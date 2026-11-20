@@ -82,6 +82,47 @@ when signed in, your service record. Its link to the stats site (named by
 The Halo admin area (MOTD, playlists, custom content, Clanker Training) is on the stats site
 at `/games/halo2/admin` ([docs/live/live-admin.md](live-admin.md)).
 
+### Browser notifications
+
+Signed-in players can open **Settings → notifications** to turn on alerts
+for games with friends or games with other players. Both start off. The
+browser stores the switches per server and account. Select **allow browser
+notifications** on that screen to let the browser show alerts in the
+background. A visible tab shows a dashboard toast regardless of browser
+permission. Both alerts open the session detail, and clicking a browser
+notification also asks the browser to focus the tab.
+
+`web/src/state/notifications.ts` follows session changes on the app's live
+stream. For those changes it reads the open sessions as the current account,
+so endpoint and visibility checks match the server's listing. A host or
+reported roster member can trigger a join alert while the game has a public
+seat and its visibility allows the reader to join. Session advertisements
+supply the lobby and its seats. Presence alone can also describe a solo
+game or a game without a current advertisement. Initial and reconnect reads
+establish a silent baseline. A tab alerts once per session and shows at most
+one alert every eight seconds. The mock streams changes to its seeded sessions
+so the settings and alerts work against the mock.
+
+Direct-message alerts need a message model with recipient-only events, stable
+message IDs and unread state. The current mailbox carries game invitations.
+See [Game-invite mailboxes](live-api.md#game-invite-mailboxes) and the
+[retail Live boundary](live-boundary.md).
+
+#### Offline delivery (not built)
+
+A service worker would subscribe through Web Push after the player opts in,
+display incoming alerts and open or focus the appropriate page. The
+`live-server` would add authenticated subscription registration and removal
+per account and browser, retain the endpoint and encryption keys privately,
+and check visibility and preferences when dispatching an event. Each server
+identity would have a dedicated P-256 VAPID key pair. Discovery would publish
+the public key, and the private key would live with the native server identity
+or in a Worker secret. An event-driven sender would deduplicate deliveries,
+retry transient failures and remove expired subscriptions. Native and
+Cloudflare deployments would share the subscription API, dispatch rules and
+parity tests, with storage and scheduled delivery behind their respective
+bindings. [Live Worker architecture](live-worker.md)
+
 ### Clanker Training
 
 Clanker Training is available there with an admin account
@@ -355,7 +396,8 @@ instead. The reducer is pure (`applyEvent`, plus `apply*Snapshot`) and runs
 inside Solid's `produce` and on plain objects in tests. On a dropped
 connection the client reconnects with exponential backoff and jitter and
 resumes after the last applied position (`from` is exclusive), so pages
-update without polling. Games outside the snapshot (deep links, older
+update without polling. The event reducer also flushes in hidden tabs for
+browser notifications. Games outside the snapshot (deep links, older
 games on a profile) are fetched on demand.
 
 ### Frames are not reactive

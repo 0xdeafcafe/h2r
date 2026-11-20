@@ -4,7 +4,7 @@
 // table. Read-only: `GET
 // /v1/sessions` and `GET /v1/sessions/{id}`, in the server's shapes.
 // H2_MOCK_SESSIONS=<n> sets how many it keeps open (default 5; 0 for none,
-// to see the empty state). The mock writes no session events to the log.
+// to see the empty state). Changes after seeding also go to the stream.
 //
 // Some are co-op campaign sessions (`flags: "coop"`, a `campaign`, friends
 // only, as the game makes them; `ping_ms` once a guest is in), and a co-op
@@ -75,6 +75,7 @@ const GAMES: Array<[name: string, flags: string, size: number]> = [
   ["Hill Hopping", "custom", 8], ["Big Team Picnic", "hopper", 16], ["Team Rumble", "hopper", 8], ["Rumble", "ranked", 8],
 ];
 const pick = <T>(xs: readonly T[]): T => xs[Math.floor(rand() * xs.length)]!;
+const sessionNonce = () => crypto.randomUUID();
 const hex = (n: number) => Array.from({ length: n }, () => Math.floor(rand() * 16).toString(16)).join("");
 
 export class Sessions {
@@ -189,10 +190,10 @@ export class Sessions {
     }
   }
 
-  private start(): void {
-    if (rand() < 0.25) { this.startCoop(); return; }
+  private start(): MockSession | null {
+    if (rand() < 0.25) return this.startCoop();
     const free = this.free();
-    if (!free.length) return;
+    if (!free.length) return null;
     const host = pick(free);
     const [name, flags, size] = pick(GAMES);
     const id = hex(16);
@@ -218,6 +219,7 @@ export class Sessions {
     const custom = this.custom?.(id, s.advertisement.map!);
     if (custom) s.advertisement.map_id = custom;
     this.all.set(id, s);
+    return s;
   }
 
   /** Someone takes a public slot. The slots are the host's own count; the
@@ -255,8 +257,7 @@ export class Sessions {
         if (i === 0) this.joinCoop(c);
         continue;
       }
-      this.start();
-      const s = [...this.all.values()].pop();
+      const s = this.start();
       if (!s) break;
       s.since = new Date(this.world.now - Math.floor(rand() * 25 * 60_000)).toISOString();
       const n = Math.floor(rand() * (s.advertisement.slots.public_open + 1));
@@ -268,6 +269,8 @@ export class Sessions {
   step(): void {
     const open = this.open();
     for (const s of open) {
+      const before = new Set(Object.keys(s.players));
+      const { public_open } = s.advertisement.slots;
       const r = rand();
       if (r < 0.3) this.join(s);
       else if (r < 0.42) this.leave(s);
@@ -276,8 +279,27 @@ export class Sessions {
         if (s.advertisement.flags === "coop") this.closeCoop(s, s.state === "expired" ? "expired" : "closed");
       } else continue;
       s.last_activity = Math.floor(this.world.now / 1000);
+      const stream = `session-${s.session_id}`;
+      const host = this.world.accounts.get(s.host_xuid) ?? null;
+      if (s.state === "deleted") {
+        this.world.append(stream, [{ type: "SessionDeleted", data: { reason: "closed" } }], host, sessionNonce);
+      } else if (s.state === "expired") {
+        this.world.append(stream, [{ type: "SessionExpired", data: {} }], null, sessionNonce);
+      } else if (public_open !== s.advertisement.slots.public_open) {
+        const events: Array<{ type: string; data: unknown }> = [
+          { type: "SessionUpdated", data: { slots: { ...s.advertisement.slots } } },
+        ];
+        for (const [xuid, slot] of Object.entries(s.players)) {
+          if (!before.delete(xuid)) events.push({ type: "PlayerJoined", data: { xuid, slot } });
+        }
+        for (const xuid of before) events.push({ type: "PlayerLeft", data: { xuid } });
+        this.world.append(stream, events, host, sessionNonce);
+      }
     }
-    if (this.open().length < this.target && rand() < 0.5) this.start();
+    if (this.open().length < this.target && rand() < 0.5) {
+      const s = this.start();
+      if (s) this.world.append(`session-${s.session_id}`, [{ type: "SessionCreated", data: structuredClone(s) }], null, sessionNonce);
+    }
     // Closed ones stay readable by id for a while, as on the server, but not for ever.
     const closed = [...this.all.values()].filter((s) => s.state !== "open");
     for (const s of closed.slice(0, Math.max(0, closed.length - 20))) this.all.delete(s.session_id);

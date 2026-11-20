@@ -147,10 +147,10 @@ export class World {
   }
 
   /** Appends events to one stream, signed by one author in one JWS when batched. */
-  append(stream: string, items: Array<{ type: string; data: unknown }>, by: Account | null): WireEvent[] {
+  append(stream: string, items: Array<{ type: string; data: unknown }>, by: Account | null, nonce = () => hex(16)): WireEvent[] {
     const { author, key } = this.author(by);
     const at = new Date(this.now).toISOString();
-    const bodies = items.map((it) => ({ stream, type: it.type, data: it.data, author, kid: key.kid, at, nonce: hex(16) }));
+    const bodies = items.map((it) => ({ stream, type: it.type, data: it.data, author, kid: key.kid, at, nonce: nonce() }));
     const jws = signJws(key, bodies.length === 1 ? bodies[0] : bodies);
     const out: WireEvent[] = [];
     for (const [i, b] of bodies.entries()) {
