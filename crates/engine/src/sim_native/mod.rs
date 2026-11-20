@@ -5,6 +5,7 @@ use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
 pub mod bsp;
 pub mod collision;
 pub mod graph;
+mod lanes;
 pub mod marker;
 pub mod mopp_query;
 pub mod object;
@@ -15,6 +16,9 @@ pub mod stream;
 pub mod unit;
 
 pub use collision::{geometry_test, point_to_leaf};
+#[cfg(any(test, feature = "differential"))]
+pub use lanes::with as with_simd;
+pub use lanes::{enabled as simd_enabled, set_enabled as set_simd};
 pub use pose::{compose, pose_matrix, rotation_codec};
 
 pub type Result = std::result::Result<TransferAbi, GuestFault>;
@@ -90,9 +94,17 @@ fn op(c: &mut CpuAbi, op: Op, a: u32, b: u32) -> u32 {
     .expect("masked SSE exceptions") as u32
 }
 
+// Packed SSE. The fast path runs on host vector lanes unless
+// `impl.sim.native_simd` is off; see `lanes` for why the bits match.
 fn vector(c: &mut CpuAbi, kind: Op, a: Vec4, b: Vec4) -> Vec4 {
-    if c.mxcsr & 0x6020 == 0x20 && a.into_iter().all(ordinary) && b.into_iter().all(ordinary) {
-        return std::array::from_fn(|i| binary32(kind, a[i], b[i]));
+    if c.mxcsr & 0x6020 == 0x20 {
+        if lanes::enabled() {
+            if lanes::ordinary(a, b) {
+                return lanes::binary32(kind, a, b);
+            }
+        } else if lanes::scalar::ordinary(a, b) {
+            return lanes::scalar::binary32(kind, a, b);
+        }
     }
     let (a, b) = (pack(a), pack(b));
     unpack(
