@@ -12,7 +12,8 @@
 //! other and, if nothing there wants it, simply resumes the loop, which then
 //! makes at least one trip before it can leave again.
 //!
-//! Bits say why the word was set ([`SLICE`], [`INTERRUPT`], [`REQUEST`]).
+//! Bits say why the word was set ([`SLICE`], [`INTERRUPT`], [`REQUEST`],
+//! [`PARK`]).
 //! They are wake hints for the context's own generated loops; the state
 //! behind them is authoritative and kept elsewhere: the context's slice
 //! (per context, so no other context can consume its expiry) and the
@@ -72,9 +73,15 @@ pub const SLICE: u32 = 1;
 pub const INTERRUPT: u32 = 2;
 /// The host asked the running guest thread to give up its slice.
 pub const REQUEST: u32 = 4;
+/// A memory guard on another thread waits for this context's generated
+/// code to stop (`ffi::memory`'s module docs; set only after
+/// [`Runtime::enable_parking`]). A wake hint like the others, but not a
+/// preemption: [`ExecCtx::preempt_decide`] ignores it, so no slice ends and
+/// no transfer is spent; the context waits at its next entry to generated
+/// code until the guard is gone.
+pub const PARK: u32 = 8;
 /// Sticky, not a wake reason: the runtime's interrupt queue is not empty.
 /// Kept only after [`Runtime::enable_leave_word`]; see the module doc.
-/// (8 is kept for `PARK`, contract change slice F2.)
 pub const IRQ_QUEUED: u32 = 16;
 
 /// Accesses per Machine slice by default (`kernel::Machine::preempt_slice`).
@@ -119,6 +126,16 @@ impl Words {
         for w in words.iter().filter_map(Weak::upgrade) {
             f(&w);
         }
+    }
+    /// Set `bits` on the word at `word` (an address [`ExecCtx`] keeps as its
+    /// first field) if it is still live. Through the list, so a word whose
+    /// context has gone is never written.
+    pub(crate) fn request_on(&self, word: usize, bits: u32) {
+        self.each(|w| {
+            if std::ptr::eq(&w.0, word as *const AtomicU32) {
+                w.request(bits);
+            }
+        });
     }
     /// Set or clear [`IRQ_QUEUED`] on every word. Called only with the
     /// interrupt queue's lock held, so the bit follows the queue exactly.
@@ -302,7 +319,8 @@ impl ExecCtx {
     /// A delivered interrupt pre-empted this safe point: keep the reasons
     /// it did not handle for the next one.
     pub(crate) fn defer_preempt(&self, reasons: u32) {
-        let rest = reasons & !(INTERRUPT | IRQ_QUEUED);
+        // A park is over once the runner is back: its guard went first.
+        let rest = reasons & !(INTERRUPT | IRQ_QUEUED | PARK);
         if rest != 0 {
             self.word.request(rest);
         }

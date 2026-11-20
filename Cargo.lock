@@ -5231,6 +5231,7 @@ dependencies = [
 name = "runtime"
 version = "0.1.0"
 dependencies = [
+ "hostfault",
  "iced-x86",
  "libc",
  "runtime-test-probe",

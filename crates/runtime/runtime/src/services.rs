@@ -17,7 +17,9 @@ pub struct Runtime {
     dispatch_gen: AtomicU64,
     pub(crate) interrupts: crate::interrupt::InterruptQueue,
     tsc: Tsc,
-    pub(crate) words: crate::preempt::Words,
+    /// Shared with the memory, which sets [`crate::preempt::PARK`] on the
+    /// running context's word.
+    pub(crate) words: Arc<crate::preempt::Words>,
     pub(crate) coverage: OnceLock<crate::coverage::Coverage>,
     pub(crate) dispatch_census: Option<crate::entry_stats::DispatchCensus>,
     /// The entry table, once dispatch has a module with one
@@ -70,13 +72,15 @@ impl LockContention {
 
 impl Runtime {
     pub fn new(memory: Guest, dispatch: Dispatch) -> Arc<Self> {
+        let memory = crate::ffi::Memory::new(memory);
+        let words = memory.words.clone();
         let rt = Arc::new(Self {
-            memory: crate::ffi::Memory::new(memory),
+            memory,
             dispatch: RwLock::new(dispatch),
             dispatch_gen: AtomicU64::new(1),
             interrupts: Default::default(),
             tsc: Tsc::default(),
-            words: Default::default(),
+            words,
             coverage: OnceLock::new(),
             dispatch_census: (std::env::var("H2_DISPATCH_STATS").as_deref() == Ok("1"))
                 .then(crate::entry_stats::DispatchCensus::default),
@@ -199,6 +203,47 @@ impl Runtime {
     }
     pub(crate) fn fast_memory(&self) -> *const crate::ffi::MemoryShared {
         self.memory.fast_shared()
+    }
+    /// The memory itself, for [`crate::ffi::call_native`]'s state word.
+    pub(crate) fn memory_state(&self) -> &crate::ffi::Memory {
+        &self.memory
+    }
+    /// Use the memory's state word and [`crate::preempt::PARK`] in place
+    /// of the gate from now on (docs/runtime/contract-thin-transfers-flat-ram.md,
+    /// section 4.1, "No gate in generated code"; `ffi::memory`'s module
+    /// docs). For the flat model, which has no gate: a paged image keeps
+    /// the gate and never needs it. It cannot be turned off again.
+    pub fn enable_parking(&self) {
+        self.memory.enable_parking();
+    }
+    /// The host address of guest address 0 in this runtime's flat RAM
+    /// window ([`crate::window`]), fixed for the runtime's life, or `None`
+    /// where there is no window. A page is readable there only while the
+    /// window holds it; anything else faults.
+    pub fn flat_base(&self) -> Option<*mut u8> {
+        self.memory.window().map(|w| w.base())
+    }
+    /// The window's cards (`cards[va >> 12]`, one byte per 4 KiB page;
+    /// one per 4 MiB region at `cards - 1024`; zero means written), made on
+    /// first use, or `None` without a window. Written cards are folded into
+    /// the write watch before it is read or changed.
+    pub fn flat_cards(&self) -> Option<*mut u8> {
+        self.memory.window().map(|w| w.cards())
+    }
+    /// Send faults inside the window to the fixup rows registered with
+    /// `hostfault`, counting them ([`crate::window::WindowStats::fixups`]).
+    /// Idempotent. Without a window, `Ok` and nothing to catch.
+    pub fn catch_window_faults(&self) -> Result<(), hostfault::Error> {
+        self.memory
+            .window()
+            .map_or(Ok(()), |w| w.catch_faults())
+    }
+    /// This runtime's window counters (zeros without a window).
+    pub fn window_stats(&self) -> crate::window::WindowStats {
+        self.memory
+            .window()
+            .map(|w| w.stats())
+            .unwrap_or_default()
     }
     /// Reads the dispatch tables (override names, say) without a new
     /// generation.

@@ -57,7 +57,7 @@ Off by default. Each is the owner's call once the A/B named is run.
 
 | Switch | What | Waiting for |
 |---|---|---|
-| `H2_FLAT_RAM`, `H2_FLAT_WRITE_WATCH` (+ `H2_FLAT_STATS_OWNER`) | guest RAM as one flat host mapping, and its write watch | a full-image A/B |
+| `H2_FLAT_RAM`, `H2_FLAT_WRITE_WATCH` (+ `H2_FLAT_STATS_OWNER`) | guest RAM as one flat host mapping, and its write watch; at run time it also makes guest RAM aliasable, so the runtime's flat RAM window holds it ([contract-thin-transfers-flat-ram.md](contract-thin-transfers-flat-ram.md), section 4.1) | a full-image A/B |
 | `H2_RAM_PAGE_CACHE` | reuses RAM pages within one gate hold | a full-image A/B |
 | `H2_X87_TOP` | checked x87 TOP specialisation | a full-image A/B |
 | `H2_ENTRY_GATE` | takes the RAM gate at handler entry; 11% off a runner entry in benches | an in-game profile ([guest-memory.md](../perf/guest-memory.md)) |

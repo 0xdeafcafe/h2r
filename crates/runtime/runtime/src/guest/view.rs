@@ -75,6 +75,9 @@ impl Guest {
             code_id: fresh_layout(),
             trap: None,
             cow_source_layout: 0, watch_revision: 0,
+            window: None,
+            ident: super::fresh_layout(),
+            congruence_skipped: self.congruence_skipped,
         };
         view.copy_layout_from(self);
         if self.fast_pages.is_some() {
@@ -92,6 +95,7 @@ impl Guest {
     /// either is in flight.
     pub fn cow_refresh(&mut self, source: &Guest) -> CopyKind {
         self.invalidate_hle_capture();
+        self.fold_cards();
         let (ram, kind) = source.ram.cow_copy();
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
         {
@@ -104,12 +108,15 @@ impl Guest {
         self.watch_revision = self.watch_revision.wrapping_add(1);
         if self.cow_source_layout != source.layout {
             self.copy_layout_from(source);
+        } else {
+            self.window_ram_replaced();
         }
         self.watch.clear_dirty();
         kind
     }
 
     fn copy_layout_from(&mut self, source: &Guest) {
+        self.fold_cards();
         self.code_moved();
         self.mappings = source.mappings.clone();
         self.next_physical = source.next_physical;
@@ -187,6 +194,7 @@ impl Guest {
         owned: &[(u32, u32)],
     ) -> HandBack {
         self.invalidate_hle_capture();
+        self.fold_cards();
         let base = base.bytes();
         let mut out = HandBack::default();
         for page in written {

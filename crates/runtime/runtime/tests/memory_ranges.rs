@@ -279,15 +279,18 @@ fn reserved() -> (Guest, runtime::guest::ReservationId) {
 #[test]
 fn reservations_cannot_be_violated_by_any_allocator_or_map() {
     let (mut g, id) = reserved();
-    // Bump allocation fills below the arena, then skips past it.
+    // Bump allocation fills below the arena, then skips past it, to the
+    // first address congruent with the mapping's modulo 16 KiB.
     g.map_zeroed(0x10000, 0x50000, Permissions::RW).unwrap();
     g.map_zeroed(0x60000, 0x20000, Permissions::RW).unwrap();
+    let after = HALO2_PHYSICAL_ARENA.end.next_multiple_of(0x4000);
     assert_eq!(g.mappings()[0].physical_start, 0);
-    assert_eq!(g.mappings()[1].physical_start, HALO2_PHYSICAL_ARENA.end);
+    assert_eq!(g.mappings()[1].physical_start, after);
     // Exhaust everything else; nothing ever lands in the arena.
-    let rest = RAM_SIZE as u32 - HALO2_PHYSICAL_ARENA.end - 0x20000;
+    let rest = RAM_SIZE as u32 - after - 0x20000;
     g.map_zeroed(0x1000_0000, rest, Permissions::RW).unwrap();
-    // The 0x11000-byte gap below the arena is the only free RAM left.
+    // The 0x11000-byte gap below the arena and the bytes skipped above it
+    // are the only free RAM left.
     assert_eq!(
         g.find_free_physical(P, 0..RAM_SIZE as u32, P),
         Some(0x50000)
@@ -295,6 +298,11 @@ fn reservations_cannot_be_violated_by_any_allocator_or_map() {
     g.map_zeroed(0x0800_0000, 0x11000, Permissions::RW).unwrap();
     let gap = g.mappings().iter().find(|m| m.virtual_start == 0x0800_0000);
     assert_eq!(gap.unwrap().physical_start, 0x50000);
+    // With nothing congruent left, the skipped bytes are used as they are.
+    let skipped = after - HALO2_PHYSICAL_ARENA.end;
+    g.map_zeroed(0x2100_0000, skipped, Permissions::RW).unwrap();
+    let gap = g.mappings().iter().find(|m| m.virtual_start == 0x2100_0000);
+    assert_eq!(gap.unwrap().physical_start, HALO2_PHYSICAL_ARENA.end);
     assert_eq!(
         g.map_zeroed(0x2000_0000, P, Permissions::RW),
         Err(MapError::OutOfMemory)

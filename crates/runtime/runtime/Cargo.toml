@@ -14,6 +14,8 @@ rustc-hash = "2"
 # mmap of guest RAM and its copy-on-write bases (src/cow.rs); as the
 # other crates pin it.
 libc = "0.2"
+# The flat RAM window's fault region (src/window.rs).
+hostfault = { path = "../hostfault" }
 
 [dev-dependencies]
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder"] }

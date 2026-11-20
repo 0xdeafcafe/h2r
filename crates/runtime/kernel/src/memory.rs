@@ -288,16 +288,36 @@ impl Memory {
         let end = (high as u64 + 1).min(RAM_SIZE as u64) as u32;
         memory.find_free_physical(size, low..end, alignment)
     }
-    /// `count` distinct free physical pages, lowest first.
-    fn physical_pages(memory: &Guest, count: usize) -> Option<Vec<u32>> {
-        let mut pages = Vec::with_capacity(count);
-        let mut cursor = 0;
-        while pages.len() < count {
-            let page = memory.find_free_physical(PAGE_SIZE, cursor..RAM_SIZE as u32, PAGE_SIZE)?;
-            pages.push(page);
-            cursor = page + PAGE_SIZE;
+    /// A distinct free physical page for each virtual page of `pages`,
+    /// lowest first, congruent with it modulo 16 KiB where one is left
+    /// (`Guest::find_free_physical_for`), so the flat RAM window can hold
+    /// it; any free page otherwise.
+    fn physical_pages(memory: &Guest, pages: &[u32]) -> Option<Vec<u32>> {
+        let mut out: Vec<u32> = Vec::with_capacity(pages.len());
+        // Per residue, where the next congruent search starts.
+        let mut cursor = [0u32; 4];
+        let mut any = 0u32;
+        for &va in pages {
+            let residue = ((va >> 12) & 3) as usize;
+            let congruent = memory
+                .find_free_physical_for(va, PAGE_SIZE, cursor[residue]..RAM_SIZE as u32)
+                .filter(|p| (p ^ va) & 0x3000 == 0 && !out.contains(p));
+            let page = match congruent {
+                Some(p) => {
+                    cursor[residue] = p + PAGE_SIZE;
+                    p
+                }
+                None => loop {
+                    let p = memory.find_free_physical(PAGE_SIZE, any..RAM_SIZE as u32, PAGE_SIZE)?;
+                    any = p + PAGE_SIZE;
+                    if !out.contains(&p) {
+                        break p;
+                    }
+                },
+            };
+            out.push(page);
         }
-        Some(pages)
+        Some(out)
     }
     /// Internal objects use a separate harness VA range, but the same physical
     /// occupancy as every other allocation. A single map makes failure atomic.
@@ -306,8 +326,9 @@ impl Memory {
         let base = self
             .find_virtual(memory, size, 0xa100_0000, 0xb000_0000, PAGE_SIZE)
             .ok_or(status::NO_MEMORY)?;
-        let physical =
-            Self::find_physical(memory, size, 0, u32::MAX, PAGE_SIZE).ok_or(status::NO_MEMORY)?;
+        let physical = memory
+            .find_free_physical_for(base, size, 0..RAM_SIZE as u32)
+            .ok_or(status::NO_MEMORY)?;
         memory
             .map(base, size, physical, Permissions::RW)
             .map_err(|_| status::NO_MEMORY)?;
@@ -330,19 +351,26 @@ impl Memory {
         let base = self
             .find_virtual(memory, span, 0xa100_0000, 0xb000_0000, PAGE_SIZE)
             .ok_or(status::NO_MEMORY)?;
-        let backed = stack_size.checked_add(PAGE_SIZE).ok_or(status::NO_MEMORY)?;
-        let physical =
-            Self::find_physical(memory, backed, 0, u32::MAX, PAGE_SIZE).ok_or(status::NO_MEMORY)?;
         let bottom = base + 2 * PAGE_SIZE;
+        // The object and the stack are each placed congruent with their own
+        // address (`Guest::find_free_physical_for`), so apart.
+        let object = memory
+            .find_free_physical_for(base, PAGE_SIZE, 0..RAM_SIZE as u32)
+            .ok_or(status::NO_MEMORY)?;
         if memory
-            .map(base, PAGE_SIZE, physical, Permissions::RW)
+            .map(base, PAGE_SIZE, object, Permissions::RW)
             .is_err()
         {
             unreachable_failure("mapping a thread object");
             return Err(status::NO_MEMORY);
         }
+        let Some(stack) = memory.find_free_physical_for(bottom, stack_size, 0..RAM_SIZE as u32)
+        else {
+            let _ = memory.unmap(base, PAGE_SIZE);
+            return Err(status::NO_MEMORY);
+        };
         if memory
-            .map(bottom, stack_size, physical + PAGE_SIZE, Permissions::RW)
+            .map(bottom, stack_size, stack, Permissions::RW)
             .is_err()
         {
             unreachable_failure("mapping a thread stack");
@@ -366,9 +394,10 @@ impl Memory {
         let base = self
             .find_virtual(memory, span, 0xa100_0000, 0xb000_0000, PAGE_SIZE)
             .ok_or(status::NO_MEMORY)?;
-        let physical =
-            Self::find_physical(memory, size, 0, u32::MAX, PAGE_SIZE).ok_or(status::NO_MEMORY)?;
         let bottom = base + PAGE_SIZE;
+        let physical = memory
+            .find_free_physical_for(bottom, size, 0..RAM_SIZE as u32)
+            .ok_or(status::NO_MEMORY)?;
         memory
             .map(bottom, size, physical, Permissions::RW)
             .map_err(|_| status::NO_MEMORY)?;
@@ -540,7 +569,7 @@ impl Memory {
             if pages.iter().any(|&page| !mappable(memory, page, PAGE_SIZE)) {
                 return Ok(Action::status(status::CONFLICTING_ADDRESSES));
             }
-            let Some(p) = Self::physical_pages(memory, pages.len()) else {
+            let Some(p) = Self::physical_pages(memory, &pages) else {
                 return Ok(Action::status(status::NO_MEMORY));
             };
             p

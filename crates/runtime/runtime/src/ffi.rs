@@ -25,10 +25,28 @@ pub struct ExecCtxOpaque {
 }
 
 pub(crate) fn call_native(f: GuestFn, cpu: &mut CpuAbi, ctx: &mut ExecCtx, pc: u32) -> TransferAbi {
+    ctx.direct_clear_view();
+    if ctx.runtime().memory_state().parking() {
+        return call_native_parked(f, cpu, ctx, pc);
+    }
     // SAFETY: native registration promises the documented ABI; these disjoint
     // exclusive borrows remain alive for exactly the synchronous call.
-    ctx.direct_clear_view();
     let result = unsafe { f(cpu, (ctx as *mut ExecCtx).cast(), pc) };
+    sync_accesses(ctx);
+    result
+}
+
+/// [`call_native`] with the memory's state word: "running" for the call
+/// (`memory.rs`'s module docs).
+#[cold]
+#[inline(never)]
+fn call_native_parked(f: GuestFn, cpu: &mut CpuAbi, ctx: &mut ExecCtx, pc: u32) -> TransferAbi {
+    let runtime = ctx.runtime().clone();
+    let memory = runtime.memory_state();
+    let entered = memory.start_running(ctx.preempt_ptr());
+    // SAFETY: as in call_native.
+    let result = unsafe { f(cpu, (ctx as *mut ExecCtx).cast(), pc) };
+    memory.stop_running(entered);
     sync_accesses(ctx);
     result
 }
