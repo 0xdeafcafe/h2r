@@ -2,6 +2,8 @@
 //! backend keeps one colour byte per surface so that reads and subsequent
 //! frames can observe exactly which target a command wrote.
 
+mod pacing;
+
 use super::*;
 use crate::backend::{GuestLayoutKind, ResolvedDraw};
 use frame_scene::{AuxTarget, Slot, SlotAt};
@@ -14,6 +16,7 @@ struct Pixels {
     surfaces: Vec<u8>,
     shown: Vec<u8>,
     clears: usize,
+    hold_present: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
 }
 
 impl Backend for Pixels {
@@ -55,6 +58,10 @@ impl Backend for Pixels {
         Ok(Some(u32::from(self.surfaces[surface as usize])))
     }
     fn present(&mut self, surface: u32, _: u32) -> Result<(), String> {
+        if let Some((entered, resume)) = self.hold_present.take() {
+            entered.send(()).map_err(|e| e.to_string())?;
+            resume.recv().map_err(|e| e.to_string())?;
+        }
         self.shown.push(self.surfaces[surface as usize]);
         Ok(())
     }
@@ -326,4 +333,34 @@ fn previous_present_flare_reports_can_land_while_the_next_frame_is_retained() {
     gpu.present(color, 0).unwrap();
     gpu.finish().unwrap();
     assert_eq!(owned.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn a_failed_native_write_faults_the_worker_without_replaying_into_the_same_target() {
+    let (mut gpu, _, target) = device(true);
+    gpu.frame_owner.as_mut().unwrap().select = Box::new(|n| {
+        Some(Candidate {
+            frame: Arc::new(frame(n, 1)),
+            eligible: Box::new(|_, _| true),
+            draw: Box::new(|gpu, targets| {
+                gpu.clear(targets[&TargetRef::SceneColour], None, clear(42))?;
+                Err("synthetic submission failure".into())
+            }),
+        })
+    });
+    gpu.clear(target, None, clear(1)).unwrap();
+    gpu.present(target, 0).unwrap();
+    // The public interface reports the first worker error. Inspect the
+    // fake backend after that transaction to distinguish one write from
+    // a rewrite by the guest path.
+    let (state, observed) = std::sync::mpsc::channel();
+    gpu.post(move |worker| {
+        let target = worker.surface(target)?;
+        let backend = &worker.inner;
+        state.send((backend.clears, backend.surfaces[target as usize], backend.shown.clone())).unwrap();
+        Ok(())
+    });
+    assert!(gpu.finish().unwrap_err().contains("synthetic submission failure"));
+    drop(gpu);
+    assert_eq!(observed.recv().unwrap(), (1, 42, Vec::new()));
 }
