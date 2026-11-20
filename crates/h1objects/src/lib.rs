@@ -37,6 +37,7 @@
 
 pub mod arsenal;
 pub mod base;
+mod biped_hits;
 pub mod coll;
 pub mod functions;
 pub mod convert;
@@ -46,6 +47,7 @@ pub mod health_hud;
 mod particle_movement;
 pub mod particles;
 pub mod physics;
+mod player_damage;
 pub mod provenance;
 pub mod query;
 pub mod ragdoll;

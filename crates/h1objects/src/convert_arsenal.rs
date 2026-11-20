@@ -178,7 +178,15 @@ impl Converter<'_> {
         } else {
             None
         };
-        let root = arsenal::damage(b, sound)?;
+        let mut scale = None;
+        if arsenal::has_vitality_damage(b) {
+            let profile = crate::player_damage::scales(b)?;
+            if profile != [1.0f32.to_bits(); 2] {
+                scale = Some(crate::player_damage::damage_key(profile));
+                self.tree.player_damage_scales.insert(profile);
+            }
+        }
+        let root = arsenal::damage_with_scale(b, sound, scale.as_deref())?;
         self.cached(t, Converted {
             group: FourCC(*b"jpt!"),
             root,
@@ -194,6 +202,44 @@ impl Converter<'_> {
             .flat_map(|event| event.parts)
             .filter(|part| part.group == h1map::Group::new(b"jpt!"))
             .find_map(|part| part.reference)
+    }
+
+    /// The projectile applies the event's damaging part itself. Keep any
+    /// companion impulse or second damage in the effect so it fires once.
+    fn detonation_effect(
+        &mut self,
+        source: Option<h1map::TagId>,
+    ) -> Result<(Option<TagId>, Option<TagId>)> {
+        let Some(id) = source else { return Ok((None, None)) };
+        let tag = self.h1_tag(id)?;
+        let effect = h1::Effect::read(self.h1, tag)?;
+        let mut primary = None;
+        for (index, part) in effect
+            .events
+            .iter()
+            .flat_map(|event| &event.parts)
+            .enumerate()
+        {
+            if part.group != h1map::Group::new(b"jpt!") {
+                continue;
+            }
+            let Some(id) = part.reference else { continue };
+            let bytes = h1::tag_bytes(
+                self.h1,
+                self.h1_tag(id)?,
+                b"jpt!",
+                arsenal::H1_JPT_MIN,
+            )?;
+            let has_damage = arsenal::has_vitality_damage(bytes);
+            if primary.is_none_or(|(_, _, current)| !current && has_damage) {
+                primary = Some((id, index, has_damage));
+            }
+        }
+        let Some((primary, index, _)) = primary else {
+            return Ok((Some(self.effect(tag)?), None));
+        };
+        let effect = self.effect_after_detonation(tag, index)?;
+        Ok((Some(effect), Some(self.damage(primary)?)))
     }
 
     pub(super) fn weapon(&mut self, tag: &Tag) -> Result<TagId> {
@@ -386,11 +432,8 @@ impl Converter<'_> {
             Some(j) => Some(self.damage(j)?),
             None => None,
         };
-        let det = self.effect_damage(p.effect).or(p.attached_detonation_damage);
-        let detonation_damage = match det {
-            Some(j) => Some(self.damage(j)?),
-            None => None,
-        };
+        let (detonation, detonation_damage) = self.detonation_effect(p.effect)?;
+        let (sup, super_damage) = self.detonation_effect(p.super_detonation)?;
         let mut parts = arsenal::ProjectileParts {
             hlmt,
             impact_damage,
@@ -400,8 +443,6 @@ impl Converter<'_> {
         };
         // Halo 1's in the slots named by pairs (arsenal::PROJECTILE_FLYBY_SOUND).
         let started = self.h1_effect(p.detonation_started, "detonation started", &mut rep)?;
-        let detonation = self.h1_effect(p.effect, "detonation effect", &mut rep)?;
-        let sup = self.h1_effect(p.super_detonation, "super detonation", &mut rep)?;
         let flyby = match p.flyby_sound {
             Some(s) => {
                 let t = self.h1_tag(s)?;
@@ -409,8 +450,7 @@ impl Converter<'_> {
             }
             None => None,
         };
-        let super_damage = self.h1_damage(self.effect_damage(p.super_detonation), "super detonation damage", &mut rep)?;
-        let attached = self.h1_damage(p.attached_detonation_damage, "attached detonation damage", &mut rep)?;
+        let attached = p.attached_detonation_damage.map(|id| self.damage(id)).transpose()?;
         parts.halo1 = vec![
             arsenal::halo1_ref("ref_108", b"jpt!", attached),
             arsenal::halo1_ref("super_detonation_damage", b"jpt!", super_damage),

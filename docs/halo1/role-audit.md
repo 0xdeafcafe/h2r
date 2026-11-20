@@ -67,7 +67,7 @@ integration run. There is no new pass count or play result yet.
   `0xf5a89`. The seat entry test needs positive distance and angle
   limits (`0xc9040`). `+0x258` and `+0x2e4` keep their definition defaults.
   Neither has an identified read in the ground or hover drive equations.
-- Biped models keep the native damage section array that `object_new`
+- Biped models other than the Halo 1 player keep the native damage section array that `object_new`
   indexes at damage info `+0xbc`, and native shield/overshield shaders
   at `+0x7c/+0x84/+0xe8/+0xf0`. The per-model camouflage shader is
   H2-specific. Halo 1 implements camouflage through its globals.

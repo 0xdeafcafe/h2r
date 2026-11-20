@@ -1064,11 +1064,39 @@ pub fn equipment(e: &h1::Equipment, b: &[u8], parts: &EquipmentParts) -> Result<
     built(d, &r)
 }
 
+/// A pure impulse may have a radius without changing body or shield vitality.
+pub(crate) fn has_vitality_damage(b: &[u8]) -> bool {
+    [H1_DAMAGE_LOWER, H1_DAMAGE_UPPER, H1_DAMAGE_UPPER + 4]
+        .into_iter()
+        .any(|at| f32::from_bits(u32_at(b, at)) > 0.0)
+}
+
+#[cfg(test)]
+#[test]
+fn shock_wave_radius_does_not_count_as_vitality_damage() {
+    let mut bytes = [0; H1_JPT_MIN];
+    bytes[4..8].copy_from_slice(&8.0f32.to_le_bytes());
+    assert!(!has_vitality_damage(&bytes));
+    bytes[H1_DAMAGE_UPPER + 4..H1_DAMAGE_UPPER + 8].copy_from_slice(&1.0f32.to_le_bytes());
+    assert!(has_vitality_damage(&bytes));
+}
+
 /// Halo 1 damage, camera impulse, shake and player feedback.
 pub fn damage(b: &[u8], sound: Option<TagId>) -> Result<Block> {
+    damage_with_scale(b, sound, None)
+}
+
+pub(crate) fn damage_with_scale(
+    b: &[u8],
+    sound: Option<TagId>,
+    scale: Option<&str>,
+) -> Result<Block> {
     let d = def(b"jpt!")?;
     let mut r = defs::default_record(d);
     set(&mut r, "ref_a8", Val::tag(FourCC(*b"snd!"), sound.unwrap_or(TagId::NULL)))?;
+    if let Some(scale) = scale {
+        set(&mut r, "string_50", Val::text(scale))?;
+    }
     if b.len() < H1_JPT_MIN { return Err(Error::Truncated("jpt! root")); }
     for (path, at) in [
         ("unknown_0", 0), ("unknown_4", 4), ("unknown_8", 8),
@@ -1128,6 +1156,6 @@ pub fn damage(b: &[u8], sound: Option<TagId>) -> Result<Block> {
     built(d, &r)
 }
 
-/// Halo 1's `jpt!` root size: where its first child block starts (V1,
-/// docs/halo1/objects.md); the damage bounds end at `+0x1dc`.
+/// Minimum Halo 1 `jpt!` bytes for the scalar damage and feedback fields.
+/// The source material multipliers follow at `+0x200`.
 pub const H1_JPT_MIN: usize = 0x1e4;

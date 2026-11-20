@@ -1141,6 +1141,67 @@ reload time, every weapon's error angles and cone ranges, the plasma
 rifle's heat, the needler's magazine and rate of fire, and every bullet's
 speed (Halo 1's are slower than the Halo 2 templates').
 
+### Blood Gulch hit registration (**Built**)
+
+The imported cyborg has one collision region and one permutation,
+`cyborg/__base`, with 16 BSPs on the same numbered nodes as the render
+skeleton. In the default pose the collision runs from about −0.002 to
+0.705 world units vertically on both the Halo 1 disc and converted
+Blood Gulch, against a render-model top of 0.704. The pills use the source standing height 0.7, crouching
+height 0.5 and radius 0.2. Coagulation's Chief has four collision
+regions and standing height 0.725, crouching height 0.5 and radius
+0.175. The Halo 1 cyborg's pathfinding sphere, living character shapes
+and rigid bodies serve other collision queries. A weapon's model ray
+uses the node BSPs (`0x001695fb`).
+
+- **Aim assist.** The weapon cones already reach the engine
+  (`weap +0x208..0x218`, Halo 2 `0x001a5137..0x001a5199`). The
+  converted cyborg had an empty `hlmt +0x68`. The target search
+  (`0x001a5d18`) and shot-aim lookup (`0x001a6ca3`) read this block
+  and resolve each entry's model marker. The converter writes the
+  cyborg's authored `body` and `head` markers with the targeting
+  radii, flags, angular limits and lock distance of Coagulation's
+  player Chief. The marker positions and nodes come from Halo 1.
+- **Headshots.** Halo 1 uses material `+0x20` bit 0
+  (`0x00095089`) with damage flag bit 1 (`0x00095092`). Halo 2
+  reads `hlmt` material `+6` for the damage section and checks its
+  bit 7 and the damage flag (`0x000d8d50..0x000d8d79`). Imported
+  cyborg materials had section −1. They now select rebuilt body or
+  head sections by the source material flag. A pistol or sniper
+  round can take the native headshot path once damage reaches the body.
+- **Projectile travel.** Halo 1 Blood Gulch uses projectile tags for
+  its bullets, pellets, bolts, needles, shells and rockets. The
+  converter takes their collision radii and ranges and converts the
+  speeds from world units per tick to per second. Halo 1 computes
+  drag over its authored air interval (`0x000c1ac0` and `0x000c3f0e`).
+  The converter now also writes that interval into the Halo 2
+  distance-based speed transition (`proj +0x18c..0x194`,
+  `0x000f9527..0x000f95b4`). A plasma rifle bolt starts at 50
+  world units per second and reaches 25 over 20–50 world units of
+  travel. The flight hook uses Halo 1's acceleration law and selects
+  the authored air or water interval for the current medium.
+- **Damage.** The source model gives the cyborg 75 shield and 75 body,
+  and converted `jpt!` tags carry the source damage bounds and reach.
+  Halo 1 indexes the damage's material scales at `jpt! +0x200`
+  (`0x00094a45` and `0x0009505c`, damage descriptor `+0x3c`).
+  The cyborg armour and shield scales now use native damage table
+  rows (`matg +0xd0`, Halo 2 `0x000d5bc0`). For example, a plasma
+  rifle bolt scales shield damage by 2 and body damage by 0.5.
+  The plasma grenade's free explosion and the needler's super
+  explosion list an impulse-only `jpt!` before the vitality damage.
+  The damaging part goes in the projectile's native damage slot.
+  The companion impulse stays in the effect and runs through
+  Halo 2's `jpt!` effect-part dispatch (`0x0017a97f`).
+  Attached detonation damage uses its dedicated slot.
+
+The Halo 2 sandbox uses its native player models and weapons.
+`tests/hitreg_disc.rs` checks the Halo 1 sandbox after writing and
+reading the map. It compares head, torso and thigh rays to the disc
+collision, checks authored marker positions and character shapes,
+and follows each converted weapon's projectile and impact damage.
+It also checks the plasma grenade and needler's separate damage and
+impulse paths. A live hit and aiming check still needs a game run.
+
 ## What has no Halo 2 home here
 
 - **Damage** (`jpt!` amounts): the projectile keeps the template's damage

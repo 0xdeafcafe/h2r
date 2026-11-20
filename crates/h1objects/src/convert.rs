@@ -346,6 +346,8 @@ pub struct Tree {
     /// Per tag (its index in [`Tree::tags`]), the values its builder took
     /// from a role ([`crate::provenance`]), for the role audit.
     pub role_fields: Vec<(usize, Vec<crate::provenance::RoleField>)>,
+    /// Body and shield scale pairs referenced by converted damage effects.
+    pub(crate) player_damage_scales: std::collections::BTreeSet<crate::player_damage::Scales>,
 }
 
 /// One owner's two HUDs: Halo 1's ([`crate::h1hud`]), which the owner
@@ -594,6 +596,7 @@ impl Tree {
     /// sandbox adds its collections between the two, so the tags and the
     /// collections hold the datums its placements name.
     pub fn install_tags(&mut self, set: &mut TagSet) -> Result<Vec<TagId>> {
+        crate::player_damage::install(set, &self.player_damage_scales)?;
         let first = set.slots.len();
         let ids: Vec<TagId> = (0..self.tags.len())
             .map(|k| {
@@ -648,6 +651,7 @@ impl Tree {
                 donors.len()
             )));
         }
+        crate::player_damage::install(set, &self.player_damage_scales)?;
         let ids = &donors[..self.tags.len()];
         for (k, (name, tag)) in self.tags.into_iter().enumerate() {
             let id = ids[k];
@@ -886,6 +890,8 @@ pub struct Converter<'a> {
     /// Effects whose particles are being converted (a particle's own
     /// effects that lead back to one are left out).
     effects_open: Vec<u32>,
+    /// Projectile effects whose primary damage is applied by the projectile.
+    detonation_effects: HashMap<(u32, usize), TagId>,
     /// Objects being converted ([`Self::object`]), so one whose effects
     /// lead back to it is refused instead of recursed into.
     objects_open: Vec<u32>,
@@ -929,6 +935,7 @@ impl<'a> Converter<'a> {
             loop_index: HashMap::new(),
             particle_shaders: None,
             effects_open: Vec::new(),
+            detonation_effects: HashMap::new(),
             objects_open: Vec::new(),
             pctl_done: HashMap::new(),
             attached_particles: HashMap::new(),
@@ -1224,21 +1231,51 @@ impl<'a> Converter<'a> {
             )));
         }
         self.effects_open.push(tag.id.0);
-        let got = self.effect_uncached(tag);
+        let got = self.effect_uncached(tag, None);
         self.effects_open.pop();
         let id = got?;
         self.done.insert(tag.id.0, id);
         Ok(id)
     }
 
-    fn effect_uncached(&mut self, tag: &Tag) -> Result<TagId> {
+    fn effect_after_detonation(&mut self, tag: &Tag, primary: usize) -> Result<TagId> {
+        let key = (tag.id.0, primary);
+        if let Some(id) = self.detonation_effects.get(&key) {
+            return Ok(*id);
+        }
+        if self.effects_open.contains(&tag.id.0) {
+            return Err(Error::Invalid(format!(
+                "{}: converting it needs itself",
+                tag.name
+            )));
+        }
+        self.effects_open.push(tag.id.0);
+        let got = self.effect_uncached(tag, Some(primary));
+        self.effects_open.pop();
+        let id = got?;
+        self.detonation_effects.insert(key, id);
+        Ok(id)
+    }
+
+    fn effect_uncached(
+        &mut self,
+        tag: &Tag,
+        primary_detonation_part: Option<usize>,
+    ) -> Result<TagId> {
         let e = h1::Effect::read(self.h1, tag)?;
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
         let mut left: std::collections::BTreeMap<String, usize> = Default::default();
         let mut targets = Vec::new();
-        for p in e.events.iter().flat_map(|ev| &ev.parts) {
+        for (index, p) in e.events.iter().flat_map(|ev| &ev.parts).enumerate() {
             let g = p.group.0.to_be_bytes();
             let got = match (p.reference, &g) {
+                (Some(_), b"jpt!") if primary_detonation_part == Some(index) => {
+                    targets.push(None);
+                    continue;
+                }
+                (Some(id), b"jpt!") if primary_detonation_part.is_some() => {
+                    Some(self.damage(id)?)
+                }
                 (None, _) => None,
                 (Some(id), b"snd!") => {
                     let t = self.h1_tag(id)?;
@@ -1296,8 +1333,13 @@ impl<'a> Converter<'a> {
             crate::provenance::capture(|| self.effect_particle_systems(tag, root, &mut rep));
         let root = root?;
         self.tree.reports.push(rep);
+        let name = if primary_detonation_part.is_some() {
+            format!("{}_detonation", tag.name)
+        } else {
+            tag.name.clone()
+        };
         let id = self.tree.push(
-            &tag.name,
+            &name,
             Converted {
                 group: FourCC(*b"effe"),
                 root,
@@ -2895,8 +2937,8 @@ impl<'a> Converter<'a> {
         ))
     }
 
-    /// Rebuild the biped. The matching H2 model supplies the native damage
-    /// section responses and camouflage shader, and the switchable H2 HUD.
+    /// Rebuild the biped. The matching H2 model supplies shield shaders
+    /// and damage responses for NPCs, and the switchable H2 HUD for the player.
     fn biped_rebuilt(&mut self, tag: &Tag, u: &Unit) -> Result<TagId> {
         use tags::defs::{self, Defs, Val};
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
@@ -2905,6 +2947,20 @@ impl<'a> Converter<'a> {
         let counterpart = cid.map(|id| self.base.root(id)).transpose()?;
         let counterpart_hlmt = counterpart.as_deref().and_then(|r| self.base.reference(r, h2::MODEL));
         let hlmt = self.model(&mut rep, &u.object, None, &tag.name, true, None)?;
+        self.object_physics(&mut rep, hlmt, &u.object, &tag.name, PhysicsKind::Biped)?;
+        let markers = match u.object.model {
+            Some(m) => {
+                h1models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?
+                    .0
+                    .markers
+                    .into_iter()
+                    .filter(|m| !m.instances.is_empty())
+                    .map(|m| m.name)
+                    .collect()
+            }
+            None => Vec::new(),
+        };
+        let player = health_hud::is_player_biped(&tag.name);
         // Halo 1's dialogue: the first `udlg` the unit names (its
         // dialogue variants block), in place of the counterpart's. V:
         // 125 of the 169 bipeds over the campaign and multiplayer maps
@@ -2926,15 +2982,20 @@ impl<'a> Converter<'a> {
             let mut r = defs::from_built(hd, &self.tree.tags[h.0 as usize & 0xffff].1.root)
                 .map_err(|e| Error::Invalid(e.to_string()))?;
             let mut copied = Vec::new();
+            if player {
+                crate::biped_hits::write_player_targets(hd, &mut r, &markers, &tag.name)?;
+            }
             if let Some(v) = native.as_ref().and_then(|c| c.at("shad_ref_94")) {
                 r.set("shad_ref_94", v.clone()).map_err(|e| Error::Invalid(e.to_string()))?;
             }
             if let Some(src) = source_damage {
                 let mut damage = defs::default_record(hd.child("block_60").expect("model damage"));
-                // Native shield shaders and damage sections are coupled to the H2
-                // damage system (object_new indexes +0xbc). H1 has no overshield shader slot.
-                for path in ["tagref_7c", "tagref_84", "tagref_e8", "tagref_f0",
-                             "block_bc"] {
+                // Native shield shaders and NPC damage responses are part of the
+                // H2 damage system (object_new indexes +0xbc).
+                for path in ["tagref_7c", "tagref_84", "tagref_e8", "tagref_f0", "block_bc"] {
+                    if player && path == "block_bc" {
+                        continue;
+                    }
                     let field = format!("block_60[0].{path}");
                     if let Some(v) = native.as_ref().and_then(|c| c.at(&field)) {
                         damage.set(path, v.clone()).map_err(|e| Error::Invalid(e.to_string()))?;
@@ -2948,6 +3009,14 @@ impl<'a> Converter<'a> {
                 }
                 let half = |at: usize| u16::from_le_bytes([src[at], src[at + 1]]);
                 let materials = h1::elements(self.h1, src, 0x234, 0x48)?;
+                if player {
+                    crate::biped_hits::write_player_damage_sections(
+                        hd,
+                        &mut r,
+                        &mut damage,
+                        &materials,
+                    )?;
+                }
                 let body_type = materials.get(usize::from(half(4)))
                     .map(|m| u16::from_le_bytes([m[0x24], m[0x25]]));
                 let shield_type = (f32::from_le_bytes(src[0xcc..0xd0].try_into().unwrap()) > 0.0)
@@ -2985,7 +3054,6 @@ impl<'a> Converter<'a> {
                 defs::to_built(hd, &r, &mut |_| None).map_err(|e| Error::Invalid(e.to_string()))?;
             self.tree.note_roles(h, copied);
         }
-        self.object_physics(&mut rep, hlmt, &u.object, &tag.name, PhysicsKind::Biped)?;
         let predicted = self.predicted(hlmt);
         let mut swap = None;
         let mut hud = None;
@@ -3007,17 +3075,6 @@ impl<'a> Converter<'a> {
                 }
             }
         }
-        let markers = match u.object.model {
-            Some(m) => {
-                h1models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?
-                    .0
-                    .markers
-                    .into_iter()
-                    .map(|m| m.name)
-                    .collect()
-            }
-            None => Vec::new(),
-        };
         let mut tracks = Vec::new();
         for id in &u.camera_tracks {
             tracks.push(self.camera_track(self.h1_tag(*id)?)?);

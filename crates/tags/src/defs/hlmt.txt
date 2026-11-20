@@ -50,7 +50,8 @@ group hlmt 0xfc align 4
     0x30 tagref udlg_ref_30 groups=udlg -- V: udlg tags (layouts.rs:835)
   0x58 block block_58 0x14 align 4
     0x0 string string_0
-    0x4 unknown 0x4 seen=58
+    0x4 unknown 0x2
+    0x6 i16 damage_section default=-1 -- E 0x000d8d50 and 0x000db0a7 index the damage section
     0x8 unknown 0x4 seen=24 -- small integers
     0xc string string_c
     0x10 unknown 0x4 seen=many -- small integers
@@ -126,14 +127,14 @@ group hlmt 0xfc align 4
       0x10 unknown 0x4 seen=5
     0xe8 tagref tagref_e8
     0xf0 tagref tagref_f0
-  0x68 block block_68 0x1c align 4
-    0x0 string string_0
-    0x4 unknown 0x4 seen=27 -- floats
-    0x8 unknown 0x4 seen=6 -- floats
+  0x68 block targets 0x1c align 4 -- E 0x001a5d18 and 0x001a6ca3 iterate or index model targets
+    0x0 string marker -- E 0x001a5d4d passes it to the object marker lookup
+    0x4 f32 radius -- E 0x001a5f76 takes it to the spherical target calculation
+    0x8 f32 cone_angle -- E 0x001a5fc6 copies it to the target search record
     0xc unknown 0x4 seen=24 -- small integers
-    0x10 unknown 0x4 seen=5 -- floats
-    0x14 unknown 0x4 seen=9 -- small integers
-    0x18 unknown 0x4 seen=7 -- floats
+    0x10 f32 weight -- E 0x001a5dc4 scales the target search weight by this
+    0x14 u32 flags -- E 0x001a5f8a and 0x001a5f9e set candidate flags
+    0x18 f32 lock_on_distance -- E 0x001a5fb6 copies it to the target search record
   0x70 block regions 0x10 align 4 -- E 0x0016d205 steps 0x10 over +0x70/+0x74; object_new reserves 10 bytes per region (layouts.rs:927-932; objects.md:166)
     0x0 string name -- E 0x0016d200 compares the requested region name with +0 (layouts.rs:851-857; objects.md:194)
     0x4 i8 collision_region default=-1 -- V: coll region index, -1 none; -1 on 1,224 of 1,230 regions of objects with no coll (collision.md:106-115; halo1/objects.md:278-281); the converter writes it (convert.rs:320-324,815)
