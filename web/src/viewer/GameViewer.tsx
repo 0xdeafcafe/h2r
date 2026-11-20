@@ -10,8 +10,11 @@
 import { Show, Suspense, createEffect, createSignal, lazy, on, onCleanup, onMount, type JSX } from "solid-js";
 import { useSearchParams } from "@solidjs/router";
 import type { MapFrame } from "../components/MapCanvas";
+import { mapPicture } from "../components/MapPicture";
+import { gameMapTitle } from "../state/maps";
+import { Overlay } from "./Overlay.tsx";
 import { GEOMETRY_CHANGED_NOTE } from "../lib/maps";
-import { geometryFor } from "../map/geometry";
+import { mapGlb } from "../map/geometry";
 import type { RosterEntry } from "../map/render";
 import { geometryChanged } from "../state/maps";
 import { identity } from "../state/identity";
@@ -73,7 +76,7 @@ export default function GameViewer(props: {
 }) {
   let box!: HTMLElement;
   const [params, setParams] = useSearchParams<{ view?: string; cam?: string; ao?: string; cut?: string; see?: string; player?: string }>();
-  const geometry = geometryFor(() => props.game.map, () => props.game.map_id);
+  const backdrop = mapPicture(() => props.game.map, () => props.game.map_id);
   const mode = () => viewerMode(
     props.director ? (props.director.selection().mode === "top-down" ? undefined : "3d") : params.view,
     !geometryChanged(props.game),
@@ -169,13 +172,19 @@ export default function GameViewer(props: {
     player: params.player,
     start: (frame: MapFrame, player?: string) => startCamera(players(), frame.players, player, signedIn(), props.focus?.()),
     priorityPlayers: () => [addressPlayer(players(), params.player), ...players().filter(p => p.xuid != null && p.xuid === signedIn()).map(p => p.index)],
-    glb: () => geometry()?.glb ?? null,
+    glb: () => mapGlb(props.game.map, props.game.map_id),
     mode: (params.cam === "orbit" || params.cam === "top" || params.cam === "follow" || params.cam === "eyes" ? params.cam : undefined) as ViewMode | undefined,
     ao: params.ao !== "0",
     // `?cut=<height>` opens with the height cut there; `?see=0` without the see-through.
     cut: params.cut !== undefined && Number.isFinite(Number(params.cut)) ? Number(params.cut) : null,
     seeThrough: params.see !== "0",
   });
+
+  const open2D = () => {
+    if (props.director) props.director.pick("top-down", props.director.selection().follow);
+    else setMode("2d");
+    queueMicrotask(focusInside);
+  };
 
   return (
     <section
@@ -232,8 +241,8 @@ export default function GameViewer(props: {
           fallback={<TacticalMap game={props.game} frame={props.frame} roster={props.roster} highlight={props.highlight} label={props.label} />}
         >
           <div class="v3-body">
-            <Suspense fallback={<div class="v3-note v3-note--mid">Loading the 3D view…</div>}>
-              <Viewer3D frame={props.frame} roster={props.roster} highlight={props.highlight} soughtAt={props.soughtAt} camera={props.director ? undefined : props.camera} director={props.director} {...view3d()} />
+            <Suspense fallback={<Overlay state="boot" title={props.title} backdrop={backdrop()} />}>
+              <Viewer3D title={props.title} mapName={gameMapTitle(props.game)} backdrop={backdrop()} on2D={open2D} frame={props.frame} roster={props.roster} highlight={props.highlight} soughtAt={props.soughtAt} camera={props.director ? undefined : props.camera} director={props.director} {...view3d()} />
             </Suspense>
           </div>
         </Show>

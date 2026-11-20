@@ -237,6 +237,9 @@ export class ViewerScene {
   private frameMap = false;
   private opening: CameraStart | null = null;
   private hasMap = false;
+  private curtain = false;
+  onFirstMapFrame?: () => void;
+  onSurfaceProgress?: (done: number, total: number) => void;
   private drewMap = false;
   private scale = 1;
   private mode: ViewMode = "orbit";
@@ -347,23 +350,43 @@ export class ViewerScene {
 
   // ---- map ----
 
-  /** Loads a map's glb. Resolves false (and leaves the grid floor) when it
-   *  can't be loaded. */
-  async loadMap(url: string): Promise<boolean> {
+  setCurtain(on: boolean) { this.curtain = on; if (!on) this.dirty = true; }
+
+  useGrid() {
+    this.mapGen++;
+    if (!this.hasMap) return;
+    this.clearMap();
+    this.setBounds({ min: [-20, -20, 0], max: [20, 20, 4] }, false);
+    this.frameCamera(true);
+  }
+
+  /** Loads a map's glb. A null progress event starts decoding. */
+  async loadMap(url: string, onProgress?: (event: ProgressEvent | null) => void): Promise<"ok" | "failed"> {
     const gen = ++this.mapGen;
     try {
       // The level comes first, drawn in its class colours; its pictures
       // follow (textures3d.ts).
       const loader = gltfLoader();
       const pending = deferTextures(loader, url);
-      const loading = loader.loadAsync(url);
+      let decoding = false;
+      const decode = () => {
+        if (decoding || gen !== this.mapGen || this.disposed) return;
+        decoding = true;
+        onProgress?.(null);
+      };
+      loader.register(() => ({ name: "viewer-progress", beforeRoot: async () => { decode(); } }));
+      const loading = loader.loadAsync(url, event => {
+        if (gen !== this.mapGen || this.disposed) return;
+        onProgress?.(event);
+        if (event.lengthComputable && event.total > 0 && event.loaded >= event.total) decode();
+      });
       // Player and vehicle models wait for the level (players3d.ts).
       this.library.hold(loading);
       const gltf = await loading;
-      if (this.disposed || gen !== this.mapGen) return false;
+      if (this.disposed || gen !== this.mapGen) return "failed";
       // Textured primitives' class materials, for the flat look.
       const [flats, plasma] = await Promise.all([loadFlats(gltf), loadPlasma(gltf)]);
-      if (this.disposed || gen !== this.mapGen) return false;
+      if (this.disposed || gen !== this.mapGen) return "failed";
       const pairs: TexturePair[] = [];
       const root = gltf.scene;
       // Whatever the glb's nodes are called (`structure`, several `bsp_<n>`,
@@ -435,7 +458,7 @@ export class ViewerScene {
       root.updateWorldMatrix(true, true);
       walk(root, []);
       if (box.isEmpty()) box.setFromObject(root);
-      if (box.isEmpty()) return false;
+      if (box.isEmpty()) throw new Error("Map has no geometry");
       this.clearMap();
       // Zones, far scenery, decals and effects, wherever in the tree the glb
       // keeps them, and the level's sky.
@@ -464,9 +487,10 @@ export class ViewerScene {
       this.frameMap = true;
       this.frameCamera(true);
       this.streamPictures(pending, used, gen, plasma);
-      return true;
+      return "ok";
     } catch {
-      return false;
+      if (gen === this.mapGen && !this.disposed) this.useGrid();
+      return "failed";
     }
   }
 
@@ -475,6 +499,7 @@ export class ViewerScene {
     const textures = new Set(plasma.textures);
     for (const p of pending) for (const t of texturesSharing(p.texture, used)) textures.add(t);
     this.mapTextures = [...textures];
+    this.onSurfaceProgress?.(0, pending.length);
     // Floors and walls seen at a glancing angle stay sharp: the GPU's most
     // anisotropic filtering (mipmaps are made when each picture arrives).
     const aniso = mapAnisotropy(this.renderer.capabilities.getMaxAnisotropy());
@@ -484,7 +509,7 @@ export class ViewerScene {
       this.textures.refresh();
       plasma.refresh();
       this.dirty = true;
-    }, { concurrency: PICTURES_AT_ONCE, stopped: () => this.disposed || gen !== this.mapGen }).then(() => { if (gen === this.mapGen) mark("h2-viewer:textured"); });
+    }, { concurrency: PICTURES_AT_ONCE, stopped: () => this.disposed || gen !== this.mapGen, progress: this.onSurfaceProgress }).then(() => { if (gen === this.mapGen) mark("h2-viewer:textured"); });
   }
 
   /** Builds (or drops) the level's teleporters, links and lifts. */
@@ -971,6 +996,7 @@ export class ViewerScene {
     this.fly = { ...a, vel: new THREE.Vector3(), keys: new Set(), drag: false, moved: 0, dist: Math.max(1, this.camera.position.distanceTo(this.controls.target)), saved };
     this.controls.enabled = false;
     this.onFlyChange?.(true);
+    this.onFlySpeed?.(speedLabel(this.flySpeed));
     this.dirty = true;
   }
 
@@ -1826,7 +1852,7 @@ export class ViewerScene {
     // (Held still when motion is reduced, but the weather still follows the view.)
     const moving = this.look.animate(this.opts.reducedMotion ? 0 : now / 1000, this.controls.target, this.camera.position.distanceTo(this.controls.target));
     if (moving && !this.opts.reducedMotion) this.dirty = true;
-    if (!this.dirty) return;
+    if (!this.dirty || this.curtain) return;
     this.dirty = false;
     this.draw(dt);
   }
@@ -1834,7 +1860,6 @@ export class ViewerScene {
   private draw(dt: number) {
     // Marks for the perf harness (web/bench/viewer.bench.ts): the first
     // frame with the level in it.
-    if (this.hasMap && !this.drewMap) { this.drewMap = true; mark("h2-viewer:first-map-frame"); }
     this.look.beforeDraw(this.camera, this.camera.position.distanceTo(this.controls.target));
     this.scenarioObjects.beforeDraw();
     // The soft ground stands in for a sky's horizon only when there is none.
@@ -1849,6 +1874,11 @@ export class ViewerScene {
       this.labels.render(this.scene, this.camera);
     } finally {
       this.scene.matrixWorldAutoUpdate = true;
+    }
+    if (this.hasMap && !this.drewMap) {
+      this.drewMap = true;
+      mark("h2-viewer:first-map-frame");
+      this.onFirstMapFrame?.();
     }
     // Ambient occlusion is the one costly step: drop it on a machine that
     // can't keep up (under ~25 frames a second for a couple of seconds),

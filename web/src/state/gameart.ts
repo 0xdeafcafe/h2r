@@ -10,6 +10,8 @@ import { isHalo1 } from "../map/views";
 
 const [art, setArt] = createSignal<GameArt | null>(null);
 export const gameArt = art;
+const [ready, setReady] = createSignal(false);
+export const gameArtReady = ready;
 
 // Map names from the owner's disc (catalog.json, by map file stem), so labels
 // read "Ivory Tower" rather than the file's "cyclotron".
@@ -48,6 +50,7 @@ export function isHalo1Map(map: string | null | undefined): boolean {
 /** Test hook: set the game art directly. */
 export function setGameArtForTest(a: GameArt | null) {
   setArt(a);
+  setReady(true);
 }
 
 /** Test hook: set the stem-to-name table directly. */
@@ -102,10 +105,11 @@ type Loaders = {
  *  hang on the pictures. Answers for another server (the user switched)
  *  are dropped. */
 export async function loadServerArt(base: string, load: Loaders): Promise<void> {
+  setReady(false);
   setArt(null);
   applyCatalog(null);
   await Promise.all([
-    missed("game-art", base) ? null : load.art(base).then((a) => {
+    (missed("game-art", base) ? Promise.resolve(null) : load.art(base)).then((a) => {
       if (load.current() !== base) return;
       if (!a) miss("game-art", base);
       setArt(a);

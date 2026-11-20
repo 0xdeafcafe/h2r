@@ -177,6 +177,8 @@ describe("the inline viewer", () => {
   test("a link to the 3D view (the old pop-out's too) opens the inline viewer on it", () => {
     const html = render("/games/halo2/games/g1?view=3d&cam=top", game());
     expect(html).toContain("gv-stage gv-stage--3d");
+    expect(html).toContain('data-state="boot"');
+    expect(html).toContain("Map uplink");
     expect(html).toMatch(/<button[^>]*aria-pressed="true"[^>]*>3D view<\/button>/);
     expect(html).not.toContain("Player positions");
   });

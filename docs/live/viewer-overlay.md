@@ -1,6 +1,6 @@
 # The 3D view's opening camera, overlay and reveal
 
-Status: Partly built. The opening camera is available. The overlay, name tags and progressive reveal are designs.
+Status: Partly built. The opening camera and loading overlay are available. Name-tag declutter and the progressive reveal are designs.
 Code: `web/src/viewer/Viewer3D.tsx` (the 3D view), `web/src/viewer/scene.ts` (`ViewerScene`), `web/src/viewer/camera.ts`, `web/src/viewer/GameViewer.tsx`. Tests: `web/test/`.
 Switch: none. Address parameters `player`, `dmg` and `fx`, and three `localStorage` keys, are listed under [Interfaces](#interfaces).
 
@@ -311,7 +311,7 @@ opacity, 260 ms, the plate's curve); the status strip and the key hints
 - The row under the pointer or with focus has `background: rgba(47, 127,
   208, .35)` and a 2px `--vo-accent` bar on its left edge (`#` above).
 - A two-value row toggles. A row with more values, and **Level layers**,
-  opens a picker in the same plate: a `‹ SEE-THROUGH` title row and one
+  opens a picker dialog in the same plate: a `‹ SEE-THROUGH` title row and one
   row per value, the current one marked. Escape or the title row goes
   back.
 - Roles: `role="menu"`, rows `menuitemcheckbox` or `menuitemradio`. Up
@@ -538,7 +538,6 @@ tests are `bun test` files in `web/test/`.
 
 | # | Slice | Files | Tests that prove it |
 |---|---|---|---|
-| 2 | Overlay and states | new `viewer/overlay.ts`, `viewer/Overlay.tsx`, `viewer/overlay.css`; `Viewer3D.tsx` (the toolbar becomes the rail and the View menu; `R`, `T`, `M`, `H`); `GameViewer.tsx` (`Suspense` fallback, `title`, `backdrop`); `viewer/scene.ts` (`loadMap` progress and result, `setCurtain`); `viewer/viewer.css` (drop `.v3-tools`, `.v3-note`) | `viewer-overlay.test.ts`: `overlayState` for every row of the state table; `loadProgress` is monotonic, lights 22 at full length, chases without a length, and formats sizes; `renderToString(Overlay)` per state has the right role, text and buttons, and the progress bar's ARIA values; the menu lists a row only when its condition holds. `game-viewer.test.ts`: the fallback is the overlay |
 | 3 | Name tags | new `viewer/declutter.ts`; `viewer/scene.ts` (label section: inner `.v3-tag`, measuring, `data-lod`); `viewer/viewer.css` | `declutter.test.ts`: two overlapping tags give one `full` and one `lifted`; a third gives a `pip`; rank beats distance; a level holds for 250 ms; no two `full` or `lifted` rectangles intersect over 500 seeded layouts; 64 is the cap |
 | 4 | Progressive reveal | new `viewer/reveal.ts`; `viewer/scene.ts` (map section: `cutaway`, uniforms, entity gating, `SceneOptions.reveal`); `viewer/level3d.ts` (`setReveal`); `viewer/sky3d.ts` (fade) | `reveal.test.ts`: `revealAt` at 0, 200, mid and end; `T` at its clamps; `objectsRadius` trails by 180 ms; `done` sets the radius off; `patchReveal` fits `THREE.ShaderLib` standard, lambert, phong and basic, with and without the see-through patch, and returns null without its hooks (as `cutaway.test.ts` does for `patchSeeThrough`); a JS mirror of the shader's `revealK` agrees at the band's edges |
 | 5 on | Damage and combat effects | [viewer-effects.md](viewer-effects.md#build-order) | there |
@@ -585,9 +584,7 @@ The progressive reveal uses the overlay veil.
 - **Code** `web/src/viewer/scene.ts` `loadMap`: the box leaves out the
   backdrop, cutscene zones and placed objects (`aside`), and nothing else
   of the structure.
-- **Code** `web/src/viewer/Viewer3D.tsx`: the toolbar is drawn from mount,
-  before `mapState` leaves `"loading"`, and a failed load and a missing
-  glb both set `"grid"`.
+- **Test** `web/test/viewer-overlay.test.ts` covers load states, progress ARIA and conditional menu rows.
 - **Code** `web/src/viewer/cutaway.ts` `SEE_FRAGMENT_BODY`: the map
   materials already `discard` and already carry `vSeeWorld`.
 - **S** The art server sends a `Content-Length` for `map.glb`, so the

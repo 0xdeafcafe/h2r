@@ -72,7 +72,9 @@ follow-a-player and free-fly cameras (F; WASD, Q/E down and up, drag with
 either button to look or click to lock the mouse, wheel or trackpad for
 speed, Shift to go faster, one finger to look and two to fly on a touch
 screen, or a gamepad, `viewer/flycam.ts`). A grid floor appears when the
-map has no geometry. The [opening camera](viewer-overlay.md#opening-camera)
+map has no geometry. The [map uplink](viewer-overlay.md#the-overlay)
+shows geometry load progress, offers **Retry** after a failed load and
+puts level settings in the 3D view's **View** panel. The [opening camera](viewer-overlay.md#opening-camera)
 follows the player selected by `?player=`, the signed-in player or the
 embedding page when present, or frames the playable area. The
 **Full screen** button puts the viewer's box full screen with the Fullscreen
@@ -245,9 +247,9 @@ optional; a frame without them draws as before.
   someone, moves to frame it. With nothing to go on it shows every zone
   not marked cinematic-only in its node's extras, and never none at all.
   A `backdrop` node (far scenery) is hidden. When the level has several,
-  the toolbar's zone picker offers "Zone in play", "All zones", and each zone by its
+  the **View** panel's zone picker offers "Zone in play", "All zones", and each zone by its
   BSP's name (`extras.name`; cutscene zones too when "Cutscene zones" is
-  ticked); its "Show" menu switches the backdrop, cutscene zones, decals,
+  ticked); its **Level layers** picker switches the backdrop, cutscene zones, decals,
   effects, sky and fog. The camera and the lights fit the playable zones
   only (`viewer/level3d.ts`).
 - *Mods* (`map/views.ts` `mapFilesFor`, `map/geometry.ts`). A game on a
