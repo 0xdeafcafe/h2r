@@ -533,10 +533,10 @@ pub(crate) fn register_late_for_profile(
             .map_err(|e| anyhow::anyhow!("native shadows: {e}"))?;
     }
     features
-        .add(&hooks::h1_projectiles::Projectiles)
+        .add(&h1_runtime::h1_projectiles::Projectiles)
         .map_err(|e| anyhow::anyhow!("Halo 1 projectile flight: {e}"))?;
     features
-        .add(&hooks::h1_scope_zoom::ScopeZoom)
+        .add(&h1_runtime::h1_scope_zoom::ScopeZoom)
         .map_err(|e| anyhow::anyhow!("Halo 1 scope zoom: {e}"))?;
     #[cfg(feature = "gpu")]
     if render_hooks == film::RenderHooks::Gpu {
