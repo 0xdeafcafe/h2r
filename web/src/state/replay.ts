@@ -1,8 +1,9 @@
 // Frames plus the game's events, sampled at any tick, with the marks,
 // steps and killcams the viewer offers.
 
+import { lifecycleLabel, type FilmLifecycleBatch } from "../api/film-lifecycle";
 import type { Frame, FrameObject, PlayerKilled, PlayerScore, ScoreChanged, WireEvent } from "../api/types";
-import { chunkAt, type ArchiveSegment } from "../api/chunk";
+import { chunkAt, type TimelineSegment } from "../api/chunk";
 import { isMachineBaseline, markMachineBaseline, recordedFrame } from "../api/pack";
 import { MachinePositionHistory, cinematicAt, sampleActors, sampleBsp, sampleFrames, sampleHits, sampleMachines, sampleObjects, sampleVehicles, withoutUnplaced, type SampledMachine, type SampledPlayer, type SampledVehicle, TICKS_PER_SECOND } from "./frames";
 
@@ -23,7 +24,8 @@ export interface ReplayKill {
  *  changing zone (structure BSP) or a cutscene. */
 export interface TimelineMark {
   tick: number;
-  kind: "kill" | "death" | "cut" | "zone" | "cinematic";
+  kind: "kill" | "death" | "cut" | "zone" | "cinematic" | "chapter";
+  label?: string;
   /** For a kill or a death. */
   kill?: ReplayKill;
   /** For a zone change: the zone now loaded. */
@@ -93,6 +95,7 @@ export class ReplayTimeline {
    *  revert or mission restart, recorded before the game's clock kept
    *  counting through them): the first tick of each later run. */
   readonly cuts: number[];
+  private readonly chapters: TimelineMark[] = [];
 
   /** The cutscenes, in tick order: playing skips them, and a view at a
    *  tick in one shows a cutscene rather than anyone in it. */
@@ -101,7 +104,7 @@ export class ReplayTimeline {
   /** `frames` as fetched (log order, oldest first) and the game's events.
    *  The events' own `GameFrame`s, when they cover the fetched frames, are
    *  read instead: their log positions place the other events among them. */
-  constructor(frames: Frame[], events: WireEvent[], archive?: readonly ArchiveSegment[]) {
+  constructor(frames: Frame[], events: WireEvent[], archive?: readonly TimelineSegment[], readonly ticksPerSecond: number = TICKS_PER_SECOND) {
     const sorted = [...events].sort((a, b) => a.position - b.position);
     const clock = new GameClock();
     const ticks = new Map<WireEvent, number>();
@@ -120,7 +123,7 @@ export class ReplayTimeline {
     if (archive?.length) {
       const start = frames[0];
       const segment = start && chunkAt(archive, start.tick);
-      if (segment?.codec === "archive" && segment.machine_entry?.length) {
+      if (segment?.machine_entry?.length) {
         this.travel.addPositions(segment.from_tick, segment.machine_entry);
       }
       // Archive frame ticks are on the playback clock already. Use the full
@@ -156,7 +159,9 @@ export class ReplayTimeline {
       for (const f of frames) if (isFrame(f)) addFrame(f);
       clock.place(sorted, ticks);
     }
-    this.cuts = clock.cuts;
+    const cuts = new Set(clock.cuts);
+    for (const f of this.frames) if (f.cut != null) cuts.add(f.tick);
+    this.cuts = [...cuts].sort((a, b) => a - b);
     this.latestRunOffset = clock.runs.at(-1)?.offset ?? 0;
     const tickOf = (ev: WireEvent, raw: number) => ticks.get(ev) ?? raw;
 
@@ -192,6 +197,12 @@ export class ReplayTimeline {
         for (const t of d.teams ?? []) running.teams[t.team] = t.score;
         this.scores.push(running);
         endTick = Math.max(endTick, tick);
+      } else if (ev.type === "FilmLifecycle") {
+        const batch = ev.data as FilmLifecycleBatch;
+        for (const change of batch.changes) this.chapters.push({kind: "chapter", tick: batch.tick, label: lifecycleLabel(change)});
+      } else if (ev.type === "FilmChapter") {
+        const d = ev.data as {tick: number; label: string};
+        this.chapters.push({kind: "chapter", tick: d.tick, label: d.label});
       } else if (ev.type === "GameEnded") {
         const raw = eventTick(ev);
         if (raw !== null) endTick = Math.max(endTick, tickOf(ev, raw));
@@ -237,7 +248,7 @@ export class ReplayTimeline {
   /** Every mark on the scrubber, in tick order. */
   get marks(): TimelineMark[] {
     if (this.marksCache) return this.marksCache;
-    const out: TimelineMark[] = [];
+    const out: TimelineMark[] = [...this.chapters];
     for (const k of this.kills) {
       const kill = k.killer !== null && k.killer !== k.victim && k.kind !== "suicide";
       out.push({ tick: k.tick, kind: kill ? "kill" : "death", kill: k });
@@ -277,7 +288,7 @@ export class ReplayTimeline {
       for (const x of m) if (x.tick > tick + 1e-6) return x.tick;
       return null;
     }
-    const slack = TICKS_PER_SECOND / 2;
+    const slack = this.ticksPerSecond / 2;
     for (let i = m.length - 1; i >= 0; i--) if (m[i]!.tick < tick - slack) return m[i]!.tick;
     return null;
   }
@@ -288,7 +299,7 @@ export class ReplayTimeline {
     let best: ReplayKill | null = null;
     for (const k of this.kills) {
       if (range && !inTickRange(k.tick, range)) continue;
-      if (k.tick <= tick + TICKS_PER_SECOND) best = k;
+      if (k.tick <= tick + this.ticksPerSecond) best = k;
       else return best ?? k;
     }
     return best;
@@ -297,7 +308,7 @@ export class ReplayTimeline {
   /** Watching `kill` (viewer/session.ts). */
   killcam(kill: ReplayKill): Killcam {
     const by = kill.killer !== null && kill.killer !== kill.victim ? kill.killer : kill.victim;
-    return { from: this.clamp(kill.tick - KILLCAM_LEAD_TICKS), speed: KILLCAM_SPEED, follow: by };
+    return { from: this.clamp(kill.tick - 5 * this.ticksPerSecond), speed: KILLCAM_SPEED, follow: by };
   }
 
   get durationTicks(): number {
@@ -305,7 +316,7 @@ export class ReplayTimeline {
   }
 
   get durationSeconds(): number {
-    return this.durationTicks / TICKS_PER_SECOND;
+    return this.durationTicks / this.ticksPerSecond;
   }
 
   clamp(tick: number): number {
@@ -316,7 +327,7 @@ export class ReplayTimeline {
     const players = sampleFrames(this.frames, this.clamp(tick));
     // A victim stays down from its kill until the next recorded frame that
     // shows it alive; 1 Hz frames would otherwise let it walk on briefly.
-    const recent = this.killsBetween(tick - TICKS_PER_SECOND, tick);
+    const recent = this.killsBetween(tick - this.ticksPerSecond, tick);
     for (const k of recent) {
       const p = players.find((q) => q.index === k.victim);
       if (p) p.alive = false;
@@ -493,7 +504,7 @@ export class ReplayClock {
   tickAt(now: number): number {
     if (!this.playing) return this.baseTick;
     const elapsed = Math.max(0, now - this.baseTime);
-    let t = this.baseTick + (elapsed / 1000) * TICKS_PER_SECOND * this.speed;
+    let t = this.baseTick + (elapsed / 1000) * this.timeline.ticksPerSecond * this.speed;
     const loop = this.loop;
     if (loop && t >= loop.to_tick) {
       const length = loop.to_tick - loop.from_tick;

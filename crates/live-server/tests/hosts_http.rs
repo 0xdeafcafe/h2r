@@ -295,6 +295,7 @@ mod tunnel {
             live_url: format!("http://{addr}"),
             data_url: "https://private.test/host-data.tar.zst".into(),
             data_sha256: "ab".repeat(32),
+            archive: "dual".into(),
             max_hosts: 1,
         });
         let lease = h

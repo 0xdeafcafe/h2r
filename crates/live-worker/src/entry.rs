@@ -85,6 +85,12 @@ async fn fetch(
     {
         return app_page(&req, &env).await;
     }
+    let film = crate::film_cache::edge::Film::from_request(&req, &env);
+    if let Some(film) = &film
+        && let Some(response) = film.hit().await
+    {
+        return Ok(response);
+    }
     let stub = env
         .durable_object(HUB)?
         .id_from_name(HUB_NAME)?
@@ -97,7 +103,11 @@ async fn fetch(
             .insert(http::header::CONTENT_ENCODING, encoding);
         resp.extensions_mut().insert(worker::EncodeBody::Manual);
     }
-    Ok(resp.map(axum::body::Body::new))
+    let response = resp.map(axum::body::Body::new);
+    if let Some(film) = film {
+        return film.store(response, &ctx).await;
+    }
+    Ok(response)
 }
 
 /// A page of the web app: the built `index.html` from the assets, with

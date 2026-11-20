@@ -29,6 +29,13 @@ without the crate's `native` feature, so the routes are not forked.
 | Server key | Worker secret `H2_LIVE_SERVER_KEY` | `ServerIdentity::from_secret`. The id is the variable `H2_LIVE_ID` ([Settings](#settings)). |
 | Web app | Workers static assets (`web/dist`) | Served by Cloudflare ahead of the Worker; it is immutable and cached at the edge. |
 
+Anonymous web Theater reads of a complete public time chunk use the Worker
+Cache API. The key includes the origin, game, immutable upload revision and
+exact byte span. A miss goes to LiveHub. A successful 206 carrying the hub's
+immutable film policy can populate the cache at that edge location. The Worker
+restores the original Content-Range on a hit. Private homes, bearer and cookie
+requests, mutable visibility and metadata reads continue through LiveHub.
+
 ### Decision: the hub's own SQLite, not D1
 
 Decided in slice 2. The log lives in `LiveHub`'s own SQLite storage. That

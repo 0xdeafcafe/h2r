@@ -70,6 +70,7 @@ pub(crate) fn add_match(lease: &HostLease, boot: &HostBoot) -> serde_json::Resul
         token: boot.token.clone(),
         data_url: boot.data_url.clone(),
         data_sha: boot.data_sha256.clone(),
+        archive: boot.archive,
         region: lease.region.clone(),
     })
 }

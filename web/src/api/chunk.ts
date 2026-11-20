@@ -52,6 +52,8 @@ export interface ArchiveSegment {
   machine_entry?: MachinePosition[];
 }
 
+export type TimelineSegment = Pick<ArchiveSegment, "ordinal" | "from_tick" | "to_tick" | "rawFrom" | "machine_entry">;
+
 export type RecordingChunk = ChunkMeta | ArchiveSegment;
 
 /** `GET /v1/games/{id}/chunks`. */
@@ -137,7 +139,7 @@ export async function decodeChunk(bytes: Uint8Array, inflate: Inflate = inflateR
 
 /** The chunk holding `tick` (the last that starts at or before it), or
  *  null before the first: what a seek fetches. `index` is oldest first. */
-export function chunkAt(index: readonly RecordingChunk[], tick: number): RecordingChunk | null {
+export function chunkAt<T extends {from_tick: number}>(index: readonly T[], tick: number): T | null {
   let lo = 0, hi = index.length;
   while (lo < hi) {
     const mid = (lo + hi) >> 1;

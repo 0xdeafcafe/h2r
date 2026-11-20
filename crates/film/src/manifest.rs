@@ -1,5 +1,9 @@
-//! Only the guest disk and its VFS metadata belong to the initial machine state.
+//! Initial guest storage and the installed content used to rebuild its mount table.
 //! Restore into a new, private directory for every replay, including seeks.
+mod keyframe;
+mod track;
+pub use track::DiskTracker;
+
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -13,6 +17,8 @@ const LIMIT: usize = 16 << 20;
 #[derive(Default, Serialize, Deserialize, Debug, PartialEq)]
 pub struct Manifest {
     entries: Vec<Item>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    assets: Vec<Item>,
 }
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 struct Item {
@@ -23,32 +29,70 @@ struct Item {
 
 impl Manifest {
     pub fn capture(root: &Path) -> Result<Self> {
+        Self::capture_guest(root, None)
+    }
+
+    fn capture_guest(root: &Path, mut tracker: Option<&mut DiskTracker>) -> Result<Self> {
         let mut manifest = Self::default();
         let mut left = LIMIT;
         for dir in ["disk", "metadata"] {
             if root.join(dir).try_exists()? {
-                manifest.visit(root, Path::new(dir), &mut left)?;
+                manifest.visit(root, Path::new(dir), &mut left, tracker.as_deref_mut())?;
             }
         }
         Ok(manifest)
     }
-    fn visit(&mut self, root: &Path, path: &Path, left: &mut usize) -> Result<()> {
+    /// Rebuild the same package offers and converted campaign level list from
+    /// local content. Only digests of installed assets travel with the film.
+    pub fn capture_v2(root: &Path) -> Result<Self> {
+        Self::capture(root)?.with_assets(root)
+    }
+
+    /// Record DATA and seed the mutable guest disk index from the same reads.
+    pub fn capture_for_recording(root: &Path) -> Result<(Self, DiskTracker)> {
+        let mut tracker = DiskTracker::new(root);
+        let manifest = Self::capture_guest(root, Some(&mut tracker))?.with_assets(root)?;
+        tracker.set_initial(&manifest.entries);
+        Ok((manifest, tracker))
+    }
+
+    fn with_assets(mut self, root: &Path) -> Result<Self> {
+        let mut assets = Self::default();
+        for dir in ["campaigns", "maps"] {
+            if root.join(dir).try_exists()? {
+                assets.visit(root, Path::new(dir), &mut 0, None)?;
+            }
+        }
+        self.assets = assets.entries;
+        Ok(self)
+    }
+
+    fn visit(&mut self, root: &Path, path: &Path, left: &mut usize, mut tracker: Option<&mut DiskTracker>) -> Result<()> {
         ensure!(
             self.entries.len() < 65536 && path.components().count() < 64,
             "film start manifest too large"
         );
         let full = root.join(path);
-        let ty = fs::symlink_metadata(&full)?.file_type();
+        let meta = fs::symlink_metadata(&full)?;
+        let ty = meta.file_type();
+        let stamp = tracker.as_ref().map(|_| track::Stamp::path(&full, &meta)).transpose()?;
         if ty.is_dir() {
             self.entries.push(Item {
                 path: path.to_owned(),
                 data: None,
                 sha256: String::new(),
             });
-            let mut children = fs::read_dir(full)?.collect::<std::io::Result<Vec<_>>>()?;
-            children.sort_by_key(|e| e.file_name());
-            for e in children {
-                self.visit(root, &path.join(e.file_name()), left)?;
+            let children = track::children(&full)?;
+            for name in &children {
+                // Materialised patches are regenerated from their verified
+                // packages. They can be several times larger than the match.
+                if path == Path::new("maps") && name == "cache" {
+                    continue;
+                }
+                self.visit(root, &path.join(name), left, tracker.as_deref_mut())?;
+            }
+            if let (Some(tracker), Some(stamp)) = (tracker, stamp) {
+                tracker.seed(path, stamp, Some(children))?;
             }
         } else {
             ensure!(
@@ -56,7 +100,7 @@ impl Manifest {
                 "unsupported film start file {}",
                 path.display()
             );
-            let mut file = fs::File::open(full)?;
+            let mut file = fs::File::open(&full)?;
             let data = if file.metadata()?.len() <= (*left).min(1 << 20) as u64 {
                 let mut bytes = vec![];
                 (&mut file).take(*left as u64 + 1).read_to_end(&mut bytes)?;
@@ -69,8 +113,11 @@ impl Manifest {
             };
             let sha256 = match &data {
                 Some(bytes) => format!("{:x}", Sha256::digest(bytes)),
-                None => hash(&mut file)?,
+                None => file_digest(&mut file)?,
             };
+            if let (Some(tracker), Some(stamp)) = (tracker, stamp) {
+                tracker.seed_file(path, stamp, &file)?;
+            }
             self.entries.push(Item {
                 path: path.to_owned(),
                 sha256,
@@ -85,11 +132,22 @@ impl Manifest {
     /// Large initial files are identified by digest. A coordinator can supply
     /// an unchanged copy of the recording's data root for these files.
     pub fn restore_with(&self, root: &Path, initial: Option<&Path>) -> Result<()> {
+        self.restore_limited(root, initial, LIMIT)
+    }
+
+    fn restore_limited(&self, root: &Path, initial: Option<&Path>, mut left: usize) -> Result<()> {
         fs::create_dir(root).context("film needs a fresh replay directory")?;
-        let mut left = LIMIT;
-        for e in &self.entries {
+        ensure!(self.entries.len() <= 65536 && self.assets.len() <= 65536,
+            "film start manifest too large");
+        for (e, assets) in self.entries.iter().map(|e| (e, false))
+            .chain(self.assets.iter().map(|e| (e, true))) {
+            let allowed = if assets {
+                e.path.starts_with("maps") || e.path.starts_with("campaigns")
+            } else {
+                e.path.starts_with("disk") || e.path.starts_with("metadata")
+            };
             ensure!(
-                (e.path.starts_with("disk") || e.path.starts_with("metadata"))
+                allowed && e.path.components().count() < 65
                     && e.path
                         .components()
                         .all(|c| matches!(c, Component::Normal(_))),
@@ -97,6 +155,7 @@ impl Manifest {
             );
             let p = root.join(&e.path);
             if let Some(bytes) = &e.data {
+                ensure!(!assets || bytes.is_empty(), "external film assets require a local source");
                 left = left
                     .checked_sub(bytes.len())
                     .context("film start files exceed 16 MiB")?;
@@ -138,7 +197,7 @@ impl Manifest {
                 std::io::copy(&mut input, &mut out)?;
                 std::io::Seek::rewind(&mut out)?;
                 ensure!(
-                    hash(&mut out)? == e.sha256,
+                    file_digest(&mut out)? == e.sha256,
                     "wrong start file {}",
                     e.path.display()
                 );
@@ -148,8 +207,34 @@ impl Manifest {
     }
 }
 
-fn hash(input: &mut fs::File) -> Result<String> {
+pub fn file_digest(input: &mut fs::File) -> Result<String> {
     let mut sha = Sha256::new();
     std::io::copy(input, &mut sha)?;
     Ok(format!("{:x}", sha.finalize()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn v2_rebuilds_installed_content_from_local_files_with_matching_digests() {
+        let dir = std::env::temp_dir().join(format!("film-assets-{}", live_proto::sign::random_id()));
+        let source = dir.join("initial");
+        fs::create_dir_all(source.join("campaigns/halo1")).unwrap();
+        fs::create_dir_all(source.join("maps/cache")).unwrap();
+        fs::write(source.join("maps/cache/unused.map"), b"cached").unwrap();
+        let level = Path::new("campaigns/halo1/a30.map");
+        fs::write(source.join(level), b"converted map fixture").unwrap();
+        let manifest = Manifest::capture_v2(&source).unwrap();
+        assert!(manifest.assets.iter().all(|item| item.data.is_none()));
+        assert!(manifest.restore(&dir.join("without-source")).is_err());
+        let replay = dir.join("replay");
+        manifest.restore_with(&replay, Some(&source)).unwrap();
+        assert_eq!(fs::read(replay.join(level)).unwrap(), b"converted map fixture");
+        assert!(!replay.join("maps/cache").exists());
+        fs::write(source.join(level), b"changed map fixture").unwrap();
+        assert!(manifest.restore_with(&dir.join("wrong-map"), Some(&source)).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
 }

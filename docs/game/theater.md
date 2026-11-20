@@ -1,5 +1,9 @@
 # Theater: saved films, free camera and spectating
 
+For the unified host recording, binary layout, reader API and current replay path, see
+[the film format](film-format.md). The tier-B v1 design and its baseline
+experiments follow below.
+
 This is the design for a Halo 3-style Theater in h2recomp: record a game
 as a film, then watch it again with pause, fast forward, rewind, a free
 camera, another player's view, clips and screenshots. It also covers the
@@ -69,18 +73,15 @@ its own.
 
 | tier | what you get | built from | state |
 |---|---|---|---|
-| **A. Web Theater** | Every Live game, in the browser: a film library, the 3D viewer with a transport, player POVs, camera modes, kill bookmarks, clips with share links | the spectator track the server already archives (v8 telemetry, [replay-fidelity.md](../live/replay-fidelity.md)) and the web viewer (`web/src/viewer`) | building now |
-| **B. Host films** | Exact `.h2film` films recorded by dedicated hosts, played back in the game with its own renderer and director cameras | sections 2–3 below, cut down to the host case | first slice implemented on the theater-film lane. Real-host verification pending |
+| **A. Web Theater** | Every Live game, in the browser: a film library, the 3D viewer with a transport, player POVs, camera modes, kill bookmarks, clips with share links | indexed pose and event records in the host film, with [spectator archives](../live/replay-fidelity.md) for older games | implemented |
+| **B. Host films** | Exact `.h2film` films recorded by dedicated hosts, played back in the game with its own renderer and director cameras | the [film format](film-format.md) and the in-game selector | implemented. Real-host verification pending |
 | **C. Live spectating** | A tier-B film streamed with a 30–120 s delay | section 4B | later |
 
 ### Tier A: Web Theater (simple, now)
 
-A **film** on the web is a game's archived spectator track. Nothing new
-is recorded.
-
-- A dedicated-host game has a complete track, because the host is the
-  only frame source and it sees every player (`frames_from_host`).
-- Peer-hosted games keep today's track.
+Web Theater reads timed pose and event records from a version 3 host film.
+The viewer fetches the chunks covering the requested time range. Older
+recordings and games without a host film use the archived telemetry track.
 
 The server keeps:
 
@@ -107,7 +108,11 @@ Pages:
   page (Recent, Saved, Clips).
 - A clip URL opens at its range, looping, with an OG card.
 
-### Tier B: host films (first slice)
+### Tier B: original host film design (version 1)
+
+The following design describes the first recording format. The current
+writer, tick records, keyframes and directory are specified in the
+[version 3 film format](film-format.md).
 
 The dedicated host records a machine-level film from `h2 host run`. Its
 streams, from section 2:
@@ -161,6 +166,8 @@ The `serve --system-link --host-light` child creates a new file, records
 from boot, and seals it at the first slice after the multiplayer end
 latch. An orderly earlier exit also seals the recording. The host still
 sends its own packets and the recorder observes the results.
+
+In the original version 1 layout:
 
 - `HEAD` carries the exact tier's module stamp, XBE digest and title ID,
   epoch, socket address, scheduler slice budget, feature switches, lobby
@@ -233,16 +240,15 @@ h2 theater play "$film_run/match.h2film" --disc "$H2_DISC" --out "$H2_IMAGE" --s
 ```
 
 During either run the agent exposes `theater.state`, `play`, `pause`,
-`speed`, `seek` and `camera`. Seek restarts the child at boot and removes
-host pacing until the target. It compares hashes throughout. The
+`speed`, `seek` and `camera`. Seek restarts the child at a compatible keyframe, or at boot when one is
+unavailable, and removes host pacing until the target. It compares hashes throughout. The
 coordinator should also seek backwards across a received packet while
 paused and resume. [Transport parameters](../runtime/agent-api.md#theater-transport)
 
-At match end the host worker sends the sealed film to
-`POST /v1/games/{id}/film` using the lease credential. Live assigns the
-lease ID to the game, and the host can explicitly override the ID via
-`H2_FILM_GAME_ID`. The server checks `telemetry.ingest` and game ownership
-before writing the binary body, up to 64 MiB, into private blob storage.
+At match end the host uploads the sealed recording under the lease's
+canonical game ID. Live checks `telemetry.ingest` and lease ownership.
+Small uploads fit in one request. Larger films use numbered parts and
+continuations, up to 2 GiB per film. [Upload protocol](../live/live-api.md#theater)
 The supervisor gives the child time to finish uploading before reporting
 the lease ended. The upload and both hash experiments still need a real
 dedicated match.
@@ -269,17 +275,18 @@ blank.
 replays the recording. For an account film, the exact host recording
 downloads first. It needs a compatible installed game image and the
 same initial files where the film references them by digest. An archive
-with only telemetry still has a film page and scoreboard. Local-format
-recordings currently have a film page too. The exact player can open
-playerless host recordings.
+with only telemetry still has a film page and scoreboard. The selector
+reads the version 3 summary for local and host recordings and opens the
+exact player for supported films.
 
-The rendered player opens in **Fly cam**. **Orbit** circles the selected
+Rendered host playback opens in **Fly cam**. Local playback opens in the
+recorded retail view. **Orbit** circles the selected
 player and **Follow** looks over their shoulder. **First person** uses
-the selected player's replayed position and aim. Its camera choice is
-disabled for recordings without exact host state. The playerless host
-has no recorded first-person weapon view or local HUD. Roster controls
-cycle round the available players. The **Default** camera uses the
-retail view.
+a selected local player's recorded viewport or the replayed host unit's
+position and aim. A playerless host has no recorded first-person weapon
+view or local HUD. Roster controls
+cycle round the available players. The **Default** camera restores the
+full local frame or selects the first available player in a version 3 host film.
 
 | Action | Controller | Keyboard and mouse |
 |---|---|---|
@@ -321,8 +328,9 @@ alongside live navigation and render parity with the code-only lane.
 ### Web Theater
 
 The player page has a Films tab with Recent, Saved and Clips. The web
-viewer uses the spectator track and has its own transport, scoreboard,
-camera controls and clip share links.
+viewer reads the host film’s presentation and event records, with spectator
+archives for older matches. It has its own transport, scoreboard, camera
+controls and clip share links.
 
 ### Lanes (code only, one combined test pass)
 

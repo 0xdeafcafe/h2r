@@ -18,7 +18,7 @@ mod supervisor;
 const USAGE: &str = "usage:
   h2 host run --lease ID --live URL --token TOKEN --data-url URL --data-sha SHA256
               [--region REGION] [--base-port 31000] [--tunnel-listen 0.0.0.0:31100]
-              [--out DIR] [--data DIR] [--film FILE]
+              [--out DIR] [--data DIR] [--film FILE] [--archive dual|film]
   h2 host pack [--control-listen 0.0.0.0:31099] [--max-matches 3]
                [--vcpus N] [--memory-mib MIB] [--linger-s 60] [--data DIR]
   h2 host bundle --disc ISO --out DIR

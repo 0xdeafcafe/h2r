@@ -45,6 +45,7 @@ pub mod light_constants;
 pub mod light_passes;
 pub mod locale;
 pub mod memory;
+pub mod objectives;
 pub mod points;
 pub mod render;
 pub mod render_loop;

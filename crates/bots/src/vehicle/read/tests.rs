@@ -319,6 +319,51 @@ fn reads_a_seat_entry_marker_in_its_live_node_and_checks_the_tag_radius() {
         entry,
         [9.75, 21.4, 1.0]
     ));
+
+    // The biped camera shares this model. With multiple variants only its
+    // common marker is active. Resolve it in the biped's own live matrix.
+    g.put_u32(body(0), tag(0))
+        .put_u32(TAG_ENTRIES, u32::from_be_bytes(*b"bipd"))
+        .put_u32(TAGS + 0xd4, name)
+        .put_u32(groups + 4, 2)
+        .put_u16(marker, 1)
+        .put_u16(marker + 0x24, 0xffff)
+        .put_f32(marker + 0x24 + 0x1c, 1.0)
+        .put_u16(body(0) + 0x114, 0x34)
+        .put_u16(body(0) + 0x116, 0x200);
+    let head = body(0) + 0x200;
+    g.put_f32(head, 1.0);
+    vec3(&mut g, head + 4, [1.0, 0.0, 0.0]);
+    vec3(&mut g, head + 0x10, [0.0, 1.0, 0.0]);
+    vec3(&mut g, head + 0x1c, [0.0, 0.0, 1.0]);
+    vec3(&mut g, head + 0x28, [20.0, 1.0, 3.0]);
+    vec3(&mut g, marker + 0x24 + 4, [0.0, 0.0, 0.2]);
+    assert!(near(
+        unit_eye(&g, handle(0), 0.5).unwrap().unwrap(),
+        [20.0, 1.0, 3.2]
+    ));
+}
+
+#[test]
+fn an_unmarked_biped_eye_follows_its_live_crouch_and_parent_pose() {
+    let mut g = world();
+    // Reuse the synthetic tag's backing memory as the passenger's biped.
+    g.put_u32(body(0), tag(0))
+        .put_u32(TAG_ENTRIES, u32::from_be_bytes(*b"bipd"))
+        .put_f32(TAGS + 0x268, 0.725)
+        .put_f32(TAGS + 0x26c, 0.5)
+        .put_f32(TAGS + 0x270, 0.175);
+    // The riding unit's origin [0.2, 0.3, 0.4] is relative to its vehicle
+    // at [10, 20, 1] facing +Y. The upper collision cap uses height-radius.
+    assert!(near(
+        unit_eye(&g, handle(0), 0.0).unwrap().unwrap(),
+        [9.7, 20.2, 1.95]
+    ));
+    assert!(near(
+        unit_eye(&g, handle(0), 1.0).unwrap().unwrap(),
+        [9.7, 20.2, 1.725]
+    ));
+    assert!(unit_eye(&g, DatumHandle::new(1, 0), 0.0).unwrap().is_none());
 }
 
 #[test]

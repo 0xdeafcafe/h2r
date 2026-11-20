@@ -212,7 +212,7 @@ impl FrameSink {
         size: (u32, u32),
         opaque: bool,
     ) -> Result<u64, FrameError> {
-        self.submit_encoded(size, opaque, view, None, |_| Ok(()))
+        self.submit_encoded(size, opaque, view, None, [0., 0., 1., 1.], |_| Ok(()))
     }
 
     /// Publishes a gfx colour surface: the D3D back buffer on `Swap`.
@@ -222,14 +222,15 @@ impl FrameSink {
         store: &SurfaceStore,
         id: SurfaceId,
     ) -> Result<u64, FrameError> {
-        self.submit_surface_with_gamma(store, id, None)
+        self.submit_surface_region(store, id, None, None)
     }
 
-    fn submit_surface_with_gamma(
+    fn submit_surface_region(
         &mut self,
         store: &SurfaceStore,
         id: SurfaceId,
         gamma: Option<&[u8; 768]>,
+        crop: Option<[u32; 4]>,
     ) -> Result<u64, FrameError> {
         let s = store
             .get(id)
@@ -245,7 +246,15 @@ impl FrameSink {
             TexelFormat::A8R8G8B8 | TexelFormat::A1R5G5B5 | TexelFormat::A4R4G4B4
         );
         let view = s.view().clone();
-        self.submit_encoded(size, opaque, &view, gamma, |enc| {
+        let (output_size, rect) = match crop {
+            Some([x, y, w, h]) if w != 0 && h != 0 && x.checked_add(w).is_some_and(|n| n <= size.0)
+                && y.checked_add(h).is_some_and(|n| n <= size.1) => {
+                ((w, h), [x as f32 / size.0 as f32, y as f32 / size.1 as f32,
+                    w as f32 / size.0 as f32, h as f32 / size.1 as f32])
+            }
+            _ => (size, [0., 0., 1., 1.]),
+        };
+        self.submit_encoded(output_size, opaque, &view, gamma, rect, |enc| {
             store
                 .resolve_msaa(enc, id)
                 .map_err(|e| FrameError::Surface(e.to_string()))
@@ -258,15 +267,33 @@ impl FrameSink {
     /// shell's device). Errors are printed (first ten) and the frame is
     /// skipped; presentation never stops the guest.
     pub fn into_present_hook(
-        mut self,
+        self,
     ) -> impl FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32, Option<&[u8; 768]>) + Send + 'static
     {
+        self.into_cropped_present_hook(1, || None)
+    }
+
+    /// Present a player's completed split-screen image; guest rendering and
+    /// the guest's own back buffer remain under the engine's control.
+    pub fn into_cropped_present_hook(
+        mut self,
+        every: u32,
+        mut crop: impl FnMut() -> Option<[u32; 4]> + Send + 'static,
+    ) -> impl FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32, Option<&[u8; 768]>) + Send + 'static
+    {
+        let mut frames = 0u64;
         move |ctx, store, id, _flags, gamma| {
+            let rect = crop();
+            let frame = frames;
+            frames = frames.wrapping_add(1);
+            if every == 0 || !frame.is_multiple_of(u64::from(every)) {
+                return;
+            }
             debug_assert!(
                 ctx.device == self.ctx.device,
                 "GfxBackend is not on the shell's device"
             );
-            if let Err(e) = self.submit_surface_with_gamma(store, id, gamma) {
+            if let Err(e) = self.submit_surface_region(store, id, gamma, rect) {
                 self.hook_errors += 1;
                 if self.hook_errors <= 10 {
                     eprintln!("app: present hook: {e}");
@@ -281,6 +308,7 @@ impl FrameSink {
         opaque: bool,
         src: &wgpu::TextureView,
         gamma: Option<&[u8; 768]>,
+        src_rect: [f32; 4],
         before: impl FnOnce(&mut wgpu::CommandEncoder) -> Result<(), FrameError>,
     ) -> Result<u64, FrameError> {
         check_size(size)?;
@@ -304,7 +332,7 @@ impl FrameSink {
                     linear: true,
                     force_opaque: opaque,
                     gamma,
-                    ..Default::default()
+                    src_rect,
                 },
             );
             ctx.queue.submit([enc.finish()]);

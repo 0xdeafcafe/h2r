@@ -948,6 +948,9 @@ pub struct KillRecord {
 /// `GET /v1/games/{id}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GameDetail {
+    /// Present when the host film and the historical Live stats have different evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stats_discrepancy: Option<crate::film::StatsDiscrepancy>,
     #[serde(flatten)]
     pub summary: GameSummary,
     pub console: Option<String>,
@@ -1114,34 +1117,66 @@ pub fn validate_new(game: &NewGame) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate one player so a partial film observation can retain its peers.
+pub fn validate_frame_player(p: &FramePlayer) -> Result<(), String> {
+    if !p.pos.iter().all(|c| c.is_finite()) || !p.yaw.is_finite() {
+        return Err("positions must be finite".into());
+    }
+    if let Some(aim) = p.aim
+        && (!aim.iter().all(|c| c.is_finite()) || length(aim) < 1e-6)
+    {
+        return Err("aim must be a finite, non-zero vector".into());
+    }
+    let ids = [&p.species, &p.weapon];
+    if ids.into_iter().flatten().any(|id| !valid_model_id(id)) {
+        return Err("species and weapon must be [a-z0-9_]{1,32}".into());
+    }
+    if p.shots.is_some_and(|n| n > MAX_FRAME_SHOTS) {
+        return Err(format!("at most {MAX_FRAME_SHOTS} shots a frame"));
+    }
+    if p.vehicle.as_deref().is_some_and(|id| !valid_model_id(id)) {
+        return Err("vehicle ids must be [a-z0-9_]{1,32}".into());
+    }
+    validate_motion(&p.stance, p.speed, &p.actions, &p.grenade)?;
+    validate_v3(p.vel, p.body, p.shield, p.seat, &p.actions, &p.actions_ago)?;
+    validate_anim(&p.anim)
+}
+
+/// Validate one actor independently of the other actors in the sample.
+pub fn validate_frame_actor(a: &FrameActor) -> Result<(), String> {
+    let ids = [
+        Some(&a.id),
+        Some(&a.species),
+        a.weapon.as_ref(),
+        a.team.as_ref(),
+        a.vehicle.as_ref(),
+    ];
+    if ids.into_iter().flatten().any(|id| !valid_model_id(id)) {
+        return Err("actor ids must be [a-z0-9_]{1,32}".into());
+    }
+    if !a.pos.iter().all(|c| c.is_finite()) || !a.yaw.is_finite() {
+        return Err("actor positions must be finite".into());
+    }
+    if a.aim
+        .is_some_and(|aim| !aim.iter().all(|c| c.is_finite()) || length(aim) < 1e-6)
+    {
+        return Err("aim must be a finite, non-zero vector".into());
+    }
+    if a.shots.is_some_and(|n| n > MAX_FRAME_SHOTS) {
+        return Err(format!("at most {MAX_FRAME_SHOTS} shots a frame"));
+    }
+    validate_motion(&a.stance, a.speed, &a.actions, &a.grenade)?;
+    validate_v3(a.vel, a.body, a.shield, a.seat, &a.actions, &a.actions_ago)?;
+    validate_anim(&a.anim)
+}
+
 /// Checks a telemetry frame.
 pub fn validate_frame(frame: &Frame) -> Result<(), String> {
     if frame.players.len() > MAX_PLAYERS {
         return Err("at most 16 players".into());
     }
-    let finite = |p: &FramePlayer| p.pos.iter().all(|c| c.is_finite()) && p.yaw.is_finite();
-    if !frame.players.iter().all(finite) {
-        return Err("positions must be finite".into());
-    }
     for p in &frame.players {
-        if let Some(aim) = p.aim
-            && (!aim.iter().all(|c| c.is_finite()) || length(aim) < 1e-6)
-        {
-            return Err("aim must be a finite, non-zero vector".into());
-        }
-        let ids = [&p.species, &p.weapon];
-        if ids.into_iter().flatten().any(|id| !valid_model_id(id)) {
-            return Err("species and weapon must be [a-z0-9_]{1,32}".into());
-        }
-        if p.shots.is_some_and(|n| n > MAX_FRAME_SHOTS) {
-            return Err(format!("at most {MAX_FRAME_SHOTS} shots a frame"));
-        }
-        if p.vehicle.as_deref().is_some_and(|id| !valid_model_id(id)) {
-            return Err("vehicle ids must be [a-z0-9_]{1,32}".into());
-        }
-        validate_motion(&p.stance, p.speed, &p.actions, &p.grenade)?;
-        validate_v3(p.vel, p.body, p.shield, p.seat, &p.actions, &p.actions_ago)?;
-        validate_anim(&p.anim)?;
+        validate_frame_player(p)?;
     }
     if frame.vehicles.len() > MAX_FRAME_VEHICLES {
         return Err(format!("at most {MAX_FRAME_VEHICLES} vehicles"));
@@ -1169,28 +1204,7 @@ pub fn validate_frame(frame: &Frame) -> Result<(), String> {
         validate_vel(v.vel)?;
     }
     for a in &frame.actors {
-        let ids = [
-            Some(&a.id),
-            Some(&a.species),
-            a.weapon.as_ref(),
-            a.team.as_ref(),
-            a.vehicle.as_ref(),
-        ];
-        if ids.into_iter().flatten().any(|id| !valid_model_id(id)) {
-            return Err("actor ids must be [a-z0-9_]{1,32}".into());
-        }
-        if !a.pos.iter().all(|c| c.is_finite()) || !a.yaw.is_finite() {
-            return Err("actor positions must be finite".into());
-        }
-        if a.aim.is_some_and(|aim| !direction(aim)) {
-            return Err("aim must be a finite, non-zero vector".into());
-        }
-        if a.shots.is_some_and(|n| n > MAX_FRAME_SHOTS) {
-            return Err(format!("at most {MAX_FRAME_SHOTS} shots a frame"));
-        }
-        validate_motion(&a.stance, a.speed, &a.actions, &a.grenade)?;
-        validate_v3(a.vel, a.body, a.shield, a.seat, &a.actions, &a.actions_ago)?;
-        validate_anim(&a.anim)?;
+        validate_frame_actor(a)?;
     }
     if frame.hits.len() > MAX_FRAME_HITS {
         return Err(format!("at most {MAX_FRAME_HITS} hits"));

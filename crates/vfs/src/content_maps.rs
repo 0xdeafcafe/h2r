@@ -113,11 +113,11 @@ impl Source for Region {
 
 enum Reader {
     Overlay {
-        base: Box<dyn Source + Send>,
-        overlay: Overlay,
+        base: Region,
+        overlay: Arc<Overlay>,
     },
     File(FileSource, HostFile),
-    Mapped(memmap2::Mmap, HostFile),
+    Mapped(memmap2::Mmap, HostFile, File),
 }
 
 pub(crate) struct Served {
@@ -148,11 +148,11 @@ impl Served {
                 base: source,
                 overlay,
             } => {
-                let base: Box<dyn Source + Send> = match source {
-                    BaseRef::Disc => Box::new(base.ok_or(Error::FileCorrupt)?),
-                    BaseRef::File { file, .. } => Box::new(FileSource::new(file)?),
+                let base = match source {
+                    BaseRef::Disc => base.ok_or(Error::FileCorrupt)?,
+                    BaseRef::File { file, .. } => Region { len: file.metadata()?.len(), file, offset: 0 },
                 };
-                Reader::Overlay { base, overlay }
+                Reader::Overlay { base, overlay: Arc::new(overlay) }
             }
             Data::File { path, file, .. } => Reader::File(
                 FileSource::new(file)?,
@@ -188,7 +188,7 @@ impl Served {
                     && crate::map_override::matching_server_copy(&mut file, size, len, &header)
                 {
                     if let Some(mapping) = crate::disc::map_read_only(&file) {
-                        served.reader = Reader::Mapped(mapping, HostFile { path, offset: 0, len });
+                        served.reader = Reader::Mapped(mapping, HostFile { path, offset: 0, len }, file);
                     } else {
                         served.reader = Reader::File(FileSource::new(file)?, HostFile { path, offset: 0, len });
                     }
@@ -210,9 +210,22 @@ impl Served {
         self.map.package.id
     }
 
+    pub(crate) fn film_source(&self) -> Result<crate::FilmMapSource> {
+        let mut source = match &self.reader {
+            Reader::File(f, _) => crate::FilmMapSource::region(f.file().try_clone()?, 0),
+            Reader::Mapped(_, _, file) => crate::FilmMapSource::region(file.try_clone()?, 0),
+            Reader::Overlay { base, overlay } => crate::FilmMapSource::overlay(
+                crate::FilmMapSource::region(base.file.try_clone()?, base.offset),
+                base.len, overlay.clone(), self.id(),
+            ),
+        };
+        source.alias = self.alias;
+        Ok(source)
+    }
+
     pub(crate) fn host_file(&self) -> Option<HostFile> {
         match (&self.reader, self.alias) {
-            (Reader::File(_, file) | Reader::Mapped(_, file), None) => Some(file.clone()),
+            (Reader::File(_, file) | Reader::Mapped(_, file, _), None) => Some(file.clone()),
             _ => None,
         }
     }
@@ -220,8 +233,8 @@ impl Served {
     fn read_source(&mut self, offset: u64, buf: &mut [u8]) -> Result<usize> {
         match &mut self.reader {
             Reader::File(file, _) => Ok(file.read_at(offset, buf)?),
-            Reader::Overlay { base, overlay } => Ok(overlay.read_at(&mut **base, offset, buf)?),
-            Reader::Mapped(map, _) => {
+            Reader::Overlay { base, overlay } => Ok(overlay.read_at(base, offset, buf)?),
+            Reader::Mapped(map, _, _) => {
                 let n = self.len.saturating_sub(offset).min(buf.len() as u64) as usize;
                 if n > 0 {
                     crate::disc::copy_mapped(map, offset, &mut buf[..n])?;

@@ -24,6 +24,27 @@ pub trait Sink: Send + 'static {
     }
 }
 
+impl Sink for Box<dyn Sink> {
+    fn event(&mut self, event: GameEvent) -> Result<(), String> {
+        (**self).event(event)
+    }
+    fn frame(&mut self, frame: Frame) -> Result<(), String> {
+        (**self).frame(frame)
+    }
+    fn flush(&mut self) -> Result<(), String> {
+        (**self).flush()
+    }
+    fn finish_sim(&mut self, report: serde_json::Value) -> Result<(), String> {
+        (**self).finish_sim(report)
+    }
+}
+
+pub(crate) struct Discard;
+impl Sink for Discard {
+    fn event(&mut self, _: GameEvent) -> Result<(), String> { Ok(()) }
+    fn frame(&mut self, _: Frame) -> Result<(), String> { Ok(()) }
+}
+
 pub struct JsonlSink {
     writer: BufWriter<File>,
 }

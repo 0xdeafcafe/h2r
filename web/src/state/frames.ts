@@ -316,12 +316,13 @@ export function fromFramePlayer(p: FramePlayer, tick?: number, shotsFrom: FrameP
 }
 
 /** Blends two frames at `tick`. Players missing from `b` hold their
- *  position from `a`; players only in `b` appear when t >= 0.5. */
+ *  position from `a`. Film roster and seat changes occur on their own tick;
+ *  sparse legacy frames use the nearer sample. */
 export function interpolateFrames(a: Frame, b: Frame | undefined, tick: number): SampledPlayer[] {
-  return blendPlayers(a.players, b && b.cut == null && b.tick > a.tick ? b.players : undefined, a.tick, b?.tick ?? a.tick, tick);
+  return blendPlayers(a.players, b && b.cut == null && b.tick > a.tick ? b.players : undefined, a.tick, b?.tick ?? a.tick, tick, !!a.film_world);
 }
 
-function blendPlayers(from: readonly FramePlayer[], to: readonly FramePlayer[] | undefined, tickA: number, tickB: number, tick: number): SampledPlayer[] {
+function blendPlayers(from: readonly FramePlayer[], to: readonly FramePlayer[] | undefined, tickA: number, tickB: number, tick: number, census = false): SampledPlayer[] {
   const a = { tick: tickA, players: from };
   // Shots the earlier frame's mask names, up to now (the newest frame of a live stream).
   const fired = (s: SampledPlayer, p: FramePlayer, at: number, after: number) => {
@@ -343,12 +344,12 @@ function blendPlayers(from: readonly FramePlayer[], to: readonly FramePlayer[] |
     const far = dx * dx + dy * dy + dz * dz > SNAP_DISTANCE * SNAP_DISTANCE;
     if (!pa.alive || !pb.alive || far) {
       // No sliding a corpse to a spawn point: take the nearer frame.
-      out.push(fromFramePlayer(t < 0.5 ? pa : pb, a.tick, pa));
+      out.push(fromFramePlayer(census || t < 0.5 ? pa : pb, a.tick, pa));
       continue;
     }
-    // Everything but the place comes from the nearer frame; shots from `a`,
+    // Discrete state uses the observed film tick or the nearer legacy frame; shots from `a`,
     // or with masks each on its tick: the later frame's as the clock passes them.
-    const s = fromFramePlayer(t < 0.5 ? pa : pb, a.tick, pa);
+    const s = fromFramePlayer(census || t < 0.5 ? pa : pb, a.tick, pa);
     fired(s, pa, a.tick, a.tick - 32);
     fired(s, pb, b.tick, a.tick);
     const va = cleanVel(pa.vel), vb = cleanVel(pb.vel);
@@ -375,7 +376,7 @@ function blendPlayers(from: readonly FramePlayer[], to: readonly FramePlayer[] |
     if (sa !== null && sb !== null) s.speed = lerp(sa, sb, t);
     out.push(s);
   }
-  if (t >= 0.5) for (const pb of next.values()) out.push(fromFramePlayer(pb));
+  if (!census && t >= 0.5) for (const pb of next.values()) out.push(fromFramePlayer(pb));
   return out;
 }
 
@@ -388,7 +389,7 @@ export function unplaced(p: FramePlayer): boolean {
 
 /** `f` without its unplaced players (`f` itself when it has none). */
 export function withoutUnplaced(f: Frame): Frame {
-  return f.players.some(unplaced) ? { ...f, players: f.players.filter((p) => !unplaced(p)) } : f;
+  return !f.film_world && f.players.some(unplaced) ? { ...f, players: f.players.filter((p) => !unplaced(p)) } : f;
 }
 
 /** Index of the last frame with tick <= `tick` in a tick-sorted array, or -1. */
@@ -436,7 +437,7 @@ const isPos = (v: unknown): v is [number, number, number] =>
 function actorsOf(f: Frame): { players: FramePlayer[]; info: Map<number, { id: string; team: string | null }> } {
   const players: FramePlayer[] = [], info = new Map<number, { id: string; team: string | null }>();
   for (const a of f.actors ?? []) {
-    if (players.length >= MAX_ACTORS) break;
+    if (players.length >= (f.film_world ? MAX_OBJECTS : MAX_ACTORS)) break;
     const id = cleanId(a?.id);
     if (!id || !isPos(a.pos) || typeof a.yaw !== "number" || !Number.isFinite(a.yaw)) continue;
     const index = actorIndex(id);
@@ -467,9 +468,9 @@ export function sampleActors(frames: readonly Frame[], tick: number): SampledPla
   const fa = frames[i]!, fb = nextOf(frames, i);
   if (!fa.actors?.length && !fb?.actors?.length) return [];
   const a = actorsCached(fa), b = fb && fb.tick > fa.tick ? actorsCached(fb) : undefined;
-  const late = !!fb && !!b && (tick - fa.tick) / (fb.tick - fa.tick) >= 0.5;
+  const late = !fa.film_world && !!fb && !!b && (tick - fa.tick) / (fb.tick - fa.tick) >= 0.5;
   const out: SampledPlayer[] = [];
-  for (const p of blendPlayers(a.players, b?.players, fa.tick, fb?.tick ?? fa.tick, tick)) {
+  for (const p of blendPlayers(a.players, b?.players, fa.tick, fb?.tick ?? fa.tick, tick, !!fa.film_world)) {
     const info = b?.info.get(p.index) ?? a.info.get(p.index);
     if (!info || (late && !b!.info.has(p.index))) continue;
     p.actor = info;
@@ -580,23 +581,23 @@ export function sampleVehicles(frames: readonly Frame[], tick: number): SampledV
   for (const a of from) {
     const b = matched.has(a.id) ? undefined : next.get(a.id);
     matched.add(a.id);
-    if (!b) { if (t < 0.5) out.push(a); continue; }
-    if ((b.x - a.x) ** 2 + (b.y - a.y) ** 2 + (b.z - a.z) ** 2 > SNAP_DISTANCE * SNAP_DISTANCE) { out.push(t < 0.5 ? a : b); continue; }
+    if (!b) { if (fa.film_world || t < 0.5) out.push(a); continue; }
+    if ((b.x - a.x) ** 2 + (b.y - a.y) ** 2 + (b.z - a.z) ** 2 > SNAP_DISTANCE * SNAP_DISTANCE) { out.push(fa.film_world || t < 0.5 ? a : b); continue; }
     const [x, y, z] = vehiclePath(frames, i, a, b, t);
     const v: SampledVehicle = {
       id: a.id, kind: t < 0.5 ? a.kind : b.kind,
       x, y, z,
       forward: nlerpAim(a.forward, b.forward, t), up: nlerpAim(a.up, b.up, t),
-      occupied: t < 0.5 ? a.occupied : b.occupied,
+      occupied: fa.film_world || t < 0.5 ? a.occupied : b.occupied,
     };
-    const parent = t < 0.5 ? a.parent : b.parent;
+    const parent = fa.film_world || t < 0.5 ? a.parent : b.parent;
     if (parent) v.parent = parent;
     const aim = a.aim && b.aim ? nlerpAim(a.aim, b.aim, t) : t < 0.5 ? a.aim : b.aim;
     if (aim) v.aim = aim;
     if (a.vel && b.vel) v.vel = [lerp(a.vel[0], b.vel[0], t), lerp(a.vel[1], b.vel[1], t), lerp(a.vel[2], b.vel[2], t)];
     out.push(v);
   }
-  if (t >= 0.5) for (const [id, b] of next) if (!matched.has(id)) out.push(b);
+  if (!fa.film_world && t >= 0.5) for (const [id, b] of next) if (!matched.has(id)) out.push(b);
   return seatTurrets(out);
 }
 
@@ -629,7 +630,7 @@ export function fromFrameMachine(m: FrameMachine): SampledMachine | null {
  *  once a frame and shared, as vehicles are. */
 function machinesOf(f: Frame): SampledMachine[] {
   const out: SampledMachine[] = [];
-  for (const raw of (f.machines ?? []).slice(0, MAX_MACHINES)) { const m = fromFrameMachine(raw); if (m) out.push(m); }
+  for (const raw of (f.machines ?? []).slice(0, f.film_world ? MAX_OBJECTS : MAX_MACHINES)) { const m = fromFrameMachine(raw); if (m) out.push(m); }
   return out;
 }
 const machineCache = new WeakMap<Frame, SampledMachine[]>();
@@ -651,7 +652,7 @@ export function sampleMachines(frames: readonly Frame[], tick: number): SampledM
   const i = findFrame(frames, tick);
   if (i < 0) return [];
   const at = new Map<string, { m: SampledMachine; tick: number }>();
-  for (let j = i; j >= 0 && j > i - MACHINE_LOOKBACK; j--) {
+  for (let j = i; j >= 0 && j > i - (frames[i]!.film_world ? 1 : MACHINE_LOOKBACK); j--) {
     if (!frames[j]!.machines) continue;
     for (const m of machinesCached(frames[j]!)) if (!at.has(m.id)) at.set(m.id, { m, tick: frames[j]!.tick });
   }
@@ -794,17 +795,18 @@ export function sampleObjects(frames: readonly Frame[], tick: number): FrameObje
   for (let n = 0; n < list.length; n++) {
     const o = list[n]!;
     if (typeof o.k !== "string" || typeof o.i !== "number") continue;
-    if (o.gone) { out.push({ k: o.k, i: o.i, gone: true }); continue; }
+    if (o.gone) { out.push(o); continue; }
     if (!finite3(o.p)) continue;
     const f = finite3(o.f) ? o.f : [1, 0, 0] as [number, number, number];
     const u = finite3(o.u) ? o.u : [0, 0, 1] as [number, number, number];
     const m = next?.get(keys[n]!);
-    if (!m || !finite3(m.p) || t === 0 || (m.p[0] - o.p[0]) ** 2 + (m.p[1] - o.p[1]) ** 2 + (m.p[2] - o.p[2]) ** 2 > SNAP_DISTANCE * SNAP_DISTANCE) {
-      out.push({ k: o.k, i: o.i, p: [o.p[0], o.p[1], o.p[2]], f, u });
+    if (m === o && o.f && o.u) { out.push(o); continue; }
+    if (!m || (o.source && o.source.id !== m.source?.id) || !finite3(m.p) || t === 0 || (m.p[0] - o.p[0]) ** 2 + (m.p[1] - o.p[1]) ** 2 + (m.p[2] - o.p[2]) ** 2 > SNAP_DISTANCE * SNAP_DISTANCE) {
+      out.push({ ...o, p: [o.p[0], o.p[1], o.p[2]], f, u });
       continue;
     }
     out.push({
-      k: o.k, i: o.i,
+      ...o,
       p: [lerp(o.p[0], m.p[0], t), lerp(o.p[1], m.p[1], t), lerp(o.p[2], m.p[2], t)],
       f: finite3(m.f) ? nlerpAim(f, m.f, t) : f,
       u: finite3(m.u) ? nlerpAim(u, m.u, t) : u,

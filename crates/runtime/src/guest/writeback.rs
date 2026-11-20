@@ -170,7 +170,9 @@ impl WritebackView<'_> {
     }
 
     pub fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), GuestFault> {
-        if self.guest.has_trap() || data.is_empty() {
+        // A taped HLE call needs the ordered writes at their original virtual
+        // addresses, including two stores to different aliases of one register.
+        if self.guest.hle_writes.is_some() || self.guest.has_trap() || data.is_empty() {
             return self.guest.write_bytes(addr, data, 1);
         }
         let (alias, count) = self.cache.segment(addr, data.len());
@@ -257,6 +259,23 @@ mod tests {
         let mut bytes = vec![0; 2 * PAGE];
         g.read_bytes(CACHE, &mut bytes, 1).unwrap();
         bytes
+    }
+
+    #[test]
+    fn captured_writeback_keeps_virtual_alias_and_order() {
+        let (mut guest, _) = scene();
+        let (_, outputs) = guest.capture_hle_writes(6, |g| {
+            Writeback::default().with(g, PAGES, |view| {
+                view.write(CACHE, &[1]).unwrap();
+                view.write(ALIAS, &[2]).unwrap();
+                view.write(OTHER - 2, &[3, 4, 5, 6]).unwrap();
+            });
+        });
+        assert_eq!(outputs.unwrap().writes, [
+            (CACHE, vec![1]), (ALIAS, vec![2]), (OTHER - 2, vec![3, 4, 5, 6]),
+        ]);
+        assert_eq!(guest.u8(CACHE).unwrap(), 2);
+        assert_eq!(guest.u8(OTHER).unwrap(), 5);
     }
 
     #[test]

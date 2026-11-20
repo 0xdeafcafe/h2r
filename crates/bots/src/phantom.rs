@@ -27,7 +27,7 @@ use crate::think::{Mode, Source, Thinker, lock_source};
 
 /// Who a phantom is (docs/game/bots.md, section 9.1): the server's account
 /// and how the lobby shows it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Identity {
     pub xuid: u64,
     pub gamertag: String,
@@ -37,7 +37,9 @@ pub struct Identity {
 pub const MAX_PHANTOMS: usize = 15;
 
 /// A phantom on the books.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct PhantomHandle(pub u32);
 
 /// The first two bytes of every phantom's machine id; the other four are
@@ -62,7 +64,7 @@ pub fn handle_of(machine: [u8; 6]) -> Option<PhantomHandle> {
 }
 
 /// Where a phantom is.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum State {
     /// On the books; the game has not made its player yet.
     Pending,
@@ -73,7 +75,7 @@ pub enum State {
 }
 
 /// What [`Phantoms::list`] says about one phantom.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PhantomInfo {
     pub handle: PhantomHandle,
     pub identity: Identity,
@@ -206,11 +208,18 @@ enum Phase {
 
 /// The phantoms of one host. Cheap to clone; clones share.
 #[derive(Clone, Default)]
-pub struct Phantoms(Arc<Mutex<Books>>);
+pub struct Phantoms(Arc<Mutex<Books>>, Arc<std::sync::atomic::AtomicU64>);
 
 impl Phantoms {
     fn lock(&self) -> std::sync::MutexGuard<'_, Books> {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn roster_revision(&self) -> u64 {
+        self.1.load(std::sync::atomic::Ordering::Acquire)
+    }
+    fn changed(&self) {
+        self.1.fetch_add(1, std::sync::atomic::Ordering::Release);
     }
 
     /// Puts a phantom on the books, [`State::Pending`]. Never waits on the
@@ -251,6 +260,7 @@ impl Phantoms {
             samples: 0,
             waiting: None,
         });
+        self.changed();
         Ok(handle)
     }
 
@@ -270,7 +280,11 @@ impl Phantoms {
     /// Whether phantoms join the pregame lobby (the default), or only a
     /// running game ([`LOBBY_ENV`]).
     pub fn set_lobby(&self, on: bool) {
-        self.lock().game_only = !on;
+        let mut books = self.lock();
+        if books.game_only != (!on) {
+            books.game_only = !on;
+            self.changed();
+        }
     }
 
     /// Whether the phantoms are a Clankermatch's (docs/game/bots.md §8.4,
@@ -279,12 +293,20 @@ impl Phantoms {
     /// leave any other, the party's lobby before the search and after the
     /// game above all. Set by the Clankermatch fill while it runs.
     pub fn set_match_only(&self, on: bool) {
-        self.lock().match_only = on;
+        let mut books = self.lock();
+        if books.match_only != (on) {
+            books.match_only = on;
+            self.changed();
+        }
     }
 
     /// Use each bot's identity and team to form its configuration in a playerless sim.
     pub fn set_playerless_host(&self, playerless: bool) {
-        self.lock().playerless_host = playerless;
+        let mut books = self.lock();
+        if books.playerless_host != (playerless) {
+            books.playerless_host = playerless;
+            self.changed();
+        }
     }
 
     /// Whether the phantoms are a Clankermatch's ([`Phantoms::set_match_only`]).
@@ -301,6 +323,7 @@ impl Phantoms {
             .position(|p| p.info.handle == handle)
             .ok_or(Error::NoSuchPhantom(handle))?;
         let p = b.list.remove(i);
+        self.changed();
         if p.made {
             b.gone.push(p.info.machine);
         }
@@ -356,6 +379,7 @@ impl Phantoms {
             .iter_mut()
             .find(|p| p.info.handle == handle)
         {
+            self.changed();
             p.info.state = State::Failed(why.into());
             p.info.player = None;
         }
@@ -697,10 +721,11 @@ pub fn player(handle: PhantomHandle) -> Option<u32> {
 
 mod action;
 
-
 pub use action::AimView;
 pub use action::SeatInput;
 pub mod session;
 
 #[cfg(test)]
 mod tests;
+
+pub mod film;

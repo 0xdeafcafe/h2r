@@ -391,6 +391,9 @@ pub struct AddMatch {
     pub token: String,
     pub data_url: String,
     pub data_sha: String,
+    /// Each lease selects its own recording and stats upload mode.
+    #[serde(default)]
+    pub archive: crate::hosts::HostArchive,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
 }

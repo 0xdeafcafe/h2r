@@ -196,4 +196,30 @@ fn flat_faults_and_exact_watch_epochs() {
     }
     store(&memory, ALIAS + PAGE, 66);
     assert_eq!(memory.lock().take_dirty(a).unwrap(), [range(1)]);
+
+    // Replacing the RAM backing must replace its watched-store mirror too.
+    let path = std::env::temp_dir().join(format!("h2-flat-restore-{}", std::process::id()));
+    let image = std::fs::File::create_new(&path).unwrap();
+    image.set_len(crate::guest::RAM_SIZE as u64).unwrap();
+    {
+        let mut g = memory.lock();
+        let layout = g.layout();
+        g.restore_cow(&layout, &path).unwrap();
+        assert_eq!(g.u8(ALIAS + PAGE).unwrap(), 0);
+    }
+    std::fs::remove_file(path).unwrap();
+    assert!(memory.try_gate());
+    // SAFETY: the gate pins the same pointers used by a generated store.
+    let mirrored = unsafe {
+        let d = &*memory.shared.data.get();
+        #[cfg(target_os = "linux")]
+        assert_eq!(d.watching >> 31, 0);
+        d.watching >> 31 != 0 && !d.flat.stores.is_null()
+            && (*d.pages.add((ALIAS / PAGE + 1) as usize)).permissions & crate::flat::FLAT != 0
+    };
+    memory.release_gate();
+    if mirrored {
+        store(&memory, ALIAS + PAGE, 88);
+        assert_eq!(memory.lock().u8(ALIAS + PAGE).unwrap(), 88);
+    }
 }

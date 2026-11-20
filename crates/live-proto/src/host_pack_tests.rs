@@ -315,10 +315,15 @@ fn add_match_omits_an_absent_region() {
         token: "t".into(),
         data_url: "https://data".into(),
         data_sha: "ab".into(),
+        archive: crate::hosts::HostArchive::Film,
         region: None,
     };
-    let json = serde_json::to_value(&add).unwrap();
+    let mut json = serde_json::to_value(&add).unwrap();
     assert!(json.get("region").is_none());
+    assert_eq!(json["archive"], "film");
+    json.as_object_mut().unwrap().remove("archive");
+    let old: AddMatch = serde_json::from_value(json).unwrap();
+    assert_eq!(old.archive, crate::hosts::HostArchive::Dual);
     let status = PackStatus {
         limits: small(),
         matches: vec![MatchStatus {

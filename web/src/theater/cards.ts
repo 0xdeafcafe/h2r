@@ -6,8 +6,9 @@ import { variantLabel } from "../state/gametype";
 import { usDate } from "../stats/fmt";
 
 export function filmCard(film: FilmSummary, mapName: string, clip?: Clip) {
-  const gameType = variantLabel(film.variant) || titleCase(film.mode) || "Game";
-  const seconds = clip ? (clip.to_tick - clip.from_tick) / TICKS_PER_SECOND : film.duration_s;
+  const gameType = film.summary?.variant_name || film.summary?.game_type || variantLabel(film.variant) || titleCase(film.mode) || "Game";
+  const hz = film.ticks_per_second || TICKS_PER_SECOND;
+  const seconds = clip ? (clip.to_tick - clip.from_tick) / hz : film.summary ? film.summary.duration_ticks / hz : film.duration_s;
   const result = film.result?.trim();
   return {
     href: theaterHref(film.game_id, clip?.id),

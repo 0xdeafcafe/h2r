@@ -31,19 +31,33 @@ const SCOPES: [&str; 4] = [
 pub(crate) struct HostClaims {
     iss: String,
     aud: String,
-    sub: String,
+    #[serde(flatten)]
+    reservation: FilmReservation,
     lxm: Vec<String>,
     iat: i64,
     exp: i64,
-    // Signed reservation details are available even after the QoS queue expires.
+    // A lease-specific Ed25519 seed for the existing event-batch JWS protocol.
+    // This stays inside the private boot credential; never log the claims.
+    event_key: String,
+}
+
+/// Exactly the reservation constraints applied to a staged film. A durable
+/// continuation stores these in private storage; it holds no bearer or signing key.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct FilmReservation {
+    sub: String,
     pub(crate) assignment_id: String,
     pub(crate) roster: Vec<Xuid>,
     pub(crate) hopper: Option<u32>,
     map: String,
     map_id: Option<String>,
-    // A lease-specific Ed25519 seed for the existing event-batch JWS protocol.
-    // This stays inside the private boot credential; never log the claims.
-    event_key: String,
+}
+
+impl std::ops::Deref for HostClaims {
+    type Target = FilmReservation;
+    fn deref(&self) -> &Self::Target {
+        &self.reservation
+    }
 }
 
 fn event_key(identity: &ServerIdentity, subject: &str) -> KeyPair {
@@ -57,15 +71,17 @@ impl HostClaims {
             event_key: event_key(identity, &sub).secret_b64(),
             iss: identity.author(),
             aud: identity.id.clone(),
-            sub,
             lxm: SCOPES.map(String::from).into(),
             iat: clock,
             exp: clock + i64::from(lease.max_match_s) + 300,
-            assignment_id: lease.assignment_id.clone(),
-            roster: lease.roster.clone(),
-            hopper: lease.hopper,
-            map: lease.map.clone(),
-            map_id: lease.map_id.clone(),
+            reservation: FilmReservation {
+                sub,
+                assignment_id: lease.assignment_id.clone(),
+                roster: lease.roster.clone(),
+                hopper: lease.hopper,
+                map: lease.map.clone(),
+                map_id: lease.map_id.clone(),
+            },
         };
         identity.key.sign_json(TYP_TOKEN, &claims)
     }
@@ -114,6 +130,45 @@ impl HostClaims {
     /// The game-start request may omit reservation fields a playerless title
     /// cannot discover through a local profile. A supplied binding must agree.
     pub(crate) fn bind_game(&self, state: &State, new: &mut game::NewGame) -> Result<(), ApiError> {
+        self.bind_game_session(state, new, false)
+    }
+}
+
+impl FilmReservation {
+    /// A finished film may arrive after the lobby closes. The signed assignment,
+    /// session owner, map and hopper must still match the original reservation.
+    pub(crate) fn bind_film(&self, state: &State, new: &mut game::NewGame) -> Result<(), ApiError> {
+        self.bind_game_session(state, new, true)
+    }
+
+    /// An archive without an observed GameStarted can be catalogued under the
+    /// reservation. Such a receipt grants no game stats or ranks.
+    pub(crate) fn check_catalogue_map(&self, level: Option<&str>) -> Result<(), ApiError> {
+        if level == Some(self.map.as_str()) {
+            Ok(())
+        } else {
+            Err(forbidden("film level is outside the host lease"))
+        }
+    }
+
+    pub(crate) fn publisher(&self) -> Publisher {
+        Publisher::Host(self.sub.clone())
+    }
+
+    pub(crate) fn canonical_film_id(&self) -> &str {
+        if self.assignment_id.starts_with("sim-") {
+            &self.assignment_id
+        } else {
+            lease_id(&self.sub).expect("verified host")
+        }
+    }
+
+    fn bind_game_session(
+        &self,
+        state: &State,
+        new: &mut game::NewGame,
+        finished: bool,
+    ) -> Result<(), ApiError> {
         if new.mode != "multiplayer"
             || new.map != self.map
             || new.map_id.map(|id| id.to_string()) != self.map_id
@@ -127,17 +182,29 @@ impl HostClaims {
                 Err(forbidden("simulation belongs to another lease"))
             };
         }
-        let session = state
-            .sessions
-            .values()
-            .find(|s| s.host == self.sub && s.state == "open")
-            .ok_or_else(|| forbidden("publish the lease session before its game"))?;
-        if new
-            .session_id
-            .as_ref()
-            .is_some_and(|id| *id != session.session_id)
-        {
-            return Err(forbidden("game names another session"));
+        let mut matching = state.sessions.values().filter(|s| {
+            s.host == self.sub
+                && (finished || s.state == "open")
+                && new.session_id.as_ref().is_none_or(|id| id == &s.session_id)
+        });
+        let Some(session) = matching.next() else {
+            // A custom host may record an unadvertised game. Its signed grant
+            // still fixes the canonical id and map. Without a session, Live's
+            // normal roster validation also rejects rostered bot identities.
+            if finished
+                && self.assignment_id.starts_with("custom-")
+                && new.session_id.is_none()
+                && new.kind() == "custom"
+                && self.hopper.is_none()
+            {
+                return Ok(());
+            }
+            return Err(forbidden("publish the lease session before its game"));
+        };
+        if finished && matching.next().is_some() {
+            return Err(forbidden(
+                "the film must identify which lease session played the game",
+            ));
         }
         new.session_id = Some(session.session_id.clone());
         if let Some(a) = &session.matchmaking {
@@ -191,6 +258,12 @@ impl HostClaims {
             && self.roster.iter().all(|x| members.contains(x))
             && members.iter().all(|x| self.roster.contains(x))
     }
+}
+
+/// Only called for a server-validated, durably selected host-film import.
+pub(crate) fn film_event_key(live: &Live, host: &str) -> Result<KeyPair, ApiError> {
+    lease_id(host).ok_or_else(|| forbidden("a film needs a verified host lease"))?;
+    Ok(event_key(&live.identity, host))
 }
 
 pub(crate) fn lease_id(subject: &str) -> Option<&str> {
@@ -297,10 +370,18 @@ impl Live {
         HostClaims::issue(&self.identity, lease, now())
     }
 
+    pub(crate) fn host_claims(
+        &self,
+        bearer: Option<&str>,
+        scope: &str,
+    ) -> Result<HostClaims, ApiError> {
+        let raw = bearer.ok_or_else(|| unauthorized("expected a host bearer token"))?;
+        HostClaims::verify(&self.identity, raw, scope, now())
+    }
+
     /// The caller compares the returned lease id to the resource in the URL.
     pub fn verify_host_token(&self, bearer: Option<&str>, scope: &str) -> Result<String, ApiError> {
-        let raw = bearer.ok_or_else(|| unauthorized("expected a host bearer token"))?;
-        let claims = HostClaims::verify(&self.identity, raw, scope, now())?;
+        let claims = self.host_claims(bearer, scope)?;
         Ok(lease_id(&claims.sub).expect("verified").to_owned())
     }
 

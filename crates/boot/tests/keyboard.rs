@@ -97,6 +97,10 @@ fn focused_screen_requires_the_retail_identity_a_writable_terminated_buffer_and_
 type Calls = Arc<Mutex<Vec<(u32, u32)>>>;
 
 fn world() -> (Arc<Runtime>, KeyboardMouse, Calls) {
+    world_with_tape(None)
+}
+
+fn world_with_tape(tape: Option<Arc<dyn film::tape::Tap>>) -> (Arc<Runtime>, KeyboardMouse, Calls) {
     let mut d = Dispatch::default();
     unsafe {
         d.register_generated_module(
@@ -150,7 +154,7 @@ fn world() -> (Arc<Runtime>, KeyboardMouse, Calls) {
     }
     let rt = Runtime::new(memory(), d);
     let kb = KeyboardMouse::new(Bindings::default());
-    assert!(k::install_at(&rt, kb.clone(), PUMP).unwrap());
+    assert!(k::install_with_tape(&rt, kb.clone(), PUMP, tape).unwrap());
     (rt, kb, log)
 }
 fn pump(rt: &Arc<Runtime>) -> CpuAbi {
@@ -224,4 +228,53 @@ fn escape_uses_the_native_backup_restore_and_back_event_and_modal_focus_discards
     pump(&rt);
     assert_eq!(*log.lock().unwrap(), vec![(k::EVENT, 1)]);
     assert!(!kb.text_active());
+}
+
+#[test]
+fn film_replays_guest_edits_and_ignores_live_typing() {
+    use film::tape::{Call, Tap};
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[derive(Default)]
+    struct KeyboardTape {
+        replay: AtomicBool,
+        calls: Mutex<VecDeque<Call>>,
+    }
+    impl Tap for KeyboardTape {
+        fn replaying(&self) -> bool {
+            self.replay.load(Ordering::Relaxed)
+        }
+        fn next(&self, op: &str, args: &[u32], thread: u32) -> Option<Call> {
+            let call = self.calls.lock().unwrap().pop_front().unwrap();
+            assert_eq!(call.op, op);
+            assert_eq!(call.args, args);
+            assert_eq!(call.thread, thread);
+            Some(call)
+        }
+        fn record(&self, tag: film::Tag, call: Call) {
+            assert_eq!(tag, film::tape::TEXT);
+            self.calls.lock().unwrap().push_back(call);
+        }
+        fn fault(&self, reason: String) {
+            panic!("{reason}");
+        }
+    }
+
+    let tape = Arc::new(KeyboardTape::default());
+    let (game, keys, log) = world_with_tape(Some(tape.clone()));
+    pump(&game); // wait one focused UI frame before the player types
+    keys.commit_text("R中");
+    keys.text_key(Some("Enter"), true, false, Some(TextAction::Accept));
+    pump(&game);
+    assert_eq!(log.lock().unwrap().len(), 3);
+
+    tape.replay.store(true, Ordering::Relaxed);
+    let (game, keys, replayed) = world_with_tape(Some(tape.clone()));
+    pump(&game);
+    assert!(replayed.lock().unwrap().is_empty());
+    keys.commit_text("another name");
+    pump(&game);
+    assert_eq!(*replayed.lock().unwrap(), *log.lock().unwrap());
+    assert!(tape.calls.lock().unwrap().is_empty());
 }

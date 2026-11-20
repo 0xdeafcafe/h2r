@@ -7,7 +7,7 @@ use std::{
     process::Command,
 };
 
-const USAGE: &str = "h2 theater play FILM [--render-every N] [--speed 0.25..4] [--disc ISO] [--out IMAGE_DIR] [--data INITIAL_DATA] [--socket PATH]";
+const USAGE: &str = "h2 theater play FILM [--seek TICK] [--render-every N] [--speed 0.25..4] [--disc ISO] [--out IMAGE_DIR] [--data INITIAL_DATA] [--movies DIR] [--socket PATH]";
 struct Options {
     film: PathBuf,
     every: u32,
@@ -16,7 +16,9 @@ struct Options {
     out: PathBuf,
     socket: PathBuf,
     data: Option<PathBuf>,
+    movies: Option<PathBuf>,
     range: Option<[u64; 2]>,
+    seek: Option<u64>,
 }
 impl Options {
     fn parse(mut args: impl Iterator<Item = String>) -> Result<Self> {
@@ -24,6 +26,8 @@ impl Options {
         let film = PathBuf::from(args.next().context(USAGE)?);
         let mut every = u32::from(cfg!(feature = "desktop"));
         let mut data = None;
+        let mut movies = None;
+        let mut seek = None;
         let mut speed = 1.;
         let mut disc = std::env::var_os("H2_DISC").map(PathBuf::from);
         let mut out = std::env::var_os("H2_IMAGE")
@@ -39,7 +43,9 @@ impl Options {
             match flag.as_str() {
                 "--render-every" => every = value.parse()?,
                 "--speed" => speed = value.parse()?,
+                "--seek" => seek = Some(value.parse().context("invalid seek tick")?),
                 "--data" => data = Some(PathBuf::from(value)),
+                "--movies" => movies = Some(PathBuf::from(value)),
                 "--disc" => disc = Some(value.into()),
                 "--out" => out = value.into(),
                 "--socket" => socket = value.into(),
@@ -55,6 +61,8 @@ impl Options {
             out,
             socket,
             data,
+            movies,
+            seek,
             range: std::env::var("H2_THEATER_RANGE")
                 .ok()
                 .map(|value| parse_range(&value))
@@ -97,8 +105,15 @@ pub fn run(args: Vec<String>) -> Result<()> {
     if let Some(work) = std::env::var_os("H2_THEATER_WORK") {
         return child(opts, Path::new(&work));
     }
-    let header = film::Reader::open(&opts.film)?.header;
-    let mut target = opts.range.map_or(0, |[start, _]| start);
+    let mut reader = film::Reader::open(&opts.film)?;
+    let header = reader.header.clone();
+    let mut target = opts
+        .seek
+        .unwrap_or_else(|| opts.range.map_or(0, |[start, _]| start));
+    if let Some([start, end]) = opts.range {
+        ensure!((start..end).contains(&target), "seek outside film clip");
+    }
+    ensure!(target <= header.meta.length_ticks, "seek beyond film");
     let mut speed = opts.speed;
     let mut paused = false;
     let mut presentation = boot::theater::Presentation::default();
@@ -136,6 +151,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         ] {
             cmd.env_remove(key);
         }
+        boot::theater::configure_replay_child(&mut reader, &mut cmd)?;
         let status = cmd.status().context("starting film playback")?;
         ensure!(status.success(), "film playback exited with {status}");
         if !restart.try_exists()? {
@@ -148,23 +164,58 @@ pub fn run(args: Vec<String>) -> Result<()> {
 fn child(opts: Options, work: &Path) -> Result<()> {
     let mut film = film::Reader::open(&opts.film)?;
     let xbe = boot::read_xbe(&opts.disc)?;
-    let image = boot::theater::playback_images(&xbe, &opts.out)
-        .into_iter()
-        .find_map(|(path, stamp)| film.header.meta.playable_here(&stamp).then_some(path))
-        .context("no installed image matches the film stamp (check --disc, --out and H2_OPT)")?;
+    let xbe_sha256 = film::xbe_digest(&xbe);
     ensure!(
-        film.header.meta.source == film::Source::Host,
-        "exact playback requires a playerless host film"
+        film.header.xbe_sha256 == xbe_sha256,
+        "film requires a different XBE"
     );
-    let entry = film
-        .entries
-        .iter()
-        .find(|e| e.tag == film::DATA)
-        .context("film has no start manifest")?
-        .clone();
+    let mut images = Vec::new();
+    let mut diagnostics = Vec::new();
+    for (path, stamp) in boot::theater::playback_images(&xbe, &opts.out) {
+        let header = &film.header;
+        match boot::theater::image_match(
+            header.version,
+            &header.meta.image_stamp,
+            &header.runtime_stamp,
+            header.guest_image.as_ref(),
+            &stamp,
+            &xbe_sha256,
+        ) {
+            Ok(mode) => images.push((path, stamp, mode)),
+            Err(e) => diagnostics.push(format!("{}: {e}", path.display())),
+        }
+    }
+    let (image, _stamp, compatibility) = images
+        .into_iter()
+        .min_by_key(|(_, _, mode)| *mode != film::image::ImageMatch::Native)
+        .with_context(|| {
+            if diagnostics.is_empty() {
+                "no current module installed for this XBE (check --disc, --out and H2_OPT)"
+                    .to_owned()
+            } else {
+                format!("no compatible film image: {}", diagnostics.join(", "))
+            }
+        })?;
+    if compatibility == film::image::ImageMatch::FromBoot {
+        eprintln!("theater: compatible guest image; verifying from boot with recorded hashes");
+    }
+    ensure!(
+        film.header.version >= 2 || film.header.meta.source == film::Source::Host,
+        "v1 local films lack the controller input stream"
+    );
+    let entry = film.machine_section().unique(film::DATA)?.clone();
     let data = work.join("data");
+    let target: u64 = std::env::var("H2_THEATER_TARGET")?.parse()?;
+    let delta = if target > 0
+        && film.header.version >= 2
+        && compatibility == film::image::ImageMatch::Native
+    {
+        film::blam::TrackReader::open(&opts.film)?.disk_delta_at(target)?
+    } else {
+        Vec::new()
+    };
     film.read::<film::manifest::Manifest>(&entry)?
-        .restore_with(&data, opts.data.as_deref())?;
+        .restore_keyframe(&data, opts.data.as_deref(), &delta)?;
     let boot = boot::RunOpts {
         disc: opts.disc,
         data_root: data,
@@ -176,22 +227,27 @@ fn child(opts: Options, work: &Path) -> Result<()> {
         d3d: true,
         bink: true,
         dsound: true,
-        movies: boot::movies_glue::Movies::Off,
+        movies: opts.movies.map_or(
+            boot::movies_glue::Movies::Off,
+            boot::movies_glue::Movies::Dir,
+        ),
     };
     #[cfg(feature = "desktop")]
     let film_parent = opts.film.parent().unwrap_or(Path::new(".")).to_owned();
+    let camera = boot::theater::FilmCamera::default();
     let presentation: boot::theater::Presentation =
         serde_json::from_reader(fs::File::open(work.join("view.json"))?)?;
     #[cfg(feature = "desktop")]
     let clip_marks = presentation.clip_marks;
     let replay = boot::theater::Replay {
-        path: opts.film,
+        path: opts.film.clone(),
         render_every: opts.every,
         speed: std::env::var("H2_THEATER_SPEED")?.parse()?,
-        seek_tick: std::env::var("H2_THEATER_TARGET")?.parse()?,
+        seek_tick: target,
         paused_at_target: std::env::var("H2_THEATER_PAUSED")? == "1",
         presentation,
         restart: work.join("restart.json"),
+        camera: camera.clone(),
         window_closed: None,
     };
     let run = move |host, window_closed| -> Result<()> {
@@ -216,17 +272,20 @@ fn child(opts: Options, work: &Path) -> Result<()> {
     bail!("rendered film playback requires the desktop feature");
     #[cfg(feature = "desktop")]
     {
-        use crate::play_cmd::theater::{film_meta, overlay};
+        use crate::play_cmd::theater::{film_entry, overlay};
 
         let dir = std::env::var_os("H2_FILM_DIR")
             .map(PathBuf::from)
             .or_else(|| opts.data.as_ref().map(|data| data.join("films")))
             .unwrap_or(film_parent);
-        let lease_id = film.header.lease_id;
-        let meta = film.header.meta;
+        let publish_every = if film.header.version == 1 {
+            1
+        } else {
+            opts.every
+        };
+        let host_view = film.header.version >= 2 && film.header.meta.source == film::Source::Host;
+        let mut meta = film_entry(film::LibraryEntry::read(&opts.film)?, &_stamp);
         let title = meta.map.clone();
-        let stamp = meta.image_stamp.clone();
-        let mut meta = film_meta(meta, false, &stamp, lease_id);
         if let Ok(id) = std::env::var("H2_THEATER_FILM_ID") {
             meta.id = id;
         }
@@ -252,11 +311,35 @@ fn child(opts: Options, work: &Path) -> Result<()> {
             if let Some(input) = window.take_input() {
                 controller.attach_input(input);
             }
-            let gfx = d3d::GfxBackend::new(window.gfx_context()).on_present(window.present_hook());
+            let (gfx, film_view) = if host_view {
+                // The authoritative guest keeps the light host's D3D profile.
+                // Its separately presented POV must not advance retail RNG.
+                let mut sink = window.frame_sink();
+                (
+                    None,
+                    Some(boot::theater::HostView::new(
+                        window.gfx_context(),
+                        move |view, size| {
+                            sink.submit_view(view, size, true)
+                                .map(|_| ())
+                                .map_err(|e| e.to_string())
+                        },
+                    )),
+                )
+            } else {
+                let present = window
+                    .frame_sink()
+                    .into_cropped_present_hook(publish_every, move || camera.present_crop());
+                (
+                    Some(d3d::GfxBackend::new(window.gfx_context()).on_present(present)),
+                    None,
+                )
+            };
             let life = window.lifecycle();
             run(
                 boot::Host {
-                    gfx: Some(gfx),
+                    gfx,
+                    film_view,
                     between_slices: Some(Box::new(move |_| !window.should_stop())),
                     host_light: true,
                     host_bots,

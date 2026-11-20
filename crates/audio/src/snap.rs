@@ -43,7 +43,10 @@ use crate::reverb::{Allpass, Delay, I3dl2Listener, Reverb};
 pub const SECTION: Tag = Tag::new("audio");
 // Master wrote version 1 for stereo and version 2 for binaural. Both
 // predate per-voice room filter memory. Version 3 records the switches.
-const VERSION: u32 = 3;
+const PCM_VERSION: u32 = 3;
+// Clock-only voices carry lengths and cursors, including outstanding packet
+// durations. Their source samples never entered the mixer.
+const CLOCK_VERSION: u32 = 4;
 
 type Error = snapshot::Error;
 
@@ -535,12 +538,11 @@ fn get_fx_state(r: &mut Reader<'_>, version: u32) -> Result<FxState, Error> {
     Ok(f)
 }
 
-fn put_buffer(w: &mut Writer, b: &SoundBuffer) {
+fn put_buffer(w: &mut Writer, b: &SoundBuffer, clock_only: bool) {
     let SoundBuffer {
         format,
         data,
-        // Rebuilt from `data`.
-        size_bytes: _,
+        size_bytes,
         decoded: _,
         frames: _,
         params,
@@ -551,7 +553,11 @@ fn put_buffer(w: &mut Writer, b: &SoundBuffer) {
         fx_state,
     } = b;
     put_format(w, format);
-    w.blob(data);
+    if clock_only {
+        w.u64(*size_bytes as u64);
+    } else {
+        w.blob(data);
+    }
     put_params(w, params);
     w.bool(*playing).bool(*looping);
     put_opt(w, loop_region, |w, &(start, end)| {
@@ -563,9 +569,15 @@ fn put_buffer(w: &mut Writer, b: &SoundBuffer) {
 
 fn get_buffer(r: &mut Reader<'_>, version: u32) -> Result<SoundBuffer, Error> {
     let format = get_format(r)?;
-    let data = r.blob()?.to_vec();
-    let mut b =
-        SoundBuffer::from_data(format, data).map_err(|e| corrupt(format!("buffer data: {e}")))?;
+    let mut b = if version == CLOCK_VERSION {
+        // Guest buffer lengths are DWORDs. A clock voice allocates no samples.
+        let len = r.u64()?;
+        let len = u32::try_from(len).map_err(|_| corrupt("clock buffer size"))?;
+        SoundBuffer::for_clock(format, len as usize)
+    } else {
+        SoundBuffer::from_data(format, r.blob()?.to_vec())
+    }
+    .map_err(|e| corrupt(format!("buffer data: {e}")))?;
     b.params = get_params(r)?;
     b.playing = r.bool()?;
     b.looping = r.bool()?;
@@ -596,7 +608,7 @@ fn get_status(r: &mut Reader<'_>) -> Result<PacketStatus, Error> {
     }
 }
 
-fn put_stream(w: &mut Writer, s: &Stream) {
+fn put_stream(w: &mut Writer, s: &Stream, clock_only: bool) {
     let Stream {
         format,
         params,
@@ -613,9 +625,17 @@ fn put_stream(w: &mut Writer, s: &Stream) {
     put_params(w, params);
     w.u32(queue.len() as u32);
     for p in queue {
-        let Packet { id, frames, .. } = p;
+        let Packet {
+            id,
+            frames,
+            frame_count,
+        } = p;
         w.u64(id.0);
-        put_f32s(w, frames);
+        if clock_only {
+            w.u64(*frame_count as u64);
+        } else {
+            put_f32s(w, frames);
+        }
     }
     w.u32(history.len() as u32);
     for [left, right] in history {
@@ -637,14 +657,28 @@ fn put_stream(w: &mut Writer, s: &Stream) {
 
 fn get_stream(r: &mut Reader<'_>, version: u32) -> Result<Stream, Error> {
     let format = get_format(r)?;
-    let mut s = Stream::new(format).map_err(|e| corrupt(format!("stream: {e}")))?;
+    let mut s = if version == CLOCK_VERSION {
+        Stream::for_clock(format)
+    } else {
+        Stream::new(format).map_err(|e| corrupt(format!("stream: {e}")))?
+    };
     s.params = get_params(r)?;
     s.queue = r
         .list(12, |r| {
             let id = PacketId(r.u64()?);
-            let frames = get_f32s(r)?;
-            let frame_count = frames.len() / format.channels() as usize;
-            Ok(Packet { id, frames, frame_count })
+            if version == CLOCK_VERSION {
+                let frame_count = get_usize(r)?;
+                let max_frames = u64::from(u32::MAX) / format.block_align() as u64
+                    * format.frames_per_block() as u64;
+                if frame_count == 0 || frame_count as u64 > max_frames {
+                    return Err(corrupt("clock packet duration"));
+                }
+                Ok(Packet { id, frames: Vec::new(), frame_count })
+            } else {
+                let frames = get_f32s(r)?;
+                let frame_count = frames.len() / format.channels() as usize;
+                Ok(Packet { id, frames, frame_count })
+            }
         })?
         .into();
     let history = r.list(8, |r| Ok([get_f32(r)?, get_f32(r)?]))?;
@@ -976,13 +1010,23 @@ impl Mixer {
     /// that loads it renders the same PCM as this one from here on. Call it
     /// while nothing renders (the output gated or drained).
     pub fn save_snapshot(&self, out: &mut SnapshotWriter) -> Result<(), SnapshotError> {
+        self.save_output_snapshot(out, false)
+    }
+
+    /// The completion-only output saves voice lengths and packet durations.
+    pub fn save_output_snapshot(
+        &self,
+        out: &mut SnapshotWriter,
+        clock_only: bool,
+    ) -> Result<(), SnapshotError> {
         let mut w = Writer::new();
-        self.put(&mut w);
-        out.section(SECTION, VERSION, SectionCodec::Zstd, w.into_bytes())?;
+        self.put(&mut w, clock_only);
+        let version = if clock_only { CLOCK_VERSION } else { PCM_VERSION };
+        out.section(SECTION, version, SectionCodec::Zstd, w.into_bytes())?;
         Ok(())
     }
 
-    fn put(&self, w: &mut Writer) {
+    fn put(&self, w: &mut Writer, clock_only: bool) {
         let Mixer {
             // Checked: the loading mixer runs at the host's rate.
             sample_rate,
@@ -1003,22 +1047,25 @@ impl Mixer {
             clock,
             // Diagnostics.
             health: _,
-            packet_clock: _,
+            packet_clock,
             taps,
         } = self;
         w.bool(*hrtf).bool(*distance_reverb);
+        if clock_only {
+            w.bool(*packet_clock);
+        }
         w.u32(*sample_rate);
         put_i32(w, *master_mb);
         put_listener(w, listener);
         w.u32(buffers.len() as u32);
         for (id, b) in buffers {
             w.u32(id.0);
-            put_buffer(w, b);
+            put_buffer(w, b, clock_only);
         }
         w.u32(streams.len() as u32);
         for (id, s) in streams {
             w.u32(id.0);
-            put_stream(w, s);
+            put_stream(w, s, clock_only);
         }
         w.u32(mix_ins.len() as u32);
         for (id, m) in mix_ins {
@@ -1090,11 +1137,24 @@ impl Mixer {
     /// check other sections too before it changes anything: decodes the
     /// section and checks it fits this mixer. Changes nothing.
     pub fn check_snapshot(&self, snapshot: &Snapshot<'_>) -> Result<LoadedMixer, SnapshotError> {
+        self.check_output_snapshot(snapshot, false)
+    }
+
+    /// Decode for the active output profile before replacing any voice. A PCM
+    /// output needs sample history that a completion-only host never kept.
+    pub fn check_output_snapshot(
+        &self,
+        snapshot: &Snapshot<'_>,
+        clock_only: bool,
+    ) -> Result<LoadedMixer, SnapshotError> {
         let (version, bytes) = snapshot
             .section(SECTION)?
             .ok_or(Error::MissingSection(SECTION))?;
-        if !(1..=VERSION).contains(&version) {
+        if !(1..=CLOCK_VERSION).contains(&version) {
             return Err(Error::SectionVersion(SECTION, version).into());
+        }
+        if clock_only != (version == CLOCK_VERSION) {
+            return Err(SnapshotError::Mismatch("different audio output profile".into()));
         }
         let mut r = Reader::new(&bytes, "audio");
         let (hrtf, distance_reverb) = match version {
@@ -1102,6 +1162,9 @@ impl Mixer {
             2 => (true, false),
             _ => (r.bool()?, r.bool()?),
         };
+        if clock_only && r.bool()? != self.packet_clock {
+            return Err(SnapshotError::Mismatch("different packet clock mode".into()));
+        }
         if hrtf != self.hrtf || distance_reverb != self.distance_reverb {
             return Err(SnapshotError::Mismatch("different audio feature settings".into()));
         }

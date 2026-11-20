@@ -66,9 +66,17 @@ impl<StorageBackend: Storage> Xapi<StorageBackend> {
         }
         memory.check(self.config.devices.gamepad, 12, true)?;
         self.remember_states();
-        self.input.sync();
+        self.sync_ports();
         self.remember_states();
         self.publish_device_type(memory)
+    }
+
+    fn sync_ports(&mut self) {
+        if let Some(tap) = self.input_tap.as_mut() {
+            tap.sync(&mut self.input);
+        } else {
+            self.input.sync();
+        }
     }
 
     fn collect_changes(&mut self) {
@@ -396,7 +404,7 @@ impl<StorageBackend: Storage> Xapi<StorageBackend> {
     pub fn sync_input(&mut self, memory: &mut impl GuestMemory) -> Result<()> {
         memory.check(self.config.devices.gamepad, 12, true)?;
         self.remember_states();
-        self.input.sync();
+        self.sync_ports();
         self.remember_states();
         self.publish_device_type(memory)?;
         self.completions.extend(self.input.take_completions());

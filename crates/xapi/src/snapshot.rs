@@ -155,6 +155,13 @@ impl<StorageBackend: Storage> Xapi<StorageBackend> {
                 self.pending_feedback.len()
             ));
         }
+        // A restored handle rebinds to the device on its port. Wait for the
+        // game to close a stale handle if another device already occupies it.
+        if self.handles.values().any(|open| {
+            self.input.open(open.port).is_ok_and(|now| now != open.device_handle)
+        }) {
+            out.push("an unplugged pad handle shares a port with its replacement".into());
+        }
         if self.launch_request.is_some() {
             out.push("a title launch is requested".into());
         }
@@ -218,7 +225,8 @@ impl<StorageBackend: Storage> Xapi<StorageBackend> {
         let bytes = snapshot.require(SECTION, VERSION..=VERSION)?;
         let saved = decode(&bytes)?;
         if let (Some(cursor), Some(tap)) = (saved.input_cursor, self.input_tap.as_mut()) {
-            tap.seek(cursor).map_err(SnapshotError::Tap)?;
+            tap.restore_input(cursor, &mut self.input)
+                .map_err(SnapshotError::Tap)?;
         }
 
         for (token, open) in std::mem::take(&mut self.handles) {

@@ -480,6 +480,8 @@ fn launcher(opts: &Options) -> Result<Launch> {
             &add.data_url,
             "--data-sha",
             &add.data_sha,
+            "--archive",
+            add.archive.as_str(),
             "--base-port",
             &ports.base_port.to_string(),
             "--tunnel-listen",
@@ -502,6 +504,8 @@ fn launcher(opts: &Options) -> Result<Launch> {
             "H2_BASE_PORT",
             "H2_TUNNEL_LISTEN",
             "H2_DATA",
+            // Each match owns its film and can finish independently.
+            "H2_FILM_OUT",
         ] {
             cmd.env_remove(name);
         }

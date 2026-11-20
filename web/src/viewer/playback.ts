@@ -1,4 +1,3 @@
-import { TICKS_PER_SECOND } from "../state/frames";
 import { ReplayClock, type ReplayTimeline, type TickRange } from "../state/replay";
 
 /** The playhead for one match, as it moves from the live buffer to a recording. */
@@ -6,7 +5,7 @@ export class ViewerPlayback {
   clock: ReplayClock | null = null;
   followingLive: boolean;
 
-  constructor(live: boolean, private readonly range?: TickRange) {
+  constructor(live: boolean, public range?: TickRange) {
     this.followingLive = live;
   }
 
@@ -58,14 +57,14 @@ export class ViewerPlayback {
     this.clock = clock;
   }
 
-  openRecording(timeline: ReplayTimeline, now: number, time?: string | string[]): void {
+  openRecording(timeline: ReplayTimeline, now: number, time?: string | string[], resumeTick?: number): void {
     const previous = this.clock;
     const clock = new ReplayClock(timeline, false, this.range);
     const seconds = Number(Array.isArray(time) ? time[0] : time);
-    let tick = timeline.startTick + (Number.isFinite(seconds) ? Math.max(0, seconds) * TICKS_PER_SECOND : 0);
+    let tick = timeline.startTick + (Number.isFinite(seconds) ? Math.max(0, seconds) * timeline.ticksPerSecond : 0);
     let playing = true;
     if (previous) {
-      tick = timeline.tickFromLatestRun(previous.tickAt(now));
+      tick = resumeTick ?? timeline.tickFromLatestRun(previous.tickAt(now));
       playing = previous.playing;
       clock.setSpeed(previous.speed, now);
     }

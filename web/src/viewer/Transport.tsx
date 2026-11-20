@@ -14,6 +14,7 @@ const MARK_TITLES: Record<TimelineMark["kind"], string> = {
   kill: "Kill: click to watch it",
   death: "Death: click to watch it",
   cut: "The game went back to a checkpoint or restarted here",
+  chapter: "Chapter",
   zone: "The level changed zone here",
   cinematic: "A cutscene: playing skips it",
 };
@@ -24,10 +25,11 @@ const MARK_TITLES: Record<TimelineMark["kind"], string> = {
 export function replayKey(s: ReplaySession, e: KeyboardEvent): boolean {
   if (e.ctrlKey || e.metaKey || e.altKey) return false;
   const tl = s.timeline();
+  const hz = tl?.ticksPerSecond ?? TICKS_PER_SECOND;
   switch (e.key) {
     case " ": s.toggle(); break;
-    case "ArrowLeft": s.seek(s.tick() - 5 * TICKS_PER_SECOND); break;
-    case "ArrowRight": s.seek(s.tick() + 5 * TICKS_PER_SECOND); break;
+    case "ArrowLeft": s.seek(s.tick() - 5 * hz); break;
+    case "ArrowRight": s.seek(s.tick() + 5 * hz); break;
     case ",": s.stepFrame(-1); break;
     case ".": s.stepFrame(1); break;
     case "<": s.stepMark(-1); break;
@@ -58,7 +60,8 @@ export default function Transport(props: {
   const length = () => bounds().to_tick - bounds().from_tick;
   const percent = (tick: number) => (tick - bounds().from_tick) / Math.max(1, length()) * 100;
   const at = (tick: number) => `${percent(tick)}%`;
-  const time = (tick: number) => clock((tick - (s.isLive() ? props.matchStartTick : bounds().from_tick)) / TICKS_PER_SECOND);
+  const hz = () => s.timeline()?.ticksPerSecond ?? TICKS_PER_SECOND;
+  const time = (tick: number) => clock((tick - (s.isLive() ? props.matchStartTick : bounds().from_tick)) / hz());
   const marks = createMemo(() => {
     const marks = s.timeline()?.marks ?? [];
     const range = s.range?.();
@@ -102,7 +105,7 @@ export default function Transport(props: {
               {(m) => (
                 <Show
                   when={m.kill}
-                  fallback={<span class={`scrub__mark scrub__mark--${m.kind}`} style={markStyle(m)} title={MARK_TITLES[m.kind]} aria-hidden="true" />}
+                  fallback={<span class={`scrub__mark scrub__mark--${m.kind}`} style={markStyle(m)} title={m.label || MARK_TITLES[m.kind]} aria-hidden="true" />}
                 >
                   {(k) => (
                     <button
@@ -119,7 +122,7 @@ export default function Transport(props: {
             </For>
           </div>
         </div>
-        <span class="replay-time">{time(s.tick())}<Show when={!s.isLive()}> / {clock(length() / TICKS_PER_SECOND)}</Show></span>
+        <span class="replay-time">{time(s.tick())}<Show when={!s.isLive()}> / {clock(length() / hz())}</Show></span>
         <select value={s.speed()} onChange={(e) => s.setSpeed(+e.currentTarget.value)} disabled={s.followingLive()} aria-label="Speed">
           <For each={SPEEDS}>{(v) => <option value={v}>{v}×</option>}</For>
         </select>

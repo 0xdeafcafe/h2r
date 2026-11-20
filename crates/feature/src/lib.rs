@@ -379,6 +379,12 @@ impl Hook {
     pub fn kind(&self) -> Kind {
         self.run.kind()
     }
+
+    /// Base-image PCs that resume this implementation and PCs at which it
+    /// hands control back to the generated image, respectively.
+    pub fn continuation_sites(&self) -> (&[u32], &[u32]) {
+        (self.resume_sites, self.generated_sites)
+    }
 }
 
 /// A declared hook, for setting its order. Returned by [`Raw`]'s methods.

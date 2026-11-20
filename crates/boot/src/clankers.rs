@@ -377,10 +377,10 @@ pub trait Rosters: Send + Sync {
 
 impl Rosters for live_hle::Hle {
     fn session(&self) -> Option<String> {
-        self.hosted_session()
+        self.bot_roster_hosted_session()
     }
     fn playlist(&self) -> Option<String> {
-        let hosted = self.hosted_session()?;
+        let hosted = self.bot_roster_hosted_session()?;
         self.matchmade()
             .filter(|(_, session)| *session == hosted)
             .map(|(playlist, _)| playlist.to_string())

@@ -184,6 +184,7 @@ impl LocalPacks {
             token: boot.token.clone(),
             data_url: boot.data_url.clone(),
             data_sha: boot.data_sha256.clone(),
+            archive: boot.archive,
             region: lease.region.clone(),
         };
         let body = serde_json::to_vec(&add).map_err(|e| HostError::new(e.to_string()))?;

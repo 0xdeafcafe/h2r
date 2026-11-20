@@ -134,6 +134,7 @@ struct Served {
 }
 
 struct ServerPack {
+    source: File,
     mapping: memmap2::Mmap,
     file: HostFile,
 }
@@ -221,6 +222,7 @@ impl<B: Backend> VariantFiles<B> {
                 Some(ServerPack {
                     mapping: crate::disc::map_read_only(&file)?,
                     file: HostFile { path: source, offset: 0, len: size },
+                    source: file,
                 })
             })();
             self.server_packs.insert(key.clone(), selected);
@@ -348,6 +350,18 @@ impl<B: Backend> Backend for VariantFiles<B> {
     }
     fn volume_info(&mut self) -> Result<VolumeInfo> {
         self.inner.volume_info()
+    }
+    fn film_source(&mut self, path: &str) -> Result<Option<crate::FilmMapSource>> {
+        if let Some(served) = self.served(path) {
+            return Ok(Some(crate::FilmMapSource::region(served?.file.try_clone()?, 0)));
+        }
+        if let Some(p) = self.package(path) {
+            return p.served(path)?.film_source().map(Some);
+        }
+        if let Some(pack) = self.server_pack(path) {
+            return Ok(Some(crate::FilmMapSource::region(pack.source.try_clone()?, 0)));
+        }
+        self.inner.film_source(path)
     }
     fn host_file(&mut self, path: &str) -> Option<HostFile> {
         let Some((_, halo1, pair)) = self.variant(path) else {

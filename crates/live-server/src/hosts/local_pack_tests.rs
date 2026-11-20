@@ -33,6 +33,7 @@ fn boot() -> HostBoot {
         token: "lease-token".into(),
         data_url: "https://private.example/bundle?sig=abc".into(),
         data_sha256: "ab".repeat(32),
+        archive: live_proto::hosts::HostArchive::Film,
     }
 }
 
@@ -81,6 +82,7 @@ fn fake_pack(cap: usize) -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
                 ),
                 ("POST", None) => {
                     let add: AddMatch = serde_json::from_slice(&req.body).unwrap();
+                    assert_eq!(add.archive, live_proto::hosts::HostArchive::Film);
                     if leases.len() >= cap {
                         let refusal = Refusal::Full {
                             running: leases.len(),

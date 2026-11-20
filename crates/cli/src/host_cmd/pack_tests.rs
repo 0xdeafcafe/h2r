@@ -11,6 +11,7 @@ fn add(lease: &str) -> AddMatch {
         token: "lease-token".into(),
         data_url: "https://data.example/bundle?sig=a".into(),
         data_sha: "ab".repeat(32),
+        archive: live_proto::hosts::HostArchive::Dual,
         region: None,
     }
 }

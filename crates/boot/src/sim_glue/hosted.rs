@@ -43,7 +43,7 @@ enum Step {
     Loading,
 }
 
-struct LobbyState {
+pub(super) struct LobbyState {
     step: Step,
     in_tick: bool,
     playerless: Option<crate::host_lobby::PlayerlessLobby>,
@@ -106,10 +106,21 @@ fn note_wait(state: &mut LobbyState, step: Step, why: Option<String>) {
     }
 }
 
+impl LobbyState {
+    pub(super) fn setup_complete(&self) -> bool {
+        self.step == Step::Loading && !self.in_tick
+    }
+
+    pub(super) fn resume_match(&mut self) {
+        self.step = Step::Loading;
+        self.in_tick = false;
+    }
+}
+
 pub(super) fn install(
     b: &mut feature::Builder,
     sim: Arc<Inner>,
-) -> Result<(), feature::BuildError> {
+) -> Result<Arc<Mutex<LobbyState>>, feature::BuildError> {
     let buffer = b.guest_alloc(0x1000, runtime::guest::Permissions::RW)?;
     // Every bot is a phantom peer, so the host console plays no local
     // player of its own: its lobby is playerless and no local profile is
@@ -121,6 +132,7 @@ pub(super) fn install(
         playerless: Some(crate::host_lobby::PlayerlessLobby::default()),
         waiting: None,
     }));
+    let checkpoint = Arc::clone(&stage);
     b.raw()
         .before(&points::GAME_TICK, "sim: System Link host", move |c| {
             if sim.lock().phase != Phase::Waiting {
@@ -197,7 +209,7 @@ pub(super) fn install(
             })
         })
         .last();
-    Ok(())
+    Ok(checkpoint)
 }
 
 async fn advance(

@@ -138,7 +138,7 @@ describe("the inline viewer", () => {
     ], []);
     const noop = () => {};
     const renderAt = (live: boolean, following: boolean) => renderControls({
-      timeline: () => timeline, error: () => null, tick: () => following ? 30 : 10,
+      timeline: () => timeline, error: () => null, tick: () => following ? 30 : 10, clipTick: t => t,
       playing: () => following, speed: () => 1, isLive: () => live, followingLive: () => following,
       goLive: noop, toggle: noop, seek: noop, setSpeed: noop, stepFrame: noop, stepMark: noop, watchKill: noop,
       frame: () => ({ players: [], markers: [], seen: null }), soughtAt: () => 0, camera: () => null,

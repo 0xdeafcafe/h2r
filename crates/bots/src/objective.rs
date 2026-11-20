@@ -20,7 +20,6 @@
 //! - King of the Hill's globals `[0x51ecc8]`: `+0x1a0` the hill in play,
 //!   whose corners are the netgame flags of type `11 +` it (`0x2bdc70`).
 
-use engine::handle::DatumHandle;
 use engine::memory::{GuestMemory, MemFault};
 use engine::points;
 use engine::view::objects;
@@ -31,57 +30,12 @@ type R<T> = Result<T, MemFault>;
 
 // ---- where it lives ----
 
-/// Holds the game-engine globals' address (`0xc9c` bytes).
-pub const GAME_ENGINE: u32 = points::GAME_ENGINE.base;
-/// `E+0xc14`: the engine index in play (`i32`; `0x1574c0` copies the
-/// variant's `+0x44` there and sets 0 when that engine has no globals).
-pub const ENGINE_INDEX: u32 = 0xc14;
-/// `E+0xc18`: how many objective objects are registered (`i32`, at most
-/// [`OBJECTIVE_MAX`]).
-pub const OBJECTIVE_COUNT: u32 = 0xc18;
-/// `E+0xc1c`: the objective records, [`OBJECTIVE_STRIDE`] each.
-pub const OBJECTIVES: u32 = 0xc1c;
-pub const OBJECTIVE_STRIDE: u32 = 0x10;
-pub const OBJECTIVE_MAX: u32 = 8;
-/// In a record: the object (`u32` datum), its team (`i16`; a ball's
-/// number in Oddball), the unit carrying it and that unit's player (`u32`
-/// datums, -1 for none).
-pub const RECORD_OBJECT: u32 = 0;
-pub const RECORD_TEAM: u32 = 4;
-pub const RECORD_UNIT: u32 = 8;
-pub const RECORD_PLAYER: u32 = 0xc;
-/// `E+8`: the netgame team designators in use (`u16` mask, bit per
-/// designator); `E+0x10`: each designator's game team (`i16`, 9 of them).
-pub const DESIGNATOR_MASK: u32 = 8;
-pub const DESIGNATOR_TEAMS: u32 = 0x10;
-pub const DESIGNATORS: u16 = 9;
-
-/// Holds King of the Hill's globals' address (`E+0xfc` in a KotH game).
-pub const KOTH_GLOBALS: u32 = points::KOTH_GLOBALS.base;
-/// In them: the hill in play (`i32`, 0 to 7).
-pub const KOTH_HILL: u32 = 0x1a0;
-
-/// `scnr+0x118`: the netgame flags block (count, then address), `0x20`
-/// each.
-pub const NETGAME_FLAGS: u32 = 0x118;
-pub const NETGAME_FLAG_STRIDE: u32 = 0x20;
-pub const FLAG_TYPE: u32 = 0x10;
-pub const FLAG_TEAM: u32 = 0x12;
-/// Netgame flags looked at, at most.
-pub const NETGAME_FLAG_LIMIT: i32 = 512;
-
-/// Netgame flag types the engine asks for (`0x243b10`, `0x2bd164`).
-pub mod kind {
-    pub const CTF_SPAWN: u16 = 0;
-    pub const CTF_RETURN: u16 = 1;
-    pub const BOMB_SPAWN: u16 = 2;
-    pub const BOMB_RETURN: u16 = 3;
-    pub const TERRITORY: u16 = 10;
-    pub const BALL_SPAWN: u16 = 4;
-    /// Hill `n`'s corners are type `HILL + n`, `n` 0 to 7.
-    pub const HILL: u16 = 11;
-    pub const HILLS: u16 = 8;
-}
+pub use engine::objectives::{
+    DESIGNATOR_MASK, DESIGNATOR_TEAMS, DESIGNATORS, ENGINE_INDEX, FLAG_TEAM, FLAG_TYPE, GAME_ENGINE,
+    KOTH_GLOBALS, KOTH_HILL, NETGAME_FLAG_LIMIT, NETGAME_FLAG_STRIDE, NETGAME_FLAGS, OBJECTIVE_COUNT,
+    OBJECTIVE_MAX, OBJECTIVE_STRIDE, OBJECTIVES, RECORD_OBJECT, RECORD_PLAYER, RECORD_TEAM, RECORD_UNIT,
+    kind, netgame_flags,
+};
 
 // ---- what the bot knows ----
 
@@ -367,14 +321,14 @@ fn read_assault(m: &dyn GuestMemory, out: &mut Objective) -> R<Vec<(u16, u16)>> 
     let mut arming = 0;
     let mut planted = 0;
     for team in 0..9 {
-        let state = m.u8(a + 0x170 + team)?;
-        if state & 2 != 0 {
+        let state = engine::objectives::bomb_state(m, a, team)?;
+        if state.planted {
             planted |= 1 << team;
         }
-        if state & 8 != 0 {
+        if state.armed {
             armed |= 1 << team;
         }
-        if m.u16(a + 0x1a0 + 2 * team)? as i16 >= 0 {
+        if state.arming {
             arming |= 1 << team;
         }
     }
@@ -401,25 +355,9 @@ fn read_hill(m: &dyn GuestMemory, flags: &[(Vec3, u16, u16)], out: &mut Objectiv
         return Ok(());
     }
     out.state = State::Hill {
-        occupants: m.u16(k + 0x1a8)?,
+        occupants: m.u16(k + engine::objectives::HILL_OCCUPANTS)?,
     };
-    let id = m.i32(k + KOTH_HILL)?;
-    let count = m.i32(k + 0x60)?;
-    if !(0..i32::from(kind::HILLS)).contains(&id) || !(4..=16).contains(&count) || count % 2 != 0 {
-        return Ok(());
-    }
-    let mut corners = Vec::with_capacity(count as usize);
-    for i in 0..count as u32 {
-        let index = m.u32(k + 4 * i)?;
-        let Some(&(at, ty, _)) = flags.get(index as usize) else {
-            return Ok(());
-        };
-        if ty != kind::HILL + id as u16 {
-            return Ok(());
-        }
-        corners.push(at);
-    }
-    out.hill = Some(Hill { corners });
+    out.hill = engine::objectives::hill_corners(m, k, flags)?.map(|(_, corners)| Hill { corners });
     Ok(())
 }
 
@@ -429,37 +367,15 @@ fn territories(m: &dyn GuestMemory, flags: &[(Vec3, u16, u16)]) -> R<Vec<Territo
     if t == 0 {
         return Ok(out);
     }
-    let players = engine::view::players::array(m)?;
-    let mut occupants = [0u16; 8];
-    if let Some(players) = &players {
-        for (h, player) in players.live(m, 16)? {
-            if player.listed(m)? && player.unit(m)?.is_some() {
-                let site = m.u8(t + 0x95 + 8 * u32::from(h.index()))?;
-                if let Some(mask) = occupants.get_mut(usize::from(site)) {
-                    *mask |= 1 << h.index();
-                }
-            }
-        }
-    }
-    let n = (m.u16(t + 0x114)? as i16).clamp(0, 8) as usize;
-    for (i, &occupants) in occupants.iter().take(n).enumerate() {
-        let flag = m.u16(t + 0x60 + 2 * i as u32)?;
-        let Some(&(at, kind::TERRITORY, _)) = flags.get(usize::from(flag)) else {
+    for site in engine::objectives::territories(m, t)? {
+        let Some(&(at, kind::TERRITORY, _)) = flags.get(usize::from(site.flag)) else {
             continue;
-        };
-        let owner = DatumHandle::from_raw(m.u32(t + 0x70 + 4 * i as u32)?);
-        let owner = match (owner, &players) {
-            (Some(h), Some(array)) => match array.get(m, h)? {
-                Some(p) if p.listed(m)? => Some((u32::from(h.index()), i16::from(p.team(m)?))),
-                _ => None,
-            },
-            _ => None,
         };
         out.push(Territory {
             at,
-            owner: owner.map(|p| p.0),
-            owner_team: owner.map(|p| p.1),
-            occupants,
+            owner: site.owner.map(|(h, _)| u32::from(h.index())),
+            owner_team: site.owner.map(|(_, team)| team),
+            occupants: site.occupants,
         });
     }
     Ok(out)
@@ -467,16 +383,14 @@ fn territories(m: &dyn GuestMemory, flags: &[(Vec3, u16, u16)]) -> R<Vec<Territo
 
 /// The registered flags, balls and bombs.
 fn read_items(m: &dyn GuestMemory, e: u32) -> R<Vec<Item>> {
-    let n = m.i32(e + OBJECTIVE_COUNT)?.clamp(0, OBJECTIVE_MAX as i32) as u32;
     let mut out = Vec::new();
-    for i in 0..n {
-        let r = e + OBJECTIVES + i * OBJECTIVE_STRIDE;
-        let Some(object) = DatumHandle::from_raw(m.u32(r + RECORD_OBJECT)?) else {
-            continue;
-        };
-        let team = m.u16(r + RECORD_TEAM)? as i16;
-        let unit = DatumHandle::from_raw(m.u32(r + RECORD_UNIT)?);
-        let player = DatumHandle::from_raw(m.u32(r + RECORD_PLAYER)?);
+    for record in engine::objectives::registered(m, e)? {
+        let engine::objectives::Registered {
+            object,
+            unit,
+            player,
+            designator: team,
+        } = record;
         // Carried: where the carrier is. Else where it lies.
         let carrier_at = match unit {
             Some(u) => objects::get(m, u)?
@@ -512,22 +426,6 @@ fn designators(m: &dyn GuestMemory, e: u32) -> R<[Option<i16>; 9]> {
         }
     }
     Ok(t)
-}
-
-/// The scenario's netgame flags: (position, type, team designator).
-pub fn netgame_flags(m: &dyn GuestMemory) -> R<Vec<(Vec3, u16, u16)>> {
-    let s = m.u32(points::SCENARIO.base)?;
-    if s == 0 {
-        return Ok(Vec::new());
-    }
-    let n = m.i32(s + NETGAME_FLAGS)?.clamp(0, NETGAME_FLAG_LIMIT) as u32;
-    let at = m.u32(s + NETGAME_FLAGS + 4)?;
-    let mut out = Vec::with_capacity(n as usize);
-    for i in 0..n {
-        let f = at + i * NETGAME_FLAG_STRIDE;
-        out.push((m.vec3(f)?, m.u16(f + FLAG_TYPE)?, m.u16(f + FLAG_TEAM)?));
-    }
-    Ok(out)
 }
 
 // ---- the decision ----

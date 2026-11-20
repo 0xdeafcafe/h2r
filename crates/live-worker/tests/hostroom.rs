@@ -33,6 +33,7 @@ fn add_match_preserves_the_complete_lease_and_signed_url() {
         token: "lease-scoped-token".into(),
         data_url: "https://data.example/bundle?sig=a%2Bb&expires=123".into(),
         data_sha256: "ab".repeat(32),
+        archive: live_proto::hosts::HostArchive::Film,
     };
     // Include the round trip through the rooms' internal requests.
     let mut lease = cloud_lease();
@@ -57,6 +58,7 @@ fn add_match_preserves_the_complete_lease_and_signed_url() {
             "token": boot.token,
             "data_url": boot.data_url,
             "data_sha": boot.data_sha256,
+            "archive": "film",
             "region": "enam",
         })
     );

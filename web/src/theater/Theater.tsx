@@ -1,12 +1,12 @@
 import { A, useParams, useSearchParams } from "@solidjs/router";
 import { For, Show, createEffect, createMemo, createResource, createSignal, on, onCleanup } from "solid-js";
 import { readClip, type Clip, type ClipInput } from "../api/films";
+import type { HostFilm } from "../api/host-film";
 import Scoreboard from "../components/Scoreboard";
 import { GEOMETRY_CHANGED_NOTE } from "../lib/maps";
 import { colourFor, rosterFor } from "../lib/game";
 import { clock } from "../lib/format";
 import { STATS_ROOT, statsPath, theaterHref } from "../routes";
-import { TICKS_PER_SECOND } from "../state/frames";
 import { identity } from "../state/identity";
 import { live } from "../state/live";
 import { gameMapTitle, geometryChanged } from "../state/maps";
@@ -18,6 +18,7 @@ import GameViewer from "../viewer/GameViewer";
 import Transport, { replayKey } from "../viewer/Transport";
 import { createReplaySession } from "../viewer/session";
 import ClipEditor from "./ClipEditor";
+import { filmGame } from "./filmGame";
 import type { ClipMarks } from "./clipRange";
 import "../styles/stats-game.css";
 import "./theater.css";
@@ -48,13 +49,24 @@ export default function Theater() {
 }
 
 function TheaterRoute(props: { game: string; clip?: string }) {
-  const game = () => live.state.games[props.game];
+  const [standalone, setStandalone] = createSignal<{game: GameState; film: HostFilm}>();
+  const game = () => live.state.games[props.game] ?? standalone()?.game;
+  const standaloneFilm = () => live.state.games[props.game] ? undefined : standalone()?.film;
   const [missing, setMissing] = createSignal(false);
+  const [filmError, setFilmError] = createSignal("");
   createEffect(on(live.loadMode, (mode) => {
     if (mode === "snapshot") return;
-    let current = true;
-    onCleanup(() => { current = false; });
-    void live.ensureGame(props.game).then((ok) => { if (current) setMissing(!ok); });
+    const request = new AbortController();
+    onCleanup(() => request.abort());
+    void live.ensureGame(props.game).then(async (ok) => {
+      if (ok || request.signal.aborted || live.state.games[props.game]) return;
+      const film = await live.api().hostFilm(props.game, request.signal);
+      if (request.signal.aborted) return;
+      if (film) setStandalone({game: filmGame(props.game, film.front), film});
+      else setMissing(true);
+    }).catch((e: unknown) => {
+      if (!request.signal.aborted) setFilmError(e instanceof Error ? e.message : String(e));
+    });
   }));
 
   const clipRead = new AbortController();
@@ -84,16 +96,16 @@ function TheaterRoute(props: { game: string; clip?: string }) {
     <>
       <Crumbs trail={[["Home", STATS_ROOT], ["Games", statsPath("/games")], ["Theater", props.clip ? theaterHref(props.game) : undefined], ...(props.clip ? [["Clip"] as [string]] : [])]} />
       <div class="s-full s-game theater">
-        <Title class="s-title--bar" back={props.clip ? ["watch full film", theaterHref(props.game)] : ["game details", gameLink()]}>
+        <Title class="s-title--bar" back={props.clip ? ["watch full film", theaterHref(props.game)] : standaloneFilm() ? ["games", statsPath("/games")] : ["game details", gameLink()]}>
           {openedClip()?.title ?? "Theater"}
         </Title>
         <Show when={clipError()}>{(message) => <p class="s-pad s-bad" role="alert">Couldn't open the clip. {message()}</p>}</Show>
         <Show when={!clipError()}>
-          <Show when={!missing()} fallback={<p class="s-pad">This film isn't available on this server.</p>}>
+          <Show when={!!game() || (!missing() && !filmError())} fallback={<p class="s-pad" role="status">{filmError() || "This film isn't available on this server."}</p>}>
             <Show when={game() && (!props.clip || openedClip()) ? game() : undefined} fallback={<div class="s-loading">{props.clip ? "Loading clip…" : "Loading film…"}</div>}>
               {(g) => (
                 <Show when={g().status === "ended"} fallback={<p class="s-pad">Theater is available after the match. <A href={gameLink()}>Watch live on the game page</A></p>}>
-                  <Film game={g()} clip={openedClip()} />
+                  <Film game={g()} clip={openedClip()} hostFilm={standaloneFilm()} />
                 </Show>
               )}
             </Show>
@@ -104,7 +116,7 @@ function TheaterRoute(props: { game: string; clip?: string }) {
   );
 }
 
-function Film(props: { game: GameState; clip?: Clip }) {
+function Film(props: { game: GameState; clip?: Clip; hostFilm?: HostFilm }) {
   const [search] = useSearchParams<{ t?: string | string[] }>();
   const [view, setView] = createSignal<CameraSelection>({ mode: cameraOf(props.clip), follow: props.clip?.pov ?? null });
   const [hud, setHud] = createSignal(true);
@@ -118,14 +130,14 @@ function Film(props: { game: GameState; clip?: Clip }) {
     return { mode: has3d() ? mode : "top-down", follow: selected ?? null };
   });
   const director: ViewerDirector = { selection, pick: (mode, follow) => setView({ mode, follow }) };
-  const session = createReplaySession(() => props.game, roster, () => search.t, { range: props.clip, sync: false });
+  const session = createReplaySession(() => props.game, roster, () => search.t, { range: props.clip, sync: false, hostFilm: () => props.hostFilm });
   const recording = () => session.timeline();
   const bounds = () => ({ from_tick: recording()!.startTick, to_tick: recording()!.recordedEndTick });
   const ready = () => !!recording()?.frames.length && (!props.clip || !!session.range?.());
   const partialClip = () => {
     const range = session.range?.();
     const clip = props.clip;
-    return range && clip && (range.from_tick !== clip.from_tick || range.to_tick !== clip.to_tick);
+    return range && clip && (session.clipTick(range.from_tick) !== clip.from_tick || session.clipTick(range.to_tick) !== clip.to_tick);
   };
   const title = () => isCampaign(props.game) ? gameMapTitle(props.game) : `${gameTitle(props.game)} on ${gameMapTitle(props.game)}`;
   const author = () => props.clip ? live.state.accounts[props.clip.by.toLowerCase()]?.gamertag : undefined;
@@ -175,7 +187,7 @@ function Film(props: { game: GameState; clip?: Clip }) {
         <Transport session={session} matchStartTick={props.game.start_tick} selection={editing() ? marks() : undefined}
           killColour={(index) => index === null ? undefined : colourFor(props.game, props.game.players[index]?.team ?? 0, index)} />
         <Show when={editing() && identity.me()}>
-          <ClipEditor game={props.game.game_id} bounds={bounds()} tick={session.tick} marks={marks()} setMarks={setMarks} view={clipView} close={closeEditor} />
+          <ClipEditor game={props.game.game_id} bounds={bounds()} tick={session.tick} clipTick={session.clipTick} hz={recording()!.ticksPerSecond} marks={marks()} setMarks={setMarks} view={clipView} close={closeEditor} />
         </Show>
       </Show>
     </>
@@ -203,7 +215,7 @@ function Film(props: { game: GameState; clip?: Clip }) {
             </div>
           )}</Show>
           <Show when={director.selection().mode === "eyes"}><span class="theater-reticle" aria-hidden="true" /></Show>
-          <time>{clock((session.tick() - (session.range?.()?.from_tick ?? recording()!.startTick)) / TICKS_PER_SECOND)}</time>
+          <time>{clock((session.tick() - (session.range?.()?.from_tick ?? recording()!.startTick)) / recording()!.ticksPerSecond)}</time>
         </div>
       </Show>
     );
@@ -222,10 +234,18 @@ function Film(props: { game: GameState; clip?: Clip }) {
           roster={roster} highlight={picked} label={`Replay of ${gameMapTitle(props.game)}`}
           director={director} viewControls={cameras()} overlay={overlay()} soughtAt={session.soughtAt} onKey={onKey} controls={controls()}
           keysLabel="Theater viewer. Space plays or pauses. Arrows seek five seconds. Comma and period step frames. K watches a kill." />
-        <Block title="Scoreboard" class="theater-scoreboard">
-          <Show when={roster().size} fallback={<p class="s-empty">No players recorded.</p>}>
-            <Scoreboard game={snapshot()} picked={picked()} onPick={onPick} />
-          </Show>
+        <Block title={props.hostFilm && !score() ? "Final scores" : "Scoreboard"} class="theater-scoreboard">
+          <Show when={props.hostFilm && !score() ? props.hostFilm.front.summary : undefined} fallback={
+            <Show when={roster().size} fallback={<p class="s-empty">No players recorded.</p>}>
+              <Scoreboard game={snapshot()} picked={picked()} onPick={onPick} />
+            </Show>
+          }>{(summary) => (
+            <Show when={summary().players.length} fallback={<p class="s-empty">No final scores recorded.</p>}>
+              <table class="s-table"><thead><tr><th>Player</th><th>Score</th></tr></thead>
+                <tbody><For each={summary().players}>{(p) => <tr><td>{p.name}</td><td>{p.score}</td></tr>}</For></tbody>
+              </table>
+            </Show>
+          )}</Show>
         </Block>
       </div>
     </>

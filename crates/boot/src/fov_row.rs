@@ -44,7 +44,7 @@ const OBJECT_HEADERS: u32 = 0x004e_0300;
 /// The tag instance table pointer: 16-byte entries, definition at `+8`.
 const TAG_INSTANCES: u32 = 0x004e_3b44;
 /// The unit definition's camera field of view (radians).
-const UNIT_CAMERA_FOV: u32 = 0xcc;
+pub(crate) const UNIT_CAMERA_FOV: u32 = 0xcc;
 
 /// The camera's unzoomed field of view in radians for `degrees` (the
 /// `graphics.fov` setting), or `None` for retail (70): the hook then

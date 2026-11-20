@@ -346,6 +346,15 @@ impl InputManager {
         self.report.set(devices, infos);
     }
 
+    /// Device generation and output capability for each occupied guest port.
+    /// A new generation distinguishes a replacement on a still-occupied port.
+    pub fn port_connections(&self) -> [Option<(u32, bool)>; PORT_COUNT] {
+        std::array::from_fn(|i| {
+            let port = &self.ports[i];
+            port.device.as_ref().map(|d| (port.generation, d.supports_rumble))
+        })
+    }
+
     /// `XGetDevices(XDEVICE_TYPE_GAMEPAD)`: bitmask of connected ports.
     pub fn connected_mask(&self) -> u32 {
         (0..PORT_COUNT)

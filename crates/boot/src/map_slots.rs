@@ -54,6 +54,17 @@ fn path_at<M: Gm>(m: &M, slot: u32) -> Option<String> {
     std::str::from_utf8(&b[..end]).ok().map(str::to_owned)
 }
 
+/// The source path retail recorded for its active cache slot.
+pub(crate) fn current_source<M: Gm>(m: &M) -> Option<String> {
+    let slot = m.u32(CURRENT)?;
+    if !SLOTS.contains(&slot) {
+        return None;
+    }
+    let path = path_at(m, slot)?;
+    slot_file(&path)?;
+    Some(path)
+}
+
 /// The map name in a slot path `d:\maps\<name>.map`, if it is one.
 pub fn map_name(path: &str) -> Option<String> {
     let lower = path.to_ascii_lowercase();

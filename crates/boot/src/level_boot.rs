@@ -27,7 +27,7 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail};
 use runtime::guest::Permissions;
@@ -107,6 +107,17 @@ const MP_LEVEL_PATH: usize = 0xb4c;
 
 /// The options we build.
 const BUFFER: u32 = 0xa2f4_1000;
+// Owned by this hook, just past the retail options struct in the same mapped
+// two pages. Guest RAM snapshots carry the one-shot across cold Theater seeks.
+const REQUEST_TAKEN: u32 = BUFFER + OPTIONS_SIZE;
+
+fn take_level_request(guest: &mut runtime::Guest) -> Result<bool, GuestFault> {
+    if guest.u8(REQUEST_TAKEN)? != 0 {
+        return Ok(false);
+    }
+    guest.set_u8(REQUEST_TAKEN, 1)?;
+    Ok(true)
+}
 
 // ---- requests ----
 
@@ -669,9 +680,8 @@ pub fn install(
     };
     rt.memory().map_zeroed(BUFFER, 0x2000, Permissions::RW)?;
     rt.edit_dispatch(|d| {
-        let taken = AtomicBool::new(false);
         d.register_override(REQUEST_MAINMENU, "level-boot:menu", move |cpu, ctx, _| {
-            if taken.swap(true, Ordering::SeqCst) {
+            if !take_level_request(&mut ctx.runtime().memory())? {
                 return Ok(menu.invoke(cpu, ctx, REQUEST_MAINMENU));
             }
             request_level(cpu, ctx, Arc::clone(&req))
@@ -805,6 +815,21 @@ fn run_from(
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn a_restored_direct_start_leaves_the_next_menu_request_to_retail() {
+        let mut recorded = runtime::Guest::new();
+        recorded.map_zeroed(BUFFER, 0x2000, Permissions::RW).unwrap();
+        assert!(take_level_request(&mut recorded).unwrap());
+        // The retail options constructor can clear the complete options block.
+        recorded.write(BUFFER, &vec![0; OPTIONS_SIZE as usize]).unwrap();
+        let pages = recorded.read::<0x2000>(BUFFER).unwrap();
+
+        let mut restored = runtime::Guest::new();
+        restored.map_zeroed(BUFFER, 0x2000, Permissions::RW).unwrap();
+        restored.write(BUFFER, &pages).unwrap();
+        assert!(!take_level_request(&mut restored).unwrap());
+    }
 
     #[test]
     fn provisioned_disc_maps_use_the_level_callbacks() {
