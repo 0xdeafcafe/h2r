@@ -88,9 +88,6 @@ fn sub_block<'a>(
     let end = start.checked_add(size as usize).ok_or_else(bad)?;
     tag.get(start..end).ok_or_else(bad)
 }
-fn block(bytes: &[u8], base: u32, off: usize, stride: usize) -> Result<&[u8]> {
-    sub_block(bytes, base, bytes, off, stride)
-}
 /// Payload span of a block, for overlap checks: `(start, end)` relative to the tag.
 fn span(bytes: &[u8], base: u32, off: usize, stride: usize) -> Option<(usize, usize)> {
     let count = u32_at(bytes, off) as usize;
