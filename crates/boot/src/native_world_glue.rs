@@ -436,7 +436,7 @@ impl<B: d3d::Backend + 'static> feature::native_world::OpaqueDraw for OpaquePass
             else { gfx::vertex::PrimitiveType::TriangleList };
         let sent = device.emit_world_ranges(&mut crate::native_lights_glue::DeviceMemory(mem),
             primitive, ranges, vertices, code.as_ref(), &targets, &textures, part.shader,
-            |count| crate::native_world_layers_glue::enter_opaque_range(part, layer, frame, targets.bound, count))
+            |count| crate::native_world_layers_glue::enter_opaque_range(part, layer, frame, count))
             .map_err(|e| Device(e.to_string()))?;
         if sent { Ok(()) } else { Err(BeforeDraw("view changed, callback or capture boundary")) }
     }
