@@ -231,6 +231,13 @@ fn check_rebuilt(
     maps: &HashMap<Role, Bound>,
     extras: &shad::Extras,
 ) -> Result<(), String> {
+    // A rebuilt stem gets a new datum when installed. Give it a local
+    // slot for the same instance checks we apply to the native stems.
+    let authored;
+    let lib = if layout.stem == shad::program::glass::CLEAR.stem {
+        authored = shad::Library::new(&[(layout.stem, TagId(0xe000_0001))], &[]);
+        &authored
+    } else { lib };
     let tree = lib.build_with(layout, maps, extras).map_err(|e| e.to_string())?;
     let rec = defs::from_built(shad::shad_def(), &tree).map_err(|e| e.to_string())?;
     let stem = lib.stem(layout).unwrap();

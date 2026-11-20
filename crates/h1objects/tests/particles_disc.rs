@@ -559,13 +559,19 @@ fn every_particle_converts() {
                 let Some(Val::Ref { target: Target::Id(stem), .. }) = r.at("shader_template") else {
                     panic!("{name}: stem")
                 };
-                let stem_name = base.name(*stem).unwrap().1.to_owned();
+                let stem_name = if matches!(p.blend, 6 | 7) {
+                    c.tree.tags[stem.index()].0.clone()
+                } else {
+                    base.name(*stem).unwrap().1.to_owned()
+                };
                 let want = particle_stem(p.blend).0;
                 if base.find(b"stem", want).is_some() {
                     assert_eq!(stem_name, want, "{name}");
                 }
                 *stems_named.entry(stem_name).or_default() += 1;
-                let (first, count) = p.sequence_range();
+                let (first, count) = if t.name == r"scenery\captain_implant\glowingdrip goo" {
+                    (0,1) // H1 clamps both sequence phases to its sole sprite.
+                } else { p.sequence_range() };
                 assert_eq!(r.at("first_sequence"), Some(&Val::Int(first.into())), "{name}");
                 assert_eq!(r.at("sequence_count"), Some(&Val::Int(count.into())), "{name}");
                 // The sprite path evaluates `frame` with no null check
@@ -884,4 +890,124 @@ fn every_pctl_part_becomes_particle_systems() {
     }
     println!("{parts} pctl parts as {systems} particle systems; state blend functions {blends:?}");
     assert!(systems > 0);
+}
+
+#[test]
+#[ignore = "reads the Halo 1 and Halo 2 discs"]
+fn retail_maximum_and_premultiplied_particles_keep_their_mask_and_motion() {
+    use h1convert::shad::program::glass::{ParticleBlend, ParticleCoordinates};
+    use h1objects::{
+        base::Base,
+        convert::Converter,
+        particles::{H1Particle, particle_system_types},
+    };
+    use tags::{
+        defs::{self, Defs, Target, Val},
+        effects::function::{Function, FunctionType},
+    };
+    let (mut maps, mut maximum, mut ice) = (0, 0, 0);
+    let mut states = 0;
+    for (base_name, levels) in level_sets() {
+        let base = Base::read(&mut h2_map(base_name)).unwrap();
+        for level in levels {
+            let Some(h1) = h1_level(&level) else { continue };
+            maps += 1;
+            for system in h1.tags().iter().filter(|t| t.group == Group::new(b"pctl")) {
+                for ty in particle_system_types(&h1, system).unwrap() {
+                    for state in ty.states {
+                        assert!(
+                            ParticleBlend::from_source(state.blend).is_none(),
+                            "{level} {}: state {} needs a rebuilt particle shader",
+                            system.name, state.name
+                        );
+                        states += 1;
+                    }
+                }
+            }
+            let mut c = Converter::new(&h1, &base);
+            for t in h1.tags().iter().filter(|t| t.group == Group::new(b"part")) {
+                let source = H1Particle::read(&h1, t).unwrap();
+                let Some(blend) = ParticleBlend::from_source(source.blend) else {
+                    continue;
+                };
+                let mode = match t.name.rsplit('\\').next().unwrap() {
+                    "glass breakable" => ParticleCoordinates::Sprite,
+                    "glass death" => ParticleCoordinates::Screen,
+                    "ice" => {
+                        assert_eq!(blend, ParticleBlend::Premultiplied, "{level}");
+                        ParticleCoordinates::Screen
+                    }
+                    "glowingdrip goo" => ParticleCoordinates::Primary,
+                    other => panic!("unexpected rebuilt particle {level}/{other}"),
+                };
+                let id = c.particle(t).unwrap().unwrap();
+                let read = |id: map::TagId| {
+                    let built = &c.tree.tags[id.index()].1;
+                    defs::from_built(Defs::builtin().group(built.group).unwrap(), &built.root)
+                        .unwrap()
+                };
+                let p = read(id);
+                let Some(Val::Ref {
+                    target: Target::Id(stem),
+                    ..
+                }) = p.at("shader_template")
+                else {
+                    panic!()
+                };
+                assert_eq!(c.tree.tags[stem.index()].0, blend.stem(mode));
+                assert_eq!(
+                    p.at("vertex_shader"),
+                    Some(&Val::Int(if mode == ParticleCoordinates::Sprite {
+                        1
+                    } else {
+                        0
+                    }))
+                );
+                assert_eq!(
+                    p.at("flags"),
+                    Some(&Val::Int(if mode == ParticleCoordinates::Primary {
+                        0x34
+                    } else {
+                        0x36
+                    }))
+                );
+                let Some(Val::Block(b)) = p.at("postprocess[0].bitmaps") else {
+                    panic!()
+                };
+                if mode == ParticleCoordinates::Primary {
+                    assert_eq!(b.len(), 1);
+                    assert_eq!(p.at("sequence_count"), Some(&Val::Int(1)));
+                } else {
+                    assert_eq!(p.at("first_sequence"), Some(&Val::Int(0)));
+                    assert_eq!(p.at("sequence_count"), Some(&Val::Int(4)));
+                    let Some(Val::Datum(Target::Id(mask))) = b[1].at("bitmap") else {
+                        panic!()
+                    };
+                    let bytes = h1.tag_data(t).unwrap();
+                    let source = h1map::TagRef::read(bytes, 0xfc).unwrap();
+                    assert_eq!(c.tree.tags[mask.index()].0, h1.tag(source.id).unwrap().name);
+                    assert_eq!(
+                        p.at("postprocess[0].animations[0].target"),
+                        Some(&Val::Int(0xb1))
+                    );
+                    for (index, at) in [(4, 0x110), (5, 0x120)] {
+                        let path = format!("postprocess[0].properties[{index}]");
+                        let Some(Val::Data(data)) = p.at(&format!("{path}.function")) else {
+                            panic!()
+                        };
+                        let fun = Function::parse(data).unwrap();
+                        assert_eq!(fun.kind, FunctionType::Periodic);
+                        assert_eq!(fun.sub_types[0], bytes[at + 2]);
+                        let period = f32::from_le_bytes(bytes[at + 4..at + 8].try_into().unwrap());
+                        assert_eq!(p.at(&format!("{path}.input_b")), Some(&Val::Float(period)));
+                    }
+                }
+                match blend {
+                    ParticleBlend::Maximum => maximum += 1,
+                    ParticleBlend::Premultiplied => ice += 1,
+                }
+            }
+        }
+    }
+    assert_eq!((maps, states, maximum, ice), (23, 629, 47, 23));
 }

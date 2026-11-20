@@ -1,11 +1,10 @@
 use h1convert::shad::program::{self, scope_filters};
 use map::build::Block;
-use map::{FourCC, TagId};
 use tags::scope_zoom::{Blur, Profile};
 
 use super::Converter;
 use crate::h1hud::scope::{self, Entry, ScopeMask, Visibility};
-use crate::{Converted, Error, Result};
+use crate::{Error, Result};
 
 impl Converter<'_> {
     /// Rebuild the masks and filters as a HUD screen effect for each view.
@@ -86,12 +85,12 @@ impl Converter<'_> {
             .ok_or_else(|| Error::NoTemplate(program::SCOPE_VERTEX.into()))?;
         let mut passes = Vec::new();
         if profile.enabled() {
-            passes.push(self.scope_tag(
+            passes.push(self.program_tag(
                 &format!("{name}_copy"),
                 b"spas",
                 scope_filters::copy(vertex)?,
             ));
-            passes.push(self.scope_tag(
+            passes.push(self.program_tag(
                 &format!("{name}_filters"),
                 b"spas",
                 scope_filters::composite(vertex, profile, masked)?,
@@ -99,21 +98,10 @@ impl Converter<'_> {
         }
         if masked {
             let mask_pass = format!("{name}_overlay");
-            passes.push(self.scope_tag(&mask_pass, b"spas", program::scope_pass(vertex)?));
+            passes.push(self.program_tag(&mask_pass, b"spas", program::scope_pass(vertex)?));
         }
-        let template = self.scope_tag(name, b"stem", scope_filters::template(&passes)?);
-        let shader = self.scope_tag(name, b"shad", program::scope_instance(template)?);
-        Ok(self.scope_tag(name, b"egor", scope::effect(shader, profile, masked)?))
-    }
-
-    fn scope_tag(&mut self, name: &str, group: &[u8; 4], root: Block) -> TagId {
-        self.tree.push(
-            name,
-            Converted {
-                group: FourCC(*group),
-                root,
-                raw: Vec::new(),
-            },
-        )
+        let template = self.program_tag(name, b"stem", scope_filters::template(&passes)?);
+        let shader = self.program_tag(name, b"shad", program::scope_instance(template)?);
+        Ok(self.program_tag(name, b"egor", scope::effect(shader, profile, masked)?))
     }
 }

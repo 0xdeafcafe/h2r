@@ -83,6 +83,8 @@ pub struct Object {
     pub object_type: u16,
     pub flags: u16,
     pub bounding_radius: f32,
+    /// Object texture override (+0x13e), zero selects each model shader permutation.
+    pub texture_override: i16,
     pub acceleration_scale: f32,
     pub bounding_offset: [f32; 3],
     /// `0x28` render model (`mode`), `0x38` animation graph (`antr`),
@@ -224,6 +226,7 @@ impl Object {
         let device_inputs = matches!(object_type, 7..=9).then(|| FunctionInputs::read(b, object_type));
         Ok(Self {
             object_type,
+            texture_override: i16_at(b, 0x13e),
             flags: u16_at(b, 2),
             bounding_radius: f32_at(b, 4),
             acceleration_scale: f32_at(b, 0x20),

@@ -75,38 +75,124 @@ impl Converter<'_> {
         Ok(got)
     }
 
+    fn particle_bitmap(&mut self, id: h1map::TagId) -> Result<((TagId, u16, u16), usize)> {
+        let t = self.h1_tag(id)?;
+        let bm = h1map::bitmap::Bitmap::read(self.h1, t)?;
+        let image = bm.images.first().ok_or_else(|| {
+            h1convert::Error::no_rebuild(
+                &self.h1.header().name,
+                &t.name,
+                "particle bitmap has no images",
+            )
+        })?;
+        Ok((
+            (
+                self.source_bitmap(Some(id))?.expect("source bitmap"),
+                image.width,
+                image.height,
+            ),
+            bm.sequences.len(),
+        ))
+    }
+
     /// The `prt3` of particle `p` (from `tag`: a `part`, or a `pctl` whose
     /// particle state `p` stands for), pushed as `name`. Not cached.
     pub(super) fn particle_of(&mut self, tag: &Tag, name: &str, p: &H1Particle) -> Result<Option<TagId>> {
         if self.particle_shaders.is_none() {
             self.particle_shaders = Some(particles::particle_shaders(self.base)?);
         }
-        let shaders = self.particle_shaders.as_ref().expect("initialised");
+        use h1convert::shad::program::{glass, particle_vertex};
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
         rep.source = name.to_owned();
-        let (want, proven) = particles::particle_stem(p.blend);
-        let fail = |why: String| h1convert::Error::no_rebuild(&self.h1.header().name, name, why);
+        let source = self.h1;
+        let fail = |why: String| h1convert::Error::no_rebuild(&source.header().name, name, why);
+        let (mut want, proven) = particles::particle_stem(p.blend);
         if !proven {
             return Err(fail(format!("no particle program for blend {}", p.blend)).into());
         }
-        let shader = shaders
+        let rebuilt = glass::ParticleBlend::from_source(p.blend);
+        let mut mask = None;
+        let mut orientation = 0;
+        if let Some(blend) = rebuilt {
+            if p.bitmap.is_none() {
+                return Err(fail(format!("particle blend {} has no primary bitmap", p.blend)).into());
+            }
+            let m = particles::Mask::read(source, tag)?;
+            let data = source.tag_data(tag)?;
+            orientation = u16::from_le_bytes(data[0xac..0xae].try_into().unwrap());
+            let fade = u16::from_le_bytes(data[0xdc..0xde].try_into().unwrap());
+            if fade != 0 && orientation != 0 {
+                return Err(fail(format!("unsupported particle angular fade {fade}")).into());
+            }
+            if orientation > 1 {
+                return Err(fail(format!(
+                    "unsupported particle orientation {orientation}"
+                ))
+                .into());
+            }
+            let coordinates = m.map_or(glass::ParticleCoordinates::Primary, |m| m.coordinates);
+            want = blend.stem(coordinates);
+            if !self
+                .particle_shaders
+                .as_ref()
+                .unwrap()
+                .iter()
+                .any(|s| s.name == want)
+            {
+                let vertex = if m.is_some() {
+                    self.program_tag(
+                        want,
+                        b"vrtx",
+                        particle_vertex::build(coordinates == glass::ParticleCoordinates::Screen)?,
+                    )
+                } else {
+                    self.base
+                        .find(b"vrtx", glass::PARTICLE_VERTEX)
+                        .ok_or_else(|| fail(format!("missing {}", glass::PARTICLE_VERTEX)))?
+                };
+                let pass = self.program_tag(
+                    want,
+                    b"spas",
+                    glass::particle_pass(vertex, coordinates, blend)?,
+                );
+                let template = glass::particle_graph(pass, coordinates);
+                let stem = self.program_tag(want, b"stem", glass::particle_template(&template)?);
+                let mut vectors = vec![[1., 1., 0., 0.], [0., 0., 0., 1.]];
+                if m.is_some() {
+                    vectors.push([1., 1., 0., 0.]);
+                }
+                self.particle_shaders
+                    .as_mut()
+                    .unwrap()
+                    .push(particles::ParticleShader {
+                        name: want.to_string(),
+                        stem,
+                        template,
+                        colors: vec![],
+                        vectors,
+                    });
+            }
+            if let Some(m) = m {
+                mask = Some(m.bind(self.particle_bitmap(m.bitmap)?.0));
+            }
+        }
+        let shader = self
+            .particle_shaders
+            .as_ref()
+            .unwrap()
             .iter()
             .find(|s| s.name == want)
             .cloned()
             .ok_or_else(|| fail(format!("missing particle program {want}")))?;
-        let bitmap = match p.bitmap {
-            Some(b) => {
-                let t = self.h1_tag(b)?;
-                let bm = h1map::bitmap::Bitmap::read(self.h1, t)?;
-                let image = bm
-                    .images
-                    .first()
-                    .ok_or_else(|| fail(format!("{} has no images", t.name)))?;
-                let (w, h) = (image.width, image.height);
-                Some((self.source_bitmap(Some(b))?.expect("source bitmap"), w, h))
-            }
-            None => None,
-        };
+        let bitmap = p.bitmap.map(|id| self.particle_bitmap(id)).transpose()?;
+        let mut particle = p.clone();
+        if rebuilt.is_some() {
+            let total = bitmap.expect("checked primary bitmap").1;
+            let (first, count) = particles::sprite_sequences(p.sequences, total)
+                .ok_or_else(|| fail("unsupported particle sprite sequence phases".into()))?;
+            particle.sequences = [first, count, 0, 0];
+        }
+        let bitmap = bitmap.map(|(binding, _)| binding);
         let effect = |c: &mut Self,
                       id: Option<h1map::TagId>,
                       rep: &mut super::ObjectReport|
@@ -130,11 +216,21 @@ impl Converter<'_> {
         };
         let collision = effect(self, p.collision_effect, &mut rep)?;
         let death = effect(self, p.death_effect, &mut rep)?;
-        rep.no_home.push(
-            "emitter-side fields (lifespan, fade times, radius and frame animation, physics, contact deterioration, fade sizes, orientation, secondary map) not carried: Halo 2 holds them on the effect's emitter".into(),
-        );
+        rep.no_home.push("Lifespan, fade times, radius, frame animation, physics, contact deterioration and fade sizes belong to the emitter".into());
+        if rebuilt.is_none() {
+            rep.no_home
+                .push("Particle orientation and secondary map are not carried".into());
+        }
         let (root, roles) = crate::provenance::capture(|| {
-            particles::particle(p, &shader, bitmap, collision, death)
+            particles::particle_with_mask(
+                &particle,
+                &shader,
+                bitmap,
+                mask,
+                orientation,
+                collision,
+                death,
+            )
         });
         let root = root?;
         self.tree.reports.push(rep);

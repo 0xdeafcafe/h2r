@@ -60,7 +60,17 @@ unused.
 | `b8` | nodes, stride `0x9c` | V1 |
 | `c4` | regions, stride `0x4c` | V1 |
 | `d0` | geometries, stride `0x30` | V1 |
-| `dc` | shaders, stride `0x20`: tag reference (`00`), i16 permutation (`10`): which digit a numeric `schi` draws ([objects.md](objects.md), "Ammunition counter") | V1 (references name `soso`/`schi`/... tags); the assault rifle's first-person model names its `numbers` twice, permutations 1 and 0 |
+| `dc` | shaders, stride `0x20`: tag reference (`00`), i16 permutation (`10`): the per-sampler image index on a model material and the digit a numeric `schi` draws ([objects.md](objects.md), "Ammunition counter") | V1 (references name `soso`/`schi`/... tags); the assault rifle's first-person model names its `numbers` twice, permutations 1 and 0 |
+
+**Built.** The H1 draw uses a nonzero texture override from the object
+(`obje +0x13e`, copied at `0x8febc`), otherwise the model shader's
+permutation. Each bitmap takes the signed remainder by its own image count
+at `0x8038b`. The converted b30 floor light fixtures bind the second image
+of both their base and reflection mask. Their detail and cube have one
+image each, shared with the wall and ceiling fixtures. The retail model
+survey found six distinct `soso` materials with multi-image bases, including
+four Grunt materials, and one `senv` (`levels\a50\shaders\covenant metal panel`). No nonzero actor-variant override at `actv +0x20c` targets a
+model using one of these seven materials.
 
 **Marker** (`0x40`): `char[32]` name, `34` block of instances (`0x20`):
 i8 region, i8 permutation, i8 node, pad, f32x3 translation (`04`), f32x4

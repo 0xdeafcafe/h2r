@@ -121,6 +121,7 @@ mod tests {
         ] {
             let item = Equipment {
                 object: h1::Object {
+                    texture_override: 0,
                     flags: 4,
                     bounding_radius: 0.25,
                     acceleration_scale: 1.0,

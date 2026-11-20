@@ -30,6 +30,8 @@ mod powerups_conv;
 mod model_defaults_conv;
 #[path = "convert_model_effects.rs"]
 mod model_effects_conv;
+#[path = "convert_shader_images.rs"]
+mod shader_images;
 #[path = "convert_scope.rs"]
 mod scope_conv;
 #[path = "convert_particles.rs"]
@@ -787,8 +789,9 @@ pub struct Converter<'a> {
     /// ([`Self::dialogue`]).
     pub dialogue_bytes: u64,
     done: HashMap<u32, TagId>,
-    /// Render models by source tag and weapon counter's loaded maximum.
-    render_models: HashMap<(h1map::TagId, Option<i16>), TagId>,
+    /// Render models by source, weapon counter maximum and object texture override.
+    render_models: HashMap<(h1map::TagId, Option<i16>, i16), TagId>,
+    permuted_shaders: HashMap<(h1map::TagId, i16), TagId>,
     colls: HashMap<(u32, bool), TagId>,
     coll_names: HashMap<(u32, bool), Vec<(String, Vec<String>)>>,
     /// Per converted `coll`, the `hlmt` materials it needs
@@ -860,6 +863,7 @@ impl<'a> Converter<'a> {
             coll_reports: Vec::new(),
             done: HashMap::new(),
             render_models: HashMap::new(),
+            permuted_shaders: HashMap::new(),
             colls: HashMap::new(),
             coll_names: HashMap::new(),
             coll_materials: HashMap::new(),
@@ -1330,7 +1334,7 @@ impl<'a> Converter<'a> {
         let mode_tag = self.h1_tag(mode_id)?;
         let (mut h1_model, _) =
             h1models::model_from_map(self.h1, mode_tag, &ModelOptions::default())?;
-        let key = (mode_id, rounds);
+        let key = (mode_id, rounds, obj.texture_override);
         let mode = match self.render_models.get(&key) {
             Some(&mode) => mode,
             None => {
@@ -1340,7 +1344,8 @@ impl<'a> Converter<'a> {
                     let points = self.powered_points(obj, &h1_model)?;
                     add_point_markers(&mut h1_model, &points);
                 }
-                let mut shaders = self.model_shaders(rep, &h1_model, rounds)?;
+                let mut shaders =
+                    self.model_shaders(rep, &h1_model, rounds, obj.texture_override)?;
                 // A player biped's body carries the player's emblem, as the
                 // Chief's does (h1models::emblem); after model_shaders, so
                 // its shader entry (no Halo 1 tag) is not looked up there.
@@ -1360,7 +1365,12 @@ impl<'a> Converter<'a> {
                     &opts,
                 )?;
                 crate::rebuild::mode_materials(&mut mode.root, &opts.shaders)?;
-                let mode = self.tree.push(&mode_tag.name, mode);
+                let render_name = if obj.texture_override == 0 {
+                    mode_tag.name.clone()
+                } else {
+                    format!("{}_texture_{}", mode_tag.name, obj.texture_override)
+                };
+                let mode = self.tree.push(&render_name, mode);
                 self.render_models.insert(key, mode);
                 mode
             }
@@ -1643,9 +1653,19 @@ impl<'a> Converter<'a> {
         rep: &mut ObjectReport,
         model: &h1models::h1::Model,
         rounds: Option<i16>,
+        texture_override: i16,
     ) -> Result<Vec<TagId>> {
         let mut shaders = Vec::with_capacity(model.shaders.len());
         for (slot, entry) in model.shaders.iter().enumerate() {
+            // The object's texture override selects the image of every
+            // multi-image material (shader_images::material_permutation).
+            let entry = &h1models::h1::ShaderRef {
+                permutation: shader_images::material_permutation(
+                    texture_override,
+                    entry.permutation,
+                ),
+                ..*entry
+            };
             let source = self.h1.tag(entry.tag);
             let result = match source {
                 Ok(tag) => self.model_shader(tag, entry, rounds).map_err(|e| format!(
@@ -1682,8 +1702,40 @@ impl<'a> Converter<'a> {
         if let Some(&id) = self.done.get(&tag.id.0) {
             return Ok(id);
         }
+        if let Some(id) = self.permuted_shader(tag, entry.permutation, &template.library)? {
+            return Ok(id);
+        }
         if let Some(source) = ModelDefaults::read(tag.group, self.h1.tag_data(tag)?)? {
             return self.model_default_shader(&template.library, tag, source);
+        }
+        if let Some(layout) = h1convert::shad::textureless_layout(tag.group, self.h1.tag_data(tag)?)
+        {
+            use h1convert::shad::program::glass;
+            let source = self.h1;
+            let map = &source.header().name;
+            let fail = |why| h1convert::Error::no_rebuild(map, &tag.name, why);
+            let root = if layout.stem == glass::CLEAR.stem {
+                let vertex = base
+                    .find(b"vrtx", glass::GLASS_VERTEX)
+                    .ok_or_else(|| fail(glass::GLASS_VERTEX))?;
+                let pass = self.program_tag(glass::CLEAR.stem, b"spas", glass::clear_pass(vertex)?);
+                let stem =
+                    self.program_tag(glass::CLEAR.stem, b"stem", glass::clear_template(pass)?);
+                glass::clear_instance(stem)?
+            } else {
+                if !template.library.has(layout) {
+                    return Err(fail(layout.stem).into());
+                }
+                template.library.build(layout, &HashMap::new())?
+            };
+            return self.cached(
+                tag,
+                Converted {
+                    group: FourCC(*b"shad"),
+                    root,
+                    raw: vec![],
+                },
+            );
         }
         if let Some(id) = self.model_effect_shader(&template.library, tag)? {
             return Ok(id);
@@ -2144,6 +2196,17 @@ impl<'a> Converter<'a> {
         let out = self.tree.push(&format!("{}_seq{seq}_sprite{first}", tag.name), conv);
         self.sprite_bitmaps.insert(key, out);
         Some(out)
+    }
+
+    fn program_tag(&mut self, name: &str, group: &[u8; 4], root: Block) -> TagId {
+        self.tree.push(
+            name,
+            Converted {
+                group: FourCC(*group),
+                root,
+                raw: Vec::new(),
+            },
+        )
     }
 
     fn cached(&mut self, t: &Tag, conv: Converted) -> Result<TagId> {
