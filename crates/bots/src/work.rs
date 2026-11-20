@@ -32,21 +32,30 @@ impl PlanSchedule {
         self.urgent = true;
     }
 
-    pub(crate) fn ready(&mut self, tick: u32, slot: Option<u32>, period: u32) -> bool {
-        if self.attempted == Some(tick) {
-            return false;
-        }
-        if let Some(slot) = slot {
-            let previous = *self.pending.get_or_insert(tick.wrapping_sub(1));
-            let regular = phase_due(tick, previous, slot, period);
-            // Spread reactions to a shared event over two ticks.
-            let urgent = self.urgent && (period <= 1 || tick % 2 == slot % 2);
-            if !regular && !urgent {
+    /// A missing or invalid route needs a plan now. Only a refresh of a
+    /// route the bot can still follow waits for its slot.
+    pub(crate) fn ready(
+        &mut self,
+        tick: u32,
+        slot: Option<u32>,
+        period: u32,
+        needs_route: bool,
+    ) -> bool {
+        if !needs_route {
+            if self.attempted == Some(tick) {
                 return false;
             }
+            if let Some(slot) = slot {
+                let previous = *self.pending.get_or_insert(tick.wrapping_sub(1));
+                let regular = phase_due(tick, previous, slot, period);
+                // Spread reactions to a shared event over two ticks.
+                let urgent = self.urgent && (period <= 1 || tick % 2 == slot % 2);
+                if !regular && !urgent {
+                    return false;
+                }
+            }
         }
-        self.pending = None;
-        self.urgent = false;
+        self.idle();
         self.attempted = Some(tick);
         true
     }
@@ -62,30 +71,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn requests_and_retries_are_staggered_by_slot() {
+    fn refreshes_are_staggered_by_slot() {
         let mut bots: [PlanSchedule; 4] = Default::default();
         for tick in 0..16 {
             for (slot, bot) in bots.iter_mut().enumerate() {
                 assert_eq!(
-                    bot.ready(tick, Some(slot as u32), 4),
+                    bot.ready(tick, Some(slot as u32), 4, false),
                     tick % 4 == slot as u32
                 );
-                assert!(!bot.ready(tick, Some(slot as u32), 4));
+                assert!(!bot.ready(tick, Some(slot as u32), 4, false));
             }
         }
     }
 
     #[test]
-    fn blocked_damage_or_lost_target_can_expedite_a_pending_request() {
+    fn damage_or_lost_target_can_expedite_a_refresh() {
         let mut bot = PlanSchedule::default();
-        assert!(bot.ready(1, Some(1), 8));
+        assert!(bot.ready(1, Some(1), 8, false));
         bot.expedite();
-        assert!(!bot.ready(2, Some(1), 8));
-        assert!(bot.ready(3, Some(1), 8));
-        assert!(!bot.ready(3, Some(1), 8));
-        assert!(!bot.ready(5, Some(1), 8));
-        assert!(bot.ready(10, Some(1), 8)); // missed phase at 9
+        assert!(!bot.ready(2, Some(1), 8, false));
+        assert!(bot.ready(3, Some(1), 8, false));
+        assert!(!bot.ready(3, Some(1), 8, false));
+        assert!(!bot.ready(5, Some(1), 8, false));
+        assert!(bot.ready(10, Some(1), 8, false)); // missed phase at 9
     }
+
+    #[test]
+    fn required_plans_bypass_the_slot_and_the_refresh_limit() {
+        let mut bot = PlanSchedule::default();
+        assert!(!bot.ready(2, Some(1), 8, false));
+        assert!(bot.ready(2, Some(1), 8, true));
+        assert!(!bot.ready(2, Some(1), 8, false));
+        assert!(bot.ready(2, Some(1), 8, true));
+        assert!(bot.ready(3, Some(1), 8, true));
+    }
+
     #[test]
     fn phase_resumes_after_the_tick_counter_wraps() {
         assert!(phase_due(0, u32::MAX, 0, 6));

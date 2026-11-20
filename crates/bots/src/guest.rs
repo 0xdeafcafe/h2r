@@ -855,9 +855,7 @@ pub(crate) fn same_live_unit(m: &dyn GuestMemory, who: Who, slot: u32, unit: u32
         let Some((kind, body)) = objects::get(m, handle)? else {
             return Ok(false);
         };
-        Ok(Some(
-            kind == objects::BIPED && body.damage_flags(m)? & BODY_DEPLETED == 0,
-        ))
+        Ok(kind == objects::BIPED && body.damage_flags(m)? & BODY_DEPLETED == 0)
     };
     check().unwrap_or(false)
 }

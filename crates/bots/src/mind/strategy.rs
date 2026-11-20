@@ -212,7 +212,6 @@ impl Mind {
             }
         }
         if self.decisions.hear(p, kills) {
-            self.foot_plan.expedite();
             self.follower = None;
         }
     }

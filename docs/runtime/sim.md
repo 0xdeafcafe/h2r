@@ -822,19 +822,19 @@ thread, so a host-side bot change alone cannot halve that workload.
 | Other visibility and wall probes | Ray-test in-cone pickups, supply sites, objective items and non-owned vehicles and eligible events. Foot steering can probe for clearance, headroom, cover and footing. Hearing, grenade arcs and danger checks add conditional probes. | Same sample or action cadence. The player cache applies to chest visibility. Aim-point, projected lead and immediate movement clearance still use current geometry for the sample. |
 | Radio and event cues | Each sample advances the radio at most once per guest tick, filters allies' reports, and gathers recent kills and shots. Fresh thinking ticks update supply and combat memory before issuing the pad. | Same cadence with reused inbox and cue buffers. |
 | Target selection and aim | Each fresh mind tick ranks the visible enemies and evaluates tactics, objective and equipment. Some support and engagement checks cast additional rays. Aiming, lead, trigger and pad update while tracking every tick. On-foot combat can cast up to two additional rays for the preferred aim point and lead. | Same cadence and scoring, using the filtered sample. Aim and input timing continue on each mind tick, including ticks without a plan. |
-| Foot routes and roaming | A missing route, changed carrier threat or destination movement over one unit could trigger a replan each tick. A plan can try up to three A* searches (safety, blacklist and unrestricted). Picking a roam goal can test reachability of multiple candidates. Ball shelter already caches for 60 ticks or until the threat moves 1.5 units. | A pending foot replan or roam search normally runs on the bot's `foot_plan_ticks` phase. Existing routes steer every tick and committed traversal keeps control. Boarding uses foot routes until entry. |
-| Ground vehicle route | For a driver, missing routes and destination movement over three units could query the route every tick. A fresh corridor can check up to three vertical rays per uncached portal. | Only active ground drivers with a destination plan, normally on their `vehicle_plan_ticks` phase. Chassis portals are indexed by nav edge. Corridor and route point storage is reused. |
+| Foot routes and roaming | A missing route, changed carrier threat or destination movement over one unit could trigger a replan each tick. A plan can try up to three A* searches (safety, blacklist and unrestricted). Picking a roam goal can test reachability of multiple candidates. Ball shelter already caches for 60 ticks or until the threat moves 1.5 units. | Pick a needed roam goal immediately. Plan immediately when a foot route is missing or the destination has moved over one unit. Refresh a usable route on the bot's `foot_plan_ticks` phase. Steering stays tick-rate and committed traversal keeps control. Boarding uses foot routes until entry. |
+| Ground vehicle route | For a driver, missing routes and destination movement over three units could query the route every tick. A fresh corridor can check up to three vertical rays per uncached portal. | Active ground drivers with a destination plan immediately when the route is missing, blocked or over three units from the new destination. Refresh a usable route on the bot's `vehicle_plan_ticks` phase. Chassis portals are indexed by nav edge. Corridor and route point storage is reused. |
 | Ground vehicle clearance | Each eligible driving tick checked the span to the first point, up to three lookahead points and advancement past nearby waypoints. Each span checks ground and up to three wall rays at each 0.45-unit sample across three lanes. Splatter and reversing can check additional spans. | Full route lookahead on the `vehicle_lookahead_ticks` phase and when a new or reached carrot needs checking. Between full checks, validate the immediate span every driving tick before steering toward the last carrot. That span covers up to 1.8 units or 150 ms of travel, whichever is greater. Splatter and reversing retain live clearance. |
 | Fighter steering | Checked floor twice per pilot tick and ran a flip clearance probe even without a newly eligible hit. | Reuse the floor result. Probe flip clearance on an eligible hit. Forward clearance and steering stay tick-rate. |
 | Map and session glue | Render hooks handle local and phantom seating and refresh session state. Nav decoding or generation is tied to map loads and missing meshes, with the auto-nav worker handling background work. | Same hook cadence. Each brain only copies the map name on a change. |
 
-Planning is phase-aligned to the in-game player slot, which is shared by
-the local and phantom scheduling paths. A lost target, new damage or a
-blocked route can bring an existing plan forward. Urgent plans split
-across even and odd bot slots. Each planner can attempt at most once per
-tick. The next phase also handles retries and coalesces destination
-updates. Timing follows the simulation tick and slot order, with the
-same random seeds as the rest of the brain.
+Refreshes of usable routes are phase-aligned to the in-game player
+slot for local and phantom bots. A lost target, new damage or a change
+in a carrier's threat can bring a refresh forward. Urgent refreshes
+split across even and odd slots, and each planner can refresh at most
+once per tick. A route needed for immediate movement bypasses the slot
+phase. Timing follows the simulation tick and slot order, with the same
+random seeds as the rest of the brain.
 
 The fixed player LOS cache, array scans, perception buffers, driver
 portal records and path workspace avoid rebuilding per-tick temporary

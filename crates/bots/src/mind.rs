@@ -250,8 +250,6 @@ pub struct Mind {
     damage_tick: Option<u32>,
     foot_plan: crate::work::PlanSchedule,
     foot_refresh: bool,
-    foot_blocked: bool,
-    roam_plan: crate::work::PlanSchedule,
     last_seen: Option<(u32, Vec3, u32)>,
     /// An uncertain search area from hearing or a public kill announcement.
     search: Option<(Vec3, u32)>,
@@ -379,8 +377,6 @@ impl Mind {
             damage_tick: None,
             foot_plan: Default::default(),
             foot_refresh: false,
-            foot_blocked: false,
-            roam_plan: Default::default(),
             last_seen: None,
             search: None,
             hand: Hand::new(seed),
@@ -459,8 +455,6 @@ impl Mind {
         self.goal = None;
         self.foot_plan = Default::default();
         self.foot_refresh = false;
-        self.foot_blocked = false;
-        self.roam_plan = Default::default();
         self.vehicles.clear_route();
     }
 
@@ -1159,7 +1153,6 @@ impl Mind {
         if !self.navigated {
             self.foot_plan.idle();
             self.foot_refresh = false;
-            self.foot_blocked = false;
             self.stuck.reset();
         }
         let taking_objective = matches!(self.doing, Doing::Play(_) | Doing::Fight(_))
@@ -1443,17 +1436,16 @@ impl Mind {
                     self.foot_refresh = true;
                     self.foot_plan.expedite();
                 }
-                let stale = !committed
-                    && (self.foot_refresh
-                        || self
-                            .follower
-                            .as_ref()
-                            .and_then(Follower::goal)
-                            .is_none_or(|g| len(sub(g, goal)) > 1.0));
-                if stale
+                let needs_route = self
+                    .follower
+                    .as_ref()
+                    .and_then(Follower::goal)
+                    .is_none_or(|g| len(sub(g, goal)) > 1.0);
+                if !committed
+                    && (needs_route || self.foot_refresh)
                     && self
                         .foot_plan
-                        .ready(tick, self.slot, self.work.foot_plan_ticks)
+                        .ready(tick, self.slot, self.work.foot_plan_ticks, needs_route)
                 {
                     self.foot_refresh = false;
                     // Around the edges it got stuck on, if it can be.
@@ -1470,11 +1462,7 @@ impl Mind {
                     // a new goal.
                     self.follower = path.map(|p| Follower::new(p, u64::from(tick)).toward(goal));
                     self.follower.as_ref()?;
-                } else if stale && self.follower.is_none() {
-                    // Waiting for the slot's search phase is not a failed
-                    // path. Callers only blacklist after an actual failure.
-                    return Some(Walk::straight([0.0; 2]));
-                } else if !stale && !committed {
+                } else if !committed && !self.foot_refresh {
                     self.foot_plan.idle();
                 }
                 let f = self.follower.as_mut()?;
@@ -1490,10 +1478,6 @@ impl Mind {
                         self.gave_up = true;
                     }
                     self.follower = None;
-                    if !done && !self.foot_blocked {
-                        self.foot_blocked = true;
-                        self.foot_plan.expedite();
-                    }
                     return (!done).then_some(Walk::straight([0.0, 0.0]));
                 }
                 if s.jump {
@@ -1516,10 +1500,6 @@ impl Mind {
         };
         let u = self.stuck.step(tick, at, Some(dir), waypoint, Some(goal));
         if u.repath {
-            if !self.foot_blocked {
-                self.foot_blocked = true;
-                self.foot_plan.expedite();
-            }
             self.follower = None;
             self.gave_up = true;
             return Some(Walk::straight([0.0, 0.0]));
@@ -1538,9 +1518,6 @@ impl Mind {
         } else {
             walk
         };
-        if walk != [0.0; 2] {
-            self.foot_blocked = false;
-        }
         Some(Walk {
             walk: if u.dir.is_some() || pad.buttons.contains(JUMP) {
                 walk
@@ -1569,7 +1546,7 @@ impl Mind {
         pad: &mut HostPadState,
         bodies: &[Vec3],
     ) -> Option<Walk> {
-        if self.goal.is_none() || self.follower.as_ref().is_some_and(Follower::done) {
+        if self.goal.is_none() || self.follower.as_ref().is_none_or(Follower::done) {
             self.goal = self.roam_goal(at, p.tick, map, &p.pickups);
             self.follower = None;
         }
@@ -1687,14 +1664,6 @@ impl Mind {
         pickups: &[crate::arms::Pickup],
     ) -> Option<Vec3> {
         let m = map?;
-        let period = if matches!(self.doing, Doing::Drive(_)) {
-            self.work.vehicle_plan_ticks
-        } else {
-            self.work.foot_plan_ticks
-        };
-        if !self.roam_plan.ready(tick, self.slot, period) {
-            return None;
-        }
         if let Some(g) = self.goal {
             self.roam.visit(g, tick);
         }

@@ -101,7 +101,6 @@ impl Mind {
         self.follower = None;
         self.foot_plan.idle();
         self.foot_refresh = false;
-        self.foot_blocked = false;
         self.take = None;
         self.stuck.reset();
         self.moves.calm();
@@ -225,7 +224,7 @@ impl Mind {
                 Some(d) => Some(d),
                 None => {
                     if self.goal.is_none()
-                        || self.vehicles.route.as_ref().is_some_and(drive::Route::done)
+                        || self.vehicles.route.as_ref().is_none_or(drive::Route::done)
                     {
                         self.goal = self.roam_goal(position, tick, map, &p.pickups);
                         self.vehicles.recycle_route();
@@ -237,21 +236,20 @@ impl Mind {
                 && go.is_none()
                 && let Some(dest) = dest
             {
-                let stale = self.vehicles.route_refresh
-                    || self.vehicles.route_blocked
+                let needs_route = self.vehicles.route_blocked
                     || self
                         .vehicles
                         .route
                         .as_ref()
                         .is_none_or(|r| len(sub(r.goal, dest)) > ROUTE_STALE);
-                let planned = stale
-                    && (map.is_none()
-                        || self.vehicles.route_plan.ready(
-                            tick,
-                            self.slot,
-                            self.work.vehicle_plan_ticks,
-                        ));
-                if planned {
+                if (needs_route || self.vehicles.route_refresh)
+                    && self.vehicles.route_plan.ready(
+                        tick,
+                        self.slot,
+                        self.work.vehicle_plan_ticks,
+                        needs_route,
+                    )
+                {
                     self.vehicles.recycle_route();
                     self.vehicles.route_refresh = false;
                     let points = &mut self.vehicles.route_points;
@@ -278,42 +276,39 @@ impl Mind {
                             self.goal = None;
                         }
                     }
-                } else if !stale {
+                } else if !self.vehicles.route_refresh {
                     self.vehicles.route_plan.idle();
                 }
-                if !self.vehicles.route_blocked || planned {
-                    let carrot = self.vehicles.route.as_mut().and_then(|r| match map {
-                        Some(m) => r.steer(
-                            m,
-                            spec,
-                            position,
-                            speed,
-                            tick,
-                            self.slot,
-                            self.work.vehicle_lookahead_ticks,
-                        ),
-                        None => r.carrot(position),
-                    });
-                    if let Some(c) = carrot {
-                        self.vehicles.route_blocked = false;
-                        let to = sub(c, position);
-                        let f = (to[0] * to[0] + to[1] * to[1]).sqrt().max(1e-6);
-                        go = Some([to[0] / f, to[1] / f]);
-                        look = Some([c[0], c[1], eye[2]]);
-                    } else if self.vehicles.route.as_ref().is_some_and(|r| !r.done()) {
-                        if !self.vehicles.route_blocked {
-                            self.vehicles.paths.discard_corridor();
-                            self.vehicles.route_plan.expedite();
-                        }
-                        self.vehicles.route_blocked = true;
-                    } else {
-                        self.vehicles.route_blocked = false;
-                        if self.last_seen.is_none()
-                            && goal.is_none()
-                            && self.vehicles.route.as_ref().is_some_and(drive::Route::done)
-                        {
-                            self.goal = None;
-                        }
+                let carrot = self.vehicles.route.as_mut().and_then(|r| match map {
+                    Some(m) => r.steer(
+                        m,
+                        spec,
+                        position,
+                        speed,
+                        tick,
+                        self.slot,
+                        self.work.vehicle_lookahead_ticks,
+                    ),
+                    None => r.carrot(position),
+                });
+                if let Some(c) = carrot {
+                    self.vehicles.route_blocked = false;
+                    let to = sub(c, position);
+                    let f = (to[0] * to[0] + to[1] * to[1]).sqrt().max(1e-6);
+                    go = Some([to[0] / f, to[1] / f]);
+                    look = Some([c[0], c[1], eye[2]]);
+                } else if self.vehicles.route.as_ref().is_some_and(|r| !r.done()) {
+                    if !self.vehicles.route_blocked {
+                        self.vehicles.paths.discard_corridor();
+                    }
+                    self.vehicles.route_blocked = true;
+                } else {
+                    self.vehicles.route_blocked = false;
+                    if self.last_seen.is_none()
+                        && goal.is_none()
+                        && self.vehicles.route.as_ref().is_some_and(drive::Route::done)
+                    {
+                        self.goal = None;
                     }
                 }
             }
