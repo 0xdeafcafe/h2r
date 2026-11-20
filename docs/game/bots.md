@@ -325,8 +325,11 @@ the nav mesh, and shared read-only by every bot in the process.
 - **File.** `<data>/bots/<map>.<bsp>.vis` beside the `.bots` file: magic
   `H2VS`, `vis::VERSION`, the `.bots` file's stamp, a hash of its walls,
   then the cells and the bits. The nav worker builds it with each nav
-  mesh (on half the machine's threads, at most 8) and writes it before the
-  `.bots` files. A map whose `.bots` is fresh but whose `.vis` is missing,
+  mesh (the game's worker on `background::workers` lowered threads,
+  `h2 bots nav` on half the machine's threads, at most 8; the grid is the
+  same either way,
+  `the_grid_is_the_same_on_any_threads_and_at_background_priority`) and
+  writes it before the `.bots` files. A map whose `.bots` is fresh but whose `.vis` is missing,
   older, damaged or from another build gets only its grid built
   (`bots: built the visibility grid for lockout (none yet): ...`).
   Bump `vis::VERSION` when the cells, the proof or the margins change.
@@ -3863,19 +3866,40 @@ game checks.
      `cache::GENERATOR` and the source map's fingerprint), then the mesh
      and the walls and tactical places. The data comes from the disc, so it stays on this
      machine and out of git. When the loaded map's name (`0x547898`)
-     changes, the glue loads `<map>.0.bots` on a thread of its own. Until
+     changes, the glue loads `<map>.0.bots` on a background thread
+     (`bots-map-data`). Until
      the data is ready, the bots can walk toward known goals. Host visual
      contacts require a loaded BSP.
    - **Built for you** (`bots::autonav`, `boot::bots_nav_auto`). At boot a
-     worker thread (named `bots-nav`, at utility QoS on Apple systems)
-     looks at every map the game can load, as the VFS serves it: the
-     disc's `D:\maps\*.map` (so a package or `H2_MAP_DIR` map in a disc
-     map's place is what counts) and the content packages'
-     `T:\$c\<offer>\*.map` (the Map Pack, new maps, converted Halo 1
-     maps). A multiplayer map whose `<map>.0.bots` is missing, damaged, of
-     an older format, built by another generator version, or built from
-     another map file is **stale** and is built; the rest are left alone.
-     The boot never waits for it.
+     worker thread (named `bots-nav`) looks at every map the game can
+     load, as the VFS serves it: the disc's `D:\maps\*.map` (so a package
+     or `H2_MAP_DIR` map in a disc map's place is what counts) and the
+     content packages' `T:\$c\<offer>\*.map` (the Map Pack, new maps,
+     converted Halo 1 maps). A multiplayer map whose `<map>.0.bots` is
+     missing, damaged, of an older format, built by another generator
+     version, or built from another map file is **stale** and is built;
+     the rest are left alone. The boot never waits for it.
+     - **Background work.** The worker runs on `background::spawn` and
+       builds each visibility grid on `background::workers` threads, each
+       lowered itself (`vis::Threads::background`), so it takes a quarter
+       of the cores below the game's priority
+       ([background-work.md](../runtime/background-work.md)). `h2 bots nav`
+       keeps half the cores at the default priority (`vis::Threads::foreground`).
+     - **Maps no bot plays.** `autonav::map_use` gives `Never` for
+       `mainmenu`, `shared` and `single_player_shared` by name, and for a
+       header of those kinds (`+0x140` 2, 3, 4); `LoadOnly` for campaign;
+       `Build` for multiplayer. The scans never open a `Never` map,
+       `Handle::want` ignores it, and the worker skips it even with
+       `--force` and any kind. When one loads, the glue reads the loaded
+       cache type (`0x547840`) and starts nothing: no thread, no build, no
+       log line. A campaign map loads a hand-built file if there is one
+       and logs nothing if not.
+     - **Packaged maps.** A map a package serves resolves on its first
+       look, reading its whole base inside the VFS lock. The scans skip a
+       map not resolved yet (`Vfs::resolves_on_use`), so the worker never
+       holds the VFS for that; the game's own open resolves it, and the
+       glue's `want` at its load scans again and finds it
+       ([maps.md](maps.md) section 2).
      - **The fingerprint** is FNV-1a (64-bit) over the map's 2 KiB cache
        header, which holds its size, the tag index's offsets, its name and
        the XOR checksum of the rest (every map writer here recomputes it).
@@ -3932,7 +3956,12 @@ game checks.
      a map installed after boot built when wanted; the worker's data
      winning over a late file read. `cargo test -p boot --lib
      bots_nav_auto`: the scan finding content maps through the VFS, a
-     map read through the VFS in chunks, nothing started when off.
+     map read through the VFS in chunks, nothing started when off, the
+     scans never opening the menu or shared maps
+     (`the_scans_never_open_the_menu_or_shared_maps`). `map_use` and the
+     worker leaving those maps alone:
+     `the_menu_and_shared_maps_are_never_used_and_multiplayer_is_built`,
+     `the_worker_never_wants_scans_or_builds_the_menu_and_shared_maps`.
      Against the disc (ignored, `--ignored`): `cargo test -p cli
      bots_nav -- --ignored` builds every multiplayer map into a scratch
      directory, then finds them all up to date.
