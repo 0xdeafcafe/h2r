@@ -2868,6 +2868,14 @@ fn rebuilt_crew_and_sentinel_characters_reach_their_own_animation_resources() {
         )
         .unwrap();
         let mut m = Map::from_reader(Cursor::new(done.bytes)).unwrap();
+        // Built from scratch, identical blocks are shared between tags
+        // (`tags::repo::build` share keys), so a character's general and
+        // weapon arrays may sit in another tag's bytes: read them through
+        // the whole metadata.
+        let space = m.metadata_space().unwrap();
+        let meta = m
+            .read_file_range(space.file_offset, u64::from(space.size))
+            .unwrap();
         let scenario = m.scenario().unwrap().clone();
         let bytes = m.read_tag_bytes(scenario.id).unwrap();
         let read = h1ai::h2::ScenarioAi::read(&tags::geometry::TagView::new(
@@ -2899,15 +2907,19 @@ fn rebuilt_crew_and_sentinel_characters_reach_their_own_animation_resources() {
                 c.location.unwrap().address,
             ))
             .unwrap();
-            assert_eq!(decoded.kind, Some(kind));
+            let mview = tags::geometry::TagView::new(&meta, space.virtual_base);
+            let general = mview.block(&bytes, 0x34, 0xc).unwrap();
+            let actor_type = general
+                .first()
+                .map(|g| u16::from_le_bytes([g[4], g[5]]));
+            assert_eq!(actor_type, Some(kind));
             if !v.major_variant.id.is_none() {
                 assert_eq!(
                     m.tag(decoded.major).unwrap().name.as_deref(),
                     Some(h1.tag(v.major_variant.id).unwrap().name.as_str())
                 );
             }
-            let cview = tags::geometry::TagView::new(&bytes, c.location.unwrap().address);
-            let weapons = cview.block(&bytes, 0xcc, 0xcc).unwrap();
+            let weapons = mview.block(&bytes, 0xcc, 0xcc).unwrap();
             if v.weapon.id.is_none() {
                 assert!(weapons.is_empty());
             } else {
