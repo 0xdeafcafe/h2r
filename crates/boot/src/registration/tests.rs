@@ -226,3 +226,27 @@ fn dedup(failures: Vec<String>) -> Vec<String> {
     }
     seen
 }
+
+#[test]
+fn viewer_skips_follow_the_light_profile_and_independent_switches() {
+    use engine::points::{LIGHT_RECORD_UPDATE, PREDICT_RESOURCES, SOUND_SUBMIX_FX};
+    let points = [&LIGHT_RECORD_UPDATE, &PREDICT_RESOURCES, &SOUND_SUBMIX_FX];
+    for (light, spec, expected) in [
+        (false, "", [false; 3]),
+        (false, "impl.sim=on", [false; 3]),
+        (true, "", [true; 3]),
+        (true, "-impl.sim.static-light", [false, true, true]),
+        (true, "-impl.sim.observer-resources", [true, false, true]),
+        (true, "-impl.sim.submix-fx", [true, true, false]),
+        (true, "-impl.sim", [false; 3]),
+    ] {
+        let mut registry = feature::Registry::new(feature::Switches::parse(spec).unwrap());
+        super::register_viewer_skips(&mut registry, light).unwrap();
+        let plan = registry.build(&feature::Base).unwrap();
+        assert_eq!(
+            points.map(|p| plan.chains.contains_key(&p.base)),
+            expected,
+            "{light} {spec}"
+        );
+    }
+}
