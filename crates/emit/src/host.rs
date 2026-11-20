@@ -781,6 +781,13 @@ impl Generated {
         unsafe { crate::compile::pgo::write_profile(&self._lib) }
     }
 
+    /// The address of an exported symbol of the module (the sim tier's
+    /// boundary functions, the bridge's installers), if it has one.
+    pub fn symbol(&self, name: &str) -> Option<*const c_void> {
+        // SAFETY: only the address is read; the caller types and calls it.
+        unsafe { self._lib.get::<*const c_void>(name.as_bytes()).ok().map(|s| *s) }
+    }
+
     /// Run transfers from `start` until one this host can't resolve, a
     /// fault/stop, a return to [`HARNESS_EXIT`], or `max` handler calls.
     /// Returns the final transfer.
