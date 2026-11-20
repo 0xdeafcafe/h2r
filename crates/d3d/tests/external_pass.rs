@@ -123,6 +123,53 @@ fn the_pass_comes_through_the_render_thread() {
 }
 
 #[test]
+fn native_pass_and_deferred_draw_keep_bound_surfaces_after_settings_changes() {
+    use d3d::{Lighting, ScaledBackend, TargetCopy};
+
+    let Some(reference) = backend() else { return };
+    let display = GfxBackend::new(app::share_context(&reference.ctx));
+    let mut scaled = ScaledBackend::new(reference, display, 4).unwrap();
+    scaled.follow_scale(|| 1);
+    let threaded = ThreadedBackend::new(scaled).unwrap();
+    let (mut d, mut m) = create_copy_swap(threaded, UploadPolicy::Always);
+    let back = d.back_buffer().unwrap();
+    set_states(&mut d, &mut m);
+    d.set_vertex_shader(&mut m, gfx::vertex::fvf::XYZRHW | gfx::vertex::fvf::DIFFUSE)
+        .unwrap();
+
+    for lighting in [Lighting::Retail, Lighting::E3] {
+        d.backend
+            .with_inner(move |b| b.follow_lighting(move || lighting))
+            .unwrap();
+        d.swap(&mut m, 0).unwrap();
+        assert_eq!(d.back_buffer(), Some(back));
+
+        let got: Got = Arc::default();
+        d.request_external_pass(Box::new(Probe(Arc::clone(&got))));
+        d.drain_until_callback(&mut m).unwrap();
+        inline_quad(&mut m, 0., 0., 8., 8., [0, 255, 0, 255]);
+        d.commit(&mut m).unwrap();
+
+        // Wait for both queued draws. The render thread latches any lookup
+        // of a retired surface, even if the guest got through commit first.
+        let drawn = d.backend
+            .with_surface(back, |b, s| {
+                Ok(pixel(&b.reference_mut().read_color(s.reference)?.0, 4, 4))
+            })
+            .unwrap();
+        assert_eq!(drawn, [0, 255, 0, 255]);
+        let copies: Vec<_> = got.lock().unwrap().iter()
+            .map(|s| (s.copy, s.sizes.1))
+            .collect();
+        let mut expected = vec![(TargetCopy::Reference, (W, H))];
+        if lighting == Lighting::E3 {
+            expected.push((TargetCopy::Display, (W, H)));
+        }
+        assert_eq!(copies, expected);
+    }
+}
+
+#[test]
 fn the_interpolating_backend_passes_it_on() {
     let Some(b) = backend() else { return };
     run(ThreadedBackend::new(InterpBackend::new(b, || 0)).unwrap());

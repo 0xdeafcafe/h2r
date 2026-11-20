@@ -203,8 +203,9 @@ pub trait ScaleView<R: Backend>: Backend {
 pub struct ScaledSurface<R, V> {
     /// The reference's surface.
     pub reference: R,
-    /// The view's scaled surface; `None` for a surface only the reference
-    /// keeps (or one the view failed to make).
+    /// The original view handle. Resolve it through [`ScaledBackend::view_surface`]
+    /// before use, since a scale change replaces the view's allocation.
+    /// `None` for a surface only the reference keeps.
     pub view: Option<V>,
     /// Guest size.
     pub size: (u32, u32),
@@ -1634,7 +1635,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         request: crate::backend::DepthGridRequest,
         sink: crate::backend::DepthGridSink,
     ) -> Result<bool, String> {
-        match surface.view {
+        match self.view_surface(&surface) {
             Some(v) => self.view.request_depth_grid(v, request, sink),
             None => self.reference.request_depth_grid(surface.reference, request, sink),
         }
@@ -1708,7 +1709,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
             return Ok(false);
         }
         shared.1 = crate::TargetCopy::Display;
-        if let (Some(c), Some(d)) = (color.view, depth.view)
+        if let (Some(c), Some(d)) = (self.view_surface(&color), self.view_surface(&depth))
             && !self.view.external_pass(c, d, view, request, Box::new(shared))?
         {
             self.view_failed("external pass", "the view backend refused it".to_string());

@@ -909,6 +909,49 @@ fn the_scale_changes_at_a_frame_boundary_with_no_fallback_frames() {
 }
 
 #[test]
+fn depth_grid_uses_the_active_depth_surface_after_settings_changes() {
+    let Some(ctx) = context() else { return };
+    if !ctx.caps.depth32_stencil8 {
+        return;
+    }
+    let mut b = scaled(&ctx, 4);
+    b.reference_mut().set_swap_finish(d3d::SwapFinish::Full);
+    b.view_mut().set_swap_finish(d3d::SwapFinish::Full);
+    let color = b.create_surface(gfx::D3DFormat::LinA8R8G8B8, W, H, false)
+        .unwrap();
+    let depth = b.create_surface(gfx::D3DFormat::LinD24S8, W, H, true)
+        .unwrap();
+    b.follow_scale(|| 1);
+    b.present(color, 4).unwrap();
+
+    for (lighting, expected) in [(d3d::Lighting::Retail, 0.25), (d3d::Lighting::E3, 0.75)] {
+        b.set_lighting(lighting);
+        let clear = |value| gfx::Clear { depth: Some(value), ..gfx::Clear::NONE };
+        b.reference_mut()
+            .clear(color.reference, Some(depth.reference), clear(0.25))
+            .unwrap();
+        // Distinguish which copy was read when E3 wakes the 1x view.
+        if let (Some(c), Some(z)) = (b.view_surface(&color), b.view_surface(&depth)) {
+            b.view_mut().clear(c, Some(z), clear(0.75)).unwrap();
+        }
+        let request = d3d::DepthGridRequest {
+            tag: 1,
+            rect: (0, 0, W, H),
+            surface_size: (W, H),
+            width: 1,
+            height: 1,
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let sink: d3d::DepthGridSink = Arc::new(move |r| tx.send(r.depth).unwrap());
+        assert!(b.request_depth_grid(depth, request, sink).unwrap());
+        b.present(color, 4).unwrap();
+        let grid = rx.try_recv().expect("full present delivers the grid");
+        assert_eq!(grid.len(), 1);
+        assert!((grid[0] - expected).abs() < 1e-6, "{lighting:?}: {grid:?}");
+    }
+}
+
+#[test]
 fn on_the_render_thread_the_change_is_made_there_and_shown_at_once() {
     let Some(ctx) = context() else { return };
     let (_, _, expect) = frame(GfxBackend::new(share(&ctx)));
