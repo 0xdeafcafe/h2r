@@ -74,7 +74,12 @@ pub fn killing_damage(
     }
     // Four kill arguments + return PC, four saved registers and 0x50
     // bytes of locals separate us from attribution's return PC.
-    if memory.u32(esp.checked_add(0x74)?).ok()? != RETURN_TO_DAMAGE_REPORT {
+    let caller = memory.u32(esp.checked_add(0x74)?).ok()?;
+    if caller != RETURN_TO_DAMAGE_REPORT {
+        static UNEXPECTED_CALLER: std::sync::Once = std::sync::Once::new();
+        UNEXPECTED_CALLER.call_once(|| {
+            eprintln!("PLAYER_KILLED: unknown attribution caller {caller:#010x}, omitting damage source");
+        });
         return None;
     }
     // The attribution prologue saved the damage reporter's EDI here.

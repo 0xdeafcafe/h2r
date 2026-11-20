@@ -136,6 +136,7 @@ describe("game art keys", () => {
     expect(weaponKey("Sniper Rifle")).toBe("weapon/sniper_rifle");
     expect(weaponKey("beam-rifle")).toBe("weapon/beam_rifle");
     expect(weaponKey("sentinel beam")).toBe("weapon/sentinel_beam");
+    expect(weaponKey("sentinel_rpg")).toBeNull();
     expect(weaponKey("rocket")).toBe("weapon/rocket_launcher");
     expect(weaponKey("smg")).toBe("weapon/smg");
     expect(weaponKey("Submachine Gun")).toBe("weapon/smg");

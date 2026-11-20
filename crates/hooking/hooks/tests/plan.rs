@@ -251,14 +251,14 @@ fn a_cycle_is_refused() {
 fn a_before_on_an_opaque_point_is_refused() {
     let mut r = Registry::new(Switches::defaults());
     r.add(&from_fn("x", |b| {
-        noop_before(b, &points::GAME_END);
+        noop_before(b, &points::PLAYER_KILLED);
         Ok(())
     }))
     .unwrap();
     assert_eq!(
         r.build(&Base).err().unwrap(),
         [Conflict::BeforeOnOpaque {
-            point: "GAME_END",
+            point: "PLAYER_KILLED",
             feature: "x"
         }]
     );

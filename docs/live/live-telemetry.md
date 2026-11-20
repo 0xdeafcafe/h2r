@@ -27,7 +27,9 @@ At `guest_layout::points::PLAYER_KILLED`, the killer is the player who
 receives credit. The weapon and headshot flag come from the damage report
 that depleted the victim's body. These can have different sources. For
 example, a player can earn credit for an opponent's fall after shooting
-them. The kill then carries the shooter's slot and the source `fall`.
+them. The kill then carries the shooter's slot and the source `fall`,
+with no headshot flag. The observer reads the raw stack at this opaque hook
+point, preserving the hook signature recorded in player films.
 The same read identifies a delayed projectile after a weapon switch or a
 thrower's death, and preserves the grenade type on a self-kill. A missing
 or unrecognised source leaves the damage fields absent and preserves the kill.

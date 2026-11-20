@@ -559,10 +559,10 @@ export function HomeView(props: { win: StatsWindow; week: StatsSummary | null; w
                     </section>
                     <section class="s-sec">
                       <header><h3>Most Used Weapons</h3><small>kills</small></header>
-                      <Bars rows={weaponRows()} value={(w) => w.kills} name={(w) => damageSourceName(w.weapon)} unit="kills" empty={`No kills ${label()}.`}
+                      <Bars rows={weaponRows()} value={(w) => w.kills} name={(w) => damageSourceName(w.weapon)} unit="kills" empty={`No weapon kills ${label()}.`}
                         label={(w) => <span class="s-who"><WeaponIcon weapon={w.weapon} width={34} />{damageSourceName(w.weapon)}</span>} />
                       <Show when={weaponRows().length}>
-                        <p class="s-sec-foot">{shares(s().weapons, (w) => w.kills, 1).map((x) => `${damageSourceName(x.row.weapon)}: ${x.pct}% of kills`)[0]}</p>
+                        <p class="s-sec-foot">{shares(s().weapons, (w) => w.kills, 1).map((x) => `${damageSourceName(x.row.weapon)}: ${x.pct}% of weapon kills`)[0]}</p>
                       </Show>
                     </section>
                   </div>

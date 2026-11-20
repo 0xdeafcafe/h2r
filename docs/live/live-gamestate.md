@@ -435,7 +435,8 @@ attribution entry `EDI` still holds the report. The prologue saves it at
 `[esp+0x1c]`. The guest-layout reader checks both sites and the depletion
 flag before using the report's code and owner. The attribution argument
 slot for the incoming code is reused as an assist counter at
-`0x001ea2c7`. A read fault on this path leaves the source unknown. A
+`0x001ea2c7`. An unrecognised return to the damage reporter emits one diagnostic.
+A read fault or unrecognised return on this path leaves the source unknown. A
 direct call outside attribution supplies its own damage code in argument
 four. A delayed grenade keeps its identity if its owner switches weapons
 or dies, and a fall still reports falling when another player earns credit.

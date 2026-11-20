@@ -646,6 +646,9 @@ game-only: no row of their own (a rostered bot's xuid included), and a
 knockout with a bot on either side counts in the totals, maps and weapons
 but in nobody's row: a human's kill of a bot is not a career kill, nor a
 death to a bot a career death. The game record keeps every one of them.
+A credited environmental death counts toward kills for the player and map.
+Weapon rankings omit falls, collisions, splatters, guardians, teleporters
+and explosions with no identified weapon.
 `activity` lists hours with any game starts or kills, within the window
 and at most 30 days back. Headshots are available on individual kills when
 reported. The summary has no headshot or medal totals.
@@ -1989,7 +1992,8 @@ Settled after the first client was built against this page.
    `frag_grenade`, `melee` or `fall`. It can also identify the cause of a
    suicide or world death. The credited `killer` may have damaged a player
    who later fell. In that case `weapon` describes the fall. `headshot`
-   is a boolean when the source reports the modifier. Both fields are
+   is a boolean for identified weapons and is absent for environmental or
+   unattributed damage. Both fields are
    optional in the event log and the `kills` array returned by
    `GET /v1/games/{id}`. An absent field means unknown.
 10. **Who writes a game** (2026-11-18). The server trusts the host's

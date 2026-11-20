@@ -97,7 +97,7 @@ pub(crate) struct Kill {
     pub tick: u64,
     pub attacker: Option<u32>,
     pub victim: u32,
-    pub source: Option<(&'static str, bool)>,
+    pub source: Option<crate::layout::KillSource>,
     pub object: Option<ObjectState>,
     /// A HaloScript cinematic was playing: the kill is not counted.
     pub cinematic: bool,

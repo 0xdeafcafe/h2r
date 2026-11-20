@@ -207,7 +207,7 @@ const WEAPONS: Array<[RegExp, string]> = [
   [/plasma ?pistol/, "plasma_pistol"],
   [/plasma ?rifle/, "plasma_rifle"],
   [/beam ?rifle/, "beam_rifle"],
-  [/sentinel/, "sentinel_beam"],
+  [/sentinel ?beam|^sentinel$/, "sentinel_beam"],
   [/sniper/, "sniper_rifle"],
   [/rocket/, "rocket_launcher"],
   [/\bsmg\b|sub ?machine/, "smg"],

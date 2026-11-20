@@ -448,15 +448,18 @@ impl Telemetry {
         self.submit(Work::End(Box::new(snapshot)))
     }
 
-    fn kill(
-        &self,
-        guest: &runtime::Guest,
-        attacker: u32,
-        victim: u32,
-        esp: u32,
-        credited_damage: Option<u8>,
-    ) -> Result<(), String> {
+    fn kill(&self, guest: &runtime::Guest, esp: u32) -> Result<(), String> {
         use guest_layout::damage::{KillingDamage, killing_damage};
+
+        let (Ok(attacker), Ok(victim)) = (
+            guest.u32(esp.wrapping_add(4)),
+            guest.u32(esp.wrapping_add(8)),
+        ) else {
+            self.dropped_film_sample("kill");
+            return Ok(());
+        };
+        // Only the low byte of the fourth argument is initialized.
+        let credited_damage = guest.u8(esp.wrapping_add(0x10)).ok();
         let tick = match memory::game_tick(guest) {
             Ok(tick) => tick,
             Err(fault) => return self.missing_sample("kill_clock", fault),
@@ -565,15 +568,7 @@ impl ::hooks::Feature for TelemetryFeature {
         b.raw()
             .observe_before(&points::PLAYER_KILLED, "kill", move |o| {
                 if t.disabled() { return; }
-                let (Some(attacker), Some(victim)) = (o.arg_u32("attacker"), o.arg_u32("victim"))
-                else {
-                    t.dropped_film_sample("kill");
-                    return;
-                };
-                // Only the low byte of this stack slot is initialized. A
-                // missing source still leaves the attributed death observable.
-                let damage = o.arg_u32("damage").map(|slot| slot as u8);
-                t.protect(|| t.kill(&o.guest(), attacker, victim, o.cpu.esp, damage));
+                t.protect(|| t.kill(&o.guest(), o.cpu.esp));
             });
         // Observers only: nothing here writes the guest or feeds back into
         // it. The session is an outbound record of the run; a load winds
@@ -807,29 +802,35 @@ mod tests {
         assert_eq!(object.pos, [1.0, 2.0, 3.0]);
         telemetry.protect(|| telemetry.start(&guest));
         let esp = 0x1a0000;
-        let headshot = Some((1 << 6) | 10);
         guest.set_u32(esp, 0x2222).unwrap();
-        telemetry.protect(|| telemetry.kill(&guest, 0x80010000, 0x80010001, esp, headshot));
-        telemetry.protect(|| telemetry.kill(&guest, 0x80010000, 0x80010000, esp, Some(21)));
+        guest.set_u32(esp + 4, 0x80010000).unwrap();
+        guest.set_u32(esp + 8, 0x80010001).unwrap();
+        guest.set_u8(esp + 0x10, (1 << 6) | 10).unwrap();
+        telemetry.protect(|| telemetry.kill(&guest, esp));
+        guest.set_u32(esp + 8, 0x80010000).unwrap();
+        guest.set_u8(esp + 0x10, 21).unwrap();
+        telemetry.protect(|| telemetry.kill(&guest, esp));
         // A different player earns credit for earlier rifle damage, but
         // the final hit was an unowned collision with the world.
         use guest_layout::damage::{DEPLETING, DamageReport};
         use points::kill_credit::{RETURN_TO_ATTRIBUTION, RETURN_TO_DAMAGE_REPORT};
         let report = 0x1b0000;
+        guest.set_u32(esp + 8, 0x80010001).unwrap();
+        guest.set_u8(esp + 0x10, (1 << 6) | 10).unwrap();
         guest.set_u32(esp, RETURN_TO_ATTRIBUTION).unwrap();
         guest.set_u32(esp + 0x74, RETURN_TO_DAMAGE_REPORT).unwrap();
         guest.set_u32(esp + 0x1c, report).unwrap();
         guest.set_u32(report + DamageReport::FLAGS.offset, DEPLETING).unwrap();
         guest.set_u8(report + DamageReport::CODE.offset, 2).unwrap();
         guest.set_u32(report + DamageReport::OWNER_PLAYER.offset, u32::MAX).unwrap();
-        telemetry.protect(|| telemetry.kill(&guest, 0x80010000, 0x80010001, esp, headshot));
+        telemetry.protect(|| telemetry.kill(&guest, esp));
         // In a cutscene the scripts' kills are not counted, and the tick's
         // frame is a marked, empty one.
         fixture::set_cinematic(&mut guest, true);
         guest
             .set_u32(fixture::TIME + layout::TIME_TICK, 10)
             .unwrap();
-        telemetry.protect(|| telemetry.kill(&guest, 0x80010000, 0x80010001, esp, headshot));
+        telemetry.protect(|| telemetry.kill(&guest, esp));
         telemetry.protect(|| telemetry.sample(&guest));
         assert!(!telemetry.disabled());
         drop(telemetry);
@@ -862,7 +863,7 @@ mod tests {
         assert_eq!(events[1]["data"]["headshot"], false);
         assert_eq!(events[2]["data"]["killer"], 0);
         assert_eq!(events[2]["data"]["weapon"], "collision");
-        assert_eq!(events[2]["data"]["headshot"], false);
+        assert!(events[2]["data"].get("headshot").is_none());
         let _ = std::fs::remove_file(path);
     }
 
