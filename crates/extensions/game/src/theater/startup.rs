@@ -195,9 +195,29 @@ type Values = BTreeMap<String, String>;
 
 #[derive(Serialize, Deserialize)]
 struct Settings {
+    // Private guest-menu state, separate from raster size and fingerprints.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    video_menu: Option<VideoMenu>,
     values: Values,
     locked: Values,
     profiles: BTreeMap<String, Values>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct VideoMenu {
+    saved: String,
+    locked: Option<String>,
+}
+
+impl VideoMenu {
+    fn capture(store: &settings::Store) -> Self {
+        let def = &setting_defs::RESOLUTION;
+        let state = store.state(def.key).expect("registered Video setting");
+        Self {
+            saved: def.name(state.saved),
+            locked: state.locked.then(|| def.name(state.value)),
+        }
+    }
 }
 
 impl Settings {
@@ -231,6 +251,7 @@ impl Settings {
             })
             .collect();
         Self {
+            video_menu: None,
             values,
             locked,
             profiles,
@@ -277,6 +298,19 @@ impl Settings {
             Ok(table)
         };
         let mut table = table_of(&self.values)?;
+        let mut menu_flag = None;
+        if let Some(menu) = &self.video_menu {
+            ensure!(!mount_settings, "Video menu belongs to the guest UI");
+            let def = &setting_defs::RESOLUTION;
+            let saved = def.parse(&menu.saved).map_err(anyhow::Error::msg)?;
+            let (section, field) = def.table_key();
+            table.entry(section).or_insert_with(|| toml::Value::Table(toml::Table::new()))
+                .as_table_mut().context("invalid Video settings")?.insert(field.into(), def.to_toml(saved));
+            if let Some(locked) = &menu.locked {
+                def.parse(locked).map_err(anyhow::Error::msg)?;
+                menu_flag = Some(settings::Flag { key: def.key.into(), value: locked.clone(), flag: "film" });
+            }
+        }
         let mut profiles = toml::Table::new();
         for (name, values) in &self.profiles {
             profiles.insert(name.clone(), toml::Value::Table(table_of(values)?));
@@ -309,6 +343,7 @@ impl Settings {
                 value: value.clone(),
                 flag: "film",
             })
+            .chain(menu_flag)
             .collect::<Vec<_>>();
         let (store, errors) = settings::Store::load(&defs, Some(path), &|_| None, &flags);
         ensure!(errors.is_empty(), "invalid film settings: {errors:?}");
@@ -331,6 +366,16 @@ impl Startup {
     /// legacy render scale and LOD Distance. Viewer raster size is separate.
     pub fn legacy_lod_multiplier(&self) -> Option<f32> {
         self.host_settings.as_ref().unwrap_or(&self.data_settings).legacy_lod_multiplier()
+    }
+
+    pub(super) fn tapes_video_menu<R: Read + Seek>(reader: &mut film::Reader<R>) -> Result<bool> {
+        #[derive(Deserialize)]
+        struct MenuSettings { video_menu: Option<VideoMenu> }
+        #[derive(Deserialize)]
+        struct MenuBoot { host_settings: Option<MenuSettings> }
+        let entry = reader.machine_section().unique(BOOT)?.clone();
+        let boot: MenuBoot = reader.read(&entry)?;
+        Ok(boot.host_settings.and_then(|settings| settings.video_menu).is_some())
     }
 
     pub fn read<R: Read + Seek>(reader: &mut film::Reader<R>) -> Result<Option<Self>> {
@@ -554,7 +599,11 @@ impl Session {
                     dsound: opts.dsound,
                     bink: opts.bink,
                     data_settings: Settings::capture(&setting_defs::load(&opts.data_root, &[]).0),
-                    host_settings: host.settings.as_deref().map(Settings::capture),
+                    host_settings: host.settings.as_deref().map(|store| {
+                        let mut saved = Settings::capture(store);
+                        saved.video_menu = self.video_menu.get().map(|s| VideoMenu::capture(s));
+                        saved
+                    }),
                 },
             )
         };
@@ -660,6 +709,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("film-lod-{}", live_proto::sign::random_id()));
         std::fs::create_dir(&root).unwrap();
         let mut film = Settings {
+            video_menu: None,
             values: BTreeMap::from([("graphics.render_scale".into(), "2".into())]),
             locked: BTreeMap::from([("graphics.render_scale".into(), "3".into())]),
             profiles: BTreeMap::new(),
@@ -678,6 +728,33 @@ mod tests {
         assert!(saved.contains("lod_distance"));
         film.locked.insert("graphics.render_scale".into(), "bad".into());
         assert!(film.install(&root.join("bad.toml"), true).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn video_menu_captures_only_the_local_guest_ui_choice_and_override() {
+        let root = std::env::temp_dir().join(format!("film-menu-{}", live_proto::sign::random_id()));
+        std::fs::create_dir(&root).unwrap();
+        for (i, locked) in [None, Some("native")].into_iter().enumerate() {
+            let original = root.join(format!("source-{i}.toml"));
+            std::fs::write(&original, "[graphics]\nresolution = '3440x1440'\n").unwrap();
+            let flags: Vec<_> = locked.into_iter().map(|v| settings::Flag {
+                key: setting_defs::RESOLUTION.key.into(), value: v.into(), flag: "film",
+            }).collect();
+            let (store, problems) = settings::Store::load(&setting_defs::defs(), Some(&original), &|_| None, &flags);
+            assert!(problems.is_empty());
+            let mut s = Settings::capture(&store);
+            assert!(serde_json::to_value(&s).unwrap().get("video_menu").is_none());
+            assert!(!s.values.contains_key(setting_defs::RESOLUTION.key));
+            s.video_menu = Some(VideoMenu::capture(&store));
+            let replay = s.install(&root.join(format!("guest-{i}.toml")), false).unwrap();
+            let key = setting_defs::RESOLUTION.key;
+            let (before, after) = (store.state(key).unwrap(), replay.state(key).unwrap());
+            assert_eq!((before.saved, before.shown, before.locked), (after.saved, after.shown, after.locked));
+            assert!(s.install(&root.join(format!("data-{i}.toml")), true).is_err());
+            s.video_menu.as_mut().unwrap().saved = "90000x800".into();
+            assert!(s.install(&root.join(format!("bad-{i}.toml")), false).is_err());
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 

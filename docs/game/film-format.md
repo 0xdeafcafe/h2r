@@ -242,11 +242,12 @@ million entries. JSON payloads are UTF-8.
 | `DESC` | Match header, including first match tick, mounted map identity and SHA-256, package/cache source if present, retail variant bytes, game type, mode, difficulty, skulls, seed and host identity. The initial roster uses absolute seats, names, optional XUIDs, teams, local/remote/phantom/bot kinds and available bot parameters. The bot kind remains readable in older descriptors. Current hosts use phantom seats for bots. Late arrivals have a join event. |
 | `INPT` | Binary block of consecutive completed ticks, including actions, events and post-tick hashes. |
 | `PADR` | Indexed local XInput calls. Records the actual guest result and returned state, including packet number. Covers menu input and reads between ticks. Phantom actions use `BTAP`. |
+| `VSIZ` | Physical width and height observed by the local guest when it draws the Resolution row or opens its picker. |
 | `TEXT` | Virtual keyboard edit at the focused guest keyboard, including profile-name entry. Uses the common call cursor and the UI thread ID. |
 | `BTAP` | Call-indexed results of the phantom bot action builder, including guest cold-animation requests. |
 | `BOTR` | Sparse bot roster changes at management boundaries. Current hosts record phantom seats. |
 | `PDEV` | Sparse controller connection changes by input-pump ordinal, including port, generation and rumble capability. |
-| `NETR`, `RAND` | Batches of host boundary calls interleaved by a common call index with `PADR`, `TEXT` and `BTAP`. Records operation, arguments, thread, return/error and output slots. Socket delivery, send results and random draws retain their original ordering. |
+| `NETR`, `RAND` | Batches of host boundary calls interleaved by a common call index with `PADR`, `TEXT`, `BTAP` and `VSIZ`. Records operation, arguments, thread, return/error and output slots. Socket delivery, send results and random draws retain their original ordering. |
 | `MARK` | Accepted lobby operations by executor boundary, D3D snapshot boundaries, bookmarks or the final mark with slice, tick and call count. |
 | `HASH` | Every 30 completed ticks, the arena digest if available and the HLE call cursor. Additional per-tick gameplay digests live in `INPT`. |
 | `KEYF` | Scheduler-boundary snapshot and cursors, described below. |
@@ -496,6 +497,15 @@ the viewer chooses the window resolution. A v3 local film can display
 one split-screen viewport. Its guest-pixel edges map onto the displayed
 raster so the selection tracks resolution changes. The slot is the player's
 seat in the film roster.
+
+When playback reaches the Video screen, its Resolution row and picker
+reproduce the recording's choices and physical size, including window resizes
+during recording. The private boot settings preserve the guest row's initial
+selection and lock. Keyframes save completed resolution changes. The recorder
+defers a seek point while the Resolution picker is held on the Video screen. The
+playback window uses its own resolution throughout.
+Older films without this menu metadata cannot reproduce the dimensions of a
+recorded picker.
 
 For a local GPU recording, `--render-every 0` runs the reference offscreen
 in the desktop player. CPU recordings and playerless hosts retain their

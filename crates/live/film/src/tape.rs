@@ -12,6 +12,9 @@ pub const TEXT: Tag = *b"TEXT";
 pub const BTAP: Tag = *b"BTAP";
 /// Sparse changes to the host's bot membership and controller-port assignments.
 pub const BOTR: Tag = *b"BOTR";
+/// Physical drawable observations made by the guest Video screen.
+pub const VSIZ: Tag = *b"VSIZ";
+pub const VIDEO_MENU_SIZE: &str = "Video.MenuSize";
 pub const PDEV: Tag = *b"PDEV";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,7 +134,7 @@ impl Playback {
                 "unexpected data after film end"
             );
             match e.tag {
-                crate::NETR | crate::RAND | PADR | TEXT | BTAP => streams.push_back(e),
+                crate::NETR | crate::RAND | PADR | TEXT | BTAP | VSIZ => streams.push_back(e),
                 crate::DATA => data += 1,
                 crate::HASH => {
                     let check: Check = reader.read(&e)?;
@@ -243,7 +246,9 @@ impl Playback {
                 batch
                     .iter()
                     .all(|c| {
-                        let tag = if c.op == "Bot.BuildAction" {
+                        let tag = if c.op == VIDEO_MENU_SIZE {
+                            VSIZ
+                        } else if c.op == "Bot.BuildAction" {
                             BTAP
                         } else if c.op == "VirtualKeyboard" {
                             TEXT

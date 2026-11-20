@@ -624,7 +624,11 @@ visibility count the guest has already consumed. The same reference applies
 when the user requests single-copy mode.
 
 Resolution is a Host setting. A film viewer chooses the display raster
-independently of the recorded guest. For protected sessions, the guest
+independently of the recorded guest. The Video row itself writes its label
+into guest memory. Local films record each size the row or picker observes so
+replaying a trip through Settings shows the same choices on another monitor.
+See [film playback](../game/film-format.md#choosing-a-players-view).
+For protected sessions, the guest
 uses retail LOD distances independent of the viewer's output height or
 LOD preference. Older films that record the scalar render scale and LOD
 selection reproduce the corresponding startup multiplier. A legacy film's

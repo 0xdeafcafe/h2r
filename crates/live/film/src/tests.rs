@@ -472,12 +472,17 @@ fn machine_seek_resumes_at_next_hle_call_and_lobby_boundary() {
     w.chunk(MARK, &lobby(10)).unwrap();
     w.chunk(MARK, &Mark::D3dBarrier { slices: 64, tick: 31, saved: true }).unwrap();
     w.chunk(RAND, &vec![call(1)]).unwrap();
+    let size = Call {
+        index: 2, op: tape::VIDEO_MENU_SIZE.into(), thread: 0, args: vec![],
+        result: Ok((3440 << 16) | 1440), outputs: vec![],
+    };
+    w.chunk(tape::VSIZ, &[&size]).unwrap();
     w.chunk(
         MARK,
         &Mark::End {
             slices: 70,
             tick: 31,
-            calls: 2,
+            calls: 3,
         },
     )
     .unwrap();
@@ -502,6 +507,7 @@ fn machine_seek_resumes_at_next_hle_call_and_lobby_boundary() {
     assert!(tape.checks.is_empty());
     assert_eq!(tape.lobby.pop_front().unwrap().0, 10);
     assert_eq!(tape.call(1, "Random", &[4], 1).unwrap(), call(1));
+    assert_eq!(tape.call(2, tape::VIDEO_MENU_SIZE, &[], 0).unwrap(), size);
     assert!(tape.exhausted());
 }
 

@@ -559,10 +559,17 @@ fn run_configured(
     // The Video row on the Settings list opens our Video screen
     // (docs/game/settings-menu.md).
     let model = match host.settings.clone() {
-        Some(store) => Some(Arc::new(
-            video_screen::model_with_native_size(store, video_screen::Switches::PLATFORM, native_size)
-                .map_err(anyhow::Error::msg)?,
-        )),
+        Some(store) => {
+            // The guest draws the picker's labels. Replay those observations
+            // independently of the viewer's presentation size.
+            let menu_size = match &film {
+                Some(session) => session.video_menu_size(native_size, &store)?,
+                None => native_size,
+            };
+            Some(Arc::new(video_screen::model_with_native_size(
+                store, video_screen::Switches::PLATFORM, menu_size,
+            ).map_err(anyhow::Error::msg)?))
+        }
         None => None,
     };
     // More than one campaign (docs/halo1/campaign-picker.md): campaigns
