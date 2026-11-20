@@ -5,6 +5,13 @@ use hs::h1_conversation::{ACTOR_CAPACITY, ROLE_STRIDE};
 
 pub(super) const ACTORS: u32 = 0x004f_55f0;
 pub(super) const UNIT_ACTOR: u32 = 0x12c;
+pub(super) const ACTOR_FOCUS: u32 = 0x338;
+const PROP_REFERENCES: u32 = 0x0050_2418;
+const PROPS: u32 = 0x0050_241c;
+const FIRST_PROP: u32 = 0x58;
+const PROP_TYPE: u32 = 0x18;
+const PROP_RECOGNITION: u32 = 0x27;
+const NEXT_PROP: u32 = 0x2c;
 const UNIT_TEAM: u32 = 0x138;
 pub(super) const ACTOR_UNIT: u32 = 0x18;
 pub(super) const ACTOR_COMMAND_STACK: u32 = 0x858;
@@ -160,6 +167,45 @@ pub(super) fn actor_handle(m: &dyn GuestMemory, unit: u32) -> Result<Option<u32>
         return Ok(None);
     };
     Ok((m.u32(actor + ACTOR_UNIT)? == unit).then_some(handle))
+}
+
+pub(super) fn focusing_on_traitor(m: &dyn GuestMemory, actor: u32) -> Result<bool, MemFault> {
+    let Some(reference) = datum(m, PROP_REFERENCES, m.u32(actor + ACTOR_FOCUS)?)? else {
+        return Ok(false);
+    };
+    let Some(prop) = datum(m, PROPS, m.u32(reference + 8)?)? else {
+        return Ok(false);
+    };
+    Ok(m.u8(prop + 0x23)? != 0)
+}
+
+pub(super) fn sees_hostile_group(m: &dyn GuestMemory, actor: u32) -> Result<bool, MemFault> {
+    let mut count = 0;
+    let mut id = m.u32(actor + FIRST_PROP)?;
+    while let Some(prop) = datum(m, PROP_REFERENCES, id)? {
+        if matches!(m.u16(prop + PROP_TYPE)?, 1 | 6) && m.u8(prop + PROP_RECOGNITION)? >= 2 {
+            count += 1;
+            if count == 5 {
+                return Ok(true);
+            }
+        }
+        let next = m.u32(prop + NEXT_PROP)?;
+        if next == id {
+            break;
+        }
+        id = next;
+    }
+    Ok(false)
+}
+
+pub(super) fn mounted(m: &dyn GuestMemory, body: u32) -> Result<bool, MemFault> {
+    if m.u16(body + 0x1fc)? == u16::MAX {
+        return Ok(false);
+    }
+    let Some(vehicle) = object_address(m, m.u32(body + OBJECT_PARENT)?)? else {
+        return Ok(false);
+    };
+    Ok(m.u8(vehicle + 0xaa)? == 1)
 }
 
 /// The gunner owns a normal vehicle shot. A collision belongs to the driver.

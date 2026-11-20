@@ -2959,6 +2959,12 @@ pub const DIALOGUE: &[(usize, &str)] = &[
     (0x840, "srchstart"),        // searchstart
     (0x870, "srch_allclr"),      // searchreport, event 46 search completion
     (0x870, "prst_allclr"),      // searchreport, event 48 pursuit completion
+    (0x880, "prstfail_nospc"),   // searchabandon, cannot take the pursuit position
+    (0x880, "prstfail_agg"),     // aggressive variant
+    (0x880, "prstfail_notme"),   // searchabandon, another actor takes the pursuit
+    (0x880, "prstfail_tim"),     // timid variant
+    (0x880, "prstfail_nopts"),   // searchabandon, no valid point
+    (0x880, "prstfail_nopts_tim"),
     (0x8c0, "newordr_advance"),  // advance
     (0x8e0, "newordr_retreat"),  // retreat
     (0x950, "grt_plr"),          // sightedfriendlyplayer, event 163

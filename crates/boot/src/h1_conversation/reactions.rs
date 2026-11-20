@@ -365,7 +365,7 @@ fn kill(
     witness(m, queue, victim, attacker, allied)
 }
 
-fn actor_notice(
+pub(super) fn actor_notice(
     m: &mut dyn GuestMemory,
     queue: Queue,
     actor_id: u32,

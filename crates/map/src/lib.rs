@@ -185,5 +185,10 @@ pub const H1_KILLING_SPREE_REPLY_LINE: usize = 0x5d0;
 /// Notices that lack an authored Halo 2 vocalization or have a separate
 /// source remark at the same native event.
 pub const fn h1_actor_notice_line(offset: usize) -> bool {
-    matches!(offset, 0x720 | 0xa50)
+    matches!(offset, 0x720 | 0xa50 | 0xb70)
+}
+
+/// Remarks selected by the original firing-burst conditions.
+pub const fn h1_firing_line(offset: usize) -> bool {
+    matches!(offset, 0x960 | 0x970 | 0x980 | 0x990 | 0x9a0)
 }

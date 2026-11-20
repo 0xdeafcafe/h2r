@@ -850,6 +850,14 @@ fn automatic_damage_dialogue_has_retail_trigger_evidence() {
     assert_eq!(u16_at(spree, 0), 1);
     assert_eq!(u16_at(spree, 4), slot(map::H1_KILLING_SPREE_LINE));
     assert_eq!(h1.bytes_at(0x0004_155f, 3).unwrap(), &[0x83, 0xc1, 120]);
+    let firing = h1.bytes_at(0x001e_f5e8, 5 * 0x28).unwrap();
+    for (i, row) in firing.chunks_exact(0x28).enumerate() {
+        assert_eq!(u16_at(row, 0), 26 + i as u16);
+        assert_eq!(u16_at(row, 4), slot(0x960 + i * 0x10));
+    }
+    let leap = h1.bytes_at(0x001e_f9d0, 0x28).unwrap();
+    assert_eq!(u16_at(leap, 0), 47);
+    assert_eq!(u16_at(leap, 4), slot(0xb70));
     let responses = h1.bytes_at(0x001e_fbd8, 45 * 0x24).unwrap();
     for (primary, response) in [
         (0x180, 0x190),

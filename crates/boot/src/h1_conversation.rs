@@ -11,6 +11,7 @@ use runtime::guest::Permissions;
 
 mod automatic;
 mod cast;
+mod combat;
 pub(crate) mod dialogue;
 mod leaders;
 mod reactions;
@@ -49,6 +50,7 @@ impl feature::Feature for Conversations {
         dialogue::install(b, pending);
         let reactions = reactions::install(b)?;
         automatic::install(b, reactions);
+        combat::install(b, reactions)?;
         search::install(b, reactions)?;
         let opcode = u32::from(BUILTINS[0].1);
         b.raw().before(

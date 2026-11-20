@@ -267,6 +267,8 @@ points! { ALL;
     AI_ACTOR_VOCALIZE @ 0x001f_b7e0: [fn(event: eax, actor: ecx, context: edx, object: stack 0, other: stack 1) -> al ret 8]; "docs/halo1/ai.md";
     /// Notifies the AI when native dismount action 29 has been accepted.
     AI_DISMOUNT_NOTICE @ 0x001b_ba20: [fn(actor: eax) ret 0]; "docs/halo1/ai.md";
+    /// Enters the leaping variant of the native melee charge.
+    AI_MELEE_LEAP_ENTER @ 0x001a_b380: [fn(actor: stack 0, state: stack 1) -> al ret 8]; "docs/halo1/ai.md";
     HS_CONVERSATION_MAP_DISPOSE @ 0x0020_9290: [fn() ret 0]; "docs/halo1/ai.md";
     /// `game_tick`: the per-tick phases, then the tick count. Called once per
     /// simulated tick by `game_update_ticks`.

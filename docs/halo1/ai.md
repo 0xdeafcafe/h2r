@@ -536,6 +536,22 @@ restoration event 196 at `0x1c9958`. The observer can use its exact
 alliance-break row, and the restored alliance uses the native
 forgiveness vocalization.
 
+**Built.** Halo 1 chooses its firing remark at `0x162a82`. It first
+checks berserk mode, then an enemy flagged as a traitor, then five
+or more recognized enemies, and finally whether the actor is seated
+in a vehicle. The Halo 2 burst hook at `0x1fe620` reads those
+conditions from the current actor, seat and perceived objects. Its
+timer follows the source remark's cooldown. The leap calls use a
+separate row. Halo 1 plays it after the leaping attack starts
+(`0x15ba89`), and Halo 2's leaping-melee entry callback at `0x1ab380`
+queues that row only after the action is accepted.
+
+**Built.** Search abandonment is stimulus 19 at `0x166ae3`, after
+a previous search attempt can no longer proceed. The Halo 2
+pursuit failure events distinguish no claimant, no position and no
+usable points. They use the original abandonment remark in the
+actor's current voice.
+
 Automatic stimuli without a verified route remain conversion errors
 (see [role-audit.md](role-audit.md#retail-gaps-that-stop-conversion)).
 
