@@ -38,7 +38,7 @@ fn vec3(b: &[u8], at: usize) -> [f32; 3] {
 fn bounds(b: &[u8], at: usize) -> [f32; 2] {
     [f32_at(b, at), f32_at(b, at + 4)]
 }
-fn name32(b: &[u8], at: usize) -> String {
+pub(crate) fn name32(b: &[u8], at: usize) -> String {
     let s = &b[at..at + 32];
     let end = s.iter().position(|&c| c == 0).unwrap_or(32);
     String::from_utf8_lossy(&s[..end]).into_owned()
@@ -1278,6 +1278,10 @@ pub fn attachments(map: &H1Map, b: &[u8]) -> Result<Vec<Attachment>> {
 pub struct Function {
     /// `+0`: bit 0 invert, bit 1 additive, bit 2 always active.
     pub flags: u32,
+    /// `+4`: period in seconds.
+    pub period: f32,
+    /// Authored wobble shape, period or magnitude at +0xe..+0x18.
+    pub wobble: bool,
     /// `+0xa`: 0 one, 1 zero, then the periodic shapes.
     pub function: u16,
     /// `+0xc`: 0 none, 1 to 4 A to D in, 5 to 8 A to D out.
@@ -1309,6 +1313,8 @@ pub fn functions(map: &H1Map, b: &[u8]) -> Result<Vec<Function>> {
         .into_iter()
         .map(|f| Function {
             flags: u32_at(f, 0),
+            period: f32_at(f, 4),
+            wobble: f[0xe..0x18].iter().any(|&b| b != 0),
             scale_period_by: u16_at(f, 8),
             function: u16_at(f, 0xa),
             scale_function_by: u16_at(f, 0xc),

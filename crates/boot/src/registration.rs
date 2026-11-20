@@ -174,9 +174,16 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     });
     let skulls_custom_on = skulls_custom::install(features, i.settings.clone(), telemetry.clone(), custom_maps)
         .context("installing our skulls")?;
-    features
-        .add(&crate::h1_particle_physics::H1ParticlePhysics)
-        .map_err(|e| anyhow::anyhow!("installing Halo 1 attachment particle physics: {e}"))?;
+    for effect in [
+        &crate::h1_particle_physics::H1ParticlePhysics as &dyn feature::Feature,
+        &crate::h1_flag::H1Flag,
+        &crate::h1_glow::H1Glow,
+        &crate::h1_lightning::H1Lightning,
+    ] {
+        features
+            .add(effect)
+            .map_err(|e| anyhow::anyhow!("installing {}: {e}", effect.manifest().id))?;
+    }
     features
         .add(&crate::h1_conversation::Conversations)
         .map_err(|e| {

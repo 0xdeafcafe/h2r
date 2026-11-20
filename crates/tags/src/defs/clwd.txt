@@ -1,0 +1,30 @@
+# Native cloth. Creation and pins 0x116980, 0x1171a0. Solver 0x117790,
+# 0x118140. Arrays checked against the retail Coagulation flag.
+group clwd 0x6c align 4
+  0x0 flags32 flags
+  0x4 string marker
+  0x8 tagref shader groups=shad
+  0x10 i16 columns
+  0x12 i16 rows
+  0x14 f32[2] spacing
+  0x1c unknown 0x2
+  0x1e i16 iterations
+  0x20 f32 gravity
+  0x24 f32 damping
+  0x28 f32 wind
+  0x2c f32 wind_perpendicular
+  0x30 f32 wind_period
+  0x34 unknown 0x18
+  0x4c block vertices 0x14 align 4
+    0x0 f32[3] position
+    0xc f32[2] uv
+  0x54 block triangles 0x2 align 4
+    0x0 i16 index
+  0x5c block strip 0x2 align 4
+    0x0 i16 index
+  0x64 block constraints 0x10 align 4
+    0x0 unknown 0x4
+    0x4 i16 a
+    0x6 i16 b
+    0x8 f32 rest_length
+    0xc f32 weight

@@ -11,6 +11,19 @@ use crate::Result;
 use crate::particles::{self, H1Contrail, H1Particle, H1ParticleState, H1ParticleType};
 
 impl Converter<'_> {
+    pub(super) fn source_point_physics(&mut self, id: h1map::TagId) -> Result<Option<TagId>> {
+        if id.is_none() {
+            return Ok(None);
+        }
+        let source = self.h1_tag(id)?;
+        let bytes = crate::h1::tag_bytes(self.h1, source, b"pphy", 0x34)?;
+        if let Some(id) = self.done.get(&source.id.0) {
+            return Ok(Some(*id));
+        }
+        let root = particles::point_physics(bytes)?;
+        self.cached(source, Converted { group: FourCC(*b"pphy"), root, raw: vec![] }).map(Some)
+    }
+
     /// A Halo 1 contrail as a Halo 2 `cont` ([`particles::contrail`]), its
     /// bitmap converted with `h1bitmaps`. Converted once.
     pub fn contrail(&mut self, tag: &Tag) -> Result<TagId> {
@@ -24,24 +37,7 @@ impl Converter<'_> {
         for point in &c.points {
             let r = h1map::TagRef::read(point, 0x10)
                 .ok_or(crate::Error::Truncated("contrail point physics"))?;
-            let id = if r.id.is_none() {
-                None
-            } else if let Some(id) = self.done.get(&r.id.0) {
-                Some(*id)
-            } else {
-                let source = self.h1_tag(r.id)?;
-                let bytes = crate::h1::tag_bytes(self.h1, source, b"pphy", 0x34)?;
-                let root = particles::point_physics(bytes)?;
-                Some(self.cached(
-                    source,
-                    Converted {
-                        group: FourCC(*b"pphy"),
-                        root,
-                        raw: vec![],
-                    },
-                )?)
-            };
-            physics.push(id);
+            physics.push(self.source_point_physics(r.id)?);
         }
         let root = particles::contrail(&c, bitmap, &physics)?;
         self.tree.reports.push(rep);

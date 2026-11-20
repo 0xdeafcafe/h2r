@@ -2033,6 +2033,8 @@ fn model_sphere_centres_the_model_box() {
 /// scaled by input `k`, bounded.
 fn h1_function(k: u16, bounds_mode: u16, bounds: [f32; 2]) -> crate::h1::Function {
     crate::h1::Function {
+        period: 1.0,
+        wobble: false,
         flags: 0,
         function: 0,
         scale_function_by: k,

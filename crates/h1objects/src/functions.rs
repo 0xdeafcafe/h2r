@@ -235,7 +235,12 @@ pub fn convert(
 
 /// Halo 1's function as a Halo 2 one, its export still empty.
 fn one(f: &h1::Function, inputs: &h1::FunctionInputs) -> Result<FunctionSpec, String> {
-    if f.function != 0 {
+    // The baton pulses its volume with a free-running cosine. Halo 2
+    // feeds a periodic object function elapsed game seconds (0xba9cb).
+    let pulse = f.function == 2 && f.period.is_finite() && f.period > 0.0
+        && f.scale_period_by == 0 && f.scale_function_by == 0 && f.bounds_mode <= 2
+        && f.bounds == [0.0, 1.0] && f.flags & !4 == 0 && !f.wobble;
+    if f.function != 0 && !pulse {
         return Err(format!("function {} is not one", f.function));
     }
     if f.add != 0 || f.scale_result_by != 0 || f.step_count > 1 || f.sawtooth_count > 1 {
@@ -248,10 +253,22 @@ fn one(f: &h1::Function, inputs: &h1::FunctionInputs) -> Result<FunctionSpec, St
         k => return Err(format!("scaled by output {}", k - 4)),
     };
     let data = match f.map_to {
+        0 if pulse => {
+            let set = [f.period.recip(), 0.0, 0.0, 1.0];
+            Function {
+                kind: FunctionType::Periodic,
+                flags: 0,
+                sub_types: [2, 2],
+                range: f.bounds,
+                unknown_0c: [0; 8],
+                payload: set.into_iter().chain(set).flat_map(f32::to_le_bytes).collect(),
+            }.to_bytes()
+        }
         0 => bounded(f)?,
         // The Sentinel's shield glow source: H1 0x8bf9e selects table
         // 2 (0x173c65, pow(x, 0.25)); H2 transition 2 uses the same curve.
-        2 if f.bounds_mode == 0
+        2 if !pulse
+            && f.bounds_mode == 0
             && f.bounds == [0.0, 1.0]
             && f.square_threshold == 0.0
             && (f.result_scale <= 0.0 || f.result_scale == 1.0) => Function {

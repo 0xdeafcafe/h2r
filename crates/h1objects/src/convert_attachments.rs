@@ -24,7 +24,35 @@ impl Converter<'_> {
         let mut notes = Vec::new();
         let functions = functions::convert(&h1::functions(self.h1, bytes)?, &inputs, &mut notes);
         let mut out = Vec::new();
-        for a in h1::attachments(self.h1, bytes)? {
+        let mut source_attachments = h1::attachments(self.h1, bytes)?;
+        for id in obj.widgets.iter().flatten() {
+            let tag = self.h1_tag(*id)?;
+            let group = tag.group.0.to_be_bytes();
+            if &group == b"elec" {
+                let b = h1::tag_bytes(self.h1, tag, &group, 0xb0)?;
+                for marker in h1::elements(self.h1, b, 0x98, 0xe4)? {
+                    source_attachments.push(h1::Attachment {
+                        group: tag.group,
+                        tag: Some(tag.id),
+                        marker: h1::name32(marker, 0).to_ascii_lowercase(),
+                        primary_scale: u16::from_le_bytes([b[0x2e], b[0x2f]]),
+                        secondary_scale: 0,
+                        change_colour: u16::from_le_bytes([b[0x30], b[0x31]]),
+                    });
+                }
+            } else if matches!(&group, b"mgs2" | b"glw!") {
+                let b = h1::tag_bytes(self.h1, tag, &group, 0x46)?;
+                source_attachments.push(h1::Attachment {
+                    group: tag.group,
+                    tag: Some(tag.id),
+                    marker: h1::name32(b, 0),
+                    primary_scale: if &group == b"mgs2" { u16::from_le_bytes([b[0x44], b[0x45]]) } else { 0 },
+                    secondary_scale: 0,
+                    change_colour: 0,
+                });
+            }
+        }
+        for a in source_attachments {
             let Some(id) = a.tag else { continue };
             let t = self.h1_tag(id)?;
             let mut group = a.group.0.to_be_bytes();
@@ -33,6 +61,18 @@ impl Converter<'_> {
                 b"ligh" => self.light(t).map(|tag| vec![tag]),
                 b"effe" => self.effect(t).map(|tag| vec![tag]),
                 b"cont" => self.contrail(t).map(|tag| vec![tag]),
+                b"mgs2" => {
+                    group = *b"MGS2";
+                    self.light_volume(t).map(|tag| vec![tag])
+                }
+                b"elec" => {
+                    group = *b"tdtl";
+                    self.lightning(t).map(|tag| vec![tag])
+                }
+                b"glw!" => {
+                    group = *b"MGS2";
+                    self.glow(t).map(|tag| vec![tag])
+                }
                 b"pctl" => {
                     group = *b"effe";
                     self.attached_particle_system(t, &a.marker)
@@ -61,11 +101,17 @@ impl Converter<'_> {
             };
             let primary_scale = scale(a.primary_scale, "primary");
             let secondary_scale = scale(a.secondary_scale, "secondary");
+            if matches!(&group, b"MGS2" | b"tdtl") && a.primary_scale != 0 && primary_scale.is_empty() {
+                return Err(h1convert::Error::no_rebuild(
+                    &self.h1.header().name, &t.name,
+                    format!("widget needs object output {}", a.primary_scale),
+                ).into());
+            }
             let colour_slot = h1convert::shad::halo2_change_colour_slot(a.change_colour);
             // Lights forward the signed index to 0x000bad50. An effect's
             // update (0x00179610) skips slot 0, which retail uses for none.
             let change_colour =
-                colour_slot.map_or(if group == *b"effe" { 0 } else { -1 }, |slot| slot as i16);
+                colour_slot.map_or(if matches!(&group, b"effe" | b"MGS2" | b"tdtl") { 0 } else { -1 }, |slot| slot as i16);
             if group == *b"effe" && colour_slot == Some(0) {
                 notes.push(format!(
                     "attachment {} at {:?}: Halo 2 effect updates skip change-colour slot 0",
@@ -101,7 +147,7 @@ impl Converter<'_> {
         obj: &h1::Object,
         rep: &mut ObjectReport,
     ) -> Result<Block> {
-        if obj.attachments.is_empty() && obj.creation_effect.is_none() {
+        if obj.attachments.is_empty() && obj.widgets.is_empty() && obj.creation_effect.is_none() {
             return Ok(root);
         }
         let (attachments, creation, functions) = self.object_attachments(bytes, obj, rep)?;
