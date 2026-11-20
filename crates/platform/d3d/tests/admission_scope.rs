@@ -2,7 +2,7 @@
 
 use crate::common::*;
 use d3d::pushbuf::method;
-use d3d::{GuestMemory, RecordingBackend, UploadPolicy};
+use d3d::{D3dError, GuestMemory, RecordingBackend, UploadPolicy};
 
 #[test]
 fn ui_layout_reports_a_failed_drain_and_releases_the_previous_fit() {
@@ -12,12 +12,17 @@ fn ui_layout_reports_a_failed_drain_and_releases_the_previous_fit() {
     let fit = d3d::backend::UiFit::about((1920, 1080), [320., 240.]);
     device.set_ui_fit(&mut mem, fit).unwrap();
     mem.write_u32(dev, put + 1).unwrap(); // an unaligned push-buffer cursor
-    assert!(device.set_ui_fit(&mut mem, None).is_err());
+    assert!(matches!(
+        device.set_ui_fit(&mut mem, None),
+        Err(D3dError::Invalid { entry: "push buffer", .. })
+    ));
     // Retrying the same transition with a bad cursor can only succeed if
     // the failure already released the layout.
     device.set_ui_fit(&mut mem, None).unwrap();
     mem.write_u32(dev, put).unwrap();
-    device.set_ui_fit(&mut mem, fit).unwrap();
+    // Repairing PUT does not clear the device fault. Requesting a new
+    // fit requires another drain, which must report that latched fault.
+    assert!(matches!(device.set_ui_fit(&mut mem, fit), Err(D3dError::Faulted(_))));
 }
 
 #[test]
