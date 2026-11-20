@@ -103,8 +103,7 @@ pub struct MaterialProgram {
     /// The vertex registers (bit `n` for `v<n>`) the program reads from
     /// the world vertex ([`INPUTS`]).
     pub inputs: u16,
-    /// The pixel shader definition and options it was translated with
-    /// (for comparing with the D3D path's: `d3d::uniform_compare`).
+    /// The pixel shader definition and options it was translated with.
     pub def: PixelShaderDef,
     pub pixel_options: PixelOptions,
     /// A world pass's own pipeline state ([`compile_world`]); `None`
@@ -134,8 +133,7 @@ pub struct RigidProgram {
     /// The vertex registers the rigid program reads.
     pub inputs: u16,
     /// The program's instruction words (four per instruction, no
-    /// header): what the D3D path's draw of a placement binds, for
-    /// telling its draws apart (`d3d::uniform_compare`).
+    /// header): what the D3D path's draw of a placement binds.
     pub words: Vec<u32>,
 }
 
@@ -599,8 +597,8 @@ pub type Cull = (Option<wgpu::Face>, wgpu::FrontFace);
 pub struct InheritedCull {
     /// `None`: not known; such passes cull nothing.
     pub device: Option<Cull>,
-    /// The placements' rigid draws take it (the D3D path's draws of a
-    /// placement were compared: `d3d::uniform_compare`).
+    /// The placements' rigid draws take it (as the D3D path's draws of a
+    /// placement do).
     pub placements: bool,
     /// The clusters' draws take it (03a's 02000: 81 cluster pixels on a
     /// curb went with it, nothing else changed).
@@ -641,7 +639,7 @@ pub fn pipeline_state(state: Option<&PassState>, cull: Option<Cull>) -> (wgpu::P
 
 /// What an image is uploaded as on a device that takes BC textures
 /// (`bc`) or not ([`crate::gpu::texture`]): format, size, levels and an
-/// FNV-1a hash of level 0's bytes, for the uniform compare.
+/// FNV-1a hash of level 0's bytes.
 pub fn describe_image(image: &Image, bc: bool) -> String {
     let (format, level0, levels) = match &image.blocks {
         Some(b) if bc => (format!("{:?}", b.format), &b.levels[0], b.levels.len()),
@@ -1500,62 +1498,6 @@ impl ProgramSet {
     pub fn set_cull(&mut self, cull: InheritedCull) {
         self.cull = cull;
     }
-
-    /// What placement `instance`'s draws of each material take in a frame
-    /// of `view`, by material ascending: the rigid program's words and
-    /// its vertex and pixel uniforms, as [`ProgramSet::prepare`] uploads
-    /// them (a diagnostic, `H2_NATIVE_WORLD_DUMP`).
-    pub fn rigid_uniforms(&self, instance: u32, view: &ViewInputs) -> Vec<RigidUniforms> {
-        let mut out: Vec<RigidUniforms> = self
-            .rigid
-            .iter()
-            .filter_map(|(&material, r)| {
-                let (_, rows) = r.slots.iter().find(|s| s.0 == instance)?;
-                let program = &self.materials.get(&material)?.program;
-                Some(RigidUniforms {
-                    material,
-                    words: r.program.words.clone(),
-                    vertex: rigid_vertex(&r.program.vertex, view, rows),
-                    pixel: frame_pixel(&program.pixel, view),
-                    samplers: std::array::from_fn(|n| {
-                        program.dims[n].and(program.samplers[n].as_ref()).and_then(sampler_key)
-                    }),
-                    // As `translate_pass` translates it.
-                    options: VertexOptions { provided_inputs: INPUT_MASK, input_fetch: WORLD_FETCH, ..Default::default() },
-                    def: program.def.clone(),
-                    pixel_options: program.pixel_options,
-                    textures: self.materials.get(&material)?.stage_info.clone(),
-                    pipeline: pipeline_state(program.state.as_ref(), self.cull.of(program.inherits_cull, false)),
-                })
-            })
-            .collect();
-        out.sort_by_key(|u| u.material);
-        out
-    }
-}
-
-/// One material's rigid draw of a placement ([`ProgramSet::rigid_uniforms`]).
-#[derive(Clone, Debug)]
-pub struct RigidUniforms {
-    pub material: u16,
-    /// The rigid program's instruction words ([`RigidProgram::words`]).
-    pub words: Vec<u32>,
-    pub vertex: VertexUniforms,
-    pub pixel: PixelUniforms,
-    /// Each sampled stage's sampler ([`sampler_key`]).
-    pub samplers: [Option<gfx::translate::SamplerKey>; 4],
-    /// The vertex translation's options.
-    pub options: VertexOptions,
-    /// The pixel shader definition and options.
-    pub def: PixelShaderDef,
-    pub pixel_options: PixelOptions,
-    /// Each stage's bitmap as uploaded ([`describe_image`]; `None`: the
-    /// lightmap, an engine texture or nothing).
-    pub textures: [Option<String>; 4],
-    /// The pipeline's primitive and depth write and compare
-    /// ([`pipeline_state`], with the cull of the last
-    /// [`ProgramSet::pipelines`]).
-    pub pipeline: (wgpu::PrimitiveState, (bool, wgpu::CompareFunction)),
 }
 
 #[cfg(test)]
@@ -2009,7 +1951,7 @@ mod tests {
     /// The native module is the D3D path's for the same draw, text for
     /// text: `d3d::nv2a`'s `translate` decodes the words as `Normal`, with
     /// the layout's fetch (the world's frame and lighting vector bound as
-    /// `NORMPACKED3` words, the uniform compare's 03a draws), and links the
+    /// `NORMPACKED3` words, as 03a's draws bind them), and links the
     /// pixel shader from the same definition and options. So the position
     /// math (and any fused multiply-add the compiler makes of it) is the
     /// same code on both paths.
