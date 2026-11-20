@@ -3,13 +3,15 @@
 //! the layer whose build is the model decorators' becomes a
 //! [`frame_scene::DecoratorDraw`] with its instances, read by
 //! [`crate::layout::decorators::read`]. What does not read is the view's
-//! decorator remainder: the guest still draws it.
+//! decorator remainder: the guest still draws it. An item whose build
+//! declines (`crate::layout::decorators::implementation`) is neither: the
+//! guest draws nothing for it.
 
 use frame_scene::{BuildError, SceneBuilder};
 
-use crate::GuestRead;
 use crate::layout::decorators::{Constants, DECORATOR_BUILD, read};
-use crate::layout::skip::{CURRENT_LIST, ITEM_SIZE, MAX_ITEMS};
+use crate::layout::skip::{CURRENT_LAYER, CURRENT_LIST, Cleared, ITEM_SIZE, MAX_ITEMS};
+use crate::{GuestRead, GuestWrite};
 
 /// What [`extract`] put in the view.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -70,6 +72,41 @@ pub fn extract(mem: &dyn GuestRead, layer: u8, builder: &mut SceneBuilder) -> Re
     Ok(Some(out))
 }
 
+/// Clears `layer`'s bit on the current list's items at `slots` (a
+/// decorator plan's, in the list's order): the skip of what the native
+/// stage draws. All or nothing: `None` when the current layer is not
+/// `layer`, the list does not read, or a slot is not a model decorator
+/// item with the bit set; then nothing is written, so the caller writes
+/// through a preview (`skip::MaskPreview`) and applies it only on `Some`.
+pub fn clear_slots(mem: &mut dyn GuestWrite, layer: u32, slots: &[u32]) -> Option<Cleared> {
+    if layer >= 32 || mem.read_u32(CURRENT_LAYER)? != layer {
+        return None;
+    }
+    let list = mem.read_u32(CURRENT_LIST).filter(|&l| l != 0)?;
+    let count = mem.read_u32(list.checked_add(4)?)?;
+    let first = mem.read_u32(list.checked_add(0xc)?)?;
+    let items = mem.read_u32(list.checked_add(0x14)?)?;
+    let bit = 1u32 << layer;
+    let mut masks = Vec::with_capacity(slots.len());
+    for &slot in slots {
+        if slot < first || slot >= count || slot - first >= MAX_ITEMS {
+            return None;
+        }
+        let item = items.checked_add(ITEM_SIZE.checked_mul(slot)?)?;
+        let mask = mem.read_u32(item.checked_add(0x10)?)?;
+        if mem.read_u32(item)? != DECORATOR_BUILD || mask & bit == 0 {
+            return None;
+        }
+        masks.push((item, mask));
+    }
+    let mut out = Cleared { layer, items: Vec::with_capacity(masks.len()) };
+    for (item, mask) in masks {
+        mem.write_u32(item + 0x10, mask & !bit)?;
+        out.items.push(item);
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use frame_scene::{SceneId, Stamp, ViewKey, ViewKind};
@@ -77,7 +114,7 @@ mod tests {
     use super::*;
     use crate::extract::camera;
     use crate::layout::camera::RENDER_CAMERA;
-    use crate::layout::decorators::tests::{constants, put_constants};
+    use crate::layout::decorators::tests::{constants, put_constants, put_implementation};
     use crate::layout::decorators::*;
     use crate::testing::{Mem, camera_record};
 
@@ -122,6 +159,8 @@ mod tests {
         m.w(PALETTE + 8 + 4, SET_DATUM);
         m.w(TAG_TABLE, TAGS);
         m.w(TAGS + 0x10 * 5 + 8, SET);
+        // The items' shader (tag 2) at detail level 3, layer 3, pass 0.
+        put_implementation(m, 2, 3, 3, 0, 0x40);
         m.f(SET + SET_FADE, 0.0);
         m.f(SET + SET_FADE + 4, 1.0);
         m.w(SET + SET_CLASSES, CLASSES);
@@ -223,11 +262,35 @@ mod tests {
         m.w(GEOMETRY + 0x1c, 1 << 16);
         m.0.remove(&(TAGS + 0x10 * 5 + 8));
         assert_eq!(extract(&m, 3, &mut b).unwrap(), Some(Decorators { draws: 0, instances: 0, remainder: 1 }));
+        // A shader whose build declines draws nothing: neither a draw nor
+        // a remainder.
+        m.w(TAGS + 0x10 * 5 + 8, SET);
+        put_implementation(&mut m, 2, 3, 3, 0, 0);
+        assert_eq!(extract(&m, 3, &mut b).unwrap(), Some(Decorators::default()));
         let s = b.seal(Stamp::default()).unwrap();
         assert_eq!(s.decorator_counts(&s.views[0]).remainder, 2);
         m.w(CURRENT_LIST, 0);
         let mut b = SceneBuilder::default();
         view(&mut b, &m);
         assert_eq!(extract(&m, 3, &mut b).unwrap(), None, "no list, nothing written");
+    }
+
+    #[test]
+    fn the_skip_clears_the_planned_slots_or_nothing() {
+        let mut m = Mem::default();
+        camera_record(&mut m, RENDER_CAMERA);
+        world(&mut m);
+        m.w(CURRENT_LAYER, 3);
+        let mask = |m: &Mem, slot: u32| m.read_u32(ITEMS + ITEM_SIZE * slot + 0x10).unwrap();
+        // Slot 0 is another build, slot 2 lacks the bit: nothing written.
+        assert_eq!(clear_slots(&mut m, 3, &[0]), None);
+        assert_eq!(clear_slots(&mut m, 3, &[1, 2]), None);
+        assert_eq!(clear_slots(&mut m, 3, &[1, 3]), None, "past the list");
+        assert_eq!(mask(&m, 1), 1 << 3);
+        assert_eq!(clear_slots(&mut m, 5, &[1]), None, "another layer is current");
+        let got = clear_slots(&mut m, 3, &[1]).unwrap();
+        assert_eq!(got, Cleared { layer: 3, items: vec![ITEMS + ITEM_SIZE] });
+        assert_eq!(mask(&m, 1), 0);
+        assert_eq!(clear_slots(&mut m, 3, &[1]), None, "already cleared");
     }
 }
