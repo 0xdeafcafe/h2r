@@ -536,7 +536,7 @@ fn gpu_compares_every_function_and_format() {
     assert!(compared > 400);
 }
 
-// --- Hard shadows (E3 lighting, docs/graphics/e3-lighting.md phase 1) ---
+// --- Hard shadows (E3 lighting, docs/graphics/e3-lighting.md, "The edge") ---
 
 /// The programs the golden files hold: retail's lookups as the game's
 /// first level uses them (linear PROJECT3D `GREATER` on D24) and a point

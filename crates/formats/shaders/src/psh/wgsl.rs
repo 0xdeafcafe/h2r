@@ -110,7 +110,7 @@ pub struct PixelOptions {
     /// default) leaves the program as it was, byte for byte.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub glyph: u8,
-    /// Hard shadows (E3 lighting, docs/graphics/e3-lighting.md phase 1):
+    /// Hard shadows (E3 lighting, docs/graphics/e3-lighting.md, "The edge"):
     /// per shadow stage, the stages that sample the same shadow map, as a
     /// mask (bit `n` for stage `n`). A shadow stage with a non-zero mask
     /// compares once, at the nearest texel, at the mean of those stages'

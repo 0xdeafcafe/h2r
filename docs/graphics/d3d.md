@@ -782,7 +782,7 @@ and allocations are bounded before anything is read:
     pixels and guest bytes at the wait against the eager device.
     With E3 lighting a render-scale view keeps its own scaled copy of each
     such level and answers this call for itself from the copy
-    (`d3d::scaled`, [e3-lighting.md](e3-lighting.md) "The Lighting setting");
+    (`d3d::scaled`, [e3-lighting-setting.md](e3-lighting-setting.md));
     the device and the guest only ever see the reference's.
     Float depth levels (`F24S8`, `F16`) stop: the host surface does not
     hold their bits. A level bound as colour after depth (or the other
