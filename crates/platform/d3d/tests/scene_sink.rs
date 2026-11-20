@@ -111,3 +111,125 @@ fn a_sink_with_no_slot_records_nothing_and_changes_nothing() {
     assert!(d.backend.last_frame().ops.is_empty());
     assert_eq!(d.backend.inner().calls, plain.backend.calls, "the sink passes the same calls on");
 }
+
+#[test]
+fn replay_retains_the_sample_version_draw_bindings_and_distinct_copy_targets() {
+    use d3d::Backend;
+    use d3d::scene_sink::{ReplayOp, ReplaySample, ReplayTexture};
+    use gfx::texture::{TextureDesc, TextureKind, decode_texture};
+    use gfx::{Clear, D3DFormat};
+    use std::sync::{Arc, Mutex};
+
+    fn slot() -> Option<SlotAt> { Some(SlotAt { slot: Slot::Opaque, view: 0 }) }
+    let (mut device, mut memory) = create(RecordingBackend::new(), UploadPolicy::Always);
+    set_states(&mut device, &mut memory);
+    quad(&mut device, &mut memory, 0xFF19_3264);
+    let draw = device.backend.draws().pop().unwrap().clone();
+
+    let frames = Arc::new(Mutex::new(Vec::new()));
+    let output = frames.clone();
+    let mut sink = SceneSink::new(RecordingBackend::new(), slot)
+        .with_replay(move |frame| output.lock().unwrap().push(frame));
+    let fmt = D3DFormat::LinA8R8G8B8;
+    let colour = sink.create_texture_target(fmt, 32, 32).unwrap();
+    let shown = sink.create_surface(fmt, 32, 32, false).unwrap();
+    let depth = sink.create_surface(D3DFormat::LinD24S8, 32, 32, true).unwrap();
+    let desc = TextureDesc::new(fmt, TextureKind::D2, 1, 1, 1, 1);
+    let decoded = decode_texture(&desc, &[11, 22, 33, 44], None, Default::default()).unwrap();
+    let image = sink.upload_texture(&decoded).unwrap();
+
+    sink.clear(colour, Some(depth), Clear::all([0.1, 0.2, 0.3, 1.0])).unwrap();
+    let snap = sink.snapshot_surface(colour, true).unwrap().unwrap();
+    sink.clear(colour, Some(depth), Clear::all([1.0, 0.0, 0.0, 1.0])).unwrap();
+    sink.draw(colour, Some(depth), &draw, [Some(&image), None, Some(&snap), None]).unwrap();
+    assert!(sink.copy_surface(colour, shown).unwrap());
+    sink.present_with_gamma(shown, 17, Some(&[12; 768])).unwrap();
+
+    let frame = frames.lock().unwrap().pop().unwrap();
+    assert_eq!(frame.present, 1);
+    assert_eq!(frame.flags, 17);
+    assert_eq!(frame.gamma.as_deref(), Some(&[12; 768]));
+    assert_eq!(frame.colour.unwrap().width, 32);
+    assert!(frame.guest_reference_complete());
+    assert_eq!(frame.private_target_refusal(), None);
+    let ops: Vec<_> = frame.ops.iter().map(|(at, op)| {
+        assert_eq!(Some(*at), slot());
+        op
+    }).collect();
+    let [ReplayOp::Clear { colour: side, .. },
+        ReplayOp::Sample { of, id, how: ReplaySample::Snapshot { opaque: true } },
+        ReplayOp::Clear { .. }, ReplayOp::Bind { colour: bound, .. },
+        ReplayOp::Draw { draw: kept, textures, .. },
+        ReplayOp::Copy { from, to: TargetRef::SceneColour }] = ops.as_slice()
+    else { panic!("unexpected replay: {ops:?}") };
+    assert!(matches!(side, TargetRef::Aux(_)));
+    assert_eq!(side, of);
+    assert_eq!(side, bound);
+    assert_eq!(side, from);
+    assert_eq!(kept.as_ref(), &draw);
+    assert!(matches!(&textures[0], Some(ReplayTexture::Upload(asset)) if **asset == decoded));
+    assert!(matches!(textures[2], Some(ReplayTexture::Sample(bound)) if bound == *id));
+
+    // An old snapshot id cannot silently resolve to this frame's first
+    // sample. Its origin includes the frame it came from.
+    sink.clear(shown, Some(depth), Clear::all([0.0; 4])).unwrap();
+    let _ = sink.snapshot_surface(shown, true).unwrap().unwrap();
+    sink.draw(shown, Some(depth), &draw, [Some(&snap), None, None, None]).unwrap();
+    sink.present(shown, 0).unwrap();
+    let next = frames.lock().unwrap().pop().unwrap();
+    assert_eq!(next.refusals, ["uncaptured_texture"]);
+}
+
+#[test]
+fn a_private_playback_requires_the_contents_a_copy_or_draw_inherits() {
+    use d3d::Backend;
+    use gfx::texture::{TextureDesc, TextureKind};
+    use gfx::D3DFormat;
+    use std::sync::{Arc, Mutex};
+
+    fn slot() -> Option<SlotAt> { Some(SlotAt { slot: Slot::AfterPost, view: 0 }) }
+    let frames = Arc::new(Mutex::new(Vec::new()));
+    let output = frames.clone();
+    let mut sink = SceneSink::new(RecordingBackend::new(), slot)
+        .with_replay(move |frame| output.lock().unwrap().push(frame));
+    let fmt = D3DFormat::LinA8R8G8B8;
+    let source = sink.create_texture_target(fmt, 2, 2).unwrap();
+    let target = sink.create_surface(fmt, 2, 2, false).unwrap();
+    sink.copy_surface(source, target).unwrap();
+    sink.present(target, 0).unwrap();
+    assert_eq!(frames.lock().unwrap().pop().unwrap().private_target_refusal(), Some("frame_needs_previous_target_contents"));
+
+    let desc = TextureDesc::new(fmt, TextureKind::D2, 2, 2, 1, 1);
+    let mut bytes = vec![7; 16];
+    sink.write_surface(source, &desc, &bytes).unwrap();
+    bytes.fill(0);
+    sink.copy_surface(source, target).unwrap();
+    sink.present(target, 0).unwrap();
+    let frame = frames.lock().unwrap().pop().unwrap();
+    assert_eq!(frame.private_target_refusal(), None);
+    assert!(matches!(&frame.ops[0].1, d3d::scene_sink::ReplayOp::Upload { bytes, .. } if **bytes == [7; 16]));
+}
+
+#[test]
+fn a_later_clear_defines_the_final_image_but_not_an_earlier_pass_snapshot() {
+    use d3d::scene_sink::{ReplayFrame, ReplayOp};
+    use frame_scene::AuxTarget;
+    use gfx::{Clear, D3DFormat};
+
+    let side = TargetRef::Aux(0);
+    let main = TargetRef::SceneColour;
+    let small = AuxTarget { width: 3, height: 4, format: D3DFormat::LinA8R8G8B8 as u32, depth: false };
+    let large = AuxTarget { width: 8, ..small };
+    let at = SlotAt { slot: Slot::AfterLights, view: 0 };
+    let clear = |colour| ReplayOp::Clear { colour, depth: TargetRef::None, clear: Clear::all([0.2, 0.3, 0.4, 1.0]) };
+    let frame = ReplayFrame {
+        presented: main,
+        colour: Some(large),
+        aux: vec![small],
+        ops: vec![(at, clear(side)), (at, ReplayOp::Copy { from: side, to: main }), (at, clear(main))],
+        ..Default::default()
+    };
+    assert_eq!(frame.private_read_refusal(1, side), None);
+    assert!(frame.private_read_refusal(2, main).is_some(), "a small copy leaves old pixels around it");
+    assert_eq!(frame.private_target_refusal(), None);
+}
