@@ -28,12 +28,16 @@ const MAX_LINE: usize = 1 << 20;
 trait Stream: Read + Write + Send + Sized + 'static {
     fn try_clone(&self) -> std::io::Result<Self>;
     fn shutdown(&self);
+    fn write_timeout(&self, timeout: std::time::Duration) -> std::io::Result<()>;
 }
 
 #[cfg(unix)]
 impl Stream for UnixStream {
     fn try_clone(&self) -> std::io::Result<Self> {
         UnixStream::try_clone(self)
+    }
+    fn write_timeout(&self, timeout: std::time::Duration) -> std::io::Result<()> {
+        self.set_write_timeout(Some(timeout))
     }
     fn shutdown(&self) {
         let _ = UnixStream::shutdown(self, std::net::Shutdown::Both);
@@ -43,6 +47,9 @@ impl Stream for UnixStream {
 impl Stream for TcpStream {
     fn try_clone(&self) -> std::io::Result<Self> {
         TcpStream::try_clone(self)
+    }
+    fn write_timeout(&self, timeout: std::time::Duration) -> std::io::Result<()> {
+        self.set_write_timeout(Some(timeout))
     }
     fn shutdown(&self) {
         let _ = TcpStream::shutdown(self, std::net::Shutdown::Both);
@@ -203,21 +210,36 @@ impl Drop for Server {
     }
 }
 
+pub(crate) enum Output {
+    Line(String),
+    Upgrade { line: String, frames: crate::live::Frames },
+}
+
 fn serve<S: Stream>(stream: S, agent: Agent) {
     let Ok(mut out) = stream.try_clone() else {
         return;
     };
-    let (tx, rx) = mpsc::sync_channel::<String>(OUT_QUEUE);
-    let conn = agent.connect(tx);
+    let (tx, rx) = mpsc::sync_channel::<Output>(OUT_QUEUE);
+    let conn = agent.connect_socket(tx);
     let _ = thread::Builder::new()
         .name(format!("agent-out-{conn}"))
         .spawn(move || {
-            for line in rx {
+            for msg in rx {
+                let (line, upgrade) = match msg {
+                    Output::Line(line) => (line, None),
+                    Output::Upgrade { line, frames } => (line, Some(frames)),
+                };
                 if out
                     .write_all(line.as_bytes())
                     .and_then(|_| out.write_all(b"\n"))
                     .is_err()
                 {
+                    break;
+                }
+                if let Some(frames) = upgrade {
+                    if out.write_timeout(crate::live::CLOSE_INTERVAL).is_ok() {
+                        let _ = frames.write_to(&mut out);
+                    }
                     break;
                 }
             }

@@ -930,6 +930,12 @@ fn run_configured(
                 })
             })
         };
+        if !replaying
+            && !host.embedded_live
+            && _live.as_ref().is_some_and(|h| h.config().server_url.is_some())
+        {
+            a.agent.set_live_session_probe(agent_glue::remote_live_game);
+        }
         hot_glue::install(&a.agent, &loaded.runtime, maps(), watch_overrides);
         ui_stack::install(&a.agent, core.ui_navigation);
         // profile.faults: the fault census (agent_glue.rs).

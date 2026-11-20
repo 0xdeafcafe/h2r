@@ -15,6 +15,13 @@ pub fn through<V: View, M: Mem + ?Sized>(m: &M, global: &Global) -> Result<Optio
     Ok(global.pointer(m)?.map(V::at))
 }
 
+/// XOR checksum in the loaded v8 cache header. CACHE_MAP_NAME is its
+/// name at +0x198 (docs/live/live-gamestate.md); the checksum word is at
+/// +0x2d0 (docs/formats/map-format.md, "Checksum").
+pub fn cache_checksum<M: Mem + ?Sized>(m: &M) -> Result<u32, Fault> {
+    crate::Off::<u32>::new(0x2d0).read(m, global::CACHE_MAP_NAME.base - 0x198)
+}
+
 crate::layout! {
     /// The game globals (`*GAME_GLOBALS`).
     pub struct GameGlobals: 0x112c {

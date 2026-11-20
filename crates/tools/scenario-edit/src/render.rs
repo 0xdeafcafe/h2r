@@ -9,6 +9,8 @@
 //! with `dear-imgui-wgpu`.
 use crate::geometry::{Camera, Marker, Tri, Vec3, block_color, cross, marker_triangles, normalize};
 use crate::scene::{Atmosphere, Blend, Scene, SceneVertex, sun_tint};
+use map::TagId;
+use std::collections::{BTreeSet, HashMap};
 use std::ops::Range;
 use wgpu::util::DeviceExt;
 
@@ -54,14 +56,17 @@ impl Instance {
 
     /// A placement's transform, highlighted when selected.
     pub fn of(m: &Marker, selected: bool) -> Self {
-        let s = m.scale;
-        let [f, l, u] = m.axes;
+        Self::at(m.position, m.axes, m.scale, selected)
+    }
+
+    pub fn at(position: Vec3, axes: [Vec3; 3], s: f32, selected: bool) -> Self {
+        let [f, l, u] = axes;
         let col = |v: Vec3| [v[0] * s, v[1] * s, v[2] * s, 0.0];
         Self {
             x: col(f),
             y: col(l),
             z: col(u),
-            t: [m.position[0], m.position[1], m.position[2], 1.0],
+            t: [position[0], position[1], position[2], 1.0],
             tint: if selected {
                 [1.0, 1.0, 1.0, 0.45]
             } else {
@@ -445,8 +450,15 @@ pub fn placement_instances(
     markers: &[Marker],
     selected: &[(crate::BlockKind, usize)],
 ) -> (Vec<Instance>, Vec<(usize, Range<u32>)>) {
-    let mut placed: Vec<(usize, Instance)> = markers
-        .iter()
+    marker_instances(scene, markers.iter(), selected)
+}
+
+fn marker_instances<'a>(
+    scene: &Scene,
+    markers: impl Iterator<Item = &'a Marker>,
+    selected: &[(crate::BlockKind, usize)],
+) -> (Vec<Instance>, Vec<(usize, Range<u32>)>) {
+    let placed = markers
         .filter_map(|m| {
             let model = scene.model_of(m)?;
             let mut instance = Instance::of(m, selected.contains(&(m.block, m.index)));
@@ -457,6 +469,12 @@ pub fn placement_instances(
             Some((model, instance))
         })
         .collect();
+    grouped_instances(placed)
+}
+
+fn grouped_instances(
+    mut placed: Vec<(usize, Instance)>,
+) -> (Vec<Instance>, Vec<(usize, Range<u32>)>) {
     placed.sort_by_key(|(model, _)| *model);
     let mut ranges: Vec<(usize, Range<u32>)> = Vec::new();
     for (i, (model, _)) in placed.iter().enumerate() {
@@ -512,6 +530,11 @@ struct GpuScene {
     /// Linear RGB behind the sky model ([`crate::scene::SceneSky::clear`]).
     sky_clear: [f32; 3],
     models: Vec<Option<GpuMesh>>,
+    /// Streamed definitions mapped to bare meshes. An absent model is
+    /// cached too, so effect-only objects cost no repeated map reads.
+    live_models: HashMap<TagId, Option<usize>>,
+    live_instances: Option<wgpu::Buffer>,
+    live_ranges: Vec<(usize, Range<u32>)>,
     instances: Option<wgpu::Buffer>,
     ranges: Vec<(usize, Range<u32>)>,
 }
@@ -1156,6 +1179,36 @@ impl Viewport {
     /// and any earlier scene). Placements are set with
     /// [`Self::set_placements`].
     pub fn set_scene(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, scene: &Scene) {
+        let (world, sky, models) = self.with_textures(device, queue, scene, |ctx| (
+            ctx.mesh(&scene.world),
+            scene.sky.as_ref().and_then(|s| ctx.mesh(&s.mesh)),
+            scene.models.iter().map(|m| ctx.mesh(m)).collect(),
+        ));
+        self.world = None;
+        self.atmosphere = AtmosphereUniforms::of(&scene.atmosphere);
+        self.scene = Some(GpuScene {
+            world,
+            sky,
+            sky_clear: scene.sky.as_ref().map_or([0.0; 3], |s| s.clear),
+            models,
+            live_models: scene.objects.iter()
+                .filter(|(tag, _)| !scene.composite_objects.contains(*tag))
+                .map(|(&tag, &index)| (tag, Some(index)))
+                .collect(),
+            live_instances: None,
+            live_ranges: Vec::new(),
+            instances: None,
+            ranges: Vec::new(),
+        });
+    }
+
+    fn with_textures<T>(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        scene: &Scene,
+        upload: impl FnOnce(MeshContext<'_>) -> T,
+    ) -> T {
         let views: Vec<wgpu::TextureView> = scene
             .textures
             .iter()
@@ -1186,16 +1239,62 @@ impl Viewport {
             grey: &grey,
             white: &white,
         };
-        self.world = None;
-        self.atmosphere = AtmosphereUniforms::of(&scene.atmosphere);
-        self.scene = Some(GpuScene {
-            world: ctx.mesh(&scene.world),
-            sky: scene.sky.as_ref().and_then(|s| ctx.mesh(&s.mesh)),
-            sky_clear: scene.sky.as_ref().map_or([0.0; 3], |s| s.clear),
-            models: scene.models.iter().map(|m| ctx.mesh(m)).collect(),
-            instances: None,
-            ranges: Vec::new(),
-        });
+        upload(ctx)
+    }
+
+    /// Load definitions when they first appear, then update only the
+    /// transforms. The scene's original meshes and textures stay resident.
+    pub fn set_live_instances(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        source: Option<&crate::MapSource>,
+        instances: &[(TagId, Instance)],
+    ) {
+        let Some(gpu) = self.scene.as_mut() else { return };
+        if instances.is_empty() {
+            gpu.live_ranges.clear();
+            return;
+        }
+        let mut missing = Vec::new();
+        for (id, _) in instances {
+            if let std::collections::hash_map::Entry::Vacant(entry) = gpu.live_models.entry(*id) {
+                entry.insert(None);
+                missing.push(*id);
+            }
+        }
+        if !missing.is_empty()
+            && let Some(source) = source
+            && let Ok(extra) = crate::scene::streamed_models(source, missing)
+        {
+            let meshes: Vec<_> = self.with_textures(device, queue, &extra, |ctx| {
+                extra.models.iter().map(|m| ctx.mesh(m)).collect()
+            });
+            let gpu = self.scene.as_mut().expect("scene is loaded");
+            let base = gpu.models.len();
+            gpu.models.extend(meshes);
+            for (id, index) in extra.objects {
+                gpu.live_models.insert(id, Some(base + index));
+            }
+        }
+        let gpu = self.scene.as_mut().expect("scene is loaded");
+        let (instances, ranges) = grouped_instances(instances.iter().filter_map(|(tag, instance)| {
+            Some((gpu.live_models.get(tag).copied().flatten()?, *instance))
+        }).collect());
+        gpu.live_ranges = ranges;
+        if !instances.is_empty() {
+            let bytes: &[u8] = bytemuck::cast_slice(&instances);
+            let len = bytes.len() as u64;
+            if gpu.live_instances.as_ref().is_none_or(|b| b.size() < len) {
+                gpu.live_instances = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("scenario viewport live instances"),
+                    size: len.next_power_of_two(),
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
+            }
+            queue.write_buffer(gpu.live_instances.as_ref().unwrap(), 0, bytes);
+        }
     }
 
     /// The placed models and the glyphs of placements without one.
@@ -1206,12 +1305,28 @@ impl Viewport {
         markers: &[Marker],
         selected: &[(crate::BlockKind, usize)],
     ) {
+        self.set_linked_placements(device, scene, markers, selected, &BTreeSet::new());
+    }
+
+    /// A placement represented by a live model keeps its authoring glyph
+    /// at its original position. Its mesh is supplied by the stream.
+    pub fn set_linked_placements(
+        &mut self,
+        device: &wgpu::Device,
+        scene: &Scene,
+        markers: &[Marker],
+        selected: &[(crate::BlockKind, usize)],
+        linked: &BTreeSet<(crate::BlockKind, usize)>,
+    ) {
         self.markers = Self::upload(
             device,
-            &glyph_vertices(markers, selected, |m| scene.model_of(m).is_some()),
+            &glyph_vertices(markers, selected, |m| {
+                !linked.contains(&(m.block, m.index)) && scene.model_of(m).is_some()
+            }),
         );
         if let Some(gpu) = &mut self.scene {
-            let (instances, ranges) = placement_instances(scene, markers, selected);
+            let placements = markers.iter().filter(|m| !linked.contains(&(m.block, m.index)));
+            let (instances, ranges) = marker_instances(scene, placements, selected);
             gpu.instances = (!instances.is_empty()).then(|| {
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("scenario viewport placements"),
@@ -1460,8 +1575,11 @@ impl Viewport {
         if let Some(world) = &scene.world {
             draw(world, &self.identity, 0..1);
         }
-        if let Some(instances) = &scene.instances {
-            for (model, range) in &scene.ranges {
+        for (buffer, ranges) in [
+            (&scene.instances, &scene.ranges), (&scene.live_instances, &scene.live_ranges),
+        ] {
+            let Some(instances) = buffer else { continue };
+            for (model, range) in ranges {
                 if let Some(Some(mesh)) = scene.models.get(*model) {
                     draw(mesh, instances, range.clone());
                 }

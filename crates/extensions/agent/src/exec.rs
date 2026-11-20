@@ -6,7 +6,7 @@
 //! thread passes in, so every answer is read on the game's own thread.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::mpsc::{SyncSender, TrySendError};
+use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 use crate::capture::{self, FrameSource, Sampler, TickMark, TimelineFrames};
@@ -29,6 +29,7 @@ use serde_json::Value;
 
 use crate::reader::{GameStatus, Reader, TagNames};
 
+mod mirror;
 mod lobby_tape;
 pub use lobby_tape::LobbyTape;
 mod snap;
@@ -180,6 +181,9 @@ struct Shared {
 
 #[derive(Default)]
 struct State {
+    live: crate::live::Mirror,
+    live_epoch: u64,
+    live_session: Option<fn(&dyn engine::GuestMemory) -> bool>,
     lobby_tape: Option<Arc<dyn LobbyTape>>,
     lobby_boundary: u64,
     pending: VecDeque<(ConnId, Request)>,
@@ -258,8 +262,15 @@ struct Capturing {
     sampling: Option<Result<(), String>>,
 }
 
+enum Output {
+    Local(SyncSender<String>),
+    Socket(SyncSender<crate::server::Output>),
+}
+
 struct Conn {
-    tx: SyncSender<String>,
+    tx: Output,
+    /// Once upgraded, both events and further requests are disabled.
+    streaming: bool,
     events: BTreeSet<EventKind>,
     /// Its outgoing queue filled up: the client isn't reading. Dropped at
     /// the next prune, whatever it asked.
@@ -299,6 +310,14 @@ impl Agent {
     /// A new connection; lines for it (responses and events) go to `tx`,
     /// a bounded queue: a client that lets it fill is dropped.
     pub fn connect(&self, tx: SyncSender<String>) -> ConnId {
+        self.connect_to(Output::Local(tx))
+    }
+
+    pub(crate) fn connect_socket(&self, tx: SyncSender<crate::server::Output>) -> ConnId {
+        self.connect_to(Output::Socket(tx))
+    }
+
+    fn connect_to(&self, tx: Output) -> ConnId {
         let mut s = self.lock();
         s.next_conn += 1;
         let id = s.next_conn;
@@ -306,6 +325,7 @@ impl Agent {
             id,
             Conn {
                 tx,
+                streaming: false,
                 events: BTreeSet::new(),
                 closing: false,
                 dead: false,
@@ -322,6 +342,7 @@ impl Agent {
         if let Some(c) = s.conns.get_mut(&conn) {
             c.closing = true;
         }
+        s.live.close(conn);
         input::lock(&s.input).release_menu(conn);
         if s.controller == Some(conn) {
             s.controller = None;
@@ -365,6 +386,9 @@ impl Agent {
             }
         };
         let mut s = self.lock();
+        if s.conns.get(&conn).is_none_or(|c| c.streaming) {
+            return;
+        }
         match parsed {
             Ok(r) if s.shutdown => {
                 if let Some(id) = r.id {
@@ -432,6 +456,11 @@ impl Agent {
         self.lock().cinematic = on;
     }
 
+    /// Same-map checkpoint restores need a key even if the game clock moves forward.
+    pub(crate) fn live_cut(&self) {
+        self.lock().live_epoch += 1;
+    }
+
     /// What a machine snapshot keeps of the game as the agent saw it
     /// (docs/runtime/snapshots.md): whether a cutscene is running, the map
     /// and its tick count. Without them a loaded cutscene reads as gameplay,
@@ -467,6 +496,7 @@ impl Agent {
         s.cinematic = cinematic;
         s.game.map = map;
         s.map_ticks = map_ticks;
+        s.live_epoch += 1;
         Ok(())
     }
 
@@ -483,6 +513,7 @@ impl Agent {
             eprintln!("agent: writing the input recording at exit: {}", e.message);
         }
         s.recorders.shutdown();
+        s.live.close_all();
         s.fail_snapshots();
         s.shutdown = true;
         s.paused = None;
@@ -571,6 +602,7 @@ impl Agent {
         s.last_tick = Some(Instant::now());
         s.refresh(reader, Where::Tick);
         s.track_load();
+        let stepping = s.stepping.is_some();
         match s.stepping {
             Some(left) if left <= 1 => {
                 s.stepping = None;
@@ -585,6 +617,7 @@ impl Agent {
         s.record_tick(reader);
         s.lobby_boundary(reader);
         s.serve(reader, Where::Tick);
+        s.capture_live(reader, None, stepping);
         s.settle_deferred(reader);
         s.settle_waits();
         s.settle_capture();
@@ -674,9 +707,11 @@ impl State {
     /// Queues a line; a full queue marks the connection dead (the game
     /// thread never blocks on a client).
     fn push(c: &mut Conn, line: String) {
-        if let Err(TrySendError::Full(_)) = c.tx.try_send(line) {
-            c.dead = true;
-        }
+        if c.streaming { return; }
+        c.dead |= match &c.tx {
+            Output::Local(tx) => tx.try_send(line).is_err(),
+            Output::Socket(tx) => tx.try_send(crate::server::Output::Line(line)).is_err(),
+        };
     }
 
     fn wants_events(&self) -> bool {
@@ -764,14 +799,21 @@ impl State {
             Where::Slice => Boundary::Slice,
         });
         let old = std::mem::replace(&mut self.game, reader.status());
-        if old.map != self.game.map {
+        let map_changed = old.map != self.game.map;
+        let bsp_changed = old.bsp != self.game.bsp;
+        if map_changed || bsp_changed
+            || old.tick.zip(self.game.tick).is_some_and(|(prev, tick)| tick < prev)
+        {
+            self.live_epoch += 1;
+        }
+        if map_changed {
             self.map_ticks = 0;
         }
         // Counting this tick, so a map's first tick says 1 in its events too.
         if where_ == Where::Tick {
             self.map_ticks += 1;
         }
-        if old.map.is_some() && old.map != self.game.map {
+        if old.map.is_some() && map_changed {
             // A cutscene doesn't outlive its map, nor do pad steps (the
             // game's tick starts again).
             self.cinematic = false;
@@ -783,14 +825,14 @@ impl State {
         let old_phase = self.phase;
         self.phase = Some(self.phase_now());
         let at = self.at();
-        if old.map != self.game.map {
+        if map_changed {
             self.emit(Event::Map {
                 from: old.map,
                 to: self.game.map.clone(),
                 at: at.clone(),
             });
         }
-        if old.bsp != self.game.bsp {
+        if bsp_changed {
             self.emit(Event::Bsp {
                 from: old.bsp,
                 to: self.game.bsp,
@@ -889,8 +931,10 @@ impl State {
         let defer_world = where_ == Where::Slice && self.ticking();
         let mut keep = VecDeque::new();
         while let Some((conn, req)) = self.pending.pop_front() {
+            if self.conns.get(&conn).is_none_or(|c| c.streaming) { continue; }
             if defer_world
-                && (req.method.starts_with("world.") || self.game_methods.contains_key(&req.method))
+                && (req.method.starts_with("world.") || matches!(req.method.as_str(), agent_proto::live::SUBSCRIBE | agent_proto::live::STATUS)
+                    || self.game_methods.contains_key(&req.method))
             {
                 keep.push_back((conn, req));
                 continue;
@@ -1009,6 +1053,9 @@ impl State {
         reader: &mut dyn Reader,
     ) -> Option<Result<Value, RpcError>> {
         let m = req.method.as_str();
+        if agent_proto::live::METHODS.contains(&m) {
+            return self.live_method(conn, req, reader);
+        }
         if method::CONTROL.contains(&m) && self.controller != Some(conn) {
             return Some(Err(RpcError::new(
                 code::NOT_CONTROLLER,
@@ -1119,6 +1166,7 @@ impl State {
                             .iter()
                             .map(|m| (*m).to_owned()),
                     )
+                    .chain(agent_proto::live::METHODS.iter().map(|m| (*m).to_owned()))
                     .chain(self.host.keys().cloned())
                     .chain(self.game_methods.keys().cloned())
                     .collect::<Vec<String>>(),

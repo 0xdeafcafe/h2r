@@ -464,8 +464,8 @@ While the game runs, the editor stays paired with it:
 
 - the status bar shows the game's map, whether it is playing or paused,
   and its tick;
-- the viewport shows the players (green), AI (red) and vehicles (blue)
-  where they are now;
+- live objects move with their bind-pose models. Player labels show the
+  name and team, and a line shows where each player aims;
 - **Go to player** brings the camera to you; **Teleport player here**
   moves you to the spot the camera looks at, and **T** over the viewport
   to the spot under the mouse;

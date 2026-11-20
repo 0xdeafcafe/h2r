@@ -121,13 +121,15 @@ pub fn snapshot(gpu: &Gpu, app: &mut App, p: &P) -> Reply {
         std::fs::create_dir_all(dir)
             .map_err(|e| err(code::FAILED, format!("{}: {e}", dir.display())))?;
     }
+    let live = crate::viewport::mirror::Scene::shown(app);
     let session = &app.session;
     let selection = session.selection();
     let mut vp = Viewport::new(&gpu.device);
     match session.scene() {
         Some(scene) => {
             vp.set_scene(&gpu.device, &gpu.queue, scene);
-            vp.set_placements(&gpu.device, scene, session.markers(), &selection);
+            vp.set_linked_placements(&gpu.device, scene, session.markers(), &selection, &live.linked);
+            vp.set_live_instances(&gpu.device, &gpu.queue, session.source(), &live.instances);
         }
         None => {
             vp.set_world(&gpu.device, session.world().0);
@@ -141,8 +143,9 @@ pub fn snapshot(gpu: &Gpu, app: &mut App, p: &P) -> Reply {
     let texture = vp
         .color_texture()
         .ok_or_else(|| err(code::FAILED, "the viewport drew nothing"))?;
-    let rgba = crate::headless::read_texture(&gpu.device, &gpu.queue, texture)
+    let mut rgba = crate::headless::read_texture(&gpu.device, &gpu.queue, texture)
         .map_err(|e| err(code::FAILED, format!("{e:#}")))?;
+    live.snapshot(&mut rgba, size, &cam);
     crate::headless::write_png(&out, &rgba, texture.width(), texture.height())
         .map_err(|e| err(code::FAILED, format!("{e:#}")))?;
     let _ = m::VIEW_SNAPSHOT;

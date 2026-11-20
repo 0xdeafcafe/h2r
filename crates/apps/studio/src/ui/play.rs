@@ -1,11 +1,10 @@
 //! The Game panel (Play, pair, live edits, the player, pause and step),
-//! the live objects drawn over the viewport, and the status chip. The
+//! the viewport teleport shortcut, and the status chip. The
 //! state and every command are `crate::play::Play`'s; this only draws it.
 
 use std::path::PathBuf;
 
 use dear_imgui_rs::{Key, Ui, WindowKey};
-use scenario_edit::geometry::Vec3;
 
 use crate::app::App;
 use agent_proto::Endpoint;
@@ -21,7 +20,6 @@ pub struct PlayUi {
     /// Sockets found by the last look.
     sockets: Vec<PathBuf>,
     step_ticks: i32,
-    show_objects: bool,
 }
 
 impl Default for PlayUi {
@@ -30,19 +28,7 @@ impl Default for PlayUi {
             play: Play::discovering(),
             sockets: launch::discover(),
             step_ticks: 1,
-            show_objects: true,
         }
-    }
-}
-
-/// Live object colours by kind.
-fn color(kind: &str) -> [f32; 4] {
-    match kind {
-        "player" => [0.35, 0.95, 0.45, 1.0],
-        "actor" => [0.95, 0.45, 0.35, 1.0],
-        "vehicle" => [0.4, 0.7, 1.0, 1.0],
-        "machine" => [0.75, 0.75, 0.8, 0.8],
-        _ => [0.55, 0.55, 0.55, 0.6],
     }
 }
 
@@ -68,6 +54,8 @@ impl PlayUi {
     pub fn chip(&self, app: &App) -> (String, [f32; 4]) {
         let offer = self.play.notice(app);
         let c = match (&self.play.conn, &offer) {
+            (Conn::Connected, _) if app.pairing.mirror.as_ref().and_then(|m| m.error()).is_some() => theme::WARN,
+            (Conn::Connected, _) if !self.play.paused && app.pairing.shown.as_ref().is_some_and(|s| s.stale) => theme::DIM,
             (Conn::Connected, _) => theme::OK,
             (Conn::Connecting, _) => theme::WARN,
             (_, Some(n)) if n.matches == MapMatch::Same => theme::OK,
@@ -75,7 +63,20 @@ impl PlayUi {
             (Conn::Lost(_), None) => theme::ERROR,
             (Conn::Off, None) => theme::DIM,
         };
-        (self.play.chip_in(app), c)
+        let mut chip = self.play.chip_in(app);
+        if let Some(stream) = &app.pairing.mirror {
+            let meta = stream.status(app.pairing.latest || self.play.paused);
+            if let (Some(fps), Some(ms)) = (meta["fps"].as_f64(), meta["delay_ms"].as_f64()) {
+                chip.push_str(&format!(" · {fps:.0} Hz · {ms:.0} ms"));
+            }
+            if let Some(counters) = &app.pairing.counters {
+                chip.push_str(&format!(
+                    " · {} dropped, {} skipped",
+                    counters["dropped"], counters["skipped"]
+                ));
+            }
+        }
+        (chip, c)
     }
 
     /// The status bar's Pair button, beside the chip, when exactly one
@@ -265,17 +266,14 @@ impl PlayUi {
                 ),
             );
         }
-        ui.checkbox("Show live objects in the viewport", &mut self.show_objects);
-        ui.text_disabled(format!(
-            "{} objects{}",
-            p.objects.len(),
-            p.player()
-                .map(|pl| format!(
-                    ", player at ({:.1}, {:.1}, {:.1})",
-                    pl.pos[0], pl.pos[1], pl.pos[2]
-                ))
-                .unwrap_or_default()
-        ));
+        ui.checkbox("Show live objects in the viewport", &mut app.pairing.show_objects);
+        ui.checkbox("Latest (no interpolation)", &mut app.pairing.latest);
+        if let Some(error) = app.pairing.mirror.as_ref().and_then(|m| m.error()) {
+            ui.text_colored(theme::WARN, error);
+        }
+        if let Some(sample) = &app.pairing.shown {
+            ui.text_disabled(format!("{} objects, {} players", sample.objects.len(), sample.players.len()));
+        }
         if ui.button(format!("{} Go to player", icon::CROSSHAIR)) {
             p.go_to_player(app);
         }
@@ -314,8 +312,7 @@ impl PlayUi {
         self.step_ticks = self.step_ticks.clamp(1, 600);
     }
 
-    /// The live objects over the viewport image (`rect`: origin and size),
-    /// and T over it to teleport the player to the point under the cursor.
+    /// T over the viewport teleports the player to the point under the cursor.
     pub fn overlay(&mut self, ui: &Ui, app: &mut App, rect: Option<[f32; 4]>) {
         let Some([x, y, w, h]) = rect else { return };
         let p = &self.play;
@@ -323,34 +320,6 @@ impl PlayUi {
             return;
         }
         let aspect = w / h.max(1.0);
-        let cam = *app.session.camera();
-        let at = |q: Vec3| {
-            cam.project(q, aspect)
-                .filter(|uv| (-0.1..=1.1).contains(&uv[0]) && (-0.1..=1.1).contains(&uv[1]))
-                .map(|uv| [x + uv[0] * w, y + uv[1] * h])
-        };
-        if self.show_objects {
-            let dl = ui.get_window_draw_list();
-            let _clip = dl.push_clip_rect([x, y], [x + w, y + h], true);
-            for o in &p.objects {
-                let Some(s) = at(o.pos) else { continue };
-                let c = color(&o.kind);
-                let r = if o.kind == "player" { 7.0 } else { 5.0 };
-                dl.add_circle(s, r, c).filled(true).build();
-                dl.add_circle(s, r + 1.5, [0.0, 0.0, 0.0, 0.8])
-                    .thickness(1.5)
-                    .build();
-                if let Some(f) = o.forward
-                    && let Some(e) = at([o.pos[0] + f[0], o.pos[1] + f[1], o.pos[2] + f[2]])
-                {
-                    dl.add_line(s, e, c).thickness(2.0).build();
-                }
-                if o.kind == "player" {
-                    let label = o.name.clone().unwrap_or_else(|| o.id.clone());
-                    dl.add_text([s[0] + 9.0, s[1] - 8.0], c, label);
-                }
-            }
-        }
         let m = ui.io().mouse_pos();
         let inside = m[0] >= x && m[0] < x + w && m[1] >= y && m[1] < y + h;
         if inside

@@ -123,6 +123,8 @@ pub struct Host {
     /// ([`crate::agent_glue::discoverable_socket`]; `H2_AGENT=off` keeps
     /// it closed). `h2 play` sets it.
     pub discoverable_agent: bool,
+    /// The host runs the Live service in this process (`h2 play --live-local`).
+    pub embedded_live: bool,
     /// The perf overlay's on/off switch, for `perf.overlay`.
     pub perf_overlay: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// Called once with the kernel's VFS when it is attached, before the
