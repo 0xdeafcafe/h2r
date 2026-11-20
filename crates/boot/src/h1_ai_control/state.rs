@@ -4,7 +4,7 @@ use engine::memory::{GuestMemory, MemFault};
 
 const GLOBALS: u32 = 0x004f_9380;
 const GLOBAL_DATA: u32 = 0x44;
-const VALUE_START: u32 = 0x41d;
+pub(super) const VALUE_START: u32 = 0x41d;
 pub(super) const STRIDE: u32 = 8;
 const VALUE: u32 = 4;
 

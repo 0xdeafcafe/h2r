@@ -85,17 +85,28 @@ fn guard_baseline(m: &dyn GuestMemory, guard_bits: Option<u32>, squad: u32) -> R
     Ok(if word & (1 << (squad % 32)) != 0 { 2 } else { 0 })
 }
 
-pub(super) fn hold_movement(m: &mut dyn GuestMemory, handle: u32) -> R<()> {
+/// The Halo 1 movement hold: the squad's timer is still counting and no
+/// member has reached combat level 5 (or a forced level, the event reports
+/// of `0x001506e7` supply). Halo 1 checks this at the individual behaviour
+/// call sites, not only on the resulting throttle.
+pub(super) fn held(m: &dyn GuestMemory, actor: actors::Actor) -> R<bool> {
     let Some(base) = state::timers_base(m)? else {
-        return Ok(());
-    };
-    let Some(actor) = actors::by_handle(m, DatumHandle(handle))? else {
-        return Ok(());
+        return Ok(false);
     };
     if let Some(at) = timer_row(m, base, actor.squad)?
         && timers::active(m.u32(at)?)
         && !releases(m, actor, state::phased_timers(m)?)?
     {
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+pub(super) fn hold_movement(m: &mut dyn GuestMemory, handle: u32) -> R<()> {
+    let Some(actor) = actors::by_handle(m, DatumHandle(handle))? else {
+        return Ok(());
+    };
+    if held(m, actor)? {
         m.write(actor.at + THROTTLE, &[0; 12])?;
     }
     Ok(())
@@ -180,7 +191,11 @@ pub(super) fn tick(cx: &Cx, base: u32) -> R<Vec<u32>> {
                     contact::focused(m, actor, rate)?
                 } else {
                     let level = legacy_combat_level(m.u16(actor.at + INTEREST_CLASS)?);
-                    contact::Contact { level, recognized_at: None, alarm: false }
+                    contact::Contact {
+                        level,
+                        recognized_at: None,
+                        alarm: false,
+                    }
                 }
             } else {
                 let status = m.u16(actor.at + COMBAT_STATUS)?;
@@ -191,7 +206,11 @@ pub(super) fn tick(cx: &Cx, base: u32) -> R<Vec<u32>> {
                 } else {
                     0
                 };
-                contact::Contact { level, recognized_at: None, alarm: false }
+                contact::Contact {
+                    level,
+                    recognized_at: None,
+                    alarm: false,
+                }
             };
             if forced {
                 // Halo 1's forced combat level (0x1506e7) raises the actor
@@ -216,7 +235,10 @@ pub(super) fn tick(cx: &Cx, base: u32) -> R<Vec<u32>> {
                     contact.releases_timer(),
                 )
             } else {
-                (contact.level > baseline, contact.level >= RELEASE_COMBAT_LEVEL)
+                (
+                    contact.level > baseline,
+                    contact.level >= RELEASE_COMBAT_LEVEL,
+                )
             };
             if informed && let Some(group) = group {
                 noticed.insert(group);
@@ -267,7 +289,6 @@ pub(super) fn tick(cx: &Cx, base: u32) -> R<Vec<u32>> {
     })
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,5 +306,72 @@ mod tests {
         assert_eq!(state::authored_tick(34, 60), state::authored_tick(17, 30));
         assert_eq!(timers::encounter_updates(Some(state::authored_tick(33, 60)), state::authored_tick(34, 60), 2), 1);
         assert_eq!(timers::encounter_updates(Some(state::authored_tick(34, 60)), state::authored_tick(35, 60), 2), 0);
+    }
+
+    fn timers_guest(value: u32) -> (FakeGuest, actors::Actor) {
+        const GLOBALS: u32 = 0x004f_9380;
+        const ARRAY: u32 = 0x0083_0000;
+        const VALUES: u32 = 0x0084_0000;
+        const SCENARIO: u32 = 0x0085_0000;
+        const DECLARATIONS: u32 = 0x0086_0000;
+        const ACTORS: u32 = 0x0087_0000;
+        const ACTOR_ROWS: u32 = 0x0088_0000;
+        const CLOCK: u32 = 0x0089_0000;
+        // One squad's table, with the guard masks appended as the compiler
+        // does, and the phased marker global holding base 0 at the end.
+        let mut words = registry::build([(0, 0x8, 2.0)]).unwrap();
+        words[registry::HEADER as usize] = value;
+        for block in 0..registry::BLOCKS {
+            words.push(0);
+        }
+        let mut guest = FakeGuest::new();
+        guest
+            .put_u32(GLOBALS, ARRAY)
+            .put_u32(ARRAY + engine::datum::layout::MAXIMUM_COUNT, 0x1000)
+            .put_u32(ARRAY + engine::datum::layout::DATA, VALUES)
+            .put_u32(SCENARIO + 0x1c0, (words.len() + 1) as u32)
+            .put_u32(SCENARIO + 0x1c4, DECLARATIONS)
+            .put(
+                DECLARATIONS + 40 * words.len(),
+                registry::PHASED_GLOBAL.as_bytes(),
+            )
+            .put_u32(points::SCENARIO.base, SCENARIO)
+            .put_u32(points::GAME_TIME.base, CLOCK)
+            .put_u16(CLOCK + 2, 30)
+            .put_u32(CLOCK + 8, 600);
+        for (index, word) in words.iter().enumerate() {
+            guest.put_u32(
+                VALUES + (state::VALUE_START as usize + index) * 8 + 4,
+                *word,
+            );
+        }
+        guest.put_u32(
+            VALUES + (state::VALUE_START as usize + words.len()) * 8 + 4,
+            0,
+        );
+        guest
+            .put_u32(super::super::ACTORS, ACTORS)
+            .put_u32(ACTORS + engine::datum::layout::ELEMENT_SIZE, 0x100)
+            .put_u32(ACTORS + engine::datum::layout::HIGH_WATER, 1)
+            .put_u32(ACTORS + engine::datum::layout::DATA, ACTOR_ROWS)
+            .put_u16(ACTOR_ROWS, 0x8123)
+            .put_u32(ACTOR_ROWS + 0x18, NONE)
+            .put_u32(ACTOR_ROWS + 0x30, 0)
+            .put_u16(ACTOR_ROWS + INTEREST_CLASS, 0);
+        let actor = actors::Actor {
+            handle: 0x8123_0000,
+            at: ACTOR_ROWS,
+            unit: NONE,
+            squad: 0,
+        };
+        (guest, actor)
+    }
+
+    #[test]
+    fn the_hold_covers_behaviour_updates_until_the_timer_ends() {
+        let (guest, actor) = timers_guest(registry::SCRIPT_HELD | 900);
+        assert!(held(&guest, actor).unwrap());
+        let (guest, actor) = timers_guest(registry::REVEAL_PLAYERS);
+        assert!(!held(&guest, actor).unwrap());
     }
 }
