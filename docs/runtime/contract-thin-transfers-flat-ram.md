@@ -644,7 +644,7 @@ Runtime only. Old images keep running on the paged path.
 
 - Remove `H2_HELD_TRY`, `H2_PAGED_TRY`, `H2Gate`, `h2_access_cold`'s gate
   half, the gate word and `GATE_*`, `H2MemoryData`, `fast_acquire` and
-  `fast_release`, view lending, `crates/recompiler/fastmem-proto`, the `fastmem-4k`
+  `fast_release`, view lending, the `fastmem-4k`
   branch's doc, and the flags `H2_FASTMEM`, `H2_FLAT_RAM`,
   `H2_RAM_PAGE_CACHE`, `H2_ENTRY_GATE`, `H2_DIRTY_INLINE`,
   `H2_DIRECT_GATE`, `H2_DIRECT_COUNT`, `H2_DIRECT_VIEW`, `H2_VIEW_CHARGE`,
@@ -778,7 +778,7 @@ coordinator builds once per step above and both lanes measure on it.
   costs microseconds per access. The fixup counter is always on, in the
   sim report and the agent API, and F3's gate is zero per tick.
 - **R4. Debuggers.** lldb stops on every `EXC_BAD_ACCESS`. With faults
-  only on wild accesses this is rare; [fastmem-proto.md](../perf/fastmem-proto.md)
+  only on wild accesses this is rare; [fastmem-proto.md](../perf/notes/fastmem-proto.md)
   "lldb" has the `process handle` line.
 - **R5. `asm` accesses hide loads from the optimiser.** Clang can no
   longer fold a load into an x86 arithmetic instruction or remove a
