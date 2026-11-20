@@ -20,11 +20,11 @@
 //! are left unwritten: nothing outside the family reads them.
 use crate::function_eval::constant::{ONE, SMALL};
 use crate::sim_native::Memory;
-use runtime::{CpuAbi, GuestFault, TransferAbi};
-use sim_anim::{
+use ::sim_anim::{
     ClipStore, Effects, Frame, Mode, Ops, Record, Request, RotOp, Secondary, Shape, Sizes, VecOp,
     Which, kernel,
 };
+use runtime::{CpuAbi, GuestFault, TransferAbi};
 use sim_core::det::{self, Fp};
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -368,7 +368,7 @@ fn plan(c: &CpuAbi, g: &impl Memory, store: &ClipStore) -> Step<Option<Plan>> {
         streams,
     };
     let mut written = vec![0u8; live];
-    let effects = sim_anim::sample(&request, &clip, &mut records, &mut written)
+    let effects = ::sim_anim::sample(&request, &clip, &mut records, &mut written)
         .map_err(|_| Decline::Kernel)?;
     Ok(Some(Plan {
         out,
