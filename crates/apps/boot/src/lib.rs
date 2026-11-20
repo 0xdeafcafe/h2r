@@ -719,6 +719,12 @@ fn run_configured(
     }
     let render_hooks = film.as_ref()
         .map_or_else(run_plan::compiled_render_hooks, |s| s.render_hooks());
+    // A present-limited run consumes every sealed frame in order.
+    let stop_at: Option<u64> = std::env::var("H2_BOOT_STOP_AT_PRESENT").ok().and_then(|v| v.parse().ok());
+    #[cfg(feature = "gpu")]
+    let private = d3d_glue::PrivateScenes::requested(
+        features.switches(), render_hooks, headless || host.unpaced_display || stop_at.is_some(),
+    );
     #[cfg(feature = "gpu")]
     let mut d3d_calls = match (opts.d3d, host.gfx.take()) {
         (false, _) => None,
@@ -738,27 +744,17 @@ fn run_configured(
                     b.set_lighting(setting_defs::lighting_of(lighting.get()));
                     b.follow_lighting(move || setting_defs::lighting_of(lighting.get()));
                 }
-                let scale_stats = b.shared_stats();
-                let report = Some(d3d_glue::scale_report(&mut b));
-                let installed = if host.render_thread {
-                    d3d_glue::install_threaded_for_profile(&loaded.runtime, b, report, interp, render_hooks)
-                } else {
-                    d3d_glue::install_for_profile(&loaded.runtime, b, report, render_hooks)
-                }?;
-                installed.with_gpu_view(Some(scale_stats))
+                d3d_glue::install_scaled_view(
+                    &loaded.runtime, b, interp, host.render_thread, render_hooks, private, host.settings.as_deref(),
+                )?
             }
-            None => {
-                let installed = if host.render_thread {
-                    d3d_glue::install_threaded_for_profile(&loaded.runtime, b, None, interp, render_hooks)
-                } else {
-                    d3d_glue::install_for_profile(&loaded.runtime, b, None, render_hooks)
-                }?;
-                installed.with_gpu_view(None)
-            }
+            None => d3d_glue::install_game_view(
+                &loaded.runtime, b, interp, host.render_thread, render_hooks, private, host.settings.as_deref(),
+            )?,
         }),
         (true, None) if host_light => Some(d3d_glue::install_light_for_profile(&loaded.runtime, render_hooks)?),
-        (true, None) => Some(d3d_glue::install_headless_for_profile(
-            &loaded.runtime, interp, render_hooks, host.settings.as_deref(),
+        (true, None) => Some(d3d_glue::install_headless_with_scenes(
+            &loaded.runtime, interp, render_hooks, host.settings.as_deref(), private,
         )?),
     };
     #[cfg(all(not(feature = "gpu"), feature = "desktop-runtime"))]
@@ -1233,10 +1229,6 @@ fn run_configured(
     } else {
         None
     };
-    // H2_BOOT_STOP_AT_PRESENT=N: end the run once N presents are out.
-    let stop_at: Option<u64> = std::env::var("H2_BOOT_STOP_AT_PRESENT")
-        .ok()
-        .and_then(|v| v.parse().ok());
     // H2_HOST_PERF=1 (the Xbox app's default): a line every 100 frames or
     // 5 s of where frame time goes on this host (host_perf.rs); it starts
     // frame stats quietly if nothing else has.

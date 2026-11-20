@@ -377,6 +377,7 @@ fn hosted(
         // The backend's work on a render thread unless H2_RENDER_THREAD=0, as
         // for `h2 run` (docs/graphics/render-thread.md).
         render_thread: render_thread(std::env::var("H2_RENDER_THREAD").ok().as_deref()),
+        unpaced_display: host.pace_policy() == app::PacePolicy::Unpaced,
         audio_sink: Some(audio_sink(audio)),
         voice_io: Some(voice::host::HostVoiceIo::opener()),
         pad_speaker,

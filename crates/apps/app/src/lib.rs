@@ -389,6 +389,11 @@ impl GuestHost {
         }
     }
 
+    /// Whether the caller advances the guest on wall time or unpaced.
+    pub fn pace_policy(&self) -> PacePolicy {
+        self.pacer.policy()
+    }
+
     /// Pacing counters so far.
     pub fn pace_stats(&self) -> PaceStats {
         self.pacer.stats()

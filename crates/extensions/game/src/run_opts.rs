@@ -73,6 +73,9 @@ pub struct Host {
     /// docs/graphics/render-thread.md); off in `Host::default()`. Hosts set it from
     /// [`crate::d3d_glue::render_thread_requested`].
     pub render_thread: bool,
+    #[cfg(feature = "gpu")]
+    /// The window runs unpaced: every sealed scene must reach the viewer.
+    pub unpaced_display: bool,
     #[cfg(feature = "local-io")]
     /// Where the logical-time audio output plays (an audio device), instead
     /// of a `NullSink` (`dsound_glue::install_with_sink`).
