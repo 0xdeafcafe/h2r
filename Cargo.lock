@@ -1042,6 +1042,7 @@ dependencies = [
 name = "cloud-saves"
 version = "0.1.0"
 dependencies = [
+ "background",
  "live-proto",
  "live-server",
  "serde",

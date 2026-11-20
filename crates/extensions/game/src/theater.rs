@@ -585,16 +585,14 @@ impl Session {
                         }
                     }
                 });
-            let worker = std::thread::Builder::new()
-                .name("film-upload".into())
-                .spawn(move || {
-                    film::upload(&target.url, &target.token, &target.game, &path)
-                        .with_context(|| format!("upload failed for {}", path.display()))?;
-                    if let Some(p) = receipt {
-                        let _ = std::fs::remove_file(p);
-                    }
-                    Ok(())
-                });
+            let worker = background::spawn("film-upload", move || {
+                film::upload(&target.url, &target.token, &target.game, &path)
+                    .with_context(|| format!("upload failed for {}", path.display()))?;
+                if let Some(p) = receipt {
+                    let _ = std::fs::remove_file(p);
+                }
+                Ok(())
+            });
             match worker {
                 Ok(job) => *self.upload.lock().unwrap_or_else(|e| e.into_inner()) = Some(job),
                 Err(e) if self.require_upload => return Err(e).context("starting host film upload"),

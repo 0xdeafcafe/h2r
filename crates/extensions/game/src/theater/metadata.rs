@@ -120,8 +120,7 @@ impl Capture {
             let cache_path = crate::map_slots::current_source(g);
             let (identity, source) = prepare_map(vfs, &info.map, cache_path.as_deref(), None)?;
             self.descriptor.map = identity.clone();
-            self.map_digest = Some(std::thread::Builder::new().name("film-map-hash".into())
-                .spawn(move || hash_map(identity, source))?);
+            self.map_digest = Some(background::spawn("film-map-hash", move || hash_map(identity, source))?);
             self.descriptor
                 .variant_blob
                 .resize(level_boot::VARIANT_SIZE as usize, 0);

@@ -14,6 +14,8 @@ settings = { path = "../../formats/settings" }
 serde.workspace = true
 serde_json.workspace = true
 ureq = { version = "2", default-features = false, features = ["tls"] }
+# The worker's thread runs below the game's priority.
+background.workspace = true
 
 [dev-dependencies]
 # The real server on loopback, for HttpRemote.

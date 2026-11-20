@@ -604,61 +604,60 @@ pub type Log = Box<dyn Fn(&str) + Send>;
 impl<R: Remote + 'static> Worker<R> {
     pub fn spawn(mut engine: Engine<R>, config: WorkerConfig, log: Log) -> io::Result<Self> {
         let (tx, rx) = mpsc::channel();
-        let join = std::thread::Builder::new()
-            .name("cloud-saves".into())
-            .spawn(move || {
-                let mut debounce = Debouncer::new(config.quiet, config.max_delay);
-                let mut retry = config.retry;
-                let mut retry_at: Option<Instant> = None;
-                let run = |engine: &mut Engine<R>, groups: &[Key], retry_at: &mut Option<Instant>, retry: &mut Duration| {
-                    let report = engine.push(groups);
-                    for l in &report.lines {
-                        log(l);
-                    }
-                    if report.offline {
-                        log(&format!(
-                            "the server cannot be reached; {} waiting, trying again in {}s",
-                            report.queued,
-                            retry.as_secs()
-                        ));
-                        *retry_at = Some(Instant::now() + *retry);
-                        *retry = (*retry * 2).min(config.retry_max);
-                    } else {
-                        *retry_at = None;
-                        *retry = config.retry;
-                    }
-                };
-                loop {
-                    match rx.recv_timeout(config.tick) {
-                        Ok(Msg::Changed(k)) => {
-                            debounce.touch(k, Instant::now());
-                            continue;
-                        }
-                        Ok(Msg::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                            let mut last = debounce.drain();
-                            last.extend(engine.settings_changed());
-                            if !last.is_empty() || !engine.state.queue.is_empty() {
-                                run(&mut engine, &last, &mut retry_at, &mut retry);
-                            }
-                            return engine;
-                        }
-                        Err(mpsc::RecvTimeoutError::Timeout) => {}
-                    }
-                    let now = Instant::now();
-                    for k in engine.settings_changed() {
-                        debounce.touch(k, now);
-                    }
-                    let due = debounce.due(now);
-                    let waiting = !engine.state.queue.is_empty();
-                    let retry_due = retry_at.is_none_or(|t| now >= t);
-                    if (!due.is_empty() && retry_at.is_none()) || (waiting && retry_due) {
-                        run(&mut engine, &due, &mut retry_at, &mut retry);
-                    } else if !due.is_empty() {
-                        // Offline and not yet time to try: queue them.
-                        engine.state.queue.extend(due);
-                    }
+        // Background work: nothing waits on a push but the last one at stop.
+        let join = background::spawn("cloud-saves", move || {
+            let mut debounce = Debouncer::new(config.quiet, config.max_delay);
+            let mut retry = config.retry;
+            let mut retry_at: Option<Instant> = None;
+            let run = |engine: &mut Engine<R>, groups: &[Key], retry_at: &mut Option<Instant>, retry: &mut Duration| {
+                let report = engine.push(groups);
+                for l in &report.lines {
+                    log(l);
                 }
-            })?;
+                if report.offline {
+                    log(&format!(
+                        "the server cannot be reached; {} waiting, trying again in {}s",
+                        report.queued,
+                        retry.as_secs()
+                    ));
+                    *retry_at = Some(Instant::now() + *retry);
+                    *retry = (*retry * 2).min(config.retry_max);
+                } else {
+                    *retry_at = None;
+                    *retry = config.retry;
+                }
+            };
+            loop {
+                match rx.recv_timeout(config.tick) {
+                    Ok(Msg::Changed(k)) => {
+                        debounce.touch(k, Instant::now());
+                        continue;
+                    }
+                    Ok(Msg::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        let mut last = debounce.drain();
+                        last.extend(engine.settings_changed());
+                        if !last.is_empty() || !engine.state.queue.is_empty() {
+                            run(&mut engine, &last, &mut retry_at, &mut retry);
+                        }
+                        return engine;
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                }
+                let now = Instant::now();
+                for k in engine.settings_changed() {
+                    debounce.touch(k, now);
+                }
+                let due = debounce.due(now);
+                let waiting = !engine.state.queue.is_empty();
+                let retry_due = retry_at.is_none_or(|t| now >= t);
+                if (!due.is_empty() && retry_at.is_none()) || (waiting && retry_due) {
+                    run(&mut engine, &due, &mut retry_at, &mut retry);
+                } else if !due.is_empty() {
+                    // Offline and not yet time to try: queue them.
+                    engine.state.queue.extend(due);
+                }
+            }
+        })?;
         Ok(Worker {
             tx,
             join: Some(join),
