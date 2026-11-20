@@ -6,9 +6,7 @@
 //! recording backend checks when write-backs happen. Synthetic resources;
 //! the GPU tests skip without an adapter.
 
-mod common;
-
-use common::*;
+use crate::common::*;
 use d3d::{Device, Event, GfxBackend, GuestMemory, RecordingBackend, SparseMemory, UploadPolicy};
 use gfx::vertex::fvf;
 

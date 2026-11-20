@@ -6,9 +6,7 @@
 //! `src/device/display.rs`). The image's pass-through programs are stood in
 //! for by made-up words; no disc bytes are used.
 
-mod common;
-
-use common::*;
+use crate::common::*;
 use d3d::abi::{Outcome, Regs};
 use d3d::layout::device_field as f;
 use d3d::{

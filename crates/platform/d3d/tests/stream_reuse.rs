@@ -1,6 +1,6 @@
 //! Reusing a copy must still read current guest bytes and retain draw snapshots.
-mod common;
-use common::*;
+
+use crate::common::*;
 use d3d::{Backend, DrawOutcome, GuestMemory, ResolvedDraw, UploadPolicy};
 use gfx::{Clear, D3DFormat, texture::DecodedTexture};
 

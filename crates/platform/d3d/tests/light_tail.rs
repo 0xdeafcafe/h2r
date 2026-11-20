@@ -8,9 +8,7 @@
 //! tail. The guest's D3D globals and device object, the push buffer and
 //! the next draw are the same.
 
-mod common;
-
-use common::*;
+use crate::common::*;
 use d3d::abi::Regs;
 use d3d::layout::device_field as f;
 use d3d::{Device, GuestLayout, GuestMemory, RecordingBackend, SparseMemory, UploadPolicy};

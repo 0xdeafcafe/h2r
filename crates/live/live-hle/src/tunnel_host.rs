@@ -26,7 +26,7 @@ use std::{
 };
 use tungstenite::{
     Message, WebSocket, accept_hdr_with_config,
-    handshake::server::{Request, Response},
+    handshake::server::{ErrorResponse, Request, Response},
     protocol::WebSocketConfig,
 };
 
@@ -273,26 +273,33 @@ impl TunnelHost {
         use live_proto::matchmaking::{PACK_ECHO_PATH, REGION_ECHO};
         let mut xuid = None;
         let mut echo = false;
-        let mut ws = accept_hdr_with_config(
-            stream,
-            |request: &Request, mut response: Response| {
-                if request.uri().path() == PACK_ECHO_PATH {
-                    echo = true;
-                    if request.headers().get("sec-websocket-protocol").and_then(|h| h.to_str().ok()) == Some(REGION_ECHO) {
-                        response.headers_mut().insert("sec-websocket-protocol", REGION_ECHO.parse().unwrap());
-                    }
-                    return Ok(response);
-                }
-                xuid = request
+        // Tungstenite requires an HTTP error response even for a callback
+        // that always accepts the handshake.
+        #[allow(clippy::result_large_err)]
+        let on_request = |request: &Request, mut response: Response| -> Result<_, ErrorResponse> {
+            if request.uri().path() == PACK_ECHO_PATH {
+                echo = true;
+                if request
                     .headers()
-                    .get("x-h2-tunnel-peer")
-                    .and_then(|header| header.to_str().ok())
-                    .and_then(|value| Xuid::parse(value).ok());
-                Ok(response)
-            },
-            Some(config),
-        )
-        .map_err(|error| error.to_string())?;
+                    .get("sec-websocket-protocol")
+                    .and_then(|h| h.to_str().ok())
+                    == Some(REGION_ECHO)
+                {
+                    response
+                        .headers_mut()
+                        .insert("sec-websocket-protocol", REGION_ECHO.parse().unwrap());
+                }
+                return Ok(response);
+            }
+            xuid = request
+                .headers()
+                .get("x-h2-tunnel-peer")
+                .and_then(|header| header.to_str().ok())
+                .and_then(|value| Xuid::parse(value).ok());
+            Ok(response)
+        };
+        let mut ws = accept_hdr_with_config(stream, on_request, Some(config))
+            .map_err(|error| error.to_string())?;
         if echo {
             ws.get_mut().set_read_timeout(Some(Duration::from_secs(1)))?;
             if let Message::Text(text) = ws.read()?
@@ -570,8 +577,11 @@ fn wait_for_hello(ws: &mut WebSocket<TcpStream>) -> Result<(), Box<dyn std::erro
     Err("client tunnel hello timed out".into())
 }
 
-fn write_frame(ws: &mut WebSocket<TcpStream>, frame: &Frame) -> tungstenite::Result<()> {
-    ws.send(Message::binary(encode(frame)))
+fn write_frame(
+    ws: &mut WebSocket<TcpStream>,
+    frame: &Frame,
+) -> Result<(), Box<dyn std::error::Error>> {
+    ws.send(Message::binary(encode(frame))).map_err(Into::into)
 }
 
 fn pending(error: &tungstenite::Error) -> bool {

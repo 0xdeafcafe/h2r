@@ -363,7 +363,7 @@ fn search_warms_one_pack_and_silence_retires_it() {
     assert_eq!(pool.free_slots(5), 5);
     assert!(pool.warm_plan(demand, 5, 2_000).start.is_none());
     let refresh = pool.warm_plan(demand, 5, 21_000);
-    assert_eq!(refresh.refresh, [start.clone()]);
+    assert_eq!(refresh.refresh.as_slice(), std::slice::from_ref(&start));
     pool.warmed(&start, 21_000, None);
     let silence = pool.warm_plan(WarmDemand::default(), 5, 30_000);
     assert!(silence.refresh.is_empty() && silence.start.is_none());

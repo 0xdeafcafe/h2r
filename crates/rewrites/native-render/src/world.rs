@@ -736,16 +736,24 @@ mod tests {
     #[test]
     fn draws_sort_into_batches_by_material_and_page() {
         let mut b = WorldBuilder::new();
-        let other = Some(LightmapKey { page: 0, palette: 0 });
+        let other = LightmapKey { page: 0, palette: 0 };
         b.add_section(Owner::Cluster(0), &quad(5, false, true), &Placement::IDENTITY, PAGE);
         b.add_section(Owner::Cluster(1), &quad(1, false, true), &Placement::IDENTITY, PAGE);
         b.add_section(Owner::Cluster(2), &quad(5, false, true), &Placement::IDENTITY, PAGE);
-        b.add_section(Owner::Cluster(3), &quad(5, false, true), &Placement::IDENTITY, other);
+        b.add_section(
+            Owner::Cluster(3),
+            &quad(5, false, true),
+            &Placement::IDENTITY,
+            Some(other),
+        );
         let w = b.finish();
         let shape: Vec<_> = w.batches.iter().map(|b| (b.material, b.lightmap, b.first_draw, b.draw_count)).collect();
-        assert_eq!(shape, vec![(1, PAGE, 0, 1), (5, other, 1, 1), (5, PAGE, 2, 2)]);
+        assert_eq!(
+            shape,
+            vec![(1, PAGE, 0, 1), (5, Some(other), 1, 1), (5, PAGE, 2, 2)]
+        );
         assert!(w.draws.iter().all(|d| w.batches[d.batch as usize].material == d.material));
-        assert_eq!(w.lightmap_keys(), vec![other.unwrap(), PAGE.unwrap()]);
+        assert_eq!(w.lightmap_keys(), vec![other, PAGE.unwrap()]);
         assert_eq!(w.materials(), vec![1, 5]);
     }
 

@@ -5,9 +5,7 @@
 //! read back from synthetic frames on a real GPU (skipped without an
 //! adapter).
 
-mod common;
-
-use common::*;
+use crate::common::*;
 use d3d::abi::Regs;
 use d3d::device::{
     BACK_BUFFER_DATA, COPY_SWAP_FLAG, DEPTH_BUFFER_DATA, DISPLAY_BUFFER_DATA, Rect,

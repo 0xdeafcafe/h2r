@@ -175,7 +175,7 @@ impl Controller {
         let face = if self.pending_face != 0 {
             self.pending_face
         } else {
-            choice & choice.wrapping_neg()
+            choice.isolate_lowest_one()
         };
         buttons &= !RIGHT_THUMB_BUTTONS;
         let free = |last: Option<u32>| {

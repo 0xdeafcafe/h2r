@@ -7,9 +7,7 @@
 //! four bytes, frees a buffer and reuses its memory for other vertices, and
 //! rewrites one quad every frame (dynamic geometry).
 
-mod common;
-
-use common::*;
+use crate::common::*;
 use d3d::backend::{Recorded, ResolvedDraw};
 use d3d::{
     Backend, Device, Event, GfxBackend, GuestMemory, RecordingBackend, SparseMemory, Stats,

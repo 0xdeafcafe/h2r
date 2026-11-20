@@ -136,9 +136,11 @@ fn quad(cam: &Mat4, z: f32, half: f32, colors: [u32; 4]) -> ResolvedDraw {
     );
     c[58] = [scale[0], scale[1], 0.0, 0.0];
     c[59] = [offset[0], offset[1], 0.5, 0.0];
-    let mut hw = d3d::hw::HwState::default();
-    hw.viewport_scale = c[58];
-    hw.viewport_offset = c[59];
+    let hw = d3d::hw::HwState {
+        viewport_scale: c[58],
+        viewport_offset: c[59],
+        ..Default::default()
+    };
     ResolvedDraw {
         entry: "interp_gpu",
         primitive: PrimitiveType::TriangleList,

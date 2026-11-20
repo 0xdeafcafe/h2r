@@ -6,11 +6,9 @@
 //! Synthetic values only; the ignored tests at the end decode the retail
 //! image in `$H2_XBE`.
 
-mod common;
-
 use std::sync::{Arc, Mutex};
 
-use common::*;
+use crate::common::{self, *};
 use d3d::abi::{Regs, SharedDevice};
 use d3d::backend::Recorded;
 use d3d::hw::method as hw;

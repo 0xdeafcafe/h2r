@@ -839,8 +839,6 @@ pub(crate) struct Gpu {
     pub(crate) uniforms: wgpu::BindGroup,
     samplers: [wgpu::Sampler; 4],
     stage_views: [Option<wgpu::TextureView>; 4],
-    /// What each stage's bitmap was uploaded as ([`describe_image`]).
-    stage_info: [Option<String>; 4],
     /// The world's pipelines, by target formats, the stencil state the
     /// layer draws with and the cull ([`ProgramSet::pipelines`]).
     world_pipelines: HashMap<PipelineKey, wgpu::RenderPipeline>,
@@ -898,25 +896,19 @@ impl Gpu {
         Self::with_images(device, program, &mut |stage, signed| {
             let mut image = stage_image(stage)?;
             bias_signed(&mut image, signed);
-            Some((
-                texture(device, queue, &image, "native world stage"),
-                describe_image(&image, device.features().contains(wgpu::Features::TEXTURE_COMPRESSION_BC)),
-            ))
+            Some(texture(device, queue, &image, "native world stage"))
         })
     }
 
     fn with_images(
         device: &wgpu::Device,
         program: MaterialProgram,
-        image: &mut dyn FnMut(Stage, [bool; 4]) -> Option<(wgpu::TextureView, String)>,
+        image: &mut dyn FnMut(Stage, [bool; 4]) -> Option<wgpu::TextureView>,
     ) -> Option<Self> {
         let mut stage_views: [Option<wgpu::TextureView>; 4] = Default::default();
-        let mut stage_info: [Option<String>; 4] = Default::default();
         for (n, &stage) in program.stages.iter().enumerate() {
             if matches!(stage, Stage::Bitmap { .. }) && program.dims[n].is_some() {
-                let (view, description) = image(stage, program.signed[n])?;
-                stage_views[n] = Some(view);
-                stage_info[n] = Some(description);
+                stage_views[n] = Some(image(stage, program.signed[n])?);
             }
         }
         let uniforms_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -983,7 +975,6 @@ impl Gpu {
             uniforms,
             samplers,
             stage_views,
-            stage_info,
             world_pipelines: HashMap::new(),
             pipelines: HashMap::new(),
         })
@@ -1035,14 +1026,8 @@ impl Gpu {
         }))
     }
 
-    /// The frame's uniforms.
-    pub(crate) fn prepare(&self, queue: &wgpu::Queue, view: &ViewInputs) {
-        queue.write_buffer(&self.vertex_buffer, 0, &frame_vertex(&self.program.vertex, view).to_bytes());
-        queue.write_buffer(&self.pixel_buffer, 0, &frame_pixel(&self.program.pixel, view).to_bytes());
-    }
-
-    /// [`Gpu::prepare`] with the pixel uniforms `pixel` in place of the
-    /// program's own, written through the submission's upload arena (the
+    /// The frame's uniforms with `pixel` in place of the program's own pixel
+    /// uniforms, written through the submission's upload arena (the
     /// reservation path records into an isolated encoder, where a queue
     /// write would escape cancellation): for a pass whose pixel state is
     /// resolved per view (the fog layer's `PixelUniforms::fog` and
@@ -1386,15 +1371,16 @@ impl ProgramSet {
                         } else {
                             image
                         };
-                        return Some((crate::light_gpu::layered_texture(device, queue, pixels, "native world stage"),
-                            format!("{:?} {}x{}", pixels.dim, pixels.width, pixels.height)));
+                        return Some(crate::light_gpu::layered_texture(
+                            device,
+                            queue,
+                            pixels,
+                            "native world stage",
+                        ));
                     }
                     let mut decoded = stage_image(stage)?;
                     bias_signed(&mut decoded, signed);
-                    Some((
-                        texture(device, queue, &decoded, "native world stage"),
-                        describe_image(&decoded, device.features().contains(wgpu::Features::TEXTURE_COMPRESSION_BC)),
-                    ))
+                    Some(texture(device, queue, &decoded, "native world stage"))
                 }).clone()
             });
             if let Some(g) = g {

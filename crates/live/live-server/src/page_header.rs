@@ -380,7 +380,7 @@ fn type_line(summary: &GameSummary) -> String {
         } else {
             "Campaign"
         };
-        return match summary.difficulty.as_deref().map(|d| title_case(d)) {
+        return match summary.difficulty.as_deref().map(title_case) {
             Some(d) => format!("{label} · {d}"),
             None => label.into(),
         };

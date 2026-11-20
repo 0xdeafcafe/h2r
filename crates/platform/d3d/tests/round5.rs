@@ -6,9 +6,7 @@
 //! end checks the addresses against the retail image in `$H2_XBE` by
 //! decoding its instructions.
 
-mod common;
-
-use common::*;
+use crate::common::{self, *};
 use d3d::abi::Regs;
 use d3d::device::PushCallback;
 use d3d::layout::device_field as f;

@@ -4,9 +4,7 @@
 //! device `+0x934`. Synthetic values only; the ignored tests at the end
 //! decode the retail image in `$H2_XBE`.
 
-mod common;
-
-use common::*;
+use crate::common::{self, *};
 use d3d::abi::Regs;
 use d3d::backend::Viewport;
 use d3d::hw::method as hw;
