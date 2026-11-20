@@ -14,8 +14,20 @@ type SafeFn =
 
 #[derive(Clone)]
 pub(crate) enum Handler {
+    /// A generated registry entry eligible for a direct transfer.
     Native(GuestFn),
+    /// A standalone ABI handler or override. It always uses the runner.
+    NativeAdapter(GuestFn),
     Rust(Arc<SafeFn>),
+}
+
+/// A resume always runs its registered original, which cannot be replaced.
+/// Store it alongside the selector so a lookup does not probe both maps.
+#[derive(Clone)]
+struct Resume {
+    handler: Handler,
+    selector: u32,
+    owner: u32,
 }
 
 #[derive(Clone)]
@@ -37,7 +49,7 @@ pub type StopRecovery = dyn Fn(&mut CpuAbi, &mut ExecCtx, TransferAbi) -> Transf
 pub struct Dispatch {
     generated: HashMap<u32, Handler>,
     overrides: HashMap<u32, Override>,
-    resumes: HashMap<u32, (u32, u32)>,
+    resumes: HashMap<u32, Resume>,
     stop_recovery: Option<Arc<StopRecovery>>,
 }
 
@@ -214,14 +226,22 @@ impl Dispatch {
         owner: u32,
         start_pc: u32,
     ) -> Result<(), RegistrationError> {
-        if !self.generated.contains_key(&owner) {
-            return Err(RegistrationError::MissingOwner(owner));
+        let handler = self
+            .resolve_original(owner)
+            .ok_or(RegistrationError::MissingOwner(owner))?;
+        match self.resumes.entry(pc) {
+            std::collections::hash_map::Entry::Occupied(_) => {
+                Err(RegistrationError::DuplicateResume(pc))
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(Resume {
+                    handler,
+                    selector: start_pc,
+                    owner,
+                });
+                Ok(())
+            }
         }
-        if self.resumes.contains_key(&pc) {
-            return Err(RegistrationError::DuplicateResume(pc));
-        }
-        self.resumes.insert(pc, (owner, start_pc));
-        Ok(())
     }
     pub fn set_enabled(&mut self, addr: u32, enabled: bool) -> bool {
         self.overrides
@@ -326,7 +346,7 @@ impl Dispatch {
     }
     /// The owner's original handler, its selector and the owner address.
     pub(crate) fn resolve_resume(&self, pc: u32) -> Option<(Handler, u32, u32)> {
-        let &(owner, selector) = self.resumes.get(&pc)?;
-        Some((self.resolve_original(owner)?, selector, owner))
+        let entry = self.resumes.get(&pc)?;
+        Some((entry.handler.clone(), entry.selector, entry.owner))
     }
 }

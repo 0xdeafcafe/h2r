@@ -706,6 +706,7 @@ mod tests {
             players,
             kills: vec![],
             nav: "loaded".into(),
+            dispatch_per_tick: None,
             notes: vec![],
         }
     }

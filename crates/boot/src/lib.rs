@@ -676,9 +676,8 @@ pub unsafe fn load_module(path: &Path, rt: &runtime::Runtime, xbe_bytes: &[u8]) 
         let conflicts = fallback::init(xbe_bytes, &rows, &res).map_err(anyhow::Error::msg)?;
         // Each row is registered as itself, and the runtime hands its STOPs
         // to the fallback (fallback.rs). H2_BOOT_TRAMPOLINE=1 routes every
-        // row through the old trampoline instead, for comparison: that also
-        // turns the module's direct calls off in effect, since a direct call
-        // needs the registered handler to be the callee's own.
+        // row through the old trampoline instead, for comparison. The
+        // runner only warms direct slots for generated registry entries.
         let trampoline = std::env::var("H2_BOOT_TRAMPOLINE").as_deref() == Ok("1");
         if trampoline {
             eprintln!("boot: H2_BOOT_TRAMPOLINE=1: every entry through the fallback trampoline");
@@ -688,13 +687,13 @@ pub unsafe fn load_module(path: &Path, rt: &runtime::Runtime, xbe_bytes: &[u8]) 
             }
         }
         rt.edit_dispatch(|d| -> Result<()> {
-            for &(addr, f) in &rows {
-                let f = if trampoline {
-                    fallback::trampoline as runtime::GuestFn
-                } else {
-                    f
-                };
-                d.register_generated(addr, runtime::cpu::ABI_VERSION, f)
+            if !trampoline {
+                d.register_generated_module(m, *version)
+                    .context("registering generated module")?;
+                return Ok(());
+            }
+            for &(addr, _) in &rows {
+                d.register_generated(addr, runtime::cpu::ABI_VERSION, fallback::trampoline)
                     .with_context(|| format!("entry {addr:#x}"))?;
             }
             for r in resumes {

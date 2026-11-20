@@ -513,6 +513,12 @@ impl<const N: usize> Wf<N> {
         if a == 0 {
             return self;
         }
+        if k.is_power_of_two() {
+            return Self::from_sig2(self.neg, self.exp - k.trailing_zeros() as i32, a);
+        }
+        if k <= u16::MAX as u64 {
+            return self.div_u16_2(a, k);
+        }
         // floor((a << 64) / k): a 192-bit quotient (qh, ql).
         let (qh, ql) = if k <= u32::MAX as u64 {
             // Native 64/64 divisions on 32-bit digits, as the limb loop.
@@ -545,6 +551,33 @@ impl<const N: usize> Wf<N> {
             _ => (ql as u128) << (z - 64),
         };
         Self::from_sig2(self.neg, self.exp - z as i32, top)
+    }
+
+    /// The series mostly divide by 16-bit constants. Divide three 48-bit
+    /// digits of `a << 16`; those 16 appended bits suffice because a
+    /// normalized significand shifts by at most 16 after this division.
+    fn div_u16_2(self, a: u128, k: u64) -> Self {
+        const DIGIT_MASK: u64 = (1 << 48) - 1;
+        // With d < 2^64, floor(d * floor((2^64 - 1) / k) / 2^64)
+        // underestimates floor(d / k) by at most one.
+        let reciprocal = (u64::MAX / k) as u128;
+        let digit = |d: u64| {
+            let q = ((d as u128 * reciprocal) >> 64) as u64;
+            let remainder = d - q * k;
+            let correction = u64::from(remainder >= k);
+            (q + correction, remainder - correction * k)
+        };
+        let (high, rem) = digit((a >> 80) as u64);
+        let (middle, rem) = digit((rem << 48) | ((a >> 32) as u64 & DIGIT_MASK));
+        let (low, _) = digit((rem << 48) | ((a as u32 as u64) << 16));
+
+        // high is nonzero and occupies at most 48 bits. Drop the unused
+        // guard bits to recover exactly the top 128 bits of the quotient.
+        let shift = 32 - high.leading_zeros();
+        let sig = ((high as u128) << (96 - shift))
+            | ((middle as u128) << (48 - shift))
+            | (low >> shift) as u128;
+        Self::from_sig2(self.neg, self.exp - (16 - shift) as i32, sig)
     }
 
     /// Square root of a positive value, digit by digit, `64N` root bits.
@@ -811,6 +844,20 @@ mod tests {
                 _ => (1 << 32) + rng.next() % (1 << 40),
             };
             assert_eq!(a.div_u64(k), div_u64_u128(a, k), "div_u64 {a:?} / {k}");
+        }
+    }
+
+    #[test]
+    fn reciprocal_digits_match_long_division_at_all_small_divisors() {
+        let mut rng = Rng(0x8834_951b_716d_b18f);
+        for k in 1..=(u16::MAX as u64 + 1) {
+            for a in [
+                Wf::<2>::from_sig2(false, 0, 1u128 << 127),
+                Wf::<2>::from_sig2(true, -17, u128::MAX),
+                rng.wf::<2>(None),
+            ] {
+                assert_eq!(a.div_u64(k), div_u64_u128(a, k), "{a:?} / {k}");
+            }
         }
     }
 

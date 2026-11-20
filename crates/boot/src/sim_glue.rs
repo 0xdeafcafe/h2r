@@ -87,6 +87,8 @@ struct State {
     end: Option<End>,
     first_tick: Option<Instant>,
     last_tick: Option<Instant>,
+    dispatch_start: Option<runtime::DispatchCounts>,
+    dispatch_end: Option<runtime::DispatchCounts>,
     /// The seed and teams are written for this match.
     set_up: bool,
     /// Weapon datums fired since the last tick.
@@ -351,6 +353,8 @@ impl Sim {
                 end: None,
                 first_tick: None,
                 last_tick: None,
+                dispatch_start: None,
+                dispatch_end: None,
                 set_up: false,
                 fired: Vec::new(),
                 notes: Vec::new(),
@@ -639,7 +643,7 @@ fn build_report(inner: &Inner, s: &State) -> Report {
     } else {
         "missing"
     };
-    s.tally.report(Finish {
+    let mut report = s.tally.report(Finish {
         match_: inner.matched.resolved_json(),
         team_play: inner.matched.team_play,
         bots: &bots,
@@ -647,7 +651,17 @@ fn build_report(inner: &Inner, s: &State) -> Report {
         speed: speed(inner, s),
         nav,
         notes,
-    })
+    });
+    if report.ticks > 0
+        && let Some((start, end)) = s.dispatch_start.zip(s.dispatch_end)
+    {
+        report.dispatch_per_tick = Some(
+            end.since(start)
+                .map(|(name, count)| (name.to_string(), count as f64 / report.ticks as f64))
+                .collect(),
+        );
+    }
+    report
 }
 
 /// A bot's brain, counting per game tick what only it knows: stuck, its
@@ -753,6 +767,8 @@ impl feature::Feature for SimMetrics {
             s.set_up = false;
             s.fired.clear();
             s.first_tick = (s.phase == Phase::Playing).then(Instant::now);
+            s.dispatch_start = o.runtime.dispatch_counts();
+            s.dispatch_end = None;
             eprintln!("sim: match started at tick {tick}");
         });
         let me = Arc::clone(&self.0);
@@ -791,13 +807,16 @@ impl feature::Feature for SimMetrics {
                         s.phase = Phase::Playing;
                         s.first_tick = Some(Instant::now());
                         s.tally.start(sample.tick);
+                        s.dispatch_start = o.runtime.dispatch_counts();
                     }
                     let resets = s.tally.resets();
                     s.tally.tick(&sample);
+                    s.dispatch_end = o.runtime.dispatch_counts();
                     if s.tally.resets() != resets {
                         // A snapshot load (a forked run): the match is
                         // timed, seeded and teamed from here.
                         s.first_tick = Some(Instant::now());
+                        s.dispatch_start = s.dispatch_end;
                         s.set_up = false;
                         eprintln!(
                             "sim: the tick jumped to {} (a snapshot load); counting from here",

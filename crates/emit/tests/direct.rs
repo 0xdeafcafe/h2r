@@ -51,6 +51,7 @@ const LOOP_B: u32 = CODE + 0xf80;
 // The second page.
 const IND: u32 = CODE + 0x1000;
 const CL: u32 = CODE + 0x1100;
+const IND_JUMP: u32 = CODE + 0x1300;
 /// Shares NEST_B's slot in a table of 256, not in one of 4096.
 const COLL: u32 = CODE + 0x1213;
 
@@ -144,6 +145,12 @@ fn funcs() -> Vec<IrFunction> {
         function(COLL, |a| {
             log(a, 32)?;
             a.ret()
+        }),
+        function(IND_JUMP, |a| {
+            a.mov(ebx, dword_ptr(DATA + 0x40))?;
+            a.add(ebx, 1)?;
+            a.mov(eax, O)?;
+            a.jmp(eax)
         }),
         // Calls through a register, to a caller of its own and to a leaf
         // (O, which the override scenario overrides), in a loop.
@@ -657,8 +664,78 @@ fn indirect_calls() {
     assert_eq!(calls.load(Ordering::Relaxed), 3 * MODES.len() as u32);
     // 3 trips: NEST_B's call of NEST_C and its return are direct either
     // way; with the switch, IND's two calls and their returns too.
-    let on = std::env::var("H2_INDIRECT_CALLS").as_deref() == Ok("1");
+    let on = std::env::var("H2_INDIRECT_CALLS").as_deref() != Ok("0");
     assert_eq!(direct_count(IND, None), if on { 18 } else { 6 });
+}
+
+#[test]
+fn an_indirect_jump_respects_dispatch_and_execute_permissions() {
+    agree("indirect jump", |m| {
+        let mut out = run_twice(IND_JUMP)(m);
+        assert_eq!(out[1].cpu.ebx, out[0].cpu.ebx);
+        m.reset();
+        m.ctx.arm_preemption(1);
+        let stopped = m.run(&Runner::default(), TransferAbi::jump(IND_JUMP));
+        assert_eq!(stopped.preempted, Some(TransferAbi::jump(O)));
+        assert_eq!(stopped.accounting[2], 1);
+        out.push(stopped);
+        m.ctx.disarm_preemption();
+
+        m.ctx.runtime().edit_dispatch(|d| {
+            d.register_override(O, "test jump override", |cpu, ctx, _| {
+                cpu.ebx += 0x100;
+                ctx.memory().ret(cpu, 0)
+            });
+        });
+        m.reset();
+        out.push(m.run(&Runner::default(), TransferAbi::jump(IND_JUMP)));
+        assert_ne!(out[1].cpu.ebx, out[3].cpu.ebx);
+        m.ctx.runtime().edit_dispatch(|d| {
+            d.set_enabled(O, false);
+        });
+        m.reset();
+        out.push(m.run(&Runner::default(), TransferAbi::jump(IND_JUMP)));
+
+        m.ctx.memory().protect(CODE, Permissions::READ).unwrap();
+        m.reset();
+        out.push(m.run(&Runner::default(), TransferAbi::jump(IND_JUMP)));
+        assert_eq!(out[5].transfer.kind, abi::FAULT);
+        out
+    });
+
+    let on = std::env::var("H2_INDIRECT_CALLS").as_deref() != Ok("0");
+    assert_eq!(direct_count(IND_JUMP, None), u64::from(on));
+}
+
+#[test]
+fn a_native_override_is_never_learned_as_an_indirect_target() {
+    unsafe extern "C" fn redirect(
+        _: *mut CpuAbi,
+        _: *mut runtime::ExecCtxOpaque,
+        _: u32,
+    ) -> TransferAbi {
+        TransferAbi::jump(O)
+    }
+
+    let mut m = Machine::new(Mode::On);
+    m.run_counting(IND_JUMP);
+    m.ctx.runtime().edit_dispatch(|d| {
+        // Keep the generated original, and replace its entry with a native
+        // override that loops until the runner's transfer budget is spent.
+        unsafe {
+            d.register_native_override(O, "native override", CpuAbi::default().abi_version, redirect)
+        }
+        .unwrap();
+    });
+    m.reset();
+    let t = Runner { max_transfers: 8 }.run(&mut m.cpu, &mut m.ctx, IND_JUMP);
+    assert!(matches!(m.ctx.event(t.event_id), Some(runtime::Event::TransferLimit)));
+
+    m.reset();
+    m.ctx.enable_profiling(true);
+    let t = Runner { max_transfers: 8 }.run(&mut m.cpu, &mut m.ctx, IND_JUMP);
+    assert!(matches!(m.ctx.event(t.event_id), Some(runtime::Event::TransferLimit)));
+    assert_eq!(m.direct_transfers(), 0);
 }
 
 /// Two callees in one slot (`H2_DIRECT_SLOTS`, runtime environment): with
@@ -671,7 +748,11 @@ fn callees_sharing_a_slot() {
     assert_eq!(n.1 & 255, n.2 & 255);
     assert_ne!(n.1 & 4095, n.2 & 4095);
     agree("shared slot", run_twice(CL));
-    let slots: u32 = std::env::var("H2_DIRECT_SLOTS").ok().and_then(|v| v.parse().ok()).unwrap_or(256);
+    let slots = std::env::var("H2_DIRECT_SLOTS")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|n| n.is_power_of_two() && *n <= 8192)
+        .unwrap_or(4096);
     // 3 trips: NEST_B's call of NEST_C and its return always; with room,
     // CL's two calls and their returns too.
     assert_eq!(direct_count(CL, None), if slots >= 4096 { 18 } else { 6 });
@@ -1023,7 +1104,7 @@ fn a_direct_callee_borrows_its_callers_view() {
     // exit call where it used to release and charge.
     assert_eq!(off[0], old_off[0], "{off:?} {old_off:?}");
     assert_eq!((off[1], old_off[3]), (0, 0));
-    if std::env::var("H2_VIEW_CHARGE").as_deref() == Ok("1") {
+    if std::env::var("H2_VIEW_CHARGE").as_deref() != Ok("0") {
         // A counting module with H2_VIEW_CHARGE spends every count in the
         // view: with one, nothing is called to settle, on the way out or
         // before a call; only the entry's acquire is left.

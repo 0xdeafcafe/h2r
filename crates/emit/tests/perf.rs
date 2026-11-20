@@ -378,6 +378,7 @@ fn runner_transfer_benchmark() {
     }
     mem.set_u32(BENCH_STACK, runtime::exec::HARNESS_EXIT).unwrap();
     let mut ctx = ExecCtx::new(Runtime::new(mem, dispatch), 1);
+    ctx.enable_direct_calls(false);
     for targets in [16u32, 256, 1024, 4096] {
         let mut times = Vec::new();
         for _ in 0..trials {
@@ -478,6 +479,7 @@ fn entry_access_benchmark() {
         mem.set_u32(BENCH_STACK, runtime::exec::HARNESS_EXIT).unwrap();
         let rt = Runtime::new(mem, dispatch);
         let mut ctx = ExecCtx::new(rt.clone(), 1);
+        ctx.enable_direct_calls(how == "direct");
         let mut times = Vec::new();
         for _ in 0..trials {
             let mut cpu = CpuAbi { esp: BENCH_STACK, ..CpuAbi::default() };
@@ -1057,7 +1059,8 @@ fn held_gate_matches_the_helper_path_at_every_stop_and_fault() {
         let gate = tag;
         // A counting handler with H2_VIEW_CHARGE spends its whole count in
         // the view, so the runtime settles all of it from there.
-        let view_charge = accounting && (defines.contains(CHARGE) || std::env::var("H2_VIEW_CHARGE").as_deref() == Ok("1"));
+        let view_charge = accounting && defines.contains(CHARGE);
+        let defines = format!("#undef H2_VIEW_CHARGE\n{defines}");
         let (_lib, dispatch) = compile_module_defines(
             &format!("held-gate{tag}"),
             held_gate_functions(),
@@ -1188,8 +1191,7 @@ fn cold_counts(accounting: bool, kind: &str, defines: &str) -> [u64; 8] {
 /// it. `--nocapture` prints the table.
 #[test]
 fn cold_accesses_by_cause() {
-    // The counts below are the default build's: whatever the environment
-    // asks for, the entry gate and the view charge are off here.
+    // Baseline without the entry gate or view charging.
     const OFF: &str = "#undef H2_ENTRY_GATE\n#define H2_ENTRY_GATE 0\n#undef H2_VIEW_CHARGE\n#define H2_VIEW_CHARGE 0\n";
     for accounting in [false, true] {
         let c = cold_counts(accounting, &format!("cold-stats-{accounting}"), OFF);

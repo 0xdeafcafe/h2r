@@ -347,7 +347,7 @@ impl Dispatch {
         if version != ABI_VERSION {
             return Err(RegistrationError::AbiVersion(version));
         }
-        self.register_generated_handler(addr, Handler::Native(f))
+        self.register_generated_handler(addr, Handler::NativeAdapter(f))
     }
 
     /// # Safety
@@ -362,7 +362,7 @@ impl Dispatch {
         if version != ABI_VERSION {
             return Err(RegistrationError::AbiVersion(version));
         }
-        Ok(self.register_override_handler(addr, name.into(), Handler::Native(f)))
+        Ok(self.register_override_handler(addr, name.into(), Handler::NativeAdapter(f)))
     }
 }
 

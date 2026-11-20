@@ -19,6 +19,7 @@ pub struct Runtime {
     tsc: Tsc,
     pub(crate) words: crate::preempt::Words,
     pub(crate) coverage: OnceLock<crate::coverage::Coverage>,
+    pub(crate) dispatch_census: Option<crate::entry_stats::DispatchCensus>,
 }
 
 /// Waits on the guest memory lock that found it held by another thread.
@@ -74,8 +75,16 @@ impl Runtime {
             tsc: Tsc::default(),
             words: Default::default(),
             coverage: OnceLock::new(),
+            dispatch_census: (std::env::var("H2_DISPATCH_STATS").as_deref() == Ok("1"))
+                .then(crate::entry_stats::DispatchCensus::default),
         })
     }
+    /// Runtime dispatch counters, enabled when constructed with
+    /// `H2_DISPATCH_STATS=1`.
+    pub fn dispatch_counts(&self) -> Option<crate::DispatchCounts> {
+        self.dispatch_census.as_ref().map(|census| census.snapshot())
+    }
+
     /// Install the generated registry before any execution contexts are built.
     pub fn enable_guest_coverage(&self, entries: &[crate::H2GenEntry]) {
         let _ = self.coverage.set(crate::coverage::Coverage::new(entries));
