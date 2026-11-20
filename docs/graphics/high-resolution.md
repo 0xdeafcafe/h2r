@@ -36,7 +36,7 @@ view").
   an integer internal size plus the presenter's resample.
 - **Shadow maps** scale only with E3 lighting: the view keeps a scaled copy
   of each depth level and samples it with one tap ([e3-lighting.md](e3-lighting.md),
-  "Lighting setting as built").
+  "The Lighting setting").
 - **MSAA and forced anisotropy** are not built; both would be view-only.
 
 ## Single-copy readbacks
@@ -195,7 +195,7 @@ With E3 lighting it stays awake at 1 (shadow maps at 2x). Tests:
 | Textures and the colour surface over the depth buffer (`0x509368`, `0x50936C`, `0x509370`) | Scale: built from the view's depth buffer | The menu's fog and distortion pass reads depth per pixel. Made on the GPU (see "Depth as a texture"). |
 | A render-to-texture level the size of the back buffer | Scale | Halo-2-HD reports one intermediate target, texaccum, that follows the back-buffer size (see "Prior art"). A full-screen intermediate left at 640x480 would undo the whole feature. |
 | Fixed-size square targets (the `0x14850` 64x64 pair, the 128x128 and 512x512 targets seen in the first level) | Do not scale | Bloom and blur kernels are measured in texels. Scaling the target shrinks the blur on screen. |
-| Shadow maps (depth levels bound as `pNewZStencil`, sampled as `LIN_D24S8`) | 1x with retail lighting. With E3 lighting the view keeps a copy at the render scale, at least 2x (`d3d::scaled::shadow_scale`), sampled with one tap ([e3-lighting.md](e3-lighting.md), "Lighting setting as built") | The comparison indexes the host texels it has (`textureDimensions`) at the guest's coordinate, so a bigger map needs no shader change; a sharper map with retail's 2x2 filter alone only narrows the soft edge. |
+| Shadow maps (depth levels bound as `pNewZStencil`, sampled as `LIN_D24S8`) | 1x with retail lighting. With E3 lighting the view keeps a copy at the render scale, at least 2x (`d3d::scaled::shadow_scale`), sampled with one tap ([e3-lighting.md](e3-lighting.md), "The Lighting setting") | The comparison indexes the host texels it has (`textureDimensions`) at the guest's coordinate, so a bigger map needs no shader change; a sharper map with retail's 2x2 filter alone only narrows the soft edge. |
 | Ordinary textures | Never | They are the game's assets. |
 
 The rule for classifying a render-to-texture level is its guest size against
