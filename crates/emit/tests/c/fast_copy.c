@@ -9,7 +9,7 @@
 static uint8_t *site(H2FastAccess *f, H2Gate *g, uint32_t addr, uint32_t width, int write) {
     H2FastPage page;
     uint8_t *host;
-    H2_SITE_TRY(f, (*g), addr, width, write, page, host, reject);
+    H2_SITE_TRY(f, (*g), addr, width, write, page, host, reject, (void)0);
     return host;
 reject:
     return NULL;
@@ -81,6 +81,13 @@ static void flat_spans(H2FastPage *pages, uint8_t *ram) {
     assert(!h2_flat_span(&g, 0, 4, 2)); /* mirror setup failed */
     ext.flat.stores = ram;
     assert(h2_flat_span(&g, 16, 32, 3) == ram + 4096 + 16);
+    pages[0].permissions = 3; /* eligible physical page with no VA alias */
+    assert(!h2_flat_span(&g, 16, 32, 1));
+    assert(h2_flat_span(&g, 16, 32, 2) == ram + 4096 + 16);
+    pages[0].permissions = 1;
+    assert(!h2_flat_span(&g, 16, 32, 2));
+    pages[0] = (H2FastPage){0x04000000, 3};
+    assert(!h2_flat_span(&g, 16, 32, 2));
     assert(!ext.prefix.dirty[0]);
     g.held = 0;
     assert(!h2_flat_span(&g, 0, 4, 1));

@@ -497,6 +497,7 @@ impl Emitter<'_> {
             self.settle_fn(f.entry);
         }
         self.line(0, format!("TransferAbi {name}(CpuAbi *cpu, ExecCtxOpaque *ctx, uint32_t start) {{"));
+        self.line(1, format!("H2_FLAT_OWNER({:#x}u);", f.entry));
         self.line(1, format!("H2_LOCALS_HOMED({:#x}u);", self.home));
         if let Some(l) = &self.lazy {
             let slots: Vec<String> = (0..l.slots).map(|i| format!("lz{i} = 0")).collect();
@@ -1041,6 +1042,7 @@ impl Emitter<'_> {
                         self.line(d + 1, "H2_GATE_DROP();");
                         self.line(d + 1, format!("uint32_t n_ = h2_fast_movs(h2_mem_, esi, edi, ecx, {width}u, H2_FLAG(10), {limit});"));
                         self.line(d + 1, "if (n_) {");
+                        self.line(d + 2, "H2_FLAT_NOTE(H2FC_TOTAL, 2ull * n_); H2_FLAT_NOTE(H2FC_BULK, 2ull * n_);");
                         self.line(d + 2, format!("uint32_t delta_ = n_ * {width}u; if (H2_FLAG(10)) delta_ = 0u - delta_; esi += delta_; edi += delta_; ecx -= n_;"));
                         if self.shape.accounting {
                             self.line(d + 2, "h2acc += (uint64_t)n_ * 2u;");

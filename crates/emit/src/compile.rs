@@ -140,6 +140,11 @@ pub fn cflags_for(arch: Arch) -> Result<Vec<String>, Error> {
             v.push(format!("-D{name}=1"));
         }
     }
+    if let Some(owner) = env("H2_FLAT_STATS_OWNER").filter(|s| !s.is_empty()) {
+        let pc = u32::from_str_radix(owner.strip_prefix("0x").unwrap_or(&owner), 16)
+            .map_err(|_| err(format!("H2_FLAT_STATS_OWNER={owner}: expected a hexadecimal guest owner address")))?;
+        v.push(format!("-DH2_FLAT_STATS_OWNER=0x{pc:08x}u"));
+    }
     Ok(pgo::for_arch(v, arch))
 }
 

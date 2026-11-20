@@ -684,14 +684,15 @@ static inline uint64_t h2_acc_budget(ExecCtxOpaque *ctx, const H2FastAccess *f) 
         uint8_t *p_, b_[16];                                                    \
         H2FastPage pg_;                                                         \
         H2Cold c_;                                                              \
-        H2_ACC_ONE();                                                           \
-        H2_SITE_TRY(h2_mem_, h2g_, a_, (n), 0, pg_, p_, slow_);                 \
+        H2_FLAT_NOTE(H2FC_TOTAL, 1); H2_ACC_ONE();                              \
+        H2_SITE_TRY(h2_mem_, h2g_, a_, (n), 0, pg_, p_, slow_,                 \
+                    H2_FLAT_NOTE(H2FC_FLAT, 1));                                \
         H2_ALIAS_FENCE(); memcpy(&dst, p_, (n)); H2_ALIAS_FENCE();              \
         goto done_;                                                             \
     slow_:                                                                      \
         H2_COLD_NOTE(h2g_);                                                     \
         c_ = h2_access_cold(ctx, h2_mem_, h2g_.held, (pc), a_, (n), 0, b_);     \
-        h2_gate_adopt(&h2g_, c_.held);                                          \
+        H2_NOTE_COLD_FLAT(c_); h2_gate_adopt(&h2g_, c_.held);                   \
         H2_COLD_NOTE_AFTER(h2g_);                                               \
         if (c_.status) { restore; H2_FAULT_EVENT(pc, c_.status); }              \
         memcpy(&dst, b_, (n));                                                  \
@@ -724,15 +725,16 @@ static inline uint64_t h2_acc_budget(ExecCtxOpaque *ctx, const H2FastAccess *f) 
         uint8_t *p_, b_[16];                                                    \
         H2FastPage pg_;                                                         \
         H2Cold c_;                                                              \
-        H2_ACC_ONE();                                                           \
-        H2_SITE_TRY(h2_mem_, h2g_, a_, (n), 1, pg_, p_, slow_);                 \
+        H2_FLAT_NOTE(H2FC_TOTAL, 1); H2_ACC_ONE();                              \
+        H2_SITE_TRY(h2_mem_, h2g_, a_, (n), 1, pg_, p_, slow_,                 \
+                    H2_FLAT_NOTE(H2FC_FLAT, 1));                                \
         H2_ALIAS_FENCE(); memcpy(p_, &v_, (n)); H2_ALIAS_FENCE();               \
         goto done_;                                                             \
     slow_:                                                                      \
         memcpy(b_, &v_, (n));                                                   \
         H2_COLD_NOTE(h2g_);                                                     \
         c_ = h2_access_cold(ctx, h2_mem_, h2g_.held, (pc), a_, (n), 1, b_);     \
-        h2_gate_adopt(&h2g_, c_.held);                                          \
+        H2_NOTE_COLD_FLAT(c_); h2_gate_adopt(&h2g_, c_.held);                   \
         H2_COLD_NOTE_AFTER(h2g_);                                               \
         if (c_.status) { restore; H2_FAULT_EVENT(pc, c_.status); }              \
     done_:;                                                                     \
@@ -751,12 +753,14 @@ static inline uint64_t h2_acc_budget(ExecCtxOpaque *ctx, const H2FastAccess *f) 
 #define H2_SPAN_LD(span, off, T, n, dst, pc, addr)                              \
     T dst = 0;                                                                  \
     if (span) {                                                                 \
+        H2_FLAT_NOTE(H2FC_TOTAL, 1); H2_FLAT_NOTE(H2FC_FLAT, 1);                \
         H2_ACC_ONE(); H2_FAST_CHARGE(h2_mem_);                                  \
         H2_ALIAS_FENCE(); memcpy(&dst, (span) + (off), n); H2_ALIAS_FENCE();    \
     } else { H2_LD(T, n, slow_value_, pc, addr); dst = slow_value_; }
 #define H2_SPAN_ST(span, off, T, n, pc, addr, value)                            \
     do {                                                                        \
         if (span) {                                                             \
+            H2_FLAT_NOTE(H2FC_TOTAL, 1); H2_FLAT_NOTE(H2FC_FLAT, 1);            \
             T v_ = (value); H2_ACC_ONE(); H2_FAST_CHARGE(h2_mem_);              \
             H2_ALIAS_FENCE(); memcpy((span) + (off), &v_, n); H2_ALIAS_FENCE(); \
         } else { H2_ST(T, n, pc, addr, value); }                                \

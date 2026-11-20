@@ -215,13 +215,14 @@ H2_EXPORT uint32_t h2probe_write(ExecCtxOpaque *c, uint32_t a, uint32_t n, uint3
     if kind == "fast-semantics" { extras.push(("probe.c", probe)); }
     if kind == "flat-store-order" {
         extras.push(("flat-probe.c", r#"#include "h2gen.h"
-H2_EXPORT uint32_t h2probe_flat(ExecCtxOpaque *ctx, uint32_t addr) {
+H2_EXPORT uint32_t h2probe_flat(ExecCtxOpaque *ctx, uint32_t addr, uint8_t *value) {
     H2FastAccess *f = h2abi_v1_fast_acquire(ctx);
     if (!f) return 0;
     H2Gate gate = {0};
     h2_gate_adopt(&gate, h2_gate_try(f));
-    uint32_t mask = (h2_flat_span(&gate, addr, 4u, 1u) != NULL) |
-        ((uint32_t)(h2_flat_span(&gate, addr, 4u, 2u) != NULL) << 1);
+    uint8_t *read = h2_flat_span(&gate, addr, 1u, 1u);
+    uint32_t mask = (read != NULL) | ((uint32_t)(h2_flat_span(&gate, addr, 1u, 2u) != NULL) << 1);
+    if (read && value) *value = *read;
     h2_gate_drop(f, &gate);
     h2abi_v1_fast_release(ctx);
     return mask;
@@ -1168,9 +1169,8 @@ fn held_gate_matches_the_helper_path_at_every_stop_and_fault() {
 /// The causes `H2_COLD_STATS` gives, in `h2gen_cold_counts` order.
 const COLD_CAUSES: [&str; 8] = ["entry", "lent-entry", "after-dcall", "flush", "drop", "tick", "miss", "no-gate"];
 
-/// Runs [`held_gate_functions`] once, start to end, with `H2_COLD_STATS`
-/// (and `defines`) and returns each cause's count of cold accesses.
-fn cold_counts(accounting: bool, kind: &str, defines: &str) -> [u64; 8] {
+/// Runs the mixed-memory main and leaf once, without contention or preemption.
+fn run_held_gate_fixture(accounting: bool, kind: &str, defines: &str) -> libloading::Library {
     let (lib, dispatch) = compile_module_defines(
         kind,
         held_gate_functions(),
@@ -1178,7 +1178,7 @@ fn cold_counts(accounting: bool, kind: &str, defines: &str) -> [u64; 8] {
         true,
         emit::opt::Passes::ALL,
         emit::Codegen { accounting, ..emit::Codegen::default() },
-        &format!("#define H2_COLD_STATS 1\n{defines}"),
+        defines,
     );
     let mut mem = Guest::new();
     mem.map_zeroed(A, 4096, Permissions::RX).unwrap();
@@ -1190,10 +1190,29 @@ fn cold_counts(accounting: bool, kind: &str, defines: &str) -> [u64; 8] {
     let mut cpu = CpuAbi { esp: STACK, esi: DATA + 0x100, edi: DATA + 0x300, ecx: 40, ebp: DATA + 0xd10, ..CpuAbi::default() };
     let t = Runner::default().run(&mut cpu, &mut ctx, A);
     assert_eq!(t.kind, runtime::abi::STOP, "{:?}", ctx.events());
+    lib
+}
+
+fn cold_counts(accounting: bool, kind: &str, defines: &str) -> [u64; 8] {
+    let lib = run_held_gate_fixture(accounting, kind, &format!("#define H2_COLD_STATS 1\n{defines}"));
     let counts: libloading::Symbol<*const [u64; 8]> = unsafe { lib.get(b"h2gen_cold_counts").unwrap() };
-    let counts = unsafe { **counts };
-    drop(rt);
-    counts
+    unsafe { **counts }
+}
+
+#[test]
+fn flat_owner_coverage() {
+    let lib = run_held_gate_fixture(false, "flat-owner-coverage",
+        "#undef H2_FLAT_RAM\n#define H2_FLAT_RAM 1\n#undef H2_FLAT_STATS_OWNER\n#define H2_FLAT_STATS_OWNER 0x400000u\n");
+    let counts: libloading::Symbol<*const [u64; 3]> = unsafe { lib.get(b"h2gen_flat_counts").unwrap() };
+    let [total, flat, bulk] = unsafe { **counts };
+    // Main only: 2 pushes, 40 ten-access calls/trips (excluding the leaf),
+    // 100 and 7 two-access trips, 70 STOSD, 2 pops, 4 stores and RET.
+    assert_eq!((total, bulk), (693, 0));
+    let enabled = std::env::var("H2_FLAT_RAM").as_deref() == Ok("1")
+        && cfg!(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")));
+    // DATA is at VA mod 16 KiB = 0 and PA mod 16 KiB = 4096.
+    // The one read straddling its two guest pages still takes the helper.
+    assert_eq!(flat, if enabled { total - 1 } else { 0 });
 }
 
 /// Why accesses take the cold path, by cause, over a run of
@@ -1992,29 +2011,38 @@ fn flat_span_matches_checked_stores_aliases_and_fault_order() {
         "flat-store-order", vec![f], false, true, emit::opt::Passes::ALL, emit::Codegen::default(),
         "#undef H2_FLAT_RAM\n#define H2_FLAT_RAM 1\n",
     );
-    type Probe = unsafe extern "C" fn(*mut runtime::ExecCtxOpaque, u32) -> u32;
+    type Probe = unsafe extern "C" fn(*mut runtime::ExecCtxOpaque, u32, *mut u8) -> u32;
     // SAFETY: the extra C source above exports this signature.
     let probe: libloading::Symbol<Probe> = unsafe { lib.get(b"h2probe_flat") }.unwrap();
     let rt = Runtime::new(Guest::new(), dispatch);
-    for (address, ro, mapped, fault, trap) in [
-        (DATA, false, true, false, false),
-        (DATA, false, true, false, true),
-        (DATA + 4092, true, true, true, false),
-        (DATA + 4092, false, false, true, false),
-        (0xfd00_0000, false, true, true, false),
-        (0xffff_ffff, false, true, true, false),
+    // Exercise every VA-to-physical offset on a 16 KiB host. Unwatched
+    // writes actually use the shifted VA. Watched writes use the mirror.
+    for (address, backing, watched, ro, mapped, fault, trap) in [
+        (DATA, 0, true, false, true, false, false),
+        (DATA, 4096, false, false, true, false, false),
+        (DATA, 8192, false, false, true, false, false),
+        (DATA, 12288, false, false, true, false, false),
+        (DATA, 4096, true, false, true, false, false),
+        (DATA, 0, true, false, true, false, true),
+        (DATA + 4092, 8192, true, true, true, true, false),
+        (DATA + 4092, 12288, true, false, false, true, false),
+        (0xfd00_0000, 4096, true, false, true, true, false),
+        (0xffff_ffff, 4096, true, false, true, true, false),
     ] {
         let run = |fast| {
             let mut g = Guest::new();
             g.map(A, 16384, 0x10000, Permissions::RX).unwrap();
             g.map(SP, 16384, 0x14000, Permissions::RW).unwrap();
-            g.map(DATA, 16384, 0, Permissions::RW).unwrap();
-            g.map(ALIAS, 16384, 0, Permissions::RW).unwrap();
+            g.map(DATA, 16384, backing, Permissions::RW).unwrap();
+            g.map(ALIAS, 16384, backing, Permissions::RW).unwrap();
             if ro { g.protect_range(DATA + 4096, 4096, Permissions::READ).unwrap(); }
             if !mapped { g.unmap(DATA + 4096, 4096).unwrap(); }
             g.set_u32(SP, runtime::exec::HARNESS_EXIT).unwrap();
-            let w = g.subscribe_writes("compare");
-            g.watch_writes(w, CONTIGUOUS_BASE, 16384).unwrap();
+            let w = watched.then(|| {
+                let id = g.subscribe_writes("compare");
+                g.watch_writes(id, CONTIGUOUS_BASE + backing, 16384).unwrap();
+                id
+            });
             if trap {
                 g.install_trap(64);
                 g.arm_all(true, true);
@@ -2024,8 +2052,8 @@ fn flat_span_matches_checked_stores_aliases_and_fault_order() {
             ctx.enable_fast_memory(fast);
             let experimental = fast && !trap && cfg!(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")));
             let watch = std::env::var("H2_FLAT_WRITE_WATCH").as_deref() != Ok("0");
-            let mask = unsafe { probe((&mut ctx as *mut ExecCtx).cast(), DATA) };
-            assert_eq!(mask, if experimental { 1 | (u32::from(watch) << 1) } else { 0 });
+            let mask = unsafe { probe((&mut ctx as *mut ExecCtx).cast(), DATA, std::ptr::null_mut()) };
+            assert_eq!(mask, if experimental { 1 | (u32::from(!watched || watch) << 1) } else { 0 });
             ctx.arm_preemption(1000);
             let mut cpu = CpuAbi { eax: 13, ecx: 29, esi: address, edi: ALIAS, esp: SP, ..CpuAbi::default() };
             let status = Runner::default().run(&mut cpu, &mut ctx, A);
@@ -2046,8 +2074,38 @@ fn flat_span_matches_checked_stores_aliases_and_fault_order() {
                 assert_eq!(g.u32(ALIAS + 4096).unwrap(), 0);
                 assert_eq!(error.as_ref().unwrap().1.addr, DATA + 4096);
             }
-            (cpu, ctx.take_slice_spent(), error, hits, g.take_dirty(w).unwrap(), g.physical_ram()[..16384].to_vec())
+            let dirty = w.map(|id| g.take_dirty(id).unwrap());
+            let bytes = g.physical_ram()[backing as usize..backing as usize + 16384].to_vec();
+            (cpu, ctx.take_slice_spent(), error, hits, dirty, bytes)
         };
-        assert_eq!(run(true), run(false), "address {address:#x}, ro={ro}, mapped={mapped}");
+        assert_eq!(run(true), run(false), "address {address:#x}, backing={backing:#x}, ro={ro}, mapped={mapped}");
+    }
+
+    // Refresh a shifted host page at each end of the 4 GiB guest range.
+    // Check the affected entry and the neighbors rebuilt outside it.
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+    for base in [0, 0xffff_c000u32] {
+        let mut g = Guest::new();
+        g.map(base, 16384, 4096, Permissions::RW).unwrap();
+        for i in 0..4 { g.set_u8(base + i * 4096 + 4095, (i + 1) as u8).unwrap(); }
+        *rt.memory() = g;
+        let mut ctx = ExecCtx::new(rt.clone(), 1);
+        ctx.enable_fast_memory(true);
+        let mut read = |page: u32| {
+            let mut value = 0;
+            let mask = unsafe { probe((&mut ctx as *mut ExecCtx).cast(), base + page * 4096 + 4095, &mut value) };
+            (mask, value)
+        };
+        for i in 0..4 { assert_eq!(read(i), (3, (i + 1) as u8)); }
+        rt.memory().protect_range(base + 4096, 4096, Permissions::READ).unwrap();
+        assert_eq!(read(1), (1, 2));
+        rt.memory().unmap(base + 8192, 4096).unwrap();
+        assert_eq!(read(2), (0, 0));
+        {
+            let mut g = rt.memory();
+            g.map(base + 8192, 4096, 0xc000, Permissions::RW).unwrap();
+            g.set_u8(base + 12287, 97).unwrap();
+        }
+        assert_eq!([read(0), read(1), read(2), read(3)], [(3, 1), (1, 2), (3, 97), (3, 4)]);
     }
 }

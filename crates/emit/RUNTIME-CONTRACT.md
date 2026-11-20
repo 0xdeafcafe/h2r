@@ -132,19 +132,26 @@ x86-64 Linux. The generated image needs a rebuild. Run the same image with
 `H2_FLAT_RAM=0` for the ordinary page-table path. With flat RAM enabled,
 `H2_FLAT_WRITE_WATCH=0` keeps the software dirty barrier on watched stores.
 
-Each Guest reserves a 4 GiB virtual window with a guard page at either end.
+Each Guest reserves a guarded 4 GiB virtual window on hosts with 4 KiB pages.
 The OS picks a stable base per live RAM backing. macOS maps shared aliases
 of that backing with Mach VM. Linux uses a memfd for the opted-in physical
 allocation. Bit 31 of the legacy `watching` word advertises a view appended
 after the 2080-byte v1 prefix on 64-bit hosts. Bit 0 retains its meaning.
-A full 4 KiB page with a matching flat alias has bit 3 in its page-table
-permissions. The low three permission bits retain their ABI meaning.
-An image first checks the capability under the gate before reading the suffix.
+A page in the original window has bit 3 in its page-table permissions.
+The low three permission bits retain their ABI meaning. An image first
+checks the capability under the gate before reading the suffix.
 
-For eligible reads and unwatched writes, the byte address is
-`flat_base + guest_va`. A 16 KiB host maps one physical host page per guest
-host-page-sized group. Only 4 KiB entries that match that physical mapping
-can use it. The emitter can check one span for multiple accesses derived
+On a 16 KiB host, contiguous guest RAM mappings can have four different
+4 KiB offsets between guest VA and physical RAM. The runtime reserves
+four guarded 4 GiB windows (16 GiB of virtual address space plus guards,
+all sharing the same physical RAM). A reservation failure falls back to
+the original window. The byte address in each window is its fixed base
+plus guest VA. Bits 4–5 of the page entry select a shifted base (1–3)
+when bit 3 is clear. Old images fall back on these entries, and old
+runtimes never set the new bits. On a protection change or remap each
+overlapping host page is rebuilt, including its unchanged guest neighbors.
+Two fragments needing different physical host pages in the same window
+slot can compete. Only entries matching the installed backing use that VA. The emitter can check one span for multiple accesses derived
 from the same unchanged register and constant displacements. That span must
 fit in one guest page with all requested permissions. Each access executes
 and charges in IR order. Selectors, changes to the base, calls, atomics,
@@ -153,7 +160,8 @@ executes each original access, including any MMIO and precise faults.
 Compiler memory barriers order accesses through different aliases.
 
 While a write watch is active, eligible generated stores use a protected
-shared alias of **physical** RAM. On a 4 KiB host this takes one 64 MiB
+shared alias of **physical** RAM. Even a full, permitted guest page
+without a VA window can use this mirror. On a 4 KiB host this takes one 64 MiB
 virtual window. On a 16 KiB host it takes four. Physical page `p` is
 written through window `p % 4`, so opening a 16 KiB host page admits
 writes to exactly one guest subpage through that window. All guest VAs for
@@ -181,6 +189,15 @@ census trap suspends flat accesses. Mapping changes refresh affected host
 pages under the same gate. Guest replacement and COW refresh retire the
 old window. Snapshot restore rebuilds the translations and reports
 restored pages through the existing watch.
+
+To count accesses in one generated owner, set `H2_FLAT_STATS_OWNER` to
+its hexadecimal entry address at image build. At module unload the image
+prints attempted guest loads/stores, flat copies, bulk MOVS accesses, and
+the remaining checked accesses. These are executions, including cold gate
+retries; rejected span probes do not count. Each successful bulk MOVS
+iteration counts one read and one write. Atomic helpers and HLE traffic
+are outside this denominator. The counter is off by default. Use the
+ordinary image for timing.
 
 ### 1.2 Atomics: `h2abi_v1_atomic_rmw`, `h2abi_v1_xchg`, `h2abi_v1_cmpxchg` (existing)
 
