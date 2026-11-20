@@ -13,6 +13,8 @@ mod camera;
 mod census;
 mod contents;
 mod replay;
+mod seeds;
+pub use seeds::TargetSeed;
 
 pub use census::{Census, TargetUse, Uses, census};
 pub use replay::{ReplayFrame, ReplayOp, ReplaySample, ReplayTexture, SinkTexture};
@@ -192,7 +194,7 @@ impl<B: Backend> SceneSink<B> {
     }
 
     fn replay_stage(&mut self, stage: &SceneStage<B::Surface>) -> Option<(SlotAt, ReplayOp)> {
-        let at = self.at()?;
+        let at = self.write_slot()?;
         self.replay.as_ref()?;
         if !stage.pass.lock().is_ok_and(|pass| pass.replays_scene()) {
             self.refuse_replay("nonrepeatable_scene_stage");
@@ -207,8 +209,23 @@ impl<B: Backend> SceneSink<B> {
         })))
     }
 
+    /// A write that bypasses recording invalidates mutable attachment history.
+    fn untracked_write(&mut self) {
+        if let Some(replay) = &mut self.replay {
+            replay.untracked_write();
+        }
+    }
+
+    fn write_slot(&mut self) -> Option<SlotAt> {
+        let at = self.at();
+        if at.is_none() {
+            self.untracked_write();
+        }
+        at
+    }
+
     fn refuse_replay(&mut self, cause: &'static str) {
-        if self.at().is_some() && let Some(replay) = &mut self.replay {
+        if self.write_slot().is_some() && let Some(replay) = &mut self.replay {
             replay.frame.refuse(cause);
         }
     }
@@ -218,6 +235,7 @@ impl<B: Backend> SceneSink<B> {
     }
 
     pub fn inner_mut(&mut self) -> &mut B {
+        self.untracked_write();
         &mut self.inner
     }
 
@@ -231,6 +249,7 @@ impl<B: Backend> SceneSink<B> {
     }
 
     fn made(&mut self, surface: B::Surface, target: AuxTarget) {
+        if let Some(replay) = &mut self.replay { replay.destroy(surface); }
         self.surfaces.retain(|(s, _)| *s != surface);
         self.surfaces.push((surface, target));
     }
@@ -275,13 +294,13 @@ impl<B: Backend> SceneSink<B> {
     }
 
     fn record_draw(&mut self, colour: B::Surface, depth: Option<B::Surface>, draw: &ResolvedDraw) {
-        let Some(at) = self.at() else { return };
+        let Some(at) = self.write_slot() else { return };
         self.bind(at, colour, depth);
         let kept = self.keep.then(|| Box::new(draw.clone()));
         self.frame.push(at, GuestOp::Draw(kept));
     }
 
-    fn replay_draw(&mut self, colour: B::Surface, depth: Option<B::Surface>, draw: Box<ResolvedDraw>, textures: [Option<&SinkTexture<B::Texture>>; 4]) {
+    fn replay_draw(&mut self, colour: B::Surface, depth: Option<B::Surface>, draw: Arc<ResolvedDraw>, textures: [Option<&SinkTexture<B::Texture>>; 4]) {
         let Some(at) = self.at() else { return };
         let (c, d) = self.replay_attachments(colour, depth);
         let replay = self.replay.as_mut().expect("recording replay");
@@ -304,7 +323,7 @@ impl<B: Backend> SceneSink<B> {
     }
 
     fn record_clear(&mut self, colour: B::Surface, depth: Option<B::Surface>, rects: bool) {
-        let Some(at) = self.at() else { return };
+        let Some(at) = self.write_slot() else { return };
         let (c, d) = self.attachments(colour, depth);
         self.frame.push(at, GuestOp::Clear { colour: c, depth: d, rects });
     }
@@ -427,21 +446,32 @@ impl<B: Backend> Backend for SceneSink<B> {
     fn draw(
         &mut self, color: Self::Surface, depth: Option<Self::Surface>, draw: &ResolvedDraw, textures: [Option<&Self::Texture>; 4],
     ) -> Result<DrawOutcome, String> {
-        self.record_draw(color, depth, draw);
-        let outcome = self.inner.draw(color, depth, draw, textures.map(|t| t.map(|t| &t.inner)))?;
-        if outcome == DrawOutcome::Drawn && self.replaying() {
-            self.replay_draw(color, depth, Box::new(draw.clone()), textures);
+        if self.replaying() {
+            return self.draw_shared(color, depth, Arc::new(draw.clone()), textures).0;
         }
-        Ok(outcome)
+        self.record_draw(color, depth, draw);
+        self.inner.draw(color, depth, draw, textures.map(|t| t.map(|t| &t.inner)))
     }
     fn draw_owned(
         &mut self, color: Self::Surface, depth: Option<Self::Surface>, draw: ResolvedDraw, textures: [Option<&Self::Texture>; 4],
     ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
+        if self.replaying() {
+            return self.draw_shared(color, depth, Arc::new(draw), textures);
+        }
         self.record_draw(color, depth, &draw);
-        let kept = self.replaying().then(|| Box::new(draw.clone()));
-        let result = self.inner.draw_owned(color, depth, draw, textures.map(|t| t.map(|t| &t.inner)));
-        if let (Ok(DrawOutcome::Drawn), Some(kept)) = (&result.0, kept) {
-            self.replay_draw(color, depth, kept, textures);
+        self.inner.draw_owned(color, depth, draw, textures.map(|t| t.map(|t| &t.inner)))
+    }
+    fn draw_shared(
+        &mut self, color: Self::Surface, depth: Option<Self::Surface>, draw: Arc<ResolvedDraw>, textures: [Option<&Self::Texture>; 4],
+    ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
+        self.record_draw(color, depth, &draw);
+        let inputs = textures.map(|t| t.map(|t| &t.inner));
+        if !self.replaying() {
+            return self.inner.draw_shared(color, depth, draw, inputs);
+        }
+        let result = self.inner.draw_shared(color, depth, Arc::clone(&draw), inputs);
+        if matches!(result.0, Ok(DrawOutcome::Drawn)) {
+            self.replay_draw(color, depth, draw, textures);
         }
         result
     }
@@ -513,7 +543,7 @@ impl<B: Backend> Backend for SceneSink<B> {
             }
         }
         let copied = self.inner.copy_surface(src, dst)?;
-        if copied && let Some(at) = self.at() {
+        if copied && let Some(at) = self.write_slot() {
             let (from, to) = (self.target(src), self.target(dst));
             self.frame.push(at, GuestOp::Copy { from, to });
             if self.replay.is_some() {
@@ -525,7 +555,7 @@ impl<B: Backend> Backend for SceneSink<B> {
     }
     fn write_surface(&mut self, surface: Self::Surface, desc: &TextureDesc, bytes: &[u8]) -> Result<bool, String> {
         let written = self.inner.write_surface(surface, desc, bytes)?;
-        if written && let Some(at) = self.at() {
+        if written && let Some(at) = self.write_slot() {
             let to = self.target(surface);
             self.frame.push(at, GuestOp::Upload { to });
             if self.replay.is_some() {
@@ -563,7 +593,9 @@ impl<B: Backend> Backend for SceneSink<B> {
     // A one-shot replacement cannot draw again into a private target.
     // Declining before commit leaves its original packet in this slot.
     fn queue_external_draw(&mut self, candidate: QueuedExternalDraw<Self::Surface>, textures: [Option<&Self::Texture>; 4]) -> bool {
-        !self.replaying() && self.inner.queue_external_draw(candidate, textures.map(|t| t.map(|t| &t.inner)))
+        if self.replaying() { return false; }
+        self.untracked_write();
+        self.inner.queue_external_draw(candidate, textures.map(|t| t.map(|t| &t.inner)))
     }
     fn reusable_external_attachments(&self) -> bool {
         self.inner.reusable_external_attachments()
@@ -605,6 +637,7 @@ impl<B: Backend> Backend for SceneSink<B> {
         pass: Box<dyn ExternalPass>,
     ) -> Result<bool, String> {
         if self.replaying() { return Ok(false); }
+        self.untracked_write();
         self.inner.external_pass(color, depth, sampled, request, pass)
     }
     fn report_pixel_count(&mut self) -> Result<Option<u64>, String> {

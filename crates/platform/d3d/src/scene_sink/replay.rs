@@ -54,7 +54,7 @@ pub enum ReplayOp {
     EndFlareQuery(u64),
     Bind { colour: TargetRef, depth: TargetRef },
     Draw {
-        draw: Box<ResolvedDraw>,
+        draw: Arc<ResolvedDraw>,
         textures: [Option<ReplayTexture>; 4],
         camera: CameraUse,
     },
@@ -97,6 +97,9 @@ pub struct ReplayFrame {
     pub present: u64,
     pub flags: u32,
     pub gamma: Option<Box<[u8; 768]>>,
+    /// Exact contents last established by an earlier clear or whole upload.
+    /// Existing display attachments already hold these pixels.
+    pub initial: Vec<(TargetRef, super::TargetSeed)>,
     pub ops: Vec<(SlotAt, ReplayOp)>,
     pub aux: Vec<AuxTarget>,
     pub colour: Option<AuxTarget>,
@@ -111,6 +114,7 @@ impl Default for ReplayFrame {
             present: 0,
             flags: 0,
             gamma: None,
+            initial: Vec::new(),
             ops: Vec::new(),
             aux: Vec::new(),
             colour: None,
@@ -143,6 +147,7 @@ pub(super) struct Recorder<S> {
     // Physical handles can be destroyed and recycled before present. Ops
     // retain the number of the resource, independently of its live handle.
     live: Vec<(S, u16)>,
+    seeds: Vec<(S, super::TargetSeed)>,
     bound: Option<(SlotAt, TargetRef, TargetRef)>,
     pub seq: u64,
     next_sample: u32,
@@ -154,6 +159,7 @@ impl<S: Copy + Eq> Recorder<S> {
         Self {
             frame: ReplayFrame::default(),
             live: Vec::new(),
+            seeds: Vec::new(),
             bound: None,
             seq: 0,
             next_sample: 0,
@@ -173,13 +179,25 @@ impl<S: Copy + Eq> Recorder<S> {
             self.frame.refuse("too_many_surfaces");
             return TargetRef::None;
         };
+        if let Some((_, seed)) = self.seeds.iter().find(|(s, _)| *s == surface) {
+            self.frame.initial.push((TargetRef::Aux(id), seed.clone()));
+        }
         self.frame.aux.push(*desc);
         self.live.push((surface, id));
         TargetRef::Aux(id)
     }
 
     pub fn destroy(&mut self, surface: S) {
+        self.seeds.retain(|(s, _)| *s != surface);
         self.live.retain(|(s, _)| *s != surface);
+    }
+
+    pub fn untracked_write(&mut self) {
+        self.seeds.clear();
+        self.frame.initial.clear();
+        if !self.frame.ops.is_empty() {
+            self.frame.refuse("write_outside_scene");
+        }
     }
 
     pub fn bind(&mut self, at: SlotAt, colour: TargetRef, depth: TargetRef) {
@@ -198,6 +216,18 @@ impl<S: Copy + Eq> Recorder<S> {
 
     pub fn finish(&mut self, present: TargetRef) {
         let mut frame = std::mem::take(&mut self.frame);
+        if frame.refusals.is_empty() {
+            let mut end = super::seeds::final_contents(&frame);
+            for &(surface, id) in &self.live {
+                self.seeds.retain(|(s, _)| *s != surface);
+                if let Some(seed) = end[usize::from(id)].take() {
+                    self.seeds.push((surface, seed));
+                }
+            }
+        } else {
+            // An external/unrecorded write could have touched any surface.
+            self.seeds.clear();
+        }
         // Only the actual present surface is the final colour. In particular
         // the source of a copy swap must remain distinct from its destination.
         let depth = frame.ops.iter().find_map(|(_, op)| match op {
@@ -223,6 +253,9 @@ impl<S: Copy + Eq> Recorder<S> {
         }
         let map = |r| match r { TargetRef::Aux(i) => names[usize::from(i)], other => other };
         frame.presented = map(present);
+        for (target, _) in &mut frame.initial {
+            *target = map(*target);
+        }
         for (_, op) in &mut frame.ops {
             op.map_targets(map);
         }
