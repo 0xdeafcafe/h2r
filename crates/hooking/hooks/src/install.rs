@@ -24,6 +24,27 @@ use crate::{Call, Flow, Hook, ImplFn, Obs, Run};
 /// the shadow entry it called (docs/runtime/snapshots.md).
 pub const AFTER_HOOKS: &str = "feature: after hooks";
 
+/// The switch, and the label, of the object update's bodies
+/// (`impl.sim.native.objects`, docs/engine/object-update.md).
+pub const SIM_OBJECTS: &str = "sim.native.objects";
+
+/// Guard every body of `table` whose chain holds another hook besides its
+/// [`SIM_OBJECTS`] implementation ([`engine::sim_objects::Table::guard`]):
+/// calls into it go through its chain, so those hooks run around the body
+/// as around the original. [`Plan::install`] calls it with the chains it
+/// places.
+pub fn guard_shared_bodies<'a>(
+    table: &engine::sim_objects::Table,
+    chains: impl IntoIterator<Item = &'a Chain>,
+) {
+    for c in chains {
+        let ours = c.implement.as_ref().is_some_and(|h| h.label == SIM_OBJECTS);
+        if ours && c.addr == c.point.base && c.hooks().count() > 1 {
+            table.guard(c.addr);
+        }
+    }
+}
+
 /// What went in, and what was left out.
 #[derive(Debug, Default)]
 pub struct Installed {
@@ -266,7 +287,7 @@ impl Plan {
         }
         // Bodies other hooks share a point with are entered through their
         // chains, not fused past them.
-        crate::sim_objects::guard_hooked(chains.iter().map(|(c, _)| c));
+        guard_shared_bodies(&engine::sim_objects::TABLE, chains.iter().map(|(c, _)| c));
         rt.edit_dispatch(|d| {
             for (c, body) in chains {
                 out.placed.push(c.addr);

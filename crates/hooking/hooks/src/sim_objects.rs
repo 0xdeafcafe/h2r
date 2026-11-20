@@ -12,8 +12,9 @@
 //!
 //! A body whose point another feature hooks too (the Halo 1 health
 //! model's `before` and `after` on the damage update) is guarded when the
-//! plan is installed ([`guard_hooked`]): calls into it go through its
-//! chain, so those hooks run around the body as around the original.
+//! plan is installed (`hooks::install::guard_shared_bodies`): calls into
+//! it go through its chain, so those hooks run around the body as around
+//! the original.
 //!
 //! The tick's `Damage` and `Kill` events (`sim_state::events`) are
 //! recorded by observers at the damage report and the kill credit, and
@@ -23,13 +24,12 @@
 //! [`crate::sim_native::SimNative`] calls [`install`]: the bodies hold no
 //! state, so the feature's snapshot policy does not change.
 use crate::Builder;
-use crate::plan::Chain;
 use engine::points;
 use engine::sim_objects::{self as objects, Table, damage};
 use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
 
 /// The switch, without its `impl.` prefix.
-pub const OBJECTS: &str = "sim.native.objects";
+pub const OBJECTS: &str = crate::install::SIM_OBJECTS;
 
 pub fn on(switches: &crate::Switches) -> bool {
     switches.implementation(OBJECTS, false)
@@ -63,22 +63,6 @@ fn install_events(b: &mut Builder) {
     b.raw().observe_before(&points::PLAYER_KILLED, "events: kill", |o| {
         damage::player_killed(&o.guest(), o.cpu.esp);
     });
-}
-
-/// Guard every body whose chain holds another hook besides its
-/// implementation: [`Table::guard`]. Called by the installer with the
-/// chains it places.
-pub(crate) fn guard_hooked<'a>(chains: impl IntoIterator<Item = &'a Chain>) {
-    guard_in(&objects::TABLE, chains);
-}
-
-fn guard_in<'a>(table: &Table, chains: impl IntoIterator<Item = &'a Chain>) {
-    for c in chains {
-        let ours = c.implement.as_ref().is_some_and(|h| h.label == OBJECTS);
-        if ours && c.addr == c.point.base && c.hooks().count() > 1 {
-            table.guard(c.addr);
-        }
-    }
 }
 
 fn install_table(b: &mut Builder, table: &'static Table) {
@@ -237,7 +221,7 @@ mod tests {
         registry.add(&Installs(&T)).unwrap();
         registry.add(&HooksDamage).unwrap();
         let plan = registry.build(&Base).unwrap();
-        guard_in(&T, plan.chains.values());
+        crate::install::guard_shared_bodies(&T, plan.chains.values());
         assert!(T.guarded(points::OBJECT_DAMAGE_UPDATE.base));
         assert!(!T.guarded(points::OBJECTS_PRE_PHYSICS.base));
 
@@ -247,7 +231,7 @@ mod tests {
         let mut registry = Registry::new(Switches::defaults());
         registry.add(&Installs(&U)).unwrap();
         let plan = registry.build(&Base).unwrap();
-        guard_in(&U, plan.chains.values());
+        crate::install::guard_shared_bodies(&U, plan.chains.values());
         assert!(!U.guarded(points::OBJECT_DAMAGE_UPDATE.base));
     }
 

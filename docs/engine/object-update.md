@@ -37,7 +37,7 @@ virtual addresses; bare numbers in tables are hex. Names are ours.
   `sim_physics::ORACLES`: never installed, kept as test oracles.
 - A body whose point another feature hooks too is guarded
   (`Table::guard`, called by the plan installer through
-  `hooks::sim_objects::guard_hooked`): `drive` hands calls into it to the
+  `hooks::install::guard_shared_bodies`): `drive` hands calls into it to the
   runtime, so the point's chain runs its hooks around the body. The Halo
   1 health model's `before` and `after` on `OBJECT_DAMAGE_UPDATE` make
   that body guarded whenever both are on.
