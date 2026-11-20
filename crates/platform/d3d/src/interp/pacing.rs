@@ -296,7 +296,7 @@ mod tests {
         assert_eq!(f2.len(), 1);
         assert_eq!(f2[0].alpha, None, "shown as it is, no blend across the gap");
         // Frame 1's blend stops at alpha 1 and nothing is shown in the gap.
-        let f1_last = shown.iter().filter(|s| s.frame == 1).last().unwrap();
+        let f1_last = shown.iter().rfind(|s| s.frame == 1).unwrap();
         assert_eq!(f1_last.alpha, Some(1.0));
         assert!(f1_last.at <= 75 * MS);
         // Frame 3 blends again.

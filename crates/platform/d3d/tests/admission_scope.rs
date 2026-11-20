@@ -5,6 +5,22 @@ use d3d::pushbuf::method;
 use d3d::{GuestMemory, RecordingBackend, UploadPolicy};
 
 #[test]
+fn ui_layout_reports_a_failed_drain_and_releases_the_previous_fit() {
+    let (mut device, mut mem) = create(RecordingBackend::new(), UploadPolicy::Tracked);
+    let dev = mem.read_u32(d3d::GuestLayout::HALO2.p_device).unwrap();
+    let put = mem.read_u32(dev).unwrap();
+    let fit = d3d::backend::UiFit::about((1920, 1080), [320., 240.]);
+    device.set_ui_fit(&mut mem, fit).unwrap();
+    mem.write_u32(dev, put + 1).unwrap(); // an unaligned push-buffer cursor
+    assert!(device.set_ui_fit(&mut mem, None).is_err());
+    // Retrying the same transition with a bad cursor can only succeed if
+    // the failure already released the layout.
+    device.set_ui_fit(&mut mem, None).unwrap();
+    mem.write_u32(dev, put).unwrap();
+    device.set_ui_fit(&mut mem, fit).unwrap();
+}
+
+#[test]
 fn refused_boundary_keeps_callback_and_following_commands_in_order() {
     let (mut device, mut mem) = create(RecordingBackend::new(), UploadPolicy::Tracked);
     let dev = mem.read_u32(d3d::GuestLayout::HALO2.p_device).unwrap();

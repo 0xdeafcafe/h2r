@@ -38,7 +38,8 @@ fn read_byte(address: u32, subpixel: vec2u) -> u32 {
     let host = vec2u(p.host_width, p.host_height);
     let lo = (texel * host + guest / 2u) / guest;
     let hi = ((texel + 1u) * host + guest / 2u) / guest;
-    let word = source_word(min(lo + (subpixel * (hi - lo) >> vec2u(16u)), host - 1u));
+    let offset = (subpixel * (hi - lo)) >> vec2u(16u);
+    let word = source_word(min(lo + offset, host - 1u));
     return (word >> (8u * (col % p.src_bpp))) & 255u;
 }
 

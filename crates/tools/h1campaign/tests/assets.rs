@@ -236,7 +236,7 @@ fn check_a30_holo_control(m: &mut M) {
     let scenario = m.scenario().unwrap().id;
     let relocator = tags::schema::Relocator::new(tags::schema::Schema::builtin(), m).unwrap();
     let (_, palette) = relocator.block_field(scenario, 0xc0).unwrap().unwrap();
-    assert!(palette.bytes.chunks_exact(0x28).any(|entry| {
+    assert!(palette.bytes.as_chunks::<0x28>().0.iter().any(|entry| {
         word(entry, 0).to_be_bytes() == group.0 && word(entry, 4) == control.0
     }));
     let (count, colors) = relocator.block_field(control, 0xac).unwrap().unwrap();

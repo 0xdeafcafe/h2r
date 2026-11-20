@@ -366,12 +366,12 @@ pub fn kill_kind(killer: Option<u32>, victim: u32, betrayal: bool) -> &'static s
 /// another player is settled again by `betrayal` ([`is_betrayal`]), since
 /// hosts before the fix recorded free-for-all kills as betrayals; `suicide`
 /// and `world` stay as recorded.
-pub fn settled_kill_kind<'a>(
-    recorded: &'a str,
+pub fn settled_kill_kind(
+    recorded: &str,
     killer: Option<u32>,
     victim: u32,
     betrayal: bool,
-) -> &'a str {
+) -> &str {
     match recorded {
         "kill" | "betrayal" if killer.is_some_and(|k| k != victim) => {
             if betrayal {

@@ -36,7 +36,8 @@ pub struct Package {
 #[derive(Debug, Clone)]
 pub struct Workspace {
     pub root: PathBuf,
-    pub target_dir: PathBuf,
+    #[cfg(test)]
+    target_dir: PathBuf,
     pub packages: BTreeMap<String, Package>,
     /// (directory, package), longest directory first, so a package nested
     /// in another's directory claims its own files.
@@ -71,6 +72,7 @@ impl Workspace {
     /// Reads `cargo metadata --no-deps --format-version 1` output.
     pub fn from_metadata(meta: &Value) -> Result<Self> {
         let root = PathBuf::from(meta["workspace_root"].as_str().ok_or_else(|| anyhow!("metadata has no workspace_root"))?);
+        #[cfg(test)]
         let target_dir = meta["target_directory"].as_str().map(PathBuf::from).unwrap_or_else(|| root.join("target"));
         let list = meta["packages"].as_array().ok_or_else(|| anyhow!("metadata has no packages"))?;
         let mut packages = BTreeMap::new();
@@ -109,7 +111,13 @@ impl Workspace {
         }
         let mut dirs: Vec<(String, String)> = by_dir.into_iter().collect();
         dirs.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then(a.0.cmp(&b.0)));
-        Ok(Workspace { root, target_dir, packages, dirs })
+        Ok(Workspace {
+            root,
+            #[cfg(test)]
+            target_dir,
+            packages,
+            dirs,
+        })
     }
 
     /// The package whose directory holds `path` (relative to the root).

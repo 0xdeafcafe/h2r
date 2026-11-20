@@ -295,7 +295,7 @@ function RunDetail(props: { id: string }) {
             <RunReport detail={found()} />
             <Show when={!(found().run.status === "running" && found().run.sim.deferred)}
               fallback={<p class="adm-note">The replay will be available after this match finishes.</p>}>
-              <Show when={game()}>{(g) => <div class="s-game"><GameView game={g()} embedded /></div>}</Show>
+              <Show when={game()}>{(g) => <div class="s-game"><GameView game={g()} embedded focus={() => Object.values(g().players).find(p => p.bot)?.index ?? null} /></div>}</Show>
             </Show>
             <BotStats detail={found()} />
           </>

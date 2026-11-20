@@ -30,10 +30,24 @@ impl Resolution {
         Self::fixed(w.parse().ok()?, h.parse().ok()?)
     }
 
+    /// Native follows the drawable's aspect within the UHD 4K pixel budget.
+    /// Explicit resolutions use the requested raster, including full 5K.
     pub fn size(self, native: (u32, u32)) -> (u32, u32) {
+        const UHD_PIXELS: u64 = 3840 * 2160;
         match self {
-            Self::Native => native,
             Self::Fixed(w, h) => (w, h),
+            Self::Native => {
+                let (w, h) = (u64::from(native.0), u64::from(native.1));
+                if w * h <= UHD_PIXELS {
+                    return native;
+                }
+                // sqrt(budget * width / height) and its transpose give
+                // one uniform reduction. Round down to stay within budget.
+                let fit = |axis: u64, other: u64| {
+                    ((UHD_PIXELS * axis) / other).isqrt().clamp(1, UHD_PIXELS) as u32
+                };
+                (fit(w, h), fit(h, w))
+            }
         }
     }
 
@@ -91,5 +105,27 @@ impl LegacyScale {
                 Resolution::fixed(self.frame.0.checked_mul(n)?, self.frame.1.checked_mul(n)?)
             });
         size.ok_or_else(|| format!("expected a whole number from 1 to {}", self.max))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Resolution::{Fixed, Native};
+
+    #[test]
+    fn native_uses_a_pixel_budget_and_explicit_sizes_use_the_full_raster() {
+        assert_eq!(Native.size((5120, 2880)), (3840, 2160));
+        assert_eq!(Native.size((2880, 5120)), (2160, 3840));
+        for physical in [(5120, 1440), (3840, 2160), (1233, 857)] {
+            assert_eq!(Native.size(physical), physical);
+        }
+        for (w, h) in [(7680, 2160), (4096, 2560), (4001, 4001)] {
+            let (rw, rh) = Native.size((w, h));
+            assert!(u64::from(rw) * u64::from(rh) <= 3840 * 2160);
+            assert!(rw > 0 && rh > 0);
+            let error = (f64::from(rw) - f64::from(rh) * f64::from(w) / f64::from(h)).abs();
+            assert!(error <= f64::from(w) / f64::from(h));
+        }
+        assert_eq!(Fixed(5120, 2880).size((5120, 2880)), (5120, 2880));
     }
 }

@@ -143,6 +143,8 @@ pub struct DisplayView {
     /// Absent when both resolution and lighting are locked to retail.
     pub backend: Option<d3d::GfxBackend>,
     pub native_size: NativeSize,
+    /// Playback uses the viewer's chosen raster while the guest uses its recorded settings.
+    pub viewer_output: Option<NativeSize>,
     /// Physical presentation rectangle for an internal render resolution.
     pub display_size: Arc<dyn Fn((u32, u32)) -> (u32, u32) + Send + Sync>,
 }

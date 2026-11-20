@@ -68,7 +68,7 @@ pub fn colour(m: &dyn GuestMemory, reference: u32, value: u32, fcw: u16, mxcsr: 
         0 => {
             let v = s.mul(v, m.u32(PACK_SCALE)?)?;
             let v = super::states::integer_value(f32::from_bits(v), fcw) & 255;
-            return Ok(0xff00_0000 | v*0x010101);
+            return Ok(0xff00_0000 | (v * 0x010101));
         }
         1 => return Ok(m.u32(p+4)?),
         2 => (4, 16, v),

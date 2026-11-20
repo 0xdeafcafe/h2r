@@ -135,6 +135,39 @@ reads only AL: non-zero with view kind 1 re-runs the same index.
   the frame counter (`render_views` increments it), `0x004b9ed8` the
   view's player unit (S).
 
+### Projected size and level of detail
+
+At 1920 rendered lines, a sphere that spans 10 guest pixels counts as 40
+pixels for visual detail. Choosing 1.5x on the Video screen makes that 60.
+`setting_defs::lod_pixel_multiplier` multiplies the active target height
+divided by 480 by the player's LOD Distance during offline play. Protected
+sessions use a fixed guest geometry multiplier independent of display
+resolution. See [determinism](high-resolution.md#determinism). The guest projection already
+accounts for the viewport and FOV, including split screen. Retail selects
+the original pixel size at every resolution. See the
+[Video settings](../game/settings-menu.md#video-screen).
+
+- **BSP clusters and placements.** The record reset at `0x0002cb30` installs
+  the scaled vertical projection for the two structure walks. The guest
+  walks and the Rust `world_walk` rewrite read the same value. A placement's
+  world-space radius still decides whether to apply its small-object
+  factor. The adjusted pixel size controls its fade and zero-alpha cull.
+  Each emitted record stores a size byte, saturated at 255.
+- **Object models.** The object walk at `0x00133720` restores the original
+  projection. The guest model chooser at `0x0004c450` and the Rust
+  `native_scene_lists/setup/sections.rs` apply the factor at the model's
+  pixel cutoffs, preserving its transition hysteresis and resident-section
+  fallback. The material record gets its own scaled size byte. For models
+  with pose-dependent sections (`hlmt + 0xc4`), section selection keeps the
+  retail pixel size. The selected sections can clear an object's dirty bit
+  and trigger a shared animation update at `0x000bd7b2`. Object lighting
+  also uses the original size because effects read its cache on the game tick.
+- **Other view consumers.** Lights and shadow casters compete for a fixed
+  budget by relative projected size. Billboard rotation needs both original
+  projection axes. Decorator detail and particle fades compare camera
+  distance with authored world distances. These consumers keep their
+  retail inputs, as do object distance fades and frustum tests.
+
 ### What does not go through the object list
 
 The first-person and player chain after the passes (`0x004b9ed8` ->

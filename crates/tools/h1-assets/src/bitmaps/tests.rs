@@ -625,7 +625,7 @@ fn a_cut_out_base_gives_a_flat_bump_with_its_binary_alpha() {
         ],
         [0, 0, 255, 255]
     );
-    assert!(got[1].rgba.chunks_exact(4).all(|t| t[3] == 0));
+    assert!(got[1].rgba.as_chunks::<4>().0.iter().all(|t| t[3] == 0));
     assert_eq!(cutout_bump(&base, &px).unwrap().1, out);
 }
 

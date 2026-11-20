@@ -96,7 +96,8 @@ beforeAll(async () => {
     name: "solid-ssr-viewer",
     setup(build) {
       build.onLoad({ filter: /(\/src\/.*\.tsx|\/@solidjs\/router\/dist\/.*\.jsx)$/ }, async ({ path }) => {
-        const src = await Bun.file(path).text();
+        const original = await Bun.file(path).text();
+        const src = original;
         const out = await babel.transformAsync(src, {
           filename: path, babelrc: false, configFile: false,
           parserOpts: { plugins: ["jsx", "typescript"] },
@@ -114,7 +115,7 @@ beforeAll(async () => {
   viewerMode = mod.viewerMode;
   keyIsForControl = mod.keyIsForControl;
   renderControls = (session) => renderToString(() => createComponent(Transport, { session, matchStartTick: 0 }));
-  render = (url, g, extra = {}) => renderToString(() => createComponent(Router, {
+  const page = (url: string, g: GameState, extra = {}) => createComponent(Router, {
     url,
     get children() {
       return createComponent(Route, {
@@ -127,7 +128,8 @@ beforeAll(async () => {
         } as unknown as Parameters<typeof mod.default>[0]),
       });
     },
-  }));
+  });
+  render = (url, g, extra) => renderToString(() => page(url, g, extra));
 });
 
 describe("the inline viewer", () => {
@@ -151,7 +153,7 @@ describe("the inline viewer", () => {
   test("mounts in the page: its bar, the 2D map in its stage, the controls under it, and a full screen button", () => {
     const html = render("/games/halo2/games/g1", game());
     expect(html).toMatch(/<section class="gv\s*"/);
-    expect(html).toContain("Game Viewer<small>Slayer on Orchard</small>");
+    expect(html).toContain("Game Viewer<small> Slayer on Orchard</small>");
     expect(html).toMatch(/class="gv-stage\s*"[^>]*tabindex="-1"/);
     // The 2D map shows first, with its tools.
     expect(html).toContain("Player positions");
@@ -169,6 +171,8 @@ describe("the inline viewer", () => {
   test("a link to the 3D view (the old pop-out's too) opens the inline viewer on it", () => {
     const html = render("/games/halo2/games/g1?view=3d&cam=top", game());
     expect(html).toContain("gv-stage gv-stage--3d");
+    expect(html).toContain('data-state="boot"');
+    expect(html).toContain("Map uplink");
     expect(html).toMatch(/<button[^>]*aria-pressed="true"[^>]*>3D view<\/button>/);
     expect(html).not.toContain("Player positions");
   });

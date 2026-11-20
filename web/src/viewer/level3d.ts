@@ -20,6 +20,7 @@ import { bspNumber, isBackdrop, isCinematic, layerNode, zoneList, zoneVisibility
 
 /** A scripted effect spawner's mark, shared by all (game units). */
 const SPAWN_MARK = new THREE.OctahedronGeometry(0.35);
+const VEIL_COLOUR = new THREE.Color("#050d18");
 
 /** What the toolbar offers for a level. */
 export interface LevelInfo {
@@ -66,6 +67,9 @@ export class LevelLook {
   private haze: THREE.FogExp2;
   private fog = new THREE.Fog(0xffffff, 1, 2);
   private background: THREE.Color | null = null;
+  private revealColour = new THREE.Color();
+  private skyReveal = 1;
+  private layersRevealed = true;
   private generation = 0;
   private centre = new THREE.Vector3();
   /** Each zone's extent in game coordinates, measured once a level is in. */
@@ -99,7 +103,6 @@ export class LevelLook {
   adopt(root: THREE.Object3D, assetExtras: unknown, mapUrl: string, plasma?: LevelPlasma) {
     this.clear();
     this.plasma = plasma ?? null;
-    plasma?.setShown(this.effects);
     const gen = this.generation;
     root.traverse((o) => {
       const kind = layerNode(o.name);
@@ -154,6 +157,8 @@ export class LevelLook {
     this.sky = null;
     this.skyInfo = null;
     this.background = null;
+    this.skyReveal = 1;
+    this.layersRevealed = true;
     this.weather.clear();
     for (const { mesh } of this.spawners) (mesh.material as THREE.Material).dispose();
     this.spawnMarks.clear();
@@ -186,7 +191,7 @@ export class LevelLook {
   setCinematic(on: boolean) { this.cinematic = on; this.apply(); }
   setBackdrop(on: boolean) { this.backdrop = on; this.apply(); }
   setDecals(on: boolean) { this.decals = on; this.apply(); }
-  setEffects(on: boolean) { this.effects = on; this.plasma?.setShown(on); this.apply(); }
+  setEffects(on: boolean) { this.effects = on; this.apply(); }
   setSky(on: boolean) { this.skyOn = on; this.apply(); }
   setFog(on: boolean) { this.fogOn = on; this.apply(); }
   setWeather(on: boolean) { this.weatherOn = on; this.weather.setOn(on); this.apply(); }
@@ -195,10 +200,10 @@ export class LevelLook {
    *  `time` (seconds), the weather around `focus`, `distance` from the
    *  camera. Whether anything did: the view must be drawn again. */
   animate(time: number, focus: THREE.Vector3, distance: number): boolean {
-    const weather = this.weather.active();
+    const weather = this.layersRevealed && this.weather.active();
     if (weather) this.weather.place(time, focus, distance);
     if (this.wet) this.water.uWaterTime.value = time;
-    const bursting = this.effects && this.spawners.some(({ s }) => s.looping && s.period);
+    const bursting = this.layersRevealed && this.effects && this.spawners.some(({ s }) => s.looping && s.period);
     if (bursting) {
       for (const { s, mesh } of this.spawners) {
         const k = pulse(s, time);
@@ -231,23 +236,57 @@ export class LevelLook {
   private apply() {
     const show = zoneVisibility(this.zones, this.active, { backdrop: this.backdrop, cinematic: this.cinematic, pick: this.pick });
     this.zones.forEach((z, i) => { z.obj.visible = show[i]!; });
-    for (const l of this.layers) l.obj.visible = l.kind === "decals" ? this.decals : this.effects;
-    this.spawnMarks.visible = this.effects;
-    if (this.sky) this.sky.group.visible = this.skyOn;
-    this.scene.background = this.skyOn && this.background ? this.background : this.gradient;
-    this.weather.group.visible = this.weatherOn;
+    this.applyLayers();
+    this.applyAtmosphere();
     this.changed();
   }
 
+  /** The atmosphere fades in first. Layers wait for the structure sweep. */
+  setReveal(sky: number, shellDone = sky === 1) {
+    if (this.skyReveal === sky && this.layersRevealed === shellDone) return;
+    if (this.skyReveal !== sky) {
+      this.skyReveal = sky;
+      this.applyAtmosphere();
+    }
+    if (this.layersRevealed !== shellDone) {
+      this.layersRevealed = shellDone;
+      this.applyLayers();
+    }
+    this.changed();
+  }
+
+  private applyLayers() {
+    const effects = this.layersRevealed && this.effects;
+    const decals = this.layersRevealed && this.decals;
+    for (const layer of this.layers) layer.obj.visible = layer.kind === "decals" ? decals : effects;
+    this.plasma?.setShown(effects);
+    this.spawnMarks.visible = effects;
+    this.weather.group.visible = this.layersRevealed && this.weatherOn;
+  }
+
+  private applyAtmosphere() {
+    const k = this.skyReveal;
+    if (this.sky) {
+      this.sky.setReveal(k);
+      this.sky.group.visible = this.skyOn && k > 0;
+    }
+    const clear = this.skyOn ? this.background : null;
+    // Fade the clear colour, or the horizon haze when using the viewer's
+    // gradient texture. The full look retains the original background.
+    this.scene.background = k === 1 ? (clear ?? this.gradient) :
+      this.revealColour.copy(VEIL_COLOUR).lerp(clear ?? this.hazeColour, k);
+    this.scene.backgroundIntensity = k;
+  }
+
   /** Whether the level's sky model is drawn now. */
-  skyShown(): boolean { return !!this.sky && this.skyOn; }
+  skyShown(): boolean { return this.sky?.group.visible ?? false; }
 
   /** Where the level is (its middle and radius in the scene): the far
    *  haze is set by its size when the sky has no fog of its own. */
   setExtent(centre: THREE.Vector3, radius: number) {
     this.centre.copy(centre);
-    this.haze.density = 0.11 / radius;
-    this.hazeDensity = this.haze.density;
+    this.hazeDensity = 0.11 / radius;
+    this.haze.density = this.hazeDensity * this.skyReveal;
   }
 
   /** Before each draw: the sky around the camera, and the fog measured
@@ -262,12 +301,12 @@ export class LevelLook {
       // `glow` is not a fog: it is its light's colour and power, the
       // radiosity record; as a haze it drowned Halo 1's maps in cyan.)
       this.haze.color.copy(this.hazeColour);
-      this.haze.density = this.hazeDensity;
+      this.haze.density = this.hazeDensity * this.skyReveal;
       this.scene.fog = this.haze;
       return;
     }
     const r = gameFog(f, focus);
-    FOG_CLEAR.value = 1 - r.cap;
+    FOG_CLEAR.value = 1 - r.cap * this.skyReveal;
     this.fog.color.setRGB(f.colour[0], f.colour[1], f.colour[2], THREE.SRGBColorSpace);
     this.fog.near = r.near;
     this.fog.far = r.far;

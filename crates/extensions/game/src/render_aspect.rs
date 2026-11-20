@@ -5,7 +5,10 @@ use std::sync::{Arc, Mutex};
 use d3d::backend::{PixelRect, UiFit};
 use engine::{GuestMemory, points};
 use hooks::{Builder, Feature, Flow, Manifest};
-use points::render_aspect::{ANCHOR, ANCHOR_READY, DOC, GROUPS, MENU_FILL, MENU_FILL_END};
+use points::render_aspect::{
+    ANCHOR, ANCHOR_READY, DOC, FLARE_QUERY, FLARE_QUERY_END, FLARE_REFLECTION,
+    FLARE_REFLECTION_END, GROUPS, MENU_FILL, MENU_FILL_END,
+};
 
 type Size = Arc<dyn Fn() -> (u32, u32) + Send + Sync>;
 type Position = Arc<dyn Fn() -> u32 + Send + Sync>;
@@ -24,9 +27,13 @@ impl<B: d3d::Backend + Send> UiLayoutSink for Mutex<d3d::Device<B>> {
             .set_projection_factor(factor);
     }
     fn set_fit(&self, guest: &mut runtime::Guest, fit: Option<UiFit>) {
-        self.lock()
+        if let Err(err) = self
+            .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .set_ui_fit(&mut d3d::runtime_glue::GuestAdapter::new(guest), fit);
+            .set_ui_fit(&mut d3d::runtime_glue::GuestAdapter::new(guest), fit)
+        {
+            eprintln!("render-aspect: draining the UI draw boundary: {err}");
+        }
     }
 }
 
@@ -100,6 +107,35 @@ fn viewport(mem: &impl GuestMemory, address: u32) -> Option<PixelRect> {
     })
 }
 
+// 0x48b00 maps clip X to guest pixel centres. Query edges at the
+// call to Begin (0x2e82b) have already been rounded, and their *original*
+// area is the game's denominator. Translate this footprint rigidly. The
+// reflected billboard has no readback and can take the entire lens map.
+fn flare_fit(
+    mem: &impl GuestMemory,
+    output: (u32, u32),
+    query_stack: Option<u32>,
+) -> Option<UiFit> {
+    let factor = projection_factor(mem, output);
+    if factor == 1.0 {
+        return None;
+    }
+    let bounds = viewport(mem, 0x0048_5648)?;
+    let centre = bounds.x as f32 + bounds.width as f32 * 0.5;
+    if let Some(esp) = query_stack {
+        let left = mem.f32(esp.checked_add(0x14)?).ok()?;
+        let right = mem.f32(esp.checked_add(0x18)?).ok()?;
+        let x = (left + right) * 0.5;
+        if !x.is_finite() || right <= left {
+            return None;
+        }
+        let delta = (x - (centre - 0.5)) * (factor - 1.0);
+        Some(UiFit::projected_sprite(1.0, delta))
+    } else {
+        Some(UiFit::projected_sprite(factor, centre * (1.0 - factor)))
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Canvas {
     output: (u32, u32),
@@ -135,13 +171,31 @@ impl Canvas {
                 ];
             }
         }
-        let mut fit = UiFit::about(self.output, pivot)?;
+        let menu = UiFit::about(self.output, self.centre());
+        if !self.hud {
+            return menu;
+        }
+        // The Xbox widescreen HUD is already laid out for anamorphic pixels.
+        // Scale the artwork only by the difference between that display and
+        // ours. Its *corner placement* still obeys the user's 4:3 safe area.
+        let mut fit =
+            UiFit::from_pixel_ratio(self.projection_factor, pivot).unwrap_or(UiFit::IDENTITY);
+        if let Some((id, _)) = anchor
+            && id < 4
+            && !self.pinned
+        {
+            let [safe_x, safe_y, _, _] = menu.unwrap_or(UiFit::IDENTITY).transform;
+            let edge_x = if id == 0 || id == 3 { 0.5 } else { -0.5 };
+            let edge_y = if id >= 2 { 0.5 } else { -0.5 };
+            fit.transform[2] += edge_x * self.rect.width as f32 * (safe_x - fit.transform[0]);
+            fit.transform[3] += edge_y * self.rect.height as f32 * (safe_y - fit.transform[1]);
+        }
         if anchor.is_some_and(|(id, _)| id >= 4) && self.hud {
             // The guest's tracked point is in the retail lens. Move its
             // centre with the world, then fit the artwork about that point.
             fit.transform[2] += (pivot[0] - self.centre()[0]) * (self.projection_factor - 1.0);
         }
-        Some(fit)
+        (fit != UiFit::IDENTITY).then_some(fit)
     }
 }
 
@@ -260,6 +314,31 @@ impl Feature for RenderAspect {
                 .after_feature("native-hud")
                 .optional();
         }
+        for (begin, end, query) in [
+            (&FLARE_QUERY, &FLARE_QUERY_END, true),
+            (&FLARE_REFLECTION, &FLARE_REFLECTION_END, false),
+        ] {
+            let (layout, size, sink) = (layout.clone(), self.size.clone(), self.sink.clone());
+            b.raw()
+                .before(
+                    begin,
+                    "align the CPU-projected flare with the display lens",
+                    move |c| {
+                        if !c.ctx.runtime().read_dispatch(|d| d.has_generated(end.base)) {
+                            return Ok(Flow::Continue);
+                        }
+                        let mut l = layout.lock().unwrap_or_else(|e| e.into_inner());
+                        let mut mem = c.ctx.memory();
+                        if let Some(fit) = flare_fit(&*mem, size(), query.then_some(c.cpu.esp)) {
+                            l.groups.push((end.base, Some(fit)));
+                            sink.set_fit(&mut mem, Some(fit));
+                        }
+                        Ok(Flow::Continue)
+                    },
+                )
+                .context_only()
+                .optional();
+        }
         let on_anchor = layout.clone();
         b.raw()
             .before(&ANCHOR, "identify the HUD element's anchor", move |c| {
@@ -321,7 +400,11 @@ impl Feature for RenderAspect {
             )
             .context_only()
             .optional();
-        for end in GROUPS.iter().map(|(_, end)| end).chain([&MENU_FILL_END]) {
+        for end in GROUPS.iter().map(|(_, end)| end).chain([
+            &MENU_FILL_END,
+            &FLARE_QUERY_END,
+            &FLARE_REFLECTION_END,
+        ]) {
             let (layout, sink) = (layout.clone(), self.sink.clone());
             b.raw()
                 .before(end, "restore the enclosing HUD layout", move |c| {
@@ -469,6 +552,68 @@ mod tests {
                 );
                 close(xy[1], point[1] * (output.1 as f32 / 480.0));
             }
+        }
+    }
+
+    #[test]
+    fn anamorphic_hud_uses_only_the_remaining_display_correction() {
+        let mut guest = FakeGuest::new();
+        guest.put_u8(0x0048_5ac2, 1).put_f32(0x0045_dfdc, 4.0 / 3.0);
+        for output in [(1920, 1080), (3440, 1440), (5120, 1440)] {
+            let canvas = Canvas {
+                output,
+                rect: FULL,
+                hud: true,
+                pinned: true,
+                projection_factor: projection_factor(&guest, output),
+            };
+            // An authored square is 12 × 16 guest pixels on this source.
+            let p = [24., 18.];
+            for pinned in [false, true] {
+                let fit = Canvas { pinned, ..canvas }.fit(Some((1, p)));
+                let a = physical(fit, output, p);
+                let b = physical(fit, output, [p[0] + 12., p[1] + 16.]);
+                close(b[0] - a[0], b[1] - a[1]);
+                let unit = output.1 as f32 / 480.;
+                let inset = if pinned {
+                    0.
+                } else {
+                    (output.0 as f32 - 640. * unit) * 0.5
+                };
+                close(a[0], inset + 32. * unit);
+                if output == (1920, 1080) && pinned {
+                    assert_eq!(fit, None);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_flare_probe_reads_the_widened_column_with_its_guest_area_and_viewport() {
+        let mut mem = FakeGuest::new();
+        for (index, v) in [0, 320, 480, 640].into_iter().enumerate() {
+            mem.put_u16(0x0048_5648 + 2 * index as u32, v);
+        }
+        let (esp, left, right) = (0x1000, 553., 565.);
+        mem.put_f32(esp + 0x14, left).put_f32(esp + 0x18, right);
+        let viewport = PixelRect {
+            x: 320,
+            y: 0,
+            width: 320,
+            height: 480,
+        };
+        assert_eq!(flare_fit(&mem, (1600, 1200), Some(esp)), None);
+        for output in [(1920, 1080), (3440, 1440), (5120, 1440)] {
+            let lens = projection_factor(&mem, output);
+            let probe = flare_fit(&mem, output, Some(esp)).unwrap();
+            let sprite = flare_fit(&mem, output, None).unwrap();
+            let x = |fit: UiFit, x: f32| x * fit.transform[0] + fit.transform[2];
+            let old = (left + right) * 0.5;
+            close(x(probe, old), 479.5 + (old - 479.5) * lens);
+            close(x(probe, right) - x(probe, left), right - left);
+            close(x(probe, old) + 0.5, x(sprite, old + 0.5));
+            assert_eq!(probe.map_rect(viewport), viewport);
+            assert_eq!(sprite.map_rect(viewport), viewport);
         }
     }
 

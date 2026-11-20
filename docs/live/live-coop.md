@@ -3,8 +3,8 @@
 Retail Halo 2 plays campaign co-op only in split screen on one console.
 This page answers "can we add co-op over our Live service?" and lays out
 the options. The owner has since decided
-([section 6](#6-campaign-session-policy)), and the first slice of phase 0
-is built on tests ([section 8](#8-co-op-transport-and-input-exchange)), as is
+([section 6](#6-decisions-made-2026-11-16)), and the first slice of phase 0
+is built on tests ([section 8](#8-what-is-built-phase-0-first-slice)), as is
 the probe of the retail path ([section 9](#9-probe-phase-2)) and, on the
 assumption that the probe's path works, Co-op over Live itself
 ([section 10](#10-co-op-over-live-built)).
@@ -587,10 +587,9 @@ Which existing settings must match between peers depends on the path,
 and `Def::scope` already says it:
 
 - **Lockstep below the game (3b) needs every `View` and `Sim` value
-  equal** for the `exact` fingerprint. For example, `graphics.fov` and
-  `graphics.hud_position` are `View`, and `graphics.single_copy` is
-  `Sim`. The `Host` settings include `graphics.resolution`,
-  `graphics.fps`, `pad_speaker.enabled` and `pad.mute_button`.
+  equal**: the `exact` fingerprint. Field of view, HUD position and LOD
+  distance carry `View` scope. Resolution is a local presentation choice. Frame rate,
+  controller speaker and mute button carry `Host` scope and stay per machine.
 - **The retail path (3a) needs only `Sim` values equal**: the `sim`
   fingerprint. Each peer renders its own view, so `graphics.fov` and
   every other `View` setting stays personal.
@@ -685,7 +684,7 @@ retail path, Start is where the session calls of 1.2 are made.
 Items 1 to 3 belong in phase 0 or 1; 4 to 6 and 10 in phase 3; 8 is the
 registry work the feature-engine plan already has.
 
-## 6. Campaign session policy
+## 6. Decisions (made 2026-11-16)
 
 The owner's answers to the questions this page ended with:
 
@@ -729,7 +728,7 @@ on it.
 - The campaign save and profile formats, for copying progress to the
   guest's own profile (2.3).
 
-## 8. Co-op transport and input exchange
+## 8. What is built (phase 0, first slice)
 
 All on tests; nothing here was run in the game. It is the part of phase 0
 that does not need the settings layer.
@@ -1899,7 +1898,7 @@ The game itself:
 So the engine runs 16 players already. What holds at two is the data
 (two starting locations) and the scripts (`player0`, `player1`).
 
-### 13.2 Player limits and spawning
+### 13.2 What is built
 
 **Stage 1a** (`coop.max_players`, `H2_COOP_MAX_PLAYERS`, 2 to 16, default
 2, the host's value counts; `coop_probe`, `coop_live`):
@@ -2187,7 +2186,7 @@ Log lines: newcomer `coop-jip: joined in progress at tick T as player N`
 or `coop-jip: back to the lobby: <why>`; host
 `coop-jip: admitted player N at tick T (K KiB sent, held M ms)`.
 
-### 14.7 Join protocol and test coverage
+### 14.7 What is built (tests only)
 
 - `crates/live/coop/src/join.rs`: the messages (encode, decode, refusal of
   short, long, unknown and oversized input), the host state machine

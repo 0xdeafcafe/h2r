@@ -109,6 +109,15 @@ fn reference_uses_retail_lens_and_scissors_while_display_uses_its_own() {
     menu.ui_fit = d3d::backend::UiFit::about((1920,1080), [320.,240.]);
     assert_eq!(menu.for_reference().display_rect(scissor), scissor);
     assert_eq!(menu.display_rect(scissor), d3d::PixelRect { x: 116, width: 96, ..scissor });
+
+    let mut probe = draw(block(), 4, true);
+    probe.hw.zpass_count_enable = true;
+    probe.ui_fit = Some(d3d::backend::UiFit::projected_sprite(1.0, -64.0));
+    assert!(probe.for_copy(d3d::TargetCopy::Reference).ui_fit.is_none());
+    let shown = probe.for_copy(d3d::TargetCopy::Display);
+    assert_eq!(shown.ui_fit, probe.ui_fit);
+    assert_eq!(shown.display_rect(scissor), scissor);
+
 }
 
 /// A camera at `x` along the world's x axis, turned `yaw`.
@@ -1577,6 +1586,29 @@ fn run_program(c: &Block, v: [f32; 3]) -> ([f32; 4], [f32; 4]) {
     let mut c = *c;
     let out = shaders::vsh::interp::run(&p, &inputs, &mut c);
     (out.get(OutReg::Pos), out.get(OutReg::T(0)))
+}
+
+#[test]
+fn hor_plus_clip_derived_lookup_samples_the_display_texel_drawn_by_the_world() {
+    // Synthetic program forwards its homogeneous clip position to the
+    // projective texture coordinates before its own viewport epilogue.
+    let mut retail = world_block(&camera(0.0, 0.0));
+    retail[LOOKUP] = [0.5, 0.0, 0.0, 0.5];
+    retail[LOOKUP + 1] = [0.0, -0.5, 0.0, 0.5];
+    for (w, h) in [(1920, 1080), (3440, 1440), (5120, 1440)] {
+        let mut view = retail;
+        let factor = (4.0 / 3.0) / (w as f32 / h as f32);
+        assert!(d3d::device::widen_projection_rows(&mut view[CAM..CAM + 4], factor));
+        for point in [[0.3, 0.4, -5.0], [-5.0, 1.0, -4.0]] {
+            let (original, _) = run_program(&retail, point);
+            let (window, tex) = run_program(&view, point);
+            let same = |a: f32, b: f32| assert!((a - b).abs() < 0.001, "{a} != {b}");
+            same(window[0], 320.0 + (original[0] - 320.0) * factor);
+            same(window[1], original[1]);
+            same(tex[0] / tex[3] * w as f32, window[0] * (w as f32 / 640.0));
+            same(tex[1] / tex[3] * h as f32, window[1] * (h as f32 / 480.0));
+        }
+    }
 }
 
 #[test]

@@ -291,7 +291,7 @@ fn a_built_package_resolves_to_the_rig() {
     assert_eq!(saved.manifest.package.name, "Test: T");
     assert!(!saved.manifest.base.derived);
     // The package served over the base is the rig.
-    let mut lib = content::Library::open(&data.join("maps"));
+    let mut lib = content::Library::open(data.join("maps"));
     let served = lib
         .resolve("fixture", &mut &bytes[..])
         .unwrap()

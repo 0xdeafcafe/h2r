@@ -372,7 +372,12 @@ impl<B: Backend> Backend for MapOverrideBackend<B> {
     fn film_source(&mut self, path: &str) -> Result<Option<crate::FilmMapSource>> {
         let derived = !self.server_maps;
         if let Some(o) = self.chosen(path) {
-            let mut source = crate::FilmMapSource::region(o.file.try_clone()?, 0);
+            let file = o.file.try_clone()?;
+            let mut source = if derived {
+                crate::FilmMapSource::region(file, 0)
+            } else {
+                crate::FilmMapSource::immutable_region(file, 0, o.len)
+            };
             if derived && let Some(name) = is_map_path(path) {
                 source.override_name = Some(name[..name.len()-4].to_ascii_lowercase());
             }

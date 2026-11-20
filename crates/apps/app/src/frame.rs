@@ -222,7 +222,7 @@ impl FrameSink {
         store: &SurfaceStore,
         id: SurfaceId,
     ) -> Result<u64, FrameError> {
-        self.submit_surface_region(store, id, None, None)
+        self.submit_surface_region(store, id, None, None, None)
     }
 
     fn submit_surface_region(
@@ -231,6 +231,7 @@ impl FrameSink {
         id: SurfaceId,
         gamma: Option<&[u8; 768]>,
         crop: Option<[u32; 4]>,
+        logical_size: Option<(u32, u32)>,
     ) -> Result<u64, FrameError> {
         let s = store
             .get(id)
@@ -246,14 +247,7 @@ impl FrameSink {
             TexelFormat::A8R8G8B8 | TexelFormat::A1R5G5B5 | TexelFormat::A4R4G4B4
         );
         let view = s.view().clone();
-        let (output_size, rect) = match crop {
-            Some([x, y, w, h]) if w != 0 && h != 0 && x.checked_add(w).is_some_and(|n| n <= size.0)
-                && y.checked_add(h).is_some_and(|n| n <= size.1) => {
-                ((w, h), [x as f32 / size.0 as f32, y as f32 / size.1 as f32,
-                    w as f32 / size.0 as f32, h as f32 / size.1 as f32])
-            }
-            _ => (size, [0., 0., 1., 1.]),
-        };
+        let (output_size, rect) = crop_region(size, logical_size.unwrap_or(size), crop);
         self.submit_encoded(output_size, opaque, &view, gamma, rect, |enc| {
             store
                 .resolve_msaa(enc, id)
@@ -276,8 +270,29 @@ impl FrameSink {
     /// Present a player's completed split-screen image; guest rendering and
     /// the guest's own back buffer remain under the engine's control.
     pub fn into_cropped_present_hook(
+        self,
+        every: u32,
+        crop: impl FnMut() -> Option<[u32; 4]> + Send + 'static,
+    ) -> impl FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32, Option<&[u8; 768]>) + Send + 'static
+    {
+        self.crop_present_hook(every, None, crop)
+    }
+
+    /// Present a viewport expressed in guest pixels from a display-resolution surface.
+    pub fn into_guest_crop_present_hook(
+        self,
+        every: u32,
+        guest_size: (u32, u32),
+        crop: impl FnMut() -> Option<[u32; 4]> + Send + 'static,
+    ) -> impl FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32, Option<&[u8; 768]>) + Send + 'static
+    {
+        self.crop_present_hook(every, Some(guest_size), crop)
+    }
+
+    fn crop_present_hook(
         mut self,
         every: u32,
+        logical_size: Option<(u32, u32)>,
         mut crop: impl FnMut() -> Option<[u32; 4]> + Send + 'static,
     ) -> impl FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32, Option<&[u8; 768]>) + Send + 'static
     {
@@ -293,7 +308,7 @@ impl FrameSink {
                 ctx.device == self.ctx.device,
                 "GfxBackend is not on the shell's device"
             );
-            if let Err(e) = self.submit_surface_region(store, id, gamma, rect) {
+            if let Err(e) = self.submit_surface_region(store, id, gamma, rect, logical_size) {
                 self.hook_errors += 1;
                 if self.hook_errors <= 10 {
                     eprintln!("app: present hook: {e}");
@@ -338,6 +353,38 @@ impl FrameSink {
             ctx.queue.submit([enc.finish()]);
             Ok(())
         })
+    }
+}
+
+/// Resolve the same half-open edges used when drawing the selected view.
+fn crop_region(size: (u32, u32), logical: (u32, u32), crop: Option<[u32; 4]>) -> ((u32, u32), [f32; 4]) {
+    let whole = (size, [0., 0., 1., 1.]);
+    let Some([x, y, w, h]) = crop else { return whole };
+    if x.checked_add(w).is_none_or(|right| right > logical.0)
+        || y.checked_add(h).is_none_or(|bottom| bottom > logical.1)
+    {
+        return whole;
+    }
+    let Some(grid) = gfx::raster::RenderScale::between(logical, size) else { return whole };
+    let [x, y, w, h] = grid.rect(x, y, w, h);
+    if w == 0 || h == 0 { return whole; }
+    ((w, h), [x as f32 / size.0 as f32, y as f32 / size.1 as f32,
+        w as f32 / size.0 as f32, h as f32 / size.1 as f32])
+}
+
+#[cfg(test)]
+mod crop_tests {
+    use super::crop_region;
+
+    #[test]
+    fn split_screen_seats_share_the_rounded_edge_at_display_resolution() {
+        let size = (3440, 1441);
+        let guest = (640, 480);
+        let (top, _) = crop_region(size, guest, Some([0, 0, 640, 240]));
+        let (bottom, rect) = crop_region(size, guest, Some([0, 240, 640, 240]));
+        assert_eq!((top, bottom), ((3440, 721), (3440, 720)));
+        assert_eq!(rect, [0.0, 721.0 / 1441.0, 1.0, 720.0 / 1441.0]);
+        assert_eq!(crop_region(size, guest, Some([0, 240, 640, 241])).0, size);
     }
 }
 

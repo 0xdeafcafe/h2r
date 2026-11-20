@@ -2022,7 +2022,7 @@ fn forced_widescreen_at_guest_resolution_preserves_the_selected_readback_policy(
         assert_eq!(d.backend.stats().presentation, wide);
         set_states(&mut d, &mut m);
         d.clear(&mut m, 0, 0, 0xF3, 0xff00_0000, 1.0, 0).unwrap();
-        d.set_ui_fit(&mut m, d3d::backend::UiFit::about(wide, [0., 0.]));
+        d.set_ui_fit(&mut m, d3d::backend::UiFit::about(wide, [0., 0.])).unwrap();
         flat_quad(&mut d, &mut m, (24., 8., 48., 40.), 0xffff_ffff);
 
         let lit = |bytes: &[u8], x: u32| bytes[((20 * w + x) * 4) as usize] != 0;

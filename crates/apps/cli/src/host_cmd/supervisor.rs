@@ -33,6 +33,7 @@ pub(super) struct Options {
     data_sha: String,
     region: Option<String>,
     base_port: u16,
+    pack_control: Option<SocketAddr>,
     pub tunnel_listen: SocketAddr,
     pub out: PathBuf,
     pub data: Option<PathBuf>,
@@ -62,6 +63,7 @@ impl Options {
                         | "--data-sha"
                         | "--region"
                         | "--base-port"
+                        | "--pack-control"
                         | "--tunnel-listen"
                         | "--out"
                         | "--data"
@@ -124,6 +126,8 @@ impl Options {
             data_sha: required("--data-sha", "H2_DATA_SHA")?,
             region: value("--region", "H2_REGION"),
             base_port,
+            pack_control: values.get("--pack-control").map(|s| s.parse()).transpose()
+                .context("--pack-control must be an IP address and port")?,
             tunnel_listen,
             out: value("--out", "H2_IMAGE")
                 .map(PathBuf::from)
@@ -171,7 +175,7 @@ pub(super) fn run(args: impl Iterator<Item = String>) -> Result<()> {
         Err(error) => (EndReason::Crashed, Some(error)),
     };
     let finish_film = !simulation && reason == EndReason::MatchOver;
-    let reported = (!finish_film).then(|| live.ended(&reason, lifecycle.players_peak));
+    let reported = (!finish_film).then(|| live.ended(&reason, lifecycle.players_peak, opts.pack_control));
     if !simulation
         && let Some(game) = game.as_ref()
         && let Ok(mut agent) = game.connect(AGENT_TIMEOUT)
@@ -195,7 +199,7 @@ pub(super) fn run(args: impl Iterator<Item = String>) -> Result<()> {
             }
         }
     }
-    let reported = reported.unwrap_or_else(|| live.ended(&reason, lifecycle.players_peak));
+    let reported = reported.unwrap_or_else(|| live.ended(&reason, lifecycle.players_peak, opts.pack_control));
     drop(game);
 
     if exit_code(&reason) != 0 {

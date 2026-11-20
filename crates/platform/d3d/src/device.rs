@@ -44,7 +44,7 @@ use gfx::xdk::RenderStateTable;
 use gfx::{Clear, D3DFormat};
 
 use crate::backend::{
-    Backend, CachedBytes, CachedIndices, DrawOutcome, GuestLayoutKind, IndexData, ResolvedDraw, StreamBytes,
+    Backend, CachedBytes, CachedIndices, DrawOutcome, IndexData, ResolvedDraw, StreamBytes,
     StreamData, TargetInfo, TextureInfo, Viewport,
 };
 use crate::dirty::{UploadPolicy, WriteTracker, hash_bytes};

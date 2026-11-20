@@ -1018,6 +1018,12 @@ impl Hle {
             .unwrap_or_else(|e| e.into_inner())
             .local_team_action(actor, action)
     }
+    /// Interrupt a host tick wait on inbound XNet traffic. Leaves all
+    /// reads, guest timeouts and readiness reporting to the game.
+    pub fn wait_for_network_input(&self, timeout: std::time::Duration) -> bool {
+        self.network.wait_for_input(timeout)
+    }
+
     pub fn network_config(&self) -> &NetworkConfig {
         &self.network.config
     }

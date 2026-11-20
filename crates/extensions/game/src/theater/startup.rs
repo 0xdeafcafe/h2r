@@ -233,6 +233,17 @@ impl Settings {
         }
     }
 
+    /// Earlier films used the same integral render scale for raster size
+    /// and visual geometry selection. Recover its startup geometry only.
+    fn legacy_lod_multiplier(&self) -> Option<f32> {
+        use crate::setting_defs::{GUEST_FRAME, LEGACY_SCALE, LOD_DISTANCE, lod_pixel_multiplier};
+
+        let effective = |key: &str| self.locked.get(key).or_else(|| self.values.get(key));
+        let size = LEGACY_SCALE.parse(effective(LEGACY_SCALE.key)?).ok()?;
+        let units = LOD_DISTANCE.parse(effective(LOD_DISTANCE.key)?).ok()?.as_int()?;
+        Some(lod_pixel_multiplier(size.size(GUEST_FRAME).1, units as u32))
+    }
+
     // Only keys and value types from this build's schema may reach the private
     // TOML file. Preserve editable rows and per-profile skull choices.
     fn install(&self, path: &Path, mount_settings: bool) -> Result<settings::Store> {
@@ -240,6 +251,12 @@ impl Settings {
         let table_of = |values: &Values| -> Result<toml::Table> {
             let mut table = toml::Table::new();
             for (key, value) in values {
+                // Older films captured raster size for its effect on guest
+                // LOD. The viewer owns its display even for these films.
+                if key == setting_defs::LEGACY_SCALE.key {
+                    setting_defs::LEGACY_SCALE.parse(value).map_err(anyhow::Error::msg)?;
+                    continue;
+                }
                 let def = defs
                     .iter()
                     .find(|d| d.key == key.as_str() && d.scope != settings::Scope::Host)
@@ -282,6 +299,7 @@ impl Settings {
         let flags = self
             .locked
             .iter()
+            .filter(|(key, _)| key.as_str() != setting_defs::LEGACY_SCALE.key)
             .map(|(key, value)| settings::Flag {
                 key: key.clone(),
                 value: value.clone(),
@@ -295,6 +313,12 @@ impl Settings {
 }
 
 impl Startup {
+    /// Guest geometry from the startup of a film that recorded both the
+    /// legacy render scale and LOD Distance. Viewer raster size is separate.
+    pub fn legacy_lod_multiplier(&self) -> Option<f32> {
+        self.host_settings.as_ref().unwrap_or(&self.data_settings).legacy_lod_multiplier()
+    }
+
     pub fn read<R: Read + Seek>(reader: &mut film::Reader<R>) -> Result<Option<Self>> {
         if reader.header.version == 1 {
             return Ok(None);
@@ -581,6 +605,32 @@ mod tests {
         );
         wire["pipeline_handback"]["refuse"] = serde_json::json!(vec![0; MAX_PIPELINE_REFUSALS + 1]);
         assert!(serde_json::from_value::<Execution>(wire).is_err());
+    }
+
+    #[test]
+    fn legacy_film_lod_uses_the_recorded_scale_without_locking_the_viewer_raster() {
+        let root = std::env::temp_dir().join(format!("film-lod-{}", live_proto::sign::random_id()));
+        std::fs::create_dir(&root).unwrap();
+        let mut film = Settings {
+            values: BTreeMap::from([("graphics.render_scale".into(), "2".into())]),
+            locked: BTreeMap::from([("graphics.render_scale".into(), "3".into())]),
+            profiles: BTreeMap::new(),
+        };
+        assert_eq!(film.legacy_lod_multiplier(), None, "predates LOD Distance");
+        film.values.insert("graphics.lod_distance".into(), "1.5".into());
+        assert_eq!(film.legacy_lod_multiplier(), Some(4.5));
+        let file = root.join("game.toml");
+        let restored = film.install(&file, true).unwrap();
+        let resolution = restored.state(setting_defs::RESOLUTION.key).unwrap();
+        assert!(!resolution.locked);
+        assert_eq!(resolution.value, settings::Resolution::Native.value());
+        let saved = std::fs::read_to_string(file).unwrap();
+        assert!(!saved.contains("render_scale"));
+        assert!(!saved.contains("resolution"));
+        assert!(saved.contains("lod_distance"));
+        film.locked.insert("graphics.render_scale".into(), "bad".into());
+        assert!(film.install(&root.join("bad.toml"), true).is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

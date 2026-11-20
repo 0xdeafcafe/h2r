@@ -281,8 +281,8 @@ describe("cutting through to the players", () => {
   });
 
   test("a wall is cut when it stands between the camera and any of them", () => {
-    const a: SeeThrough = { eye: [0, 1, 0], target: [20, 1, 0], radius: 2, floor: 0.1 };
-    const b: SeeThrough = { eye: [0, 1, 0], target: [0, 1, 20], radius: 2, floor: 0.1 };
+    const a: SeeThrough = { eye: [0, 1, 0], target: [20, 1, 0], radius: 0.6, halfHeight: 0.9 };
+    const b: SeeThrough = { eye: [0, 1, 0], target: [0, 1, 20], radius: 0.6, halfHeight: 0.9 };
     expect(seeThroughHidesAny([10, 1, 0], [a, b])).toBe(true);
     expect(seeThroughHidesAny([0, 1, 10], [a, b])).toBe(true);
     expect(seeThroughHidesAny([10, 1, 10], [a, b])).toBe(false);

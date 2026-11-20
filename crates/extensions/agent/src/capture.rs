@@ -52,7 +52,7 @@ pub struct TickMark {
 
 /// The tick a frame that ended at `ns` belongs to: the last tick that had
 /// ended by then (the first one, for frames before it).
-fn tick_of<'a>(marks: &'a [TickMark], ns: u64) -> Option<&'a TickMark> {
+fn tick_of(marks: &[TickMark], ns: u64) -> Option<&TickMark> {
     let i = marks.partition_point(|m| m.ns <= ns);
     marks.get(i.saturating_sub(1))
 }

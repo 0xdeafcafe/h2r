@@ -211,11 +211,9 @@ impl Catalogue {
                     .cloned()
                     .collect();
                 if c.game_order() {
-                    maps.sort_by(|a, b| (a.sort, a.id).cmp(&(b.sort, b.id)));
+                    maps.sort_by_key(|m| (m.sort, m.id));
                 } else {
-                    maps.sort_by(|a, b| {
-                        (a.name.to_lowercase(), a.id).cmp(&(b.name.to_lowercase(), b.id))
-                    });
+                    maps.sort_by_key(|m| (m.name.to_lowercase(), m.id));
                 }
                 (!maps.is_empty()).then_some((c, maps))
             })

@@ -66,8 +66,8 @@ async fn fetch(
             crate::site::GameArt::NotFound(why) => live_server::app::not_found(why).into_response(),
         });
     }
-    // The stats site's first address: the same page where it is now.
-    // (live_server::page_meta::moved; wrangler.toml sends `/stats/*` here.)
+    // Old stats and whole-film URLs lead to their canonical pages.
+    // (live_server::page_meta::moved; wrangler.toml routes both prefixes here.)
     if matches!(*req.method(), http::Method::GET | http::Method::HEAD)
         && let Some(to) = live_server::page_meta::moved(&path, req.uri().query())
     {
@@ -112,7 +112,7 @@ async fn fetch(
 
 /// A page of the web app: the built `index.html` from the assets, with
 /// the page's link preview in it ([`live_server::page_meta`]) and, for a
-/// game page, its pre-rendered header above the app
+/// game page, the template for its pre-rendered hero
 /// ([`live_server::page_header`]). Only a page that names a player, game
 /// or clan asks the hub; if that fails the page still gets its section's
 /// preview (and no header, which the client then renders itself).
@@ -207,6 +207,7 @@ async fn fetch_retrying(
         .and_then(|v| v.trim().parse::<u64>().ok());
     // Dedicated tunnel admission consumes the bearer nonce, like the co-op relay.
     let kept = hostroom::tunnel_lease(path).is_none()
+        && live_proto::matchmaking::echo_region(path).is_none()
         && doretry::keeps_body(req.inner().body().is_some(), length);
     let mut req = Some(req);
     let mut attempt = 1;
@@ -473,12 +474,17 @@ impl DurableObject for LiveHub {
         let path = req.uri().path();
         let relay = crate::relayroom::session_of(path);
         let tunnel = hostroom::tunnel_lease(path);
-        if path == "/v1/stream" || path == "/v1/ingest" || relay.is_some() || tunnel.is_some() {
+        let echo = live_proto::matchmaking::echo_region(path);
+        if path == "/v1/stream" || path == "/v1/ingest" || relay.is_some() || tunnel.is_some() || echo.is_some() {
             if matches!(*req.method(), http::Method::GET | http::Method::HEAD) {
                 let ip = live_server::http::client_ip_key(&live, None, req.headers());
                 if let Err(e) = live_server::http::limit_read(&live, &ip) {
                     return Response::try_from(axum::response::IntoResponse::into_response(e));
                 }
+            }
+            if let Some(region) = echo {
+                let region = region.to_owned();
+                return hostroom::region_echo::upgrade(&live, &self.env, req, &region).await;
             }
             if let Some(id) = tunnel {
                 let id = id.to_owned();
@@ -492,11 +498,16 @@ impl DurableObject for LiveHub {
             self.schedule(&live).await?;
             return resp;
         }
+        let queue_ticket = path == "/v1/matchmaking/queue" && req.method() == http::Method::PUT;
         let mut router = live_server::http::router(live.clone());
         let mut resp = match router.call(req).await {
             Ok(resp) => resp,
             Err(never) => match never {},
         };
+        if queue_ticket && resp.status().is_success() {
+            let live = live.clone();
+            self.state.wait_until(async move { live.refresh_host_pools().await });
+        }
         if let Some((ms, head)) = cold
             && let Ok(v) = format!("start;dur={ms}, events;desc={head}").parse()
         {

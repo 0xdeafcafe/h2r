@@ -5,6 +5,7 @@
 mod geometry;
 mod lights;
 mod objects;
+mod object_lod;
 mod records;
 mod setup;
 mod transparents;
@@ -32,9 +33,36 @@ fn enabled(switches: &Switches) -> bool {
     hooks::switches::native_render_on(switches)
 }
 
+type Scale = Arc<dyn Fn() -> f32 + Send + Sync>;
+
+impl NativeSceneLists {
+    /// Install LOD adjustment at the guest functions invoked by the fallback
+    /// paths. These hooks also apply when native scene lists are disabled.
+    pub fn install_guest_lod(b: &mut Builder, scale: Arc<dyn Fn() -> f32 + Send + Sync>) {
+        object_lod::install(b, &scale);
+    }
+
+    /// Configure the replacement object setup and record writer for this view.
+    pub fn with_lod_scale(scale: Arc<dyn Fn() -> f32 + Send + Sync>) -> impl Feature {
+        ScaledSceneLists(Some(scale))
+    }
+}
+
+struct ScaledSceneLists(Option<Scale>);
+
 impl Feature for NativeSceneLists {
     fn manifest(&self) -> Manifest {
         Manifest::new(ID, "Rust scene list builders").doc("docs/graphics/native-renderer.md")
+    }
+
+    fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        ScaledSceneLists(None).build(b)
+    }
+}
+
+impl Feature for ScaledSceneLists {
+    fn manifest(&self) -> Manifest {
+        NativeSceneLists.manifest()
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
@@ -57,10 +85,12 @@ impl Feature for NativeSceneLists {
             Seam::Function(&points::SCENE_GEOMETRY_GATHER, 4),
             geometry::gather,
         );
+        let setup_scale = self.0.clone();
+        let record_scale = self.0.clone();
         install(
             b,
             Seam::Function(&points::OBJECT_RENDER_SETUP, 20),
-            setup::build,
+            move |m, cpu| setup::build(m, cpu, setup_scale.as_ref().map_or(1.0, |f| f())),
         );
         install(
             b,
@@ -70,7 +100,7 @@ impl Feature for NativeSceneLists {
                 &points::SCENE_RECORD_WRITER,
                 SceneList::ObjectRecord,
             ),
-            records::build,
+            move |m, cpu| records::build(m, cpu, record_scale.as_ref().map_or(1.0, |f| f())),
         );
         install(
             b,
@@ -117,6 +147,16 @@ impl Feature for NativeSceneLists {
         );
         Ok(())
     }
+}
+
+/// The existing pre-trim checks, for FrameScene's read-only extraction.
+pub(crate) fn light_candidate_eligible(
+    m: &dyn GuestMemory,
+    record: u32,
+    definition: u32,
+    flags: u32,
+) -> Option<bool> {
+    lights::candidate_eligible(m, record, definition, flags).ok()
 }
 
 pub(crate) fn instruction_entries() -> [u32; 5] {
@@ -300,9 +340,11 @@ enum Seam {
 }
 
 /// The stage can depend on the view kind, which is read by the builder.
-type Build = fn(&dyn GuestMemory, &CpuAbi) -> (SceneList, Result<Output>);
-
-fn install(b: &mut Builder, seam: Seam, build: Build) {
+fn install(
+    b: &mut Builder,
+    seam: Seam,
+    build: impl Fn(&dyn GuestMemory, &CpuAbi) -> (SceneList, Result<Output>) + Send + Sync + 'static,
+) {
     let point = match seam {
         Seam::Function(point, _) | Seam::Sites(point, _, _) | Seam::CallSite(point, _, _, _) => {
             point

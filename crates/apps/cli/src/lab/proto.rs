@@ -4,10 +4,9 @@
 //! `{"ok": false, "error": "..."}`. Everything a request names is checked
 //! here before the host acts on it: the environment comes from allowlists,
 //! `h2 play` flags from a list of known ones, and every name that becomes a
-//! path (run ids, recordings, PGO profiles) is one plain component, so
-//! nothing reaches outside the lab root. The host is not a sandbox (whoever
-//! can reach the socket can already run a shell as the same user); the
-//! lists keep agents to runs that mean something.
+//! path (run ids, recordings, PGO profiles) is one plain component.
+//! Branch sync and service updates act on the configured checkout. Pair
+//! only with drivers trusted to build and run code as the host user.
 
 use std::collections::BTreeMap;
 
@@ -31,6 +30,7 @@ pub const RUN_ENV: &[&str] = &[
     "H2_RENDER_SCALE",
     "H2_RESOLUTION",
     "H2_HUD_POSITION",
+    "H2_LOD_DISTANCE",
     "H2_WATERMARK",
     "H2_MAPPACK",
     "H2_HALO1",
@@ -148,6 +148,19 @@ pub const INPUT_FILE: &str = "input.bin";
 #[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
     Status,
+    Update,
+    Fetch {
+        id: String,
+    },
+    SyncBases {
+        branch: String,
+        commit: String,
+    },
+    Sync {
+        branch: String,
+        commit: String,
+        bytes: u64,
+    },
     Run(RunReq),
     Build(BuildSpec),
     Wait {
@@ -205,6 +218,20 @@ pub const AGENT_STDIN_MAX: usize = 1 << 20;
 /// Largest upload `put` takes, in bytes.
 pub const PUT_MAX: usize = 64 << 20;
 
+/// Largest git bundle a sync accepts, streamed to disk.
+pub const BUNDLE_MAX: u64 = 4 << 30;
+
+/// Bounds a control message before it can reach the JSON parser.
+pub const REQUEST_MAX: u64 = (2 * PUT_MAX + (1 << 20)) as u64;
+
+pub fn check_commit(commit: &str) -> Result<()> {
+    ensure!(
+        matches!(commit.len(), 40 | 64) && commit.bytes().all(|b| b.is_ascii_hexdigit()),
+        "commit must be a full git object id"
+    );
+    Ok(())
+}
+
 pub fn parse(line: &str) -> Result<Request> {
     let r: Request = serde_json::from_str(line)?;
     validate(&r)?;
@@ -213,7 +240,24 @@ pub fn parse(line: &str) -> Result<Request> {
 
 pub fn validate(r: &Request) -> Result<()> {
     match r {
-        Request::Status | Request::Recordings | Request::Runs { .. } => Ok(()),
+        Request::Status | Request::Update | Request::Recordings | Request::Runs { .. } => Ok(()),
+        Request::Fetch { id } => {
+            check_name("id", id)?;
+            ensure!(id.bytes().all(|b| b.is_ascii_digit()), "invalid job id");
+            Ok(())
+        }
+        Request::SyncBases { branch, commit } | Request::Sync { branch, commit, .. } => {
+            check_rev(branch)?;
+            check_commit(commit)?;
+            if let Request::Sync { bytes, .. } = r {
+                ensure!(
+                    *bytes <= BUNDLE_MAX,
+                    "git bundle over {} GiB",
+                    BUNDLE_MAX >> 30
+                );
+            }
+            Ok(())
+        }
         Request::Run(run) => validate_run(run),
         Request::Build(b) => validate_build(b),
         Request::Wait { id, timeout } => {
@@ -491,7 +535,7 @@ pub fn check_play_args(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Hex for `put` (no base64 crate in the tree; recordings are small).
+/// Hex payloads for recording and PGO uploads.
 pub fn to_hex(b: &[u8]) -> String {
     const D: &[u8; 16] = b"0123456789abcdef";
     let mut s = String::with_capacity(b.len() * 2);
@@ -516,17 +560,6 @@ pub fn from_hex(s: &str) -> Result<Vec<u8>> {
         .chunks(2)
         .map(|p| Ok(d(p[0])? << 4 | d(p[1])?))
         .collect()
-}
-
-/// Single-quotes `s` for a POSIX shell (remote commands over ssh).
-pub fn sh_quote(s: &str) -> String {
-    if !s.is_empty()
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"/._-=:@%+,".contains(&b))
-    {
-        return s.to_string();
-    }
-    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 #[cfg(test)]
@@ -690,14 +723,5 @@ mod tests {
         assert!(run(r#"{"cmd":"run","level":"x","difficulty":"impossible"}"#).is_err());
         assert!(run(r#"{"cmd":"run","difficulty":"easy"}"#).is_err());
         assert!(run(r#"{"cmd":"run","replay":"a","record":"b"}"#).is_err());
-    }
-
-    #[test]
-    fn hex_and_quoting_round_trip() {
-        let b: Vec<u8> = (0..=255).collect();
-        assert_eq!(from_hex(&to_hex(&b)).unwrap(), b);
-        assert!(from_hex("abc").is_err());
-        assert_eq!(sh_quote("/a/b"), "/a/b");
-        assert_eq!(sh_quote("it's here"), r"'it'\''s here'");
     }
 }

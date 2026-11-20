@@ -31,7 +31,7 @@ pub use late::{
     DeviceFog, FOG_WORDS, FogState, LateCounts, LateInput, LateLayer, LateMaterial, LatePart, PostEffect, PostParams, WaterState,
 };
 pub use layer::{LayerInputs, LayerItem, LayerOwner, LayerPass};
-pub use light::{LightStep, LightTarget, SceneLight};
+pub use light::{Light, LightCandidate, LightConstants, LightProjection, LightStep, LightTarget, LightVariants, LightVolume, SceneLight};
 pub use light_group::{GroupSite, LightBinding, LightEntry, LightGroup, LightPose, LightStream, ObjectShadow, PROJECTION_ROWS, Topology};
 pub use node::{NODE_MATRIX_SIZE, NodeMatrix};
 pub use object::{Defaults, ItemKey, LIGHTING_BYTES, LIGHTING_WORDS, Lighting, ObjectFrame, Owner};

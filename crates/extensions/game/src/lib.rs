@@ -73,6 +73,8 @@ pub mod keyboard_glue;
 pub mod layout_glue;
 pub mod level_boot;
 pub mod list_class;
+#[cfg(feature = "gpu")]
+pub mod lod_distance;
 mod lobby_quality;
 mod lobby_status;
 pub mod live_glue;

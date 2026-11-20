@@ -82,7 +82,7 @@ fn scene() -> (Mixer, StreamId, MixInId) {
             Some(Stage {
                 kind: FilterKind::LowPass,
                 hz: 2000.0,
-                q: 0.7071,
+                q: std::f32::consts::FRAC_1_SQRT_2,
                 gain_db: 0.0,
             }),
             Some(Stage {
@@ -145,7 +145,7 @@ fn scene() -> (Mixer, StreamId, MixInId) {
             Some(Stage {
                 kind: FilterKind::HighPass,
                 hz: 200.0,
-                q: 0.7071,
+                q: std::f32::consts::FRAC_1_SQRT_2,
                 gain_db: 0.0,
             }),
             None,

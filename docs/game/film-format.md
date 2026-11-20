@@ -491,8 +491,10 @@ assumption that the saved clip endpoints refer directly to film ticks.
 ## Choosing a player's view
 
 In local playback the guest renders its original camera, first-person weapon
-and HUD. A v3 local film can display one split-screen viewport at its
-original aspect ratio. The slot is the player's seat in the film roster.
+and HUD. Its exact 640x480 reference provides guest readbacks, while
+the viewer chooses the window resolution. A v3 local film can display
+one split-screen viewport. Its guest-pixel edges map onto the displayed
+raster so the selection tracks resolution changes. The slot is the player's seat in the film roster.
 
 ```sh
 h2 agent theater.camera '{"mode":"first_person","seat":0}'
@@ -505,7 +507,7 @@ a cinematic, death or vehicle camera the window shows the recorded frame.
 
 A playerless host has no local director, first-person weapon or HUD. For
 a rendered host film the desktop player opens a separate GPU view at the
-viewer's selected resolution. Native follows the physical drawable, including
+viewer's selected resolution. Native follows the physical drawable within the default 4K pixel budget, including
 a resize while paused. The presented aspect sets the observer's horizontal
 field of view. The BSP and posed objects use the same projection for drawing
 and culling. The observer uses the selected unit’s posed camera

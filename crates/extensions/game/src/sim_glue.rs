@@ -135,6 +135,7 @@ struct State {
     /// A copy-on-write guest RAM base census at the match's end
     /// (`state.load` with `"cow": true`): pages written over the base.
     cow: Option<(u64, u64)>,
+    file_reads: vfs::GuestReadBytes,
 }
 
 struct Inner {
@@ -405,6 +406,7 @@ impl Sim {
                 fired: Vec::new(),
                 notes: Vec::new(),
                 cow: None,
+                file_reads: vfs::GuestReadBytes::default(),
             }),
             stop: AtomicBool::new(false),
             created: Instant::now(),
@@ -575,9 +577,10 @@ impl Sim {
 
     /// The guest RAM census at the match's end, for the report's `wall`
     /// block: `(written, total)` pages over a shared copy-on-write base.
-    pub fn note_cow(&self, written: Option<(u64, u64)>) {
+    pub fn note_memory(&self, written: Option<(u64, u64)>, reads: vfs::GuestReadBytes) {
         let mut s = self.0.lock();
         s.cow = written;
+        s.file_reads = reads;
     }
 
     /// The report at the end of the run, written to `H2_SIM_REPORT` when
@@ -756,6 +759,8 @@ fn build_report(inner: &Inner, s: &State) -> Report {
         "missing"
     };
     let mut memory = crate::host_mem::usage();
+    memory.mapped_read_bytes = s.file_reads.mapped;
+    memory.copied_read_bytes = s.file_reads.copied;
     memory.guest_written_pages = s.cow.map(|(w, _)| w);
     memory.guest_pages = s.cow.map(|(_, t)| t);
     let mut report = s.tally.report(Finish {

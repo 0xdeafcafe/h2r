@@ -446,7 +446,7 @@ fn queued_world_draws_choose_native_or_d3d_in_order_without_waiting() {
             .unwrap()
     };
     let baseline = render(false);
-    assert!(baseline.chunks_exact(4).any(|p| p[1] != 0));
+    assert!(baseline.as_chunks::<4>().0.iter().any(|p| p[1] != 0));
     assert_eq!(render(true), baseline);
     assert_eq!(
         *outcomes.lock().unwrap(),

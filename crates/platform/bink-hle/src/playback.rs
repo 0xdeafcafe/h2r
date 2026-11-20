@@ -1,7 +1,6 @@
 //! Override bodies. Everything is `__stdcall`: arguments sit at `esp+4...`
 //! and the callee pops them, so each body ends in `ret(cpu, 4 * nargs)`.
 use crate::{Request, read_cstr};
-use crate::addr::*;
 use crate::audio_out::{MovieAudioOut, MovieVoice};
 use crate::source::{AudioInfo, Clock, MovieSource, MovieStream, StreamInfo, SystemClock};
 use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi, guest::Permissions};

@@ -304,11 +304,7 @@ fn child(opts: Options, work: &Path) -> Result<()> {
             keyboard: false,
             gamepads: true,
             theater: Some(overlay),
-            aspect: if host_view {
-                app::DisplayAspect::Source
-            } else {
-                app::DisplayAspect::Standard
-            },
+            aspect: app::DisplayAspect::Source,
             mouse_capture: false,
             keep_open_on_guest_exit: false,
             ..Default::default()
@@ -317,19 +313,17 @@ fn child(opts: Options, work: &Path) -> Result<()> {
             if let Some(input) = window.take_input() {
                 controller.attach_input(input);
             }
-            let (gfx, film_view) = if host_view {
+            let (store, problems) = boot::setting_defs::load(&data, &[]);
+            for p in problems {
+                eprintln!("theater: {p}");
+            }
+            let native: boot::run_opts::NativeSize = std::sync::Arc::new(window.native_size());
+            let raster = boot::d3d_glue::output_size(Some(&store), native.clone())?;
+            let (gfx, gfx_view, film_view) = if host_view {
                 // The authoritative guest keeps the light host's D3D profile.
-                // Its separately presented POV must not advance retail RNG.
-                let (store, problems) = boot::setting_defs::load(&data, &[]);
-                for p in problems {
-                    eprintln!("theater: {p}");
-                }
-                let raster = boot::d3d_glue::output_size(
-                    Some(&store),
-                    std::sync::Arc::new(window.native_size()),
-                )?;
                 let mut sink = window.frame_sink();
                 (
+                    None,
                     None,
                     Some(boot::theater::HostView::new(
                         window.gfx_context(),
@@ -345,9 +339,15 @@ fn child(opts: Options, work: &Path) -> Result<()> {
             } else {
                 let present = window
                     .frame_sink()
-                    .into_cropped_present_hook(publish_every, move || camera.present_crop());
+                    .into_guest_crop_present_hook(publish_every, boot::setting_defs::GUEST_FRAME, move || camera.present_crop());
                 (
-                    Some(d3d::GfxBackend::new(window.gfx_context()).on_present(present)),
+                    Some(d3d::GfxBackend::new(window.gfx_context())),
+                    Some(boot::run_opts::DisplayView {
+                        backend: Some(d3d::GfxBackend::new(window.gfx_context()).on_present(present)),
+                        native_size: native,
+                        viewer_output: Some(raster),
+                        display_size: std::sync::Arc::new(window.display_size()),
+                    }),
                     None,
                 )
             };
@@ -355,6 +355,7 @@ fn child(opts: Options, work: &Path) -> Result<()> {
             run(
                 boot::Host {
                     gfx,
+                    gfx_view,
                     film_view,
                     between_slices: Some(Box::new(move |_| !window.should_stop())),
                     host_light: true,

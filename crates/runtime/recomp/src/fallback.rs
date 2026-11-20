@@ -140,7 +140,26 @@ struct State {
     lifter: lift::Lifter<'static>,
     functions: Vec<u32>,
     cache: HashMap<u32, ir::IrInsn>,
-    cold: HashMap<u32, rustc_hash::FxHashMap<u32, ir::IrInsn>>,
+    cold: ColdBody,
+}
+
+/// A slim host runs one guest thread at a time. Keep the body of the
+/// executing owner; re-lift an evicted owner on its next call or resume.
+#[derive(Default)]
+struct ColdBody {
+    owner: Option<u32>,
+    insns: rustc_hash::FxHashMap<u32, ir::IrInsn>,
+}
+
+impl ColdBody {
+    fn select(&mut self, owner: u32, lift: impl FnOnce() -> rustc_hash::FxHashMap<u32, ir::IrInsn>) {
+        if self.owner != Some(owner) {
+            // Release a large preceding body before lifting the next one.
+            self.insns = Default::default();
+            self.insns = lift();
+            self.owner = Some(owner);
+        }
+    }
 }
 
 /// Whether an unsupported-instruction STOP from generated code is
@@ -235,7 +254,13 @@ fn build_state() -> &'static Mutex<State> {
         // The interpreter's own copy: with the stopgap, unread jump-table
         // targets become entries so the lazy lifter can reach them.
         let unread = UNREAD_ENABLED.load(std::sync::atomic::Ordering::SeqCst)
-            .then(|| UNREAD.get_or_init(|| unread_targets(bytes, &analysis)));
+            .then(|| UNREAD.get_or_init(|| {
+                let targets = unread_targets(bytes, &analysis);
+                if let Some(path) = unread_cache_path(bytes) {
+                    write_unread_cache(&path, &targets);
+                }
+                targets
+            }));
         for &addr in unread.map_or(&[][..], |u| u.all.as_slice()) {
             analysis.functions.entry(addr).or_insert(analyze::Function {
                 start: addr,
@@ -255,7 +280,7 @@ fn build_state() -> &'static Mutex<State> {
                 t.elapsed().as_secs_f64()
             );
         }
-        Mutex::new(State { lifter, functions, cache: HashMap::new(), cold: HashMap::new() })
+        Mutex::new(State { lifter, functions, cache: HashMap::new(), cold: ColdBody::default() })
     })
 }
 
@@ -263,7 +288,7 @@ impl State {
     fn cold_insn(&mut self, owner: u32, pc: u32) -> Option<&ir::IrInsn> {
         // Overlapping owners can disagree about which edges leave the
         // function. Use the same owner as the full module's registry.
-        let body = self.cold.entry(owner).or_insert_with(|| {
+        self.cold.select(owner, || {
             self.lifter.lift(owner).into_iter()
                 .flat_map(|func| func.blocks.into_values())
                 .flat_map(|block| block.insns)
@@ -274,13 +299,13 @@ impl State {
         // targets. A published resume can be inside one of those new
         // functions, outside its original owner's widened CFG.
         let tables = TABLES.get().unwrap();
-        if !body.contains_key(&pc)
+        if !self.cold.insns.contains_key(&pc)
             && UNREAD_ENABLED.load(std::sync::atomic::Ordering::SeqCst)
             && (tables.resumes.contains(&pc) || tables.entries.contains(&pc))
         {
             return self.insn(pc);
         }
-        self.cold.get(&owner)?.get(&pc)
+        self.cold.insns.get(&pc)
     }
 
     fn insn(&mut self, pc: u32) -> Option<&ir::IrInsn> {
@@ -690,20 +715,24 @@ fn unread_allowed(site: u32, target: u32) -> bool {
 /// asks for the set on an unresolved entry, and generated switch STOPs
 /// still check their own tables before interpreting.
 pub fn start_analysis(rt: &runtime::Runtime) {
+    configure_analysis(rt, true)
+}
+
+/// Install the same discovery and interpretation routes in both profiles.
+/// A light host leaves the full image analysis unallocated until an actual
+/// miss. A cached target set can still rule out an unknown entry at once.
+pub fn configure_analysis(rt: &runtime::Runtime, prewarm: bool) {
     UNREAD_ENABLED.store(true, std::sync::atomic::Ordering::SeqCst);
     let bytes = *XBE.get().unwrap();
     let path = unread_cache_path(bytes);
-    let cache_hit = if let Some(p) = path.as_deref()
+    if let Some(p) = path.as_deref()
         && let Some(u) = read_unread_cache(p)
     {
         if crate::log::verbose() {
             eprintln!("fallback: unread jump-table targets from {}", p.display());
         }
         let _ = UNREAD.set(u);
-        true
-    } else {
-        false
-    };
+    }
     rt.edit_dispatch(|d| {
         d.set_entry_fallback(
             |addr| {
@@ -717,13 +746,11 @@ pub fn start_analysis(rt: &runtime::Runtime) {
             },
         );
     });
-    if let Err(e) = std::thread::Builder::new().name(ANALYSIS_THREAD.into()).spawn(move || {
+    if !prewarm {
+        return;
+    }
+    if let Err(e) = std::thread::Builder::new().name(ANALYSIS_THREAD.into()).spawn(|| {
         let _ = build_state();
-        if !cache_hit
-            && let (Some(p), Some(u)) = (path.as_deref(), UNREAD.get())
-        {
-            write_unread_cache(p, u);
-        }
     }) {
         eprintln!("fallback: could not start interpreter analysis thread: {e}");
     }
@@ -802,6 +829,24 @@ pub fn log_cold_summary(stats: &Stats) {
 mod tests {
     use super::*;
     use runtime::Event;
+
+    #[test]
+    fn slim_cache_retains_one_owner_and_relifts_an_evicted_resume() {
+        // The same PC can belong to overlapping owners with different IR.
+        let pc = 0x10020;
+        let mut cache = ColdBody::default();
+        let mut lifts = 0;
+        for (owner, len) in [(1, 2), (1, 2), (2, 4), (1, 2)] {
+            cache.select(owner, || {
+                lifts += 1;
+                let insn = ir::IrInsn { pc, len, atomic: None, stmts: vec![], control: ir::Control::Next };
+                [(pc, insn)].into_iter().collect()
+            });
+            assert_eq!(cache.insns.len(), 1);
+            assert_eq!(cache.insns[&pc].len, len);
+        }
+        assert_eq!(lifts, 3);
+    }
 
     #[test]
     fn cold_entries_and_resumes_preserve_the_dispatch_route() {

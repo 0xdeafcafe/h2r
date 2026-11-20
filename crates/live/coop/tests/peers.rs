@@ -468,8 +468,8 @@ fn cinematic_frames_apply_the_hosts_extra_ticks_once_through_loss_and_reordering
         for (port, peer) in peers.iter_mut().enumerate() {
             peer.pump();
             let decision = if port == 0 { (peer.next_frame() % 16) as u8 } else { 15 };
-            if seen[port].len() < 40 {
-                if let Ok((frame,ticks)) = peer.begin_cinematic_frame([0;PAD],CinematicTicks::new(decision).unwrap()) {
+            if seen[port].len() < 40
+                && let Ok((frame,ticks)) = peer.begin_cinematic_frame([0;PAD],CinematicTicks::new(decision).unwrap()) {
                     assert_eq!(frame as usize,seen[port].len());
                     seen[port].push(ticks.count());
                     for _ in 0..=ticks.count() {
@@ -478,7 +478,6 @@ fn cinematic_frames_apply_the_hosts_extra_ticks_once_through_loss_and_reordering
                         next_tick[port] += 1;
                     }
                 }
-            }
         }
         if seen[0].len() == 40 && seen[1].len() == 40
             && peers.iter().all(|p| p.stats().ticks_agreed == u64::from(next_tick[0])) { break; }

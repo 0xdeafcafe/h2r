@@ -332,8 +332,10 @@ mod tests {
 
         let guest = engine::testing::FakeGuest::new();
         let remote = Remote::new();
-        let mut pad = Gamepad::default();
-        pad.buttons = input::gamepad::Buttons::START;
+        let pad = Gamepad {
+            buttons: input::gamepad::Buttons::START,
+            ..Default::default()
+        };
         remote.replace([input::backend::remote::Step {
             pad,
             ..Default::default()

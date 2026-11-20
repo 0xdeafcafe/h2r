@@ -204,6 +204,10 @@ fn layer11_uses_only_its_map_and_preserves_rgb_stencil_and_alpha_test() {
         (&blocked, 3, true, 64, Reference),
     ] {
         let mut d = receiver();
+        // At the same raster size, the projected display scissor is x=5..7;
+        // the guest copy keeps x=2..6. Both regions cut the same triangle.
+        d.clip = Some(d3d::PixelRect { x: 2, y: 0, width: 4, height: 16 });
+        d.retail_constants = Some((d.shader.constants.clone(), 0.5));
         d.state.render.alpha_test_enable = alpha_test;
         d.state.render.alpha_func = CompareFunc::Greater;
         d.state.render.alpha_ref = 1;
@@ -235,7 +239,10 @@ fn layer11_uses_only_its_map_and_preserves_rgb_stencil_and_alpha_test() {
         Renderer::encode_pass(&ctx, &mut enc, &surface.target(), Clear::NONE, &packets, None).unwrap();
         ctx.queue.submit([enc.finish()]);
         let px = surface.read_pixels(&ctx);
-        assert_eq!(&px[(2 * 16 + 2) * 4..][..4], [255, 0, 255, want]);
+        let alpha = |x| px[(2 * 16 + x) * 4 + 3];
+        assert_eq!(alpha(5usize), want, "inside both scissors");
+        let expected = if copy == Display { (64, want) } else { (want, 64) };
+        assert_eq!((alpha(2), alpha(6)), expected, "{copy:?}");
         assert_eq!(&px[(15 * 16 + 15) * 4..][..4], [255, 0, 255, 64]);
     }
 }

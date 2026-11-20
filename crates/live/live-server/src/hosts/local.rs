@@ -1,7 +1,8 @@
 //! One supervisor, writable data directory and network port range per lease.
 
 use super::{HostBoot, HostError, HostLease, HostProvider, ProviderKind};
-use live_proto::hosts::Transport;
+use live_proto::host_pack::WarmDemand;
+use live_proto::hosts::{HostClass, Transport};
 use std::collections::HashMap;
 use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
@@ -191,6 +192,19 @@ impl HostProvider for LocalProvider {
         ProviderKind::Local
     }
 
+    async fn warm(
+        &self,
+        _live: &crate::app::Live,
+        region: Option<&str>,
+        class: &HostClass,
+        demand: WarmDemand,
+    ) -> Result<usize, HostError> {
+        match &self.packs {
+            Some(packs) => packs.warm(self.bin()?, region, class, demand).await,
+            None => Ok(0),
+        }
+    }
+
     async fn start(&self, lease: &HostLease, boot: &HostBoot) -> Result<String, HostError> {
         if let Some(packs) = &self.packs {
             if !lease
@@ -284,9 +298,6 @@ impl HostProvider for LocalProvider {
 
 impl Drop for LocalProvider {
     fn drop(&mut self) {
-        if let Some(packs) = &mut self.packs {
-            packs.stop_all();
-        }
         for host in self.children.get_mut().unwrap().values_mut() {
             let _ = stop_child(&mut host.child);
         }

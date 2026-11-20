@@ -97,7 +97,7 @@ pub fn brightest_into_alpha(img: &Image, px: &[u8], gain: f32) -> Result<(Image,
             .ok_or_else(|| Error::Invalid(format!("the image has no level {}", l.level)))?;
         let alpha: Vec<u8> = src
             .rgba
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .map(|t| brightest(t[0], t[1], t[2], gain))
             .collect();
         let blocks = encode_dxt5(src.width, src.height, &src.rgba, &alpha);
@@ -309,7 +309,7 @@ pub fn cutout_bump(base: &Image, base_px: &[u8]) -> Result<(Image, Vec<u8>)> {
             .ok_or_else(|| Error::Invalid(format!("the base has no level {}", l.level)))?;
         let alpha: Vec<u8> = src
             .rgba
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .map(|t| if t[3] >= CUTOUT_THRESHOLD { 255 } else { 0 })
             .collect();
         let blocks = encode_alpha_dxt5(src.width, src.height, &alpha, FLAT_NORMAL_BLOCK);

@@ -960,15 +960,19 @@ impl PixelRect {
     }
 }
 
-/// Affine placement of a UI canvas in the guest window, captured while its
-/// producer owns the draw. Geometry and scissors use the same translation.
+/// Affine placement in the guest window, captured while a UI or projected
+/// sprite producer owns the draw.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct UiFit {
     /// x' = x * sx + ox, y' = y * sy + oy, before the host raster shift.
     pub transform: [f32; 4],
+    // A flare moves in its viewport. UI widgets carry a local scissor.
+    fit_scissor: bool,
 }
 
 impl UiFit {
+    pub const IDENTITY: Self = Self { transform: [1.0, 1.0, 0.0, 0.0], fit_scissor: true };
+
     /// Fit guest pixels uniformly on the output, about a pivot in guest
     /// window coordinates. Each player's viewport has its own pivot.
     pub fn about(output: (u32, u32), pivot: [f32; 2]) -> Option<Self> {
@@ -978,12 +982,25 @@ impl UiFit {
         }
         let sx = w as f32 / 640.0;
         let sy = h as f32 / 480.0;
-        let x = sx.min(sy) / sx;
-        let y = sx.min(sy) / sy;
-        Some(Self { transform: [x, y, pivot[0] * (1.0 - x), pivot[1] * (1.0 - y)] })
+        Self::from_pixel_ratio(1.0 / (sx / sy), pivot)
+    }
+
+    /// Guest pixel width/height divided by displayed pixel width/height.
+    /// For anamorphic Xbox artwork the numerator already includes its lens.
+    pub fn from_pixel_ratio(ratio: f32, pivot: [f32; 2]) -> Option<Self> {
+        if !ratio.is_finite() || ratio <= 0.0 || ratio == 1.0 { return None; }
+        let x = ratio.min(1.0);
+        let y = ratio.recip().min(1.0);
+        Some(Self { transform: [x, y, pivot[0] * (1.0 - x), pivot[1] * (1.0 - y)], fit_scissor: true })
+    }
+
+    /// A CPU-projected sprite or query retains its player's scissor.
+    pub fn projected_sprite(scale: f32, offset: f32) -> Self {
+        Self { transform: [scale, 1.0, offset, 0.0], fit_scissor: false }
     }
 
     pub fn map_rect(&self, r: PixelRect) -> PixelRect {
+        if !self.fit_scissor { return r; }
         let [sx, sy, ox, oy] = self.transform;
         let x = |edge: u32| (edge as f32 * sx + ox).round() as u32;
         let y = |edge: u32| (edge as f32 * sy + oy).round() as u32;

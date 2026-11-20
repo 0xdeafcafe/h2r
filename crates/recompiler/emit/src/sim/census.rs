@@ -361,7 +361,7 @@ pub fn census(closure: &Closure) -> Census {
     c
 }
 
-fn region<'a>(regions: &'a [Region], a: u32) -> &'a str {
+fn region(regions: &[Region], a: u32) -> &str {
     regions.iter().find(|r| a >= r.start && a < r.end).map_or("(no section)", |r| r.name.as_str())
 }
 
@@ -391,7 +391,7 @@ pub fn markdown(title: &str, c: &Census, regions: &[Region]) -> String {
     for site in &c.sites {
         by.entry(site.kind).or_default().push(site);
     }
-    let count = |p: &dyn Fn(&Kind) -> bool| by.iter().filter(|(k, _)| p(*k)).map(|(_, v)| v.len()).sum::<usize>();
+    let count = |p: &dyn Fn(&Kind) -> bool| by.iter().filter(|(k, _)| p(k)).map(|(_, v)| v.len()).sum::<usize>();
     let _ = writeln!(s, "| class | stores |\n|---|---|");
     let classes: [(&str, &dyn Fn(&Kind) -> bool); 7] = [
         ("absolute", &|k| matches!(k, Kind::Absolute(_))),

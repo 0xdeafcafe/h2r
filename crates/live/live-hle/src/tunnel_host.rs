@@ -270,10 +270,19 @@ impl TunnelHost {
             .max_write_buffer_size(4096)
             .max_frame_size(limit)
             .max_message_size(limit);
+        use live_proto::matchmaking::{PACK_ECHO_PATH, REGION_ECHO};
         let mut xuid = None;
+        let mut echo = false;
         let mut ws = accept_hdr_with_config(
             stream,
-            |request: &Request, response: Response| {
+            |request: &Request, mut response: Response| {
+                if request.uri().path() == PACK_ECHO_PATH {
+                    echo = true;
+                    if request.headers().get("sec-websocket-protocol").and_then(|h| h.to_str().ok()) == Some(REGION_ECHO) {
+                        response.headers_mut().insert("sec-websocket-protocol", REGION_ECHO.parse().unwrap());
+                    }
+                    return Ok(response);
+                }
                 xuid = request
                     .headers()
                     .get("x-h2-tunnel-peer")
@@ -284,6 +293,15 @@ impl TunnelHost {
             Some(config),
         )
         .map_err(|error| error.to_string())?;
+        if echo {
+            ws.get_mut().set_read_timeout(Some(Duration::from_secs(1)))?;
+            if let Message::Text(text) = ws.read()?
+                && text.as_str() == REGION_ECHO
+            {
+                ws.send(Message::Text(text))?;
+            }
+            return Ok(());
+        }
         ws.get_mut().set_read_timeout(Some(TURN))?;
         wait_for_hello(&mut ws)?;
 
@@ -436,8 +454,8 @@ impl TunnelHost {
 
     fn destination(&self, id: u32) -> Option<SocketAddrV4> {
         let channel = lock(&self.channels).get(&id)?.clone();
-        let target = *lock(&channel.destination);
-        target
+        
+        *lock(&channel.destination)
     }
 
     fn reap_addresses(&self, network: &Network) {
@@ -835,6 +853,47 @@ mod tests {
         assert!(!valid_client_frame(&control(Kind::Hello, 0, vec![1])));
         assert!(!valid_client_frame(&control(Kind::Bye, 0x0102, Vec::new())));
         assert!(valid_client_frame(&control(Kind::Bye, 0, Vec::new())));
+    }
+
+    #[test]
+    fn regional_echo_accepts_one_text_frame_and_never_registers_a_game_peer() {
+        use live_proto::matchmaking::{PACK_ECHO_PATH, REGION_ECHO};
+        use tungstenite::client::IntoClientRequest;
+
+        let bridge = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let SocketAddr::V4(bridge_address) = bridge.local_addr().unwrap() else { unreachable!() };
+        let host = TunnelHost {
+            address: SocketAddrV4::new(Ipv4Addr::LOCALHOST, BASE),
+            bridge, bridge_address, peers: Mutex::default(), channels: Mutex::default(),
+            listeners: Default::default(), pings: Default::default(), asked: Default::default(),
+        };
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        thread::scope(|scope| {
+            let server = scope.spawn(|| {
+                for _ in 0..2 {
+                    let (stream, _) = listener.accept().unwrap();
+                    host.serve(stream).unwrap();
+                }
+            });
+            let addr = listener.local_addr().unwrap();
+            for text_frame in [true, false] {
+                let mut req = format!("ws://{addr}{PACK_ECHO_PATH}").into_client_request().unwrap();
+                req.headers_mut().insert("sec-websocket-protocol", REGION_ECHO.parse().unwrap());
+                let stream = TcpStream::connect(addr).unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                let (mut client, response) = tungstenite::client(req, stream).unwrap();
+                assert_eq!(response.headers()["sec-websocket-protocol"], REGION_ECHO);
+                if text_frame {
+                    client.send(Message::Text(REGION_ECHO.into())).unwrap();
+                    assert_eq!(client.read().unwrap(), Message::Text(REGION_ECHO.into()));
+                } else {
+                    client.send(Message::Binary(encode(&control(Kind::Hello, 0, vec![])).into())).unwrap();
+                    assert!(client.read().is_err());
+                }
+            }
+            server.join().unwrap();
+        });
+        assert_eq!(lock(&host.peers).last_id, 0);
     }
 
     #[test]

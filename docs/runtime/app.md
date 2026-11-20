@@ -453,14 +453,15 @@ surface, clearing the rest to black.
   before the slot is published, and the window's read is submitted before
   the slot can return to the guest. No fences.
 - **Scaling** (`scale.rs`). Play uses square output pixels by default.
-  Native resolution follows the drawable's physical dimensions.
-  `GuestHost::native_size` publishes the internal size for Native and
+  Native follows the drawable up to the default 4K pixel budget.
+  `GuestHost::native_size` publishes the physical drawable size for Native and
   `GuestHost::display_size` reports where a given raster is presented.
   `--aspect 4:3` and `16:9` fit those shapes inside the window. `Fit`
   adds bars as needed, `Integer` takes the largest whole multiple of
   the frame height that fits, and `Stretch` fills the drawable.
-- **Resize** reconfigures the surface and updates Native resolution.
-  Minimizing preserves the last nonzero size.
+- **Resize** reconfigures the window surface immediately. The game reallocates
+  its Native raster after the drawable size holds steady for 150 ms. Minimizing
+  preserves the last nonzero size.
 - **Vsync**: `AutoVsync` (Fifo) by default, `AutoNoVsync` with
   `vsync: false`. This only affects the window; guest pacing is separate.
 - **Display rate** (`AppConfig::fps`, `H2_FPS=30|60|120|uncapped`, `h2 play

@@ -24,6 +24,7 @@
 //!    - gravity: game time `+4` × `[51e9c4]` scales the vector at
 //!      `[4687bc]` into `[S+14..+20]`, passed to `10cf80(object, 0)`
 //!      (`eax` = `&S[14]`, `ret 8`).
+//!
 //!    Each of these sets the result.
 //! 2. Body `+12c` bit 4: velocity `+94..+9c` scaled by the constant at
 //!    `45dc84` and `10d5f0(eax: object)`; result 1.

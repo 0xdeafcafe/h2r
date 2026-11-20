@@ -2796,9 +2796,9 @@ mod tests {
         assert_eq!(run.result, Ok(Ret::new(SCREEN, 4)));
         assert_eq!(Screen::at(SCREEN).vtable(&run.guest), Ok(TABLES));
         // While the constructor ran, the Controls rows' array was asked for
-        // the screen's five rows; any other array, and anything
+        // the screen's Video rows; any other array, and anything
         // after, as asked.
-        assert_eq!(*during.lock().unwrap(), Some((5, 7)));
+        assert_eq!(*during.lock().unwrap(), Some((video_rows().count() as u32, 7)));
         assert_eq!(array_count(crate::speaker_row::LIST_NAME, 7), 7);
     }
 

@@ -80,7 +80,7 @@ pub static FPS: Def = Def {
 /// "Terms" and "Prior art"), so no video mode changes it.
 pub const GUEST_FRAME: (u32, u32) = (640, 480);
 
-const LEGACY_SCALE: settings::LegacyScale = settings::LegacyScale {
+pub(crate) const LEGACY_SCALE: settings::LegacyScale = settings::LegacyScale {
     key: "graphics.render_scale",
     env: "H2_RENDER_SCALE",
     frame: GUEST_FRAME,
@@ -90,7 +90,7 @@ const LEGACY_SCALE: settings::LegacyScale = settings::LegacyScale {
 pub static RESOLUTION: Def = Def {
     key: "graphics.resolution",
     label: "Resolution",
-    help: "Native follows the window in physical pixels. Choose a smaller size to render fewer pixels.",
+    help: "Native follows the window up to the pixel count of 4K. Pick a size to render at that resolution.",
     kind: Kind::Resolution(LEGACY_SCALE),
     default: Value::Int(0),
     env: Some("H2_RESOLUTION"),
@@ -119,11 +119,6 @@ pub fn resolution_from_env() -> Result<settings::Resolution, String> {
             .map_err(|e| format!("{}={v:?}: {e}", LEGACY_SCALE.env)),
         None => Ok(settings::Resolution::Native),
     }
-}
-
-/// Vertical pixel density relative to the guest, including fractional sizes.
-pub fn effective_vertical_scale(output_height: u32) -> f32 {
-    output_height as f32 / GUEST_FRAME.1 as f32
 }
 
 pub const HUD_PINNED: u32 = 1;
@@ -158,11 +153,52 @@ pub static HUD_POSITION: Def = Def {
     }),
 };
 
+/// Render-distance multipliers in half units. Zero selects the guest's
+/// original pixel scale independently of the output resolution.
+pub static LOD_DISTANCE: Def = Def {
+    key: "graphics.lod_distance",
+    label: "LOD Distance",
+    help: "Choose how far away models keep their detail. 1x matches the rendering resolution. \
+           Network play and film recording use retail distances.",
+    kind: Kind::Choice(&[
+        Choice { value: 0, name: "retail", label: "Retail" },
+        Choice { value: 1, name: "0.5", label: "0.5x" },
+        Choice { value: 2, name: "1.0", label: "1x" },
+        Choice { value: 3, name: "1.5", label: "1.5x" },
+        Choice { value: 4, name: "2.0", label: "2x" },
+        Choice { value: 6, name: "3.0", label: "3x" },
+        Choice { value: 8, name: "4.0", label: "4x" },
+    ]),
+    default: Value::Int(2),
+    env: Some("H2_LOD_DISTANCE"),
+    flag: None,
+    aliases: &[
+        ("1", Value::Int(2)), ("2", Value::Int(4)),
+        ("3", Value::Int(6)), ("4", Value::Int(8)),
+    ],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::View,
+    tier: Tier::User,
+    menu: Some(Menu {
+        screen: "video",
+        order: 45,
+    }),
+};
+
+/// Convert one pixel of the guest's projected size to output pixels for LOD.
+pub fn lod_pixel_multiplier(output_height: u32, half_units: u32) -> f32 {
+    if half_units == 0 {
+        return 1.0;
+    }
+    (output_height as f32 / GUEST_FRAME.1 as f32) * (half_units as f32 * 0.5)
+}
+
 /// Select the readback and draw policy when rendering above guest resolution.
 pub static SINGLE_COPY: Def = Def {
     key: "graphics.single_copy",
     label: "Single-copy scaled rendering",
-    help: "Draw once at the selected resolution. Guest reads sample that image at guest pixel positions. Disable for exact 1x readbacks.",
+    help: "In offline play, draw once and sample that image for guest readbacks. Disable for exact Xbox readbacks. Network play, films and lockstep always use exact readbacks.",
     kind: Kind::Bool,
     default: Value::Bool(true),
     env: Some("H2_SINGLE_COPY"),
@@ -797,6 +833,7 @@ pub static ALL: &[&Def] = &[
     &FPS,
     &RESOLUTION,
     &HUD_POSITION,
+    &LOD_DISTANCE,
     &SINGLE_COPY,
     &LIGHTING,
     &PAD_SPEAKER,
@@ -995,8 +1032,8 @@ mod tests {
         assert!(p.is_empty());
         assert_eq!(load(&env), Fixed(3440, 1440));
         assert!(env.state(RESOLUTION.key).unwrap().locked);
-        assert_eq!(effective_vertical_scale(1050), 2.1875);
-        assert_eq!(effective_vertical_scale(2880), 6.0);
+        assert_eq!(lod_pixel_multiplier(1050, 2), 2.1875);
+        assert_eq!(lod_pixel_multiplier(2880, 2), 6.0);
         for bad in [
             "2",
             "2x",
@@ -1029,6 +1066,7 @@ mod tests {
                 ("H2_FPS", "Uncapped"),
                 ("H2_RENDER_SCALE", "6"),
                 ("H2_HUD_POSITION", "centered"),
+                ("H2_LOD_DISTANCE", "1.5"),
                 ("H2_SINGLE_COPY", "0"),
                 ("H2_PAD_SPEAKER", "0"),
                 ("H2_PAD_MUTE", "0"),
@@ -1265,6 +1303,34 @@ mod tests {
         let (s, _) = with_env(&data, &[("H2_HALO1_SANDBOX", "halo1")]);
         assert_eq!(halo1_sandbox(&s), "h1");
         assert!(s.state(HALO1_SANDBOX.key).unwrap().locked);
+    }
+
+    #[test]
+    fn lod_distance_matches_output_by_default_and_retail_is_independent_of_output() {
+        let data = tmp("lod-distance");
+        let (store, problems) = with_env(&data, &[]);
+        assert!(problems.is_empty());
+        let setting = store.handle::<u32>(LOD_DISTANCE.key);
+        assert_eq!(lod_pixel_multiplier(480, setting.get()), 1.0);
+        assert_eq!(lod_pixel_multiplier(1920, setting.get()), 4.0);
+        assert_eq!(lod_pixel_multiplier(2160, setting.get()), 4.5);
+        for (name, scale_at_4x) in [
+            ("0.5", 2.0), ("1", 4.0), ("1.0", 4.0), ("1.5", 6.0),
+            ("2", 8.0), ("3", 12.0), ("4", 16.0), ("retail", 1.0),
+        ] {
+            let v = LOD_DISTANCE.parse(name).unwrap();
+            store.set(LOD_DISTANCE.key, v).unwrap();
+            assert_eq!(lod_pixel_multiplier(1920, setting.get()), scale_at_4x);
+            assert_eq!(with_env(&data, &[]).0.get(LOD_DISTANCE.key), Some(v));
+        }
+        let (locked, problems) = with_env(&data, &[("H2_LOD_DISTANCE", "1.5")]);
+        assert!(problems.is_empty());
+        assert_eq!(locked.get(LOD_DISTANCE.key), Some(Value::Int(3)));
+        assert!(locked.state(LOD_DISTANCE.key).unwrap().locked);
+        assert!(LOD_DISTANCE.parse("5").is_err());
+        assert!(LOD_DISTANCE.parse("NaN").is_err());
+        assert_eq!(RESOLUTION.scope, Scope::Host);
+        assert_eq!(LOD_DISTANCE.scope, Scope::View);
     }
 
     #[test]

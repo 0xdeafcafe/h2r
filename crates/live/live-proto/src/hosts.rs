@@ -10,13 +10,15 @@ pub const HOST_READY: &str = "HostReady";
 pub const HOST_PLAYING: &str = "HostPlaying";
 pub const HOST_ENDED: &str = "HostEnded";
 pub const HOST_STOPPED: &str = "HostStopped";
-pub const KINDS: [&str; 6] = [
+pub const HOST_PACK_WARM_RESERVED: &str = "HostPackWarmReserved";
+pub const KINDS: [&str; 7] = [
     HOST_REQUESTED,
     HOST_BOOTING,
     HOST_READY,
     HOST_PLAYING,
     HOST_ENDED,
     HOST_STOPPED,
+    HOST_PACK_WARM_RESERVED,
 ];
 
 pub const DEFAULT_IDLE_TIMEOUT_S: u32 = 120;
@@ -118,7 +120,7 @@ pub enum ProviderKind {
     Fly,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HostClass {
     Small,
@@ -191,6 +193,9 @@ pub struct HostRequested {
     /// A provider address known before launch, usable for cleanup after replay.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_ref: Option<String>,
+    /// A managed packed lease reserves its share of the final empty hold.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pack_linger: bool,
 }
 
 /// Data for [`HOST_BOOTING`].
@@ -216,6 +221,22 @@ pub struct HostPlaying {
     pub players: u8,
 }
 
+/// Cumulative occupancy and sampled process-group usage for a packed lease.
+/// Integer units keep events reproducible across a replay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackUsage {
+    /// Elapsed time from slot allocation to the sample.
+    pub slot_us: u64,
+    /// Integral of elapsed time divided by concurrent occupied slots.
+    pub container_share_us: u64,
+    /// The first match bears the pack's start allowance when a warm grant has not paid it.
+    pub charge_start: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_us: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peak_pss_bytes: Option<u64>,
+}
+
 /// Data for [`HOST_ENDED`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostEnded {
@@ -223,12 +244,41 @@ pub struct HostEnded {
     pub reason: EndReason,
     pub ran_ms: u64,
     pub players_peak: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pack_usage: Option<PackUsage>,
+}
+
+/// Incremental idle capacity granted by the hub before a Cloudflare pool acts.
+/// Times are UTC Unix milliseconds. Retrying a recorded grant is idempotent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostPackWarmReserved {
+    pub pool: String,
+    pub class: HostClass,
+    pub periods: Vec<PackWarmPeriod>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackWarmPeriod {
+    pub pack: String,
+    pub from_ms: i64,
+    pub until_ms: i64,
+    pub start: bool,
+}
+
+/// The pool's disposition of the slot when it serialized the lease release.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PackRelease {
+    NoLinger,
+    Linger { released_ms: i64 },
 }
 
 /// Data for [`HOST_STOPPED`], recorded after a managed host confirms shutdown.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostStopped {
     pub lease_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pack_release: Option<PackRelease>,
 }
 
 #[cfg(test)]
@@ -416,12 +466,14 @@ mod tests {
                 "HostPlaying",
                 "HostEnded",
                 "HostStopped",
+                "HostPackWarmReserved",
             ],
         );
         round_trip(
             HostRequested {
                 lease: lease(),
                 provider_ref: None,
+                pack_linger: false,
             },
             json!({ "lease": lease() }),
         );
@@ -429,6 +481,7 @@ mod tests {
             HostRequested {
                 lease: lease(),
                 provider_ref: Some("room".into()),
+                pack_linger: false,
             },
             json!({ "lease": lease(), "provider_ref": "room" }),
         );
@@ -460,6 +513,7 @@ mod tests {
                 reason: EndReason::MatchOver,
                 ran_ms: 250_000,
                 players_peak: 5,
+                pack_usage: None,
             },
             json!({
                 "lease_id": LEASE_ID, "reason": "match_over", "ran_ms": 250_000, "players_peak": 5
@@ -468,6 +522,7 @@ mod tests {
         round_trip(
             HostStopped {
                 lease_id: LEASE_ID.into(),
+                pack_release: None,
             },
             json!({ "lease_id": LEASE_ID }),
         );

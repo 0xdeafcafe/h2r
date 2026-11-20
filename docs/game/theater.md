@@ -103,10 +103,13 @@ Routes:
 
 Pages:
 
-- `/theater/<game>` and `/theater/<game>/clip/<id>`, linked from the game
-  page ("Watch in Theater") and from a new **Films** tab on the player
-  page (Recent, Saved, Clips).
-- A clip URL opens at its range, looping, with an OG card.
+- **Watch in Theater** and the player's **Films** tab open the replay at
+  `/games/halo2/games/<game>#game-viewer`. Legacy `/theater/<game>` links
+  redirect there.
+- A shared clip at `/theater/<game>/clip/<id>` opens its range on a loop and
+  has its own link preview. Both routes use the Game Details viewer.
+- Spectator archives with projectile samples draw trails from recorded
+  positions. The host film draws projectile objects from its pose records.
 
 ### Tier B: original host film design (version 1)
 

@@ -2,11 +2,10 @@
 //! boundary. A skipped render or a sleep does not change the unit of
 //! measurement.
 
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicU64, Ordering},
-};
-use std::time::Instant;
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use agent::Access;
 use agent_proto::{RpcError, code, method};
@@ -25,9 +24,9 @@ struct Sample {
 }
 
 impl Sample {
-    fn now() -> Self {
+    fn now(at: Instant) -> Self {
         Self {
-            at: Instant::now(),
+            at,
             game_ns: thread_cpu_ns(),
             process_ns: process_cpu_ns(),
             rss_bytes: resident_bytes(),
@@ -61,19 +60,84 @@ struct Reading {
     rss_bytes: Option<u64>,
 }
 
+const LATENCY_WINDOW: Duration = Duration::from_secs(30);
+const LATE_TICK: Duration = Duration::from_millis(live_proto::host_pack::LATE_TICK_MS);
+
+/// Exact nearest-rank p99 of individual tick intervals. Evict by wall
+/// time so the horizon stays 30 seconds even when tick rate changes.
+#[derive(Default)]
+struct TickIntervals {
+    last_tick: Option<Instant>,
+    intervals: VecDeque<(Instant, Duration)>,
+}
+
+impl TickIntervals {
+    fn tick(&mut self, now: Instant, playing: bool) {
+        if !playing {
+            self.last_tick = None;
+            self.intervals.clear();
+            return;
+        }
+        while self.intervals.front().is_some_and(|(at, _)| now.duration_since(*at) >= LATENCY_WINDOW) {
+            self.intervals.pop_front();
+        }
+        if let Some(last) = self.last_tick.replace(now) {
+            self.intervals.push_back((now, now.duration_since(last)));
+        }
+    }
+
+    fn report(&self, now: Instant) -> (Option<f64>, usize) {
+        let mut durations: Vec<_> = self.intervals.iter().rev()
+            .take_while(|(at, _)| now.duration_since(*at) < LATENCY_WINDOW)
+            .map(|(_, elapsed)| *elapsed)
+            .collect();
+        if durations.is_empty() {
+            return (None, 0);
+        }
+        let late = durations.iter().filter(|&&d| d > LATE_TICK).count();
+        let index = durations.len() - 1 - durations.len() / 100;
+        let (_, p99, _) = durations.select_nth_unstable(index);
+        (Some(p99.as_secs_f64() * 1000.0), late)
+    }
+}
+
 #[derive(Default)]
 struct State {
+    intervals: TickIntervals,
     previous: Option<Sample>,
     last: Option<(Instant, Reading)>,
 }
 
-#[derive(Default)]
-struct Shared {
+struct Sampler {
     ticks: AtomicU64,
+    host_light: bool,
     state: Mutex<State>,
 }
 
-struct Metrics(Arc<Shared>);
+impl Sampler {
+    fn tick(&self, is_multiplayer: impl FnOnce() -> bool) {
+        let boundary = self.ticks.fetch_add(1, Ordering::Relaxed).is_multiple_of(WINDOW_TICKS);
+        if !self.host_light && !boundary {
+            return;
+        }
+
+        let now = Instant::now();
+        let playing = self.host_light.then(is_multiplayer);
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(playing) = playing {
+            state.intervals.tick(now, playing);
+        }
+        if boundary {
+            let sample = Sample::now(now);
+            if let Some(prev) = &state.previous {
+                state.last = Some((now, sample.since(prev)));
+            }
+            state.previous = Some(sample);
+        }
+    }
+}
+
+struct Metrics(Arc<Sampler>);
 
 impl Feature for Metrics {
     fn manifest(&self) -> Manifest {
@@ -84,16 +148,10 @@ impl Feature for Metrics {
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         b.snapshot(SnapshotPolicy::Stateless);
         let shared = Arc::clone(&self.0);
-        b.frame().on_tick("sample host metrics", move |_| {
-            if !shared.ticks.fetch_add(1, Ordering::Relaxed).is_multiple_of(WINDOW_TICKS) {
-                return;
-            }
-            let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
-            let now = Sample::now();
-            if let Some(prev) = &state.previous {
-                state.last = Some((now.at, now.since(prev)));
-            }
-            state.previous = Some(now);
+        b.frame().on_tick("sample host metrics", move |o| {
+            shared.tick(|| {
+                crate::level_boot::active_mode(&*o.guest()) == Some(crate::level_boot::MODE_MULTIPLAYER)
+            });
         });
         Ok(())
     }
@@ -104,11 +162,16 @@ pub fn install(
     agent: &agent::Agent,
     host_light: bool,
 ) -> anyhow::Result<()> {
-    let shared = Arc::new(Shared::default());
+    let shared = Arc::new(Sampler {
+        ticks: AtomicU64::new(0),
+        host_light,
+        state: Mutex::new(State::default()),
+    });
     if features
         .add(&Metrics(Arc::clone(&shared)))
         .map_err(anyhow::Error::msg)?
     {
+        let mut peak_pss_bytes = None;
         agent.add_method(method::HOST_METRICS, Access::Read, move |params| {
             if !(params.is_null() || params.as_object().is_some_and(|p| p.is_empty())) {
                 return Err(RpcError::new(
@@ -124,7 +187,22 @@ pub fn install(
                 ));
             };
             let mut reply = json!(reading);
-            reply["age_ms"] = json!(at.elapsed().as_millis() as u64);
+            let now = Instant::now();
+            let timing = host_light.then(|| state.intervals.report(now));
+            reply["wall_ms_per_tick_p99"] = json!(timing.and_then(|(p99, _)| p99));
+            reply["late_ticks"] = json!(timing.map(|(_, late)| late));
+            reply["age_ms"] = json!(now.duration_since(*at).as_millis() as u64);
+            drop(state);
+            let split = crate::host_mem::resident_split();
+            let pss = split.map(|m| m.pss);
+            peak_pss_bytes = peak_pss_bytes.max(pss);
+            reply["cpu_seconds"] = json!(process_cpu_ns().map(|ns| ns as f64 / 1e9));
+            reply["private_bytes"] = json!(split.map(|m| m.private));
+            reply["shared_bytes"] = json!(split.map(|m| m.shared));
+            reply["private_dirty_bytes"] = json!(split.map(|m| m.private_dirty));
+            reply["shared_clean_bytes"] = json!(split.map(|m| m.shared_clean));
+            reply["pss_bytes"] = json!(pss);
+            reply["peak_pss_bytes"] = json!(peak_pss_bytes);
             reply["host_light"] = json!(host_light);
             Ok(reply)
         });
@@ -168,6 +246,45 @@ fn resident_bytes() -> Option<u64> {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn ordinary_players_get_window_metrics_without_a_guest_mode_read() {
+        let sampler = Sampler {
+            ticks: AtomicU64::new(0),
+            host_light: false,
+            state: Mutex::new(State::default()),
+        };
+        for _ in 0..=WINDOW_TICKS {
+            sampler.tick(|| panic!("ordinary player sampled the game's mode"));
+        }
+        let state = sampler.state.lock().unwrap();
+        assert_eq!(state.last.as_ref().unwrap().1.ticks, WINDOW_TICKS);
+        assert!(state.intervals.last_tick.is_none());
+        assert!(state.intervals.intervals.is_empty());
+    }
+
+    #[test]
+    fn rolling_p99_counts_individual_gameplay_intervals_and_expires_at_30s() {
+        let mut w = TickIntervals::default();
+        let mut at = Instant::now();
+        w.tick(at, true);
+        // Two late ticks of 50 ms, 97 regular ticks and one at the threshold.
+        for ms in [50, 50, 36].into_iter().chain(std::iter::repeat_n(33, 97)) {
+            at += Duration::from_millis(ms);
+            w.tick(at, true);
+        }
+        assert_eq!(w.report(at), (Some(50.0), 2));
+        // When only the first 50 ms tick expires, the second is the maximum.
+        // With 99 intervals, nearest-rank p99 is still the maximum.
+        assert_eq!(
+            w.report(at + LATENCY_WINDOW - Duration::from_millis(3250)),
+            (Some(50.0), 1)
+        );
+        assert_eq!(w.report(at + LATENCY_WINDOW), (None, 0));
+        w.tick(at, false);
+        w.tick(at + Duration::from_secs(5), true);
+        assert_eq!(w.report(at + Duration::from_secs(5)), (None, 0));
+    }
 
     #[test]
     fn normalizes_cpu_time_by_ticks_and_wall_interval() {

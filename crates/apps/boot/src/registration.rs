@@ -30,6 +30,23 @@ use crate::{
     skulls_mp, snapshot_probe, telemetry, touch_glue, ui, ui_back, ui_watch, variant_ext, variant_page, xapi_glue,
 };
 
+/// The three subsystems measured together on a light host. Resolve each
+/// default through the ordinary implementation hierarchy so a group or leaf
+/// override wins, and a new subsystem only joins after its own parity gate.
+pub(crate) fn profile_switches(mut switches: hooks::Switches, light: bool) -> hooks::Switches {
+    if light && switches.feature("host-light-native", false) {
+        for subsystem in [
+            sim_bridge::sim_native::ANIM,
+            sim_bridge::sim_native::COLLISION,
+            sim_bridge::sim_objects::OBJECTS,
+        ] {
+            let enabled = switches.implementation(subsystem, true);
+            switches = switches.with(&format!("impl.{subsystem}"), enabled);
+        }
+    }
+    switches
+}
+
 /// The light profile requires a headless backend and the clock-only DirectSound shim.
 pub(crate) fn register_viewer_skips(
     features: &mut hooks::Registry,
@@ -295,6 +312,12 @@ pub enum AgentSource {
 /// What [`register_late`] needs: the registrations after the host's d3d,
 /// audio and input are in.
 pub struct LateInputs<'a> {
+    /// The effective resolution source of the backend drawing this run.
+    #[cfg(feature = "gpu")]
+    pub view: Option<&'a crate::d3d_glue::DrawingView>,
+    /// Retail guest geometry, or a legacy film's recorded geometry.
+    #[cfg(feature = "gpu")]
+    pub fixed_lod: Option<f32>,
     pub rt: &'a Arc<Runtime>,
     pub lockstep: lockstep_glue::Config,
     pub agent: AgentSource,
@@ -350,7 +373,7 @@ pub(crate) fn register_late_for_profile(
     );
     let lockstep_on = i.lockstep.enabled();
     let input_replay = i.lockstep.replay.is_some();
-    let xa = i.xa.map(|x| &**x);
+    let xa = i.xa.map(AsRef::as_ref);
     // H2_LOCKSTEP / H2_INPUT_RECORD / H2_INPUT_REPLAY (lockstep_glue.rs).
     let harness = if lockstep_on {
         let h = lockstep_glue::Lockstep::install(features, i.lockstep, lockstep::TickHook::HALO2, xa)?;
@@ -414,6 +437,19 @@ pub(crate) fn register_late_for_profile(
     features.add(&i.pipeline).map_err(|e| anyhow::anyhow!("pipeline render: {e}"))?;
     #[cfg(feature = "gpu")]
     if render_hooks == film::RenderHooks::Gpu {
+        use render_bridge::native_scene_lists::NativeSceneLists;
+
+        let lod = if let Some(view) = i.view {
+            let lod = crate::lod_distance::LodDistance::new(i.settings.as_deref(), view.scale_stats.clone())?;
+            let lod = match i.fixed_lod {
+                Some(factor) => lod.with_fixed_multiplier(factor),
+                None => lod,
+            };
+            let enabled = features.add(&lod).map_err(|e| anyhow::anyhow!("LOD distance: {e}"))?;
+            enabled.then_some(lod)
+        } else {
+            None
+        };
         features
             .add(&render_bridge::native_map_work::NativeMapWork)
             .map_err(|e| anyhow::anyhow!("native map lifecycle: {e}"))?;
@@ -481,9 +517,12 @@ pub(crate) fn register_late_for_profile(
         features
             .add(&render_bridge::native_world_layers::NativeWorldLayers)
             .map_err(|e| anyhow::anyhow!("native world layers: {e}"))?;
-        features
-            .add(&render_bridge::native_scene_lists::NativeSceneLists)
-            .map_err(|e| anyhow::anyhow!("native scene lists: {e}"))?;
+        if let Some(lod) = lod {
+            let scale = Arc::new(move || lod.multiplier());
+            features.add(&NativeSceneLists::with_lod_scale(scale))
+        } else {
+            features.add(&NativeSceneLists)
+        }.map_err(|e| anyhow::anyhow!("native scene lists: {e}"))?;
         // Mark the sorted geometry entries so their resolved indexed draws
         // can use a cached vertex binding in the game's order (off by default).
         features

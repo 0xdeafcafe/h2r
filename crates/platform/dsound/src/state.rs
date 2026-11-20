@@ -1946,7 +1946,7 @@ impl DirectSound {
             })?;
             st.format().block_align()
         };
-        if pkt.max_size as usize % align != 0 {
+        if !(pkt.max_size as usize).is_multiple_of(align) {
             return Ok(E_INVALIDARG);
         }
         // Writes first: nothing is queued if the guest's pointers fault.

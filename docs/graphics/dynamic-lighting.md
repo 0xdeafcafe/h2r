@@ -1,8 +1,8 @@
 # Dynamic lighting: a live sun over the baked lightmaps
 
-Status: Design (investigation). The static BSP census is implemented. The recommendation is go, in stages, for the hybrid in "How it works"; slices 0 and 1 decide whether the rest is built.
-Code: `crates/apps/cli/src/lighting/census.rs`. The data it reads is decoded by `crates/formats/tags/src/lighting.rs` and `crates/formats/tags/src/structure.rs` and loaded by `crates/rewrites/native-render/src/load.rs`. Tests: the census module and `crates/formats/tags/src/lighting_tests.rs`.
-Switch: none. The design adds the value `dynamic` to the Lighting row (`H2_LIGHTING`), listed in [switches.md](../runtime/switches.md).
+Status: The static BSP census and the offline split viewer are implemented. Retail page review is the gate for renderer work. The runtime mode is a design.
+Code: `crates/apps/cli/src/lighting/census.rs` and `crates/tools/viewer/src/split/`. The viewer entry point is `crates/apps/cli/src/lighting/split.rs`. Tests: the census module, `crates/formats/tags/src/lighting_tests.rs` and the viewer's invented forward bakes in `solve/tests.rs` and `lamp.rs`.
+Switch: [offline viewer options](../runtime/switches.md#tools). The runtime design adds `dynamic` to the Lighting row (`H2_LIGHTING`).
 
 An opt-in mode that takes the sun out of Halo 2's baked lightmaps and
 lights it live, with shadow maps, so that the level and everything in it
@@ -56,7 +56,7 @@ where that design's checkpoint stops it or its fit refuses a level.
   frame's own GPU time at that scale is not measured; slice 0 measures it.
 - **The runtime slices sit on the FrameScene renderer**
   ([framescene.md](framescene.md)), not on the tenant path. The offline
-  slices need nothing and can start at once.
+  viewer runs directly on the owner's map and resources.
 
 ## What the disc holds
 
@@ -91,7 +91,7 @@ where that design's checkpoint stops it or its fit refuses a level.
   c20 H2V tool). Which level each retail map shipped with is not known.
 - **The sun's size.** A sky light's cutoff angle is 2 to 20 degrees
   (**V**). That it is the sun's disc, which would set the width of a
-  baked penumbra, is **S**; slice 1's edge fit checks it.
+  baked penumbra, is **S**. The viewer reports the authored cutoff and assumes a 0.27-degree angular radius for tracing.
 - **The sky light flags.** Four values occur (**V**); none is named.
 - **Lightmap resolution per BSP.** `h2 lighting --all` measures linear
   texel density over opaque geometry and reports full-resolution page
@@ -173,9 +173,15 @@ dependency this design takes at run time.
 
 ### The split, offline
 
-`h2 lighting bake <map>` (a new verb of the existing command) reads the
-owner's disc and writes into the cache directory. Nothing it writes is
-committed. For each BSP with a lightmap and a sky light:
+`h2 lighting split` produces a private set of display lightmap pages for one
+BSP and one light. Open `index.html` in the chosen output directory to see
+retail, reconstructed lamp on and reconstructed lamp off together. The
+comparison is in atlas space. Cache loading and drawing the pages in the
+game belong to slice 2.
+
+The viewer reads display group zero after matching its structure checksum
+to the BSP, expands each bound P8 image through its bound palette
+and evaluates each stored mip independently.
 
 1. **Texel positions.** Rasterise every lit triangle in lightmap
    coordinate space, giving each page texel a world position and a
@@ -197,11 +203,15 @@ committed. For each BSP with a lightmap and a sky light:
    edge and the traced one differ in blur, and step 4 leaves a ridge.
    There `I` is filled from both sides, since indirect light is smooth
    across a sun shadow's edge.
-6. **Per-vertex data.** The `2e`/`2f` colour buckets are split the same
-   way, per vertex.
+6. **Per-vertex data.** The viewer joins `2e`/`2f` colour runs to posed
+   vertices using the instance or scenery bucket reference and section
+   offset. Scenery also needs a matching placement identifier and model
+   checksum. The same fit gives each vertex its direct and residual colour.
+   Mesh edges lead the fill to its neighbours. CSV files preserve the run
+   labels and vertex order. The report names unresolved geometry.
 
 Two sets of pages come out. The *closure* set is step 4's `I` and the
-baked direct page `B = D · V`, multiplied per texel, so that `I + B` is
+baked direct page `B = min(retail, round(D · V))` per channel, so that `I + B` is
 the retail page to within one step of 255 and stays so under filtering,
 which is linear in each page. The *play* set is step 5's `I` and `D`.
 Each stored mip level is split on its own. A report gives, per BSP, the
@@ -212,6 +222,40 @@ pass is base times lightmap times two with no gamma step
 ([editor.md](../editor/editor.md), "Packages and Halo 1 in the Maps
 list"; native-world.md, "Material translation"). The split works in those
 units, so no colour-space conversion enters.
+
+#### Reading the comparison
+
+`crates/tools/viewer/src/split/solve.rs` samples a 4 × 4 footprint at each
+texel against two CPU triangle BVHs. One contains clusters and instances,
+the other the scenario scenery. Each receives the same subpixel rays. The
+viewer computes an independent median RGB slope from base-mip shadow-edge
+pairs for each occluder set and reports the median error in those pairs.
+The comparison pages use the scenery-inclusive fit. A missing pair
+withholds the inferred colours.
+
+A numeric source ID selects a sky light in the BSP's referenced skies.
+A placed sphere can also be isolated by its zero-based scenario placement
+index. Its fitted direct term includes the receiver cosine and linear
+attenuation to its authored radius. Rays end at the lamp. The viewer
+rejects dynamic-only lights, projected or custom shapes, and textured gels.
+The lamp-off image removes the fitted direct contribution. Source bounce,
+other lights and baked emission stay in the residual. Changing the lamp's
+bounce requires a separate transport solve ([live-gi.md](live-gi.md)).
+
+Compare **on against retail** for new seams, ridges and missing shadow
+casters. Compare **off against on** for a plausible direct-light footprint
+and surviving independent fill. The report orders base pages by total RGB
+change and links every lower mip, traced visibility, closure pair, unshadowed
+direct and original alpha. The previews show stored RGB at the same exposure.
+Each retail/on/off display page also carries the original alpha.
+The closure error checks arithmetic. The lamp-on error, clamped share,
+unfilled edge count and the pictures judge the reconstruction.
+
+The outdoor review set is Zanzibar, Coagulation and Ascension, BSP 0,
+sky light 0 on each. Each invocation writes a separate report outside Git.
+An incomplete input, a fit with no visible change or closure beyond one
+step stops the gate. Otherwise the owner decides after reviewing the three
+reports. The command syntax is in [switches.md](../runtime/switches.md#tools).
 
 ### The frame
 
@@ -411,8 +455,8 @@ Choices for the owner, with the design's pick:
 
 ## Not verified
 
-- That subtracting a traced sun from a retail lightmap leaves a clean
-  indirect term on any retail level. Nothing has been run.
+- Whether subtracting a traced sun leaves a clean indirect term on the
+  three outdoor retail BSPs. This needs the owner's page review.
 - Every cost on this page. None was measured on an M3.
 - The role of a sky light's colour, power, cutoff angle and flags in the
   bake, and that the `shad +0x0c` block holds the bake's emitter inputs.

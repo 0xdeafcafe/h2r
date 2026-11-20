@@ -461,7 +461,14 @@ pub struct SceneViewRecord {
     pub instances: u32,
     pub parts: u32,
     pub rows: u32,
+    /// Guest-selected lights, in the view's draw list.
     pub lights: u32,
+    /// All extracted light candidates, including the guest-selected lights.
+    #[serde(default)]
+    pub lights_candidates: u32,
+    /// Candidates with both sets of lighting constants and any projection.
+    #[serde(default)]
+    pub lights_with_constants: u32,
     /// Lights that cast their shadow: the view's shadow maps.
     pub shadows: u32,
     /// Lights by each layer their passes draw (`"10"` to `"14"`); layers

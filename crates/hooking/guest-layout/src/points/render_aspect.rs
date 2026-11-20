@@ -7,6 +7,13 @@ pub const ANCHOR_READY: Point = Point::new("HUD_LAYOUT_ANCHOR_READY", 0x0013_992
 // Fade over the whole per-player UI viewport inside the menu callback.
 pub const MENU_FILL: Point = Point::new("UI_MENU_VIEW_FILL", 0x0014_7cdb, Sig::Site, DOC);
 pub const MENU_FILL_END: Point = Point::new("UI_MENU_VIEW_FILL_END", 0x0014_7d10, Sig::Site, DOC);
+// The flare reports the area of a rectangle projected on the CPU. These
+// two boundaries enclose just the vertices and END after that area is known.
+pub const FLARE_QUERY: Point = Point::new("FLARE_QUERY_SCREEN_QUAD", 0x0002_e82b, Sig::Site, DOC);
+pub const FLARE_QUERY_END: Point = Point::new("FLARE_QUERY_SCREEN_END", 0x0002_e9bb, Sig::Site, DOC);
+// A single reflection's CPU-projected billboard, including native admission.
+pub const FLARE_REFLECTION: Point = Point::new("FLARE_REFLECTION_SCREEN_QUAD", 0x0002_f247, Sig::Site, DOC);
+pub const FLARE_REFLECTION_END: Point = Point::new("FLARE_REFLECTION_SCREEN_END", 0x0002_f24c, Sig::Site, DOC);
 // Return PC at the call to the HUD anchor helper and the end of the
 // producer using that anchor. The sensor blips have their own call and
 // use the same bottom-left origin as the motion sensor bitmap widget.
@@ -52,6 +59,10 @@ pub fn instruction_entries() -> impl Iterator<Item = u32> {
         ANCHOR_READY.base,
         MENU_FILL.base,
         MENU_FILL_END.base,
+        FLARE_QUERY.base,
+        FLARE_QUERY_END.base,
+        FLARE_REFLECTION.base,
+        FLARE_REFLECTION_END.base,
     ]
     .into_iter()
     .chain(GROUPS.iter().map(|(_, end)| end.base))

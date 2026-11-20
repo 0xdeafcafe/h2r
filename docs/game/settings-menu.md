@@ -11,7 +11,7 @@ simulation memory except through a hook that says so (the clamp global in
 "Field of view").
 
 - The top-level Settings list has a **Video** row that opens our Video screen:
-  field of view, frame rate, resolution, HUD position and lighting ("Video screen",
+  field of view, frame rate, resolution, lighting, HUD position and LOD distance ("Video screen",
   "Field of view").
 - The Controls screen has rows for the controller speaker, the Steam
   Controller (speaker, trackpad aim, left trackpad) and, on iOS, the touch
@@ -169,14 +169,21 @@ row, **Video**. A on it opens a screen titled "Video" with these display options
 | Resolution | Native (current physical width x height), then sizes at that aspect | `[graphics] resolution` (`"native"` or `"WxH"`) | next frame | `H2_RESOLUTION`, legacy `H2_RENDER_SCALE` |
 | Lighting | Retail, E3 (default Retail) | `[graphics] lighting` (`"retail"`, `"e3"`) | next frame | `H2_LIGHTING` |
 | HUD Position | Pinned (default), Centered | `[graphics] hud_position` (`"pinned"`, `"centered"`) | live | `H2_HUD_POSITION` |
+| LOD Distance | Retail, 0.5x, 1x (default), 1.5x, 2x, 3x, 4x | `[graphics] lod_distance` (number or `"retail"`) | next view | `H2_LOD_DISTANCE` |
 
-A on Resolution or HUD Position opens a select dialog. A confirms the
+A on Resolution, HUD Position or LOD Distance opens a select dialog. A confirms the
 highlighted option and saves it to `<data>/settings.toml`. B cancels. Native
 tracks the physical window size. Choosing a numbered size fixes the render
 target at that size, including after a window resize. At 5120x2880 the
 select dialog offers Native, 1280x720, 1920x1080, 2560x1440, 3840x2160 and
 5120x2880. The saved integer `graphics.render_scale` and its launch override
-select the corresponding fixed multiple of 640x480.
+select the corresponding fixed multiple of 640x480. Native uses a 4K
+pixel budget. The explicit 5120x2880 option uses the full panel raster.
+
+In offline play, LOD Distance at 1x matches the render height. A higher
+multiplier retains model detail farther away. Retail uses 480-line
+distances at every resolution. Network and film readback policy is
+described in [determinism](../graphics/high-resolution.md#determinism).
 
 Pinned keeps corner-anchored HUD groups near the edges of each player's
 viewport. Centered keeps those groups inside a centred 4:3 safe area.
@@ -200,8 +207,8 @@ the screen; `boot::video_screen::model` builds the screen as
 `ui::extend(List::Settings, 2)` and the speaker row as
 `ui::extend(List::Controls, 6)` ([Settings as a schema](#settings-as-a-schema));
 the hooks registered by `layout_glue::install` ask that model for counts,
-texts and presses. `h2 play` reads the saved frame rate, resolution, HUD position, lighting
-and mute button when no flag or variable sets them. Tests:
+texts and presses. `h2 play` reads the saved frame rate, resolution, lighting, HUD position,
+LOD distance and mute button when no flag or variable sets them. Tests:
 `setting_defs::tests::lighting_is_retail_unless_asked_and_has_a_video_row`
 (default Retail, the row on this screen, live, the file's names, the
 variable's lock) and `video_screen`'s tests for the Video rows, their exact
@@ -422,7 +429,7 @@ the list per account. A host row would call that same HLE.
 `game::pause_menu::tests` covers the exact Settings labels and row order,
 native controller/player settings routes, and B and Back restoring the
 Settings list at the same row. It also covers live Video and Voice
-changes. `game::video_screen::tests` checks the four display options,
+changes. `game::video_screen::tests` checks the five display options,
 Mute Button in Voice and Aim Assist on the iOS Controls list.
 `game::speaker_row::tests` checks the read-only iOS Aim Assist row.
 
@@ -436,7 +443,7 @@ screen after each step.
    for `class: "pause-settings"` in campaign or
    `class: "mp-pause-settings"` in multiplayer.
 2. Select Video and press A. Check for `class: "video"` on the same
-   window and slot, and the four display options. Press B, wait for
+   window and slot, and the five display options. Press B, wait for
    Settings, then move down to Voice and press A. Check for
    `class: "voice"` on the same window and slot and **Mute Button** below
    **Voice Volume**. Press Back and check that Settings is active again.
@@ -712,7 +719,7 @@ and which it wants on ([skulls.md](skulls.md)).
 - Which retail option lives in the profile and which in the preferences file,
   and their layouts. Nothing here reads or writes the retail values.
 - Which row-level behaviours only a game run shows: the Video rows apply as
-  the tables say (frame rate, resolution and lighting without a flash or a
+  the tables say (frame rate, resolution, lighting and LOD distance without a flash or a
   black frame); the Video and Voice screens return to the Settings list
   with B; in split screen each page opens in the pressing player's
   quarter.

@@ -259,7 +259,7 @@ fn selected_and_indirect_world_draws_match_for_both_cameras_at_both_scales_in_on
     arena.flush(&ctx.queue);
     ctx.queue.submit([enc.finish()]);
     ctx.queue.on_submitted_work_done(move || drop(arena));
-    for pair in images.chunks_exact(2) {
+    for pair in images.as_chunks::<2>().0 {
         let (reference, selected) = (&pair[0], &pair[1]);
         let px = read(&ctx, &reference.0, wgpu::TextureAspect::All);
         assert_eq!(px, read(&ctx, &selected.0, wgpu::TextureAspect::All));

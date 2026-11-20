@@ -327,9 +327,10 @@ pub(crate) struct X87(pub(crate) x87::abi::X87Abi);
 
 impl X87 {
     pub(crate) fn new(control: u16) -> Self {
-        let mut s = x87::abi::X87Abi::default();
-        s.control = control;
-        X87(s)
+        X87(x87::abi::X87Abi {
+            control,
+            ..Default::default()
+        })
     }
     pub(crate) fn ok(code: u32) -> Result<(), Error> {
         if code & x87::abi::status::MASK == x87::abi::status::OK {

@@ -6,8 +6,10 @@ import type { SampledPlayer, SampledVehicle } from "../state/frames";
 import { actorColour, vehicleBox } from "../viewer/models";
 import type { MapPalette } from "./palette";
 import type { LiveShot } from "./shots";
-import { grenadeColour, grenadeTrail, hitColour, type Grenade, type LiveHit } from "./events";
+import { entityIndex, hitColour, type LiveHit } from "./events";
+import { projectileColour, type ProjectileTrail } from "../state/projectile-trails";
 import { LIFT_COLOUR, TELEPORTER_COLOUR, linkEnds, type MapFeatures, type TeleporterRole } from "./features";
+import { bodyColour, vitalsNumber, type Vitals } from "./vitals";
 
 export interface Bounds { minX: number; minY: number; maxX: number; maxY: number }
 
@@ -50,69 +52,141 @@ export interface Scene {
   features?: MapFeatures | null;
   /** Reduced motion: nothing floats or flashes. */
   still?: boolean;
-  /** Damage on screen now: a line from attacker to victim, a marker and a number. */
-  hits?: LiveHit[];
-  /** Grenades in flight: the arc of the throw. */
-  grenades?: Array<Grenade & { age: number; alpha: number }>;
+  damage?: MapDamage;
+  /** Recorded projectile paths up to the frame's render tick. */
+  projectileTrails?: ProjectileTrail[];
 }
 
 type Px = readonly [number, number];
 
-/** Damage on a 2D map: a line from the attacker (`from`, when known) to
- *  the victim at `to`, a tick-cross marker there, and the amount floating
- *  up from it. A kill is red, bigger, and ringed. */
-export function drawHit(ctx: CanvasRenderingContext2D, from: Px | null, to: Px, h: LiveHit, still = false) {
-  const colour = hitColour(h);
-  const [x, y] = to;
+export interface MapDamage {
+  vitals: ReadonlyMap<number, Vitals>;
+  hits: readonly LiveHit[];
+  numbers: boolean;
+  followed: number | null;
+}
+
+export interface DamageDot {
+  at: Px;
+  radius: number;
+  colour: string;
+  vehicle?: boolean;
+}
+
+const ARC_START = Math.PI * 0.75;
+const ARC_LENGTH = Math.PI * 1.5;
+
+/** The two vitality arcs leave a quarter of the circle clear at the bottom. */
+export function drawVitals(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, vitals: Vitals) {
   ctx.lineCap = "round";
-  if (from && (still ? h.mark > 0 : h.line > 0)) {
-    ctx.globalAlpha = still ? 0.5 * h.mark : h.line;
-    for (const [style, w] of [["rgba(0, 0, 0, 0.6)", h.kill ? 4.5 : 3.5], [colour, h.kill ? 2.5 : 1.5]] as const) {
+  const bar = (radius: number, width: number, amount: number, edge: number | null, colour: string) => {
+    const full = Math.min(1, amount);
+    const chip = Math.min(1, edge ?? full);
+    ctx.lineWidth = width;
+    const arc = (start: number, end: number, ink: string) => {
+      if (start >= end) return;
+      ctx.strokeStyle = ink;
+      ctx.beginPath();
+      ctx.arc(x, y, radius, ARC_START + ARC_LENGTH * start, ARC_START + ARC_LENGTH * end);
+      ctx.stroke();
+    };
+    arc(0, 1, "rgba(0, 0, 0, 0.6)");
+    arc(0, full, colour);
+    arc(full, chip, "rgba(223, 243, 255, 0.8)");
+  };
+  bar(r + 3, 1.5, vitals.shield, vitals.shieldChip, "#8fd4ff");
+  if (vitals.body < 0.995) bar(r + 1, 1, vitals.body, vitals.bodyChip, bodyColour(vitals.body));
+}
+
+export function damageLabel(name: string, vitals: Vitals | undefined, showNumbers: boolean): string {
+  const number = showNumbers ? vitalsNumber(vitals) : "";
+  return number ? name + " " + number : name;
+}
+
+/** Live hits leave a directional wedge. Focused exchanges and kills also
+ *  connect to the attacker, and a kill gets the map's knockout cross. */
+export function drawHits(
+  ctx: CanvasRenderingContext2D, hits: readonly LiveHit[], at: (x: number, y: number, z: number) => Px,
+  dots: ReadonlyMap<string, DamageDot>, roster: ReadonlyMap<number, RosterEntry>,
+  followed: number | null, highlight: number | null, still = false,
+): void {
+  const focused = (id: number | null) => id !== null && (id === followed || id === highlight);
+  for (const hit of hits) {
+    const attacker = hit.fromId ? entityIndex(hit.fromId) : null;
+    const victim = hit.toId ? entityIndex(hit.toId) : null;
+    const dot = hit.toId ? dots.get(hit.toId) : undefined;
+    const killColour = (attacker === null ? undefined : roster.get(attacker)?.colour)
+      ?? (hit.fromId ? dots.get(hit.fromId)?.colour : undefined);
+    drawHit(ctx, hit.from ? at(hit.from.x, hit.from.y, hit.from.z) : null, at(hit.x, hit.y, hit.z), hit,
+      dot, focused(attacker) || focused(victim), killColour, still);
+  }
+}
+
+function drawHit(ctx: CanvasRenderingContext2D, from: Px | null, to: Px, h: LiveHit,
+  dot: DamageDot | undefined, focused: boolean, killColour: string | undefined, still: boolean,
+) {
+  const kill = h.kill && !h.vehicle && !dot?.vehicle;
+  const colour = kill ? killColour ?? hitColour(h) : hitColour({ kind: h.kind, kill: false });
+  const [x, y] = kill ? to : dot?.at ?? to;
+  ctx.lineCap = "round";
+  if (from && !h.vehicle && !dot?.vehicle && (kill || focused) && h.line > 0) {
+    ctx.globalAlpha = still ? 0.5 : h.line;
+    for (const [style, w] of [["rgba(0, 0, 0, 0.6)", kill ? 4.5 : 3.5], [colour, kill ? 2.5 : 1.5]] as const) {
       ctx.strokeStyle = style; ctx.lineWidth = w;
       ctx.beginPath(); ctx.moveTo(from[0], from[1]); ctx.lineTo(x, y); ctx.stroke();
     }
   }
-  ctx.globalAlpha = Math.max(0, Math.min(1, h.mark));
-  // The marker: four ticks around the victim, like a hit marker.
-  const a = h.kill ? 7 : 5, b = h.kill ? 13 : 9;
-  for (const [style, w] of [["rgba(0, 0, 0, 0.8)", 4], [colour, 2]] as const) {
-    ctx.strokeStyle = style; ctx.lineWidth = w;
+
+  const directionAlpha = h.direction;
+  const [vx, vy] = dot?.at ?? to;
+  if (from && directionAlpha > 0 && Math.hypot(from[0] - vx, from[1] - vy) > 1e-6) {
+    const a = Math.atan2(from[1] - vy, from[0] - vx);
+    const r = (dot?.radius ?? 5) + 3;
+    const ux = Math.cos(a), uy = Math.sin(a);
+    const bx = vx + r * ux, by = vy + r * uy;
+    ctx.globalAlpha = directionAlpha;
+    ctx.fillStyle = hitColour({ kind: h.kind, kill: false });
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.8)";
+    ctx.lineWidth = 1;
+    ctx.lineJoin = "round";
     ctx.beginPath();
-    for (const [dx, dy] of [[1, 1], [1, -1], [-1, 1], [-1, -1]] as const) { ctx.moveTo(x + dx * a, y + dy * a); ctx.lineTo(x + dx * b, y + dy * b); }
-    if (h.kill) { ctx.moveTo(x + b + 4, y); ctx.arc(x, y, b + 4, 0, Math.PI * 2); }
+    ctx.moveTo(bx - 3 * uy, by + 3 * ux);
+    ctx.lineTo(bx + 6 * ux, by + 6 * uy);
+    ctx.lineTo(bx + 3 * uy, by - 3 * ux);
+    ctx.closePath();
+    ctx.fill();
     ctx.stroke();
   }
-  if (h.text) {
-    ctx.font = `700 ${h.kill ? 13 : 11}px ui-sans-serif, system-ui, sans-serif`;
-    ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    const ty = y - b - 8 - (still ? 0 : h.rise * 14);
-    ctx.lineWidth = 3; ctx.strokeStyle = "rgba(0, 0, 0, 0.85)"; ctx.lineJoin = "round";
-    ctx.strokeText(h.text, x, ty);
-    ctx.fillStyle = colour;
-    ctx.fillText(h.text, x, ty);
+  if (kill) {
+    ctx.globalAlpha = h.mark;
+    for (const [style, w] of [["rgba(0, 0, 0, 0.8)", 4], [colour, 2]] as const) {
+      ctx.strokeStyle = style; ctx.lineWidth = w;
+      ctx.beginPath();
+      ctx.moveTo(x - 6, y - 6); ctx.lineTo(x + 6, y + 6);
+      ctx.moveTo(x + 6, y - 6); ctx.lineTo(x - 6, y + 6);
+      ctx.stroke();
+    }
   }
   ctx.globalAlpha = 1;
 }
 
-/** A thrown grenade on a 2D map: the path flown so far as a dashed line,
- *  and the grenade at its end. `pts` are canvas points along the arc. */
-export function drawGrenade(ctx: CanvasRenderingContext2D, pts: readonly Px[], alpha: number, type: string | null) {
-  if (pts.length < 2 || !(alpha > 0)) return;
-  const colour = grenadeColour(type);
-  ctx.globalAlpha = Math.min(1, alpha);
+/** Recorded positions projected into a 2D map, with a dot at the head. */
+export function drawProjectileTrail(ctx: CanvasRenderingContext2D, pts: readonly Px[], colour: string) {
+  if (!pts.length) return;
   ctx.lineCap = "round";
-  ctx.setLineDash([3, 4]);
-  for (const [style, w] of [["rgba(0, 0, 0, 0.6)", 3], [colour, 1.5]] as const) {
-    ctx.strokeStyle = style; ctx.lineWidth = w;
-    ctx.beginPath();
-    pts.forEach(([px, py], i) => (i ? ctx.lineTo(px, py) : ctx.moveTo(px, py)));
-    ctx.stroke();
+  if (pts.length > 1) {
+    ctx.setLineDash([3, 4]);
+    for (const [style, w] of [["rgba(0, 0, 0, 0.6)", 3], [colour, 1.5]] as const) {
+      ctx.strokeStyle = style; ctx.lineWidth = w;
+      ctx.beginPath();
+      pts.forEach(([px, py], i) => (i ? ctx.lineTo(px, py) : ctx.moveTo(px, py)));
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
   }
-  ctx.setLineDash([]);
   const [x, y] = pts[pts.length - 1]!;
   ctx.fillStyle = colour; ctx.strokeStyle = "rgba(0, 0, 0, 0.85)"; ctx.lineWidth = 1;
   ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-  ctx.globalAlpha = 1;
 }
 
 /** A teleporter on a 2D map: a ring; a sender has a dot in it, a receiver is open, a two-way has both rings. */
@@ -372,6 +446,8 @@ export function draw(ctx: CanvasRenderingContext2D, w: number, h: number, s: Sce
   ctx.globalAlpha = 1;
 
   const r = s.flat ? (s.mini ? 3 : 5) : s.mini ? 3.5 : 8;
+  const damage = s.mini ? undefined : s.damage;
+  const dots = damage?.hits.length ? new Map<string, DamageDot>() : undefined;
 
   // The map's own furniture, under everything that moves.
   if (!s.mini && s.features) drawFeatures(ctx, s.features, (x, y) => [sx(x), sy(y)], v.scale);
@@ -394,20 +470,37 @@ export function draw(ctx: CanvasRenderingContext2D, w: number, h: number, s: Sce
       if (veh.parent) continue;
       const [len, wid] = vehicleBox(veh.kind);
       const k = Math.max(v.scale, 9 / wid);
+      const x = sx(veh.x), y = sy(veh.y);
+      const colour = veh.occupied ? vehicleColour(veh.id, s.players, s.actors, s.roster) : EMPTY_VEHICLE_COLOUR;
       if (!veh.occupied) ctx.globalAlpha = EMPTY_VEHICLE_ALPHA;
-      drawVehicle(ctx, sx(veh.x), sy(veh.y), Math.atan2(-veh.forward[1], veh.forward[0]), len * k, wid * k, veh.occupied ? vehicleColour(veh.id, s.players, s.actors, s.roster) : EMPTY_VEHICLE_COLOUR);
+      drawVehicle(ctx, x, y, Math.atan2(-veh.forward[1], veh.forward[0]), len * k, wid * k, colour);
+      dots?.set(veh.id, { at: [x, y], radius: wid * k / 2, colour, vehicle: true });
       ctx.globalAlpha = 1;
     }
   }
   for (const a of s.actors ?? []) {
     if (!a.alive || a.vehicle) continue;
-    drawActor(ctx, sx(a.x), sy(a.y), s.mini ? 1.5 : 2.5, actorColour(a.actor?.team));
+    const x = sx(a.x), y = sy(a.y), radius = s.mini ? 1.5 : 2.5;
+    const colour = actorColour(a.actor?.team);
+    drawActor(ctx, x, y, radius, colour);
+    if (a.actor) dots?.set(a.actor.id, { at: [x, y], radius, colour });
+    const vitals = damage?.vitals.get(a.index);
+    if (vitals) drawVitals(ctx, x, y, radius, vitals);
   }
 
   // Players.
   const sorted = s.players.slice().sort((a, b) => a.z - b.z);
   for (const p of sorted) {
-    if (!p.alive) continue;
+    const vitals = damage?.vitals.get(p.index);
+    if (!p.alive) {
+      const info = s.roster.get(p.index);
+      if (vitals && vitals.chipFrom !== null) {
+        const x = sx(p.x), y = sy(p.y);
+        drawVitals(ctx, x, y, r, vitals);
+        if (info && damage?.numbers) drawLabel(ctx, pal, x, y, r + 4, damageLabel(rosterLabel(info), vitals, true));
+      }
+      continue;
+    }
     const info = s.roster.get(p.index);
     const colour = info?.colour ?? "#999";
     const x = sx(p.x), y = sy(p.y);
@@ -416,6 +509,9 @@ export function draw(ctx: CanvasRenderingContext2D, w: number, h: number, s: Sce
     // Facing: a soft wedge ahead of the dot. Yaw 0 = +x, counter-clockwise.
     const a = -p.yaw;
     const picked = s.highlight === p.index || s.hover === p.index;
+    const radius = s.flat && picked ? r * 1.4 : s.highlight === p.index ? r * 1.35 : r;
+    const labelRadius = vitals ? radius + 4 : r;
+    if (dots) dots.set("p" + p.index, { at: [x, y], radius, colour });
     // Where they are looking, when the frame says: a short line from the dot.
     if (!s.mini && p.aim) {
       const hot = s.firing?.has(p.index) ?? false;
@@ -428,10 +524,13 @@ export function draw(ctx: CanvasRenderingContext2D, w: number, h: number, s: Sce
       ctx.strokeStyle = "rgba(0, 0, 0, 0.85)";
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.arc(x, y, picked ? r * 1.4 : r, 0, Math.PI * 2);
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
-      if (!s.mini && info && picked) drawLabel(ctx, pal, x, y, r, rosterLabel(info));
+      if (vitals) drawVitals(ctx, x, y, radius, vitals);
+      if (!s.mini && info && (picked || (damage?.numbers && vitalsNumber(vitals)))) {
+        drawLabel(ctx, pal, x, y, labelRadius, damageLabel(rosterLabel(info), vitals, !!damage?.numbers));
+      }
       continue;
     }
     if (!s.mini) {
@@ -448,7 +547,7 @@ export function draw(ctx: CanvasRenderingContext2D, w: number, h: number, s: Sce
     ctx.strokeStyle = "#fff";
     ctx.lineWidth = s.mini ? 1.25 : 2.5;
     ctx.beginPath();
-    ctx.arc(x, y, s.highlight === p.index ? r * 1.35 : r, 0, Math.PI * 2);
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
     // A nose so facing reads even on the minimap.
@@ -458,14 +557,15 @@ export function draw(ctx: CanvasRenderingContext2D, w: number, h: number, s: Sce
     ctx.lineTo(x + Math.cos(a - 0.6) * r, y + Math.sin(a - 0.6) * r);
     ctx.closePath();
     ctx.fill();
-    if (!s.mini && info) drawLabel(ctx, pal, x, y, r, rosterLabel(info));
+    if (vitals) drawVitals(ctx, x, y, radius, vitals);
+    if (!s.mini && info) drawLabel(ctx, pal, x, y, labelRadius, damageLabel(rosterLabel(info), vitals, !!damage?.numbers));
   }
   ctx.globalAlpha = 1;
 
-  // Over everyone: grenades in flight, then damage.
+  // Over everyone: recorded projectile paths, then damage.
   if (!s.mini) {
-    for (const g of s.grenades ?? []) drawGrenade(ctx, grenadeTrail(g, g.age).map(([gx, gy]) => [sx(gx), sy(gy)] as const), g.alpha, g.type);
-    for (const hit of s.hits ?? []) drawHit(ctx, hit.from ? [sx(hit.from.x), sy(hit.from.y)] : null, [sx(hit.x), sy(hit.y)], hit, s.still);
+    for (const p of s.projectileTrails ?? []) drawProjectileTrail(ctx, p.points.map(([x, y]) => [sx(x), sy(y)] as const), projectileColour(p.kind));
+    if (damage && dots) drawHits(ctx, damage.hits, (x, y) => [sx(x), sy(y)], dots, s.roster, damage.followed, s.highlight ?? null, s.still);
   }
 }
 

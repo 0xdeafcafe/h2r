@@ -4,6 +4,11 @@ set -eu
 export H2_IMAGE="${H2_IMAGE:-/opt/h2/image}"
 export H2_HOST_CACHE="${H2_HOST_CACHE:-/var/cache/h2}"
 
+# The bookworm image uses glibc. Bound its per-process arenas and return
+# free space at the end of the heap after the level-load allocations.
+export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
+export MALLOC_TRIM_THRESHOLD_="${MALLOC_TRIM_THRESHOLD_:-131072}"
+
 # A packed container starts empty. Live adds each lease's match over the
 # private control port (docs/live/dedicated-host.md#packed-hosts).
 if [ "${H2_PACK:-}" = "1" ]; then

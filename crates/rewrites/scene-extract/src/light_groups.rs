@@ -433,7 +433,7 @@ mod tests {
         b.begin(SceneId::default());
         b.open_view(ViewKey { kind: ViewKind::Game, player: 0, view: 0 }, crate::layout::camera::read(&cam, 0x1000).unwrap())
             .unwrap();
-        let light = SceneLight { handle: 1, definition: 2, flags: 4, definition_flags: 0, additional_casters: true, steps: 0..0 };
+        let light = SceneLight { handle: 1, definition: 2, flags: 4, definition_flags: 0, additional_casters: true, steps: 0..0, ..Default::default() };
         let step = LightStep { layer: 10, stencil: None, target: LightTarget::ShadowMap, draws: true };
         b.push_light(light, &[step]).unwrap();
     }

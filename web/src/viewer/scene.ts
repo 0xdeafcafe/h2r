@@ -2,7 +2,7 @@
 // none) under a sun, with players as their species' model in their team or
 // own colour, holding their weapon (a capsule when the server has no
 // models), an aim ray from the head, name labels, muzzle flashes and
-// tracers when they fire, damage drawn from attacker to victim, grenades
+// tracers when they fire, damage drawn from attacker to victim, projectiles
 // in flight, every vehicle in the world, and fading knockout marks. A
 // skinned model plays its clips (standing, walking, running, crouching, in
 // the air, throwing, hitting, reloading, firing) as the frames say; a
@@ -35,7 +35,9 @@ import { BipedAnim, HELD, MAX_TWIST, SpeedMeter, WALK_SPEED, actionShot, aimAngl
 import { GroundCache, type Floor } from "./ground";
 import { FloorGrid, type FloorSource } from "./floorgrid";
 import { Bodies, bodyPlace, type Place } from "./bodies";
-import { EventFeed } from "../map/events";
+import { EventFeed, entityIndex } from "../map/events";
+import { VitalsTrack, type DamageMode } from "../map/vitals";
+import { TagDamage } from "./vitals3d";
 import { Effects3D } from "./effects3d";
 import { ZoneFollower, bspNumber, isBackdrop, isCinematic, layerNode, type ZonePick } from "./zones";
 import { dressWater } from "./water3d";
@@ -54,14 +56,20 @@ import type { SampledMachine } from "../state/frames";
 import { easeAngle, mountedTurrets, pickTurret, type TurretAim } from "./turrets";
 import { findTurrets, poseTurret, turretWant, type TurretObj } from "./turrets3d";
 import { BOOST, FLY_KEYS, MOUSE_LOOK, PAD_LOOK, TOUCH_LOOK, addMoves, anglesOf, approach, keyBoost, keyMove, lookStep, looksWith, moveIsIdle, padInput, pointerLook, speedLabel, speedStep, twoFingerMove, type FlyMove } from "./flycam";
-import { cameraFit, eyeView, followDistance, markerScale, type Box3 } from "./camera";
-import { SEE_MAX, SEE_RADIUS, cutHeight, cutRange, meshRole, patchSeeThrough, seeTargets, takesSeeThrough, type SeeMode } from "./cutaway";
+import { cameraFit, eyeView, followDistance, markerScale, orbitDirection, type Box3 } from "./camera";
+import { cutHeight, cutRange, meshRole, seeTargets, takesSeeThrough, type SeeMode } from "./cutaway";
+import { declutter, type TagIn, type TagState } from "./declutter";
+import { easeOutExpo, playableBounds, type CameraStart } from "./start";
+import { revealAt, revealBand } from "./reveal";
+import { CutawayMaterials } from "./cutaway3d";
 
 /** `eyes`: first person, through the followed player's eyes along their aim. */
 export type ViewMode = "orbit" | "top" | "follow" | "eyes";
 
 export interface SceneOptions {
   reducedMotion: boolean;
+  /** Skip the opening sweep for stills and renderer measurements. */
+  reveal?: boolean;
   /** Called when a player's label is clicked. */
   onPick?: (index: number) => void;
   /** Players as the game draws them, without their rings, aim rays or
@@ -86,6 +94,10 @@ interface PlayerObj {
   rayMat: THREE.MeshBasicMaterial;
   label: CSS2DObject;
   el: HTMLDivElement;
+  tag: HTMLDivElement;
+  plate: HTMLDivElement;
+  tagSize: { w: number; h: number } | null;
+  damage: TagDamage | null;
   /** The weapon's name in the label. */
   gun: HTMLElement;
   colour: string;
@@ -155,8 +167,12 @@ interface MarkObj { group: THREE.Group; mat: THREE.MeshBasicMaterial }
 export class ViewerScene {
   readonly renderer: THREE.WebGLRenderer;
   private labels: CSS2DRenderer;
+  private tagStates = new Map<number, TagState>();
+  private tagActivity = new Map<number, number>();
+  private tagPriority: readonly (number | null)[] = [];
+  private tagHighlight: number | null = null;
+  private tagsPending = false;
   private scene = new THREE.Scene();
-  private filmWorld = new FilmWorld3D();
   private camera = new THREE.PerspectiveCamera(42, 1, 0.1, 5000);
   /** The near plane when the camera is far out; it shrinks as the camera
    *  comes in (fitNear) so close-ups are not clipped. */
@@ -189,6 +205,10 @@ export class ViewerScene {
   private projectiles: Projectiles;
   private raycaster = new THREE.Raycaster();
   private feed = new EventFeed();
+  private vitals = new VitalsTrack();
+  private damage: DamageMode = "bars";
+  private confirmed = new Set<number>();
+  onKillConfirm?: (entry: { id: number; killer: string; victim: string; weapon: string; expires: number }) => void;
   private effects: Effects3D;
   // What of the level is shown (zones, far scenery, decals, effects) and
   // the sky and fog around it.
@@ -217,20 +237,14 @@ export class ViewerScene {
   private featuresOn = true;
   private tracers = new Map<number, TracerObj>();
   private spare: TracerObj[] = [];
-  // Seeing into the level: a clipping plane that drops everything above a
-  // height, and a cone from the camera to the player in focus that level
-  // geometry is cut out of. Both live in the map's materials (one plane and
-  // one set of uniforms shared by all of them), so they cost nothing per mesh.
+  // The height plane and the player windows are shared by the level's
+  // materials and the machines and scenery the frames draw separately.
   private cutPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), CUT_OFF);
   private cut = { on: false, height: 0 };
   private cutShown: number | null = null;
   private seeMode: SeeMode = "auto";
-  private see = {
-    uSeeTargets: { value: Array.from({ length: SEE_MAX }, () => new THREE.Vector4()) },
-    uSeeFloors: { value: new Array<number>(SEE_MAX).fill(0) },
-    uSeeCount: { value: 0 },
-  };
-  private patched = new WeakSet<THREE.Material>();
+  private cutaway: CutawayMaterials;
+  private filmWorld: FilmWorld3D;
   private v0 = new THREE.Vector3();
   private e0 = new THREE.Euler();
   private v1 = new THREE.Vector3();
@@ -238,12 +252,23 @@ export class ViewerScene {
   private v3 = new THREE.Vector3();
   private q0 = new THREE.Quaternion();
   private bounds: Box3 | null = null;
+  private frameBox: Box3 | null = null;
+  private frameMap = false;
+  private opening: CameraStart | null = null;
+  private initialMode: { mode: ViewMode; follow: number | null } | null = null;
+  private sweep: { start: number; origin: THREE.Vector3; reach: number; band: number } | null = null;
+  private visibleRadius = Infinity;
+  private shellRevealed = true;
+  private revealFinished = false;
   private hasMap = false;
+  private curtain = false;
+  onReveal?: (state: "started" | "done") => void;
+  onSurfaceProgress?: (done: number, total: number) => void;
   private drewMap = false;
   private scale = 1;
   private mode: ViewMode = "orbit";
   private followIndex: number | null = null;
-  private tween: { t0: number; ms: number; p0: THREE.Vector3; p1: THREE.Vector3; q0: THREE.Vector3; q1: THREE.Vector3 } | null = null;
+  private tween: { t0: number; ms: number; ease: (t: number) => number; p0: THREE.Vector3; p1: THREE.Vector3; q0: THREE.Vector3; q1: THREE.Vector3 } | null = null;
   private lastNow = 0;
   private lowZ = Infinity;
   /** Dead players' bodies, left where they fell. */
@@ -271,6 +296,8 @@ export class ViewerScene {
 
   /** Throws when the browser can't give a WebGL context. */
   constructor(host: HTMLElement, private opts: SceneOptions) {
+    this.cutaway = new CutawayMaterials(this.cutPlane, this.camera.position, this.sweepEnabled);
+    this.filmWorld = new FilmWorld3D(node => this.cutaway.attachModel(node));
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
     this.renderer = renderer;
     renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
@@ -349,23 +376,43 @@ export class ViewerScene {
 
   // ---- map ----
 
-  /** Loads a map's glb. Resolves false (and leaves the grid floor) when it
-   *  can't be loaded. */
-  async loadMap(url: string): Promise<boolean> {
+  setCurtain(on: boolean) { this.curtain = on; if (!on) this.dirty = true; }
+
+  useGrid() {
+    this.mapGen++;
+    if (!this.hasMap) return;
+    this.clearMap();
+    this.setBounds({ min: [-20, -20, 0], max: [20, 20, 4] }, false);
+    this.frameCamera(true);
+  }
+
+  /** Loads a map's glb. A null progress event starts decoding. */
+  async loadMap(url: string, onProgress?: (event: ProgressEvent | null) => void): Promise<"ok" | "failed"> {
     const gen = ++this.mapGen;
     try {
       // The level comes first, drawn in its class colours; its pictures
       // follow (textures3d.ts).
       const loader = gltfLoader();
       const pending = deferTextures(loader, url);
-      const loading = loader.loadAsync(url);
+      let decoding = false;
+      const decode = () => {
+        if (decoding || gen !== this.mapGen || this.disposed) return;
+        decoding = true;
+        onProgress?.(null);
+      };
+      loader.register(() => ({ name: "viewer-progress", beforeRoot: async () => { decode(); } }));
+      const loading = loader.loadAsync(url, event => {
+        if (gen !== this.mapGen || this.disposed) return;
+        onProgress?.(event);
+        if (event.lengthComputable && event.total > 0 && event.loaded >= event.total) decode();
+      });
       // Player and vehicle models wait for the level (players3d.ts).
       this.library.hold(loading);
       const gltf = await loading;
-      if (this.disposed || gen !== this.mapGen) return false;
+      if (this.disposed || gen !== this.mapGen) return "failed";
       // Textured primitives' class materials, for the flat look.
       const [flats, plasma] = await Promise.all([loadFlats(gltf), loadPlasma(gltf)]);
-      if (this.disposed || gen !== this.mapGen) return false;
+      if (this.disposed || gen !== this.mapGen) return "failed";
       const pairs: TexturePair[] = [];
       const root = gltf.scene;
       // Whatever the glb's nodes are called (`structure`, several `bsp_<n>`,
@@ -400,17 +447,13 @@ export class ViewerScene {
         const mesh = o as THREE.Mesh;
         // Decals and effects: their own blending, the level's cuts, no part in the framing.
         if (mesh.isMesh && path.some((n) => layerNode(n)) && dressLayer(mesh)) {
-          this.cutaway(mesh.material as THREE.Material);
-          return;
-        }
-        if (mesh.isMesh) {
+          this.cutaway.attach(mesh.material as THREE.Material, true, null);
+        } else if (mesh.isMesh && !Array.isArray(mesh.material) && plasma.has(mesh.material)) {
           // Plasma is already dressed and shared across its instances.
-          if (!Array.isArray(mesh.material) && plasma.has(mesh.material)) {
-            used.add(mesh.material);
-            mesh.castShadow = mesh.receiveShadow = false;
-            this.cutaway(mesh.material);
-            return;
-          }
+          used.add(mesh.material);
+          mesh.castShadow = mesh.receiveShadow = false;
+          this.cutaway.attach(mesh.material, true, null);
+        } else if (mesh.isMesh) {
           if (role === "machine") mesh.material = Array.isArray(mesh.material) ? mesh.material.map(own) : own(mesh.material);
           const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
           for (const m of mats) { used.add(m); if (dressWater(m, this.look.water)) wet = true; }
@@ -428,7 +471,7 @@ export class ViewerScene {
             // Machines are ordinary models and keep the side they came with,
             // and so does anything cut out by alpha (a grate reads from both sides).
             if (role === "level" && !m.transparent && !m.alphaTest) m.side = THREE.FrontSide;
-            this.cutaway(m, takesSeeThrough(role, vehicle));
+            this.cutaway.attach(m, takesSeeThrough(role, vehicle), role === "machine" || vehicle ? "objects" : "level");
           }
           mesh.castShadow = solid;
           mesh.receiveShadow = true;
@@ -441,7 +484,7 @@ export class ViewerScene {
       root.updateWorldMatrix(true, true);
       walk(root, []);
       if (box.isEmpty()) box.setFromObject(root);
-      if (box.isEmpty()) return false;
+      if (box.isEmpty()) throw new Error("Map has no geometry");
       this.clearMap();
       // Zones, far scenery, decals and effects, wherever in the tree the glb
       // keeps them, and the level's sky.
@@ -449,6 +492,10 @@ export class ViewerScene {
       this.look.wet = wet;
       this.textures.adopt(pairs);
       this.scenarioObjects.adopt(root, this.textures);
+      if (this.sweepEnabled) root.traverse(o => {
+        const mesh = o as THREE.Mesh;
+        if (mesh.isMesh) this.cutaway.attachShadow(mesh);
+      });
       this.frameObjects.reset();
       // Machine roots and their optional device clips are both driven by the frames.
       const deviceClips = new Map(gltf.animations.map((clip) => [clip.name, clip]));
@@ -462,16 +509,19 @@ export class ViewerScene {
       this.scene.add(root);
       this.hasMap = true;
       this.drewMap = false;
+      this.revealFinished = false;
       mark("h2-viewer:map-loaded");
       if (this.grid) { this.scene.remove(this.grid); this.grid = null; this.gridKey = ""; }
       // glTF (x, y, z) is game (x, -z, y).
       this.setBounds({ min: [box.min.x, -box.max.z, box.min.y], max: [box.max.x, -box.min.z, box.max.y] }, true);
       this.showFeatures();
+      this.frameMap = true;
       this.frameCamera(true);
       this.streamPictures(pending, used, gen, plasma);
-      return true;
+      return "ok";
     } catch {
-      return false;
+      if (gen === this.mapGen && !this.disposed) this.useGrid();
+      return "failed";
     }
   }
 
@@ -480,6 +530,7 @@ export class ViewerScene {
     const textures = new Set(plasma.textures);
     for (const p of pending) for (const t of texturesSharing(p.texture, used)) textures.add(t);
     this.mapTextures = [...textures];
+    this.onSurfaceProgress?.(0, pending.length);
     // Floors and walls seen at a glancing angle stay sharp: the GPU's most
     // anisotropic filtering (mipmaps are made when each picture arrives).
     const aniso = mapAnisotropy(this.renderer.capabilities.getMaxAnisotropy());
@@ -489,7 +540,7 @@ export class ViewerScene {
       this.textures.refresh();
       plasma.refresh();
       this.dirty = true;
-    }, { concurrency: PICTURES_AT_ONCE, stopped: () => this.disposed || gen !== this.mapGen }).then(() => { if (gen === this.mapGen) mark("h2-viewer:textured"); });
+    }, { concurrency: PICTURES_AT_ONCE, stopped: () => this.disposed || gen !== this.mapGen, progress: this.onSurfaceProgress }).then(() => { if (gen === this.mapGen) mark("h2-viewer:textured"); });
   }
 
   /** Builds (or drops) the level's teleporters, links and lifts. */
@@ -497,6 +548,7 @@ export class ViewerScene {
     if (this.featureGroup) { this.scene.remove(this.featureGroup); disposeTree(this.featureGroup); this.featureGroup = null; }
     if (this.features && this.featuresOn) {
       this.featureGroup = buildFeatures(this.features, Math.max(1, this.scale * 0.8));
+      this.featureGroup.visible = this.shellRevealed;
       this.scene.add(this.featureGroup);
     }
     this.dirty = true;
@@ -525,6 +577,7 @@ export class ViewerScene {
     let o = this.looseMachines.get(m.id);
     if (!o) {
       const boxMat = new THREE.MeshStandardMaterial({ color: 0x9a7b4f, roughness: 0.7, metalness: 0.2 });
+      this.cutaway.attach(boxMat);
       const box = new THREE.Mesh(this.geoBox, boxMat);
       box.castShadow = true;
       box.scale.set(2.4, 1.2, 2.4);
@@ -541,7 +594,10 @@ export class ViewerScene {
     if (key !== o.key) {
       if (o.model) o.group.remove(o.model);
       o.model = template ? this.library.instantiateVehicle(template, null) : null;
-      if (o.model) o.group.add(o.model);
+      if (o.model) {
+        this.cutaway.attachModel(o.model);
+        o.group.add(o.model);
+      }
       o.box.visible = !o.model;
       o.key = key;
       this.dirty = true;
@@ -565,6 +621,7 @@ export class ViewerScene {
       if (!g.position.equals(this.v0) || !g.quaternion.equals(this.q0)) this.dirty = true;
       g.position.copy(this.v0);
       g.quaternion.copy(this.q0);
+      g.visible = this.insideReveal(g.position);
     }
     for (const [id, o] of this.looseMachines) {
       const m = this.shownMachines.get(id);
@@ -592,7 +649,6 @@ export class ViewerScene {
   /** The level's rain, snow or motes, where they fall. */
   setWeather(on: boolean) { this.look.setWeather(on); }
 
-  /** Gives a level material the height cut and the see-through. */
   /** Near plane from the camera's distance to what it orbits: small up
    *  close, back to the map's own value further out, for depth precision. */
   private fitNear() {
@@ -602,27 +658,6 @@ export class ViewerScene {
       this.camera.near = near;
       this.camera.updateProjectionMatrix();
     }
-  }
-
-  /** The height cut on a material, and the see-through unless `see` is
-   *  false (vehicle placements: they are always drawn whole). */
-  private cutaway(m: THREE.Material, see = true) {
-    if (this.patched.has(m)) return;
-    this.patched.add(m);
-    m.clippingPlanes = [this.cutPlane];
-    m.clipShadows = true;
-    if (!see) return;
-    const before = m.onBeforeCompile, key = m.customProgramCacheKey;
-    m.onBeforeCompile = (shader, renderer) => {
-      before.call(m, shader, renderer);
-      const out = patchSeeThrough(shader.vertexShader, shader.fragmentShader);
-      if (!out) return;
-      shader.vertexShader = out.vertex;
-      shader.fragmentShader = out.fragment;
-      Object.assign(shader.uniforms, this.see);
-    };
-    m.customProgramCacheKey = () => key.call(m) + "|see";
-    m.needsUpdate = true;
   }
 
   /** The height cut: nothing of the level above `height` (game z) is
@@ -665,28 +700,33 @@ export class ViewerScene {
     this.cutShown = h;
     this.cutPlane.constant = h === null ? CUT_OFF : h;
 
-    // The see-through: a cone from the camera to each player it is for.
+    // Project around the bodies as drawn, including floor correction and seats.
     const focus = this.followIndex ?? highlight;
     const cam = this.camera.position;
-    const alive = [...this.shown]
-      .filter(([i, s]) => s.alive && !s.actor && this.players.has(i))
-      .map(([i, s]) => { const [x, y, z] = gameToGl(s.x, s.y, s.z); return { i, d: cam.distanceToSquared(this.v0.set(x, y, z)) }; })
+    const alive = [...this.players]
+      .filter(([i, p]) => p.group.visible && !p.actor && this.shown.get(i)?.alive)
+      .map(([i, p]) => ({ i, d: cam.distanceToSquared(p.group.position) }))
       .sort((a, b) => a.d - b.d)
       .map((p) => p.i);
-    const inFocus = focus !== null && this.shown.get(focus)?.alive && this.players.has(focus) ? focus : null;
+    const inFocus = focus !== null && alive.includes(focus) ? focus : null;
     // Through someone's eyes there is nothing between them and the camera.
-    const targets = seeTargets(this.mode === "eyes" ? "off" : this.seeMode, inFocus, alive);
-    const u = this.see;
+    const targets = seeTargets(this.mode === "eyes" && !this.fly ? "off" : this.seeMode, inFocus, alive);
+    const u = this.cutaway.uniforms;
     let n = 0;
     for (const index of targets) {
-      const s = this.shown.get(index)!, p = this.players.get(index)!;
-      const k = p.turn.scale.x, tall = p.biped ? p.biped.height * k : 0.86 * k;
-      const [x, y, z] = gameToGl(s.x, s.y, s.z);
-      const r = SEE_RADIUS * Math.max(1, k);
+      const p = this.players.get(index)!;
+      const { x, y, z } = p.group.position;
+      const scale = p.turn.scale.x;
+      const tall = p.turn.visible
+        ? (p.biped ? p.biped.height : 0.86 * p.body.scale.y) * scale
+        : p.label.position.y;
+      const radius = Math.max(0.15, 0.5 * tall);
+      const halfHeight = Math.max(0.15, 0.58 * tall);
+      const centerY = y + tall * 0.5;
       const t = u.uSeeTargets.value[n]!;
-      if (t.x !== x || t.y !== y + tall * 0.6 || t.z !== z || t.w !== r) this.dirty = true;
-      t.set(x, y + tall * 0.6, z, r);
-      u.uSeeFloors.value[n] = y + 0.06 * k;
+      if (t.x !== x || t.y !== centerY || t.z !== z || t.w !== radius || u.uSeeHalfHeights.value[n] !== halfHeight) this.dirty = true;
+      t.set(x, centerY, z, radius);
+      u.uSeeHalfHeights.value[n] = halfHeight;
       n++;
     }
     if (u.uSeeCount.value !== n) this.dirty = true;
@@ -721,12 +761,63 @@ export class ViewerScene {
     this.features = null;
     this.showFeatures();
     this.hasMap = false;
+    this.frameMap = false;
+    this.sweep = null;
+    this.visibleRadius = Infinity;
+    this.shellRevealed = true;
+    this.sun.shadow.intensity = 1;
+    this.cutaway.clearReveal();
+  }
+
+  private get sweepEnabled() { return this.opts.reveal !== false && !this.opts.bare && !this.opts.reducedMotion; }
+
+  /** Starts once, when the loaded map can be drawn with its opening shot. */
+  private advanceReveal(now: number) {
+    if (!this.hasMap || this.curtain) return;
+    if (!this.drewMap && this.sweepEnabled && this.bounds && this.frameBox) {
+      const focus = this.opening?.kind === "player" ? this.opening.index
+        : this.initialMode ? this.initialMode.follow : this.followIndex;
+      const p = focus === null || this.fly ? undefined : this.shown.get(focus);
+      const { min, max } = this.frameBox;
+      const origin = p
+        ? new THREE.Vector3(...gameToGl(p.x, p.y, p.z))
+        : new THREE.Vector3(...gameToGl((min[0] + max[0]) / 2, (min[1] + max[1]) / 2, min[2]));
+      let reach = 0;
+      for (const x of [this.bounds.min[0], this.bounds.max[0]])
+        for (const y of [this.bounds.min[1], this.bounds.max[1]])
+          for (const z of [this.bounds.min[2], this.bounds.max[2]]) {
+            reach = Math.max(reach, origin.distanceTo(this.v0.set(...gameToGl(x, y, z))));
+          }
+      this.sweep = { start: now, origin, reach, band: revealBand(reach) };
+      for (const p of this.players.values()) p.el.classList.remove("v3-label--revealed");
+    }
+    const sweep = this.sweep;
+    if (!sweep) return;
+    const frame = revealAt(now - sweep.start, sweep.reach);
+    this.cutaway.setReveal(sweep.origin, sweep.band, this.scale, frame);
+    this.shellRevealed = frame.shadows === 1;
+    this.look.setReveal(frame.sky, this.shellRevealed);
+    this.sun.shadow.intensity = frame.shadows;
+    if (this.featureGroup) this.featureGroup.visible = this.shellRevealed;
+    this.visibleRadius = this.shellRevealed ? Infinity : Math.max(0, frame.radius - sweep.band);
+    if (frame.done) this.sweep = null;
+    this.dirty = true;
+  }
+
+  private insideReveal = (at: THREE.Vector3) => {
+    return !this.sweep || at.distanceToSquared(this.sweep.origin) < this.visibleRadius ** 2;
+  };
+
+  private revealLabel(p: PlayerObj) {
+    if (!this.sweep) return;
+    if (!p.group.visible) p.el.classList.remove("v3-label--revealed");
+    else if (p.label.visible) p.el.classList.add("v3-label--revealed");
   }
 
   /** Sizes the lights, shadows, fog, ground and camera limits to a box
    *  (game coordinates). */
   private setBounds(b: Box3, real: boolean) {
-    this.bounds = b;
+    this.bounds = this.frameBox = b;
     const fit = cameraFit(b, this.camera.fov, this.camera.aspect);
     const r = fit.radius;
     this.scale = markerScale(b);
@@ -793,30 +884,74 @@ export class ViewerScene {
 
   // ---- camera ----
 
-  private frameCamera(now: boolean) {
-    if (!this.bounds) return;
-    const fit = cameraFit(this.bounds, this.camera.fov, this.camera.aspect);
+  private framePose() {
+    if (!this.frameBox) return null;
+    const fit = cameraFit(this.frameBox, this.camera.fov, this.camera.aspect);
+    const clamp = (d: number) => THREE.MathUtils.clamp(d, this.controls.minDistance * 4, this.controls.maxDistance);
     const target = new THREE.Vector3(...gameToGl(...fit.centre));
-    const pos = this.mode === "top"
-      ? target.clone().add(new THREE.Vector3(0, fit.topDistance, 0.001))
-      : target.clone().add(new THREE.Vector3(...gameToGl(...fit.offset)));
-    this.moveCamera(pos, target, now);
+    const offset = this.mode === "top"
+      ? new THREE.Vector3(0, clamp(fit.topDistance), 0.0001)
+      : new THREE.Vector3(...gameToGl(...fit.offset)).setLength(clamp(Math.hypot(...fit.offset)));
+    return { target, offset };
   }
 
-  private moveCamera(pos: THREE.Vector3, target: THREE.Vector3, now: boolean) {
+  private frameCamera(now: boolean) {
+    const pose = this.framePose();
+    if (pose) this.moveCamera(pose.target.clone().add(pose.offset), pose.target, now);
+  }
+
+  private moveCamera(
+    pos: THREE.Vector3, target: THREE.Vector3, now: boolean,
+    ms = 650, ease = (t: number) => t * t * (3 - 2 * t),
+  ) {
     if (now || this.opts.reducedMotion) {
       this.tween = null;
       this.camera.position.copy(pos);
       this.controls.target.copy(target);
       this.controls.update();
     } else {
-      this.tween = { t0: performance.now(), ms: 650, p0: this.camera.position.clone(), p1: pos, q0: this.controls.target.clone(), q1: target };
+      this.tween = { t0: performance.now(), ms, ease, p0: this.camera.position.clone(), p1: pos, q0: this.controls.target.clone(), q1: target };
     }
     this.dirty = true;
   }
 
-  setMode(mode: ViewMode, follow: number | null = null) {
+  setStart(start: CameraStart) { this.opening = start; }
+  setInitialMode(mode: ViewMode, follow: number | null) {
+    this.initialMode = { mode, follow: mode === "eyes" || mode === "follow" ? follow : null };
+  }
+
+  private beginOpening() {
+    if (this.initialMode) {
+      const { mode, follow } = this.initialMode;
+      this.initialMode = null;
+      this.setMode(mode, follow, true);
+    }
+    const start = this.opening;
+    if (!start) return;
+    this.opening = null;
+    const pose = this.framePose();
+    if (!pose) return;
+    const { target, offset } = pose;
+    if (start.kind === "player") {
+      const player = this.shown.get(start.index);
+      if (!player) return;
+      const focus = new THREE.Vector3(...gameToGl(player.x, player.y, player.z + this.focusHeight(start.index)));
+      const distance = followDistance(offset.length(), this.scale, !!this.players.get(start.index)?.biped, this.controls.minDistance);
+      this.moveCamera(target.clone().add(offset), target, true);
+      this.setMode("follow", start.index);
+      this.moveCamera(focus.clone().add(offset.setLength(distance)), focus, false, 1800, easeOutExpo);
+    } else {
+      const pitch = THREE.MathUtils.radToDeg(Math.asin(offset.y / offset.length()));
+      const from = new THREE.Vector3(...gameToGl(...orbitDirection(pitch + 4, 14)));
+      from.setLength(Math.min(offset.length() * 1.35, this.controls.maxDistance));
+      this.moveCamera(target.clone().add(from), target, true);
+      this.moveCamera(target.clone().add(offset), target, false, 1400, easeOutExpo);
+    }
+  }
+
+  setMode(mode: ViewMode, follow: number | null = null, immediate = false) {
     this.endFly(false);
+    this.tween = null;
     const was = this.mode;
     this.mode = mode;
     this.followIndex = mode === "follow" || mode === "eyes" ? follow : null;
@@ -838,10 +973,10 @@ export class ViewerScene {
         if (was === "top" || dir.y / dir.length() > 0.9) dir.set(0.6, 0.55, 0.6);
         // Close to the player, however big the level is.
         const want = followDistance(dir.length(), this.scale, !!this.players.get(follow!)?.biped, this.controls.minDistance);
-        this.moveCamera(target.clone().addScaledVector(dir.normalize(), want), target, false);
+        this.moveCamera(target.clone().addScaledVector(dir.normalize(), want), target, immediate);
       }
-    } else if (top || was === "top" || (was === "eyes" && mode === "orbit")) {
-      this.frameCamera(false);
+    } else if (top || was !== mode || immediate) {
+      this.frameCamera(immediate);
     }
     this.dirty = true;
   }
@@ -954,6 +1089,7 @@ export class ViewerScene {
     this.fly = { ...a, vel: new THREE.Vector3(), keys: new Set(), drag: false, moved: 0, dist: Math.max(1, this.camera.position.distanceTo(this.controls.target)), saved };
     this.controls.enabled = false;
     this.onFlyChange?.(true);
+    this.onFlySpeed?.(speedLabel(this.flySpeed));
     this.dirty = true;
   }
 
@@ -1182,18 +1318,28 @@ export class ViewerScene {
     ray.renderOrder = 2;
     const el = document.createElement("div");
     el.className = "v3-label";
+    const tag = document.createElement("div");
+    tag.className = "v3-tag";
+    tag.style.setProperty("--tag-colour", colour);
+    const plate = document.createElement("div");
+    plate.className = "v3-tag-plate";
     const pip = document.createElement("i");
-    pip.style.background = colour;
     const gun = document.createElement("small");
-    el.append(pip, document.createTextNode(name));
+    plate.append(pip, document.createTextNode(name));
     if (bot) {
-      const tag = document.createElement("b");
-      tag.className = "v3-bot";
-      tag.textContent = "BOT";
-      tag.title = "A Clanker bot";
-      el.append(tag);
+      const badge = document.createElement("b");
+      badge.className = "v3-bot";
+      badge.textContent = "BOT";
+      badge.title = "A Clanker bot";
+      plate.append(badge);
     }
-    el.append(gun);
+    plate.append(gun);
+    const lonePip = document.createElement("span");
+    lonePip.className = "v3-pip";
+    lonePip.title = name;
+    lonePip.append(document.createElement("i"));
+    tag.append(plate, lonePip);
+    el.append(tag);
     if (!actor) el.addEventListener("pointerdown", (e) => { e.stopPropagation(); this.opts.onPick?.(index); });
     const label = new CSS2DObject(el);
     label.center.set(0.5, 1);
@@ -1203,7 +1349,7 @@ export class ViewerScene {
     group.add(turn, ring, ray, label);
     this.scene.add(group);
     if (actor) el.classList.add("v3-label--ai");
-    p = { group, turn, body, arrow, ring, ray, rayMat, label, el, gun, colour, name, bot, biped: null, bipedUrl: null, weapon: null, weaponUrl: null, weaponName: null, actor, anim: new BipedAnim(), meter: new SpeedMeter(), legs: 0, shotId: 0, wasAlive: null, lastAlive: null };
+    p = { group, turn, body, arrow, ring, ray, rayMat, label, el, tag, plate, tagSize: null, damage: null, gun, colour, name, bot, biped: null, bipedUrl: null, weapon: null, weaponUrl: null, weaponName: null, actor, anim: new BipedAnim(), meter: new SpeedMeter(), legs: 0, shotId: 0, wasAlive: null, lastAlive: null };
     this.players.set(index, p);
     return p;
   }
@@ -1240,10 +1386,7 @@ export class ViewerScene {
         this.dirty = true;
       }
     }
-    if (s.weapon !== p.weaponName) {
-      p.weaponName = s.weapon;
-      p.gun.textContent = weaponLabel(s.weapon);
-    }
+    this.tagWeapon(p, s.weapon);
   }
 
   /** The class of clips a player's weapon calls for. */
@@ -1355,20 +1498,17 @@ export class ViewerScene {
   private followZone(now: number, reported: number | null, highlight: number | null, seeking: boolean) {
     const players: Array<{ x: number; y: number; z: number }> = [];
     for (const s of this.shown.values()) if (!s.actor && s.alive) players.push(s);
-    const fi = this.followIndex ?? highlight;
+    const fi = (this.opening?.kind === "player" ? this.opening.index : this.initialMode?.follow ?? this.followIndex) ?? highlight;
     const f = fi !== null ? this.shown.get(fi) : undefined;
     const focus = f && f.alive && !f.actor ? f : null;
     const bsp = this.zone.update(now, this.look.zoneBoxes(), { reported, focus, players }, { cinematic: this.look.cinematicOn(), snap: seeking });
-    if (!this.look.setActive(bsp) || bsp === null || !this.look.following() || this.mode === "follow") return;
+    const changed = this.look.setActive(bsp);
+    if (bsp === null || !this.look.following()) return;
     const box = this.look.zoneBox(bsp);
-    // A level with one zone was framed whole at load.
-    if (!box || this.look.zoneBoxes().length < 2) return;
-    const fit = cameraFit(box, this.camera.fov, this.camera.aspect);
-    const target = new THREE.Vector3(...gameToGl(...fit.centre));
-    const pos = this.mode === "top"
-      ? target.clone().add(new THREE.Vector3(0, fit.topDistance, 0.001))
-      : target.clone().add(new THREE.Vector3(...gameToGl(...fit.offset)));
-    this.moveCamera(pos, target, seeking);
+    if (!box || this.look.info().zoneCount < 2) return;
+    const reframed = this.frameBox !== box;
+    this.frameBox = box;
+    if ((changed || reframed) && !this.opening && !this.initialMode && this.mode !== "follow" && this.mode !== "eyes" && !this.fly) this.frameCamera(seeking);
   }
 
   /** Leaves a player's body where they fell: a copy of their model, made
@@ -1413,6 +1553,7 @@ export class ViewerScene {
       o.group.position.set(x, y, z);
       o.group.rotation.y = yawToGl(b.yaw);
       o.group.scale.setScalar(MODEL_SCALE);
+      o.group.visible = this.insideReveal(o.group.position);
       if (!an) continue;
       const dieMs = an.duration(clipFor(an.names, o.cls, "die")) ?? 0;
       const st = o.anim.update(now, { alive: false });
@@ -1502,8 +1643,9 @@ export class ViewerScene {
         t.flash.rotation.x = shot.id * 1.9;
         t.group.visible = true;
         const look = this.shotLook(shot.index);
-        // The shot itself flies on its own; a model's beam stays only for a capsule.
-        const drawShot = !frame.filmWorld || look.kind === "bullet" || look.kind === "beam";
+        // Draw fast shots as muzzle tracers. Slower projectiles come from
+        // the frame census or the film object stream.
+        const drawShot = look.kind === "bullet" || look.kind === "beam";
         t.beam.visible = !p.biped && drawShot;
         if (look.kind === "melee") t.flash.visible = false;
         else if (p.biped && drawShot) {
@@ -1512,6 +1654,7 @@ export class ViewerScene {
         }
       }
       kept.add(shot.id);
+      t.group.visible = this.insideReveal(t.group.position);
       t.beamMat.opacity = shot.alpha * 0.85;
       t.flash.visible = shot.age < FLASH_MS && this.shotLook(shot.index).kind !== "melee";
       t.flashMat.opacity = flashAlpha(shot.age);
@@ -1558,29 +1701,102 @@ export class ViewerScene {
     return m;
   }
 
+  setDamage(mode: DamageMode) { this.damage = mode; this.dirty = true; }
+
+  private layoutTags(now: number) {
+    if (this.opts.bare) return;
+    const tags: TagIn[] = [];
+    for (const [id, p] of this.players) {
+      if (!p.group.visible || !p.label.visible || p.el.style.display === "none") continue;
+      const rank = id === this.followIndex ? 0 : id === this.tagHighlight || this.tagPriority.includes(id) ? 1
+        : p.actor ? 4 : this.tagActivity.has(id) ? 2 : 3;
+      const position = this.v0.setFromMatrixPosition(p.label.matrixWorld);
+      const depth = this.camera.position.distanceTo(position);
+      const hidden = rank > 1 && depth > 25 * this.scale;
+      if (p.gun.hidden !== hidden) {
+        p.gun.hidden = hidden;
+        p.tagSize = null;
+      }
+      const size = p.tagSize ??= { w: p.tag.offsetWidth, h: p.tag.offsetHeight };
+      position.project(this.camera);
+      tags.push({ id, x: (position.x + 1) * this.w / 2, y: (1 - position.y) * this.h / 2 - 4, ...size, depth, rank });
+    }
+    this.tagStates = declutter(tags, this.tagStates, now);
+    this.tagsPending = false;
+    for (const [id, state] of this.tagStates) {
+      const tag = this.players.get(id)!.tag;
+      if (tag.dataset.lod !== state.lod) tag.dataset.lod = state.lod;
+      this.tagsPending ||= state.pending !== null;
+    }
+  }
+
+  private tagWeapon(p: PlayerObj, weapon: string | null) {
+    if (p.weaponName === weapon) return;
+    p.weaponName = weapon;
+    p.gun.textContent = weaponLabel(weapon);
+    p.tagSize = null;
+    this.dirty = true;
+  }
+
   /** Places players and marks for this moment, moves the camera, and draws
    *  if anything changed. */
-  update(now: number, frame: MapFrame, roster: Map<number, RosterEntry>, highlight: number | null, seeking: boolean) {
+  update(now: number, frame: MapFrame, roster: Map<number, RosterEntry>, highlight: number | null, seeking: boolean, priority: readonly (number | null)[] = []) {
     if (this.disposed) return;
     const dt = this.lastNow ? Math.min(250, now - this.lastNow) : 16;
     this.lastNow = now;
+    if (highlight !== this.tagHighlight || priority.length !== this.tagPriority.length
+      || priority.some((index, i) => index !== this.tagPriority[i])) {
+      this.tagHighlight = highlight;
+      this.tagPriority = priority;
+      this.dirty = true;
+    }
+    if (seeking) {
+      this.tagActivity.clear();
+      this.tagStates.clear();
+      this.dirty = true;
+    }
 
     for (const p of frame.players) if (p.alive && p.z < this.lowZ) this.lowZ = p.z;
     this.fitGrid(frame.seen);
+    if (this.frameMap && !this.curtain && this.bounds) {
+      this.frameMap = false;
+      const features = this.features ? [...this.features.teleporters, ...this.features.lifts] : [];
+      this.frameBox = this.look.info().zoneCount > 1
+        ? this.bounds : playableBounds(this.bounds, this.spots().values(), frame.seen, features);
+      if (!this.opening && !this.initialMode && this.mode !== "follow" && this.mode !== "eyes" && !this.fly) this.frameCamera(true);
+    }
 
     const snap = seeking || this.opts.reducedMotion;
     smoothPlayers(this.shown, frame.actors?.length ? [...frame.players, ...frame.actors] : frame.players, dt, { snap });
     const fired = this.shots.observe(frame.players, now, { quiet: seeking });
     if (frame.actors?.length) fired.push(...this.shots.observe(frame.actors, now, { quiet: seeking }));
     // A sword (or anything that melees) swings rather than shoots.
-    for (const index of fired) this.oneShot(index, this.shotLook(index).kind === "melee" ? "melee" : "fire", now);
+    for (const index of fired) {
+      this.tagActivity.set(index, now);
+      this.oneShot(index, this.shotLook(index).kind === "melee" ? "melee" : "fire", now);
+    }
     for (const e of this.feed.observe(frame, now, { quiet: seeking })) {
       const shot = actionShot(e.action);
       if (shot) this.oneShot(e.index, shot, now);
     }
+    const hits = this.feed.liveHits(now);
+    if (!seeking) for (const h of hits) for (const id of [h.fromId, h.toId]) {
+      if (id === null) continue;
+      const index = entityIndex(id);
+      const born = h.born;
+      if (born > (this.tagActivity.get(index) ?? -Infinity)) this.tagActivity.set(index, born);
+    }
+    for (const [index, at] of this.tagActivity) if (now - at >= 2000) {
+      this.tagActivity.delete(index);
+      this.dirty = true;
+    }
     this.followZone(now, frame.bsp ?? null, highlight, seeking);
+    this.advanceReveal(now);
+    // First-person's own model must be hidden on the very first draw.
+    if (this.initialMode?.mode === "eyes") this.beginOpening();
     const S = this.scale;
     const still = this.opts.reducedMotion;
+    const vitals = this.vitals.observe(frame, now, { quiet: seeking, reducedMotion: still });
 
     this.updateMachines(frame.machines ?? [], dt, snap);
     const livingMachines = frame.filmWorld ? new Set((frame.machines ?? []).flatMap(m =>
@@ -1607,7 +1823,7 @@ export class ViewerScene {
       if (!m) return null;
       const file = m.table.objects[p.kind] ?? (p.class === "weap" ? weaponFile(m.table, p.kind) : null);
       return file ? this.library.vehicle(modelUrl(m.root, file, m.table.stamp))?.root ?? null : null;
-    })) this.dirty = true;
+    }, this.insideReveal)) this.dirty = true;
     this.frameObjects.update(frame.objects, (frame.vehicles?.length ?? 0) > 0);
 
     // Vehicles first: whoever is in one is drawn as the vehicle. A turret
@@ -1629,6 +1845,7 @@ export class ViewerScene {
       if (g.position.x !== x || g.position.y !== y || g.position.z !== z || g.scale.x !== k || q.x !== qx || q.y !== qy || q.z !== qz) this.dirty = true;
       g.position.set(x, y, z);
       g.scale.setScalar(k);
+      g.visible = this.insideReveal(g.position);
       if (o.turrets.length) this.aimTurrets(o, mounts.aims.get(id) ?? [], dt, snap);
     }
     for (const [id, o] of this.vehicles) {
@@ -1647,6 +1864,9 @@ export class ViewerScene {
     for (const [index, s] of this.shown) {
       const info = s.actor ? { name: weaponLabel(s.species) || "AI", colour: actorColour(s.actor.team) } : roster.get(index);
       const p = this.player(index, info, !!s.actor);
+      const v = vitals.get(index);
+      if (!this.opts.bare && this.damage !== "off" && v) p.damage ??= new TagDamage(p.tag, p.plate);
+      if (p.damage?.update(this.damage, v)) { p.tagSize = null; this.dirty = true; }
       const hull = s.vehicle ? hullOf(s.vehicle)! : null;
       const ride = hull ? this.vehicles.get(hull) : undefined;
       if (ride && s.alive) {
@@ -1655,18 +1875,18 @@ export class ViewerScene {
         const seated = this.sit(p, s, ride, s.vehicle !== hull, firstRider.get(hull!) === index, dt);
         if (seated) {
           // In their seat, drawn; the label above the vehicle.
-          g.visible = !this.isEyes(index);
+          g.visible = !this.isEyes(index) && this.insideReveal(ride.group.position);
           p.turn.visible = true;
           p.ring.visible = p.ray.visible = false;
           p.label.visible = !this.opts.bare && (!p.actor || this.actorNames);
           p.label.position.y = ride.height * ride.group.scale.x + 0.25 * S - (g.position.y - ride.group.position.y);
           p.el.classList.toggle("on", highlight === index || this.followIndex === index);
-          if (s.weapon !== p.weaponName) { p.weaponName = s.weapon; p.gun.textContent = weaponLabel(s.weapon); }
+          this.revealLabel(p);
           continue;
         }
         // In a vehicle with no seat to show them in: the vehicle stands for them, and carries their label.
         if (p.turn.visible || !g.visible || !g.position.equals(ride.group.position)) this.dirty = true;
-        g.visible = !this.isEyes(index);
+        g.visible = !this.isEyes(index) && this.insideReveal(ride.group.position);
         g.position.copy(ride.group.position);
         p.turn.visible = p.ring.visible = p.ray.visible = false;
         p.turn.rotation.set(0, yawToGl(s.yaw), 0);
@@ -1674,17 +1894,18 @@ export class ViewerScene {
         p.label.visible = !this.opts.bare && (!p.actor || this.actorNames);
         p.label.position.y = ride.height * ride.group.scale.x + 0.25 * S;
         p.el.classList.toggle("on", highlight === index || this.followIndex === index);
-        if (s.weapon !== p.weaponName) { p.weaponName = s.weapon; p.gun.textContent = weaponLabel(s.weapon); }
+        this.revealLabel(p);
         continue;
       }
       // An AI's body comes in the frames (the `dead` stance) and is drawn
       // as it lies; a player's is left behind as a body of its own, made
       // from the model they had alive (the dead have no species or weapon).
       const dead = !s.alive || s.stance === "dead";
+      const casualtyTag = dead && !this.opts.bare && this.damage !== "off" && v?.chipFrom != null;
       if (!p.actor) this.playerBody(index, p, s, now, seeking);
       this.dress(p, s);
       const show = s.alive || (p.actor && dead);
-      p.turn.visible = true;
+      p.turn.visible = show;
       p.ring.visible = !dead && !this.opts.bare;
       p.ray.visible = !dead && !p.actor && !this.opts.bare;
       // On their feet, on the floor (ground.ts); in the air or dead, where the frames have them.
@@ -1698,10 +1919,13 @@ export class ViewerScene {
         ? MODEL_SCALE
         : S * (big ? 1.25 : 1) * (p.actor ? 0.8 : 1);
       const yaw = yawToGl(s.yaw);
-      if (g.visible !== show || g.position.x !== x || g.position.y !== y || g.position.z !== z || turn.scale.x !== k || turn.rotation.y !== yaw) this.dirty = true;
-      g.visible = show && !this.isEyes(index);
-      p.label.visible = !dead && !this.opts.bare && (!p.actor || this.actorNames);
+      const wasVisible = g.visible;
+      if (g.position.x !== x || g.position.y !== y || g.position.z !== z || turn.scale.x !== k || turn.rotation.y !== yaw) this.dirty = true;
       g.position.set(x, y, z);
+      g.visible = (show || casualtyTag) && !this.isEyes(index) && this.insideReveal(g.position);
+      if (wasVisible !== g.visible) this.dirty = true;
+      p.label.visible = (!dead || casualtyTag) && !this.opts.bare && (!p.actor || this.actorNames);
+      this.revealLabel(p);
       // Level again after a seat that leaned with its vehicle.
       turn.rotation.set(0, yaw, 0);
       turn.scale.setScalar(k);
@@ -1739,17 +1963,39 @@ export class ViewerScene {
     }
     this.updateBodies(now, dt, seeking);
     this.drawShots(now, frame);
-    if (this.effects.film(frame.filmEffects ?? [], still)) this.dirty = true;
-    if (this.projectiles.update(now)) this.dirty = true;
-    if (this.effects.update(this.feed.liveHits(now), still || frame.filmWorld ? [] : this.feed.liveGrenades(now), S, still)) this.dirty = true;
-    this.updateCutaway(dt, highlight);
-
+    if (this.effects.film(frame.filmEffects ?? [], still, this.insideReveal)) this.dirty = true;
+    if (this.projectiles.update(now, this.insideReveal)) this.dirty = true;
+    const damage = this.damage === "off" ? [] : hits;
+    const confirmed = new Set<number>();
+    for (const hit of damage) {
+      if (!hit.kill) continue;
+      confirmed.add(hit.id);
+      if (this.confirmed.has(hit.id)) continue;
+      const name = (id: string | null, fallback: string) => {
+        const index = id === null ? null : entityIndex(id);
+        return index === null ? fallback : this.players.get(index)?.name ?? roster.get(index)?.name ?? fallback;
+      };
+      this.onKillConfirm?.({
+        id: hit.id, killer: name(hit.fromId, "Guardians"), victim: name(hit.toId, "Unknown player"),
+        weapon: weaponLabel(hit.weapon) || weaponLabel(hit.kind) || "Damage", expires: now + 3000,
+      });
+    }
+    this.confirmed = confirmed;
+    if (this.effects.update(damage, still ? [] : frame.projectileTrails ?? [], S, {
+      visible: this.insideReveal,
+      focused: index => index === this.followIndex || index === highlight,
+      colour: index => this.players.get(index)?.colour ?? roster.get(index)?.colour,
+      ring: index => {
+        const p = this.players.get(index);
+        return p?.group.visible && p.ring.visible ? { position: p.group.position, scale: p.ring.scale.x } : undefined;
+      },
+    })) this.dirty = true;
     frame.markers.forEach((m, i) => {
       const o = this.mark(i);
       const a = Math.max(0, Math.min(1, m.alpha));
       if (!o.group.visible || Math.abs(o.mat.opacity - a) > 0.004) this.dirty = true;
-      o.group.visible = a > 0;
       o.group.position.set(...gameToGl(m.x, m.y, m.z + 0.06 * S));
+      o.group.visible = a > 0 && this.insideReveal(o.group.position);
       o.group.scale.setScalar(S * 1.3);
       o.mat.color.set(m.colour);
       o.mat.opacity = a;
@@ -1759,12 +2005,13 @@ export class ViewerScene {
       this.marks[i]!.group.visible = false;
     }
 
+    this.beginOpening();
     // Camera: flying, or a running tween, then following.
     if (this.fly) {
       this.flyStep(dt);
     } else if (this.tween) {
       const tw = this.tween;
-      const u = Math.min(1, (performance.now() - tw.t0) / tw.ms), e = u * u * (3 - 2 * u);
+      const u = Math.min(1, (performance.now() - tw.t0) / tw.ms), e = tw.ease(u);
       this.camera.position.lerpVectors(tw.p0, tw.p1, e);
       this.controls.target.lerpVectors(tw.q0, tw.q1, e);
       if (u >= 1) this.tween = null;
@@ -1800,23 +2047,23 @@ export class ViewerScene {
     }
     // Through someone's eyes the orbit controls would pull the camera back to their least distance.
     if (!this.fly && this.mode !== "eyes") this.controls.update();
+    this.updateCutaway(dt, highlight);
     // The water's ripples and the weather move by themselves.
     // (Held still when motion is reduced, but the weather still follows the view.)
     const moving = this.look.animate(this.opts.reducedMotion ? 0 : now / 1000, this.controls.target, this.camera.position.distanceTo(this.controls.target));
     if (moving && !this.opts.reducedMotion) this.dirty = true;
-    if (!this.dirty) return;
+    if ((!this.dirty && !this.tagsPending) || this.curtain) return;
     this.dirty = false;
-    this.draw(dt);
+    this.draw(dt, now);
   }
 
-  private draw(dt: number) {
+  private draw(dt: number, now: number) {
     // Marks for the perf harness (web/bench/viewer.bench.ts): the first
     // frame with the level in it.
-    if (this.hasMap && !this.drewMap) { this.drewMap = true; mark("h2-viewer:first-map-frame"); }
     this.look.beforeDraw(this.camera, this.camera.position.distanceTo(this.controls.target));
     this.scenarioObjects.beforeDraw();
     // The soft ground stands in for a sky's horizon only when there is none.
-    this.ground.visible = !this.look.skyShown();
+    this.ground.visible = this.shellRevealed && !this.look.skyShown();
     // The world matrices once a frame: the passes and the labels would
     // each walk the whole tree (every bone of every biped) again.
     this.scene.updateMatrixWorld();
@@ -1825,8 +2072,19 @@ export class ViewerScene {
       if (this.composer && this.aoWanted) this.composer.render();
       else this.renderer.render(this.scene, this.camera);
       this.labels.render(this.scene, this.camera);
+      this.layoutTags(now);
     } finally {
       this.scene.matrixWorldAutoUpdate = true;
+    }
+    if (this.hasMap && !this.drewMap) {
+      this.drewMap = true;
+      mark("h2-viewer:first-map-frame");
+      this.onReveal?.("started");
+    }
+    if (this.hasMap && !this.sweep && !this.revealFinished) {
+      this.revealFinished = true;
+      mark("h2-viewer:revealed");
+      this.onReveal?.("done");
     }
     // Ambient occlusion is the one costly step: drop it on a machine that
     // can't keep up (under ~25 frames a second for a couple of seconds),
@@ -1858,9 +2116,6 @@ export class ViewerScene {
         composer.addPass(new OutputPass());
         composer.setPixelRatio(this.renderer.getPixelRatio());
         composer.setSize(this.w, this.h);
-        // The occlusion pass draws the scene again with one material of its
-        // own: it takes the cuts too, or the cut-away walls would still shade.
-        this.cutaway(gtao.normalMaterial);
         this.composer = composer;
         this.gtao = gtao;
         gtao.updateGtaoMaterial({ radius: this.scale * 1.6, distanceExponent: 1.2, thickness: 1.2, scale: 1.15, samples: 12 });
@@ -1905,6 +2160,7 @@ export class ViewerScene {
     this.effects.dispose();
     this.projectiles.dispose();
     this.filmWorld.dispose();
+    this.cutaway.dispose();
     this.library.dispose();
     this.look.dispose();
     disposeTree(this.scene);

@@ -3,6 +3,8 @@ import type { FilmProp, FilmVector, FilmWorld } from "../api/types";
 import { gameToGl } from "../map/views";
 import { vehicleBasis } from "./models";
 
+const levelProps = new Set(["scen", "bloc", "mach", "ctrl", "lifi", "ssce", "weap", "eqip"]);
+
 const proxy: Record<string, { size: FilmVector; colour: number }> = {
   proj: { size: [.045, .026, .026], colour: 0xee9962 },
   weap: { size: [.26, .07, .08], colour: 0x536064 },
@@ -28,7 +30,7 @@ export class FilmWorld3D {
   private y = new THREE.Vector3();
   private z = new THREE.Vector3();
 
-  constructor() {
+  constructor(private readonly cutaway: (object: THREE.Object3D) => void) {
     this.outline.visible = false;
     this.group.add(this.outline);
   }
@@ -42,7 +44,9 @@ export class FilmWorld3D {
     return mesh;
   }
 
-  update(world: FilmWorld | undefined, template: (p: FilmProp) => THREE.Object3D | null) {
+  update(world: FilmWorld | undefined, template: (p: FilmProp) => THREE.Object3D | null,
+    visible?: (at: THREE.Vector3) => boolean,
+  ) {
     let changed = false;
     const keep = new Set<string>();
     for (const p of world?.props ?? []) {
@@ -52,6 +56,7 @@ export class FilmWorld3D {
       if (!entry || entry.asset !== asset) {
         entry?.node.removeFromParent();
         const node = asset ? asset.clone(true) : this.standIn(p);
+        if (levelProps.has(p.class)) this.cutaway(node);
         node.visible = true;
         node.matrixAutoUpdate = true;
         this.group.add(node);
@@ -64,6 +69,8 @@ export class FilmWorld3D {
       this.basis.makeBasis(this.x.set(...b.x), this.y.set(...b.y), this.z.set(...b.z));
       this.q.setFromRotationMatrix(this.basis);
       this.x.set(...gameToGl(...p.pos));
+      const show = levelProps.has(p.class) || (visible?.(this.x) ?? true);
+      if (node.visible !== show) { node.visible = show; changed = true; }
       if (!node.position.equals(this.x) || !node.quaternion.equals(this.q)) {
         node.position.copy(this.x);
         node.quaternion.copy(this.q);

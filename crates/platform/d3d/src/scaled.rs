@@ -78,6 +78,7 @@
 mod single;
 
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use gfx::state::{ColorWriteMask, DepthBufferMode, StencilOp};
 use gfx::texture::{DecodeOptions, DecodedTexture, TextureDesc};
@@ -386,6 +387,9 @@ pub struct ScaledBackend<R: Backend, V: ScaleView<R>> {
     /// Where the wanted scale comes from ([`ScaledBackend::follow_scale`]).
     follow: Option<Box<dyn Fn() -> RenderScale + Send>>,
     presentation: Option<Box<dyn Fn((u32, u32)) -> (u32, u32) + Send>>,
+    /// Keep the accepted raster after a resize allocation/transfer failure.
+    /// The same request retries after a second without logging every present.
+    failed_target: Option<FailedTarget>,
     /// The view has recorded work not yet submitted.
     view_pending: bool,
     /// A view call failed since the last present.
@@ -413,6 +417,21 @@ struct ShadowLevel<R, V> {
     size: (u32, u32),
     format: D3DFormat,
     view: Option<ShadowView<V>>,
+}
+
+#[derive(Clone, Copy)]
+struct FailedTarget {
+    scale: RenderScale,
+    lighting: Lighting,
+    retry_at: Instant,
+}
+
+impl FailedTarget {
+    /// A fresh setting may be tried at the next present. Keep retrying the
+    /// same allocation at one-second intervals while the current image shows.
+    fn waiting(self, scale: RenderScale, lighting: Lighting, now: Instant) -> bool {
+        (self.scale, self.lighting) == (scale, lighting) && now < self.retry_at
+    }
 }
 
 /// The view's copy of a [`ShadowLevel`].
@@ -490,6 +509,7 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
             remapped: false,
             follow: None,
             presentation: None,
+            failed_target: None,
             view_pending: false,
             frame_failed: false,
             stats: ScaleStats {
@@ -596,13 +616,18 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
     fn retarget(&mut self, scale: RenderScale, lighting: Lighting) {
         let was_awake = self.awake();
         let was_single = self.single();
+        let retry_wait = self.failed_target.is_some_and(|failed| failed.waiting(scale, lighting, Instant::now()));
+        if self.failed_target.is_some_and(|f| (f.scale, f.lighting) != (scale, lighting)) {
+            self.failed_target = None;
+        }
+        let (scale, lighting) = if retry_wait { (self.scale, self.lighting) } else { (scale, lighting) };
         // A scaled shadow can be the only up-to-date image in single-copy
         // mode. Preserve it before retiring or handing it to the exact path.
         if self.single() && (scale == RenderScale::ONE || self.shadow_factor() != shadow_scale(scale.vertical_rounded(), lighting)) {
             for shadow in &self.shadows {
                 if let Some(v) = &shadow.view && !v.stale_depth && !v.stale_stencil
                     && let Err(e) = self.view.resize(v.depth, shadow.guest.expect("imported shadow")) {
-                    eprintln!("d3d: keeping current scale and lighting: {e}");
+                    self.resize_failed(scale, lighting, e);
                     return;
                 }
             }
@@ -613,8 +638,10 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
             self.view.set_hard_shadows(lighting == Lighting::E3);
         }
         let old = self.scale;
-        if scale != old {
-            self.rescale(scale);
+        if scale != old && let Err(e) = self.rescale(scale) {
+            self.resize_failed(scale, lighting, e);
+        } else if !retry_wait {
+            self.failed_target = None;
         }
         self.stats.presentation = self.presentation.as_ref()
             .map_or(self.stats.output, |viewport| viewport(self.stats.output));
@@ -643,6 +670,17 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
                 self.drop_shadow_view(i);
             }
         }
+    }
+
+    fn resize_failed(&mut self, scale: RenderScale, lighting: Lighting, error: String) {
+        if self.failed_target.is_none() {
+            eprintln!("d3d: keeping render resolution {} after resize to {scale} failed: {error}", self.scale);
+        }
+        self.failed_target = Some(FailedTarget {
+            scale,
+            lighting,
+            retry_at: Instant::now() + Duration::from_secs(1),
+        });
     }
 
     /// Fills every scaled surface from the reference's, each guest pixel
@@ -912,9 +950,9 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
 
     /// Makes every scaled surface again at `scale` and fills it from the
     /// reference's. Nothing changes if one cannot be made.
-    fn rescale(&mut self, scale: RenderScale) {
+    fn rescale(&mut self, scale: RenderScale) -> Result<(), String> {
         if scale == self.scale {
-            return;
+            return Ok(());
         }
         let old = self.scale;
         if let Err(e) = self.view.submit_recorded() {
@@ -937,8 +975,7 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
                     for v in made {
                         let _ = self.view.destroy_surface(v);
                     }
-                    eprintln!("d3d: render scale stays {old}: a {w}x{h} surface at {scale}: {e}");
-                    return;
+                    return Err(format!("a {w}x{h} surface: {e}"));
                 }
             }
         }
@@ -951,14 +988,12 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
                 let to = if scale != RenderScale::ONE { new } else { guest };
                 if let Err(e) = self.view.resize(from, to) {
                     for v in made.iter().copied() { let _ = self.view.destroy_surface(v); }
-                    eprintln!("d3d: render scale stays {old}: {e}");
-                    return;
+                    return Err(e);
                 }
                 if scale == RenderScale::ONE && self.lighting == Lighting::E3 {
                     if let Err(e) = self.view.resize(guest, new) {
                         for v in made.iter().copied() { let _ = self.view.destroy_surface(v); }
-                        eprintln!("d3d: render scale stays {old}: {e}");
-                        return;
+                        return Err(e);
                     }
                 }
             }
@@ -974,7 +1009,7 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
                 self.view_failed("destroy", e);
             }
         }
-        eprintln!("d3d: render resolution {old} -> {scale}");
+        Ok(())
     }
 
     /// What the view did differently so far.
@@ -2466,6 +2501,21 @@ pub fn lighting_ab_at_resolution(reference: GfxBackend, retail: GfxBackend, e3: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_resize_allows_a_different_pick_immediately() {
+        let scale = RenderScale::for_output(5120, 2880).unwrap();
+        let at = Instant::now();
+        let failed = FailedTarget {
+            scale,
+            lighting: Lighting::Retail,
+            retry_at: at + Duration::from_secs(1),
+        };
+        assert!(failed.waiting(scale, Lighting::Retail, at + Duration::from_millis(999)));
+        assert!(!failed.waiting(scale, Lighting::Retail, at + Duration::from_secs(1)));
+        assert!(!failed.waiting(RenderScale::ONE, Lighting::Retail, at));
+        assert!(!failed.waiting(scale, Lighting::E3, at));
+    }
 
     #[test]
     fn transactional_stages_require_live_frame_and_scaled_shadow_copies() {

@@ -5,7 +5,7 @@ use std::sync::Mutex;
 
 use live_proto::hosts::{
     self, HostBooting, HostClass, HostEnded, HostLease, HostPlaying, HostReady, HostRequested,
-    HostStopped, ProviderKind,
+    HostStopped, PackUsage, ProviderKind,
 };
 use live_proto::sign::{EventBody, parse_time};
 use serde::{Deserialize, Serialize};
@@ -13,6 +13,8 @@ use time::{Date, OffsetDateTime};
 
 use crate::dispatch::Subscriber;
 use crate::store::RecordedEvent;
+
+mod warm;
 
 pub const DEFAULT_WORKER_BUDGET_USD: f64 = 25.0;
 
@@ -102,12 +104,18 @@ pub struct LeaseUsage {
     /// Final runtime from HostEnded, if recorded.
     pub ran_ms: Option<u64>,
     pub players_peak: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pack_usage: Option<PackUsage>,
     #[serde(skip)]
     max_players: u8,
     #[serde(skip)]
     deadline_ms: i64,
     #[serde(skip)]
     managed: bool,
+    #[serde(skip)]
+    pack_linger: bool,
+    #[serde(skip)]
+    pack_release: Option<hosts::PackRelease>,
     #[serde(skip)]
     stopped_ms: Option<i64>,
 }
@@ -124,16 +132,79 @@ impl LeaseUsage {
             end_ms: None,
             ran_ms: None,
             players_peak: 0,
+            pack_usage: None,
             max_players: lease.max_players,
             deadline_ms: lease.deadline_ms(),
             managed,
+            pack_linger: false,
+            pack_release: None,
             stopped_ms: None,
         }
     }
 
-    fn billing_end(&self) -> Option<i64> {
-        if self.managed { self.stopped_ms } else { self.end_ms }
+    /// Both live reports and replayed events must fit the interval measured by Live.
+    pub(crate) fn accepts_pack_usage(&self, usage: &PackUsage, ended_ms: i64) -> bool {
+        let elapsed_ms = ended_ms.saturating_sub(self.requested_ms).max(0) as u64;
+        // The supervisor reports whole microseconds. Round the lower bound down.
+        let minimum_share = usage.slot_us / live_proto::host_pack::MAX_PACK_MATCHES as u64;
+        let maximum_cpu = usage.slot_us.saturating_mul(u64::from(self.class.vcpu()));
+        usage.slot_us > 0
+            && usage.slot_us <= elapsed_ms.saturating_mul(1000)
+            && (minimum_share..=usage.slot_us).contains(&usage.container_share_us)
+            && usage.cpu_us.is_none_or(|cpu| cpu <= maximum_cpu)
     }
+
+    fn cloudflare_resources(&self, start_ms: i64, from: u64, to: u64, reserving: bool) -> Resources {
+        let seconds = tick_seconds(from, to);
+        let vcpus = f64::from(self.class.vcpu());
+        let full = Resources { container_seconds: seconds, cpu_seconds: seconds * vcpus, charge_start: true };
+        // An open reservation covers the full class. A manually launched
+        // host has no provider-managed pack from which to claim a discount.
+        let (Some(usage), Some(reported_at)) = (self.pack_usage, self.end_ms) else {
+            return full;
+        };
+        if !self.managed || reserving {
+            return full;
+        }
+
+        // Split each monthly window into the observed slot interval and
+        // the launch/cleanup intervals, which retain full-capacity charges.
+        let observed_end = reported_at.saturating_sub(start_ms).max(0) as u64;
+        let observed_start = observed_end.saturating_sub(usage.slot_us / 1000);
+        let occupied = tick_seconds(from.clamp(observed_start, observed_end), to.clamp(observed_start, observed_end));
+        let outside = seconds - occupied;
+        let share = usage.container_share_us as f64 / usage.slot_us as f64;
+        let cpu_per_second = usage.cpu_us.map_or(vcpus, |cpu| cpu as f64 / usage.slot_us as f64);
+        Resources {
+            container_seconds: outside + occupied * share,
+            cpu_seconds: outside * vcpus + occupied * cpu_per_second,
+            charge_start: usage.charge_start,
+        }
+    }
+
+    fn billing_end(&self) -> Option<i64> {
+        if !self.managed {
+            return self.end_ms;
+        }
+        // A replayed stop confirmation can arrive well after the release.
+        // Stop pricing this lease's occupied interval at the pool's clock.
+        if let Some(hosts::PackRelease::Linger { released_ms }) = self.pack_release {
+            Some(released_ms)
+        } else {
+            self.stopped_ms
+        }
+    }
+}
+
+struct Resources {
+    container_seconds: f64,
+    cpu_seconds: f64,
+    charge_start: bool,
+}
+
+/// Cumulative tick boundaries charge a 10 ms tick crossing midnight once.
+fn tick_seconds(from_ms: u64, to_ms: u64) -> f64 {
+    (to_ms.div_ceil(10) - from_ms.div_ceil(10)) as f64 / 100.0
 }
 
 /// Estimated usage and USD for a lease through a given time.
@@ -150,6 +221,7 @@ pub struct HostCosts {
     prices: PriceTable,
     budget_usd_month: Option<f64>,
     leases: Mutex<BTreeMap<String, LeaseUsage>>,
+    warm: Mutex<warm::WarmLedger>,
 }
 
 impl HostCosts {
@@ -212,14 +284,22 @@ impl HostCosts {
             return;
         };
         let at_ms = at.unix_timestamp_nanos().div_euclid(1_000_000) as i64;
+        if event.kind == hosts::HOST_PACK_WARM_RESERVED {
+            if let Ok(grant) = hosts::HostPackWarmReserved::deserialize(&event.data) {
+                self.warm.lock().unwrap().apply(&grant);
+            }
+            return;
+        }
         let mut leases = self.leases.lock().unwrap();
         match event.kind.as_str() {
             hosts::HOST_REQUESTED => {
-                if let Ok(HostRequested { lease, provider_ref }) =
+                if let Ok(HostRequested { lease, provider_ref, pack_linger }) =
                     HostRequested::deserialize(&event.data)
                 {
                     leases.entry(lease.id.clone()).or_insert_with(|| {
-                        LeaseUsage::requested(&lease, at_ms, provider_ref.is_some())
+                        let mut usage = LeaseUsage::requested(&lease, at_ms, provider_ref.is_some());
+                        usage.pack_linger = pack_linger && usage.managed && lease.provider == ProviderKind::Cloudflare;
+                        usage
                     });
                 }
             }
@@ -254,15 +334,22 @@ impl HostCosts {
                     }
                     lease.end_ms = Some(at_ms);
                     lease.ran_ms = Some(data.ran_ms);
+                    lease.pack_usage = data.pack_usage.filter(|usage| lease.accepts_pack_usage(usage, at_ms));
                     lease.players_peak = lease.players_peak.max(data.players_peak);
                 }
             }
             hosts::HOST_STOPPED => {
                 if let Ok(data) = HostStopped::deserialize(&event.data)
                     && let Some(lease) = leases.get_mut(&data.lease_id)
-                    && lease.managed
+                    && lease.managed && lease.stopped_ms.is_none()
                 {
-                    lease.stopped_ms.get_or_insert(at_ms);
+                    lease.stopped_ms = Some(at_ms);
+                    lease.pack_release = data.pack_release.map(|release| match release {
+                        hosts::PackRelease::Linger { released_ms } => hosts::PackRelease::Linger {
+                            released_ms: released_ms.max(lease.requested_ms).min(at_ms),
+                        },
+                        other => other,
+                    });
                 }
             }
             _ => {}
@@ -296,7 +383,8 @@ impl HostCosts {
             .unwrap()
             .values()
             .map(|lease| self.estimate(lease, month_start, now_ms, false).cost_usd)
-            .sum()
+            .sum::<f64>()
+            + self.warm.lock().unwrap().cost(&self.prices.cloudflare, month_start, now_ms)
     }
 
     pub fn budget_usd_month(&self) -> Option<f64> {
@@ -305,11 +393,17 @@ impl HostCosts {
 
     /// Called under the host writer lock, before appending HostRequested.
     /// In-flight starts and running hosts already claim their full duration.
-    pub(crate) fn can_start(&self, lease: &HostLease) -> bool {
+    pub(crate) fn can_start(&self, lease: &HostLease, pack_linger: bool) -> bool {
+        let mut candidate = LeaseUsage::requested(lease, lease.created_ms, false);
+        candidate.pack_linger = pack_linger;
+        self.fits_budget(&candidate, None)
+    }
+
+    fn fits_budget(&self, candidate: &LeaseUsage, grant: Option<&hosts::HostPackWarmReserved>) -> bool {
         let Some(cap) = self.budget_usd_month else {
             return true;
         };
-        let now = lease.created_ms;
+        let now = candidate.requested_ms;
         let Some((mut from, mut until)) = utc_month(now) else {
             return false;
         };
@@ -325,29 +419,54 @@ impl HostCosts {
 
         // Require room for a full match in the admission month, even when
         // some of the runtime will be charged to the next month.
-        let candidate = LeaseUsage::requested(lease, now, false);
-        let mut additional = self.estimate(&candidate, now, candidate.deadline_ms, true).cost_usd;
+        let finish = candidate.deadline_ms.saturating_add(if candidate.pack_linger {
+            live_proto::host_pack::LINGER_MS
+        } else { 0 });
+        let mut additional = self.estimate(candidate, now, finish, true).cost_usd;
         loop {
             let committed: f64 = leases
                 .values()
                 .map(|lease| self.estimate(lease, from, until, true).cost_usd)
                 .sum();
-            let projected = committed + additional;
+            let warm = self.warm.lock().unwrap().cost(&self.prices.cloudflare, from, until);
+            let extension = grant.map_or(0.0, |g| warm::grant_cost(g, &self.prices.cloudflare, from, until));
+            let projected = committed + additional + warm + extension;
             if !projected.is_finite() || projected > cap {
                 return false;
             }
-            if candidate.deadline_ms <= until {
+            if finish <= until {
                 return true;
             }
             let Some(next) = utc_month(until) else {
                 return false;
             };
             (from, until) = next;
-            additional = self.estimate(&candidate, from, until, true).cost_usd;
+            additional = self.estimate(candidate, from, until, true).cost_usd;
         }
     }
 
     fn estimate(&self, lease: &LeaseUsage, from_ms: i64, to_ms: i64, forecast: bool) -> LeaseCost {
+        let mut cost = self.estimate_match(lease, from_ms, to_ms, forecast);
+        if lease.pack_linger {
+            let start = match lease.pack_release {
+                Some(hosts::PackRelease::Linger { released_ms }) => Some(released_ms),
+                Some(hosts::PackRelease::NoLinger) => None,
+                // Pending stops reserve the whole tail. Older providers and
+                // historical events carry no receipt and retain that estimate.
+                None => lease.stopped_ms.or(forecast.then_some(lease.deadline_ms)),
+            };
+            if let Some(start) = start {
+                let tail = hosts::PackWarmPeriod {
+                    pack: String::new(), from_ms: start,
+                    until_ms: start.saturating_add(live_proto::host_pack::LINGER_MS), start: false,
+                };
+                cost.cost_usd += warm::period_cost(&lease.class, &tail, &self.prices.cloudflare, from_ms, to_ms);
+            }
+        }
+        cost
+    }
+
+    fn estimate_match(&self, lease: &LeaseUsage, from_ms: i64, to_ms: i64, forecast: bool) -> LeaseCost {
         let reserving = forecast && lease.billing_end().is_none();
         let start = match lease.start_ms {
             Some(start) => start,
@@ -377,21 +496,18 @@ impl HostCosts {
         let cost_usd = match lease.provider {
             ProviderKind::Local => 0.0,
             ProviderKind::Cloudflare => {
-                // Round cumulative runtime so a tick spanning two months
-                // is counted once, in the month when it started.
-                let ticks = to.div_ceil(10) - from.div_ceil(10);
-                let seconds = ticks as f64 / 100.0;
+                let resources = lease.cloudflare_resources(start, from, to, reserving);
                 let rates = &self.prices.cloudflare;
-                let vcpu_seconds = seconds * f64::from(lease.class.vcpu());
-                let cpu = vcpu_seconds * rates.usd_per_vcpu_second;
-                let memory = vcpu_seconds * CLOUDFLARE_GIB_PER_VCPU * rates.usd_per_gib_second;
-                let disk = seconds * CLOUDFLARE_DISK_GB * rates.usd_per_gb_disk_second;
+                let cpu = resources.cpu_seconds * rates.usd_per_vcpu_second;
+                let memory = resources.container_seconds * f64::from(lease.class.vcpu())
+                    * CLOUDFLARE_GIB_PER_VCPU * rates.usd_per_gib_second;
+                let disk = resources.container_seconds * CLOUDFLARE_DISK_GB * rates.usd_per_gb_disk_second;
                 let egress = if rates.usd_per_egress_gb > 0.0 {
                     estimated_egress_gb * rates.usd_per_egress_gb
                 } else {
                     0.0
                 };
-                let start_fee = if charge_start { rates.usd_per_start } else { 0.0 };
+                let start_fee = if charge_start && resources.charge_start { rates.usd_per_start } else { 0.0 };
                 cpu + memory + disk + egress + start_fee
             }
             ProviderKind::Fly => {
@@ -712,28 +828,185 @@ mod tests {
     }
 
     #[test]
+    fn four_packed_matches_settle_to_one_container_and_one_start() {
+        let costs = HostCosts::default();
+        let full = HostCosts::default();
+        let at = FEB + MINUTE;
+        full.fold(&managed_request("full", FEB, 120));
+        full.fold(&end("full", MINUTE as u64, 0, at));
+        full.fold(&event(hosts::HOST_STOPPED, json!({ "lease_id": "full" }), at));
+        for i in 0..4 {
+            let id = format!("slot-{i}");
+            costs.fold(&managed_request(&id, FEB, 120));
+            let mut ended = end(&id, MINUTE as u64, 0, at);
+            ended.data["pack_usage"] = json!({
+                "slot_us": 60_000_000, "container_share_us": 15_000_000,
+                "cpu_us": 15_000_000, "charge_start": i == 0, "peak_pss_bytes": 123_000
+            });
+            costs.fold(&ended);
+            costs.fold(&ended);
+            costs.fold(&event(hosts::HOST_STOPPED, json!({ "lease_id": id }), at));
+        }
+        close(costs.month_to_date(at), full.month_to_date(at));
+        assert_eq!(costs.lease("slot-2").unwrap().pack_usage.unwrap().peak_pss_bytes, Some(123_000));
+    }
+
+    #[test]
+    fn replay_prices_the_full_class_when_a_pack_report_is_out_of_bounds() {
+        let at = FEB + 1_000;
+        let requested = managed_request("match", FEB, 60);
+        let stopped = event(hosts::HOST_STOPPED, json!({ "lease_id": "match" }), at);
+        let replay = |usage: Option<PackUsage>| {
+            let costs = HostCosts::default();
+            let mut ended = end("match", 1_000, 0, at);
+            if let Some(usage) = usage {
+                ended.data["pack_usage"] = json!(usage);
+            }
+            costs.fold(&requested);
+            costs.fold(&ended);
+            costs.fold(&stopped);
+            assert_eq!(costs.lease("match").unwrap().end_ms, Some(at));
+            (costs.lease("match").unwrap().pack_usage, costs.month_to_date(at))
+        };
+        let (missing, full_cost) = replay(None);
+        assert!(missing.is_none());
+        assert!(full_cost > 0.0);
+        let valid = PackUsage {
+            slot_us: 1_000_000,
+            container_share_us: 100_000,
+            charge_start: false,
+            cpu_us: Some(1_000_000),
+            peak_pss_bytes: None,
+        };
+        let (kept, discounted_cost) = replay(Some(valid));
+        assert_eq!(kept, Some(valid));
+        assert!(discounted_cost < full_cost);
+        for usage in [
+            PackUsage { slot_us: 0, container_share_us: 0, cpu_us: None, ..valid },
+            PackUsage { slot_us: 1_000_001, ..valid },
+            PackUsage { container_share_us: 99_999, ..valid },
+            PackUsage { container_share_us: 1_000_001, ..valid },
+            PackUsage { cpu_us: Some(1_000_001), ..valid },
+        ] {
+            let (kept, charge) = replay(Some(usage));
+            assert_eq!(kept, None, "{usage:?}");
+            close(charge, full_cost);
+        }
+    }
+
+    #[test]
+    fn pack_report_bounds_allow_whole_microsecond_rounding_and_both_cores() {
+        let mut large = candidate(FEB, 60);
+        large.class = HostClass::Large;
+        let lease = LeaseUsage::requested(&large, FEB, true);
+        let usage = PackUsage {
+            slot_us: 999_999,
+            container_share_us: 99_999,
+            charge_start: true,
+            cpu_us: Some(1_999_998),
+            peak_pss_bytes: None,
+        };
+        assert!(lease.accepts_pack_usage(&usage, FEB + 1_000));
+        assert!(!lease.accepts_pack_usage(&PackUsage { cpu_us: Some(1_999_999), ..usage }, FEB + 1_000));
+        assert!(!lease.accepts_pack_usage(&PackUsage { slot_us: u64::MAX, ..usage }, FEB));
+    }
+
+    #[test]
+    fn packed_costs_keep_launch_and_cleanup_and_split_at_month_boundary() {
+        let costs = HostCosts::configured(
+            Some(r#"{"cloudflare":{"usd_per_vcpu_second":1,"usd_per_gib_second":0,"usd_per_gb_disk_second":0,"usd_per_start":0}}"#),
+            None,
+        ).unwrap();
+        costs.fold(&managed_request("a", FEB - 3_000, 120));
+        // 1 second of launch, 4 seconds at 25% CPU, then 2 seconds of cleanup.
+        let mut ended = end("a", 4_000, 0, FEB + 2_000);
+        ended.data["pack_usage"] = json!({
+            "slot_us": 4_000_000, "container_share_us": 2_000_000,
+            "cpu_us": 1_000_000, "charge_start": true
+        });
+        costs.fold(&ended);
+        costs.fold(&event(hosts::HOST_STOPPED, json!({ "lease_id": "a" }), FEB + 4_000));
+        close(costs.lease_cost("a", FEB + MINUTE).unwrap().cost_usd, 4.0);
+        close(costs.month_to_date(FEB + MINUTE), 2.5);
+    }
+
+    #[test]
+    fn only_new_managed_packed_leases_reserve_the_empty_hold() {
+        let costs = HostCosts::configured(
+            Some(r#"{"egress_gb_per_player_minute":0,"cloudflare":{"usd_per_vcpu_second":1,"usd_per_gib_second":0,"usd_per_gb_disk_second":0,"usd_per_start":0}}"#),
+            Some("59"),
+        ).unwrap();
+        let lease = candidate(FEB, 1);
+        assert!(costs.can_start(&lease, false));
+        assert!(!costs.can_start(&lease, true));
+
+        for (name, has_hold) in [("legacy", false), ("packed", true)] {
+            let mut request = managed_request(name, FEB, 2);
+            if has_hold {
+                request.data["pack_linger"] = json!(true);
+            }
+            costs.fold(&request);
+            costs.fold(&event(hosts::HOST_STOPPED, json!({ "lease_id": name }), FEB+1_000));
+        }
+        let legacy = costs.lease_cost("legacy", FEB + 100_000).unwrap();
+        let packed = costs.lease_cost("packed", FEB + 100_000).unwrap();
+        close(legacy.cost_usd, 1.0);
+        close(packed.cost_usd, 61.0);
+        assert_eq!(packed.ran_ms, legacy.ran_ms);
+        close(costs.month_to_date(FEB + 20_000), 21.0);
+    }
+
+    #[test]
+    fn release_receipt_charges_one_tail_without_measured_usage_across_midnight() {
+        let costs = HostCosts::configured(
+            Some(r#"{"egress_gb_per_player_minute":0,"cloudflare":{"usd_per_vcpu_second":1,"usd_per_gib_second":0,"usd_per_gb_disk_second":0,"usd_per_start":0}}"#),
+            None,
+        ).unwrap();
+        for id in ["a", "b"] {
+            let mut request = managed_request(id, FEB - 2_000, 120);
+            request.data["pack_linger"] = json!(true);
+            costs.fold(&request);
+            costs.fold(&end(id, 0, 0, FEB - 1_000)); // No report from the game.
+        }
+        let stopped = |id: &str, release, at| event(
+            hosts::HOST_STOPPED, json!({ "lease_id": id, "pack_release": release }), at,
+        );
+        let first = stopped("a", hosts::PackRelease::NoLinger, FEB - 1_000);
+        costs.fold(&first);
+        // The last release was recorded before midnight. Confirmation was retried later.
+        let last = stopped("b", hosts::PackRelease::Linger { released_ms: FEB - 1_000 }, FEB + 10_000);
+        costs.fold(&last);
+        costs.fold(&first);
+        costs.fold(&last);
+        let at = FEB + 100_000;
+        close(costs.lease_cost("a", at).unwrap().cost_usd, 1.0);
+        close(costs.lease_cost("b", at).unwrap().cost_usd, 61.0);
+        close(costs.month_to_date(at), 59.0);
+    }
+
+    #[test]
     fn reserves_pending_cloudflare_starts_and_settles_once_the_room_stops() {
         let costs = budget_fixture();
-        assert!(costs.can_start(&candidate(FEB, 4)));
-        assert!(!costs.can_start(&candidate(FEB, 8)));
+        assert!(costs.can_start(&candidate(FEB, 4), false));
+        assert!(!costs.can_start(&candidate(FEB, 8), false));
         costs.fold(&managed_request("match", FEB, 4));
         close(costs.month_to_date(FEB), 1.0);
-        assert!(!costs.can_start(&candidate(FEB, 4)));
+        assert!(!costs.can_start(&candidate(FEB, 4), false));
 
         // A game can report that it ended while its container is still up.
         costs.fold(&end("match", 100, 2, FEB + 1_000));
         assert_eq!(costs.stop_confirmed("match"), Some(false));
-        assert!(!costs.can_start(&candidate(FEB + 1_000, 4)));
+        assert!(!costs.can_start(&candidate(FEB + 1_000, 4), false));
         close(costs.month_to_date(FEB + 2_000), 3.0);
-        assert!(!costs.can_start(&candidate(FEB + 4_000, 1)));
+        assert!(!costs.can_start(&candidate(FEB + 4_000, 1), false));
 
         for at in [FEB + 2_000, FEB + 3_000] {
             costs.fold(&event(hosts::HOST_STOPPED, json!({ "lease_id": "match" }), at));
         }
         assert_eq!(costs.stop_confirmed("match"), Some(true));
         close(costs.month_to_date(FEB + 5_000), 3.0);
-        assert!(costs.can_start(&candidate(FEB + 5_000, 4)));
-        assert!(!costs.can_start(&candidate(FEB + 5_000, 5)));
+        assert!(costs.can_start(&candidate(FEB + 5_000, 4), false));
+        assert!(!costs.can_start(&candidate(FEB + 5_000, 5), false));
     }
 
     #[test]
@@ -742,7 +1015,7 @@ mod tests {
         costs.fold(&managed_request("match", FEB - 1_000, 7));
         close(costs.month_to_date(FEB - 1), 2.0);
         // January can cover the reservation (2 + 5). February cannot (6 + 3).
-        assert!(!costs.can_start(&candidate(FEB - 1_000, 4)));
+        assert!(!costs.can_start(&candidate(FEB - 1_000, 4), false));
         close(costs.month_to_date(FEB), 0.0);
         close(costs.month_to_date(FEB + 1_000), 1.0);
         costs.fold(&event(
@@ -751,7 +1024,7 @@ mod tests {
             FEB + 1_000,
         ));
         close(costs.month_to_date(FEB + MINUTE), 1.0);
-        assert!(costs.can_start(&candidate(FEB + MINUTE, 4)));
+        assert!(costs.can_start(&candidate(FEB + MINUTE, 4), false));
     }
 
     #[test]
@@ -773,7 +1046,7 @@ mod tests {
             }
         };
         let disabled = HostCosts::from_env(&override_cap, worker).unwrap();
-        assert!(!disabled.can_start(&candidate(FEB, 4)));
+        assert!(!disabled.can_start(&candidate(FEB, 4), false));
     }
 
     #[test]
@@ -789,7 +1062,7 @@ mod tests {
         let cost = costs.lease_cost("match", FEB + MINUTE).unwrap();
         close(cost.estimated_egress_gb, 0.003);
         close(cost.cost_usd, 0.0030004);
-        assert!(!costs.can_start(&candidate(FEB + MINUTE, 1)));
+        assert!(!costs.can_start(&candidate(FEB + MINUTE, 1), false));
     }
 
     #[test]

@@ -3,13 +3,17 @@
 Status: Implemented for independently sized horizontal and vertical raster grids.
 Code: `crates/platform/gfx/src/raster.rs`, `crates/platform/d3d/src/scaled.rs`,
 `crates/platform/d3d/src/scaled/single.rs`, `crates/extensions/game/src/d3d_glue.rs`.
+Tests: `crates/platform/d3d/tests/render_scale.rs`, `crates/platform/gfx/src/raster.rs`,
+`crates/extensions/game/src/render_aspect.rs` and `crates/extensions/game/src/lod_distance.rs`.
+Switch: Resolution, HUD, LOD distance, single-copy readbacks and glyph smoothing
+are listed in [switches.md](../runtime/switches.md#settings).
 
-The Resolution row defaults to Native. A window renders at its drawable size
-in physical pixels, including Retina backing pixels. An explicit size stays
-fixed when the window moves or resizes. Fullscreen Native on a 5120x2880
-display uses a 5120x2880 frame target. On a 3440x1440 display it uses
-3440x1440. The host accepts dimensions up to 8192 on each axis and fits an
-oversize drawable to the texture limit while keeping its aspect.
+Native follows the physical drawable, including Retina backing pixels, with
+a default internal budget of 3840 × 2160 pixels. It scales both dimensions
+together to preserve the display aspect. On a 5120x2880 Studio Display,
+Native renders at 3840x2160. Choosing **5120x2880** renders at full panel
+resolution. Both 3440x1440 and 5120x1440 fit within the budget at native size.
+Explicit sizes stay fixed on resize and support up to 8192 on each axis.
 
 The guest still addresses a 640x480 frame. A scaled frame has a separate
 horizontal and vertical ratio. The physical rectangle in which the shell
@@ -20,9 +24,12 @@ forces an anamorphic aspect with `--aspect`. See the
 
 ## Summary
 
-- **The guest never learns the resolution.** The device (`d3d::Device`) keeps
+- **Guest device coordinates.** The device (`d3d::Device`) keeps
   every size, viewport, scissor, header and return value in guest pixels.
-  Scaling lives below the `d3d::Backend` trait.
+  Raster scaling lives below the `d3d::Backend` trait. In offline play
+  model and structure LOD use projected pixels at the accepted render
+  height. Both copies draw the same chosen geometry. See
+  [projected size and level of detail](occlusion-culling.md#projected-size-and-level-of-detail).
 - **One draw per target in single-copy mode.** At increased resolution
   the display encoder owns the draw stream, including draws to guest-size intermediates. Guest reads sample the
   scaled image at guest pixel positions.
@@ -51,11 +58,15 @@ of each view. For a recognised perspective draw, the host scales the
 horizontal clip coordinate by the ratio of the guest's pixel aspect to
 the displayed pixel aspect. For translated shaders, the recogniser
 requires a four-row perspective transform. Programs with an unrecognised
-clip transform and CPU-projected sprites, including lens-flare quads, keep
-their original positions. The vertical field of view, depth, simulation
+clip transform keep their original positions. The flare pass translates its
+occlusion query to the projected display column, preserving the footprint used
+for the expected count, and applies the lens to the reflection billboards.
+The exact reference draws both at the retail coordinates. The vertical field of view, depth, simulation
 camera and guest visibility records keep their retail values. Orthographic
 menu draws use a uniform fit inside each player's viewport. Corner HUD
-groups can use the fitted rectangle or the viewport edges.
+groups can use the fitted rectangle or the viewport edges. If the game already
+uses the Xbox widescreen HUD layout, its artwork receives only the remaining
+aspect correction. At 16:9 the Pinned layout retains the retail widescreen fit.
 
 **Live visibility is incomplete at the sides.** A wider lens shows more of
 the geometry the guest submitted, including triangles crossing the retail
@@ -71,8 +82,9 @@ See [the host film view](../game/film-format.md#choosing-a-players-view).
 
 The policy is selected at launch (`d3d_glue::single_copy`,
 `graphics.single_copy` in `crates/extensions/game/src/setting_defs.rs`). Set
-`single_copy = false` under `[graphics]` for exact-reference captures or
-replays. The lighting A/B capture always uses its separate reference.
+`single_copy = false` under `[graphics]` to request a retail reference in
+offline play. Boot requires the reference for network and film sessions, input
+tapes and lockstep. Lighting A/B captures also use a separate reference.
 
 
 The frame buffers, frame-sized RTT levels and their depth attachment are
@@ -143,15 +155,15 @@ From [render-thread.md](render-thread.md) ("What can move") and
 | Frame-buffer and depth-buffer contents | never in guest memory; a CPU read through their `Data` faults | No. |
 | Textures over the depth buffer (`0x509368`, `0x50936C`) | decoded on the host; the bytes never reach guest memory | No. |
 
-So two channels carry pixels to the guest: write-backs and counts. What the
-game does with them is not fully traced. The callback at `0x24970` reads
-texels and its purpose is not recorded in our docs; the flare ratio at least
-feeds rendering. Until that is traced, assume both can reach the simulation.
+Both write-backs and counts feed guest state. The push-buffer callback
+at `0x24970` reads target texels through `0x3fdbc0` and `0x24a70`.
+The flare reader at `0x207b0` turns a sample count into a smoothed
+visibility byte. See [determinism](#determinism).
 
 
 ## Exact mode: reference and view
 
-With `graphics.single_copy` off, `ScaledBackend` wraps two `GfxBackend`s:
+In exact mode, `ScaledBackend` wraps two `GfxBackend`s:
 
 ```text
  Device (guest pixels, unchanged)
@@ -204,7 +216,10 @@ from the view and `frame-NNNNN-1x.png` from the reference
 
 ### Changing the scale during a run
 
-`ScaledBackend::follow_resolution` reads the selected resolution and Native drawable at each present. A new
+At each present, `ScaledBackend::follow_resolution` checks for a change. An
+explicit resolution takes effect at this boundary. During a window drag the
+compositor presents the existing raster until the Native drawable holds the
+same size for 150 ms. A new
 scale is made at that frame boundary, on the thread that presents (the
 render thread under `ThreadedBackend`): every scaled surface is made again at
 the new size and filled from the reference's, and the device's surface
@@ -598,12 +613,23 @@ everything else.
 
 ## Determinism
 
-For a fixed guest draw stream, exact mode (`graphics.single_copy` off)
-answers guest reads from its separate retail-size reference. Single-copy
-mode reads from the physical raster and can return different coverage or
-texel values. Device readbacks include an untraced downstream consumer of
-the `0x24970` callback. GPU readback equality across devices or display
-settings requires separate evidence.
+Boot selects exact readbacks when it installs networking, arms a film recorder,
+plays a film, or enables lockstep or an input tape.
+The 640x480 reference supplies texels, depth, stencil and visibility counts
+using the retail lens and HUD coordinates. The window presents its own
+resolution, aspect and HUD layout. Boot selects this policy before the
+first frame, including time in the menu before a player joins System Link,
+Live or co-op. Changing a display cannot retroactively repair a pixel or
+visibility count the guest has already consumed. The same reference applies
+when the user requests single-copy mode.
+
+Resolution is a Host setting. A film viewer chooses the display raster
+independently of the recorded guest. For protected sessions, the guest
+uses retail LOD distances independent of the viewer's output height or
+LOD preference. Older films that record the scalar render scale and LOD
+selection reproduce the corresponding startup multiplier. A legacy film's
+startup record cannot describe a later change to either setting. In offline
+single-copy play, guest readbacks still sample the display raster.
 
 The observer produces the vertical field of view from player control.
 Aim search and shot assistance use weapon tag angles and zoom, and the
@@ -802,9 +828,17 @@ ones about the renderer's structure:
 
 ## Not verified
 
-- Which write-backs and counts happen in gameplay, and whether any value
-  reaches the simulation (the callback at `0x24970` is not traced). Only a
-  run with counters can show it.
+- Cross-machine and film tick-hash parity for the same input across window
+  sizes and HUD settings. Exact mode isolates the display-dependent inputs;
+  it does not establish cross-driver raster equivalence.
+- Texaccum, refraction, active camouflage and water may derive projective
+  texture coordinates independently of the clip transform. A synthetic shader
+  covers a lookup derived from the corrected clip X and W. Compare a
+  high-contrast surface at the same tick at 4:3 and ultrawide. Use the agent
+  API's `render.frame` and `render.capture` to identify the producer of any
+  displaced lookup and inspect its projected coordinates after division by W.
+  A correction belongs on the display's screen-space lookup. Asset UVs and
+  the retail reference keep their original mapping.
 - Fractional and odd-scale point taps in retail water, fog and feedback
   draws. A half-texel-shifted point sample can select the adjacent texel.
 - HUD corner ownership, projected markers and scissor alignment in split

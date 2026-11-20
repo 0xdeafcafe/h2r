@@ -10,7 +10,7 @@ mod dir_disc;
 mod disc;
 mod host;
 mod film_map;
-pub use film_map::{FilmMap, FilmMapSource};
+pub use film_map::{FilmMap, FilmMapSource, ImmutableRead};
 mod map_override;
 mod packages;
 mod path;
@@ -83,6 +83,8 @@ pub struct Config {
     pub map_packages: Option<PathBuf>,
     /// Use read-only mappings for the immutable DVD, when possible.
     pub mmap_disc: bool,
+    /// Serve eligible guest reads by installing private file pages.
+    pub map_guest_reads: bool,
     /// Verified server copies, keyed by DVD filename or installed MapId.
     pub server_maps: Option<PathBuf>,
     /// Sim stores ([`sim_store`]): serve `maps\<map>.map` from this
@@ -101,6 +103,7 @@ impl Config {
             content_maps: ContentMaps::default(),
             map_packages: None,
             mmap_disc: false,
+            map_guest_reads: false,
             server_maps: None,
             sim_store: None,
         }
@@ -145,6 +148,13 @@ pub fn default_data_root(
     }
 }
 
+/// Successful NtReadFile bytes for one mounted machine, including map loads.
+#[derive(Default, Clone, Copy, Debug)]
+pub struct GuestReadBytes {
+    pub mapped: u64,
+    pub copied: u64,
+}
+
 struct Mount {
     device: String,
     backend: Box<dyn Backend>,
@@ -180,6 +190,9 @@ pub type ChangeObserver = Box<dyn FnMut(&Changed) + Send>;
 /// put a mutex around it in the kernel. Share checks span every alias within this instance.
 #[derive(Default)]
 pub struct Vfs {
+    map_guest_reads: bool,
+    read_copy_reasons: HashSet<&'static str>,
+    guest_reads: GuestReadBytes,
     extra_cache_bytes: u32,
     pub namespace: Namespace,
     mounts: Vec<Mount>,
@@ -228,6 +241,7 @@ impl Vfs {
             Err(e) => eprintln!("vfs: damaged saves not repaired: {e}"),
         }
         let mut vfs = Self::new();
+        vfs.map_guest_reads = config.map_guest_reads;
         vfs.extra_cache_bytes = config.extra_cache_bytes;
         vfs.content_maps = config.content_maps.clone();
         for partition in 1..=5 {
@@ -833,6 +847,69 @@ impl Vfs {
         self.object_mut(handle)?.position = position;
         Ok(())
     }
+    pub fn guest_read_bytes(&self) -> GuestReadBytes {
+        self.guest_reads
+    }
+
+    pub fn note_guest_copy(&mut self, bytes: usize) {
+        self.guest_reads.copied += bytes as u64;
+    }
+
+    /// Try one NtReadFile before its ordinary bounded-copy loop. A refusal
+    /// leaves the file position and the guest's bytes alone. Ordinary reads
+    /// report backend errors (including sparse store misses) as usual.
+    pub fn try_map_read(
+        &mut self,
+        handle: Handle,
+        offset: Offset,
+        length: usize,
+        install: impl FnOnce(&ImmutableRead<'_>) -> std::result::Result<usize, &'static str>,
+    ) -> Option<usize> {
+        if !self.map_guest_reads || length == 0 {
+            return None;
+        }
+        let file = self.object(handle).ok()?;
+        if !file.path.as_bytes().get(file.path.len().saturating_sub(4)..)?.eq_ignore_ascii_case(b".map") {
+            return None;
+        }
+        let (mount, path) = (file.mount, file.path.clone());
+        let at = match offset {
+            Offset::Current => file.position,
+            Offset::Absolute(at) if at <= i64::MAX as u64 => at,
+            _ => return None,
+        };
+        let result = if !file.options.access.contains(Access::READ)
+            || file.options.access.0 & (Access::WRITE.0 | Access::APPEND.0) != 0 {
+            Err("writable handle")
+        } else if length < 16 * 4096 {
+            Err("short read")
+        } else if let Ok(Some(source)) = self.mounts[mount].backend.film_source(&path) {
+            match source.immutable_read(at, length) {
+                Some(span) => install(&span).map(|mapped| (span.byte_len(), mapped)),
+                None => Err("mutable, composed or noncontiguous source"),
+            }
+        } else {
+            Err("no immutable file region")
+        };
+        match result {
+            Ok((len, mapped)) => {
+                self.object_mut(handle).expect("open during read").position = at + len as u64;
+                if sim_store::record::enabled() {
+                    sim_store::record::note(&self.mounts[mount].device, &path, at, len as u64);
+                }
+                self.guest_reads.mapped += mapped as u64;
+                self.note_guest_copy(len - mapped);
+                Some(len)
+            }
+            Err(reason) => {
+                if self.read_copy_reasons.insert(reason) {
+                    eprintln!("guest mapped read: copying {path} at {at} ({length} bytes): {reason}");
+                }
+                None
+            }
+        }
+    }
+
     /// Synchronous I/O: both current and explicit successful reads update the file-object position.
     pub fn read(&mut self, handle: Handle, offset: Offset, buffer: &mut [u8]) -> Result<usize> {
         let file = self.object(handle)?;

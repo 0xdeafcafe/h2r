@@ -146,6 +146,8 @@ fn reply(scene: &FrameScene, counters: BTreeMap<String, u64>, summary: Option<&C
                     parts: c.parts,
                     rows: c.rows,
                     lights: c.lights,
+                    lights_candidates: c.lights_candidates,
+                    lights_with_constants: c.lights_with_constants,
                     shadows: c.shadows,
                     light_layers: light_layers(scene, v),
                     layer_items: c.layers.iter().fold(BTreeMap::new(), |mut m, &(layer, items, _)| {
@@ -270,7 +272,7 @@ mod tests {
         b.add_remainder(1).unwrap();
         let step = |layer| LightStep { layer, stencil: Some(0), target: LightTarget::View, draws: true };
         let light = |handle, flags| SceneLight {
-            handle, definition: 9, flags, definition_flags: 0, additional_casters: false, steps: 0..0,
+            handle, definition: 9, flags, definition_flags: 0, additional_casters: false, steps: 0..0, ..Default::default()
         };
         b.push_light(light(1, 4), &[step(11), step(12)]).unwrap();
         b.push_light(light(2, 0), &[step(12)]).unwrap();
@@ -304,6 +306,7 @@ mod tests {
         assert_eq!(v.key, "game:0:0");
         assert_eq!((v.clusters, v.instances, v.parts, v.rows, v.remainder), (2, 1, 2, 6, 1));
         assert_eq!((v.lights, v.shadows), (2, 1));
+        assert_eq!((v.lights_candidates, v.lights_with_constants), (2, 0));
         assert_eq!(v.light_layers, BTreeMap::from([("11".to_owned(), 1), ("12".to_owned(), 2)]));
         assert_eq!((v.layer_items.clone(), v.layer_remainder), (BTreeMap::from([("5".to_owned(), 2)]), 1));
         assert_eq!(v.part_flags, BTreeMap::from([("stencil_mark".to_owned(), 1)]));

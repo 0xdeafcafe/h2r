@@ -14,6 +14,19 @@ pub(crate) fn label(choice: Resolution, native: (u32, u32)) -> String {
     }
 }
 
+/// The narrow value column shows the physical Native size. The picker's
+/// help has room for the automatic raster and the full-size alternative.
+pub(crate) fn help(native: (u32, u32)) -> String {
+    let (w, h) = Resolution::Native.size(native);
+    if (w, h) == native {
+        return crate::setting_defs::RESOLUTION.help.into();
+    }
+    format!(
+        "Native renders at {w}x{h}. Pick {}x{} for full resolution.",
+        native.0, native.1
+    )
+}
+
 pub(crate) fn choices(native: (u32, u32), current: Resolution) -> Vec<Resolution> {
     let (w, h) = native;
     let mut sizes = Vec::new();
@@ -74,6 +87,12 @@ mod tests {
                 "5120x2880"
             ]
         );
+        assert_eq!(
+            help(native),
+            "Native renders at 3840x2160. Pick 5120x2880 for full resolution."
+        );
+        assert_eq!(help((3440, 1440)), crate::setting_defs::RESOLUTION.help);
+        assert!(label(Resolution::Native, native).len() < VALUE_SLOT.len());
     }
 
     #[test]

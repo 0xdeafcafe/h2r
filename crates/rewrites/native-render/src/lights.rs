@@ -84,44 +84,7 @@ pub struct Light {
     pub constants: Option<LightConstants>,
 }
 
-/// One light's constants as its passes read them, words as the game
-/// stores them (docs/graphics/native-lights.md, "Stage 4", "Engine
-/// constants"); `engine::light_constants` and `engine::light_passes`
-/// compute them without writing guest memory.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LightConstants {
-    /// The 36 dwords `0x0003a550` uploads to `c[31]`..`c[39]`.
-    pub frame: [u32; 36],
-    /// The per-light flags (`[0x004ba014]`, `engine::light_passes::flag`).
-    pub flags: u32,
-    /// Engine vectors 5 and 6: colours A and B as the frame holds them.
-    pub colour_a: [u32; 3],
-    pub colour_b: [u32; 3],
-    /// The colour scale mode (`[0x00485a2c]`, integers 0 and 1).
-    pub mode: u32,
-    /// The definition's first dword (its first byte picks layer 12's
-    /// implementation 4; bit 1 is integer 7), and its words `+0x8a` and
-    /// `+0x80` (integers 2 and 3).
-    pub definition_flags: u32,
-    pub definition_8a: u16,
-    pub definition_80: u16,
-    /// Falloff word 0 (`[0x00485a30]`, scalar 16).
-    pub falloff_0: u32,
-    /// The `bitm` datum engine texture 10 (the gel) binds, image 0
-    /// (`engine::light_passes::gel`). A shader-driven gel uses the live
-    /// target-13 binding supplied separately by its producer.
-    pub gel: Option<u32>,
-    /// The constants setup also renders a shader into target 13.
-    pub animated_gel: bool,
-}
-
-impl LightConstants {
-    /// Whether the light casts its shadow (flag bit 2): its passes run
-    /// layers 10 and 11 before the others (`light_passes`).
-    pub fn shadowed(&self) -> bool {
-        self.flags & 4 != 0
-    }
-}
+pub use frame_scene::LightConstants;
 
 /// Consecutive native lights in the game's order: one external pass. The
 /// feature adds lights while the pass waits in the device; the pass takes

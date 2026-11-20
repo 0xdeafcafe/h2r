@@ -233,63 +233,65 @@ where
                     // first, where the GPU would have run them; the entry
                     // itself runs again afterwards (see
                     // `deliver_push_callback`).
-                    Ok(mut d) => match {
+                    Ok(mut d) => {
                         // An armed swallow checks the entry's caller before
                         // the draws its drain executes.
-                        let ret = d.swallowing()
+                        let ret = d
+                            .swallowing()
                             .then(|| mem.read_u32(regs.esp).unwrap_or(0));
-                        ret.map_or(Ok(()), |ret| {
+                        let drain = ret.map_or(Ok(()), |ret| {
                             d.swallow_caller(&mem, regs.esp, ret, |token| {
                                 ctx.live_continuations()
                                     .iter()
                                     .any(|c| c.token == token && c.origin == "feature: after hooks")
                             })
                         })
-                        .and_then(|()| d.drain_until_callback(&mut mem))
-                    } {
-                        Ok(Some(cb)) => {
-                            drop(d);
-                            drop(guest);
-                            return deliver_push_callback(cpu, ctx, &dev, cb, addr);
-                        }
-                        Ok(None) => match d
-                            .swallow_before_entry(e.name)
-                            .and_then(|()| d.call_residual_entry(&e, &mut mem, &regs))
-                        {
-                            Ok(o) => {
-                                apply(cpu, o);
-                                let destroys = d.take_pending_destroys();
-                                let vblanks = d.take_pending_vblanks();
+                        .and_then(|()| d.drain_until_callback(&mut mem));
+                        match drain {
+                            Ok(Some(cb)) => {
                                 drop(d);
-                                if destroys.is_empty() && vblanks.is_empty() {
-                                    return guest.ret(cpu, o.cleanup);
-                                }
-                                // Resources the entry destroyed go to the
-                                // original D3D_DestroyResource, and vblanks
-                                // counted by Swap to the callback
-                                // (crate::vblank), before the caller resumes.
-                                let ret = guest.ret(cpu, o.cleanup)?;
                                 drop(guest);
-                                let saved = *cpu;
-                                return destroy_then_return(
-                                    cpu,
-                                    ctx,
-                                    destroys.into(),
-                                    vblanks.into(),
-                                    saved,
-                                    ret.target_pc,
-                                );
+                                return deliver_push_callback(cpu, ctx, &dev, cb, addr);
                             }
+                            Ok(None) => match d
+                                .swallow_before_entry(e.name)
+                                .and_then(|()| d.call_residual_entry(&e, &mut mem, &regs))
+                            {
+                                Ok(o) => {
+                                    apply(cpu, o);
+                                    let destroys = d.take_pending_destroys();
+                                    let vblanks = d.take_pending_vblanks();
+                                    drop(d);
+                                    if destroys.is_empty() && vblanks.is_empty() {
+                                        return guest.ret(cpu, o.cleanup);
+                                    }
+                                    // Resources the entry destroyed go to the
+                                    // original D3D_DestroyResource, and vblanks
+                                    // counted by Swap to the callback
+                                    // (crate::vblank), before the caller resumes.
+                                    let ret = guest.ret(cpu, o.cleanup)?;
+                                    drop(guest);
+                                    let saved = *cpu;
+                                    return destroy_then_return(
+                                        cpu,
+                                        ctx,
+                                        destroys.into(),
+                                        vblanks.into(),
+                                        saved,
+                                        ret.target_pc,
+                                    );
+                                }
+                                Err(err) => {
+                                    d.swallow_entry_failed(e.name);
+                                    (err, mem.take_fault())
+                                }
+                            },
                             Err(err) => {
                                 d.swallow_entry_failed(e.name);
                                 (err, mem.take_fault())
                             }
-                        },
-                        Err(err) => {
-                            d.swallow_entry_failed(e.name);
-                            (err, mem.take_fault())
                         }
-                    },
+                    }
                 }
             };
             let error = match (error, fault) {

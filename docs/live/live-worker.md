@@ -418,8 +418,9 @@ member, and accepts a current ticket for renewal.
 
 When Live grants a Cloudflare lease, the hub calls the room named by the
 lease ID. Its private `start` request asks the class's pool room to place
-the match on a pack container with room. Only when no pack has room does a
-new pack room launch the image entrypoint with `H2_PACK=1`, which executes
+the match on a pack container with room. An eligible search can start a pack
+before a lease exists. When placement finds no room, a new pack room launches
+the image entrypoint with `H2_PACK=1`, which executes
 `/opt/h2/h2 host pack`. The pack starts the match's `h2 host run`.
 [Packed hosts](dedicated-host.md#packed-hosts) The
 host receives the lease ID, Live URL, lease-scoped token, signed bundle URL
@@ -440,8 +441,8 @@ meet the default scheduling policy's 3 GiB per vCPU minimum.
 
 | Worker setting | Purpose |
 |---|---|
-| `LIVE_MAX_HOSTS` | Shared cap across both classes. Defaults to 4. Set each application's numeric `max_instances` to the same value when deploying. |
-| `LIVE_HOST_PACK_MATCHES` | Matches per host container. Defaults to 3, at most 8. Each container still admits a match only when its measured load leaves room. |
+| `LIVE_MAX_HOSTS` | Shared lease cap across both classes. The default is 4. Operators may select 0–4 or a measured fleet step (16, 64, 256, 1,024). Deployment calculates a separate container limit for each class. [Fleet caps](host-halving.md#caps) |
+| `LIVE_HOST_PACK_MATCHES` | Optional slot cap per container. Small packs have five slots and large packs ten. A numeric value lowers the class cap. Admission also checks gameplay tick p99, CPU and memory. |
 | `LIVE_HOST_PRICES` | Optional JSON price table used to estimate lease costs, including when replaying past host events. |
 | `LIVE_HOST_BUDGET_USD` | Estimated dedicated-host spend cap in USD per UTC calendar month. Defaults to $25. Set to `0` to disable new leases. Falls back to `LIVE_HOST_BUDGET_USD_MONTH` when unset. |
 | `LIVE_HOST_LIVE_URL` | URL the host can reach for registration and reports. Defaults to Live's public URL. |
@@ -575,11 +576,12 @@ with it (the switch). Both need `--yes-production`.
 
 Every environment declares the dedicated host containers, built from
 `deploy/host/Dockerfile` with the image `deploy/host/build.sh` stages. Until
-that image is staged, deploy with `--no-hosts`: the script writes
-`wrangler.nohosts.toml` beside `wrangler.toml` without the `[[containers]]`
-blocks and with `LIVE_MAX_HOSTS = "0"`, so Live refuses host launches and
-everything else deploys. Without the image and without the flag it stops
-before deploying.
+the image is staged, `deploy.sh --no-hosts` (with the environment name)
+omits the container applications and sets the lease cap to zero. For a host
+deployment, edit the environment's variables in `wrangler.toml`.
+`python3 crates/live/live-worker/host_capacity.py` prints the effective
+config, including each application's container limit. The deploy script
+passes this config to Wrangler and removes its temporary copy on exit.
 
 `deploy.sh` prints each step as it goes:
 
@@ -640,7 +642,8 @@ header, the Worker reads `GET /v1/games/{id}` anonymously and builds the
 model from the matching game detail. The hub's generic metadata response
 skips the fallback, and the detail read enforces the same anonymous
 visibility rules. Both homes use the same renderer to put the header
-and its emblem URLs above the app's root in the initial HTML.
+and its emblem URLs in an inert template in the initial HTML. Game Details
+mounts it below the breadcrumbs.
 [Worker page rendering](../../crates/live/live-worker/src/site.rs)
 
 The Worker routes `/art/emblem/*` ahead of static assets. The stable

@@ -22,6 +22,9 @@
 
 pub mod render_aspect;
 
+/// Vertical pixels per projection unit in the current retail view.
+pub const PIXEL_SCALE: u32 = 0x004b_9ed0;
+
 /// Where one argument or the result lives at the function's entry or exit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Loc {
@@ -609,6 +612,8 @@ points! { ALL;
     RENDER_FRAME_TAIL @ 0x0001_3b90: [opaque]; "docs/graphics/native-renderer.md";
     /// `render_scene_passes`: the scene pass sequence of one view.
     RENDER_SCENE_PASSES @ 0x0002_bcd0: [opaque]; "docs/graphics/e3-lighting.md";
+    /// Resets the record counters immediately before the two structure walks.
+    RESET_SCENE_RECORDS @ 0x0002_cb30: [fn() ret 0]; "docs/graphics/occlusion-culling.md";
     /// Main view's visible structure cluster and placement record walks.
     WORLD_CLUSTER_RECORDS @ 0x0013_3390: [fn(visibility: ebx) ret 0]; "docs/graphics/native-renderer.md";
     /// One visible row entering the gather. A cold neighbour can require
@@ -740,8 +745,11 @@ points! { ALL;
     LIGHT_GEOMETRY_FLAGS @ 0x0003_1660: [fn(light: eax, definition: ecx, vis: esi, owner: stack 0, root: stack 1, point: stack 2, shadow: stack 3) ret 16]; "docs/graphics/native-renderer.md";
     /// Append the optional owner or owning unit as a dynamic light caster.
     LIGHT_EXTRA_CASTER @ 0x0003_1c20: [fn(shadow: al, owner: ecx, vis: stack 0) ret 4]; "docs/graphics/native-renderer.md";
+    /// Select a model detail tier. The projected radius is in the low float
+    /// of XMM4. The return value and fraction drive the per-view hysteresis.
+    MODEL_LOD @ 0x0004_c450: [fn(distances: ecx, fraction: ebx, object: stack 0) -> al ret 4]; "docs/graphics/occlusion-culling.md";
     /// Write one BSP or model render record, with its associated cache state.
-    SCENE_RECORD_WRITER @ 0x0002_cbf0: [opaque]; "docs/graphics/native-renderer.md";
+    SCENE_RECORD_WRITER @ 0x0002_cbf0: [fn(section: eax, selector: ecx, node_count: edx, pixels: stack 9) -> eax ret 84]; "docs/graphics/native-renderer.md";
     /// The object render records for a visibility struct: EAX the struct
     /// (`0x00547f88` the main view's), stack 0 an argument passed on,
     /// `ret 4`. Reorders the struct's object list (`0x00134240`), then

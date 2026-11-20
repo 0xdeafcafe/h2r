@@ -345,3 +345,30 @@ fn a_stopped_grid_build_keeps_its_progress_and_carries_on_to_the_same_grid() {
     assert_eq!(again.walls.vis().map(|v| &**v), Some(&full));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn light_index_budget_preserves_dense_cell_and_pair_answers() {
+    // Just large enough to exceed the light index budget. Include both
+    // ends of the lattice and a pair with a set visibility bit.
+    let columns = (LIGHT_INDEX_BYTES / size_of::<u16>() + 1) as u32;
+    let make = |budget| {
+        let mut grid = Vis::with_index_budget(
+            [0.0; 3], [1.0; 3], [columns, 1, 1], vec![0, 10, columns - 1], 0, budget,
+        ).unwrap();
+        grid.bits[0] = 1;
+        grid
+    };
+    let light = make(LIGHT_INDEX_BYTES);
+    let dense = make(usize::MAX);
+    assert_eq!(light.index.capacity(), 0);
+    assert_eq!(dense.index.len(), columns as usize);
+    for x in -1..=columns as i32 {
+        let p = [x as f32 + 0.5, 0.5, 0.5];
+        assert_eq!(light.cell(p), dense.cell(p));
+        assert_eq!(light.never([0.5; 3], p), dense.never([0.5; 3], p));
+    }
+    assert_eq!(light.to_bytes(Stamp::now(7)), dense.to_bytes(Stamp::now(7)));
+    assert!(Vis::with_index_budget(
+        [0.0; 3], [1.0; 3], [columns, 1, 1], vec![columns], 0, 0,
+    ).is_none());
+}

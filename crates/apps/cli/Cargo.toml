@@ -24,6 +24,7 @@ xiso = { workspace = true, optional = true }
 h1map = { path = "../../tools/h1map", optional = true }
 # Halo 1 multiplayer maps converted (`h2 h1 convert`).
 h1convert = { path = "../../tools/h1convert", optional = true }
+viewer = { path = "../../tools/viewer", optional = true }
 scenario-edit = { path = "../../tools/scenario-edit", optional = true }
 # Halo 1 campaign levels converted (`h2 h1 convert <iso> a30`).
 h1campaign = { path = "../../tools/h1campaign", optional = true }
@@ -100,6 +101,10 @@ png = "0.18"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+# Paired LAN lab connections (TLS 1.3 and HMAC).
+ring = { version = "0.17", optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
+subtle = { version = "2", optional = true }
 # Enable runtime-detected ARM SHA instructions for full-image cache
 # validation. sha2-asm has no MSVC build; Windows uses the portable code.
 sha2 = { version = "0.10", features = ["asm"], optional = true }
@@ -125,6 +130,7 @@ desktop = [
     "dep:h1map",
     "dep:h1convert",
     "dep:scenario-edit",
+    "dep:viewer",
     "dep:h1campaign",
     "dep:h1-assets",
     "dep:h1objects",
@@ -154,6 +160,9 @@ desktop = [
     "dep:flate2",
     "dep:live-hle",
     "dep:sha2",
+    "dep:ring",
+    "dep:rustls",
+    "dep:subtle",
 ]
 perf = ["desktop", "dep:perf", "boot/perf"]
 

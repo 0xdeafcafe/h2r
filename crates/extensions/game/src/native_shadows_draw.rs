@@ -209,7 +209,8 @@ impl Range {
             )
         };
         let mut packets = Vec::with_capacity(rects.len());
-        for r in rects {
+        for &rect in rects {
+            let r = draw.display_rect(rect);
             d.scissor = Some(gfx::renderer::ScissorRect {
                 x: r.x,
                 y: r.y,

@@ -299,16 +299,18 @@ impl Live for Preview {
         let first = fixture("game-1", "lockout", "Team Slayer", true);
         let second = fixture("game-2", "zanzibar", "CTF", false);
         let films = vec![first.clone(), second.clone()];
-        let mut state = super::State::default();
-        state.load = match name {
-            "empty" | "empty-saved" | "empty-clips" => Load::Ready(Vec::new()),
-            "loading" => Load::Loading,
-            _ => Load::Ready(films.clone()),
-        };
-        state.tab = match name {
-            "saved" | "empty-saved" => Tab::Saved,
-            "clips" | "empty-clips" => Tab::Clips,
-            _ => Tab::Recent,
+        let mut state = super::State {
+            load: match name {
+                "empty" | "empty-saved" | "empty-clips" => Load::Ready(Vec::new()),
+                "loading" => Load::Loading,
+                _ => Load::Ready(films.clone()),
+            },
+            tab: match name {
+                "saved" | "empty-saved" => Tab::Saved,
+                "clips" | "empty-clips" => Tab::Clips,
+                _ => Tab::Recent,
+            },
+            ..Default::default()
         };
         state.clips.push(Clip {
             film: first.id.clone(),

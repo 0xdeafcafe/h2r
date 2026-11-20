@@ -148,7 +148,9 @@ pub fn run_theater(
         ..LiveConfig::default()
     };
     let mut opts = opts.clone();
-    let sim = match theater::Startup::read(&mut reader)? {
+    let startup = theater::Startup::read(&mut reader)?;
+    let legacy_lod = startup.as_ref().and_then(theater::Startup::legacy_lod_multiplier);
+    let sim = match startup {
         Some(start) => start.restore(&mut opts, &mut host)?,
         None => {
             anyhow::ensure!(reader.header.meta.source == film::Source::Host,
@@ -156,7 +158,7 @@ pub fn run_theater(
             None
         }
     };
-    run_configured(xbe, image, &opts, host, (&lan, None), sim.map(|s| (s, None)), Some(replay))
+    run_configured(xbe, image, &opts, host, (&lan, None), sim.map(|s| (s, None)), Some((replay, legacy_lod)))
 }
 
 fn run_configured(
@@ -166,8 +168,11 @@ fn run_configured(
     mut host: Host,
     (live, publisher): (&LiveConfig, Option<HostPublisher>),
     sim: Option<(sim_glue::Sim, Option<telemetry::TelemetryConfig>)>,
-    replay: Option<theater::Replay>,
+    replay: Option<(theater::Replay, Option<f32>)>,
 ) -> Result<RunReport> {
+    let (replay, legacy_lod) = replay.unzip();
+    #[cfg(not(feature = "gpu"))]
+    let _ = legacy_lod;
     // H2_SIM and the CLI sim entry share the dedicated profile. The explicit
     // switch off supplies a stock headless control for the same roster.
     let (sim_mode, upload) = match sim {
@@ -180,12 +185,13 @@ fn run_configured(
         host.host_light || (sim_mode.is_some() && switches.feature("host-light", true));
     #[cfg(not(feature = "desktop-runtime"))]
     anyhow::ensure!(host_light, "the host binary requires the light host profile");
+    let coalesce_host_ticks = host_light && switches.feature("host-light.tick-pacing", false);
     let replaying = replay.is_some();
     let render_every = replay.as_ref().map_or(0, |r| r.render_every);
     if host_audit::module_from_env().is_some() {
         anyhow::ensure!(host_light, "H2_HOST_MODULE requires the light host profile");
     }
-    if host.host_light {
+    if host.host_light && !replaying {
         anyhow::ensure!(live.enabled && sim_mode.is_none(),
             "--host-light serves the network lobby; unset H2_SIM");
         anyhow::ensure!(
@@ -194,9 +200,9 @@ fn run_configured(
         );
     }
     #[cfg(feature = "gpu")]
-    let host_graphics = (host.gfx.is_some() && !(replaying && render_every != 0))
-        || host.gfx_view.is_some()
-        || host.render_thread;
+    let rendered_replay = replaying && render_every != 0 && sim_mode.is_none() && host.gfx.is_some();
+    #[cfg(feature = "gpu")]
+    let host_graphics = !rendered_replay && (host.gfx.is_some() || host.gfx_view.is_some() || host.render_thread);
     #[cfg(not(feature = "gpu"))]
     let host_graphics = false;
     if host_light || sim_mode.is_some() {
@@ -209,6 +215,7 @@ fn run_configured(
             "light host and sim require the guest D3D, Bink, DirectSound and XAPI shims"
         );
     }
+    bots::vis::set_light_index_budget(host_light);
     let bots = opts.xapi && (!host_light || sim_mode.is_some() || host.host_bots);
     d3d_diag::keep_present_history(!host_light);
     let x = xbe::Xbe::parse(xbe_bytes)?;
@@ -245,6 +252,7 @@ fn run_configured(
     // exactly what the game assumes. The write-combined window is a boot
     // stopgap: --no-stopgaps leaves it out.
     let mut options = runtime::loader::LoadOptions::halo2();
+    options.map_guest_reads = host_light && switches.implementation("sim.mapped-reads", true);
     if opts.stopgaps {
         for r in &mut options.physical_reservations {
             r.aliases.push(d3d_glue::WC_BASE | r.physical.start);
@@ -270,7 +278,7 @@ fn run_configured(
     // Interpreting past unsupported instructions is a stopgap too.
     fallback::set_recovery(opts.stopgaps);
     if opts.stopgaps {
-        fallback::start_analysis(&loaded.runtime);
+        fallback::configure_analysis(&loaded.runtime, !host_light);
     }
     eprintln!(
         "registered {} entries, {} resumes in {:.1}s",
@@ -358,18 +366,24 @@ fn run_configured(
         audit.is_none() || !switches.feature("render-census", false),
         "host audit and render-census both use the guest access trap"
     );
-    let mut features = hooks::Registry::new(switches);
+    let lockstep_config = lockstep_glue::Config::from_env();
+    let lockstep_on = lockstep_config.enabled();
+    #[cfg(feature = "gpu")]
+    let protected_readbacks = d3d_glue::protected_readbacks(_live.is_some(), film.is_some(), lockstep_on);
+    let mut features = hooks::Registry::new(registration::profile_switches(switches, host_light));
     #[cfg(feature = "gpu")]
     let native_size: run_opts::NativeSize = host.gfx_view.as_ref().map(|view| view.native_size.clone())
         .unwrap_or_else(|| Arc::new(|| setting_defs::GUEST_FRAME));
     #[cfg(not(feature = "gpu"))]
     let native_size: run_opts::NativeSize = Arc::new(|| setting_defs::GUEST_FRAME);
     #[cfg(feature = "gpu")]
-    let output_size = if opts.d3d && !host_light && sim_mode.is_none()
+    let output_size = if opts.d3d && ((!host_light && sim_mode.is_none()) || rendered_replay)
         && (host.gfx_view.is_some() || (host.gfx.is_none() && std::env::var_os("H2_BOOT_GFX").is_some()))
     {
-        let output = d3d_glue::output_size(host.settings.as_deref(), native_size.clone())?;
-        Some(output)
+        match host.gfx_view.as_ref().and_then(|v| v.viewer_output.clone()) {
+            Some(output) => Some(output),
+            None => Some(d3d_glue::output_size(host.settings.as_deref(), native_size.clone())?),
+        }
     } else {
         None
     };
@@ -386,6 +400,7 @@ fn run_configured(
     std::fs::create_dir_all(&opts.data_root)?;
     let mut cfg = vfs::Config::new(&opts.data_root, x.certificate.title_id);
     cfg.mmap_disc = host_light;
+    cfg.map_guest_reads = options.map_guest_reads;
     if host_light {
         cfg.server_maps = std::env::var_os("H2_SERVER_MAP_DIR")
             .filter(|path| !path.is_empty())
@@ -731,6 +746,16 @@ fn run_configured(
     #[cfg(not(feature = "gpu"))]
     let headless = true;
     #[cfg(feature = "gpu")]
+    let single = opts.d3d && host.gfx_view.is_some()
+        && d3d_glue::single_copy(host.settings.as_deref(), protected_readbacks)?;
+    #[cfg(feature = "gpu")]
+    if single && d3d_glue::locked_retail_target(host.settings.as_deref())
+        && let Some(view) = &mut host.gfx_view && view.viewer_output.is_none()
+        && let Some(display) = view.backend.take()
+    {
+        host.gfx = Some(display.as_only_display());
+    }
+    #[cfg(feature = "gpu")]
     if opts.d3d && host.gfx_view.as_ref().is_none_or(|view| view.backend.is_none()) && interp.is_none() && let Some(b) = &mut host.gfx {
         native_shadows_glue::configure_single(b);
     }
@@ -744,7 +769,6 @@ fn run_configured(
                 let output = output_size.expect("display view has an output size");
                 let (width, height) = output();
                 let scale = d3d::scaled::RenderScale::for_output(width, height).map_err(anyhow::Error::msg)?;
-                let single = d3d_glue::single_copy(host.settings.as_deref())?;
                 let mut b = d3d::ScaledBackend::with_resolution(b, view, scale, single).map_err(anyhow::Error::msg)?;
                 eprintln!("d3d: rendering at {width}x{height}; single copy {single}");
                 // The Video screen's Resolution row changes the scale at the
@@ -766,25 +790,31 @@ fn run_configured(
                 if let Some(viewport) = display_size.take() {
                     b.follow_presentation(move |src| viewport(src));
                 }
-                let stats = b.shared_stats();
+                let scale_stats = b.shared_stats();
+                let stats = scale_stats.clone();
                 active_size = Some(Arc::new(move || {
                     stats.lock().unwrap_or_else(|e| e.into_inner()).presentation
                 }));
                 let report = Some(d3d_glue::scale_report(&mut b));
-                if host.render_thread {
-                    d3d_glue::install_threaded_for_profile(&loaded.runtime, b, report, interp, render_hooks)?
+                let installed = if host.render_thread {
+                    d3d_glue::install_threaded_for_profile(&loaded.runtime, b, report, interp, render_hooks)
                 } else {
-                    d3d_glue::install_for_profile(&loaded.runtime, b, report, render_hooks)?
-                }
+                    d3d_glue::install_for_profile(&loaded.runtime, b, report, render_hooks)
+                }?;
+                installed.with_gpu_view(Some(scale_stats))
             }
-            None if host.render_thread => {
-                d3d_glue::install_threaded_for_profile(&loaded.runtime, b, None, interp, render_hooks)?
+            None => {
+                let installed = if host.render_thread {
+                    d3d_glue::install_threaded_for_profile(&loaded.runtime, b, None, interp, render_hooks)
+                } else {
+                    d3d_glue::install_for_profile(&loaded.runtime, b, None, render_hooks)
+                }?;
+                installed.with_gpu_view(None)
             }
-            None => d3d_glue::install_for_profile(&loaded.runtime, b, None, render_hooks)?,
         }),
         (true, None) if host_light => Some(d3d_glue::install_light_for_profile(&loaded.runtime, render_hooks)?),
         (true, None) => Some(d3d_glue::install_headless_for_profile(
-            &loaded.runtime, interp, render_hooks, host.settings.as_deref(),
+            &loaded.runtime, interp, render_hooks, host.settings.as_deref(), protected_readbacks,
         )?),
     };
     #[cfg(all(not(feature = "gpu"), feature = "desktop-runtime"))]
@@ -923,8 +953,6 @@ fn run_configured(
     #[cfg(feature = "desktop-runtime")]
     let script = xapi_glue::InputScript::from_env();
     // H2_LOCKSTEP / H2_INPUT_RECORD / H2_INPUT_REPLAY (lockstep_glue.rs).
-    let lockstep_config = lockstep_glue::Config::from_env();
-    let lockstep_on = lockstep_config.enabled();
     // H2_AGENT=<socket>: the agent API (agent_glue.rs, docs/runtime/agent-api.md);
     // the debug menu talks to a local one with no socket.
     // With none set, a game that asks for it opens `<pid>.sock` in the agents
@@ -953,6 +981,10 @@ fn run_configured(
     let late = registration::register_late_for_profile(
         &mut features,
         registration::LateInputs {
+            #[cfg(feature = "gpu")]
+            view: d3d_calls.as_ref().and_then(|d| d.view.as_ref()),
+            #[cfg(feature = "gpu")]
+            fixed_lod: protected_readbacks.then(|| legacy_lod.flatten().unwrap_or(1.0)),
             rt: &loaded.runtime,
             lockstep: lockstep_config,
             agent: agent_source,
@@ -1223,6 +1255,20 @@ fn run_configured(
     } else {
         None
     };
+    if coalesce_host_ticks
+        && let Some(pacer) = m.pacer.as_mut()
+        && pacer.ticks_per_second == kernel::clock::Clock::FREQUENCY
+    {
+        let phase = std::env::var_os("H2_HOST_TICK_PHASE_NS")
+            .map(|value| value.to_string_lossy().parse::<u64>())
+            .transpose()
+            .context("H2_HOST_TICK_PHASE_NS must be an unsigned integer")?
+            .unwrap_or(0);
+        let live = _live.clone();
+        pacer.coalesce_host_ticks(phase, move |timeout| {
+            live.as_ref().is_some_and(|hle| hle.wait_for_network_input(timeout))
+        });
+    }
     eprintln!("entry {:#010x}, running", loaded.cpu.eip);
     let t = Instant::now();
     // One slice at a time so XAPI's input pump runs between slices
@@ -1242,7 +1288,7 @@ fn run_configured(
     // what holds state outside guest RAM, for `state.*` and the probe.
     let snap_host = snapshot_glue::Host {
         rt: &loaded.runtime,
-        d3d: d3d_calls.as_ref().map(|i| &*i.snapshot),
+        d3d: d3d_calls.as_ref().map(|i| i.snapshot.as_ref()),
         audio: ds.as_ref(),
         xapi: xa.as_ref(),
         bink: bink.as_deref(),
@@ -1476,7 +1522,9 @@ fn run_configured(
             );
             (w, t)
         });
-        s.note_cow(cow);
+        let reads = k.vfs().map(|vfs| vfs.lock().unwrap_or_else(|e| e.into_inner()).guest_read_bytes())
+            .unwrap_or_default();
+        s.note_memory(cow, reads);
     }
     let sim_upload_result = match &sim_mode {
         Some(_) if replaying => Ok(()),

@@ -25,10 +25,28 @@ pub struct Installed {
     /// The vblank callback on the 60 Hz logical clock, for
     /// `Kernel::add_periodic` (taken once).
     pub vblank: Option<kernel::periodic::Handler>,
+    /// Present only when this backend draws an image.
+    #[cfg(feature = "gpu")]
+    pub view: Option<DrawingView>,
     /// The device, for machine snapshots (`crate::snapshot_glue`).
     pub snapshot: Arc<dyn DeviceSnapshot>,
     #[cfg(feature = "gpu")]
     pub ui_layout: Arc<dyn crate::render_aspect::UiLayoutSink>,
+}
+
+/// The installed GPU view. A plain backend draws at guest resolution. A
+/// scaled backend publishes its effective scale when it presents.
+#[cfg(feature = "gpu")]
+pub struct DrawingView {
+    pub scale_stats: Option<Arc<Mutex<d3d::scaled::ScaleStats>>>,
+}
+
+#[cfg(feature = "gpu")]
+impl Installed {
+    pub fn with_gpu_view(mut self, scale_stats: Option<Arc<Mutex<d3d::scaled::ScaleStats>>>) -> Self {
+        self.view = Some(DrawingView { scale_stats });
+        self
+    }
 }
 
 /// The device as a machine snapshot sees it, whatever backend it was made
@@ -173,52 +191,53 @@ pub fn install_headless(
     rt: &runtime::Runtime,
     interp: Option<Interpolation>,
 ) -> anyhow::Result<Installed> {
-    install_headless_for_profile(rt, interp, crate::run_plan::compiled_render_hooks(), None)
+    install_headless_for_profile(rt, interp, crate::run_plan::compiled_render_hooks(), None, false)
 }
 
 #[cfg(feature = "gpu")]
-/// Keep the single-backend path available to captures locked to retail
-/// dimensions and lighting. Even there, the window can present anamorphically.
+/// Boot selects the presenting backend after network and film registration.
 pub fn window_targets(
-    store: &settings::Store,
+    _store: &settings::Store,
     native_size: crate::run_opts::NativeSize,
     display_size: impl Fn((u32, u32)) -> (u32, u32) + Send + Sync + 'static,
     reference: impl FnOnce() -> d3d::GfxBackend,
     display: impl FnOnce() -> d3d::GfxBackend,
 ) -> (d3d::GfxBackend, crate::run_opts::DisplayView) {
+    let (main, backend) = (reference(), Some(display()));
+    (main, crate::run_opts::DisplayView { backend, native_size, viewer_output: None, display_size: Arc::new(display_size) })
+}
+
+/// A locked retail target has no live raster edits. It can present directly
+/// when the run permits single-copy rendering.
+#[cfg(feature = "gpu")]
+pub fn locked_retail_target(store: Option<&settings::Store>) -> bool {
+    let Some(store) = store else { return false };
     use crate::setting_defs::{GUEST_FRAME, LIGHTING, RESOLUTION, lighting_of};
     let fixed = settings::Resolution::Fixed(GUEST_FRAME.0, GUEST_FRAME.1);
     let locked = |key| store.state(key).is_some_and(|state| state.locked);
-    let retail = store.handle::<settings::Resolution>(RESOLUTION.key).get() == fixed
+    store.handle::<settings::Resolution>(RESOLUTION.key).get() == fixed
         && locked(RESOLUTION.key)
         && lighting_of(store.handle::<u32>(LIGHTING.key).get()) == d3d::Lighting::Retail
-        && locked(LIGHTING.key);
-    let single = store.handle::<bool>(crate::setting_defs::SINGLE_COPY.key).get();
-    let (main, backend) = if retail && single {
-        (display().as_only_display(), None)
-    } else {
-        (reference(), Some(display()))
-    };
-    (main, crate::run_opts::DisplayView { backend, native_size, display_size: Arc::new(display_size) })
+        && locked(LIGHTING.key)
 }
 
-/// The same per-run dimensions feed the raster grid and the render projection.
 #[cfg(feature = "gpu")]
-pub fn output_size(
-    store: Option<&settings::Store>,
-    native: crate::run_opts::NativeSize,
-) -> anyhow::Result<crate::run_opts::NativeSize> {
-    if let Some(store) = store {
-        let choice = store.handle::<settings::Resolution>(crate::setting_defs::RESOLUTION.key);
-        Ok(Arc::new(move || choice.get().size(native())))
-    } else {
-        let choice = crate::setting_defs::resolution_from_env().map_err(anyhow::Error::msg)?;
-        Ok(Arc::new(move || choice.size(native())))
+mod output_size;
+#[cfg(feature = "gpu")]
+pub use output_size::output_size;
+
+#[cfg(feature = "gpu")]
+pub fn protected_readbacks(network: bool, film: bool, lockstep: bool) -> bool {
+    // XNet sockets and film taps are installed before entry. A match may
+    // start later on that same device; earlier retail pixels must already exist.
+    network || film || lockstep
+}
+
+#[cfg(feature = "gpu")]
+pub fn single_copy(store: Option<&settings::Store>, protected: bool) -> anyhow::Result<bool> {
+    if protected {
+        return Ok(false);
     }
-}
-
-#[cfg(feature = "gpu")]
-pub fn single_copy(store: Option<&settings::Store>) -> anyhow::Result<bool> {
     let def = &crate::setting_defs::SINGLE_COPY;
     let value = match store {
         Some(store) => store.get(def.key).unwrap_or(def.default),
@@ -236,6 +255,7 @@ pub fn install_headless_for_profile(
     interp: Option<Interpolation>,
     profile: film::RenderHooks,
     settings: Option<&settings::Store>,
+    protected_readbacks: bool,
 ) -> anyhow::Result<Installed> {
     match std::env::var_os("H2_BOOT_GFX") {
         None => install_for_profile(rt, Headless::default(), None, profile),
@@ -420,6 +440,7 @@ pub fn install_headless_for_profile(
                 eprintln!(
                     "d3d: lighting A/B at {width}x{height} (H2_BOOT_GFX_LIGHTING_AB): a retail and an E3 view of one run; the guest sees a 1x reference"
                 );
+                let scale_stats = b.shared_stats();
                 let (retail_report, e3_report) =
                     (scale_report(b.reference_mut()), scale_report(&mut b));
                 let report: ExtraReport = Box::new(move || {
@@ -430,11 +451,12 @@ pub fn install_headless_for_profile(
                         ab.lock().unwrap().report()
                     )
                 });
-                return if render_thread_requested() {
+                let installed = if render_thread_requested() {
                     install_for_profile(rt, d3d::ThreadedBackend::new(b)?, Some(report), profile)
                 } else {
                     install_for_profile(rt, b, Some(report), profile)
-                };
+                }?;
+                return Ok(installed.with_gpu_view(Some(scale_stats)));
             }
             if (width, height) != crate::setting_defs::GUEST_FRAME || lighting != d3d::Lighting::Retail {
                 // The display presents scaled frames. Exact reference captures
@@ -449,19 +471,21 @@ pub fn install_headless_for_profile(
                         .on_present(shots("", shadow_shots, Some(Arc::clone(&between))))
                         .on_present_replay(between.hook(dir.clone(), "")),
                 );
-                let single = single_copy(settings)?;
+                let single = single_copy(settings, protected_readbacks)?;
                 let mut b =
                     d3d::ScaledBackend::with_resolution(reference, view, scale, single).map_err(anyhow::Error::msg)?;
                 b.set_lighting(lighting);
                 eprintln!(
                     "d3d: rendering at {width}x{height}, {lighting:?} lighting (H2_LIGHTING); single copy {single}"
                 );
+                let scale_stats = b.shared_stats();
                 let report = scale_report(&mut b);
-                return if render_thread_requested() {
+                let installed = if render_thread_requested() {
                     install_threaded_for_profile(rt, b, Some(report), interp, profile)
                 } else {
                     install_for_profile(rt, b, Some(report), profile)
-                };
+                }?;
+                return Ok(installed.with_gpu_view(Some(scale_stats)));
             }
             let mut backend = configure_gfx(
                 d3d::GfxBackend::new(ctx)
@@ -475,10 +499,12 @@ pub fn install_headless_for_profile(
             // submission, present) on a render thread of its own
             // (docs/graphics/render-thread.md), unless H2_RENDER_THREAD=0;
             // behind the in-between frames when `interp` is given.
-            if render_thread_requested() {
-                return install_threaded_for_profile(rt, backend, None, interp, profile);
-            }
-            install_for_profile(rt, backend, None, profile)
+            let installed = if render_thread_requested() {
+                install_threaded_for_profile(rt, backend, None, interp, profile)
+            } else {
+                install_for_profile(rt, backend, None, profile)
+            }?;
+            Ok(installed.with_gpu_view(None))
         }
     }
 }
@@ -1515,6 +1541,8 @@ pub fn install_for_profile<B: d3d::backend::Backend + Send + 'static>(
     Ok(Installed {
         #[cfg(feature = "gpu")]
         ui_layout,
+        #[cfg(feature = "gpu")]
+        view: None,
         vblank,
         snapshot,
         report,
@@ -1835,6 +1863,28 @@ pub fn barrier_handler(
 mod tests {
     use super::*;
     use d3d::backend::Backend;
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn readback_policy_covers_network_and_film_before_gameplay_starts() {
+        let store = settings::Store::defaults(crate::setting_defs::ALL);
+        // XNet is installed at boot for both LAN-only configurations (System
+        // Link) and signed-in ones. Joining a match later uses that device.
+        for (network, film, lockstep, single, label) in [
+            (true, false, false, false, "lobby before a System Link, Live, or co-op join"),
+            (false, true, false, false, "armed recorder or Theater replay"),
+            (false, false, true, false, "lockstep or input-tape playback"),
+            (true, true, false, false, "film of a network match"),
+            (false, false, false, true, "offline play"),
+        ] {
+            let protected = protected_readbacks(network, film, lockstep);
+            assert_eq!(single_copy(Some(&store), protected).unwrap(), single, "{label}");
+        }
+        let exact = settings::Flag::parse_set("graphics.single_copy=false").unwrap();
+        let (store, errors) = settings::Store::load(crate::setting_defs::ALL, None, &|_| None, &[exact]);
+        assert!(errors.is_empty());
+        assert!(!single_copy(Some(&store), false).unwrap());
+    }
 
     #[test]
     fn the_feature_arena_starts_after_the_device_pages() {

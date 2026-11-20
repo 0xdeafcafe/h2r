@@ -258,7 +258,7 @@ pub(crate) fn invoke(
             return Err(fail("invalid service frame length".into()));
         }
         let claims: Vec<_> = arenas
-            .chunks_exact(8)
+            .as_chunks::<8>().0.iter()
             .map(|p| {
                 (
                     u32::from_le_bytes(p[..4].try_into().unwrap()),

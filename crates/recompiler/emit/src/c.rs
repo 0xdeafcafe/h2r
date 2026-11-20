@@ -836,8 +836,8 @@ impl Emitter<'_> {
                     self.fp_ready = false;
                     self.line(0, format!("L_{:08x}:;", insn.pc));
                 }
-                if self.span.is_none() {
-                    if let Some(span) = span::group(&b.insns[i..], self.shape.selectors) {
+                if self.span.is_none()
+                    && let Some(span) = span::group(&b.insns[i..], self.shape.selectors) {
                         let base = span.reg.map_or_else(|| "0u".into(), |r| {
                             let name = reg_name(r);
                             if self.home & (1 << r.index()) != 0 { name.to_string() } else { format!("cpu->{name}") }
@@ -846,7 +846,6 @@ impl Emitter<'_> {
                             insn.pc, span.start, span.len, span.rights));
                         self.span = Some((insn.pc, span));
                     }
-                }
                 self.insn(insn, last);
                 if self.span.as_ref().is_some_and(|(_, s)| s.offsets.is_empty()) {
                     self.span = None;
