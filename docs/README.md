@@ -82,7 +82,13 @@ every page here and the plan to bring them to those rules.
 - [layer-draw.md](graphics/layer-draw.md): the layer draw and its entry loop, read and ported, with the `render-timing` breakdown
 - [hot-iteration.md](graphics/hot-iteration.md): live tag edits (`edit.*`) and hot WGSL overrides, parameters and toggles for the host renderer (`render.*`), without a rebuild or restart
 - [high-resolution.md](graphics/high-resolution.md): 4K and other internal resolutions (`H2_RENDER_SCALE`, the Resolution row); phases 1 and 2 built
-- [native-renderer.md](graphics/native-renderer.md): the native GPU renderer (`impl.render.native`, `crates/native-render`): the stage plan, each stage as designed and as built, and the all-native A/B
+- [native-renderer.md](graphics/native-renderer.md): the native GPU renderer (`impl.render.native`, `crates/native-render`): the frame, the stages and how a frame is checked
+- [native-world.md](graphics/native-world.md): native renderer stage 1: the static world
+- [native-objects.md](graphics/native-objects.md): native renderer stage 2: objects and skinning
+- [native-transparents.md](graphics/native-transparents.md): native renderer stage 3: transparents
+- [native-lights.md](graphics/native-lights.md): native renderer stage 4: lights and shadows
+- [native-water-fog.md](graphics/native-water-fog.md): native renderer stage 4b: water, fog and camouflage
+- [native-post-hud.md](graphics/native-post-hud.md): native renderer stage 5: post and HUD
 - [native-shadows.md](graphics/native-shadows.md): native shadows: caster enumeration, projection, and the interface to the light graph
 - [native-gels.md](graphics/native-gels.md): native shader gel quads through `DrawAdmission`
 - [native-particles.md](graphics/native-particles.md): native particles, contrails, beams and the other immediate effects
