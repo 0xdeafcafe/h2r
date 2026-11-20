@@ -617,6 +617,10 @@ impl WorldPass {
 }
 
 impl d3d::ExternalPass for WorldPass {
+    // The selection and constants belong to this view. Ready pins the BSP,
+    // and each recording binds the target copy passed to it by the renderer.
+    fn replays_scene(&self) -> bool { true }
+
     /// Packets need no worker round trip; the pin holds while no other
     /// command intervenes (`d3d::ThreadedBackend`).
     fn batch_key(&self) -> Option<u64> { Some(self.run) }

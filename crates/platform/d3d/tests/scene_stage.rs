@@ -154,3 +154,39 @@ fn a_stage_of_no_ranges_is_not_taken() {
     let r = d.reserve_scene_stage(&mut m, plan(Stage::Particles, 0), Box::new(Probe(seen))).unwrap();
     assert!(r.is_none());
 }
+
+#[test]
+fn replay_filters_one_shot_stages_before_the_guest_surrenders_the_draw() {
+    use d3d::scene_sink::{ReplayOp, SceneSink};
+    use frame_scene::{Slot, SlotAt};
+
+    struct Retained;
+
+    impl ExternalPass for Retained {
+        fn replays_scene(&self) -> bool { true }
+    }
+
+    let captured = Arc::new(Mutex::new(None));
+    let out = Arc::clone(&captured);
+    let worker = ThreadedBackend::new(recorder()).unwrap();
+    let sink = SceneSink::new(worker, || Some(SlotAt { slot: Slot::Opaque, view: 0 }))
+        .with_replay(move |frame| *out.lock().unwrap() = Some(frame));
+    let (mut d, mut m) = create(sink, UploadPolicy::Always);
+    set_states(&mut d, &mut m);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    assert!(d.reserve_scene_stage(&mut m, plan(Stage::World, 1), Box::new(Probe(seen.clone()))).unwrap().is_none());
+    quad(&mut d, &mut m, 0xff00_ff00);
+
+    d.reserve_scene_stage(&mut m, plan(Stage::World, 1), Box::new(Retained)).unwrap().unwrap().commit();
+    d.swap(&mut m, 0).unwrap();
+    let guard = captured.lock().unwrap();
+    let frame = guard.as_ref().expect("the sink captured the swap");
+    let order: Vec<_> = frame.ops.iter().filter_map(|(_, op)| match op {
+        ReplayOp::Draw { .. } => Some("guest"),
+        ReplayOp::Stage(_) => Some("stage"),
+        _ => None,
+    }).collect();
+    assert_eq!(order, ["guest", "stage"]);
+    assert!(seen.lock().unwrap().is_empty());
+    assert_eq!(d.stats().external_passes, 1);
+}

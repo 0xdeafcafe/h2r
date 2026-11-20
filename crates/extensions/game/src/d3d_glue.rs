@@ -1149,6 +1149,10 @@ impl d3d::backend::Backend for Headless {
         self.0.run_scene_stage(stage)
     }
 
+    fn accepts_scene_pass(&self, pass: &dyn d3d::ExternalPass) -> bool {
+        self.0.accepts_scene_pass(pass)
+    }
+
     fn queues_scene_stages(&self) -> bool {
         self.0.queues_scene_stages()
     }

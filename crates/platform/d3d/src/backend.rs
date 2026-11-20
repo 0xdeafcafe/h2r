@@ -265,6 +265,13 @@ impl IndexedTail {
 /// world. The device decides where (the bound targets and viewport); the
 /// backend gives the pass its encoder and the targets' views.
 pub trait ExternalPass: Send {
+    /// The scene may retain this pass after presentation and record it again
+    /// on other attachments of the same device. Its selections, view and
+    /// material inputs must stay valid for the lifetime of the pass. It
+    /// must produce packets or encoded commands using only the attachments
+    /// and uploads supplied to that recording, with no guest feedback.
+    fn replays_scene(&self) -> bool { false }
+
     fn indexed_tail(&self) -> Option<IndexedTail> { None }
 
     /// All these ranges share the textures resolved at the first draw.
@@ -1379,6 +1386,11 @@ pub trait Backend: Send {
             Ok(false)
         }
     }
+
+    /// The backend can accept this particular pass into a scene reservation.
+    /// Checked while the guest still owns all the draws. A sink that keeps
+    /// a replay requires the pass to support repeated recording.
+    fn accepts_scene_pass(&self, _pass: &dyn ExternalPass) -> bool { true }
 
     /// Whether [`queue_scene_stage`](Self::queue_scene_stage) takes a
     /// stage now: a render thread whose backend

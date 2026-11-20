@@ -2215,7 +2215,7 @@ impl<B: Backend> Device<B> {
     pub fn reserve_scene_stage(
         &mut self, mem: &mut dyn GuestMemory, plan: crate::ExternalPlan, mut pass: Box<dyn crate::ExternalPass>,
     ) -> Result<Option<SceneReservation<'_, B>>, D3dError> {
-        if !self.queues_scene_stages(plan.stage) || plan.ranges == 0 {
+        if !self.queues_scene_stages(plan.stage) || plan.ranges == 0 || !self.backend.accepts_scene_pass(&*pass) {
             return Ok(None);
         }
         self.swallow_external_boundary()?;

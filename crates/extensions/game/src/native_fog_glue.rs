@@ -431,6 +431,10 @@ struct FogViewPass {
 }
 
 impl d3d::ExternalPass for FogViewPass {
+    // The selection and constants belong to this view. Ready pins the BSP,
+    // and each recording binds the target copy passed to it by the renderer.
+    fn replays_scene(&self) -> bool { true }
+
     /// Packets need no worker round trip, and the pass samples no guest
     /// texture, level or slot (its stage textures are its own).
     fn batch_key(&self) -> Option<u64> {

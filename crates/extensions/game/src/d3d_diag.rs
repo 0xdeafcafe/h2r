@@ -775,6 +775,10 @@ impl<B: Backend> Backend for DiagBackend<B> {
         self.inner.run_scene_stage(stage)
     }
 
+    fn accepts_scene_pass(&self, pass: &dyn d3d::ExternalPass) -> bool {
+        self.inner.accepts_scene_pass(pass)
+    }
+
     fn queues_scene_stages(&self) -> bool {
         self.inner.queues_scene_stages()
     }

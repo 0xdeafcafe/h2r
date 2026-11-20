@@ -405,6 +405,10 @@ impl WaterViewPass {
 }
 
 impl d3d::ExternalPass for WaterViewPass {
+    // The selection and constants belong to this view. Ready pins the BSP,
+    // and each recording binds the target copy passed to it by the renderer.
+    fn replays_scene(&self) -> bool { true }
+
     /// Pinned attachments only when no render target is sampled: the pin
     /// carries no sampled levels (`d3d::ThreadedBackend`).
     fn batch_key(&self) -> Option<u64> {
