@@ -8,7 +8,7 @@ arena can be named and added to the copy.
 
 ## Method
 
-`emit::sim::census` (`crates/emit/src/sim/census.rs`) runs over the lifted
+`emit::sim::census` (`crates/recompiler/emit/src/sim/census.rs`) runs over the lifted
 IR of a closure: `game_tick` (`0x00137fe0`) and everything it reaches
 through direct calls and tail transfers. Each function is interpreted
 abstractly, joined at blocks, and every store's address is classified:

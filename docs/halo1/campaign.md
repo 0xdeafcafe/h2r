@@ -45,24 +45,24 @@ disc/halo1.iso ──xiso──▶ maps/*.map (cache v5, zlib)
 
 Pieces:
 
-- **`crates/h1map`** reads Halo 1 Xbox cache files: version 5, a 0x800-byte
+- **`crates/tools/h1map`** reads Halo 1 Xbox cache files: version 5, a 0x800-byte
   header, then a zlib stream holding the rest of the file. It knows the tag
   index and the Halo 1 tag layouts the converter needs.
-- **The map builder** (in `crates/map`) writes a complete v8 cache file from
+- **The map builder** (in `crates/formats/map`) writes a complete v8 cache file from
   a tag set: header, tag index, string IDs, metadata, raw resources and BSP
   slots. Today `MapEditor` only patches an existing map. The builder is the
   biggest missing piece, and Halo 1 needs it first. New maps made from
   scratch also need it ([maps.md](../game/maps.md)).
-- **`crates/h1models`** (Built) converts Halo 1 `mode` and `antr` tags to
+- **`crates/tools/h1models`** (Built) converts Halo 1 `mode` and `antr` tags to
   Halo 2 `mode` and `jmad` block trees for the builder
   ([models.md](models.md)).
-- **`crates/h1bitmaps`** (Built) decodes Halo 1 `bitm` images to RGBA8
+- **`crates/tools/h1bitmaps`** (Built) decodes Halo 1 `bitm` images to RGBA8
   with Halo 2's texture decoder and converts them to Halo 2 `bitm` block
   trees, pixels copied as they are ([bitmaps.md](bitmaps.md)).
-- **The converter** (`crates/h1convert`) works one tag group at a time, in
+- **The converter** (`crates/tools/h1convert`) works one tag group at a time, in
   the order of §3: collision, structure BSP, placements, MOPP
   (`h2 h1 convert`), see [multiplayer.md](multiplayer.md).
-  **`crates/h1campaign`** puts it and the other Halo 1 crates together for
+  **`crates/tools/h1campaign`** puts it and the other Halo 1 crates together for
   a campaign level (§9).
 - **The import command**, `h2 import halo1 [disc/halo1.iso]`, converts
   every campaign level and every multiplayer map into the data root, with
@@ -84,7 +84,7 @@ Pieces:
 | `bipd`, `vehi`, `weap`, `eqip`, `scen`, `mach`, `ctrl` | the same groups | field-by-field. Halo 1 tuning values carry over where Halo 2 has the field |
 | `actr` + `actv` | `char` | |
 | encounters, squads, firing positions, command lists | squads, zones, firing positions, orders | |
-| scripts | Halo 2 scripts | decompile Halo 1's syntax nodes, rename the functions that differ, compile to Halo 2 nodes with `crates/hs`. Builtins Halo 2 lacks go in the Rust HS VM ([hs_vm.md](../engine/hs_vm.md)). `crates/h1scripts`, [scripts.md](scripts.md) |
+| scripts | Halo 2 scripts | decompile Halo 1's syntax nodes, rename the functions that differ, compile to Halo 2 nodes with `crates/formats/hs`. Builtins Halo 2 lacks go in the Rust HS VM ([hs_vm.md](../engine/hs_vm.md)). `crates/tools/h1scripts`, [scripts.md](scripts.md) |
 | `snd!` | `snd!` + `ugh!` | both Xbox ADPCM |
 | `ustr`, `hmt ` | string IDs, `unic` | |
 | recorded animations | recorded animations | versions differ |
@@ -95,7 +95,7 @@ Each step is proven with tests; the user plays the result.
 
 1. **Import and read.** Recognise the Halo 1 disc (title ID `4D530004`),
    pull out its maps, decompress them, list their tags.
-   **Built:** `crates/h1map`, `h2 h1 info|tags|bitmap|convert`,
+   **Built:** `crates/tools/h1map`, `h2 h1 info|tags|bitmap|convert`,
    `h2 import halo1`; format in
    [map-format.md](map-format.md). The disc's multiplayer maps
    are read and converted in tests ([multiplayer.md](multiplayer.md)).
@@ -119,7 +119,7 @@ Each step is proven with tests; the user plays the result.
    definitions, [tag-definitions.md](../formats/tag-definitions.md)).
 5. **AI.** Characters, encounters to squads, generated pathfinding.
    **Built** (§9): `h1ai` on retail Halo 2 characters, pathfinding from
-   `crates/pathfind` in every converted BSP.
+   `crates/formats/pathfind` in every converted BSP.
 6. **Scripts.** **Built, stubbed** (§9): `h1scripts` with
    `Missing::Stub`, hooks resolved to the placed names, trigger volumes,
    squads and the sounds the scripts name.
@@ -362,7 +362,7 @@ Halo 1's multiplayer maps follow the same rules, with a sandbox setting:
 
 ## 9. The ten levels on a pinned base (**Built**, tests only)
 
-`crates/h1campaign`; `h2 h1 convert disc/halo1.iso <level> --out DIR
+`crates/tools/h1campaign`; `h2 h1 convert disc/halo1.iso <level> --out DIR
 [--disc disc/halo2.iso] [--base MAP] [--dry-run] [--force]` writes
 `DIR/<level>.map` and `DIR/campaign.toml` (Halo 1's manifest,
 `content::campaign_list::HALO1`, unless one is there already). With
@@ -1078,7 +1078,7 @@ converts what is missing: a map not in the stamp, or stamped done but
 whose file is gone. Everything is converted again when:
 
 - **the converter version changes**: `CONVERTER_VERSION` in
-  `crates/cli/src/h1_import.rs`. **Bump it in the commit that changes what
+  `crates/apps/cli/src/h1_import.rs`. **Bump it in the commit that changes what
   the Halo 1 converters write** (h1convert, h1campaign, h1objects, h1ai,
   h1scripts, h1sounds, h1bitmaps, h1models, h1sky, h1text, or the map
   builder under them). `--follow` builds each new commit's `h2 play`, so

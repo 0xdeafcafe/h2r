@@ -1,0 +1,120 @@
+# nhdt: new HUD definition. The widget layouts the HUD draw reads (E: the
+# retail default.xbe, read with h2 disasm), gathered in
+# docs/editor/hud-editor.md and crates/tools/hud-edit/src/layout.rs (whose tests
+# check these offsets). +0x18 in both widget kinds holds three threshold
+# bytes the inferred schema once took for a raw-resource pointer (and the
+# text widgets' +0x2c, the justification, for its size); the schema now
+# leaves that word out (tags::schema::infer::ENGINE_DATA), so it is copied
+# as bytes.
+group nhdt 0x28 align 4
+  0x0 unknown 0x8
+  0x8 block bitmap_widgets 0x64 align 4 -- E 0x0013a532: +0x08 count, +0x0c address; drawn by 0x0022aff1
+    0x0 string name -- D the widget's name, a string ID; nothing found reads it in the draw
+    0x4 u8 input_1 -- E 0x0013ad48: the HUD input the widget's shader reads as hud_input1 (16 shield, 17 body, 20 and 21 grenade counts, 0x31 heat, 0x36 rounds, 0x38 battery)
+    0x5 u8 input_2 -- E 0x0013ad48: hud_input2
+    0x6 u8 input_3 -- E 0x0013ad48: hud_input3
+    0x7 u8 input_4 -- E 0x0013ad48: hud_input4
+    0x8 flags16 show_when_a bits=_|_|frag_selected|plasma_selected|_|_|unzoomed -- E 0x0013ac87: drawn when any show word meets its state word and no hide word does; V the named bits (retail grenade widgets and scope masks)
+    0xa u16 show_when_b -- E 0x0013ac87: show word B
+    0xc u16 show_when_c -- E 0x0013ac87: show word C (bits 0x08, 0x10, 0x20 from the weapon state against the thresholds at +0x18)
+    0xe u16 show_when_d -- E 0x0013ac87: show word D
+    0x10 flags16 hide_when_a bits=_|_|frag_selected|plasma_selected|_|_|unzoomed -- E 0x0013ac87: hide word A
+    0x12 u16 hide_when_b -- E 0x0013ac87: hide word B
+    0x14 u16 hide_when_c -- E 0x0013ac87: hide word C
+    0x16 u16 hide_when_d -- E 0x0013ac87: hide word D
+    0x18 u8 threshold_battery -- E 0x0013ac8f: word C bit 0x08 when this, as a float, is above the battery's age (a fraction)
+    0x19 u8 threshold_loaded -- E 0x0013aca8: word C bit 0x10 when the rounds loaded are below this
+    0x1a u8 threshold_reserve -- E 0x0013acbd: word C bit 0x20 when the rounds in reserve are below this
+    0x1b u8 h1_screen -- D converted weapon widget marker and source screen selector
+    0x1c enum16 anchor values=top_right|top_left|bottom_left|bottom_right|centre -- E 0x001396c7: the corner of the view's HUD frame the offsets start from; above 4 a projected point
+    0x1e flags16 flags bits=mirror_0|mirror_1 -- E 0x0022b29c: bits 0 and 1 mirror the texture
+    0x20 tagref bitmap groups=bitm -- E 0x0022ae21: the art; its sequence per screen mode below
+    0x28 tagref shader -- E 0x0022aff1: the shader drawing the art (meters read hud_input1)
+    0x30 i8 sequence_full -- E 0x0022ae7f: the bitmap sequence in fullscreen (first sprite, else first image)
+    0x31 i8 sequence_half -- E 0x0022ae79: half screen
+    0x32 i8 sequence_quarter -- E 0x0022ae73: quarter screen
+    0x33 u8 h1_half_size -- D converted crosshair basis is halved in split screen
+    0x34 i16[2] offset_full -- E 0x0022b128: x, y in HUD pixels from the anchor, fullscreen
+    0x38 i16[2] offset_half -- E 0x0022b0da: half screen
+    0x3c i16[2] offset_quarter -- E 0x0022b089: quarter screen
+    0x40 f32[2] registration_full -- E 0x0022b156: the point of the sprite (fractions of its size) placed at the offset, fullscreen
+    0x48 f32[2] registration_half -- E 0x0022b108: half screen
+    0x50 f32[2] registration_quarter -- E 0x0022b0b7: quarter screen
+    0x58 block effects 0x68 align 4 -- E 0x0022bcaf: widget animation (not modelled by the HUD tool)
+      0x0 flags32 scale_flags bits=scale|rotate|offset -- E 0x22bcaf
+      0x4 string string_4
+      0x8 unknown 0x8
+      0x10 data block_10 align 4
+      0x18 string string_18
+      0x1c unknown 0x8
+      0x24 data block_24 align 4
+      0x2c string string_2c
+      0x30 unknown 0x8
+      0x38 data block_38 align 4
+      0x40 unknown 0xc
+      0x4c data block_4c align 4
+      0x54 string string_54
+      0x58 unknown 0x8
+      0x60 data block_60 align 4
+    0x60 u16 special -- E 0x0022b2d0: 5 the shield meter (fills by the shield)
+    0x62 i16 h1_frame_period -- D converted warning sprite period, in seconds
+  0x10 block text_widgets 0x54 align 4 -- E 0x0013a532: +0x10 count, +0x14 address; drawn by 0x0022aa16
+    0x0 string name -- D the widget's name, a string ID; nothing found reads it in the draw
+    0x4 u8 input_1 -- E 0x0013ad48: the HUD input a number shows
+    0x5 u8 input_2 -- E 0x0013ad48
+    0x6 u8 input_3 -- E 0x0013ad48
+    0x7 u8 input_4 -- E 0x0013ad48
+    0x8 flags16 show_when_a bits=_|_|frag_selected|plasma_selected|_|_|unzoomed -- E 0x0013ac87: as the bitmap widgets'
+    0xa u16 show_when_b -- E 0x0013ac87
+    0xc u16 show_when_c -- E 0x0013ac87
+    0xe u16 show_when_d -- E 0x0013ac87
+    0x10 flags16 hide_when_a bits=_|_|frag_selected|plasma_selected|_|_|unzoomed -- E 0x0013ac87
+    0x12 u16 hide_when_b -- E 0x0013ac87
+    0x14 u16 hide_when_c -- E 0x0013ac87
+    0x16 u16 hide_when_d -- E 0x0013ac87
+    0x18 u8 threshold_battery -- E 0x0013ac8f: as the bitmap widgets'
+    0x19 u8 threshold_loaded -- E 0x0013aca8: as the bitmap widgets'
+    0x1a u8 threshold_reserve -- E 0x0013acbd: as the bitmap widgets'
+    0x1b u8 h1_screen -- D converted weapon widget marker and source screen selector
+    0x1c enum16 anchor values=top_right|top_left|bottom_left|bottom_right|centre -- E 0x001396c7 (from 0x0022ab17)
+    0x1e flags16 flags bits=number|pad_2|pad_4|player_name -- E 0x0022a8a4: show the input as a number, padded, or the player's name
+    0x20 tagref shader -- E 0x0022aa2f: no shader, no text
+    0x28 string text -- E 0x0022a871: the string shown (no string, no text)
+    0x2c enum16 justification values=start|centre|end -- E 0x0022ac0b: the text starts at the point, is centred on it, or ends at it
+    0x2e unknown 0x2
+    0x30 i8 font_full -- E 0x0022a85b: 0 engine font 6, 1 engine font 8, else no text; fullscreen
+    0x31 i8 font_half -- E 0x0022a85b: half screen
+    0x32 i8 font_quarter -- E 0x0022a85b: quarter screen
+    0x33 unknown 0x1
+    0x34 unknown 0xc
+    0x40 i16[2] offset_full -- E 0x0022ab46: x, y in HUD pixels from the anchor (the text's top), fullscreen
+    0x44 i16[2] offset_half -- E 0x0022ab38: half screen
+    0x48 i16[2] offset_quarter -- E 0x0022ab2a: quarter screen
+    0x4c block effects 0x68 align 4 -- E 0x0022bcaf: text animation (not modelled by the HUD tool)
+      0x0 unknown 0x10
+      0x10 data block_10 align 4
+      0x18 unknown 0xc
+      0x24 data block_24 align 4
+      0x2c unknown 0xc
+      0x38 data block_38 align 4
+      0x40 unknown 0xc
+      0x4c data block_4c align 4
+      0x54 string string_54
+      0x58 unknown 0x8
+      0x60 data block_60 align 4
+  0x18 unknown 0x8
+  0x20 block screen_effects 0x50 align 4 -- E 0x0013a57d: gated before the bitmap and text widgets
+    0x0 unknown 0x4
+    0x4 u8[4] inputs -- E 0x0013a5b5
+    0x8 u16[4] show_when
+    0x10 u16[4] hide_when
+    0x18 u8[4] thresholds
+    0x1c u16 anchor
+    0x1e unknown 0x2
+    0x20 tagref bitmap groups=bitm -- E 0x0022b949
+    0x28 tagref effect_full groups=egor -- E 0x0022b91a
+    0x30 tagref effect_half groups=egor -- E 0x0022b915
+    0x38 tagref effect_quarter groups=egor -- E 0x0022b910
+    0x40 i8[3] sequences -- E 0x0022b929: fullscreen, half screen, quarter screen
+    0x43 unknown 0x1
+    0x44 i16[6] offsets

@@ -1,6 +1,6 @@
 # Movies
 
-Status: Built. Code: `crates/movies/src` (installer), `crates/bink-hle/src`, `crates/boot/src/movies_glue.rs`, `crates/cli/src/movies_cmd.rs` (`h2 movies`). Tests: see "Tests".
+Status: Built. Code: `crates/formats/movies/src` (installer), `crates/platform/bink-hle/src`, `crates/apps/boot/src/movies_glue.rs`, `crates/apps/cli/src/movies_cmd.rs` (`h2 movies`). Tests: see "Tests".
 Switch: `--movies`, `--no-movies` (command-line flags).
 
 The retail disc contains three Bink 1 movies: `/bink/intro_60.bik`,
@@ -128,12 +128,12 @@ unreadable movie resolves to `None`.
 ## CLI
 
 `h2 movies [<iso>] [--out <dir>] [--ffmpeg PATH] [--force] [--only NAME]` is the
-standalone exporter (`crates/cli/src/movies_cmd.rs`). `--out` defaults to the app data
+standalone exporter (`crates/apps/cli/src/movies_cmd.rs`). `--out` defaults to the app data
 directory (`movies::install::app_movies_dir()`), which is where `h2 play`
 looks (`--movies DIR` elsewhere, which headless `h2 run` needs to play them); see
 [bink-hle.md](bink-hle.md) for how a run decides to play them. It writes H.264/AAC MP4,
 requires `--force` to replace existing output, and does not use the
-resumable installer in `crates/movies/src/install.rs`. Its exit codes are 0 success, 1 failure, 2 bad
+resumable installer in `crates/formats/movies/src/install.rs`. Its exit codes are 0 success, 1 failure, 2 bad
 arguments, 3 ffmpeg missing, 4 unsuitable ffmpeg, and 130 interrupted.
 An app installer calls `movies::install::install_iso`. MP4s are playable through
 `TranscodedSource` (`Mp4Source` is a compatibility alias).

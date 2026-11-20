@@ -1,10 +1,10 @@
 # Xbox storage boundary
 
 Status: Built.
-Code: `crates/vfs/src`. Tests: `crates/vfs/tests/`, `crates/vfs/src/host_write_behind_tests.rs`.
+Code: `crates/runtime/vfs/src`. Tests: `crates/runtime/vfs/tests/`, `crates/runtime/vfs/src/host_write_behind_tests.rs`.
 Switch: `H2_MAP_DIR` (unset), listed in [switches.md](switches.md).
 
-`crates/vfs` owns storage names, mounted filesystems, open file objects and
+`crates/runtime/vfs` owns storage names, mounted filesystems, open file objects and
 filesystem status results. It is safe Rust and has no dependency on guest
 memory, `kernel`, `runtime`, or `cli`. The kernel translates guest pointers,
 ANSI object strings, handles, information classes and IO_STATUS_BLOCKs at its
@@ -104,7 +104,7 @@ the Z: and N: cache volumes (docs/runtime/xapi.md).
 `DiscBackend<R: Read + Seek + Send>` uses `xiso::Xiso` to discover the game
 partition and index directory records. `DiscBackend::open(path)` uses a
 read-only host file; `new(Cursor<Vec<u8>>)` works for synthetic tests. Both
-plain XISO and Redump offsets follow `crates/xiso`. Reads seek directly to
+plain XISO and Redump offsets follow `crates/formats/xiso`. Reads seek directly to
 `partition_offset + sector * 2048 + requested_offset`, and allocate no
 full-file buffer. The original disc is never modified. Writes, creation,
 truncation, deletion and writable opens fail with `MediaWriteProtected`.
@@ -130,7 +130,7 @@ it for the font files ([button-icons.md](../input/button-icons.md)).
 `MapOverrideBackend::new(inner, dir)` serves `maps\<name>.map` from
 `<dir>/<name>.map` when the inner backend (the disc) has that map and the
 directory holds a file of that name. The boot mounts the disc through it
-when `H2_MAP_DIR` names a directory (`crates/boot/src/map_override.rs`);
+when `H2_MAP_DIR` names a directory (`crates/apps/boot/src/map_override.rs`);
 unset or empty, the disc is mounted with `with_disc`/`with_disc_rewrite`
 exactly as before. The font rewrite wraps it, so both apply.
 
@@ -170,7 +170,7 @@ stream byte runs over the base. BPS reads use the materialised
 `<data>/maps/cache/<MapId>.map` file. The resolved size is available
 through `stat`, and a streamed overlay can be read through the VFS even
 though it has no contiguous host file. A damaged layer or mismatched
-base fails the mod read. [VFS content maps](../../crates/vfs/src/content_maps.rs) ·
+base fails the mod read. [VFS content maps](../../crates/runtime/vfs/src/content_maps.rs) ·
 [Patch resolution](../game/maps.md#2-applying-layers-at-load)
 
 Live installs and removals publish a new registry and trigger a content
@@ -178,11 +178,11 @@ scan on the next main-menu tick. An open file keeps its resolved bytes
 until the last handle closes. The normal boot mounts the disc, campaign
 additions, any explicit `H2_MAP_DIR` override and the font rewrite
 independently of the generated offers. [Live refresh](../game/map-select.md#changes-during-a-session) ·
-[Boot mounts](../../crates/boot/src/map_override.rs)
+[Boot mounts](../../crates/apps/boot/src/map_override.rs)
 
 `Vfs::with_disc_backend(config, backend)` is `with_disc` for a disc
-backend built by the caller. Tests: `crates/vfs/src/map_override.rs` and
-`crates/vfs/tests/map_override.rs` (sparse 300 MiB streaming, listings,
+backend built by the caller. Tests: `crates/runtime/vfs/src/map_override.rs` and
+`crates/runtime/vfs/tests/map_override.rs` (sparse 300 MiB streaming, listings,
 case, fall-through, symlinks, a no-match mount identical to `with_disc`,
 and a model of the cache copy with its checksum).
 
@@ -398,7 +398,7 @@ synchronous writes, as does a failure to spawn the thread (logged). A
 differential test runs the same random sequence of creates, overlapping writes, reads, stats, truncations, flushes,
 cleanups, removals, listings and volume queries with write-behind on and
 off and compares every result and the final host bytes
-(`crates/vfs/src/host_write_behind_tests.rs`). `cargo test -p vfs
+(`crates/runtime/vfs/src/host_write_behind_tests.rs`). `cargo test -p vfs
 --release bench_write_behind -- --ignored --nocapture` measures the
 calling thread's time per 256 KiB write either way, with the caller busy
 for 0, 1 or 5 ms between writes. On a heavily loaded host (load average

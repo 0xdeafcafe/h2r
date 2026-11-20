@@ -1,7 +1,7 @@
 # Iteration builds and caches
 
 Status: Built.
-Code: `crates/emit/src/compile.rs` (object cache, `obj_dir_with`, `prune_obj_cache`), `crates/boot/src/tier.rs`, `h2 emit` and `h2 build` in `crates/cli/src/main.rs`. Tests: `crates/emit/src/compile.rs` (unit tests), `crates/boot/src/tier.rs`.
+Code: `crates/recompiler/emit/src/compile.rs` (object cache, `obj_dir_with`, `prune_obj_cache`), `crates/apps/boot/src/tier.rs`, `h2 emit` and `h2 build` in `crates/apps/cli/src/main.rs`. Tests: `crates/recompiler/emit/src/compile.rs` (unit tests), `crates/apps/boot/src/tier.rs`.
 Switch: `H2_OBJ_CACHE`, `H2_OBJ_CACHE_MAX`, `H2_OPT`, `H2_DEBUG`, `H2_CPU`, `H2_PGO*`, `H2_HOT`, `H2_OPT_COLD`, listed in [switches.md](../runtime/switches.md).
 
 `cargo h2 emit /path/to/default.xbe --run-entry` builds only the host
@@ -186,7 +186,7 @@ relying on it (notes/build-perf.md has the compile-time side).
 
 All off by default; each adds flags to `compile::cflags`, so each is in
 every object's key and in the boot stamp. Set the same values on `h2 run`
-and `h2 play` as on `h2 build`, or they rebuild (`crates/emit/src/compile/pgo.rs`).
+and `h2 play` as on `h2 build`, or they rebuild (`crates/recompiler/emit/src/compile/pgo.rs`).
 
 - `H2_OPT=3`: `-O3`.
 - `H2_CPU=<name>`: `-mcpu=<name>` (`apple-m1`, `apple-m3`, ...) for arm64
@@ -231,7 +231,7 @@ H2_OPT=2 H2_PGO=use:$T/h2.profdata target/release/h2 build disc/halo2.iso --out 
 H2_OPT=2 H2_PGO=use:$T/h2.profdata target/release/h2 play disc/halo2.iso --out $OUT/use
 ```
 
-`crates/emit/tests/pgo.rs` runs the same loop on a synthetic handler:
+`crates/recompiler/emit/tests/pgo.rs` runs the same loop on a synthetic handler:
 an instrumented build writes a profile, `llvm-profdata merge` and `show`
 read it, a `use` build compiles, links and computes the same result, and
 `H2_OPT=3` and `H2_CPU` build; each keys its objects apart.
@@ -267,7 +267,7 @@ what they compile for; the target is in the objects' flags and the stamp
 - **Runtime only.** The stamp covers the runtime only through
   `runtime/include` (`h2abi.h`), so a runtime change keeps the dylib.
 - **Generator change** (xbe, analyze, ir, lift, opt, emit, x87, or boot's
-  bridge in `crates/boot/c`): the whole pipeline runs again, but most of
+  bridge in `crates/apps/boot/c`): the whole pipeline runs again, but most of
   it is cheap.
   - *Analysis* is cached in the boot cache (`H2_BOOT_CACHE`, default
     `$TMPDIR/h2boot-cache`; `off` disables it), keyed by the image's hash

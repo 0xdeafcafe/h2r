@@ -18,7 +18,7 @@ import "../styles/dash-games.css";
 import { STATS_NAME } from "../brand";
 import { STATS_ROOT } from "../routes";
 
-/** The disc's own pictures (crates/cli/src/live_art.rs `TITLE_IMAGES`): the
+/** The disc's own pictures (crates/apps/cli/src/live_art.rs `TITLE_IMAGES`): the
  *  game's tile and the picture of a save without one of its own. Null
  *  without the server's game art; the screen then draws its own. */
 export const TITLE_IMAGE = "title/image";

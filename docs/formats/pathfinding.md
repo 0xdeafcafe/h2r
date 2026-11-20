@@ -1,24 +1,24 @@
 # AI pathfinding data (`sbsp` +0xc4) and generating it
 
-Status: Built. Code: `crates/tags/src/pathfinding.rs` (layout), `crates/pathfind` (generator). Tests: `crates/tags/src/pathfinding_tests.rs`. Switch: none.
+Status: Built. Code: `crates/formats/tags/src/pathfinding.rs` (layout), `crates/formats/pathfind` (generator). Tests: `crates/formats/tags/src/pathfinding_tests.rs`. Switch: none.
 
 Halo 2's AI walks on *sectors*: convex polygons joined by *links*. A
 structure BSP carries them. Halo 1 maps don't, so a Halo 1 converter has to
 generate them from collision. `h2 h1 convert` writes generated
-pathfinding into each converted campaign BSP (`crates/h1campaign`,
+pathfinding into each converted campaign BSP (`crates/tools/h1campaign`,
 [campaign.md](../halo1/campaign.md) §9); multiplayer maps still leave
 `sbsp+0xc4` empty ([multiplayer.md](../halo1/multiplayer.md)). This page is the layout as retail levels
 carry it, how it relates to the collision BSP, and the generator in
-`crates/pathfind`.
+`crates/formats/pathfind`.
 
 Code:
 
-- `crates/tags/src/pathfinding.rs`: decoder, ring walk, surface lookup,
+- `crates/formats/tags/src/pathfinding.rs`: decoder, ring walk, surface lookup,
   validator (`PathfindingData`).
-- `crates/tags/src/collision.rs`: `Bsp::decode_structure` decodes the
+- `crates/formats/tags/src/collision.rs`: `Bsp::decode_structure` decodes the
   structure BSP's collision BSP (the `coll` BSP layout without its leading
   word).
-- `crates/pathfind`: generator (`generate`), comparison metrics
+- `crates/formats/pathfind`: generator (`generate`), comparison metrics
   (`compare`), and the `map::build` block tree (`build::element`).
 
 Evidence labels as in [map-format.md](map-format.md): **V** checked on the
@@ -112,7 +112,7 @@ So the lookup is: find the collision surface under a point (the collision
 BSP query), then `refs[surface]`, then walk the 2D BSP with the point's x
 and y. `PathfindingData::sector_for_surface` does exactly that.
 
-### What the sectors are (V, from `crates/pathfind/examples/analyze.rs`)
+### What the sectors are (V, from `crates/formats/pathfind/examples/analyze.rs`)
 
 - Only part of the sectors come from the structure's collision. On
   `01a_tutorial`, 3115 of 11191 sectors are reachable from refs; the rest

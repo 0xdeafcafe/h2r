@@ -1,17 +1,17 @@
 # Floating point in the lifter
 
 Status: Built. Every x87, SSE and MMX instruction the image uses is lowered; the exact paths are the reference and the native paths are guarded fast paths.
-Code: `crates/x87`, `crates/simd`, `crates/lift/src/lower/x87.rs`, `crates/lift/src/lower/sse.rs`, `crates/emit/src/x87.rs`, `crates/emit/c/h2x87_native.h`, `crates/emit/c/h2sse_native.h`. Tests: `crates/lift/tests/oracle_x87/`, `crates/emit/tests/differential.rs`.
+Code: `crates/recompiler/x87`, `crates/recompiler/simd`, `crates/recompiler/lift/src/lower/x87.rs`, `crates/recompiler/lift/src/lower/sse.rs`, `crates/recompiler/emit/src/x87.rs`, `crates/recompiler/emit/c/h2x87_native.h`, `crates/recompiler/emit/c/h2sse_native.h`. Tests: `crates/recompiler/lift/tests/oracle_x87/`, `crates/recompiler/emit/tests/differential.rs`.
 Switch: `H2_X87_NATIVE`, `H2_SSE_NATIVE`, listed in [switches.md](../runtime/switches.md).
 
 Halo 2 is an SSE1 game with an x87 sidecar. Every floating-point instruction is lowered for bit-exactness first, and no host floating point or libm decides a guest-visible bit. The interface is [FLOAT-ABI.md](FLOAT-ABI.md); the census of what the retail image uses is [notes/fp-census.md](notes/fp-census.md).
 
 ## The paths
 
-- **Exact x87 helpers.** `crates/x87` is integer ext80 arithmetic, exact under every precision and rounding control; the generated C calls `h2x87_v1_*`. This is the authority and the path when `H2_X87_NATIVE=0`. [FLOAT-ABI.md](FLOAT-ABI.md).
+- **Exact x87 helpers.** `crates/recompiler/x87` is integer ext80 arithmetic, exact under every precision and rounding control; the generated C calls `h2x87_v1_*`. This is the authority and the path when `H2_X87_NATIVE=0`. [FLOAT-ABI.md](FLOAT-ABI.md).
 - **Guarded native x87.** `h2x87_native.h` runs add, subtract, multiply, divide, square root and integer loads in host binary64 when a value-level proof holds (PC=53, round-to-nearest, exceptions masked, operands exactly representable), and calls the helper otherwise. On by default. [x87-native.md](x87-native.md).
 - **Transcendentals.** `fsin`, `fcos`, `fptan`, `fpatan`, `fyl2x`, `fyl2xp1`, `f2xm1` and `fsincos` evaluate at 512 bits and round once; the `fast-trans` feature tries a guarded 128-bit pass first. [x87-transcendentals.md](x87-transcendentals.md).
-- **SSE reference.** `crates/simd` is integer soft-float for every SSE1 form, with MXCSR, NaN payloads and `#XM` exact; `h2simd.h` is its C side. [simd.md](simd.md), [sse-oracle.md](sse-oracle.md).
+- **SSE reference.** `crates/recompiler/simd` is integer soft-float for every SSE1 form, with MXCSR, NaN payloads and `#XM` exact; `h2simd.h` is its C side. [simd.md](simd.md), [sse-oracle.md](sse-oracle.md).
 - **Native SSE.** `h2sse_native.h` runs guarded SSE arithmetic on the host's vector unit and keeps MXCSR in guest state. On by default. [sse-native.md](sse-native.md).
 
 ## 1. What the game uses
@@ -24,7 +24,7 @@ The measured mix, compare idioms, x87 stack depths and the reachability bounds a
 
 ### 1.2 Control words and rounding
 
-- Every `fldcw` is in CRT code. Game code reaches it through `_control87`, which the platform bootstrap calls first, with precision 53, round-to-nearest and all exceptions masked: control word `0x027f`. `CpuAbi::xbox_thread()` starts threads at the same word (`crates/runtime/src/cpu.rs`).
+- Every `fldcw` is in CRT code. Game code reaches it through `_control87`, which the platform bootstrap calls first, with precision 53, round-to-nearest and all exceptions masked: control word `0x027f`. `CpuAbi::xbox_thread()` starts threads at the same word (`crates/runtime/runtime/src/cpu.rs`).
 - Precision 64 and the directed rounding modes appear only inside CRT `floor`, `ceil` and the transcendental dispatchers.
 - Float-to-int is `_ftol2`: `fistp` at round-to-nearest, then a correction toward zero.
 - Every MXCSR write sets the exception masks or clears the sticky flags. None sets FTZ, DAZ or a rounding mode, so SSE runs with the thread default `0x1f80` and denormals are live.
@@ -33,11 +33,11 @@ The measured mix, compare idioms, x87 stack depths and the reachability bounds a
 
 ### 2.1 Representation of x87 values
 
-The x87 state is `X87Abi` inside `CpuAbi`: eight physical registers as ten bytes, control, status (holding TOP), tag, opcode, FIP/FDP and selectors. It is the only representation; every instruction lowers to a call into `crates/x87` or to a guarded native path that produces the same bits. `long double` is never used (on Apple arm64 it is `double`). The transcendentals compute at full 64-bit precision under round-to-nearest only and stop with `Unmodelled` under another rounding mode; for |x| of 2^63 or more, `fsin`, `fcos` and `fptan` set C2 and leave the operand. They use the exact value of pi, not the Pentium III's 66-bit one.
+The x87 state is `X87Abi` inside `CpuAbi`: eight physical registers as ten bytes, control, status (holding TOP), tag, opcode, FIP/FDP and selectors. It is the only representation; every instruction lowers to a call into `crates/recompiler/x87` or to a guarded native path that produces the same bits. `long double` is never used (on Apple arm64 it is `double`). The transcendentals compute at full 64-bit precision under round-to-nearest only and stop with `Unmodelled` under another rounding mode; for |x| of 2^63 or more, `fsin`, `fcos` and `fptan` set C2 and leave the operand. They use the exact value of pi, not the Pentium III's 66-bit one.
 
 ### 2.2 The x87 stack in the IR
 
-The IR names registers as `St(i)` relative to TOP, as the instruction does (`crates/ir/src/x87.rs`); the helpers maintain TOP and the tags and raise stack faults. No stack-depth analysis is needed for correctness. MMX aliasing lives in `h2gen.h`: an MMX write stores 64 bits and `0xffff` in the top two bytes, MMX entry marks every tag valid, `emms` marks them empty, and every MMX instruction first checks for a pending #MF (`h2i_x87_wait`).
+The IR names registers as `St(i)` relative to TOP, as the instruction does (`crates/recompiler/ir/src/x87.rs`); the helpers maintain TOP and the tags and raise stack faults. No stack-depth analysis is needed for correctness. MMX aliasing lives in `h2gen.h`: an MMX write stores 64 bits and `0xffff` in the top two bytes, MMX entry marks every tag valid, `emms` marks them empty, and every MMX instruction first checks for a pending #MF (`h2i_x87_wait`).
 
 ### 2.3 Precision control
 
@@ -55,15 +55,15 @@ The game masks every x87 exception, but the model does not depend on that.
 - Post-computation exceptions (OE, UE, PE), when unmasked, stop with `Unmodelled` (event 12).
 - Sticky flags are always exact, so `fnstsw`, `_statusfp` and `and ax, 0x20` see true values.
 
-Details: FLOAT-ABI.md section 2; the event table is `crates/emit/RUNTIME-CONTRACT.md` section 1.3.
+Details: FLOAT-ABI.md section 2; the event table is `crates/recompiler/emit/RUNTIME-CONTRACT.md` section 1.3.
 
 ### 2.6 `fnstsw` and `sahf` flag use
 
-`h2x87_v1_cmp` writes C3/C2/C0 into the status word on both OK and SUPPRESS, so `fnstsw ax; test ah, M; jcc` and `fnstsw ax; sahf; jcc` need no fusion: `fnstsw` is a field read and the following integer instructions work on AX (`crates/lift/src/lower/x87.rs`). `fcomi`, `fcomip` and `fucomip` write ZF/PF/CF from the returned bits, clear OF/SF/AF and mark all six flags defined (FLOAT-ABI.md section 4.4). `fcom` and `fucom` differ in raising IE on a quiet NaN, and the helper models that.
+`h2x87_v1_cmp` writes C3/C2/C0 into the status word on both OK and SUPPRESS, so `fnstsw ax; test ah, M; jcc` and `fnstsw ax; sahf; jcc` need no fusion: `fnstsw` is a field read and the following integer instructions work on AX (`crates/recompiler/lift/src/lower/x87.rs`). `fcomi`, `fcomip` and `fucomip` write ZF/PF/CF from the returned bits, clear OF/SF/AF and mark all six flags defined (FLOAT-ABI.md section 4.4). `fcom` and `fucom` differ in raising IE on a quiet NaN, and the helper models that.
 
 ### 2.7 SSE
 
-SSE is defined by `crates/simd` ([simd.md](simd.md)): results, NaN payloads, signed zeros, MXCSR sticky flags and `#XM` are exact, with no host floating point. `rcp` and `rsqrt` have no Pentium III table here, so they are held to the architectural error bound.
+SSE is defined by `crates/recompiler/simd` ([simd.md](simd.md)): results, NaN payloads, signed zeros, MXCSR sticky flags and `#XM` are exact, with no host floating point. `rcp` and `rsqrt` have no Pentium III table here, so they are held to the architectural error bound.
 
 ### 2.8 Proof rule for the native `double` path
 
@@ -71,20 +71,20 @@ The native path ([x87-native.md](x87-native.md)) keeps the architectural ext80 s
 
 ### 2.9 How the oracle checks FP
 
-`crates/oracle` runs synthetic fixtures in Unicorn (QEMU 5.0.1 core) and `crates/sse-oracle` runs SSE against hardware ([oracle.md](oracle.md), [sse-oracle.md](sse-oracle.md)). Unicorn is evidence for x87 add, subtract, multiply, divide and square root, which use SoftFloat extended precision, for `minps`/`maxps` and for the conversion indefinite. It is not evidence for the transcendentals (it uses host libm), x87 sticky exception flags other than ZE, C1 and the undefined condition codes, control-word bit 6, MXCSR sticky flags or `rcp`/`rsqrt` bits.
+`crates/recompiler/oracle` runs synthetic fixtures in Unicorn (QEMU 5.0.1 core) and `crates/recompiler/sse-oracle` runs SSE against hardware ([oracle.md](oracle.md), [sse-oracle.md](sse-oracle.md)). Unicorn is evidence for x87 add, subtract, multiply, divide and square root, which use SoftFloat extended precision, for `minps`/`maxps` and for the conversion indefinite. It is not evidence for the transcendentals (it uses host libm), x87 sticky exception flags other than ZE, C1 and the undefined condition codes, control-word bit 6, MXCSR sticky flags or `rcp`/`rsqrt` bits.
 
-The comparison policy (`crates/lift/tests/oracle_x87/`):
+The comparison policy (`crates/recompiler/lift/tests/oracle_x87/`):
 
 1. Bit-exact: every ext80 and XMM byte, the control word except bit 6, C0-C3 where the SDM defines them, TOP, the tags, EFLAGS from compares, memory and integer results, and event 14 with its `arg`.
-2. Masked by mnemonic, never a blanket ignore: x87 sticky bits and MXCSR bits 0-5 where Unicorn does not model them, C1 and the undefined condition codes, FOP, FCS and FDS (and FIP/FDP after control instructions), and control-word bit 6. `crates/x87` is the authority for masked bits.
-3. Tolerance by name: the transcendentals against `crates/x87`'s 512-bit result (cross-checked at 768 bits), with C2 and out-of-range behaviour exact; cases near multiples of pi where the Pentium III's 66-bit reduction differs are labelled `pi66`.
+2. Masked by mnemonic, never a blanket ignore: x87 sticky bits and MXCSR bits 0-5 where Unicorn does not model them, C1 and the undefined condition codes, FOP, FCS and FDS (and FIP/FDP after control instructions), and control-word bit 6. `crates/recompiler/x87` is the authority for masked bits.
+3. Tolerance by name: the transcendentals against `crates/recompiler/x87`'s 512-bit result (cross-checked at 768 bits), with C2 and out-of-range behaviour exact; cases near multiples of pi where the Pentium III's 66-bit reduction differs are labelled `pi66`.
 
 Fixture families cover signed zeros, denormals, infinities, quiet and signalling NaNs with distinct payloads, round-to-even ties, the three precisions, conversion extremes, every compare-and-branch combination with unordered operands, and unmasked-exception ordering.
 
 ## Evidence
 
 - **Code**: the paths above; the exact x87 and SSE paths are the reference.
-- **Test**: `crates/lift/tests/oracle_x87/` (lowering against Unicorn), `crates/emit/tests/differential.rs` (interpreter against generated C).
+- **Test**: `crates/recompiler/lift/tests/oracle_x87/` (lowering against Unicorn), `crates/recompiler/emit/tests/differential.rs` (interpreter against generated C).
 - **S**: PC=53 and mask-all being the thread-start state on hardware; verified by an Xbox or xemu trace.
 
 ## Not verified

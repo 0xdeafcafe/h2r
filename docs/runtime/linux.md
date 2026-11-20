@@ -1,7 +1,7 @@
 # Linux x86-64 game module
 
 Status: Built. A reference for the Linux x86-64 module and the headless host build.
-Code: `crates/emit/src/compile.rs` (`Arch::X86_64Linux`, `linux_target_args`), `deploy/host/build.sh`.
+Code: `crates/recompiler/emit/src/compile.rs` (`Arch::X86_64Linux`, `linux_target_args`), `deploy/host/build.sh`.
 Switch: `H2_LINUX_SYSROOT`, `H2_OPT`, see [switches.md](switches.md).
 
 The dedicated host runs an ELF64 shared object, `libh2game.so`, built for
@@ -138,7 +138,7 @@ address is occupied, it tries `MAP_32BIT`, then lets the kernel choose
 any free address. Generated code receives the actual RAM pointer. Guest
 addresses, aliases, permissions and MMIO still go through the Xbox page
 table, whose pages are 4 KiB. Linux snapshots copy the RAM bytes into a
-separate guarded reservation. [Runtime storage](../../crates/runtime/src/cow.rs)
+separate guarded reservation. [Runtime storage](../../crates/runtime/runtime/src/cow.rs)
 
 Game writes use the runtime's software dirty marks. The separate
 `fastmem-probe` executable exercises hardware write watching in its own
@@ -148,7 +148,7 @@ the fault address and RIP, opens one page and retries the instruction.
 Foreign faults return to the previous signal disposition. The probe's
 child-process tests cover cross-page writes, rearming, teardown, and
 the signal delivered for an unhandled access.
-[Fault probe](../../crates/fastmem-proto/src/bin/fastmem-probe/linux.rs)
+[Fault probe](../../crates/recompiler/fastmem-proto/src/bin/fastmem-probe/linux.rs)
 
 ### Host clocks and workers
 
@@ -159,8 +159,8 @@ workers receive their OS names from Rust's named thread builder. Linux
 reports wall time with the monotonic clock and CPU usage with the thread
 and process CPU clocks. The stack-sampling profiler reports unsupported
 on Linux. The dedicated host executes the ahead-of-time game module and
-keeps its physical RAM mapping read/write. [Kernel pacer](../../crates/kernel/src/pacer.rs)
-[CPU counters](../../crates/timeline/src/host.rs)
+keeps its physical RAM mapping read/write. [Kernel pacer](../../crates/runtime/kernel/src/pacer.rs)
+[CPU counters](../../crates/runtime/timeline/src/host.rs)
 
 For integration, run the runtime RAM, fastmem probe, kernel pacer and
 perf clock tests on x86-64 Linux. Then boot the actual deployment image

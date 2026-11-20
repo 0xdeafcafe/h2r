@@ -1,5 +1,5 @@
 // Account creation in the browser, matching live-proto's `AccountRequest`
-// (crates/live-proto/src/sign.rs): a fresh Ed25519 key signs a compact JWS
+// (crates/live/live-proto/src/sign.rs): a fresh Ed25519 key signs a compact JWS
 // with header {alg: "EdDSA", kid, typ: "h2live-account"} over the RFC 8785
 // canonical JSON of {gamertag, jwk, invite?, aud, iat}, POSTed as
 // application/jose. `aud` is the server id from its well-known document

@@ -4,8 +4,8 @@ Status: plan, 2026-11-20. Nothing here is built. It replaces the verdict in
 [feature-engine.md](feature-engine.md) ("Subsystem map and ranking", rows
 15-18) that objects, AI and physics "stay recompiled". The user asked on
 2026-11-16 and 2026-11-17 for whole-subsystem rewrites, not per-function
-patches. The per-function ports in `crates/engine/src/sim_native` and
-`crates/engine/src/sim_physics` are bit-exact, register-level ports of single
+patches. The per-function ports in `crates/rewrites/engine/src/sim_native` and
+`crates/rewrites/engine/src/sim_physics` are bit-exact, register-level ports of single
 functions. From here on they serve as **reference and test oracles**. They are
 not the architecture.
 
@@ -211,7 +211,7 @@ films and goldens get re-recorded per build.
 
 1. **Unit tests** on synthetic data in the subsystem crate: every codec,
    shape and edge case. No game data.
-2. **Differential tests** (`crates/engine/tests/differential.rs`,
+2. **Differential tests** (`crates/rewrites/engine/tests/differential.rs`,
    `differential` feature, owner's XBE, skipped without it). Each taken-over
    entry runs against the lifted code on the IR interpreter from the same
    guest state; compare all memory, return value and registers outside the
@@ -368,10 +368,10 @@ as runtime before).
 
 **AI, actors, pathfinding and HaloScript (campaign; slot set by census B).**
 
-- *HaloScript.* The `crates/hs` VM exists and is not wired in
+- *HaloScript.* The `crates/formats/hs` VM exists and is not wired in
   ([hs_vm.md](hs_vm.md)). It goes in behind `impl.sim.native.hs`, with
   arena-hash parity on campaign levels.
-- *Pathfinding.* `crates/pathfind` decodes and generates the data.
+- *Pathfinding.* `crates/formats/pathfind` decodes and generates the data.
 - *AI.* `AI_TARGET_SCORE` `265d30` is already a named hot point.
 - *Order.* Set by the phase 0 campaign census, not guessed here.
 
@@ -458,15 +458,15 @@ including the exact retail operation order for normalisation and blending.
 
 **Crates and modules (new):**
 
-- `crates/sim-core`: no `runtime` dependency.
+- `crates/rewrites/sim-core`: no `runtime` dependency.
   - `math`: `Quat`, `Vec3` and `NodeMatrix`. `NodeMatrix` is `#[repr(C)]`
     with the 0x34-byte `real_matrix4x3` layout from native-renderer.md:
     scale `+0`, forward `+4`, left `+0x10`, up `+0x1c`, position `+0x28`.
   - `lanes`: the exact SSE-order f32x4 operations, moved from
-    `crates/engine/src/sim_native/lanes.rs` so both use one copy.
+    `crates/rewrites/engine/src/sim_native/lanes.rs` so both use one copy.
   - `det`: the float rules and the environment check.
   - `Epoch`: the derived-state invalidation counter.
-- `crates/sim-anim`: depends on `sim-core`, and on `tags` for the codec enum
+- `crates/rewrites/sim-anim`: depends on `sim-core`, and on `tags` for the codec enum
   and flag-array layout only. The `tags` sampler deliberately differs from the
   engine (it holds the first key and rejects some data), so it is not reused
   for values.
@@ -490,7 +490,7 @@ including the exact retail operation order for normalisation and blending.
     translation `[f32; 3]` at `+0x10`, scale `f32` at `+0x1c`. The static
     stream is applied first, then the animated stream. Arithmetic follows the
     retail operation order through `sim-core::lanes`.
-- `crates/engine/src/sim_anim.rs`: the adapter.
+- `crates/rewrites/engine/src/sim_anim.rs`: the adapter.
   - Reads the wrapper arguments.
   - Gets or builds the clip.
   - Calls `sample`.
@@ -498,12 +498,12 @@ including the exact retail operation order for normalisation and blending.
   - Sets the return registers.
   - Faults the way the guest would on an unmapped view: it reads the view
     before writing any output.
-- `crates/feature/src/sim_native.rs`: installs the three entries under
+- `crates/hooking/feature/src/sim_native.rs`: installs the three entries under
   `impl.sim.native.anim` (hierarchical, default off until exit) and removes
   the `native_rotation_codec` and `native_animation_stream` entries.
-- `crates/engine/src/points.rs`: the three wrapper points, with ABIs from
+- `crates/rewrites/engine/src/points.rs`: the three wrapper points, with ABIs from
   step 0.
-- `crates/feature/src/switches.rs`: no new mechanism, because hierarchical
+- `crates/hooking/feature/src/switches.rs`: no new mechanism, because hierarchical
   lookup already exists.
 
 **Guest readers still fed (unchanged):** the output records, which `112070`,
@@ -535,10 +535,10 @@ bounding-sphere update and the renderer all read those matrices.
 
 **Lane ownership:**
 
-- new: `crates/sim-core`, `crates/sim-anim`, `crates/engine/src/sim_anim.rs`,
+- new: `crates/rewrites/sim-core`, `crates/rewrites/sim-anim`, `crates/rewrites/engine/src/sim_anim.rs`,
   `docs/engine/anim-sampling.md`;
-- edited: `crates/feature/src/sim_native.rs`, `crates/engine/src/points.rs`,
-  the workspace `Cargo.toml`, `crates/engine/Cargo.toml`.
+- edited: `crates/hooking/feature/src/sim_native.rs`, `crates/rewrites/engine/src/points.rs`,
+  the workspace `Cargo.toml`, `crates/rewrites/engine/Cargo.toml`.
 
 It touches nothing owned by Live, bots, theater or film.
 

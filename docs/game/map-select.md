@@ -1,7 +1,7 @@
 # Multiplayer map selection
 
 Status: Built. The category dialog, the separate mod slots and the live refresh are in the code; the game checks under "Game verification" are open.
-Code: `crates/boot/src/map_select.rs` (`map_select::MapSelect`, `Catalogue`, `page`). Tests: `crates/boot/src/map_select.rs`.
+Code: `crates/apps/boot/src/map_select.rs` (`map_select::MapSelect`, `Catalogue`, `page`). Tests: `crates/apps/boot/src/map_select.rs`.
 Switch: none.
 
 Game Setup's **Change Map** uses the game's Select Map dialog to show

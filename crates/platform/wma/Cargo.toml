@@ -1,0 +1,20 @@
+[package]
+name = "wma"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+# Exposes `Tables::synthetic` for other crates' tests (no retail data).
+synthetic = []
+
+[dependencies]
+xbe.workspace = true
+thiserror.workspace = true
+sha2 = "0.10.9"
+asf = { path = "../../formats/asf" }
+# Machine snapshots: a session's whole state (Session::save_state).
+snapshot = { path = "../../runtime/snapshot" }
+
+[dev-dependencies]
+asf = { path = "../../formats/asf", features = ["disc"] }

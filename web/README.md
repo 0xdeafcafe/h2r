@@ -1,6 +1,6 @@
 # h2 live web app
 
-The web front end for h2recomp's Xbox Live replacement (`crates/live-server`).
+The web front end for h2recomp's Xbox Live replacement (`crates/live/live-server`).
 It shows everyone who has signed up, who is online, the games they are
 playing as they happen (live top-down map, scoreboard, kill feed), replays of
 finished games, and the raw event log with signature checks. It is built
@@ -596,7 +596,7 @@ they are our art, not the game's.
 script, so the server writes each page's `<title>`, description, theme
 colour, Open Graph and Twitter card tags into `index.html` in place of the
 block between `<!-- page-meta -->` and `<!-- /page-meta -->`
-(`crates/live-server/src/page_meta.rs`). A player's page gets their record
+(`crates/live/live-server/src/page_meta.rs`). A player's page gets their record
 (games, wins, kills, K/D from the public stats), a game's its variant, map,
 score, winner and players, a clan's its name, members and motto; other
 pages their section. Only what an anonymous reader may see is used: a

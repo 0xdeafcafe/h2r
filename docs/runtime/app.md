@@ -1,10 +1,10 @@
 # App: the host shell
 
 Status: Built.
-Code: `crates/app/src` (`shell.rs`, `embedded.rs`, `lib.rs`), `crates/cli/src/play_cmd.rs` (`h2 play`). Tests: `crates/app/tests/`.
+Code: `crates/apps/app/src` (`shell.rs`, `embedded.rs`, `lib.rs`), `crates/apps/cli/src/play_cmd.rs` (`h2 play`). Tests: `crates/apps/app/tests/`.
 Switch: `H2_FPS` (30), the rest in [switches.md](switches.md).
 
-`crates/app` is the platform layer the game runs inside on macOS: a window
+`crates/apps/app` is the platform layer the game runs inside on macOS: a window
 with a Metal surface, presentation of the guest's frames, live keyboard,
 mouse and controller input, the audio device, and the guest thread's
 lifecycle. Everything the recompiled game touches (D3D, XAPI, DirectSound,
@@ -84,7 +84,7 @@ FrameSource, Compositor}`, `pacing::{Pacer, PacePolicy, VBlank}`,
 
 ## Playing: `h2 play`
 
-`h2 play` (crates/cli `play_cmd.rs`) runs the boot driver inside the shell:
+`h2 play` (crates/apps/cli `play_cmd.rs`) runs the boot driver inside the shell:
 
 ```sh
 CARGO_TARGET_DIR=$TMPDIR/app-play-target cargo build --release -p cli
@@ -244,10 +244,10 @@ never overlap.
 
 Both panels sit on the same bottom margin; the live panel grows upwards.
 
-- The label is baked at compile time by `crates/app/build.rs`: the short
+- The label is baked at compile time by `crates/apps/app/build.rs`: the short
   commit, the branch (`detached` off a branch, `unknown` without git) and
   the time the build script last ran (it reruns when HEAD moves or
-  `crates/app/src` changes). `H2_BUILD_SHA`, `H2_BUILD_BRANCH` and
+  `crates/apps/app/src` changes). `H2_BUILD_SHA`, `H2_BUILD_BRANCH` and
   `SOURCE_DATE_EPOCH` override them.
 - The live panel comes from the frame stats' rolling window
   (`timeline::phase::window_summary`): fps, the mean frame time, then in
@@ -298,7 +298,7 @@ it. Everything after the follow flags is passed to `h2 play` as is.
 | `--fresh-data` | off | Each launch gets an empty data dir under the cache (otherwise the user's `--data`). |
 | `--cache DIR` | `~/Library/Caches/h2recomp/follow` | Where everything below lives. |
 
-How it works (crates/cli `follow.rs`):
+How it works (crates/apps/cli `follow.rs`):
 
 - **Supervisor.** The parent process runs the game as a child (`h2 play`
   with the same arguments, plus `--out`, `--data` and the hidden
@@ -481,7 +481,7 @@ coarse, the clean fix is a kernel hook called before each idle
 
 `VBlank` is the refresh arithmetic in guest ticks (`NTSC` 60000/1001 Hz,
 `HZ60`, `PAL50`): `count_at(ticks)`, `time_of(n)`, `next_after(ticks)`. The
-game's own vblanks do not use it: `crates/d3d` delivers them as a kernel
+game's own vblanks do not use it: `crates/platform/d3d` delivers them as a kernel
 periodic source on the logical clock (d3d.md, "Vertical blank").
 
 ## Input
@@ -638,7 +638,7 @@ logical time through `tick`, input through `InputManager`, frames through a
 `app::embedded` (`embedded.rs`, built on Apple and Windows targets only) is
 the shell for a native host that owns the window and the run loop: the tvOS
 and iOS apps ([tvos.md](tvos.md), [ios.md](ios.md); the host crate is
-`crates/apple-host`), and later the UWP app for Xbox
+`crates/apps/apple-host`), and later the UWP app for Xbox
 ([windows.md](windows.md)). The host passes its surface (`host_surface`: a
 `CAMetalLayer` on Apple, a XAML `SwapChainPanel` on Windows) and calls
 `Embedded::redraw` from its display link on the main thread. The guest

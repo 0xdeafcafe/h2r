@@ -1,10 +1,10 @@
 # Independent x86 instruction oracle
 
 Status: Built. Unicorn is an optional backend (`--features unicorn`); the lifter checks below need it.
-Code: `crates/oracle` (`run`, `bin/oracle-fixtures`), `crates/lift/tests/oracle.rs`. Tests: `crates/oracle/tests`.
-Switch: none; the lifter check reads `H2_ORACLE_FIXTURES`, a test-only variable (`crates/lift/tests/oracle.rs`).
+Code: `crates/recompiler/oracle` (`run`, `bin/oracle-fixtures`), `crates/recompiler/lift/tests/oracle.rs`. Tests: `crates/recompiler/oracle/tests`.
+Switch: none; the lifter check reads `H2_ORACLE_FIXTURES`, a test-only variable (`crates/recompiler/lift/tests/oracle.rs`).
 
-`crates/oracle` executes synthetic bytes in **Unicorn**, independently of the
+`crates/recompiler/oracle` executes synthetic bytes in **Unicorn**, independently of the
 lifter, IR, generated C, and runtime. It is an instruction-testing reference, not
 a claim that QEMU reproduces an Xbox Pentium III exactly. Agreement between our
 lifter and itself is not independent evidence; see [LIFTER.md §3 and §8](LIFTER.md).
@@ -207,7 +207,7 @@ seeds, backend version, post-state, validity, writes and stop. Fixed xorshift64*
 and a decimal seed make inputs reproducible. Reproducibility requires the same
 catalog/order, random count, dependency versions, and backend behavior.
 
-`crates/oracle/fixtures/smoke.json` holds **19** hand-picked generated fixtures.
+`crates/recompiler/oracle/fixtures/smoke.json` holds **19** hand-picked generated fixtures.
 They are synthetic and suitable for source control; no game data is included.
 Default-feature tests deserialize them and check selected results by hand.
 Feature-enabled tests replay the corpus, comparing only defined GPR/flag bits.
@@ -231,21 +231,21 @@ CARGO_TARGET_DIR="$TMPDIR/oracle-target" cargo test -p oracle --features unicorn
 ```
 
 ```sh
-CARGO_TARGET_DIR="$TMPDIR/oracle-target" cargo run -p oracle --features unicorn --bin oracle-fixtures -- --out "$TMPDIR/oracle-fixtures.jsonl" --small-out crates/oracle/fixtures/smoke.json
+CARGO_TARGET_DIR="$TMPDIR/oracle-target" cargo run -p oracle --features unicorn --bin oracle-fixtures -- --out "$TMPDIR/oracle-fixtures.jsonl" --small-out crates/recompiler/oracle/fixtures/smoke.json
 ```
 
 ## Lifter checks
 
-The lowering is cross-checked against the oracle's Unicorn-backed fixtures (synthetic encodings, no game data): `cargo test -p lift --features oracle-fixtures --test oracle`, with `H2_ORACLE_FIXTURES` naming the `.jsonl` files that `oracle-fixtures` writes. Registers, EIP, XMM, x87, MXCSR, memory and the stop must match, and so must which status flags are defined. The harness has self-contained tests without fixture files: state import, every comparison, defined-flag handling and skip counting. The x87 masks are in `crates/lift/tests/oracle_x87/` ([FLOAT.md](FLOAT.md) section 2.9).
+The lowering is cross-checked against the oracle's Unicorn-backed fixtures (synthetic encodings, no game data): `cargo test -p lift --features oracle-fixtures --test oracle`, with `H2_ORACLE_FIXTURES` naming the `.jsonl` files that `oracle-fixtures` writes. Registers, EIP, XMM, x87, MXCSR, memory and the stop must match, and so must which status flags are defined. The harness has self-contained tests without fixture files: state import, every comparison, defined-flag handling and skip counting. The x87 masks are in `crates/recompiler/lift/tests/oracle_x87/` ([FLOAT.md](FLOAT.md) section 2.9).
 
 Two accommodations apply:
 
 - After an MMX transition, Unicorn (QEMU) leaves bits 64-79 of a written MMX register unchanged and reports a content-classified tag word, where the SDM sets those bits to ones and the transition marks every tag valid.
-- `rcp*`/`rsqrt*` lanes are held to the architectural bound (relative error at most 1.5 * 2^-12; a denormal input acts as a signed zero and a tiny result flushes to zero) rather than to exact bits, because QEMU computes exact quotients where the Pentium III uses tables. Unicorn also never sets MXCSR's exception flags, so after SSE arithmetic only MXCSR's control bits are compared; `crates/simd` checks the flags against hardware with its own corpus ([sse-oracle.md](sse-oracle.md)).
+- `rcp*`/`rsqrt*` lanes are held to the architectural bound (relative error at most 1.5 * 2^-12; a denormal input acts as a signed zero and a tiny result flushes to zero) rather than to exact bits, because QEMU computes exact quotients where the Pentium III uses tables. Unicorn also never sets MXCSR's exception flags, so after SSE arithmetic only MXCSR's control bits are compared; `crates/recompiler/simd` checks the flags against hardware with its own corpus ([sse-oracle.md](sse-oracle.md)).
 
 The test prints its skip classes with `--nocapture`. The counts of one run, and what each skip class is, are in [notes/fp-census.md](notes/fp-census.md).
 
-The emitter's differential test (`crates/emit/tests/differential.rs`) runs synthetic functions through the interpreter and through generated C from random states. The atomics in generated C go through the runtime's operation-wide accessors (`crates/emit/RUNTIME-CONTRACT.md`).
+The emitter's differential test (`crates/recompiler/emit/tests/differential.rs`) runs synthetic functions through the interpreter and through generated C from random states. The atomics in generated C go through the runtime's operation-wide accessors (`crates/recompiler/emit/RUNTIME-CONTRACT.md`).
 
 ## Settling disputes later
 

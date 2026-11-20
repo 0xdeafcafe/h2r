@@ -1,10 +1,10 @@
 # Xbox Live replacement
 
 Status: built, with the sections below marking what is not. The server
-(`crates/live-proto`, `crates/live-server`, `h2 live ...` in
+(`crates/live/live-proto`, `crates/live/live-server`, `h2 live ...` in
 [4.2](#42-cli) and [4.3](#43-service)) has accounts with recovery codes,
 title files, friends, teams, sessions, invites, stats, cloud saves, custom
-maps, co-op sessions and a relay, and the client HLE (`crates/live-hle`)
+maps, co-op sessions and a relay, and the client HLE (`crates/live/live-hle`)
 starts at [Client HLE: sign-in](#client-hle-sign-in). It is on in the app
 builds and opt-in for `h2 play` (`--live`). Sections 1 to 3 and 6 are the
 original design and investigation; the HLE sections say what the game does
@@ -61,7 +61,7 @@ thousand in the library. `0x003cd718` (17 sites) is the busiest; the
 `0x003cd0e1..0x003cd17d` cluster looks like the XNet socket calls (send,
 receive, select).
 
-**With Live off.** The kernel reports no cable (`crates/kernel/src/net.rs`,
+**With Live off.** The kernel reports no cable (`crates/runtime/kernel/src/net.rs`,
 `PhyGetLinkState` returns 0), so the title skips `XNetStartup` and every
 Live path reports "network cable unplugged". Nothing in `XONLINE` runs.
 With Live on, the HLE ([4.1](#41-client-recomp-side)) sets the link up and
@@ -150,7 +150,7 @@ all and proves the socket layer.
 
 ### 4.2 CLI
 
-Implemented (crates/cli/src/live_cmd.rs, live_accounts.rs, live_query.rs,
+Implemented (crates/apps/cli/src/live_cmd.rs, live_accounts.rs, live_query.rs,
 play_live.rs; `h2 live --help` has every flag):
 
 ```
@@ -242,7 +242,7 @@ anything but loopback.
 #### Playing on Live
 
 `h2 play` is offline unless a flag asks for Live, and contacts nothing to
-decide (`choose` in `crates/cli/src/play_live.rs`). The app builds are the
+decide (`choose` in `crates/apps/cli/src/play_live.rs`). The app builds are the
 other way round: on by default (below).
 
 | `h2 play` flags | Plays | `$H2_LIVE_SERVER` |
@@ -297,7 +297,7 @@ URL, then boots with `boot::LiveConfig {
 enabled, accounts_path: play-accounts.json, server_url }`. The server stops
 when the game does.
 
-**The app builds** (tvOS and iOS, `crates/apple-host`; the Xbox app when
+**The app builds** (tvOS and iOS, `crates/apps/apple-host`; the Xbox app when
 there is one, docs/runtime/windows.md) are on by default against the same
 service (`live_hle::platform`). `live.toml` in the app's data root is the
 switch:
@@ -334,7 +334,7 @@ points at a build of your own and skips this.
 
 `h2 live friend add|accept|decline|remove|list` act as a local account
 (`--as GAMERTAG`): each writes a signed friend event on that account's
-stream (`crates/cli/src/live_cmd.rs`, `friend`).
+stream (`crates/apps/cli/src/live_cmd.rs`, `friend`).
 
 #### Game art
 
@@ -345,7 +345,7 @@ icons, Live icons, game-type icons, weapon silhouettes, medals, the player
 colour palette, every multiplayer map's preview and every campaign level's
 level-select picture (`map/<stem>/preview` too), and the game's title and
 save images from `default.xbe` (`title/image`, `title/save-image`: the
-`$$XTIMAGE` and `$$XSIMAGE` sections, `crates/assets/src/xpr.rs`). A cold run takes well
+`$$XTIMAGE` and `$$XSIMAGE` sections, `crates/platform/assets/src/xpr.rs`). A cold run takes well
 under a second. Keys and emblem colouring are in
 [live-api.md](live-api.md#optional-game-art).
 
@@ -442,7 +442,7 @@ chain. A stream whose first event read is not its first (version 0, with
 
 ### 4.3 Service
 
-Two crates. `crates/live-proto` is what clients and server share, with no
+Two crates. `crates/live/live-proto` is what clients and server share, with no
 runtime: the wire types of [live-api.md](live-api.md) (XUIDs as 16 hex
 digits, title IDs as 8, gamertags with Live's rules: 1..=15 letters, digits
 and single spaces, starting with a letter, compared case-insensitively),
@@ -450,7 +450,7 @@ the signing code of [live-security.md](live-security.md) (`sign`: Ed25519
 keys as JWK with RFC 7638 thumbprints, compact JWS, signed event bodies and
 batches, self-issued tokens, invites, the hash chain; `jcs`: RFC 8785
 canonical JSON) and the MOTD builder (`motd`). The game-side client and
-the CLI sign with exactly this code. `crates/live-server` is the service
+the CLI sign with exactly this code. `crates/live/live-server` is the service
 (axum, tokio, sqlx with runtime-checked queries; see its README).
 
 The API is [live-api.md](live-api.md) on `127.0.0.1:8074`. Built: health,
@@ -476,7 +476,7 @@ the contract leaves open:
 - `POST /v1/events` answers 201 with the whole stored event, a superset of
   `{position}`.
 
-**Games** (crates/live-server/src/games.rs, live-proto `game`). `POST
+**Games** (crates/live/live-server/src/games.rs, live-proto `game`). `POST
 /v1/games` (`games.write`) takes the game without an id; the server picks
 a random 32-hex `game_id` and writes `GameStarted` itself, signed by the
 server key, with `host` = the token's author, on `game-<id>`. Consoles
@@ -660,7 +660,7 @@ online, where and with whom. To keep that from flooding the log:
 
 ## Client HLE: sign-in
 
-`crates/live-hle` replaces the public entries in
+`crates/live/live-hle` replaces the public entries in
 [live-boundary.md](live-boundary.md) when the host enables Live. It uses
 `Dispatch::register_override`, as XAPI and DSound do. Disabled is the default:
 it registers nothing, reads no account file and leaves the console PHY setting
@@ -1014,7 +1014,7 @@ should sign anyone out. The client rides out a short outage at two levels:
 
 The Worker retries too ([live-worker.md](live-worker.md) "Deploys and
 retries"), and the server renews deadlines on restart (Managers, above).
-Tests: `crates/live-hle/tests/server.rs` drives a proxy (`Flaky`) in front of
+Tests: `crates/live/live-hle/tests/server.rs` drives a proxy (`Flaky`) in front of
 the embedded server that fails requests on cue: an outage shorter than the
 grace, then a real one; a lost answer to a presence event (one event on the
 server); dropped connections and a deploy under logon and storage reads;
@@ -1103,7 +1103,7 @@ host UDP traffic; actual menu transitions and a full retail match are unconfirme
 
 ## Client HLE: player feedback
 
-`XOnlineFeedbackSend` (`0x003a0890`, `crates/live-hle/src/feedback.rs`)
+`XOnlineFeedbackSend` (`0x003a0890`, `crates/live/live-hle/src/feedback.rs`)
 takes eight stack words: the controller, the target's XUID by value (three
 words), the XDK feedback type, an `XONLINE_FEEDBACK_PARAMS` pointer (its
 one field is a wide-string pointer; the library sends it as UTF-8 of at
@@ -1135,7 +1135,7 @@ task.
 
 ## Client HLE: mute list
 
-The three mute-list calls (`crates/live-hle/src/mutes.rs`) keep each
+The three mute-list calls (`crates/live/live-hle/src/mutes.rs`) keep each
 signed-in player's list in the HLE and back it with the server's
 ([live-api.md](live-api.md) "Mute list"), so a mute follows the player to
 other machines and the website.
@@ -1310,7 +1310,7 @@ retention/draining. No test runs the title.
 
 ## Client HLE: Live not set up
 
-`crates/boot/src/live_notice.rs` puts our text on the game's own "cannot
+`crates/apps/boot/src/live_notice.rs` puts our text on the game's own "cannot
 connect to Xbox Live" dialog, the one that offers the troubleshooter (UI
 error `0x23`). The game draws it in its dialog and font; no tag or localized
 string is edited. `boot::run_hosted_with_live` installs it after the Live
@@ -1375,8 +1375,8 @@ dashboard's network settings through `XLaunchNewImageA`, which ends the run
 here. Other Live errors (servers busy `0x25`, invalid user `0x9a`,
 connection lost `0x38`) keep the game's text.
 
-Tests: `crates/boot/src/live_notice.rs` checks the text, the URL line and
-the buffer bounds on synthetic guest memory; `crates/boot/tests/live_notice.rs`
+Tests: `crates/apps/boot/src/live_notice.rs` checks the text, the URL line and
+the buffer bounds on synthetic guest memory; `crates/apps/boot/tests/live_notice.rs`
 runs the hook through the real Runner with the fixture module's leaf
 standing in for the fill, and checks that only error `0x23` changes, that
 install refuses to wrap an existing override and skips a missing original,
@@ -1458,13 +1458,13 @@ The game also has to choose which file to save into. It only knows
 saves to that file and to `shared_accounts_path(..)`.
 
 
-Tests: `crates/live-hle/tests/account_setup.rs` covers create, recover with
+Tests: `crates/live/live-hle/tests/account_setup.rs` covers create, recover with
 the code from the returned secret, a wrong code, a used code, an unknown
 gamertag, lockout, reset, an unreachable server, saving with other entries
 kept at 0600, and a saved account signing in after `reload_accounts`. All of
 them run against the in-process memory server.
-`crates/live-hle/src/account_setup.rs` maps refusals to errors.
-`crates/boot/src/account_screen.rs` covers every transition and checks that
+`crates/live/live-hle/src/account_setup.rs` maps refusals to errors.
+`crates/apps/boot/src/account_screen.rs` covers every transition and checks that
 every page fits.
 
 ### In-game sign-in
@@ -1508,7 +1508,7 @@ record is replaced by the saved account's (the controller slot word kept),
 and the service logon starts as for any account, ending in `CONNECTED`.
 Cancel fails the logon with `INVALID_USER` (the user's HRESULT too).
 
-**The prompt** (`crates/boot/src/signin_screen.rs`) is our own list class
+**The prompt** (`crates/apps/boot/src/signin_screen.rs`) is our own list class
 (`list_class`) with one row and a description, on the Controls layout. The
 d-pad types the code (up and down change the digit, left and right move;
 direction events, kinds 1 to 4, from the d-pad or the left stick, as
@@ -1594,7 +1594,7 @@ was typed:
 - **Anything else** (unreachable, busy, server error) is said on the
   gamertag page.
 
-**The keyboard** (`crates/boot/src/signin_keyboard.rs`). A on either page
+**The keyboard** (`crates/apps/boot/src/signin_keyboard.rs`). A on either page
 opens the game's own on-screen keyboard. On the app builds the host's
 system keyboard types into it (`keyboard_glue`). It is opened with the
 retail opener `0x00238c21`: stdcall `(context, buffer, capacity)`, `ret
@@ -1678,18 +1678,18 @@ made on that server's web dashboard and none on this machine):
 7. Again, with B on the prompt: note the game's sign-in error and that it
    returns to the menu.
 
-Tests: `crates/live-hle/tests/signin_code.rs` (the logon pending through a
+Tests: `crates/live/live-hle/tests/signin_code.rs` (the logon pending through a
 wrong code, the right code against the embedded server's real TOTP, both
 files saved, the countdown to a lockout, cancel, create, unreachable, no
 server; New Account making a free gamertag, a taken one kept waiting and
 signed in with its code, backing out of one, an invite-only server);
-`crates/live-hle/src/config.rs` (the list, the New Account row);
-`crates/boot/tests/new_account_prompt.rs` (New Account opening the prompt
+`crates/live/live-hle/src/config.rs` (the list, the New Account row);
+`crates/apps/boot/tests/new_account_prompt.rs` (New Account opening the prompt
 through the runner; A opening the retail keyboard on our buffer, with our
-title); `crates/boot/src/signin_keyboard.rs` (reading the text back);
-`crates/boot/src/signin_screen.rs` (the d-pad entry, every page fitting
-five lines of 40); `crates/boot/src/list_class.rs` (a class's own buttons,
-live text); `crates/cli/src/play_live.rs` (the hand-off).
+title); `crates/apps/boot/src/signin_keyboard.rs` (reading the text back);
+`crates/apps/boot/src/signin_screen.rs` (the d-pad entry, every page fitting
+five lines of 40); `crates/apps/boot/src/list_class.rs` (a class's own buttons,
+live text); `crates/apps/cli/src/play_live.rs` (the hand-off).
 
 ## Client HLE: outgoing messages
 

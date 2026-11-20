@@ -1,10 +1,10 @@
-# Halo 1 sandbox objects as Halo 2 tags (`crates/h1objects`)
+# Halo 1 sandbox objects as Halo 2 tags (`crates/tools/h1objects`)
 
 Status: **Built** (2026-11-17) for reading every Halo 1 Xbox object tag on
 the 13 multiplayer maps, and for building Blood Gulch's arsenal (assault
 rifle, pistol, plasma rifle, needler, frag and plasma grenades, health
 pack, cyborg, warthog, ghost) as Halo 2 tags on Coagulation. The built
-tags read back through `crates/tags`. No converted object has been loaded
+tags read back through `crates/formats/tags`. No converted object has been loaded
 by the game yet ("Needs a game run").
 
 This is the Halo 1 sandbox of [multiplayer.md](multiplayer.md)
@@ -723,7 +723,7 @@ not weapons, equipment, devices, bipeds or crates). So:
   had no solid cell or whose base had no scenery `phmo`) gets its `coll`
   with one slot per BSP: the box of the BSP's vertices at
   `+0x10`/`+0x20`, the `coll`'s own datum at `+0x30`, and MOPP code from
-  `crates/mopp` over the BSP's surfaces, keyed `0..n` (`coll::bsp_mopp`),
+  `crates/formats/mopp` over the BSP's surfaces, keyed `0..n` (`coll::bsp_mopp`),
   at `+0x64`;
 - every other object gets its `coll` without slots, as retail. A Halo 1
   `coll` that both kinds use is built twice (the second named with

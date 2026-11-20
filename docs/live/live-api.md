@@ -1,7 +1,7 @@
 # Live service API
 
 Status: contract, implemented apart from what the sections mark as not
-built (federation among them). The service is `crates/live-server`
+built (federation among them). The service is `crates/live/live-server`
 ([live.md](live.md)). Everything here is JSON over HTTP on one port
 (default `127.0.0.1:8074`), plus WebSockets for streaming, ingest, the
 co-op relay and the dedicated host tunnel. Identity, signing, tokens
@@ -321,7 +321,7 @@ a frame at 1 Hz whose `shots`, `actions` and `hits` cover its whole second.
 ### Frame chunks
 
 The server records a game's frames in chunks of ten seconds of game time
-(`crates/live-proto/src/chunk.rs`): every frame sent in an aligned window
+(`crates/live/live-proto/src/chunk.rs`): every frame sent in an aligned window
 of 300 ticks, packed as one stream (a keyframe, then deltas; [packed
 frames](live-telemetry.md#packed-frames)) and compressed with raw deflate.
 A chunk is stored when a frame lands in the next window, and when the game
@@ -396,7 +396,7 @@ the index once and fetches the one chunk whose window holds the tick.
 
 ### Caching
 
-Set by `crates/live-server/src/caching.rs` on GET and HEAD responses whose handler set no `Cache-Control` of its own:
+Set by `crates/live/live-server/src/caching.rs` on GET and HEAD responses whose handler set no `Cache-Control` of its own:
 
 - `/assets/*` (built, named by content hash): `public, max-age=31536000, immutable`.
 - The web app's HTML (`/`, every app route, and a missing asset answered with the app): `no-cache`.
@@ -601,7 +601,7 @@ retention policy keeps all recordings.
 ## Stats summary
 
 `GET /v1/stats/summary?window=` (default `7d`) feeds the stats site's home
-page. It is a projection of the game streams (`crates/live-server/src/stats.rs`),
+page. It is a projection of the game streams (`crates/live/live-server/src/stats.rs`),
 kept in UTC-day buckets for the last 30 days, hour buckets for the same span,
 and a running all-time bucket, so an answer merges at most 30 buckets and
 never reads the log. Answers are cached until the log moves or the hour
@@ -689,7 +689,7 @@ The Live admin's usage screens (`/dash/admin/usage`,
 [web-boundary.md](web-boundary.md) §5) read two endpoints, both for
 admins only: an `admin.read` token from an admin account, or the
 operator's (401 without one, 403 for anyone else). The numbers live in
-`crates/live-server/src/usage.rs`; a read walks only the days it asks
+`crates/live/live-server/src/usage.rs`; a read walks only the days it asks
 for, in memory, and never the log.
 
 **Where the counts come from.** Two books, merged when read:
@@ -1942,7 +1942,7 @@ above where they differ.
 - **Account creation** payload is `{gamertag, jwk, invite?, aud, iat}`;
   `aud` is the server id from the well-known document and `iat` must be
   within 5 minutes of the server's clock. The fixed test vector is
-  `account_request_vector` in `crates/live-proto/src/sign.rs`.
+  `account_request_vector` in `crates/live/live-proto/src/sign.rs`.
 
 ## Ranks
 

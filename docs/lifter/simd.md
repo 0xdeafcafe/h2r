@@ -1,16 +1,16 @@
 # SSE1 floating-point reference semantics
 
 Status: Built.
-Code: `crates/simd/src/lib.rs` (Rust side), `crates/simd/c/h2simd.h` (C side). Tests: `crates/simd/tests/` (`differential.rs`, `header.rs`, `oracle_corpus.rs`, `hardware.rs`).
+Code: `crates/recompiler/simd/src/lib.rs` (Rust side), `crates/recompiler/simd/c/h2simd.h` (C side). Tests: `crates/recompiler/simd/tests/` (`differential.rs`, `header.rs`, `oracle_corpus.rs`, `hardware.rs`).
 Switch: none.
 
-`crates/simd` defines what every SSE1 floating-point instruction the Pentium
+`crates/recompiler/simd` defines what every SSE1 floating-point instruction the Pentium
 III runs does, down to the bit: results, NaN payloads, signed zeros, the
 MXCSR sticky flags and whether the instruction raises `#XM`. It has two
 sides:
 
-- the Rust side, `crates/simd/src/lib.rs`, which the IR interpreter calls;
-- the C side, `crates/simd/c/h2simd.h`, which the generated code calls.
+- the Rust side, `crates/recompiler/simd/src/lib.rs`, which the IR interpreter calls;
+- the C side, `crates/recompiler/simd/c/h2simd.h`, which the generated code calls.
 
 The C side is the Rust side written again line for line. Both are integer
 soft-float only. Neither uses the host's floating point or its floating-point

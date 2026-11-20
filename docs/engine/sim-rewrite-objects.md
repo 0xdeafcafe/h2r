@@ -2,13 +2,13 @@
 
 Status: design, 2026-11-20. Nothing here is built. It details phase 3 of
 [sim-rewrite.md](sim-rewrite.md) (the plan; its section 8 decisions bind this
-page). Phase 1 (animation and pose, `crates/sim-anim`) and phase 2 (collision
+page). Phase 1 (animation and pose, `crates/rewrites/sim-anim`) and phase 2 (collision
 and spatial queries) land first; section 6 says what this phase needs from
 them.
 
 Evidence marks: **C** confirmed (read from the retail image with `h2 disasm`
 on 2026-11-20, or already encoded in a differential-tested port in
-`crates/engine/src/sim_physics`), **L** likely, **O** open. Names are ours.
+`crates/rewrites/engine/src/sim_physics`), **L** likely, **O** open. Names are ours.
 Addresses are guest virtual addresses; bare numbers in tables are hex.
 Sample counts come from the Waterworks profile behind
 [sim-budget.md](../perf/sim-budget.md) (84,358 main-thread samples, 14.12
@@ -261,7 +261,7 @@ and return 1.
 ## 3. Crates and modules
 
 ```
-crates/sim-core/                  (phase 1a creates it; this phase adds)
+crates/rewrites/sim-core/                  (phase 1a creates it; this phase adds)
   src/spec.rs                     Spec<K>: validated speculation (section 7)
   src/jobs.rs                     Jobs: fixed chunking (plan section 6)
 crates/sim-objects/               new; no `runtime` dependency
@@ -278,14 +278,14 @@ crates/sim-objects/               new; no `runtime` dependency
   src/pose.rs                     bd090 orchestration over sim-anim
   src/unit/, biped/, ...          one module per type tree
   src/phase.rs                    PoseSet, BoundsSet (transient SoA)
-crates/sim-state/                 new; read-only API (section 8)
-crates/engine/src/sim_objects/    the guest boundary (needs `runtime`)
+crates/rewrites/sim-state/                 new; read-only API (section 8)
+crates/rewrites/engine/src/sim_objects/    the guest boundary (needs `runtime`)
   mod.rs                          BODIES table, local dispatcher, supported()
   frame.rs                        retail frame helpers (push, pop, slots)
   walks.rs                        b6f10, b7060, b7150
   object.rs                       bc470, bc820, dispatchers 108c60/108cd0/109050/1090d0
   ...                             one file per ported segment body
-crates/feature/src/sim_objects.rs installer, `impl.sim.native.objects`
+crates/hooking/feature/src/sim_objects.rs installer, `impl.sim.native.objects`
 docs/engine/object-update.md      the contract page (engine README format)
 ```
 
@@ -341,7 +341,7 @@ pub struct DefTable { by_tag_index: Vec<u32 /* 0 = absent, else index + 1 */>, d
 
 Keyed by tag datum index, valid for one map load. Tag data is immutable
 after load, with one exception to check in slice 0: the map-patching features
-(`crates/boot/src/map_override.rs`, mods) write tags at load, before any
+(`crates/apps/boot/src/map_override.rs`, mods) write tags at load, before any
 object exists; the table must be built after they run, which lazy building
 gives for free. The descriptor slots in the type table are image constants
 and are read from guest memory once per process.
@@ -768,7 +768,7 @@ The plan's ladder, with these specifics.
    `bdef0`); `Spec` with 1, 2 and 8 workers giving identical bytes; `Spec`
    with every input class perturbed between `prepare` and `take`; `Spec`
    never prepared.
-2. **Segment differential tests** (`crates/engine/tests/sim_objects_differential.rs`,
+2. **Segment differential tests** (`crates/rewrites/engine/tests/sim_objects_differential.rs`,
    `differential` feature). The existing harness model: run the owner's XBE
    on the IR interpreter to the next call or return and compare with the
    Rust segment. Compared: all memory at and above `ESP`, all memory outside
@@ -845,7 +845,7 @@ are independent of each other once their dependencies are in, and are
 ordered here by Waterworks samples; the campaign census may reorder 8 to 11.
 
 Files each lane owns: its own modules under `crates/sim-objects/src` and
-`crates/engine/src/sim_objects`, one row block in `BODIES`, its section of
+`crates/rewrites/engine/src/sim_objects`, one row block in `BODIES`, its section of
 the contract page, and its test file section. Shared edits (`BODIES`,
 `points.rs`, the installer) are append-only.
 

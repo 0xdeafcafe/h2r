@@ -1,6 +1,6 @@
 # Halo 2 Xbox string IDs and localized text
 
-Status: Built. Code: `crates/tags/src/localization.rs`. Switch: none.
+Status: Built. Code: `crates/formats/tags/src/localization.rs`. Switch: none.
 
 Implemented in `tags::localization`, separately from the generated tag codecs.
 The existing `tags::wire::StringId` is reused and re-exported as `tags::StringId`;

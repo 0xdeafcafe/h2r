@@ -1,7 +1,7 @@
 # Expanded settings menu
 
 Status: Built. Our settings are native game screens (a Video screen, extra Controls rows, Video and Voice rows in both pause menus), driven by a schema of `settings::Def`s. Per-player mute is not built (see "Per-player mute").
-Code: `crates/boot/src/video_screen.rs`, `crates/boot/src/pause_menu.rs`, `crates/boot/src/voice_settings.rs`, `crates/boot/src/fov_row.rs`, `crates/boot/src/setting_defs.rs`, `crates/settings`, `crates/cli/src/settings_cmd.rs`. Tests: in those files.
+Code: `crates/apps/boot/src/video_screen.rs`, `crates/apps/boot/src/pause_menu.rs`, `crates/apps/boot/src/voice_settings.rs`, `crates/apps/boot/src/fov_row.rs`, `crates/apps/boot/src/setting_defs.rs`, `crates/formats/settings`, `crates/apps/cli/src/settings_cmd.rs`. Tests: in those files.
 Switch: one variable per setting, in `setting_defs.rs` and listed in [switches.md](../runtime/switches.md).
 
 The screens are the game's own list class with our rows, so they look native and
@@ -125,7 +125,7 @@ A host-side file, not the guest profile.
   default `~/Library/Application Support/h2recomp/data`;
   [storage.md](../runtime/storage.md)). It is not under `disk/`, which is the
   guest's. One writer, `settings::Store`, writes it and keeps other keys
-  (`crates/settings/src/file.rs`).
+  (`crates/formats/settings/src/file.rs`).
 - The guest profile is signed and sized by the game, and writes to it go
   through retail code. Our settings are per install, not per gamertag, and
   do not travel with a save someone else loads.
@@ -532,7 +532,7 @@ cameras do not.
 ## Settings as a schema
 
 The schema is the settings layer of [feature-engine.md](../engine/feature-engine.md). A setting is one
-`settings::Def` (`crates/settings`): its `table.key` in `settings.toml`, its
+`settings::Def` (`crates/formats/settings`): its `table.key` in `settings.toml`, its
 label and help, its kind (bool, whole number with a valid range and row
 steps, or a choice), its default, the variable and flag that override it,
 and whether a change applies at once (`Live`) or at the next launch

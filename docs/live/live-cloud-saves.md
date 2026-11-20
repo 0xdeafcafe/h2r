@@ -4,10 +4,10 @@ Signed in to Live, a player's saves follow their account: sign in on
 another machine and the profiles, campaign progress, saved game variants
 and our per-profile settings are there before the game reads them.
 
-- Server: `crates/live-server/src/cloud_saves.rs`, the endpoints in
+- Server: `crates/live/live-server/src/cloud_saves.rs`, the endpoints in
   [live-api.md](live-api.md) "Cloud saves".
-- Client: `crates/cloud-saves` (merge, state, worker), wired into
-  `h2 play` by `crates/cli/src/play_cloud.rs`.
+- Client: `crates/live/cloud-saves` (merge, state, worker), wired into
+  `h2 play` by `crates/apps/cli/src/play_cloud.rs`.
 - The VFS hook: `vfs::Vfs::set_change_observer`
   ([storage.md](../runtime/storage.md)).
 
@@ -148,7 +148,7 @@ it anyway, since it compares every item with the agreed state.
 
 ## Conflicts
 
-The rules, as `crates/cloud-saves/src/merge.rs` applies them per item
+The rules, as `crates/live/cloud-saves/src/merge.rs` applies them per item
 (base: the last agreed state):
 
 1. **Same bytes on both sides**: nothing moves; that is the new base.
@@ -215,15 +215,15 @@ saves: `cloud saves: <url> keeps none; saves stay on this machine`.
 
 ## Tests
 
-- `crates/live-server/tests/cloud_saves.rs`: owner only (other accounts,
+- `crates/live/live-server/tests/cloud_saves.rs`: owner only (other accounts,
   the server key, no token, the wrong method), versions and 409s,
   tombstones, hash and header checks, the caps, no data directory.
-- `crates/cloud-saves/src/merge.rs`: the rules above over invented trees.
-- `crates/cloud-saves/src/engine/tests.rs`: two machines through a fake
+- `crates/live/cloud-saves/src/merge.rs`: the rules above over invented trees.
+- `crates/live/cloud-saves/src/engine/tests.rs`: two machines through a fake
   server (pulls, pushes, conflicts with copies, deletions, the offline
   queue across a restart, deferred 409s in play, settings), and the worker
   against a real VFS over a temporary data root.
-- `crates/cloud-saves/tests/http.rs`: `HttpRemote` and the engine against
+- `crates/live/cloud-saves/tests/http.rs`: `HttpRemote` and the engine against
   the real server on loopback.
-- `crates/vfs/tests/storage.rs` `changes_are_observed_at_close_and_removal`.
-- `crates/cli/src/play_cloud.rs`: three data roots on one embedded service.
+- `crates/runtime/vfs/tests/storage.rs` `changes_are_observed_at_close_and_removal`.
+- `crates/apps/cli/src/play_cloud.rs`: three data roots on one embedded service.

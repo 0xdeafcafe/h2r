@@ -1,10 +1,10 @@
 # Campaign cache integration gate
 
 Status: Built.
-Code: `crates/boot/src/map_slots.rs`, `crates/boot/src/map_copy.rs`, `crates/vfs/src/campaign_maps.rs`. Tests: `crates/kernel/tests/cache_slots.rs` (ignored; needs the disc).
+Code: `crates/apps/boot/src/map_slots.rs`, `crates/apps/boot/src/map_copy.rs`, `crates/runtime/vfs/src/campaign_maps.rs`. Tests: `crates/runtime/kernel/tests/cache_slots.rs` (ignored; needs the disc).
 Switch: none.
 
-`crates/kernel/tests/cache_slots.rs` is an opt-in retail integration test.
+`crates/runtime/kernel/tests/cache_slots.rs` is an opt-in retail integration test.
 It reads and analyzes the supplied XBE at runtime, lifts the cache path and its
 callees, compiles a bounded C module in scratch space, and runs it against the
 real kernel/runtime/VFS. No retail bytes or generated code belong in Git.
@@ -146,7 +146,7 @@ of the header outside guest memory during a session, so the on-disk
 slot header does not matter. The record's resident header is the only
 thing checked.
 
-**The fix: the `map-slots` feature** (`crates/boot/src/map_slots.rs`).
+**The fix: the `map-slots` feature** (`crates/apps/boot/src/map_slots.rs`).
 
 - **When it runs.** After `RENDER_FRAME`, on the main thread, where the
   copy machine `0x2141f0` also runs, at most every 500 ms.
@@ -159,7 +159,7 @@ thing checked.
   The hook zeroes the slot's 0x800-byte resident header, as state 7 does.
   The next request misses. The VFS then resolves the current source if
   the path is still installed.
-  [VFS content maps](../../crates/vfs/src/content_maps.rs)
+  [VFS content maps](../../crates/runtime/vfs/src/content_maps.rs)
 - **What it leaves alone.**
   - Slots 0-2: copies of other maps check their headers as dependencies
     (state 4, `0x214390`).
@@ -168,7 +168,7 @@ thing checked.
 
 Tests: `map_slots` (synthetic guest memory: drops, the current slot, a
 copy in flight, the shared slots, a refilled slot) and
-`crates/vfs/tests/packages.rs` (`map_changed`). Nothing here is checked
+`crates/runtime/vfs/tests/packages.rs` (`map_changed`). Nothing here is checked
 in game; see the lane report for the in-game checks.
 
 Known gaps:
@@ -213,7 +213,7 @@ time barely moves and the pacer never sleeps. The load costs 1,744 times
 whatever one loading frame costs the host: 3.2 to 5.7 s headless, far more
 in a window where each present is dearer.
 
-**The fix: the `map-copy` feature** (`crates/boot/src/map_copy.rs`, on by
+**The fix: the `map-copy` feature** (`crates/apps/boot/src/map_copy.rs`, on by
 default, `H2_FEATURES=-map-copy` turns it off). When the copy machine is
 called from the loading-screen loop (return address `0x1639c2`), a
 `before` hook answers with an async body that runs the step the loop

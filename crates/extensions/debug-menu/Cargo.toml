@@ -1,0 +1,10 @@
+[package]
+name = "debug-menu"
+description = "Our in-game debug menu: a tree of rows over the agent API's registries, its navigation, touchpad and pad input, and the lines the host overlay draws (docs/runtime/debug-menu.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+input = { path = "../../platform/input", default-features = false }

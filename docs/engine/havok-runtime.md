@@ -1,7 +1,7 @@
 # Havok at run time: world, bodies and contacts
 
-Status: Reference. Code: `crates/live-telemetry/src/havok.rs`,
-`crates/live-telemetry/src/havok_agents.rs`. Switch: none.
+Status: Reference. Code: `crates/live/live-telemetry/src/havok.rs`,
+`crates/live/live-telemetry/src/havok_agents.rs`. Switch: none.
 
 How the retail game keeps its Havok world in guest memory, as far as
 `havok.bodies`, `havok.contacts` and `havok.agents` read it
@@ -11,8 +11,8 @@ surface pushed the biped's body, and how hard.
 
 Static reading of `default.xbe` with `h2 disasm`; nothing here was
 checked in a running game for these layout notes. Synthetic fixtures for
-the two readers live in `crates/live-telemetry/src/havok.rs` and
-`crates/live-telemetry/src/havok_agents/tests.rs`.
+the two readers live in `crates/live/live-telemetry/src/havok.rs` and
+`crates/live/live-telemetry/src/havok_agents/tests.rs`.
 No Havok SDK headers or code were used; names (island, entity, motion,
 contact constraint) are descriptive. No game data is on this page.
 

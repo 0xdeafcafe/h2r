@@ -1,14 +1,14 @@
 # DirectSound (guest side)
 
-Status: Built. Code: `crates/dsound/src` (`register.rs` is the entry). Tests: `crates/dsound/tests`.
+Status: Built. Code: `crates/platform/dsound/src` (`register.rs` is the entry). Tests: `crates/platform/dsound/tests`.
 Switch: none.
 
-`crates/dsound` is the guest-facing half of audio: it takes the calls Halo 2
+`crates/platform/dsound` is the guest-facing half of audio: it takes the calls Halo 2
 makes into its statically linked Xbox DirectSound (`DSOUND` section,
 `0x00379c60`..`0x00387374`, XDK 5849) and answers them from Rust. It reads
-and writes guest memory through a small trait and drives `crates/audio`
+and writes guest memory through a small trait and drives `crates/platform/audio`
 (ADPCM, mixer, cpal), which is described in [audio.md](audio.md). Only
-`register.rs` depends on `crates/runtime`. Nothing depends on the kernel,
+`register.rs` depends on `crates/runtime/runtime`. Nothing depends on the kernel,
 which is reached through the `register::Events` trait.
 
 All addresses below are for the retail 5849 `default.xbe`. The call-site
@@ -254,7 +254,7 @@ every frame, so only the moment inside a frame differs.
 
 So the attenuation lives in mix-bin volumes, and those must survive
 `SetOutputBuffer`. The library keeps a voice's bin list and a per-bin
-volume table apart (`crates/dsound/src/mixbins.rs`, from `0x37bc89`
+volume table apart (`crates/platform/dsound/src/mixbins.rs`, from `0x37bc89`
 `SetMixBins`, `0x37a4db` `SetMixBinVolumes`, `0x37bd54` `SetOutputBuffer`
 and `0x37a500`): `SetOutputBuffer(mix-in)` replaces the list with the
 mix-in's input bin at `1 / channels`; a later `SetMixBins` routes the
@@ -428,14 +428,14 @@ The shared kinds (`DoWork` for `set_frames_per_do_work`, `Manual` for
 repeat. Every refused path reports `ConsumerConflict { held, wanted }`
 (`spawn_output`, `spawn_pump(.., true)` and `set_frames_per_do_work` return
 it, a manual `advance_audio` or `tick` is a `Stop::Consumer`). It cannot see a
-renderer outside the crate (`crates/app`'s `AudioOut`/`DiscardRenderer`, or
+renderer outside the crate (`crates/apps/app`'s `AudioOut`/`DiscardRenderer`, or
 an `audio::Pump` of the caller's own): pick one.
 
 | consumer | who renders | who reports completions to the game |
 |---|---|---|
 | `Hle::spawn_output`, device pacing (the default for a runner, see below) | its thread, into a sink (a device) | the same thread, each wake, and the game's own `DoWork`/`GetStatus`/`Process` |
 | `Hle::spawn_output`, logical pacing (deterministic runs) | `Output::advance_to`, called by the runner at its scheduler points; its thread only plays the result | `advance_to`, and the game's own calls |
-| `crates/app`'s `AudioOut` (legacy) | the app | `Hle::spawn_pump(runtime, period, false)` or the game's calls |
+| `crates/apps/app`'s `AudioOut` (legacy) | the app | `Hle::spawn_pump(runtime, period, false)` or the game's calls |
 | nothing (headless boot, tests) | `Hle::spawn_pump(runtime, period, true)`, or `DirectSound::set_frames_per_do_work`, or `Hle::tick`/`advance_audio` by hand | the same call |
 
 ### Consumers and the output thread
@@ -859,7 +859,7 @@ pushes `ebp` three times with `ebp` zeroed at `0x21ff35`: timestamp 0, flags
 
 ## Voice effects
 
-What reaches `audio` (`crates/audio/src/fx.rs`, `reverb.rs`), where the layouts
+What reaches `audio` (`crates/platform/audio/src/fx.rs`, `reverb.rs`), where the layouts
 came from, and what is assumed. Descriptor layouts were read from how Halo
 builds them (`h2 disasm`; constants read from the retail image and reduced to
 the scalar meanings below, none copied). Halo's sites: the stream sound

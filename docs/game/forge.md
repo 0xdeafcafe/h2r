@@ -299,7 +299,7 @@ operations replicated by the host: out of scope until the rest works.
    Link. [map-pack.md](map-pack.md) §6 lists multiplayer as a separate job;
    this page assumes it.
 2. Typed, tested decoding of `scnr+0x100`, `+0x118`, `+0x120`, `+0x128` and
-   the scenery/crate blocks in `crates/tags`, with engine-backed strides
+   the scenery/crate blocks in `crates/formats/tags`, with engine-backed strides
    and field meanings (today the header decoder keeps them opaque).
 
 ### Risks
@@ -340,7 +340,7 @@ is not counted.
 entries on one map."** In place only: no new guest memory, no editor, no
 network. Pieces:
 
-1. `crates/tags`: typed netgame equipment entry (position `+0x40`,
+1. `crates/formats/tags`: typed netgame equipment entry (position `+0x40`,
    orientation `+0x4c`, reference `+0x58`, type byte `+0x14`, flags `+0`),
    tested on synthetic bytes.
 2. A variant crate: the JSON model, canonical hashing, validation against a

@@ -91,14 +91,14 @@ re-picked every 15 s.
 Files published before the header was traced carry 16 zero bytes there,
 which the game rejects. On start, the server (`h2 live serve` and the
 embedded one) republishes such a MOTD or hopper with a real header and the
-same body (`crates/live-server/src/title_headers.rs`); reads through the
+same body (`crates/live/live-server/src/title_headers.rs`); reads through the
 admin API accept them meanwhile.
 
 ### The default MOTD and keeping what you publish
 
 `h2 play --live-local` without Postgres keeps its log in the live data directory
 (`server/log`: `events.jsonl`, `blobs/`, `checkpoints.json`;
-`crates/live-server/src/filestore.rs`), so accounts, friends, games and
+`crates/live/live-server/src/filestore.rs`), so accounts, friends, games and
 published title files survive a restart; the game reads the MOTD only at
 sign-in, so a publish needs to outlive the session. Only if that directory
 is held by another running server does it fall back to memory (with a
@@ -106,7 +106,7 @@ warning).
 
 When no MOTD has ever been published, the embedded server (on Postgres or
 the file store) publishes a default one at start
-(`crates/live-server/src/default_motd.rs`): a short header and 21 original
+(`crates/live/live-server/src/default_motd.rs`): a short header and 21 original
 "Did you know?" lines and gameplay tips. It never replaces a published one;
 edit it like any other.
 
@@ -252,7 +252,7 @@ New playlists, removals and built-in variants:
 - Only the hoppers named are checked: unused slots elsewhere never block a
   publish.
 
-This is `apply_patch` in `crates/live-server/src/admin.rs`; the Worker
+This is `apply_patch` in `crates/live/live-server/src/admin.rs`; the Worker
 serves the same router, so both homes check the same way.
 
 ### Importing the base image
@@ -337,7 +337,7 @@ re-extracted once.
 ```
 
 All three lists come from the main menu map (code:
-`crates/cli/src/live_catalog.rs`; the two level lists through
+`crates/apps/cli/src/live_catalog.rs`; the two level lists through
 `tags::ui_levels`, the reader the boot's map select and the editor's Maps
 list share):
 
@@ -423,7 +423,7 @@ the embedded server has made an admin (§1), and lands on `/games/halo2/admin`
 
 - The CLI builds the same browser entry `account export` writes and hands
   it to the running server, in memory, under a token of 256 random bits
-  (`Live::offer_local_signin`, `crates/live-server/src/local_signin.rs`).
+  (`Live::offer_local_signin`, `crates/live/live-server/src/local_signin.rs`).
   Nothing is logged or written to the event log; a restart forgets it.
 - `POST /v1/local/signin` `{"once": token}` answers the entry once and
   forgets it. An offer lasts ten minutes; at most four are outstanding.
@@ -476,8 +476,8 @@ link that works from another machine would have to carry the key itself
 
 ## Wiring
 
-The admin module is self-contained (`crates/live-server/src/admin.rs`,
-`crates/cli/src/live_admin.rs`, `live_proto::hopper`); the pieces other
+The admin module is self-contained (`crates/live/live-server/src/admin.rs`,
+`crates/apps/cli/src/live_admin.rs`, `live_proto::hopper`); the pieces other
 files own are small and listed in the lane report: module declarations,
 route registrations, the `Policy.admins`/`Live.admins` fields, the
 `admin` field on account reads, the CLI dispatch and the `--admin` flag,
@@ -494,7 +494,7 @@ players and the stats site.
 
 For an admin (`isMeAdmin`, the account read's `admin` field) it is "your
 server", from `GET /v1/admin/status` (an `admin.read` token, admins and
-the operator only; `crates/live-server/src/status.rs`):
+the operator only; `crates/live/live-server/src/status.rs`):
 
 ```json
 { "id": "…", "software": "…", "url": "https://….trycloudflare.com",
@@ -534,7 +534,7 @@ Actions on these plates are blades (`web/src/dash/Blades.tsx`): focusable
 rows moved through with up and down, A acts, X does a row's second action
 (revoke, on invites), the same on keyboard, gamepad, mouse and touch.
 
-**Invites** (`/dash/server/invites`, `crates/live-server/src/invites.rs`):
+**Invites** (`/dash/server/invites`, `crates/live/live-server/src/invites.rs`):
 pick how long it lasts (1, 7 or 30 days; at most 30), make one, and the
 code is shown and copied. Each is single-use, like the operator's. The
 list shows open invites (copy again, revoke) and recent used, revoked and

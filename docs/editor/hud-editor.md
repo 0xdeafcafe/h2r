@@ -1,6 +1,6 @@
 # The HUD editor
 
-Status: Built. Code: `crates/hud-edit/src`, the HUD tool in `crates/studio/src`. Tests: in-source unit tests.
+Status: Built. Code: `crates/tools/hud-edit/src`, the HUD tool in `crates/apps/studio/src`. Tests: in-source unit tests.
 Switch: none.
 
 The editor's **HUD** tool shows a map's HUDs (`nhdt` tags) as the game
@@ -23,7 +23,7 @@ the game, **D** assumed here.
 
 ## Code
 
-- `crates/hud-edit` (no UI):
+- `crates/tools/hud-edit` (no UI):
   - `layout`: the `nhdt` root (`+0x08` bitmap widgets, `0x64` each;
     `+0x10` text widgets, `0x54` each; E `0x13a532`) and every widget
     field with the address that reads it; the field tables
@@ -45,7 +45,7 @@ the game, **D** assumed here.
     `map::writer::MapEditor`.
   - `fixture` (feature `fixture`): an invented map for tests, built with
     `map::build` (its bitmap through `h1bitmaps`).
-- `crates/studio`: `app/hud.rs` (`HudTool`: the session, the state, the
+- `crates/apps/studio`: `app/hud.rs` (`HudTool`: the session, the state, the
   selection, the picture and findings; the `Hud*` actions) and
   `ui/hud.rs` (the windows: maps, HUDs and widgets in the outliner; the
   picture and the state in the centre; the generic field panel, checks,
@@ -118,7 +118,7 @@ only. Nothing grows, so nothing moves.
 
 The inspector shows the selected widget's element in the studio's generic
 field panel (`studio::fields::panel`, the Tags tool's), named by the `nhdt`
-definition `crates/tags/src/defs/nhdt.txt`: anchor (an enum), flags,
+definition `crates/formats/tags/src/defs/nhdt.txt`: anchor (an enum), flags,
 inputs, the show and hide words of the gate (word A's known bits named),
 bitmap and shader references with the tag picker, sequences, offsets and
 registrations per screen mode, the special type, and the effects blocks

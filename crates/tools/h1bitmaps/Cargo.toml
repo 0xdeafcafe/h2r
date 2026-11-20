@@ -1,0 +1,20 @@
+[package]
+name = "h1bitmaps"
+description = "Halo 1 Xbox bitmaps: decode to RGBA8 with Halo 2's texture decoder, and convert to Halo 2 bitm tags"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+h1map = { path = "../h1map" }
+# Halo 1's pixel formats and Xbox layouts are Halo 2's: one decoder for both.
+assets.workspace = true
+gfx = { path = "../../platform/gfx" }
+tags.workspace = true
+map.workspace = true
+# `Converted { group, root, raw }` and `install`, shared with the model converter.
+h1models = { path = "../h1models" }
+thiserror.workspace = true
+
+[dev-dependencies]
+xiso.workspace = true

@@ -34,7 +34,7 @@ targets:
     dependencies:
       - framework: build/libh2host.a
         embed: false
-      # Embedded and signed, not linked: crates/boot dlopens it, after
+      # Embedded and signed, not linked: crates/apps/boot dlopens it, after
       # checking its stamp.
       - framework: build/h2game.framework
         embed: true

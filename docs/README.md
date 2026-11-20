@@ -13,14 +13,14 @@ are under [Reviews](#reviews).
 
 - [LIFTER.md](lifter/LIFTER.md) (**start here**): the lifter: x86 to IR to C11, the runtime contract, the validation plan. Where it and the code differ, the code wins
 - [FLOAT.md](lifter/FLOAT.md): what floating point the game uses (measured with `h2 fpstats`) and the correctness-first plan
-- [FLOAT-ABI.md](lifter/FLOAT-ABI.md): the x87 IR ops and `h2x87_v1_*` runtime helpers (`crates/x87`), #MF included; read when touching x87 lowering
+- [FLOAT-ABI.md](lifter/FLOAT-ABI.md): the x87 IR ops and `h2x87_v1_*` runtime helpers (`crates/recompiler/x87`), #MF included; read when touching x87 lowering
 - [x87-native.md](lifter/x87-native.md): the guarded native binary64 x87 path, on by default (`H2_X87_NATIVE=0` disables it): range proof, status bits, fallbacks
 - [x87-transcendentals.md](lifter/x87-transcendentals.md): the `fast-trans` 128-bit first pass for FYL2X, F2XM1 and the trig ops, and the table-driven FYL2X and F2XM1: guards and rules
 - [sse-native.md](lifter/sse-native.md): guarded native SSE arithmetic, on by default (`H2_SSE_NATIVE=0` disables it): eligibility and range proof
-- [simd.md](lifter/simd.md): bit-exact SSE1 reference semantics (`crates/simd`), its C twin and how it is tested
-- [oracle.md](lifter/oracle.md): independent x86 instruction oracle on Unicorn (`crates/oracle`)
-- [sse-oracle.md](lifter/sse-oracle.md): SSE/MMX results measured on Rosetta 2 (`crates/sse-oracle`)
-- [cranelift-tier.md](lifter/cranelift-tier.md): design for a Cranelift fast tier for the first build (`crates/clif`); the first stages are built
+- [simd.md](lifter/simd.md): bit-exact SSE1 reference semantics (`crates/recompiler/simd`), its C twin and how it is tested
+- [oracle.md](lifter/oracle.md): independent x86 instruction oracle on Unicorn (`crates/recompiler/oracle`)
+- [sse-oracle.md](lifter/sse-oracle.md): SSE/MMX results measured on Rosetta 2 (`crates/recompiler/sse-oracle`)
+- [cranelift-tier.md](lifter/cranelift-tier.md): design for a Cranelift fast tier for the first build (`crates/recompiler/clif`); the first stages are built
 - [dispatch-coverage.md](lifter/dispatch-coverage.md): indirect-dispatch coverage of the campaign's main tables, and how to reproduce it
 - [xdk-libraries.md](lifter/xdk-libraries.md): how `h2 symbols` identifies statically linked XDK library code
 - [BUILD-CACHE.md](lifter/BUILD-CACHE.md): generated-source and object caches, locking, iteration builds, `H2_EMIT_TARGET`; read before changing the build
@@ -31,11 +31,11 @@ are under [Reviews](#reviews).
 - [BOOT.md](runtime/BOOT.md) (**start here**): `h2 build` and `h2 run`, the boot runner's flags and environment, stopgaps, current state
 - [switches.md](runtime/switches.md): every env var and `H2_FEATURES` switch left, one line each, and the experiments still waiting for a measurement
 - [building.md](runtime/building.md): the root `justfile`: building every target (Mac, Apple TV, iPhone, Windows, Xbox) from your disc, `just doctor`, `maps=demo|all`
-- [app.md](runtime/app.md): the host shell, `h2 play` and `h2 play --follow` (`crates/app`): flags, pacing, frame stats, embedded hosts (tvOS, iOS)
+- [app.md](runtime/app.md): the host shell, `h2 play` and `h2 play --follow` (`crates/apps/app`): flags, pacing, frame stats, embedded hosts (tvOS, iOS)
 - [level-boot.md](runtime/level-boot.md): `h2 play --level` / `H2_LEVEL`: start a campaign level or a local multiplayer game directly
 - [kernel-imports.md](runtime/kernel-imports.md): work list of every kernel import Halo 2 uses, with signatures
-- [xapi.md](runtime/xapi.md): which XAPI services are replaced (`crates/xapi`) and which stay generated, native saves included
-- [storage.md](runtime/storage.md): the Xbox storage boundary (`crates/vfs`): volumes, FATX names, file semantics, map overrides
+- [xapi.md](runtime/xapi.md): which XAPI services are replaced (`crates/platform/xapi`) and which stay generated, native saves included
+- [storage.md](runtime/storage.md): the Xbox storage boundary (`crates/runtime/vfs`): volumes, FATX names, file semantics, map overrides
 - [agent-api.md](runtime/agent-api.md): the agent API to the running game (`h2 serve`, `h2 agent`): UI and world views, profiling by owner, snapshots, input, overrides, sim matches and tick traces
 - [debug-menu.md](runtime/debug-menu.md): our in-game debug menu: an overlay over the game image, in the 8x8 font, over the same registries as `h2 agent` (built and unit tested, not yet seen in the game)
 - [contract-thin-transfers-flat-ram.md](runtime/contract-thin-transfers-flat-ram.md): spec for the first recompiler-contract change: calls and host calls that stay off the runner, and one-instruction guest memory with a fixup table and card marking; why the opt-in flat RAM is slower; slices, gates and measurements (design only)
@@ -59,7 +59,7 @@ are under [Reviews](#reviews).
 
 ## Input (`input/`)
 
-- [input.md](input/input.md) (**start here**): XInput replacement, device model, backends, bindings and input timelines (`crates/input`)
+- [input.md](input/input.md) (**start here**): XInput replacement, device model, backends, bindings and input timelines (`crates/platform/input`)
 - [input-default.toml](input/input-default.toml): the default binding file; [input-menu-example.toml](input/input-menu-example.toml): an example input timeline
 - [host-keyboard.md](input/host-keyboard.md): host typing in the game's virtual keyboard
 - [controller-layouts.md](input/controller-layouts.md): the retail button layouts and the extra ones we add
@@ -69,10 +69,10 @@ are under [Reviews](#reviews).
 
 ## Graphics (`graphics/`)
 
-- [graphics.md](graphics/graphics.md) (**start here**): D3D8 state and textures on wgpu (`crates/gfx`): batching, merged passes, the pipeline cache
-- [d3d.md](graphics/d3d.md): the guest-facing Direct3D 8 replacement (`crates/d3d`): entries, device model, push buffer, render targets, vblank
+- [graphics.md](graphics/graphics.md) (**start here**): D3D8 state and textures on wgpu (`crates/platform/gfx`): batching, merged passes, the pipeline cache
+- [d3d.md](graphics/d3d.md): the guest-facing Direct3D 8 replacement (`crates/platform/d3d`): entries, device model, push buffer, render targets, vblank
 - [framescene.md](graphics/framescene.md): design for `FrameScene` and a native renderer that owns the frame: the snapshot type, threads, 60/120 fps from two snapshots, the order D3D is cut and deleted, slices with tests and gates
-- [shaders.md](graphics/shaders.md): NV2A vertex microcode, register combiners, fog and shadow maps to WGSL (`crates/shaders`)
+- [shaders.md](graphics/shaders.md): NV2A vertex microcode, register combiners, fog and shadow maps to WGSL (`crates/formats/shaders`)
 - [render-thread.md](graphics/render-thread.md): the render thread (on by default, `H2_RENDER_THREAD=0` turns it off): what the guest can observe
 - [render-loop.md](graphics/render-loop.md): the view and pass loops of the retail renderer read, and the render-state list ported to Rust
 - [occlusion-culling.md](graphics/occlusion-culling.md): how a view's objects are chosen, the per-object skip point, and Hi-Z occlusion culling against the previous frame's depth (`impl.render.occlusion`)
@@ -80,7 +80,7 @@ are under [Reviews](#reviews).
 - [layer-draw.md](graphics/layer-draw.md): the layer draw and its entry loop, read and ported, with the `render-timing` breakdown
 - [hot-iteration.md](graphics/hot-iteration.md): live tag edits (`edit.*`) and hot WGSL overrides, parameters and toggles for the host renderer (`render.*`), without a rebuild or restart
 - [high-resolution.md](graphics/high-resolution.md): 4K and other internal resolutions (`H2_RENDER_SCALE`, the Resolution row); built, one scale for both axes
-- [native-renderer.md](graphics/native-renderer.md): the native GPU renderer (`impl.render.native`, `crates/native-render`): the frame, the stages and how a frame is checked
+- [native-renderer.md](graphics/native-renderer.md): the native GPU renderer (`impl.render.native`, `crates/rewrites/native-render`): the frame, the stages and how a frame is checked
 - [native-world.md](graphics/native-world.md): native renderer stage 1: the static world
 - [native-objects.md](graphics/native-objects.md): native renderer stage 2: objects and skinning
 - [native-transparents.md](graphics/native-transparents.md): native renderer stage 3: transparents
@@ -98,17 +98,17 @@ are under [Reviews](#reviews).
 
 ## Audio and movies (`audio/`)
 
-- [audio.md](audio/audio.md) (**start here**): the mixer behind DirectSound (`crates/audio`): voices, ADPCM, mix bins, effects, output
-- [dsound.md](audio/dsound.md): the guest-facing DirectSound shim (`crates/dsound`): call sites, buffers, streams, audio stats
-- [wma.md](audio/wma.md): ASF demuxing and native WMAv2 decoding (`crates/asf`, `crates/wma`)
+- [audio.md](audio/audio.md) (**start here**): the mixer behind DirectSound (`crates/platform/audio`): voices, ADPCM, mix bins, effects, output
+- [dsound.md](audio/dsound.md): the guest-facing DirectSound shim (`crates/platform/dsound`): call sites, buffers, streams, audio stats
+- [wma.md](audio/wma.md): ASF demuxing and native WMAv2 decoding (`crates/formats/asf`, `crates/platform/wma`)
 - [playstation-audio.md](audio/playstation-audio.md): DualSense/DS4 speaker routing, mute button and microphone design
-- [bink-hle.md](audio/bink-hle.md): the Bink player replacement (`crates/bink-hle`): playback of installed movies with sound, skip mode
+- [bink-hle.md](audio/bink-hle.md): the Bink player replacement (`crates/platform/bink-hle`): playback of installed movies with sound, skip mode
 - [movies.md](audio/movies.md): optional Bink movie conversion with your own ffmpeg (`h2 movies`)
 
 ## Performance (`perf/`)
 
 - [README.md](perf/README.md) (**start here**): where the frame rate stands, which doc answers which question, and the order to read them in
-- [profiling.md](perf/profiling.md): the profiler, timeline traces and benchmarks (`h2 profile`, `h2 bench`, `crates/perf`, `crates/timeline`); test and bench knobs
+- [profiling.md](perf/profiling.md): the profiler, timeline traces and benchmarks (`h2 profile`, `h2 bench`, `crates/tools/perf`, `crates/runtime/timeline`); test and bench knobs
 - [guest-memory.md](perf/guest-memory.md): guest memory accessors, the inline RAM path (`H2_FASTMEM`, on by default), direct calls, the one exit call, the lent view and runtime counters
 - [sim-budget.md](perf/sim-budget.md): the Waterworks and Lockout simulation tick budget: where an unrendered sim's main thread spends its time
 - [sim-attribution.md](perf/sim-attribution.md): every sample of that Waterworks sim given an owner, the runtime share split, and the rewrite phase order it implies
@@ -122,16 +122,16 @@ are under [Reviews](#reviews).
 - [tag-definitions.md](formats/tag-definitions.md): typed tag definitions (`tags::defs`): every field named or an explicit unknown span; decode, encode, defaults, diff; disc round trip and coverage per group; scenery rebuilt with no template bytes
 - [tag-repo.md](formats/tag-repo.md): the loose tag repository: one position-independent file per tag (`tags::repo`), `h2 tags extract` / `h2 tags build`, variants, rebuild proof
 - [animation.md](formats/animation.md): animation graphs (`jmad`) and frame decompression (`h2 anim`)
-- [bitmaps.md](formats/bitmaps.md): bitmap tags to textures and PNG (`crates/assets`, `h2 bitmap`)
+- [bitmaps.md](formats/bitmaps.md): bitmap tags to textures and PNG (`crates/platform/assets`, `h2 bitmap`)
 - [collision.md](formats/collision.md): collision and physics model tags (`h2 collision`)
 - [effects.md](formats/effects.md): the effects family (`effe`, `prt3`, `pmov` and more; `h2 effect`)
-- [fonts.md](formats/fonts.md): packed bitmap fonts and the text rasteriser (`crates/font`, `h2 font`)
-- [haloscript.md](formats/haloscript.md): HaloScript syntax, builtins and decoding (`crates/hs`, `h2 hs`)
+- [fonts.md](formats/fonts.md): packed bitmap fonts and the text rasteriser (`crates/formats/font`, `h2 font`)
+- [haloscript.md](formats/haloscript.md): HaloScript syntax, builtins and decoding (`crates/formats/hs`, `h2 hs`)
 - [lighting.md](formats/lighting.md): level lighting, lightmaps and atmosphere
 - [localization.md](formats/localization.md): string IDs and localized text
-- [mopp.md](formats/mopp.md): Havok MOPP code in structure BSPs: the engine's opcodes, a query model, and the writer (`crates/mopp`)
+- [mopp.md](formats/mopp.md): Havok MOPP code in structure BSPs: the engine's opcodes, a query model, and the writer (`crates/formats/mopp`)
 - [objects.md](formats/objects.md): object tags (`obje` family, `hlmt`, `itmc`, `vehc`; `h2 object`)
-- [pathfinding.md](formats/pathfinding.md): AI pathfinding data in structure BSPs, and generating it from collision (`crates/pathfind`)
+- [pathfinding.md](formats/pathfinding.md): AI pathfinding data in structure BSPs, and generating it from collision (`crates/formats/pathfind`)
 - [shader-instances.md](formats/shader-instances.md): shader instance, template and pass tags (`shad`, `stem`, `spas`)
 - [sound.md](formats/sound.md): sound tags (`snd!`, `ugh!`) and `h2 sound`
 - [structure-bsp.md](formats/structure-bsp.md): render model and structure BSP geometry, lightmaps, and the viewer
@@ -141,11 +141,11 @@ are under [Reviews](#reviews).
 
 - [engine-map.md](engine/engine-map.md) (**start here**): survey of the retail engine's subsystems and where to start overriding
 - [feature-engine.md](engine/feature-engine.md): the feature engine: Rust subsystems at clean boundaries, hooks, settings; what is built and what is design
-- [guest-layout.md](engine/guest-layout.md): `crates/guest-layout`: guest structure offsets and globals, the `impl.*` switch table, hook point shapes
+- [guest-layout.md](engine/guest-layout.md): `crates/hooking/guest-layout`: guest structure offsets and globals, the `impl.*` switch table, hook point shapes
 - [anim-sampling.md](engine/anim-sampling.md): animation sampling in Rust (`sim-anim`) behind `impl.sim.native.anim`: the contract, the decoded clips and the disc sweep
 - [sim-tier-experiment.md](engine/sim-tier-experiment.md): the sim-tier experiment: the tick's leaves compiled under a looser contract (`emit::sim`), checked against the interpreter and timed against the hand ports
 - [sim-tier-writes.md](engine/sim-tier-writes.md): a static census of every store the game tick can make
-- [README.md](engine/README.md): contracts for the engine functions rewritten in Rust (`crates/engine`) and their differential tests, indexing [datum_new.md](engine/datum_new.md), [tag_get_checked.md](engine/tag_get_checked.md), [locale_string_id_find.md](engine/locale_string_id_find.md), [memory_pool.md](engine/memory_pool.md) and the HaloScript VM, [hs_vm.md](engine/hs_vm.md)
+- [README.md](engine/README.md): contracts for the engine functions rewritten in Rust (`crates/rewrites/engine`) and their differential tests, indexing [datum_new.md](engine/datum_new.md), [tag_get_checked.md](engine/tag_get_checked.md), [locale_string_id_find.md](engine/locale_string_id_find.md), [memory_pool.md](engine/memory_pool.md) and the HaloScript VM, [hs_vm.md](engine/hs_vm.md)
 - [shadow-exec.md](engine/shadow-exec.md): shadow execution: native ports checked against the lifted original on the states the game reaches (`shadow.*`, `scripts/shadow-gate.sh`), and the shared `lifted` crate
 - [havok-runtime.md](engine/havok-runtime.md): how the retail game keeps its Havok world in guest memory: world, islands, bodies, shapes, contacts, agents
 - [collision-queries.md](engine/collision-queries.md): the native collision world behind `impl.sim.native.collision`: entries, contract and bail reasons
@@ -188,16 +188,16 @@ Halo 1 (Xbox) running in the Halo 2 engine: its data read from your own `halo1.i
 Reading and converting Halo 1 data:
 
 - [map-format.md](halo1/map-format.md): Halo 1 Xbox cache files (v5, zlib) and the `h1map` reader (`h2 h1 info|tags|convert`, `h2 import halo1`)
-- [models.md](halo1/models.md): Halo 1 Xbox models and animation graphs converted to Halo 2 `mode` and `jmad` (`crates/h1models`)
-- [bitmaps.md](halo1/bitmaps.md): Halo 1 Xbox bitmaps: where the pixels are, decoding with Halo 2's decoder, conversion to Halo 2 `bitm` and lightmap pages (`crates/h1bitmaps`, `h2 h1 bitmap`)
-- [sounds.md](halo1/sounds.md): Halo 1 Xbox sounds: where the samples are, decoding to PCM, conversion to Halo 2 `snd!` plus `ugh!` gestalt entries, the whole gestalt layout, class mapping (`crates/h1sounds`, `h2 h1 sound`)
-- [objects.md](halo1/objects.md): Halo 1 sandbox objects (`weap`, `proj`, `eqip`, `bipd`, `vehi`, `coll`, `phys`) read from Halo 1 and built as Halo 2 tags on retail templates, with the tuning carried over (`crates/h1objects`)
+- [models.md](halo1/models.md): Halo 1 Xbox models and animation graphs converted to Halo 2 `mode` and `jmad` (`crates/tools/h1models`)
+- [bitmaps.md](halo1/bitmaps.md): Halo 1 Xbox bitmaps: where the pixels are, decoding with Halo 2's decoder, conversion to Halo 2 `bitm` and lightmap pages (`crates/tools/h1bitmaps`, `h2 h1 bitmap`)
+- [sounds.md](halo1/sounds.md): Halo 1 Xbox sounds: where the samples are, decoding to PCM, conversion to Halo 2 `snd!` plus `ugh!` gestalt entries, the whole gestalt layout, class mapping (`crates/tools/h1sounds`, `h2 h1 sound`)
+- [objects.md](halo1/objects.md): Halo 1 sandbox objects (`weap`, `proj`, `eqip`, `bipd`, `vehi`, `coll`, `phys`) read from Halo 1 and built as Halo 2 tags on retail templates, with the tuning carried over (`crates/tools/h1objects`)
 - [role-audit.md](halo1/role-audit.md): Halo 2 values left in converted tags (role words, counterpart references), each allowed or a bug
-- [ai.md](halo1/ai.md): Halo 1 AI data (actors, encounters, command lists) read, Halo 2's scenario AI blocks and `char` decoded, and the conversion between them (`crates/h1ai`)
+- [ai.md](halo1/ai.md): Halo 1 AI data (actors, encounters, command lists) read, Halo 2's scenario AI blocks and `char` decoded, and the conversion between them (`crates/tools/h1ai`)
 - [ai-control.md](halo1/ai-control.md): Halo 1 encounter script controls bound to Halo 2 evaluators (`h1scripts::aicontrol`, `h1ai::control`)
-- [scripts.md](halo1/scripts.md): Halo 1 campaign scripts decoded, decompiled, translated to Halo 2 builtins and compiled to Halo 2 nodes (`crates/h1scripts`)
-- [sky.md](halo1/sky.md): Halo 1 and Halo 2 `sky ` tags: layouts, the disc census, and conversion (`crates/h1sky`)
-- [text.md](halo1/text.md): Halo 1 `ustr` and `hmt ` text: reading UTF-16 lists and HUD messages, converting them to Halo 2 `unic` locale rows (`crates/h1text`)
+- [scripts.md](halo1/scripts.md): Halo 1 campaign scripts decoded, decompiled, translated to Halo 2 builtins and compiled to Halo 2 nodes (`crates/tools/h1scripts`)
+- [sky.md](halo1/sky.md): Halo 1 and Halo 2 `sky ` tags: layouts, the disc census, and conversion (`crates/tools/h1sky`)
+- [text.md](halo1/text.md): Halo 1 `ustr` and `hmt ` text: reading UTF-16 lists and HUD messages, converting them to Halo 2 `unic` locale rows (`crates/tools/h1text`)
 
 ## Xbox Live (`live/`)
 
@@ -227,9 +227,9 @@ Reading and converting Halo 1 data:
 ## Editor (`editor/`)
 
 - [editor-guide.md](editor/editor-guide.md) (**start here**): user guide to `h2-editor`: map objects, game variants, playlists and Halo 1 maps, step by step with 74 screenshots
-- [editor.md](editor/editor.md): the editor for developers (`crates/studio`, Dear ImGui + wgpu): window, the tools, Halo 1 maps and converting, the playlist format rules, code layout, scripted headless screenshots (`--do`, `--crop`, `--callout`), viewport gaps
-- [scenario-editor.md](editor/scenario-editor.md): the scenario placement editor (`crates/scenario-edit`): blocks, fields, save rules, packages
-- [variants.md](editor/variants.md): the game variant record, its schema and saved files (`crates/variants`)
+- [editor.md](editor/editor.md): the editor for developers (`crates/apps/studio`, Dear ImGui + wgpu): window, the tools, Halo 1 maps and converting, the playlist format rules, code layout, scripted headless screenshots (`--do`, `--crop`, `--callout`), viewport gaps
+- [scenario-editor.md](editor/scenario-editor.md): the scenario placement editor (`crates/tools/scenario-edit`): blocks, fields, save rules, packages
+- [variants.md](editor/variants.md): the game variant record, its schema and saved files (`crates/formats/variants`)
 - [hud-editor.md](editor/hud-editor.md): the HUD tool (`nhdt` tags): placement, checks, the save, what is not modelled
 - [agent-api.md](editor/agent-api.md): the editor's socket API: JSON methods over maps, tags, placements, variants, playlists and UI screens
 

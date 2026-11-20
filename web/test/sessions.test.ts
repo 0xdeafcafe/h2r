@@ -3,7 +3,7 @@ import { gametype, keepSelection, kind, listed, mapName, openFor, parseSession, 
 import { Sessions } from "../mock/sessions";
 import { World } from "../mock/world";
 
-/** A session as the server sends it (crates/live-proto/src/session.rs). */
+/** A session as the server sends it (crates/live/live-proto/src/session.rs). */
 const wire = (over: Record<string, unknown> = {}, ad: Record<string, unknown> = {}) => ({
   session_id: "00112233445566aa",
   host: "acct:0009000000000001@live.example",

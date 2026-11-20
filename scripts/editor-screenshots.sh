@@ -14,7 +14,7 @@
 # quality 82, at most 1600 wide); crops of panels, menus and tooltips stay
 # PNG at full resolution so their text reads. The steps (--do), crops
 # (--crop) and numbered callouts (--callout) are h2-editor's own flags;
-# crates/studio/src/script.rs describes the targets. Run a shot by hand
+# crates/apps/studio/src/script.rs describes the targets. Run a shot by hand
 # with H2_EDITOR_PROBE=1 to list the windows and widgets it can aim at.
 # Variants and packages are saved under a scratch data root, never your own.
 set -euo pipefail

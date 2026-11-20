@@ -1,7 +1,7 @@
 # Render thread
 
 Status: Built.
-Code: `crates/d3d/src/threaded.rs` (`d3d::ThreadedBackend`), `crates/boot/src/d3d_glue.rs` (`render_thread_requested`, `render_thread_from`). Tests: `crates/d3d/tests/threaded.rs`, `threaded_frame_stats.rs`, `depth_textures.rs`.
+Code: `crates/platform/d3d/src/threaded.rs` (`d3d::ThreadedBackend`), `crates/apps/boot/src/d3d_glue.rs` (`render_thread_requested`, `render_thread_from`). Tests: `crates/platform/d3d/tests/threaded.rs`, `threaded_frame_stats.rs`, `depth_textures.rs`.
 Switch: `H2_RENDER_THREAD=0` turns it off (on by default), listed in [switches.md](../runtime/switches.md).
 
 On the Xbox the NV2A consumes the push buffer while the CPU goes on with the
@@ -27,7 +27,7 @@ override, holding the guest memory lock and then the device lock.
 | state translation, draw resolve (streams and indices copied out of guest memory) | `Device` draws (`device.rs`, `device/raster.rs`) | runner |
 | texture decode | `Device` texture cache | runner |
 | the device model: RTT dirty bits, lazy write-back, depth generations, fences, register words | `Device` | runner |
-| shader preparation (NV2A translation cached by key), uniforms, bind groups | `Nv2aShaders::prepare` (`crates/d3d/src/nv2a.rs`) | render thread |
+| shader preparation (NV2A translation cached by key), uniforms, bind groups | `Nv2aShaders::prepare` (`crates/platform/d3d/src/nv2a.rs`) | render thread |
 | recording into the pending pass | `GfxBackend::record`, `gfx::Renderer::record` | render thread |
 | encoding and submission | `GfxBackend` (`MAX_ENCODED_PASSES` = 1024 per submission, target switches, surface operations, `Swap`) | render thread |
 | uploads, surface writes, snapshots, copies | `GfxBackend` | render thread |
@@ -48,8 +48,8 @@ Frame stats forward the worker's counters and timers through a queued
 marker at the device's `Swap` boundary, so frame numbers hold without
 `Swap` waiting; `render-wait_us` measures the guest thread's reply and
 throttle waits apart from `cpu`
-(`crates/d3d/tests/threaded_frame_stats.rs`). `menu_cpu`
-(`crates/boot/examples/menu_cpu.rs`) prints
+(`crates/platform/d3d/tests/threaded_frame_stats.rs`). `menu_cpu`
+(`crates/apps/boot/examples/menu_cpu.rs`) prints
 `guest_thread_cpu_ms_per_frame`, the runner thread's own CPU time, which is
 the guest's critical path.
 
@@ -121,7 +121,7 @@ Where the guest waits on the GPU, all on the runner:
 ## Keeping guest-visible semantics exact
 
 Each `Backend` method falls in one of these classes
-(`crates/d3d/src/threaded.rs`):
+(`crates/platform/d3d/src/threaded.rs`):
 
 1. **Reads** (`read_surface`, `read_depth`, `read_pixel_count`): queued,
    and the runner waits for the answer. Everything queued before has run,
@@ -202,7 +202,7 @@ Against the requirements:
 
 ## Interfaces
 
-- `d3d::ThreadedBackend<B>` (`crates/d3d/src/threaded.rs`) is a `Backend`
+- `d3d::ThreadedBackend<B>` (`crates/platform/d3d/src/threaded.rs`) is a `Backend`
   that moves `B` to the `d3d-render` thread. `finish`, `with_inner` and
   `with_surface` run something after the queue and wait (tests, reports).
   `with_jitter(seed)` delays the render thread by seeded random amounts
@@ -210,7 +210,7 @@ Against the requirements:
   the counts answered without the queue.
 - `Backend::judge`, `draw_owned`, `try_pixel_count`, `depth_alias_texture`
   and `depth_level_texture` are the trait's hooks for it
-  (`crates/d3d/src/backend.rs`); a wrapper forwards them or the backend
+  (`crates/platform/d3d/src/backend.rs`); a wrapper forwards them or the backend
   falls back to the synchronous behaviour.
 - After each present and each batch the render thread moves the pixel counts
   the GPU has written (`Backend::try_pixel_count`, in report order up to
@@ -241,7 +241,7 @@ Against the requirements:
 
 ## Evidence
 
-- Test: `crates/d3d/tests/threaded.rs` runs one device sequence through a
+- Test: `crates/platform/d3d/tests/threaded.rs` runs one device sequence through a
   backend and through the render thread. The sequence clears an RTT level,
   samples it in place, has the guest store into it, writes it back with
   `BlockOnResource`, then runs `EndVisibilityTest`, `SetFence`,
@@ -266,7 +266,7 @@ Against the requirements:
   (`batched_commands_run_in_order_and_reads_see_everything_before_them`).
 - Test: depth-alias textures made on the render thread give the same
   read-backs, uploads, draws, skips and stats
-  (`crates/d3d/tests/depth_textures.rs`).
+  (`crates/platform/d3d/tests/depth_textures.rs`).
 - Test: the persistent pipeline cache builds the same pipelines behind the
   render thread.
 

@@ -1,11 +1,11 @@
 # Graphics: D3D8 on wgpu
 
-Status: Built. Reference for `crates/gfx`.
-Code: `crates/gfx/src/`. Tests: `crates/gfx/tests/`.
+Status: Built. Reference for `crates/platform/gfx`.
+Code: `crates/platform/gfx/src/`. Tests: `crates/platform/gfx/tests/`.
 Switch: none of its own; the variables it reads are in [switches.md](../runtime/switches.md).
 
-`crates/gfx` is the graphics foundation. It replaces Direct3D 8 (Xbox flavour)
-at the API level; it does not emulate the NV2A GPU. `crates/d3d`
+`crates/platform/gfx` is the graphics foundation. It replaces Direct3D 8 (Xbox flavour)
+at the API level; it does not emulate the NV2A GPU. `crates/platform/d3d`
 ([d3d.md](d3d.md)) calls into it from the D3D entry points and from the
 push-buffer methods the game writes inline.
 
@@ -170,7 +170,7 @@ Unknown or unverified details, flagged so nobody trusts them blindly:
   function (D3D's `D3DRS_SHADOWFUNC`), giving 1 or 0 in every channel; xemu's
   `psh_append_shadowmap` compares with 0 for PROJECT2D and with `r/q`,
   clamped to the format's depth range (16777215, 65535, or 511.9375 for
-  float), for PROJECT3D, and short-cuts NEVER and ALWAYS. `crates/shaders`
+  float), for PROJECT3D, and short-cuts NEVER and ALWAYS. `crates/formats/shaders`
   compares per texel and then filters (2x2 PCF under linear filtering; see
   docs/graphics/shaders.md, "Shadow maps"), with `d3d::nv2a` passing each stage's
   format, function, filter and addressing. A colour texture over depth memory is not a depth texture:
@@ -229,7 +229,7 @@ handled by `repack.rs` in one of two modes (`FetchMode`, per draw in
 `RepackPlan::with_mode(layout, strides, mode)` is a pure function, so the
 program's `input_fetch` (computed by `Nv2aShaders`) and the pipeline's
 vertex formats (`PipelineKey::from_plan`) always agree.
-`crates/d3d/tests/vertex_fetch.rs` draws every type both ways and compares
+`crates/platform/d3d/tests/vertex_fetch.rs` draws every type both ways and compares
 pixels; `cargo bench -p d3d --bench vertex_fetch` times a draw-heavy frame
 in each mode. The `NORMPACKED3` field order (x in the low bits) is
 verified. The register number is the wgpu shader location. Multi-stream
@@ -279,7 +279,7 @@ modelled.
 one with `Draw::shader`, and `PipelineKey::shader` keys the cache. Extra
 resources go in `Draw::bind_groups` (`BoundGroup`: index, group and its
 dynamic offsets). `program::ProgramBindings` implements
-the resource contract of `crates/shaders` (docs/graphics/shaders.md): group 0 holds
+the resource contract of `crates/formats/shaders` (docs/graphics/shaders.md): group 0 holds
 the vertex and pixel uniforms (dynamic offsets into one upload ring; bytes
 equal to the previous draw's reuse its copy), group 1 a texture and sampler
 per sampled stage (cached by views and sampler keys, dropped after four
@@ -395,7 +395,7 @@ the regression tests pin the rules rather than the GPU behaviour:
   most programs have none and stay merged;
 - the d3d backend gives each draw whose program can discard, and each
   draw after a partly masked draw with a different mask, a render pass of
-  its own (`crates/d3d/tests/batching.rs`).
+  its own (`crates/platform/d3d/tests/batching.rs`).
 
 The built-in pre-transformed shader also has a `discard` (alpha test) but
 samples no textures, so its draws stay merged. To look for another case,
@@ -463,7 +463,7 @@ is generic over the stored value so its behaviour is unit tested without a GPU;
 ### Pipeline compiles (`compile.rs`) and the pipeline cache
 
 A first-time pipeline is expensive, and almost all of it is the Metal
-compiler. Measured with `crates/d3d/tests/pipeline_cost.rs` (ignored; 24
+compiler. Measured with `crates/platform/d3d/tests/pipeline_cost.rs` (ignored; 24
 retail vertex programs from a local `h2 extract-shaders` corpus, each with
 a pass-through combiner, entry points renamed so Metal's own cache cannot
 hold them; release build, load average about 75):
@@ -539,7 +539,7 @@ render-to-texture levels by pixel.
 
 Translated shaders: `d3d::GfxBackend` renders every draw through
 `d3d::nv2a::Nv2aShaders` (vertex programs and register combiners from
-`crates/shaders`, and the fixed-function texture stages as a synthesized
+`crates/formats/shaders`, and the fixed-function texture stages as a synthesized
 combiner program) unless the built-in shader reproduces the whole state
 (`d3d::nv2a::builtin_equivalent`: no texture, pixel shader, fog, specular,
 flat shading or two-sided lighting, stages passing diffuse through).
@@ -551,13 +551,13 @@ texture passes `CURRENT` through (as Wine documents D3D doing). With
 follows the NV2A fog unit as D3D programs it (shaders.md "Fog"):
 pre-transformed vertices take their fog coordinate from the specular
 alpha without a fog table, else from z (affine projection) or w, as D3D's
-pass-through programs do. `crates/d3d/tests/shaders_render.rs` draws a
+pass-through programs do. `crates/platform/d3d/tests/shaders_render.rs` draws a
 UI-like quad (vertex program with constants and a default input, combiner,
 linear texture, alpha blend and alpha test) and a fixed-function textured
 quad through the device and checks pixels; `cargo run -p d3d --example
-window` shows the same through `crates/app` in a real window.
+window` shows the same through `crates/apps/app` in a real window.
 
-`crates/viewer` is the first consumer of real assets: it decodes a `mode` tag
+`crates/tools/viewer` is the first consumer of real assets: it decodes a `mode` tag
 (`tags::model`, see map-format.md "Render-model geometry") and draws it with
 its own small WGSL pipeline through `GfxContext`/`Presenter`, or into an
 `OffscreenTarget` for `--png` screenshots. Flat, vertex-normal or normal-colour
@@ -588,7 +588,7 @@ outside the disc reads its shared resources from the disc's `shared`,
 ## Not supported yet (future work)
 
 The register-combiner and vertex-microcode translators exist in
-`crates/shaders` ([shaders.md](shaders.md)) and are wired in by `d3d::nv2a`
+`crates/formats/shaders` ([shaders.md](shaders.md)) and are wired in by `d3d::nv2a`
 (Cxbx and xemu are cited there as references, read for behaviour, not
 copied). What is still missing there: untransformed fixed-function vertices
 (transform, lighting, texgen), fixed-function bump-env ops, colour key and
@@ -604,14 +604,14 @@ point sprites.
   point draws still need quad expansion. Line stipple usage remains unverified.
 * The D3D flicker setting and the kernel TV encoder's flicker/luma settings
   are recorded, but neither filter reaches presentation and no display-filter
-  option exists yet (see `crates/kernel/XAPI.md`).
+  option exists yet (see `crates/runtime/kernel/XAPI.md`).
 * Occlusion counts (`gfx::occlusion::PixelCounter`, `Draw::count_samples`)
   re-draw each counted draw into an additive `R16Float` target, against a
   scratch copy of depth/stencil with the draw's own writes, and sum it with
   a compute pass, because wgpu occlusion queries are boolean on Metal.
   The count pass does not run the draw's fragment program, so alpha test and
   `discard` do not reject samples. See "Visibility tests" in `d3d.md`.
-* Push-buffer/NV2A method streams are not decoded here: `crates/d3d`
+* Push-buffer/NV2A method streams are not decoded here: `crates/platform/d3d`
   decodes them and calls this crate (d3d.md, "Push buffer").
 * Exact linear filtering at custom texture borders and `D3DTSS_COLORKEY*`
   are not modelled (no retail Halo 2 material sets `COLORKEYOP`). `ALPHAKILL` and signed

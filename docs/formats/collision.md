@@ -1,10 +1,10 @@
 # Collision models (`coll`) and physics models (`phmo`)
 
-Status: Built. Code: `crates/tags/src/collision.rs`. Tests: `crates/tags/src/collision_tests.rs`. Switch: none.
+Status: Built. Code: `crates/formats/tags/src/collision.rs`. Tests: `crates/formats/tags/src/collision_tests.rs`. Switch: none.
 
-Implementation: `crates/tags/src/collision.rs` (hand-written codecs, not in
+Implementation: `crates/formats/tags/src/collision.rs` (hand-written codecs, not in
 `schema.rs`; synthetic tests in `collision_tests.rs`). CLI: `h2 collision`
-in `crates/cli/src/collision.rs`. Engine addresses are in
+in `crates/apps/cli/src/collision.rs`. Engine addresses are in
 [engine-map.md](../engine/engine-map.md) ("Collision and physics model layouts").
 No game data, tag names or dumps are committed; tests build invented payloads.
 
@@ -413,7 +413,7 @@ Capsules are built along their end-point axis, not a fixed one.
 
 How the engine answers "which surface" from the blocks above; modelled in
 `h1convert::surface_query` and checked on the disc by
-`crates/h1convert/tests/collision_engine.rs`. The same code serves object
+`crates/tools/h1convert/tests/collision_engine.rs`. The same code serves object
 and structure BSPs.
 
 | Step | Rule | Evidence |

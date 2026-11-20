@@ -1,7 +1,7 @@
 # Maps: new, edited, patched and shared
 
 Status: Partly built. The package loader, the editor's package tools, the multiplayer slots, Live sharing and the in-game Mods screens are built; applying `map-variant` content packs and the SPPF and Serenity readers are not.
-Code: `crates/content` (manifest, `MapId`, patch readers, resolver), `crates/vfs/src/packages.rs`, `crates/boot/src/new_maps.rs`, `crates/live-hle/src/maps.rs`, `crates/boot/src/mods_screen.rs`. Tests: `crates/content`, `crates/vfs/tests/packages.rs`, `crates/boot/src/new_maps/tests.rs`.
+Code: `crates/formats/content` (manifest, `MapId`, patch readers, resolver), `crates/runtime/vfs/src/packages.rs`, `crates/apps/boot/src/new_maps.rs`, `crates/live/live-hle/src/maps.rs`, `crates/apps/boot/src/mods_screen.rs`. Tests: `crates/formats/content`, `crates/runtime/vfs/tests/packages.rs`, `crates/apps/boot/src/new_maps/tests.rs`.
 Switch: `H2_MAP_DIR` (developer override for `\maps\<name>.map`), listed in [switches.md](../runtime/switches.md).
 
 A map is a base plus layers, held as a package under `<data>/maps/`. A
@@ -118,7 +118,7 @@ as 64 lowercase hex digits. The canonical JSON is a copy of
 because live-proto will depend on `content` for `MapId`; its tests replay
 jcs's vectors. Golden vectors on synthetic hashes pin the id.
 
-The types live in `crates/content` (manifest, `MapId`, patch format
+The types live in `crates/formats/content` (manifest, `MapId`, patch format
 readers, resolver), which vfs, boot, editor, live-proto and live-server
 depend on.
 
@@ -435,7 +435,7 @@ create, effects its scripts play on a loop, and its own or changed
 bitmaps and shaders. A game on a mod the server has no art for uses the
 base map's geometry, unless `[result] geometry` differs from the base's.
 
-The native viewer (`crates/viewer`) opens an installed mod as
+The native viewer (`crates/tools/viewer`) opens an installed mod as
 `mod:<package dir>` (`viewer --list` lists them with their base and
 `MapId`), built in memory the same way: its layers over the disc's base
 (or the installed map pack map), the base checked against the package's
@@ -457,7 +457,7 @@ SHA-256.
   retail). The web groups history and career stats by `map_id ?? map`, so a
   modded Lockout never mixes into Lockout's stats, and shows the package's
   name, falling back to the base map's title.
-- **Content store** (`crates/live-server/src/content.rs`, API in
+- **Content store** (`crates/live/live-server/src/content.rs`, API in
   [live-api.md](../live/live-api.md) "Custom maps"). Blobs by SHA-256 under
   `<data>/content/<aa>/<sha256>`, checked on upload, kept once, immutable;
   caps of 95 MiB on patches, packs and images and on a whole map (the
@@ -658,7 +658,7 @@ Limits:
 Many old mods are whole modded `.map` files: they hold the retail map's
 bytes and may not be shared. `h2 live maps import FILE [--base MAP]
 [--disc ISO] [--mappack ISO] [--out DIR] [--name NAME] [--info mod.toml]
-[--category C] [--no-publish]` (`crates/cli/src/live_mod_import.rs`) makes
+[--category C] [--no-publish]` (`crates/apps/cli/src/live_mod_import.rs`) makes
 a package that shares only the difference:
 
 1. The base map (`--base`, else `base_map` in the sidecar) is read from
@@ -858,7 +858,7 @@ two-column table (each row a white name, left, and a pale-blue value,
 right, 22 units apart from `[177 118 157 276]`). Matchmaking (pane 3)
 shows the same details block, so it is the game's own "game details"
 look. A mod's page is built on it
-(`crates/boot/src/mods_screen/page_layout.rs`; each rectangle, font,
+(`crates/apps/boot/src/mods_screen/page_layout.rs`; each rectangle, font,
 colour, animation and depth bias is the lobby tag's own unless noted):
 
 | Part | Lobby original | On a mod's page |

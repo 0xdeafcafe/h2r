@@ -1,8 +1,8 @@
 # Halo 2 retail Xbox cache files (version 8)
 
-Status: Built. Reader and lossless writer in `crates/map`; tag codecs in `crates/tags`. Switch: none.
+Status: Built. Reader and lossless writer in `crates/formats/map`; tag codecs in `crates/formats/tags`. Switch: none.
 
-This describes the reader and lossless writer in `crates/map`, not an on-disk Rust struct ABI.
+This describes the reader and lossless writer in `crates/formats/map`, not an on-disk Rust struct ABI.
 All integers below are little-endian. Offsets are hexadecimal and relative to
 one `.map` file, including when the map is read inside an ISO.
 
@@ -258,7 +258,7 @@ The typed per-group definitions (every field named or an explicit `unknown`
 span) are in [tag-definitions.md](tag-definitions.md); the layout inference
 that finds pointers, references and string IDs is in
 [tag-schema.md](tag-schema.md). The generated codecs for the records below
-are in `crates/tags/schema.rs` and `crates/tags/build.rs`. Cache bytes are
+are in `crates/formats/tags/schema.rs` and `crates/formats/tags/build.rs`. Cache bytes are
 never cast into `#[repr(C)]` structs: disk offsets, alignment, little-endian
 fields, salted references and region-dependent pointers need explicit
 decoding.
@@ -268,7 +268,7 @@ decoding.
 
 ## Generated record codecs
 
-This section records the implementation in `crates/tags`. For block claims,
+This section records the implementation in `crates/formats/tags`. For block claims,
 **V means count × stride fits in bounds on every disc instance**, with the
 additional checks stated below. **S** marks a meaning that is unverified on the
 disc and in the engine.
@@ -309,7 +309,7 @@ does not account for the eight-byte difference.
 
 ### Schema and generation
 
-`crates/tags/schema.rs` declares records, offsets, field kinds, and the three
+`crates/formats/tags/schema.rs` declares records, offsets, field kinds, and the three
 reviewed bitmap block strides in Rust. Unreviewed gaps become coalesced `Bytes`
 fields; they are not scanned for plausible pointers. `build.rs` checks record
 limits, duplicate names, overlapping fields, and nonzero reviewed strides.
@@ -420,10 +420,10 @@ locale slots, and readable generated-code/record formatting.
 
 ## Render-model geometry (`mode` sections, parts, vertices)
 
-The model reader is in `crates/tags/src/model.rs`, and its tag records are in
-the delimited "render_model geometry" section of `crates/tags/schema.rs`. Raw
+The model reader is in `crates/formats/tags/src/model.rs`, and its tag records are in
+the delimited "render_model geometry" section of `crates/formats/tags/schema.rs`. Raw
 section blocks are loaded by the shared geometry decoder,
-`crates/tags/src/geometry.rs`, which structure BSPs and lightmaps also use.
+`crates/formats/tags/src/geometry.rs`, which structure BSPs and lightmaps also use.
 Its block info, resource, part, subpart and descriptor layouts, and the
 hostile-input rules every owner gets, are documented once in
 [structure-bsp.md](structure-bsp.md). This section covers what is

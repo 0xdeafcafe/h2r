@@ -7,7 +7,7 @@ ten-minute, 16-player match. The v7 baseline below uses about 145.
 These totals include each record's length prefix and a complete key
 every 150 samples. The comparison covers transfer size with the same
 sampling rate and field precision. [Live codec](../live/live-telemetry.md#version-8-live-wire) ·
-[Benchmark](../../crates/live-proto/tests/packed_v8.rs)
+[Benchmark](../../crates/live/live-proto/tests/packed_v8.rs)
 
 ## Match and measurement
 

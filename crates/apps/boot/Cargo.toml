@@ -1,0 +1,119 @@
+[package]
+name = "boot"
+description = "Boot glue: lift, emit and compile the whole XBE, then run it on the runtime with kernel HLE"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+film = { path = "../../live/film" }
+rustc-hash = "2"
+xbe.workspace = true
+xiso.workspace = true
+analyze.workspace = true
+lift.workspace = true
+# The lifted original for shadow checks (fallback.rs, docs/engine/shadow-exec.md).
+lifted = { path = "../../runtime/lifted" }
+emit.workspace = true
+# The Cranelift fast tier (tier.rs, docs/lifter/cranelift-tier.md).
+clif = { workspace = true, optional = true }
+ir.workspace = true
+runtime.workspace = true
+kernel.workspace = true
+vfs.workspace = true
+# Map packages under <data>/maps (docs/game/maps.md).
+content.workspace = true
+# The controller-speaker sound index reads the player's map files (pad_speaker).
+tags.workspace = true
+hs.workspace = true
+h1scripts = { path = "../../tools/h1scripts" }
+coop = { path = "../../live/coop" }
+h1text = { path = "../../tools/h1text" }
+map.workspace = true
+h1convert = { path = "../../tools/h1convert" }
+h1map = { path = "../../tools/h1map" }
+# Our settings (setting_defs, the ui model).
+settings = { path = "../../formats/settings" }
+feature = { path = "../../hooking/feature", default-features = false }
+engine = { path = "../../rewrites/engine", features = ["runtime-glue"] }
+toml = "0.9"
+chrono = { version = "0.4", default-features = false, features = ["alloc"] }
+font = { path = "../../formats/font" }
+# Our added game variant choices (variant_options, docs/game/game-options.md).
+variants = { path = "../../formats/variants" }
+anyhow.workspace = true
+libloading = "0.8"
+d3d = { path = "../../platform/d3d", default-features = false }
+gfx = { path = "../../platform/gfx", default-features = false }
+png = "0.18"
+# The native post's A/B readback (native_post_glue).
+wgpu = { version = "30", optional = true }
+# New maps' list previews from mainmenu.map's level pictures (new_maps).
+assets = { path = "../../platform/assets" }
+native-render = { path = "../../rewrites/native-render", optional = true }
+# The frame step's scene (docs/graphics/framescene.md); pure, no GPU.
+frame-scene = { path = "../../rewrites/frame-scene" }
+shaders = { path = "../../formats/shaders", optional = true }
+serde.workspace = true
+x87 = { path = "../../recompiler/x87" }
+dsound = { path = "../../platform/dsound", default-features = false }
+# Voice chat's media objects (voice_glue); devices come from the host.
+voice = { workspace = true, optional = true }
+audio = { path = "../../platform/audio", default-features = false }
+bink-hle = { path = "../../platform/bink-hle", default-features = false }
+# Where `h2 movies` installs (movies_glue).
+movies = { workspace = true, optional = true }
+xapi = { path = "../../platform/xapi" }
+live-hle = { path = "../../live/live-hle" }
+live-telemetry = { path = "../../live/live-telemetry" }
+live-proto.workspace = true
+input = { path = "../../platform/input", default-features = false }
+# Phantom bots (docs/game/bots.md).
+bots = { path = "../../live/bots" }
+# Sim mode's match, tuning and report files (docs/runtime/sim.md).
+sim = { path = "../../live/sim" }
+iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info"] }
+timeline = { path = "../../runtime/timeline" }
+# The determinism harness (H2_LOCKSTEP, H2_INPUT_RECORD, H2_INPUT_REPLAY).
+lockstep = { path = "../../extensions/lockstep" }
+# Machine snapshots: feature sections' codec (docs/runtime/snapshots.md).
+snapshot = { path = "../../runtime/snapshot" }
+# The agent API (H2_AGENT; docs/runtime/agent-api.md).
+agent = { path = "../../extensions/agent", default-features = false }
+agent-proto = { path = "../../extensions/agent-proto" }
+# Our debug menu (debug_menu_glue.rs, docs/runtime/debug-menu.md).
+debug-menu = { path = "../../extensions/debug-menu" }
+# Hot iteration on the agent (src/hot_glue.rs, docs/graphics/hot-iteration.md).
+hot-render = { path = "../../platform/hot-render", optional = true }
+hot-tags = { path = "../../extensions/hot-tags" }
+# The agent glue's host methods (input.pad, profile.sample.*).
+serde_json.workspace = true
+# `H2_PERF_FROM`: a profiler/timeline session over part of a run.
+perf = { path = "../../tools/perf", optional = true }
+
+[features]
+default = ["gpu", "movie-playback", "local-io"]
+desktop-runtime = ["dep:clif", "feature/native-render"]
+gpu = ["desktop-runtime", "gfx/gpu", "d3d/gpu", "agent/render-overrides", "dep:wgpu", "dep:native-render", "dep:shaders", "dep:hot-render"]
+movie-playback = ["desktop-runtime", "bink-hle/playback", "dep:movies"]
+local-io = ["desktop-runtime", "dep:voice", "dsound/playback"]
+perf = ["dep:perf"]
+
+[dev-dependencies]
+# The fixture generated module, for hooks run through the real Runner.
+runtime-test-probe = { path = "../../runtime/runtime/test-probe" }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[[example]]
+name = "menu_cpu"
+required-features = ["gpu"]
+
+[[test]]
+name = "headless_interp"
+required-features = ["gpu"]
+
+[[test]]
+name = "fast_tier"
+required-features = ["desktop-runtime"]

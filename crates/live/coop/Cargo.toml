@@ -1,0 +1,13 @@
+[package]
+name = "coop"
+description = "Co-op over Live, phase 0: the peer transport, the two-port pad schedule and the per-tick hash exchange (docs/live/live-coop.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+xapi = { path = "../../platform/xapi" }
+tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+
+[dev-dependencies]
+lockstep = { path = "../../extensions/lockstep" }

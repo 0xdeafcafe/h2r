@@ -50,8 +50,8 @@ recorded in a doc, **Estimate** is reasoning that a run must confirm.
 
 ### 2.1 A memory access
 
-**Code.** A load is `H2_LD_` (`crates/emit/c/h2gen.h:658`), a store
-`H2_ST_` (`:699`). Both call `H2_SITE_TRY` (`crates/emit/c/h2fastmem.h:509`),
+**Code.** A load is `H2_LD_` (`crates/recompiler/emit/c/h2gen.h:658`), a store
+`H2_ST_` (`:699`). Both call `H2_SITE_TRY` (`crates/recompiler/emit/c/h2fastmem.h:509`),
 which without flat RAM is `H2_HELD_TRY` (`:404`):
 
 1. is the gate held by this handler (`h2g_.held`);
@@ -66,7 +66,7 @@ which without flat RAM is `H2_HELD_TRY` (`:404`):
 Anything else is one call to `h2_access_cold` (`:552`), which takes the
 gate and retries, or drops it and calls the Rust helper. The gate is a
 word shared with every Rust memory guard (`Memory::lock`,
-`crates/runtime/src/ffi/memory.rs:78`). A handler drops it before every
+`crates/runtime/runtime/src/ffi/memory.rs:78`). A handler drops it before every
 call that takes the context, on every way out, and after 32 loop headers
 (`h2_gate_tick`, `h2fastmem.h:315`; RUNTIME-CONTRACT.md lines 54-80).
 
@@ -82,10 +82,10 @@ direct calls and before atomics (RUNTIME-CONTRACT.md lines 365-416).
 ### 2.2 The opt-in flat RAM
 
 **Code.** `H2_EMIT_FLAT_RAM=1` at build defines `H2_FLAT_RAM` in the C
-(`crates/emit/src/compile.rs:138`, `flat_image_flag` `:188`).
+(`crates/recompiler/emit/src/compile.rs:138`, `flat_image_flag` `:188`).
 `H2_FLAT_RAM=1` at run makes each `Guest` build an `Arena`
-(`crates/runtime/src/flat.rs:12`, `:89`; `Guest::flat_view`,
-`crates/runtime/src/guest.rs:1065`):
+(`crates/runtime/runtime/src/flat.rs:12`, `:89`; `Guest::flat_view`,
+`crates/runtime/runtime/src/guest.rs:1065`):
 
 - A guarded 4 GiB window with guest RAM aliased in at guest virtual
   addresses. On a 16 KiB host a 4 KiB guest page can sit at four offsets
@@ -94,7 +94,7 @@ direct calls and before atomics (RUNTIME-CONTRACT.md lines 365-416).
   entry say which window holds the page (`flat.rs:18-28`).
 - While a write watch is active, stores go to a second alias set, the
   mirror: all of physical RAM, four planes on a 16 KiB host, indexed by
-  physical address (`crates/runtime/src/flat/protection.rs:183`). Watched
+  physical address (`crates/runtime/runtime/src/flat/protection.rs:183`). Watched
   clean pages are read-only there. The first store takes `SIGBUS`
   (`SIGSEGV` on Linux), the handler opens the page with `mprotect` and
   records it (`State::fault`, `:60`). A page that faults in two watch
@@ -107,21 +107,21 @@ direct calls and before atomics (RUNTIME-CONTRACT.md lines 365-416).
   or the window index. If it returns null the site runs the whole paged
   path after it (`H2_SITE_TRY`, `:509-515`).
 - The emitter groups accesses off one register into a span checked once
-  (`crates/emit/src/c/span.rs`, `c.rs:549`; `H2_SPAN`, `h2gen.h:729`).
+  (`crates/recompiler/emit/src/c/span.rs`, `c.rs:549`; `H2_SPAN`, `h2gen.h:729`).
 - Every store is bracketed by `H2_ALIAS_FENCE` (`h2gen.h:646`, `:710`).
 - Every Rust guard also calls `publish_flat` when taken
   (`ffi/memory.rs:124`) and `flat_view`, which calls `Arena::rearm`, when
   dropped (`:226`, `guest.rs:1077`).
 - A copy-on-write restore from a file and a second-executor refresh turn
   flat RAM off for that `Guest` (`Guest::restore_cow`,
-  `crates/runtime/src/guest/state.rs:166-170`; `Guest::cow_refresh`,
+  `crates/runtime/runtime/src/guest/state.rs:166-170`; `Guest::cow_refresh`,
   `guest/view.rs:95-101`). An installed access trap suspends it
   (`guest.rs:1067`).
 
 ### 2.3 A call between generated functions
 
 **Code.** `H2_CALL_SLOT_` (`h2gen.h:1200`), from `H2_DCALL` at
-`crates/emit/src/c.rs:1184` and `H2_ICALL` at `:1205`. In order:
+`crates/recompiler/emit/src/c.rs:1184` and `H2_ICALL` at `:1205`. In order:
 
 1. load the context's `H2Direct` block; test depth against the cap; hash
    the target into one of 4,096 slots; compare the slot's PC and handler
@@ -142,8 +142,8 @@ direct calls and before atomics (RUNTIME-CONTRACT.md lines 365-416).
    continuation.
 
 A slot is filled only when the runner itself dispatches that entry to a
-generated handler (`ExecCtx::note_direct`, `crates/runtime/src/direct.rs:284`,
-called at `crates/runtime/src/runner.rs:246-248`). Hooks, HLE functions
+generated handler (`ExecCtx::note_direct`, `crates/runtime/runtime/src/direct.rs:284`,
+called at `crates/runtime/runtime/src/runner.rs:246-248`). Hooks, HLE functions
 and kernel imports never get a slot. Any `edit_dispatch` moves the
 generation and empties every slot at once (`direct.rs:12-17`).
 
@@ -155,11 +155,11 @@ transfer it routes: pending-fault check; `transfer.valid_abi()` and
 `take_preempt`; `interrupt::deliver`; `preempt_decide`; the diagnostic
 frame list (`frames.unwind`, then `call` or `enter`); the scope test; the
 transfer limit; `take_continuation`; the token test; `resolve_cached`
-(`crates/runtime/src/exec.rs:170`); the kernel-token test;
+(`crates/runtime/runtime/src/exec.rs:170`); the kernel-token test;
 `check_execute_cached` (`exec.rs:218`); the entry-stats and census
 branches; `note_direct`; `direct_begin`; the HLE census; then
-`execute_dispatched` (`crates/runtime/src/handler.rs:34`), which checks
-coverage, calls `ffi::call_native` (`crates/runtime/src/ffi.rs:27`),
+`execute_dispatched` (`crates/runtime/runtime/src/handler.rs:34`), which checks
+coverage, calls `ffi::call_native` (`crates/runtime/runtime/src/ffi.rs:27`),
 checks the pending fault and validates both ABIs again.
 
 `call_native` clears the lent view before the call and settles the view's
@@ -198,9 +198,9 @@ All **Code**; the ranking is an **Estimate**.
 | # | Cause | Where |
 |---|---|---|
 | P1 | A flat access does not remove the paged checks, it precedes them. A flat load is: gate held, capability bit, page-table load, permission, size, window bit. That is the same count as `H2_HELD_TRY` and the same page-table cache miss. Each site carries both paths plus the cold call, so the image grows. | `h2fastmem.h:464-494`, `:509-515` |
-| P2 | The D3D write barrier watches all 64 MiB, so a watch is active for the whole run and every store takes the mirror branch: physical-range test, mirror pointer, plane, and a second address formed from the physical page. | `crates/boot/src/d3d_glue.rs:1683-1688`; `h2fastmem.h:471-486` |
+| P2 | The D3D write barrier watches all 64 MiB, so a watch is active for the whole run and every store takes the mirror branch: physical-range test, mirror pointer, plane, and a second address formed from the physical page. | `crates/apps/boot/src/d3d_glue.rs:1683-1688`; `h2fastmem.h:471-486` |
 | P3 | Once any page is promoted, the mirror pointer published to C is null, and every store also loads a bit from the promoted-page bitmap. A store to a promoted page fails the flat probe and then runs the full paged store with dirty marking. Promoted pages are by construction the ones written most. | `flat.rs:240-244`; `h2fastmem.h:476-481`; `protection.rs:258-265` |
-| P4 | Each first store to a watched clean page is a signal and an `mprotect`. Pages are re-protected whenever the watch epoch moves: every `take_dirty`, every mute or unmute, every subscription change. | `protection.rs:60-92`, `:275-319`; `crates/runtime/src/watch.rs:131`, `:151`, `:312` |
+| P4 | Each first store to a watched clean page is a signal and an `mprotect`. Pages are re-protected whenever the watch epoch moves: every `take_dirty`, every mute or unmute, every subscription change. | `protection.rs:60-92`, `:275-319`; `crates/runtime/runtime/src/watch.rs:131`, `:151`, `:312` |
 | P5 | Every Rust guard got heavier: `publish_flat` on take, `flat_view` (with `rearm`) on drop. HLE-heavy ticks take thousands. | `ffi/memory.rs:124`, `:226-241` |
 | P6 | On a 16 KiB host any mapping or protection change replaces whole host ranges in all four windows with guard mappings and re-aliases them. The kernel's page-table entries for those ranges are gone, so later accesses take soft faults. | `Arena::refresh`, `flat.rs:124-158` |
 | P7 | Three alias sets (window, mirror, canonical) each need their own kernel page-table entries. First touch of each host page through each alias is a soft fault. | `flat.rs:117-119`; `protection.rs:199-204` |
@@ -220,8 +220,8 @@ first:
 
 | # | Hypothesis | Evidence | How to tell |
 |---|---|---|---|
-| D1 | Stale aliases after a copy-on-write restore. `Ram::become_private_of` replaces the canonical mapping; the window and mirror kept aliasing the old backing. Generated code then read and wrote RAM that Rust no longer saw. | Fixed by `bbb2f45b8` (`state.rs:163-170`). The only caller is the snapshot loader's `load_cow` (`crates/boot/src/snapshot_glue.rs:673-677`); whether the measured run went through it is Q2. | After the fix the hashes match. Note what the fix does: it **turns flat RAM off** for that guest. A run that starts through `load_cow` is then not a flat run at all, and `H2_FLAT_STATS` prints zeros. |
-| D2 | The source side of `Ram::cow_copy`. The live RAM is a private anonymous mapping with shared aliases; `mach_vm_remap(copy = TRUE)` of it makes the source copy-on-write. If the canonical mapping and its aliases then resolve their writes to different objects, they split. | `crates/runtime/src/cow.rs:109`, `mach::remap_copy` `:506`, `mach::alias` `:477`. No test covers a store through an alias after a copy of the source (`ffi/memory/flat_tests.rs` has three tests, none does this). | New test in F2: copy, write through the window, read through canonical, and the reverse. On Linux the copy is a full `memcpy` and cannot split. |
+| D1 | Stale aliases after a copy-on-write restore. `Ram::become_private_of` replaces the canonical mapping; the window and mirror kept aliasing the old backing. Generated code then read and wrote RAM that Rust no longer saw. | Fixed by `bbb2f45b8` (`state.rs:163-170`). The only caller is the snapshot loader's `load_cow` (`crates/apps/boot/src/snapshot_glue.rs:673-677`); whether the measured run went through it is Q2. | After the fix the hashes match. Note what the fix does: it **turns flat RAM off** for that guest. A run that starts through `load_cow` is then not a flat run at all, and `H2_FLAT_STATS` prints zeros. |
+| D2 | The source side of `Ram::cow_copy`. The live RAM is a private anonymous mapping with shared aliases; `mach_vm_remap(copy = TRUE)` of it makes the source copy-on-write. If the canonical mapping and its aliases then resolve their writes to different objects, they split. | `crates/runtime/runtime/src/cow.rs:109`, `mach::remap_copy` `:506`, `mach::alias` `:477`. No test covers a store through an alias after a copy of the source (`ffi/memory/flat_tests.rs` has three tests, none does this). | New test in F2: copy, write through the window, read through canonical, and the reverse. On Linux the copy is a full `memcpy` and cannot split. |
 | D3 | A page mapped in a shifted window on a 16 KiB host whose host page holds a second guest page with a different physical neighbour. | `map_ranges`, `flat.rs:195-229`: "a split group can have candidates in different physical host pages". | First differing arena block from `h2 sim diff` maps to a page whose entry has bits 4-5 set. Does not exist on a 4 KiB host: run D-check on Linux x86-64. |
 | D4 | Read-after-write across aliases reordered by the compiler. | The fence exists for this; span members share one pointer. Unlikely. | Divergence disappears at `H2_OPT=0`. |
 | D5 | The run is not deterministic at all. | Not checked for this measurement. | Two paged runs with the same seed must match first. M0 does this before anything else. |
@@ -266,7 +266,7 @@ COFF). The module exports the section bounds. At
 registration the runtime checks the rows are sorted by address and fails
 with a named error if not; it never sorts or skips.
 
-**The fault handler.** A new crate, `crates/hostfault`, with no
+**The fault handler.** A new crate, `crates/runtime/hostfault`, with no
 dependency but `libc` (for `sigaction` and the saved machine context),
 owns the process-wide handler: `SIGBUS` and `SIGSEGV` on
 macOS, `SIGSEGV` on Linux, a vectored handler on Windows. It keeps a
@@ -466,7 +466,7 @@ from the switches that exist. Debug builds always take `DIAG`.
 
 **Not in this change.** Returning the transfer in a register instead of
 20 bytes through memory is slice T4, taken only if T2's profile still
-shows it. After-hooks that allocate (`crates/feature/src/install.rs`)
+shows it. After-hooks that allocate (`crates/hooking/feature/src/install.rs`)
 are the hook engine's, not the contract's.
 
 ## 5. What must not change, and why it does not
@@ -474,7 +474,7 @@ are the hook engine's, not the contract's.
 | Invariant | Argument | Proof |
 |---|---|---|
 | I1. Guest results | No IR, lifter, x87 or SSE code is touched. A load or store moves the same bytes. | Existing differential suites, unchanged. |
-| I2. The access count per handler activation, and where it is flushed | `H2_ACC_ONE`, `H2_ACC_FLUSH`, `h2_view_spend` and the poll comparison are not edited. Spans never changed the count. | `crates/emit/tests/accounting.rs` and `preempt.rs`, unchanged and green. |
+| I2. The access count per handler activation, and where it is flushed | `H2_ACC_ONE`, `H2_ACC_FLUSH`, `h2_view_spend` and the poll comparison are not edited. Spans never changed the count. | `crates/recompiler/emit/tests/accounting.rs` and `preempt.rs`, unchanged and green. |
 | I3. Where a thread can yield | The leave word is non-zero exactly when the old two-word test failed. Calls and returns test it at the same points. `PARK` never ends a slice. | New test `leave_word_matches_old_quiet`; the hash gate. |
 | I4. The transfer count | Direct calls, tail jumps, inline returns and thunk calls each take one, as the runner does. A park takes none. | New test `thunk_takes_the_runners_transfers`. |
 | I5. Guest-visible layout | Only physical addresses of non-contiguous allocations move. | Film goldens replay; the hash gate on a recorded film. |
@@ -512,7 +512,7 @@ different macros and files and can alternate. Slices that change
 
 ### T2. Entry table, indirect map, no per-call execute read
 
-- `crates/emit/src/lib.rs` (registry emission, `:481`): dense indices,
+- `crates/recompiler/emit/src/lib.rs` (registry emission, `:481`): dense indices,
   `pcmap`, module feature bit 8. A module with bit 8 masks `IRQ_QUEUED`
   out of `H2_POLLED` and `h2_fast_movs`, compares the whole word in
   `h2_direct_quiet`, and its registration calls
@@ -526,13 +526,13 @@ different macros and files and can alternate. Slices that change
 - Tests: `override_stops_direct_calls_at_once` (existing behaviour, new
   mechanism); `indirect_call_to_cold_entry_is_direct`;
   `entry_outside_code_guard_goes_to_runner`; the direct-call suite in
-  `crates/emit/tests/direct.rs` updated.
+  `crates/recompiler/emit/tests/direct.rs` updated.
 - Exit: hash gate; runner entries per tick from `H2_ENTRY_STATS=1` down by
   the indirect-entry rows (M2); ms/tick not worse.
 
 ### T3. Host calls in place
 
-- `h2rt_thunk` in `crates/runtime/src/direct.rs`, built on T1's `step`.
+- `h2rt_thunk` in `crates/runtime/runtime/src/direct.rs`, built on T1's `step`.
   `live[i]` holds it for overridden entries; `H2_ICALL`'s miss path calls
   it for out-of-range targets.
 - Tests: `thunk_takes_the_runners_transfers`;
@@ -553,11 +553,11 @@ gone.
 
 ### F1. `hostfault` and the fixup spike
 
-- New `crates/hostfault`: handler install and chaining, region registry,
+- New `crates/runtime/hostfault`: handler install and chaining, region registry,
   fixup-table registration and lookup.
-- A C fixture in `crates/emit/tests/c/` with one `asm goto` load and store
+- A C fixture in `crates/recompiler/emit/tests/c/` with one `asm goto` load and store
   per width, built for every target `Arch` knows
-  (`crates/emit/src/compile.rs:202`). `H2_FIX_ABS=1` (a define of the
+  (`crates/recompiler/emit/src/compile.rs:202`). `H2_FIX_ABS=1` (a define of the
   fixture only) emits 64-bit absolute rows instead, and `hostfault`
   takes either (`Format::Relative32`, `Format::Absolute64`);
   `fixture_builds_for_every_target` prints which one each target took.
@@ -576,7 +576,7 @@ Runtime only. Old images keep running on the paged path.
 - Delete the opt-in flat RAM: `flat.rs` windows 1-3, `flat/protection.rs`,
   `H2_FLAT_WRITE_WATCH`, `H2_FLAT_STATS`, and in C `H2_FLAT_RAM`'s
   `h2_flat_span`, `h2_begin_span`, `H2_SPAN*`, `H2FlatMemoryData`; delete
-  `crates/emit/src/c/span.rs` and `H2_EMIT_FLAT_RAM`,
+  `crates/recompiler/emit/src/c/span.rs` and `H2_EMIT_FLAT_RAM`,
   `H2_FLAT_STATS_OWNER`. M0 must have been taken first.
 - `Memory` owns the window; `Guest` map, unmap, protect, restore and trap
   arming update it. Congruent `fresh_physical` and `find_free_physical`.
@@ -600,10 +600,10 @@ Runtime only. Old images keep running on the paged path.
   4.1; `H2Mem`; module feature bit 16. Selected by the existing
   `H2_FLAT_RAM=1` at build; the runtime takes the model from the module's
   feature bit, so there is no run-time variable.
-- `crates/emit/src/host.rs`: the test host's memory is a window of its
+- `crates/recompiler/emit/src/host.rs`: the test host's memory is a window of its
   own with its pages mapped in place.
 - Tests: every existing inline-against-helper test in
-  `crates/emit/tests/perf.rs` rerun as window against null window;
+  `crates/recompiler/emit/tests/perf.rs` rerun as window against null window;
   `page_crossing_access_is_native`; `access_past_4gib_takes_the_fixup`;
   `armed_trap_page_logs_every_access`; `mmio_access_faults_as_before`.
 - Exit: hash gate; fixups per tick zero after the first second; ms/tick
@@ -614,7 +614,7 @@ Runtime only. Old images keep running on the paged path.
 - `d3d_glue.rs` barrier and `native_world_glue.rs` drain through
   `fold_cards`. Remove the C dirty bitmap from the guard path.
 - Tests: `barrier_sees_every_store_between_draws`; the existing
-  `crates/boot/tests/write_barrier.rs`.
+  `crates/apps/boot/tests/write_barrier.rs`.
 - Exit: gameplay frame time on the lab level not worse than paged with
   rendering on (M5); no signal in a steady-state run.
 
@@ -644,13 +644,13 @@ Runtime only. Old images keep running on the paged path.
 
 - Remove `H2_HELD_TRY`, `H2_PAGED_TRY`, `H2Gate`, `h2_access_cold`'s gate
   half, the gate word and `GATE_*`, `H2MemoryData`, `fast_acquire` and
-  `fast_release`, view lending, `crates/fastmem-proto`, the `fastmem-4k`
+  `fast_release`, view lending, `crates/recompiler/fastmem-proto`, the `fastmem-4k`
   branch's doc, and the flags `H2_FASTMEM`, `H2_FLAT_RAM`,
   `H2_RAM_PAGE_CACHE`, `H2_ENTRY_GATE`, `H2_DIRTY_INLINE`,
   `H2_DIRECT_GATE`, `H2_DIRECT_COUNT`, `H2_DIRECT_VIEW`, `H2_VIEW_CHARGE`,
   `H2_EXIT_CALL`, `H2_COLD_STATS`, `H2_DIRECT_CALLS`. Rewrite
   RUNTIME-CONTRACT.md sections 1.1 and 4.
-- `crates/clif` keeps calling the checked helpers; note it in
+- `crates/recompiler/clif` keeps calling the checked helpers; note it in
   [cranelift-tier.md](../lifter/cranelift-tier.md) as its next step.
 - Exit: workspace tests; hash gate; a cold image build timed.
 
@@ -729,10 +729,10 @@ render front-end, UI, sound, HLE glue. So this work is needed whatever
 the experiment's gate says, and its gates always run with the sim tier
 off.
 
-**Files.** This lane owns `crates/emit/c/h2gen.h`, `h2fastmem.h`,
-`crates/emit/src/c.rs`, `c/span.rs`, `compile.rs`' flag list,
-`crates/runtime/src/{flat*,direct,runner,ffi*,cow,watch,preempt}.rs`,
-`guest.rs`' fast-page and allocation code, `crates/hostfault` and
+**Files.** This lane owns `crates/recompiler/emit/c/h2gen.h`, `h2fastmem.h`,
+`crates/recompiler/emit/src/c.rs`, `c/span.rs`, `compile.rs`' flag list,
+`crates/runtime/runtime/src/{flat*,direct,runner,ffi*,cow,watch,preempt}.rs`,
+`guest.rs`' fast-page and allocation code, `crates/runtime/hostfault` and
 RUNTIME-CONTRACT.md. The sim tier adds new files only (its own emit
 module, header and runtime module) and one registration call. A change it
 needs in a file above goes through a slice here.

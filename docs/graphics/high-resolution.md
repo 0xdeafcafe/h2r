@@ -2,9 +2,9 @@
 
 Status: Built, with one scale for both axes. A per-axis scale for anamorphic
 widescreen is Design (not built).
-Code: `crates/d3d/src/scaled.rs` and `crates/d3d/src/scaled/single.rs`
-(`ScaledBackend`), `crates/gfx/src/renderer.rs` (`window_shift`),
-`crates/boot/src/d3d_glue.rs` (wiring). Tests: `crates/d3d/tests/render_scale.rs`,
+Code: `crates/platform/d3d/src/scaled.rs` and `crates/platform/d3d/src/scaled/single.rs`
+(`ScaledBackend`), `crates/platform/gfx/src/renderer.rs` (`window_shift`),
+`crates/apps/boot/src/d3d_glue.rs` (wiring). Tests: `crates/platform/d3d/tests/render_scale.rs`,
 `seams_gpu.rs`, `glyph_text.rs`.
 Switch: `H2_RENDER_SCALE` (1), `H2_SINGLE_COPY` (on), `H2_SMOOTH_TEXT` (off),
 listed in [switches.md](../runtime/switches.md).
@@ -14,7 +14,7 @@ render scale, and the guest never learns the resolution. The setting is
 `[graphics] render_scale`, the Resolution row on the Video screen
 ([settings-menu.md](../game/settings-menu.md), "Video screen");
 `H2_RENDER_SCALE` (1 to 6) locks the scale when set
-(`d3d::render_scale_from`, `crates/cli/src/play_cmd.rs`). The default,
+(`d3d::render_scale_from`, `crates/apps/cli/src/play_cmd.rs`). The default,
 `graphics.single_copy` on, is described first. With it off, an exact 1x
 reference is rendered beside the scaled view ("Exact mode: reference and
 view").
@@ -42,7 +42,7 @@ view").
 ## Single-copy readbacks
 
 The policy is selected at launch (`d3d_glue::single_copy`,
-`graphics.single_copy` in `crates/boot/src/setting_defs.rs`). Set
+`graphics.single_copy` in `crates/apps/boot/src/setting_defs.rs`). Set
 `single_copy = false` under `[graphics]` for exact-reference captures or
 replays. The lighting A/B capture always uses its separate reference.
 
@@ -170,7 +170,7 @@ This differs from the render thread, where a disagreement stops the run,
 because there the disagreeing backend is the one the guest observes.
 Headless runs (`H2_BOOT_GFX` with `H2_RENDER_SCALE`) write `frame-NNNNN.png`
 from the view and `frame-NNNNN-1x.png` from the reference
-(`crates/boot/src/d3d_glue.rs`, [BOOT.md](../runtime/BOOT.md)).
+(`crates/apps/boot/src/d3d_glue.rs`, [BOOT.md](../runtime/BOOT.md)).
 
 ### Changing the scale during a run
 
@@ -210,7 +210,7 @@ downsample of a bloom chain does this. In single-copy mode a mixed draw runs
 once at guest size: `ScaledBackend::guest_image` box-resizes the scaled
 partner to its guest-size handle (`ScaleStats::downsamples`), and a scaled
 partner that the draw modified is transferred back on the GPU
-(`crates/d3d/src/scaled/single.rs`, `draw_single`). In exact mode the
+(`crates/platform/d3d/src/scaled/single.rs`, `draw_single`). In exact mode the
 reference draws every guest-size target from its own 1x surfaces and the view
 samples the reference's result, so no resolve is needed. The view never reads
 back to the CPU.
@@ -299,7 +299,7 @@ ulps off a centre covers the same samples as one on it.
 
 Snapping to 1/16 of a host pixel instead (the guest's grid times the
 scale) only narrows the sliver. Measured by
-`crates/d3d/tests/seams_gpu.rs` (a 64x64 frame, a strip meeting a long
+`crates/platform/d3d/tests/seams_gpu.rs` (a 64x64 frame, a strip meeting a long
 edge at 47 T-junction vertices, and a seam whose two draws hold an end one
 ulp apart), clear-colour pixels inside the mesh:
 
@@ -524,7 +524,7 @@ The view redraws it from the same texels:
   `on`, `true`) turns it on; `Device::set_glyph_smoothing` does the same in
   tests.
 
-Measured by `crates/d3d/tests/glyph_text.rs` on a synthetic glyph cache (a
+Measured by `crates/platform/d3d/tests/glyph_text.rs` on a synthetic glyph cache (a
 ring, a letter, a thick and a thin slanted stroke, a dot), drawn 1:1 on
 the 64x64 corner of an 80x80 target (clear of the target's edge, where
 scaled positions are clamped). Along the thick stroke's edge, the largest
@@ -608,7 +608,7 @@ No test needs a game build. Tests invent their data; captures from the
 owner's runs stay in `$TMPDIR` and never go into Git. GPU tests skip when no
 adapter exists.
 
-- `crates/d3d/tests/render_scale.rs` (headless wgpu): the guest sees the same
+- `crates/platform/d3d/tests/render_scale.rs` (headless wgpu): the guest sees the same
   answers at every scale; the view's frame box-filtered equals the reference
   except on geometry edges; only frame-sized surfaces scale; scales outside 1
   to 6 are rejected; frame-sized targets, small targets with the scaled depth
@@ -616,12 +616,12 @@ adapter exists.
   depth memory match the reference downsampled; the scale and the lighting
   change at a frame boundary; the E3 shadow-map tests; the `single_copy_*`
   tests.
-- `crates/d3d/tests/seams_gpu.rs`: clear-colour pixels inside a mesh with
+- `crates/platform/d3d/tests/seams_gpu.rs`: clear-colour pixels inside a mesh with
   T-junctions and a one-ulp seam, at 2x to 6x ("Subpixel snapping and
   cracks").
-- `crates/d3d/tests/glyph_text.rs`: the glyph filter against a synthetic
+- `crates/platform/d3d/tests/glyph_text.rs`: the glyph filter against a synthetic
   cache ("Text").
-- `crates/d3d/tests/gpu_depth_alias.rs`, `external_pass.rs`: depth aliases and
+- `crates/platform/d3d/tests/gpu_depth_alias.rs`, `external_pass.rs`: depth aliases and
   external passes through `ScaledBackend`.
 
 Not covered by a test: a capture replayer for whole frames; stipple by guest

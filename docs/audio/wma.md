@@ -1,9 +1,9 @@
 # ASF and retail WMAv2
 
-Status: Built. Code: `crates/asf`, `crates/wma`, `crates/dsound/src/xwma.rs`. Tests: `crates/wma`, `crates/asf`, `crates/dsound/tests/xwma.rs`.
+Status: Built. Code: `crates/formats/asf`, `crates/platform/wma`, `crates/platform/dsound/src/xwma.rs`. Tests: `crates/platform/wma`, `crates/formats/asf`, `crates/platform/dsound/tests/xwma.rs`.
 Switch: none.
 
-`crates/asf` demuxes the retail sound permutations. `crates/wma` decodes them
+`crates/formats/asf` demuxes the retail sound permutations. `crates/platform/wma` decodes them
 natively to interleaved i16 stereo PCM. `h2 sound` exports these permutations as
 WAV, including sounds tagged Xbox ADPCM with `Encoding::Codec`.
 **Measured against the game's own decoder (Unicorn, 48 streams): within 2 LSB
@@ -222,7 +222,7 @@ the last quarter of the 2n folded output (i >= 3n/2) when saving overlap
 (`fchs` at `0x38d918`). That broke time-domain aliasing cancellation in the
 second half of every following block.
 
-An ignored test, `crates/oracle/tests/wma_disc.rs`, reruns 128 kbps stream 0
+An ignored test, `crates/recompiler/oracle/tests/wma_disc.rs`, reruns 128 kbps stream 0
 (the shortest of 0 to 4; about 25 s in release) and 96 kbps streams 5, 38, 154 and 226
 against the guest decoder and requires at most 1 LSB. It reads the disc
 by absolute path:
@@ -291,8 +291,8 @@ as a reset would.
 
 The tables are read from the XBE at runtime (`WmaHle::from_xbe`, which
 requires the verified retail image) and shared by every stream. Tests:
-`crates/wma` (`boundary` unit tests against the direct decoder) and
-`crates/dsound/tests/xwma.rs` (through the runner, plus an ignored test
+`crates/platform/wma` (`boundary` unit tests against the direct decoder) and
+`crates/platform/dsound/tests/xwma.rs` (through the runner, plus an ignored test
 that decodes disc streams 0 and 38 through the boundary and requires PCM
 identical to `decode_asf`).
 

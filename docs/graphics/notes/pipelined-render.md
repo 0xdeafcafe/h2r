@@ -10,8 +10,8 @@ were replaced by the switch `impl.render.pipelined_frame`.
 
 Entries are from 2026-11-17 and 2026-11-18. Commit: not recorded; the
 page they come from was last revised at `b8b163968`. Method: `render-census`
-(`crates/feature/src/render_census.rs`) and the prototype
-(`crates/feature/src/pipeline_render.rs`) on the owner's disc, headless.
+(`crates/hooking/feature/src/render_census.rs`) and the prototype
+(`crates/hooking/feature/src/pipeline_render.rs`) on the owner's disc, headless.
 Not re-run.
 
 ## What it would buy
@@ -162,8 +162,8 @@ existing rule applies.
 
 ## The census (`render-census`)
 
-Built: `crates/feature/src/render_census.rs`, on the runtime's access
-trap `crates/runtime/src/trap.rs`. Off by default.
+Built: `crates/hooking/feature/src/render_census.rs`, on the runtime's access
+trap `crates/runtime/runtime/src/trap.rs`. Off by default.
 
 **How it sees accesses.** Every inline guest access, in generated C
 (`h2fastmem.h`: `H2_HELD_TRY`, `h2_fast_copy`, `h2_fast_movs`) and in
@@ -495,7 +495,7 @@ after it is weeks of work.
 
 ### Build plan, in order
 
-1. **Census v2** (`crates/feature/src/render_census.rs` only, no image
+1. **Census v2** (`crates/hooking/feature/src/render_census.rs` only, no image
    change):
    - pick sticky pages per region (for example the top 8 of each of
      `game_state`, `datum:*`, `world_pool`, `other`, after the XBE pages
@@ -632,7 +632,7 @@ In the render scope, by kernel export:
   of them (0.8 a frame) stopping the thread.** Two kinds of code yield:
   - **The frame wait.** `0x0012b2e0` runs inside
     `render_frame_and_present` and is overridden by the d3d crate's clocked
-    frame wait (`FrameWait::HALO2_CLOCKED`, `crates/d3d/src/vblank.rs`). It
+    frame wait (`FrameWait::HALO2_CLOCKED`, `crates/platform/d3d/src/vblank.rs`). It
     calls `NtYieldExecution` through `call_guest` until the vblank counter
     reaches its target, so the other threads run and the logical clock
     moves to the next vblank. That is logical-clock pacing, not a spin on
@@ -750,7 +750,7 @@ than they save.
 ## The prototype
 
 Build plan steps 3 (the cheap remedies), 4 (hand-back) and 5 (measure),
-as `crates/feature/src/pipeline_render.rs`, wired in the boot by
+as `crates/hooking/feature/src/pipeline_render.rs`, wired in the boot by
 `d3d_glue::pipeline_render`. Off under
 lockstep (`H2_LOCKSTEP`, `H2_INPUT_RECORD`, `H2_INPUT_REPLAY`) and with
 `render-census`. No image change: it needs a new `h2` binary only.
@@ -958,7 +958,7 @@ copy, push and flush` are merges of the feature's. It is the switch that
 settles whether a bad global came from a merge.
 
 From the first check on, the watched words' pages also carry a write trap
-on live memory (`Guest::set_trap_focus`, `crates/runtime/src/trap.rs`):
+on live memory (`Guest::set_trap_focus`, `crates/runtime/runtime/src/trap.rs`):
 every write over a watched word through the checked path prints at once
 `trap: focus <word> = <value> written by pc <pc> (<addr>+<len>, thread
 <guest thread>, hle <handler>, host thread <name>)` (400 lines at most),
@@ -1258,7 +1258,7 @@ stamp also make every serial comparison in the rig check this.
 - Visit marks are render-private by design (the sim never sees the
   render's counters).
 
-**Tests.** `crates/feature/tests/pipeline_render.rs`: a synthetic render
+**Tests.** `crates/hooking/feature/tests/pipeline_render.rs`: a synthetic render
 front-end (a Rust function registered as generated code with resume
 points) and sim, run serially and pipelined over 120 rounds
 (`H2_PIPELINE_ROUNDS`; 2,000 pass): the same final memory but the marks,
@@ -1279,9 +1279,9 @@ carries on too. Switched on with every frame serial (a warm-up that never
 ends), every kind of frame leaves guest memory (data, marks, the game
 thread's stack, the protected page) equal to the switched-off run's after
 each frame; a watched word reports each change once.
-`crates/emit/tests/second_executor.rs`: lifted x86 refused at a kernel
+`crates/recompiler/emit/tests/second_executor.rs`: lifted x86 refused at a kernel
 call carries on on the main context from the refused CPU (twenty rounds).
-`crates/d3d/tests/registration.rs`: a real D3D entry on the executor (the
+`crates/platform/d3d/tests/registration.rs`: a real D3D entry on the executor (the
 recording backend) reads the snapshot and writes the view.
 
 **Not done** (fallbacks cover them; the `pipeline:` lines say which

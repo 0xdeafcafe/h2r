@@ -3,8 +3,8 @@
 Status: Built. Unit tested: the model, navigation, gestures, input
 swallowing, layout, drawing on a headless GPU, the cheats over a fake game.
 Not seen in a running game; "Not verified" lists what only a run can show.
-Code: `crates/cli/src/play_cmd.rs` (the overlay is created in `h2 play` and
-`h2 run`), `crates/agent/src/hostpads.rs`.
+Code: `crates/apps/cli/src/play_cmd.rs` (the overlay is created in `h2 play` and
+`h2 run`), `crates/extensions/agent/src/hostpads.rs`.
 Switch: `H2_DEBUG_MENU` (on), listed in [switches.md](switches.md).
 
 The retail game has no debug menu, so this one is ours. It is an overlay the
@@ -58,13 +58,13 @@ keyboard can open it.
 ## Keyboard
 
 The keys are the Keyboard column of the table above, mapped by
-`debug_menu::Key` (`crates/debug-menu/src/lib.rs`). While the menu is open
+`debug_menu::Key` (`crates/extensions/debug-menu/src/lib.rs`). While the menu is open
 they go to the menu and every other key is swallowed.
 
 ## Sections
 
 Each section is a `debug_menu::Section`: the agent calls it makes, and a
-function from their answers to rows (`crates/debug-menu/src/sources.rs`).
+function from their answers to rows (`crates/extensions/debug-menu/src/sources.rs`).
 The menu re-asks every second while a page is open, and right after any
 change.
 
@@ -80,7 +80,7 @@ change.
 ## Cheats
 
 The retail game has no usable cheat commands, so these are our own
-(`crates/boot/src/cheats.rs`). They are applied after each game tick to the
+(`crates/apps/boot/src/cheats.rs`). They are applied after each game tick to the
 local players' units, with the helpers our custom skulls use:
 
 | Cheat | What it does |
@@ -188,28 +188,28 @@ The hook for a later Players section (`sim.*`) is
 `debug_menu::Shared::add_section`: give it the `sim.*` calls and a rows
 function, and it appears on the first page after the built-in sections.
 
-Test new rows in `crates/debug-menu/src/tests.rs`: the fake game there
+Test new rows in `crates/extensions/debug-menu/src/tests.rs`: the fake game there
 answers the calls the way the host methods do.
 
 ## How it is wired
 
-- `crates/input`: the DualSense and DualShock 4 touchpad
+- `crates/platform/input`: the DualSense and DualShock 4 touchpad
   (`HostPadState::touchpad`, read in `game_controller/apple.rs`, never mapped
   to the guest), gestures (`touchpad.rs`), and `InputManager::set_gate`. A
   `PadGate` sees each pad between polling and conversion.
-- `crates/debug-menu`: the model (`model.rs`), sections (`sources.rs`), layout
+- `crates/extensions/debug-menu`: the model (`model.rs`), sections (`sources.rs`), layout
   (`layout.rs`), the gate (`gate.rs`) and `Shared`, the handle the window,
   the input layer and the agent connection share.
-- `crates/agent/src/menu.rs`: the menu's in-process agent connection, plus
+- `crates/extensions/agent/src/menu.rs`: the menu's in-process agent connection, plus
   `settings.list`/`settings.set` and `perf.overlay`.
-- `crates/boot/src/debug_menu_glue.rs`: installs those methods. A game
+- `crates/apps/boot/src/debug_menu_glue.rs`: installs those methods. A game
   without `H2_AGENT` still gets a socketless agent for the menu. Its shader
   overrides are not loaded or watched until asked.
-- `crates/app/src/menu_overlay.rs`: the drawing (top left of the game image,
+- `crates/apps/app/src/menu_overlay.rs`: the drawing (top left of the game image,
   one step bigger than the watermark, a dark plate, the selected row on a
   bar). `keymap.rs` has the backquote key, and `shell.rs` routes keys and
   redraws.
-- `crates/cli/src/play_cmd.rs`: makes the menu, sets the gate, hands it to
+- `crates/apps/cli/src/play_cmd.rs`: makes the menu, sets the gate, hands it to
   the window and the game.
 - With the keyboard on (the default), player one is
   `input::backend::fallback::KeyboardFallback`: the first pad merged with the

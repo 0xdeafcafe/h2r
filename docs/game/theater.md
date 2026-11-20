@@ -20,7 +20,7 @@ In short:
   The recompiled game already runs on a logical clock, so its schedule
   depends only on its own work and its inputs. Record the inputs (pad
   reads, network receives, host randomness, the boot conditions) and the
-  same build replays the session exactly. The harness (`crates/lockstep`)
+  same build replays the session exactly. The harness (`crates/extensions/lockstep`)
   already records and replays pad reads by read index.
 - **That exact replay is the first slice**: record a game, watch it back
   from the start with pause, fast forward and slow motion, and export
@@ -390,7 +390,7 @@ observer (`0x0016f280`) run once per frame with a variable time step,
 (about 4 MiB) arena; pools are bump-allocated from it by name
 (`0x00123dd0`). Checkpoints copy exactly this block: the writer
 (`0x2151f0`), revert to a slot (`0x123f60`) and full restore (`0x124380`)
-are exercised byte-exactly by `crates/xapi/tests/checkpoints.rs`. This is
+are exercised byte-exactly by `crates/platform/xapi/tests/checkpoints.rs`. This is
 the classic Blam design: the game's state is one relocatable blob that is
 saved by copying memory. It's the strongest reason Halo 2 fits a
 Halo 3-style Theater.

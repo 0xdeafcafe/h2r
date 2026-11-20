@@ -1,6 +1,6 @@
 # Havok MOPP code (`sbsp+0x1e0`) and writing it
 
-Status: Built. Code: `crates/mopp`. Switch: none.
+Status: Built. Code: `crates/formats/mopp`. Switch: none.
 
 A structure BSP carries a Havok MOPP program: bytecode that walks a
 bounding-volume tree over the level's collision surfaces and emits the
@@ -8,9 +8,9 @@ key of each surface a query may touch. Havok bodies (vehicles, dropped
 weapons, grenades, crates) collide with the level only through it. There
 is no fallback: a converted level without a real program has no Havok
 collision at all. This page is the format as the engine reads it, the
-engine's interpreter semantics, and the writer in `crates/mopp`.
+engine's interpreter semantics, and the writer in `crates/formats/mopp`.
 
-Code: `crates/mopp` ([README](../../crates/mopp/README.md)).
+Code: `crates/formats/mopp` ([README](../../crates/formats/mopp/README.md)).
 
 Evidence: **E** read from the engine code in the retail XBE (addresses
 given); **V** checked on the owner's disc (all 78 structure BSPs of

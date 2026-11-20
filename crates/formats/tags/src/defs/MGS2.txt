@@ -1,0 +1,22 @@
+# MGS2: light volume. Evidence: crates/formats/tags/src/lighting.rs (LightVolume) and lighting_tests.rs,
+# docs/formats/lighting.md "Atmosphere groups" (E 0x0004f010, 0x0004f061..0x0004f115).
+# Referenced by ligh +0x9c and created by the effect part switch (0x0017a8db).
+group MGS2 0x10 align 4
+  0x0 f32[2] distance_fade -- E camera-distance fade [near, far]: 0x0004f061..0x0004f115 clamp((far-d)/(far-near), 0, 1) when far > near (lighting.rs:237-241,253-260; lighting.md:154)
+  0x8 block layers 0x98 align 4 -- E 0x0004f010 loops over it, stride 0x98 (lighting.rs:261-262; lighting.md:155)
+    0x0 flags32 flags -- E 0x0004f010, 0x00179880 test bits; labels not established (lighting.rs:230,265; lighting.md:156)
+    0x4 tagref bitmap groups=bitm -- V class/datum (lighting.rs:231,266; lighting.md:158)
+    0xc u32 sample_count -- E 0x0004f010: loop count and reciprocal of count minus one (lighting.rs:232,267; lighting.md:157)
+    0x10 data data_10 align 4
+    0x18 data data_18 align 4
+    0x20 data data_20 align 4
+    0x28 data data_28 align 4
+    0x30 data data_30 align 4
+    0x38 block block_38 0x1c align 4
+      0x0 data data_0 align 4
+      0x8 data data_8 align 4
+      0x10 unknown 0xc
+    0x40 unknown 0x20
+    0x60 block sample_positions 0x8 align 4
+      0x0 f32[2] input -- E 0x4f402..0x4f419 interpolates the two sample coordinates by view angle
+    0x68 unknown 0x30

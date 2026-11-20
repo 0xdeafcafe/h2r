@@ -1,10 +1,10 @@
 # Shaders
 
-Status: Built. Reference for `crates/shaders`.
-Code: `crates/shaders/src/`. Tests: `crates/shaders/tests/`.
+Status: Built. Reference for `crates/formats/shaders`.
+Code: `crates/formats/shaders/src/`. Tests: `crates/formats/shaders/tests/`.
 Switch: none.
 
-`crates/shaders` turns Halo 2's Xbox shader programs into WGSL. We don't
+`crates/formats/shaders` turns Halo 2's Xbox shader programs into WGSL. We don't
 emulate the NV2A. D3D8 is replaced at the API level, but Halo 2's shaders are
 written for NV2A features (vertex microcode, register combiners, texture-stage
 "shader modes"), so they still have to be translated.
@@ -20,8 +20,8 @@ written for NV2A features (vertex microcode, register combiners, texture-stage
 ## What Halo 2 stores
 
 Everything here was checked against the retail disc (cache build
-`02.09.27.09809`, all 30 maps). `h2 extract-shaders` (`crates/cli/src/extract_shaders.rs`) reproduces it,
-reading the maps with `crates/map`. It
+`02.09.27.09809`, all 30 maps). `h2 extract-shaders` (`crates/apps/cli/src/extract_shaders.rs`) reproduces it,
+reading the maps with `crates/formats/map`. It
 reads your own disc image at run time and writes the corpus, a manifest
 and a provenance record to a directory you choose (keep it in `$TMPDIR`; no
 game data belongs in the repo). Every count in this section is a line of its
@@ -321,7 +321,7 @@ keeps the ordering across the range at float precision as the stored w
 does, so this stays a known cost. Halo's first-person weapon and hands use
 another projection than the level, so their z did not order against the
 level's while their w does; drawn with z they were hidden behind nearby
-walls. `crates/d3d/tests/shaders_render.rs`
+walls. `crates/platform/d3d/tests/shaders_render.rs`
 (`w_buffered_programs_depth_test_w_not_z`) checks the order and that z past
 `Zmax` no longer clips. Not covered: pre-transformed (`XYZRHW`) draws keep
 z, and an occlusion count pass (which does not run the fragment program)
@@ -446,7 +446,7 @@ evaluates. With D3D's parameters they give `(end − d)/(end − start)`,
 `e^(−density·d)` and `e^(−(density·d)²)`, and with no table the factor is
 `oFog.x` itself. The model computes the exp scales in closed form. D3D multiplies by its
 own constants (`0x45E378`, `0x45E374`), which differ from the closed forms
-by about 4e-6 relative; the ignored `crates/d3d/tests/fog_xbe.rs` reads
+by about 4e-6 relative; the ignored `crates/platform/d3d/tests/fog_xbe.rs` reads
 them from `$H2_XBE` and checks that tolerance. The uniform
 carries `[mode, bias, scale]`, computed with f64 intermediates and f32
 stores, as the x87 code rounds. The fog register's rgb is
@@ -491,7 +491,7 @@ factor, never the colour's alpha.
   interpolated. Whether
   the rasteriser interpolates an infinite varying as infinity across a
   triangle (rather than NaN where a vertex's weight is 0) is not
-  established. `crates/d3d/tests/fog_xbe.rs` (ignored, `$H2_XBE`) runs the
+  established. `crates/platform/d3d/tests/fog_xbe.rs` (ignored, `$H2_XBE`) runs the
   image's three programs through the interpreter, `rhw = 0` included, and
   checks that their `oFog` matches, along with the commit's constants
   (against the closed forms) and method headers.
@@ -864,7 +864,7 @@ An adapter implementing gfx's `ShaderProgram` needs very little:
   checks the pixels.
 - The GPU tests pass trivially when no adapter is present. Set
   `SHADERS_NO_GPU` to force that.
-- `crates/d3d/tests/nv2a_conformance.rs` is the end-to-end conformance
+- `crates/platform/d3d/tests/nv2a_conformance.rs` is the end-to-end conformance
   suite. It renders small synthetic combiner programs, fixed-function
   stages and pipeline states through `GfxBackend` and `Nv2aShaders` into an
   `A8R8G8B8` target and checks known pixel values. It covers per-stage and

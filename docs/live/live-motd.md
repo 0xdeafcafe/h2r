@@ -439,7 +439,7 @@ meaning unconfirmed.
    `//title.4d530064/t:4d530064/9809/<name>` (and the `test/` prefix) with
    the published file, reporting received == total; FILE_NOT_FOUND for
    anything else (§2.0-§2.2'). Under the HLE this is
-   `crates/live-hle/src/storage_api.rs`; no legacy endpoint is contacted.
+   `crates/live/live-hle/src/storage_api.rs`; no legacy endpoint is contacted.
 2. The game fetches at sign-in only; a publish shows at the next sign-in.
 3. `message_of_the_day.dat`: 16-byte header (§2.4, version 1) + BE u32
    `0x00025224` + zlib stream inflating to the 152,100-byte payload of §3.1.

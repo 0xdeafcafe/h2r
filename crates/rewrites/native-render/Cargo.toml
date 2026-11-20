@@ -1,0 +1,37 @@
+[package]
+name = "native-render"
+description = "Native GPU renderer: the static world (structure BSP) loaded once from the map's tags, culled and drawn with indirect draws (docs/graphics/native-renderer.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[features]
+default = ["gpu"]
+# The map loader and the wgpu pass. Without it only the pure parts
+# (world, camera, cull, skip) build: what the feature crate's hooks need.
+gpu = ["dep:map", "dep:tags", "dep:wgpu", "dep:shaders", "dep:gfx", "dep:d3d", "dep:pollster"]
+# Seeded differential test of the object lighting port against the lifted
+# original (tests/object_lighting_differential.rs; needs the user's XBE).
+differential = ["dep:analyze", "dep:xbe", "dep:ir", "dep:lift"]
+
+[dependencies]
+map = { workspace = true, optional = true }
+tags = { workspace = true, optional = true }
+wgpu = { version = "30", optional = true }
+shaders = { path = "../../formats/shaders", optional = true }
+gfx = { path = "../../platform/gfx", optional = true }
+d3d = { path = "../../platform/d3d", optional = true }
+pollster = { version = "1", optional = true }
+bytemuck = { version = "1", features = ["derive"] }
+frame-scene = { path = "../frame-scene" }
+scene-extract = { path = "../scene-extract" }
+# For tests/object_lighting_differential.rs only.
+analyze = { workspace = true, optional = true }
+xbe = { workspace = true, optional = true }
+ir = { workspace = true, optional = true }
+lift = { workspace = true, optional = true }
+
+[dev-dependencies]
+timeline = { path = "../../runtime/timeline" }
+gfx = { path = "../../platform/gfx" }
+pollster = "1"

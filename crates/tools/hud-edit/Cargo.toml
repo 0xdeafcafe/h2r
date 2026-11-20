@@ -1,0 +1,28 @@
+[package]
+name = "hud-edit"
+description = "The HUD editor's UI-free logic: a map's nhdt HUDs and their widgets, the engine's placement, a preview canvas, layout checks, edits with undo and the patched-map save (docs/editor/hud-editor.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+map.workspace = true
+tags.workspace = true
+assets.workspace = true
+xiso.workspace = true
+font = { path = "../../formats/font" }
+png = "0.18"
+scenario-edit = { path = "../scenario-edit" }
+# The invented test map (feature `fixture`): its bitmap goes through the
+# Halo 1 bitmap converter, the one tool that writes a whole Halo 2 `bitm`.
+h1map = { path = "../h1map", optional = true }
+h1bitmaps = { path = "../h1bitmaps", optional = true }
+h1models = { path = "../h1models", optional = true }
+
+[features]
+fixture = ["dep:h1map", "dep:h1bitmaps", "dep:h1models"]
+
+[dev-dependencies]
+hud-edit = { path = ".", features = ["fixture"] }

@@ -1,7 +1,7 @@
 # Guarded transcendentals
 
 Status: Built. The guarded first pass is on by default.
-Code: `crates/x87/src/trans_fast.rs`, `crates/x87/src/trans.rs`. Tests: `crates/x87/src` (`fast-trans`), `crates/x87/tests`.
+Code: `crates/recompiler/x87/src/trans_fast.rs`, `crates/recompiler/x87/src/trans.rs`. Tests: `crates/recompiler/x87/src` (`fast-trans`), `crates/recompiler/x87/tests`.
 Switch: the `x87/fast-trans` Cargo feature (default on); no environment variable.
 
 `x87/fast-trans` adds a 128-bit integer first pass for **FYL2X, F2XM1,
@@ -222,7 +222,7 @@ Regenerate fixtures, if MPFR is installed:
 
 ```sh
 cc -Wall -Wextra -Werror scripts/x87-trans-oracle.c $(pkg-config --cflags --libs mpfr gmp) -o "$TMPDIR/x87-trans-oracle"
-"$TMPDIR/x87-trans-oracle" > crates/x87/tests/data/trans_oracle.txt
+"$TMPDIR/x87-trans-oracle" > crates/recompiler/x87/tests/data/trans_oracle.txt
 ```
 
 ## Trig and atan2

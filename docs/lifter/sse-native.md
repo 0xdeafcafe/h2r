@@ -1,7 +1,7 @@
 # Guarded native SSE arithmetic
 
 Status: Built. On by default.
-Code: `crates/emit/c/h2sse_native.h`, `crates/emit/src/c.rs`. Tests: `crates/emit/tests/native_sse.rs`.
+Code: `crates/recompiler/emit/c/h2sse_native.h`, `crates/recompiler/emit/src/c.rs`. Tests: `crates/recompiler/emit/tests/native_sse.rs`.
 Switch: `H2_SSE_NATIVE` (on), listed in [switches.md](../runtime/switches.md).
 
 `H2_SSE_NATIVE` is on by default; `H2_SSE_NATIVE=0` uses the integer

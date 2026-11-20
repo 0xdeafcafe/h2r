@@ -19,7 +19,7 @@ export function applyBanners(m: Manifest, banners: Array<{ id: string; file: str
   return { ...m, images };
 }
 
-/** `bytes` as the extractor's packing writes a copy (crates/live-server/src/
+/** `bytes` as the extractor's packing writes a copy (crates/live/live-server/src/
  *  art_pack.rs `brotli` and `gzip`): Brotli quality 11 with a 16 MiB window,
  *  gzip level 9. */
 export function compressedCopies(bytes: Uint8Array): { br: Buffer; gz: Buffer } {

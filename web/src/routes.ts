@@ -1,6 +1,6 @@
 // Where the sites live. The stats site is Halo 2's, under /games/ so
 // another game's (Halo 1's) can sit beside it. The servers know the same
-// root (crates/live-server/src/page_meta.rs, STATS_ROOT) for link previews
+// root (crates/live/live-server/src/page_meta.rs, STATS_ROOT) for link previews
 // and the old /stats redirect.
 
 /** Each game's stats site sits under this. Alone, it goes to Halo 2's. */

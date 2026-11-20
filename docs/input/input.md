@@ -1,13 +1,13 @@
 # Input
 
-Status: Built. A reference for `crates/input`.
-Code: `crates/input/src/lib.rs` (`InputManager`), `crates/input/src/backend/mod.rs` (`HostBackend`). Tests: `crates/input/tests/mouse_look.rs`, `crates/xapi/tests/`.
+Status: Built. A reference for `crates/platform/input`.
+Code: `crates/platform/input/src/lib.rs` (`InputManager`), `crates/platform/input/src/backend/mod.rs` (`HostBackend`). Tests: `crates/platform/input/tests/mouse_look.rs`, `crates/platform/xapi/tests/`.
 Switch: see the sections below; each is in [switches.md](../runtime/switches.md).
 
-`crates/input` replaces Xbox XInput (XAPI) at the API level. The recompiled
+`crates/platform/input` replaces Xbox XInput (XAPI) at the API level. The recompiled
 game calls `XInitDevices`, `XGetDevices`, `XGetDeviceChanges`, `XInputOpen`,
 `XInputPoll`, `XInputGetState`, `XInputSetState`; the guest adapters in
-[`crates/xapi`](../runtime/xapi.md) marshal those calls to `InputManager`. No USB stack
+[`crates/platform/xapi`](../runtime/xapi.md) marshal those calls to `InputManager`. No USB stack
 is emulated.
 
 ```
@@ -288,7 +288,7 @@ a second (`STALE_MOTION`) is dropped rather than delivered late as a flick.
 
 Motion is not spent by `sync`: `h2 play` syncs after every guest slice,
 far more often than the game polls, and a per-sync spend would leave almost
-every `XInputGetState` a centred right stick. `crates/input/tests/mouse_look.rs` and `crates/xapi/tests/mouse_look.rs`
+every `XInputGetState` a centred right stick. `crates/platform/input/tests/mouse_look.rs` and `crates/platform/xapi/tests/mouse_look.rs`
 cover this at slice-rate syncs and game-rate reads.
 
 The virtual pad applies no deadzone, but Halo applies its own after reading

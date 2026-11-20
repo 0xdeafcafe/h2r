@@ -175,7 +175,7 @@ validate XBE bounds/sections, and report title ID, raw certificate version,
 region, library builds and timestamps. Header creation, PE and certificate
 timestamps are distinct metadata, not public release dates. Preserve disc
 and language identity alongside them; metadata alone does not authenticate
-an executable. `crates/xbe` currently parses certificate title/version/region;
+an executable. `crates/formats/xbe` currently parses certificate title/version/region;
 the expanded importer and timestamp reporting remain design work.
 [XBE format reference](https://xboxdevwiki.net/Xbe).
 
@@ -204,7 +204,7 @@ or generated. "Tooling" means CLI inspection only.
 
 The HLE hooks are almost all literal addresses, and none of them is checked
 against the image before it's installed. `runtime::Dispatch::register_override`
-(`crates/runtime/src/dispatch.rs:102-136`) is a plain map insert. If a 1.0
+(`crates/runtime/runtime/src/dispatch.rs:102-136`) is a plain map insert. If a 1.0
 address points somewhere else in an update, one of two things happens without
 any error: the hook never fires, and the original code runs as generated C
 behind an HLE device that never saw the call, or the hook fires in the middle
@@ -212,27 +212,27 @@ of an unrelated function.
 
 | crate | what | distinct | where | how it's matched today |
 |---|---|---:|---|---|
-| d3d | function overrides: `Entry` literals | 56 | `crates/d3d/src/abi.rs:338-860` (`entries()`) | 63 of all d3d entries named by XDK signature in `docs/graphics/d3d.md`, 28 not |
+| d3d | function overrides: `Entry` literals | 56 | `crates/platform/d3d/src/abi.rs:338-860` (`entries()`) | 63 of all d3d entries named by XDK signature in `docs/graphics/d3d.md`, 28 not |
 | d3d | `SetRenderState_*` setters, each with its guest slot | 30 | `abi.rs:117-147` (`render_state_setters!`, `setter_adapters!` at `:288`) | mostly signature-matched; the slot comes from the body's store |
 | d3d | `UNIMPLEMENTED` + `PORT_IO` stops | 4 | `abi.rs:152`, `:176`, `stops()` at `:197` | partly |
 | d3d | `NATIVE` (report only, never registered) | ~7 | `abi.rs:220` | |
 | d3d | LTCG register convention per entry | 91 | the `convention` strings and adapter bodies in `abi.rs` | not checked at run time (`abi.rs:11`) |
-| d3d | `GuestLayout::HALO2`: D3D globals, plus one game global (`game_device_pointer`) | 16 | `crates/d3d/src/layout.rs:194-215` | none. Only `simple_encode` is checked against the bytes it points at (`pushbuf.rs:482-510`) |
+| d3d | `GuestLayout::HALO2`: D3D globals, plus one game global (`game_device_pointer`) | 16 | `crates/platform/d3d/src/layout.rs:194-215` | none. Only `simple_encode` is checked against the bytes it points at (`pushbuf.rs:482-510`) |
 | d3d | `CDevice` field offsets (`device_field`), `DEVICE_DWORDS`, `RENDER_STATE_SLOTS`, and two stray offsets (`fragments.rs:536`, `display.rs:124`) | ~48 | `layout.rs:69-190` | they depend on the XDK build, not on Halo |
-| d3d | render-state slot numbers (5849 numbering) | ~20 | `crates/d3d/src/state.rs:62` | XDK build. `gfx::RenderStateTable::for_build` already handles other builds |
-| d3d | `DESTROY_RESOURCE` | 1 | `crates/d3d/src/runtime_glue.rs:328` | duplicates an `abi.rs` entry |
-| d3d (game code) | `FrameWait::HALO2`: 1 hook + 6 game globals | 7 | `crates/d3d/src/vblank.rs:235-245` | none |
-| dsound | `ENTRIES` stdcall overrides, each with its `argc` | 66 | `crates/dsound/src/overrides.rs:46-114`, registered in `register.rs:581` | 59 named by XDK signature (`docs/audio/dsound.md`), the rest by call-site survey |
-| dsound | xWMA codec entries | 6 | `crates/dsound/src/xwma.rs:26-46` | none |
-| dsound | `Layout::default`: stream vtable global, effect count, XDK-internal object offsets | ~1 + ~8 | `crates/dsound/src/state.rs:108-168` | none |
-| wma | WMA decoder tables and constants read from the image | ~54 | `crates/wma/src/tables.rs:116-217` | gated by the exact SHA-256 of the 1.0 image (`wma/src/lib.rs:20`, `VerifiedImage::load` at `:47`) |
-| xapi | overrides (16) and opt-in save hooks (4) | 20 | `crates/xapi/src/register.rs:29-82`, `OVERRIDES` at `:105`, `SAVE_OVERRIDES` at `:157` | 12 of the 16 overrides are XAPI signature matches (`docs/runtime/xapi.md`), the rest inferred |
+| d3d | render-state slot numbers (5849 numbering) | ~20 | `crates/platform/d3d/src/state.rs:62` | XDK build. `gfx::RenderStateTable::for_build` already handles other builds |
+| d3d | `DESTROY_RESOURCE` | 1 | `crates/platform/d3d/src/runtime_glue.rs:328` | duplicates an `abi.rs` entry |
+| d3d (game code) | `FrameWait::HALO2`: 1 hook + 6 game globals | 7 | `crates/platform/d3d/src/vblank.rs:235-245` | none |
+| dsound | `ENTRIES` stdcall overrides, each with its `argc` | 66 | `crates/platform/dsound/src/overrides.rs:46-114`, registered in `register.rs:581` | 59 named by XDK signature (`docs/audio/dsound.md`), the rest by call-site survey |
+| dsound | xWMA codec entries | 6 | `crates/platform/dsound/src/xwma.rs:26-46` | none |
+| dsound | `Layout::default`: stream vtable global, effect count, XDK-internal object offsets | ~1 + ~8 | `crates/platform/dsound/src/state.rs:108-168` | none |
+| wma | WMA decoder tables and constants read from the image | ~54 | `crates/platform/wma/src/tables.rs:116-217` | gated by the exact SHA-256 of the 1.0 image (`wma/src/lib.rs:20`, `VerifiedImage::load` at `:47`) |
+| xapi | overrides (16) and opt-in save hooks (4) | 20 | `crates/platform/xapi/src/register.rs:29-82`, `OVERRIDES` at `:105`, `SAVE_OVERRIDES` at `:157` | 12 of the 16 overrides are XAPI signature matches (`docs/runtime/xapi.md`), the rest inferred |
 | xapi | globals and import slot: TLS index, cache rows, gamepad type, the HAL partition-count import slot | 5 | `register.rs` `addr` module, `config.rs:25-46` (`CacheGlobals`, already configurable) | none |
 | xapi | game allocator called from Rust (`GAME_ALLOCATE`) | 1 | `register.rs:445` | none |
-| bink-hle | Bink API hooks | 11 | `crates/bink-hle/src/addr.rs` | none (third-party, no XDK database) |
+| bink-hle | Bink API hooks | 11 | `crates/platform/bink-hle/src/addr.rs` | none (third-party, no XDK database) |
 | bink-hle | game movie-wrapper functions, plus the `WRAPPER_STATE` global and its offsets | 15 + 1 | `addr.rs`, installed by `lib.rs:65-118` | none |
 | boot | `X_MOUNT_UTILITY_DRIVE` (`--no-xapi`), `CREATE_DEVICE` (duplicates d3d) | 2 | `xapi_glue.rs:248`, `d3d_glue.rs:311` | none |
-| runtime | `HALO2_PHYSICAL_ARENA`, applied to every image | 1 range | `crates/runtime/src/loader.rs:24`, used by `boot/src/lib.rs:353` | none. It was read off the 1.0 startup code |
+| runtime | `HALO2_PHYSICAL_ARENA`, applied to every image | 1 range | `crates/runtime/runtime/src/loader.rs:24`, used by `boot/src/lib.rs:353` | none. It was read off the 1.0 startup code |
 
 Runtime total: about 250 hook addresses, about 30 data globals, and about 80
 struct offsets or slot numbers. Of the hooks, about 130 have an XDK signature
@@ -243,37 +243,37 @@ Bink, unnamed D3D or DSound internals, or XAPI helpers named by hand.
 
 | crate | what | distinct | where | status |
 |---|---|---:|---|---|
-| engine | `OVERRIDES` (tag lookup, datum arrays, locale), each with its 1.0 LTCG convention | 22 | `crates/engine/src/abi.rs:100-252` | nothing registers them yet (`engine/src/runtime_glue.rs:6`); they'd misbehave silently once something does |
+| engine | `OVERRIDES` (tag lookup, datum arrays, locale), each with its 1.0 LTCG convention | 22 | `crates/rewrites/engine/src/abi.rs:100-252` | nothing registers them yet (`engine/src/runtime_glue.rs:6`); they'd misbehave silently once something does |
 | engine | globals: tag index, tag entries, empty string | 3 | `engine/src/tags.rs:17,20`, `locale.rs:18` | same |
 | engine | datum array header (0x4c bytes, 15 fields) | 15 | `engine/src/datum.rs:20-81` | engine struct, probably the same across builds |
-| hs | catalog tables (functions, count, types, script kinds, externals) | 5 | `crates/hs/src/catalog.rs:8-12` | **fail-closed**: checks title ID, entry, certificate version, builtin count and the dispatch instruction (`:53-57`) |
-| hs | native evaluator addresses plus argument, return and float-constant addresses | ~24 | `crates/hs/src/vm/image.rs:65-107` | **fail-closed**: validated at `:133-170` |
+| hs | catalog tables (functions, count, types, script kinds, externals) | 5 | `crates/formats/hs/src/catalog.rs:8-12` | **fail-closed**: checks title ID, entry, certificate version, builtin count and the dispatch instruction (`:53-57`) |
+| hs | native evaluator addresses plus argument, return and float-constant addresses | ~24 | `crates/formats/hs/src/vm/image.rs:65-107` | **fail-closed**: validated at `:133-170` |
 | hs | baked counts (911 builtins, 62 types, 0x41d externals, the thread size) | ~6 | `catalog.rs:67-112` | fail-closed through the catalog gate |
-| perf | d3d bench entry points | 3 | `crates/perf/src/pushbuf.rs:36-38` | synthetic memory only |
+| perf | d3d bench entry points | 3 | `crates/tools/perf/src/pushbuf.rs:36-38` | synthetic memory only |
 
 ### 1.3 Analysis-time, hard-coded
 
 | crate | what | distinct | where | failure mode |
 |---|---|---:|---|---|
-| analyze | known retail dispatch tables (lifecycle, HaloScript evaluators, object descriptors, animation codecs, compression callbacks, UI vtables) | ~9 | `crates/analyze/src/dispatch.rs:35` (gate), `retail_tables` up to `:235` | **fail-closed as a unit**: gated on title ID + entry point, every slot checked; another image just loses that coverage |
+| analyze | known retail dispatch tables (lifecycle, HaloScript evaluators, object descriptors, animation codecs, compression callbacks, UI vtables) | ~9 | `crates/recompiler/analyze/src/dispatch.rs:35` (gate), `retail_tables` up to `:235` | **fail-closed as a unit**: gated on title ID + entry point, every slot checked; another image just loses that coverage |
 | analyze | campaign roots | 6 | `dispatch.rs:12` | coverage test and example only |
-| lift | `_ftol2` native replacement | 1 | `crates/lift/src/crt.rs:36-53` | gated on title ID + entry, otherwise the generic lift (safe, but slower). No byte check inside the gate |
+| lift | `_ftol2` native replacement | 1 | `crates/recompiler/lift/src/crt.rs:36-53` | gated on title ID + entry, otherwise the generic lift (safe, but slower). No byte check inside the gate |
 
 ### 1.4 Stamps, caches and gates that assume one image
 
 | what | key | where | with an update XBE |
 |---|---|---|---|
-| dylib stamp | fnv64 of the XBE + generator hash + passes + codegen + ABI + cflags | `crates/boot/src/lib.rs:65-95` | rebuilds, never reuses (safe) |
-| emit receipt | SHA-256 of the XBE + h2 binary + settings | `crates/cli/src/emit_cache.rs:31-38` | safe |
-| fallback unread-target cache | fnv64 of the XBE + source hash | `crates/boot/src/fallback.rs:503-513` | safe |
-| object cache | per-source fnv64 | `crates/emit/src/compile.rs:292` | safe to share between images |
+| dylib stamp | fnv64 of the XBE + generator hash + passes + codegen + ABI + cflags | `crates/apps/boot/src/lib.rs:65-95` | rebuilds, never reuses (safe) |
+| emit receipt | SHA-256 of the XBE + h2 binary + settings | `crates/apps/cli/src/emit_cache.rs:31-38` | safe |
+| fallback unread-target cache | fnv64 of the XBE + source hash | `crates/apps/boot/src/fallback.rs:503-513` | safe |
+| object cache | per-source fnv64 | `crates/recompiler/emit/src/compile.rs:292` | safe to share between images |
 | default out dirs `$TMPDIR/h2gen`, `$TMPDIR/h2boot` | none | cli | two images thrash one dylib slot |
 | data root `~/Library/Application Support/h2recomp/data` (and `Config::for_title`) | title ID only | `boot/src/lib.rs:378`, `vfs` | 1.0 and the update share saves and the cache partition (see section 4) |
-| `h2 play --follow` caches | commit only | `crates/cli/src/follow.rs:1091,1103` | stamp check still applies |
+| `h2 play --follow` caches | commit only | `crates/apps/cli/src/follow.rs:1091,1103` | stamp check still applies |
 | title ID + entry gates | `0x4d530064` + `0x2d0aee` | `analyze/dispatch.rs:35`, `lift/crt.rs`, `hs/catalog.rs` | probably excluded, since an update relinks and the entry moves. But a build that keeps the entry would be wrongly accepted |
-| exact 1.0 SHA-256 | `wma::RETAIL_SHA256` | `crates/wma/src/lib.rs:20`; also `engine/tests/differential.rs:44` | **boot fails**: `boot/src/dsound_glue.rs:136` propagates the `from_xbe` error |
-| map header | version 8, build string `02.09.27.09809` | `crates/map/src/reader.rs:54-66` | disc maps still open; any map the update ships with a new build string is refused loudly |
-| map writer size limits | per cache type, from the 1.0 validator | `crates/map/src/writer.rs:137-142` | tooling only |
+| exact 1.0 SHA-256 | `wma::RETAIL_SHA256` | `crates/platform/wma/src/lib.rs:20`; also `engine/tests/differential.rs:44` | **boot fails**: `boot/src/dsound_glue.rs:136` propagates the `from_xbe` error |
+| map header | version 8, build string `02.09.27.09809` | `crates/formats/map/src/reader.rs:54-66` | disc maps still open; any map the update ships with a new build string is refused loudly |
+| map writer size limits | per cache type, from the 1.0 validator | `crates/formats/map/src/writer.rs:137-142` | tooling only |
 
 ### 1.5 Test-only
 
@@ -312,7 +312,7 @@ with iced-x86, table contents.
 
 ## 2. What already copes with a different image
 
-- **Function discovery and the CFG** (`crates/analyze`): discovery starts
+- **Function discovery and the CFG** (`crates/recompiler/analyze`): discovery starts
   from the entry point and the kernel thunks, then follows calls and tail
   calls, code immediates, data pointers and gap scans. Jump tables are sized
   from their guards. `pointer_seeds.rs` is fully derived; its literals are
@@ -327,7 +327,7 @@ with iced-x86, table contents.
   (`kernel/src/lib.rs:381-396`), and so does XAPI's cache-row title ID
   (`xapi/src/cache.rs:165`). `boot/src/stopgaps.rs` is
   keyed by ordinal, and sections come from the header.
-- **XDK identification** (`crates/symbols`, `docs/lifter/xdk-libraries.md`): it reads
+- **XDK identification** (`crates/recompiler/symbols`, `docs/lifter/xdk-libraries.md`): it reads
   the library build from the XBE's library table and matches in waves, so it
   would find the same XDK functions in an update. But its only consumer
   today is `h2 symbols` (`cli/src/main.rs:434`). **No hook is currently
@@ -337,15 +337,15 @@ with iced-x86, table contents.
 - **Fail-closed already**: `hs` (catalog and VM), the analyzer's retail tables,
   `lift`'s `_ftol2`, WMA tables, and the dylib and emit stamps. Of these,
   only WMA turns into a hard boot failure.
-- **Data format**: `crates/tags`' ~3,600 hex literals are tag field offsets,
+- **Data format**: `crates/formats/tags`' ~3,600 hex literals are tag field offsets,
   block sizes and fourccs. The 154 XBE addresses in that crate are provenance
-  comments. `crates/map` refuses unknown versions and build strings.
+  comments. `crates/formats/map` refuses unknown versions and build strings.
 
 ## 3. Design
 
 ### 3.1 Version detection
 
-Add an `ImageId` in `crates/xbe`, computed once per image:
+Add an `ImageId` in `crates/formats/xbe`, computed once per image:
 
 - the SHA-256 of the whole file;
 - certificate title ID, version (+0xAC, already parsed), regions;
@@ -411,7 +411,7 @@ on both sides.
    - The entry point.
    - Kernel thunk slots, by ordinal, which gives exact data matches for the
      import table.
-   - XDK functions that `crates/symbols` finds in both images under the same
+   - XDK functions that `crates/recompiler/symbols` finds in both images under the same
      name, with no `ambiguous` or `shared` flag.
    - The data symbols that symbols votes for (the D3D device pointer, state
      offsets).
@@ -526,17 +526,17 @@ Some of this pays for itself even without update files:
 ### 3.5 Data: maps, saves, tags
 
 - **Disc maps** don't change with a title update: the update XBE reads them
-  from `D:`. `crates/map`'s version 8 / `02.09.27.09809` gate keeps working
+  from `D:`. `crates/formats/map`'s version 8 / `02.09.27.09809` gate keeps working
   for them.
 - **To check once files are available:**
   - Does the update directory carry any `.map` files or replacement shared
     maps? If so, check their header version, build string and tag index
-    layout. Run `crates/tags` decoders over every tag, and diff the field
+    layout. Run `crates/formats/tags` decoders over every tag, and diff the field
     sets against a disc map of the same name.
   - Downloadable map packs sit beside the update in `TDATA`, under `$c`.
     Answered for the Map Pack disc ([map-pack.md](../game/map-pack.md)): its nine
     maps have the same version 8 header and build string as the disc's, and
-    `crates/map` opens them. The update, unlike 1.0, lists them: 1.0 reads
+    `crates/formats/map` opens them. The update, unlike 1.0, lists them: 1.0 reads
     each package's `patch.lvl`, which only names Lockout, and the update
     reads `patch_v3.lvl`, which names the package's own maps. Still to do:
     run the tag decoders over every tag and diff against a disc map.

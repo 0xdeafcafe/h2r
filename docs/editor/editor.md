@@ -1,13 +1,13 @@
 # h2-editor
 
-Status: Built. Code: `crates/studio/src`. Tests: in-source unit tests.
+Status: Built. Code: `crates/apps/studio/src`. Tests: in-source unit tests.
 Switch: none.
 
 To *use* the editor (open a map, move a weapon, make a game variant, edit
 a playlist), read the user guide, [editor-guide.md](editor-guide.md).
 This page is for developers.
 
-`h2-editor` (`crates/studio`) is a native editor suite for the files
+`h2-editor` (`crates/apps/studio`) is a native editor suite for the files
 h2recomp's game reads, in the spirit of the original tools' Sapien, with
 a game-tool look (Unreal, RenderDoc, Tracy). It is a Rust app on Dear
 ImGui's docking branch: `dear-imgui-rs` for the UI, `dear-imgui-wgpu` on
@@ -17,21 +17,21 @@ web views, no scripting. It runs unbundled, so it sets its own Dock icon
 (`app_icon::set_dock_icon`, [art/app-icon](../../art/app-icon/README.md)).
 It hosts six tools:
 
-- **Scenario**: the scenario editor (`crates/scenario-edit`,
+- **Scenario**: the scenario editor (`crates/tools/scenario-edit`,
   [scenario-editor.md](scenario-editor.md)): placements on a map, in a 3D
   viewport, saved as a map package or a whole `.map`.
 - **Tags**: every field of every tag of the open map, labelled and
   edited in place, saved with the map (below).
-- **Game variants**: the game variant editor (`crates/variants`,
+- **Game variants**: the game variant editor (`crates/formats/variants`,
   [variants.md](variants.md)).
 - **Playlists**: `multiplayer_hopper.dat`, the 16 matchmaking playlists
-  the game downloads from Live (`crates/hopper-edit`, below).
+  the game downloads from Live (`crates/tools/hopper-edit`, below).
 - **UI Screens**: our native game screens drawn, stepped and checked
   offline (`boot::ui_kit`, [ui-builder.md](../game/ui-builder.md);
   below).
 - **HUD**: a map's HUDs (`nhdt`) drawn as the engine places them, checked
   for overlaps and spills, edited and saved as a patched `.map`
-  (`crates/hud-edit`, [hud-editor.md](hud-editor.md)).
+  (`crates/tools/hud-edit`, [hud-editor.md](hud-editor.md)).
 
 Nothing in the editor contains game data. Map names and everything else
 it shows come from your own disc at run time.
@@ -759,7 +759,7 @@ listed as unavailable.
 Each change is one undo step (typing in a field or dragging a weight is
 one), and undo walks back past a save.
 
-The editing logic (`crates/hopper-edit/src/model.rs`, driven through
+The editing logic (`crates/tools/hopper-edit/src/model.rs`, driven through
 `hopper_edit::HopperSession`) mirrors the server's `apply_patch`: every
 entry remembers the slot its bytes come from, and writing back copies
 that whole 0x37c-byte slot (game variant and unknown blobs) before
@@ -798,7 +798,7 @@ the same lossless `MapEditor` path as the scenario's.
 
 ### The field registry
 
-`tags::registry` (`crates/tags/src/registry.rs`) gives every group's root
+`tags::registry` (`crates/formats/tags/src/registry.rs`) gives every group's root
 and block elements as fields tiling every byte, merged from:
 
 - the **schema** (`tags::schema`, `schema/layouts.txt`, inferred from
@@ -988,21 +988,21 @@ rules and their proof, the checks, the save, and how the widget fields
 use the generic field panel (`fields.rs`, named by
 `tags/src/defs/nhdt.txt`) with the HUD tool's own history. `app/hud.rs` (`HudTool`) holds the tool's state
 and its `Hud*` actions; `ui/hud.rs` draws it; the logic is
-`crates/hud-edit`.
+`crates/tools/hud-edit`.
 
 ## Code
 
 The tools' logic lives in UI-free crates with their own tests; the
 studio crate only draws them and turns input into actions.
 
-- `crates/editor-core`: map sources (`MapSource`: a disc image, a loose
+- `crates/tools/editor-core`: map sources (`MapSource`: a disc image, a loose
   `.map` with its siblings, or a folder of maps; `map_names()`,
   `open_map(name)`, `resources(name)`), the snapshot `UndoStack`
   (coalescing by `u64` keys), `Status`, `variant_sources` (the
   variant schema, XBE save names and save storage for a source),
   `packages` (the packages under a data root, Halo 1 origins) and
   `halo1` (Halo 1 sources and what is shown of a map).
-- `crates/scenario-edit`: `Session` holds the scenario editor's state and
+- `crates/tools/scenario-edit`: `Session` holds the scenario editor's state and
   every command (open, select, add, remove, plane drags, gizmo gestures,
   undo, save, packages); `session/multi.rs` holds the multi-selection
   and its edits (`edit_selection`, `remove_selection`,
@@ -1010,15 +1010,15 @@ studio crate only draws them and turns input into actions.
   wgpu (the camera gives separate view and projection matrices for
   ImGuizmo; `geometry::decompose` turns a gizmo matrix back into position
   and yaw/pitch/roll).
-- `crates/variants`: the variant record, schema, saves and
+- `crates/formats/variants`: the variant record, schema, saves and
   `VariantEditor` (state and commands).
-- `crates/hud-edit`: the HUD tool's logic (the `nhdt` layout and field
+- `crates/tools/hud-edit`: the HUD tool's logic (the `nhdt` layout and field
   tables, placement, the preview, checks, `HudSession`;
   [hud-editor.md](hud-editor.md)).
-- `crates/hopper-edit`: the playlist editor's logic (working copy,
+- `crates/tools/hopper-edit`: the playlist editor's logic (working copy,
   validation, presets, catalog, the variant picker's sources) and
   `HopperSession` (file handling, undo).
-- `crates/studio`:
+- `crates/apps/studio`:
   - `app.rs`: `App`, the state (each tool's session) and `Action`s
     (open, select map, save, packages, undo/redo, select, delete,
     duplicate, add; variants; playlist files and entries; quit), with the

@@ -45,7 +45,7 @@ What is planned is in [../reviews/2026-11-20-architecture.md](../reviews/2026-11
   Fallback analysis overlaps boot when a target list exists. Boot then mounts
   the VFS, prepares map offers and the campaign catalogue, and installs HLE
   and feature hooks. The bot nav scan already runs on a worker.
-  [Recorded startup log](../../crates/cli/src/coop_verdict/host-at-menu.log)
+  [Recorded startup log](../../crates/apps/cli/src/coop_verdict/host-at-menu.log)
 - **First VFS access to mainmenu.** Boot reads installed campaign PNGs. The
   first stat, directory listing or read that needs the rewritten map builds
   its picture tags. The reported ten-card rebuild took about 1 s. Subsequent
@@ -71,7 +71,7 @@ include the earlier host setup. [Load timeline](../runtime/agent-api.md#load-tim
 
 [notes/not-adopted.md](notes/not-adopted.md) lists the experiments that
 lost, with the result of each. The Mach exception write-watch prototype
-(`crates/fastmem-proto`) is written up in
+(`crates/recompiler/fastmem-proto`) is written up in
 [notes/fastmem-proto.md](notes/fastmem-proto.md).
 
 ## Elsewhere

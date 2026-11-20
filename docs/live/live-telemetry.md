@@ -1,6 +1,6 @@
 # Live telemetry
 
-`crates/live-telemetry` observes the retail game state described in
+`crates/live/live-telemetry` observes the retail game state described in
 [live-gamestate.md](live-gamestate.md) and produces the events and frames in
 [live-api.md](live-api.md). It is on when Live is on or `H2_TELEMETRY_FILE` is
 set ([Server ingest](#server-ingest)), and `H2_TELEMETRY=0` turns it off. The crate does
@@ -34,7 +34,7 @@ A replacement activation or a main-menu transition emits `GameEnded` with
 reason `quit` before clearing the old session; post-end kills are ignored.
 
 Fields rated **likely** by the research document are listed only in
-`crates/live-telemetry/src/layout.rs::LIKELY_FIELDS`; they are not required by
+`crates/live/live-telemetry/src/layout.rs::LIKELY_FIELDS`; they are not required by
 the initial event contract. Confirmed offsets used by the readers share that
 file so runtime validation has one correction point.
 
@@ -181,7 +181,7 @@ legendary; anything else leaves it out); multiplayer games are `custom`
 unless the host has called `Telemetry::set_playlist`, which makes them
 `matchmaking` with that playlist name and id. Nothing calls it yet:
 live-hle has no matchmaking (its sessions are all advertised `custom` with
-no hopper, `crates/live-hle/src/sessions.rs`), so the playlist source is
+no hopper, `crates/live/live-hle/src/sessions.rs`), so the playlist source is
 the HLE's search/match state once phase 2 of
 [live-matchmaking.md](live-matchmaking.md) lands. `online` is never sent.
 
@@ -257,7 +257,7 @@ Tag names are (likely) not in guest memory: nothing in the XBE refers to
 the cache header's tag-name fields, and the loader reads the tag index and
 metadata. On map activation telemetry asks the boot for the
 map's file (`\Device\CdRom0\maps\<short name>.map` through the VFS),
-reads its tag names with `crates/map`, and keeps only `bipd` and `weap`
+reads its tag names with `crates/formats/map`, and keeps only `bipd` and `weap`
 rows. The table is used only if the file's scenario datum equals the
 guest's (tag index header `[0x00547f00]+0x0c`), since both indexes hold the
 same salted datums. Without a match, or without a locator (tests, a raw
@@ -267,7 +267,7 @@ XBE), `species` and `weapon` are left out.
 
 Players and actors carry the protocol's version 3 unit fields from capture
 (docs/live/replay-fidelity.md, step 4). Offsets and evidence are in
-`crates/live-telemetry/src/layout.rs`; all are confirmed by static reading
+`crates/live/live-telemetry/src/layout.rs`; all are confirmed by static reading
 of the retail XBE.
 
 - `vel`: body `+0x88`, sent as read, in world units **a second**. The
@@ -312,7 +312,7 @@ packed delta of the next even frame would carry every actor again whole
 second. Sending everything every tick doubles the world scan's game-thread
 cost (it runs on frame ticks only, `pipeline.rs`) and the bytes, while the
 server forwards at most 15 frames a second (`FRAME_INTERVAL`, 66 ms,
-`crates/live-server/src/games.rs`) and records the first frame of each
+`crates/live/live-server/src/games.rs`) and records the first frame of each
 wall-clock second, so the extra frames would be dropped or folded before
 anyone saw them. With `vel` and `fire` filled, the viewer can place each
 shot on its tick and interpolate between 15 Hz samples with the velocity
@@ -398,7 +398,7 @@ scan's actors, vehicles, machines, placed objects and bodies, all plain
 values) and queues it with the shots and hits the hooks counted. A start,
 kill or end is read and queued the same way, and the playlist and skull
 settings are queued in order with them. One worker thread
-(`crates/live-telemetry/src/pipeline.rs`) runs the session over the queue
+(`crates/live/live-telemetry/src/pipeline.rs`) runs the session over the queue
 in order: it builds the events and frames (ids, species, weapon, team and
 stance names, actor order, placements), loads the map's tag names at a
 match start, and hands everything to the sink, which diffs, packs, signs,
@@ -679,7 +679,7 @@ server to readers (`/v1/stream?frames=packed`), recorded frames at rest
 and `/frames` for older games). JSON readers can request `?format=json`
 on an individual chunk or the legacy frame page. Live JSON readers use
 `/v1/stream?frames=json`. See the [precision and transfer measurements](../engine/live-telemetry.md).
-`crates/live-proto/src/pack.rs` writes and reads it;
+`crates/live/live-proto/src/pack.rs` writes and reads it;
 `web/src/api/pack.ts` reads it; the golden vectors in
 `web/test/fixtures/pack` (written by the Rust tests from invented frames,
 read by the TypeScript tests) keep the two in step.
@@ -935,7 +935,7 @@ and [migration procedure](replay-migration.md).
 ## Telemetry cost
 
 Measured on the deterministic invented games in
-`crates/live-proto/src/samples.rs` (a 16-player Slayer: 16 players, 4
+`crates/live/live-proto/src/samples.rs` (a 16-player Slayer: 16 players, 4
 vehicles, hits, weapon spawns; a campaign scene: 1 player, 60 actors, 8
 vehicles, 12 machines, 25 crates moved, 16 objects gone), 450 frames each,
 release build on the development Mac. Run
@@ -1019,7 +1019,7 @@ no game run are needed. Each stage runs alone as well:
 
 - Game thread, sink worker and wire:
   `cargo test --release -p live-telemetry --lib bench -- --ignored --nocapture --test-threads=1`
-  (`crates/live-telemetry/src/bench.rs`, `guest.json`). Three synthetic
+  (`crates/live/live-telemetry/src/bench.rs`, `guest.json`). Three synthetic
   scenes in fixture guest memory: `mp16` (16 players, 2 weapons each, 12
   vehicles and 4 turrets, 5 riders, 200 placed scenery and 24 placed
   weapons, 296 objects), `mp16_1000` (the same at 984 objects) and
@@ -1035,7 +1035,7 @@ no game run are needed. Each stage runs alone as well:
   records the worker's time apart (`worker`). Then the frames are packed as
   the server sink packs them.
 - Server: `cargo bench -p live-server --bench telemetry`
-  (`crates/live-server/benches/telemetry.rs`, `server.json`): packed
+  (`crates/live/live-server/benches/telemetry.rs`, `server.json`): packed
   ingest at 15 Hz a game, signed event batches of 1 and 32, and stream
   fan-out to 1, 10 and 100 loopback readers (packed and JSON).
 - Web: `cd web && bun run bench:telemetry` (`web/bench/telemetry.bench.ts`,
@@ -1171,7 +1171,7 @@ The fifth lane batches packed frames once for every reader: ingest appends
 each game's packed frames to a pending buffer, and every 100 ms the server
 publishes one tick (every game's batch, and their bytes back to back) to
 readers of all games, and each game's batch alone to readers of that game,
-who are not woken by the others (`crates/live-server/src/packed.rs`). A
+who are not woken by the others (`crates/live/live-server/src/packed.rs`). A
 reader that may see every game and follows every stream sends the tick's
 bytes as they are; otherwise it copies the records that follow what it was
 sent. Readers never get a frame twice or an older one (the sequence rule
@@ -1205,7 +1205,7 @@ relying on live output, check in this order:
 4. Server discovery, game creation, token refresh and signed-batch
    acceptance against the live ingest implementation. Reconnect, the outbox
    and resends are tested against the embedded server through a proxy that
-   cuts, refuses and mutes the socket (`crates/live-telemetry/src/server_tests.rs`);
+   cuts, refuses and mutes the socket (`crates/live/live-telemetry/src/server_tests.rs`);
    a real Worker deploy mid-game is still to watch.
 5. Whether end-latch reasons other than `finished` can be distinguished; the
    current hook cannot reliably identify `quit` or `lost`.

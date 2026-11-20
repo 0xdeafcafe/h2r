@@ -1,6 +1,6 @@
 // The product's names and colours, in one place. index.html gets the names
 // at build time (vite.config.ts), and the server reads them back out of it
-// for link previews (crates/live-server/src/page_meta.rs), so a rename is
+// for link previews (crates/live/live-server/src/page_meta.rs), so a rename is
 // a one-line change here. Routes never change with a name.
 
 /** The service's name: the link-preview card's mark, and what the CLI and

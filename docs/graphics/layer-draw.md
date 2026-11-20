@@ -1,7 +1,7 @@
 # Layer draw (`0x00044550`, `0x0003bc30`)
 
 Status: Built. The read is reference; `engine::render_loop::layer::Entries` ports the entry loop `0x0003bc30` and is placed by no feature.
-Code: `crates/engine/src/render_loop/layer.rs`. Tests: `crates/engine/tests/layer_differential.rs`.
+Code: `crates/rewrites/engine/src/render_loop/layer.rs`. Tests: `crates/rewrites/engine/tests/layer_differential.rs`.
 Switch: none.
 
 The scene passes draw layer by layer ([e3-lighting.md](e3-lighting.md),
@@ -81,7 +81,7 @@ different function per entry type), and what they call: shader draw begin
 
 `engine::render_loop::layer::Entries` ports the entry loop `0x0003bc30` as
 a state machine (it does `_chkstk`'s probes and stack writes itself).
-`crates/engine/tests/layer_differential.rs` runs it against the lifted
+`crates/rewrites/engine/tests/layer_differential.rs` runs it against the lifted
 original from seeded states (0 to 40 entries or a negative count, six
 item types with stub handlers, skipped targets); call logs, registers and
 all 64 MB must be equal. No feature places it: tests drive the loop
@@ -197,7 +197,7 @@ either:
 
 The cause is the hooks. A generated handler calls another directly only
 when the runtime has resolved the target to a native handler
-(`crates/runtime/src/direct.rs`; `h2_direct_enter` in `h2gen.h`). A
+(`crates/runtime/runtime/src/direct.rs`; `h2_direct_enter` in `h2gen.h`). A
 hooked address resolves to the feature chain's override instead, so a
 call to it hands the transfer up to the runner and unwinds every
 generated frame above it. Each of those callers then resumes, and

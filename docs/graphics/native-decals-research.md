@@ -1,7 +1,7 @@
 # Native decals
 
 Status: Built. All seven decal modes are admitted through `d3d::DrawAdmission`; pixel parity with D3D is not verified.
-Code: `crates/feature/src/native_decals.rs`, `crates/boot/src/native_decals_glue.rs`, `crates/native-render/src/decal.rs`, `decal_gpu.rs`. Tests: `crates/feature/tests/native_defaults.rs` (switch), `crates/native-render/tests/decals_gpu.rs`.
+Code: `crates/hooking/feature/src/native_decals.rs`, `crates/apps/boot/src/native_decals_glue.rs`, `crates/rewrites/native-render/src/decal.rs`, `decal_gpu.rs`. Tests: `crates/hooking/feature/tests/native_defaults.rs` (switch), `crates/rewrites/native-render/tests/decals_gpu.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 The guest keeps the decal array, the per-record texture binds, the duplicate markers and the wrapper's state. The stage replaces only the resolved `D3DDevice_DrawVertices` packet of each record. Addresses and offsets below are research points from the guest code (**Code**, `h2 disasm`), not game data. Part of [native-renderer.md](native-renderer.md).

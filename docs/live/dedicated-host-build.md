@@ -174,7 +174,7 @@ Use a distinct output directory for the full module.
 
 ### 1. Lease (live-proto, owned by lane `dh-lease`)
 
-`crates/live-proto/src/hosts.rs`, re-exported as `live_proto::hosts`:
+`crates/live/live-proto/src/hosts.rs`, re-exported as `live_proto::hosts`:
 
 ```rust
 pub struct HostLease {
@@ -237,7 +237,7 @@ events. They don't call providers.
 
 ### 3. HostProvider trait (live-server, owned by `dh-provider`)
 
-`crates/live-server/src/hosts.rs` (+ `hosts/` submodules):
+`crates/live/live-server/src/hosts.rs` (+ `hosts/` submodules):
 
 ```rust
 #[async_trait(?Send)]   // match the crate's existing async trait style; wasm has no Send
@@ -269,9 +269,9 @@ Providers:
 
 | impl | file | owner |
 |---|---|---|
-| `LocalProvider`: spawns `h2 host run` with its own `--data` dir under the server's data root, or with `LIVE_HOST_PACK_MATCHES` set, `h2 host pack` processes routed by the shared `Pool` | `crates/live-server/src/hosts/local.rs` (native only, `cfg(not(target_arch = "wasm32"))`) | `dh-provider` |
-| `CloudflareProvider`: a `HostRoom` Durable Object per lease, routed by a pool room to pack rooms that each own a Container running several matches ([Packed hosts](dedicated-host.md#packed-hosts)) | `crates/live-worker/src/hostroom.rs` + `wrangler.toml` `[[containers]]` | `dh-cf` |
-| `FlyProvider`: Machines API, `auto_destroy`, region from the lease | `crates/live-server/src/hosts/fly.rs` (HTTP through the crate's existing fetch abstraction so it builds for both homes) | `dh-fly` |
+| `LocalProvider`: spawns `h2 host run` with its own `--data` dir under the server's data root, or with `LIVE_HOST_PACK_MATCHES` set, `h2 host pack` processes routed by the shared `Pool` | `crates/live/live-server/src/hosts/local.rs` (native only, `cfg(not(target_arch = "wasm32"))`) | `dh-provider` |
+| `CloudflareProvider`: a `HostRoom` Durable Object per lease, routed by a pool room to pack rooms that each own a Container running several matches ([Packed hosts](dedicated-host.md#packed-hosts)) | `crates/live/live-worker/src/hostroom.rs` + `wrangler.toml` `[[containers]]` | `dh-cf` |
+| `FlyProvider`: Machines API, `auto_destroy`, region from the lease | `crates/live/live-server/src/hosts/fly.rs` (HTTP through the crate's existing fetch abstraction so it builds for both homes) | `dh-fly` |
 
 ### 4. Host credential and host-signed telemetry (owned by `dh-identity`)
 
@@ -283,7 +283,7 @@ token is a server-issued JWT with:
 - an expiry of `max_match_s + 300`
 
 `Live::issue_host_token(&HostLease) -> String` lives in
-`crates/live-server/src/host_identity.rs`. The telemetry the host
+`crates/live/live-server/src/host_identity.rs`. The telemetry the host
 uploads carries this identity. The ranks code counts a game for
 Ranked only when the assigned host's lease signed it and its players
 match the lease roster.
@@ -311,7 +311,7 @@ against those names. `dh-provider` writes the methods.
 
 ### 6. Tunnel wire (live-proto, owned by `dh-tunnel-client`)
 
-`crates/live-proto/src/tunnel.rs`. One WebSocket binary message is
+`crates/live/live-proto/src/tunnel.rs`. One WebSocket binary message is
 one datagram:
 
 ```
@@ -345,7 +345,7 @@ image or committed.
 
 ### 8. Cost and budget (owned by `dh-cost`)
 
-`crates/live-server/src/host_costs.rs` folds the durable `hosts` stream
+`crates/live/live-server/src/host_costs.rs` folds the durable `hosts` stream
 into per-lease cost estimates. The providers use the following rates.
 
 - Price config is `LIVE_HOST_PRICES` as JSON, with defaults from [dedicated-host.md](dedicated-host.md).
@@ -365,7 +365,7 @@ month-to-date spend and the configured cap.
 ### 9. Host process (owned by `dh-supervisor` and `dh-lobby`)
 
 `h2 host run --lease <id> --live <url> --token <t> --data-url <u> --data-sha <h> [--region r]`
-(`crates/cli/src/host_cmd.rs`, `dh-supervisor`):
+(`crates/apps/cli/src/host_cmd.rs`, `dh-supervisor`):
 
 1. Provision the data (contract 7).
 2. Boot the light host: the same boot path as `h2 serve --system-link --host-light`, with no window and no local player.
@@ -373,7 +373,7 @@ month-to-date spend and the configured cap.
 4. Register the endpoint (contract 5) and report state.
 5. Exit on match over, empty, idle or max duration. The exit code is 0 on a clean end.
 
-Playerless lobby agent methods (`crates/boot/src/host_lobby.rs` +
+Playerless lobby agent methods (`crates/apps/boot/src/host_lobby.rs` +
 agent-proto entries, `dh-lobby`):
 
 | method | params | result |
@@ -411,7 +411,7 @@ in one small, marked place (a `mod` line, a route line, a match arm).
 | 11 | `dh-client-join` | sol | game client joins a dedicated host from `Queue::Join` (+ endpoint), UI line | `live-hle` matchmaking client glue |
 | 12 | `dh-lobby` | astra | playerless lobby: `boot/src/host_lobby.rs`, agent methods | `boot/src/lib.rs` registration line, `agent-proto` |
 | 13 | `dh-supervisor` | sol | `cli/src/host_cmd.rs`, the host run loop | `cli/src/main.rs` subcommand line |
-| 14 | `dh-provision` | glm | `h2 host bundle`, fetch + verify + cache (`crates/host-data/`) | `cli/src/main.rs` subcommand line |
+| 14 | `dh-provision` | glm | `h2 host bundle`, fetch + verify + cache (`crates/live/host-data/`) | `cli/src/main.rs` subcommand line |
 | 15 | `dh-linux-emit` | astra | `emit` Linux target, ELF module loading | `runtime` loader cfg |
 | 16 | `dh-linux-runtime` | astra | Linux `cfg` for runtime, kernel, fastmem, perf: guest RAM reservation, fault handling, threads, timers | those crates' platform modules |
 | 17 | `dh-linux-headless` | sol | `host` cargo feature: cli/boot/bink/input/app gated so Linux builds without GUI | `Cargo.toml` features across those crates |

@@ -1,6 +1,6 @@
 # Halo 1 AI data, and Halo 2's
 
-`crates/h1ai` is step 5 of the campaigns work ([campaign.md](campaign.md)):
+`crates/tools/h1ai` is step 5 of the campaigns work ([campaign.md](campaign.md)):
 it reads Halo 1's AI data out of an Xbox cache file (through `h1map`),
 decodes Halo 2's scenario AI blocks and `char` tags out of a v8 map, and
 converts the first into the second as `map::build` blocks. Halo 2's AI then
@@ -13,7 +13,7 @@ scenario. Soldier movement and combat still need a live a30 observation.
 Evidence labels, as in [map-format.md](map-format.md):
 
 - **V (verified on disc):** checked by the `#[ignore]` tests in
-  `crates/h1ai/tests/disc.rs` on the owner's discs. Strides were read off
+  `crates/tools/h1ai/tests/disc.rs` on the owner's discs. Strides were read off
   the spacing of consecutive blocks (count × stride = gap to the next block)
   and then checked by decoding every element with range checks.
 - **S (unverified):** a field name or enum order that our disc checks and

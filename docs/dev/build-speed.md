@@ -91,7 +91,7 @@ after this lands is a full rebuild.
 
 ### Build scripts
 
-`crates/movies/build.rs` and `crates/bink-hle/build.rs` asked cargo to
+`crates/formats/movies/build.rs` and `crates/platform/bink-hle/build.rs` asked cargo to
 rerun them whenever `PATH` changed, to learn whether `ffmpeg` is
 installed (only the tests use the answer). Cargo rebuilds a crate whose
 build script reran, and then everything above it: `movies` and
@@ -102,12 +102,12 @@ that file. After installing ffmpeg, touch the build script.
 
 The other build scripts were read and left alone:
 
-- `crates/boot/build.rs` names every file it hashes. It also hashes
+- `crates/apps/boot/build.rs` names every file it hashes. It also hashes
   `Cargo.lock`, so any dependency change in any crate recompiles `boot`.
-- `crates/app/build.rs` bakes the commit and build time and reruns when
+- `crates/apps/app/build.rs` bakes the commit and build time and reruns when
   `HEAD` moves. That is correct, and costs a rebuild of `app` and `cli`
   on every commit or checkout (see follow-up 5).
-- `crates/tags/build.rs` follows `schema.rs` and itself.
+- `crates/formats/tags/build.rs` follows `schema.rs` and itself.
 
 ### One test binary per crate (`tests/it.rs`)
 
@@ -222,7 +222,7 @@ What does miss:
   day, plus a 16 GB incremental directory.
 - **Feature sets and profile settings.** Each distinct set is a
   distinct key, correctly. See "What the target directory shows".
-- **`app` and `cli`.** `crates/app/build.rs` bakes the commit hash and
+- **`app` and `cli`.** `crates/apps/app/build.rs` bakes the commit hash and
   the wall-clock build time, so no two builds of `app`, or of `cli`
   above it, are ever the same input (follow-up 5).
 - **`PATH`**, fixed above.
@@ -388,9 +388,9 @@ compiles nothing. The rules:
 - A changed file that belongs to no crate and is named by none is
   listed on stderr. It is not tested, and the script says so.
 
-Examples on today's tree: a change in `crates/d3d/src` gives 15 crates;
-in `crates/d3d/tests`, 1; in `crates/tags/src`, 45; in
-`crates/cli/src`, 1.
+Examples on today's tree: a change in `crates/platform/d3d/src` gives 15 crates;
+in `crates/platform/d3d/tests`, 1; in `crates/formats/tags/src`, 45; in
+`crates/apps/cli/src`, 1.
 
 What it cannot see: a test that opens a file outside its crate at run
 time through a path the scan does not recognise. The scan covers
@@ -510,10 +510,10 @@ repeated here in short.
 | # | What | Command (before and after) | Compare |
 |---|---|---|---|
 | 3 | Test builds of the merged crates, cold | `cargo test --locked --no-run -p d3d -p engine -p h1objects -p h1convert` | wall time, executables in `deps`, `du -sh` |
-| 4 | Relink after an edit | `touch crates/d3d/src/lib.rs`, then `cargo test --no-run -p d3d` | wall time: 50 links against 14 |
+| 4 | Relink after an edit | `touch crates/platform/d3d/src/lib.rs`, then `cargo test --no-run -p d3d` | wall time: 50 links against 14 |
 | 5 | Same tests, same results | `cargo test -p d3d -p engine` | the `test result` lines sum to the same passed and ignored counts, plus one guard test per crate |
 | 6 | Flakes from sharing a process | `cargo test -p d3d --test it` ten times | every run passes |
-| 7 | Dependencies without debug info | `cargo build -p cli`, cold, then `touch crates/cli/src/main.rs` and again | size of `deps/*.rlib`, link time of `h2` |
+| 7 | Dependencies without debug info | `cargo build -p cli`, cold, then `touch crates/apps/cli/src/main.rs` and again | size of `deps/*.rlib`, link time of `h2` |
 | 8 | The sweep as one command | a loop of `cargo test --no-run -p X` against one `cargo test --no-run -p X -p Y ...` | wall time, and copies per crate: `ls deps \| sed -E 's/-[0-9a-f]{16}.*//' \| sort \| uniq -c \| sort -rn` |
 | 9 | nextest against `cargo test` | `cargo nextest run -p ...` against `cargo test -p ...`, both after `--no-run` | wall time of the run alone |
 | 10 | Where a build's time goes | `cargo build -p cli --timings` | the `boot` and `cli` bars and the link, in `target/cargo-timings` |

@@ -1,0 +1,18 @@
+[package]
+name = "h1ai"
+description = "Halo 1 AI data (actors, encounters, command lists) read and converted to Halo 2 squads, zones, orders and characters"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+h1map = { path = "../h1map" }
+map.workspace = true
+pathfind = { path = "../../formats/pathfind" }
+tags.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# The converted collision BSP the firing positions are checked against.
+h1convert = { path = "../h1convert" }
+xiso.workspace = true

@@ -4,11 +4,11 @@ Status: Built. The runtime and the generated game module build for
 `x86_64-pc-windows-msvc`, cross-compiled from a Mac, and run inside the UWP
 app on an Xbox Series X in Developer Mode ([xbox.md](xbox.md)). The Windows
 desktop path (`h2 play` on a Windows PC) has not been run.
-Code: `crates/emit/src/compile.rs` (`Arch::X86_64Windows`), `platform/windows/env.sh`.
+Code: `crates/recompiler/emit/src/compile.rs` (`Arch::X86_64Windows`), `platform/windows/env.sh`.
 Switch: `H2_EMIT_TARGET=windows`, `H2_XWIN`, `H2_LLD`, `H2_LLVM`, `H2_WINDOWS_TARGET_DIR`, see [switches.md](switches.md).
 
 The module and the runtime are the Xbox app's: the UWP app
-(`crates/uwp-host`, `platform/xbox`) is documented in [xbox.md](xbox.md).
+(`crates/apps/uwp-host`, `platform/xbox`) is documented in [xbox.md](xbox.md).
 This page covers the cross-toolchain, the module's target and what the
 runtime does on Windows.
 

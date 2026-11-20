@@ -12,7 +12,7 @@
 # image_url says where they were downloaded from. Reports come from
 # `h2 live maps analyze --map-id ID --out CONTENTS/<slug>.toml`.
 #
-# Keys read (crates/cli/src/live_maps_details.rs): [[pack]] id, name, description,
+# Keys read (crates/apps/cli/src/live_maps_details.rs): [[pack]] id, name, description,
 # authors, released, source_url, [[pack.image]]; [[mod]] map_id, name, slug, pack,
 # description, features, [[mod.image]] file, caption, source_url, credit, licence.
 # original_description, description_sources and image_url are for the reader.

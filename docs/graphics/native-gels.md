@@ -1,7 +1,7 @@
 # Native shader gels
 
 Status: Built. Replaces supported gel quad packets through `DrawAdmission`; parity with D3D is not verified.
-Code: `crates/feature/src/native_gels.rs`, `crates/boot/src/native_gels_glue.rs`, `native_gels_replace.rs`, `crates/native-render/src/gels.rs`, `gels_gpu.rs`. Tests: `crates/feature/tests/native_gels.rs`, `crates/native-render/tests/gels_gpu.rs`, `native_gels_replace::tests` and `native_gels_glue::tests` in `boot`.
+Code: `crates/hooking/feature/src/native_gels.rs`, `crates/apps/boot/src/native_gels_glue.rs`, `native_gels_replace.rs`, `crates/rewrites/native-render/src/gels.rs`, `gels_gpu.rs`. Tests: `crates/hooking/feature/tests/native_gels.rs`, `crates/rewrites/native-render/tests/gels_gpu.rs`, `native_gels_replace::tests` and `native_gels_glue::tests` in `boot`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 A light's gel is a shader drawn into render target 13 before the light passes sample it as engine texture 10. The stage replaces that quad draw. The ordered handoff records the quad on both required target copies, then commits before it suppresses the original packet. Any preparation, resource, validation or range-count failure retains the original packet. Part of [native-renderer.md](native-renderer.md).

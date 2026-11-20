@@ -1,0 +1,186 @@
+# hlmt: model (object model). Names from crates/formats/tags/src/object/layouts.rs (HLMT, VARIANT*,
+# REGION*, NODE; E/V evidence), docs/formats/objects.md "hlmt object models",
+# docs/formats/collision.md "hlmt region bytes" and the Halo 1 converter
+# crates/tools/h1objects/src/convert.rs (`h2` consts) / docs/halo1/objects.md.
+# No community tag definition was used.
+
+group hlmt 0xfc align 4
+  0x0 tagref render_model groups=mode -- V (layouts.rs:880; objects.md:157); the converter writes it (convert.rs:312,774)
+  0x8 tagref collision_model groups=coll -- E 0x000b7b40: object_new sets an object flag when +0xc is not null (layouts.rs:882-888; objects.md:158)
+  0x10 u32 animation_group -- D: group half of the animation reference; the converter writes a tag reference at +0x10 (convert.rs:314,776)
+  0x14 datum animation -- E 0x000b7b40: object_new tests +0x14 before its animation and physics setup (layouts.rs:889-895; objects.md:159); jmad
+  0x18 tagref phys_ref_18 groups=phys -- V: phys tags (layouts.rs:896)
+  0x20 tagref physics_model groups=phmo -- V (layouts.rs:897; objects.md:161); phmo rigid bodies bind to the object's nodes (halo1/objects.md:204-208)
+  0x28 unknown 0x4 seen=many -- floats
+  0x2c unknown 0x4 seen=many -- floats
+  0x30 unknown 0x4 seen=zero
+  0x34 unknown 0x4 seen=43 -- floats
+  0x38 unknown 0x4 seen=39 -- floats
+  0x3c unknown 0x4 seen=39 -- floats
+  0x40 unknown 0x4 seen=36 -- floats
+  0x44 unknown 0x4 seen=13 -- floats
+  0x48 unknown 0x4 seen=zero
+  0x4c unknown 0x4 seen=6 -- small integers
+  0x50 block variants 0x38 align 4 -- E 0x0016d1bb steps 0x38 over +0x50/+0x54 (layouts.rs:898-904; objects.md:162)
+    0x0 string name -- E 0x0016d1b6 compares the requested variant name with +0 (layouts.rs:807-812; objects.md:175)
+    0x4 i8[16] region_map -- E 0x0016d764 reads the signed byte at +4+region: hlmt region index -> index into this variant's regions, -1 none (layouts.rs:814-819; objects.md:176-178); V: the validator checks it
+    0x14 block regions 0x14 align 4 -- E 0x0016d78b reads +0x18, index*0x14 (layouts.rs:821-826; objects.md:179)
+      0x0 string region -- V: equals the name of the hlmt region at +4 (layouts.rs:758-763; objects.md:186,200)
+      0x4 u8 model_region -- V: index into hlmt regions (+0x70); the region map sends it back (layouts.rs:765-770; objects.md:187,201)
+      0x5 unknown 0x1 seen=2
+      0x6 unknown 0x2 seen=const
+      0x8 block permutations 0x20 align 4 -- V: stride from layout (layouts.rs:773-778; objects.md:189)
+        0x0 string permutation -- V: names a permutation of the hlmt region; 7,030 of 8,743 do, 1,685 are zero (layouts.rs:729-734; objects.md:278-280)
+        0x4 unknown 0x4 seen=18 -- small integers
+        0x8 f32 probability default=1 -- D: 1.0 on single-permutation regions (layouts.rs:736-741; objects.md:189-190,227)
+        0xc block block_c 0x18 align 4
+          0x0 string string_0
+          0x4 unknown 0x4 seen=34
+          0x8 tagref tagref_8
+          0x10 string string_10
+          0x14 unknown 0x4 seen=8 -- floats
+        0x14 pad 0xc
+      0x10 unknown 0x4 seen=zero
+    0x1c block objects 0x10 align 4 -- V: two string IDs and an object reference (layouts.rs:785-799,828-833; objects.md:180-181)
+      0x0 string string_0
+      0x4 string string_4
+      0x8 tagref object -- V: observed classes are object types (vehi, weap, scen, mach) (layouts.rs:792-798)
+    0x24 u32 h1_voice_selector -- H1 voice variant marker and authored selector (docs/halo1/ai.md)
+    0x28 pad 0x4
+    0x2c string string_2c
+    0x30 tagref udlg_ref_30 groups=udlg -- V: udlg tags (layouts.rs:835)
+  0x58 block block_58 0x14 align 4
+    0x0 string string_0
+    0x4 unknown 0x2
+    0x6 i16 damage_section default=-1 -- E 0x000d8d50 and 0x000db0a7 index the damage section
+    0x8 unknown 0x4 seen=24 -- small integers
+    0xc string string_c
+    0x10 unknown 0x4 seen=many -- small integers
+  0x60 block block_60 0xf8 align 4 -- V: at most one element; object_new reads its +0xbc (layouts.rs:913-919; objects.md:164)
+    0x0 unknown 0x4 seen=6 -- small integers
+    0x4 string string_4
+    0x8 unknown 0x4 seen=9 -- small integers
+    0xc unknown 0x4 seen=zero
+    0x10 unknown 0x4 seen=8 -- small integers
+    0x14 pad 0x14
+    0x28 unknown 0x4 seen=28 -- floats
+    0x2c unknown 0x4 seen=zero
+    0x30 unknown 0x4 seen=8 -- floats
+    0x34 unknown 0x4 seen=7 -- floats
+    0x38 unknown 0x4 seen=6 -- floats
+    0x3c pad 0x40
+    0x7c tagref tagref_7c
+    0x84 tagref tagref_84
+    0x8c unknown 0x4 seen=10 -- floats
+    0x90 string string_90
+    0x94 unknown 0x4 seen=3 -- floats
+    0x98 unknown 0x4 seen=9 -- floats
+    0x9c unknown 0x4 seen=8 -- floats
+    0xa0 unknown 0x4 seen=2 -- floats
+    0xa4 tagref tagref_a4
+    0xac tagref tagref_ac
+    0xb4 tagref tagref_b4
+    0xbc block block_bc 0x38 align 4 -- object_new reads this block's count (objects.md:164)
+      0x0 string string_0
+      0x4 unknown 0x4 seen=14 -- small integers
+      0x8 unknown 0x4 seen=15 -- floats
+      0xc block block_c 0x50 align 4
+        0x0 unknown 0x4 seen=6
+        0x4 unknown 0x4 seen=25
+        0x8 unknown 0x4 seen=11 -- floats
+        0xc tagref tagref_c
+        0x14 tagref tagref_14
+        0x1c string string_1c
+        0x20 unknown 0x4 seen=50
+        0x24 string string_24
+        0x28 string string_28
+        0x2c unknown 0x4 seen=9 -- floats
+        0x30 tagref tagref_30
+        0x38 string string_38
+        0x3c string string_3c
+        0x40 string string_40
+        0x44 unknown 0x4 seen=3 -- floats
+        0x48 string string_48
+        0x4c unknown 0x4 seen=4 -- floats
+      0x14 pad 0x10
+      0x24 unknown 0x4 seen=5 -- floats
+      0x28 unknown 0x4 seen=5 -- floats
+      0x2c unknown 0x4 seen=5 -- floats
+      0x30 string string_30
+      0x34 unknown 0x4 seen=3 -- small integers
+    0xc4 block block_c4 0x10 align 4
+      0x0 unknown 0x4 seen=5 -- small integers
+      0x4 pad 0xc
+    0xcc unknown 0x4 seen=58
+    0xd0 unknown 0x4 seen=8 -- floats
+    0xd4 unknown 0x4 seen=7 -- floats
+    0xd8 block block_d8 0x14 align 4
+      0x0 string string_0
+      0x4 unknown 0x4 seen=4 -- floats
+      0x8 unknown 0x4 seen=5 -- floats
+      0xc unknown 0x4 seen=6 -- floats
+      0x10 unknown 0x4 seen=9 -- floats
+    0xe0 block block_e0 0x14 align 4
+      0x0 string string_0
+      0x4 string string_4
+      0x8 string string_8
+      0xc unknown 0x4 seen=2 -- floats
+      0x10 unknown 0x4 seen=5
+    0xe8 tagref tagref_e8
+    0xf0 tagref tagref_f0
+  0x68 block targets 0x1c align 4 -- E 0x001a5d18 and 0x001a6ca3 iterate or index model targets
+    0x0 string marker -- E 0x001a5d4d passes it to the object marker lookup
+    0x4 f32 radius -- E 0x001a5f76 takes it to the spherical target calculation
+    0x8 f32 cone_angle -- E 0x001a5fc6 copies it to the target search record
+    0xc unknown 0x4 seen=24 -- small integers
+    0x10 f32 weight -- E 0x001a5dc4 scales the target search weight by this
+    0x14 u32 flags -- E 0x001a5f8a and 0x001a5f9e set candidate flags
+    0x18 f32 lock_on_distance -- E 0x001a5fb6 copies it to the target search record
+  0x70 block regions 0x10 align 4 -- E 0x0016d205 steps 0x10 over +0x70/+0x74; object_new reserves 10 bytes per region (layouts.rs:927-932; objects.md:166)
+    0x0 string name -- E 0x0016d200 compares the requested region name with +0 (layouts.rs:851-857; objects.md:194)
+    0x4 i8 collision_region default=-1 -- V: coll region index, -1 none; -1 on 1,224 of 1,230 regions of objects with no coll (collision.md:106-115; halo1/objects.md:278-281); the converter writes it (convert.rs:320-324,815)
+    0x5 i8 physics_region -- V: physics region index, -1 none; never -1 on an object with no phmo (collision.md:108-113; convert.rs:325,816)
+    0x6 pad 0x2
+    0x8 block permutations 0x8 align 4 -- V: stride from layout (layouts.rs:858-864; objects.md:196)
+      0x0 string name -- V: variant permutations name these (objects.md:278-280); the converter writes the render permutation's name (convert.rs:819)
+      0x4 pad 0x1
+      0x5 i8 collision_permutation default=-1 -- V: coll permutation index, -1 none (collision.md:109-110; convert.rs:326,820)
+      0x6 i8 physics_permutation -- V: physics permutation index, -1 none (collision.md:109-110; convert.rs:327,821)
+      0x7 pad 0x1
+  0x78 block nodes 0x5c align 4 -- V: a retail hlmt node is its mode node's first 0x5c bytes with +0xa zero (halo1/objects.md:214-218); E 0x000b7ef3, 0x000b800b: object_new reserves 0x34 bytes of node matrices per node, at least one (layouts.rs:934-940)
+    0x0 string name -- V: as the mode node's name (halo1/objects.md:215; h1models mode.rs:244-252)
+    0x4 i16 parent_index -- V: as mode node +4 (schema.rs:447; halo1/objects.md:215)
+    0x6 i16 first_child_index -- V: as mode node +6 (schema.rs:448)
+    0x8 i16 next_sibling_index -- V: as mode node +8 (schema.rs:449)
+    0xa pad 0x2 -- V: zero on retail hlmt nodes, where the mode node holds -1 (halo1/objects.md:216-218; h1models mode.rs:249)
+    0xc f32[3] translation -- V: as mode node +0xc, default translation (schema.rs:450; halo1/objects.md:216)
+    0x18 f32[4] orientation -- V: as mode node +0x18, default rotation (schema.rs:451)
+    0x28 f32 default_scale default=1 -- V: as mode node +0x28, 1.0 (halo1/models.md:315; halo1/objects.md:216)
+    0x2c f32[3] inverse_forward -- V: as mode node +0x2c, inverse model-space basis (halo1/models.md:315; halo1/objects.md:216-217)
+    0x38 f32[3] inverse_left -- V: as mode node +0x38 (halo1/models.md:315)
+    0x44 f32[3] inverse_up -- V: as mode node +0x44 (halo1/models.md:315)
+    0x50 f32[3] inverse_position -- V: as mode node +0x50 (halo1/models.md:315; halo1/objects.md:217)
+  0x80 u32 h1_dialogue_flags -- converted biped dialogue rules (docs/halo1/ai.md)
+  0x84 block block_84 0x14 align 4 -- V: at most one element (layouts.rs:941-947)
+    0x0 unknown 0x4 seen=6
+    0x4 unknown 0x4 seen=many
+    0x8 unknown 0x4 seen=many
+    0xc unknown 0x4 seen=many
+    0x10 unknown 0x4 seen=many -- floats
+  0x8c tagref udlg_ref_8c groups=udlg -- V: udlg tags (layouts.rs:948)
+  0x94 tagref shad_ref_94 groups=shad -- V: shad tags (layouts.rs:949)
+  0x9c block h1_dialogue_regions 0x8 align 4 -- converted collision regions in source order
+    0x0 f32 threshold
+    0x4 u32 flags
+  0xa4 unknown 0x4 seen=30
+  0xa8 unknown 0x4 seen=11
+  0xac unknown 0x4 seen=2 -- small integers
+  0xb0 pad 0x14
+  0xc4 unknown 0x4 seen=20
+  0xc8 unknown 0x4 seen=6
+  0xcc unknown 0x4 seen=2 -- small integers
+  0xd0 pad 0x14
+  0xe4 unknown 0x4 seen=2 -- small integers
+  0xe8 pad 0x8
+  0xf0 tagref shad_ref_f0 groups=shad -- V: shad tags (layouts.rs:950)
+  0xf8 string string_f8

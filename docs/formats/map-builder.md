@@ -2,15 +2,15 @@
 
 Status: Built for the cache layout, string IDs, tag names, tag index,
 metadata with fixups, raw resources, BSP regions and the checksum.
-Code: `crates/map/src/build.rs`. Switch: none.
+Code: `crates/formats/map/src/build.rs`. Switch: none.
 Proven by synthetic tests and by retail round trips on all 30 maps of the
 owner's disc. Maps it writes for the Halo 1 converter load and play in the
 game (**Run**, owner's play).
 
 `MapEditor` ([map-format.md](map-format.md), "Lossless writing") patches
-an existing map in place. The builder in `crates/map/src/build.rs` writes
+an existing map in place. The builder in `crates/formats/map/src/build.rs` writes
 a whole v8 cache from a `TagSet` instead. The Halo 1 converter
-(`crates/h1convert`, [multiplayer.md](../halo1/multiplayer.md)) uses it to
+(`crates/tools/h1convert`, [multiplayer.md](../halo1/multiplayer.md)) uses it to
 write a converted structure BSP and lightmap into a base map, and maps made
 from scratch ([maps.md](../game/maps.md) §4) need it too.
 
@@ -31,7 +31,7 @@ v8 metadata holds absolute values that depend on layout:
   each BSP region).
 
 A tag laid out at a new address only works if every one of these inside it
-is known. `crates/tags` knows a few layouts completely (bitmaps); most
+is known. `crates/formats/tags` knows a few layouts completely (bitmaps); most
 retail tags still have opaque spans that may hold pointers. So a tag set
 cannot assume every tag is relocatable.
 
@@ -298,7 +298,7 @@ H2_DISC=disc/halo2.iso H2_BUILD_MAPS=all cargo test --release -p tags --test map
   appended at a new address and every local LOD's pixels copied to new
   raw resources: same tags, names, groups, roots and strings; every pinned
   tag byte-identical at its address; every tag of the five groups
-  `crates/tags` decodes (`bitm`, `scnr`, `matg`, `sbsp`, `mode`) decodes
+  `crates/formats/tags` decodes (`bitm`, `scnr`, `matg`, `sbsp`, `mode`) decodes
   to the same fields, bitmaps apart from block addresses and moved LOD
   pointers, whose pixel bytes match. The other 12 (`01b`, `03b`, `04b`,
   `06a`, `06b`, `07a`, `08b`, `mainmenu`, `shared`,

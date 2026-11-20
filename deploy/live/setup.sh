@@ -43,7 +43,7 @@ if ! type -P h2 >/dev/null; then
   command -v cargo >/dev/null || die "neither h2 nor cargo found (needed to extract art and make invites)"
   ask inst "h2 isn't on your PATH. Install it with cargo install now? (y/n)" y
   if [[ $inst == [yY]* ]]; then
-    cargo install --locked --path "$root/crates/cli" --bin h2
+    cargo install --locked --path "$root/crates/apps/cli" --bin h2
     hash -r
   else
     echo "fine: using cargo run from the repo instead"
@@ -144,7 +144,7 @@ mkdir -p data art
 # An h2 installed before `assets check` existed is older than this checkout,
 # and art it extracts would be stale too.
 if type -P h2 >/dev/null && [[ "$(h2 live --help 2>&1 || true)" != *"assets check"* ]]; then
-  die "the h2 on your PATH is older than this checkout; update it: cargo install --locked --force --path $root/crates/cli --bin h2"
+  die "the h2 on your PATH is older than this checkout; update it: cargo install --locked --force --path $root/crates/apps/cli --bin h2"
 fi
 
 if ! h2 live assets check --out "$here/art"; then

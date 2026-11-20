@@ -1,7 +1,7 @@
 # Campaign indirect dispatch coverage
 
 Status: Built. The tool is an analyzer example; the retail result below is one measurement.
-Code: `crates/analyze/examples/dispatch_coverage.rs`, `crates/analyze/src/dispatch.rs`, `crates/analyze/src/pointer_seeds.rs`. Tests: `crates/analyze/tests/dispatch_coverage.rs`.
+Code: `crates/recompiler/analyze/examples/dispatch_coverage.rs`, `crates/recompiler/analyze/src/dispatch.rs`, `crates/recompiler/analyze/src/pointer_seeds.rs`. Tests: `crates/recompiler/analyze/tests/dispatch_coverage.rs`.
 Switch: `H2_XBE` (input path); no other.
 
 The `analyze` example `dispatch_coverage` measures dispatch entry coverage for
@@ -24,7 +24,7 @@ cargo run -p analyze --release --example dispatch_coverage > "$KEEP/dispatch-aft
 
 ## Tests
 
-Synthetic regressions in `crates/analyze/src/pointer_seeds.rs` cover a one-slot vtable followed by pointer-shaped metadata into an unclaimed MOV immediate (`heuristic_tail_does_not_seed_metadata_inside_unclaimed_mov`), a valid trapping callback that is the final rejected speculative candidate (`final_rejected_candidate_is_still_seeded_as_a_trap_callback`), and a flat far jump whose known instruction bodies stay protected (`seeding_respects_flat_far_jump_instruction_claims`). `crates/emit/tests/far_jmp.rs` runs a far jump through analyze, lift and emit. The codec fixture (`codec_schema_keeps_null_record_and_indexes_the_whole_family`, `crates/analyze/src/dispatch.rs`) checks all nine records, null record 0 and the exclusion of metadata fields; `crates/analyze/tests/dispatch_coverage.rs` is the retail test (`H2_XBE`, ignored without it).
+Synthetic regressions in `crates/recompiler/analyze/src/pointer_seeds.rs` cover a one-slot vtable followed by pointer-shaped metadata into an unclaimed MOV immediate (`heuristic_tail_does_not_seed_metadata_inside_unclaimed_mov`), a valid trapping callback that is the final rejected speculative candidate (`final_rejected_candidate_is_still_seeded_as_a_trap_callback`), and a flat far jump whose known instruction bodies stay protected (`seeding_respects_flat_far_jump_instruction_claims`). `crates/recompiler/emit/tests/far_jmp.rs` runs a far jump through analyze, lift and emit. The codec fixture (`codec_schema_keeps_null_record_and_indexes_the_whole_family`, `crates/recompiler/analyze/src/dispatch.rs`) checks all nine records, null record 0 and the exclusion of metadata fields; `crates/recompiler/analyze/tests/dispatch_coverage.rs` is the retail test (`H2_XBE`, ignored without it).
 
 The TSV contains:
 

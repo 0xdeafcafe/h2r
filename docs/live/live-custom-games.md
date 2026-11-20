@@ -155,7 +155,7 @@ Rejected alternatives:
 - A press calls `0x19a148` with the item id in EAX. That stores the privacy
   into the squad session at `+0x498c` (`0x64230` → `0x5bde0`).
 
-Boot ([`crates/boot/src/custom_games.rs`](../../crates/boot/src/custom_games.rs))
+Boot ([`crates/apps/boot/src/custom_games.rs`](../../crates/apps/boot/src/custom_games.rs))
 does two things with it:
 
 - It follows that press into the `live.visibility` setting (`H2_LIVE_VISIBILITY`,
@@ -340,11 +340,11 @@ label is not shortened.
 
 | Piece | Where | Tests |
 |---|---|---|
-| `Visibility`, `Endpoint::listable`, `Session::listed_for`, update | `crates/live-proto/src/session.rs` | unit: defaults and wire omission, the visibility matrix, declared addresses |
-| Create rule, reader-filtered list, `?visibility=` | `crates/live-server/src/sessions.rs`, `Live::read_caller` | `crates/live-server/tests/session_visibility.rs`: anonymous/stranger/friend/host lists, update, observed vs declared, loopback |
-| HLE: advertisement and change-only update carry it; `Hle::set_session_visibility`; `Hle::set_visibility_probe` | `crates/live-hle/src/sessions.rs` | `crates/live-hle/tests/server.rs`: `browser_search_rows_follow_the_hosts_visibility_setting` (procedure 1, 50 rows, seven columns, as the browser asks; friend sees it, stranger not; live switch; FindFromID still works), `the_titles_privacy_probe_decides_a_new_advertisement` |
-| `live.visibility` setting, HLE binding | `crates/boot/src/setting_defs.rs`, `live_glue::bind_visibility` | setting env and steps reach the HLE |
-| Live menu rows, fifth item widget, tag, Map Pack dialog, back from the Live browser, privacy hook and probe | `crates/boot/src/custom_games.rs`, `layout_glue::install` | count grows only the Live list; row order, texts and panes; the fifth child item; the tag's fifth pane and moved blocks on a synthetic tag (and what is left alone); the dialog entry; row/mask argument reads; only a Live-mode browser is redirected, only a back request is rewritten, our press stores a row the cursor restore takes; privacy mapping and squad gates; install without a game |
+| `Visibility`, `Endpoint::listable`, `Session::listed_for`, update | `crates/live/live-proto/src/session.rs` | unit: defaults and wire omission, the visibility matrix, declared addresses |
+| Create rule, reader-filtered list, `?visibility=` | `crates/live/live-server/src/sessions.rs`, `Live::read_caller` | `crates/live/live-server/tests/session_visibility.rs`: anonymous/stranger/friend/host lists, update, observed vs declared, loopback |
+| HLE: advertisement and change-only update carry it; `Hle::set_session_visibility`; `Hle::set_visibility_probe` | `crates/live/live-hle/src/sessions.rs` | `crates/live/live-hle/tests/server.rs`: `browser_search_rows_follow_the_hosts_visibility_setting` (procedure 1, 50 rows, seven columns, as the browser asks; friend sees it, stranger not; live switch; FindFromID still works), `the_titles_privacy_probe_decides_a_new_advertisement` |
+| `live.visibility` setting, HLE binding | `crates/apps/boot/src/setting_defs.rs`, `live_glue::bind_visibility` | setting env and steps reach the HLE |
+| Live menu rows, fifth item widget, tag, Map Pack dialog, back from the Live browser, privacy hook and probe | `crates/apps/boot/src/custom_games.rs`, `layout_glue::install` | count grows only the Live list; row order, texts and panes; the fifth child item; the tag's fifth pane and moved blocks on a synthetic tag (and what is left alone); the dialog entry; row/mask argument reads; only a Live-mode browser is redirected, only a back request is rewritten, our press stores a row the cursor restore takes; privacy mapping and squad gates; install without a game |
 | Web "Find a game" shows "open to", hides invite-only | `web/src/lib/sessions.ts`, `web/src/dash/Sessions.tsx` | `web/test/sessions.test.ts` |
 
 With Live on, a further row, **Co-op Campaign**, sits directly above Custom

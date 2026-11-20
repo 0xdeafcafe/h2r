@@ -4,7 +4,7 @@ Evidence for [render-loop.md](../render-loop.md) and [layer-draw.md](../layer-dr
 
 ## 2026-11-17: where the scene passes' time goes
 
-Commit: not recorded. Method: the `render-timing` feature (`crates/feature/src/render_timing.rs`), Old Mombasa census run, headless. Not re-run.
+Commit: not recorded. Method: the `render-timing` feature (`crates/hooking/feature/src/render_timing.rs`), Old Mombasa census run, headless. Not re-run.
 
 `render-timing` site lines from the 2026-11-17 Old Mombasa census run,
 weighted over the 100 one-second windows with `render` above 15 ms (2,607
@@ -35,7 +35,7 @@ Commit: not recorded. Method: `H2_FRAME_STATS=1 H2_FEATURES=render-timing` (per-
 - The layer draw at `0x0002bed0` was 6.25 ms a frame (3.34 guest, 2.90 D3D).
 - `shader_begin` was 7.36 ms over 481 calls, about 15 us each (an upper bound), against 0.88 ms for `layer_build`.
 - The pure-guest callees of `0x00016b90`, per frame, each about 482 calls: `0x000174d0` 2.17 ms, `0x00018a90` 1.94, `0x0001b0a0` 1.36, `0x00019ca0` 0.57.
-- Host cost of the soft-float helpers (`crates/x87`, release, one core): `fyl2x` about 870 ns for a non-exact logarithm and 120 ns for a power of two, `fprem` about 23 ns, `fmul` about 12 ns.
+- Host cost of the soft-float helpers (`crates/recompiler/x87`, release, one core): `fyl2x` about 870 ns for a non-exact logarithm and 120 ns for a power of two, `fprem` about 23 ns, `fmul` about 12 ns.
 
 ### The `render-timing` stages
 

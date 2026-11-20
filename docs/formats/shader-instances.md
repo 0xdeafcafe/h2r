@@ -1,8 +1,8 @@
 # Shader instances, templates and passes
 
-Status: Built. Code: `crates/tags/src/shader.rs`. Tests: `crates/tags/src/shader_tests.rs`. Switch: none.
+Status: Built. Code: `crates/formats/tags/src/shader.rs`. Tests: `crates/formats/tags/src/shader_tests.rs`. Switch: none.
 
-`crates/tags` decodes the three tag groups that make up a Halo 2 material:
+`crates/formats/tags` decodes the three tag groups that make up a Halo 2 material:
 
 - **`shad`** (shader instance) holds the parameters: bitmaps, colours, vectors
   and animated properties.
@@ -14,7 +14,7 @@ Status: Built. Code: `crates/tags/src/shader.rs`. Tests: `crates/tags/src/shader
 
 `tags::shader` has the records and `tags::material` turns a `shad` into the
 ordered passes, ready for the D3D/WGSL layer. The pixel shader definition and
-the vertex microcode are translated by `crates/shaders` (see
+the vertex microcode are translated by `crates/formats/shaders` (see
 [shaders.md](../graphics/shaders.md)).
 
 ```sh
@@ -334,7 +334,7 @@ variants and engine constants.
 - All 11,495 materials resolve into 86,497 (lod, layer) pass lists, 86,562
   passes and 307,944 implementations.
 - The 2,931 distinct resolved pixel shader definitions translate through
-  `crates/shaders` with no warnings and pass naga.
+  `crates/formats/shaders` with no warnings and pass naga.
 - Every reference resolves to the right group or is null. Every range fits
   its block. Every render state used has a name.
 - 3,428 instances have animated parameters.

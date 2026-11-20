@@ -1,4 +1,4 @@
-// The tvOS and iOS apps' Rust half (crates/apple-host). All calls on the
+// The tvOS and iOS apps' Rust half (crates/apps/apple-host). All calls on the
 // main thread.
 #ifndef H2HOST_H
 #define H2HOST_H
@@ -45,7 +45,7 @@ bool h2host_overlay_wanted(uint32_t physical_pads, bool keyboard_shown);
 // on-screen controls have neither.
 bool h2host_button(H2Host *host, int32_t button, bool down);
 
-// iOS touch controls (docs/runtime/ios.md, crates/input/src/touch.rs). The
+// iOS touch controls (docs/runtime/ios.md, crates/platform/input/src/touch.rs). The
 // buttons held, as H2_TOUCH_* bits, named for the pad control they press.
 enum {
     H2_TOUCH_A = 1u << 0, // Jump
@@ -89,7 +89,7 @@ float h2host_touch_gyro(H2Host *host);
 bool h2host_touch_crouched(H2Host *host);
 
 // What the on-screen controls draw, from player one's state
-// (crates/input/src/touch_layout.rs): a layout, the buttons shown and
+// (crates/platform/input/src/touch_layout.rs): a layout, the buttons shown and
 // dimmed, and the move stick's radius.
 enum {
     H2_TOUCH_LAYOUT_ON_FOOT = 0,

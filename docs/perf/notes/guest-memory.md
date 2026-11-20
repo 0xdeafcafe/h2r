@@ -56,7 +56,7 @@ lengths, with and without accounting); `exits.rs`
 `H2_VIEW_CHARGE=1` (A acquires once, nothing else is called). The emit,
 runtime and oracle suites pass with the three C switches off and on.
 
-Benchmarks (`crates/emit/tests/perf.rs`, release, accounting on, the v3
+Benchmarks (`crates/recompiler/emit/tests/perf.rs`, release, accounting on, the v3
 bridge with one exit call as in the image; switch sets run round-robin,
 min of 9 trials, best round, load average 30-80):
 
@@ -117,7 +117,7 @@ on the Xbox) instead of a token. Nothing is drained on return, as before:
 an entry that calls guest code before returning still leaves the stores
 made meanwhile for the next entry. The shadow page at `0xa0ff_4000` is gone.
 
-Proof (`crates/boot/tests/write_barrier.rs`): a real wrapped entry
+Proof (`crates/apps/boot/tests/write_barrier.rs`): a real wrapped entry
 (`D3DResource_AddRef`) returns to its caller within one runner transfer
 with its stdcall cleanup, no live continuation and its pre-call store
 drained; and `barrier_handler` around an entry that returns through a guest
@@ -168,7 +168,7 @@ memo ignores the layout), `the_resolve_cache_answers_each_target_with_its_own_ha
 `now_ns_is_monotonic_and_keeps_time_with_instant`, and the runtime and emit
 suites.
 
-Benchmarks: `runner_transfer_benchmark` (`crates/emit/tests/perf.rs`: eight
+Benchmarks: `runner_transfer_benchmark` (`crates/recompiler/emit/tests/perf.rs`: eight
 indirect calls a loop trip into one of N callees that only `ret`, so 16
 runner transfers a trip) and `timeline`'s `now_ns_cost`:
 
@@ -234,19 +234,19 @@ the old calls.
 
 `H2_EXIT_CALL=0` and `H2_DIRECT_VIEW=0` build the old exit and the old
 entries and exits. They are C defines the equivalence tests set, not
-`cflags()` switches. `crates/emit/RUNTIME-CONTRACT.md` §4 has the rules.
+`cflags()` switches. `crates/recompiler/emit/RUNTIME-CONTRACT.md` §4 has the rules.
 
-Proof: `crates/emit/tests/direct.rs` compares lent and unlent views, and
+Proof: `crates/recompiler/emit/tests/direct.rs` compares lent and unlent views, and
 old-exit builds through the v2 bridge table, in every scenario above
 (faults, hand-ups, transfer limits, a slice ending at every access, depth
 caps, overrides, interrupts), on charged and inline accesses, slice spent,
 budget and preempt word. `a_direct_callee_borrows_its_callers_view` counts
 the calls: in the nested fixture 7 acquires and 7 releases become 1
 acquire and 7 exits, and calls past a depth cap acquire as through the
-runner. `crates/emit/tests/exits.rs` checks the preprocessed epilogue, lend,
+runner. `crates/recompiler/emit/tests/exits.rs` checks the preprocessed epilogue, lend,
 borrow and hand-up for every accounting and fast-memory combination, the
 runtime has `exit_settles_as_charge_then_release`, and
-`crates/boot/tests/bridge.rs` loads an old-style bridge through v2.
+`crates/apps/boot/tests/bridge.rs` loads an old-style bridge through v2.
 
 ## Inline guest loads and stores (2026-11-16)
 
@@ -345,7 +345,7 @@ once the result below settled it):
   atomic). The shared epilogue still stores every homed local.
 
 What the runtime sees at every exit is unchanged
-(`crates/emit/RUNTIME-CONTRACT.md` §4, "Register homes"). A handler that
+(`crates/recompiler/emit/RUNTIME-CONTRACT.md` §4, "Register homes"). A handler that
 never touches EFLAGS still sets its bit 1 on the way out.
 
 Static effect, measured before the inline loads and stores below landed,
@@ -400,7 +400,7 @@ context's slot says the runner resolved the target to this very handler at
 the current dispatch generation (any `edit_dispatch` stops all direct calls
 until the runner resolves again), and the page is executable in the inline
 RAM view. The same checks repeat for the return. The contract has the
-details (`crates/emit/RUNTIME-CONTRACT.md` §4, "Direct calls").
+details (`crates/recompiler/emit/RUNTIME-CONTRACT.md` §4, "Direct calls").
 
 Counters: `transfers` still counts every guest transfer; the new
 `direct_transfers` is the part made in C, which passes no runner safe point,
@@ -420,7 +420,7 @@ epilogue: `h2abi_v1_fast_acquire`/`release` (two Rust calls), the register
 spill and reload, and two gate round trips for the execute checks. The
 next section removes the Rust calls.
 
-Proof: `crates/emit/tests/direct.rs` builds one synthetic module with the
+Proof: `crates/recompiler/emit/tests/direct.rs` builds one synthetic module with the
 flag off and on and runs it on the real runtime three ways (built off, built
 on with `ExecCtx::enable_direct_calls(false)`, on), requiring identical
 transfer, CPU, memory, events, backtrace, preempted transfer and transfer
@@ -449,7 +449,7 @@ table and RAM pointers it read when it took it. It drops the gate before
 anything that takes the context, on every way out, and after 32 loop
 headers or REP trips. A Rust memory guard that finds the gate held marks it
 wanted; the handler gives way at its next loop header and cannot retake the
-gate ahead of that guard. `crates/emit/RUNTIME-CONTRACT.md` has the rules.
+gate ahead of that guard. `crates/recompiler/emit/RUNTIME-CONTRACT.md` has the rules.
 An access under a held gate is a page-table load, a permission check and
 the copy. Access accounting, the slice boundary, dirty bits and fault order
 are unchanged: `held_gate_matches_the_helper_path_at_every_stop_and_fault`
@@ -457,7 +457,7 @@ runs a synthetic handler (runs of accesses, loops, a REP, x87, calls, a
 page-crossing read, a store to a read-only page) against the same module on
 the helper path, for seven slice lengths, with and without accounting.
 
-Synthetic loops through the real runtime (`crates/emit/tests/perf.rs`,
+Synthetic loops through the real runtime (`crates/recompiler/emit/tests/perf.rs`,
 accounting on as in the image, clang `-O1`, Apple Silicon, best of 15, load
 average 41-70):
 

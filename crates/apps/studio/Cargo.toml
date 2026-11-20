@@ -1,0 +1,62 @@
+[package]
+name = "studio"
+description = "h2-editor: the editor suite on Dear ImGui (docking) + wgpu + winit: scenario placements, game variants, playlists"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+default-run = "h2-editor"
+
+[[bin]]
+name = "h2-editor"
+path = "src/main.rs"
+
+[dependencies]
+# test-engine: the item hooks the headless screenshots aim input with.
+dear-imgui-rs = { version = "0.22", features = ["test-engine"] }
+dear-imgui-wgpu = "0.22"
+dear-imgui-winit = "0.22"
+dear-imguizmo = { version = "0.22", default-features = false }
+wgpu = "30"
+winit = "0.30"
+pollster = "1"
+png = "0.18"
+anyhow.workspace = true
+# The Dock icon for the unbundled editor (art/app-icon).
+app-icon = { path = "../app-icon" }
+rfd = "0.18"
+content.workspace = true
+editor-core = { path = "../../tools/editor-core" }
+scenario-edit = { path = "../../tools/scenario-edit" }
+# The HUD tool's logic (docs/editor/hud-editor.md).
+hud-edit = { path = "../../tools/hud-edit" }
+variants = { path = "../../formats/variants" }
+hopper-edit = { path = "../../tools/hopper-edit" }
+live-proto.workspace = true
+# Convert to Halo 2: the Halo 1 converter, over Halo 1 and Halo 2 maps.
+h1convert = { path = "../../tools/h1convert" }
+# The Halo 1 sandbox's objects.
+h1objects = { path = "../../tools/h1objects" }
+h1map = { path = "../../tools/h1map" }
+# The converted map card's PNG.
+assets.workspace = true
+map.workspace = true
+# The tag editor's field registry (schema structure + definition names).
+tags.workspace = true
+# The UI Screens tool: our game screens' pages, preview and checks
+# (boot::ui_kit; docs/game/ui-builder.md).
+boot.workspace = true
+# The Map Pack's content directory (`T:\$c`) on the host.
+vfs.workspace = true
+serde_json.workspace = true
+
+# Play and pair (src/play.rs): the agent API's wire types and client.
+agent-proto = { path = "../../extensions/agent-proto" }
+# The agent API (src/api): method names, short forms and the client.
+studio-proto = { path = "../studio-proto" }
+
+[dev-dependencies]
+# The HUD tool's tests draw the invented HUD map.
+hud-edit = { path = "../../tools/hud-edit", features = ["fixture"] }
+# The agent's real server behind an invented game (src/play/tests.rs).
+agent = { path = "../../extensions/agent" }

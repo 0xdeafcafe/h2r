@@ -1,7 +1,7 @@
 # Guarded native x87 lowering
 
 Status: Built. On by default.
-Code: `crates/emit/c/h2x87_native.h`, `crates/emit/src/x87.rs`. Tests: `crates/emit/tests/native_x87.rs`.
+Code: `crates/recompiler/emit/c/h2x87_native.h`, `crates/recompiler/emit/src/x87.rs`. Tests: `crates/recompiler/emit/tests/native_x87.rs`.
 Switch: `H2_X87_NATIVE` (on), listed in [switches.md](../runtime/switches.md). Measurements: [notes/x87-native.md](notes/x87-native.md).
 
 The generated C runs guarded x87 arithmetic in native binary64. It is
@@ -23,7 +23,7 @@ Never put the resulting C, dylib, game data or screenshots in Git.
 
 The lifter emits `Intrinsic::X87` operations. `emit/src/x87.rs` emits one
 `h2x87_v1_*` Rust helper call per operation (plus a separate store commit)
-unless the native path applies. `crates/x87` uses integer ext80 software
+unless the native path applies. `crates/recompiler/x87` uses integer ext80 software
 arithmetic, not host `long double`. All eight physical registers remain ten-byte ext80
 values in `X87Abi`; TOP is status bits 11–13 and tags are physical.
 The emitter caches environment pointers in handler locals.
@@ -150,7 +150,7 @@ explicitly tested and retains the reference path.
 `emit/tests/native_x87.rs` builds a C wrapper with the native flag forced
 on independently of the test process's environment. It compares every
 physical register byte, tag, control/status/environment field and helper
-return code against `crates/x87`, including both destination directions,
+return code against `crates/recompiler/x87`, including both destination directions,
 pops, every PC/RC, unmasked exceptions, empty stacks, unusual ext80
 encodings, exponent boundaries, special values and a directed host mode.
 Transport/store checks include the convert/write/commit boundary.

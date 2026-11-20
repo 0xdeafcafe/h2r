@@ -1,8 +1,16 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/host-data", # dh-provision (contract 7)
-    "crates/*",
+    "crates/formats/*",
+    "crates/recompiler/*",
+    "crates/runtime/*",
+    "crates/platform/*",
+    "crates/hooking/*",
+    "crates/rewrites/*",
+    "crates/live/*",
+    "crates/extensions/*",
+    "crates/tools/*",
+    "crates/apps/*",
 ]
 
 [workspace.package]
@@ -11,34 +19,34 @@ version = "0.1.0"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-hs = { path = "crates/hs" }
-tags = { path = "crates/tags" }
-map = { path = "crates/map" }
-assets = { path = "crates/assets" }
-xiso = { path = "crates/xiso" }
-movies = { path = "crates/movies" }
-xbe = { path = "crates/xbe" }
-analyze = { path = "crates/analyze" }
-symbols = { path = "crates/symbols" }
-runtime = { path = "crates/runtime" }
-ir = { path = "crates/ir" }
-opt = { path = "crates/opt" }
-lift = { path = "crates/lift" }
-emit = { path = "crates/emit" }
-clif = { path = "crates/clif" }
-simd = { path = "crates/simd" }
-sim-core = { path = "crates/sim-core" }
-sim-anim = { path = "crates/sim-anim" }
-sim-collision = { path = "crates/sim-collision" }
-x87 = { path = "crates/x87" }
-kernel = { path = "crates/kernel" }
-voice = { path = "crates/voice" }
-vfs = { path = "crates/vfs" }
-boot = { path = "crates/boot" }
-content = { path = "crates/content" }
-live-proto = { path = "crates/live-proto" }
-live-server = { path = "crates/live-server" }
-cloud-saves = { path = "crates/cloud-saves" }
+hs = { path = "crates/formats/hs" }
+tags = { path = "crates/formats/tags" }
+map = { path = "crates/formats/map" }
+assets = { path = "crates/platform/assets" }
+xiso = { path = "crates/formats/xiso" }
+movies = { path = "crates/formats/movies" }
+xbe = { path = "crates/formats/xbe" }
+analyze = { path = "crates/recompiler/analyze" }
+symbols = { path = "crates/recompiler/symbols" }
+runtime = { path = "crates/runtime/runtime" }
+ir = { path = "crates/recompiler/ir" }
+opt = { path = "crates/recompiler/opt" }
+lift = { path = "crates/recompiler/lift" }
+emit = { path = "crates/recompiler/emit" }
+clif = { path = "crates/recompiler/clif" }
+simd = { path = "crates/recompiler/simd" }
+sim-core = { path = "crates/rewrites/sim-core" }
+sim-anim = { path = "crates/rewrites/sim-anim" }
+sim-collision = { path = "crates/rewrites/sim-collision" }
+x87 = { path = "crates/recompiler/x87" }
+kernel = { path = "crates/runtime/kernel" }
+voice = { path = "crates/platform/voice" }
+vfs = { path = "crates/runtime/vfs" }
+boot = { path = "crates/apps/boot" }
+content = { path = "crates/formats/content" }
+live-proto = { path = "crates/live/live-proto" }
+live-server = { path = "crates/live/live-server" }
+cloud-saves = { path = "crates/live/cloud-saves" }
 thiserror = "2"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }

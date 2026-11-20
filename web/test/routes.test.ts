@@ -1,5 +1,5 @@
 // Where the stats site lives (src/routes.ts), its old address, and the
-// servers' copy of the same root (crates/live-server/src/page_meta.rs).
+// servers' copy of the same root (crates/live/live-server/src/page_meta.rs).
 
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -25,11 +25,11 @@ describe("the stats site's address", () => {
   });
 
   test("the servers know the same addresses", () => {
-    const rs = readFileSync(join("crates/live-server/src/page_meta.rs"), "utf8");
+    const rs = readFileSync(join("crates/live/live-server/src/page_meta.rs"), "utf8");
     expect(rs).toContain(`pub const STATS_ROOT: &str = "${STATS_ROOT}";`);
     expect(rs).toContain(`pub const OLD_STATS_ROOT: &str = "${OLD_STATS_ROOT}";`);
     // The Worker is sent the old pages (to redirect them) and the new.
-    const toml = readFileSync(join("crates/live-worker/wrangler.toml"), "utf8");
+    const toml = readFileSync(join("crates/live/live-worker/wrangler.toml"), "utf8");
     for (const p of [`"${OLD_STATS_ROOT}"`, `"${OLD_STATS_ROOT}/*"`, `"${GAMES_ROOT}"`, `"${GAMES_ROOT}/*"`]) expect(toml).toContain(p);
   });
 

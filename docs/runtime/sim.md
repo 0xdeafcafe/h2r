@@ -6,10 +6,10 @@ matches. [Not verified](#not-verified) lists what a run has not settled.
 Switch: `H2_SIM`, `sim.render_every` and the `impl.sim.*` switches, listed in
 [switches.md](switches.md).
 
-Code: `crates/sim` (the match, batch and tuning files, pacing, the
-tally and report, the comparison), `crates/bots/src/tuning.rs`,
-`crates/feature/src/sim_frame.rs`, `crates/boot/src/sim_glue.rs` and its
-System Link lobby, `crates/cli/src/sim_cmd.rs`, and the examples in
+Code: `crates/live/sim` (the match, batch and tuning files, pacing, the
+tally and report, the comparison), `crates/live/bots/src/tuning.rs`,
+`crates/hooking/feature/src/sim_frame.rs`, `crates/apps/boot/src/sim_glue.rs` and its
+System Link lobby, `crates/apps/cli/src/sim_cmd.rs`, and the examples in
 [sim-examples/](sim-examples/).
 
 The goal: train and test the bots offline. Run the retail game's own
@@ -30,7 +30,7 @@ choice to check before building on it.
 ## 1. What a headless run does today
 
 `h2 run` and `h2 serve` are headless: `boot::run_hosted` with
-`Host::default()` (crates/boot/src/lib.rs). Per frame of gameplay, this is
+`Host::default()` (crates/apps/boot/src/lib.rs). Per frame of gameplay, this is
 what runs on the one host thread that drives every guest thread
 (**Code**, numbers **Doc** from [gameplay-budget.md](../perf/notes/gameplay-budget.md),
 Old Mombasa, "Render front-end versus simulation"):
@@ -39,13 +39,13 @@ Old Mombasa, "Render front-end versus simulation"):
 |---|---|---|---|
 | The tick: players, AI, scripts, objects, Havok (`game_tick` `0x00137fe0`) and the per-frame work around it (input poll, frame timing, network, director, observer) | guest code | yes | 6.2 (1000 draws) to 7.8 (2000 draws) |
 | The render front-end: `render_frame_and_present` `0x00223240` and everything under it (views, passes, objects, lights, the push buffer) | guest code | **yes** | 16.3 to 18.9 |
-| Our D3D layer called from it: entry wrappers, state resolve, stream copies, push-buffer decode | `crates/d3d` HLE | **yes**, into a `RecordingBackend` that forgets every call | 5.2 to 7.7 |
-| GPU: encode, submit, present, read-backs | `crates/gfx`, wgpu | no (only with `H2_BOOT_GFX` or a window) | 0 |
+| Our D3D layer called from it: entry wrappers, state resolve, stream copies, push-buffer decode | `crates/platform/d3d` HLE | **yes**, into a `RecordingBackend` that forgets every call | 5.2 to 7.7 |
+| GPU: encode, submit, present, read-backs | `crates/platform/gfx`, wgpu | no (only with `H2_BOOT_GFX` or a window) | 0 |
 | Vblank interrupt (60 Hz DPC, `0x0012b2a0` bumps the vblank counter) | kernel periodic source | yes | tiny |
 | The frame wait (`0x0012b2e0`, `FrameWait::HALO2_CLOCKED`) | d3d HLE | yes, but on the logical clock: an idle advance, no wall time | 0 |
-| DirectSound: the mixer rendered on a logical 48 kHz grid into a `NullSink`, packets completed | `crates/dsound`, `crates/audio` | **yes** | part of "kernel, XAPI, scheduler, DirectSound": 1.5 to 2.1 |
+| DirectSound: the mixer rendered on a logical 48 kHz grid into a `NullSink`, packets completed | `crates/platform/dsound`, `crates/platform/audio` | **yes** | part of "kernel, XAPI, scheduler, DirectSound": 1.5 to 2.1 |
 | The sound service (`0x00125b40`, guest) | guest code | yes | in the tick's share |
-| XAPI input pump between slices | `crates/xapi` | yes | small |
+| XAPI input pump between slices | `crates/platform/xapi` | yes | small |
 | The kernel trace file (`--out/kernel-trace.tsv`, one row per kernel call) | `boot::trace` | yes in `h2 run` | 0.9 |
 | Telemetry, lockstep, agent observers | features | only when switched on | small |
 
@@ -119,7 +119,7 @@ Outside the render front-end:
   to a `NullSink`: no device, no sound. The mixing itself (resampling,
   filters, reverb) is host work that only produces samples nobody hears;
   a "positions only" mixer that advances voices without making samples
-  would save it, but it changes `crates/audio`'s voice cursors and needs
+  would save it, but it changes `crates/platform/audio`'s voice cursors and needs
   its own A/B. **Not built**: it is under 2 ms a frame (row 10 above).
 - **The kernel trace file is off** in sim mode (`trace: None`): 0.9 ms a
   frame of writes nobody reads.
@@ -143,7 +143,7 @@ bracket): N = 30 renders once a second, keeping the caches warm at about
 | Scaled | `"x4"`, `"x0.5"` | A pacer at that multiple of real time (`Pacer::ticks_per_second` = 10 MHz times the factor): the run never goes faster than that. |
 
 The pacer only makes the host wait; schedules and guest state are the same
-paced or not (`crates/kernel/src/pacer.rs`). So a paced and an unpaced run
+paced or not (`crates/runtime/kernel/src/pacer.rs`). So a paced and an unpaced run
 of the same match are the same match. `sim::clock` holds the parsing and
 the arithmetic (tested); boot sets `Machine::pacer` from it. Pass
 `--pace realtime` to `h2 sim run` or `h2 sim batch` to override the match
@@ -156,8 +156,8 @@ process (boot and load included).
 ## 4. Sim mode
 
 `H2_SIM=<match file>` on the boot path, or `h2 sim run <match file>`.
-What it changes (**Code**, `crates/boot/src/sim_glue.rs`,
-`crates/feature/src/sim_frame.rs`):
+What it changes (**Code**, `crates/apps/boot/src/sim_glue.rs`,
+`crates/hooking/feature/src/sim_frame.rs`):
 
 1. **The light host can skip the render front-end** in world frames. The `sim-frame`
    feature implements `RENDER_FRAME` (`0x00223240`). At each entry it
@@ -517,7 +517,7 @@ JSONL capture, or use `--upload` for an Uplink recording.
 
 ## 7. Parallel runs, A/B and tuning
 
-`h2 sim batch <batch file>` (`crates/cli/src/sim_cmd.rs`):
+`h2 sim batch <batch file>` (`crates/apps/cli/src/sim_cmd.rs`):
 
 ```toml
 out = "results/aggr-vs-base"   # results directory
@@ -981,9 +981,9 @@ headers and blocks while those dependencies are being traced.
 ## Running a match
 
 - `h2 sim` never builds: it stops with `h2 build` when the image is not
-  current for this `h2` (`crates/cli/src/sim_cmd.rs`), as `h2 serve` does.
+  current for this `h2` (`crates/apps/cli/src/sim_cmd.rs`), as `h2 serve` does.
 - Sim mode never builds nav meshes: run `h2 bots nav <map>`
-  (`crates/cli/src/bots_nav.rs`) once per map first.
+  (`crates/apps/cli/src/bots_nav.rs`) once per map first.
 - Each batch run has its own data directory (`<out>/runs/<id>/data`, its
   `bots/` linked to `--data`'s). For supported Map Pack runs the batch
   stages the selected offer from the shared data directory.

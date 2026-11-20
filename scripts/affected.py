@@ -87,7 +87,7 @@ class Workspace:
                     continue
                 (self.dev_deps if dep.get("kind") == "dev" else self.deps)[name].add(target)
         # Longest directory first, so a crate nested in another's directory
-        # (crates/runtime/test-probe) claims its own files.
+        # (crates/runtime/runtime/test-probe) claims its own files.
         self._dirs = sorted(self.dir.items(), key=lambda kv: -len(kv[1]))
         self._outside = None
 

@@ -1,5 +1,5 @@
 // The mock's `GET /v1/stats/summary` (docs/live/live-api.md "Stats summary"):
-// the same counting rules as crates/live-server/src/stats.rs, folded over
+// the same counting rules as crates/live/live-server/src/stats.rs, folded over
 // the mock's log. The log only reaches back the simulated history (twenty
 // minutes by default), so a made-up archive of the 30 days before it (game
 // starts, kills and ends only, no frames, never in the log) is folded in

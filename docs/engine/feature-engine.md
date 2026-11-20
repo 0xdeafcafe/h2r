@@ -5,13 +5,13 @@ bridges, the async entries, the typed views, the settings store and the `ui`
 model with our own list class are built. The subsystem facades `loader`,
 `camera` and `render`, content packs, the tape and the run fingerprint are
 designs ([below](#not-built)).
-Code: `crates/feature/src` (`lib.rs`, `plan.rs`, `install.rs`, `switches.rs`,
+Code: `crates/hooking/feature/src` (`lib.rs`, `plan.rs`, `install.rs`, `switches.rs`,
 `bridge.rs`, `leaves.rs`, `entry.rs`, `locale.rs`, `arena.rs`,
-`snapshot.rs`), `crates/engine/src` (`points.rs`, `entry.rs`, `view.rs`,
-`testing.rs`), `crates/settings/src`, and `crates/boot/src/registration.rs`.
-Tests: `crates/feature/tests/plan.rs`, `crates/feature/tests/install.rs`,
-`crates/boot/tests/feature_plan.rs`, `crates/boot/src/registration/tests.rs`,
-`crates/engine/tests/views.rs`.
+`snapshot.rs`), `crates/rewrites/engine/src` (`points.rs`, `entry.rs`, `view.rs`,
+`testing.rs`), `crates/formats/settings/src`, and `crates/apps/boot/src/registration.rs`.
+Tests: `crates/hooking/feature/tests/plan.rs`, `crates/hooking/feature/tests/install.rs`,
+`crates/apps/boot/tests/feature_plan.rs`, `crates/apps/boot/src/registration/tests.rs`,
+`crates/rewrites/engine/tests/views.rs`.
 Switch: `H2_FEATURES` (`id`, `-id`, `impl.<name>=on|off`), listed in
 [switches.md](../runtime/switches.md).
 
@@ -30,19 +30,19 @@ Nothing on this page was established by running the game.
 ## How it works
 
 1. Boot builds one `feature::Registry` from `Switches::from_env`
-   (`crates/feature/src/switches.rs`) and adds every feature in
+   (`crates/hooking/feature/src/switches.rs`) and adds every feature in
    `register_core` and `register_late`
-   (`crates/boot/src/registration.rs`).
+   (`crates/apps/boot/src/registration.rs`).
 2. `Registry::add` asks the feature's `Manifest` (`id`, `title`,
    `default_on`, `doc`), checks its switch, and runs `Feature::build`
    against a `Builder`. A switched-off feature declares nothing. A feature
    whose `build` fails is left out with the reason.
 3. `Registry::build(&dyn ImageAddrs)` calls `plan::build`
-   (`crates/feature/src/plan.rs`): it resolves every point to an address,
+   (`crates/hooking/feature/src/plan.rs`): it resolves every point to an address,
    groups hooks by address, orders each kind, reports conflicts, and
    allocates a shadow entry for every chain that runs something after the
    body.
-4. `Plan::install(&Runtime)` (`crates/feature/src/install.rs`) maps the
+4. `Plan::install(&Runtime)` (`crates/hooking/feature/src/install.rs`) maps the
    plan's guest pages and registers one override per address, or refuses the
    whole plan before touching anything.
 5. Boot logs the plan: a summary line, or with `H2_FEATURE_PLAN=1` one
@@ -53,7 +53,7 @@ Nothing on this page was established by running the game.
 
 ### Named points
 
-`engine::points` (`crates/engine/src/points.rs`) is the one table of named
+`engine::points` (`crates/rewrites/engine/src/points.rs`) is the one table of named
 guest locations. A `Point` has a name, the address in the base (1.0) image,
 a `Sig`, a `Class` (`Required` or `Optional`), a `hot` flag and the page that
 records the evidence. A `Global` names a guest word or structure read by more
@@ -110,14 +110,14 @@ hooks sort by `Order` (`First`, `Default`, `Last`), then by declared
 feature's), then by feature id. Two mutating hooks (`before` or `after`) of
 different features in one `Order` class with no `after_feature` between them
 are a conflict, so boot refuses the plan and the game stops at boot
-(`crates/boot/src/registration.rs`). A hook on a `hot` point makes the plan
+(`crates/apps/boot/src/registration.rs`). A hook on a `hot` point makes the plan
 warn: an overridden entry leaves the direct-call fast path
-(`crates/runtime/src/direct.rs`).
+(`crates/runtime/runtime/src/direct.rs`).
 
-**Test:** `crates/feature/tests/plan.rs`
+**Test:** `crates/hooking/feature/tests/plan.rs`
 (`unordered_mutating_hooks_are_refused_and_an_order_resolves_them`,
 `order_classes_and_after_feature_sort_the_chain`);
-`crates/boot/src/registration/tests.rs`
+`crates/apps/boot/src/registration/tests.rs`
 (`the_plan_builds_with_every_combination_of_optional_features`) builds the
 plan boot builds, so a clash fails `cargo test`.
 
@@ -164,7 +164,7 @@ runs alone.
 ### Resources
 
 `Builder::guest_alloc(len, perms)` hands out page-granular guest memory from
-one reserved range (`crates/feature/src/arena.rs`, `ARENA_START`
+one reserved range (`crates/hooking/feature/src/arena.rs`, `ARENA_START`
 to `ARENA_END`, inside the kernel's HLE reservation), mapped at install.
 Shadow entries and `Builder::entry` pages come from the same range.
 `Builder::snapshot(SnapshotPolicy)` says what a feature holds outside guest
@@ -173,7 +173,7 @@ RAM; a feature that says nothing is `Unaudited` and blocks machine snapshots
 
 ## Switches
 
-Read from `H2_FEATURES` (`crates/feature/src/switches.rs`): a comma-separated
+Read from `H2_FEATURES` (`crates/hooking/feature/src/switches.rs`): a comma-separated
 list of `id` (on), `-id` (off) or `id=on|off`. A feature is on unless its
 manifest says `off_by_default` or the list switches it. An `impl.<name>`
 entry switches an implementation: `Switches::implementation(name, default)`
@@ -193,7 +193,7 @@ key).
 A Rust body cannot call a guest function as a plain Rust call: one host
 thread drives every guest thread, and a guest call that blocks or is
 preempted must unwind to the scheduler. A body that calls guest code is an
-`async` block over a `Cx` (`crates/engine/src/entry.rs`):
+`async` block over a `Cx` (`crates/rewrites/engine/src/entry.rs`):
 
 - `cx.call(GuestCall)` awaits a guest call and returns the callee's
   registers; `cx.read` and `cx.write` take guest memory for the closure only,
@@ -207,17 +207,17 @@ preempted must unwind to the scheduler. A body that calls guest code is an
 - `engine::entry::testing::run` drives a body in a test against fake
   callees on a `FakeGuest` and records the calls.
 - A future parked across a guest call holds a continuation slot
-  (`crates/runtime/src/continuation.rs`) and blocks whole-machine forks while
+  (`crates/runtime/runtime/src/continuation.rs`) and blocks whole-machine forks while
   pending, so deeply recursive entries stay sync or stay recompiled.
 
-**Test:** `crates/feature/tests/install.rs`
+**Test:** `crates/hooking/feature/tests/install.rs`
 (`an_entry_awaits_guest_calls_and_returns_as_stdcall`,
 `an_async_implementation_is_a_chains_body`), and the core's tests in
-`crates/engine/src/entry.rs`.
+`crates/rewrites/engine/src/entry.rs`.
 
 ## Bridges
 
-`Builder::frame` and `Builder::game` (`crates/feature/src/bridge.rs`) give
+`Builder::frame` and `Builder::game` (`crates/hooking/feature/src/bridge.rs`) give
 a feature Rust events without naming an address. Each is a read-only
 observer after the guest function returned, so any number share one point:
 
@@ -228,7 +228,7 @@ observer after the guest function returned, so any number share one point:
 | `game().on_end` | `GAME_END` | the game-end path returned |
 
 Live telemetry, lockstep's tick hash and the level boot's loaded mark
-listen on them. **Test:** `crates/feature/tests/install.rs`
+listen on them. **Test:** `crates/hooking/feature/tests/install.rs`
 (`two_tick_observers_both_run_after_the_tick`,
 `game_start_reaches_every_listener`).
 
@@ -240,17 +240,17 @@ the sources first (`locale().serve()`), so with it on our strings need no
 hook. When nothing native serves them (`impl.engine.locale=off`, or the
 implementation is missing), `Registry::build` adds one `before` on
 `LOCALE_FIND` owned by the `locale` bridge
-(`crates/feature/src/locale.rs`, `plan::place_locale`). The decision is made
+(`crates/hooking/feature/src/locale.rs`, `plan::place_locale`). The decision is made
 after every feature declared. `locale_string_id_exists` does not consult
 sources.
 
-**Test:** `crates/feature/tests/plan.rs`
+**Test:** `crates/hooking/feature/tests/plan.rs`
 (`string_sources_are_served_by_the_rust_lookup_or_one_bridge_hook`,
 `the_bridge_is_decided_after_every_feature_declared`).
 
 ## Leaves
 
-`engine-leaves` (`crates/feature/src/leaves.rs`) places the 22 Rust
+`engine-leaves` (`crates/hooking/feature/src/leaves.rs`) places the 22 Rust
 implementations in `engine::abi::OVERRIDES` (datum arrays, tag lookup, locale
 lookup) as implementations. Each is switched by
 `impl.engine.<group>.<name>`, falling back to `impl.engine.<group>` and
@@ -263,7 +263,7 @@ is in [notes/feature-engine.md](notes/feature-engine.md) and
 [README.md](README.md); nothing has measured the datum and tag leaves in a
 running game.
 
-**Test:** `crates/feature/tests/plan.rs`
+**Test:** `crates/hooking/feature/tests/plan.rs`
 (`only_the_locale_leaves_are_on_by_default`).
 
 ## Guest data access
@@ -280,8 +280,8 @@ constant per field, and a builder that writes one on a `FakeGuest`. The grammar
 is `field @ 0xOFF: Type`; field types are the integers, `f32`, `Vec3` and
 `Option<DatumHandle>`. Nothing is read until a getter is called and nothing is
 cached, so each offset is a named research point beside the doc it came from
-(`crates/engine/src/view.rs`). Shared game structures (objects, units,
-players, game globals) and the globals table are in `crates/guest-layout`
+(`crates/rewrites/engine/src/view.rs`). Shared game structures (objects, units,
+players, game globals) and the globals table are in `crates/hooking/guest-layout`
 ([guest-layout.md](guest-layout.md)); `record!` takes their offsets by name.
 
 | View | Built on | Used by |
@@ -292,22 +292,22 @@ players, game globals) and the globals table are in `crates/guest-layout`
 | `view::ui` | `Screen`, `ListHandler`, `Item`, `PressRecord`, slot numbers ([ui.md](../formats/ui.md), "Screen and list classes") | our list class |
 | `engine::render::light`, `layer` | layouts beside their evidence | the renderer |
 
-**Test:** `crates/engine/tests/views.rs` on `FakeGuest`, and
-`crates/engine/tests/differential.rs`, which checks `Datums` and `Tags`
+**Test:** `crates/rewrites/engine/tests/views.rs` on `FakeGuest`, and
+`crates/rewrites/engine/tests/differential.rs`, which checks `Datums` and `Tags`
 against the original's answers on real layouts.
 
 ## Settings
 
-`crates/settings` depends on `toml` only; `cli`, `app`, `boot`, `d3d` and
+`crates/formats/settings` depends on `toml` only; `cli`, `app`, `boot`, `d3d` and
 `gfx` can all depend on it. A setting is one `Def`
-(`crates/settings/src/def.rs`): `key` (`table.key` in `settings.toml`),
+(`crates/formats/settings/src/def.rs`): `key` (`table.key` in `settings.toml`),
 `label`, `help`, `kind` (`Bool`, `Int { valid, steps, unit }`, `Choice`),
 `default`, `env`, `flag`, `aliases`, `parse_env`, `apply` (`Live`, `NextMap`,
 `Restart`), `scope` (`Host`, `View`, `Sim`), `tier` (`User`, `Advanced`,
 `Diagnostic`) and `menu`. Boot's definitions are
-`crates/boot/src/setting_defs.rs`.
+`crates/apps/boot/src/setting_defs.rs`.
 
-`Store` (`crates/settings/src/store.rs`) is `load`, `handle`, `get`, `set`,
+`Store` (`crates/formats/settings/src/store.rs`) is `load`, `handle`, `get`, `set`,
 `step`, `state`, `force`, `on_change`, plus per-profile values. Rules:
 
 - Precedence: flag, environment, file, default. A value from a flag or the
@@ -327,12 +327,12 @@ against the original's answers on real layouts.
 | Surface | How |
 |---|---|
 | In-game menu | `ui::Screen::rows_from_settings` over `Tier::User` defs with a `menu` |
-| CLI | `h2 settings list [--all] / get / set`, `h2 play --set key=value` (`crates/cli/src/settings_cmd.rs`) |
+| CLI | `h2 settings list [--all] / get / set`, `h2 play --set key=value` (`crates/apps/cli/src/settings_cmd.rs`) |
 | Environment | every `Def` with `env` |
 
 ## UI
 
-`crates/boot/src/ui.rs` is the `ui` subsystem's Rust model: our list screens
+`crates/apps/boot/src/ui.rs` is the `ui` subsystem's Rust model: our list screens
 and the rows we add to retail lists, as data over the settings `Store`. It is
 pure: no guest memory, and a press goes only through the store.
 
@@ -357,7 +357,7 @@ are read in [ui.md](../formats/ui.md) and
 
 ### UI step b
 
-`boot::list_class` (`crates/boot/src/list_class.rs`) is our own list screen
+`boot::list_class` (`crates/apps/boot/src/list_class.rs`) is our own list screen
 class: a Controls-shaped screen (the Controls tag's layout, built by the
 Controls constructor) whose screen and list handler point at our copies of the
 Controls vtables. Five entries of ours, async entries at arena addresses,
@@ -385,17 +385,17 @@ exists anywhere.
 Built on it: the Video screen, the Skulls screen (`skulls_screen`), the
 campaign picker (`campaign_menu`), the Live sign-in screen (`signin_screen`)
 and the co-op lobby, friends and join screens (`coop_live`).
-**Test:** the plan tests in `crates/boot/src/list_class.rs`.
+**Test:** the plan tests in `crates/apps/boot/src/list_class.rs`.
 
 ### UI step c
 
 Rows of ours on a retail list are data on the plan
-(`crates/boot/src/retail_rows.rs`): an `Extension` answers a retail list's
+(`crates/apps/boot/src/retail_rows.rs`): an `Extension` answers a retail list's
 extension rows from the `ui` model with `before` hooks at the list's row text
 and row chosen, and a retail row goes on to the original. The Settings list
 (the Video row) and the Controls list (the speaker row) use it.
 
-The retail Controls row text is ported (`crates/boot/src/controls_text.rs`,
+The retail Controls row text is ported (`crates/apps/boot/src/controls_text.rs`,
 feature `controls-text`, an implementation). Every string id is read at run
 time from its instruction in the loaded image and named by instruction address;
 nothing is copied. Our rows' hooks run around it as they did around the
@@ -403,16 +403,16 @@ original. Not ported: the Button Layout list's handlers. The shared list hooks
 (the datum array constructor, the pane, the screen tag, the text set), the
 layouts, the Live menu's Custom Game Browser row, the added item widgets and
 the camera's field of view are still raw hooks in
-`crates/boot/src/layout_glue.rs`.
+`crates/apps/boot/src/layout_glue.rs`.
 
 ## 7. Rasterizer front-end
 
 The render front-end is replaced by the native renderer
 ([native-renderer.md](../graphics/native-renderer.md)), whose stages are
-features in `crates/feature/src/native_*`; its one switch is
+features in `crates/hooking/feature/src/native_*`; its one switch is
 `impl.render.native`. The reads of the retail call tree are in
 [render-loop.md](../graphics/render-loop.md). `render-timing`
-(`crates/feature/src/render_timing.rs`, off by default) puts observers on both
+(`crates/hooking/feature/src/render_timing.rs`, off by default) puts observers on both
 sides of the four orchestrators, `render_frame_and_present` and the per-light
 pass, and reports the front-end's guest time as the frame stats' `render`
 phase with an exclusive split per stage
@@ -505,7 +505,7 @@ Design only. No type, crate or command named here exists.
 - **Test.** The differential harness agrees with the lifted original on every
   call of the 22 leaves and on the game path, and the views agree with the
   original: [notes/feature-engine.md](notes/feature-engine.md).
-- **Code.** `crates/boot/tests/feature_plan.rs`
+- **Code.** `crates/apps/boot/tests/feature_plan.rs`
   (`the_full_plan_builds_and_reads_as_expected`) pins the plan text for the
   default configuration.
 

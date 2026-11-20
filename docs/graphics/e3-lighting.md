@@ -3,10 +3,10 @@
 Status: Partly built. The Lighting setting (harder, sharper retail shadows in
 the view) is built. Observers, sun shadows from objects and per-pixel
 dynamic lights are Design (not built).
-Code: `crates/d3d/src/scaled.rs` (`Lighting`, `follow_lighting`, `shadow_scale`),
-`crates/shaders/src/psh/shadow.rs` (hard shadows), `crates/engine/src/render.rs`
-(read-only views of the light record). Tests: `crates/d3d/tests/render_scale.rs`,
-`crates/shaders/tests/shadow.rs`.
+Code: `crates/platform/d3d/src/scaled.rs` (`Lighting`, `follow_lighting`, `shadow_scale`),
+`crates/formats/shaders/src/psh/shadow.rs` (hard shadows), `crates/rewrites/engine/src/render.rs`
+(read-only views of the light record). Tests: `crates/platform/d3d/tests/render_scale.rs`,
+`crates/formats/shaders/tests/shadow.rs`.
 Switch: `H2_LIGHTING` (`retail`), listed in [switches.md](../runtime/switches.md).
 
 An opt-in lighting mode in the spirit of the Halo 2 E3 2003 demo: hard-edged
@@ -159,9 +159,9 @@ the guest's size (`tex_scale`), so a larger map needs no change there.
   every read (`read_depth`, `read_surface`, counts, the judge), so game
   memory, read-backs and the simulation are the 1x run's.
 
-Tests (no game run): `crates/shaders/tests/shadow.rs` (retail and E3 golden
+Tests (no game run): `crates/formats/shaders/tests/shadow.rs` (retail and E3 golden
 WGSL; one tap on the interpreter and the GPU; the mean of two stages over one
-map) and the E3 section of `crates/d3d/tests/render_scale.rs`:
+map) and the E3 section of `crates/platform/d3d/tests/render_scale.rs`:
 `e3_shadow_maps_scale_in_the_view_and_the_guest_reads_retail_bytes`,
 `retail_lighting_leaves_shadow_maps_to_the_reference`,
 `e3_shadows_are_one_tap_and_follow_the_caster_closer`,
@@ -204,7 +204,7 @@ disc's tags (`h2 shader`, `h2 effect`), done without building or running the
 game. Labels are this page's: **R** is read from engine code or
 from the disc by this project, **S** is our inference. Names are ours unless
 said otherwise. Read-only views of the structures below are in
-`crates/engine/src/render.rs`, tested on invented records.
+`crates/rewrites/engine/src/render.rs`, tested on invented records.
 
 The short version: **the light data is found, and it is a plain salted datum
 array the render code reads at fixed points.** The guest's dynamic lights are
@@ -448,7 +448,7 @@ lit?". Three ways to get it:
 | **Host shadow maps** at high resolution with a one-tap comparison | Works with any mesh and with alpha test. Reuses the vertex programs. This is how the community restoration gets its "stencil-like" mode. | Bias and resolution artefacts. Not exact at grazing angles. Arguably not the feature the README names. |
 | **Ray queries** against a host acceleration structure | Exact and simple once geometry is on the host. | wgpu's ray-query support is not something to depend on yet. Needs the same host geometry as volumes. |
 
-The prototype `shadowlab` (`crates/viewer/src/bin/shadowlab`) renders one
+The prototype `shadowlab` (`crates/tools/viewer/src/bin/shadowlab`) renders one
 scene with volumes and with shadow maps from tag geometry, with no game run,
 and times them. Its results are in [notes/e3-lighting.md](notes/e3-lighting.md).
 

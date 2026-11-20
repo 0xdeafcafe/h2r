@@ -1,7 +1,7 @@
 # Agent API: driving the running game without pixels
 
 Status: Built. Every method below is registered by the code; the ones no run has exercised are named under "Not verified".
-Code: `crates/agent-proto` (wire types, blocking client), `crates/agent` (server, tick-boundary executor, most methods), `crates/boot/src/agent_glue.rs` (the methods the host answers), `crates/cli/src/agent_cmd.rs` (`h2 agent`). Tests: `crates/agent/src/exec/tests.rs`, `crates/agent/src/sim/tests.rs`, `crates/agent/src/trace/tests.rs`, `crates/boot/tests/feature_plan.rs`.
+Code: `crates/extensions/agent-proto` (wire types, blocking client), `crates/extensions/agent` (server, tick-boundary executor, most methods), `crates/apps/boot/src/agent_glue.rs` (the methods the host answers), `crates/apps/cli/src/agent_cmd.rs` (`h2 agent`). Tests: `crates/extensions/agent/src/exec/tests.rs`, `crates/extensions/agent/src/sim/tests.rs`, `crates/extensions/agent/src/trace/tests.rs`, `crates/apps/boot/tests/feature_plan.rs`.
 Switch: `agent` feature (`H2_FEATURES=-agent` removes the tick hooks), `H2_AGENT` (the socket), listed in [switches.md](switches.md).
 
 An agent, a script or a test reads and drives a running Halo 2 through one
@@ -61,7 +61,7 @@ connection to hold `session.claim`.
 | `shadow.enable`, `shadow.disable`, `shadow.status` | act, act, read | [Shadow checks](#shadow-checks) |
 
 A new method gets a row here and a section for its domain. The names
-live in `crates/agent-proto/src` (`method::ALL`, `hot::method::ALL`,
+live in `crates/extensions/agent-proto/src` (`method::ALL`, `hot::method::ALL`,
 `state::method::ALL`, `sim`, `trace`, `theater`) and where the host adds
 them (`Agent::add_method`, `Agent::add_game_method`).
 
@@ -106,7 +106,7 @@ printf 'claim\npause\nstep 30\ncount\nresume\n' | h2 agent -
 - **Settings of a headless run.** A headless run has no settings store
   unless given one, so menus built on settings stay retail and the log
   says so. `--settings DIR` on `serve` and `run` builds the store as
-  `h2 play` does (`boot::setting_defs::load`, `crates/cli/src/boot_cmd.rs`):
+  `h2 play` does (`boot::setting_defs::load`, `crates/apps/cli/src/boot_cmd.rs`):
   `DIR/settings.toml`, then the `H2_*` variables, then the defaults. A
   setting changed in a menu is written back to that file, so pass a copy.
 - **Cost.** The agent is one more observer on `GAME_TICK`, which costs
@@ -116,7 +116,7 @@ printf 'claim\npause\nstep 30\ncount\nresume\n' | h2 agent -
 
 ## Wire
 
-JSON-RPC 2.0, one JSON object per line each way (`crates/agent-proto/src/lib.rs`).
+JSON-RPC 2.0, one JSON object per line each way (`crates/extensions/agent-proto/src/lib.rs`).
 A request with an `id` gets one response with that `id`. Valid JSON that is
 not a request gets `-32600`; params fields a method does not know are
 refused; batches are not supported. Method names are `domain.verb`.
@@ -146,7 +146,7 @@ refused; batches are not supported. Method names are `domain.verb`.
   500 ms, where guest memory may be mid-update. While the game ticks,
   answers between slices keep the last tick's state and say `tick`. The
   agent feature observes `GAME_TICK` last, after telemetry and lockstep
-  (`crates/boot/tests/feature_plan.rs`).
+  (`crates/apps/boot/tests/feature_plan.rs`).
 
 **Errors** (`agent_proto::code`):
 
@@ -162,7 +162,7 @@ refused; batches are not supported. Method names are `domain.verb`.
 
 **Connections.** A client that half-closes (`nc -N`) still gets answers to
 what it sent. Closing releases control. Each connection queues at most
-4096 lines for its client (`OUT_QUEUE` in `crates/agent/src/server.rs`); a
+4096 lines for its client (`OUT_QUEUE` in `crates/extensions/agent/src/server.rs`); a
 client that lets it fill is dropped and its control released, so the game
 thread never waits on a client.
 
@@ -296,7 +296,7 @@ h2 agent object player.0
 ## `world.ai`
 
 `h2 agent world.ai` returns `{at, actors}` at one game boundary and takes
-no parameters (`crates/agent/src/ai.rs`). Each allocated actor has its
+no parameters (`crates/extensions/agent/src/ai.rs`). Each allocated actor has its
 salted AI `datum`, its `unit` ID (for `world.object`), character tag
 datum, team, scenario squad index, current behavior ID, its retail name
 when available (`behavior_name`), and combat status. A missing unit,
@@ -321,7 +321,7 @@ the player. A remembered object can stay selected after contact is lost.
 ## `world.raw`: an object's bytes, before and after
 
 A game method, read only, no claim (`agent::raw::install`; reader
-`crates/live-telemetry/src/raw.rs`). It exists to look for state a forced
+`crates/live/live-telemetry/src/raw.rs`). It exists to look for state a forced
 crouch leaves behind ([superbounce.md](../game/superbounce.md)).
 
 `world.raw {id, parts?, len?}` returns `id`, `datum` and `parts`, each
@@ -340,7 +340,7 @@ Each part is found through the one before it ([havok-runtime.md](../engine/havok
 32-bit words that differ, with their offset from the part's base, and
 both as floats where they read as ones. A part on one side only, or whose
 base moved, is listed, not compared. It reads what `h2 agent raw` prints,
-or a `-` script's last line (`crates/cli/src/agent_raw.rs`).
+or a `-` script's last line (`crates/apps/cli/src/agent_raw.rs`).
 
 ```sh
 h2 agent raw player.0 > before.json             # world.raw {"id":"player.0"}
@@ -468,9 +468,9 @@ h2 agent fallbacks 20
   when it did. By ticks the window is 1 to 36000 (it gives up after 600 s
   with `complete: false`); by `ms`, 1 to 600000. One capture at a time; it
   is read-only. With frame stats off it answers `UNAVAILABLE`
-  (`crates/agent/src/capture.rs`).
+  (`crates/extensions/agent/src/capture.rs`).
 - **Causes.** The reply's `causes` counts every frame over budget, listed
-  or not, by cause (`crates/agent/src/capture.rs`, `causes`):
+  or not, by cause (`crates/extensions/agent/src/capture.rs`, `causes`):
   `shader_compile` and `pipeline_compile` (any on the critical path),
   `texture_uploads` and `gpu_readback` (more than twice the window's
   median, and at least one), `file_io` (the guest's file calls took at
@@ -514,7 +514,7 @@ h2 agent fallbacks 20
 ## `render`: the frame and the pipeline
 
 `render.frame` and `render.stats` are host methods (types in
-`crates/agent-proto/src/render.rs`, logic in `crates/agent/src/render.rs`).
+`crates/extensions/agent-proto/src/render.rs`, logic in `crates/extensions/agent/src/render.rs`).
 
 ```sh
 h2 agent frame                     # the next whole frame: passes, totals
@@ -603,7 +603,7 @@ H2_OPT=2 H2_BOOT_GFX=$TMPDIR/h2-gfx H2_BOOT_GFX_EVERY=never \
 ### `render.coop_look`
 
 A read-only host method registered with the Live co-op prediction
-feature (`crates/boot/src/coop_look.rs`). With no parameters it returns
+feature (`crates/apps/boot/src/coop_look.rs`). With no parameters it returns
 the most recent 256 rendered local views, oldest first; `{"after":123}`
 returns samples newer than that cursor. `latest` is the most recent
 sample number, initially zero; a gap in sample numbers means the reader
@@ -633,12 +633,12 @@ additional display-rate replays reuse the guest frame.
 
 The checks the native renderer's slices gate on
 ([framescene.md](../graphics/framescene.md), sections 9 and 12). Host
-methods; types in `crates/agent-proto/src/render.rs` and
-`crates/agent-proto/src/sim/hashes.rs`, logic in
-`crates/agent/src/compare.rs`, `crates/agent/src/render.rs` and
-`crates/agent/src/sim/hashes.rs`, host glue in boot's `agent_glue`,
+methods; types in `crates/extensions/agent-proto/src/render.rs` and
+`crates/extensions/agent-proto/src/sim/hashes.rs`, logic in
+`crates/extensions/agent/src/compare.rs`, `crates/extensions/agent/src/render.rs` and
+`crates/extensions/agent/src/sim/hashes.rs`, host glue in boot's `agent_glue`,
 `agent_frames`, `d3d_diag`, `d3d_glue` and `scene_glue`. Tested in
-`crates/agent` over synthetic images, the frame recorder's rig and the
+`crates/extensions/agent` over synthetic images, the frame recorder's rig and the
 sim report's tally.
 
 ```sh
@@ -744,7 +744,7 @@ h2 agent render.parity '{"arm": true}'
 ## Load timeline
 
 `load.timeline {"last": N}` is a core method (8 by default, 1 to 32 kept;
-`crates/agent/src/loads.rs`).
+`crates/extensions/agent/src/loads.rs`).
 
 ```sh
 h2 agent loads                     # the last 8 loads, BSP switches and stalls
@@ -782,7 +782,7 @@ The newest host perf line (`boot::host_perf`): `{line, age_ms}`;
 `h2 agent hostmetrics`; no parameters. It reports the latest complete
 window of 30 intervals between returns from `GAME_TICK` (`0x00137fe0`).
 The first reading is available after 31 tick returns; until then it
-answers `UNAVAILABLE` ([`crates/boot/src/host_metrics.rs`](../../crates/boot/src/host_metrics.rs)).
+answers `UNAVAILABLE` ([`crates/apps/boot/src/host_metrics.rs`](../../crates/apps/boot/src/host_metrics.rs)).
 
 | Field | Meaning |
 |---|---|
@@ -803,7 +803,7 @@ sustained.
 ### `host.audit`
 
 Set `H2_HOST_AUDIT=/path/to/audit.json` before boot to register this
-method (`crates/boot/src/host_audit.rs`). `h2 agent hostaudit` takes no
+method (`crates/apps/boot/src/host_audit.rs`). `h2 agent hostaudit` takes no
 parameters. It writes a snapshot to the configured path and returns the
 path, ticks, observed and registered function counts, tag range count and
 inclusive CPU timing. An orderly exit writes the final snapshot; call the
@@ -814,8 +814,8 @@ Report fields and corpus: [sim.md](sim.md#host-audit-corpus).
 ### `host.lobby`
 
 A System Link light host started with `H2_HOST_LOBBY=1` registers these
-four game methods (`crates/boot/src/host_lobby.rs`, types
-`crates/agent-proto/src/host_lobby.rs`). Each result also carries `at`.
+four game methods (`crates/apps/boot/src/host_lobby.rs`, types
+`crates/extensions/agent-proto/src/host_lobby.rs`). Each result also carries `at`.
 
 | Method | Parameters | Result |
 |---|---|---|
@@ -863,7 +863,7 @@ Both methods are read-only. `ui.screen` needs `H2_UI_WATCH=1`.
   names it the same way ([live-coop.md](../live/live-coop.md), 12.6).
 - **`ui.campaign`** (`h2 agent ui.campaign`, no parameters): a tick-boundary
   read of the campaign menu from the guest screen and focus, without UI
-  watch (`crates/boot/src/campaign_menu.rs`). With no installed Halo 1
+  watch (`crates/apps/boot/src/campaign_menu.rs`). With no installed Halo 1
   campaign it returns `{"installed":false}`. With one it reports `page`
   (`picker`, `options`, `levels`, `difficulty`, `dialog` or `other`),
   `game` (the selected campaign key on the three game-specific pages),
@@ -880,14 +880,14 @@ Both methods are read-only. `ui.screen` needs `H2_UI_WATCH=1`.
 
 Screens already moved to Rust (the Video screen, the skulls page, the
 account, co-op and sign-in screens; [feature-engine.md](../engine/feature-engine.md))
-share one list-screen implementation (`crates/boot/src/list_class.rs`).
+share one list-screen implementation (`crates/apps/boot/src/list_class.rs`).
 Menus are driven with `input.pad` and checked with `ui.screen`; there is no
 widget-level focus or activate method.
 
 ## `audio`: voice routing
 
 `h2 agent audio.voices` takes no parameters and is registered with
-DirectSound (`crates/boot/src/dsound_glue.rs`). The result has
+DirectSound (`crates/apps/boot/src/dsound_glue.rs`). The result has
 `distance_reverb` (host enhancement enabled), `reverb_active` (audible
 environment configured), and `voices`. Each playing buffer, queued
 unpaused stream and playing mix-in has a mixer `id`, `kind`, `volume_mb`
@@ -906,7 +906,7 @@ have a configured send gain and deliver silence. Plain stereo routing has
 
 ## HaloScript state
 
-Three game methods with an empty parameter object (`crates/agent/src/hs_state.rs`)
+Three game methods with an empty parameter object (`crates/extensions/agent/src/hs_state.rs`)
 that sample guest state at a tick boundary. Each answers `UNAVAILABLE` if
 its backing state is unreadable or uninitialized.
 
@@ -929,7 +929,7 @@ its backing state is unreadable or uninitialized.
 
 Input goes through the normal pad path, so the game cannot tell an agent
 from a person. The agent's tap is an `xapi::tap::InputTap` (the layer
-`H2_INPUT_RECORD` and `H2_INPUT_REPLAY` use, `crates/agent/src/tap.rs`
+`H2_INPUT_RECORD` and `H2_INPUT_REPLAY` use, `crates/extensions/agent/src/tap.rs`
 over `input::backend::remote`'s step queue): it sees each
 `XInputGetState` result just before the guest gets it. Every host that
 runs the game through boot's XAPI has it: `h2 serve` (headless pad),
@@ -996,7 +996,7 @@ controllers the host's input layer has, before the game sees anything.
 Use it when a pad, a button or the touchpad does not do what it should. It
 answers from the last input sync (`syncs` counts them), which runs
 whenever the game reads its pads. Boot adds it wherever the game has XAPI
-input (`crates/boot/src/debug_menu_glue.rs`, `crates/agent/src/hostpads.rs`).
+input (`crates/apps/boot/src/debug_menu_glue.rs`, `crates/extensions/agent/src/hostpads.rs`).
 
 - `devices`: each controller as its own backend reads it, before any
   merging (`input::HostBackend::devices`). From Apple GameController:
@@ -1033,9 +1033,9 @@ h2 agent --socket /tmp/h2-play.sock hostpads
 ## `state`: machine snapshots
 
 `state.save`, `load`, `list`, `drop` and `fork` (types in
-`crates/agent-proto/src/state.rs`, the executor's part in
-`crates/agent/src/exec/snap.rs`, the machine in
-`crates/boot/src/snapshot_glue.rs`). A snapshot is the whole machine at one
+`crates/extensions/agent-proto/src/state.rs`, the executor's part in
+`crates/extensions/agent/src/exec/snap.rs`, the machine in
+`crates/apps/boot/src/snapshot_glue.rs`). A snapshot is the whole machine at one
 tick boundary, named. What is in it, how a load works and where files live:
 [snapshots.md](snapshots.md). Snapshots stay in the cache directory, one
 directory per build, and never enter the repository: they contain game
@@ -1068,7 +1068,7 @@ h2 agent state fork FROM NAME [replace]
 ## `edit` and hot `render`: live tag and shader changes
 
 Host methods answered where the game's host registers them
-(`crates/agent/src/hot.rs`, names in `crates/agent-proto/src/hot.rs`).
+(`crates/extensions/agent/src/hot.rs`, names in `crates/extensions/agent-proto/src/hot.rs`).
 The design, the override directory and the rules are in
 [hot-iteration.md](../graphics/hot-iteration.md). The override directory
 is `$H2_RENDER_OVERRIDES`, else `render-overrides` in the cache directory.
@@ -1099,14 +1099,14 @@ Tag names come from the map file the game loaded ([`world`](#world-what-is-in-th
 
 The in-game debug menu is a client of this API ([debug-menu.md](debug-menu.md));
 the methods it added beside the agent's own are in
-`crates/debug-menu/src/sources.rs` (`method`).
+`crates/extensions/debug-menu/src/sources.rs` (`method`).
 
 | Method | Access | Params | Does |
 |---|---|---|---|
-| `settings.list` | read | `{prefix?}` | settings (`settings.toml`) and how each applies (`crates/agent/src/menu.rs`) |
+| `settings.list` | read | `{prefix?}` | settings (`settings.toml`) and how each applies (`crates/extensions/agent/src/menu.rs`) |
 | `settings.set` | act | `{key, value}` | saves the value and applies it as the setting applies; `UNAVAILABLE` when something else set it for this run |
 | `perf.overlay` | act | `{}` reads, `{on}` sets | the perf overlay (the watermark) |
-| `cheat.list` | read | `{}` | the cheats, their values, and why any is refused (`crates/boot/src/cheats.rs`) |
+| `cheat.list` | read | `{}` | the cheats, their values, and why any is refused (`crates/apps/boot/src/cheats.rs`) |
 | `cheat.set` | act | `{name, value}` | sets one, for example `{"name":"hide_hud","value":true}` |
 
 ## `sim`: simulated players and direct state
@@ -1115,7 +1115,7 @@ the methods it added beside the agent's own are in
 running game: players that are not people, game state written directly,
 and assertions that answer pass or fail with what was seen. It never
 starts another game instance. They are game methods
-(`Agent::add_game_method`, `crates/agent/src/sim/`): answered on the
+(`Agent::add_game_method`, `crates/extensions/agent/src/sim/`): answered on the
 game's thread with guest memory at hand, and like `world.*` at a tick
 boundary while the game ticks. The wire types are `agent_proto::sim`.
 
@@ -1199,7 +1199,7 @@ X
 h2 agent sim run bot-team.txt
 ```
 
-The verbs in `crates/cli/src/agent_sim.rs`: `add phantom [source]
+The verbs in `crates/apps/cli/src/agent_sim.rs`: `add phantom [source]
 xuid=X gamertag=G [key=JSON...]`, `remove <sim.N|all>`, `list`, `pad
 <sim.N> <steps> [append]`, `set <player.N|sim.N> key=JSON...`, `give
 <player.N|sim.N> <weap tag> [loaded=N] [reserve=N] [keep]`, `spawn <tag>
@@ -1268,7 +1268,7 @@ write; it needs the game's respawn and is not provided.
 
 A host write of a position cannot move a player: the biped's physics puts
 the body back at the next tick. So a move goes through the game
-(`crates/agent/src/sim/calls.rs`), and its physics, cluster and vehicle
+(`crates/extensions/agent/src/sim/calls.rs`), and its physics, cluster and vehicle
 seat hear of it.
 
 A game method answers in the tick observer, after the tick, where nothing
@@ -1384,7 +1384,7 @@ H2_AGENT=/tmp/sim.sock h2 agent match.stop
 ## Theater transport
 
 The game agent lists these host methods in `session.methods`
-(`crates/agent-proto/src/theater.rs`, `crates/boot/src/theater/controls.rs`).
+(`crates/extensions/agent-proto/src/theater.rs`, `crates/apps/boot/src/theater/controls.rs`).
 In an ordinary CLI-hosted game, `theater.play` with a library ID starts an
 isolated playback process; subsequent transport requests through that
 game agent go to its player. During startup the caller can retry after a
@@ -1456,9 +1456,9 @@ bug.
 Polling `world.object` from outside (`h2 agent -`) drops ticks when the
 game or the client is busy. `trace.*` and `flight.*` take the rows inside
 the game, in the tick observer, before queued requests are served, so each
-tick gives exactly one row. Code: `crates/agent/src/trace.rs` (tests in
-`trace/tests.rs`), wire types and `show` in `crates/agent-proto/src/trace.rs`,
-CLI in `crates/cli/src/agent_flight.rs`.
+tick gives exactly one row. Code: `crates/extensions/agent/src/trace.rs` (tests in
+`trace/tests.rs`), wire types and `show` in `crates/extensions/agent-proto/src/trace.rs`,
+CLI in `crates/apps/cli/src/agent_flight.rs`.
 
 ```sh
 h2 agent trace start player.0 physics,pos          # rows to traces/trace-<ms>.jsonl
@@ -1551,7 +1551,7 @@ X
 h2 agent run grenade.txt          # one JSON verdict; exit 1 unless it passed
 ```
 
-`h2 agent run <script|->` (`crates/cli/src/agent_run.rs`) is the `h2
+`h2 agent run <script|->` (`crates/apps/cli/src/agent_run.rs`) is the `h2
 agent -` script on one connection, plus `expect <pointer> <op> [JSON]` on
 the last answer (a JSON pointer; ops `==`, `!=`, `<`, `<=`, `>`, `>=` on
 numbers, `contains` for a substring, an array element or an object key,
@@ -1566,9 +1566,9 @@ except kept ones, so a long scenario costs a few lines of context.
 ### Test maps on disk
 
 `h2 testmap <source.map> <script.json | -> --out <new.map> [--force]`
-(`crates/cli/src/testmap_cmd.rs`) is a host-only tool for a repro that
+(`crates/apps/cli/src/testmap_cmd.rs`) is a host-only tool for a repro that
 needs one thing in an empty room. It runs a JSON edit script
-(`scenario_edit::script`, `crates/scenario-edit/src/script.rs`) over the
+(`scenario_edit::script`, `crates/tools/scenario-edit/src/script.rs`) over the
 source's placement blocks through the editor's own `Session`, so every
 edit is checked as the editor checks it, and saves a new map (the source
 is never written). It prints what each operation did and the entries left
@@ -1612,11 +1612,11 @@ agents do not.
 Statements are **Code** (read from this repository, the path given) unless
 labelled. Guest addresses are **E** (read from the retail XBE with `h2
 disasm`) and are research points, not data. Tests that cover the page:
-`crates/agent/src/exec/tests.rs` (wire, control, wait, deferred answers),
-`crates/agent/src/sim/tests.rs` (`sim.*`, with the callees played by the
-tests), `crates/agent/src/trace/tests.rs`, `crates/agent/src/havok.rs` and
-`crates/agent/src/raw.rs` (synthetic guest memory), `crates/agent-proto`
-(wire types), `crates/boot/tests/feature_plan.rs` (the observer order).
+`crates/extensions/agent/src/exec/tests.rs` (wire, control, wait, deferred answers),
+`crates/extensions/agent/src/sim/tests.rs` (`sim.*`, with the callees played by the
+tests), `crates/extensions/agent/src/trace/tests.rs`, `crates/extensions/agent/src/havok.rs` and
+`crates/extensions/agent/src/raw.rs` (synthetic guest memory), `crates/extensions/agent-proto`
+(wire types), `crates/apps/boot/tests/feature_plan.rs` (the observer order).
 
 ## Not verified
 

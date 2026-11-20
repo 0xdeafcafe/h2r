@@ -7,7 +7,7 @@ finds the console's GPU through DX12, loads the module through
 are not verified ("Known gaps"). In App mode the process has about 1.7 GB
 of memory, little of it free once booted. **Switch it to Game in Dev Home**
 (see "Installing and launching") before loading a level.
-Code: `crates/uwp-host`, `platform/xbox`. Tests: `platform/xbox/tests/portal_test.sh`.
+Code: `crates/apps/uwp-host`, `platform/xbox`. Tests: `platform/xbox/tests/portal_test.sh`.
 Switch: `H2_XBOX`, `H2_XBOX_PROFILE_DIR` and the build variables, see [switches.md](switches.md).
 
 The game runs on an Xbox Series X|S in Developer Mode as a UWP app,
@@ -23,7 +23,7 @@ packs every map, and the Multiplayer Map Pack with `--mappack`
 
 | Piece | What it is | Built by |
 | --- | --- | --- |
-| `crates/uwp-host` (`h2uwp.exe`) | the app: a `CoreApplication` view (no XAML) whose render loop runs `h2host::start_in`, the same shell and `boot::run_hosted` the Apple apps use | `cargo build -Zbuild-std --target x86_64-pc-windows-msvc`, static CRT, `/APPCONTAINER` |
+| `crates/apps/uwp-host` (`h2uwp.exe`) | the app: a `CoreApplication` view (no XAML) whose render loop runs `h2host::start_in`, the same shell and `boot::run_hosted` the Apple apps use | `cargo build -Zbuild-std --target x86_64-pc-windows-msvc`, static CRT, `/APPCONTAINER` |
 | `h2game.dll` (+ `h2game.dll.stamp`) | the generated module, loaded with `LoadPackagedLibrary` | `boot::build` with `H2_EMIT_TARGET=windows` (`apple-host` `pack --platform xbox`) |
 | `disc/` | the disc files the app needs (`h2host::layout::DISC_FILES`), served as D: by `vfs::DirDiscBackend` | `pack` |
 | `bootcache/` | the XBE's analysis for this build, copied to LocalState on first launch | `pack` |

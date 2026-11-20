@@ -17,7 +17,7 @@ tier completes.
 
 ## The tier
 
-`crates/emit/src/sim.rs` (`emit::sim`) builds on the same lifted IR as
+`crates/recompiler/emit/src/sim.rs` (`emit::sim`) builds on the same lifted IR as
 `emit::write_module`; nothing in the lifter, IR or reference emitter
 changes. The tier is chosen per root by the test that builds it: there is
 no switch or environment variable.
@@ -49,7 +49,7 @@ no switch or environment variable.
   values are binary64 while they stay in the subset
   `docs/lifter/x87-native.md` proves exact at PC=53: zero, or normal with
   exponent within 2^±400. PE and C1 are rebuilt exactly from the rounding
-  error (`crates/emit/c/h2tier.h`).
+  error (`crates/recompiler/emit/c/h2tier.h`).
 - **Boundary.** Each root exports
   `uint32_t h2tier_<entry>(CpuAbi *, uint8_t *base, uint32_t *rare_pc)`.
   It requires MXCSR `0x1f80` (masked, round to nearest, no FTZ), the host
@@ -81,7 +81,7 @@ MXCSR. Nothing in the five roots reads them.
 
 ## Method
 
-`crates/engine/tests/sim_tier_differential.rs` (feature `differential`)
+`crates/rewrites/engine/tests/sim_tier_differential.rs` (feature `differential`)
 needs the user's XBE. It compiles the closure of the five roots twice
 into one dylib, once by `emit::write_module_with` (the reference tier,
 registered with the production runtime's `Dispatch` and run by `Runner`)
@@ -108,7 +108,7 @@ dirties, minus the same loop with the restore alone. The reference
 runner's cost around the empty function is printed once; the table shows
 the reference raw and net of it. Each row is the mean over timed cases.
 
-`crates/emit/tests/sim_tier.rs` needs no disc: iced-assembled integer,
+`crates/recompiler/emit/tests/sim_tier.rs` needs no disc: iced-assembled integer,
 `rep movsd`, SSE, x87 and call fixtures, 400 random states each, against
 the interpreter.
 

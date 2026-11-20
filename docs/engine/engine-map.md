@@ -514,7 +514,7 @@ Constants used by these paths: `0x0045dc70` = 0.001, `0x0045dccc` = 1000.0,
 
 ## Animation graphs (`jmad`) and animation decompression
 
-Added with the animation decoder (`crates/tags/src/anim.rs`, `anim_sample.rs`;
+Added with the animation decoder (`crates/formats/tags/src/anim.rs`, `anim_sample.rs`;
 [animation.md](../formats/animation.md)). Names are assigned descriptions, except codec
 and cache names, which are strings the executable itself carries. All addresses
 are guest virtual addresses read in Ghidra's decompilation and cross-checked with
@@ -598,7 +598,7 @@ in [effects.md](../formats/effects.md).
 ## Effects: function evaluator
 
 Static analysis only; names are assigned descriptions. Layout, evidence and the
-Rust port (`crates/tags/src/effects/function.rs`) are in [effects.md](../formats/effects.md).
+Rust port (`crates/formats/tags/src/effects/function.rs`) are in [effects.md](../formats/effects.md).
 
 | Address / assigned name | Confidence | Evidence |
 |---|---|---|
