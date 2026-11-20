@@ -346,7 +346,7 @@ Built and tested, all behind `impl.render.occlusion` (exactly that key;
   `DEPTH32FLOAT_STENCIL8`), and the viewport-to-texel rectangle
   (`cargo test -p d3d --lib grid_rect`);
 - the guest side (`occlusion::guest`) and the feature on the runtime
-  (`cargo test -p hooks --test occlusion`): the records, setup and
+  (`cargo test -p render-bridge --test occlusion`): the records, setup and
   transparents hooks over the synthetic generated module, one capture per
   main view and frame, grids delivered as the device would, skipping from
   the second occluded frame and running the original otherwise.
