@@ -540,7 +540,7 @@ named, reversible change, applied live:
 
 | Override | Label | Example |
 |---|---|---|
-| `switch {name, on}` | as the feature says | `impl.render.native_world=off`, `e3_lighting=off` |
+| `switch {name, on}` | as the feature says | `impl.render.native=off`, `e3_lighting=off` |
 | `render.pass {name, off}` | View | drop the shadow pass |
 | `render.lod_bias`, `render.scale` | View | |
 | `effects.cap {class?, max}` | Sim | at most 8 live plasma impacts |
@@ -1144,24 +1144,6 @@ run against the game):
   (`frame-<seq>-pass-<n>.png`); `snaps` gives each file or error. A pass
   with no draw has no known size and says so. This is a GPU round trip,
   only when asked.
-- **Residual render census.** With
-  `H2_NATIVE_RESIDUAL_PROBE=2000,3000` at launch,
-  `render.stats` includes `counters.residual`. It lists completed
-  present numbers and, for each view kind, the invocation count and
-  distinct Direct3D entry and return-PC pairs, with ordinary backend
-  draw attempts. Use the stage counters
-  in the same reply to identify submitted native draws. See the
-  [residual caller inventory](../graphics/native-renderer.md#residual-render-callers).
-- **Shadow maps.** `render.shadows {}` reads completed GPU comparisons when
-  `impl.render.native_shadows=on` and `H2_NATIVE_SHADOWS_COMPARE=1`.
-  It accepts no parameters. `comparing` reports the requested mode.
-  `maps.completed`, `nonempty` (at least one caster packet) and `mismatched`
-  count physical maps since process start. `maps.recent` keeps the latest 32
-  in readback completion order. Each includes the present (`frame`), generation,
-  view, parent identity, site, map kind, physical copy, extent, candidate count,
-  projection (nine vectors of four raw u32 words), packet count,
-  differing texel count and first differing pixel or null. A dropped or pending
-  readback contributes no sample. See [native shadows](../graphics/native-shadows.md).
 - **Counters.** `render.stats`: `interp` is `d3d::interp::InterpStats`
   with every field (frames blended and held, replays, warps, and the hold
   reasons `unsure_*`, `mismatch_*`, `dropped`), read from its `Debug`
