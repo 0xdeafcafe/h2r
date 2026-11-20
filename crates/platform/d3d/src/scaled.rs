@@ -219,6 +219,16 @@ pub trait ScaleView<R: Backend>: Backend {
         flags: u32,
         gamma: Option<&[u8; 768]>,
     ) -> Result<(), String>;
+    /// Show an in-between frame from the reference store. A GPU view uses
+    /// its replay hook, preserving the guest swap number for captures.
+    fn replay_reference(
+        &mut self,
+        reference: &mut R,
+        surface: R::Surface,
+        gamma: Option<&[u8; 768]>,
+    ) -> Result<(), String> {
+        self.present_reference(reference, surface, 0, gamma)
+    }
 }
 
 /// A [`ScaledBackend`] surface: the reference's, and the view's when the
@@ -1508,7 +1518,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
             Some(v) if !self.frame_failed => self.view.present_replay(v, gamma),
             _ => self
                 .view
-                .present_reference(&self.reference, surface.reference, 0, gamma),
+                .replay_reference(&mut self.reference, surface.reference, gamma),
         }
     }
 
@@ -2327,6 +2337,16 @@ impl ScaleView<GfxBackend> for GfxBackend {
     ) -> Result<(), String> {
         self.present_from(Some(reference), surface, flags, gamma)
     }
+
+    fn replay_reference(
+        &mut self,
+        reference: &mut GfxBackend,
+        surface: gfx::surface::SurfaceId,
+        gamma: Option<&[u8; 768]>,
+    ) -> Result<(), String> {
+        reference.flush()?;
+        self.show_replay(Some(reference), surface, gamma)
+    }
 }
 
 /// The retail-or-E3 A/B capture ([`LightingAb`]): a second view over a
@@ -2399,6 +2419,17 @@ impl ScaleView<ScaledBackend<GfxBackend, GfxBackend>> for GfxBackend {
         gamma: Option<&[u8; 768]>,
     ) -> Result<(), String> {
         self.present_from(Some(reference.reference()), surface.reference, flags, gamma)
+    }
+
+    fn replay_reference(
+        &mut self,
+        reference: &mut ScaledBackend<GfxBackend, GfxBackend>,
+        surface: Surf<GfxBackend, GfxBackend>,
+        gamma: Option<&[u8; 768]>,
+    ) -> Result<(), String> {
+        let reference = reference.reference_mut();
+        reference.flush()?;
+        self.show_replay(Some(reference), surface.reference, gamma)
     }
 }
 

@@ -9,6 +9,35 @@ use d3d::backend::Recorded;
 use d3d::{Device, Event, GfxBackend, GuestMemory, RecordingBackend, SparseMemory, UploadPolicy};
 use gfx::GfxContext;
 
+/// At 1x a sleeping scaled view presents from the reference's store.
+#[test]
+fn parity_observes_only_guest_swaps_even_when_the_view_sleeps() {
+    use d3d::Backend;
+    use std::sync::{Arc, Mutex};
+
+    let Ok(ctx) = GfxContext::headless() else { return };
+    let reference = GfxBackend::new(GfxContext {
+        instance: ctx.instance.clone(), adapter: ctx.adapter.clone(), device: ctx.device.clone(),
+        queue: ctx.queue.clone(), caps: ctx.caps,
+    });
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let out = Arc::clone(&observed);
+    let mut view = GfxBackend::new(ctx);
+    view.observe_guest_present(move |ordinal, _, store, surface| {
+        let d = store.get(surface).unwrap().desc();
+        out.lock().unwrap().push((ordinal, d.width, d.height));
+    });
+    let mut scaled = d3d::ScaledBackend::with_single_copy(reference, view, 1, false).unwrap();
+    let back = scaled.create_surface(gfx::D3DFormat::LinA8R8G8B8, 16, 8, false).unwrap();
+    scaled.present(back, 0).unwrap();
+    scaled.present_replay(back, None).unwrap();
+    scaled.follow_scale(|| 2);
+    scaled.present(back, 0).unwrap();
+    scaled.present_replay(back, None).unwrap();
+    scaled.present(back, 0).unwrap();
+    assert_eq!(&*observed.lock().unwrap(), &[(1, 16, 8), (2, 16, 8), (3, 32, 16)]);
+}
+
 #[test]
 fn first_frame_renders_through_gfx() {
     let ctx = match GfxContext::headless() {

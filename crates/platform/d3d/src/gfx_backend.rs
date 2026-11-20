@@ -90,6 +90,10 @@ use crate::shader::{ShaderProvider, VertexProcessing};
 pub type PresentHook =
     Box<dyn FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32, Option<&[u8; 768]>) + Send>;
 
+/// Observes the dispatched guest present, including a sleeping scaled view
+/// showing a surface from its reference store.
+type GuestPresentObserver = Box<dyn FnMut(u64, &GfxContext, &SurfaceStore, SurfaceId) + Send>;
+
 /// Inspects a completed batch in encoder order while its upload ranges
 /// and texture bindings still name this batch's data.
 type RecordedPassObserver = Box<dyn FnMut(&GfxContext, &mut wgpu::CommandEncoder, &wgpu::Texture, &gfx::RenderTarget<'_>, Clear, &[RecordedDraw]) + Send>;
@@ -155,6 +159,7 @@ pub struct GfxBackend {
     scene_presented: Option<SurfaceId>,
     scene_uploads: guest_draw_pass::TextureCache,
     present_hook: Option<PresentHook>,
+    guest_present_observer: Option<GuestPresentObserver>,
     recorded_pass_observer: Option<RecordedPassObserver>,
     submission_uploads: Option<Box<dyn FnMut() + Send>>,
     submitted_frame_observer: Option<Box<dyn FnMut() + Send>>,
@@ -333,6 +338,7 @@ impl GfxBackend {
             scene_presented: None,
             scene_uploads: Default::default(),
             present_hook: None,
+            guest_present_observer: None,
             recorded_pass_observer: None,
             submission_uploads: None,
             submitted_frame_observer: None,
@@ -484,6 +490,34 @@ impl GfxBackend {
     ) -> Self {
         self.present_hook = Some(Box::new(hook));
         self
+    }
+
+    /// A host-only replay may use a surface from the sleeping view's 1x
+    /// reference. It still goes to the replay hook and has no guest ordinal.
+    pub(crate) fn show_replay(
+        &mut self,
+        from: Option<&GfxBackend>,
+        surface: SurfaceId,
+        gamma: Option<&[u8; 768]>,
+    ) -> Result<(), String> {
+        self.flush()?;
+        let (ctx, store) = match from {
+            Some(reference) => (&reference.ctx, &reference.store),
+            None => (&self.ctx, &self.store),
+        };
+        if let Some(hook) = self.replay_hook.as_mut().or(self.present_hook.as_mut()) {
+            hook(ctx, store, surface, 0, gamma);
+        }
+        Ok(())
+    }
+
+    /// Observe the guest swaps on this backend. A host-only interpolated
+    /// present does not consume a number or notify this observer.
+    pub fn observe_guest_present(
+        &mut self,
+        observer: impl FnMut(u64, &GfxContext, &SurfaceStore, SurfaceId) + Send + 'static,
+    ) {
+        self.guest_present_observer = Some(Box::new(observer));
     }
 
     /// Observe complete packets before their original pass records. Used by
@@ -1105,13 +1139,15 @@ impl GfxBackend {
         if from.is_none() {
             self.presented = Some(surface);
         }
-        if let Some(hook) = self.present_hook.as_mut() {
-            match from {
-                // Another backend's surface (a view showing its reference's
-                // image, `crate::scaled`), on the same device.
-                Some(other) => hook(&other.ctx, &other.store, surface, flags, gamma),
-                None => hook(&self.ctx, &self.store, surface, flags, gamma),
-            }
+        let (ctx, store) = match from {
+            Some(reference) => (&reference.ctx, &reference.store),
+            None => (&self.ctx, &self.store),
+        };
+        if let Some(observer) = &mut self.guest_present_observer {
+            observer(self.frame - 1, ctx, store, surface);
+        }
+        if let Some(hook) = &mut self.present_hook {
+            hook(ctx, store, surface, flags, gamma);
         }
         let frame_end = self.last_submit.clone();
         if honour_finish && flags & 4 != 0 {
@@ -2167,11 +2203,7 @@ impl Backend for GfxBackend {
         // A host-only frame (crate::interp): submitted and shown through
         // the hook; the frame count, shader upkeep, `presented` and the
         // swap wait belong to the guest's presents.
-        self.flush()?;
-        if let Some(hook) = self.replay_hook.as_mut().or(self.present_hook.as_mut()) {
-            hook(&self.ctx, &self.store, surface, 0, gamma);
-        }
-        Ok(())
+        self.show_replay(None, surface, gamma)
     }
 
     fn clear_pixel_count(&mut self) -> Result<(), String> {
