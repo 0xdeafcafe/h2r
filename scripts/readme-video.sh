@@ -135,6 +135,22 @@ agent() {
   (cd "$scratch" && "$h2" agent --socket "$1" --timeout 1810 "${@:2}")
 }
 
+# session.wait answers TIMEOUT after at most 600 s, so a long wait (a level
+# intro while the bots build nav meshes) is retried in 600 s slices for up
+# to 30 minutes.
+agent_wait() {
+  local socket="$1" until="$2" slice out
+  for ((slice = 0; slice < 3; slice++)); do
+    if out="$(agent "$socket" wait "$until" 600000 2>&1)"; then
+      printf '%s\n' "$out"
+      return 0
+    fi
+    grep -q 'timed out before the condition held' <<< "$out" || { printf '%s\n' "$out" >&2; return 1; }
+  done
+  printf '%s\n' "$out" >&2
+  return 1
+}
+
 capture() {
   local name="$1" level="$2" gfx="$scratch/$1" socket="$1.sock"
   local i ready map tick start_tick capture_tick params queued armed clip_id result recorded
@@ -162,10 +178,10 @@ capture() {
   done
   [[ -S "$scratch/$socket" ]] || fail "$name: timed out waiting for the agent socket"
 
-  ready="$(agent "$socket" wait '{"phase":"gameplay","map_ticks":30}' 1800000)"
+  ready="$(agent_wait "$socket" '{"phase":"gameplay","map_ticks":30}')"
   map="$(jq -er '.at.map' <<< "$ready")"
-  agent "$socket" wait "$(jq -cn --arg map "$map" --argjson ticks "$settle_ticks" \
-    '{phase:"gameplay", $map, $ticks}')" 1800000 >/dev/null
+  agent_wait "$socket" "$(jq -cn --arg map "$map" --argjson ticks "$settle_ticks" \
+    '{phase:"gameplay", $map, $ticks}')" >/dev/null
   agent "$socket" cheat.set '{"name":"hide_hud","value":true}' >/dev/null
   tick="$(agent "$socket" status | jq -er '.at.tick')"
   start_tick=$((tick + 60))
@@ -189,9 +205,9 @@ capture() {
 
   # The renderer permits two guest frames in flight. Give the last
   # capture and its replays time to drain before querying the PNG writer.
-  agent "$socket" wait "$(jq -cn --arg map "$map" \
+  agent_wait "$socket" "$(jq -cn --arg map "$map" \
     --argjson tick "$((capture_tick + clip_ticks + 3))" '{phase:"gameplay", $map, $tick}')" \
-    1800000 >/dev/null
+    >/dev/null
   if ! result="$(agent "$socket" render.capture_clip.status "$clip_id")" ||
      ! jq -e --argjson count "$clip_frames" '.written == $count and .frames == $count' \
        <<< "$result" >/dev/null; then
