@@ -82,6 +82,9 @@ pub struct Ready {
     /// compiled layer-6 passes, their supplies and the parts the water
     /// pass draws.
     pub(crate) water: Option<Arc<crate::native_water_glue::WaterData>>,
+    /// The scene's layers 1, 5, 7, 8 and 20 of this load
+    /// (`native_layers_glue`), when `frame-scene.layers` is placed.
+    pub(crate) layers: Option<Arc<crate::native_layers_glue::LayersView>>,
     /// What the native lights draw over this world
     /// (`native_lights_glue`; `None` when the world has no native
     /// material).
@@ -489,6 +492,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
     crate::native_transparents_glue::install(device);
     crate::native_fog_glue::install(device, Arc::clone(&state));
     crate::native_water_glue::install(device, Arc::clone(&state));
+    crate::native_layers_glue::install(device, Arc::clone(&state));
     let gels = crate::native_gels_glue::install(device);
     crate::native_lights_glue::install(device, state, gels);
     // The post loads its own screen effects (`native_post_glue::EffectsSlot`).
@@ -544,6 +548,10 @@ pub(crate) fn upload_on<'a>(ready: &'a Ready, device: &wgpu::Device, queue: &wgp
     // The water set rides the same upload (`native_water_glue`).
     if let Some(water) = ready.water.as_ref().filter(|w| !w.programs.is_empty()) {
         crate::native_water_glue::upload_water(water, device, queue, &mut g, &mut stage, &mut |k| lightmaps.get(&k).cloned());
+    }
+    // The scene's layers ride it too (`native_layers_glue`).
+    if let Some(layers) = ready.layers.as_ref() {
+        crate::native_layers_glue::upload_layers(layers, device, queue, &mut g, &mut stage, &mut |k| lightmaps.get(&k).cloned());
     }
     *gpu = Some(g);
     gpu
@@ -932,6 +940,10 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
     // The water edge blend (layer 6), over the world's transparent parts
     // before its draws are kept.
     let water = Some(crate::native_water_glue::load(&mut map, &mut files, &shaders, &world, &lightmaps, &mut stage_images, &mut decoder));
+    // The scene's layers 1, 5, 7, 8 and 20 from the plan, over the whole
+    // world, when their stage is placed.
+    let layers = render_bridge::native_layers::placed()
+        .then(|| crate::native_layers_glue::load(&mut map, &mut files, &shaders, &world, &lightmaps, &mut stage_images, &mut decoder));
     // Draw only a native material's clusters, and its placements with its
     // rigid program: the rest keeps its D3D draws.
     let opaque = opaque_materials::Library::load(&mut map, &shaders);
@@ -955,6 +967,7 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
         parts: Arc::new(parts),
         fog,
         water,
+        layers,
         lights,
         palettes: decoder.used().clone(),
     }, bsps.len()))

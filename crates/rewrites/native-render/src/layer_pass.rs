@@ -380,6 +380,106 @@ pub fn property_value(property: &AnimatedProperty, index: usize, time: Option<f6
     Ok((hi - lo) * v + lo)
 }
 
+/// One structure item of a layer draw's list as the skip sees it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SkipItem {
+    /// Its index in the list ([`LayerItem::slot`]).
+    pub slot: u32,
+    pub owner: crate::world::Owner,
+    /// The low byte of its render argument: the index into its section's
+    /// parts the build `0x0004cbf0` draws.
+    pub part: u8,
+    /// The item's shader datum (`+8`).
+    pub shader: u32,
+}
+
+/// Clears `layer`'s bit on the longest run of the current list's items,
+/// from its first, that are structure geometry items `native` accepts:
+/// the native pass records before the guest's layer draw, so what it
+/// takes must come first in the list's order. The walk stops at the first
+/// item of the layer that is not one (an object, another build, a refused
+/// part); that item and the rest keep their D3D draws. `None` when the
+/// layer is not current or the list does not read; nothing is written
+/// then. Callers plan the writes in a `skip::MaskPreview`.
+pub fn clear_prefix(
+    mem: &mut dyn crate::camera::GuestWrite,
+    layer: u32,
+    native: &dyn Fn(SkipItem) -> bool,
+) -> Option<(Vec<SkipItem>, crate::skip::Cleared)> {
+    use crate::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, ITEM_SIZE, MAX_ITEMS, RENDER_RECORD_SIZE, RENDER_RECORDS};
+    use crate::world::Owner;
+    if layer >= 32 || mem.read_u32(CURRENT_LAYER)? != layer {
+        return None;
+    }
+    let list = mem.read_u32(CURRENT_LIST)?;
+    if list == 0 {
+        return None;
+    }
+    let count = mem.read_u32(list.checked_add(4)?)?;
+    let first = mem.read_u32(list.checked_add(0xc)?)?;
+    let items = mem.read_u32(list.checked_add(0x14)?)?;
+    if first > count || count - first > MAX_ITEMS {
+        return None;
+    }
+    items.checked_add(count.checked_mul(ITEM_SIZE)?)?;
+    let bit = 1u32 << layer;
+    let mut prefix = Vec::new();
+    for i in first..count {
+        let item = items + ITEM_SIZE * i;
+        let mask = mem.read_u32(item + 0x10)?;
+        if mask & bit == 0 {
+            continue;
+        }
+        if mem.read_u32(item)? != GEOMETRY_BUILD {
+            break;
+        }
+        let arg = mem.read_u32(item + 0xc)?;
+        let record = (arg >> 8) as u16 as i16;
+        if record < 0 {
+            break;
+        }
+        let base = RENDER_RECORDS + RENDER_RECORD_SIZE * record as u32;
+        if mem.read_u32(base + 4)? != u32::MAX {
+            break; // an object's
+        }
+        let packed = mem.read_u32(base + 0xc)?;
+        let owner = if mem.read_u32(base)? & (1 << 12) == 0 {
+            Owner::Cluster((packed >> 9) & 0x1ff)
+        } else {
+            Owner::Instance((packed >> 18) & 0x7ff)
+        };
+        let found = SkipItem { slot: i, owner, part: arg as u8, shader: mem.read_u32(item + 8)? };
+        if !native(found) {
+            break;
+        }
+        prefix.push((item, mask, found));
+    }
+    let mut cleared = crate::skip::Cleared { layer, items: Vec::with_capacity(prefix.len()) };
+    let mut drawn = Vec::with_capacity(prefix.len());
+    for (item, mask, found) in prefix {
+        mem.write_u32(item + 0x10, mask & !bit)?;
+        cleared.items.push(item);
+        drawn.push(found);
+    }
+    Some((drawn, cleared))
+}
+
+/// The world's owner of a layer item, `None` for an object's.
+pub fn world_owner(owner: LayerOwner) -> Option<crate::world::Owner> {
+    match owner {
+        LayerOwner::Cluster(c) => Some(crate::world::Owner::Cluster(u32::from(c))),
+        LayerOwner::Placement(p) => Some(crate::world::Owner::Instance(u32::from(p))),
+        LayerOwner::Object(_) => None,
+    }
+}
+
+/// Whether a planned draw is static: the material as resolved at the load
+/// (no input read per draw) and no animation. Only these draw with the
+/// programs compiled at the load (`crate::fog_gpu::FogSet`).
+pub fn is_static(draw: &LayerDraw) -> bool {
+    draw.animation.is_empty() && draw.passes.iter().all(|p| draw.implementation(p).is_some_and(|i| !i.per_draw_inputs))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,6 +723,51 @@ mod tests {
         let m = material(8, vec![vec![implementation(0, InputReads::default(), vec![c])]], own_inputs());
         let r = plan_item(&pass(8, view_inputs()), &item(LayerOwner::Cluster(1), 0, None), &mut library(m)).unwrap_err();
         assert_eq!(r, LayerRefusal::Property { property: 5 }, "the instance has no property 5");
+    }
+
+    #[test]
+    fn the_skip_takes_the_accepted_structure_items_up_to_the_first_it_cannot() {
+        use crate::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, ITEM_SIZE, RENDER_RECORD_SIZE, RENDER_RECORDS};
+        use crate::world::Owner;
+        use scene_extract::GuestRead;
+        use scene_extract::testing::Mem;
+        const LIST: u32 = 0x0060_0000;
+        const ITEMS: u32 = 0x0061_0000;
+        let mut m = Mem::default();
+        m.w(CURRENT_LAYER, 5);
+        m.w(CURRENT_LIST, LIST);
+        m.w(LIST + 4, 5);
+        m.w(LIST + 0xc, 0);
+        m.w(LIST + 0x14, ITEMS);
+        // Records 1 and 2 clusters 7 and 8, record 3 an object's, record 4
+        // placement 9.
+        for (r, flags, model, packed) in [(1, 0, u32::MAX, 7 << 9), (2, 0, u32::MAX, 8 << 9), (3, 0, 0xe100_0001, 0), (4, 1 << 12, u32::MAX, 9 << 18)] {
+            let base = RENDER_RECORDS + RENDER_RECORD_SIZE * r;
+            m.w(base, flags);
+            m.w(base + 4, model);
+            m.w(base + 0xc, packed);
+        }
+        // Item 1 is not in layer 5; item 3 the object; item 4 after it.
+        for (i, record, mask) in [(0u32, 1u32, 1u32 << 5), (1, 3, 1 << 3), (2, 2, 1 << 5 | 1 << 3), (3, 3, 1 << 5), (4, 4, 1 << 5)] {
+            let at = ITEMS + ITEM_SIZE * i;
+            m.w(at, GEOMETRY_BUILD);
+            m.w(at + 8, 0xe000_0010 + i);
+            m.w(at + 0xc, record << 8 | i);
+            m.w(at + 0x10, mask);
+        }
+        let (drawn, cleared) = clear_prefix(&mut m, 5, &|_| true).unwrap();
+        assert_eq!(drawn.iter().map(|d| d.owner).collect::<Vec<_>>(), [Owner::Cluster(7), Owner::Cluster(8)]);
+        assert_eq!(drawn[1], SkipItem { slot: 2, owner: Owner::Cluster(8), part: 2, shader: 0xe000_0012 });
+        assert_eq!(cleared.items, [ITEMS, ITEMS + 2 * ITEM_SIZE]);
+        assert_eq!(m.read_u32(ITEMS + 0x10), Some(0), "its layer-5 bit cleared");
+        assert_eq!(m.read_u32(ITEMS + 2 * ITEM_SIZE + 0x10), Some(1 << 3), "only layer 5's");
+        assert_eq!(m.read_u32(ITEMS + 4 * ITEM_SIZE + 0x10), Some(1 << 5), "after the object: the guest's");
+        // A refused first item leaves everything to the guest.
+        m.w(ITEMS + 0x10, 1 << 5);
+        m.w(ITEMS + 2 * ITEM_SIZE + 0x10, 1 << 5);
+        let (drawn, cleared) = clear_prefix(&mut m, 5, &|i| i.owner != Owner::Cluster(7)).unwrap();
+        assert!(drawn.is_empty() && cleared.items.is_empty());
+        assert_eq!(clear_prefix(&mut m, 7, &|_| true), None, "not the current layer");
     }
 
     #[test]

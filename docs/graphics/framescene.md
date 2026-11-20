@@ -6,7 +6,8 @@ Change 7 of the [architecture review](../reviews/2026-11-20-architecture.md)
 page is the spec: types, threads, the order of work, the tests and gates
 for each slice, the order of deletion and the commands that measure it.
 Slices 0 to 3 are built; their sections say how. Of slice 4 the entry
-census is built, and its section says what the replacements wait on. The
+census and the structure's layer draws from the plan are built, and its
+section says what the replacements wait on. The
 rest is the plan. Lanes write code and tests; the coordinator builds, runs and
 measures.
 
@@ -870,7 +871,8 @@ to the guest's draws (**Code**):
   `boot::native_world_layers_glue`; the first person's per item at
   issue). With the entry replaced nothing is resolved. What a stage
   needs to draw a layer pass from the scene alone is extracted and
-  planned; the GPU recording of the plan is not built.
+  planned, and the structure's static items draw from the plan
+  (`frame-scene.layers`, below).
   - **Material inputs** (`frame_scene::LayerInputs`, read at the layer
     draw's begin by `scene_extract::layout::layer_inputs`, research
     points in its module notes). The render time `0x004858a0`, which
@@ -902,13 +904,37 @@ to the guest's draws (**Code**):
     be planned has a named cause (`LayerRefusal::name`): an input the
     scene does not give, an animation driven by an object function or of
     a bitmap or state, a material or pass that does not resolve.
-  - **Not built.** Recording the plan: the clusters' and placements'
-    passes over the world's buffers (as the fog stage records its
-    layer-16 passes, `fog_gpu::FogSet`), the objects' over the model
-    buffers (`object_program_gpu`), with the planned constants and
-    animation values; the glue that takes the layer entries with it in
-    place of the indexed-draw admission; and the plan's refusals in
-    `render.scene`.
+  - **The stage** (`frame-scene.layers`, an option with the native
+    renderer on; `render_bridge::native_layers`, its host
+    `boot::native_layers_glue`). At the world's load (only with the
+    option placed) each world material's passes of each of the five
+    layers are compiled as the fog's layer 16 is (`fog_gpu::layer_passes`,
+    `FogProgram`), all or nothing per material and layer, and each
+    material is resolved once with its instance's properties and input
+    scales; `GpuWorld::set_layer` holds one `fog_gpu::FogSet` per layer.
+    Before a scene view's layer draw (`layer_site` is `Site::Scene`; the
+    first person's layers stay as they are) the bridge extracts the
+    layer's pass from guest memory and the host plans it. A planned item
+    is drawn when it is a cluster's or a placement's, its draw is static
+    (no animation, no per-draw inputs: what the compiled programs hold)
+    and the layer's set draws its part with its shader.
+    `layer_pass::clear_prefix` clears the layer's bit on the run of such
+    items from the list's first, since the native pass records before the
+    guest's draw; one external pass (`GpuWorld::layer_draws`, in the D3D
+    pass open on the bound attachments) draws them. Everything else keeps
+    its D3D draws and so the indexed-draw admission: the objects (their
+    recording over the model buffers, `object_program_gpu`, is not
+    built), animated or per-draw items, and every item after the first
+    one the stage cannot draw. Each ask's outcomes are counted in
+    `render.scene` as `layer_plan_<layer>_taken` and
+    `layer_plan_<layer>_refused_<cause>`: the plan's causes
+    (`LayerRefusal::name`, `per_draw` for a material resolved per draw),
+    `object`, `animated`, `stencil` (layers 1 and 3 begin in stencil mode
+    1), `palettes`, `device`, `program` (no material of the layer
+    compiled), `order` (planned and static, but from the first item the
+    layer's set cannot draw on) and `unread` (the layer's pass did not
+    read); `layer_plan_asked`, `layer_plan_drawn` and `layer_plan_items`
+    count the layer calls asked, those drawn natively and their items.
   - **Tests** (synthetic). `every_view_input_reads_as_its_selector_computes_it`,
     `without_fog_or_a_view_the_selectors_fall_back` and
     `an_input_whose_words_do_not_read_is_not_given`
@@ -923,8 +949,14 @@ to the guest's draws (**Code**):
     `view_and_lighting_inputs_are_given_and_the_material_is_resolved_with_them`,
     `a_structure_item_draws_with_no_lighting_and_an_input_nothing_gives_is_named`,
     `a_game_time_property_wraps_its_time_over_its_period_and_maps_onto_its_range`,
-    `constant_animations_take_their_values_and_other_kinds_are_named`
-    and `a_scene_layer_plans_its_items_in_order_and_names_the_rest`.
+    `constant_animations_take_their_values_and_other_kinds_are_named`,
+    `a_scene_layer_plans_its_items_in_order_and_names_the_rest` and
+    `the_skip_takes_the_accepted_structure_items_up_to_the_first_it_cannot`;
+    for the stage, `the_plans_outcomes_count_by_layer_and_cause`
+    (`render_bridge::native_layers`),
+    `a_per_draw_refusal_counts_apart_from_a_missing_material` and
+    `the_plan_reads_only_what_the_load_resolved`
+    (`boot::native_layers_glue`).
 - **Layer 3.** The decorators (build `0x0004de20`) are in the scene
   (`View::decorators`, each placement's draw with its instances'
   `v11..v15`) and their stage's plan and instanced recording are built,

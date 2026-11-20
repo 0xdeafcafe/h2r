@@ -140,6 +140,7 @@ pub(crate) static BSP_LOAD_PENDING: AtomicBool = AtomicBool::new(true);
 pub fn reset() {
     crate::native_world::forget_pending();
     crate::native_fog::forget_pending();
+    crate::native_layers::forget_pending();
     crate::native_water::forget_pending();
     crate::native_objects::forget_pending();
     MAP.reset();

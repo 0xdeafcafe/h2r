@@ -93,6 +93,8 @@ pub mod native_fog_glue;
 #[cfg(feature = "gpu")]
 pub mod native_gels_glue;
 #[cfg(feature = "gpu")]
+pub mod native_layers_glue;
+#[cfg(feature = "gpu")]
 mod native_gels_replace;
 #[cfg(feature = "gpu")]
 pub mod native_hud_glue;
