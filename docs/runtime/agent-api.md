@@ -8,7 +8,7 @@ An agent, a script or a test reads and drives a running Halo 2 through one
 JSON-RPC interface: what is in the level, where frame time goes, what the
 menus show, how to put the game in a state and act in it. It replaces
 screenshots, pasted logs and environment variables read at launch. The
-front end is the `h2 agent` CLI; there is no other client.
+command-line client is `h2 agent`. The editor connects to the same endpoint.
 
 The rule that must hold: every answer is read at one tick boundary on the
 game's thread, and says which moment it describes (the `at` stamp).
@@ -24,6 +24,7 @@ connection to hold `session.claim`.
 | Method | Access | Section |
 |---|---|---|
 | `session.status`, `methods`, `claim`, `release`, `wait`, `subscribe` | read | [`session`](#session-what-is-running-and-its-clock) |
+| `live.subscribe`, `live.status`, `live.close` | read | [Live mirror](#live-mirror) |
 | `session.pause`, `resume`, `step` | claim | [Control](#control) |
 | `world.count`, `world.query`, `world.object` | read | [`world`](#world-what-is-in-the-level) |
 | `world.ai` | read | [`world.ai`](#worldai) |
@@ -96,19 +97,6 @@ printf 'claim\npause\nstep 30\ncount\nresume\n' | h2 agent -
   control"). TCP has no authentication; Unix sockets are Unix only.
   `h2 serve` removes its socket on Ctrl-C or SIGTERM. A Unix socket is
   created with mode 0600.
-- **Finding a game.** `h2 play` with `H2_AGENT` unset opens its own socket,
-  `<cache>/h2recomp/agents/<pid>.sock` (`agent_proto::discover`; the
-  directory is mode 0700, so only the user can connect; set in `boot`'s
-  agent source from `Host::discoverable_agent`). A game started any other
-  way (`h2 serve`, `h2 run`, the Xbox app) opens a socket only where
-  `H2_AGENT` or `--socket` says. `H2_AGENT=off` keeps `h2 play` from
-  opening one ([switches.md](switches.md)). A client lists the directory
-  and asks each socket `session.status` (`discover::scan`); a file nothing
-  answers on, left by a game that was killed, is removed. `h2 agent games`
-  prints each game's socket, pid, map and phase, and `h2 agent <call>` with
-  no socket named, no `$H2_AGENT` and nothing at the default socket uses
-  the one game in the directory. The editor pairs with these games
-  ([editor-guide.md](../editor/editor-guide.md), "Play from the editor").
 - **Another Mac.** `h2 lab agent --host H <run id> <call>` runs `h2 agent
   <call>` against that run's socket; `h2 lab bench` does a wait, capture,
   `render` and `counters` in one command ([lab.md](lab.md#driving-a-run-the-agent-api)).
@@ -129,6 +117,22 @@ printf 'claim\npause\nstep 30\ncount\nresume\n' | h2 agent -
   dispatch transfers as `lockstep`'s does: compare runs that all have it,
   or all lack it. With `H2_FEATURES=-agent` requests are answered only
   between slices, and pause and step are refused.
+
+### Finding a game
+
+`h2 play` with `H2_AGENT` unset opens its own socket,
+`<cache>/h2recomp/agents/<pid>.sock` (`agent_proto::discover`; the
+directory is mode 0700, so only the user can connect; set in `boot`'s
+agent source from `Host::discoverable_agent`). A game started any other
+way (`h2 serve`, `h2 run`, the Xbox app) opens a socket only where
+`H2_AGENT` or `--socket` says. `H2_AGENT=off` keeps `h2 play` from
+opening one ([switches.md](switches.md)). A client lists the directory
+and asks each socket `session.status` (`discover::scan`); a file nothing
+answers on, left by a game that was killed, is removed. `h2 agent games`
+prints each game's socket, pid, map and phase, and `h2 agent <call>` with
+no socket named, no `$H2_AGENT` and nothing at the default socket uses
+the one game in the directory. The editor pairs with these games
+([editor-guide.md](../editor/editor-guide.md), "Play from the editor").
 
 ## Wire
 
@@ -187,6 +191,47 @@ Access::Read | Act | Claimed, f)` (answered between slices too, where the
 method does not read guest memory) or `Agent::add_game_method` (answered
 on the game's thread with guest memory at hand, at a tick boundary while
 the game ticks).
+
+## Live mirror
+
+The editor opens a second connection to the same Unix or TCP endpoint.
+It calls `live.subscribe` there and reads the JSON reply line before
+switching to length-prefixed binary frames. Keep the original JSON
+connection for control calls. The stream reads the game at tick boundaries.
+
+| Method | Params | Result |
+|---|---|---|
+| `live.subscribe` | `{layers: ["objects", "players"], every?, key_every?}` | `{at, stream, protocol: "h2-live-mirror/1", tick_rate, map: {name, checksum, epoch}, layers, refused}`. The stream id is numeric. An unavailable checksum is null. Each unsupported layer has a reason under `refused`. |
+| `live.status` | none | `{map: {name, checksum, epoch}, streams, capture_us: {p50, p99, budget}, shed}`. Stream fields are `stream`, `layers`, `every`, `frames`, `bytes`, `queue`, `dropped` and `skipped`. Frames and bytes count complete writes, including the length prefix. |
+| `live.close` | `{stream}` | `{closed: true}` if the stream existed. Disconnecting the binary socket also ends its subscription. |
+
+`every` samples one tick in 1–30 (default 1). `key_every` requests a
+full frame at least every specified number of game ticks (default 150).
+An empty accepted layer set yields header-only frames. The first frame and frames after a cut or a dropped sample are keys.
+Deltas identify records by salted object handle or player index and carry
+field masks and removals. A player joining or changing name requires a
+key. The length on each layer lets readers skip unknown layers. The
+binary layout and blocking decoder are in `agent_proto::live`. A frame
+starts with a little-endian u32 payload length, capped at 8 MiB. The
+payload starts with a kind byte, three u64s (sequence, game tick, map
+epoch) and a flags byte (paused, cut). Each section has a u8 layer id
+and a u32 byte length.
+
+Objects carry their definition, type, header flags, parent, transform,
+velocity, vitality and scenario placement index. A child's transform is
+relative to its parent, as in `sim.objects`. Players carry their name,
+team, unit, held weapon, aim and local user. The game thread fills reusable
+buffers. A worker diffs and encodes them and each socket has a bounded
+writer queue. `skipped` counts missed captures and `dropped` counts
+frames lost on the way to the writer. Capture percentiles are in
+microseconds over the last 150 successful captures, against a 150 µs budget. They are null before the first capture.
+
+A game in a remote Live match refuses a subscription and closes an
+existing one on entry. The embedded service used by `--live-local`
+supports the mirror. For exact-tick comparison and a replay with and
+without a subscriber, use `scripts/check-live-mirror.py` with a gameplay
+snapshot and its matching input log. It prints the hash comparison,
+object count, byte rate and capture timings.
 
 ## `session`: what is running and its clock
 

@@ -455,6 +455,28 @@ impl crate::layout_glue::Gm for Mem<'_> {
     }
 }
 
+/// Called on an external Live service, at gameplay boundaries. Matchmaking plays
+/// in its target session, custom games in the squad. Refuse an unreadable
+/// session until the next probe can positively identify its network class.
+pub fn remote_live_game(m: &dyn engine::GuestMemory) -> bool {
+    use bots::lobby;
+    use crate::variant_ext::{SESSION_NETWORK_CLASS, SYSTEM_LINK};
+
+    let local = || -> Option<bool> {
+        if m.u8(lobby::NETWORKING).ok()? == 0 {
+            return Some(true);
+        }
+        let cycle = m.u32(lobby::SESSION_TYPE).ok()?;
+        let session = m.u32(lobby::game_session_at(cycle)).ok()?;
+        if session == 0 || m.u32(session.checked_add(lobby::STATE)?).ok()? == 0 {
+            return Some(true);
+        }
+        let class = m.u32(session.checked_add(SESSION_NETWORK_CLASS)?).ok()?;
+        Some(matches!(class, 0 | SYSTEM_LINK))
+    };
+    local() != Some(true)
+}
+
 /// The session kind from the simulation mode, and the squad session
 /// (`coop_probe::read_sim`, `read_session`).
 pub fn session_view(m: &dyn engine::GuestMemory) -> agent_proto::sim::SessionView {
@@ -531,6 +553,31 @@ mod tests {
             std::thread::sleep(Duration::from_millis(2));
         }
         assert_eq!(clients.join().unwrap(), [json!(1), json!(2)]);
+    }
+
+    #[test]
+    fn remote_live_probe_uses_the_active_session_and_refuses_unreadable_state() {
+        use bots::lobby;
+        use crate::variant_ext::{SESSION_NETWORK_CLASS, SYSTEM_LINK};
+        let mut g = engine::testing::FakeGuest::new();
+        assert!(remote_live_game(&g));
+        let squad = 0x4000;
+        let target = 0x14000;
+        g.map(lobby::NETWORKING, 0x80)
+            .put_u8(lobby::NETWORKING, 1)
+            .put_u32(lobby::SESSION, squad)
+            .put_u32(lobby::TARGET_SESSION, target);
+        for (addr, class) in [(squad, SYSTEM_LINK), (target, 2)] {
+            g.map(addr, 0x8000)
+                .put_u32(addr + lobby::STATE, 5)
+                .put_u32(addr + SESSION_NETWORK_CLASS, class);
+        }
+        g.put_u32(lobby::SESSION_TYPE, 3);
+        assert!(!remote_live_game(&g));
+        g.put_u32(lobby::SESSION_TYPE, 8);
+        assert!(remote_live_game(&g));
+        g.put_u8(lobby::NETWORKING, 0);
+        assert!(!remote_live_game(&g));
     }
 
     #[test]

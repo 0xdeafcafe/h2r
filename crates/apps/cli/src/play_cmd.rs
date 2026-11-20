@@ -384,6 +384,7 @@ fn hosted(
         theater: None,
         perf_overlay: None,
         discoverable_agent: false,
+        embedded_live: false,
         settings: Some(store),
         trace_limit: Some(TRACE_LIMIT),
         // `run` sets it from --level or H2_LEVEL, resolved before the window.
@@ -811,6 +812,7 @@ pub(crate) fn run_with_theater(
         // The agent socket where editors find it (docs/runtime/agent-api.md,
         // "Finding a game"), unless H2_AGENT names one or is `off`.
         host.discoverable_agent = true;
+        host.embedded_live = live.local;
         host.perf_overlay = perf_overlay;
         let r = boot::run_hosted_with_live(&xbe, &lib, &opts, host, &live_config);
         // As `h2 run` does: the kernel's storage may outlive the run (or never

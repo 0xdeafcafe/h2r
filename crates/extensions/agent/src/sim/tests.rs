@@ -982,6 +982,87 @@ fn a_local_bot_is_refused_saying_why() {
 }
 
 #[test]
+fn live_capture_matches_sim_objects_at_the_same_boundary() {
+    use agent_proto::live::{Layers, World};
+    use agent_proto::sim::objects::{ObjectsReply, handle};
+    use guest_layout::object::header;
+    use guest_layout::{Datum, Object as Layout, ObjectHeader, ObjectType};
+
+    let (h, mut game) = (Harness::new(), game());
+    let g = &mut game.g;
+    let objects = engine::view::objects::array(g).unwrap().unwrap();
+    let unit_id = objects.array.handle_of(g, 0).unwrap().unwrap();
+    let unit_header = objects.get(g, unit_id).unwrap().unwrap();
+    ObjectHeader::at(unit_header.addr)
+        .set(g, ObjectHeader::FLAGS, header::ACTIVE | header::AWAKE)
+        .unwrap();
+    let unit = Layout::at(UNIT_BODY);
+    unit.set(g, Layout::DEFINITION, Datum(0x9000_0017)).unwrap();
+    unit.set(g, Layout::PARENT, Datum(u32::MAX)).unwrap();
+    unit.set(g, Layout::POSITION, [1.5, 2.0, -3.0]).unwrap();
+    unit.set(g, Layout::FORWARD, [0.0, 1.0, 0.0]).unwrap();
+    unit.set(g, Layout::UP, [0.0, 0.0, 1.0]).unwrap();
+    unit.set(g, Layout::SCALE, 1.25).unwrap();
+    unit.set(g, Layout::PLACEMENT_INDEX, 5).unwrap();
+    unit.as_unit()
+        .set(g, guest_layout::Unit::AIM, [0.0, -1.0, 0.0])
+        .unwrap();
+    let gun = Layout::at(WEAPON_BODY);
+    gun.set(g, Layout::PARENT, Datum(unit_id.raw())).unwrap();
+    gun.set(g, Layout::PLACEMENT_INDEX, -1).unwrap();
+    let players = engine::view::players::array(g).unwrap().unwrap();
+    let player = players.get_absolute(g, 0).unwrap().unwrap();
+    let mut name = [0; guest_layout::player::NAME_UNITS];
+    for (dst, unit) in name.iter_mut().zip("Nyx ∆".encode_utf16()) {
+        *dst = unit;
+    }
+    guest_layout::Player::at(player.addr)
+        .set(g, guest_layout::Player::NAME, name)
+        .unwrap();
+
+    let mut sample = World::default();
+    let layers = Layers { objects: true, players: true };
+    crate::live::capture::read(g, layers, &mut sample).unwrap();
+    let reply: ObjectsReply =
+        serde_json::from_value(h.ok(&mut game, method::OBJECTS, Value::Null)).unwrap();
+    assert!(!reply.truncated);
+    assert_eq!(sample.objects.len(), reply.objects.len());
+    for (obj, listed) in sample.objects.iter().zip(&reply.objects) {
+        assert_eq!(handle(obj.id), listed.id);
+        assert_eq!(
+            ObjectType::from_u8(obj.kind).map(|k| k.group()),
+            listed.kind.as_deref()
+        );
+        assert_eq!(obj.tag.map(handle), listed.definition);
+        assert_eq!(obj.parent.map(handle), listed.parent);
+        assert_eq!(obj.position, listed.position);
+        assert_eq!(obj.forward, listed.forward);
+        assert_eq!(obj.up, listed.up);
+        assert_eq!(obj.scale, listed.scale);
+        assert_eq!(obj.velocity, listed.velocity);
+        assert_eq!(
+            (obj.body, obj.shield),
+            (listed.vitality.body, listed.vitality.shield)
+        );
+    }
+    assert_eq!(sample.objects[0].flags, header::ACTIVE | header::AWAKE);
+    assert_eq!(reply.objects[0].flags, ["active", "awake"]);
+    assert_eq!(sample.objects[1].flags, 0);
+    assert!(reply.objects[1].flags.is_empty());
+    assert_eq!(sample.objects[0].placement, Some(5));
+    assert_eq!(sample.objects[1].placement, None);
+
+    assert_eq!(sample.players.len(), 2);
+    let player = &sample.players[0];
+    assert_eq!(player.name, "Nyx ∆");
+    assert_eq!((player.index, player.team, player.local_user), (0, 0, Some(0)));
+    assert_eq!(player.unit, Some(sample.objects[0].id));
+    assert_eq!(player.held, Some(sample.objects[1].id));
+    assert_eq!(player.aim, [0.0, -1.0, 0.0]);
+    assert_eq!(sample.players[1].unit, None, "still listed between lives");
+}
+
+#[test]
 fn sim_objects_lists_the_pool_through_the_typed_views() {
     let (h, mut game) = (Harness::new(), game());
     let r = h.ok(&mut game, method::OBJECTS, Value::Null);

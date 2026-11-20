@@ -56,6 +56,7 @@ mod exec;
 pub mod havok;
 pub mod hostpads;
 pub mod hot;
+mod live;
 mod loads;
 pub mod menu;
 pub mod raw;
@@ -114,6 +115,10 @@ impl hooks::Feature for AgentFeature {
                 .observe_after(point, label, move |_| a.set_cinematic(on))
                 .optional();
         }
+        let revert = self.0.clone();
+        b.raw().observe_after(&engine::points::GAME_STATE_REVERT, "mirror-cut", move |_| {
+            revert.live_cut();
+        }).optional();
         let (save, load) = (self.0.clone(), self.0.clone());
         b.snapshot(hooks::SnapshotPolicy::section(
             move || save.save_state(),

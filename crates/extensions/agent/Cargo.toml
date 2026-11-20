@@ -23,6 +23,7 @@ guest-layout = { path = "../../hooking/guest-layout" }
 # The simulation's typed object views (src/sim/objects.rs, `sim.objects`).
 sim-state.workspace = true
 live-telemetry = { path = "../../live/live-telemetry" }
+live-proto.workspace = true
 timeline = { path = "../../runtime/timeline" }
 xapi = { path = "../../platform/xapi" }
 input = { path = "../../platform/input", default-features = false }
@@ -40,7 +41,6 @@ png = "0.18"
 [dev-dependencies]
 # A synthetic lifted original for the shadow.* tests.
 lifted = { path = "../../runtime/lifted" }
-live-proto.workspace = true
 # sim.hashes' rows against the sim report's (src/sim/hashes.rs); renamed
 # so it can't be mistaken for this crate's `sim` module.
 sim-report = { package = "sim-bench", path = "../../live/sim-bench" }
