@@ -867,12 +867,15 @@ fn code_id_moves_exactly_when_lifted_code_can_lose_execute() {
     let guarded = g.code_id();
     assert_ne!(guarded, before, "a guard moves it");
     // Range changes cannot take Execute from lifted code, and a
-    // whole-mapping protect elsewhere does not touch it.
+    // whole-mapping protect elsewhere does not touch it. The range protect
+    // splits the code mapping: [0x10000, 0x11000) is a mapping of its own
+    // now, with no lifted code in it.
     g.protect_range(0x10000, P, Permissions::READ).unwrap();
     g.protect(0x20000, Permissions::READ).unwrap();
+    g.protect(0x10000, Permissions::RX).unwrap();
     assert_eq!(g.code_id(), guarded);
     // A whole-mapping protect over lifted code does, even keeping Execute.
-    g.protect(0x10000, Permissions::RX).unwrap();
+    g.protect(0x11000, Permissions::RX).unwrap();
     let protected = g.code_id();
     assert_ne!(protected, guarded);
     // Restoring a snapshot layout moves it too.

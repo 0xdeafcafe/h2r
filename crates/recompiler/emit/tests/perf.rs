@@ -1182,6 +1182,10 @@ fn run_held_gate_fixture(accounting: bool, kind: &str, defines: &str) -> libload
     );
     let mut mem = Guest::new();
     mem.map_zeroed(A, 4096, Permissions::RX).unwrap();
+    // Lifted code, as the loader guards an XBE's: only then does the entry
+    // table hold the leaf, so main's calls of it are direct (runtime
+    // direct.rs).
+    mem.guard_code(A, 4096).unwrap();
     mem.map_zeroed(DATA, 8192, Permissions::RW).unwrap();
     mem.set_u32(STACK, runtime::exec::HARNESS_EXIT).unwrap();
     let rt = Runtime::new(mem, dispatch);
@@ -1216,13 +1220,14 @@ fn flat_owner_coverage() {
 }
 
 /// Why accesses take the cold path, by cause, over a run of
-/// [`held_gate_functions`]: 40 trips of a loop that calls a leaf directly,
-/// a 100-trip loop with no call, a page-crossing loop, a REP and stores. A
-/// handler's first access is cold (it starts without the gate), and so is
-/// the first after a direct call returns (the caller drops the gate to
-/// charge its accesses and call); `miss` counts the cold ones taken with
-/// the gate held (a cross-page read), `no-gate` those that leave without
-/// it. `--nocapture` prints the table.
+/// [`held_gate_functions`]: 40 trips of a loop that calls a leaf directly
+/// (all 40: the entry table needs no warming), a 100-trip loop with no
+/// call, a page-crossing loop, a REP and stores. A handler's first access
+/// is cold (it starts without the gate), and so is the first after a direct
+/// call returns (the caller drops the gate to charge its accesses and
+/// call); `miss` counts the cold ones taken with the gate held (a
+/// cross-page read), `no-gate` those that leave without it. `--nocapture`
+/// prints the table.
 #[test]
 fn cold_accesses_by_cause() {
     // Isolate entry-gate and direct-gate savings from the flat emitter's
@@ -1234,12 +1239,11 @@ fn cold_accesses_by_cause() {
         let c = cold_counts(accounting, &format!("cold-stats-{accounting}"), &format!("{PAGED}{OFF}"));
         let table: Vec<_> = COLD_CAUSES.iter().zip(c).map(|(k, n)| format!("{k} {n}")).collect();
         println!("accounting {accounting}: {}", table.join(", "));
-        // main, then the first call (through the dispatcher: the leaf and
-        // main's return point); the other 39 calls are direct, each leaf
-        // from cold, then main's first access after it.
-        assert_eq!(c[0], 3, "{table:?}");
-        assert_eq!(c[1], 39, "{table:?}");
-        assert_eq!(c[2], 39, "{table:?}");
+        // main, from the runner; all 40 calls are direct, each leaf from
+        // cold, then main's first access after it.
+        assert_eq!(c[0], 1, "{table:?}");
+        assert_eq!(c[1], 40, "{table:?}");
+        assert_eq!(c[2], 40, "{table:?}");
         assert!(c[6] >= 1, "the cross-page read: {table:?}");
         // The leaf opens with a read and write of [esp+4]. Flat code
         // keeps the gate for that span only when the backend is enabled.
@@ -1247,7 +1251,7 @@ fn cold_accesses_by_cause() {
         let flat = cold_counts(accounting, &format!("cold-stats-flat-{accounting}"), &format!("{FLAT}{OFF}"));
         let flat_runtime = cfg!(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))
             && std::env::var("H2_FLAT_RAM").as_deref() == Ok("1");
-        let expected = if flat_runtime { [2, 0, 39] } else { [3, 39, 39] };
+        let expected = if flat_runtime { [1, 0, 40] } else { [1, 40, 40] };
         assert_eq!(flat[..3], expected, "{flat:?}");
         // H2_DIRECT_GATE lends the hold across the calls: the leaves and
         // main after them start inline, but for the calls a tick ended the
