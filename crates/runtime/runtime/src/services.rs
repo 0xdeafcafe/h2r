@@ -25,6 +25,8 @@ pub struct Runtime {
     /// The entry table, once dispatch has a module with one
     /// ([`crate::direct`]).
     live: OnceLock<crate::direct::Live>,
+    /// Dispatch has a flat-RAM module ([`Runtime::flat_ram`]).
+    flat: std::sync::atomic::AtomicBool,
 }
 
 /// Waits on the guest memory lock that found it held by another thread.
@@ -85,11 +87,60 @@ impl Runtime {
             dispatch_census: (std::env::var("H2_DISPATCH_STATS").as_deref() == Ok("1"))
                 .then(crate::entry_stats::DispatchCensus::default),
             live: OnceLock::new(),
+            flat: Default::default(),
         });
         let d = rt.dispatch.read().unwrap_or_else(|e| e.into_inner());
         rt.adopt_entry_table(&d);
+        let flat = rt.adopt_flat_dispatch(&d);
         drop(d);
+        if flat {
+            rt.memory.make_flat();
+        }
         rt
+    }
+    /// Dispatch has (or has just gained) a flat-RAM module
+    /// ([`crate::generated::FEATURE_FLAT_RAM`]): send window faults to the
+    /// fixups, make the null window, and park generated code for memory
+    /// guards, all before any flat handler can be resolved. Called with
+    /// the dispatch lock; true the first time, when the caller then moves
+    /// RAM into an aliasable backing ([`crate::ffi::Memory::make_flat`])
+    /// once the lock is dropped. Until then the window guards every page,
+    /// which is slow but right.
+    fn adopt_flat_dispatch(&self, d: &Dispatch) -> bool {
+        use std::sync::atomic::Ordering::AcqRel;
+        if !d.flat_ram() || self.flat.swap(true, AcqRel) {
+            return false;
+        }
+        let window = self
+            .memory
+            .window()
+            .expect("a flat-RAM module needs this runtime's flat RAM window, which the system refused");
+        if let Err(e) = window.catch_faults() {
+            panic!("a flat-RAM module needs window faults caught: {e}");
+        }
+        crate::window::null_window()
+            .expect("a flat-RAM module needs the null window, which the system refused");
+        self.memory.enable_parking();
+        true
+    }
+    /// Dispatch has a flat-RAM module: generated code reads and writes
+    /// guest RAM through the window ([`Runtime::flat_base`]) and parks for
+    /// memory guards.
+    pub fn flat_ram(&self) -> bool {
+        self.flat.load(Ordering::Acquire)
+    }
+    /// Where a flat-RAM handler's block points for one call: the window
+    /// and its cards, or the null window while the context's fast memory
+    /// is off (`ExecCtx::enable_fast_memory`).
+    #[inline]
+    pub(crate) fn flat_block_target(&self, fast: bool) -> (*mut u8, *mut u8) {
+        match self.memory.window() {
+            Some(w) if fast => (w.base(), w.cards()),
+            _ => {
+                let null = crate::window::null_window().expect("made with the flat-RAM module");
+                (null.base(), null.cards())
+            }
+        }
     }
     /// Dispatch has (or has just gained) a module with an entry table: the
     /// leave word goes on before the table can hold anything, then the
@@ -257,9 +308,17 @@ impl Runtime {
         // disabled reaches the entry table before the edit returns, so no
         // direct call made after it skips the override.
         self.adopt_entry_table(&d);
+        // Under the write lock: no flat handler is resolved before its
+        // faults are caught and parking is on.
+        let flat = self.adopt_flat_dispatch(&d);
         // Under the write lock: a context that resolves after this sees the
         // new tables and the new generation together.
         self.dispatch_gen.fetch_add(1, Ordering::AcqRel);
+        drop(d);
+        // The memory lock, after the dispatch lock.
+        if flat {
+            self.memory.make_flat();
+        }
         r
     }
     /// The hook for a generated handler's STOP

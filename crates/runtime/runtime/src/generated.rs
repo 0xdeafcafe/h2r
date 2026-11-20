@@ -153,12 +153,28 @@ pub struct H2GenEntryModule {
     pub text_hi: u32,
 }
 
+/// `H2GenModule` as h2gen.h declares it for a module with
+/// [`FEATURE_FLAT_RAM`]: the entry-table layout, then the fixup table
+/// (`H2_FIX_BOUNDS`, h2fastmem.h).
+#[repr(C)]
+#[derive(Debug)]
+pub struct H2GenFlatModule {
+    pub entry: H2GenEntryModule,
+    /// The fixup rows, `[fix_start, fix_end)`, in [`hostfault::Format`]
+    /// `fix_format`; both null for none.
+    pub fix_start: *const u8,
+    pub fix_end: *const u8,
+    pub fix_format: u32,
+    pub fix_pad: u32,
+}
+
 const _: () = assert!(size_of::<H2GenResume>() == 12);
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(
     size_of::<H2GenEntry>() == 24
         && size_of::<H2GenModule>() == 32
         && size_of::<H2GenEntryModule>() == 48
+        && size_of::<H2GenFlatModule>() == 72
 );
 
 pub const ENTRY_FUNCTION: u32 = 0;
@@ -200,13 +216,28 @@ pub const FEATURE_ENTRY_TABLE: u32 = 8;
 /// whatever the entry table holds, which is the thunk for an overridden
 /// entry, and an indirect call or jump outside the module's text calls the
 /// thunk. [`FEATURE_DIRECT_CALLS`] needs it: an image built before it reads
-/// the block at the old offsets and is refused. (16 is kept for flat RAM.)
+/// the block at the old offsets and is refused.
 pub const FEATURE_HOST_CALLS: u32 = 32;
+/// Module feature (`H2GEN_FEATURE_FLAT_RAM`, `H2_FLAT_RAM=1` at build):
+/// the flat memory model (docs/runtime/contract-thin-transfers-flat-ram.md,
+/// section 4.1). Every access is one host instruction at the runtime's flat
+/// RAM window base plus the guest address, read through the flat block at
+/// the context's third word ([`crate::ffi::H2Mem`]), with no gate; a
+/// faulting one resumes at its fixup row's landing label and takes the
+/// checked helper. The module carries its fixup table
+/// ([`H2GenFlatModule`]), which registration checks and registers with
+/// `hostfault`; it needs [`FEATURE_ENTRY_TABLE`] (the layout before it) and
+/// a host with a window. A runtime with such a module makes guest RAM
+/// aliasable, sends window faults to the fixups and parks generated code
+/// for memory guards ([`crate::Runtime::enable_parking`]). An image without
+/// it keeps the paged model.
+pub const FEATURE_FLAT_RAM: u32 = 16;
 /// Every module feature this runtime implements.
 pub const FEATURES: u32 = FEATURE_ACCOUNTING
     | FEATURE_DIRECT_CALLS
     | FEATURE_DIRECT_VIEW
     | FEATURE_ENTRY_TABLE
+    | FEATURE_FLAT_RAM
     | FEATURE_HOST_CALLS;
 
 /// What `register_generated_module` added.
@@ -259,7 +290,11 @@ impl Dispatch {
     /// against its rows (every row's byte maps to the row), and becomes
     /// this dispatch's entry table; a second one is refused. A module with
     /// [`FEATURE_DIRECT_CALLS`] and no entry table, or without
-    /// [`FEATURE_HOST_CALLS`], is refused.
+    /// [`FEATURE_HOST_CALLS`], is refused. A module with
+    /// [`FEATURE_FLAT_RAM`] needs the entry table and a host with a flat RAM
+    /// window, and its fixup table must be sorted
+    /// ([`RegistrationError::FixupTable`]); it is registered with
+    /// `hostfault` for as long as this dispatch (or a fork of it) lives.
     ///
     /// # Safety
     /// `module` and its tables (each `count` rows plus a zero row) must be
@@ -267,7 +302,9 @@ impl Dispatch {
     /// ffi.rs and h2abi.h and stay loaded while registered. With
     /// [`FEATURE_ENTRY_TABLE`], `module` must be the head of an
     /// [`H2GenEntryModule`] whose `pcmap` is null or valid for
-    /// `text_hi - text_lo` elements.
+    /// `text_hi - text_lo` elements. With [`FEATURE_FLAT_RAM`], the head
+    /// of an [`H2GenFlatModule`] whose fixup rows are readable, in their
+    /// format, and stay loaded with the module.
     pub unsafe fn register_generated_module(
         &mut self,
         module: &H2GenModule,
@@ -295,6 +332,13 @@ impl Dispatch {
         if with_table && self.entry_table().is_some() {
             return Err(RegistrationError::SecondEntryTable);
         }
+        let flat = module.features & FEATURE_FLAT_RAM != 0;
+        if flat && !with_table {
+            return Err(RegistrationError::FlatRamWithoutEntryTable);
+        }
+        if flat && !crate::window::supported() {
+            return Err(RegistrationError::FlatRamUnsupported);
+        }
         // SAFETY: the caller guarantees the table shapes.
         let entries = unsafe { table(module.entries, module.entry_count, ModuleTable::Entries)? };
         // SAFETY: as above.
@@ -316,6 +360,16 @@ impl Dispatch {
             let ext = unsafe { &*std::ptr::from_ref(module).cast::<H2GenEntryModule>() };
             // SAFETY: as above, for pcmap.
             Some(unsafe { entry_table(entries, ext)? })
+        } else {
+            None
+        };
+        // Last of the checks that may fail: the table registers as it is
+        // checked, and unregisters if anything after it refuses.
+        let fixups = if flat {
+            // SAFETY: the caller guarantees the flat layout with the feature.
+            let ext = unsafe { &*std::ptr::from_ref(module).cast::<H2GenFlatModule>() };
+            // SAFETY: as above, for the rows.
+            Some(unsafe { fixup_table(ext)? })
         } else {
             None
         };
@@ -347,6 +401,9 @@ impl Dispatch {
         }
         if let Some(t) = entry_table {
             self.set_entry_table(t);
+        }
+        if let Some(t) = fixups {
+            self.set_flat_fixups(t);
         }
         Ok(RegisteredModule {
             entries: entries.len(),
@@ -403,6 +460,24 @@ unsafe fn entry_table(
         .map(|e| (e.addr, (e.kind == ENTRY_FUNCTION).then_some(e.handler).flatten()))
         .collect();
     Ok(crate::direct::EntryTable::new(table, ext.pcmap, (lo, hi)))
+}
+
+/// A flat module's fixup table, checked and registered with `hostfault`
+/// (rows sorted by instruction address, never sorted here).
+///
+/// # Safety
+/// `ext`'s fixup bounds are null or a readable table in `fix_format` that
+/// stays loaded while the returned table lives.
+unsafe fn fixup_table(ext: &H2GenFlatModule) -> Result<hostfault::Table, RegistrationError> {
+    let format = hostfault::Format::from_raw(ext.fix_format)
+        .ok_or(RegistrationError::FixupTable(hostfault::Error::BadTable))?;
+    if ext.fix_start.is_null() != ext.fix_end.is_null() {
+        return Err(RegistrationError::FixupTable(hostfault::Error::BadTable));
+    }
+    // SAFETY: the caller's contract, passed on; null bounds are an empty
+    // table, which registers nothing.
+    unsafe { hostfault::register_table(ext.fix_start, ext.fix_end, format) }
+        .map_err(RegistrationError::FixupTable)
 }
 
 /// Drop the zero row after the counted rows, checking it is one.

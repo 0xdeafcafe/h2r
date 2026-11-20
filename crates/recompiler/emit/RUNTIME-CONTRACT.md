@@ -125,15 +125,63 @@ mock host returns null; generated/runtime tests install the real view and
 cover mapping changes, permissions, aliases, every width, fault transactions,
 access budgets, host concurrency and replacement of the backing Guest.
 
+#### Flat RAM (`H2_FLAT_RAM`, module feature 16)
+
+Building with `H2_FLAT_RAM=1` (and without `H2_EMIT_FLAT_RAM`) selects the
+flat model in `h2fastmem.h` (`H2_FLAT_`), on macOS and x86-64 Linux, arm64
+or x86-64; any other target fails to compile. The design is
+docs/runtime/contract-thin-transfers-flat-ram.md, section 4.1.
+
+- **One instruction per access.** `H2_LD_`/`H2_ST_` load or store at
+  `base + (uint64_t)addr` with one `asm goto` instruction, then a store
+  writes zero to the page's card (`cards[addr >> 12]`) and its 4 MiB
+  region's (`cards[(addr >> 22) - 1024]`). There is no gate, page table
+  or permission test in generated code. A page crossing is one native
+  access when both pages are in the window.
+- **Fixups.** Each access instruction has a row in section `__h2_fix`
+  (`__DATA_CONST` on Mach-O) or `h2_fix` (ELF): two 32-bit words, the
+  instruction and its slow label, each relative to its own address
+  (`hostfault::Format::Relative32`). A faulting access resumes at the
+  label, which calls `h2abi_v1_read`/`write` (or the `_counted` pair with
+  accounting) and so faults, logs or reaches MMIO exactly as the paged
+  path's helper call. The rows must be sorted by instruction address, as
+  the compiler emits them; registration refuses a table that is not
+  (`RegistrationError::FixupTable`), which a linker that reorders
+  functions or splits hot and cold code would cause.
+- **The block.** The context's third word (after `preempt` and the
+  direct-call block) points at an `H2Mem`
+  `{base, cards, accesses, budget, preempt}` (40 bytes). A handler loads
+  `base` and `cards` once, at entry, and counts and charges in `accesses`
+  and `budget` as a paged handler does in its view. The runtime fills it
+  before each handler call (`ffi::call_native`, the window or, while the
+  context's fast memory is off, the null window that maps nothing) and
+  settles the count after (`sync_accesses`).
+- **Bulk copies.** `h2_fast_movs` keeps its chunking and count, probes
+  the first byte of the source (a load) and of the destination (a load
+  and a store of the same byte), `memmove`s and marks the destination's
+  card. A probe that faults rejects the chunk.
+- **What the runtime does.** Registration needs the entry table
+  (`FlatRamWithoutEntryTable`) and a host with a window
+  (`FlatRamUnsupported`). Once dispatch has a flat module, the runtime
+  catches window faults, parks generated code for memory guards
+  (`Runtime::enable_parking`) and moves guest RAM into a backing the
+  window can alias, copying what was there (`Guest::require_aliasable_ram`);
+  a Guest put in its place and a copy-on-write restore are moved too. A
+  second-executor refresh still leaves RAM the window cannot alias, so
+  such a view runs through its fixups. A runtime without bit 16 in
+  `FEATURES` refuses the module as unknown; a module without it runs the
+  paged model unchanged.
+
 #### Opt-in flat RAM and first-write faults
 
-On macOS or x86-64 Linux, set `H2_EMIT_FLAT_RAM=1` for the image build and
-leave it set for both executions. Rebuild the generated image once. Select
-the backend at execution with `H2_FLAT_RAM=0` (ordinary page table) or
+This is the span image (`H2_FLAT_SPAN` in `h2fastmem.h`), kept for the M0
+measurement of docs/runtime/contract-thin-transfers-flat-ram.md. On macOS
+or x86-64 Linux, set `H2_EMIT_FLAT_RAM=1` for the image build and leave it
+set for both executions. Rebuild the generated image once. Select the
+backend at execution with `H2_FLAT_RAM=0` (ordinary page table) or
 `H2_FLAT_RAM=1` (flat). Both settings then produce the same image stamp.
-Without an explicit emitter setting the image flags follow `H2_FLAT_RAM`
-for compatibility. With flat RAM enabled, `H2_FLAT_WRITE_WATCH=0` keeps
-every watched store on the software dirty barrier.
+With flat RAM enabled, `H2_FLAT_WRITE_WATCH=0` keeps every watched store
+on the software dirty barrier.
 
 Each Guest reserves a guarded 4 GiB virtual window on hosts with 4 KiB pages.
 The OS picks a stable base per live RAM backing. macOS maps shared aliases
@@ -476,6 +524,9 @@ typedef struct H2GenModule {
     /* H2GEN_FEATURE_ENTRY_TABLE only: */
     const uint16_t *pcmap;        /* text_hi - text_lo entry indices, or NULL */
     uint32_t text_lo, text_hi;
+    /* H2GEN_FEATURE_FLAT_RAM only: */
+    const void *fix_start, *fix_end; /* the fixup rows, or both NULL */
+    uint32_t fix_format, fix_pad;    /* 0: Relative32; 0 */
 } H2GenModule;
 ```
 
@@ -493,9 +544,9 @@ typedef struct H2GenModule {
   `H2GEN_FEATURE_ACCOUNTING` (1, §1.1), `H2GEN_FEATURE_DIRECT_CALLS` (2,
   §4 "Direct calls"), `H2GEN_FEATURE_DIRECT_VIEW` (4, a lent view, same
   section), `H2GEN_FEATURE_ENTRY_TABLE` (8, below),
+  `H2GEN_FEATURE_FLAT_RAM` (16, §1.1 "Flat RAM"; needs the entry table),
   `H2GEN_FEATURE_HOST_CALLS` (32, host calls in place, §4 "Direct calls";
-  on every direct-call module), or 0. Bit 16 is kept for flat RAM. It was
-  `reserved`, always 0.
+  on every direct-call module), or 0. It was `reserved`, always 0.
 - **The entry table** (feature 8, on every module `h2gen.h` builds). The
   entry rows are sorted by address, and row `r` has entry index `r + 1`;
   0 is no entry, so a module has at most 65,535 rows. `pcmap` holds, for
@@ -505,7 +556,8 @@ typedef struct H2GenModule {
   callee's index as a constant; an indirect one looks it up in `pcmap`.
   The module's loop polls and `h2_fast_movs` mask the preempt word's
   `IRQ_QUEUED` bit (§4, "Loop safe points"). A struct without the feature
-  ends at `resumes`; the runtime reads the last three fields only with it.
+  ends at `resumes`; the runtime reads `pcmap`, `text_lo` and `text_hi`
+  only with it, and the fixup fields only with feature 16.
 
 ## 3. Registration adapter (**new**)
 

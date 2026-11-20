@@ -508,9 +508,10 @@ h2 agent flatmem
   (`runtime::window::process_stats`, answered by boot's agent glue;
   [contract-thin-transfers-flat-ram.md](contract-thin-transfers-flat-ram.md),
   section 4.1). They are always on. `windows` is how many there are and
-  `aliased` how many hold RAM (guest RAM is aliasable only while flat RAM
-  is selected). `fixups` counts faulting accesses sent to their slow
-  path. `pages_outside` counts mapped guest pages the window does not
+  `aliased` how many hold RAM (guest RAM is aliasable once a flat-RAM
+  module is registered, or from the start with `H2_FLAT_RAM=1` at run
+  time). `fixups` counts faulting accesses sent to their slow path; the
+  null window a context uses with fast memory off is not counted. `pages_outside` counts mapped guest pages the window does not
   hold: non-congruent with their backing, sharing a host page with one,
   byte-granular or armed by the access trap. Each costs a fault and the
   helper per access once flat accesses are emitted. `congruence_skipped`

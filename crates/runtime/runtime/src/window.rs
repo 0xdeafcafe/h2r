@@ -31,6 +31,12 @@
 //! fixups taken, mapped pages outside the window, and bytes the congruent
 //! allocator skipped (`Guest::map_zeroed`). The agent API's
 //! `profile.memory` answers them (docs/runtime/agent-api.md).
+//!
+//! **The null window** ([`null_window`]) is one more reservation, shared by
+//! the process, that never holds anything. A flat-RAM handler on a context
+//! whose fast memory is off (`ExecCtx::enable_fast_memory`) reads and
+//! writes through it, so every access takes its fixup and the checked
+//! helper. It is not in [`process_stats`]: its fixups are the point.
 
 use crate::cow::Ram;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering::Relaxed};
@@ -151,21 +157,42 @@ pub struct Window {
     cards: OnceLock<Cards>,
 }
 
+/// This host can have a window: macOS or x86-64 Linux, on 4 KiB or
+/// 16 KiB pages. A flat-RAM module is refused anywhere else.
+pub fn supported() -> bool {
+    !cfg!(miri) && os::page_size().is_some_and(|h| matches!(h, 4096 | 16384))
+}
+
+/// The process's null window (module docs), with its faults sent to the
+/// fixups; `None` where there is no window or the system refused it.
+pub(crate) fn null_window() -> Option<&'static Window> {
+    static NULL: OnceLock<Option<Window>> = OnceLock::new();
+    static CAUGHT: OnceLock<bool> = OnceLock::new();
+    let w = NULL.get_or_init(Window::build).as_ref()?;
+    // In place: the fault callback keeps the address of `fixups`.
+    CAUGHT.get_or_init(|| w.catch_faults().is_ok()).then_some(w)
+}
+
 impl Window {
     /// A new window with nothing in it, or `None` where there is none:
     /// another host page size, a target without one, or the reservation
     /// refused.
     pub(crate) fn new() -> Option<Arc<Self>> {
-        if cfg!(miri) {
+        let window = Arc::new(Self::build()?);
+        let mut windows = WINDOWS.lock().unwrap_or_else(|e| e.into_inner());
+        windows.retain(|w| w.strong_count() > 0);
+        windows.push(Arc::downgrade(&window));
+        Some(window)
+    }
+    /// A window counted nowhere.
+    fn build() -> Option<Self> {
+        if !supported() {
             return None;
         }
         let host = os::page_size()?;
-        if !matches!(host, 4096 | 16384) {
-            return None;
-        }
         // A guard host page at either end: a span past the top lands in it.
         let reservation = os::Reservation::new(VA_SIZE + 2 * host)?;
-        let window = Arc::new(Self {
+        Some(Self {
             region: Mutex::new(None),
             reservation,
             host,
@@ -180,11 +207,7 @@ impl Window {
             skipped: AtomicU64::new(0),
             aliased: AtomicBool::new(false),
             cards: OnceLock::new(),
-        });
-        let mut windows = WINDOWS.lock().unwrap_or_else(|e| e.into_inner());
-        windows.retain(|w| w.strong_count() > 0);
-        windows.push(Arc::downgrade(&window));
-        Some(window)
+        })
     }
 
     /// The host address of guest address 0. Fixed for the window's life.

@@ -78,6 +78,7 @@ impl Guest {
             window: None,
             ident: super::fresh_layout(),
             congruence_skipped: self.congruence_skipped,
+            aliasable_ram: false,
         };
         view.copy_layout_from(self);
         if self.fast_pages.is_some() {

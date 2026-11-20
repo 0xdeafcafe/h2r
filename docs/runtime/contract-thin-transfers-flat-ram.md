@@ -1,9 +1,13 @@
 # Contract change 1: thin transfers and flat RAM
 
-Written 2026-11-20. Slices T1, F1, T2 and T3 are built (section 6), and
-F2 except its first bullet: deleting the opt-in flat RAM waits for M0,
-which has not been taken. The F2 counters are on the agent API, not yet in
-the sim report. None has been measured yet. This is the spec for
+Written 2026-11-20. Slices T1, F1, T2, T3 and F3 are built (section 6),
+and F2 except its first bullet: deleting the opt-in flat RAM waits for M0,
+which has not been taken. M0's span image still builds with
+`H2_EMIT_FLAT_RAM=1`; `H2_FLAT_RAM=1` alone builds F3's model. F3's tests
+are `crates/recompiler/emit/tests/flat.rs` and the runtime's
+`window/tests.rs`; its access-trap and MMIO cases need a flat-built module
+in the runtime's tests and are not written. The F2 counters are on the
+agent API, not yet in the sim report. None has been measured yet. This is the spec for
 decision 7 of [sim-rewrite.md](../engine/sim-rewrite.md) section 8: change
 the recompiler contract, starting with two items of
 [2026-11-20-architecture.md](../reviews/2026-11-20-architecture.md):
@@ -699,6 +703,13 @@ Runtime only. Old images keep running on the paged path.
   feature bit, so there is no run-time variable.
 - `crates/recompiler/emit/src/host.rs`: the test host's memory is a window of its
   own with its pages mapped in place.
+- The runtime takes the model at registration: bit 16 needs the entry
+  table and a host with a window; the module's fixup table is checked
+  sorted and registered with `hostfault`. A runtime with such a module
+  catches window faults, turns parking on and moves guest RAM into an
+  aliasable backing, copying what was there. A copy-on-write restore
+  copies the image into that backing too, which is Q1's Linux answer on
+  every host until F5 re-aliases a shared remap on macOS.
 - Tests: every existing inline-against-helper test in
   `crates/recompiler/emit/tests/perf.rs` rerun as window against null window;
   `page_crossing_access_is_native`; `access_past_4gib_takes_the_fixup`;
@@ -811,8 +822,13 @@ report.
 against the T3 image, and:
 
 ```bash
+export H2_FLAT_RAM=1               # the flat image, at build and every run
+h2 build "$H2_DISC" --out "$H2_IMAGE"
 size -m "$H2_IMAGE/libh2game.dylib" | grep -E '__text|__h2_fix'
 ```
+
+Fixups per tick are `profile.memory`'s `fixups` on the agent API
+(docs/runtime/agent-api.md).
 
 **M5. Frames.** `h2 lab bench --host laptop --branch <slice> --level
 03a_oldmombasa --scale 4` as in lab.md "`--serve` and `bench`", against

@@ -1206,7 +1206,7 @@ fn cold_counts(accounting: bool, kind: &str, defines: &str) -> [u64; 8] {
 #[test]
 fn flat_owner_coverage() {
     let lib = run_held_gate_fixture(false, "flat-owner-coverage",
-        "#undef H2_FLAT_RAM\n#define H2_FLAT_RAM 1\n#undef H2_FLAT_STATS_OWNER\n#define H2_FLAT_STATS_OWNER 0x400000u\n");
+        "#undef H2_FLAT_RAM\n#define H2_FLAT_RAM 0\n#undef H2_FLAT_SPAN\n#define H2_FLAT_SPAN 1\n#undef H2_FLAT_STATS_OWNER\n#define H2_FLAT_STATS_OWNER 0x400000u\n");
     let counts: libloading::Symbol<*const [u64; 3]> = unsafe { lib.get(b"h2gen_flat_counts").unwrap() };
     let [total, flat, bulk] = unsafe { **counts };
     // Main only: 2 pushes, 40 ten-access calls/trips (excluding the leaf),
@@ -1232,8 +1232,8 @@ fn flat_owner_coverage() {
 fn cold_accesses_by_cause() {
     // Isolate entry-gate and direct-gate savings from the flat emitter's
     // span preflight, which can acquire the gate before the first access.
-    const PAGED: &str = "#undef H2_FLAT_RAM\n#define H2_FLAT_RAM 0\n";
-    const FLAT: &str = "#undef H2_FLAT_RAM\n#define H2_FLAT_RAM 1\n";
+    const PAGED: &str = "#undef H2_FLAT_RAM\n#define H2_FLAT_RAM 0\n#undef H2_FLAT_SPAN\n#define H2_FLAT_SPAN 0\n";
+    const FLAT: &str = "#undef H2_FLAT_RAM\n#define H2_FLAT_RAM 0\n#undef H2_FLAT_SPAN\n#define H2_FLAT_SPAN 1\n";
     const OFF: &str = "#undef H2_ENTRY_GATE\n#define H2_ENTRY_GATE 0\n#undef H2_VIEW_CHARGE\n#define H2_VIEW_CHARGE 0\n";
     for accounting in [false, true] {
         let c = cold_counts(accounting, &format!("cold-stats-{accounting}"), &format!("{PAGED}{OFF}"));
@@ -2013,7 +2013,7 @@ fn flat_span_matches_checked_stores_aliases_and_fault_order() {
     assert!(text.contains("H2_SPAN_ST(sp_"), "{text}");
     let (lib, dispatch) = compile_module_defines(
         "flat-store-order", vec![f], false, true, emit::opt::Passes::ALL, emit::Codegen::default(),
-        "#undef H2_FLAT_RAM\n#define H2_FLAT_RAM 1\n",
+        "#undef H2_FLAT_RAM\n#define H2_FLAT_RAM 0\n#undef H2_FLAT_SPAN\n#define H2_FLAT_SPAN 1\n",
     );
     type Probe = unsafe extern "C" fn(*mut runtime::ExecCtxOpaque, u32, *mut u8) -> u32;
     // SAFETY: the extra C source above exports this signature.

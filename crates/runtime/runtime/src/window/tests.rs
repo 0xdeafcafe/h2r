@@ -185,3 +185,89 @@ fn fold_before_mute_and_drain() {
     assert_eq!(g.take_dirty(a).unwrap(), pages(&[0x4000, 0xc000]));
     assert_eq!(g.take_dirty(b).unwrap(), pages(&[0x4000, 0x8000, 0xc000]));
 }
+
+/// A dispatch with a flat-RAM module's (empty) fixup table.
+fn flat_dispatch() -> Dispatch {
+    let mut d = Dispatch::default();
+    // SAFETY: an empty table reads nothing.
+    let table = unsafe {
+        hostfault::register_table(std::ptr::null(), std::ptr::null(), hostfault::Format::Relative32)
+    }
+    .expect("an empty table");
+    d.set_flat_fixups(table);
+    d
+}
+
+/// Contract slice F3: a runtime with a flat-RAM module moves RAM made
+/// before it into a backing the window can alias, bytes and mappings
+/// unchanged, parks generated code, and points a context's block at the
+/// window, or at the null window while fast memory is off.
+#[test]
+fn flat_runtime_aliases_ram_made_before_it() {
+    let mut g = Guest::new();
+    g.map(0x10000, 0x4000, 0x8000, Permissions::RW).unwrap();
+    g.set_u32(0x10010, 0x1111).unwrap();
+    let rt = Runtime::new(g, flat_dispatch());
+    assert!(rt.flat_ram());
+    assert!(rt.memory_state().parking(), "parking is on");
+    let w = rt.memory().window().cloned().expect("a window on this host");
+    let base = rt.flat_base().expect("a window");
+    assert!(w.is_aliased(), "RAM aliased in");
+    assert!(w.holds(0x10010));
+    // SAFETY: the window holds the page (checked above).
+    assert_eq!(unsafe { (base.add(0x10010) as *const u32).read_volatile() }, 0x1111);
+    assert_eq!(rt.flat_block_target(true), (base, w.cards()));
+    let null = null_window().expect("the null window");
+    assert_eq!(rt.flat_block_target(false).0, null.base());
+    assert_ne!(null.base(), base);
+
+    // A Guest put in its place is moved too.
+    let mut next = Guest::new();
+    next.map(0x20000, 0x4000, 0x4000, Permissions::RW).unwrap();
+    next.set_u32(0x20020, 0x2222).unwrap();
+    drop(std::mem::replace(&mut *rt.memory(), next));
+    assert!(w.is_aliased());
+    assert!(w.holds(0x20020));
+    // SAFETY: as above.
+    assert_eq!(unsafe { (base.add(0x20020) as *const u32).read_volatile() }, 0x2222);
+}
+
+/// A paged runtime never parks or moves RAM, and a later flat module
+/// switches both on through `edit_dispatch`.
+#[test]
+fn flat_module_registered_later_adopts_flat_ram() {
+    let mut g = Guest::new();
+    g.map(0x10000, 0x4000, 0x8000, Permissions::RW).unwrap();
+    g.set_u32(0x10010, 0x3333).unwrap();
+    let rt = Runtime::new(g, Dispatch::default());
+    assert!(!rt.flat_ram());
+    assert!(!rt.memory_state().parking());
+    rt.edit_dispatch(|d| {
+        // SAFETY: as in flat_dispatch.
+        let table = unsafe {
+            hostfault::register_table(std::ptr::null(), std::ptr::null(), hostfault::Format::Relative32)
+        }
+        .expect("an empty table");
+        d.set_flat_fixups(table);
+    });
+    assert!(rt.flat_ram());
+    assert!(rt.memory_state().parking());
+    let w = rt.memory().window().cloned().expect("a window on this host");
+    assert!(w.is_aliased());
+    let base = rt.flat_base().expect("a window");
+    // SAFETY: the window holds the page once aliased.
+    assert!(w.holds(0x10010));
+    assert_eq!(unsafe { (base.add(0x10010) as *const u32).read_volatile() }, 0x3333);
+}
+
+/// `Ram::make_aliasable` keeps every byte, zero pages included.
+#[test]
+fn make_aliasable_keeps_the_bytes() {
+    let mut ram = Ram::zeroed_with(RAM_SIZE, false);
+    ram[5] = 1;
+    ram[RAM_SIZE - 1] = 2;
+    ram[0x12345] = 3;
+    assert!(ram.make_aliasable());
+    assert!(ram.can_alias());
+    assert_eq!((ram[5], ram[RAM_SIZE - 1], ram[0x12345], ram[0x5000]), (1, 2, 3, 0));
+}

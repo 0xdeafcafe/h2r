@@ -61,6 +61,10 @@ pub struct Dispatch {
     /// `generated::FEATURE_ENTRY_TABLE`), from which the runtime keeps its
     /// [`Live`](crate::direct::Live) table.
     entry_table: Option<Arc<crate::direct::EntryTable>>,
+    /// The flat module's fixup table (`generated::FEATURE_FLAT_RAM`, only
+    /// on the entry-table module), registered with `hostfault` while any
+    /// dispatch holding it lives.
+    flat_fixups: Option<Arc<hostfault::Table>>,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -117,6 +121,19 @@ pub enum RegistrationError {
     /// A second module with an entry table; a runtime keeps one.
     #[error("a generated module with an entry table is already registered")]
     SecondEntryTable,
+    /// A flat-RAM module needs the entry-table layout its fixup bounds
+    /// follow ([`FEATURE_FLAT_RAM`](crate::generated::FEATURE_FLAT_RAM)).
+    #[error("generated module uses flat RAM but has no entry table: rebuild the image")]
+    FlatRamWithoutEntryTable,
+    /// A flat-RAM module on a host with no flat RAM window (only macOS and
+    /// x86-64 Linux have one). Rebuild the image without `H2_FLAT_RAM=1`.
+    #[error("generated module uses flat RAM, which this host has no window for: rebuild the image without H2_FLAT_RAM")]
+    FlatRamUnsupported,
+    /// A flat-RAM module's fixup table is malformed or unsorted (a linker
+    /// that reorders functions or splits hot and cold code breaks the
+    /// emit order the table relies on).
+    #[error("generated module fixup table: {0}")]
+    FixupTable(hostfault::Error),
     /// The module's entry table does not match its entry rows.
     #[error("generated module entry table: {0}")]
     EntryTable(String),
@@ -392,6 +409,7 @@ impl Dispatch {
             stop_recovery: self.stop_recovery.clone(),
             entry_fallback: None,
             entry_table: self.entry_table.clone(),
+            flat_fixups: self.flat_fixups.clone(),
         }
     }
     /// Use the title's generated functions in an isolated executor. HLE-only
@@ -419,6 +437,14 @@ impl Dispatch {
     }
     pub(crate) fn set_entry_table(&mut self, table: crate::direct::EntryTable) {
         self.entry_table = Some(Arc::new(table));
+    }
+    /// A flat-RAM module is registered: its code reads and writes guest
+    /// RAM through the window.
+    pub fn flat_ram(&self) -> bool {
+        self.flat_fixups.is_some()
+    }
+    pub(crate) fn set_flat_fixups(&mut self, table: hostfault::Table) {
+        self.flat_fixups = Some(Arc::new(table));
     }
 
     pub fn has_generated(&self, addr: u32) -> bool {

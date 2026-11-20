@@ -118,6 +118,8 @@ pub(crate) struct Memory {
     /// The state word (module docs); used once `parking` is on.
     state: AtomicUsize,
     parking: AtomicBool,
+    /// A flat-RAM module runs on this memory ([`Memory::make_flat`]).
+    flat: AtomicBool,
     /// Guards waiting for generated code to park: it may not start again
     /// until they have had the Guest.
     waiters: AtomicUsize,
@@ -137,6 +139,7 @@ impl Memory {
             window,
             state: AtomicUsize::new(IDLE),
             parking: AtomicBool::new(false),
+            flat: AtomicBool::new(false),
             waiters: AtomicUsize::new(0),
             words: Default::default(),
             guest: Mutex::new(guest),
@@ -272,6 +275,15 @@ impl Memory {
     /// The flat RAM window, where there is one.
     pub(crate) fn window(&self) -> Option<&Arc<crate::window::Window>> {
         self.window.as_ref()
+    }
+    /// A flat-RAM module runs on this memory: its Guest, and any Guest put
+    /// in its place, keeps RAM in a backing the window can alias
+    /// ([`Guest::require_aliasable_ram`]). Takes the Guest.
+    pub(crate) fn make_flat(&self) {
+        if self.flat.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        self.lock().require_aliasable_ram();
     }
     /// Use the state word from now on (module docs).
     pub(crate) fn enable_parking(&self) {
@@ -414,10 +426,14 @@ impl DerefMut for MemoryGuard<'_> {
 impl Drop for MemoryGuard<'_> {
     fn drop(&mut self) {
         let memory = self.memory;
-        // A Guest put in place of another is shown in the window from now.
+        // A Guest put in place of another is shown in the window from now,
+        // over RAM the window can alias if a flat-RAM module runs.
         if let Some(w) = &memory.window
             && !self.guard.shown_in(w)
         {
+            if memory.flat.load(Ordering::Acquire) {
+                self.guard.require_aliasable_ram();
+            }
             self.guard.attach_window(w.clone());
         }
         // Still holding the Guest (and the gate, if any): see Memory::layout.
@@ -526,10 +542,13 @@ impl Drop for OwnedFastAccess {
 }
 
 pub(crate) fn sync_accesses(ctx: &mut ExecCtx) {
+    // A flat-RAM handler counts in the context's block, a paged one in its
+    // view; only one of them is ever non-zero.
     let count = ctx
         .fast_memory
         .as_mut()
-        .map_or(0, OwnedFastAccess::take_accesses);
+        .map_or(0, OwnedFastAccess::take_accesses)
+        + ctx.mem_block.take_accesses();
     if count != 0 {
         if let Some(p) = &mut ctx.profile {
             p.fast_memory_accesses += count;

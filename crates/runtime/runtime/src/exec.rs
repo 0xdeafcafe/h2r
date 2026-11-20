@@ -15,9 +15,10 @@ pub(crate) use crate::continuation::{
     BASE as CONTINUATION_BASE, Continuation, END as CONTINUATION_END,
 };
 
-/// `repr(C)` for its first field only: generated code reads `preempt`
-/// through the `ExecCtxOpaque *` it is given (`preempt.rs`). Every other
-/// field stays private to Rust.
+/// `repr(C)` for its first three fields only: generated code reads
+/// `preempt`, the direct-call block and the flat block through the
+/// `ExecCtxOpaque *` it is given (`preempt.rs`, `direct.rs`,
+/// `ffi/mem_block.rs`). Every other field stays private to Rust.
 #[repr(C)]
 pub struct ExecCtx {
     /// Must stay first (RUNTIME-CONTRACT.md, "Loop safe points").
@@ -25,6 +26,10 @@ pub struct ExecCtx {
     /// Must stay second (RUNTIME-CONTRACT.md, "Direct calls"): `direct`'s
     /// block, or null while direct calls are disabled.
     pub(crate) direct_ptr: crate::direct::DirectPtr,
+    /// Must stay third (RUNTIME-CONTRACT.md, "Flat RAM"): the flat
+    /// model's block, which a flat-RAM handler reads its window base,
+    /// cards and access budget from ([`crate::ffi::H2Mem`]).
+    pub(crate) mem_block: crate::ffi::MemBlock,
     pub(crate) direct: crate::direct::Direct,
     pub(crate) runtime: Arc<Runtime>,
     pub(crate) profile: Option<crate::perf::Profile>,
@@ -101,6 +106,7 @@ fn resolve_slot(pc: u32) -> usize {
 }
 const _: () = assert!(std::mem::offset_of!(ExecCtx, preempt) == 0);
 const _: () = assert!(std::mem::offset_of!(ExecCtx, direct_ptr) == size_of::<*const u32>());
+const _: () = assert!(std::mem::offset_of!(ExecCtx, mem_block) == 2 * size_of::<*const u32>());
 impl ExecCtx {
     pub fn new(runtime: Arc<Runtime>, thread_id: u32) -> Self {
         let direct = crate::direct::Direct::new(&runtime);
@@ -132,6 +138,7 @@ impl ExecCtx {
         let mut ctx = Self {
             preempt,
             direct_ptr: direct.as_ptr(),
+            mem_block: crate::ffi::MemBlock::new(),
             direct,
             word,
             runtime,
@@ -151,6 +158,8 @@ impl ExecCtx {
             fast_memory: None,
             fast_memory_enabled: true,
         };
+        let preempt = ctx.preempt_ptr();
+        ctx.mem_block.set_preempt(preempt);
         if ctx.runtime.coverage.get().is_some() {
             ctx.enable_direct_calls(false);
         }

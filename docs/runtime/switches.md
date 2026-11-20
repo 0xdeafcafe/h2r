@@ -57,7 +57,8 @@ Off by default. Each is the owner's call once the A/B named is run.
 
 | Switch | What | Waiting for |
 |---|---|---|
-| `H2_FLAT_RAM`, `H2_FLAT_WRITE_WATCH` (+ `H2_FLAT_STATS_OWNER`) | guest RAM as one flat host mapping, and its write watch; at run time it also makes guest RAM aliasable, so the runtime's flat RAM window holds it ([contract-thin-transfers-flat-ram.md](contract-thin-transfers-flat-ram.md), section 4.1) | a full-image A/B |
+| `H2_FLAT_RAM` | at build, the flat memory model: each guest access is one host instruction in the runtime's window, with a fixup to the helper (module feature 16; macOS and x86-64 Linux only); set it on the run too, or the image recompiles paged. At run time it also makes guest RAM aliasable from the start ([contract-thin-transfers-flat-ram.md](contract-thin-transfers-flat-ram.md), section 4.1, slice F3; [RUNTIME-CONTRACT.md](../../crates/recompiler/emit/RUNTIME-CONTRACT.md), "Flat RAM") | M4 of the contract doc |
+| `H2_EMIT_FLAT_RAM`, `H2_FLAT_WRITE_WATCH` (+ `H2_FLAT_STATS_OWNER`) | at build, the opt-in span image instead (`H2_FLAT_SPAN`); with it, `H2_FLAT_RAM` at run time turns the span path and its write watch on or off for that image (RUNTIME-CONTRACT.md, "Opt-in flat RAM and first-write faults") | M0 of the contract doc, then removal |
 | `H2_RAM_PAGE_CACHE` | reuses RAM pages within one gate hold | a full-image A/B |
 | `H2_X87_TOP` | checked x87 TOP specialisation | a full-image A/B |
 | `H2_ENTRY_GATE` | takes the RAM gate at handler entry; 11% off a runner entry in benches | an in-game profile ([guest-memory.md](../perf/guest-memory.md)) |

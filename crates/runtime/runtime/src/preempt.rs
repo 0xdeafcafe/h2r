@@ -291,13 +291,11 @@ impl ExecCtx {
             }
             self.slice.left = self.slice.left.saturating_sub(count);
         }
+        let budget = self.access_budget();
         if let Some(view) = &mut self.fast_memory {
-            view.set_budget(if self.slice.armed && self.slice.left != 0 {
-                self.slice.left
-            } else {
-                u64::MAX
-            });
+            view.set_budget(budget);
         }
+        self.mem_block.set_budget(budget);
     }
     /// Accesses the context may make before its slice expires, for
     /// generated code that counts its own: `u64::MAX` when nothing would

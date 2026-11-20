@@ -185,6 +185,9 @@ pub struct Guest {
     /// Physical bytes the congruent allocator has skipped
     /// ([`Guest::map_zeroed`]).
     congruence_skipped: u64,
+    /// The runtime runs a flat-RAM module: RAM is kept in a backing the
+    /// window can alias ([`Guest::require_aliasable_ram`]).
+    aliasable_ram: bool,
 }
 
 /// Guest ABI outputs. The caller recreates zeroed allocations with
@@ -272,6 +275,7 @@ impl Guest {
             window: None,
             ident: fresh_layout(),
             congruence_skipped: 0,
+            aliasable_ram: false,
         }
     }
     /// Identifies the mappings and their permissions: a new value, never
@@ -1379,6 +1383,43 @@ impl Guest {
     #[cfg(test)]
     pub(crate) fn window(&self) -> Option<&std::sync::Arc<crate::window::Window>> {
         self.owned_window()
+    }
+    /// The runtime runs a flat-RAM module (`generated::FEATURE_FLAT_RAM`):
+    /// move RAM into a backing the window can alias, if it is not in one,
+    /// and keep it there through a copy-on-write restore
+    /// ([`Guest::restore_cow`]). RAM made before the module registered is
+    /// copied over, its bytes and every mapping unchanged. A
+    /// second-executor refresh ([`Guest::cow_refresh`]) still leaves RAM
+    /// the window cannot alias: that view runs through its fixups
+    /// (docs/runtime/contract-thin-transfers-flat-ram.md, slice F5).
+    pub(crate) fn require_aliasable_ram(&mut self) {
+        self.aliasable_ram = true;
+        if self.ensure_aliasable_ram() {
+            self.refresh_fast_range(0, 1u64 << 32);
+        }
+    }
+    /// Copy RAM into an aliasable backing if this Guest needs one and does
+    /// not have it; true if RAM moved. The caller then rebuilds the page
+    /// table and the window from the new RAM.
+    pub(crate) fn ensure_aliasable_ram(&mut self) -> bool {
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+        {
+            if !self.aliasable_ram || self.ram.can_alias() {
+                return false;
+            }
+            self.fold_cards();
+            if !self.ram.make_aliasable() {
+                return false;
+            }
+            // The span model's aliases were of the old RAM. A flat-RAM
+            // module never reads them.
+            self.flat = None;
+            self.flat_requested = false;
+            self.watch_revision = self.watch_revision.wrapping_add(1);
+            true
+        }
+        #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64"))))]
+        false
     }
     /// A Guest whose RAM the window can alias, for a test.
     #[cfg(test)]

@@ -144,6 +144,30 @@ impl Ram {
         { matches!(self.backing, Backing::Guarded { file: Some(_), .. }) }
     }
 
+    /// Move these bytes into a fresh aliasable backing
+    /// ([`Ram::zeroed_with`]), keeping `cow_base`: false, and unchanged,
+    /// if this host gives none. Only non-zero 4 KiB pages are copied, so a
+    /// mostly empty RAM costs little more than a scan.
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+    pub(crate) fn make_aliasable(&mut self) -> bool {
+        if self.can_alias() {
+            return true;
+        }
+        let mut fresh = Self::zeroed_with(self.len, true);
+        if !fresh.can_alias() {
+            return false;
+        }
+        const CHUNK: usize = 4096;
+        for (to, from) in fresh.chunks_mut(CHUNK).zip(self.chunks(CHUNK)) {
+            if from.iter().any(|&b| b != 0) {
+                to.copy_from_slice(from);
+            }
+        }
+        fresh.cow_base = self.cow_base.take();
+        *self = fresh;
+        true
+    }
+
     /// Install a shared alias over a host-page-aligned subrange of a
     /// private address-space reservation.
     ///
