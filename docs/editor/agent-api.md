@@ -139,6 +139,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `playlist` | `list` (with `unused` per playlist and the `templates`), `get {playlist}`, `set {playlist, title, description, template, clear}` (`template`: make the slot a playlist of that kind, or give a playlist another kind; `clear: true`: make it unused; [live-matchmaking.md §6.10](../live/live-matchmaking.md)), `entry {playlist, op, entry, to, weight}`, `entry_variant` |
 | `ui` | `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}` |
 | `pair` | `list`, `status`, `connect {socket}`, `disconnect`, `auto {enabled}` |
+| `mirror` | `status`, `objects {kind?, near?, limit?, at_tick?}` |
 | `view` | `camera {yaw, pitch, distance, target, focus, all}`, `snapshot {out, size, camera}`, `stats` |
 | `hud` | `list {map \| package}`, `read {hud, state}`, `set {hud, widget, field, value, merge}`, `move {hud, widget, x, y, mode, merge}`, `render {hud, state, out}`, `check {hud, state}`, `save_as {path}` |
 | `model` (planned) | `list`, `read`, `render`, `colors`, `emblem` |
@@ -203,6 +204,18 @@ Notes on some:
   `pair.status` for `state: "connected"`. `pair.connect` with no `socket`
   takes the one game running, and is refused with none or several.
   `pair.auto {enabled}` reads or sets auto-pair, on by default.
+- **Live mirror.** The paired window reads the game's `objects` and
+  `players` stream. `mirror.status` reports the stream state, layers,
+  frame rate, presentation delay, dropped and skipped counts, and the
+  store's latest, earliest retained and shown ticks. `mirror.objects`
+  returns `{tick, objects, truncated}` for the viewport sample.
+  `at_tick` selects an exact game sample in the interpolation window
+  and answers `REFUSED` when it has expired. Each object has its salted
+  `id`, tag group `kind`, definition `tag`, `pos`, basis, scale,
+  velocity, flags, parent, vitality, placement and node count. Positions
+  of attached objects are relative to their parents. `near` takes
+  `{point: [x,y,z], radius}` in world space. Bind-pose objects have no
+  streamed nodes. Pairing and presentation are described in [live-mirror.md](live-mirror.md).
 - **Renders.** `ui.render` draws on the CPU (no GPU needed); `view.snapshot`
   renders the open map offscreen through the viewport's own renderer
   (wgpu, no window) and answers `NO_GPU` on a machine without an adapter.

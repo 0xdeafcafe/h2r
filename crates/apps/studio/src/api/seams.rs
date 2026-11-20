@@ -55,4 +55,5 @@ pub fn register(api: &mut Api) {
     api.register(Box::new(super::hud::Hud));
     // pair.*: the window's pairing with a running game (play::pair).
     api.register(Box::new(super::pair::Pair));
+    api.register(Box::new(super::mirror::Mirror));
 }

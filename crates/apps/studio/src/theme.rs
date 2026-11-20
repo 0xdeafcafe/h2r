@@ -9,7 +9,7 @@ use dear_imgui_rs::{
 /// framebuffer scale, so this stays crisp on HiDPI displays.
 pub const FONT_SIZE: f32 = 15.0;
 
-static INTER_REGULAR: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
+pub(crate) static INTER_REGULAR: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
 static INTER_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/Inter-SemiBold.ttf");
 static LUCIDE: &[u8] = include_bytes!("../assets/fonts/lucide-subset.ttf");
 

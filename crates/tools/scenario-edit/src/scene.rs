@@ -41,6 +41,16 @@ use tags::anim_sample::{Mat4, NodeTransform, mat_mul};
 use tags::geometry::{RawSource, TagView};
 use tags::model::RenderModelGeometry;
 
+/// Bind-pose meshes missing from the open scene, resolved against the
+/// same map and shared resource files as the scenario's placed objects.
+pub(crate) fn streamed_models(source: &MapSource, objects: Vec<TagId>) -> crate::Result<Scene> {
+    let mut map = source.open()?;
+    let mut raw = geometry::RawFiles::open(source)?;
+    let mut builder = SceneBuilder::new(&mut map, &mut raw, resource_files(source));
+    builder.object_models(objects, false);
+    Ok(builder.finish())
+}
+
 /// The largest side of an uploaded texture.
 pub const MAX_TEXTURE: u32 = 512;
 /// The mean linear brightness [`Image::lift_factor`] raises dark textures to.
@@ -786,6 +796,9 @@ pub struct Scene {
     pub models: Vec<Mesh>,
     /// Placed object tag → index into [`Self::models`].
     pub objects: HashMap<TagId, usize>,
+    /// Placement meshes which include the variant's attached objects. A
+    /// live instance uses the bare mesh: children have their own records.
+    pub composite_objects: std::collections::HashSet<TagId>,
     /// The level's sky, drawn behind everything at infinity.
     pub sky: Option<SceneSky>,
     /// Textures drawn clamped to their edges, not repeated
@@ -1343,6 +1356,10 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
     /// A model for every placed object tag that resolves to one, with the
     /// objects its model variant attaches ([`object_model_of`]).
     pub fn objects(&mut self, objects: impl IntoIterator<Item = TagId>) {
+        self.object_models(objects, true);
+    }
+
+    fn object_models(&mut self, objects: impl IntoIterator<Item = TagId>, attachments: bool) {
         let ctx = match tags::object::Context::read(self.map) {
             Ok(c) => c,
             Err(_) => return,
@@ -1355,9 +1372,17 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
                 continue;
             }
             self.scene.stats.objects += 1;
-            let Some(wanted) = object_model_of(&ctx, object, multiplayer) else {
+            let wanted = if attachments {
+                object_model_of(&ctx, object, multiplayer)
+            } else {
+                render_model_of(&ctx, object).map(|mode| ObjectModel { mode, attached: Vec::new() })
+            };
+            let Some(wanted) = wanted else {
                 continue;
             };
+            if !wanted.attached.is_empty() {
+                self.scene.composite_objects.insert(object);
+            }
             let model = match by_model.get(&wanted) {
                 Some(m) => *m,
                 None => {

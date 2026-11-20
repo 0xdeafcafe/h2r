@@ -27,6 +27,7 @@ use crate::App;
 
 mod docs;
 mod hud;
+mod mirror;
 mod pair;
 mod params;
 mod playlists;

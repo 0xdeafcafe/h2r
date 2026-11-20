@@ -196,6 +196,18 @@ pub struct Bridge {
     /// What `Play` last published: `None` until a window has drawn a
     /// frame (headless, there is no pairing).
     pub published: Option<Value>,
+    /// One socket and its exact tick samples for the current pairing.
+    pub mirror: Option<live_mirror::Stream>,
+    /// The sample shown this editor frame, shared by the viewport and API.
+    pub shown: Option<live_mirror::Sample>,
+    pub latest: bool,
+    pub show_objects: bool,
+    /// Counters reported by the game's writer for this stream.
+    pub counters: Option<Value>,
+    /// Map identity from the handshake, refreshed over live.status after a cut.
+    pub stream_map: Value,
+    /// A Play copy may include edits. Its checksum belongs to this open document.
+    pub(super) play_copy: Option<(u64, u32)>,
 }
 
 impl Default for Bridge {
@@ -204,6 +216,51 @@ impl Default for Bridge {
             auto_pair: true,
             requests: Vec::new(),
             published: None,
+            mirror: None,
+            shown: None,
+            latest: false,
+            show_objects: true,
+            counters: None,
+            stream_map: Value::Null,
+            play_copy: None,
         }
+    }
+}
+
+impl Bridge {
+    pub(super) fn clear_mirror(&mut self) {
+        self.mirror = None;
+        self.shown = None;
+        self.counters = None;
+        self.stream_map = Value::Null;
+        self.play_copy = None;
+    }
+
+    /// Only resolve definition handles and world-space coordinates against
+    /// the editor map when the name belongs to this exact frame's epoch.
+    pub(crate) fn matches_sample(&self, app: &crate::App, sample: &live_mirror::Sample) -> bool {
+        if !app.session.is_open()
+            || self.stream_map["epoch"].as_u64() != Some(sample.epoch)
+            || MapMatch::of(app.loaded_map(), self.stream_map["name"].as_str()) != MapMatch::Same
+        {
+            return false;
+        }
+        let expected = self.play_copy
+            .filter(|(revision, _)| *revision == app.session.world_rev())
+            .map(|(_, sum)| sum)
+            .or_else(|| app.session.source_checksum());
+        match (expected, self.stream_map["checksum"].as_u64()) {
+            (Some(a), Some(b)) => u64::from(a) == b,
+            _ => true,
+        }
+    }
+
+    pub fn player(&self) -> Option<(&agent_proto::live::Player, &agent_proto::live::Object)> {
+        let shown = self.shown.as_ref()?;
+        shown.players.iter().filter_map(|player| {
+            let unit = player.unit?;
+            let object = shown.objects.iter().find(|object| object.id == unit)?;
+            Some((player, object))
+        }).min_by_key(|(player, _)| (player.local_user.unwrap_or(u16::MAX), player.index))
     }
 }

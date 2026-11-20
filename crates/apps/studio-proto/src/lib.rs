@@ -130,6 +130,9 @@ pub mod method {
     pub const PAIR_DISCONNECT: &str = "pair.disconnect";
     pub const PAIR_AUTO: &str = "pair.auto";
 
+    pub const MIRROR_STATUS: &str = "mirror.status";
+    pub const MIRROR_OBJECTS: &str = "mirror.objects";
+
     pub const VIEW_CAMERA: &str = "view.camera";
     pub const VIEW_SNAPSHOT: &str = "view.snapshot";
     pub const VIEW_STATS: &str = "view.stats";

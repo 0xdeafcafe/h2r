@@ -693,15 +693,15 @@ game running, once per socket (`Play::auto_tried`), so Unpair sticks. An
 empty path pairs with the default socket. The game is then taken to hold
 the map as the editor shows it at that moment.
 
-While paired (`play::Play`, on a link thread that polls `session.status`
-and `world.query` four times a second):
+While paired, `play::Play` keeps a control connection for commands and
+status, and a second connection for the binary live mirror.
 
 - **Status chip** in the status bar: the connection, the game's map, its
   phase (playing, paused, loading, menu, cinematic) and tick.
-- **Live objects** drawn over the viewport: players (green, with names),
-  AI (red), vehicles (blue), machines and bodies, each with a facing
-  line. Turrets, whose positions are relative to their vehicle, are left
-  out.
+- **Live objects** use their definition's model in the bind pose.
+  Player labels show the name and team, and an aim line follows the
+  unit's targeting vector. The viewport interpolates streamed transforms
+  between game ticks ([live-mirror.md](live-mirror.md)).
 - **Edits sent live.** Every 200 ms the editor compares the placements
   with what the game is taken to hold (`sync::Baseline`) and sends each
   changed field of a placement with `edit.set` on the game's `scnr`,
@@ -731,7 +731,7 @@ and `world.query` four times a second):
   machine desyncs the others.
 
 Tests (`play::tests`, against the agent crate's server and executor with
-an invented game behind them, no game data): pairing and the polled
+an invented game behind them, no game data): pairing and streamed
 objects, Go to player, a moved placement as one `edit.set` with its path
 and bytes, the warning when the game's copy differed, undo, an added
 entry as a reload, teleport and the spawn, no writes in co-op or with

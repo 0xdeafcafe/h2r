@@ -3572,6 +3572,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "live-mirror"
+version = "0.1.0"
+dependencies = [
+ "agent-proto",
+ "serde_json",
+]
+
+[[package]]
 name = "live-proto"
 version = "0.1.0"
 dependencies = [
@@ -6479,6 +6487,7 @@ dependencies = [
 name = "studio"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "agent",
  "agent-proto",
  "anyhow",
@@ -6491,11 +6500,13 @@ dependencies = [
  "dear-imgui-winit",
  "dear-imguizmo",
  "editor-core",
+ "guest-layout",
  "h1convert",
  "h1map",
  "h1objects",
  "hopper-edit",
  "hud-edit",
+ "live-mirror",
  "live-proto",
  "map",
  "png",
