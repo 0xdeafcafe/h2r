@@ -615,10 +615,11 @@ def rename_crate(old, new, window_name):
     return w.finish(old_dirs=[old_dir])
 
 
-def copy_manifest(src_dir, dst_dir, src_pkg, dst_pkg, description):
+def copy_manifest(src_dir, dst_dir, src_pkg, dst_pkg, description, allow=()):
     """A new package's manifest: the source's dependencies and features
     under the new name, without its targets, and without the dependencies
-    the destination's domain may not have (scripts/crate-domains.toml).
+    the destination's domain may not have (scripts/crate-domains.toml),
+    except those in `allow`, which the caller lists as exceptions.
     Returns (text, [dropped dependency names])."""
     rule_set = cratemeta.rules(ROOT)
     pkgs = cratemeta.packages(ROOT)
@@ -639,7 +640,8 @@ def copy_manifest(src_dir, dst_dir, src_pkg, dst_pkg, description):
             header = line.strip()
         key = re.match(r"^([A-Za-z0-9_-]+)\s*(=|\.)", line)
         normal = header.endswith("dependencies]") and "dev-dependencies" not in header
-        if key and normal and key.group(1) in domain_of and domain_of[key.group(1)] not in allowed:
+        if key and normal and key.group(1) in domain_of and domain_of[key.group(1)] not in allowed \
+                and key.group(1) not in allow:
             dropped.append(key.group(1))
             while out and out[-1].lstrip().startswith("#"):
                 out.pop()  # the comment that explained it

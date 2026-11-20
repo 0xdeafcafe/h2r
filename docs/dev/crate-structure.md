@@ -184,7 +184,7 @@ cannot become a member.
 | `frame-scene`, `scene-extract` | `framescene` | `crates/rewrites/` | Guest-free: `scene-extract` reads memory through its own trait and depends only on `frame-scene` |
 | `hostfault` | `contract` | `crates/runtime/hostfault` | The process-wide fault handler; `libc` only |
 | `sim-tier` | `sim-tier` | `crates/recompiler/sim-tier` | A second lowering of `ir`, beside `emit` and `clif`. Not committed on its branch yet |
-| `recomp` | (contract work) | `crates/runtime/recomp` | XBE to a loaded module, out of `boot/src/lib.rs`. Not on a branch yet; it is S4 |
+| `recomp` | (contract work) | `crates/runtime/recomp` | XBE to a loaded module, out of `boot/src/lib.rs` by S4 (ran) |
 
 A lane whose crate lands **before** window 1 adds it as `crates/<name>`
 as it does now; the window moves it, because every name above is already
@@ -220,7 +220,7 @@ ports stay as oracles until each `impl.sim.native.<subsystem>` lands.
 | Part | Lines | Goes to | Window |
 |---|---:|---|---|
 | Composition root: `lib.rs`, `registration`, the tests | 6,325 | `crates/apps/boot` | stays |
-| Build and load: `fallback`, `shim`, `sse`, `x87`, `tier`, `host_coverage`, `build.rs`, `c/`, and the pipeline in `lib.rs` | about 3,200 | `crates/runtime/recomp` | S4 |
+| Build and load: `fallback`, `shim`, `sse`, `x87`, `tier`, `host_coverage`, `host_report`, `build.rs`, `c/`, and the pipeline in `lib.rs` | 3,575 | `crates/runtime/recomp` | S4, done |
 | Everything else, as one crate first | 146,827 | `crates/extensions/game` | S5 |
 | Render glue: 29 modules (`native_*_glue`, `d3d_glue`, `d3d_diag`, `render_thread`, `opaque_streams`, ...) | 18,694 | `crates/rewrites/render-bridge`, below `game` | S6 |
 | Halo 1 runtime: 14 `h1_*` modules | 20,572 | `crates/extensions/h1-runtime` | S6 |
@@ -359,7 +359,7 @@ git -c merge.renameLimit=30000 -c merge.directoryRenames=true merge -X rename-th
 | S1 | Small renames and deletions | `s1-small.py` | 2 crates renamed, 1 deleted, 3 files to `wma` | ran: `move-s1` |
 | S2 | `guest-layout` takes `engine`'s guest boundary and points | `s2-guest-layout.py` | 7 files, 3,505 lines | ran: `move-s2`; `entry.rs` stays in `engine` |
 | S3 | `hooks` gives away the sim, render and Halo 1 hooks | `split.py s3-sim-bridge`, `s3-render-bridge`, `s3-h1-hooks` | 8 + 27 + 2 modules, 25,037 lines | ran: `move-s3-sim-bridge`, `move-s3-render-bridge`, `move-s3-h1-hooks` |
-| S4 | `recomp` out of `boot` | the contract lane | 7 files and 630 lines of `lib.rs` | before the contract work starts |
+| S4 | `recomp` out of `boot` | `s4-recomp.py` | 7 modules, 922 lines of `lib.rs`, `build.rs`, `c/`, 1 test | ran: `move-s4` |
 | S5 | `boot` keeps the root, `game` takes the rest | `s5-boot-root.py` | 151 modules, 291 files, 146,827 lines | 96 references to cut, about 30 of them S4's |
 | S6 | `game` gives away the render glue, the Halo 1 runtime, the UI toolkit and the Live glue | `split.py s6-*` (six specs) | 71 modules, 92,695 lines | 3 to 82 references each |
 | S7 | `cli` becomes `main.rs` and ten command crates | `split.py s7-*` (ten specs) | 91 modules, 76,883 lines | four specs now, the rest 1 to 29 references each |
@@ -542,15 +542,42 @@ and `--check` also stops on a bare `module::` path in the root and on
 
 ### S4. `recomp` out of `boot`
 
-Lane work, before the contract implementers start, so thin transfers and
-flat RAM never touch `boot/src/lib.rs`. `fallback`, `shim`, `sse`, `x87`,
-`tier`, `host_coverage`, `c/`, `build.rs`, `tests/fast_tier.rs` and the
-pipeline in `lib.rs` (`BRIDGE` to `Module`: stamps, the analysis cache,
-`build*`) go to `crates/runtime/recomp`; `boot` re-exports the names
-`cli` uses (`boot::tier`, `boot::build`, ...). `boot` loses its build
-script, so a `Cargo.lock` change stops recompiling it. This also removes
-about 30 of S5's 96 references (`stamp_path`, `analysis_cache`,
-`build_stamp`, `DYLIB`, `dylib_current`, ...).
+`scripts/moves/s4-recomp.py`, run as `scripts/moves/window.sh run s4`
+(tags `move-s4-pre`, `move-s4`; replay with `scripts/moves/window.sh
+replay s4`). Build and load leave `boot` for `crates/runtime/recomp`:
+
+- the modules `fallback`, `shim`, `sse`, `x87`, `tier`, `host_coverage`
+  and `host_report`, unchanged, with `build.rs`, `c/` and
+  `tests/fast_tier.rs`;
+- from `boot/src/lib.rs`, cut by markers and not line numbers, so a
+  branch's edits inside them move with them on replay: the pipeline (from
+  the doc comment of `pub const BRIDGE` to the one of `pub struct
+  RunOpts`: stamps, the analysis cache, `build*`, `Module`,
+  `load_module`), the `log` module, `SHIM_EVENTS`, and the root tests from
+  `fn synthetic_xbe` to the end of `mod tests`.
+
+`boot` depends on `recomp`, forwards `desktop-runtime` to it, and its root
+says `pub use recomp::*;`, so `crate::fallback` and `stamp_path` in
+`boot`, and `boot::tier`, `boot::build` and `boot::fallback` in `cli`, the
+hosts and the tests, resolve as before. In what moved, `pub(crate)` is
+`pub`, as are `stamp_path` and `Module::slim`, which the run reads.
+
+Cut first (`S4 prep`): the host audit's report, its two environment
+variables and the module list a light host builds from it are
+`host_report` (plain data, which the build reads); `host_audit` keeps the
+collector and re-exports them, so `boot::host_audit::Report` still
+resolves. `fallback::init_with_cold` no longer hands the shadow checks
+their lifted original: the run does, after `load_module`, because
+`sim-bridge` is in `rewrites`, which `runtime` may not use.
+
+`boot` keeps a build script for the campaign cards' hash
+(`CAMPAIGN_CARDS_SOURCE_HASH`), which hashes `Cargo.lock` too, so a lock
+change still recompiles `boot` until S5 takes `campaign_cards` and that
+script to `game`. The generator, analysis, unread-target and fast-tier
+hashes are `recomp`'s, over the same relative paths, so a module built
+before the move is still current. After the move `boot` drops `clif`,
+`lifted`, `lift`, `ir` and `x87`. The lock file does not name `recomp`
+until the first cargo command adds it.
 
 ### S5. `boot` keeps the root
 
