@@ -395,6 +395,8 @@ pub struct TagSet {
     pub strings: Vec<Option<String>>,
     /// [`TagSet::intern`]'s index of `strings`.
     strings_index: StringsIndex,
+    /// Source conversions installed during this build, separate from same-name retail assets.
+    converted: HashMap<(FourCC, String), TagId>,
     /// Tag-index slots in order.
     pub slots: Vec<Slot>,
     /// Root scenario datum (`scnr`).
@@ -519,6 +521,7 @@ impl TagSet {
             groups: Vec::new(),
             strings: Vec::new(),
             strings_index: StringsIndex::default(),
+            converted: HashMap::new(),
             slots: Vec::new(),
             scenario: TagId::NULL,
             globals: TagId::NULL,
@@ -589,6 +592,23 @@ impl TagSet {
             (t.group == group && s.name.as_deref() == Some(name)).then_some(t.id)
         })
     }
+    /// Remember a source conversion after its payload and resources have been installed.
+    pub fn record_conversion(&mut self, group: FourCC, name: &str, id: TagId) {
+        self.converted.insert((group, name.to_owned()), id);
+    }
+
+    /// Only reuse a tag installed by the source converter in this build.
+    pub fn converted(&self, group: FourCC, name: &str) -> Option<TagId> {
+        let id = *self.converted.get(&(group, name.to_owned()))?;
+        let slot = self.slots.get(id.index())?;
+        (slot.name.as_deref() == Some(name) && self.tag(id)?.group == group).then_some(id)
+    }
+
+    /// Copy source provenance when duplicating an index without changing its datums.
+    pub fn copy_conversion_records(&mut self, source: &TagSet) {
+        self.converted.clone_from(&source.converted);
+    }
+
     /// The string ID for `value`, adding it to the table if needed.
     pub fn intern(&mut self, value: &str) -> Result<u32> {
         let index = self.strings_index.intern(&mut self.strings, value)?;
@@ -747,6 +767,7 @@ impl TagSet {
             groups,
             strings: map.strings().to_vec(),
             strings_index: StringsIndex::default(),
+            converted: HashMap::new(),
             slots,
             scenario,
             globals,

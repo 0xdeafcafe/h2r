@@ -705,10 +705,10 @@ const KINDS: [Kind; 8] = [
     },
 ];
 
-/// Object groups an `object_definition` script atom may name.
-const OBJECT_GROUPS: [&[u8; 4]; 12] = [
+/// Source object groups an untyped script definition may name.
+const OBJECT_GROUPS: [&[u8; 4]; 13] = [
     b"bipd", b"vehi", b"weap", b"eqip", b"garb", b"proj", b"scen", b"mach", b"ctrl", b"ssce",
-    b"bloc", b"crea",
+    b"bloc", b"crea", b"lifi",
 ];
 
 /// The Halo 1 player biped the objects layer converts.
@@ -823,20 +823,10 @@ pub fn write(
     let rep = &mut report.scenario;
     level_text.write(&mut root);
 
-    // BSP descriptors: exactly Halo 1's BSPs, in order, so its BSP
-    // indices (`switch_bsp`, zones, placements) need no map. A BSP past
-    // the base's descriptors takes the base's first as its template.
-    let templates = base.elements(BSPS, BSP)?;
-    let first = templates
-        .first()
-        .ok_or_else(|| invalid("the base has no BSP descriptor"))?;
+    // The loader fills these descriptors from the converted BSP sections.
     let mut desc = Vec::new();
-    for (k, slot) in bsps.iter().enumerate() {
-        let mut b = if fresh {
-            Block::zeroed(BSP)
-        } else {
-            Block::new(templates.get(k).unwrap_or(first).to_vec())
-        };
+    for slot in bsps {
+        let mut b = Block::zeroed(BSP);
         for (at, field) in [
             (0, BspField::FileOffset),
             (4, BspField::Size),
@@ -903,17 +893,13 @@ pub fn write(
         let tag = h1.tag(r.id)?;
         // Each material names a copy of a base sky shader drawing Halo 1's
         // bitmaps (h1convert::sky_shaders).
-        let id = h1convert::sky::Sky::from_map(h1, tag)
-            .and_then(|sky| sky.install(set, &base.sky_templates))
-            .map_err(|e| invalid(format!("sky: {e}")))?;
+        let id = h1convert::sky::Sky::from_map(h1, tag)?.install(set, &base.sky_templates)?;
         let mut e = Block::zeroed(8);
         e.tag_ref(0, id);
         skies.push(e);
         rep.skies.push(tag.name.clone());
     }
-    if !skies.is_empty() {
-        put_block(&mut root, SKIES, 8, skies);
-    }
+    put_block(&mut root, SKIES, 8, skies);
 
     // Halo 1's indoor fog as atmosphere element 0, which the skyless
     // clusters name (`structure::Prepared::atmosphere`).
@@ -927,18 +913,11 @@ pub fn write(
         .collect();
     put_block(&mut root, ATMOSPHERE, h1sky::atmosphere::LEN, atmosphere);
 
-    // Player starting locations, on the base's first element.
-    let template = base
-        .elements(STARTING_LOCATIONS, STARTING_LOCATION)?
-        .first()
-        .filter(|_| !fresh)
-        .map(|e| e.to_vec())
-        .unwrap_or_else(|| vec![0; STARTING_LOCATION]);
     let starts: Vec<Block> = mp
         .starting_locations
         .iter()
         .map(|s| {
-            let mut b = Block::new(template.clone());
+            let mut b = Block::zeroed(STARTING_LOCATION);
             for (k, v) in s.position.iter().enumerate() {
                 b.put_f32(4 * k, *v);
             }
@@ -960,13 +939,18 @@ pub fn write(
     }
     let mut aliases = crate::h2assets::Aliases::default();
     let ai_src = h1ai::h1::H1Ai::read(h1).map_err(|e| invalid(format!("ai: {e}")))?;
-    let ai_weapon_tags = if opts.ai {
+    let ai_weapon_tags = if opts.ai && opts.assets == crate::h2assets::Assets::Halo2 {
         ai_weapons::retail_tags(h1, &ai_src, set, &mut report.dropped)?
     } else {
         Vec::new()
     };
     let mut weapon_palette = Vec::new();
     let mut kit = crate::roster::Loadout::default();
+    let source_tables = (opts.ai || opts.scripts.is_some())
+        .then(|| h1scripts::Tables::read(h1))
+        .transpose()
+        .map_err(|e| invalid(format!("AI script references: {e}")))?;
+    let script_tags = source_tables.as_ref().filter(|_| opts.scripts.is_some());
     let placed = match objects {
         Some(b) if opts.objects => {
             // Device groups are written with the scripts' level data;
@@ -982,8 +966,8 @@ pub fn write(
                     &mut report.dropped,
                     groups,
                     opts.devices,
-                    opts.rebuild_bipeds,
                     opts.ai.then_some(&ai_src),
+                    script_tags,
                     &mut kit,
                     opts.assets,
                     &mut aliases,
@@ -996,7 +980,7 @@ pub fn write(
             if !fresh {
                 weapon_palette = ai_weapons::base_palette(base)?;
             }
-            let roster = crate::roster::prepare(h1, &ai_src, &mut conv)?;
+            let roster = crate::roster::prepare(h1, &ai_src, &mut conv, opts.assets, script_tags)?;
             let ids = conv
                 .tree
                 .install(set)
@@ -1096,12 +1080,11 @@ pub fn write(
     put_block(&mut root, BSP_SWITCHES, BSP_SWITCH, switches);
 
     // AI.
-    let source_tables = (opts.ai || opts.scripts.is_some())
-        .then(|| h1scripts::Tables::read(h1))
-        .transpose()
-        .map_err(|e| invalid(format!("AI script references: {e}")))?;
     let mut retained = ai_src.clone();
-    let mut ai_options = h1ai::convert::Options::default();
+    let mut ai_options = h1ai::convert::Options {
+        halo2_assets: opts.assets == crate::h2assets::Assets::Halo2,
+        ..Default::default()
+    };
     let mut requests = Vec::new();
     let mut selection = None;
     let mut generated_starts = std::collections::HashSet::new();
@@ -1303,6 +1286,7 @@ pub fn write(
                 rewritten,
                 crate::cutscenes::policy(opts, &h1.header().name.to_ascii_lowercase()),
                 &aliases,
+                opts.assets,
                 level_text,
             )?);
         }
@@ -1362,15 +1346,6 @@ enum Pal {
     Retail(TagId),
 }
 
-/// The retail object in `set` whose `h1objects` template row matches the
-/// Halo 1 object `tag` (a template the base lacks but a donor brought).
-fn retail_stand_in(set: &TagSet, tag: &h1map::Tag) -> Option<TagId> {
-    let group = tag.group.0.to_be_bytes();
-    h1objects::convert::template_candidates(&group, &tag.name)
-        .into_iter()
-        .find_map(|n| set.find(FourCC(group), n))
-}
-
 /// Converts the palettes' objects, installs them, and writes the
 /// placements. Returns, per (Halo 1 object type, Halo 1 placement), the
 /// Halo 2 object type and placement index (a light fixture becomes a
@@ -1387,8 +1362,8 @@ fn place_objects(
     dropped: &mut Vec<String>,
     device_groups: bool,
     devices: crate::Devices,
-    rebuild_bipeds: bool,
     ai: Option<&h1ai::h1::H1Ai>,
+    scripts: Option<&h1scripts::Tables>,
     kit: &mut crate::roster::Loadout,
     assets: crate::h2assets::Assets,
     aliases: &mut crate::h2assets::Aliases,
@@ -1408,10 +1383,9 @@ fn place_objects(
     let mut conv = h1objects::convert::Converter::new(h1, base);
     conv.options.unit_hud_draw_colour = true;
     let roster = ai
-        .map(|src| crate::roster::prepare(h1, src, &mut conv))
+        .map(|src| crate::roster::prepare(h1, src, &mut conv, assets, scripts))
         .transpose()?
         .unwrap_or_default();
-    conv.options.rebuild_bipeds = rebuild_bipeds;
     let mut palettes = Vec::new();
     for k in &KINDS {
         let mut pal = Vec::new();
@@ -1445,33 +1419,18 @@ fn place_objects(
                     }
                     Ok(None) => None,
                     Err(why) => {
-                        dropped.push(format!("{} palette {}: Halo 2 assets: {why}", k.label, tag.name));
-                        Some(None)
+                        return Err(
+                            h1convert::Error::no_rebuild(&h1.header().name, &tag.name, why).into(),
+                        );
                     }
                 };
                 if let Some(got) = swapped {
                     pal.push(got);
                     continue;
                 }
-                match conv.object(tag) {
-                    Ok(id) => Some(Pal::Converted(id)),
-                    // A template a donor brought (`crate::donor`): placed
-                    // as the retail object itself, since `h1objects`
-                    // builds only on the base's own templates.
-                    Err(e) => match matches!(e, h1objects::Error::NoTemplate(_))
-                        .then(|| retail_stand_in(set, tag))
-                        .flatten()
-                    {
-                        Some(id) => {
-                            rep.stand_ins.push((tag.name.clone(), id));
-                            Some(Pal::Retail(id))
-                        }
-                        None => {
-                            dropped.push(format!("{} palette {}: {e}", k.label, tag.name));
-                            None
-                        }
-                    },
-                }
+                Some(Pal::Converted(conv.object(tag).map_err(|e| {
+                    h1convert::Error::no_rebuild(&h1.header().name, &tag.name, e)
+                })?))
             };
             pal.push(got);
         }
@@ -1485,22 +1444,17 @@ fn place_objects(
         .flat_map(|p| p.weapons.iter().filter_map(|w| w.0))
     {
         let tag = h1.tag(w)?;
-        if let Ok(Some(id)) = swap(&*set, tag) {
+        if let Some(id) = swap(set, tag)
+            .map_err(|why| h1convert::Error::no_rebuild(&h1.header().name, &tag.name, why))?
+        {
             aliases.insert(FourCC(*b"weap"), &tag.name, id);
             profile_weapons.insert(w, Pal::Retail(id));
             continue;
         }
-        let got = match conv.object(tag) {
-            Ok(id) => Some(Pal::Converted(id)),
-            Err(h1objects::Error::NoTemplate(_)) => retail_stand_in(set, tag).map(Pal::Retail),
-            Err(e) => {
-                dropped.push(format!("starting profile weapon {}: {e}", tag.name));
-                None
-            }
-        };
-        if let Some(p) = got {
-            profile_weapons.insert(w, p);
-        }
+        let id = conv
+            .object(tag)
+            .map_err(|e| h1convert::Error::no_rebuild(&h1.header().name, &tag.name, e))?;
+        profile_weapons.insert(w, Pal::Converted(id));
     }
     // The players' first-person arms: Halo 1's, which Halo 1's
     // first-person graphs name node for node (the engine binds them by
@@ -1508,13 +1462,13 @@ fn place_objects(
     let hands = match h1convert::globals::h1_first_person_hands(h1)
         .map_err(|e| invalid(format!("first-person arms: {e}")))?
     {
-        Some(id) => match conv.first_person_arms(id) {
-            Ok(t) => Some(t),
-            Err(e) => {
-                dropped.push(format!("first-person arms: {e}"));
-                None
-            }
-        },
+        Some(id) => Some(conv.first_person_arms(id).map_err(|e| {
+            h1convert::Error::no_rebuild(
+                &h1.header().name,
+                h1.tag(id).map_or("first-person arms", |t| &t.name),
+                e,
+            )
+        })?),
         None => None,
     };
     let mut player = None;
@@ -1532,8 +1486,7 @@ fn place_objects(
                 Some(t.name.clone())
             }
             Err(e) => {
-                dropped.push(format!("player biped {}: {e}", t.name));
-                None
+                return Err(h1convert::Error::no_rebuild(&h1.header().name, &t.name, e).into());
             }
         },
         None => None,
@@ -1547,21 +1500,53 @@ fn place_objects(
         h1convert::globals::h1_grenades(h1).map_err(|e| invalid(format!("grenades: {e}")))?
     };
     for g in h1_grenades {
-        let mut one = |id: Option<h1map::TagId>, what: &str| -> Option<TagId> {
-            let tag = h1.tag(id?).ok()?;
-            match conv.object(tag) {
-                Ok(id) => Some(id),
-                Err(e) => {
-                    dropped.push(format!("grenade {what} {}: {e}", tag.name));
-                    None
-                }
-            }
+        let mut one = |id: Option<h1map::TagId>| -> Result<Option<TagId>> {
+            let Some(id) = id else { return Ok(None) };
+            let tag = h1.tag(id)?;
+            let id = conv
+                .object(tag)
+                .map_err(|e| h1convert::Error::no_rebuild(&h1.header().name, &tag.name, e))?;
+            Ok(Some(id))
         };
         grenades.push(h1convert::globals::Grenade {
             maximum: g.maximum,
-            equipment: one(g.equipment, "equipment"),
-            projectile: one(g.projectile, "projectile"),
+            equipment: one(g.equipment)?,
+            projectile: one(g.projectile)?,
         });
+    }
+    if let Some(tables) = scripts {
+        for r in &tables.references {
+            if r.id.is_none() {
+                continue;
+            }
+            let t = h1.tag(r.id)?;
+            let group = FourCC(t.group.0.to_be_bytes());
+            if aliases.get(group, &t.name).is_some() {
+                continue;
+            }
+            match &group.0 {
+                b"effe" => {
+                    conv.effect(t)
+                        .map_err(|e| h1convert::Error::no_rebuild(&h1.header().name, &t.name, e))?;
+                }
+                b"jpt!" => {
+                    conv.damage(t.id)
+                        .map_err(|e| h1convert::Error::no_rebuild(&h1.header().name, &t.name, e))?;
+                }
+                b"bipd" | b"vehi" | b"mach" | b"weap" | b"scen" => {
+                    if let Some(id) = swap(set, t).map_err(|why| {
+                        h1convert::Error::no_rebuild(&h1.header().name, &t.name, why)
+                    })? {
+                        aliases.insert(group, &t.name, id);
+                    } else {
+                        conv.object(t).map_err(|e| {
+                            h1convert::Error::no_rebuild(&h1.header().name, &t.name, e)
+                        })?;
+                    }
+                }
+                _ => {} // Sounds, actor variants and animation graphs have dedicated installers.
+            }
+        }
     }
     rep.dialogue_bytes = conv.dialogue_bytes;
     let mut tree = std::mem::take(&mut conv.tree);
@@ -1927,6 +1912,7 @@ fn install_scripts(
     rewritten: crate::recordings::Report,
     cutscenes: h1scripts::compile::Cutscenes,
     aliases: &crate::h2assets::Aliases,
+    assets: crate::h2assets::Assets,
     level_text: &h1text::scenario::LevelText,
 ) -> Result<ScriptReport> {
     use h1scripts::compile::{Missing, compile_scenario};
@@ -2045,13 +2031,15 @@ fn install_scripts(
     }
     let (at, stride) = h1scripts::seats::MAPPINGS;
     put_block(root, at, stride, seats.elements());
-    let free_characters = crate::actor_control::install(h1, set, aliases, &c.hooks)?;
+    let free_characters = crate::actor_control::install(h1, set, aliases, assets, &c.hooks)?;
     let tags_by_name: HashMap<(FourCC, String), TagId> = set
         .slots
         .iter()
         .filter_map(|s| {
             let t = s.tag.as_ref()?;
-            Some(((t.group, s.name.as_ref()?.to_ascii_lowercase()), t.id))
+            let name = s.name.as_ref()?;
+            (set.converted(t.group, name) == Some(t.id))
+                .then(|| ((t.group, name.to_ascii_lowercase()), t.id))
         })
         .collect();
     let mut resolved_by_level = 0;
@@ -2063,9 +2051,9 @@ fn install_scripts(
             "hud_corner" => h1scripts::hud::corner(&h.token),
             "starting_profile" => crate::profiles::script_index(&profiles, &h.token),
             "sound" => sounds.get(&h.token.to_ascii_lowercase()).map(|id| id.0),
-            _ if h.h1_type == "command_voice_tag" => Some(tags_by_name
+            _ if h.h1_type == "command_voice_tag" => tags_by_name
                 .get(&(FourCC(*b"udlg"), h.token.to_ascii_lowercase()))
-                .map_or(u32::MAX, |id| id.0)),
+                .map(|id| id.0),
             _ if hook_value(h, targets).is_some() => hook_value(h, targets),
             "unit_seat_mapping" => seats.values.get(&h.token).copied(),
             "cutscene_recording" => crate::cutscenes::recording_index(recordings, &h.token),
@@ -2073,11 +2061,25 @@ fn install_scripts(
             // Halo 2 tag placed instead of it (`crate::h2assets`).
             "object_definition" => {
                 let name = h.token.to_ascii_lowercase();
-                OBJECT_GROUPS
-                    .iter()
-                    .find_map(|g| tags_by_name.get(&(FourCC(**g), name.clone())))
-                    .copied()
-                    .or_else(|| aliases.by_name(&name).map(|a| a.1))
+                let mut sources = h1.tags().iter().filter(|tag| {
+                    tag.name.eq_ignore_ascii_case(&name)
+                        && OBJECT_GROUPS.contains(&&tag.group.0.to_be_bytes())
+                });
+                let source = sources.next()?;
+                if sources.next().is_some() {
+                    return None;
+                }
+                let group = FourCC(source.group.0.to_be_bytes());
+                let dest = match &group.0 {
+                    b"lifi" => FourCC(*b"mach"),
+                    b"vehi" => {
+                        FourCC(h1objects::scripted_props::replacement_group(&name).unwrap_or(group.0))
+                    }
+                    _ => group,
+                };
+                aliases
+                    .get(group, &name)
+                    .or_else(|| set.converted(dest, &name))
                     .map(|id| id.0)
             }
             ty => level.resolve(h).or_else(|| {
@@ -2103,6 +2105,20 @@ fn install_scripts(
     if let Some(hook) = left.iter().find(|h| h.type_name == "hud_message") {
         return Err(invalid(format!("HUD message {:?} is missing", hook.token)));
     }
+    if let Some(h) = left.iter().find(|h| {
+        !h.token.eq_ignore_ascii_case("none")
+            && (h.type_name == "object_definition"
+                || h.h1_type == "command_voice_tag"
+                || h1scripts::level::tag_group(&h.type_name).is_some())
+            && h.h1_type != "command_unit_graph_candidate"
+    }) {
+        return Err(h1convert::Error::no_rebuild(
+            &h1.header().name,
+            &h.token,
+            format!("script atom {}", h.type_name),
+        )
+        .into());
+    }
     let mut unresolved: Vec<(String, usize)> = Vec::new();
     let mut samples: Vec<(String, String)> = Vec::new();
     for h in &left {
@@ -2116,39 +2132,37 @@ fn install_scripts(
             samples.push((h.type_name.clone(), h.token.clone()));
         }
     }
-    let by_name: HashMap<String, (FourCC, TagId)> = set
-        .slots
-        .iter()
-        .filter_map(|s| {
-            let t = s.tag.as_ref()?;
-            Some((s.name.clone()?, (t.group, t.id)))
-        })
-        .collect();
     let mut resolved = 0;
-    let mut missing_character = None;
     for at in SCRIPT_FIELDS {
         put_block(root, at, 0, Vec::new());
     }
     c.install(root, |group, name| {
-        let r = if group == h1map::Group::new(b"char") {
-            let group = FourCC(*b"char");
-            let tag = tags_by_name
-                .get(&(group, name.to_ascii_lowercase()))
-                .map(|&id| (group, id));
-            if tag.is_none() {
-                missing_character = Some(name.to_owned());
+        let source = FourCC(group.0.to_be_bytes());
+        let dest = match &source.0 {
+            b"antr" => FourCC(*b"jmad"),
+            b"actv" => FourCC(*b"char"),
+            b"lifi" => FourCC(*b"mach"),
+            b"vehi" => {
+                FourCC(h1objects::scripted_props::replacement_group(name).unwrap_or(source.0))
             }
-            tag
-        } else {
-            by_name.get(name).copied().or_else(|| aliases.by_name(name))
+            _ => source,
         };
+        let id = if source == FourCC(*b"char") {
+            // Compiler-generated references identify a concrete character selected by the AI plan.
+            ai_control
+                .uncover
+                .iter()
+                .find(|(_, rule)| rule.character == name)
+                .map(|(&id, _)| TagId(id))
+        } else {
+            set.converted(dest, name)
+                .or_else(|| aliases.get(source, name))
+        };
+        let r = id.and_then(|id| set.tag(id).map(|t| (t.group, id)));
         resolved += usize::from(r.is_some());
         r
     })
-    .map_err(|e| invalid(format!("scripts: {e}")))?;
-    if let Some(name) = missing_character {
-        return Err(invalid(format!("scripts: missing AI character reference {name}")));
-    }
+    .map_err(|e| invalid(format!("{}: {e}", h1.header().name)))?;
     Ok(ScriptReport {
         scripts: c.scripts.len(),
         globals: c.globals.len(),
@@ -2211,8 +2225,7 @@ fn install_named_sounds(
     let mut ids = HashMap::new();
     let mut needed = Vec::new();
     for name in names.into_iter().take(take) {
-        if let Some(id) = set.find(FourCC(*b"snd!"), &name)
-            && matches!(set.tag(id).map(|t| &t.payload), Some(TagPayload::Built(_)))
+        if let Some(id) = set.converted(FourCC(*b"snd!"), &name)
         {
             ids.insert(name.to_ascii_lowercase(), id);
         } else {

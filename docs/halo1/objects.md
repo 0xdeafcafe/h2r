@@ -184,7 +184,7 @@ Read field by field since converter version 50 (`h1::Effect`,
 `h1objects::particles::H1Particle` and `Converter::particle`: the stem
 by the framebuffer blend function at `+0xda` (0 alpha blend, 3 additive,
 7 alpha-multiply-add: V, the particles both games ship pair that way; 6,
-on three particles, is drawn additive, unproven), the bitmap (`+0x4`) as
+on three particles, now reports a missing blend implementation), the bitmap (`+0x4`) as
 the stem's `alpha_map_texture` with the compiled shader built from the
 stem ([tag-definitions.md](../formats/tag-definitions.md), "The compiled particle
 shader"), Halo 1's sprite sequences (`+0x98` first, `+0x9a + +0x9c`
@@ -320,7 +320,7 @@ part groups on the disc are `deca`, `snd!`, `obje`, `ligh`, `lens`,
 attachment that names one converts it (`Converter::contrail`), on
 vehicles with the other attachments and on rebuilt projectiles, whose
 attachment block is replaced by Halo 1's when any of them converts. A
-point's physics (`pphy`) is not converted: null.
+point with an authored physics reference names its rebuilt `pphy`. The definition carries the source flags, mass, buoyancy, density, drag, friction and restitution.
 
 ### `bipd`, `vehi`, `scen`
 
@@ -1212,7 +1212,7 @@ attachments name a contrail (236 attachments) names the converted one.
   radius), the packed tint, null `pmov` (no gravity or drag), the base's
   role words on the systems and emitters.
 - Contrails: Halo 1's spans as Halo 2's (the flags and the root's
-  zeroed `+0x3c..+0x60`), and points with no physics (`pphy` null).
+  zeroed `+0x3c..+0x60`), and points with source `pphy` physics.
 
 - That the engine accepts objects whose `hlmt` has no variants
   and regions renamed from Halo 1, and whose template damage info names

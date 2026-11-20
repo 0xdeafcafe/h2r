@@ -734,46 +734,7 @@ pub fn projectile(
 pub const H1_RESPONSES: usize = 0x240;
 pub const H1_RESPONSE_SIZE: usize = 0xa0;
 
-/// Halo 1's material types in the order of its responses, each with the
-/// Halo 2 global material its response is written for: the Halo 2
-/// material of the same substance and, where Halo 2 has one, the same
-/// character. Every name is one of the base's global materials (V:
-/// `weapon_rebuild_disc` on every base).
-pub const MATERIALS: [(&str, &str); 33] = [
-    ("dirt", "tough_terrain_dirt"),
-    ("sand", "tough_terrain_sand"),
-    ("stone", "hard_terrain_stone"),
-    ("snow", "soft_terrain_snow"),
-    ("wood", "tough_organic_wood"),
-    ("metal (hollow)", "hard_metal_thin"),
-    ("metal (thin)", "hard_metal_thin"),
-    ("metal (thick)", "hard_metal_thick"),
-    ("rubber", "tough_inorganic_rubber"),
-    ("glass", "brittle_glass"),
-    ("force field", "energy_shield_thick_for"),
-    ("grunt", "soft_organic_flesh_grunt"),
-    ("hunter armor", "hard_metal_thick_cov_hunter"),
-    ("hunter skin", "soft_organic_flesh_hunter"),
-    ("elite", "soft_organic_flesh_elite"),
-    ("jackal", "soft_organic_flesh_jackal"),
-    ("jackal energy shield", "energy_shield_thick_cov_jackal"),
-    ("engineer skin", "soft_organic_flesh"),
-    ("engineer force field", "energy_shield_thin"),
-    ("flood combat form", "tough_floodflesh_combatform"),
-    ("flood carrier form", "tough_floodflesh_carrierform"),
-    ("cyborg armor", "hard_metal_thin_hum_masterchief"),
-    ("cyborg energy shield", "energy_shield_thin_hum_masterchief"),
-    ("human armor", "tough_inorganic_armor_hum"),
-    ("human skin", "soft_organic_flesh_human"),
-    ("sentinel", "hard_metal_thin_for_sentinel"),
-    ("monitor", "hard_metal_thin_for_monitor"),
-    ("plastic", "tough_inorganic_plastic"),
-    ("water", "liquid_thin_water"),
-    ("leaves", "soft_organic_plant_leafy"),
-    ("elite energy shield", "energy_shield_thin_cov_elite"),
-    ("ice", "hard_terrain_ice"),
-    ("hunter shield", "hard_metal_solid_cov_hunter"),
-];
+pub use h1convert::materials::MATERIALS;
 
 /// The material every element not written for one material covers.
 pub const DEFAULT_MATERIAL: &str = "default_material";
@@ -797,6 +758,7 @@ pub fn response(h1: u16) -> Option<u16> {
 /// One material response's values, in Halo 2's terms.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Response {
+    pub effects: [Option<TagId>; 3],
     pub response: u16,
     pub potential_response: u16,
     pub potential_flags: u16,
@@ -836,6 +798,7 @@ impl Response {
         // is retail's unused one (0, 0, chance 0).
         let potential = h(0x24) != 0 || h(0x26) != 0;
         Ok(Self {
+            effects: [None; 3],
             response: map(h(2))?,
             potential_response: if potential { map(h(0x24))? } else { 0 },
             potential_flags: if potential { h(0x26) } else { 0 },
@@ -863,14 +826,25 @@ pub fn responses(
     h1: &h1map::H1Map,
     b: &[u8],
     materials: &[String],
+    mut convert: impl FnMut(h1map::TagId) -> Result<TagId>,
 ) -> Result<Vec<(&'static str, i16, Response)>> {
-    let blk = h1map::Block::read(b, H1_RESPONSES)
-        .ok_or_else(|| Error::Invalid("proj material responses".into()))?;
-    let all: Vec<Response> = h1
+    let blk =
+        h1map::Block::read(b, H1_RESPONSES).ok_or(Error::Truncated("proj material responses"))?;
+    let mut all = Vec::new();
+    for row in h1
         .block(blk, H1_RESPONSE_SIZE)?
         .chunks_exact(H1_RESPONSE_SIZE)
-        .map(Response::from_h1)
-        .collect::<Result<_>>()?;
+    {
+        let mut response = Response::from_h1(row)?;
+        for (slot, at) in response.effects.iter_mut().zip([4, 0x3c, 0x68]) {
+            let reference =
+                h1map::TagRef::read(row, at).ok_or(Error::Truncated("response effect"))?;
+            if !reference.id.is_none() {
+                *slot = Some(convert(reference.id)?);
+            }
+        }
+        all.push(response);
+    }
     responses_from(&all, materials)
 }
 
@@ -906,8 +880,7 @@ pub fn responses_from(
     Ok(out)
 }
 
-/// [`responses`] as `proj +0x19c` elements; flags 0 and the effects
-/// null (Halo 1's effects are not converted).
+/// Write each material response with its three authored effect references.
 fn response_elements(d: &StructDef, list: &[(&'static str, i16, Response)]) -> Result<Vec<Record>> {
     let ed = d
         .child("material_responses")
@@ -917,6 +890,14 @@ fn response_elements(d: &StructDef, list: &[(&'static str, i16, Response)]) -> R
         let mut e = defs::default_record(ed);
         let int = |v: u16| Val::Int(i64::from(v));
         let pair = |v: [f32; 2]| Val::floats(&v);
+        for (field, id) in ["effect", "potential_effect", "detonation_effect"]
+            .into_iter()
+            .zip(r.effects)
+        {
+            if let Some(id) = id {
+                set(&mut e, field, Val::tag(FourCC(*b"effe"), id))?;
+            }
+        }
         set(&mut e, "response", int(r.response))?;
         set(&mut e, "material_name", Val::text(name))?;
         set(&mut e, "material", Val::Int(i64::from(*index)))?;

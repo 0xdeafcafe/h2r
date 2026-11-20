@@ -1568,7 +1568,7 @@ fn teleporter_receiver_brightness_against_halo1() {
 #[test]
 #[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
 fn terrain_detail_modes_are_read_and_installed() {
-    use h1convert::structure::{COLLISION_MATERIAL, PART_KIND, Templates};
+    use h1convert::structure::{PART_KIND, Templates};
     use map::build::TagSet;
 
     let h1_iso = std::env::var("H1_ISO").expect("set H1_ISO");
@@ -1593,7 +1593,7 @@ fn terrain_detail_modes_are_read_and_installed() {
     let mut base = open(&h2_disc, b, s);
     let source_materials = [(0, source.name.clone())];
     let templates = Templates {
-        collision_material: [0; COLLISION_MATERIAL],
+        collision_materials: Vec::new(),
         material_heads: vec![[0; 16]],
         part_kinds: vec![PART_KIND],
     };

@@ -31,7 +31,7 @@ impl Converter<'_> {
         }
 
         let mut rep = Self::report(tag, &format!("rebuilt as {group}", group = FourCC(group)));
-        let hlmt = self.model(&mut rep, &obj, None, &tag.name, true, None)?;
+        let hlmt = self.model(&mut rep, &obj, &tag.name, None)?;
         if group == *b"bloc"
             && !self.object_physics(&mut rep, hlmt, &obj, &tag.name, PhysicsKind::Crate)?
         {

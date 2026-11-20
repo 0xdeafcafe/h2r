@@ -60,8 +60,6 @@ const ALLOWED: &[Rule] = &[
         "(a) half of a reference the definition does not name, holding none (a group word or -1): no value to take from anywhere",
     ),
     ("hlmt", "block_60[].block_bc*", "*", "(a) native damage section response table indexed by object_new"),
-    ("hlmt", "block_60[].tagref_7c", "shad", "(a) native first- or third-person shield shader"),
-    ("hlmt", "block_60[].tagref_84", "shad", "(a) native first- or third-person shield shader"),
     ("hlmt", "block_60[].tagref_e8", "shad", "(a) native first- or third-person shield shader"),
     ("hlmt", "block_60[].tagref_f0", "shad", "(a) native first- or third-person shield shader"),
     (
@@ -117,12 +115,6 @@ const ALLOWED: &[Rule] = &[
 /// damage bounds were; docs/formats/tag-definitions.md). The suspects are
 /// listed; each is a bug until shown otherwise.
 const KNOWN: &[Rule] = &[
-    (
-        "mode",
-        "materials[].shader",
-        "shad",
-        "bug: a Halo 1 model shader with no base map (V: a10's soso `light siren` on alert_light names no map at all) gets the base's stand-in model shader (Converter::model_shaders; a marine's head on 05a_deltaapproach); the fix needs Halo 1's draw of a null base map",
-    ),
     ("vehi", "block_1c8[]*", "value", "seat access thresholds used by the Halo 2 entry test"),
     ("vehi", "block_2e8[]*", "value", "Havok lift-point parameters"),
     ("vehi", "block_2f0[]*", "value", "Havok friction-point parameters"),
@@ -205,6 +197,14 @@ impl Halo1Objects for Audit<'_> {
 
     fn first_person_arms(&mut self, id: h1map::TagId) -> Result<usize, String> {
         self.inner.first_person_arms(id)
+    }
+
+    fn collision(
+        &mut self,
+        group: [u8; 4],
+        name: &str,
+    ) -> Result<Vec<tags::collision::Bsp>, String> {
+        self.inner.collision(group, name)
     }
 
     fn take(&mut self) -> ObjectTags {

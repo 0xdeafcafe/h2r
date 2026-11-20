@@ -62,12 +62,6 @@ fn a10_cryo_tube_glass_is_alpha_blended_with_its_own_maps() {
         .stem(&h1convert::shad::ONE_ALPHA_ENV)
         .expect("the base has one_alpha_env");
     let base = Base::read(&mut base_map).unwrap();
-    let stand_in = base
-        .model_shader
-        .as_ref()
-        .expect("the base has a model shader")
-        .name
-        .clone();
     let mut conv = Converter::new(&h1, &base);
     let tube = h1
         .tags()
@@ -99,7 +93,7 @@ fn a10_cryo_tube_glass_is_alpha_blended_with_its_own_maps() {
     tag_refs(&glass.root, &mut refs);
     let names: Vec<&str> = refs.iter().filter_map(|&id| named(id)).collect();
     eprintln!(
-        "cryo glass: {} references; tree's: {names:?}; stand-in {stand_in}",
+        "cryo glass: {} references; tree's: {names:?}",
         refs.len()
     );
     assert!(refs.contains(&blended), "drawn with one_alpha_env");

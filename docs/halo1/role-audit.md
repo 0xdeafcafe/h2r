@@ -9,10 +9,10 @@ integration run. There is no new pass count or play result yet.
 | Area | Source and evidence |
 | --- | --- |
 | Items and weapons | **Built**. The shared item layer carries flags, pickup order, collision sound, material effects, detonation effects, damage and delay bounds. Weapon ready and flashlight times, magazine flags, chamber time, ammunition objects and firing-effect shot ranges come from their own records. Each trigger supplies its own effect and damage references. Halo 2 caches ten inverse barrel times; the retail barrels on Coagulation use 1000 for instantaneous changes. Six of the times have Halo 1 fields. The remaining four are instantaneous. See `arsenal.rs` and `weapon_rebuild_disc.rs`. |
-| Projectiles and damage | **Built**. Projectiles carry their flags, own impact and attached damage, and damage from the relevant normal or super-detonation event's parts. A damage tag carries radius, cutoff, damage bounds, impulse, camera shake, sound, screen flash and motor fades. Each motor has its own duration and transition; the Halo 2 response selectors share Halo 1's authored feedback. Blood Gulch's needle and plasma grenade distinguish the normal and attached damage slots. |
+| Projectiles and damage | **Built**. Projectiles carry their flags, own impact and attached damage, and each damage part in its original effect event. A damage tag carries radius, cutoff, damage bounds, impulse, camera shake, sound, screen flash and motor fades. Each motor has its own duration and transition; the Halo 2 response selectors share Halo 1's authored feedback. Blood Gulch's needle and plasma grenade distinguish the normal and attached damage slots. |
 | Object functions and attachments | **Built**. Scenery, bipeds, vehicles, projectiles, weapons, equipment and debris resolve the source creation effect, attachment and marker, and bind primary scales to the output names of the converted object functions. The object acceleration scale moves from H1 `+0x20` to H2 `+0x14`. The ball carries 2 in both formats. The schema includes the creation-effect reference and inherited function and attachment blocks even in groups where retail leaves them empty. |
 | Bipeds and models | **Built**. Camera tracks, HUD interfaces, weapon lists, integrated light, melee damage, dialogue, blood effect and material effects follow the original unit and collision references. Unit camera and acceleration parameters, landing and slope limits, jump and crouch rates, and flying motion are written from Halo 1. The crewman's angles on a30 distinguish cutoff and falloff. The monitor and sentinel on c20 and 04b distinguish flying physics. Standing and crouching use the source collision dimensions or a pair of spheres for sphere-only characters. The alternate three sphere sizes remain available to the engine. `0x001c2460` and `0x001d6dd6` select those shapes. |
-| Vitality and shields | **Built**. The model's damage record uses H1 collision body and shield vitality, body and shield global material, shield stun and recharge times, the reciprocal recharge rate, and shield damaged/depleted/recharging effects. The cyborg and elite's `coll +0x198` name their depletion effects; their H2 models use `+0xac` in the damage element. First- and third-person shield shaders and the native damage section array are the exceptions below. |
+| Vitality and shields | **Built**. The model's damage record uses H1 collision body and shield vitality, body and shield global material, shield stun and recharge times, the reciprocal recharge rate, and shield damaged/depleted/recharging effects. The cyborg and elite's `coll +0x198` name their depletion effects; their H2 models use `+0xac` in the damage element. The ordinary shield uses the source modifier shader. The native overshield slots and damage section array are described below. |
 | Vehicles | **Built**. Speeds scale by 30 and accelerations by 900 when converting per-tick cache values. Seat flags, camera/pitch/yaw limits and tracks, vehicle sounds, material effects and antigravity effects come from H1. Powered mass points supply lift strength, offset, height and damping, wheel radii and marker positions. The friction points and their phantom spheres use the same point order. The Warthog's four tires and the Scorpion's treads show the two layouts. The loader at `0x00205550` constructs the Havok headers and pointers from the number of shapes at `+0x38` and the inline arrays at `+0x60` (stride `0x90`, eight spheres each). `0x002067dd` pairs each friction point with the same-numbered contact. |
 | Lights, decals and particles | **Built**. Lights use H1's radius, cone, duration and colours and a unity brightness multiplier (`0x000c0dc9`). H1 decal layers 0, 1, 2 and 3 select H2 layers 2, 4, 5 and 1. The overlap limit and optional scale use their definition defaults; the placement branches are recorded in `docs/formats/effects.md`. Particle properties use functions with neutral multipliers and the emitter's H1 values. Shader constants use identity UV scale and zero offset; the second vertex vector is the homogeneous origin. The compiled stem supplies the bindings (`0x00017000` and `0x00017170`). The single-bitmap particle instances on Coagulation supply the comparison. |
 
@@ -68,18 +68,71 @@ integration run. There is no new pass count or play result yet.
   limits (`0xc9040`). `+0x258` and `+0x2e4` keep their definition defaults.
   Neither has an identified read in the ground or hover drive equations.
 - Biped models keep the native damage section array that `object_new`
-  indexes at damage info `+0xbc`, and native shield/overshield shaders
-  at `+0x7c/+0x84/+0xe8/+0xf0`. The per-model camouflage shader is
+  indexes at damage info `+0xbc`, and native overshield shaders at `+0xe8/+0xf0`. The source modifier supplies both ordinary shield views at `+0x7c/+0x84`. The per-model camouflage shader is
   H2-specific. Halo 1 implements camouflage through its globals.
 - The optional Halo 2 side of the paired HUD, HUD drawing shaders,
   particle and material shader templates, default texture inputs, the
   scope effect's screen vertex shader and the player emblem are native
   rendering dependencies. The primary HUD and source bitmap slots use
   converted Halo 1 tags.
-- **Known gap.** A Halo 1 model shader with no base map gets the base's
-  stand-in model shader, a marine's head on 05a_deltaapproach. a10's
-  `light siren` on the alert light names no map at all. The fix needs
-  Halo 1's draw of a null base map.
+
+## Retail fallback inventory
+
+The survey read the ten campaign and thirteen multiplayer maps on the owner's
+Halo 1 Xbox disc. It also read the tag tables, structure palettes and sky
+models on 05a_deltaapproach, Coagulation and Beaver Creek on the Halo 2
+disc. Counts below are distinct map, parent and source-use combinations.
+A tag being present on the disc establishes a candidate, not a runtime draw.
+The accompanying TSV has 35,510 rows. Each gives the map, group, source path, parent or BSP index, destination base, historical candidate or disposition and code site.
+
+| Former fallback and code site | Retail source and former target | Current handling |
+| --- | --- | --- |
+| BSP render shaders, `textures::plan_bsp` | 1,981 BSP/shader rows. The old word matcher selected the closest base shader or the first opaque one. | **Built.** Material records name the rebuilt source shader. Its recipe must be available and its source images must convert. The illumination-only `levels\a10\shaders\monitor glow` on a10, d40 and putput uses its own illumination texture at `+0x254` and UV scale at `+0x250`. |
+| BSP collision, `textures::Retexture::install` and `Structure::write` | 1,295 BSP/shader/material rows. Delta Approach supplied `tower_metal_dirty`, `tower_metal_trim_g` or `shaders\invalid`. Coagulation supplied `coag_rocks` and Beaver Creek supplied `bc_forerunner_lightgray`. | **Built.** Each source palette entry retains its shader and maps its substance at `+0x22` to the destination globals material index. Collision-only shaders enter the conversion graph. Merged scenery surfaces use their object's source substance. H1 object collision materials have no shader reference. |
+| Model materials, `Converter::model_shader` | The first eligible opaque object shader was `objects\characters\marine\marine_female\shaders\head_female` on Delta Approach and `objects\multi\2way_teleporter\shaders\2way_teleporter` on both multiplayer bases. Seven distinct diffuse-null `soso` paths account for 17 map/model/shader rows. | **Built.** A missing recipe, map or program reports the source shader and map. The null-base, Chicago and volume plasma programs are implemented on the separate `h1-next-nullshader` branch. |
+| Sky materials, `Sky::from_map/install` | 135 sky/material rows. Delta Approach used `deltatemple\shaders\ring_afternoon`, both multiplayer bases used `coagulation\shaders\coag_ring`. | **Built.** Source material references and bitmaps are required. Missing recipes and flares fail conversion. The scenario records the actual number of source skies. |
+| Bitmap, sound and flare reuse, `TagSet::converted` | Six `bitm` paths collide on every map, including `rasterizer\glow` and five `ui\hud\bitmaps` images. No `snd!`, `lsnd`, `snde` or `lens` namesakes were found on these three bases. | **Built.** Reuse requires an installed conversion with the same group, name and live datum. The existing slot may receive rebuilt data. The name alone cannot certify its contents. Loop tracks, details, sound environments and authored sounds propagate conversion failures. |
+| Objects, units, campaign placements and AI, `Converter::model`, `roster::prepare/install`, `ai_control_characters::resolve` | Previously an object could inherit a native unit/model root or species character. Examples include H2 Marine, Grunt and Elite characters. The disc has 265 map/unit rows and 217 map/actor-palette entries. Nine additional map/variant pairs occur in explicit script references. | **Built.** The H1 sandbox builds the object and model definitions, actor variant unit, weapon and major variant links. A vehicle lacking a solid hull uses its own mass points or fails. The H2 sandbox can explicitly select an H2 asset. |
+| Script atoms and cinematic animation, `h1campaign::scenario` and `cutscenes` | 910 explicit map/reference pairs across eleven source groups, including sounds, loops, animation graphs, effects, damage, actor variants and five object groups. Formerly a path could resolve to a native namesake or disappear. | **Built.** The scenario resolves typed converted datums and explicit H2 asset aliases. Script-only effect, damage and object roots are rebuilt. First- and third-person animation sound events both resolve their authored sounds. |
+| Effects, projectiles and devices, `effect_uncached`, `arsenal::responses`, `device` | 10,102 effect-part rows, including 338 damage rows. 7,115 projectile material/effect rows and 137 device transitions, of which 127 are effects and ten are sounds. | **Built.** Every event keeps its original damage parts. H2 dispatches damage directly at `0x17a8a0`. Each material response resolves its normal, potential and detonation effects. Device transitions use the source reference's group. Cyclic dependencies resolve to the eventual converted datum. |
+| Contrails, `Converter::contrail` | 265 map/contrail/physics rows formerly emitted a null `pphy`. Cold smoke, steam, vacuum and the Warthog antenna have corresponding point-physics records with differing coefficients on the two discs. | **Built.** The typed H2 definition receives source flags, mass, air/liquid buoyancy, density, drag, friction and restitution. Each contrail point names its own converted physics tag. |
+| Multiplayer starting equipment, `halo1::plan_starting_equipment` | Both H2 bases used one `multiplayer\\single_weapons\\smg` collection. Blood Gulch's CTF row instead names the assault rifle and pistol. Wizard has three distinct game-type rows. | **Built.** The H1 sandbox rebuilds its source rows, selector words, collections, weapons and weights. A native variant selector with no H1 weapon or vehicle is left unassigned. |
+| Ordinary biped shields, `biped_rebuilt` | 55 biped/modifier rows name three `spla` tags. The H2 Chief uses `masterchief_plasma_shield_change_color_fp` and `masterchief_plasma_shield_change_color`; the Elite uses `elite_plasma_shield_fp` and `elite_plasma_shield`. | **Built.** Both ordinary shield views bind the source modifier through the model-material converter. All three source shaders use the Elite shield noise volume twice. Integration needs the sibling volume-plasma rebuild described above. |
+
+### Dependencies kept from Halo 2
+
+The base map supplies engine globals, global material indices, the sound
+gestalt and native scenario infrastructure. The H1 conversion writes source
+entries into these containers. Material and HUD rendering require native
+shader programs, vertex shaders and default inputs. The H1 Xbox engine has
+no equivalent tags for those programs. The HUD's optional H2 view and the
+multiplayer player emblem are explicit features. The generic AI behavior
+parent and Sentinel behavior style supply H2 engine behavior. H1 actor
+variants provide the concrete character. H2 asset mode retains its selected
+native units, weapons and vehicles, including assets from donor maps.
+
+`h1map`, `h1bitmaps`, `h1models` and `h1sky` read source data or write
+caller-supplied datums. `h1text` extends the destination locale table
+to keep IDs already referenced by engine tags. The HUD converter lives
+in `h1objects::h1hud`. It builds its primary `nhdt` and binds destination
+drawing programs. `h1scripts` emits relocation requests. Campaign resolves
+those against the selected sandbox before installing the scenario.
+
+### Retail gaps that stop conversion
+
+| Source | Implementation still needed |
+| --- | --- |
+| `levels\a10\shaders\burnt flourescent off` on d40 and `levels\a50\shaders\covenant glass floor` on a50/d20 | A verified textureless environment and transparent-glass draw. The source base slot is null. A name-matched BSP material gives the wrong appearance. |
+| `effects\particles\solid\glass breakable`, `effects\particles\solid\glass death` and d20's `scenery\captain_implant\glowingdrip goo` | Blend 6 needs a verified framebuffer equation and a matching compiled particle program. The former additive choice affected 47 map/tag pairs. |
+| 27 distinct widget paths in 262 owner/map rows, and a10's `levels\a30\devices\beam emitter\beam` attachment | Source widget conversion and dispatcher bindings for `mgs2` volumetric lights, `ant!` antennas, `elec` lightning, `flag` cloth and `glw!` glow. Examples include the Warthog antenna, the Marine flashlight, the multiplayer flag and the Monitor tendrils. An object owning one fails with the exact dependency. |
+| A sky cloud layer on a base without the two-input sky program | Supply the shared two-input program and preserve the authored mask and tile. A single-sampler transparent material omits the mask. |
+| Authored `udlg` slots without a corresponding H2 vocalization and bipeds with multiple dialogue variants | Native event routing for the unmapped lines and per-unit voice selection. H2 has one dialogue reference per model. The converter identifies the source sound or additional voice that cannot be represented. |
+
+The ignored `both_sandboxes_rebuild_every_retail_map` test attempts all 46
+conversions, collects individual map/sandbox errors and asserts that the
+failure list is empty. It also checks that the disc contained ten campaign
+and thirteen multiplayer maps. This is an integration acceptance test.
+The disc survey above reads input data and does not establish a pass.
 
 ## Running the audit
 

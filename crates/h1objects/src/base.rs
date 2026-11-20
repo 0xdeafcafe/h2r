@@ -13,52 +13,14 @@ pub struct Base {
     pub meta: Metadata,
     /// Every tag with a payload: datum, group, name, payload address.
     pub tags: Vec<(TagId, FourCC, String, u32)>,
-    /// The shader converted models' materials copy, with Halo 1's bitmaps
-    /// ([`h1convert::textures::model_template`]); `None` leaves them null.
+    /// Native shader programs available to the source material compiler.
     pub model_shader: Option<h1convert::textures::ModelTemplate>,
     /// The globals' material names, in order: a material's index is its
     /// position ([`global_materials`]).
     pub materials: Vec<String>,
 }
 
-/// `matg +0x150`: the global materials block; elements of `0xb4`, the
-/// name a string ID at `+0`. V: on the disc's maps every projectile
-/// material response's material index (`proj +0x19c` element `+0x10`) is
-/// the position of its name here (`tests/weapon_rebuild_disc.rs`).
-pub const GLOBAL_MATERIALS: usize = 0x150;
-pub const GLOBAL_MATERIAL_SIZE: usize = 0xb4;
-
-/// The global material names of `map`'s globals (none without globals).
-pub fn global_materials<R: Read + Seek>(map: &mut Map<R>, meta: &Metadata) -> Vec<String> {
-    let Some(t) = map.tags().iter().find(|t| t.group == FourCC(*b"matg")) else {
-        return Vec::new();
-    };
-    let Some(at) = t.location.map(|l| l.address) else {
-        return Vec::new();
-    };
-    let word = |b: &[u8], o: usize| u32::from_le_bytes(b[o..o + 4].try_into().expect("4"));
-    let Ok(head) = meta.slice(at, (GLOBAL_MATERIALS + 8) as u64) else {
-        return Vec::new();
-    };
-    let (n, first) = (
-        word(head, GLOBAL_MATERIALS),
-        word(head, GLOBAL_MATERIALS + 4),
-    );
-    let strings = map.strings();
-    (0..n)
-        .map(|i| {
-            meta.slice(first + i * GLOBAL_MATERIAL_SIZE as u32, 4)
-                .ok()
-                .and_then(|b| {
-                    strings
-                        .get((word(b, 0) & 0xffff) as usize)
-                        .cloned()
-                        .flatten()
-                })
-                .unwrap_or_default()
-        })
-        .collect()
-}
+pub use h1convert::materials::{GLOBAL_MATERIAL_SIZE, GLOBAL_MATERIALS, global_materials};
 
 impl Base {
     pub fn read<R: Read + Seek>(map: &mut Map<R>) -> Result<Self> {
@@ -72,7 +34,7 @@ impl Base {
                 .iter()
                 .filter_map(|t| Some((t.id, t.group, t.name.clone()?, t.location?.address)))
                 .collect(),
-            model_shader: h1convert::textures::model_template(map).ok().flatten(),
+            model_shader: h1convert::textures::model_template(map)?,
         })
     }
 

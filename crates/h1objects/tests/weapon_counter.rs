@@ -130,8 +130,6 @@ fn counter_base() -> Base {
         },
         tags: Vec::new(),
         model_shader: Some(ModelTemplate {
-            shader: TagId(0xe200_0002),
-            name: "stand-in".into(),
             library: Library::new(
                 &[
                     (ILLUM_DETAIL.stem, TagId(0xe200_0003)),

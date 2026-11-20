@@ -32,13 +32,13 @@ pub mod flood;
 pub mod fresh;
 pub mod globals;
 pub mod lens;
+pub mod materials;
 pub mod placements;
 pub mod query;
 pub mod sandbox;
 pub mod scenery_collision;
 pub mod scratch;
 pub mod shad;
-pub mod shaders;
 pub mod sky;
 pub mod sky_shaders;
 pub mod slots;
@@ -50,6 +50,12 @@ pub mod ui;
 /// Why a conversion was refused.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("{map}: no rebuild for Halo 1 {tag}: {reason}")]
+    NoRebuild {
+        map: String,
+        tag: String,
+        reason: String,
+    },
     /// A value doesn't fit the Halo 2 field it goes into.
     #[error("{what} {value:#x} doesn't fit (Halo 2 holds at most {max:#x})")]
     TooBig {
@@ -107,6 +113,16 @@ pub enum Error {
     /// A converted tag couldn't be installed.
     #[error("installing a converted tag: {0}")]
     Install(#[from] h1models::Error),
+}
+
+impl Error {
+    pub fn no_rebuild(map: &str, tag: impl Into<String>, reason: impl std::fmt::Display) -> Self {
+        Self::NoRebuild {
+            map: map.to_owned(),
+            tag: tag.into(),
+            reason: reason.to_string(),
+        }
+    }
 }
 
 /// Result alias for this crate.

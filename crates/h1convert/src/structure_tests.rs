@@ -65,17 +65,23 @@ fn meshes() -> Vec<Mesh> {
     ]
 }
 
-fn templates() -> Templates {
+fn templates(set: &mut TagSet) -> Templates {
     let mut collision_material = [0u8; COLLISION_MATERIAL];
     collision_material[8..10].copy_from_slice(&3u16.to_le_bytes());
+    collision_material[0xa..0xc].fill(0xff);
     collision_material[0xc..0x14].fill(0xff);
-    let mut material_head = [0u8; 16];
-    material_head[8..16].fill(0xff);
-    let mut second = [0u8; 16];
-    second[8..16].fill(0xee);
+    let group = FourCC(*b"shad");
+    set.add_group(group, None, None);
+    let material_heads = ["a", "b"].into_iter().map(|name| {
+        let shader = set.add_tag(group, name, TagPayload::Built(Block::zeroed(0x80))).unwrap();
+        let mut head = [0u8; 16];
+        head[8..12].copy_from_slice(&group.as_u32().to_le_bytes());
+        head[12..16].copy_from_slice(&shader.0.to_le_bytes());
+        head
+    }).collect();
     Templates {
-        collision_material,
-        material_heads: vec![material_head, second],
+        collision_materials: vec![collision_material; 2],
+        material_heads,
         part_kinds: vec![PART_KIND, PART_KIND_TRANSPARENT],
     }
 }
@@ -163,7 +169,7 @@ fn build_full(
         TagId::NULL
     };
     let collision = crate::collision::convert(&room()).unwrap();
-    let t = templates();
+    let t = templates(&mut set);
     let mopp = stand_in_mopp();
     let mut sound = Sound::default();
     if sounds {
@@ -320,14 +326,13 @@ fn a_converted_structure_reads_back_through_halo_2s_decoders() {
         assert_eq!(word(&p, count), 1);
         assert_ne!(word(&p, address), 0);
     }
-    // Each material: the template's head, an empty block, 0xff at +0x1c.
+    // Each material points to its source shader, including after relocation.
     let mats = off(word(&p, 0xa8));
-    assert_eq!(&p[mats + 8..mats + 16], [0xff; 8]);
-    assert_eq!(
-        &p[mats + 0x28..mats + 0x30],
-        [0xee; 8],
-        "material 1 from base material 1"
-    );
+    for (k, name) in ["a", "b"].into_iter().enumerate() {
+        let at = mats + k * MATERIAL + 8;
+        assert_eq!(word(&p, at), FourCC(*b"shad").as_u32());
+        assert_eq!(map.tag(TagId(word(&p, at + 4))).unwrap().name.as_deref(), Some(name));
+    }
     assert_eq!(word(&p, mats + 0x10), 0);
     assert_eq!(p[mats + 0x1c], 0xff);
 }
@@ -621,7 +626,7 @@ fn render_fields_are_filled_the_way_retail_fills_them() {
     assert_eq!(word(&c.raw, 0x94), 0x1234_5678, "the structure checksum");
 
     // Predicted resources: the cluster's own geometry, then its lightmap
-    // page (the materials' shaders are not in the set: no bitmaps).
+    // page (the synthetic shaders declare no bitmap parameters).
     let tag = map.tag(b.sbsp).unwrap().clone();
     let at = tag.location.unwrap().address;
     let p = map.read_tag_bytes(b.sbsp).unwrap();

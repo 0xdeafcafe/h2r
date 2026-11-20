@@ -597,7 +597,7 @@ fn weapon_effects_metadata() {
             for id in ids.into_iter().flatten() {
                 let tag = h1.tag(id).unwrap();
                 if tag.group == Group::new(b"snd!") {
-                    c.sound(tag, &mut rep);
+                    c.sound(tag, &mut rep).unwrap();
                     sounds.insert(tag.name.clone());
                 } else if tag.group == Group::new(b"effe") {
                     if let Err(e) = c.effect(tag) {

@@ -217,6 +217,7 @@ pub fn unpinned_copy(pinned: &TagSet) -> TagSet {
     set.groups = pinned.groups.clone();
     set.strings = pinned.strings.clone();
     set.slots = pinned.slots.clone();
+    set.copy_conversion_records(pinned);
     set.scenario = pinned.scenario;
     set.globals = pinned.globals;
     set.index_word_14 = pinned.index_word_14;

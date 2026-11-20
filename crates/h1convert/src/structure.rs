@@ -724,74 +724,20 @@ pub fn bitmap_images(set: &TagSet, id: TagId) -> u32 {
     }
 }
 
-/// Element templates taken from the base map's own structure BSP.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Material records in source order. Shader datums are filled at installation.
+#[derive(Debug, Clone, Default)]
 pub struct Templates {
-    /// A collision material: global material index at `+0x08`, shader
-    /// reference at `+0x0c`. No pointers, so it copies as is.
-    pub collision_material: [u8; COLLISION_MATERIAL],
-    /// Each base render material's first 16 bytes (shader reference at
-    /// `+0x08`, its datum at `+0x0c`). A written material copies one; the
-    /// rest is written here: its block at `+0x10` empty, `+0x1c` 0xff.
+    pub collision_materials: Vec<[u8; COLLISION_MATERIAL]>,
     pub material_heads: Vec<[u8; 16]>,
-    /// Each material head's part kind ([`part_kind`] of its shader's
-    /// template; [`PART_KIND`] until set).
     pub part_kinds: Vec<u16>,
 }
 
 impl Templates {
-    /// The shader datum of the collision material template (`+0x10`).
-    pub fn collision_shader(&self) -> map::TagId {
-        let m = &self.collision_material;
-        map::TagId(u32::from_le_bytes(m[0x10..0x14].try_into().expect("4")))
-    }
-
-    /// The shader datum of base material `i`.
     pub fn shader(&self, i: usize) -> map::TagId {
         let h = &self.material_heads[i];
-        map::TagId(u32::from_le_bytes(h[0xc..0x10].try_into().expect("4")))
-    }
-}
-
-impl Templates {
-    /// The first collision material and every render material of a base
-    /// `sbsp` payload loaded at `address`.
-    pub fn from_base(sbsp: &[u8], address: u32) -> Result<Self> {
-        let word = |at: usize| -> Result<u32> {
-            sbsp.get(at..at + 4)
-                .map(|b| u32::from_le_bytes(b.try_into().expect("4")))
-                .ok_or(Error::Invalid("base sbsp root is short"))
-        };
-        let first = |field: usize, size: usize| -> Result<&[u8]> {
-            if word(field)? == 0 {
-                return Err(Error::Invalid("base sbsp has an empty material block"));
-            }
-            let at = word(field + 4)?.wrapping_sub(address) as usize;
-            sbsp.get(at..at + size)
-                .ok_or(Error::Invalid("base sbsp material outside the tag"))
-        };
-        Ok(Self {
-            collision_material: first(0x0c, COLLISION_MATERIAL)?.try_into().expect("size"),
-            material_heads: {
-                let n = word(0xa4)? as usize;
-                let at = word(0xa8)?.wrapping_sub(address) as usize;
-                let all = at
-                    .checked_add(n * MATERIAL)
-                    .and_then(|end| sbsp.get(at..end))
-                    .ok_or(Error::Invalid("base sbsp material outside the tag"))?;
-                first(0xa4, 16)?;
-                all.as_chunks::<MATERIAL>()
-                    .0
-                    .iter()
-                    .map(|m| m[..16].try_into().expect("16"))
-                    .collect::<Vec<_>>()
-            },
-            part_kinds: Vec::new(),
-        })
-        .map(|mut t| {
-            t.part_kinds = vec![PART_KIND; t.material_heads.len()];
-            t
-        })
+        map::TagId(u32::from_le_bytes(
+            h[0xc..0x10].try_into().expect("shader datum"),
+        ))
     }
 }
 
@@ -1298,7 +1244,7 @@ impl Structure<'_> {
             }
         }
 
-        let count = self.materials.len().max(1);
+        let count = self.materials.len();
         let mut materials = Block::zeroed(MATERIAL * count);
         for (k, m) in materials
             .bytes
@@ -1316,15 +1262,18 @@ impl Structure<'_> {
             m[..16].copy_from_slice(head);
             m[0x1c] = 0xff;
         }
-        let mut collision_materials =
-            Block::zeroed(COLLISION_MATERIAL * self.collision_materials.max(1));
-        for m in collision_materials
-            .bytes
-            .as_chunks_mut::<COLLISION_MATERIAL>()
-            .0
-        {
-            m.copy_from_slice(&self.templates.collision_material);
-            put16(m, 0xa, 0xffff);
+        for (k, &index) in self.materials.iter().enumerate() {
+            materials.tag_ref((k * MATERIAL + 8) as u32, self.templates.shader(index));
+        }
+        if self.templates.collision_materials.len() != self.collision_materials {
+            return Err(Error::Invalid(
+                "collision material count differs from the source palette",
+            ));
+        }
+        let mut collision_materials = Block::new(self.templates.collision_materials.concat());
+        for (k, row) in self.templates.collision_materials.iter().enumerate() {
+            let datum = u32::from_le_bytes(row[16..20].try_into().expect("shader datum"));
+            collision_materials.tag_ref((k * COLLISION_MATERIAL + 12) as u32, map::TagId(datum));
         }
         let mut leaves = Block::zeroed(8 * self.collision.leaves.len());
         for (k, l) in leaves.bytes.as_chunks_mut::<8>().0.iter_mut().enumerate() {
@@ -1336,7 +1285,7 @@ impl Structure<'_> {
         root.put_u32(0x08, self.checksum);
         root.block(
             0x0c,
-            self.collision_materials.max(1) as u32,
+            self.collision_materials as u32,
             collision_materials,
         );
         root.block(0x14, 1, collision_block(self.collision));

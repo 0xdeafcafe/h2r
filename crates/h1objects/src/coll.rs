@@ -278,12 +278,34 @@ pub fn convert_collision(c: &Collision, bsp_physics: bool) -> Result<(Converted,
 /// same name, else of the same index, else node 0). Empty with no
 /// collision. For [`h1convert::convert::halo1::merge_scenery_collision`],
 /// which makes placed scenery solid as structure.
-pub fn object_bsps(h1: &h1map::H1Map, obj: &crate::h1::Object) -> Result<Vec<Bsp>> {
+pub fn object_bsps(
+    h1: &h1map::H1Map,
+    obj: &crate::h1::Object,
+    globals: &[String],
+) -> Result<Vec<Bsp>> {
     use h1convert::scenery_collision::{Pose, transformed};
     let Some(c) = obj.collision else {
         return Ok(Vec::new());
     };
-    let coll = Collision::read(h1, h1.tag(c)?)?;
+    let tag = h1.tag(c)?;
+    let coll = Collision::read(h1, tag)?;
+    let materials = coll
+        .material_types
+        .iter()
+        .map(|&kind| {
+            crate::arsenal::MATERIALS
+                .get(usize::from(kind))
+                .and_then(|(_, name)| globals.iter().position(|g| g == *name))
+                .and_then(|i| u16::try_from(i).ok())
+                .ok_or_else(|| {
+                    crate::Error::Invalid(format!(
+                        "{}: {}: unknown collision substance {kind}",
+                        h1.header().name,
+                        tag.name
+                    ))
+                })
+        })
+        .collect::<Result<Vec<_>>>()?;
     // (name, default pose) per model node.
     let nodes: Vec<(String, Pose)> = match obj.model {
         Some(m) => {
@@ -309,7 +331,19 @@ pub fn object_bsps(h1: &h1map::H1Map, obj: &crate::h1::Object) -> Result<Vec<Bsp
     let mut out = Vec::new();
     for (i, n) in coll.nodes.iter().enumerate() {
         let Some(src) = n.bsps.first() else { continue };
-        let bsp = h1convert::collision::convert(src)?;
+        let mut bsp = h1convert::collision::convert(src)?;
+        for surface in &mut bsp.surfaces {
+            surface.material = *materials
+                .get(usize::from(surface.material))
+                .ok_or_else(|| {
+                    crate::Error::Invalid(format!(
+                        "{}: {}: missing collision material {}",
+                        h1.header().name,
+                        tag.name,
+                        surface.material
+                    ))
+                })?;
+        }
         let pose = nodes
             .iter()
             .find(|m| m.0 == n.name)

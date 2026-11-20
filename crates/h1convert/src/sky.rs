@@ -8,20 +8,12 @@
 //! still names a base sky. Converted clusters all draw sky 0
 //! ([`crate::structure`]).
 //!
-//! A converted sky model's material `k` names a copy of a base sky shader
-//! drawing Halo 1's shader `k`'s bitmaps ([`crate::sky_shaders`]), added
-//! under the Halo 1 shader's name; a material whose shader doesn't convert
-//! names the base sky's own ([`base_sky_shader`]). They are never NONE: the shader draw begin `0x1bbf0` does not skip a NONE shader
-//! (`0x1bcb9` only clears its cached words), and the draw `0x16b90` then
-//! reads tag slot `0xffff`'s entry as a `shad` and dereferences its
-//! compiled postprocess (`0x16bc7`, `0x16bde`): a null read on the first
-//! frame that draws the sky.
+//! Every authored sky material requires a rebuilt shader before installation.
 
 use std::io::{Read, Seek};
 
 use map::build::{Block, FixupKind, TagPayload, TagSet};
 use map::{FourCC, Map, TagId};
-use tags::geometry::TagView;
 use tags::shader::SHAD;
 
 use crate::sky_shaders::{H1SkyShader, SkyTemplates, read_h1, recipe};
@@ -37,6 +29,7 @@ pub const SKY: usize = 8;
 pub struct Sky {
     /// The Halo 1 sky's tag path (the new tag's name).
     pub name: String,
+    source_map: String,
     pub sky: h1sky::h1::Sky,
     /// Its render model's path and conversion.
     pub model: Option<(String, h1models::Converted)>,
@@ -76,34 +69,6 @@ pub const MODE_MATERIALS: usize = 0x60;
 pub const MODE_MATERIAL: usize = 0x20;
 pub const MATERIAL_SHADER: usize = 0x08;
 
-/// The `shad` the base's first sky's model draws its first material with:
-/// scenario skies (`+0x08`) element 0, its `sky ` model (`+0x00`), that
-/// model's materials ([`MODE_MATERIALS`]).
-pub fn base_sky_shader<R: Read + Seek>(base: &mut Map<R>) -> Option<TagId> {
-    let word = |b: &[u8], o: usize| Some(u32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?));
-    let scnr = base.scenario()?.clone();
-    let bytes = base.read_tag_bytes(scnr.id).ok()?;
-    let view = TagView::new(&bytes, scnr.location?.address);
-    let skies = view.block(view.at(0, SKIES + 8).ok()?, SKIES, SKY).ok()?;
-    let sky = TagId(word(skies.first()?, 4)?);
-    let model = TagId(word(&base.read_tag_bytes(sky).ok()?, 4)?);
-    let tag = base.tag(model).ok()?.clone();
-    if tag.group != FourCC(*b"mode") {
-        return None;
-    }
-    let bytes = base.read_tag_bytes(model).ok()?;
-    let view = TagView::new(&bytes, tag.location?.address);
-    let root = view.at(0, MODE_MATERIALS + 8).ok()?;
-    view.block(root, MODE_MATERIALS, MODE_MATERIAL)
-        .ok()?
-        .iter()
-        .filter_map(|m| word(m, MATERIAL_SHADER + 4).map(TagId))
-        .find(|id| {
-            base.tag(*id)
-                .is_ok_and(|t| t.group == FourCC(*b"shad") && t.location.is_some())
-        })
-}
-
 /// Points material `k` of the converted `mode` tree `root` at `shader`.
 /// False when it has no such material.
 pub fn set_material_shader(root: &mut Block, k: usize, shader: TagId) -> bool {
@@ -129,18 +94,30 @@ impl Sky {
     pub fn from_map(h1: &h1map::H1Map, tag: &h1map::Tag) -> Result<Self> {
         let f = h1sky::convert::sky_from_map(h1, tag)
             .map_err(|e| Error::Sky(format!("{}: {e}", tag.name)))?;
-        let shaders: Vec<Option<H1SkyShader>> =
-            f.shaders.iter().map(|&id| read_h1(h1, id)).collect();
+        let shaders = f
+            .shaders
+            .iter()
+            .map(|&id| {
+                let shader = h1.tag(id)?;
+                read_h1(h1, id).map(Some).ok_or_else(|| {
+                    Error::no_rebuild(
+                        &h1.header().name,
+                        &shader.name,
+                        format!("{} sky material", shader.group),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
         let mut bitmaps = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for m in shaders.iter().flatten().flat_map(|s| &s.maps) {
             if !seen.insert(m.bitmap) {
                 continue;
             }
-            let Ok(t) = h1.tag(m.bitmap) else { continue };
-            if let Ok((_, c, _)) = h1bitmaps::convert_bitmap(h1, t) {
-                bitmaps.push((m.bitmap, t.name.clone(), c));
-            }
+            let t = h1.tag(m.bitmap)?;
+            let (_, c, _) = h1bitmaps::convert_bitmap(h1, t)
+                .map_err(|e| Error::no_rebuild(&h1.header().name, &t.name, e))?;
+            bitmaps.push((m.bitmap, t.name.clone(), c));
         }
         let mut opaque_bitmaps = Vec::new();
         let mut seen = std::collections::HashSet::new();
@@ -152,12 +129,10 @@ impl Sky {
             if !seen.insert(id) {
                 continue;
             }
-            let Ok(t) = h1.tag(id) else {
-                continue;
-            };
-            if let Ok((_, c, _)) = h1bitmaps::convert::convert_bitmap_opaque(h1, t) {
-                opaque_bitmaps.push((id, opaque_name(&t.name), c));
-            }
+            let t = h1.tag(id)?;
+            let (_, c, _) = h1bitmaps::convert::convert_bitmap_opaque(h1, t)
+                .map_err(|e| Error::no_rebuild(&h1.header().name, &t.name, e))?;
+            opaque_bitmaps.push((id, opaque_name(&t.name), c));
         }
         let flares = f
             .sky
@@ -165,11 +140,16 @@ impl Sky {
             .iter()
             .map(|l| {
                 (!l.lens_flare.id.is_none())
-                    .then(|| crate::lens::Flare::read(h1, l.lens_flare.id).ok())
-                    .flatten()
+                    .then(|| {
+                        let tag = h1.tag(l.lens_flare.id)?;
+                        crate::lens::Flare::read(h1, tag.id)
+                            .map_err(|e| Error::no_rebuild(&h1.header().name, &tag.name, e))
+                    })
+                    .transpose()
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
         Ok(Self {
+            source_map: h1.header().name.clone(),
             name: tag.name.clone(),
             flares,
             sky: f.sky,
@@ -183,8 +163,7 @@ impl Sky {
 
     /// Adds the sky to `set`: its bitmaps, a shader copy per material
     /// (`templates`), the model and the sky; returns the sky's datum. A
-    /// material with no copy names [`SkyTemplates::fallback`]; with
-    /// neither the sky goes in without its model.
+    /// missing material fails conversion with its source path.
     pub fn install(&self, set: &mut TagSet, templates: &SkyTemplates) -> Result<TagId> {
         let err = |e: &dyn std::fmt::Display| Error::Sky(format!("{}: {e}", self.name));
         let model = match &self.model {
@@ -200,7 +179,7 @@ impl Sky {
                     .shaders
                     .iter()
                     .flatten()
-                    .filter(|s| set.find(SHAD, &s.name).is_none())
+                    .filter(|s| set.converted(SHAD, &s.name).is_none())
                     .filter_map(|s| Some((s, recipe(s)?)))
                     .flat_map(|(s, r)| {
                         let picture = s.opaque_picture();
@@ -213,7 +192,7 @@ impl Sky {
                     .collect();
                 let mut ids = std::collections::HashMap::new();
                 for (h1id, name, b) in self.bitmaps.iter().filter(|b| drawn.contains(&b.0)) {
-                    let id = match set.find(b.group, name) {
+                    let id = match set.converted(b.group, name) {
                         Some(id) => id,
                         None => b.clone().install(set, name).map_err(|e| err(&e))?,
                     };
@@ -221,17 +200,16 @@ impl Sky {
                 }
                 let mut opaque = std::collections::HashMap::new();
                 for (h1id, name, b) in &self.opaque_bitmaps {
-                    let id = match set.find(b.group, name) {
+                    let id = match set.converted(b.group, name) {
                         Some(id) => id,
                         None => b.clone().install(set, name).map_err(|e| err(&e))?,
                     };
                     opaque.insert(*h1id, id);
                 }
                 set.add_group(SHAD, None, None);
-                let mut all = true;
                 for (k, s) in self.shaders.iter().enumerate() {
                     let copy = match s {
-                        Some(s) => match set.find(SHAD, &s.name) {
+                        Some(s) => match set.converted(SHAD, &s.name) {
                             Some(id) => Some(id),
                             None => {
                                 let picture = s.opaque_picture();
@@ -249,24 +227,37 @@ impl Sky {
                                     })
                                     .collect();
                                 match recipe(s).and_then(|r| templates.copy(r, &maps, r.scroll(s))) {
-                                    Some(tree) => Some(
-                                        set.add_tag(SHAD, &s.name, TagPayload::Built(tree))
-                                            .map_err(|e| err(&e))?,
-                                    ),
+                                    Some(tree) => {
+                                        let id =
+                                            set.add_tag(SHAD, &s.name, TagPayload::Built(tree))?;
+                                        set.record_conversion(SHAD, &s.name, id);
+                                        Some(id)
+                                    }
                                     None => None,
                                 }
                             }
                         },
                         None => None,
                     };
-                    match copy.or(templates.fallback) {
-                        Some(id) => {
-                            set_material_shader(&mut c.root, k, id);
-                        }
-                        None => all = false,
+                    let id = copy.ok_or_else(|| {
+                        Error::no_rebuild(
+                            &self.source_map,
+                            s.as_ref().map_or(n, |s| &s.name),
+                            format!(
+                                "sky {} material {k} lacks its shader program or bitmap",
+                                self.name
+                            ),
+                        )
+                    })?;
+                    if !set_material_shader(&mut c.root, k, id) {
+                        return Err(Error::no_rebuild(
+                            &self.source_map,
+                            n,
+                            format!("missing material {k}"),
+                        ));
                     }
                 }
-                all.then_some((n.as_str(), c))
+                Some((n.as_str(), c))
             }
             None => None,
         };
@@ -275,8 +266,8 @@ impl Sky {
         let flares: Vec<Option<TagId>> = self
             .flares
             .iter()
-            .map(|f| f.as_ref().and_then(|f| f.install(set).ok()))
-            .collect();
+            .map(|f| f.as_ref().map(|f| f.install(set)).transpose())
+            .collect::<Result<_>>()?;
         h1sky::convert::install_sky_with_flares(
             set,
             &self.sky,
@@ -290,24 +281,14 @@ impl Sky {
 }
 
 /// Converts every sky the Halo 1 scenario names.
-pub fn read(h1: &h1map::H1Map) -> Skies {
+pub fn read(h1: &h1map::H1Map) -> Result<Skies> {
     let mut out = Skies::default();
-    let refs = match h1.multiplayer() {
-        Ok(mp) => mp.skies,
-        Err(e) => {
-            out.notes
-                .push(format!("the scenario's skies don't read: {e}"));
-            return out;
-        }
-    };
-    for r in refs {
-        let Ok(tag) = h1.tag(r.id) else { continue };
-        match Sky::from_map(h1, tag) {
-            Ok(sky) => out.skies.push(sky),
-            Err(e) => out.notes.push(e.to_string()),
+    for r in h1.multiplayer()?.skies {
+        if !r.id.is_none() {
+            out.skies.push(Sky::from_map(h1, h1.tag(r.id)?)?);
         }
     }
-    out
+    Ok(out)
 }
 
 impl Skies {
@@ -323,29 +304,32 @@ impl Skies {
 /// Points every element of the skies block of a scenario payload (loaded
 /// at `address`) at `ids` (module docs). Returns the elements rewritten.
 pub fn patch_scenario(scnr: &mut [u8], address: u32, ids: &[TagId]) -> Result<usize> {
-    let Some(&last) = ids.last() else {
-        return Ok(0);
-    };
     let word = |b: &[u8], at: usize| -> Result<u32> {
         b.get(at..at + 4)
             .map(|b| u32::from_le_bytes(b.try_into().expect("4")))
             .ok_or(Error::Invalid("scenario skies outside the tag"))
     };
     let count = word(scnr, SKIES)? as usize;
-    if count == 0 {
+    if ids.len() > count {
+        return Err(Error::Invalid(
+            "source sky palette exceeds pinned scenario capacity",
+        ));
+    }
+    if ids.is_empty() {
+        scnr[SKIES..SKIES + 4].fill(0);
         return Ok(0);
     }
     let start = word(scnr, SKIES + 4)?.wrapping_sub(address) as usize;
     if start + count * SKY > scnr.len() {
         return Err(Error::Invalid("scenario skies outside the tag"));
     }
-    for k in 0..count {
-        let id = ids.get(k).copied().unwrap_or(last);
+    scnr[SKIES..SKIES + 4].copy_from_slice(&(ids.len() as u32).to_le_bytes());
+    for (k, id) in ids.iter().enumerate() {
         let at = start + k * SKY;
         scnr[at..at + 4].copy_from_slice(&FourCC(*b"sky ").as_u32().to_le_bytes());
         scnr[at + 4..at + 8].copy_from_slice(&id.0.to_le_bytes());
     }
-    Ok(count)
+    Ok(ids.len())
 }
 
 #[cfg(test)]
@@ -359,15 +343,16 @@ mod tests {
         b[SKIES..SKIES + 4].copy_from_slice(&3u32.to_le_bytes());
         b[SKIES + 4..SKIES + 8].copy_from_slice(&(address + 0x20).to_le_bytes());
         let ids = [TagId(0xe1000010), TagId(0xe1010011)];
-        assert_eq!(patch_scenario(&mut b, address, &ids).unwrap(), 3);
+        assert_eq!(patch_scenario(&mut b, address, &ids).unwrap(), 2);
         let datum =
             |k: usize| u32::from_le_bytes(b[0x24 + 8 * k..0x28 + 8 * k].try_into().unwrap());
         assert_eq!(
-            [datum(0), datum(1), datum(2)],
-            [ids[0].0, ids[1].0, ids[1].0]
+            [datum(0), datum(1)],
+            [ids[0].0, ids[1].0]
         );
         assert_eq!(b[0x20..0x24], FourCC(*b"sky ").as_u32().to_le_bytes());
         assert_eq!(patch_scenario(&mut b, address, &[]).unwrap(), 0);
+        assert_eq!(&b[SKIES..SKIES + 4], &0u32.to_le_bytes());
     }
 
     /// A converted model's materials, as `h1models::mode` lays them out:

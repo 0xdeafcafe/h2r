@@ -2,7 +2,7 @@
 
 use h1ai::{
     control::{Control, UncoverRule},
-    convert::{Plan, rebuilds_character},
+    convert::Plan,
 };
 use h1map::H1Map;
 use map::{
@@ -21,47 +21,22 @@ pub(crate) fn resolve(
     scripted: bool,
 ) -> Result<(Vec<TagId>, Vec<(String, String)>)> {
     let mut chars = Vec::new();
-    let resolve = |p: &str| -> Option<TagId> {
-        let find = |p: &str| {
-            set.slots.iter().find_map(|s| {
-                let t = s.tag.as_ref()?;
-                (t.group == FourCC(*b"char") && s.name.as_deref() == Some(p)).then_some(t.id)
-            })
-        };
-        if plan
-            .characters
-            .iter()
-            .any(|c| c.h2_character == p && rebuilds_character(c.h1_type))
-        {
-            return find(p);
+    let character_ids: Vec<_> = plan.characters.iter().map(|c| {
+        if c.h2_character == c.h1_variant {
+            set.converted(FourCC(*b"char"), &c.h1_variant)
+        } else {
+            set.find(FourCC(*b"char"), &c.h2_character)
         }
-        find(p).or_else(|| {
-            // Stand-ins for characters the base lacks: the marine for
-            // marine kinds, else the folder's first.
-            let folder = p.rsplit_once('\\')?.0;
-            if p.contains("\\marine\\") {
-                find("objects\\characters\\marine\\ai\\marine")
-            } else {
-                set.slots.iter().find_map(|s| {
-                    let t = s.tag.as_ref()?;
-                    (t.group == FourCC(*b"char") && s.name.as_deref()?.starts_with(folder))
-                        .then_some(t.id)
-                })
-            }
-        })
-    };
-    let character_ids: Vec<_> = plan
-        .characters
-        .iter()
-        .map(|c| resolve(&c.h2_character))
-        .collect();
+    }).collect();
     let mut characters = Vec::with_capacity(character_ids.len());
     for (index, (c, got)) in plan.characters.iter().zip(character_ids).enumerate() {
-        if require_rebuilt && rebuilds_character(c.h1_type) && got.is_none() {
-            return Err(invalid(format!(
-                "missing rebuilt character {}",
-                c.h2_character
-            )));
+        if require_rebuilt && got.is_none() {
+            return Err(h1convert::Error::no_rebuild(
+                &h1.header().name,
+                &c.h1_variant,
+                format!("missing character {}", c.h2_character),
+            )
+            .into());
         }
         let selected = if let Some(id) = got
             && scripted

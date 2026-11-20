@@ -1412,7 +1412,7 @@ impl Compiled {
 
     /// The tables as `map::build` blocks, installed into the scenario block
     /// `scnr` (fields per [`field`]). `reference` maps each Halo 1 reference
-    /// to a Halo 2 group and tag; unresolved ones are dropped.
+    /// to its installed group and datum. Unresolved authored references fail before writing.
     pub fn install(
         &self,
         scnr: &mut Block,
@@ -1420,6 +1420,16 @@ impl Compiled {
     ) -> Result<()> {
         if scnr.bytes.len() < field::MIN_LEN {
             return Err(invalid("scenario block too short for script fields"));
+        }
+        let mut refs = Vec::with_capacity(self.references.len());
+        for (group, name) in &self.references {
+            if name.is_empty() || name.eq_ignore_ascii_case("none") {
+                continue;
+            }
+            let target = reference(*group, name).ok_or_else(|| {
+                invalid(format!("no rebuild for script reference {group} {name}"))
+            })?;
+            refs.push(target);
         }
         let nodes: Vec<u8> = self.nodes.iter().flat_map(|n| n.encode()).collect();
         scnr.block(field::NODES, self.nodes.len() as u32, Block::new(nodes));
@@ -1434,11 +1444,6 @@ impl Compiled {
             self.globals.len() as u32,
             Block::new(self.globals.concat()),
         );
-        let refs: Vec<_> = self
-            .references
-            .iter()
-            .filter_map(|(g, name)| reference(*g, name))
-            .collect();
         let mut block = Block::zeroed(refs.len() * 8);
         for (i, (group, id)) in refs.iter().enumerate() {
             block.bytes[i * 8..i * 8 + 4]

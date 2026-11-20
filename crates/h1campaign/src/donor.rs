@@ -115,7 +115,13 @@ impl std::fmt::Display for Brought {
 /// `h1ai`'s table).
 pub fn wanted(h1: &H1Map) -> Result<Vec<(FourCC, String)>> {
     let ai = h1ai::h1::H1Ai::read(h1).map_err(|e| invalid(format!("ai: {e}")))?;
-    let plan = h1ai::convert::convert(&ai, &Default::default());
+    let plan = h1ai::convert::convert(
+        &ai,
+        &h1ai::convert::Options {
+            halo2_assets: true,
+            ..Default::default()
+        },
+    );
     let mut out: Vec<(FourCC, String)> = Vec::new();
     for c in &plan.characters {
         let w = match c.h1_type.0 {

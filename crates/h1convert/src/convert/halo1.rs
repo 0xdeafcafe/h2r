@@ -60,7 +60,8 @@ pub trait Halo1Objects {
     /// space, as Halo 2 BSPs: for each collision node with any, its BSP of
     /// the first permutation of its region (the one a converted
     /// placement, which names no variant, draws), placed by the render
-    /// model's default pose. Empty when it has no collision; the default
+    /// model's default pose. Each surface names a global material index.
+    /// Empty when it has no collision; the default
     /// reads none. [`merge_scenery_collision`] puts each placed scenery
     /// object's into the level's.
     fn collision(
@@ -312,11 +313,12 @@ pub fn halo1_netgame_type(group: [u8; 4], name: &str) -> u8 {
 }
 
 fn collect_spawns(
+    map: &str,
     source: Vec<Halo1Spawn>,
     objects: &mut dyn Halo1Objects,
     unresolved: &mut Vec<String>,
     placed_vehicles: &mut Vec<String>,
-) -> (Vec<Halo1Collection>, Vec<(Halo1Spawn, usize, u8)>) {
+) -> Result<(Vec<Halo1Collection>, Vec<(Halo1Spawn, usize, u8)>)> {
     // Each Halo 1 collection some spawn uses, built once, and the spawns
     // naming it (collection index, netgame type).
     let mut collections: Vec<Halo1Collection> = Vec::new();
@@ -333,7 +335,6 @@ fn collect_spawns(
             Some(c) => c,
             None => {
                 let mut entries = Vec::new();
-                let mut why = Vec::new();
                 let mut kind = None;
                 for it in &sp.items {
                     match objects.object(it.group, &it.name) {
@@ -344,20 +345,15 @@ fn collect_spawns(
                             entries.push((k, it.weight));
                             kind.get_or_insert(halo1_netgame_type(it.group, &it.name));
                         }
-                        Err(w) => why.push(format!("{}: {w}", it.name)),
+                        Err(w) => return Err(Error::no_rebuild(map, &it.name, w)),
                     }
                 }
                 if entries.is_empty() {
                     unresolved.push(format!(
-                        "{} at {:?}: {}",
-                        sp.collection,
-                        sp.position,
-                        why.join("; ")
+                        "{} at {:?}: empty source collection",
+                        sp.collection, sp.position
                     ));
                     continue;
-                }
-                for w in why {
-                    unresolved.push(format!("{} leaves out {w}", sp.collection));
                 }
                 collections.push(Halo1Collection {
                     group,
@@ -371,7 +367,7 @@ fn collect_spawns(
         };
         spawns.push((sp, c, kinds[c]));
     }
-    (collections, spawns)
+    Ok((collections, spawns))
 }
 
 fn write_spawn(
@@ -425,7 +421,7 @@ pub fn prepare_halo1<R: Read + Seek>(
     let mut s = Scenario::read(base)?;
     let template = s.new_entry(
         BlockKind::NetgameEquipment,
-        (!s.block(BlockKind::NetgameEquipment).is_empty()).then_some(0),
+        None,
         None,
     )?;
     // Spawns and flags as the Halo 2 variant has them; no Halo 2 items.
@@ -440,75 +436,70 @@ pub fn prepare_halo1<R: Read + Seek>(
     let first = base.index_slots() as usize;
     let mut placed_vehicles = Vec::new();
     let (mut collections, spawns) = collect_spawns(
-        plan_objects(h1)?, objects, &mut applied.unresolved, &mut placed_vehicles,
-    );
+        &h1.header().name,
+        plan_objects(h1)?,
+        objects,
+        &mut applied.unresolved,
+        &mut placed_vehicles,
+    )?;
     // The player: Halo 1's multiplayer biped, converted like the objects.
     let player = player_biped_name(h1);
-    let player_biped = match &player {
-        Some(n) => match objects.object(*b"bipd", n) {
-            Ok(k) => Some(added_datum(first + k)),
-            Err(w) => {
-                applied.unresolved.push(format!("player biped {n}: {w}"));
-                None
-            }
-        },
-        None => {
-            applied
-                .unresolved
-                .push("player biped: the map has no cyborg biped".into());
-            None
-        }
-    };
+    let player_name = player.as_ref().ok_or_else(|| {
+        Error::no_rebuild(
+            &h1.header().name,
+            "player biped",
+            "no multiplayer biped in source globals",
+        )
+    })?;
+    let player_biped = Some(added_datum(
+        first
+            + objects
+                .object(*b"bipd", player_name)
+                .map_err(|e| Error::no_rebuild(&h1.header().name, player_name, e))?,
+    ));
     let mut scenery = plan_scenery(h1, objects, first, &mut applied.unresolved)?;
     merge_scenery_collision(objects, &mut p, &mut scenery, &mut applied.unresolved)?;
     // The player's first-person arms: Halo 1's, which Halo 1's
     // first-person graphs name node for node (the engine binds them by
     // name; Halo 2's arms match no node of them).
     let player_hands = match crate::globals::h1_first_person_hands(h1)? {
-        Some(id) => match objects.first_person_arms(id) {
-            Ok(k) => Some(added_datum(first + k)),
-            Err(w) => {
-                applied.unresolved.push(format!("first-person arms: {w}"));
-                None
-            }
-        },
+        Some(id) => Some(added_datum(
+            first
+                + objects.first_person_arms(id).map_err(|e| {
+                    Error::no_rebuild(
+                        &h1.header().name,
+                        h1.tag(id).map_or("first-person arms", |t| &t.name),
+                        e,
+                    )
+                })?,
+        )),
         None => None,
     };
     // Halo 1's grenade types, converted like the objects.
     let mut grenades = Vec::new();
     for g in crate::globals::h1_grenades(h1)? {
-        let mut one = |id: Option<h1map::TagId>, group: [u8; 4]| -> Option<TagId> {
-            let tag = h1.tag(id?).ok()?;
-            match objects.object(group, &tag.name) {
-                Ok(k) => Some(added_datum(first + k)),
-                Err(w) => {
-                    applied.unresolved.push(format!("grenade {}: {w}", tag.name));
-                    None
-                }
-            }
+        let mut one = |id: Option<h1map::TagId>, group: [u8; 4]| -> Result<Option<TagId>> {
+            let Some(id) = id else { return Ok(None) };
+            let tag = h1.tag(id)?;
+            let k = objects
+                .object(group, &tag.name)
+                .map_err(|e| Error::no_rebuild(&h1.header().name, &tag.name, e))?;
+            Ok(Some(added_datum(first + k)))
         };
         grenades.push(crate::globals::Grenade {
             maximum: g.maximum,
-            equipment: one(g.equipment, *b"eqip"),
-            projectile: one(g.projectile, *b"proj"),
+            equipment: one(g.equipment, *b"eqip")?,
+            projectile: one(g.projectile, *b"proj")?,
         });
     }
-    let weapon_list = plan_weapon_list(h1, base, objects, first, &mut applied.unresolved)?;
+    let weapon_list = plan_weapon_list(h1, base, objects, first)?;
     let vehicle_list = plan_vehicle_list(
-        base,
+        &h1.header().name, base,
         objects,
         first,
         &placed_vehicles,
-        &mut applied.unresolved,
     )?;
-    let starting = plan_starting_equipment(
-        h1,
-        base,
-        &s,
-        objects,
-        &mut collections,
-        &mut applied.unresolved,
-    )?;
+    let starting = plan_starting_equipment(h1, objects, &mut collections)?;
     let objects_out = objects.take();
     // The collections follow the objects.
     let after = first + objects_out.count;
@@ -528,22 +519,21 @@ pub fn prepare_halo1<R: Read + Seek>(
     }
     // The starting equipment names the Halo 1 collections made for it.
     let k = BlockKind::StartingEquipment;
-    let mut entries: Vec<Vec<u8>> = (0..s.block(k).len())
-        .map(|i| s.block(k).entry(i).expect("in range").to_vec())
-        .collect();
-    for (i, at, c) in &starting {
-        let id = added_datum(after + c);
-        entries[*i][*at..*at + 4].copy_from_slice(&FourCC(*b"itmc").as_u32().to_le_bytes());
-        entries[*i][*at + 4..*at + 8].copy_from_slice(&id.0.to_le_bytes());
+    while !s.block(k).is_empty() {
+        s.remove(k, s.block(k).len() - 1)?;
     }
-    if !starting.is_empty() {
-        while !s.block(k).is_empty() {
-            let last = s.block(k).len() - 1;
-            s.remove(k, last)?;
+    for row in starting {
+        let mut entry = s.new_entry(k, None, None)?;
+        entry[..12].copy_from_slice(&row.filters);
+        for (at, collection) in STARTING_EQUIPMENT_COLLECTIONS
+            .into_iter()
+            .zip(row.collections)
+        {
+            let id = collection.map_or(TagId::NULL, |index| added_datum(after + index));
+            entry[at..at + 4].copy_from_slice(&FourCC(*b"itmc").as_u32().to_le_bytes());
+            entry[at + 4..at + 8].copy_from_slice(&id.0.to_le_bytes());
         }
-        for e in entries {
-            s.add(k, e)?;
-        }
+        s.add(k, entry)?;
     }
     let tags_out = with_collections(objects_out, first, collections);
     p.applied = applied;
@@ -572,122 +562,71 @@ pub fn prepare_halo1<R: Read + Seek>(
 /// for the player's weapons.
 pub const STARTING_EQUIPMENT_COLLECTIONS: [usize; 5] = [0x3c, 0x44, 0x4c, 0x54, 0x5c];
 
-/// The Halo 1 sandbox's starting equipment: each `itmc` the base's
-/// starting equipment names gets a Halo 1 collection, its weapons each the
-/// Halo 1 weapon [`crate::sandbox::halo1_weapon_for`] picks at the same
-/// weight (converted like the objects), appended to `collections`.
-/// Returns (entry, reference offset, collection index) to point at it.
-/// Entries that are not weapons are reported and left out; a collection
-/// with no Halo 1 weapon is reported and left as the base's.
-fn plan_starting_equipment<R: Read + Seek>(
+struct StartingEquipment {
+    filters: [u8; 12],
+    collections: [Option<usize>; 5],
+}
+
+/// H1 starting equipment rows have flags, four game-type selectors and
+/// collection references at +0x3c (16 bytes apart). The H2 spawn code
+/// reads the same selectors and rolls its five compact references.
+fn plan_starting_equipment(
     h1: &H1Map,
-    base: &mut Map<R>,
-    s: &Scenario,
     objects: &mut dyn Halo1Objects,
     collections: &mut Vec<Halo1Collection>,
-    unresolved: &mut Vec<String>,
-) -> Result<Vec<(usize, usize, usize)>> {
-    let k = BlockKind::StartingEquipment;
-    let names: Vec<(TagId, FourCC, String, Option<u32>)> = base
-        .tags()
-        .iter()
-        .map(|t| {
-            (
-                t.id,
-                t.group,
-                t.name.clone().unwrap_or_default(),
-                t.location.map(|l| l.address),
-            )
-        })
-        .collect();
-    let mut made: Vec<(TagId, Option<usize>)> = Vec::new();
-    let mut out = Vec::new();
-    let word = |b: &[u8], at: usize| {
-        b.get(at..at + 4)
-            .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
-            .ok_or(Error::Invalid("a collection is too short"))
-    };
-    for i in 0..s.block(k).len() {
-        let e = s.block(k).entry(i).expect("in range").to_vec();
-        for at in STARTING_EQUIPMENT_COLLECTIONS {
-            let id = TagId(word(&e, at + 4)?);
-            if id.0 == u32::MAX || word(&e, at)? != FourCC(*b"itmc").as_u32() {
+) -> Result<Vec<StartingEquipment>> {
+    let (at, stride) = h1map::scenario::layout::STARTING_EQUIPMENT;
+    let scnr = h1.tag_data(h1.scenario())?;
+    let space = h1.tag_space();
+    let mut rows = Vec::new();
+    for src in space.block_at(scnr, at, stride)? {
+        let mut row = StartingEquipment {
+            filters: src[..12].try_into().expect("starting equipment header"),
+            collections: [None; 5],
+        };
+        for i in 0..6 {
+            let r = h1map::TagRef::read(src, 0x3c + 16 * i).expect("starting equipment reference");
+            if r.id.is_none() {
                 continue;
             }
-            let c = match made.iter().find(|m| m.0 == id) {
-                Some(m) => m.1,
-                None => {
-                    let c = starting_collection(h1, base, &names, id, objects, collections, unresolved, &word)?;
-                    made.push((id, c));
-                    c
-                }
-            };
-            if let Some(c) = c {
-                out.push((i, at, c));
+            let tag = h1.tag(r.id)?;
+            if i >= row.collections.len() {
+                return Err(Error::no_rebuild(
+                    &h1.header().name,
+                    &tag.name,
+                    "sixth starting collection has no H2 slot",
+                ));
             }
+            let existing = collections
+                .iter()
+                .position(|c| c.group == *b"itmc" && c.name == tag.name);
+            let index = if let Some(index) = existing {
+                index
+            } else {
+                let collection = h1.item_collection(r.id)?;
+                let mut entries = Vec::new();
+                for p in collection.permutations {
+                    let item = h1.tag(p.item.id)?;
+                    let index = objects
+                        .object(item.group.0.to_be_bytes(), &item.name)
+                        .map_err(|why| Error::no_rebuild(&h1.header().name, &item.name, why))?;
+                    entries.push((index, p.weight));
+                }
+                collections.push(Halo1Collection {
+                    group: *b"itmc",
+                    name: tag.name.clone(),
+                    entries,
+                    respawn: collection.spawn_time,
+                });
+                collections.len() - 1
+            };
+            row.collections[i] = Some(index);
         }
+        rows.push(row);
     }
-    Ok(out)
+    Ok(rows)
 }
 
-/// One starting equipment collection rebuilt with Halo 1 weapons
-/// ([`plan_starting_equipment`]); its index in `collections`.
-#[allow(clippy::too_many_arguments)]
-fn starting_collection<R: Read + Seek>(
-    h1: &H1Map,
-    base: &mut Map<R>,
-    names: &[(TagId, FourCC, String, Option<u32>)],
-    id: TagId,
-    objects: &mut dyn Halo1Objects,
-    collections: &mut Vec<Halo1Collection>,
-    unresolved: &mut Vec<String>,
-    word: &dyn Fn(&[u8], usize) -> Result<u32>,
-) -> Result<Option<usize>> {
-    let Some((_, _, name, Some(address))) = names.iter().find(|t| t.0 == id) else {
-        return Ok(None);
-    };
-    let bytes = base.read_tag_bytes(id)?;
-    let n = word(&bytes, 0)? as usize;
-    let first = word(&bytes, 4)?
-        .checked_sub(*address)
-        .ok_or(Error::Invalid("a collection's entries lie outside it"))? as usize;
-    let mut entries = Vec::new();
-    for j in 0..n {
-        let at = first + j * super::COLLECTION_ENTRY;
-        let weight = f32::from_bits(word(&bytes, at)?);
-        let item = TagId(word(&bytes, at + 8)?);
-        let Some((_, g, item_name, _)) = names.iter().find(|t| t.0 == item) else {
-            continue;
-        };
-        if *g != FourCC(*b"weap") {
-            unresolved.push(format!("starting equipment {name}: {item_name} is not a weapon"));
-            continue;
-        }
-        match halo1_weapon(h1, item_name) {
-            Some(w) => match objects.object(*b"weap", &w) {
-                Ok(k) => entries.push((k, weight)),
-                Err(why) => unresolved.push(format!("starting equipment {name}: {w}: {why}")),
-            },
-            None => unresolved.push(format!(
-                "starting equipment {name}: {item_name} has no Halo 1 weapon on the map"
-            )),
-        }
-    }
-    if entries.is_empty() {
-        unresolved.push(format!("starting equipment {name}: no Halo 1 weapon; left as the base's"));
-        return Ok(None);
-    }
-    collections.push(Halo1Collection {
-        group: *b"itmc",
-        name: format!("{name} (Halo 1)"),
-        entries,
-        respawn: 0,
-    });
-    Ok(Some(collections.len() - 1))
-}
-
-/// The Halo 1 weapon the map has for the Halo 2 weapon `h2_name`
-/// ([`crate::sandbox::halo1_weapon_for`], first choice on the map).
 fn halo1_weapon(h1: &H1Map, h2_name: &str) -> Option<String> {
     let last = |p: &str| p.rsplit(['\\', '/']).next().unwrap_or("").to_ascii_lowercase();
     let choices = crate::sandbox::halo1_weapon_for(h2_name)?;
@@ -705,7 +644,7 @@ fn halo1_weapon(h1: &H1Map, h2_name: &str) -> Option<String> {
 /// [`crate::sandbox::halo1_weapon_for`] picks, the first of its choices
 /// the map has, converted like the objects (datums from slot `first`).
 /// Entries naming none stay none; an entry no Halo 1 weapon fits is
-/// reported and left. The game variant's starting weapon is a list entry
+/// unassigned. The game variant's starting weapon is a list entry
 /// (`crate::globals::STARTING_WEAPON_ENTRY`), and the Halo 1 cyborg can
 /// hold only Halo 1 weapons.
 fn plan_weapon_list<R: Read + Seek>(
@@ -713,18 +652,17 @@ fn plan_weapon_list<R: Read + Seek>(
     base: &mut Map<R>,
     objects: &mut dyn Halo1Objects,
     first: usize,
-    unresolved: &mut Vec<String>,
 ) -> Result<Vec<(usize, TagId)>> {
     let mut out = Vec::new();
     for (i, name) in base_list(base, crate::globals::List::Weapons)? {
         let name = name.as_str();
         let Some(h1_name) = halo1_weapon(h1, name) else {
-            unresolved.push(format!("weapon list {i}: {name} has no Halo 1 weapon on the map"));
+            out.push((i, TagId::NULL));
             continue;
         };
         match objects.object(*b"weap", &h1_name) {
             Ok(k) => out.push((i, added_datum(first + k))),
-            Err(w) => unresolved.push(format!("weapon list {i}: {h1_name}: {w}")),
+            Err(w) => return Err(Error::no_rebuild(&h1.header().name, &h1_name, w)),
         }
     }
     Ok(out)
@@ -828,29 +766,26 @@ pub fn halo1_vehicle_for<'a>(h2_name: &str, placed: &'a [String]) -> Option<&'a 
 /// that vehicle, so a game variant's vehicle option that swaps a vehicle
 /// for another of its class gives a Halo 1 one. The other entries (the
 /// spectre and the turrets, which have no class; a vehicle the map
-/// places none of, as Blood Gulch's banshee) keep the base's and are
-/// reported. As the list names the base's
+/// places none of, as Blood Gulch's banshee) are unassigned. As the list names the base's
 /// vehicles, a pinned map kept every retail vehicle and all it names
 /// (`fresh::prune_pinned`): pointed at the Halo 1 vehicles, those the
 /// map's spawns stand in for are dropped.
 fn plan_vehicle_list<R: Read + Seek>(
+    map: &str,
     base: &mut Map<R>,
     objects: &mut dyn Halo1Objects,
     first: usize,
     placed: &[String],
-    unresolved: &mut Vec<String>,
 ) -> Result<Vec<(usize, TagId)>> {
     let mut out = Vec::new();
     for (i, name) in base_list(base, crate::globals::List::Vehicles)? {
         let Some(h1_name) = halo1_vehicle_for(&name, placed) else {
-            unresolved.push(format!(
-                "vehicle list {i}: {name} has no Halo 1 vehicle the map places; the base's stays"
-            ));
+            out.push((i, TagId::NULL));
             continue;
         };
         match objects.object(*b"vehi", h1_name) {
             Ok(k) => out.push((i, added_datum(first + k))),
-            Err(w) => unresolved.push(format!("vehicle list {i}: {h1_name}: {w}")),
+            Err(w) => return Err(Error::no_rebuild(map, h1_name, w)),
         }
     }
     Ok(out)
@@ -995,7 +930,7 @@ pub fn plan_scenery(
     h1: &H1Map,
     objects: &mut dyn Halo1Objects,
     first: usize,
-    unresolved: &mut Vec<String>,
+    _unresolved: &mut Vec<String>,
 ) -> Result<Scenery> {
     use h1map::scenario::layout;
     let scnr = h1.tag_data(h1.scenario())?;
@@ -1017,10 +952,7 @@ pub fn plan_scenery(
                 index.push(Some((out.palette.len() as u16, name)));
                 out.palette.push(added_datum(first + k));
             }
-            Err(w) => {
-                unresolved.push(format!("scenery {name}: {w}"));
-                index.push(None);
-            }
+            Err(w) => return Err(Error::no_rebuild(&h1.header().name, name, w)),
         }
     }
     for e in space.block_at(scnr, layout::SCENERY.0, layout::SCENERY.1)? {
@@ -1053,32 +985,50 @@ pub fn plan_scenery(
 /// start has its object's collision ([`Halo1Objects::collision`]) moved
 /// to its place and merged into `p.collision`, its new leaves in the
 /// cluster of the level leaf each stands in (`p.sound_leaves`); its
-/// surfaces take collision material 0 (every converted collision material
-/// is the base's one template, `structure::Templates`). The object still
+/// surfaces keep the substance of their source object collision material. The object still
 /// draws as scenery. A placement whose collision can't be read or doesn't
-/// fit Halo 2's packed fields is listed in `unresolved` and stays
-/// walk-through. Counts the placements merged in `scenery.solid`.
+/// fit Halo 2's packed fields fails the map conversion.
 pub fn merge_scenery_collision(
     objects: &mut dyn Halo1Objects,
     p: &mut Prepared,
     scenery: &mut Scenery,
-    unresolved: &mut Vec<String>,
+    _unresolved: &mut Vec<String>,
 ) -> Result<()> {
-    use crate::scenery_collision::{Pose, merge, transformed};
+    use crate::scenery_collision::{Pose, merge_materials, transformed};
     let mut collisions: std::collections::HashMap<String, Vec<tags::collision::Bsp>> =
         std::collections::HashMap::new();
     for placed in scenery.placed.iter().filter(|s| s.at_start) {
         let name = &placed.name;
-        let bsps = collisions.entry(name.clone()).or_insert_with(|| {
-            objects.collision(*b"scen", name).unwrap_or_else(|w| {
-                unresolved.push(format!("scenery {name}: collision not read: {w}"));
-                Vec::new()
-            })
-        });
+        let bsps = match collisions.entry(name.clone()) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let mut bsps = objects
+                    .collision(*b"scen", name)
+                    .map_err(|e| Error::no_rebuild(&p.h1_name, name, e))?;
+                for surface in bsps.iter_mut().flat_map(|bsp| &mut bsp.surfaces) {
+                    let material = (None, surface.material);
+                    let palette = &mut p.textures.collision;
+                    let index = palette
+                        .iter()
+                        .position(|row| *row == material)
+                        .unwrap_or_else(|| {
+                            palette.push(material);
+                            palette.len() - 1
+                        });
+                    surface.material = u16::try_from(index).map_err(|_| {
+                        Error::no_rebuild(&p.h1_name, name, "collision material index overflow")
+                    })?;
+                }
+                p.collision_materials = p.textures.collision.len();
+                entry.insert(bsps)
+            }
+        };
         let pose = Pose::placement(placed.position, placed.rotation);
         let mut joined = false;
         for bsp in bsps.iter() {
-            match transformed(bsp, &pose).and_then(|world| merge(&mut p.collision, &world, 0)) {
+            match transformed(bsp, &pose)
+                .and_then(|world| merge_materials(&mut p.collision, &world, |index| index))
+            {
                 Ok(m) => {
                     for l in m.stand_ins {
                         let c = p.sound_leaves.get(l).copied().unwrap_or(0);
@@ -1086,9 +1036,8 @@ pub fn merge_scenery_collision(
                     }
                     joined |= m.slots > 0;
                 }
-                Err(e) => unresolved.push(format!(
-                    "scenery {name} at {:?}: collision not merged into the level's: {e}",
-                    placed.position
+                Err(e) => return Err(Error::no_rebuild(
+                    &p.h1_name, name, format!("scenery collision at {:?}: {e}", placed.position),
                 )),
             }
         }
@@ -1136,7 +1085,13 @@ pub fn prepare_halo2<R: Read + Seek>(
     let mut unresolved = std::mem::take(&mut p.applied.unresolved);
     merge_scenery_collision(objects, &mut p, &mut scenery, &mut unresolved)?;
     p.applied.unresolved = unresolved;
-    let (collections, spawns) = collect_spawns(powerups, objects, &mut p.applied.unresolved, &mut Vec::new());
+    let (collections, spawns) = collect_spawns(
+        &h1.header().name,
+        powerups,
+        objects,
+        &mut p.applied.unresolved,
+        &mut Vec::new(),
+    )?;
     let converted = objects.take();
     let after = first + converted.count;
     for (sp, c, _) in spawns {

@@ -110,7 +110,7 @@ pub struct Looping {
     pub details: Vec<Detail>,
     /// Every `snd!` the tracks and details name, converted, by path.
     pub sounds: Vec<(String, ConvertedSound)>,
-    /// Sounds that didn't convert (their references are left null).
+    /// Informational notes about this source loop.
     pub notes: Vec<String>,
 }
 
@@ -145,7 +145,7 @@ pub fn read_looping(h1: &H1Map, tag: &Tag) -> Result<Looping> {
         let t = h1.find(SND, &name).expect("named by a reference above");
         match Sound::read(h1, t).and_then(|s| convert_sound(&s, h1.bytes())) {
             Ok(c) => out.sounds.push((name, c)),
-            Err(e) => out.notes.push(format!("{name}: {e}")),
+            Err(e) => return Err(Error::Invalid(format!("{}: {name}: {e}", h1.header().name))),
         }
     }
     Ok(out)
@@ -366,7 +366,7 @@ pub fn install_looping(set: &mut TagSet, loops: &[Looping]) -> Result<Vec<TagId>
         if ids.contains_key(name) || new.iter().any(|(n, _)| n == name) {
             continue;
         }
-        match set.find(snd, name) {
+        match set.converted(snd, name) {
             Some(id) => {
                 ids.insert(name.clone(), id);
             }
@@ -380,12 +380,20 @@ pub fn install_looping(set: &mut TagSet, loops: &[Looping]) -> Result<Vec<TagId>
     }
     let mut out = Vec::with_capacity(loops.len());
     for l in loops {
-        let id = match set.find(FourCC(*b"lsnd"), &l.name) {
+        let id = match set.converted(FourCC(*b"lsnd"), &l.name) {
             Some(id) => id,
-            None => l
-                .to_h2(&ids)
-                .install(set, &l.name)
-                .map_err(|e| Error::Invalid(e.to_string()))?,
+            None => {
+                for name in l.sound_names() {
+                    let id = set.converted(snd, &name).ok_or_else(|| {
+                        Error::Invalid(format!(
+                            "{}: {} requires unconverted snd! {name}",
+                            set.name, l.name
+                        ))
+                    })?;
+                    ids.insert(name, id);
+                }
+                crate::convert::install_named(l.to_h2(&ids), set, &l.name)?
+            }
         };
         out.push(id);
     }
@@ -420,12 +428,9 @@ pub fn environment(h1: &[u8]) -> Converted {
 /// Adds a converted sound environment under `name`, or finds the set's
 /// own `snde` of that path.
 pub fn install_environment(set: &mut TagSet, name: &str, c: &Converted) -> Result<TagId> {
-    match set.find(FourCC(*b"snde"), name) {
+    match set.converted(FourCC(*b"snde"), name) {
         Some(id) => Ok(id),
-        None => c
-            .clone()
-            .install(set, name)
-            .map_err(|e| Error::Invalid(e.to_string())),
+        None => crate::convert::install_named(c.clone(), set, name),
     }
 }
 

@@ -18,15 +18,32 @@ impl Converter<'_> {
             return Ok(*id);
         }
         let c = H1Contrail::read(self.h1, tag)?;
-        let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
-        let bitmap = c.bitmap.and_then(|b| self.bitmap(b));
-        if c.bitmap.is_some() && bitmap.is_none() {
-            rep.no_home.push("bitmap: did not convert".into());
+        let rep = Self::report(tag, "none: rebuilt from tags::defs");
+        let bitmap = self.source_bitmap(c.bitmap)?;
+        let mut physics = Vec::with_capacity(c.points.len());
+        for point in &c.points {
+            let r = h1map::TagRef::read(point, 0x10)
+                .ok_or(crate::Error::Truncated("contrail point physics"))?;
+            let id = if r.id.is_none() {
+                None
+            } else if let Some(id) = self.done.get(&r.id.0) {
+                Some(*id)
+            } else {
+                let source = self.h1_tag(r.id)?;
+                let bytes = crate::h1::tag_bytes(self.h1, source, b"pphy", 0x34)?;
+                let root = particles::point_physics(bytes)?;
+                Some(self.cached(
+                    source,
+                    Converted {
+                        group: FourCC(*b"pphy"),
+                        root,
+                        raw: vec![],
+                    },
+                )?)
+            };
+            physics.push(id);
         }
-        if !c.points.is_empty() {
-            rep.no_home.push(format!("{} points: physics (pphy) not converted, null", c.points.len()));
-        }
-        let root = particles::contrail(&c, bitmap)?;
+        let root = particles::contrail(&c, bitmap, &physics)?;
         self.tree.reports.push(rep);
         let id = self.tree.push(
             &tag.name,
@@ -68,56 +85,51 @@ impl Converter<'_> {
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
         rep.source = name.to_owned();
         let (want, proven) = particles::particle_stem(p.blend);
+        let fail = |why: String| h1convert::Error::no_rebuild(&self.h1.header().name, name, why);
+        if !proven {
+            return Err(fail(format!("no particle program for blend {}", p.blend)).into());
+        }
         let shader = shaders
             .iter()
             .find(|s| s.name == want)
-            .or_else(|| shaders.iter().find(|s| s.name == particles::particle_stem(0).0));
-        let Some(shader) = shader.cloned() else {
-            return Ok(None);
-        };
-        if shader.name != want {
-            rep.no_home.push(format!("shader: {want} not on the base, {} instead", shader.name));
-        } else if !proven {
-            rep.no_home.push(format!("shader: blend function {} drawn as {want} (unproven)", p.blend));
-        }
+            .cloned()
+            .ok_or_else(|| fail(format!("missing particle program {want}")))?;
         let bitmap = match p.bitmap {
             Some(b) => {
-                let size = self
-                    .h1
-                    .tag(b)
-                    .ok()
-                    .and_then(|t| h1map::bitmap::Bitmap::read(self.h1, t).ok())
-                    .and_then(|bm| bm.images.first().map(|i| (i.width, i.height)));
-                match (self.bitmap(b), size) {
-                    (Some(id), Some((w, h))) => Some((id, w, h)),
-                    _ => {
-                        rep.no_home.push("bitmap: did not convert".into());
-                        None
-                    }
-                }
+                let t = self.h1_tag(b)?;
+                let bm = h1map::bitmap::Bitmap::read(self.h1, t)?;
+                let image = bm
+                    .images
+                    .first()
+                    .ok_or_else(|| fail(format!("{} has no images", t.name)))?;
+                let (w, h) = (image.width, image.height);
+                Some((self.source_bitmap(Some(b))?.expect("source bitmap"), w, h))
             }
             None => None,
         };
-        let effect = |c: &mut Self, id: Option<h1map::TagId>, rep: &mut super::ObjectReport, what: &str| {
-            let t = id.and_then(|i| c.h1.tag(i).ok())?;
-            if c.effects_open.contains(&t.id.0) {
-                rep.no_home.push(format!("{what}: {} leads back to the effect being converted, left out", t.name));
-                return None;
-            }
-            let got = if t.group == h1map::Group::new(b"effe") {
-                c.effect(t).ok().map(|id| (FourCC(*b"effe"), id))
-            } else if t.group == h1map::Group::new(b"snd!") {
-                c.sound(t, rep).map(|id| (FourCC(*b"snd!"), id))
-            } else {
-                None
+        let effect = |c: &mut Self,
+                      id: Option<h1map::TagId>,
+                      rep: &mut super::ObjectReport|
+         -> Result<Option<(FourCC, TagId)>> {
+            let Some(id) = id else { return Ok(None) };
+            let t = c.h1_tag(id)?;
+            let group = FourCC(t.group.0.to_be_bytes());
+            let id = match &group.0 {
+                b"effe" => c.effect(t)?,
+                b"snd!" => c.sound(t, rep)?,
+                _ => {
+                    return Err(h1convert::Error::no_rebuild(
+                        &c.h1.header().name,
+                        &t.name,
+                        "particle event group",
+                    )
+                    .into());
+                }
             };
-            if got.is_none() {
-                rep.no_home.push(format!("{what}: {} did not convert", t.name));
-            }
-            got
+            Ok(Some((group, id)))
         };
-        let collision = effect(self, p.collision_effect, &mut rep, "collision effect");
-        let death = effect(self, p.death_effect, &mut rep, "death effect");
+        let collision = effect(self, p.collision_effect, &mut rep)?;
+        let death = effect(self, p.death_effect, &mut rep)?;
         rep.no_home.push(
             "emitter-side fields (lifespan, fade times, radius and frame animation, physics, contact deterioration, fade sizes, orientation, secondary map) not carried: Halo 2 holds them on the effect's emitter".into(),
         );
@@ -177,32 +189,33 @@ impl Converter<'_> {
         let Some(tags::defs::Val::Block(mut evs)) = r.at("events").cloned() else {
             return Ok(root);
         };
-        let (mut made, mut left) = (0usize, 0usize);
+        let mut made = 0usize;
         for (k, (duration, list)) in events.iter().enumerate() {
-            let Some(ev) = evs.get_mut(k) else { continue };
+            let ev = evs.get_mut(k).ok_or_else(|| {
+                h1convert::Error::no_rebuild(
+                    &self.h1.header().name,
+                    &tag.name,
+                    format!("missing output event {k}"),
+                )
+            })?;
             let d = (duration[0] + duration[1]) * 0.5;
             let mut systems = Vec::new();
             for p in list {
-                let part = p.particle.and_then(|i| self.h1.tag(i).ok());
-                let got = match part {
-                    Some(t) => match (self.particle(t), H1Particle::read(self.h1, t)) {
-                        (Ok(Some(id)), Ok(h)) => Some((id, h)),
-                        _ => None,
-                    },
-                    None => None,
-                };
-                let Some((id, h)) = got else {
-                    left += 1;
-                    continue;
-                };
+                let Some(source) = p.particle else { continue };
+                let t = self.h1_tag(source)?;
+                let id = self.particle(t)?.ok_or_else(|| {
+                    h1convert::Error::no_rebuild(
+                        &self.h1.header().name,
+                        &t.name,
+                        "missing particle definition",
+                    )
+                })?;
+                let h = H1Particle::read(self.h1, t)?;
                 systems.push(particles::particle_system(p, &h, id, d)?);
             }
             for (id, location) in systems_of.get(k).into_iter().flatten() {
-                let Ok(t) = self.h1.tag(*id) else { continue };
+                let t = self.h1_tag(*id)?;
                 let states = self.particle_system_states(t)?;
-                if states.is_empty() {
-                    left += 1;
-                }
                 for (prt3, state, count) in states {
                     systems.push(particles::particle_system(
                         &state.as_effect_particle(count, *location),
@@ -220,9 +233,6 @@ impl Converter<'_> {
             if duration[1] < particles::TICK {
                 ev.set("duration_bounds", tags::defs::Val::floats(&[particles::TICK; 2])).map_err(inv)?;
             }
-        }
-        if left > 0 {
-            rep.no_home.push(format!("{left} particles or particle systems left out (their part or states did not convert)"));
         }
         if made == 0 {
             return Ok(root);

@@ -157,15 +157,7 @@ fn new_collection(
 }
 
 fn template(s: &Scenario, kind: BlockKind) -> Result<Vec<u8>, ApplyError> {
-    s.new_entry(kind, (!s.block(kind).is_empty()).then_some(0), None)
-        .map_err(Into::into)
-        .and_then(|e| {
-            if s.block(kind).is_empty() {
-                Err(ApplyError::NoTemplate(kind))
-            } else {
-                Ok(e)
-            }
-        })
+    Ok(s.new_entry(kind, None, None)?)
 }
 
 fn clear(s: &mut Scenario, kind: BlockKind) -> Result<(), ApplyError> {
