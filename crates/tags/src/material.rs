@@ -221,6 +221,79 @@ pub struct Material {
     pub layers: Vec<ResolvedLayer>,
 }
 
+/// Parameter storage shared by consecutive full material binds. The two
+/// banks are vertex attribute defaults and hardware constants c[18..34].
+/// Texture parameters retain their raw frame until copied to a stage.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParameterState {
+    pub slots: HashMap<u8, (TextureSource, i32)>,
+    pub slot_sizes: HashMap<u8, Option<(u16, u16)>>,
+    pub stages: [Option<StageTexture>; 4],
+    pub banks: [[[f32; 4]; 16]; 2],
+    pub pixel_shader: [u8; PSDEF_SIZE],
+    /// Last bound spas implementation, its exit list and fixed-function
+    /// state from implementation switches. Per-draw overrides are separate.
+    pub fixed: ImplementationState,
+}
+
+/// Static entry and exit lists in the shader cache. A change of shad
+/// alone can rebind parameters while retaining the same spas implementation.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ImplementationState {
+    pub current: Option<(TagId, usize)>,
+    pub restore: Vec<RenderStateValue>,
+    pub render: HashMap<u8, u32>,
+    pub samplers: [Option<StageStates>; 4],
+}
+
+impl ImplementationState {
+    fn switch(&mut self, pass: TagId, imp: &ResolvedImplementation) -> Vec<RenderStateValue> {
+        let next = Some((pass, imp.index));
+        if self.current == next {
+            return Vec::new();
+        }
+        // 0x16de0 applies the outgoing implementation's restore list
+        // before 0x16e2e enters the new one. Preserve duplicate setters
+        // in order: different render states can share a hardware method.
+        let mut writes = std::mem::take(&mut self.restore);
+        writes.extend_from_slice(&imp.render_states);
+        for write in &writes {
+            self.render.insert(write.state, write.value);
+        }
+        self.restore.clone_from(&imp.restore_states);
+        for (stage, &sampler) in self.samplers.iter_mut().zip(&imp.stage_states) {
+            *stage = Some(sampler);
+        }
+        self.current = next;
+        writes
+    }
+}
+
+impl Default for ParameterState {
+    fn default() -> Self {
+        Self { slots: HashMap::new(), slot_sizes: HashMap::new(), stages: [None; 4],
+            banks: [[[0.; 4]; 16]; 2], pixel_shader: [0; PSDEF_SIZE], fixed: ImplementationState::default() }
+    }
+}
+
+/// One implementation selected by an already prepared scene entry.
+#[derive(Clone, Copy, Debug)]
+pub struct PassSelection {
+    pub lod: usize,
+    pub layer: usize,
+    pub pass: usize,
+    pub implementation: usize,
+}
+
+/// A selected tag binding and its position within the layer.
+pub struct SelectedImplementation {
+    /// Ordered fixed render-state setters when resolving over live state.
+    pub render_writes: Vec<RenderStateValue>,
+    pub pass: TagId,
+    pub layer_passes: usize,
+    pub implementation: ResolvedImplementation,
+}
+
 /// Most implementations one material may resolve to (summed over every
 /// (lod, layer) pass list), checked from the template before any expansion.
 pub const MAX_MATERIAL_IMPLEMENTATIONS: usize = 1 << 12;
@@ -400,7 +473,7 @@ impl ShaderLibrary {
                 for (k, imp) in spas.implementations.iter().enumerate() {
                     let ib = tp.implementations[usize::from(p.implementations.start) + k];
                     let anim = sp.animation_leaf(lod, layer, pi, k).copied();
-                    imps.push(this.resolve(tp, sp, spas, imp, k, ib, anim, &inputs, &mut work)?);
+                    imps.push(this.resolve(tp, sp, spas, imp, k, ib, anim, &inputs, &mut work, None)?);
                 }
                 passes.push(ResolvedPass {
                     index: pi,
@@ -418,6 +491,47 @@ impl ShaderLibrary {
         })
     }
 
+    /// Apply a full parameter rebind to the supplied incoming storage.
+    /// Only the selected binding rows execute. An unreadable tag leaves
+    /// the incoming state intact. Animated properties need their
+    /// evaluator before the static result can be published.
+    pub fn selected_implementation(
+        &mut self, shader_id: TagId, selection: PassSelection, inputs: Option<&EngineInputs>,
+        mut state: Option<&mut ParameterState>,
+    ) -> Result<SelectedImplementation> {
+        let shader = self.shader(shader_id)?;
+        let sp = shader.compiled()?;
+        sp.validate()?;
+        let tp = self.template(shader.template.id)?.compiled()?;
+        tp.validate()?;
+        let lod = tp.lods.get(selection.lod).ok_or(Error::Invalid("missing selected LOD"))?;
+        if selection.layer >= usize::from(lod.layers.count) { return Err(Error::Invalid("missing selected layer")); }
+        let passes = tp.layer_passes(selection.lod, selection.layer).ok_or(Error::Invalid("missing selected layer"))?;
+        let layer_passes = passes.len();
+        let pass = *passes.get(selection.pass).ok_or(Error::Invalid("missing selected pass"))?;
+        let k = selection.implementation;
+        if k >= usize::from(pass.implementations.count) {
+            return Err(Error::Invalid("missing selected implementation"));
+        }
+        let ib = tp.implementations[usize::from(pass.implementations.start) + k];
+        self.pass(pass.pass.id)?.compiled()?.validate()?;
+        let tp = self.templates[&shader.template.id].compiled()?;
+        let spas = self.passes[&pass.pass.id].compiled()?;
+        if usize::from(pass.implementations.count) != spas.implementations.len() {
+            return Err(Error::Invalid("template binding rows do not match the pass's implementations"));
+        }
+        let anim = sp.animation_leaf(selection.lod, selection.layer, selection.pass, k).copied();
+        let defaults;
+        let inputs = match inputs {
+            Some(inputs) => inputs,
+            None => { defaults = EngineInputs::for_shader(&shader); &defaults }
+        };
+        let implementation = self.resolve(tp, sp, spas, &spas.implementations[k], k, ib, anim, inputs,
+            &mut Work(MAX_MATERIAL_WORK), state.as_deref_mut())?;
+        let render_writes = state.map(|s| s.fixed.switch(pass.pass.id, &implementation)).unwrap_or_default();
+        Ok(SelectedImplementation { pass: pass.pass.id, layer_passes, implementation, render_writes })
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn resolve(
         &self,
@@ -430,6 +544,7 @@ impl ShaderLibrary {
         anim: Option<AnimationRanges>,
         inputs: &EngineInputs,
         work: &mut Work,
+        state: Option<&mut ParameterState>,
     ) -> Result<ResolvedImplementation> {
         work.charge(
             1 + [
@@ -452,7 +567,7 @@ impl ShaderLibrary {
         )?;
         // 0x00016f60: bitmap parameters into texture slots, with the raw
         // frame (`+0x18`; 0 for the default texture).
-        let mut slots: HashMap<u8, (TextureSource, i32)> = HashMap::new();
+        let mut slots = state.as_ref().map(|s| s.slots.clone()).unwrap_or_default();
         for b in &tp.bindings[ib.bitmaps.indices()] {
             let slot = (b.word & 0xff) as u8;
             if slot >= 64 {
@@ -479,7 +594,7 @@ impl ShaderLibrary {
 
         // 0x00017000: instance vectors into vertex defaults (bank 0) and
         // vertex constants (bank 1).
-        let mut banks = [[[0f32; 4]; 16]; 2];
+        let mut banks = state.as_ref().map(|s| s.banks).unwrap_or_default();
         let mut written = [[0u8; 16]; 2];
         let mut origin = [[Origin::Instance; 16]; 2];
         for b in &tp.bindings[ib.vertex_constants.indices()] {
@@ -502,9 +617,9 @@ impl ShaderLibrary {
         }
 
         // 0x0001ba00 / 0x00016e81: the pixel shader.
-        let mut ps = imp.pixel_shader;
-        let mut frag_offset = [0u8; 8];
         let variant = !imp.fragments.is_empty();
+        let mut ps = initial_definition(&imp.pixel_shader, variant, state.as_ref().map(|s| &s.pixel_shader));
+        let mut frag_offset = [0u8; 8];
         if variant {
             build_variant(&mut ps, &mut frag_offset, spas, imp, inputs, work)?;
         }
@@ -531,13 +646,9 @@ impl ShaderLibrary {
             )?;
         }
 
-        // 0x00018a90: texture stage bindings. A slot binding first copies the
-        // whole slot to the stage (0x00018afb), then, when it asks, refreshes
-        // the *slot's* size (0x00018b31..0x00018ba2), so the stage keeps the
-        // slot's earlier size. Each implementation starts from zero slot
-        // sizes (fresh state; see the stale-state note in the docs).
-        let mut slot_sizes: HashMap<u8, Option<(u16, u16)>> = HashMap::new();
-        let mut textures: [Option<StageTexture>; 4] = [None; 4];
+        // The stage takes the slot's size before this binding refreshes it.
+        let mut slot_sizes = state.as_ref().map(|s| s.slot_sizes.clone()).unwrap_or_default();
+        let mut textures = state.as_ref().map(|s| s.stages).unwrap_or_default();
         for t in &spas.textures[imp.textures.indices()] {
             let stage = textures
                 .get_mut(usize::from(t.stage))
@@ -700,6 +811,18 @@ impl ShaderLibrary {
                 })
                 .collect::<Vec<_>>()
         };
+        let vertex_constants = regs(1);
+        let vertex_defaults = regs(0);
+        if let Some(state) = state {
+            if !animated.is_empty() {
+                return Err(Error::Invalid("animated material requires the property evaluator"));
+            }
+            state.slots = slots;
+            state.slot_sizes = slot_sizes;
+            state.stages = textures;
+            state.banks = banks;
+            state.pixel_shader = ps;
+        }
         Ok(ResolvedImplementation {
             index,
             vertex_shader: (!imp.vertex_shader.is_null()).then_some(imp.vertex_shader.id),
@@ -716,8 +839,8 @@ impl ShaderLibrary {
             input_reads: input_reads(spas, imp),
             vector_bindings: vector_bindings(&engine_writes),
             scalar_bindings: vector_bindings(&scalar_writes),
-            vertex_constants: regs(1),
-            vertex_defaults: regs(0),
+            vertex_constants,
+            vertex_defaults,
             animated,
             engine_render_states: spas.externals[imp.animated_render_states.indices()].to_vec(),
             engine_stage_states: spas.externals[imp.animated_stage_states.indices()].to_vec(),
@@ -844,7 +967,17 @@ const PS_FINAL_C1: usize = 44;
 const PS_RGB_OUT: usize = 45;
 const PS_COMBINER_COUNT: usize = 53;
 
-/// `0x0001ba00`: assemble the general/final combiners from fragments.
+fn initial_definition(embedded: &[u8; PSDEF_SIZE], variant: bool,
+    previous: Option<&[u8; PSDEF_SIZE]>) -> [u8; PSDEF_SIZE] {
+    let Some(previous) = previous.filter(|_| variant) else { return *embedded; };
+    // 0x1ba00 changes only texture modes, dot mapping and input texture
+    // before it builds the selected combiner stages in the persistent buffer.
+    let mut ps = *previous;
+    ps[54 * 4..57 * 4].copy_from_slice(&embedded[54 * 4..57 * 4]);
+    ps
+}
+
+/// Assemble the general and final combiners selected by the fragments.
 fn build_variant(
     ps: &mut [u8; PSDEF_SIZE],
     frag_offset: &mut [u8; 8],

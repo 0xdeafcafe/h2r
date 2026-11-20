@@ -9,10 +9,11 @@
 //! - **The bots** are the match file's, each a [`bots::Brain`] with its
 //!   skill, its seed (from the match seed and its logical seat) and its tuning, in a
 //!   [`Metered`] wrapper that counts what only the brain knows.
-//! - **The render front-end** is skipped in world frames
-//!   ([`feature::sim_frame`]); the pipelined render is off, the kernel
-//!   trace file is off, and the nav meshes are never built in the
-//!   background (`bots_nav_auto`).
+//! - **The render front-end** is skipped in world frames on the light
+//!   host ([`feature::sim_frame`]). Full headless runs can opt into the
+//!   render worker and collect the same tick hashes. The kernel trace
+//!   file is off and nav meshes are never built in the background
+//!   (`bots_nav_auto`).
 //! - **The pace** is the match's ([`sim::clock::Pace`]); unpaced by default.
 //! - **The metrics** come from read-only observers ([`SimMetrics`]): each
 //!   tick's player snapshot, the shots, the damage reports, the kills and
@@ -86,6 +87,8 @@ struct State {
     end: Option<End>,
     first_tick: Option<Instant>,
     last_tick: Option<Instant>,
+    dispatch_start: Option<runtime::DispatchCounts>,
+    dispatch_end: Option<runtime::DispatchCounts>,
     /// The seed and teams are written for this match.
     set_up: bool,
     /// Weapon datums fired since the last tick.
@@ -374,6 +377,8 @@ impl Sim {
                 end: None,
                 first_tick: None,
                 last_tick: None,
+                dispatch_start: None,
+                dispatch_end: None,
                 set_up: false,
                 fired: Vec::new(),
                 notes: Vec::new(),
@@ -651,7 +656,7 @@ fn build_report(inner: &Inner, s: &State) -> Report {
     let mut memory = crate::host_mem::usage();
     memory.guest_written_pages = s.cow.map(|(w, _)| w);
     memory.guest_pages = s.cow.map(|(_, t)| t);
-    s.tally.report(Finish {
+    let mut report = s.tally.report(Finish {
         match_: inner.matched.resolved_json(),
         team_play: inner.matched.team_play,
         bots: &bots,
@@ -660,7 +665,17 @@ fn build_report(inner: &Inner, s: &State) -> Report {
         memory,
         nav,
         notes,
-    })
+    });
+    if report.ticks > 0
+        && let Some((start, end)) = s.dispatch_start.zip(s.dispatch_end)
+    {
+        report.dispatch_per_tick = Some(
+            end.since(start)
+                .map(|(name, count)| (name.to_string(), count as f64 / report.ticks as f64))
+                .collect(),
+        );
+    }
+    report
 }
 
 /// A bot's brain, counting per game tick what only it knows: stuck, its
@@ -756,6 +771,8 @@ impl feature::Feature for SimMetrics {
             s.set_up = false;
             s.fired.clear();
             s.first_tick = None;
+            s.dispatch_start = None;
+            s.dispatch_end = None;
             eprintln!("sim: match started at tick {tick}");
         });
         let me = Arc::clone(&self.0);
@@ -811,6 +828,7 @@ impl feature::Feature for SimMetrics {
                         s.phase = Phase::Playing;
                         s.first_tick = Some(Instant::now());
                         s.tally.start(sample.tick);
+                        s.dispatch_start = o.runtime.dispatch_counts();
                     }
                     let resets = s.tally.resets();
                     let tick = sample.tick;
@@ -822,9 +840,11 @@ impl feature::Feature for SimMetrics {
                             s.notes.push(NOTE.into());
                         }
                     }
+                    s.dispatch_end = o.runtime.dispatch_counts();
                     if s.tally.resets() != resets {
                         // A tick jump resets the match timer and seed.
                         s.first_tick = Some(Instant::now());
+                        s.dispatch_start = s.dispatch_end;
                         s.set_up = false;
                         eprintln!(
                             "sim: the tick jumped to {tick} (a snapshot load); counting from here"

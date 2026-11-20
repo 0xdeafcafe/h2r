@@ -2,7 +2,7 @@
 //! Video screen's list class, the level boot's loaded mark, our strings, lockstep's tick hash, the Rust
 //! locale lookup on by default): it builds
 //! with no conflict, and this is its text (the `feature plan:` lines boot
-//! logs). Before the registry, telemetry and lockstep could not both hook
+//! logs with `H2_FEATURE_PLAN=1`). Before the registry, telemetry and lockstep could not both hook
 //! the tick, and the level boot had to chain onto telemetry by hand.
 
 use boot::telemetry::{TelemetryConfig, TelemetrySinkConfig};
@@ -81,6 +81,23 @@ locale source ui-strings:our strings (served by engine-leaves)
 warning: LOCALE_FIND (0x001a02d0) is hot: hooking it leaves the direct-call fast path
 "
     );
+    let installed = feature::Installed {
+        placed: vec![*plan.chains.keys().next().unwrap(), plan.entries[0].addr],
+        notes: vec!["aim-assist: off: PLAYER_CONTROL_UPDATE has no generated original".into()],
+        off: vec![(
+            "aim-assist",
+            "PLAYER_CONTROL_UPDATE has no generated original".into(),
+        )],
+    };
+    assert_eq!(
+        plan.startup_text(&installed, false),
+        "7 features on, 1 off (aim-assist), 1 hooked points, 1 entries; H2_FEATURE_PLAN=1 lists them\n\
+         aim-assist: off: PLAYER_CONTROL_UPDATE has no generated original\n"
+    );
+    assert_eq!(
+        plan.startup_text(&installed, true),
+        format!("{}{}\n", plan.text(), installed.notes[0])
+    );
     // Shadows only where something runs after the original.
     let shadows = plan.chains.values().filter(|c| c.shadow.is_some()).count();
     assert_eq!(shadows, 5);
@@ -139,7 +156,12 @@ fn the_agent_observes_the_tick_last_and_the_cutscenes() {
 fn the_agent_can_be_switched_off() {
     let mut r = feature::Registry::new(feature::Switches::parse("-agent").unwrap());
     assert!(!r.add(&agent::AgentFeature(agent::Agent::new())).unwrap());
-    let text = r.build(&feature::Base).unwrap().text();
+    let plan = r.build(&feature::Base).unwrap();
+    let text = plan.text();
+    assert_eq!(
+        plan.startup_text(&feature::Installed::default(), false),
+        "0 features on, 1 off (agent), 0 hooked points, 0 entries; H2_FEATURE_PLAN=1 lists them\n"
+    );
     assert!(text.contains("feature agent: off"), "{text}");
     assert!(!text.contains("[agent:"), "{text}");
 }

@@ -47,7 +47,7 @@ pub struct ExecCtx {
     pub(crate) preempted: Option<TransferAbi>,
     /// Recently resolved transfers, so a hot call or return skips the
     /// dispatch lock and hash lookups (`resolve_cached`).
-    resolved: Box<ResolveCache>,
+    resolved: ResolveCache,
 }
 
 /// Entries in the resolve cache. The game makes tens of thousands of
@@ -103,11 +103,35 @@ const _: () = assert!(std::mem::offset_of!(ExecCtx, preempt) == 0);
 const _: () = assert!(std::mem::offset_of!(ExecCtx, direct_ptr) == size_of::<*const u32>());
 impl ExecCtx {
     pub fn new(runtime: Arc<Runtime>, thread_id: u32) -> Self {
+        let direct = crate::direct::Direct::new(&runtime);
+        Self::with_caches(runtime, thread_id, direct, ResolveCache::default())
+    }
+
+    /// Start an independent invocation on the same runtime and thread ID.
+    /// Only the dispatch caches survive. Callback tokens, CPU diagnostics and
+    /// preemption state start fresh, just as with a new context.
+    pub fn restart(self) -> Self {
+        let Self {
+            runtime,
+            thread_id,
+            mut direct,
+            resolved,
+            ..
+        } = self;
+        direct.restart();
+        Self::with_caches(runtime, thread_id, direct, resolved)
+    }
+
+    fn with_caches(
+        runtime: Arc<Runtime>,
+        thread_id: u32,
+        direct: crate::direct::Direct,
+        resolved: ResolveCache,
+    ) -> Self {
         let (preempt, word) = crate::preempt::new_word(&runtime);
-        let (direct, direct_ptr) = crate::direct::Direct::new(&runtime);
         let mut ctx = Self {
             preempt,
-            direct_ptr,
+            direct_ptr: direct.as_ptr(),
             direct,
             word,
             runtime,
@@ -122,7 +146,7 @@ impl ExecCtx {
             interrupt_token: None,
             slice: Default::default(),
             preempted: None,
-            resolved: Box::default(),
+            resolved,
             profile: None,
             fast_memory: None,
             fast_memory_enabled: true,
@@ -382,6 +406,16 @@ impl ExecCtx {
     /// return. Each is Rust state a machine snapshot cannot save.
     pub fn live_continuations(&self) -> Vec<crate::continuation::ContinuationInfo> {
         self.continuations.live_list()
+    }
+    /// Exchange the return-token pools for two suspended guest stacks.
+    /// The token is an address on the guest stack and can also be saved
+    /// in guest registers. Preserve slot identities and generations across
+    /// the pivot. The caller must ensure the incoming callbacks can run
+    /// against this context, and exchange the pools back before either
+    /// executor resumes its original stack.
+    pub fn swap_callback_stack(&mut self, other: &mut ExecCtx) {
+        std::mem::swap(&mut self.continuations, &mut other.continuations);
+        std::mem::swap(&mut self.interrupt_token, &mut other.interrupt_token);
     }
     /// The continuation pool as plain data, for a machine snapshot: refuses
     /// while a continuation that is not rebuildable is live.
@@ -697,6 +731,150 @@ mod tests {
                 assert_eq!((cpu.eax, cpu.ecx), (i, BASE + i * 16));
             }
         }
+    }
+
+    #[test]
+    fn restarting_keeps_dispatch_storage_but_discards_invocation_state() {
+        const CODE: u32 = 0x10000;
+        let runtime = Runtime::new(Guest::new(), Dispatch::default());
+        runtime.edit_dispatch(|d| {
+            d.register_override(CODE, "first", |cpu, _, _| {
+                cpu.eax = 1;
+                Ok(TransferAbi::stop(0))
+            });
+        });
+        runtime
+            .memory()
+            .map_zeroed(CODE, 0x1000, Permissions::RX)
+            .unwrap();
+        let mut ctx = ExecCtx::new(runtime.clone(), 7);
+        let mut cpu = CpuAbi::default();
+        let runner = Runner::default();
+        assert_eq!(runner.run(&mut cpu, &mut ctx, CODE).kind, abi::STOP);
+        assert_eq!(cpu.eax, 1);
+
+        let cache = ctx.resolved.0.as_ptr();
+        let slot = resolve_slot(CODE);
+        let retained_generation = ctx.resolved.0[slot].as_ref().unwrap().generation;
+        ctx.emit(Event::InvalidTransfer);
+        ctx.arm_preemption(1);
+        ctx.wake(crate::preempt::REQUEST);
+        ctx.enable_profiling(true);
+
+        let mut ctx = ctx.restart();
+        assert_eq!(ctx.thread_id, 7);
+        assert_eq!(ctx.resolved.0.as_ptr(), cache);
+        assert_eq!(
+            ctx.resolved.0[slot].as_ref().unwrap().generation,
+            retained_generation
+        );
+        assert!(ctx.events().is_empty());
+        assert!(!ctx.preemption_armed());
+        assert_eq!(ctx.preempt_pending(), 0);
+        assert!(ctx.profile().is_none());
+
+        runtime.edit_dispatch(|d| {
+            d.register_override(CODE, "second", |cpu, _, _| {
+                cpu.eax = 2;
+                Ok(TransferAbi::stop(0))
+            });
+        });
+        assert_eq!(runner.run(&mut cpu, &mut ctx, CODE).kind, abi::STOP);
+        assert_eq!(cpu.eax, 2);
+        runtime.memory().protect(CODE, Permissions::READ).unwrap();
+        assert_eq!(runner.run(&mut cpu, &mut ctx, CODE).kind, abi::FAULT);
+    }
+
+    #[test]
+    fn the_dispatch_census_counts_hle_and_why_a_slice_stopped() {
+        const CODE: u32 = 0x10000;
+        let mut dispatch = Dispatch::default();
+        dispatch.register_override(CODE, "charge", |_, ctx, _| {
+            ctx.charge_accesses(1);
+            Ok(TransferAbi::jump(CODE))
+        });
+        let mut runtime = Runtime::new(Guest::new(), dispatch);
+        Arc::get_mut(&mut runtime).unwrap().dispatch_census = Some(Default::default());
+        runtime
+            .memory()
+            .map_zeroed(CODE, 0x1000, Permissions::RX)
+            .unwrap();
+        let first = runtime.dispatch_counts().unwrap();
+        let mut ctx = ExecCtx::new(runtime.clone(), 1);
+        let mut cpu = CpuAbi::default();
+        let runner = Runner::default();
+
+        ctx.arm_preemption(1);
+        assert_eq!(runner.run(&mut cpu, &mut ctx, CODE), TransferAbi::stop(0));
+        let resume = ctx.take_preempted().unwrap();
+        ctx.arm_preemption(1);
+        ctx.wake(crate::preempt::REQUEST);
+        assert_eq!(runner.run_from(&mut cpu, &mut ctx, resume), TransferAbi::stop(0));
+
+        let counts = runtime.dispatch_counts().unwrap();
+        assert_eq!(
+            counts.since(first).filter(|(_, n)| *n > 0).collect::<Vec<_>>(),
+            [("hle", 1), ("slice_preempt", 1), ("request_preempt", 1)]
+        );
+    }
+
+    #[test]
+    fn missing_entry_fallback_respects_routes_permissions_and_explicit_entries() {
+        const CODE: u32 = 0x0001_0000;
+        const MISSING: u32 = CODE + 0x10;
+        const UNKNOWN: u32 = CODE + 0x20;
+        const RESUME: u32 = CODE + 0x30;
+        let mut dispatch = Dispatch::default();
+        dispatch
+            .register_generated_rust(CODE, |cpu, _, selector| {
+                cpu.eax = selector;
+                Ok(TransferAbi::stop(0))
+            })
+            .unwrap();
+        dispatch.register_resume(RESUME, CODE, RESUME).unwrap();
+        dispatch.set_entry_fallback(
+            |pc| pc != UNKNOWN,
+            |cpu, _, selector| {
+                cpu.eax = selector + 1;
+                Ok(TransferAbi::stop(0))
+            },
+        );
+        let rt = Runtime::new(Guest::new(), dispatch);
+        rt.memory().map_zeroed(CODE, 0x1000, Permissions::RX).unwrap();
+        let mut ctx = ExecCtx::new(rt.clone(), 1);
+        let mut cpu = CpuAbi::default();
+        let runner = Runner::default();
+        for (transfer, expected) in [
+            (TransferAbi::jump(CODE), CODE),
+            (TransferAbi::ret(RESUME), RESUME),
+            (TransferAbi::ret(MISSING), MISSING + 1),
+            (TransferAbi::jump(MISSING), MISSING + 1),
+        ] {
+            let result = runner.run_from(&mut cpu, &mut ctx, transfer);
+            assert_eq!(result.kind, abi::STOP);
+            assert_eq!(cpu.eax, expected);
+        }
+
+        for transfer in [TransferAbi::resume(MISSING), TransferAbi::jump(UNKNOWN)] {
+            let result = runner.run_from(&mut cpu, &mut ctx, transfer);
+            assert!(matches!(ctx.event(result.event_id), Some(Event::UnsupportedTarget { .. })));
+        }
+
+        rt.memory().protect(CODE, Permissions::READ).unwrap();
+        let result = runner.run(&mut cpu, &mut ctx, MISSING);
+        assert!(matches!(ctx.event(result.event_id), Some(Event::MemoryFault { fault, .. })
+            if fault.access == Access::Execute && fault.addr == MISSING));
+
+        rt.memory().protect(CODE, Permissions::RX).unwrap();
+        rt.edit_dispatch(|d| {
+            d.register_override(MISSING, "new explicit entry", |cpu, _, selector| {
+                cpu.eax = selector;
+                Ok(TransferAbi::stop(0))
+            });
+        });
+        let result = runner.run(&mut cpu, &mut ctx, MISSING);
+        assert_eq!(result.kind, abi::STOP);
+        assert_eq!(cpu.eax, MISSING);
     }
 
     #[test]

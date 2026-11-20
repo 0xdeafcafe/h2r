@@ -280,13 +280,17 @@ pub struct LateInputs<'a> {
     pub data_root: &'a Path,
 }
 
-/// The pipelined render as the plan gets it: off for a lockstep run, which
-/// compares serial runs.
+/// Light hosts replace the frame entry with the skip implementation.
+/// Full headless simulations keep the entry and can opt in for hash comparisons.
 pub fn pipeline_for(
-    pipeline: feature::pipeline_render::PipelineRender, lockstep_on: bool,
+    pipeline: feature::pipeline_render::PipelineRender,
+    lockstep_on: bool,
+    host_light: bool,
 ) -> feature::pipeline_render::PipelineRender {
     if lockstep_on {
         pipeline.disabled("lockstep (H2_LOCKSTEP/H2_INPUT_RECORD/H2_INPUT_REPLAY) compares serial runs")
+    } else if host_light {
+        pipeline.disabled("the world render is skipped (sim-frame)")
     } else {
         pipeline
     }
@@ -344,6 +348,8 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::leaves::EngineLeaves)
         .map_err(|e| anyhow::anyhow!("engine leaves: {e}"))?;
+    features.add(&feature::sim_physics::NativePhysics)
+        .map_err(|e| anyhow::anyhow!("simulation physics: {e}"))?;
     // Render front-end time in the frame stats, when H2_FEATURES has
     // render-timing (off by default).
     features
@@ -356,7 +362,7 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
         .with_region(crate::d3d_glue::PUSH_BASE, crate::d3d_glue::PUSH_BASE + crate::d3d_glue::PUSH_LEN, "push_buffer")
         .with_region(crate::d3d_glue::SCRATCH_BASE, crate::d3d_glue::SCRATCH_BASE + 0x1000, "d3d_scratch");
     features.add(&census).map_err(|e| anyhow::anyhow!("render census: {e}"))?;
-    // H2_PIPELINE_RENDER=1: the render front-end one frame behind the
+    // impl.render.pipelined_frame: the render front-end one frame behind the
     // sim, on its own host thread (docs/graphics/pipelined-render.md, "The
     // prototype"). Pipelined and serial runs are not lockstep-compatible.
     features.add(&i.pipeline).map_err(|e| anyhow::anyhow!("pipeline render: {e}"))?;
@@ -431,6 +437,10 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::native_residual::NativeResidual)
         .map_err(|e| anyhow::anyhow!("native residual: {e}"))?;
+    #[cfg(feature = "gpu")]
+    features
+        .add(&feature::native_scene_lists::NativeSceneLists)
+        .map_err(|e| anyhow::anyhow!("native scene lists: {e}"))?;
     // Mark the sorted geometry entries so their resolved indexed draws
     // can use a cached vertex binding in the game's order (off by default).
     #[cfg(feature = "gpu")]
@@ -462,6 +472,10 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::native_lights::NativeLights)
         .map_err(|e| anyhow::anyhow!("native lights: {e}"))?;
+    #[cfg(feature = "gpu")]
+    features
+        .add(&feature::native_lights::walk::NativeLightWalk)
+        .map_err(|e| anyhow::anyhow!("native light walk: {e}"))?;
     // Shader-driven gels: observe target-13 production before light consumption.
     #[cfg(feature = "gpu")]
     features
@@ -489,13 +503,8 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::native_post::NativePost)
         .map_err(|e| anyhow::anyhow!("native post: {e}"))?;
-    // The HUD's and the UI's screen draws on the native GPU renderer
-    // (on by default since 2026-11-20; H2_FEATURES=impl.render.native_hud=off
-    // turns them off for the comparison against the D3D path, or
-    // H2_NATIVE_HUD_COMPARE; docs/graphics/native-renderer.md, stage 5):
-    // context-only hooks on the screen-quad batch (text) and the HUD shader
-    // quad. Its host (native_hud_glue) draws accepted quads natively and
-    // pairs the plans for D3D draws in compare mode.
+    // Native UI producers and the ordered menu, HUD and loading callbacks.
+    // impl.render.native_ui=off returns these draws to the ordinary device path.
     #[cfg(feature = "gpu")]
     features
         .add(&feature::native_hud::NativeHud)

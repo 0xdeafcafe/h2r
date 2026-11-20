@@ -128,7 +128,7 @@ fn native_pass_and_deferred_draw_keep_bound_surfaces_after_settings_changes() {
 
     let Some(reference) = backend() else { return };
     let display = GfxBackend::new(app::share_context(&reference.ctx));
-    let mut scaled = ScaledBackend::new(reference, display, 4).unwrap();
+    let mut scaled = ScaledBackend::with_single_copy(reference, display, 4, false).unwrap();
     scaled.follow_scale(|| 1);
     let threaded = ThreadedBackend::new(scaled).unwrap();
     let (mut d, mut m) = create_copy_swap(threaded, UploadPolicy::Always);
@@ -403,7 +403,7 @@ fn refusal_of_the_display_discards_even_the_recorded_reference_clear() {
         instance: ctx.instance.clone(), adapter: ctx.adapter.clone(), device: ctx.device.clone(),
         queue: ctx.queue.clone(), caps: ctx.caps,
     });
-    let (mut d, mut m) = create(d3d::ScaledBackend::new(reference, display, 2).unwrap(), UploadPolicy::Always);
+    let (mut d, mut m) = create(d3d::ScaledBackend::with_single_copy(reference, display, 2, false).unwrap(), UploadPolicy::Always);
     let back = d.back_buffer().unwrap();
     d.clear(&mut m, 0, 0, 0xf0, 0xff00ff00, 1., 0).unwrap();
     let seen = Arc::default();
@@ -608,7 +608,7 @@ fn display_preflight_can_refuse_before_any_copy_records() {
         instance: ctx.instance.clone(), adapter: ctx.adapter.clone(), device: ctx.device.clone(),
         queue: ctx.queue.clone(), caps: ctx.caps,
     });
-    let (mut d, mut m) = create(d3d::ScaledBackend::new(reference, display, 2).unwrap(), UploadPolicy::Always);
+    let (mut d, mut m) = create(d3d::ScaledBackend::with_single_copy(reference, display, 2, false).unwrap(), UploadPolicy::Always);
     let seen = Arc::default();
     assert!(d.prepare_external_pass(&mut m, plan(1), Box::new(CheckCopies(Arc::clone(&seen)))).unwrap().is_none());
     assert_eq!(*seen.lock().unwrap(), [d3d::TargetCopy::Reference, d3d::TargetCopy::Display]);
@@ -684,7 +684,7 @@ fn an_indexed_intermediate_can_be_drawn_and_read_at_1x_and_refuses_a_mixed_scale
             instance: ctx.instance.clone(), adapter: ctx.adapter.clone(), device: ctx.device.clone(),
             queue: ctx.queue.clone(), caps: ctx.caps,
         });
-        let (mut d, mut m) = create(d3d::ScaledBackend::new(reference, display, scale).unwrap(), UploadPolicy::Always);
+        let (mut d, mut m) = create(d3d::ScaledBackend::with_single_copy(reference, display, scale, false).unwrap(), UploadPolicy::Always);
         let header = MISC + 0x7800;
         d3d::resource::SurfaceHeader::linear(gfx::D3DFormat::LinA8R8G8B8, 16, 16, 64, 0x0021_0000)
             .write(&mut m, header).unwrap();
@@ -798,7 +798,7 @@ fn compatible_lights_share_one_pass_per_copy_and_refusal_keeps_both_pixels() {
     let ctx = &reference.ctx;
     let display = GfxBackend::new(GfxContext { instance: ctx.instance.clone(), adapter: ctx.adapter.clone(),
         device: ctx.device.clone(), queue: ctx.queue.clone(), caps: ctx.caps });
-    let (mut d, mut m) = create(d3d::ScaledBackend::new(reference, display, 2).unwrap(), UploadPolicy::Always);
+    let (mut d, mut m) = create(d3d::ScaledBackend::with_single_copy(reference, display, 2, false).unwrap(), UploadPolicy::Always);
     let back = d.back_buffer().unwrap();
     let seen: Got = Arc::default();
     assert!(d.external_pass_now(&mut m, Box::new(Probe(seen.clone()))).unwrap());
@@ -863,4 +863,129 @@ fn intervening_d3d_work_revalidates_attachments_even_with_the_same_run_key() {
     let pixels = d.backend.with_surface(back, |b, back| b.read_color(back).map(|(pixels, _)| pixels)).unwrap();
     assert_eq!(&pixels[..4], &[0, 255, 0, 255], "clear follows the first light");
     assert_eq!(&pixels[16..20], &[255; 4], "second light follows the clear");
+}
+
+#[test]
+fn gathered_light_ranges_match_individual_indexed_draws_including_duplicates() {
+    let (mut device, mut mem) = create(RecordingBackend::default(), UploadPolicy::Always);
+    set_states(&mut device, &mut mem);
+    quad_vb(&mut mem, 0., 0., 32., 32., 0xff009900);
+    bind_quad(&mut device, &mut mem);
+    mem.write(MISC, &[3, 0, 2, 0, 1, 0, 0, 0]).unwrap();
+    let ranges = [(MISC, 3), (MISC + 2, 3), (MISC, 3)];
+    assert!(device.begin_external_boundary(&mut mem).unwrap());
+    let siblings = device.indexed_siblings(&mem, &ranges).unwrap();
+    for (addr, count) in ranges {
+        device.draw_indexed_vertices(&mut mem, TRIANGLESTRIP, count, addr).unwrap();
+    }
+    let original = device.backend.draws();
+    assert_eq!(original.len(), siblings.len());
+    for (draw, sibling) in original.into_iter().zip(siblings) {
+        assert_eq!(sibling.vertex_count, draw.vertex_count);
+        assert_eq!(sibling.layout, draw.layout);
+        assert_eq!(sibling.streams, draw.streams);
+        assert_eq!(Some(&*sibling.indices), draw.indices.as_deref());
+    }
+    assert!(device.indexed_siblings(&mem, &[(MISC, 3), (u32::MAX - 1, 3)]).is_err());
+}
+
+#[test]
+fn light_walk_cursor_and_both_gpu_copies_commit_together_at_the_indexed_abi() {
+    use d3d::backend::IndexedTail;
+
+    #[derive(Clone)]
+    struct Candidate {
+        tail: IndexedTail,
+        display_ranges: usize,
+    }
+
+    impl d3d::DrawAdmission for Candidate {
+        fn admit(&self, _: &d3d::DrawSnapshot<'_>) -> Option<(d3d::ExternalPlan, Box<dyn ExternalPass>)> {
+            let plan = d3d::ExternalPlan { stage: timeline::native::Stage::Lights, ..plan(2) };
+            Some((plan, Box::new(self.clone())))
+        }
+    }
+
+    impl ExternalPass for Candidate {
+        fn indexed_tail(&self) -> Option<IndexedTail> { Some(self.tail) }
+
+        fn writes(&self) -> d3d::ExternalWrites {
+            d3d::ExternalWrites { color: true, depth_stencil: false }
+        }
+
+        fn record_ranges(&mut self, target: ExternalTarget<'_>) -> usize {
+            let ranges = if target.copy == d3d::TargetCopy::Display { self.display_ranges } else { 2 };
+            Probe(Arc::default()).encode(target);
+            ranges
+        }
+    }
+
+    let Some(reference) = backend() else { return };
+    let ctx = &reference.ctx;
+    let display = GfxBackend::new(GfxContext {
+        instance: ctx.instance.clone(), adapter: ctx.adapter.clone(), device: ctx.device.clone(),
+        queue: ctx.queue.clone(), caps: ctx.caps,
+    });
+    let scaled = d3d::ScaledBackend::with_single_copy(reference, display, 2, false).unwrap();
+    let (mut device, mut mem) = create(scaled, UploadPolicy::Always);
+    set_states(&mut device, &mut mem);
+    quad_vb(&mut mem, 8., 8., 16., 16., 0xffff00ff);
+    bind_quad(&mut device, &mut mem);
+    mem.write(MISC, &[0, 0, 1, 0, 2, 0]).unwrap();
+    let tail = IndexedTail { indexed_esp: STACK_TOP - 16, counter: STACK_TOP + 0x100, remaining: 2 };
+    let back = device.back_buffer().unwrap();
+    for (display_ranges, remaining, expected) in [(1, 2, false), (2, 3, false), (2, 2, true)] {
+        device.clear(&mut mem, 0, 0, 0xf0, 0xff00ff00, 1., 0).unwrap();
+        mem.write_u32(tail.counter, remaining).unwrap();
+        let scope = device.begin_draw_scope(&mut mem, Arc::new(Candidate { tail, display_ranges }))
+            .unwrap().unwrap();
+        call(&mut device, &mut mem, 0x003f_afa0, Default::default(), &[TRIANGLESTRIP, 3, MISC]).unwrap();
+        assert_eq!(scope.committed(), expected);
+        assert_eq!(mem.read_u32(tail.counter).unwrap(), if expected { 1 } else { remaining });
+        // Pixel zero lies outside the ordinary triangle. A red pixel on
+        // either target after refusal would expose a partial reservation.
+        let reference = device.backend.reference_mut().read_color(back.reference).unwrap().0;
+        let display = device.backend.view_mut().read_color(back.view.unwrap()).unwrap().0;
+        for pixels in [reference, display] {
+            assert_eq!(pixels[1], if expected { 0 } else { 255 });
+        }
+    }
+}
+
+#[test]
+fn single_copy_commits_world_and_objects_once_at_display_size() {
+    struct NativeRange(Probe);
+
+    impl ExternalPass for NativeRange {
+        fn writes(&self) -> d3d::ExternalWrites {
+            d3d::ExternalWrites { color: true, depth_stencil: false }
+        }
+
+        fn record_ranges(&mut self, target: ExternalTarget<'_>) -> usize {
+            self.0.encode(target);
+            1
+        }
+    }
+
+    let Some(reference) = backend() else { return };
+    let display = GfxBackend::new(app::share_context(&reference.ctx));
+    let scaled = d3d::ScaledBackend::new(reference, display, 4).unwrap();
+    let (mut d, mut m) = create(ThreadedBackend::new(scaled).unwrap(), UploadPolicy::Always);
+    for stage in [timeline::native::Stage::World, timeline::native::Stage::Objects] {
+        let seen: Got = Arc::default();
+        let pass = NativeRange(Probe(Arc::clone(&seen)));
+        let plan = d3d::ExternalPlan { stage, view: 0, ..plan(1) };
+        d.prepare_external_bound(&mut m, plan, Box::new(pass), Vec::new()).unwrap().unwrap().commit();
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "{stage:?}");
+        assert_eq!(seen[0].copy, d3d::TargetCopy::Display, "{stage:?}");
+        assert_eq!(seen[0].sizes, ((W, H), (4 * W, 4 * H)), "{stage:?}");
+        assert_eq!(seen[0].viewport, [0., 0., (4 * W) as f32, (4 * H) as f32]);
+    }
+    let back = d.back_buffer().unwrap();
+    let pixels = d.backend.read_surface(back, gfx::D3DFormat::LinA8R8G8B8, W, H,
+        d3d::GuestLayoutKind::Linear { pitch: W * 4 }).unwrap();
+    assert_eq!(&pixels[..4], &[0, 0, 255, 255]);
+    let stats = d.backend.with_inner(|b| b.stats()).unwrap();
+    assert_eq!((stats.reference_draws, stats.display_draws), (0, 2));
 }

@@ -405,3 +405,86 @@ fn layout_follows_formats_and_strides_whatever_came_before() {
         assert_eq!(w.shader.vertex, c.shader.vertex, "step {k}");
     }
 }
+
+#[test]
+fn prepared_bsp_vertices_follow_the_live_binding_and_writes_between_subdraws() {
+    use d3d::device::{StreamSource, declaration_streams};
+    use gfx::vertex::VertexLayout;
+
+    let (mut d, mut m) = setup(RecordingBackend::new());
+    d.set_vertex_cache(Some(1 << 20));
+    let headers = set_headers(0);
+    bind(&mut d, &mut m, headers, 0);
+    let mut rng = Rng(73);
+    for set in 0..2 {
+        for s in 0..3 {
+            m.write(0x8000_0000 | vb_data(set, s), &rng.bytes(VERTS * STRIDES[s as usize])).unwrap();
+        }
+    }
+
+    let vaf = d3d::guest::read_array::<64>(&m, VAF).unwrap();
+    let layout = VertexLayout {
+        streams: declaration_streams(&vaf, |s| STRIDES[s], "synthetic declaration").unwrap(),
+        pretransformed: false,
+    };
+    let sources = (0..3).map(|s| StreamSource { buffer: headers[s], stride: STRIDES[s], offset: 0 }).collect();
+    let range = d.prepare_index_range(&m, list(0), 30).unwrap();
+    let key = [41, 59, 3];
+    let prepared = d.prepare_section_vertices(&m, key, std::slice::from_ref(&range),
+        || Some((vaf, layout, sources))).unwrap();
+    let (_, _, first) = d.world_vertex_part(&m, &prepared, 0, &range, None).unwrap();
+    let prepared = d.prepare_section_vertices(&m, key, std::slice::from_ref(&range),
+        || panic!("unchanged section unnecessarily resolved its inputs again")).unwrap();
+    assert!(first.iter().all(|s| s.data.cache_id().is_some()));
+    let copy_bytes = d.stats().vertex_bytes_copied;
+    let (_, _, clean) = d.world_vertex_part(&m, &prepared, 0, &range, None).unwrap();
+    assert_eq!(clean[0].data.cache_id(), first[0].data.cache_id());
+    assert_eq!(d.stats().vertex_bytes_copied, copy_bytes);
+
+    // Keep the first packet alive, as a threaded backend can. These writes
+    // include a page invalidation, a header retarget with unchanged guest
+    // object identity, a stream-offset change, and a restore of host caches.
+    let (lo, _) = range.window().unwrap();
+    let va = (0x8000_0000 | vb_data(0, 0)) + u32::from(lo) * STRIDES[0];
+    for step in 0..5 {
+        match step {
+            0 => {
+                m.write_u32(va, 37).unwrap();
+                d.note_write(va, 4);
+            }
+            1 => m.write_u32(headers[0] + 4, vb_data(1, 0)).unwrap(),
+            2 => bind(&mut d, &mut m, headers, 8),
+            3 => {
+                bind(&mut d, &mut m, headers, 0);
+                m.write_u32(headers[0] + 4, vb_data(0, 0)).unwrap();
+                d.drop_host_caches().unwrap();
+                // A restored image replaces the old bytes without reporting
+                // each individual store to the old tracker.
+                let stream2 = (0x8000_0000 | vb_data(0, 2)) + u32::from(lo) * STRIDES[2];
+                m.write_u32(stream2, 78).unwrap();
+            }
+            _ => {
+                let dev = d3d::GuestLayout::HALO2.device;
+                m.write_u32(dev + d3d::layout::device_field::BASE_VERTEX, 1).unwrap();
+            }
+        }
+        let (layout, vertex, bytes) = d.world_vertex_part(&m, &prepared, 0, &range, None).unwrap();
+        if step == 1 {
+            let mut called = false;
+            d.prepare_section_vertices(&m, key, std::slice::from_ref(&range), || {
+                called = true;
+                None
+            }).unwrap();
+            assert!(called, "a retargeted stream must refresh the section projection");
+        }
+        if step == 3 { assert_eq!(&bytes[2].data[..4], &78_u32.to_le_bytes()); }
+        d.draw_indexed_vertices(&mut m, 5, 30, list(0)).unwrap();
+        let serial = d.backend.calls.iter().rev().find_map(|c| match c {
+            Recorded::Draw { draw, .. } => Some(draw),
+            _ => None,
+        }).unwrap();
+        assert_eq!(serial.layout, layout);
+        assert_eq!(serial.shader.vertex, vertex);
+        assert_eq!(serial.streams, bytes, "step {step}");
+    }
+}

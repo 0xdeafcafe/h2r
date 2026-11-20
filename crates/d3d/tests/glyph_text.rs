@@ -204,10 +204,11 @@ fn share(ctx: &GfxContext) -> GfxContext {
 }
 
 fn scaled(ctx: &GfxContext, scale: u32) -> Scaled {
-    ScaledBackend::new(
+    ScaledBackend::with_single_copy(
         GfxBackend::new(share(ctx)),
         GfxBackend::new(share(ctx)),
         scale,
+        false,
     )
     .unwrap()
 }

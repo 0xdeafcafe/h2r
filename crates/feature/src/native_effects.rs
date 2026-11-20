@@ -11,8 +11,8 @@ const fn points(site: Site) -> (Site, Point, Point) {
     let (begin, end) = site.boundaries();
     (
         site,
-        Point::new("EFFECT_IMMEDIATE_BEGIN", begin, Sig::Opaque, DOC),
-        Point::new("EFFECT_IMMEDIATE_END", end, Sig::Opaque, DOC),
+        Point::new("EFFECT_IMMEDIATE_BEGIN", begin, Sig::Site, DOC),
+        Point::new("EFFECT_IMMEDIATE_END", end, Sig::Site, DOC),
     )
 }
 static BOUNDARIES: [(Site, Point, Point); 5] = [
@@ -24,21 +24,26 @@ static BOUNDARIES: [(Site, Point, Point); 5] = [
 ];
 static REFUSALS: [(Point, &str); 3] = [
     (
-        Point::new("EFFECT_QUERY", 0x0002_e9b6, Sig::Opaque, DOC),
+        Point::new("EFFECT_QUERY", 0x0002_e9b6, Sig::Site, DOC),
         "VisibilityQuery",
     ),
     (
-        Point::new("EFFECT_LAYERED_A", 0x0004_1cc0, Sig::Opaque, DOC),
+        Point::new("EFFECT_LAYERED_A", 0x0004_1cc0, Sig::Site, DOC),
         "OtherLaneLayeredGeometry",
     ),
     (
-        Point::new("EFFECT_LAYERED_B", 0x0004_23c0, Sig::Opaque, DOC),
+        Point::new("EFFECT_LAYERED_B", 0x0004_23c0, Sig::Site, DOC),
         "OtherLaneLayeredGeometry",
     ),
 ];
-static CALLBACK_QUEUE: Point = Point::new("EFFECT_CALLBACK_QUEUE", 0x0004_1490, Sig::Opaque, DOC);
+static CALLBACK_QUEUE: Point = Point::new("EFFECT_CALLBACK_QUEUE", 0x0004_1490, Sig::Site, DOC);
 static CALLBACK_WRAPPER: Point =
-    Point::new("EFFECT_CALLBACK_WRAPPER", 0x0004_8e40, Sig::Opaque, DOC);
+    Point::new("EFFECT_CALLBACK_WRAPPER", 0x0004_8e40, Sig::Site, DOC);
+pub(crate) fn instruction_entries() -> impl Iterator<Item = u32> {
+    BOUNDARIES.iter().flat_map(|(_, begin, end)| [begin.base, end.base])
+        .chain(REFUSALS.iter().map(|(point, _)| point.base))
+}
+
 pub(crate) fn build(b: &mut crate::Builder) {
     for (index, (site, start, end)) in BOUNDARIES.iter().enumerate() {
         let site = *site;
@@ -57,7 +62,7 @@ pub(crate) fn build(b: &mut crate::Builder) {
             let mode = if compare.is_some() { Mode::Compare } else { Mode::Native };
             let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
             if let Some(h) = host { h.arm_effect(&mut *mem, site, mode); }
-        }).context_only();
+        }).context_only().optional();
         b.raw()
             .observe_before(end, "native_particles_effect_end", move |o| {
                 let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -87,7 +92,7 @@ pub(crate) fn build(b: &mut crate::Builder) {
         if !matches!(callback, Some(0x0024_4610 | 0x002b_e650)) && queued.fetch_add(1, Ordering::Relaxed) < compare_budget().unwrap_or(8) {
             eprintln!("native-particles-refused: queue=0x00041490 callback={callback:?} reason=UnownedMaterialCallback");
         }
-    }).context_only();
+    }).context_only().optional();
     let wrapped = AtomicU64::new(0);
     b.raw().observe_before(&CALLBACK_WRAPPER, "native_particles_callback_wrapper", move |o| {
         let mem = o.guest();
@@ -96,5 +101,5 @@ pub(crate) fn build(b: &mut crate::Builder) {
             let reason = if callback == Some(0x0024_dc50) { "NoGeometryCallback" } else { "UnownedMaterialCallback" };
             eprintln!("native-particles-refused: handler=0x00048e40 callback={callback:?} reason={reason}");
         }
-    }).context_only();
+    }).context_only().optional();
 }

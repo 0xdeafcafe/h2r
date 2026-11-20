@@ -125,6 +125,80 @@ mock host returns null; generated/runtime tests install the real view and
 cover mapping changes, permissions, aliases, every width, fault transactions,
 access budgets, host concurrency and replacement of the backing Guest.
 
+#### Opt-in flat RAM and first-write faults
+
+Set `H2_FLAT_RAM=1` for both the image build and execution on macOS or
+x86-64 Linux. The generated image needs a rebuild. Run the same image with
+`H2_FLAT_RAM=0` for the ordinary page-table path. With flat RAM enabled,
+`H2_FLAT_WRITE_WATCH=0` keeps the software dirty barrier on watched stores.
+
+Each Guest reserves a guarded 4 GiB virtual window on hosts with 4 KiB pages.
+The OS picks a stable base per live RAM backing. macOS maps shared aliases
+of that backing with Mach VM. Linux uses a memfd for the opted-in physical
+allocation. Bit 31 of the legacy `watching` word advertises a view appended
+after the 2080-byte v1 prefix on 64-bit hosts. Bit 0 retains its meaning.
+A page in the original window has bit 3 in its page-table permissions.
+The low three permission bits retain their ABI meaning. An image first
+checks the capability under the gate before reading the suffix.
+
+On a 16 KiB host, contiguous guest RAM mappings can have four different
+4 KiB offsets between guest VA and physical RAM. The runtime reserves
+four guarded 4 GiB windows (16 GiB of virtual address space plus guards,
+all sharing the same physical RAM). A reservation failure falls back to
+the original window. The byte address in each window is its fixed base
+plus guest VA. Bits 4–5 of the page entry select a shifted base (1–3)
+when bit 3 is clear. Old images fall back on these entries, and old
+runtimes never set the new bits. On a protection change or remap each
+overlapping host page is rebuilt, including its unchanged guest neighbors.
+Two fragments needing different physical host pages in the same window
+slot can compete. Only entries matching the installed backing use that VA. The emitter can check one span for multiple accesses derived
+from the same unchanged register and constant displacements. That span must
+fit in one guest page with all requested permissions. Each access executes
+and charges in IR order. Selectors, changes to the base, calls, atomics,
+conditionals, REP and faulting intrinsics end a group. A rejected group
+executes each original access, including any MMIO and precise faults.
+Compiler memory barriers order accesses through different aliases.
+
+While a write watch is active, eligible generated stores use a protected
+shared alias of **physical** RAM. Even a full, permitted guest page
+without a VA window can use this mirror. On a 4 KiB host this takes one 64 MiB
+virtual window. On a 16 KiB host it takes four. Physical page `p` is
+written through window `p % 4`, so opening a 16 KiB host page admits
+writes to exactly one guest subpage through that window. All guest VAs for
+that physical page choose the same window. Only watched pages awaiting a
+write need protection. Their first store faults, opens
+the host page with `mprotect`, records the physical page, and retries.
+Same-value writes count. Repeated stores have no software dirty mark.
+
+The opt-in runtime installs a process-wide SIGBUS handler on macOS or
+SIGSEGV handler on Linux when it first creates a protected store view.
+It inspects the saved data-write exception and the fault address, and
+forwards unowned faults to the prior disposition. Darwin supplies the fault
+address in SIGBUS signal info. [XNU signal delivery on arm64](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/dev/arm/unix_signal.c).
+The handler stays
+installed for the process lifetime. Hosts that manage these signals
+can select the software dirty barrier. Mapping or watch setup failure
+retains the existing generated accessors for affected accesses.
+
+The next Rust memory guard publishes first writes before exposing Guest.
+After a drain or a subscription change it re-protects open pages for
+which an interested subscriber still needs a mark. Contiguous pages of
+the same window share a protection call. Host writes, REP chunks and
+atomics keep their existing physical write notifications. Installing a
+census trap suspends flat accesses. Mapping changes refresh affected host
+pages under the same gate. Guest replacement and COW refresh retire the
+old window. Snapshot restore rebuilds the translations and reports
+restored pages through the existing watch.
+
+To count accesses in one generated owner, set `H2_FLAT_STATS_OWNER` to
+its hexadecimal entry address at image build. At module unload the image
+prints attempted guest loads/stores, flat copies, bulk MOVS accesses, and
+the remaining checked accesses. These are executions, including cold gate
+retries; rejected span probes do not count. Each successful bulk MOVS
+iteration counts one read and one write. Atomic helpers and HLE traffic
+are outside this denominator. The counter is off by default. Use the
+ordinary image for timing.
+
 ### 1.2 Atomics: `h2abi_v1_atomic_rmw`, `h2abi_v1_xchg`, `h2abi_v1_cmpxchg` (existing)
 
 Every supported LOCK-prefixed instruction (all but `lock adc`/`lock sbb`,
@@ -309,7 +383,7 @@ so a module is never run by a runtime that would charge twice or not at all.
 A bridge forwards the four functions; the test bridge's legacy install fills
 them with the charged accessors, a no-op charge and an unlimited budget.
 
-`H2_VIEW_CHARGE=1` (a `cflags` switch, off by default; counting modules
+`H2_VIEW_CHARGE` (a `cflags` switch, on by default; counting modules
 with `H2_FASTMEM`) makes no call to charge when the handler has a view: a
 charge adds the count to the view's own (`accesses`), raising SLICE on the
 preempt word when the sum reaches the view's `budget`, exactly as the
@@ -523,12 +597,12 @@ Its semantics:
     `runtime::direct`), or null, in which case no call is direct (the test
     host; `ExecCtx::enable_direct_calls(false)`). A runtime without the
     block refuses the module by its feature bit.
-  - Only a `call` to a static target that is a function entry (kind 0) of
-    the module, whose continuation is a selector of the caller's own
-    handler, or a `jmp` tail to such an entry, is emitted as a direct call
-    (`H2_DCALL`, `H2_DJUMP`). Lazy flags are settled and the inline RAM
-    gate dropped first, and the handler's access count is charged
-    (`H2_ACC_FLUSH`), as at any exit.
+  - A static `call` or tail `jmp` to a function entry of the module may
+    use its linked symbol (`H2_DCALL`, `H2_DJUMP`). Indirect calls and
+    jumps may use the cached handler for the evaluated target PC
+    (`H2_ICALL`, `H2_IJUMP`, on unless `H2_INDIRECT_CALLS=0`). Both call
+    forms require a continuation selector in the calling handler. Lazy
+    flags and the access count are settled before entering the target.
   - It is direct only if, at that moment: the preempt word is 0 and the
     runtime's interrupt queue is empty (so the runner's safe point would do
     nothing); the block's `budget` (the runner's `max_transfers` left) is
@@ -538,9 +612,11 @@ Its semantics:
     view (taken with the gate; no view, a busy gate or no bit is a no).
     Otherwise the handler leaves with the ordinary `CALL`/`JUMP`, exactly
     as without the flag.
-  - The runner fills a slot each time it dispatches an entry route to a
-    native handler with selector = target, recording the generation it
-    resolved at. Any `edit_dispatch` moves the generation, so an override
+  - The runner learns slots from generated registry entries reached through
+    an entry route with selector = target, recording the generation it resolved
+    at. Standalone native adapters and overrides go through the runner. `H2_DIRECT_SLOTS` selects the active
+    size of the per-context cache (4096 by default, up to 8192).
+    Any `edit_dispatch` moves the generation, so an override
     registered, enabled, disabled or replaced (from any thread) stops every
     direct call to that entry: the next call goes to the runner, which
     resolves it again. A direct call therefore never bypasses an override.
@@ -554,11 +630,11 @@ Its semantics:
     clears. A handler with a lent view does not call
     `h2abi_v1_fast_acquire`, and on its way out (epilogue or hand-up)
     calls `h2abi_v1_exit` only to charge a count of its own, never just to
-    release. The caller charged its count just before, so the view holds
-    nothing unsettled when lent; what the callee counts in it is settled
-    by the first Rust helper that looks (they all settle first) or by the
-    outermost handler's exit, and its budget is what acquire would have
-    set again, so the slice runs out at the same access. The runtime
+    release. With view charging the lent view can already hold accesses
+    counted by the caller. The safe-point check accounts for that count.
+    The first Rust helper that observes the count, or the runtime after
+    the outermost handler returns, settles it. Its budget is what acquire
+    would have set again, so the slice runs out at the same access. The runtime
     clears `view` before it invokes any native handler itself, so a
     handler entered through the runner always acquires.
   - The callee's result continues inline only if it is `RETURN`/

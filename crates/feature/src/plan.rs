@@ -281,6 +281,8 @@ fn place_locale(
                         // Reads edi, the sources' boot-fixed answers, and
                         // the stack it returns through.
                         context_only: true,
+                        resume_sites: &[],
+                        generated_sites: &[],
                     },
                 ));
                 "served by the locale bridge".to_owned()
@@ -579,6 +581,50 @@ impl Plan {
             s.push_str(&format!("warning: {w}\n"));
         }
         s
+    }
+
+    /// What boot prints after installation. The summary counts installed
+    /// points and entries; the full listing describes the plan as built.
+    pub fn startup_text(&self, installed: &crate::Installed, verbose: bool) -> String {
+        let mut text = if verbose {
+            self.text()
+        } else {
+            let off: Vec<_> = self
+                .features
+                .iter()
+                .filter(|f| f.off.is_some() || installed.off_reason(f.id).is_some())
+                .map(|f| f.id)
+                .collect();
+            let off_names = if off.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", off.join(", "))
+            };
+            let points = self
+                .chains
+                .keys()
+                .filter(|addr| installed.placed.contains(addr))
+                .count();
+            let entries = self
+                .entries
+                .iter()
+                .filter(|e| installed.placed.contains(&e.addr))
+                .count();
+            let mut text = format!(
+                "{} features on, {} off{off_names}, {points} hooked points, {entries} entries; H2_FEATURE_PLAN=1 lists them\n",
+                self.features.len() - off.len(),
+                off.len(),
+            );
+            for n in &self.notes {
+                text.push_str(&format!("note: {n}\n"));
+            }
+            text
+        };
+        for n in &installed.notes {
+            text.push_str(n);
+            text.push('\n');
+        }
+        text
     }
 
     /// Whether `feature` is in the plan and on.

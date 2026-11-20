@@ -7,6 +7,15 @@ use gfx::translate::Capabilities;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct NativeDrawKey(ProgramKey);
 
+/// GPU-independent shader and sampler selection for a resolved material.
+pub struct NativeDrawMaterial {
+    pub key: NativeDrawKey,
+    def: PixelShaderDef,
+    signs: [u8; 4],
+    pub samplers: [SamplerKey; 4],
+    pub writes_depth: bool,
+}
+
 /// GPU-independent shader inputs for one copy of a resolved draw.
 pub struct NativeDrawProgram {
     pub key: NativeDrawKey,
@@ -16,11 +25,27 @@ pub struct NativeDrawProgram {
     pub writes_depth: bool,
 }
 
+impl NativeDrawProgram {
+    pub fn resolve(draw: &ResolvedDraw, present: [bool; 4], caps: Capabilities,
+        fetch: FetchMode, scale: u32) -> Result<Self, String> {
+        let material = NativeDrawMaterial::resolve(draw, present, caps, fetch)?;
+        let (vertex, pixel) = material.uniforms(draw, scale);
+        Ok(Self { key: material.key, vertex, pixel, samplers: material.samplers, writes_depth: material.writes_depth })
+    }
+}
+
 /// The linked shader and the dimensions of the stages it really samples.
 pub struct NativeDrawShader {
     pub source: String,
     pub dims: StageDims,
     pub discards: bool,
+}
+
+/// A UI program that still needs the ordinary draw path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UiProgramError {
+    Shader,
+    Texture,
 }
 
 impl NativeDrawKey {
@@ -34,16 +59,15 @@ impl NativeDrawKey {
     }
 }
 
-impl NativeDrawProgram {
+static TABLE: std::sync::LazyLock<RenderStateTable> = std::sync::LazyLock::new(RenderStateTable::default);
+
+impl NativeDrawMaterial {
     pub fn resolve(
         draw: &ResolvedDraw,
         present: [bool; 4],
         caps: Capabilities,
         fetch: FetchMode,
-        scale: u32,
     ) -> Result<Self, String> {
-        static TABLE: std::sync::LazyLock<RenderStateTable> =
-            std::sync::LazyLock::new(RenderStateTable::default);
         let sampled = crate::device::sampled_stages(&draw.shader, &draw.raw, &draw.state);
         if (0..4).any(|n| sampled[n] && (!present[n] || draw.texture_info[n].is_none())) {
             return Err("a sampled stage has no resolved texture view".into());
@@ -60,6 +84,56 @@ impl NativeDrawProgram {
         }
         if key.pixel_options.shadow.iter().any(Option::is_some) || draw.glyph_cache != 0 {
             return Err("requires a backend-specific texture path".into());
+        }
+        Ok(Self {
+            writes_depth: key.pixel_options.w_buffer,
+            key: NativeDrawKey(key),
+            def,
+            signs,
+            samplers: samplers(draw, border, caps),
+        })
+    }
+
+    pub fn uniforms(&self, draw: &ResolvedDraw, scale: u32) -> (VertexUniforms, PixelUniforms) {
+        uniforms(&TABLE, draw, &self.key.0, &self.def, self.signs, scale)
+    }
+}
+
+impl NativeDrawProgram {
+    /// A UI producer may use pretransformed vertices and the display-only
+    /// glyph filter. Use the same shader key and uniforms as an ordinary draw.
+    pub fn resolve_ui(
+        draw: &ResolvedDraw,
+        present: [bool; 4],
+        caps: Capabilities,
+        fetch: FetchMode,
+        scale: u32,
+    ) -> Result<Self, UiProgramError> {
+        static TABLE: std::sync::LazyLock<RenderStateTable> =
+            std::sync::LazyLock::new(RenderStateTable::default);
+        if hot_render::global().active() {
+            return Err(UiProgramError::Shader);
+        }
+        let sampled = crate::device::sampled_stages(&draw.shader, &draw.raw, &draw.state);
+        if (0..4).any(|n| sampled[n] && (!present[n] || draw.texture_info[n].is_none())) {
+            return Err(UiProgramError::Texture);
+        }
+        // The ordinary backend uses a different vertex and fragment program
+        // for its built-in diffuse fast path.
+        if matches!(draw.shader.vertex, VertexProcessing::FixedFunction { .. })
+            && gfx::Renderer::builtin_supports(&draw.layout)
+            && builtin_equivalent(draw, present.into_iter().any(|bound| bound))
+        {
+            return Err(UiProgramError::Shader);
+        }
+        let KeyParts { mut key, def, signs, border, .. } =
+            program_key(&TABLE, caps, draw, present, fetch)
+                .map_err(|_| UiProgramError::Shader)?;
+        if key.pixel_options.shadow.iter().any(Option::is_some) {
+            return Err(UiProgramError::Texture);
+        }
+        if scale > 1 {
+            key.pixel_options.glyph = draw.glyph_cache & 0xF;
         }
         let (vertex, pixel) = uniforms(&TABLE, draw, &key, &def, signs, scale);
         Ok(Self {
@@ -184,4 +258,120 @@ pub(super) fn samplers(
         }
         k
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::{PixelRect, TargetInfo, TextureInfo, Viewport};
+    use crate::shader::ShaderInputs;
+    use crate::state::StateWords;
+    use gfx::format::D3DFormat;
+    use gfx::state::{DepthBufferMode, FillMode, StencilOp};
+    use gfx::vertex::{PrimitiveType, VertexLayout, fvf};
+    use std::sync::Arc;
+
+    fn ui_draw() -> ResolvedDraw {
+        let raw = StateWords::defaults(false);
+        let mut state = raw.translate(&RenderStateTable::default());
+        let render = &mut state.render;
+        render.depth_mode = DepthBufferMode::Z;
+        render.depth_func = CompareFunc::LessEqual;
+        render.depth_write = true;
+        render.stencil.enable = true;
+        render.stencil.pass = StencilOp::Replace;
+        render.stencil.reference = 3;
+        render.alpha_test_enable = true;
+        render.alpha_func = CompareFunc::Greater;
+        render.alpha_ref = 91;
+        render.shade_mode = ShadeMode::Flat;
+        render.fog_enable = true;
+        render.fog_color = 0xff_00_00_ff;
+        let fvf = fvf::XYZRHW | fvf::DIFFUSE | (1 << fvf::TEXCOUNT_SHIFT);
+        let glyph = TextureInfo {
+            header: 0x1000,
+            palette: 0,
+            format: D3DFormat::A8R8G8B8,
+            kind: TextureKind::D2,
+            width: 16,
+            height: 16,
+            depth: 1,
+            levels: 1,
+        };
+        ResolvedDraw {
+            entry: "synthetic UI fan",
+            primitive: PrimitiveType::TriangleFan,
+            vertex_count: 4,
+            layout: VertexLayout::from_fvf(fvf).unwrap(),
+            streams: Vec::new(),
+            indices: None,
+            state,
+            extras: raw.stage_extras(),
+            raw: Arc::new(raw),
+            target: TargetInfo {
+                width: 32, height: 32, format: D3DFormat::A8R8G8B8,
+                depth_format: Some(D3DFormat::D24S8),
+            },
+            shader: ShaderInputs {
+                vertex: VertexProcessing::FixedFunction { fvf },
+                provided_inputs: (1 << 9) | 0b1001,
+                vertex_defaults: [[0.0; 4]; 16],
+                constants: Arc::new([[0.0; 4]; 192]),
+                pixel_shader: None,
+                combiner_state: Arc::new([0; 57]),
+                final_combiner_latch: false,
+                affine_projection: false,
+            },
+            viewport: Viewport {
+                x: 0, y: 0, width: 32, height: 32, min_z: 0.0, max_z: 1.0,
+            },
+            clip: Some(PixelRect { x: 0, y: 0, width: 32, height: 32 }),
+            clip_rects: Vec::new(),
+            hw: crate::hw::HwState {
+                stipple_control: Some(1),
+                stipple_pattern: [0xa5a5a5a5; 32],
+                ..Default::default()
+            },
+            textures: [Some(glyph.header), None, None, None],
+            texture_info: [Some(glyph), None, None, None],
+            glyph_cache: 1,
+        }
+    }
+
+    #[test]
+    fn ui_program_carries_alpha_fog_stipple_flat_depth_and_stencil() {
+        let mut draw = ui_draw();
+        let caps = Capabilities::ALL;
+        let present = [true, false, false, false];
+        assert!(matches!(
+            NativeDrawProgram::resolve_ui(&draw, [false; 4], caps, FetchMode::Cpu, 1),
+            Err(UiProgramError::Texture)
+        ));
+        let reference = NativeDrawProgram::resolve_ui(&draw, present, caps, FetchMode::Cpu, 1).unwrap();
+        let display = NativeDrawProgram::resolve_ui(&draw, present, caps, FetchMode::Cpu, 2).unwrap();
+        assert_eq!(reference.pixel.alpha_ref[0], 91.0);
+        assert_eq!(reference.pixel.fog_color, [0.0, 0.0, 1.0, 1.0]);
+        assert_eq!(reference.pixel.stipple, [0xa5a5a5a5; 32]);
+        assert_eq!(reference.key.0.pixel_options.alpha_test, Some(alpha_func(CompareFunc::Greater)));
+        assert!(reference.key.0.pixel_options.stipple);
+        assert!(reference.key.0.pixel_options.flat_shading);
+        assert!(reference.key.0.vertex_options.flat_shading);
+        assert_eq!(reference.key.0.pixel_options.glyph, 0);
+        assert_eq!(display.key.0.pixel_options.glyph, 1);
+        assert!(reference.key.translate().unwrap().discards);
+
+        draw.state.render.fill_mode = FillMode::Wireframe;
+        let state = &draw.state.render;
+        let topology = draw.primitive.host_topology();
+        assert_eq!(gfx::translate::primitive_state(state, topology, caps).polygon_mode, wgpu::PolygonMode::Line);
+        let depth = gfx::translate::depth_stencil_state(
+            state, Some(wgpu::TextureFormat::Depth24PlusStencil8), topology,
+        ).unwrap();
+        assert_eq!(depth.depth_compare, Some(wgpu::CompareFunction::LessEqual));
+        assert_eq!(depth.depth_write_enabled, Some(true));
+        assert_eq!(depth.stencil.front.pass_op, wgpu::StencilOperation::Replace);
+        assert!(draw.writes_depth_stencil());
+        let wire = NativeDrawProgram::resolve_ui(&draw, present, caps, FetchMode::Cpu, 1).unwrap();
+        assert!(!wire.key.0.pixel_options.stipple);
+    }
 }

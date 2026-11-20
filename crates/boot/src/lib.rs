@@ -10,6 +10,8 @@
 //! Nothing derived from the disc is written outside the caller's output
 //! directory, which should be under `$TMPDIR` or `target/`.
 
+pub use feature::scene_effect_instruction_entries;
+
 pub mod account_screen;
 pub mod agent_glue;
 pub mod aim_assist;
@@ -125,6 +127,8 @@ pub mod native_water_glue;
 pub mod native_world_glue;
 #[cfg(feature = "gpu")]
 mod native_world_layers_glue;
+#[cfg(feature = "gpu")]
+mod opaque_streams;
 pub mod new_maps;
 pub mod pad_speaker;
 pub mod precision;
@@ -779,13 +783,13 @@ pub unsafe fn load_module(path: &Path, rt: &runtime::Runtime, xbe_bytes: &[u8]) 
             }
         }
         rt.edit_dispatch(|d| -> Result<()> {
-            for &(addr, f) in &rows {
-                let f = if trampoline {
-                    fallback::trampoline as runtime::GuestFn
-                } else {
-                    f
-                };
-                d.register_generated(addr, runtime::cpu::ABI_VERSION, f)
+            if !trampoline {
+                d.register_generated_module(m, *version)
+                    .context("registering generated module")?;
+                return Ok(());
+            }
+            for &(addr, _) in &rows {
+                d.register_generated(addr, runtime::cpu::ABI_VERSION, fallback::trampoline)
                     .with_context(|| format!("entry {addr:#x}"))?;
             }
             for r in resumes {
@@ -1172,10 +1176,7 @@ fn run_configured(
     // Interpreting past unsupported instructions is a stopgap too.
     fallback::set_recovery(opts.stopgaps);
     if opts.stopgaps {
-        let unread = fallback::install_unread_targets(&loaded.runtime);
-        crate::log::note(&format!(
-            "fallback: {unread} unread jump-table targets registered"
-        ));
+        fallback::start_analysis(&loaded.runtime);
     }
     eprintln!(
         "registered {} entries, {} resumes in {:.1}s",
@@ -1625,8 +1626,9 @@ fn run_configured(
         (false, _) => None,
         (true, Some(b)) => Some(match host.gfx_view.take() {
             Some((view, scale)) => {
-                let mut b = d3d::ScaledBackend::new(b, view, scale).map_err(anyhow::Error::msg)?;
-                eprintln!("d3d: rendering at {scale}x; the guest sees a 1x reference");
+                let single = d3d_glue::single_copy(host.settings.as_deref())?;
+                let mut b = d3d::ScaledBackend::with_single_copy(b, view, scale, single).map_err(anyhow::Error::msg)?;
+                eprintln!("d3d: rendering at {scale}x; single copy {single}");
                 // The Video screen's Resolution row changes the scale at the
                 // next frame boundary (docs/graphics/high-resolution.md).
                 // The Lighting row (E3 lighting, docs/graphics/e3-lighting.md)
@@ -1651,7 +1653,7 @@ fn run_configured(
             None => d3d_glue::install_with(&loaded.runtime, b)?,
         }),
         (true, None) if host_light => Some(d3d_glue::install_light(&loaded.runtime)?),
-        (true, None) => Some(d3d_glue::install_headless(&loaded.runtime, interp)?),
+        (true, None) => Some(d3d_glue::install_headless_with_settings(&loaded.runtime, interp, host.settings.as_deref())?),
     };
     #[cfg(all(not(feature = "gpu"), feature = "desktop-runtime"))]
     let mut d3d_calls = opts.d3d.then(|| {
@@ -1775,14 +1777,11 @@ fn run_configured(
         None => registration::AgentSource::None,
     };
     let watch_overrides = agent_glue::socket_from_env().is_some();
-    let pipeline =
-        registration::pipeline_for(d3d_glue::pipeline_render(d3d_calls.as_ref()), lockstep_on);
-    // Sim mode skips the render it would pipeline (both implement the frame).
-    let pipeline = if sim_mode.is_some() || host_light {
-        pipeline.disabled("the world render is skipped (sim-frame)")
-    } else {
-        pipeline
-    };
+    let pipeline = registration::pipeline_for(
+        d3d_glue::pipeline_render(d3d_calls.as_ref()),
+        lockstep_on,
+        host_light,
+    );
     #[cfg(feature = "desktop-runtime")]
     render_probe::set_pipeline(pipeline.clone());
     let coop_probe = coop_probe::parse(|k| std::env::var(k).ok()).map_err(anyhow::Error::msg)?;
@@ -1849,6 +1848,11 @@ fn run_configured(
             host.settings.clone(),
             host.perf_overlay.clone(),
         );
+    }
+    if sim_mode.is_some() || host_light {
+        features
+            .add(&feature::sim_native::SimNative::new(&loaded.runtime))
+            .map_err(anyhow::Error::msg)?;
     }
     registration::register_viewer_skips(&mut features, host_light)?;
     if host_light {
@@ -1919,12 +1923,13 @@ fn run_configured(
         let c: Vec<String> = conflicts.iter().map(ToString::to_string).collect();
         anyhow::anyhow!("feature plan refused: {}", c.join("; "))
     })?;
-    for line in plan.text().lines() {
-        eprintln!("feature plan: {line}");
-    }
+    let verbose_plan = feature::plan_verbose();
     let installed = plan
         .install(&loaded.runtime)
         .context("installing the feature plan")?;
+    for line in plan.startup_text(&installed, verbose_plan).lines() {
+        eprintln!("feature plan: {line}");
+    }
     if let Some(audit) = &audit {
         if let Some(why) = installed.off_reason("host-audit") {
             anyhow::bail!("host audit needs its feature hooks: {why}");
@@ -1939,9 +1944,6 @@ fn run_configured(
     if host_light && let Some(why) = installed.off_reason(feature::sim_frame::ID) {
         anyhow::bail!("light host needs sim-frame: {why}");
     }
-    for n in &installed.notes {
-        eprintln!("feature plan: {n}");
-    }
     if let Some(a) = &agent {
         a.set_plan(&plan, &installed);
         if let Some(why) = installed.off_reason("agent") {
@@ -1949,17 +1951,19 @@ fn run_configured(
             eprintln!("agent: answering between slices only, no pausing: {why}");
         }
     }
-    if let Some(store) = host.settings.as_ref().filter(|_| skulls_on) {
-        eprintln!("{}", skulls::report(&plan, &installed, store));
-    }
-    if skulls_mp_on {
-        eprintln!("{}", skulls_mp::report(&plan, &installed));
-    }
-    if skulls_custom_on {
-        eprintln!("{}", skulls_custom::report(&plan, &installed));
-    }
-    if health_on {
-        eprintln!("{}", health::report(&plan, &installed));
+    if verbose_plan {
+        if let Some(store) = host.settings.as_ref().filter(|_| skulls_on) {
+            eprintln!("{}", skulls::report(&plan, &installed, store));
+        }
+        if skulls_mp_on {
+            eprintln!("{}", skulls_mp::report(&plan, &installed));
+        }
+        if skulls_custom_on {
+            eprintln!("{}", skulls_custom::report(&plan, &installed));
+        }
+        if health_on {
+            eprintln!("{}", health::report(&plan, &installed));
+        }
     }
     if let (Some(h), Some(why)) = (harness.as_mut(), installed.off_reason("lockstep")) {
         eprintln!("lockstep: hashing presents only: {why}");
@@ -2510,8 +2514,12 @@ fn run_configured(
 
 /// Shared note sink (stderr when `H2_BOOT_VERBOSE` is set).
 pub mod log {
+    pub(crate) fn verbose() -> bool {
+        std::env::var_os("H2_BOOT_VERBOSE").is_some()
+    }
+
     pub fn note(s: &str) {
-        if std::env::var_os("H2_BOOT_VERBOSE").is_some() {
+        if verbose() {
             eprintln!("note: {s}");
         }
     }

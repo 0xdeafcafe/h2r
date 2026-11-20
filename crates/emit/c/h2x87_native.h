@@ -31,10 +31,12 @@ static inline int h2x87n_live(const X87Abi *s, unsigned p) {
 static inline void h2x87n_tag(X87Abi *s, unsigned p, unsigned t) {
     s->tag = (uint16_t)((s->tag & ~(3u << (2u * p))) | (t << (2u * p)));
 }
-static inline void h2x87n_pop(X87Abi *s) {
-    unsigned p = h2x87n_phys(s, 0);
+static inline void h2x87n_pop_at(X87Abi *s, unsigned p) {
     h2x87n_tag(s, p, 3);
     s->status = (uint16_t)((s->status & ~0x3800u) | (((p + 1u) & 7u) << 11));
+}
+static inline void h2x87n_pop(X87Abi *s) {
+    h2x87n_pop_at(s, h2x87n_phys(s, 0));
 }
 static inline uint64_t h2x87n_bits(double x) {
     uint64_t b; memcpy(&b, &x, 8); return b;
@@ -91,41 +93,53 @@ static inline H2X87N_FAST int h2x87n_mode(const X87Abi *s) {
 static inline uint16_t h2x87n_status(uint16_t sw, int inexact, int up) {
     return (uint16_t)((sw & ~0x200u) | (inexact ? 0x20u : 0) | (up ? 0x200u : 0));
 }
-static inline uint32_t h2x87n_ld_f64(X87Abi *s, uint64_t b) {
-    unsigned e = (unsigned)((b >> 52) & 0x7ffu), p = h2x87n_phys(s, 7);
+static inline H2X87N_FAST uint32_t h2x87n_ld_f64_at(X87Abi *s, unsigned top, uint64_t b) {
+    unsigned e = (unsigned)((b >> 52) & 0x7ffu), p = ((top + 7u) & 7u);
     if ((s->status & 0x80u) || h2x87n_live(s, p) || e == 0x7ffu ||
         (!e && (b << 1))) return h2x87_v1_ld_f64(s, b);
     s->status = (uint16_t)((s->status & ~0x3a00u) | (p << 11));
     h2x87n_put(s, p, b); return H2X87_OK;
 }
-static inline uint32_t h2x87n_ld_f32(X87Abi *s, uint32_t b) {
+static inline uint32_t h2x87n_ld_f64(X87Abi *s, uint64_t b) {
+    return h2x87n_ld_f64_at(s, h2x87n_phys(s, 0), b);
+}
+static inline H2X87N_FAST uint32_t h2x87n_ld_f32_at(X87Abi *s, unsigned top, uint32_t b) {
     unsigned e = (b >> 23) & 0xffu;
     if (e == 0xffu || (!e && (b << 1))) return h2x87_v1_ld_f32(s, b);
     /* Bit widening avoids host float conversion, including host FTZ. */
     uint64_t v = (uint64_t)(b >> 31) << 63;
     if (e) v |= ((uint64_t)(e + (1023 - 127)) << 52) | ((uint64_t)(b & 0x7fffffu) << 29);
-    return h2x87n_ld_f64(s, v);
+    return h2x87n_ld_f64_at(s, top, v);
+}
+static inline uint32_t h2x87n_ld_f32(X87Abi *s, uint32_t b) {
+    return h2x87n_ld_f32_at(s, h2x87n_phys(s, 0), b);
 }
 /* FILD m16/m32: every such integer is exact in binary64 (normal or +0),
  * so this is FLD of that double; the conversion is exact, flag-free and
  * independent of the rounding mode. Overflow and pending #MF fall back. */
-static inline uint32_t h2x87n_ld_i32(X87Abi *s, int32_t v) {
+static inline H2X87N_FAST uint32_t h2x87n_ld_i32_at(X87Abi *s, unsigned top, int32_t v) {
     uint64_t b = 0;
     if (v) {
         uint32_t m = v < 0 ? 0u - (uint32_t)v : (uint32_t)v;
-        unsigned top = 31u - (unsigned)__builtin_clz(m);
-        b = ((uint64_t)(v < 0) << 63) | ((uint64_t)(1023u + top) << 52) |
-            (((uint64_t)m << (52u - top)) & UINT64_C(0xfffffffffffff));
+        unsigned exponent = 31u - (unsigned)__builtin_clz(m);
+        b = ((uint64_t)(v < 0) << 63) | ((uint64_t)(1023u + exponent) << 52) |
+            (((uint64_t)m << (52u - exponent)) & UINT64_C(0xfffffffffffff));
     }
-    unsigned p = h2x87n_phys(s, 7);
+    unsigned p = ((top + 7u) & 7u);
     if ((s->status & 0x80u) || h2x87n_live(s, p)) return h2x87_v1_ld_i32(s, v);
     s->status = (uint16_t)((s->status & ~0x3a00u) | (p << 11));
     h2x87n_put(s, p, b); return H2X87_OK;
 }
-static inline uint32_t h2x87n_ld_i16(X87Abi *s, int16_t v) {
-    unsigned p = h2x87n_phys(s, 7);
+static inline uint32_t h2x87n_ld_i32(X87Abi *s, int32_t v) {
+    return h2x87n_ld_i32_at(s, h2x87n_phys(s, 0), v);
+}
+static inline H2X87N_FAST uint32_t h2x87n_ld_i16_at(X87Abi *s, unsigned top, int16_t v) {
+    unsigned p = ((top + 7u) & 7u);
     if ((s->status & 0x80u) || h2x87n_live(s, p)) return h2x87_v1_ld_i16(s, v);
-    return h2x87n_ld_i32(s, v);
+    return h2x87n_ld_i32_at(s, top, v);
+}
+static inline uint32_t h2x87n_ld_i16(X87Abi *s, int16_t v) {
+    return h2x87n_ld_i16_at(s, h2x87n_phys(s, 0), v);
 }
 static inline uint32_t h2x87n_ld_const(X87Abi *s, uint32_t which) {
     if (which <= 1) return h2x87n_ld_f64(s, which ? 0 : UINT64_C(0x3ff0000000000000));
@@ -144,10 +158,13 @@ static inline uint32_t h2x87n_ld_st(X87Abi *s, uint32_t i) {
     s->status = (uint16_t)((s->status & ~0x3a00u) | (to << 11));
     return H2X87_OK;
 }
-static inline uint32_t h2x87n_store_commit(X87Abi *s, uint16_t sw, uint32_t pop) {
+static inline H2X87N_FAST uint32_t h2x87n_store_commit_at(X87Abi *s, unsigned top, uint16_t sw, uint32_t pop) {
     s->status = (uint16_t)((sw & ~0x3800u) | (s->status & 0x3800u));
-    if (pop) h2x87n_pop(s);
+    if (pop) h2x87n_pop_at(s, top);
     return H2X87_OK;
+}
+static inline uint32_t h2x87n_store_commit(X87Abi *s, uint16_t sw, uint32_t pop) {
+    return h2x87n_store_commit_at(s, h2x87n_phys(s, 0), sw, pop);
 }
 static inline uint32_t h2x87n_st_st(X87Abi *s, uint32_t dst, uint32_t pop) {
     /* Keep the uncommon arbitrary-tag/empty-stack cases at the authority. */
@@ -162,12 +179,12 @@ static inline uint32_t h2x87n_xch(X87Abi *s, uint32_t i) {
     /* Tag classification and stack faults belong to the reference. */
     return h2x87_v1_xch(s, i);
 }
-static inline H2X87N_FAST uint32_t h2x87n_arith(X87Abi *s, uint32_t op, uint32_t dst, uint32_t kind, uint64_t src) {
+static inline H2X87N_FAST uint32_t h2x87n_arith_at(X87Abi *s, unsigned top, uint32_t op, uint32_t dst, uint32_t kind, uint64_t src) {
     double a, b, q, err;
-    unsigned p = h2x87n_phys(s, dst);
+    unsigned p = ((top + dst) & 7u);
     if (!h2x87n_mode(s) || !h2x87n_get(s, p, &a)) goto slow;
     if (kind == 0) {
-        if (!h2x87n_get(s, h2x87n_phys(s, (unsigned)src), &b)) goto slow;
+        if (!h2x87n_get(s, ((top + (unsigned)src) & 7u), &b)) goto slow;
     } else if (kind == 1) {
         uint32_t v = (uint32_t)src; unsigned e = (v >> 23) & 0xffu;
         if (!e || e == 0xffu) goto slow;
@@ -202,10 +219,13 @@ static inline H2X87N_FAST uint32_t h2x87n_arith(X87Abi *s, uint32_t op, uint32_t
     h2x87n_put(s, p, h2x87n_bits(q));
     s->status = h2x87n_status(s->status, err != 0.0,
         (q < 0.0 && err > 0.0) || (q > 0.0 && err < 0.0));
-    if (op & 0x100u) h2x87n_pop(s);
+    if (op & 0x100u) h2x87n_pop_at(s, top);
     return H2X87_OK;
 slow:
     return h2x87_v1_arith(s, op, dst, kind, src);
+}
+static inline H2X87N_FAST uint32_t h2x87n_arith(X87Abi *s, uint32_t op, uint32_t dst, uint32_t kind, uint64_t src) {
+    return h2x87n_arith_at(s, h2x87n_phys(s, 0), op, dst, kind, src);
 }
 static inline H2X87N_FAST uint32_t h2x87n_unary(X87Abi *s, uint32_t op) {
     double a;
@@ -219,16 +239,72 @@ static inline H2X87N_FAST uint32_t h2x87n_unary(X87Abi *s, uint32_t op) {
     s->status = h2x87n_status(s->status, err != 0.0, err > 0.0);
     return H2X87_OK;
 }
-static inline H2X87N_FAST uint32_t h2x87n_st_f64(X87Abi *s, uint32_t i, uint64_t *value, uint16_t *sw) {
+#if H2_X87_STORE_BITS
+/* FST narrows ext80 to its destination precision regardless of PC. For
+ * canonical normals in the target exponent range the only possible flag
+ * is PE; a carry out of the largest exponent goes to the authority.
+ * Integer rounding also works under directed guest or host modes. */
+static inline H2X87N_FAST int h2x87n_store_bits(const X87Abi *s, unsigned p,
+        unsigned frac, unsigned bias, uint64_t *value, uint16_t *sw) {
+    if ((s->status & 0x80u) || !h2x87n_live(s, p)) return 0;
+    uint64_t m;
+    uint16_t se;
+    memcpy(&m, s->st[p], 8);
+    memcpy(&se, s->st[p] + 8, 2);
+    unsigned neg = se >> 15, e = se & 0x7fffu;
+    uint64_t sign = (uint64_t)neg << (frac == 23 ? 31 : 63);
+    if (!m && !e) {
+        *value = sign;
+        *sw = h2x87n_status(s->status, 0, 0);
+        return 1;
+    }
+    unsigned exp = e - (16383u - bias);
+    if (!(m >> 63) || exp - 1u >= bias * 2u) return 0;
+    unsigned drop = 63u - frac;
+    uint64_t half = UINT64_C(1) << (drop - 1u);
+    uint64_t lost = m & (2u * half - 1u), kept = m >> drop;
+    unsigned up = 0;
+    if (lost) {
+        if (!(s->control & 0x20u)) return 0; /* unmasked PE */
+        switch ((s->control >> 10) & 3u) {
+        case 0: up = lost > half || (lost == half && (kept & 1u)); break;
+        case 1: up = neg; break;
+        case 2: up = !neg; break;
+        }
+    }
+    uint64_t mag = ((uint64_t)(exp - 1u) << frac) + kept + up;
+    if ((mag >> frac) > bias * 2u) return 0;
+    *value = sign | mag;
+    *sw = h2x87n_status(s->status, lost != 0, up);
+    return 1;
+}
+#endif
+static inline H2X87N_FAST uint32_t h2x87n_st_f64_at(X87Abi *s, unsigned top, uint32_t i, uint64_t *value, uint16_t *sw) {
+#if H2_X87_STORE_BITS
+    if (h2x87n_store_bits(s, (top + i) & 7u, 52, 1023, value, sw)) return H2X87_OK;
+    return h2x87_v1_st_f64(s, i, value, sw);
+#else
     double a;
-    if (!h2x87n_mode(s) || !h2x87n_get(s, h2x87n_phys(s, i), &a))
+    if (!h2x87n_mode(s) || !h2x87n_get(s, ((top + i) & 7u), &a))
         return h2x87_v1_st_f64(s, i, value, sw);
     *value = h2x87n_bits(a); *sw = (uint16_t)(s->status & ~0x200u);
     return H2X87_OK;
+#endif
 }
-static inline H2X87N_FAST uint32_t h2x87n_st_f32(X87Abi *s, uint32_t i, uint32_t *value, uint16_t *sw) {
+static inline H2X87N_FAST uint32_t h2x87n_st_f64(X87Abi *s, uint32_t i, uint64_t *value, uint16_t *sw) {
+    return h2x87n_st_f64_at(s, h2x87n_phys(s, 0), i, value, sw);
+}
+static inline H2X87N_FAST uint32_t h2x87n_st_f32_at(X87Abi *s, unsigned top, uint32_t i, uint32_t *value, uint16_t *sw) {
+#if H2_X87_STORE_BITS
+    uint64_t bits;
+    if (h2x87n_store_bits(s, (top + i) & 7u, 23, 127, &bits, sw)) {
+        *value = (uint32_t)bits;
+        return H2X87_OK;
+    }
+    return h2x87_v1_st_f32(s, i, value, sw);
+#else
     double a;
-    if (!h2x87n_mode(s) || !h2x87n_get(s, h2x87n_phys(s, i), &a)) goto slow;
+    if (!h2x87n_mode(s) || !h2x87n_get(s, ((top + i) & 7u), &a)) goto slow;
     /* Exclude the binary32 underflow/overflow ranges (including rounding
      * across their boundaries), preserving ext80's range and sticky bits. */
     uint64_t b = h2x87n_bits(a) & UINT64_C(0x7fffffffffffffff);
@@ -242,6 +318,10 @@ static inline H2X87N_FAST uint32_t h2x87n_st_f32(X87Abi *s, uint32_t i, uint32_t
     return H2X87_OK;
 slow:
     return h2x87_v1_st_f32(s, i, value, sw);
+#endif
+}
+static inline H2X87N_FAST uint32_t h2x87n_st_f32(X87Abi *s, uint32_t i, uint32_t *value, uint16_t *sw) {
+    return h2x87n_st_f32_at(s, h2x87n_phys(s, 0), i, value, sw);
 }
 #undef H2X87N_FAST
 #else
@@ -258,5 +338,28 @@ slow:
 #define h2x87n_arith h2x87_v1_arith
 #define h2x87n_unary h2x87_v1_unary
 #define h2x87n_xch h2x87_v1_xch
+#endif
+
+#if H2_X87_NATIVE && H2_X87_TOP
+/* A constant TOP makes the register offset (10 * physical slot) and tag
+ * masks constants in the inlined helper. Keep the dynamic instance out
+ * of line so it is shared by all sites in the shard. */
+#define H2X87_DYNAMIC(name, params, args) \
+    static __attribute__((noinline, unused)) uint32_t h2x87d_##name params { return h2x87n_##name args; }
+H2X87_DYNAMIC(ld_f32, (X87Abi *s, uint32_t v), (s, v))
+H2X87_DYNAMIC(ld_f64, (X87Abi *s, uint64_t v), (s, v))
+H2X87_DYNAMIC(ld_i16, (X87Abi *s, int16_t v), (s, v))
+H2X87_DYNAMIC(ld_i32, (X87Abi *s, int32_t v), (s, v))
+H2X87_DYNAMIC(st_f32, (X87Abi *s, uint32_t i, uint32_t *v, uint16_t *sw), (s, i, v, sw))
+H2X87_DYNAMIC(st_f64, (X87Abi *s, uint32_t i, uint64_t *v, uint16_t *sw), (s, i, v, sw))
+H2X87_DYNAMIC(store_commit, (X87Abi *s, uint16_t sw, uint32_t pop), (s, sw, pop))
+H2X87_DYNAMIC(arith, (X87Abi *s, uint32_t op, uint32_t dst, uint32_t kind, uint64_t src),
+                    (s, op, dst, kind, src))
+#undef H2X87_DYNAMIC
+#define H2X87_AT(top, name, s, ...)                                             \
+    (__builtin_expect(h2x87n_phys(s, 0) == (top), 1)                            \
+        ? h2x87n_##name##_at(s, top, __VA_ARGS__) : h2x87d_##name(s, __VA_ARGS__))
+#else
+#define H2X87_AT(top, name, s, ...) h2x87n_##name(s, __VA_ARGS__)
 #endif
 #endif

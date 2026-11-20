@@ -39,7 +39,7 @@ pub struct Loops {
 
 /// Local successors of a block: the targets its last instruction can reach
 /// without leaving the handler.
-fn successors(b: &IrBlock, blocks: &BTreeMap<u32, IrBlock>) -> Vec<u32> {
+pub(crate) fn successors(b: &IrBlock, blocks: &BTreeMap<u32, IrBlock>) -> Vec<u32> {
     let Some(last) = b.insns.last() else { return Vec::new() };
     let local = |d: &Dest| (!d.tail).then_some(d.pc);
     let out: Vec<u32> = match &last.control {

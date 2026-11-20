@@ -24,6 +24,9 @@ use shaders::psh::{PixelShaderDef, bits::*};
 use shaders::vsh::encode::{Inst, Operand, program};
 use shaders::vsh::{MacOp, OutReg, Program};
 
+// The frame counter capture is process-wide, including threaded backends.
+static CAPTURE_LOCK: Mutex<()> = Mutex::new(());
+
 const SIZE: u32 = 32;
 const FORMAT: D3DFormat = D3DFormat::LinA8R8G8B8;
 const DEPTH: D3DFormat = D3DFormat::LinD24S8;
@@ -189,8 +192,17 @@ fn record(
     let sample = !surfaces.sampled.is_empty();
     let pass: Box<dyn ExternalPass> =
         Box::new(IndexedPass::new(draw, Arc::clone(cache), 1, sample.then_some(ACCUM)).unwrap());
+    record_pass(backend, surfaces, textures, timeline::native::Stage::World, pass)
+}
+
+fn record_pass(
+    backend: &mut GfxBackend, surfaces: ExternalSurfaces<SurfaceId>,
+    textures: [Option<&d3d::gfx_backend::HostTexture>; 4],
+    stage: timeline::native::Stage, pass: Box<dyn ExternalPass>,
+) -> bool {
+    let sample = !surfaces.sampled.is_empty();
     let plan = ExternalPlan {
-        stage: timeline::native::Stage::World,
+        stage,
         view: 0,
         ranges: 1,
         slots: ACCUM
@@ -332,6 +344,7 @@ fn scene(backend: &mut GfxBackend, mixed: bool) -> Vec<u8> {
 
 #[test]
 fn world_layers_gpu_mixed_w_depth_stencil_and_texaccum_match_d3d() {
+    let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let Ok(ctx) = GfxContext::headless() else {
         eprintln!("skipping opaque layer test without a GPU adapter");
         return;
@@ -362,6 +375,7 @@ fn world_layers_gpu_mixed_w_depth_stencil_and_texaccum_match_d3d() {
 
 #[test]
 fn queued_world_draws_choose_native_or_d3d_in_order_without_waiting() {
+    let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let Ok(ctx) = GfxContext::headless() else {
         return;
     };
@@ -440,6 +454,7 @@ fn queued_world_draws_choose_native_or_d3d_in_order_without_waiting() {
 
 #[test]
 fn uncached_world_geometry_shares_one_upload_and_one_pass() {
+    let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let Ok(ctx) = GfxContext::headless() else {
         return;
     };
@@ -492,4 +507,74 @@ fn uncached_world_geometry_shares_one_upload_and_one_pass() {
     };
     assert_eq!(pixel(4), [255, 0, 0, 255]);
     assert_eq!(pixel(20), [255, 255, 0, 255]);
+}
+
+#[test]
+fn resident_sections_upload_only_changed_constants_across_swaps() {
+    let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    use native_render::world_layers::{Geometry, Owner};
+    use timeline::{native::Stage, phase};
+    let Ok(ctx) = GfxContext::headless() else { return };
+    let mut backend = GfxBackend::new(ctx);
+    let color = backend.create_surface(FORMAT, SIZE, SIZE, false).unwrap();
+    let depth = backend.create_surface(DEPTH, SIZE, SIZE, true).unwrap();
+    let first = backend.create_texture_target(FORMAT, SIZE, SIZE).unwrap();
+    let next = backend.create_texture_target(FORMAT, SIZE, SIZE).unwrap();
+    let lightmaps = [first, next].map(|surface| backend.surface_texture(surface).unwrap().unwrap());
+    let surfaces = ExternalSurfaces { color, depth, sampled: vec![], slots: vec![], slot_sizes: vec![] };
+    let cache = Arc::new(Cache::default());
+    phase::start(phase::Config::live(u64::MAX)).unwrap();
+    phase::frame_end(0);
+    assert!(phase::capture_begin());
+
+    for swap in 1..=6 {
+        for (stage, owner) in [
+            (Stage::World, Owner::Cluster(3)),
+            (Stage::Objects, Owner::Object { handle: swap, model: 8, section: 3 }),
+        ] {
+            let geometry = Geometry { owner, record: swap as u16, sorted_slot: 50 + swap,
+                part: 1, shader: 9, variant: 0, implementation: 1 };
+            // Owned snapshots have no stable D3D cache ID.
+            let world = stage == Stage::World;
+            let mut draw = triangle(if swap >= 4 { 8.0 } else { 2.0 }, [1.0; 4], 1, world);
+            if swap >= 3 { Arc::make_mut(&mut draw.shader.constants)[11] = [if world { 0.25 } else { 0.75 }; 4]; }
+            let generation = if swap >= 5 { 2 } else { 1 };
+            let pass = IndexedPass::for_section(&draw, cache.clone(), u64::from(swap), None,
+                (generation, 4), geometry, 3).unwrap();
+            let texture = world.then_some(&lightmaps[usize::from(swap == 6)]);
+            assert!(record_pass(&mut backend, surfaces.clone(), [texture, None, None, None], stage, Box::new(pass)));
+        }
+        backend.flush().unwrap();
+        backend.ctx.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        phase::frame_end(u64::from(swap));
+    }
+    let frames = phase::capture_end().unwrap();
+    phase::stop();
+    assert_eq!(frames.len(), 6);
+    let count = |frame: usize, label: &str| {
+        let (i, _) = phase::counter_columns().find(|(_, name)| *name == label).unwrap();
+        frames[frame].counts[i]
+    };
+    for stage in ["world", "objects"] {
+        let metric = |f, name| count(f, &format!("native_{stage}_{name}"));
+        assert_eq!(metric(0, "cache_misses"), 1);
+        for frame in [1, 2] {
+            assert_eq!(metric(frame, "cache_hits"), 1);
+            assert_eq!(metric(frame, "cache_misses"), 0);
+            assert_eq!(metric(frame, "buffers"), 0);
+        }
+        assert_eq!(metric(1, "upload_bytes"), 0);
+        assert_eq!(metric(2, "upload_bytes"), 16);
+        // Same-address mutation, then a BSP reload at the same address.
+        for frame in [3, 4] {
+            assert_eq!(metric(frame, "cache_misses"), 1);
+            assert!(metric(frame, "upload_bytes") >= 3 * 48 + 3 * 4);
+        }
+    }
+    // A new lightmap behind the same guest header rebinds the world material.
+    assert_eq!(count(5, "native_world_cache_misses"), 1);
+    assert_eq!(count(5, "native_world_upload_bytes"), 0);
+    assert_eq!(count(5, "native_objects_cache_hits"), 1);
+    assert_eq!(count(1, "queue_writes"), 0);
+    assert_eq!(count(2, "queue_writes"), 1);
 }

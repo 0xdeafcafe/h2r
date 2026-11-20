@@ -66,7 +66,7 @@ pub(crate) fn configure_single(backend: &mut d3d::GfxBackend) {
     }
 }
 
-pub(crate) fn install<B: d3d::backend::Backend + 'static>(device: &d3d::abi::SharedDevice<B>) {
+pub(crate) fn install<B: d3d::backend::Backend + 'static>(device: &d3d::abi::SharedDevice<B>) -> Option<Arc<dyn d3d::DrawAdmission>> {
     let gpu = SINGLE_GPU.lock().unwrap_or_else(|e| e.into_inner()).take();
     let compare = native_shadows::comparing();
     if enabled() && (compare || gpu.is_some()) {
@@ -81,11 +81,13 @@ pub(crate) fn install<B: d3d::backend::Backend + 'static>(device: &d3d::abi::Sha
             .add_draw_admission(gate.clone());
         native_shadows::set_host(Arc::new(Glue {
             device: Arc::clone(device),
-            gate,
+            gate: Arc::clone(&gate),
             sequence: AtomicU64::new(1),
         }));
+        Some(gate)
     } else {
         native_shadows::clear_host();
+        None
     }
 }
 

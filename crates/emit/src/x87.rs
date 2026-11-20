@@ -13,6 +13,8 @@
 //! drops every assignment but the last. They are spilled before
 //! `save_image` and reloaded after the helpers that write them.
 
+pub(crate) mod top;
+
 use ir::x87::{X87Env, X87Format, X87Op, X87Src};
 use ir::{Intrinsic, IrFunction, Stmt, Temp, Value};
 
@@ -80,10 +82,14 @@ fn chunk_copies(env: X87Env, vals: &[String], to_buffer: bool) -> String {
 }
 
 /// The C lines for one x87 op of the instruction at `pc`.
-pub fn stmt(op: X87Op, args: &[Value], dsts: &[Temp], pc: u32) -> Vec<String> {
+pub fn stmt(op: X87Op, args: &[Value], dsts: &[Temp], pc: u32, top: Option<u8>) -> Vec<String> {
     let s = "&cpu->x87";
     let a = |i: usize| val(&args[i]);
     let call = |c: String| format!("H2X87({pc:#x}u, H2_PERF_X87({c}));");
+    let native = |name: &str, operands: String| match top {
+        Some(t) => format!("H2X87_AT({t}u, {name}, {s}, {operands})"),
+        None => format!("h2x87n_{name}({s}, {operands})"),
+    };
     match op {
         X87Op::Mark { fop, mem } => vec![if mem {
             format!("H2X87_MARKM({pc:#x}u, {fop:#x}u, {});", a(0))
@@ -91,14 +97,9 @@ pub fn stmt(op: X87Op, args: &[Value], dsts: &[Temp], pc: u32) -> Vec<String> {
             format!("H2X87_MARK({pc:#x}u, {fop:#x}u);")
         }],
         X87Op::Load(f) => vec![call(match f {
-            X87Format::F32 | X87Format::F64 => format!("h2x87n_ld_{}({s}, {})", f.suffix(), a(0)),
+            X87Format::F32 | X87Format::F64 => native(&format!("ld_{}", f.suffix()), a(0)),
             X87Format::I16 | X87Format::I32 => {
-                format!(
-                    "h2x87n_ld_{}({s}, ({}){})",
-                    f.suffix(),
-                    int_ptr(f).unwrap(),
-                    a(0)
-                )
+                native(&format!("ld_{}", f.suffix()), format!("({}){}", int_ptr(f).unwrap(), a(0)))
             }
             X87Format::F80 | X87Format::Bcd => format!(
                 "h2x87i_ld80({s}, {}, {}u)",
@@ -128,7 +129,7 @@ pub fn stmt(op: X87Op, args: &[Value], dsts: &[Temp], pc: u32) -> Vec<String> {
                         "h2x87_v1_st_{}({s}, {src}u, ({p} *)&t{v}, &t{sw})",
                         f.suffix()
                     ),
-                    None => format!("h2x87n_st_{}({s}, {src}u, &t{v}, &t{sw})", f.suffix()),
+                    None => native(&format!("st_{}", f.suffix()), format!("{src}u, &t{v}, &t{sw}")),
                 },
             };
             vec![
@@ -138,7 +139,7 @@ pub fn stmt(op: X87Op, args: &[Value], dsts: &[Temp], pc: u32) -> Vec<String> {
         }
         X87Op::StoreCommit { pop } => {
             let p = if pop { a(1) } else { "0u".into() };
-            vec![call(format!("h2x87n_store_commit({s}, {}, {p})", a(0)))]
+            vec![call(native("store_commit", format!("{}, {p}", a(0))))]
         }
         X87Op::StoreReg { dst, pop } => {
             vec![call(format!("h2x87n_st_st({s}, {dst}u, {}u)", pop as u32))]
@@ -146,11 +147,7 @@ pub fn stmt(op: X87Op, args: &[Value], dsts: &[Temp], pc: u32) -> Vec<String> {
         X87Op::Arith { op, dst, src, pop } => {
             let sel = op as u32 | if pop { 0x100 } else { 0 };
             let dst = if matches!(src, X87Src::St(_)) { dst } else { 0 };
-            vec![call(format!(
-                "h2x87n_arith({s}, {sel:#x}u, {dst}u, {}u, {})",
-                src.kind(),
-                src_bits(src, args)
-            ))]
+            vec![call(native("arith", format!("{sel:#x}u, {dst}u, {}u, {}", src.kind(), src_bits(src, args))))]
         }
         X87Op::Unary(u) => vec![call(format!("h2x87n_unary({s}, {}u)", u as u32))],
         X87Op::Cmp {

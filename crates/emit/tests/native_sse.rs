@@ -12,14 +12,15 @@ fn harness(native: bool) -> PathBuf {
 fn harness_mode(native: bool, mode: u32) -> PathBuf {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
-        "native-sse-{native}-{mode}-{}",
-        std::env::var("H2SSE_TEST_ARCH").unwrap_or_default()
+        "native-sse-{native}-{mode}-{}-{:?}",
+        std::env::var("H2SSE_TEST_ARCH").unwrap_or_default(),
+        std::thread::current().id()
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let mut source = std::fs::read_to_string(root.join("../simd/c/test/soft_harness.c")).unwrap();
     source = source.replace("#include \"h2simd.h\"", "#include \"h2sse_native.h\"");
     for name in &OPS[..10] {
-        source = source.replace(&format!("h2s_{name}("), &format!("h2sn_{name}("));
+        source = source.replace(&format!("h2s_{name}("), &format!("h2sn_{name}_mode(H2_FP_SAMPLE(), "));
     }
     source = source.replace(
         "    while (fread",
@@ -83,6 +84,9 @@ fn harness_mode(native: bool, mode: u32) -> PathBuf {
             "-fno-sanitize-recover=all",
         ])
         .arg(format!("-DH2_SSE_NATIVE={}", u8::from(native)))
+        .arg("-DH2_SSE_HOST_RUN=1")
+        .arg("-DH2_SSE_STICKY_PE=1")
+        .arg("-DH2_SSE_PACKED_X86=1")
         .arg(format!("-DH2SSE_HOST_MODE={mode}"))
         .arg("-I")
         .arg(root.join("c"))
@@ -140,6 +144,40 @@ fn synthetic_modes_edges_and_random_states() {
             .collect();
         check(&exe, &input);
     }
+    // FastTwoSum must detect a tiny lost addend even when binary64
+    // addition would have lost it too. Alternate signed zeros, exact
+    // cancellation and ties, and put the inexact lane last.
+    let mut sums = Vec::new();
+    for op in 0..4 {
+        for pe in [0, 0x20] {
+            for (a, b) in [(1.0f32, -1.0f32), (-0.0, 0.0), (2.0f32.powi(60), 2.0f32.powi(-60)),
+                (1.0, 2.0f32.powi(-24)), (-1.0, -2.0f32.powi(-24))] {
+                let lane = if op & 1 != 0 { 96 } else { 0 };
+                sums.push(In {
+                    op, pred: 0, mxcsr: 0x1f80 | pe,
+                    a: u128::from(a.to_bits()) << lane,
+                    b: u128::from(b.to_bits()) << lane,
+                });
+            }
+        }
+    }
+    // One rejected lane must delegate the whole packed op, even when PE
+    // was already set. Include zero divisors, negative sqrt and sNaN.
+    for op in [1, 3, 5, 7, 9] {
+        let ones = 0x3f800000_3f800000_3f800000_3f800000u128;
+        for high in [0u32, 0xbf800000, 1, 0x7f800001] {
+            for mxcsr in [0x1fa0, 0x1f20] {
+                sums.push(In {
+                    op,
+                    pred: 0,
+                    mxcsr,
+                    a: ones,
+                    b: (ones & (u128::MAX >> 32)) | (u128::from(high) << 96),
+                });
+            }
+        }
+    }
+    check(&exe, &sums);
     let off = harness(false);
     check(&off, &edge_records(false));
 }
@@ -375,6 +413,8 @@ fn fast_equiv(opt: &str, sanitize: bool, count: u64, seed: u64) -> String {
         "-Wextra",
         "-Werror",
         "-DH2_SSE_NATIVE=1",
+        "-DH2_SSE_STICKY_PE=1",
+        "-DH2_SSE_PACKED_X86=1",
     ]);
     if sanitize {
         command.args(["-fsanitize=undefined", "-fno-sanitize-recover=all"]);

@@ -24,12 +24,50 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use engine::memory::GuestMemory;
 use engine::points;
+use runtime::abi::TransferAbi;
+use timeline::native::{Metric, Stage};
 
 use crate::{BuildError, Builder, Feature, Flow, Manifest};
 
 pub const ID: &str = "native-post";
 /// The switch, looked up exactly.
 pub const SWITCH: &str = "impl.render.native_post";
+pub const WALK_SWITCH: &str = "impl.render.native_post_walk";
+
+pub fn walk_on(switches: &crate::Switches) -> bool {
+    crate::switches::native_walk_on(switches, SWITCH, WALK_SWITCH)
+}
+
+/// The screen strip's BEGIN is published and its current row is known.
+pub(crate) const SCREEN_STRIP_READY: points::Point = points::Point::new(
+    "SCREEN_STRIP_READY", 0x0002_d565, points::Sig::Site, "docs/graphics/native-renderer.md",
+);
+pub const SCREEN_STRIP_TAIL: u32 = 0x0002_d8b2;
+const SCREEN_FRAME_BYTES: u32 = 0xa8;
+
+/// Values left live at the end of the screen strip's guest vertex loop.
+pub struct StripTail {
+    pub edi: u32,
+    pub ebx: u32,
+}
+
+fn walk_strip(
+    mem: &mut dyn GuestMemory, esp: u32, mxcsr: u32,
+) -> Result<Option<StripTail>, runtime::GuestFault> {
+    let tail = (|| {
+        Some(StripTail { edi: mem.u32(esp.checked_add(0x34)?).ok()?, ebx: mem.u32(esp.checked_add(0x50)?).ok()? })
+    })();
+    let Some(tail) = tail else { return Ok(None) };
+    let Some(call_esp) = esp.checked_add(SCREEN_FRAME_BYTES) else { return Ok(None) };
+    let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else { return Ok(None) };
+    if host.draw_strip(mem, esp, call_esp, mxcsr)? {
+        Stage::Post.count(Metric::WalkSuppressed, 1);
+        Ok(Some(tail))
+    } else {
+        Ok(None)
+    }
+}
+
 
 /// Whether the native post is on (on by default since 2026-11-20;
 /// `impl.render.native_post=off` turns it off for the comparison against
@@ -73,6 +111,12 @@ pub struct CallSite {
 
 /// What the colour pass becomes: boot's glue over the GPU and the device.
 pub trait Host: Send + Sync {
+    fn draw_strip(
+        &self, _mem: &mut dyn GuestMemory, _esp: u32, _call_esp: u32, _mxcsr: u32,
+    ) -> Result<bool, runtime::GuestFault> {
+        Ok(false)
+    }
+
     /// The call of `0x000214f0` with `args` (its seven stack words) is
     /// about to run. `native`: drop its quads and draw the glow natively;
     /// otherwise only observe them (the A/B). `true`: the device is armed.
@@ -335,6 +379,21 @@ impl Feature for NativePost {
             Ok(())
         });
         if native {
+            if walk_on(b.switches()) && trace_spec().is_none() {
+                b.raw().before(&SCREEN_STRIP_READY, "native_post_walk_strip", |c| {
+                    let rt = Arc::clone(c.ctx.runtime());
+                    if !rt.read_dispatch(|dispatch| dispatch.has_resume(SCREEN_STRIP_TAIL)) {
+                        return Ok(Flow::Continue);
+                    }
+                    let Some(tail) = walk_strip(&mut *rt.memory(), c.cpu.esp, c.cpu.mxcsr)? else {
+                        return Ok(Flow::Continue);
+                    };
+                    c.cpu.edi = tail.edi;
+                    c.cpu.ebx = tail.ebx;
+                    c.cpu.ebp = 0;
+                    Ok(Flow::Return(TransferAbi::resume(SCREEN_STRIP_TAIL)))
+                }).context_only().optional();
+            }
             b.raw()
                 .before(&points::SCREEN_EFFECT, "native_post_screen_effect", move |c| {
                     let rt = Arc::clone(c.ctx.runtime());

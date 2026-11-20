@@ -1,16 +1,80 @@
 # Pipelined rendering
 
-Status: **a first prototype is built, off by default**
-(`H2_PIPELINE_RENDER=1`, "The prototype" below), on the census that
-decided it (`render-census`) and the second executor
-(docs/runtime/second-executor.md). The first census run and its verdict
-are in "Census results (2026-11-18)". Not yet run in the game.
+Enable the worker with `H2_FEATURES=impl.render.pipelined_frame=on`. It is
+off by default. `H2_PIPELINE_RENDER=1` supplies the default when the exact
+switch is unset. The switch is independent of `impl.render.native`.
 
-The question: can the game's own render front-end
-(`render_frame_and_present` `0x00223240` and everything under it,
-docs/engine/feature-engine.md section 7) run on a second host thread one
-frame behind the simulation, against a copy-on-write snapshot of guest
-RAM, so a frame costs `max(sim, render)` instead of `sim + render`?
+## Tick ordering and hash parity
+
+For an eligible world frame, the game thread drives the view loop and hands
+generated scene traversals to the render worker during preparation. Candidates
+include the game and alternate views, scene passes and graph animation data
+resolution inside HUD or UI calls. Existing native entry hooks run on their
+original thread. At `render_loop::views::END_A`, the game thread runs the
+frame wait once and launches the frame-end effects, device work and present
+on the worker. Tick N+1 can run during that final submission.
+
+| Tick-visible state | Publication before tick N+1 |
+|---|---|
+| Particles and effects | The original per-view update at `0x00174420` writes system visibility and location frame stamps on live RAM. Split-screen, culling and repeated visits retain their guest order. |
+| RNG | Particle draws advance the effects word and object updates advance the game word in the live traversal. The tick starts with both seeds left by the last view. |
+| Animation cache | A settled hit runs against frozen payloads. The game thread replays its use stamp at slot offset `+0x14`. Missing or pending payloads go through the original game-thread getter, including eviction, I/O and completion. |
+| View and object state | View frame counters, visit marks and per-object lighting allocations occur during traversal. The live current-view context is cleared before the tick. |
+
+The worker queues settled uses in visit order, including repeated uses of
+the same slot. A miss ends the batch with the getter's registers and its
+original stack argument. Before issuing that call the game thread publishes
+the prefix and replays its stamp writes. The worker takes a fresh COW view
+after the live getter returns. An entry with an outstanding I/O handle takes
+this path even when its completion byte is set, because the getter still
+has cleanup to do. A batch holds at most 256 settled uses.
+
+A scene stops at a host override, particle update or cache-owner entry and
+returns control to the game thread at that call. A changed observed page or
+incomplete footprint discards the unpublished segment and finishes the frame
+serially. The game thread waits for each scene segment during preparation.
+Tick overlap begins when the prepared frame reaches the final submission.
+
+The boot test `ordered_frame_owners_match_the_serial_tick_hash_while_drawing`
+holds a worker draw open while a synthetic tick consumes particle state,
+advances both RNGs and evicts both animation slots. It compares the slot and
+stamp bytes, the ordered I/O digest, the drawn payload and the production
+`state_hashes_v1` gameplay digest with the serial sequence. The feature rig
+also covers consecutive prepared frames and a serial fallback.
+
+## Snapshot coverage
+
+The worker has a COW view of the 64 MiB guest address space, including the
+dedicated guest stack on which the game thread ran the view loop. The
+handoff checks the caller's return PC, stack depth and outstanding Rust
+continuations. A different frame path or an open view debug bracket finishes
+serially. This avoids moving thread-local cleanup or borrowing the simulation
+stack while a tick is using it.
+
+The worker's access trap records which pages it used. A change in virtual
+mapping, backing offset or permissions selects the original serial path
+(`snapshot_mapping`). An incomplete trace selects `snapshot_trace`.
+The game thread rechecks coverage and outstanding I/O after frame preparation,
+at the snapshot boundary. If eligibility changed, it finishes the pending
+callee on live memory. Preparation, requests and the wait each run once.
+
+`render.stats.pipeline` reports serial reasons, launches, completions and
+`overlap_ms`, the cumulative worker time before the game thread joins.
+`animation_uses` counts settled stamps published in batches,
+`animation_owner_calls` counts suspended gets serviced on the game thread
+and `scene_retries` counts discarded scene segments.
+`sim_joins` is retained for telemetry compatibility and stays zero. A
+game-thread device call or the next frame still joins when required.
+Overlap can include time when the game thread is descheduled. The current
+split has no measured speedup. For gameplay parity, compare the complete
+`state_hashes_v1` tick series from matched headless runs with `-host-light`
+and the switch explicitly off and on.
+
+## Earlier whole-frame design and measurements
+
+The remaining sections record the whole-frame prototype, its census and
+the bounds estimated for moving the entire front-end to a worker. The tick
+join and its measurements below belong to that prototype.
 
 ## What it would buy
 
@@ -612,7 +676,7 @@ the record the instruction addresses.
 | `0x0003dfb1` (in `0x0003ddd0`) → `0x000bc50d` (`0x000bc470`, object update), `0x001a588b`, `0x001511f0` | 25 / 29 / 13 lines over about 3000 frames | **Object render-state handle.** `0x0003ddd0` stores a cached render-state handle at object `+0xcc` and stamps it with the render frame counter `0x004ba034`. The sim readers load `+0x68`, `+0x0c` and `+0xaa`, never `+0xcc`; object records are not 64-byte aligned, so these are other fields, often of a neighbouring object, in the same line. | (a), false sharing | Render-owned field. Merge `game_state` pages byte by byte; the render's `+0xcc` write never meets a sim write. |
 | `0x000c132e` (in `0x000c12d0`, from `0x000c15a0` ← `0x0002ba10` under `render_views`) → `0x000c3238` (`0x000c3220`), `0x000c0ca7` (`0x000c0c80`, light update from the tick through `0x000c1400`) | 12 / 7 lines, every frame | **Lights.** The render writes per-light render fields at `+0xf8..+0x108` of the 0x110-byte light record (`0x000c12d0` is the only function that touches them). The tick's light update reads `+0x02` and `+0x4c`. With a 0x110 stride, `+0x100` of one light shares a line with `+0x02`/`+0x4c` of the next. | (a), false sharing | Byte-level merge of `datum:lights`. The fields are render-only. |
 | `0x001747aa`, `0x00174837` (in `0x00174420`, from `0x00174220`/`0x00176cb0` ← the object and effect draw paths `0x0003fdf0`/`0x00040e90`) → `0x00179128` (`0x00179020` ← `0x001792b0` ← `0x00176e40`, the effect update in the tick), `0x0017531c` (`0x00175270`), `0x00248756` (`0x00248750`; both under `0x00174a30`) | 35 lines over 1820 frames, 14, and 64 over 1579 | **Particle systems.** The render pass updates particle systems as it draws them: `0x00174420` clears a flag bit at `+0x0d` and rewrites `+0x10`, `+0x30` and `+0x44` in `datum:particle_system`, `particle_emitter`, `particle_location` and `effect location`. The sim's effect and particle updates read and write the same fields (`+0x0c`, `+0x10`, `+0x30`, `+0x44`). This is real two-writer state, not false sharing. | (c), cosmetic | Make the four particle datums render-owned. The sim's particle-side updates (`0x00174a30` and `0x00179020`'s particle work) run on the render thread at the launch, against the sim's committed state, and effect creation and deletion reach them through a queue. Particles do not feed gameplay, so the order change is visible only as a one-frame shift in particle motion. Until that exists, a pipelined frame has to skip these datums in the merge and accept conflicts, which is not correct. |
-| `0x0012387a` (in `0x001237e0`, `animation_resource_get`) → `0x0012377e` (`0x001236f0`, `animation_resource_request`, from the animation code in the tick) | 25 lines over 2835 frames | **Animation cache.** The render's get updates the cache entry's use stamp (`+0x14` + 8 × index) in the cache records at `0x7ff60000`; the tick's request reads the header at `+0x64` in the same lines. When the data is not resident, the get loads it and waits (`0x001237a0`, a `SwitchToThread` loop). | (c) | Same as the texture and geometry caches (step 3.5 of the first plan): cache bookkeeping is written only on the game thread, the render's stamp updates and requests are queued and replayed at the join. |
+| `0x0012387a` (in `0x001237e0`, `animation_resource_get`) → `0x0012377e` (`0x001236f0`, `animation_resource_request`, from the animation code in the tick) | 25 lines over 2835 frames | **Animation cache.** The render's get updates the cache entry's use stamp (`+0x14` + 24 × index) in the cache records at `0x7ff60000`. The tick's request loads the entry-array header through `+0x64` and reads the same use stamp at `0x0012378c`. When the data is not resident, the get loads it and waits (`0x001237a0`, a `SwitchToThread` loop). | (c) | Same as the texture and geometry caches (step 3.5 of the first plan): cache bookkeeping is written only on the game thread, the render's stamp updates and requests are queued and replayed at the join. |
 | host, `other` (3 lines); `0x002df76e` → host | small | **Per-thread kernel scratch.** The pages at the top of the thread stacks (`0xa1005000`, `0xa1048000`, `0xa1049000`) and `0xa1001000`, which the host's kernel code writes for the calling thread. | (a) | The render thread gets its own (the second `ExecCtx` already needs its own stack and TLS). |
 
 Smaller lines (each under 10 lines a frame): the cached object
@@ -745,11 +809,11 @@ speedup only comes after steps 6 and 7. The native renderer (feature
 engine stages 7b-7d) remains the alternative if steps 6 and 7 cost more
 than they save.
 
-## The prototype (`H2_PIPELINE_RENDER=1`)
+## The prototype
 
 Build plan steps 3 (the cheap remedies), 4 (hand-back) and 5 (measure),
 as `crates/feature/src/pipeline_render.rs`, wired in the boot by
-`d3d_glue::pipeline_render`. Off unless `H2_PIPELINE_RENDER=1`; off under
+`d3d_glue::pipeline_render`. Off under
 lockstep (`H2_LOCKSTEP`, `H2_INPUT_RECORD`, `H2_INPUT_REPLAY`) and with
 `render-census`. No image change: it needs a new `h2` binary only.
 
@@ -877,10 +941,14 @@ makes the refused call with the render's CPU at that call
 the generated code's resume points; the render's last `ret` lands in a
 continuation that restores the game thread and carries on (the next
 launch, or the sim's D3D call). The frame wait inside it is skipped (it
-ran at the launch). A refusal beneath a Rust continuation on the render
-thread (a D3D push callback, a destroy delivery) cannot move to the game
-thread's context: it is counted as `unresumable:<call>` and the run stops
-with that name. Faults stop the run as they would serially.
+ran at the launch). When the render stack holds only callbacks created by
+`Call::answer_render_async`, the game thread takes the render's callback
+pool with its stack. Return tokens keep their identities, including any
+saved in guest registers. Each resumed poll reads and writes the current
+executor's RAM through its `Cx`. The outer render return restores the
+original game callback pool. Other live Rust callbacks, including a D3D
+push callback or a destroy delivery, still stop a fallback with
+`unresumable:<call>`. Faults stop the run as they would serially.
 
 A fallback after serviced calls had two more faults, fixed with the
 crash at present 1825 (a render-thread fault in object code at
@@ -940,7 +1008,7 @@ sight of each listed guest word prints `pipeline: watch <addr> = <value>
 (its page mapped|unmapped) first seen after <step>`, and every change of
 the value, or of whether the page it points at is mapped, prints
 `pipeline: watch <addr> <old> -> <new> after <step>`; at most 200 lines.
-With `H2_PIPELINE_RENDER` unset the watch still runs, at each
+With the pipeline switched off the watch still runs, at each
 `render_frame_and_present` entry (`the game thread ran (pipelining off)`),
 and nothing else of the feature is installed (no render stack in the
 arena): the run to compare with. A step says who changed it: `the game
@@ -997,9 +1065,10 @@ followed by `after_fallback` serial frames. Rather than allowing one hook
 per run, an override can now be marked context-only
 (`Dispatch::mark_context_only`): it acts only on the context it runs on
 (its registers, guest stack and the memory that context sees, plus host
-state it only reads) and returns without a Rust continuation. The
-executor's fork keeps every marked override, whatever `allow` says, and a
-new override at the same address clears the mark. Plan hooks say it on
+state it only reads). It returns synchronously or suspends through
+`Call::answer_render_async` with owned render state. The executor's fork
+keeps every marked override, whatever `allow` says, and a new override at
+the same address clears the mark. Plan hooks say it on
 declaration (`HookRef::context_only`). The plan marks a chain when every
 hook in it says so and nothing runs after the body (`Chain::render_thread`):
 an `after` or `observe_after` hook means the body is called through the
@@ -1416,7 +1485,7 @@ the render. With the tick joining first, the overlap is the frame's work
 outside the tick. The next real win has to come from a cheaper render
 (docs/perf/gameplay-budget.md), not from more pipelining.
 
-### Where it stands (2026-11-18)
+### Whole-frame prototype measurements (2026-11-18)
 
 Measured live with the tick joining first (03a, headless GPU backend,
 `H2_OPT=2` with PGO, gameplay around present 38,000; totals over 38,107

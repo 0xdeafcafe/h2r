@@ -84,6 +84,24 @@ fn analysed() -> Analysis {
 }
 
 #[test]
+fn a_researched_instruction_can_split_an_owner_at_a_dispatch_boundary() {
+    // mov eax, 1; inc eax; ret
+    let data = xbe_with(&[0xb8, 1, 0, 0, 0, 0x40, 0xc3]);
+    let x = Xbe::parse(&data).unwrap();
+    let mut a = analyze(&x).unwrap();
+    a.expose_instructions([TEXT + 2, TEXT + 5]);
+    assert!(!a.functions.contains_key(&(TEXT + 2)), "middle of MOV");
+    assert!(a.functions.contains_key(&(TEXT + 5)));
+    let cfg = cfg::CfgBuilder::new(&a, &x);
+    let entry = cfg.build(TEXT).unwrap();
+    assert_eq!(entry.blocks[&TEXT].insns, [TEXT]);
+    assert!(entry.blocks[&TEXT].edges.iter().any(|edge| {
+        edge.target == Some(TEXT + 5) && edge.exits
+    }));
+    assert_eq!(cfg.build(TEXT + 5).unwrap().insn_count(), 2);
+}
+
+#[test]
 fn calls_that_never_return_end_the_block() {
     let a = analysed();
     assert!(a.conflicts.is_empty(), "{:?}", a.conflicts);

@@ -66,6 +66,10 @@ mod display;
 mod fragments;
 mod mirror;
 mod native_residual;
+mod opaque_vertices;
+pub use opaque_vertices::{PreparedWorldVertices, WorldVertexKey};
+mod opaque_world;
+pub use opaque_world::{PreparedIndexRange, PreparedOpaqueTargets, PreparedStageTexture};
 mod raster;
 use native_residual::{EntryKind, Residual};
 mod snap;
@@ -286,6 +290,50 @@ pub struct StreamSource {
     pub stride: u32,
     /// Byte offset of vertex 0.
     pub offset: u32,
+}
+
+/// Decode the per-register D3D vertex attribute format in program mode.
+/// The stream stride comes from the live or prospective stream binding.
+pub fn declaration_streams(
+    vaf: &[u32; 64],
+    stride: impl Fn(usize) -> u32,
+    entry: &'static str,
+) -> Result<Vec<StreamLayout>, D3dError> {
+    let mut by_stream: Vec<StreamLayout> = Vec::new();
+    for reg in 0..16usize {
+        let (stream, offset, format) =
+            (vaf[4 * reg], vaf[4 * reg + 1], vaf[4 * reg + 2] & 0xFF);
+        if format == 0x02 {
+            continue; // D3DVSDT_NONE
+        }
+        if stream >= 16 {
+            return Err(D3dError::invalid(
+                entry,
+                format!("vertex register {reg} reads stream {stream}"),
+            ));
+        }
+        let data_type = VertexDataType::from_xbox(format).ok_or_else(|| {
+            D3dError::unimplemented(
+                entry,
+                format!("vertex register {reg} data type {format:#x}"),
+            )
+        })?;
+        let attr = VertexAttribute {
+            register: VertexRegister(reg as u8),
+            data_type,
+            offset,
+        };
+        match by_stream.iter_mut().find(|s| s.stream == stream) {
+            Some(s) => s.attributes.push(attr),
+            None => by_stream.push(StreamLayout {
+                stream,
+                attributes: vec![attr],
+                stride: stride(stream as usize),
+            }),
+        }
+    }
+    by_stream.sort_by_key(|s| s.stream);
+    Ok(by_stream)
 }
 
 /// `D3DRECT`.
@@ -946,6 +994,7 @@ pub struct Device<B: Backend> {
     /// The last vertex program's attribute format words and the stream
     /// layout they give (`vertex_setup`).
     vertex_memo: Option<VertexMemo>,
+    world_vertex_plans: opaque_vertices::WorldVertexPlans,
     /// The last state translated, part by part: a part is reused while its
     /// guest words are unchanged.
     translated: crate::state::TranslateMemo,
@@ -1040,6 +1089,8 @@ pub struct Device<B: Backend> {
     /// since the last drain, issued after the next one in the order asked.
     pending_external: Vec<Box<dyn crate::backend::ExternalPass>>,
     admissions: Vec<Arc<dyn crate::DrawAdmission>>,
+    opaque_world_admission: Option<usize>,
+    opaque_targets: Option<PreparedOpaqueTargets>,
     scoped_admission: Option<(Arc<ScopeState>, Arc<dyn crate::DrawAdmission>)>,
     residual: Residual,
     /// Optional vertex-binding optimization at the resolved indexed draw.
@@ -1165,6 +1216,10 @@ struct ScopeState {
 #[must_use]
 pub struct DrawScope(Arc<ScopeState>);
 
+impl DrawScope {
+    pub fn committed(&self) -> bool { self.0.committed.load(AtomicOrdering::Acquire) }
+}
+
 impl Drop for DrawScope {
     fn drop(&mut self) { self.0.closed.store(true, AtomicOrdering::Release); }
 }
@@ -1195,7 +1250,7 @@ impl<S: Copy + Eq> ExternalBinding<S> {
 }
 
 pub(crate) fn complete_recordings(plan: &crate::ExternalPlan, c: &[crate::ExternalRecording]) -> bool {
-    let copies = matches!(c, [r] if r.copy == crate::TargetCopy::Reference)
+    let copies = matches!(c, [one] if one.copy == crate::TargetCopy::Reference || one.single_display)
         || matches!(c, [r, d] if r.copy == crate::TargetCopy::Reference && d.copy == crate::TargetCopy::Display);
     copies && c.iter().all(|r| plan.complete(r.copy, r.ranges))
 }
@@ -1268,6 +1323,7 @@ impl<B: Backend> Device<B> {
             translator: Translator::new(&RenderStateTable::default()),
             translated: Default::default(),
             vertex_memo: None,
+            world_vertex_plans: Default::default(),
             backend,
             created: false,
             params: None,
@@ -1331,6 +1387,8 @@ impl<B: Backend> Device<B> {
             pending_grid: None,
             pending_external: Vec::new(),
             admissions: Vec::new(),
+            opaque_world_admission: None,
+            opaque_targets: None,
             scoped_admission: None,
             residual: Residual::default(),
             indexed_geometry: None,
@@ -1755,6 +1813,7 @@ impl<B: Backend> Device<B> {
         self.swap_count = 0;
         self.fence = 0;
         self.cache.clear();
+        self.world_vertex_plans = Default::default();
         if let Some(c) = &mut self.vertex_cache {
             c.clear();
         }
@@ -2090,6 +2149,14 @@ impl<B: Backend> Device<B> {
     /// Consult admissions at the actual resolved geometry emission, in registration order.
     pub fn add_draw_admission(&mut self, admission: Arc<dyn crate::DrawAdmission>) {
         self.admissions.push(admission);
+    }
+
+    /// Sorted BSP producers have already selected this owner. The same
+    /// owner also participates in ordinary indexed admission at its usual
+    /// priority. It consumes palette-resolved host views only.
+    pub fn add_opaque_world_admission(&mut self, admission: Arc<dyn crate::DrawAdmission>) {
+        self.opaque_world_admission = Some(self.admissions.len());
+        self.add_draw_admission(admission);
     }
 
     /// Enter a guest helper that emits a single candidate draw. Drain earlier
@@ -3482,8 +3549,33 @@ impl<B: Backend> Device<B> {
             self.refresh_pushed(mem)?;
         }
         let p = self.pushed.as_mut().expect("just set");
-        Arc::make_mut(p).render[slot as usize] = value;
+        // Queued draws can retain this Arc. An unchanged canonical GPU
+        // register does not require copying their entire state snapshot.
+        if p.render[slot as usize] != value {
+            Arc::make_mut(p).render[slot as usize] = value;
+        }
         Ok(())
+    }
+
+    /// In-process Simple setter for an opaque shader handoff. The register
+    /// changes no resources. PUT must already be consumed and the device's
+    /// pushed state initialized, so no guest vertex, texture, push command
+    /// or shadow data can be consumed ahead of a dirty-watch boundary.
+    pub fn try_opaque_simple(
+        &mut self, mem: &dyn GuestMemory, header: u32, value: u32,
+    ) -> bool {
+        if !self.created || self.pushed.is_none() || self.fault.is_some()
+            || self.trace.is_some() || self.swallowing.is_some()
+            || self.active_callback.is_some() || self.undelivered.is_some()
+            || !self.pending_destroys.is_empty() || !self.display.pending.is_empty()
+            || self.pending_grid.is_some() || !self.pending_external.is_empty()
+            || mem.read_u32(self.cfg.layout.device + field::PUT).ok() != Some(self.consumed)
+        {
+            return false;
+        }
+        // Both drains in the ABI path would find an empty ring. The
+        // setter uses exactly the normal canonical slot and counts it.
+        self.commit_simple(mem, header, value).is_ok()
     }
 
     /// `SetRenderState_Simple` (`0x3f5cf0`, `ECX` = push header
@@ -3498,9 +3590,15 @@ impl<B: Backend> Device<B> {
         header: u32,
         value: u32,
     ) -> Result<(), D3dError> {
-        const E: &str = "D3DDevice_SetRenderState_Simple";
-        self.live(E)?;
+        self.live("D3DDevice_SetRenderState_Simple")?;
         self.sync_push_buffer(mem)?;
+        self.commit_simple(mem, header, value)
+    }
+
+    fn commit_simple(
+        &mut self, mem: &dyn GuestMemory, header: u32, value: u32,
+    ) -> Result<(), D3dError> {
+        const E: &str = "D3DDevice_SetRenderState_Simple";
         let method = header & 0x3_FFFF;
         let slot = (header >> 18 == 1)
             .then(|| self.mirror_slot(method))
@@ -4858,40 +4956,7 @@ impl<B: Backend> Device<B> {
                 streams,
             ));
         }
-        let mut by_stream: Vec<StreamLayout> = Vec::new();
-        for reg in 0..16usize {
-            let (stream, offset, format) =
-                (vaf[4 * reg], vaf[4 * reg + 1], vaf[4 * reg + 2] & 0xFF);
-            if format == 0x02 {
-                continue; // D3DVSDT_NONE
-            }
-            if stream >= 16 {
-                return Err(D3dError::invalid(
-                    entry,
-                    format!("vertex register {reg} reads stream {stream}"),
-                ));
-            }
-            let data_type = VertexDataType::from_xbox(format).ok_or_else(|| {
-                D3dError::unimplemented(
-                    entry,
-                    format!("vertex register {reg} data type {format:#x}"),
-                )
-            })?;
-            let attr = VertexAttribute {
-                register: VertexRegister(reg as u8),
-                data_type,
-                offset,
-            };
-            match by_stream.iter_mut().find(|s| s.stream == stream) {
-                Some(s) => s.attributes.push(attr),
-                None => by_stream.push(StreamLayout {
-                    stream,
-                    attributes: vec![attr],
-                    stride: bound(stream as usize).stride,
-                }),
-            }
-        }
-        by_stream.sort_by_key(|s| s.stream);
+        let by_stream = declaration_streams(&vaf, |i| bound(i).stride, entry)?;
         let streams = by_stream.iter().map(|s| bound(s.stream as usize)).collect();
         self.vertex_memo = Some(VertexMemo {
             vaf,
@@ -5295,6 +5360,7 @@ impl<B: Backend> Device<B> {
     /// Turns the vertex cache on (with `budget` bytes of snapshots) or off
     /// (every draw copies its streams: `H2_VERTEX_CACHE=0`). Starts empty.
     pub fn set_vertex_cache(&mut self, budget: Option<usize>) {
+        self.world_vertex_plans = Default::default();
         self.vertex_cache = budget.map(VertexCache::new);
         self.index_cache = budget.map(|b| IndexCache::new(b / 4));
     }
@@ -5355,7 +5421,7 @@ impl<B: Backend> Device<B> {
             self.trace_draw(e, p, v, 0, None, None);
         }
         let mut streams = std::mem::take(&mut parts.streams);
-        let result = self.submit_inner(mem, parts, &mut streams);
+        let result = self.submit_inner(mem, parts, &mut streams, None, None);
         self.recycle_streams(streams);
         result
     }
@@ -5365,10 +5431,16 @@ impl<B: Backend> Device<B> {
         mem: &mut dyn GuestMemory,
         parts: DrawParts,
         streams: &mut Vec<StreamBytes>,
+        mut native: Option<(&dyn crate::DrawAdmission, &mut bool)>,
+        prepared: Option<opaque_world::PacketInputs<'_>>,
     ) -> Result<(), D3dError> {
         let entry = parts.entry;
         // Consume the candidate even when it proves empty, clipped or unresolved.
-        let scoped = self.scoped_admission.take().filter(|(state, _)| !state.closed.load(AtomicOrdering::Acquire));
+        let scoped = if native.is_none() {
+            self.scoped_admission.take().filter(|(state, _)| !state.closed.load(AtomicOrdering::Acquire))
+        } else {
+            None
+        };
         if self.swallowing.as_ref().is_some_and(|s| !s.holding)
             && !matches!(entry, "inline Begin/End" | "D3DDevice_End")
         {
@@ -5389,6 +5461,7 @@ impl<B: Backend> Device<B> {
         let mut keys = [None; 4];
         let mut texture_info = [None; 4];
         let mut glyph_cache = 0u8;
+        let mut reads_frame_copy = false;
         let mut snapshots: [Option<B::Texture>; 4] = Default::default();
         let mut aliases: [Option<raster::DepthAliasKey>; 4] = [None; 4];
         let mut depth_levels: [Option<u32>; 4] = [None; 4];
@@ -5411,6 +5484,7 @@ impl<B: Backend> Device<B> {
                 match self.frame_texture(mem, header, sampled[stage], extras[stage].color_sign)? {
                     FrameTexture::No => {}
                     FrameTexture::Snapshot(info, t) => {
+                        reads_frame_copy |= sampled[stage];
                         // Snapshots are not stored biased, so COLORSIGN
                         // cannot apply to them (docs/graphics/shaders.md).
                         extras[stage].color_sign = 0;
@@ -5419,6 +5493,7 @@ impl<B: Backend> Device<B> {
                         continue;
                     }
                     FrameTexture::DepthAlias(info, key) => {
+                        reads_frame_copy |= sampled[stage];
                         extras[stage].color_sign = key.1;
                         texture_info[stage] = Some(info);
                         aliases[stage] = Some(key);
@@ -5426,8 +5501,10 @@ impl<B: Backend> Device<B> {
                     }
                     FrameTexture::Skip(reason) if sampled[stage] => {
                         self.swallow_abort(SwallowRefusal::Resource, || format!("post sample at stage {stage}: {reason}"))?;
-                        self.stats.draws += 1;
-                        self.events.push(Event::DrawSkipped { entry, reason });
+                        if native.is_none() {
+                            self.stats.draws += 1;
+                            self.events.push(Event::DrawSkipped { entry, reason });
+                        }
                         return Ok(());
                     }
                     // A stage the draw does not read: left unbound.
@@ -5451,14 +5528,20 @@ impl<B: Backend> Device<B> {
                     depth_levels[stage] = Some(level);
                     continue;
                 }
+                if let Some((info, t)) = self.rtt_alias_texture(mem, header, extras[stage].color_sign)? {
+                    texture_info[stage] = Some(info);
+                    snapshots[stage] = Some(t);
+                    continue;
+                }
                 self.flush_for_texture(mem, header, WritebackCause::Sample)?;
-                let (k, i) = self.resolve_texture(
-                    mem,
-                    entry,
-                    header,
-                    self.palettes[stage],
-                    extras[stage].color_sign,
-                )?;
+                let palette = self.palettes[stage];
+                let sign = extras[stage].color_sign;
+                let prepared = prepared.and_then(|p| p.textures[stage])
+                    .and_then(|p| self.prepared_texture(mem, p, header, palette, sign));
+                let (k, i) = match prepared {
+                    Some(binding) => binding,
+                    None => self.resolve_texture(mem, entry, header, palette, sign)?,
+                };
                 extras[stage].color_sign = k.2;
                 keys[stage] = Some(k);
                 texture_info[stage] = Some(i);
@@ -5468,7 +5551,10 @@ impl<B: Backend> Device<B> {
             }
         }
         self.swallow_target_switch(mem, self.render_target, self.depth_stencil)?;
-        let (target, compatible_geometry_target) = self.target_info(mem)?;
+        let (target, compatible_geometry_target) = match prepared {
+            Some(p) if self.matches_opaque_targets(mem, p.targets) => (p.targets.info, false),
+            _ => self.target_info(mem)?,
+        };
         let (color, depth) = self.current_targets(mem, entry)?;
         let writes_depth = writes_depth_or_stencil(&state.render, target.depth_format);
         // The presented image is kept before anything draws over it; what
@@ -5512,28 +5598,54 @@ impl<B: Backend> Device<B> {
         } else {
             (draw, snapshots)
         };
-        let admission = if self.swallowing.is_some() || (scoped.is_none() && self.admissions.is_empty())
+        let admission = if self.swallowing.is_some() || (native.is_none() && scoped.is_none() && self.admissions.is_empty())
             || !draw.state.bad.is_empty() || self.hw.zpass_count_enable
         {
             None
         } else {
+            let owner = prepared.and(self.opaque_world_admission).and_then(|i| self.admissions.get(i));
             let snapshot = crate::DrawSnapshot {
                 draw: &draw, vertex_shader: self.vertex_shader, pixel_shader: self.pixel_shader,
                 bound_textures: self.textures, sampled_stages: sampled, palettes: self.palettes,
-                palette_entries: std::array::from_fn(|i| self.stage_palette(mem, i)),
+                palette_entries: if owner.is_some() { Default::default() } else {
+                    std::array::from_fn(|i| self.stage_palette(mem, i))
+                },
                 color_header: self.render_target, depth_header: self.depth_stencil,
             };
-            if let Some((_, stage)) = &scoped {
+            if let Some(owner) = owner {
+                crate::backend::admit_draw(owner.as_ref(), &snapshot)
+            } else if let Some((stage, _)) = &native {
+                crate::backend::admit_draw(*stage, &snapshot)
+            } else if let Some((_, stage)) = &scoped {
                 crate::backend::admit_draw(stage.as_ref(), &snapshot)
             } else {
                 self.admissions.iter().find_map(|stage| crate::backend::admit_draw(stage.as_ref(), &snapshot))
             }
         };
+        let mut fallback_reason = "packet admission";
         let replacement = admission.and_then(|(plan, mut pass)| {
             use timeline::native::Metric;
+            if (pass.indexed_tail().is_some_and(|tail| tail.remaining > 1)
+                || pass.requires_independent_samples())
+                && (reads_frame_copy || !self.independent_samples(mem, &sampled)) {
+                plan.stage.count(Metric::RefusedResources, 1);
+                return None;
+            }
             match self.external_binding(mem, &plan, &mut *pass, None) {
-                Ok(binding) => Some((plan, pass, binding)),
+                Ok(binding) if native.is_none()
+                    || (binding.surfaces.color == color
+                        && binding.depth_write == writes_depth
+                        && (!writes_depth || depth == Some(binding.surfaces.depth))
+                        && binding.colors.iter().all(|&(h, s)| h == self.render_target && s == color)) =>
+                {
+                    Some((plan, pass, binding))
+                }
+                Ok(_) => {
+                    plan.stage.count(Metric::RefusedInputs, 1);
+                    None
+                }
                 Err(why) => {
+                    fallback_reason = why.describe();
                     self.refuse_external(why);
                     plan.stage.count(Metric::Examined, 1);
                     plan.stage.count(Metric::RefusedResources, 1);
@@ -5552,10 +5664,11 @@ impl<B: Backend> Device<B> {
                 .or_else(|| depth_levels[i].and_then(|h| self.depth_level_tex.get(&h)))
                 .or_else(|| keys[i].and_then(|k| self.cache.get(&k)).map(|c| &c.host))
         });
-        self.stats.draws += 1;
+        self.stats.draws += u64::from(native.is_none());
         let replacement = replacement.filter(|(plan, pass, _)| {
             let missing = (0..4).any(|i| sampled[i] && draw.textures[i].is_some() && textures[i].is_none());
             if missing {
+                fallback_reason = "sampled texture unavailable";
                 let items = pass.items(plan.ranges) as u64;
                 plan.stage.count(timeline::native::Metric::Examined, items);
                 plan.stage.count(timeline::native::Metric::RefusedResources, items);
@@ -5566,7 +5679,8 @@ impl<B: Backend> Device<B> {
             // Layer-level mask edits and helper scopes need the answer immediately.
             // At a resolved draw the original packet is sufficient for worker fallback
             // when both routes make precisely the same guest-visible writes.
-            let fallback = if scoped.is_none()
+            let tail = pass.indexed_tail();
+            let fallback = if native.is_none() && tail.is_none() && scoped.is_none()
                 && binding.same_draw_writes(self.render_target, color, depth, writes_depth)
                 && !(parts.indexed_esp.is_some() && compatible_geometry_target && (self.indexed_geometry_scope)())
             {
@@ -5576,12 +5690,16 @@ impl<B: Backend> Device<B> {
             };
             let pass = Arc::new(std::sync::Mutex::new(pass));
             if let Some(fallback) = fallback {
+                let material = prepared.map(|p| p.material);
                 let stats = Arc::clone(&self.queued_external_stats);
                 let queued = crate::backend::QueuedExternalDraw {
                     surfaces: binding.surfaces.clone(), request: binding.request, plan: plan.clone(),
                     pass: pass.clone(), fallback, fallback_depth: depth, finished: Box::new(move |fallback| {
                         let count = if fallback.is_some() { &stats.dropped } else { &stats.committed };
                         count.fetch_add(1, AtomicOrdering::Relaxed);
+                        if let Some(shader) = material {
+                            timeline::native::world_packet(shader, fallback.map(|_| "worker recording"));
+                        }
                     }),
                 };
                 if self.backend.queue_external_draw(queued, textures) {
@@ -5594,13 +5712,24 @@ impl<B: Backend> Device<B> {
                 binding.surfaces.clone(), binding.request, textures, &plan, crate::TargetCopy::Reference, pass,
             );
             if let Ok(Some(recordings)) = commands && complete_recordings(&plan, &recordings) {
-                for &(_, surface) in &binding.colors { self.before_target_write(surface)?; }
-                PreparedExternal { device: self, binding, recordings }.commit();
-                if let Some((scope, _)) = scoped { scope.committed.store(true, AtomicOrdering::Release); }
-                *streams = draw.streams;
-                return Ok(());
+                // The original first draw is still intact. On a stale
+                // cursor or a stack fault, drop every unpublished copy.
+                if tail.is_none_or(|t| t.consume(mem, parts.indexed_esp)) {
+                    for &(_, surface) in &binding.colors { self.before_target_write(surface)?; }
+                    PreparedExternal { device: self, binding, recordings }.commit();
+                    if let Some(p) = prepared { timeline::native::world_packet(p.material, None); }
+                    if let Some((_, committed)) = native.as_mut() { **committed = true; }
+                    if let Some((scope, _)) = scoped { scope.committed.store(true, AtomicOrdering::Release); }
+                    *streams = draw.streams;
+                    return Ok(());
+                }
             }
+            fallback_reason = "backend recording";
             self.stats.external_passes_dropped += 1;
+        }
+        if native.is_some() {
+            *streams = draw.streams;
+            return Ok(());
         }
         // Only adapt geometry for a submission that will use the D3D draw.
         // A committed external replacement recycles the original streams.
@@ -5617,6 +5746,9 @@ impl<B: Backend> Device<B> {
             None
         };
         let (outcome, spare) = self.backend.draw_owned(color, depth, draw, textures);
+        if let Some(p) = prepared {
+            timeline::native::world_packet(p.material, Some(fallback_reason));
+        }
         if let Some(original) = original {
             // A threaded backend may return buffers from an earlier draw.
             for stream in spare {
@@ -5759,6 +5891,51 @@ impl<B: Backend> Device<B> {
         self.draw_indexed_vertices_at(mem, primitive, count, indices, None)
     }
 
+    // A later draw would resolve an overlapping texture again after the
+    // first target write. Different headers can name the same guest bytes.
+    fn independent_samples(&self, mem: &dyn GuestMemory, sampled: &[bool; 4]) -> bool {
+        let targets = [self.render_target, self.depth_stencil];
+        for (&read, &texture) in sampled.iter().zip(&self.textures) {
+            if !read || texture == 0 { continue; }
+            let Ok((start, end)) = self.resource_span(mem, texture) else { return false };
+            for &target in &targets {
+                if target == 0 { continue; }
+                let Ok((a, b)) = self.resource_span(mem, target) else { return false };
+                // The resource decoder uses a one-byte span for unknown layouts.
+                if end - start <= 1 || b - a <= 1 || (start < b && a < end) { return false; }
+            }
+        }
+        true
+    }
+
+    /// Read the other complete parts of a native scene batch with the
+    /// leader's current stream bindings. Use the normal index rebasing,
+    /// vertex base, address translation and write-tracked stream cache.
+    pub fn indexed_siblings(
+        &mut self, mem: &dyn GuestMemory, ranges: &[(u32, u32)],
+    ) -> Result<Vec<crate::backend::IndexedStreams>, D3dError> {
+        const E: &str = "native light geometry";
+        if ranges.is_empty() { return Ok(Vec::new()); }
+        if ranges.len() > 2560 { return Err(D3dError::invalid(E, "too many parts")); }
+        let base = mem.read_u32(self.cfg.layout.device + field::BASE_VERTEX)?;
+        let (layout, _, sources) = self.vertex_setup(mem, E)?;
+        let mut out = Vec::with_capacity(ranges.len());
+        let mut budget = 32u64 << 20;
+        for &(addr, count) in ranges {
+            vertex_limit(E, count)?;
+            if count < 3 { return Err(D3dError::invalid(E, "incomplete part")); }
+            let (lo, hi, indices) = self.index_list(mem, addr, span(E, count, 2)?)?;
+            base.checked_add(u32::from(hi)).ok_or_else(|| D3dError::invalid(E, "vertex base overflow"))?;
+            let window = u32::from(hi) - u32::from(lo) + 1;
+            let bytes = u64::from(count) * 4 + sources.iter().map(|s| u64::from(s.stride) * u64::from(window)).sum::<u64>();
+            budget = budget.checked_sub(bytes).ok_or_else(|| D3dError::invalid(E, "vertex window budget"))?;
+            let streams = sources.iter().map(|s| self.read_stream(mem, E, s, base + u32::from(lo), window))
+                .collect::<Result<Vec<_>, _>>()?;
+            out.push(crate::backend::IndexedStreams { layout: layout.clone(), vertex_count: window, streams, indices });
+        }
+        Ok(out)
+    }
+
     pub(crate) fn draw_indexed_vertices_at(
         &mut self,
         mem: &mut dyn GuestMemory,
@@ -5771,12 +5948,28 @@ impl<B: Backend> Device<B> {
         self.live(E)?;
         self.sync_push_buffer(mem)?;
         let primitive = Self::primitive(E, primitive)?;
+        let Some(parts) = self.indexed_parts(mem, primitive, count, indices, esp, true)? else {
+            return Ok(());
+        };
+        self.submit(mem, parts)
+    }
+
+    fn indexed_parts(
+        &mut self,
+        mem: &dyn GuestMemory,
+        primitive: PrimitiveType,
+        count: u32,
+        indices: u32,
+        esp: Option<u32>,
+        publish_state: bool,
+    ) -> Result<Option<DrawParts>, D3dError> {
+        const E: &str = "D3DDevice_DrawIndexedVertices";
         vertex_limit(E, count)?;
         let base = mem.read_u32(self.cfg.layout.device + field::BASE_VERTEX)?;
         let index_bytes = span(E, count, 2)?;
         if index_bytes < 2 {
             crate::guest::check_range(indices, index_bytes)?;
-            return Ok(());
+            return Ok(None);
         }
         let (lo16, hi16, list) = self.index_list(mem, indices, index_bytes)?;
         // Every index overflows alike or none does: the largest decides.
@@ -5797,27 +5990,29 @@ impl<B: Backend> Device<B> {
                 }
             }
         }
-        let words = match self.draw_state(mem) {
+        let words = if publish_state {
+            self.draw_state(mem)
+        } else {
+            self.state(mem).map(Arc::new)
+        };
+        let words = match words {
             Ok(words) => words,
             Err(e) => {
                 self.recycle_streams(streams);
                 return Err(e);
             }
         };
-        self.submit(
-            mem,
-            DrawParts {
-                entry: E,
-                indexed_esp: esp,
-                primitive,
-                vertex_count: window,
-                layout,
-                vertex,
-                streams,
-                indices: Some(list),
-                words,
-            },
-        )
+        Ok(Some(DrawParts {
+            entry: E,
+            indexed_esp: esp,
+            primitive,
+            vertex_count: window,
+            layout,
+            vertex,
+            streams,
+            indices: Some(list),
+            words,
+        }))
     }
 
     /// The 16-bit index list `[va, va + len)`: its smallest and largest
@@ -6039,6 +6234,18 @@ impl<B: Backend> Device<B> {
         if !d.inline.is_empty() {
             return self.inline_array_draw(mem, entry, d);
         }
+        let words = self.pushed_state(mem)?;
+        let parts = self.immediate_parts(mem, entry, d, words)?;
+        self.submit(mem, parts)
+    }
+
+    fn immediate_parts(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        entry: &'static str,
+        d: ImmediateDraw,
+        words: Arc<StateWords>,
+    ) -> Result<DrawParts, D3dError> {
         let (layout, vertex) = if self.vertex_shader & 1 == 0 {
             let (l, v, _) = self.vertex_setup(mem, entry)?;
             (l, v)
@@ -6119,21 +6326,17 @@ impl<B: Backend> Device<B> {
                 stride: s.stride,
             });
         }
-        let words = self.pushed_state(mem)?;
-        self.submit(
-            mem,
-            DrawParts {
-                entry,
-                indexed_esp: None,
-                primitive: d.primitive,
-                vertex_count: d.vertices.len() as u32,
-                layout,
-                vertex,
-                streams,
-                indices: None,
-                words,
-            },
-        )
+        Ok(DrawParts {
+            entry,
+            indexed_esp: None,
+            primitive: d.primitive,
+            vertex_count: d.vertices.len() as u32,
+            layout,
+            vertex,
+            streams,
+            indices: None,
+            words,
+        })
     }
 }
 
@@ -6309,7 +6512,7 @@ pub(crate) fn inline_array_layout(
 /// stencil test that can store something (the format has stencil, the
 /// write mask is not zero, and some outcome's operation is not `KEEP`). A
 /// read-only test changes nothing.
-fn writes_depth_or_stencil(r: &gfx::RenderState, depth: Option<D3DFormat>) -> bool {
+pub(crate) fn writes_depth_or_stencil(r: &gfx::RenderState, depth: Option<D3DFormat>) -> bool {
     use gfx::state::{DepthBufferMode, StencilOp};
     let Some(f) = depth else {
         return false;

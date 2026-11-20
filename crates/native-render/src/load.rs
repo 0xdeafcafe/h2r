@@ -27,6 +27,9 @@ pub struct LoadedWorld {
     pub shaders: Vec<TagId>,
     /// The lightmap group's bitmap and palettes, when the BSP is lit.
     pub lightmap_bitmap: Option<TagId>,
+    /// A damaged lightmap tag makes the lighting selector unknown.
+    /// Geometry remains available to other passes.
+    pub lightmap_error: Option<String>,
     pub palettes: Vec<[u32; 256]>,
     /// Sections that did not decode (left to the D3D path).
     pub failed_sections: u32,
@@ -157,11 +160,13 @@ pub fn load_world<R: Read + Seek>(
     let &(bsp_id, lightmap) = bsps.get(index).ok_or("no such BSP")?;
     let shaders = bsp_shaders(map, bsp_id)?;
     let bsp = StructureRender::read(map, bsp_id)?;
-    let group = lightmap.and_then(|l| Lightmap::read(map, l).ok()).and_then(|l| {
-        l.groups
-            .into_iter()
-            .find(|g| g.structure_checksum == bsp.checksum && g.bitmap.is_some())
-    });
+    // The record builder tests the first group only. A later group with
+    // the same checksum cannot change the lighting implementation.
+    let (group, lightmap_error) = match lightmap.map(|id| Lightmap::read(map, id)).transpose() {
+        Ok(l) => (l.and_then(|l| l.groups.into_iter().next())
+            .filter(|g| g.structure_checksum == bsp.checksum && g.bitmap.is_some()), None),
+        Err(e) => (None, Some(e.to_string())),
+    };
     let (clusters, instances) = group
         .as_ref()
         .map_or((&[][..], &[][..]), |g| (&g.cluster_render_info[..], &g.instance_render_info[..]));
@@ -240,6 +245,7 @@ pub fn load_world<R: Read + Seek>(
         world: b.finish(),
         shaders,
         lightmap_bitmap: group.as_ref().and_then(|g| g.bitmap),
+        lightmap_error,
         palettes: group.map(|g| g.palettes).unwrap_or_default(),
         failed_sections: failed,
     })

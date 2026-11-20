@@ -20,9 +20,9 @@ impl Site {
     ];
     pub const fn boundaries(self) -> (u32, u32) {
         match self {
-            Self::Billboard => (0x0004_8497, 0x0004_849c),
-            Self::DepthBillboard => (0x0004_8ae5, 0x0004_8aea),
-            Self::WeatherLayer => (0x0003_8342, 0x0003_8347),
+            Self::Billboard => (0x0004_8497, 0x0004_849d),
+            Self::DepthBillboard => (0x0004_8ae5, 0x0004_8aeb),
+            Self::WeatherLayer => (0x0003_8342, 0x0003_8349),
             Self::WeatherParticles => (0x0003_96f7, 0x0003_96f9),
             Self::MaterialStrip => (0x0019_fc3e, 0x0019_fc40),
         }

@@ -48,6 +48,7 @@ pub mod memory;
 pub mod points;
 pub mod render;
 pub mod render_loop;
+pub mod scene_list_math;
 pub mod screen_effect;
 pub mod screen_effects;
 pub mod screen_grid;
@@ -59,10 +60,18 @@ pub mod hs_syntax;
 mod squad_pool;
 pub mod tags;
 pub mod testing;
+pub mod ui_backdrop;
+pub mod ui_model;
+pub mod ui_sprite;
 pub mod view;
 
 #[cfg(feature = "runtime-glue")]
 pub mod runtime_glue;
+#[cfg(feature = "runtime-glue")]
+pub mod sim_native;
+
+#[cfg(feature = "runtime-glue")]
+pub mod sim_physics;
 
 pub use handle::DatumHandle;
 pub use memory::{FlatMemory, GuestMemory, MemFault};

@@ -158,7 +158,7 @@ process (boot and load included).
 What it changes (**Code**, `crates/boot/src/sim_glue.rs`,
 `crates/feature/src/sim_frame.rs`):
 
-1. **The render front-end is skipped** in world frames: the `sim-frame`
+1. **The light host can skip the render front-end** in world frames. The `sim-frame`
    feature implements `RENDER_FRAME` (`0x00223240`). At each entry it
    decides as the prototype does (the world path, the countdowns,
    `render_every`). Not skipping: the generated original. Skipping: the
@@ -167,13 +167,15 @@ What it changes (**Code**, `crates/boot/src/sim_glue.rs`,
    bots' pads before it, their views back after it) run as they would
    around the original. The host's present count (`d3d_diag::presents`,
    which `H2_BOOT_STOP_AT_PRESENT`, the input script and the agent stamp
-   count) moves on by one per skipped frame.
+   count) moves on by one per skipped frame. Full headless runs
+   (`-host-light`) keep the render entry and can explicitly enable the
+   [render worker for hash comparisons](../graphics/pipelined-render.md#tick-ordering-and-hash-parity).
 2. **No GPU and no window.** `Host::gfx` stays `None`; `H2_BOOT_GFX` is
    refused. The D3D layer stays installed over a `RecordingBackend`, so
    the game's own D3D calls outside the render (device creation, the
    loading screen, the sim's few calls) are answered as before.
 3. **No audio output**: the logical mixer into a `NullSink`, as headless
-   already is. The pipelined render is off (it implements the same point).
+   already is.
 4. **No keyboard pad.** The headless host uses phantom peers for all bot
    input and leaves the controller ports free.
 5. **Unpaced** unless the match says otherwise (above).
@@ -336,6 +338,14 @@ ticks; and the final score. The report is one JSON file per match:
   "notes": []
 }
 ```
+
+With `H2_DISPATCH_STATS=1`, the report includes `dispatch_per_tick`
+for the observed match interval. It records the CALLs, JUMPs, RESUMEs,
+RETURNs, STOPs and FAULTs that native generated handlers hand back to the
+runner. HLE entries and slice or host-request preemptions are counted
+alongside those exits. A loop resume can also cause a preemption, so
+these counts can overlap. `H2_ENTRY_STATS=1` adds a separate, more
+expensive census of direct-slot misses and hot runner targets on stderr.
 
 At `WEAPON_FIRE`, a handheld shot is credited to the player who owns
 the parent biped. The next tick's held-weapon snapshot provides a

@@ -1167,8 +1167,9 @@ adds them; types in `crates/agent-proto/src/render.rs`, logic in
   reasons `unsure_*`, `mismatch_*`, `dropped`), read from its `Debug`
   text so fields added there appear with no change here; `pipeline` is the
   pipelined render's totals (`pipelined`, `completed`, `serial` reasons,
-  `fallbacks` by call, joins, times in ms); `paths` is calls into each
-  native render path since the start (`feature::render_loop::path_calls`:
+  `fallbacks` by call, joins, snapshot coverage, and times in ms including
+  `overlap_ms` for the worker's execution before the game-thread join).
+  `paths` counts calls into each native render path since the start (`feature::render_loop::path_calls`:
   `render_views`, `layer_draw`, `layer_entries`, `render_game_view`,
   `render_scene_passes`, `render_states`); `counters` the frame-stats window's line. Each is
   `null` where that piece isn't running.
@@ -1196,7 +1197,7 @@ adds them; types in `crates/agent-proto/src/render.rs`, logic in
   ([high-framerate.md](../game/high-framerate.md) "Held frames, draw by
   draw").
   Without `H2_BOOT_GFX`, with `H2_RENDER_THREAD=0` or under
-  `H2_PIPELINE_RENDER`, `interp` stays `null`.
+  `impl.render.pipelined_frame`, `interp` stays `null`.
 
 ### Co-op look per rendered view
 

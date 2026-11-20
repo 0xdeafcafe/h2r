@@ -41,6 +41,10 @@ pub enum Loc {
 pub enum Sig {
     /// Not read: observers and after-hooks only, never typed arguments.
     Opaque,
+    /// An instruction boundary inside a function (a researched resume
+    /// point), not a call: no arguments, and a before-hook may only
+    /// continue or resume a researched transfer, never return a value.
+    Site,
     Fn {
         args: &'static [(&'static str, Loc)],
         ret: Option<Loc>,
@@ -56,7 +60,7 @@ impl Sig {
     /// The location of the named argument.
     pub fn arg(&self, name: &str) -> Option<Loc> {
         match self {
-            Sig::Opaque => None,
+            Sig::Opaque | Sig::Site => None,
             Sig::Fn { args, .. } => args.iter().find(|(n, _)| *n == name).map(|(_, l)| *l),
         }
     }
@@ -116,6 +120,90 @@ impl Point {
         }
         self
     }
+}
+
+/// Beginning and end of the index build within the sorted dispatcher.
+pub const TRANSPARENT_ORDER_BEGIN: Point = Point::new(
+    "TRANSPARENT_ORDER_BEGIN", 0x0001_e381, Sig::Site, "docs/graphics/native-renderer.md",
+);
+pub const TRANSPARENT_ORDER_READY: Point = Point::new(
+    "TRANSPARENT_ORDER_READY", 0x0001_e3bc, Sig::Site, "docs/graphics/native-renderer.md",
+);
+
+/// The object section loop's call to the shared record writer.
+pub const OBJECT_RECORD_APPEND: Point = Point::new(
+    "OBJECT_RECORD_APPEND", 0x0013_41d0, Sig::Site, "docs/graphics/native-renderer.md",
+);
+/// Return from that call, routed through the generated resume table.
+pub const OBJECT_RECORD_APPENDED: u32 = 0x0013_41d5;
+
+/// The geometry submitter's transparent-only append branch and epilogue.
+pub const TRANSPARENT_GEOMETRY_ENTRY: Point = Point::new(
+    "TRANSPARENT_GEOMETRY_ENTRY", 0x0004_1381, Sig::Site, "docs/graphics/native-renderer.md",
+);
+pub const TRANSPARENT_GEOMETRY_QUEUED: Point = Point::new(
+    "TRANSPARENT_GEOMETRY_QUEUED", 0x0004_1477, Sig::Site, "docs/graphics/native-renderer.md",
+);
+
+/// Entry points of the UI render walk. The feature asks image analysis
+/// to expose the interior sites before lifting.
+pub mod ui_render {
+    use super::{Point, Sig};
+    pub use super::{
+        UI_FADE_DRAW as FADE_DRAW, UI_HUD_DRAW as HUD_DRAW, UI_LOADING_DRAW as LOADING_DRAW,
+        UI_OVERLAY_RECT_DRAW as OVERLAY_RECT_DRAW,
+    };
+
+    const DOC: &str = "docs/graphics/native-renderer.md";
+    pub const BACKDROP_WASH: Point =
+        Point::new("UI_BACKDROP_WASH", 0x0025_4b95, Sig::Site, DOC);
+    pub const BACKDROP_WASH_TAIL: u32 = 0x0025_4dc0;
+    pub const BACKDROP_TINT: Point =
+        Point::new("UI_BACKDROP_TINT", 0x0025_4e28, Sig::Site, DOC);
+    pub const BACKDROP_TINT_TAIL: u32 = 0x0025_4ee0;
+    pub const BACKDROP_COMPOSITE: Point =
+        Point::new("UI_BACKDROP_COMPOSITE", 0x0025_5083, Sig::Site, DOC);
+    pub const BACKDROP_COMPOSITE_TAIL: u32 = 0x0025_5191;
+    pub const MODEL_WIDGET_DRAW: u32 = 0x002b_0baa;
+    pub const MODEL_VIEW_CALL: Point =
+        Point::new("UI_MODEL_VIEW_CALL", 0x002b_0e12, Sig::Site, DOC);
+    pub const MODEL_VIEW_CONTINUATION: u32 = 0x002b_0e17;
+    pub const MODEL_VIEW_RETURN: Point =
+        Point::new("UI_MODEL_VIEW_RETURN", 0x002b_0e1b, Sig::Site, DOC);
+    pub const MODEL_GEOMETRY_CALL: Point =
+        Point::new("UI_MODEL_GEOMETRY_CALL", 0x0004_d621, Sig::Site, DOC);
+    pub const MODEL_GEOMETRY_RETURN: u32 = 0x0004_d626;
+    pub const MODEL_GEOMETRY_EMITTER: u32 = 0x0004_daa0;
+    pub const MODEL_TEXTURE_COMMIT: u32 = 0x0001_cf50;
+    pub const ITEM_CONTINUATION: u32 = 0x0023_5448;
+    pub const OUTLINE_VERTICES: Point =
+        Point::new("UI_OUTLINE_VERTICES", 0x0001_ed98, Sig::Site, DOC);
+    pub const OUTLINE_VERTICES_TAIL: u32 = 0x0001_ee3a;
+    pub const OUTLINE_SUBMIT_RETURN: u32 = 0x0023_5e55;
+    pub const LAYERS_RETURN: Point = Point::new("UI_LAYERS_RETURN", 0x0014_7cb9, Sig::Site, DOC);
+    pub const ITEM_CALL: Point = Point::new("UI_ITEM_CALL", 0x0023_5445, Sig::Site, DOC);
+    pub const ITEM_RETURN: Point = Point::new("UI_ITEM_RETURN", 0x0023_544d, Sig::Site, DOC);
+    pub const HUD_RETURN: Point = Point::new("UI_HUD_RETURN", 0x0013_96b9, Sig::Site, DOC);
+    pub const HUD_HIDDEN_RETURN: Point =
+        Point::new("UI_HUD_HIDDEN_RETURN", 0x0013_96c6, Sig::Site, DOC);
+    pub const FADE_RETURN: Point = Point::new("UI_FADE_RETURN", 0x0004_0dbf, Sig::Site, DOC);
+    pub const OVERLAY_RECT_RETURN: Point =
+        Point::new("UI_OVERLAY_RECT_RETURN", 0x0013_c1db, Sig::Site, DOC);
+    pub const LOADING_RETURN: Point = Point::new("UI_LOADING_RETURN", 0x0002_906d, Sig::Site, DOC);
+    pub const LOADING_EMPTY_RETURN: Point =
+        Point::new("UI_LOADING_EMPTY_RETURN", 0x0002_9075, Sig::Site, DOC);
+    pub const LOADING_SPINNER_READY: Point =
+        Point::new("UI_LOADING_SPINNER_READY", 0x0002_a1f4, Sig::Site, DOC);
+    pub const LOADING_SPINNER_TAIL: u32 = 0x0002_a2dc;
+    pub const LOADING_BITMAP_READY: Point =
+        Point::new("UI_LOADING_BITMAP_READY", 0x0002_ae60, Sig::Site, DOC);
+    pub const LOADING_BITMAP_TAIL: u32 = 0x0002_af87;
+    /// Return from the common inline quad uploader to the overlay/bitmap helper.
+    pub const RECT_SUBMIT_RETURN: u32 = 0x0005_2ce7;
+    pub const SCREEN_QUAD_READY: Point =
+        Point::new("UI_SCREEN_QUAD_READY", 0x0003_63c4, Sig::Site, DOC);
+    pub const FADE_FAN_READY: Point = Point::new("UI_FADE_FAN_READY", 0x0004_0d86, Sig::Site, DOC);
+    pub const FADE_FAN_TAIL: u32 = 0x0004_0db8;
 }
 
 /// A named guest global (a word or a structure at a fixed address).
@@ -222,6 +310,20 @@ macro_rules! globals {
 }
 
 points! { ALL;
+    SIM_UNIT_POSE @ 0x0011_2070: [fn(unit: stack 0, nodes: stack 1, source: stack 2, target: stack 3) ret 16], Hot; "docs/perf/sim-budget.md";
+    SIM_ANIMATION_STREAM @ 0x0027_98a0: [opaque], Hot; "docs/perf/sim-budget.md";
+    SIM_GRAPH_RESOLVE @ 0x001d_d9d0: [fn(graph: edx, clip: stack 0) ret 4], Hot; "docs/perf/sim-budget.md";
+    SIM_MARKER_TRANSFORMS @ 0x000b_8d30: [fn(out: ebx, object: stack 0, name: stack 1, capacity: stack 2) -> eax ret 12], Hot; "docs/perf/sim-budget.md";
+    COLLISION_BSP_SEGMENT @ 0x001d_e6d0: [fn(query: stack 0, node: stack 1, lo: stack 2, hi: stack 3) -> al ret 16], Hot; "docs/perf/sim-budget.md";
+    SIM_COLLISION_QUERY @ 0x0016_97c0: [fn(flags: stack 0, start: stack 1, delta: stack 2, ignore_a: stack 3, ignore_b: stack 4, out: stack 5) -> al ret 24], Hot; "docs/perf/sim-budget.md";
+    BASE_OBJECT_IMPORT @ 0x000b_cc20: [fn(object: stack 0, name: stack 1, value: stack 2, active: stack 3) -> al ret 16], Hot; "docs/perf/sim-budget.md";
+    SIM_MOPP_BOX @ 0x002f_f8b0: [fn(query: ecx, state: stack 0, program: stack 1) ret 8], Hot; "docs/perf/sim-budget.md";
+    SIM_MOPP_RAY @ 0x0030_09e0: [fn(query: ecx, state: stack 0, program: stack 1, segment: stack 2) ret 12], Hot; "docs/perf/sim-budget.md";
+    OBJECT_TRANSFORM_COMPOSE @ 0x0014_2a60: [fn(parent: ecx, child: edx, out: stack 0) -> eax ret 4], Hot; "docs/perf/sim-budget.md";
+    OBJECT_POSE_MATRIX @ 0x0014_21f0: [fn(out: stack 0, pose: stack 1) ret 8], Hot; "docs/perf/sim-budget.md";
+    ANIM_ROTATION_CODEC @ 0x0028_c530: [fn() ret 0], Hot; "docs/perf/sim-budget.md";
+    COLLISION_POINT_TO_LEAF @ 0x0014_a280: [fn(node: eax, bsp: ecx, point: edx) -> eax ret 0], Hot; "docs/perf/sim-budget.md";
+    COLLISION_GEOMETRY_TEST @ 0x0011_e5e0: [fn(origin: eax, center: ecx, direction: edx, radius: stack 0) -> al ret 4], Hot; "docs/perf/sim-budget.md";
     /// The HaloScript evaluator shared by argument-evaluating discarded builtins.
     HS_DISCARDED_EVALUATE @ 0x002a_b6c0: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
     /// How strongly the observing actor prioritizes one candidate.
@@ -285,6 +387,20 @@ points! { ALL;
     OBJECTS_PRE_PHYSICS @ 0x000b_6f10: [opaque], Optional; "docs/engine/engine-map.md";
     WORLD_PHYSICS @ 0x001c_3d30: [opaque], Optional; "docs/engine/engine-map.md";
     OBJECTS_POST_PHYSICS @ 0x000b_7060: [opaque], Optional; "docs/engine/engine-map.md";
+    FIRST_PERSON_POSE_UPDATE @ 0x0016_760c: [opaque], Hot; "docs/perf/sim-budget.md";
+    FIRST_PERSON_FILTER_UPDATE @ 0x0016_6d75: [opaque], Hot; "docs/perf/sim-budget.md";
+    LIGHT_RECORD_UPDATE @ 0x000c_0c80: [fn(light: stack 0) ret 4], Hot; "docs/perf/sim-budget.md";
+    HAVOK_WELD_CONTACTS @ 0x002f_a2f0: [opaque], Hot; "docs/perf/sim-budget.md";
+    HAVOK_SOLVER @ 0x0031_c940: [opaque], Hot; "docs/perf/sim-budget.md";
+    HAVOK_SUPPORT_VERTICES @ 0x0030_48a0: [opaque], Hot; "docs/perf/sim-budget.md";
+    OBJECT_SPATIAL_VISIT @ 0x000b_b050: [fn(lists: stack 0, types: stack 1, location: stack 2, center: stack 3, radius: stack 4, out: stack 5, capacity: stack 6) ret 28], Hot; "docs/perf/sim-budget.md";
+    OBSERVER_RESULT @ 0x0017_1d90: [fn(observer: esi) ret 0], Hot; "docs/perf/sim-budget.md";
+    OBJECT_SPATIAL_PORTAL @ 0x0014_a370: [fn(portal: eax, center: ecx, bsp: edx, radius: stack 0) -> al ret 4], Hot; "docs/perf/sim-budget.md";
+    OBJECT_CHANGE_COLORS @ 0x000b_e8e0: [fn(object: stack 0) -> al ret 4], Hot; "docs/perf/sim-budget.md";
+    OBJECT_PRE_UPDATE @ 0x000b_c470: [fn(object: stack 0) -> al ret 4], Hot; "docs/perf/sim-budget.md";
+    OBJECT_POST_UPDATE @ 0x000b_c820: [fn(object: stack 0) ret 4], Hot; "docs/perf/sim-budget.md";
+    UNIT_AIM_UPDATE @ 0x000c_7840: [opaque], Hot; "docs/perf/sim-budget.md";
+    UNIT_UPDATE @ 0x000c_6b30: [fn(unit: stack 0) -> al ret 4], Hot; "docs/perf/sim-budget.md";
     OBJECTS_FINALIZE @ 0x000b_7150: [opaque], Optional; "docs/engine/engine-map.md";
     AI_UPDATE @ 0x001c_83c0: [opaque], Optional; "docs/engine/engine-map.md";
     SCRIPT_UPDATE @ 0x0020_9310: [opaque], Optional; "docs/engine/engine-map.md";
@@ -294,7 +410,11 @@ points! { ALL;
     CAMERA_OBSERVER @ 0x0016_f280: [opaque], Optional; "docs/engine/engine-map.md";
     CAMERA_FIRST_PERSON @ 0x0023_c110: [opaque], Optional; "docs/engine/engine-map.md";
     UI_UPDATE @ 0x0014_79c3: [opaque], Optional; "docs/engine/engine-map.md";
-    UI_RENDER_LAYERS @ 0x0014_7af1: [opaque], Optional; "docs/engine/engine-map.md";
+    UI_RENDER_LAYERS @ 0x0014_7af1: [fn(user: eax, fallback_user: stack 0, bounds: stack 1) ret 8], Optional; "docs/engine/engine-map.md";
+    UI_HUD_DRAW @ 0x0019_17eb: [fn() ret 0], Optional; "docs/graphics/native-renderer.md";
+    UI_FADE_DRAW @ 0x0004_0890: [fn() ret 0], Optional; "docs/graphics/native-renderer.md";
+    UI_OVERLAY_RECT_DRAW @ 0x0013_c050: [fn(bounds: ecx, color: eax) ret 0], Optional; "docs/graphics/native-renderer.md";
+    UI_LOADING_DRAW @ 0x0002_89e0: [fn() -> al ret 0], Optional; "docs/graphics/native-renderer.md";
     NETWORK_PRE_UPDATE @ 0x0008_df50: [opaque], Optional; "docs/engine/engine-map.md";
     NETWORK_POST_UPDATE @ 0x0008_dfc0: [opaque], Optional; "docs/engine/engine-map.md";
     /// The game-end path; the end latch is game globals `+0x1128`.
@@ -387,10 +507,19 @@ points! { ALL;
     RENDER_FRAME_TAIL @ 0x0001_3b90: [opaque]; "docs/graphics/native-renderer.md";
     /// `render_scene_passes`: the scene pass sequence of one view.
     RENDER_SCENE_PASSES @ 0x0002_bcd0: [opaque]; "docs/graphics/e3-lighting.md";
+    /// Main view's visible structure cluster and placement record walks.
+    WORLD_CLUSTER_RECORDS @ 0x0013_3390: [fn(visibility: ebx) ret 0]; "docs/graphics/native-renderer.md";
+    /// One visible row entering the gather. A cold neighbour can require
+    /// the surrounding walk to stay in the guest.
+    WORLD_VISIBILITY_FLAGS @ 0x0013_32f0: [fn(visibility: stack 0) -> eax ret 4]; "docs/graphics/native-renderer.md";
+    WORLD_PLACEMENT_RECORDS @ 0x0013_3520: [fn(visibility: stack 0) ret 4]; "docs/graphics/native-renderer.md";
     /// Sets the render stencil mode, including after the scene passes return.
     RENDER_STENCIL_MODE @ 0x0001_5370: [opaque]; "docs/graphics/native-renderer.md";
     /// The additional shadow-caster pass (layer 10/11 pair after the main lights).
     ADDITIONAL_SHADOW_CASTERS @ 0x0003_0ed0: [opaque]; "docs/graphics/native-shadows.md";
+    /// Target selection helper. The light tail restores its view target here
+    /// after the last geometry, including on a light with no active layer.
+    LIGHT_RESTORE_TARGET @ 0x0001_4bc0: [opaque]; "docs/graphics/native-renderer.md";
     /// The scene call that walks the object shadow list.
     OBJECT_SHADOW_LIST @ 0x0003_35e0: [opaque]; "docs/graphics/native-shadows.md";
     /// Gathers the object shadow candidates.
@@ -465,6 +594,13 @@ points! { ALL;
     /// is followed by one; it ends the layer's state and sets the current
     /// layer (`[0x00467130]`) to 0.
     LAYER_END @ 0x0004_45d0: [opaque]; "docs/graphics/native-renderer.md";
+    /// Resolve one material for the record-to-scene-item walk. The main
+    /// caller tests AL before advancing its part cursor in EDI.
+    WORLD_PART_MATERIAL @ 0x0004_5ce0: [fn(record: ecx, scratch: eax, part: stack 0, region: stack 1) -> al ret 8], Hot; "docs/graphics/native-renderer.md";
+    /// The standard geometry item's build callback. AL admits its sort slot.
+    WORLD_GEOMETRY_BUILD @ 0x0004_cbf0: [fn(shader: stack 0, arg: stack 1, lod: stack 2, layer: stack 3, selector: stack 4, part: stack 5, entry: stack 6) -> al ret 28], Hot; "docs/graphics/layer-draw.md";
+    /// BSP geometry emitter. AL selects masked subparts, CL selects strips.
+    WORLD_PART_EMIT @ 0x0004_daa0: [fn(section: stack 0, part: stack 1, bitmap: stack 2) ret 12], Hot; "docs/graphics/native-renderer.md";
     /// LAYER_ENTRIES calls the item's geometry handler with seven stack words.
     /// Its continuation reloads EAX from the loop counter before using it.
     LIGHT_GEOMETRY_DRAW @ 0x0004_d0b0: [fn(shader: stack 0, arg: stack 1, variant: stack 2, layer: stack 3, selector: stack 4, part: stack 5, entry: stack 6) ret 28], Hot; "docs/graphics/layer-draw.md";
@@ -489,7 +625,21 @@ points! { ALL;
     /// the list word's address (`count << 9 | first`), `ret 4`. Applies
     /// each entry through `SetRenderState_Simple`, the D3D shadow and
     /// dirty bits, or a per-state setter.
-    RENDER_STATES @ 0x0001_a170: [opaque]; "docs/graphics/render-loop.md";
+    RENDER_STATES @ 0x0001_a170: [fn(context: ebx, list: stack 0) ret 4]; "docs/graphics/render-loop.md";
+    /// Populate visibility lists from the current view's cluster references.
+    SCENE_CLUSTER_GATHER @ 0x0013_2220: [fn(vis: stack 0) ret 4]; "docs/graphics/native-renderer.md";
+    /// Publish clusters and their instanced geometry in visibility order.
+    SCENE_GEOMETRY_GATHER @ 0x0013_4390: [fn(vis: stack 0) ret 4]; "docs/graphics/native-renderer.md";
+    /// Move objects with the model-link property to the front of the list.
+    SCENE_OBJECT_ORDER @ 0x0013_4240: [fn(vis: stack 0) ret 4]; "docs/graphics/native-renderer.md";
+    /// Collect, rank and fade the current view's dynamic lights.
+    VISIBLE_LIGHT_LIST @ 0x0003_1910: [fn(output: stack 0) -> eax ret 4]; "docs/graphics/native-renderer.md";
+    /// Mark caster and receiver flags on a light's visibility lists.
+    LIGHT_GEOMETRY_FLAGS @ 0x0003_1660: [fn(light: eax, definition: ecx, vis: esi, owner: stack 0, root: stack 1, point: stack 2, shadow: stack 3) ret 16]; "docs/graphics/native-renderer.md";
+    /// Append the optional owner or owning unit as a dynamic light caster.
+    LIGHT_EXTRA_CASTER @ 0x0003_1c20: [fn(shadow: al, owner: ecx, vis: stack 0) ret 4]; "docs/graphics/native-renderer.md";
+    /// Write one BSP or model render record, with its associated cache state.
+    SCENE_RECORD_WRITER @ 0x0002_cbf0: [opaque]; "docs/graphics/native-renderer.md";
     /// The object render records for a visibility struct: EAX the struct
     /// (`0x00547f88` the main view's), stack 0 an argument passed on,
     /// `ret 4`. Reorders the struct's object list (`0x00134240`), then
@@ -504,6 +654,10 @@ points! { ALL;
     /// calls it after the opaque layers and before the first-person
     /// chain): the occlusion depth capture point.
     SCENE_TRANSPARENTS @ 0x0001_e370: [opaque]; "docs/graphics/occlusion-culling.md";
+    /// Queue an effect callback with inline payload and view depth.
+    TRANSPARENT_EFFECT_ENTRY @ 0x0001_e4e0: [fn(size: ecx, position: edx, handler: stack 0, payload: stack 1) -> al ret 8]; "docs/graphics/native-renderer.md";
+    /// Queue the polygon effect callback with seven extra words.
+    TRANSPARENT_POLYGON_ENTRY @ 0x0001_e5e0: [fn(size: ecx, position: edx) -> al ret 32]; "docs/graphics/native-renderer.md";
     /// A sorted transparent geometry entry's handler: the transparents call
     /// it through the entry's `+0x20` with the entry's `+0x24` (shader
     /// datum, then the render record argument), stdcall, `ret 4`. Runs the
@@ -918,8 +1072,6 @@ points! { ALL;
     SLOT_SIGN_OUT @ 0x0019_0d4b: [fn(slot: eax) ret 0]; "docs/game/bots.md";
     /// Walks a block of predicted resources in the requested prediction mode.
     PREDICT_RESOURCES @ 0x0016_e5e0: [fn(mode: edi, resources: stack 0) -> al ret 4], Optional; "docs/perf/sim-budget.md";
-    /// Recomputes the light datum's intensity, color, radius and active-list membership.
-    LIGHT_RECORD_UPDATE @ 0x000c_0c80: [fn(light: stack 0) ret 4], Optional; "docs/perf/sim-budget.md";
     /// Sets source reverb and filter parameters on a DirectSound submix buffer.
     SOUND_SUBMIX_FX @ 0x0022_11e0: [fn(submix: eax, room: stack 0) ret 4], Optional; "docs/perf/sim-budget.md";
     /// The sound frame service, once a frame after the render: among

@@ -56,6 +56,10 @@ impl Guest {
     pub fn cow_snapshot(&self) -> (Guest, CopyKind) {
         let (ram, kind) = self.ram.cow_copy();
         let mut view = Guest {
+            #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+            flat: None,
+            #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+            flat_requested: crate::flat::enabled(),
             ram,
             mappings: Vec::new(),
             mapping_hints: std::array::from_fn(|_| Default::default()),
@@ -68,7 +72,7 @@ impl Guest {
             watch: Default::default(),
             layout: fresh_layout(),
             trap: None,
-            cow_source_layout: 0,
+            cow_source_layout: 0, watch_revision: 0,
         };
         view.copy_layout_from(self);
         if self.fast_pages.is_some() {
@@ -86,7 +90,13 @@ impl Guest {
     /// either is in flight.
     pub fn cow_refresh(&mut self, source: &Guest) -> CopyKind {
         let (ram, kind) = source.ram.cow_copy();
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+        {
+            self.flat = None;
+            self.flat_requested = crate::flat::enabled();
+        }
         self.ram = ram;
+        self.watch_revision = self.watch_revision.wrapping_add(1);
         if self.cow_source_layout != source.layout {
             self.copy_layout_from(source);
         }
@@ -133,6 +143,7 @@ impl Guest {
         let start = (physical as usize).min(RAM_SIZE);
         let end = (physical as usize + len as usize).min(RAM_SIZE);
         self.ram[start..end].copy_from_slice(&base.bytes()[start..end]);
+        self.watch_revision = self.watch_revision.wrapping_add(1);
     }
 
     /// Merge what a view changed into this (live) Guest, over `written`
