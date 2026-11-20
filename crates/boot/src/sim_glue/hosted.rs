@@ -209,34 +209,15 @@ async fn advance(
                 return Ok(if started { Step::Loading } else { step });
             }
             if sim.matched.team_play {
-                cx.write(|m| -> Result<(), engine::MemFault> {
-                    use bots::phantom::session::{self, at::*};
-                    let s = m.u32(points::SQUAD_SESSION.base)?;
-                    let local = m.u32(s + LOCAL_PEER)?;
-                    let mask = m.u32(s + PLAYER_MASK)?;
-                    for slot in (0..session::MAX).filter(|i| mask & (1 << i) != 0) {
-                        let p = s + PLAYERS + slot * PLAYER_SIZE;
-                        if m.u32(p + P_PEER)? != local {
-                            continue;
-                        }
-                        let controller = m.u32(p + P_CONTROLLER)?;
-                        let Some(team) = sim
-                            .matched
-                            .bots
-                            .iter()
-                            .find(|b| b.port.map(u32::from) == Some(controller))
-                            .and_then(|b| b.team)
-                        else {
-                            continue;
-                        };
-                        if m.u8(p + P_EFFECTIVE + CONFIG_TEAM as u32)? != team
-                            || m.u8(p + P_REQUESTED + CONFIG_TEAM as u32)? != team
-                        {
-                            session::set_team(m, s, slot, team)?;
-                        }
+                let mut ready = true;
+                for bot in &sim.matched.bots {
+                    if let (Some(port), Some(team)) = (bot.port, bot.team) {
+                        ready &= local_team_ready(cx, u32::from(port), team).await?;
                     }
-                    Ok(())
-                })?;
+                }
+                if !ready {
+                    return Ok(step);
+                }
             }
             // Same countdown and controller as the lobby's Start Game row.
             if cx
@@ -256,4 +237,116 @@ async fn advance(
         Step::Loading => (),
     }
     Ok(step)
+}
+
+// The lobby team picker (0x250d4d) changes the controller's preference and
+// calls 0x18fe9e. Every later local property refresh reads the same dword
+// at 0x18fe74. Editing just the session leaves that source stale.
+const SLOT_TEAM: u32 = 0x1fc;
+const PUBLISH_PROPERTIES: u32 = 0x18fe9e;
+
+async fn local_team_ready(cx: &Cx, port: u32, team: u8) -> Result<bool, EntryError> {
+    use bots::phantom::session::{self, at::*};
+
+    let profile = guest::slot(port);
+    let user = cx.read(|m| m.u32(profile + guest::SLOT_LOCAL_USER))?;
+    if user >= 4 || !cx.read(|m| guest::signed_in(m, port))? {
+        return Ok(false);
+    }
+    if cx.read(|m| m.u32(profile + SLOT_TEAM))? != u32::from(team) {
+        cx.write(|m| m.set_u32(profile + SLOT_TEAM, u32::from(team)))?;
+        cx.call(GuestCall::new(PUBLISH_PROPERTIES).edi(port))
+            .await?;
+        return Ok(false);
+    }
+
+    // 0x65cb0 can retain an existing effective team. Keep the session
+    // copies in sync and check them again after the next retail tick.
+    Ok(cx.write(|m| -> Result<bool, engine::MemFault> {
+        let s = m.u32(points::SQUAD_SESSION.base)?;
+        let local = m.u32(s + LOCAL_PEER)?;
+        let mask = m.u32(s + PLAYER_MASK)?;
+        for slot in (0..session::MAX).filter(|i| mask & (1 << i) != 0) {
+            let p = s + PLAYERS + slot * PLAYER_SIZE;
+            if m.u32(p + P_PEER)? == local && m.u32(p + P_CONTROLLER)? == port {
+                if m.u8(p + P_REQUESTED + CONFIG_TEAM as u32)? == team
+                    && m.u8(p + P_EFFECTIVE + CONFIG_TEAM as u32)? == team
+                {
+                    return Ok(true);
+                }
+                session::set_team(m, s, slot, team)?;
+                break;
+            }
+        }
+        Ok(false)
+    })?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bots::phantom::session::at::*;
+    use engine::entry::{Regs, testing::run};
+    use engine::memory::GuestMemory;
+    use engine::testing::FakeGuest;
+
+    #[test]
+    fn blue_local_publishes_its_controller_preference_before_countdown() {
+        const S: u32 = 0x800000;
+        const PORT: u32 = 1;
+        let profile = guest::slot(PORT);
+        let remote = S + PLAYERS;
+        let local = remote + PLAYER_SIZE;
+        let mut g = FakeGuest::new();
+        g.put_u32(points::SQUAD_SESSION.base, S)
+            .put_u32(S + LOCAL_PEER, 2)
+            .put_u32(S + PLAYER_MASK, 3)
+            .put_u32(S + UPDATE, 5)
+            .put_u32(S + CHANGES, 8)
+            .put_u32(profile, guest::SLOT_PROFILE)
+            .put_u32(profile + guest::SLOT_LOCAL_USER, 0)
+            .put_u32(profile + SLOT_TEAM, 0)
+            .put_u32(remote + P_PEER, 1)
+            .put_u32(remote + P_CONTROLLER, PORT)
+            .put_u8(remote + P_REQUESTED + CONFIG_TEAM as u32, 1)
+            .put_u8(remote + P_EFFECTIVE + CONFIG_TEAM as u32, 1)
+            .put_u32(local + P_PEER, 2)
+            .put_u32(local + P_CONTROLLER, PORT)
+            .put_u8(local + P_EFFECTIVE + CONFIG_TEAM as u32, 0);
+        let tick = |g| {
+            run(
+                &|cx| {
+                    Box::pin(async move {
+                        Ok(Ret::new(
+                            u32::from(local_team_ready(&cx, PORT, 1).await?),
+                            0,
+                        ))
+                    })
+                },
+                g,
+                Regs::default(),
+                |call, m| {
+                    assert_eq!(*call, GuestCall::new(PUBLISH_PROPERTIES).edi(PORT));
+                    assert_eq!(m.u32(profile + SLOT_TEAM), Ok(1));
+                    Regs::default()
+                },
+            )
+        };
+        let first = tick(g);
+        assert_eq!(first.calls.len(), 1);
+        assert_eq!(first.result, Ok(Ret::new(0, 0)));
+        let mut g = first.guest;
+        g.put_u8(local + P_REQUESTED + CONFIG_TEAM as u32, 1);
+        let pending = tick(g);
+        assert!(pending.calls.is_empty());
+        assert_eq!(pending.result, Ok(Ret::new(0, 0)));
+        assert_eq!(
+            pending.guest.u8(local + P_EFFECTIVE + CONFIG_TEAM as u32),
+            Ok(1)
+        );
+        assert_eq!(pending.guest.u32(S + UPDATE), Ok(6));
+        let ready = tick(pending.guest);
+        assert!(ready.calls.is_empty());
+        assert_eq!(ready.result, Ok(Ret::new(1, 0)));
+    }
 }

@@ -21,11 +21,14 @@ use input::host::HostPadState;
 
 /// Buffered controller reports on the remote action path. Build the guest
 /// action on arrival so its absolute aim and weapon fields use current
-/// host state. A newer arrival supersedes any older queued reports.
+/// host state. Stick positions coalesce. Each trigger transition needs
+/// a sample of its own for the retail pressure reader.
 pub(super) struct Uplink {
     rng: Rng,
     default_ping_ms: f32,
     in_flight: VecDeque<(u32, HostPadState)>,
+    trigger_changes: [VecDeque<(u32, f32)>; 2],
+    sent: HostPadState,
     arrived: HostPadState,
     last_tick: Option<u32>,
 }
@@ -37,6 +40,8 @@ impl Uplink {
             default_ping_ms: 40.0 + 40.0 * rng.unit(),
             rng,
             in_flight: VecDeque::new(),
+            trigger_changes: Default::default(),
+            sent: HostPadState::default(),
             arrived: HostPadState::default(),
             last_tick: None,
         }
@@ -44,6 +49,10 @@ impl Uplink {
 
     pub(super) fn clear(&mut self) {
         self.in_flight.clear();
+        for changes in &mut self.trigger_changes {
+            changes.clear();
+        }
+        self.sent = HostPadState::default();
         self.arrived = HostPadState::default();
         self.last_tick = None;
     }
@@ -63,24 +72,65 @@ impl Uplink {
         } else {
             PhantomLatency::default().jitter_ms
         };
-        let delay = if ping > 0.0 {
-            let one_way = ping * 0.5 + jitter * self.rng.signed();
-            (one_way.max(0.0) / TICK_MS).ceil() as u32
+        self.sent = pad;
+        if ping == 0.0 {
+            self.in_flight.clear();
+            for changes in &mut self.trigger_changes {
+                changes.clear();
+            }
+            self.arrived = pad;
         } else {
-            0
-        };
-        self.in_flight.push_back((tick.wrapping_add(delay), pad));
-        if let Some(i) = self
-            .in_flight
-            .iter()
-            .rposition(|&(due, _)| reached(tick, due))
-        {
-            self.arrived = self.in_flight[i].1;
-            self.in_flight.drain(..=i);
+            let one_way = ping * 0.5 + jitter * self.rng.signed();
+            let delay = (one_way.max(0.0) / TICK_MS).ceil() as u32;
+            let due = tick.wrapping_add(delay);
+            let left = arrived_trigger(
+                &mut self.trigger_changes[0],
+                tick,
+                due,
+                pad.left_trigger,
+                self.arrived.left_trigger,
+            );
+            let right = arrived_trigger(
+                &mut self.trigger_changes[1],
+                tick,
+                due,
+                pad.right_trigger,
+                self.arrived.right_trigger,
+            );
+            self.in_flight.push_back((due, pad));
+            if let Some(i) = self
+                .in_flight
+                .iter()
+                .rposition(|&(due, _)| reached(tick, due))
+            {
+                self.arrived = self.in_flight[i].1;
+                self.in_flight.drain(..=i);
+            }
+            self.arrived.left_trigger = left;
+            self.arrived.right_trigger = right;
         }
         self.last_tick = Some(tick);
         self.arrived
     }
+}
+
+// A release can reach the host on the same tick as its press or even
+// overtake it. Deliver pressure changes in send order, one per trigger
+// per tick. Steady pressure adds nothing to the queue.
+fn arrived_trigger(
+    changes: &mut VecDeque<(u32, f32)>,
+    tick: u32,
+    due: u32,
+    sent: f32,
+    held: f32,
+) -> f32 {
+    if changes.back().map_or(held, |&(_, value)| value) != sent {
+        changes.push_back((due, sent));
+    }
+    if changes.front().is_some_and(|&(due, _)| reached(tick, due)) {
+        return changes.pop_front().unwrap().1;
+    }
+    held
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -143,11 +193,7 @@ impl Phantoms {
         }
         let (_, body) = objects::get(m, unit).ok()??;
         let observed = m.vec3(body.addr + guest::UNIT_AIM).ok()?;
-        let sent = p
-            .uplink
-            .in_flight
-            .back()
-            .map_or(p.uplink.arrived, |&(_, pad)| pad);
+        let sent = p.uplink.sent;
         let accepted =
             p.buttons.publication != Publication::Missing && m.u32(slot + SLOT_STAMP).ok()? == tick;
         let record = slot + SLOT_ACTION;
@@ -340,6 +386,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn coalesced_reports_preserve_fire_edges_and_take_the_latest_stick() {
+        // Two ticks for the press, one for the release: both are due
+        // at tick zero across the game-clock wrap.
+        let mut u = Uplink::new(17);
+        let send = |u: &mut Uplink, tick, ping, right, left, x| {
+            u.sample(
+                tick,
+                HostPadState {
+                    right_trigger: right,
+                    left_trigger: left,
+                    right_stick: (x, 0.),
+                    ..Default::default()
+                },
+                PhantomLatency {
+                    ping_ms: Some(ping),
+                    jitter_ms: 0.,
+                },
+            )
+        };
+        let start = u32::MAX - 1;
+        assert_eq!(send(&mut u, start, 100., 1., 0., 0.5).right_trigger, 0.);
+        assert_eq!(
+            send(&mut u, u32::MAX, 40., 0., 0.75, -0.5).right_trigger,
+            0.
+        );
+        let arrived = send(&mut u, 0, 40., 0., 0.75, 0.);
+        assert_eq!(
+            (
+                arrived.right_trigger,
+                arrived.left_trigger,
+                arrived.right_stick.0
+            ),
+            (1., 0.75, -0.5)
+        );
+        assert_eq!(u.sent.right_trigger, 0.);
+        let arrived = send(&mut u, 1, 40., 0., 0.75, 0.);
+        assert_eq!((arrived.right_trigger, arrived.left_trigger), (0., 0.75));
+
+        // A delayed press for a despawned unit must never fire on respawn.
+        send(&mut u, 2, 100., 1., 0., 0.);
+        u.clear();
+        assert_eq!(send(&mut u, 4, 40., 0., 0., 0.).right_trigger, 0.);
+    }
+
+    #[test]
     fn phantom_ping_and_jitter_replay_per_identity() {
         let report = HostPadState {
             right_trigger: 1.0,
@@ -374,6 +465,12 @@ mod tests {
             seen.iter()
                 .enumerate()
                 .all(|(t, &down)| !down || matches!(t % 6, 1 | 2))
+        );
+        // Every requested pulse reaches retail even when jitter moves its
+        // press and release onto the same sample.
+        assert!(
+            seen.chunks_exact(6)
+                .all(|ticks| ticks.iter().any(|&down| down))
         );
         assert!(seen.iter().skip(1).step_by(6).any(|&down| down));
         assert!(seen.iter().skip(2).step_by(6).any(|&down| down));

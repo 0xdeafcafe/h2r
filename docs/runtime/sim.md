@@ -479,8 +479,12 @@ How to read it and the rule for which model stays are in
 `mode = "seat_swap"` schedules two legs per map, game type, skill and
 seed. The second leg exchanges every local and phantom seat. Both
 lineups must fit on a host. Each bot keeps its name, team, tuning, arm
-and brain seed. The checked-in Legendary Midship example plays ten seed
-pairs, two red against two blue, with normal phantom latency.
+and brain seed. The Legendary Midship example plays ten seed pairs, two
+red against two blue. Its arm requests zero phantom ping and jitter so
+the action builder sees each pad on its sample tick. To measure the cost
+of network timing, rerun the same seeds in a separate output directory
+with the example's two transport overrides removed. The ordinary seeded
+40–80 ms round trip adds one or two ticks at 30 Hz to aim and fire.
 
 ```sh
 H2_BOTS_ALL_PHANTOM=0 H2_OPT=2 h2 sim batch docs/runtime/sim-examples/midship-seat-swap.toml --disc disc/halo2.iso --parallel 3 --pace unpaced
@@ -493,8 +497,11 @@ means, and their signed `local_minus_phantom` gap for shots, opposing
 hits, damage dealt and damage taken. Each pair of legs contributes one
 sample. Its two observations for each logical seat are matched across
 the legs. Only full rosters ending at game over or the tick limit count.
-Incomplete pairs appear in `excluded`; absent reports appear in
-`missing`. These are counts per game, so game length affects the result.
+Each excluded pair has a reason in `exclusion_reasons` and in the text
+table. A leg that ends during lineup binding has zero measured ticks.
+The reason includes the missing seats when the report names them.
+Absent reports appear in `missing`. These are counts per game, so game
+length affects the result.
 
 Keep all-phantom mode off for this comparison. The planner refuses a
 seat swap when every seat is forced to use the same transport. Compare
