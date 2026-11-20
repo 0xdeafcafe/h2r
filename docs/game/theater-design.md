@@ -174,13 +174,26 @@ the assumptions. All of it is **Estimate** until slice 13's measurement.
 | Machine | Records | Kept | Used for |
 |---|---|---|---|
 | The host | the film of the authoritative simulation: every seat's accepted action is in its update (`actions.rs`); and the stats stream | streamed to Live | the stats for everyone; the film for Theater on other machines |
-| Each player's machine | the film of the simulation that machine ran | `<data>/films/`, never uploaded | Theater on that machine: the player's own picture and HUD |
+| Each player's machine | the same film: the host forwards every seat's actions to each client as it gathers them | `<data>/films/`, never uploaded | Theater on that machine: the whole game, opened on the player's own seat |
 
-A Live client does not see other seats' inputs. Halo 2's multiplayer is
-host-authoritative, and a client is sent replicated state
-([theater.md](theater.md#fit)). A client's film is therefore a machine
-film whose network tape is its input for every other seat, and it stays
-one after the engine film exists for hosts and offline games.
+A Live client is not sent other seats' inputs by the game: Halo 2's
+multiplayer is host-authoritative and replicates state
+([theater.md](theater.md#fit)). The host knows every seat's action, so it
+sends them beside the game: the film's own tick chunks, forwarded to each
+client as they close ([input-film.md](input-film.md#the-action-side-stream)).
+A client's film is then the host's film, byte for byte, with no network
+tape, at about 6 kbit/s for 16 seats (**Estimate**). Theater plays it
+with the player's seat selected, which gives their view and HUD of the
+authoritative game; it does not show what their own machine predicted.
+
+A player who joins a running game starts from a start point: the
+compressed arena and extension state at the join tick, about 0.26 MB,
+authenticated by the host and checked against the film
+([input-film.md](input-film.md#start-points)). It is never guest RAM.
+
+Every game gets fresh seat and machine identifiers, issued by Live for a
+Live game and by the recorder for an offline one. They name nothing
+outside that game, so a film needs no scrub.
 
 ## How it works
 
@@ -384,16 +397,16 @@ build whose simulation is bit-exact
 
 - **A Live game.** A dedicated host streams two things to the server as
   the game is played: the stats stream and its film. Live imports the
-  stats through its existing ledger import. The film's tick stream holds no identity and
-  Live never inflates it. Ingest scrubs the parts that do: the seed's
-  roster keeps the game id and each seat's gamertag, and, while a host
-  film still has a machine part, sender addresses and account identifiers
-  in it are replaced by those. When the game ends, a compaction pass
-  stores the film under the game id in its smallest playable form. That
-  film is what every download serves, so a download carries gamertags
-  and the game id and no other identity, and no guest RAM. Each player's
+  stats through its existing ledger import. Live stores the film as sent and never
+  inflates a chunk. It needs no scrub: its identifiers are the per-game
+  ones Live issued, and its roster is the game id and each seat's
+  gamertag. A host film that still has a machine part is the exception,
+  and is served only to the game's participants until the engine film
+  replaces it. A download carries gamertags and the game id, no other
+  identity, and no guest RAM. Each player's
   machine builds keyframes as a sidecar.
-- **Each player's own film** of a Live game stays on that player's
+- **Each player's own film** of a Live game, the host's film as
+  forwarded, stays on that player's
   machine. Share on a Live game creates no upload, only the link.
 - **Share.** A film recorded on this machine is already free of guest
   RAM, so `film::share` copies it with the profile in `DATA` reduced to
@@ -602,8 +615,8 @@ an order: 12, 13 and 14 start with 0 to 3.
 | 12 | **The split.** The recorder writes the stats stream and the film as two files; the film has no `KEYF`, and a local recorder's keyframes go to the sidecar; the selector reads a film's header and the stats file beside it; the player takes a film with no keyframe as the normal case. The film keeps tag 1's existing coding inside its own file until slice 13. | now; the sidecar half after slice 2 | A recording of a synthetic game gives a stats file the existing web reader tests accept unchanged and a film that plays from its seed to the same digests. No pose or event record is in the film; no input or digest is in the stats file. A container holding both still plays. |
 | 13 | **The film encoding.** `h2 film stat --fields` over recorded films: per field, how often it changes, the stored bytes under each predictor, and any grid. Then the column encoder and streaming decoder of [input-film.md](input-film.md#the-encoding), the 16-bit digests, the dictionary if it earns its place, and the fixed buffers. | the measurement now, on films that exist; the encoder after slice 12 | The field table in a dated note, with the size steps of input-film.md corrected by it. Round trips: every recorded film re-encodes and decodes to identical action bytes on every tick. A fuzzed chunk is refused, never read out of bounds. The recorder and the decoder allocate nothing after start, shown by a counting allocator in the tests. |
 | 14 | **Tape minimisation.** The binary call stream, pad deltas, batches that do not close on a change of stream, pure operations computed in playback, and a null network for an offline game in place of its socket tape. | after slice 0's tape table; one ABI bump for all of it | Round trips for every operation's outputs. A synthetic offline film holds no socket call and replays to the same digests. A film in the JSON encoding is refused as a breaking change. The note gains the stored bytes per stream before and after. |
-| 15 | **The engine film.** The three experiments, the seat record in the recorder, playback from the seed with seats made in memory, then films written without a machine part. | experiments after slice 12; adoption per kind of game as each passes | The three answers, with their hash runs, in a dated note. Then: an offline film with its machine part removed plays to the same digests; a host film with its packets removed does too. |
-| 16 | **Live and the web.** Ingest takes the stats stream and the film as two objects, stores the film without inflating a chunk, scrubs the seed's roster, and compacts under the game id; the ranged read serves the stats stream and the unranged read the film; the ledger import reads the stats stream. | after slice 12 | The existing public-range, ledger and web viewer tests pass against a stats stream with no film in it. A film upload is stored byte for byte except its seed, and its tick chunks are never inflated (a counting test double). A container holding both is still served. The parity suite passes on both homes. |
+| 15 | **The engine film.** The three experiments, the seat record in the recorder, playback from the seed with seats made in memory, start points for a mid-game join, then films written without a machine part. | experiments after slice 12; adoption per kind of game as each passes | The three answers, with their hash runs, in a dated note. Then: an offline film with its machine part removed plays to the same digests; a host film with its packets removed does too; a film that begins at a start point plays to the same digests, and a start point with one byte changed is refused. |
+| 16 | **Live and the web.** Ingest takes the stats stream and the film as two objects, stores the film without inflating a chunk, issues the per-game identifiers at session creation, and carries the action side stream on the tunnel; the ranged read serves the stats stream and the unranged read the film; the ledger import reads the stats stream. | after slice 12 | The existing public-range, ledger and web viewer tests pass against a stats stream with no film in it. A film upload is stored byte for byte and its tick chunks are never inflated (a counting test double). Two games of the same players share no identifier. A client that drops three forwarded chunks ends with a film equal to the host's. A container holding both is still served. The parity suite passes on both homes. |
 
 Slices 1, 2, 3, 5, 6, 7, 8, 12, 13 and 14 touch separate files and can run as
 parallel lanes, except that 3 and 12 share `theater/record.rs`. Slice 4
@@ -631,8 +644,13 @@ is the only one whose merge waits on a measurement.
   for jumps across the change.
 - A film with no capture point is seekable only by simulating from its
   start.
-- A Live client's film keeps its network tape; it is never an engine
-  film.
+- A Live client records the host's actions, not its own packets. Until
+  the engine film plays host games, a client's film keeps its network
+  tape.
+- A start point is the arena and extension state, at most 1 MiB stored,
+  and is refused unless the host's tag and the film's arena hash match.
+- Seat and machine identifiers are issued per game and mean nothing
+  outside it.
 - Clip export needs the user's own ffmpeg for MP4; PNG needs nothing.
 
 ## Evidence
@@ -715,11 +733,11 @@ is the only one whose merge waits on a measurement.
    cadence differs from the recording's. The verification row in
    "Determinism checks" turns captures off rather than show a diverged
    film.
-6. **A scrub can break a film.** An address or identifier that the
-   simulation reads is an input: replacing it changes the arena and the
-   digests. While a host film has a machine part its packets hold such
-   values. The scrub is tested against the digests for each field, and a
-   field that fails is fixed where it is issued, not rewritten at ingest.
+6. **Per-game identifiers must reach the simulation unchanged.** The
+   identifiers the update carries come from the session's peers. If the
+   engine derives them from something Live does not issue, a film would
+   still name a console. Slice 16 traces the source before it relies on
+   them.
 7. **The engine film may not hold for a kind of game.** Then that kind
    keeps its machine part, and a host's film keeps its packets.
 8. **The size estimates rest on assumed rates.** Slice 13 measures before
@@ -733,23 +751,15 @@ is the only one whose merge waits on a measurement.
 
 ## Open questions
 
-1. **A Live client's own film.** It needs the network tape, 0.3 to
-   1.5 MB a minute (**Estimate**), because a client is not sent other
-   seats' inputs. Keep it as designed, or have a client keep the host's
-   film from Live and watch its own seat in that, small but without its
-   own HUD and prediction?
-2. **Seat identifiers.** If the identifiers the simulation reads name a
-   console across games, should Live issue per-game ones at session
-   creation so that a film needs no scrub?
-3. **The arena-keyframe seed.** If the engine's game start cannot
-   reproduce the recorded arena, may a film carry one compressed arena
-   at match start, on the machine only, or on Live as well?
-4. **Hosts beyond macOS** that register the `h2recomp` scheme.
+1. **Hosts beyond macOS** that register the `h2recomp` scheme.
 
 Settled: stats is the summary and the film is the simulation, in two
 files; a film is a seed, inputs and joins, with no keyframe; films after
 a breaking simulation change are refused, not drawn as poses; downloads
-serve the scrubbed, compacted film; clip video is the user's ffmpeg and
+serve the film as stored, which needs no scrub because Live issues
+fresh identifiers for each game; the host forwards every seat's actions
+so each client records the same film; a player who joins mid-game starts
+from an authenticated arena start point, never guest RAM; clip video is the user's ffmpeg and
 Live stores only tick ranges; the scheme is `h2recomp`; every player in a
 Live match records their own film, and the host's is what Live serves to
 everyone else; rewind is jumps of 5 s and 30 s until slice 11 brings

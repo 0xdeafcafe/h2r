@@ -61,9 +61,9 @@ state only in a clip that starts mid-game
 ([notes/halo3-film.md](notes/halo3-film.md)). A campaign game resumed from
 a save has the save file in `DATA`, which is the user's own data. If the
 engine's game start does not reproduce the recorded arena from the seed
-(the first experiment in [theater-design.md](theater-design.md#before-and-after-the-sim-rewrite)), the fallback seed is one compressed arena
-keyframe at match start, `sim_state::Keyframe`. That waits for the sim
-rewrite and is game state, which Live does not store.
+(the first experiment in [theater-design.md](theater-design.md#before-and-after-the-sim-rewrite)), the film begins at a start
+point instead ("Start points"), which is also how a mid-game joiner's
+film begins.
 
 ### What the replay depends on
 
@@ -210,14 +210,16 @@ The film is one file, little-endian, read front to back.
 ```text
 header, 64 bytes
    0   8  ASCII "H2FILM4!"
-   8   u16 version (4), u16 flags (bit 0 machine part, bit 1 sealed)
+   8   u16 version (4), u16 flags (bit 0 machine part, bit 1 sealed,
+          bit 2 begins at a start point)
   12   u8 ticks per second, u8 seat limit (16), u16 ticks per chunk (256)
   16  16  film id
   32   u32 length in ticks, u32 stored bytes of the seed
   40   u64 offset of the trailer
   48  16  digest of the dictionary the chunks name, or zero
 seed            one zstd frame
-blocks          each: u8 kind (0 tick chunk, 1 machine envelope),
+blocks          each: u8 kind (0 tick chunk, 1 machine envelope,
+                2 start point),
                 u32 stored bytes, then one zstd frame
 trailer         u32 chunk count, then a u64 offset per tick chunk
 ```
@@ -328,14 +330,82 @@ forward pass over that column, then serves ticks by reading one byte from
 each present column into the seat's row. `apply` in `actions.rs` writes
 the rows into the update.
 
+### The action side stream
+
+In a Live game the host forwards the film to every client as it is made,
+so each client records the engine film and no network tape.
+
+- **What is sent.** The film's blocks, unchanged: the seed when a client
+  joins, then each tick chunk as it closes, every 256 ticks. Nothing is
+  encoded twice, and a client's file equals the host's.
+- **Where it rides.** A frame kind of the Live datagram tunnel
+  (`live_proto::tunnel`, `crates/live/live-hle/src/tunnel_host.rs`,
+  `tunnel_client.rs`), beside the game's datagrams and outside the
+  guest's sockets. The guest sends and receives what it did before, so
+  the simulation contract does not move. A frame carries the game id, the
+  chunk index, a part number and the bytes.
+- **Bandwidth** (**Estimate**, from the sizes above). 16 seats: 43,200
+  bytes a minute of actions, 3,650 of digests and 280 of framing, 47,100
+  in all: 785 bytes a second, 6.3 kbit/s to each client, and 94 kbit/s
+  from a host with 15 clients. A chunk is about 6.7 KB every 8.5 s. Two
+  seats: 1.2 kbit/s.
+- **Bound.** A client is sent at most 16 KiB a second of film. A chunk
+  over 64 KiB stored is not forwarded. The host keeps the last eight
+  stored chunks, at most 512 KiB, for resends.
+- **Loss.** A client that sees a gap in the chunk index asks the host for
+  that chunk again. A chunk the host no longer holds, or would not send,
+  is fetched after the game from the host's film on Live, by the byte
+  range its trailer gives. A film with a gap is unsealed until the gap is
+  filled, and is not offered for Watch.
+- **Check.** Each chunk ends with the arena hash, and the sealed film's
+  digest is in the game's Live record; the client compares both.
+- **The view.** Theater plays the whole film with the player's seat
+  selected. It shows the host's authoritative game from that seat, not
+  the client's own prediction.
+
+### Start points
+
+A player who joins a running game cannot simulate from the seed in time,
+so the host gives them a start point.
+
+- **What it is.** The game-state arena (`0x3fe000` bytes) and the
+  extension blob at the end of the join tick, compressed, with the tick,
+  the arena hash and the per-game identifiers. Never guest RAM, device
+  state or the disk. The join's own seat record is on the next tick, so
+  the state is one every machine already has
+  ([live-coop.md](../live/live-coop.md) section 14).
+- **How small.** 4,186,112 bytes of arena; the retail join compresses it
+  into a 256 KiB buffer, about 16 to 1 (**E**, a guess recorded in
+  live-coop.md section 14.1). So about 0.26 MB, against about 1.2 MB for
+  the game state in a Halo 3 clip. The stored limit is 1 MiB for the
+  arena and 64 KiB for the extension blob.
+- **How it is made safe.** The host tags it with a MAC over the tick, the
+  lengths, the arena hash and the SHA-256 of the bytes, under the key the
+  joiner's tunnel session already holds. The joiner inflates into a
+  buffer of exactly the arena's size, refuses any other length, and after
+  loading compares `lockstep::hash_sim` with the tagged hash. The host
+  writes the same arena hash into the join's seat record, so the film on
+  Live confirms the start point after the game. Nothing in it is an
+  address the loader follows: the arena goes in through the engine's own
+  restore path.
+- **In a film.** A film that begins at a start point has header flag bit
+  2 and a block of kind 2 before its first tick chunk. It stays on the
+  joiner's machine. The joiner can instead fetch the earlier chunks and
+  hold the whole game from its seed.
+- **What it waits for.** Loading an arena into a running match, which is
+  the retail synchronous join for co-op
+  (`crates/extensions/game/src/coop_jip.rs`) and `sim_state::Keyframe`
+  otherwise.
+
 ### On Live
 
 Live stores a film as the bytes it was sent and serves it by byte range.
 It reads the header and the seed, checks that every block's stored size
-stays inside the file, and inflates no tick chunk. Identity is in the
-seed's roster only, so the scrub rewrites one small frame and copies the
-rest. A clip is a pair of ticks; playing it needs the film from its
-first byte to the end of the clip's last chunk, which is one range.
+stays inside the file, and inflates no tick chunk. A film needs no scrub:
+Live issues the seat and machine identifiers afresh for each game, and
+the seed's roster holds the game id and gamertags. A clip is a pair of
+ticks; playing it needs the film from its first byte to the end of the
+clip's last chunk, which is one range.
 
 ## Rules and limits
 
@@ -381,6 +451,13 @@ first byte to the end of the clip's last chunk, which is one range.
 - The three engine-film experiments
   ([theater-design.md](theater-design.md#before-and-after-the-sim-rewrite)).
 - The zstd context sizes.
+- That the tunnel can carry a frame kind the guest never sees, on every
+  kind of host.
+- The compressed size of an arena, and the key a start point's MAC uses.
+- That a seat that was remote in the recording gets a HUD when selected
+  in playback.
+- That per-game identifiers issued by Live are the ones the update
+  carries.
 
 ## Related
 
