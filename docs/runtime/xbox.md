@@ -76,19 +76,23 @@ platform seam, unchanged.
 - **Back** (B on the pad) is marked handled, so the system never treats it as
   leaving the app; the game sees B.
 - **Bounds:** `ApplicationViewBoundsMode::UseCoreWindow`, so the game gets the
-  whole screen and not the Xbox's TV-safe area. The 4:3 picture is fitted
-  (`device_config`).
-- **Files:** the app container refuses `std::fs::canonicalize` and
-  `File::open` on a directory, even inside the app's own LocalState
-  (ERROR_ACCESS_DENIED). On Windows the hard disk (`vfs::HostBackend`)
-  therefore uses absolute paths as they are and skips directory syncs.
-  The co-op screen's level list (`boot::coop_live::disc_levels`) reads a
-  disc directory's `maps/mainmenu.map` file, found by listing, instead of
-  opening the disc path as an image (it logged `opening ...\disc: Access
-  is denied` and offered no levels).
-  File syncs open the file for writing, because `FlushFileBuffers` needs
-  write access. If the game cannot start, the log lists each file-system
-  step with its OS error (`h2uwp: check ...`).
+  whole screen and not the Xbox's TV-safe area. Native resolution follows the
+  drawable (`device_config`).
+
+### Files
+
+The app container refuses `std::fs::canonicalize` and
+`File::open` on a directory, even inside the app's own LocalState
+(ERROR_ACCESS_DENIED). On Windows the hard disk (`vfs::HostBackend`)
+therefore uses absolute paths as they are and skips directory syncs.
+The co-op screen's level list (`boot::coop_live::disc_levels`) reads a
+disc directory's `maps/mainmenu.map` file, found by listing, instead of
+opening the disc path as an image (it logged `opening ...\disc: Access
+is denied` and offered no levels).
+File syncs open the file for writing, because `FlushFileBuffers` needs
+write access. If the game cannot start, the log lists each file-system
+step with its OS error (`h2uwp: check ...`).
+
 - **Logs:** a UWP process has no console. stderr and stdout are pointed at
   `LocalState\h2uwp.log` (`SetStdHandle`). Read it in the Device Portal's
   File explorer (LocalAppData, the package, LocalState).

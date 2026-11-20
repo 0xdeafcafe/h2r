@@ -158,7 +158,7 @@ fn serve(dir: &Path, data: &Path, disc: &Path, image: Option<&Path>) -> Result<(
         .args(["--no-halo1", "--no-mappack", "--no-movies"])
         .env("H2_BOOT_GFX", dir.join("gpu"))
         .env("H2_BOOT_GFX_EVERY", "never")
-        .env("H2_RENDER_SCALE", "1")
+        .env("H2_RESOLUTION", "640x480")
         .env_remove("H2_BOOT_GFX_LIGHTING_AB")
         .env_remove("H2_LEVEL")
         .env_remove("H2_MAP_DIR")

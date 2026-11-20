@@ -10,8 +10,8 @@
 //! *reference* renders at the guest's size and answers everything the guest
 //! can observe: surface and depth read-backs, pixel counts, draw outcomes,
 //! the judge and every capability question. The *view* renders the frame
-//! buffers and the depth buffer at an integer multiple of their size and is
-//! what is shown. Nothing the view does reaches the device, so the guest's
+//! buffers and the depth buffer on the horizontal and vertical grids of
+//! the selected output resolution. Nothing the view does reaches the device, so the guest's
 //! values are the 1x run's by construction.
 //!
 //! What the view keeps at scale: every surface made at the frame size (the
@@ -48,15 +48,14 @@
 //! A view failure never reaches the guest: it is counted and that frame is
 //! shown from the reference's image.
 //!
-//! **Changing the scale during a run.** [`ScaledBackend::follow_scale`]
-//! gives it a source of the wanted scale (the Video screen's Resolution
-//! setting), read at every present. A change is made at that frame
+//! **Changing the scale during a run.** [`ScaledBackend::follow_resolution`]
+//! reads the Video screen's requested raster at each present. A change is made at that frame
 //! boundary, on whichever thread presents (the render thread under
 //! [`crate::ThreadedBackend`]): every scaled surface is made again at the
 //! new scale and filled from the reference's, and the device's handles are
 //! mapped onto the new ones, so the guest and the device see nothing. At
-//! scale 1 the view sleeps: it draws nothing and each frame is the
-//! reference's ([`ScaleStats::reference_frames`]), so a run can start at
+//! 640x480 with a retail lens and retail lighting the view sleeps and
+//! presents the reference ([`ScaleStats::reference_frames`]), so a run can start at
 //! 1x and go up without a second backend's work until it does.
 //!
 //! **The Lighting row** ([`Lighting`], [`ScaledBackend::follow_lighting`],
@@ -90,8 +89,8 @@ use crate::gfx_backend::{GfxBackend, HostTexture};
 pub use crate::{Lighting, MAX_SCALE};
 pub use gfx::renderer::RenderScale;
 
-/// `H2_RENDER_SCALE`: unset, empty or `1` is 1 (no view backend at all);
-/// `2`..=`6` render the frame at that multiple.
+/// Parse the legacy integer scale. The resolution setting resolves Native
+/// and explicit pixel dimensions before constructing the backend.
 pub fn render_scale_from(value: Option<&str>) -> Result<u32, String> {
     let Some(v) = value.map(str::trim).filter(|v| !v.is_empty()) else {
         return Ok(1);
@@ -149,6 +148,9 @@ pub fn view_for<V>(scale: u32, make: impl FnOnce() -> V) -> Option<V> {
 /// their guest size, and access to its reference `R`'s resources (the two
 /// are on one device).
 pub trait ScaleView<R: Backend>: Backend {
+    /// A nested reference in a lighting A/B also feeds a display image.
+    const REFERENCE_INCLUDES_DISPLAY: bool = false;
+
     /// A surface `scale` times `width x height`. Draws and clears into it
     /// keep taking guest-pixel rectangles; the backend scales them.
     fn create_scaled_surface(
@@ -583,8 +585,8 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
         shadow_scale(self.scale.vertical_rounded(), self.lighting)
     }
 
-    /// Whether the view draws: above render scale 1, or with scaled
-    /// shadow maps (E3 lighting, whose view runs at 1x too).
+    /// Whether frame-size display surfaces carry a distinct raster, E3
+    /// lighting, or an anamorphic presentation alongside the exact reference.
     fn awake(&self) -> bool {
         self.scale != RenderScale::ONE || self.shadow_factor() > 1
             || (!self.single_copy && self.anamorphic_guest_frame())
@@ -1367,10 +1369,15 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
             return self.draw_single(color, depth, draw, textures);
         }
         self.before_shared_write(&color);
+        let reference_draw = if V::REFERENCE_INCLUDES_DISPLAY {
+            std::borrow::Cow::Borrowed(draw)
+        } else {
+            draw.for_reference()
+        };
         let out = self.reference.draw(
             color.reference,
             depth.map(|d| d.reference),
-            &draw.for_reference(),
+            &reference_draw,
             textures.map(|t| t.map(|t| &t.reference)),
         )?;
         let drawn = out == DrawOutcome::Drawn;
@@ -2358,6 +2365,8 @@ impl ScaleView<GfxBackend> for GfxBackend {
 /// takes the inner reference's textures and pixels, as a view over a
 /// plain backend does, so the two views differ only where lighting does.
 impl ScaleView<ScaledBackend<GfxBackend, GfxBackend>> for GfxBackend {
+    const REFERENCE_INCLUDES_DISPLAY: bool = true;
+
     fn create_scaled_surface(
         &mut self,
         format: D3DFormat,

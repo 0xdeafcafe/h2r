@@ -49,8 +49,12 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   vertical FOV `+0x28`, viewport `+0x30` (i16 top, left, bottom, right),
   near `+0x40`, far `+0x44` ([occlusion-culling.md](occlusion-culling.md),
   "Camera and view"). From it, a view matrix and a projection with the
-  game's own aspect rule (`0x0002fb70`). Read once per view, at the layer-3
-  hook (below), so it is the camera the game's own draws would use.
+  game's own aspect rule (`0x0002fb70`). When available, the paired
+  projection at `0x004b9e14` supplies both diagonal scales and off-centre
+  terms. The display copy adjusts the horizontal row for the presented
+  viewport. The retail copy keeps the original lens. Both operate on
+  the structure parts and objects admitted by the guest.
+  See [widescreen projection](high-resolution.md#widescreen-projection).
 - **Cull.** Frustum planes from the view-projection, tested against each
   draw's world bounds on the CPU (a few thousand AABBs: microseconds). The
   result is `instance_count` 0 or 1 in the indirect buffer (one 20-byte

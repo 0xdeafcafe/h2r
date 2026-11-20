@@ -504,8 +504,11 @@ a cinematic, death or vehicle camera the window shows the recorded frame.
 `theater.camera {"mode":"default"}` returns to the whole local frame.
 
 A playerless host has no local director, first-person weapon or HUD. For
-a rendered host film the desktop player opens a separate 960 × 540 GPU
-view of the running simulation. It uses the selected unit’s posed camera
+a rendered host film the desktop player opens a separate GPU view at the
+viewer's selected resolution. Native follows the physical drawable, including
+a resize while paused. The presented aspect sets the observer's horizontal
+field of view. The BSP and posed objects use the same projection for drawing
+and culling. The observer uses the selected unit’s posed camera
 marker, aim and unzoomed field of view. When the marker is unavailable,
 it estimates eye height from the biped’s collision capsule and crouch state.
 The scene uses the active BSP with its base textures and lightmaps, and

@@ -29,6 +29,8 @@ pub const RUN_ENV: &[&str] = &[
     "H2_AUDIO_STATS",
     "H2_FPS",
     "H2_RENDER_SCALE",
+    "H2_RESOLUTION",
+    "H2_HUD_POSITION",
     "H2_WATERMARK",
     "H2_MAPPACK",
     "H2_HALO1",

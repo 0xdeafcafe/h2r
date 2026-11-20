@@ -120,10 +120,14 @@ reads only AL: non-zero with view kind 1 re-runs the same index.
   `(right - left) / (bottom - top)` from `+0x30..+0x36`, and stores the x
   scale as `1 / (t · aspect · x extent)` and the y scale as `1 / (t · y
   extent)` (extents 1 by default): x takes the aspect, so `t` is the
-  vertical half-angle's tangent. Two things the read does not settle: with
-  `[0x00485ac2]` set (and `[0x00510c50]+5`) the aspect is multiplied by a
-  constant (`0x0045dfdc`; S: an anamorphic or widescreen mode), and the
-  frustum extents can come from the caller instead of the default.
+  vertical half-angle's tangent. The Xbox widescreen path conditionally
+  multiplies the viewport aspect by the anamorphic factor at `0x0045dfdc`.
+  The subsequent test of byte `+5` at `[0x00510c50]` can change the
+  vertical tangent or frustum extents independently of this width factor.
+  The caller may also supply off-centre extents. The live guest gather
+  uses this retail lens. Its per-object setup can advance gameplay RNG,
+  so a wider host projection can expose regions for which the guest
+  supplied no object records. See [high resolution](high-resolution.md#determinism).
 - The projection `0x004b9e14` (built by `0x0002fd90`): world-to-view 4x3
   at `+0`, view-to-world at `+0x34`, four frustum bounds at `+0x68`, pixel
   scales at `+0xb8`/`+0xbc` (`0x004b9ed0` is the LOD pixel scale).

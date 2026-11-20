@@ -11,7 +11,7 @@ simulation memory except through a hook that says so (the clamp global in
 "Field of view").
 
 - The top-level Settings list has a **Video** row that opens our Video screen:
-  field of view, frame rate, resolution and lighting ("Video screen",
+  field of view, frame rate, resolution, HUD position and lighting ("Video screen",
   "Field of view").
 - The Controls screen has rows for the controller speaker, the Steam
   Controller (speaker, trackpad aim, left trackpad) and, on iOS, the touch
@@ -160,21 +160,34 @@ privacy screen sets it; [live-custom-games.md](../live/live-custom-games.md)),
 ## Video screen
 
 The top-level Settings list (Player Profiles, Game Variants) has a third
-row, **Video**. A on it opens a screen titled "Video" with four display options:
+row, **Video**. A on it opens a screen titled "Video" with these display options.
 
 | Row | Values | Saved as | Applies | Locked by |
 |---|---|---|---|---|
 | Field of View | 70 to 120 in steps of 5 | `[graphics] fov` | at once | `H2_FOV` |
 | Frame Rate | 30, 60, 120, Uncapped | `[graphics] fps` | at once | `--fps`, `H2_FPS` |
-| Resolution | 640x480, 1280x960, 1920x1440, 2560x1920 (scale 1 to 4; shown as the size, saved as the scale) | `[graphics] render_scale` | next frame | `H2_RENDER_SCALE` |
+| Resolution | Native (current physical width x height), then sizes at that aspect | `[graphics] resolution` (`"native"` or `"WxH"`) | next frame | `H2_RESOLUTION`, legacy `H2_RENDER_SCALE` |
 | Lighting | Retail, E3 (default Retail) | `[graphics] lighting` (`"retail"`, `"e3"`) | next frame | `H2_LIGHTING` |
+| HUD Position | Pinned (default), Centered | `[graphics] hud_position` (`"pinned"`, `"centered"`) | live | `H2_HUD_POSITION` |
 
-A steps the row's value and saves it to `<data>/settings.toml` at once,
-keeping every other key. The window follows the frame rate at its next turn
-(`app::fps::FpsControl`), the view backend makes its targets again at the
-next frame boundary on the render thread (`ScaledBackend::follow_scale`,
-[high-resolution.md](../graphics/high-resolution.md)), and so does the lighting
-(`ScaledBackend::follow_lighting`, [e3-lighting-setting.md](../graphics/e3-lighting-setting.md)).
+A on Resolution or HUD Position opens a select dialog. A confirms the
+highlighted option and saves it to `<data>/settings.toml`. B cancels. Native
+tracks the physical window size. Choosing a numbered size fixes the render
+target at that size, including after a window resize. At 5120x2880 the
+select dialog offers Native, 1280x720, 1920x1080, 2560x1440, 3840x2160 and
+5120x2880. The saved integer `graphics.render_scale` and its launch override
+select the corresponding fixed multiple of 640x480.
+
+Pinned keeps corner-anchored HUD groups near the edges of each player's
+viewport. Centered keeps those groups inside a centred 4:3 safe area.
+Both settings keep menus centred and preserve the proportions of their
+text and artwork.
+
+The frame rate applies at the window's next turn (`app::fps::FpsControl`).
+The render thread applies resolution and lighting at a frame boundary
+(`ScaledBackend::follow_resolution`, `ScaledBackend::follow_lighting`).
+See [high resolution](../graphics/high-resolution.md) and
+[E3 lighting](../graphics/e3-lighting-setting.md).
 A locked row shows the variable's value and A
 does nothing. A bad variable is reported and ignored, so the saved value is
 used. Above 30, the frame rate redraws the newest game frame more often
@@ -187,11 +200,11 @@ the screen; `boot::video_screen::model` builds the screen as
 `ui::extend(List::Settings, 2)` and the speaker row as
 `ui::extend(List::Controls, 6)` ([Settings as a schema](#settings-as-a-schema));
 the hooks registered by `layout_glue::install` ask that model for counts,
-texts and presses. `h2 play` reads the saved frame rate, scale, lighting
+texts and presses. `h2 play` reads the saved frame rate, resolution, HUD position, lighting
 and mute button when no flag or variable sets them. Tests:
 `setting_defs::tests::lighting_is_retail_unless_asked_and_has_a_video_row`
 (default Retail, the row on this screen, live, the file's names, the
-variable's lock) and `video_screen`'s tests for the four rows, their exact
+variable's lock) and `video_screen`'s tests for the Video rows, their exact
 labels and values, and saving live changes.
 
 ### How the screen is made (Local, static reading of the retail XBE)
@@ -637,8 +650,9 @@ is copied, and H2V's addresses and structures differ.
   `0x16f3a0` and direct) were checked for reads of the FOV fields
   (`+0x38`, `+0x4c`, `+0x50`): the render camera (`0x2f800`), the
   particles' scale (`0x248970`) and camera code. The others read
-  position. `0xbd610` reads `+0x38` / `+0x4c` of a pointer whose origin was
-  not traced; that is the one open item.
+  position. In `0xbd610`, the `+0x38` load at `0xbd67f` reads the object
+  definition. The `+0x4c` load at `0xbd8d2` reads render-model node data.
+  Both pointers come through tag instances.
 - Networked state: the observer and the director are per local player and
   never serialised by the game; nothing here writes simulation memory. The
   clamp global `0x55e488` is the one guest write, and only the camera
@@ -652,8 +666,7 @@ cameras do not.
 
 The schema is the settings layer of [feature-engine.md](../engine/feature-engine.md). A setting is one
 `settings::Def` (`crates/formats/settings`): its `table.key` in `settings.toml`, its
-label and help, its kind (bool, whole number with a valid range and row
-steps, or a choice), its default, the variable and flag that override it,
+label and help, its kind (bool, bounded whole number, resolution or choice), its default, the variable and flag that override it,
 and whether a change applies at once (`Live`) or at the next launch
 (`Restart`). Ours are in `boot::setting_defs`.
 
