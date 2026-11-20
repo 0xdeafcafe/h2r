@@ -65,7 +65,10 @@
 //! translation) counts nothing. Clearing and reporting the counter submit
 //! the pending pass first, so they stay in order with the counted draws.
 
+mod guest_draw_pass;
 mod native_runs;
+
+pub use guest_draw_pass::GuestDrawPass;
 
 use std::collections::HashMap;
 
@@ -148,6 +151,9 @@ pub struct GfxBackend {
     pub renderer: Renderer,
     shaders: Option<Box<dyn ShaderProvider>>,
     presented: Option<SurfaceId>,
+    /// Last scene-owned display target, retained through the next display swap.
+    scene_presented: Option<SurfaceId>,
+    scene_uploads: guest_draw_pass::TextureCache,
     present_hook: Option<PresentHook>,
     recorded_pass_observer: Option<RecordedPassObserver>,
     submission_uploads: Option<Box<dyn FnMut() + Send>>,
@@ -181,6 +187,9 @@ pub struct GfxBackend {
     /// Reports recorded into the open encoder, told their submission when
     /// it is made ([`set_defer_side_passes`](Self::set_defer_side_passes)).
     unsubmitted_reports: Vec<PixelReport>,
+    /// Canonical scene queries recorded into the open encoder. At submit
+    /// they deliver their counts directly to the guest's feedback slots.
+    flare_reports: Vec<(PixelReport, crate::scene_sink::FlareWriter)>,
     next_ticket: u64,
     /// Presents so far plus one.
     frame: u64,
@@ -321,6 +330,8 @@ impl GfxBackend {
             renderer,
             shaders: Some(Box::new(Nv2aShaders::new())),
             presented: None,
+            scene_presented: None,
+            scene_uploads: Default::default(),
             present_hook: None,
             recorded_pass_observer: None,
             submission_uploads: None,
@@ -335,6 +346,7 @@ impl GfxBackend {
             counter: None,
             reports: HashMap::new(),
             unsubmitted_reports: Vec::new(),
+            flare_reports: Vec::new(),
             depth_bits: None,
             guest_words: None,
             gpu_depth_aliases: true,
@@ -750,6 +762,22 @@ impl GfxBackend {
         Ok(())
     }
 
+    /// Copies the native flare counter at this point in the frame. The
+    /// normal pass encoder counts at guest pixel spacing on a scaled
+    /// target. The copy shares the frame submission; it never waits here.
+    pub(super) fn record_flare_report(
+        &mut self,
+        report: &crate::scene_sink::FlareReport,
+    ) -> Result<(), String> {
+        let Some(feedback) = report.claim() else { return Ok(()) };
+        let (mut encoder, passes) = self.take_open()?;
+        let counter = self.counter.get_or_insert_with(|| PixelCounter::new(&self.ctx));
+        let result = counter.report(&self.ctx, &mut encoder);
+        self.flare_reports.push((result, feedback));
+        self.open = Some((encoder, passes));
+        Ok(())
+    }
+
     /// The merge self-check ([`set_merge_check`](Self::set_merge_check)):
     /// renders `p` merged and with one render pass per draw from the same
     /// starting attachments, reports the pixels that differ, and narrows a
@@ -989,6 +1017,13 @@ impl GfxBackend {
         for r in self.unsubmitted_reports.drain(..) {
             r.submitted(index.clone());
         }
+        for (report, feedback) in self.flare_reports.drain(..) {
+            let device = self.ctx.device.clone();
+            let submission = index.clone();
+            // Register the map before telling a deterministic reader that
+            // it can finish it by waiting for this particular submission.
+            feedback.map(report, device, submission);
+        }
         self.last_submit = Some(index.clone());
         self.renderer.submitted();
         if let Some(s) = self.shaders.as_mut() {
@@ -1035,6 +1070,17 @@ impl GfxBackend {
         flags: u32,
         gamma: Option<&[u8; 768]>,
     ) -> Result<(), String> {
+        self.submit_present(from, surface, flags, gamma, true)
+    }
+
+    fn submit_present(
+        &mut self,
+        from: Option<&GfxBackend>,
+        surface: SurfaceId,
+        flags: u32,
+        gamma: Option<&[u8; 768]>,
+        honour_finish: bool,
+    ) -> Result<(), String> {
         let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
         let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "present");
         self.flush()?;
@@ -1060,7 +1106,7 @@ impl GfxBackend {
             }
         }
         let frame_end = self.last_submit.clone();
-        if flags & 4 != 0 {
+        if honour_finish && flags & 4 != 0 {
             // D3DSWAP_FINISH: wait for the GPU (for the previous frame's
             // work, unless `SwapFinish::Full`).
             let wait = match self.swap_finish {

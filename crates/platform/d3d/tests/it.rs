@@ -25,6 +25,8 @@ mod first_frame;
 mod fog_xbe;
 #[path = "fragments.rs"]
 mod fragments;
+#[path = "guest_draw_pass.rs"]
+mod guest_draw_pass;
 #[path = "glyph_text.rs"]
 mod glyph_text;
 #[path = "interp.rs"]
