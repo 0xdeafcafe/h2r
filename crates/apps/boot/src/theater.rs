@@ -122,7 +122,7 @@ pub fn image_match(
 ) -> Result<film::image::ImageMatch> {
     ensure!(version == 1 || runtime == compatibility::SIMULATION_ABI, "film simulation ABI differs (recorded {runtime}, installed {})", compatibility::SIMULATION_ABI);
     if version >= 3 && let Some(guest) = guest {
-        return guest.compare(original, candidate, emit::compile::Arch::host().triple(), xbe_sha256)
+        return guest.compare(original, candidate, recomp::host_triple(), xbe_sha256)
             .map_err(|reason| anyhow::anyhow!("film image stamp differs: {reason}"));
     }
     ensure!(!candidate.is_empty() && original == candidate, "film requires its exact native image stamp");
@@ -221,7 +221,7 @@ impl Session {
             }).flatten();
             let xbe_sha256 = film::xbe_digest(xbe);
             let guest_image = film::image::GuestImage::capture(
-                &stamp, emit::compile::Arch::host().triple(), &xbe_sha256,
+                &stamp, recomp::host_triple(), &xbe_sha256,
             );
             let header = Header {
                 version: 3,
@@ -349,7 +349,7 @@ impl Session {
 
     pub(crate) fn render_hooks(&self) -> film::RenderHooks {
         self.lock().header.render_hooks
-            .unwrap_or_else(crate::registration::compiled_render_hooks)
+            .unwrap_or_else(crate::run_plan::compiled_render_hooks)
     }
 
     pub(crate) fn telemetry_plan(&self) -> live_proto::film::TelemetryHooks {

@@ -21,6 +21,8 @@ use std::sync::{Arc, Mutex};
 use anyhow::Context;
 use runtime::Runtime;
 
+use crate::run_plan::{compiled_render_hooks, register_telemetry};
+
 use crate::{
     agent_glue, aim_assist, bot_glue, campaign_menu, cheats, clankers, coop_probe, custom_games,
     game_setup_help, h1_options, h1_options_row, health, hud, hud_swap, layout_glue, level_boot, lockstep_glue,
@@ -80,31 +82,6 @@ pub struct Core {
 /// Registers everything from the telemetry hooks to the touch glue.
 pub fn register_core(features: &mut hooks::Registry, i: CoreInputs<'_>) -> anyhow::Result<Core> {
     register_core_film(features, i, None)
-}
-
-pub(crate) fn register_telemetry(
-    features: &mut hooks::Registry,
-    config: &telemetry::TelemetryConfig,
-    film: Option<&Arc<crate::theater::Session>>,
-) -> anyhow::Result<Option<Arc<telemetry::Telemetry>>> {
-    let Some(film) = film else {
-        return Ok(
-            telemetry::install(features, config).unwrap_or_else(|error| {
-                eprintln!("live telemetry disabled: {error}");
-                None
-            }),
-        );
-    };
-    // Guest transfers depend on the installed hook addresses. The recorder
-    // and player consume the same header plan even when their sinks differ.
-    let hooks = film.telemetry_plan();
-    let installed = telemetry::install_film(features, config, film.film_observer(), hooks)
-        .map_err(anyhow::Error::msg)?;
-    anyhow::ensure!(
-        installed.is_some() == hooks.enabled(),
-        "film telemetry hook plan {hooks:?} could not be installed"
-    );
-    Ok(installed)
 }
 
 pub(crate) fn register_core_film(
@@ -332,18 +309,6 @@ pub fn pipeline_for(
         pipeline.disabled("the world render is skipped (sim-frame)")
     } else {
         pipeline
-    }
-}
-
-/// Group availability follows boot's Cargo features. A desktop playback binary
-/// can select the smaller registration plan recorded by a dedicated host.
-pub(crate) fn compiled_render_hooks() -> film::RenderHooks {
-    if cfg!(feature = "gpu") {
-        film::RenderHooks::Gpu
-    } else if cfg!(feature = "desktop-runtime") {
-        film::RenderHooks::Desktop
-    } else {
-        film::RenderHooks::Slim
     }
 }
 

@@ -1,7 +1,7 @@
 # Booting the recompiled XBE natively
 
 Status: Built.
-Code: `crates/apps/boot/src/lib.rs` (`build`, `run`, `run_hosted`), `crates/apps/boot/src/registration.rs`, `crates/apps/cli/src/boot_cmd.rs` (`h2 build`, `h2 run`, `h2 serve`). Tests: `crates/apps/boot/tests/`.
+Code: `crates/runtime/recomp/src/lib.rs` (`build`, `load_module`, the build stamp), `crates/apps/boot/src/lib.rs` (`run`, `run_hosted`), `crates/apps/boot/src/registration.rs`, `crates/apps/cli/src/boot_cmd.rs` (`h2 build`, `h2 run`, `h2 serve`). Tests: `crates/runtime/recomp/` (unit tests, `tests/fast_tier.rs`), `crates/apps/boot/tests/`.
 Switches: the boot runner's own are below; every other one is in [switches.md](switches.md).
 
 `h2 build` lifts the whole `default.xbe` and compiles it to a host dylib.
@@ -109,14 +109,16 @@ fed on the guest's clock, the callback count, a monotonic clock and
 
 ## How it fits together
 
-- **`crates/apps/boot/src/lib.rs`**: `build` and `run`.
+- **`crates/runtime/recomp/src/lib.rs`** builds and loads the module;
+  **`crates/apps/boot/src/lib.rs`**, the composition root, runs it and
+  re-exports `recomp` (`boot::build`, `boot::tier`).
   - `build` runs analyze, lifts each function, then `emit::plan` writes
     C11 shards and `h2gen.h`.
   - clang builds the shards for the host architecture, and they are linked
     with `c/boot_bridge.c` into `libh2game.dylib`.
   - The bridge forwards the `h2abi_v1_*` imports to `runtime::ffi`. Rust
     implements the `h2shim_*` imports in `shim.rs`.
-  - `run` reads the module's `h2gen_module` tables and registers every
+  - `load_module` reads the module's `h2gen_module` tables and registers every
     generated entry and resume as itself, so the module's direct calls
     (`H2_DIRECT_CALLS`) match. A slim host module's left-out owners are
     registered to the interpreter (`fallback::register_cold`).

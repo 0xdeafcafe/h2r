@@ -61,7 +61,7 @@ spill (`crates/runtime/runtime/src/ffi.rs`): the runtime settles the view's coun
 then spends the handler's `n`. Without `H2_FASTMEM` the charge alone stays.
 The boot bridge table has an `exit` slot installed by `h2boot_install_v3`;
 a module built before it is installed through `h2boot_install_v2`
-(`crates/apps/boot/src/lib.rs`). `H2_EXIT_CALL=0` and `H2_DIRECT_VIEW=0` are C
+(`crates/runtime/recomp/src/lib.rs`, `install_bridge`). `H2_EXIT_CALL=0` and `H2_DIRECT_VIEW=0` are C
 defines the equivalence tests set to build the older exit and entries; they
 are not part of `cflags_for`.
 

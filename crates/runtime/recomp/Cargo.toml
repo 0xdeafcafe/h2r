@@ -1,6 +1,6 @@
 [package]
 name = "recomp"
-description = "Build and load: the XBE lifted, emitted and compiled into one host module, its build stamp, the module loaded with the boot bridge, and the interpreter for what the module leaves out"
+description = "Build and load: the XBE lifted, emitted and compiled into one host module, its build stamp, the module loaded with the boot bridge, and the interpreter for what the module leaves out (docs/runtime/BOOT.md)"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

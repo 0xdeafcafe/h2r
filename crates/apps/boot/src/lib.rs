@@ -1,11 +1,7 @@
-//! Boot glue: the whole XBE through lift, emit and clang into one host
-//! dylib, then that dylib registered with the runtime, the kernel HLE
-//! attached, and the entry thread run until something stops it.
-//!
-//! This is a tracer bullet, not the final shape of the engine: the
-//! generated code is loaded as a dylib (with `c/boot_bridge.c` forwarding
-//! its ABI imports to the runtime) so the host binary needs no link-time
-//! knowledge of the generated symbols. See docs/runtime/BOOT.md.
+//! The composition root: the module `recomp` built (`boot::build`, the
+//! re-exported pipeline), registered with the runtime, the kernel HLE
+//! attached, every feature planned onto the hooks, and the entry thread run
+//! until something stops it. See docs/runtime/BOOT.md.
 //!
 //! Nothing derived from the disc is written outside the caller's output
 //! directory, which should be under `$TMPDIR` or `target/`.
@@ -140,6 +136,7 @@ pub mod render_probe;
 #[cfg(feature = "desktop-runtime")]
 pub mod render_thread;
 pub mod retail_rows;
+pub mod run_plan;
 pub mod sampling;
 pub use live_telemetry as telemetry;
 pub mod bot_glue;
@@ -188,7 +185,7 @@ pub mod xapi_glue;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
@@ -626,7 +623,7 @@ fn run_configured(
                 light: host_light,
                 bots,
                 telemetry_hooks: telemetry::image_film_hooks(&loaded.runtime),
-                render_hooks: registration::compiled_render_hooks(),
+                render_hooks: run_plan::compiled_render_hooks(),
                 live_service: live.server_url.is_some(),
                 address: _live
                     .as_ref()
@@ -1013,7 +1010,7 @@ fn run_configured(
         native_shadows_glue::configure_single(b);
     }
     let render_hooks = film.as_ref()
-        .map_or_else(registration::compiled_render_hooks, |s| s.render_hooks());
+        .map_or_else(run_plan::compiled_render_hooks, |s| s.render_hooks());
     #[cfg(feature = "gpu")]
     let mut d3d_calls = match (opts.d3d, host.gfx.take()) {
         (false, _) => None,

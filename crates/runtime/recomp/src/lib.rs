@@ -34,6 +34,10 @@ pub const BRIDGE_X87: &str = concat!(
 pub const H2ABI_H: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../runtime/runtime/include/h2abi.h");
 /// File name of the linked module inside the build directory.
 pub const DYLIB: &str = emit::compile::Arch::host().module_file_name();
+/// The host's target triple, which a film's image stamp records.
+pub fn host_triple() -> &'static str {
+    emit::compile::Arch::host().triple()
+}
 
 /// Read `default.xbe` from an XISO, a raw XBE, or a directory holding the
 /// disc's files (the tvOS bundle, docs/runtime/tvos.md).
