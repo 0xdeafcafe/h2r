@@ -29,7 +29,7 @@ type M = Map<BufReader<File>>;
 const LIGH: FourCC = FourCC(*b"ligh");
 
 /// The scenario's light placements and their palette (`scnr +0xe8` and
-/// `+0xf0`; docs/formats/effects.md "Where lights come from").
+/// `+0xf0`; docs/formats/effects.md "ligh (light)").
 const PLACEMENTS: usize = 0xe8;
 const PALETTE: usize = 0xf0;
 const PALETTE_STRIDE: usize = 0x28;

@@ -1339,7 +1339,7 @@ fn run_configured(
         campaign_cards::CardRewrite::new(cards, s.cards.clone())
             .map(|r| r.with_cache(&opts.data_root))
     });
-    // Every font gets the bot mark's gear (docs/game/bots.md §8.2.2), after
+    // Every font gets the bot mark's gear (docs/game/bots.md, "Clanker appearance and Live player options"), after
     // the icon sets.
     #[cfg(feature = "desktop-runtime")]
     let fonts = vfs::Chain(
@@ -2020,7 +2020,7 @@ fn run_configured(
     eprintln!("entry {:#010x}, running", loaded.cpu.eip);
     let t = Instant::now();
     // One slice at a time so XAPI's input pump runs between slices
-    // (docs/runtime/xapi.md "Input pump"); no guard is held here.
+    // (docs/runtime/xapi.md "Input behavior and sources"); no guard is held here.
     let mut outcome = kernel::RunOutcome::SliceLimit;
     let mut host_stop = false;
     let mut input_errors = 0u64;

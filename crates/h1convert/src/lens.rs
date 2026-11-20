@@ -2,7 +2,7 @@
 //! `lens` definition (`crates/tags/src/defs/lens.txt`) with no retail
 //! template read. Used by the sky (each sky light's flare) and by
 //! `h1objects` (lights' flares). Layouts and evidence:
-//! docs/formats/tag-definitions.md, "Lens flares".
+//! docs/formats/effects.md, "lens (lens flare)".
 //!
 //! Halo 1's `lens` (V, every lens of every map on the Halo 1 disc, 641
 //! tags, `flares_disc.rs` `halo1_layout_survey`): a `0xf0` root, the
@@ -104,7 +104,7 @@ impl H1Lens {
 }
 
 /// A Halo 2 reflection's fields from Halo 1's reflection `b` (V by value
-/// sets over both discs, docs/formats/tag-definitions.md, "Lens flares"):
+/// sets over both discs, docs/formats/effects.md, "lens (lens flare)"):
 /// flags `+0`, bitmap index `+4`, position `+0x1c`, rotation offset
 /// `+0x20`, radius bounds `+0x28`, brightness bounds `+0x34`, the tint's
 /// red, green and blue `+0x44`.
