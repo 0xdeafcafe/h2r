@@ -1,0 +1,21 @@
+[package]
+name = "h1-runtime"
+description = "Halo 1 in the running game: AI control, conversations, HUD text, script builtins, cinematics, and the hooks only converted maps need (docs/halo1/README.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[package.metadata.h2]
+status = "in progress"
+
+[dependencies]
+hooks = { path = "../../hooking/hooks" }
+runtime.workspace = true
+tags.workspace = true
+engine = { path = "../../rewrites/engine", features = ["runtime-glue"] }
+timeline = { path = "../../runtime/timeline" }
+
+[dev-dependencies]
+# tests/install.rs and tests/plan.rs time the render stages (render_timing).
+render-bridge = { path = "../../rewrites/render-bridge" }
+runtime-test-probe = { path = "../../runtime/runtime/test-probe" }
