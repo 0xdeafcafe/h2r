@@ -35,7 +35,7 @@ master defaults.
 ```
 I="START@f310,DOWN@f408,A@f419,A@f524,A@f585,A@f632,A@f700,A@f760,A@f820"
 H2_BOOT_GFX=$R/gfx H2_BOOT_GFX_EVERY=4215 H2_BOOT_INPUT=$I \
-H2_BOOT_FPS_FROM=4220 H2_BOOT_STOP_AT_PRESENT=4520 H2_GFX_MERGE_PASSES=1 \
+H2_BOOT_FPS_FROM=4220 H2_BOOT_STOP_AT_PRESENT=4520 \
 H2_FRAME_STATS=1 H2_FRAME_STATS_CSV=$R/frames.csv H2_FRAME_STATS_FROM=4220 \
 H2_PERF_FROM=4220 H2_PROFILE=$R/prof H2_PROFILE_HZ=250 \
 H2_TIMELINE=$R/trace.json H2_TIMELINE_CATS=all \
@@ -53,15 +53,9 @@ Three views of the same run:
 - **The sampler**, at 250 Hz (a 1.5% pause tax), splits the guest
   `slice` span into guest code, accessors, x87 and dispatch.
 
-`H2_GFX_MERGE_PASSES=1` is on in every run. Without it the backend
-encodes and submits a pass per draw, which docs/runtime/BOOT.md measures at about 3x
-slower on the menu. On master, `h2 play` never merged: the variable was
-only read for `H2_BOOT_GFX`'s headless backend. So the user's `h2 play`
-numbers include a submit per draw. This branch makes `h2 play` honour
-`H2_GFX_MERGE_PASSES=1` too (opt-in, because a few edge pixels differ).
-Merged passes have since become the default for both, matching one pass
-per draw on the menu (docs/graphics/graphics.md, "Merged passes"), so
-`H2_GFX_MERGE_PASSES=1` no longer changes anything.
+These runs used merged passes, then an opt-in (`H2_GFX_MERGE_PASSES=1`).
+Merged passes have since become the default for `h2 run` and `h2 play`
+(docs/graphics/graphics.md, "Merged passes"), and the variable is gone.
 
 ## What a level frame is
 
@@ -167,8 +161,7 @@ the old defaults, which `H2_FASTMEM=0 H2_X87_NATIVE=0 H2_ACCESS_COUNT=0`
 reproduces.
 
 Same window, same input, with `H2_FASTMEM=1 H2_X87_NATIVE=1
-H2_ACCESS_COUNT=1` set for both build and run, plus `H2_GFX_MERGE_PASSES=1`
-as before. These numbers are for measurement only: FASTMEM has a known P1
+H2_ACCESS_COUNT=1` set for both build and run, merged passes as before. These numbers are for measurement only: FASTMEM has a known P1
 being fixed. The schedule is identical (1.45 M accesses, 26 slices, the
 same 4 compiles in the same frames), so the frames compare one for one.
 
@@ -224,7 +217,7 @@ Steady frame p50 71.6 ms, p99 81.5, max 721.
 
 | # | change | owner | worst-frame effect | steady saving (ms/frame) | confidence |
 |---|---|---|---|---|---|
-| 0 | **Merged passes in `h2 play`** (`H2_GFX_MERGE_PASSES=1`, this branch): about 300 draws a frame otherwise mean about 300 passes and submits, against 26 | gfx | follows p50 | not measured in the level; on the menu, merging was about 3x on gfx time. Expect -15 to -30 for a user on master's `h2 play` | medium |
+| 0 | **Merged passes in `h2 play`** (this branch; now the default): about 300 draws a frame otherwise mean about 300 passes and submits, against 26 | gfx | follows p50 | not measured in the level; on the menu, merging was about 3x on gfx time. Expect -15 to -30 for a user on master's `h2 play` | medium |
 | 1 | **Compile pipelines off the game thread, and prewarm them** (done: docs/graphics/graphics.md "Pipeline compiles"; draws wait at encode rather than being skipped). Create nv2a programs and render pipelines on a worker. Until one is ready, skip the draw for a frame or two, or block only on a deadline. Persist the keys seen (program hash plus pipeline key) and compile them at map load. Metal's own cache already makes a repeat compile ~5 ms (frame 4256), so the hitch is the first time a material or angle appears. | gfx, d3d nv2a | **721 -> ~80 ms** (-640): the only hitch over 110 ms in either run | ~2 | high: 665 of 721 ms is `pipeline create` |
 | 2 | **FASTMEM on by default** once its P1 is fixed (with `H2_ACCESS_COUNT`) | runtime, emit | follows p50 | **-35 to -40** (119 -> 75 measured, with a load difference) | high: measured |
 | 3 | **Fast exact FYL2X/F2XM1** (done: [x87-transcendentals.md](../lifter/x87-transcendentals.md); both first passes are table-driven now). A table-driven or double-double first pass with a rounding-ambiguity check, keeping the `Wf<8>` series as the exact fallback for the rare hard cases. That is the correctly-rounded-libm pattern, and the guest result stays bit-exact. | x87 | follows p50 | **-10 to -12** (13.5 -> ~2) | medium: 97% of x87 time is these two; the exactness check is the work |
@@ -438,7 +431,8 @@ depth buffer as the alias's format on the GPU
 (`Backend::depth_alias_texture`, docs/graphics/d3d.md "Depth aliases on the
 GPU"). No read-back, no CPU decode, no upload; with the render thread
 it no longer drains the render thread's queue either.
-`H2_D3D_GPU_DEPTH_ALIAS=0` restores the read-back.
+`GfxBackend::set_gpu_depth_aliases(false)` restores the read-back
+(tests and benches).
 
 Headless microbench, `cargo test --release -p d3d --test gpu_depth_alias
 -- --ignored --nocapture`: a 640x480 frame that clears colour and depth,
@@ -449,7 +443,7 @@ Apple Silicon, load average 9 (other lanes running), two rounds:
 
 | path | round 0 ms/frame | round 1 ms/frame |
 |---|---|---|
-| sync, read-back (`H2_D3D_GPU_DEPTH_ALIAS=0`) | 3.44 | 3.31 |
+| sync, read-back (GPU alias off) | 3.44 | 3.31 |
 | sync, GPU alias | **1.31** | **1.41** |
 | render thread, read-back | 3.37 | 3.53 |
 | render thread, GPU alias | **1.21** | **1.28** |
@@ -530,11 +524,12 @@ draw, all in):
 | fast mode, churn + an RGB-only draw every 20 (31 render passes) | - | 12.7-13.8 |
 | one render pass per draw (600) | 109-122 | 105-118 |
 
-The fast rule (`H2_GFX_MERGE_PASSES=fast`) splits a discarding draw only
-after a partly masked draw. It was off by default at first because the
-merge self-check finds a few edge pixels off in a level frame
-(docs/graphics/graphics.md); it is now the default, and `H2_GFX_MERGE_PASSES=exact`
-restores the rule measured as "merged" above.
+The fast rule split a discarding draw only after a partly masked draw.
+It was off by default at first because the merge self-check finds a few
+edge pixels off in a level frame (docs/graphics/graphics.md); it became
+the default, and was later superseded by the loose rule and removed. The
+rule measured as "merged" above is the exact rule
+(`GfxBackend::set_merge_masks(false)`).
 One run of The Heretic with it on (presents 4220-4520, cold pipeline
 cache, `H2_GFX_MERGE_CHECK=4216`, otherwise the command above) met a load
 average of 100-160 from other lanes, so it does not compare with the
@@ -854,7 +849,7 @@ Changes:
   about 130 us against about 20 us for an exact one, submit share
   included;
 - side work rides the open encoder (`GfxBackend::set_defer_side_passes`,
-  `H2_GFX_SIDE_SUBMIT=1` turns it off; off under a render scale);
+  off under a render scale);
 - frames.csv gains `passes` (render and compute passes gfx begins) and
   `queue_writes` (staging buffers from gfx's queued writes).
 
@@ -897,21 +892,21 @@ Changes in this round:
 - A counted draw alone in its run that writes nothing (the flare
   tests: colour writes off, no depth or stencil writes) no longer gets
   a render pass after its count pass: it would load and store the
-  attachments unchanged. One pass fewer per flare test.
-  `H2_GFX_IDLE_COUNTED_PASS=1` restores it.
+  attachments unchanged. One pass fewer per flare test
+  (`gfx::renderer::set_skip_idle_counted` restores it for tests).
 - The report of a visibility test goes into the open encoder like the
   other side work, so a test no longer submits on its own (it reaches the
   GPU with the next submission, at the latest the present; Halo reads it
   two frames later). A read, or the render thread's poll for a count the
-  guest is spinning on, submits it first. Under `H2_GFX_SIDE_SUBMIT=1` it
+  guest is spinning on, submits it first. With side passes not deferred (a render scale) it
   submits as before.
 - New persistent vertex and index buffers (vertex-cache snapshots) are
   written through one staging ring per submission and buffer copies,
   instead of a queue write (a staging buffer) each: most of the 537
-  `queue_writes` at 2000 draws. `H2_GFX_STAGED_UPLOADS=0` restores the
-  queue writes.
-- `H2_GFX_MERGE_PASSES=loose` (opt-in, not exact) drops the merge-rule
-  splits, to measure what `pass_mask` + `pass_nocolor` + `pass_discard`
+  `queue_writes` at 2000 draws. `Renderer::set_staged_uploads(false)`
+  restores the queue writes (tests).
+- The loose merge rule (opt-in then, the default since 2026-11-18; not
+  exact) drops the merge-rule splits, to measure what `pass_mask` + `pass_nocolor` + `pass_discard`
   cost and, with `H2_GFX_MERGE_CHECK`, which pixels they protect.
 
 The mask splits are left as they are: each one exists because merged
@@ -968,8 +963,8 @@ Changes:
   a buffer of their own). The test scene holds 5 slabs instead of
   10,800 buffers. Same bytes at the offsets the draws bind (the pool
   tests compare every region with a buffer per id, staged and not,
-  through evictions and reuse). `H2_GFX_VERTEX_SLABS=0` restores a
-  buffer per region.
+  through evictions and reuse). `Renderer::set_vertex_slabs(false)`
+  restores a buffer per region (tests).
 - A draw's 3 KiB constant block (`ShaderInputs::constants`) was
   allocated on the game thread and freed on the render thread, every
   draw; the allocator handed the freed pages back with `madvise`. The

@@ -583,15 +583,14 @@ and allocations are bounded before anything is read:
     pending pass (`gfx::Renderer::record`), with their vertices, indices
     and uniforms packed into upload rings, and submitted together. The
     pending pass is encoded as one render pass (no Metal render encoder
-    per draw, no attachment store and load between draws). A draw after
-    one that writes only some colour channels starts a render pass of its
-    own, unless it writes the same ones and cannot `discard`
+    per draw, no attachment store and load between draws), whatever the
+    colour masks and `discard`: the loose rule, the default, much cheaper
+    in a level, where a few edge pixels can differ. The exact rule
+    (`GfxBackend::set_merge_masks(false)`) gives a draw after one that
+    writes only some colour channels a render pass of its own unless it
+    writes the same ones, and every draw that can `discard`
     (`PreparedShader::discards`: alpha test, alpha kill, a clip-plane
-    stage, the polygon stipple). That is the fast rule, the default
-    (`GfxBackend::set_merge_discards`): much cheaper in a level, where a
-    few edge pixels can differ. The exact rule
-    (`H2_GFX_MERGE_PASSES=exact`) also gives every discarding draw a
-    render pass of its own; with it the main menu's frames match one
+    stage, the polygon stipple); with it the main menu's frames match one
     render pass per draw byte for byte.
     `GfxBackend::set_merge_passes(false)` gives one render pass per draw,
     the exact reference (docs/graphics/graphics.md, "Merged passes"). `GfxBackend::set_merge_check(Some(frame))` renders
@@ -1952,8 +1951,7 @@ below). Still wanted:
   `crates/d3d/tests/gpu_depth_alias.rs` draws seven alias layouts with
   three sign masks over three depth contents with the pass on and off,
   on the device's thread and through the render thread, and compares
-  the back buffers byte for byte. `H2_D3D_GPU_DEPTH_ALIAS=0`
-  (`GfxBackend::set_gpu_depth_aliases`) goes back to the device's
-  read-back.
+  the back buffers byte for byte. `GfxBackend::set_gpu_depth_aliases(false)`
+  goes back to the device's read-back (tests).
 - **Public `HostPixelOrder` from `gfx::surface`.** It is only reachable as
   `gfx::encode::HostPixelOrder`.

@@ -1,5 +1,5 @@
 //! Textures over the depth buffer's memory made on the GPU
-//! (`GfxBackend::set_gpu_depth_aliases`, `H2_D3D_GPU_DEPTH_ALIAS`) against
+//! (`GfxBackend::set_gpu_depth_aliases`) against
 //! the old synchronous path (the device reads the depth buffer back,
 //! decodes the bytes and uploads them): the same back buffer, byte for
 //! byte, for every alias layout here, on the device's thread and through

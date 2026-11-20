@@ -327,7 +327,6 @@ Not every flag belongs in a menu. They fall in four groups.
 
 | Setting | Variable | Applies |
 |---|---|---|
-| merged passes | `H2_GFX_MERGE_PASSES=0` turns off; the loose rule is the default, `=fast` or `=exact` for the stricter rules | `GfxBackend::set_merge_passes` and `set_merge_discards` exist, so live |
 | render thread | `H2_RENDER_THREAD=0` (off; on by default) | restart; it moves the backend to another thread ([render-thread.md](../graphics/render-thread.md)) |
 | pipeline cache | `H2_PIPELINE_CACHE` (path or `off`) | restart |
 | shader compile threads | `H2_GFX_COMPILE_THREADS` | restart |

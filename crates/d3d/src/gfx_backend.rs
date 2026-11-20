@@ -50,12 +50,12 @@
 //! side work (the alias mirror's stores and loads, depth-alias and
 //! depth-level textures, pixel-counter clears) goes into the open encoder
 //! after the pending pass and waits for the next submission
-//! ([`GfxBackend::set_defer_side_passes`]). The pending pass is encoded as one render pass, except
-//! that a draw that follows a draw writing only some colour channels starts
-//! a render pass of its own, and under the exact rule so does every draw
-//! whose program can `discard` (see [`GfxBackend::set_merge_passes`] and
-//! [`GfxBackend::set_merge_discards`]); with merging off every draw gets
-//! its own render pass.
+//! ([`GfxBackend::set_defer_side_passes`]). The pending pass is encoded as
+//! one render pass (the loose rule). Under the exact rule a draw that
+//! follows a draw writing only some colour channels starts a render pass of
+//! its own, and so does every draw whose program can `discard` (see
+//! [`GfxBackend::set_merge_passes`] and [`GfxBackend::set_merge_masks`]);
+//! with merging off every draw gets its own render pass.
 //!
 //! Visibility tests: a draw issued while `SET_ZPASS_PIXEL_COUNT_ENABLE` is
 //! set has its samples counted into a [`gfx::occlusion::PixelCounter`]
@@ -160,8 +160,6 @@ pub struct GfxBackend {
     external_ordering_error: Option<String>,
     stats: BatchStats,
     merge_passes: bool,
-    /// [`set_merge_discards`](Self::set_merge_discards).
-    merge_discards: bool,
     /// [`set_merge_masks`](Self::set_merge_masks).
     merge_masks: bool,
     /// Made at the first counted draw.
@@ -242,19 +240,10 @@ pub enum SwapFinish {
     /// on the wait: every read back (surfaces, the alias mirror,
     /// visibility counts) waits for its own copy.
     Pipelined,
-    /// Everything submitted, this frame included (`H2_GFX_SWAP_FINISH=full`).
+    /// Everything submitted, this frame included: what tests that need a
+    /// deterministic GPU state at `Swap` ask for
+    /// ([`GfxBackend::set_swap_finish`]).
     Full,
-}
-
-impl SwapFinish {
-    /// `H2_GFX_SWAP_FINISH`: `full` waits for everything; anything else is
-    /// [`SwapFinish::Pipelined`].
-    pub fn from_env() -> Self {
-        match std::env::var("H2_GFX_SWAP_FINISH").as_deref() {
-            Ok("full") => SwapFinish::Full,
-            _ => SwapFinish::Pipelined,
-        }
-    }
 }
 
 /// How draws were grouped into passes and submissions.
@@ -315,8 +304,8 @@ impl GfxBackend {
     }
 
     /// Where vertex formats are converted for program draws (default
-    /// [`gfx::repack::FetchMode::from_env`]: the vertex shader, unless
-    /// `H2_VERTEX_FETCH=cpu`). For tests and benches comparing the paths.
+    /// [`gfx::repack::FetchMode::Gpu`]: the vertex shader). For tests and
+    /// benches comparing the paths.
     pub fn set_vertex_fetch(&mut self, mode: gfx::repack::FetchMode) {
         self.renderer.set_vertex_fetch(mode);
     }
@@ -325,10 +314,9 @@ impl GfxBackend {
     pub fn new(ctx: GfxContext) -> Self {
         let store = SurfaceStore::new(ctx.caps);
         let mut renderer = Renderer::new(&ctx);
-        // `H2_GFX_STAGED_UPLOADS=0`: a queue write per persistent buffer.
-        renderer.set_staged_uploads(std::env::var_os("H2_GFX_STAGED_UPLOADS").is_none_or(|v| v != "0"));
-        // `H2_GFX_VERTEX_SLABS=0`: a buffer per persistent stream.
-        renderer.set_vertex_slabs(std::env::var_os("H2_GFX_VERTEX_SLABS").is_none_or(|v| v != "0"));
+        // Persistent buffers go through the staging ring, not a queue write
+        // each.
+        renderer.set_staged_uploads(true);
         Self {
             ctx,
             store,
@@ -345,10 +333,7 @@ impl GfxBackend {
             external_ordering_error: None,
             stats: BatchStats::default(),
             merge_passes: true,
-            merge_discards: merge_discards_from_env(
-                std::env::var("H2_GFX_MERGE_PASSES").ok().as_deref(),
-            ),
-            merge_masks: merge_masks_from_env(std::env::var("H2_GFX_MERGE_PASSES").ok().as_deref()),
+            merge_masks: true,
             counter: None,
             reports: HashMap::new(),
             unsubmitted_reports: Vec::new(),
@@ -356,7 +341,7 @@ impl GfxBackend {
             depth_grid: None,
             depth_grids: Vec::new(),
             guest_words: None,
-            gpu_depth_aliases: std::env::var_os("H2_D3D_GPU_DEPTH_ALIAS").is_none_or(|v| v != "0"),
+            gpu_depth_aliases: true,
             depth_words: None,
             readbacks: 0,
             mirror: None,
@@ -373,12 +358,12 @@ impl GfxBackend {
             warper: None,
             last_submit: None,
             prev_frame_end: None,
-            swap_finish: SwapFinish::from_env(),
+            swap_finish: SwapFinish::Pipelined,
             open: None,
             external_prefix: Vec::new(),
             external_on_submit: Vec::new(),
             upload_pool: Default::default(), current_uploads: None, submitted_uploads: Vec::new(),
-            defer_side_passes: std::env::var_os("H2_GFX_SIDE_SUBMIT").is_none_or(|v| v != "1"),
+            defer_side_passes: true,
             scratch_depth: None,
         }
     }
@@ -387,9 +372,8 @@ impl GfxBackend {
     /// depth-alias and depth-level textures, pixel-counter clears) into the
     /// encoder kept open across target switches, after the pending pass,
     /// instead of submitting the pending pass and then the work in a
-    /// submission of its own (on by default; `H2_GFX_SIDE_SUBMIT=1` turns
-    /// it off). The GPU sees the same commands in the same order; they reach
-    /// it at the next submission, which anything that reads their results
+    /// submission of its own (on by default). The GPU sees the same
+    /// commands in the same order; they reach it at the next submission, which anything that reads their results
     /// on the CPU (a read-back, a queued write over the mirror) or replaces
     /// what they write makes first ([`flush`](Self::flush)). Each one saved
     /// two submissions per call (about 0.1 ms each in a level). Off when
@@ -400,14 +384,13 @@ impl GfxBackend {
     }
 
     /// What `Swap` with `D3DSWAP_FINISH` waits for (default
-    /// [`SwapFinish::from_env`]).
+    /// [`SwapFinish::Pipelined`]).
     pub fn set_swap_finish(&mut self, mode: SwapFinish) {
         self.swap_finish = mode;
     }
 
     /// Textures over the depth buffer's memory made on the GPU (on by
-    /// default; `H2_D3D_GPU_DEPTH_ALIAS=0` turns it off): the device hands
-    /// them to [`Backend::depth_alias_texture`], which decodes the depth
+    /// default): the device hands them to [`Backend::depth_alias_texture`], which decodes the depth
     /// buffer's `D24S8` words as the texture's format in a compute pass
     /// ([`gfx::guest_words::GuestWords::depth_alias`]) instead of reading
     /// the buffer back, decoding on the CPU and uploading. Formats the pass
@@ -431,38 +414,23 @@ impl GfxBackend {
     /// Encode the draws of a pending pass into one render pass (the
     /// default) or one render pass per draw (both in one submission).
     /// Merged passes cost much less (no Metal render encoder per draw, no
-    /// attachment store and load between draws). A draw that follows a
-    /// draw writing only some colour channels (unless it writes the same
-    /// ones, and cannot `discard`) still starts a render pass of its own,
-    /// because on Apple GPUs its edge pixels otherwise depend on earlier
-    /// draws in the pass; under the exact rule
-    /// ([`set_merge_discards`](Self::set_merge_discards) off) so does every
-    /// draw whose program can `discard` (`PreparedShader::discards`). With
-    /// the exact rule the main menu matches one pass per draw byte for
-    /// byte; one pass per draw is the exact reference (docs/graphics/graphics.md,
-    /// "Merged passes").
+    /// attachment store and load between draws). Under the exact rule
+    /// ([`set_merge_masks`](Self::set_merge_masks) off) a draw that follows
+    /// a draw writing only some colour channels (unless it writes the same
+    /// ones) starts a render pass of its own, because on Apple GPUs its
+    /// edge pixels otherwise depend on earlier draws in the pass, and so
+    /// does every draw whose program can `discard`
+    /// (`PreparedShader::discards`). With the exact rule the main menu
+    /// matches one pass per draw byte for byte; one pass per draw is the
+    /// exact reference (docs/graphics/graphics.md, "Merged passes").
     pub fn set_merge_passes(&mut self, merge: bool) {
         self.merge_passes = merge;
     }
 
-    /// The fast merge rule (the default): a draw whose program can
-    /// `discard` starts a render pass of its own only after a draw that
-    /// writes some colour channels and not others ([`merge_split`]),
-    /// instead of always (the exact rule, `false`). In a level that is most
-    /// of the render passes (every alpha-tested draw had one under the
-    /// exact rule), and each costs about 40-75 us of CPU in wgpu and Metal.
-    /// Not proven exact: at The Heretic's frame 4216 the merge self-check
-    /// finds 61 edge pixels in two passes off by up to 4 levels, after
-    /// additive draws (docs/graphics/graphics.md, "Merged passes").
-    /// `H2_GFX_MERGE_PASSES=exact` turns it off when the backend is made.
-    pub fn set_merge_discards(&mut self, on: bool) {
-        self.merge_discards = on;
-    }
-
-    /// The loose merge rule (the default; `H2_GFX_MERGE_PASSES=fast` or
-    /// `exact` turns it off): no draw starts a render pass of its own for
-    /// the merge rules, not after a partly masked draw either. Counted
-    /// draws and target switches still split. Not exact: on Old Mombasa
+    /// The loose merge rule (the default; off is the exact rule, for tests
+    /// and pixel-fidelity references): no draw starts a render pass of its
+    /// own for the merge rules, not after a partly masked draw or for a
+    /// `discard` either. Counted draws and target switches still split. Not exact: on Old Mombasa
     /// it took a 1000-draw frame from about 193 render passes to 41, and
     /// the merge self-check ([`set_merge_check`](Self::set_merge_check))
     /// found 12 of a 970-draw frame's pixels off, by up to 3 levels
@@ -1206,11 +1174,7 @@ impl GfxBackend {
         let prev_mask = pending.draws.last().map(RecordedDraw::color_writes);
         let mask = draw.color_writes();
         // Apply the same driver workarounds across both kinds of draws.
-        let split = !self.merge_masks && if self.merge_discards {
-            merge_split(prev_mask, mask, discards)
-        } else {
-            discards || merge_split(prev_mask, mask, false)
-        };
+        let split = !self.merge_masks && (discards || merge_split(prev_mask, mask));
         if first && (!self.merge_passes || split) {
             draw.start_pass();
             if self.merge_passes && !draw.counts_samples() {
@@ -2309,32 +2273,15 @@ impl Backend for GfxBackend {
     }
 }
 
-/// The fast merge rule ([`GfxBackend::set_merge_discards`]) for a value
-/// of `H2_GFX_MERGE_PASSES`: on unless it is `exact`. (`0`, one render
-/// pass per draw, is applied by the embedder through
-/// [`GfxBackend::set_merge_passes`] and needs no rule.)
-fn merge_discards_from_env(value: Option<&str>) -> bool {
-    value != Some("exact")
-}
-
-/// The loose merge rule ([`GfxBackend::set_merge_masks`]) for a value of
-/// `H2_GFX_MERGE_PASSES`: on unless it is `fast` or `exact`.
-fn merge_masks_from_env(value: Option<&str>) -> bool {
-    !matches!(value, Some("fast" | "exact"))
-}
-
-/// Whether a merged draw writing `mask` starts a render pass of its own
-/// after a draw in the same pending pass that wrote `prev` (`None` for the
-/// first draw): after a partly masked draw, unless it writes the same
-/// channels and (`discards`) its program cannot `discard`.
-///
-/// With `discards` false this is the exact mode's second rule. In the fast
-/// mode ([`GfxBackend::set_merge_discards`]) it is the whole rule: because
-/// a draw with another mask always splits after a partly masked one, a
-/// render pass holds a partly masked draw only while its last draw is one,
-/// so checking the previous draw covers every earlier draw in the pass.
-fn merge_split(prev: Option<wgpu::ColorWrites>, mask: wgpu::ColorWrites, discards: bool) -> bool {
-    prev.is_some_and(|prev| prev != wgpu::ColorWrites::ALL && (prev != mask || discards))
+/// The exact rule's mask split: whether a merged draw writing `mask`
+/// starts a render pass of its own after a draw in the same pending pass
+/// that wrote `prev` (`None` for the first draw): after a partly masked
+/// draw, unless it writes the same channels. Because a draw with another
+/// mask always splits after a partly masked one, a render pass holds a
+/// partly masked draw only while its last draw is one, so checking the
+/// previous draw covers every earlier draw in the pass.
+fn merge_split(prev: Option<wgpu::ColorWrites>, mask: wgpu::ColorWrites) -> bool {
+    prev.is_some_and(|prev| prev != wgpu::ColorWrites::ALL && prev != mask)
 }
 
 /// Which shader a draw takes: `Ok(true)` gfx's built-in one, `Ok(false)`
@@ -2439,7 +2386,7 @@ pub(crate) fn grid_rect(
 
 #[cfg(test)]
 mod tests {
-    use super::{grid_rect, merge_discards_from_env, merge_masks_from_env, merge_split};
+    use super::{grid_rect, merge_split};
     use wgpu::ColorWrites as W;
 
     #[test]
@@ -2466,40 +2413,18 @@ mod tests {
     }
 
     #[test]
-    fn the_fast_merge_rule_is_the_default_and_exact_turns_it_off() {
-        assert!(merge_discards_from_env(None));
-        for v in ["fast", "1", "0", ""] {
-            assert!(merge_discards_from_env(Some(v)), "{v:?}");
-        }
-        assert!(!merge_discards_from_env(Some("exact")));
-    }
-
-    #[test]
-    fn the_loose_merge_rule_is_the_default_and_fast_or_exact_turn_it_off() {
-        assert!(merge_masks_from_env(None));
-        for v in ["loose", "1", ""] {
-            assert!(merge_masks_from_env(Some(v)), "{v:?}");
-        }
-        assert!(!merge_masks_from_env(Some("fast")));
-        assert!(!merge_masks_from_env(Some("exact")));
-    }
-
-    #[test]
     fn merged_draws_split_only_after_a_partly_masked_draw() {
         // The first draw of a pending pass, and any draw after a fully
-        // written one, stay in the pass, discard or not.
-        for discards in [false, true] {
-            assert!(!merge_split(None, W::COLOR, discards));
-            for mask in [W::ALL, W::COLOR, W::ALPHA] {
-                assert!(!merge_split(Some(W::ALL), mask, discards));
-            }
+        // written one, stay in the pass.
+        assert!(!merge_split(None, W::COLOR));
+        for mask in [W::ALL, W::COLOR, W::ALPHA] {
+            assert!(!merge_split(Some(W::ALL), mask));
         }
-        // After a partly masked draw: the same mask stays unless it can
-        // discard; any other mask splits.
-        assert!(!merge_split(Some(W::COLOR), W::COLOR, false));
-        assert!(merge_split(Some(W::COLOR), W::COLOR, true));
-        assert!(merge_split(Some(W::COLOR), W::ALL, false));
-        assert!(merge_split(Some(W::COLOR), W::ALPHA, false));
-        assert!(merge_split(Some(W::empty()), W::ALL, true));
+        // After a partly masked draw: the same mask stays; any other mask
+        // splits.
+        assert!(!merge_split(Some(W::COLOR), W::COLOR));
+        assert!(merge_split(Some(W::COLOR), W::ALL));
+        assert!(merge_split(Some(W::COLOR), W::ALPHA));
+        assert!(merge_split(Some(W::empty()), W::ALL));
     }
 }

@@ -123,11 +123,9 @@ as a person's keys. Hold keys for one present at the menu's frame rate
 (`START@f330+2,DOWN@f455+1,Enter@f475+1`): the menus autorepeat, and at one
 or two presents a second a 4-present hold moves the cursor twice.
 `H2_BOOT_GFX` is ignored: frames go to the window. As for `h2 run`,
-consecutive draws to one target share a render pass, and
-`H2_GFX_MERGE_PASSES=0` gives one render pass per draw. Alpha-tested
-draws are merged too by default (the fast rule; a few edge pixels in a
-level can differ), and `H2_GFX_MERGE_PASSES=exact` gives each its own
-render pass (docs/runtime/BOOT.md).
+consecutive draws to one target share a render pass under the loose
+rule (a few edge pixels in a level can differ from one render pass per
+draw; docs/graphics/graphics.md, "Merged passes").
 
 How it is wired (all through `boot::run_hosted` and `boot::Host`, docs/runtime/BOOT.md
 "Hosted runs"):

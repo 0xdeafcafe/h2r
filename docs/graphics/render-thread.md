@@ -141,8 +141,7 @@ Each `Backend` method falls in one of three classes
    2026-11-15 `GfxBackend` makes the texture itself, on the GPU
    (`gfx::guest_words::GuestWords::depth_alias`, docs/graphics/d3d.md "Depth
    aliases on the GPU"), so neither thread reads the depth buffer back
-   for the formats that pass covers; `H2_D3D_GPU_DEPTH_ALIAS=0` restores
-   the read-back.
+   for the formats that pass covers.
 
 Against the requirements:
 
