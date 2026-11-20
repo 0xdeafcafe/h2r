@@ -5,7 +5,7 @@ use engine::{
     memory::{GuestMemory, MemFault},
     points,
 };
-use h1scripts::cinematics::{Field, MARKER};
+use h1_contract::cinematics::{Field, MARKER};
 use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "gpu")]
@@ -60,7 +60,7 @@ impl Cells {
         let base = m.u32(data + index * 8).ok()?;
         if base.checked_add(Field::ALL.len() as u32)? > index
             || m.read(defs + base * 40, &mut label).is_err()
-            || label.split(|b| *b == 0).next()? != h1scripts::cinematics::ACTIVE_NAME.as_bytes()
+            || label.split(|b| *b == 0).next()? != h1_contract::cinematics::ACTIVE_NAME.as_bytes()
         {
             return None;
         }
@@ -89,7 +89,7 @@ pub fn reflection_active(m: &dyn GuestMemory) -> bool {
 }
 
 fn material(m: &mut dyn GuestMemory, shader: u32) -> Result<(), MemFault> {
-    use h1convert::shad::{MODEL_REFLECTION_SIGNATURE, model_reflection_start};
+    use h1_contract::shader::{MODEL_REFLECTION_SIGNATURE, model_reflection_start};
     if shader == u32::MAX {
         return Ok(());
     }

@@ -26,6 +26,7 @@ assets = { path = "crates/platform/assets" }
 xiso = { path = "crates/formats/xiso" }
 movies = { path = "crates/formats/movies" }
 xbe = { path = "crates/formats/xbe" }
+h1-contract = { path = "crates/formats/h1-contract" }
 analyze = { path = "crates/recompiler/analyze" }
 symbols = { path = "crates/recompiler/symbols" }
 runtime = { path = "crates/runtime/runtime" }

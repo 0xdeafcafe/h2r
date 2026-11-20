@@ -5,7 +5,7 @@ use engine::points::{
     HUD_GLYPH_CREATE, HUD_GLYPH_FIND, HUD_GLYPH_LOAD, HUD_GLYPH_PIXELS, HUD_GLYPH_PIXELS_READY,
 };
 use hooks::{Builder, Flow};
-use h1text::hud::{
+use h1_contract::hud::{
     MARKER, MARKER_AT, SILHOUETTE_BASE, SILHOUETTE_LIMIT, SILHOUETTE_SIZE, SILHOUETTES,
 };
 

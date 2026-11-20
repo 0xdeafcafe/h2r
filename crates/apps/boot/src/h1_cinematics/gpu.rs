@@ -49,7 +49,7 @@ fn pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::RenderP
 fn video_images(name: &str) -> Option<[Image; 2]> {
     use crate::native_world_glue::decode_image;
     let (mut map, mut files) = crate::native_map::open(name).ok()?;
-    let [mask, noise] = h1scripts::cinematics::VIDEO_BITMAPS.map(|tag| {
+    let [mask, noise] = h1_contract::cinematics::VIDEO_BITMAPS.map(|tag| {
         let id = map
             .tags()
             .iter()

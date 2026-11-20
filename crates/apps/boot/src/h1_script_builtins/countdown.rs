@@ -1,5 +1,5 @@
 
-use h1convert::shad::COUNTDOWN_DIGITS;
+use h1_contract::shader::COUNTDOWN_DIGITS;
 
 const TICKS_PER_SECOND: u64 = 30;
 

@@ -54,6 +54,10 @@ mod detail;
 pub mod program;
 
 pub use detail::DetailBlend;
+/// The names `boot` answers, kept in `h1-contract`.
+pub use h1_contract::shader::{
+    COUNTDOWN_DIGITS, MODEL_REFLECTION_SIGNATURE, model_reflection_start,
+};
 
 /// What a Halo 1 shader supplies to a stem.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -337,21 +341,6 @@ pub const COUNTER_TREE: AnimTree = AnimTree {
 /// rounds loaded (`i16`, the value `primary_ammunition` divides by the
 /// magazine's loaded maximum, `0x000ffadf`).
 pub const AMMUNITION_DIGITS: [&str; 2] = ["primary_ammunition_ones", "primary_ammunition_tens"];
-
-/// Names of the object functions that provide the Halo 1 engine timer's
-/// individual digits. The boot feature resolves these names in the loaded
-/// cache's StringID table before answering the shader's function lookups.
-pub const COUNTDOWN_DIGITS: [&str; 9] = [
-    "h1_countdown_digit_0",
-    "h1_countdown_digit_1",
-    "h1_countdown_digit_2",
-    "h1_countdown_digit_3",
-    "h1_countdown_digit_4",
-    "h1_countdown_digit_5",
-    "h1_countdown_digit_6",
-    "h1_countdown_digit_7",
-    "h1_countdown_digit_8",
-];
 
 /// A counter digit's frames: a digit's bitmap holds one image per digit,
 /// 0 to 9 in order (Halo 1's `numbers_plate` and retail's).
@@ -1023,18 +1012,6 @@ pub struct Bound {
     pub id: TagId,
     pub scale: [f32; 2],
     pub lod_offset: f32,
-}
-
-/// Final unbound colour of a converted model reflection parameter block.
-pub const MODEL_REFLECTION_SIGNATURE: u32 = u32::from_le_bytes(*b"H1rf");
-
-/// Facing/grazing RGB followed by facing/grazing alpha, before the saved copy.
-pub fn model_reflection_start(original_colors: usize) -> Option<usize> {
-    match original_colors {
-        7 => Some(1),
-        8 => Some(4),
-        _ => None,
-    }
 }
 
 /// Values a shader sets over its layout's.

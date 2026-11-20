@@ -10,6 +10,8 @@ h1map = { path = "../h1map" }
 # Halo 1 seat labels as the converted graphs (and rebuilt vehicles) name them.
 h1models = { path = "../h1models" }
 hs.workspace = true
+# The names the game's Halo 1 hooks read back (docs/dev/crate-structure.md).
+h1-contract.workspace = true
 map.workspace = true
 xbe.workspace = true
 xiso.workspace = true

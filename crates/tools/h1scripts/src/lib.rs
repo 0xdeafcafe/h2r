@@ -16,7 +16,6 @@
 
 pub mod aicontrol;
 pub mod catalog;
-pub mod cinematics;
 pub mod commands;
 pub mod compile;
 pub mod decompile;
@@ -29,6 +28,8 @@ pub mod translate;
 pub mod unit_builtins;
 
 pub use catalog::Catalog;
+/// The cinematic globals `boot` reads, kept in `h1-contract`.
+pub use h1_contract::cinematics;
 pub use layout::Tables;
 
 /// A malformed table, an unsupported XBE, or a script that will not compile.

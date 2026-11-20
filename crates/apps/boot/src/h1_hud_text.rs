@@ -11,7 +11,7 @@ use engine::points::{
 };
 use engine::tags::{entry_layout, tag_entry_checked};
 use hooks::{BuildError, Builder, Manifest};
-use h1text::hud::{
+use h1_contract::hud::{
     EVENT_LAYOUT_SIZE, EVENT_MARKER, GROUP, LEGACY_MARKER, LEGACY_SIZE, MARKER, MARKER_AT,
     SCENARIO_HMT, SIZE, glyph,
 };
@@ -67,7 +67,7 @@ fn show_scenario_help(mem: &mut dyn GuestMemory, tag: u32, index: u16) -> Result
     if !extended(mem, tag)? {
         return Ok(());
     }
-    let Some(row) = list_row(mem, tag, h1text::hud::SCENARIO_HELP, index)? else {
+    let Some(row) = list_row(mem, tag, h1_contract::hud::SCENARIO_HELP, index)? else {
         return Ok(());
     };
     let hud = mem.u32(HUD)?;
@@ -450,8 +450,8 @@ mod tests {
         mem.set_u32(tag + 0x10, 12).unwrap();
         mem.set_u32(tag + 0x14, messages).unwrap();
         // Five help rows from message 7, after the mission's own messages.
-        mem.set_u16(tag + h1text::hud::SCENARIO_HELP, 7).unwrap();
-        mem.set_u16(tag + h1text::hud::SCENARIO_HELP + 2, 5).unwrap();
+        mem.set_u16(tag + h1_contract::hud::SCENARIO_HELP, 7).unwrap();
+        mem.set_u16(tag + h1_contract::hud::SCENARIO_HELP + 2, 5).unwrap();
 
         show_scenario_help(&mut mem, tag, 5).unwrap();
         assert_eq!(mem.u8(flags + HELP_SHOWN).unwrap(), 0);

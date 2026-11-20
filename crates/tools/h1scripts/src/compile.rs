@@ -25,21 +25,9 @@ use crate::{Result, invalid};
 mod aicontrol_compile;
 mod conversations;
 
-/// Halo 2 scenario fields the tables go in (docs/formats/haloscript.md).
-pub mod field {
-    /// Script string data (byte count, address).
-    pub const STRINGS: u32 = 0x1b0;
-    /// Scripts block.
-    pub const SCRIPTS: u32 = 0x1b8;
-    /// Globals block.
-    pub const GLOBALS: u32 = 0x1c0;
-    /// Script references block.
-    pub const REFERENCES: u32 = 0x1c8;
-    /// Syntax nodes block.
-    pub const NODES: u32 = 0x238;
-    /// Bytes of scenario these fields need.
-    pub const MIN_LEN: usize = 0x240;
-}
+/// Halo 2 scenario fields the tables go in, kept in `h1-contract`
+/// (docs/formats/haloscript.md).
+pub use h1_contract::script_fields as field;
 
 /// Halo 2 value types the compiler writes by number (from Halo 2's type
 /// name table: `crates/formats/hs` reads it from the XBE).

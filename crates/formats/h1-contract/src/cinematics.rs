@@ -1,4 +1,5 @@
-//! Checkpointed scenario globals shared by the cinematic script compiler and renderer.
+//! Checkpointed scenario globals shared by the cinematic script compiler
+//! (`h1scripts::compile`) and renderer (`boot::h1_cinematics`).
 pub const VIDEO_BITMAPS: [&str; 2] = [r"h1_cinematic\video_mask", r"h1_cinematic\video_noise"];
 pub const ACTIVE_NAME: &str = "h1_cine_active";
 pub const MARKER: &str = "h1_cine_state";

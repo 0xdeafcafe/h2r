@@ -33,10 +33,9 @@ pub const MP_ORDER: [&str; 13] = [
     "longest",
 ];
 
-/// The campaign's play order: level file names.
-pub const CAMPAIGN_ORDER: [&str; 10] = [
-    "a10", "a30", "a50", "b30", "b40", "c10", "c20", "c40", "d20", "d40",
-];
+/// The campaign's play order, kept in `h1-contract` (the game picker
+/// reads it).
+pub use h1_contract::campaign::CAMPAIGN_ORDER;
 
 /// The picture's part of each list image: width, height.
 pub const PICTURE: (u32, u32) = (139, 113);

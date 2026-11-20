@@ -266,7 +266,7 @@ text takes the script's corner and offsets. A warning colour starts at
 the native threshold. This pass carries the countdown in place of its
 normal auxiliary label while the timer is up.
 
-**Built.** `h1scripts::hud::CONTROL_BUILTINS` reserves the following
+**Built.** `h1_contract::hud_builtins::CONTROL_BUILTINS` reserves the following
 retired entries. Their retail signature is `(boolean) -> void` and
 they share evaluator `0x2ab130`. The hook evaluates the argument with
 the retail VM at `0x209d50` and returns through `0x209ae0`. It runs

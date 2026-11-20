@@ -17,6 +17,8 @@ h1sky = { path = "../h1sky" }
 h1text = { path = "../h1text" }
 # The sound gestalt, rebuilt for a fresh map.
 h1sounds = { path = "../h1sounds" }
+# The names the game's Halo 1 hooks read back (docs/dev/crate-structure.md).
+h1-contract.workspace = true
 map.workspace = true
 # The structure's Havok MOPP code.
 mopp = { path = "../../formats/mopp" }

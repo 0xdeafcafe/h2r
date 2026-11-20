@@ -8,6 +8,8 @@ license.workspace = true
 h1bitmaps = { path = "../h1bitmaps" }
 h1map = { path = "../h1map" }
 h1models = { path = "../h1models" }
+# The names the game's Halo 1 hooks read back (docs/dev/crate-structure.md).
+h1-contract.workspace = true
 map.workspace = true
 tags.workspace = true
 thiserror.workspace = true

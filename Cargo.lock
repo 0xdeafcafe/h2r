@@ -653,10 +653,7 @@ dependencies = [
  "font",
  "frame-scene",
  "gfx",
- "h1convert",
- "h1map",
- "h1scripts",
- "h1text",
+ "h1-contract",
  "hooks",
  "hot-render",
  "hot-tags",
@@ -2461,6 +2458,13 @@ name = "guest-layout"
 version = "0.1.0"
 
 [[package]]
+name = "h1-contract"
+version = "0.1.0"
+dependencies = [
+ "map",
+]
+
+[[package]]
 name = "h1ai"
 version = "0.1.0"
 dependencies = [
@@ -2520,6 +2524,7 @@ version = "0.1.0"
 dependencies = [
  "assets",
  "content",
+ "h1-contract",
  "h1bitmaps",
  "h1map",
  "h1models",
@@ -2586,6 +2591,7 @@ dependencies = [
 name = "h1scripts"
 version = "0.1.0"
 dependencies = [
+ "h1-contract",
  "h1ai",
  "h1map",
  "h1models",
@@ -2625,6 +2631,7 @@ dependencies = [
 name = "h1text"
 version = "0.1.0"
 dependencies = [
+ "h1-contract",
  "h1bitmaps",
  "h1map",
  "h1models",
