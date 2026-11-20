@@ -1,5 +1,9 @@
 # Graphics: D3D8 on wgpu
 
+Status: Built. Reference for `crates/gfx`.
+Code: `crates/gfx/src/`. Tests: `crates/gfx/tests/`.
+Switch: none of its own; the variables it reads are in [switches.md](../runtime/switches.md).
+
 `crates/gfx` is the graphics foundation. It replaces Direct3D 8 (Xbox flavour)
 at the API level; it does not emulate the NV2A GPU. `crates/d3d`
 ([d3d.md](d3d.md)) calls into it from the D3D entry points and from the
