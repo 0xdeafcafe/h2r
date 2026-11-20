@@ -66,8 +66,8 @@ async fn fetch(
             crate::site::GameArt::NotFound(why) => live_server::app::not_found(why).into_response(),
         });
     }
-    // The stats site's first address: the same page where it is now.
-    // (live_server::page_meta::moved; wrangler.toml sends `/stats/*` here.)
+    // Old stats and whole-film URLs lead to their canonical pages.
+    // (live_server::page_meta::moved; wrangler.toml routes both prefixes here.)
     if matches!(*req.method(), http::Method::GET | http::Method::HEAD)
         && let Some(to) = live_server::page_meta::moved(&path, req.uri().query())
     {
@@ -112,7 +112,7 @@ async fn fetch(
 
 /// A page of the web app: the built `index.html` from the assets, with
 /// the page's link preview in it ([`live_server::page_meta`]) and, for a
-/// game page, its pre-rendered header above the app
+/// game page, the template for its pre-rendered hero
 /// ([`live_server::page_header`]). Only a page that names a player, game
 /// or clan asks the hub; if that fails the page still gets its section's
 /// preview (and no header, which the client then renders itself).

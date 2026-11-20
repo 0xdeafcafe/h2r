@@ -33,7 +33,7 @@ import CoopGames from "./CoopGames";
 import PlayerFilms from "../theater/PlayerFilms";
 import { hms, longDate, num, ratio, usDate, usDateTime } from "./fmt";
 import { parseCommendations, type Commendations } from "../admin/bans";
-import { STATS_ROOT, statsPath } from "../routes";
+import { STATS_ROOT, gameHref, statsPath } from "../routes";
 
 function useAccount() {
   const params = useParams<{ tag: string }>();
@@ -185,7 +185,7 @@ export function ServiceRecordPage() {
                 ...(me() && me()!.xuid !== a().xuid ? [{ label: "Compare With Me", href: `${base()}/career?compare=${encodeURIComponent(me()!.gamertag)}` }] : []),
                 { label: "Players & Leaderboards", href: statsPath("/players") },
               ]} />
-              <RecentGames games={hist().slice(0, 12).map((h) => h.game)} title="Recent h2 live Games" empty="Their first chapter is still ahead." />
+              <RecentGames player={a().gamertag} games={hist().slice(0, 12).map((h) => h.game)} title="Recent h2 live Games" empty="Their first chapter is still ahead." />
               <PlayedWith account={a()} />
               <Show when={!a().bot}><PlayerSocial account={a()} /></Show>
               <PeopleFinder />
@@ -196,7 +196,7 @@ export function ServiceRecordPage() {
                 <Show when={latest()} fallback={<span class="s-dim">Latest game</span>}>
                   {(h) => (
                     <>
-                      <A href={`${STATS_ROOT}/games/${h().game.game_id}`}>{gameTitle(h().game)} on {gameMapTitle(h().game)}</A>
+                      <A href={gameHref(h().game.game_id, { player: a().gamertag })}>{gameTitle(h().game)} on {gameMapTitle(h().game)}</A>
                       <span class="s-capbar-right">{h().game.status === "live" ? "playing now" : usDate(h().game.started_at)}</span>
                     </>
                   )}
@@ -274,7 +274,7 @@ function CommendationFacts(props: { xuid: string }) {
   );
 }
 
-function HistoryTable(props: { rows: HistoryRow[]; selected?: string; onSelect: (id: string) => void }) {
+function HistoryTable(props: { rows: HistoryRow[]; gamertag: string; selected?: string; onSelect: (id: string) => void }) {
   return (
     <table class="s-grid">
       <thead><tr><th /><th class="num">Date</th><th>Map</th><th class="hide-s">Playlist</th><th class="num">Place</th><th /></tr></thead>
@@ -282,7 +282,7 @@ function HistoryTable(props: { rows: HistoryRow[]; selected?: string; onSelect: 
         <For each={props.rows} fallback={<tr><td colspan="6" class="s-dim">Your first chapter is still ahead.</td></tr>}>
           {(r) => (
             <tr classList={{ sel: props.selected === r.game.game_id }} onClick={() => props.onSelect(r.game.game_id)}>
-              <td><span class="s-who"><GametypeIcon variant={r.game.variant} /><A href={`${STATS_ROOT}/games/${r.game.game_id}`}>{gameTitle(r.game)}</A><SkullBadges skulls={r.game.skulls} size={16} /></span></td>
+              <td><span class="s-who"><GametypeIcon variant={r.game.variant} /><A href={gameHref(r.game.game_id, { player: props.gamertag })}>{gameTitle(r.game)}</A><SkullBadges skulls={r.game.skulls} size={16} /></span></td>
               <td class="num">{usDateTime(r.game.started_at)}</td>
               <td><span class="s-who"><MapPreview map={r.game.map} mapId={r.game.map_id} />{gameMapTitle(r.game)}</span></td>
               <td class="hide-s">{playlist(r.game)}</td>
@@ -296,7 +296,7 @@ function HistoryTable(props: { rows: HistoryRow[]; selected?: string; onSelect: 
   );
 }
 
-function CampaignTable(props: { rows: CampaignRow[]; selected?: string; onSelect: (id: string) => void }) {
+function CampaignTable(props: { rows: CampaignRow[]; gamertag: string; selected?: string; onSelect: (id: string) => void }) {
   return (
     <table class="s-grid">
       <thead><tr><th>Level</th><th class="num">Date</th><th class="hide-s">Type</th><th>Result</th><th class="num">Deaths</th><th /></tr></thead>
@@ -304,7 +304,7 @@ function CampaignTable(props: { rows: CampaignRow[]; selected?: string; onSelect
         <For each={props.rows} fallback={<tr><td colspan="6" class="s-dim">No campaign games on record yet.</td></tr>}>
           {(r) => (
             <tr classList={{ sel: props.selected === r.game.game_id }} onClick={() => props.onSelect(r.game.game_id)}>
-              <td><span class="s-who"><MapPreview map={r.game.map} mapId={r.game.map_id} /><A href={`${STATS_ROOT}/games/${r.game.game_id}`}>{gameMapTitle(r.game)}</A><SkullBadges skulls={r.game.skulls} size={16} /></span></td>
+              <td><span class="s-who"><MapPreview map={r.game.map} mapId={r.game.map_id} /><A href={gameHref(r.game.game_id, { player: props.gamertag })}>{gameMapTitle(r.game)}</A><SkullBadges skulls={r.game.skulls} size={16} /></span></td>
               <td class="num">{usDateTime(r.game.started_at)}</td>
               <td class="hide-s">{gameTypeLine(r.game)}</td>
               <td>{r.outcome === "playing" ? <span class="s-live-tag">LIVE</span> : OUTCOME_WORDS[r.outcome]}</td>
@@ -322,8 +322,8 @@ function CampaignPreview(props: { row: CampaignRow; gamertag: string }) {
   const g = () => props.row.game;
   return (
     <aside class="s-preview">
-      <A href={`${STATS_ROOT}/games/${g().game_id}`} class="s-preview-pic" style={{ display: "block" }}><MapThumb game={g()} /></A>
-      <div class="s-preview-title"><A href={`${STATS_ROOT}/games/${g().game_id}`}>{gameMapTitle(g())}</A></div>
+      <A href={gameHref(g().game_id, { player: props.gamertag })} class="s-preview-pic" style={{ display: "block" }}><MapThumb game={g()} /></A>
+      <div class="s-preview-title"><A href={gameHref(g().game_id, { player: props.gamertag })}>{gameMapTitle(g())}</A></div>
       <p>
         {gameTypeLine(g())}<br />
         {longDate(g().started_at)}<br />
@@ -342,7 +342,7 @@ function CampaignPreview(props: { row: CampaignRow; gamertag: string }) {
       <div class="s-preview-head">Game Record ({g().positions.length})</div>
       <ul class="s-pad">
         <li><VerifySummary positions={() => g().positions} /></li>
-        <li><A href={`${STATS_ROOT}/games/${g().game_id}`}>{g().status === "live" ? "Watch it live" : "Mission report and replay"}</A></li>
+        <li><A href={gameHref(g().game_id, { player: props.gamertag })}>{g().status === "live" ? "Watch it live" : "Mission report and replay"}</A></li>
       </ul>
     </aside>
   );
@@ -391,7 +391,7 @@ export function HistoryPage() {
                 <div class="s-history">
                   <div class="s-grid-wrap">
                     {pager()}
-                    <HistoryTable rows={rows()} selected={chosen()?.game.game_id} onSelect={setSel} />
+                    <HistoryTable gamertag={a().gamertag} rows={rows()} selected={chosen()?.game.game_id} onSelect={setSel} />
                     {pager(true)}
                   </div>
                   <Show when={chosen()} keyed>{(r) => <Preview row={r} gamertag={a().gamertag} />}</Show>
@@ -401,7 +401,7 @@ export function HistoryPage() {
               <div class="s-history">
                 <div class="s-grid-wrap">
                   {pager()}
-                  <CampaignTable rows={crows()} selected={cchosen()?.game.game_id} onSelect={setSel} />
+                  <CampaignTable gamertag={a().gamertag} rows={crows()} selected={cchosen()?.game.game_id} onSelect={setSel} />
                   {pager(true)}
                 </div>
                 <Show when={cchosen()} keyed>{(r) => <CampaignPreview row={r} gamertag={a().gamertag} />}</Show>
@@ -427,8 +427,8 @@ function Preview(props: { row: HistoryRow; gamertag: string }) {
   const length = () => gameSeconds(g(), now());
   return (
     <aside class="s-preview">
-      <A href={`${STATS_ROOT}/games/${g().game_id}`} class="s-preview-pic" style={{ display: "block" }}><MapThumb game={g()} /></A>
-      <div class="s-preview-title"><A href={`${STATS_ROOT}/games/${g().game_id}`}>{gameTitle(g())}</A> on {gameMapTitle(g())}</div>
+      <A href={gameHref(g().game_id, { player: props.gamertag })} class="s-preview-pic" style={{ display: "block" }}><MapThumb game={g()} /></A>
+      <div class="s-preview-title"><A href={gameHref(g().game_id, { player: props.gamertag })}>{gameTitle(g())}</A> on {gameMapTitle(g())}</div>
       <p>
         Playlist: {playlist(g())}<br />
         {longDate(g().started_at)}<br />
@@ -452,7 +452,7 @@ function Preview(props: { row: HistoryRow; gamertag: string }) {
       <div class="s-preview-head">Game Record ({g().positions.length})</div>
       <ul class="s-pad">
         <li><VerifySummary positions={() => g().positions} /></li>
-        <li><A href={`${STATS_ROOT}/games/${g().game_id}`}>{g().status === "live" ? "Watch it live" : "Carnage report and replay"}</A></li>
+        <li><A href={gameHref(g().game_id, { player: props.gamertag })}>{g().status === "live" ? "Watch it live" : "Carnage report and replay"}</A></li>
       </ul>
     </aside>
   );

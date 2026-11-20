@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { CUT_MARGIN, SEE_BEHIND, SEE_RADIUS, clampCut, cutHeight, cutRange, meshRole, patchSeeThrough, seeThroughHides, stepCut, takesSeeThrough, type SeeThrough } from "../src/viewer/cutaway";
+import { CUT_MARGIN, clampCut, cutHeight, cutRange, meshRole, patchSeeThrough, seeThroughHides, stepCut, takesSeeThrough, type SeeThrough } from "../src/viewer/cutaway";
 import { buildArena, encodeGlb, enclose } from "../mock/arena";
+import { CutawayMaterials } from "../src/viewer/cutaway3d";
+import { FilmWorld3D } from "../src/viewer/film-world3d";
 
 describe("what a map glb's meshes are", () => {
   test("the structure, however its nodes are named, is level geometry", () => {
@@ -30,17 +32,6 @@ describe("which meshes the see-through cuts", () => {
     expect(takesSeeThrough(meshRole(["scenario", "scen_4"]))).toBe(true);
     expect(takesSeeThrough(meshRole(["scenario", "vehi_0"]), true)).toBe(false);
     expect(takesSeeThrough(meshRole(["collision"]))).toBe(false);
-  });
-
-  test("a machine in front of a player is cut by the same test as a wall there", () => {
-    // A door slab across the line of sight, facing the camera: the same
-    // point and normal give the same answer whatever the mesh is.
-    const at: SeeThrough = { eye: [0, 2, 0], target: [10, 1, 0], radius: SEE_RADIUS, floor: 0.06 };
-    expect(seeThroughHides([6, 1.4, 0.2], at, [-1, 0, 0])).toBe(true);
-    // Its back face, the far side of the slab, is cut too (normal either way round).
-    expect(seeThroughHides([6.3, 1.4, 0.2], at, [1, 0, 0])).toBe(true);
-    // And a lift deck the player stands on is kept.
-    expect(seeThroughHides([9.5, 0.4, 0], at, [0, 1, 0])).toBe(false);
   });
 });
 
@@ -71,100 +62,33 @@ describe("the height cut", () => {
 });
 
 describe("the see-through", () => {
-  // The camera 20 units from a player, looking level along +x. y is up.
-  const s: SeeThrough = { eye: [0, 1, 0], target: [20, 1, 0], radius: 2, floor: 0.1 };
+  const s: SeeThrough = { eye: [0, 1, 0], target: [20, 1, 0], radius: 0.6, halfHeight: 1 };
 
-  test("a wall on the line of sight is cut; one beside it is not", () => {
+  test("the window follows the projected body, growing toward the player", () => {
     expect(seeThroughHides([10, 1, 0], s)).toBe(true);
-    // The cone is half as wide halfway there: radius 1.
-    expect(seeThroughHides([10, 1.7, 0], s)).toBe(true);
-    expect(seeThroughHides([10, 2.2, 0], s)).toBe(false);
-    expect(seeThroughHides([10, 1, 1.5], s)).toBe(false);
-    // Close to the camera it is narrow: what's beside the view is kept.
-    expect(seeThroughHides([2, 1.5, 0], s)).toBe(false);
-    expect(seeThroughHides([2, 1.1, 0], s)).toBe(true);
+    expect(seeThroughHides([10, 1.45, 0], s)).toBe(true);
+    expect(seeThroughHides([10, 1.6, 0], s)).toBe(false);
+    expect(seeThroughHides([10, 1, 0.45], s)).toBe(false);
+    expect(seeThroughHides([2, 1.2, 0], s)).toBe(false);
   });
 
-  test("nothing behind the camera, at the player, or past them is cut", () => {
+  test("a close slab is still cut and surfaces behind the player or camera stay", () => {
+    expect(seeThroughHides([19.95, 1, 0], s)).toBe(true);
+    expect(seeThroughHides([20.05, 1, 0], s)).toBe(false);
     expect(seeThroughHides([-1, 1, 0], s)).toBe(false);
-    expect(seeThroughHides([19.5, 1, 0], s)).toBe(false);
-    expect(seeThroughHides([25, 1, 0], s)).toBe(false);
   });
 
-  test("the floor they stand on stays, a floor above them goes", () => {
-    const above: SeeThrough = { eye: [0, 21, 0], target: [20, 1, 0], radius: 2, floor: 0.1 };
-    // Ground just in front of the player, inside the cone but at floor height.
-    expect(seeThroughHides([18.6, 0.05, 0], above)).toBe(false);
-    // An upper floor on the line of sight.
-    expect(seeThroughHides([15, 6, 0], above)).toBe(true);
+  test("a floor above the player can occlude them and the floor underfoot stays from above", () => {
+    const above: SeeThrough = { ...s, eye: [0, 3, 0], target: [10, 1, 0], halfHeight: 0.9 };
+    expect(seeThroughHides([5, 2, 0], above)).toBe(true);
+    expect(seeThroughHides([10, 0, 0], above)).toBe(false);
+    expect(seeThroughHides([5, 0.05, 0], above)).toBe(false);
+    expect(seeThroughHides([10, 0, 0], { ...above, eye: [10, 5, 0] })).toBe(false);
   });
 
-  // The old see-through cut everything in the cone; `inCone` is that test
-  // (a surface squarely facing the camera), to show each case below is one
-  // the cone reaches.
-  const inCone = (p: [number, number, number], at: SeeThrough) => seeThroughHides(p, at);
-
-  test("open terrain: ground under and beside the line of sight stays, a crest in the way goes", () => {
-    // Behind and a little above a player on sandy ground, as the 3D view
-    // follows: the eye 8 back and 2 up, the chest 0.6 above their feet.
-    const follow: SeeThrough = { eye: [-8, 2, 0], target: [0, 0.6, 0], radius: SEE_RADIUS, floor: 0.06 };
-    const bump: [number, number, number] = [-3, 0.4, 0];
-    const beside: [number, number, number] = [-3.5, 0.3, 0.9];
-    expect(inCone(bump, follow)).toBe(true);
-    expect(inCone(beside, follow)).toBe(true);
-    // A bump in the sand between them, its slope tilted up towards the camera.
-    expect(seeThroughHides(bump, follow, [-0.3, 1, 0])).toBe(false);
-    // Flat ground beside the line.
-    expect(seeThroughHides(beside, follow, [0, 1, 0])).toBe(false);
-    // A dune crest the line of sight goes into: higher than the line there.
-    const crest: [number, number, number] = [-4, 1.6, 0];
-    expect(inCone(crest, follow)).toBe(true);
-    expect(seeThroughHides(crest, follow, [-0.4, 1, 0])).toBe(true);
-    // The crest's steep face towards the camera; the normal either way round.
-    expect(seeThroughHides([-4.5, 1.5, 0], follow, [-1, 0.3, 0])).toBe(true);
-    expect(seeThroughHides([-4.5, 1.5, 0], follow, [1, -0.3, 0])).toBe(true);
-  });
-
-  test("indoors: a partition or an upper floor in the way goes; a wall beside the line and the floor underfoot stay", () => {
-    const room: SeeThrough = { eye: [0, 6, 0], target: [10, 1, 0], radius: 2, floor: 0.1 };
-    // A partition across the line, facing the camera.
-    expect(seeThroughHides([5, 3.5, 0], room, [-1, 0, 0])).toBe(true);
-    // The top of an upper floor between them.
-    expect(seeThroughHides([5, 3.4, 0.3], room, [0, 1, 0])).toBe(true);
-    // A corridor wall running along the line, beside it: the player is in front of it.
-    expect(inCone([5, 3.5, 0.7], room)).toBe(true);
-    expect(seeThroughHides([5, 3.5, 0.7], room, [0, 0, -1])).toBe(false);
-    // A step up near the player, inside the cone, below their chest.
-    expect(inCone([7, 1.1, 0], room)).toBe(true);
-    expect(seeThroughHides([7, 1.1, 0], room, [0, 1, 0])).toBe(false);
-  });
-
-  test("a surface nearly edge-on to the player is kept, so it doesn't flicker as the camera moves", () => {
-    // A wall plane passing just behind the chest: within the margin, kept
-    // whichever side the camera's small moves put it.
-    for (const dx of [-0.05, 0, 0.05]) {
-      const near: SeeThrough = { eye: [0, 1, 0], target: [10 + SEE_BEHIND * 0.5 + dx, 1, 0], radius: 2, floor: 0.1 };
-      expect(seeThroughHides([10, 1.3, 0], near, [-1, 0, 0])).toBe(false);
-    }
-    // A degenerate face (no normal) is never cut.
-    expect(seeThroughHides([10, 1, 0], s, [0, 0, 0])).toBe(false);
-  });
-
-  test("off, or with no distance to look along, it cuts nothing", () => {
+  test("a disabled window or a camera inside the target cuts nothing", () => {
     expect(seeThroughHides([10, 1, 0], { ...s, radius: 0 })).toBe(false);
-    expect(seeThroughHides([0, 1, 0], { ...s, target: s.eye })).toBe(false);
-  });
-
-  test("the rim is a clean edge: the full cone is cut, nothing past it, with no dither", () => {
-    // Halfway, the cone's radius is 1: just inside it is cut, just outside kept.
-    expect(seeThroughHides([10, 1.95, 0], s)).toBe(true);
-    expect(seeThroughHides([10, 2.05, 0], s)).toBe(false);
-    expect(SEE_RADIUS).toBeGreaterThan(1);
-    // The shader has no per-pixel noise in it to speckle the edge (or the
-    // occlusion, which reads the depth the edge leaves).
-    const out = patchSeeThrough(THREE.ShaderLib.standard.vertexShader, THREE.ShaderLib.standard.fragmentShader)!;
-    expect(out.fragment).not.toContain("gl_FragCoord");
-    expect(out.fragment).not.toContain("seeRim");
+    expect(seeThroughHides([10, 1, 0], { ...s, eye: s.target })).toBe(false);
   });
 
   test("an instanced or batched mesh is cut where each copy stands, not where its model sits", () => {
@@ -187,12 +111,84 @@ describe("the see-through", () => {
       expect(out.fragment).toContain("uniform vec4 uSeeTargets[");
       expect(out.fragment).toContain("uniform int uSeeCount;");
       expect(out.fragment.indexOf("#include <clipping_planes_fragment>")).toBeLessThan(out.fragment.indexOf("discard;"));
-      // The surface normal is taken outside every branch (derivatives need it) and tested before the discard.
-      expect(out.fragment.indexOf("dFdx(vSeeWorld)")).toBeLessThan(out.fragment.indexOf("if (uSeeCount > 0)"));
-      expect(out.fragment.indexOf("seeTarget.xyz - vSeeWorld, seeN")).toBeLessThan(out.fragment.indexOf("discard;"));
+      expect(out.fragment).toContain("uniform vec3 uSeeEye;");
+      expect(out.fragment).toContain("seeRaySq >= dot(seeRay, seeCentre)");
       expect(out.vertex.indexOf("#include <project_vertex>")).toBeLessThan(out.vertex.indexOf("vSeeWorld = "));
     }
     expect(patchSeeThrough("void main() {}", "void main() {}")).toBeNull();
+  });
+
+  test("the same window cuts a split BSP, instanced scenery and a loose machine", () => {
+    const scene = new THREE.Scene();
+    const cutaway = new CutawayMaterials(new THREE.Plane(new THREE.Vector3(0, -1, 0), 100), new THREE.Vector3(...s.eye));
+    cutaway.uniforms.uSeeTargets.value[0]!.set(...s.target, s.radius);
+    cutaway.uniforms.uSeeHalfHeights.value[0] = s.halfHeight;
+    cutaway.uniforms.uSeeCount.value = 1;
+
+    const geometry = new THREE.BoxGeometry(0.25, 2, 2);
+    const levelMaterial = new THREE.MeshStandardMaterial();
+    cutaway.attach(levelMaterial);
+    const bsp = new THREE.Group();
+    bsp.name = "bsp_3";
+    const cluster = new THREE.Mesh(geometry, levelMaterial);
+    cluster.name = "cluster_0";
+    cluster.position.set(3, 1, 0);
+    bsp.add(cluster);
+    scene.add(bsp);
+
+    const scenery = new THREE.InstancedMesh(geometry, levelMaterial, 2);
+    scenery.name = "scenery";
+    scenery.setMatrixAt(0, new THREE.Matrix4().makeTranslation(7, 1, 0));
+    scenery.setMatrixAt(1, new THREE.Matrix4().makeTranslation(7, 1, 3));
+    scene.add(scenery);
+
+    const shared = new THREE.MeshStandardMaterial();
+    const machine = new THREE.Mesh(geometry, shared);
+    machine.name = "machine";
+    machine.position.set(19.95, 1, 0);
+    cutaway.attachModel(machine);
+    scene.add(machine);
+    const player = new THREE.Mesh(new THREE.SphereGeometry(s.radius), shared);
+    player.position.set(...s.target);
+    scene.add(player);
+    const behind = new THREE.Mesh(geometry, levelMaterial);
+    behind.name = "behind";
+    behind.position.set(22, 1, 0);
+    scene.add(behind);
+    scene.updateMatrixWorld();
+
+    const ray = new THREE.Raycaster(new THREE.Vector3(...s.eye), new THREE.Vector3(20, 0.02, 0.03).normalize());
+    const hits = ray.intersectObjects(scene.children);
+    expect(hits.some((hit) => hit.object === behind)).toBe(true);
+    expect(hits.some((hit) => hit.object === player)).toBe(true);
+    const cut = new Set(hits.flatMap(({ object, point: { x, y, z } }) =>
+      object !== player && seeThroughHides([x, y, z], s) ? [object.name] : []));
+    expect([...cut]).toEqual(["cluster_0", "scenery", "machine"]);
+    ray.ray.direction.set(7, 0, 3).normalize();
+    const side = ray.intersectObject(scenery).find((hit) => hit.instanceId === 1);
+    expect(side).toBeDefined();
+    const { x, y, z } = side!.point;
+    expect(seeThroughHides([x, y, z], s)).toBe(false);
+    expect(machine.material).not.toBe(shared);
+    expect(shared.customProgramCacheKey()).not.toEndWith("|see");
+    for (const material of [cluster.material, scenery.material, machine.material]) {
+      expect(material.customProgramCacheKey()).toEndWith("|see");
+      expect(material.transparent).toBe(false);
+      expect(material.depthWrite).toBe(true);
+    }
+    cutaway.dispose();
+  });
+
+  test("a film's loose scenery joins the cutaway without changing the model template", () => {
+    const cutaway = new CutawayMaterials(new THREE.Plane(), new THREE.Vector3());
+    const world = new FilmWorld3D((object) => cutaway.attachModel(object));
+    const template = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshStandardMaterial());
+    world.update({ props: [{ id: "scenery", class: "scen", kind: "crate", pos: [2, 0, 0], forward: [1, 0, 0], up: [0, 0, 1] }], hill: null }, () => template);
+    const placed = world.group.children.find((object) => object instanceof THREE.Mesh) as typeof template;
+    expect(placed.material.customProgramCacheKey()).toEndWith("|see");
+    expect(template.material.customProgramCacheKey()).not.toEndWith("|see");
+    world.dispose();
+    cutaway.dispose();
   });
 });
 

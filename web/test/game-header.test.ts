@@ -6,7 +6,7 @@
 
 import { describe, expect, test } from "bun:test";
 import {
-  escapeHtml, gameHeaderHtml, gameHeaderJson, gameHeaderModel, teamName,
+  adoptGameHeader, escapeHtml, gameHeaderHtml, gameHeaderJson, gameHeaderModel, showGameHeader, teamName,
 } from "../src/stats/gameHeader";
 import { packEmblem } from "../src/lib/art";
 import { emblemPath } from "../src/lib/emblem";
@@ -113,8 +113,8 @@ describe("the game header's markup", () => {
     const html = gameHeaderHtml(model);
     expect(html).toContain('<div class="s-gamehead" data-game="0123abcd">');
     expect(html).toContain("<b>Team Slayer</b> on Orchard");
-    expect(html).toContain("<i class=\"s-gamehead-flag\">FINAL</i><span>Blue Team won</span>");
-    expect(html).toContain("<header><span>Blue</span><b>20</b></header>");
+    expect(html).toContain("<i class=\"s-gamehead-flag\">FINAL</i> <span>Blue Team won</span>");
+    expect(html).toContain("<header><span>Blue</span> <b>20</b></header>");
     // A name that needs escaping, escaped.
     expect(html).toContain("<span>Rock &amp; Roll</span>");
     expect(html).toContain('<img class="emblem emblem--game" src="/art/emblem/30-7-3-6-8-2.png"');
@@ -156,112 +156,54 @@ describe("the game header's markup", () => {
   });
 });
 
-// ---- adoption: the client keeps the header the page shipped ----
-
-/** Just enough document for showGameHeader: a body, an app node, and
- *  elements that answer getElementById and the two selectors it asks. */
-interface FakeEl {
-  id: string;
-  className: string;
-  hidden: boolean;
-  dataset: Record<string, string>;
-  innerHTML: string;
-  textContent: string;
-  children: FakeEl[];
-  querySelector(sel: string): FakeEl | null;
-}
-
-function fakePage(withHeader: boolean) {
-  const el = (id: string, cls: string): FakeEl => ({
-    id, className: cls, hidden: false, dataset: {} as Record<string, string>,
-    innerHTML: "", textContent: "",
-    querySelector(sel: string): FakeEl | null {
-      const byId = sel.startsWith("#") ? this.children.find((c) => c.id === sel.slice(1)) ?? null : null;
-      const byClass = sel.startsWith(".") ? this.children.find((c) => (" " + c.className + " ").includes(" " + sel.slice(1) + " ")) ?? null : null;
-      return byId ?? byClass;
-    },
-    children: [] as FakeEl[],
-  });
-  const root = el("root", "");
-  const body = { children: [] as FakeEl[], insertBefore: (_n: FakeEl) => _n };
-  const script = el("game-header-model", "");
-  const col = el("", "s-gamehead-col");
-  let header: FakeEl | null = null;
-  if (withHeader) {
-    header = el("game-header", "s-gamehead-shell");
-    header.children = [script, col];
-    header.dataset.game = "0123abcd";
-    script.textContent = MODEL_JSON.trim();
-    col.innerHTML = GOLDEN_HTML.trim();
+describe("the Game Details hero", () => {
+  function heroSlot() {
+    const model = { textContent: MODEL_JSON.trim() };
+    const sourceHeader = { dataset: { game: "0123abcd" }, querySelector: () => model };
+    const source = { querySelector: () => sourceHeader };
+    const slot = {
+      dataset: {} as Record<string, string>,
+      firstElementChild: null as typeof sourceHeader | null,
+      innerHTML: "",
+      appendChild(header: typeof sourceHeader) { this.firstElementChild = header; },
+      replaceChildren() { this.firstElementChild = null; this.innerHTML = ""; },
+    };
+    return { slot, element: slot as unknown as HTMLElement, source: source as unknown as ParentNode, sourceHeader };
   }
-  const doc = {
-    getElementById: (id: string): FakeEl | null => (id === "root" ? root : id === "game-header" ? header : null),
-    createElement: () => {
-      const made = el("", "");
-      made.children = [el("game-header-model", ""), el("", "s-gamehead-col")];
-      return made;
-    },
-    body,
-  };
-  return {
-    doc, header: () => header, body, script: () => script, col: () => col, root,
-  };
-}
 
-describe("the page's header node", () => {
-  test("a page load adopts what the server shipped: the node is left untouched", async () => {
-    const { showGameHeader } = await import("../src/stats/gameHeader");
-    const page = fakePage(true);
-    (globalThis as { document?: unknown }).document = page.doc;
-    try {
-      // The game the page shipped, re-derived by the client: the same model.
-      const did = showGameHeader(gameHeaderModel(fixtureGame()));
-      expect(did).toBe("kept");
-      expect(page.col().innerHTML).toBe(GOLDEN_HTML.trim());
-      expect(page.header()?.hidden).toBe(false);
-      // Still loading the game: whatever is up stays up.
-      expect(showGameHeader(undefined)).toBe("kept");
-      // A missing game hides it.
-      expect(showGameHeader(null)).toBe("hid");
-      expect(page.header()?.hidden).toBe(true);
-    } finally {
-      delete (globalThis as { document?: unknown }).document;
-    }
+  test("only the matching game can adopt the staged hero and its existing nodes", () => {
+    const { slot, element, source, sourceHeader } = heroSlot();
+    adoptGameHeader(element, source, "other");
+    expect(slot.firstElementChild).toBeNull();
+
+    adoptGameHeader(element, source, "0123abcd");
+    showGameHeader(element, gameHeaderModel(fixtureGame()));
+    expect(slot.firstElementChild).toBe(sourceHeader);
+    expect(slot.innerHTML).toBe("");
   });
 
-  test("a live game that moved on rewrites the header in place", async () => {
-    const { showGameHeader } = await import("../src/stats/gameHeader");
-    const page = fakePage(true);
-    (globalThis as { document?: unknown }).document = page.doc;
-    try {
-      const g = fixtureGame();
-      g.status = "live";
-      g.winner = null;
-      g.scores[0]!.score = 16;
-      g.teams[0] = 19;
-      expect(showGameHeader(gameHeaderModel(g))).toBe("wrote");
-      expect(page.col().innerHTML).toContain('s-gamehead-flag--live">LIVE<');
-      expect(page.col().innerHTML).toContain("<b>19</b>");
-      expect(page.script().textContent).toBe(gameHeaderJson(gameHeaderModel(g)));
-    } finally {
-      delete (globalThis as { document?: unknown }).document;
-    }
+  test("a changed game updates the same slot, and a missing game clears it", () => {
+    const { slot, element, source } = heroSlot();
+    const g = fixtureGame();
+    adoptGameHeader(element, source, "0123abcd");
+    g.scores[0]!.score = 16;
+    g.teams[0] = 19;
+    showGameHeader(element, gameHeaderModel(g));
+    expect(slot.innerHTML).toContain("<b>19</b>");
+    expect(slot.innerHTML).toContain('s-gamehead-pscore">16</b>');
+    showGameHeader(element, null);
+    expect(slot.firstElementChild).toBeNull();
+    expect(slot.innerHTML).toBe("");
   });
 
-  test("a page that shipped no header (a dev server) makes its own above the app", async () => {
-    const { showGameHeader } = await import("../src/stats/gameHeader");
-    const page = fakePage(false);
-    let made: FakeEl | null = null;
-    page.body.insertBefore = (n: FakeEl) => { made = n; return n; };
-    (globalThis as { document?: unknown }).document = page.doc;
-    try {
-      expect(showGameHeader(null)).toBe("hid"); // nothing to hide yet
-      expect(showGameHeader(gameHeaderModel(fixtureGame()))).toBe("wrote");
-      expect(made).toBeTruthy();
-      const node = made as unknown as { id: string; className: string };
-      expect([node.id, node.className]).toEqual(["game-header", "s-gamehead-shell"]);
-    } finally {
-      delete (globalThis as { document?: unknown }).document;
-    }
+  test("the initial HTML stages the hero and Game Details places it below the site header and breadcrumbs", async () => {
+    const read = (path: string) => Bun.file(new URL(path, import.meta.url)).text();
+    const [html, app, layout, game] = await Promise.all([
+      read("../index.html"), read("../src/index.tsx"), read("../src/stats/Layout.tsx"), read("../src/stats/Game.tsx"),
+    ]);
+    expect(html).toMatch(/<template id="game-header-source">\s*<!-- game-header -->\s*<!-- \/game-header -->\s*<\/template>/);
+    expect(app).toMatch(/path=\{STATS_ROOT\} component=\{StatsLayout\}>[\s\S]*?path="\/games\/:id" component=\{Game\}/);
+    expect(layout).toMatch(/<header class="s-top">[\s\S]*?<main class="s-main">\{props.children\}<\/main>/);
+    expect(game).toMatch(/<Crumbs trail=\{trail\(\)\} \/>\s*<div class="s-full s-game">\s*<div ref=\{hero\} class="s-game-hero" \/>/);
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { gameArt, mapDisplayName, mapKey, parseManifest, resolveMapStem } from "../src/lib/gameart";
-import { applyCatalog, artStem, gameImage, isHalo1Map, loadServerArt, mapTitle, setGameArtForTest, setMapTitles, variantType } from "../src/state/gameart";
+import { applyCatalog, artStem, gameArtReady, gameImage, isHalo1Map, loadServerArt, mapTitle, setGameArtForTest, setMapTitles, variantType } from "../src/state/gameart";
 import { gameMapGroupLabel, gameMapTitle } from "../src/state/maps";
 import { variantLabel, variantName, gameTypeLine } from "../src/state/gametype";
 import { OUTCOME_WORDS } from "../src/state/derive";
@@ -175,6 +175,7 @@ describe("the catalog without the manifest", () => {
     await loadServerArt("https://a.example", { art: async () => null, catalog: async () => catalog, current: () => "https://a.example" });
     expect(gameImage(mapKey("tower"))).toBeNull();
     expect(mapTitle("tower")).toBe("Tall Tower");
+    expect(gameArtReady()).toBe(true);
     noArt();
   });
 
@@ -182,6 +183,7 @@ describe("the catalog without the manifest", () => {
     noArt();
     await loadServerArt("https://b.example", { art: async () => null, catalog: async () => catalog, current: () => "https://elsewhere.example" });
     expect(mapTitle("tower")).toBe("Tower");
+    expect(gameArtReady()).toBe(false);
   });
 });
 

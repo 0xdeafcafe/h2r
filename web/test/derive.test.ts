@@ -3,7 +3,7 @@ import type { Kill } from "../src/state/reducer";
 import { applyEvents, initialState } from "../src/state/reducer";
 import {
   bestSprees, countMedals, gameHistory, gameMedals, nextRankAt, places, playedWith, rankFor, rankIndex, serviceRecord,
-  weaponBreakdown, weaponsAgainst,
+  gameWeaponReport, weaponBreakdown, weaponsAgainst,
 } from "../src/state/derive";
 import { ev, resetPos } from "./helpers";
 
@@ -55,6 +55,20 @@ describe("medals", () => {
 });
 
 describe("weapons", () => {
+  test("game report has no weapon bars when all scoring kills lack weapon data", () => {
+    expect(gameWeaponReport([])).toEqual([]);
+    expect(gameWeaponReport([k(0, 0, 1, null), k(1, 1, 0, "unknown"), k(2, 0, 1, " ")]))
+      .toEqual([]);
+  });
+
+  test("game report keeps the missing share in the totals and in the abbreviated view", () => {
+    const kills = [k(0, 0, 1, "rifle"), k(1, 0, 2, "sword"), k(2, 1, 0, null), k(3, 2, 0, null)];
+    expect(gameWeaponReport(kills, 2)).toEqual([
+      { weapon: "rifle", kills: 1, share: 0.25 },
+      { weapon: null, kills: 2, share: 0.5 },
+    ]);
+  });
+
   test("breakdown by weapon for a slot, most used first", () => {
     const kills = [k(0, 0, 1, "rifle"), k(1, 0, 2, "sword"), k(2, 0, 3, "rifle"), k(3, 1, 0, "rocket"), k(4, 0, 0, null, "suicide"), k(5, 0, 2, null)];
     const rows = weaponBreakdown(kills, new Set([0]));

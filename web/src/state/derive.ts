@@ -126,6 +126,25 @@ export function weaponBreakdown(kills: readonly Kill[], slots?: Set<number>): We
     .sort((a, b) => b.kills - a.kills || a.weapon.localeCompare(b.weapon));
 }
 
+export type GameWeaponRow = Omit<WeaponRow, "weapon"> & { weapon: string | null };
+
+/** Keep missing kills in mixed totals. Leave the breakdown empty when
+ *  none of the scoring kills names a weapon. */
+export function gameWeaponReport(kills: readonly Kill[], limit = Infinity): GameWeaponRow[] {
+  const recorded: GameWeaponRow[] = [];
+  const missing: GameWeaponRow = { weapon: null, kills: 0, share: 0 };
+  for (const row of weaponBreakdown(kills)) {
+    const weapon = row.weapon.trim();
+    if (weapon && weapon.toLowerCase() !== "unknown") recorded.push(row);
+    else {
+      missing.kills += row.kills;
+      missing.share += row.share;
+    }
+  }
+  if (!recorded.length || limit <= 0) return [];
+  return missing.kills ? [...recorded.slice(0, limit - 1), missing] : recorded.slice(0, limit);
+}
+
 /** Deaths by weapon for the given slots: what knocked them out, most often first. */
 export function weaponsAgainst(kills: readonly Kill[], slots: Set<number>): WeaponRow[] {
   const m = new Map<string, number>();
