@@ -3,7 +3,8 @@
 Status: design, 2026-11-20. Slices 0 to 2 are built: the dispatcher and
 the switch (default off), the views and `sim-state`, and slice 1's bodies
 (the walks, the per-object updates, the type dispatchers, the wake leaves
-and the early-mover wake). The contracts they keep are in
+and the early-mover wake). Slice 11's bodies are built too, except the
+projectile step `f8eb0`, which stays a callout. The contracts they keep are in
 [object-update.md](object-update.md). It details phase 3 of
 [sim-rewrite.md](sim-rewrite.md) (the plan; its section 8 decisions bind this
 page). Phase 1 (animation and pose, `crates/rewrites/sim-anim`) and phase 2 (collision
