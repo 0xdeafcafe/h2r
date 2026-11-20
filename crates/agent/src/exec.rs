@@ -115,6 +115,11 @@ impl GameCtx<'_> {
         }
     }
 
+    /// Inspect guest state at this game boundary.
+    pub fn read_guest<T>(&mut self, f: impl FnOnce(&dyn engine::GuestMemory) -> T) -> Result<T, RpcError> {
+        self.with_guest(|m| Ok(f(m)))
+    }
+
     /// Answers a host method (`ui.screen`, `input.state`) as a client
     /// would get it, when the host registered one of that name.
     pub fn host(&mut self, name: &str, params: Value) -> Option<Result<Value, RpcError>> {

@@ -26,6 +26,8 @@
 //!
 //! With no campaign installed nothing is hooked and nothing is written.
 
+pub(crate) mod legacy_checkpoint;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -463,11 +465,10 @@ pub fn campaign_of(built: &[Built], map_id: u32) -> Option<&Built> {
 // Which campaign the menu shows.
 
 /// The campaign the level select shows (1 until the picker says
-/// otherwise), and whether the next level-select request is ours to pass.
+/// otherwise), and whether the level-select constructor is running.
 #[derive(Debug)]
 pub struct Selection {
     campaign: AtomicU32,
-    pass: AtomicBool,
     building: AtomicBool,
     /// Seen as the picker opened: the signed-in profiles, and each
     /// campaign's first level's picture (`bitm` datum) in the loaded map.
@@ -485,7 +486,6 @@ impl Default for Selection {
     fn default() -> Self {
         Selection {
             campaign: AtomicU32::new(RETAIL_CAMPAIGN),
-            pass: AtomicBool::new(false),
             building: AtomicBool::new(false),
             seen: Mutex::new(Seen::default()),
         }
@@ -505,32 +505,15 @@ impl Selection {
     pub fn set(&self, id: u32) {
         self.campaign.store(id, Ordering::SeqCst);
     }
-    /// The picker is about to open the level select itself: let that one
-    /// request through.
-    pub fn let_through(&self) {
-        self.pass.store(true, Ordering::SeqCst);
-    }
-    /// Whether this request is the one let through (and forget it).
-    pub fn take_pass(&self) -> bool {
-        self.pass.swap(false, Ordering::SeqCst)
-    }
     pub fn set_building(&self, on: bool) {
         self.building.store(on, Ordering::SeqCst);
     }
     pub fn building(&self) -> bool {
         self.building.load(Ordering::SeqCst)
     }
-    /// Why a snapshot can't be taken now: the level select is being built,
-    /// or a level-select request is to be let through. The campaign shown
-    /// is menu state only; in a game, the level's campaign comes from the
-    /// map (`State::lookup_campaign`, `fix_selection`).
+    /// Prevent a snapshot between the before and after constructor hooks.
     pub fn snapshot_live(&self) -> Option<String> {
-        if self.building() {
-            return Some("the level select is being built".into());
-        }
-        self.pass
-            .load(Ordering::SeqCst)
-            .then(|| "a level-select request is to be let through".into())
+        self.building().then(|| "the level select is being built".into())
     }
 }
 
@@ -545,6 +528,13 @@ pub struct CampaignProgress {
     pub finished: [i64; 4],
     /// The last level started, `-1` none.
     pub last: i64,
+    /// Map basenames survive changes in the order of installed maps.
+    #[serde(default)]
+    pub last_map: Option<String>,
+    #[serde(default)]
+    pub difficulty: Option<u16>,
+    #[serde(default)]
+    pub checkpoint: bool,
 }
 
 impl CampaignProgress {
@@ -552,6 +542,7 @@ impl CampaignProgress {
         CampaignProgress {
             finished: [-1; 4],
             last: -1,
+            ..Self::default()
         }
     }
 }
@@ -586,7 +577,12 @@ impl Progress {
                     false,
                 ),
             },
-            Err(_) => (ProgressFile::default(), None, true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (ProgressFile::default(), None, true),
+            Err(e) => (
+                ProgressFile::default(),
+                Some(format!("campaigns: {} unreadable ({e}); progress not kept this run", path.display())),
+                false,
+            ),
         };
         (
             Progress {
@@ -635,16 +631,27 @@ impl Progress {
         })
     }
 
-    /// Level `map_id` started by `profile`.
-    pub fn started(&self, profile: &str, key: &str, map_id: u32) {
+    /// Record a launch only after a difficulty has been confirmed.
+    pub fn launched(&self, profile: &str, key: &str, level: &cl::BuiltLevel, difficulty: u16, restore: bool) {
         self.with(|f| {
-            let p =
-                f.0.entry(profile.into())
-                    .or_default()
-                    .entry(key.into())
-                    .or_insert_with(CampaignProgress::fresh);
-            let changed = p.last != i64::from(map_id);
-            p.last = map_id.into();
+            let p = f.0.entry(profile.into()).or_default().entry(key.into())
+                .or_insert_with(CampaignProgress::fresh);
+            let before = p.clone();
+            p.checkpoint &= restore && p.last_map.as_deref() == Some(level.map.as_str());
+            p.last_map = Some(level.map.clone());
+            p.last = level.map_id.into();
+            p.difficulty = Some(difficulty.min(3));
+            ((), *p != before)
+        })
+    }
+
+    pub fn checkpoint_saved(&self, profile: &str, key: &str) {
+        self.with(|f| {
+            let Some(p) = f.0.get_mut(profile).and_then(|games| games.get_mut(key)) else {
+                return ((), false);
+            };
+            let changed = !p.checkpoint;
+            p.checkpoint = true;
             ((), changed)
         })
     }
@@ -841,11 +848,23 @@ pub fn read_disc(disc: &Path) -> anyhow::Result<(Vec<String>, Vec<u32>, Vec<u32>
     Ok((names, campaigns, maps))
 }
 
-/// The state the hooks share, when at least one campaign is installed
-/// under `<data>/campaigns`; `None` (and the disc unread) otherwise. Says
-/// what it found.
+fn has_installed_halo1(data_root: &Path) -> bool {
+    let dir = data_root.join("campaigns").join(HALO1_KEY);
+    let Ok(text) = std::fs::read_to_string(dir.join(cl::MANIFEST_FILE)) else { return false };
+    match CampaignManifest::parse(&text) {
+        Ok(m) => m.campaign.key == HALO1_KEY && m.levels.iter().any(|l| {
+            dir.join(format!("{}.map", l.map)).is_file()
+        }),
+        Err(e) => {
+            eprintln!("campaigns: invalid Halo 1 manifest in {}: {e}", dir.display());
+            false
+        }
+    }
+}
+
+/// Only inspect the disc and enable the menus once a Halo 1 mission is installed.
 pub fn boot_state(data_root: &Path, disc: &Path) -> Option<State> {
-    if !data_root.join("campaigns").is_dir() {
+    if !has_installed_halo1(data_root) {
         return None;
     }
     let (names, retail_campaigns, retail_maps) = match read_disc(disc) {
