@@ -200,7 +200,7 @@ CPU includes every process thread; GPU execution and time descheduled are
 not CPU time. For pixel fidelity, `H2_GFX_MERGE_CHECK=N` renders frame N
 both merged and one pass per draw and reports the differences
 ([graphics.md](../graphics/graphics.md) "Merged passes"). Runs with the
-numbers are in [menu-budget.md](../perf/menu-budget.md).
+numbers are in [menu-budget.md](../perf/notes/menu-budget.md).
 
 ## Boot stopgaps in force
 

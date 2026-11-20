@@ -96,7 +96,7 @@ fallback (blocker 1): about 45k fallback entries by the main menu.
 
 When this was written the main menu ran at about 5-6 fps on an unloaded
 M-series Mac (1.9 fps at fd3e969); current in-level numbers are in
-[gameplay-budget.md](../perf/gameplay-budget.md). Audio runs on logical time through a
+[gameplay-budget.md](../../perf/notes/gameplay-budget.md). Audio runs on logical time through a
 `NullSink` (its frames are counted as dropped, by design), vblanks on
 the 60 Hz logical clock. When every thread waits with nothing timed but
 audio is still playing, the runner moves logical time on one audio
