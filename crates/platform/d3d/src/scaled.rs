@@ -1816,19 +1816,6 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         self.reference.can_sample_depth_surfaces()
     }
 
-    fn request_depth_grid(
-        &mut self,
-        surface: Self::Surface,
-        request: crate::backend::DepthGridRequest,
-        sink: crate::backend::DepthGridSink,
-    ) -> Result<bool, String> {
-        if self.single() { return self.view.request_depth_grid(self.image(surface), request, sink); }
-        match self.view_surface(&surface) {
-            Some(v) => self.view.request_depth_grid(v, request, sink),
-            None => self.reference.request_depth_grid(surface.reference, request, sink),
-        }
-    }
-
     fn reusable_external_attachments(&self) -> bool {
         self.reference.reusable_external_attachments() && self.view.reusable_external_attachments()
     }

@@ -1753,17 +1753,6 @@ where
         self.inner.can_sample_depth_surfaces()
     }
 
-    fn request_depth_grid(
-        &mut self,
-        surface: Self::Surface,
-        request: crate::backend::DepthGridRequest,
-        sink: crate::backend::DepthGridSink,
-    ) -> Result<bool, String> {
-        // Only the guest's own frames ask (the device, between its draws);
-        // a replay is host-only and never produces a grid.
-        self.inner.request_depth_grid(surface, request, sink)
-    }
-
     fn external_attachments(
         &mut self, surfaces: crate::ExternalSurfaces<Self::Surface>, textures: [Option<&Self::Texture>; 4],
         copy: crate::TargetCopy,

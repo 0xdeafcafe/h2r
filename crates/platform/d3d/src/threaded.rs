@@ -1387,26 +1387,6 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         Ok(true)
     }
 
-    fn request_depth_grid(
-        &mut self,
-        surface: u32,
-        request: crate::backend::DepthGridRequest,
-        sink: crate::backend::DepthGridSink,
-    ) -> Result<bool, String> {
-        self.check()?;
-        // In order with the draws before it, on the render thread; the
-        // grid reaches `sink` from there.
-        let shared = Arc::clone(&self.shared);
-        self.post(move |w| {
-            let s = w.surface(surface)?;
-            if !w.inner.request_depth_grid(s, request, sink)? {
-                shared.miss("request_depth_grid returned false".into());
-            }
-            Ok(())
-        });
-        Ok(true)
-    }
-
     fn depth_level_texture(&mut self, surface: u32) -> Result<Option<ProxyTexture<B>>, String> {
         self.check()?;
         // An RGBA8 texture: it has a view.

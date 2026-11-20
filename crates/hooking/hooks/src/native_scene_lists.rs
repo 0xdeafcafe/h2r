@@ -57,7 +57,6 @@ impl Feature for NativeSceneLists {
             Seam::Function(&points::SCENE_GEOMETRY_GATHER, 4),
             geometry::gather,
         );
-        // The opt-in occlusion feature's before-hook gets first refusal.
         install(
             b,
             Seam::Function(&points::OBJECT_RENDER_SETUP, 20),

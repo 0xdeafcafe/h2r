@@ -166,12 +166,6 @@ pub struct GfxBackend {
     pub(crate) counter: Option<PixelCounter>,
     /// The depth-bits pass ([`Backend::depth_level_texture`]), made on first use.
     depth_bits: Option<gfx::depth_bits::DepthBits>,
-    /// The occlusion grid pass ([`Backend::request_depth_grid`]), made on
-    /// first use.
-    depth_grid: Option<gfx::depth_grid::DepthGrid>,
-    /// Grids on their way back: mapped after the submission that holds
-    /// them, handed to their sink at a later present.
-    depth_grids: Vec<(gfx::depth_grid::PendingGrid, u64, crate::backend::DepthGridSink)>,
     /// Guest-word passes ([`Backend::depth_alias_texture`]), made on first use.
     guest_words: Option<gfx::guest_words::GuestWords>,
     /// [`set_gpu_depth_aliases`](Self::set_gpu_depth_aliases).
@@ -342,8 +336,6 @@ impl GfxBackend {
             reports: HashMap::new(),
             unsubmitted_reports: Vec::new(),
             depth_bits: None,
-            depth_grid: None,
-            depth_grids: Vec::new(),
             guest_words: None,
             gpu_depth_aliases: true,
             depth_words: None,
@@ -559,34 +551,6 @@ impl GfxBackend {
         self.store
             .read_color(&self.ctx, id)
             .map_err(|e| format!("{e:?}"))
-    }
-
-    /// Hands every mapped occlusion grid to its sink (no wait: a grid whose
-    /// map has not completed waits for a later present), oldest first: the
-    /// feature drops the asks older than a delivered one, so a newer grid
-    /// handed over first would lose the older.
-    fn deliver_depth_grids(&mut self) {
-        let mut i = 0;
-        while i < self.depth_grids.len() {
-            let (g, tag, _) = &self.depth_grids[i];
-            if g.failed() {
-                self.depth_grids.remove(i);
-                continue;
-            }
-            let tag = *tag;
-            match g.try_take() {
-                Some(depth) => {
-                    let (g, _, sink) = self.depth_grids.remove(i);
-                    sink(crate::backend::DepthGridResult {
-                        tag,
-                        width: g.width,
-                        height: g.height,
-                        depth,
-                    });
-                }
-                None => i += 1,
-            }
-        }
     }
 
     fn external_views(
@@ -1077,10 +1041,6 @@ impl GfxBackend {
         if let Some(observer) = &mut self.submitted_frame_observer {
             observer();
         }
-        // Occlusion grids recorded before this present are submitted now.
-        for (g, _, _) in &mut self.depth_grids {
-            g.map();
-        }
         self.frame += 1;
         self.frame_draw = 0;
         let new_pipelines = self.renderer.take_new_keys();
@@ -1122,7 +1082,6 @@ impl GfxBackend {
             }
         }
         self.prev_frame_end = frame_end;
-        self.deliver_depth_grids();
         // Reports from this frame and before are read later (Halo reads a
         // visibility test two frames after it ends): start their reads now,
         // so the read finds the count mapped instead of waiting.
@@ -1662,43 +1621,6 @@ impl Backend for GfxBackend {
             self.submit_open();
         }
         Ok(Some(self.host_texture(out, TextureKind::D2)))
-    }
-
-    fn request_depth_grid(
-        &mut self,
-        surface: SurfaceId,
-        request: crate::backend::DepthGridRequest,
-        sink: crate::backend::DepthGridSink,
-    ) -> Result<bool, String> {
-        let s = self.store.get(surface).map_err(|e| e.to_string())?;
-        let texture = s.texture().clone();
-        let samples = s.desc().samples;
-        let readable = matches!(
-            texture.format(),
-            wgpu::TextureFormat::Depth32FloatStencil8 | wgpu::TextureFormat::Depth32Float
-        ) && texture.usage().contains(wgpu::TextureUsages::TEXTURE_BINDING);
-        if !readable || samples > 1 || request.width == 0 || request.height == 0 {
-            return Ok(false);
-        }
-        // Too many in flight (nobody presents): drop the request.
-        if self.depth_grids.len() >= 8 {
-            return Ok(false);
-        }
-        let Some(rect) = grid_rect(request, (texture.width(), texture.height())) else {
-            return Ok(false);
-        };
-        let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
-        // After the draws into it, in the same submission as them.
-        let (mut enc, passes) = self.take_open()?;
-        let ctx = &self.ctx;
-        let grid = self.depth_grid.get_or_insert_with(|| gfx::depth_grid::DepthGrid::new(ctx));
-        let pending = grid.reduce(ctx, &mut enc, &texture, rect, request.width, request.height);
-        self.open = Some((enc, passes));
-        if !self.defer_side_passes {
-            self.submit_open();
-        }
-        self.depth_grids.push((pending, request.tag, sink));
-        Ok(true)
     }
 
     fn reusable_external_attachments(&self) -> bool { true }
@@ -2378,56 +2300,10 @@ fn split<'a>(draw: Draw<'a>, pieces: &[Option<ScissorRect>]) -> Vec<Draw<'a>> {
         .collect()
 }
 
-/// A grid request's rectangle in the texels of a `texels`-sized texture
-/// (scaled from the guest size), clamped to it; `None` when empty.
-pub(crate) fn grid_rect(
-    request: crate::backend::DepthGridRequest,
-    texels: (u32, u32),
-) -> Option<gfx::depth_grid::Rect> {
-    let (gw, gh) = request.surface_size;
-    if gw == 0 || gh == 0 {
-        return None;
-    }
-    let (x, y, w, h) = request.rect;
-    let sx = |v: u32| (v as u64 * texels.0 as u64 / gw as u64).min(texels.0 as u64) as u32;
-    let sy = |v: u32| (v as u64 * texels.1 as u64 / gh as u64).min(texels.1 as u64) as u32;
-    let (x0, y0) = (sx(x), sy(y));
-    let (x1, y1) = (sx(x.saturating_add(w)), sy(y.saturating_add(h)));
-    (x1 > x0 && y1 > y0).then_some(gfx::depth_grid::Rect {
-        x: x0,
-        y: y0,
-        width: x1 - x0,
-        height: y1 - y0,
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{grid_rect, merge_split};
+    use super::merge_split;
     use wgpu::ColorWrites as W;
-
-    #[test]
-    fn a_grid_rect_scales_from_guest_pixels_to_texels() {
-        let req = |rect| crate::backend::DepthGridRequest {
-            tag: 0,
-            rect,
-            surface_size: (640, 480),
-            width: 64,
-            height: 32,
-        };
-        let r = |x, y, width, height| gfx::depth_grid::Rect { x, y, width, height };
-        assert_eq!(grid_rect(req((0, 0, 640, 480)), (640, 480)), Some(r(0, 0, 640, 480)));
-        // A 2x view: the same viewport, twice the texels.
-        assert_eq!(grid_rect(req((0, 0, 640, 480)), (1280, 960)), Some(r(0, 0, 1280, 960)));
-        // A split-screen half.
-        assert_eq!(grid_rect(req((0, 240, 640, 240)), (1280, 960)), Some(r(0, 480, 1280, 480)));
-        // Clamped to the texture; empty is nothing.
-        assert_eq!(grid_rect(req((600, 0, 100, 480)), (640, 480)), Some(r(600, 0, 40, 480)));
-        assert_eq!(grid_rect(req((0, 0, 0, 480)), (640, 480)), None);
-        let mut z = req((0, 0, 640, 480));
-        z.surface_size = (0, 0);
-        assert_eq!(grid_rect(z, (640, 480)), None);
-    }
 
     #[test]
     fn merged_draws_split_only_after_a_partly_masked_draw() {

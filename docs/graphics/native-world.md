@@ -215,8 +215,7 @@ painted over with bare world while the walls looked right. Drawing it would have
 
 ### Where the native pass goes, and depth
 
-The ask is recorded in order with the draws, like the occlusion depth
-grid (`d3d::Device::request_depth_grid`): the device issues it at the next
+The ask is recorded in order with the draws: the device issues it at the next
 drain of the push buffer, which is the first D3D entry inside the layer
 draw, so it lands after layer 1's draws and before layer 3's object
 draws. At that moment the device knows the bound colour surface, depth

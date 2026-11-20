@@ -435,11 +435,6 @@ pub(crate) fn register_late_for_profile(
     // sim, on its own host thread (docs/graphics/pipelined-render.md, "The
     // prototype"). Pipelined and serial runs are not lockstep-compatible.
     features.add(&i.pipeline).map_err(|e| anyhow::anyhow!("pipeline render: {e}"))?;
-    // Occlusion culling of objects (H2_FEATURES=impl.render.occlusion=on,
-    // off by default; docs/graphics/occlusion-culling.md).
-    features
-        .add(&hooks::occlusion::OcclusionCull)
-        .map_err(|e| anyhow::anyhow!("occlusion: {e}"))?;
     #[cfg(feature = "gpu")]
     if render_hooks == film::RenderHooks::Gpu {
         features

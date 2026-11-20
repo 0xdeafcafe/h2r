@@ -370,11 +370,6 @@ pub mod clear_flags {
 pub struct Stats {
     /// Changes of the bound colour/depth pair, including a switch away and back.
     pub target_changes: u64,
-    /// Occlusion depth grids recorded ([`Device::request_depth_grid`]).
-    pub depth_grids: u64,
-    /// Asks not recorded (another depth bound, not W-buffered, the
-    /// backend cannot).
-    pub depth_grids_skipped: u64,
     /// External passes recorded ([`Device::request_external_pass`]).
     pub external_passes: u64,
     /// External passes dropped (no colour or depth bound, the backend
@@ -740,23 +735,6 @@ struct VertexMemo {
     streams: Vec<StreamLayout>,
 }
 
-/// The W-buffer's parameters when a depth grid was asked for: the stored
-/// depth is `floor(view_depth · inv_w_far · z_scale) / z_max`, `z_max` the
-/// depth format's full scale (`z_scale` for `D24S8`), so the view depth of
-/// a raw grid value `d` is at most `(d · z_max + 1) / (inv_w_far · z_scale)`
-/// (docs/graphics/shaders.md, "W-buffering"; `0x3f6840` scales the
-/// viewport matrix by `+0x944 · +0x948`).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct DepthScale {
-    pub inv_w_far: f32,
-    pub z_scale: f32,
-}
-
-/// Where [`Device::request_depth_grid`]'s grids go, with the W-buffer's
-/// parameters at the time.
-pub type OcclusionSink =
-    std::sync::Arc<dyn Fn(crate::backend::DepthGridResult, DepthScale) + Send + Sync>;
-
 /// The guest call that owns a post transaction. Its return hook closes
 /// the transaction even if the call drew fewer primitives than planned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -940,13 +918,6 @@ impl ExternalRefusal {
 /// The refusals logged so far (a bit per [`ExternalRefusal::index`]).
 static EXTERNAL_REFUSALS_LOGGED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-struct GridAsk {
-    tag: u64,
-    width: u32,
-    height: u32,
-    sink: OcclusionSink,
-}
-
 /// One Direct3D device.
 pub struct Device<B: Backend> {
     cfg: DeviceConfig,
@@ -1043,9 +1014,6 @@ pub struct Device<B: Backend> {
     encode: Option<SimpleEncode>,
     /// NV2A register state the push buffer has set ([`crate::hw`]).
     hw: HwState,
-    /// An occlusion depth grid asked for ([`Device::request_depth_grid`]),
-    /// issued after the next drain.
-    pending_grid: Option<GridAsk>,
     /// The external passes asked for ([`Device::request_external_pass`])
     /// since the last drain, issued after the next one in the order asked.
     pending_external: Vec<Box<dyn crate::backend::ExternalPass>>,
@@ -1340,7 +1308,6 @@ impl<B: Backend> Device<B> {
             queued_external_stats: Default::default(),
             encode: None,
             hw: HwState::default(),
-            pending_grid: None,
             pending_external: Vec::new(),
             admissions: Vec::new(),
             opaque_world_admission: None,
@@ -2024,11 +1991,8 @@ impl<B: Backend> Device<B> {
             Ok(None) => {
                 // Everything queued before this entry has been recorded:
                 // the depth now is what the draws so far left.
-                if self.pending_grid.is_some() || !self.pending_external.is_empty() {
+                if !self.pending_external.is_empty() {
                     self.swallow_abort(SwallowRefusal::Dependency, || "an external job interrupted the post call".into())?;
-                }
-                if let Some(ask) = self.pending_grid.take() {
-                    self.issue_depth_grid(mem, ask);
                 }
                 for pass in std::mem::take(&mut self.pending_external) {
                     self.issue_external_pass(mem, pass);
@@ -2043,23 +2007,6 @@ impl<B: Backend> Device<B> {
                 Err(e)
             }
         }
-    }
-
-    /// Asks for the occlusion depth grid of the main depth buffer over the
-    /// current viewport (docs/graphics/occlusion-culling.md): recorded
-    /// after the next drain of the push buffer (the next D3D entry), so it
-    /// holds the draws queued before it. The grid reaches `sink` later with
-    /// the W-buffer parameters of that moment, without the guest waiting.
-    /// A newer ask replaces one not issued yet. Nothing is recorded when
-    /// the bound depth is not the device's own depth buffer, the depth is
-    /// not W-buffered, or the backend cannot.
-    pub fn request_depth_grid(&mut self, tag: u64, width: u32, height: u32, sink: OcclusionSink) {
-        self.pending_grid = Some(GridAsk {
-            tag,
-            width,
-            height,
-            sink,
-        });
     }
 
     /// The device side of Halo's `render_light_passes` tail
@@ -3032,49 +2979,6 @@ impl<B: Backend> Device<B> {
         }
     }
 
-    fn issue_depth_grid(&mut self, mem: &mut dyn GuestMemory, ask: GridAsk) {
-        let Some(scale) = self.depth_grid_scale(mem) else {
-            self.stats.depth_grids_skipped += 1;
-            return;
-        };
-        let (Some(depth), Some(p)) = (self.depth, self.params) else {
-            self.stats.depth_grids_skipped += 1;
-            return;
-        };
-        if self.depth_stencil == 0 || self.depth_stencil != self.depth_header {
-            self.stats.depth_grids_skipped += 1;
-            return;
-        }
-        let v = self.viewport;
-        let request = crate::backend::DepthGridRequest {
-            tag: ask.tag,
-            rect: (v.x, v.y, v.width, v.height),
-            surface_size: (p.width, p.height),
-            width: ask.width,
-            height: ask.height,
-        };
-        let sink = ask.sink;
-        let wrapped: crate::backend::DepthGridSink = std::sync::Arc::new(move |r| sink(r, scale));
-        match self.backend.request_depth_grid(depth, request, wrapped) {
-            Ok(true) => self.stats.depth_grids += 1,
-            _ => self.stats.depth_grids_skipped += 1,
-        }
-    }
-
-    /// The W-buffer's parameters now: `None` unless the depth is W-buffered
-    /// (`SET_CONTROL0` z-perspective) with a finite, positive scale.
-    fn depth_grid_scale(&self, mem: &dyn GuestMemory) -> Option<DepthScale> {
-        let w = self.hw.control0? & crate::hw::CONTROL0_Z_PERSPECTIVE != 0;
-        if !w {
-            return None;
-        }
-        let dev = mem.read_u32(self.cfg.layout.p_device).ok()?;
-        let inv_w_far = f32::from_bits(mem.read_u32(dev + field::INV_W_FAR).ok()?);
-        let z_scale = f32::from_bits(mem.read_u32(dev + field::Z_SCALE).ok()?);
-        (inv_w_far.is_finite() && inv_w_far > 0.0 && z_scale.is_finite() && z_scale > 0.0)
-            .then_some(DepthScale { inv_w_far, z_scale })
-    }
-
     /// Marks `cb` as being delivered: until [`Device::end_push_callback`],
     /// [`Device::drain_until_callback`] refuses to drain (the runtime glue
     /// calls these around the guest call).
@@ -3488,7 +3392,7 @@ impl<B: Backend> Device<B> {
             || self.swallowing.is_some()
             || self.active_callback.is_some() || self.undelivered.is_some()
             || !self.pending_destroys.is_empty() || !self.display.pending.is_empty()
-            || self.pending_grid.is_some() || !self.pending_external.is_empty()
+            || !self.pending_external.is_empty()
             || mem.read_u32(self.cfg.layout.device + field::PUT).ok() != Some(self.consumed)
         {
             return false;

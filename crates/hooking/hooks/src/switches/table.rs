@@ -42,7 +42,7 @@ pub struct Switch {
 
 /// The most rows the table may hold. Raise it only with a reason in the
 /// commit; lower it when a switch goes.
-pub const BUDGET: usize = 51;
+pub const BUDGET: usize = 50;
 
 use Initial::{Group, Off, On};
 
@@ -73,7 +73,6 @@ pub const TABLE: &[Switch] = &[
         "the native renderer owns the frame (review 4.3): delete with the D3D path"),
     sw("impl.render.pipelined_frame", Off, "render", "2026-11-18",
         "the pipelined COW worker in its current form is a dead end (review 5): delete"),
-    sw("impl.render.occlusion", Off, "render", "2026-11-14", "off a cycle: delete or turn on"),
     sw("impl.render.interpolate", Off, "render", "2026-11-14",
         "the presentation snapshot (sim-review lane 7) replaces it: delete"),
     sw("impl.render.reproject", Off, "render", "2026-11-18",

@@ -745,14 +745,6 @@ impl<B: Backend> Backend for DiagBackend<B> {
     fn can_sample_depth_surfaces(&self) -> bool {
         self.inner.can_sample_depth_surfaces()
     }
-    fn request_depth_grid(
-        &mut self,
-        surface: Self::Surface,
-        request: d3d::DepthGridRequest,
-        sink: d3d::DepthGridSink,
-    ) -> Result<bool, String> {
-        self.inner.request_depth_grid(surface, request, sink)
-    }
     #[cfg(feature = "gpu")]
     fn external_attachments(
         &mut self, surfaces: d3d::ExternalSurfaces<Self::Surface>, textures: [Option<&Self::Texture>; 4],
