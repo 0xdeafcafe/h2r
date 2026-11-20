@@ -849,7 +849,11 @@ impl Live {
         let host_due = self
             .host_sweep_due_ms()
             .map(|ms| ms.saturating_add(999).div_euclid(1000));
-        self.sweep_due().into_iter().chain(host_due).min()
+        self.sweep_due()
+            .into_iter()
+            .chain(host_due)
+            .chain(self.usage.flush_due())
+            .min()
     }
 
     pub async fn sweep_with_hosts(&self) {

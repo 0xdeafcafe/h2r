@@ -638,8 +638,12 @@ pub fn limit_read(live: &Live, ip: &str) -> Result<(), ApiError> {
 pub(crate) struct ClientIp(pub String);
 
 async fn count_api_request(State(live): Shared, req: Request, next: Next) -> Response {
-    live.count_api_request(req.uri().path()).await;
-    next.run(req).await
+    let api = req.uri().path().starts_with("/v1/");
+    let response = next.run(req).await;
+    if api {
+        live.count_api_request(response.status().as_u16()).await;
+    }
+    response
 }
 
 async fn guard_request(State(live): Shared, mut req: Request, next: Next) -> Response {

@@ -725,17 +725,19 @@ and a cached inventory of the private blob store.
   `stored.content` (`ContentStored`, for its uploader). Other events the
   server signs for itself (`GameFrame`, `RankChanged`, `ReportReviewed`,
   `PresenceExpired`, ...) count as events by type and nothing more.
-- *Metered* at the request: `requests` for HTTP requests to `/v1/*` that
-  reach the Live API service, including errors, preflight requests and
-  WebSocket upgrade requests. This is a service-wide count. On the Worker,
-  it counts calls to `LiveHub`, including internal API calls. Cloudflare
-  cache hits, static assets, health checks and WebSocket messages are
-  outside this count. Upload meters count `up.frames` (authenticated text
+- *Metered* at the request: `requests` for HTTP responses from `/v1/*`,
+  including errors, preflight requests and WebSocket upgrades. Rate-limited
+  responses (429) are excluded. This is a service-wide count. On the Worker,
+  it includes internal API calls to `LiveHub`. Cloudflare cache hits,
+  static assets, health checks and WebSocket messages are outside this count.
+  Upload meters count `up.frames` (authenticated text
   and packed frame messages received on `/v1/ingest`), `up.content`
   (content uploads, title files, map outlines) and `up.saves` (committed
   cloud save bodies). The native server batches metered increments for up
-  to a minute. The Worker's Durable Object writes them to SQLite in the
-  handler so the counts survive eviction between requests and messages.
+  to a minute. The Worker flushes to SQLite every five seconds while
+  counters are pending, or sooner when a batch reaches 256 increments.
+  The sweep alarm flushes batches left by a burst of traffic. A deploy
+  or abrupt reset can discard a batch before it is written.
   `h2 live store copy` copies the log and blobs. The metered history starts
   anew on the destination.
 - *Inventoried* for `stored.saves`: the actual account save blobs in the

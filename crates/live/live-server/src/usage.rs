@@ -14,12 +14,14 @@
 //! - **Metered** at the request ([`Live::meter`]): API requests, bytes
 //!   received for live frames, content uploads and cloud saves. The native
 //!   server batches deltas for up to [`FLUSH_EVERY_S`] seconds. The Durable
-//!   Object writes through to its store because its memory can be discarded.
+//!   Object flushes after `WORKER_FLUSH_EVERY_S` seconds or
+//!   `WORKER_PENDING_LIMIT` meter increments, whichever comes first. Its
+//!   sweep alarm flushes small bursts even if no more traffic arrives.
 //!   The first write of a new day also drops expired daily counters.
 //!
 //! The request counter measures work that reaches the API, including
-//! WebSocket upgrade requests. Static assets, edge-cache hits, and
-//! WebSocket messages do not enter that counter.
+//! WebSocket upgrade requests. Rate-limited requests, static assets,
+//! edge-cache hits, and WebSocket messages do not enter that counter.
 //!
 //! Stored save bytes come from an inventory of the private blob store
 //! (`Live::stored_save_bytes`). The other reads use the in-memory books.
@@ -42,6 +44,10 @@ use crate::store::{RecordedEvent, UsageRow};
 pub const KEEP_DAYS: i64 = 400;
 /// The native server's interval for batching metered counts.
 pub const FLUSH_EVERY_S: i64 = 60;
+/// The Durable Object's interval for flushing pending counters.
+const WORKER_FLUSH_EVERY_S: i64 = 5;
+/// Flush a busy Durable Object's batch early after this many meter calls.
+const WORKER_PENDING_LIMIT: usize = 256;
 /// The most days a read covers.
 pub const MAX_RANGE_DAYS: i64 = KEEP_DAYS;
 /// The most accounts a top-N read returns.
@@ -165,6 +171,7 @@ struct Derived {
 struct Metered {
     book: Book,
     pending: BTreeMap<(String, String, String), i64>,
+    increments: usize,
     last_flush: i64,
     last_day: String,
     prune_pending: bool,
@@ -174,7 +181,8 @@ struct Metered {
 pub struct Usage {
     derived: RwLock<Derived>,
     metered: Mutex<Metered>,
-    write_through: bool,
+    flush_every_s: i64,
+    pending_limit: usize,
     /// Today's first kept day, for replays of old events; from the clock.
     clock: Box<dyn Fn() -> i64 + Send + Sync>,
 }
@@ -186,10 +194,15 @@ impl Default for Usage {
 }
 
 impl Usage {
-    pub(crate) fn with_write_through(write_through: bool) -> Self {
+    pub(crate) fn worker() -> Self {
+        Self::worker_with_clock(Box::new(crate::app::now))
+    }
+
+    fn worker_with_clock(clock: Box<dyn Fn() -> i64 + Send + Sync>) -> Self {
         Self {
-            write_through,
-            ..Self::default()
+            flush_every_s: WORKER_FLUSH_EVERY_S,
+            pending_limit: WORKER_PENDING_LIMIT,
+            ..Self::with_clock(clock)
         }
     }
 
@@ -202,7 +215,8 @@ impl Usage {
                 last_day: day_of(now),
                 ..Default::default()
             }),
-            write_through: false,
+            flush_every_s: FLUSH_EVERY_S,
+            pending_limit: usize::MAX,
             clock,
         }
     }
@@ -236,6 +250,22 @@ impl Usage {
         *m.pending
             .entry((day, account, metric.to_string()))
             .or_default() += n;
+        m.increments = m.increments.saturating_add(1);
+    }
+
+    fn pending_due(&self, metered: &Metered) -> Option<i64> {
+        if metered.increments >= self.pending_limit {
+            Some(metered.last_flush)
+        } else if !metered.pending.is_empty() || metered.prune_pending {
+            Some(metered.last_flush + self.flush_every_s)
+        } else {
+            None
+        }
+    }
+
+    /// When an outstanding batch needs the sweep, even if traffic stops.
+    pub(crate) fn flush_due(&self) -> Option<i64> {
+        self.pending_due(&self.metered.lock().unwrap())
     }
 
     /// The rows to write now, if a write is due: a new day (which also cuts
@@ -247,13 +277,11 @@ impl Usage {
         let today = day_of(now);
         let mut m = self.metered.lock().unwrap();
         let new_day = today != m.last_day;
-        if !new_day
-            && ((m.pending.is_empty() && !m.prune_pending)
-                || (!self.write_through && now - m.last_flush < FLUSH_EVERY_S))
-        {
+        if !new_day && self.pending_due(&m).is_none_or(|at| now < at) {
             return None;
         }
         m.last_flush = now;
+        m.increments = 0;
         let prune = std::mem::take(&mut m.prune_pending) || new_day;
         let keep = if prune { keep_from(now) } else { String::new() };
         if new_day {
@@ -733,10 +761,10 @@ pub fn top(mut items: Vec<AccountUsage>, sort: &str, limit: usize) -> Option<Vec
 }
 
 impl Live {
-    /// Counts an HTTP request at the API boundary. Both the shared router
+    /// Counts an API response after rate limiting. Both the shared router
     /// and the Worker's direct WebSocket routes use the same counter.
-    pub async fn count_api_request(&self, path: &str) {
-        if path.starts_with("/v1/") {
+    pub async fn count_api_request(&self, status: u16) {
+        if status != StatusCode::TOO_MANY_REQUESTS.as_u16() {
             self.meter(None, metric::REQUESTS, 1).await;
         }
     }
@@ -1170,6 +1198,37 @@ mod tests {
         assert!(u.due().is_none(), "no second write of the same cutoff");
         assert_eq!(u.overview(1).days.len(), 0, "today has nothing");
         assert_eq!(u.overview(2).days[0].up["frames"], 150);
+    }
+
+    #[test]
+    fn worker_usage_flushes_at_its_idle_deadline_or_increment_cap() {
+        let t = Arc::new(AtomicI64::new(NOON));
+        let u = Usage::worker_with_clock(clock(&t));
+        assert_eq!(u.flush_due(), None);
+
+        u.meter(None, metric::REQUESTS, 1);
+        assert_eq!(u.flush_due(), Some(NOON + WORKER_FLUSH_EVERY_S));
+        t.fetch_add(WORKER_FLUSH_EVERY_S - 1, Ordering::SeqCst);
+        assert!(u.due().is_none());
+        t.fetch_add(1, Ordering::SeqCst);
+        let (rows, keep) = u.due().expect("the idle alarm flushes the batch");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].n, 1);
+        assert_eq!(u.flush_due(), None);
+
+        u.unflushed(rows, &keep);
+        assert_eq!(u.flush_due(), Some(NOON + 2 * WORKER_FLUSH_EVERY_S));
+        assert!(u.due().is_none(), "a failed write waits for the next batch");
+        for _ in 1..WORKER_PENDING_LIMIT {
+            u.meter(None, metric::REQUESTS, 1);
+        }
+        assert!(u.due().is_none());
+        u.meter(None, metric::REQUESTS, 1);
+        let (rows, keep) = u.due().expect("a full batch flushes immediately");
+        assert!(keep.is_empty());
+        assert_eq!(rows.len(), 1, "increments to the same row are combined");
+        assert_eq!(rows[0].n, WORKER_PENDING_LIMIT as i64 + 1);
+        assert_eq!(u.flush_due(), None);
     }
 
     #[test]

@@ -359,8 +359,8 @@ impl LiveHub {
     }
 
     /// After anything that may have changed what is due: sets the alarm
-    /// for the next sweep or socket check (or removes it), and runs the
-    /// packed tick while a game is live. Nothing else in the hub runs on
+    /// for the next sweep or socket check, and runs the packed tick while
+    /// a game is live. Usage flushes in the sweep. Nothing else runs on
     /// a timer, so with no alarm due and no game live it can hibernate.
     async fn schedule(&self, live: &Arc<Live>) -> Result<()> {
         if live.packed_active() && !self.ticking.replace(true) {
@@ -474,22 +474,25 @@ impl DurableObject for LiveHub {
         let relay = crate::relayroom::session_of(path);
         let tunnel = hostroom::tunnel_lease(path);
         if path == "/v1/stream" || path == "/v1/ingest" || relay.is_some() || tunnel.is_some() {
-            live.count_api_request(path).await;
             if matches!(*req.method(), http::Method::GET | http::Method::HEAD) {
                 let ip = live_server::http::client_ip_key(&live, None, req.headers());
                 if let Err(e) = live_server::http::limit_read(&live, &ip) {
+                    self.schedule(&live).await?;
                     return Response::try_from(axum::response::IntoResponse::into_response(e));
                 }
             }
-            if let Some(id) = tunnel {
+            let resp = if let Some(id) = tunnel {
                 let id = id.to_owned();
-                return hostroom::upgrade(&live, &self.env, req, &id).await;
-            }
-            if let Some(session) = relay {
+                hostroom::upgrade(&live, &self.env, req, &id).await
+            } else if let Some(session) = relay {
                 let session = session.to_owned();
-                return crate::relay::upgrade(&live, &self.env, req, &session).await;
+                crate::relay::upgrade(&live, &self.env, req, &session).await
+            } else {
+                self.socket(live.clone(), &req).await
+            };
+            if let Ok(response) = &resp {
+                live.count_api_request(response.status_code()).await;
             }
-            let resp = self.socket(live.clone(), &req).await;
             self.schedule(&live).await?;
             return resp;
         }

@@ -97,6 +97,32 @@ async fn counts_api_requests_including_errors_and_preflight() {
 }
 
 #[tokio::test]
+async fn api_usage_excludes_rate_limited_reads_and_writes() {
+    let h = start(
+        Arc::new(MemoryStore::new()),
+        Policy {
+            read_rate: (0.0, 1),
+            create_rate: (0.0, 1),
+            ..Policy::default()
+        },
+    )
+    .await;
+    assert_eq!(h.get("/v1/snapshot").await.status, StatusCode::OK);
+    assert_eq!(
+        h.get("/v1/snapshot").await.status,
+        StatusCode::TOO_MANY_REQUESTS,
+    );
+    h.create("Player").await;
+    assert_eq!(
+        h.call(Method::POST, "/v1/accounts", &[], "rejected")
+            .await
+            .status,
+        StatusCode::TOO_MANY_REQUESTS,
+    );
+    assert_eq!(h.live.usage().overview(2).totals.requests, Some(2));
+}
+
+#[tokio::test]
 async fn the_log_and_the_ingest_socket_both_count() {
     let h = server().await;
     let boss = h.create("Boss").await;

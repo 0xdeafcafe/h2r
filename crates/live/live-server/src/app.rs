@@ -549,7 +549,10 @@ impl Live {
         dispatcher.subscribe(mutes.clone());
         let stats = Arc::new(crate::stats::Stats::with_model(model.clone()));
         dispatcher.subscribe(stats.clone());
-        let usage = Arc::new(crate::usage::Usage::with_write_through(timers == Timers::Driven));
+        let usage = Arc::new(match timers {
+            Timers::Spawned => crate::usage::Usage::default(),
+            Timers::Driven => crate::usage::Usage::worker(),
+        });
         usage.load(&store.usage().await?);
         dispatcher.subscribe(usage.clone());
         let hosts =

@@ -330,7 +330,7 @@ packed decoder.
 
 ## Timers and hibernation
 
-A Durable Object with a timer pending does not hibernate. On a machine
+In-memory timers keep a Durable Object awake. On a machine
 the server spawns loops: the dispatcher's poll, the sweep every 5 s and the
 100 ms packed tick. The hub starts the server with `Timers::Driven`
 instead, which spawns none of them:
@@ -338,12 +338,18 @@ instead, which spawns none of them:
   writer, and its wake sees every append.
 - After every request, socket message and alarm, the hub sets its one
   alarm (`LiveHub::schedule`) for the earliest of:
-  - `Live::sweep_due`: the next presence to expire, game to end as lost,
-    or co-op session to expire;
+  - `Live::sweep_due_with_hosts`: the next presence, game, session, film,
+    dedicated host or usage deadline;
   - each stream or ingest socket's auth deadline or token end.
 
   With nothing due there is no alarm. The alarm runs the sweep and the
   sockets' checks, then sets the next one.
+- Metered [usage](live-api.md#usage) accumulates in memory and flushes to
+  SQLite after five seconds or 256 meter increments, whichever comes first.
+  Requests and ingest messages both arm the sweep while a batch is pending.
+  The flush deadline is shorter than Cloudflare's usual ten-second idle
+  period before hibernation. A deploy or abrupt reset can discard a pending
+  batch. [Durable Object lifecycle](https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/)
 - The packed tick runs only while a game is live (`Live::packed_active`),
   and stops by itself when none is.
 

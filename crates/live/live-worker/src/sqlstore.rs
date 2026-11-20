@@ -691,6 +691,8 @@ mod tests {
 
     #[tokio::test]
     async fn worker_usage_survives_hub_restart() {
+        use std::time::Duration;
+
         use axum::{body::Body, http::Request};
         use http_body_util::BodyExt;
         use live_proto::sign::{AccountRequest, KeyPair, issue_token};
@@ -728,6 +730,14 @@ mod tests {
         };
 
         let live = start().await;
+        // Exercise the direct upgrade's response counter immediately after
+        // startup. A lone upgrade arms the sweep without writing per request.
+        live.count_api_request(101).await;
+        live.count_api_request(429).await;
+        assert_eq!(live.usage().pending(), 1);
+        assert!(live.sweep_due_with_hosts().is_some());
+        assert!(live.store().usage().await.unwrap().is_empty());
+
         let key = KeyPair::generate();
         let req = Request::post("/v1/accounts")
             .body(Body::from(AccountRequest::sign(
@@ -754,9 +764,7 @@ mod tests {
             .await
             .unwrap();
 
-        // The hub's direct upgrade path counts the request before accepting
-        // the socket. Frame traffic uses the same ingest session as the hub.
-        live.count_api_request("/v1/ingest").await;
+        // Frame traffic uses the same ingest session as the hub.
         let mut ingest = IngestSession::new(live.clone());
         let auth = serde_json::to_string(&ClientMessage::Auth {
             token: issue_token(
@@ -772,10 +780,17 @@ mod tests {
         // Malformed frame data still traverses the authenticated socket.
         ingest.on_binary(&[0u8; 40]).await;
         drop(ingest);
+        if live.usage().pending() != 0 {
+            let deadline = live
+                .sweep_due_with_hosts()
+                .expect("a small usage batch schedules an alarm");
+            tokio::time::sleep(Duration::from_secs((deadline - now()).max(0) as u64)).await;
+        }
+        live.sweep_with_hosts().await;
+        assert_eq!(live.usage().pending(), 0);
         drop(live);
 
-        // No sweep or goal deadline runs between an isolated request and
-        // eviction. These counters must already be in SQLite.
+        // The idle alarm has written the request and frame batch to SQLite.
         let live = start().await;
         let usage = live.usage().overview(2);
         assert_eq!(usage.totals.requests, Some(2));
@@ -802,7 +817,7 @@ mod tests {
                 assert_eq!(items[0]["stored"]["saves"], 9);
             } else {
                 assert_eq!(usage["stored"]["saves"], 9);
-                assert_eq!(usage["totals"]["requests"], 3);
+                assert_eq!(usage["totals"]["requests"], 2);
             }
         }
         let _ = std::fs::remove_dir_all(dir);

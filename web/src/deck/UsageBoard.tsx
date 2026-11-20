@@ -34,7 +34,7 @@ export default function UsageBoard(props: {
           table={v().requests.days.length ? () => <SeriesTable days={v().requests.days} series={[v().requests.daily]} format={(n) => n.toLocaleString("en-US")} label="Counted Live API requests per UTC day" /> : undefined}>
           <Show when={v().requests.total !== null} fallback={<p class="dk-empty">No request measurements for this date range.</p>}>
             <Show when={v().requests.measuredFrom}>{(day) => <p class="dk-note">Request records begin {day()} (UTC, within retained history).</p>}</Show>
-            <p class="dk-note">Counts requests that reach the Live API, including failed requests and WebSocket upgrades. Cloudflare’s edge totals also cover traffic such as cached responses and static files.</p>
+            <p class="dk-note">Counts Live API requests admitted by the rate limiter, including WebSocket upgrades. Cloudflare’s edge totals also cover traffic such as cached responses and static files.</p>
           </Show>
         </Panel>
       </Show>

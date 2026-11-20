@@ -160,7 +160,7 @@ async fn matchmaking_exposes_first_host_sweep_deadline_in_the_forming_response()
         candidates(ticket(&h, player, port, false, samples).await);
     }
 
-    assert_eq!(h.live.sweep_due_with_hosts(), None);
+    assert_eq!(h.live.host_sweep_due_ms(), None);
     let forming = ticket(&h, &players[3], ports[3], false, last_report);
     tokio::pin!(forming);
     tokio::select! {
@@ -180,10 +180,10 @@ async fn matchmaking_exposes_first_host_sweep_deadline_in_the_forming_response()
     let due = h.live.host_sweep_due_ms().expect("first host sweep deadline");
     assert!(due > host.lease.created_ms);
     assert!(due <= host.lease.created_ms + 60_000);
-    assert_eq!(
-        h.live.sweep_due_with_hosts(),
-        Some((due + 999).div_euclid(1000))
-    );
+    assert!(h
+        .live
+        .sweep_due_with_hosts()
+        .is_some_and(|at| at <= (due + 999).div_euclid(1000)));
 }
 
 #[tokio::test]
