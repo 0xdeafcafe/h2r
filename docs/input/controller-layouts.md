@@ -128,8 +128,7 @@ is "drawn". The list rows are not in the tag. Code fills them:
 Every change is at a function entry, because the game is statically
 recompiled: `rt.edit_dispatch(|d| d.register_override(addr, name, closure))`
 replaces a function at its entry, `rt.resolve_original(addr)` runs the
-generated original, and the shadow-page pattern in `crates/boot/src/wrappers.rs`
-and `d3d_glue.rs` runs the original and then continues in Rust through
+generated original, and the shadow-page pattern in `d3d_glue.rs` runs the original and then continues in Rust through
 `ctx.call_guest`. There is no way to patch inside a function, so a site that
 is a switch inside a big function needs the whole function wrapped.
 

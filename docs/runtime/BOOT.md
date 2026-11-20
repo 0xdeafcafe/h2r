@@ -49,8 +49,6 @@ copies. Nothing is ever written next to it.
 | `H2_NATIVE_LISTS_COMPARE=1` | compare the Rust scene list builders with the original guest output and log the first mismatch at each seam. See [native-renderer.md](../graphics/native-renderer.md#scene-list-builders). |
 | `H2_NATIVE_VERBOSE=1` | show the native renderer's per-definition and per-material load lines and comparison dumps. With verbose logging off, a stage that finds no work logs when it stands down for the map. See [native-renderer.md](../graphics/native-renderer.md). |
 | `H2_BOOT_MAPS=1` | dump the guest memory map in the report |
-| `H2_BOOT_OLD_GLUE=1` | re-enable the boot glue master now covers (the wrappers for alertable/root -3, EEPROM, mutants, MEM_TOP_DOWN, allocation, full attributes and MEM_RELEASE; the 0x55810 voice-off) |
-| `H2_BOOT_VOICE=1` | with `H2_BOOT_OLD_GLUE`, keep voice on (skip the 0x55810 override) |
 | `H2_BOOT_GFX=<dir>` | run D3D on a headless `GfxBackend` with the nv2a shaders and write presented frames to `<dir>/frame-NNNNN.png` |
 | `H2_BOOT_UPLOAD_ALWAYS` | Any value, even `0`, counts as set. D3D re-reads every resource on every use, instead of trusting the write barrier (`UploadPolicy::Tracked`) |
 | `H2_BOOT_GFX_EVERY=N` | with `H2_BOOT_GFX`, keep the first frame and every Nth (default 30); `never` renders on the GPU but writes no PNGs |
@@ -167,12 +165,9 @@ fed on the guest's clock, the callback count, a monotonic clock and
     code gets) and `sse.rs`.
   - Control goes back to generated code at the next registered entry or
     resume, call or return.
-- **`stopgaps.rs`, `wrappers.rs`**: boot-only kernel behaviour, each a
-  named blocker below.
-  - A stopgap replaces a kernel export the kernel stops on. It is only
-    installed if the ordinal is in `Kernel::stopped_ordinals()`.
-  - A wrapper parks the kernel's handler on a shadow page (`0xa0ff1000`),
-    fixes up the arguments, then jumps to it.
+- **`stopgaps.rs`**: boot-only kernel behaviour, each a named blocker
+  below. A stopgap replaces a kernel export the kernel stops on. It is
+  only installed if the ordinal is in `Kernel::stopped_ordinals()`.
 - **`trace.rs`**: wraps every kernel import token to record the TSV.
 - **`d3d_glue.rs`**: `d3d::register` on a headless `RecordingBackend`
   (or `GfxBackend` with `H2_BOOT_GFX`), with `UploadPolicy::Tracked`.
@@ -188,8 +183,6 @@ fed on the guest's clock, the callback count, a monotonic clock and
   - `xapi::service_input` runs between scheduler slices.
   - With `--no-xapi`, the boot keeps its own XMountUtilityDrive override
     (`0x2d5b77`, which writes `xapi::register::addr::CACHE_ROW`).
-- **`game_glue.rs`**: boot-only overrides of Halo functions (only the
-  retired voice-off, under `H2_BOOT_OLD_GLUE`).
 - **`d3d_diag.rs`**: a backend wrapper; the report gains draw outcomes by
   target, the texture formats drawn and device events by reason, and
   `H2_BOOT_DRAWLOG` logs whole frames. `H2_SWEEP_DIAG=<file>`
@@ -424,7 +417,8 @@ because `Kernel::stopped_ordinals()` is empty for every entry.
   - MmSetAddressProtect (182);
   - XcSHAInit, XcSHAUpdate and XcSHAFinal (335-337);
   - MmPersistContiguousMemory and NtOpenSymbolicLinkObject.
-- Also retired by kernel round 3, now behind `H2_BOOT_OLD_GLUE`:
+- Also retired by kernel round 3 (the code, kept for a while behind
+  `H2_BOOT_OLD_GLUE`, was deleted in the 2026-11-20 flag cleanup):
   - the mutant semaphores (192/221);
   - the root -3 and FILE_SYNCHRONOUS_IO_ALERT rewrite;
   - EEPROM XC_MAX_ALL;
@@ -436,8 +430,8 @@ because `Kernel::stopped_ordinals()` is empty for every entry.
 - XAPI round 2: the N: interim override and `0x2d5d0a`
   (VfsStorage + `CACHE_ROW`; N: mounts as Partition4).
 - DSound round 2: the `0x55810` voice-off. XHV now passes `0x33337d`.
-  The override is kept behind `H2_BOOT_OLD_GLUE`; the proof that it is
-  safe is in game_glue.rs.
+  The override (`game_glue.rs`) was deleted with the rest of the retired
+  glue in the 2026-11-20 flag cleanup.
 - Before these rounds: the class-34 wrapper, XeLoad/UnloadSection, the
   boot XMountUtilityDrive (back with `--no-xapi`), and the deletion of the
   pre-created T:/U:/Z: links.

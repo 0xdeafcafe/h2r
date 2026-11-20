@@ -229,7 +229,7 @@ of an unrelated function.
 | xapi | game allocator called from Rust (`GAME_ALLOCATE`) | 1 | `register.rs:445` | none |
 | bink-hle | Bink API hooks | 11 | `crates/bink-hle/src/addr.rs` | none (third-party, no XDK database) |
 | bink-hle | game movie-wrapper functions, plus the `WRAPPER_STATE` global and its offsets | 15 + 1 | `addr.rs`, installed by `lib.rs:65-118` | none |
-| boot | `VOICE_INIT` stopgap, `X_MOUNT_UTILITY_DRIVE` (`--no-xapi`), `CREATE_DEVICE` (duplicates d3d) | 3 | `crates/boot/src/game_glue.rs:28`, `xapi_glue.rs:248`, `d3d_glue.rs:311` | none |
+| boot | `X_MOUNT_UTILITY_DRIVE` (`--no-xapi`), `CREATE_DEVICE` (duplicates d3d) | 2 | `xapi_glue.rs:248`, `d3d_glue.rs:311` | none |
 | runtime | `HALO2_PHYSICAL_ARENA`, applied to every image | 1 range | `crates/runtime/src/loader.rs:24`, used by `boot/src/lib.rs:353` | none. It was read off the 1.0 startup code |
 
 Runtime total: about 250 hook addresses, about 30 data globals, and about 80
@@ -323,7 +323,7 @@ with iced-x86, table contents.
 - **Kernel**: imports go by ordinal. The thunk table is decoded from the
   header (`kernel/src/image.rs:127`), the title ID comes from the certificate
   (`kernel/src/lib.rs:381-396`), and so does XAPI's cache-row title ID
-  (`xapi/src/cache.rs:165`). `boot/src/stopgaps.rs` and `wrappers.rs` are
+  (`xapi/src/cache.rs:165`). `boot/src/stopgaps.rs` is
   keyed by ordinal, and sections come from the header.
 - **XDK identification** (`crates/symbols`, `docs/lifter/xdk-libraries.md`): it reads
   the library build from the XBE's library table and matches in waves, so it

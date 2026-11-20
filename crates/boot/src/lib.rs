@@ -37,7 +37,6 @@ pub mod dsound_glue;
 pub mod effect_census;
 pub mod fallback;
 pub mod fov_row;
-pub mod game_glue;
 pub mod game_setup_help;
 mod h1_recordings;
 mod h1_conversation;
@@ -184,7 +183,6 @@ pub mod video_screen;
 #[cfg(feature = "local-io")]
 pub mod voice_glue;
 pub mod voice_settings;
-pub mod wrappers;
 pub mod x87;
 pub mod xapi_glue;
 
@@ -1140,7 +1138,7 @@ fn run_configured(
         log::note(&format!("page {:#x} widened to {:?}", n.page, n.effective));
     }
     let t = Instant::now();
-    // Shadow pages: trace 0xa0ff0000, wrappers 0xa0ff1000, d3d 0xa0ff2000,
+    // Shadow pages: trace 0xa0ff0000, d3d 0xa0ff2000,
     // barrier 0xa0ff4000, live notice 0xa0ff6000. Hooks placed by the
     // feature plan (telemetry, lockstep, the level-loaded mark, our strings)
     // take theirs from the feature arena (`feature::arena`).
@@ -1378,31 +1376,13 @@ fn run_configured(
     let uses = opts
         .stopgaps
         .then(|| stopgaps::install(&k, &loaded.runtime));
-    if let Some(u) = &uses {
-        // Retired with the kernel round: the class-34 wrapper
-        // (wrappers::install), XeLoad/UnloadSection (install_sections) and
-        // the FILE_SYNCHRONOUS_IO_ALERT rewrite. H2_BOOT_OLD_GLUE=1 brings
-        // them back.
-        wrappers::map_shadow(&loaded.runtime)?;
-        if std::env::var_os("H2_BOOT_OLD_GLUE").is_some() {
-            wrappers::install(&loaded.runtime, u)?;
-            stopgaps::install_sections(&loaded.runtime, xbe_bytes.to_vec(), u);
-        }
-        if !opts.xapi {
-            xapi_glue::install_no_xapi_mount(&loaded.runtime, &k, 5, u);
-        }
-        // Retired with kernel round 3, XAPI round 2 and DSound round 2
-        // (docs/runtime/BOOT.md "Retired"); H2_BOOT_OLD_GLUE=1 brings them back.
-        if std::env::var_os("H2_BOOT_OLD_GLUE").is_some() {
-            game_glue::install(&loaded.runtime, u);
-            wrappers::install_alertable(&loaded.runtime, u);
-            wrappers::install_eeprom_all(&loaded.runtime, u);
-            wrappers::install_mutants(&loaded.runtime, u);
-            wrappers::install_top_down(&loaded.runtime, u);
-            wrappers::install_free_virtual(&loaded.runtime, u);
-            wrappers::install_set_allocation(&loaded.runtime, u);
-            wrappers::install_full_attributes(&loaded.runtime, u);
-        }
+    // The kernel, XAPI and DSound rounds retired the boot's wrappers and
+    // game overrides (docs/runtime/BOOT.md "Retired"); only the
+    // XMountUtilityDrive override stays, for --no-xapi.
+    if let Some(u) = &uses
+        && !opts.xapi
+    {
+        xapi_glue::install_no_xapi_mount(&loaded.runtime, &k, 5, u);
     }
     // Community variants and the dedicated-host matchmaking status text.
     community_variants::install_with_live(&loaded.runtime, _live.clone())

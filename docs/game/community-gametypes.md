@@ -196,7 +196,7 @@ Dreadnaut, the CTF, Assault and Territories set
 ## What the code does
 
 All three hooks are wrappers at function entries
-(`register_override`/`resolve_original`, as in `wrappers.rs`).
+(`register_override`/`resolve_original`, as in `d3d_glue.rs`).
 
 1. **The list.** `0x149f88` is wrapped. Before the original runs, the
    wrapper reads the `sily` definitions the `goof` pages name and keeps each
