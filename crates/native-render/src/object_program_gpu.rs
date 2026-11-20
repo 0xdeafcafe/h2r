@@ -139,23 +139,6 @@ fn texture_group(
     device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("native object program textures"), layout, entries: &entries })
 }
 
-/// One lit part's draw as [`LitObjects::draws`] issues it
-/// ([`LitObjects::part_uniforms`]).
-#[derive(Clone, Debug)]
-pub struct PartUniforms {
-    pub implementation: usize,
-    pub words: Vec<u32>,
-    pub vertex: VertexUniforms,
-    pub pixel: PixelUniforms,
-    pub options: shaders::vsh::VertexOptions,
-    pub def: shaders::psh::PixelShaderDef,
-    pub pixel_options: shaders::psh::PixelOptions,
-    pub samplers: [Option<gfx::translate::SamplerKey>; 4],
-    pub textures: [Option<String>; 4],
-    pub primitive: wgpu::PrimitiveState,
-    pub depth: (bool, wgpu::CompareFunction),
-}
-
 /// The texture accumulation level an encode binds: its view and its size
 /// in guest texels (the coordinates the programs give are texels of it).
 #[derive(Clone, Copy)]
@@ -438,62 +421,6 @@ impl LitObjects {
             texaccum_scale(&mut pixel, pass.texaccum, t.guest_size);
         }
         Some((vertex, pixel))
-    }
-
-    /// One line on how `d` (of model `index`) draws (diagnostics: the
-    /// objects' probe).
-    pub fn describe(&self, index: u32, d: &PlannedDraw) -> String {
-        let section = self.models.get(&index).and_then(|m| m.parts.get(d.part)).map(|p| (p.section, p.part, p.shader_tag));
-        format!(
-            "part {} (section, part, shader) {section:x?} implementation {} indices {:?}: depth {:?} write {} cull {:?} front {:?} writes {:?} alpha test {:?} clamp {}{}",
-            d.part,
-            d.implementation,
-            d.indices,
-            d.state.depth_compare,
-            d.state.depth_write,
-            d.state.primitive.cull_mode,
-            d.state.primitive.front_face,
-            d.state.color_writes,
-            d.state.alpha_test,
-            d.state.w_clamp,
-            if d.texaccum { "; samples the texture accumulation level" } else { "" },
-        )
-    }
-
-    /// What `d` (of model `index`) is issued with in `view` (as
-    /// [`Self::draws`] puts it in), to compare with the D3D path's draw
-    /// of it (`d3d::uniform_compare`).
-    pub fn part_uniforms(&self, index: u32, d: &PlannedDraw, view: &ViewInputs, texaccum: Option<Texaccum<'_>>) -> Result<PartUniforms, String> {
-        let m = self.models.get(&index).ok_or("no lit model")?;
-        let pass = &m.programs.get(d.program).ok_or("no program")?.pass;
-        let (vertex, mut pixel) = self.issued(index, d, view, texaccum).ok_or("it samples the texture accumulation level and there is none")?;
-        let textures = std::array::from_fn(|n| {
-            if pass.texaccum[n] {
-                Some(format!("the texture accumulation level ({:?} guest texels)", texaccum.map(|t| t.guest_size)))
-            } else if pass.normalization[n] {
-                Some("the normalization cube".to_string())
-            } else {
-                match pass.program.stages[n] {
-                    Stage::Empty => None,
-                    s => Some(format!("{s:?}")),
-                }
-            }
-        });
-        let def = pass.program.def.with_default_final_combiner(pixel.fog[0] != 0.0, pixel.fog[3] != 0.0);
-        pixel.fog[3] = 0.0;
-        Ok(PartUniforms {
-            implementation: d.implementation,
-            words: pass.words.clone(),
-            vertex,
-            pixel,
-            options: pass.options,
-            def,
-            pixel_options: pass.program.pixel_options,
-            samplers: std::array::from_fn(|n| pass.program.dims[n].and(pass.program.samplers[n].as_ref()).and_then(crate::program::sampler_key)),
-            textures,
-            primitive: d.state.primitive,
-            depth: (d.state.depth_write, d.state.depth_compare),
-        })
     }
 
     /// The sections model `index`'s lit parts come from, each once

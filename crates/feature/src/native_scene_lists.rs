@@ -1,5 +1,7 @@
-//! Retail scene list production. A builder reads under the guest-memory
-//! guard and proposes all its writes before any output becomes visible.
+//! Retail scene list production, on with the native renderer
+//! (`impl.render.native`, on by default). A builder reads under the
+//! guest-memory guard and proposes all its writes before any output
+//! becomes visible.
 mod geometry;
 mod lights;
 mod objects;
@@ -7,9 +9,7 @@ mod records;
 mod setup;
 mod transparents;
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
 
 use engine::memory::{GuestMemory, MemFault};
 use engine::points::{self, Point};
@@ -20,7 +20,6 @@ use timeline::native::{SceneList, SceneListResult};
 use crate::{BuildError, Builder, Feature, Flow, Manifest, Switches};
 
 const ID: &str = "native-scene-lists";
-const SWITCH: &str = "impl.render.native_scene_lists";
 const NONE: u32 = u32::MAX;
 const TAGS: u32 = engine::tags::TAG_ENTRIES_GLOBAL;
 const FRAME: u32 = 0x004b_a034;
@@ -29,13 +28,7 @@ const OBJECTS: u32 = engine::render_loop::occlusion::guest::OBJECTS;
 pub struct NativeSceneLists;
 
 fn enabled(switches: &Switches) -> bool {
-    crate::switches::native_render_default(switches)
-        && crate::switches::native_stage_on(switches, SWITCH)
-}
-
-fn compare_on() -> bool {
-    static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var("H2_NATIVE_LISTS_COMPARE").as_deref() == Ok("1"))
+    crate::switches::native_render_on(switches)
 }
 
 impl Feature for NativeSceneLists {
@@ -253,7 +246,6 @@ impl Bytes {
 #[derive(Default)]
 struct Output {
     writes: Vec<Write>,
-    compare_checks: Vec<Write>,
     eax: Option<u32>,
     ecx: Option<u32>,
     edx: Option<u32>,
@@ -284,14 +276,6 @@ impl Output {
         }
     }
 
-    fn compare_range(&mut self, m: &dyn GuestMemory, addr: u32, size: usize) -> Result<()> {
-        self.compare_checks.push(Write {
-            addr,
-            bytes: Bytes::Array(m.bytes(addr, size)?),
-        });
-        Ok(())
-    }
-
     fn check_write(&self, mem: &Guest) -> Result<()> {
         for Write { addr, bytes } in &self.writes {
             mem.check(*addr, bytes.slice().len(), Access::Write, 1)
@@ -306,44 +290,6 @@ impl Output {
         }
         Ok(())
     }
-
-    fn mismatch(&self, m: &dyn GuestMemory, cpu: &CpuAbi) -> Option<String> {
-        for Write { addr, bytes } in self.compare_checks.iter().chain(&self.writes) {
-            let expected = bytes.slice();
-            let Ok(actual) = m.bytes(*addr, expected.len()) else {
-                return Some(format!("could not read output at {addr:#010x}"));
-            };
-            if let Some(i) = actual.iter().zip(expected).position(|(a, b)| a != b) {
-                return Some(format!(
-                    "at {:#010x} Rust {:02x}, guest {:02x}",
-                    *addr as usize + i,
-                    expected[i],
-                    actual[i],
-                ));
-            }
-        }
-        if let Some(expected) = self.eax
-            && expected != cpu.eax
-        {
-            return Some(format!(
-                "return value Rust {expected:#x}, guest {:#x}",
-                cpu.eax
-            ));
-        }
-        for (reg, actual, expected) in [("ecx", cpu.ecx, self.ecx), ("edx", cpu.edx, self.edx)] {
-            if let Some(expected) = expected
-                && actual != expected
-            {
-                return Some(format!("{reg} Rust {expected:#x}, guest {actual:#x}"));
-            }
-        }
-        if let Some(expected) = self.al
-            && expected != cpu.eax as u8
-        {
-            return Some(format!("AL Rust {expected:#x}, guest {:#x}", cpu.eax as u8));
-        }
-        None
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -354,14 +300,7 @@ enum Seam {
 }
 
 /// The stage can depend on the view kind, which is read by the builder.
-struct Built(SceneList, Output);
 type Build = fn(&dyn GuestMemory, &CpuAbi) -> (SceneList, Result<Output>);
-
-#[derive(Default)]
-struct Compare {
-    pending: Mutex<HashMap<(usize, u32, u32), Built>>,
-    reported: AtomicBool,
-}
 
 fn install(b: &mut Builder, seam: Seam, build: Build) {
     let point = match seam {
@@ -369,35 +308,6 @@ fn install(b: &mut Builder, seam: Seam, build: Build) {
             point
         }
     };
-    let comparison = compare_on().then(|| Arc::new(Compare::default()));
-    if let Some(compare) = comparison.clone() {
-        let finish = move |o: &crate::Obs| {
-            let key = (Arc::as_ptr(o.runtime) as usize, o.thread_id, o.cpu.esp);
-            let Some(Built(stage, output)) = compare.pending.lock().unwrap().remove(&key) else {
-                return;
-            };
-            if let Some(detail) = output.mismatch(&*o.guest(), o.cpu) {
-                stage.count(SceneListResult::Mismatch);
-                if !compare.reported.swap(true, Ordering::Relaxed) {
-                    eprintln!("native-scene-lists: {} first mismatch {detail}", point.name);
-                }
-            } else {
-                stage.count(SceneListResult::Compared);
-            }
-        };
-        match seam {
-            Seam::Function(target, _) | Seam::CallSite(_, _, target, _) => {
-                b.raw()
-                    .observe_after(target, "compare scene list", finish)
-                    .optional();
-            }
-            Seam::Sites(_, ready, _) => {
-                b.raw()
-                    .observe_before(ready, "compare scene list", finish)
-                    .optional();
-            }
-        }
-    }
     b.raw()
         .before(point, "build scene list", move |c| {
             if c.addr != point.base {
@@ -436,21 +346,6 @@ fn install(b: &mut Builder, seam: Seam, build: Build) {
                     return Ok(Flow::Continue);
                 }
             };
-            if let Some(compare) = &comparison {
-                let esp = match seam {
-                    Seam::Function(_, pop) => c.cpu.esp.wrapping_add(4 + pop),
-                    Seam::Sites(_, _, _) | Seam::CallSite(_, _, _, _) => {
-                        c.cpu.esp.wrapping_add(output.pop)
-                    }
-                };
-                let key = (Arc::as_ptr(&runtime) as usize, c.ctx.thread_id, esp);
-                compare
-                    .pending
-                    .lock()
-                    .unwrap()
-                    .insert(key, Built(stage, output));
-                return Ok(Flow::Continue);
-            }
             // Write preflight and publication share the same memory guard.
             // Read the return address before making any guest writes.
             let transfer = match seam {
@@ -492,16 +387,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_scene_lists_switch() {
-        for (spec, expected) in [
-            ("", true),
-            ("impl.render.native_scene_lists=on", true),
-            ("impl.render.native_scene_lists=off", false),
-            (
-                "impl.render.native=off,impl.render.native_scene_lists=on",
-                false,
-            ),
-        ] {
+    fn native_scene_lists_follow_the_master_switch() {
+        for (spec, expected) in [("", true), ("impl.render.native=off", false), ("impl.render=off", true)] {
             assert_eq!(enabled(&Switches::parse(spec).unwrap()), expected);
         }
     }

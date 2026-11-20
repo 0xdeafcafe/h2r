@@ -209,38 +209,6 @@ impl PassStencil {
     }
 }
 
-/// Which sections' parts a pass draws ([`GpuWorld::set_owners`]).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Owners {
-    #[default]
-    All,
-    /// Clusters only: placements left to the D3D path.
-    Clusters,
-    /// Placements only: clusters left to the D3D path.
-    Placements,
-}
-
-impl Owners {
-    /// Whether `owner`'s parts are drawn.
-    pub fn keeps(self, owner: Owner) -> bool {
-        match (self, owner) {
-            (Owners::All, _) => true,
-            (Owners::Clusters, Owner::Cluster(_)) | (Owners::Placements, Owner::Instance(_)) => true,
-            _ => false,
-        }
-    }
-
-    /// `all`, `clusters` or `placements`.
-    pub fn parse(v: &str) -> Option<Self> {
-        match v.trim() {
-            "all" | "" => Some(Owners::All),
-            "clusters" => Some(Owners::Clusters),
-            "placements" => Some(Owners::Placements),
-            _ => None,
-        }
-    }
-}
-
 /// A single guest list in draw order. Only uniform destinations are deduplicated.
 #[derive(Default)]
 pub struct WorldSelection {
@@ -278,10 +246,6 @@ pub struct GpuWorld {
     /// The cull the next pass's inheriting programs draw with
     /// ([`GpuWorld::set_inherited_cull`]).
     inherited_cull: crate::program::InheritedCull,
-    /// Whether [`GpuWorld::prepare`] culls on the CPU ([`GpuWorld::set_cull`]).
-    culls: bool,
-    /// Which sections' parts it draws ([`GpuWorld::set_owners`]).
-    owners: Owners,
     vertices: wgpu::Buffer,
     /// [`World::program_vertices`]: what the material programs read.
     program_vertices: wgpu::Buffer,
@@ -572,8 +536,6 @@ impl GpuWorld {
             part_slots, world,
             stencil: PassStencil::default(),
             inherited_cull: crate::program::InheritedCull::default(),
-            culls: true,
-            owners: Owners::All,
             vertices,
             program_vertices,
             indices,
@@ -806,28 +768,13 @@ impl GpuWorld {
     }
 
     /// The cull the material programs whose pass does not set `CULLMODE`
-    /// draw with from the next pass (and [`GpuWorld::rigid_uniforms`]
-    /// reports; [`crate::program::InheritedCull`]).
+    /// draw with from the next pass
+    /// ([`crate::program::InheritedCull`]).
     pub fn set_inherited_cull(&mut self, cull: crate::program::InheritedCull) {
         self.inherited_cull = cull;
         if let Some(p) = &mut self.programs {
             p.set_cull(cull);
         }
-    }
-
-    /// Whether [`GpuWorld::prepare`] culls by the frustum (on by default).
-    /// Off, every draw is drawn and the programs' own clipping alone
-    /// decides: a diagnostic, telling a part culled on the CPU from one
-    /// clipped or failing depth on the GPU.
-    pub fn set_cull(&mut self, on: bool) {
-        self.culls = on;
-    }
-
-    /// Which sections' parts [`GpuWorld::prepare`] leaves drawn (all by
-    /// default): a diagnostic, with the host leaving the rest to the D3D
-    /// path ([`Owners::keeps`] on the parts it skips).
-    pub fn set_owners(&mut self, owners: Owners) {
-        self.owners = owners;
     }
 
     /// Draws `programs`' materials with their own programs from now on.
@@ -845,12 +792,6 @@ impl GpuWorld {
     /// How many materials draw with their own programs.
     pub fn program_count(&self) -> usize {
         self.programs.as_ref().map_or(0, ProgramSet::len)
-    }
-
-    /// Placement `instance`'s rigid draws in a frame of `view`
-    /// ([`ProgramSet::rigid_uniforms`]); empty without programs.
-    pub fn rigid_uniforms(&self, instance: u32, view: &ViewInputs) -> Vec<crate::program::RigidUniforms> {
-        self.programs.as_ref().map_or_else(Vec::new, |p| p.rigid_uniforms(instance, view))
     }
 
     /// The frame's view for the programs' uniforms (the device's view
@@ -929,7 +870,7 @@ impl GpuWorld {
         for part in parts {
             let &slot = self.part_slots.get(part)?;
             let draw = &self.world.draws[slot];
-            if draw.index_count == 0 || !self.owners.keeps(draw.owner) || (self.culls && !frustum.may_see(&draw.bounds)) {
+            if draw.index_count == 0 || !frustum.may_see(&draw.bounds) {
                 return None;
             }
             selection.push(slot, draw);
@@ -993,26 +934,7 @@ impl GpuWorld {
 
     pub fn cull_stats(&mut self, camera: &RenderCamera) -> CullStats {
         let frustum = Self::draw_frustum(&camera.view_projection(), self.has_programs());
-        let stats = if self.culls {
-            cull(&self.world, &frustum, &mut self.slots)
-        } else {
-            for slot in &mut self.slots {
-                slot.instance_count = 1;
-            }
-            CullStats { visible: self.slots.len() as u32, total: self.world.draws.len() as u32 }
-        };
-        if self.owners == Owners::All {
-            stats
-        } else {
-            let mut visible = 0;
-            for (slot, d) in self.slots.iter_mut().zip(&self.world.draws) {
-                if !self.owners.keeps(d.owner) {
-                    slot.instance_count = 0;
-                }
-                visible += slot.instance_count.min(1);
-            }
-            CullStats { visible, total: stats.total }
-        }
+        cull(&self.world, &frustum, &mut self.slots)
     }
 
     fn write_frame(&self, uploads: &mut gfx::ring::EncoderUploads<'_>, camera: &RenderCamera, depth: DepthRule) {

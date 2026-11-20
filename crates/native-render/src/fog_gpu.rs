@@ -333,10 +333,6 @@ pub struct FogProgram {
     pub state: PassState,
     /// The fog words the pass's implementation sets itself.
     pub words: FogWords,
-    /// The program's instruction words (four per instruction, no header):
-    /// what the D3D path's draw binds, for telling its draws apart
-    /// (`d3d::uniform_compare`).
-    pub code_words: Vec<u32>,
     /// The pass with its vertex program's rigid classification, which
     /// draws the material's instanced placements (`compile_pass_rigid`,
     /// their rows in `c[50..52]` per draw as `0x0004d830` uploads them);
@@ -367,15 +363,11 @@ impl FogProgram {
     ) -> Result<Self, String> {
         world_constants_read(&pass.look, microcode)?;
         let program = compile_pass(&pass.look, microcode, pass.state.alpha_test)?;
-        let parsed = shaders::vsh::Program::parse(microcode).map_err(|e| format!("vertex program: {e:?}"))?;
-        let code_words = microcode[4..4 + 16 * parsed.instructions.len()]
-            .chunks_exact(4)
-            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-            .collect();
+        shaders::vsh::Program::parse(microcode).map_err(|e| format!("vertex program: {e:?}"))?;
         let rigid = rigid_microcode
             .map(|code| crate::program::compile_pass_rigid(&pass.look, pass.state.alpha_test, code))
             .transpose()?;
-        Ok(FogProgram { program, state: pass.state, words: pass.fog, code_words, rigid })
+        Ok(FogProgram { program, state: pass.state, words: pass.fog, rigid })
     }
 }
 

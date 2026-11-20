@@ -18,7 +18,7 @@ use native_render::world::Owner;
 
 #[test]
 fn the_plan_orders_it_inside_render_timing_with_the_layer_ports() {
-    let switches = "impl.render.native_world=on,render-timing=on,render-timing.deep=on,impl.render.layer_draw=on";
+    let switches = "render-timing=on,render-timing.deep=on,impl.render.layer_draw=on";
     let mut r = Registry::new(Switches::parse(switches).unwrap());
     assert!(r.add(&feature::render_timing::RenderTiming::new()).unwrap());
     assert!(r.add(&feature::render_loop::RenderLoop).unwrap());
@@ -37,7 +37,7 @@ fn the_plan_orders_it_inside_render_timing_with_the_layer_ports() {
 /// after.
 #[test]
 fn its_layer_draw_chain_runs_on_the_render_thread() {
-    let mut r = Registry::new(Switches::parse("impl.render.native_world=on").unwrap());
+    let mut r = Registry::new(Switches::parse("").unwrap());
     assert!(r.add(&NativeWorld).unwrap());
     let plan = r.build(&Base).unwrap();
     let chain = plan
@@ -54,7 +54,7 @@ fn its_layer_draw_chain_runs_on_the_render_thread() {
 #[test]
 fn its_snapshot_policy_is_stateless_off_and_a_section_on() {
     for (switches, policy) in [
-        ("impl.render.native_world=off", "stateless"),
+        ("impl.render.native=off", "stateless"),
         ("", "section"),
     ] {
         let mut r = Registry::new(Switches::parse(switches).unwrap());
@@ -70,17 +70,6 @@ fn its_snapshot_policy_is_stateless_off_and_a_section_on() {
     }
 }
 
-#[test]
-fn material_programs_are_on_with_the_world_and_need_it() {
-    let on = |s: &str| native_world::programs_on(&Switches::parse(s).unwrap());
-    assert!(native_world::PROGRAMS_DEFAULT);
-    assert!(on(""), "on with the world, on by default");
-    assert!(on("impl.render.native_world=on"), "on with the world");
-    assert!(!on("impl.render.native_world=on,impl.render.native_world_programs=off"), "stage 1 for the A/B");
-    assert!(!on("impl.render.native_world=off,impl.render.native_world_programs=on"));
-    assert!(on("impl.render.native_world=on,impl.render=off"), "looked up exactly, not through impl.render");
-}
-
 /// The plan text with the native world and a pipeline that is on.
 fn plan_with_pipeline(switches: &str) -> String {
     use feature::pipeline_render::{Addrs, PipelineRender};
@@ -93,17 +82,15 @@ fn plan_with_pipeline(switches: &str) -> String {
 
 #[test]
 fn it_is_on_by_default_and_keeps_pipelining() {
-    assert!(native_world::DEFAULT);
+    assert!(native_world::on(&Switches::parse("").unwrap()));
     let text = plan_with_pipeline("");
     assert!(text.contains("native_world_skip"), "{text}");
     assert!(text.contains("pipelined frame"), "{text}");
-    let text = plan_with_pipeline("impl.render.native_world=on");
-    assert!(text.contains("native_world_skip"), "{text}");
 }
 
 #[test]
-fn the_switch_off_places_nothing_and_keeps_pipelining() {
-    let text = plan_with_pipeline("impl.render.native_world=off");
+fn the_master_switch_off_places_nothing_and_keeps_pipelining() {
+    let text = plan_with_pipeline("impl.render.native=off");
     assert!(!text.contains("native_world"), "{text}");
     assert!(text.contains("pipelined frame"), "{text}");
 }
@@ -301,11 +288,10 @@ fn the_world_items_skip_layer_3_and_get_it_back_at_the_next_layer_draw() {
 }
 
 #[test]
-fn the_world_build_switch_places_only_context_only_scene_hooks() {
+fn the_world_build_places_only_context_only_scene_hooks() {
     let labels = ["native_world_visible_sections", "native_world_build_section",
         "native_world_build_entry", "native_world_empty_entries", "native_world_shader_states"];
-    for (settings, enabled) in [("", true), ("impl.render.native_world_skip_build=off", false),
-        ("impl.render.native=off", false)] {
+    for (settings, enabled) in [("", true), ("impl.render.native=off", false)] {
         let mut r = Registry::new(Switches::parse(settings).unwrap());
         r.add(&NativeWorld).unwrap();
         let plan = r.build(&Base).unwrap();
