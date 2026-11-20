@@ -72,25 +72,6 @@ fn parse_range(value: &str) -> Result<[u64; 2]> {
     Ok([start, end])
 }
 
-/// Consume the movie option before the supervisor parses its lease arguments.
-/// The serve child inherits H2_FILM_OUT (including when no flag was given).
-pub fn arguments() -> Result<std::vec::IntoIter<String>> {
-    let mut args: Vec<_> = std::env::args().skip(1).collect();
-    if args.first().is_some_and(|s| s == "host")
-        && args.get(1).is_some_and(|s| s == "run")
-        && let Some(i) = args.iter().position(|s| s == "--film")
-    {
-        let value = args
-            .get(i + 1)
-            .filter(|s| !s.starts_with("--") && !s.is_empty())
-            .context("--film needs a path")?;
-        // SAFETY: main hasn't started any threads.
-        unsafe { std::env::set_var("H2_FILM_OUT", value) }
-        args.drain(i..=i + 1);
-    }
-    Ok(args.into_iter())
-}
-
 struct Temp(PathBuf);
 impl Temp {
     fn new() -> Result<Self> {
@@ -246,11 +227,12 @@ fn child(opts: Options, work: &Path) -> Result<()> {
             .map(PathBuf::from)
             .or_else(|| opts.data.as_ref().map(|data| data.join("films")))
             .unwrap_or(film_parent);
+        let lease_id = film.header.lease_id;
         let meta = film.header.meta;
         let title = meta.map.clone();
         let stamp = meta.image_stamp.clone();
         let theater = boot::theater_ui::Theater::playback(
-            film_meta(meta, false, &stamp),
+            film_meta(meta, false, &stamp, lease_id),
             opts.range,
             opts.socket,
             dir.clone(),

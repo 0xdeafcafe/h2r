@@ -19,7 +19,7 @@ impl Library for FilmLibrary {
         let entries = self.0.list().map_err(|e| e.to_string())?;
         Ok(entries
             .into_iter()
-            .map(|entry| film_meta(entry.meta, entry.saved, stamp))
+            .map(|entry| film_meta(entry.meta, entry.saved, stamp, entry.lease_id))
             .collect())
     }
 
@@ -36,8 +36,14 @@ impl Library for FilmLibrary {
     }
 }
 
-pub(crate) fn film_meta(meta: film::FilmMeta, saved: bool, stamp: &str) -> FilmMeta {
-    let playable_here = meta.source == film::Source::Host && meta.playable_here(stamp);
+pub(crate) fn film_meta(
+    meta: film::FilmMeta,
+    saved: bool,
+    stamp: &str,
+    lease_id: Option<String>,
+) -> FilmMeta {
+    let host_film = meta.source == film::Source::Host;
+    let playable_here = host_film && meta.playable_here(stamp);
     FilmMeta {
         id: meta.id,
         map: meta.map,
@@ -63,6 +69,7 @@ pub(crate) fn film_meta(meta: film::FilmMeta, saved: bool, stamp: &str) -> FilmM
         saved,
         result: None,
         host: None,
+        web_game_id: lease_id.filter(|_| host_film),
     }
 }
 
@@ -140,5 +147,31 @@ impl shell::Controller for Controller {
 
     fn take_leave(&self) -> bool {
         self.theater.leave_requested()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_host_films_use_the_image_stamp_and_the_lease_web_link() {
+        let meta = film::FilmMeta {
+            id: "local-file-id".into(),
+            map: "lockout".into(),
+            variant: "Slayer".into(),
+            started_ms: 100,
+            length_ticks: 1800,
+            players: Vec::new(),
+            source: film::Source::Host,
+            image_stamp: "image stamp".into(),
+        };
+        let playable = film_meta(meta.clone(), false, "image stamp", Some("hl-game".into()));
+        assert!(playable.playable_here);
+        assert_eq!(playable.id, "local-file-id");
+        assert_eq!(playable.web_game_id.as_deref(), Some("hl-game"));
+        let other = film_meta(meta, false, "other image", None);
+        assert!(!other.playable_here);
+        assert!(other.web_game_id.is_none());
     }
 }

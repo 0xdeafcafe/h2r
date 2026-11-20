@@ -32,7 +32,28 @@ struct Recording {
     batch: Batch,
     file: PathBuf,
     match_over: bool,
+    upload: Option<UploadTarget>,
 }
+
+struct UploadTarget {
+    url: String,
+    token: String,
+    game: String,
+}
+
+impl UploadTarget {
+    fn from_env(lease: Option<&str>, env: impl Fn(&str) -> Option<String>) -> Result<Option<Self>> {
+        let (Some(url), Some(token)) = (env("H2_HOST_LIVE_URL"), env("H2_HOST_TOKEN")) else {
+            return Ok(None);
+        };
+        // Live uses the lease ID as the canonical game ID for its host.
+        let game = env("H2_FILM_GAME_ID")
+            .or_else(|| lease.map(str::to_owned))
+            .context("no lease game ID for film")?;
+        Ok(Some(Self { url, token, game }))
+    }
+}
+
 enum Mode {
     Record(Recording),
     Replay(Playback, Replay),
@@ -139,6 +160,11 @@ impl Session {
                     },
                 },
             };
+            let upload = if host_light {
+                UploadTarget::from_env(header.lease_id.as_deref(), |key| std::env::var(key).ok())?
+            } else {
+                None
+            };
             let manifest = film::manifest::Manifest::capture(&opts.data_root)?;
             let mut file = File::options();
             file.write(true).create_new(true);
@@ -159,6 +185,7 @@ impl Session {
                     batch: Batch::default(),
                     file: path,
                     match_over: false,
+                    upload,
                 }),
                 header,
                 1.,
@@ -296,27 +323,18 @@ impl Session {
         }
     }
 
-    pub fn finish(
-        &self,
-        slices: u64,
-        teardown: bool,
-        telemetry: Option<&Arc<crate::telemetry::Telemetry>>,
-    ) -> Result<()> {
-        self.finish_output(slices, teardown, telemetry)?;
+    pub fn finish(&self, slices: u64, teardown: bool) -> Result<()> {
+        self.finish_output(slices, teardown)?;
         if teardown
             && let Some(job) = self.upload.lock().unwrap_or_else(|e| e.into_inner()).take()
             && job.join().is_err()
         {
-            eprintln!("theater: film upload worker stopped")
+            eprintln!("theater: film upload worker stopped");
         }
         Ok(())
     }
-    fn finish_output(
-        &self,
-        slices: u64,
-        teardown: bool,
-        telemetry: Option<&Arc<crate::telemetry::Telemetry>>,
-    ) -> Result<()> {
+
+    fn finish_output(&self, slices: u64, teardown: bool) -> Result<()> {
         let mut s = self.lock();
         if let Mode::Replay(_, replay) = &s.mode {
             let window_closed = replay.window_closed.as_ref().is_some_and(|closed| closed());
@@ -353,6 +371,7 @@ impl Session {
         };
         let mut out = rec.out.take().context("film already closed")?;
         let path = rec.file.clone();
+        let upload = rec.upload.take();
         let done = (|| -> Result<()> {
             rec.batch.flush(&mut out)?;
             out.chunk(film::HEAD, &header)?;
@@ -373,23 +392,11 @@ impl Session {
         }
         s.complete = true;
         drop(s);
-        if matched
-            && let (Ok(url), Ok(token)) = (
-                std::env::var("H2_HOST_LIVE_URL"),
-                std::env::var("H2_HOST_TOKEN"),
-            )
-        {
-            let telemetry = telemetry.cloned();
+        if matched && let Some(target) = upload {
             let worker = std::thread::Builder::new()
                 .name("film-upload".into())
                 .spawn(move || {
-                    let game = std::env::var("H2_FILM_GAME_ID")
-                        .ok()
-                        .or_else(|| telemetry.and_then(|t| t.film_game_id()));
-                    let sent = game
-                        .context("no telemetry game ID for film")
-                        .and_then(|id| film::upload(&url, &token, &id, &path));
-                    if let Err(e) = sent {
+                    if let Err(e) = film::upload(&target.url, &target.token, &target.game, &path) {
                         eprintln!("theater: upload failed for {}: {e}", path.display())
                     }
                 });

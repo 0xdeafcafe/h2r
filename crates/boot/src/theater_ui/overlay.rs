@@ -703,6 +703,7 @@ mod tests {
                 saved: false,
                 result: None,
                 host: None,
+                web_game_id: None,
             },
             clip: None,
         })

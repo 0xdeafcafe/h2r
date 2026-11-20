@@ -153,12 +153,12 @@ They use the guest director (section 3, "Free camera").
 
 ### Tier B implementation and coordinator runs
 
-A playerless `h2 host run --film FILE` passes the output path to its
-`serve --system-link --host-light` child through `H2_FILM_OUT`. The child
-creates a new file, records from boot, and seals it at the first slice
-after the multiplayer end latch. An orderly earlier exit also seals the
-recording. The recorder never substitutes a return value in a live socket
-call. The host still sends its own packets.
+A leased, playerless `h2 host run` records in its private lease directory
+by default. Use `--film FILE` or `H2_FILM_OUT` to retain a copy elsewhere.
+The `serve --system-link --host-light` child creates a new file, records
+from boot, and seals it at the first slice after the multiplayer end
+latch. An orderly earlier exit also seals the recording. The host still
+sends its own packets and the recorder observes the results.
 
 - `HEAD` carries the exact tier's module stamp, XBE digest and title ID,
   epoch, socket address, scheduler slice budget, feature switches, lobby
@@ -236,16 +236,14 @@ host pacing until the target. It compares hashes throughout. The
 coordinator should also seek backwards across a received packet while
 paused and resume. [Transport parameters](../runtime/agent-api.md#theater-transport)
 
-**Upload contract and integration TODO.** At match end the host worker
-calls `film::upload(live_url, token, game_id, path)` with
-`H2_HOST_LIVE_URL`, `H2_HOST_TOKEN`, and the game ID chosen by telemetry
-(or explicit `H2_FILM_GAME_ID`). The request is
-`POST /v1/games/{id}/film`, bearer authentication, binary body, at most
-64 MiB. The coordinator must wire the route after the lease identity and
-game ownership changes land. Verify `telemetry.ingest` **and** that the
-lease owns this game before storing in the private blob store in both
-homes. Exercise upload and supervisor shutdown together, including a slow
-upload. These checks and both hash experiments still need a real run.
+At match end the host worker sends the sealed film to
+`POST /v1/games/{id}/film` using the lease credential. Live assigns the
+lease ID to the game, and the host can explicitly override the ID via
+`H2_FILM_GAME_ID`. The server checks `telemetry.ingest` and game ownership
+before writing the binary body, up to 64 MiB, into private blob storage.
+The supervisor gives the child time to finish uploading before reporting
+the lease ended. The upload and both hash experiments still need a real
+dedicated match.
 
 ### UI plan
 
@@ -315,11 +313,13 @@ wait for keyframes. A film's scores, kills, bookmarks and seek support
 depend on what the playback agent reports.
 
 The library adapter is in `boot::theater_ui::adapter`. The desktop runner
-accepts its opener via `play_cmd::run_with_theater`. The integration pass
-supplies an opener over `film::Library::open` and maps saved status and
-`playable_here`. The menu agent launches the player with a private
-`--socket` path. The child window sends transport and HUD calls to that
-socket.
+accepts its opener via `play_cmd::run_with_theater`, which supplies an
+opener over `film::Library::open` and maps saved status and image
+compatibility. With Live configured, Recent also shows the account's
+spectator archives, including campaign and games on converted maps.
+The archive detail opens the QR link to the web Theater. The menu agent
+launches the exact player with a private `--socket` path. The child
+window sends transport and HUD calls to that socket.
 
 The coordinator can preview the guest screens and transport model with
 `h2 ui preview theater.films`, `h2 ui preview theater.film` and
