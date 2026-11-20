@@ -148,6 +148,11 @@ fn every_served_id_is_in_its_registered_family() {
         .into_iter()
         .map(|(i, _)| i)
         .collect::<Vec<_>>();
+    let model_ids: (Vec<u32>, Vec<u32>) = model
+        .strings()
+        .iter()
+        .map(|(i, _)| *i)
+        .partition(|i| family("ui model").owns(*i));
     let checks: Vec<(&str, Vec<u32>)> = vec![
         ("layouts", ids(layout_glue::strings())),
         (
@@ -158,7 +163,10 @@ fn every_served_id_is_in_its_registered_family() {
             ],
         ),
         ("live menu rows", ids(custom_games::strings())),
-        ("ui model", model.strings().iter().map(|(i, _)| *i).collect()),
+        // The model's ids run past the "ui model" block into "ui model
+        // more" (video_screen::MORE); each must be in one of the two.
+        ("ui model", model_ids.0),
+        ("ui model more", model_ids.1),
         (
             "campaign picker",
             (0..=campaign_menu::MAX_ROWS as u32)
