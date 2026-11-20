@@ -1,7 +1,7 @@
 # Native renderer stage 4: lights and shadows
 
-Status: Partly built. Dynamic lights' layers 12 and 13 over cluster geometry, the light passes typed into the frame scene, the gathered light and shadow geometry walk and the shadow replacements are built; the visible-light gather, object-model lights, the first-person lights and parity with D3D are not.
-Code: `crates/rewrites/render-bridge/src/native_lights.rs`, `native_lights/walk.rs`, `crates/apps/boot/src/native_lights_glue.rs`, `native_lights_glue/walk.rs`, `crates/rewrites/native-render/src/lights.rs`, `light_look.rs`, `light_gpu.rs`, `light_list.rs`, `crates/rewrites/scene-extract/src/layout/light_passes.rs`. Tests: `crates/rewrites/render-bridge/tests/native_lights.rs`, `native_lights_split.rs`, `crates/rewrites/engine/tests/light_passes.rs`, `light_constants.rs`.
+Status: Partly built. Dynamic lights' layers 12 and 13 over cluster geometry, the light passes and their gathered groups typed into the frame scene, the gathered light and shadow geometry walk and the shadow replacements are built; the visible-light gather, object-model lights, the first-person lights and parity with D3D are not.
+Code: `crates/rewrites/render-bridge/src/native_lights.rs`, `native_lights/walk.rs`, `crates/apps/boot/src/native_lights_glue.rs`, `native_lights_glue/walk.rs`, `crates/rewrites/native-render/src/lights.rs`, `light_look.rs`, `light_gpu.rs`, `light_list.rs`, `light_scene.rs`, `crates/rewrites/scene-extract/src/layout/light_passes.rs`, `crates/rewrites/scene-extract/src/light_groups.rs`, `crates/rewrites/frame-scene/src/light_group.rs`. Tests: `crates/rewrites/render-bridge/tests/native_lights.rs`, `native_lights_split.rs`, `crates/rewrites/engine/tests/light_passes.rs`, `light_constants.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 Part of [native-renderer.md](native-renderer.md). The dynamic lights are not layers of the scene list: after layer 7, `render_scene_passes` calls `render_dynamic_lights` (`0x00031c80`, `points::RENDER_DYNAMIC_LIGHTS`), which gathers each visible light's geometry into a list of its own and draws layers 10 to 14 over it, one light at a time. The game has two more shadow paths beside it: object shadows before layer 7, and the first-person view's lights after the scene. The pages for the other pieces are [native-shadows.md](native-shadows.md) (layers 10, 11 and 14) and [native-gels.md](native-gels.md) (target 13).
@@ -97,6 +97,52 @@ their original draw dispatch. Clears, map
 freezes, object shadow filters, gel updates and target restores run at
 their original points. The live-binding requirement still costs one
 guest handler even for a successful group.
+
+### Gathered groups in the scene
+
+At the same build, the walk's sorted entries go into the frame scene
+as a group of the light (`scene_extract::light_groups`,
+`frame_scene::LightGroup`; framescene.md, slice 4), with what the first
+`LIGHT_GEOMETRY_DRAW` supplies to the path above: per entry its stream
+(the model's section, the cluster, or the placement's definition; the
+part, vertex class, index range and topology), its pose (world, the
+placement by index, or the object's node rows) and its bindings
+(shader, pass selector, variant, implementation), and for layers 10 and
+11 the shadow projection block. The additional casters' layers are
+groups of their own site. An entry the handler would do more for (the
+auxiliary state toggle, state around one part, visible subparts, a
+shader flag, a material animation, a template callback) is the group's
+remainder, counted by cause in `render.scene`
+(`scene_light_entry_remainder_<cause>`). Each object shadow
+(`0x00032350`, matched to its caster entry as the shadow stage matches
+it) is a `frame_scene::ObjectShadow` of the view with its call's two
+arguments, and its layers 10 and 11 are its groups
+(`GroupSite::ObjectShadow`, `FrameScene::shadow_groups_of`).
+`native_render::light_scene::plan` gives a whole group's draws from the
+scene alone, against the native geometry (`Resident`, each entry's part
+and its index range there): the sorted order and duplicates kept,
+adjacent list ranges of one stream, binding, class and pose joined, an
+entry whose part is not held refused by name.
+
+A light's layer 12 or 13 whose group is whole and of structure
+geometry (clusters and placements) is drawn from the scene with no
+handler: `boot::native_lights_glue` (`Glue::alone`, behind
+`render_bridge::native_lights::Host::draw_alone`) holds the world's
+parts as the `Resident` (`Structure`), resolves each entry's material
+pass for the light as the resolved-draw path does, takes the scissor,
+stencil, W-buffer, palettes and cull from the device at that point, and
+issues the pass at once (`Device::external_pass_now`), with no resolved
+fallback. It refuses, issuing nothing, a model entry (the light passes
+hold no model streams), a shader gel (its target-13 slot is pinned
+through a draw's plan), a remainder, and any state the resolved-draw
+path refuses. When it draws, the walk hands the guest's entry loop no
+entries, so none of the layer's handlers runs, and the layer leaves the
+light's candidate (`render.scene`'s `scene_light_layers_alone` counts
+them). Otherwise the layer takes the gathered or resolved-draw path as
+before. Shadow layers 10, 11 and 14 (the light's, the additional
+casters' and the object shadows') have no recorder from the scene: the
+shadow stage records from resolved draws, so their groups are in the
+scene but their handlers run.
 
 Frame stats count completed dynamic lights in `lights_walked_native`,
 `lights_walked_fallback` and `lights_walk_empty`. Each fallback adds
@@ -362,7 +408,7 @@ The host takes each of layers 12 and 13 a light's steps draw, shadowed or not, w
 
 ## Rules and limits
 
-- Only cluster geometry is drawn natively. Models and rigid placements keep their D3D handlers. A split may consume a contiguous native prefix; the remaining entries run in guest order.
+- Only structure geometry is drawn natively. Models keep their D3D handlers. A split may consume a contiguous native prefix; the remaining entries run in guest order. A whole structure group of layer 12 or 13 is drawn from the scene with no handler.
 - A light that samples a shadow map (engine textures 13 and 8), an animated input, an engine-driven state or an unsupplied constant keeps its D3D passes (`light_look`).
 - The visible-light gather at `0x00031c80`, the object-model lights, the object-shadow call `0x00032350`'s lights and the first-person lights (`0x000404b0`) run in the guest. The first-person records at `0x004c6b00` would need writing before the gather can be skipped.
 - Diagnostics print as `native-lights:` on stderr: at load, each light texture with its size or why it did not load, and the surfaces left to D3D; at run time, each refusal reason on its first occurrence, and counts by reason every 1800 host decisions.

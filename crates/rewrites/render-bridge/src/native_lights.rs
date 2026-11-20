@@ -58,6 +58,36 @@ pub struct Dispatch<'a> {
     pub sorted: &'a SortedLayer,
 }
 
+/// A gathered group as the scene holds it (`frame_scene::LightGroup`),
+/// copied out of the frame step: its entries and each entry's node rows
+/// (empty but for an object's).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SceneGroup {
+    pub group: frame_scene::LightGroup,
+    pub entries: Vec<frame_scene::LightEntry>,
+    pub rows: Vec<Vec<frame_scene::Row>>,
+}
+
+impl SceneGroup {
+    /// The node rows of `entry`, one of [`Self::entries`].
+    pub fn rows_of(&self, entry: &frame_scene::LightEntry) -> &[frame_scene::Row] {
+        self.entries.iter().position(|e| std::ptr::eq(e, entry)).and_then(|n| self.rows.get(n)).map_or(&[], Vec::as_slice)
+    }
+}
+
+/// A layer the light's steps draw, whose group the scene holds whole: the
+/// host may draw it from the scene alone, and then no handler runs
+/// (framescene.md, slice 4).
+pub struct Alone<'a> {
+    pub light: Light,
+    pub serial: u64,
+    /// 12 or 13.
+    pub layer: u32,
+    pub shader_gel: Option<(u32, u32)>,
+    pub view_target: [u32; 8],
+    pub group: &'a SceneGroup,
+}
+
 pub trait Host: Send + Sync {
     /// Plan a sorted prefix of one layer. The handlers still emit their
     /// D3D packets so each native draw can fall back in the same queue
@@ -67,6 +97,12 @@ pub trait Host: Send + Sync {
     /// Before the guest constants or gel quad for this invocation.
     fn checkpoint_gel(&self, serial: u64);
     fn target(&self) -> Option<[u32; 8]>;
+    /// Draw `alone`'s layer from the scene at this point of the device's
+    /// queue, before its handlers would run; `false` leaves the layer to
+    /// them, nothing issued.
+    fn draw_alone(&self, _mem: &mut dyn GuestMemory, _alone: Alone<'_>) -> bool {
+        false
+    }
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
@@ -242,6 +278,7 @@ pub fn light_constants(mem: &dyn GuestMemory, e: &Entry) -> Option<LightConstant
 
 fn begin_light(mem: &dyn GuestMemory, entry: Entry) {
     finish_candidate();
+    crate::scene_step::light_entry();
     if let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
         host.clear_admission();
     }
@@ -330,6 +367,42 @@ fn geometry(mem: &mut dyn GuestMemory, esp: u32, esi: u32, port_caller: impl FnO
         Err(why) => refused(why),
     };
     accepted.then_some(())
+}
+
+/// The gathered walk's build of `layer` (12 or 13) of the running light,
+/// whose group the scene holds whole: the host draws it from the scene
+/// alone. `true` when it did: the layer leaves the candidate, and the
+/// walk hands the guest's entry loop no entries. `false`, with the
+/// reason counted, leaves the layer to its handlers as before.
+pub fn draw_alone(mem: &mut dyn GuestMemory, layer: u32, group: &SceneGroup) -> bool {
+    if !matches!(layer, 12 | 13) || Stage::Lights.standing_down() {
+        return false;
+    }
+    let Some((light, serial, shader_gel)) = CANDIDATE.with_borrow(|slot| {
+        slot.as_ref().filter(|c| c.layers & 1 << layer != 0).map(|c| (c.light, c.serial, c.shader_gel))
+    }) else {
+        return false;
+    };
+    let Some(view_target) = VIEW_TARGET.get() else { return refused("light view target unavailable") };
+    let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else { return refused("no light host") };
+    if !host.draw_alone(mem, Alone { light, serial, layer, shader_gel, view_target, group }) {
+        return false;
+    }
+    CANDIDATE.with_borrow_mut(|slot| {
+        if let Some(c) = slot.as_mut() {
+            c.layers &= !(1 << layer);
+            c.inside = None;
+        }
+    });
+    ALONE.fetch_add(1, Ordering::Relaxed);
+    true
+}
+
+static ALONE: AtomicU64 = AtomicU64::new(0);
+
+/// Light layers drawn from the scene alone, no handler run.
+pub fn drawn_alone() -> u64 {
+    ALONE.load(Ordering::Relaxed)
 }
 
 pub struct NativeLights;
@@ -491,5 +564,44 @@ mod tests {
         assert_eq!(leave_layer(), Some(12));
         assert_eq!(layers(), Some((0, None)));
         CANDIDATE.take();
+    }
+
+    struct Stub(bool);
+
+    impl Host for Stub {
+        fn submit(&self, _: &mut dyn GuestMemory, _: Dispatch<'_>) -> bool { false }
+        fn clear_admission(&self) {}
+        fn checkpoint_gel(&self, _: u64) {}
+        fn target(&self) -> Option<[u32; 8]> { None }
+        fn draw_alone(&self, _: &mut dyn GuestMemory, alone: Alone<'_>) -> bool {
+            self.0 && alone.group.entries.is_empty()
+        }
+    }
+
+    #[test]
+    fn a_whole_scene_group_is_drawn_alone_only_for_a_layer_the_light_still_draws() {
+        let group = SceneGroup {
+            group: frame_scene::LightGroup {
+                light: 0, layer: 12, site: frame_scene::GroupSite::Light, projection: None, entries: 0..0, remainder: 0,
+            },
+            entries: Vec::new(),
+            rows: Vec::new(),
+        };
+        let mut m = drawing(12, LIGHT_LIST);
+        assert!(!draw_alone(&mut m, 12, &group), "no light running");
+        CANDIDATE.set(Some(candidate(RESOLVED_LAYERS)));
+        VIEW_TARGET.set(Some([1; 8]));
+        set_host(Arc::new(Stub(false)));
+        assert!(!draw_alone(&mut m, 12, &group), "the host keeps it on its handlers");
+        assert_eq!(layers(), Some((RESOLVED_LAYERS, None)));
+        set_host(Arc::new(Stub(true)));
+        assert!(!draw_alone(&mut m, 14, &group), "not a layer drawn from the scene");
+        enter_layer(&m, 0x0003_144f);
+        assert!(draw_alone(&mut m, 12, &group));
+        assert_eq!(layers(), Some((1 << 13, None)), "the layer leaves the candidate, its specular stays");
+        assert!(!draw_alone(&mut m, 12, &group), "drawn once");
+        CANDIDATE.take();
+        VIEW_TARGET.set(None);
+        *HOST.lock().unwrap() = None;
     }
 }

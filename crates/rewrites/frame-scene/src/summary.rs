@@ -4,13 +4,17 @@
 //! key, camera, clusters, world state, remainder, auxiliary depth,
 //! instances (key, definition, model, nodes, sphere, lighting, defaults),
 //! parts (slot, key, layer, flags, subparts, rows), lights (handle,
-//! definition, flags, additional casters, steps) and layer draws (layer,
-//! flags, remainder, material inputs, items with their owner, model, rows
-//! and lighting) and decorator draws (`crate::decorator::summary_words`).
+//! definition, flags, additional casters, steps, gathered groups), object
+//! shadows (identity, groups), layer draws (layer, flags, remainder,
+//! material inputs, items with their owner, model, rows and lighting) and
+//! decorator draws (`crate::decorator::summary_words`). A group hashes its
+//! layer, site, projection, remainder and entries (slot, record, owner,
+//! model, stream, pose with its rows, binding).
 //! Floats by their
 //! bits. Not the map epoch, the present number or the stamp: they count
 //! this process, not the frame.
 
+use crate::light_group::{LightGroup, LightPose};
 use crate::object::{Defaults, Lighting};
 use crate::scene::FrameScene;
 
@@ -39,7 +43,7 @@ pub fn summary_hash(scene: &FrameScene) -> u64 {
     h.word(scene.id.tick);
     h.word(u32::from(scene.cut.0));
     h.word(scene.views.len() as u32);
-    for v in &scene.views {
+    for (vi, v) in scene.views.iter().enumerate() {
         h.word(v.key.kind as u32);
         h.word(u32::from(v.key.player));
         h.word(u32::from(v.key.view));
@@ -117,7 +121,7 @@ pub fn summary_hash(scene: &FrameScene) -> u64 {
         }
         let lights = scene.lights_of(v);
         h.word(lights.len() as u32);
-        for l in lights {
+        for (k, l) in lights.iter().enumerate() {
             h.word(l.handle);
             h.word(l.definition);
             h.word(l.flags);
@@ -135,6 +139,14 @@ pub fn summary_hash(scene: &FrameScene) -> u64 {
                 });
                 h.word(u32::from(s.draws));
             }
+            light_groups(&mut h, scene, scene.groups_of(v.lights.start + k as u32));
+        }
+        let shadows = scene.object_shadows_of(vi as u32);
+        h.word(shadows.len() as u32);
+        for o in shadows {
+            h.word(o.identity[0]);
+            h.word(o.identity[1]);
+            light_groups(&mut h, scene, scene.shadow_groups_of(o));
         }
         let passes = scene.layers_of(v);
         h.word(passes.len() as u32);
@@ -153,14 +165,7 @@ pub fn summary_hash(scene: &FrameScene) -> u64 {
                 h.word(u32::from(i.key.section));
                 h.word(u32::from(i.key.part));
                 h.word(i.key.implementation as u32);
-                match i.owner {
-                    crate::layer::LayerOwner::Cluster(c) => h.word(0x1_0000 | u32::from(c)),
-                    crate::layer::LayerOwner::Placement(c) => h.word(0x2_0000 | u32::from(c)),
-                    crate::layer::LayerOwner::Object(k) => {
-                        h.word(0x3_0000);
-                        h.word(k.0);
-                    }
-                }
+                owner(&mut h, i.owner);
                 h.word(i.model);
                 let rows = slice_rows(scene, &i.rows);
                 h.word(rows.len() as u32);
@@ -173,6 +178,63 @@ pub fn summary_hash(scene: &FrameScene) -> u64 {
         crate::decorator::summary_words(scene, v, &mut |w| h.word(w));
     }
     h.0
+}
+
+fn light_groups(h: &mut Fnv, scene: &FrameScene, groups: &[LightGroup]) {
+    h.word(groups.len() as u32);
+    for g in groups {
+        h.word(u32::from(g.layer));
+        h.word(g.site as u32);
+        match &g.projection {
+            Some(p) => {
+                h.word(1);
+                for w in p.iter().flatten() {
+                    h.word(*w);
+                }
+            }
+            None => h.word(0),
+        }
+        h.word(g.remainder);
+        let entries = scene.entries_of(g);
+        h.word(entries.len() as u32);
+        for e in entries {
+            h.word(u32::from(e.slot));
+            h.word(u32::from(e.record));
+            owner(h, e.owner);
+            h.word(e.model);
+            let st = &e.stream;
+            for w in [u32::from(st.section), u32::from(st.part), u32::from(st.vertex_class), st.first_index, st.index_count] {
+                h.word(w);
+            }
+            h.word(st.topology as u32);
+            match &e.pose {
+                LightPose::World => h.word(0),
+                LightPose::Placement(p) => h.word(0x1_0000 | u32::from(*p)),
+                LightPose::Rows(_) => {
+                    let rows = scene.pose_rows(e);
+                    h.word(0x2_0000 | rows.len() as u32);
+                    for r in rows {
+                        h.floats(r);
+                    }
+                }
+            }
+            let b = &e.binding;
+            for w in [b.shader, u32::from(b.selector), u32::from(b.variant), u32::from(b.implementation)] {
+                h.word(w);
+            }
+        }
+    }
+}
+
+fn owner(h: &mut Fnv, o: crate::layer::LayerOwner) {
+    match o {
+        crate::layer::LayerOwner::Cluster(c) => h.word(0x1_0000 | u32::from(c)),
+        crate::layer::LayerOwner::Placement(c) => h.word(0x2_0000 | u32::from(c)),
+        crate::layer::LayerOwner::Object(k) => {
+            h.word(0x3_0000);
+            h.word(k.0);
+        }
+    }
 }
 
 fn slice_rows<'a>(scene: &'a FrameScene, r: &std::ops::Range<u32>) -> &'a [crate::scene::Row] {
@@ -317,5 +379,49 @@ mod tests {
         let mut hidden = LayerInputs::default();
         hidden.scalars[12] = 1.0f32.to_bits();
         assert_eq!(with(hidden), none, "a word not given does not count");
+    }
+
+    #[test]
+    fn a_lights_groups_and_an_object_shadows_count_in_the_hash() {
+        use crate::layer::LayerOwner;
+        use crate::light::SceneLight;
+        use crate::light_group::{GroupSite, LightBinding, LightEntry, LightStream, Topology};
+        let entry = LightEntry {
+            slot: 1,
+            record: 2,
+            owner: LayerOwner::Cluster(3),
+            model: u32::MAX,
+            stream: LightStream { section: 3, part: 0, vertex_class: 0, first_index: 0, index_count: 6, topology: Topology::List },
+            pose: LightPose::World,
+            binding: LightBinding { shader: 4, selector: 0, variant: 0, implementation: 2 },
+        };
+        let group = |light, site| LightGroup { light, layer: 10, site, projection: None, entries: 0..1, remainder: 0 };
+        let base = || {
+            let mut s = (*scene(1, 0.0)).clone();
+            s.lights.push(SceneLight {
+                handle: 4, definition: 5, flags: 4, definition_flags: 0, additional_casters: false, steps: 0..0,
+            });
+            s.views[0].lights = 0..1;
+            s.light_entries.push(entry.clone());
+            s
+        };
+        let plain = summary_hash(&base());
+        let mut lit = base();
+        lit.light_groups.push(group(0, GroupSite::Light));
+        let lit_hash = summary_hash(&lit);
+        assert_ne!(lit_hash, plain, "a group");
+        lit.light_entries[0].binding.implementation = 3;
+        assert_ne!(summary_hash(&lit), lit_hash, "its entry's binding");
+        lit.light_entries[0].binding.implementation = 2;
+        lit.light_groups[0].projection = Some([[1; 4]; crate::light_group::PROJECTION_ROWS]);
+        assert_ne!(summary_hash(&lit), lit_hash, "its projection");
+        let mut shadowed = base();
+        shadowed.object_shadows.push(crate::light_group::ObjectShadow { view: 0, identity: [1, 2], groups: 0..1 });
+        shadowed.shadow_groups.push(group(0, GroupSite::ObjectShadow));
+        let shadow_hash = summary_hash(&shadowed);
+        assert_ne!(shadow_hash, plain, "an object shadow");
+        assert_ne!(shadow_hash, lit_hash, "not the light's group");
+        shadowed.object_shadows[0].identity = [1, 3];
+        assert_ne!(summary_hash(&shadowed), shadow_hash, "its identity");
     }
 }
