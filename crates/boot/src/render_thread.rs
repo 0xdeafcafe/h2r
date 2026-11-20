@@ -61,6 +61,13 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ),
     #[cfg(feature = "gpu")]
     (
+        "native-shadows",
+        "RENDER_LIGHT_PASSES",
+        "context-only, but shares the light passes with render-timing (off by default), \
+         whose timer runs after the body",
+    ),
+    #[cfg(feature = "gpu")]
+    (
         "native-decals",
         "DECAL_RENDER",
         "on by default; the decal scope opens at the callback and closes at its return",
