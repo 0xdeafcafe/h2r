@@ -274,7 +274,7 @@ fn vehicle_tag_depth(h1: &H1Map, t: &h1map::Tag) -> Result<f32> {
         return Ok(0.0);
     }
     let mode = h1.tag(r.id)?;
-    let (m, _) = h1models::model_from_map(h1, mode, &Default::default())
+    let (m, _) = h1_assets::models::model_from_map(h1, mode, &Default::default())
         .map_err(|e| named(format!("model {}: {e}", mode.name)))?;
     let lowest = m
         .geometries

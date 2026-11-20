@@ -19,7 +19,7 @@
 //!   bipeds lack (cutscenes keep Halo 1's characters until retargeting
 //!   exists, §5).
 //! - **The AI's characters** are retail Halo 2 `char` tags in both
-//!   variants (`h1ai::convert::character_for`), so their bipeds and
+//!   variants (`crate::ai::convert::character_for`), so their bipeds and
 //!   weapons are Halo 2's already; the squads name them as before.
 //! - **Scenery, devices, health packs** are the level, not its sandbox;
 //!   the health model is Halo 1's whatever the assets (§6).

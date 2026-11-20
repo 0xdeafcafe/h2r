@@ -47,7 +47,7 @@ use crate::surface_query::{PROJECTION, dominant_axis};
 use crate::{Error, Result};
 
 /// A rigid transform `p' = r p + t`, `r` row-major acting on column
-/// vectors (as `h1models::mode::world_transforms` gives a node's).
+/// vectors (as `h1_assets::models::mode::world_transforms` gives a node's).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pose {
     pub r: [[f32; 3]; 3],

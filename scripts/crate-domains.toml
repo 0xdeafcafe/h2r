@@ -80,9 +80,8 @@ live_owned = ["bot-glue", "net-glue", "theater"]
 about = "Offline work on game data: the Halo 1 converters, the editor cores, the profiler"
 uses = ["formats", "recompiler", "runtime", "platform", "rewrites", "live"]
 crates = [
-    "editor-core", "h1-assets", "h1ai", "h1bitmaps", "h1campaign", "h1convert",
-    "h1map", "h1models", "h1objects", "h1scripts", "h1sky", "h1sounds", "h1text",
-    "hopper-edit", "hud-edit", "live-art", "perf", "scenario-edit", "viewer",
+    "editor-core", "h1-assets", "h1campaign", "h1convert",
+    "h1map", "h1objects", "hopper-edit", "hud-edit", "live-art", "perf", "scenario-edit", "viewer",
 ]
 live_owned = ["live-art"]
 
@@ -129,3 +128,18 @@ until = "the `lifted` crate lands"
 from = "native-render"
 to = "lift"
 until = "the `lifted` crate lands"
+
+[[exception]]
+from = "hooks"
+to = "frame-scene"
+until = "S3: scene_step leaves hooks for render-bridge"
+
+[[exception]]
+from = "hooks"
+to = "scene-extract"
+until = "S3: scene_step leaves hooks for render-bridge"
+
+[[exception]]
+from = "sim-core"
+to = "simd"
+until = "simd's exact SSE lanes move to a guest-free crate sim-core may use"

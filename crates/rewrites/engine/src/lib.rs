@@ -11,7 +11,7 @@
 //! - [`datum`]: datum arrays (allocation, salts, lookup, iteration).
 //! - [`locale`]: localized-string lookup by packed StringID.
 //! - [`render`]: read-only views of the live lights and scene layers
-//!   (`docs/graphics/e3-lighting.md`, phase 0).
+//!   (`docs/graphics/e3-lighting.md`, "Phase 0 findings").
 //! - [`light_constants`]: `0x0004a1e0`'s per-light globals block, computed
 //!   bit for bit without writing guest memory.
 //! - [`shadow_constants`]: `0x00048ee0`'s shadow block, the same way.

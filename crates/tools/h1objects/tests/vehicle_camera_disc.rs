@@ -2,7 +2,7 @@
 //! `$H1_ISO` and `$H2_DISC`; nothing is written.
 //!
 //! ```sh
-//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test vehicle_camera_disc -- --ignored --nocapture
+//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test it vehicle_camera_disc:: -- --ignored --nocapture
 //! ```
 //!
 //! - `halo_2s_default_track_is_halo_1s`: Halo 2's
@@ -280,7 +280,7 @@ fn converted_seats_carry_halo_1s_tracks() {
             assert_eq!(defs::from_built(def(b"trak"), &again).unwrap(), rec);
             let mut src = h1::CameraTrack::read(&h1, h1.tag(first).unwrap()).unwrap();
             for p in &mut src.points {
-                p.1 = h1models::h1::h2_rotation(p.1);
+                p.1 = h1_assets::models::h1::h2_rotation(p.1);
             }
             let got = points(&rec);
             assert!(same_points(&got, &src), "{} {}", t.name, h.label);

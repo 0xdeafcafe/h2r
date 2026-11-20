@@ -23,15 +23,15 @@ fn selected_bitmap(
     image: Image,
     pixels: Vec<u8>,
     baked: bool,
-) -> h1bitmaps::Result<Converted> {
+) -> h1_assets::bitmaps::Result<Converted> {
     let mut selected = bitmap.clone();
     selected.images = vec![image];
     selected.sequences.clear();
     if baked {
-        selected.encoding = h1bitmaps::mask::INTERPOLATED_ALPHA;
+        selected.encoding = h1_assets::bitmaps::mask::INTERPOLATED_ALPHA;
     }
     let mut data = Some(pixels);
-    h1bitmaps::convert::convert_with(&selected, |_| Ok(data.take().expect("one selected image")))
+    h1_assets::bitmaps::convert::convert_with(&selected, |_| Ok(data.take().expect("one selected image")))
         .map(|(converted, _)| converted)
 }
 
@@ -126,7 +126,7 @@ impl Converter<'_> {
                 (Role::Base, Some(mask)) => {
                     let m = image_index(permutation, mask.images.len())
                         .ok_or_else(|| fail("invalid reflection mask permutation"))?;
-                    Some(h1bitmaps::mask::red_into_alpha(
+                    Some(h1_assets::bitmaps::mask::red_into_alpha(
                         image,
                         pixels,
                         &mask.images[m],
@@ -136,7 +136,7 @@ impl Converter<'_> {
                 (Role::ChangeColour, _) => {
                     let (slot, _) = shad::soso_change_colour(h1, tag)
                         .ok_or_else(|| fail("missing change colour selector"))?;
-                    Some(h1bitmaps::mask::channel_into(
+                    Some(h1_assets::bitmaps::mask::channel_into(
                         image,
                         pixels,
                         shad::SOSO_CHANGE_COLOUR_CHANNEL,
@@ -165,7 +165,7 @@ impl Converter<'_> {
                 && *role == Role::Base
                 && recipe.layout.stem == shad::TEX_BUMP_ALPHA_TEST.stem
             {
-                let (flat, bytes) = h1bitmaps::mask::cutout_bump(image, pixels)
+                let (flat, bytes) = h1_assets::bitmaps::mask::cutout_bump(image, pixels)
                     .map_err(|e| fail(&e.to_string()))?;
                 maps.insert(
                     Role::Bump,

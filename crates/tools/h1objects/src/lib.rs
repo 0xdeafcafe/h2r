@@ -17,7 +17,7 @@
 //!   animation, collision and physics tags used by each object.
 //! - [`rebuild`] writes the objects from typed definitions ([`tags::defs`]).
 //!
-//! [`convert::Tree`] installs the resulting [`h1models::Converted`] tags
+//! [`convert::Tree`] installs the resulting [`h1_assets::models::Converted`] tags
 //! together into the destination [`map::build::TagSet`].
 //!
 //! Layouts, evidence and the tuning table: `docs/halo1/objects.md`. No
@@ -48,7 +48,7 @@ pub mod scripted_props;
 pub mod verify;
 
 pub use convert::Options;
-pub use h1models::Converted;
+pub use h1_assets::models::Converted;
 
 /// Conversion failures.
 #[derive(Debug, thiserror::Error)]
@@ -60,7 +60,7 @@ pub enum Error {
     #[error("halo 2 tags: {0}")]
     Tags(#[from] tags::Error),
     #[error("model or animation: {0}")]
-    Model(#[from] h1models::Error),
+    Model(#[from] h1_assets::models::Error),
     #[error("collision BSP: {0}")]
     Bsp(#[from] h1convert::Error),
     #[error("truncated {0}")]

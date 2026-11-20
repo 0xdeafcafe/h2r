@@ -6,10 +6,10 @@ use engine::memory::{GuestMemory, MemFault};
 use engine::points::{HS_UNUSED_EVALUATOR, HUD_SENSOR_DRAW, HUD_WIDGET_GATE};
 use hooks::{Builder, Flow};
 
-use h1scripts::hud::{CONTROL_BUILTINS, SCENARIO_HELP_BUILTIN};
-use h1text::hud::{
+use h1_contract::hud::{
     COMPONENT_START, CONTROL_FLAGS, SENSOR, WIDGET_CONTROL_SIZE, WIDGET_CONTROLS,
 };
+use h1_contract::hud_builtins::{CONTROL_BUILTINS, SCENARIO_HELP_BUILTIN};
 
 use super::{flash, mission_hud};
 

@@ -4,7 +4,7 @@ use h1convert::textures::ModelTemplate;
 use h1map::bitmap;
 use h1map::testing::{BASE, SCNR_ID, Spec, build_with_extra_tags, group, put};
 use h1map::{H1Map, HEADER_LEN};
-use h1models::h1::MODE_HEADER;
+use h1_assets::models::h1::MODE_HEADER;
 use h1objects::base::Base;
 use h1objects::convert::{Converter, local, local_index};
 use h1objects::h1::{MAGAZINE_SIZE, WEAP_SIZE, WEAPON_PRIMARY_AMMUNITION, Weapon};

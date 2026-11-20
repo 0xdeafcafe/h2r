@@ -6,7 +6,7 @@
 //! "Lens flares, debris and light fixtures".
 
 use h1map::Tag;
-use h1models::Converted;
+use h1_assets::models::Converted;
 use map::build::Block;
 use map::{FourCC, TagId};
 use tags::defs::{self, Defs, Record, StructDef, Val};

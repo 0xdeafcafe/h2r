@@ -11,9 +11,9 @@
 //! and every CPU field but MXCSR exactly as the interpreter does.
 //!
 //! Correctness:
-//! `H2_XBE=<xbe> cargo test -p engine --features differential --test sim_tier_differential`
+//! `H2_XBE=<xbe> cargo test -p engine --features differential --test it sim_tier_differential::`
 //! Bench (results table rows on stdout):
-//! `H2_XBE=<xbe> cargo test -p engine --release --features differential --test sim_tier_differential -- --ignored --nocapture`
+//! `H2_XBE=<xbe> cargo test -p engine --release --features differential --test it sim_tier_differential:: -- --ignored --nocapture`
 #![cfg(feature = "differential")]
 
 mod common;

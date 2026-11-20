@@ -304,8 +304,9 @@ box and description text: `skulls_menu::LIST_LAYOUT`, `FRAME`,
   `ui\shell\bitmaps\sp_levels`, cropped to the 139×113 picture during
   import. For a full import the source is image 0 (The Pillar of Autumn).
   A partial import uses its earliest available card in disc mission
-  order. If an older import has no cards, read image 0 directly from
-  `H1_ISO` or the sibling `halo1.iso`. Halo 2 uses Cairo Station,
+  order (`h1_contract::campaign::CAMPAIGN_ORDER`). The game reads no
+  Halo 1 disc: an import with no cards leaves the artwork missing until
+  `h2 import halo1` runs again. Halo 2 uses Cairo Station,
   `ui\code_global_bitmaps\campaign2` in the Halo 2 disc's
   `maps/mainmenu.map`, trimming 16 pixels on each edge before the cover
   crop. Boot writes both focus states under
@@ -457,14 +458,15 @@ reads the multiplayer list, which campaign ids never reach.
 
 The synthetic tests cover picker navigation, native row allocation,
 separate game/profile saves, old progress, tile focus
-and agent menu state. The ignored disc test reads both owner discs and
-checks the generated PNGs against the two in-memory bitmaps. Supply
+and agent menu state. The ignored disc test reads the owner's Halo 2 disc
+with an invented Halo 1 card and checks the generated PNGs against the two
+in-memory bitmaps. Supply
 absolute disc paths when the test checkout lacks a local disc directory.
 
 ```sh
 cargo test -p boot --lib campaign
 cargo test -p agent-proto --lib sim::menu
-H1_ISO="$PWD/disc/halo1.iso" H2_DISC="$PWD/disc/halo2.iso" cargo test -p boot --lib picker_collage_from_both_discs -- --ignored
+H2_DISC="$PWD/disc/halo2.iso" cargo test -p boot --lib picker_collage_from_an_import_card_and_the_disc -- --ignored
 ```
 
 With both games installed, verify a fresh profile and one with an existing

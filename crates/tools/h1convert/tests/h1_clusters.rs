@@ -171,7 +171,7 @@ fn portals_join_every_cluster_in_their_planes() {
 #[test]
 #[ignore = "reads the Halo 1 disc ($H1_ISO)"]
 fn every_cluster_samples_its_own_lightmap_page_as_halo1_did() {
-    use h1bitmaps::BitmapExt;
+    use h1_assets::bitmaps::BitmapExt;
     use h1map::bitmap::Bitmap;
     let mut bsps = 0;
     for (name, h1) in levels() {
@@ -206,12 +206,12 @@ fn every_cluster_samples_its_own_lightmap_page_as_halo1_did() {
                 .iter()
                 .zip(&converted.raw)
                 .map(|(img, (bytes, _))| {
-                    h1bitmaps::decode::stack(&h1bitmaps::decode_image(img, bytes).unwrap(), 0)
+                    h1_assets::bitmaps::decode::stack(&h1_assets::bitmaps::decode_image(img, bytes).unwrap(), 0)
                         .unwrap()
                 })
                 .collect();
             // Bilinear, clamped to the edge, as the page is sampled.
-            let texel = |im: &h1bitmaps::Rgba8Image, uv: [f32; 2]| -> [f32; 4] {
+            let texel = |im: &h1_assets::bitmaps::Rgba8Image, uv: [f32; 2]| -> [f32; 4] {
                 let (w, h) = (im.width as i64, im.height as i64);
                 let (x, y) = (uv[0] * w as f32 - 0.5, uv[1] * h as f32 - 0.5);
                 let (x0, y0) = (x.floor(), y.floor());
@@ -240,7 +240,7 @@ fn every_cluster_samples_its_own_lightmap_page_as_halo1_did() {
                     samples += 1;
                     let want = texel(&decode_source[usize::from(p)], b.vertices[i].lightmap);
                     let got = texel(&decode_atlas[usize::from(q)], a.vertices[i].lightmap);
-                    // Half Halo 1's light (`h1bitmaps::atlas::to_halo2_light`):
+                    // Half Halo 1's light (`h1_assets::bitmaps::atlas::to_halo2_light`):
                     // within half a 5-bit step, and one 8-bit step of filtering.
                     differ += usize::from(
                         want.iter().zip(&got).take(3).any(|(a, b)| (a / 2.0 - b).abs() > 255.0 / 62.0 + 1.0),

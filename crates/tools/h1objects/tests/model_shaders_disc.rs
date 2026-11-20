@@ -4,7 +4,7 @@
 //! prints names only. Nothing is written.
 //!
 //! ```sh
-//! H1_ISO=... H2_DISC=... cargo test -p h1objects --test model_shaders_disc -- --ignored --nocapture
+//! H1_ISO=... H2_DISC=... cargo test -p h1objects --test it model_shaders_disc:: -- --ignored --nocapture
 //! ```
 
 use std::fs::File;
@@ -119,12 +119,12 @@ fn a10_cryo_tube_glass_is_alpha_blended_with_its_own_maps() {
 /// The converted base `name` (in `tree`) is DXT5 of the sniper rifle's
 /// base map's size and chain, its colours the base map's and its alpha the
 /// multipurpose map's red: Halo 1 masks the reflection with that red, and
-/// `tex_bump_env` with the colour pass's alpha (`h1bitmaps::mask`). DXT5's
+/// `tex_bump_env` with the colour pass's alpha (`h1_assets::bitmaps::mask`). DXT5's
 /// alpha is within half a step of its block's 8-value mode (a range of
 /// 255 over 14: 19); the colours are re-encoded from Halo 1's DXT1 blocks,
 /// exact but where a block used DXT1's three-colour mode.
 fn sniper_base_alpha_is_its_multipurpose_red(h1: &H1Map, tree: &h1objects::convert::Tree, name: &str) {
-    use h1bitmaps::BitmapExt;
+    use h1_assets::bitmaps::BitmapExt;
     let (_, conv) = tree.tags.iter().find(|(n, _)| n == name).expect("the masked base");
     assert_eq!(conv.group.0, *b"bitm");
     let images = conv
@@ -138,7 +138,7 @@ fn sniper_base_alpha_is_its_multipurpose_red(h1: &H1Map, tree: &h1objects::conve
         .expect("images block");
     let img = h1map::bitmap::Image::parse(&images.bytes).unwrap();
     assert_eq!(img.format, h1map::bitmap::PixelFormat::Dxt5);
-    let got = h1bitmaps::decode_image(&img, &conv.raw[0].0).unwrap();
+    let got = h1_assets::bitmaps::decode_image(&img, &conv.raw[0].0).unwrap();
     let read = |path: &str| {
         let t = h1
             .tags()
@@ -457,7 +457,7 @@ fn bloodgulch_cyborg_and_scorpion_take_change_colours() {
 #[test]
 #[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
 fn bloodgulch_cyborg_wears_the_chiefs_emblem_on_its_left_shoulder() {
-    use h1models::emblem::{LEFT_SHOULDER, place};
+    use h1_assets::models::emblem::{LEFT_SHOULDER, place};
     let h1 = h1_map("bloodgulch");
     let mode = h1
         .tags()
@@ -465,7 +465,7 @@ fn bloodgulch_cyborg_wears_the_chiefs_emblem_on_its_left_shoulder() {
         .find(|t| t.group == Group::new(b"mode") && t.name == "characters\\cyborg\\cyborg")
         .expect("the cyborg's model");
     let (model, _) =
-        h1models::model_from_map(&h1, mode, &h1models::mode::ModelOptions::default()).unwrap();
+        h1_assets::models::model_from_map(&h1, mode, &h1_assets::models::mode::ModelOptions::default()).unwrap();
     let spot = place(&model, &LEFT_SHOULDER).expect("the ray meets the left upper arm");
     eprintln!("{spot:?}");
     // Halo 1 models face +x, z up: the left shoulder is at +y, near the
@@ -530,7 +530,7 @@ fn change_colour_map_is_the_multipurpose_blue(
     name: &str,
     mask: &str,
 ) {
-    use h1bitmaps::BitmapExt;
+    use h1_assets::bitmaps::BitmapExt;
     let (_, conv) = tree
         .tags
         .iter()
@@ -548,7 +548,7 @@ fn change_colour_map_is_the_multipurpose_blue(
         .expect("images block");
     let img = h1map::bitmap::Image::parse(&images.bytes).unwrap();
     assert_eq!(img.format, h1map::bitmap::PixelFormat::Dxt5);
-    let got = h1bitmaps::decode_image(&img, &conv.raw[0].0).unwrap();
+    let got = h1_assets::bitmaps::decode_image(&img, &conv.raw[0].0).unwrap();
     let t = h1
         .tags()
         .iter()
@@ -617,7 +617,7 @@ fn bloodgulch_assault_rifle_counter_shows_the_rounds_loaded() {
         .tag(w.first_person_model.expect("a first-person model"))
         .unwrap()
         .clone();
-    let (fp, _) = h1models::model_from_map(&h1, &fp_tag, &Default::default()).unwrap();
+    let (fp, _) = h1_assets::models::model_from_map(&h1, &fp_tag, &Default::default()).unwrap();
     let numbers: Vec<(usize, i16)> = fp
         .shaders
         .iter()
@@ -727,7 +727,7 @@ fn bloodgulch_assault_rifle_counter_shows_the_rounds_loaded() {
 /// clear) draws on `tex_bump_alpha_test_single_pass` with its leaf bitmap
 /// in slot 2, the base the colour pass alpha-tests, and in slot 0, the
 /// bump, a flat bump map whose alpha is 0 exactly where the leaf's is
-/// below a half and 255 elsewhere (`h1bitmaps::mask::cutout_bump`). The
+/// below a half and 255 elsewhere (`h1_assets::bitmaps::mask::cutout_bump`). The
 /// stem's depth and shadow passes kill by slot 0's alpha, as retail's
 /// `bush_vine` on coagulation shows: with the default bump there (opaque),
 /// the whitebark's leaf canopies drew as whole, near-black cards
@@ -868,7 +868,7 @@ fn bloodgulch_leaves_cut_their_depth_out_by_the_leaf_alpha() {
 /// bitmap `leaf`'s size and chain, its top level's alpha 0 exactly where
 /// the leaf's is below 128 and 255 elsewhere, every texel the flat normal.
 fn leaf_alpha_cuts_the_bump(h1: &H1Map, tree: &h1objects::convert::Tree, leaf: &str, bump: &str) {
-    use h1bitmaps::BitmapExt;
+    use h1_assets::bitmaps::BitmapExt;
     let (_, conv) = tree.tags.iter().find(|(n, _)| n == bump).expect("the bump");
     assert_eq!(conv.group.0, *b"bitm");
     let images = conv
@@ -893,7 +893,7 @@ fn leaf_alpha_cuts_the_bump(h1: &H1Map, tree: &h1objects::convert::Tree, leaf: &
         (img.width, img.height, img.mip_count),
         (s.width, s.height, s.mip_count)
     );
-    let got = h1bitmaps::decode_image(&img, &conv.raw[0].0).unwrap();
+    let got = h1_assets::bitmaps::decode_image(&img, &conv.raw[0].0).unwrap();
     let top = got.iter().find(|l| l.level == 0 && l.face == 0).unwrap();
     let want = source.decode(h1, 0, 0).unwrap();
     assert_eq!((top.width, top.height), (want.width, want.height));
@@ -901,7 +901,7 @@ fn leaf_alpha_cuts_the_bump(h1: &H1Map, tree: &h1objects::convert::Tree, leaf: &
     let mut clear = 0;
     for k in 0..n {
         let a = want.rgba[k * 4 + 3];
-        let expect = if a >= h1bitmaps::mask::CUTOUT_THRESHOLD {
+        let expect = if a >= h1_assets::bitmaps::mask::CUTOUT_THRESHOLD {
             255
         } else {
             0
@@ -1056,7 +1056,7 @@ fn b30_fixtures_select_their_own_base_and_reflection_mask() {
             .find(|(_, (n, t))| n == &format!("{name}_Base") && t.group.0 == *b"bitm")
             .unwrap();
         assert!(bindings.contains(&local(i)));
-        let (_, bytes) = h1bitmaps::mask::red_into_alpha(
+        let (_, bytes) = h1_assets::bitmaps::mask::red_into_alpha(
             &base_bitmap.images[k],
             base_bitmap.pixels(&h1, k).unwrap(),
             &mask.images[k],

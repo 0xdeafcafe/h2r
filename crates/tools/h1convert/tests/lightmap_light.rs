@@ -1,5 +1,5 @@
 //! How bright a converted lightmap draws: Halo 2's structure lighting pass
-//! against Halo 1's pages (`h1bitmaps::atlas::to_halo2_light`).
+//! against Halo 1's pages (`h1_assets::bitmaps::atlas::to_halo2_light`).
 //!
 //! Needs `$H2_DISC` and `$H1_ISO`; nothing from either disc is written.
 
@@ -8,7 +8,7 @@ use std::io::{BufReader, Cursor};
 use std::path::PathBuf;
 
 use assets::{Region, ResourceFiles};
-use h1bitmaps::BitmapExt;
+use h1_assets::bitmaps::BitmapExt;
 use h1map::H1Map;
 use map::{FourCC, Map, ResourceFile, TagId};
 use tags::material::ShaderLibrary;

@@ -3,17 +3,17 @@ name = "h1objects"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+# The test files build as one binary, tests/it.rs (docs/dev/build-speed.md).
+autotests = false
 
 [dependencies]
 h1map = { path = "../h1map" }
 # Converted render models and animation graphs.
-h1models = { path = "../h1models" }
+h1-assets = { path = "../h1-assets" }
 # The collision BSP narrowing copy, shared with the structure.
 h1convert = { path = "../h1convert" }
 # Halo 1's own bitmaps on the converted models' shaders.
-h1bitmaps = { path = "../h1bitmaps" }
 # Halo 1 sounds and looping sounds the converted effects and attachments play.
-h1sounds = { path = "../h1sounds" }
 map.workspace = true
 # The Halo 2 collision BSP form, and the object decoders the proof reads back through.
 tags.workspace = true
@@ -35,3 +35,7 @@ xbe.workspace = true
 variants = { path = "../../formats/variants" }
 # Halo 2's HUD text font measured against Halo 1's digits (tests/hud_layout_disc.rs).
 font = { path = "../../formats/font" }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"

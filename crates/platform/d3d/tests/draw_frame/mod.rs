@@ -12,7 +12,7 @@
 
 #![allow(dead_code)]
 
-use crate::common::*;
+use super::common::*;
 use d3d::backend::{DrawOutcome, ResolvedDraw};
 use d3d::{Backend, Device, GuestMemory, SparseMemory, UploadPolicy};
 use gfx::texture::DecodedTexture;

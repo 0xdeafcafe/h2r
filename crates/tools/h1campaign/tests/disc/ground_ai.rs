@@ -2,7 +2,7 @@
 use std::collections::HashSet;
 use std::io::Cursor;
 
-use h1ai::h2::ScenarioAi;
+use h1campaign::ai::h2::ScenarioAi;
 use h1map::H1Map;
 use map::{FourCC, Map, TagId};
 use tags::{pathfinding::PathfindingData, schema::Memory};
@@ -35,7 +35,7 @@ pub(super) fn check(
     decoded: &[PathfindingData],
     mem: &Memory,
 ) {
-    let source = h1ai::h1::H1Ai::read(h1).unwrap();
+    let source = h1campaign::ai::h1::H1Ai::read(h1).unwrap();
     assert_eq!(source.encounters.len(), ai.zones.len());
     let (mut ground, mut assigned) = (0, 0);
     for (enc, zone) in source.encounters.iter().zip(&ai.zones) {
@@ -150,7 +150,7 @@ pub(super) fn check(
                 // Built — crew), converted under its source name.
                 let rebuilt = source
                     .actor_of(actor as usize)
-                    .is_some_and(|a| h1ai::convert::rebuilds_character(a.kind));
+                    .is_some_and(|a| h1campaign::ai::convert::rebuilds_character(a.kind));
                 let expected = if rebuilt {
                     tag.name.rsplit('\\').next().unwrap()
                 } else {

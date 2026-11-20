@@ -183,7 +183,7 @@ pub fn left_out(l: &H1Lens) -> Vec<String> {
 pub struct Flare {
     pub name: String,
     pub lens: H1Lens,
-    pub bitmap: Option<(String, h1models::Converted)>,
+    pub bitmap: Option<(String, h1_assets::models::Converted)>,
 }
 
 impl Flare {
@@ -194,7 +194,7 @@ impl Flare {
         let bitmap = match lens.bitmap {
             Some(b) => {
                 let t = map.tag(b)?;
-                Some((t.name.clone(), h1bitmaps::convert_bitmap(map, t)?.1))
+                Some((t.name.clone(), h1_assets::bitmaps::convert_bitmap(map, t)?.1))
             }
             None => None,
         };
@@ -219,7 +219,7 @@ impl Flare {
             None => None,
         };
         let root = rebuild(&self.lens, bitmap)?;
-        Ok(h1models::Converted {
+        Ok(h1_assets::models::Converted {
             group: FourCC(*b"lens"),
             root,
             raw: Vec::new(),

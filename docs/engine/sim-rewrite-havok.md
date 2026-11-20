@@ -775,7 +775,7 @@ Coordinator commands per slice (lanes run nothing):
 ```
 cargo test -p sim-havok
 cargo test -p engine --features differential --test sim_havok_differential
-cargo test -p engine --features differential --test sim_physics_differential
+cargo test -p engine --features differential --test it sim_physics_differential::
 cargo test -p agent havok
 ```
 
