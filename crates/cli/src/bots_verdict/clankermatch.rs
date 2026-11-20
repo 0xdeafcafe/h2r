@@ -505,7 +505,7 @@ pub fn verdict(l: &Log, plan: CmPlan) -> Verdict {
     // came with no bot in the game's lobby).
     let start = host_at.and_then(|h| l.index_from(h, game_start));
     let lobby_end = start.unwrap_or(l.texts.len());
-    let counts: Vec<(usize, u64)> = (from..lobby_end)
+    let counts: Vec<(usize, u64)> = (host_at.unwrap_or(0)..lobby_end)
         .filter_map(|i| read_lobby_players(l.texts[i]).map(|n| (i, n)))
         .collect();
     let best = counts.iter().max_by_key(|c| c.1);

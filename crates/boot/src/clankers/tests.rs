@@ -100,7 +100,7 @@ fn the_roster_follows_the_store_as_the_count_changes() {
         on(&s, count, 1);
         assert_eq!(ph.list().len(), count as usize);
     }
-    store.set(ENABLED.key, Value::Bool(false)).unwrap();
+    s.set(ENABLED.key, Value::Bool(false)).unwrap();
     assert!(ph.list().is_empty());
 }
 
