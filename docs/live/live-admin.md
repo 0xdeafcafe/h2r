@@ -556,10 +556,10 @@ rows moved through with up and down, A acts, X does a row's second action
 off. On the dashboard, an admin opens a player's page or selects them in
 the players list to change **can invite** and the **open invite cap**.
 A blank cap allows any number of open invites. Changing the cap leaves
-existing invites in place. Switching the grant off revokes the
-account's open invites, and granting it again leaves those codes dead.
-Admin accounts have invite access through their role. An explicit grant
-can also set their open invite cap.
+existing invites in place. Switching the grant off permanently closes a
+non-admin's open invites. An admin can invite through their role regardless
+of the explicit grant or its cap. Revoking the admin role permanently closes
+the account's open invites, even if it still holds a grant for future invites.
 
 The operator uses `h2 live invite grant <gamertag> [--open-cap N]` and
 `h2 live invite ungrant <gamertag>` with the server key in `--data`.
@@ -614,8 +614,8 @@ permission to revoke that invite.
 - Only the operator grants or revokes the admin role using a server-key
   token with `lxm` `admin.write`.
 - Invites from accounts are logged as their own signed `InviteCreated`
-  events and are rate-limited. Grant revocation closes open invites from
-  that account (§5 and [live-security.md](live-security.md) §3).
+  events and are rate-limited. A ban blocks redemption of a grantee's
+  codes while it is in force (§5 and [live-security.md](live-security.md) §3).
 - Admin publishes go through the same event log as operator ones
   (`TitleFilePublished` by the server key), so the audit trail does not
   say who clicked; the operator's own log of grants and the account reads

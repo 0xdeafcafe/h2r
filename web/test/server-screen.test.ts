@@ -343,6 +343,16 @@ describe("the mock's server endpoints", () => {
     }
   });
 
+  test("an admin keeps both open codes after removing a one-invite grant", async () => {
+    const { account, f } = await setup(true);
+    await writeInviteGrant("http://m/v1", HOST, account, account.gamertag, { open_cap: 1 }, f);
+    const first = await createInvite("http://m/v1", HOST, account, 7, f);
+    const second = await createInvite("http://m/v1", HOST, account, 7, f);
+    await writeInviteGrant("http://m/v1", HOST, account, account.gamertag, null, f);
+    const open = await fetchMyInvites("http://m/v1", HOST, account, f);
+    expect(open.map((i) => i.jti)).toEqual([second.jti, first.jti]);
+  });
+
   test("a custom code: made, listed as custom without the code, matched loosely, unique while open", async () => {
     const { admin, account, f } = await setup(true);
     const made = await createInvite("http://m/v1", HOST, account, 7, f, Date.now(), "Pancake-Night");

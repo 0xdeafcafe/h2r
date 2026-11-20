@@ -258,6 +258,8 @@ impl Live {
     ) -> ApiResult<u64> {
         let by = self.ban_moderator(bearer)?;
         let target = self.ban_target(target)?;
+        // A concurrent invite redemption either finishes before this ban or sees it.
+        let _invite_guard = self.invites.writes.lock().await;
         if self.admins.is_admin_xuid(target, &self.model.read()) {
             return Err(forbidden("admins can't be banned"));
         }

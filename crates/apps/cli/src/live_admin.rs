@@ -132,13 +132,10 @@ pub(crate) fn invite_grant(mut args: Args, enabled: bool) -> Result<()> {
     } else {
         (client.agent.delete(&url), None)
     };
-    let reply: serde_json::Value =
+    let event: live_proto::WireEvent =
         serde_json::from_str(&live_cmd::call(client.authorized(req, token)?, body.as_deref())?)?;
     let action = if enabled { "enabled" } else { "revoked" };
-    println!(
-        "invite permission {action} for {tag} (position {})",
-        reply["position"].as_u64().unwrap_or(0)
-    );
+    println!("invite permission {action} for {tag} (position {})", event.position);
     Ok(())
 }
 

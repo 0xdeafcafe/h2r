@@ -573,6 +573,89 @@ async fn invite_cap_counts_only_open_invites_and_serializes_creation() {
 }
 
 #[tokio::test]
+async fn admin_invites_survive_caps_and_removal_of_an_explicit_grant() {
+    let h = server(true, false).await;
+    let boss = account(&h, "Boss").await;
+    assert_eq!(
+        grant_invites(&h, None, "Boss", Some(1)).await.status,
+        StatusCode::CREATED
+    );
+    let exp = now() + 3600;
+    for _ in 0..2 {
+        let r = create_invite(&h, &boss, created_event(&h, &boss, &random_id(), exp)).await;
+        assert_eq!(r.status, StatusCode::CREATED);
+    }
+    let revoked = h
+        .call(
+            Method::DELETE,
+            "/v1/accounts/Boss/invite-grant",
+            &[operator_auth(&h, lxm::INVITE_GRANTS_WRITE)],
+            Body::empty(),
+        )
+        .await;
+    assert_eq!(revoked.status, StatusCode::OK);
+    assert_eq!(revoked.json()["data"]["keep_open"], true);
+    let list = my_invites(&h, &boss).await.json();
+    let open = list["items"].as_array().unwrap();
+    assert_eq!(open.len(), 2);
+    assert_eq!(
+        sign_up(&h, "Guest", open[0]["invite"].as_str().unwrap())
+            .await
+            .status,
+        StatusCode::CREATED
+    );
+}
+
+#[tokio::test]
+async fn a_grantees_code_cannot_be_redeemed_during_a_ban() {
+    let h = server(true, false).await;
+    let player = account(&h, "Player").await;
+    assert_eq!(
+        grant_invites(&h, None, "Player", None).await.status,
+        StatusCode::CREATED
+    );
+    let r = create_invite(
+        &h,
+        &player,
+        created_event(&h, &player, &random_id(), now() + 3600),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    let code = r.json()["invite"].as_str().unwrap().to_string();
+
+    let path = format!("/v1/admin/bans/{}", player.xuid);
+    let ban = h
+        .call(
+            Method::POST,
+            &path,
+            &[operator_auth(&h, lxm::REPORTS_MODERATE)],
+            json!({"reason": "cooldown"}).to_string(),
+        )
+        .await;
+    assert_eq!(ban.status, StatusCode::CREATED);
+    let refused = sign_up(&h, "Guest", &code).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        refused.json()["message"],
+        "invite: its creator no longer has invite access"
+    );
+
+    let lift = h
+        .call(
+            Method::POST,
+            &format!("{path}/lift"),
+            &[operator_auth(&h, lxm::REPORTS_MODERATE)],
+            json!({}).to_string(),
+        )
+        .await;
+    assert_eq!(lift.status, StatusCode::OK);
+    assert_eq!(
+        sign_up(&h, "Guest", &code).await.status,
+        StatusCode::CREATED
+    );
+}
+
+#[tokio::test]
 async fn granted_accounts_have_their_own_creation_rate() {
     let h = server(true, false).await;
     let a = account(&h, "Player").await;
@@ -676,16 +759,13 @@ async fn revoked_invites_and_ex_admins_invites_do_not_sign_up() {
     assert_eq!(r.status, StatusCode::OK);
     let r = sign_up(&h, "Orphan", &code).await;
     assert_eq!(r.status, StatusCode::FORBIDDEN);
-    assert!(
-        r.json()["message"]
-            .as_str()
-            .unwrap()
-            .contains("no longer an admin")
-    );
+    assert_eq!(r.json()["message"], "invite: revoked");
+    assert_eq!(grant_invites(&h, None, "Nobody", None).await.status, StatusCode::CREATED);
+    assert_eq!(sign_up(&h, "StillOrphan", &code).await.status, StatusCode::FORBIDDEN);
 
     let (_, v) = status(&h, Some(h.bearer(&boss, ADMIN_READ)), None, &[]).await;
-    assert_eq!(v["invites"]["revoked"], 1);
-    assert_eq!(v["invites"]["open"], 1);
+    assert_eq!(v["invites"]["revoked"], 2);
+    assert_eq!(v["invites"]["open"], 0);
 }
 
 #[tokio::test]

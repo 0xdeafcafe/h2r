@@ -137,9 +137,14 @@ export class Admin {
       const data = { xuid: a.xuid, gamertag: a.gamertag, by: c.author };
       if (req.method === "DELETE") {
         if (!this.grants.delete(a.xuid)) return fail(409, "conflict", "this account has no invite grant");
-        const by = this.world.author(a).author;
-        for (const i of this.invites.values()) if (i.by === by && this.state(i) === "open") i.revoked = true;
-        const [ev] = this.world.append(`account-${a.xuid}`, [{ type: "InviteGrantRevoked", data }], null);
+        const keepOpen = this.isAdmin(a);
+        if (!keepOpen) {
+          const by = this.world.author(a).author;
+          for (const i of this.invites.values()) if (i.by === by && this.state(i) === "open") i.revoked = true;
+        }
+        const [ev] = this.world.append(`account-${a.xuid}`, [{
+          type: "InviteGrantRevoked", data: keepOpen ? { ...data, keep_open: true } : data,
+        }], null);
         return ok(ev);
       }
       const grant: unknown = await req.json().catch(() => null);
@@ -188,7 +193,7 @@ export class Admin {
       const now = Date.now() / 1000;
       if (typeof jti !== "string" || jti.length < 16) return fail(400, "invalid", "jti is 16 to 64 of [A-Za-z0-9_-]");
       if (typeof exp !== "number" || exp <= now || exp > now + MAX_DAYS * 86400 + 300) return fail(400, "invalid", `exp is in the future, at most ${MAX_DAYS} days`);
-      const cap = this.grants.get(c.xuid)?.open_cap;
+      const cap = c.admin ? null : this.grants.get(c.xuid)?.open_cap;
       if (cap != null && [...this.invites.values()].filter((i) => i.by === c.author && this.state(i) === "open").length >= cap) {
         return fail(409, "conflict", `open invite limit reached (${cap})`);
       }

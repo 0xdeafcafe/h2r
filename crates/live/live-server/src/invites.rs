@@ -12,8 +12,8 @@
 //! open invites. Older server-signed JWS codes also redeem.
 //!
 //! The server signs [`GRANTED`] and [`GRANT_REVOKED`] on the target's
-//! account stream. Revocation closes its open invites during log replay
-//! and while the server is running.
+//! account stream. The projection closes open invites on admin revocation
+//! and when a non-admin loses its grant.
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -251,7 +251,9 @@ impl Subscriber for Invites {
                     r.revoked = true;
                 }
             }
-            (_, GRANTED | GRANT_REVOKED, _) => self.apply_grant(event),
+            (_, GRANTED | GRANT_REVOKED | crate::admin::ADMIN_REVOKED, _) => {
+                self.apply_permission_change(event);
+            }
             (_, types::ACCOUNT_CREATED, _) => {
                 let (Some(jti), Some(xuid)) = (
                     b.data.get("invite").and_then(Value::as_str),
@@ -272,7 +274,7 @@ impl Subscriber for Invites {
 }
 
 impl Invites {
-    fn apply_grant(&self, event: &RecordedEvent) {
+    fn apply_permission_change(&self, event: &RecordedEvent) {
         let b = &event.body;
         let Some(Author::Server(server)) = Author::parse(&b.author) else {
             return;
@@ -291,7 +293,12 @@ impl Invites {
                     .insert(xuid, InviteGrant { open_cap });
             }
         } else if let Some(at) = parse_time(&b.at) {
-            self.grants.write().unwrap().remove(&xuid);
+            if b.kind == GRANT_REVOKED {
+                self.grants.write().unwrap().remove(&xuid);
+                if b.data["keep_open"].as_bool() == Some(true) {
+                    return;
+                }
+            }
             let by = Author::Account { xuid, server }.to_string();
             let at = at.unix_timestamp();
             for r in self.by_jti.write().unwrap().values_mut() {
@@ -314,9 +321,9 @@ pub fn check_redeemable(live: &Live, jti: &str) -> Result<(), ApiError> {
     }
     if let Some(xuid) = r.creator()
         && !live.admins.is_admin_xuid(xuid, &live.model.read())
-        && live.invites.grant(xuid).is_none()
+        && (live.invites.grant(xuid).is_none() || live.bans.read().in_force(xuid, now()).is_some())
     {
-        return Err(forbidden("invite: whoever made it is no longer an admin"));
+        return Err(forbidden("invite: its creator no longer has invite access"));
     }
     Ok(())
 }
@@ -447,7 +454,8 @@ pub async fn create(
     let (admin, grant) = permission(live, &author)?;
     let by = author.to_string();
     let now = now();
-    if let Some(cap) = grant.and_then(|g| g.open_cap)
+    if !admin
+        && let Some(cap) = grant.and_then(|g| g.open_cap)
         && live.invites.open_count(&by, now) >= cap.get() as usize
     {
         return Err(ApiError::new(
@@ -712,6 +720,11 @@ async fn change_grant(
                 ErrorCode::Conflict,
                 "this account has no invite grant",
             ));
+        }
+        // Persist this decision so replay also respects the role held at revocation,
+        // including an admin supplied by configuration or the embedded server.
+        if live.admins.is_admin_xuid(xuid, &live.model.read()) {
+            data["keep_open"] = json!(true);
         }
         (GRANT_REVOKED, StatusCode::OK)
     };

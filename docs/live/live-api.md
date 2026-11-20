@@ -47,7 +47,7 @@ Event types so far (payload fields):
 |---|---|---|
 | `account-<xuid>` | `AccountCreated` | `xuid`, `gamertag` |
 | `account-<xuid>` | `KeyAdded`, `KeyRevoked` | `jwk`, `kid` (security §1) |
-| `account-<xuid>` | `InviteGrantSet`, `InviteGrantRevoked` | `xuid`, `gamertag`, `by`, plus `open_cap` for `InviteGrantSet` ([Server invites](#server-invites)) |
+| `account-<xuid>` | `InviteGrantSet`, `InviteGrantRevoked` | `xuid`, `gamertag`, `by`, plus `open_cap` for `InviteGrantSet` or `keep_open: true` when revoking a current admin's explicit grant ([Server invites](#server-invites)) |
 | `account-<xuid>` | `FriendRequested`, `FriendAccepted`, `FriendDeclined`, `FriendRemoved` | `from`/`to`, or `by`/`friend` ([Friends](#friends), below) |
 | `gamertag-<lower>` | `GamertagReserved` | `xuid` |
 | `title-<id>-file-<name>` | `TitleFilePublished` | `title_id`, `name`, `sha256`, `size` |
@@ -817,7 +817,7 @@ except account creation. Signed bodies are sent raw as a compact JWS with
 | `PUT /v1/titles/{title}/files/{name}` | raw bytes, operator token | publish a title file (max 2 MiB) |
 | `POST /v1/events` | one compact JWS (an event on a stream the author may write) | append; 201 `{position}` |
 | `POST /v1/accounts/{gamertag}/invite-grant` | `{"open_cap": N}` with an admin or operator's `invite-grants.write` token | enable or update invite access. 201 `InviteGrantSet` wire event |
-| `DELETE /v1/accounts/{gamertag}/invite-grant` | no body, same token scope | revoke invite access and the account's open invites. 200 `InviteGrantRevoked` wire event or 409 if there is no explicit grant |
+| `DELETE /v1/accounts/{gamertag}/invite-grant` | no body, same token scope | remove the explicit grant and close the account's open invites unless it is an admin. 200 `InviteGrantRevoked` wire event or 409 if there is no explicit grant |
 | `POST /v1/invites` | `invites.write` token. Signed `InviteCreated {jti, exp}` for an account, bare or in `{"event": <jws>, "code": "..."}`. No body for operator form (`?days=&code=`) | create a single-use invite. 201 `{invite, custom, jti, exp, position}` |
 | `POST /v1/invites/{jti}/revoke` | `invites.write` token and signed `InviteRevoked {jti}` | end an open invite. Admins can end any invite and granted accounts can end their own |
 | `POST /v1/games` | `GameStarted` data without `game_id` | starts a game; returns `{game_id}` |
@@ -841,11 +841,13 @@ for `POST /v1/invites`:
 {"error":"forbidden","message":"an admin must enable invite access for this account"}
 ```
 
-With a grant, creating at the open invite cap returns 409. Exceeding the
+For a non-admin with a grant, creating at the open invite cap returns 409. Exceeding the
 creation rate returns 429. Non-admin accounts with a grant have a burst
 of three, with one invite slot replenished per minute. Admins have a
 burst of ten and the same refill rate. Redemption or revocation frees
-open-cap space. Lowering a cap leaves existing invites open.
+open-cap space. Lowering a cap leaves existing invites open. Revoking the
+admin role permanently closes the account's open invites. A ban blocks
+redemption of a grantee's codes while it is in force.
 
 Both list endpoints return `{items, position}`. Each item has `jti`,
 `by`, `at`, `exp`, `state` (`open`, `used`, `revoked` or `expired`) and
