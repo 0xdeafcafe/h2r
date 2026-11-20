@@ -749,7 +749,16 @@ h2 agent render.parity '{"arm": true}'
   framescene.md, slice 3), its model decorator draws (one per
   placement), their instances and the draws the guest still draws
   (`decorators`, `decorator_instances`, `decorator_remainder`;
-  native-decorators.md), and carried ops by slot
+  native-decorators.md), its late passes when they ran (framescene.md,
+  slice 5): `fog` (layer 16) and `water` (layer 6), each `{draws, items,
+  materials, parts, drawn, kept, device_words}` (whether the layer's own
+  gate held, its items in the list, the materials and parts the native
+  stage draws, whether the stage took the layer, the items the guest
+  still draws, the device fog words of 7 that read), and `post`,
+  `{colour, late, view_kind, screen_effects, screen_effects_gated,
+  colour_pass, effects}` (`render_screen_effects`' arguments and gates,
+  whether the colour pass ran, the screen effects drawn under it); each
+  absent when its draw did not run in the view; and carried ops by slot
   and by `CameraUse` (empty while no stage carries ops); `counters`
   (`scenes_sealed`, `scenes_unsealed`, `scene_views`, `scene_no_camera`,
   `scene_refused_writes`, `scene_layers`, `scene_layer_items`,
@@ -767,11 +776,18 @@ h2 agent render.parity '{"arm": true}'
   `scene_light_entry_remainder_<cause>` (sorted entries left to the
   guest's handlers, by `scene_extract::light_groups::Cause`: `memory`,
   `callback`, `owner`, `section`, `range`, `state`, `subparts`,
-  `material`, `pose`; framescene.md, slice 4), and from `d3d::scene_stage`
-  `scene_stages_world`, `scene_stages_objects`, the scene stages queued
-  to the render thread, and `scene_dropped_world`,
-  `scene_dropped_objects`, those it could not record after the guest
-  skipped their items; framescene.md, slice 2; with `frame-scene.layers`
+  `material`, `pose`; framescene.md, slice 4),
+  `scene_fog_views`, `scene_fog_gate_held`, `scene_fog_drawn`,
+  `scene_fog_parts` and the same four for `scene_water_` (late layers
+  written, of those whose gate held, those the native stage took, and
+  the parts it took), `scene_post_views`, `scene_post_colour`,
+  `scene_post_effects` and `scene_post_unplaced` (post calls whose words
+  did not read, and colour passes or screen effects with no post call of
+  their view; slice 5), and from `d3d::scene_stage`
+  `scene_stages_<stage>`, the scene stages queued to the render thread,
+  and `scene_dropped_<stage>`, those it could not record after the guest
+  skipped their items, for `world` and `objects` (framescene.md, slice
+  2) and `fog` and `water` (slice 5); with `frame-scene.layers`
   in `H2_FEATURES`, `layer_plan_asked`, `layer_plan_drawn`,
   `layer_plan_items` and the plan's outcomes by layer,
   `layer_plan_<layer>_taken` and `layer_plan_<layer>_refused_<cause>`
@@ -781,8 +797,10 @@ h2 agent render.parity '{"arm": true}'
   (`render_bridge::entry_census`; framescene.md, slice 4), totals since
   the start: `by_entry`, keyed by guest entry (`layer.<site>.<layer>`
   with site `scene`, `alternate`, `first_person`, `light`,
-  `object_shadow` or `other`; `light_passes`, `object_shadow`,
-  `screen_effects`), each `{calls, d3d_draws, seed_steps,
+  `object_shadow` or `other`, the late passes' fog and water calls
+  being `layer.scene.16` and `layer.scene.6`; `light_passes`,
+  `object_shadow`, `screen_effects`, and under it `colour_pass` and
+  `screen_effect`), each `{calls, d3d_draws, seed_steps,
   effects_seed_steps, seed_unmatched, animation_gets,
   particle_updates}`: the guest draws handed to the D3D backend under
   the entry, the steps of the shared random seeds `+0` and `+4`, calls

@@ -21,8 +21,11 @@
 //!   `0x0002d140` draws it (S: the scenario's screen effects; 03a's map
 //!   holds one `egor`, `effects\screen_effects\blur`). With `late`,
 //!   `0x0002df00` last.
+//!
+//! The frame step reads it into the view's `frame_scene::PostParams`
+//! (`crate::late::post`, docs/graphics/framescene.md, slice 5).
 
-use crate::camera::GuestRead;
+use crate::GuestRead;
 
 /// `render_screen_effects`.
 pub const RENDER_SCREEN_EFFECTS: u32 = 0x0001_3870;
@@ -91,7 +94,7 @@ impl PostFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::camera::tests::Mem;
+    use crate::testing::Mem;
 
     #[test]
     fn the_frame_reads_its_gates() {

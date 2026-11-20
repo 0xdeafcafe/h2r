@@ -141,18 +141,23 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         Some(word) if word & 0x10 == 0 => {}
         Some(_) => {
             WATER_GATED.fetch_add(1, Ordering::Relaxed);
+            crate::scene_step::late_kept(&*m.0, WATER_LAYER as u8, false);
             return;
         }
         None => return,
     }
-    // A layer 6 without a structure item draws no world water.
+    // A layer 6 without a structure item draws no world water. As the
+    // fog's: the scene records what the guest keeps, the glue what it
+    // takes.
     if skip::has_structure_items(&m, WATER_LAYER) != Some(true) {
+        crate::scene_step::late_kept(&*m.0, WATER_LAYER as u8, true);
         return;
     }
     let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
         return;
     };
     let Some(cleared) = host.ask(&mut *m.0) else {
+        crate::scene_step::late_kept(&*m.0, WATER_LAYER as u8, true);
         return;
     };
     if cleared.items.is_empty() {

@@ -10,6 +10,7 @@
 pub mod builder;
 pub mod camera;
 pub mod decorator;
+pub mod late;
 pub mod layer;
 pub mod light;
 pub mod light_group;
@@ -21,6 +22,9 @@ pub mod summary;
 pub use builder::{BuildError, FreeList, InstanceInput, SceneBuilder};
 pub use camera::{Camera, D24_SCALE, Mat4, RenderCamera, mul, transform, w_depth};
 pub use decorator::{DecoratorCounts, DecoratorDraw, DecoratorInstance};
+pub use late::{
+    DeviceFog, FOG_WORDS, FogState, LateCounts, LateInput, LateLayer, LateMaterial, LatePart, PostEffect, PostParams, WaterState,
+};
 pub use layer::{LayerInputs, LayerItem, LayerOwner, LayerPass};
 pub use light::{LightStep, LightTarget, SceneLight};
 pub use light_group::{GroupSite, LightBinding, LightEntry, LightGroup, LightPose, LightStream, ObjectShadow, PROJECTION_ROWS, Topology};
