@@ -3,7 +3,7 @@
 //! the device: behind the render thread with the real shader judge
 //! (`ThreadedBackend` over a backend judged by `Nv2aJudge`), and for
 //! reference the device alone. Each runs with draw sharing on and off
-//! (`Device::set_draw_sharing`, `H2_D3D_DRAW_SHARING`), alternating rounds
+//! (`Device::set_draw_sharing`), alternating rounds
 //! so a loaded machine slows both alike; the best round's mean and the
 //! median frame are reported.
 //!

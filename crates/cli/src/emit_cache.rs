@@ -127,13 +127,11 @@ mod tests {
     #[test]
     fn the_key_covers_access_accounting_and_its_default() {
         let passes = emit::opt::Passes::parse("all").unwrap();
-        let on = settings(&passes, emit::Codegen { accounting: true, ..emit::Codegen::default() });
-        let off = settings(&passes, emit::Codegen { accounting: false, ..emit::Codegen::default() });
+        let on = settings(&passes, emit::Codegen { accounting: true });
+        let off = settings(&passes, emit::Codegen { accounting: false });
         assert_ne!(on, off);
         assert_eq!(settings(&passes, emit::Codegen::parse(None).unwrap()), on);
         assert_eq!(settings(&passes, emit::Codegen::parse(Some("0")).unwrap()), off);
-        let all_locals = settings(&passes, emit::Codegen { reg_homes: false, ..emit::Codegen::parse(None).unwrap() });
-        assert_ne!(on, all_locals, "H2_REG_HOMES");
         let tree = Tree::new("settings");
         let exe = tree.0.join("generator");
         fs::write(&exe, "generator").unwrap();

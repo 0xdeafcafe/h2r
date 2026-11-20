@@ -54,6 +54,9 @@ struct Execution {
     coop: crate::coop_live::film::Options,
     old_glue: bool,
     trampoline: bool,
+    /// Old films: the retired H2_PIPELINE_RENDER alias. New films carry the
+    /// pipelined frame in H2_FEATURES and always write false here.
+    #[serde(default)]
     pipeline_render: bool,
     #[serde(default, with = "HandbackWire")]
     pipeline_handback: HandbackOptions,
@@ -142,7 +145,7 @@ impl Execution {
             coop: crate::coop_live::film::Options::capture(),
             old_glue: std::env::var_os("H2_BOOT_OLD_GLUE").is_some(),
             trampoline: std::env::var("H2_BOOT_TRAMPOLINE").as_deref() == Ok("1"),
-            pipeline_render: std::env::var(pipeline_render::ENV).as_deref() == Ok("1"),
+            pipeline_render: false,
         })
     }
 }
@@ -159,11 +162,13 @@ pub fn configure_replay_child<R: Read + Seek>(
         return configure_handback(&HandbackOptions::default(), child);
     };
     let e = start.execution;
+    if e.pipeline_render {
+        child.env("H2_FEATURES", switches.with(pipeline_render::SWITCH, true).spec());
+    }
     configure_handback(&e.pipeline_handback, child)?;
     for (name, enabled) in [
         ("H2_BOOT_OLD_GLUE", e.old_glue),
         ("H2_BOOT_TRAMPOLINE", e.trampoline),
-        (feature::pipeline_render::ENV, e.pipeline_render),
     ] {
         if enabled {
             child.env(name, "1");

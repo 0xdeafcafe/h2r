@@ -1,5 +1,5 @@
 //! This crate's integration test files as one test binary: one link and one
-//! executable instead of 18 (docs/dev/build-speed.md).
+//! executable instead of 16 (docs/dev/build-speed.md).
 //!
 //! Each file stays where it was and is a module here. Its tests gain the
 //! file's name as a prefix, so `cargo test -p engine --test it colour_pass_differential::`
@@ -23,10 +23,6 @@ mod light_constants_differential;
 mod light_passes;
 #[path = "light_passes_differential.rs"]
 mod light_passes_differential;
-#[path = "render_loop_differential.rs"]
-mod render_loop_differential;
-#[path = "scene_differential.rs"]
-mod scene_differential;
 #[path = "screen_effects_differential.rs"]
 mod screen_effects_differential;
 #[path = "screen_grid_differential.rs"]

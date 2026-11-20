@@ -1,8 +1,7 @@
 # Pipelined rendering
 
 Enable the worker with `H2_FEATURES=impl.render.pipelined_frame=on`. It is
-off by default. `H2_PIPELINE_RENDER=1` supplies the default when the exact
-switch is unset. The switch is independent of `impl.render.native`.
+off by default. The switch is independent of `impl.render.native`.
 
 ## Tick ordering and hash parity
 
@@ -1113,10 +1112,9 @@ Everything else is in `boot::render_thread::REFUSED`, with its reason:
   `SCENE_TRANSPARENTS` returns. The return continuation takes the
   game-thread fallback. Inside the call, an eligible indexed draw uses
   the native vertex binding at its resolved position in the D3D stream.
-- `render-timing`, `render-loop` and `render-census` are off by default.
-  Timing writes the game thread's frame table and needs after
-  continuations. The render-loop ports park in Rust continuations around
-  their guest calls. Pipelining is off while the census is on.
+- `render-timing` and `render-census` are off by default. Timing writes
+  the game thread's frame table and needs after continuations.
+  Pipelining is off while the census is on.
 - On `RENDER_FRAME`, the pipeline's own implementation and map-slots'
   observer run on the game thread.
 - Game-thread points have after parts: health, precision, level-boot,
@@ -1498,8 +1496,8 @@ pipelined frames from `render.stats`):
 - 33-34 fps (cpu 23-29 ms a frame), no better than stock.
 
 So the measured overlap is about 1.3 ms a frame, and the hand-back alone
-costs as much. Pipelining stays **off by default** (`H2_PIPELINE_RENDER`
-unset). It is a research switch, not a speed-up.
+costs as much. Pipelining stays **off by default**
+(`impl.render.pipelined_frame` unset). It is a research switch, not a speed-up.
 
 What would move the join later, so the tick runs beside the render:
 

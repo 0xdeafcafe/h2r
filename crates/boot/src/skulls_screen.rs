@@ -49,7 +49,6 @@
 //! (`list_class::LEFT_EVENT` has the trace), so a held A raises no second
 //! one, and a continue within [`GUARD`] of the page opening (sooner than
 //! two presses can be made) is dropped as that press seen twice.
-//! `H2_SKULLS_GUARD_MS` changes it.
 //!
 //! **The page** is a [`SkullsScreen`] (rows, strings and descriptions in
 //! [`skulls_menu`]) on a class with the level select's layout
@@ -113,12 +112,6 @@ fn difficulty_name(row: i16) -> &'static str {
 /// the gap between two presses of a thumb.
 pub const GUARD: Duration = crate::ui_kit::input::OPENER_GUARD;
 
-/// `H2_SKULLS_GUARD_MS`: the guard in milliseconds, else [`GUARD`].
-pub fn guard_from(v: Option<&str>) -> Duration {
-    v.and_then(|v| v.trim().parse().ok())
-        .map_or(GUARD, Duration::from_millis)
-}
-
 /// The page's class: the level select's layout, the picture and the
 /// description; A on Start Level goes on, left, right and A on the other
 /// rows change them, X and Start are not the action's, and the destructor
@@ -134,7 +127,7 @@ pub fn class(
     let act: Action = Arc::new(move |cx, page| {
         let flow = Arc::clone(&on_action);
         Box::pin(async move {
-            let mode = Continue::from_env(flow.pending().is_some_and(|p| p.from_select));
+            let mode = Continue::for_press(flow.pending().is_some_and(|p| p.from_select));
             action(&cx, &flow, page, mode).await
         })
     });
@@ -287,20 +280,6 @@ impl Default for PageFlow {
 }
 
 impl PageFlow {
-    /// With the guard read from `H2_SKULLS_GUARD_MS`; the line to log when
-    /// it is set.
-    pub fn from_env() -> (Self, Option<String>) {
-        let v = std::env::var("H2_SKULLS_GUARD_MS").ok();
-        let guard = guard_from(v.as_deref());
-        let line = v.map(|v| format!("skulls page: H2_SKULLS_GUARD_MS={v}: guard {guard:?}"));
-        (
-            PageFlow {
-                guard,
-                ..Self::default()
-            },
-            line,
-        )
-    }
     fn lock(&self) -> std::sync::MutexGuard<'_, (Option<Pending>, Phase)> {
         self.kept.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -498,21 +477,6 @@ impl Continue {
         } else {
             Continue::Stay
         }
-    }
-    /// `H2_SKULLS_CONTINUE`: `freed` or `stay` to force one for trying in
-    /// game, else [`Continue::for_press`].
-    pub fn parse(v: Option<&str>, from_select: bool) -> Continue {
-        match v {
-            Some("freed") => Continue::Freed,
-            Some("stay") => Continue::Stay,
-            _ => Continue::for_press(from_select),
-        }
-    }
-    fn from_env(from_select: bool) -> Continue {
-        Continue::parse(
-            std::env::var("H2_SKULLS_CONTINUE").ok().as_deref(),
-            from_select,
-        )
     }
 }
 
@@ -1112,17 +1076,11 @@ mod tests {
     }
 
     /// The level select's (and New Campaign's) difficulty goes straight
-    /// on with the page up; a lobby's closes the page first. The variable
-    /// forces either, for trying in game.
+    /// on with the page up; a lobby's closes the page first.
     #[test]
     fn the_order_follows_the_lists_mode() {
         assert_eq!(Continue::for_press(false), Continue::Stay);
         assert_eq!(Continue::for_press(true), Continue::Freed);
-        assert_eq!(Continue::parse(None, false), Continue::Stay);
-        assert_eq!(Continue::parse(None, true), Continue::Freed);
-        assert_eq!(Continue::parse(Some("freed"), false), Continue::Freed);
-        assert_eq!(Continue::parse(Some("stay"), true), Continue::Stay);
-        assert_eq!(Continue::parse(Some("now"), false), Continue::Stay, "gone");
     }
 
     const PAGE: u32 = 0x0010_0000;
@@ -1484,11 +1442,7 @@ mod tests {
     }
 
     #[test]
-    fn the_guard_comes_from_the_env() {
-        assert_eq!(guard_from(None), GUARD);
-        assert_eq!(guard_from(Some("0")), Duration::ZERO);
-        assert_eq!(guard_from(Some(" 120 ")), Duration::from_millis(120));
-        assert_eq!(guard_from(Some("soon")), GUARD);
+    fn the_guard_is_under_a_second_tap() {
         assert!(
             GUARD < Duration::from_millis(80),
             "under a quick second tap"

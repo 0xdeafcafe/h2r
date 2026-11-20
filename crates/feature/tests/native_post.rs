@@ -16,20 +16,16 @@ fn placed(switches: &str) -> Option<feature::plan::Plan> {
 }
 
 #[test]
-fn the_switch_places_it_and_the_ab_places_it_observing() {
-    // One test: the A/B's placement is process-wide.
-    assert!(placed("impl.render.native_post=off").is_none(), "off: nothing");
-    native_post::place_for_capture(true);
-    assert!(placed("impl.render.native_post=off").is_some(), "the A/B's D3D side");
-    native_post::place_for_capture(false);
-    assert!(placed("impl.render.native_post=off").is_none());
-    assert!(placed("impl.render.native_post=on,render-timing").is_some(), "the call still runs: timing is fine");
+fn the_master_switch_places_it() {
+    assert!(placed("impl.render.native=off").is_none(), "off: nothing");
+    assert!(placed("").is_some(), "on by default");
+    assert!(placed("render-timing").is_some(), "the call still runs: timing is fine");
 }
 
 /// Off or on, it holds nothing a load must drop: never a blocker.
 #[test]
 fn its_snapshot_policy_is_stateless_on_or_off() {
-    for switches in ["impl.render.native_post=off", ""] {
+    for switches in ["impl.render.native=off", ""] {
         let mut r = Registry::new(Switches::parse(switches).unwrap());
         assert!(r.add(&NativePost).unwrap());
         let plan = r.build(&Base).unwrap();
@@ -49,7 +45,7 @@ fn its_snapshot_policy_is_stateless_on_or_off() {
 
 #[test]
 fn the_colour_pass_has_a_return_boundary() {
-    let plan = placed("impl.render.native_post=on").expect("placed");
+    let plan = placed("").expect("placed");
     let chain = plan
         .chains
         .values()
@@ -63,14 +59,14 @@ const ESP: u32 = 0x0060_0000;
 #[derive(Default)]
 struct Stub {
     arm: Mutex<bool>,
-    seen: Mutex<Vec<(CallSite, [u32; 7], Fp, bool)>>,
+    seen: Mutex<Vec<(CallSite, [u32; 7], Fp)>>,
     effects: Mutex<Vec<(CallSite, ScreenEffect, Fp)>>,
     finished: Mutex<Vec<(PostCall, u32)>>,
 }
 
 impl Host for Stub {
-    fn colour_pass(&self, _mem: &mut dyn GuestMemory, site: CallSite, args: [u32; 7], fp: Fp, native: bool) -> bool {
-        self.seen.lock().unwrap().push((site, args, fp, native));
+    fn colour_pass(&self, _mem: &mut dyn GuestMemory, site: CallSite, args: [u32; 7], fp: Fp) -> bool {
+        self.seen.lock().unwrap().push((site, args, fp));
         *self.arm.lock().unwrap()
     }
 
@@ -97,18 +93,18 @@ fn the_host_gets_the_calls_words() {
     let before = native_post::counts();
 
     // No host: nothing armed, still counted.
-    assert!(!native_post::on_colour_pass(&mut m, ESP, fp, true));
+    assert!(!native_post::on_colour_pass(&mut m, ESP, fp));
 
     let stub = Arc::new(Stub::default());
     native_post::set_host(stub.clone());
-    assert!(!native_post::on_colour_pass(&mut m, ESP, fp, false));
-    assert_eq!(stub.seen.lock().unwrap().last().copied(), Some((site, args, fp, false)));
+    assert!(!native_post::on_colour_pass(&mut m, ESP, fp));
+    assert_eq!(stub.seen.lock().unwrap().last().copied(), Some((site, args, fp)));
     *stub.arm.lock().unwrap() = true;
-    assert!(native_post::on_colour_pass(&mut m, ESP, fp, true));
-    assert_eq!(stub.seen.lock().unwrap().last().copied(), Some((site, args, fp, true)));
+    assert!(native_post::on_colour_pass(&mut m, ESP, fp));
+    assert_eq!(stub.seen.lock().unwrap().last().copied(), Some((site, args, fp)));
     // An unreadable stack: the host is not asked.
     let asked = stub.seen.lock().unwrap().len();
-    assert!(!native_post::on_colour_pass(&mut m, 0x0001_0000, fp, true));
+    assert!(!native_post::on_colour_pass(&mut m, 0x0001_0000, fp));
     assert_eq!(stub.seen.lock().unwrap().len(), asked);
 
     // A screen effect: EAX the datum, then the four words.
@@ -140,7 +136,7 @@ fn the_host_gets_the_calls_words() {
 
 #[test]
 fn the_screen_effect_hook_is_the_switchs_only() {
-    let on = placed("impl.render.native_post=on").expect("placed");
+    let on = placed("").expect("placed");
     assert!(on.text().contains("native_post_screen_effect"));
     let chain = on
         .chains
@@ -148,21 +144,4 @@ fn the_screen_effect_hook_is_the_switchs_only() {
         .find(|c| c.point.name == "SCREEN_EFFECT")
         .expect("placed at SCREEN_EFFECT");
     assert!(chain.needs_shadow(), "the return continuation closes the call");
-}
-
-/// `H2_POST_TRACE`: a count (empty: the default), `,after` to note the
-/// returns too; anything else traces nothing.
-#[test]
-fn the_trace_variable_is_a_count_and_after() {
-    use native_post::{TraceSpec, TRACE_CALLS};
-    let spec = |calls, after| Some(TraceSpec { calls, after });
-    assert_eq!(TraceSpec::parse(""), spec(TRACE_CALLS, false));
-    assert_eq!(TraceSpec::parse("8"), spec(8, false));
-    assert_eq!(TraceSpec::parse("8,after"), spec(8, true));
-    assert_eq!(TraceSpec::parse(" 2 , after "), spec(2, true));
-    assert_eq!(TraceSpec::parse(",after"), spec(TRACE_CALLS, true));
-    for bad in ["0", "-1", "x", "8,before", "8,after,x"] {
-        assert_eq!(TraceSpec::parse(bad), None, "{bad}");
-    }
-    assert_eq!(native_post::return_line("0x0002d140", 0xffff_ff01), "0x0002d140 returned, AL 1");
 }

@@ -272,8 +272,7 @@ pending ([theater.md](../game/theater.md) "In-memory machine forks").
   generalised to async entries (guest calls served by the interpreter).
   It needs the owner's XBE, is pinned by hash and skips without it.
 - **Call captures** for state too rich to synthesise: at the n-th call of
-  a point, dump registers and guest RAM (the mechanism behind
-  `H2_BOOT_DUMP_RAW`), then run the differential test from that state.
+  a point, dump registers and guest RAM, then run the differential test from that state.
   Captures hold game memory. They stay in the user's data directory and
   are never committed.
 - **Run-level comparison**: the same input replay with the entry on
@@ -605,16 +604,14 @@ an exclusive split per stage ([gameplay-budget.md](../perf/gameplay-budget.md), 
 front-end versus simulation"). It answers how much of the game thread's
 guest time 7a-7d can move at all.
 
-**7a status.** `render_views`, `render_game_view` and
-`render_scene_passes` are ported (`engine::render_loop`, placed by the
-`render-loop` feature under `impl.render.views`, `impl.render.game_view`
-and `impl.render.scene_passes`, off by default) and agree with the lifted
-originals call for call. One bookkeeping port under them is built:
-the shader draw's render-state list (`impl.render.states`, and
-`impl.render.states_skip`, which skips `SetRenderState_Simple` calls for
-values D3D's shadow already holds). Ports of the layer entries' sort and
-the transparents' sort were built and removed: about 0.01 ms a frame
-([render-switches.md](../graphics/render-switches.md), "Removed").
+**7a status.** `render_views`, `render_game_view`, `render_scene_passes`,
+the layer draw and the shader draw's render-state list were ported, agreed
+with the lifted originals call for call, and were removed unused in
+`ebaa4a0b`: none saved measurable time, and each placed port cost a hooked
+call. The layer entries' sort and the transparents' sort went the same
+way (about 0.01 ms a frame). The render-state list stays in
+`engine::render_loop::states`: the native world's walk runs it, skipping
+`SetRenderState_Simple` calls for values D3D's shadow already holds.
 
 The reads, the measured
 cost of each scene-pass call site and the next targets are in
@@ -1075,7 +1072,7 @@ pub static FOV: Def = Def {
 
 impl Feature for Fov {
     fn manifest(&self) -> Manifest { Manifest::new("fov", "Field of view", Sim::View)
-        .legacy_off("H2_NO_FOV_ROW").doc("docs/game/settings-menu.md") }
+        .doc("docs/game/settings-menu.md") }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         let fov: Setting<u32> = b.setting(&FOV);
         b.camera().modifier(move |cam: &mut FirstPerson, _| {

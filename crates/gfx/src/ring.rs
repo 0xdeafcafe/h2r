@@ -203,6 +203,10 @@ struct SubmissionRing {
     patches: Option<wgpu::CommandEncoder>,
     // Repeated view rows can feed multiple destinations from one staged span.
     patch_sources: std::collections::HashMap<(usize, usize), (u64, u64)>,
+    // Persistent buffers a command recorded with this arena writes in draw
+    // order ([`EncoderUploads`]). Kept until the arena returns: its commands
+    // can land in a later submission than the one it started.
+    ordered: std::collections::HashSet<wgpu::Buffer>,
     scratch: Vec<u8>,
 }
 
@@ -250,6 +254,7 @@ impl Drop for SubmissionStorage {
         // They hold uniforms and layouts, never references to map textures.
         ring.resident.truncate(ring.next_run.saturating_add(64));
         ring.patch_sources.clear();
+        ring.ordered.clear();
         ring.next_run = 0;
         ring.upload.staged.clear();
         ring.upload.reset();
@@ -273,7 +278,8 @@ impl SubmissionUploads {
                         | wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::INDEX,
                     256 << 10),
                 uniform_groups: Vec::new(),
-                resident: Vec::new(), next_run: 0, patches: None, patch_sources: Default::default(), scratch: Vec::new(),
+                resident: Vec::new(), next_run: 0, patches: None, patch_sources: Default::default(),
+                ordered: Default::default(), scratch: Vec::new(),
             })
         });
         let before = ring.upload.generation();
@@ -432,6 +438,31 @@ impl SubmissionUploads {
         ring.patches.take().map(wgpu::CommandEncoder::finish)
     }
 
+    /// Copy `bytes` into a persistent buffer ahead of every command of the
+    /// submission whose [`upload_commands`](Self::upload_commands) take it.
+    /// The caller keeps one content per range for that submission
+    /// (`d3d::GfxBackend` decides at commit, in submission order).
+    pub fn write_front(&self, device: &wgpu::Device, queue: &wgpu::Queue, dst: &wgpu::Buffer, offset: u64, bytes: &[u8]) {
+        if bytes.is_empty() { return; }
+        crate::churn::upload_bytes(bytes.len());
+        self.with_ring(device, |ring| {
+            let (src, at) = ring.upload.push(device, queue, bytes, 4);
+            let encoder = ring.patches.get_or_insert_with(|| device.create_command_encoder(&Default::default()));
+            encoder.copy_buffer_to_buffer(&src, at, dst, offset, bytes.len() as u64);
+        });
+    }
+
+    /// Whether a command recorded with this arena writes `dst` in draw order:
+    /// a front write of it could land before that write.
+    pub fn wrote_in_order(&self, dst: &wgpu::Buffer) -> bool {
+        let guard = self.0.ring.lock().unwrap_or_else(|e| e.into_inner());
+        guard.as_ref().is_some_and(|ring| ring.ordered.contains(dst))
+    }
+
+    fn written_in_order(&self, device: &wgpu::Device, dst: &wgpu::Buffer) {
+        self.with_ring(device, |ring| { ring.ordered.insert(dst.clone()); });
+    }
+
     pub fn flush(&self, queue: &wgpu::Queue) {
         if let Some(copies) = self.upload_commands(queue) { queue.submit([copies]); }
     }
@@ -467,6 +498,15 @@ impl EncoderUploads<'_> {
         if bytes.is_empty() { return; }
         let (src, at) = self.arena.stage(self.device, self.queue, bytes);
         self.encoder.copy_buffer_to_buffer(&src, at, dst, offset, bytes.len() as u64);
+        self.arena.written_in_order(self.device, dst);
+    }
+
+    /// Copy already staged bytes (from [`SubmissionUploads::stage`]) in draw
+    /// order, remembering `dst` as written in order like [`Self::write`].
+    pub fn copy(&mut self, src: &wgpu::Buffer, src_offset: u64, dst: &wgpu::Buffer, offset: u64, len: u64) {
+        if len == 0 { return; }
+        self.encoder.copy_buffer_to_buffer(src, src_offset, dst, offset, len);
+        self.arena.written_in_order(self.device, dst);
     }
 
     /// Stage shared view data once and copy it into each placement's block;
@@ -477,6 +517,7 @@ impl EncoderUploads<'_> {
         for i in 0..count {
             self.encoder.copy_buffer_to_buffer(&src, at, dst, first + i as u64 * stride, bytes.len() as u64);
         }
+        self.arena.written_in_order(self.device, dst);
     }
 }
 
@@ -516,6 +557,44 @@ mod tests {
         let before = crate::churn::snapshot();
         retry.flush(&ctx.queue);
         assert_eq!((crate::churn::snapshot() - before).queue_writes, 1);
+    }
+
+    #[test]
+    fn front_writes_go_ahead_of_the_submission_and_ordered_writes_are_remembered_until_the_arena_returns() {
+        let Ok(ctx) = GfxContext::headless() else { return };
+        let buffer = |label| ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label), size: 256,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let (a, b) = (buffer("a"), buffer("b"));
+        let pool = UploadPool::default();
+        let arena = pool.begin();
+        let mut encoder = ctx.device.create_command_encoder(&Default::default());
+        // In draw order: after the front write of the same range.
+        EncoderUploads { arena: &arena, device: &ctx.device, queue: &ctx.queue, encoder: &mut encoder }
+            .write(&b, 0, &[2; 16]);
+        arena.write_front(&ctx.device, &ctx.queue, &b, 0, &[1; 16]);
+        arena.write_front(&ctx.device, &ctx.queue, &a, 16, &[3; 16]);
+        assert!(arena.wrote_in_order(&b));
+        assert!(!arena.wrote_in_order(&a));
+        let front = arena.upload_commands(&ctx.queue).expect("front copies");
+        ctx.queue.submit([front, encoder.finish()]);
+        let read = |buffer: &wgpu::Buffer| {
+            buffer.slice(..).map_async(wgpu::MapMode::Read, |r| r.unwrap());
+            ctx.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            let bytes = buffer.slice(..).get_mapped_range().unwrap().to_vec();
+            buffer.unmap();
+            bytes
+        };
+        assert_eq!(read(&b)[..16], [2; 16], "the ordered write lands last");
+        assert_eq!(read(&a)[16..32], [3; 16]);
+        // A submission's flush does not forget the ordered write; the arena's return does.
+        assert!(arena.wrote_in_order(&b));
+        drop(arena);
+        let next = pool.begin();
+        next.stage(&ctx.device, &ctx.queue, &[0; 4]);
+        assert!(!next.wrote_in_order(&b), "the pooled ring starts clean");
     }
 
     #[test]

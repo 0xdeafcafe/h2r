@@ -13,6 +13,7 @@ Re-measure before acting on any row.
 | How do I profile, trace or bench something? | [profiling.md](profiling.md): `h2 profile`, `h2 bench`, the timeline, test and bench knobs |
 | Where does an in-level frame's time go, and what are the worst frames? | [gameplay-budget.md](gameplay-budget.md) |
 | Which guest functions consume CPU in an unrendered Waterworks sim, and who calls them? | [sim-budget.md](sim-budget.md) |
+| Which subsystem owns each sample of that sim, what does the runtime share consist of, and what does each rewrite phase save? | [sim-attribution.md](sim-attribution.md) |
 | Where does a main-menu frame's time go? | [menu-budget.md](menu-budget.md) |
 | What structural changes would close the gameplay gap, and which landed? | [architecture-review.md](architecture-review.md): ranked changes, each with its status |
 | How do generated code and the runtime touch guest memory, call and exit? | [guest-memory.md](guest-memory.md): the inline RAM path (`H2_FASTMEM`), direct calls, the exit call, register homes, runner transfers |

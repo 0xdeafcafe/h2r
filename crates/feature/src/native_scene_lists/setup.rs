@@ -288,15 +288,7 @@ fn setup(m: &dyn GuestMemory, cpu: &CpuAbi) -> Result<Output> {
         }
         .visit(&mut staged, handle, &prepared, state, descend, false)?;
     }
-    let mut checks = Output::default();
-    if compare_on() {
-        records::compare_counters(&staged, &mut checks)?;
-        checks.compare_range(&staged, palette::PALETTE_CURSOR, 4)?;
-        checks.compare_range(&staged, at(list.column(m, 8)?, index * 2)?, 2)?;
-        checks.compare_range(&staged, at(body, 0xcc)?, 4)?;
-    }
     let mut out = staged.finish();
-    out.compare_checks = checks.compare_checks;
     if let Some((ecx, edx)) = tail_registers {
         out.ecx = Some(ecx);
         out.edx = Some(edx);

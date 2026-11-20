@@ -16,7 +16,6 @@
 //! the community variants' string hook. A definition already pointing into
 //! our page (the same tag memory loaded again) is left alone, and a
 //! definition the page has no room for keeps its retail block.
-//! `H2_NO_VARIANT_OPTIONS=1` leaves every list as retail.
 
 use std::collections::HashSet;
 
@@ -32,11 +31,6 @@ pub const SIZE: u32 = 0x4000;
 /// The labels' string ids: one per [`OPTIONS`] entry.
 const IDS: crate::ui_kit::ids::Family = crate::ui_kit::ids::family("variant options");
 const _: () = assert!(OPTIONS.len() as u32 <= IDS.len);
-
-/// Whether the variant options are switched on.
-pub fn enabled() -> bool {
-    std::env::var_os("H2_NO_VARIANT_OPTIONS").is_none()
-}
 
 /// The label id of [`OPTIONS`]`[k]`.
 pub fn label_id(k: usize) -> u32 {

@@ -24,9 +24,6 @@ use serde_json::{Map, Value, json};
 
 use crate::exec::{Access, Agent};
 
-/// The calls into each native render path so far (name, calls).
-pub type PathCalls = fn() -> Vec<(&'static str, u64)>;
-
 /// One draw, as the backend wrapper describes it.
 #[derive(Debug, Clone, Default)]
 pub struct DrawInfo {
@@ -75,7 +72,6 @@ struct ProbeState {
     stage: Stage,
     last: Option<FrameRecord>,
     presents: u64,
-    paths: Option<PathCalls>,
 }
 
 enum Stage {
@@ -97,7 +93,6 @@ struct Arming {
 struct Recording {
     arming: Arming,
     began: Instant,
-    paths_before: Vec<(&'static str, u64)>,
     rec: FrameRecord,
     targets: BTreeSet<String>,
     /// The current pass's colour and depth.
@@ -122,7 +117,6 @@ impl FrameProbe {
                 stage: Stage::Idle,
                 last: None,
                 presents: 0,
-                paths: None,
             }),
         }
     }
@@ -135,12 +129,6 @@ impl FrameProbe {
     #[inline]
     pub fn armed(&self) -> bool {
         self.armed.load(Ordering::Relaxed)
-    }
-
-    /// Where native render path calls are counted (boot's
-    /// `feature::render_loop::path_calls`).
-    pub fn set_paths(&self, paths: PathCalls) {
-        self.lock().paths = Some(paths);
     }
 
     /// Arms for the next whole frame; forgets the last one.
@@ -298,7 +286,6 @@ impl FrameProbe {
         if !self.armed() {
             return None;
         }
-        let paths = s.paths;
         match std::mem::replace(&mut s.stage, Stage::Idle) {
             Stage::Idle => None,
             Stage::Waiting(arming) => {
@@ -310,7 +297,6 @@ impl FrameProbe {
                     },
                     arming,
                     began: Instant::now(),
-                    paths_before: paths.map(|f| f()).unwrap_or_default(),
                     targets: BTreeSet::new(),
                     key: None,
                 }));
@@ -325,15 +311,6 @@ impl FrameProbe {
                 r.rec.ms = (r.began.elapsed().as_secs_f64() * 1e5).round() / 100.0;
                 r.rec.totals.passes = r.rec.passes.len();
                 r.rec.totals.targets = r.targets.len();
-                if let Some(f) = paths {
-                    let before: BTreeMap<&str, u64> = r.paths_before.iter().copied().collect();
-                    for (name, calls) in f() {
-                        let d = calls.saturating_sub(before.get(name).copied().unwrap_or(0));
-                        if d > 0 {
-                            r.rec.paths.insert(name.to_owned(), d);
-                        }
-                    }
-                }
                 s.last = Some(r.rec);
                 if ask.is_none() {
                     self.armed.store(false, Ordering::Relaxed);
@@ -506,15 +483,11 @@ pub fn pipeline_json(s: &feature::pipeline_render::Stats) -> Value {
 pub struct RenderSources {
     pub interp: Box<dyn Fn() -> Option<Value> + Send>,
     pub pipeline: Box<dyn Fn() -> Option<Value> + Send>,
-    pub paths: Option<PathCalls>,
     pub counters: Box<dyn Fn() -> Option<Value> + Send>,
 }
 
 /// Adds `render.frame` (over `probe`) and `render.stats` (over `sources`).
 pub fn add_methods(agent: &Agent, probe: &'static FrameProbe, sources: RenderSources) {
-    if let Some(p) = sources.paths {
-        probe.set_paths(p);
-    }
     agent.add_method(method::RENDER_FRAME, Access::Read, move |v| {
         let p: FrameParams = if v.is_null() {
             FrameParams::default()
@@ -547,10 +520,6 @@ pub fn add_methods(agent: &Agent, probe: &'static FrameProbe, sources: RenderSou
         let s = RenderStats {
             interp: (sources.interp)().unwrap_or(Value::Null),
             pipeline: (sources.pipeline)().unwrap_or(Value::Null),
-            paths: sources
-                .paths
-                .map(|f| f().into_iter().map(|(k, v)| (k.to_owned(), v)).collect())
-                .unwrap_or_default(),
             counters: (sources.counters)().unwrap_or(Value::Null),
         };
         serde_json::to_value(s).map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))
@@ -606,15 +575,7 @@ mod tests {
 
     #[test]
     fn a_whole_frame_between_two_presents_in_passes() {
-        static PATHS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        fn paths() -> Vec<(&'static str, u64)> {
-            vec![
-                ("render_views", PATHS.load(Ordering::Relaxed)),
-                ("layer_sort", 0),
-            ]
-        }
         let p = FrameProbe::new();
-        p.set_paths(paths);
         p.present(10);
         let armed = p
             .arm(&FrameParams {
@@ -630,7 +591,6 @@ mod tests {
         );
         // The rest of the frame being drawn when it was armed: not kept.
         p.draw(draw("shadow", "drawn", 99));
-        PATHS.store(5, Ordering::Relaxed);
         p.present(11);
         p.clear("shadow", Some("z"));
         p.draw(draw("shadow", "drawn", 30));
@@ -638,7 +598,6 @@ mod tests {
         p.op("copy", "main", "-> mirror".into());
         p.draw(draw("main", "skipped empty", 3));
         p.draw(draw("shadow", "drawn", 3));
-        PATHS.store(7, Ordering::Relaxed);
         p.present(12);
         assert!(!p.armed(), "one frame, then disarmed");
         // After it: not recorded.
@@ -667,8 +626,6 @@ mod tests {
         assert_eq!(f.draws.len(), 3);
         assert!(f.truncated, "four draws, three listed");
         assert_eq!(f.draws[2].pass, 1);
-        assert_eq!(f.paths.get("render_views"), Some(&2));
-        assert!(!f.paths.contains_key("layer_sort"), "no calls, not listed");
     }
 
     #[test]

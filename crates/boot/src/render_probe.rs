@@ -1,6 +1,6 @@
 //! What the agent's `render.stats` reads (crates/agent's `render`): the
-//! in-between frames' counters, the pipelined render's, the native render
-//! paths' calls and the frame-stats window. The pieces register here when
+//! in-between frames' counters, the pipelined render's and the frame-stats
+//! window. The pieces register here when
 //! they are built; each reads as `null` when it isn't running.
 //!
 //! `render.frame` needs nothing here: the draw diagnostics wrapper
@@ -59,16 +59,8 @@ fn pipeline() -> Option<Value> {
 /// The frame-stats window's per-frame means of the render counters
 /// (`profile.counters` has the rest).
 fn counters() -> Option<Value> {
-    let line = timeline::phase::window_summary().map(|i| i.short_line());
-    #[cfg(feature = "gpu")]
-    let residual = crate::native_residual_glue::census();
-    #[cfg(not(feature = "gpu"))]
-    let residual: Option<Value> = None;
-    match (line, residual) {
-        (None, None) => None,
-        (Some(line), None) => Some(json!({ "line": line })),
-        (line, Some(residual)) => Some(json!({ "line": line, "residual": residual })),
-    }
+    let line = timeline::phase::window_summary()?.short_line();
+    Some(json!({ "line": line }))
 }
 
 pub fn sources() -> agent::render::RenderSources {
@@ -78,10 +70,6 @@ pub fn sources() -> agent::render::RenderSources {
         #[cfg(not(feature = "gpu"))]
         interp: Box::new(|| None),
         pipeline: Box::new(pipeline),
-        #[cfg(feature = "desktop-runtime")]
-        paths: Some(feature::render_loop::path_calls),
-        #[cfg(not(feature = "desktop-runtime"))]
-        paths: None,
         counters: Box::new(counters),
     }
 }
@@ -117,7 +105,5 @@ mod tests {
         assert_eq!(v["frames"], 12);
         set_pipeline(feature::pipeline_render::PipelineRender::new());
         assert_eq!(pipeline().unwrap()["pipelined"], 0);
-        let paths = (sources().paths.unwrap())();
-        assert!(paths.iter().any(|p| p.0 == "render_views"));
     }
 }

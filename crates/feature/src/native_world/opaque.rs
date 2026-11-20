@@ -73,10 +73,7 @@ fn sorted(c: &mut Call<'_>) -> Result<Flow, runtime::GuestFault> {
     let rt = Arc::clone(c.ctx.runtime());
     let mut mem = rt.memory();
     let caller = mem.u32(esp)?;
-    if caller != native_render::light_list::HANDLER_RETURN && !c.ctx.live_continuations().iter().any(|k| {
-        k.token == caller && k.target == points::LIGHT_GEOMETRY_DRAW.base
-            && k.origin == crate::render_loop::SORTED_HANDLER
-    }) {
+    if caller != native_render::light_list::HANDLER_RETURN {
         return Ok(Flow::Continue);
     }
     let Ok(sorted) = SortedRun::read(&Mem(&mut *mem), layer.list, esp, c.cpu.esi) else {

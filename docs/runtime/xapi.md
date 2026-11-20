@@ -249,11 +249,8 @@ again. Each repair is a `vfs:` line on stderr. Cloud saves never upload a
 damaged meta file nor write one downloaded
 (docs/live/live-cloud-saves.md, rule 6).
 
-`H2_SAVE_TRACE=1` prints every kernel file call on `U:` (open name,
-access, share, disposition, options, status, IOSB information, and the
-return addresses on the guest stack; calls on a handle opened there, reads
-and writes only when they fail), so one run names the call behind an
-error 4 (`crates/kernel/src/files/save_trace.rs`).
+A trace of every file call on `U:` (8a39b114a, `H2_SAVE_TRACE`) found
+this cause; it was removed once the repair was in.
 
 ## Opt-in native save games
 

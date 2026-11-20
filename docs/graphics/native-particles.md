@@ -2,8 +2,9 @@
 
 Status: particles, beam emissions, generated contrails and the researched
 four-vertex effect builder, lens reflections, volume/trail billboards and
-weather layers/lines and the two researched material strips are connected to `d3d::DrawAdmission`, behind
-`impl.render.native_particles` (off by default). The handoff commit
+weather layers/lines and the two researched material strips are connected to `d3d::DrawAdmission`, on by
+default and off with the rest of the native renderer
+(`impl.render.native=off`). The handoff commit
 `2fe68835` and subsequent contract `2a61f863` were merged, not rebased. **No cargo, build or game run was
 performed by this lane.** Source checks and synthetic tests are supplied;
 coverage, pixel parity and speedup remain coordinator checks.
@@ -133,13 +134,7 @@ Explicit assumptions and limits:
 
 ## Diagnostics and coordinator checks
 
-`H2_NATIVE_PARTICLES_COMPARE=N` enables read-only comparison for the first N
-particle calls and first N recognized dynamic calls (empty means eight); after the budget, every remaining call
-continues on D3D. Invalid/zero values disable comparison. The switch must
-also be on. Require paired `geometry=Ok(())` lines from the concrete
-admission adapter. Comparison consumes its scope and returns no native
-replacement, so D3D continues drawing. This verifies geometry pairing,
-not pixel parity. Native coverage comes from `H2_FRAME_STATS=1` counters:
+Native coverage comes from `H2_FRAME_STATS=1` counters:
 `native_particles_suppressed` and positive reference/display range counts
 in view bucket `other`; resource/range refusals must be understood.
 
@@ -169,14 +164,11 @@ none on
 Requested level runs after coordinator build, using the coordinator's
 existing image and `h2 serve` plus `h2 agent` for control/capture:
 
-- `H2_LEVEL=03a`, `H2_OPT=2`,
-  `H2_FEATURES=impl.render.native_particles=on`,
-  `H2_NATIVE_PARTICLES_COMPARE=64`. Compare the first 4,000 presents,
-  including intro and street, collecting at presents 1,000/2,000/3,000/4,000.
-  Include a contrail-bearing projectile and the four-vertex effect builder.
-  Require positive paired coverage before switching to Native mode.
-- Same save/input, 4,000 presents, compare variable **unset**, particles
-  off/on. Keep every other feature fixed. Compare colour/depth plus
+- `H2_LEVEL=03a`, `H2_OPT=2`, the first 4,000 presents, including intro
+  and street, collecting at presents 1,000/2,000/3,000/4,000. Include a
+  contrail-bearing projectile and the four-vertex effect builder.
+- Same save/input, native rendering off (`H2_FEATURES=impl.render.native=off`)
+  and on. Keep every other feature fixed. Compare colour/depth plus
   particle/effect evolution at those presents. Require identical guest
   particle updates and positive native receipts. Repeat with transparent
   native geometry enabled to exercise alternating native/D3D entries.
@@ -247,9 +239,6 @@ still apply. Failure on either copy retains the original draw.
 This assumes the resolved immediate stream is the authoritative output of
 the guest's geometry calculation. Unlike the particle emission decoder,
 this path does not independently re-evaluate billboard/weather arithmetic.
-Compare diagnostics validate scope, declaration, primitive, count and
-resolved resources; they do **not** establish arithmetic or pixel parity.
-Each of the five sites gets its own `H2_NATIVE_PARTICLES_COMPARE=N` budget.
 
 The updated handoff contract prepares every live copy before recording
 any. Particle passes retain one prepared entry per Reference/Display copy
@@ -331,8 +320,7 @@ material. Diagnostics are bounded and are not replacement receipts.
 Additional coordinator acceptance cases, alongside the 03a runs above:
 exercise sorted and direct beams, a lens with changing occlusion, a light
 volume/trail, and both material-strip callbacks. On a weather-bearing BSP,
-exercise both line and point modes plus its weather layer. Compare first
-with `H2_NATIVE_PARTICLES_COMPARE=64`, then unset it and check native
+exercise both line and point modes plus its weather layer. Check native
 Reference **and** Display receipts at 1x/2x. Query results and weather/beam
 simulation state must match the D3D baseline. Unsupported point and layered
 geometry draws must retain D3D receipts. No pixel-parity or performance
@@ -340,19 +328,17 @@ claim is made before those runs.
 
 ## Walking completed emission inputs
 
-`impl.render.native_particles_walk` tries the direct emitter at
+The particle walk tries the direct emitter at
 `0x0023ed5c` after the allocator succeeds. The native issue uses the live
 declaration and the same carried attributes as the inline quad. A
 successful reservation bypasses the emitter's guest packet and preserves
 the final default registers. A refused reservation restores the
 defaults and the guest emits the quad in place.
 
-`impl.render.native_effects_walk` admits the effect quad at
+The effects walk admits the effect quad at
 `0x0004b252` from the builder's source and contrails at `0x0004b28c`
 from the builder's output. The return frame and caller arguments must
 still describe the same dynamic call. The quad's known builder only
 copies the four vertices. Contrails run their original builder before
-native issue. All switches default on under native rendering.
-`H2_NATIVE_PARTICLES_COMPARE` keeps the original emitters for its geometry
-pairing. The earlier effect leaves and query paths keep their documented
+native issue. Both walks are on whenever native rendering is. The earlier effect leaves and query paths keep their documented
 admission and fallback boundaries.

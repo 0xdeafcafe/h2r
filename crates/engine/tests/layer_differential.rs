@@ -1,9 +1,9 @@
-//! The Rust layer draw (`engine::render_loop::layer`: `0x00044550` and its
-//! entry loop `0x0003bc30`) against the original, lifted and run on the IR
+//! The Rust layer entry loop (`engine::render_loop::layer::Entries`,
+//! `0x0003bc30`) against the original, lifted and run on the IR
 //! interpreter, from the same seeded 64 MB state (docs/graphics/layer-draw.md).
+//! The native lights' split test drives the loop through it.
 //!
-//! As for `render_views` (`render_loop_differential.rs`): every callee is
-//! a stub on both sides that logs the call (target, every general
+//! Every callee is a stub on both sides that logs the call (target, every general
 //! register, the stack arguments) and answers from a seeded generator.
 //! The entry build `0x0003bab0` writes a seeded list of entries into the
 //! loop's buffer and returns their count; the entry handlers are stubs at
@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 
 use common::{IMAGE_SHA256, sha256, xbe_path};
 use engine::memory::{GuestMemory, MemFault};
-use engine::render_loop::layer::{self, Draw, Entries};
+use engine::render_loop::layer::{self, Entries};
 use engine::render_loop::{Regs, Step};
 use ir::IrInsn;
 use ir::interp::{self, Cpu, FlatMemory};
@@ -99,17 +99,13 @@ fn is_handler(a: u32) -> bool {
     (HANDLERS..HANDLERS + 0x100 * KINDS).contains(&a)
 }
 
-fn is_callee(entry: u32, a: u32) -> bool {
-    match entry {
-        layer::LAYER_ENTRIES => a == layer::LAYER_BUILD || is_handler(a),
-        _ => a == layer::LAYER_SETUP || a == layer::LAYER_ENTRIES,
-    }
+fn is_callee(a: u32) -> bool {
+    a == layer::LAYER_BUILD || is_handler(a)
 }
 
 fn cleanup(target: u32) -> u32 {
     match target {
         layer::LAYER_BUILD => 16,
-        layer::LAYER_ENTRIES => 4,
         t if is_handler(t) => layer::HANDLER_CLEANUP,
         _ => 0,
     }
@@ -182,7 +178,7 @@ impl Lifted<'_> {
         let mut log = Vec::new();
         let mut steps = 0;
         while pc != HARNESS_EXIT {
-            if is_callee(entry, pc) {
+            if is_callee(pc) {
                 log.push(stub(seed, log.len(), pc, &mut cpu.gpr, mem));
                 let esp = cpu.gpr[4];
                 pc = word(mem, esp);
@@ -227,26 +223,10 @@ impl Lifted<'_> {
     }
 }
 
-enum Port {
-    Draw(Draw),
-    Entries(Entries),
-}
-
-fn port(
-    entry: u32,
-    seed: u64,
-    mem: &mut FlatMemory,
-    mut r: Regs,
-) -> Result<(Regs, Vec<CallLog>), String> {
+fn port(seed: u64, mem: &mut FlatMemory, mut r: Regs) -> Result<(Regs, Vec<CallLog>), String> {
     let e = |f: MemFault| format!("{f:?}");
     let mut log = Vec::new();
-    let (mut m, mut step) = if entry == layer::LAYER_ENTRIES {
-        let (m, s) = Entries::start(&mut r, &mut Eng(mem)).map_err(e)?;
-        (Port::Entries(m), s)
-    } else {
-        let (m, s) = Draw::start(&mut r, &mut Eng(mem)).map_err(e)?;
-        (Port::Draw(m), s)
-    };
+    let (mut m, mut step) = Entries::start(&mut r, &mut Eng(mem)).map_err(e)?;
     loop {
         match step {
             Step::Return { to } => {
@@ -265,20 +245,16 @@ fn port(
                 log.push(stub(seed, log.len(), target, &mut gpr, mem));
                 [r.eax, r.ecx, r.edx, r.ebx, _, r.ebp, r.esi, r.edi] = gpr;
                 r.esp += 4 + c;
-                step = match &mut m {
-                    Port::Draw(m) => m.resume(&mut r, &mut Eng(mem)),
-                    Port::Entries(m) => m.resume(&mut r, &mut Eng(mem)),
-                }
-                .map_err(e)?;
+                step = m.resume(&mut r, &mut Eng(mem)).map_err(e)?;
             }
         }
     }
 }
 
-/// A seeded state for `entry`.
-fn state(image: &FlatMemory, entry: u32, seed: u64, case: u32) -> (FlatMemory, Regs) {
+/// A seeded state for the entry loop.
+fn state(image: &FlatMemory, seed: u64, case: u32) -> (FlatMemory, Regs) {
     let mut mem = image.clone();
-    let mut r = Rng(seed.wrapping_mul(0x51_7cc1_b727_220a) ^ case as u64 ^ entry as u64);
+    let mut r = Rng(seed.wrapping_mul(0x51_7cc1_b727_220a) ^ case as u64 ^ layer::LAYER_ENTRIES as u64);
     // The list's handler table: KINDS records, each handler a stub.
     put(&mut mem, LIST + 0x14, TABLE);
     for k in 0..KINDS {
@@ -293,21 +269,6 @@ fn state(image: &FlatMemory, entry: u32, seed: u64, case: u32) -> (FlatMemory, R
         let v = if r.below(4) == 0 { u32::MAX } else { r.u32() };
         put(&mut mem, TARGETS + 0x200 * t + 0x100, v);
     }
-    // The globals the layer draw reads: any layer 0 to 31, fog mode 3 in
-    // a third, the fog bytes zero in half.
-    let layer = if r.below(3) == 0 { 16 } else { r.below(32) };
-    put(&mut mem, layer::CURRENT_LAYER, layer);
-    put(&mut mem, layer::CURRENT_ARG, r.u32());
-    put(&mut mem, layer::CURRENT_LIST, LIST);
-    put(
-        &mut mem,
-        layer::FOG_MODE,
-        if r.below(3) == 0 { 3 } else { r.below(5) },
-    );
-    for a in [layer::FOG_A, layer::FOG_B] {
-        mem.bytes[a as usize] = if r.below(2) == 0 { 0 } else { r.u32() as u8 };
-    }
-    put(&mut mem, layer::DRAWING_LAYER, r.u32());
     let esp = STACK_TOP - 0x400 - 4 * r.below(8);
     put(&mut mem, esp, HARNESS_EXIT);
     put(&mut mem, esp + 4, r.u32());
@@ -315,19 +276,11 @@ fn state(image: &FlatMemory, entry: u32, seed: u64, case: u32) -> (FlatMemory, R
         eax: r.u32(),
         ecx: r.u32(),
         edx: r.u32(),
-        ebx: if entry == layer::LAYER_ENTRIES {
-            r.below(32)
-        } else {
-            r.u32()
-        },
+        ebx: r.below(32),
         esp,
         ebp: r.u32(),
         esi: r.u32(),
-        edi: if entry == layer::LAYER_ENTRIES {
-            LIST
-        } else {
-            r.u32()
-        },
+        edi: LIST,
         xmm0: 0,
         xmm1: 0,
     };
@@ -335,9 +288,9 @@ fn state(image: &FlatMemory, entry: u32, seed: u64, case: u32) -> (FlatMemory, R
 }
 
 #[test]
-fn layer_draw_matches_the_lifted_original() {
+fn layer_entries_match_the_lifted_original() {
     let Some(path) = xbe_path() else {
-        eprintln!("SKIPPED layer_draw_matches_the_lifted_original: no XBE (set H2_XBE)");
+        eprintln!("SKIPPED layer_entries_match_the_lifted_original: no XBE (set H2_XBE)");
         return;
     };
     let data = std::fs::read(&path).unwrap();
@@ -353,15 +306,16 @@ fn layer_draw_matches_the_lifted_original() {
     let seeds: Vec<u64> = std::env::var("H2_DIFF_SEEDS")
         .map(|s| s.split(',').map(|v| v.trim().parse().unwrap()).collect())
         .unwrap_or_else(|_| vec![1, 7, 99]);
-    for entry in [layer::LAYER_ENTRIES, points_layer_draw()] {
+    let entry = layer::LAYER_ENTRIES;
+    {
         let (mut cases, mut calls) = (0, 0);
         let mut targets: BTreeMap<u32, u64> = BTreeMap::new();
         for &seed in &seeds {
             for case in 0..64 {
-                let (mut a, regs) = state(&image, entry, seed, case);
+                let (mut a, regs) = state(&image, seed, case);
                 let mut b = a.clone();
                 let (ra, la) = lifted.run(entry, seed, &mut a, regs).unwrap();
-                let (rb, lb) = port(entry, seed, &mut b, regs).unwrap();
+                let (rb, lb) = port(seed, &mut b, regs).unwrap();
                 assert_eq!(
                     la.len(),
                     lb.len(),
@@ -392,17 +346,8 @@ fn layer_draw_matches_the_lifted_original() {
         eprintln!(
             "{entry:#010x}: {cases} states, {calls} calls equal, registers and all 64 MB equal; calls by target (handlers as {HANDLERS:#x}): {targets:#x?}"
         );
-        let want: &[u32] = if entry == layer::LAYER_ENTRIES {
-            &[layer::LAYER_BUILD, HANDLERS]
-        } else {
-            &[layer::LAYER_SETUP, layer::LAYER_ENTRIES]
-        };
-        for t in want {
+        for t in &[layer::LAYER_BUILD, HANDLERS] {
             assert!(targets.contains_key(t), "{t:#x} never called");
         }
     }
-}
-
-fn points_layer_draw() -> u32 {
-    engine::points::LAYER_DRAW.base
 }

@@ -357,9 +357,7 @@ the file is left alone. Audio off (`--no-audio`) or a bad speaker setting
 locks the row off. With `H2_PAD_SPEAKER=0` the controller output is not
 opened at all, so the speaker cannot be turned on during that run.
 
-`H2_NO_SPEAKER_ROW=1` leaves the Controls screen as retail (the setting
-still applies from the file); `H2_NO_LAYOUTS=1` turns off only the button
-layouts. Headless runs (`h2 run`) never add the row.
+Headless runs (`h2 run`) never add the row.
 
 ## Mute button and LED (built)
 
@@ -507,7 +505,7 @@ The in-game row:
    open their usual dialogs.
 7. Quit and start again: the row shows the last value, and `settings.toml`
    in the data root has it. With `H2_PAD_SPEAKER=0` the row shows off
-   and A does nothing; with `H2_NO_SPEAKER_ROW=1` the screen has six rows.
+   and A does nothing.
 
 ## Sources
 

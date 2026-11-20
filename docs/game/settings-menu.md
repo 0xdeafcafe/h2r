@@ -309,13 +309,13 @@ Not every flag belongs in a menu. They fall in four groups.
 | mouse capture, pause on blur | `AppConfig` | live |
 | audio, gamepads | `--no-audio`, `--no-gamepads` | restart |
 | controller speaker | **Built:** a "Controller Speaker" row on Settings, Controls, saved as `[pad_speaker] enabled` in `settings.toml` in `h2 play`'s data root. `H2_PAD_SPEAKER` (on, or a TOML file) locks it when set; `H2_PAD_SPEAKER_DEVICE`, `H2_PAD_SPEAKER_EXCLUSIVE` ([playstation-audio.md](../audio/playstation-audio.md)) | on/off live (the router and the HID speaker path, `boot::speaker_setting`); routes and exclusive could go live the same way; device needs the output reopened |
-| field of view | **Built:** a "Field of View" row on the Video screen, saved as `[graphics] fov` in `settings.toml`. `H2_FOV` (degrees, or `0` for retail) locks it when set; `H2_NO_FOV_ROW=1` removes the row and the camera hook | live (the camera hook reads the setting every frame) |
+| field of view | **Built:** a "Field of View" row on the Video screen, saved as `[graphics] fov` in `settings.toml`. `H2_FOV` (degrees, or `0` for retail) locks it when set | live (the camera hook reads the setting every frame) |
 | frame rate | **Built:** a "Frame Rate" row on the Video screen (30, 60, 120, Uncapped), saved as `[graphics] fps` (`30`, `60`, `120` or `"uncapped"`). `--fps` or `H2_FPS` locks it when set ([high-framerate.md](high-framerate.md)); above 30 it only redraws the newest frame until high-fps phase 2 | live (the window follows it at its next turn) |
 | resolution scale | **Built:** a "Resolution" row on the Video screen (640x480, 1280x960, 1920x1440, 2560x1920: the game's 640x480 back buffer times the scale), saved as `[graphics] render_scale` (the file may hold 1 to 6). `H2_RENDER_SCALE` locks it when set ([high-resolution.md](../graphics/high-resolution.md)) | live (the next frame is at the new size) |
 | lighting | **Built (phase 1):** a "Lighting" row on the Video screen (Retail, E3), saved as `[graphics] lighting` (`"retail"` or `"e3"`). E3 draws the game's shadow maps at the render scale (at least 2x) in the shown image only and compares them with one tap; the guest sees retail. `H2_LIGHTING` locks it when set ([e3-lighting.md](../graphics/e3-lighting.md), "Phase 1 as built") | live (the next frame) |
 | Halo 1 options | **Built:** not in Settings. Chosen per game on the Halo 1 options screens (`boot::h1_options`): the custom game lobby's "Halo 1 Options" (Sandbox, HUD) and a Halo 1 level's Game Options page (Assets, HUD). Saved as `[multiplayer] halo1_sandbox`, `[campaign] halo1_assets`, `[halo1] hud` (`"h1"` or `"h2"`); `H2_HALO1_SANDBOX`, `H2_HALO1_ASSETS`, `H2_HALO1_HUD` lock them ([multiplayer.md](../halo1/multiplayer.md) "Halo 1 options") | the next map load (sandbox, assets) or game start (HUD) |
 | aim assist | **Built:** an "Aim Assist" row on the Video screen (Auto, Default, Strong, Very Strong), saved as `[controls] aim_assist`. Auto is Strong while the iOS touch controls show; in multiplayer only the touch player gets it, per player, and the weapon tags stay retail. `H2_AIM_ASSIST` locks it when set ([aim-assist.md](aim-assist.md)) | next map load |
-| touch controls (iOS) | **Built:** five rows on Controls on iOS, in place of the Steam Controller's: "Touch Look Speed" (1 to 10, `[touch] look`, `H2_TOUCH_LOOK`), "Touch Crouch" (Toggle, Hold; `[touch] crouch`, `H2_TOUCH_CROUCH`), "Gyro Aim" (0 off to 10; `[touch] gyro`, `H2_TOUCH_GYRO`), "Look Acceleration" (0 to 10; `[touch] look_accel`, `H2_TOUCH_LOOK_ACCEL`) and "Touch Auto Fire" (Off, On; `[touch] auto_fire`, `H2_TOUCH_AUTO_FIRE`). `H2_NO_TOUCH_ROWS=1` removes them ([ios.md](../runtime/ios.md#controls)) | live |
+| touch controls (iOS) | **Built:** five rows on Controls on iOS, in place of the Steam Controller's: "Touch Look Speed" (1 to 10, `[touch] look`, `H2_TOUCH_LOOK`), "Touch Crouch" (Toggle, Hold; `[touch] crouch`, `H2_TOUCH_CROUCH`), "Gyro Aim" (0 off to 10; `[touch] gyro`, `H2_TOUCH_GYRO`), "Look Acceleration" (0 to 10; `[touch] look_accel`, `H2_TOUCH_LOOK_ACCEL`) and "Touch Auto Fire" (Off, On; `[touch] auto_fire`, `H2_TOUCH_AUTO_FIRE`) ([ios.md](../runtime/ios.md#controls)) | live |
 | Steam Controller | **Built:** three rows on Controls with a Steam Controller: "Steam Pad Speaker" (`[steam_pad] speaker`, `H2_STEAM_SPEAKER`), "Trackpad Aim" (1 to 10, default 5; `[steam_pad] sensitivity`, `H2_STEAM_SENSITIVITY`) and "Left Trackpad" (D-Pad, Stick; `[steam_pad] left_pad`, `H2_STEAM_LEFT_PAD`) | live (`boot::setting_defs::steam_tuning`) |
 | controller mute button | **Built:** a "Mute Button" row on the Video screen, saved as `[pad] mute_button`. `H2_PAD_MUTE` (`1` default, `0` off; [playstation-audio.md](../audio/playstation-audio.md)) locks it when set | live (sent to the HID thread) |
 | Live game visibility | **Built:** `live.visibility` (`public`, `friends`, `invite`; `H2_LIVE_VISIBILITY`). No row of ours: the title's own party privacy screen sets it, and the HLE updates an open lobby ([live-custom-games.md](../live/live-custom-games.md)) | at once |
@@ -327,7 +327,6 @@ Not every flag belongs in a menu. They fall in four groups.
 
 | Setting | Variable | Applies |
 |---|---|---|
-| merged passes | `H2_GFX_MERGE_PASSES=0` turns off; the loose rule is the default, `=fast` or `=exact` for the stricter rules | `GfxBackend::set_merge_passes` and `set_merge_discards` exist, so live |
 | render thread | `H2_RENDER_THREAD=0` (off; on by default) | restart; it moves the backend to another thread ([render-thread.md](../graphics/render-thread.md)) |
 | pipeline cache | `H2_PIPELINE_CACHE` (path or `off`) | restart |
 | shader compile threads | `H2_GFX_COMPILE_THREADS` | restart |
@@ -421,9 +420,7 @@ button (`PadHid::mute_switch`). A locked row shows the variable's value and A
 does nothing. A bad variable is reported and ignored, so the saved value is
 used (before this, a bad `H2_RENDER_SCALE` meant 1x). Above 30, the frame
 rate only redraws the newest game frame more often until high-fps phase 2
-([high-framerate.md](high-framerate.md)). `H2_NO_VIDEO_SCREEN=1` removes
-the row and the screen; `H2_NO_FOV_ROW=1` removes the field of view row and
-the camera hook. Headless runs (`h2 run`) have none of it (`H2_LIGHTING=e3`
+([high-framerate.md](high-framerate.md)). Headless runs (`h2 run`) have none of it (`H2_LIGHTING=e3`
 works there as a variable).
 
 Code: the rows are `Def`s in `boot::setting_defs` with a `menu` naming
@@ -528,7 +525,7 @@ screen below. Each opens over the dialog, and B comes back to it. The
 top-level pause menus are retail. Code: `boot::pause_menu`, the model in
 `video_screen::model` (`ui::extend(List::GameSettings, 7)`), and the
 dialog's hooks in `layout_glue::install`, the same three the speaker row
-uses. `H2_NO_PAUSE_ROWS=1` takes the rows out. No game was built or run
+uses. No game was built or run
 for this. The trace below is a static reading of the retail XBE with
 `h2 disasm`, `h2 ui` and `h2 tags`.
 
@@ -605,7 +602,7 @@ paused", and the tick budget `0x146660` runs no tick while it is set.
   synchronous path, so Start opens `dialog_pause` and its constructor
   sets the local paused byte, as without our rows. [not traced] Whether
   the synchronous client and server honour one console's paused byte. Our
-  rows add nothing to it either way: compare with `H2_NO_PAUSE_ROWS=1`.
+  rows add nothing to it either way.
 
 ### The Settings dialog (Local, static)
 
@@ -712,9 +709,9 @@ Campaign (any level, and a co-op over Live game):
 3. A on Voice: eight rows, one line each (Microphone, Voice Output, Talk,
    Talk Button, Mute My Mic, Mute Everyone, Mic Volume, Voice Volume). B
    returns to Settings, still paused.
-4. Co-op over Live, two consoles: whatever the other console does on a
-   pause must be the same with `H2_NO_PAUSE_ROWS=1`; open Video and Voice,
-   change a row, close: no desync line, no stall.
+4. Co-op over Live, two consoles: the other console does on a pause what
+   it does on a retail pause; open Video and Voice, change a row, close:
+   no desync line, no stall.
 
 Multiplayer (local, system link, and a Live game with another console):
 
@@ -724,9 +721,6 @@ Multiplayer (local, system link, and a Live game with another console):
    split screen, player 2's opens in player 2's quarter.
 7. Keep a Voice screen up for 30 seconds in a networked game and press
    rows: no stall, no disconnect.
-8. `H2_NO_PAUSE_ROWS=1`: the dialog as before (retail rows and Controller
-   Speaker). `H2_NO_VOICE_SCREEN=1`: Video only. `H2_NO_VIDEO_SCREEN=1`:
-   Voice only.
 
 ## Voice screen (built on tests)
 

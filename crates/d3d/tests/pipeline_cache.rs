@@ -161,7 +161,7 @@ fn scratch() -> PathBuf {
 
 /// `b` with the exact merge rule: every discarding draw starts a render pass.
 fn exact(mut b: GfxBackend) -> GfxBackend {
-    b.set_merge_discards(false);
+    b.set_merge_masks(false);
     b
 }
 

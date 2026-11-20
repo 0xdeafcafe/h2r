@@ -237,9 +237,8 @@ The "None" start also makes **Bumper Cars** possible (decided 2a): a
 Slayer built-in with no weapons, no grenades, nothing on the map, Warthogs
 and Ghosts and nothing else to drive, 25 points. Its unarmed start is one
 of our choices, so `usable()` keeps it only when the option lists carry
-ours (`variant_options`, on by default); with `H2_NO_VARIANT_OPTIONS=1` it
-is left out with a log line, as any variant with a value the game doesn't
-offer is.
+ours (`variant_options`); without them it would be left out with a log
+line, as any variant with a value the game doesn't offer is.
 
 ### More options the game doesn't allow
 
@@ -726,9 +725,7 @@ After slice 2:
    options: N choices added to M option lists`.
 4. Respawn 1 s in a game: back in after about one to two seconds (retail's
    floor and its 32-tick slot).
-5. With `H2_NO_VARIANT_OPTIONS=1` the lists are retail and the log says
-   Bumper Cars was left out.
-6. Studio: the new choices show with "(h2recomp)"; respawn 0 with cycling
+5. Studio: the new choices show with "(h2recomp)"; respawn 0 with cycling
    (typed in by hand) can't be saved.
 
 After slice 3 (one machine; Studio writes the variant):
@@ -871,7 +868,7 @@ After slices 6 to 8:
   `0xa0fd4000` (retail options byte for byte), labels in the "variant
   options" string family (`0x00ffe100..`, answered by the community
   string hook). A definition already pointing into the page is skipped; one
-  that doesn't fit stays retail. `H2_NO_VARIANT_OPTIONS=1` turns it off.
+  that doesn't fit stays retail.
 - `community_variants`: `StartingWeapon` takes `Option<Weapon>`; Bounce
   Practice has the magnum; Bumper Cars is the thirteenth variant
   (description number 92).

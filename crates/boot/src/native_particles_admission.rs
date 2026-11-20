@@ -8,8 +8,9 @@ use std::sync::{Arc, Mutex};
 use d3d::{
     DrawAdmission, DrawSnapshot, ExternalPass, ExternalPlan, ExternalTarget, ExternalWrites,
 };
+use d3d::backend::{ExternalAttachments, ExternalDraws};
 use engine::memory::GuestMemory;
-use feature::native_particles::{Call, Host, Mode, Producer};
+use feature::native_particles::{Call, Host, Producer};
 use gfx::vertex::{PrimitiveType, VertexDataType};
 use native_render::effect_geometry::{self, DynamicCall};
 use native_render::effect_immediate::{self, Site};
@@ -37,7 +38,6 @@ impl Source {
 #[derive(Clone)]
 struct Pending {
     source: Source,
-    mode: Mode,
     id: u64,
 }
 #[derive(Default)]
@@ -62,7 +62,7 @@ impl native_render::camera::GuestRead for Read<'_> {
     }
 }
 impl<B: d3d::backend::Backend + 'static> ImmediateAdmission<B> {
-    fn arm(&self, source: Source, mode: Mode) -> bool {
+    fn arm(&self, source: Source) -> bool {
         let mut s = self
             .admission
             .scope
@@ -72,7 +72,6 @@ impl<B: d3d::backend::Backend + 'static> ImmediateAdmission<B> {
         s.issuing = None;
         s.waiting = Some(Pending {
             source,
-            mode,
             id: self.admission.serial.fetch_add(1, Ordering::Relaxed),
         });
         true
@@ -85,7 +84,6 @@ impl<B: d3d::backend::Backend + 'static> Host for ImmediateAdmission<B> {
         let carried = call.emission.attributes.map(|r| r.map(|v| v.map(f32::from_bits)));
         let pending = Pending {
             source: Source::Particle(call.clone()),
-            mode: Mode::Native,
             id: self.admission.serial.fetch_add(1, Ordering::Relaxed),
         };
         let candidate = Direct { admission: &self.admission, pending, stage: Stage::Particles };
@@ -132,14 +130,14 @@ impl<B: d3d::backend::Backend + 'static> Host for ImmediateAdmission<B> {
         drawn
     }
 
-    fn arm(&self, _: &mut dyn GuestMemory, call: &Call, mode: Mode) -> bool {
-        self.arm(Source::Particle(call.clone()), mode)
+    fn arm(&self, _: &mut dyn GuestMemory, call: &Call) -> bool {
+        self.arm(Source::Particle(call.clone()))
     }
-    fn arm_dynamic(&self, _: &mut dyn GuestMemory, call: &DynamicCall, mode: Mode) -> bool {
-        self.arm(Source::Dynamic(*call, Vec::new()), mode)
+    fn arm_dynamic(&self, _: &mut dyn GuestMemory, call: &DynamicCall) -> bool {
+        self.arm(Source::Dynamic(*call, Vec::new()))
     }
-    fn arm_effect(&self, mem: &mut dyn GuestMemory, site: Site, mode: Mode) -> bool {
-        self.arm(Source::Immediate(site), mode);
+    fn arm_effect(&self, mem: &mut dyn GuestMemory, site: Site) -> bool {
+        self.arm(Source::Immediate(site));
         // All vertices are published, but END is not. Drain prior work
         // without ownership, then own only this leaf's completed draw.
         self.publish(mem, Producer::Immediate(site), 0);
@@ -393,21 +391,6 @@ impl Admission {
         stage: Stage,
     ) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
         let result = geometry(snapshot.draw, &pending.source);
-        if pending.mode == Mode::Compare {
-            eprintln!(
-                "native-particles-compare: call={} producer={:?} geometry={:?} target={:#x}/{:#x} primitive={:?} vertices={} textures={:?} final_latch={}",
-                pending.id,
-                pending.source.producer(),
-                result.as_ref().map(|_| ()),
-                snapshot.color_header,
-                snapshot.depth_header,
-                snapshot.draw.primitive,
-                snapshot.draw.vertex_count,
-                snapshot.draw.textures,
-                snapshot.draw.shader.final_combiner_latch
-            );
-            return None;
-        }
         let (vertices, raw_vertices, indices) = match result {
             Ok(geometry) => geometry,
             Err(reason) => {
@@ -479,10 +462,56 @@ struct Pass {
     renderers: Renderers,
     prepared: Vec<(PreparedDraw, DrawIdentity, TargetKey)>,
 }
+/// What a snapshot needs of one target copy, whether it comes from an
+/// isolated recording's `ExternalTarget` or the open pass's attachments.
+struct CopyView<'a> {
+    device: &'a wgpu::Device,
+    guest_size: (u32, u32),
+    size: (u32, u32),
+    color_format: wgpu::TextureFormat,
+    depth_format: wgpu::TextureFormat,
+    stages: [Option<&'a wgpu::TextureView>; 4],
+    copy: d3d::TargetCopy,
+}
+impl<'a> CopyView<'a> {
+    fn of_target(t: &ExternalTarget<'a>) -> Self {
+        Self {
+            device: t.device,
+            guest_size: t.guest_size,
+            size: t.size,
+            color_format: t.color_format,
+            depth_format: t.depth_format,
+            stages: t.stages,
+            copy: t.copy,
+        }
+    }
+    fn of_attachments(t: &'a ExternalAttachments, request: &d3d::ExternalPassRequest) -> Self {
+        Self {
+            device: &t.device,
+            guest_size: request.surface_size,
+            size: t.size,
+            color_format: t.color_format,
+            depth_format: t.depth_format,
+            stages: t.stages.each_ref().map(Option::as_ref),
+            copy: t.copy,
+        }
+    }
+}
+fn renderer_for<'a>(
+    renderers: &'a mut HashMap<wgpu::Device, (u64, ParticleRenderer)>,
+    device: &wgpu::Device,
+) -> &'a mut (u64, ParticleRenderer) {
+    static DEVICES: AtomicU64 = AtomicU64::new(1);
+    renderers.entry(device.clone()).or_insert_with(|| {
+        let id = DEVICES.fetch_add(1, Ordering::Relaxed);
+        (id, ParticleRenderer::new(id))
+    })
+}
 impl Pass {
     fn snapshot(
         &self,
-        t: &ExternalTarget<'_>,
+        t: &CopyView<'_>,
+        renderer: &mut ParticleRenderer,
         device_id: u64,
     ) -> Result<ImmediateDrawSnapshot, Refused> {
         let d = &self.draw;
@@ -534,7 +563,7 @@ impl Pass {
                     identity: header as u64,
                     dimension: dim,
                     view: view.clone(),
-                    sampler: t.device.create_sampler(&program.samplers[n].descriptor()),
+                    sampler: renderer.sampler(t.device, &program.samplers[n]),
                 });
             }
         }
@@ -598,12 +627,9 @@ impl ExternalPass for Pass {
     fn prepare_copy(&mut self, target: &ExternalTarget<'_>) -> Result<(), &'static str> {
         self.prepared
             .retain(|p| p.1.copy != u32::from(target.copy == d3d::TargetCopy::Display));
-        let mut renderers = self.renderers.lock().unwrap_or_else(|e| e.into_inner());
-        static DEVICES: AtomicU64 = AtomicU64::new(1);
-        let (id, renderer) = renderers.entry(target.device.clone()).or_insert_with(|| {
-            let id = DEVICES.fetch_add(1, Ordering::Relaxed);
-            (id, ParticleRenderer::new(id))
-        });
+        let renderers = self.renderers.clone();
+        let mut renderers = renderers.lock().unwrap_or_else(|e| e.into_inner());
+        let (id, renderer) = renderer_for(&mut renderers, target.device);
         let refusal = |why: Refused| {
             static LOGGED: AtomicU64 = AtomicU64::new(0);
             if LOGGED.fetch_add(1, Ordering::Relaxed) < 16 {
@@ -614,13 +640,62 @@ impl ExternalPass for Pass {
             }
             "particle resources"
         };
-        let snapshot = self.snapshot(target, *id).map_err(&refusal)?;
+        let snapshot = self
+            .snapshot(&CopyView::of_target(target), renderer, *id)
+            .map_err(&refusal)?;
         let draw = renderer
             .prepare(target.device, &snapshot)
             .map_err(refusal)?;
         self.prepared
             .push((draw, snapshot.identity, snapshot.target));
         Ok(())
+    }
+    /// One packet appended to the D3D pass open on these attachments: no
+    /// command buffer or render pass of its own. `None` (the isolated
+    /// recording below) only for what a packet cannot carry.
+    fn record_draws(
+        &mut self,
+        t: &ExternalAttachments,
+        request: d3d::ExternalPassRequest,
+    ) -> Option<Result<ExternalDraws, &'static str>> {
+        let view = CopyView::of_attachments(t, &request);
+        // Sampling the colour or depth being drawn is a feedback loop the
+        // open pass cannot express.
+        let attached = [t.color.texture(), t.depth.texture()];
+        if view.stages.iter().flatten().any(|v| attached.contains(&v.texture())) {
+            return Some(Err("particle samples its own target"));
+        }
+        let renderers = self.renderers.clone();
+        let mut renderers = renderers.lock().unwrap_or_else(|e| e.into_inner());
+        let (id, renderer) = renderer_for(&mut renderers, &t.device);
+        let refusal = |why: Refused| {
+            static LOGGED: AtomicU64 = AtomicU64::new(0);
+            if LOGGED.fetch_add(1, Ordering::Relaxed) < 16 {
+                eprintln!(
+                    "native-particles-refused: call={} copy={:?} reason={why:?}",
+                    self.id, t.copy
+                );
+            }
+            "particle resources"
+        };
+        let snapshot = match self.snapshot(&view, renderer, *id) {
+            Ok(s) => s,
+            Err(why) => return Some(Err(refusal(why))),
+        };
+        if snapshot.stencil_reference > u32::from(u8::MAX) {
+            return None;
+        }
+        Some(
+            match renderer.draws(&t.device, &t.queue, &t.uploads, &snapshot) {
+                Ok((packet, discards)) => Ok(ExternalDraws {
+                    ranges: 1,
+                    packets: vec![packet],
+                    discards,
+                    writes: Vec::new(),
+                }),
+                Err(why) => Err(refusal(why)),
+            },
+        )
     }
     fn record_ranges(&mut self, target: ExternalTarget<'_>) -> usize {
         let Some(i) = self
@@ -773,7 +848,6 @@ mod tests {
         );
         admission.scope.lock().unwrap().issuing = Some(Pending {
             source,
-            mode: Mode::Native,
             id: 1,
         });
         let mut wrong = draw.clone();

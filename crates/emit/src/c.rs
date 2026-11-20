@@ -78,9 +78,6 @@ pub struct OwnerShape<'a> {
     /// `H2_DJUMP`; RUNTIME-CONTRACT.md §4, "Direct calls"). `None` emits
     /// every transfer for the runner.
     pub functions: Option<&'a BTreeSet<u32>>,
-    /// Keep only the registers the handler writes in locals ([`homes`]);
-    /// `false` keeps all eight and EFLAGS in locals, as before.
-    pub reg_homes: bool,
 }
 
 /// [`homes`] bit for EFLAGS and its defined mask (bits 0-7 are the GPRs in
@@ -88,9 +85,6 @@ pub struct OwnerShape<'a> {
 pub const HOME_FLAGS: u32 = 1 << 8;
 /// Upper home-mask bits for XMM0..7, independent of the integer homes switch.
 const XMM_BASE: u8 = 9;
-
-/// All integer registers and EFLAGS in locals.
-pub const HOME_ALL: u32 = 0x1ff;
 
 /// Which registers `f`'s handler keeps in C locals: those it can write,
 /// as a [`Gpr::index`] bit set plus [`HOME_FLAGS`] and bits 9–16 for XMM0–7.
@@ -257,8 +251,8 @@ pub fn function(f: &IrFunction, shape: &OwnerShape<'_>) -> String {
     // With accounting a REP loop polls too, so it needs the poll's locals.
     let polled = !shape.loops.headers.is_empty()
         || (shape.accounting && f.insns().any(|i| i.stmts.iter().any(|s| matches!(s, Stmt::Repeat { .. }))));
-    let home = homes(f) | if shape.reg_homes { 0 } else { HOME_ALL };
-    let dirty = if shape.reg_homes { dirty_at_exits(f, home) } else { BTreeMap::new() };
+    let home = homes(f);
+    let dirty = dirty_at_exits(f, home);
     let mut e = Emitter {
         out: String::new(),
         shape,
@@ -1194,8 +1188,8 @@ impl Emitter<'_> {
             }
             // A call through a pointer, back to this handler: H2_ICALL finds
             // the target's handler in the direct slots the runner filled
-            // and calls it as H2_DCALL would (H2_INDIRECT_CALLS), or leaves
-            // for the runner as below.
+            // and calls it as H2_DCALL would, or leaves for the runner as
+            // below.
             Control::Call { target: Target::Dynamic(v), continuation, kind: CallKind::Indirect, .. }
                 if self.shape.functions.is_some() && self.shape.selectors.contains(continuation) =>
             {
