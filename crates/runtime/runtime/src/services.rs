@@ -20,6 +20,7 @@ pub struct Runtime {
     pub(crate) words: crate::preempt::Words,
     pub(crate) coverage: OnceLock<crate::coverage::Coverage>,
     pub(crate) dispatch_census: Option<crate::entry_stats::DispatchCensus>,
+    fault_census: crate::fault_census::FaultCensus,
 }
 
 /// Waits on the guest memory lock that found it held by another thread.
@@ -77,7 +78,13 @@ impl Runtime {
             coverage: OnceLock::new(),
             dispatch_census: (std::env::var("H2_DISPATCH_STATS").as_deref() == Ok("1"))
                 .then(crate::entry_stats::DispatchCensus::default),
+            fault_census: Default::default(),
         })
+    }
+    /// Every memory fault and what became of its state
+    /// ([`crate::fault_census`]; the agent's `profile.faults`).
+    pub fn fault_census(&self) -> &crate::fault_census::FaultCensus {
+        &self.fault_census
     }
     /// Runtime dispatch counters, enabled when constructed with
     /// `H2_DISPATCH_STATS=1`.

@@ -20,6 +20,7 @@ mod coverage;
 pub mod events;
 pub mod exec;
 pub mod executor;
+pub mod fault_census;
 #[allow(unsafe_code)]
 pub mod ffi;
 mod frames;

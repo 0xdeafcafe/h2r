@@ -1821,6 +1821,8 @@ fn run_configured(
             })
         };
         hot_glue::install(&a.agent, &loaded.runtime, maps(), watch_overrides);
+        // profile.faults: the fault census (agent_glue.rs).
+        agent_glue::add_runtime_methods(&a.agent, &loaded.runtime);
         // sim.give and sim.spawn find tags as edit.* does (agent_glue.rs).
         if let Some(sim) = &a.sim {
             sim.set_tags(Box::new(hot_glue::map_tags(&loaded.runtime, maps())));

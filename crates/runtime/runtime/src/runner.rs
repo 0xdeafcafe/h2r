@@ -55,6 +55,7 @@ impl Runner {
             }
         });
         ctx.set_direct_budget(outer);
+        ctx.census_run_end(&result);
         result
     }
     /// Run a scoped guest call on its existing stack. Stop when its actual
@@ -75,6 +76,7 @@ impl Runner {
             self.run_inner::<true, false>(cpu, ctx, transfer, scope)
         };
         ctx.set_direct_budget(outer);
+        ctx.census_run_end(&result);
         result
     }
 
@@ -167,6 +169,9 @@ impl Runner {
                 }
                 return stop;
             }
+            // Guest execution goes on here: from a memory fault's state, if
+            // the last run on this context ended with one (fault_census).
+            ctx.census_continue();
             match step::<SCOPED, DIAG>(cpu, ctx, transfer, scope, &mut remaining, &mut diag) {
                 Step::Next(next) => transfer = next,
                 Step::Done(done) => return done,

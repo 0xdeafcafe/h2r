@@ -30,7 +30,7 @@ connection to hold `session.claim`.
 | `world.raw` | read | [`world.raw`](#worldraw-an-objects-bytes-before-and-after) |
 | `world.poke` | claim | [`world.poke`](#worldpoke-replace-bytes-in-one-object-part) |
 | `havok.bodies`, `havok.agents`, `havok.contacts` | read | [`havok`](#havok-the-physics-world) |
-| `profile.counters`, `profile.capture`, `profile.fallbacks` | read | [`profile`](#profile-where-a-frame-goes) |
+| `profile.counters`, `profile.capture`, `profile.fallbacks`, `profile.faults` | read | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.start`, `profile.sample.stop` | act | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.status` | read | [`profile`](#profile-where-a-frame-goes) |
 | `render.frame`, `render.stats` | read | [`render`](#render-the-frame-and-the-pipeline) |
@@ -443,6 +443,7 @@ empty manifold is still a candidate in the query box.
 | `profile.counters` | none | the frame-stats rolling window (`timeline::phase`), the numbers `H2_FRAME_STATS` prints: `frames`, `fps`, frame ms, `phase_ms`, `counts`. When nothing else collects them the glue starts a quiet 5 s window |
 | `profile.capture` | `{ticks \| ms, budget_ms?, spikes?, sample?}` | percentiles, phases, counters and spikes over a window (below) |
 | `profile.fallbacks` | `{top?}` | where the fallback interpreter runs |
+| `profile.faults` | `{top?}` | the fault census: every guest memory fault and whether execution went on from it |
 | `profile.sample.start`, `.stop`, `.status` | `{hz?}`, `{inline?}`, none | the in-process sampler |
 
 ```sh
@@ -450,6 +451,7 @@ h2 agent counters
 h2 agent capture 900                 # 900 game ticks, about 30 s
 h2 agent capture 10000ms sample      # h2 built --features perf
 h2 agent fallbacks 20
+h2 agent faults
 ```
 
 - **`profile.capture`** keeps every frame-stats row over the window and
@@ -501,6 +503,18 @@ h2 agent fallbacks 20
   modules also report `cold_entries` (interpreter invocations for omitted
   owners) and `cold_sites` (distinct owner/selector pairs); the boot log
   names each pair on first use.
+- **Faults.** `profile.faults {top}` (20 by default, 1 to 500) is the
+  fault census (`runtime::fault_census`,
+  [block-clock-imprecise-faults.md](block-clock-imprecise-faults.md)):
+  `generated` (memory faults raised by an accessor generated code called)
+  and `runtime` (raised by the runtime or a Rust handler); `ended` (faults
+  a run returned to its caller with); `continued` (times guest execution
+  went on, on the same context, from the state a fault left) and
+  `continued_generated` (of those, generated faults);
+  `precise_exits_needed`, true when `continued_generated` is not 0; and
+  the `top` fault PCs by count, each with `source`, `count`, `continued`
+  and the first fault's `addr`, `len`, `access` and `reason`. Kept per PC,
+  at most 4096 (`sites_full`). It counts from the process's start.
 - **Sampling.** `sample: true` also runs the in-process sampler
   (`profile.sample.*`, `boot::sampling`) over the window, and `sampling` is
   what `profile.sample.stop` answers: the module-relative dump

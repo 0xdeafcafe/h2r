@@ -90,6 +90,9 @@ or a short form:
   fallbacks [N]          profile.fallbacks: the N (20) fallback interpreter
                          entry addresses that interpreted most, with their
                          function, hits and instructions
+  faults [N]             profile.faults: the fault census, every guest memory
+                         fault and whether execution went on from it, with
+                         the N (20) most frequent fault PCs
   render                 render.stats: in-between frames and why they held,
                          the pipelined render, the frame-stats counters
   state save <name> [replace]  state.save: the whole machine at the next tick
@@ -630,6 +633,13 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
                 Some(_) => json!({ "top": number(arg, "fallbacks")? }),
             },
         ),
+        "faults" => (
+            method::PROFILE_FAULTS,
+            match arg {
+                None => Value::Null,
+                Some(_) => json!({ "top": number(arg, "faults")? }),
+            },
+        ),
         "object" => (
             method::WORLD_OBJECT,
             json!({ "id": arg.context("object needs an id, e.g. actor.e1230045")? }),
@@ -887,6 +897,8 @@ mod tests {
             ("profile.fallbacks".into(), json!({"top": 5}))
         );
         assert_eq!(c("fallbacks"), ("profile.fallbacks".into(), Value::Null));
+        assert_eq!(c("faults 5"), ("profile.faults".into(), json!({"top": 5})));
+        assert_eq!(c("faults"), ("profile.faults".into(), Value::Null));
         assert_eq!(c("loads 3"), ("load.timeline".into(), json!({"last": 3})));
         assert_eq!(
             c("state save fight"),

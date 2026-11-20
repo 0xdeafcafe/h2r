@@ -291,6 +291,9 @@ impl SecondExecutor {
         if self.base.is_none() {
             return Err(ExecutorError::NoSnapshot);
         }
+        // A new call from the host's own state: a fault an earlier run
+        // ended with is dropped, not gone on from (fault_census).
+        self.ctx.discard_fault();
         {
             let mut memory = self.ctx.memory();
             for &v in args.iter().rev().chain([crate::exec::HARNESS_EXIT].iter()) {
@@ -309,6 +312,7 @@ impl SecondExecutor {
             return Err(ExecutorError::NoSnapshot);
         }
         let entry = cpu.eip;
+        self.ctx.discard_fault();
         self.run_from(cpu, TransferAbi::jump(entry))
     }
 

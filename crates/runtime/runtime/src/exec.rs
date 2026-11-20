@@ -35,6 +35,11 @@ pub struct ExecCtx {
     event_ids: Vec<u32>,
     next_event_id: u32,
     pub(crate) pending_fault: Option<u32>,
+    /// The memory fault the last run ended with, until execution goes on
+    /// from it (`fault_census`).
+    pub(crate) open_fault: Option<crate::fault_census::OpenFault>,
+    /// Who raised the last few memory faults, by event id (`fault_census`).
+    pub(crate) fault_sources: Vec<(u32, crate::fault_census::FaultSource)>,
     continuations: Continuations,
     pub(crate) frames: crate::frames::ShadowStack,
     pub(crate) interrupts_masked: bool,
@@ -140,6 +145,8 @@ impl ExecCtx {
             event_ids: Vec::new(),
             next_event_id: 1,
             pending_fault: None,
+            open_fault: None,
+            fault_sources: Vec::new(),
             continuations: Continuations::default(),
             frames: Default::default(),
             interrupts_masked: false,
@@ -299,7 +306,8 @@ impl ExecCtx {
         taken
     }
     pub fn fault(&mut self, pc: u32, fault: GuestFault) -> TransferAbi {
-        TransferAbi::fault(self.emit(Event::MemoryFault { pc, fault }))
+        let id = self.emit_memory_fault(pc, fault, crate::fault_census::FaultSource::Runtime);
+        TransferAbi::fault(id)
     }
 
     /// Using the caller's guard, save owned Rust state, push a return token, and yield
