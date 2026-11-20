@@ -52,6 +52,7 @@ pub mod screen_effect;
 pub mod screen_effects;
 pub mod screen_grid;
 pub mod shadow_constants;
+pub mod hs_actions;
 pub mod hs_pool;
 pub mod hs_syntax;
 // Historical fixed-size partition fixture; the runtime reserves campaign_squad_pool.

@@ -96,3 +96,96 @@ have no stock calls across the ten campaign maps.
 The disc tests check the descriptor signatures, campaign callsites, seat labels
 on rebuilt vehicles and profile indices. The boot tests use synthetic guest
 memory to check the script ABI, game clock, input flags and tick dispatch.
+
+## a10 cryotube action
+
+**Built.** Solo Normal takes `tutorial_setup`. Other difficulties and co-op take
+`fast_setup`, which dismounts the player on a timer. The authored tutorial
+creates `cryotube_1`, a stationary vehicle with one seat, and seats
+`player0` in `CT-driver` with `unit_enter_vehicle`. The Halo 1 seat flags
+are zero. Opening the tube and enabling player input are separate script
+steps. `tutorial_action` displays the authored help row `tutorial_action_1`
+with its action glyph (18), enables input, resets the action tests and
+polls `player_action_test_action` every tick with no timeout. One sampled
+press suffices. The generic seated `exit_vehicle` prompt uses a different
+row and the vehicle's name.
+
+On success the script resets the action tests, hides the help, fades the
+view and calls `unit_exit_vehicle`. Halo 1's evaluator at `0xf37e0`
+checks the unit's parent and seat. Halo 2 slot 227 passes mode 1 to
+`0x11af90`, which checks the parent and seat before dispatching the exit.
+After a 170-tick animation wait and a fade the script places the player
+at the exit flag and sets `mark_tutorial_action`. The setup thread then
+wakes `tutorial_moving_1`.
+
+| Stage | Xbox executable evidence |
+|---|---|
+| Halo 1 mapped input | At `0xfa00a` mapped control 2 sets packet `+0x18` bit 6 on button-down. The gather at `0xf8a9a` records Action in bit 0 of the control globals. The hold threshold is a separate packet bit. |
+| Halo 1 script | Slot 345 at `0xed420` reads the recorded bit and claims the button. Slot 340 at `0xed520` clears the latch and claim. The input path at `0xf8bb3` consumes the claimed action through release. |
+| Halo 2 v99 | Native slots 488 (`0x2a91c0`) and 479 (`0x2a9020`) implement the test and reset. The packet starts cleared. At `0x186a07` the gather writes mapped action/reload (default X) to packet `+0x20` bit 0 and the hold threshold to bit 1. At `0x187b33` the script sampler reads bit 2. Holding X leaves the script latch clear. |
+| Converted campaign | At entry to `0x187b30` the hook records the mapped press in the guest latch. While the button is claimed or suppressed until release it moves the press into bit 2. The native routine at `0x187c9b` can then track release, clear interaction and mark it handled. An unclaimed press continues to ordinary interaction. |
+
+The look lesson uses signed pitch and yaw latches and checks all four
+directions (slots 491–495). The pitch-choice lesson uses Accept and
+Cancel. The shield lesson drives the `shield_charge_power` device group
+and waits for Accept (default A, slot 489), whose own packet bit reaches
+the sampler at `0x187b73`. Movement, jump and crouch progression uses
+trigger-volume membership and script flags. First-contact doors use power,
+position, automatic-operation calls and volumes. The ignored a10 cryotube
+disc test checks the emitted tutorial definitions for missing calls, globals
+and stubbed indexed arguments. It verifies interpreter dispatch and casts
+against the Halo 2 executable, then checks the action wait, native dismount
+and representative look, volume, shield and door opcodes.
+
+### Headless exit check
+
+From the repository root, with the coordinator's matching `h2`, built image
+and installed a10, start a fresh solo Normal session. These commands use the
+standard macOS image directory, default data root and default pad layout.
+
+```sh
+H2_OPT=2 H2_LEVEL=a10 H2_DIFFICULTY=normal h2 serve disc/halo2.iso \
+  --out "$(getconf DARWIN_USER_TEMP_DIR)/h2boot" \
+  --socket "$(getconf DARWIN_USER_TEMP_DIR)/a10-cryo.sock"
+```
+
+In a second shell, run the block below. The waits advance in game ticks so
+dialogue length does not determine when X is pressed. A failed assertion
+stops the check. Inspect `hs.threads`, `hs.globals`, and `hs.player_actions`
+at that point to identify the last completed gate.
+
+```sh
+(
+  set -euo pipefail
+  a() { h2 agent --socket "$(getconf DARWIN_USER_TEMP_DIR)/a10-cryo.sock" --timeout 330 "$@"; }
+  ticks() { a wait "{\"ticks\":$1}" 300000 >/dev/null; }
+  marked() { a hs.globals | jq -e --arg n "$1" 'any(.globals[]; .name == $n and .value.boolean == true)' >/dev/null; }
+  active() { a hs.threads | jq -e --arg n "$1" 'any(.threads[]; .script == $n and .wake >= 0)'; }
+  claimed() { a hs.player_actions | jq -e '.capture % 2 == 1' >/dev/null; }
+  await_gate() {
+    for i in $(seq 1 240); do
+      if "$@"; then return 0; fi
+      ticks 30
+    done
+    echo "Timed out awaiting $*" >&2
+    return 1
+  }
+  a wait '{"phase":"gameplay","map":"a10"}' 300000
+  await_gate marked mark_tutorial_introduction
+  ticks 90
+  a pad '{"steps":[{"right":[1,0],"ticks":8},{"right":[-1,0],"ticks":8},{"right":[0,1],"ticks":8},{"right":[0,-1],"ticks":8},{"ticks":2}]}'
+  await_gate marked mark_tutorial_looking
+  await_gate marked mark_tutorial_hud_health
+  await_gate claimed
+  active tutorial_action
+  a object player.0 | jq -e '.object.vehicle != null'
+  a press b
+  ticks 15
+  claimed
+  a object player.0 | jq -e '.object.vehicle != null'
+  a pad '{"steps":[{"buttons":["x"],"ticks":30},{"ticks":2}]}'
+  await_gate marked mark_tutorial_action
+  a object player.0 | jq -e '.object != null and .object.vehicle == null'
+  await_gate active tutorial_moving_1
+)
+```

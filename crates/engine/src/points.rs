@@ -871,6 +871,8 @@ points! { ALL;
     /// each bound local user. Reads slowdown and follow at
     /// `0x18622b` and calls the aim-assist search `0x1a4900` at `0x1861a1`.
     PLAYER_CONTROL_UPDATE @ 0x0018_5be0: [fn(user: stack 0, controller: edx) ret 0x14]; "docs/game/aim-assist.md";
+    /// Gather script action-test flags and consume the controls claimed by a script.
+    PLAYER_ACTION_TEST_UPDATE @ 0x0018_7b30: [fn(packet: ecx, actions: eax) ret 0]; "docs/halo1/script-builtins.md";
     /// The aim-assist parameters of a unit's held weapons, from the weapon
     /// tags (aim cone and pull angles and ranges, zoom applied):
     /// unit in ECX, the 0x24-byte result at ESI (kept to the return), zoom
