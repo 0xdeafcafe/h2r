@@ -130,35 +130,23 @@ glb says and it can be looked into from outside; meshes under a `machines`
 node are ordinary models and keep the side they came with. Every mesh is
 found by walking the glb, so one `structure` node or many `bsp_<n>` ones
 are the same to it. Two more ways in (`viewer/cutaway.ts`): **Cut** (key
-`c`, `[` and `]` or the slider) hides the level above a height, and while
-following a player keeps to just over their head; **See-through** (key `x`
-steps off, *in focus* and *everyone*; *in focus* by default) cuts away
-whatever of the level, its machines (doors, lifts, platforms) and its
-placed objects lies between the camera and the
-player being followed (or pointed at in the scoreboard), else every player
-(up to 8, nearest the camera first), a cone to each with a clean edge,
-leaving the floor they stand on, so a player inside a building is seen
-through its walls and roof. Only a surface that is in the way is cut: one
-the line of sight passes through, near where it crosses, with the player
-behind it (its normal is the triangle's own, from the shader's
-derivatives; floors, terrain and ceilings count as level). Ground under or
-beside the line, a step near the player and a wall running alongside stay,
-so open terrain keeps its sand instead of showing a hole to the sky; *everyone* cuts to all of them as well as the
-one in focus. Machines and placed objects are cut exactly as the level
-is, in world space (an instanced batch through each instance's own
-matrix), so a lift in front of a player goes with the wall behind it
-instead of standing whole in the hole; players and vehicles (the frames'
-and the level's parked ones, which a player may be riding) are never cut.
-The rim is a hard edge, not a dither: a per-pixel dither speckled the
-boundary, crawled as the camera moved, and the occlusion, which reads the
-scene's own depth, picked the speckle up as dark freckles. The occlusion
-takes both cuts because it reads that depth (and, without a depth texture,
-its own normal pass is patched the same way); the see-through leaves
-shadows alone, so a room seen through its roof keeps the shade the roof
-gives it. Both are a clipping
-plane and a few lines in the map materials' shaders, shared by all of
-them, so a big level costs no more. `?cut=<height>` and `?see=0` on the
-pop-out page set them from a link. (Culling front faces instead was
+`c`, `[` and `]` or the slider) hides the level above a height. While following
+a player it keeps to just above their head. **See-through** (key `x` to
+cycle through off, *in focus* and *everyone*) opens a window around each
+target's displayed body. *In focus* uses the followed or highlighted
+player, or the nearest players when no one is selected. *Everyone* uses
+up to eight targets.
+
+The same shader tests each pixel ray against the player's body volume.
+Fragments in front of the body that block the window are discarded.
+BSP sections and clusters, instanced scenery, and doors, lifts and
+platforms take the same cut, including machines drawn from frames and
+scenery drawn from the film. The cut leaves the player's supporting floor
+and geometry outside the window visible. Bipeds and vehicles draw whole.
+The cut applies to both colour and depth, so the remaining fragments
+keep their normal depth ordering. Ambient occlusion uses that same depth,
+and shadows stay in place. `?cut=<height>` and `?see=0` set the initial
+view from a link. (Culling front faces instead was
 tried: Halo's levels are thick-walled and faced inwards, so it shows the
 inside of the near walls and ceilings rather than what is beyond them.)
 

@@ -55,7 +55,8 @@ import { easeAngle, mountedTurrets, pickTurret, type TurretAim } from "./turrets
 import { findTurrets, poseTurret, turretWant, type TurretObj } from "./turrets3d";
 import { BOOST, FLY_KEYS, MOUSE_LOOK, PAD_LOOK, TOUCH_LOOK, addMoves, anglesOf, approach, keyBoost, keyMove, lookStep, looksWith, moveIsIdle, padInput, pointerLook, speedLabel, speedStep, twoFingerMove, type FlyMove } from "./flycam";
 import { cameraFit, eyeView, followDistance, markerScale, type Box3 } from "./camera";
-import { SEE_MAX, SEE_RADIUS, cutHeight, cutRange, meshRole, patchSeeThrough, seeTargets, takesSeeThrough, type SeeMode } from "./cutaway";
+import { cutHeight, cutRange, meshRole, seeTargets, takesSeeThrough, type SeeMode } from "./cutaway";
+import { CutawayMaterials } from "./cutaway3d";
 
 /** `eyes`: first person, through the followed player's eyes along their aim. */
 export type ViewMode = "orbit" | "top" | "follow" | "eyes";
@@ -156,7 +157,6 @@ export class ViewerScene {
   readonly renderer: THREE.WebGLRenderer;
   private labels: CSS2DRenderer;
   private scene = new THREE.Scene();
-  private filmWorld = new FilmWorld3D();
   private camera = new THREE.PerspectiveCamera(42, 1, 0.1, 5000);
   /** The near plane when the camera is far out; it shrinks as the camera
    *  comes in (fitNear) so close-ups are not clipped. */
@@ -217,20 +217,14 @@ export class ViewerScene {
   private featuresOn = true;
   private tracers = new Map<number, TracerObj>();
   private spare: TracerObj[] = [];
-  // Seeing into the level: a clipping plane that drops everything above a
-  // height, and a cone from the camera to the player in focus that level
-  // geometry is cut out of. Both live in the map's materials (one plane and
-  // one set of uniforms shared by all of them), so they cost nothing per mesh.
+  // The height plane and the player windows are shared by the level's
+  // materials and the machines and scenery the frames draw separately.
   private cutPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), CUT_OFF);
   private cut = { on: false, height: 0 };
   private cutShown: number | null = null;
   private seeMode: SeeMode = "auto";
-  private see = {
-    uSeeTargets: { value: Array.from({ length: SEE_MAX }, () => new THREE.Vector4()) },
-    uSeeFloors: { value: new Array<number>(SEE_MAX).fill(0) },
-    uSeeCount: { value: 0 },
-  };
-  private patched = new WeakSet<THREE.Material>();
+  private cutaway = new CutawayMaterials(this.cutPlane, this.camera.position);
+  private filmWorld = new FilmWorld3D((node) => this.cutaway.attachModel(node));
   private v0 = new THREE.Vector3();
   private e0 = new THREE.Euler();
   private v1 = new THREE.Vector3();
@@ -400,17 +394,13 @@ export class ViewerScene {
         const mesh = o as THREE.Mesh;
         // Decals and effects: their own blending, the level's cuts, no part in the framing.
         if (mesh.isMesh && path.some((n) => layerNode(n)) && dressLayer(mesh)) {
-          this.cutaway(mesh.material as THREE.Material);
-          return;
-        }
-        if (mesh.isMesh) {
+          this.cutaway.attach(mesh.material as THREE.Material);
+        } else if (mesh.isMesh && !Array.isArray(mesh.material) && plasma.has(mesh.material)) {
           // Plasma is already dressed and shared across its instances.
-          if (!Array.isArray(mesh.material) && plasma.has(mesh.material)) {
-            used.add(mesh.material);
-            mesh.castShadow = mesh.receiveShadow = false;
-            this.cutaway(mesh.material);
-            return;
-          }
+          used.add(mesh.material);
+          mesh.castShadow = mesh.receiveShadow = false;
+          this.cutaway.attach(mesh.material);
+        } else if (mesh.isMesh) {
           if (role === "machine") mesh.material = Array.isArray(mesh.material) ? mesh.material.map(own) : own(mesh.material);
           const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
           for (const m of mats) { used.add(m); if (dressWater(m, this.look.water)) wet = true; }
@@ -428,7 +418,7 @@ export class ViewerScene {
             // Machines are ordinary models and keep the side they came with,
             // and so does anything cut out by alpha (a grate reads from both sides).
             if (role === "level" && !m.transparent && !m.alphaTest) m.side = THREE.FrontSide;
-            this.cutaway(m, takesSeeThrough(role, vehicle));
+            this.cutaway.attach(m, takesSeeThrough(role, vehicle));
           }
           mesh.castShadow = solid;
           mesh.receiveShadow = true;
@@ -525,6 +515,7 @@ export class ViewerScene {
     let o = this.looseMachines.get(m.id);
     if (!o) {
       const boxMat = new THREE.MeshStandardMaterial({ color: 0x9a7b4f, roughness: 0.7, metalness: 0.2 });
+      this.cutaway.attach(boxMat);
       const box = new THREE.Mesh(this.geoBox, boxMat);
       box.castShadow = true;
       box.scale.set(2.4, 1.2, 2.4);
@@ -541,7 +532,10 @@ export class ViewerScene {
     if (key !== o.key) {
       if (o.model) o.group.remove(o.model);
       o.model = template ? this.library.instantiateVehicle(template, null) : null;
-      if (o.model) o.group.add(o.model);
+      if (o.model) {
+        this.cutaway.attachModel(o.model);
+        o.group.add(o.model);
+      }
       o.box.visible = !o.model;
       o.key = key;
       this.dirty = true;
@@ -592,7 +586,6 @@ export class ViewerScene {
   /** The level's rain, snow or motes, where they fall. */
   setWeather(on: boolean) { this.look.setWeather(on); }
 
-  /** Gives a level material the height cut and the see-through. */
   /** Near plane from the camera's distance to what it orbits: small up
    *  close, back to the map's own value further out, for depth precision. */
   private fitNear() {
@@ -602,27 +595,6 @@ export class ViewerScene {
       this.camera.near = near;
       this.camera.updateProjectionMatrix();
     }
-  }
-
-  /** The height cut on a material, and the see-through unless `see` is
-   *  false (vehicle placements: they are always drawn whole). */
-  private cutaway(m: THREE.Material, see = true) {
-    if (this.patched.has(m)) return;
-    this.patched.add(m);
-    m.clippingPlanes = [this.cutPlane];
-    m.clipShadows = true;
-    if (!see) return;
-    const before = m.onBeforeCompile, key = m.customProgramCacheKey;
-    m.onBeforeCompile = (shader, renderer) => {
-      before.call(m, shader, renderer);
-      const out = patchSeeThrough(shader.vertexShader, shader.fragmentShader);
-      if (!out) return;
-      shader.vertexShader = out.vertex;
-      shader.fragmentShader = out.fragment;
-      Object.assign(shader.uniforms, this.see);
-    };
-    m.customProgramCacheKey = () => key.call(m) + "|see";
-    m.needsUpdate = true;
   }
 
   /** The height cut: nothing of the level above `height` (game z) is
@@ -665,28 +637,33 @@ export class ViewerScene {
     this.cutShown = h;
     this.cutPlane.constant = h === null ? CUT_OFF : h;
 
-    // The see-through: a cone from the camera to each player it is for.
+    // Project around the bodies as drawn, including floor correction and seats.
     const focus = this.followIndex ?? highlight;
     const cam = this.camera.position;
-    const alive = [...this.shown]
-      .filter(([i, s]) => s.alive && !s.actor && this.players.has(i))
-      .map(([i, s]) => { const [x, y, z] = gameToGl(s.x, s.y, s.z); return { i, d: cam.distanceToSquared(this.v0.set(x, y, z)) }; })
+    const alive = [...this.players]
+      .filter(([i, p]) => p.group.visible && !p.actor && this.shown.get(i)?.alive)
+      .map(([i, p]) => ({ i, d: cam.distanceToSquared(p.group.position) }))
       .sort((a, b) => a.d - b.d)
       .map((p) => p.i);
-    const inFocus = focus !== null && this.shown.get(focus)?.alive && this.players.has(focus) ? focus : null;
+    const inFocus = focus !== null && alive.includes(focus) ? focus : null;
     // Through someone's eyes there is nothing between them and the camera.
-    const targets = seeTargets(this.mode === "eyes" ? "off" : this.seeMode, inFocus, alive);
-    const u = this.see;
+    const targets = seeTargets(this.mode === "eyes" && !this.fly ? "off" : this.seeMode, inFocus, alive);
+    const u = this.cutaway.uniforms;
     let n = 0;
     for (const index of targets) {
-      const s = this.shown.get(index)!, p = this.players.get(index)!;
-      const k = p.turn.scale.x, tall = p.biped ? p.biped.height * k : 0.86 * k;
-      const [x, y, z] = gameToGl(s.x, s.y, s.z);
-      const r = SEE_RADIUS * Math.max(1, k);
+      const p = this.players.get(index)!;
+      const { x, y, z } = p.group.position;
+      const scale = p.turn.scale.x;
+      const tall = p.turn.visible
+        ? (p.biped ? p.biped.height : 0.86 * p.body.scale.y) * scale
+        : p.label.position.y;
+      const radius = Math.max(0.15, 0.5 * tall);
+      const halfHeight = Math.max(0.15, 0.58 * tall);
+      const centerY = y + tall * 0.5;
       const t = u.uSeeTargets.value[n]!;
-      if (t.x !== x || t.y !== y + tall * 0.6 || t.z !== z || t.w !== r) this.dirty = true;
-      t.set(x, y + tall * 0.6, z, r);
-      u.uSeeFloors.value[n] = y + 0.06 * k;
+      if (t.x !== x || t.y !== centerY || t.z !== z || t.w !== radius || u.uSeeHalfHeights.value[n] !== halfHeight) this.dirty = true;
+      t.set(x, centerY, z, radius);
+      u.uSeeHalfHeights.value[n] = halfHeight;
       n++;
     }
     if (u.uSeeCount.value !== n) this.dirty = true;
@@ -1742,8 +1719,6 @@ export class ViewerScene {
     if (this.effects.film(frame.filmEffects ?? [], still)) this.dirty = true;
     if (this.projectiles.update(now)) this.dirty = true;
     if (this.effects.update(this.feed.liveHits(now), still || frame.filmWorld ? [] : this.feed.liveGrenades(now), S, still)) this.dirty = true;
-    this.updateCutaway(dt, highlight);
-
     frame.markers.forEach((m, i) => {
       const o = this.mark(i);
       const a = Math.max(0, Math.min(1, m.alpha));
@@ -1800,6 +1775,7 @@ export class ViewerScene {
     }
     // Through someone's eyes the orbit controls would pull the camera back to their least distance.
     if (!this.fly && this.mode !== "eyes") this.controls.update();
+    this.updateCutaway(dt, highlight);
     // The water's ripples and the weather move by themselves.
     // (Held still when motion is reduced, but the weather still follows the view.)
     const moving = this.look.animate(this.opts.reducedMotion ? 0 : now / 1000, this.controls.target, this.camera.position.distanceTo(this.controls.target));
@@ -1858,9 +1834,6 @@ export class ViewerScene {
         composer.addPass(new OutputPass());
         composer.setPixelRatio(this.renderer.getPixelRatio());
         composer.setSize(this.w, this.h);
-        // The occlusion pass draws the scene again with one material of its
-        // own: it takes the cuts too, or the cut-away walls would still shade.
-        this.cutaway(gtao.normalMaterial);
         this.composer = composer;
         this.gtao = gtao;
         gtao.updateGtaoMaterial({ radius: this.scale * 1.6, distanceExponent: 1.2, thickness: 1.2, scale: 1.15, samples: 12 });
@@ -1905,6 +1878,7 @@ export class ViewerScene {
     this.effects.dispose();
     this.projectiles.dispose();
     this.filmWorld.dispose();
+    this.cutaway.dispose();
     this.library.dispose();
     this.look.dispose();
     disposeTree(this.scene);

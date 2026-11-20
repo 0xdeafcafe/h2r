@@ -3,6 +3,8 @@ import type { FilmProp, FilmVector, FilmWorld } from "../api/types";
 import { gameToGl } from "../map/views";
 import { vehicleBasis } from "./models";
 
+const levelProps = new Set(["scen", "bloc", "mach", "ctrl", "lifi", "ssce"]);
+
 const proxy: Record<string, { size: FilmVector; colour: number }> = {
   proj: { size: [.045, .026, .026], colour: 0xee9962 },
   weap: { size: [.26, .07, .08], colour: 0x536064 },
@@ -28,7 +30,7 @@ export class FilmWorld3D {
   private y = new THREE.Vector3();
   private z = new THREE.Vector3();
 
-  constructor() {
+  constructor(private readonly cutaway: (object: THREE.Object3D) => void) {
     this.outline.visible = false;
     this.group.add(this.outline);
   }
@@ -52,6 +54,7 @@ export class FilmWorld3D {
       if (!entry || entry.asset !== asset) {
         entry?.node.removeFromParent();
         const node = asset ? asset.clone(true) : this.standIn(p);
+        if (levelProps.has(p.class)) this.cutaway(node);
         node.visible = true;
         node.matrixAutoUpdate = true;
         this.group.add(node);

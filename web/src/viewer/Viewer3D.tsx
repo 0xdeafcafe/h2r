@@ -303,7 +303,7 @@ export default function Viewer3D(props: Viewer3DProps) {
             aria-label="See-through"
             value={see()}
             onChange={(e) => pickSee(e.currentTarget.value as SeeMode)}
-            title="See-through: walls, roofs and floors between the camera and players are cut away. In focus: the player you follow or point at in the scoreboard, else everyone. Key: x"
+            title="See-through opens a view of players through walls, floors, scenery and machines. In focus follows your selected player, or shows everyone when no player is selected. Key X."
           >
             <option value="off">See-through off</option>
             <option value="auto">See-through: in focus</option>
