@@ -1,3 +1,6 @@
 [alias]
 # `cargo h2 analyze` etc. Uses the disc in disc/ unless given a path.
 h2 = "run --release -q -p cli --"
+# `cargo xtask test|check|affected`: the test and check runner
+# (crates/tools/xtask/README.md).
+xtask = "run -q -p xtask --"

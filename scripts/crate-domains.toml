@@ -78,11 +78,12 @@ crates = [
 live_owned = ["bot-glue", "net-glue", "theater"]
 
 [tools]
-about = "Offline work on game data: the Halo 1 converters, the editor cores, the profiler"
+about = "Offline work on game data: the Halo 1 converters, the editor cores, the profiler; and xtask, the workspace's test runner"
 uses = ["formats", "recompiler", "runtime", "platform", "rewrites", "live"]
 crates = [
     "editor-core", "h1-assets", "h1campaign", "h1convert",
     "h1map", "h1objects", "hopper-edit", "hud-edit", "live-art", "perf", "scenario-edit", "viewer",
+    "xtask",
 ]
 live_owned = ["live-art"]
 

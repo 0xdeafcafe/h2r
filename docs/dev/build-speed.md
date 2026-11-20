@@ -11,8 +11,7 @@ Status: the changes below are committed but **not measured**. They were
 written without running a build. The numbers are read from an existing
 target directory and from the compiler cache's own report; every
 expected gain is reasoning from those, to be confirmed with the plan
-further down. The two scripts were run as far as they go without
-building (see the end of "The gate").
+further down.
 
 ## The shape of the problem
 
@@ -174,11 +173,12 @@ reports every failure instead of stopping at the first, keeps tests
 that read discs to four at a time, and runs timed tests one at a time.
 Doctests still need `cargo test --doc`.
 
-nextest is not a pure win here. A file whose tests share an expensive
-fixture through a `OnceLock` (the C library `emit/tests/native_x87.rs`
-compiles, the oracles in `engine`'s `sim_*_differential`) builds it once
-per test instead of once per file. Measure per crate before switching
-the sweep.
+`cargo xtask test` runs the tests through nextest (section 5). nextest
+is not a pure win here. A file whose tests share an expensive fixture
+through a `OnceLock` (the C library `emit/tests/native_x87.rs` compiles,
+the oracles in `engine`'s `sim_*_differential`) builds it once per test
+instead of once per file. The disc tier's differential steps run under
+`cargo test` for that reason.
 
 ## Many worktrees, many agents
 
@@ -317,10 +317,10 @@ the hook fires and links it to `/Volumes/Builds/targets/h2recomp/gate-N`
 like any other. Git rewrites only the files that differ between two
 commits, so cargo's file times are right and it rebuilds exactly what
 changed. Two slots match the existing rule of two compiles at once; the
-lease is that rule. `scripts/gate.py --pool DIR` implements it, and
-`--exec` runs any other command in a leased slot. The gate does not
-pass `CARGO_TARGET_DIR` on, since that would route a slot back into a
-shared directory.
+lease is that rule. Nothing in the repository implements the pool:
+`cargo xtask test` builds in the checkout it runs in. A pool that runs
+it must not pass `CARGO_TARGET_DIR` on, since that would route a slot
+back into a shared directory.
 
 Two things about the hook to work with:
 
@@ -341,9 +341,8 @@ Lane worktrees whose agents do not compile keep empty targets and cost
 nothing.
 
 **Prune policy.** Cleaning disk is a job for the machine's cleanup
-tooling and the hook, not for this repository, so the gate only refuses
-to start a step under a free-space floor (6 GiB by default) and prints
-the target's free space. What the cleanup should do:
+tooling and the hook, not for this repository. What the cleanup should
+do:
 
 1. Lane targets: leave them to the hook. A lane target over a gigabyte
    means a lane compiled, which the rules say it should not.
@@ -357,131 +356,141 @@ the target's free space. What the cleanup should do:
 4. Delete `debug/incremental*` entries older than three days.
 5. If the target is still over 25 GB, delete its `debug/` whole. The
    next build is cold for cargo but mostly cache hits.
-6. Delete gate ledger files (section 4) older than 14 days.
+6. Delete ledger files (section 4) older than 14 days.
 
 Never prune by file age without the lock: an rlib nothing has rebuilt
 keeps its old time while a running build still links against it. The
 hook's own check, that nothing has a file open, covers a removed
 worktree; it does not cover a slot between two cargo commands of one
-gate run. The lock does.
+test run. The lock does.
 
 ### 3. Test only what changed
 
-`scripts/affected.py` prints the crates a branch can have changed:
+`cargo xtask affected` prints the packages a branch can have changed,
+one per line (`crates/tools/xtask/src/workspace.rs`):
 
-    scripts/affected.py --base master --why
-    scripts/affected.py --format args       # -p a -p b ..., for cargo
+    cargo xtask affected                    # against origin/master
+    cargo xtask affected --base master --why
 
-It takes the files that differ from the merge base (and uncommitted
-ones), maps each to its crate, and adds every crate that builds against
-one of those. The dependency graph comes from
-`cargo metadata --offline --no-deps`, which resolves nothing and
-compiles nothing. The rules:
+It takes the files that differ between the merge base with `--base` and
+the working tree (committed, staged, unstaged and untracked), maps each
+to its package by the manifest directories `cargo metadata --no-deps`
+reports, and adds every workspace package that builds against one of
+those. `cargo metadata --no-deps` resolves nothing and compiles nothing.
+The rules:
 
-- A change under a crate's `tests/`, `benches/` or `examples/` affects
-  that crate only.
-- A crate that only dev-depends on a changed crate is added, but its
-  own dependents are not.
-- A file outside the crates counts for the crates whose sources name
-  it: `include_str!("../../../docs/graphics/d3d.md")` in a `d3d` test,
-  `#[path]` into another crate's `tests/common`, the runtime's ABI
-  header. A change to `docs/graphics/d3d.md` tests `d3d`.
-- `Cargo.lock`, the root `Cargo.toml` and `.cargo/config.toml` affect
-  everything.
-- A changed file that belongs to no crate and is named by none is
-  listed on stderr. It is not tested, and the script says so.
-
-Examples on today's tree: a change in `crates/platform/d3d/src` gives 15 crates;
-in `crates/platform/d3d/tests`, 1; in `crates/formats/tags/src`, 45; in
-`crates/apps/cli/src`, 1.
+- A change under a package's `tests/`, `benches/` or `examples/`
+  affects that package only.
+- A package that only dev-depends on a changed package is added, but
+  its own dependents are not.
+- A file outside the packages counts for the packages whose sources
+  name it: `include_str!("../../../docs/graphics/d3d.md")` in a `d3d`
+  test, `#[path]` into another crate's `tests/common`, the runtime's
+  ABI header. A change to `docs/graphics/d3d.md` tests `d3d`.
+- The root `Cargo.toml`, `Cargo.lock`, anything under `.cargo/`,
+  `.config/nextest.toml` and `rust-toolchain*` affect every package.
+- A changed file that belongs to no package and is named by none is
+  listed (`--why` prints them on stderr). It is not tested by cargo,
+  and xtask says so.
 
 What it cannot see: a test that opens a file outside its crate at run
 time through a path the scan does not recognise. The scan covers
-`include!` forms, `#[path]`, and string paths joined to
+`include!` forms, `#[path]`, and `../` strings joined to
 `CARGO_MANIFEST_DIR` on one line.
 
 ### 4. The test ledger
 
-There is a ledger already, `tested`, outside the repository. It keys a
-pass on the whole checkout's tree, the cargo arguments and some
-environment. Three problems: any commit anywhere, a doc fix included,
-is a new key for every crate; it calls a lock script at a temporary
-path that no longer exists, so it cannot run; and none of the sweep
-scripts call it. They run cargo directly.
+xtask records passes in `~/Library/Caches/h2recomp/xtask-ledger`
+(`$XDG_CACHE_HOME/h2recomp/xtask-ledger` elsewhere), one file per key
+(`crates/tools/xtask/src/ledger.rs`). A package's key covers what its
+test run can depend on:
 
-`scripts/gate.py` keeps its own, keyed per step on what the step can
-depend on (`scripts/affected.py --keys` prints the crate part):
-
-- the crate's own git tree;
-- the trees of every crate its tests build against, without their
-  `tests/`, `benches/` and `examples/`;
-- the outside files those crates name;
-- `Cargo.lock`, the root `Cargo.toml`, the cargo config;
-- the cargo arguments, `rustc -vV`, the machine, and the environment
-  that changes builds or tests (`RUSTFLAGS`, `CARGO_PROFILE_*`,
-  `H2_*`, `H1_*`);
-- the retail XBE's contents, when the step is given one.
+- the package's own git tree;
+- the trees of every workspace package its tests build against,
+  without their `tests/`, `benches/` and `examples/`;
+- the outside files those packages name;
+- the root `Cargo.toml`, `Cargo.lock`, `.cargo/`, `.config/nextest.toml`
+  and the toolchain file;
+- the command, `rustc -vV`, the machine, and the environment that
+  changes builds or tests (`RUSTFLAGS`, `RUSTDOCFLAGS`,
+  `CARGO_ENCODED_RUSTFLAGS`, `CARGO_PROFILE_*`, `CARGO_BUILD_*`,
+  `H2_*`, `H1_*`).
 
 Two checkouts with the same key build and test the same thing, so a
 pass in one is a pass in the other: a lane rebased onto a master that
-moved only in crates it does not depend on keeps its passes. Only
-passes are recorded. A crate with uncommitted changes anywhere in its
-inputs has no key and always runs. Two gates that reach the same key
-at once run it once; the second waits and reads the result.
+moved only in packages it does not depend on keeps its passes, and so
+does an integration branch for the lanes it merged. Only passes are
+recorded, and only when every failure of the run is a test the summary
+names: after a build error nothing is recorded. A package with
+uncommitted changes anywhere in its inputs has no key and always runs.
+`--no-ledger` runs everything and records nothing. The disc tier never
+uses the ledger.
 
 The key is deliberately coarse in one place: any `Cargo.lock` change
-invalidates every crate. Narrowing that to each crate's own resolved
-dependencies needs a full `cargo metadata`, and is a refinement.
+invalidates every package. Narrowing that to each package's own
+resolved dependencies needs a full `cargo metadata`, and is a
+refinement.
 
-Because a pass must mean the same thing wherever it is reused, the gate
-tests each crate with its own command, `cargo test -p X`. One command
-for many crates (`cargo test -p a -p b ...`) compiles each shared crate
-once, because features are then resolved once, but its result depends
-on which other crates were named, so it cannot be recorded per crate.
-Use the single command for a full cold sweep with no ledger; use the
-gate for branches.
+A pass is recorded per package from one run over many packages, where
+cargo resolves features once for all of them. A package tested alone
+can see a smaller feature set of a shared dependency, and so a
+different build. The ledger accepts that: it trades the exactness of a
+`cargo test -p X` per package for one parallel run.
+
+The older `tested` ledger outside the repository keys a pass on the
+whole checkout's tree, so any commit anywhere, a doc fix included, is a
+new key for every crate. xtask does not use it.
 
 ### 5. The gate
 
-`scripts/gate.py` is the one command a branch passes before it merges:
+`cargo xtask test` is the one command a branch passes before it merges
+(`crates/tools/xtask/src/main.rs`; the crate's README has every flag):
 
-    scripts/gate.py --pool /Volumes/Builds/h2recomp-gate
-    scripts/gate.py --dry-run          # the plan, no cargo
+    cargo xtask test --dry-run         # the packages and the commands, nothing run
+    cargo xtask test                   # the affected packages
+    cargo xtask test --all --web       # everything
+    cargo xtask test --disc            # and the disc tier
 
 1. `cargo check --locked -p cli`, then again with
-   `--no-default-features --features host`.
-2. `cargo test --locked -p X` for each affected crate, dependencies
-   first, with `H2_XBE` set when the disc is there.
-3. The disc differentials when the branch touches what they cover:
-   `engine` and `native-render` with `--features differential` (for a
-   change in `engine`, `emit` or `runtime`), and `runtime` and `emit`
-   on flat RAM. The table is `DISC_STEPS` at the top of the script.
+   `--no-default-features --features host`, when `cli` is affected.
+   Both build into the checkout's one target directory, so they run one
+   after the other.
+2. One `cargo nextest run --locked --profile xtask --no-fail-fast`
+   with a `-p` for every affected package (`--workspace` when that is
+   all of them). nextest spreads the tests of every binary of every
+   package over the cores at once; a loop of `cargo test -p X` runs one
+   binary at a time.
+3. One `cargo test --locked --doc` for the same packages that have a
+   library with doctests, which nextest cannot run.
+4. With `--disc`, the disc tier: see
+   [crate-structure.md](crate-structure.md), "Gates".
+5. With `--web`, or when anything under `web/` changed:
+   `bun install --frozen-lockfile` when `web/node_modules` is missing,
+   then `bun test` and `bun run typecheck` in `web/`. They run beside
+   the Rust steps, and their output is printed when they finish.
 
-Every step ends as `PASS`, `LEDGER`, `NOT NEEDED`, `NOT RUN` or `FAIL`,
-and the summary lists them. The exit status is 0 only when nothing is
-`FAIL`. There is no way for a step to be skipped quietly:
+The `xtask` profile in `.config/nextest.toml` sets the time limits: a
+test still running after five minutes is killed and reported as failed,
+a disc test after thirty. It also writes a JUnit report
+(`target/nextest/xtask/junit.xml` under the workspace root; nextest keeps its store there whatever `CARGO_TARGET_DIR` says). xtask reads it, and
+`cargo nextest list --message-format json` for the tests the run left
+out, and prints one line per package: passed, failed, skipped and the
+slowest test. Each failed test follows with the first lines of its
+output, from the panic when there is one. Doctest results join their
+package's line.
 
-- A step that cannot run is `FAIL`: no disc for a disc step, free
-  space under the floor, cargo missing.
-- The time limit is the script's own (`--timeout-min`, per step). It
-  does not use `timeout`, which macOS lacks; a step over the limit is
-  killed with its children and is `FAIL`.
-- A step's exit status is read directly, never through a pipe.
-- `NOT RUN` only comes from a flag on the command line (`--exclude`,
-  `--without-disc REASON`), and the final line then reads `PASSED,
-  WITH N STEPS LEFT OUT BY FLAGS`.
-- For test steps the summary shows how many tests passed and how many
-  were ignored, so a step that ran nothing is visible.
+Every step ends as `PASS`, `FAIL`, `LEDGER` or `NOT NEEDED`, and the
+exit status is 0 only when nothing is `FAIL`. A step that cannot run
+is `FAIL`: nextest missing, a build error, no disc for the disc tier.
 
-Each step's output goes to a log file; a failure prints its failing
-lines and the log's path. `--fail-fast` stops at the first failure and
-marks the rest `FAIL, not reached`.
+`--dry-run` prints the affected packages and the exact commands; no
+cargo runs. `cargo xtask check` runs the two `cli` checks,
+`scripts/crate-graph.py layers --check`, `scripts/crate-table.py
+--check` and `scripts/docs-check.py` on the docs the branch changed.
 
-State of testing: `affected.py` was run against this repository. The
-gate's plan, ledger, failure, timeout, lease and exit-status paths were
-exercised with a stand-in `cargo` that builds nothing, including a
-lease on the builds volume, where the hook linked the slot's target as
-described. It has not yet run a real build.
+What is left to the machine: a pool of build slots (section 2) is not
+part of xtask, which builds in the checkout it runs in, into that
+checkout's target directory.
 
 ## Measurement plan
 
@@ -521,9 +530,9 @@ repeated here in short.
 | 9 | nextest against `cargo test` | `cargo nextest run -p ...` against `cargo test -p ...`, both after `--no-run` | wall time of the run alone |
 | 10 | Where a build's time goes | `cargo build -p cli --timings` | the `boot` and `cli` bars and the link, in `target/cargo-timings` |
 | 11 | The cache ignores the checkout's path | `cargo test --no-run -p xbe` in two checkouts of one commit, each with an empty target directory | `kache explain xbe` after the second: a hit |
-| 12 | A pool slot against a fresh target | gate branch A, then branch B, in one slot; then branch B in its own worktree with an empty target | wall time of B's gate both ways, `du -sh` of both targets, and "copied" in `kache stats` |
-| 13 | The ledger | the gate twice on one commit; then on a branch rebased over a master that moved in a crate it does not depend on | second run: every step `LEDGER`; after the rebase: only the steps for crates that changed |
-| 14 | The gate fails loudly | the gate with `--disc /nonexistent` on a branch touching `engine`; with `--timeout-min 0.1`; with `--min-free-gib 10000` | exit status 1 each time, the step `FAIL` with its reason |
+| 12 | A persistent target against a fresh one | `cargo xtask test` on branch A, then branch B, in one worktree moved with `git checkout --detach`; then branch B in its own worktree with an empty target | wall time of B's run both ways, `du -sh` of both targets, and "copied" in `kache stats` |
+| 13 | The ledger | `cargo xtask test` twice on one commit; then on a branch rebased over a master that moved in a crate it does not depend on | second run: every package from the ledger; after the rebase: only the packages whose inputs changed run |
+| 14 | xtask fails loudly | `cargo xtask test --disc` with no disc and `H2_XBE` unset; a scratch test that sleeps past the `xtask` profile's limit; a branch with a compile error | exit status 1 each time, the step `FAIL` with its reason; the sleeping test killed and named |
 
 ## Expected gains
 
@@ -554,7 +563,7 @@ These are estimates from the counts above.
   that can see the change, instead of a fixed list of 16 that may not
   include them; one that changes only `d3d`'s tests, 1. A change to
   `tags` still tests 45: the graph is wide at the bottom.
-- **The ledger.** A branch re-gated after a rebase, or two lanes merged
+- **The ledger.** A branch tested again after a rebase, or two lanes merged
   into an integration branch, rerun only the steps whose inputs
   changed. With the old whole-tree key that was never.
 

@@ -30,3 +30,22 @@ test-group = 'disc'
 [[profile.default.overrides]]
 filter = 'binary(/^(perf|pacing|lock_contention|vblank_clock|threaded|threaded_frame_stats|visibility_async|pipeline_cache|hot_overrides)$/) | binary(/bench|churn|cost/)'
 test-group = 'timing'
+
+# The profile `cargo xtask test` runs (crates/tools/xtask). A hung test is
+# killed and reported as failed instead of holding the run: after five
+# minutes, or thirty for a disc test. xtask reads the JUnit report, under
+# the workspace root at target/nextest/xtask/junit.xml (nextest's store
+# ignores CARGO_TARGET_DIR), for its per-package
+# summary.
+[profile.xtask]
+slow-timeout = { period = "60s", terminate-after = 5 }
+
+[profile.xtask.junit]
+path = "junit.xml"
+store-success-output = false
+store-failure-output = true
+
+[[profile.xtask.overrides]]
+filter = 'package(h1objects) | package(h1convert) | package(h1campaign) | binary(disc) | test(/_disc(::|$)/)'
+test-group = 'disc'
+slow-timeout = { period = "300s", terminate-after = 6 }
