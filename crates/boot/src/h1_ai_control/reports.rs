@@ -7,7 +7,13 @@
 //! `0x0014d3a0` walks for actors with no selected prop) sets or clears
 //! the forced-combat bit 30 of unit `+0x134` from the report's own flag.
 //! Halo 2 selects no interest for such an actor, so the bridge keeps the
-//! same state in the campaign pool's actor rows instead.
+//! same state in the campaign pool's actor rows instead. A heard shot's
+//! reach is Halo 1's exact formula (`0x0014e379`): the weapon's authored
+//! loudness (`weap +0x270`, carried by the converter in the perception
+//! table's weapon rows) times three, plus the hearing unit's own radius
+//! at object body `+0x3c` — the scaled bounding radius, which Halo 2
+//! keeps at the same offset (`0x000be075` writes it from the definition
+//! tag's `+0x4` bounding radius times the object's scale).
 
 use std::collections::BTreeMap;
 
@@ -22,15 +28,9 @@ use super::{
     NONE, actors, contact, is_converted_campaign, state, uncover_limits,
     uncover_limits::REPORT_LATCH as LAST_SHOT,
 };
-/// The scenario squad record's character-palette index, and the palette
-/// and `char` tag offsets the reach reads below use.
-const SQUAD_CHARACTER: u32 = 0x36;
-const CHARACTER_COUNT: u32 = 0x178;
-const CHARACTERS: u32 = 0x17c;
-const CHAR_PARENT_DATUM: u32 = 0x8;
-const CHAR_PERCEPTION_COUNT: u32 = 0x4c;
-const CHAR_PERCEPTION: u32 = 0x50;
-const PERCEPTION_HEARING: u32 = 0x18;
+/// The hearing unit's radius: the scaled bounding radius both engines
+/// keep at object body `+0x3c`.
+const UNIT_RADIUS: u32 = 0x3c;
 const ITEM_BARRELS_COUNT: u32 = 0x2d0;
 const ITEM_BARRELS: u32 = 0x2d4;
 const BARREL_SIZE: u32 = 0xec;
@@ -108,53 +108,33 @@ fn audible_barrel(m: &dyn GuestMemory, definition: Option<DatumHandle>, barrel: 
     Ok((m.u16(barrels + barrel * BARREL_SIZE + BARREL_FIRING_NOISE)? as i16) > 0)
 }
 
-/// The character's authored hearing distance, following the parent chain
-/// while the tag itself carries no perception block.
-fn hearing(m: &dyn GuestMemory, character: DatumHandle) -> R<f32> {
-    use engine::tags::{GroupTag, tag_get_checked};
-
-    let mut tag = character;
-    for _ in 0..4 {
-        let Some(at) = tag_get_checked(m, tag, GroupTag::from_chars(*b"char"))? else {
-            return Ok(0.0);
-        };
-        if m.u32(at + CHAR_PERCEPTION_COUNT)? != 0 {
-            let block = m.u32(at + CHAR_PERCEPTION)?;
-            let distance = m.f32(block + PERCEPTION_HEARING)?;
-            return Ok(distance.max(0.0));
+/// The weapon's authored report loudness from the perception table's
+/// weapon rows. A weapon without a row — Halo 2 content no Halo 1 tag
+/// sourced — behaves as a zero-loudness Halo 1 weapon: its shots report
+/// no further than the hearing unit's own radius.
+fn weapon_loudness(m: &dyn GuestMemory, definition: Option<DatumHandle>) -> R<f32> {
+    let (Some(table), Some(definition)) = (uncover_limits::perception_table(m)?, definition) else {
+        return Ok(0.0);
+    };
+    let scenario = m.u32(points::SCENARIO.base)?;
+    // The weapon references run just before the character references,
+    // which anchor the end of the scenario's reference list.
+    let Some(first) = m
+        .u32(scenario + 0x1c8)?
+        .checked_sub(table.characters() + table.weapons())
+    else {
+        return Ok(0.0);
+    };
+    let references = m.u32(scenario + 0x1cc)?;
+    for row in 0..table.weapons() {
+        let reference = references + 8 * (first + row);
+        if m.u32(reference)? == u32::from_be_bytes(*b"weap")
+            && m.u32(reference + 4)? == definition.raw()
+        {
+            return Ok(uncover_limits::hex(m, table.weapon_row(row))?.map_or(0.0, f32::from_bits));
         }
-        let parent = m.u32(at + CHAR_PARENT_DATUM)?;
-        if parent == 0 || parent == NONE {
-            return Ok(0.0);
-        }
-        tag = DatumHandle(parent);
     }
     Ok(0.0)
-}
-
-/// A muzzle report's reach for one squad: the hearing distance of its
-/// squad's character, as authored on the source `actr`. Halo 1 instead
-/// scales the weapon's own loudness float by three and adds the actor's
-/// radius (`0x0014e379`); that float has no converted home, so the reach
-/// is the character's hearing and the weapon's authored `firing_noise`
-/// decides whether the shot reports at all.
-fn squad_hearing(m: &dyn GuestMemory, squad: u32) -> R<f32> {
-    let scenario = m.u32(points::SCENARIO.base)?;
-    if scenario == 0 || squad >= m.u32(scenario + super::SQUAD_COUNT)? {
-        return Ok(0.0);
-    }
-    let rows = m.u32(scenario + super::SQUADS)?;
-    let record = rows + super::SQUAD_SIZE * squad;
-    let index = u32::from(m.u16(record + SQUAD_CHARACTER)?);
-    if index >= m.u32(scenario + CHARACTER_COUNT)? {
-        return Ok(0.0);
-    }
-    let palette = m.u32(scenario + CHARACTERS)?;
-    let character = DatumHandle(m.u32(palette + index * 8 + 4)?);
-    if character.0 == 0 {
-        return Ok(0.0);
-    }
-    hearing(m, character)
 }
 
 fn record_shot(m: &mut dyn GuestMemory, weapon: u32, barrel: u32) -> R<()> {
@@ -165,7 +145,8 @@ fn record_shot(m: &mut dyn GuestMemory, weapon: u32, barrel: u32) -> R<()> {
     let Some((_, body)) = objects::get(m, DatumHandle(weapon))? else {
         return Ok(());
     };
-    if !audible_barrel(m, body.definition(m)?, barrel)? {
+    let definition = body.definition(m)?;
+    if !audible_barrel(m, definition, barrel)? {
         return Ok(());
     }
     // An attached weapon can carry a stale origin; the holder's place is
@@ -179,7 +160,9 @@ fn record_shot(m: &mut dyn GuestMemory, weapon: u32, barrel: u32) -> R<()> {
     if !at.iter().all(|value| value.is_finite()) {
         return Ok(());
     }
-    let mut reach: BTreeMap<u32, f32> = BTreeMap::new();
+    // Halo 1's reach (`0x0014e379`): the weapon's loudness times three,
+    // plus each hearing unit's own radius.
+    let loud = weapon_loudness(m, definition)? * 3.0;
     for actor in actors::all(m)? {
         if actor.squad == NONE {
             continue;
@@ -190,20 +173,14 @@ fn record_shot(m: &mut dyn GuestMemory, weapon: u32, barrel: u32) -> R<()> {
         if unit.damage_flags(m)? & 4 != 0 {
             continue;
         }
-        let distance = match reach.entry(actor.squad) {
-            std::collections::btree_map::Entry::Occupied(held) => *held.get(),
-            std::collections::btree_map::Entry::Vacant(free) => {
-                let distance = squad_hearing(m, actor.squad)?;
-                *free.insert(distance)
-            }
-        };
+        let reach = loud + m.f32(unit.addr() + UNIT_RADIUS)?;
         let place = unit.position(m)?;
         let squared = place
             .iter()
             .zip(at)
             .map(|(a, b)| (a - b).powi(2))
             .sum::<f32>();
-        if squared > distance * distance {
+        if squared > reach * reach {
             continue;
         }
         if let Some(row) = uncover_limits::actor_row(m, actor)? {
@@ -250,20 +227,25 @@ mod tests {
         const WEAPON_BODY: u32 = 0x0089_0000;
         const NEAR_BODY: u32 = 0x008a_0000;
         const FAR_BODY: u32 = 0x008b_0000;
+        const EDGE_BODY: u32 = 0x008c_0000;
         const TAG_HEADER: u32 = 0x0060_0000;
         const GROUP_ROWS: u32 = 0x0061_0000;
         const TAG_ROWS: u32 = 0x0062_0000;
         const WEAP_TAG: u32 = 0x0063_0000;
         const BARRELS: u32 = 0x0063_1000;
-        const CHAR_TAG: u32 = 0x0064_0000;
-        const PERCEPTION: u32 = 0x0064_1000;
         const SCENARIO: u32 = 0x0070_0000;
-        const SQUAD_ROWS: u32 = 0x0071_0000;
-        const PALETTE: u32 = 0x0072_0000;
+        const DECLARATIONS: u32 = 0x0071_0000;
+        const STRINGS: u32 = 0x0072_0000;
+        const REFS: u32 = 0x0073_0000;
+        const GLOBALS: u32 = 0x004f_9380;
+        const VM_ARRAY: u32 = 0x0074_0000;
+        const VM_VALUES: u32 = 0x0075_0000;
         const NONE_HANDLE: u32 = u32::MAX;
         const WEAP: u32 = u32::from_be_bytes(*b"weap");
-        const CHAR: u32 = u32::from_be_bytes(*b"char");
 
+        // The perception table: no character rows, one weapon row holding
+        // the shot weapon's authored loudness (6 world units).
+        let table = format!("00000000{:08x}{:08x}", 0x8000_0000u32, 6.0f32.to_bits());
         let squad_storage = 0x10000;
         let group = squad_storage + campaign_squad_pool::SQUAD_BYTES;
         let mut guest = FakeGuest::new();
@@ -282,55 +264,56 @@ mod tests {
             .put_u32(ACTOR_BITS, 0b11)
             .put_u32(points::OBJECTS.base, OBJECT_ARRAY)
             .put_u32(OBJECT_ARRAY + layout::ELEMENT_SIZE, 0xc)
-            .put_u32(OBJECT_ARRAY + layout::HIGH_WATER, 3)
+            .put_u32(OBJECT_ARRAY + layout::HIGH_WATER, 4)
             .put_u32(OBJECT_ARRAY + layout::DATA, OBJECT_ROWS)
             .put_u32(OBJECT_ARRAY + layout::BITMAP, OBJECT_BITS)
-            .put_u32(OBJECT_BITS, 0b111)
-            // The published tag index: groups sorted char < weap.
+            .put_u32(OBJECT_BITS, 0b1111)
+            // The published tag index: one weap group, one weap tag.
             .put_u32(tags::TAG_INDEX_GLOBAL, TAG_HEADER)
             .put_u32(TAG_HEADER + tags::index_layout::GROUPS, GROUP_ROWS)
-            .put_u32(TAG_HEADER + tags::index_layout::GROUP_COUNT, 2)
-            .put_u32(TAG_HEADER + tags::index_layout::TAG_COUNT, 2)
+            .put_u32(TAG_HEADER + tags::index_layout::GROUP_COUNT, 1)
+            .put_u32(TAG_HEADER + tags::index_layout::TAG_COUNT, 1)
             .put_u32(tags::TAG_ENTRIES_GLOBAL, TAG_ROWS)
-            .put_u32(GROUP_ROWS, CHAR)
-            .put_u32(GROUP_ROWS + 4, NONE_HANDLE)
-            .put_u32(GROUP_ROWS + 8, NONE_HANDLE)
-            .put_u32(GROUP_ROWS + 12, WEAP)
-            .put_u32(GROUP_ROWS + 16, u32::from_be_bytes(*b"item"))
-            .put_u32(GROUP_ROWS + 20, u32::from_be_bytes(*b"obje"))
+            .put_u32(GROUP_ROWS, WEAP)
+            .put_u32(GROUP_ROWS + 4, u32::from_be_bytes(*b"item"))
+            .put_u32(GROUP_ROWS + 8, u32::from_be_bytes(*b"obje"))
             .put_u32(TAG_ROWS, WEAP)
             .put_u32(TAG_ROWS + 4, 0x8130_0000)
             .put_u32(TAG_ROWS + 8, WEAP_TAG)
-            .put_u32(TAG_ROWS + 16, CHAR)
-            .put_u32(TAG_ROWS + 20, 0x8140_0001)
-            .put_u32(TAG_ROWS + 24, CHAR_TAG)
             // The weapon tag: two barrels, the first audible, the second
             // silent (Halo 1 trigger +0x2e order: silent first).
             .put_u32(WEAP_TAG + ITEM_BARRELS_COUNT, 2)
             .put_u32(WEAP_TAG + ITEM_BARRELS, BARRELS)
             .put_u16(BARRELS + BARREL_FIRING_NOISE, 1)
             .put_u16(BARRELS + BARREL_SIZE + BARREL_FIRING_NOISE, 0)
-            // The squad's character and its hearing distance.
+            // The perception state global points at the table, whose one
+            // weapon reference names the firing weapon's definition.
             .put_u32(points::SCENARIO.base, SCENARIO)
-            .put_u32(SCENARIO + super::super::SQUAD_COUNT, 2)
-            .put_u32(SCENARIO + super::super::SQUADS, SQUAD_ROWS)
-            .put_u16(SQUAD_ROWS + SQUAD_CHARACTER, 0)
-            .put_u16(SQUAD_ROWS + super::super::SQUAD_SIZE + SQUAD_CHARACTER, 0)
-            .put_u32(SCENARIO + CHARACTER_COUNT, 1)
-            .put_u32(SCENARIO + CHARACTERS, PALETTE)
-            .put_u32(PALETTE + 4, 0x8140_0001)
-            .put_u32(CHAR_TAG + CHAR_PERCEPTION_COUNT, 1)
-            .put_u32(CHAR_TAG + CHAR_PERCEPTION, PERCEPTION)
-            .put_f32(PERCEPTION + PERCEPTION_HEARING, 12.0);
+            .put_u32(SCENARIO + 0x1b0, table.len() as u32)
+            .put_u32(SCENARIO + 0x1b4, STRINGS)
+            .put(STRINGS, table.as_bytes())
+            .put_u32(SCENARIO + 0x1c0, 1)
+            .put_u32(SCENARIO + 0x1c4, DECLARATIONS)
+            .put(DECLARATIONS, hs::h1_ai_slots::PERCEPTION_STATE.as_bytes())
+            .put_u32(SCENARIO + 0x1c8, 1)
+            .put_u32(SCENARIO + 0x1cc, REFS)
+            .put_u32(REFS, WEAP)
+            .put_u32(REFS + 4, 0x8130_0000)
+            .put_u32(GLOBALS, VM_ARRAY)
+            .put_u32(VM_ARRAY + layout::DATA, VM_VALUES)
+            .put_u32(VM_VALUES + 0x41d * 8 + 4, 0);
         // The firing weapon, held by nobody, at the origin.
         put_object(&mut guest, OBJECT_ROWS, 0, 2, objects::WEAPON, WEAPON_BODY);
-        put_body(&mut guest, WEAPON_BODY, [0.0, 0.0, 0.0]);
+        put_body(&mut guest, WEAPON_BODY, [0.0, 0.0, 0.0], 0.25);
         put_object(&mut guest, OBJECT_ROWS, 1, 3, objects::BIPED, NEAR_BODY);
-        put_body(&mut guest, NEAR_BODY, [10.0, 0.0, 0.0]);
+        put_body(&mut guest, NEAR_BODY, [10.0, 0.0, 0.0], 1.0);
         put_object(&mut guest, OBJECT_ROWS, 2, 4, objects::BIPED, FAR_BODY);
-        put_body(&mut guest, FAR_BODY, [100.0, 0.0, 0.0]);
+        put_body(&mut guest, FAR_BODY, [100.0, 0.0, 0.0], 1.0);
+        put_object(&mut guest, OBJECT_ROWS, 3, 5, objects::BIPED, EDGE_BODY);
+        put_body(&mut guest, EDGE_BODY, [19.5, 0.0, 0.0], 1.0);
         put_actor(&mut guest, ACTOR_ROWS, 0, 0x8123, 0x0003_0001, 0);
         put_actor(&mut guest, ACTOR_ROWS, 1, 0x8124, 0x0004_0002, 1);
+        put_actor(&mut guest, ACTOR_ROWS, 2, 0x8125, 0x0005_0003, 2);
         (guest, ACTOR_ROWS)
     }
 
@@ -340,10 +323,11 @@ mod tests {
             .put_u32(rows + slot * 0xc + 8, body);
     }
 
-    fn put_body(g: &mut FakeGuest, at: u32, position: [f32; 3]) {
+    fn put_body(g: &mut FakeGuest, at: u32, position: [f32; 3], radius: f32) {
         g.map(at, 0x10c)
             .put_u32(at, 0x8130_0000)
             .put_u32(at + 0x14, u32::MAX)
+            .put_f32(at + 0x3c, radius)
             .put_f32(at + 0x64, position[0])
             .put_f32(at + 0x68, position[1])
             .put_f32(at + 0x6c, position[2]);
@@ -356,7 +340,7 @@ mod tests {
     }
 
     #[test]
-    fn a_heard_shot_forces_combat_within_the_characters_hearing() {
+    fn a_heard_shot_reaches_loudness_times_three_plus_the_units_radius() {
         let (mut guest, actor_rows) = shot_guest();
         record_shot(&mut guest, 0x0002_0000, 0).unwrap();
         let near = actors::Actor {
@@ -371,14 +355,20 @@ mod tests {
             unit: 0x0004_0002,
             squad: 1,
         };
+        // Halo 1's reach: 6 * 3 + 1 = 19 world units. The actor at 10 is
+        // inside, the actor at 19.5 is half a unit past it.
         let near_row = campaign_squad_pool::actor_state(&guest, 0)
             .unwrap()
             .unwrap();
         let far_row = campaign_squad_pool::actor_state(&guest, 1)
             .unwrap()
             .unwrap();
+        let edge_row = campaign_squad_pool::actor_state(&guest, 2)
+            .unwrap()
+            .unwrap();
         assert_eq!(guest.u32(near_row + LAST_SHOT), Ok(600));
         assert_eq!(guest.u32(far_row + LAST_SHOT), Ok(0));
+        assert_eq!(guest.u32(edge_row + LAST_SHOT), Ok(0));
         assert!(forced(&guest, near, 600 + FORCE_TICKS - 1).unwrap());
         assert!(!forced(&guest, near, 600 + FORCE_TICKS).unwrap());
         assert!(!forced(&guest, far, 600).unwrap());

@@ -146,6 +146,23 @@ pub(crate) fn resolve(
                 );
             }
         }
+        // Rebuilt weapons keep their Halo 1 paths, so every converted
+        // `weap` the set carries under a Halo 1 name brings its authored
+        // report loudness (`weap +0x270`) with it. Retail stand-ins
+        // already carry theirs from the weapon palette pass.
+        for slot in &set.slots {
+            let (Some(tag), Some(name)) = (&slot.tag, &slot.name) else {
+                continue;
+            };
+            if tag.group != FourCC(*b"weap") || ai_control.weapon_reports.contains_key(name.as_str()) {
+                continue;
+            }
+            if let Some(source) = h1.find(h1map::Group::new(b"weap"), name) {
+                let loud = h1ai::h1::weapon_loudness(h1, source)
+                    .map_err(|e| invalid(format!("AI weapon {name}: {e}")))?;
+                ai_control.weapon_reports.entry(name.clone()).or_insert(loud);
+            }
+        }
         // A substitute that upgrades through a Halo 2-only major tag would
         // otherwise lose its authored thresholds: the promoted actor reads
         // the major tag, which no Halo 1 variant names. Variants with a

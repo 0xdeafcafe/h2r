@@ -1106,10 +1106,51 @@ fn check_authored_uncover_rules<R: std::io::Read + std::io::Seek>(
     let offset = scenario.node(global.root()).unwrap().data();
     let encoded = scenario.string(offset).unwrap();
     let word = |s| u32::from_str_radix(s, 16).unwrap();
+    // The two-section header: character rows, then weapon loudness rows,
+    // with the weapon word's marker bit set.
     let count = word(&encoded[..8]);
-    assert_eq!(encoded.len(), 8 + count as usize * 16);
+    let marked = word(&encoded[8..16]);
+    assert_ne!(marked & 0x8000_0000, 0, "{level}: one-word perception header");
+    let weapons = marked & 0x7fff_ffff;
+    assert_eq!(
+        encoded.len(),
+        16 + count as usize * 16 + weapons as usize * 8,
+        "{level}: perception table shape"
+    );
     let references = scenario.references();
-    let rules: std::collections::HashMap<_, _> = encoded.as_bytes()[8..].chunks_exact(16)
+    assert!(references.len() >= count as usize + weapons as usize);
+    let weapon_rules: std::collections::HashMap<_, f32> = encoded.as_bytes()
+        [16 + count as usize * 16..]
+        .chunks_exact(8)
+        .zip(&references[references.len() - count as usize - weapons as usize
+            ..references.len() - count as usize])
+        .map(|(row, weapon)| {
+            assert_eq!(weapon.group(), FourCC(*b"weap"), "{level}: weapon row reference");
+            let row = std::str::from_utf8(row).unwrap();
+            (weapon.id(), f32::from_bits(word(row)))
+        })
+        .collect();
+    assert_eq!(weapon_rules.len(), weapons as usize);
+    // Every converted weapon the campaign names keeps its authored
+    // Halo 1 loudness (weap +0x270) in the table.
+    for tag in map.tags() {
+        if tag.group != FourCC(*b"weap") {
+            continue;
+        }
+        let Some(id) = source.find(h1map::Group::new(b"weap"), tag.name.as_deref().unwrap_or(""))
+        else {
+            continue;
+        };
+        let loud = h1ai::h1::weapon_loudness(source, id).unwrap();
+        assert_eq!(
+            weapon_rules.get(&tag.id),
+            Some(&loud),
+            "{level}: {} keeps its authored report loudness",
+            tag.name.as_deref().unwrap_or("unnamed")
+        );
+    }
+    let rules: std::collections::HashMap<_, _> = encoded.as_bytes()[16..16 + count as usize * 16]
+        .chunks_exact(16)
         .zip(&references[references.len() - count as usize..])
         .map(|(row, character)| {
             assert_eq!(character.group(), FourCC(*b"char"));

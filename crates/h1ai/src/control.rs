@@ -115,6 +115,9 @@ pub struct Control {
     pub combat_timers: BTreeMap<u16, CombatTimer>,
     pub guard_baselines: BTreeSet<u16>,
     pub uncover: BTreeMap<u32, UncoverRule>,
+    /// Converted weapon tag path -> Halo 1 report loudness (`weap +0x270`),
+    /// for the reach of a heard shot's forced combat level.
+    pub weapon_reports: BTreeMap<String, f32>,
     pub teleport_starts: BTreeMap<u16, Vec<bool>>,
     /// Squads that can participate in follow-driven migration (Halo 1 flag 0x20).
     pub automatic_migration: BTreeSet<u16>,

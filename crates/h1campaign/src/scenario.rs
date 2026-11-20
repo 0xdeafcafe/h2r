@@ -960,10 +960,10 @@ pub fn write(
     }
     let mut aliases = crate::h2assets::Aliases::default();
     let ai_src = h1ai::h1::H1Ai::read(h1).map_err(|e| invalid(format!("ai: {e}")))?;
-    let ai_weapon_tags = if opts.ai {
+    let (ai_weapon_tags, ai_weapon_loudness) = if opts.ai {
         ai_weapons::retail_tags(h1, &ai_src, set, &mut report.dropped)?
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
     let mut weapon_palette = Vec::new();
     let mut kit = crate::roster::Loadout::default();
@@ -1135,6 +1135,12 @@ pub fn write(
     } else {
         h1ai::control::prepare(&ai_src, &mut plan, &ai_options, &requests)
     };
+    for (weapon, loudness) in &ai_weapon_loudness {
+        ai_control
+            .weapon_reports
+            .entry(weapon.clone())
+            .or_insert(*loudness);
+    }
     if let Some((retained, subjects)) = &selection {
         h1ai::control::install_teleport_starts(
             &ai_src, &mut ai_control, subjects.teleport_subjects.as_ref(),

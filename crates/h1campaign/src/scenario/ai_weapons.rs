@@ -22,14 +22,18 @@ pub(super) fn base_palette(base: &BaseScenario) -> Result<Vec<TagId>> {
         .collect()
 }
 
-/// Look up retail tags before placing converted objects with similar names.
+/// Look up retail tags before placing converted objects with similar
+/// names. Also collects each resolved tag's authored Halo 1 report
+/// loudness (`weap +0x270`), keyed by the tag path the perception
+/// table's weapon rows reference.
 pub(super) fn retail_tags(
     h1: &H1Map,
     ai: &H1Ai,
     set: &TagSet,
     dropped: &mut Vec<String>,
-) -> Result<Vec<Option<TagId>>> {
+) -> Result<(Vec<Option<TagId>>, Vec<(String, f32)>)> {
     let mut tags = Vec::with_capacity(ai.actor_palette.len());
+    let mut loudness = Vec::new();
     for variant in &ai.actor_palette {
         let weapon = variant
             .as_ref()
@@ -40,16 +44,20 @@ pub(super) fn retail_tags(
             continue;
         };
         let tag = h1.tag(id)?;
+        let loud =
+            h1ai::h1::weapon_loudness(h1, tag).map_err(|e| invalid(format!("ai weapon {}: {e}", tag.name)))?;
         let retail = crate::h2assets::stand_in(set, tag).ok().flatten();
         if retail.is_none() {
             dropped.push(format!(
                 "ai weapon {}: no retail counterpart in map",
                 tag.name
             ));
+        } else if let Some(name) = retail.and_then(|id| set.slots[id.index()].name.clone()) {
+            loudness.push((name, loud));
         }
         tags.push(retail);
     }
-    Ok(tags)
+    Ok((tags, loudness))
 }
 
 /// Keep placement indices stable. Multiple variants may share a weapon.

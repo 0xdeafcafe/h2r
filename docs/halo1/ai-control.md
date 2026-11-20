@@ -201,6 +201,7 @@ cargo test -p engine --lib campaign_squad_pool
 cargo test -p engine --lib points
 cargo test -p h1campaign --lib actor_control
 cargo test -p h1campaign --lib squad_roster
+H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso cargo test -p h1objects --test weapon_rebuild_disc firing_noise_census -- --ignored --nocapture
 H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso cargo test -p h1scripts --test disc encounter_controls_emit_live_evaluators_and_native_orders -- --ignored
 H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso cargo test -p h1campaign --test disc every_level_s_scripts_run_on_the_retail_interpreter -- --ignored
 H2_DISC=disc/halo2.iso cargo test -p h1campaign --test disc migration_speech_events_use_retail_order_patterns -- --ignored
