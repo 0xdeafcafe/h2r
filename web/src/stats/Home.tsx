@@ -23,7 +23,7 @@ import {
 } from "../lib/statsHome";
 import { campaignLine, gametype, listed, mapName, pingText, seats, sortSessions, kind as sessionKind } from "../lib/sessions";
 import { SKULLS } from "../lib/skulls";
-import { titleCase } from "../lib/format";
+import { damageSourceName } from "../lib/format";
 import { now } from "../lib/now";
 import { useMotd } from "../state/motd";
 import { motdMessages } from "../lib/motd";
@@ -205,7 +205,7 @@ function OfTheWeek(props: { sum: StatsSummary | null }) {
           <Panel title="Weapon of the Week" sub="most kills, last 7 days" class="s-week-box">
             <div class="s-week-body">
               <span class="s-week-art s-week-art--weapon"><WeaponIcon weapon={w().weapon} width={112} /></span>
-              <div><b>{titleCase(w().weapon)}</b><span>{num(w().kills)} kills</span><span class="s-dim">{weaponShare()}% of all kills</span></div>
+              <div><b>{damageSourceName(w().weapon)}</b><span>{num(w().kills)} kills</span><span class="s-dim">{weaponShare()}% of all kills</span></div>
             </div>
           </Panel>
         )}
@@ -555,10 +555,10 @@ export function HomeView(props: { win: StatsWindow; week: StatsSummary | null; w
                     </section>
                     <section class="s-sec">
                       <header><h3>Most Used Weapons</h3><small>kills</small></header>
-                      <Bars rows={weaponRows()} value={(w) => w.kills} name={(w) => titleCase(w.weapon)} unit="kills" empty={`No kills ${label()}.`}
-                        label={(w) => <span class="s-who"><WeaponIcon weapon={w.weapon} width={34} />{titleCase(w.weapon)}</span>} />
+                      <Bars rows={weaponRows()} value={(w) => w.kills} name={(w) => damageSourceName(w.weapon)} unit="kills" empty={`No kills ${label()}.`}
+                        label={(w) => <span class="s-who"><WeaponIcon weapon={w.weapon} width={34} />{damageSourceName(w.weapon)}</span>} />
                       <Show when={weaponRows().length}>
-                        <p class="s-sec-foot">{shares(s().weapons, (w) => w.kills, 1).map((x) => `${titleCase(x.row.weapon)}: ${x.pct}% of kills`)[0]}</p>
+                        <p class="s-sec-foot">{shares(s().weapons, (w) => w.kills, 1).map((x) => `${damageSourceName(x.row.weapon)}: ${x.pct}% of kills`)[0]}</p>
                       </Show>
                     </section>
                   </div>

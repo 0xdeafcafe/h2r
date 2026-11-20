@@ -414,9 +414,45 @@ Standard four-argument stack convention, callee pops 16 bytes:
 | attacker player datum | `[esp+0x04]` | `u32` | Finally attributed killer; `0xffffffff` for none |
 | victim player datum | `[esp+0x08]` | `u32` | Victim player |
 | unknown flag | `[esp+0x0c]` | `u32` | **Not** a betrayal flag: it is set for free-for-all kills between enemies too (seen 2026-11-19, a Clankers free-for-all whose every kill was sent as a betrayal). Nothing reads it; a betrayal is a teammate killed in a team game (`live_proto::game::is_betrayal`). |
-| packed damage code | `[esp+0x10]` | `u8` in low byte | Low 6 bits damage type, high 2 bits modifier |
+| packed damage code | `[esp+0x10]` | `u8` in low byte | Low 6 bits damage reporting type, high 2 bits modifier |
 
 The direct call is at `0x001ea460` inside attribution routine `0x001e9fa0`. It follows recent-damage attribution, so the killer is final. It is not universal for campaign AI or arbitrary units: a game engine/statborg and a victim player index are required.
+
+The packed code belongs to the credited damage source. If recent damage
+earns the kill, the caller takes its code from the victim's attribution
+entry (`0x001ea16c`). When the credited player dealt the final damage it
+uses that damage's code (`0x001ea1d4`). Both paths pass the code at
+`0x001ea45c`.
+
+Live reads the actual killing damage from the active damage report. On the
+base image the sole direct call to attribution is at `0x000d9aca`, after
+the report's body-depleted flag is checked at `0x000d9aa2`. This applies
+to falls and kill volumes that reach the player-kill hook as well. At
+attribution entry `EDI` still holds the report. The prologue saves it at
+`0x001e9fb6`. When the kill hook sees the return to attribution
+(`[esp] = 0x001ea465`) and attribution's return to the damage reporter
+(`[esp+0x74] = 0x000d9acf`), the saved report pointer is at
+`[esp+0x1c]`. The guest-layout reader checks both sites and the depletion
+flag before using the report's code and owner. The attribution argument
+slot for the incoming code is reused as an assist counter at
+`0x001ea2c7`. A read fault on this path leaves the source unknown. A
+direct call outside attribution supplies its own damage code in argument
+four. A delayed grenade keeps its identity if its owner switches weapons
+or dies, and a fall still reports falling when another player earns credit.
+
+- Modifier 1 marks a headshot. The body-damage path checks the hit
+  section and damage effect at `0x000d8d69` and `0x000d8d75` before it
+  sets the modifier at `0x000d8db4`. Report construction copies that
+  packed byte at `0x000d955c`.
+- The kill handler classifies generic melee, the sword and objective
+  strikes as melee at `0x0015cecd`. It treats modifier 2 as an
+  assassination for melee and as a stick for a plasma grenade at
+  `0x0015d295` and `0x0015d2bf`.
+- The roadkill branch at `0x0015d2b0` recognizes a player collision or
+  modifier 3. For a generic collision Live compares the lethal report's
+  owner player with the victim. World and self collisions retain the
+  collision source when that modifier is absent. Environmental deaths
+  carry the source the engine reports, including falling and guardians.
 
 Timing matters:
 
@@ -551,7 +587,7 @@ Consistency rules:
 - Check vehicle-passenger transforms against gameplay. Generic parented-object composition is known, but only the cheap vehicle-parent path is recommended here.
 - Persistent winner storage and normal-end/quit reason are not recovered. `0x0015b3a0` supplies a transient prospective winner, while `0x001389c0` supplies only the end latch.
 - PGCR's detailed output structure was not mapped; only its construction hook is included.
-- A direct causative weapon tag is not available at `0x0015ce70`. Correlate `0x000d9640`'s `jpt!` damage datum if damage-effect identity is sufficient.
+- The kill callback identifies the credited damage reporting type. Distinguishing two modded weapons sharing one reporting type would require resolving the individual cause.
 - Options types other than `1`, `2`, and `3`, the ninth stat counter, and exact original names for game-engine state values remain unresolved and are not needed for the initial scoreboard.
 - Unit aim and shots are static-analysis-only: check that `+0x168` follows the reticle (not lagging it, which would point at `+0x15c`) and that one `0x00104150` call is one shot for automatic, burst, spread and plasma weapons.
 - The appearance path above is static-analysis-only: validate the local player-slot/profile offsets against the profile editor, and find where remote players' appearance lives in the `0x21c` record (candidate: the `+0x84..+0xc0` configuration gap). Rank is Xbox Live state and is not recoverable from guest memory.

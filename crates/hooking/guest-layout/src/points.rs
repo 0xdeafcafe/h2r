@@ -130,6 +130,13 @@ pub const TRANSPARENT_ORDER_READY: Point = Point::new(
     "TRANSPARENT_ORDER_READY", 0x0001_e3bc, Sig::Site, "docs/graphics/native-renderer.md",
 );
 
+/// Return sites on the retail depleting damage report's kill-credit path.
+/// Used to identify that caller's stack layout at PLAYER_KILLED entry.
+pub mod kill_credit {
+    pub const RETURN_TO_ATTRIBUTION: u32 = 0x001e_a465;
+    pub const RETURN_TO_DAMAGE_REPORT: u32 = 0x000d_9acf;
+}
+
 /// Return addresses for the retail lobby leave and party leader queries.
 pub mod party_leave {
     pub const LOBBY_BACK_COUNT: u32 = 0x0025_11c5;
@@ -506,8 +513,9 @@ points! { ALL;
     GAME_END @ 0x0013_89c0: [opaque]; "docs/live/live-gamestate.md";
     /// A player was killed: `(attacker player, victim player, flag, packed
     /// damage)` on the stack. The flag is not a betrayal flag (it is set in
-    /// free-for-all too). Who pops them is not read.
-    PLAYER_KILLED @ 0x0015_ce70: [opaque]; "docs/live/live-gamestate.md";
+    /// free-for-all too). The low byte of the fourth argument is the
+    /// credited damage reporting type and modifier.
+    PLAYER_KILLED @ 0x0015_ce70: [fn(attacker: stack 0, victim: stack 1, flag: stack 2, damage: stack 3) ret 16]; "docs/live/live-gamestate.md";
     /// One weapon barrel fires: stdcall `(weapon object datum, barrel
     /// index)`. One call is one shot (likely).
     WEAPON_FIRE @ 0x0010_4150: [fn(weapon: stack 0, barrel: stack 1) ret 8], Optional; "docs/live/live-gamestate.md";
@@ -1461,6 +1469,23 @@ mod tests {
     }
 
     #[test]
+    fn player_killed_names_the_credited_damage_argument() {
+        assert_eq!(
+            PLAYER_KILLED.sig,
+            Sig::Fn {
+                args: &[
+                    ("attacker", Loc::Stack(0)),
+                    ("victim", Loc::Stack(1)),
+                    ("flag", Loc::Stack(2)),
+                    ("damage", Loc::Stack(3)),
+                ],
+                ret: None,
+                pop: 16,
+            }
+        );
+    }
+
+    #[test]
     fn the_macro_reads_signatures_and_flags() {
         assert_eq!(
             GAME_TICK.sig,
@@ -1474,7 +1499,6 @@ mod tests {
         assert_eq!(WEAPON_FIRE.sig.arg("barrel"), Some(Loc::Stack(1)));
         assert_eq!(WEAPON_FIRE.class, Class::Optional);
         assert!(LOCALE_FIND.hot && !GAME_TICK.hot);
-        assert!(PLAYER_KILLED.sig.is_opaque());
         assert_eq!(by_base(0x0013_7fe0).map(|p| p.name), Some("GAME_TICK"));
     }
 }

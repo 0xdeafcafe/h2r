@@ -129,6 +129,7 @@ describe("game art keys", () => {
   test("weapons go by the words of the reported name", () => {
     expect(weaponKey("sword")).toBe("weapon/energy_sword");
     expect(weaponKey("energy_sword")).toBe("weapon/energy_sword");
+    expect(weaponKey("energy_blade")).toBe("weapon/energy_sword");
     expect(weaponKey("Plasma Pistol")).toBe("weapon/plasma_pistol");
     expect(weaponKey("plasma_rifle")).toBe("weapon/plasma_rifle");
     expect(weaponKey("sniper")).toBe("weapon/sniper_rifle");

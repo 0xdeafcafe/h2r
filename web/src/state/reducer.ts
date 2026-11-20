@@ -38,6 +38,7 @@ export interface Kill {
   victim: number;
   killer: number | null;
   weapon: string | null;
+  headshot?: boolean | null;
   kind: KillKind;
   /** Victim position, when the event carried it. */
   pos: [number, number, number] | null;
@@ -466,6 +467,7 @@ function addKill(g: GameState, k: KillRecord) {
     victim: k.victim,
     killer: k.killer ?? null,
     weapon: k.weapon ?? null,
+    headshot: k.headshot ?? null,
     kind: k.kind ?? "kill",
     pos: k.pos ?? null,
   };

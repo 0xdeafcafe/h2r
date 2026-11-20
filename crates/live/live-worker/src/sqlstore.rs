@@ -754,7 +754,7 @@ mod tests {
             ("PlayerJoined", serde_json::json!({"player": clanker(2)})),
             (
                 "PlayerKilled",
-                serde_json::json!({"tick": 30, "victim": 1, "killer": 0, "kind": "kill"}),
+                serde_json::json!({"tick": 30, "victim": 1, "killer": 0, "kind": "kill", "weapon": "frag_grenade", "headshot": false}),
             ),
             (
                 "PlayerKilled",
@@ -778,6 +778,10 @@ mod tests {
         assert_eq!(status, 201, "{body}");
 
         let (_, g) = call("GET", format!("/v1/games/{id}"), None, String::new()).await;
+        assert_eq!(g["kills"][0]["weapon"], "frag_grenade");
+        assert_eq!(g["kills"][0]["headshot"], false);
+        assert!(g["kills"][1].get("weapon").is_none());
+        assert!(g["kills"][1].get("headshot").is_none());
         let players = g["players"].as_array().unwrap();
         assert_eq!(players.len(), 3, "{g}");
         assert!(
