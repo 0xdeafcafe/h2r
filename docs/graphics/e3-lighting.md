@@ -1,7 +1,7 @@
 # E3 lighting: stencil shadows and dynamic lighting
 
-Status: Partly built. The Lighting setting (harder retail shadow maps) is built on the D3D path only. The native design below (sun shadows from objects, more lights, shadows from every cone light, the sharp edge) is Design.
-Code: `crates/platform/d3d/src/scaled.rs` (`Lighting`, `follow_lighting`, `shadow_scale`), `crates/formats/shaders/src/psh/shadow.rs` (the shadow comparison), `crates/rewrites/engine/src/render.rs` (views of the light record), `crates/rewrites/native-render/src/light_look.rs` (retail's light passes, native). Tests: `crates/platform/d3d/tests/render_scale.rs`, `crates/formats/shaders/tests/shadow.rs`.
+Status: Partly built. The scaled D3D backend draws harder retail shadows. The native frame graph accepts the Lighting mode and draws sealed scenes into private targets. Both native modes use the guest's light passes. Native atlas tiles, sun shadows and light selection are Design.
+Code: `crates/rewrites/native-render/src/frame_graph.rs` (display and private lighting), `crates/platform/d3d/src/scaled.rs` (`Lighting`, `follow_lighting`, `shadow_scale`), `crates/formats/shaders/src/psh/shadow.rs` (the shadow comparison), `crates/rewrites/engine/src/render.rs` (views of the light record), `crates/rewrites/native-render/src/light_look.rs` (retail's light passes, native). Tests: `crates/rewrites/native-render/tests/world_layers_gpu/frame_graph.rs`, `crates/platform/d3d/tests/render_scale.rs`, `crates/formats/shaders/tests/shadow.rs`.
 Switch: `H2_LIGHTING` (`retail`), listed in [switches.md](../runtime/switches.md).
 
 An opt-in lighting mode in the spirit of the Halo 2 E3 2003 demo: hard-edged
@@ -161,7 +161,7 @@ shadows from every cone light, and a different edge.
 
 ## How it works
 
-Nothing in this section is built. It is the design, in the present tense.
+The frame graph and candidate extraction are built. The sections on new shadow maps and light selection describe the design.
 
 ### The scene does not know the mode
 
@@ -396,15 +396,20 @@ light pass runs.
 `lights_with_constants` per view in `render.scene`. The extraction counters
 report views attempted, elapsed nanoseconds and unread batches.
 
-The capture override, pass rows and drawing counters belong to the later slices.
+On a replayable game view the render thread draws one sealed scene into a private target with either mode. A completed native draw publishes its own report.
 
 - `render.capture` takes `lighting: "retail" | "e3"`: the same sealed scene
   drawn in that mode into a private target, the setting untouched. A retail
   and an E3 capture of one tick go to `render.compare`.
-- `render.frame` lists the mode's passes (`e3.tiles`, `e3.sun`, `e3.marks`,
-  `e3.lights`) with GPU time where the adapter has timestamp queries.
-- `render.stats` and `render.scene` count `lights_lit`, `lights_shadowed`,
-  `lights_over_cap`, `sun_tiles`, `sun_tiles_redrawn` and `atlas_halved`.
+- `render.frame` reports four lighting stages under the completed E3
+  graph's `e3.passes`: `e3.tiles`, `e3.sun`, `e3.marks` and
+  `e3.lights`. Each has its submitted draw count and an optional GPU
+  time. L3 issues no draws for these stages.
+- `render.stats` and `render.scene` expose the E3 graph's per-draw
+  counters under `display_frame.e3` and `private_frame.e3`:
+  `lights_lit`, `lights_shadowed`, `lights_over_cap`, `sun_tiles`,
+  `sun_tiles_redrawn` and `atlas_halved`. They count the renderer's own
+  light and atlas decisions. L3 replays guest selections in both modes.
 
 `settings.set` with `graphics.lighting` changes the mode live, as the row
 does.
@@ -497,11 +502,15 @@ frame; repeat at `H2_RENDER_SCALE=1` and with `--env H2_FPS=60`. For one
 frame, on a serve:
 
 ```sh
-h2 agent render.capture '{"tick": 9000, "lighting": "retail"}'
-h2 agent render.capture '{"tick": 9000, "lighting": "e3"}'
-h2 agent frame compare retail.png e3.png --diff diff.png
-h2 agent render.frame      # e3.tiles, e3.sun, e3.marks, e3.lights
-h2 agent render.stats      # lights_lit, lights_shadowed, sun_tiles, ...
+retail=$(h2 agent render.capture '{"lighting":"retail"}')
+tick=$(printf '%s\n' "$retail" | jq -r '.tick')
+h2 agent render.frame '{"source":"private","arm":true}'
+e3=$(h2 agent render.capture "$(jq -nc --argjson t "$tick" '{tick:$t,lighting:"e3"}')")
+retail_path=$(printf '%s\n' "$retail" | jq -r '.path')
+e3_path=$(printf '%s\n' "$e3" | jq -r '.path')
+h2 agent frame compare "$retail_path" "$e3_path" --diff diff.png
+h2 agent render.frame '{"source":"private"}'   # frame.private_frame.e3.passes
+h2 agent render.stats                        # private_frame.e3
 ```
 
 Each slice adds a dated entry to [notes/e3-lighting.md](notes/e3-lighting.md)
@@ -509,19 +518,16 @@ with its commit and these numbers.
 
 ## The Lighting setting
 
-What is built of the mode is the row on the D3D path
-([e3-lighting-setting.md](e3-lighting-setting.md)): with E3 chosen, the
-scaled backend keeps a copy of each of the guest's shadow maps at the
+The row also selects the shadow treatment on the [D3D path](e3-lighting-setting.md). With E3 chosen, the scaled backend keeps a copy of each of the guest's shadow maps at the
 render scale (at least 2x, `d3d::scaled::shadow_scale`) and the pixel
 translator compares it with one nearest tap
 (`shaders::psh::PixelOptions::hard_shadow`). The guest sees retail. It
 changes the edge of retail's own dynamic-light shadows and nothing else,
 and it is the Hard form of "The edge".
 
-It is on the path FrameScene removes. From FrameScene slice 6 a game view
-has no scaled copy, and the row selects the native mode above as its
-slices land; the scaled-copy code is deleted with `scaled.rs`. Until L3
-the row means what that page says.
+Where the native frame graph owns the game view, the row supplies its
+mode at the display frame. An explicit private capture supplies its own
+mode. The native graph draws the same lighting in both modes through L3.
 
 ## Phase 0 findings
 

@@ -5,10 +5,14 @@
 //! pass. Display and capture use the same recording path and separate
 //! attachments. Only display hands its final target to the presenter.
 
+mod lighting;
+pub use lighting::{E3Report, PassWork};
+
 use std::ops::Range;
 
 use d3d::gfx_backend::{BatchStats, GuestDrawPass};
 use d3d::scene_sink::{ReplayFrame, ReplayOp};
+use d3d::threaded::owner::Outputs;
 use d3d::{GfxBackend, Lighting};
 use frame_scene::{FrameScene, SceneId, TargetRef, summary_hash};
 
@@ -42,16 +46,25 @@ pub trait PassObserver {
 pub struct FrameReport {
     pub id: SceneId,
     pub lighting: Lighting,
+    /// Present for a completed draw using the E3 mode.
+    pub e3: Option<E3Report>,
     pub render_passes: u64,
     pub draws: u64,
     pub submits: u64,
 }
 
 impl FrameReport {
-    fn new(id: SceneId, lighting: Lighting, before: BatchStats, after: BatchStats) -> Self {
+    fn new(
+        id: SceneId,
+        lighting: Lighting,
+        e3: Option<E3Report>,
+        before: BatchStats,
+        after: BatchStats,
+    ) -> Self {
         Self {
             id,
             lighting,
+            e3,
             render_passes: after.render_passes - before.render_passes,
             draws: after.draws - before.draws,
             submits: after.submits - before.submits,
@@ -117,8 +130,12 @@ fn record(
     pass: &mut GuestDrawPass<'_>,
     frame: &ReplayFrame,
     fresh_targets: bool,
+    lighting: Lighting,
     observer: Option<&mut dyn PassObserver>,
-) -> Result<(), String> {
+) -> Result<Option<E3Report>, String> {
+    // The graph replays the guest's layers in both modes. Only work
+    // submitted by the E3 stages belongs to these four pass rows.
+    let e3 = (lighting == Lighting::E3).then(E3Report::default);
     let rows = observer
         .as_ref()
         .map(|_| pass_rows(frame))
@@ -141,7 +158,7 @@ fn record(
             });
         }
     }
-    Ok(())
+    Ok(e3)
 }
 
 /// Re-render this scene to an isolated target. No present hook or
@@ -167,14 +184,14 @@ pub fn draw_private_with_observer(
 ) -> Result<CapturedFrame, String> {
     let before = backend.batch_stats();
     let mut pass = GuestDrawPass::new(backend, replay, scale)?;
-    record(&mut pass, replay, true, observer)?;
+    let e3 = record(&mut pass, replay, true, lighting, observer)?;
     let (size, rgba) = pass.read_rgba()?;
     Ok(CapturedFrame {
         id: scene.id,
         scene_hash: summary_hash(scene),
         size,
         rgba,
-        report: FrameReport::new(scene.id, lighting, before, backend.batch_stats()),
+        report: FrameReport::new(scene.id, lighting, e3, before, backend.batch_stats()),
     })
 }
 
@@ -193,11 +210,12 @@ pub fn draw_display(
 ) -> Result<FrameReport, String> {
     let before = backend.batch_stats();
     let mut pass = GuestDrawPass::new_display(backend, replay, scale)?;
-    record(&mut pass, replay, true, observer)?;
+    let e3 = record(&mut pass, replay, true, lighting, observer)?;
     pass.present(flags, gamma)?;
     Ok(FrameReport::new(
         scene.id,
         lighting,
+        e3,
         before,
         backend.batch_stats(),
     ))
@@ -216,15 +234,13 @@ pub fn draw_display_on(
     gamma: Option<&[u8; 768]>,
     observer: Option<&mut dyn PassObserver>,
     targets: &std::collections::HashMap<TargetRef, gfx::surface::SurfaceId>,
-) -> Result<FrameReport, String> {
+) -> Result<(FrameReport, Outputs<d3d::gfx_backend::HostTexture>), String> {
     let before = backend.batch_stats();
     let mut pass = GuestDrawPass::on_existing(backend, replay, targets)?;
-    record(&mut pass, replay, false, observer)?;
-    pass.present(flags, gamma)?;
-    Ok(FrameReport::new(
-        scene.id,
-        lighting,
-        before,
-        backend.batch_stats(),
+    let e3 = record(&mut pass, replay, false, lighting, observer)?;
+    let outputs = pass.present_with_outputs(flags, gamma)?;
+    Ok((
+        FrameReport::new(scene.id, lighting, e3, before, backend.batch_stats()),
+        outputs,
     ))
 }

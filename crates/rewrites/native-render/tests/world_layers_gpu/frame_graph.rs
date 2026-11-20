@@ -296,6 +296,9 @@ fn retail_and_e3_private_draws_of_one_sealed_tick_are_identical() {
         (first.report.lighting, second.report.lighting),
         (Lighting::Retail, Lighting::E3)
     );
+    assert!(first.report.e3.is_none());
+    assert_eq!(second.report.e3, Some(Default::default()));
+    assert!(second.report.draws > 0, "the shared world draw still ran");
     assert_eq!(rgba(&first, 4, 4), [255, 0, 0, 255]);
     assert_eq!(second.size, first.size);
     assert_eq!(second.rgba, first.rgba);
@@ -303,7 +306,8 @@ fn retail_and_e3_private_draws_of_one_sealed_tick_are_identical() {
 
     // Display is the only graph entry that publishes. A second capture
     // must leave the displayed image, its handle and the present hook alone.
-    draw_display(&mut backend, &scene, &frame, 1, Lighting::E3, 0, None, None).unwrap();
+    let display = draw_display(&mut backend, &scene, &frame, 1, Lighting::E3, 0, None, None).unwrap();
+    assert_eq!(display.e3, second.report.e3);
     let presented = backend.last_presented().unwrap();
     let shown = backend.read_color(presented).unwrap().0;
     frame.ops.truncate(1);

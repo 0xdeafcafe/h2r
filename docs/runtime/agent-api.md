@@ -717,6 +717,19 @@ after a renderer reset. `render.scene` includes the same field when its
 sealed scene matches the private capture's map epoch, frame, tick and
 summary hash.
 
+A completed native E3 draw includes an `e3` object in its
+`display_frame` or `private_frame`. The armed `render.frame` record
+includes it for the corresponding draw. Its `passes` array contains
+`e3.tiles`, `e3.sun`, `e3.marks` and `e3.lights`. Each row has
+`name`, submitted `draws` and `gpu_ns` (null for an empty or unmeasured
+stage). Snapshot indices refer to the attachment runs in the frame
+record. The six per-frame counters are `lights_lit`, `lights_shadowed`,
+`lights_over_cap`, `sun_tiles`, `sun_tiles_redrawn` and `atlas_halved`.
+They count the E3 renderer's selections and atlas work. Slice L3 replays
+the guest's own lights in both modes, so its E3 counters and pass draw
+counts are zero. The guest's light selections are in `render.scene.views`.
+Retail graph draws omit `e3`.
+
 `interp` exists when in-between frames run: in `h2 play`, or in an `h2
 serve` that renders on the GPU off-screen (`H2_BOOT_GFX`) with an
 interpolation switch on. The in-between frames are paced on the wall

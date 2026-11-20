@@ -1,6 +1,6 @@
 # The Lighting row on the D3D path
 
-Status: Built. On the scaled backend only; the native renderer's E3 lighting is a separate design.
+Status: Built. This page describes the scaled D3D backend. The native frame graph also accepts the lighting mode.
 Code: `crates/platform/d3d/src/scaled.rs` (`Lighting`, `follow_lighting`, `shadow_scale`), `crates/formats/shaders/src/psh/shadow.rs` (`PixelOptions::hard_shadow`). Tests: `crates/platform/d3d/tests/render_scale.rs`, `crates/formats/shaders/tests/shadow.rs`.
 Switch: `H2_LIGHTING` (`retail`), listed in [switches.md](../runtime/switches.md).
 
@@ -9,8 +9,8 @@ With the Video screen's Lighting row on E3, the scaled backend
 maps larger and compares them with one tap, in the shown image only. It
 changes no other part of the picture: not the lights drawn, not object
 shadows, not the lightmaps. The design for E3 lighting as a whole, on the
-native renderer, is [e3-lighting.md](e3-lighting.md); this page is the
-part of it that exists, and it lives on the path FrameScene removes
+native renderer, is in [e3-lighting.md](e3-lighting.md). The scaled
+shadow maps live on the path FrameScene removes
 ([framescene.md](framescene.md), section 11: `scaled.rs` goes in slice 10).
 While the row is on E3 the native shadow stage stands down for the scaled
 copies ([native-shadows.md](native-shadows.md), "Rules and limits"). No
