@@ -31,9 +31,18 @@
 //! over the pool dressed with the fields they branch on. Every body the
 //! root reaches is part of its tree; a callee that is not a body is a
 //! callout. The fused finalize run must also record one `ObjectDeleted`
-//! event per object it deletes. A damage update root also compares the
-//! XMM registers at every callout: the function keeps a value in `xmm3`
-//! across its calls.
+//! event per object it deletes.
+//!
+//! Every root also compares the float state at every callout and at its
+//! return: the eight XMM registers and the whole x87 state (the eight
+//! physical registers, TOP and the rest of the status word, the tag
+//! word, the control word, FIP, FOP, FDP and their selectors). A root
+//! leaves that comparison only through [`FLOAT_OPT_OUT`], with its
+//! reason written there. Runs start with stale values in the empty x87
+//! registers and last-instruction pointers that no instruction in a root
+//! makes, so a body that forgets to update them differs. Stubs for the
+//! callees that answer in a float register answer there: `xmm0` for
+//! `30bf0` and `1e9700`, a pushed `st(0)` for `24590`.
 //!
 //! Needs the user's XBE (`lifted::image`); skipped without it.
 #![cfg(feature = "differential")]
@@ -391,6 +400,7 @@ fn answer(cpu: &mut Cpu, g: &mut Guest, target: u32, n: usize, case: u32) {
             _ => {}
         }
     }
+    answer_floats(cpu, target, n, case);
     cpu.gpr[4] = sp + 4 + cleanup(target);
     cpu.eip = ret;
 }
@@ -405,8 +415,9 @@ struct Callout {
     eflags: u32,
     defined: u32,
     ram: u64,
-    /// The XMM registers, for roots that compare them.
+    /// The XMM registers and the x87 state, unless the root opts out.
     xmm: Option<[u128; 8]>,
+    x87: Option<ir::interp::X87>,
 }
 
 impl PartialEq for Callout {
@@ -416,6 +427,7 @@ impl PartialEq for Callout {
             == (o.kind, o.target, o.resume, o.gpr, o.ram)
             && self.eflags & both == o.eflags & both
             && self.xmm == o.xmm
+            && self.x87 == o.x87
     }
 }
 
@@ -431,9 +443,10 @@ fn digest(g: &Guest, esp: u32) -> u64 {
 }
 
 fn callout(cpu: &Cpu, g: &Guest, t: TransferAbi) -> Callout {
-    let xmm = XMM.with(std::cell::Cell::get).then_some(cpu.xmm);
+    let floats = FLOATS.with(std::cell::Cell::get);
     Callout {
-        xmm,
+        xmm: floats.then_some(cpu.xmm),
+        x87: floats.then(|| cpu.x87.clone()),
         kind: t.kind,
         target: t.target_pc,
         resume: t.resume_pc,
@@ -445,8 +458,17 @@ fn callout(cpu: &Cpu, g: &Guest, t: TransferAbi) -> Callout {
 }
 
 std::thread_local! {
-    /// Whether the root being run compares the XMM registers.
-    static XMM: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Whether the root being run compares the float state.
+    static FLOATS: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// Roots that do not compare the XMM registers and the x87 state, each
+/// with the reason. Empty: every root compares them.
+const FLOAT_OPT_OUT: &[(u32, &str)] = &[];
+
+/// Whether `root` compares the float state.
+fn floats(root: u32) -> bool {
+    !FLOAT_OPT_OUT.iter().any(|&(r, _)| r == root)
 }
 
 /// One run's record: the callouts, the pc at each resume point, and the
@@ -578,7 +600,63 @@ fn start(ram: &ir::interp::FlatMemory, root: u32, case: u32) -> (Cpu, Guest) {
     for (i, reg) in cpu.xmm.iter_mut().enumerate() {
         *reg = (0x1234_u128 + i as u128) << 100;
     }
+    seed_x87(&mut cpu.x87);
     (cpu, g)
+}
+
+/// The x87 state a run starts with: the stack empty, as at every object
+/// update's entry, but the physical registers holding stale values and
+/// the last-instruction pointers naming an instruction outside every
+/// root. The selectors are those every x87 instruction leaves (`GUEST_CS`,
+/// `GUEST_DS`).
+fn seed_x87(x: &mut ir::interp::X87) {
+    for (i, reg) in x.st.iter_mut().enumerate() {
+        *reg = [0x11 * (i as u8 + 1); 10];
+        reg[9] = 0x3f;
+    }
+    x.instruction_pointer = 0x0012_3450;
+    x.opcode = 0x1d9;
+    x.data_pointer = 0x0060_0ff0;
+    x.instruction_selector = 0x8;
+    x.data_selector = 0x10;
+}
+
+/// Callees that answer in a float register (docs/engine/object-update.md,
+/// "Slice 11 bodies"): the length `30bf0` leaves in `xmm0` after
+/// normalising, the engine scale `1e9700` returns in `xmm0`, and the
+/// vector length `24590` pushes on the x87 stack.
+const XMM0_ANSWERS: &[u32] = &[0x30bf0, 0x1e9700];
+const ST0_ANSWERS: &[u32] = &[0x24590];
+
+/// The float answer of a stub, the same in every run: zero, small and
+/// large lengths, by the call's index and the case.
+fn float_answer(target: u32, n: usize, case: u32) -> f32 {
+    let k = (n + case as usize + target as usize) % 4;
+    [0.0, 0.75, 2.5, 1.0e-4][k]
+}
+
+fn answer_floats(cpu: &mut Cpu, target: u32, n: usize, case: u32) {
+    if XMM0_ANSWERS.contains(&target) {
+        cpu.xmm[0] = u128::from(float_answer(target, n, case).to_bits());
+    }
+    if ST0_ANSWERS.contains(&target) {
+        let x = &mut cpu.x87;
+        let mut a = x87::abi::X87Abi {
+            st: x.st,
+            control: x.control,
+            status: x.status,
+            tag: x.tag,
+            opcode: x.opcode,
+            instruction_pointer: x.instruction_pointer,
+            data_pointer: x.data_pointer,
+            instruction_selector: x.instruction_selector,
+            data_selector: x.data_selector,
+        };
+        x87::abi::ld_f32(&mut a, float_answer(target, n, case).to_bits());
+        x.st = a.st;
+        x.status = a.status;
+        x.tag = a.tag;
+    }
 }
 
 fn check(name: &str, reference: &Record, other: &Record) {
@@ -599,7 +677,7 @@ fn transcripts(point: &points::Point, cases: u32) {
         code.prime(body.point.base);
     }
     assert!(code.insn(point.base).is_some(), "{}", point.name);
-    XMM.with(|x| x.set(point.base == points::OBJECT_DAMAGE_UPDATE.base));
+    FLOATS.with(|x| x.set(floats(point.base)));
     let mut h = Harness { code: &mut code, table, root: point.base, case: 0 };
     for case in 0..cases {
         h.case = case;
@@ -1319,7 +1397,7 @@ fn dressed(point: &points::Point, cases: u32) {
     }
     assert!(code.insn(point.base).is_some(), "{}", point.name);
     assert!(table.owns(point.base), "{} is a body", point.name);
-    XMM.with(|x| x.set(false));
+    FLOATS.with(|x| x.set(floats(point.base)));
     let mut h = Harness { code: &mut code, table, root: point.base, case: 0 };
     for case in 0..cases {
         h.case = case;
@@ -1398,4 +1476,31 @@ fn creature_post_update() {
 fn type_update_dispatch_reaches_the_small_types() {
     dressed(&points::OBJECT_TYPE_UPDATE, 13);
     dressed(&points::OBJECT_TYPE_POST_UPDATE, 13);
+}
+
+/// The float comparison on its own: a run that differs from another only
+/// in an XMM register nobody writes, or in the x87 last-instruction
+/// pointer, gives a different transcript.
+#[test]
+fn the_harness_sees_a_float_difference() {
+    let Some((image, ram)) = image() else { return };
+    let root = points::OBJECTS_FINALIZE.base;
+    let mut code = image.original();
+    code.prime(root);
+    for body in sim_objects::TABLE.bodies() {
+        code.prime(body.point.base);
+    }
+    FLOATS.with(|x| x.set(floats(root)));
+    let mut h = Harness { code: &mut code, table: &*sim_objects::TABLE, root, case: 1 };
+    let (cpu, g) = start(ram, root, 1);
+    let a = h.run(cpu, g, &|_| false);
+    assert!(!a.callouts.is_empty(), "finalize makes callouts");
+    let (mut cpu, g) = start(ram, root, 1);
+    cpu.xmm[5] ^= 1;
+    let b = h.run(cpu, g, &|_| false);
+    assert_ne!(a.callouts[0], b.callouts[0], "an XMM register is compared");
+    let (mut cpu, g) = start(ram, root, 1);
+    cpu.x87.instruction_pointer ^= 0x10;
+    let c = h.run(cpu, g, &|_| false);
+    assert_ne!(a.callouts[0], c.callouts[0], "the x87 state is compared");
 }
