@@ -166,6 +166,13 @@ hearing unit's radius (Halo 1 `0x0014e379`). The perception table's
 weapon rows carry the loudness from `weap +0x270`. A missing row
 contributes zero loudness. Both feed the timer
 tick and the movement hold.
+Built: script references resolve by group and name
+(`scenario::reference_group`: Halo 1 `antr`, `mod2` and shader groups
+are Halo 2 `jmad`, `mode` and `shad`). A converted weapon shares its
+path with its model and animation graph. By name alone, a10's weapon
+rows named the graph. The rows sit at the end of the references, so a
+weapon row that does not resolve is a conversion error ("missing AI
+weapon reference"). Dropping it would shift every row after it.
 
 **Built — the hold at behaviour sites.** Halo 1 checks the combat-timer
 hold at the individual behaviour call sites, so a held actor does not

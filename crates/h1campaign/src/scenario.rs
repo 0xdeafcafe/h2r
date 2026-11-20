@@ -2142,16 +2142,20 @@ fn install_scripts(
             samples.push((h.type_name.clone(), h.token.clone()));
         }
     }
-    let by_name: HashMap<String, (FourCC, TagId)> = set
+    // By group and name: a converted weapon, its model and its animation
+    // graph share one Halo 1 path, so a name alone picked whichever slot
+    // came last (a10's perception rows named a `jmad` for a weapon).
+    let by_key: HashMap<(FourCC, String), TagId> = set
         .slots
         .iter()
         .filter_map(|s| {
             let t = s.tag.as_ref()?;
-            Some((s.name.clone()?, (t.group, t.id)))
+            Some(((t.group, s.name.as_ref()?.to_ascii_lowercase()), t.id))
         })
         .collect();
     let mut resolved = 0;
     let mut missing_character = None;
+    let mut missing_weapon = None;
     for at in SCRIPT_FIELDS {
         put_block(root, at, 0, Vec::new());
     }
@@ -2166,7 +2170,23 @@ fn install_scripts(
             }
             tag
         } else {
-            by_name.get(name).copied().or_else(|| aliases.by_name(name))
+            let h1_group = group;
+            let group = reference_group(group);
+            let tag = by_key
+                .get(&(group, name.to_ascii_lowercase()))
+                .copied()
+                .or_else(|| aliases.get(FourCC(h1_group.0.to_be_bytes()), name))
+                .and_then(|id| Some((set.tag(id)?.group, id)));
+            // A weapon row of the perception table: the runtime finds the
+            // rows by their place at the end of the references, so a
+            // dropped one would shift every row after it.
+            if tag.is_none()
+                && group == FourCC(*b"weap")
+                && ai_control.weapon_reports.contains_key(name)
+            {
+                missing_weapon = Some(name.to_owned());
+            }
+            tag
         };
         resolved += usize::from(r.is_some());
         r
@@ -2174,6 +2194,9 @@ fn install_scripts(
     .map_err(|e| invalid(format!("scripts: {e}")))?;
     if let Some(name) = missing_character {
         return Err(invalid(format!("scripts: missing AI character reference {name}")));
+    }
+    if let Some(name) = missing_weapon {
+        return Err(invalid(format!("scripts: missing AI weapon reference {name}")));
     }
     Ok(ScriptReport {
         scripts: c.scripts.len(),
@@ -2200,6 +2223,21 @@ fn install_scripts(
         recordings: recordings.len(),
         recording_bytes: recordings.iter().map(|r| r.stream.len()).sum(),
         recordings_rewritten: rewritten,
+    })
+}
+
+/// The Halo 2 group of the tag converted from a Halo 1 tag of `group`, as
+/// a script reference names it: Halo 1's animation graphs, models and
+/// shaders are Halo 2's `jmad`, `mode` and `shad`; every other group keeps
+/// its four characters.
+fn reference_group(group: h1map::Group) -> FourCC {
+    let g = group.0.to_be_bytes();
+    FourCC(match &g {
+        b"antr" => *b"jmad",
+        b"mod2" | b"mode" => *b"mode",
+        b"shdr" | b"senv" | b"soso" | b"sotr" | b"schi" | b"scex" | b"swat" | b"sgla"
+        | b"smet" | b"spla" => *b"shad",
+        _ => g,
     })
 }
 
