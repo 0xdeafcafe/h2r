@@ -286,7 +286,16 @@ pub fn run(rpc: &mut dyn Rpc, step: &Lobby) -> Result<Value, RpcError> {
             let mut b = downs(mode.row());
             b.push("a");
             press(rpc, &b)?;
-            done(until(rpc, &mode.opens(), STEP_MS, "mode")?)
+            let mut want = mode.opens();
+            if *mode == Mode::Campaign {
+                match rpc.call(method::UI_CAMPAIGN, Value::Null) {
+                    Ok(state) if state["installed"] == true => want.screen = Some(39),
+                    Ok(_) => {}
+                    Err(e) if e.code == code::METHOD_NOT_FOUND => {}
+                    Err(e) => return Err(e),
+                }
+            }
+            done(until(rpc, &want, STEP_MS, "mode")?)
         }
         Lobby::Host {
             via: Host::LiveCoop,
@@ -368,6 +377,7 @@ mod tests {
         fn call(&mut self, m: &str, p: Value) -> Result<Value, RpcError> {
             match m {
                 method::UI_SCREEN => Ok(serde_json::to_value(self.now).unwrap()),
+                method::UI_CAMPAIGN => Ok(json!({"installed": self.now.screen == Some(39)})),
                 method::INPUT_PAD => {
                     self.pads.push(p);
                     if let Some(s) = self.after.pop_front() {
@@ -414,6 +424,20 @@ mod tests {
         .unwrap();
         assert_eq!(buttons(&m.pads[0]), ["down", "down", "down", "a"]);
         assert_eq!(r["screen"]["mode"], MODE_SYSTEM_LINK);
+    }
+
+    #[test]
+    fn campaign_mode_accepts_the_installed_picker_and_retail_destination() {
+        for id in [39, CAMPAIGN_SCREENS[0]] {
+            let mut m = Menu {
+                now: Screen::default(),
+                after: [at(Some(id), None, None)].into(),
+                pads: vec![],
+            };
+            let r = run(&mut m, &Lobby::Mode { mode: Mode::Campaign }).unwrap();
+            assert_eq!(buttons(&m.pads[0]), ["a"]);
+            assert_eq!(r["screen"]["screen"], id);
+        }
     }
 
     #[test]

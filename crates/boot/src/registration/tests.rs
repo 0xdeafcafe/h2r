@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use super::{AgentSource, CoreInputs, LateInputs, register_core, register_late};
+use super::{AgentSource, CoreInputs, LateInputs, register_core, register_late_for_profile};
 use crate::lockstep_glue;
 
 /// Every switch that adds hooks, on (the native renderer is on by default).
@@ -83,6 +83,10 @@ impl Case {
 /// The registry boot would hand the plan for `case`, from the same
 /// registration functions.
 pub(crate) fn registry(case: &Case) -> feature::Registry {
+    registry_for_profile(case, super::compiled_render_hooks())
+}
+
+fn registry_for_profile(case: &Case, profile: film::RenderHooks) -> feature::Registry {
     let rt = Arc::new(runtime::Runtime::new(runtime::Guest::new(), runtime::Dispatch::default()));
     let settings = case
         .settings
@@ -124,7 +128,7 @@ pub(crate) fn registry(case: &Case) -> feature::Registry {
         lockstep.enabled(),
         false,
     );
-    register_late(
+    register_late_for_profile(
         &mut features,
         LateInputs {
             rt: &rt,
@@ -142,6 +146,7 @@ pub(crate) fn registry(case: &Case) -> feature::Registry {
             disc: nowhere,
             data_root: nowhere,
         },
+        profile,
     )
     .unwrap();
     // Boot's Live branch (registration.rs): the armed co-op hooks, unless
@@ -163,6 +168,33 @@ fn plan(case: &Case) -> Result<feature::Plan, String> {
 fn assert_builds(case: &Case) {
     if let Err(e) = plan(case) {
         panic!("{e}");
+    }
+}
+
+#[test]
+fn a_desktop_player_registers_only_the_films_render_groups() {
+    use film::RenderHooks::{Desktop, Gpu, Slim};
+    for profile in [Slim, Desktop, Gpu] {
+        if !super::compiled_render_hooks().supports(profile) {
+            continue;
+        }
+        let plan = registry_for_profile(&Case::none(ALL_ON), profile)
+            .build(&feature::Base)
+            .unwrap();
+        let ids: Vec<_> = plan.features.iter().map(|f| f.id).collect();
+        assert_eq!(ids.contains(&"render-loop"), profile != Slim);
+        assert_eq!(ids.contains(&"native-map-work"), profile == Gpu);
+        assert_eq!(ids.contains(&"native-world"), profile == Gpu);
+        assert_eq!(ids.contains(&"native-hud"), profile == Gpu);
+        assert_eq!(ids.contains(&"native-scene-lists"), profile == Gpu);
+        assert_eq!(ids.contains(&"native-light-walk"), profile == Gpu);
+        assert!(ids.contains(&"h1-scope-zoom"));
+        assert!(ids.contains(&"occlusion"));
+        if profile == Slim {
+            assert!(plan.chains.values().flat_map(|c| c.hooks()).all(|h| {
+                h.feature != "render-loop" && !h.feature.starts_with("native-")
+            }));
+        }
     }
 }
 

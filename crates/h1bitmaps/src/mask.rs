@@ -115,27 +115,92 @@ pub fn brightest(r: u8, g: u8, b: u8, gain: f32) -> u8 {
         .clamp(0.0, 255.0) as u8
 }
 
-/// The single-image Halo 1 bitmap `tag` with [`brightest_into_alpha`]'s
-/// alpha, converted (DXT5, format word [`INTERPOLATED_ALPHA`]).
+/// The Halo 1 bitmap `tag` with [`brightest_into_alpha`]'s alpha on
+/// every image, its sequences kept, converted (DXT5, format word
+/// [`INTERPOLATED_ALPHA`]).
 pub fn convert_brightest(
     map: &h1map::H1Map,
     tag: &h1map::Tag,
     gain: f32,
 ) -> Result<h1models::Converted> {
     let bm = h1map::bitmap::Bitmap::read(map, tag)?;
-    if bm.images.len() != 1 {
+    bake_each(map, bm, |i, img, px| brightest_into_alpha(img, px, gain).map_err(|e| at_image(i, e)))
+}
+
+/// A Halo 1 model shader's base map `base` with the red of its
+/// multipurpose map `mask` as alpha on every image ([`red_into_alpha`]),
+/// its sequences kept, converted (DXT5, format word
+/// [`INTERPOLATED_ALPHA`]). Image `i` of the base takes image `i` of a
+/// mask with as many images, or the only image of a single-image mask:
+/// Halo 1's multi-image model maps come in such pairs (D: b30's `light
+/// fixtures` and `light fixtures multi`, two images each, 256 and 128
+/// square; the grunt's torso, arms and legs, and head and back with their
+/// `multi` maps, two 256 square images each). Any other pairing is an
+/// error.
+pub fn convert_reflection_mask(
+    map: &h1map::H1Map,
+    base: &h1map::Tag,
+    mask: &h1map::Tag,
+) -> Result<h1models::Converted> {
+    let bm = h1map::bitmap::Bitmap::read(map, base)?;
+    let mm = h1map::bitmap::Bitmap::read(map, mask)?;
+    let pick = paired_image(bm.images.len(), mm.images.len())?;
+    let masks = (0..mm.images.len())
+        .map(|k| mm.pixels(map, k))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    bake_each(map, bm, |i, img, px| {
+        let k = pick(i);
+        red_into_alpha(img, px, &mm.images[k], masks[k]).map_err(|e| at_image(i, e))
+    })
+}
+
+/// The Halo 1 multipurpose map `mask` as a Halo 2 change-colour map
+/// ([`channel_into`], channel `from` into `to`) on every image, its
+/// sequences kept, converted (DXT5, format word [`INTERPOLATED_ALPHA`]).
+pub fn convert_change_colour(
+    map: &h1map::H1Map,
+    mask: &h1map::Tag,
+    from: usize,
+    to: usize,
+) -> Result<h1models::Converted> {
+    let mm = h1map::bitmap::Bitmap::read(map, mask)?;
+    bake_each(map, mm, |i, img, px| channel_into(img, px, from, to).map_err(|e| at_image(i, e)))
+}
+
+/// Which mask image each of `base` images takes: the same index when the
+/// counts agree, else the mask's only image.
+pub(crate) fn paired_image(base: usize, mask: usize) -> Result<impl Fn(usize) -> usize> {
+    if base == 0 || mask == 0 || (mask != base && mask != 1) {
         return Err(Error::Unsupported(format!(
-            "a brightness mask of {} images",
-            bm.images.len()
+            "a mask of {mask} images on a base of {base}"
         )));
     }
-    let (img, px) = brightest_into_alpha(&bm.images[0], bm.pixels(map, 0)?, gain)?;
-    let mut baked = bm.clone();
-    baked.images[0] = img;
-    baked.encoding = INTERPOLATED_ALPHA;
-    let mut px = Some(px);
-    let (conv, _) = crate::convert::convert_with(&baked, |_| Ok(px.take().unwrap_or_default()))?;
-    Ok(conv)
+    Ok(move |i| if mask == base { i } else { 0 })
+}
+
+fn at_image(i: usize, e: Error) -> Error {
+    Error::Invalid(format!("image {i}: {e}"))
+}
+
+/// `bm` with each image `i` (and its stored pixels) replaced by what
+/// `bake` makes of it, converted with Halo 1's format word for DXT5.
+fn bake_each(
+    map: &h1map::H1Map,
+    mut bm: h1map::bitmap::Bitmap,
+    mut bake: impl FnMut(usize, &Image, &[u8]) -> Result<(Image, Vec<u8>)>,
+) -> Result<h1models::Converted> {
+    if bm.images.is_empty() {
+        return Err(Error::Invalid("a bitmap with no images".into()));
+    }
+    let mut pixels = Vec::with_capacity(bm.images.len());
+    for i in 0..bm.images.len() {
+        let (image, bytes) = bake(i, &bm.images[i], bm.pixels(map, i)?)?;
+        bm.images[i] = image;
+        pixels.push(bytes);
+    }
+    bm.encoding = INTERPOLATED_ALPHA;
+    let (converted, _) = crate::convert::convert_with(&bm, |i| Ok(std::mem::take(&mut pixels[i])))?;
+    Ok(converted)
 }
 
 /// A Halo 2 change-colour map from one channel of a Halo 1 model
@@ -255,23 +320,21 @@ pub fn cutout_bump(base: &Image, base_px: &[u8]) -> Result<(Image, Vec<u8>)> {
     Ok((out_img, out))
 }
 
-/// The single-image Halo 1 bitmap `tag` as [`cutout_bump`]'s bump map,
-/// converted (DXT5, format word [`INTERPOLATED_ALPHA`]).
+/// A flat bump with the same cutout and image sequences as the source bitmap.
 pub fn convert_cutout_bump(map: &h1map::H1Map, tag: &h1map::Tag) -> Result<h1models::Converted> {
-    let bm = h1map::bitmap::Bitmap::read(map, tag)?;
-    if bm.images.len() != 1 {
-        return Err(Error::Unsupported(format!(
-            "a cut-out bump of {} images",
-            bm.images.len()
-        )));
+    let mut baked = h1map::bitmap::Bitmap::read(map, tag)?;
+    if baked.images.is_empty() {
+        return Err(Error::Invalid("empty cutout bitmap".into()));
     }
-    let (img, px) = cutout_bump(&bm.images[0], bm.pixels(map, 0)?)?;
-    let mut baked = bm.clone();
-    baked.images[0] = img;
+    let mut pixels = Vec::with_capacity(baked.images.len());
+    for i in 0..baked.images.len() {
+        let (image, bytes) = cutout_bump(&baked.images[i], baked.pixels(map, i)?)?;
+        baked.images[i] = image;
+        pixels.push(bytes);
+    }
     baked.encoding = INTERPOLATED_ALPHA;
-    let mut px = Some(px);
-    let (conv, _) = crate::convert::convert_with(&baked, |_| Ok(px.take().unwrap_or_default()))?;
-    Ok(conv)
+    let (converted, _) = crate::convert::convert_with(&baked, |i| Ok(std::mem::take(&mut pixels[i])))?;
+    Ok(converted)
 }
 
 /// DXT5 blocks of a `w` x `h` level whose colour half is `colour` in

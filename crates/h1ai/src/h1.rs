@@ -386,6 +386,21 @@ pub fn actor(m: &H1Map, t: &Tag) -> Result<Actor> {
     })
 }
 
+/// A `weap` tag's report loudness (`+0x270`). Halo 1 multiplies it by
+/// three and adds the hearing unit's own radius (`0x0014e379`) for the
+/// reach of a shot's alert report to the AI.
+pub fn weapon_loudness(m: &H1Map, t: &Tag) -> Result<f32> {
+    let b = m.tag_data(t)?;
+    if b.len() < 0x274 {
+        return Err(Error::Invalid(format!(
+            "weap {} is {} bytes",
+            t.name,
+            b.len()
+        )));
+    }
+    Ok(f32_at(b, 0x270))
+}
+
 /// Reads an `actv` tag.
 pub fn actor_variant(m: &H1Map, t: &Tag) -> Result<ActorVariant> {
     let b = m.tag_data(t)?;

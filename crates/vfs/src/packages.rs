@@ -59,7 +59,7 @@ use crate::{
 enum Served {
     Overlay {
         base: Base,
-        overlay: Overlay,
+        overlay: std::sync::Arc<Overlay>,
     },
     File {
         file: FileSource,
@@ -415,7 +415,7 @@ impl<B: Backend> PackageBackend<B> {
                 };
                 (
                     format!("{runs} patched runs over {over}"),
-                    Served::Overlay { base, overlay },
+                    Served::Overlay { base, overlay: std::sync::Arc::new(overlay) },
                 )
             }
             Data::File { path: p, file, .. } => match FileSource::new(file) {
@@ -577,6 +577,25 @@ impl<B: Backend> Backend for PackageBackend<B> {
     }
     fn volume_info(&mut self) -> Result<VolumeInfo> {
         self.inner.volume_info()
+    }
+    fn film_source(&mut self, path: &str) -> Result<Option<crate::FilmMapSource>> {
+        let Some(entry) = self.chosen(path) else { return self.inner.film_source(path) };
+        let id = entry.id;
+        match &entry.served {
+            Served::File { file, .. } => Ok(Some(crate::FilmMapSource::region(file.file().try_clone()?, 0))),
+            Served::Overlay { base, overlay } => {
+                let patch = overlay.clone();
+                let (base, len) = match base {
+                    Base::Disc(len) => {
+                        let len = *len;
+                        let Some(source) = self.inner.film_source(path)? else { return Ok(None) };
+                        (source, len)
+                    }
+                    Base::File(file) => (crate::FilmMapSource::region(file.file().try_clone()?, 0), file.size()),
+                };
+                Ok(Some(crate::FilmMapSource::overlay(base, len, patch, id)))
+            }
+        }
     }
     /// A materialised map is all of its cache file. An overlaid map is not
     /// one region of any host file, so it has none.

@@ -510,9 +510,17 @@ fn build_section(
                 "geometry {index} has more than 65535 indices"
             )));
         }
-        let shader = usize::try_from(p.shader)
-            .ok()
-            .and_then(|s| model.shaders.get(s));
+        // A part naming a shader past the model's list has no material to
+        // draw with: a named error, not an opaque part.
+        let shader = match usize::try_from(p.shader) {
+            Ok(s) => Some(model.shaders.get(s).ok_or_else(|| {
+                Error::Invalid(format!(
+                    "geometry {index}: part shader {s} past the model's {} shaders",
+                    model.shaders.len()
+                ))
+            })?),
+            Err(_) => None,
+        };
         let kind = match shader {
             Some(s) if s.group == h1map::Group::new(b"soso") => PART_KIND_OPAQUE,
             Some(_) => PART_KIND_TRANSPARENT,

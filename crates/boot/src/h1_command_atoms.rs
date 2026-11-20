@@ -43,7 +43,7 @@ fn decode(m: &dyn GuestMemory, id: u32) -> R<Option<Atom>> {
     }
     let bits = encoded as u32;
     let kind = ((bits >> 16) - 1) as u16;
-    if !matches!(kind, 2 | 3 | 4 | 7 | 9 | 13 | 15 | 22) {
+    if !matches!(kind, 2 | 3 | 4 | 7 | 9 | 13 | 15 | 16 | 22) {
         return Ok(None);
     }
     let scenario = m.u32(points::SCENARIO.base)?;
@@ -246,6 +246,15 @@ async fn execute(
             let finished = cx.write(|m| performance::shoot(m, a, actor, unit, state, true))?;
             Ok(Ret::new(if finished { 2 } else { 0 }, 16))
         }
+        16 => {
+            let sound = cx.read(|m| {
+                crate::h1_conversation::dialogue::source_sound(m, unit, a.operand)
+            })?;
+            if sound != u32::MAX {
+                crate::h1_conversation::play_spatial(&cx, scratch, unit, sound).await?;
+            }
+            Ok(done)
+        }
         9 => {
             let candidates = cx.read(|m| seats(m, origin, a.amount, a.operand))?;
             for (vehicle, seat) in candidates {
@@ -291,6 +300,7 @@ impl feature::Feature for CommandAtoms {
             .doc("docs/halo1/ai.md")
     }
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+        b.snapshot(feature::SnapshotPolicy::Stateless);
         control::install(b);
         performance::install(b)?;
         motion::install(b)?;

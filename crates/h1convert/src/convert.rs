@@ -17,7 +17,7 @@ use scenario_edit::Scenario;
 
 use crate::apply::{Applied, apply};
 use crate::structure::{Mesh, Section, Structure, Templates};
-use crate::{Error, Result, collision, placements, shaders, slots, structure};
+use crate::{Error, Result, collision, placements, slots, structure};
 
 pub mod halo1;
 
@@ -153,9 +153,7 @@ pub struct Prepared {
     pub sections: Vec<Section>,
     /// Halo 1 shader name of each structure material.
     pub materials: Vec<String>,
-    /// For each structure material, the base shader it draws with
-    /// ([`crate::shaders::pick`]): its index among the base's materials
-    /// and its tag name.
+    /// Source material index and Halo 1 shader path, in geometry order.
     pub material_shaders: Vec<(usize, String)>,
     /// Halo 1's own textures on copies of those shaders
     /// ([`crate::textures`]), added when the map is built.
@@ -193,6 +191,7 @@ pub struct Prepared {
     /// Halo 1's scenery ([`halo1::plan_scenery`]), written into the
     /// scenario by the fresh build; `None` places none.
     pub scenery: Option<halo1::Scenery>,
+    pub(crate) fixtures: halo1::Fixtures,
     /// The Halo 1 sandbox's player biped (one of the added objects), made
     /// the multiplayer player unit when the map is built
     /// ([`crate::globals::set_player_unit`]); `None` keeps the base's.
@@ -359,7 +358,15 @@ pub fn prepare<R: Read + Seek>(
     if sandbox == Sandbox::Halo1 {
         return Err(Error::Halo1Sandbox);
     }
-    prepare_plan(h1, source_sha256, base, placements::plan_map(h1)?)
+    let plan = placements::plan_map(h1)?;
+    if let Some(vehicle) = plan.source_vehicles.first() {
+        return Err(Error::no_rebuild(
+            &h1.header().name,
+            &vehicle.collection,
+            "use prepare_halo2 with a Halo 1 object converter",
+        ));
+    }
+    prepare_plan(h1, source_sha256, base, plan)
 }
 
 fn prepare_plan<R: Read + Seek>(
@@ -409,9 +416,18 @@ fn prepare_plan<R: Read + Seek>(
         .filter(|&m| m != u16::MAX)
         .max()
         .map_or(0, |m| usize::from(m) + 1);
-    let collision_materials = src.collision_materials()?.len().max(largest).max(1);
+    let collision_materials = src.collision_materials()?.len();
+    if largest > collision_materials {
+        return Err(Error::Invalid(
+            "surface outside source collision material palette",
+        ));
+    }
 
-    let name_of = |r: h1map::TagRef| h1.tag(r.id).map(|t| t.name.clone()).unwrap_or_default();
+    let name_of = |r: h1map::TagRef| -> Result<String> {
+        h1.tag(r.id).map(|t| t.name.clone()).map_err(|e| {
+            Error::no_rebuild(&h1.header().name, "structure", format!("lightmap material shader: {e}"))
+        })
+    };
     let mut meshes: Vec<Mesh> = structure::meshes(&src, name_of)?;
     let flipped = structure::fix_winding(&mut meshes);
     let mut index: BTreeMap<String, u16> = BTreeMap::new();
@@ -442,73 +458,18 @@ fn prepare_plan<R: Read + Seek>(
     let trigger_volumes = park_trigger_volumes(&mut scnr_bytes.clone(), scnr_at)?;
     // Ambient sound: the palettes go into the base's storage, as many as
     // it holds (`ambience::patch_scenario`); each cluster names its zone's.
-    let ambience = crate::ambience::read(h1);
+    let ambience = crate::ambience::read(h1)?;
     let room = crate::ambience::room(&scnr_bytes)?;
-    let written = [
-        ambience
-            .backgrounds
-            .len()
-            .min(room[0])
-            .min(crate::ambience::MAX_PALETTE),
-        ambience
-            .environments
-            .len()
-            .min(room[1])
-            .min(crate::ambience::MAX_PALETTE),
-    ];
+    ambience.check_capacity(&h1.header().name, room)?;
+    let written = [ambience.backgrounds.len(), ambience.environments.len()];
     let (sound_clusters, sound_leaves) =
         crate::clusters::sound_zones(&src, collision.leaves.len(), |z| {
             ambience.index(0, z, written)
         })?;
-    let sbsp_at = base
-        .tag(sbsp)?
-        .location
-        .ok_or(Error::Invalid("base sbsp has no data"))?
-        .address;
-    let mut templates = Templates::from_base(&base.read_tag_bytes(sbsp)?, sbsp_at)?;
-    let mut base_shaders = Vec::new();
-    for i in 0..templates.material_heads.len() {
-        let id = templates.shader(i);
-        let name = base
-            .tag(id)
-            .ok()
-            .and_then(|t| t.name.clone())
-            .unwrap_or_default();
-        let template = scenario_edit::scene::shader_bitmaps(base, id)
-            .map(|(t, _)| t)
-            .unwrap_or_default();
-        templates.part_kinds[i] = crate::structure::base_part_kind(base, id, &template);
-        base_shaders.push(shaders::BaseShader { name, template });
-    }
-    let h1_shaders: Vec<(String, String)> = materials
-        .iter()
-        .map(|n| {
-            let group = h1
-                .tags()
-                .iter()
-                .find(|t| &t.name == n)
-                .map(|t| t.group.to_string())
-                .unwrap_or_default();
-            (n.clone(), group)
-        })
-        .collect();
-    let material_shaders: Vec<(usize, String)> = shaders::pick(&h1_shaders, &base_shaders)
-        .into_iter()
-        .map(|i| (i, base_shaders[i].name.clone()))
-        .collect();
-    // Halo 1's own textures on copies of the picked shaders. A map whose
-    // shaders can't be read keeps the base's (with a note saying why).
-    let picks: Vec<(usize, String)> = material_shaders
-        .iter()
-        .map(|m| m.0)
-        .zip(materials.iter().cloned())
-        .collect();
-    let textures = crate::textures::plan(h1, base, &templates, &picks).unwrap_or_else(|e| {
-        crate::textures::Retexture {
-            notes: vec![format!("the base's textures kept: {e}")],
-            ..Default::default()
-        }
-    });
+    let templates = Templates::default();
+    let material_shaders: Vec<_> = materials.iter().cloned().enumerate().collect();
+    let textures =
+        crate::textures::plan_bsp(h1, base, &material_shaders, &src.collision_materials()?)?;
 
     // The base's lightmap bitmap's slot takes the converted lightmap.
     let lightmap_slot = slots::lightmap_bitmap(base, ltmp)?;
@@ -523,7 +484,14 @@ fn prepare_plan<R: Read + Seek>(
             slot,
             replaces: base.tag(slot)?.name.clone().unwrap_or_default(),
         }),
-        _ => None,
+        (Some((source, _, _)), None) => {
+            return Err(Error::no_rebuild(
+                &h1.header().name,
+                source,
+                "base structure has no lightmap bitmap slot",
+            ));
+        }
+        (None, _) => None,
     };
     // Built vehicle collections are added after the base's tags when the
     // map is built (`TagSet::add_tag`), so their datums are known now:
@@ -550,7 +518,7 @@ fn prepare_plan<R: Read + Seek>(
         textures,
         skies: crate::sky::Skies {
             templates: crate::sky_shaders::sky_templates(base),
-            ..crate::sky::read(h1)
+            ..crate::sky::read(h1)?
         },
         ambience,
         sound_clusters,
@@ -563,6 +531,7 @@ fn prepare_plan<R: Read + Seek>(
         objects: None,
         objects_first: 0,
         scenery: None,
+        fixtures: halo1::Fixtures::default(),
         player_biped: None,
         player_hands: None,
         grenades: Vec::new(),
@@ -823,6 +792,9 @@ impl Prepared {
         let mut patched = Cursor::new(Vec::new());
         scenario_edit::save::write_patched(base, &self.scenario, &mut patched)?;
         let mut patched = Map::from_reader(Cursor::new(patched.into_inner()))?;
+        if !intermediate && !self.fixtures.placements.is_empty() {
+            patched = self.fixtures.patch_pinned(patched)?;
+        }
         let mut set = TagSet::from_map(&mut patched)?;
         set.check_bsp_space = !intermediate;
         // The vehicle collections the placements build first (their
@@ -937,6 +909,7 @@ impl Prepared {
         // which no placement names (`boot::precision`, `boot::hud_swap`).
         let mut keep: Vec<TagId> = self.applied.precision.iter().map(|p| p.1).collect();
         keep.extend(self.hud_swaps().iter().map(|h| h[2]));
+        keep.extend(self.fixtures.palette.iter().copied());
         let pruned = crate::fresh::prune_pinned(
             &mut set,
             base.index_slots() as usize,

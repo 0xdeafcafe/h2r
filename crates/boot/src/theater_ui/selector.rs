@@ -138,8 +138,8 @@ pub(super) fn fitted(text: &str, limit: usize) -> String {
     }
 }
 
-pub(super) fn clock(ticks: u64) -> String {
-    let secs = ticks / 30;
+pub(super) fn clock(ticks: u64, rate: u64) -> String {
+    let secs = ticks / rate;
     format!("{}:{:02}", secs / 60, secs % 60)
 }
 
@@ -165,7 +165,10 @@ impl Entry {
             .as_ref()
             .map(|clip| clip.to_tick.saturating_sub(clip.from_tick))
             .or_else(|| self.film.duration())
-            .map_or_else(|| "--:--".into(), clock)
+            .map_or_else(
+                || "--:--".into(),
+                |ticks| clock(ticks, self.film.tick_rate()),
+            )
     }
 
     pub fn result(&self, player: Option<&str>) -> String {

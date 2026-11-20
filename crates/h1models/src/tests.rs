@@ -325,10 +325,20 @@ fn compare_animation(src: &h1::Animation, clip: &tags::anim_sample::AnimationCli
     assert_eq!(clip.frame_count(), usize::from(src.frame_count));
     for f in 0..clip.frame_count() {
         let pose = clip.sample_frame(f).expect("frame samples");
+        assert_eq!(pose.nodes.len(), src.frames[f].len());
         for (n, (got, want)) in pose.nodes.iter().zip(&src.frames[f]).enumerate() {
-            let carried = |c: usize| src.has(c, n) || src.kind == h1::AnimType::Base;
+            let non_identity = [
+                want.rotation != [0.0, 0.0, 0.0, 1.0] && want.rotation != [0.0, 0.0, 0.0, -1.0],
+                want.translation != [0.0; 3],
+                want.scale != 1.0,
+            ];
+            let carried =
+                |c: usize| src.has(c, n) || src.kind == h1::AnimType::Base || non_identity[c];
+            assert_eq!(
+                [got.has_rotation, got.has_translation, got.has_scale],
+                [carried(0), carried(1), carried(2)]
+            );
             if carried(0) {
-                assert!(got.has_rotation);
                 // Rotation angle between the two: 4 asin(|q1 - q2| / 2) on
                 // the same hemisphere (acos of the dot product would turn
                 // f32 rounding into ~1e-3 rad).
@@ -346,13 +356,11 @@ fn compare_animation(src: &h1::Animation, clip: &tags::anim_sample::AnimationCli
                 e[0] = e[0].max(4.0 * (chord / 2.0).min(1.0).asin());
             }
             if carried(1) {
-                assert!(got.has_translation);
                 for a in 0..3 {
                     e[1] = e[1].max((got.translation[a] - want.translation[a]).abs());
                 }
             }
             if carried(2) {
-                assert!(got.has_scale);
                 e[2] = e[2].max((got.scale - want.scale).abs());
             }
         }
@@ -597,7 +605,7 @@ fn synthetic_graph() -> (Image, u32) {
     let mut img = Image::default();
     let mut nodes = vec![0u8; 3 * 0x40];
     for (i, (n, parent, child, sib)) in [
-        ("root", -1i16, 1i16, -1i16),
+        ("root", 0i16, 1i16, -1i16),
         ("a", 0, -1, 2),
         ("b", 0, -1, -1),
     ]
@@ -635,6 +643,8 @@ fn synthetic_graph() -> (Image, u32) {
         e[0x24..0x26].copy_from_slice(&fs.to_le_bytes());
         put(&mut e, 0x28, 0xabcd);
         e[0x2c] = 3;
+        put16(&mut e, 0x38, -1);
+        put16(&mut e, 0x42, -1);
         put(&mut e, 0x5c, trans);
         put(&mut e, 0x6c, rot | 0xff00_0000); // junk above the node count
         put(&mut e, 0x7c, scale);
@@ -672,11 +682,11 @@ fn synthetic_graph() -> (Image, u32) {
         default,
         data,
     );
-    // Overlay: rotation on node 0 only.
+    // Overlay: node 0 rotates. One constant channel of each kind is non-identity.
     let mut default = Vec::new();
-    default.extend(f(&[0.0; 3]));
-    default.extend(f(&[1.0]));
-    default.extend(q([0.0, 0.0, 0.0, 1.0]));
+    default.extend(f(&[0.0, -0.125, 0.0]));
+    default.extend(f(&[1.25]));
+    default.extend(q([0.0, 0.3, 0.0, 0.9]));
     default.extend(f(&[0.0; 3]));
     default.extend(f(&[1.0]));
     default.extend(q([0.0, 0.0, 0.0, 1.0]));
@@ -864,6 +874,7 @@ fn reads_synthetic_graph() {
     let (img, at) = synthetic_graph();
     let g = h1::Graph::read(&img, at).unwrap();
     assert_eq!(g.nodes.len(), 3);
+    assert_eq!(g.nodes[0].parent, -1);
     let a = &g.animations[0];
     assert_eq!(a.animated, [0b010, 0b100, 0b100]);
     assert_eq!(a.frames[4][2].translation, [1.0, 2.0, -1.0]);
@@ -903,12 +914,32 @@ fn synthetic_graph_round_trips_through_the_h2_decoder() {
     let (img, at) = synthetic_graph();
     let g = h1::Graph::read(&img, at).unwrap();
     let (out, report) = jmad::convert_graph(&g, None).unwrap();
+    assert_eq!(report.carried_default_channels, 3);
     assert_eq!(report.names[0].1, "combat:rifle:move_front");
     assert_eq!(report.names[1].1, "combat:rifle:aim_still");
     let (bytes, ids) = build(vec![(out, "invented\\graph")]);
     for (name, e) in check_graph(&g, &[], bytes, ids[0]) {
         assert!(e[0] < 2e-4 && e[1] == 0.0 && e[2] == 0.0, "{name}: {e:?}");
     }
+}
+
+#[test]
+fn replacement_with_only_default_channels_samples_on_every_frame() {
+    let (img, at) = synthetic_graph();
+    let mut graph = h1::Graph::read(&img, at).unwrap();
+    let a = &mut graph.animations[1];
+    a.kind = h1::AnimType::Replacement;
+    a.animated = [0; 3];
+    for pose in &mut a.frames {
+        pose[0].rotation = [0.0, 0.0, 0.0, -1.0];
+    }
+    let (out, report) = jmad::convert_graph(&graph, None).unwrap();
+    assert_eq!(report.carried_default_channels, 3);
+    let (bytes, ids) = build(vec![(out, "replacement")]);
+    let errors = check_graph(&graph, &[], bytes, ids[0]);
+    let (_, [rotation, translation, scale]) = errors[1];
+    assert!(rotation < 2e-4);
+    assert_eq!((translation, scale), (0.0, 0.0));
 }
 
 /// Every level of a converted graph's tree is laid out in ascending
@@ -1018,8 +1049,7 @@ fn a_class_that_borrows_a_slot_finds_it_by_name() {
 /// rifle's `reload-empty` slot holds its `reload-full`. The reader takes
 /// the table, and the converted tree names each slot's action
 /// (`reload_empty`) for the animation it holds, beside the labels' own;
-/// a label's own action is not replaced, and a slot past the animations
-/// is skipped.
+/// the slot is authoritative, and a slot past the animations is rejected.
 #[test]
 fn a_first_person_slot_names_its_action_for_the_animation_it_holds() {
     let (mut img, at) = synthetic_graph();
@@ -1045,6 +1075,8 @@ fn a_first_person_slot_names_its_action_for_the_animation_it_holds() {
     // A base animation, as Halo 1's reloads are (an overlay would go to
     // the type's overlays).
     g.animations[1].kind = h1::AnimType::Base;
+    assert!(jmad::convert_graph(&g, None).unwrap_err().to_string().contains("slot 11"));
+    g.first_person_slots[11] = -1;
     let (out, _) = jmad::convert_graph(&g, None).unwrap();
     let (bytes, ids) = build(vec![(out, "invented\\graph")]);
     let mut map = Map::from_reader(Cursor::new(bytes)).unwrap();
@@ -1111,11 +1143,11 @@ fn first_person_type(g: &h1::Graph) -> (Vec<(String, i16)>, Vec<(String, i16)>) 
 }
 
 /// The assault rifle's `fire-1` slot is empty and its firing animation is
-/// labelled `firing`: the graph gets `fire_1` naming it, beside `firing`.
+/// labelled `firing`: the engine leaves the current animation playing.
 /// Its overlay (`moving`) goes to the type's overlays, not its actions:
 /// the engine finds a first-person overlay there (`0x001dbc80`).
 #[test]
-fn a_first_person_graph_fires_its_firing_animation_and_keeps_overlays_apart() {
+fn an_empty_fire_slot_does_not_play_an_unreferenced_clip() {
     let (img, at) = synthetic_graph();
     let mut g = h1::Graph::read(&img, at).unwrap();
     assert_eq!(g.animations[1].kind, h1::AnimType::Overlay);
@@ -1123,7 +1155,7 @@ fn a_first_person_graph_fires_its_firing_animation_and_keeps_overlays_apart() {
     g.animations[1].name = "first-person moving".into();
     g.first_person_slots = vec![-1, -1, -1, 1];
     let (actions, overlays) = first_person_type(&g);
-    assert_eq!(actions, [("fire_1".to_owned(), 0), ("firing".to_owned(), 0)]);
+    assert_eq!(actions, [("firing".to_owned(), 0)]);
     assert_eq!(overlays, [("moving".to_owned(), 1)]);
 }
 
@@ -1142,8 +1174,7 @@ fn a_filled_fire_slot_keeps_its_animation() {
     assert!(overlays.is_empty());
 }
 
-/// Third-person graphs keep their overlays among the actions, as before:
-/// only first-person overlays are moved.
+/// Unclassified graphs keep the original label-derived action tree.
 #[test]
 fn a_third_person_graph_keeps_its_overlays_as_actions() {
     let (img, at) = synthetic_graph();
@@ -1357,7 +1388,7 @@ fn real_graphs_round_trip() {
             std::array::from_fn(|k| w[k].max(e[k]))
         });
         println!(
-            "{path}: {} animations, {} frames; max error rotation {:.2e} rad, translation {:.2e}, scale {:.2e}; variants {}, root movement {}, dropped overlay defaults {}, zero rotations {}",
+            "{path}: {} animations, {} frames; max error rotation {:.2e} rad, translation {:.2e}, scale {:.2e}; variants {}, root movement {}, carried overlay defaults {}, zero rotations {}",
             g.animations.len(),
             g.animations
                 .iter()
@@ -1368,7 +1399,7 @@ fn real_graphs_round_trip() {
             worst[2],
             report.variants.len(),
             report.movement.len(),
-            report.dropped_default_channels,
+            report.carried_default_channels,
             report.zero_rotations
         );
         for (name, e) in errors.iter().take(4) {
@@ -1566,6 +1597,98 @@ fn h1_disc_maps() -> Option<Vec<(String, h1map::H1Map)>> {
             })
             .collect(),
     )
+}
+
+/// Decode every non-base clip through the native resource format, including
+/// graphs which get their skeleton from their owning object's render model.
+#[test]
+#[ignore = "reads H1_ISO"]
+fn retail_overlay_defaults_round_trip_on_all_23_maps() {
+    let disc = std::env::var_os("H1_ISO").expect("set H1_ISO");
+    let mut iso =
+        xiso::Xiso::open(std::io::BufReader::new(std::fs::File::open(disc).unwrap())).unwrap();
+    let entries = h1map::disc::Disc::open(&mut iso).unwrap().maps;
+    let mut maps = [0; 2];
+    let mut defaults = 0;
+    for entry in entries {
+        let map = h1map::H1Map::from_bytes(&iso.read(&entry).unwrap()).unwrap();
+        match map.header().cache_type {
+            h1map::CacheType::Campaign => maps[0] += 1,
+            h1map::CacheType::Multiplayer => maps[1] += 1,
+            h1map::CacheType::UserInterface => continue,
+            other => panic!("unexpected map type {other}"),
+        }
+        for tag in map
+            .tags()
+            .iter()
+            .filter(|t| t.group == h1map::Group::new(b"antr"))
+        {
+            let context = || format!("{} / {}", map.header().name, tag.name);
+            let source = h1::Graph::read(&map, tag.data_address)
+                .unwrap_or_else(|e| panic!("{}: {e}", context()));
+            if source
+                .animations
+                .iter()
+                .all(|a| a.kind == h1::AnimType::Base)
+            {
+                continue;
+            }
+            let skeleton = if source.nodes.is_empty() {
+                let mode = map
+                    .find(h1map::Group::new(b"mode"), &tag.name)
+                    .or_else(|| {
+                        let object = h1map::Group::new(b"obje");
+                        map.tags()
+                            .iter()
+                            .filter(|t| t.parent == object || t.grandparent == object)
+                            .find_map(|t| {
+                                let data = map.tag_data(t).unwrap();
+                                let graph = h1map::TagRef::read(data, 0x38)?;
+                                (graph.id == tag.id).then(|| {
+                                    let model = h1map::TagRef::read(data, 0x28).unwrap();
+                                    map.tag(model.id).unwrap()
+                                })
+                            })
+                    })
+                    .unwrap_or_else(|| panic!("{}: missing source skeleton", context()));
+                Some(h1::AnimNode::from_model(
+                    &h1::Model::read(&map, mode.data_address).unwrap(),
+                ))
+            } else {
+                None
+            };
+            let (out, report) = jmad::convert_graph(&source, skeleton.as_deref())
+                .unwrap_or_else(|e| panic!("{}: {e}", context()));
+            defaults += report.carried_default_channels;
+            let (bytes, ids) = build(vec![(out, &tag.name)]);
+            let mut built = Map::from_reader(Cursor::new(&bytes)).unwrap();
+            let graph = AnimationGraph::read(&mut built, ids[0]).unwrap();
+            let resource = graph.read_resource(0, &mut Raw(bytes)).unwrap();
+            assert_eq!(
+                graph.animations.len(),
+                source.animations.len(),
+                "{}",
+                context()
+            );
+            for (i, a) in source
+                .animations
+                .iter()
+                .enumerate()
+                .filter(|(_, a)| a.kind != h1::AnimType::Base)
+            {
+                let clip = graph.clip_from_shared(i, &resource).unwrap();
+                let [r, t, s] = compare_animation(a, &clip);
+                assert!(
+                    r < 2e-4 && t == 0.0 && s == 0.0,
+                    "{} / {}: {r} {t} {s}",
+                    context(),
+                    a.name
+                );
+            }
+        }
+    }
+    assert_eq!(maps, [10, 13]);
+    assert!(defaults > 0);
 }
 
 /// Rotation angle between two unit quaternions, in radians.
@@ -2233,7 +2356,7 @@ fn sentinel_fixed_slots_build_a_runtime_idle_and_aim_overlay() {
         }],
         ..Default::default()
     }];
-    let (out, _) = jmad::convert_graph_for(&g, None, &Default::default(), true).unwrap();
+    let (out, _) = jmad::convert_graph_for(&g, None, &Default::default(), jmad::GraphRole::Sentinel).unwrap();
     let (bytes, ids) = build(vec![(out, "invented\\sentinel")]);
     let mut map = Map::from_reader(Cursor::new(bytes)).unwrap();
     let graph = tags::anim::AnimationGraph::read(&mut map, ids[0]).unwrap();
@@ -2269,3 +2392,203 @@ fn sentinel_fixed_slots_build_a_runtime_idle_and_aim_overlay() {
     assert_eq!(graph.animations[1].unknown_12, 0);
     assert_eq!(graph.blend_screens.len(), 1);
 }
+
+#[test]
+fn cyborg_action_overlay_and_damage_use_slot_indices() {
+    let (mut img, at) = synthetic_graph();
+    // H1's damage array starts with four directions of eleven s-ping
+    // regions. Give front/chest a clip whose name describes another use.
+    let damage = img.alloc(
+        &[-1i16, 1]
+            .into_iter()
+            .flat_map(i16::to_le_bytes)
+            .collect::<Vec<_>>(),
+    );
+    block(&mut img.0[(at - BASE) as usize..], 0x3c, 2, damage);
+    let mut g = h1::Graph::read(&img, at).unwrap();
+    g.nodes[0].name = "bip01 pelvis".into();
+    g.nodes[1].name = "bip01 l hand".into();
+    g.nodes[2].name = "bip01 r hand".into();
+    g.animations[0].next_permutation = -1;
+    g.animations[0].key_frames = [2, 0];
+    g.animations[0].foot_frames = [0, 3];
+    g.animations[0].loop_frame = 50;
+    g.animations[1].first_permutation = 1;
+    g.animations[1].next_permutation = -1;
+    let mut slots = vec![-1; 39];
+    slots[0] = 0;
+    slots[25] = 1;
+    slots[36] = 0;
+    g.units = vec![h1::UnitSlots {
+        label: "stand".into(),
+        classes: vec![h1::ClassSlots {
+            label: "missile".into(),
+            slots,
+            types: vec![("rl".into(), vec![-1, -1, -1, -1, 1])],
+            screen: h1::AimScreen {
+                left_frames: 1,
+                right_frames: 1,
+                left_yaw_per_frame: 0.8,
+                right_yaw_per_frame: 0.8,
+                ..Default::default()
+            },
+            ik: vec![("left hand".into(), "grip".into())],
+        }],
+        ..Default::default()
+    }];
+    let convert = |g: &h1::Graph| {
+        jmad::convert_graph_for(g, None, &Default::default(), jmad::GraphRole::Player)
+    };
+    let (out, _) = convert(&g).unwrap();
+    let r = Raw32::new(out);
+    let class = r.ty(["combat", "missile", "any"]).unwrap();
+    assert_eq!(
+        r.entries(class + 4),
+        [("idle".into(), 0), ("stunned_back".into(), 0)]
+    );
+    assert_eq!(
+        r.entries(class + 12),
+        [("aim_still_down".into(), 1), ("aim_still_up".into(), 1)]
+    );
+    let mode = r
+        .level(r.base + 0x34, 20)
+        .into_iter()
+        .find(|m| m.0 == "combat")
+        .unwrap();
+    let class_record = r
+        .level(mode.1 + 4, 20)
+        .into_iter()
+        .find(|c| c.0 == "missile")
+        .unwrap()
+        .1;
+    let markers = r.w(class_record + 0x10);
+    assert_eq!(r.w(class_record + 0xc), 1);
+    assert_eq!(r.name(r.w(markers)), "left hand");
+    assert_eq!(r.name(r.w(markers + 4)), "grip");
+    let rl = r.ty(["combat", "missile", "rl"]).unwrap();
+    assert_eq!(r.entries(rl + 12), [("fire_1".into(), 1)]);
+    assert!(r.entries(rl + 4).is_empty());
+    assert_eq!(r.w(r.base + 0x5c), 0b010);
+    assert_eq!(r.w(r.base + 0x7c), 0b101);
+    let records = r.w(r.base + 0x30);
+    assert_eq!(r.w(records + 0x2c) >> 16, 4);
+    let events = r.w(records + 0x50);
+    assert_eq!(r.w(records + 0x4c), 3);
+    assert_eq!(r.w(events), 2 << 16);
+    assert_eq!(r.w(events + 4), 2);
+    assert_eq!(r.w(events + 8), (3 << 16) | 3);
+    let any = r.ty(["any"; 3]).unwrap();
+    let damage = r.level(any + 0x14, 12);
+    assert_eq!(damage[0].0, "s_ping");
+    let directions = r.w(damage[0].1 + 8);
+    let regions = r.w(directions + 4);
+    assert_eq!(r.w(regions), 0xffff0000);
+    assert_eq!(r.w(regions + 4), 0x0001ffff);
+
+    g.units[0].classes[0].slots[25] = 7;
+    assert!(convert(&g).unwrap_err().to_string().contains("index 7"));
+}
+
+#[test]
+fn cyborg_weapon_classes_prefer_the_populated_source_listing() {
+    let class = |label: &str, kinds: &[(&str, i16)]| h1::ClassSlots {
+        label: label.to_owned(),
+        types: kinds
+            .iter()
+            .map(|&(ty, slot)| (ty.to_owned(), vec![slot]))
+            .collect(),
+        ..Default::default()
+    };
+    let mut stand = h1::UnitSlots {
+        label: "stand".into(),
+        classes: vec![
+            class("rifle", &[("ne", -1)]),
+            class("pistol", &[("ne", 0)]),
+            class("support", &[("ft", -1)]),
+        ],
+        ..Default::default()
+    };
+    assert_eq!(
+        h1::player_weapon_pairs(std::slice::from_ref(&stand)).unwrap(),
+        [
+            ("ft".to_owned(), "support".to_owned()),
+            ("ne".to_owned(), "pistol".to_owned())
+        ]
+    );
+    stand.classes[0].types[0].1[0] = 1;
+    assert!(
+        h1::player_weapon_pairs(&[stand])
+            .unwrap_err()
+            .to_string()
+            .contains("ambiguous")
+    );
+}
+
+#[test]
+fn first_person_reload_phases_follow_the_populated_slots() {
+    let (img, at) = synthetic_graph();
+    let mut g = h1::Graph::read(&img, at).unwrap();
+    g.animations[0].name = "first-person reload-empty".into();
+    g.animations[1].name = "first-person reload-full".into();
+    g.animations[1].kind = h1::AnimType::Base;
+    g.first_person_slots = vec![-1; 26];
+    for (k, i) in [(7, 1), (8, 0), (23, 0), (24, 1), (25, 0)] {
+        g.first_person_slots[k] = i;
+    }
+    let (actions, _) = first_person_type(&g);
+    for (name, index) in [
+        ("reload_empty", 1),
+        ("reload_full", 0),
+        ("reload_continue_empty", 1),
+        ("reload_continue_full", 0),
+        ("reload_enter", 0),
+        ("reload_exit", 0),
+        ("exit_empty", 1),
+    ] {
+        assert!(actions.contains(&(name.into(), index)), "{name}");
+    }
+}
+
+/// Decode the installed resource for every frame of the cyborg and its
+/// first-person weapons (including root movement and both channel masks).
+#[test]
+#[ignore = "reads Blood Gulch from H1_ISO"]
+fn bloodgulch_player_frame_data() {
+    let disc = std::env::var_os("H1_ISO").expect("set H1_ISO");
+    let mut iso =
+        xiso::Xiso::open(std::io::BufReader::new(std::fs::File::open(disc).unwrap())).unwrap();
+    let directory = h1map::disc::Disc::open(&mut iso).unwrap();
+    let entry = directory.map("bloodgulch").unwrap();
+    let map = h1map::H1Map::from_reader(Cursor::new(iso.read(entry).unwrap())).unwrap();
+    let cyborg = r"characters\cyborg\cyborg";
+    let mut count = 0;
+    for tag in map.tags().iter().filter(|t| {
+        t.group == h1map::Group::new(b"antr")
+            && (t.name == cyborg || t.name.starts_with("weapons\\") && t.name.ends_with(r"\fp\fp"))
+    }) {
+        let (g, _, converted) = crate::graph_from_map(&map, tag, None).unwrap();
+        if tag.name == cyborg {
+            let model = map.find(h1map::Group::new(b"mode"), cyborg).unwrap();
+            let model = h1::Model::read(&map, model.data_address).unwrap();
+            assert_eq!(model.nodes.len(), g.nodes.len());
+            for (node, bone) in model.nodes.iter().zip(&g.nodes) {
+                assert_eq!(
+                    (&node.name, node.parent, node.first_child, node.next_sibling),
+                    (&bone.name, bone.parent, bone.first_child, bone.next_sibling)
+                );
+            }
+        }
+        let (bytes, ids) = build(vec![(converted, &tag.name)]);
+        for (anim, [angle, translation, scale]) in check_graph(&g, &[], bytes, ids[0]) {
+            assert!(
+                angle < 0.0002 && translation == 0.0 && scale == 0.0,
+                "{} {anim}: {angle} rad, translation {translation}, scale {scale}",
+                tag.name
+            );
+        }
+        count += 1;
+    }
+    assert_eq!(count, 12, "cyborg and eleven first-person graphs");
+}
+
+mod campaign_bipeds;

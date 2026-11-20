@@ -18,7 +18,8 @@ fn presses(d: &mut Driver, from: u64, to: u64) -> Vec<String> {
 const TITLE: &str = "ui: screen none (slot 4: window 5 active 0x82537e90 pending 0x0 list [0xffff/0x4588b0]; slot 0: no window)";
 const DIALOG_0A: &str = "ui: screen none (slot 4: window 3 active 0x82539070 pending 0x0 list [0x1/0xec700000]; slot 0: no window)";
 const DIALOG_A7: &str = "ui: screen none (slot 4: window 2 active 0x82545500 pending 0x0 list [0x1/0x4588b0]; slot 0: no window)";
-const DIALOG_14: &str = "ui: screen none (slot 4: window 3 active 0x82539070 pending 0x0 list [0x1/0xe1670000]; slot 0: no window)";
+const UNNAMED_DIALOG: &str = "ui: screen none (slot 4: window 3 active 0x82539070 pending 0x0 list [0x1/0xe1670000]; slot 0: no window)";
+const DIALOG_14: &str = "ui: screen none (slot 4: window 3 active 0x82539070 pending 0x0 list [0x1/0xe1670000]; slot 0: no window), dialog 0x14 dialog_live_signin (window 3, slot 4)";
 const MAIN_ROW_0: &str = "ui: screen none (slot 4: window 5 active 0x82539070 pending 0x0 list [0x1/0xe16d0000]; slot 0: no window)";
 const MAIN_ROW_1: &str = "ui: screen none (slot 4: window 5 active 0x82539070 pending 0x0 list [0x1/0xe16e0001]; slot 0: no window)";
 const MAIN_ROW_2: &str = "ui: screen none (slot 4: window 5 active 0x82539070 pending 0x0 list [0x1/0xe16f0002]; slot 0: no window)";
@@ -71,7 +72,7 @@ fn a_fresh_profile_boots_with_a_presses_then_goes_to_xbox_live() {
     );
     d.line(19_000, DIALOG_A7);
     assert_eq!(presses(&mut d, 19_100, 23_000).len(), 1);
-    d.line(23_500, DIALOG_14);
+    d.line(23_500, UNNAMED_DIALOG);
     assert_eq!(presses(&mut d, 23_600, 27_500).len(), 1);
     // The main menu: the window 5 line, then the lobby mode a moment after.
     d.line(30_000, MAIN_ROW_0);
@@ -123,9 +124,8 @@ fn main_menu_to_the_lobby_to_start() {
     let p = presses(&mut d, 2500, 5000);
     assert_eq!(p.len(), 2, "{p:?}");
     d.line(3300, MAIN_ROW_1);
-    // A dialog on the way (a game's line from before the dialog part,
-    // and no gate line): A, said as unnamed.
-    d.line(5000, DIALOG_14);
+    // A dialog on the way (a game line without a dialog ID) takes A.
+    d.line(5000, UNNAMED_DIALOG);
     let p = presses(&mut d, 5100, 8500);
     assert_eq!(
         p,
@@ -165,16 +165,17 @@ fn main_menu_to_the_lobby_to_start() {
             .any(|s| s == "bots-drive: in the Live custom game lobby")
     );
     assert!(presses(&mut d, 22_100, 27_000).is_empty());
-    for p in 1..=3 {
+    for i in 1..=3 {
         d.line(
-            27_000 + p,
-            &format!(
-                "bots: Bot {p} on port {p} is on Xbox Live as its own bot account, beside port 0's"
-            ),
+            27_000 + i,
+            &format!("bots: phantom Clanker {i} joins (peer {i}, in the pregame lobby)"),
         );
     }
-    let p = presses(&mut d, 27_100, 29_000);
-    assert_eq!(p, ["a Start Game: 3 local bots on Xbox Live"]);
+    d.line(27_050, "clankers: Clanker 1 off");
+    assert!(presses(&mut d, 27_100, 28_000).is_empty());
+    d.line(28_050, "bots: phantom Tin Can joins (peer 1, in the pregame lobby)");
+    let p = presses(&mut d, 28_100, 29_000);
+    assert_eq!(p, ["a Start Game: 3 phantoms in the lobby"]);
     d.status(32_000, "loading");
     assert!(d.done() && !d.stuck());
     assert!(
@@ -241,19 +242,10 @@ fn back_on_the_main_menu_tries_again() {
     assert!(d.take_said().iter().any(|s| s.contains("Xbox Live again")));
 }
 
-/// Run 20261119-001305's picker: the join gate names it, the list is on
-/// row 0 (the no-account row).
-const GATE_14: &str = "bots: join gate port 1: screen none (top none), dialog 0x14 (window 3, slot 4), signed_in false (slot 0x1): waits";
-const GATE_NONE: &str = "bots: join gate port 1: screen none (top none), dialog none, signed_in false (slot 0x1): waits";
+/// Run 20261119-001305's picker: the game's own line names it, the list
+/// is on row 0 (the no-account row).
 /// The same list one row down (the tester's account).
-const DIALOG_14_ROW_1: &str = "ui: screen none (slot 4: window 3 active 0x82539070 pending 0x0 list [0x1/0xe1680001]; slot 0: no window)";
-
-#[test]
-fn the_join_gate_names_the_dialog() {
-    assert_eq!(gate_dialog(GATE_14), Some(Some(0x14)));
-    assert_eq!(gate_dialog(GATE_NONE), Some(None));
-    assert_eq!(gate_dialog("bots: Clanker 1 on port 1"), None);
-}
+const DIALOG_14_ROW_1: &str = "ui: screen none (slot 4: window 3 active 0x82539070 pending 0x0 list [0x1/0xe1680001]; slot 0: no window), dialog 0x14 dialog_live_signin (window 3, slot 4)";
 
 #[test]
 fn the_account_picker_gets_down_then_a_not_a_on_no_account() {
@@ -262,7 +254,6 @@ fn the_account_picker_gets_down_then_a_not_a_on_no_account() {
     assert_eq!(p.last().unwrap(), "a Xbox Live (signs in)");
     // The picker over the main menu, on row 0 (run 2: A here signed out).
     d.line(4100, DIALOG_14);
-    d.line(4100, GATE_14);
     let p = presses(&mut d, 4200, 7000);
     assert_eq!(
         p,
@@ -273,7 +264,6 @@ fn the_account_picker_gets_down_then_a_not_a_on_no_account() {
     assert_eq!(p, ["a the account picker's account row 1: sign in"]);
     assert!(d.take_said().iter().any(|s| s.contains("account picker")));
     // Signed in: the players' screen in Xbox Live mode.
-    d.line(10_100, GATE_NONE);
     d.line(10_100, "ui: screen 0x1e (window 5, slot 4), mode 3");
     let p = presses(&mut d, 10_200, 13_000);
     assert_eq!(
@@ -287,7 +277,6 @@ fn the_picker_at_boot_picks_the_account_too() {
     let mut d = Driver::new(3);
     d.status(500, "menu");
     d.line(1000, DIALOG_14);
-    d.line(1000, GATE_14);
     let p = presses(&mut d, 1100, 3000);
     assert_eq!(
         p,
@@ -307,7 +296,6 @@ fn a_picker_whose_cursor_does_not_move_gets_a_after_one_down() {
     let mut d = at_main();
     presses(&mut d, 2500, 4000);
     d.line(4100, DIALOG_14);
-    d.line(4100, GATE_14);
     let p = presses(&mut d, 4200, 9000);
     assert_eq!(
         p,
@@ -330,16 +318,13 @@ fn a_picker_that_keeps_coming_back_gives_up() {
     let mut t = 4100;
     for _ in 0..PICKER_PICKS {
         d.line(t, DIALOG_14_ROW_1);
-        d.line(t, GATE_14);
         let p = presses(&mut d, t + 100, t + 3000);
         assert_eq!(p, ["a the account picker's account row 1: sign in"]);
         // Closed, then open again.
-        d.line(t + 3100, GATE_NONE);
         d.line(t + 3100, MAIN_ROW_1);
         t += 3200;
     }
     d.line(t, DIALOG_14_ROW_1);
-    d.line(t, GATE_14);
     assert!(presses(&mut d, t + 100, t + 3000).is_empty());
     assert!(d.stuck());
     assert!(d.take_said().iter().any(|s| s.contains("never signed in")));
@@ -350,7 +335,6 @@ fn a_picker_that_stays_up_after_a_gives_up() {
     let mut d = at_main();
     presses(&mut d, 2500, 4000);
     d.line(4100, DIALOG_14_ROW_1);
-    d.line(4100, GATE_14);
     assert_eq!(presses(&mut d, 4200, 6000).len(), 1);
     assert!(presses(&mut d, 6100, 5600 + 2 * STEP_MS + 500).is_empty());
     assert!(d.stuck());
@@ -397,7 +381,7 @@ fn the_lobby_starts_anyway_after_its_wait() {
     d.line(8100, ADVERTISED);
     d.line(
         9000,
-        "bots: Bot 1 on port 1 is on Xbox Live as its own bot account, beside port 0's",
+        "bots: phantom Clanker 1 joins (peer 1, in the pregame lobby)",
     );
     assert!(presses(&mut d, 9000, 8100 + LOBBY_WAIT_MS).is_empty());
     let p = presses(&mut d, 8200 + LOBBY_WAIT_MS, 8300 + LOBBY_WAIT_MS);
@@ -405,7 +389,7 @@ fn the_lobby_starts_anyway_after_its_wait() {
     assert!(
         d.take_said()
             .iter()
-            .any(|s| s.contains("only 1 of 3 local bots"))
+            .any(|s| s.contains("only 1 of 3 phantoms"))
     );
 }
 
@@ -420,7 +404,7 @@ fn start_again_then_stuck() {
     for p in 1..=3 {
         d.line(
             8200,
-            &format!("bots: B{p} on port {p} is on Xbox Live as guest 1 of port 0's account"),
+            &format!("bots: phantom B{p} joins (peer {p}, in the pregame lobby)"),
         );
     }
     assert_eq!(presses(&mut d, 9700, 10000).len(), 1);
@@ -572,8 +556,7 @@ fn an_optimatch_lobby_advertising_is_not_hosting() {
     );
 }
 
-/// Run 20261119-013507: with the local bots joining in the lobby, not on
-/// the players' screen, the Live menu's list mask is `0x1` (the one
+/// Run 20261119-013507: the Live menu's list mask is `0x1` (the one
 /// signed-in player's), as the main menu's. It is learnt as the screen
 /// that settles after A on the players' screen, and driven to Custom Game.
 const SOLO_LIVE_ROW_0: &str = "ui: screen none (slot 4: window 5 active 0x82539a80 pending 0x0 list [0x1/0xe2780000]; slot 0: no window)";
@@ -621,9 +604,8 @@ fn the_main_menu_alone_is_not_the_live_menu() {
     assert!(d.at_main() && !d.live_menu());
 }
 
-/// Run 20261119-115144 (`h2 bots test --clankermatch`): no local bot is
-/// placed before the roster, so no join gate line ever names the picker;
-/// the game's own line does now.
+/// Run 20261119-115144 (`h2 bots test --clankermatch`): the game's own
+/// `ui: screen` line names the picker.
 const CM_PICKER: &str = "ui: screen none (slot 4: window 3 active 0x8253b0b0 pending 0x0 list [0x1/0xe1670000]; slot 0: no window), dialog 0x14 dialog_live_signin (window 3, slot 4)";
 const CM_PICKER_ROW_1: &str = "ui: screen none (slot 4: window 3 active 0x8253b0b0 pending 0x0 list [0x1/0xe1680001]; slot 0: no window), dialog 0x14 dialog_live_signin (window 3, slot 4)";
 const CM_BOOT_0A: &str = "ui: screen none (slot 4: window 3 active 0x82539070 pending 0x0 list [0x1/0xec700000]; slot 0: no window), dialog 0x0a (window 3, slot 4)";
@@ -648,7 +630,14 @@ fn the_dialog_part_of_a_none_line_is_read() {
         ),
         Some(("dialog ? (window 0, slot 4)", None))
     );
-    assert_eq!(line_dialog(DIALOG_14), None, "a line from before the part");
+    assert_eq!(
+        line_dialog(
+            "ui: screen none (slot 4: window 3 active 0x82539070 pending 0x0 list [0x1/0xe1670000]; slot 0: no window)"
+        ),
+        None,
+        "a line from before the part"
+    );
+    assert_eq!(line_dialog(DIALOG_14).map(|(_, id)| id), Some(Some(0x14)));
     assert_eq!(line_dialog("ui: screen 0xb6 (window 1, slot 4)"), None);
     // The part leaves the slot 4 parts as they were.
     let n = none_line(CM_PICKER).unwrap();

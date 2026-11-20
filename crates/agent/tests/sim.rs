@@ -11,11 +11,11 @@ use agent::sim::bots::FakeBots;
 use agent::{Access, Agent, GameStatus, Reader, Server};
 use agent_proto::expect::Expect;
 use agent_proto::sim::menu::{self, JOIN_SCREEN, Lobby, MODE_SYSTEM_LINK, Mode};
-use agent_proto::sim::{self, SessionKind, SessionView, method};
+use agent_proto::sim::{self, Identity, SessionKind, SessionView, method};
 use agent_proto::{Client, Kind, Object};
 use serde_json::{Value, json};
 
-/// A multiplayer game where player 1 joins team 1 at tick 40.
+/// A multiplayer game where remote player 1 joins team 1 at tick 40.
 struct Lockout {
     tick: Arc<AtomicU64>,
 }
@@ -39,7 +39,6 @@ impl Reader for Lockout {
             id: "player.1".into(),
             kind: Kind::Player,
             team: Some(team),
-            local_user: Some(1),
             ..Default::default()
         }])
     }
@@ -84,16 +83,32 @@ fn a_script_adds_a_bot_and_waits_for_the_game_to_agree() {
     let (stop, h) = game(&a);
     let mut c = Client::connect(&path).unwrap();
     c.set_timeout(Some(Duration::from_secs(10))).unwrap();
+    let identity = Identity {
+        xuid: "000b000000000001".into(),
+        gamertag: "Clanker".into(),
+    };
     let added = c
         .call(
             method::PLAYER_ADD,
-            json!({"kind": "local", "source": "brain"}),
+            json!({
+                "kind": "phantom",
+                "source": "brain",
+                "identity": identity,
+                "team": 1,
+            }),
         )
         .unwrap();
-    assert_eq!(added["player"], "player.1");
+    assert_eq!(added["id"], "sim.1");
+    assert!(added.get("player").is_none());
+    {
+        let mut log = bots.log();
+        assert_eq!(log.phantoms[&1], (identity, Some(1)));
+        // The phantom becomes the game's remote player once it joins.
+        log.phantom_players.insert(1, 1);
+    }
     let checks = [
+        Expect::parse(r#"/sim/1/player == "player.1""#).unwrap(),
         Expect::parse("/player/1/team == 1").unwrap(),
-        Expect::parse("/sim/1/port == 1").unwrap(),
     ];
     let v = sim::until(&mut c, &checks, 600, 5).unwrap();
     assert_eq!(v["pass"], true, "{v}");

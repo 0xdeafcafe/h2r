@@ -527,7 +527,7 @@ fn theater_clip(live: &Live, game_id: &str, clip_id: &str) -> Option<PageMeta> {
         if clip.game != game_id {
             return None;
         }
-        (clip.title.clone(), clip.duration_s())
+        (clip.title.clone(), clip.duration_s(model.games.get(game_id)?))
     };
     let game_title = game(live, game_id)?.page?;
     Some(PageMeta {

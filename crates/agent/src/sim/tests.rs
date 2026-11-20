@@ -46,7 +46,7 @@ impl Reader for Game {
 }
 
 /// Player 0 (the human, port 0) with a unit holding a weapon, and player
-/// 1 (port 1, a local bot's) between lives.
+/// 1 between lives.
 fn game() -> Game {
     let mut g = FakeGuest::new();
     for (global, hdr) in [
@@ -322,20 +322,20 @@ fn writes_wait_for_a_tick_boundary() {
 }
 
 #[test]
-fn local_players_come_from_the_bots_and_take_scripted_pads() {
+fn phantoms_take_scripted_pads_and_resolve_by_sim_id() {
     let (h, mut game) = (Harness::new(), game());
     let r = h.ok(
         &mut game,
         method::PLAYER_ADD,
-        json!({"kind": "local", "source": "script", "team": 1,
+        json!({"kind": "phantom", "source": "script", "team": 1,
+               "identity": {"xuid": "9", "gamertag": "Clanker"},
                "steps": [{"buttons": ["a"], "ticks": 2}]}),
     );
     assert_eq!(r["id"], "sim.1");
-    assert_eq!(r["port"], 1);
-    // Port 1's player is player.1 in the fake world.
-    assert_eq!(r["player"], "player.1");
-    assert!(r["team_pending"].is_string());
-    let remote = match h.bots.log().bots.get(&Bot::Local { port: 1 }) {
+    assert_eq!(r["team"], 1);
+    assert!(r["player"].is_null());
+    h.bots.log().phantom_players.insert(1, 1);
+    let remote = match h.bots.log().bots.get(&Bot { handle: 1 }) {
         Some(PadSource::Script(r)) => r.clone(),
         other => panic!("{other:?}"),
     };
@@ -366,7 +366,7 @@ fn local_players_come_from_the_bots_and_take_scripted_pads() {
     assert!(l["players"][0].get("brain").is_none());
     let r = h.ok(&mut game, method::PLAYER_REMOVE, json!({"id": "sim.1"}));
     assert_eq!(r["removed"], json!(["sim.1"]));
-    assert_eq!(h.bots.log().removed, [Bot::Local { port: 1 }]);
+    assert_eq!(h.bots.log().removed, [Bot { handle: 1 }]);
     let e = h.err(
         &mut game,
         method::PLAYER_PAD,
@@ -419,7 +419,7 @@ fn phantoms_need_a_server_issued_identity() {
 }
 
 #[test]
-fn until_bots_land_adds_are_refused_saying_why() {
+fn a_missing_bots_backend_refuses_adds_saying_why() {
     let agent = Agent::new();
     let sim = super::install(&agent, Box::new(NotLanded), None);
     let (tx, rx) = std::sync::mpsc::sync_channel(4);
@@ -434,16 +434,18 @@ fn until_bots_land_adds_are_refused_saying_why() {
         agent.on_tick(&mut g);
         serde_json::from_str(&rx.recv().unwrap()).unwrap()
     };
-    let r = call(json!({"kind": "local", "source": "brain"}));
+    let add = json!({"kind": "phantom", "source": "brain",
+                     "identity": {"xuid": "9", "gamertag": "Clanker"}});
+    let r = call(add.clone());
     assert!(
         r["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("bots::local"),
+            .contains("bots::phantom"),
         "{r}"
     );
     sim.set_bots(Box::new(FakeBots::default()));
-    let r = call(json!({"kind": "local", "source": "brain"}));
+    let r = call(add);
     assert_eq!(r["result"]["id"], "sim.1");
 }
 
@@ -526,19 +528,16 @@ fn temperament_sim_player_list_and_view_expose_current_brain_state() {
     .unwrap();
     {
         let mut log = h.bots.log();
-        log.brains.insert(Bot::Local { port: 1 }, brain.clone());
+        log.brains.insert(Bot { handle: 1 }, brain.clone());
         log.clankers.push(ClankerView {
-            name: "Local Clanker".into(),
-            kind: PlayerKind::Local,
-            port: Some(1),
-            player: None,
+            name: "Clanker".into(),
+            kind: PlayerKind::Phantom,
+            player: Some("player.1".into()),
             brain: brain.clone(),
             aim: None,
         });
         let mut remote = log.clankers[0].clone();
         remote.name = "Remote Clanker".into();
-        remote.kind = PlayerKind::Phantom;
-        remote.port = None;
         remote.player = Some("player.2".into());
         remote.aim = Some(agent_proto::sim::PhantomAim {
             tick: 100,
@@ -557,14 +556,15 @@ fn temperament_sim_player_list_and_view_expose_current_brain_state() {
     let added = h.ok(
         &mut game,
         method::PLAYER_ADD,
-        json!({"kind": "local", "source": "brain"}),
+        json!({"kind": "phantom", "source": "brain",
+               "identity": {"xuid": "9", "gamertag": "Clanker"}}),
     );
     assert_eq!(added["brain"], serde_json::to_value(&brain).unwrap());
     let mut updated = brain;
     updated.mood.tilt = 0.625;
     {
         let mut log = h.bots.log();
-        log.brains.insert(Bot::Local { port: 1 }, updated.clone());
+        log.brains.insert(Bot { handle: 1 }, updated.clone());
         log.clankers[0].brain = updated.clone();
     }
     let updated = serde_json::to_value(updated).unwrap();
@@ -969,15 +969,14 @@ fn give_and_spawn_resolve_a_shared_name_among_their_groups() {
 }
 
 #[test]
-fn a_local_player_the_game_would_never_seat_is_refused_saying_why() {
+fn a_local_bot_is_refused_saying_why() {
     let (h, mut game) = (Harness::new(), game());
-    h.bots.log().local_refusal = Some("a game is running".into());
     let e = h.err(
         &mut game,
         method::PLAYER_ADD,
         json!({"kind": "local", "source": "script"}),
     );
-    assert_eq!(e["code"], code::UNAVAILABLE);
-    assert!(e["message"].as_str().unwrap().contains("a game is running"));
-    assert!(h.bots.log().bots.is_empty(), "no pad added");
+    assert_eq!(e["code"], code::INVALID_PARAMS);
+    assert!(e["message"].as_str().unwrap().contains("controller seats are for people"));
+    assert!(h.bots.log().bots.is_empty());
 }

@@ -504,7 +504,7 @@ pub fn event_shows_to(s: &State, stream: &str, viewer: Viewer) -> bool {
         return session_shows_to(s, id, viewer);
     }
     // Theater reads use the current game visibility and current clip state.
-    stream != crate::films::STREAM
+    stream != crate::films::STREAM && !stream.starts_with(crate::films::IMPORT_PREFIX)
 }
 
 /// What presence says instead of a hidden game's or session's activity.

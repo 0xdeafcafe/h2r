@@ -14,7 +14,7 @@ live-floor-bench = []
 content.workspace = true
 serde.workspace = true
 # Exact float parsing: the canonical-payload check re-serialises numbers.
-serde_json = { workspace = true, features = ["float_roundtrip"] }
+serde_json = { workspace = true, features = ["float_roundtrip", "raw_value"] }
 thiserror.workspace = true
 ed25519-dalek = "2"
 sha2 = "0.10"

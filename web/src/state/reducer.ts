@@ -344,6 +344,12 @@ export function applyEvent(s: LiveState, ev: WireEvent): boolean {
       if (g && typeof d?.tick === "number" && d.tick > g.last_tick) g.last_tick = d.tick;
       break;
     }
+    case "HostFilmStored": {
+      const id = (ev.data as {game?: string} | null)?.game;
+      const g = id && s.games[id];
+      if (g) g.archiveRevision = ev.position;
+      break;
+    }
     case "ReplayArchivePublished":
     case "ReplayArchiveRolledBack": {
       const g = gameFor(s, ev);

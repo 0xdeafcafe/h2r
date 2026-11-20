@@ -1,6 +1,6 @@
 [package]
 name = "bots"
-description = "Multiplayer bots (Clankers): the brain that turns what a bot sees into controller input, and the input backend that puts bot pads on free controller ports (docs/game/bots.md)"
+description = "Multiplayer bots (Clankers): the brain that turns what a bot sees into controller input, and the phantom peers that play through the host simulation (docs/game/bots.md)"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

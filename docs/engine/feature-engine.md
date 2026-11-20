@@ -345,6 +345,10 @@ features get easier. "Fidelity risk" is the cost of being subtly wrong.
 | 17 | AI | 426 / 112 K (excludes squads, pathfinding) | low | very high | - | **stay recompiled** |
 | 18 | Physics integration, Havok, collision | 97 / 21 K plus the library | low | very high: float behaviour, super bouncing ([high-framerate.md](../game/high-framerate.md) section 4) | - | **stay recompiled** |
 
+Superseded for rows 15-18 (2026-11-20): the simulation is now being
+rewritten subsystem by subsystem. See [sim-rewrite.md](sim-rewrite.md).
+The reasoning below is the original 2026-11 verdict.
+
 Why the simulation stays: films and the lockstep harness depend on it
 running the same instructions; its floating-point results are the bar
 ARCHITECTURE.md puts last ("physics and AI, last"); it is three quarters

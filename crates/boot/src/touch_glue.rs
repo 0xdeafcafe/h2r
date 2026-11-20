@@ -56,7 +56,7 @@ use crate::layout_glue::Gm;
 pub const FEATURE: &str = "touch-glue";
 
 /// The player-control array pointer; elements start `0x14` in.
-pub const PLAYER_CONTROL: u32 = 0x004e_d284;
+pub use engine::hs_actions::PLAYER_CONTROL;
 pub const PC_HEADER: u32 = 0x14;
 pub const PC_STRIDE: u32 = 0x94;
 pub const PC_UNIT: u32 = 0x00;
@@ -332,8 +332,10 @@ impl feature::Feature for TouchGlue {
                 Ok(())
             })
             // Our skulls hook the same tick; neither reads what the other
-            // writes, so any fixed order will do.
-            .after_feature(crate::skulls_custom::FEATURE);
+            // writes, so any fixed order will do. The Halo 1 weapon HUD's
+            // sample runs outside, after every tick-end write.
+            .after_feature(crate::skulls_custom::FEATURE)
+            .after_feature(crate::h1_hud_text::FEATURE);
         b.snapshot(feature::SnapshotPolicy::forbid_while(touch_live));
         Ok(())
     }

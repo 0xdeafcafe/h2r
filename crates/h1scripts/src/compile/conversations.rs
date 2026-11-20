@@ -79,6 +79,22 @@ impl Lowering {
     }
 }
 
+/// The bytes the voice table takes at the start of the script strings,
+/// where the runtime reads it; none when the level has no voices.
+pub(super) fn voice_prefix_len(scenes: &[Conversation], scopes: &SpeakerScopes) -> usize {
+    let has_cast = scenes
+        .iter()
+        .flat_map(|s| &s.participants)
+        .any(|p| !p.radio());
+    if has_cast || !scopes.voice_definitions.is_empty() {
+        voices::prefix_len(scopes)
+    } else {
+        0
+    }
+}
+
+/// `c`'s script strings start with [`voice_prefix_len`] reserved bytes,
+/// reserved before any string was interned.
 pub(super) fn build(
     c: &mut Compiler<'_>,
     scenes: &[Conversation],
@@ -90,13 +106,12 @@ pub(super) fn build(
             "conversation workers exceed the Halo 2 thread pool",
         ));
     }
-    let has_cast = scenes
-        .iter()
-        .flat_map(|s| &s.participants)
-        .any(|p| !p.radio());
-    let voice_metadata = has_cast || !scopes.voice_definitions.is_empty();
-    if voice_metadata {
-        c.out.strings.resize(voices::prefix_len(scopes), 0);
+    let prefix = voice_prefix_len(scenes, scopes);
+    let voice_metadata = prefix != 0;
+    if voice_metadata && c.out.strings.len() < prefix {
+        return Err(invalid(
+            "the conversation voice table was not reserved at the start of the script strings",
+        ));
     }
     let mut program = Program::new(c);
     let profile_base = if voice_metadata {
@@ -296,13 +311,13 @@ impl<'c, 's> Program<'c, 's> {
 
     /// A shared balanced selector keeps unscoped roles from each embedding
     /// a copy of the same squad or encounter literals in the node pool.
-    fn scope_selector(&mut self, kind: u16, scopes: &[String], cursor: &Global) -> Result<Script> {
+    fn scope_selector(&mut self, kind: u16, scopes: &[u32], cursor: &Global) -> Result<Script> {
         if let Some(script) = self.scope_selectors.get(&kind) {
             return Ok(script.clone());
         }
-        fn select(scopes: &[String], first: usize, cursor: &Global) -> Expr {
+        fn select(scopes: &[u32], first: usize, cursor: &Global) -> Expr {
             if scopes.len() == 1 {
-                return Expr::Hook(AI, scopes[0].clone());
+                return Expr::Ai(scopes[0]);
             }
             let mid = scopes.len() / 2;
             either(
@@ -531,15 +546,23 @@ impl<'p, 'c, 's, 'a> Scene<'p, 'c, 's, 'a> {
                 });
             return Ok(vec![reset, scratch.candidate.set(speaker), accept]);
         }
-        let (scope, count) = if let Some(scope) = &participant.encounter {
-            (Expr::Hook(AI, scope.clone()), 1)
+        let (scope, count) = if let Some(selector) = participant.encounter {
+            let Some(scope) = self
+                .scopes
+                .for_selector(selector)
+                .map_err(|e| invalid(format!("{}: {e}", self.source.name)))?
+            else {
+                // An explicitly AI-free scenario supplies an empty cast roster.
+                return Ok(Vec::new());
+            };
+            (Expr::Ai(scope), 1)
         } else {
             let scopes = self.scopes.for_actor_type(participant.actor_type);
             if scopes.is_empty() {
                 return Ok(Vec::new());
             }
             if let [scope] = scopes {
-                (Expr::Hook(AI, scope.clone()), 1)
+                (Expr::Ai(*scope), 1)
             } else {
                 let selector = self.program.scope_selector(
                     participant.actor_type,

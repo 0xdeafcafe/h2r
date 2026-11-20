@@ -84,6 +84,8 @@ impl Names {
 pub(crate) enum Work {
     /// A setting for the matches to come, in order with them.
     Configure(Box<dyn FnOnce(&mut Session) + Send>),
+    /// A film already projected this observation on the game thread.
+    Forward(Vec<Output>),
     Start(Box<Start>),
     Tick(Box<Snapshot>),
     Kill(Box<Kill>),
@@ -125,6 +127,8 @@ struct Shared {
     wake: Condvar,
     /// The queue ran empty and the worker is between batches.
     idle: Condvar,
+    /// A batch left the bounded legacy transport queue.
+    space: Condvar,
     #[allow(clippy::vec_box, reason = "each goes back into a Work::Tick unmoved")]
     spare: Mutex<Vec<Box<Snapshot>>>,
     error: Mutex<Option<String>>,
@@ -267,6 +271,30 @@ impl Pipeline {
         Ok(())
     }
 
+    /// The primary recording is already independent of transport. Preserve
+    /// the legacy event prefix as well if a fast headless sim fills its
+    /// outbound queue before Live finishes the initial handshake.
+    pub(crate) fn forward(&self, output: Vec<Output>) -> Result<(), String> {
+        if let Some(error) = self.worker_error() {
+            return Err(error);
+        }
+        let mut queue = self.shared.queue.lock().unwrap();
+        while queue.work.len() >= MAX_QUEUED {
+            self.shared.wake.notify_one();
+            queue = self.shared.space.wait(queue).unwrap();
+            if let Some(error) = self.worker_error() {
+                return Err(error);
+            }
+        }
+        let wake = queue.parked || queue.work.is_empty();
+        queue.work.push_back(Work::Forward(output));
+        drop(queue);
+        if wake {
+            self.shared.wake.notify_one();
+        }
+        Ok(())
+    }
+
     /// A cleared snapshot the worker is done with (its roster kept for the
     /// names), or a new one.
     pub(crate) fn snapshot(&self) -> Box<Snapshot> {
@@ -361,6 +389,7 @@ fn run(shared: &Shared, session: &Mutex<Session>, sink: &mut dyn Sink) {
             std::mem::swap(&mut queue.work, &mut batch);
             queue.ticks = 0;
             queue.busy = true;
+            shared.space.notify_all();
         }
         let start = Instant::now();
         active = Some(start);
@@ -369,14 +398,19 @@ fn run(shared: &Shared, session: &Mutex<Session>, sink: &mut dyn Sink) {
             if failed {
                 continue;
             }
+            let mut projected = Vec::new();
             let (done, report) = match work {
+                Work::Forward(output) => {
+                    projected = output;
+                    (None, None)
+                }
                 Work::FinishSim(report) => {
                     session.end_previous();
                     (None, Some(report))
                 }
                 work => (apply(&mut session, work), None),
             };
-            for output in session.take_output() {
+            for output in projected.into_iter().chain(session.take_output()) {
                 let sent = match output {
                     Output::Event(event) => sink.event(event),
                     Output::Frame(frame) => sink.frame(frame),
@@ -410,7 +444,7 @@ fn run(shared: &Shared, session: &Mutex<Session>, sink: &mut dyn Sink) {
 }
 
 /// One piece of work into the session; the snapshot it is done with.
-fn apply(session: &mut Session, work: Work) -> Option<Box<Snapshot>> {
+pub(crate) fn apply(session: &mut Session, work: Work) -> Option<Box<Snapshot>> {
     match work {
         Work::Configure(f) => f(session),
         Work::Start(start) => {
@@ -444,7 +478,7 @@ fn apply(session: &mut Session, work: Work) -> Option<Box<Snapshot>> {
             } = *kill;
             session.kill(tick, attacker, victim, object, cinematic);
         }
-        Work::FinishSim(_) => unreachable!("handled by the worker"),
+        Work::Forward(_) | Work::FinishSim(_) => unreachable!("handled by the worker"),
         Work::End(snapshot) => {
             session.end(&snapshot);
             return Some(snapshot);

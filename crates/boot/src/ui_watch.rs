@@ -31,11 +31,8 @@
 //! low half the cursor's row). Their active screen's id does read, so a
 //! none line with a dialog up names it ([`dialog`], [`dialog_name`]):
 //! `ui: screen none (...), dialog 0x14 dialog_live_signin (window 3, slot
-//! 4)`. Before this the menu drivers learnt the dialog only from the bots'
-//! join gate lines, which a Clankermatch run never prints at boot (its
-//! local bots are placed only once the roster comes), so run
-//! 20261119-115144 took the account picker for any dialog and pressed A on
-//! its no-account row.
+//! 4)`. This distinguishes the account picker from other dialogues so the
+//! menu driver can choose the account row.
 //!
 //! **The screens seen in runs** (20261118-092343, traced statically):
 //!

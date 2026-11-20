@@ -477,6 +477,37 @@ impl BlobStore {
         }
     }
 
+    /// Exact bounded range, including the total length needed by HTTP 206.
+    /// Both the native stores and the Worker's R2 binding handle this at source.
+    pub async fn get_range(
+        &self,
+        key: &str,
+        range: std::ops::Range<u64>,
+    ) -> Result<Option<(Bytes, u64)>> {
+        if range.is_empty() {
+            return Err(BlobError::Config("empty blob range".into()));
+        }
+        let options = GetOptions {
+            range: Some(GetRange::Bounded(range.clone())),
+            ..Default::default()
+        };
+        match self.store.get_opts(&Self::key(key)?, options).await {
+            Ok(result) => {
+                if result.range != range {
+                    return Err(BlobError::Changed(key.into()));
+                }
+                let size = result.meta.size;
+                let bytes = result.bytes().await?;
+                if bytes.len() as u64 != range.end - range.start {
+                    return Err(BlobError::Changed(key.into()));
+                }
+                Ok(Some((bytes, size)))
+            }
+            Err(object_store::Error::NotFound { .. }) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// How the object is to be served, as the store kept it; `None` if there
     /// is no object. A directory keeps none, so all of it is `None`.
     pub async fn meta(&self, key: &str) -> Result<Option<Meta>> {
@@ -516,6 +547,23 @@ impl BlobStore {
             Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
             Err(e) => Err(e.into()),
         }
+    }
+
+    /// At most `limit` existing keys in one directory, in backend order.
+    /// Dropping the listing stream leaves later storage pages unread.
+    pub(crate) async fn first_keys(&self, dir: &str, limit: usize) -> Result<Vec<String>> {
+        let prefix = Self::key(dir.trim_end_matches('/'))?;
+        let mut listing = self.store.list(Some(&prefix));
+        let mut keys = Vec::new();
+        while keys.len() < limit {
+            match listing.next().await {
+                Some(Ok(meta)) => keys.push(meta.location.to_string()),
+                Some(Err(object_store::Error::NotFound { .. })) => continue,
+                Some(Err(error)) => return Err(error.into()),
+                None => break,
+            }
+        }
+        Ok(keys)
     }
 
     /// Every object whose key starts with `prefix` (a whole directory: end

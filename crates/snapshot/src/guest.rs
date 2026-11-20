@@ -108,8 +108,44 @@ pub fn load_guest(
     guest: &mut Guest,
     base: Option<&[u8]>,
 ) -> Result<PageStats, Error> {
+    load_guest_ram(snapshot, guest, base, None)
+}
+
+/// Decode the physical pages of a standalone anchor without restoring its
+/// device state, mappings or kernel into the running machine.
+pub fn standalone_ram(snapshot: &Snapshot<'_>) -> Result<Vec<u8>, Error> {
+    let ram = snapshot.require(RAM, RAM_VERSION..=RAM_VERSION)?;
+    let mut out = vec![0; RAM_SIZE];
+    pages::decode(&ram, &mut out, None)?;
+    Ok(out)
+}
+
+/// Film seeks carry a named anchor in the private tick directory. Verify
+/// both its identity and the checksums of the inherited pages.
+pub fn load_guest_delta(
+    snapshot: &Snapshot<'_>,
+    guest: &mut Guest,
+    base: &Base<'_>,
+) -> Result<PageStats, Error> {
+    load_guest_ram(snapshot, guest, Some(base.ram), Some(base.name))
+}
+
+fn load_guest_ram(
+    snapshot: &Snapshot<'_>,
+    guest: &mut Guest,
+    base: Option<&[u8]>,
+    expected_name: Option<&str>,
+) -> Result<PageStats, Error> {
     let layout = load_layout(snapshot)?;
     let ram = snapshot.require(RAM, RAM_VERSION..=RAM_VERSION)?;
+    if let Some(name) = expected_name {
+        if pages::base_name(&ram)?.as_deref() != Some(name) {
+            return Err(Error::Corrupt(
+                "ram",
+                "anchor name disagrees with the film index".into(),
+            ));
+        }
+    }
     let mut stats = PageStats::default();
     guest
         .restore_with(&layout, |out| {

@@ -43,8 +43,20 @@ pub trait Part {
     fn blockers(&self) -> Vec<String> {
         Vec::new()
     }
+    fn film_load_blockers(&self) -> Vec<String> {
+        self.blockers()
+    }
     fn save(&mut self, out: &mut SnapshotWriter) -> Result<(), String>;
     fn load(&mut self, snapshot: &Snapshot<'_>) -> Result<(), String>;
+    /// Film anchors supply physical RAM only. Device and feature sections
+    /// are always complete for the selected keyframe.
+    fn save_with_ram_base(&mut self, out: &mut SnapshotWriter, _base: &snapshot::Base<'_>) -> Result<(), String> {
+        self.save(out)
+    }
+    fn load_with_ram_base(&mut self, snap: &Snapshot<'_>, _base: &snapshot::Base<'_>) -> Result<(), String> {
+        self.load(snap)
+    }
+
     /// [`Part::load`] with guest RAM mapped copy-on-write over `ram`, an
     /// uncompressed RAM image the save wrote beside the snapshot. The
     /// default loads normally; the guest part is the one that can do this.
@@ -56,13 +68,14 @@ pub trait Part {
 
 /// The device first: its save writes guest memory. Guest RAM after every
 /// part that may write it.
-pub const SAVE_ORDER: [&str; 8] = [
-    "d3d", "dsound", "audioout", "wma", "guest", "kernel", "xapi", "features",
+pub const SAVE_ORDER: [&str; 9] = [
+    "d3d", "dsound", "audioout", "wma", "livefilm", "guest", "kernel", "xapi", "features",
 ];
-/// Guest RAM first; the kernel before dsound (its pins adopt the loaded
+/// Recreate taped Live HLE claims before guest RAM. The kernel precedes
+/// dsound (its pins adopt the loaded
 /// kernel's references); features last, over a loaded machine.
-pub const LOAD_ORDER: [&str; 8] = [
-    "guest", "kernel", "d3d", "dsound", "audioout", "wma", "xapi", "features",
+pub const LOAD_ORDER: [&str; 9] = [
+    "livefilm", "guest", "kernel", "d3d", "dsound", "audioout", "wma", "xapi", "features",
 ];
 
 /// `lockstep::hash_guest` of the RAM saved.
@@ -76,11 +89,29 @@ pub fn save_parts(
     header: Header,
     hash: &dyn Fn() -> lockstep::RamHash,
 ) -> Result<Vec<u8>, String> {
+    save_parts_observing(parts, header, hash, None, |_, _| {})
+}
+
+/// Reports each attempted section immediately, including a section which
+/// stopped the save. D3D's capture has guest-visible effects even if a
+/// later part prevents the recorder from publishing a complete keyframe.
+pub(crate) fn save_parts_observing(
+    parts: &mut [Box<dyn Part + '_>],
+    header: Header,
+    hash: &dyn Fn() -> lockstep::RamHash,
+    ram_base: Option<&snapshot::Base<'_>>,
+    mut attempted: impl FnMut(&str, bool),
+) -> Result<Vec<u8>, String> {
     check_names(parts)?;
     let mut out = SnapshotWriter::new(header);
     for name in SAVE_ORDER {
         if let Some(p) = parts.iter_mut().find(|p| p.name() == name) {
-            p.save(&mut out).map_err(|e| format!("{name}: {e}"))?;
+            let result = match ram_base {
+                Some(base) if name == "guest" => p.save_with_ram_base(&mut out, base),
+                _ => p.save(&mut out),
+            };
+            attempted(name, result.is_ok());
+            result.map_err(|e| format!("{name}: {e}"))?;
         }
     }
     let h = hash();
@@ -102,14 +133,24 @@ pub fn load_parts(
     snapshot: &Snapshot<'_>,
     cow: Option<&Path>,
 ) -> Result<Vec<String>, String> {
+    load_parts_with_base(parts, snapshot, cow, None)
+}
+
+pub(crate) fn load_parts_with_base(
+    parts: &mut [Box<dyn Part + '_>],
+    snapshot: &Snapshot<'_>,
+    cow: Option<&Path>,
+    ram_base: Option<&snapshot::Base<'_>>,
+) -> Result<Vec<String>, String> {
     check_names(parts)?;
     let mut applied = Vec::new();
     for name in LOAD_ORDER {
         if let Some(p) = parts.iter_mut().find(|p| p.name() == name) {
             let loaded = if name == "guest" {
-                match cow {
-                    Some(ram) => p.load_cow(snapshot, ram),
-                    None => p.load(snapshot),
+                match (ram_base, cow) {
+                    (Some(base), _) => p.load_with_ram_base(snapshot, base),
+                    (None, Some(ram)) => p.load_cow(snapshot, ram),
+                    (None, None) => p.load(snapshot),
                 }
             } else {
                 p.load(snapshot)
@@ -288,7 +329,11 @@ impl Host<'_> {
             names.push("bink");
         }
         if self.live.is_some() {
-            names.push("live");
+            names.push(if self.live.is_some_and(|l| l.film_service_taped()) {
+                "livefilm"
+            } else {
+                "live"
+            });
         }
         names
     }
@@ -319,13 +364,18 @@ impl Host<'_> {
             }
         }
         if let Some(l) = self.live {
+            if crate::theater::in_keyframe() && !l.film_service_taped() {
+                out.push(("live", "local film has untaped online service state".into()));
+            }
             for c in 0..4 {
-                if l.user(c) != 0 {
+                if l.user(c) != 0 && !(crate::theater::in_keyframe() && l.film_service_taped()) {
                     out.push(("live", format!("signed in on controller {c}")));
                 }
             }
         }
-        if crate::coop_live::lobby().is_some_and(|l| l.in_coop()) {
+        if crate::coop_live::lobby().is_some_and(|l| l.in_coop())
+            && !(crate::theater::in_keyframe() && self.live.is_some_and(|l| l.film_service_taped()))
+        {
             out.push(("coop", "hosting or joined to a co-op session".to_owned()));
         }
         out
@@ -334,6 +384,9 @@ impl Host<'_> {
     /// Every part but the kernel and the features.
     fn device_parts(&self) -> Vec<Box<dyn Part + '_>> {
         let mut parts: Vec<Box<dyn Part + '_>> = Vec::new();
+        if let Some(live) = self.live.filter(|l| l.film_service_taped()) {
+            parts.push(Box::new(FilmNetwork(live, self.rt)));
+        }
         parts.push(Box::new(GuestPart(self.rt)));
         if let Some(d) = self.d3d {
             parts.push(Box::new(D3dPart(d, self.rt)));
@@ -375,6 +428,34 @@ impl Host<'_> {
     }
 }
 
+/// Recreate dynamic Live HLE claims before Guest::restore verifies the
+/// fixed layout. Loading this section requires an isolated playback HLE.
+struct FilmNetwork<'a>(&'a live_hle::Hle, &'a runtime::Runtime);
+impl Part for FilmNetwork<'_> {
+    fn name(&self) -> &'static str {
+        "livefilm"
+    }
+    fn blockers(&self) -> Vec<String> {
+        if crate::theater::in_keyframe() {
+            Vec::new()
+        } else {
+            vec!["the live service cursor belongs to a film keyframe".into()]
+        }
+    }
+    fn save(&mut self, out: &mut SnapshotWriter) -> Result<(), String> {
+        let bytes = self.0.save_film_network(&self.1.memory())?;
+        out.section(Tag::new("livefilm"), 1, Codec::Zstd, bytes)
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    fn load(&mut self, snapshot: &Snapshot<'_>) -> Result<(), String> {
+        let bytes = snapshot
+            .require(Tag::new("livefilm"), 1..=1)
+            .map_err(|e| e.to_string())?;
+        self.0.load_film_network(&bytes, &mut self.1.memory())
+    }
+}
+
 /// The whole machine for a save or load.
 pub struct BootMachine<'a> {
     pub parts: Vec<Box<dyn Part + 'a>>,
@@ -407,18 +488,23 @@ impl BootMachine<'_> {
         }
         notes
     }
-}
 
-impl agent::SnapshotMachine for BootMachine<'_> {
-    fn blockers(&mut self) -> Vec<String> {
+    pub(crate) fn film_load_blockers(&self) -> Vec<String> {
+        self.collect_blockers(true)
+    }
+
+    fn collect_blockers(&self, film_load: bool) -> Vec<String> {
         let mut out: Vec<String> = self
             .parts
             .iter()
             .flat_map(|p| {
                 let name = p.name();
-                p.blockers()
-                    .into_iter()
-                    .map(move |w| format!("{name}: {w}"))
+                let reasons = if film_load {
+                    p.film_load_blockers()
+                } else {
+                    p.blockers()
+                };
+                reasons.into_iter().map(move |w| format!("{name}: {w}"))
             })
             .collect();
         out.extend(
@@ -427,6 +513,12 @@ impl agent::SnapshotMachine for BootMachine<'_> {
                 .map(|(owner, why)| format!("{owner}: {why}")),
         );
         out
+    }
+}
+
+impl agent::SnapshotMachine for BootMachine<'_> {
+    fn blockers(&mut self) -> Vec<String> {
+        self.collect_blockers(false)
     }
 
     fn save(&mut self, name: &str, replace: bool, at: &At, cow: bool) -> Result<Saved, RpcError> {
@@ -570,6 +662,14 @@ impl Part for GuestPart<'_> {
         snapshot::guest::load_guest(snapshot, &mut self.0.memory(), None).map_err(err)?;
         snapshot::guest::load_tsc(snapshot, self.0).map_err(err)
     }
+    fn save_with_ram_base(&mut self, out: &mut SnapshotWriter, base: &snapshot::Base<'_>) -> Result<(), String> {
+        snapshot::guest::save_guest(out, &self.0.memory(), Some(base)).map_err(err)?;
+        snapshot::guest::save_tsc(out, self.0).map_err(err)
+    }
+    fn load_with_ram_base(&mut self, snap: &Snapshot<'_>, base: &snapshot::Base<'_>) -> Result<(), String> {
+        snapshot::guest::load_guest_delta(snap, &mut self.0.memory(), base).map_err(err)?;
+        snapshot::guest::load_tsc(snap, self.0).map_err(err)
+    }
     fn load_cow(&mut self, snapshot: &Snapshot<'_>, ram: &Path) -> Result<(), String> {
         let layout = snapshot::guest::load_layout(snapshot).map_err(err)?;
         self.0.memory().restore_cow(&layout, ram).map_err(err)?;
@@ -616,11 +716,22 @@ impl Part for D3dPart<'_> {
     fn blockers(&self) -> Vec<String> {
         self.0.blockers()
     }
+    fn film_load_blockers(&self) -> Vec<String> {
+        self.0.film_load_blockers()
+    }
     fn save(&mut self, out: &mut SnapshotWriter) -> Result<(), String> {
-        self.0.save(self.1, out)
+        if crate::theater::in_keyframe() {
+            self.0.save_film(self.1, out)
+        } else {
+            self.0.save(self.1, out)
+        }
     }
     fn load(&mut self, snapshot: &Snapshot<'_>) -> Result<(), String> {
-        self.0.load(snapshot)
+        if crate::theater::in_keyframe() {
+            self.0.load_film(self.1, snapshot)
+        } else {
+            self.0.load(snapshot)
+        }
     }
 }
 

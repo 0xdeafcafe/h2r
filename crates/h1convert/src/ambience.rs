@@ -23,7 +23,7 @@
 //! with the structure's next round.
 
 use h1map::{H1Map, TagRef};
-use h1sounds::looping::{Looping, SNDE, install_environment, install_looping};
+use h1sounds::looping::{Looping, install_environment, install_looping};
 use map::build::TagSet;
 use map::{FourCC, TagId};
 
@@ -88,125 +88,95 @@ fn entry_name(e: &[u8]) -> String {
 
 /// Reads both palettes of every structure BSP (entries the BSPs share
 /// once), converting each looping sound with its sounds.
-pub fn read(h1: &H1Map) -> Ambience {
+pub fn read(h1: &H1Map) -> Result<Ambience> {
     read_with(h1, h1sounds::looping::read_looping)
 }
 
 /// Read the palettes when the campaign installs all looping sounds in a single pass.
-pub fn read_campaign(h1: &H1Map) -> Ambience {
+pub fn read_campaign(h1: &H1Map) -> Result<Ambience> {
     read_with(h1, h1sounds::looping::read_definition)
 }
 
 fn read_with(
     h1: &H1Map,
     read_loop: fn(&H1Map, &h1map::Tag) -> h1sounds::Result<Looping>,
-) -> Ambience {
+) -> Result<Ambience> {
     let mut out = Ambience::default();
-    let bsps = match h1.structure_bsps() {
-        Ok(b) => b,
-        Err(e) => {
-            out.notes
-                .push(format!("the structure BSPs don't read: {e}"));
-            return out;
+    for bsp in h1.structure_bsps()? {
+        let s = h1.structure_bsp(&bsp)?;
+        let fail = |name: &str, why: String| Error::no_rebuild(&h1.header().name, name, why);
+        let mut backgrounds = Vec::new();
+        for e in s
+            .space
+            .block_at(s.root, H1_BACKGROUND_SOUNDS, H1_BACKGROUND_SOUND)?
+        {
+            let entry = entry_name(e);
+            let r =
+                TagRef::read(e, 0x20).ok_or(Error::Invalid("short background sound reference"))?;
+            let index = if r.id.is_none() {
+                None
+            } else {
+                let t = h1.tag(r.id)?;
+                Some(match out.backgrounds.iter().position(|(n, l)| *n == entry && l.name == t.name) {
+                    Some(k) => k,
+                    None => {
+                        let l = read_loop(h1, t).map_err(|e| fail(&t.name, e.to_string()))?;
+                        out.backgrounds.push((entry, l));
+                        out.backgrounds.len() - 1
+                    }
+                })
+            };
+            backgrounds.push(index);
         }
-    };
-    for bsp in bsps {
-        out.bsp_backgrounds.push(Vec::new());
-        out.bsp_environments.push(Vec::new());
-        let s = match h1.structure_bsp(&bsp) {
-            Ok(s) => s,
-            Err(e) => {
-                out.notes.push(format!("{}: {e}", bsp.name));
-                continue;
-            }
-        };
-        let palette = |at, len| s.space.block_at(s.root, at, len);
-        match palette(H1_BACKGROUND_SOUNDS, H1_BACKGROUND_SOUND) {
-            Ok(es) => {
-                for e in es {
-                    let entry = entry_name(e);
-                    let Some(t) = TagRef::read(e, 0x20).and_then(|r| h1.tag(r.id).ok()) else {
-                        out.notes.push(format!("background sound {entry}: no lsnd"));
-                        push_index(&mut out.bsp_backgrounds, None);
-                        continue;
-                    };
-                    if let Some(k) = out
-                        .backgrounds
-                        .iter()
-                        .position(|(n, l)| *n == entry && l.name == t.name)
-                    {
-                        push_index(&mut out.bsp_backgrounds, Some(k));
-                        continue;
+        out.bsp_backgrounds.push(backgrounds);
+        let mut environments = Vec::new();
+        for e in s
+            .space
+            .block_at(s.root, H1_SOUND_ENVIRONMENTS, H1_SOUND_ENVIRONMENT)?
+        {
+            let entry = entry_name(e);
+            let r =
+                TagRef::read(e, 0x20).ok_or(Error::Invalid("short sound environment reference"))?;
+            let index = if r.id.is_none() {
+                None
+            } else {
+                let t = h1.tag(r.id)?;
+                Some(match out.environments.iter().position(|v| v.entry == entry && v.name == t.name) {
+                    Some(k) => k,
+                    None => {
+                        let tag = h1sounds::looping::read_environment(h1, t).map_err(|e| fail(&t.name, e.to_string()))?;
+                        out.environments.push(Environment { entry, name: t.name.clone(), tag });
+                        out.environments.len() - 1
                     }
-                    match read_loop(h1, t) {
-                        Ok(l) => {
-                            out.notes.extend(l.notes.iter().cloned());
-                            out.backgrounds.push((entry, l));
-                            let k = out.backgrounds.len() - 1;
-                            push_index(&mut out.bsp_backgrounds, Some(k));
-                        }
-                        Err(e) => {
-                            out.notes.push(format!("{}: {e}", t.name));
-                            push_index(&mut out.bsp_backgrounds, None);
-                        }
-                    }
-                }
-            }
-            Err(e) => out
-                .notes
-                .push(format!("{}: background sounds: {e}", bsp.name)),
+                })
+            };
+            environments.push(index);
         }
-        match palette(H1_SOUND_ENVIRONMENTS, H1_SOUND_ENVIRONMENT) {
-            Ok(es) => {
-                for e in es {
-                    let entry = entry_name(e);
-                    let Some(t) = TagRef::read(e, 0x20)
-                        .and_then(|r| h1.tag(r.id).ok())
-                        .filter(|t| t.group == SNDE)
-                    else {
-                        out.notes
-                            .push(format!("sound environment {entry}: no snde"));
-                        push_index(&mut out.bsp_environments, None);
-                        continue;
-                    };
-                    if let Some(k) = out
-                        .environments
-                        .iter()
-                        .position(|v| v.entry == entry && v.name == t.name)
-                    {
-                        push_index(&mut out.bsp_environments, Some(k));
-                        continue;
-                    }
-                    match h1sounds::looping::read_environment(h1, t) {
-                        Ok(tag) => {
-                            out.environments.push(Environment {
-                                entry,
-                                name: t.name.clone(),
-                                tag,
-                            });
-                            let k = out.environments.len() - 1;
-                            push_index(&mut out.bsp_environments, Some(k));
-                        }
-                        Err(e) => {
-                            out.notes.push(format!("{}: {e}", t.name));
-                            push_index(&mut out.bsp_environments, None);
-                        }
-                    }
-                }
-            }
-            Err(e) => out
-                .notes
-                .push(format!("{}: sound environments: {e}", bsp.name)),
-        }
+        out.bsp_environments.push(environments);
     }
-    out
-}
-
-fn push_index(per_bsp: &mut [Vec<Option<usize>>], k: Option<usize>) {
-    per_bsp.last_mut().expect("one per BSP").push(k);
+    out.check_capacity(&h1.header().name, [MAX_PALETTE; 2])?;
+    Ok(out)
 }
 
 impl Ambience {
+    pub(crate) fn check_capacity(&self, map: &str, room: [usize; 2]) -> Result<()> {
+        if let Some((_, sound)) = self.backgrounds.get(room[0]) {
+            return Err(Error::no_rebuild(
+                map,
+                &sound.name,
+                "background sound palette capacity",
+            ));
+        }
+        if let Some(environment) = self.environments.get(room[1]) {
+            return Err(Error::no_rebuild(
+                map,
+                &environment.name,
+                "sound environment palette capacity",
+            ));
+        }
+        Ok(())
+    }
+
     /// Halo 1 BSP `bsp`'s background sound and sound environment palette
     /// indices (a cluster's `+0x04`, `+0x06`; -1 none), as indices into
     /// the converted palettes of which the first `written` entries were
@@ -377,7 +347,15 @@ fn put(e: &mut [u8], at: usize, v: u32) {
 /// at the Halo 1 level's (module docs). Returns the entries written, per
 /// palette.
 pub fn patch_scenario(scnr: &mut [u8], address: u32, installed: &Installed) -> Result<[u32; 2]> {
-    let [backgrounds, environments] = installed.palettes(room(scnr)?);
+    let room = room(scnr)?;
+    if installed.backgrounds.len() > room[0].min(MAX_PALETTE)
+        || installed.environments.len() > room[1].min(MAX_PALETTE)
+    {
+        return Err(Error::Invalid(
+            "source sound palettes exceed scenario capacity",
+        ));
+    }
+    let [backgrounds, environments] = installed.palettes(room);
     Ok([
         write_palette(
             scnr,
@@ -418,7 +396,7 @@ mod tests {
     fn the_palettes_name_halo1s_entries_in_the_bases_storage() {
         let address = 0x8000_0000;
         let mut b = scenario(address, 3, 2);
-        let installed = Installed {
+        let mut installed = Installed {
             backgrounds: vec![("sound".into(), TagId(0xe1230042))],
             environments: vec![
                 ("mountains".into(), TagId(0xe1240043)),
@@ -426,6 +404,8 @@ mod tests {
                 ("third".into(), TagId(0xe1260045)),
             ],
         };
+        assert!(patch_scenario(&mut b, address, &installed).is_err());
+        installed.environments.pop();
         assert_eq!(patch_scenario(&mut b, address, &installed).unwrap(), [1, 2]);
         let w = |at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
         assert_eq!(w(BACKGROUND_SOUNDS), 1);
@@ -435,7 +415,6 @@ mod tests {
         assert_eq!(w(e + 0x24), 0xe1230042);
         assert_eq!(w(e + 0x2c), u32::MAX);
         assert_eq!(f32::from_bits(w(e + 0x44)), 2.0);
-        // The base held 2 environments: Halo 1's third is left out.
         assert_eq!(w(SOUND_ENVIRONMENTS), 2);
         let e = 0x300 + 3 * BACKGROUND_SOUND;
         assert_eq!(w(e + 0x24), 0xe1240043);

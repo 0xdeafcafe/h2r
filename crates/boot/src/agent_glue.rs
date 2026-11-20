@@ -67,8 +67,20 @@ impl AgentGlue {
         replaying: bool,
         allow_bot_add: bool,
     ) -> Result<AgentGlue> {
-        let endpoint = agent_proto::Endpoint::from(path);
-        if let agent_proto::Endpoint::Unix(p) = &endpoint
+        Self::with_endpoint(registry, Some(Endpoint::from(path)), xapi, replaying, allow_bot_add)
+    }
+
+    /// A recording uses the player's observation and input hooks even when no
+    /// external controller is attached, so guest scheduling and snapshot feature
+    /// identities agree when Theater attaches its transport socket later.
+    pub(crate) fn with_endpoint<S: xapi::Storage>(
+        registry: &mut feature::Registry,
+        endpoint: Option<Endpoint>,
+        xapi: Option<&Mutex<xapi::Xapi<S>>>,
+        replaying: bool,
+        allow_bot_add: bool,
+    ) -> Result<AgentGlue> {
+        if let Some(Endpoint::Unix(p)) = &endpoint
             && let Some(dir) = p.parent()
         {
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -94,13 +106,16 @@ impl AgentGlue {
         // On the game thread: the sampler's main target.
         crate::sampling::set_game_thread();
         let mut listeners = Vec::new();
-        if let Some(addr) = std::env::var_os(HOST_TCP_ENV).filter(|addr| !addr.is_empty()) {
+        if endpoint.is_some()
+            && let Some(addr) = std::env::var_os(HOST_TCP_ENV).filter(|addr| !addr.is_empty()) {
             let addr = addr
                 .into_string()
                 .map_err(|_| anyhow::anyhow!("{HOST_TCP_ENV} is not UTF-8"))?;
             listeners.push(listen(&Endpoint::Tcp(addr), &agent)?);
         }
-        listeners.push(listen(&endpoint, &agent)?);
+        if let Some(endpoint) = endpoint {
+            listeners.push(listen(&endpoint, &agent)?);
+        }
         match registry.add(&agent::AgentFeature(agent.clone())) {
             Ok(true) => {}
             Ok(false) => {
@@ -249,6 +264,9 @@ pub fn add_host_methods(agent: &agent::Agent) {
             )),
         },
     );
+    agent.add_game_method(method::UI_CAMPAIGN, Access::Read, |_, ctx| {
+        ctx.read_guest(crate::campaign_menu::inspect)
+    });
     agent.add_method(
         method::UI_SCREEN,
         Access::Read,
@@ -262,16 +280,13 @@ pub fn add_host_methods(agent: &agent::Agent) {
     );
 }
 
-/// `sim.*` (crates/agent's `sim`): its players are the process-wide local
+/// `sim.*` (crates/agent's `sim`): its players are the process's phantom
 /// bots ([`crate::sim_bots`]), and the session kind is read as `coop_probe`
 /// reads it.
 fn install_sim(agent: &agent::Agent, allow_bot_add: bool) -> agent::sim::SimHandle {
     agent::sim::install(
         agent,
-        Box::new(crate::sim_bots::LocalBots::new(
-            bots::local::global().clone(),
-            allow_bot_add,
-        )),
+        Box::new(crate::sim_bots::SimBots::new(allow_bot_add)),
         Some(Box::new(session_view)),
     )
 }

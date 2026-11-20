@@ -9,8 +9,8 @@ use agent_proto::sim::{self, Rpc, method};
 use agent_proto::{RpcError, code};
 use serde_json::{Map, Value, json};
 
-pub const USAGE: &str = "  sim add <local|phantom> [script|recording|brain] [team=N] [port=N]
-        [steps=JSON] [recording=NAME] [xuid=X gamertag=G]
+pub const USAGE: &str = "  sim add phantom [script|recording|brain] xuid=X gamertag=G
+        [team=N] [steps=JSON] [recording=NAME]
                          sim.player.add (default source: brain); a phantom's
                          xuid comes from the local embedded Live server
   sim remove <sim.N|all> sim.player.remove
@@ -86,9 +86,13 @@ pub fn params(words: &[String]) -> Result<(&'static str, Value), RpcError> {
     let rest = words.get(1..).unwrap_or(&[]);
     Ok(match verb {
         "add" => {
-            let kind = rest
-                .first()
-                .ok_or_else(|| bad("sim add <local|phantom> ..."))?;
+            match rest.first().map(String::as_str) {
+                Some("phantom") => {}
+                Some("local") => {
+                    return Err(bad("controller seats are for people. Use sim add phantom"));
+                }
+                _ => return Err(bad("sim add phantom [script|recording|brain] xuid=X gamertag=G")),
+            }
             let (source, more) = match rest.get(1) {
                 Some(s) if !s.contains('=') => (s.as_str(), &rest[2..]),
                 _ => ("brain", rest.get(1..).unwrap_or(&[])),
@@ -107,7 +111,7 @@ pub fn params(words: &[String]) -> Result<(&'static str, Value), RpcError> {
                     json!({ "xuid": s(xuid), "gamertag": s(gamertag) }),
                 );
             }
-            p.insert("kind".into(), json!(kind));
+            p.insert("kind".into(), json!("phantom"));
             p.insert("source".into(), json!(source));
             (method::PLAYER_ADD, Value::Object(p))
         }
@@ -269,10 +273,11 @@ mod tests {
     fn verbs_become_calls() {
         let p = |s: &str| params(&w(s)).unwrap();
         assert_eq!(
-            p("add local script team=1 steps=[{\"buttons\":[\"a\"]}]"),
+            p("add phantom script xuid=0009000000000001 gamertag=Clanker team=1 steps=[{\"buttons\":[\"a\"]}]"),
             (
                 method::PLAYER_ADD,
-                json!({"kind": "local", "source": "script", "team": 1, "steps": [{"buttons": ["a"]}]})
+                json!({"kind": "phantom", "source": "script", "team": 1, "steps": [{"buttons": ["a"]}],
+                       "identity": {"xuid": "0009000000000001", "gamertag": "Clanker"}})
             )
         );
         assert_eq!(
@@ -349,6 +354,12 @@ mod tests {
         ] {
             assert!(params(&w(bad)).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn sim_add_refuses_controller_seats() {
+        let e = params(&w("add local script")).unwrap_err();
+        assert!(e.message.contains("Use sim add phantom"));
     }
 
     #[test]

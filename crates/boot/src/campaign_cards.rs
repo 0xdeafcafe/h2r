@@ -35,6 +35,7 @@ use map::{FourCC, Map, TagId};
 use tags::rgba_bitmap::{self, Template};
 
 mod cache;
+pub mod picker;
 
 /// The map the level select lives in, as the VFS names it.
 pub const MAINMENU: &str = "maps\\mainmenu.map";

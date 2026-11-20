@@ -231,6 +231,13 @@ fn check_rebuilt(
     maps: &HashMap<Role, Bound>,
     extras: &shad::Extras,
 ) -> Result<(), String> {
+    // A rebuilt stem gets a new datum when installed. Give it a local
+    // slot for the same instance checks we apply to the native stems.
+    let authored;
+    let lib = if layout.stem == shad::program::glass::CLEAR.stem {
+        authored = shad::Library::new(&[(layout.stem, TagId(0xe000_0001))], &[]);
+        &authored
+    } else { lib };
     let tree = lib.build_with(layout, maps, extras).map_err(|e| e.to_string())?;
     let rec = defs::from_built(shad::shad_def(), &tree).map_err(|e| e.to_string())?;
     let stem = lib.stem(layout).unwrap();
@@ -1568,7 +1575,7 @@ fn teleporter_receiver_brightness_against_halo1() {
 #[test]
 #[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
 fn terrain_detail_modes_are_read_and_installed() {
-    use h1convert::structure::{COLLISION_MATERIAL, PART_KIND, Templates};
+    use h1convert::structure::{PART_KIND, Templates};
     use map::build::TagSet;
 
     let h1_iso = std::env::var("H1_ISO").expect("set H1_ISO");
@@ -1593,7 +1600,7 @@ fn terrain_detail_modes_are_read_and_installed() {
     let mut base = open(&h2_disc, b, s);
     let source_materials = [(0, source.name.clone())];
     let templates = Templates {
-        collision_material: [0; COLLISION_MATERIAL],
+        collision_materials: Vec::new(),
         material_heads: vec![[0; 16]],
         part_kinds: vec![PART_KIND],
     };
@@ -1634,4 +1641,89 @@ fn terrain_detail_modes_are_read_and_installed() {
     for i in 0..3 {
         assert!((colors[i] - texel[i]).abs() < 0.002, "{colors:?}");
     }
+}
+
+/// On a base without the sky cloud stem, every authored mask/tile pair
+/// still reaches the compiled sky colour layer at its own UV scale.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn every_cloud_layer_draws_on_a_base_without_the_retail_stem() {
+    use h1convert::sky_shaders::{Recipe, recipe, sky_templates};
+    use map::build::TagSet;
+    use tags::material::TextureSource;
+
+    let h1_iso = std::env::var("H1_ISO").expect("set H1_ISO");
+    let h2_disc = std::env::var("H2_DISC").expect("set H2_DISC");
+    let (_, offset, size) = h2_maps(&h2_disc)
+        .into_iter()
+        .find(|m| m.0 == "05a_deltaapproach")
+        .unwrap();
+    let mut base = open(&h2_disc, offset, size);
+    let templates = sky_templates(&mut base);
+    assert!(templates.library.stem(&shad::SKY_CLOUDS).is_none());
+    let initial = TagSet::from_map(&mut base).unwrap();
+
+    let mut iso = xiso::Xiso::open(BufReader::new(File::open(h1_iso).unwrap())).unwrap();
+    let disc = h1map::disc::Disc::open(&mut iso).unwrap();
+    let mut count = 0;
+    let mut maps = 0;
+    for name in CAMPAIGN.iter().copied().chain(h1convert::convert::MAPS.iter().map(|m| m.0)) {
+        let Some(entry) = disc.map(name) else { continue };
+        let h1 = H1Map::from_bytes(&iso.read(entry).unwrap()).unwrap();
+        let mut skies = h1convert::sky::read(&h1).unwrap();
+        skies.templates = templates.clone();
+        maps += 1;
+        let clouds: Vec<_> = skies.skies.iter()
+            .flat_map(|s| s.shaders.iter().flatten())
+            .filter_map(|s| match recipe(s) {
+                Some(Recipe::Clouds { mask, tile }) => Some((s, mask, tile)),
+                _ => None,
+            })
+            .collect();
+        if clouds.is_empty() {
+            continue;
+        }
+
+        let mut set = initial.clone();
+        skies.install(&mut set).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let (bytes, _) = set.build().unwrap();
+        let mut built = Map::from_reader(Cursor::new(bytes)).unwrap();
+        let mut lib = ShaderLibrary::read(&mut built).unwrap();
+        for (shader, mask, tile) in clouds {
+            let id = set.converted(SHAD, &shader.name).unwrap();
+            let mat = lib.material(id, None).unwrap();
+            let layer = mat.layers.iter().find(|l| l.lod == 0 && l.layer == 15).unwrap();
+            let implementation = &layer.passes[0].implementations[0];
+            for (map, stage, reg) in [(mask, 1, 20), (tile, 2, 22)] {
+                let source = &shader.maps[map];
+                let name = &h1.tag(source.bitmap).unwrap().name;
+                let want = set.converted(FourCC(*b"bitm"), name).unwrap();
+                assert!(matches!(
+                    implementation.textures[stage].unwrap().source,
+                    TextureSource::Bitmap { bitmap, .. } if bitmap == want
+                ));
+                let constants = &implementation.vertex_constants;
+                let u = constants.iter().find(|c| c.index == reg).unwrap().value;
+                let v = constants.iter().find(|c| c.index == reg + 1).unwrap().value;
+                assert_eq!(u[0], source.scale[0], "{name}: u scale");
+                assert_eq!(v[1], source.scale[1], "{name}: v scale");
+            }
+            if recipe(shader).unwrap().scroll(shader).iter().any(Option::is_some) {
+                assert!(!implementation.animated.is_empty(), "{}: missing tile scroll", shader.name);
+            }
+            let def = shaders::psh::PixelShaderDef::from_bytes(&implementation.pixel_shader).unwrap();
+            let c = shaders::psh::interp::run(
+                &def,
+                &shaders::psh::PixelOptions::default(),
+                &shaders::psh::interp::Inputs::default(),
+                &shaders::psh::interp::Uniforms::default(),
+                &Texels([[0.0; 4], [1.0, 1.0, 1.0, 0.25], [0.25, 0.5, 0.75, 0.5], [0.0; 4]]),
+            )
+            .unwrap();
+            assert_eq!(c, [0.25, 0.5, 0.75, 0.125], "{}", shader.name);
+            count += 1;
+        }
+    }
+    assert_eq!(maps, 23);
+    assert!(count > 0, "the test disc has no cloud layers");
 }

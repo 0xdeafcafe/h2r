@@ -66,13 +66,11 @@ pub mod method {
     ];
 }
 
-/// How a simulated player reaches the game (docs/game/bots.md §1).
+/// The seating kind returned by the sim API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlayerKind {
-    /// A pad on a free local controller port (bots.md stage 1).
-    Local,
-    /// A remote player with no machine, made on the host (bots.md stage 6).
+    /// A remote System Link peer made on the host.
     Phantom,
 }
 
@@ -113,11 +111,7 @@ pub struct AddParams {
     /// `recording`: the input log's name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recording: Option<String>,
-    /// `local`: the controller port (default: the lowest free one after
-    /// the real pads).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub port: Option<u32>,
-    /// `phantom`: its server-issued identity (required).
+    /// Its server-issued identity (required).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<Identity>,
 }
@@ -131,10 +125,7 @@ pub struct SimPlayer {
     pub source: SourceKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub team: Option<i32>,
-    /// `local`: its controller port.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub port: Option<u32>,
-    /// `phantom`: its xuid and gamertag.
+    /// Its xuid and gamertag.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<Identity>,
     /// The game's player it became (`player.<index>`), once the game lists
@@ -183,8 +174,6 @@ pub struct ClankerView {
     pub name: String,
     pub kind: PlayerKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub port: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub player: Option<String>,
     pub brain: BotBrain,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -217,8 +206,7 @@ pub struct RemoveParams {
     pub all: bool,
 }
 
-/// `sim.player.pad`: scripted steps for a simulated player (its source
-/// becomes `script`).
+/// `sim.player.pad`: pad steps for a player with a script source.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DriveParams {
@@ -649,13 +637,13 @@ mod tests {
     #[test]
     fn add_params_parse_and_refuse_strays() {
         let p: AddParams = serde_json::from_value(json!({
-            "kind": "local", "source": "script", "team": 1,
+            "kind": "phantom", "source": "script", "team": 1,
             "steps": [{"buttons": ["a"], "ticks": 2}]
         }))
         .unwrap();
         assert_eq!(
             (p.kind, p.source, p.team),
-            (PlayerKind::Local, SourceKind::Script, Some(1))
+            (PlayerKind::Phantom, SourceKind::Script, Some(1))
         );
         assert_eq!(p.steps.len(), 1);
         assert!(
@@ -663,7 +651,7 @@ mod tests {
         );
         assert!(
             serde_json::from_value::<AddParams>(
-                json!({"kind": "local", "source": "brain", "bot": true})
+                json!({"kind": "phantom", "source": "brain", "bot": true})
             )
             .is_err()
         );

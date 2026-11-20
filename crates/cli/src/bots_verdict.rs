@@ -17,9 +17,6 @@ use std::fmt::Write as _;
 
 use crate::coop_verdict::parse_line;
 
-/// Local bots play on ports 1 to 3; the rest of the count are phantoms.
-pub const LOCAL_PORTS: usize = 3;
-
 /// Whether a game's stderr line goes into the merged log.
 pub fn wanted(line: &str) -> bool {
     const KEEP: [&str; 17] = [
@@ -56,20 +53,15 @@ pub struct Plan {
 const PLAN: &str = "bots-test: plan: ";
 
 impl Plan {
-    pub fn local(&self) -> usize {
-        self.count.min(LOCAL_PORTS)
-    }
-
     pub fn phantoms(&self) -> usize {
-        self.count - self.local()
+        self.count
     }
 
-    /// `bots-test: plan: count 5 (3 local, 2 phantoms), gamertag Tester, map any`
+    /// `bots-test: plan: count 5 (5 phantoms), gamertag Tester, map any`
     pub fn line(&self) -> String {
         format!(
-            "{PLAN}count {} ({} local, {} phantoms), gamertag {}, map {}",
+            "{PLAN}count {} ({} phantoms), gamertag {}, map {}",
             self.count,
-            self.local(),
             self.phantoms(),
             self.tag,
             self.map.as_deref().unwrap_or("any")
@@ -173,39 +165,13 @@ fn check(name: &str, pass: bool, detail: String, lines: Vec<String>) -> Check {
     }
 }
 
-/// `bots: join gate port P: ...` and `bots: signing NAME in on port P ...`:
-/// the port.
-fn gate_port(text: &str) -> Option<u8> {
-    text.strip_prefix("bots: join gate port ")?
-        .split(':')
-        .next()?
-        .parse()
-        .ok()
-}
-
+/// `bots: signing NAME in on port P ...`: the port. No line of ours says
+/// it any more (every bot is a phantom); one on a log means a bot was
+/// signed in on a controller port, which the Clankermatch verdict refuses.
 fn signing_port(text: &str) -> Option<u8> {
     let rest = text.strip_prefix("bots: signing ")?;
     let (_, after) = rest.rsplit_once(" on port ")?;
     after.split(' ').next()?.parse().ok()
-}
-
-/// `clankers: Clanker P is GAMERTAG on Xbox Live (bot account XUID)`: the
-/// port, gamertag and xuid.
-fn account_line(text: &str) -> Option<(u8, &str, &str)> {
-    let rest = text.strip_prefix("clankers: Clanker ")?;
-    let (port, rest) = rest.split_once(" is ")?;
-    let (tag, rest) = rest.split_once(" on Xbox Live (bot account ")?;
-    Some((port.parse().ok()?, tag, rest.strip_suffix(')')?))
-}
-
-/// `bots: NAME on port P is on Xbox Live as its own bot account, ...`.
-fn on_live_as_account(text: &str) -> Option<u8> {
-    let rest = text.strip_prefix("bots: ")?;
-    let (_, after) = rest.split_once(" on port ")?;
-    let (port, after) = after.split_once(' ')?;
-    after
-        .starts_with("is on Xbox Live as its own bot account")
-        .then(|| port.parse::<u8>().ok())?
 }
 
 /// `bots: phantom NAME joins (peer N)` (a running game) or `... joins
@@ -221,8 +187,13 @@ fn phantom_joined(text: &str) -> Option<&str> {
 const IN_LOBBY: &str = ", in the pregame lobby)";
 
 /// [`phantom_joined`] for a join in the pregame lobby: the name.
-fn phantom_joined_lobby(text: &str) -> Option<&str> {
+pub(crate) fn phantom_joined_lobby(text: &str) -> Option<&str> {
     phantom_joined(text).filter(|_| text.ends_with(IN_LOBBY))
+}
+
+/// The phantom removed by a `clankers: NAME off` line.
+pub(crate) fn phantom_off(text: &str) -> Option<&str> {
+    text.strip_prefix("clankers: ")?.strip_suffix(" off")
 }
 
 /// A phantom that could not be made: a `failed` line about a phantom, or
@@ -356,11 +327,6 @@ fn ended_off_live(l: &Log) -> Option<(&'static str, String)> {
     ended
 }
 
-/// A sample of port 1's join gate while the account picker is open.
-fn picker_opened(text: &str) -> bool {
-    text.starts_with("bots: join gate port 1: ") && text.contains(", dialog 0x14 (")
-}
-
 /// The game's own line with the account picker up (`ui: screen none
 /// (...), dialog 0x14 dialog_live_signin (...)`, `boot::ui_watch`).
 fn picker_line(text: &str) -> bool {
@@ -369,8 +335,7 @@ fn picker_line(text: &str) -> bool {
 
 /// How many times the account picker opened: by the game's `ui: screen`
 /// lines (a cursor move is another line, so only a line after one
-/// without the picker counts), else by port 1's join gate, which a run
-/// with no local bot placed yet (Clankermatch) never prints.
+/// without the picker counts).
 fn picker_openings(texts: &[&str]) -> usize {
     let mut up = false;
     let mut by_ui = 0;
@@ -381,20 +346,7 @@ fn picker_openings(texts: &[&str]) -> usize {
         }
         up = now;
     }
-    if by_ui > 0 {
-        by_ui
-    } else {
-        let mut up = false;
-        let mut by_gate = 0;
-        for t in texts.iter().filter(|t| gate_port(t) == Some(1)) {
-            let now = picker_opened(t);
-            if now && !up {
-                by_gate += 1;
-            }
-            up = now;
-        }
-        by_gate
-    }
+    by_ui
 }
 
 const TROUBLE: [&str; 7] = [
@@ -416,7 +368,6 @@ pub fn verdict(log: &str) -> Option<Verdict> {
         return Some(clankermatch::verdict(&l, plan));
     }
     let plan = Plan::read(&l.texts)?;
-    let local = plan.local() as u8;
     let mut checks = Vec::new();
 
     // 1. The game signed in to Live.
@@ -439,28 +390,28 @@ pub fn verdict(log: &str) -> Option<Verdict> {
         ),
     });
 
-    // 2. The Clankers driver took the settings: one local bot per port.
-    let on: BTreeSet<u8> = l
+    // 2. The Clankers driver took the settings: a phantom per bot.
+    let on: BTreeSet<&str> = l
         .texts
         .iter()
         .filter_map(|t| {
-            let rest = t.strip_prefix("clankers: Clanker ")?;
-            let (port, after) = rest.split_once(' ')?;
-            after.starts_with("on (").then(|| port.parse::<u8>().ok())?
+            let rest = t.strip_prefix("clankers: ")?;
+            rest.split_once(" (phantom")
+                .filter(|(_, r)| r.starts_with(") on") || r.starts_with(", rostered) on"))
+                .map(|(name, _)| name)
         })
         .collect();
-    let missing: Vec<u8> = (1..=local).filter(|p| !on.contains(p)).collect();
     checks.push(check(
         "Clankers on (the settings reached the driver)",
-        missing.is_empty(),
-        if missing.is_empty() {
-            format!("{} local bots on ports 1 to {local}", on.len())
+        on.len() >= plan.count,
+        if on.len() >= plan.count {
+            format!("{} phantoms on", on.len())
         } else {
             format!(
-                "no `clankers: Clanker N on` for port{} {:?}: clankers.enabled/clankers.count \
-                 did not reach the driver, or the port was taken",
-                if missing.len() == 1 { "" } else { "s" },
-                missing
+                "only {} of {} `clankers: NAME (phantom...) on` lines: \
+                 clankers.enabled/clankers.count did not reach the driver",
+                on.len(),
+                plan.count
             )
         },
         l.last(6, |t| t.starts_with("clankers: ")),
@@ -587,116 +538,7 @@ pub fn verdict(log: &str) -> Option<Verdict> {
         ),
     });
 
-    // 6. Each local bot signed in through the join gate.
-    let mut where_ = Vec::new();
-    let mut lines = Vec::new();
-    let mut missing = Vec::new();
-    for p in 1..=local {
-        let signs = l.first(|t| gate_port(t) == Some(p) && t.ends_with(": signs in"));
-        let signed = l.first(|t| signing_port(t) == Some(p));
-        match (signs, signed) {
-            (Some((g, gt)), Some((s, st))) => {
-                let at = if st.contains("in the pregame lobby") || gt.contains("screen lobby") {
-                    "the lobby"
-                } else if st.contains("on the players screen") {
-                    "the players screen"
-                } else {
-                    "elsewhere"
-                };
-                where_.push(format!("port {p} in {at}"));
-                lines.push(g);
-                lines.push(s);
-            }
-            _ => {
-                missing.push(p);
-                lines.extend(l.last(2, |t| gate_port(t) == Some(p)));
-            }
-        }
-    }
-    checks.push(check(
-        "local bots signed in (join gate)",
-        missing.is_empty(),
-        if missing.is_empty() {
-            where_.join(", ")
-        } else {
-            format!(
-                "port{} {:?} never signed in; the last join gate lines say what it waited on \
-                 (screen, dialog, signed_in)",
-                if missing.len() == 1 { "" } else { "s" },
-                missing
-            )
-        },
-        lines,
-    ));
-
-    // 7. Each local bot on Live as its own bot account.
-    let mut lines = Vec::new();
-    let mut missing = Vec::new();
-    let mut names = Vec::new();
-    for p in 1..=local {
-        let account = l.first(|t| {
-            account_line(t).is_some_and(|(port, _, xuid)| {
-                port == p && xuid.to_ascii_lowercase().starts_with("000b")
-            })
-        });
-        let live = l.first(|t| on_live_as_account(t) == Some(p));
-        match (account, live) {
-            (Some((a, at)), Some((b, _))) => {
-                if let Some((_, tag, xuid)) = account_line(at) {
-                    names.push(format!("{tag} ({xuid})"));
-                }
-                lines.push(a);
-                lines.push(b);
-            }
-            _ => {
-                missing.push(p);
-                lines.extend(l.last(2, |t| {
-                    t.contains(&format!(" on port {p} "))
-                        || t.starts_with(&format!("clankers: Clanker {p} "))
-                }));
-            }
-        }
-    }
-    checks.push(check(
-        "local bots on Xbox Live as bot accounts (000b...)",
-        missing.is_empty(),
-        if missing.is_empty() {
-            names.join(", ")
-        } else {
-            format!(
-                "port{} {:?}: no bot account sign-in (`Clanker N is ... (bot account 000b...)` \
-                 and `... is on Xbox Live as its own bot account`); a guest or offline line \
-                 says why",
-                if missing.len() == 1 { "" } else { "s" },
-                missing
-            )
-        },
-        lines,
-    ));
-
-    // 8. Start Game with the bots in: the start state.
-    let ready =
-        l.first(|t| t.starts_with("bots: start state 9") || t.starts_with("bots: start state 10"));
-    checks.push(match ready {
-        Some((line, t)) => check("Start Game: start state ready", true, t.into(), vec![line]),
-        None => {
-            let states = l.last(3, |t| t.starts_with("bots: start state"));
-            let detail = if states.is_empty() {
-                "no `bots: start state` line: Start Game was never pressed with the bots in \
-                 the lobby"
-                    .to_string()
-            } else {
-                "Start Game was pressed but the lobby would not start; the start state says \
-                 which check held it"
-                    .to_string()
-            };
-            let mut lines = states;
-            lines.extend(l.last(2, |t| t.starts_with("bots-drive")));
-            check("Start Game: start state ready", false, detail, lines)
-        }
-    });
-
-    // 9. Gameplay on a map.
+    // 6. Gameplay on a map.
     let play = l.first(|t| {
         read_status(t).is_some_and(|(phase, mode, map)| {
             phase == "gameplay"
@@ -731,7 +573,7 @@ pub fn verdict(log: &str) -> Option<Verdict> {
         }
     });
 
-    // 10. The phantoms joined the pregame lobby (docs/game/bots.md §5.1,
+    // 7. The phantoms joined the pregame lobby (docs/game/bots.md §5.1,
     // "Phantoms in the pregame lobby").
     let want = plan.phantoms();
     let joined: BTreeSet<&str> = l.texts.iter().filter_map(|t| phantom_joined(t)).collect();
@@ -745,7 +587,7 @@ pub fn verdict(log: &str) -> Option<Verdict> {
         check(
             "phantoms joined the pregame lobby",
             failed.is_empty(),
-            "none asked for (count 3 or less)".into(),
+            "none asked for".into(),
             failed,
         )
     } else {
@@ -787,7 +629,7 @@ pub fn verdict(log: &str) -> Option<Verdict> {
         )
     });
 
-    // 11. The session's player count reached the host and every bot:
+    // 8. The session's player count reached the host and every bot:
     // the slots the game filled in its advertisement, or the players the
     // host reported joining (docs/game/bots.md §9.5), whichever is more.
     let counts: Vec<(u64, u64)> = l.texts.iter().filter_map(|t| read_session(t)).collect();
@@ -809,7 +651,7 @@ pub fn verdict(log: &str) -> Option<Verdict> {
         l.last(2, |t| t.starts_with("bots-test: session ")),
     ));
 
-    // 12. Telemetry: the game record has the bots.
+    // 9. Telemetry: the game record has the bots.
     let best = l.texts.iter().filter_map(|t| read_game(t)).max();
     checks.push(check(
         "game record: the bots with bot: true",
@@ -825,9 +667,8 @@ pub fn verdict(log: &str) -> Option<Verdict> {
     let trouble = l.last(8, |t| TROUBLE.iter().any(|k| t.contains(*k)));
     Some(Verdict {
         title: format!(
-            "bots test: {} Clankers ({} local, {} phantoms) with {} on a Live custom game",
+            "bots test: {} Clankers ({} phantoms) with {} on a Live custom game",
             plan.count,
-            plan.local(),
             plan.phantoms(),
             plan.tag
         ),

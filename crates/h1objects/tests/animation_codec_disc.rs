@@ -225,7 +225,7 @@ fn converted_blood_gulch_graphs_read_as_the_engine_reads_them() {
     // placeholders point at them; a graph naming another converted tag
     // (a `local` placeholder) would need it in the map too, so none may.
     let mut tree = c.tree;
-    tree.install_audio(&mut set, true);
+    tree.try_install_audio(&mut set).unwrap();
     assert!(tree.audio_notes.is_empty(), "{:?}", tree.audio_notes);
     fn locals(b: &map::build::Block, out: &mut Vec<usize>) {
         use map::build::FixupKind;

@@ -2,7 +2,7 @@
 //! Guest calls stand in for map-dependent queries (which seat, weapon, zoom).
 use super::*;
 use crate::{
-    local::{Frame, PadSource},
+    pad_source::{Frame, PadSource},
     phantom::{Identity, Phantoms, machine_id},
     tuning::PhantomLatency,
 };
@@ -167,7 +167,7 @@ fn match_opening_waits_for_host_opacity_and_uses_the_first_open_sample() {
     const GAME_ENGINE: u32 = 0x0077_1000;
     let (ph, mut g, slot) = game_with_latency(
         |f| {
-            let tick = f.tick.unwrap();
+            let tick = f.tick;
             assert_eq!(
                 f.frame,
                 u64::from(tick - 54),
@@ -212,14 +212,28 @@ fn match_opening_waits_for_host_opacity_and_uses_the_first_open_sample() {
             guest_query,
         );
         assert_eq!(run.result, Ok(Ret::new(1, 8)));
+        let expected = if tick == 57 {
+            active_pad().to_gamepad(&Default::default(), false)
+        } else {
+            input::Gamepad::default()
+        };
+        assert_eq!(ph.gathered_pads(tick)[1], Some(expected));
         g = run.guest;
     }
 
-    // Another fade on the host's own seat is independent once play starts.
+    // Seek into active play. The local human's later fade must still allow
+    // retail to bridge a single missed phantom build with the accepted action.
+    let saved = serde_json::to_vec(&ph.film_roster()).unwrap();
+    let restored = Phantoms::default();
+    restored
+        .restore_film_roster(&serde_json::from_slice(&saved).unwrap())
+        .unwrap();
     at_tick(&mut g, 58);
     g.put_f32(GAME_ENGINE + guest::LOCAL_BLACK_OPACITY, 1.0);
-    let g = gather(&ph, g, slot);
-    assert_eq!(g.f32(OUT + 0x14).unwrap(), 1.0);
+    let run = call_with_builder(&restored, g, slot, |_| None, guest_query);
+    assert_eq!(run.result, Ok(Ret::new(1, 8)));
+    assert_eq!(run.guest.f32(OUT + 0x14).unwrap(), 1.0);
+    assert_eq!(restored.gathered_pads(58)[1], ph.gathered_pads(57)[1]);
 }
 
 #[test]
@@ -285,6 +299,17 @@ fn a_phantom_respawn_gates_only_its_own_pad_until_the_fade_ends() {
         assert_eq!(run.result, Ok(Ret::new(1, 8)));
         g = gather(&ph, run.guest, other_slot);
         assert_eq!(g.f32(OUT + 0x14).unwrap(), 1.0);
+        let active = active_pad().to_gamepad(&Default::default(), false);
+        let pads = ph.gathered_pads(100 + age);
+        assert_eq!(
+            pads[1],
+            Some(if age < 10 {
+                input::Gamepad::default()
+            } else {
+                active
+            })
+        );
+        assert_eq!(pads[2], Some(active));
     }
 }
 
@@ -319,8 +344,8 @@ fn phantom_acquires_an_enemy_on_the_tick_it_clears_cover_and_stops_at_cover() {
     // This fixture has zero transport and controller delay so the action
     // carries the current brain report. The skill reaction still applies.
     let (ph, mut g, slot) = game(move |frame| {
-        assert!(frame.machine.is_some());
-        let tick = frame.tick.unwrap();
+        assert_ne!(frame.machine, [0; 6]);
+        let tick = frame.tick;
         let pad = brain.pad_in_map(frame, Some(&map));
         assert_eq!(
             brain.mind.doing == Doing::Fight(2),
@@ -381,10 +406,11 @@ fn phantom_acquires_an_enemy_on_the_tick_it_clears_cover_and_stops_at_cover() {
 #[test]
 fn missed_build_revalidates_one_previous_action_then_resumes_fresh_input() {
     let (ph, g, slot) = game(|f| HostPadState {
-        right_trigger: if f.tick == Some(100) { 1. } else { 0. },
+        right_trigger: if f.tick == 100 { 1. } else { 0. },
         ..Default::default()
     });
     let mut g = gather(&ph, g, slot);
+    let first_pad = ph.gathered_pads(100)[1].expect("accepted action source");
     let mut previous = [0; ACTION_SIZE];
     g.read(OUT, &mut previous).unwrap();
     at_tick(&mut g, 101);
@@ -403,6 +429,7 @@ fn missed_build_revalidates_one_previous_action_then_resumes_fresh_input() {
     );
     assert_eq!(run.result, Ok(Ret::new(1, 8)));
     assert_eq!(run.guest.u32(slot + SLOT_STAMP).unwrap(), 101);
+    assert_eq!(ph.gathered_pads(101)[1], Some(first_pad));
     let repeat = call_with_builder(
         &ph,
         run.guest,
@@ -417,6 +444,7 @@ fn missed_build_revalidates_one_previous_action_then_resumes_fresh_input() {
     let missed = call_with_builder(&ph, g, slot, |_| None, |_, _| panic!("replayed twice"));
     assert_eq!(missed.result, Ok(Ret::new(0, 8)));
     assert_eq!(missed.guest.u32(slot + SLOT_STAMP).unwrap(), 101);
+    assert!(ph.gathered_pads(102).iter().all(Option::is_none));
     let repeat = call_with_builder(
         &ph,
         missed.guest,
@@ -498,7 +526,7 @@ fn arrived_pad_publishes_the_whole_local_action_once_per_tick() {
     ];
     for (ping, delay) in [(0., 0), (80., 2)] {
         let (ph, mut g, slot) = game_with_latency(
-            move |f| pads[(f.tick.unwrap() as usize - 100) % 3],
+            move |f| pads[(f.tick as usize - 100) % 3],
             PhantomLatency {
                 ping_ms: Some(ping),
                 jitter_ms: 0.,
@@ -512,7 +540,9 @@ fn arrived_pad_publishes_the_whole_local_action_once_per_tick() {
             } else {
                 pads[((tick - 100 - delay) % 3) as usize]
             };
-            let local = fixture_record(pad.to_gamepad(&Default::default(), false));
+            let arrived = pad.to_gamepad(&Default::default(), false);
+            assert_eq!(ph.gathered_pads(tick)[1], Some(arrived));
+            let local = fixture_record(arrived);
             let mut got = [0; ACTION_SIZE];
             g.read(OUT, &mut got).unwrap();
             assert_eq!(got, local);
@@ -523,7 +553,7 @@ fn arrived_pad_publishes_the_whole_local_action_once_per_tick() {
 #[test]
 fn assist_tracks_the_validated_action_across_repeated_gather_and_target_loss() {
     let (ph, mut g, slot) = game(|f| HostPadState {
-        right_trigger: if f.tick == Some(100) { 1. } else { 0. },
+        right_trigger: if f.tick == 100 { 1. } else { 0. },
         ..Default::default()
     });
     let handle = ph.list()[0].handle;
@@ -573,7 +603,7 @@ fn only_valid_phantom_records_are_published() {
 fn aim_view_separates_intended_arrived_and_observed_aim() {
     let (ph, mut g, slot) = game_with_latency(
         |f| {
-            if f.tick == Some(100) {
+            if f.tick == 100 {
                 HostPadState {
                     right_stick: (1., 0.),
                     right_trigger: 1.,

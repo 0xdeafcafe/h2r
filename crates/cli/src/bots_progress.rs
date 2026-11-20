@@ -1,5 +1,5 @@
 //! `progress.json`: what `h2 bots test` knows right now, in one small file
-//! an outside driver (`--no-drive`, an LLM or a person) can poll: the 12
+//! an outside driver (`--no-drive`, an LLM or a person) can poll: the
 //! checks as pass, pending or fail, the phase, mode and map the agent API
 //! last reported, the game's last `ui:` line and its last `bots:` or
 //! `clankers:` line. It is written from the merged log, so it says what

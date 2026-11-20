@@ -385,6 +385,39 @@ impl Network {
         }
         a
     }
+    /// These operations are mirrored during offline replay; keep them clear
+    /// of the native socket and tunnel dispatch.
+    fn register_key(&self, op: Op, a: &[u32], rt: &Runtime) -> Result<u32> {
+        use Op::*;
+        match op {
+            RegisterKey => {
+                let kid = read(rt, a[0], 8)?.try_into().unwrap();
+                let key = read(rt, a[1], 16)?.try_into().unwrap();
+                let mut s = lock(&self.state);
+                if s.keys.contains_key(&kid) {
+                    return Err(10048);
+                }
+                if s.keys.len() >= 64 {
+                    return Err(10055);
+                }
+                s.keys.insert(kid, key);
+                eprintln!("live: xnet: key for session {} registered", hex(&kid));
+                Ok(0)
+            }
+            UnregisterKey => {
+                let kid: [u8; 8] = read(rt, a[0], 8)?.try_into().unwrap();
+                let mut s = lock(&self.state);
+                if s.keys.remove(&kid).is_none() {
+                    return Err(10022);
+                }
+                s.peers.retain(|_, p| p.kid != kid);
+                lock(&self.listeners).remove(&kid);
+                eprintln!("live: xnet: key for session {} unregistered", hex(&kid));
+                Ok(0)
+            }
+            _ => unreachable!("key lifecycle operation"),
+        }
+    }
     fn run(&self, op: Op, a: &[u32], thread: u32, rt: &Runtime) -> Result<u32> {
         use Op::*;
         match op {
@@ -522,31 +555,7 @@ impl Network {
                 write(rt, a[1], &bytes[8..])?;
                 Ok(0)
             }
-            RegisterKey => {
-                let kid = read(rt, a[0], 8)?.try_into().unwrap();
-                let key = read(rt, a[1], 16)?.try_into().unwrap();
-                let mut s = lock(&self.state);
-                if s.keys.contains_key(&kid) {
-                    return Err(10048);
-                }
-                if s.keys.len() >= 64 {
-                    return Err(10055);
-                }
-                s.keys.insert(kid, key);
-                eprintln!("live: xnet: key for session {} registered", hex(&kid));
-                Ok(0)
-            }
-            UnregisterKey => {
-                let kid: [u8; 8] = read(rt, a[0], 8)?.try_into().unwrap();
-                let mut s = lock(&self.state);
-                if s.keys.remove(&kid).is_none() {
-                    return Err(10022);
-                }
-                s.peers.retain(|_, p| p.kid != kid);
-                lock(&self.listeners).remove(&kid);
-                eprintln!("live: xnet: key for session {} unregistered", hex(&kid));
-                Ok(0)
-            }
+            RegisterKey | UnregisterKey => self.register_key(op, a, rt),
             XnToIn => {
                 let xna: [u8; 36] = read(rt, a[0], 36)?.try_into().unwrap();
                 let remote = endpoint(&xna)?;

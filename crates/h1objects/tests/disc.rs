@@ -234,7 +234,11 @@ fn bloodgulch_sandbox_converts_and_reads_back() {
             let w = u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
             let d = u32::from_le_bytes(b[at + 4..at + 8].try_into().unwrap());
             assert!(d & 0xffff_0000 != local(0).0, "placeholder left at {at:#x}");
-            if groups.contains(&w) && d != u32::MAX && d != 0 {
+            // An effe part keeps its dispatch group word at +0x8, right
+            // before its reference's own group at +0xc: two group words,
+            // not a reference. The real (+0xc, +0x10) pair is checked one
+            // word later.
+            if groups.contains(&w) && d != u32::MAX && d != 0 && d != w {
                 let g = tags_by_id.get(&d).unwrap_or_else(|| {
                     panic!("{id:?} +{at:#x}: reference to a missing tag {d:08x}")
                 });

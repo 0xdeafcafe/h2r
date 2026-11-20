@@ -16,7 +16,7 @@ use pages::BROWSE_ROWS;
 struct SampleLibrary(Mutex<Vec<FilmMeta>>);
 
 impl Library for SampleLibrary {
-    fn list(&self, _: &str) -> Result<Vec<FilmMeta>, String> {
+    fn list(&self, _: &[String]) -> Result<Vec<FilmMeta>, String> {
         Ok(self.0.lock().unwrap().clone())
     }
 
@@ -68,6 +68,7 @@ fn fixture(id: &str, map: &str, variant: &str, playable: bool) -> FilmMeta {
             score: Some(score),
             kills: Some(kills),
             deaths: Some(deaths),
+            ..Player::default()
         })
         .collect(),
         source: Source::Host,

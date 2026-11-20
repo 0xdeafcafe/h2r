@@ -34,9 +34,14 @@ thread_local! {
     static DRAW: RefCell<Draw> = RefCell::new(Draw::default());
 }
 
-fn colour(mem: &dyn GuestMemory, frame: u32) -> Result<Option<u32>, MemFault> {
+fn colour(mem: &dyn GuestMemory, frame: u32, rows: u32) -> Result<Option<u32>, MemFault> {
     if mem.u32(frame + 4)? != WIDGET_DRAW_RETURN {
         return Ok(None);
+    }
+    let bitmap_frame = mem.u32(frame)?;
+    let widget = mem.u32(bitmap_frame + 0x78)?;
+    if let Some(colour) = super::weapon::colour(mem, widget, rows, bitmap_frame)? {
+        return Ok(Some(colour));
     }
     let Some(tag) = mission_hud(mem)? else {
         return Ok(None);
@@ -44,7 +49,6 @@ fn colour(mem: &dyn GuestMemory, frame: u32) -> Result<Option<u32>, MemFault> {
     if !super::extended(mem, tag)? {
         return Ok(None);
     }
-    let widget = mem.u32(mem.u32(frame)? + 0x78)?;
     let Some(entry) = widget_control(mem, tag, mem.u32(widget)?)? else {
         return Ok(None);
     };
@@ -119,15 +123,15 @@ fn restore(mem: &mut dyn GuestMemory) -> Result<(), MemFault> {
     Ok(())
 }
 
-pub(super) fn register(b: &mut Builder) {
+pub(super) fn register(b: &mut Builder, rows: u32) {
     b.raw()
-        .before(&SHADER_DRAW_BEGIN, "select a converted panel tint", |c| {
+        .before(&SHADER_DRAW_BEGIN, "select a converted panel tint", move |c| {
             let sp = c.cpu.esp;
             let frame = c.cpu.ebp;
             let mut mem = c.ctx.memory();
             if mem.u32(sp).ok() == Some(DRAW_SETUP_RETURN) {
                 let _ = restore(&mut *mem);
-                let colour = colour(&*mem, frame).ok().flatten();
+                let colour = colour(&*mem, frame, rows).ok().flatten();
                 DRAW.with(|draw| draw.borrow_mut().colour = colour);
             }
             Ok(Flow::Continue)

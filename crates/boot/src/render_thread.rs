@@ -99,6 +99,7 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "*",
         "native particle simulation on the game thread, with post-step hooks around the guest bodies",
     ),
+    ("campaigns", "*", "reads campaign selection and updates profile saves on the game thread"),
     ("campaign-squad-pools", "*", "sizes the guest datum pools as a map loads"),
     ("h1-ai-control", "*", "updates simulation actors and evaluates guest script arguments"),
     ("h1-command-atoms", "*", "runs command scripts and their actor updates on the simulation thread"),
@@ -122,6 +123,8 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ("h1-script-builtins", "HS_FALSE_EVALUATOR", "evaluates the script on its guest interpreter thread"),
     ("h1-script-builtins", "HS_CONSTANT_LONG_EVALUATOR", "evaluates the script on its guest interpreter thread"),
     ("h1-health", "OBJECT_DAMAGE_UPDATE", AFTER),
+    ("h1-hud-text", "GAME_TICK", AFTER),
+    ("h1-hud-text", "GAME_ACTIVATE", AFTER),
     ("h1-health", "BODY_RESTORE", AFTER),
     ("h1-health", "GAME_ACTIVATE", AFTER),
     ("h1-precision", "GAME_ACTIVATE", AFTER),
@@ -220,20 +223,15 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "EMBLEM_WIDGET_DRAW",
         "consumes the shared card refresh flag and updates the live widget",
     ),
-    // Local bots: the game thread's frame, sound and players screen. Around
-    // RENDER_FRAME, the pipeline's snapshot is taken with the bot views
-    // hidden; the render thread never meets these points.
+    // Phantom membership and input run on the game thread.
     ("bots", "RENDER_FRAME", AFTER),
+    ("bots", "GAME_ACTIVATE", AFTER),
     (
         "bots",
         "SIMULATION_SLOT_ACTION",
         "phantoms sample their pad once per simulation tick: the game thread's tick, \
          answered asynchronously",
     ),
-    ("bots", "SOUND_UPDATE", AFTER),
-    ("bots", "SOUND_LISTENERS_UPDATE", AFTER),
-    ("bots", "SOUND_OWNER_USER", AFTER),
-    ("bots", "GAME_ACTIVATE", AFTER),
     (
         "bots",
         "ITEM_SET_UNIT",
@@ -258,22 +256,6 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "bots",
         "PLAYER_KILLED",
         "a death in the simulation, on the game thread; logs it for the bots' emotes",
-    ),
-    (
-        "bots",
-        "PLAYERS_SCREEN_UNJOINED",
-        "a players screen event on the game thread; signs a bot in with guest calls",
-    ),
-    ("bots", "PLAYERS_SCREEN_UPDATE", AFTER),
-    (
-        "bots",
-        "PREGAME_LOBBY_INPUT",
-        "a lobby input event on the game thread; notes a Start press for the start-state log",
-    ),
-    (
-        "bots",
-        "LOBBY_ROW_PRESS",
-        "a lobby list event on the game thread; notes a Start Game press for the start-state log",
     ),
     (
         "bots",
@@ -320,7 +302,12 @@ mod tests {
             ALL_ON.to_owned(),
             format!("{ALL_ON},render-census"),
         ] {
-            let plan = registry(&Case::full(&switches)).build(&feature::Base).unwrap();
+            let mut features = registry(&Case::full(&switches));
+            features.add(&crate::campaign_menu::Campaigns {
+                state: std::sync::Arc::new(crate::campaign_menu::tests::state()),
+                picker: std::sync::Arc::new(|| 0),
+            }).unwrap();
+            let plan = features.build(&feature::Base).unwrap();
             for c in plan.chains.values() {
                 match c.render_thread() {
                     Ok(()) => safe.push(c.point.name),

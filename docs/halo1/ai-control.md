@@ -31,13 +31,14 @@ and translation. Runtime behavior still needs the integration build.
 | `ai_attach_free` | Compiles the actor-variant token to a rebuilt `char` at the original tag path. Source `actr` perception and `actv` vitality and weapon tuning populate the Halo 2 character records. The hook uses Halo 2 `0x001e0160` with no squad to attach that character to the supplied unit. The routine replaces any previous actor at `0x001e0d98` and puts the new actor on the free list. Halo 1's allocator and free-list insertion are `0x0014b810` and `0x0013bdd0`. |
 | `ai_teleport_to_starting_location` and its unsupported-only form | **Built.** Halo 1 `0x00141510` skips seated actors in the conditional form and casts a two-metre downward ray from 0.4 m above the unit. Halo 2 `0x001697c0` tests front-facing BSP geometry, `0x000b7430` sets the selected transform, and `0x000b7360` wakes physics. Authored required starts are consumed first. The ordinary pool resets only on exhaustion, following Halo 1 `0x0013b270` and `0x0013b500`. The Halo 2 spawn selector at `0x002039d0` shares these guest-backed reservations and honors the native wave's exclusions. Explicit starts consume the same bits at `0x00203780`. New maps encode both teleport forms in slot 300 with markers 38 and 39. |
 | `ai_grenades` | Binds native 280. Halo 2 `0x002a4da1` writes the boolean at AI globals `+0x340`, read by grenade logic at `0x001ae48b` and `0x001e2d69`. Halo 1 `0x000f086d` writes its AI grenade gate. |
+| `ai` | **Built.** Binds Halo 2's unnamed 278 (`0x002a4d00`, `(boolean) -> void`), which no retail Halo 2 script calls. Halo 1's `ai` (283, `0x000f08c0`, "turns all AI on or off.") stores the boolean at its AI globals `[0x002fa248]+0` (`0x000f08ed`). Halo 2's 278 stores it at `[0x004f55d0]+0` (`0x002a4d31`), and the next descriptor, 279 (`0x002a4d40`, `() -> boolean`), reads it back. Both `ai_update` loops (Halo 1 `0x0014a162`, Halo 2 `0x001c83c0`) check `+1`, then run actor work only while `+0` is set. On the first tick after it clears they run a teardown once (`0x0014bfc0`, `0x001e3240`) and clear `+2`. a30 and b30 call it. `ai_binds_halo2_s_global_ai_switch` (h1scripts disc test) checks the bytes, the binding and the compiled calls. |
 | `ai_spawn_actor` | Calls the two-argument overload of `ai_place` (291, `0x002a5010`) with count 1. For a literal platoon, the first member is selected as in Halo 1 `0x001422c0`. Ordinary `ai_place` uses the one-argument overload (290). |
 | `ai_go_to_vehicle`, `ai_go_to_vehicle_override` | Both use Halo 2's native pathing and seat assignment at `0x00274a50`. Normal entry excludes actors already queued to board, matching Halo 1 `0x00141819`. Override uses retail 343, which writes the new transport command into slot 1 via `0x001a80e0` and invalidates the commands it replaces. The scenario seat mapping preserves labels such as the transport seat `p_riderlm`. |
 | `ai_vehicle_encounter`, `ai_vehicle_enterable_*`, `ai_going_to_vehicle` | Use salted vehicle handles and persistent HaloScript globals for the registry. Halo 1 `0x00140e70` assigns the vehicle and moves its occupants. Halo 1 `0x0013f2d0` defaults boarding distance to 8 m and the setters add team, actor-type or squad criteria. The continuous control uses Halo 2 `0x00274a50` to pick seats and request native boarding. It moves riders to the assigned squad with `0x001e3400`. The count reads queued type `0x4c` commands and their vehicle dwords as written at `0x00274d47` and copied to the actor queue at `0x001a81de`. The converted registry holds 96 simultaneous vehicle records on maps using the setters. |
 | `ai_link_activation` | Links the encounter groups by direction. A continuous HaloScript call reads each native squad's active bit (`0x00203ca4`), follows links starting from active encounters and calls the native activator `0x00203bf0` for linked squads. The Halo 1 setter `0x0013a680` permits three links per source. |
 | `ai_try_to_fight`, `ai_try_to_fight_player`, `ai_try_to_fight_nothing` | A salted actor handle owns the saved preference, following Halo 1 `0x0013f710`–`0x0013f7c9`. It adds the stock 10-point preferred-target bonus to eligible candidates in Halo 2's scorer `0x00265d30`. Clearing the preference returns the actor to ordinary target selection. |
 | `ai_playfight` | The encounter switch applies Halo 1's 0.3 outgoing damage multiplier (`0x001475f5`, called for the damage owner at `0x0009575c`) in the corresponding Halo 2 actor damage modifier at `0x001c8440`. The burst setup at Halo 2 `0x001fe620` applies Halo 1's 0.6 duration multiplier and doubles angular spread plus one degree (`0x00162436`, `0x00162492`). The pause at `0x001fed70` uses Halo 1's 1.7 multiplier from `0x001616ea`. The game retains its native firing and hit processing. |
-| `ai_timer_expire` | **Built.** Compiles literal platoons to their members and accepts computed AI selections. Halo 1 `0x0013bcfa` truncates delays to 30 Hz ticks. The encounter's index selects its phase every 15 ticks (`0x0013eae0`). The first update with an alerted actor above its baseline latches the countdown (`0x0013db0c`). Later updates subtract 15 ticks. Bit 3 holds the timer until explicit expiry or an actor in the squad reaches combat level 5 (`0x00167bff`). Bit 4 reveals players on expiry (`0x0013e200`). Rebuilt maps use the Halo 1 awareness table on the focused prop. The movement hold operates at `0x001e4403`. |
+| `ai_timer_expire` | **Built.** Compiles literal platoons to their members and accepts computed AI selections. Halo 1 `0x0013bcfa` truncates delays to 30 Hz ticks. The encounter's index selects its phase every 15 ticks (`0x0013eae0`). The first update with an alerted actor above its baseline latches the countdown (`0x0013db0c`). Later updates subtract 15 ticks. Bit 3 holds the timer until explicit expiry or an actor in the squad reaches combat level 5 (`0x00167bff`). Bit 4 reveals players on expiry (`0x0013e200`). Rebuilt maps use the Halo 1 awareness table on the focused prop, with the encounter's alert reports spread and heard shots forcing the release level (below). The hold zeroes the throttle at `0x001e4403` and skips the actor's behaviour update at `0x001a7cc0`. |
 | `ai_status` | Preserves the existing combat-status ladder and comparison lowering in `h1scripts::compile`. The translation survey now counts it as an adapter. The mapping of Halo 1 status 6 to Halo 2 visible status is described in [scripts.md](scripts.md). |
 | `ai_living_fraction` | Binds Halo 2's 327. `0x002a59a0` divides living actors by spawned actors, using the counted result of `0x00273f30`. |
 | `ai_detach`, `ai_braindead_by_unit` | Binds native 288 (`0x002a4f20`), which detaches the unit's actor, and 312 (`0x002a55f0`), which calls `0x00274f30` for the object list and its attached units. |
@@ -127,14 +128,19 @@ remembered targets, and live sight. Older converted maps without the new
 **Built.** The converter uses `h1campaign::squad_roster::prepare`
 from `97830757` for script-created starts. The campaign storage hook
 uses the retail game-state allocator at `0x00200930`. Its squad array
-has room for 384 `0x98`-byte records and a bitmap. The group array
-keeps its 100 retail records and stays at its startup address. Before
+has room for 386 `0x98`-byte records and a bitmap. On a50, 384 squads
+have authored starts or direct script references. The maneuver destinations
+`grav_mus_hall_covenant/grav_mus_manuever` and `control_covenant/squad_all`
+require two more records. The extra records and bitmap word add 308 bytes
+to the reservation. The group array keeps its 100 retail records and stays
+at its startup address. Before
 `0x00200b30` the hook sets the squad header capacity for the loaded
 scenario, with 335 as the retail minimum. The added allocation is part
-of guest game state. A further 6 KiB after the group array holds the
-salted actor alert, recognition and injury state, with one record for each of the 256
-native actor slots (`0x001dfae0`). The added storage changes the native checkpoint layout, so
-affected images and checkpoints need regeneration.
+of guest game state. A further 7 KiB after the group array holds the
+salted actor alert, recognition, injury and report state, with one
+record for each of the 256 native actor slots (`0x001dfae0`). The added
+storage changes the native checkpoint layout, so affected images and
+checkpoints need regeneration.
 
 All named b40 destinations now have independent native squad indices,
 including the 16 vehicle assignments and two infantry destinations beyond
@@ -145,15 +151,79 @@ unnamed automatic destinations use reusable squad orders and keep their
 source order and masks. Slot 300 marker 40 passes the offset of this data
 in the scenario script section.
 
-- The raw perception bridge depends on Halo 2 selecting an interest and
-  recognizing the target. Source-only alert reports and forced combat
-  levels at `0x0014e8a0` and `0x001506e7` still need corresponding events
-  in the bridge. Exact timer parity for those cases remains open. The hold
-  gates native throttle. Halo 1 also checks the hold at individual
-  behavior call sites.
-- A substitute character that upgrades through a Halo 2-only major tag can
-  leave the authored uncover table. Rebuilt major variants with source
-  tags retain their own requirements.
+**Built — alert reports and forced combat levels.** Halo 1 keeps both
+kinds of state on the unit object: the alert-report copy at `0x0014e8a0`
+(Halo 1 `0x0014e200`) moves the alert bits at unit `+0xc0` and the
+sighting timestamps at `+0xb8`, `+0x3e4` and `+0x3e8` from one linked
+unit of an encounter to another, and the event-report path at
+`0x001506e7` (Halo 1 `0x001505f0`, run from the queue `0x0014d3a0`
+walks for actors with no selected prop) sets or clears the forced-combat
+bit 30 of unit `+0x134` from the report's own flag. Halo 2 selects no
+interest for such an actor, so `h1_ai_control::reports` rebuilds the
+events: the timer tick spreads the strongest alarmed contact of an
+encounter to its members (level, alert latch and sighting sample, the
+fields the copy moves), and a muzzle report at the native weapon-fire
+point forces the release level for three seconds — the weapon's
+converted `firing_noise` decides whether the shot reports at all (the
+silent end of Halo 1's trigger `+0x2e` enum) and each hearing actor's
+reach is three times the firing weapon's authored loudness plus the
+hearing unit's radius (Halo 1 `0x0014e379`). The perception table's
+weapon rows carry the loudness from `weap +0x270`. A missing row
+contributes zero loudness. Both feed the timer
+tick and the movement hold.
+Built: script references resolve by group and name
+(`scenario::reference_group`: Halo 1 `antr`, `mod2` and shader groups
+are Halo 2 `jmad`, `mode` and `shad`). A converted weapon shares its
+path with its model and animation graph. By name alone, a10's weapon
+rows named the graph. The rows sit at the end of the references, so a
+weapon row that does not resolve is a conversion error ("missing AI
+weapon reference"). Dropping it would shift every row after it.
+Built: references added after the script compile go in front of the
+perception rows. c10's video mask and noise bitmaps
+(`cutscenes::install_video`) were appended after them, which moved two
+character rows into the weapon section. The disc check
+`every_level_s_scripts_run_on_the_retail_interpreter` reads each
+weapon row's reference group.
+
+**Built — the hold at behaviour sites.** Halo 1 checks the combat-timer
+hold at the individual behaviour call sites, so a held actor does not
+advance its behaviours while its squad counts down. The bridge gated
+only the throttle that `AI_SUBMIT_UNIT_CONTROL` writes. The new
+`AI_UPDATE_BEHAVIORS` point (Halo 2 `0x001a7cc0`, the per-actor walk
+over the 0x40-stride behaviour records at actor `+0x90` dispatched
+through the `0x46eeb8` table) now returns early for an actor whose
+squad timer is active and unreleased, and the throttle hold reuses the
+same predicate (`timers::held`).
+
+**Built — substitute major upgrades.** A substitute character promotes
+through its `char` tag's `+0x24` major reference; when the major is a
+Halo 2-only tag no Halo 1 variant names, the promoted actor found no
+row in the perception table and uncovered without its authored
+requirements. `h1campaign::ai_control_characters::inherit_majors` copies
+each registered character's thresholds onto its major tag (built fixup,
+pinned bytes and alias payloads alike), keeping a major's own rule when
+a source variant supplies one. The disc check reads
+each converted character's major and requires its rule.
+Built: one major cannot carry two authored sets, since the runtime finds
+a promoted actor's row by its character. b30 and c40 place elite
+variants with different thresholds that both promote to `elite_major`.
+A palette character whose thresholds differ from those its major
+already carries is now rebuilt from the `char` definition as
+`h1_ai\promoted_N`, a child of it, and promotes to
+`h1_ai\promoted_N_major`, a child of the major. Both carry the
+variant's thresholds, and the variant's palette entries name the child.
+A child inherits its parent's property blocks and carries its flags,
+unit, creature and style (squad setup reads the unit at `0x00200d11`).
+A conflicting character no palette entry names stays a conversion error.
+Test: `a_conflicting_promotion_gets_its_own_rebuilt_major`.
+Built: a character transplanted from a donor map holds its references
+as remapped datums in its bytes, with no fixups
+(`tags::schema::transplant`). The major reader only looked at fixups, so
+c10's flood combat elite (from `04b_floodlab`) found no major, and
+`floodcombat_elite_shielded` had no row. A built tag's reference is now
+its fixup, or else the datum in its bytes when it names a tag in the
+set. The same reader gives a rebuilt child its parent's unit, creature
+and style. Test: `a_transplanted_characters_major_is_read_from_its_bytes`.
 
 Conversations and command lists have separate converter lanes.
 
@@ -166,10 +236,14 @@ cargo test -p h1scripts --lib ai_control
 cargo test -p boot --lib h1_ai_control
 cargo test -p boot --lib h1_squad_storage
 cargo test -p engine --lib campaign_squad_pool
+cargo test -p engine --lib points
 cargo test -p h1campaign --lib actor_control
+cargo test -p h1campaign --lib squad_roster
+H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso cargo test -p h1objects --test weapon_rebuild_disc firing_noise_census -- --ignored --nocapture
 H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso cargo test -p h1scripts --test disc encounter_controls_emit_live_evaluators_and_native_orders -- --ignored
 H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso cargo test -p h1campaign --test disc every_level_s_scripts_run_on_the_retail_interpreter -- --ignored
 H2_DISC=disc/halo2.iso cargo test -p h1campaign --test disc migration_speech_events_use_retail_order_patterns -- --ignored
 H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso cargo test -p h1campaign --test disc retail_ai_control_hooks_match_spawn_follow_and_uncover_paths -- --ignored
 H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso cargo test -p h1campaign --test disc retail_uncover_and_combat_timer_contact_rules -- --ignored
+H1_ISO=disc/halo1.iso cargo test -p h1campaign --lib campaign_scripts_keep_their_squad_targets_and_fit_the_pools -- --ignored
 ```

@@ -44,6 +44,7 @@ import { dressLayer } from "./layers3d";
 import { loadPlasma, type LevelPlasma } from "./plasma3d";
 import { LevelAoPass } from "./aopass";
 import { machineMatrix, machineNode, placeDevice, placeMachine, type MachineNode } from "./machines3d";
+import { FilmWorld3D } from "./film-world3d";
 import { FrameObjects } from "./objects3d";
 import { buildFeatures } from "./features3d";
 import { TextureSwap, deferTextures, loadFlats, mapAnisotropy, streamTextures, texturesSharing, type TexturePair } from "./textures3d";
@@ -155,6 +156,7 @@ export class ViewerScene {
   readonly renderer: THREE.WebGLRenderer;
   private labels: CSS2DRenderer;
   private scene = new THREE.Scene();
+  private filmWorld = new FilmWorld3D();
   private camera = new THREE.PerspectiveCamera(42, 1, 0.1, 5000);
   /** The near plane when the camera is far out; it shrinks as the camera
    *  comes in (fitNear) so close-ups are not clipped. */
@@ -339,6 +341,7 @@ export class ViewerScene {
     this.library.setEnvironment(this.scene.environment);
     this.effects = new Effects3D(scene, this.camera);
     this.projectiles = new Projectiles(scene);
+    scene.add(this.filmWorld.group);
 
     this.setBounds({ min: [-20, -20, 0], max: [20, 20, 4] }, false);
     this.frameCamera(true);
@@ -505,7 +508,7 @@ export class ViewerScene {
   hasTextures(): boolean { return this.textures.has(); }
   /** The kinds of placed object the level has (scenario3d.ts's names). */
   objectKinds(): string[] { return this.scenarioObjects.kinds(); }
-  setObjects(on: boolean) { this.scenarioObjects.setShown(on); }
+  setObjects(on: boolean) { this.scenarioObjects.setShown(on); this.filmWorld.group.visible = on; }
   setObjectKind(kind: string, on: boolean) { this.scenarioObjects.setKind(kind, on); }
 
   /** Whether the level has teleporters or lifts to show. */
@@ -1469,7 +1472,7 @@ export class ViewerScene {
 
   /** Draws the shots on screen now: a muzzle flash at the player's weapon,
    *  and the shot itself flying along their aim (viewer/projectiles.ts). */
-  private drawShots(now: number) {
+  private drawShots(now: number, frame: MapFrame) {
     const S = this.scale;
     const live = this.opts.reducedMotion ? [] : this.shots.live(now);
     const kept = new Set<number>();
@@ -1482,7 +1485,14 @@ export class ViewerScene {
         this.tracers.set(shot.id, t);
         const k = p.turn.scale.x;
         this.muzzle(p, k, t.group.position);
-        t.group.quaternion.setFromUnitVectors(AXIS_X, this.v1.set(...gameToGl(...s.aim)).normalize());
+        const who = s.actor?.id ?? "p" + shot.index;
+        const barrel = frame.filmEffects?.find(e => e.kind === "barrel" && e.unit === who);
+        if (barrel) {
+          // Keep the model's muzzle offset from the shooter's recorded origin.
+          const dx = barrel.pos[0] - s.x, dy = barrel.pos[1] - s.y, dz = barrel.pos[2] - s.z;
+          t.group.position.add(this.v2.set(...gameToGl(dx, dy, dz)));
+        }
+        t.group.quaternion.setFromUnitVectors(AXIS_X, this.v1.set(...gameToGl(...(barrel?.direction ?? s.aim))).normalize());
         // Never thinner than a few pixels, however far the camera is.
         const far = this.camera.position.distanceTo(t.group.position);
         const width = Math.max(p.biped ? p.biped.height * 0.024 * k : 0.026 * k, far * 0.0022);
@@ -1493,9 +1503,10 @@ export class ViewerScene {
         t.group.visible = true;
         const look = this.shotLook(shot.index);
         // The shot itself flies on its own; a model's beam stays only for a capsule.
-        t.beam.visible = !p.biped;
+        const drawShot = !frame.filmWorld || look.kind === "bullet" || look.kind === "beam";
+        t.beam.visible = !p.biped && drawShot;
         if (look.kind === "melee") t.flash.visible = false;
-        else if (p.biped) {
+        else if (p.biped && drawShot) {
           const dir = this.v1.clone();
           this.projectiles.fire(look, t.group.position, dir, this.shotDistance(shot.index, t.group.position, dir, look.range, now), now);
         }
@@ -1572,9 +1583,31 @@ export class ViewerScene {
     const still = this.opts.reducedMotion;
 
     this.updateMachines(frame.machines ?? [], dt, snap);
+    const livingMachines = frame.filmWorld ? new Set((frame.machines ?? []).flatMap(m =>
+      m.node ? [m.node, THREE.PropertyBinding.sanitizeNodeName(m.node)] : [])) : null;
+    for (const [name, node] of this.machineNodes) {
+      const visible = !livingMachines || livingMachines.has(name);
+      if (node.obj.visible !== visible) { node.obj.visible = visible; this.dirty = true; }
+    }
     for (const node of this.machineNodes.values()) {
       if (placeDevice(node, frame.machinePositions)) this.dirty = true;
     }
+    this.scenarioObjects.setCompleteCensus(!!frame.filmWorld);
+    let world = frame.filmWorld;
+    if (world && frame.objects) {
+      // Mod maps and incomplete art exports may omit a placement mesh.
+      const missing = frame.objects.flatMap(o => o.source && o.p && !o.gone && !this.scenarioObjects.hasPlacement(o.k, o.i)
+        ? [{ ...o.source, pos: o.p, forward: o.f ?? [1, 0, 0] as [number, number, number], up: o.u ?? [0, 0, 1] as [number, number, number] }] : []);
+      if (missing.length) world = { ...world, props: world.props.concat(missing) };
+    }
+    if (this.filmWorld.update(world, p => {
+      const mapModel = this.scenarioObjects.template(p.class, p.kind);
+      if (mapModel) return mapModel;
+      const m = this.models;
+      if (!m) return null;
+      const file = m.table.objects[p.kind] ?? (p.class === "weap" ? weaponFile(m.table, p.kind) : null);
+      return file ? this.library.vehicle(modelUrl(m.root, file, m.table.stamp))?.root ?? null : null;
+    })) this.dirty = true;
     this.frameObjects.update(frame.objects, (frame.vehicles?.length ?? 0) > 0);
 
     // Vehicles first: whoever is in one is drawn as the vehicle. A turret
@@ -1705,9 +1738,10 @@ export class ViewerScene {
       this.dirty = true;
     }
     this.updateBodies(now, dt, seeking);
-    this.drawShots(now);
+    this.drawShots(now, frame);
+    if (this.effects.film(frame.filmEffects ?? [], still)) this.dirty = true;
     if (this.projectiles.update(now)) this.dirty = true;
-    if (this.effects.update(this.feed.liveHits(now), still ? [] : this.feed.liveGrenades(now), S, still)) this.dirty = true;
+    if (this.effects.update(this.feed.liveHits(now), still || frame.filmWorld ? [] : this.feed.liveGrenades(now), S, still)) this.dirty = true;
     this.updateCutaway(dt, highlight);
 
     frame.markers.forEach((m, i) => {
@@ -1870,6 +1904,7 @@ export class ViewerScene {
     this.geoBox.dispose();
     this.effects.dispose();
     this.projectiles.dispose();
+    this.filmWorld.dispose();
     this.library.dispose();
     this.look.dispose();
     disposeTree(this.scene);

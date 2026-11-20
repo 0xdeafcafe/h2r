@@ -33,9 +33,15 @@ pub fn control(m: &dyn GuestMemory, user: usize) -> Option<u32> {
     ptr(m, pc::PLAYER_CONTROL)?.checked_add(pc::PC_HEADER + pc::PC_STRIDE * user as u32)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(remote = "DatumHandle")]
+struct FilmDatum(u32);
+
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Subject {
+    #[serde(with = "FilmDatum")]
     pub player: DatumHandle,
+    #[serde(with = "FilmDatum")]
     pub unit: DatumHandle,
     pub position: [f32; 3],
     pub zoom: u16,

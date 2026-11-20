@@ -234,8 +234,11 @@ impl PresentParameters {
 
     /// Reads the structure.
     pub fn read(mem: &dyn GuestMemory, addr: u32) -> Result<Self, D3dError> {
-        let w = mem.read_words(addr, 17)?;
-        Ok(Self {
+        Ok(Self::from_words(crate::guest::read_array(mem, addr)?))
+    }
+
+    fn from_words(w: [u32; 17]) -> Self {
+        Self {
             width: w[0],
             height: w[1],
             back_buffer_format: w[2],
@@ -250,12 +253,11 @@ impl PresentParameters {
             presentation_interval: w[12],
             buffer_surface: w[13],
             depth_stencil_surface: w[16],
-        })
+        }
     }
 
-    /// Writes the structure (tests).
-    pub fn write(&self, mem: &mut dyn GuestMemory, addr: u32) -> Result<(), D3dError> {
-        let w = [
+    fn words(&self) -> [u32; 17] {
+        [
             self.width,
             self.height,
             self.back_buffer_format,
@@ -273,8 +275,12 @@ impl PresentParameters {
             0,
             0,
             self.depth_stencil_surface,
-        ];
-        for (i, v) in w.into_iter().enumerate() {
+        ]
+    }
+
+    /// Writes the structure (tests).
+    pub fn write(&self, mem: &mut dyn GuestMemory, addr: u32) -> Result<(), D3dError> {
+        for (i, v) in self.words().into_iter().enumerate() {
             mem.write_u32(at(addr, 4 * i as u64)?, v)?;
         }
         Ok(())
@@ -1509,6 +1515,102 @@ impl<B: Backend> Device<B> {
             ));
         }
         let p = PresentParameters::read(mem, params)?;
+        self.allocate_frame_buffers(mem, p)?;
+        let sw = self.swap.as_ref().expect("frame buffers allocated");
+        let host_fmt = sw.format;
+        let buffer_count = sw.buffers.len();
+        let copy_swap = !sw.flip;
+        let pb = self.cfg.push_buffer;
+        let scratch = self.cfg.scratch.addr;
+        let l = self.layout();
+        let bpp = host_fmt.bytes_per_texel().unwrap_or(4);
+        let headers = std::iter::once(self.back_header).chain(self.frame_headers.iter().copied());
+        for (header, &(data, _)) in headers.zip(&sw.buffers) {
+            SurfaceHeader::linear(host_fmt, p.width, p.height, p.width * bpp, data)
+                .write(mem, header)?;
+        }
+        if p.enable_auto_depth_stencil {
+            let dlin = linear_twin(
+                D3DFormat::from_raw(p.auto_depth_stencil_format).expect("validated depth format"),
+            );
+            let dbpp = dlin.bytes_per_texel().unwrap_or(4);
+            SurfaceHeader::linear(dlin, p.width, p.height, p.width * dbpp, DEPTH_BUFFER_DATA)
+                .write(mem, self.depth_header)?;
+        }
+        self.render_target = self.back_header;
+        self.depth_stencil = self.depth_header;
+        // Device object.
+        let dev = l.device;
+        self.store_viewport(
+            mem,
+            Viewport {
+                x: 0,
+                y: 0,
+                width: p.width,
+                height: p.height,
+                min_z: 0.0,
+                max_z: 1.0,
+            },
+        )?;
+        mem.write_u32(dev + field::REF_COUNT, 1)?;
+        mem.write_u32(dev + field::PUT, pb.addr)?;
+        mem.write_u32(dev + field::THRESHOLD, pb.addr + pb.len - PUSH_MARGIN)?;
+        let copy_flag = if copy_swap { COPY_SWAP_FLAG } else { 0 };
+        mem.write_u32(dev + field::FLAGS, behavior_flags & 0x10 | copy_flag)?;
+        mem.write_u32(dev + field::RENDER_TARGET, self.back_header)?;
+        mem.write_u32(dev + field::DEPTH_STENCIL, self.depth_header)?;
+        // `+0x1A10`: frame buffers (back buffers + 1, `0x3fc990`); the
+        // header pointers follow from `+0x1A14`.
+        mem.write_u32(dev + field::FRAME_BUFFER_COUNT, buffer_count as u32)?;
+        mem.write_u32(dev + field::BACK_BUFFER, self.back_header)?;
+        for (i, &h) in self.frame_headers.iter().enumerate() {
+            mem.write_u32(dev + field::DISPLAY_SURFACE + 4 * i as u32, h)?;
+        }
+        mem.write_u32(dev + field::SWAP_COUNT, 0)?;
+        // The GPU's completion word: every fence handed out has passed.
+        let completed = at(scratch, GPU_COMPLETED_OFFSET as u64)?;
+        mem.write_u32(completed, self.fence)?;
+        mem.write_u32(dev + field::GPU_COMPLETED, completed)?;
+        mem.write_u32(dev + field::GPU_TIME, self.fence)?;
+        mem.write_u32(l.p_device, dev)?;
+        mem.write_u32(l.dirty_flags, 0)?;
+        let defaults = StateWords::defaults(p.enable_auto_depth_stencil);
+        defaults.write(mem, &l)?;
+        self.pushed = Some(Arc::new(defaults));
+        if pp_device != 0 {
+            mem.write_u32(pp_device, dev)?;
+        }
+        self.consumed = pb.addr;
+        self.fence_at = pb.addr;
+        if let Some(base) = self.cfg.nv2a_window {
+            // `0x3fc31d`: the register base; the original's idle wait at
+            // `0x3fc3f2` follows, which the window answers at once.
+            let w = match self.regs.take() {
+                Some(w) if w.base() == base => w,
+                _ => RegisterWindow::new(base).map_err(|e| D3dError::invalid(E, e))?,
+            };
+            self.regs = Some(w);
+            mem.write_u32(dev + field::NV2A_REGISTERS, base)?;
+            self.sync_registers(mem)?;
+        }
+        self.params = Some(p);
+        // The lost-image state belongs to the old ring.
+        self.display.shown_lost = false;
+        self.created = true;
+        self.torn_down.clear();
+        self.init_transform_state(mem)?;
+        Ok(0)
+    }
+
+    // Both retail CreateDevice and a fresh film player need the same host
+    // frame buffers and the method-to-slot table from the mounted image.
+    // Guest headers and defaults are written only by retail CreateDevice.
+    fn allocate_frame_buffers(
+        &mut self,
+        mem: &dyn GuestMemory,
+        p: PresentParameters,
+    ) -> Result<(), D3dError> {
+        const E: &str = "Direct3D_CreateDevice";
         if p.buffer_surface != 0 || p.depth_stencil_surface != 0 {
             return Err(D3dError::unimplemented(
                 E,
@@ -1575,13 +1677,13 @@ impl<B: Backend> Device<B> {
             copy_pending: false,
             format: host_fmt,
             size: (p.width, p.height),
-            buffers: buffers.clone(),
+            buffers,
             flip: !copy_swap,
         });
 
         let scratch = self.cfg.scratch.addr;
         self.back_header = scratch;
-        self.frame_headers = (0..buffers.len() as u64 - 1)
+        self.frame_headers = (0..u64::from(count))
             .map(|i| {
                 at(
                     scratch,
@@ -1589,12 +1691,6 @@ impl<B: Backend> Device<B> {
                 )
             })
             .collect::<Result<_, _>>()?;
-        let bpp = host_fmt.bytes_per_texel().unwrap_or(4);
-        let headers = std::iter::once(self.back_header).chain(self.frame_headers.iter().copied());
-        for (header, &(data, _)) in headers.zip(&buffers) {
-            SurfaceHeader::linear(host_fmt, p.width, p.height, p.width * bpp, data)
-                .write(mem, header)?;
-        }
         if p.enable_auto_depth_stencil {
             let dfmt = D3DFormat::from_raw(p.auto_depth_stencil_format)
                 .filter(|f| f.is_depth())
@@ -1611,73 +1707,8 @@ impl<B: Backend> Device<B> {
                     .map_err(D3dError::Backend)?,
             );
             self.depth_header = at(scratch, SurfaceHeader::SIZE as u64)?;
-            let dbpp = dlin.bytes_per_texel().unwrap_or(4);
-            SurfaceHeader::linear(dlin, p.width, p.height, p.width * dbpp, DEPTH_BUFFER_DATA)
-                .write(mem, self.depth_header)?;
         }
-        self.render_target = self.back_header;
-        self.depth_stencil = self.depth_header;
-        // Device object.
-        let dev = l.device;
-        self.store_viewport(
-            mem,
-            Viewport {
-                x: 0,
-                y: 0,
-                width: p.width,
-                height: p.height,
-                min_z: 0.0,
-                max_z: 1.0,
-            },
-        )?;
-        mem.write_u32(dev + field::REF_COUNT, 1)?;
-        mem.write_u32(dev + field::PUT, pb.addr)?;
-        mem.write_u32(dev + field::THRESHOLD, pb.addr + pb.len - PUSH_MARGIN)?;
-        let copy_flag = if copy_swap { COPY_SWAP_FLAG } else { 0 };
-        mem.write_u32(dev + field::FLAGS, behavior_flags & 0x10 | copy_flag)?;
-        mem.write_u32(dev + field::RENDER_TARGET, self.back_header)?;
-        mem.write_u32(dev + field::DEPTH_STENCIL, self.depth_header)?;
-        // `+0x1A10`: frame buffers (back buffers + 1, `0x3fc990`); the
-        // header pointers follow from `+0x1A14`.
-        mem.write_u32(dev + field::FRAME_BUFFER_COUNT, buffers.len() as u32)?;
-        mem.write_u32(dev + field::BACK_BUFFER, self.back_header)?;
-        for (i, &h) in self.frame_headers.iter().enumerate() {
-            mem.write_u32(dev + field::DISPLAY_SURFACE + 4 * i as u32, h)?;
-        }
-        mem.write_u32(dev + field::SWAP_COUNT, 0)?;
-        // The GPU's completion word: every fence handed out has passed.
-        let completed = at(scratch, GPU_COMPLETED_OFFSET as u64)?;
-        mem.write_u32(completed, self.fence)?;
-        mem.write_u32(dev + field::GPU_COMPLETED, completed)?;
-        mem.write_u32(dev + field::GPU_TIME, self.fence)?;
-        mem.write_u32(l.p_device, dev)?;
-        mem.write_u32(l.dirty_flags, 0)?;
-        let defaults = StateWords::defaults(p.enable_auto_depth_stencil);
-        defaults.write(mem, &l)?;
-        self.pushed = Some(Arc::new(defaults));
-        if pp_device != 0 {
-            mem.write_u32(pp_device, dev)?;
-        }
-        self.consumed = pb.addr;
-        self.fence_at = pb.addr;
-        if let Some(base) = self.cfg.nv2a_window {
-            // `0x3fc31d`: the register base; the original's idle wait at
-            // `0x3fc3f2` follows, which the window answers at once.
-            let w = match self.regs.take() {
-                Some(w) if w.base() == base => w,
-                _ => RegisterWindow::new(base).map_err(|e| D3dError::invalid(E, e))?,
-            };
-            self.regs = Some(w);
-            mem.write_u32(dev + field::NV2A_REGISTERS, base)?;
-            self.sync_registers(mem)?;
-        }
-        self.params = Some(p);
-        // The lost-image state belongs to the old ring.
-        self.display.shown_lost = false;
-        self.created = true;
-        self.torn_down.clear();
-        self.init_transform_state(mem)?;
-        Ok(0)
+        Ok(())
     }
 
     /// The device teardown `0x3fc530` (`EAX` = device), which Halo's inlined

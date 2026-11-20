@@ -5,12 +5,24 @@
 //! Halo 1 keeps in its default data, and an animated stream (codec 3,
 //! `8byte_quantized_rotation_only`: i16 quaternions like Halo 1's, float
 //! translations and scales) holding the channels Halo 1 animates. Overlays and
-//! replacements carry only their animated channels. Names and the
-//! mode/class/type/action tree come from [`crate::names`].
+//! replacements repeat their non-identity defaults in the animated stream.
+//! Record names come from [`crate::names`]. The player graph binds the engine
+//! keys by source slot.
 //!
 //! Layouts are those `crates/tags` decodes (`docs/formats/animation.md`).
 
+mod biped;
+mod player;
 mod sentinel;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GraphRole<'a> {
+    Other,
+    Biped(&'a [(String, String)]),
+    Sentinel,
+    Player,
+    CampaignPlayer,
+}
 
 use std::collections::BTreeMap;
 
@@ -44,12 +56,13 @@ pub struct GraphReport {
     pub variants: Vec<String>,
     /// Animations with per-frame root movement in the output resource.
     pub movement: Vec<String>,
-    /// Non-identity default channels of overlays and replacements, dropped.
-    pub dropped_default_channels: usize,
+    /// Non-identity overlay and replacement channels encoded on every frame.
+    pub carried_default_channels: usize,
     /// Zero quaternions in the source, written as identity.
     pub zero_rotations: usize,
-    /// Suspension elements left out: their mass point has no marker on
-    /// the converted model ([`GraphOptions::mass_point_markers`]).
+    /// Suspension elements not written: their mass point has no marker on
+    /// the converted model ([`GraphOptions::mass_point_markers`]). The
+    /// object converter refuses a graph with any (a named error).
     pub suspension_without_marker: Vec<String>,
 }
 
@@ -249,21 +262,25 @@ fn encode(
     } else {
         (1u64 << nodes) - 1
     };
-    let animated: Channels = anim.animated;
+    let mut animated: Channels = anim.animated;
     let defaults: Channels = animated.map(|m| !m & all);
     let static_part = if anim.kind == AnimType::Base && defaults.iter().any(|&m| m != 0) {
         static_stream(&anim.frames[0], defaults)
     } else {
         if anim.kind != AnimType::Base {
-            let p = &anim.frames[0];
-            for n in 0..nodes {
-                let t = p[n];
-                let rot_id = (t.rotation[3].abs() - 1.0).abs() < 1e-4;
-                let trans_id = t.translation.iter().all(|v| v.abs() < 1e-6);
-                let scale_id = (t.scale - 1.0).abs() < 1e-6;
-                for (c, id) in [rot_id, trans_id, scale_id].into_iter().enumerate() {
-                    if defaults[c] >> n & 1 != 0 && !id {
-                        report.dropped_default_channels += 1;
+            // H2 only samples a static stream on base animations. A constant
+            // channel in codec 3 or 8 still participates in the overlay.
+            for (n, t) in anim.frames[0].iter().enumerate() {
+                let driven = [
+                    t.rotation[..3] != [0.0; 3] || t.rotation[3].abs() != 1.0,
+                    t.translation != [0.0; 3],
+                    t.scale != 1.0,
+                ];
+                for (c, non_identity) in driven.into_iter().enumerate() {
+                    let bit = 1u64 << n;
+                    if non_identity && defaults[c] & bit != 0 {
+                        animated[c] |= bit;
+                        report.carried_default_channels += 1;
                     }
                 }
             }
@@ -340,7 +357,7 @@ pub fn animation_names(g: &Graph) -> Vec<(H2Name, bool)> {
 pub(crate) fn borrow_slots(
     g: &Graph,
     names: &[(H2Name, bool)],
-    tree: &mut BTreeMap<String, BTreeMap<String, BTreeMap<String, Vec<(String, usize)>>>>,
+    tree: &mut Actions,
 ) {
     let any = |s: &str| if s.is_empty() { "any".to_owned() } else { s.to_owned() };
     for unit in &g.units {
@@ -382,30 +399,25 @@ pub(crate) fn borrow_slots(
 /// actions of mode, class and type `any`: each slot that names an
 /// animation becomes the action its slot word maps to (`reload-empty` ->
 /// `reload_empty`, `melee` -> `melee_strike_1`), naming that animation,
-/// unless an animation labelled so already took the action. Halo 1 plays
+/// replacing a conflicting label-derived binding. Halo 1 plays
 /// first-person animations by slot; Halo 2 looks the action up by name
 /// (`reload_empty`, `fire_1`, ...), so without this a slot filled by an
 /// animation labelled for another (the assault rifle's `reload-empty` slot
 /// holds its `reload-full`) has no action, and its animation never plays.
-///
-/// A graph whose `fire-1` slot is empty but which has an animation
-/// labelled `firing` ([`FIRST_PERSON_FIRING`]) also gets `fire_1` naming
-/// it ([`first_person_fire`]).
-pub(crate) fn first_person_slots(
-    g: &Graph,
-    tree: &mut BTreeMap<String, BTreeMap<String, BTreeMap<String, Vec<(String, usize)>>>>,
-) {
+pub(crate) fn first_person_slots(g: &Graph, tree: &mut Actions) -> Result<()> {
     if !is_first_person(g) {
-        return;
+        return Ok(());
     }
+    let per_shell = g.first_person_slots.get(23).is_some_and(|&enter| enter >= 0);
     for (k, &slot) in g.first_person_slots.iter().enumerate() {
-        let (Some(word), Ok(index)) = (crate::h1::FIRST_PERSON_SLOTS.get(k), usize::try_from(slot))
-        else {
-            continue;
+        let Some(word) = crate::h1::FIRST_PERSON_SLOTS.get(k) else {
+            if slot == -1 {
+                continue;
+            }
+            return Err(Error::Unsupported(format!(
+                "populated first-person slot {k}"
+            )));
         };
-        if index >= g.animations.len() {
-            continue;
-        }
         let name = map_name(&format!("{} {word}", crate::names::FIRST_PERSON));
         let actions = tree
             .entry(name.mode)
@@ -414,11 +426,42 @@ pub(crate) fn first_person_slots(
             .or_default()
             .entry(name.kind)
             .or_default();
-        if !actions.iter().any(|(a, _)| *a == name.action) {
-            actions.push((name.action, index));
+        if slot == -1 {
+            actions.retain(|(key, _)| *key != name.action);
+            continue;
+        }
+        let index = usize::try_from(slot)
+            .ok()
+            .filter(|&i| i < g.animations.len())
+            .ok_or_else(|| {
+                Error::Invalid(format!("first-person slot {k}: animation index {slot}"))
+            })?;
+        let mut bind = |key: String| {
+            if let Some((_, old)) = actions.iter_mut().find(|(a, _)| a == &key) {
+                *old = index;
+            } else {
+                actions.push((key, index));
+            }
+        };
+        bind(name.action);
+        // H2's first-person state dispatch at 0x166620..0x16664f.
+        // H1 changes ready to state 2 (slot 22) when the weapon is hot
+        // (0xd7448..0xd7463). H1 has one melee and two shotgun exits;
+        // H2's single post-insertion exit uses the loaded exit.
+        let engine_key = match k {
+            13 => Some("melee"),
+            22 => Some("ready_overheated"),
+            23 if per_shell => Some("reload_enter"),
+            7 if per_shell => Some("reload_continue_empty"),
+            8 if per_shell => Some("reload_continue_full"),
+            25 if per_shell => Some("reload_exit"),
+            _ => None,
+        };
+        if let Some(key) = engine_key {
+            bind(key.into());
         }
     }
-    first_person_fire(g, tree);
+    Ok(())
 }
 
 /// Only a weapon's first-person graph (every animation `first-person ...`)
@@ -431,42 +474,8 @@ pub(crate) fn is_first_person(g: &Graph) -> bool {
             .all(|a| a.name.split(' ').next() == Some(crate::names::FIRST_PERSON))
 }
 
-/// The label of the assault rifle's firing animation, which no slot holds.
-pub const FIRST_PERSON_FIRING: &str = "first-person firing";
-
-/// `fire_1` for a first-person graph that has none, naming its
-/// [`FIRST_PERSON_FIRING`] animation. V (every first-person graph on the
-/// disc's maps, Blood Gulch, a10, c10, d40): the assault rifle's is the
-/// only one whose `fire-1` slot (2) is empty while it has a firing
-/// animation, `first-person firing`, a 21-frame base animation no slot
-/// holds; the flamethrower, ball and flag have neither. Halo 1 plays
-/// first-person animations by slot, so it plays none for the assault
-/// rifle's shots (I: no slot names it, and nothing else in the graph
-/// does). Halo 2 gives every weapon that fires a `fire_1` (V: 13 of the
-/// Chief's 17 retail first-person graphs on Coagulation have it; the four
-/// without are the flag, ball, bomb and energy sword, which do not fire),
-/// and without one a converted assault rifle fired with no recoil
-/// animation.
-pub(crate) fn first_person_fire(
-    g: &Graph,
-    tree: &mut BTreeMap<String, BTreeMap<String, BTreeMap<String, Vec<(String, usize)>>>>,
-) {
-    let slot = crate::h1::FIRST_PERSON_SLOTS[2];
-    let fire = map_name(&format!("{} {slot}", crate::names::FIRST_PERSON));
-    let Some(index) = g.animations.iter().position(|a| a.name == FIRST_PERSON_FIRING) else {
-        return;
-    };
-    let actions = tree
-        .entry(fire.mode)
-        .or_default()
-        .entry(fire.class)
-        .or_default()
-        .entry(fire.kind)
-        .or_default();
-    if !actions.iter().any(|(a, _)| *a == fire.action) {
-        actions.push((fire.action, index));
-    }
-}
+type Actions =
+    BTreeMap<String, BTreeMap<String, BTreeMap<String, Vec<(String, usize)>>>>;
 
 /// `(mode, class, type)` -> that type's overlay animations, `(name,
 /// animation index)`.
@@ -486,13 +495,12 @@ pub(crate) type Overlays = BTreeMap<(String, String, String), Vec<(String, usize
 /// `pitch_and_turn` (and the needler's `ammunition`, sprint's `sprint`) in
 /// that block and none of them among its actions. Until converter version
 /// 79 they were actions, so no Halo 1 weapon swayed as it moved. Halo 1's
-/// `overlays` keeps its name; Halo 2 also asks for `pitch_and_turn`, which
-/// Halo 1 has no animation for (S: Halo 1's 9-frame `overlays` is the one
-/// the two have in common by name and frame count; which of Halo 2's two it
-/// corresponds to is not established).
+/// Both engines require nine frames for the overlays slot (H1
+/// 0xd8284..0xd82aa, H2 0x1679a4..0x1679ae). H2 samples its additional
+/// pitch_and_turn slot separately (0x16791b..0x16796b).
 pub(crate) fn first_person_overlays(
     g: &Graph,
-    tree: &mut BTreeMap<String, BTreeMap<String, BTreeMap<String, Vec<(String, usize)>>>>,
+    tree: &mut Actions,
 ) -> Overlays {
     let mut out = Overlays::new();
     if !is_first_person(g) && !is_vehicle(g) {
@@ -703,14 +711,14 @@ pub fn convert_graph_with(
     skeleton: Option<&[AnimNode]>,
     opts: &GraphOptions,
 ) -> Result<(Converted, GraphReport)> {
-    convert_graph_for(g, skeleton, opts, false)
+    convert_graph_for(g, skeleton, opts, GraphRole::Other)
 }
 
 pub(crate) fn convert_graph_for(
     g: &Graph,
     skeleton: Option<&[AnimNode]>,
     opts: &GraphOptions,
-    sentinel: bool,
+    role: GraphRole<'_>,
 ) -> Result<(Converted, GraphReport)> {
     let node_list: &[AnimNode] = match (g.nodes.is_empty(), skeleton) {
         (false, _) => &g.nodes,
@@ -739,14 +747,21 @@ pub(crate) fn convert_graph_for(
     let mut report = GraphReport::default();
     let mut resource = Vec::new();
     let mut records = Vec::new();
-    let mut tree: BTreeMap<String, BTreeMap<String, BTreeMap<String, Vec<(String, usize)>>>> =
-        BTreeMap::new();
+    let mut tree = Actions::new();
     let names = animation_names(g);
     let mut plan = vehicle_plan(g, &names, opts, &mut report);
-    let sentinel_overlays = if sentinel {
+    let mut slot_overlays = if role == GraphRole::Sentinel {
         sentinel::bindings(g, &mut plan, &mut tree)
     } else {
         Overlays::new()
+    };
+    let player = matches!(role, GraphRole::Player | GraphRole::CampaignPlayer);
+    let npc = matches!(role, GraphRole::Biped(_) | GraphRole::Sentinel);
+    let fp = is_first_person(g);
+    let mut player_data = if player {
+        player::bindings(g, &mut tree, &mut slot_overlays, &mut plan)?
+    } else {
+        player::PlayerData::default()
     };
     for (i, anim) in g.animations.iter().enumerate() {
         if anim.frame_count == 0 {
@@ -762,7 +777,7 @@ pub(crate) fn convert_graph_for(
         if anim.frame_info_type != 0 {
             report.movement.push(anim.name.clone());
         }
-        if !plan.outside.contains(&i) {
+        if !player && !plan.outside.contains(&i) {
             tree.entry(name.mode)
                 .or_default()
                 .entry(name.class)
@@ -817,12 +832,34 @@ pub(crate) fn convert_graph_for(
             .put_i16(0x3e, movement_size)
             .put_u16(0x42, static_size as u16)
             .put_u32(0x48, animated_size as u32);
+        if player || fp || npc {
+            // H1 0xa318e caps the loop start. H2 0x1c6810 consumes it directly.
+            let start = (anim.loop_frame as i16).max(0) as u16;
+            r.put_u16(0x2e, start.min(anim.frame_count - 1));
+        }
+        if player || fp {
+            player::playback(anim, &mut r)?;
+        }
+        if player || npc {
+            player::permutation(g, i, &mut r)?;
+        }
         records.push(r);
     }
-    borrow_slots(g, &names, &mut tree);
-    first_person_slots(g, &mut tree);
+    if !player {
+        borrow_slots(g, &names, &mut tree);
+    }
+    match role {
+        GraphRole::Biped(weapon_classes) => {
+            biped::bindings(g, &mut tree, &mut slot_overlays, weapon_classes)?;
+        }
+        GraphRole::CampaignPlayer | GraphRole::Sentinel => {
+            biped::bindings(g, &mut tree, &mut slot_overlays, &[])?;
+        }
+        _ => {}
+    }
+    first_person_slots(g, &mut tree)?;
     let mut overlays = first_person_overlays(g, &mut tree);
-    overlays.extend(sentinel_overlays);
+    overlays.extend(slot_overlays);
     if !plan.slot_overlays.is_empty() {
         let any = || "any".to_owned();
         tree.entry(any())
@@ -844,6 +881,9 @@ pub(crate) fn convert_graph_for(
         .iter()
         .map(|n| {
             let mut b = Block::zeroed(NODE_LEN);
+            if player || npc {
+                b.put_u16(0xa, player::node_flags(n));
+            }
             b.string_id(0, &n.name)
                 .put_i16(4, n.next_sibling)
                 .put_i16(6, n.first_child)
@@ -877,6 +917,9 @@ pub(crate) fn convert_graph_for(
                                 .map(|o| o.iter().map(action_block).collect::<Vec<_>>())
                                 .unwrap_or_default();
                             let mut b = Block::zeroed(TYPE_LEN);
+                            if player && mode == "any" && class == "any" && kind == "any" {
+                                player_data.write_damage(&mut b);
+                            }
                             b.string_id(0, &kind);
                             b.block(4, actions.len() as u32, sorted_array(actions, ACTION_LEN));
                             if !over.is_empty() {
@@ -887,6 +930,9 @@ pub(crate) fn convert_graph_for(
                         .collect::<Vec<_>>();
                     let mut b = Block::zeroed(CLASS_LEN);
                     b.string_id(0, &class);
+                    if player {
+                        player_data.write_ik(&mode, &class, &mut b);
+                    }
                     b.block(4, types.len() as u32, sorted_array(types, TYPE_LEN));
                     b
                 })
@@ -907,6 +953,9 @@ pub(crate) fn convert_graph_for(
 
     let mut h = Block::zeroed(HEADER_LEN);
     h.tag_ref(0, map::TagId::NULL);
+    if player || npc {
+        player::write_masks(node_list, &mut h);
+    }
     h.block(0x0c, node_blocks.len() as u32, array(node_blocks, NODE_LEN));
     if !plan.screens.is_empty() {
         let screens = plan
@@ -933,7 +982,7 @@ pub(crate) fn convert_graph_for(
         p.string_id(0, crate::names::FIRST_PERSON_MODE)
             .string_id(4, crate::names::FIRST_PERSON_MODE);
         h.block(0x54, 1, p);
-    } else if is_vehicle(g) {
+    } else if !plan.weapon_pairs.is_empty() {
         // `(any, any)` and each weapon type's `(type, class)` from Halo 1's
         // tables, as retail vehicle graphs hold (V: the ghost's `(any,
         // any)`, `(gun, fixed)`; the scorpion cannon's `(cannon, fixed)`,

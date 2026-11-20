@@ -28,7 +28,7 @@ use map::build::{Block, FixupKind, RawId, RawRef, TagPayload, TagSet};
 use map::{FourCC, Map, TagId};
 use tags::repo::{
     Body, BuildOptions, LooseTag, MapSource, Node, RawRes, Region, TagKey, TagSource, Tree,
-    closure, to_tag_set,
+    Value, closure, to_tag_set,
 };
 use tags::schema::{Field, Struct};
 
@@ -54,8 +54,6 @@ pub struct ScratchReport {
     pub built_here: usize,
     /// Datum words rewritten in them.
     pub words: usize,
-    /// References to tags no source holds, nulled: (from, to).
-    pub dangling: Vec<(String, String)>,
     /// The sound gestalt cut to the kept sounds ([`crate::compact`]), or
     /// why it stays whole.
     pub gestalt: Option<crate::compact::Compacted>,
@@ -64,6 +62,56 @@ pub struct ScratchReport {
 
 fn invalid(s: impl Into<String>) -> Error {
     Error::Fresh(s.into())
+}
+
+/// Where `tree` names `target`: each field as its offsets from the root,
+/// with the element index where an array has more than one.
+fn ref_fields(tree: &Tree, target: &TagKey) -> Vec<String> {
+    fn go(t: &Tree, n: u32, target: &TagKey, path: &str, depth: u32, out: &mut Vec<String>) {
+        let Some(node) = t.nodes.get(n as usize).filter(|_| depth <= 64) else {
+            return;
+        };
+        let size = node.size.max(1);
+        for (o, v) in &node.fields {
+            let at = if node.count > 1 {
+                format!("{path}[{}]+{:#x}", o / size, o % size)
+            } else {
+                format!("{path}+{:#x}", o % size)
+            };
+            match v {
+                Value::Ref(k) if k == target => out.push(at),
+                Value::Block(c) | Value::Data(c) => go(t, *c, target, &at, depth + 1, out),
+                _ => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    go(tree, 0, target, "", 0, &mut out);
+    out.dedup();
+    out
+}
+
+/// The error for references to tags the map cannot hold: (the tag naming
+/// one, the tag named, the fields naming it). A reference is never nulled:
+/// the writer of the naming tag, or the conversion that should have built
+/// the named one, is what to fix.
+fn dangling(map: &str, refs: &[(TagKey, TagKey, Vec<String>)]) -> Error {
+    let list: Vec<String> = refs
+        .iter()
+        .take(8)
+        .map(|(from, to, fields)| {
+            if from == to {
+                format!("{to} (a root: the globals, the keep list, or named by the scenario or BSPs)")
+            } else {
+                format!("{from} {} -> {to}", fields.join(", "))
+            }
+        })
+        .collect();
+    invalid(format!(
+        "{map}: {} references to tags no source holds: {}",
+        refs.len(),
+        list.join("; ")
+    ))
 }
 
 /// The two sources as one: a key the conversion built or edited reads from
@@ -346,8 +394,20 @@ pub fn build(
     roots.dedup();
     let mut c = closure(src, &roots).map_err(repo)?;
     let mut report = ScratchReport::default();
-    for (k, from) in &c.missing {
-        report.dangling.push((from.to_string(), k.to_string()));
+    if !c.missing.is_empty() {
+        let refs: Vec<_> = c
+            .missing
+            .iter()
+            .map(|(to, from)| {
+                let fields = c
+                    .get(from)
+                    .and_then(|t| t.tree())
+                    .map(|t| ref_fields(t, to))
+                    .unwrap_or_default();
+                (from.clone(), to.clone(), fields)
+            })
+            .collect();
+        return Err(dangling(&set.name, &refs));
     }
     c.tags.retain(|t| !built_here(t.key.group));
     // A tag the repository could not take exactly would be built short.
@@ -388,8 +448,21 @@ pub fn build(
         index_word_14: set.index_word_14,
     };
     let (mut out, built) = to_tag_set(src, &tags, &opts).map_err(repo)?;
-    for (from, to) in built.dangling {
-        report.dangling.push((from.to_string(), to.to_string()));
+    if !built.dangling.is_empty() {
+        let refs: Vec<_> = built
+            .dangling
+            .iter()
+            .map(|(from, to)| {
+                let fields = tags
+                    .iter()
+                    .find(|t| &t.key == from)
+                    .and_then(|t| t.tree())
+                    .map(|t| ref_fields(t, to))
+                    .unwrap_or_default();
+                (from.clone(), to.clone(), fields)
+            })
+            .collect();
+        return Err(dangling(&set.name, &refs));
     }
     scope_shares(&mut out);
     out.scenario_path = set.scenario_path.clone();
@@ -415,6 +488,8 @@ pub fn build(
         words: 0,
         untyped: false,
         error: None,
+        tag: String::new(),
+        path: Vec::new(),
     };
     let mut payloads = Vec::new();
     for (id, key) in &here {
@@ -423,6 +498,8 @@ pub fn build(
         };
         let mut b = b.clone();
         cx.untyped = key.group == FourCC(*b"scnr");
+        cx.tag = key.to_string();
+        cx.path.clear();
         cx.block(
             &mut b,
             tags::schema::Schema::builtin().groups.get(&key.group),
@@ -459,14 +536,34 @@ struct Transfer<'a> {
     /// edge's two `u16` vertices).
     untyped: bool,
     error: Option<Error>,
+    /// The tag being moved, and the block offsets down to the one being
+    /// rewritten, for the error naming a datum the map does not hold.
+    tag: String,
+    path: Vec<u32>,
 }
 
 impl Transfer<'_> {
-    fn id(&mut self, d: TagId) -> TagId {
+    /// `d` in the new set. A datum the new set does not hold is an error
+    /// naming the field (`at`, in the block being rewritten), never null.
+    fn id(&mut self, d: TagId, at: u32) -> TagId {
         if d == TagId::NULL {
             return d;
         }
-        (self.map_id)(d).unwrap_or(TagId::NULL)
+        if let Some(n) = (self.map_id)(d) {
+            return n;
+        }
+        let path: String = self
+            .path
+            .iter()
+            .chain([&at])
+            .map(|o| format!("+{o:#x}"))
+            .collect();
+        let named = key_of(self.set, d).map_or_else(|| format!("{d}"), |k| k.to_string());
+        self.error.get_or_insert(invalid(format!(
+            "{}: {} {path} names {named}, which the map does not hold",
+            self.set.name, self.tag
+        )));
+        TagId::NULL
     }
 
     /// `b` (a tree of `self.set`) rewritten for `out`.
@@ -492,7 +589,7 @@ impl Transfer<'_> {
             }
             let d = TagId(u32::from_le_bytes(b.bytes[k..k + 4].try_into().expect("4")));
             if d.0 != u32::MAX && key_of(self.set, d).is_some() {
-                let n = self.id(d);
+                let n = self.id(d, k as u32);
                 b.bytes[k..k + 4].copy_from_slice(&n.0.to_le_bytes());
                 self.words += 1;
             }
@@ -503,9 +600,11 @@ impl Transfer<'_> {
                 | FixupKind::Data(child)
                 | FixupKind::Pointer(child) => {
                     let c = s.and_then(|s| child_struct(s, f.offset));
-                    self.block(child, c, out)
+                    self.path.push(f.offset);
+                    self.block(child, c, out);
+                    self.path.pop();
                 }
-                FixupKind::TagRef(t) | FixupKind::TagId(t) => *t = self.id(*t),
+                FixupKind::TagRef(t) | FixupKind::TagId(t) => *t = self.id(*t, f.offset),
                 FixupKind::TagOffset { .. } => {
                     self.error.get_or_insert(Error::Fresh(
                         "a scenario or BSP tree points into another tag's bytes".into(),
@@ -528,8 +627,8 @@ impl Transfer<'_> {
                         Some(&n) => n,
                         None => {
                             let s = &self.set.bsps[*section];
-                            let bsp = self.id(s.bsp);
-                            let lightmap = s.lightmap.map(|l| self.id(l));
+                            let bsp = self.id(s.bsp, f.offset);
+                            let lightmap = s.lightmap.map(|l| self.id(l, f.offset));
                             let n = out.add_bsp(bsp, lightmap);
                             self.sections.insert(*section, n);
                             n
@@ -598,6 +697,102 @@ mod tests {
         assert_ne!(k1, Some(42));
         // The gestalt shares nothing.
         assert_eq!(key(&set, u), None);
+    }
+
+    /// An in-memory source.
+    struct Mem(Vec<LooseTag>);
+
+    impl TagSource for Mem {
+        fn keys(&self) -> Vec<TagKey> {
+            self.0.iter().map(|t| t.key.clone()).collect()
+        }
+        fn read(&mut self, key: &TagKey) -> tags::repo::Result<Option<LooseTag>> {
+            Ok(self.0.iter().find(|t| &t.key == key).cloned())
+        }
+        fn raw(&mut self, _: &RawRes) -> tags::repo::Result<Vec<u8>> {
+            Err(tags::repo::Error::Invalid("no raw".into()))
+        }
+        fn groups(&self) -> Vec<map::TagGroup> {
+            Vec::new()
+        }
+    }
+
+    /// A globals tag naming a bitmap no source holds: the build fails,
+    /// naming the map, the tag, the field and the missing tag, where it
+    /// used to null the reference and go on.
+    #[test]
+    fn a_reference_no_source_holds_fails_the_build_naming_the_field() {
+        let mut set = TagSet::new(CacheType::Multiplayer, "m", "s");
+        for g in [b"matg", b"scnr"] {
+            set.add_group(FourCC(*g), None, None);
+        }
+        let empty = || TagPayload::Built(Block::zeroed(0x10));
+        set.globals = set
+            .add_tag(FourCC(*b"matg"), "globals\\globals", empty())
+            .unwrap();
+        set.scenario = set
+            .add_tag(FourCC(*b"scnr"), "levels\\m\\m", empty())
+            .unwrap();
+        let gone = TagKey::new(FourCC(*b"bitm"), "a\\gone");
+        let node = |size: u32, count: u32, fields| Node {
+            bytes: vec![0; (size * count) as usize],
+            count,
+            size,
+            align: 4,
+            fields,
+        };
+        let matg = LooseTag {
+            key: TagKey::new(FourCC(*b"matg"), "globals\\globals"),
+            body: Body::Tree(Tree {
+                region: Region::Metadata,
+                nodes: vec![
+                    node(0x10, 1, vec![(0, Value::Block(1))]),
+                    node(0xc, 2, vec![(0xc + 4, Value::Ref(gone))]),
+                ],
+                raws: Vec::new(),
+                losses: Vec::new(),
+            }),
+        };
+        let keep = Keep {
+            palettes: &[],
+            groups: &[],
+            prefixes: &[],
+        };
+        let e = build(&mut Mem(vec![matg]), &set, &keep, &[], &HashSet::new(), None)
+            .map(|_| ())
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("m: 1 references to tags no source holds"), "{e}");
+        assert!(
+            e.contains("globals\\globals.matg +0x0[1]+0x4 -> a\\gone.bitm"),
+            "{e}"
+        );
+    }
+
+    /// A datum the scenario or a BSP names that the new set lacks is an
+    /// error naming the field, not a null datum.
+    #[test]
+    fn a_datum_the_new_set_lacks_is_an_error_naming_the_field() {
+        let mut set = TagSet::new(CacheType::Multiplayer, "m", "s");
+        let shad = tag(&mut set, b"shad", "cliff");
+        let none = |_: TagId| -> Option<TagId> { None };
+        let mut cx = Transfer {
+            set: &set,
+            map_id: &none,
+            raws: HashMap::new(),
+            sections: HashMap::new(),
+            words: 0,
+            untyped: false,
+            error: None,
+            tag: "levels\\m\\m.sbsp".into(),
+            path: vec![0x58],
+        };
+        assert_eq!(cx.id(shad, 0x24), TagId::NULL);
+        let e = cx.error.expect("an error").to_string();
+        assert!(
+            e.contains("m: levels\\m\\m.sbsp +0x58+0x24 names cliff.shad, which the map does not hold"),
+            "{e}"
+        );
     }
 
     #[test]

@@ -310,6 +310,10 @@ macro_rules! globals {
 }
 
 points! { ALL;
+    /// Length of the vector at EAX. The original returns the float in x87 ST(0).
+    VECTOR_LENGTH_3D @ 0x0002_4590: [fn(vector: eax) ret 0], Hot; "docs/halo1/objects.md";
+    /// Initialize the damage packet at EDX from the damage effect datum on the stack.
+    DAMAGE_DATA_INIT @ 0x000d_6660: [fn(packet: edx, effect: stack 0) ret 4]; "docs/halo1/objects.md";
     SIM_UNIT_POSE @ 0x0011_2070: [fn(unit: stack 0, nodes: stack 1, source: stack 2, target: stack 3) ret 16], Hot; "docs/perf/sim-budget.md";
     SIM_ANIMATION_STREAM @ 0x0027_98a0: [opaque], Hot; "docs/perf/sim-budget.md";
     SIM_GRAPH_RESOLVE @ 0x001d_d9d0: [fn(graph: edx, clip: stack 0) ret 4], Hot; "docs/perf/sim-budget.md";
@@ -346,11 +350,40 @@ points! { ALL;
     AI_FIRE_PAUSE @ 0x001f_ed70: [fn(actor: eax, firing: ecx) ret 0], Hot; "docs/halo1/ai-control.md";
     /// Stages the actor's movement, aim and trigger commands for its unit.
     AI_SUBMIT_UNIT_CONTROL @ 0x001e_4390: [fn(actor: eax) ret 0], Hot; "docs/halo1/ai-control.md";
+    /// One actor's queued behaviors update: walks the 0x40-stride records
+    /// at actor +0x90 through the dispatch table at 0x46eeb8.
+    AI_UPDATE_BEHAVIORS @ 0x001a_7cc0: [fn(actor: stack 0) ret 4], Hot; "docs/halo1/ai-control.md";
     HS_UNIT_GRENADE_COUNT @ 0x002a_4310: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
     /// HaloScript's object awareness evaluator, index 305.
     HS_AI_SEE_OBJECT @ 0x002a_53b0: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
     HS_CONVERSATION_SPAWN_WAVE @ 0x0020_1520: [fn(count: eax, squad: stack 0, location: stack 1) ret 16]; "docs/halo1/ai.md";
     HS_CONVERSATION_UNIT_NEW @ 0x000c_4410: [fn(unit: stack 0) ret 12]; "docs/halo1/ai.md";
+    /// Initializes the unit's speech block from its model and variant name.
+    UNIT_DIALOGUE_SET_VARIANT @ 0x0011_4ec0: [fn(unit: eax, variant: stack 0) ret 4]; "docs/halo1/ai.md";
+    /// Enqueue the selected candidate in the AI dialogue scheduler.
+    AI_DIALOGUE_ENQUEUE @ 0x0020_d0c0: [fn(vocabulary: stack 0, time: stack 1, stimulus: stack 2, candidate: stack 3, context: stack 4, parent: stack 5, queued: stack 6) -> al ret 28]; "docs/halo1/ai.md";
+    /// Check whether a unit can play a line and resolve its sound.
+    UNIT_DIALOGUE_CHECK @ 0x0011_4520: [fn(unit: eax, vocalization: edx, priority: stack 0, speech_time: stack 1, sound: stack 2) -> al ret 12]; "docs/halo1/ai.md";
+    /// Installs the prepared utterance into the per-unit speech block.
+    UNIT_DIALOGUE_SET_LINE @ 0x0011_4680: [fn(unit: eax, line: ebx) ret 0]; "docs/halo1/ai.md";
+    /// Update the unit's playing and queued speech.
+    UNIT_DIALOGUE_UPDATE @ 0x0011_4c60: [fn(unit: eax) ret 0], Hot; "docs/halo1/ai.md";
+    /// Clears body depletion and restores a reanimating unit.
+    UNIT_REANIMATE @ 0x000c_af00: [fn(unit: eax) ret 0]; "docs/halo1/ai.md";
+    /// Reports a nonlethal hit to the victim's and aggressor's AI.
+    AI_INJURY_NOTICE @ 0x001c_9c80: [fn(victim: eax, owner: edx, category: stack 0, amount: stack 1, direction: stack 2, deferred: stack 3) ret 16]; "docs/halo1/ai.md";
+    /// Reports a depleted unit body and the player or unit responsible.
+    AI_KILL_NOTICE @ 0x001c_95d0: [fn(victim: stack 0, owner: stack 1, category: stack 2, amount: stack 3) ret 16]; "docs/halo1/ai.md";
+    /// Announces a vocalization event from an actor and its perceived object.
+    AI_ACTOR_VOCALIZE @ 0x001f_b7e0: [fn(event: eax, actor: ecx, context: edx, object: stack 0, other: stack 1) -> al ret 8]; "docs/halo1/ai.md";
+    /// Notifies the AI when native dismount action 29 has been accepted.
+    AI_DISMOUNT_NOTICE @ 0x001b_ba20: [fn(actor: eax) ret 0]; "docs/halo1/ai.md";
+    /// Enters the leaping variant of the native melee charge.
+    AI_MELEE_LEAP_ENTER @ 0x001a_b380: [fn(actor: stack 0, state: stack 1) -> al ret 8]; "docs/halo1/ai.md";
+    /// Dispatches the global vocalization stimulus and its two participants.
+    AI_DIALOGUE_STIMULUS @ 0x0020_ba60: [fn(event: stack 0, speaker: stack 1, object: stack 2, relation: stack 3, other: stack 4, context: stack 5) -> al ret 24]; "docs/halo1/ai.md";
+    /// Enters native postcombat behavior.
+    AI_POSTCOMBAT_ENTER @ 0x001b_4240: [fn(actor: stack 0, state: stack 1) -> al ret 8]; "docs/halo1/ai.md";
     HS_CONVERSATION_MAP_DISPOSE @ 0x0020_9290: [fn() ret 0]; "docs/halo1/ai.md";
     /// `game_tick`: the per-tick phases, then the tick count. Called once per
     /// simulated tick by `game_update_ticks`.
@@ -426,6 +459,8 @@ points! { ALL;
     /// One weapon barrel fires: stdcall `(weapon object datum, barrel
     /// index)`. One call is one shot (likely).
     WEAPON_FIRE @ 0x0010_4150: [fn(weapon: stack 0, barrel: stack 1) ret 8], Optional; "docs/live/live-gamestate.md";
+    /// Object deletion before the salted header and body are freed.
+    OBJECT_DELETE @ 0x000b_8540: [fn(object: stack 0) ret 4], Optional; "docs/game/skulls.md";
     /// Attach a weapon to a unit, or detach when the unit is -1.
     ITEM_SET_UNIT @ 0x0010_ca80: [fn(item: eax, unit: stack 0) ret 4], Optional; "docs/game/bots.md";
     /// Successful power-up application before the consumed equipment is deleted.
@@ -444,6 +479,9 @@ points! { ALL;
     BODY_DAMAGE @ 0x000d_8cb0: [fn(record: edi, object: stack 0) ret 12], Optional; "docs/game/game-options.md";
     /// Wheel and tread controllers after the driver inputs have been read.
     VEHICLE_TREAD_UPDATE @ 0x000f_1cd0: [fn(object: ebx, contacts: stack 0) ret 4]; "docs/halo1/role-audit.md";
+    UNIT_CONTROL_REFRESH @ 0x000c_e0c0: [fn(object: edi) ret 0]; "docs/halo1/role-audit.md";
+    VEHICLE_GRAVITY_DELTA @ 0x000f_7ed0: [fn(object: eax, delta: esi) ret 0]; "docs/halo1/role-audit.md";
+    VEHICLE_CONTACT_FORCES @ 0x0020_6090: [fn(contacts: stack 0, force: stack 1, torque: stack 2) -> al ret 12]; "docs/halo1/role-audit.md";
     VEHICLE_CONTACT_SOLVE @ 0x0020_56e0: [fn(object: stack 0, contacts: stack 1, fraction: stack 2, force: stack 3, torque: stack 4) ret 20]; "docs/halo1/role-audit.md";
     VEHICLE_WHEEL_UPDATE @ 0x000f_1f80: [fn(object: stack 0, contacts: stack 1) ret 8]; "docs/halo1/role-audit.md";
     /// An object's damage update: stdcall `(object datum)`, AL whether
@@ -455,6 +493,14 @@ points! { ALL;
     EFFECT_STEP_EMITTERS @ 0x0017_9020: [fn(effect: stack 0, elapsed: stack 1, dt: stack 2) ret 12]; "docs/halo1/objects.md";
     /// Dispatch one native movement operator over an emitter's particle list.
     PARTICLE_MOVEMENT_STAGE @ 0x002b_8da0: [fn(stage: eax, head: esi, dt: stack 1) ret 12]; "docs/halo1/objects.md";
+    /// Cloth geometry update, per-node integration and material lookup.
+    CLOTH_UPDATE @ 0x0011_68a0: [fn() ret 0]; "docs/halo1/objects.md";
+    CLOTH_INTEGRATE @ 0x0011_8140: [fn(cloth: eax) ret 0]; "docs/halo1/objects.md";
+    CLOTH_SHADER @ 0x0011_6ac0: [fn(cloth: stack 0) -> eax ret 4]; "docs/halo1/objects.md";
+    /// Queue an attachment endpoint with its animated marker transform (0x41bb3).
+    LIGHTNING_QUEUE @ 0x0004_29a0: [fn(owner: stack 0, tag: stack 1) ret 24]; "docs/halo1/objects.md";
+    /// Submit 0x18-byte light-volume samples (0x4f792).
+    LIGHT_VOLUME_SPRITES @ 0x0004_f7e0: [fn(bitmap: ecx, samples: stack 0, count: stack 1) -> al ret 32]; "docs/halo1/objects.md";
     /// Initialise a particle's local position and velocity at birth.
     PARTICLE_INITIALISE @ 0x0024_9170: [fn(emitter: stack 0, particle: edi) ret 8]; "docs/halo1/objects.md";
     /// Begin, update and remove a command on the Halo 2 AI scheduler.
@@ -796,6 +842,10 @@ points! { ALL;
     HUD_MATERIAL_CONSTANTS @ 0x0001_8ee0: [fn(material: stack 0) ret 4], Optional; "docs/halo1/text.md";
     HUD_MATERIAL_PIXEL_SHADER @ 0x0001_b050: [fn(material: esi) ret 0], Optional; "docs/halo1/text.md";
     HUD_MATERIAL_READY @ 0x0001_cd90: [fn() ret 0], Optional; "docs/halo1/text.md";
+    HUD_WIDGET_INPUTS @ 0x0013_ad48: [fn(weapon: ecx, hud: edx, user: stack 0, inputs: stack 1, output: stack 2) ret 12], Optional; "docs/halo1/hud.md";
+    HUD_WIDGET_STRING @ 0x0022_a871: [fn(widget: ebx, hud: stack 0, values: stack 1, output: stack 2, font: stack 3) ret 16], Optional; "docs/halo1/hud.md";
+    HUD_WIDGET_EFFECTS @ 0x0022_bcaf: [fn(effects: eax, y_basis: ebx, origin: stack 0, x_basis: stack 1) ret 8], Optional; "docs/halo1/hud.md";
+    HUD_WIDGET_SPRITE @ 0x0022_ae21: [fn(widget: ecx, bounds: eax, user: stack 0, image: stack 1, width: stack 2, height: stack 3) ret 16], Optional; "docs/halo1/hud.md";
     HUD_WIDGET_GATE @ 0x0013_ac87: [fn(state: eax, weapon: ecx, word_c: edx, word_a: stack 0, word_b: stack 1, word_d: stack 2) -> al ret 12], Optional; "docs/editor/hud-editor.md";
     HUD_SENSOR_DRAW @ 0x001a_2823: [fn(screen: eax, user: ecx) ret 0], Optional; "docs/halo1/hud.md";
     HUD_TEXT_TAIL @ 0x0015_f120: [fn(player: eax, out: esi, capacity: stack 0, mode: stack 1) -> al ret 8], Optional; "docs/halo1/text.md";
@@ -960,7 +1010,7 @@ points! { ALL;
     SIM_STATE_RECEIVED @ 0x0006_aa20: [fn(world: edi, length: stack 0) -> al ret 4], Optional; "docs/live/live-coop.md";
     /// Apply one update record (stack): player entries, the player-set
     /// change (`+0xDD0`, mask `+0xDD4`), events, the save flag (`+0x403C`).
-    SIM_UPDATE_APPLY @ 0x0006_83a0: [opaque], Optional; "docs/live/live-coop.md";
+    SIM_UPDATE_APPLY @ 0x0006_83a0: [fn(update: stack 0) ret 4], Optional; "docs/live/live-coop.md";
     /// Synchronous: send this console's player actions for the tick to
     /// the machine that builds the updates (message `0x28`, `0x180`
     /// bytes, up to four local players).
@@ -991,6 +1041,15 @@ points! { ALL;
     /// list, sorted, into the data array (stdcall `(array, campaign id)`).
     /// 1.0 asks for campaign 1 only (`0x19c190`).
     CAMPAIGN_LEVEL_LIST @ 0x0019_c6d0: [fn(array: stack 0, campaign: stack 1) ret 8]; "docs/halo1/campaign-picker.md";
+    CAMPAIGN_OPTIONS_LIST @ 0x002b_14dc: [fn(list: ebx, player: stack 0) -> eax ret 4]; "docs/halo1/campaign-picker.md";
+    CAMPAIGN_OPTION_TEXT @ 0x002b_1613: [fn(list: ecx, item: stack 0, arg: stack 1) ret 8]; "docs/halo1/campaign-picker.md";
+    CAMPAIGN_OPTION_CHOSEN @ 0x002b_166d: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/halo1/campaign-picker.md";
+    PROFILE_LAST_MAP @ 0x0019_10d9: [fn() -> eax ret 0]; "docs/halo1/campaign-picker.md";
+    PROFILE_CHECKPOINT_SET @ 0x0019_048c: [fn(slot: stack 0) ret 4]; "docs/halo1/campaign-picker.md";
+    CAMPAIGN_CHECKPOINT_POLL @ 0x002b_178e: [fn(list: ecx) ret 0]; "docs/halo1/campaign-picker.md";
+    CAMPAIGN_OPTION_HELP @ 0x002b_18b7: [fn(list: eax) -> eax ret 0]; "docs/halo1/campaign-picker.md";
+    CHECKPOINT_QUEUE_READ @ 0x002a_da70: [fn(path: eax) -> eax ret 20]; "docs/halo1/campaign-picker.md";
+    CHECKPOINT_QUEUE_WRITE @ 0x002a_dec0: [fn(path: eax) -> eax ret 20]; "docs/halo1/campaign-picker.md";
     /// The menu's campaign start: options from the selection globals
     /// `0x54e7c0`-`0x54e7c8`, the level looked up by `(campaign, map)`.
     CAMPAIGN_START @ 0x0023_643f: [fn() ret 0]; "docs/halo1/campaign-picker.md";
@@ -1025,6 +1084,8 @@ points! { ALL;
     /// each bound local user. Reads slowdown and follow at
     /// `0x18622b` and calls the aim-assist search `0x1a4900` at `0x1861a1`.
     PLAYER_CONTROL_UPDATE @ 0x0018_5be0: [fn(user: stack 0, controller: edx) ret 0x14]; "docs/game/aim-assist.md";
+    /// Gather script action-test flags and consume the controls claimed by a script.
+    PLAYER_ACTION_TEST_UPDATE @ 0x0018_7b30: [fn(packet: ecx, actions: eax) ret 0]; "docs/halo1/script-builtins.md";
     /// The aim-assist parameters of a unit's held weapons, from the weapon
     /// tags (aim cone and pull angles and ranges, zoom applied):
     /// unit in ECX, the 0x24-byte result at ESI (kept to the return), zoom
@@ -1070,6 +1131,8 @@ points! { ALL;
     /// session. Callers `0x18f5c6`, `0x1901e7`, `0x1906be`, `0x24b807`,
     /// `0x24ba16`, `0x24ba5a`.
     SLOT_SIGN_OUT @ 0x0019_0d4b: [fn(slot: eax) ret 0]; "docs/game/bots.md";
+    /// Allocates a one-shot sound after native playback admission.
+    SOUND_IMPULSE_ALLOCATE @ 0x0012_6000: [fn(source: stack 0, channel: stack 1, tag: stack 2, rule: stack 3) ret 16]; "docs/halo1/sounds.md";
     /// Walks a block of predicted resources in the requested prediction mode.
     PREDICT_RESOURCES @ 0x0016_e5e0: [fn(mode: edi, resources: stack 0) -> al ret 4], Optional; "docs/perf/sim-budget.md";
     /// Sets source reverb and filter parameters on a DirectSound submix buffer.

@@ -7,7 +7,7 @@ const PLAYERS_HEADER: u32 = 0x0061_0000;
 const PLAYERS_DATA: u32 = 0x0061_1000;
 
 fn idle() -> Box<dyn PadSource> {
-    Box::new(|_: &crate::local::Frame<'_>| Default::default())
+    Box::new(|_: &crate::pad_source::Frame<'_>| Default::default())
 }
 
 fn who(xuid: u64, tag: &str) -> Identity {

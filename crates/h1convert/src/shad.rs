@@ -42,7 +42,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Seek};
 
-use map::build::Block;
+use map::build::{Block, TagSet};
 use map::{FourCC, Map, TagId};
 use tags::defs::{self, Defs, Record, Str, Target, Val};
 use tags::shader::SHAD;
@@ -1084,6 +1084,8 @@ pub struct Library {
     stems: HashMap<&'static str, TagId>,
     fixed: HashMap<Fixed, Bound>,
     detail: Option<detail::Program>,
+    model_lighting: Option<std::sync::Arc<tags::shader::TemplatePostprocess>>,
+    glass_vertex: Option<TagId>,
 }
 
 impl Library {
@@ -1100,6 +1102,7 @@ impl Library {
                 })
                 .map(|t| t.id)
         };
+        out.glass_vertex = find(base, b"vrtx", program::glass::GLASS_VERTEX);
         for l in LAYOUTS {
             if let Some(id) = find(base, b"stem", l.stem) {
                 out.stems.insert(l.stem, id);
@@ -1134,6 +1137,8 @@ impl Library {
             stems: stems.iter().copied().collect(),
             fixed: fixed.iter().copied().collect(),
             detail: None,
+            model_lighting: None,
+            glass_vertex: None,
         }
     }
 
@@ -1142,9 +1147,20 @@ impl Library {
         self.stems.get(layout.stem).copied()
     }
 
+    pub(crate) fn install_sky_clouds(&mut self, set: &mut TagSet) -> Result<()> {
+        if self.stem(&SKY_CLOUDS).is_none() {
+            let id = program::clouds::install(set)?;
+            self.stems.insert(SKY_CLOUDS.stem, id);
+        }
+        Ok(())
+    }
+
     /// Whether the base has `layout`'s stem and every default bitmap it
     /// needs.
     pub fn has(&self, layout: &Layout) -> bool {
+        if layout.stem == program::glass::CLEAR.stem {
+            return self.glass_vertex.is_some();
+        }
         self.stem(layout).is_some()
             && layout.bitmaps.iter().all(|b| match b {
                 Bm::Role(_, f) | Bm::Fixed(f) => self.fixed.contains_key(f),
@@ -1318,6 +1334,34 @@ impl Library {
         maps: &HashMap<Role, Bound>,
         extras: &Extras,
     ) -> Result<Block> {
+        if layout.stem == program::glass::CLEAR.stem {
+            use map::build::TagPayload;
+            use program::glass;
+            let group = FourCC(*b"stem");
+            let id = if let Some(id) = set.converted(group, layout.stem) {
+                id
+            } else {
+                let vertex = self
+                    .glass_vertex
+                    .ok_or(Error::Invalid("missing glass vertex shader"))?;
+                let pass_group = FourCC(*b"spas");
+                set.add_group(pass_group, None, None);
+                let pass = set.add_tag(
+                    pass_group,
+                    layout.stem,
+                    TagPayload::Built(glass::clear_pass(vertex)?),
+                )?;
+                set.add_group(group, None, None);
+                let id = set.add_tag(
+                    group,
+                    layout.stem,
+                    TagPayload::Built(glass::clear_template(pass)?),
+                )?;
+                set.record_conversion(group, layout.stem, id);
+                id
+            };
+            return glass::clear_instance(id);
+        }
         if !uses_detail_program(layout, extras) {
             return self.build_with(layout, maps, extras);
         }
@@ -1357,6 +1401,15 @@ fn range16(start: u16, count: u16) -> Val {
 /// Writes `tree` with `props` (property `k` driving component `k`) into
 /// the record's postprocess.
 fn animate(rec: &mut Record, tree: &AnimTree, props: &[Property]) -> Result<()> {
+    animate_ranges(rec, tree, props, props.len())
+}
+
+/// Each group supplies one property range. Texture transforms consume several
+/// components together, while scalar register writes each consume one.
+fn animate_ranges(rec: &mut Record, tree: &AnimTree, props: &[Property], width: usize) -> Result<()> {
+    if !(1..=127).contains(&width) || props.len() > 512 || props.len() % width != 0 {
+        return Err(Error::Invalid("invalid shader animation property range"));
+    }
     let def = shad_def();
     let ppdef = child(def, "postprocess")?;
     let Some(Val::Block(pps)) = rec.at("postprocess").cloned() else {
@@ -1430,7 +1483,7 @@ fn animate(rec: &mut Record, tree: &AnimTree, props: &[Property]) -> Result<()> 
         .map(|k| {
             mk(
                 "property_refs",
-                &[("property", Val::Int(i64::from(k))), ("component", Val::Int(i64::from(k)))],
+                &[("property", Val::Int(i64::from(k))), ("component", Val::Int(i64::from(k % width as u16)))],
             )
         })
         .collect::<Result<Vec<_>>>()?;
@@ -1438,7 +1491,9 @@ fn animate(rec: &mut Record, tree: &AnimTree, props: &[Property]) -> Result<()> 
     set(
         &mut pp,
         "property_ranges",
-        Val::Block(vec![mk("property_ranges", &[("property_refs", range16(0, n))])?]),
+        Val::Block((0..n).step_by(width).map(|start| {
+            mk("property_ranges", &[("property_refs", range16(start, width as u16))])
+        }).collect::<Result<Vec<_>>>()?),
     )?;
     let binds = tree
         .bindings
@@ -1457,6 +1512,200 @@ fn animate(rec: &mut Record, tree: &AnimTree, props: &[Property]) -> Result<()> 
         .collect::<Result<Vec<_>>>()?;
     set(&mut pp, "animations", Val::Block(binds))?;
     set(rec, "postprocess", Val::Block(vec![pp]))
+}
+
+/// Native draw dependencies for a player emblem, which has no Halo 1 shader.
+pub const EMBLEM_STEM: &str = r"shaders\shader_templates\opaque\emblem_overlay_simple";
+pub const EMBLEM_BITMAP: &str = r"ui\global_bitmaps\emblems\foreground";
+
+/// Build a player-emblem instance. The native program supplies the team/member
+/// colours. The instance binds the foreground frame, toggle and active inputs.
+pub fn emblem(stem: TagId, foreground: TagId) -> Result<Block> {
+    use tags::effects::function::{Function, FunctionType};
+
+    const FRAMES: u16 = 64;
+    let layout = Layout {
+        stem: EMBLEM_STEM,
+        word_14: 1,
+        ints: [0, 0],
+        bitmaps: &[],
+        colors: &[],
+        vectors: &[],
+        root: Root::None,
+        animation: None,
+        tint: None,
+    };
+    let foreground = Bound {
+        id: foreground,
+        scale: [1.0, 1.0],
+        lod_offset: 3.363171,
+    };
+    let mut root = build_record(
+        &layout,
+        stem,
+        &[Some(foreground)],
+        &[0; 2],
+        &[[1.0, 1.0, 0.0, 0.0]],
+        None,
+    )?;
+    set(&mut root, "scalar_input", Val::Float(0.0))?;
+    let image_def = child(shad_def(), "bitmap_images")?;
+    let images = (0..FRAMES)
+        .map(|image| {
+            let mut row = defs::default_record(image_def);
+            set(&mut row, "image", Val::Int(i64::from(image)))?;
+            set(&mut row, "bitmap", datum(Some(foreground.id)))?;
+            Ok(row)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    set(&mut root, "bitmap_images", Val::Block(images))?;
+    let ppdef = child(shad_def(), "postprocess")?;
+    let Some(Val::Block(postprocess)) = root.at_mut("postprocess") else {
+        return Err(Error::Invalid("emblem shader lacks its postprocess"));
+    };
+    let pp = &mut postprocess[0];
+    let rows = |path: &str, values: Vec<Vec<(&str, Val)>>| -> Result<Val> {
+        let def = child(ppdef, path)?;
+        values
+            .into_iter()
+            .map(|fields| {
+                let mut row = defs::default_record(def);
+                for (field, value) in fields {
+                    set(&mut row, field, value)?;
+                }
+                Ok(row)
+            })
+            .collect::<Result<Vec<_>>>()
+            .map(Val::Block)
+    };
+    set(
+        pp,
+        "lods",
+        rows(
+            "lods",
+            vec![vec![
+                ("layer_mask", Val::Int(1 << 2)),
+                ("layers", range16(0, 25)),
+            ]],
+        )?,
+    )?;
+    set(
+        pp,
+        "layers",
+        rows(
+            "layers",
+            (0..25)
+                .map(|layer| {
+                    vec![(
+                        "passes",
+                        range16(u16::from(layer > 2), u16::from(layer == 2)),
+                    )]
+                })
+                .collect(),
+        )?,
+    )?;
+    set(
+        pp,
+        "passes",
+        rows("passes", vec![vec![("implementations", range16(0, 1))]])?,
+    )?;
+    set(
+        pp,
+        "implementations",
+        rows(
+            "implementations",
+            vec![vec![
+                ("bitmap_animations", range16(3, 1)),
+                ("render_state_animations", range16(3, 0)),
+                ("stage_state_animations", range16(3, 0)),
+                ("pixel_constant_animations", range16(0, 2)),
+                ("vertex_constant_animations", range16(2, 1)),
+            ]],
+        )?,
+    )?;
+
+    // Two scalar properties bracket the ten texture-transform components.
+    // Component 0 selects the frame; 1–3 are unity and 4–9 are zero.
+    let mut properties = vec![Vec::new(); 12];
+    for (i, row) in properties.iter_mut().enumerate() {
+        let (input, maximum) = match i {
+            0 => ("emblem_toggle_foreground", 1.0),
+            1 => ("emblem_foreground_index", f32::from(FRAMES)),
+            11 => ("emblem_active", 1.0),
+            _ => ("", if i < 5 { 1.0 } else { 0.0 }),
+        };
+        let function = if input.is_empty() {
+            Function {
+                kind: FunctionType::Constant,
+                flags: 0,
+                sub_types: [0, 0],
+                range: [maximum; 2],
+                unknown_0c: [0; 8],
+                payload: [1.0f32.to_le_bytes(); 2].concat(),
+            }
+        } else {
+            row.push(("input", Val::text(input)));
+            Function {
+                kind: FunctionType::Identity,
+                flags: 0,
+                sub_types: [0, 0],
+                range: [0.0, maximum],
+                unknown_0c: [0; 8],
+                payload: Vec::new(),
+            }
+        };
+        row.extend([
+            ("input_b", Val::Float(1.0)),
+            ("function", Val::Data(function.to_bytes())),
+        ]);
+    }
+    set(pp, "properties", rows("properties", properties)?)?;
+    set(
+        pp,
+        "property_refs",
+        rows(
+            "property_refs",
+            (0..12)
+                .map(|i| {
+                    vec![
+                        ("property", Val::Int(i)),
+                        ("component", Val::Int(if i == 11 { -1 } else { i - 1 })),
+                    ]
+                })
+                .collect(),
+        )?,
+    )?;
+    set(
+        pp,
+        "property_ranges",
+        rows(
+            "property_ranges",
+            vec![
+                vec![("property_refs", range16(0, 1))],
+                vec![("property_refs", range16(1, 10))],
+                vec![("property_refs", range16(11, 1))],
+            ],
+        )?,
+    )?;
+    set(
+        pp,
+        "animations",
+        rows(
+            "animations",
+            [[128, 0, 3, 0], [0, 1, 3, 2], [176, 1, 0, 1], [0, 0, 0, 1]]
+                .map(|b| {
+                    vec![
+                        ("target", Val::Int(b[0])),
+                        ("param_1", Val::Int(b[1])),
+                        ("param_2", Val::Int(b[2])),
+                        ("property_range", Val::Int(b[3])),
+                    ]
+                })
+                .to_vec(),
+        )?,
+    )?;
+    defs::to_built(shad_def(), &root, &mut |_| None)
+        .map_err(|e| Error::Textures(format!("emblem shader: {e}")))
 }
 
 /// The `shad` definition.
@@ -1796,9 +2045,56 @@ pub const SPLA_MAP: usize = 0xd4;
 ///   fade by the view angle as Halo 1's fade mode says ([`Tint::faded`]);
 ///   Other `sotr` stages (combiners) aren't read.
 pub fn read_h1(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
+    if let Some(layout) = textureless_layout(tag.group, h1.tag_data(tag).ok()?) {
+        return Some(H1Shader {
+            name: tag.name.clone(),
+            group: tag.group.to_string(),
+            layout,
+            maps: vec![],
+            extras: Extras::default(),
+            fallback: None,
+        });
+    }
     let mut s = read_h1_maps(h1, tag)?;
     s.fit_kinds(h1);
     if s.maps.is_empty() { None } else { Some(s) }
+}
+
+/// Match the source draw, including its absent layers. Bad references or
+/// additional sampled maps must still go through the full material reader.
+pub fn textureless_layout(group: h1map::Group, bytes: &[u8]) -> Option<&'static Layout> {
+    let null_maps = |offsets: &[usize]| {
+        offsets.iter().all(|&offset| {
+            h1map::TagRef::read(bytes, offset)
+                .is_some_and(|r| r.group == h1map::Group::new(b"bitm") && r.id.is_none())
+        })
+    };
+    let zero = |at: usize, len: usize| {
+        bytes
+            .get(at..at + len)
+            .is_some_and(|b| b.iter().all(|v| *v == 0))
+    };
+    if group == h1map::Group::new(b"senv")
+        && zero(0x28, 4)
+        && null_maps(&[0x88, 0xb8, 0xcc, 0xfc, 0x128, 0x254, 0x324])
+        && zero(0x290, 4)
+    {
+        // 0x774a2 / 0x77500 bind white and neutral detail respectively.
+        return Some(&TEX_BUMP);
+    }
+    if group == h1map::Group::new(b"sgla")
+        && zero(0x28, 2)
+        && null_maps(&[0x64, 0xac, 0xc0, 0x158, 0x16c, 0x1a0, 0x1b4])
+        && zero(0x8a, 2)
+        && zero(0x8c, 4)
+        && zero(0x9c, 4)
+        && [0x54, 0x58, 0x5c]
+            .iter()
+            .all(|&at| bytes.get(at..at + 4) == Some(&1f32.to_le_bytes()[..]))
+    {
+        return Some(&program::glass::CLEAR);
+    }
+    None
 }
 
 /// The texture kind of the Halo 1 bitmap `id` (its first image); Halo 1's
@@ -1834,8 +2130,19 @@ fn read_h1_maps(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
     match group.as_str() {
         "senv" | "soso" => {
             let m = crate::textures::h1_maps_of(h1, tag)?;
-            let s = crate::textures::h1_scales_of(h1, tag);
+            let s = crate::textures::h1_scales_of(h1, tag).ok()?;
             let d = h1.tag_data(tag).ok()?;
+            if group == "senv" && m.base.is_none() {
+                // Monitor glow has no diffuse texture. Its only sampled
+                // image is the illumination map, following its UV scale.
+                let light = h1map::TagRef::read(d, 0x254)?;
+                if light.group == h1map::Group::new(b"bitm") && !light.id.is_none() {
+                    let mut shader = one(&ILLUM, Some(light.id))?;
+                    let scale = f32::from_le_bytes(d.get(0x250..0x254)?.try_into().ok()?);
+                    shader.maps[0].1.scale = [scale; 2];
+                    return Some(shader);
+                }
+            }
             let flags = d
                 .get(SENV_FLAGS..SENV_FLAGS + 2)
                 .map_or(0, |b| u16::from_le_bytes([b[0], b[1]]));
@@ -3010,6 +3317,95 @@ pub fn h1_lod_offset(h1: &h1map::H1Map, id: h1map::TagId) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rebuilt_emblem_binds_the_player_inputs_at_the_native_pass() {
+        use tags::effects::function::Function;
+
+        let stem = TagId(0xe001_0001);
+        let atlas = TagId(0xe002_0002);
+        let b = emblem(stem, atlas).unwrap();
+        let r = defs::from_built(shad_def(), &b).unwrap();
+        // The template is a reference fixup to the stem, its group word
+        // written as `stem`. A builder tree reads a reference fixup back
+        // with group 0 (`defs::from_built`): the map builder writes the
+        // target tag's own group at emit.
+        assert!(b.fixups.iter().any(|f| {
+            f.offset == 0 && f.kind == map::build::FixupKind::TagRef(stem)
+        }));
+        assert_eq!(b.bytes[..4], FourCC(*b"stem").as_u32().to_le_bytes());
+        assert_eq!(
+            r.at("template"),
+            Some(&Val::Ref {
+                group: 0,
+                target: Target::Id(stem),
+            })
+        );
+        assert_eq!(
+            r.at("postprocess[0].bitmaps[0].bitmap"),
+            Some(&datum(Some(atlas)))
+        );
+        assert_eq!(
+            r.at("postprocess[0].lods[0].layer_mask"),
+            Some(&Val::Int(4))
+        );
+        assert_eq!(
+            r.at("postprocess[0].implementations[0].bitmap_animations"),
+            Some(&range16(3, 1))
+        );
+        assert_eq!(
+            r.at("postprocess[0].animations[3].property_range"),
+            Some(&Val::Int(1))
+        );
+        for (i, input, sample, expected) in [
+            (0, "emblem_toggle_foreground", 1.0, 1.0),
+            (1, "emblem_foreground_index", 17.0 / 64.0, 17.0),
+            (11, "emblem_active", 0.0, 0.0),
+        ] {
+            let path = format!("postprocess[0].properties[{i}]");
+            assert_eq!(r.at(&format!("{path}.input")), Some(&Val::text(input)));
+            let Some(Val::Data(data)) = r.at(&format!("{path}.function")) else {
+                panic!("missing emblem property function {input}");
+            };
+            let function = Function::parse(data).unwrap();
+            let [lo, hi] = function.range;
+            assert_eq!(lo + (hi - lo) * function.evaluate(sample, 0.0), expected);
+        }
+    }
+
+    #[test]
+    fn textureless_layout_requires_absent_layers_and_white_glass_tint() {
+        for (group, slots, layout) in [
+            (
+                b"senv",
+                &[0x88, 0xb8, 0xcc, 0xfc, 0x128, 0x254, 0x324][..],
+                &TEX_BUMP,
+            ),
+            (
+                b"sgla",
+                &[0x64, 0xac, 0xc0, 0x158, 0x16c, 0x1a0, 0x1b4][..],
+                &program::glass::CLEAR,
+            ),
+        ] {
+            let mut b = vec![0; 0x340];
+            for &i in slots {
+                b[i..i + 4].copy_from_slice(&h1map::Group::new(b"bitm").0.to_le_bytes());
+                b[i + 12..i + 16].fill(0xff);
+            }
+            for i in [0x54, 0x58, 0x5c] {
+                b[i..i + 4].copy_from_slice(&1f32.to_le_bytes());
+            }
+            let group = h1map::Group::new(group);
+            assert_eq!(textureless_layout(group, &b), Some(layout));
+            b[slots[0] + 12] = 1;
+            assert!(textureless_layout(group, &b).is_none());
+            b[slots[0] + 12] = 0xff;
+            if group == h1map::Group::new(b"sgla") {
+                b[0x54..0x58].fill(0);
+                assert!(textureless_layout(group, &b).is_none());
+            }
+        }
+    }
 
     /// A `soso` is alpha-tested on a base with an alpha unless its flags
     /// say not (bit 2); the other bits (two-sided, decal) don't change

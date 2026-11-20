@@ -11,6 +11,7 @@ pub mod batch;
 pub mod clock;
 pub mod compare;
 pub mod config;
+pub mod diff;
 pub mod metrics;
 
 /// The environment variable that turns sim mode on: the match file's path.

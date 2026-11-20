@@ -151,16 +151,8 @@ fn targets(r: &Record, path: &str, out: &mut Vec<(String, TagId)>) {
 
 /// Reads `c`'s root through its group's definition, checks it writes the
 /// same again, pins nothing, holds no raw data (but a model's), and names
-/// only tags of the tree, or `stand_in` (the base's model shader, which
-/// the shader conversion puts in a material whose Halo 1 shader it cannot
-/// read; counted in `stand_ins`).
-fn read_back(
-    tree: &Tree,
-    c: &Converted,
-    name: &str,
-    stand_in: Option<TagId>,
-    stand_ins: &mut usize,
-) -> Record {
+/// only tags of the tree.
+fn read_back(tree: &Tree, c: &Converted, name: &str) -> Record {
     let g = c.group.0;
     let d = def(&g);
     // A render model's vertices are raw data; the object tags have none.
@@ -191,10 +183,6 @@ fn read_back(
             assert!(tree.loops.get(id.0 as usize & 0xffff).is_some());
             continue;
         }
-        if Some(id) == stand_in && p.contains(".materials[") {
-            *stand_ins += 1;
-            continue;
-        }
         assert!(
             local(tree, id).is_some(),
             "{name}: {p} names {id:?}, not a converted tag"
@@ -214,12 +202,10 @@ fn word(r: &Record, path: &str) -> u32 {
 #[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
 fn every_scenery_rebuilds_from_its_definition() {
     let mut count = 0;
-    let mut stand_ins = 0;
     let mut tally = BTreeMap::<String, usize>::new();
     for (base_name, levels) in sets() {
         let mut base_map = h2_map(base_name);
         let base = Base::read(&mut base_map).unwrap();
-        let stand_in = base.model_shader.as_ref().map(|m| m.shader);
         let mut seen = HashSet::new();
         for level in levels {
             if !wanted(&level) {
@@ -238,7 +224,7 @@ fn every_scenery_rebuilds_from_its_definition() {
                 let tree = &c.tree;
                 let got = local(tree, id).expect("scen in the tree");
                 assert_eq!(got.group, FourCC(*b"scen"), "{name}");
-                let r = read_back(tree, got, &name, None, &mut stand_ins);
+                let r = read_back(tree, got, &name);
                 let rep = tree
                     .reports
                     .iter()
@@ -340,7 +326,7 @@ fn every_scenery_rebuilds_from_its_definition() {
                 };
                 let hc = local(tree, h).unwrap();
                 assert_eq!(hc.group, FourCC(*b"hlmt"));
-                let hr = read_back(tree, hc, &name, None, &mut stand_ins);
+                let hr = read_back(tree, hc, &name);
 
                 // No physics model: the engine gives scenery no Havok
                 // body (docs/halo1/objects.md, "Collision for Havok").
@@ -348,7 +334,7 @@ fn every_scenery_rebuilds_from_its_definition() {
                 let mode = reference(&hr, "render_model").expect("a render model");
                 let mc = local(tree, mode).unwrap();
                 assert_eq!(mc.group, FourCC(*b"mode"));
-                let mr = read_back(tree, mc, &name, stand_in, &mut stand_ins);
+                let mr = read_back(tree, mc, &name);
                 let coll = reference(&hr, "collision_model");
                 assert_eq!(coll.is_some(), obj.collision.is_some(), "{name}: coll");
                 assert_eq!(
@@ -410,7 +396,7 @@ fn every_scenery_rebuilds_from_its_definition() {
         }
     }
     println!(
-        "{count} scenery objects rebuilt: {tally:?}; {stand_ins} materials on the base's model shader"
+        "{count} scenery objects rebuilt: {tally:?}"
     );
     assert!(count > 0, "no scenery");
 }

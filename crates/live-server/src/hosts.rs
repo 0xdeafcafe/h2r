@@ -48,6 +48,7 @@ pub struct HostBoot {
     pub token: String,
     pub data_url: String,
     pub data_sha256: String,
+    pub archive: live_proto::hosts::HostArchive,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -104,6 +105,7 @@ pub struct HostConfig {
     pub live_url: String,
     pub data_url: String,
     pub data_sha256: String,
+    pub archive: String,
     pub max_hosts: usize,
 }
 
@@ -113,6 +115,7 @@ impl HostConfig {
             live_url: env("LIVE_HOST_LIVE_URL").unwrap_or_default(),
             data_url: env("LIVE_HOST_DATA_URL").unwrap_or_default(),
             data_sha256: env("LIVE_HOST_DATA_SHA256").unwrap_or_default(),
+            archive: env("LIVE_HOST_ARCHIVE").unwrap_or_else(|| "dual".into()),
             max_hosts: env("LIVE_MAX_HOSTS").map_or(4, |s| s.parse().unwrap_or(0)),
         }
     }

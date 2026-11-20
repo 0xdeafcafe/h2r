@@ -1,6 +1,6 @@
 # Waterworks simulation tick budget
 
-The 2026-11-20 five-minute, four-local-bot comparison at the same seed measured **14.96 → 14.12 ms/tick on Waterworks** and **9.07 → 8.49 ms/tick on Lockout** after commit `36b417561`. Lockout kills matched. One Waterworks bot scored four kills in one run and one in the other. Same-build Waterworks repeatability is open. The earlier 62% bot-glue sample was a different roster with two phantom seats. It cannot predict the speedup for four local seats.
+The 2026-11-20 five-minute, four-local-bot comparison at the same seed measured **14.96 → 14.12 ms/tick on Waterworks** and **9.07 → 8.49 ms/tick on Lockout** after commit `36b417561`. Lockout kills matched. One Waterworks bot scored four kills in one run and one in the other. Same-build Waterworks repeatability is open. An earlier 62% bot-glue sample came from a different roster with two phantom seats. These are historical measurements. Use the phantom-only fixtures below for current comparisons.
 
 ## Where the main thread spent its time
 
@@ -80,7 +80,7 @@ The instruction list identifies 11 more owners. Their hottest instruction can ra
 
 ### Headless guest dependencies
 
-- **First person.** At `1380a0` the tick calls `165dc1`. Its four slot checks at `165de2` already bypass `166d75` and `16760c` for unmapped local users. A local bot has a mapped slot. In that case `166d75` advances the second engine RNG word (`[4e7408]+4`, writes at `1674f9` and `167539`). The pose path through `16760c → bd970 → 1cb410 → 1cb3b0 → 1dd630` can select either RNG word, including the hashed seed at `1dd6e1`. Evaluation also requests shared animation resources (`1678d7 → 1c6f60 → 1dd9d0 → 1236f0`). Effect update `176e40 → 1792b0 → 179fb0 → 17aec0 → 1664da` reads the resulting hand node matrices, and the observer reads the transform at slot `+2098` through `16ebf0`. Keep the weapon and animation update for every mapped seat.
+- **First person.** At `1380a0` the tick calls `165dc1`. Its four slot checks at `165de2` already bypass `166d75` and `16760c` for unmapped local users. A signed-in local player has a mapped slot. Sim hosts leave all four slots unmapped. In that case `166d75` advances the second engine RNG word (`[4e7408]+4`, writes at `1674f9` and `167539`). The pose path through `16760c → bd970 → 1cb410 → 1cb3b0 → 1dd630` can select either RNG word, including the hashed seed at `1dd6e1`. Evaluation also requests shared animation resources (`1678d7 → 1c6f60 → 1dd9d0 → 1236f0`). Effect update `176e40 → 1792b0 → 179fb0 → 17aec0 → 1664da` reads the resulting hand node matrices, and the observer reads the transform at slot `+2098` through `16ebf0`. Keep the weapon and animation update for every mapped seat.
 - **Lights.** `c1400` owns the datum walk, expiry and spatial links. `c0c80` can evaluate an attached object's functions at `c0dc4` and change light-list membership through `c2d00` or `c3220`. The light profile's `impl.sim.static-light` bypasses only a repeated update from `c1484` when the unowned, untimed, already active light and its current tag agree on every value the guest would write. With no parent, function or timer, `c0f05` copies intensity from datum `+cc` and the two RGB triples and brightness from the tag. Zero counts at tag `+c4/+cc/+d4` make `c0b00` discard its phase calculation. At unit intensity the radius calculation at `c11d7` returns the upper radius. The hook compares all output bits, including the doubled brightness, and admits in-range finite values only. With positive radius and a nonblack colour, the already-set active bit takes the exit at `c125c` without relinking. The comparisons use live memory on every invocation. All other records run the guest body. The enclosing walk always runs.
 - **Observer.** `171d90` rewrites the per-seat basis at `+20..+37`, FOV at `+4c` and scale at `+50`. After its call at `171291`, `170fd0` uses the basis to place the camera and calls `171830` for collision. Particle input at `248a31` uses that same scale. The observer also reaches the shared resource cache through `3f450 → 3bcb0 → 12ce00`. Keep camera derivation, collision and resource requests. [Render and simulation dependencies](../graphics/pipelined-render.md)
 - **Sound.** `127805` passes a listener point to `11bed0`, which calls `14a280` and returns the leaf, cluster and BSP. The listener stores the result at `127b04..127b0d`. Code at `221dd6..221e14` uses the cluster for a transmission threshold. The verdict at `127d9e` affects nearest-listener selection. Substituting a constant can change which voices play and when their packets complete, even on the silent clock. Keep the listener update, BSP queries, sound service and voice scheduling. Weapon collision shares `14a280`. [Listener ownership](../game/bots.md#43-hiding-the-views-traced) · [Clock-only host](../live/dedicated-host.md#light-host)
@@ -129,13 +129,14 @@ The guest entries above are lower bounds on an unwound main-thread stack, with o
 
 - **Silent audio.** All 801 `Stream::play_frames` samples (0.95% of the thread) occur in the clock-only discard path. This profile was already advancing a logical clock without producing PCM. The packet clock advances exact common sample-rate ratios in batches. Other rates retain the renderer's repeated floating-point additions to preserve completion boundaries. Silent spatial buffers compute Doppler alone. The guest sound service, callback grid, completion order and buffer pitch still run. The sampled stream function sets a **0.95-point ceiling** on its own savings. The profile gives no separate measurable pan/cone saving.
 - **Sim observation.** The sim skips the optional Havok body and character-contact diagnostics in its private player snapshot. Those reads supply the inspector and never feed the pads, scoring or seat binding. The old snapshot path is 118 samples (0.14%) inclusive. Only part of that time can be saved. A fixture compares both snapshots and takes another full read from the same guest memory.
+- **Native SIMD lanes.** The native ports behind `impl.sim.native_*` model each packed SSE `addps`, `subps` and `mulps` the guest executes. When MXCSR rounds to nearest with PE sticky and all eight operand lanes are zero or within `[2^-63, 2^63)`, one host vector instruction (NEON on AArch64, SSE2 on x86-64) performs the range check and the operation. This covers transform composition `142a60`, pose matrix `1421f0`, the blend-screen codec `28c530` and the float MOPP clip blends under `3009e0`. Other operands use the bit-exact SSE model, and x87 sequences stay scalar. `impl.sim.native_simd` (default on) selects the host lanes. Turning it off restores the scalar per-lane loop for A/B timing. Both paths produce identical bits. The differential harness runs every native case both ways against the lifted guest, and a unit test without the XBE compares the lanes with the scalar loop and the SSE model. Marker transforms and unit pose make no packed float operations. The integer MOPP box walk decodes one node at a time, and each two-child visit is a guest call. Neither function has SIMD work to batch. [Lanes](../../crates/engine/src/sim_native/lanes.rs)
 - **Runtime and other host work.** Dispatch execute and run loop self shares are 6.25% and 4.54%, guest reads 1.36%, exit/charge 0.84%/0.69%, resume/resolve 0.78%/0.53%, context creation 0.73%, fast acquisition 0.52%, x87 small division/compare 0.56%/0.44%. The runtime lane owns these. XAPI input sync accounts for 0.82% self and services controller state. Kernel file dispatch accounts for 0.67% self, 572 visible samples including children. The profile carries neither filenames nor per-call phase information. Animation and sound have resource-request paths, but a static path cannot identify the sampled file operations.
 
-For the coordinator's comparison, use the same image, map, seed, roster and profile. With `H2_FEATURES=impl.sim.arena-hash,-impl.audio.packet-clock,-impl.sim.metrics-projection`, establish same-build A/A repeatability first. Then enable one optimization at a time, with arena hashing enabled in both runs. Compare every `state_hashes_v1` tick, gameplay digest and arena digest, including the number and range of ticks. A gap, missing arena, or early end leaves parity unverified. Use both Waterworks seat configurations and a Lockout control. For throughput, disable arena verification and the profiler in both arms. The new default gameplay digest runs in each arm. The current evidence establishes neither a 2× speedup nor Waterworks parity. [Sim report and controls](../runtime/sim.md#post-tick-state-hashes)
+For the coordinator's comparison, use the same image, map, seed, roster and profile. With `H2_FEATURES=impl.sim.arena-hash,-impl.audio.packet-clock,-impl.sim.metrics-projection`, establish same-build A/A repeatability first. Then enable one optimisation at a time, with arena hashing enabled in both runs. Compare every `state_hashes_v1` tick, gameplay digest and arena digest, including the number and range of ticks. A gap, missing arena, or early end leaves parity unverified. Use the phantom-only Waterworks and Lockout fixtures below. For throughput, disable arena verification and the profiler in both arms. The new default gameplay digest runs in each arm. The current evidence establishes neither a 2× speedup nor Waterworks parity. [Sim report and controls](../runtime/sim.md#post-tick-state-hashes)
 
 ### Matched light-profile A/B
 
-Use one optimized coordinator-built CLI and its full clang image for every arm. Set `H2_DISC`, `H2_IMAGE` and `H2_DATA` to absolute paths. The input data directory needs bot navigation meshes for both maps. Run the following in Bash with jq installed. The three cases use seed 7, team Slayer, a 1,800-tick limit and four legendary bots. The mixed Waterworks case seats Blue 1 and Blue 2 as phantoms. Each process starts with fresh writable data and the same navigation files.
+Use one optimised coordinator-built CLI and its full clang image for every arm. Set `H2_DISC`, `H2_IMAGE` and `H2_DATA` to absolute paths. The input data directory needs bot navigation meshes for both maps. Run the following in Bash with jq installed. Both cases use seed 7, team Slayer, a 1,800-tick limit and four legendary phantoms. Each process starts with fresh writable data and the same navigation files.
 
 ```bash
 set -euo pipefail
@@ -155,7 +156,7 @@ run_arm() (
     trap 'rm -rf -- "$scratch"' EXIT
     ln -s "${H2_DATA:?}/bots" "$scratch/bots"
     report="$out/$case_id.$pass.$arm.json"
-    H2_OPT=2 H2_BOTS_ALL_PHANTOM=0 H2_FEATURES="host-light,$flags,impl.sim.arena-hash=$arena" \
+    H2_OPT=2 H2_FEATURES="host-light,$flags,impl.sim.arena-hash=$arena" \
         h2 sim run "$out/$case_id.json" --disc "${H2_DISC:?}" --out "${H2_IMAGE:?}" \
         --tier clang --data "$scratch" --pace unpaced --report "$report" >"$report.log" 2>&1
     jq -e --arg arena "$arena" '
@@ -166,13 +167,12 @@ run_arm() (
                 ($arena == "off" or (.arena | test("^[0-9a-f]{16}$")))))' "$report" >/dev/null
 )
 
-for case_id in lockout-local waterworks-local waterworks-mixed; do
-    jq -n --arg map "${case_id%-*}" --arg seats "${case_id#*-}" '{
+for case_id in lockout waterworks; do
+    jq -n --arg map "$case_id" '{
         map: $map, game_type: "slayer", seed: 7, team_play: true, time_limit_s: 0,
         score_limit: 250, max_ticks: 1800, max_wall_s: 900, render_every: 0, pace: "unpaced",
         bot: [range(4) as $i | {name: (["Red 1","Blue 1","Red 2","Blue 2"][$i]),
-            skill: "legendary", team: ($i % 2),
-            kind: (if $seats == "mixed" and ($i % 2) == 1 then "phantom" else "local" end)}]
+            skill: "legendary", team: ($i % 2)}]
     }' > "$out/$case_id.json"
     for arm in off repeat static-light observer-resources submix-fx all; do
         run_arm "$arm" parity on
@@ -199,7 +199,7 @@ done
 The `repeat` arm checks baseline repeatability before any flag comparison. A diff shows the first differing tick, including whether the gameplay or checkpoint-arena digest changed. If A/A differs, keep both reports and resolve repeatability before attributing a difference to a skip. For each case report each arm's median, its difference from `off` in ms/tick and the ratio `off / arm`. Only an all-on ratio of at least 2 meets the throughput target. For guest attribution, run the pair below in the same shell with a profiling-enabled CLI. Compare on-CPU guest sample shares and per-function counts across the same 1,800 ticks. Use the unprofiled medians for the speedup. The 1.02% inclusive light sample covers all light records; only qualifying records can contribute. The profile gives no isolated savings estimate for observer prediction or submix coefficients.
 
 ```bash
-case_id=waterworks-local
+case_id=waterworks
 for arm in off all; do
     H2_PERF_FROM=level H2_PROFILE_HZ=1000 H2_PROFILE_CPU=1 \
         H2_PROFILE="$out/profile-$arm" run_arm "$arm" profile off

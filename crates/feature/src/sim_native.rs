@@ -99,12 +99,20 @@ const ENTRIES: &[(&points::Point, &'static str, Body)] = &[
     ),
 ];
 
+/// `impl.sim.native_simd`: host vector lanes inside the native bodies'
+/// packed SSE fast path. On by default, so it follows the native ports;
+/// off keeps the scalar per-lane loop for A/B timing. Both are exact.
+fn simd_on(switches: &crate::Switches) -> bool {
+    switches.implementation("sim.native_simd", true)
+}
+
 impl Feature for SimNative {
     fn manifest(&self) -> Manifest {
         Manifest::new("sim-native", "Native simulation functions").doc("docs/perf/sim-budget.md")
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        sim::set_simd(simd_on(b.switches()));
         let descriptor_on = b
             .switches()
             .implementation("sim.native_object_import", false);
@@ -187,5 +195,22 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn simd_lanes_default_on_and_switch_off_independently() {
+        assert!(simd_on(&Switches::defaults()));
+        let native = Switches::defaults().with("impl.sim.native_transform_compose", true);
+        assert!(simd_on(&native));
+        assert!(!simd_on(
+            &Switches::defaults().with("impl.sim.native_simd", false)
+        ));
+        // The sub-switch follows the `impl.sim` group when unset.
+        assert!(!simd_on(&Switches::defaults().with("impl.sim", false)));
+        assert!(simd_on(
+            &Switches::defaults()
+                .with("impl.sim", false)
+                .with("impl.sim.native_simd", true)
+        ));
     }
 }

@@ -199,8 +199,9 @@ pub struct FunctionSpec {
 }
 
 /// Halo 1's functions as Halo 2's, by output index: `None` for one this
-/// can't carry (its reason in `notes`). An attachment naming such an
-/// output keeps an empty primary scale (1, as before).
+/// can't carry (its reason in `notes`). A consumer naming such an output
+/// (an attachment's scale, [`primary_scale`]; a device change colour)
+/// fails the conversion with that reason.
 pub fn convert(
     functions: &[h1::Function],
     inputs: &h1::FunctionInputs,
@@ -211,11 +212,18 @@ pub fn convert(
         .take(4)
         .enumerate()
         .map(|(k, f)| match one(f, inputs) {
+            // H1 0x8c06d..0x8c088: the additive flag adds the output's
+            // previous value and wraps the sum by one (0x180ada), an
+            // accumulator Halo 2's function blobs cannot hold.
+            Ok(_) if f.flags & 2 != 0 => {
+                notes.push(format!(
+                    "function {}: not converted (additive accumulation, H1 0x8c06d)",
+                    OUTPUT_NAMES[k]
+                ));
+                None
+            }
             Ok(mut s) => {
                 s.export = OUTPUT_NAMES[k].into();
-                if f.flags & 2 != 0 {
-                    notes.push(format!("function {}: Halo 1's additive flag dropped", OUTPUT_NAMES[k]));
-                }
                 Some(s)
             }
             Err(why) => {
@@ -225,9 +233,25 @@ pub fn convert(
         })
         .collect();
     let exports: Vec<Option<String>> = out.iter().map(|s| s.as_ref().map(|s| s.export.clone())).collect();
-    for (s, f) in out.iter_mut().zip(functions) {
-        if let (Some(s), Ok(i)) = (s, usize::try_from(f.turn_off_with)) {
-            s.turn_off_with = exports.get(i).cloned().flatten().unwrap_or_default();
+    for (k, (slot, f)) in out.iter_mut().zip(functions).enumerate() {
+        let Ok(i) = usize::try_from(f.turn_off_with) else { continue };
+        // H1 0x8c050..0x8c06b: the function is off unless function `i`'s
+        // active bit is set. One with no converted function `i` cannot
+        // carry that switch.
+        match exports.get(i).cloned().flatten() {
+            Some(export) => {
+                if let Some(s) = slot.as_mut() {
+                    s.turn_off_with = export;
+                }
+            }
+            None if slot.is_some() => {
+                notes.push(format!(
+                    "function {}: not converted (turns off with function {i}, which has no converted output)",
+                    OUTPUT_NAMES[k]
+                ));
+                *slot = None;
+            }
+            None => {}
         }
     }
     out
@@ -235,10 +259,15 @@ pub fn convert(
 
 /// Halo 1's function as a Halo 2 one, its export still empty.
 fn one(f: &h1::Function, inputs: &h1::FunctionInputs) -> Result<FunctionSpec, String> {
-    if f.function != 0 {
+    // The baton pulses its volume with a free-running cosine. Halo 2
+    // feeds a periodic object function elapsed game seconds (0xba9cb).
+    let pulse = f.function == 2 && f.period.is_finite() && f.period > 0.0
+        && f.scale_period_by == 0 && f.scale_function_by == 0 && f.bounds_mode <= 2
+        && f.bounds == [0.0, 1.0] && f.flags & !4 == 0 && !f.wobble;
+    if f.function != 0 && !pulse {
         return Err(format!("function {} is not one", f.function));
     }
-    if f.map_to != 0 || f.add != 0 || f.scale_result_by != 0 || f.step_count > 1 || f.sawtooth_count > 1 {
+    if f.add != 0 || f.scale_result_by != 0 || f.step_count > 1 || f.sawtooth_count > 1 {
         return Err("a shape past one scaled by an input".into());
     }
     let import = match f.scale_function_by {
@@ -247,12 +276,41 @@ fn one(f: &h1::Function, inputs: &h1::FunctionInputs) -> Result<FunctionSpec, St
             .ok_or_else(|| format!("input {k} has no Halo 2 import"))?,
         k => return Err(format!("scaled by output {}", k - 4)),
     };
+    let data = match f.map_to {
+        0 if pulse => {
+            let set = [f.period.recip(), 0.0, 0.0, 1.0];
+            Function {
+                kind: FunctionType::Periodic,
+                flags: 0,
+                sub_types: [2, 2],
+                range: f.bounds,
+                unknown_0c: [0; 8],
+                payload: set.into_iter().chain(set).flat_map(f32::to_le_bytes).collect(),
+            }.to_bytes()
+        }
+        0 => bounded(f)?,
+        // The Sentinel's shield glow source: H1 0x8bf9e selects table
+        // 2 (0x173c65, pow(x, 0.25)); H2 transition 2 uses the same curve.
+        2 if !pulse
+            && f.bounds_mode == 0
+            && f.bounds == [0.0, 1.0]
+            && f.square_threshold == 0.0
+            && (f.result_scale <= 0.0 || f.result_scale == 1.0) => Function {
+            kind: FunctionType::Transition,
+            flags: 0,
+            sub_types: [2; 2],
+            range: [0.0, 1.0],
+            unknown_0c: [0; 8],
+            payload: [0.0f32, 1.0, 0.0, 1.0].into_iter().flat_map(f32::to_le_bytes).collect(),
+        }.to_bytes(),
+        mode => return Err(format!("unsupported map-to {mode} with bounds {:?}", f.bounds)),
+    };
     Ok(FunctionSpec {
         flags: f.flags & 0b101,
         import: import.into(),
         export: String::new(),
         turn_off_with: String::new(),
-        data: bounded(f.bounds_mode, f.bounds)?,
+        data,
     })
 }
 
@@ -260,8 +318,17 @@ fn one(f: &h1::Function, inputs: &h1::FunctionInputs) -> Result<FunctionSpec, St
 /// range, is Halo 1's: clip to `[lo, hi]`, clip and normalise to `[0,
 /// 1]`, or scale `[0, 1]` to fit `[lo, hi]`. The blob's result is
 /// clamped to `[0, 1]` before the range ([`Function::evaluate`]).
-fn bounded(mode: u16, [lo, hi]: [f32; 2]) -> Result<Vec<u8>, String> {
-    if !(hi > lo) {
+fn bounded(source: &h1::Function) -> Result<Vec<u8>, String> {
+    let mode = source.bounds_mode;
+    let [lo, hi] = source.bounds;
+    let gain = if source.result_scale > 0.0 { source.result_scale } else { 1.0 };
+    if ![lo, hi, source.square_threshold, source.result_scale]
+        .into_iter()
+        .all(f32::is_finite)
+    {
+        return Err("non-finite function bounds, threshold or scale".into());
+    }
+    if hi <= lo {
         return Err(format!("bounds {lo} to {hi}"));
     }
     let identity = |range| Function {
@@ -272,10 +339,29 @@ fn bounded(mode: u16, [lo, hi]: [f32; 2]) -> Result<Vec<u8>, String> {
         unknown_0c: [0; 8],
         payload: Vec::new(),
     };
-    // (x - lo) / (hi - lo): words 4 and 5 of a linear blob's first set.
-    let normalise = |range| {
+    // H1 0x8bea4: a nonzero threshold is a strict greater-than comparison.
+    // 0x8bfad then applies a positive scale before bounds. One input ULP
+    // spans the step exactly for the f32 power value evaluated by H2.
+    let threshold = source.square_threshold;
+    if threshold != 0.0 {
+        let bounded_value = |x: f32| match mode {
+            0 => Ok(x.clamp(lo, hi)),
+            1 => Ok(((x - lo) / (hi - lo)).clamp(0.0, 1.0)),
+            2 => Ok(lo + (hi - lo) * x),
+            _ => Err(format!("bounds mode {mode}")),
+        };
+        let mut keys = [0.0f32; 40];
+        keys[9] = threshold;
+        keys[13] = (threshold.next_up() - threshold).recip();
+        keys[17] = 1.0;
+        return Ok(Function {
+            kind: FunctionType::LinearKey,
+            payload: keys.into_iter().flat_map(f32::to_le_bytes).collect(),
+            ..identity([bounded_value(0.0)?, bounded_value(gain)?])
+        }.to_bytes());
+    }
+    let linear = |range, a: f32, b: f32| {
         let mut payload = vec![0u8; 8 * 6];
-        let (a, b) = (1.0 / (hi - lo), -lo / (hi - lo));
         payload[16..20].copy_from_slice(&a.to_le_bytes());
         payload[20..24].copy_from_slice(&b.to_le_bytes());
         Function {
@@ -285,22 +371,26 @@ fn bounded(mode: u16, [lo, hi]: [f32; 2]) -> Result<Vec<u8>, String> {
         }
     };
     let f = match mode {
-        0 if lo == 0.0 && hi == 1.0 => identity([0.0, 1.0]),
-        0 => normalise([lo, hi]),
-        1 => normalise([0.0, 1.0]),
-        2 => identity([lo, hi]),
+        0 if lo == 0.0 && hi == 1.0 && gain == 1.0 => identity([0.0, 1.0]),
+        0 => linear([lo, hi], gain / (hi - lo), -lo / (hi - lo)),
+        1 => linear([0.0, 1.0], gain / (hi - lo), -lo / (hi - lo)),
+        2 => identity([lo, lo + (hi - lo) * gain]),
         m => return Err(format!("bounds mode {m}")),
     };
     Ok(f.to_bytes())
 }
 
-/// An attachment's primary scale: the export of Halo 1's output `index`
-/// (1 to 4) where it converted, else empty.
-pub fn primary_scale(index: u16, converted: &[Option<FunctionSpec>]) -> String {
-    usize::from(index)
-        .checked_sub(1)
-        .and_then(|k| converted.get(k))
-        .and_then(|s| s.as_ref())
-        .map(|s| s.export.clone())
-        .unwrap_or_default()
+/// An attachment's scale: empty for index 0 (none), else the export of
+/// Halo 1's output `index` (1 to 4). An output with no converted function
+/// is an error: Halo 1 scales the attachment by that output, while an
+/// empty Halo 2 scale leaves it at one.
+pub fn primary_scale(index: u16, converted: &[Option<FunctionSpec>]) -> Result<String, String> {
+    let Some(k) = usize::from(index).checked_sub(1) else {
+        return Ok(String::new());
+    };
+    match converted.get(k) {
+        Some(Some(s)) => Ok(s.export.clone()),
+        Some(None) => Err(format!("output {index}'s function did not convert")),
+        None => Err(format!("output {index} has no function")),
+    }
 }

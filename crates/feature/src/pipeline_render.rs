@@ -860,6 +860,39 @@ struct Shared {
     inner: Mutex<Inner>,
 }
 
+/// Options that change how the render worker returns guest state to the simulation.
+#[derive(Debug, PartialEq, Eq)]
+pub struct HandbackOptions {
+    pub predict_frames: bool,
+    pub replay_seeds: bool,
+    pub defer_io: bool,
+    pub refuse: Vec<u32>,
+}
+
+impl Default for HandbackOptions {
+    fn default() -> Self {
+        Self {
+            predict_frames: true,
+            replay_seeds: true,
+            defer_io: true,
+            refuse: Vec::new(),
+        }
+    }
+}
+
+impl HandbackOptions {
+    pub fn from_env() -> Self {
+        let env = |name| std::env::var(name).ok();
+        let default = Self::default();
+        Self {
+            predict_frames: switch(env(PREDICT_FRAMES_ENV).as_deref(), default.predict_frames),
+            replay_seeds: switch(env(SEED_REPLAY_ENV).as_deref(), default.replay_seeds),
+            defer_io: switch(env(DEFER_IO_ENV).as_deref(), default.defer_io),
+            refuse: parse_watch(env(REFUSE_ENV).as_deref()),
+        }
+    }
+}
+
 /// The feature. See the module docs.
 #[derive(Clone)]
 pub struct PipelineRender {
@@ -879,16 +912,16 @@ impl PipelineRender {
     pub fn new() -> Self {
         let watch = parse_watch(std::env::var(WATCH_ENV).ok().as_deref());
         let env = |name| std::env::var(name).ok();
-        let refuse = parse_watch(env(REFUSE_ENV).as_deref());
+        let options = HandbackOptions::from_env();
         Self::with(false, Addrs::HALO2)
             .check_snapshot(true)
             .print(true)
             .watch(&watch)
-            .predict_frames(switch(env(PREDICT_FRAMES_ENV).as_deref(), true))
-            .replay_seeds(switch(env(SEED_REPLAY_ENV).as_deref(), true))
-            .refuse(&refuse)
+            .predict_frames(options.predict_frames)
+            .replay_seeds(options.replay_seeds)
+            .refuse(&options.refuse)
             .report_conflicts(switch(env(CONFLICTS_ENV).as_deref(), false))
-            .defer_io(switch(env(DEFER_IO_ENV).as_deref(), true))
+            .defer_io(options.defer_io)
     }
 
     /// Explicitly on or off, with `addrs`. Prints no `pipeline:` lines

@@ -4,6 +4,7 @@ use crate::state::Storage;
 use runtime::Guest;
 use std::collections::BTreeMap;
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct QosMemory {
     storage: Storage,
     live: BTreeMap<u32, u32>,
@@ -19,6 +20,26 @@ impl Default for QosMemory {
     }
 }
 impl QosMemory {
+    pub(crate) fn validate(&self, claims: &[(u32, u32)]) -> Result<(), String> {
+        let (mut next, end) = self
+            .storage
+            .used_range(claims, 0x10_0000)?
+            .unwrap_or_default();
+        let mut blocks: Vec<_> = self.live.iter().chain(&self.free).collect();
+        blocks.sort_unstable_by_key(|entry| *entry.0);
+        for (&start, &len) in blocks {
+            if start != next || len == 0 || len % 8 != 0 {
+                return Err("invalid Live QoS allocation".into());
+            }
+            next = next
+                .checked_add(len)
+                .ok_or("Live QoS allocation overflow")?;
+        }
+        if next != end {
+            return Err("incomplete Live QoS arena".into());
+        }
+        Ok(())
+    }
     pub fn alloc(&mut self, m: &mut Guest, size: u32) -> Option<u32> {
         let size = size.checked_add(7)? & !7;
         let found = self

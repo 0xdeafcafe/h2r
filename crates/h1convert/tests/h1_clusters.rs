@@ -178,7 +178,7 @@ fn every_cluster_samples_its_own_lightmap_page_as_halo1_did() {
         for bsp in h1.structure_bsps().unwrap() {
             let s = h1.structure_bsp(&bsp).unwrap();
             let col = &s.collision_bsps().unwrap()[0];
-            let before = h1convert::structure::meshes(&s, |_| String::new()).unwrap();
+            let before = h1convert::structure::meshes(&s, |_| Ok(String::new())).unwrap();
             let mut after = before.clone();
             let material = vec![0u16; after.len()];
             let laid =

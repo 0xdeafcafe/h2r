@@ -1,0 +1,9 @@
+# The three retail antenna pairs have matching root tuning spans and
+# 0x80-byte vertices, including their precomputed displacement vectors.
+group ant! 0xa0 align 4
+  0x0 string marker
+  0x4 tagref bitmap groups=bitm
+  0xc tagref physics groups=pphy
+  0x14 unknown 0x84
+  0x98 block vertices 0x80 align 4
+    0x0 unknown 0x80

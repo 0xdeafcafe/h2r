@@ -121,8 +121,11 @@ fn every_campaign_conversation_compiles_with_its_source_sounds() {
     with_h1(|h1, level, map| {
         let ai = H1Ai::read(map).unwrap_or_else(|e| panic!("{level}: {e}"));
         let t = Tables::read(map).unwrap();
-        let plan = h1ai::convert::convert(&ai, &Default::default());
-        let scopes = SpeakerScopes::from_plan(&plan);
+        let options = Default::default();
+        let mut plan = h1ai::convert::convert(&ai, &options).unwrap();
+        let mut controls = h1ai::control::prepare(&ai, &mut plan, &options, &[]).unwrap();
+        controls.bind_script_indices(&plan);
+        let scopes = SpeakerScopes::from_plan(&plan, &controls, &ai.conversations).unwrap();
         if level == "a30" {
             let squad = plan
                 .ai
@@ -559,19 +562,28 @@ fn conversation_vm_plays_holds_advances_and_restarts() {
             .unwrap()
             .unwrap();
         tick_until(&mut vm, &mut engine, |_, e| e.starts.len() == 5);
-        assert_eq!(
-            &engine.starts[3..],
-            &[(sound(0), ACTOR), (sound(0), SECOND_ACTOR)]
-        );
+        // Both workers were started before the same tick. Which one the VM
+        // runs first within a tick is its thread order, which no listener
+        // can hear: compare the two starts as a set, then follow each
+        // speaker's own handle (the stub numbers them from 1 in start order).
+        let mut both = engine.starts[3..].to_vec();
+        both.sort_unstable();
+        let mut expected = vec![(sound(0), ACTOR), (sound(0), SECOND_ACTOR)];
+        expected.sort_unstable();
+        assert_eq!(both, expected);
+        let handle = |object| {
+            4 + engine.starts[3..].iter().position(|&(_, o)| o == object).unwrap() as u32
+        };
+        let (first, overlap) = (handle(ACTOR), handle(SECOND_ACTOR));
         let second = |vm: &Vm<'_>| vm.global(global_at("status", 1)).unwrap().short();
         assert_eq!(second(&vm), 3);
         vm.call_script(&mut engine, stop).unwrap().unwrap();
-        assert_eq!(engine.stops, [1, 4]);
-        assert!(engine.playing.contains_key(&5));
-        let end = engine.playing[&5];
+        assert_eq!(engine.stops, [1, first]);
+        assert!(engine.playing.contains_key(&overlap));
+        let end = engine.playing[&overlap];
         tick_until(&mut vm, &mut engine, |vm, _| second(vm) == 6);
         assert_eq!(engine.tick, end);
-        assert_eq!(engine.stops, [1, 4]);
+        assert_eq!(engine.stops, [1, first]);
         exercised = true;
     });
     assert!(

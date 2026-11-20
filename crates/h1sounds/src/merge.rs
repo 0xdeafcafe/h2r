@@ -13,17 +13,21 @@
 //! | permutations | appended in order, with their name and chunks |
 //! | chunks | appended; the caller maps each pointer (copies the raw) |
 //! | custom playback, extra info | appended whole (nested blocks); the extra info's owner becomes the caller's datum |
-//! | promotion | refused: its rules hold indices this module doesn't map |
+//! | promotion | appended with its own timers, preserving each rule's index within the sound's rebuilt pitch ranges |
 //!
 //! Import names are string IDs; the caller maps them from the source map's
 //! string table into the destination's.
 
-use crate::convert::snd;
-use crate::gestalt::{Chunk, ChunkPointer, SoundGestalt, blocks};
-use crate::{Error, Result};
-use map::build::{TagPayload, TagSet};
+use std::collections::HashSet;
 
-/// An extra info's `snd!` owner datum.
+use map::build::{TagPayload, TagSet};
+use map::{FourCC, Map, TagId};
+
+use crate::convert::snd;
+use crate::gestalt::{Chunk, ChunkPointer, Nested, SoundGestalt, blocks};
+use crate::{Error, Result};
+
+/// An extra info's `ugh!` owner datum.
 const EXTRA_OWNER: usize = 0x20;
 /// An extra info's raw pointer.
 const EXTRA_RAW: usize = 8;
@@ -64,6 +68,48 @@ fn get<'a>(g: &'a SoundGestalt, i: usize, n: usize, what: &str) -> Result<&'a [u
     Ok(g.element(i, n))
 }
 
+/// Halo 2's promotion rule selects a pitch range relative to the snd!,
+/// with -1 selecting range zero (0x218f10 and 0x219070). Each rule has
+/// its own timer (0x126f60). The header index itself is signed at 0x218f1a.
+fn promotion<'a>(g: &'a SoundGestalt, header: &[u8]) -> Result<Option<&'a Nested>> {
+    if header.len() < snd::LEN {
+        return Err(Error::Invalid(format!("snd!: {} bytes", header.len())));
+    }
+    let index = header[snd::PROMOTION];
+    if index == u8::MAX {
+        return Ok(None);
+    }
+    let bad = |reason: &str| Error::Invalid(format!("snd!: promotion {index}: {reason}"));
+    if index > i8::MAX as u8 {
+        return Err(bad("index exceeds signed 8 bits"));
+    }
+    let entry = g.nested[blocks::PROMOTIONS]
+        .get(usize::from(index))
+        .ok_or_else(|| bad("missing from the gestalt"))?;
+    let [rules, timers] = entry.children.as_slice() else {
+        return Err(bad("expected rule and timer blocks"));
+    };
+    if entry.bytes.len() != crate::gestalt::STRIDES[blocks::PROMOTIONS]
+        || rules.count == 0
+        || rules.count != timers.count
+        || u64::from(rules.count) * 0x10 != rules.bytes.len() as u64
+        || u64::from(timers.count) * 4 != timers.bytes.len() as u64
+    {
+        return Err(bad("invalid rule or timer block size"));
+    }
+    let count = u16::from(header[snd::PITCH_RANGE_COUNT]);
+    for (i, rule) in rules.bytes.chunks_exact(0x10).enumerate() {
+        let range = u16_at(rule, 0);
+        let target = if range == u16::MAX { 0 } else { range };
+        if target >= count {
+            return Err(Error::Invalid(format!(
+                "snd!: promotion {index} rule {i} targets pitch range {target} of {count}"
+            )));
+        }
+    }
+    Ok(Some(entry))
+}
+
 /// How [`merge_sound`] maps what lives outside the gestalt.
 pub trait MergeMap {
     /// A source import name (string ID) as a destination one.
@@ -75,8 +121,7 @@ pub trait MergeMap {
 
 /// Appends the gestalt entries `header` (a source `snd!`, at least
 /// [`snd::LEN`] bytes) names in `src` to `dst`, and returns the `snd!`
-/// with its indices rewritten for `dst`. `owner` is the datum the moved
-/// `snd!` has in the destination (written into its extra info).
+/// with its indices rewritten for `dst`. `owner` is the destination gestalt datum.
 pub fn merge_sound(
     src: &SoundGestalt,
     header: &[u8],
@@ -84,15 +129,16 @@ pub fn merge_sound(
     owner: u32,
     map: &mut dyn MergeMap,
 ) -> Result<Vec<u8>> {
-    if header.len() < snd::LEN {
-        return Err(Error::Invalid(format!("snd!: {} bytes", header.len())));
-    }
+    let promotion = promotion(src, header)?
+        .map(|entry| {
+            i8::try_from(dst.count(blocks::PROMOTIONS))
+                .map(|index| (index as u8, entry))
+                .map_err(|_| {
+                    Error::Unsupported("destination promotion index exceeds signed 8 bits".into())
+                })
+        })
+        .transpose()?;
     let mut out = header.to_vec();
-    if header[snd::PROMOTION] != 0xff {
-        return Err(Error::Unsupported(
-            "snd!: sound promotions are not merged".into(),
-        ));
-    }
 
     let playback = u16_at(header, snd::PLAYBACK) as usize;
     let e = get(src, blocks::PLAYBACKS, playback, "playback")?.to_vec();
@@ -191,31 +237,40 @@ pub fn merge_sound(
 
     let extra = u16_at(header, snd::EXTRA_INFO);
     if extra != 0xffff {
+        let index = i16::try_from(dst.count(blocks::EXTRA_INFOS))
+            .map_err(|_| Error::Unsupported("extra info index exceeds signed 16 bits".into()))?;
         let mut e = src.nested[blocks::EXTRA_INFOS]
             .get(extra as usize)
             .ok_or_else(|| Error::Invalid(format!("snd!: extra info {extra}")))?
             .clone();
         let p = u32_at(&e.bytes, EXTRA_RAW);
-        if p != 0 && p != u32::MAX {
+        let pointer = src
+            .extra_raws
+            .get(&(extra as usize))
+            .copied()
+            .map(ChunkPointer::Local)
+            .or_else(|| (p != 0 && p != u32::MAX).then_some(ChunkPointer::Stored(p)));
+        if let Some(pointer) = pointer {
             let size = u32_at(&e.bytes, EXTRA_RAW + 4);
-            match map.raw(ChunkPointer::Stored(p), size)? {
+            match map.raw(pointer, size)? {
                 ChunkPointer::Stored(v) => {
-                    e.bytes[EXTRA_RAW..EXTRA_RAW + 4].copy_from_slice(&v.to_le_bytes())
+                    e.bytes[EXTRA_RAW..EXTRA_RAW + 4].copy_from_slice(&v.to_le_bytes());
                 }
-                ChunkPointer::Local(_) => {
-                    return Err(Error::Unsupported(
-                        "snd!: an extra info's raw can only stay where it is".into(),
-                    ));
+                ChunkPointer::Local(raw) => {
+                    e.bytes[EXTRA_RAW..EXTRA_RAW + 4].fill(0);
+                    dst.extra_raws.insert(index as usize, raw);
                 }
             }
         }
         e.bytes[EXTRA_OWNER..EXTRA_OWNER + 4].copy_from_slice(&owner.to_le_bytes());
         dst.nested[blocks::EXTRA_INFOS].push(e);
-        put_u16(
-            &mut out,
-            snd::EXTRA_INFO,
-            index16("extra info", dst.count(blocks::EXTRA_INFOS) - 1)?,
-        );
+        put_u16(&mut out, snd::EXTRA_INFO, index as u16);
+    }
+    if let Some((index, entry)) = promotion {
+        // Rebuilding the sound preserves its range order. The target words
+        // therefore still select their original ranges after first range moves.
+        dst.nested[blocks::PROMOTIONS].push(entry.clone());
+        out[snd::PROMOTION] = index;
     }
     Ok(out)
 }
@@ -227,11 +282,8 @@ pub struct Moved {
     pub tree: tags::schema::transplant::Transplanted,
     /// `snd!` tags whose gestalt entries came along.
     pub sounds: usize,
-    /// Of those, sounds whose promotion was cut (merging refuses them).
-    pub promotions_cut: usize,
-    /// Of those, sounds whose extra info was cut (its raw lives in the
-    /// source map's file, which an extra info can't point into).
-    pub extra_infos_cut: usize,
+    /// Of those, sounds that took their native promotion rule and timers.
+    pub promotions: usize,
     /// Sound chunks copied as local raw resources, and their bytes.
     pub raw: (usize, u64),
 }
@@ -280,9 +332,10 @@ impl<R: std::io::Read + std::io::Seek> MergeMap for Between<'_, R> {
 /// `dst`, with the sounds: every `snd!` the tree copies takes its entries
 /// from `src_gestalt` (the source map's) into `gestalt` (the
 /// destination's, which the caller installs afterwards), its chunks'
-/// local raw copied. A promotion is cut (merging refuses them), and so is
-/// an extra info whose raw is in the source file. `Ok(Err(..))`, and
-/// `dst` unchanged, when the schema refuses the tree.
+/// local raw and extra-info resources copied and its promotion rule
+/// reindexed. A reused sound must still have the donor's promotion rule.
+/// Returns `Ok(Err(..))` with `dst` unchanged when the schema refuses the
+/// tree. A failed sound merge invalidates the in-progress destination.
 pub fn transplant<R: std::io::Read + std::io::Seek>(
     schema: &tags::schema::Schema,
     src: &mut map::Map<R>,
@@ -313,20 +366,48 @@ pub fn transplant_from<R: std::io::Read + std::io::Seek>(
         Ok(t) => t,
         Err(r) => return Ok(Err(r)),
     };
-    let sounds: Vec<(map::TagId, map::TagId)> = tree
-        .added
-        .iter()
-        .filter(|id| {
-            src.tags()
-                .iter()
-                .any(|t| t.id == **id && t.group == map::FourCC(*b"snd!"))
-        })
-        .map(|id| (*id, tree.ids[id]))
-        .collect();
+    let sound_group = FourCC(*b"snd!");
+    let added: HashSet<_> = tree.added.iter().copied().collect();
+    for (&from, &to) in &tree.ids {
+        let source = src.tag(from)?;
+        if source.group != sound_group || added.contains(&from) {
+            continue;
+        }
+        let context = sound_context(src, from);
+        let header = src
+            .read_tag_bytes(from)
+            .map_err(|e| sound_error(&context, e))?;
+        let Some(entry) = promotion(src_gestalt, &header).map_err(|e| sound_error(&context, e))?
+        else {
+            continue;
+        };
+        let bytes = match dst.tag(to).map(|tag| &tag.payload) {
+            Some(TagPayload::Built(block)) => block.bytes.as_slice(),
+            Some(TagPayload::Pinned { bytes, .. }) => bytes.as_slice(),
+            _ => return Err(sound_error(&context, "reused sound has no payload")),
+        };
+        let reused = promotion(gestalt, bytes).map_err(|e| sound_error(&context, e))?;
+        if reused != Some(entry) {
+            return Err(sound_error(
+                &context,
+                format!("reused sound in {} has a different promotion", dst.name),
+            ));
+        }
+    }
+    let mut sounds = Vec::new();
+    for &id in &tree.added {
+        if src.tag(id)?.group == sound_group {
+            sounds.push(id);
+        }
+    }
     let mut moved = Moved {
         sounds: sounds.len(),
         ..Moved::default()
     };
+    if sounds.is_empty() {
+        return Ok(Ok(Moved { tree, ..moved }));
+    }
+    let owner = SoundGestalt::owner(dst, crate::gestalt::DEFAULT_NAME)?.0;
     let strings = src.strings().to_vec();
     let mut map = Between {
         src,
@@ -335,39 +416,40 @@ pub fn transplant_from<R: std::io::Read + std::io::Seek>(
         raws: std::collections::HashMap::new(),
         copied: (0, 0),
     };
-    for (from, to) in sounds {
-        let mut header = map.src.read_tag_bytes(from)?;
-        if header.len() < snd::LEN {
-            return Err(Error::Invalid(format!("snd!: {} bytes", header.len())));
-        }
-        if header[snd::PROMOTION] != 0xff {
-            header[snd::PROMOTION] = 0xff;
-            moved.promotions_cut += 1;
-        }
-        let extra = u16_at(&header, snd::EXTRA_INFO);
-        if extra != 0xffff {
-            let local = src_gestalt.nested[blocks::EXTRA_INFOS]
-                .get(extra as usize)
-                .map(|e| u32_at(&e.bytes, EXTRA_RAW))
-                .is_some_and(|p| p != 0 && p != u32::MAX && p >> 30 == 0);
-            if local {
-                put_u16(&mut header, snd::EXTRA_INFO, 0xffff);
-                moved.extra_infos_cut += 1;
-            }
-        }
-        let out = merge_sound(src_gestalt, &header, gestalt, to.0, &mut map)?;
+    for from in sounds {
+        let to = tree.ids[&from];
+        let context = sound_context(map.src, from);
+        let header = map
+            .src
+            .read_tag_bytes(from)
+            .map_err(|e| sound_error(&context, e))?;
+        let out = merge_sound(src_gestalt, &header, gestalt, owner, &mut map)
+            .map_err(|e| sound_error(&context, e))?;
         let t = map
             .dst
             .tag_mut(to)
-            .ok_or_else(|| Error::Invalid("a transplanted snd! is missing".into()))?;
+            .ok_or_else(|| sound_error(&context, "transplanted sound is missing"))?;
         match &mut t.payload {
             TagPayload::Built(b) if b.bytes.len() >= snd::LEN => {
                 b.bytes[..snd::LEN].copy_from_slice(&out[..snd::LEN]);
             }
-            _ => return Err(Error::Invalid("a transplanted snd! is not built".into())),
+            _ => return Err(sound_error(&context, "transplanted sound is not built")),
         }
+        moved.promotions += usize::from(out[snd::PROMOTION] != u8::MAX);
     }
     moved.raw = map.copied;
     moved.tree = tree;
     Ok(Ok(moved))
+}
+
+fn sound_context<R: std::io::Read + std::io::Seek>(src: &Map<R>, id: TagId) -> String {
+    let name = src.tag(id).ok().and_then(|tag| tag.name.as_deref());
+    match name {
+        Some(name) => format!("{}: snd! {name}", src.header().name),
+        None => format!("{}: snd! {id:?}", src.header().name),
+    }
+}
+
+fn sound_error(context: &str, reason: impl std::fmt::Display) -> Error {
+    Error::Invalid(format!("{context}: {reason}"))
 }

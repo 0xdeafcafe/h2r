@@ -163,6 +163,7 @@ pub struct Guest {
     code: Vec<(u64, u64)>,
     next_id: u32,
     pub(crate) watch: crate::watch::WriteWatch,
+    hle_writes: Option<HleWrites>,
     /// Names the current mappings and permissions ([`Guest::layout_id`]).
     layout: u64,
     /// The access trap, when a research observer installed one
@@ -173,6 +174,36 @@ pub struct Guest {
     cow_source_layout: u64,
     /// RAM replaced without per-page notifications (COW refresh or rollback).
     watch_revision: u64,
+}
+
+/// Guest ABI outputs. The caller recreates zeroed allocations with
+/// `map_zeroed` before applying the ordered writes. An allocation never
+/// aliases existing RAM, so every earlier write is independent of its bytes.
+#[derive(Debug, Default)]
+pub struct HleOutputs {
+    pub zeroed: Vec<(u32, u32, Permissions)>,
+    pub writes: Vec<(u32, Vec<u8>)>,
+}
+
+struct HleWrites {
+    outputs: HleOutputs,
+    remaining: usize,
+    expected_layout: u64,
+    incomplete: bool,
+}
+
+impl HleWrites {
+    fn store(&mut self, addr: u32, value: &[u8]) {
+        if value.is_empty() || self.incomplete {
+            return;
+        }
+        if self.outputs.writes.len() == 4096 || value.len() > self.remaining {
+            self.incomplete = true;
+            return;
+        }
+        self.remaining -= value.len();
+        self.outputs.writes.push((addr, value.to_vec()));
+    }
 }
 
 /// Layout identities, unique across every [`Guest`] in the process, so a
@@ -215,6 +246,7 @@ impl Guest {
             code: Vec::new(),
             next_id: 1,
             watch: Default::default(),
+            hle_writes: None,
             layout: fresh_layout(),
             trap: None,
             cow_source_layout: 0, watch_revision: 0,
@@ -350,14 +382,25 @@ impl Guest {
         permissions: Permissions,
     ) -> Result<(), MapError> {
         self.check_virtual(va, len)?;
+        let before = self.layout;
         if let Some(physical) = self.fresh_physical(len) {
-            return self.map(va, len, physical, permissions);
+            self.map(va, len, physical, permissions)?;
+        } else {
+            let physical = self
+                .find_free_physical(len, 0..RAM_SIZE as u32, PAGE_SIZE)
+                .ok_or(MapError::OutOfMemory)?;
+            self.map(va, len, physical, permissions)?;
+            self.fill_zero(physical as usize, len as usize);
         }
-        let physical = self
-            .find_free_physical(len, 0..RAM_SIZE as u32, PAGE_SIZE)
-            .ok_or(MapError::OutOfMemory)?;
-        self.map(va, len, physical, permissions)?;
-        self.fill_zero(physical as usize, len as usize);
+        if let Some(w) = &mut self.hle_writes {
+            if w.expected_layout != before || w.outputs.zeroed.len() == 4096 {
+                w.incomplete = true;
+            }
+            if !w.incomplete {
+                w.outputs.zeroed.push((va, len, permissions));
+                w.expected_layout = self.layout;
+            }
+        }
         Ok(())
     }
     fn fresh_physical(&self, len: u32) -> Option<u32> {
@@ -1041,6 +1084,7 @@ impl Guest {
     }
 
     pub(crate) fn fast_parts(&mut self) -> (*mut u8, *const FastPage, bool) {
+        self.invalidate_hle_capture();
         (
             self.ram.as_mut_ptr(),
             self.fast_pages
@@ -1274,6 +1318,45 @@ impl Guest {
         }
         Ok(())
     }
+    /// Capture the virtual writes and zero-initialised allocations of one
+    /// synchronous ABI call. Physical reservation changes, other mapping
+    /// operations, direct RAM replacements and nested capture cannot be
+    /// reproduced as ABI outputs and return `None`, as does exceeding the
+    /// byte/record budget. The call itself always runs normally.
+    pub fn capture_hle_writes<T>(
+        &mut self,
+        byte_limit: usize,
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> (T, Option<HleOutputs>) {
+        let fixed = (self.reservations.len(), self.code.len());
+        let mut previous = self.hle_writes.replace(HleWrites {
+            remaining: byte_limit,
+            outputs: HleOutputs::default(),
+            expected_layout: self.layout,
+            incomplete: false,
+        });
+        if let Some(outer) = &mut previous {
+            outer.incomplete = true;
+        }
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self)));
+        let captured = std::mem::replace(&mut self.hle_writes, previous);
+        let value = result.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        let outputs = captured
+            .filter(|w| {
+                !w.incomplete
+                    && w.expected_layout == self.layout
+                    && fixed == (self.reservations.len(), self.code.len())
+            })
+            .map(|w| w.outputs);
+        (value, outputs)
+    }
+
+    fn invalidate_hle_capture(&mut self) {
+        if let Some(w) = &mut self.hle_writes {
+            w.incomplete = true;
+        }
+    }
+
     /// No bytes change unless every mapping in the access is writable.
     pub fn write_bytes(
         &mut self,
@@ -1299,6 +1382,9 @@ impl Guest {
             if self.watch.active() {
                 self.watch.note(at, value.len());
             }
+            if let Some(w) = &mut self.hle_writes {
+                w.store(addr, value);
+            }
             return Ok(());
         }
         let Some(mut index) = self.checked_start(addr, value.len(), Access::Write, alignment)?
@@ -1320,6 +1406,9 @@ impl Guest {
             }
             offset += n;
             index += 1;
+        }
+        if let Some(w) = &mut self.hle_writes {
+            w.store(addr, value);
         }
         if self.trap.is_some() && !value.is_empty() {
             self.trap_note(pc, addr, value.len(), true);

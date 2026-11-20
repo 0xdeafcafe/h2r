@@ -10,8 +10,8 @@
 //! across as tokens), and the raw nothing names any more is emptied
 //! ([`crate::fresh::drop_unused_raw`]).
 //!
-//! A promotion, which the merge refuses, is carried whole (its rules index
-//! the sound's own pitch ranges: [`PROMOTION_EVIDENCE`]).
+//! Sound promotions travel through the same merge as their pitch ranges
+//! and retain their sound-relative targets.
 //!
 //! The gestalt is left whole, with the reason, when a `snd!` is not a
 //! built 20-byte tree, or when the `ugh!` holds raw anywhere but a chunk or
@@ -39,16 +39,6 @@ pub struct Compacted {
     /// Raw resources emptied, and their bytes.
     pub raw_dropped: (usize, u64),
 }
-
-/// Why a promotion moves whole. Its rules (`+0`, `0x10` each) start with
-/// a pitch range index *within the sound* (V, 2026-11-18, every promotion
-/// of 05a, Coagulation and 03a: each index is below the sound's own range
-/// count, and `glass_breakable`'s rules are the same on 05a and
-/// Coagulation though its first range is 13 on one and 20 on the other);
-/// its runtime timers (`+8`) are one per rule, and the rest of the element
-/// is runtime state (`ffffffff`, then zeros). Every promotion has one
-/// sound.
-pub const PROMOTION_EVIDENCE: () = ();
 
 /// Extra info: element size and its raw pointer.
 const EXTRA_LEN: u32 = 0x2c;
@@ -230,7 +220,8 @@ impl MergeMap for Same {
 /// `set` is unchanged on error.
 pub fn gestalt(set: &mut TagSet) -> Result<Compacted> {
     let slot = SoundGestalt::slot(set).ok_or_else(|| fail("no ugh!"))?;
-    let TagPayload::Built(old) = &set.slots[slot].tag.as_ref().expect("tag").payload else {
+    let owner = set.slots[slot].tag.as_ref().expect("gestalt");
+    let TagPayload::Built(old) = &owner.payload else {
         return Err(fail("the ugh! is not built"));
     };
     let mut root = old.clone();
@@ -247,27 +238,16 @@ pub fn gestalt(set: &mut TagSet) -> Result<Compacted> {
         let TagPayload::Built(b) = &t.payload else {
             return Err(fail(format!("{:?} is not built", s.name)));
         };
-        if b.bytes.len() < snd::LEN || !b.fixups.is_empty() {
+        use tags::sound::h1_promotion as h1;
+        let promoted = h1::present(&b.bytes)
+            && (b.fixups.is_empty()
+                || matches!(b.fixups.as_slice(), [f] if f.offset == h1::TARGET
+                    && matches!(f.kind, FixupKind::TagId(_))));
+        if !promoted && (b.bytes.len() < snd::LEN || !b.fixups.is_empty()) {
             return Err(fail(format!("{:?} is not a plain snd!", s.name)));
         }
-        // The merge refuses promotions; carried here whole (see
-        // `PROMOTION_EVIDENCE`).
-        let mut header = b.bytes.clone();
-        let promotion = header[snd::PROMOTION];
-        header[snd::PROMOTION] = 0xff;
-        let mut out = merge_sound(&src, &header, &mut dst, t.id.0, &mut Same)
+        let out = merge_sound(&src, &b.bytes, &mut dst, owner.id.0, &mut Same)
             .map_err(|e| fail(format!("{:?}: {e}", s.name)))?;
-        if promotion != 0xff {
-            let e = src.nested[blocks::PROMOTIONS]
-                .get(promotion as usize)
-                .ok_or_else(|| fail(format!("{:?}: promotion {promotion}", s.name)))?
-                .clone();
-            dst.nested[blocks::PROMOTIONS].push(e);
-            out[snd::PROMOTION] = u8::try_from(dst.count(blocks::PROMOTIONS) - 1)
-                .ok()
-                .filter(|&v| v != 0xff)
-                .ok_or_else(|| fail("more than 254 promotions"))?;
-        }
         headers.insert(i, out);
     }
     let mut new_root = dst.to_block();

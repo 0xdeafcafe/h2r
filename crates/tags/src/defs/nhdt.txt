@@ -25,7 +25,7 @@ group nhdt 0x28 align 4
     0x18 u8 threshold_battery -- E 0x0013ac8f: word C bit 0x08 when this, as a float, is above the battery's age (a fraction)
     0x19 u8 threshold_loaded -- E 0x0013aca8: word C bit 0x10 when the rounds loaded are below this
     0x1a u8 threshold_reserve -- E 0x0013acbd: word C bit 0x20 when the rounds in reserve are below this
-    0x1b unknown 0x1
+    0x1b u8 h1_screen -- D converted weapon widget marker and source screen selector
     0x1c enum16 anchor values=top_right|top_left|bottom_left|bottom_right|centre -- E 0x001396c7: the corner of the view's HUD frame the offsets start from; above 4 a projected point
     0x1e flags16 flags bits=mirror_0|mirror_1 -- E 0x0022b29c: bits 0 and 1 mirror the texture
     0x20 tagref bitmap groups=bitm -- E 0x0022ae21: the art; its sequence per screen mode below
@@ -33,7 +33,7 @@ group nhdt 0x28 align 4
     0x30 i8 sequence_full -- E 0x0022ae7f: the bitmap sequence in fullscreen (first sprite, else first image)
     0x31 i8 sequence_half -- E 0x0022ae79: half screen
     0x32 i8 sequence_quarter -- E 0x0022ae73: quarter screen
-    0x33 unknown 0x1
+    0x33 u8 h1_half_size -- D converted crosshair basis is halved in split screen
     0x34 i16[2] offset_full -- E 0x0022b128: x, y in HUD pixels from the anchor, fullscreen
     0x38 i16[2] offset_half -- E 0x0022b0da: half screen
     0x3c i16[2] offset_quarter -- E 0x0022b089: quarter screen
@@ -41,7 +41,7 @@ group nhdt 0x28 align 4
     0x48 f32[2] registration_half -- E 0x0022b108: half screen
     0x50 f32[2] registration_quarter -- E 0x0022b0b7: quarter screen
     0x58 block effects 0x68 align 4 -- E 0x0022bcaf: widget animation (not modelled by the HUD tool)
-      0x0 unknown 0x4
+      0x0 flags32 scale_flags bits=scale|rotate|offset -- E 0x22bcaf
       0x4 string string_4
       0x8 unknown 0x8
       0x10 data block_10 align 4
@@ -57,7 +57,7 @@ group nhdt 0x28 align 4
       0x58 unknown 0x8
       0x60 data block_60 align 4
     0x60 u16 special -- E 0x0022b2d0: 5 the shield meter (fills by the shield)
-    0x62 unknown 0x2
+    0x62 i16 h1_frame_period -- D converted warning sprite period, in seconds
   0x10 block text_widgets 0x54 align 4 -- E 0x0013a532: +0x10 count, +0x14 address; drawn by 0x0022aa16
     0x0 string name -- D the widget's name, a string ID; nothing found reads it in the draw
     0x4 u8 input_1 -- E 0x0013ad48: the HUD input a number shows
@@ -75,7 +75,7 @@ group nhdt 0x28 align 4
     0x18 u8 threshold_battery -- E 0x0013ac8f: as the bitmap widgets'
     0x19 u8 threshold_loaded -- E 0x0013aca8: as the bitmap widgets'
     0x1a u8 threshold_reserve -- E 0x0013acbd: as the bitmap widgets'
-    0x1b unknown 0x1
+    0x1b u8 h1_screen -- D converted weapon widget marker and source screen selector
     0x1c enum16 anchor values=top_right|top_left|bottom_left|bottom_right|centre -- E 0x001396c7 (from 0x0022ab17)
     0x1e flags16 flags bits=number|pad_2|pad_4|player_name -- E 0x0022a8a4: show the input as a number, padded, or the player's name
     0x20 tagref shader -- E 0x0022aa2f: no shader, no text

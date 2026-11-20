@@ -139,10 +139,22 @@ pub(super) fn check(
                 }
                 let variant = source.actor_palette[actor as usize].as_ref().unwrap();
                 let tag = h1.tag(variant.weapon.id).unwrap();
-                let h1campaign::h2assets::Swap::Retail(expected) =
+                let h1campaign::h2assets::Swap::Retail(retail) =
                     h1campaign::h2assets::swap_for(b"weap", &tag.name)
                 else {
                     panic!("no a30 weapon counterpart for {}", tag.name);
+                };
+                // Retail characters carry the retail counterpart. A rebuilt
+                // character (a30's `crewman pistol`) carries Halo 1's own
+                // weapon in the Halo 1-assets variant (docs/halo1/ai.md,
+                // Built — crew), converted under its source name.
+                let rebuilt = source
+                    .actor_of(actor as usize)
+                    .is_some_and(|a| h1ai::convert::rebuilds_character(a.kind));
+                let expected = if rebuilt {
+                    tag.name.rsplit('\\').next().unwrap()
+                } else {
+                    retail
                 };
                 let slot = u32::try_from(index).unwrap();
                 assert!(slot < weapon_count);

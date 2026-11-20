@@ -162,6 +162,7 @@ pub mod method {
     /// `boot::ui_watch`): `{"screen", "window", "slot", "live_menu_row",
     /// "mode", "dialog", "age_ms"}`; `dialog` is the first screen on windows
     /// 0 to 4 (`{"id", "name", "window", "slot"}`) or `null`.
+    pub const UI_CAMPAIGN: &str = "ui.campaign";
     pub const UI_SCREEN: &str = "ui.screen";
     /// Record the next whole frame's passes, draws and targets, or read
     /// the last one recorded ([`crate::FrameParams`]).

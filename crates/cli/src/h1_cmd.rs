@@ -794,22 +794,14 @@ fn convert(args: &[String]) -> Result<()> {
         ),
         None => println!("  lightmap: none, the level is unlit"),
     }
-    for (h1s, (i, b)) in p.materials.iter().zip(&p.material_shaders) {
-        let copy = p
-            .textures
-            .copies
-            .iter()
-            .find(|c| &c.h1_shader == h1s && c.material == *i);
-        match copy {
-            Some(c) => {
-                let roles: Vec<&str> = c.swapped.iter().map(|s| s.0).collect();
-                println!(
-                    "  shader {h1s}: Halo 1's {} on a copy of {b}",
-                    roles.join(", ")
-                );
-            }
-            None => println!("  shader {h1s} -> {b} (the base's, a stand-in)"),
-        }
+    for shader in &p.textures.copies {
+        let roles: Vec<_> = shader.swapped.iter().map(|s| s.0).collect();
+        println!(
+            "  shader {} on {} ({})",
+            shader.h1_shader,
+            shader.layout.stem,
+            roles.join(", ")
+        );
     }
     if !p.textures.bitmaps.is_empty() {
         println!(
@@ -1098,14 +1090,13 @@ fn convert_campaign(a: &ConvertArgs, h1: &H1Map) -> Result<()> {
 }
 
 /// The campaign conversion's layers: everything, scripts when the Halo 1
-/// disc's XBE gave them, and up to 1000 sounds.
+/// disc's XBE gave them, and all the sounds they reference.
 pub(crate) fn campaign_options<'a>(
     scripts: Option<&'a h1campaign::Scripting>,
     donors: Option<&'a h1campaign::donor::Donors>,
 ) -> h1campaign::Options<'a> {
     h1campaign::Options {
         scripts,
-        sounds: usize::MAX,
         donors,
         ..Default::default()
     }

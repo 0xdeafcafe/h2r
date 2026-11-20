@@ -19,9 +19,7 @@
 //!   base with character shapes holds the pills and spheres `biped_shapes`
 //!   builds from its own collision size, and every rigid body of their
 //!   physics models `BIPED_BODY`.
-//! - `bipeds_rebuilt_against_the_template_path`: every Halo 1 biped on the
-//!   ten levels, rebuilt (the default) and on its template
-//!   (`rebuild_bipeds` off): the rebuilt record round-trips with nothing
+//! - Every retail biped round-trips through its definition with nothing
 //!   pinned, carries Halo 1's header, camera, words and collision size with
 //!   shapes sized to it, local unit references, source vitality and shields,
 //!   and a physics model when the source has collision.
@@ -738,7 +736,7 @@ fn biped_shapes_follow_the_collision_size() {
 
 #[test]
 #[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
-fn bipeds_rebuilt_against_the_template_path() {
+fn bipeds_rebuilt_from_the_source_unit() {
     let mut base_map = h2_map("05a_deltaapproach");
     let base = Base::read(&mut base_map).unwrap();
     let d = def(b"bipd");
@@ -761,20 +759,7 @@ fn bipeds_rebuilt_against_the_template_path() {
             }
             let u = h1::Unit::read(&h1, t).unwrap();
 
-            let mut tc = Converter::new(&h1, &base);
-            tc.options.rebuild_bipeds = false;
-            let tid = match tc.object(t) {
-                Ok(id) => id,
-                Err(e) => {
-                    lines.push(format!("{level} {}: neither path ({e})", t.name));
-                    continue;
-                }
-            };
-            let tpl = local(&tc.tree, tid).expect("template bipd in the tree");
-            let tr = defs::from_built(d, &tpl.root).expect("template bipd reads");
-
             let mut c = Converter::new(&h1, &base);
-            assert!(c.options.rebuild_bipeds, "rebuilt bipeds are the default");
             let id = c
                 .object(t)
                 .unwrap_or_else(|e| panic!("{}: rebuilt: {e}", t.name));
@@ -801,12 +786,23 @@ fn bipeds_rebuilt_against_the_template_path() {
             assert_eq!(r.at("unit.obje.object_type"), Some(&Val::Enum(BIPED_TYPE)));
             assert_eq!(
                 float(&r, "unit.obje.bounding_radius"),
-                float(&tr, "unit.obje.bounding_radius"),
-                "{}: radius as the template path writes it",
+                u.object.bounding_radius,
+                "{}: source bounding radius",
                 t.name
             );
-            let (rc, tchain) = (chain(&c.tree, &r), chain(&tc.tree, &tr));
-            assert_eq!(rc, tchain, "{}: model chain", t.name);
+            let source = &u.object;
+            let expected = vec![
+                Some(FourCC(*b"hlmt")),
+                Some(FourCC(*b"mode")),
+                source.collision.map(|_| FourCC(*b"coll")),
+                source.animation.map(|_| FourCC(*b"jmad")),
+            ];
+            assert_eq!(
+                chain(&c.tree, &r),
+                expected,
+                "{}: source model chain",
+                t.name
+            );
             let Some(Val::Block(pr)) = r.at("unit.obje.predicted_resources") else {
                 panic!()
             };
@@ -884,13 +880,12 @@ fn bipeds_rebuilt_against_the_template_path() {
                     .map(|h| defs::from_built(hd, &h.root).unwrap())
                     .and_then(|h| reference(&h, "physics_model"))
             };
-            let borrowed = phmo(&tc.tree, &tr).is_some();
             let built = phmo(&c.tree, &r);
             // A biped Halo 1 gives no collision (a cinematic one) gets
             // none, as retail's cinematic characters have none (miranda,
             // regret_holo on 05a); the template path borrowed the
             // template's.
-            if borrowed && u.object.collision.is_some() {
+            if u.object.collision.is_some() {
                 assert!(
                     built.is_some(),
                     "{}: a phmo where the template path had one ({:?})",

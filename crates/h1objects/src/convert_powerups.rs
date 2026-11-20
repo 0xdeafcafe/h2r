@@ -30,7 +30,7 @@ impl Converter<'_> {
         let mut rep = Self::report(tag, "rebuilt from the eqip definition");
         let mut object = e.object.clone();
         self.halo2_change_colours(&mut object);
-        let hlmt = self.model(&mut rep, &object, None, &tag.name, true, None)?;
+        let hlmt = self.model(&mut rep, &object, &tag.name, None)?;
         let predicted = self.predicted(hlmt);
         let mut root = equipment_values(e, b, hlmt)?;
         let (attachments, creation, functions) = self.object_attachments(b, &e.object, &mut rep)?;
@@ -41,10 +41,9 @@ impl Converter<'_> {
 
         if let Some(id) = e.pickup_sound {
             let source = self.h1_tag(id)?;
-            if let Some(sound) = self.sound(source, &mut rep) {
-                root.set("snd_ref_134", Val::tag(FourCC(*b"snd!"), sound))
-                    .map_err(def_error)?;
-            }
+            let sound = self.sound(source, &mut rep)?;
+            root.set("snd_ref_134", Val::tag(FourCC(*b"snd!"), sound))
+                .map_err(def_error)?;
         }
         let references = self.item_effect_refs(b, &mut rep)?;
         crate::arsenal::refs(&mut root, &references)?;
@@ -122,6 +121,7 @@ mod tests {
         ] {
             let item = Equipment {
                 object: h1::Object {
+                    texture_override: 0,
                     flags: 4,
                     bounding_radius: 0.25,
                     acceleration_scale: 1.0,

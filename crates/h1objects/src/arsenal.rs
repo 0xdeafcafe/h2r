@@ -37,6 +37,10 @@ pub const WEAPON_WORDS: &[(&str, usize)] = &[
     ("unknown_15c", 0x358), // heat detonation fraction
     ("unknown_160", 0x35c), // heat loss per second
     ("unknown_164", 0x360), // heat illumination
+    ("unknown_254", 0x440), // battery age slows heat recovery
+    ("unknown_258", 0x444), // battery age slows firing
+    ("unknown_25c", 0x448), // age at which misfires start
+    ("unknown_260", 0x44c), // misfire chance at full age
     ("unknown_208", 0x3e4), // aim cone angle
     ("unknown_20c", 0x3e8), // aim cone range
     ("unknown_210", 0x3ec), // pull angle
@@ -52,10 +56,17 @@ pub const BARREL_WORDS: &[(&str, usize)] = &[
     ("unknown_8", 0x8),   // rounds per second, to
     ("unknown_c", 0xc),   // firing acceleration time
     ("unknown_10", 0x10), // firing deceleration time
+    ("unknown_18", 0x14), // spin fraction for the firing transition
     ("unknown_28", 0x20), // i16 magazine, i16 rounds per shot
     ("unknown_2c", 0x24), // i16 minimum rounds loaded, i16 rounds between tracers
     ("unknown_38", 0x38), // error acceleration time
     ("unknown_3c", 0x3c), // error deceleration time
+    // H2 blends two error profiles (0xff474, 0x104dd1); H1 has one.
+    ("unknown_48", 0x38),
+    ("unknown_4c", 0x3c),
+    ("unknown_58", 0x78),
+    ("unknown_5c", 0x7c),
+    ("unknown_60", 0x80),
     ("unknown_68", 0x6c), // i16 distribution function, i16 projectiles per shot
     ("unknown_6c", 0x70), // distribution angle
     ("unknown_70", 0x78), // minimum error
@@ -64,9 +75,10 @@ pub const BARREL_WORDS: &[(&str, usize)] = &[
     ("unknown_7c", 0x84), // first-person offset
     ("unknown_80", 0x88),
     ("unknown_84", 0x8c),
-    ("unknown_9c", 0xa4), // recovery and its fraction before heat per round
-    ("unknown_a0", 0xa8),
+    ("unknown_9c", 0xa4), // ejection port recovery time
+    ("unknown_a0", 0xa8), // illumination recovery time
     ("unknown_a4", 0xb8), // heat per round
+    ("unknown_a8", 0xbc), // battery age per round
 ];
 
 /// `proj` words from Halo 1 by offset (S, V2; the removed template path's rows):
@@ -89,7 +101,8 @@ pub const PROJECTILE_WORDS: &[(&str, usize, bool)] = &[
     ("unknown_178", 0x1e0, false), // water damage range, to
     ("unknown_17c", 0x1e4, true), // initial velocity
     ("unknown_180", 0x1e8, true), // final velocity
-    ("unknown_184", 0x1ec, true), // guided angular velocity
+    ("unknown_184", 0x1ec, true), // the two bounds H2 samples at 0xf82e8
+    ("unknown_188", 0x1ec, true),
 ];
 
 /// Halo 1's `jpt!` damage: lower bound `+0x1d0`, upper bound `+0x1d4`
@@ -216,6 +229,7 @@ pub struct WeaponParts {
     pub predicted: Vec<Predicted>,
     /// Per Halo 1 trigger, its converted projectile.
     pub projectiles: Vec<Option<TagId>>,
+    pub charging_effect: Option<TagId>,
     /// Halo 1's first-person model and animations, converted.
     pub first_person: (Option<TagId>, Option<TagId>),
     pub halo1: Halo1Refs,
@@ -399,10 +413,8 @@ fn behaviour_pair(behaviour: i16) -> i16 {
     }
 }
 
-/// Halo 1 trigger flag `0x8`: set on exactly the Halo 1 weapons that fire
-/// once per press on Blood Gulch (rocket launcher, sniper rifle, the
-/// scorpion's cannon) and on none of the automatic ones. S for the name;
-/// V for that split.
+/// H1's once-per-press flag, used by the rocket launcher, sniper rifle
+/// and Scorpion cannon on Blood Gulch. The shotgun has its own weapon type.
 pub const H1_TRIGGER_ONE_PER_PRESS: u32 = 0x8;
 /// Halo 1 trigger `+0x48` f32: seconds to charge (V: 0.6 on the plasma
 /// pistol's first trigger, the only nonzero one on Blood Gulch, and Halo
@@ -415,56 +427,61 @@ pub const H1_TRIGGER_CHARGING_TIME: usize = 0x48;
 /// pistol, the only trigger that charges: 45.0, 0, 1.0, 0, and no charging
 /// effect. They become Halo 2's trigger `+0x20..+0x30` word for word
 /// ([`TriggerWords::charged_time`]): the plasma pistol's charged
-/// illumination is 1.0 in both games. The charging effect is not carried
-/// (no Halo 1 trigger on the disc's multiplayer maps names one).
+/// illumination is 1.0 in both games.
 pub const H1_TRIGGER_CHARGED: usize = 0x4c;
 
-/// The Halo 2 triggers for Halo 1's (`h1`, each `h1::TRIGGER_SIZE`
-/// bytes), whose barrels are one per Halo 1 trigger in order. Halo 1
-/// fires each trigger from its own input; Halo 2 needs a trigger naming
-/// the barrel:
-///
-/// - a first trigger that charges (`+0x48` > 0) with a second one is one
-///   charging trigger, barrel 0 tapped and barrel 1 charged (Halo 1's
-///   plasma pistol: trigger 1 is its overcharge, as Halo 2's plasma
-///   pistol's secondary barrel);
-/// - otherwise each of the first two Halo 1 triggers is a trigger on input
-///   0 and 1 firing its barrel, once per press when it has
-///   [`H1_TRIGGER_ONE_PER_PRESS`], else automatically.
+/// The H1 shotgun is weapon type 1 in both games, including the shell
+/// reload path (H1 0xbf70f, H2 0x10271d). Its trigger flags are zero.
+const SHOTGUN: i16 = 1;
+
+fn single_shot(weapon_type: i16, flags: u32, barrel: usize) -> bool {
+    flags & H1_TRIGGER_ONE_PER_PRESS != 0 || (weapon_type == SHOTGUN && barrel == 0)
+}
+
+/// Halo 2 trigger inputs for an ordinary weapon. The rebuild also knows the
+/// weapon type, which distinguishes the shotgun from an automatic rifle.
 pub fn h2_triggers(h1: &[Vec<u8>]) -> Vec<TriggerWords> {
-    let flags = |t: &Vec<u8>| u32_at(t, 0);
-    let charging = |t: &Vec<u8>| f32::from_bits(u32_at(t, H1_TRIGGER_CHARGING_TIME));
-    match h1 {
-        [] => Vec::new(),
-        [first, _, ..] if charging(first) > 0.0 => {
-            let mut t = TriggerWords::new(0, 2, 0, 1);
-            t.0[7] = charging(first).to_bits();
-            // Charged time, overcharged action (its i16 alone), charged
-            // illumination, spew time.
+    weapon_triggers(0, h1)
+}
+
+fn weapon_triggers(weapon_type: i16, h1: &[Vec<u8>]) -> Vec<TriggerWords> {
+    if let Some(first) = h1.first() {
+        let charge = u32_at(first, H1_TRIGGER_CHARGING_TIME);
+        if f32::from_bits(charge) > 0.0 {
+            // The plasma pistol fires barrel 1 at full charge. The fuel
+            // rods charge and discharge the same barrel (H1 0xc0d61).
+            let mut t = TriggerWords::new(0, 2, 0, i16::from(h1.len() > 1));
+            t.0[6] = 1; // charging action, checked by H2 at 0xfe955
+            t.0[7] = charge;
             for k in 0..4 {
                 t.0[8 + k] = u32_at(first, H1_TRIGGER_CHARGED + 4 * k);
             }
             t.0[9] &= 0xffff;
-            vec![t]
+            return vec![t];
         }
-        _ => h1
-            .iter()
-            .take(2)
-            .enumerate()
-            .map(|(i, t)| {
-                let behaviour = i16::from(flags(t) & H1_TRIGGER_ONE_PER_PRESS != 0);
-                TriggerWords::new(i as i16, behaviour, i as i16, -1)
-            })
-            .collect(),
     }
+    h1.iter()
+        .take(2)
+        .enumerate()
+        .map(|(i, trigger)| {
+            let single = single_shot(weapon_type, u32_at(trigger, 0), i);
+            TriggerWords::new(i as i16, i16::from(single), i as i16, -1)
+        })
+        .collect()
 }
 
-/// Halo 2 caches inverse seconds. Across Coagulation's barrels each
-/// rate equals the reciprocal of its time, or 1000 for an instant change.
-/// Halo 1 has six of the times. The other pairs have zero duration.
+/// Bits used by the disc's triggers, excluding the once-per-press bit
+/// which moves to the trigger behaviour. The bits change positions
+/// between engines (docs/halo1/objects.md, "Firing a rebuilt weapon").
+fn barrel_flags(flags: u32) -> u32 {
+    (flags & 0x4) | ((flags & 0x20) >> 2) | ((flags & 0x1c00) >> 5)
+}
+
+/// Halo 2 caches inverse seconds. Its two error profiles share H1's
+/// times. The H2-only gun climb has zero duration.
 fn barrel_rates(e: &mut Record, trigger: &[u8]) -> Result<()> {
     for (path, source) in [
-        ("unknown_50", None), ("unknown_54", None),
+        ("unknown_50", Some(0x38)), ("unknown_54", Some(0x3c)),
         ("unknown_c4", None), ("unknown_c8", None),
         ("unknown_cc", Some(0xa8)), ("unknown_d0", Some(0xa4)),
         ("unknown_d4", Some(0xc)), ("unknown_d8", Some(0x10)),
@@ -479,6 +496,16 @@ fn barrel_rates(e: &mut Record, trigger: &[u8]) -> Result<()> {
 
 /// The `weap` root from Halo 1's weapon `w` (the bytes of its tag: `b`).
 pub fn weapon(w: &h1::Weapon, b: &[u8], parts: &WeaponParts) -> Result<Block> {
+    let trig = h1_triggers(b)?;
+    if trig.len() != w.triggers.len() || trig.len() > 2 {
+        return Err(Error::Invalid(format!(
+            "expected at most two matching triggers, got {} decoded and {} raw",
+            w.triggers.len(), trig.len()
+        )));
+    }
+    let charging = trig.first().is_some_and(|t| {
+        f32::from_bits(u32_at(t, H1_TRIGGER_CHARGING_TIME)) > 0.0
+    });
     let d = def(b"weap")?;
     let mut r = defs::default_record(d);
     refs(&mut r, &parts.halo1)?;
@@ -492,6 +519,7 @@ pub fn weapon(w: &h1::Weapon, b: &[u8], parts: &WeaponParts) -> Result<Block> {
     for (path, at) in WEAPON_WORDS {
         word(&mut r, path, u32_at(b, *at))?;
     }
+    set(&mut r, "weapon_type", Val::Int(w.weapon_type.into()))?;
     let levels = w.magnification_levels.max(0);
     set(&mut r, "magnification_levels", Val::Int(levels.into()))?;
     let flags = (w.flags & 0xffff) | if levels == 0 { NO_BINOCULAR_ZOOM } else { 0 };
@@ -571,7 +599,6 @@ pub fn weapon(w: &h1::Weapon, b: &[u8], parts: &WeaponParts) -> Result<Block> {
     // Barrels: one per Halo 1 trigger.
     let bd = d.child("barrels").expect("weap barrels");
     let fd = d.child("barrels.block_e4").expect("barrel firing effects");
-    let trig = h1_triggers(b)?;
     let mut barrels = Vec::new();
     for (i, t) in w.triggers.iter().enumerate() {
         let mut e = defs::default_record(bd);
@@ -579,6 +606,22 @@ pub fn weapon(w: &h1::Weapon, b: &[u8], parts: &WeaponParts) -> Result<Block> {
             word(&mut e, path, u32_at(&trig[i], *at))?;
         }
         barrel_rates(&mut e, &trig[i])?;
+        let flags = u32_at(&trig[i], 0);
+        if flags & !0x1c2c != 0 {
+            return Err(Error::Invalid(format!("unsupported flags {flags:#x} on trigger {i}")));
+        }
+        word(&mut e, "unknown_0", barrel_flags(flags))?;
+        let single = single_shot(w.weapon_type, flags, i);
+        if single || charging {
+            word(&mut e, "unknown_1c", 0x0001_0001)?; // one shot, regardless of pellet count
+            let rate = f32::from_bits(u32_at(&trig[i], 4));
+            if rate > 0.0 {
+                word(&mut e, "unknown_20", rate.recip().to_bits())?;
+            }
+        }
+        // The MP firing path at 0x10429b dispatches on prediction type.
+        let prediction = if charging { 0 } else if single { 2 } else { 1 };
+        set(&mut e, "prediction_type", Val::Int(prediction))?;
         set(&mut e, "firing_noise", Val::Int(t.firing_noise.into()))?;
         set(
             &mut e,
@@ -613,11 +656,16 @@ pub fn weapon(w: &h1::Weapon, b: &[u8], parts: &WeaponParts) -> Result<Block> {
     set(&mut r, "barrels", Val::Block(barrels))?;
     let td = d.child(TRIGGERS).expect("weap triggers");
     let mut triggers = Vec::new();
-    for t in h2_triggers(&trig) {
+    for t in weapon_triggers(w.weapon_type, &trig) {
         let mut e = defs::default_record(td);
         for (k, w) in t.0.iter().enumerate() {
             if *w != 0 {
                 word(&mut e, &format!("unknown_{:x}", 4 * k), *w)?;
+            }
+        }
+        if t.behaviour() == 2 {
+            if let Some(id) = parts.charging_effect {
+                set(&mut e, "ref_30", Val::tag(FourCC(*b"effe"), id))?;
             }
         }
         triggers.push(e);
@@ -654,7 +702,11 @@ fn h1_triggers(b: &[u8]) -> Result<Vec<Vec<u8>>> {
     // The caller passes the concatenated trigger elements after the root
     // ([`weapon_bytes`]).
     let root = h1::WEAP_SIZE;
-    Ok(b[root..]
+    let bytes = b.get(root..).ok_or(Error::Truncated("weap root"))?;
+    if bytes.len() % h1::TRIGGER_SIZE != 0 {
+        return Err(Error::Truncated("weap trigger"));
+    }
+    Ok(bytes
         .chunks_exact(h1::TRIGGER_SIZE)
         .map(<[u8]>::to_vec)
         .collect())
@@ -684,6 +736,35 @@ pub struct ProjectileParts {
     pub responses: Vec<(&'static str, i16, Response)>,
 }
 
+/// Halo 1 computes air drag from the two velocities over its authored
+/// air interval (0x000c1ac0). Halo 2 blends speed by distance over that
+/// same interval (0x000f9527..0x000f95b4).
+fn velocity_change_distance(b: &[u8]) -> ([f32; 2], f32) {
+    let f = |at| f32::from_bits(u32_at(b, at));
+    let bounds = [f(0x1d0), f(0x1d4)];
+    let length = bounds[1] - bounds[0];
+    if f(0x1e4) == f(0x1e8) {
+        ([0.0, 0.0], 1.0)
+    } else if length.is_finite() && length > 0.0 {
+        (bounds, length.recip())
+    } else {
+        ([0.0, 0.0], 0.0)
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn projectile_velocity_transition_uses_air_distance() {
+    let mut bytes = [0; h1::PROJ_SIZE];
+    for (at, value) in [(0x1d0, 20.0f32), (0x1d4, 50.0), (0x1e4, 2.0), (0x1e8, 1.0)] {
+        bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    let (bounds, inverse) = velocity_change_distance(&bytes);
+    assert_eq!(bounds, [20.0, 50.0]);
+    assert_eq!(inverse, 1.0 / 30.0);
+    assert_eq!((35.0 - bounds[0]) * inverse, 0.5);
+}
+
 /// The `proj` root from Halo 1's projectile (its tag's bytes `b`).
 pub fn projectile(
     p: &h1::Projectile,
@@ -702,6 +783,13 @@ pub fn projectile(
         };
         word(&mut r, path, w)?;
     }
+    let (change_distance, inverse) = velocity_change_distance(b);
+    set(&mut r, "velocity_change_distance", Val::floats(&change_distance))?;
+    set(
+        &mut r,
+        "inverse_velocity_change_distance",
+        Val::Float(inverse),
+    )?;
     // Halo 1's detonation noise (`+0x1f0`, i16) in the low half of `+0xe4`.
     word(
         &mut r,
@@ -715,6 +803,11 @@ pub fn projectile(
     )?;
     set(&mut r, "collision_radius", Val::Float(p.collision_radius))?;
     set(&mut r, "maximum_range", Val::Float(p.maximum_range))?;
+    if p.initial_velocity != p.final_velocity {
+        // H2 compares this guidance scalar numerically against zero at
+        // 0xf88df. Its unused sign distinguishes the H1 flight law.
+        word(&mut r, "unknown_198", tags::H1_PROJECTILE_VELOCITY_CURVE)?;
+    }
     let jpt = FourCC(*b"jpt!");
     set(
         &mut r,
@@ -734,46 +827,7 @@ pub fn projectile(
 pub const H1_RESPONSES: usize = 0x240;
 pub const H1_RESPONSE_SIZE: usize = 0xa0;
 
-/// Halo 1's material types in the order of its responses, each with the
-/// Halo 2 global material its response is written for: the Halo 2
-/// material of the same substance and, where Halo 2 has one, the same
-/// character. Every name is one of the base's global materials (V:
-/// `weapon_rebuild_disc` on every base).
-pub const MATERIALS: [(&str, &str); 33] = [
-    ("dirt", "tough_terrain_dirt"),
-    ("sand", "tough_terrain_sand"),
-    ("stone", "hard_terrain_stone"),
-    ("snow", "soft_terrain_snow"),
-    ("wood", "tough_organic_wood"),
-    ("metal (hollow)", "hard_metal_thin"),
-    ("metal (thin)", "hard_metal_thin"),
-    ("metal (thick)", "hard_metal_thick"),
-    ("rubber", "tough_inorganic_rubber"),
-    ("glass", "brittle_glass"),
-    ("force field", "energy_shield_thick_for"),
-    ("grunt", "soft_organic_flesh_grunt"),
-    ("hunter armor", "hard_metal_thick_cov_hunter"),
-    ("hunter skin", "soft_organic_flesh_hunter"),
-    ("elite", "soft_organic_flesh_elite"),
-    ("jackal", "soft_organic_flesh_jackal"),
-    ("jackal energy shield", "energy_shield_thick_cov_jackal"),
-    ("engineer skin", "soft_organic_flesh"),
-    ("engineer force field", "energy_shield_thin"),
-    ("flood combat form", "tough_floodflesh_combatform"),
-    ("flood carrier form", "tough_floodflesh_carrierform"),
-    ("cyborg armor", "hard_metal_thin_hum_masterchief"),
-    ("cyborg energy shield", "energy_shield_thin_hum_masterchief"),
-    ("human armor", "tough_inorganic_armor_hum"),
-    ("human skin", "soft_organic_flesh_human"),
-    ("sentinel", "hard_metal_thin_for_sentinel"),
-    ("monitor", "hard_metal_thin_for_monitor"),
-    ("plastic", "tough_inorganic_plastic"),
-    ("water", "liquid_thin_water"),
-    ("leaves", "soft_organic_plant_leafy"),
-    ("elite energy shield", "energy_shield_thin_cov_elite"),
-    ("ice", "hard_terrain_ice"),
-    ("hunter shield", "hard_metal_solid_cov_hunter"),
-];
+pub use h1convert::materials::MATERIALS;
 
 /// The material every element not written for one material covers.
 pub const DEFAULT_MATERIAL: &str = "default_material";
@@ -797,6 +851,7 @@ pub fn response(h1: u16) -> Option<u16> {
 /// One material response's values, in Halo 2's terms.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Response {
+    pub effects: [Option<TagId>; 3],
     pub response: u16,
     pub potential_response: u16,
     pub potential_flags: u16,
@@ -836,6 +891,7 @@ impl Response {
         // is retail's unused one (0, 0, chance 0).
         let potential = h(0x24) != 0 || h(0x26) != 0;
         Ok(Self {
+            effects: [None; 3],
             response: map(h(2))?,
             potential_response: if potential { map(h(0x24))? } else { 0 },
             potential_flags: if potential { h(0x26) } else { 0 },
@@ -863,14 +919,25 @@ pub fn responses(
     h1: &h1map::H1Map,
     b: &[u8],
     materials: &[String],
+    mut convert: impl FnMut(h1map::TagId) -> Result<TagId>,
 ) -> Result<Vec<(&'static str, i16, Response)>> {
-    let blk = h1map::Block::read(b, H1_RESPONSES)
-        .ok_or_else(|| Error::Invalid("proj material responses".into()))?;
-    let all: Vec<Response> = h1
+    let blk =
+        h1map::Block::read(b, H1_RESPONSES).ok_or(Error::Truncated("proj material responses"))?;
+    let mut all = Vec::new();
+    for row in h1
         .block(blk, H1_RESPONSE_SIZE)?
         .chunks_exact(H1_RESPONSE_SIZE)
-        .map(Response::from_h1)
-        .collect::<Result<_>>()?;
+    {
+        let mut response = Response::from_h1(row)?;
+        for (slot, at) in response.effects.iter_mut().zip([4, 0x3c, 0x68]) {
+            let reference =
+                h1map::TagRef::read(row, at).ok_or(Error::Truncated("response effect"))?;
+            if !reference.id.is_none() {
+                *slot = Some(convert(reference.id)?);
+            }
+        }
+        all.push(response);
+    }
     responses_from(&all, materials)
 }
 
@@ -906,8 +973,7 @@ pub fn responses_from(
     Ok(out)
 }
 
-/// [`responses`] as `proj +0x19c` elements; flags 0 and the effects
-/// null (Halo 1's effects are not converted).
+/// Write each material response with its three authored effect references.
 fn response_elements(d: &StructDef, list: &[(&'static str, i16, Response)]) -> Result<Vec<Record>> {
     let ed = d
         .child("material_responses")
@@ -917,6 +983,14 @@ fn response_elements(d: &StructDef, list: &[(&'static str, i16, Response)]) -> R
         let mut e = defs::default_record(ed);
         let int = |v: u16| Val::Int(i64::from(v));
         let pair = |v: [f32; 2]| Val::floats(&v);
+        for (field, id) in ["effect", "potential_effect", "detonation_effect"]
+            .into_iter()
+            .zip(r.effects)
+        {
+            if let Some(id) = id {
+                set(&mut e, field, Val::tag(FourCC(*b"effe"), id))?;
+            }
+        }
         set(&mut e, "response", int(r.response))?;
         set(&mut e, "material_name", Val::text(name))?;
         set(&mut e, "material", Val::Int(i64::from(*index)))?;
@@ -971,11 +1045,39 @@ pub fn equipment(e: &h1::Equipment, b: &[u8], parts: &EquipmentParts) -> Result<
     built(d, &r)
 }
 
+/// A pure impulse may have a radius without changing body or shield vitality.
+pub(crate) fn has_vitality_damage(b: &[u8]) -> bool {
+    [H1_DAMAGE_LOWER, H1_DAMAGE_UPPER, H1_DAMAGE_UPPER + 4]
+        .into_iter()
+        .any(|at| f32::from_bits(u32_at(b, at)) > 0.0)
+}
+
+#[cfg(test)]
+#[test]
+fn shock_wave_radius_does_not_count_as_vitality_damage() {
+    let mut bytes = [0; H1_JPT_MIN];
+    bytes[4..8].copy_from_slice(&8.0f32.to_le_bytes());
+    assert!(!has_vitality_damage(&bytes));
+    bytes[H1_DAMAGE_UPPER + 4..H1_DAMAGE_UPPER + 8].copy_from_slice(&1.0f32.to_le_bytes());
+    assert!(has_vitality_damage(&bytes));
+}
+
 /// Halo 1 damage, camera impulse, shake and player feedback.
 pub fn damage(b: &[u8], sound: Option<TagId>) -> Result<Block> {
+    damage_with_scale(b, sound, None)
+}
+
+pub(crate) fn damage_with_scale(
+    b: &[u8],
+    sound: Option<TagId>,
+    scale: Option<&str>,
+) -> Result<Block> {
     let d = def(b"jpt!")?;
     let mut r = defs::default_record(d);
     set(&mut r, "ref_a8", Val::tag(FourCC(*b"snd!"), sound.unwrap_or(TagId::NULL)))?;
+    if let Some(scale) = scale {
+        set(&mut r, "string_50", Val::text(scale))?;
+    }
     if b.len() < H1_JPT_MIN { return Err(Error::Truncated("jpt! root")); }
     for (path, at) in [
         ("unknown_0", 0), ("unknown_4", 4), ("unknown_8", 8),
@@ -991,6 +1093,12 @@ pub fn damage(b: &[u8], sound: Option<TagId>) -> Result<Block> {
     let f = |at: usize| f32::from_bits(u32_at(b, at));
     word(&mut r, "unknown_a0", (f(0xec) / 30.0).to_bits())?;
     let category = u32_at(b, 0x1c4);
+    set(
+        &mut r,
+        "h1_damage_category",
+        Val::Int((map::H1_DAMAGE_CATEGORY | (category >> 16)).into()),
+    )?;
+    set(&mut r, "h1_death_impulse", Val::Float(f(0x1f4)))?;
     // H1 sniper rounds have a distinct category. H2 uses the bullet category.
     let category = if category >> 16 == 5 { (category & 0xffff) | (2 << 16) } else { category };
     word(&mut r, "unknown_10", category)?;
@@ -1035,6 +1143,8 @@ pub fn damage(b: &[u8], sound: Option<TagId>) -> Result<Block> {
     built(d, &r)
 }
 
-/// Halo 1's `jpt!` root size: where its first child block starts (V1,
-/// docs/halo1/objects.md); the damage bounds end at `+0x1dc`.
-pub const H1_JPT_MIN: usize = 0x1e4;
+/// Minimum Halo 1 `jpt!` bytes for the scalar damage and feedback fields.
+/// The last of them this converter reads is the damage impulse at `+0x1f4`
+/// (Halo 1 dialogue selection at `0x4721b`). The source material
+/// multipliers follow at `+0x200`.
+pub const H1_JPT_MIN: usize = 0x1f8;

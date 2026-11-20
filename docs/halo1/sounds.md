@@ -29,11 +29,45 @@ data from `0x22ab800`); no two spans overlap (sounds that share samples
 share the span), and none reaches the tag data. Xbox Halo 1 has no
 `sounds.map`; every sample is in the map that plays it.
 
-The lip-sync (`+0x54`) and subtitle (`+0x68`) data references carry a
-running offset that looks like a position in a PC-style resource file (it
-advances by the samples' size plus the tag's size); it is not a file offset
-in the Xbox map and is not read. 34,315 permutations have lip-sync data,
-none have subtitles (V for the counts).
+The mouth data reference at permutation `+0x54` holds the byte count.
+Its virtual address at `+0x60` resolves in the Xbox tag data. The
+separate resource-file offset at `+0x5c` is unused on Xbox. Across the
+disc, 34,315 permutations have mouth data and none have subtitles.
+
+### Dialogue mouth curves (Built)
+
+On a10, 1,038 sounds contain 4,659 authored mouth curves. Each byte
+gives the aperture for one 30 Hz tick. H1 clamps the tick to the curve,
+reads the byte through the permutation's tag-memory pointer and scales it
+by 1/255 (`0x2821f..0x2828d`). The unit updates its aperture at `+0x298`
+(`0x3b7a0`). Its pose update reads the current unit mode's slot 10 and
+blends frame zero of that overlay with this weight (`0x3ee2a..0x3ee70`).
+
+H2 requests the sound's extra-info resource for a speaking unit when its
+sound class enables lip sync (`0x18c630`). It converts elapsed audio
+time to 30 Hz ticks, updates the unit aperture at `+0x208` and checks for
+an optional facial sequence (`0x18c720`, `0x18c9b0`, `0x18ca20`). The
+signed descriptor index at permutation `+5` picks an element containing
+mouth offset, mouth length, facial-sequence offset and facial-sequence
+length. The sampler clamps the tick, reads the aperture byte and scales
+by 1/255 (`0x218e50`). With no facial sequence, the unit looks up `talk`
+in the overlay block and mixes it at that aperture (`0x1cc150`,
+`0x112335..0x1123b5`). Retail 01b's marine has a one-frame talk overlay
+in both combat and patrol. Actor-bound H1 conversation lines already use
+the native biped sound callback.
+
+Conversion copies the H1 curve bytes into the H2 extra-info resource.
+The first locator relocates the data buffer and the second relocates the
+16-byte descriptors. Their indices span all pitch ranges of the sound.
+An unvoiced permutation has a zero-length mouth entry when another
+permutation in the sound is voiced. H1 supplies aperture and an authored
+graph pose, so the H2 facial-sequence length is zero. The resource keeps
+its owning `ugh!` datum through installation, transplant and compaction.
+No campaign sound carrying mouth data uses a split permutation chain.
+Conversion reports a split voiced chain because its segment timing has
+no retail example. The ignored `a10_dialogue_mouth_curves_reach_the_retail_resource_layout`
+check reads the retail locators, then compares every exported a10 curve
+through the installed sound's pitch range and permutation.
 
 ## `snd!` header (`0xa4` bytes)
 
@@ -54,9 +88,39 @@ none have subtitles (V for the counts).
 | `6c` | `u16` encoding: 0 mono, 1 stereo | V |
 | `6e` | `u16` compression: 0 none, 1 Xbox ADPCM, 2 IMA ADPCM, 3 Ogg | V: only 1 on the disc |
 | `70` | `snd!` reference: promotion sound | V: 258 sounds set it |
-| `80` | `u16` promotion count | S |
-| `84`..`98` | runtime values | not read |
+| `80` | `i16` promotion count | E: `0x24eb5` and `0x24f11` |
+| `84` | milliseconds credited per request | E: `0x24ed7` and `0x24f01` |
+| `88`, `8c` | live promotion credit and last request time | E: `0x24ec3..0x24f3a` |
 | `98` | pitch ranges block | V |
+
+### Impulse promotion (Built)
+
+Halo 1 checks promotion once an impulse has passed playback eligibility
+(`0x26c7c..0x26c90`). `0x24ea0` subtracts elapsed mixer milliseconds from
+its credit, floors the result at zero, and adds the duration at `snd! +0x84`.
+A request goes through at or below count × duration. Above that threshold,
+the mixer resets the credit and retries with the datum at `+0x7c`
+(`0x26e09..0x26e28`). With a null datum it rejects the request and retains
+the decayed credit. A count of zero bypasses the calculation.
+
+Halo 2's `0x126ec0` promotion selects a range inside one sound
+(`0x218f10`). Converted H1 sounds keep the native header and gestalt with
+an appended rule containing the target datum, count, duration and two
+initially zero counter words. The boot hook uses the H2 mixer clock
+(`0x126a34`) and routes an eligible impulse at `0x126000`. Native impulse
+allocation and permutation selection then use the selected sound. A rate
+limit returns the allocator's no-sound datum. The H1 mixer has no promotion
+call in its looping playback path.
+
+The installer follows each promotion target to its source sound and assigns
+all datums before installing the target fixups. This handles the retail
+cycles in the small, medium and large rock impact sounds. Fresh map
+construction and gestalt compaction retain the fixups. A read-only census
+found 253 redirect rules and 77 rate limits across the 23 playable maps.
+The ignored `every_retail_halo1_promotion_round_trips` test rebuilds them
+all and checks the target, count and duration. The campaign and multiplayer
+read-back audit checks rules on sounds reached by each converted map.
+The boot unit tests cover decay, threshold crossing and rate limiting.
 
 ### Pitch range (`0x48`)
 
@@ -232,7 +296,7 @@ let ids = install_sounds(&mut set, vec![(name, c)])?;
 
 - `ConvertedSound` holds the header with its indices unset, the playback and
   scale elements, and per range its parameters and permutations with their
-  chunks. `dropped` lists what had no Halo 2 place (promotions, lip-sync).
+  chunks, and the source impulse promotion rule when present.
 - `ConvertedSound::add_to(gestalt, set) -> h1models::Converted` appends the
   entries to a `SoundGestalt`, adds the chunks to the set as raw resources,
   and returns the 20-byte `snd!` in the `Converted { group, root, raw }`
@@ -365,21 +429,26 @@ new indices:
   fresh byte-aligned run with the source bits copied; the other form
   (`+4` = 0) keeps `+6` as it is;
 - custom playback and extra info appended whole, and the extra info's
-  owner set to `owner`. An extra info's raw pointer may only be mapped to
-  a stored pointer;
-- sounds with a promotion (`+0xc` not `ff`) are refused
-  (`Error::Unsupported`), since the promotion rules hold indices this
-  doesn't map.
+  owner set to the destination gestalt datum. Its resource can be local or shared;
+- promotions carry their original rules, timers and initial state into
+  a fresh destination entry. The `snd! +0xc` index points to that entry.
 
-**Proof.** Two tests:
+**Built.** Halo 2's `0x126f60` updates the timer for each rule. At
+`0x218f10` the selected rule supplies a pitch range relative to the
+sound, with `-1` selecting range zero. `0x219070` adds the sound's first
+pitch range in the gestalt. The merge rebuilds the pitch ranges and their
+permutations in source order, so the rule still selects the same samples.
+The destination gets a separate timer block for each copied sound. Invalid
+targets or timer blocks and promotion indices outside the signed-byte
+range produce errors. A read-only survey of 30 retail maps found 231
+promoted sounds among 65,309 sound headers. Every promotion had one
+owner, one timer per rule and sound-relative targets inside its owner.
 
-- `a_moved_sound_takes_its_gestalt_entries_and_flag_bits` uses invented
-  gestalts.
-- `every_retail_sound_merges` (**V**, 2026-11-17) merges every `snd!` of
-  every retail map, one by one, into an empty gestalt. Each merged sound
-  names the same entries as it did in its own gestalt: bytes, names,
-  chunks and flag bits. 65,078 sounds merge; 231 with promotions are
-  refused.
+`native_promotion_selects_the_same_samples_after_its_sound_moves`
+checks the selected chunk after both indices change.
+`every_retail_sound_merges` checks all retail rules and timers alongside
+the existing playback, range, permutation and chunk comparisons.
+Integration execution is pending.
 
 ```sh
 H2_DISC=disc/halo2.iso cargo test -p h1sounds --release --test real_disc -- --ignored every_retail_sound_merges --nocapture
@@ -391,13 +460,8 @@ A map built from scratch keeps only the `snd!` tags something reaches;
 `compact::gestalt` merges each of them, in index order, into an empty
 gestalt and rewrites its header. Chunk and extra-info raw keep their
 resources and import names their strings (carried as tokens across
-`SoundGestalt`, which keeps stored words). A promotion, which
-`merge_sound` refuses, is carried whole: its rules start with a pitch
-range index within the sound, not the gestalt (**V**, 2026-11-18, every
-promotion of 05a, Coagulation and 03a: each index is below the sound's own
-range count, and `glass_breakable`'s rules are the same on 05a and
-Coagulation though its first range is 13 on one and 20 on the other); its
-runtime timers are one per rule, and each promotion has one sound.
+`SoundGestalt`, which keeps stored words). Compaction uses the same
+merge to place the promotion entry beside its rebuilt ranges.
 `compact::entries` describes a sound's entries without an index in them,
 so a map and its cut compare sound by sound.
 
@@ -408,24 +472,22 @@ dst_gestalt)` runs `tags::schema::transplant::transplant` and then merges
 every `snd!` the tree copied into `dst_gestalt`, which the caller installs
 once at the end (`SoundGestalt::install`). The `MergeMap` maps import
 names through the source's string table into the set's (`TagSet::intern`)
-and copies a chunk whose pointer is in the source's own file as a local
-raw resource, once per pointer; shared-cache pointers stay. Two things
-merging refuses are cut first instead: a promotion (the header's index
-set to `ff`), and an extra info whose raw is in the source file. The
-copied `snd!` is rewritten with the new indices; its extra info's owner
-is its new datum.
+and copies each local chunk or extra-info resource once per pointer.
+Shared-cache pointers keep their file selector. The transplant report counts
+sounds whose promotion entries were carried over. A same-name promoted
+sound may be reused when its destination promotion entry matches. A bad
+entry or incompatible reuse names the donor map and sound in the error.
 
 A gestalt the set already holds as a built tag reads back through
 `SoundGestalt::from_block` (the inverse of `to_block`, local chunks
 included), so a set's gestalt can grow in more than one pass: donors
 first, then the converted script sounds (`h1campaign`).
 
-**Proof.** `a_built_gestalt_reads_back` (invented gestalt), and
-`a_transplanted_tree_takes_its_sounds` (**V**, 2026-11-17): 04b's flood
-combat elite onto 05a, built, reopened. Each of its 42 moved sounds names
-the source's playback and scale, and per permutation the same import
-name as a string and the same chunk bytes (354 chunks; this tree's are
-all in the shared caches, so the pointers stay). One promotion is cut.
+The ignored `a_transplanted_tree_takes_its_sounds` check transplants 04b's
+flood combat elite onto 05a and compares the 42 moved sounds after
+reopening the map, including the promotion previously cut. The synthetic
+`a_reused_donor_sound_must_keep_its_promotion` check covers a same-name
+sound whose destination lacks the rule.
 
 ```sh
 H2_DISC=disc/halo2.iso cargo test -p h1sounds --release --test real_disc -- --ignored a_transplanted_tree_takes_its_sounds --nocapture
@@ -479,9 +541,6 @@ music, Cortana, UI.
 - **Chunk size bit 31**: set on some retail chunks, never `0x7ff8` ones; meaning open.
 - **Playback, scale and pitch range parameter fields** are S; the
   conversions (dB, cents, half cone angles) are untested in game.
-- **Promotions** (258 Halo 1 sounds) and **lip-sync** (34,315 permutations)
-  are dropped and listed in `ConvertedSound::dropped`. Halo 2 has blocks for
-  both (9, 10); filling them needs their element layouts.
 - **Class 45** holds the Halo 1 multiplayer announcer as well as scripted
   effects; whether Halo 2's mixer treats `scripted_cinematic_foley` well for
   announcer lines is unchecked.

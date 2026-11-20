@@ -885,6 +885,8 @@ async fn cors_reads_only() {
         )
         .await;
     assert_eq!(r.headers["access-control-allow-origin"], "*");
+    assert!(r.headers["access-control-expose-headers"].to_str().unwrap()
+        .split(", ").any(|h| h == "content-range"));
 
     let preflight = |method: &str| {
         let headers = [
@@ -904,6 +906,8 @@ async fn cors_reads_only() {
             .unwrap()
             .contains("authorization")
     );
+    assert!(read.headers["access-control-allow-headers"].to_str().unwrap()
+        .split(", ").any(|h| h == "range"));
     let write = preflight("POST").await;
     assert!(!write.headers.contains_key("access-control-allow-origin"));
 

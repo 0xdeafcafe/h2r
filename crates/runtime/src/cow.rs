@@ -201,6 +201,13 @@ impl Ram {
             if raw == libc::MAP_FAILED {
                 return Err(std::io::Error::last_os_error());
             }
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            {
+                // MAP_FIXED replaced the memfd-backed data pages. Keeping
+                // that fd would let a new flat alias map the old RAM.
+                let Backing::Guarded { file, .. } = &mut self.backing;
+                *file = None;
+            }
             #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
             {
                 *self = Self {

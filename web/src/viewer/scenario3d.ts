@@ -99,6 +99,17 @@ export class ScenarioObjects {
   private hiddenKinds = new Set<string>();
   /** The frames draw the vehicles: the level's own are hidden. */
   private vehiclesHidden = false;
+  private completeCensus = false;
+  private templates = new Map<string, THREE.Object3D>();
+
+  hasPlacement(kind: string, i: number) { return this.placed.has(key(kind, i)); }
+  template(kind: string, tag: string) { return this.templates.get(`${kind}:${tag}`) ?? null; }
+
+  setCompleteCensus(on: boolean) {
+    if (this.completeCensus === on) return;
+    this.completeCensus = on;
+    this.refresh();
+  }
 
   constructor(private changed: () => void = () => {}) {}
 
@@ -124,6 +135,8 @@ export class ScenarioObjects {
       if (!meshes.length) continue;
       const p: Placed = { info, node, batch: null, slot: -1, rest: node.matrix.clone(), loose: false, gone: false };
       this.placed.set(key(info.kind, info.index), p);
+      const stem = info.tag.split(/[\\/]/).pop();
+      if (stem) this.templates.set(`${info.item ?? info.kind}:${stem}`, node);
       const g = `${info.kind}|${info.item ?? ""}|${info.bsp ?? ""}|${meshes[0]!.geometry.uuid}`;
       let list = groups.get(g);
       if (!list) groups.set(g, (list = []));
@@ -162,6 +175,7 @@ export class ScenarioObjects {
     for (const b of this.batches) for (const im of b.meshes) { im.removeFromParent(); im.dispose(); }
     this.batches = [];
     this.placed.clear();
+    this.templates.clear();
     this.zones.clear();
     this.root = null;
   }
@@ -279,7 +293,7 @@ export class ScenarioObjects {
   private refresh(notify = true) {
     let changed = false;
     for (const b of this.batches) {
-      const v = this.on && !this.hiddenKinds.has(b.kind) && !(this.vehiclesHidden && b.vehicle) && this.zoneShown(b.bsp);
+      const v = this.on && !this.completeCensus && !this.hiddenKinds.has(b.kind) && !(this.vehiclesHidden && b.vehicle) && this.zoneShown(b.bsp);
       for (const im of b.meshes) if (im.visible !== v) { im.visible = v; changed = true; }
     }
     for (const p of this.placed.values()) {

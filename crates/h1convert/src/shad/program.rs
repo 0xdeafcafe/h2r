@@ -9,6 +9,12 @@ use tags::shader::{IndexRange, TemplatePostprocess};
 use super::{Layout, Root, build_record, set};
 use crate::{Error, Result};
 
+pub(super) mod clouds;
+pub mod force_field;
+pub mod glass;
+pub mod model_defaults;
+pub mod model_effects;
+pub mod particle_vertex;
 pub mod scope_filters;
 
 const SPAS: FourCC = FourCC(*b"spas");
@@ -135,7 +141,7 @@ pub(super) fn pass(
         vertex_shader,
         pixel,
         textures,
-        address,
+        [address; 4],
         mip_filter,
         states,
         restore,
@@ -150,7 +156,7 @@ fn pass_with_inputs(
     vertex_shader: TagId,
     pixel: &PixelShaderDef,
     textures: &[(u8, u8)],
-    address: u8,
+    addresses: [u8; 4],
     mip_filter: u8,
     states: &[(u8, u32)],
     restore: &[(u8, u32)],
@@ -158,6 +164,14 @@ fn pass_with_inputs(
     vertex_bindings: &[[u8; 4]],
     scalars: u64,
 ) -> Result<Block> {
+    if textures.len() > addresses.len() {
+        return Err(Error::Invalid("a shader pass has more than four texture stages"));
+    }
+    // Mode 4 reads a vector engine input (the object change colours, for example).
+    let vectors = pixel_bindings
+        .iter()
+        .filter(|b| b[2] & 7 == 4 && b[3] < 64)
+        .fold(0u64, |mask, b| mask | (1u64 << b[3]));
     let d = def(b"spas");
     let pp = d.child("postprocess").expect("spas postprocess");
     let mut body = defs::default_record(pp);
@@ -177,6 +191,10 @@ fn pass_with_inputs(
                 Val::Word(u32::from_le_bytes(bytes[0xd6..0xda].try_into().unwrap())),
             ),
             ("pixel_shader_tail", byte_list(&bytes[0xda..])),
+            (
+                "vector_inputs",
+                Val::List(vec![int(vectors as u32), int((vectors >> 32) as u32)]),
+            ),
             (
                 "scalar_inputs",
                 Val::List(vec![int(scalars as u32), int((scalars >> 32) as u32)]),
@@ -221,7 +239,7 @@ fn pass_with_inputs(
         &mut body,
         pp,
         "stage_states",
-        textures.iter().map(|_| {
+        textures.iter().zip(addresses).map(|(_, address)| {
             vec![
                 ("min_filter", int(0x20)),
                 ("mag_mip_filter", int(2 | (mip_filter << 4))),

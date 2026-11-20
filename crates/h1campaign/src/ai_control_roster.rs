@@ -18,34 +18,27 @@ pub(crate) struct Retained {
 pub(crate) fn prepare(
     source: &H1Ai,
     roster: &mut H1Ai,
-    generated: &std::collections::HashSet<usize>,
+    roster_indices: &crate::squad_roster::Selection,
     subjects: &RetainedSubjects,
     requests: &[h1ai::control::Request],
     group_count: usize,
 ) -> Result<Retained> {
     let fits = |count| engine::campaign_squad_pool::holds(count, group_count);
-    let name = |encounter: &str, squad: &str| format!("{encounter}/{squad}").to_ascii_lowercase();
     let maneuvers = h1ai::control::maneuver_targets(source, requests);
     let mut selected = BTreeMap::new();
-    let mut output = 0;
-    // The roster selector retains source order. Resolve before conversion,
-    // while full source records can distinguish duplicated or long names.
-    for (ei, (e, original)) in roster.encounters.iter_mut().zip(&source.encounters).enumerate() {
-        let mut next = 0;
-        for mut squad in e.squads.drain(..) {
-            let generated = generated.contains(&output);
-            let starts = generated.then(|| std::mem::take(&mut squad.starting_locations));
-            let candidates = &original.squads[next..];
-            let offset = candidates.iter().position(|original| *original == squad)
-                .or_else(|| candidates.iter().position(|original| original.name == squad.name))
-                .ok_or_else(|| invalid(format!("cannot recover source index for {}/{}", e.name, squad.name)))?;
-            let source_index = next + offset;
-            next = source_index + 1;
-            if let Some(starts) = starts {
-                squad.starting_locations = starts;
-            }
-            selected.insert((ei, source_index), (squad, generated));
-            output += 1;
+    for (ei, (e, indices)) in roster
+        .encounters
+        .iter_mut()
+        .zip(&roster_indices.indices)
+        .enumerate()
+    {
+        let rows = indices
+            .iter()
+            .enumerate()
+            .filter_map(|(si, &id)| Some((si, id?)));
+        for (squad, (si, id)) in e.squads.drain(..).zip(rows) {
+            let generated = roster_indices.generated.contains(&usize::from(id));
+            selected.insert((ei, si), (squad, generated));
         }
     }
     let mut keep = BTreeSet::new();
@@ -53,7 +46,6 @@ pub(crate) fn prepare(
     let mut automatic_rows = BTreeMap::<_, Vec<_>>::new();
     for (ei, encounter) in source.encounters.iter().enumerate() {
         for (si, squad) in encounter.squads.iter().enumerate() {
-            let key = name(&encounter.name, &squad.name);
             let existing = selected.get(&(ei, si));
             if squad.flags & 0x20 != 0 && subjects.follow_encounters.as_ref()
                 .is_none_or(|groups| groups.contains(&(ei as u16)))
@@ -64,7 +56,9 @@ pub(crate) fn prepare(
                 || existing.is_some_and(|(q, _)| !q.starting_locations.is_empty())
             {
                 keep.insert((ei, si));
-            } else if maneuvers.contains(&key) {
+            } else if roster_indices.required_squads.contains(&(ei, si))
+                || maneuvers.contains(&(ei, si))
+            {
                 optional.push((0, ei, si));
             } else if subjects.migration_destinations.contains(&(ei as u16, si as u8)) {
                 optional.push((1, ei, si));

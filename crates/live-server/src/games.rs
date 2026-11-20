@@ -631,6 +631,25 @@ impl Live {
             .key(self, &first.kid)
             .ok_or_else(|| unauthorized("the events' key is unknown or revoked"))?;
         parsed.verify(&key).map_err(sign_error)?;
+        // A film can finish an interrupted telemetry stream. Hold the same lock
+        // while checking the roster and committing this host's live batch.
+        let _film_guard = if author.host_lease_id().is_some() {
+            Some(self.host_game_writes.lock(game_id).await)
+        } else {
+            None
+        };
+        let film_expect = if author.host_lease_id().is_some() {
+            let model = self.model.read();
+            if model.films.imports.contains_key(game_id) {
+                return Err(conflict("the host film is finalising this game"));
+            }
+            vec![(
+                crate::films::import_stream(game_id),
+                model.films.import_version(game_id),
+            )]
+        } else {
+            Vec::new()
+        };
         let game = self.writable_game(game_id, author, false)?;
         let stream = game::stream(game_id);
         let now = now();
@@ -686,7 +705,7 @@ impl Live {
                         )));
                     }
                     if game.started.game.sim.is_some() && (!p.is_bot() || p.xuid.is_some()) {
-                        return Err(invalid("simulation players must be local bots"));
+                        return Err(invalid("simulation players must be bots without an account ID"));
                     }
                     author.check_players(
                         &self.model.read(),
@@ -739,7 +758,7 @@ impl Live {
             self.flush_recording(game_id).await?;
             events.insert(events.len() - 1, self.server_event(stream, crate::replay_archive::REQUESTED, json!({})));
         }
-        let recorded = self.store.append(events, &[]).await?;
+        let recorded = self.store.append(events, &film_expect).await?;
         let last = recorded.last().map_or(0, |e| e.position);
         self.wait_applied(last).await?;
         if ends {
@@ -865,7 +884,7 @@ impl Live {
         }
     }
 
-    async fn flush_recording(&self, id: &str) -> Result<(), ApiError> {
+    pub(crate) async fn flush_recording(&self, id: &str) -> Result<(), ApiError> {
         let clock = self.ingest.games.lock().unwrap().get(id).cloned();
         let Some(clock) = clock else { return Ok(()) };
         {
@@ -1267,6 +1286,7 @@ impl Live {
         let g = s.games.get(id).ok_or_else(|| not_found("no such game"))?;
         let n = &g.started.game;
         Ok(GameDetail {
+            stats_discrepancy: g.film_stats_discrepancy.clone(),
             summary: self.game_summary(g),
             console: n.console.clone(),
             host: g.started.host.clone(),
@@ -1402,7 +1422,7 @@ impl Live {
             .presence
             .values()
             .map(|p| p.last_seen + policy.presence_ttl_s);
-        let games = s.games.values().filter(|g| g.ended.is_none()).map(|g| {
+        let games = s.games.values().filter(|g| g.ended.is_none() && !s.films.ingesting(&g.started.game_id)).map(|g| {
             g.last_activity
                 + crate::sim_runs::idle_seconds(g.started.game.sim.as_ref(), policy.game_idle_s)
         });
@@ -1413,7 +1433,7 @@ impl Live {
             .map(|v| v.last_activity + policy.session_idle_s);
         let archive = s.games.values().filter_map(|g| g.recording.due(g.ended.is_some())).min();
         presence.chain(games).chain(sessions).min().map(|d| d + 1)
-            .into_iter().chain(archive).min()
+            .into_iter().chain(archive).chain(s.films.film_work_due()).min()
     }
 
     /// The managers: expire quiet presence and end idle games, as the
@@ -1421,9 +1441,22 @@ impl Live {
     /// restart (rebuilt from the events' `at`).
     pub async fn sweep(&self) {
         let now = now();
+        crate::films::continue_staged(self).await;
+        let cleanup = self.model.read().films.next_cleanup();
+        if let Some(id) = cleanup {
+            crate::films::cleanup_published(self, &id).await;
+        }
         self.flush_usage().await;
         self.sweep_sessions(now).await;
         crate::replay_archive::advance(self, now).await;
+        let import = self.model.read().films.next_import();
+        if let Some(id) = import {
+            match crate::films::resume_import(self, &id, 1).await {
+                Ok(true) => crate::films::cleanup_published(self, &id).await,
+                Ok(false) => {}
+                Err(e) => eprintln!("live: resuming film stats for {id}: {}", e.message),
+            }
+        }
         let policy = self.policy();
         let (expired, idle): (Vec<_>, Vec<_>) = {
             let s = self.model.read();
@@ -1437,7 +1470,7 @@ impl Live {
                 .games
                 .values()
                 .filter(|g| {
-                    g.ended.is_none()
+                    g.ended.is_none() && !s.films.ingesting(&g.started.game_id)
                         && g.last_activity
                             + crate::sim_runs::idle_seconds(
                                 g.started.game.sim.as_ref(),
@@ -1450,11 +1483,13 @@ impl Live {
                         g.started.game_id.clone(),
                         g.last_tick.unwrap_or(0),
                         g.scoreboard.clone(),
+                        s.films.import_version(&g.started.game_id),
                     )
                 })
                 .collect();
             (expired, idle)
         };
+        let mut expect = Vec::new();
         let mut events = Vec::new();
         for xuid in expired {
             events.push(self.server_event(
@@ -1463,11 +1498,12 @@ impl Live {
                 json!({"xuid": xuid}),
             ));
         }
-        for (id, tick, players) in idle {
+        for (id, tick, players, import_version) in idle {
             if let Err(e) = self.flush_recording(&id).await {
                 eprintln!("live: retrying the last chunk of {id}: {}", e.message);
                 continue;
             }
+            expect.push((crate::films::import_stream(&id), import_version));
             let ended = GameEnded {
                 tick,
                 reason: "lost".into(),
@@ -1485,7 +1521,7 @@ impl Live {
         if events.is_empty() {
             return;
         }
-        match self.store.append(events, &[]).await {
+        match self.store.append(events, &expect).await {
             Ok(recorded) => {
                 // Wait, so the next sweep does not write them twice.
                 let _ = self

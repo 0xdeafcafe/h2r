@@ -9,12 +9,14 @@ use std::sync::{
 
 use engine::{
     entry::{Cx, EntryResult, GuestCall, Ret},
+    hs_actions::{LATCHED as ACTION_TEST_FLAGS, PLAYER_CONTROL},
     memory::{GuestMemory, MemFault},
     points,
 };
 use feature::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
 use h1scripts::unit_builtins::{RUNTIME_SLOTS, RuntimeBuiltin, RuntimeSlot};
 
+mod action;
 mod countdown;
 mod flashlight;
 
@@ -26,7 +28,6 @@ const RETURN_FROM_EXPRESSION: u32 = 0x0020_9ae0;
 
 const CINEMATIC_GLOBALS: u32 = engine::colour_pass::global::OVERRIDE_GATE;
 const CINEMATIC_ACTIVE: u32 = 5;
-const ACTION_TEST_FLAGS: u32 = 4;
 const LOOK_DIRECTIONS: u32 = 0x3c00;
 const MOVE_DIRECTIONS: u32 = 0x3c000;
 const PLAYER0_THUMBSTICK_LAYOUT: u32 = 0x0051_ea30;
@@ -81,7 +82,7 @@ fn write_speed(m: &mut dyn GuestMemory, bits: u32) -> Result<(), MemFault> {
 }
 
 fn all_directions(m: &dyn GuestMemory, mask: u32) -> Result<u32, MemFault> {
-    let control = m.u32(crate::touch_glue::PLAYER_CONTROL)?;
+    let control = m.u32(PLAYER_CONTROL)?;
     Ok(u32::from(control != 0 && m.u32(control + ACTION_TEST_FLAGS)? & mask == mask))
 }
 
@@ -216,6 +217,7 @@ impl Feature for ScriptBuiltins {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        action::install(b);
         flashlight::install(b);
         crate::h1_cinematics::hooks(b);
         for point in [

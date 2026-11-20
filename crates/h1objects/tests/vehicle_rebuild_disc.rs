@@ -16,8 +16,7 @@
 //!   their bases, coagulation and beavercreek) converts; the `vehi`, its `hlmt`
 //!   and `phmo` read back through the definitions, write the same again,
 //!   pin nothing and hold no template bytes; the known fields are Halo 1's
-//!   (type, flags, camera, bounds, seats, weapons) and the rest the type's
-//!   role.
+//!   (type, flags, camera, bounds, seats and weapons).
 //! - `powered_mass_points_become_friction_and_hover_points`: the
 //!   warthog's four tires become friction points and the ghost's three
 //!   powered points hover points, each naming a marker of the converted
@@ -42,8 +41,7 @@
 //! - `wheels_and_treads_are_solid_above_the_hull`: the retail scorpion's
 //!   `phmo` reaches past 1.0 either side (its treads) and stays 0.2 above
 //!   the origin; the base's scorpion has wheel shapes and its warthog
-//!   none (`member_wheel_shapes`), and the converted vehicles' roles say
-//!   the same; the converted Blood Gulch scorpion's body reaches as far
+//!   none (`member_wheel_shapes`). The converted Blood Gulch scorpion's body reaches as far
 //!   as its Halo 1 tread collision does, the warthog's no further than
 //!   its hull, and nothing of either is under the hull's lowest point;
 //!   the ghost has no wheel nodes.
@@ -66,6 +64,7 @@ use h1objects::rebuild::{
 use h1objects::{Converted, h1};
 use map::{FourCC, Map, TagId};
 use tags::defs::{self, Defs, Record, Str, StructDef, Target, Val};
+use tags::object::direct_drive::GRAVITY_RATIO;
 
 fn disc(var: &str, name: &str) -> String {
     std::env::var(var)
@@ -405,22 +404,20 @@ fn every_vehicle_rebuilds_from_its_definition() {
                 let Some(Val::Block(phys)) = r.at(VEHI_PHYSICS) else { panic!() };
                 assert_eq!(phys.len(), 1, "{name}: every retail vehicle has one");
 
-                // The type's role, where the base has the type.
-                let role = c.vehicle_role(h1_type, h1_powered(&h1, &u)).unwrap();
-                if let Some(role) = &role {
-                    for (p, w) in &role.controller {
-                        assert_eq!(
-                            r.at(p),
-                            Some(&Val::Bytes(w.to_le_bytes().to_vec())),
-                            "{name}: role {p}"
-                        );
-                    }
-                    assert_eq!(flags & 0xffff_0000, 0, "{name}");
-                    assert_eq!(
-                        r.at(VEHI_CONTROL),
-                        Some(&Val::Bytes(vec![if h1_type == 0 { 2 } else { 0 }, 0])),
-                        "{name}: control"
-                    );
+                assert_eq!(flags & 0xffff_0000, 0, "{name}");
+                assert_eq!(
+                    r.at(VEHI_CONTROL),
+                    Some(&Val::Bytes(vec![if h1_type == 0 { 2 } else { 0 }, 0]))
+                );
+                assert_eq!(word(&r, "unknown_25c"), 30f32.to_bits());
+                for field in [
+                    "unknown_244",
+                    "unknown_274",
+                    "unknown_278",
+                    "unknown_2b0",
+                    "unknown_2bc",
+                ] {
+                    assert_eq!(word(&r, field), 0, "{name}: {field}");
                 }
 
                 // The model chain: hlmt, mode, its coll and jmad; a phmo
@@ -449,7 +446,7 @@ fn every_vehicle_rebuilds_from_its_definition() {
                 };
                 count += 1;
                 lines.push(format!(
-                    "{base_name}: {name}: type {h1_type}, {} seats {:?}, {}/{h1_weapons} weapons, role {}; {path}",
+                    "{base_name}: {name}: type {h1_type}, {} seats {:?}, {}/{h1_weapons} weapons; {path}",
                     seats.len(),
                     seats
                         .iter()
@@ -457,11 +454,6 @@ fn every_vehicle_rebuilds_from_its_definition() {
                         .map(|(k, _)| text(&r, &format!("{VEHI_SEATS}[{k}].label")))
                         .collect::<Vec<_>>(),
                     weapons.len(),
-                    role.as_ref()
-                        .map_or("turret tables".to_owned(), |x| format!(
-                            "over {:?}",
-                            x.member
-                        )),
                 ));
             }
         }
@@ -916,18 +908,10 @@ fn h1_powered(h1: &H1Map, u: &h1::Unit) -> usize {
         .len()
 }
 
-/// Coagulation holds three hover vehicles (the ghost, spectre and
-/// wraith) that disagree on most driving words, and a role over all three
-/// left those words zero: the converted Blood Gulch ghost held no top
-/// speed and no hover strength, and did not move under its driver
-/// (`h1objects::rebuild::nearest_members`). Halo 1's ghost has three
-/// powered points, so its role is the retail ghost alone (three hover
-/// points), and the converted ghost carries every nonzero root word of it
-/// and nonzero strength, height and damping (`+0x8`, `+0x10`, `+0x14`) on
-/// each hover point.
+/// Every Ghost lift coefficient comes from its own powered group.
 #[test]
 #[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
-fn ghost_takes_the_retail_ghosts_role() {
+fn ghost_keeps_its_source_hover_points() {
     let mut base_map = h2_map("coagulation");
     let base = Base::read(&mut base_map).unwrap();
     let h1 = h1_level("bloodgulch").unwrap();
@@ -938,49 +922,13 @@ fn ghost_takes_the_retail_ghosts_role() {
         .unwrap();
     let u = h1::Unit::read(&h1, t).unwrap();
     assert_eq!(h1_powered(&h1, &u), 3, "Halo 1 ghost's powered points");
-    let d = def(b"vehi");
-    let (ty, hover) = (
-        offset(d, "vehicle_type", 0) as usize,
-        offset(d, VEHI_HOVER, 0) as usize,
-    );
-    let mut hovers = Vec::new();
-    for x in base.tags.iter().filter(|x| x.1 == FourCC(*b"vehi")) {
-        let r = base.root(x.0).unwrap();
-        if u16::from_le_bytes([r[ty], r[ty + 1]]) == 4 {
-            hovers.push((x.2.clone(), u32_at(&r, hover)));
-        }
-    }
-    println!("coagulation's hover vehicles (hover points): {hovers:?}");
-    assert!(hovers.len() > 1, "{hovers:?}");
-
     let mut c = Converter::new(&h1, &base);
-    let role = c.vehicle_role(4, 3).unwrap().unwrap();
-    assert_eq!(
-        role.member,
-        "objects\\vehicles\\ghost\\ghost"
-    );
-    let ghost = base
-        .root(
-            base.find(b"vehi", "objects\\vehicles\\ghost\\ghost")
-                .unwrap(),
-        )
-        .unwrap();
-    for (p, w) in &role.controller {
-        assert_eq!(u32_at(&ghost, offset(d, p, 0) as usize), *w, "role {p}");
-    }
     let id = c.object(t).unwrap();
     let r = read_back(local(&c.tree, id).unwrap(), "ghost_mp");
     let src = h1.tag_data(t).unwrap();
     let speed = f32::from_le_bytes(src[0x2f8..0x2fc].try_into().unwrap()) * 30.0;
     assert_eq!(r.at("unknown_1f4"), Some(&Val::Bytes(speed.to_le_bytes().to_vec())));
 
-    for (p, w) in &role.controller {
-        assert_eq!(
-            r.at(p),
-            Some(&Val::Bytes(w.to_le_bytes().to_vec())),
-            "ghost_mp {p}"
-        );
-    }
     let Some(Val::Block(points)) = r.at(VEHI_HOVER) else {
         panic!()
     };
@@ -991,8 +939,12 @@ fn ghost_takes_the_retail_ghosts_role() {
         let source = phys.mass_points.iter().find(|p| h1objects::coll::sid_name(&p.name) == *marker).unwrap();
         let [strength, offset, height, damping, full, cutoff] = phys.antigravity[source.powered_mass_point as usize];
         for (field, value) in [
-            ("unknown_8", strength), ("unknown_c", offset), ("unknown_10", height),
-            ("unknown_14", damping * 30.0), ("unknown_18", full), ("unknown_1c", cutoff),
+            ("unknown_8", strength * GRAVITY_RATIO),
+            ("unknown_c", offset),
+            ("unknown_10", height),
+            ("unknown_14", damping * 30.0 / GRAVITY_RATIO),
+            ("unknown_18", full),
+            ("unknown_1c", cutoff),
             ("unknown_20", source.radius),
         ] {
             assert_eq!(point.at(field), Some(&Val::Bytes(value.to_le_bytes().to_vec())), "{marker} {field}");
@@ -1045,8 +997,7 @@ fn reach(points: impl Iterator<Item = [f32; 3]>) -> (f32, f32) {
 /// as retail's are; the warthog's tires stay out, as retail's do; the
 /// ghost has no wheel nodes. Which by the base: the retail scorpion's
 /// physics model has tread shapes, the warthog's no wheel shape
-/// ([`h1objects::rebuild::member_wheel_shapes`]), and the converted
-/// vehicles' roles say so.
+/// ([`h1objects::rebuild::member_wheel_shapes`]).
 ///
 /// The user walked through the converted scorpion's treads on Blood Gulch
 /// (2026-11-19): its `coll` carried them, its `phmo` (versions 77 to 85)
@@ -1156,16 +1107,7 @@ fn wheels_and_treads_are_solid_above_the_hull() {
         let (hull_y, floor) = reach(hull_pts.into_iter());
         let (wheel_y, _) = reach(wheel_pts.into_iter());
 
-        // The converted body, and its role's say.
         let mut c = Converter::new(&h1, &base);
-        let b = h1.tag_data(t).unwrap();
-        let h1_type = u16::from_le_bytes([b[H1_VEHICLE_TYPE], b[H1_VEHICLE_TYPE + 1]]);
-        let role = c.vehicle_role(h1_type, h1_powered(&h1, &u)).unwrap();
-        assert_eq!(
-            role.as_ref().is_some_and(|r| r.wheel_shapes),
-            held,
-            "{name}: the role's wheel shapes"
-        );
         let vid = c.object(t).unwrap();
         let r = read_back(local(&c.tree, vid).unwrap(), name);
         let h = defs::from_built(
@@ -1535,7 +1477,7 @@ fn blood_gulch_drive_commands_follow_the_source_on_both_bases() {
                 close(scalar(field), expected);
             }
             for (field, expected) in [
-                ("unknown_2b4", spring),
+                ("unknown_2b4", spring / GRAVITY_RATIO),
                 ("unknown_2b8", 1.5),
                 ("unknown_2c0", 0.707107),
                 ("unknown_2c4", 0.5),
@@ -1555,10 +1497,17 @@ fn blood_gulch_drive_commands_follow_the_source_on_both_bases() {
                 };
                 assert_eq!(lifts.len(), 3);
                 for point in lifts {
+                    // Half-height hover at 0.4 units/s, using H2's solver.
+                    let strength = f32::from_bits(word(point, "unknown_8"));
+                    let damping = f32::from_bits(word(point, "unknown_14"));
+                    close(
+                        strength * (4.1712594 * 0.25 - damping * 0.4),
+                        1.5 * (0.0035651792 * 900.0 * 0.25 - 0.6 * 0.4),
+                    );
                     for (field, value) in [
-                        ("unknown_8", 1.5),
+                        ("unknown_8", 1.5 * GRAVITY_RATIO),
                         ("unknown_10", 0.75),
-                        ("unknown_14", 0.6),
+                        ("unknown_14", 0.6 / GRAVITY_RATIO),
                         ("unknown_18", 0.5),
                         ("unknown_1c", 0.258819),
                     ] {
@@ -1640,4 +1589,242 @@ fn blood_gulch_drive_commands_follow_the_source_on_both_bases() {
             }
         }
     }
+}
+
+/// Exercise the driving definition separately from the assets attached to
+/// each vehicle, including the cinematics with a null physics reference.
+#[test]
+#[ignore = "reads H1_ISO and H2_DISC"]
+fn retail_vehicle_drive_laws_round_trip() {
+    use h1objects::rebuild::{Point, VehicleSpec, vehicle};
+    use tags::object::{direct_drive as ground, h1_flight as air};
+    let mut iso = xiso::Xiso::open(BufReader::new(
+        File::open(disc("H1_ISO", "halo1.iso")).unwrap(),
+    ))
+    .unwrap();
+    let retail = h1map::disc::Disc::open(&mut iso).unwrap();
+    let materials = BTreeMap::from(
+        ["05a_deltaapproach", "coagulation", "beavercreek"]
+            .map(|name| (name, Base::read(&mut h2_map(name)).unwrap().materials)),
+    );
+    let mut aircraft = HashSet::new();
+    let mut warthog = false;
+    let mut scorpion = false;
+    let (mut campaign, mut multiplayer, mut redirects, mut vehicles) = (0, 0, 0, 0);
+    let (mut wheels, mut lifts, mut channels) = (0, 0, 0);
+    let mut solid_hulls = 0;
+    for entry in &retail.maps {
+        let level = h1map::disc::map_stem(entry);
+        if level == "ui" {
+            continue;
+        }
+        let base_name = if h1map::disc::CAMPAIGN_LEVELS.contains(&level) {
+            campaign += 1;
+            "05a_deltaapproach"
+        } else {
+            multiplayer += 1;
+            h1convert::convert::known(level)
+                .unwrap_or_else(|| panic!("unknown retail map {level}"))
+                .1
+        };
+        let base_materials = &materials[base_name];
+        let ice = base_materials
+            .iter()
+            .position(|s| s == "hard_terrain_ice")
+            .unwrap() as u16;
+        let map = H1Map::from_reader(Cursor::new(iso.read(entry).unwrap())).unwrap();
+        for t in map
+            .tags()
+            .iter()
+            .filter(|t| t.group == h1map::Group::new(b"vehi"))
+        {
+            if h1objects::scripted_props::replacement_group(&t.name).is_some() {
+                redirects += 1;
+                continue;
+            }
+            vehicles += 1;
+            let name = &t.name;
+            let source = map.tag_data(t).unwrap();
+            let obj = h1::Object::read(&map, source).unwrap();
+            let ty = u32_at(source, H1_VEHICLE_TYPE) as u16;
+            assert!(
+                matches!(ty, 0 | 1 | 3 | 4 | 5 | 6),
+                "{level} {name}: type {ty}"
+            );
+            let tag = obj.physics.map(|id| map.tag(id).unwrap());
+            let physics = tag.map(|t| map.tag_data(t).unwrap());
+            let p = tag.map(|t| h1::Physics::read(&map, t).unwrap());
+            if let Some(phys) = physics {
+                assert!(
+                    !h1::elements(&map, phys, 0x5c, 0x24).unwrap().is_empty(),
+                    "{level} {name}: inertia"
+                );
+            }
+            let solid_hull = obj.collision.is_some_and(|id| {
+                let coll = h1::Collision::read(&map, map.tag(id).unwrap()).unwrap();
+                coll.nodes
+                    .iter()
+                    .filter_map(|node| node.bsps.first())
+                    .any(|src| {
+                        let bsp = h1convert::collision::convert(src)
+                            .unwrap_or_else(|e| panic!("{level} {name}: {e}"));
+                        !h1objects::physics::solid_cells(&bsp).is_empty()
+                    })
+            });
+            assert!(
+                solid_hull
+                    || p.as_ref().is_some_and(|p| p
+                        .mass_points
+                        .iter()
+                        .any(|m| m.radius.is_finite() && m.radius > 0.0)),
+                "{level} {name}: body"
+            );
+            solid_hulls += usize::from(solid_hull);
+            let points: Vec<_> = p
+                .iter()
+                .flat_map(|p| {
+                    p.mass_points.iter().filter_map(move |m| {
+                        let g = usize::try_from(m.powered_mass_point).ok()?;
+                        assert!(
+                            matches!(p.powered_flags.get(g).copied(), Some(1 | 0x40)),
+                            "{level} {name}: powered group {g}"
+                        );
+                        Some(Point {
+                            sphere: [m.position[0], m.position[1], m.position[2], m.radius],
+                            marker: h1objects::coll::sid_name(&m.name),
+                            region: String::new(),
+                            region_index: -1,
+                            steered: g == 0,
+                            antigravity: (p.powered_flags[g] & 0x40 != 0)
+                                .then_some(p.antigravity[g]),
+                        })
+                    })
+                })
+                .collect();
+            let names: HashSet<_> = points.iter().map(|p| &p.marker).collect();
+            assert_eq!(
+                names.len(),
+                points.len(),
+                "{level} {name}: duplicate marker"
+            );
+            let hover_count = points.iter().filter(|p| p.antigravity.is_some()).count();
+            lifts += hover_count;
+            wheels += points.len() - hover_count;
+            let contacts = points.first().filter(|p| p.antigravity.is_none()).map(|_| {
+                h1::GroundContacts::read(&map, physics.unwrap(), base_materials)
+                    .unwrap_or_else(|e| panic!("{level} {name} on {base_name}: {e}"))
+            });
+            let power =
+                h1::powered_seats(&map, source).unwrap_or_else(|e| panic!("{level} {name}: {e}"));
+            channels += power.len();
+            let root = vehicle(&VehicleSpec {
+                source,
+                object: &obj,
+                physics,
+                vehicle_type: ty,
+                flags: u32_at(source, H1_VEHICLE_FLAGS),
+                bounds: None,
+                hlmt: None,
+                seats: &[],
+                predicted: &[],
+                camera_field_of_view: 0.0,
+                weapons: &[],
+                references: &[],
+                attachments: &[],
+                functions: &[],
+                creation_effect: None,
+                points: &points,
+                contacts: contacts.as_ref(),
+                seat_power: &power,
+            })
+            .unwrap_or_else(|e| panic!("{level} {name}: {e}"));
+            let r = defs::from_built(def(b"vehi"), &root).unwrap();
+            let Some(Val::Block(shapes)) = r.get(VEHI_PHYSICS) else {
+                panic!("{name}: phantom")
+            };
+            let meta = |at| word(&shapes[0], &format!("unknown_{at:x}"));
+            if physics.is_some() || !power.is_empty() {
+                assert_eq!(meta(ground::POWER_DATA), ground::POWER_MAGIC, "{name}");
+                let flags = meta(ground::POWER_DATA + 4);
+                assert_eq!(flags & 255, power.len() as u32);
+                assert_eq!(flags & ground::HAS_SOURCE_GRAVITY != 0, physics.is_some());
+            }
+            if !power.is_empty() {
+                assert_eq!(meta(ground::POWER_DATA + 8), power[0][0].to_bits());
+                assert_eq!(meta(ground::POWER_DATA + 12), power[0][1].to_bits());
+            }
+            if let Some(c) = contacts {
+                assert_eq!(meta(ground::CONTACT_DATA), ground::CONTACT_MAGIC, "{name}");
+                assert_eq!(meta(ground::CONTACT_DATA + 4) & 255, points.len() as u32);
+                let start = ground::CONTACT_DATA + ground::CONTACT_HEADER;
+                if name == r"vehicles\warthog\warthog" {
+                    warthog = true;
+                    assert_eq!(
+                        (meta(start), meta(start + 8), meta(start + 12)),
+                        (5, 0.45f32.to_bits(), 0.65f32.to_bits())
+                    );
+                    let front = start + 2 * ground::WHEEL_BYTES;
+                    assert_eq!(
+                        (meta(front + 8), meta(front + 12)),
+                        (0.75f32.to_bits(), 0.45f32.to_bits())
+                    );
+                    let surface = start + 4 * ground::WHEEL_BYTES;
+                    assert_eq!(
+                        (meta(surface), meta(surface + 4)),
+                        (u32::from(ice), 0.125f32.to_bits())
+                    );
+                    let rate = f32::from_bits(meta(start + 4));
+                    assert!((rate * 5000.0 - 306.12245 * 0.2 * 30.0).abs() < 0.01);
+                    let wheel = ground::WheelDrag {
+                        mode: meta(start),
+                        rate: rate * f32::from_bits(meta(surface + 4)),
+                        parallel: f32::from_bits(meta(start + 8)),
+                        perpendicular: f32::from_bits(meta(start + 12)),
+                    };
+                    let cap = f32::from_bits(word(&r, "unknown_1f4"));
+                    let ice_force = wheel.force(
+                        [cap, 1.0, 0.0],
+                        [1.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0],
+                        [0.0, 0.0, 1.0],
+                        cap,
+                        0.707107,
+                        0.5,
+                        5000.0,
+                    );
+                    // At the source speed cap only sideslip produces a force.
+                    assert_eq!((ice_force[0], ice_force[2]), (0.0, 0.0));
+                    assert!((ice_force[1] + 306.12245 * 0.2 * 30.0 * 0.65 * 0.125).abs() < 0.001);
+                } else if name == r"vehicles\scorpion\scorpion" {
+                    scorpion = true;
+                    assert_eq!(meta(start), 4);
+                    assert!(c.surfaces.iter().all(|(mat, _)| *mat != ice));
+                }
+            }
+            if matches!(ty, 3 | 5) {
+                assert_eq!(meta(air::DATA), air::MAGIC, "{level} {name}");
+                let expected = match (ty, p.as_ref()) {
+                    (_, None) => air::PASSIVE,
+                    (3, _) => air::DROPSHIP,
+                    (_, Some(p)) if p.powered_mass_points != 2 => air::PASSIVE,
+                    _ if f32_at(physics.unwrap(), 0) > 0.0 => air::LIFEPOD,
+                    _ => air::BANSHEE,
+                };
+                assert_eq!(meta(air::DATA + 4), expected, "{level} {name}");
+                aircraft.insert(expected);
+                if expected == air::BANSHEE {
+                    assert_eq!(meta(air::DATA + 20), u32_at(source, 0x308));
+                    assert_eq!(meta(air::DATA + 24), u32_at(source, 0x314));
+                }
+            }
+        }
+    }
+    assert_eq!((campaign, multiplayer), (10, 13));
+    assert_eq!((vehicles, redirects, solid_hulls), (94, 2, 90));
+    assert_eq!((wheels, lifts, channels), (222, 90, 97));
+    assert!(warthog && scorpion);
+    assert_eq!(
+        aircraft,
+        HashSet::from([air::PASSIVE, air::BANSHEE, air::LIFEPOD, air::DROPSHIP])
+    );
 }

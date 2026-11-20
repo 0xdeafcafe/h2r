@@ -1,14 +1,20 @@
 #!/bin/sh
 set -eu
 
+export H2_IMAGE="${H2_IMAGE:-/opt/h2/image}"
+export H2_HOST_CACHE="${H2_HOST_CACHE:-/var/cache/h2}"
+
+# A packed container starts empty. Live adds each lease's match over the
+# private control port (docs/live/dedicated-host.md#packed-hosts).
+if [ "${H2_PACK:-}" = "1" ]; then
+  exec /opt/h2/h2 host pack
+fi
+
 : "${H2_LEASE:?H2_LEASE (lease ID) is required}"
 : "${H2_LIVE:?H2_LIVE (Live URL) is required}"
 : "${H2_TOKEN:?H2_TOKEN (lease credential) is required}"
 : "${H2_DATA_URL:?H2_DATA_URL (signed bundle URL) is required}"
 : "${H2_DATA_SHA:?H2_DATA_SHA (bundle SHA-256) is required}"
-
-export H2_IMAGE="${H2_IMAGE:-/opt/h2/image}"
-export H2_HOST_CACHE="${H2_HOST_CACHE:-/var/cache/h2}"
 
 set -- host run \
   --lease "$H2_LEASE" \

@@ -24,61 +24,87 @@ impl Converter<'_> {
         let mut notes = Vec::new();
         let functions = functions::convert(&h1::functions(self.h1, bytes)?, &inputs, &mut notes);
         let mut out = Vec::new();
-        for a in h1::attachments(self.h1, bytes)? {
+        let mut source_attachments = h1::attachments(self.h1, bytes)?;
+        for id in obj.widgets.iter().flatten() {
+            let tag = self.h1_tag(*id)?;
+            let group = tag.group.0.to_be_bytes();
+            if &group == b"elec" {
+                let b = h1::tag_bytes(self.h1, tag, &group, 0xb0)?;
+                for marker in h1::elements(self.h1, b, 0x98, 0xe4)? {
+                    source_attachments.push(h1::Attachment {
+                        group: tag.group,
+                        tag: Some(tag.id),
+                        marker: h1::name32(marker, 0).to_ascii_lowercase(),
+                        primary_scale: u16::from_le_bytes([b[0x2e], b[0x2f]]),
+                        secondary_scale: 0,
+                        change_colour: u16::from_le_bytes([b[0x30], b[0x31]]),
+                    });
+                }
+            } else if matches!(&group, b"mgs2" | b"glw!") {
+                let b = h1::tag_bytes(self.h1, tag, &group, 0x46)?;
+                source_attachments.push(h1::Attachment {
+                    group: tag.group,
+                    tag: Some(tag.id),
+                    marker: h1::name32(b, 0),
+                    primary_scale: if &group == b"mgs2" { u16::from_le_bytes([b[0x44], b[0x45]]) } else { 0 },
+                    secondary_scale: 0,
+                    change_colour: 0,
+                });
+            }
+        }
+        for a in source_attachments {
             let Some(id) = a.tag else { continue };
             let t = self.h1_tag(id)?;
             let mut group = a.group.0.to_be_bytes();
             let result = match &group {
-                b"lsnd" => Ok(self.looping_sound(t, rep).into_iter().collect()),
+                b"lsnd" => self.looping_sound(t).map(|id| vec![id]),
                 b"ligh" => self.light(t).map(|tag| vec![tag]),
                 b"effe" => self.effect(t).map(|tag| vec![tag]),
                 b"cont" => self.contrail(t).map(|tag| vec![tag]),
+                b"mgs2" => {
+                    group = *b"MGS2";
+                    self.light_volume(t).map(|tag| vec![tag])
+                }
+                b"elec" => {
+                    group = *b"tdtl";
+                    self.lightning(t).map(|tag| vec![tag])
+                }
+                b"glw!" => {
+                    group = *b"MGS2";
+                    self.glow(t).map(|tag| vec![tag])
+                }
                 b"pctl" => {
                     group = *b"effe";
                     self.attached_particle_system(t, &a.marker)
                 }
                 _ => {
-                    notes.push(format!(
-                        "attachment {} {}: no converter here",
-                        a.group, t.name
-                    ));
-                    continue;
+                    return Err(h1convert::Error::no_rebuild(
+                        &self.h1.header().name,
+                        &t.name,
+                        format!("unsupported {} attachment", a.group),
+                    )
+                    .into());
                 }
             };
-            let tags = match result {
-                Ok(tags) if !tags.is_empty() => tags,
-                Ok(_) => {
-                    notes.push(format!(
-                        "attachment {} {}: no converted tag",
-                        a.group, t.name
-                    ));
-                    continue;
-                }
-                Err(e) => {
-                    notes.push(format!(
-                        "attachment {} {}: not converted ({e})",
-                        a.group, t.name
-                    ));
-                    continue;
-                }
+            // A pctl with no active emitters genuinely emits nothing.
+            let tags = result
+                .map_err(|e| h1convert::Error::no_rebuild(&self.h1.header().name, &t.name, e))?;
+            let scale = |index, kind| {
+                functions::primary_scale(index, &functions).map_err(|why| {
+                    h1convert::Error::no_rebuild(
+                        &self.h1.header().name,
+                        &t.name,
+                        format!("{kind} scale at {:?}: {why}", a.marker),
+                    )
+                })
             };
-            let mut scale = |index, kind| {
-                let scale = functions::primary_scale(index, &functions);
-                if index != 0 && scale.is_empty() {
-                    notes.push(format!(
-                        "attachment {} at {:?}: {kind} output {index} has no converted function",
-                        t.name, a.marker,
-                    ));
-                }
-                scale
-            };
-            let primary_scale = scale(a.primary_scale, "primary");
-            let secondary_scale = scale(a.secondary_scale, "secondary");
+            let primary_scale = scale(a.primary_scale, "primary")?;
+            let secondary_scale = scale(a.secondary_scale, "secondary")?;
             let colour_slot = h1convert::shad::halo2_change_colour_slot(a.change_colour);
             // Lights forward the signed index to 0x000bad50. An effect's
             // update (0x00179610) skips slot 0, which retail uses for none.
             let change_colour =
-                colour_slot.map_or(if group == *b"effe" { 0 } else { -1 }, |slot| slot as i16);
+                colour_slot.map_or(if matches!(&group, b"effe" | b"MGS2" | b"tdtl") { 0 } else { -1 }, |slot| slot as i16);
             if group == *b"effe" && colour_slot == Some(0) {
                 notes.push(format!(
                     "attachment {} at {:?}: Halo 2 effect updates skip change-colour slot 0",
@@ -94,12 +120,13 @@ impl Converter<'_> {
                 change_colour,
             }));
         }
-        let creation = obj.creation_effect.and_then(|id| {
-            self.h1_tag(id)
-                .and_then(|tag| self.effect(tag))
-                .map_err(|e| notes.push(format!("creation effect {id:?}: not converted ({e})")))
-                .ok()
-        });
+        let creation = obj
+            .creation_effect
+            .map(|id| {
+                let t = self.h1_tag(id)?;
+                self.effect(t)
+            })
+            .transpose()?;
         rep.no_home.extend(notes);
         Ok((out, creation, functions.into_iter().flatten().collect()))
     }
@@ -113,7 +140,7 @@ impl Converter<'_> {
         obj: &h1::Object,
         rep: &mut ObjectReport,
     ) -> Result<Block> {
-        if obj.attachments.is_empty() && obj.creation_effect.is_none() {
+        if obj.attachments.is_empty() && obj.widgets.is_empty() && obj.creation_effect.is_none() {
             return Ok(root);
         }
         let (attachments, creation, functions) = self.object_attachments(bytes, obj, rep)?;
@@ -134,7 +161,7 @@ impl Converter<'_> {
         let mut obj = h1::Object::read(self.h1, bytes)?;
         self.halo2_change_colours(&mut obj);
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
-        let model = self.model(&mut rep, &obj, None, &tag.name, true, None)?;
+        let model = self.model(&mut rep, &obj, &tag.name, None)?;
         let predicted = self.predicted(model);
         let (attachments, creation, functions) = self.object_attachments(bytes, &obj, &mut rep)?;
         let d = Defs::builtin().group(FourCC(group)).expect("ssce");

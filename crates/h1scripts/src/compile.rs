@@ -391,6 +391,12 @@ pub fn compile_scenario(
     };
     c.out.scripts.resize(t.scripts.len(), [0; 40]);
     c.out.globals.resize(t.globals.len(), [0; 40]);
+    // The runtime reads the conversation voice table at offset 0 of the
+    // script strings, so it is reserved before anything interns a string
+    // (the command scripts below do); `conversations::build` fills it.
+    if let Some((scenes, scopes)) = conversation_data {
+        c.out.strings.resize(conversations::voice_prefix_len(scenes, scopes), 0);
+    }
     // Spawn locations and command-list literals address the command definitions
     // directly after the authored scripts. Allocate those before any other helpers.
     c.generate_commands()?;
@@ -1371,6 +1377,25 @@ impl Compiler<'_> {
                 _ => expected,
             }
         };
+        if h1_source == types::AI
+            && self
+                .h2
+                .types
+                .get(usize::from(source))
+                .is_some_and(|name| name == "ai")
+            && let Some(native) = self
+                .ai_control
+                .and_then(|control| control.script_index(bits))
+        {
+            let native = native.map_err(|e| {
+                invalid(format!(
+                    "{}: {e} ({})",
+                    self.definition,
+                    String::from_utf8_lossy(&token)
+                ))
+            })?;
+            return Ok(self.literal(expected, source, native, &token));
+        }
         // A seat mapping is `count << 16 | first` into the scenario's
         // mapping table (retail: `0x10004` names one seat); 0 names none,
         // so an unresolved one moves nobody instead of indexing past it.
@@ -1412,7 +1437,7 @@ impl Compiled {
 
     /// The tables as `map::build` blocks, installed into the scenario block
     /// `scnr` (fields per [`field`]). `reference` maps each Halo 1 reference
-    /// to a Halo 2 group and tag; unresolved ones are dropped.
+    /// to its installed group and datum. Unresolved authored references fail before writing.
     pub fn install(
         &self,
         scnr: &mut Block,
@@ -1420,6 +1445,16 @@ impl Compiled {
     ) -> Result<()> {
         if scnr.bytes.len() < field::MIN_LEN {
             return Err(invalid("scenario block too short for script fields"));
+        }
+        let mut refs = Vec::with_capacity(self.references.len());
+        for (group, name) in &self.references {
+            if name.is_empty() || name.eq_ignore_ascii_case("none") {
+                continue;
+            }
+            let target = reference(*group, name).ok_or_else(|| {
+                invalid(format!("no rebuild for script reference {group} {name}"))
+            })?;
+            refs.push(target);
         }
         let nodes: Vec<u8> = self.nodes.iter().flat_map(|n| n.encode()).collect();
         scnr.block(field::NODES, self.nodes.len() as u32, Block::new(nodes));
@@ -1434,11 +1469,6 @@ impl Compiled {
             self.globals.len() as u32,
             Block::new(self.globals.concat()),
         );
-        let refs: Vec<_> = self
-            .references
-            .iter()
-            .filter_map(|(g, name)| reference(*g, name))
-            .collect();
         let mut block = Block::zeroed(refs.len() * 8);
         for (i, (group, id)) in refs.iter().enumerate() {
             block.bytes[i * 8..i * 8 + 4]

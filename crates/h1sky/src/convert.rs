@@ -160,7 +160,7 @@ pub fn sky_from_map(map: &h1map::H1Map, tag: &h1map::Tag) -> Result<FromMap> {
                 &options,
             )?;
         }
-        model_scale = self::model_scale(nearest_surface(&h1_model), level_reach(map));
+        model_scale = self::model_scale(nearest_surface(&h1_model), level_reach(map)?);
         shaders = h1_model.shaders.iter().map(|s| s.tag).collect();
         Some((tag.name.clone(), converted))
     };
@@ -174,14 +174,13 @@ pub fn sky_from_map(map: &h1map::H1Map, tag: &h1map::Tag) -> Result<FromMap> {
 
 /// The farthest one point of `map`'s level can be from another: the
 /// diagonal of the box around every structure BSP's world bounds. 0 for a
-/// map with no BSP that reads.
-pub fn level_reach(map: &h1map::H1Map) -> f32 {
+/// map with no BSP; a BSP that does not read is an error, not left out of
+/// the box.
+pub fn level_reach(map: &h1map::H1Map) -> Result<f32> {
     let mut lo = [f32::INFINITY; 3];
     let mut hi = [f32::NEG_INFINITY; 3];
-    for r in map.structure_bsps().unwrap_or_default() {
-        let Ok(bsp) = map.structure_bsp(&r) else {
-            continue;
-        };
+    for r in map.structure_bsps()? {
+        let bsp = map.structure_bsp(&r)?;
         let b = bsp.world_bounds();
         for a in 0..3 {
             if b[2 * a].is_finite() && b[2 * a + 1].is_finite() && b[2 * a] <= b[2 * a + 1] {
@@ -191,9 +190,9 @@ pub fn level_reach(map: &h1map::H1Map) -> f32 {
         }
     }
     if (0..3).any(|a| lo[a] > hi[a]) {
-        return 0.0;
+        return Ok(0.0);
     }
-    len(sub(hi, lo))
+    Ok(len(sub(hi, lo)))
 }
 
 /// Installs `model` (if any) and the converted `sky` into `set`, linking
