@@ -319,14 +319,9 @@ fn hosted(
     store: Arc<settings::Store>,
     steam: Option<input::steam_pad::SteamPads>,
 ) -> boot::Host {
-    let configure = |mut gfx: d3d::GfxBackend| {
-        // As for `h2 run`: passes are merged by default (the fast rule;
-        // H2_GFX_MERGE_PASSES=exact, read by GfxBackend::new, gives the
-        // exact one), and H2_GFX_MERGE_PASSES=0 gives one render pass per
-        // draw (docs/runtime/BOOT.md).
-        if std::env::var("H2_GFX_MERGE_PASSES").is_ok_and(|v| v == "0") {
-            gfx.set_merge_passes(false);
-        }
+    let configure = |gfx: d3d::GfxBackend| {
+        // As for `h2 run`: passes are merged under the loose rule
+        // (docs/graphics/graphics.md).
         // Build last run's pipelines ahead of time (H2_PIPELINE_CACHE;
         // docs/graphics/graphics.md).
         match d3d::pipeline_store::default_path() {
