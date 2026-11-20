@@ -1011,3 +1011,23 @@ fn lean_and_diag_runners_agree() {
     assert_eq!((fixtures[8].1)(false).3, 0x42);
     assert_eq!((fixtures[7].1)(false).0[0], TransferAbi::stop(0));
 }
+
+/// Both instances refuse a CPU whose ABI header is broken when the run
+/// starts; the lean one checks it there only, not after every handler.
+#[test]
+fn lean_and_diag_runners_refuse_a_broken_cpu_header() {
+    for diag in [true, false] {
+        let image = load_xbe(&synthetic_xbe()).unwrap();
+        image.runtime.edit_dispatch(|d| {
+            let _ = d.register_override(ENTRY, "never runs", |cpu, _, _| {
+                cpu.eax = 1;
+                Ok(TransferAbi::stop(0))
+            });
+        });
+        let (mut ctx, mut cpu) = (image.context(), image.cpu);
+        cpu.abi_version = 99;
+        let t = Runner::default().run_from_instance(&mut cpu, &mut ctx, TransferAbi::jump(ENTRY), diag);
+        assert_eq!(ctx.event(t.event_id), Some(&Event::InvalidAbi), "diag={diag}");
+        assert_eq!(cpu.eax, image.cpu.eax, "diag={diag}: no handler ran");
+    }
+}

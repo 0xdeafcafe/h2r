@@ -24,7 +24,17 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 fn clang(args: &[&str], extra: &[&Path]) -> Result<(), String> {
-    let out = Command::new("clang")
+    clang_in(None, args, extra)
+}
+
+/// `clang` against `sysroot` when given, with no `SDKROOT` from the
+/// environment (a macOS one makes a tvOS or iOS compile fail).
+fn clang_in(sysroot: Option<&str>, args: &[&str], extra: &[&Path]) -> Result<(), String> {
+    let mut command = Command::new("clang");
+    if let Some(root) = sysroot {
+        command.env_remove("SDKROOT").args(["-isysroot", root]);
+    }
+    let out = command
         .args([
             "-std=c11",
             "-O2",
@@ -44,8 +54,20 @@ fn clang(args: &[&str], extra: &[&Path]) -> Result<(), String> {
     }
 }
 
+/// The SDK a non-macOS Apple target compiles against, from `xcrun`; `None`
+/// when this host has no such SDK.
+fn apple_sdk(sdk: &str) -> Option<String> {
+    let out = Command::new("xcrun")
+        .args(["--sdk", sdk, "--show-sdk-path"])
+        .output()
+        .ok()?;
+    let path = String::from_utf8(out.stdout).ok()?.trim().to_owned();
+    (out.status.success() && !path.is_empty()).then_some(path)
+}
+
 /// Every target emit compiles for: the fixture compiles to an object with
-/// at least one row encoding. Self-relative rows are the design; a target
+/// at least one row encoding. A tvOS or iOS target is skipped, with a note,
+/// on a host without its SDK. Self-relative rows are the design; a target
 /// that needs the absolute fallback is named in the output, and the spec
 /// records it.
 #[test]
@@ -61,12 +83,26 @@ fn fixture_builds_for_every_target() {
     ];
     let mut failures = Vec::new();
     for arch in arches {
+        let sysroot = match arch.sdk() {
+            None => None,
+            Some(sdk) => match apple_sdk(sdk) {
+                Some(path) => Some(path),
+                None => {
+                    println!(
+                        "fixup rows on {}: skipped, no {sdk} SDK on this host",
+                        arch.name()
+                    );
+                    continue;
+                }
+            },
+        };
         let mut took = None;
         let mut errors = Vec::new();
         for (abs, name) in ENCODINGS {
             let obj = dir.join(format!("fixup-{}-{name}.o", arch.name()));
             let define = format!("-DH2_FIX_ABS={abs}");
-            match clang(
+            match clang_in(
+                sysroot.as_deref(),
                 &["-c", "-target", arch.triple(), &define, "-o"],
                 &[&obj, &fixture()],
             ) {

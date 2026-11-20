@@ -80,7 +80,8 @@ impl Runner {
 
     /// The runner's loop: validate the transfer, take the safe point, then
     /// [`step`]. `DIAG` adds the entry stats, the dispatch census, the
-    /// profile counters, coverage, the HLE census and the CPU ABI checks;
+    /// profile counters, coverage, the HLE census and the CPU ABI check on
+    /// every transfer (the lean one checks it on the first only);
     /// without them the routing, the safe point, every event and every
     /// transfer count are the same.
     fn run_inner<const SCOPED: bool, const DIAG: bool>(
@@ -92,6 +93,10 @@ impl Runner {
     ) -> TransferAbi {
         let mut remaining = self.max_transfers;
         let mut diag = Diag::new::<DIAG>(ctx);
+        // The lean instance checks the CPU's ABI header once, at the run's
+        // first transfer, in the same place the diagnostic one checks it
+        // every time: a broken header handed in is a clean InvalidAbi.
+        let mut check_cpu = true;
         loop {
             if let Some(id) = ctx.pending_fault.take() {
                 return TransferAbi::fault(id);
@@ -106,9 +111,10 @@ impl Runner {
             {
                 return transfer;
             }
-            if DIAG && !cpu.valid_abi() {
+            if (DIAG || check_cpu) && !cpu.valid_abi() {
                 return TransferAbi::fault(ctx.emit(Event::InvalidAbi));
             }
+            check_cpu = false;
             let valid = match transfer.kind {
                 abi::CALL => transfer.route == abi::ENTRY,
                 abi::JUMP => matches!(transfer.route, abi::ENTRY | abi::RESUME),

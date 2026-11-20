@@ -460,7 +460,8 @@ alone on a hand-up; the runner replays `frames[0..depth]` and zeroes it.
 
 **A lean runner.** `run_inner` gets a second const parameter, `DIAG`.
 The lean instance has no entry stats, census, profile counters, coverage,
-HLE census or `cpu.valid_abi()`. `Runner` picks the instance once per run
+HLE census, and checks `cpu.valid_abi()` only on the run's first
+transfer. `Runner` picks the instance once per run
 from the switches that exist. Debug builds always take `DIAG`.
 
 **Not in this change.** Returning the transfer in a register instead of
