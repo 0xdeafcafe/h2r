@@ -33,7 +33,7 @@
 use crate::light_constants::{Error, Fpu, Sse, X87};
 use crate::memory::{GuestMemory, MemFault};
 
-/// `0x00048ee0`: ECX the view context, EBX the light's frame block
+/// `0x00048ee0`: ECX the projection volume, EBX the light's frame block
 /// (`record + 0x84`), stack the `ligh` definition; `ret 4` (through
 /// `0x003f7330`).
 pub const SHADOW_SETUP: u32 = 0x0004_8ee0;
