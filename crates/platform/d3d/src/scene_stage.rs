@@ -20,6 +20,16 @@ use timeline::native::{Metric, Stage};
 /// Stages there are counters for (`timeline::native::Stage` is smaller).
 const STAGES: usize = 16;
 
+thread_local! {
+    // Drops can originate at reservation commit on the guest or at stage
+    // execution on the display worker. Each side closes its own Swap.
+    static LOCAL_DROPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+pub(crate) fn take_local_drops() -> u64 {
+    LOCAL_DROPS.with(|drops| drops.replace(0))
+}
+
 static QUEUED: [AtomicU64; STAGES] = [const { AtomicU64::new(0) }; STAGES];
 static DROPPED: [AtomicU64; STAGES] = [const { AtomicU64::new(0) }; STAGES];
 static DOWN: [AtomicBool; STAGES] = [const { AtomicBool::new(false) }; STAGES];
@@ -40,6 +50,7 @@ pub fn queued(stage: Stage) {
 /// `ranges`: the guest ranges the stage promised.
 pub fn dropped(stage: Stage, ranges: usize, why: &'static str) {
     let i = index(stage);
+    LOCAL_DROPS.with(|drops| drops.set(drops.get() + 1));
     DROPPED[i].fetch_add(1, Ordering::Relaxed);
     stage.count(Metric::SceneDropped, 1);
     DOWN[i].store(true, Ordering::Relaxed);

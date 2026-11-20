@@ -60,10 +60,12 @@ impl Frame {
         self.unknown = true;
     }
 
-    pub fn present(&mut self, complete: bool) {
-        if !self.saw_inputs && complete { return; }
+    pub fn present(&mut self, complete: bool) -> Option<(u64, bool)> {
+        if !self.saw_inputs && complete { return None; }
+        let observed = (self.missing.len() as u64, self.unknown || !complete);
         let mut totals = TOTALS.lock().unwrap_or_else(|e| e.into_inner());
         self.finish(&mut totals, complete);
+        Some(observed)
     }
 
     fn finish(&mut self, totals: &mut Totals, complete: bool) {

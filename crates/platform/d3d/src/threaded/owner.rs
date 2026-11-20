@@ -310,7 +310,7 @@ fn target_map<B: Backend>(
 impl<B: Backend> Worker<B> {
     /// Both renderers spend the same guest proxy only when its backend
     /// ticket has been read, landed asynchronously, or explicitly dropped.
-    fn adopt_outputs(&mut self, frame: &ReplayFrame, samples: &HashMap<u32, u64>, outputs: Outputs<B::Texture>) -> Result<(), String> {
+    fn adopt_outputs(&mut self, frame: &ReplayFrame, samples: &HashMap<u32, u64>, outputs: Outputs<B::Texture>) -> Result<u64, String> {
         let expected = frame.ops.iter().filter_map(|(at, op)| match op {
             ReplayOp::EndFlareQuery(proxy) => Some((at, *proxy)),
             _ => None,
@@ -331,7 +331,7 @@ impl<B: Backend> Worker<B> {
         self.tickets.extend(outputs.tickets);
         let game_queries = expected.filter(|(at, _)| at.slot.in_game_view()).count() as u64;
         FLARE_QUERIES.fetch_add(game_queries, Ordering::Relaxed);
-        Ok(())
+        Ok(game_queries)
     }
 
     pub(super) fn owner_present(&mut self, present: Present<B>) {
@@ -362,6 +362,8 @@ impl<B: Backend> Worker<B> {
             Some((candidate.frame, candidate.draw, surfaces, proxies.samples))
         });
 
+        use crate::scene_sink::window::DisplayResult;
+        let mut outcome = DisplayResult::Failed;
         self.inner.stamp_present(at);
         if let Some((frame, draw, targets, samples)) = accepted {
             // The worker owns this scene and all of its original commands.
@@ -383,7 +385,8 @@ impl<B: Backend> Worker<B> {
                 }
             }
             match result {
-                Ok(()) => {
+                Ok(game_queries) => {
+                    outcome = DisplayResult::Owned { game_queries };
                     PRESENTED.fetch_add(1, Ordering::Relaxed);
                 }
                 // Encoding may have modified the borrowed targets. The
@@ -400,6 +403,7 @@ impl<B: Backend> Worker<B> {
             match self.surface(surface).and_then(|surface| self.inner.present_with_gamma(surface, flags, gamma.as_deref())) {
                 Ok(()) if self.shared.failed.load(Ordering::Acquire) => failed(n),
                 Ok(()) => {
+                    outcome = DisplayResult::Ordinary;
                     DECLINED.fetch_add(1, Ordering::Relaxed);
                     declined(n);
                 }
@@ -410,7 +414,10 @@ impl<B: Backend> Worker<B> {
             }
             self.shared.display_capacity.release(n);
         }
-        self.residency.present(!self.shared.failed.load(Ordering::Relaxed));
+        let residency = self.residency.present(!self.shared.failed.load(Ordering::Relaxed));
+        if let Some(window) = self.shared.window.get() {
+            window.complete(n, outcome, residency, crate::scene_stage::take_local_drops());
+        }
         self.run(Self::land_pixel_counts);
     }
 }

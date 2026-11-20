@@ -59,6 +59,13 @@ fn counters(sink: bool) -> BTreeMap<String, u64> {
     if sink && let Some(residency) = d3d::scene_stage::residency::counters() {
         counts.extend(residency.map(|(name, n)| (name.to_owned(), n)));
     }
+    if sink && let Some(window) = present_window() { counts.extend(window.counters()); }
+    if let Some(queue) = crate::frame_owner::private_mailbox_stats() {
+        counts.insert("scene_private_published".into(), queue.published);
+        counts.insert("scene_private_taken".into(), queue.taken);
+        counts.insert("scene_private_replaced".into(), queue.dropped);
+        counts.insert("scene_private_waiting".into(), queue.waiting as u64);
+    }
     if let Some(owner) = d3d::threaded::owner::stats() {
         counts.insert("scene_owned_presented".into(), owner.presented);
         counts.insert("scene_owned_declined".into(), owner.declined);
@@ -71,6 +78,17 @@ fn counters(sink: bool) -> BTreeMap<String, u64> {
     counts
 }
 
+type Window = d3d::scene_sink::window::PresentWindow;
+static WINDOW: std::sync::Mutex<std::sync::Weak<Window>> = std::sync::Mutex::new(std::sync::Weak::new());
+
+pub(crate) fn set_present_window(window: Option<&std::sync::Arc<Window>>) {
+    *WINDOW.lock().unwrap_or_else(|e| e.into_inner()) = window.map(std::sync::Arc::downgrade).unwrap_or_default();
+}
+
+fn present_window() -> Option<std::sync::Arc<Window>> {
+    WINDOW.lock().unwrap_or_else(|e| e.into_inner()).upgrade()
+}
+
 static ACTIVATION: std::sync::OnceLock<agent_proto::SceneCensusActivation> = std::sync::OnceLock::new();
 
 /// Called by level boot at the same boundary as its first-level-loaded mark.
@@ -79,6 +97,7 @@ static ACTIVATION: std::sync::OnceLock<agent_proto::SceneCensusActivation> = std
 pub(crate) fn level_activated(map: &str, present: u64) {
     if render_bridge::carried_slots::slot().is_some() {
         ACTIVATION.get_or_init(|| {
+            if let Some(window) = present_window() { window.activate(); }
             let mut c = counters(true);
             let frame = c["scene_carried_frames"];
             c.retain(|k, _| {

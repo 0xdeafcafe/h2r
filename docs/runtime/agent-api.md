@@ -959,7 +959,8 @@ h2 agent render.parity '{"arm": true}'
   `H2_FEATURES` (framescene.md, slice 6), the device's scene sink files
   each guest D3D op by the frame's slot (`opaque`, `after_opaque`,
   `after_lights`, `transparents`, `after_post`, `overlay`, `outside`)
-  while the D3D backend still draws it; `carried` is its last frame:
+  for both the original renderer and the frame owner. `carried` describes
+  the last recorded frame:
   `slots`, each slot's `{draws, binds, clears, copies, uploads,
   samples}` (slots with none left out), `side_targets`, each surface
   other than the scene's presented colour and its depth that a game
@@ -981,9 +982,25 @@ h2 agent render.parity '{"arm": true}'
   and outside slots. Each row gives its `count`, `first_frame` and
   `last_frame`. Compare counts at two boundaries to isolate a window.
   On a direct level boot, `carried_activation` records the loaded map, its
-  activation present, sink frame and gate counters. Subtract these
-  counts from the current counters for the post-load interval. A row
+  activation present, sink frame and a snapshot of process counters. A row
   whose `last_frame` exceeds `carried_activation.frame` occurred after loading.
+  A threaded GPU sink also reports `scene_window_*` counters from one device.
+  `start` is its original Swap at activation and `through` is the last
+  completed Swap. The interval excludes `start` and includes `through`.
+  `owner_enabled` is 1 when this device selects a native frame owner.
+  `gaps` counts missing or out-of-order joins. `games` counts completed
+  frames that entered a game view or issued a game-view operation.
+  `owned` and `ordinary` count those game frames by actual display path.
+  `failed` counts failed presentations across the interval. `stage_drops`
+  includes guest-side and worker-side stage drops. For game frames,
+  `unresident` counts omitted instances and `unknown_residency` counts
+  frames without a complete observation. `read_surface`, `read_depth`,
+  `read_mirror` and `read_pixel_count` count guest requests in game views.
+  `flare_queries` counts original game-view reports installed by the
+  owner. `unmatched_flare_frames` counts owned frames where that number
+  differed from the original requests on the same Swap. Each read of
+  these counters covers a single completed interval, even when the
+  worker is drawing a later frame. The guest continues running.
   The per-frame `aux` number appears only under `carried.side_targets`.
   The cumulative census is available on the census-only path. Rendering
   workers omit this extra scan. Both paths count
@@ -1001,6 +1018,11 @@ h2 agent render.parity '{"arm": true}'
   the seal and the queued commands or Swap parameters.
   `scene_owned_target_refusals` counts missing physical attachments and
   frames the physical backend cannot reproduce at the active scale or mode.
+  The private renderer reports its own publication queue in
+  `scene_private_published`, `scene_private_taken`, `scene_private_replaced`
+  and `scene_private_waiting`. In paced mode a newer seal can replace an
+  unread private scene. In locked mode at most two scenes wait and each
+  reaches the reader. These counts describe capture availability.
   With the sink and a render worker, `scene_residency_frames` counts
   presents where the worker observed a draw, a committed scene stage,
   an owned frame or a failure. `scene_unresident` counts distinct

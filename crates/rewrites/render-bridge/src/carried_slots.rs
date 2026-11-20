@@ -21,7 +21,7 @@
 //! An option, off by default: without it [`slot`] answers `None` and the
 //! sink records nothing.
 
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 
 use engine::memory::GuestMemory;
@@ -34,6 +34,15 @@ pub const ID: &str = "frame-scene.sink";
 /// The view index in a view record (`render_game_view` stores it at
 /// `0x004ba050`).
 const VIEW_RECORD_INDEX: u32 = 4;
+
+// Frame-end and overlay hooks may run before Swap. Keep a game-view entry
+// until the original present, including views without any carried packets.
+static GAME_VIEW: AtomicBool = AtomicBool::new(false);
+
+/// Consume the game-view entry observed since the last original Swap.
+pub fn take_present_game_view() -> bool {
+    GAME_VIEW.swap(false, Ordering::Relaxed)
+}
 
 /// [`OFF`], or the current slot as `slot << 8 | view`.
 static AT: AtomicU16 = AtomicU16::new(OFF);
@@ -88,6 +97,7 @@ pub fn on(event: SlotEvent) {
         return;
     }
     let mut t = TRACKER.lock().unwrap_or_else(|e| e.into_inner());
+    if matches!(event, SlotEvent::GameView(_)) { GAME_VIEW.store(true, Ordering::Relaxed); }
     t.on(event);
     AT.store(pack(t.at()), Ordering::Relaxed);
 }
@@ -98,6 +108,7 @@ pub fn forget() {
 }
 
 fn arm() {
+    GAME_VIEW.store(false, Ordering::Relaxed);
     *TRACKER.lock().unwrap_or_else(|e| e.into_inner()) = SlotTracker::new();
     AT.store(pack(SlotAt::default()), Ordering::Relaxed);
 }

@@ -974,26 +974,39 @@ where
     B: d3d::backend::Backend + Send + 'static,
     B::Texture: Sync,
 {
+    let switches = hooks::Switches::from_env().map_err(anyhow::Error::msg)?;
+    let measure = threaded
+        && profile == film::RenderHooks::Gpu
+        && switches.feature(render_bridge::carried_slots::ID, false);
+    let window = measure.then(|| {
+        Arc::new(d3d::scene_sink::window::PresentWindow::new(scenes.is_some() && interp.is_none()))
+    });
     let worker = if let Some(scenes) = scenes {
         if threaded && interp.is_none() {
-            let display = d3d::ThreadedBackend::new(backend)?.with_frame_owner(scenes.owner);
-            return install_device(rt, display, extra, profile, Some(SceneWorker::Display(scenes.service)));
+            let display = d3d::ThreadedBackend::new(backend)?
+                .with_frame_owner(scenes.owner)
+                .with_present_window(window.clone());
+            return install_device(rt, display, extra, profile, Some(SceneWorker::Display(scenes.service)), window);
         }
         Some(SceneWorker::Private(scenes.service))
     } else {
         None
     };
     if !threaded {
-        return install_device(rt, backend, extra, profile, worker);
+        return install_device(rt, backend, extra, profile, worker, None);
     }
     match interp {
         Some(Interpolation { rate, mode }) => {
             let interp = d3d::InterpBackend::new(backend, rate).with_mode(mode);
             crate::render_probe::set_interp(interp.stats());
             crate::render_probe::set_interp_holds(interp.holds());
-            install_device(rt, d3d::ThreadedBackend::new(interp)?, extra, profile, worker)
+            let display = d3d::ThreadedBackend::new(interp)?.with_present_window(window.clone());
+            install_device(rt, display, extra, profile, worker, window)
         }
-        None => install_device(rt, d3d::ThreadedBackend::new(backend)?, extra, profile, worker),
+        None => {
+            let display = d3d::ThreadedBackend::new(backend)?.with_present_window(window.clone());
+            install_device(rt, display, extra, profile, worker, window)
+        }
     }
 }
 
@@ -1520,6 +1533,8 @@ pub fn install_for_profile<B: d3d::backend::Backend + Send + 'static>(
         rt, backend, extra, profile,
         #[cfg(feature = "gpu")]
         None,
+        #[cfg(feature = "gpu")]
+        None,
     )
 }
 
@@ -1529,6 +1544,7 @@ fn install_device<B: d3d::backend::Backend + Send + 'static>(
     extra: Option<ExtraReport>,
     profile: film::RenderHooks,
     #[cfg(feature = "gpu")] worker: Option<SceneWorker>,
+    #[cfg(feature = "gpu")] window: Option<Arc<d3d::scene_sink::window::PresentWindow>>,
 ) -> anyhow::Result<Installed> {
     anyhow::ensure!(
         crate::run_plan::compiled_render_hooks().supports(profile),
@@ -1543,6 +1559,11 @@ fn install_device<B: d3d::backend::Backend + Send + 'static>(
     // a slot, and passes every call on.
     #[cfg(feature = "desktop-runtime")]
     let backend = d3d::SceneSink::new(backend, render_bridge::carried_slots::slot);
+    #[cfg(feature = "gpu")]
+    let backend = {
+        crate::scene_glue::set_present_window(window.as_ref());
+        backend.with_present_window(window, render_bridge::carried_slots::take_present_game_view)
+    };
     #[cfg(feature = "gpu")]
     let (backend, worker) = if let Some(worker) = worker {
         let (backend, service) = match worker {

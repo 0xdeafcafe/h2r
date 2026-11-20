@@ -250,6 +250,7 @@ pub struct Worker<B: Backend> {
 
 #[derive(Default)]
 struct Shared {
+    window: std::sync::OnceLock<Arc<crate::scene_sink::window::PresentWindow>>,
     /// Emptied draw boxes for the guest's side to fill (at most
     /// [`SPARE_DRAWS`]).
     spent_boxes: Mutex<Vec<DrawBox>>,
@@ -569,6 +570,12 @@ pub struct ThreadedBackend<B: Backend + 'static> {
 }
 
 impl<B: Backend + 'static> ThreadedBackend<B> {
+    /// Installs the counter window shared with this device's guest sink.
+    pub fn with_present_window(self, window: Option<Arc<crate::scene_sink::window::PresentWindow>>) -> Self {
+        if let Some(window) = window { let _ = self.shared.window.set(window); }
+        self
+    }
+
     /// Moves `inner` to a new thread named `d3d-render`.
     pub fn new(inner: B) -> std::io::Result<Self> {
         let (tx, rx) = mpsc::channel::<Vec<Cmd<B>>>();
@@ -1142,7 +1149,13 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             self.post(move |w| {
                 w.inner.stamp_present(at);
                 let r = w.surface(surface).and_then(|s| w.inner.present_with_gamma(s, flags, gamma.as_deref()));
-                w.residency.present(r.is_ok() && !w.shared.failed.load(Ordering::Relaxed));
+                let complete = r.is_ok() && !w.shared.failed.load(Ordering::Relaxed);
+                let residency = w.residency.present(complete);
+                if let Some(window) = w.shared.window.get() {
+                    use crate::scene_sink::window::DisplayResult;
+                    let outcome = if complete { DisplayResult::Ordinary } else { DisplayResult::Failed };
+                    window.complete(n, outcome, residency, crate::scene_stage::take_local_drops());
+                }
                 w.shared.display_capacity.release(n);
                 r?;
                 w.land_pixel_counts()

@@ -11,6 +11,7 @@
 #[cfg(feature = "gpu")]
 mod camera;
 mod census;
+pub mod window;
 mod contents;
 mod replay;
 mod seeds;
@@ -98,6 +99,7 @@ pub struct SceneSink<B: Backend> {
     inner: B,
     source: SlotSource,
     collect_census: bool,
+    present_window: Option<(Arc<window::PresentWindow>, fn() -> bool)>,
     keep: bool,
     replay: Option<Recorder<B::Surface>>,
     presents: u64,
@@ -122,6 +124,7 @@ impl<B: Backend> SceneSink<B> {
             inner,
             source,
             collect_census: true,
+            present_window: None,
             keep: false,
             replay: None,
             presents: 0,
@@ -142,6 +145,12 @@ impl<B: Backend> SceneSink<B> {
     /// a second pass over every draw to collect the census.
     pub fn with_census(mut self, enabled: bool) -> Self {
         self.collect_census = enabled;
+        self
+    }
+
+    /// Joins the original guest Swap to its display worker's result.
+    pub fn with_present_window(mut self, window: Option<Arc<window::PresentWindow>>, game_view: fn() -> bool) -> Self {
+        self.present_window = window.map(|window| (window, game_view));
         self
     }
 
@@ -367,9 +376,22 @@ impl<B: Backend> SceneSink<B> {
             self.scene_colour.remove(0);
         }
         if self.at().is_none() && self.frame.ops.is_empty() && self.frame.readbacks.is_empty() {
+            if let Some((window, game_view)) = &self.present_window {
+                window.submit(self.presents, window::Input {
+                    game_view: game_view(), drops: crate::scene_stage::take_local_drops(), ..Default::default()
+                });
+            }
             return;
         }
         let summary = self.frame.summary();
+        if let Some((window, game_view)) = &self.present_window {
+            let entered = game_view();
+            window.submit(self.presents, window::Input {
+                game_view: entered || !summary.views.is_empty() || summary.readback_total() != 0,
+                reads: summary.readbacks,
+                drops: crate::scene_stage::take_local_drops(),
+            });
+        }
         if self.collect_census {
             census::record(&self.frame);
         } else {
