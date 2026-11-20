@@ -8,27 +8,37 @@
 //! what the first geometry handler supplied to the D3D-snapshot path
 //! (`boot::native_lights_glue::walk`), the scene carries.
 //!
-//! Adjacent list entries of one stream, binding, vertex class and pose
-//! join into one draw (the indices of consecutive parts of a section are
-//! one range); strips never join. A group with a remainder, a stream the
-//! native geometry does not hold, or a placement it has no transform for,
-//! is refused by name and the layer keeps its handlers.
+//! Each entry's part is looked up in the native geometry ([`Resident`]),
+//! which gives its stream and its index range there. Adjacent list
+//! entries of one stream, binding, vertex class and pose join into one
+//! draw; strips never join. A group with a remainder, an entry whose part
+//! the native geometry does not hold, or an object entry without node
+//! rows, is refused by name and the layer keeps its handlers.
+//! `boot::native_lights_glue` draws a planned group of structure geometry
+//! (clusters and placements, in the world's buffers) in layers 12 and 13;
+//! it holds no model streams for the light passes, so an object entry is
+//! [`Refusal::Stream`].
 
 use std::ops::Range;
 
-use frame_scene::{FrameScene, GroupSite, LayerOwner, LightBinding, LightEntry, LightGroup, LightPose, PROJECTION_ROWS, Topology};
+use frame_scene::{FrameScene, GroupSite, LightBinding, LightEntry, LightGroup, LightPose, PROJECTION_ROWS, Row, Topology};
 
 /// A resident stream, as the native geometry names it.
 pub type StreamId = u32;
 
+/// Where the native geometry holds an entry's part.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResidentPart {
+    pub stream: StreamId,
+    /// The part's indices in the stream's index buffer.
+    pub indices: Range<u32>,
+}
+
 /// The native geometry a group's entries name.
 pub trait Resident {
-    /// The resident stream of section `section` of what `owner` draws
-    /// (`model` the record's, `u32::MAX` for the structure's); `None` when
-    /// it is not loaded.
-    fn stream(&self, owner: LayerOwner, model: u32, section: u16) -> Option<StreamId>;
-    /// Whether the native world holds placement `index`'s transform.
-    fn placement(&self, index: u16) -> bool;
+    /// Where `entry`'s part (its owner, model, section and part, with its
+    /// shader) is held; `None` when it is not, or not for that shader.
+    fn part(&self, entry: &LightEntry) -> Option<ResidentPart>;
 }
 
 /// Why a group is not planned: its layer keeps its handlers.
@@ -36,10 +46,9 @@ pub trait Resident {
 pub enum Refusal {
     /// Sorted entries extraction left to the guest.
     Remainder(u32),
-    /// An entry's stream is not resident.
+    /// An entry's part is not resident.
     Stream,
-    /// An entry's placement has no native transform, or an object's
-    /// rows are empty.
+    /// An object entry's node rows are empty.
     Pose,
 }
 
@@ -58,8 +67,8 @@ impl Refusal {
 pub struct Draw {
     pub stream: StreamId,
     pub vertex_class: u16,
-    pub first_index: u32,
-    pub index_count: u32,
+    /// Indices in the stream's index buffer.
+    pub indices: Range<u32>,
     pub topology: Topology,
     /// The first entry's pose; a [`LightPose::Rows`] range is into the
     /// scene's rows.
@@ -87,11 +96,11 @@ impl Plan {
     }
 }
 
-fn same_pose(scene: &FrameScene, a: &LightEntry, b: &LightEntry) -> bool {
+fn same_pose<'r>(rows: &dyn Fn(&LightEntry) -> &'r [Row], a: &LightEntry, b: &LightEntry) -> bool {
     match (&a.pose, &b.pose) {
         (LightPose::World, LightPose::World) => true,
         (LightPose::Placement(x), LightPose::Placement(y)) => x == y,
-        (LightPose::Rows(_), LightPose::Rows(_)) => a.record == b.record && scene.pose_rows(a) == scene.pose_rows(b),
+        (LightPose::Rows(_), LightPose::Rows(_)) => a.record == b.record && rows(a) == rows(b),
         _ => false,
     }
 }
@@ -101,37 +110,44 @@ pub fn plan(scene: &FrameScene, group: &LightGroup, resident: &dyn Resident) -> 
     if !group.whole() {
         return Err(Refusal::Remainder(group.remainder));
     }
-    let entries = scene.entries_of(group);
+    let draws = plan_entries(scene.entries_of(group), &|e| scene.pose_rows(e), resident)?;
+    Ok(Plan { light: group.light, layer: group.layer, site: group.site, projection: group.projection, draws })
+}
+
+/// [`plan`]'s draws for a whole group's `entries`, each object entry's
+/// node rows from `rows`.
+pub fn plan_entries<'r>(
+    entries: &[LightEntry],
+    rows: &dyn Fn(&LightEntry) -> &'r [Row],
+    resident: &dyn Resident,
+) -> Result<Vec<Draw>, Refusal> {
     let mut draws: Vec<Draw> = Vec::with_capacity(entries.len());
     let mut last: Option<&LightEntry> = None;
     for (n, e) in entries.iter().enumerate() {
-        let stream = resident.stream(e.owner, e.model, e.stream.section).ok_or(Refusal::Stream)?;
-        match &e.pose {
-            LightPose::Placement(p) if !resident.placement(*p) => return Err(Refusal::Pose),
-            LightPose::Rows(_) if scene.pose_rows(e).is_empty() => return Err(Refusal::Pose),
-            _ => {}
+        let part = resident.part(e).ok_or(Refusal::Stream)?;
+        if matches!(e.pose, LightPose::Rows(_)) && rows(e).is_empty() {
+            return Err(Refusal::Pose);
         }
         let n = n as u32;
         let joins = last.is_some_and(|l| {
             let d = draws.last().expect("a draw for the last entry");
             e.stream.topology == Topology::List
                 && d.topology == Topology::List
-                && d.stream == stream
+                && d.stream == part.stream
                 && d.vertex_class == e.stream.vertex_class
                 && d.binding == e.binding
-                && d.first_index + d.index_count == e.stream.first_index
-                && same_pose(scene, l, e)
+                && d.indices.end == part.indices.start
+                && same_pose(rows, l, e)
         });
         if joins {
             let d = draws.last_mut().expect("a draw for the last entry");
-            d.index_count += e.stream.index_count;
+            d.indices.end = part.indices.end;
             d.entries.end = n + 1;
         } else {
             draws.push(Draw {
-                stream,
+                stream: part.stream,
                 vertex_class: e.stream.vertex_class,
-                first_index: e.stream.first_index,
-                index_count: e.stream.index_count,
+                indices: part.indices,
                 topology: e.stream.topology,
                 pose: e.pose.clone(),
                 binding: e.binding,
@@ -140,7 +156,7 @@ pub fn plan(scene: &FrameScene, group: &LightGroup, resident: &dyn Resident) -> 
         }
         last = Some(e);
     }
-    Ok(Plan { light: group.light, layer: group.layer, site: group.site, projection: group.projection, draws })
+    Ok(draws)
 }
 
 /// Each group of `scene`'s lights of `view` that plans, or why not, in
@@ -160,21 +176,22 @@ mod tests {
     };
 
     use super::*;
+    use frame_scene::LayerOwner;
 
+    /// Holds every part but cluster 9's and placement 7's, its indices
+    /// where the guest's are, each owner kind its own stream.
     struct Held;
 
     impl Resident for Held {
-        fn stream(&self, owner: LayerOwner, model: u32, section: u16) -> Option<StreamId> {
-            match owner {
-                LayerOwner::Cluster(c) if c != 9 => Some(1000 + u32::from(section)),
-                LayerOwner::Placement(_) => Some(2000 + u32::from(section)),
-                LayerOwner::Object(_) => Some(model ^ u32::from(section)),
-                _ => None,
-            }
-        }
-
-        fn placement(&self, index: u16) -> bool {
-            index != 7
+        fn part(&self, e: &LightEntry) -> Option<ResidentPart> {
+            let stream = match e.owner {
+                LayerOwner::Cluster(c) if c != 9 => 1000 + u32::from(e.stream.section),
+                LayerOwner::Placement(p) if p != 7 => 2000 + u32::from(e.stream.section),
+                LayerOwner::Object(_) => e.model ^ u32::from(e.stream.section),
+                _ => return None,
+            };
+            let first = e.stream.first_index;
+            Some(ResidentPart { stream, indices: first..first + e.stream.index_count })
         }
     }
 
@@ -233,8 +250,8 @@ mod tests {
         let s = scene(&[(group(12, GroupSite::Light), entries)]);
         let g = &s.groups_of(0)[0];
         let p = plan(&s, g, &Held).unwrap();
-        let ranges: Vec<_> = p.draws.iter().map(|d| (d.first_index, d.index_count, d.entries.clone())).collect();
-        assert_eq!(ranges, [(0, 12, 0..2), (6, 6, 2..3), (12, 6, 3..4), (18, 6, 4..5), (24, 6, 5..6), (30, 12, 6..8)]);
+        let ranges: Vec<_> = p.draws.iter().map(|d| (d.indices.clone(), d.entries.clone())).collect();
+        assert_eq!(ranges, [(0..12, 0..2), (6..12, 2..3), (12..18, 3..4), (18..24, 4..5), (24..30, 5..6), (30..42, 6..8)]);
         assert_eq!(p.entries(), 8, "every handler of the layer");
         assert_eq!(p.draws[0].stream, 1002);
         assert_eq!(p.draws[4].stream, 2002);
@@ -298,6 +315,6 @@ mod tests {
             (group(12, GroupSite::Light), vec![]),
         ]);
         let got: Vec<_> = s.groups_of(0).iter().map(|g| plan(&s, g, &Held).map(|p| p.draws.len())).collect();
-        assert_eq!(got, [Err(Refusal::Remainder(2)), Err(Refusal::Stream), Err(Refusal::Pose), Err(Refusal::Pose), Ok(0)]);
+        assert_eq!(got, [Err(Refusal::Remainder(2)), Err(Refusal::Stream), Err(Refusal::Stream), Err(Refusal::Pose), Ok(0)]);
     }
 }
