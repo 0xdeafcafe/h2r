@@ -87,17 +87,33 @@ pub fn profile_flags(opt: Option<&str>, debug: Option<&str>) -> Result<Vec<Strin
 }
 
 /// Every flag for a generated object: [`CFLAGS`] plus [`profile_flags`]
-/// from the environment, plus the optional paths. `H2_PERF` is off unless
-/// set to `1`; the inline RAM path (`H2_FASTMEM`), native x87
-/// (`H2_X87_NATIVE`) and SSE (`H2_SSE_NATIVE`), and direct calls between
-/// generated handlers (`H2_DIRECT_CALLS`) are on unless set to `0`; store
-/// sites testing the dirty bit before marking a page (`H2_DIRTY_INLINE`,
-/// `h2fastmem.h`) is off unless set to `1`; so is counting cold guest
-/// accesses by cause (`H2_COLD_STATS`, printed to stderr), and lending the
-/// RAM gate across direct calls (`H2_DIRECT_GATE`, `h2gen.h`), carrying the
-/// access count across direct calls (`H2_DIRECT_COUNT`) and taking the RAM
-/// gate at a handler's start (`H2_ENTRY_GATE`, `h2fastmem.h`). Charging
-/// accesses in the RAM view (`H2_VIEW_CHARGE`) defaults on.
+/// from the environment, plus the `-D` switches below. Each is `0` or `1`,
+/// and each is in the object cache key and the boot stamp, so set it the
+/// same for `h2 build` and `h2 run`.
+///
+/// - On unless `0`: the inline RAM path (`H2_FASTMEM`), native x87
+///   (`H2_X87_NATIVE`) and SSE (`H2_SSE_NATIVE`), whose off builds are the
+///   exact reference paths for bisecting a divergence
+///   (docs/runtime/BOOT.md); direct calls between generated handlers
+///   (`H2_DIRECT_CALLS`, module feature 2), whose off build is the
+///   reference the direct-call tests compare with; and charging a counting
+///   handler's accesses in the RAM view (`H2_VIEW_CHARGE`, on since
+///   feddd0402; its off path stays until a profile in the game settles
+///   it).
+/// - Off unless `1`, awaiting a measurement in full images: flat RAM
+///   (`H2_FLAT_RAM`), the per-hold RAM page cache (`H2_RAM_PAGE_CACHE`),
+///   checked x87 TOP specialisation (`H2_X87_TOP`), the RAM gate taken at
+///   a handler's start (`H2_ENTRY_GATE`, `h2fastmem.h`), store sites
+///   testing the dirty bit before marking a page (`H2_DIRTY_INLINE`), and
+///   lending the RAM gate (`H2_DIRECT_GATE`) or the access count
+///   (`H2_DIRECT_COUNT`) across direct calls (`h2gen.h`). Each trades fewer
+///   hot operations for more live state or larger generated code
+///   (docs/perf/guest-memory.md).
+/// - Off unless `1`, diagnostics: loop and x87 counters (`H2_PERF`), and
+///   cold guest accesses counted by cause (`H2_COLD_STATS`, printed to
+///   stderr). `H2_FLAT_STATS_OWNER` (a guest address) counts one owner's
+///   flat-RAM accesses.
+///
 /// Profile-guided optimisation (`H2_PGO`) and the target CPU (`H2_CPU`,
 /// arm64 only: see [`pgo::for_arch`]) are off unless set ([`pgo`]).
 ///
@@ -107,10 +123,6 @@ pub fn profile_flags(opt: Option<&str>, debug: Option<&str>) -> Result<Vec<Strin
 /// targets had flags of their own. The stamp ([`boot`'s `build_stamp`])
 /// takes them for the target it builds for, so a module cross-built for
 /// Windows matches what the app computes on the device.
-///
-/// H2_FLAT_RAM, H2_RAM_PAGE_CACHE and H2_X87_TOP are opt-in until
-/// measured in full images: both trade fewer hot operations for more
-/// live state or larger generated code.
 pub fn cflags_for(arch: Arch) -> Result<Vec<String>, Error> {
     let env = |k| std::env::var(k).ok();
     let mut v: Vec<String> = CFLAGS.iter().map(|s| s.to_string()).collect();
