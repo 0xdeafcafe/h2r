@@ -938,7 +938,7 @@ points! { ALL;
     /// `+4`, `+8` and `+2` (word) on the stack; the screen in EAX.
     CONTROLS_SCREEN_CTOR @ 0x002b_7752: [fn(screen: edi, a: stack 0, b: stack 1, player: stack 2) -> eax ret 12]; "docs/formats/ui.md";
     /// Queue a constructed screen on the channel named by the request.
-    SCREEN_PUSH @ 0x0014_7f6d: [opaque]; "docs/formats/ui.md";
+    SCREEN_PUSH @ 0x0014_7f6d: [fn(screen: edi, request: ebx) ret 0]; "docs/formats/ui.md";
     /// The generic screen event handler; B and Back close by channel.
     SCREEN_BACK_EVENT @ 0x0023_00ea: [fn(screen: ecx, event: stack 0) -> al ret 4]; "docs/game/ui-screens.md";
     /// Game Setup handles X and delegates other events to SCREEN_BACK_EVENT.
