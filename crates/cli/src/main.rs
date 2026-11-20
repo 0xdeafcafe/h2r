@@ -1119,12 +1119,7 @@ fn run_lift(path: &Path, opts: &LiftOpts) -> Result<()> {
         }
     }
     if opts.stats || (!opts.histogram && !opts.run_entry && opts.dump.is_empty()) {
-        // H2_STATS_ALL=1 lists every unsupported mnemonic, not the top 30.
-        if std::env::var_os("H2_STATS_ALL").is_some() {
-            print!("{:#}", lifter.stats());
-        } else {
-            print!("{}", lifter.stats());
-        }
+        print!("{}", lifter.stats());
     }
     Ok(())
 }
