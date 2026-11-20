@@ -293,6 +293,9 @@ impl Backend for AnyDisc {
     fn map_id(&mut self, path: &str) -> Option<content::MapId> {
         either!(self, d => d.map_id(path))
     }
+    fn resolves_on_use(&mut self, path: &str) -> bool {
+        either!(self, d => d.resolves_on_use(path))
+    }
     fn cleanup(&mut self, path: &str, write_access: bool) -> Result<()> {
         either!(self, d => d.cleanup(path, write_access))
     }

@@ -1,0 +1,12 @@
+[package]
+name = "background"
+description = "Background work in the game process: named threads below the game's own priority, and the worker cap for background jobs (docs/runtime/background-work.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+# setpriority: a thread's own nice value on Linux.
+libc = "0.2"

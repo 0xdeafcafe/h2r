@@ -38,10 +38,10 @@ session that owns Live, bots, theater and film.
 crates/
   formats/     asf content font hs map mopp movies pathfind settings shaders tags variants
                xbe xiso h1-contract
-  recompiler/  analyze symbols lift ir opt emit clif x87 simd oracle sse-oracle
+  recompiler/  analyze symbols lift ir opt emit clif x87 simd oracle sse-oracle hostfault
                +sim-tier
-  runtime/     runtime (and its test-probe) kernel vfs snapshot timeline
-               +hostfault +lifted +recomp
+  runtime/     runtime (and its test-probe) kernel vfs snapshot timeline background
+               +lifted +recomp
   platform/    d3d gfx assets hot-render  dsound audio wma  xapi input  bink-hle voice
   hooking/     ~hooks (feature)  guest-layout  +switches
   rewrites/    engine native-render
@@ -182,7 +182,7 @@ cannot become a member.
 | `sim-core`, `sim-anim` | `sim-anim` | `crates/rewrites/` | Guest-free. The adapter is `engine/src/sim_anim.rs`; the install, `sim_native`, is in `sim-bridge` (S3) |
 | `sim-collision` | `sim-collision` | `crates/rewrites/sim-collision` | Guest-free; depends on `sim-core` |
 | `frame-scene`, `scene-extract` | `framescene` | `crates/rewrites/` | Guest-free: `scene-extract` reads memory through its own trait and depends only on `frame-scene` |
-| `hostfault` | `contract` | `crates/runtime/hostfault` | The process-wide fault handler; `libc` only |
+| `hostfault` | `contract` | `crates/recompiler/hostfault` | The process-wide fault handler; `libc` only. `emit` writes the fixup tables it reads and `runtime` registers regions, so it sits where both may use it |
 | `sim-tier` | `sim-tier` | `crates/recompiler/sim-tier` | A second lowering of `ir`, beside `emit` and `clif`. Not committed on its branch yet |
 | `recomp` | (contract work) | `crates/runtime/recomp` | XBE to a loaded module, out of `boot/src/lib.rs` by S4 (ran) |
 

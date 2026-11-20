@@ -324,11 +324,33 @@ the nav mesh, and shared read-only by every bot in the process.
   or without it. `Walls::hit` (a grenade's flight) does not use it.
 - **File.** `<data>/bots/<map>.<bsp>.vis` beside the `.bots` file: magic
   `H2VS`, `vis::VERSION`, the `.bots` file's stamp, a hash of its walls,
-  then the cells and the bits. The nav worker builds it with each nav
-  mesh (on half the machine's threads, at most 8) and writes it before the
-  `.bots` files. A map whose `.bots` is fresh but whose `.vis` is missing,
-  older, damaged or from another build gets only its grid built
-  (`bots: built the visibility grid for lockout (none yet): ...`).
+  then the cells and the bits. The nav worker writes a map's `.bots`
+  files first, then builds each BSP's grid from them
+  (`vis::rebuild_resumable`; the game's worker on `background::workers`
+  lowered threads, `h2 bots nav` on half the machine's threads, at most
+  8; the grid is the same either way,
+  `the_grid_is_the_same_on_any_threads_and_at_background_priority`) and
+  writes each `.vis` as it finishes, BSP 0 last. A map whose `.bots` is
+  fresh but whose `.vis` is missing, older, damaged or from another build
+  gets only its grid built
+  (`bots: built the visibility grid for lockout (none yet): ...`); a BSP
+  whose `.vis` is current (`vis::current`: this version, the `.bots`
+  stamp, its walls) is not built again.
+- **Progress.** A grid is built in about 64 chunks of rows of pairs
+  (`vis::fill`). After a chunk the build saves the grid so far and the
+  first row not done to `<map>.<bsp>.vis.part` (magic `H2VP`) at most
+  every `vis::SAVE_EVERY` (10 s), and the next build of that BSP carries
+  on from it when it was made for the same `.bots` stamp and the same
+  cells (`vis::read_part`); the part goes when the `.vis` is written.
+  The game's worker also stops between chunks when a map is asked for
+  (`Handle::want`) or it is stopped, saves, builds the map asked for, and
+  carries on with the grid once its queue is empty
+  (`bots: visibility grid for lockout: paused after 12.0 s, progress saved`).
+  The game never stops the worker at exit, so a quit loses at most
+  `SAVE_EVERY` of grid work. Tests:
+  `a_stopped_grid_build_keeps_its_progress_and_carries_on_to_the_same_grid`
+  (`vis/tests.rs`), `a_built_grid_is_saved_where_the_game_loads_it_and_used`
+  (`autonav/tests.rs`: written to `cache::dir`, where the glue loads).
   Bump `vis::VERSION` when the cells, the proof or the margins change.
 - **Loading.** The glue reads the `.vis` with the `.bots` and attaches it
   only when its stamp and walls hash match. Otherwise it logs why and
@@ -3863,19 +3885,40 @@ game checks.
      `cache::GENERATOR` and the source map's fingerprint), then the mesh
      and the walls and tactical places. The data comes from the disc, so it stays on this
      machine and out of git. When the loaded map's name (`0x547898`)
-     changes, the glue loads `<map>.0.bots` on a thread of its own. Until
+     changes, the glue loads `<map>.0.bots` on a background thread
+     (`bots-map-data`). Until
      the data is ready, the bots can walk toward known goals. Host visual
      contacts require a loaded BSP.
    - **Built for you** (`bots::autonav`, `boot::bots_nav_auto`). At boot a
-     worker thread (named `bots-nav`, at utility QoS on Apple systems)
-     looks at every map the game can load, as the VFS serves it: the
-     disc's `D:\maps\*.map` (so a package or `H2_MAP_DIR` map in a disc
-     map's place is what counts) and the content packages'
-     `T:\$c\<offer>\*.map` (the Map Pack, new maps, converted Halo 1
-     maps). A multiplayer map whose `<map>.0.bots` is missing, damaged, of
-     an older format, built by another generator version, or built from
-     another map file is **stale** and is built; the rest are left alone.
-     The boot never waits for it.
+     worker thread (named `bots-nav`) looks at every map the game can
+     load, as the VFS serves it: the disc's `D:\maps\*.map` (so a package
+     or `H2_MAP_DIR` map in a disc map's place is what counts) and the
+     content packages' `T:\$c\<offer>\*.map` (the Map Pack, new maps,
+     converted Halo 1 maps). A multiplayer map whose `<map>.0.bots` is
+     missing, damaged, of an older format, built by another generator
+     version, or built from another map file is **stale** and is built;
+     the rest are left alone. The boot never waits for it.
+     - **Background work.** The worker runs on `background::spawn` and
+       builds each visibility grid on `background::workers` threads, each
+       lowered itself (`vis::Threads::background`), so it takes a quarter
+       of the cores below the game's priority
+       ([background-work.md](../runtime/background-work.md)). `h2 bots nav`
+       keeps half the cores at the default priority (`vis::Threads::foreground`).
+     - **Maps no bot plays.** `autonav::map_use` gives `Never` for
+       `mainmenu`, `shared` and `single_player_shared` by name, and for a
+       header of those kinds (`+0x140` 2, 3, 4); `LoadOnly` for campaign;
+       `Build` for multiplayer. The scans never open a `Never` map,
+       `Handle::want` ignores it, and the worker skips it even with
+       `--force` and any kind. When one loads, the glue reads the loaded
+       cache type (`0x547840`) and starts nothing: no thread, no build, no
+       log line. A campaign map loads a hand-built file if there is one
+       and logs nothing if not.
+     - **Packaged maps.** A map a package serves resolves on its first
+       look, reading its whole base inside the VFS lock. The scans skip a
+       map not resolved yet (`Vfs::resolves_on_use`), so the worker never
+       holds the VFS for that; the game's own open resolves it, and the
+       glue's `want` at its load scans again and finds it
+       ([maps.md](maps.md) section 2).
      - **The fingerprint** is FNV-1a (64-bit) over the map's 2 KiB cache
        header, which holds its size, the tag index's offsets, its name and
        the XOR checksum of the rest (every map writer here recomputes it).
@@ -3904,7 +3947,8 @@ game checks.
        other BSPs first and `<map>.0.bots` (the one checked) last. A crash
        leaves the old file or the new one, never half of one.
      - **Log**: one line a map built (`bots: built the nav mesh for
-       lockout (none yet): 590 polygons, ... in 0.0 s`), and one summary
+       lockout (none yet): 590 polygons, ... in 0.0 s`), one when its
+       grid is (`bots: built the visibility grid for lockout ...`), and one summary
        after the pass (`bots: nav meshes: 12 built, 0 up to date (0.5 s)`).
      - **Off**: `H2_BOTS_NAV_AUTO=0` (or `off`). The worker also stays
        off when the bots feature is (`H2_FEATURES=-bots`).
@@ -3932,7 +3976,12 @@ game checks.
      a map installed after boot built when wanted; the worker's data
      winning over a late file read. `cargo test -p boot --lib
      bots_nav_auto`: the scan finding content maps through the VFS, a
-     map read through the VFS in chunks, nothing started when off.
+     map read through the VFS in chunks, nothing started when off, the
+     scans never opening the menu or shared maps
+     (`the_scans_never_open_the_menu_or_shared_maps`). `map_use` and the
+     worker leaving those maps alone:
+     `the_menu_and_shared_maps_are_never_used_and_multiplayer_is_built`,
+     `the_worker_never_wants_scans_or_builds_the_menu_and_shared_maps`.
      Against the disc (ignored, `--ignored`): `cargo test -p cli
      bots_nav -- --ignored` builds every multiplayer map into a scratch
      directory, then finds them all up to date.

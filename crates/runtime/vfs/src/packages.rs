@@ -484,6 +484,17 @@ impl<B: Backend> Backend for PackageBackend<B> {
         self.flush_notices();
         now != then || self.inner.map_changed(path)
     }
+    /// A map a package serves that has not been resolved yet.
+    fn resolves_on_use(&mut self, path: &str) -> bool {
+        self.refresh();
+        if let Some(stem) = self.scope.stem(path)
+            && !self.files.contains_key(&path.to_ascii_lowercase())
+            && self.library.choose(stem).is_some()
+        {
+            return true;
+        }
+        self.inner.resolves_on_use(path)
+    }
     fn closed(&mut self, path: &str) {
         let key = path.to_ascii_lowercase();
         if let Some(n) = self.open.get_mut(&key) {

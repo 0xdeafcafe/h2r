@@ -1,6 +1,8 @@
 //! The bots' nav meshes, built while the game runs (docs/game/bots.md §10,
-//! stage 2, "Built for you"): [`bots::autonav::Worker`] on a low-priority
-//! thread of its own, so the boot never waits for it.
+//! stage 2, "Built for you"): [`bots::autonav::Worker`] on a background
+//! thread of its own ([`background::spawn`]), its visibility grids split
+//! across [`background::workers`] lowered threads, so the boot and a map
+//! load never wait for it, nor for the cores it uses.
 //!
 //! It scans retail maps as the VFS serves them, including explicit
 //! `H2_MAP_DIR` editor overrides. Generated offers open on demand so the
@@ -14,6 +16,13 @@
 //! scanned again (a map installed since boot is found) and looked at next.
 //! If it was stale the bots walk straight until the build lands, then take
 //! the new mesh without a reload ([`bots::autonav::offer`]).
+//!
+//! The scans never resolve a map package: a packaged map nothing has
+//! opened yet is skipped ([`unresolved`]) until the game loads it, so the
+//! worker never holds the VFS for a read of a whole base map.
+//!
+//! The main menu and the shared resource maps are never scanned or built
+//! ([`bots::autonav::map_use`]).
 //!
 //! `H2_BOTS_NAV_AUTO=0` turns it off; `h2 bots nav` still builds by hand.
 
@@ -73,9 +82,12 @@ pub fn start_with(
         Box::new(move || scan(&disc, &content, &scan_vfs))
             as Box<dyn FnMut() -> Vec<Box<dyn Source>> + Send>
     };
-    let (worker, handle) = Worker::new(data_root.join("bots"), scan);
+    let (worker, handle) = Worker::new(bots::cache::dir(data_root), scan);
     let worker = worker
         .on_demand(move |name| {
+            if !played(name) {
+                return None;
+            }
             // Content packages first, then the disc's own map of the name:
             // a light host's scan holds only the booted map, so a later
             // `want` finds the rest here.
@@ -91,23 +103,27 @@ pub fn start_with(
         })
         .first(first)
         .stay(true)
+        .background(true)
         .on_built(|name, d| {
             if autonav::offer(name, d.clone(), true) {
                 eprintln!("bots: {name}: the new nav mesh is in use");
             }
         });
-    let spawned = std::thread::Builder::new()
-        .name("bots-nav".into())
-        .spawn(move || {
-            lower_priority();
-            worker.run();
-        });
+    let spawned = background::spawn("bots-nav", move || {
+        worker.run();
+    });
     if let Err(e) = spawned {
         eprintln!("bots: nav meshes not built: {e}");
         return None;
     }
     autonav::set_handle(handle.clone());
     Some(handle)
+}
+
+/// Whether a bot ever plays the map `name`: the scans never open the main
+/// menu or the shared resource maps ([`autonav::map_use`]).
+fn played(name: &str) -> bool {
+    autonav::map_use(name, None) != autonav::MapUse::Never
 }
 
 /// Where content packages live on the host: `T:\$c`.
@@ -122,11 +138,14 @@ fn content_root(data_root: &Path) -> PathBuf {
 /// Maps loaded later arrive through [`Handle::want`], which the worker
 /// answers with the on-demand lookup.
 pub fn scan_light(vfs: &SharedVfs, first: Option<&str>) -> Vec<Box<dyn Source>> {
-    let Some(first) = first else {
+    let Some(first) = first.filter(|f| played(f)) else {
         return Vec::new();
     };
     let name = first.to_ascii_lowercase();
     let path = format!("{}\\maps\\{name}.map", vfs::CDROM_DEVICE);
+    if unresolved(vfs, &path) {
+        return Vec::new();
+    }
     vfs_source(vfs, &name, &path).into_iter().collect()
 }
 
@@ -134,8 +153,11 @@ pub fn scan_light(vfs: &SharedVfs, first: Option<&str>) -> Vec<Box<dyn Source>> 
 /// are opened through the worker's on-demand lookup.
 pub fn scan(disc: &Path, content: &Path, vfs: &SharedVfs) -> Vec<Box<dyn Source>> {
     let mut out = Vec::new();
-    for name in disc_map_names(disc) {
+    for name in disc_map_names(disc).into_iter().filter(|n| played(n)) {
         let path = format!("{}\\maps\\{name}.map", vfs::CDROM_DEVICE);
+        if unresolved(vfs, &path) {
+            continue;
+        }
         out.extend(vfs_source(vfs, &name, &path));
     }
     let mut dirs: Vec<_> = std::fs::read_dir(content)
@@ -157,6 +179,9 @@ pub fn scan(disc: &Path, content: &Path, vfs: &SharedVfs) -> Vec<Box<dyn Source>
         maps.sort();
         for file in maps {
             let key = &file[..file.len() - ".map".len()];
+            if !played(key) {
+                continue;
+            }
             let path = format!(
                 "{}\\TDATA\\{:08X}\\{}\\{}\\{file}",
                 vfs::DATA_DEVICE,
@@ -164,10 +189,24 @@ pub fn scan(disc: &Path, content: &Path, vfs: &SharedVfs) -> Vec<Box<dyn Source>
                 vfs::CONTENT_DIR,
                 d.file_name().to_string_lossy()
             );
+            if unresolved(vfs, &path) {
+                continue;
+            }
             out.extend(vfs_source(vfs, key, &path));
         }
     }
     out
+}
+
+/// Whether `path` is a packaged map nothing has looked at yet: its first
+/// look reads the whole base map with the VFS held
+/// ([`vfs::Vfs::resolves_on_use`]), which would stall the game's own reads.
+/// The scans leave it to the game's first open; when the game loads it, the
+/// glue's [`Handle::want`] scans again and finds it resolved.
+fn unresolved(vfs: &SharedVfs, path: &str) -> bool {
+    vfs.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .resolves_on_use(path)
 }
 
 /// The disc's `maps\*.map` names; none if the image does not read.
@@ -310,24 +349,6 @@ impl Drop for VfsFile {
     }
 }
 
-/// The worker's thread runs at utility QoS on Apple systems (below the
-/// game's threads, as macOS's own indexing does); elsewhere at the default.
-#[cfg(target_vendor = "apple")]
-fn lower_priority() {
-    unsafe extern "C" {
-        fn pthread_set_qos_class_self_np(qos_class: u32, relative_priority: i32) -> i32;
-    }
-    /// `QOS_CLASS_UTILITY` from `sys/qos.h`.
-    const QOS_CLASS_UTILITY: u32 = 0x11;
-    // SAFETY: sets the calling thread's own QoS class; no pointers.
-    unsafe {
-        pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
-    }
-}
-
-#[cfg(not(target_vendor = "apple"))]
-fn lower_priority() {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,6 +421,21 @@ mod tests {
             (parsed.name.as_str(), parsed.multiplayer),
             ("new_map", true)
         );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_scans_never_open_the_menu_or_shared_maps() {
+        let root = tmp("ui");
+        let vfs = storage(&root);
+        put_package_map(&root, "4d53006400000401", "mainmenu");
+        put_package_map(&root, "4d53006400000401", "shared");
+        put_package_map(&root, "4d53006400000401", "lockout_remix");
+        let found = scan(&root.join("no.iso"), &content_root(&root), &vfs);
+        let keys: Vec<&str> = found.iter().map(|s| s.key()).collect();
+        assert_eq!(keys, ["lockout_remix"]);
+        assert!(scan_light(&vfs, Some("mainmenu")).is_empty());
+        assert!(scan_light(&vfs, Some("single_player_shared")).is_empty());
         std::fs::remove_dir_all(&root).unwrap();
     }
 

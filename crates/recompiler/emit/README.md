@@ -4,7 +4,7 @@ The C11 back end: planned semantic IR in, disposable C out, written against the 
 
 ## Where it sits
 
-`recompiler` domain. Depends on `ir`, `opt`, `lift`, `analyze`, `x87` and `xbe`, plus `runtime/hostfault`. Used by `clif`, `engine` (differential tests), `perf`, `recomp`, `boot` and `cli`.
+`recompiler` domain. Depends on `ir`, `opt`, `lift`, `analyze`, `x87` and `xbe`, plus `hostfault`. Used by `clif`, `engine` (differential tests), `perf`, `recomp`, `boot` and `cli`.
 
 ## Layout
 

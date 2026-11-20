@@ -1717,7 +1717,7 @@ superbounce patch and more, built from the user's own disc while the game
 runs and queued as the next game. Design, recipe format and the built-in
 rigs: [test-maps.md](../game/test-maps.md). Host methods registered by
 `crates/extensions/game/src/test_maps.rs` (the `test-maps` cargo feature of
-`boot`); wire types `agent_proto::test_maps`.
+`boot`, which supplies the recipes in `crates/apps/boot/src/test_maps_recipes.rs`); wire types `agent_proto::test_maps`.
 
 | Method | Access | Params and result |
 |---|---|---|

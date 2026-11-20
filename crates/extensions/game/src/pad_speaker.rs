@@ -291,21 +291,21 @@ pub fn spawn(
         shared.map(|name| v.host_file(name))
     };
     let mut indexer = PadIndexer::new(config, shared);
-    let join = std::thread::Builder::new()
-        .name("pad-speaker-index".into())
-        .spawn(move || {
-            if let Some(r) = indexer.add_shared() {
-                install(r);
+    // Background work: the speaker plays what is indexed, and a map's
+    // sounds go in when its index lands.
+    let join = background::spawn("pad-speaker-index", move || {
+        if let Some(r) = indexer.add_shared() {
+            install(r);
+        }
+        for (file, cache_slot) in rx {
+            match indexer.add_map(&file, cache_slot) {
+                Ok(Some(r)) => install(r),
+                Ok(None) => {}
+                Err(e) => eprintln!("pad speaker: not indexed: {e}"),
             }
-            for (file, cache_slot) in rx {
-                match indexer.add_map(&file, cache_slot) {
-                    Ok(Some(r)) => install(r),
-                    Ok(None) => {}
-                    Err(e) => eprintln!("pad speaker: not indexed: {e}"),
-                }
-            }
-        })
-        .expect("spawning the pad speaker indexer");
+        }
+    })
+    .expect("spawning the pad speaker indexer");
     PadIndex {
         vfs,
         join: Some(join),

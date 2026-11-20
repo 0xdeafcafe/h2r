@@ -198,6 +198,13 @@ generated path. Host tools can resolve the original package and use its
 BPS cache file. A resolution reads a patched map's base once, in full, per
 session, since the overlay's checksum pass needs the bytes. The base's hash
 is kept between runs for the Live gate (section 5, `disc-hashes.toml`).
+That read runs inside the `Vfs` lock, so every other file read waits for
+it. `Vfs::resolves_on_use` (`Backend::resolves_on_use`, forwarded by
+every wrapper) says whether a first look at a path would resolve a
+package; background readers skip such a map and leave the resolution to
+the game's own first open (the bots' nav scan, `boot::bots_nav_auto`,
+[bots.md](bots.md) section 10). Test: `resolves_on_use_is_true_only_before_a_packaged_maps_first_look`
+in `crates/runtime/vfs/tests/packages.rs`.
 
 ### Patch formats
 

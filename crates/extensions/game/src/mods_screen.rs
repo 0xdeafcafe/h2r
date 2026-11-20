@@ -2100,9 +2100,7 @@ pub fn install(
         .add(&ModTexts(Arc::clone(&repo)))
         .map_err(|e| anyhow::anyhow!("mods: {e}"))?;
     let weak = Arc::downgrade(&repo);
-    std::thread::Builder::new()
-        .name("h2-mods".into())
-        .spawn(move || reader(weak))?;
+    background::spawn("h2-mods", move || reader(weak))?;
     Ok(true)
 }
 
