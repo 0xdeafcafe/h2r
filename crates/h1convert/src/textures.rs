@@ -400,11 +400,11 @@ impl Retexture {
 
 /// Converted object models' shaders: [`shad::TEX_BUMP`] rebuilt from each
 /// Halo 1 model shader's base and detail maps ([`ModelTemplate::copy`]),
-/// and a base shader a model shader with no base map names instead.
+/// and a stand-in for shader families the model converter cannot yet rebuild.
 #[derive(Debug, Clone)]
 pub struct ModelTemplate {
     /// A base `objects\` shader drawn with [`MODEL_TEMPLATE`]: what a
-    /// material whose Halo 1 shader has no base map names (never NONE).
+    /// material whose source shader is unsupported names (never NONE).
     pub shader: TagId,
     pub name: String,
     pub library: shad::Library,
@@ -417,7 +417,7 @@ pub const MODEL_TEMPLATE: &str = shad::TEX_BUMP.stem;
 /// (by name) drawn with [`MODEL_TEMPLATE`] as the stand-in. `None` when
 /// the base lacks either.
 pub fn model_template<R: Read + Seek>(base: &mut Map<R>) -> Result<Option<ModelTemplate>> {
-    let library = shad::Library::read(base);
+    let mut library = shad::Library::read(base);
     if !library.has(&shad::TEX_BUMP) {
         return Ok(None);
     }
@@ -434,6 +434,7 @@ pub fn model_template<R: Read + Seek>(base: &mut Map<R>) -> Result<Option<ModelT
             continue;
         };
         if template == MODEL_TEMPLATE {
+            library.load_model_lighting(base);
             return Ok(Some(ModelTemplate {
                 shader: id,
                 name,

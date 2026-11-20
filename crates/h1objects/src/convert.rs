@@ -16,6 +16,7 @@
 
 use std::collections::HashMap;
 
+use h1convert::shad::program::model_defaults::ModelDefaults;
 use h1map::{H1Map, Tag};
 use h1models::Converted;
 use h1models::mode::ModelOptions;
@@ -36,6 +37,8 @@ mod arsenal_conv;
 mod scripted_props_conv;
 #[path = "convert_powerups.rs"]
 mod powerups_conv;
+#[path = "convert_model_defaults.rs"]
+mod model_defaults_conv;
 #[path = "convert_scope.rs"]
 mod scope_conv;
 #[path = "convert_particles.rs"]
@@ -1435,7 +1438,7 @@ impl<'a> Converter<'a> {
                     let points = self.powered_points(obj, &h1_model)?;
                     add_point_markers(&mut h1_model, &points);
                 }
-                let mut shaders = self.model_shaders(rep, &h1_model, rounds);
+                let mut shaders = self.model_shaders(rep, &h1_model, rounds)?;
                 // A player biped's body carries the player's emblem, as the
                 // Chief's does (h1models::emblem); after model_shaders, so
                 // its shader entry (no Halo 1 tag) is not looked up there.
@@ -1888,12 +1891,11 @@ impl<'a> Converter<'a> {
         shaders.push(shader);
     }
 
-    /// A `shad` per Halo 1 shader of `model`: a transparent one rebuilt on
-    /// its own stem ([`Self::transparent_model_shader`]), else a copy of
-    /// the base's model shader ([`Base::model_shader`]) drawing the Halo 1 shader's own
-    /// base and detail maps, converted by `h1bitmaps` (each once). A
-    /// shader with no base map this reads gets the base's model shader
-    /// itself, never null: the shader draw begin `0x1bbf0` does not skip a
+    /// One rebuilt material per Halo 1 shader. Null-base model shaders
+    /// use the rasterizer defaults and their own colours. Other supported
+    /// shaders use their own maps and the appropriate lighting or transparent
+    /// template. An unsupported shader uses the stand-in from
+    /// [`Base::model_shader`]: the draw begin at `0x1bbf0` does not skip a
     /// NONE shader (`0x1bcb9` only clears its cached words) and the draw
     /// `0x16b90` then reads tag slot `0xffff`'s entry as a `shad`. With no
     /// template at all the materials stay null.
@@ -1909,11 +1911,11 @@ impl<'a> Converter<'a> {
         rep: &mut ObjectReport,
         model: &h1models::h1::Model,
         rounds: Option<i16>,
-    ) -> Vec<TagId> {
+    ) -> Result<Vec<TagId>> {
         let Some(template) = self.base.model_shader.clone() else {
             rep.no_home
                 .push("model shaders: the base has no model shader to copy; materials null".into());
-            return Vec::new();
+            return Ok(Vec::new());
         };
         let mut out = Vec::new();
         for s in &model.shaders {
@@ -1921,11 +1923,22 @@ impl<'a> Converter<'a> {
                 out.push(id);
                 continue;
             }
-            let id = (|| -> Option<TagId> {
-                let tag = self.h1.tag(s.tag).ok()?;
-                if let Some(id) = self.done.get(&tag.id.0) {
-                    return Some(*id);
+            let source_tag = self.h1.tag(s.tag).ok();
+            if let Some(tag) = source_tag {
+                if let Some(&id) = self.done.get(&tag.id.0) {
+                    out.push(id);
+                    continue;
                 }
+                if tag.group == h1map::Group::new(b"soso")
+                    && let Some(source) = ModelDefaults::read(tag.group, self.h1.tag_data(tag)?)
+                        .map_err(|e| Error::Invalid(format!("{}: {e}", tag.name)))?
+                {
+                    out.push(self.model_default_shader(&template.library, tag, source)?);
+                    continue;
+                }
+            }
+            let id = (|| -> Option<TagId> {
+                let tag = source_tag?;
                 if let Some(id) = self.transparent_model_shader(&template.library, tag) {
                     return Some(id);
                 }
@@ -1944,12 +1957,12 @@ impl<'a> Converter<'a> {
             if id.is_none() {
                 rep.no_home.push(format!(
                     "model shader {}: no base map read; the base's model shader stands in",
-                    self.h1.tag(s.tag).map_or("?".into(), |t| t.name.clone())
+                    source_tag.map_or("?", |t| t.name.as_str())
                 ));
             }
             out.push(id.unwrap_or(template.shader));
         }
-        out
+        Ok(out)
     }
 
     /// A Halo 1 model shader that isn't `senv` or `soso` (glass, chicago,

@@ -1084,6 +1084,7 @@ pub struct Library {
     stems: HashMap<&'static str, TagId>,
     fixed: HashMap<Fixed, Bound>,
     detail: Option<detail::Program>,
+    model_lighting: Option<std::sync::Arc<tags::shader::TemplatePostprocess>>,
 }
 
 impl Library {
@@ -1134,6 +1135,7 @@ impl Library {
             stems: stems.iter().copied().collect(),
             fixed: fixed.iter().copied().collect(),
             detail: None,
+            model_lighting: None,
         }
     }
 

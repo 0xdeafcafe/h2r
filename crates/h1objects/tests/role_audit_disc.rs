@@ -100,11 +100,12 @@ const ALLOWED: &[Rule] = &[
         "bitm",
         "(a) the Halo 2 HUD of the HUD pair (masterchief_h1_health), Halo 2's by design (hud.md)",
     ),
+    ("stem", "postprocess[].passes[].pass", "spas", "(a) native opaque lighting, shadow and fog passes used by the rebuilt model template"),
     (
         "spas",
         "postprocess[].implementations[].vertex_shader",
         "vrtx",
-        "(a) the scope effect's passes draw with Halo 2's screen-effect vertex shader (program::SCOPE_VERTEX): Halo 1 has no vertex shader tags (hud.md, Scope mask)",
+        "(a) the scope and model passes require native screen-effect and model vertex shaders; Halo 1 has no vertex shader tags",
     ),
 ];
 
@@ -117,12 +118,8 @@ const ALLOWED: &[Rule] = &[
 /// damage bounds were; docs/formats/tag-definitions.md). The suspects are
 /// listed; each is a bug until shown otherwise.
 const KNOWN: &[Rule] = &[
-    (
-        "mode",
-        "materials[].shader",
-        "shad",
-        "bug: a Halo 1 model shader with no base map (V: a10's soso `light siren` on alert_light names no map at all) gets the base's stand-in model shader (Converter::model_shaders; a marine's head on 05a_deltaapproach); the fix needs Halo 1's draw of a null base map",
-    ),
+    ("mode", "materials[].shader", "door lock symbols", "bug: the small door's schi additive stage has a null bitmap"),
+    ("mode", "materials[].shader", "sentinel shield", "bug: the sentinel's spla needs its two volume-noise samplers"),
     ("vehi", "block_1c8[]*", "value", "seat access thresholds used by the Halo 2 entry test"),
     ("vehi", "block_2e8[]*", "value", "Havok lift-point parameters"),
     ("vehi", "block_2f0[]*", "value", "Havok friction-point parameters"),
@@ -387,8 +384,22 @@ fn meaning<'d>(d: &'d StructDef, path: &str) -> Option<&'d str> {
     }
 }
 
+/// Classify the two remaining transparent materials by the original shader in this slot.
+fn known_material(h1: &H1Map, model: &str, path: &str) -> Option<&'static str> {
+    let slot = path.strip_prefix("materials[")?.strip_suffix("].shader")?;
+    let tag = h1.find(h1map::Group::new(b"mode"), model)?;
+    let model = h1models::h1::Model::read(h1, tag.data_address).ok()?;
+    let entry = model.shaders.get(slot.parse::<usize>().ok()?)?;
+    let source = h1.tag(entry.tag).ok()?;
+    match (&source.group.0.to_be_bytes(), source.name.as_str()) {
+        (b"schi", r"levels\a50\devices\small door\shaders\door lock symbols") => Some("door lock symbols"),
+        (b"spla", r"characters\sentinel\shaders\sentinel_shield") => Some("sentinel shield"),
+        _ => None,
+    }
+}
+
 /// The leaks of one map's sandbox.
-fn audit(map: &str, base: &Base, snap: &Snapshot) -> Vec<Leak> {
+fn audit(map: &str, h1: &H1Map, base: &Base, snap: &Snapshot) -> Vec<Leak> {
     let mut out = Vec::new();
     for (k, (tag, conv)) in snap.tags.iter().enumerate() {
         let group = conv.group.to_string();
@@ -416,6 +427,10 @@ fn audit(map: &str, base: &Base, snap: &Snapshot) -> Vec<Leak> {
             // player's own emblem and colours.
             let what = if name == h1objects::convert::EMBLEM_SHADER {
                 "emblem".to_owned()
+            } else if conv.group == FourCC(*b"mode")
+                && base.model_shader.as_ref().is_some_and(|s| s.shader == id)
+            {
+                known_material(h1, tag, &p).map_or_else(|| g.to_string(), str::to_owned)
             } else {
                 g.to_string()
             };
@@ -585,7 +600,7 @@ fn every_role_leak_is_classified() {
         };
         assert!(!snap.tags.is_empty(), "{name}: no objects converted");
         let noted: usize = snap.roles.iter().map(|e| e.1.len()).sum();
-        let got = audit(name, &base, &snap);
+        let got = audit(name, &h1, &base, &snap);
         println!(
             "{name} on {base_name}: {} tags, {noted} role values noted, {} leaks",
             snap.tags.len(),
@@ -647,6 +662,14 @@ fn paths_normalise_and_rules_match_by_prefix() {
     };
     assert!(rule(KNOWN, &l).is_none());
     assert!(rule(ALLOWED, &l).is_none());
+    let model_shader = Leak {
+        group: "mode".into(),
+        path: "materials[].shader".into(),
+        what: "shad".into(),
+        ..l
+    };
+    assert!(rule(KNOWN, &model_shader).is_none());
+    assert!(rule(ALLOWED, &model_shader).is_none());
     assert!(matches("unknown_*", "unknown_1c"));
     assert!(!matches("unknown_1", "unknown_1c"));
 }

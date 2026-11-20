@@ -76,10 +76,81 @@ integration run. There is no new pass count or play result yet.
   scope effect's screen vertex shader and the player emblem are native
   rendering dependencies. The primary HUD and source bitmap slots use
   converted Halo 1 tags.
-- **Known gap.** A Halo 1 model shader with no base map gets the base's
-  stand-in model shader, a marine's head on 05a_deltaapproach. a10's
-  `light siren` on the alert light names no map at all. The fix needs
-  Halo 1's draw of a null base map.
+
+## Models that used the marine head shader
+
+**Built.** A model with an H1 `soso` whose base, detail and reflection
+datums are null now gets its own H2 `shad`. On the owner's campaign
+discs, 15 of the 21 model records that referenced
+`objects\characters\marine\marine_female\shaders\head_female` on
+05a_deltaapproach meet this condition. Fourteen have all four bitmaps
+null. The shield charger has a multipurpose bitmap.
+
+The H1 Xbox model setup at `0x70433..0x70561` binds these images. The
+null-datum branch at `0x8036a` selects the bitmap for the texture kind
+from the rasterizer globals at `0x803c3..0x8041e`. Its image records
+are 0x30 bytes apart. Reading the named images on a10 gives these values.
+
+| Slot | Reference / datum | Rasterizer bitmap | Image | RGB |
+| --- | --- | --- | ---: | --- |
+| Base | `+0xa4 / +0xb0` | `default 2d` | 1 | white |
+| Detail | `+0xdc / +0xe8` | `default 2d` | 2 | 128, 128, 128 |
+| Multipurpose | `+0xbc / +0xc8` | `default 2d` | 1 | white |
+| Reflection | `+0x164 / +0x170` | `default cube map` | 0 | black |
+
+At `0x705dc..0x7064a` the XBE interpolates the RGB at `+0x78`
+and `+0x84` using the waveform at `+0x72` and time divided by the
+period at `+0x74`. Bit 0 at `+0x6c` synchronizes the phase. Otherwise
+the draw uses an object-seeded phase. Function 0 returns one
+(`0x173f20`). All affected shaders either select a constant endpoint
+or have identical endpoints, so their emission is independent of time
+and phase. In particular, the rocks have a nonconstant waveform but
+both endpoints are black. A custom map with two different endpoints
+and a varying wave currently returns a conversion error.
+
+H1 multiplies the resulting emission by the object colour at `+0x70`
+and independently selects diffuse object colour at `+0x4c`
+(`0x7064f..0x7068e`). In the model combiner at `0x6f4df..0x6f58f`,
+multipurpose green masks the addition of emission to the lit surface.
+Blue interpolates from white to the diffuse object colour and multiplies
+the saturated result. The null cube contributes black. The charger uses
+green from its actual `levels\a10\bitmaps\light` bitmap.
+
+`h1convert::shad::program::model_defaults` builds the instance, template
+and additional passes through the H2 definitions. The opaque lighting
+inputs are a white base, flat normal and neutral detail. H2 scene layer
+7 adds emission. Layer 2 multiplies the destination after the dynamic
+lights (`0x2c034..0x2c05b`). The native four-change-colour pass supplies
+the object vector selectors. The alert light emits fixed red, the door
+lock uses object colour A for emission and diffuse, and the signal light
+uses A for emission and B for diffuse. The waterfall emitter and rocks
+require only the white lit surface.
+
+Each level in a row below contains a separate affected `mode` tag. Slots
+are zero-based. The inventory compares the material datums of all ten
+previously converted campaign maps against the shader references in
+the matching H1 disc maps.
+
+| Levels | Render model tag | Slot | Source shader |
+| --- | --- | ---: | --- |
+| a10, d40 | `levels\a10\devices\alert_light\alert_light` | 1 | `soso light siren` |
+| a10, d40 | `levels\a10\devices\doors\door blast closed\door blast closed` | 2 | `soso obj-light lock` |
+| a10, d40 | `levels\a10\devices\doors\door blast half\door blast half` | 2 | `soso obj-light lock` |
+| a10, d40 | `levels\a10\devices\doors\door blast\door blast` | 6 | `soso obj-light lock` |
+| a10, d40 | `levels\a10\devices\doors\door jeff tube\door jeff tube` | 3 | `soso obj-light lock` |
+| a10 | `levels\a10\devices\shield charge\shield charge` | 4 | `soso obj-shield charge` |
+| d40 | `levels\a10\devices\signal light\signal light` | 0 | `soso light signal` |
+| a30 | `scenery\waterfalls\waterfall_emitter\waterfall_emitter` | 0 | `soso invisible` |
+| b30, d20 | `scenery\debris\rocks_smoldering\rocks_smoldering` | 0 | `soso rocks_smoldering` |
+| a50, d20 | `levels\a50\devices\small door\small door` | 1 | `schi door lock symbols` |
+| c10, c20, c40, d40 | `characters\sentinel\sentinel` | 1 | `spla sentinel_shield` |
+
+**Remaining.** The small door's Chicago shader has one additive stage
+with a null bitmap. Its own setup selects default 2D image 0 (black) at
+`0x67cc8..0x67cd8`. The Sentinel plasma shader has two non-null 3D
+noise inputs, bound at `0x6d557` and `0x6d5c2`. Both still reach the
+stand-in. The role audit records those two source shaders by group and
+path. Any `soso` material that reaches the stand-in fails the audit.
 
 ## Running the audit
 
@@ -95,4 +166,13 @@ all supported object roots and their rebuilt dependencies on
 
 ```sh
 H1_ISO="$PWD/disc/halo1.iso" H2_DISC="$PWD/disc/halo2.iso" H1_MAPS=all cargo test --release -p h1objects --test role_audit_disc -- --ignored --nocapture
+```
+
+The shader regressions check the synthetic combiner equations and the
+15 converted model slots on the owner's discs. Run from the integrated
+checkout with `disc/` present.
+
+```sh
+cargo test --release -p h1convert --lib model_defaults
+H1_ISO="$PWD/disc/halo1.iso" H2_DISC="$PWD/disc/halo2.iso" cargo test --release -p h1objects --test model_shaders_disc campaign_null_base_model_materials_use_their_own_shaders -- --ignored
 ```

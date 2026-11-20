@@ -914,3 +914,6 @@ fn leaf_alpha_cuts_the_bump(h1: &H1Map, tree: &h1objects::convert::Tree, leaf: &
         "{leaf}: a cut-out, not all or nothing"
     );
 }
+
+#[path = "model_shaders_disc/model_defaults.rs"]
+mod model_defaults;
