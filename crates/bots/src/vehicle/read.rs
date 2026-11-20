@@ -49,6 +49,43 @@ pub const OBJECT_LIMIT: i32 = 2048;
 
 const VEHI: GroupTag = GroupTag::from_chars(*b"vehi");
 
+pub(crate) type VehicleHeader = (DatumHandle, objects::Header);
+
+/// Nested seat and marker buffers follow the observation back to the
+/// reader. Filtered-out vehicles also return their buffers here.
+#[derive(Default)]
+pub(crate) struct SeatBuffers(Vec<Vec<Seat>>);
+
+impl SeatBuffers {
+    pub(crate) fn save(&mut self, seats: Vec<Seat>) {
+        if !seats.is_empty() {
+            self.0.push(seats);
+        }
+    }
+
+    pub(crate) fn clear_sight(&mut self, sight: &mut Sight) {
+        sight.riding = None;
+        for vehicle in sight.vehicles.drain(..) {
+            self.save(vehicle.seats);
+        }
+    }
+
+    fn take(&mut self, count: usize) -> Vec<Seat> {
+        let mut seats = self
+            .0
+            .iter()
+            .position(|s| s.len() == count)
+            .map_or_else(Vec::new, |i| self.0.swap_remove(i));
+        seats.resize_with(count, || Seat {
+            role: SeatRole::Passenger,
+            rider: None,
+            entries: Vec::new(),
+            boards: None,
+        });
+        seats
+    }
+}
+
 struct Definition {
     class: Class,
     alternate_fire: bool,
@@ -62,6 +99,7 @@ fn definition(
     def: DatumHandle,
     body: objects::Body,
     world: [Vec3; 3],
+    buffers: &mut SeatBuffers,
 ) -> R<Option<Definition>> {
     let Some(tag) = Tags.entry(m, def)? else {
         return Ok(None);
@@ -80,42 +118,35 @@ fn definition(
     } else {
         0
     };
-    let mut flags = Vec::with_capacity(count as usize);
-    for i in 0..count {
-        flags.push(m.u32(base + i * SEAT_STRIDE + SEAT_FLAGS)?);
+    let mut flags = [0; MAX_SEATS as usize];
+    let flags = &mut flags[..count as usize];
+    for (i, flag) in flags.iter_mut().enumerate() {
+        *flag = m.u32(base + i as u32 * SEAT_STRIDE + SEAT_FLAGS)?;
     }
     let mode = entry::model(m, vehi).ok().flatten();
-    let seats = roles(&flags)
-        .into_iter()
-        .enumerate()
-        .map(|(i, role)| {
-            // Seat rules at 0xc8c87 and 0xc92c0. Boarding seats target a
-            // normal seat by its signed index at +0x3e.
-            let seat = base + i as u32 * SEAT_STRIDE;
-            let flags = flags[i];
-            let boards = (flags & (1 << 11) != 0)
-                .then(|| m.u16(seat + 0x3e).ok().filter(|&n| u32::from(n) < count))
-                .flatten();
-            let eligible = flags & (1 << 16) == 0 && (flags & (1 << 11) == 0 || boards.is_some());
-            let role = if class == Class::Turret && flags & (SEAT_DRIVER | SEAT_GUNNER) != 0 {
-                SeatRole::Gunner
-            } else if class == Class::Turret {
-                SeatRole::Passenger
-            } else {
-                role
-            };
-            Seat {
-                role,
-                rider: None,
-                entries: if eligible {
-                    entry::read(m, mode, seat, body, world).unwrap_or_default()
-                } else {
-                    Vec::new()
-                },
-                boards,
-            }
-        })
-        .collect();
+    let mut seats = buffers.take(flags.len());
+    for (i, (role, seat)) in seat_roles(flags).zip(&mut seats).enumerate() {
+        // Seat rules at 0xc8c87 and 0xc92c0. Boarding seats target a
+        // normal seat by its signed index at +0x3e.
+        let address = base + i as u32 * SEAT_STRIDE;
+        let flags = flags[i];
+        seat.boards = (flags & (1 << 11) != 0)
+            .then(|| m.u16(address + 0x3e).ok().filter(|&n| u32::from(n) < count))
+            .flatten();
+        let eligible = flags & (1 << 16) == 0 && (flags & (1 << 11) == 0 || seat.boards.is_some());
+        seat.role = if class != Class::Turret {
+            role
+        } else if flags & (SEAT_DRIVER | SEAT_GUNNER) != 0 {
+            SeatRole::Gunner
+        } else {
+            SeatRole::Passenger
+        };
+        seat.rider = None;
+        if !eligible || entry::read_into(m, mode, address, body, world, &mut seat.entries).is_err()
+        {
+            seat.entries.clear();
+        }
+    }
     let alternate_fire = class == Class::Fighter && fighter_secondary(m, vehi).unwrap_or(false);
     let hull = mode.and_then(|mode| entry::hull(m, mode).ok().flatten());
     Ok(Some(Definition {
@@ -148,24 +179,24 @@ fn fighter_secondary(m: &dyn GuestMemory, vehi: u32) -> R<bool> {
 /// all, the first seat that is not a gunner's drives (a guess for a tag
 /// read wrong rather than a vehicle nobody drives).
 pub fn roles(flags: &[u32]) -> Vec<SeatRole> {
-    let mut out: Vec<SeatRole> = flags
+    seat_roles(flags).collect()
+}
+
+fn seat_roles(flags: &[u32]) -> impl Iterator<Item = SeatRole> + '_ {
+    let backup = flags
         .iter()
-        .map(|f| {
-            if f & SEAT_DRIVER != 0 {
-                SeatRole::Driver
-            } else if f & SEAT_GUNNER != 0 {
-                SeatRole::Gunner
-            } else {
-                SeatRole::Passenger
-            }
-        })
-        .collect();
-    if !out.contains(&SeatRole::Driver)
-        && let Some(s) = out.iter_mut().find(|r| **r == SeatRole::Passenger)
-    {
-        *s = SeatRole::Driver;
-    }
-    out
+        .all(|f| f & SEAT_DRIVER == 0)
+        .then(|| flags.iter().position(|f| f & SEAT_GUNNER == 0))
+        .flatten();
+    flags.iter().enumerate().map(move |(i, f)| {
+        if f & SEAT_DRIVER != 0 || backup == Some(i) {
+            SeatRole::Driver
+        } else if f & SEAT_GUNNER != 0 {
+            SeatRole::Gunner
+        } else {
+            SeatRole::Passenger
+        }
+    })
 }
 
 /// An object's own pose: position, forward, up.
@@ -240,19 +271,28 @@ pub fn unit_position(m: &dyn GuestMemory, body: objects::Body) -> R<Vec3> {
 /// game, or with no objects, nothing.
 pub fn sight(m: &dyn GuestMemory, who: Who) -> R<Sight> {
     let mut out = Sight::default();
-    let Some(array) = objects::array(m)? else {
-        return Ok(out);
-    };
-    for (h, header) in array.live(m, OBJECT_LIMIT)? {
-        if header.kind(m)? != objects::VEHICLE || header.body(m)? == 0 {
-            continue;
+    sight_into(m, who, &mut out, None, &mut SeatBuffers::default())?;
+    Ok(out)
+}
+
+fn sight_into(
+    m: &dyn GuestMemory,
+    who: Who,
+    out: &mut Sight,
+    headers: Option<&[VehicleHeader]>,
+    buffers: &mut SeatBuffers,
+) -> R<()> {
+    buffers.clear_sight(out);
+    let mut read_vehicle = |h: DatumHandle, header: objects::Header| -> R<()> {
+        if header.body(m)? == 0 {
+            return Ok(());
         }
         let body = objects::Body::at(header.body(m)?);
         if body.damage_flags(m)? & BODY_DEPLETED != 0 {
-            continue;
+            return Ok(());
         }
         let Some(def) = body.definition(m)? else {
-            continue;
+            return Ok(());
         };
         // A vehicle whose tag does not read is no use to a bot.
         let [position, forward, up] = world_pose(m, body)?;
@@ -262,42 +302,65 @@ pub fn sight(m: &dyn GuestMemory, who: Who) -> R<Sight> {
             .chain(up)
             .all(f32::is_finite)
         {
-            continue;
+            return Ok(());
         }
         let Some(Definition {
             class,
             alternate_fire,
             hull,
             seats,
-        }) = definition(m, def, body, [position, forward, up])
+        }) = definition(m, def, body, [position, forward, up], buffers)
             .ok()
             .flatten()
         else {
-            continue;
+            return Ok(());
         };
-        let on = vehicle_body(m, body.parent(m)?)?
-            .and(body.parent(m)?)
-            .map(DatumHandle::raw);
+        let read_state = || -> R<_> {
+            let parent = body.parent(m)?;
+            let on = vehicle_body(m, parent)?.and(parent).map(DatumHandle::raw);
+            Ok((on, body.health(m)?))
+        };
+        let (on, health) = match read_state() {
+            Ok(state) => state,
+            Err(fault) => {
+                buffers.save(seats);
+                return Err(fault);
+            }
+        };
         out.vehicles.push(Vehicle {
             id: h.raw(),
             class,
             position,
             forward,
             up,
-            health: body.health(m)?,
+            health,
             alternate_fire,
             hull,
             on,
             seats,
         });
+        Ok(())
+    };
+    if let Some(headers) = headers {
+        for &(h, header) in headers {
+            read_vehicle(h, header)?;
+        }
+    } else if let Some(array) = objects::array(m)? {
+        for record in array.live_iter(m, OBJECT_LIMIT)? {
+            let (h, header) = record?;
+            if header.kind(m)? == objects::VEHICLE {
+                read_vehicle(h, header)?;
+            }
+        }
     }
     if out.vehicles.is_empty() {
-        return Ok(out);
+        return Ok(());
     }
     let Some(players) = players::array(m)? else {
-        return Ok(out);
+        return Ok(());
     };
-    for (handle, p) in players.live(m, 16)? {
+    for record in players.live_iter(m, 16)? {
+        let (handle, p) = record?;
         if !p.listed(m)? {
             continue;
         }
@@ -330,23 +393,34 @@ pub fn sight(m: &dyn GuestMemory, who: Who) -> R<Sight> {
             });
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 /// [`sight`] in a multiplayer game only (as [`crate::guest::perceive_as`]
 /// gates it), and nothing on a fault: vehicles are extra, a bot that
 /// cannot read them plays on foot.
 pub fn sight_in_game(m: &dyn GuestMemory, who: Who) -> Sight {
+    let mut out = Sight::default();
+    sight_in_game_into(m, who, &mut out, None, &mut SeatBuffers::default());
+    out
+}
+
+pub(crate) fn sight_in_game_into(
+    m: &dyn GuestMemory,
+    who: Who,
+    out: &mut Sight,
+    headers: Option<&[VehicleHeader]>,
+    buffers: &mut SeatBuffers,
+) {
     let multiplayer = m
         .u32(points::GAME_GLOBALS.base)
         .ok()
         .filter(|&g| g != 0)
         .and_then(|g| m.u32(g + crate::guest::OPTIONS).ok())
         == Some(crate::guest::MODE_MULTIPLAYER);
-    if !multiplayer {
-        return Sight::default();
+    if !multiplayer || sight_into(m, who, out, headers, buffers).is_err() {
+        buffers.clear_sight(out);
     }
-    sight(m, who).unwrap_or_default()
 }
 
 #[cfg(test)]

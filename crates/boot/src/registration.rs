@@ -28,6 +28,25 @@ use crate::{
     skulls_mp, snapshot_probe, telemetry, touch_glue, ui, ui_watch, variant_ext, variant_page, xapi_glue,
 };
 
+/// The light profile requires a headless backend and the clock-only DirectSound shim.
+pub(crate) fn register_viewer_skips(
+    features: &mut feature::Registry,
+    host_light: bool,
+) -> anyhow::Result<()> {
+    if host_light {
+        features
+            .add(&feature::sim_static_light::StaticLight)
+            .map_err(anyhow::Error::msg)?;
+        features
+            .add(&feature::sim_observer::ObserverResources)
+            .map_err(anyhow::Error::msg)?;
+        features
+            .add(&feature::sim_submix::SimSubmix)
+            .map_err(anyhow::Error::msg)?;
+    }
+    Ok(())
+}
+
 /// What [`register_core`] needs: the registrations up to the touch glue.
 pub struct CoreInputs<'a> {
     pub rt: &'a Arc<Runtime>,
@@ -347,6 +366,7 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features.add(&i.pipeline).map_err(|e| anyhow::anyhow!("pipeline render: {e}"))?;
     // Stage 7a: the Rust render_views, when H2_FEATURES has
     // impl.render.views=on (off by default; docs/graphics/render-loop.md).
+    #[cfg(feature = "desktop-runtime")]
     features
         .add(&feature::render_loop::RenderLoop)
         .map_err(|e| anyhow::anyhow!("render loop: {e}"))?;

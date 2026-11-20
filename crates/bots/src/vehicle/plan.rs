@@ -117,11 +117,13 @@ pub fn take(
         {
             continue;
         }
-        let crew: Vec<_> = sight.crew(v.id).collect();
-        if crew.iter().any(|(r, _)| !me.friend(r.team)) {
+        let mut driven = false;
+        if sight.crew(v.id).any(|(r, role)| {
+            driven |= role == SeatRole::Driver;
+            !me.friend(r.team)
+        }) {
             continue;
         }
-        let driven = crew.iter().any(|(_, role)| *role == SeatRole::Driver);
         let pick = if v.enterable(SeatRole::Driver) && !driven {
             // A teammate walking to it first has it.
             let claimed = friends

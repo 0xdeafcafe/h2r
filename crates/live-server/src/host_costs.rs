@@ -4,7 +4,8 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use live_proto::hosts::{
-    self, HostBooting, HostClass, HostEnded, HostPlaying, HostReady, HostRequested, ProviderKind,
+    self, HostBooting, HostClass, HostEnded, HostLease, HostPlaying, HostReady, HostRequested,
+    HostStopped, ProviderKind,
 };
 use live_proto::sign::{EventBody, parse_time};
 use serde::{Deserialize, Serialize};
@@ -13,7 +14,11 @@ use time::{Date, OffsetDateTime};
 use crate::dispatch::Subscriber;
 use crate::store::RecordedEvent;
 
-pub const DEFAULT_BUDGET_USD_MONTH: f64 = 5.0;
+pub const DEFAULT_WORKER_BUDGET_USD: f64 = 25.0;
+
+// Both Wrangler container applications provision 3 GiB per vCPU and 12 GB disk.
+const CLOUDFLARE_GIB_PER_VCPU: f64 = 3.0;
+const CLOUDFLARE_DISK_GB: f64 = 12.0;
 
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -39,14 +44,21 @@ struct CloudflarePrices {
     usd_per_vcpu_second: f64,
     usd_per_gib_second: f64,
     usd_per_egress_gb: f64,
+    usd_per_gb_disk_second: f64,
+    usd_per_start: f64,
 }
 
 impl Default for CloudflarePrices {
     fn default() -> Self {
         Self {
+            // Cloudflare rates before included allowances, with full CPU usage.
+            // https://developers.cloudflare.com/containers/platform/pricing/
             usd_per_vcpu_second: 0.000_02,
             usd_per_gib_second: 0.000_002_5,
             usd_per_egress_gb: 0.025,
+            usd_per_gb_disk_second: 0.000_000_07,
+            // Planning allowance for each start, separate from Cloudflare's rates.
+            usd_per_start: 0.001,
         }
     }
 }
@@ -73,7 +85,7 @@ pub enum HostCostConfigError {
     PricesJson(#[from] serde_json::Error),
     #[error("LIVE_HOST_PRICES rates must be finite and non-negative")]
     PricesRange,
-    #[error("LIVE_HOST_BUDGET_USD_MONTH must be a finite non-negative number")]
+    #[error("LIVE_HOST_BUDGET_USD must be a finite non-negative number")]
     Budget,
 }
 
@@ -90,17 +102,37 @@ pub struct LeaseUsage {
     /// Final runtime from HostEnded, if recorded.
     pub ran_ms: Option<u64>,
     pub players_peak: u8,
+    #[serde(skip)]
+    max_players: u8,
+    #[serde(skip)]
+    deadline_ms: i64,
+    #[serde(skip)]
+    managed: bool,
+    #[serde(skip)]
+    stopped_ms: Option<i64>,
 }
 
 impl LeaseUsage {
-    fn elapsed_ms(&self, at_ms: i64) -> u64 {
-        if let (Some(end_ms), Some(ran_ms)) = (self.end_ms, self.ran_ms)
-            && at_ms >= end_ms
-        {
-            return ran_ms;
+    fn requested(lease: &HostLease, at_ms: i64, managed: bool) -> Self {
+        Self {
+            lease_id: lease.id.clone(),
+            provider: lease.provider.clone(),
+            class: lease.class.clone(),
+            region: lease.region.clone(),
+            requested_ms: at_ms,
+            start_ms: managed.then_some(lease.created_ms),
+            end_ms: None,
+            ran_ms: None,
+            players_peak: 0,
+            max_players: lease.max_players,
+            deadline_ms: lease.deadline_ms(),
+            managed,
+            stopped_ms: None,
         }
-        self.start_ms
-            .map_or(0, |start_ms| at_ms.max(start_ms).abs_diff(start_ms))
+    }
+
+    fn billing_end(&self) -> Option<i64> {
+        if self.managed { self.stopped_ms } else { self.end_ms }
     }
 }
 
@@ -113,26 +145,28 @@ pub struct LeaseCost {
 }
 
 /// Replay as a dispatcher subscriber or fold event bodies directly.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct HostCosts {
     prices: PriceTable,
-    budget_usd_month: f64,
+    budget_usd_month: Option<f64>,
     leases: Mutex<BTreeMap<String, LeaseUsage>>,
 }
 
-impl Default for HostCosts {
-    fn default() -> Self {
-        Self {
-            prices: PriceTable::default(),
-            budget_usd_month: DEFAULT_BUDGET_USD_MONTH,
-            leases: Mutex::default(),
-        }
-    }
-}
-
 impl HostCosts {
-    /// Pass the values of LIVE_HOST_PRICES and LIVE_HOST_BUDGET_USD_MONTH.
-    /// Missing values and omitted JSON fields use the defaults.
+    /// Use the deployment's cap by default. The legacy variable remains an
+    /// alias so a deployment with an existing cap keeps it on upgrade.
+    pub fn from_env(
+        env: &dyn Fn(&str) -> Option<String>,
+        default_budget_usd: Option<f64>,
+    ) -> Result<Self, HostCostConfigError> {
+        let budget = env("LIVE_HOST_BUDGET_USD").or_else(|| env("LIVE_HOST_BUDGET_USD_MONTH"));
+        let mut costs = Self::configured(env("LIVE_HOST_PRICES").as_deref(), budget.as_deref())?;
+        costs.budget_usd_month = costs.budget_usd_month.or(default_budget_usd);
+        Ok(costs)
+    }
+
+    /// Pass the values of LIVE_HOST_PRICES and LIVE_HOST_BUDGET_USD.
+    /// Omitted prices use the defaults and a missing cap is unlimited.
     pub fn configured(
         prices_json: Option<&str>,
         budget_usd_month: Option<&str>,
@@ -145,6 +179,8 @@ impl HostCosts {
                 prices.cloudflare.usd_per_vcpu_second,
                 prices.cloudflare.usd_per_gib_second,
                 prices.cloudflare.usd_per_egress_gb,
+                prices.cloudflare.usd_per_gb_disk_second,
+                prices.cloudflare.usd_per_start,
                 prices.fly.small_usd_per_second,
                 prices.fly.large_usd_per_second,
             ];
@@ -154,12 +190,14 @@ impl HostCosts {
             costs.prices = prices;
         }
         if let Some(value) = budget_usd_month {
-            costs.budget_usd_month = value
-                .trim()
-                .parse()
-                .ok()
-                .filter(|&value| valid_rate(value))
-                .ok_or(HostCostConfigError::Budget)?;
+            costs.budget_usd_month = Some(
+                value
+                    .trim()
+                    .parse()
+                    .ok()
+                    .filter(|&value| valid_rate(value))
+                    .ok_or(HostCostConfigError::Budget)?,
+            );
         }
         Ok(costs)
     }
@@ -177,17 +215,11 @@ impl HostCosts {
         let mut leases = self.leases.lock().unwrap();
         match event.kind.as_str() {
             hosts::HOST_REQUESTED => {
-                if let Ok(HostRequested { lease }) = HostRequested::deserialize(&event.data) {
-                    leases.entry(lease.id.clone()).or_insert_with(|| LeaseUsage {
-                        lease_id: lease.id,
-                        provider: lease.provider,
-                        class: lease.class,
-                        region: lease.region,
-                        requested_ms: at_ms,
-                        start_ms: None,
-                        end_ms: None,
-                        ran_ms: None,
-                        players_peak: 0,
+                if let Ok(HostRequested { lease, provider_ref }) =
+                    HostRequested::deserialize(&event.data)
+                {
+                    leases.entry(lease.id.clone()).or_insert_with(|| {
+                        LeaseUsage::requested(&lease, at_ms, provider_ref.is_some())
                     });
                 }
             }
@@ -217,12 +249,20 @@ impl HostCosts {
                 if let Ok(data) = HostEnded::deserialize(&event.data)
                     && let Some(lease) = active_lease(&mut leases, &data.lease_id)
                 {
-                    if data.ran_ms > 0 || lease.start_ms.is_some() {
+                    if !lease.managed && (data.ran_ms > 0 || lease.start_ms.is_some()) {
                         lease.start_ms = Some(at_ms.saturating_sub_unsigned(data.ran_ms));
                     }
                     lease.end_ms = Some(at_ms);
                     lease.ran_ms = Some(data.ran_ms);
                     lease.players_peak = lease.players_peak.max(data.players_peak);
+                }
+            }
+            hosts::HOST_STOPPED => {
+                if let Ok(data) = HostStopped::deserialize(&event.data)
+                    && let Some(lease) = leases.get_mut(&data.lease_id)
+                    && lease.managed
+                {
+                    lease.stopped_ms.get_or_insert(at_ms);
                 }
             }
             _ => {}
@@ -233,64 +273,126 @@ impl HostCosts {
         self.leases.lock().unwrap().get(lease_id).cloned()
     }
 
+    pub(crate) fn stop_confirmed(&self, lease_id: &str) -> Option<bool> {
+        let leases = self.leases.lock().unwrap();
+        let lease = leases.get(lease_id)?;
+        lease.managed.then_some(lease.stopped_ms.is_some())
+    }
+
     /// Price a lease through now_ms, in Unix milliseconds.
     pub fn lease_cost(&self, lease_id: &str, now_ms: i64) -> Option<LeaseCost> {
         let leases = self.leases.lock().unwrap();
         let lease = leases.get(lease_id)?;
-        Some(self.estimate(lease, 0, lease.elapsed_ms(now_ms)))
+        Some(self.estimate(lease, i64::MIN, now_ms, false))
     }
 
-    /// Estimated USD accrued in the current UTC month, including running
-    /// hosts and only the current month's share of a spanning lease.
+    /// Accrued USD in the current UTC month, excluding unspent reservations.
     pub fn month_to_date(&self, now_ms: i64) -> f64 {
-        let Some(month_start_ms) = utc_month_start_ms(now_ms) else {
+        let Some((month_start, _)) = utc_month(now_ms) else {
             return 0.0;
         };
         self.leases
             .lock()
             .unwrap()
             .values()
-            .map(|lease| {
-                let from_ms = lease.elapsed_ms(month_start_ms);
-                let to_ms = lease.elapsed_ms(now_ms);
-                self.estimate(lease, from_ms, to_ms).cost_usd
-            })
+            .map(|lease| self.estimate(lease, month_start, now_ms, false).cost_usd)
             .sum()
     }
 
-    /// The configured monthly spending limit in USD.
-    pub fn budget_usd_month(&self) -> f64 {
+    pub fn budget_usd_month(&self) -> Option<f64> {
         self.budget_usd_month
     }
 
-    /// The guard trips as soon as estimated spending reaches the limit.
-    pub fn over_budget(&self, now_ms: i64) -> bool {
-        self.month_to_date(now_ms) >= self.budget_usd_month
+    /// Called under the host writer lock, before appending HostRequested.
+    /// In-flight starts and running hosts already claim their full duration.
+    pub(crate) fn can_start(&self, lease: &HostLease) -> bool {
+        let Some(cap) = self.budget_usd_month else {
+            return true;
+        };
+        let now = lease.created_ms;
+        let Some((mut from, mut until)) = utc_month(now) else {
+            return false;
+        };
+        let leases = self.leases.lock().unwrap();
+        // Fail closed while billable compute could be running past its limit.
+        if cap == 0.0
+            || leases.values().any(|lease| {
+                lease.managed && lease.stopped_ms.is_none() && lease.deadline_ms <= now
+            })
+        {
+            return false;
+        }
+
+        // Require room for a full match in the admission month, even when
+        // some of the runtime will be charged to the next month.
+        let candidate = LeaseUsage::requested(lease, now, false);
+        let mut additional = self.estimate(&candidate, now, candidate.deadline_ms, true).cost_usd;
+        loop {
+            let committed: f64 = leases
+                .values()
+                .map(|lease| self.estimate(lease, from, until, true).cost_usd)
+                .sum();
+            let projected = committed + additional;
+            if !projected.is_finite() || projected > cap {
+                return false;
+            }
+            if candidate.deadline_ms <= until {
+                return true;
+            }
+            let Some(next) = utc_month(until) else {
+                return false;
+            };
+            (from, until) = next;
+            additional = self.estimate(&candidate, from, until, true).cost_usd;
+        }
     }
 
-    fn estimate(&self, lease: &LeaseUsage, from_ms: u64, to_ms: u64) -> LeaseCost {
-        let ran_ms = to_ms - from_ms;
-        if ran_ms == 0 {
+    fn estimate(&self, lease: &LeaseUsage, from_ms: i64, to_ms: i64, forecast: bool) -> LeaseCost {
+        let reserving = forecast && lease.billing_end().is_none();
+        let start = match lease.start_ms {
+            Some(start) => start,
+            None if reserving => lease.requested_ms,
+            None => return LeaseCost::default(),
+        };
+        let end = lease
+            .billing_end()
+            .unwrap_or(if reserving { lease.deadline_ms } else { to_ms });
+        let elapsed = |at: i64| at.min(end).max(start).abs_diff(start);
+        let from = elapsed(from_ms);
+        let to = elapsed(to_ms);
+        let ran_ms = to - from;
+        // The flat fee belongs to the UTC month containing the start,
+        // including a start that has yet to accrue its first tick.
+        let charge_start = from_ms <= start && (start < to_ms || !forecast && start == to_ms);
+        if ran_ms == 0 && !charge_start {
             return LeaseCost::default();
         }
-        let player_minutes = ran_ms as f64 / 60_000.0 * f64::from(lease.players_peak);
+        let players = if reserving {
+            lease.max_players
+        } else {
+            lease.players_peak
+        };
+        let player_minutes = ran_ms as f64 / 60_000.0 * f64::from(players);
         let estimated_egress_gb = player_minutes * self.prices.egress_gb_per_player_minute;
         let cost_usd = match lease.provider {
             ProviderKind::Local => 0.0,
             ProviderKind::Cloudflare => {
                 // Round cumulative runtime so a tick spanning two months
                 // is counted once, in the month when it started.
-                let ticks = to_ms.div_ceil(10) - from_ms.div_ceil(10);
+                let ticks = to.div_ceil(10) - from.div_ceil(10);
                 let seconds = ticks as f64 / 100.0;
                 let rates = &self.prices.cloudflare;
-                let cpu = seconds * f64::from(lease.class.vcpu()) * rates.usd_per_vcpu_second;
-                let memory = seconds * f64::from(lease.class.gib()) * rates.usd_per_gib_second;
+                let vcpu_seconds = seconds * f64::from(lease.class.vcpu());
+                let cpu = vcpu_seconds * rates.usd_per_vcpu_second;
+                let memory = vcpu_seconds * CLOUDFLARE_GIB_PER_VCPU * rates.usd_per_gib_second;
+                let disk = seconds * CLOUDFLARE_DISK_GB * rates.usd_per_gb_disk_second;
                 let egress = if rates.usd_per_egress_gb > 0.0 {
                     estimated_egress_gb * rates.usd_per_egress_gb
                 } else {
                     0.0
                 };
-                cpu + memory + egress
+                let start_fee = if charge_start { rates.usd_per_start } else { 0.0 };
+                cpu + memory + disk + egress + start_fee
             }
             ProviderKind::Fly => {
                 let rate = match lease.class {
@@ -329,16 +431,19 @@ fn valid_rate(value: f64) -> bool {
     value.is_finite() && value >= 0.0
 }
 
-fn utc_month_start_ms(now_ms: i64) -> Option<i64> {
+fn utc_month(now_ms: i64) -> Option<(i64, i64)> {
     let now = OffsetDateTime::from_unix_timestamp_nanos(i128::from(now_ms) * 1_000_000).ok()?;
-    let month_start = Date::from_calendar_date(now.year(), now.month(), 1).ok()?;
-    Some(month_start.midnight().assume_utc().unix_timestamp() * 1_000)
+    let start = Date::from_calendar_date(now.year(), now.month(), 1).ok()?;
+    let year = now.year() + i32::from(now.month() == time::Month::December);
+    let end = Date::from_calendar_date(year, now.month().next(), 1).ok()?;
+    let unix_ms = |date: Date| date.midnight().assume_utc().unix_timestamp() * 1_000;
+    Some((unix_ms(start), unix_ms(end)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use live_proto::hosts::{DEFAULT_IDLE_TIMEOUT_S, DEFAULT_MAX_MATCH_S, HostLease, Transport};
+    use live_proto::hosts::{DEFAULT_IDLE_TIMEOUT_S, DEFAULT_MAX_MATCH_S, Transport};
     use live_proto::sign::format_time;
     use serde_json::{Value, json};
 
@@ -462,14 +567,17 @@ mod tests {
         let settled = costs.lease_cost("match", FEB + 2_000).unwrap();
         assert_eq!(settled.ran_ms, 640);
         close(settled.estimated_egress_gb, 640.0 / 60_000.0 * 5.0 * 0.0005);
-        close(settled.cost_usd, 0.64 * 0.000_025 + settled.estimated_egress_gb * 0.025);
+        close(
+            settled.cost_usd,
+            0.64 * 0.000_028_34 + settled.estimated_egress_gb * 0.025 + 0.001,
+        );
     }
 
     #[test]
     fn prices_the_documented_ten_minute_matches() {
         for (provider, class, players, expected) in [
-            (ProviderKind::Cloudflare, HostClass::Small, 2, 0.01525),
-            (ProviderKind::Cloudflare, HostClass::Large, 16, 0.032),
+            (ProviderKind::Cloudflare, HostClass::Small, 2, 0.018254),
+            (ProviderKind::Cloudflare, HostClass::Large, 16, 0.036504),
             (ProviderKind::Fly, HostClass::Small, 2, 0.046 / 6.0),
             (ProviderKind::Fly, HostClass::Large, 16, 0.092 / 6.0),
             (ProviderKind::Local, HostClass::Large, 16, 0.0),
@@ -504,7 +612,10 @@ mod tests {
         }
         close(costs.lease_cost("playing", now).unwrap().estimated_egress_gb, 0.001);
         assert_eq!(costs.lease_cost("requested", now), Some(LeaseCost::default()));
-        close(costs.month_to_date(now), 3.0 * 60.0 * 0.000_025 + 0.001 * 0.025);
+        close(
+            costs.month_to_date(now),
+            3.0 * (60.0 * 0.000_028_34 + 0.001) + 0.001 * 0.025,
+        );
     }
 
     #[test]
@@ -545,7 +656,7 @@ mod tests {
     #[test]
     fn charges_each_cloudflare_tick_once_across_midnight() {
         let costs = HostCosts::configured(
-            Some(r#"{"cloudflare":{"usd_per_vcpu_second":1,"usd_per_gib_second":0}}"#),
+            Some(r#"{"cloudflare":{"usd_per_vcpu_second":1,"usd_per_gib_second":0,"usd_per_gb_disk_second":0,"usd_per_start":0}}"#),
             None,
         )
         .unwrap();
@@ -579,40 +690,106 @@ mod tests {
         assert_eq!(costs.month_to_date(FEB + 61_000), 0.0);
     }
 
-    #[test]
-    fn budget_trips_at_the_limit_including_running_spend() {
-        let costs = HostCosts::configured(
-            Some(r#"{"fly":{"small_usd_per_second":1}}"#),
-            None,
+    fn budget_fixture() -> HostCosts {
+        HostCosts::configured(
+            Some(r#"{"cloudflare":{"usd_per_vcpu_second":1,"usd_per_gib_second":0,"usd_per_gb_disk_second":0,"usd_per_egress_gb":0,"usd_per_start":1}}"#),
+            Some("8"),
         )
-        .unwrap();
-        assert_eq!(costs.budget_usd_month(), 5.0);
-        costs.fold(&request("ended", ProviderKind::Fly, HostClass::Small, FEB));
-        costs.fold(&end("ended", 2_000, 2, FEB + 2_000));
-        costs.fold(&request("running", ProviderKind::Fly, HostClass::Small, FEB + 2_000));
-        costs.fold(&boot("running", FEB + 2_000));
+        .unwrap()
+    }
 
-        assert!(!costs.over_budget(FEB + 4_999));
-        assert_eq!(costs.month_to_date(FEB + 5_000), 5.0);
-        assert!(costs.over_budget(FEB + 5_000));
-        assert!(costs.over_budget(FEB + 5_001));
-        assert!(HostCosts::configured(None, Some("0")).unwrap().over_budget(FEB));
+    fn managed_request(id: &str, start_ms: i64, max_match_s: u32) -> EventBody {
+        let mut event = request(id, ProviderKind::Cloudflare, HostClass::Small, start_ms);
+        event.data["provider_ref"] = json!(format!("room/{id}"));
+        event.data["lease"]["max_match_s"] = json!(max_match_s);
+        event
+    }
+
+    fn candidate(now: i64, max_match_s: u32) -> HostLease {
+        HostRequested::deserialize(&managed_request("next", now, max_match_s).data)
+            .unwrap()
+            .lease
+    }
+
+    #[test]
+    fn reserves_pending_cloudflare_starts_and_settles_once_the_room_stops() {
+        let costs = budget_fixture();
+        assert!(costs.can_start(&candidate(FEB, 4)));
+        assert!(!costs.can_start(&candidate(FEB, 8)));
+        costs.fold(&managed_request("match", FEB, 4));
+        close(costs.month_to_date(FEB), 1.0);
+        assert!(!costs.can_start(&candidate(FEB, 4)));
+
+        // A game can report that it ended while its container is still up.
+        costs.fold(&end("match", 100, 2, FEB + 1_000));
+        assert_eq!(costs.stop_confirmed("match"), Some(false));
+        assert!(!costs.can_start(&candidate(FEB + 1_000, 4)));
+        close(costs.month_to_date(FEB + 2_000), 3.0);
+        assert!(!costs.can_start(&candidate(FEB + 4_000, 1)));
+
+        for at in [FEB + 2_000, FEB + 3_000] {
+            costs.fold(&event(hosts::HOST_STOPPED, json!({ "lease_id": "match" }), at));
+        }
+        assert_eq!(costs.stop_confirmed("match"), Some(true));
+        close(costs.month_to_date(FEB + 5_000), 3.0);
+        assert!(costs.can_start(&candidate(FEB + 5_000, 4)));
+        assert!(!costs.can_start(&candidate(FEB + 5_000, 5)));
+    }
+
+    #[test]
+    fn checks_next_month_reservations_and_charges_the_start_fee_once() {
+        let costs = budget_fixture();
+        costs.fold(&managed_request("match", FEB - 1_000, 7));
+        close(costs.month_to_date(FEB - 1), 2.0);
+        // January can cover the reservation (2 + 5). February cannot (6 + 3).
+        assert!(!costs.can_start(&candidate(FEB - 1_000, 4)));
+        close(costs.month_to_date(FEB), 0.0);
+        close(costs.month_to_date(FEB + 1_000), 1.0);
+        costs.fold(&event(
+            hosts::HOST_STOPPED,
+            json!({ "lease_id": "match" }),
+            FEB + 1_000,
+        ));
+        close(costs.month_to_date(FEB + MINUTE), 1.0);
+        assert!(costs.can_start(&candidate(FEB + MINUTE, 4)));
+    }
+
+    #[test]
+    fn environment_defaults_and_legacy_cap() {
+        let absent = |_: &str| None;
+        let worker = Some(DEFAULT_WORKER_BUDGET_USD);
+        let budget = |env: &dyn Fn(&str) -> Option<String>, default| {
+            HostCosts::from_env(env, default).unwrap().budget_usd_month()
+        };
+        assert_eq!(budget(&absent, worker), Some(25.0));
+        assert_eq!(budget(&absent, None), None);
+        let legacy = |key: &str| (key == "LIVE_HOST_BUDGET_USD_MONTH").then(|| "3".into());
+        assert_eq!(budget(&legacy, worker), Some(3.0));
+        let override_cap = |key: &str| {
+            if key == "LIVE_HOST_BUDGET_USD" {
+                Some("0".into())
+            } else {
+                legacy(key)
+            }
+        };
+        let disabled = HostCosts::from_env(&override_cap, worker).unwrap();
+        assert!(!disabled.can_start(&candidate(FEB, 4)));
     }
 
     #[test]
     fn partial_price_overrides_keep_other_defaults() {
         let costs = HostCosts::configured(
             Some(r#"{"egress_gb_per_player_minute":0.001,"cloudflare":{"usd_per_egress_gb":0.1}}"#),
-            Some(" 0.0017 "),
+            Some(" 0.0029 "),
         )
         .unwrap();
-        assert_eq!(costs.budget_usd_month(), 0.0017);
+        assert_eq!(costs.budget_usd_month(), Some(0.0029));
         costs.fold(&request("match", ProviderKind::Cloudflare, HostClass::Small, FEB));
         costs.fold(&end("match", 60_000, 3, FEB + MINUTE));
         let cost = costs.lease_cost("match", FEB + MINUTE).unwrap();
         close(cost.estimated_egress_gb, 0.003);
-        close(cost.cost_usd, 0.0018);
-        assert!(costs.over_budget(FEB + MINUTE));
+        close(cost.cost_usd, 0.0030004);
+        assert!(!costs.can_start(&candidate(FEB + MINUTE, 1)));
     }
 
     #[test]

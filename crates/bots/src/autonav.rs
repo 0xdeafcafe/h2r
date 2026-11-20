@@ -647,6 +647,12 @@ pub fn loaded() -> String {
     LOADED.lock().unwrap_or_else(|e| e.into_inner()).name.clone()
 }
 
+/// Clone the loaded name only when the caller has a different name.
+pub(crate) fn loaded_change(previous: &str) -> Option<String> {
+    let loaded = LOADED.lock().unwrap_or_else(|e| e.into_inner());
+    (loaded.name != previous).then(|| loaded.name.clone())
+}
+
 /// Offers `map`'s data to the bots ([`cache::set_current`]); see
 /// [`Loaded::accept`]. Returns whether it went in.
 pub fn offer(map: &str, data: MapData, built: bool) -> bool {

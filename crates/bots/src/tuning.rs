@@ -98,6 +98,26 @@ pub fn aim_model() -> AimModel {
         .unwrap_or_else(default_aim_model)
 }
 
+/// Intervals for expensive work, in game ticks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorkRates {
+    pub foot_plan_ticks: u32,
+    pub vehicle_plan_ticks: u32,
+    pub vehicle_lookahead_ticks: u32,
+    pub player_los_ticks: u32,
+}
+
+impl Default for WorkRates {
+    fn default() -> Self {
+        Self {
+            foot_plan_ticks: 6,
+            vehicle_plan_ticks: 8,
+            vehicle_lookahead_ticks: 3,
+            player_los_ticks: 3,
+        }
+    }
+}
+
 /// What a bot is tuned by. `None` keeps the built-in value.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Tuning {
@@ -129,6 +149,7 @@ pub struct Tuning {
     pub phantom_ping_ms: Option<f32>,
     pub phantom_jitter_ms: Option<f32>,
     pub aim_model: Option<AimModel>,
+    pub work: WorkRates,
 }
 
 impl Tuning {

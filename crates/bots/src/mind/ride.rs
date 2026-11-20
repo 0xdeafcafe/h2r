@@ -65,7 +65,11 @@ impl Mind {
         if chosen.is_none() {
             self.vehicles.lock.reset();
         }
-        let riding = self.vehicles.sight.riding?;
+        let Some(riding) = self.vehicles.sight.riding else {
+            self.vehicles.route_plan.idle();
+            self.vehicles.route_refresh = false;
+            return None;
+        };
         // This pad is the whole pad and returns before the glitch gate.
         self.drop_glitches();
         let sight = &self.vehicles.sight;
@@ -74,8 +78,7 @@ impl Mind {
             // Its seat is in a vehicle that did not read: sit still.
             return Some(pad);
         };
-        let root = sight.root(part).clone();
-        let part = part.clone();
+        let root = sight.root(part);
         let speed = self.vehicles.speed(root.id);
         let driver = riding.role == SeatRole::Driver;
         let wheels = Wheels::of(self.skill);
@@ -96,6 +99,8 @@ impl Mind {
         };
         // Nothing of walking carries on in a vehicle.
         self.follower = None;
+        self.foot_plan.idle();
+        self.foot_refresh = false;
         self.take = None;
         self.stuck.reset();
         self.moves.calm();
@@ -104,7 +109,24 @@ impl Mind {
 
         let reacted = chosen.filter(|&(_, ready)| reached(p.tick, ready));
         if driver && root.class == Class::Fighter {
-            return Some(self.fly(p, map, me, &root, reacted, goal, dt));
+            let (at, forward, health, alternate_fire) = (
+                root.position,
+                root.forward,
+                root.health,
+                root.alternate_fire,
+            );
+            return Some(self.fly(
+                p,
+                map,
+                me,
+                at,
+                forward,
+                health,
+                alternate_fire,
+                reacted,
+                goal,
+                dt,
+            ));
         }
         let gunner = riding.role == SeatRole::Gunner;
         let stationary = root.class == Class::Turret;
@@ -177,10 +199,16 @@ impl Mind {
 
         // Where the driver goes: the objective, the fight, where the enemy
         // was, else somewhere to roam.
+        let (root_id, position, health, part_position) =
+            (root.id, root.position, root.health, part.position);
         let mut there = matches!(goal, Some(Goal::Carry(_) | Goal::Keep));
         let mut stuck = false;
         let mut throttle = 0.0;
-        if driver {
+        if driver
+            && self.vehicles.leaving.is_none()
+            && health >= drive::LEAVE_HEALTH
+            && self.vehicles.flipped < drive::FLIPPED_TICKS
+        {
             let dest = match goal {
                 Some(Goal::Go(at) | Goal::Hunt(_, at) | Goal::Escort(at) | Goal::Hold(at, _)) => {
                     Some(at)
@@ -190,7 +218,7 @@ impl Mind {
             .or(chosen.map(|(o, _)| o.position))
             .or(self.last_seen.map(|(_, at, _)| at));
             if let Some(Goal::Go(at)) = goal {
-                there |= dist_xy(root.position, at) < drive::ON_FOOT;
+                there |= dist_xy(position, at) < drive::ON_FOOT;
             }
             let dest = match dest {
                 Some(d) => Some(d),
@@ -198,66 +226,89 @@ impl Mind {
                     if self.goal.is_none()
                         || self.vehicles.route.as_ref().is_none_or(drive::Route::done)
                     {
-                        self.goal = self.roam_goal(root.position, tick, map, &p.pickups);
-                        self.vehicles.route = None;
+                        self.goal = self.roam_goal(position, tick, map, &p.pickups);
+                        self.vehicles.recycle_route();
                     }
                     self.goal
                 }
             };
-            if go.is_none()
+            if !there
+                && go.is_none()
                 && let Some(dest) = dest
             {
-                let stale = self
-                    .vehicles
-                    .route
-                    .as_ref()
-                    .is_none_or(|r| len(sub(r.goal, dest)) > ROUTE_STALE);
-                if stale {
-                    self.vehicles.route = match map {
-                        Some(m) => self
-                            .vehicles
-                            .paths
-                            .vehicle_path(
-                                m,
-                                root.id,
-                                root.position,
-                                dest,
-                                spec.half_width,
-                                spec.height,
-                            )
-                            .map(|path| drive::Route::new(path, dest)),
-                        None => Some(drive::Route::straight(dest)),
+                let needs_route = self.vehicles.route_blocked
+                    || self
+                        .vehicles
+                        .route
+                        .as_ref()
+                        .is_none_or(|r| len(sub(r.goal, dest)) > ROUTE_STALE);
+                if (needs_route || self.vehicles.route_refresh)
+                    && self.vehicles.route_plan.ready(
+                        tick,
+                        self.slot,
+                        self.work.vehicle_plan_ticks,
+                        needs_route,
+                    )
+                {
+                    self.vehicles.recycle_route();
+                    self.vehicles.route_refresh = false;
+                    let points = &mut self.vehicles.route_points;
+                    let found = if let Some(map) = map {
+                        self.vehicles.paths.vehicle_path_into(
+                            map,
+                            root_id,
+                            position,
+                            dest,
+                            spec.half_width,
+                            spec.height,
+                            points,
+                        )
+                    } else {
+                        points.clear();
+                        points.push(dest);
+                        true
                     };
-                    if self.vehicles.route.is_none() {
+                    if found {
+                        self.vehicles.route = Some(drive::Route::new(std::mem::take(points), dest));
+                    } else {
                         there |= matches!(goal, Some(Goal::Go(_)));
                         if chosen.is_none() && goal.is_none() {
                             self.goal = None;
                         }
                     }
+                } else if !self.vehicles.route_refresh {
+                    self.vehicles.route_plan.idle();
                 }
                 let carrot = self.vehicles.route.as_mut().and_then(|r| match map {
-                    Some(m) => {
-                        r.carrot_clear(root.position, |to| drive::clear(m, spec, root.position, to))
-                    }
-                    None => r.carrot(root.position),
+                    Some(m) => r.steer(
+                        m,
+                        spec,
+                        position,
+                        speed,
+                        tick,
+                        self.slot,
+                        self.work.vehicle_lookahead_ticks,
+                    ),
+                    None => r.carrot(position),
                 });
-                match carrot {
-                    Some(c) => {
-                        let to = sub(c, root.position);
-                        let f = (to[0] * to[0] + to[1] * to[1]).sqrt().max(1e-6);
-                        go = Some([to[0] / f, to[1] / f]);
-                        if look.is_none() {
-                            look = Some([c[0], c[1], eye[2]]);
-                        }
+                if let Some(c) = carrot {
+                    self.vehicles.route_blocked = false;
+                    let to = sub(c, position);
+                    let f = (to[0] * to[0] + to[1] * to[1]).sqrt().max(1e-6);
+                    go = Some([to[0] / f, to[1] / f]);
+                    look = Some([c[0], c[1], eye[2]]);
+                } else if self.vehicles.route.as_ref().is_some_and(|r| !r.done()) {
+                    if !self.vehicles.route_blocked {
+                        self.vehicles.paths.discard_corridor();
                     }
-                    None => {
-                        if self.vehicles.route.as_ref().is_some_and(|r| !r.done()) {
-                            self.vehicles.paths.discard_corridor();
-                        }
-                        // There: a roam goal is done; anything else, park.
-                        if self.last_seen.is_none() && goal.is_none() {
-                            self.goal = None;
-                        }
+                    self.vehicles.route_blocked = true;
+                } else {
+                    self.vehicles.route_blocked = false;
+                    if self.last_seen.is_none()
+                        && goal.is_none()
+                        && self.vehicles.route.as_ref().is_some_and(drive::Route::done)
+                    {
+                        self.goal = None;
                     }
                 }
             }
@@ -265,17 +316,19 @@ impl Mind {
                 let off = wrap(d[1].atan2(d[0]) - aim_at.0);
                 throttle = drive::throttle(off);
             }
-            let trying = throttle > 0.3 || self.vehicles.route.as_ref().is_some_and(|r| !r.done());
+            let trying = throttle > 0.3
+                || self.vehicles.route_blocked
+                || self.vehicles.route.as_ref().is_some_and(|r| !r.done());
             match self.vehicles.unstick.step(tick, speed, trying) {
                 drive::Unstuck::Drive => {}
                 drive::Unstuck::Reverse => {
                     // Back up the way it came: the stick straight back.
                     let back = [
-                        root.position[0] - facing[0],
-                        root.position[1] - facing[1],
-                        root.position[2],
+                        position[0] - facing[0],
+                        position[1] - facing[1],
+                        position[2],
                     ];
-                    if map.is_none_or(|m| drive::clear(m, spec, root.position, back)) {
+                    if map.is_none_or(|m| drive::clear(m, spec, position, back)) {
                         go = Some([-facing[0], -facing[1]]);
                         throttle = 1.0;
                     } else {
@@ -295,7 +348,7 @@ impl Mind {
         // Getting out.
         if self.vehicles.leaving.is_none() {
             self.vehicles.leaving = drive::leave(&drive::Ride {
-                health: root.health,
+                health,
                 flipped: self.vehicles.flipped,
                 driverless: if stationary {
                     0
@@ -308,7 +361,7 @@ impl Mind {
             });
             if self.vehicles.leaving.is_none()
                 && gunner
-                && plan::flanked(part.position, me.aim, seen.iter().map(|o| o.position))
+                && plan::flanked(part_position, me.aim, seen.iter().map(|o| o.position))
             {
                 self.vehicles.leaving = Some(drive::Leave::Flanked);
             }
@@ -348,12 +401,14 @@ impl Mind {
         p: &Perception,
         map: Option<&MapData>,
         me: &Me,
-        root: &crate::vehicle::Vehicle,
+        at: Vec3,
+        forward: Vec3,
+        health: f32,
+        alternate_fire: bool,
         target: Option<(Seen, u32)>,
         goal: Option<Goal>,
         dt: u32,
     ) -> HostPadState {
-        let at = root.position;
         let nearby_floor = map.and_then(|m| flight::floor(m, at));
         let objective = match goal {
             Some(Goal::Go(pos) | Goal::Carry(pos)) => Some(pos),
@@ -361,15 +416,15 @@ impl Mind {
         };
         let ground_goal = objective.filter(|pos| dist_xy(at, *pos) < 8.0);
         let emergency =
-            root.health < drive::LEAVE_HEALTH || self.vehicles.flipped >= drive::FLIPPED_TICKS;
+            health < drive::LEAVE_HEALTH || self.vehicles.flipped >= drive::FLIPPED_TICKS;
         let target = target.map(|(o, _)| up(o.position, CHEST));
         let cruise = target.or(self.last_seen.map(|(_, pos, _)| pos));
         if cruise.is_none() && self.goal.is_none_or(|g| dist_xy(g, at) < 4.0) {
             self.goal = self.roam_goal(at, p.tick, map, &p.pickups);
         }
         let default_goal = [
-            at[0] + root.forward[0] * 12.0,
-            at[1] + root.forward[1] * 12.0,
+            at[0] + forward[0] * 12.0,
+            at[1] + forward[1] * 12.0,
             nearby_floor.unwrap_or(at[2] - 4.5),
         ];
         let destination = ground_goal
@@ -378,24 +433,25 @@ impl Mind {
             .or(cruise)
             .or(self.goal)
             .unwrap_or(default_goal);
-        let pilot = self.vehicles.flight.step(
+        let pilot = self.vehicles.flight.step_with_floor(
             &flight::FlightIn {
                 tick: p.tick,
                 at,
                 aim: me.aim,
-                forward: root.forward,
+                forward,
                 destination,
                 target,
-                health: root.health,
-                has_bomb: root.alternate_fire,
+                health,
+                has_bomb: alternate_fire,
                 land: emergency || ground_goal.is_some(),
             },
             map,
+            nearby_floor,
         );
         let mut pad = HostPadState::default();
         // Damage may force a bailout even over the void. Routine
         // dismounts wait until close to the floor.
-        if pilot.landed || emergency && (root.health < 0.08 || nearby_floor.is_none()) {
+        if pilot.landed || emergency && (health < 0.08 || nearby_floor.is_none()) {
             self.vehicles.leaving.get_or_insert(if emergency {
                 drive::Leave::Wrecked
             } else {
@@ -436,6 +492,7 @@ impl Mind {
         known: Option<Vec3>,
         calm: bool,
         goal: Option<Goal>,
+        friends: &mut Vec<Vec3>,
     ) -> Option<u32> {
         let tick = p.tick;
         let carrying = matches!(goal, Some(Goal::Carry(_) | Goal::Keep));
@@ -502,20 +559,24 @@ impl Mind {
                     }
                     _ => false,
                 };
-                if !calm || matches!(self.kit, Kit::Seek(_)) || !far_goal {
+                if mem.sight.vehicles.is_empty()
+                    || !calm
+                    || matches!(self.kit, Kit::Seek(_))
+                    || !far_goal
+                {
                     return None;
                 }
-                let friends: Vec<Vec3> = p
-                    .others
-                    .iter()
-                    .filter(|o| p.teams && o.team == me.team)
-                    .filter(|o| mem.sight.ridden_by(o.id).is_none())
-                    .map(|o| o.position)
-                    .collect();
+                friends.extend(
+                    p.others
+                        .iter()
+                        .filter(|o| p.teams && o.team == me.team)
+                        .filter(|o| mem.sight.ridden_by(o.id).is_none())
+                        .map(|o| o.position),
+                );
                 // A mounted gun is taken when it covers somewhere contested.
                 let mut wheels = wheels;
                 wheels.gunner = false;
-                plan::take(&foot, &mem.sight, &friends, &wheels, speed, shunned)
+                plan::take(&foot, &mem.sight, friends, &wheels, speed, shunned)
             })?;
         self.vehicles.going = Some(Going {
             pick,
@@ -542,18 +603,18 @@ impl Mind {
         let Some(g) = self.vehicles.going else {
             return (None, None);
         };
-        let Some(part) = self.vehicles.sight.get(g.pick.vehicle).cloned() else {
+        let Some(part) = self.vehicles.sight.get(g.pick.vehicle) else {
             self.vehicles.going = None;
             return (None, None);
         };
-        let selected = plan::approach(&part, g.pick, at, g.side, map)
-            .or_else(|| plan::approach(&part, g.pick, at, 1, map));
+        let selected = plan::approach(part, g.pick, at, g.side, map)
+            .or_else(|| plan::approach(part, g.pick, at, 1, map));
         let Some((point, entry)) = selected else {
             self.vehicles.going = None;
             self.vehicles.shun(g.pick.root, tick);
             return (None, None);
         };
-        if dist_xy(at, point) < plan::ENTER_RANGE && plan::in_entry(&part, entry, at) {
+        if dist_xy(at, point) < plan::ENTER_RANGE && plan::in_entry(part, entry, at) {
             self.follower = None;
             let Some(going) = self.vehicles.going.as_mut() else {
                 return (None, None);

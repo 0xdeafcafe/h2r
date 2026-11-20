@@ -57,6 +57,11 @@ pub struct SaveParams {
     /// Replace a snapshot of that name; refused otherwise.
     #[serde(default)]
     pub replace: bool,
+    /// Also write the raw RAM image `<name>.ram` beside it, for loads that
+    /// map guest RAM copy-on-write over the file (shared between processes;
+    /// docs/runtime/snapshots.md).
+    #[serde(default)]
+    pub cow: bool,
     /// Ticks to retry while something is live ([`DEFAULT_TICKS`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_ticks: Option<u64>,
@@ -67,6 +72,12 @@ pub struct SaveParams {
 #[serde(deny_unknown_fields)]
 pub struct LoadParams {
     pub name: String,
+    /// Map the saved `<name>.ram` copy-on-write as guest RAM instead of
+    /// decoding RAM into it: pages the match never writes stay shared with
+    /// every other process on the same image. Refused, naming the file,
+    /// when the save wrote no RAM image.
+    #[serde(default)]
+    pub cow: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_ticks: Option<u64>,
 }

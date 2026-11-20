@@ -7,7 +7,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use d3d::{DeviceConfig, GuestRange, RecordingBackend, UploadPolicy};
+use d3d::{DeviceConfig, GuestRange, UploadPolicy};
+#[cfg(feature = "desktop-runtime")]
+use d3d::RecordingBackend;
 
 pub const PUSH_BASE: u32 = 0xa0e0_0000;
 pub const PUSH_LEN: u32 = 0x8_0000;
@@ -86,16 +88,23 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
     {
         install_headless(rt, None)
     }
-    #[cfg(not(feature = "gpu"))]
+    #[cfg(all(not(feature = "gpu"), feature = "desktop-runtime"))]
     {
         install_with(rt, Headless::default())
+    }
+    #[cfg(not(feature = "desktop-runtime"))]
+    {
+        install_light(rt)
     }
 }
 
 /// No display backend. Leftover lobby and loading draws carry texture
 /// descriptors and handles through the ABI without copying the pixels.
 pub fn install_light(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
-    install_with(rt, Headless(RecordingBackend::default(), true))
+    let backend = d3d::descriptor::DescriptorBackend::default();
+    #[cfg(not(feature = "desktop-runtime"))]
+    let backend = backend.with_present(crate::d3d_diag::note_descriptor_present);
+    install_with(rt, backend)
 }
 
 #[cfg(feature = "gpu")]
@@ -910,9 +919,11 @@ fn all_black(px: &[u8]) -> bool {
 /// checks against. Without this the recorder would hold
 /// a copy of every draw (streams included) for the whole run; the report's
 /// draw counts come from `DiagBackend`.
+#[cfg(feature = "desktop-runtime")]
 #[derive(Default)]
 pub struct Headless(RecordingBackend, bool);
 
+#[cfg(feature = "desktop-runtime")]
 impl Headless {
     fn forget<T>(&mut self, r: T) -> T {
         use d3d::backend::Recorded;
@@ -933,6 +944,7 @@ impl Headless {
     }
 }
 
+#[cfg(feature = "desktop-runtime")]
 impl d3d::backend::Backend for Headless {
     type Surface = u32;
     type Texture = u32;
@@ -1262,6 +1274,7 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
     backend: B,
     extra: Option<ExtraReport>,
 ) -> anyhow::Result<Installed> {
+    #[cfg(feature = "desktop-runtime")]
     let (backend, draw_stats) = crate::d3d_diag::DiagBackend::new(backend);
     // Tracked uploads trust the write barrier below; H2_BOOT_UPLOAD_ALWAYS
     // goes back to re-reading every resource on every use.
@@ -1287,6 +1300,7 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
     d3d::runtime_glue::map_device_memory(&mut rt.memory(), &cfg)?;
     let device = d3d::runtime_glue::shared(cfg, backend);
     let watch = subscribe_write_barrier(rt)?;
+    #[cfg(feature = "desktop-runtime")]
     install_occlusion_capture(&device);
     #[cfg(feature = "gpu")]
     let shadow_admission = {
@@ -1329,42 +1343,42 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
         Some(Box::new(d3d::vblank::clocked_vblanks(Arc::clone(&device))));
     let snapshot: Arc<dyn DeviceSnapshot> = device.clone();
     let dev = device;
+    let report = Box::new(move || {
+        let mut d = dev.lock().unwrap();
+        // Device events by kind and reason, most frequent first.
+        let mut ev: std::collections::BTreeMap<String, u64> = Default::default();
+        for e in d.take_events() {
+            let k = match e {
+                d3d::Event::DrawSkipped { entry, reason } => {
+                    format!("draw skipped in {entry}: {reason}")
+                }
+                d3d::Event::BadState(b) => format!("bad state {b:?}"),
+                other => format!("{other:?}"),
+            };
+            let k: String = k.chars().take(200).collect();
+            *ev.entry(k).or_default() += 1;
+        }
+        let mut ev: Vec<_> = ev.into_iter().collect();
+        ev.sort_by_key(|e| std::cmp::Reverse(e.1));
+        let ev: String = ev
+            .iter()
+            .take(40)
+            .map(|(k, n)| format!("\n  event {n:>8}  {k}"))
+            .collect();
+        let extra = extra
+            .as_ref()
+            .map(|f| format!("\n{}", f()))
+            .unwrap_or_default();
+        #[cfg(feature = "desktop-runtime")]
+        let draws = draw_stats.lock().unwrap().report();
+        #[cfg(not(feature = "desktop-runtime"))]
+        let draws = "";
+        format!("stats {:?}; last stop {:?}{ev}\n{draws}{extra}", d.stats(), d.last_stop())
+    });
     Ok(Installed {
         vblank,
         snapshot,
-        report: Box::new(move || {
-            let mut d = dev.lock().unwrap();
-            // Device events by kind and reason, most frequent first.
-            let mut ev: std::collections::BTreeMap<String, u64> = Default::default();
-            for e in d.take_events() {
-                let k = match e {
-                    d3d::Event::DrawSkipped { entry, reason } => {
-                        format!("draw skipped in {entry}: {reason}")
-                    }
-                    d3d::Event::BadState(b) => format!("bad state {b:?}"),
-                    other => format!("{other:?}"),
-                };
-                let k: String = k.chars().take(200).collect();
-                *ev.entry(k).or_default() += 1;
-            }
-            let mut ev: Vec<_> = ev.into_iter().collect();
-            ev.sort_by_key(|e| std::cmp::Reverse(e.1));
-            let ev: String = ev
-                .iter()
-                .take(40)
-                .map(|(k, n)| format!("\n  event {n:>8}  {k}"))
-                .collect();
-            let extra = extra
-                .as_ref()
-                .map(|f| format!("\n{}", f()))
-                .unwrap_or_default();
-            format!(
-                "stats {:?}; last stop {:?}{ev}\n{}{extra}",
-                d.stats(),
-                d.last_stop(),
-                draw_stats.lock().unwrap().report()
-            )
-        }),
+        report,
         implemented: r.implemented.len(),
         stopping: r.stopping.len(),
         native: r.native.len(),
@@ -1651,6 +1665,7 @@ pub fn barrier_handler(
 /// order with the draws; the finished grid goes back to the feature with
 /// the W-buffer's mapping to view depth. Inert unless
 /// `impl.render.occlusion` is on (nothing asks).
+#[cfg(feature = "desktop-runtime")]
 fn install_occlusion_capture<B: d3d::backend::Backend + Send + 'static>(
     device: &d3d::abi::SharedDevice<B>,
 ) {
@@ -1676,11 +1691,12 @@ fn install_occlusion_capture<B: d3d::backend::Backend + Send + 'static>(
 
 /// The W-buffer's raw depth to view depth: stored `floor(w · inv_w_far ·
 /// z_scale) / z_scale` (`z_scale` the format's full scale, `+0x948`).
+#[cfg(feature = "desktop-runtime")]
 pub fn w_buffer_mapping(s: d3d::DepthScale) -> engine::render_loop::occlusion::DepthMapping {
     engine::render_loop::occlusion::DepthMapping::w_buffer(s.inv_w_far, s.z_scale)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop-runtime"))]
 mod tests {
     use super::*;
     use d3d::backend::Backend;

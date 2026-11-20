@@ -53,8 +53,10 @@ mod h1_ai_control;
 mod h1_command_atoms;
 pub mod health;
 pub mod host_audit;
+pub mod host_coverage;
 mod host_lobby;
 mod host_metrics;
+pub mod host_mem;
 pub mod host_perf;
 pub mod hot_glue;
 pub mod hud;
@@ -101,6 +103,7 @@ mod native_map;
 mod native_shadows_draw;
 #[cfg(feature = "gpu")]
 mod native_shadows_scope;
+#[cfg(feature = "desktop-runtime")]
 mod native_shadows_probe;
 #[cfg(feature = "gpu")]
 pub mod native_shadows_glue;
@@ -130,7 +133,9 @@ pub mod new_maps;
 pub mod pad_speaker;
 pub mod precision;
 pub mod registration;
+#[cfg(feature = "desktop-runtime")]
 pub mod render_probe;
+#[cfg(feature = "desktop-runtime")]
 pub mod render_thread;
 pub mod retail_rows;
 pub mod sampling;
@@ -330,6 +335,40 @@ pub fn dylib_current_for(xbe_bytes: &[u8], dylib: &Path, arch: emit::compile::Ar
         && std::fs::read_to_string(stamp_path(dylib)).is_ok_and(|s| s == build_stamp_for(xbe_bytes, arch))
 }
 
+const SLIM_STAMP: &str = "host coverage ";
+
+fn slim_stamp(xbe: &[u8], arch: emit::compile::Arch, coverage: &host_coverage::Coverage) -> String {
+    format!("{}{SLIM_STAMP}{:016x}\n", full_build_stamp(xbe, arch), coverage.fingerprint())
+}
+
+/// Exact stamp check for a build requested with a particular coverage list.
+pub fn slim_current_for(
+    xbe: &[u8],
+    module: &Path,
+    arch: emit::compile::Arch,
+    coverage: &host_coverage::Coverage,
+) -> bool {
+    module.is_file()
+        && std::fs::read_to_string(stamp_path(module))
+            .is_ok_and(|stamp| stamp == slim_stamp(xbe, arch, coverage))
+}
+
+/// A light host starts a staged slim module using its own coverage stamp.
+/// The image, generator, target and settings still have to match.
+pub fn current_slim_stamp(xbe: &[u8], module: &Path) -> Option<String> {
+    if !module.is_file() || host_audit::module_from_env().is_some() {
+        return None;
+    }
+    let stamp = std::fs::read_to_string(stamp_path(module)).ok()?;
+    let full = full_build_stamp(xbe, stamp_target());
+    let fingerprint = stamp
+        .strip_prefix(full.as_str())?
+        .strip_prefix(SLIM_STAMP)?
+        .strip_suffix('\n')?;
+    (fingerprint.len() == 16 && fingerprint.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then_some(stamp)
+}
+
 /// Where [`build`] (and the fallback interpreter at run time) keep
 /// discovery's result for `xbe_bytes`: in the boot cache directory
 /// (`H2_BOOT_CACHE`, default `$TMPDIR/h2boot-cache`; `off` disables it),
@@ -388,12 +427,37 @@ pub(crate) fn analyze_cached(
 }
 
 /// Lift, emit and compile the image for the target selected by `H2_EMIT_TARGET`.
+#[cfg(feature = "desktop-runtime")]
 pub fn build(xbe_bytes: &[u8], out: &Path, jobs: usize) -> Result<PathBuf> {
     build_for(xbe_bytes, out, jobs, emit::compile::Arch::target()?)
 }
 
 /// Compile and stamp the image for the explicitly selected target.
+#[cfg(feature = "desktop-runtime")]
 pub fn build_for(xbe_bytes: &[u8], out: &Path, jobs: usize, arch: emit::compile::Arch) -> Result<PathBuf> {
+    build_selected(xbe_bytes, out, jobs, arch, None)
+}
+
+#[cfg(feature = "desktop-runtime")]
+pub fn build_slim(
+    xbe_bytes: &[u8],
+    out: &Path,
+    jobs: usize,
+    arch: emit::compile::Arch,
+    coverage: &host_coverage::Coverage,
+) -> Result<PathBuf> {
+    anyhow::ensure!(host_audit::module_from_env().is_none(), "--profile host conflicts with H2_HOST_MODULE");
+    build_selected(xbe_bytes, out, jobs, arch, Some(coverage))
+}
+
+#[cfg(feature = "desktop-runtime")]
+fn build_selected(
+    xbe_bytes: &[u8],
+    out: &Path,
+    jobs: usize,
+    arch: emit::compile::Arch,
+    coverage: Option<&host_coverage::Coverage>,
+) -> Result<PathBuf> {
     let total = Instant::now();
     let x = xbe::Xbe::parse(xbe_bytes)?;
     let lib = out.join(arch.module_file_name());
@@ -438,15 +502,22 @@ pub fn build_for(xbe_bytes: &[u8], out: &Path, jobs: usize, arch: emit::compile:
     );
     let src = out.join("src");
     let t = Instant::now();
-    let hot = host_audit::module_from_env()
-        .map(|path| host_audit::module_owners(&path, &full_build_stamp(xbe_bytes, arch)))
-        .transpose()?;
-    let w = emit::write_module_with_hot(
-        &owners,
-        &src,
-        emit::Codegen::from_env().map_err(anyhow::Error::msg)?,
-        hot.as_ref(),
-    )?;
+    let codegen = emit::Codegen::from_env().map_err(anyhow::Error::msg)?;
+    let w = if let Some(coverage) = coverage {
+        let native = coverage.owners(&owners)?;
+        eprintln!(
+            "host coverage: {} of {} native owners, {} interpreted",
+            native.len(),
+            owners.len(),
+            owners.len() - native.len()
+        );
+        emit::write_slim_module(&owners, &src, codegen, &native)?
+    } else {
+        let hot = host_audit::module_from_env()
+            .map(|path| host_audit::module_owners(&path, &full_build_stamp(xbe_bytes, arch)))
+            .transpose()?;
+        emit::write_module_with_hot(&owners, &src, codegen, hot.as_ref())?
+    };
     eprintln!(
         "emit: {:.1}s, {} owners, {} files ({} rewritten), {:.1} MB of C, {} entries, {} resumes",
         t.elapsed().as_secs_f64(),
@@ -491,7 +562,11 @@ pub fn build_for(xbe_bytes: &[u8], out: &Path, jobs: usize, arch: emit::compile:
         t.elapsed().as_secs_f64(),
         lib.display()
     );
-    std::fs::write(stamp_path(&lib), build_stamp_for(xbe_bytes, arch))
+    let stamp = match coverage {
+        Some(coverage) => slim_stamp(xbe_bytes, arch, coverage),
+        None => build_stamp_for(xbe_bytes, arch),
+    };
+    std::fs::write(stamp_path(&lib), stamp)
         .with_context(|| format!("stamping {}", lib.display()))?;
     eprintln!("build: {:.1}s", total.elapsed().as_secs_f64());
     Ok(lib)
@@ -502,6 +577,7 @@ pub struct Module {
     _lib: libloading::Library,
     pub entries: usize,
     pub resumes: usize,
+    slim: bool,
 }
 
 /// `module` relative to the package root `root`, for `LoadPackagedLibrary`,
@@ -658,12 +734,29 @@ pub unsafe fn load_module(path: &Path, rt: &runtime::Runtime, xbe_bytes: &[u8]) 
             bail!("module table ABI {}", m.abi_version);
         }
         let entries = std::slice::from_raw_parts(m.entries, m.entry_count as usize);
-        if std::env::var_os(host_audit::ENV).is_some_and(|p| !p.is_empty()) {
-            anyhow::ensure!(std::env::var("H2_BOOT_TRAMPOLINE").as_deref() != Ok("1"),
-                "host audit requires registry dispatch");
-            rt.enable_guest_coverage(entries);
-        }
         let resumes = std::slice::from_raw_parts(m.resumes, m.resume_count as usize);
+        let cold = match lib.get::<*const u32>(b"h2gen_cold_v1") {
+            Ok(table) => {
+                // The generated symbol starts with the two counts, followed
+                // by those many [selector, owner] rows (emit's registry).
+                let table = *table;
+                let entries = *table as usize;
+                let resumes = *table.add(1) as usize;
+                let rows = table.add(2).cast::<[u32; 2]>();
+                Some(fallback::ColdRoutes {
+                    entries: std::slice::from_raw_parts(rows, entries),
+                    resumes: std::slice::from_raw_parts(rows.add(entries), resumes),
+                })
+            }
+            Err(_) => None,
+        };
+        let trampoline = std::env::var("H2_BOOT_TRAMPOLINE").as_deref() == Ok("1");
+        anyhow::ensure!(!trampoline || cold.is_none(), "slim host modules require registry dispatch");
+        if std::env::var_os(host_audit::ENV).is_some_and(|p| !p.is_empty()) {
+            anyhow::ensure!(!trampoline, "host audit requires registry dispatch");
+            anyhow::ensure!(cold.is_none(), "host audit requires a full generated module");
+            rt.enable_guest_coverage(entries, resumes);
+        }
         let mut rows = Vec::with_capacity(entries.len());
         for e in entries {
             let (Some(f), Some(v)) = (e.handler, e.abi_version) else {
@@ -675,12 +768,13 @@ pub unsafe fn load_module(path: &Path, rt: &runtime::Runtime, xbe_bytes: &[u8]) 
             rows.push((e.addr, f));
         }
         let res: Vec<(u32, u32, u32)> = resumes.iter().map(|r| (r.pc, r.owner, r.start)).collect();
-        let conflicts = fallback::init(xbe_bytes, &rows, &res).map_err(anyhow::Error::msg)?;
+        let conflicts = fallback::init_with_cold(xbe_bytes, &rows, &res, cold)
+            .map_err(anyhow::Error::msg)?;
         // Each row is registered as itself, and the runtime hands its STOPs
         // to the fallback (fallback.rs). H2_BOOT_TRAMPOLINE=1 routes every
-        // row through the old trampoline instead, for comparison. The
-        // runner only warms direct slots for generated registry entries.
-        let trampoline = std::env::var("H2_BOOT_TRAMPOLINE").as_deref() == Ok("1");
+        // row through the old trampoline instead, for comparison: that also
+        // turns the module's direct calls off in effect, since a direct call
+        // needs the registered handler to be the callee's own.
         if trampoline {
             eprintln!("boot: H2_BOOT_TRAMPOLINE=1: every entry through the fallback trampoline");
             // The trampoline finds a resume's handler by selector alone.
@@ -702,6 +796,10 @@ pub unsafe fn load_module(path: &Path, rt: &runtime::Runtime, xbe_bytes: &[u8]) 
                 d.register_resume(r.pc, r.owner, r.start)
                     .with_context(|| format!("resume {:#x}", r.pc))?;
             }
+            if let Some(cold) = cold {
+                fallback::register_cold(d, cold, fallback::interpret_cold)
+                    .context("registering slim host interpreter routes")?;
+            }
             Ok(())
         })?;
         if !trampoline {
@@ -711,6 +809,7 @@ pub unsafe fn load_module(path: &Path, rt: &runtime::Runtime, xbe_bytes: &[u8]) 
             _lib: lib,
             entries: entries.len(),
             resumes: resumes.len(),
+            slim: cold.is_some(),
         })
     }
 }
@@ -849,10 +948,12 @@ pub struct Host {
     /// XAPI's input manager (`xapi_glue::register_with`).
     pub input: Option<input::InputManager>,
     /// The keyboard pad `H2_BOOT_INPUT` presses, when `input` is given.
+    #[cfg(feature = "desktop-runtime")]
     pub keyboard: Option<input::backend::keyboard::KeyboardMouse>,
     /// Button icons for the device in use (`icons`, docs/input/button-icons.md).
     /// `None` takes `H2_ICONS`; with that unset too, the fonts and the glyph
     /// lookups are left alone.
+    #[cfg(feature = "desktop-runtime")]
     pub icons: Option<icons::IconOptions>,
     /// Keep only this many kernel calls in memory (`trace::install_bounded`).
     pub trace_limit: Option<usize>,
@@ -981,6 +1082,8 @@ fn run_configured(
     let switches = feature::Switches::from_env().map_err(anyhow::Error::msg)?;
     let host_light =
         host.host_light || (sim_mode.is_some() && switches.feature("host-light", true));
+    #[cfg(not(feature = "desktop-runtime"))]
+    anyhow::ensure!(host_light, "the host binary requires the light host profile");
     let replaying = replay.is_some();
     let render_every = replay.as_ref().map_or(0, |r| r.render_every);
     if host_audit::module_from_env().is_some() {
@@ -1021,8 +1124,15 @@ fn run_configured(
             || std::env::var_os(bots::ENV).is_some_and(|v| !v.is_empty()));
     d3d_diag::keep_present_history(!host_light);
     let x = xbe::Xbe::parse(xbe_bytes)?;
-    // Either tier's module, by its own stamp (tier.rs).
-    let Some(tier) = tier::module_tier(xbe_bytes, dylib) else {
+    let slim_stamp = host_light.then(|| current_slim_stamp(xbe_bytes, dylib)).flatten();
+    let tier = if slim_stamp.is_some() {
+        anyhow::ensure!(std::env::var_os(host_audit::ENV).is_none_or(|p| p.is_empty()),
+            "host audit requires a full generated module");
+        Some(tier::Tier::Host)
+    } else {
+        tier::module_tier(xbe_bytes, dylib)
+    };
+    let Some(tier) = tier else {
         bail!(
             "{} was not built from this image by this generator (stamp {} wants {:?}, or the fast tier's {:?}); rebuild it with `h2 build`",
             dylib.display(),
@@ -1036,6 +1146,11 @@ fn run_configured(
         tier.name(),
         dylib.display()
     );
+    let running_stamp = || match tier {
+        tier::Tier::Host => slim_stamp.as_ref().expect("validated host stamp").clone(),
+        tier::Tier::Clang => build_stamp(xbe_bytes),
+        tier::Tier::Fast => tier::fast_stamp(xbe_bytes),
+    };
     // Keep Halo's fixed arena, physical [0x61000, 0x3145000), free, with its
     // contiguous window at 0x80061000 and (boot addition) its write-combined
     // window at 0xf0061000, so MmAllocateContiguousMemoryEx can return
@@ -1061,6 +1176,7 @@ fn run_configured(
     // take theirs from the feature arena (`feature::arena`).
     // SAFETY: the dylib is ours and stays loaded until the end of this fn.
     let module = unsafe { load_module(dylib, &loaded.runtime, xbe_bytes)? };
+    anyhow::ensure!(module.slim == (tier == tier::Tier::Host), "module coverage table and build stamp disagree");
     // Interpreting past unsupported instructions is a stopgap too.
     fallback::set_recovery(opts.stopgaps);
     if opts.stopgaps {
@@ -1103,10 +1219,7 @@ fn run_configured(
         .filter(|p| !p.is_empty())
         .map(PathBuf::from);
     let film = if replaying || film_path.is_some() {
-        let stamp = match tier {
-            tier::Tier::Clang => build_stamp(xbe_bytes),
-            tier::Tier::Fast => tier::fast_stamp(xbe_bytes),
-        };
+        let stamp = running_stamp();
         let clock = k.clock();
         let session = match theater::Session::open(
             film_path,
@@ -1140,10 +1253,7 @@ fn run_configured(
     };
     // Features declare their hooks here; the plan is built and installed
     // once, below, after the last of them (docs/engine/feature-engine.md).
-    let audit = host_audit::Audit::from_env(|| match tier {
-        tier::Tier::Clang => build_stamp(xbe_bytes),
-        tier::Tier::Fast => tier::fast_stamp(xbe_bytes),
-    }, host_light);
+    let audit = host_audit::Audit::from_env(running_stamp, host_light);
     anyhow::ensure!(
         audit.is_none() || host_audit::module_from_env().is_none(),
         "host audit requires a full generated module"
@@ -1163,11 +1273,21 @@ fn run_configured(
         cfg.server_maps = std::env::var_os("H2_SERVER_MAP_DIR")
             .filter(|path| !path.is_empty())
             .map(PathBuf::from);
+        // Sim stores: the retail maps' bytes a recording saw the guest
+        // read, served instead of the disc (crates/vfs/src/sim_store.rs).
+        cfg.sim_store = std::env::var_os(vfs::sim_store::STORE_ENV)
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from);
     }
     // Converted Halo 1 maps follow the sandbox chosen per game (h1_variants).
     cfg.variants = h1_variants::mp_variants();
     cfg.content_maps = new_maps::mounted_packages();
     let uploading_sim = upload.is_some();
+    #[cfg(not(feature = "desktop-runtime"))]
+    if opts.xapi && host.input.is_none() {
+        host.input = Some(input::InputManager::new(Default::default())?);
+    }
+    #[cfg(feature = "desktop-runtime")]
     if opts.xapi && host.input.is_none() {
         if sim_mode.is_some() || !cfg!(feature = "local-io") {
             // Start without a local pad. Sim can attach its bots below.
@@ -1178,6 +1298,7 @@ fn run_configured(
             host.keyboard = Some(keyboard);
         }
     }
+    #[cfg(feature = "desktop-runtime")]
     let icon_options = match host.icons {
         Some(o) => Some(o),
         None => icons::choice_from_env()?.map(|choice| icons::IconOptions {
@@ -1185,6 +1306,7 @@ fn run_configured(
             gamepads: false,
         }),
     };
+    #[cfg(feature = "desktop-runtime")]
     let icons = icon_options
         .map(|o| Arc::new(icons::Icons::new(o, host.keyboard.as_ref())))
         .filter(|i| i.enabled());
@@ -1229,10 +1351,13 @@ fn run_configured(
     });
     // Every font gets the bot mark's gear (docs/game/bots.md §8.2.2), after
     // the icon sets.
+    #[cfg(feature = "desktop-runtime")]
     let fonts = vfs::Chain(
         icons.as_ref().map(|i| i.font_rewrite()),
         bot_mark::GearRewrite,
     );
+    #[cfg(not(feature = "desktop-runtime"))]
+    let fonts = bot_mark::GearRewrite;
     let rewrites = Some(vfs::Chain(fonts, cards));
     let mounted = map_override::mount(
         cfg.clone(),
@@ -1241,6 +1366,7 @@ fn run_configured(
         maps.as_deref(),
         &campaign_maps,
     );
+    #[cfg(feature = "desktop-runtime")]
     if let Some(i) = &icons {
         icons::install(&loaded.runtime, Arc::clone(i))?;
     }
@@ -1348,15 +1474,12 @@ fn run_configured(
             .unwrap_or_else(|| opts.data_root.join("films"))
     };
     let theater = if let Some((theater, open)) = host.theater.take() {
-        let stamp = match tier {
-            tier::Tier::Clang => build_stamp(xbe_bytes),
-            tier::Tier::Fast => tier::fast_stamp(xbe_bytes),
-        };
+        let stamp = running_stamp();
         theater.install(
             &mut features,
             &film_dir(),
             stamp,
-            live.server_url.as_deref(),
+            live,
             open,
         )?;
         Some(theater)
@@ -1406,7 +1529,7 @@ fn run_configured(
     // Sim mode never builds them: a build on a thread is at the wall
     // clock's mercy (docs/runtime/sim.md §8).
     if let (true, Some(vfs), None) = (core.bots_on, k.vfs(), &sim_mode) {
-        bots_nav_auto::start(&opts.data_root, &opts.disc, vfs, level_name.clone());
+        bots_nav_auto::start(&opts.data_root, &opts.disc, vfs, level_name.clone(), host_light);
     }
     if let Some(s) = &sim_mode {
         if !core.bots_on {
@@ -1533,7 +1656,7 @@ fn run_configured(
         (true, None) if host_light => Some(d3d_glue::install_light(&loaded.runtime)?),
         (true, None) => Some(d3d_glue::install_headless_with_settings(&loaded.runtime, interp, host.settings.as_deref())?),
     };
-    #[cfg(not(feature = "gpu"))]
+    #[cfg(all(not(feature = "gpu"), feature = "desktop-runtime"))]
     let mut d3d_calls = opts.d3d.then(|| {
         if host_light {
             d3d_glue::install_light(&loaded.runtime)
@@ -1541,6 +1664,8 @@ fn run_configured(
             d3d_glue::install(&loaded.runtime)
         }
     }).transpose()?;
+    #[cfg(not(feature = "desktop-runtime"))]
+    let mut d3d_calls = Some(d3d_glue::install_light(&loaded.runtime)?);
     // Vblanks on the 60 Hz logical clock (docs/graphics/d3d.md "Vertical blank"),
     // delivered as DPCs; the frame wait above is the clocked one.
     if let Some(handler) = d3d_calls.as_mut().and_then(|i| i.vblank.take()) {
@@ -1562,6 +1687,7 @@ fn run_configured(
     #[cfg(feature = "local-io")]
     let clock_only_audio = host_light
         || (sim_mode.is_some() && features.switches().feature("audio.clock-only", false));
+    // Without local I/O the host has no speakers: audio is always the clock.
     #[cfg(not(feature = "local-io"))]
     let clock_only_audio = true;
     #[cfg(not(feature = "local-io"))]
@@ -1606,6 +1732,7 @@ fn run_configured(
     // `input.host` (`h2 agent hostpads`) reads the manager's report after
     // the manager moves into XAPI.
     let host_pads = host.input.as_ref().map(input::InputManager::host_report);
+    #[cfg(feature = "desktop-runtime")]
     let (xa, pad) = match (opts.xapi, host.input.take()) {
         (false, _) => (None, None),
         (true, Some(input)) => (
@@ -1617,6 +1744,10 @@ fn run_configured(
             (Some(x), Some(pad))
         }
     };
+    #[cfg(not(feature = "desktop-runtime"))]
+    let xa = host.input.take()
+        .map(|input| xapi_glue::register_with(&loaded.runtime, &k, input))
+        .transpose()?;
     // Voice chat's communicator (docs/live/live-voice.md): off until a
     // microphone is chosen on the Voice screen.
     #[cfg(feature = "local-io")]
@@ -1633,10 +1764,12 @@ fn run_configured(
             game_mix,
         )
     });
+    #[cfg(feature = "desktop-runtime")]
     if let Some(keyboard) = pad.as_ref() {
         keyboard_glue::install(&loaded.runtime, keyboard.clone())
             .context("installing host keyboard entry")?;
     }
+    #[cfg(feature = "desktop-runtime")]
     let script = xapi_glue::InputScript::from_env();
     // H2_LOCKSTEP / H2_INPUT_RECORD / H2_INPUT_REPLAY (lockstep_glue.rs).
     let lockstep_config = lockstep_glue::Config::from_env();
@@ -1657,6 +1790,7 @@ fn run_configured(
     } else {
         pipeline
     };
+    #[cfg(feature = "desktop-runtime")]
     render_probe::set_pipeline(pipeline.clone());
     let coop_probe = coop_probe::parse(|k| std::env::var(k).ok()).map_err(anyhow::Error::msg)?;
     #[cfg(feature = "gpu")]
@@ -1685,6 +1819,7 @@ fn run_configured(
     if let (Some(theater), Some(a)) = (&theater, &agent) {
         theater.connect(&a.agent);
     }
+    #[cfg(feature = "local-io")]
     if let (Some(a), Some(audio)) = (&agent, &ds) {
         dsound_glue::add_agent_methods(&a.agent, audio.mixer());
     }
@@ -1727,6 +1862,7 @@ fn run_configured(
             .add(&feature::sim_native::SimNative::new(&loaded.runtime))
             .map_err(anyhow::Error::msg)?;
     }
+    registration::register_viewer_skips(&mut features, host_light)?;
     if host_light {
         let frame = match &sim_mode {
             Some(sim) => sim.frame().clone(),
@@ -1851,9 +1987,12 @@ fn run_configured(
             &opts.movies,
             &opts.disc,
             why_off.as_deref(),
+            #[cfg(feature = "local-io")]
             ds.as_ref()
                 .filter(|_| !clock_only_audio)
                 .map(dsound_glue::Audio::mixer),
+            #[cfg(not(feature = "local-io"))]
+            None,
         );
         Some(hle)
     } else {
@@ -1898,6 +2037,7 @@ fn run_configured(
     // Logical time added for pending audio alone since a thread last ran.
     let mut audio_idle = 0u64;
     // H2_AUDIO_STATS=1: a line of audio health every few seconds.
+    #[cfg(feature = "local-io")]
     let mut audio_report = ds
         .as_ref()
         .and_then(|_| dsound_glue::AudioReport::from_env());
@@ -1917,10 +2057,7 @@ fn run_configured(
     }
     let shelf = agent.as_ref().and_then(|a| {
         // The running tier's own stamp: a fast-tier snapshot is not a clang one's.
-        let stamp = match tier {
-            tier::Tier::Clang => build_stamp(xbe_bytes),
-            tier::Tier::Fast => tier::fast_stamp(xbe_bytes),
-        };
+        let stamp = running_stamp();
         let key = snapshot_glue::build_key(stamp, &switch_spec, &plan, &snap_host.names());
         let shelf = snapshot_glue::Shelf::from_env(key)?;
         a.agent.set_snapshots(Box::new(shelf.clone()));
@@ -2017,6 +2154,7 @@ fn run_configured(
         }
         #[cfg(feature = "perf")]
         sampling::tick();
+        #[cfg(feature = "desktop-runtime")]
         if !replaying && let Some(pad) = &pad {
             script.step(slice, pad);
         }
@@ -2092,6 +2230,7 @@ fn run_configured(
         {
             audio_errors.push(format!("slice {slice}: {e}"));
         }
+        #[cfg(feature = "local-io")]
         if let (Some(a), Some(r)) = (&ds, &mut audio_report) {
             r.tick(a);
         }
@@ -2102,7 +2241,7 @@ fn run_configured(
             break;
         }
         if let Some(f) = &film {
-            f.finish(film_slices, false, _telemetry.as_ref())?;
+            f.finish(film_slices, false)?;
         }
         // Sim mode: the match is over (its end, its limits, match.stop).
         if let Some(s) = &sim_mode
@@ -2116,7 +2255,20 @@ fn run_configured(
         audit.finish(&loaded.runtime)?;
     }
     if let Some(f) = &film {
-        f.finish(film_slices, true, _telemetry.as_ref())?;
+        f.finish(film_slices, true)?;
+    }
+    // A shared copy-on-write guest RAM base (`state.load` with
+    // "cow": true): census the pages the match wrote over it, so the
+    // report says how much stayed shared.
+    if let Some(s) = &sim_mode {
+        let cow = loaded.runtime.memory().cow_census()?.map(|(w, t, runs)| {
+            eprintln!(
+                "sim: {w} of {t} guest pages written over the shared base ({} run(s))",
+                runs.len()
+            );
+            (w, t)
+        });
+        s.note_cow(cow);
     }
     let sim_upload_result = match &sim_mode {
         Some(s) => match s.finish() {
@@ -2270,6 +2422,7 @@ fn run_configured(
     }
     if let Some(s) = fallback::STATS.lock().unwrap().as_ref() {
         let first: Vec<String> = s.first.iter().map(|f| format!("{:#x}", f.0)).collect();
+        fallback::log_cold_summary(s);
         eprintln!(
             "fallback: {} entries, {} instructions interpreted, {} x87 emulated; x87 mix {:?}; from [{}]",
             s.fallbacks,
@@ -2711,6 +2864,18 @@ mod tests {
         std::fs::remove_file(dir.join("Default.XBE")).unwrap();
         assert!(read_xbe(&dir).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn slim_stamps_distinguish_coverage_even_when_the_owner_count_is_equal() {
+        let a = host_coverage::Coverage { selectors: [(0x1000, 0x1000)].into() };
+        let b = host_coverage::Coverage { selectors: [(0x1000, 0x1010)].into() };
+        let arch = emit::compile::Arch::X86_64Linux;
+        let image = b"image a";
+        let stamp = slim_stamp(image, arch, &a);
+        assert_ne!(stamp, full_build_stamp(image, arch));
+        assert_ne!(stamp, slim_stamp(image, arch, &b));
+        assert_ne!(stamp, slim_stamp(b"image b", arch, &a));
     }
 
     #[test]

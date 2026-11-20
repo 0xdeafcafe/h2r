@@ -54,6 +54,8 @@ pub fn win32(error: vfs::Error) -> Error {
         FileTooLarge => 223,
         FileCorrupt => 1392,
         IoDeviceError => 1117,
+        // STATUS_DEVICE_DATA_ERROR: a sim store read outside its ranges.
+        NotInStore => 23,
         NoMoreFiles => 18,
     })
 }

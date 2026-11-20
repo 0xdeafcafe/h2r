@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 runtime.workspace = true
-feature = { path = "../feature" }
+feature = { path = "../feature", default-features = false }
 engine = { path = "../engine" }
 
 [dev-dependencies]

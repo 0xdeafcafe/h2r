@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use dsound::{DirectSound, Hle, Layout};
 
 /// Read-only routing view for comparing one emitter at several distances.
+#[cfg(feature = "local-io")]
 pub(crate) fn add_agent_methods(agent: &agent::Agent, mixer: Arc<Mutex<audio::Mixer>>) {
     agent.add_method(
         agent_proto::method::AUDIO_VOICES,
@@ -22,6 +23,7 @@ pub(crate) fn add_agent_methods(agent: &agent::Agent, mixer: Arc<Mutex<audio::Mi
     );
 }
 
+#[cfg(feature = "local-io")]
 fn voice_levels(
     mixer: &Mutex<audio::Mixer>,
     params: serde_json::Value,
@@ -229,6 +231,7 @@ impl audio::sink::AudioSink for BoxedSink {
     }
 }
 
+#[cfg(feature = "local-io")]
 pub fn install(
     rt: &Arc<runtime::Runtime>,
     k: &Arc<kernel::Kernel>,
@@ -246,6 +249,7 @@ pub fn install(
 /// Pacing stays logical: audio time is the kernel's, so guest-visible audio
 /// state is the same as a headless run; a host slower than real time is
 /// heard as underruns, never as a different schedule.
+#[cfg(feature = "local-io")]
 pub fn install_with_sink(
     rt: &Arc<runtime::Runtime>,
     k: &Arc<kernel::Kernel>,
@@ -259,6 +263,7 @@ pub fn install_with_sink(
 /// routed sounds, and the sound index ([`crate::pad_speaker`]) built from
 /// every map the game opens. With `pad` `None`, or its device absent, every
 /// sound plays on `open`'s sink.
+#[cfg(feature = "local-io")]
 pub fn install_with_sinks(
     rt: &Arc<runtime::Runtime>,
     k: &Arc<kernel::Kernel>,
@@ -272,6 +277,7 @@ pub fn install_with_sinks(
 /// [`install_with_sink`] without the native WMA codec (it needs the retail
 /// image's tables): the game's own codec would run. For tests of the audio
 /// path that have no image.
+#[cfg(feature = "local-io")]
 pub fn install_without_wma(
     rt: &Arc<runtime::Runtime>,
     k: &Arc<kernel::Kernel>,
@@ -326,6 +332,7 @@ fn install_parts(
         s.attach_router_sink(move |router| hle.direct_sound().set_pad_router(router));
     }
     let origin = k.clock().counter();
+    #[cfg(feature = "local-io")]
     let pacing = if open.is_some() {
         dsound::Pacing::Logical {
             origin,
@@ -335,6 +342,8 @@ fn install_parts(
     } else {
         dsound::Pacing::Completions { origin }
     };
+    #[cfg(not(feature = "local-io"))]
+    let pacing = dsound::Pacing::Completions { origin };
     let output = hle
         .spawn_output(
             Arc::clone(rt),
@@ -379,10 +388,12 @@ fn install_parts(
 
 /// The jitter buffer a device plays through: `dsound::Playout::default()`,
 /// with `H2_AUDIO_LATENCY_MS` (10..=500) as the starting target.
+#[cfg(feature = "local-io")]
 pub fn playout_from_env() -> dsound::Playout {
     playout_from(std::env::var("H2_AUDIO_LATENCY_MS").ok().as_deref())
 }
 
+#[cfg(feature = "local-io")]
 fn playout_from(latency_ms: Option<&str>) -> dsound::Playout {
     let mut p = dsound::Playout::default();
     match latency_ms.map(|v| v.trim().parse::<u32>()) {
@@ -401,12 +412,14 @@ fn playout_from(latency_ms: Option<&str>) -> dsound::Playout {
 
 /// `H2_AUDIO_STATS=1`: one line every [`AudioReport::EVERY`] on stderr with
 /// what the audio path did in that window (docs/audio/dsound.md, "Audio stats").
+#[cfg(feature = "local-io")]
 pub struct AudioReport {
     last_at: std::time::Instant,
     last: Option<(dsound::OutputStats, audio::StreamHealth)>,
     max_callbacks: usize,
 }
 
+#[cfg(feature = "local-io")]
 impl AudioReport {
     pub const EVERY: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -447,6 +460,7 @@ impl AudioReport {
 }
 
 /// One `H2_AUDIO_STATS` line: counters are what changed since `last`.
+#[cfg(feature = "local-io")]
 fn audio_line(
     secs: f64,
     out: &dsound::OutputStats,
@@ -511,6 +525,7 @@ pub fn describe(a: &Audio) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "local-io")]
     #[test]
     fn audio_voices_reports_the_positioned_bus_and_its_input_stream() {
         use super::voice_levels;
@@ -547,6 +562,7 @@ mod tests {
         assert!((voices[1]["bins"][1]["gain"].as_f64().unwrap() - 10f64.powf(-0.5)).abs() < 1e-6);
     }
 
+    #[cfg(feature = "local-io")]
     #[test]
     fn latency_override_sets_the_target_and_room_to_grow() {
         let d = dsound::Playout::default();
@@ -558,6 +574,7 @@ mod tests {
         assert_eq!(super::playout_from(Some("x")), d);
     }
 
+    #[cfg(feature = "local-io")]
     #[test]
     fn the_stats_line_reports_the_window() {
         let mut then = dsound::OutputStats::default();

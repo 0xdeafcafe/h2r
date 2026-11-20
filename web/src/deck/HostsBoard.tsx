@@ -23,20 +23,21 @@ const costColumn: Col<AdminHost> = {
   key: "cost", label: "cost", num: true, value: (host) => host.cost_usd, render: (host) => formatHostCost(host.cost_usd),
 };
 
-function Budget(props: { spent: number; limit: number }) {
-  const parts = () => [
-    { label: "spent", value: Math.min(props.spent, props.limit) },
-    { label: "remaining", value: Math.max(0, props.limit - props.spent) },
+function Budget(props: { spent: number; limit: number | null }) {
+  const parts = (limit: number) => [
+    { label: "spent", value: Math.min(props.spent, limit) },
+    { label: "remaining", value: Math.max(0, limit - props.spent) },
   ];
-  const reached = () => props.spent >= props.limit;
+  const reached = () => props.limit !== null && props.spent >= props.limit;
   return (
-    <Panel title="Month to date" span={6}>
+    <Panel title="Month-to-date spend (UTC)" span={6}>
       <p class="dk-host-budget">
-        <strong>{formatHostCost(props.spent)}</strong> of {formatHostCost(props.limit)} budget
-        <Show when={reached()}> · {props.spent > props.limit ? "Over budget" : "Budget reached"}</Show>
+        <strong>{formatHostCost(props.spent)}</strong>
+        {props.limit === null ? " · No spending cap" : ` of ${formatHostCost(props.limit)} budget`}
+        <Show when={reached()}> · {props.spent > (props.limit ?? 0) ? "Over budget" : "Budget reached"}</Show>
       </p>
-      <Show when={props.limit > 0}>
-        <SegBar parts={parts()} colors={[reached() ? STATUS.critical : ACCENT, QUIET]} label="Monthly host budget" format={formatHostCost} />
+      <Show when={props.limit}>
+        {(limit) => <SegBar parts={parts(limit())} colors={[reached() ? STATUS.critical : ACCENT, QUIET]} label="Monthly host budget" format={formatHostCost} />}
       </Show>
     </Panel>
   );

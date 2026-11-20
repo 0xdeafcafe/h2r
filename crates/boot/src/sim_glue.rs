@@ -95,6 +95,9 @@ struct State {
     /// Weapon datums fired since the last tick.
     fired: Vec<u32>,
     notes: Vec<String>,
+    /// A copy-on-write guest RAM base census at the match's end
+    /// (`state.load` with `"cow": true`): pages written over the base.
+    cow: Option<(u64, u64)>,
 }
 
 struct Inner {
@@ -178,6 +181,8 @@ pub fn skill(s: sim::config::Skill) -> bots::mind::Skill {
 
 /// A tuning file's numbers as the bots crate takes them.
 pub fn tuning(p: &BotParams) -> bots::tuning::Tuning {
+    let work = bots::tuning::WorkRates::default();
+    let rate = |value: Option<u32>, default| value.unwrap_or(default).clamp(1, 30);
     bots::tuning::Tuning {
         reaction: p.reaction,
         error: p.error,
@@ -204,6 +209,12 @@ pub fn tuning(p: &BotParams) -> bots::tuning::Tuning {
             .aim_model
             .as_deref()
             .and_then(bots::tuning::AimModel::parse),
+        work: bots::tuning::WorkRates {
+            foot_plan_ticks: rate(p.foot_plan_ticks, work.foot_plan_ticks),
+            vehicle_plan_ticks: rate(p.vehicle_plan_ticks, work.vehicle_plan_ticks),
+            vehicle_lookahead_ticks: rate(p.vehicle_lookahead_ticks, work.vehicle_lookahead_ticks),
+            player_los_ticks: rate(p.player_los_ticks, work.player_los_ticks),
+        },
     }
 }
 
@@ -360,6 +371,7 @@ impl Sim {
                 set_up: false,
                 fired: Vec::new(),
                 notes: Vec::new(),
+                cow: None,
             }),
             stop: AtomicBool::new(false),
             created: Instant::now(),
@@ -506,6 +518,13 @@ impl Sim {
         build_report(inner, &s)
     }
 
+    /// The guest RAM census at the match's end, for the report's `wall`
+    /// block: `(written, total)` pages over a shared copy-on-write base.
+    pub fn note_cow(&self, written: Option<(u64, u64)>) {
+        let mut s = self.0.lock();
+        s.cow = written;
+    }
+
     /// The report at the end of the run, written to `H2_SIM_REPORT` when
     /// set, and its summary on stderr.
     pub fn finish(&self) -> Result<Report> {
@@ -536,6 +555,9 @@ impl Sim {
                 .with_context(|| format!("writing the report {}", path.display()))?;
             eprintln!("sim: report {}", path.display());
         }
+        // A read recording (H2_SIM_STORE_RECORD) is written with the
+        // report, merged into what the file already holds.
+        vfs::sim_store::record::flush();
         if self.matched().distributed() && self.0.lock().bindings.len() != self.matched().bots.len()
         {
             bail!(
@@ -646,12 +668,16 @@ fn build_report(inner: &Inner, s: &State) -> Report {
     } else {
         "missing"
     };
+    let mut memory = crate::host_mem::usage();
+    memory.guest_written_pages = s.cow.map(|(w, _)| w);
+    memory.guest_pages = s.cow.map(|(_, t)| t);
     let mut report = s.tally.report(Finish {
         match_: inner.matched.resolved_json(),
         team_play: inner.matched.team_play,
         bots: &bots,
         end: s.end.unwrap_or(End::Aborted),
         speed: speed(inner, s),
+        memory,
         nav,
         notes,
     });
@@ -1083,9 +1109,20 @@ mod tests {
             phantom_ping_ms: Some(80.0),
             phantom_jitter_ms: Some(2.5),
             aim_model: Some("net".into()),
+            foot_plan_ticks: Some(2),
+            player_los_ticks: Some(4),
+            ..BotParams::default()
         };
         let t = tuning(&p);
         assert_eq!(t.aim_model, Some(bots::tuning::AimModel::Net));
+        assert_eq!(
+            t.work,
+            bots::tuning::WorkRates {
+                foot_plan_ticks: 2,
+                player_los_ticks: 4,
+                ..Default::default()
+            }
+        );
         assert_eq!(
             tuning(&BotParams {
                 aim_model: Some("code".into()),

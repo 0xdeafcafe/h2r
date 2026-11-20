@@ -519,8 +519,13 @@ fn the_mod_list_reads_published_maps_newest_first() {
             .mod_list(10, None, Box::new(move |r| tx.send(r).unwrap()))
             .map(|()| rx.recv_timeout(Duration::from_secs(10)).unwrap())
     };
+    assert_eq!(w.hle.check_mod_list(), Err(ModsError::NotSignedIn));
     assert_eq!(ask(&w).unwrap_err(), ModsError::NotSignedIn);
-    w.logon();
+    let logon = w.begin(&[0]);
+    assert_eq!(w.hle.check_mod_list(), Err(ModsError::NotSignedIn));
+    assert_eq!(ask(&w).unwrap_err(), ModsError::NotSignedIn);
+    assert_eq!(w.wait(logon), CONNECTED);
+    assert_eq!(w.hle.check_mod_list(), Ok(()));
     assert!(
         ask(&w).unwrap().unwrap().items.is_empty(),
         "nothing published yet"
@@ -591,6 +596,9 @@ fn the_mod_list_reads_published_maps_newest_first() {
         assert_eq!(e.size, 19);
     }
     assert!(page.position > 0);
+    assert_eq!(w.call("XOnlineTaskClose", &[logon]), OK);
+    assert_eq!(w.hle.check_mod_list(), Err(ModsError::NotSignedIn));
+    assert_eq!(ask(&w).unwrap_err(), ModsError::NotSignedIn);
 }
 
 #[test]

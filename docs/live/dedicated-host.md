@@ -75,34 +75,35 @@ Rates checked November 19, 2026. The figures assume one running instance per occ
 ## Cost and budget
 
 Live estimates the cost of each dedicated match from the server-signed
-`hosts` stream. The lease identifies the provider, region and class.
-The estimate starts at `HostBooting`, or at the first `HostReady` or
-`HostPlaying` if booting was unrecorded. A requested lease accrues no cost
-until there is evidence of runtime. While the host is running, Live uses
-elapsed time and the largest player count reported so far. On
-`HostEnded`, it uses the reported `ran_ms` ending at the event timestamp,
-and the largest player count across all reports.
+`hosts` stream, stored in LiveHub's Durable Object on Cloudflare and in
+the event store on native Live. For Worker-launched containers, Live
+starts counting at the lease reservation, before calling the provider.
+It keeps counting until the provider confirms the stop, even if the
+start response was lost or the game already reported the match ended.
+For leases without a reserved provider address, Live starts counting
+at the first evidence of runtime and settles from the recorded
+`HostEnded`.
 
-| Provider | Small (1 vCPU, 2 GiB) | Large (2 vCPU, 4 GiB) | Metered egress |
+| Provider | Small | Large | Estimated egress |
 |---|---|---|---|
 | Local | $0 | $0 | $0 |
-| Cloudflare Containers | $0.000020/vCPU-s + $0.0000025/GiB-s | Same rates, twice the class resources | $0.025/GB |
+| Cloudflare Containers | 1 vCPU, 3 GiB, 12 GB disk | 2 vCPU, 6 GiB, 12 GB disk | $0.025/GB |
 | Fly Machines | Performance-1x, 2 GB, about $0.046/h | Performance-2x, 4 GB, about $0.092/h | Compute only in the estimate |
 
 Cloudflare bills active containers in 10 ms increments. Live rounds up
-the cumulative runtime to that increment for CPU and memory. It assumes
-full use of the class's vCPUs and uses the class's GiB of memory.
+the cumulative runtime to that increment for CPU, memory and disk. It
+assumes full use of the allocated vCPUs, memory and disk, and adds a flat
+$0.001 estimate per start. The flat amount is a planning allowance.
 Fly uses the class's hourly rate divided by 3,600 and multiplies it by
-runtime in seconds. The estimate uses the class sizes shown here.
-Actual Cloudflare instance sizes, active CPU usage, regions and
-included allowances affect the invoice. Disk, IPs, Workers, Durable
-Objects and Fly network charges are outside this estimate.
+runtime in seconds. The estimate covers the dedicated hosts in one Live
+deployment. Cloudflare plan fees, Workers, Durable Objects, actual
+egress and included allowances can all affect the account invoice.
 [Cloudflare pricing](https://developers.cloudflare.com/containers/platform/pricing/) ·
 [Fly pricing](https://docs.fly.io/about/pricing)
 
 Estimated egress is peak players × runtime in minutes ×
-0.0005 GB per player-minute. This assumes peak occupancy for the whole
-runtime. Only Cloudflare's cost calculation prices those bytes. The
+0.0005 GB per player-minute for Cloudflare. The budget check uses the
+lease's full player capacity for the reserved runtime. The
 optional `LIVE_HOST_PRICES` JSON object can override any of these defaults.
 Omitted fields keep their defaults. Rates must be finite and non-negative.
 
@@ -112,7 +113,9 @@ Omitted fields keep their defaults. Rates must be finite and non-negative.
   "cloudflare": {
     "usd_per_vcpu_second": 0.00002,
     "usd_per_gib_second": 0.0000025,
-    "usd_per_egress_gb": 0.025
+    "usd_per_gb_disk_second": 0.00000007,
+    "usd_per_egress_gb": 0.025,
+    "usd_per_start": 0.001
   },
   "fly": {
     "small_usd_per_second": 0.000012777777777777778,
@@ -121,32 +124,44 @@ Omitted fields keep their defaults. Rates must be finite and non-negative.
 }
 ```
 
-The budget guard adds spend accrued since midnight UTC on the first of the
-month, including running hosts and only the current month's share of a
-lease that crosses midnight at the month boundary. It refuses new dedicated
-requests once estimated spend reaches `LIVE_HOST_BUDGET_USD_MONTH`, which
-defaults to $5.00. Matchmaking then falls back to a peer host. A limit of
-zero prevents new dedicated requests. Existing hosts continue to accrue
-spend until they end.
+Set `LIVE_HOST_BUDGET_USD` to the limit in USD per UTC calendar month.
+The Worker defaults to $25 and native Live defaults to unlimited.
+`LIVE_HOST_BUDGET_USD_MONTH` still works when the new setting is absent.
+Set the limit to zero to disable new dedicated host requests.
+
+Before granting a lease, Live checks month-to-date spend, the remaining
+commitments on existing leases and the cost of one more full-length
+match. It also checks commitments in the next month when a lease crosses
+the UTC boundary. If there is insufficient budget, the admin start
+returns HTTP 503 with a budget error and matchmaking can use a peer
+host. The Live reaper and each room's deadline alarm enforce the maximum
+lease duration.
+
+The admin Hosts board and `GET /v1/admin/hosts` show estimated spend
+since midnight UTC on the first of the month (`month_to_date_usd`) and
+the cap (`budget_usd`, which is `null` for unlimited).
 
 For 10 minutes of total runtime, including any boot and lobby time,
 the defaults give these estimates in USD.
 
 | Match | Estimated egress | Cloudflare Containers | Fly Machines |
 |---|---:|---:|---:|
-| 2 players, Small | 0.010 GB | $0.01500 compute + $0.00025 egress = **$0.01525** | $0.046 ÷ 6 = **$0.00767** |
-| 16 players, Large | 0.080 GB | $0.03000 compute + $0.00200 egress = **$0.03200** | $0.092 ÷ 6 = **$0.01533** |
+| 2 players, Small | 0.010 GB | **$0.01825** | $0.046 ÷ 6 = **$0.00767** |
+| 16 players, Large | 0.080 GB | **$0.03650** | $0.092 ÷ 6 = **$0.01533** |
 
 ## Container image
 
 Both cloud providers use the same Linux/amd64 image. It runs as a non-root
-user on `debian:bookworm-slim` with `ca-certificates`. Ship the image only
+user in a scratch rootfs with bookworm's ELF runtime libraries and CA
+certificates. Ship the image only
 through a private registry because it contains a module compiled from the
 owner's disc.
 
 On macOS, `deploy/host/build.sh` cross-builds the headless `h2` with
 cargo-zigbuild targeting `x86_64-unknown-linux-gnu.2.36` and builds the
-module with `h2 build --arch x86_64-linux --tier clang`. Clang and lld
+module with `h2 build --arch x86_64-linux --tier clang`. Pass
+`--coverage FILE` to stage the [slim host profile](dedicated-host-build.md#slim-host).
+Clang and lld
 use the Debian bookworm amd64 sysroot at `H2_LINUX_SYSROOT`. Docker copies
 `h2`, `libh2game.so` and its stamp from `deploy/host/stage/`. The matching
 `default.xbe` and maps come from private runtime provisioning. [Build and run instructions](../../deploy/host/README.md) · [Linux module build](../runtime/linux.md)
@@ -182,6 +197,38 @@ planning figures from the two-bot sim and the earlier process allowance.
 Replication, map loads and the map itself can move either number. RSS counts
 shared pages in each process. Measure the fleet’s incremental RAM separately
 before sizing by game count.
+
+Measured 2026-11-20, one waterworks 2v2 sim process (macOS `vmmap`,
+`/usr/bin/time -l`): peak RSS about **981 MiB**, of which **791 MiB** is
+the resident pages of the whole mmapped disc image (the game copies
+`shared` (183 MiB), `single_player_shared` (429 MiB) and the level map
+from `D:` at load); footprint (dirty) **143 MiB** — Malloc Large 103 MiB
+(guest RAM is 64 MiB of that), Malloc Small 35 MiB — plus shared
+`__TEXT` 414 MiB. On a container host the resident image pages are
+charged per container. Three changes cut that, all behaviour-identical:
+
+- Bulk reads through the disc mapping drop their pages again after the
+  copy out (`msync(MS_KILLPAGES)` on macOS, `madvise(MADV_DONTNEED)` +
+  `posix_fadvise(DONTNEED)` on Linux): the data lands in the title's
+  cache copy or guest RAM, so the image's pages stop accumulating.
+- The nav builder on a light host scans only the booted map at boot
+  (was: every map on the disc, reading each one's BSPs); later maps
+  build on demand as they load.
+- The descriptor-only D3D path creates no vertex or index caches (was:
+  128 + 32 MiB of LRU budget).
+
+**Sim stores** ([Sim stores](../runtime/sim.md#sim-stores-the-map-without-the-map))
+take it further: with `H2_SIM_STORE` naming a directory of built
+stores, the host serves each `maps\<map>.map` from the store — only the
+bytes a recording saw the guest read — and never streams the retail
+map. Two hosts on different maps still share `shared.map`'s store pages
+and the dylib's code; two on the same map can also share guest RAM
+itself, each over a sparse copy-on-write base image
+(`state.load` with `"cow": true`). Measurement plan for the fleet:
+`wall.peak_rss_mib` and `wall.footprint_mib` in each run's report;
+`vmmap`/`smaps` for shared-versus-private per process; the reports'
+`wall.guest_written_pages` over `wall.guest_pages` for how much of the
+shared base a match keeps.
 
 ### Server maps
 

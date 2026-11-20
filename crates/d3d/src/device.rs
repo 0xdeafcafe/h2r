@@ -1314,6 +1314,10 @@ struct DrawParts {
 impl<B: Backend> Device<B> {
     /// A device that has not been created yet (`Direct3D_CreateDevice` does that).
     pub fn new(cfg: DeviceConfig, backend: B) -> Self {
+        // A descriptor-only backend (the light profile's recorder) has no
+        // drawing to feed resolved streams: the caches would only hold
+        // bytes nothing reads (128 + 32 MiB of budget).
+        let caches = vertex_cache_on() && !backend.uses_texture_placeholders();
         Self {
             cfg,
             translator: Translator::new(&RenderStateTable::default()),
@@ -1340,10 +1344,8 @@ impl<B: Backend> Device<B> {
             stream_pool: Vec::new(),
             stream_pool_bytes: 0,
             stream_scratch: Vec::new(),
-            vertex_cache: vertex_cache_on()
-                .then(|| VertexCache::new(VertexCache::budget_from_env())),
-            index_cache: vertex_cache_on()
-                .then(|| IndexCache::new(VertexCache::budget_from_env() / 4)),
+            vertex_cache: caches.then(|| VertexCache::new(VertexCache::budget_from_env())),
+            index_cache: caches.then(|| IndexCache::new(VertexCache::budget_from_env() / 4)),
             push_words: Vec::new(),
             program: Box::new([0; PROGRAM_SLOTS * 4]),
             program_start: 0,

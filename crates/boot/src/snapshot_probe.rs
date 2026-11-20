@@ -160,6 +160,7 @@ mod tests {
         })
         .unwrap();
         r.add(&feature::leaves::EngineLeaves).unwrap();
+        #[cfg(feature = "desktop-runtime")]
         r.add(&feature::render_loop::RenderLoop).unwrap();
         r.add(&TickCounter {
             ticks: Arc::default(),
@@ -185,6 +186,7 @@ mod tests {
     /// policy before it returns, so none is left unaudited and none blocks a
     /// save (the agent's `state.save` once refused with all six "not
     /// audited").
+    #[cfg(feature = "desktop-runtime")]
     #[test]
     fn switched_off_render_features_block_nothing() {
         let off = "impl.render.native_world=off,impl.render.native_objects=off,\

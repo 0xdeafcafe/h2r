@@ -100,6 +100,14 @@ impl HostProvider for CloudflareProvider {
         ProviderKind::Cloudflare
     }
 
+    fn reserved_ref(&self, lease: &HostLease) -> Option<String> {
+        Some(provider_ref(lease))
+    }
+
+    fn log_budget_refusal(&self, message: &str) {
+        worker::console_warn!("{message}");
+    }
+
     async fn start(
         &self,
         lease: &HostLease,
@@ -117,9 +125,7 @@ impl HostProvider for CloudflareProvider {
             env: HostEnv::new(lease, boot)
                 .map_err(|e| HostError::new(format!("could not encode host lease: {e}")))?,
             class: lease.class.clone(),
-            deadline_ms: lease
-                .created_ms
-                .saturating_add(i64::from(lease.max_match_s) * 1000),
+            deadline_ms: lease.deadline_ms(),
         };
         SendWrapper::new(async {
             let namespace = binding(&lease.class);
@@ -273,8 +279,7 @@ impl Room {
         {
             return refuse(ErrorCode::Invalid, "lease does not name this HostRoom");
         }
-        let remaining = start.deadline_ms.saturating_sub(js_sys::Date::now() as i64);
-        if remaining <= 0 {
+        if start.deadline_ms <= js_sys::Date::now() as i64 {
             return refuse(ErrorCode::Gone, "host lease deadline has passed");
         }
         let storage = self.state.storage();
@@ -301,7 +306,11 @@ impl Room {
             deadline_ms: start.deadline_ms,
         };
         storage.put(ROOM_KEY, active).await?;
-        storage.set_alarm(remaining).await?;
+        let remaining = start.deadline_ms.saturating_sub(js_sys::Date::now() as i64);
+        storage.set_alarm(remaining.max(1)).await?;
+        if start.deadline_ms <= js_sys::Date::now() as i64 {
+            return refuse(ErrorCode::Gone, "host lease deadline has passed");
+        }
         let raw: &ContainerControl = container.unchecked_ref();
         raw.start_with_options(&options)
             .map_err(|_| worker::Error::RustError("container start failed".into()))?;

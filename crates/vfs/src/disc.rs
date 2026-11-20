@@ -17,7 +17,7 @@ pub struct DiscBackend<R> {
     volume_bytes: u64,
     /// The image file, when opened by path ([`Backend::host_file`]).
     image: Option<std::path::PathBuf>,
-    mapping: Option<memmap2::Mmap>,
+    mapping: Option<MappedDisc>,
 }
 impl DiscBackend<File> {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
@@ -26,7 +26,7 @@ impl DiscBackend<File> {
 
     pub(crate) fn open_with_mapping(path: impl AsRef<Path>, mmap: bool) -> Result<Self> {
         let file = File::open(path.as_ref())?;
-        let mapping = if mmap { map_read_only(&file) } else { None };
+        let mapping = if mmap { MappedDisc::new(&file) } else { None };
         let mut disc = Self::new(file)?;
         disc.mapping = mapping;
         disc.image = Some(path.as_ref().to_path_buf());
@@ -160,7 +160,7 @@ impl<R: Read + Seek + Send> Backend for DiscBackend<R> {
             return Ok(0);
         }
         if let Some(map) = &self.mapping {
-            copy_mapped(map, start + offset, &mut buffer[..len])?;
+            map.read(start + offset, &mut buffer[..len])?;
         } else {
             self.reader.seek(SeekFrom::Start(start + offset))?;
             self.reader.read_exact(&mut buffer[..len])?;
@@ -182,23 +182,153 @@ impl<R: Read + Seek + Send> Backend for DiscBackend<R> {
     }
 }
 
-/// Only the DVD input in the immutable-disc profile is mapped. The title
-/// may replace or truncate its writable cache files and installed maps.
-// The crate denies unsafe code; this read-only map is its one exception.
+/// Map an immutable host input (a disc, a verified map or a sim store).
 #[allow(unsafe_code)]
+pub(crate) fn map_immutable(file: &File) -> std::io::Result<memmap2::Mmap> {
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::other("expected a regular file"));
+    }
+    // SAFETY: these inputs remain intact for the mapping's lifetime.
+    // The store builder replaces files by rename, including on a rebuild.
+    unsafe { memmap2::MmapOptions::new().map(file) }
+}
+
 pub(crate) fn map_read_only(file: &File) -> Option<memmap2::Mmap> {
-    if !file.metadata().ok()?.is_file() {
+    map_immutable(file).ok()
+}
+
+/// A whole-file read-only mapping whose bulk reads drop their pages after
+/// the copy out: every byte the title takes from the disc lands in guest
+/// RAM or in its cache-partition copy, so the mapped pages need not stay
+/// resident (a container host is charged for them; docs/live/dedicated-host.md,
+/// "Light host"). Small reads keep their pages.
+pub(crate) struct MappedDisc {
+    map: memmap2::Mmap,
+    /// A descriptor of the mapped file, for Linux page-cache advice.
+    #[cfg(target_os = "linux")]
+    file: Option<File>,
+}
+
+/// Bulk reads drop their pages. The guest's file I/O moves at most one
+/// kernel I/O chunk (64 KiB, `kernel::limits::IO_CHUNK`) per call, so every
+/// whole-map transfer drops as it goes; the small metadata reads of boot
+/// (headers, directory records) stay cached.
+pub(crate) const BULK_READ: usize = 64 * 1024;
+
+impl MappedDisc {
+    pub(crate) fn new(file: &File) -> Option<Self> {
+        map_read_only(file).map(|map| Self {
+            map,
+            #[cfg(target_os = "linux")]
+            file: file.try_clone().ok(),
+        })
+    }
+
+    /// Copy `[offset, offset + buffer.len())` out of the mapping, then drop
+    /// those pages again for a bulk read. A later read faults them back in,
+    /// so the bytes are the same either way.
+    pub(crate) fn read(&self, offset: u64, buffer: &mut [u8]) -> Result<()> {
+        copy_mapped(&self.map, offset, buffer)?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if buffer.len() >= BULK_READ
+            && let Some((start, len)) =
+                page_span(offset, buffer.len() as u64, rustix::param::page_size() as u64)
+        {
+            self.drop_mapped_pages(start, len);
+        }
+        Ok(())
+    }
+}
+
+/// The whole pages covering `[offset, offset + len)`: `(start, len)`,
+/// page-aligned and rounded outward, so a fault's readahead around the
+/// bytes asked for is dropped with them. `None` when the range is empty.
+fn page_span(offset: u64, len: u64, page: u64) -> Option<(u64, u64)> {
+    if len == 0 {
         return None;
     }
-    // SAFETY: The host-light input is an immutable disc image or immutable
-    // DVD files. Active files must remain intact until the run ends.
-    unsafe { memmap2::MmapOptions::new().map(file) }.ok()
+    let start = offset / page * page;
+    let end = (offset + len).div_ceil(page) * page;
+    Some((start, end - start))
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+impl MappedDisc {
+    #[allow(unsafe_code)]
+    fn drop_mapped_pages(&self, start: u64, len: u64) {
+        // The last page may extend beyond EOF. Give the kernel only the
+        // mapped bytes and let it round the length to whole pages.
+        let Some(bytes) = self.map.get(start as usize..) else {
+            return;
+        };
+        let len = bytes.len().min(len as usize);
+        let at = bytes.as_ptr().cast_mut().cast();
+        // SAFETY: the range starts on a host page boundary inside our
+        // immutable mapping. Discarding clean pages preserves their bytes.
+        #[cfg(target_os = "macos")]
+        unsafe {
+            libc::msync(at, len, libc::MS_KILLPAGES);
+        }
+        #[cfg(target_os = "linux")]
+        unsafe {
+            libc::madvise(at, len, libc::MADV_DONTNEED);
+            if let Some(file) = &self.file {
+                use std::os::fd::AsRawFd;
+                libc::posix_fadvise(
+                    file.as_raw_fd(),
+                    start as libc::off_t,
+                    len as libc::off_t,
+                    libc::POSIX_FADV_DONTNEED,
+                );
+            }
+        }
+    }
 }
 
 pub(crate) fn copy_mapped(map: &[u8], offset: u64, buffer: &mut [u8]) -> Result<()> {
-    let bytes = usize::try_from(offset).ok()
+    let bytes = usize::try_from(offset)
+        .ok()
         .and_then(|start| map.get(start..)?.get(..buffer.len()))
         .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?;
     buffer.copy_from_slice(bytes);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_bulk_read_through_the_mapping_reads_the_same_bytes_twice() {
+        // A file large enough for one bulk read and some tail: the second
+        // read must see the first's bytes after its pages were dropped.
+        let dir = std::env::temp_dir().join(format!("h2-mapped-disc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("data.bin");
+        let bytes: Vec<u8> = (0..BULK_READ + 8192).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&path, &bytes).unwrap();
+        let file = File::open(&path).unwrap();
+        let map = MappedDisc::new(&file).expect("a regular file maps");
+        let mut first = vec![0u8; BULK_READ];
+        let mut second = vec![0u8; BULK_READ];
+        map.read(3, &mut first).unwrap();
+        map.read(3, &mut second).unwrap();
+        assert_eq!(first, &bytes[3..3 + BULK_READ]);
+        assert_eq!(second, first);
+        let mut tail = [0u8; 8];
+        map.read((BULK_READ) as u64, &mut tail).unwrap();
+        assert_eq!(&tail[..], &bytes[BULK_READ..BULK_READ + tail.len()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn page_spans_round_outward_and_skip_empty_ranges() {
+        let page = 16384u64;
+        assert_eq!(page_span(0, 1, page), Some((0, page)));
+        assert_eq!(page_span(1, page - 1, page), Some((0, page)));
+        assert_eq!(page_span(1, page, page), Some((0, 2 * page)));
+        assert_eq!(page_span(page, page, page), Some((page, page)));
+        assert_eq!(page_span(5, 0, page), None);
+    }
 }

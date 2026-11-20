@@ -39,6 +39,7 @@ pub mod tuning;
 pub mod vehicle;
 mod visits;
 pub mod weapons;
+mod work;
 
 use std::collections::VecDeque;
 
@@ -79,13 +80,19 @@ pub struct Brain {
     tuning: Option<tuning::Tuning>,
     controller: human_input::Controller,
     observations: VecDeque<Observation>,
+    spare_observations: Vec<Observation>,
     sampled: Option<(u32, bool)>,
     pending_kills: Vec<emote::Kill>,
+    visibility: perceive::Visibility,
+    player_unit: Option<(u32, u32)>,
+    vehicle_headers: Vec<vehicle::read::VehicleHeader>,
+    vehicle_seats: vehicle::read::SeatBuffers,
 }
 
 #[derive(Default)]
 struct Observation {
     perception: brain::Perception,
+    visible_players: Option<u16>,
     vehicles: vehicle::Sight,
     kills: Vec<emote::Kill>,
     sounds: Vec<sound::ShotSound>,
@@ -138,9 +145,11 @@ impl Brain {
         self.mind.bounces = bounces;
         self.retune();
         self.controller = human_input::Controller::new(self.seed);
-        self.observations.clear();
+        self.discard_observations(false);
         self.sampled = None;
         self.pending_kills.clear();
+        self.visibility.clear_life();
+        self.player_unit = None;
     }
 
     pub fn new(skill: mind::Skill, seed: u64) -> Self {
@@ -154,8 +163,13 @@ impl Brain {
             tuning: None,
             controller: human_input::Controller::new(seed),
             observations: VecDeque::new(),
+            spare_observations: Vec::new(),
             sampled: None,
             pending_kills: Vec::new(),
+            visibility: Default::default(),
+            player_unit: None,
+            vehicle_headers: Vec::new(),
+            vehicle_seats: Default::default(),
         }
     }
 
@@ -201,6 +215,22 @@ impl Brain {
         )
     }
 
+    fn discard_observations(&mut self, keep_kills: bool) {
+        let mut newer = Vec::new();
+        if keep_kills {
+            std::mem::swap(&mut newer, &mut self.pending_kills);
+        }
+        while let Some(mut observation) = self.observations.pop_front() {
+            if keep_kills {
+                self.pending_kills.append(&mut observation.kills);
+            }
+            self.spare_observations.push(observation);
+        }
+        if keep_kills {
+            self.pending_kills.append(&mut newer);
+        }
+    }
+
     fn sample(
         &mut self,
         mut observation: Observation,
@@ -218,8 +248,8 @@ impl Brain {
                     board.forget_deaths(&observation.kills);
                 }
             }
-            observation.inbox = board.listen(p);
-            observation.supply_calls = board.supply_calls(p);
+            board.listen_into(p, &mut observation.inbox);
+            board.supply_calls_into(p, &mut observation.supply_calls);
             board.epoch
         };
         if self.epoch != epoch {
@@ -231,8 +261,9 @@ impl Brain {
             observation.kills.clear();
         }
 
-        self.pending_kills.append(&mut observation.kills);
         if self.sampled == Some((tick, alive)) {
+            self.pending_kills.append(&mut observation.kills);
+            self.spare_observations.push(observation);
             return self.controller.report();
         }
         if self
@@ -241,20 +272,20 @@ impl Brain {
         {
             // Visual samples are for the previous life. Preserve their
             // kill feed in order so a quick death cannot swallow a kill.
-            let current_kills = std::mem::take(&mut self.pending_kills);
-            self.pending_kills
-                .extend(self.observations.drain(..).flat_map(|o| o.kills));
-            self.pending_kills.extend(current_kills);
+            self.discard_observations(true);
             self.controller.discard_pending();
         }
         self.sampled = Some((tick, alive));
+        if !self.pending_kills.is_empty() {
+            self.pending_kills.append(&mut observation.kills);
+            std::mem::swap(&mut self.pending_kills, &mut observation.kills);
+        }
         let limits = self
             .tuning
             .unwrap_or_default()
             .input_limits(self.mind.skill);
         let intent =
             if alive {
-                observation.kills = std::mem::take(&mut self.pending_kills);
                 self.observations.push_back(observation);
                 let mut ready = None::<Observation>;
                 while self.observations.front().is_some_and(|o| {
@@ -263,13 +294,13 @@ impl Brain {
                     let mut next = self.observations.pop_front().unwrap();
                     if let Some(mut earlier) = ready.take() {
                         earlier.kills.append(&mut next.kills);
-                        next.kills = earlier.kills;
+                        std::mem::swap(&mut earlier.kills, &mut next.kills);
+                        self.spare_observations.push(earlier);
                     }
                     ready = Some(next);
                 }
                 ready.map_or_else(HostPadState::default, |o| self.think(o, map, channel, tick))
             } else {
-                observation.kills = std::mem::take(&mut self.pending_kills);
                 self.think(observation, map, channel, tick)
             };
         self.controller.step(tick, intent, limits)
@@ -277,35 +308,34 @@ impl Brain {
 
     fn think(
         &mut self,
-        observation: Observation,
+        mut observation: Observation,
         map: Option<&cache::MapData>,
         channel: &std::sync::Mutex<radio::Radio>,
         tick: u32,
     ) -> HostPadState {
-        let Observation {
-            perception,
-            kills,
-            sounds,
-            grenades,
-            vehicles,
-            inbox,
-            supply_calls,
-        } = observation;
-        self.mind.hear_deaths(&perception, &kills, map);
+        let p = &observation.perception;
+        self.mind.hear_deaths(p, &observation.kills, map);
         self.mind
             .decisions
-            .hear_supplies(&supply_calls, perception.tick);
-        if let Some((id, _)) = perception.observations.player {
+            .hear_supplies(&observation.supply_calls, p.tick);
+        if let Some((id, _)) = p.observations.player {
             let weight = self.mind.decisions.behavior().taunt_weight();
-            self.mind.emote.hear_with_style(&kills, Some(id), weight);
-        }
-        self.mind.decisions.inbox = inbox;
-        self.mind.see_vehicles(vehicles);
-        let pad = tuning::with(self.tuning, || {
             self.mind
-                .step_with_cues(&perception, map, &sounds, &grenades)
+                .emote
+                .hear_with_style(&observation.kills, Some(id), weight);
+        }
+        std::mem::swap(&mut self.mind.decisions.inbox, &mut observation.inbox);
+        std::mem::swap(&mut self.mind.vehicles.sight, &mut observation.vehicles);
+        let pad = tuning::with(self.tuning, || {
+            self.mind.step_observed(
+                p,
+                map,
+                &observation.sounds,
+                &observation.grenades,
+                observation.visible_players,
+            )
         });
-        let reports = self.mind.decisions.supply_reports(&perception);
+        let reports = self.mind.decisions.supply_reports(p);
         if self.mind.decisions.report.is_some() || !reports.is_empty() {
             let mut board = radio::lock(channel);
             if board.epoch == self.epoch {
@@ -318,6 +348,7 @@ impl Brain {
                 }
             }
         }
+        self.spare_observations.push(observation);
         pad
     }
 }
@@ -336,10 +367,12 @@ impl local::PadSource for Brain {
     fn reset_input(&mut self) {
         if let Some((tick, _)) = self.sampled.take() {
             self.mind.release(tick);
-            self.observations.clear();
+            self.discard_observations(false);
             self.pending_kills.clear();
             self.controller.reset();
         }
+        self.player_unit = None;
+        self.visibility.clear_life();
     }
 
     fn phantom_latency(&self) -> tuning::PhantomLatency {
@@ -356,51 +389,112 @@ impl local::PadSource for Brain {
             Some(id) => guest::Who::Machine(id),
             None => guest::Who::Port(u32::from(f.port)),
         };
-        let Ok((p, grenades)) = guest::perceive_for_brain(f.guest, who) else {
+        let mut observation = self.spare_observations.pop().unwrap_or_default();
+        let cursor = emote::kills().since_into(self.kills_seen, &mut observation.kills);
+        let name_change = autonav::loaded_change(&self.map);
+        let map = cache::current();
+        // Render can poll a local pad repeatedly within one game tick.
+        // Keep processing fresh kill events and same-tick life transitions.
+        if observation.kills.is_empty()
+            && name_change.is_none()
+            && f.tick
+                .is_some_and(|tick| self.sampled == Some((tick, true)))
+            && self.visibility.matches_map(map.as_ref())
+            && self
+                .player_unit
+                .is_some_and(|(slot, unit)| guest::same_live_unit(f.guest, who, slot, unit))
+        {
+            self.kills_seen = cursor;
+            self.spare_observations.push(observation);
+            return self.controller.report();
+        }
+        self.vehicle_headers.clear();
+        if guest::perception_into(
+            f.guest,
+            who,
+            true,
+            &mut observation.perception,
+            &mut observation.grenades,
+            Some(&mut self.vehicle_headers),
+        )
+        .is_err()
+        {
+            self.spare_observations.push(observation);
             self.reset_input();
             self.fidget.reset();
             return HostPadState::default();
-        };
-        // This map's super bounce spots (crate::glitches::spots).
-        let map = autonav::loaded();
-        if map != self.map {
-            self.mind.bounces = glitches::bounces(&map);
-            self.mind.experience.enter(&map);
-            self.map = map;
         }
-        let (kills, cursor) = emote::kills().since(self.kills_seen);
+        if let Some(name) = name_change {
+            self.mind.bounces = glitches::bounces(&name);
+            self.mind.experience.enter(&name);
+            self.map = name;
+        }
         self.kills_seen = cursor;
-        // The radio and the deaths every frame, alive or not
-        // (crate::decisions); the shots heard only in play.
+        let p = &mut observation.perception;
         let alive = p.me.is_some();
-        // Vehicles are extra: a fault reading them leaves the bot on foot
-        // (docs/game/bots.md, Vehicles).
-        let (vehicles, sounds) = if alive {
-            (
-                vehicle::read::sight_in_game(f.guest, who),
-                sound::recent(p.tick),
-            )
+        let unit = p.observations.player.and_then(|(id, _)| {
+            p.observations
+                .supply_players
+                .iter()
+                .find(|p| p.id == id)
+                .map(|p| (id, p.unit))
+        });
+        if let (Some(old), Some(new)) = (self.player_unit, unit)
+            && old != new
+        {
+            // A replacement biped can arrive without a dead sample.
+            self.discard_observations(true);
+            self.mind.release(p.tick);
+            self.controller.discard_pending();
+            self.sampled = None;
+        }
+        self.player_unit = unit;
+        if self.visibility.bind(map.as_ref(), unit, p.tick) {
+            self.mind.invalidate_routes();
+            // Observations filtered against old geometry must not guide a
+            // pad after the BSP has changed. Keep their kill feed in order.
+            self.discard_observations(true);
+        }
+        // Vehicles are extra: a fault reading them leaves the bot on foot.
+        if alive {
+            let headers = p
+                .observations
+                .pickups_scanned
+                .then_some(self.vehicle_headers.as_slice());
+            vehicle::read::sight_in_game_into(
+                f.guest,
+                who,
+                &mut observation.vehicles,
+                headers,
+                &mut self.vehicle_seats,
+            );
+            sound::recent_into(p.tick, &mut observation.sounds);
         } else {
-            Default::default()
-        };
-        let map = cache::current();
-        if let Some(loaded) = &map {
+            self.vehicle_seats.clear_sight(&mut observation.vehicles);
+            observation.sounds.clear();
+        }
+        if let Some(loaded) = &map
+            && observation
+                .vehicles
+                .riding
+                .is_some_and(|r| r.role == vehicle::SeatRole::Driver)
+        {
             self.mind.vehicles.paths.bind_map(loaded);
         }
-        let (mut p, mut vehicles, mut kills) = (p, vehicles, kills);
-        perceive::observe(&mut p, &mut vehicles, &mut kills, map.as_deref());
-        let pad = self.sample(
-            Observation {
-                perception: p,
-                vehicles,
-                kills,
-                sounds: if map.is_some() { sounds } else { Vec::new() },
-                grenades: if map.is_some() { grenades } else { Vec::new() },
-                ..Observation::default()
-            },
+        observation.visible_players = Some(perceive::observe_cached(
+            p,
+            &mut observation.vehicles,
+            &mut observation.kills,
             map.as_deref(),
-            radio::host(),
-        );
+            &mut self.visibility,
+            self.tuning.unwrap_or_default().work.player_los_ticks,
+            &mut self.vehicle_seats,
+        ));
+        if map.is_none() {
+            observation.sounds.clear();
+            observation.grenades.clear();
+        }
+        let pad = self.sample(observation, map.as_deref(), radio::host());
         if alive {
             self.fidget.reset();
             return pad;

@@ -30,6 +30,7 @@
 
 pub mod abi;
 pub mod backend;
+pub mod descriptor;
 pub mod device;
 pub mod dirty;
 pub mod events;

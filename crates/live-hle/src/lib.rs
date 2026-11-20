@@ -4,6 +4,7 @@
 #![deny(unsafe_code)]
 
 pub mod account_setup;
+pub mod films;
 mod auto;
 pub mod clankermatch;
 mod client;
@@ -555,6 +556,11 @@ impl Hle {
         done: Box<dyn FnOnce(live_proto::bots::PlayerCard) + Send>,
     ) {
         self.lock().bot_card(xuid, done)
+    }
+    /// Whether the guest has a signed-in player who can read the mod list.
+    /// Makes no request and never touches guest memory.
+    pub fn check_mod_list(&self) -> Result<(), mods::ModsError> {
+        self.lock().check_mod_list()
     }
     /// A page of the mod repository, newest first (`GET /v1/maps?sort=new`
     /// with a `read` token, docs/game/maps.md §5 "Mod downloads"). Returns

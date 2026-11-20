@@ -11,8 +11,8 @@ x87.workspace = true
 # Interrupt and HLE-call events (docs/perf/profiling.md); dependency-free.
 timeline = { path = "../timeline" }
 rustc-hash = "2"
-
-[target.'cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))'.dependencies]
+# mmap of guest RAM and its copy-on-write bases (src/cow.rs); as the
+# other crates pin it.
 libc = "0.2"
 
 [dev-dependencies]

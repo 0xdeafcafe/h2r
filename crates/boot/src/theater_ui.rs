@@ -72,7 +72,6 @@ enum Load {
     #[default]
     Loading,
     Ready(Vec<FilmMeta>),
-    Error(String),
 }
 
 #[derive(Default)]
@@ -86,6 +85,8 @@ struct State {
     status: String,
     clips: Vec<Clip>,
     clips_error: Option<String>,
+    local_error: Option<String>,
+    archive_error: Option<String>,
     revision: u64,
     open_generation: u64,
     player: Option<String>,
@@ -100,6 +101,14 @@ impl State {
         match &self.load {
             Load::Ready(list) => list,
             _ => &[],
+        }
+    }
+
+    fn library_error(&self) -> Option<&str> {
+        if self.tab == Tab::Recent {
+            self.local_error.as_deref().or(self.archive_error.as_deref())
+        } else {
+            self.local_error.as_deref()
         }
     }
 
@@ -154,7 +163,7 @@ struct Location {
     open: OpenLibrary,
     dir: PathBuf,
     stamp: String,
-    web: String,
+    live: live_hle::LiveConfig,
 }
 
 /// The guest screens and desktop compositor share one controller.
@@ -200,22 +209,19 @@ impl Theater {
         registry: &mut feature::Registry,
         dir: &Path,
         stamp: String,
-        web: Option<&str>,
+        live: &live_hle::LiveConfig,
         open: OpenLibrary,
     ) -> anyhow::Result<()> {
         *self.0.location.lock().unwrap_or_else(|e| e.into_inner()) = Some(Location {
             open,
             dir: dir.to_owned(),
             stamp,
-            web: web
-                .unwrap_or(live_proto::DEFAULT_SERVER)
-                .trim_end_matches('/')
-                .to_owned(),
+            live: live.clone(),
         });
         pages::install(registry, self.clone())
     }
 
-    /// Opening from the main menu starts the disk read in the background.
+    /// Opening Theater reads the local library and Live archives in the background.
     pub(crate) fn open(&self, player: Option<String>) {
         let generation = {
             let mut state = self.state();
@@ -225,6 +231,8 @@ impl Theater {
             state.selected = None;
             state.web = false;
             state.load = Load::Loading;
+            state.local_error = None;
+            state.archive_error = None;
             state.changed();
             state.open_generation
         };
@@ -234,8 +242,11 @@ impl Theater {
             .spawn(move || this.read_library(generation))
         {
             let mut state = self.state();
-            state.load = Load::Error(e.to_string());
-            state.changed();
+            if state.open_generation == generation {
+                state.load = Load::Ready(Vec::new());
+                state.local_error = Some(e.to_string());
+                state.changed();
+            }
         }
     }
 
@@ -247,14 +258,30 @@ impl Theater {
             .unwrap_or_else(|e| e.into_inner())
             .clone();
         let Some(location) = location else { return };
-        let films = (location.open)(&location.dir).and_then(|library| {
-            let mut films = library.list(&location.stamp)?;
-            films.sort_by(|a, b| {
-                b.started_ms
-                    .cmp(&a.started_ms)
-                    .then_with(|| a.id.cmp(&b.id))
-            });
+        let local = (location.open)(&location.dir).and_then(|library| {
+            let films = library.list(&location.stamp)?;
             Ok((library, films))
+        });
+        let (opened, mut films, local_error) = match local {
+            Ok((library, films)) => (Some(library), films, None),
+            Err(error) => (None, Vec::new(), Some(error)),
+        };
+        let archive = live_hle::films::recent(&location.live).and_then(|rows| {
+            rows.into_iter()
+                .map(FilmMeta::try_from)
+                .collect::<Result<Vec<_>, _>>()
+        });
+        let archive_error = match archive {
+            Ok(rows) => {
+                films.extend(rows);
+                None
+            }
+            Err(error) => Some(error),
+        };
+        films.sort_by(|a, b| {
+            b.started_ms
+                .cmp(&a.started_ms)
+                .then_with(|| a.id.cmp(&b.id))
         });
         let clips = adapter::load_clips(&adapter::clips_path(&location.dir));
         let mut library = self.0.library.lock().unwrap_or_else(|e| e.into_inner());
@@ -262,16 +289,10 @@ impl Theater {
         if state.open_generation != generation {
             return;
         }
-        state.load = match films {
-            Ok((opened, films)) => {
-                *library = Some(opened);
-                Load::Ready(films)
-            }
-            Err(error) => {
-                *library = None;
-                Load::Error(error)
-            }
-        };
+        *library = opened;
+        state.load = Load::Ready(films);
+        state.local_error = local_error;
+        state.archive_error = archive_error;
         match clips {
             Ok(clips) => {
                 state.clips = clips;
@@ -355,22 +376,22 @@ impl Theater {
     }
 
     fn url(&self, entry: &Entry) -> Option<String> {
-        if entry.film.source != adapter::Source::Host {
-            return None;
-        }
+        let game_id = entry.film.web_game_id.as_deref()?;
         let web = self
             .0
             .location
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
-            .map_or_else(|| live_proto::DEFAULT_SERVER.to_owned(), |l| l.web.clone());
-        if entry.film.id.is_empty() || matches!(entry.film.id.as_str(), "." | "..") {
+            .and_then(|l| l.live.server_url.clone())
+            .unwrap_or_else(|| live_proto::DEFAULT_SERVER.to_owned());
+        let web = web.trim_end_matches('/');
+        if game_id.is_empty() || matches!(game_id, "." | "..") {
             return None;
         }
         let mut id = String::new();
         use std::fmt::Write;
-        for b in entry.film.id.bytes() {
+        for b in game_id.bytes() {
             if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'~' | b'.') {
                 id.push(char::from(b));
             } else {

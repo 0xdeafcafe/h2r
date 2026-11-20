@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use engine::memory::{GuestMemory, MemFault};
 use runtime::guest::Permissions;
 
-use super::{DETAIL, Entry, FILMS, Load, Theater};
+use super::{DETAIL, Entry, FILMS, Load, Tab, Theater, adapter::Source};
 use crate::list_class::{
     ListClass, ListLayout, LiveText, Panel, PanelText, PictureSpec, Rows, TextBlock,
 };
@@ -73,13 +73,19 @@ pub(super) enum Action {
 }
 
 impl Action {
-    const ALL: [Self; 4] = [Self::Watch, Self::Save, Self::Delete, Self::Web];
+    fn for_entry(entry: &Entry) -> &'static [Self] {
+        if entry.film.source == Source::Archive {
+            &[Self::Web]
+        } else {
+            &[Self::Watch, Self::Save, Self::Delete, Self::Web]
+        }
+    }
 }
 
 impl Theater {
     fn choose_film(&self, row: i16) -> Chosen {
         let mut state = self.state();
-        if row == 0 && matches!(state.load, Load::Error(_)) {
+        if row == 0 && state.library_error().is_some() {
             let player = state.player.clone();
             drop(state);
             self.open(player);
@@ -97,7 +103,10 @@ impl Theater {
         let Some(entry) = state.selected.clone() else {
             return false;
         };
-        let Some(&action) = usize::try_from(row).ok().and_then(|i| Action::ALL.get(i)) else {
+        let Some(&action) = usize::try_from(row)
+            .ok()
+            .and_then(|i| Action::for_entry(&entry).get(i))
+        else {
             return false;
         };
         if action != Action::Delete {
@@ -116,7 +125,7 @@ impl Theater {
                 return false;
             }
             Action::Watch => {}
-            Action::Web if entry.film.source == super::adapter::Source::Host => {
+            Action::Web if entry.film.web_game_id.is_some() => {
                 state.web = !state.web;
             }
             Action::Web => {}
@@ -172,7 +181,11 @@ fn fitted(s: &str, limit: usize) -> String {
 fn film_line(entry: &Entry, player: Option<&str>) -> (String, String) {
     let film = &entry.film;
     let map = content::map_pack::title(&film.map).unwrap_or(&film.map);
-    let mark = if film.playable_here { "" } else { "* " };
+    let mark = if film.playable_here || film.source == Source::Archive {
+        ""
+    } else {
+        "* "
+    };
     let label = format!("{mark}{} / {}", fitted(map, 13), fitted(&film.variant, 13));
     let date = i64::try_from(film.started_ms)
         .ok()
@@ -220,7 +233,7 @@ fn films_model(state: &super::State) -> Vec<RowSpec> {
     let mut rows = Vec::new();
     let (label, value, press) = match &state.load {
         Load::Loading => ("Reading films...", "", Press::Nothing),
-        Load::Error(_) => ("Retry library", "", Press::Act),
+        Load::Ready(_) if state.library_error().is_some() => ("Retry library", "", Press::Act),
         Load::Ready(_) if state.entries().is_empty() => (
             match state.tab {
                 super::Tab::Recent => "No recent films",
@@ -236,7 +249,9 @@ fn films_model(state: &super::State) -> Vec<RowSpec> {
     rows.extend(state.entries().iter().take(MAX_ROWS - 1).map(|entry| {
         let (label, meta) = film_line(entry, state.player.as_deref());
         let row = RowSpec::info(&label, &meta).press(Press::Open(DETAIL.into()));
-        if entry.film.playable_here {
+        if entry.film.source == Source::Archive {
+            row.describe("Live archive")
+        } else if entry.film.playable_here {
             row
         } else {
             row.describe("Unavailable on this build")
@@ -250,8 +265,9 @@ fn detail_model(state: &super::State) -> Vec<RowSpec> {
         return vec![RowSpec::info("Film unavailable", "")];
     };
     let film = &entry.film;
-    Action::ALL
-        .into_iter()
+    Action::for_entry(entry)
+        .iter()
+        .copied()
         .map(|action| {
             let (label, enabled) = match action {
                 Action::Watch if !film.playable_here => ("Watch (build mismatch)", false),
@@ -263,7 +279,7 @@ fn detail_model(state: &super::State) -> Vec<RowSpec> {
                 Action::Web if state.web => ("Hide web link", true),
                 Action::Web => (
                     "Open on the web",
-                    film.source == super::adapter::Source::Host,
+                    film.web_game_id.is_some(),
                 ),
             };
             if enabled {
@@ -329,14 +345,25 @@ fn film_panel_values(state: &super::State, web: Option<String>) -> Vec<String> {
         return Vec::new();
     };
     let f = &entry.film;
-    let host = match f.source {
-        super::adapter::Source::Host => "Dedicated host",
-        super::adapter::Source::Local => "This console",
-    };
     let length = entry
         .clip
         .as_ref()
         .map_or(f.length_ticks, |c| c.to_tick - c.from_tick);
+    if f.source == Source::Archive {
+        let mut values = vec![
+            "Live archive".into(),
+            format!("Variant   {}", fitted(&f.variant, 20)),
+            format!("Length   {}", clock(length)),
+        ];
+        values.resize(6 + ROSTER * 4, String::new());
+        values.push(web.unwrap_or_default());
+        return values;
+    }
+    let host = if f.source == Source::Host {
+        "Dedicated host"
+    } else {
+        "This console"
+    };
     let stamp = f.image_stamp.trim().lines().next().unwrap_or_default();
     let roster_pages = f.players.len().div_ceil(ROSTER).max(1);
     let mut values = vec![
@@ -439,8 +466,10 @@ pub(super) fn spec(theater: &Theater, list: bool) -> ScreenSpec {
             tabs(&state).join("     "),
         ));
         s.help = match &state.load {
-            Load::Error(error) => Some(fitted(error, 38)),
-            Load::Ready(_) if state.tab == super::Tab::Clips => state.clips_error.clone(),
+            Load::Ready(_) if state.library_error().is_some() => {
+                state.library_error().map(|error| fitted(error, 38))
+            }
+            Load::Ready(_) if state.tab == Tab::Clips => state.clips_error.clone(),
             _ => None,
         };
     } else {
@@ -463,7 +492,7 @@ pub(super) fn spec(theater: &Theater, list: bool) -> ScreenSpec {
         } else if state
             .selected
             .as_ref()
-            .is_some_and(|entry| !entry.film.playable_here)
+            .is_some_and(|entry| !entry.film.playable_here && entry.film.source != Source::Archive)
         {
             Some("Unavailable on this build".into())
         } else {

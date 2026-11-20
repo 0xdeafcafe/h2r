@@ -834,6 +834,32 @@ const BIPED_CROUCH_REQUEST: u32 = 1 << 23;
 /// Object body damage flags bit 2: the body is depleted (dead).
 pub const BODY_DEPLETED: u16 = 1 << 2;
 
+/// A fast same-tick check before reusing a local bot's already sampled pad.
+pub(crate) fn same_live_unit(m: &dyn GuestMemory, who: Who, slot: u32, unit: u32) -> bool {
+    let check = || -> R<bool> {
+        if game_mode(m) != Some(MODE_MULTIPLAYER) {
+            return Ok(false);
+        }
+        let Some(array) = players::array(m)? else {
+            return Ok(false);
+        };
+        let Some(p) = array.get_absolute(m, slot as i32)? else {
+            return Ok(false);
+        };
+        if !p.listed(m)? || !is(m, &p, who)? {
+            return Ok(false);
+        }
+        let Some(handle) = p.unit(m)?.filter(|h| h.raw() == unit) else {
+            return Ok(false);
+        };
+        let Some((kind, body)) = objects::get(m, handle)? else {
+            return Ok(false);
+        };
+        Ok(kind == objects::BIPED && body.damage_flags(m)? & BODY_DEPLETED == 0)
+    };
+    check().unwrap_or(false)
+}
+
 /// A player's living unit: its origin (in the world: a rider's is its
 /// vehicle's), aim and body.
 fn living_unit(
@@ -929,41 +955,71 @@ pub fn perceive(m: &dyn GuestMemory, port: u32) -> R<Perception> {
 /// player with a living unit, the weapons lying about and the objective.
 /// Outside one, nothing.
 pub fn perceive_as(m: &dyn GuestMemory, who: Who) -> R<Perception> {
-    Ok(perception(m, who, false)?.0)
+    let mut out = Perception::default();
+    perception_into(m, who, false, &mut out, &mut Vec::new(), None)?;
+    Ok(out)
 }
 
+#[cfg(test)]
 pub(crate) fn perceive_for_brain(
     m: &dyn GuestMemory,
     who: Who,
 ) -> R<(Perception, Vec<crate::incoming::Grenade>)> {
-    perception(m, who, true)
+    let mut out = Perception::default();
+    let mut grenades = Vec::new();
+    perception_into(m, who, true, &mut out, &mut grenades, None)?;
+    Ok((out, grenades))
 }
 
-fn perception(
+pub(crate) fn perception_into(
     m: &dyn GuestMemory,
     who: Who,
     sense_grenades: bool,
-) -> R<(Perception, Vec<crate::incoming::Grenade>)> {
-    let mut out = Perception::default();
-    let mut grenades = Vec::new();
+    out: &mut Perception,
+    grenades: &mut Vec<crate::incoming::Grenade>,
+    vehicle_headers: Option<&mut Vec<crate::vehicle::read::VehicleHeader>>,
+) -> R<()> {
+    out.me = None;
+    out.teams = false;
+    out.tick = 0;
+    out.objective = None;
+    out.observations.player = None;
+    out.observations.ahead = false;
+    out.observations.service_rate = None;
+    out.observations.pickups_scanned = false;
+    out.observations.contacts.clear();
+    out.observations.supply_players.clear();
+    out.observations.held_power.clear();
+    out.observations.takes.clear();
+    out.others.clear();
+    out.pickups.clear();
+    grenades.clear();
+    if let Some(sites) = &mut out.observations.supplies {
+        sites.clear();
+    }
     let globals = m.u32(points::GAME_GLOBALS.base)?;
     if globals == 0 || m.u32(globals + OPTIONS)? != MODE_MULTIPLAYER {
-        return Ok((out, grenades));
+        out.observations.supplies = None;
+        return Ok(());
     }
     out.teams = m.u32(globals + OPTIONS + VARIANT_FLAGS)? & 1 != 0;
     out.tick = game_tick(m).unwrap_or(0);
     let Some(array) = players::array(m)? else {
-        return Ok((out, grenades));
+        out.observations.supplies = None;
+        return Ok(());
     };
     let mut me_index = None;
-    let mut scoreboard = Vec::new();
-    for (handle, p) in array.live(m, 16)? {
+    let mut scoreboard = [(0, 0); 16];
+    let mut listed = 0;
+    for player in array.live_iter(m, 16)? {
+        let (handle, p) = player?;
         if !p.listed(m)? {
             continue;
         }
         let id = u32::from(handle.index());
         let team = i16::from(p.team(m)?);
-        scoreboard.push((id, team));
+        scoreboard[listed] = (id, team);
+        listed += 1;
         let ours = is(m, &p, who)?;
         if ours {
             out.observations.player = Some((id, team));
@@ -1026,22 +1082,37 @@ fn perception(
         }
     }
     if let Some(me) = me_index {
-        out.observations.ahead = intel::ahead(m, me, out.teams, &scoreboard).unwrap_or(false);
+        out.observations.ahead =
+            intel::ahead(m, me, out.teams, &scoreboard[..listed]).unwrap_or(false);
         let near = out.me.filter(|_| sense_grenades).map(|me| me.position);
-        if let Ok(ground) = crate::arms::ground(m, near) {
-            out.pickups = ground.weapons;
-            out.observations.held_power = ground.held_power;
-            out.observations.takes = pickups::recent(out.tick);
-            out.observations.supplies = ground.supplies;
+        let mut ground = crate::arms::Ground {
+            weapons: std::mem::take(&mut out.pickups),
+            held_power: std::mem::take(&mut out.observations.held_power),
+            supplies: out.observations.supplies.take(),
+            grenades: std::mem::take(grenades),
+        };
+        let scanned = crate::arms::ground_into(m, near, &mut ground, vehicle_headers).is_ok();
+        out.pickups = ground.weapons;
+        out.observations.held_power = ground.held_power;
+        out.observations.supplies = ground.supplies;
+        *grenades = ground.grenades;
+        if scanned {
+            pickups::recent_into(out.tick, &mut out.observations.takes);
             out.observations.service_rate = intel::service_rate(m);
             out.observations.pickups_scanned = true;
-            grenades = ground.grenades;
+        } else {
+            out.pickups.clear();
+            out.observations.held_power.clear();
+            out.observations.supplies = None;
+            grenades.clear();
         }
         // The objective is extra too: a fault leaves the bot playing as in
         // Slayer (section 3.7).
         out.objective = crate::objective::read(m, me).ok().flatten();
+    } else {
+        out.observations.supplies = None;
     }
-    Ok((out, grenades))
+    Ok(())
 }
 
 #[cfg(test)]

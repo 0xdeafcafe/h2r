@@ -14,6 +14,7 @@ use serde_json::Value;
 pub enum Source {
     Host,
     Local,
+    Archive,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -43,6 +44,36 @@ pub struct FilmMeta {
     pub saved: bool,
     pub result: Option<String>,
     pub host: Option<String>,
+    pub web_game_id: Option<String>,
+}
+
+impl TryFrom<live_hle::films::RecentFilm> for FilmMeta {
+    type Error = String;
+
+    fn try_from(film: live_hle::films::RecentFilm) -> Result<Self, Self::Error> {
+        if !live_proto::game::valid_id(&film.game_id) {
+            return Err("Invalid Live film ID".into());
+        }
+        let date = chrono::DateTime::parse_from_rfc3339(&film.started_at)
+            .map_err(|_| "Invalid Live film date".to_owned())?;
+        let started_ms = u64::try_from(date.timestamp_millis())
+            .map_err(|_| "Invalid Live film date".to_owned())?;
+        Ok(Self {
+            id: format!("live:{}", film.game_id),
+            map: film.map,
+            variant: film.variant.unwrap_or(film.mode),
+            started_ms,
+            length_ticks: film.duration_s.unwrap_or(0).saturating_mul(30),
+            players: Vec::new(),
+            source: Source::Archive,
+            image_stamp: String::new(),
+            playable_here: false,
+            saved: false,
+            result: film.result,
+            host: None,
+            web_game_id: Some(film.game_id),
+        })
+    }
 }
 
 pub trait Library: Send + Sync {

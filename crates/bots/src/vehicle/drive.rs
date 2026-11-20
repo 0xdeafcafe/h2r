@@ -51,6 +51,7 @@ pub struct Route {
     points: Vec<Vec3>,
     next: usize,
     pub goal: Vec3,
+    checked: Option<(u32, Vec3)>,
 }
 
 impl Route {
@@ -60,12 +61,58 @@ impl Route {
             points,
             next: 0,
             goal,
+            checked: None,
         }
     }
 
     /// Straight there (no nav mesh).
     pub fn straight(goal: Vec3) -> Route {
         Route::new(vec![goal], goal)
+    }
+
+    pub(crate) fn into_points(self) -> Vec<Vec3> {
+        self.points
+    }
+
+    /// The complete span is checked on the driver's phase. Between those
+    /// checks the previous carrot is usable only with fresh local clearance.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn steer(
+        &mut self,
+        map: &MapData,
+        spec: Spec,
+        at: Vec3,
+        speed: f32,
+        tick: u32,
+        slot: Option<u32>,
+        period: u32,
+    ) -> Option<Vec3> {
+        if self.next + 1 == self.points.len() && dist_xy(at, self.points[self.next]) <= ARRIVED {
+            self.next += 1;
+            return None;
+        }
+        let check_full = self.checked.is_none_or(|(then, carrot)| {
+            dist_xy(at, carrot) < 0.45
+                || slot.is_none_or(|slot| crate::work::phase_due(tick, then, slot, period))
+        });
+        if check_full {
+            let mut floor = None;
+            let carrot = self.carrot_clear(at, |to| {
+                clear_with_floor(map, spec, at, to, || {
+                    *floor.get_or_insert_with(|| start_floor(map, at))
+                })
+            });
+            self.checked = carrot.map(|point| (tick, point));
+            return carrot;
+        }
+
+        let (_, carrot) = self.checked?;
+        let length = dist_xy(at, carrot);
+        // At least four wheel samples, or the distance travelled in the
+        // next 150 ms at the current speed, if longer.
+        let fraction = ((speed * 0.15).max(1.8) / length.max(0.01)).min(1.0);
+        let near = std::array::from_fn(|i| at[i] + (carrot[i] - at[i]) * fraction);
+        clear(map, spec, at, near).then_some(carrot)
     }
 
     pub fn done(&self) -> bool {
@@ -104,20 +151,27 @@ impl Route {
 
     /// Follow the route in order. Only cut a corner if the direct span
     /// still fits the chassis, even when a waypoint is already nearby.
-    pub fn carrot_clear(&mut self, at: Vec3, clear: impl Fn(Vec3) -> bool) -> Option<Vec3> {
-        while self.next + 1 < self.points.len()
-            && dist_xy(at, self.points[self.next]) < REACHED
-            && clear(self.points[self.next + 1])
-        {
+    pub fn carrot_clear(&mut self, at: Vec3, mut clear: impl FnMut(Vec3) -> bool) -> Option<Vec3> {
+        let mut first_clear = false;
+        let mut next_blocked = false;
+        while self.next + 1 < self.points.len() && dist_xy(at, self.points[self.next]) < REACHED {
+            if !clear(self.points[self.next + 1]) {
+                next_blocked = true;
+                break;
+            }
             self.next += 1;
+            first_clear = true;
         }
         let first = *self.points.get(self.next)?;
         if self.next + 1 == self.points.len() && dist_xy(at, first) <= ARRIVED {
             self.next += 1;
             return None;
         }
-        if !clear(first) {
+        if !first_clear && !clear(first) {
             return None;
+        }
+        if next_blocked {
+            return Some(first);
         }
         Some(
             self.points[self.next + 1..]
@@ -134,6 +188,20 @@ impl Route {
 /// The lanes under the wheels and hull all stay on drivable ground, and
 /// the chassis fits under overhead geometry and between walls.
 pub fn clear(map: &MapData, spec: Spec, from: Vec3, to: Vec3) -> bool {
+    clear_with_floor(map, spec, from, to, || start_floor(map, from))
+}
+
+fn start_floor(map: &MapData, from: Vec3) -> Option<f32> {
+    map.nav.nearest(from, 0.25, 0.45, 1.5).map(|(_, p)| p[2])
+}
+
+fn clear_with_floor(
+    map: &MapData,
+    spec: Spec,
+    from: Vec3,
+    to: Vec3,
+    floor: impl FnOnce() -> Option<f32>,
+) -> bool {
     let dx = to[0] - from[0];
     let dy = to[1] - from[1];
     let length = dx.hypot(dy);
@@ -144,14 +212,14 @@ pub fn clear(map: &MapData, spec: Spec, from: Vec3, to: Vec3) -> bool {
         -dy * spec.half_width / length,
         dx * spec.half_width / length,
     ];
-    let Some((_, center)) = map.nav.nearest(from, 0.25, 0.45, 1.5) else {
+    let Some(start_z) = floor() else {
         return false;
     };
     let steps = (length / 0.45).ceil() as u32;
     for lane in [-1.0, 0.0, 1.0] {
         let [sx, sy] = side.map(|v| lane * v);
         let mut last = None;
-        let mut z = center[2];
+        let mut z = start_z;
         for step in 0..=steps {
             let t = step as f32 / steps as f32;
             let probe = [from[0] + dx * t + sx, from[1] + dy * t + sy, z + 0.35];

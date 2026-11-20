@@ -53,6 +53,13 @@ pub fn note_skipped_present() {
     PRESENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// A descriptor-only lobby swap still advances host frame timing.
+#[cfg(not(feature = "desktop-runtime"))]
+pub(crate) fn note_descriptor_present() {
+    let present = PRESENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    crate::host_perf::on_present(present);
+}
+
 /// Wall-clock time of every present, for the frame-rate report.
 static KEEP_PRESENT_HISTORY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 static PRESENT_TIMES: Mutex<Vec<std::time::Instant>> = Mutex::new(Vec::new());

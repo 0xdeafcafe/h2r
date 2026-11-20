@@ -8,7 +8,7 @@ license.workspace = true
 [dependencies]
 timeline = { path = "../timeline" }
 runtime.workspace = true
-feature = { path = "../feature" }
+feature = { path = "../feature", default-features = false }
 engine = { path = "../engine", features = ["runtime-glue"] }
 live-proto.workspace = true
 map.workspace = true

@@ -6,8 +6,8 @@ module compiled from your own disc. Use a private registry for this image.
 ## Build on macOS
 
 Install [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild), Zig,
-the Rust `x86_64-unknown-linux-gnu` target and LLVM's `clang`, `ld.lld` and
-`llvm-ar`. Put the LLVM tools on `PATH` and use an amd64 Debian bookworm
+the Rust `x86_64-unknown-linux-gnu` target and LLVM's `clang`, `ld.lld`,
+`llvm-ar` and `llvm-strip`. Put the LLVM tools on `PATH` and use an amd64 Debian bookworm
 sysroot with glibc development files, Linux headers and GCC support files.
 The script checks these prerequisites and prints installation hints.
 [Linux module build](../../docs/runtime/linux.md)
@@ -19,6 +19,9 @@ and `H2_LINUX_SYSROOT` to the absolute sysroot path. Stage the host and module.
 deploy/host/build.sh "$H2_DISC"
 ```
 
+Pass `--coverage FILE` to stage a slim module built from the recorded owner
+list. [Record and check a slim host](../../docs/live/dedicated-host-build.md#slim-host)
+
 Pack the staged files into a local image.
 
 ```sh
@@ -27,9 +30,20 @@ docker buildx build --platform linux/amd64 --load -t h2host:local deploy/host
 
 The script builds the Linux host against bookworm's glibc 2.36 and uses a
 Mac build of `h2` from the same checkout to emit `libh2game.so` and its
-stamp. Set `H2_BIN` to reuse a Mac binary from that revision. Docker takes
-the staged host, module and stamp. Supply the matching code-generation
-settings at runtime if you override defaults such as `H2_OPT`.
+stamp. Set `H2_BIN` to reuse a Mac binary from that revision. The script
+strips the staged copies. The scratch image copies the ELF runtime
+dependencies, certificates, entrypoint shell and staged files. Supply the
+matching code-generation settings at runtime if you override defaults
+such as `H2_OPT`.
+
+For a private registry push, export the rootfs layer with gzip level 9.
+Set `H2_HOST_IMAGE` to the private image reference.
+
+```sh
+docker buildx build --platform linux/amd64 \
+  --output "type=image,name=$H2_HOST_IMAGE,push=true,compression=gzip,compression-level=9,force-compression=true" \
+  deploy/host
+```
 
 ## Run one lease
 

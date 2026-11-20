@@ -2,7 +2,6 @@
 //! move within a polygon even while the ordered walk portals stay the same.
 use super::{Kind, Search, V3};
 use crate::cache::MapData;
-use rustc_hash::FxHashMap;
 use std::sync::{Arc, Weak};
 
 #[derive(Clone, Debug, Default)]
@@ -10,10 +9,12 @@ pub(crate) struct VehiclePaths {
     owner: Weak<MapData>,
     // Vehicle datum and exact chassis dimensions (including mounted parts).
     chassis: Option<(u32, u32, u32)>,
-    portals: FxHashMap<u32, Option<V3>>,
+    // Indexed by nav edge: unchecked, blocked, or a clear crossing point.
+    portals: Vec<Option<Option<V3>>>,
     search: Search,
     exhausted_from: Option<u32>,
-    last: Option<(u32, u32, Vec<u32>)>,
+    last: Option<(u32, u32)>,
+    edges: Vec<u32>,
     #[cfg(test)]
     pub(crate) searches: usize,
 }
@@ -34,7 +35,8 @@ impl VehiclePaths {
         self.last = None;
     }
 
-    pub(crate) fn vehicle_path(
+    #[cfg(test)]
+    pub(super) fn vehicle_path(
         &mut self,
         map: &MapData,
         vehicle: u32,
@@ -43,52 +45,82 @@ impl VehiclePaths {
         half_width: f32,
         height: f32,
     ) -> Option<Vec<V3>> {
+        let mut points = Vec::new();
+        self.vehicle_path_into(map, vehicle, from, to, half_width, height, &mut points)
+            .then_some(points)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn vehicle_path_into(
+        &mut self,
+        map: &MapData,
+        vehicle: u32,
+        from: V3,
+        to: V3,
+        half_width: f32,
+        height: f32,
+        points: &mut Vec<V3>,
+    ) -> bool {
+        points.clear();
         // A caller passing a plain borrowed map can edit it between ticks.
         if !std::ptr::eq(self.owner.as_ptr(), map) {
             self.owner = Weak::new();
             self.chassis = None;
         }
         let chassis = (vehicle, half_width.to_bits(), height.to_bits());
+        let nav = &map.nav;
         if self.chassis != Some(chassis) {
             self.portals.clear();
+            self.portals.resize(nav.edges.len(), None);
             self.last = None;
             self.exhausted_from = None;
             self.chassis = Some(chassis);
         }
 
-        let nav = &map.nav;
-        let (start, _) = nav.nearest(from, 1.2, 0.5, 1.5)?;
-        let (goal, to) = nav.nearest(to, 2.0, 0.5, 1.5)?;
+        let Some((start, _)) = nav.nearest(from, 1.2, 0.5, 1.5) else {
+            return false;
+        };
+        let Some((goal, to)) = nav.nearest(to, 2.0, 0.5, 1.5) else {
+            return false;
+        };
         if self.exhausted_from == Some(start) && !self.search.reached(goal) {
-            return None;
+            return false;
         }
-        if self
-            .last
-            .as_ref()
-            .is_none_or(|(s, g, _)| (*s, *g) != (start, goal))
-        {
+        if self.last != Some((start, goal)) {
             #[cfg(test)]
             {
                 self.searches += 1;
             }
-            let corridor = self.search.corridor(nav, start, goal, |i, e| {
-                e.kind != Kind::Walk
-                    || self
-                        .portals
-                        .entry(i)
-                        .or_insert_with(|| nav.vehicle_portal(e, half_width, height, &map.walls))
-                        .is_none()
-            });
-            self.exhausted_from = corridor.is_none().then_some(start);
-            self.last = corridor.map(|edges| (start, goal, edges));
+            let portals = &mut self.portals;
+            let found = self.search.corridor_into(
+                nav,
+                start,
+                goal,
+                |i, e| {
+                    e.kind != Kind::Walk
+                        || portals[i as usize]
+                            .get_or_insert_with(|| {
+                                nav.vehicle_portal(e, half_width, height, &map.walls)
+                            })
+                            .is_none()
+                },
+                &mut self.edges,
+            );
+            self.exhausted_from = (!found).then_some(start);
+            self.last = found.then_some((start, goal));
+            if !found {
+                return false;
+            }
         }
-        let (_, _, edges) = self.last.as_ref()?;
-        let mut points = Vec::with_capacity(edges.len() + 1);
-        for edge in edges {
-            points.push(self.portals[edge]?);
-        }
+
+        // Every edge in the corridor passed the portal predicate above.
+        points.extend(
+            self.edges
+                .iter()
+                .map(|&edge| self.portals[edge as usize].flatten().unwrap()),
+        );
         points.push(to);
-        Some(points)
+        true
     }
 }
 

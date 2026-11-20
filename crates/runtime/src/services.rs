@@ -86,8 +86,8 @@ impl Runtime {
     }
 
     /// Install the generated registry before any execution contexts are built.
-    pub fn enable_guest_coverage(&self, entries: &[crate::H2GenEntry]) {
-        let _ = self.coverage.set(crate::coverage::Coverage::new(entries));
+    pub fn enable_guest_coverage(&self, entries: &[crate::H2GenEntry], resumes: &[crate::H2GenResume]) {
+        let _ = self.coverage.set(crate::coverage::Coverage::new(entries, resumes));
     }
 
     pub fn guest_coverage(&self) -> Option<crate::GuestCoverage> {

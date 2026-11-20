@@ -41,6 +41,10 @@ pub enum Error {
     ReparsePointNotResolved = 0xC000_0280,
     #[error("file too large")]
     FileTooLarge = 0xC000_0904,
+    /// A sim store was asked for bytes no recording covered. The named
+    /// cause is on stderr; the guest sees a device data error.
+    #[error("bytes not in the sim store")]
+    NotInStore = 0xC000_009C,
     #[error("filesystem corrupt or ambiguous")]
     FileCorrupt = 0xC000_0102,
     #[error("host I/O error")]

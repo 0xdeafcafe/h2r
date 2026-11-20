@@ -77,6 +77,26 @@ fn floor() -> NavMesh {
     )
 }
 
+#[test]
+fn walking_replaces_a_route_for_a_changed_goal_off_phase() {
+    let map = MapData {
+        nav: floor(),
+        ..Default::default()
+    };
+    let mut mind = Mind::new(Skill::Normal, 1);
+    mind.slot = Some(5);
+    let at = [5.0, 5.0, 0.0];
+    let east = [14.0, 5.0, 0.0];
+    let west = [2.0, 5.0, 0.0];
+    let mut pad = HostPadState::default();
+
+    let walk = mind.go(at, east, 1, Some(&map), &mut pad, &[]).unwrap();
+    assert!(walk.walk[0] > 0.0);
+    let walk = mind.go(at, west, 2, Some(&map), &mut pad, &[]).unwrap();
+    assert!(walk.walk[0] < 0.0);
+    assert_eq!(mind.follower.as_ref().and_then(Follower::goal), Some(west));
+}
+
 /// A wall across X = 5 from Y -20 to 20, Z 0 to 3.
 fn wall() -> Walls {
     let q = [

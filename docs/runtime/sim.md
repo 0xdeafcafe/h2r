@@ -297,6 +297,10 @@ reaction = 5
 - phantom transport: `phantom_ping_ms` (0–1000 ms round trip) and
   `phantom_jitter_ms` (0–50 ms bounded one-way variation). These fields
   apply when the source drives a phantom;
+- host work intervals in game ticks (1–30 each): `foot_plan_ticks`
+  (default 6), `vehicle_plan_ticks` (8), `vehicle_lookahead_ticks` (3)
+  and `player_los_ticks` (3). See [Bot navigation performance](#bot-navigation-performance)
+  for what each interval controls;
 - `aim_model`: `code` (the hand-written tracking, the default) or `net`
   (the aim net; [bots.md §3.4.1](../game/bots.md#341-the-aim-net-compared-the-code-aim-stays)).
 
@@ -339,7 +343,9 @@ ticks; and the final score. The report is one JSON file per match:
   "result": { "end": "game_over", "winner": {"player": 2}, "teams": [] },
   "ticks": 9000, "game_seconds": 300.0,
   "wall": { "setup_s": 21.8, "match_s": 41.2, "process_s": 63.0, "speedup": 7.28,
-            "process_speedup": 4.76, "ms_per_tick": 4.58 },
+            "process_speedup": 4.76, "ms_per_tick": 4.58,
+            "peak_rss_mib": 981, "footprint_mib": 143,
+            "guest_written_pages": 2100, "guest_pages": 16384 },
   "players": [
     { "index": 0, "name": "A1", "bot": true, "port": 0, "arm": "base", "team": 0,
       "score": 12, "kills": 12, "deaths": 9, "assists": 2, "suicides": 0, "betrayals": 0,
@@ -374,6 +380,74 @@ any other player in free-for-all. Multiple pellets, splash and melee can
 produce separate reports. The original `hits`, `accuracy`,
 `damage_dealt` and `damage_taken` fields keep their previous definitions.
 Readers can continue to load earlier `h2-sim-report/1` reports.
+
+The `wall` block carries the process's memory: `peak_rss_mib`
+(`getrusage`'s `ru_maxrss`), `footprint_mib` on macOS
+(`proc_pid_rusage`'s `ri_phys_footprint` — dirty pages, the number a
+fleet pays for), and, when the run loaded a shared copy-on-write guest
+RAM base (§6.1), `guest_written_pages` of `guest_pages`: the census of
+what the match wrote over the base, so batches record memory per run.
+Measured 2026-11-20, one waterworks 2v2 sim process, macOS: peak RSS
+about 981 MiB (791 MiB of it the resident pages of the whole mmapped
+disc image), footprint (dirty) 143 MiB (103 MiB Malloc Large, of which
+guest RAM is 64 MiB; 35 MiB Malloc Small), shared `__TEXT` 414 MiB.
+
+### 6.1 Sim stores: the map without the map
+
+The retail map is never streamed in a sim or light host that uses
+stores. A recording pass notes every byte range the guest reads through
+the VFS; the build packs those ranges per map into one small file; the
+run serves the map from it, byte for byte at the same offsets, and a
+read of a byte no recording covered is a named error (`NotInStore`,
+with the range on stderr) — never a silent fall back to the disc, so a
+miss is found, recorded, and the store rebuilt:
+
+```sh
+# 1. Record (runs merge, so play several seeds for coverage):
+H2_SIM_STORE_RECORD=reads.txt h2 sim run match.toml
+# 2. Build (verified byte for byte against the disc):
+h2 sim store build waterworks --disc disc/halo2.iso --out store --reads reads.txt
+#    ...or every map the recording holds:
+h2 sim store build all --disc disc/halo2.iso --out store --reads reads.txt
+# 3. Serve (default off until measured):
+H2_SIM_STORE=store h2 sim run match.toml   # or h2 serve --system-link --host-light
+```
+
+The store file (`<map>.h2store`) is a 24-byte header, a sorted range
+index and the packed bytes of the ranges — nothing else. The serving
+side (`vfs::SimStoreBackend`, layered under `H2_MAP_DIR` and
+`H2_SERVER_MAP_DIR`) keeps only the index in memory, maps the file
+read-only and copies straight into the guest's own read buffer, so
+every process on one host shares the store's page-cache pages and
+nothing private is retained. `stat` keeps the map's logical length; a
+store-served map has no `host_file` (like a streamed overlay); an
+unreadable store file makes the map's reads fail, never fall back.
+Two games on different maps still share `shared.map`'s store, the
+common tag data both read, and the dylib's code pages.
+
+Boot still opens the disc image for the XBE and small header reads;
+with a store covering every map the sim reads, the image's resident
+pages stop mattering. Without `H2_SIM_STORE`, the light profile maps
+the disc read-only and drops a bulk read's pages again after the copy
+out (`vfs::disc`), so a map copied to the title's cache partition
+leaves no pages behind either.
+
+### 6.2 Sharing guest RAM between games on one machine
+
+Halo copies a map's tag data into guest RAM at load, so each process
+holds its own dirty copy. `state.save` with `"cow": true` writes, beside
+the snapshot, a sparse raw RAM image (`<name>.ram`: zero pages are
+holes); `state.load` with `"cow": true` maps that file private
+copy-on-write in place of decoding RAM in — pages the match never
+writes stay one shared set across every process on the same image
+(including the zero pages), and only written pages become private.
+`h2 sim batch --fork` saves and loads this way. The match-end census in
+the report's `wall` block (`guest_written_pages`) says how much stayed
+shared; `vmmap` (macOS) or `/proc/<pid>/smaps` (Linux, `Private_Dirty`
+versus `Shared`) per process says what a fleet keeps. Note: machine
+snapshots need the full audio path, so `--fork` refuses the light host
+until that blocker is lifted — `H2_FEATURES=-host-light` for a full
+headless fork.
 
 `ttk_kills` and `ttk_ticks` are the time to kill. A fight is a player's
 hits with damage on one opponent, none more than 150 ticks after the
@@ -739,13 +813,101 @@ bot glue and 2,917 in ground-vehicle pathfinding. Wall checks accounted
 for 1,866 top-of-stack samples across threads. The hash-table growth
 under those checks came from the temporary set of triangle IDs per ray.
 
-Drivers now reuse corridors, unreachable results and portal clearance.
-Wall probes within one grid cell test its triangles directly. Longer
-probes use reusable visit marks. A* reuses its heap and polygon records,
-and the tally takes ownership of each tick sample. The 2× target still
-needs a matched before/after run. Compare ms/tick and per-tick hashes
-with the same build profile, map, seed, seats and tick limit, including
-an all-local Lockout control.
+The first optimization pass added corridor, unreachable-result and portal
+clearance reuse. It also removed the temporary triangle set from wall
+rays, reused A* search records and let the sim tally take ownership of
+each tick sample. The all-local profile in the [simulation budget](../perf/sim-budget.md)
+is a separate measurement. Guest code accounted for 70.76% of its main
+thread, so a host-side bot change alone cannot halve that workload.
+
+#### Per-tick work
+
+| Work | Before scheduling | Current frequency |
+|---|---|---|
+| Local and phantom pads | The local render hook called the source once per rendered frame, including repeat guest ticks. Phantom action gather samples once per fresh simulation tick with a bound unit, then builds and publishes the retail action. | An unchanged local live unit can reuse its report on repeated ticks. Kill events and life transitions still get sampled. The phantom action path keeps its tick cadence. |
+| World perception | Per pad sample, read up to 16 players, arms, scoreboard and objective state. A living bot scanned up to 2,048 object slots for weapons, supplies and grenades, then scanned the table again for vehicles and players again for seat occupants. | Per fresh sample, reuse the ground scan's vehicle headers and read occupants when vehicles exist. Perception, vehicle seat markers, recent cues and the delayed observation queue reuse buffers. |
+| Player LOS | Per candidate in the notice cone (or near the bot), cast an eye-to-chest wall ray. The delayed mind sample repeated the opponent rays. | Check the cone every sample. Use one visibility result per observer, player slot and unit. Refresh by observer-plus-target slot at up to `player_los_ticks` age. A clear ray is reused only at identical endpoints. A blocked ray allows up to 0.1 world units of movement at each endpoint. Leaving the cone, switching bodies or collision data, and restarting the clock invalidate the result. |
+| Other visibility and wall probes | Ray-test in-cone pickups, supply sites, objective items and non-owned vehicles and eligible events. Foot steering can probe for clearance, headroom, cover and footing. Hearing, grenade arcs and danger checks add conditional probes. | Same sample or action cadence. The player cache applies to chest visibility. Aim-point, projected lead and immediate movement clearance still use current geometry for the sample. |
+| Radio and event cues | Each sample advances the radio at most once per guest tick, filters allies' reports, and gathers recent kills and shots. Fresh thinking ticks update supply and combat memory before issuing the pad. | Same cadence with reused inbox and cue buffers. |
+| Target selection and aim | Each fresh mind tick ranks the visible enemies and evaluates tactics, objective and equipment. Some support and engagement checks cast additional rays. Aiming, lead, trigger and pad update while tracking every tick. On-foot combat can cast up to two additional rays for the preferred aim point and lead. | Same cadence and scoring, using the filtered sample. Aim and input timing continue on each mind tick, including ticks without a plan. |
+| Foot routes and roaming | A missing route, changed carrier threat or destination movement over one unit could trigger a replan each tick. A plan can try up to three A* searches (safety, blacklist and unrestricted). Picking a roam goal can test reachability of multiple candidates. Ball shelter already caches for 60 ticks or until the threat moves 1.5 units. | Pick a needed roam goal immediately. Plan immediately when a foot route is missing or the destination has moved over one unit. Refresh a usable route on the bot's `foot_plan_ticks` phase. Steering stays tick-rate and committed traversal keeps control. Boarding uses foot routes until entry. |
+| Ground vehicle route | For a driver, missing routes and destination movement over three units could query the route every tick. A fresh corridor can check up to three vertical rays per uncached portal. | Active ground drivers with a destination plan immediately when the route is missing, blocked or over three units from the new destination. Refresh a usable route on the bot's `vehicle_plan_ticks` phase. Chassis portals are indexed by nav edge. Corridor and route point storage is reused. |
+| Ground vehicle clearance | Each eligible driving tick checked the span to the first point, up to three lookahead points and advancement past nearby waypoints. Each span checks ground and up to three wall rays at each 0.45-unit sample across three lanes. Splatter and reversing can check additional spans. | Full route lookahead on the `vehicle_lookahead_ticks` phase and when a new or reached carrot needs checking. Between full checks, validate the immediate span every driving tick before steering toward the last carrot. That span covers up to 1.8 units or 150 ms of travel, whichever is greater. Splatter and reversing retain live clearance. |
+| Fighter steering | Checked floor twice per pilot tick and ran a flip clearance probe even without a newly eligible hit. | Reuse the floor result. Probe flip clearance on an eligible hit. Forward clearance and steering stay tick-rate. |
+| Map and session glue | Render hooks handle local and phantom seating and refresh session state. Nav decoding or generation is tied to map loads and missing meshes, with the auto-nav worker handling background work. | Same hook cadence. Each brain only copies the map name on a change. |
+
+Refreshes of usable routes are phase-aligned to the in-game player
+slot for local and phantom bots. A lost target, new damage or a change
+in a carrier's threat can bring a refresh forward. Urgent refreshes
+split across even and odd slots, and each planner can refresh at most
+once per tick. A route needed for immediate movement bypasses the slot
+phase. Timing follows the simulation tick and slot order, with the same
+random seeds as the rest of the brain.
+
+The fixed player LOS cache, array scans, perception buffers, driver
+portal records and path workspace avoid rebuilding per-tick temporary
+collections in the common path. Initial buffer growth, new objectives
+and some conditional tactical or route outputs can still allocate.
+
+#### Matched performance and combat comparison
+
+Use `H2_BEFORE` and `H2_AFTER` for the absolute paths to the two
+release `h2` binaries. Set `H2_DISC`, `H2_IMAGE` and `H2_DATA` to
+absolute paths to the same disc, compatible clang image built at
+`H2_OPT=2`, and data directory with both nav meshes. From the repo root,
+create two fixtures with the same four legendary bots, teams, seed 7
+and 9,000-tick limit. Waterworks has two local and two phantom seats.
+Lockout seats all four locally.
+
+```sh
+bench_dir="$RUSH_KEEP/bot-speed"
+mkdir -p "$bench_dir"
+awk '/^map = / {$0="map = \"waterworks\""} /^time_limit_s = / {$0="time_limit_s = 0\nscore_limit = 0\nseed = 7"} {print}' \
+  docs/runtime/sim-examples/midship-seats.toml > "$bench_dir/waterworks.toml"
+sed -e 's/^map = "waterworks"/map = "lockout"/' -e 's/^kind = "phantom"/kind = "local"/' \
+  "$bench_dir/waterworks.toml" > "$bench_dir/lockout.toml"
+```
+
+Run both fixtures on both binaries with the same unpaced light profile
+and write separate reports.
+
+```sh
+for arm in before after; do
+  case "$arm" in
+    before) sim_h2="$H2_BEFORE" ;;
+    after) sim_h2="$H2_AFTER" ;;
+  esac
+  for map in waterworks lockout; do
+    env -u H2_PROFILE -u H2_TIMELINE -u H2_LOCKSTEP -u H2_BOOT_GFX \
+      -u H2_HOST_MODULE -u H2_SERVER_MAP_DIR H2_OPT=2 H2_BOTS_ALL_PHANTOM=0 \
+      H2_FEATURES=host-light,-impl.sim.arena-hash \
+      "$sim_h2" sim run "$bench_dir/$map.toml" --disc "$H2_DISC" --out "$H2_IMAGE" \
+      --data "$H2_DATA" --tier clang --pace unpaced --report "$bench_dir/$map-$arm.json" \
+      || break 2
+  done
+done
+```
+
+Verify a loaded mesh, four bound seats of the expected kinds, 9,000
+ticks and a `tick_limit` exit. Compare `wall.ms_per_tick` and per-seat
+kills, shots, hits and accuracy. Vehicle ticks, stuck ticks and replans
+help explain a change in kill or accuracy results.
+
+```sh
+jq '{map: .match.map, seed: .match.seed, ticks, end: .result.end, nav,
+     ms_per_tick: .wall.ms_per_tick,
+     players: [.players[] | {seat, kind, name, kills, deaths, shots, hits,
+                             accuracy, vehicle_ticks, stuck_ticks, repaths}]}' \
+  "$bench_dir"/waterworks-before.json "$bench_dir"/waterworks-after.json \
+  "$bench_dir"/lockout-before.json "$bench_dir"/lockout-after.json
+```
+
+Repeat each arm with the same inputs and compare `state_hashes_v1` to
+test same-build determinism before attributing a difference to the
+change. Each run uses fresh processes. Match trajectories can differ
+between arms because decisions that require a fresh route can move to a
+different tick. Compare Waterworks driving and combat across paired
+seeds if a single pair shows a quality change.
 
 ## Host audit corpus
 
@@ -789,6 +951,12 @@ attribution. Nested buckets overlap, and totals include lobby and load
 work where the hook runs. Auditing bypasses generated native direct
 calls to count visible entries. Inlined blocks with no selector cannot
 be counted separately. Use an unaudited batch for throughput.
+
+For a deployable module, export the owner/selector pairs with
+`h2 sim audit-coverage OUTPUT AUDIT [AUDIT ...]` and use
+`h2 build --profile host --coverage OUTPUT`. Omitted owners use the
+counted interpreter fallback. See [Slim host](../live/dedicated-host-build.md#slim-host)
+for recording and comparison.
 
 The experimental `H2_HOST_MODULE` build option accepts a complete
 `audit.json` from the matching full clang image. Use a separate output

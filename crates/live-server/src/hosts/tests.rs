@@ -300,7 +300,7 @@ async fn lifecycle_replays_and_keeps_boot_credentials_out_of_the_log() {
     assert_eq!(inventory["recent"][0]["lease"]["id"], lease.id);
     assert_eq!(inventory["recent"][0]["cost_usd"], 0.0);
     assert_eq!(inventory["month_to_date_usd"], 0.0);
-    assert_eq!(inventory["budget_usd"], 5.0);
+    assert!(inventory["budget_usd"].is_null());
     assert!(inventory["running"].as_array().unwrap().is_empty());
     drop(live);
     let restarted = start(store.clone(), &key, fake.clone()).await;
@@ -537,18 +537,82 @@ async fn monthly_budget_refuses_before_reservation_or_provider_call() {
         },
         Policy::default(),
         Timers::Driven,
-        HostCosts::configured(None, Some("0")).unwrap(),
+        HostCosts::configured(None, Some("0.01")).unwrap(),
     )
     .await
     .unwrap();
-    let fake = Arc::new(Fake::new(ProviderKind::Local));
+    let fake = Arc::new(Fake::new(ProviderKind::Cloudflare));
     live.set_host_provider(fake.clone());
     live.set_host_config(config(1));
-    let refused = live.request_host(request("budget")).await.unwrap_err();
+    let mut lease = request("budget");
+    lease.provider = ProviderKind::Cloudflare;
+    lease.transport = Transport::Tunnel;
+    let refused = live.request_host(lease).await.unwrap_err();
     assert_eq!(refused.code, ErrorCode::Unavailable);
     assert_eq!(live.position(), 0);
     assert!(live.host_for_assignment("custom-budget").is_none());
     assert_eq!(fake.starts.load(Ordering::Relaxed), 0);
+    let inventory = live
+        .admin_hosts(Some(&operator(&live, crate::invites::LXM_ADMIN_READ)))
+        .unwrap();
+    assert_eq!(inventory["month_to_date_usd"], 0.0);
+    assert_eq!(inventory["budget_usd"], 0.01);
+}
+
+#[tokio::test]
+async fn reaper_recovers_the_reserved_room_after_a_lost_start_reply() {
+    let store = Arc::new(MemoryStore::new());
+    let key = KeyPair::generate().secret_b64();
+    let fake = Arc::new(Fake::new(ProviderKind::Cloudflare));
+    let live = start(store.clone(), &key, fake.clone()).await;
+    let mut lease = request("lost-reply");
+    lease.id = HostLease::new_id();
+    lease.provider = ProviderKind::Cloudflare;
+    lease.transport = Transport::Tunnel;
+    lease.max_match_s = 1;
+    lease.created_ms = now_ms() - 2_000;
+    let reference = format!("machine-{}", lease.id);
+    live.host_event(
+        0,
+        HOST_REQUESTED,
+        HostRequested {
+            lease: lease.clone(),
+            provider_ref: Some(reference.clone()),
+        },
+    )
+    .await
+    .unwrap();
+    drop(live);
+
+    let live = start(store.clone(), &key, fake.clone()).await;
+    let deadline = lease.deadline_ms();
+    live.sweep_hosts_at(deadline - 1).await;
+    assert_eq!(
+        live.require_host(&lease.id).unwrap().state,
+        HostState::Requested,
+    );
+    assert_eq!(live.hosts.costs.stop_confirmed(&lease.id), Some(false));
+
+    fake.running.write().unwrap().insert(reference.clone());
+    fake.fail_stop.store(true, Ordering::Relaxed);
+    live.sweep_hosts_at(deadline).await;
+    assert!(fake.running.read().unwrap().contains(&reference));
+    assert_eq!(live.hosts.costs.stop_confirmed(&lease.id), Some(false));
+
+    fake.fail_stop.store(false, Ordering::Relaxed);
+    live.sweep_hosts_at(deadline + 1).await;
+    assert!(!fake.running.read().unwrap().contains(&reference));
+    assert_eq!(
+        live.require_host(&lease.id).unwrap().reason,
+        Some(EndReason::MaxDuration),
+    );
+    assert_eq!(live.hosts.costs.stop_confirmed(&lease.id), Some(true));
+    let settled = live.hosts.costs.lease_cost(&lease.id, now_ms()).unwrap();
+    drop(live);
+
+    let live = start(store, &key, fake).await;
+    assert_eq!(live.hosts.costs.stop_confirmed(&lease.id), Some(true));
+    assert_eq!(live.hosts.costs.lease_cost(&lease.id, now_ms()), Some(settled));
 }
 
 #[tokio::test]

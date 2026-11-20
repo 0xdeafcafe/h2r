@@ -24,6 +24,9 @@ use crate::ui_kit::view::{Art, PaneArt};
 pub struct SampleSource;
 
 impl Source for SampleSource {
+    fn check_list(&self) -> Result<(), ModsError> {
+        Ok(())
+    }
     fn list(&self, _limit: u32, _done: ListDone) -> Result<(), ModsError> {
         Ok(())
     }
