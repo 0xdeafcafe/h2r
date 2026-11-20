@@ -890,8 +890,7 @@ fn grenade_blocks_pair_across_the_discs() {
 /// each type's `+0xc`, none among the actions; the converted graphs put
 /// Halo 1's overlay animations there too, under names retail's overlays
 /// use or the engine asks for (`overcharged_jitter`, `0x0016821f`). The
-/// assault rifle, whose `fire-1` slot is empty, fires its `firing`
-/// animation as `fire_1`.
+/// assault rifle leaves its empty firing slot empty, as in the Halo 1 XBE.
 #[test]
 #[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
 fn first_person_graphs_take_retail_modes() {
@@ -999,7 +998,8 @@ fn first_person_graphs_take_retail_modes() {
             );
         }
         if t.name.contains("assault rifle") {
-            assert!(actions.iter().any(|a| a == "fire_1"), "{}: fire_1", t.name);
+            assert_eq!(g.first_person_slots[2], -1);
+            assert!(!actions.iter().any(|a| a == "fire_1"), "{}: empty firing slot", t.name);
         }
         assert_eq!(
             pairs,

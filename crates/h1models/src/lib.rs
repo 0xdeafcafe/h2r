@@ -103,6 +103,15 @@ pub fn graph_weapon_types(map: &h1map::H1Map, tag: &h1map::Tag) -> Result<Vec<(S
     h1::weapon_types(map, tag_address(map, tag, b"antr")?)
 }
 
+/// Standing weapon types and classes from the cyborg's slot tables.
+pub fn player_weapon_types(map: &h1map::H1Map) -> Result<Vec<(String, String)>> {
+    let Some(tag) = map.find(h1map::Group::new(b"antr"), r"characters\cyborg\cyborg") else {
+        return Ok(Vec::new());
+    };
+    h1::player_types(map, tag_address(map, tag, b"antr")?)
+        .map_err(|e| Error::Invalid(format!("{}: {}: {e}", map.header().name, tag.name)))
+}
+
 /// [`graph_from_map`] with what the animated object adds
 /// ([`jmad::GraphOptions`]: a vehicle's mass point markers).
 pub fn graph_from_map_with(
@@ -111,7 +120,8 @@ pub fn graph_from_map_with(
     model: Option<&h1map::Tag>,
     opts: &jmad::GraphOptions,
 ) -> Result<(h1::Graph, jmad::GraphReport, Converted)> {
-    let graph = h1::Graph::read(map, tag_address(map, tag, b"antr")?)?;
+    let context = |e: Error| Error::Invalid(format!("{}: {}: {e}", map.header().name, tag.name));
+    let graph = h1::Graph::read(map, tag_address(map, tag, b"antr")?).map_err(context)?;
     let skeleton = match model {
         Some(t) if graph.nodes.is_empty() => Some(h1::AnimNode::from_model(&h1::Model::read(
             map,
@@ -119,8 +129,15 @@ pub fn graph_from_map_with(
         )?)),
         _ => None,
     };
-    let sentinel = tag.name.eq_ignore_ascii_case(r"characters\sentinel\sentinel");
-    let (out, report) = jmad::convert_graph_for(&graph, skeleton.as_deref(), opts, sentinel)?;
+    let role = if tag.name.eq_ignore_ascii_case(r"characters\cyborg\cyborg") {
+        jmad::GraphRole::Player
+    } else if tag.name.eq_ignore_ascii_case(r"characters\sentinel\sentinel") {
+        jmad::GraphRole::Sentinel
+    } else {
+        jmad::GraphRole::Other
+    };
+    let (out, report) = jmad::convert_graph_for(&graph, skeleton.as_deref(), opts, role)
+        .map_err(context)?;
     Ok((graph, report, out))
 }
 

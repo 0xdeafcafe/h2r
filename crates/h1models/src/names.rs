@@ -85,16 +85,13 @@ pub const CLASSES: &[&str] = &["unarmed", "pistol", "rifle", "missile", "fixed"]
 
 /// Action labels whose Halo 2 name differs beyond `-` -> `_`.
 pub const ACTIONS: &[(&str, &str)] = &[
-    // Retail has no `reload_1`, and no third-person reload at all: the
-    // reload actions (`reload_full`, `reload_empty`, ...) belong to the
-    // first-person weapon graphs. `reload_full` is the full-magazine one.
-    // Halo 1 spells the action both `reload` and `reload-1`.
+    // Animation record names. The cyborg's weapon slot 0 binds the
+    // corresponding third-person replacement under the key reload_1.
     ("reload", "reload_full"),
     ("reload-1", "reload_full"),
     ("throw-grenade", "throw_grenade"),
-    // `melee` maps to itself — retail `combat:rifle:any:melee`, on the
-    // elite; `melee_strike_1..3` are first-person-only — so no rename is
-    // listed for it.
+    // The elite also has a base melee action. The cyborg's weapon slot
+    // 8 supplies its separate melee_strike_1 replacement overlay.
 ];
 
 fn action_name(s: &str) -> String {
@@ -290,7 +287,7 @@ mod tests {
     /// absence establishes: `(kind, level, name)` where level is `mode` or
     /// `action`.
     const RETAIL_ABSENT: &[(&str, &str, &str)] = &[
-        // Halo 1 reload animations must not become `reload_1`.
+        // reload_1 is in the overlay list, outside this action search.
         ("biped", "action", "reload_1"),
         // Unit damage has no Halo 2 tree names at all.
         ("biped", "mode", "h_kill"),

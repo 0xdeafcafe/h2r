@@ -774,19 +774,16 @@ the magnum `pistol`/`hp`, the rocket launcher `missile`/`rl`, vehicle guns
 `fixed`/`gun` (V, Coagulation). The rebuilt weapons left both null, so in
 the Halo 1 sandbox the player could pick nothing up and so never fired.
 
-Halo 1 keeps only the type on the weapon (its label, `+0x30c`); the class
-is where the units' graphs put that type (`stand rifle ar idle`). The
-converter (`Converter::weapon_class`) takes, over every animation of every
-graph on the map, the class most of them name the label under, through
-the same naming the converted `jmad` tree uses (`h1models::names`): the
-assault rifle `rifle`/`ar`, pistol `pistol`/`hp`, shotgun `rifle`/`sg`,
-plasma rifle `rifle`/`pr`, sniper rifle `rifle`/`sr`, rocket launcher
-`missile`/`rl`, needler `pistol`/`ne`, plasma pistol `pistol`/`pp`. A label
-no graph holds (Derelict's flamethrower, `ft`) gets neither, with a
-report line. V: `tests/sandbox_disc.rs`
-(`every_halo1_weapon_is_held_by_the_halo1_player_graph`): on every
-multiplayer map, every Halo 1 hand weapon of the Halo 1 sandbox names a
-class and type the converted player biped's graph holds in mode `combat`.
+**Built. Player weapon classes.** Halo 1 stores the type on the weapon
+(`weap +0x30c`) and lists it under a standing class in the cyborg graph.
+The converted weapon and graph use that same class. Blood Gulch has
+`rifle/ar`, `rifle/sg`, `rifle/sr`, `rifle/pr`, `missile/rl`,
+`pistol/hp`, `pistol/pp` and `pistol/ne`. The needler has weapon clips
+under pistol and an empty secondary listing under rifle. The flamethrower
+is listed under `support/ft`, with no source idle for that class.
+Objective weapons use `rifle/f` and `pistol/b`. Guns outside the cyborg's
+tables use their unit graph. The ignored sandbox disc tests read the
+class/type from each converted weapon and look up its source slots.
 
 **Holding is finding** (converter version 64). The graph lookup
 `0x001db170` finds the mode, class, type and action each by binary
@@ -811,7 +808,7 @@ and type, a list of animation indices), and on the cyborg every class's
 throw slot names `stand rifle throw-grenade` (V: Blood Gulch's cyborg
 `antr`, every unit and class). The converter carries those slots over:
 a slot naming another class's animation becomes an action of the
-borrowing class naming the same animation (`jmad::borrow_slots`), so the
+borrowing class naming the same animation (`jmad::player`), so the
 pistol, plasma pistol, needler and rocket launcher throw with the rifle's
 animation, as in Halo 1. The disc test fails on any weapon of any
 multiplayer map whose path finds no throw.
