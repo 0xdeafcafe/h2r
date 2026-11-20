@@ -474,6 +474,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "background"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "backtrace"
 version = "0.3.77"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -685,6 +692,7 @@ dependencies = [
 name = "bots"
 version = "0.1.0"
 dependencies = [
+ "background",
  "engine",
  "input",
  "live-proto",
@@ -2207,6 +2215,7 @@ dependencies = [
  "anyhow",
  "assets",
  "audio",
+ "background",
  "bink-hle",
  "bots",
  "chrono",

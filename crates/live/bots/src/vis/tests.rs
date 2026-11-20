@@ -116,6 +116,20 @@ fn a_wall_between_cells_means_never_and_open_space_maybe() {
 }
 
 #[test]
+fn the_grid_is_the_same_on_any_threads_and_at_background_priority() {
+    let walls = thin_wall();
+    let reference = build(&floor(), &walls);
+    for count in [0, 1, 3, 7] {
+        for background in [false, true] {
+            let vis = build_with(&floor(), &walls, Threads { count, background });
+            assert!(vis == reference, "{count} threads, background {background}");
+        }
+    }
+    assert!(Threads::background().background && Threads::background().count >= 1);
+    assert!(!Threads::foreground().background && Threads::foreground().count >= 1);
+}
+
+#[test]
 fn a_wall_of_several_triangles_is_proved_where_one_covers_and_never_wrong() {
     let walls = thick_wall();
     let vis = build(&floor(), &walls);

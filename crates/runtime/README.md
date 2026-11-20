@@ -12,6 +12,7 @@ apps sit above it and use it. See
 
 | Crate | What |
 |---|---|
+| [background](background/) | Background work: threads below the game's priority, the worker cap for background jobs |
 | [hostfault](hostfault/) | Process-wide host fault handler: regions and fixup tables |
 | [kernel](kernel/) | The Xbox kernel's services over the runtime |
 | [lifted](lifted/) | The lifted original on the IR interpreter, the oracle for ports |

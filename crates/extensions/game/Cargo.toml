@@ -69,6 +69,9 @@ live-proto.workspace = true
 input = { path = "../../platform/input", default-features = false }
 # Phantom bots (docs/game/bots.md).
 bots = { path = "../../live/bots" }
+# Threads below the game's priority for background work
+# (docs/runtime/background-work.md).
+background.workspace = true
 # Sim mode's match, tuning and report files (docs/runtime/sim.md).
 sim-bench = { path = "../../live/sim-bench" }
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info"] }

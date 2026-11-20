@@ -413,6 +413,11 @@ pub fn load(dir: &Path, map: &str, bsp: usize, stamp: Stamp, walls: &Walls) -> S
 /// `map` and writes it (BSP 0 last), for a map whose nav files are up to
 /// date but whose grid is not. Returns BSP 0's data with its grid.
 pub fn rebuild(dir: &Path, map: &str) -> Result<MapData, String> {
+    rebuild_with(dir, map, Threads::foreground())
+}
+
+/// [`rebuild`] on `threads`.
+pub fn rebuild_with(dir: &Path, map: &str, threads: Threads) -> Result<MapData, String> {
     let mut built = Vec::new();
     for k in 0.. {
         let path = dir.join(cache::file_name(map, k));
@@ -423,7 +428,7 @@ pub fn rebuild(dir: &Path, map: &str) -> Result<MapData, String> {
         };
         let (d, stamp) =
             MapData::from_bytes(&bytes).ok_or_else(|| format!("{} is damaged", path.display()))?;
-        let vis = build(&d.nav, &d.walls);
+        let vis = build_with(&d.nav, &d.walls, threads);
         let file = vis.to_bytes(stamp);
         d.walls.set_vis(Arc::new(vis));
         built.push((k, file, d));
@@ -690,10 +695,47 @@ fn voxelise(samples: &[V3], size: V3) -> Option<(V3, [u32; 3], Vec<u32>)> {
     Some((origin, dims, voxels))
 }
 
-/// Builds a structure BSP's grid from its nav mesh and walls. Spreads the
-/// pairs over half the machine's threads; the result does not depend on
-/// how many.
+/// The threads a grid build spreads its pairs over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Threads {
+    pub count: usize,
+    /// Each one lowers itself ([`background::lower_current`]).
+    pub background: bool,
+}
+
+impl Threads {
+    /// Half the machine's threads, at most 8, at the default priority: a
+    /// build someone waits for (`h2 bots nav`).
+    pub fn foreground() -> Self {
+        Threads {
+            count: std::thread::available_parallelism()
+                .map_or(1, |t| t.get() / 2)
+                .clamp(1, 8),
+            background: false,
+        }
+    }
+
+    /// [`background::workers`] threads below the game's priority: the
+    /// game's own nav worker, which nothing waits for.
+    pub fn background() -> Self {
+        Threads {
+            count: background::workers(),
+            background: true,
+        }
+    }
+}
+
+/// Builds a structure BSP's grid from its nav mesh and walls on
+/// [`Threads::foreground`].
 pub fn build(nav: &NavMesh, walls: &Walls) -> Vis {
+    build_with(nav, walls, Threads::foreground())
+}
+
+/// Builds a structure BSP's grid, spreading the pairs over `threads`; the
+/// result does not depend on how many.
+pub fn build_with(nav: &NavMesh, walls: &Walls, threads: Threads) -> Vis {
+    let Threads { count: threads, background: lower } = threads;
+    let threads = threads.max(1);
     let hash = walls_hash(walls);
     let points = samples(nav);
     if points.is_empty() {
@@ -714,14 +756,16 @@ pub fn build(nav: &NavMesh, walls: &Walls) -> Vis {
     };
     let n = vis.cells();
     let boxes: Vec<Box3> = vis.voxels.iter().map(|&v| vis.voxel_box(v)).collect();
-    let threads = std::thread::available_parallelism()
-        .map_or(1, |t| t.get() / 2)
-        .clamp(1, 8);
     let found: Vec<Vec<(u32, u32)>> = std::thread::scope(|s| {
         let jobs: Vec<_> = (0..threads)
             .map(|k| {
                 let boxes = &boxes;
                 s.spawn(move || {
+                    // A QoS class does not carry to a spawned thread: each
+                    // lowers itself.
+                    if lower {
+                        background::lower_current();
+                    }
                     let mut never = Vec::new();
                     for i in (k..n).step_by(threads) {
                         for j in i + 1..n {

@@ -40,7 +40,7 @@ crates/
                xbe xiso h1-contract
   recompiler/  analyze symbols lift ir opt emit clif x87 simd oracle sse-oracle
                +sim-tier
-  runtime/     runtime (and its test-probe) kernel vfs snapshot timeline
+  runtime/     runtime (and its test-probe) kernel vfs snapshot timeline background
                +hostfault +lifted +recomp
   platform/    d3d gfx assets hot-render  dsound audio wma  xapi input  bink-hle voice
   hooking/     ~hooks (feature)  guest-layout  +switches

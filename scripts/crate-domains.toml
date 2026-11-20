@@ -30,7 +30,7 @@ crates = [
 about = "The machine the lifted code runs on: memory, CPU state, kernel, filesystem, snapshots, the build-and-load driver"
 uses = ["formats", "recompiler"]
 crates = [
-    "hostfault", "kernel", "lifted", "recomp", "runtime", "runtime-test-probe",
+    "background", "hostfault", "kernel", "lifted", "recomp", "runtime", "runtime-test-probe",
     "snapshot", "timeline", "vfs",
 ]
 

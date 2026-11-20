@@ -101,6 +101,7 @@ fn the_header_gives_name_kind_and_a_fingerprint_of_every_byte() {
     let h = MapHeader::parse(&header("lockout", MP, 7)).unwrap();
     assert_eq!(h.name, "lockout");
     assert!(h.multiplayer);
+    assert_eq!(h.kind, map::CacheType::Multiplayer);
     assert!(!MapHeader::parse(&header("01a_tutorial", CAMPAIGN, 7)).unwrap().multiplayer);
     // An edit changes the checksum, so the fingerprint.
     let other = MapHeader::parse(&header("lockout", MP, 8)).unwrap();
@@ -264,6 +265,54 @@ fn a_pass_builds_the_current_map_first_then_the_stale_ones_and_skips_the_rest() 
     let (w, _) = Worker::new(dir.clone(), scan_of(Arc::clone(&list), Arc::clone(&builds)));
     let sum = w.force(true).any_kind(true).log(|_| {}).run();
     assert_eq!(sum.built.len(), 4);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn the_menu_and_shared_maps_are_never_used_and_multiplayer_is_built() {
+    use map::CacheType as K;
+    for name in ["mainmenu", "MainMenu", "shared", "single_player_shared", " shared ", ""] {
+        for kind in [None, Some(K::Multiplayer), Some(K::Campaign)] {
+            assert_eq!(map_use(name, kind), MapUse::Never, "{name:?} {kind:?}");
+        }
+    }
+    // By kind, whatever the name.
+    for kind in [K::MainMenu, K::Shared, K::SinglePlayerShared] {
+        assert_eq!(map_use("renamed", Some(kind)), MapUse::Never, "{kind:?}");
+    }
+    assert_eq!(map_use("lockout", Some(K::Multiplayer)), MapUse::Build);
+    // Only the name: the build reads the header before it builds.
+    assert_eq!(map_use("lockout", None), MapUse::Build);
+    assert_eq!(map_use("01a_tutorial", Some(K::Campaign)), MapUse::LoadOnly);
+    assert_eq!(map_use("odd", Some(K::Unknown(9))), MapUse::LoadOnly);
+}
+
+#[test]
+fn the_worker_never_wants_scans_or_builds_the_menu_and_shared_maps() {
+    let dir = tmp("ui");
+    let builds: Log = Arc::default();
+    let list = maps(&[
+        ("mainmenu", 2, 1),
+        ("shared", 3, 1),
+        ("single_player_shared", 4, 1),
+        // Named like a played map, but the header says main menu.
+        ("menu_copy", 2, 1),
+        ("lockout", MP, 1),
+    ]);
+    let (w, h) = Worker::new(dir.clone(), scan_of(Arc::clone(&list), Arc::clone(&builds)));
+    h.want("mainmenu");
+    h.want("Shared");
+    assert!(h.0.wants.lock().unwrap().names.is_empty());
+    h.want("lockout");
+    assert_eq!(h.0.wants.lock().unwrap().names, ["lockout"]);
+    // Even forced and of any kind (`h2 bots nav mainmenu --force`).
+    let sum = w.force(true).any_kind(true).log(|_| {}).run();
+    assert_eq!(*builds.lock().unwrap(), ["lockout"]);
+    assert_eq!(sum.built, ["lockout"]);
+    assert_eq!(sum.skipped, 1, "menu_copy, by its header");
+    for n in ["mainmenu", "shared", "single_player_shared", "menu_copy"] {
+        assert!(!dir.join(cache::file_name(n, 0)).exists(), "{n}");
+    }
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
