@@ -361,3 +361,5 @@ fn canonical_targets_preserve_previous_frame_contents_outside_a_partial_draw() {
     assert_eq!(&pixels[i..i + 4], [0, 255, 0, 255]);
     assert!(draw_private(&mut backend, &sealed(), &frame, 1, Lighting::Retail).is_err());
 }
+
+mod scaled;

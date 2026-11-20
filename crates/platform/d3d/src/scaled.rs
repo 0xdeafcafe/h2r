@@ -76,6 +76,7 @@
 //! it, so the guest sees retail's bytes. With E3 lighting the view is
 //! awake at render scale 1 too (frame buffers at 1x, shadow maps at 2x).
 
+mod scene_targets;
 mod single;
 
 use std::sync::{Arc, Mutex};

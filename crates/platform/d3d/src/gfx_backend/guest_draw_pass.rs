@@ -15,7 +15,7 @@ use gfx::{D3DFormat, TextureDesc};
 use super::{GfxBackend, HostTexture};
 use crate::backend::{Backend, DrawOutcome};
 use crate::scaled::ScaleView;
-use crate::scene_sink::{ReplayFrame, ReplayOp, ReplaySample, ReplayTexture};
+use crate::scene_sink::{FlareTickets, ReplayFrame, ReplayOp, ReplaySample, ReplayTexture};
 
 /// A frame keeps uploads alive by Arc. Sharing the allocation identifies
 /// the exact decoded texels without hashing guest assets at every draw.
@@ -34,6 +34,44 @@ pub struct GuestDrawPass<'a> {
     old_count_samples: bool,
     old_gpu_only_aliases: bool,
     owns_targets: bool,
+    flare_tickets: FlareTickets,
+}
+
+impl GfxBackend {
+    /// All replay attachment names must resolve to the original image with
+    /// the recorded dimensions, format and sampling. Check before replacing
+    /// any render commands so an unsupported frame can run on the guest path.
+    pub fn matches_scene_targets(&self, frame: &ReplayFrame, targets: &HashMap<TargetRef, SurfaceId>) -> bool {
+        self.matches_scene_targets_at(frame, targets, 1)
+    }
+
+    pub(crate) fn matches_scene_targets_at(
+        &self, frame: &ReplayFrame, targets: &HashMap<TargetRef, SurfaceId>, scale: u32,
+    ) -> bool {
+        let count = usize::from(frame.colour.is_some()) + usize::from(frame.depth.is_some()) + frame.aux.len();
+        let mut distinct = std::collections::HashSet::with_capacity(count);
+        targets.len() == count && targets.contains_key(&frame.presented) && targets.iter().all(|(&name, &id)| {
+            let desc = match name {
+                TargetRef::SceneColour => frame.colour,
+                TargetRef::SceneDepth => frame.depth,
+                TargetRef::Aux(i) => frame.aux.get(usize::from(i)).copied(),
+                TargetRef::None => None,
+            };
+            distinct.insert(id) && desc.is_some_and(|desc| self.scene_target_matches(id, desc, scale))
+        })
+    }
+
+    /// Check before committing a scene to an existing physical target.
+    fn scene_target_matches(&self, id: SurfaceId, desc: AuxTarget, scale: u32) -> bool {
+        let Ok(surface) = self.store.get(id) else { return false };
+        let actual = surface.desc();
+        desc.width.checked_mul(scale) == Some(actual.width)
+            && desc.height.checked_mul(scale) == Some(actual.height)
+            && D3DFormat::from_raw(desc.format) == Some(actual.format)
+            && actual.samples == 1
+            && (surface.kind() == gfx::surface::SurfaceKind::DepthStencil) == desc.depth
+            && self.scales.get(&id).copied().unwrap_or(1) == scale
+    }
 }
 
 impl<'a> GuestDrawPass<'a> {
@@ -47,15 +85,16 @@ impl<'a> GuestDrawPass<'a> {
         Self::start(gpu, frame, scale, true, None)
     }
 
-    /// A game-view frame replacing the original draw into its 1x targets.
-    /// Retains target content across frames and hands the same surfaces
-    /// back at the transition to an outside view.
+    /// Draw on the renderer's existing targets at their common scale.
+    /// Guest reads and the next view can use the contents directly.
     pub fn on_existing(
         gpu: &'a mut GfxBackend,
         frame: &ReplayFrame,
         targets: &HashMap<TargetRef, SurfaceId>,
     ) -> Result<Self, String> {
-        Self::start(gpu, frame, 1, true, Some(targets))
+        let presented = targets.get(&frame.presented).ok_or("missing existing present target")?;
+        let scale = gpu.scales.get(presented).copied().unwrap_or(1);
+        Self::start(gpu, frame, scale, true, Some(targets))
     }
 
     fn start(
@@ -71,9 +110,11 @@ impl<'a> GuestDrawPass<'a> {
         if !frame.refusals.is_empty() {
             return Err(format!("scene cannot be replayed: {}", frame.refusals.join(", ")));
         }
-        if existing.is_none()
-            && let Some(cause) = frame.private_target_refusal()
-        {
+        if existing.is_none() && let Some(cause) = if display {
+            frame.display_target_refusal()
+        } else {
+            frame.private_target_refusal()
+        } {
             return Err(cause.into());
         }
         gpu.scene_uploads.retain(|_, (owner, _)| owner.strong_count() != 0);
@@ -92,6 +133,7 @@ impl<'a> GuestDrawPass<'a> {
             old_count_samples,
             old_gpu_only_aliases,
             owns_targets: existing.is_none(),
+            flare_tickets: Vec::new(),
         };
         if let Some(colour) = frame.colour {
             pass.resolve_target(TargetRef::SceneColour, colour, existing)?;
@@ -126,15 +168,7 @@ impl<'a> GuestDrawPass<'a> {
             let &id = existing
                 .get(&target)
                 .ok_or_else(|| format!("missing existing target {target:?}"))?;
-            let physical = self.gpu.store.get(id).map_err(|e| e.to_string())?;
-            let actual = physical.desc();
-            if actual.width != desc.width
-                || actual.height != desc.height
-                || actual.format != format
-                || actual.samples != 1
-                || (physical.kind() == gfx::surface::SurfaceKind::DepthStencil) != desc.depth
-                || self.gpu.scales.get(&id).copied().unwrap_or(1) != 1
-            {
+            if !self.gpu.scene_target_matches(id, desc, self.scale) {
                 return Err(format!("existing target {target:?} does not match the scene"));
             }
             id
@@ -247,11 +281,10 @@ impl<'a> GuestDrawPass<'a> {
                     self.gpu.clear_pixel_count()?;
                 }
             }
-            ReplayOp::EndFlareQuery(report) => {
-                if self.display
-                    && let Some(report) = report
-                {
-                    self.gpu.record_flare_report(report)?;
+            ReplayOp::EndFlareQuery(proxy) => {
+                if self.display {
+                    let ticket = self.gpu.report_pixel_count()?.ok_or("native flare counter unavailable")?;
+                    self.flare_tickets.push((*proxy, ticket));
                 }
             }
         }
@@ -342,6 +375,22 @@ impl<'a> GuestDrawPass<'a> {
     /// guest Swap finish wait. Retain the shown target until the next
     /// display swap: callers may read the most recently presented surface.
     pub fn present(mut self, flags: u32, gamma: Option<&[u8; 768]>) -> Result<(), String> {
+        self.publish(flags, gamma)
+    }
+
+    /// Submit and transfer the canonical frame's reports to its guest
+    /// ticket table. A failed or abandoned draw retires them in Drop.
+    pub fn present_with_outputs(
+        mut self, flags: u32, gamma: Option<&[u8; 768]>,
+    ) -> Result<crate::threaded::owner::Outputs<HostTexture>, String> {
+        self.publish(flags, gamma)?;
+        Ok(crate::threaded::owner::Outputs {
+            tickets: std::mem::take(&mut self.flare_tickets),
+            samples: std::mem::take(&mut self.samples),
+        })
+    }
+
+    fn publish(&mut self, flags: u32, gamma: Option<&[u8; 768]>) -> Result<(), String> {
         if !self.display {
             return Err("a private scene capture cannot be presented".into());
         }
@@ -372,6 +421,9 @@ impl Drop for GuestDrawPass<'_> {
         // An error may abandon a partly recorded frame. Retire its
         // pending GPU uses before releasing target handles from the store.
         let _ = self.gpu.flush();
+        for (_, ticket) in self.flare_tickets.drain(..) {
+            self.gpu.drop_pixel_count(ticket);
+        }
         if self.owns_targets {
             for (_, target) in self.targets.drain() {
                 self.gpu.scales.remove(&target);
