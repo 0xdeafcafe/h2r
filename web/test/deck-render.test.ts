@@ -148,9 +148,9 @@ describe("the dense dashboard style page", () => {
     expect(html).toMatch(/role="radio"[^>]*aria-checked="true"[^>]*>30 days/);
   });
 
-  test("six tiles, then every panel", () => {
+  test("six activity tiles and the shared usage panels", () => {
     expect(html.match(/class="dk-panel dk-tile/g)).toHaveLength(6);
-    for (const t of ["data uploaded", "stored", "events written", "messages sent", "players", "events by type", "top accounts"]) {
+    for (const t of ["recorded uploads", "stored", "events written", "messages sent", "players", "events by type", "top accounts"]) {
       expect(html).toContain(`<h2>${t}</h2>`);
     }
   });
@@ -188,9 +188,11 @@ describe("the dense dashboard style page", () => {
 });
 
 describe("the Live admin usage page", () => {
-  test("is on the dashboard side, under the server in the trail", () => {
+  test("keeps Server in the trail and goes back to Live Admin on a direct visit", () => {
     expect(sideOf("/dash/admin/usage")).toBe("dash");
-    expect(usage).toMatch(/href="\/dash\/server" class="dk-back[ "]/);
+    const trail = usage.match(/<nav class="dk-trail"[^>]*>(.*?)<\/nav>/s)?.[1];
+    expect(trail).toMatch(/href="\/dash\/server"[^>]*>server<\/a>.*href="\/dash\/admin"[^>]*>live admin<\/a>/s);
+    expect(usage).toMatch(/href="\/dash\/admin" class="dk-back[ "]/);
   });
 
   test("signed out it reads nothing and asks for an admin's sign-in, with no filters or numbers", () => {
