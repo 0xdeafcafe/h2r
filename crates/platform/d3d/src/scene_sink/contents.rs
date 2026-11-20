@@ -3,10 +3,16 @@
 //! can make a defined aspect depend on an unknown input, but only a full
 //! overwrite can make an unknown aspect independent of its old contents.
 
+mod rects;
+#[cfg(feature = "gpu")]
+mod overwrite;
+
+use crate::backend::PixelRect;
+use rects::Holes;
 use std::collections::HashMap;
 
 use frame_scene::{AuxTarget, TargetRef};
-use gfx::state::DepthBufferMode;
+use gfx::state::{CompareFunc, DepthBufferMode};
 use gfx::D3DFormat;
 
 use super::{ReplayFrame, ReplayOp, ReplaySample, ReplayTexture};
@@ -40,26 +46,48 @@ impl ReplayFrame {
         }
     }
 
+    fn upload_aspects(&self, target: TargetRef, format: D3DFormat) -> u8 {
+        let mask = self.aspects(target);
+        // A D16 upload into a stencil-capable surface fills its depth only.
+        if matches!(format, D3DFormat::D16 | D3DFormat::LinD16) { mask & !STENCIL } else { mask }
+    }
+
     /// A reason this stream would produce a different image if its
     /// attachments were freshly allocated. The in-place owner can still
     /// draw it against its persistent attachments.
     pub fn private_target_refusal(&self) -> Option<&'static str> {
-        self.read_refusal(self.ops.len(), self.presented, false)
+        self.read_refusal(self.ops.len(), self.presented, false, false)
     }
 
     /// Fresh display targets must also reproduce every guest-visible count.
     pub fn display_target_refusal(&self) -> Option<&'static str> {
-        self.read_refusal(self.ops.len(), self.presented, true)
+        self.read_refusal(self.ops.len(), self.presented, true, false)
     }
 
     /// Whether a pass snapshot through the first `end` commands can read
     /// all of `colour` without pixels inherited from another frame.
     pub fn private_read_refusal(&self, end: usize, colour: TargetRef) -> Option<&'static str> {
-        self.read_refusal(end, colour, false)
+        self.read_refusal(end, colour, false, false)
     }
 
-    fn read_refusal(&self, end: usize, colour: TargetRef, feedback: bool) -> Option<&'static str> {
+    /// A handoff between live target sets with different histories needs
+    /// every attachment and every frozen sampled output to agree. Do not
+    /// count retained seeds: in-place replay leaves the live pixels alone.
+    pub fn all_targets_defined(&self) -> bool {
+        self.refusals.is_empty() && self.read_refusal(self.ops.len(), self.presented, true, true).is_none()
+    }
+
+    fn read_refusal(&self, end: usize, colour: TargetRef, feedback: bool, all: bool) -> Option<&'static str> {
         let mut state = Contents::default();
+        if !all {
+            for (target, seed) in &self.initial {
+                let mask = match seed {
+                    super::TargetSeed::Colour(_) => COLOUR,
+                    super::TargetSeed::Upload { desc, .. } => self.upload_aspects(*target, desc.format),
+                };
+                state.define(*target, mask);
+            }
+        }
         let mut attachments = None;
         let mut samples = HashMap::new();
         let mut query_defined = false;
@@ -72,35 +100,37 @@ impl ReplayFrame {
                     if clear.stencil.is_some() { state.define(*depth, STENCIL); }
                 }
                 ReplayOp::ClearRects { colour, depth, clear } => {
-                    let covers = |target| self.desc(target).is_some_and(|d| clear.rects.iter().any(|r| r.is_whole(d.width, d.height)));
-                    if covers(*colour) && let Some((_, m)) = clear.color {
-                        state.define(*colour, channels(m.red, m.green, m.blue, m.alpha));
+                    if let Some((_, m)) = clear.color {
+                        state.cover(*colour, self.desc(*colour), channels(m.red, m.green, m.blue, m.alpha), &clear.rects);
                     }
-                    if covers(*depth) {
-                        if clear.depth.is_some() { state.define(*depth, DEPTH); }
-                        if clear.stencil.is_some() { state.define(*depth, STENCIL); }
-                    }
+                    let z = if clear.depth.is_some() { DEPTH } else { 0 };
+                    let stencil = if clear.stencil.is_some() { STENCIL } else { 0 };
+                    state.cover(*depth, self.desc(*depth), z | stencil, &clear.rects);
                 }
                 ReplayOp::Upload { to, desc, .. } => {
                     if self.desc(*to).is_some_and(|t| (t.width, t.height) == (desc.width, desc.height)) {
-                        state.define(*to, self.aspects(*to));
+                        state.define(*to, self.upload_aspects(*to, desc.format));
                     }
                 }
                 ReplayOp::Copy { from, to } => {
-                    let from_size = self.desc(*from).map(|t| (t.width, t.height));
-                    let to_size = self.desc(*to).map(|t| (t.width, t.height));
-                    // A smaller source overwrites only its rectangle at
-                    // (0, 0). The rest still depends on the destination.
-                    let mut bits = state.bits(*from);
-                    if from_size != to_size { bits &= state.bits(*to); }
-                    state.targets.insert(*to, bits);
+                    if from == to { continue; }
+                    if let Some(src) = self.desc(*from) {
+                        let mask = self.aspects(*to);
+                        let known = state.bits(*from) & mask;
+                        state.forget(*to, mask & !known);
+                        let area = PixelRect { x: 0, y: 0, width: src.width, height: src.height };
+                        state.cover(*to, self.desc(*to), known, &[area]);
+                    } else {
+                        state.forget(*to, self.aspects(*to));
+                    }
                 }
                 ReplayOp::Sample { id, of, how } => {
-                    // A snapshot freezes this version; an in-place view
-                    // can additionally depend on intervening writes.
+                    // A snapshot freezes this version. An in-place view reads
+                    // the contents present when the draw binds it.
                     let mut mask = self.aspects(*of);
                     if matches!(how, ReplaySample::Snapshot { opaque: true }) { mask &= !ALPHA; }
                     let live = matches!(how, ReplaySample::InPlace);
+                    if all && !live && !state.has(*of, mask) { return Some("sample_needs_previous_target_contents"); }
                     samples.insert(*id, (state.has(*of, mask), live.then_some((*of, mask))));
                 }
                 ReplayOp::Draw { draw, textures, .. } => {
@@ -110,11 +140,11 @@ impl ReplayFrame {
                         ReplayTexture::Upload(_) => true,
                         ReplayTexture::Placeholder(_) => false,
                         ReplayTexture::Sample(id) => samples.get(id).is_some_and(|(defined, live)| {
-                            *defined && live.is_none_or(|(target, mask)| state.has(target, mask))
+                            live.map_or(*defined, |(target, mask)| state.has(target, mask))
                         }),
                     });
                     if depth != TargetRef::None {
-                        if r.depth_mode != DepthBufferMode::Disabled {
+                        if r.depth_mode != DepthBufferMode::Disabled && !matches!(r.depth_func, CompareFunc::Always | CompareFunc::Never) {
                             inputs &= state.has(depth, DEPTH);
                         }
                         if r.stencil.enable {
@@ -123,10 +153,18 @@ impl ReplayFrame {
                     }
                     if draw.hw.zpass_count_enable { query_defined &= inputs; }
                     if r.blend_enable { inputs &= state.has(colour, COLOUR); }
+                    let c = r.color_write;
                     if !inputs {
-                        let c = r.color_write;
                         state.forget(colour, channels(c.red, c.green, c.blue, c.alpha));
                         if draw.writes_depth_stencil() { state.forget(depth, DEPTH | STENCIL); }
+                    } else {
+                        #[cfg(feature = "gpu")]
+                        if !state.has(colour, channels(c.red, c.green, c.blue, c.alpha))
+                            && let Some(target) = self.desc(colour)
+                            && overwrite::covers_colour(draw, textures.iter().any(Option::is_some), target)
+                        {
+                            state.define(colour, channels(c.red, c.green, c.blue, c.alpha));
+                        }
                     }
                 }
                 ReplayOp::Stage(stage) => {
@@ -154,6 +192,14 @@ impl ReplayFrame {
                 ReplayOp::EndFlareQuery(_) => {}
             }
         }
+        if all {
+            let declared = self.colour.iter().map(|_| TargetRef::SceneColour)
+                .chain(self.depth.iter().map(|_| TargetRef::SceneDepth))
+                .chain((0..self.aux.len()).map(|i| TargetRef::Aux(i as u16)));
+            if declared.into_iter().any(|t| !state.has(t, self.aspects(t))) {
+                return Some("frame_needs_previous_target_contents");
+            }
+        }
         (!state.has(colour, COLOUR)).then_some("frame_needs_previous_target_contents")
     }
 }
@@ -161,6 +207,7 @@ impl ReplayFrame {
 #[derive(Default)]
 struct Contents {
     targets: HashMap<TargetRef, u8>,
+    partial: HashMap<(TargetRef, u8), Holes>,
 }
 
 impl Contents {
@@ -174,6 +221,34 @@ impl Contents {
         *self.targets.entry(target).or_default() |= mask;
     }
     fn forget(&mut self, target: TargetRef, mask: u8) {
+        if mask == 0 { return; }
         *self.targets.entry(target).or_default() &= !mask;
+        self.partial.retain(|(t, bit), _| *t != target || *bit & mask == 0);
+    }
+
+    fn cover(&mut self, target: TargetRef, desc: Option<AuxTarget>, mask: u8, rects: &[PixelRect]) {
+        let Some(desc) = desc else { return };
+        let mask = mask & !self.bits(target);
+        if mask == 0 || rects.is_empty() || desc.width == 0 || desc.height == 0 { return; }
+        if rects.iter().any(|r| r.is_whole(desc.width, desc.height)) {
+            self.define(target, mask);
+            return;
+        }
+        for bit in [1, 2, 4, ALPHA, DEPTH, STENCIL] {
+            if mask & bit == 0 { continue; }
+            let key = (target, bit);
+            for &rect in rects {
+                let holes = self.partial.entry(key).or_insert_with(|| Holes::whole(desc.width, desc.height));
+                match holes.cover(rect) {
+                    Ok(true) => {
+                        self.define(target, bit);
+                        self.partial.remove(&key);
+                        break;
+                    }
+                    Ok(false) => {}
+                    Err(()) => { self.partial.remove(&key); }
+                }
+            }
+        }
     }
 }

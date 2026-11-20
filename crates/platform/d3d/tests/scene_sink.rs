@@ -286,3 +286,122 @@ fn the_worker_adopts_only_the_actual_immutable_draw_packet_including_unused_nan_
         assert_eq!(legacy_draws, usize::from(!native));
     }
 }
+
+#[test]
+fn tiled_masked_clears_need_every_pixel_of_every_written_channel() {
+    use d3d::backend::{ChannelMask, PixelRect, RectClear};
+    use d3d::scene_sink::{ReplayFrame, ReplayOp};
+
+    let main = TargetRef::SceneColour;
+    let at = SlotAt { slot: Slot::Opaque, view: 0 };
+    let rgba = ChannelMask { red: true, green: true, blue: true, alpha: true };
+    let rgb = ChannelMask { alpha: false, ..rgba };
+    let alpha = ChannelMask { alpha: true, ..ChannelMask::default() };
+    let rect = |x, y, width, height| PixelRect { x, y, width, height };
+    let clear = |rects, mask| (at, ReplayOp::ClearRects {
+        colour: main, depth: TargetRef::None,
+        clear: RectClear { rects, color: Some(([0.4, 0.2, 0.1, 0.8], mask)), depth: None, stencil: None },
+    });
+    let mut frame = ReplayFrame {
+        colour: Some(frame_scene::AuxTarget { width: 6, height: 5, format: gfx::D3DFormat::LinA8R8G8B8 as u32, depth: false }),
+        presented: main, ..Default::default()
+    };
+    frame.ops.push(clear(vec![rect(0, 0, 4, 5), rect(2, 0, 4, 3)], rgba));
+    frame.ops.push(clear(vec![rect(4, 3, 2, 2)], rgb));
+    assert!(frame.private_target_refusal().is_some(), "the bottom right alpha is missing");
+    frame.ops.push(clear(vec![rect(4, 3, 2, 1), rect(4, 4, 1, 1)], alpha));
+    assert!(frame.private_target_refusal().is_some(), "one uncovered pixel");
+    frame.ops.push(clear(vec![rect(5, 4, 1, 1)], alpha));
+    assert_eq!(frame.private_target_refusal(), None);
+    assert!(frame.all_targets_defined());
+}
+
+#[test]
+fn a_frozen_sample_needs_the_earlier_pixels_and_an_in_place_view_sees_the_later_clear() {
+    use d3d::scene_sink::{ReplayFrame, ReplayOp, ReplaySample, ReplayTexture};
+    use frame_scene::{AuxTarget, carried::CameraUse};
+    use gfx::{Clear, D3DFormat};
+
+    let (mut d, mut m) = create(RecordingBackend::new(), UploadPolicy::Always);
+    set_states(&mut d, &mut m);
+    quad(&mut d, &mut m, 0xFF55_8822);
+    let mut draw = d.backend.draws().pop().unwrap().clone();
+    draw.state.render.color_write = gfx::state::ColorWriteMask::ALL;
+    let main = TargetRef::SceneColour;
+    let side = TargetRef::Aux(0);
+    let at = SlotAt { slot: Slot::AfterLights, view: 0 };
+    let desc = AuxTarget { width: W, height: H, format: D3DFormat::LinA8R8G8B8 as u32, depth: false };
+    let clear = |colour| (at, ReplayOp::Clear { colour, depth: TargetRef::None, clear: Clear::all([0.2, 0.5, 0.7, 1.0]) });
+    let frame = |how| ReplayFrame {
+        presented: main, colour: Some(desc), aux: vec![desc], ops: vec![
+            clear(main), (at, ReplayOp::Sample { id: 0, of: side, how }), clear(side),
+            (at, ReplayOp::Bind { colour: main, depth: TargetRef::None }),
+            (at, ReplayOp::Draw { draw: std::sync::Arc::new(draw.clone()), textures: [Some(ReplayTexture::Sample(0)), None, None, None], camera: CameraUse::Screen }),
+        ], ..Default::default()
+    };
+    let live = frame(ReplaySample::InPlace);
+    assert_eq!(live.private_target_refusal(), None);
+    assert!(live.all_targets_defined());
+    let mut snap = frame(ReplaySample::Snapshot { opaque: false });
+    assert!(snap.private_target_refusal().is_some());
+    snap.ops.push(clear(main));
+    assert_eq!(snap.private_target_refusal(), None, "the final display no longer uses that sample");
+    assert!(!snap.all_targets_defined(), "another caller can still hold that frozen sample");
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+fn an_opaque_full_target_rhw_strip_defines_colour_only_when_it_covers_every_sample() {
+    use d3d::backend::PixelRect;
+    use d3d::scene_sink::{ReplayFrame, ReplayOp};
+    use frame_scene::{AuxTarget, carried::CameraUse};
+    use gfx::state::{ColorWriteMask, RenderState, CullMode, DepthBufferMode, TextureOp};
+
+    let (mut d, mut m) = create(RecordingBackend::new(), UploadPolicy::Always);
+    set_states(&mut d, &mut m);
+    quad_vb(&mut m, -0.5, -0.5, W as f32 - 0.5, H as f32 - 0.5, 0xE05F_15F0);
+    bind_quad(&mut d, &mut m);
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    let mut draw = d.backend.draws().pop().unwrap().clone();
+    draw.state.render = RenderState { cull_mode: CullMode::None, depth_mode: DepthBufferMode::Disabled, ..Default::default() };
+    draw.state.stages[0].color_op = TextureOp::Disable;
+    std::sync::Arc::make_mut(&mut draw.raw).render.fill(0);
+    draw.hw.stipple_control = Some(0);
+    let main = TargetRef::SceneColour;
+    let at = SlotAt { slot: Slot::Overlay, view: 0 };
+    let frame = |draw: &ResolvedDraw| ReplayFrame {
+        presented: main,
+        colour: Some(AuxTarget { width: W, height: H, format: draw.target.format as u32, depth: false }),
+        ops: vec![(at, ReplayOp::Bind { colour: main, depth: TargetRef::None }),
+            (at, ReplayOp::Draw { draw: std::sync::Arc::new(draw.clone()), textures: [None, None, None, None], camera: CameraUse::Screen })],
+        ..Default::default()
+    };
+    let defined = |draw| frame(draw).private_target_refusal().is_none();
+    assert!(defined(&draw));
+    let mut clipped = draw.clone();
+    clipped.clip = Some(PixelRect { x: 1, y: 0, width: W - 1, height: H });
+    assert!(!defined(&clipped));
+    let mut blended = draw.clone();
+    blended.state.render.blend_enable = true;
+    assert!(!defined(&blended));
+    let mut masked = draw.clone();
+    masked.state.render.color_write = ColorWriteMask { alpha: false, ..ColorWriteMask::ALL };
+    assert!(!defined(&masked));
+    let mut stippled = draw.clone();
+    stippled.hw.stipple_control = Some(1);
+    assert!(!defined(&stippled));
+
+    let ctx = match gfx::GfxContext::headless() {
+        Ok(ctx) => ctx,
+        Err(e) => { eprintln!("skipping GPU readback: {e}"); return; }
+    };
+    let mut gpu = d3d::GfxBackend::new(ctx);
+    let frame = frame(&draw);
+    for scale in [1, 4] {
+        let mut private = d3d::gfx_backend::GuestDrawPass::new(&mut gpu, &frame, scale).unwrap();
+        for (_, op) in &frame.ops { private.apply(op).unwrap(); }
+        let ([w, h], pixels) = private.read_rgba().unwrap();
+        assert_eq!([w, h], [W * scale, H * scale]);
+        assert!(pixels.chunks_exact(4).all(|p| p == [0x5f, 0x15, 0xf0, 0xe0]));
+    }
+}
