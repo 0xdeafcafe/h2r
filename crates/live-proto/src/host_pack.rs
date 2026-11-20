@@ -274,17 +274,15 @@ impl Pool {
     /// `pack` refused a lease. Returns true when the pack runs nothing and
     /// should stop (a new pack whose first match failed to start).
     pub fn refused(&mut self, pack: &str) -> bool {
-        match self.packs.get_mut(pack) {
-            Some(entry) if !entry.leases.is_empty() => {
-                entry.full_at = Some(entry.leases.len());
-                false
-            }
-            Some(_) => {
-                self.packs.remove(pack);
-                true
-            }
-            None => true,
+        let Some(entry) = self.packs.get_mut(pack) else {
+            return true;
+        };
+        if !entry.leases.is_empty() {
+            entry.full_at = Some(entry.leases.len());
+            return false;
         }
+        self.packs.remove(pack);
+        true
     }
 
     /// `lease` ended. Returns its pack when that was the pack's last lease;
