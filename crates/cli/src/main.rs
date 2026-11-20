@@ -22,6 +22,7 @@ mod agent_raw;
 mod agent_run;
 mod agent_sim;
 mod sim_cmd;
+mod sim_store_cmd;
 mod theater_cmd;
 #[cfg(feature = "desktop")]
 mod anim;

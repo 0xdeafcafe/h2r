@@ -339,7 +339,9 @@ ticks; and the final score. The report is one JSON file per match:
   "result": { "end": "game_over", "winner": {"player": 2}, "teams": [] },
   "ticks": 9000, "game_seconds": 300.0,
   "wall": { "setup_s": 21.8, "match_s": 41.2, "process_s": 63.0, "speedup": 7.28,
-            "process_speedup": 4.76, "ms_per_tick": 4.58 },
+            "process_speedup": 4.76, "ms_per_tick": 4.58,
+            "peak_rss_mib": 981, "footprint_mib": 143,
+            "guest_written_pages": 2100, "guest_pages": 16384 },
   "players": [
     { "index": 0, "name": "A1", "bot": true, "port": 0, "arm": "base", "team": 0,
       "score": 12, "kills": 12, "deaths": 9, "assists": 2, "suicides": 0, "betrayals": 0,
@@ -366,6 +368,74 @@ any other player in free-for-all. Multiple pellets, splash and melee can
 produce separate reports. The original `hits`, `accuracy`,
 `damage_dealt` and `damage_taken` fields keep their previous definitions.
 Readers can continue to load earlier `h2-sim-report/1` reports.
+
+The `wall` block carries the process's memory: `peak_rss_mib`
+(`getrusage`'s `ru_maxrss`), `footprint_mib` on macOS
+(`proc_pid_rusage`'s `ri_phys_footprint` — dirty pages, the number a
+fleet pays for), and, when the run loaded a shared copy-on-write guest
+RAM base (§6.1), `guest_written_pages` of `guest_pages`: the census of
+what the match wrote over the base, so batches record memory per run.
+Measured 2026-11-20, one waterworks 2v2 sim process, macOS: peak RSS
+about 981 MiB (791 MiB of it the resident pages of the whole mmapped
+disc image), footprint (dirty) 143 MiB (103 MiB Malloc Large, of which
+guest RAM is 64 MiB; 35 MiB Malloc Small), shared `__TEXT` 414 MiB.
+
+### 6.1 Sim stores: the map without the map
+
+The retail map is never streamed in a sim or light host that uses
+stores. A recording pass notes every byte range the guest reads through
+the VFS; the build packs those ranges per map into one small file; the
+run serves the map from it, byte for byte at the same offsets, and a
+read of a byte no recording covered is a named error (`NotInStore`,
+with the range on stderr) — never a silent fall back to the disc, so a
+miss is found, recorded, and the store rebuilt:
+
+```sh
+# 1. Record (runs merge, so play several seeds for coverage):
+H2_SIM_STORE_RECORD=reads.txt h2 sim run match.toml
+# 2. Build (verified byte for byte against the disc):
+h2 sim store build waterworks --disc disc/halo2.iso --out store --reads reads.txt
+#    ...or every map the recording holds:
+h2 sim store build all --disc disc/halo2.iso --out store --reads reads.txt
+# 3. Serve (default off until measured):
+H2_SIM_STORE=store h2 sim run match.toml   # or h2 serve --system-link --host-light
+```
+
+The store file (`<map>.h2store`) is a 24-byte header, a sorted range
+index and the packed bytes of the ranges — nothing else. The serving
+side (`vfs::SimStoreBackend`, layered under `H2_MAP_DIR` and
+`H2_SERVER_MAP_DIR`) keeps only the index in memory, maps the file
+read-only and copies straight into the guest's own read buffer, so
+every process on one host shares the store's page-cache pages and
+nothing private is retained. `stat` keeps the map's logical length; a
+store-served map has no `host_file` (like a streamed overlay); an
+unreadable store file makes the map's reads fail, never fall back.
+Two games on different maps still share `shared.map`'s store, the
+common tag data both read, and the dylib's code pages.
+
+Boot still opens the disc image for the XBE and small header reads;
+with a store covering every map the sim reads, the image's resident
+pages stop mattering. Without `H2_SIM_STORE`, the light profile maps
+the disc read-only and drops a bulk read's pages again after the copy
+out (`vfs::disc`), so a map copied to the title's cache partition
+leaves no pages behind either.
+
+### 6.2 Sharing guest RAM between games on one machine
+
+Halo copies a map's tag data into guest RAM at load, so each process
+holds its own dirty copy. `state.save` with `"cow": true` writes, beside
+the snapshot, a sparse raw RAM image (`<name>.ram`: zero pages are
+holes); `state.load` with `"cow": true` maps that file private
+copy-on-write in place of decoding RAM in — pages the match never
+writes stay one shared set across every process on the same image
+(including the zero pages), and only written pages become private.
+`h2 sim batch --fork` saves and loads this way. The match-end census in
+the report's `wall` block (`guest_written_pages`) says how much stayed
+shared; `vmmap` (macOS) or `/proc/<pid>/smaps` (Linux, `Private_Dirty`
+versus `Shared`) per process says what a fleet keeps. Note: machine
+snapshots need the full audio path, so `--fork` refuses the light host
+until that blocker is lifted — `H2_FEATURES=-host-light` for a full
+headless fork.
 
 `ttk_kills` and `ttk_ticks` are the time to kill. A fight is a player's
 hits with damage on one opponent, none more than 150 ticks after the

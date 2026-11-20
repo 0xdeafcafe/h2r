@@ -32,7 +32,7 @@ pub struct DirDiscBackend {
     entries: BTreeMap<String, Node>,
     volume_bytes: u64,
     /// The last file read, kept open: the game streams maps in many reads.
-    open: Option<(String, File, Option<memmap2::Mmap>)>,
+    open: Option<(String, File, Option<crate::disc::MappedDisc>)>,
     mmap: bool,
 }
 
@@ -187,7 +187,7 @@ impl Backend for DirDiscBackend {
         if self.open.as_ref().is_none_or(|opened| opened.0 != key) {
             let file = File::open(&node.host)?;
             let mapping = if self.mmap && key.ends_with(".map") {
-                crate::disc::map_read_only(&file)
+                crate::disc::MappedDisc::new(&file)
             } else {
                 None
             };
@@ -195,7 +195,7 @@ impl Backend for DirDiscBackend {
         }
         let (_, file, mapping) = self.open.as_mut().expect("DVD file opened above");
         if let Some(map) = mapping {
-            crate::disc::copy_mapped(map, offset, &mut buffer[..len])?;
+            map.read(offset, &mut buffer[..len])?;
         } else {
             file.seek(SeekFrom::Start(offset))?;
             file.read_exact(&mut buffer[..len])?;
@@ -242,7 +242,9 @@ pub fn open_disc_with_mapping(path: impl AsRef<Path>, mmap: bool) -> Result<AnyD
     if std::fs::metadata(path)?.is_dir() {
         Ok(AnyDisc::Dir(DirDiscBackend::open_with_mapping(path, mmap)?))
     } else {
-        Ok(AnyDisc::Image(crate::DiscBackend::open_with_mapping(path, mmap)?))
+        Ok(AnyDisc::Image(crate::DiscBackend::open_with_mapping(
+            path, mmap,
+        )?))
     }
 }
 

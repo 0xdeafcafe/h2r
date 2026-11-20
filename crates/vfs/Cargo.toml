@@ -13,4 +13,6 @@ content.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 # fd-anchored traversal for HostBackend::format (openat/unlinkat, no symlink following).
-rustix = { version = "1", default-features = false, features = ["fs", "std"] }
+rustix = { version = "1", default-features = false, features = ["fs", "param", "std"] }
+# Dropping a disc mapping's pages after a bulk read (msync/madvise/fadvise).
+libc = "0.2"

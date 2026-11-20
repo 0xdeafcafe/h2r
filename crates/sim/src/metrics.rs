@@ -327,6 +327,34 @@ pub struct Wall {
     pub speedup: f64,
     pub process_speedup: f64,
     pub ms_per_tick: f64,
+    /// The process's peak resident set, in MiB (`getrusage`'s `ru_maxrss`
+    /// while the report is built; reports before the field carry none).
+    #[serde(default)]
+    pub peak_rss_mib: u64,
+    /// The process's physical footprint on macOS, in MiB
+    /// (`proc_pid_rusage`'s `ri_phys_footprint`): everything the process
+    /// is charged for, clean pages included. `None` elsewhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footprint_mib: Option<u64>,
+    /// Guest RAM pages the match wrote over a shared copy-on-write base
+    /// (`state.load` with `"cow": true`): the pages that stopped being
+    /// shared. `None` without a base.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guest_written_pages: Option<u64>,
+    /// The base's guest RAM pages, `guest_written_pages`'s denominator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guest_pages: Option<u64>,
+}
+
+/// The process's memory, sampled while a report is built: [`Wall`]'s
+/// memory fields. Peak RSS everywhere; the footprint where the host
+/// has one (macOS); the guest census when a shared base was loaded.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MemoryUsage {
+    pub peak_rss_mib: u64,
+    pub footprint_mib: Option<u64>,
+    pub guest_written_pages: Option<u64>,
+    pub guest_pages: Option<u64>,
 }
 
 /// One player's line in the report.
@@ -475,6 +503,8 @@ pub struct Finish<'a> {
     pub end: End,
     /// Its `ticks` are ignored: the tally's count is used.
     pub speed: SpeedMeter,
+    /// The process's memory, as the report's `wall` block carries it.
+    pub memory: MemoryUsage,
     /// `loaded` or `missing`.
     pub nav: &'a str,
     pub notes: Vec<String>,
@@ -489,6 +519,7 @@ impl Finish<'_> {
             bots: &[],
             end,
             speed: SpeedMeter::default(),
+            memory: MemoryUsage::default(),
             nav: "loaded",
             notes: Vec::new(),
         }
@@ -769,6 +800,7 @@ impl Tally {
             bots,
             end,
             speed,
+            memory,
             nav,
             notes,
         } = f;
@@ -875,6 +907,10 @@ impl Tally {
                 speedup: speed.speedup(),
                 process_speedup: speed.process_speedup(),
                 ms_per_tick: speed.ms_per_tick(),
+                peak_rss_mib: memory.peak_rss_mib,
+                footprint_mib: memory.footprint_mib,
+                guest_written_pages: memory.guest_written_pages,
+                guest_pages: memory.guest_pages,
             },
             players,
             kills: self.kills.clone(),
@@ -1314,6 +1350,20 @@ mod tests {
     }
 
     #[test]
+    fn a_report_from_before_the_memory_fields_still_parses() {
+        let old = serde_json::json!({
+            "setup_s": 1.0, "match_s": 2.0, "process_s": 3.0,
+            "speedup": 4.0, "process_speedup": 5.0, "ms_per_tick": 6.0
+        });
+        let wall: Wall = serde_json::from_value(old).unwrap();
+        assert_eq!(wall.peak_rss_mib, 0);
+        assert_eq!(wall.footprint_mib, None);
+        // A report without a footprint is not serialized with one.
+        let v = serde_json::to_value(&wall).unwrap();
+        assert!(v.get("footprint_mib").is_none());
+    }
+
+    #[test]
     fn winners() {
         let mut t = Tally::new();
         t.start(0);
@@ -1344,17 +1394,26 @@ mod tests {
         let r = t.report(Finish {
             match_: serde_json::json!({"map": "lockout"}),
             speed,
+            memory: MemoryUsage {
+                peak_rss_mib: 981,
+                footprint_mib: Some(143),
+                ..MemoryUsage::default()
+            },
             ..Finish::bare(End::GameOver)
         });
         // The meter's ticks are the tally's.
         assert_eq!(r.ticks, 1);
         assert_eq!(r.wall.process_s, 1.5);
+        assert_eq!(r.wall.peak_rss_mib, 981);
+        assert_eq!(r.wall.footprint_mib, Some(143));
         let v = serde_json::to_value(&r).unwrap();
         assert_eq!(v["format"], FORMAT);
         assert_eq!(v["match"]["map"], "lockout");
         assert_eq!(v["result"]["end"], "game_over");
         assert_eq!(v["result"]["winner"], serde_json::json!({"player": 0}));
         assert_eq!(v["kills"][0]["kind"], "suicide");
+        assert_eq!(v["wall"]["peak_rss_mib"], 981);
+        assert_eq!(v["wall"]["footprint_mib"], 143);
         let back: Report = serde_json::from_value(v).unwrap();
         assert_eq!(back, r);
     }

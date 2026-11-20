@@ -115,6 +115,7 @@ impl World {
                 }
             }),
             presents: 77,
+            rt: None,
         }
     }
 

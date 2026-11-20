@@ -27,13 +27,35 @@ type SharedVfs = Arc<Mutex<vfs::Vfs>>;
 
 /// Starts the worker unless [`autonav::ENV`] says off. `first`: the map
 /// the boot loads, if it knows.
-pub fn start(data_root: &Path, disc: &Path, vfs: SharedVfs, first: Option<String>) -> Option<Handle> {
+pub fn start(
+    data_root: &Path,
+    disc: &Path,
+    vfs: SharedVfs,
+    first: Option<String>,
+    light: bool,
+) -> Option<Handle> {
     let v = std::env::var(autonav::ENV).ok();
-    start_with(autonav::enabled(v.as_deref()), data_root, disc, vfs, first)
+    start_with(
+        autonav::enabled(v.as_deref()),
+        data_root,
+        disc,
+        vfs,
+        first,
+        light,
+    )
 }
 
-/// [`start`] with the switch given.
-pub fn start_with(on: bool, data_root: &Path, disc: &Path, vfs: SharedVfs, first: Option<String>) -> Option<Handle> {
+/// [`start`] with the switch given. `light`: the light-host profile,
+/// which scans only the booted map — reading every map on the disc at
+/// boot (its BSPs) would bring the whole image resident.
+pub fn start_with(
+    on: bool,
+    data_root: &Path,
+    disc: &Path,
+    vfs: SharedVfs,
+    first: Option<String>,
+    light: bool,
+) -> Option<Handle> {
     if !on {
         eprintln!(
             "bots: nav meshes are not built automatically ({}=0); `h2 bots nav all` builds them",
@@ -43,16 +65,28 @@ pub fn start_with(on: bool, data_root: &Path, disc: &Path, vfs: SharedVfs, first
     }
     let (disc, content) = (disc.to_path_buf(), content_root(data_root));
     let scan_vfs = Arc::clone(&vfs);
-    let (worker, handle) = Worker::new(
-        data_root.join("bots"),
-        Box::new(move || scan(&disc, &content, &scan_vfs)),
-    );
+    let wanted = first.clone();
+    let scan = if light {
+        Box::new(move || scan_light(&scan_vfs, wanted.as_deref()))
+            as Box<dyn FnMut() -> Vec<Box<dyn Source>> + Send>
+    } else {
+        Box::new(move || scan(&disc, &content, &scan_vfs))
+            as Box<dyn FnMut() -> Vec<Box<dyn Source>> + Send>
+    };
+    let (worker, handle) = Worker::new(data_root.join("bots"), scan);
     let worker = worker
         .on_demand(move |name| {
-            let path = vfs
+            // Content packages first, then the disc's own map of the name:
+            // a light host's scan holds only the booted map, so a later
+            // `want` finds the rest here.
+            let mut path = vfs
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .content_map_path(name)?;
+                .content_map_path(name);
+            if path.is_none() {
+                path = Some(format!("{}\\maps\\{name}.map", vfs::CDROM_DEVICE));
+            }
+            let path = path?;
             vfs_source(&vfs, name, &path)
         })
         .first(first)
@@ -81,6 +115,19 @@ fn content_root(data_root: &Path) -> PathBuf {
     vfs::Config::new(data_root, crate::new_maps::HALO2_TITLE)
         .title_data_dir()
         .join(vfs::CONTENT_DIR)
+}
+
+/// The light host's scan: only the booted map, through the VFS's own path
+/// — no walk of the image, no content enumeration, no other map's bytes.
+/// Maps loaded later arrive through [`Handle::want`], which the worker
+/// answers with the on-demand lookup.
+pub fn scan_light(vfs: &SharedVfs, first: Option<&str>) -> Vec<Box<dyn Source>> {
+    let Some(first) = first else {
+        return Vec::new();
+    };
+    let name = first.to_ascii_lowercase();
+    let path = format!("{}\\maps\\{name}.map", vfs::CDROM_DEVICE);
+    vfs_source(vfs, &name, &path).into_iter().collect()
 }
 
 /// Disc and physically installed content. Generated package placeholders
@@ -138,7 +185,10 @@ fn disc_map_names(disc: &Path) -> Vec<String> {
         .iter()
         .filter(|e| {
             let p = e.path.to_ascii_lowercase();
-            !e.is_dir && p.starts_with("/maps/") && p.ends_with(".map") && p.matches('/').count() == 2
+            !e.is_dir
+                && p.starts_with("/maps/")
+                && p.ends_with(".map")
+                && p.matches('/').count() == 2
         })
         .map(|e| {
             let n = e.path.rsplit('/').next().unwrap_or(&e.path);
@@ -157,11 +207,17 @@ pub fn vfs_source(vfs: &SharedVfs, key: &str, path: &str) -> Option<Box<dyn Sour
             key,
             h.offset,
             h.len,
-            Box::new(move || Ok(Box::new(std::io::BufReader::new(std::fs::File::open(&file)?)))),
+            Box::new(move || {
+                Ok(Box::new(std::io::BufReader::new(std::fs::File::open(
+                    &file,
+                )?)))
+            }),
         )));
     }
     let r = v.open(path, vfs::OpenOptions::default()).ok()?;
-    let len = v.query_information(r.handle).map(|i| i.metadata.end_of_file);
+    let len = v
+        .query_information(r.handle)
+        .map(|i| i.metadata.end_of_file);
     let _ = v.close(r.handle);
     let len = len.ok()?;
     drop(v);
@@ -172,7 +228,10 @@ pub fn vfs_source(vfs: &SharedVfs, key: &str, path: &str) -> Option<Box<dyn Sour
         len,
         Box::new(move || {
             let f = VfsFile::open(Arc::clone(&vfs), &path)?;
-            Ok(Box::new(std::io::BufReader::with_capacity(VfsFile::CHUNK, f)))
+            Ok(Box::new(std::io::BufReader::with_capacity(
+                VfsFile::CHUNK,
+                f,
+            )))
         }),
     )))
 }
@@ -213,7 +272,10 @@ impl VfsFile {
 impl Read for VfsFile {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let left = self.len.saturating_sub(self.pos);
-        let n = buf.len().min(Self::CHUNK).min(usize::try_from(left).unwrap_or(usize::MAX));
+        let n = buf
+            .len()
+            .min(Self::CHUNK)
+            .min(usize::try_from(left).unwrap_or(usize::MAX));
         if n == 0 {
             return Ok(0);
         }
@@ -240,7 +302,11 @@ impl Seek for VfsFile {
 
 impl Drop for VfsFile {
     fn drop(&mut self) {
-        let _ = self.vfs.lock().unwrap_or_else(|e| e.into_inner()).close(self.handle);
+        let _ = self
+            .vfs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .close(self.handle);
     }
 }
 
@@ -297,7 +363,14 @@ mod tests {
     #[test]
     fn switched_off_nothing_starts() {
         let root = tmp("off");
-        let h = start_with(false, &root, &root.join("no.iso"), storage(&root), None);
+        let h = start_with(
+            false,
+            &root,
+            &root.join("no.iso"),
+            storage(&root),
+            None,
+            false,
+        );
         assert!(h.is_none());
         assert!(!root.join("bots").exists());
         std::fs::remove_dir_all(&root).unwrap();
@@ -309,7 +382,13 @@ mod tests {
         let vfs = storage(&root);
         let bytes = put_package_map(&root, "4d53006400000401", "new_map");
         put_package_map(&root, "4d53006400000402", "other");
-        std::fs::write(content_root(&root).join("4d53006400000402").join("patch.lvl"), b"x").unwrap();
+        std::fs::write(
+            content_root(&root)
+                .join("4d53006400000402")
+                .join("patch.lvl"),
+            b"x",
+        )
+        .unwrap();
         // No disc: the content maps only.
         let mut found = scan(&root.join("no.iso"), &content_root(&root), &vfs);
         let keys: Vec<&str> = found.iter().map(|s| s.key()).collect();
@@ -317,7 +396,10 @@ mod tests {
         let h = found[0].header().unwrap();
         assert_eq!(h, bytes[..autonav::MAP_HEADER_LEN]);
         let parsed = autonav::MapHeader::parse(&h).unwrap();
-        assert_eq!((parsed.name.as_str(), parsed.multiplayer), ("new_map", true));
+        assert_eq!(
+            (parsed.name.as_str(), parsed.multiplayer),
+            ("new_map", true)
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 

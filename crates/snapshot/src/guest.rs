@@ -95,6 +95,11 @@ pub fn save_guest(
     Ok(stats)
 }
 
+/// Read the guest layout for either a decoded or a file-backed RAM restore.
+pub fn load_layout(snapshot: &Snapshot<'_>) -> Result<GuestLayout, Error> {
+    decode_layout(&snapshot.require(LAYOUT, LAYOUT_VERSION..=LAYOUT_VERSION)?)
+}
+
 /// Replace `guest`'s layout and RAM with the snapshot's. The guest must
 /// have been booted like the saved one (`Guest::restore`); RAM is decoded
 /// straight into it. A failed decode leaves the guest unusable.
@@ -103,7 +108,7 @@ pub fn load_guest(
     guest: &mut Guest,
     base: Option<&[u8]>,
 ) -> Result<PageStats, Error> {
-    let layout = decode_layout(&snapshot.require(LAYOUT, LAYOUT_VERSION..=LAYOUT_VERSION)?)?;
+    let layout = load_layout(snapshot)?;
     let ram = snapshot.require(RAM, RAM_VERSION..=RAM_VERSION)?;
     let mut stats = PageStats::default();
     guest
