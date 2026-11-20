@@ -64,6 +64,15 @@ pub use plan::{Base, Conflict, ImageAddrs, Plan, Remap};
 pub use snapshot::{FeatureSnapshot, SnapshotPolicy};
 pub use switches::Switches;
 
+/// Log the full startup plan and first use of each hook. Read once.
+pub fn plan_verbose() -> bool {
+    static VERBOSE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *VERBOSE.get_or_init(|| {
+        std::env::var("H2_FEATURE_PLAN").as_deref() == Ok("1")
+            || std::env::var_os("H2_BOOT_VERBOSE").is_some()
+    })
+}
+
 /// Whether `H2_NATIVE_VERBOSE=1`: the native renderer's per-definition
 /// and per-material load lines, and its comparison dumps, print. Without
 /// it each stage prints one summary line per level load (the environment

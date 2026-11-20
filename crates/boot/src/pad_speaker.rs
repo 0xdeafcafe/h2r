@@ -180,11 +180,31 @@ impl PadIndexer {
     /// returns the router over everything indexed so far, or `None` if
     /// nothing was added.
     pub fn add(&mut self, file: &HostFile) -> Result<Option<PadRouter>, String> {
-        if !self.done.insert(file.clone()) {
+        self.add_map(file, false)
+    }
+
+    fn add_map(&mut self, file: &HostFile, cache_slot: bool) -> Result<Option<PadRouter>, String> {
+        if file.len == 0 || !self.done.insert(file.clone()) {
             return Ok(None);
         }
-        let reader = File::open(&file.path).map_err(|e| format!("{}: {e}", file.path.display()))?;
-        let mut map = Map::from_region(BufReader::new(reader), file.offset, file.len)
+        let error = |e: std::io::Error| format!("{}: {e}", file.path.display());
+        let mut reader = BufReader::new(File::open(&file.path).map_err(error)?);
+        if cache_slot {
+            // The game preallocates slots and invalidates old maps by zeroing
+            // the header. Try again on the next open, even at the same length.
+            const HEADER_LEN: u64 = 0x800;
+            reader.seek(SeekFrom::Start(file.offset)).map_err(error)?;
+            let mut header = Vec::new();
+            (&mut reader)
+                .take(file.len.min(HEADER_LEN))
+                .read_to_end(&mut header)
+                .map_err(error)?;
+            if header.iter().all(|&b| b == 0) {
+                self.done.remove(file);
+                return Ok(None);
+            }
+        }
+        let mut map = Map::from_region(reader, file.offset, file.len)
             .map_err(|e| format!("{}: {e}", file.path.display()))?;
         let mut res = Resources::new(file, &self.shared);
         let n = index_map(&mut self.index, &mut map, &mut res)
@@ -214,7 +234,22 @@ impl PadIndexer {
 
 /// Whether an opened file is a map worth indexing.
 fn is_map(path: &str) -> bool {
-    path.len() > 4 && path[path.len() - 4..].eq_ignore_ascii_case(".map")
+    path.len() > 4 && path.as_bytes()[path.len() - 4..].eq_ignore_ascii_case(b".map")
+}
+
+fn is_cache_slot(device: &str, path: &str) -> bool {
+    let name = path.trim_start_matches('\\').as_bytes();
+    name.len() == 12
+        && name[..5].eq_ignore_ascii_case(b"cache")
+        && name[5..8].iter().all(u8::is_ascii_digit)
+        && name[8..].eq_ignore_ascii_case(b".map")
+        && [
+            r"\Device\Harddisk0\Partition3",
+            r"\Device\Harddisk0\Partition4",
+            r"\Device\Harddisk0\Partition5",
+        ]
+        .iter()
+        .any(|partition| device.eq_ignore_ascii_case(partition))
 }
 
 /// The indexer thread. Dropping it removes the VFS observer and joins.
@@ -245,12 +280,12 @@ pub fn spawn(
     shared: [&str; 3],
     mut install: impl FnMut(PadRouter) + Send + 'static,
 ) -> PadIndex {
-    let (tx, rx) = mpsc::channel::<HostFile>();
+    let (tx, rx) = mpsc::channel::<(HostFile, bool)>();
     let shared = {
         let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
         v.set_open_observer(Some(Box::new(move |f: &vfs::OpenedFile| {
             if let (true, Some(h)) = (is_map(&f.path), &f.host) {
-                let _ = tx.send(h.clone());
+                let _ = tx.send((h.clone(), is_cache_slot(&f.device, &f.path)));
             }
         })));
         shared.map(|name| v.host_file(name))
@@ -262,8 +297,8 @@ pub fn spawn(
             if let Some(r) = indexer.add_shared() {
                 install(r);
             }
-            for file in rx {
-                match indexer.add(&file) {
+            for (file, cache_slot) in rx {
+                match indexer.add_map(&file, cache_slot) {
                     Ok(Some(r)) => install(r),
                     Ok(None) => {}
                     Err(e) => eprintln!("pad speaker: not indexed: {e}"),

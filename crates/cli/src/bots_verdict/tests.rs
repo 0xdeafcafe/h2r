@@ -540,6 +540,7 @@ fn an_account_picker_that_never_signed_in_is_named() {
         "bots-drive: press a on screen none main menu row 1 (Xbox Live (signs in; the bots join here))",
         "bots: join gate port 1: screen none (top none), dialog 0x14 (window 3, slot 4), signed_in false (slot 0x1): waits",
         "bots: join gate port 2: screen none (top none), dialog 0x14 (window 3, slot 4), signed_in false (slot 0x1): waits",
+        "bots: join gate port 1: screen none (top none), dialog 0x14 (window 3, slot 4), signed_in false (slot 0x1): waits",
         "bots: join gate port 1: screen none (top none), dialog none, signed_in false (slot 0x1): waits",
         "bots: join gate port 1: screen none (top none), dialog 0x14 (window 3, slot 4), signed_in false (slot 0x1): waits",
         "bots-drive: stuck: no Xbox Live menu after 4 tries; back on the main menu",

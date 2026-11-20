@@ -44,7 +44,8 @@ copies. Nothing is ever written next to it.
 | `H2_ACCESS_COUNT=0` | **On by default.** Generated handlers count their own guest memory accesses and charge them in bulk (see crates/emit/RUNTIME-CONTRACT.md). `0` lets the runtime charge each accessor call. It changes the C: part of the dylib stamp and the emit cache key, as `H2_PASSES` is. |
 | `H2_EMIT_TARGET=tvos` / `ios` | `h2 build` compiles and links the module for the Apple TV (`arm64-apple-tvos17.0`, against the appletvos SDK) or an iPhone or iPad (`arm64-apple-ios17.0`, the iphoneos SDK) instead of the Mac; its stamp names the target, so only that app accepts it ([tvos.md](tvos.md), [ios.md](ios.md)). Unset, `host` or `macos`: the Mac, unchanged |
 | `H2_BOOT_TRAMPOLINE=1` | register every generated entry through the old fallback trampoline instead of as itself; this also keeps every direct call from matching, as before 2026-11. For A/B comparisons |
-| `H2_BOOT_VERBOSE=1` | log every boot note (stopgap decisions, fallback entries) |
+| `H2_BOOT_VERBOSE=1` | log boot notes, fallback analysis and cache diagnostics, each sampled bot join gate, and repeat messages while Mods has no in-game Live session. Also enables `H2_FEATURE_PLAN` detail. |
+| `H2_FEATURE_PLAN=1` | list features, hooks, entries, locale sources, and hot-point warnings. Also log the first time each hook runs and show the skull and health install reports. The default prints a one-line installation summary and any problems. |
 | `H2_FEATURES=impl.render.native=off` | disable the native GPU render stages. An explicit stage switch wins in either order. For example, `impl.render.native=off,impl.render.native_world=on` enables the world and its material programs. The `impl.render` switch still controls the lifted render-loop ports independently. |
 | `H2_NATIVE_VERBOSE=1` | show the native renderer's per-definition and per-material load lines and comparison dumps. With verbose logging off, a stage that finds no work logs when it stands down for the map. See [native-renderer.md](../graphics/native-renderer.md). |
 | `H2_BOOT_MAPS=1` | dump the guest memory map in the report |
@@ -91,6 +92,12 @@ copies. Nothing is ever written next to it.
 | `H2_BOOT_DRAWLOG_VERTS=1` | with `H2_BOOT_DRAWLOG`, add the vertex layout and the first 8 vertices of each stream |
 | `H2_BOOT_DUMP=addr:len,...` | print guest words at the end of the run (hex) |
 | `H2_BOOT_DUMP_RAW=addr:len:file;...` | save raw guest bytes at the end of the run (hex address and length) |
+
+The startup log shows the selected Live account before the game signs
+in. The Mods list uses the in-game Xbox Live session and reports once
+when that session is unavailable. The controller-speaker indexer skips
+empty cache slots, including slots whose headers the game has zeroed
+while replacing a map.
 
 The run prints a report when it ends. It covers:
 
@@ -307,19 +314,13 @@ target/release/h2 run disc/halo2.iso --out $OUT --data $T/data --fresh-data
   presents the run prints `present N: last 100 at X fps`.
 - `H2_BOOT_GFX_EVERY=never` keeps the GPU path but writes no PNGs; drop
   it for a screenshot every N.
-- The fallback reads the image's analysis from the boot cache, where
-  `h2 build` left it, so a run after a build doesn't analyze again. Only a
-  run whose analyzer has no cached analysis yet (a run with
-  `H2_BOOT_CACHE=off`, or a dylib built elsewhere) analyzes the image for
-  the fallback (15-20 s alone); later runs read the unread-target cache
-  and analyze in the background, so compare second runs. When only the
-  unread-target file is missing (the analyzer or `fallback.rs` changed),
-  the newest one the same image left under other sources stands in and
-  the run starts at once: the analysis checks it in the background,
-  saves this build's file and registers any target it adds
-  (`fallback: unread jump-table targets checked: the same`). Only a cache
-  with no unread-target file for the image at all waits for the analysis
-  before the first frame.
+- The fallback loads or computes the image analysis on a background
+  thread. It reuses the cache from `h2 build` when available, and reads
+  the unread-target cache for the current image and analyzer. Boot
+  continues on a cache miss. An unsupported instruction or a transfer
+  that needs the fallback can still wait for the analysis. The run
+  reports waits over 100 ms, and `H2_BOOT_VERBOSE=1` shows when analysis
+  finishes. Compare warm runs to avoid competition from cold analysis.
 - Numbers are only meaningful on a quiet machine: with heavy builds
   running alongside (load average 170-430) the same run fell to a
   fraction of its quiet-machine rate, and the analysis went from 15 s to
@@ -375,7 +376,7 @@ Sizes are S (under a day), M (a few days) or L (a week or more).
 | Stopgap | Where | Retire when |
 | --- | --- | --- |
 | Back/depth surface backing at CreateDevice, `0xf0000000` write-combined alias | d3d_glue.rs `install_back_surfaces`, lib.rs | d3d / runtime |
-| Fallback from unread jump-table targets (every unguarded switch's, read from the image), and the unknown-switch stops they cause, allowed only for the site's own table. On the retail image it finds nothing analyze has not read (blocker 1); kept as a net for a table read short | fallback.rs `unread_targets`, `install_unread_targets` | analyze (#1): remove |
+| Fallback from unread jump-table targets (every unguarded switch's, read from the image), and the unknown-switch stops they cause, allowed only for the site's own table. On the retail image it finds nothing analyze has not read (blocker 1); kept as a net for a table read short | fallback.rs `unread_targets`, `start_analysis` | analyze (#1): remove |
 | Interpreting past instructions the lifter doesn't lower | fallback.rs `recover` (the runtime's stop-recovery hook), `set_recovery` | lift |
 | `--no-xapi` only: XMountUtilityDrive `0x2d5b77` | xapi_glue.rs | n/a |
 
