@@ -59,7 +59,7 @@ fn ui_shares_the_loading_and_effect_points_with_other_features() {
 #[test]
 fn scene_effect_instruction_entries_are_unique() {
     let mut seen = std::collections::HashSet::new();
-    for address in hooks::scene_effect_instruction_entries() {
+    for address in hooks::scene_entries::scene_effect_instruction_entries() {
         assert!(seen.insert(address), "duplicate entry {address:#010x}");
     }
     assert!(seen.contains(&hooks::native_particles::DYNAMIC_QUAD_READY.base));

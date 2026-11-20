@@ -7,7 +7,7 @@ modules = [
     "native_lights", "native_map_work", "native_objects", "native_particles", "native_post",
     "native_scene_lists", "native_shadows", "native_transparents", "native_water", "native_world",
     "native_world_layers", "occlusion", "pipeline_render", "pipeline_scene", "pipeline_snapshot",
-    "render_census", "render_loop", "render_timing", "scene_step",
+    "render_census", "render_loop", "render_timing", "scene_entries", "scene_step", "scope_zoom_hud",
 ]
 tests = [
     "native_defaults", "native_first_person", "native_fog", "native_gels", "native_hud", "native_lights",
