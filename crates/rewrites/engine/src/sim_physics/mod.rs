@@ -19,7 +19,7 @@ mod object_update;
 mod node_matrices;
 mod spatial;
 mod visit;
-mod unit_aim;
+pub(crate) mod unit_aim;
 mod weld;
 mod weapon_slots;
 
@@ -76,7 +76,6 @@ pub const PORTS: &[Port] = {
         port(&OBJECT_SPATIAL_VISIT, "sim.native_spatial_visit", Sse, &visit::SITES, visit::objects),
         port(&OBJECT_SPATIAL_PORTAL, "sim.native_spatial_portal", Mixed, &spatial::SITES, spatial::portal),
         port(&UNIT_AIM_UPDATE, "sim.native_unit_aim", Trig, unit_aim::SITES, unit_aim::aim),
-        port(&UNIT_UPDATE, "sim.native_unit_update", Integer, &objects::UNIT_SITES, objects::unit),
         port(&LIGHT_RECORD_UPDATE, "sim.native_light_record", Sse, light::SITES, light::update),
         port(&FIRST_PERSON_POSE_UPDATE, "sim.native_first_person_pose", Mixed, first_person::POSE_SITES, first_person::pose),
         port(&FIRST_PERSON_FILTER_UPDATE, "sim.native_first_person_filters", Mixed, first_person::FILTER_SITES, first_person::filters),
@@ -88,9 +87,11 @@ pub const PORTS: &[Port] = {
 /// replaces them owns the switch now (docs/engine/sim-rewrite.md section 8).
 /// The additive-layer node evaluator runs under `0x2798a0`, which
 /// `impl.sim.native.anim` replaces whole (docs/engine/anim-sampling.md).
-/// The object walks, the per-object updates and change colours are bodies under
-/// `impl.sim.native.objects` (`crate::sim_objects`); their `oracle.*`
-/// names are labels, not switches.
+/// The object walks, the per-object updates, change colours and the unit
+/// update's shell are bodies under `impl.sim.native.objects`
+/// (`crate::sim_objects`); their `oracle.*` names are labels, not switches.
+/// The unit aim port stays in `PORTS` under its own switch, and the
+/// unit movement body runs the same code (`unit_aim::step`).
 pub const ORACLES: &[Port] = {
     use Controls::*;
     use points::*;
@@ -100,6 +101,8 @@ pub const ORACLES: &[Port] = {
         port(&OBJECT_PRE_UPDATE, "oracle.object_pre_update", Integer, &object_update::PRE, object_update::pre),
         port(&OBJECT_POST_UPDATE, "oracle.object_post_update", Integer, &object_update::POST, object_update::post),
         port(&OBJECT_CHANGE_COLORS, "oracle.object_change_colors", Sse, &colors::SITES, colors::update),
+        // Slice 6a: the unit update's shell is a body (`crate::sim_objects::unit`).
+        port(&UNIT_UPDATE, "oracle.unit_update", Integer, &objects::UNIT_SITES, objects::unit),
         // Other codecs are guest calls that resume at the call's return.
         port(&ANIM_ADDITIVE_NODES, "sim.native.anim", Sse, &crate::sim_native::evaluator::ADDITIVE_SITES, crate::sim_native::evaluator::additive),
     ]

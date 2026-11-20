@@ -1,6 +1,6 @@
 # Simulation rewrite, phase 3: the object and unit update
 
-Status: design, 2026-11-20. Slices 0 to 3, 8 and 11 are built: the
+Status: design, 2026-11-20. Slices 0 to 3, 6a, 8 and 11 are built: the
 dispatcher and the switch (default off), the views and `sim-state`,
 slice 1's bodies (the walks, the per-object updates, the type
 dispatchers, the wake leaves and the early-mover wake), slice 3's
@@ -8,7 +8,8 @@ dispatchers, the wake leaves and the early-mover wake), slice 3's
 type import handlers and change colours, all segments), slice 8's (the
 damage update, and the `Damage` and `Kill` events), and slice 11's (the
 small type updates, except the projectile step `f8eb0`, which stays a
-callout). The contracts they keep are in
+callout), and slice 6a's (the unit update's shell, movement, direction
+clamp, idle test and aim update; `native_unit_update` is retired). The contracts they keep are in
 [object-update.md](object-update.md). It details phase 3 of
 [sim-rewrite.md](sim-rewrite.md) (the plan; its section 8 decisions bind this
 page). Phase 1 (animation and pose, `crates/rewrites/sim-anim`) and phase 2 (collision

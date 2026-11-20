@@ -9,7 +9,11 @@ const TAU:u32=0x0043_f17c;
 const ONE:u32=0x0045_dbc0;
 const NEG_ONE:u32=0x0045_dbcc;
 const SMALL:u32=0x0045_dbdc;
-pub(super) const SITES:&[u32]=&[0xc7b4d,0xc7e2d,0xc7e43,0xc7e51,0xc7e78,0xc7ea1,0xc80a3,0xc80e0,0xc81cb];
+
+/// Where [`step`] leaves the function: `call target` returning to `site`
+/// (the return address not pushed yet), or `ret pop` (not popped yet).
+pub(crate) enum Exit { Call(u32,u32), Ret(u16) }
+pub(crate) const SITES:&[u32]=&[0xc7b4d,0xc7e2d,0xc7e43,0xc7e51,0xc7e78,0xc7ea1,0xc80a3,0xc80e0,0xc81cb];
 
 /// Scalar XMM assignments distinguish a fresh load (clears upper lanes)
 /// from a register arithmetic result (retains its upper lanes).
@@ -110,7 +114,7 @@ fn transform_out(c:&mut CpuAbi,g:&mut Guest,dest:u32,first:bool)->Result<()> {
     Ok(())
 }
 
-fn begin(c:&mut CpuAbi,g:&mut Guest)->Result<TransferAbi> {
+fn begin(c:&mut CpuAbi,g:&mut Guest)->Result<Exit> {
     c.esp=c.esp.wrapping_sub(128);
     transform_inputs(c,g)?;
     c.ecx=g.u32(c.esp+140)?;
@@ -144,7 +148,7 @@ fn begin(c:&mut CpuAbi,g:&mut Guest)->Result<TransferAbi> {
         finish_fpu(c,g,x,0xc7aad,sp+64)?;
         if c.esi!=0 {
             transform_out(c,g,sp+56,true)?;
-            return g.call(c,0x30bf0,0xc7b4d);
+            return Ok(Exit::Call(0x30bf0,0xc7b4d));
         }
     } else {
         c.ecx=g.u32(c.eax)?;c.edx=g.u32(c.eax+4)?;c.eax=g.u32(c.eax+8)?;
@@ -154,7 +158,7 @@ fn begin(c:&mut CpuAbi,g:&mut Guest)->Result<TransferAbi> {
     velocity(c,g)
 }
 
-fn velocity(c:&mut CpuAbi,g:&mut Guest)->Result<TransferAbi> {
+fn velocity(c:&mut CpuAbi,g:&mut Guest)->Result<Exit> {
     let sp=c.esp;
     let p=g.u32(sp+140)?;
     c.edx=g.u32(p)?;c.eax=g.u32(p+4)?;c.ecx=g.u32(p+8)?;
@@ -200,7 +204,7 @@ fn velocity(c:&mut CpuAbi,g:&mut Guest)->Result<TransferAbi> {
     c.ebp=g.u32(sp+148)?;c.edx=sp+68;push(c,g,c.edx)?;
     c.edx=g.u32(sp+152)?;
     for v in [c.edx,c.ebp,c.eax,c.ecx] {push(c,g,v)?;}
-    g.call(c,0xc7300,0xc7e2d)
+    Ok(Exit::Call(0xc7300,0xc7e2d))
 }
 
 fn rotate_velocity(c:&mut CpuAbi,g:&mut Guest,x:&mut X87)->Result<()> {
@@ -239,16 +243,27 @@ fn rotate_velocity(c:&mut CpuAbi,g:&mut Guest,x:&mut X87)->Result<()> {
     ld(c,g,1,TAU)
 }
 
+/// The port: the transfer, made on the guest stack.
 pub(super) fn aim(c:&mut CpuAbi,g:&mut Guest,pc:u32)->Result<TransferAbi> {
+    match step(c,g,pc)? {
+        Exit::Call(target,site)=>g.call(c,target,site),
+        Exit::Ret(pop)=>g.ret(c,u32::from(pop)),
+    }
+}
+
+/// From the entry or a site to the next transfer, without making it:
+/// [`aim`] pushes the return address or pops it, and the object update's
+/// body (`crate::sim_objects::unit`) leaves that to its dispatcher.
+pub(crate) fn step(c:&mut CpuAbi,g:&mut Guest,pc:u32)->Result<Exit> {
     let sp=c.esp;
     match pc {
         0xc7b4d=>{ld(c,g,1,TAU)?;velocity(c,g)}
         0xc7e2d=>{
             c.ecx=g.u32(sp+24)?;c.eax=sp+104;push(c,g,c.eax)?;c.eax=g.u32(sp+16)?;
             for v in [c.edx,c.ebp,c.ecx,c.eax] {push(c,g,v)?;}
-            g.call(c,0xc7300,0xc7e43)
+            Ok(Exit::Call(0xc7300,0xc7e43))
         }
-        0xc7e43=>{push(c,g,c.edx)?;c.ecx=sp+104;c.eax=sp+72;g.call(c,0xc75d0,0xc7e51)}
+        0xc7e43=>{push(c,g,c.edx)?;c.ecx=sp+104;c.eax=sp+72;Ok(Exit::Call(0xc75d0,0xc7e51))}
         0xc7e51 | 0xc7e78=>{
             let first=pc==0xc7e51;
             let off=if first {12} else {16};
@@ -256,7 +271,7 @@ pub(super) fn aim(c:&mut CpuAbi,g:&mut Guest,pc:u32)->Result<TransferAbi> {
             push(c,g,sp+off)?;
             c.edx=sp+off+28;c.ecx=sp+if first {72} else {104};
             if !first {c.ebx=byte(c.ebx,c.eax as u8);}
-            g.call(c,0xc7750,if first {0xc7e78} else {0xc7ea1})
+            Ok(Exit::Call(0xc7750,if first {0xc7e78} else {0xc7ea1}))
         }
         0xc7ea1=>{
             let arrived=c.ebx as u8!=0 && c.eax as u8!=0;
@@ -277,18 +292,18 @@ pub(super) fn aim(c:&mut CpuAbi,g:&mut Guest,pc:u32)->Result<TransferAbi> {
             else {ld(c,g,1,ONE)?;let hi=above(c,low(c,0),low(c,1))?;st(c,g,if hi{1}else{0},sp+8)?;}
             let mut x=load_fpu(c);x.fld(g.u32(sp+8)?).map_err(fp_error)?;
             finish_fpu(c,g,x,0xc80d7,sp+8)?;
-            g.call(c,0x322bd8,0xc80e0)
+            Ok(Exit::Call(0x322bd8,0xc80e0))
         }
         0xc80e0=>apply_speed(c,g),
         0xc81cb=>leave(c,g),
         _=>begin(c,g),
     }
 }
-fn leave(c:&mut CpuAbi,g:&Guest)->Result<TransferAbi> {
-    c.ebx=pop(c,g)?;c.esp=arithmetic(c,c.esp,128,false);g.ret(c,20)
+fn leave(c:&mut CpuAbi,g:&Guest)->Result<Exit> {
+    c.ebx=pop(c,g)?;c.esp=arithmetic(c,c.esp,128,false);Ok(Exit::Ret(20))
 }
 
-fn steer(c:&mut CpuAbi,g:&mut Guest)->Result<TransferAbi> {
+fn steer(c:&mut CpuAbi,g:&mut Guest)->Result<Exit> {
     let sp=c.esp;
     c.eax=byte(c.eax,g.u8(sp+7)?);
     ld(c,g,0,sp+8)?;ld(c,g,1,sp+12)?;add(c,0,g.u32(sp+28)?)?;add(c,1,g.u32(sp+32)?)?;
@@ -335,9 +350,9 @@ fn steer(c:&mut CpuAbi,g:&mut Guest)->Result<TransferAbi> {
     sub(c,0,low(c,7))?;sub(c,4,low(c,2))?;sub(c,1,low(c,5))?;
     c.eax=c.ebx;
     for (i,r) in [0,4,1].into_iter().enumerate() {st(c,g,r,c.ebx+4*i as u32)?;}
-    g.call(c,0x30bf0,0xc80a3)
+    Ok(Exit::Call(0x30bf0,0xc80a3))
 }
-fn apply_speed(c:&mut CpuAbi,g:&mut Guest)->Result<TransferAbi> {
+fn apply_speed(c:&mut CpuAbi,g:&mut Guest)->Result<Exit> {
     let sp=c.esp;
     let mut x=load_fpu(c);
     x.arith_m(arith_op::DIV,g.u32(sp+136)?).map_err(fp_error)?;
@@ -348,7 +363,7 @@ fn apply_speed(c:&mut CpuAbi,g:&mut Guest)->Result<TransferAbi> {
     if comparison & 0x41!=0 {ld(c,g,0,sp+8)?;}
     logic(c,c.esi,1<<31);
     for i in [0,4,8] {ld(c,g,1,c.ebx+i)?;mul(c,1,low(c,0))?;st(c,g,1,c.ebx+i)?;}
-    if c.esi!=0 {transform_out(c,g,c.edi,false)?;return g.call(c,0x30bf0,0xc81cb);}
+    if c.esi!=0 {transform_out(c,g,c.edi,false)?;return Ok(Exit::Call(0x30bf0,0xc81cb));}
     c.eax=g.u32(sp+56)?;c.ecx=g.u32(sp+60)?;c.edx=g.u32(sp+64)?;
     g.set_u32(c.edi,c.eax)?;g.set_u32(c.edi+4,c.ecx)?;g.set_u32(c.edi+8,c.edx)?;
     leave(c,g)
