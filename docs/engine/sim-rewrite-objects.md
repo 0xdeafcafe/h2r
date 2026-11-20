@@ -1,6 +1,6 @@
 # Simulation rewrite, phase 3: the object and unit update
 
-Status: design, 2026-11-20. Slices 0 to 6c, 8 to 11 are built: the
+Status: design, 2026-11-20. Slices 0 to 6c, 7a and 8 to 11 are built: the
 dispatcher and the switch (default off), the views and `sim-state`,
 slice 1's bodies (the walks, the per-object updates, the type
 dispatchers, the wake leaves and the early-mover wake), slice 3's
@@ -15,7 +15,9 @@ as a body, without `sim-anim`'s skeleton walk yet), slice 6a's (the unit update'
 test and aim update), slice 6b's (the unit update's control, state,
 powered seats and control refresh), slice 6c's (the unit update's timers, dialogue
 update, team with its seat iterator, active camouflage and integrated
-light, and the unit animation state `111650`), slice 9's (the weapon update `fdfb0`), slice
+light, and the unit animation state `111650`), slice 7a's (the biped update `dd360` with its
+leaves, timer, fall, animation state and look updates; the movement and
+animation steps below it stay callouts), slice 9's (the weapon update `fdfb0`), slice
 10's (the vehicle update `efde0`, with the type physics and the rest of
 its tree left as callouts), and slice 11's (the small type updates and
 the projectile step `f8eb0`). The differential

@@ -1323,6 +1323,38 @@ points! { ALL;
     /// limits block's three channels; `al` from its last two callees and
     /// the channels.
     UNIT_ANIMATION_STATE @ 0x0011_1650: [fn(unit: stack 0, record: stack 1) -> al ret 8], Hot; "docs/engine/object-update.md";
+    // Slice 7a of docs/engine/sim-rewrite-objects.md: the biped update.
+    /// Biped update: slot `+40` of `bipd`.
+    BIPED_UPDATE @ 0x000d_d360: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
+    /// The first object up the parent chain from `object` (itself
+    /// included) whose body `+4` bit 26 is clear; none when the chain ends
+    /// first. The biped update's first call, on its parent.
+    OBJECT_CARRIER @ 0x000b_af40: [fn(object: eax) -> eax ret 0], Hot; "docs/engine/object-update.md";
+    /// The biped's counter at body `+39d`, counted down; at 1 in state 3 it
+    /// starts an animation (`10f430`). `al` 1 when it counted.
+    BIPED_TIMER_UPDATE @ 0x000e_2d80: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
+    /// A seconds value times the tick rate, rounded by `fistp` (`ecx`
+    /// returns the same integer).
+    GAME_SECONDS_TO_TICKS @ 0x0014_69f0: [fn(seconds: stack 0) -> eax ret 4], Hot; "docs/engine/object-update.md";
+    /// An action request for the unit: eight words on the stack, the action
+    /// first, handed to `0xe6900`.
+    BIPED_ACTION @ 0x000e_68c0: [fn(action: ecx, object: stack 0) ret 4], Hot; "docs/engine/object-update.md";
+    /// The animation kind (0, 1, or 2 for any other) of an animation name
+    /// (string ID).
+    BIPED_ANIMATION_KIND @ 0x000d_d300: [fn(name: ecx) -> al ret 0], Hot; "docs/engine/object-update.md";
+    /// `eax` 1 when an unparented biped in state 1 or 3 has been in the air
+    /// (body `+348` bit 0) long enough to land, else 0.
+    BIPED_AIRBORNE_TEST @ 0x000e_4050: [fn(object: eax) -> eax ret 0], Hot; "docs/engine/object-update.md";
+    /// After the fall counter's time, the root velocity against a speed;
+    /// above it, `0xe4d90` with kind 2.
+    BIPED_FALL_UPDATE @ 0x000e_45e0: [fn(object: esi) ret 0], Hot; "docs/engine/object-update.md";
+    /// The animation kind's counter at body `+39b` and, for two animation
+    /// names, `0xe4d90` with kind 3 and a weight.
+    BIPED_ANIMATION_STATE_UPDATE @ 0x000e_4c50: [fn(object: edi) ret 0], Hot; "docs/engine/object-update.md";
+    /// The look toward the target (body `+13c`): a head marker, the aim
+    /// clamped to the look limits, and body `+3cc..3d4` stepped toward the
+    /// result.
+    BIPED_LOOK_UPDATE @ 0x000d_e190: [fn(object: eax) ret 0], Hot; "docs/engine/object-update.md";
 }
 
 /// The point at `base`, if the table names one.

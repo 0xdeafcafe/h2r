@@ -56,6 +56,8 @@ mod unit_state;
 // Slice 6c: the rest of the unit update.
 mod unit_anim;
 mod unit_rest;
+// Slice 7a: the biped update.
+mod biped;
 
 use crate::points::{self, Point};
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
@@ -202,6 +204,18 @@ pub const BODIES: &[Body] = &[
     Body { point: &points::UNIT_CAMO_UPDATE, sites: &unit_rest::CAMO_SITES, run: unit_rest::camo },
     Body { point: &points::UNIT_LIGHT_UPDATE, sites: &unit_rest::LIGHT_SITES, run: unit_rest::light },
     Body { point: &points::UNIT_ANIMATION_STATE, sites: &unit_anim::ANIM_SITES, run: unit_anim::anim },
+    // Slice 7a: the biped update (the `bipd` descriptor's slot `+40`) and
+    // the part of its tree that is ported (`biped`).
+    Body { point: &points::BIPED_UPDATE, sites: &biped::UPDATE_SITES, run: biped::biped_update },
+    Body { point: &points::OBJECT_CARRIER, sites: &[], run: biped::carrier },
+    Body { point: &points::BIPED_TIMER_UPDATE, sites: &biped::TIMER_SITES, run: biped::timer_update },
+    Body { point: &points::GAME_SECONDS_TO_TICKS, sites: &[], run: biped::seconds_to_ticks },
+    Body { point: &points::BIPED_ACTION, sites: &biped::ACTION_SITES, run: biped::action },
+    Body { point: &points::BIPED_ANIMATION_KIND, sites: &[], run: biped::animation_kind },
+    Body { point: &points::BIPED_AIRBORNE_TEST, sites: &[], run: biped::airborne_test },
+    Body { point: &points::BIPED_FALL_UPDATE, sites: &biped::FALL_SITES, run: biped::fall_update },
+    Body { point: &points::BIPED_ANIMATION_STATE_UPDATE, sites: &biped::STATE_SITES, run: biped::animation_state },
+    Body { point: &points::BIPED_LOOK_UPDATE, sites: &biped::LOOK_SITES, run: biped::look_update },
 ];
 
 /// The bodies [`drive`] runs and fuses, indexed by entry and site.
