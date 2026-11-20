@@ -525,7 +525,14 @@ lightmap), sampler states and instance constants. Materials without
 one (no layer 3, more than one pass, an engine texture source other
 than the lightmap, per-draw engine inputs) stay on the D3D path.
 Base maps upload their decoded mip chain (`gpu::Image::from_levels`).
-`native-render::program` makes one pipeline per (program, definition) through `shaders::link`, the uniforms filled as the D3D path fills them, one bind group per material:
+`native_render::program` links each material's programs and fills its
+uniforms and bind groups. During the BSP upload, `WorldPipelines` opens
+the material's archived pipeline descriptors. The compile workers build
+pipelines for those descriptors and for new combinations of target
+formats, stencil and inherited cull requested by a live view. At guest
+admission, `GpuWorld::prewarm_world` checks every selected cluster and
+placement. D3D draws that selection until all its bindings are present
+and its pipeline completions have crossed a frame boundary.
 
 - `look::layer3_pass` takes the pass's implementation as above and
   its own render states (`pass_state`, as transparents do): depth test

@@ -6,6 +6,11 @@
 //! GPU side for [`crate::gpu::GpuWorld`].
 
 use std::collections::HashMap;
+use std::sync::Arc;
+
+use gfx::compile::PendingPipeline;
+use gfx::pipeline::{ShaderId, ShaderProgram};
+use gfx::vertex::OwnedVertexBufferLayout;
 
 use shaders::psh::{self, PixelOptions, PixelShaderDef, PixelUniforms, TextureDim};
 use shaders::vsh::{self, InputFetch, VertexOptions, VertexUniforms};
@@ -616,7 +621,7 @@ impl InheritedCull {
 }
 
 /// The primitive and the depth write and compare a program's pipeline
-/// draws with ([`render_pipeline`]): its pass's state, or the opaque
+/// draws with ([`described_pipeline`]): its pass's state, or the opaque
 /// world's (a triangle list, no cull, `LessEqual` and write), with `cull`
 /// over its cull and winding ([`InheritedCull::of`]). No depth bias: the
 /// polygon offset is the fragment's (`PixelUniforms::depth`).
@@ -831,26 +836,91 @@ fn stage_state(s: &StageStates) -> Option<gfx::state::TextureStageState> {
 /// textures and pipelines (by target formats).
 pub(crate) struct Gpu {
     pub(crate) program: MaterialProgram,
-    module: Option<wgpu::ShaderModule>,
-    layout: wgpu::PipelineLayout,
+    pub(crate) pipelines: WorldPipelines,
     textures_layout: wgpu::BindGroupLayout,
     vertex_buffer: wgpu::Buffer,
     pixel_buffer: wgpu::Buffer,
     pub(crate) uniforms: wgpu::BindGroup,
     samplers: [wgpu::Sampler; 4],
     stage_views: [Option<wgpu::TextureView>; 4],
-    /// The world's pipelines, by target formats, the stencil state the
-    /// layer draws with and the cull ([`ProgramSet::pipelines`]).
-    world_pipelines: HashMap<PipelineKey, wgpu::RenderPipeline>,
-    /// The pass's own pipelines by target formats ([`Gpu::pipeline`]):
-    /// the fog and water layers' passes, whose state is each pass's own
-    /// (`crate::fog_gpu`, `crate::water_gpu`).
-    pub(crate) pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat), wgpu::RenderPipeline>,
 }
 
 /// A world or rigid pipeline's key: target formats, stencil state and the
 /// inherited cull it was made with ([`InheritedCull::of`]).
 type PipelineKey = (wgpu::TextureFormat, wgpu::TextureFormat, wgpu::StencilState, Option<Cull>);
+
+/// A direct render (for example the Theater camera) needs its pipeline now.
+/// The live guest can draw with D3D while an admission check is pending.
+#[derive(Clone, Copy)]
+pub(crate) enum PipelineUse {
+    Direct,
+    Preflight,
+}
+
+/// One program and its immutable vertex layout, scoped to this map's GPU resources.
+/// The small key avoids rebuilding a vertex descriptor for an already-seen draw.
+pub(crate) struct WorldPipelines {
+    archive: crate::pipelines::Pipelines,
+    shader: ShaderId,
+    vertices: OwnedVertexBufferLayout,
+    pending: HashMap<PipelineKey, Arc<PendingPipeline>>,
+}
+
+impl WorldPipelines {
+    pub(crate) fn new(
+        device: &wgpu::Device, source: &str, module: wgpu::ShaderModule, layout: wgpu::PipelineLayout,
+        shader: ShaderId, label: &'static str, attributes: Vec<wgpu::VertexAttribute>,
+    ) -> Self {
+        let program = ShaderProgram {
+            module, layout, vs_entry: "vs_main".into(), fs_entry: "fs_main".into(), count_entry: None,
+        };
+        Self {
+            archive: crate::pipelines::Pipelines::new(device, source, program, label),
+            shader,
+            vertices: OwnedVertexBufferLayout {
+                stride: std::mem::size_of::<WorldVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes,
+            },
+            pending: HashMap::new(),
+        }
+    }
+
+    fn material(device: &wgpu::Device, source: &str, layout: wgpu::PipelineLayout, shader: ShaderId) -> Option<Self> {
+        let module = gfx::program::validated_resource(device, || device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("native world program"),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        }))?;
+        let attributes = INPUTS.into_iter().map(|(shader_location, offset, format)| {
+            wgpu::VertexAttribute { format, offset, shader_location }
+        }).collect();
+        Some(Self::new(device, source, module, layout, shader, "native world program", attributes))
+    }
+
+    /// The pass state is fixed for this GPU program. Only the attachment formats,
+    /// inherited cull and stencil vary between its draws.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare(
+        &mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat,
+        state: Option<&PassState>, cull: Option<Cull>, stencil: &wgpu::StencilState, usage: PipelineUse,
+    ) -> bool {
+        let pending = self.pending.entry((color, depth, stencil.clone(), cull)).or_insert_with(|| {
+            let mut key = described_pipeline(self.shader, color, depth, state, cull, stencil.clone());
+            key.vertex_buffers.push(self.vertices.clone());
+            self.archive.request(device, &key)
+        });
+        match usage {
+            PipelineUse::Direct => pending.get().is_some(),
+            PipelineUse::Preflight => pending.previous_frame().is_some_and(Option::is_some),
+        }
+    }
+
+    pub(crate) fn get(
+        &self, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, stencil: &wgpu::StencilState, cull: Option<Cull>,
+    ) -> Option<&wgpu::RenderPipeline> {
+        self.pending.get(&(color, depth, stencil.clone(), cull))?.try_get()?.as_ref()
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct MaterialUse {
@@ -965,18 +1035,16 @@ impl Gpu {
             ],
         });
         let samplers = std::array::from_fn(|n| device.create_sampler(&sampler_descriptor(program.samplers[n].as_ref())));
+        let pipelines = WorldPipelines::material(device, &program.wgsl, layout, WORLD_CLUSTER_PROGRAM)?;
         Some(Gpu {
             program,
-            module: None,
-            layout,
+            pipelines,
             textures_layout,
             vertex_buffer,
             pixel_buffer,
             uniforms,
             samplers,
             stage_views,
-            world_pipelines: HashMap::new(),
-            pipelines: HashMap::new(),
         })
     }
 
@@ -1051,82 +1119,6 @@ impl Gpu {
         ]
     }
 
-    /// Makes the pipeline for these target formats: the world's opaque
-    /// state without `state`, a transparent pass's with it.
-    pub(crate) fn pipeline(
-        &mut self,
-        device: &wgpu::Device,
-        color: wgpu::TextureFormat,
-        depth: wgpu::TextureFormat,
-        state: Option<&PassState>,
-    ) {
-        let module = shader_module(device, &mut self.module, &self.program.wgsl);
-        let layout = &self.layout;
-        self.pipelines
-            .entry((color, depth))
-            .or_insert_with(|| render_pipeline(device, module, layout, color, depth, state, None, wgpu::StencilState::default()));
-    }
-}
-
-/// Defer WGSL compilation until a selected material needs its first pipeline.
-fn shader_module<'a>(device: &wgpu::Device, module: &'a mut Option<wgpu::ShaderModule>, source: &str) -> &'a wgpu::ShaderModule {
-    module.get_or_insert_with(|| device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("native world program"),
-        source: wgpu::ShaderSource::Wgsl(source.into()),
-    }))
-}
-
-/// A program's pipeline over the world vertex ([`INPUTS`]): the world's
-/// opaque state without `state`, a pass's own with it, `cull` over its
-/// cull ([`pipeline_state`]); `stencil` the stencil test and write.
-#[allow(clippy::too_many_arguments)]
-fn render_pipeline(
-    device: &wgpu::Device,
-    module: &wgpu::ShaderModule,
-    layout: &wgpu::PipelineLayout,
-    color: wgpu::TextureFormat,
-    depth: wgpu::TextureFormat,
-    state: Option<&PassState>,
-    cull: Option<Cull>,
-    stencil: wgpu::StencilState,
-) -> wgpu::RenderPipeline {
-    let attributes: Vec<wgpu::VertexAttribute> = INPUTS
-        .iter()
-        .map(|&(location, offset, format)| wgpu::VertexAttribute { format, offset, shader_location: location })
-        .collect();
-    let (primitive, (depth_write, depth_compare)) = pipeline_state(state, cull);
-    let (blend, write_mask) = state.map_or((None, wgpu::ColorWrites::ALL), |s| (s.blend, s.color_writes));
-    gfx::churn::create_render_pipeline(device, &wgpu::RenderPipelineDescriptor {
-        label: Some("native world program"),
-        layout: Some(layout),
-        vertex: wgpu::VertexState {
-            module,
-            entry_point: Some("vs_main"),
-            compilation_options: Default::default(),
-            buffers: &[Some(wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<WorldVertex>() as u64,
-                step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &attributes,
-            })],
-        },
-        primitive,
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: depth,
-            depth_write_enabled: Some(depth_write),
-            depth_compare: Some(depth_compare),
-            stencil,
-            bias: wgpu::DepthBiasState::default(),
-        }),
-        multisample: wgpu::MultisampleState::default(),
-        fragment: Some(wgpu::FragmentState {
-            module,
-            entry_point: Some("fs_main"),
-            compilation_options: Default::default(),
-            targets: &[Some(wgpu::ColorTargetState { format: color, blend, write_mask })],
-        }),
-        multiview_mask: None,
-        cache: None,
-    })
 }
 
 /// Shader ids the world's packets report to the pass they join (for
@@ -1134,7 +1126,7 @@ fn render_pipeline(
 pub(crate) const WORLD_CLUSTER_PROGRAM: gfx::pipeline::ShaderId = gfx::pipeline::ShaderId(u32::MAX - 1);
 pub(crate) const WORLD_RIGID_PROGRAM: gfx::pipeline::ShaderId = gfx::pipeline::ShaderId(u32::MAX - 2);
 
-/// [`render_pipeline`]'s state as a packet describes it: primitive, depth
+/// The state a pipeline reports in a packet: primitive, depth
 /// and stencil, and colour target (its write mask splits merged passes).
 pub(crate) fn described_pipeline(
     shader: gfx::pipeline::ShaderId,
@@ -1168,15 +1160,13 @@ pub(crate) fn described_pipeline(
 /// material's pixel uniforms and texture groups.
 pub(crate) struct Rigid {
     program: RigidProgram,
-    module: Option<wgpu::ShaderModule>,
-    layout: wgpu::PipelineLayout,
     buffer: wgpu::Buffer,
     pub(crate) uniforms: wgpu::BindGroup,
     /// Bytes between slots (the device's offset alignment).
     stride: u64,
     /// Per slot, ascending: the placement and its rows.
     slots: Vec<(u32, ModelRows)>,
-    pipelines: HashMap<PipelineKey, wgpu::RenderPipeline>,
+    pub(crate) pipelines: WorldPipelines,
 }
 
 /// The placements `material`'s draws in `world` name, ascending, each with
@@ -1261,7 +1251,8 @@ impl Rigid {
                 wgpu::BindGroupEntry { binding: 1, resource: gpu.pixel_buffer.as_entire_binding() },
             ],
         });
-        Some(Self { program, module: None, layout, buffer, uniforms, stride, slots, pipelines: HashMap::new() })
+        let pipelines = WorldPipelines::material(device, &program.wgsl, layout, WORLD_RIGID_PROGRAM)?;
+        Some(Self { program, buffer, uniforms, stride, slots, pipelines })
     }
 
     /// The frame's view and rows in every slot.
@@ -1295,36 +1286,6 @@ impl Rigid {
     pub(crate) fn offset(&self, instance: u32) -> Option<u32> {
         let n = self.slots.binary_search_by_key(&instance, |s| s.0).ok()?;
         u32::try_from(n as u64 * self.stride).ok()
-    }
-
-    /// Makes the pipeline for these formats, state and cull (another
-    /// stage's passes: the fog layer's, `crate::fog_gpu`, whose state is
-    /// each pass's own).
-    pub(crate) fn pipeline_for(
-        &mut self,
-        device: &wgpu::Device,
-        color: wgpu::TextureFormat,
-        depth: wgpu::TextureFormat,
-        state: Option<&PassState>,
-        cull: Option<Cull>,
-        stencil: &wgpu::StencilState,
-    ) {
-        let module = shader_module(device, &mut self.module, &self.program.wgsl);
-        let layout = &self.layout;
-        self.pipelines
-            .entry((color, depth, stencil.clone(), cull))
-            .or_insert_with(|| render_pipeline(device, module, layout, color, depth, state, cull, stencil.clone()));
-    }
-
-    /// The pipeline those keys name, when made.
-    pub(crate) fn pipeline_at(
-        &self,
-        color: wgpu::TextureFormat,
-        depth: wgpu::TextureFormat,
-        cull: Option<Cull>,
-        stencil: &wgpu::StencilState,
-    ) -> Option<&wgpu::RenderPipeline> {
-        self.pipelines.get(&(color, depth, stencil.clone(), cull))
     }
 }
 
@@ -1442,38 +1403,44 @@ impl ProgramSet {
     ) {
         self.cull = cull;
         for (&material, g) in &mut self.materials {
-            Self::material_pipelines(g, self.rigid.get_mut(&material), device, color, depth, stencil, cull, true);
+            Self::material_pipelines(
+                g, self.rigid.get_mut(&material), device, color, depth, stencil, cull, true, PipelineUse::Direct,
+            );
         }
     }
 
     #[allow(clippy::too_many_arguments)]
     fn material_pipelines(
         g: &mut Gpu, rigid: Option<&mut Rigid>, device: &wgpu::Device, color: wgpu::TextureFormat,
-        depth: wgpu::TextureFormat, stencil: &wgpu::StencilState, cull: InheritedCull, cluster: bool,
-    ) {
-        let state = g.program.state;
+        depth: wgpu::TextureFormat, stencil: &wgpu::StencilState, cull: InheritedCull, cluster: bool, usage: PipelineUse,
+    ) -> bool {
+        let state = g.program.state.as_ref();
+        let mut ready = true;
         if cluster {
             let c = cull.of(g.program.inherits_cull, true);
-            let module = shader_module(device, &mut g.module, &g.program.wgsl);
-            g.world_pipelines.entry((color, depth, stencil.clone(), c)).or_insert_with(|| {
-                render_pipeline(device, module, &g.layout, color, depth, state.as_ref(), c, stencil.clone())
-            });
+            ready &= g.pipelines.prepare(device, color, depth, state, c, stencil, usage);
         }
         if let Some(r) = rigid {
-            r.pipeline_for(device, color, depth, state.as_ref(), cull.of(g.program.inherits_cull, false), stencil);
+            let c = cull.of(g.program.inherits_cull, false);
+            ready &= r.pipelines.prepare(device, color, depth, state, c, stencil, usage);
         }
+        ready
     }
 
     pub(crate) fn selected_pipelines(
         &mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat,
-        stencil: &wgpu::StencilState, materials: &HashMap<u16, MaterialUse>,
-    ) {
-        for (&material, usage) in materials {
+        stencil: &wgpu::StencilState, materials: &HashMap<u16, MaterialUse>, usage: PipelineUse,
+    ) -> bool {
+        let mut ready = true;
+        for (&material, selected) in materials {
             if let Some(g) = self.materials.get_mut(&material) {
-                let rigid = if usage.rigid { self.rigid.get_mut(&material) } else { None };
-                Self::material_pipelines(g, rigid, device, color, depth, stencil, self.cull, usage.cluster);
+                let rigid = if selected.rigid { self.rigid.get_mut(&material) } else { None };
+                ready &= Self::material_pipelines(g, rigid, device, color, depth, stencil, self.cull, selected.cluster, usage);
+            } else {
+                ready = false;
             }
         }
+        ready
     }
 
     /// All selected programs see the same view bytes. Only the material constants
@@ -1556,7 +1523,7 @@ impl ProgramSet {
     ) -> Option<(&wgpu::RenderPipeline, &wgpu::BindGroup)> {
         let g = self.materials.get(&material)?;
         let cull = self.cull.of(g.program.inherits_cull, true);
-        Some((g.world_pipelines.get(&(color, depth, stencil.clone(), cull))?, &g.uniforms))
+        Some((g.pipelines.get(color, depth, stencil, cull)?, &g.uniforms))
     }
 
     /// The rigid pipeline, uniforms and dynamic offset placement
@@ -1568,7 +1535,7 @@ impl ProgramSet {
     ) -> Option<(&wgpu::RenderPipeline, &wgpu::BindGroup, u32)> {
         let r = self.rigid.get(&material)?;
         let cull = self.cull.of(self.materials.get(&material)?.program.inherits_cull, false);
-        Some((r.pipelines.get(&(color, depth, stencil.clone(), cull))?, &r.uniforms, r.offset(instance)?))
+        Some((r.pipelines.get(color, depth, stencil, cull)?, &r.uniforms, r.offset(instance)?))
     }
 
     /// How many materials draw their placements with rigid programs.
@@ -1703,13 +1670,22 @@ mod tests {
         let format = wgpu::TextureFormat::Rgba8Unorm;
         let depth = wgpu::TextureFormat::Depth24PlusStencil8;
         let stencil = wgpu::StencilState::default();
+        // A pending compile must refuse the whole reservation without running
+        // the compiler on the frame thread. This pending value has no worker.
+        let key = (format, depth, stencil.clone(), None);
+        let pending = PendingPipeline::new(|| panic!("admission tried to compile a pipeline"));
+        set.materials.get_mut(&1).unwrap().pipelines.pending.insert(key.clone(), pending.clone());
         let selected = [(1, MaterialUse { cluster: true, rigid: false })].into();
-        set.selected_pipelines(&ctx.device, format, depth, &stencil, &selected);
+        assert!(!set.selected_pipelines(&ctx.device, format, depth, &stencil, &selected, PipelineUse::Preflight));
+        assert!(pending.built_on().is_none());
+        assert!(set.batch(3, 1, format, depth, &stencil).is_none());
+        set.materials.get_mut(&1).unwrap().pipelines.pending.remove(&key);
+        set.selected_pipelines(&ctx.device, format, depth, &stencil, &selected, PipelineUse::Direct);
         let pipeline = set.batch(3, 1, format, depth, &stencil).unwrap().0.clone();
-        set.selected_pipelines(&ctx.device, format, depth, &stencil, &selected);
+        set.selected_pipelines(&ctx.device, format, depth, &stencil, &selected, PipelineUse::Direct);
         assert_eq!(&pipeline, set.batch(3, 1, format, depth, &stencil).unwrap().0);
-        assert!(set.materials[&0].module.is_none());
-        assert!(replacement.materials[&1].world_pipelines.is_empty());
+        assert!(set.materials[&0].pipelines.pending.is_empty());
+        assert!(replacement.materials[&1].pipelines.pending.is_empty());
     }
 
     /// The world's packets (`GpuWorld::selection_draws`) with their view

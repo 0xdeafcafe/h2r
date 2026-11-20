@@ -11,7 +11,7 @@ use crate::cull::{CullStats, Frustum, IndirectSlot, SLOT_SIZE, cull, indirect_sl
 use crate::fog_gpu::FogSet;
 use crate::light_gpu::{LightDraw, LightSet, LightTarget};
 use crate::light_look::LightStage;
-use crate::program::{MaterialUse, ProgramSet, ViewInputs};
+use crate::program::{MaterialUse, PipelineUse, ProgramSet, ViewInputs, WorldPipelines};
 use crate::world::{LightmapKey, Owner, World, WorldDraw, WorldVertex};
 
 /// An RGBA8 image (linear rows, no padding) with its smaller levels.
@@ -255,10 +255,7 @@ pub struct GpuWorld {
     frame: wgpu::Buffer,
     frame_group: wgpu::BindGroup,
     batch_groups: Vec<wgpu::BindGroup>,
-    frame_layout: wgpu::BindGroupLayout,
-    batch_layout: wgpu::BindGroupLayout,
-    shader: wgpu::ShaderModule,
-    pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat), wgpu::RenderPipeline>,
+    fixed: WorldPipelines,
     /// Materials drawn with their own programs ([`crate::program`]); the
     /// rest draw with stage 1's.
     programs: Option<ProgramSet>,
@@ -538,6 +535,13 @@ impl GpuWorld {
             label: Some("native world"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
         });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("native world"),
+            bind_group_layouts: &[Some(&frame_layout), Some(&batch_layout)],
+            immediate_size: 0,
+        });
+        let attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x2, 3 => Float32x3];
+        let fixed = WorldPipelines::new(device, SHADER, shader, layout, gfx::pipeline::ShaderId(0), "native world", attributes.to_vec());
         let part_slots = world.draws.iter().enumerate().map(|(i, d)| ((d.owner, d.part), i)).collect();
         Self {
             part_slots, world,
@@ -551,10 +555,7 @@ impl GpuWorld {
             frame,
             frame_group,
             batch_groups,
-            frame_layout,
-            batch_layout,
-            shader,
-            pipelines: HashMap::new(),
+            fixed,
             programs,
             fog: None,
             layers: HashMap::new(),
@@ -986,56 +987,25 @@ impl GpuWorld {
         }
     }
 
-    fn pipeline(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) -> &wgpu::RenderPipeline {
-        let (shader, fl, bl) = (&self.shader, &self.frame_layout, &self.batch_layout);
-        self.pipelines.entry((color, depth)).or_insert_with(|| {
-            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("native world"),
-                bind_group_layouts: &[Some(fl), Some(bl)],
-                immediate_size: 0,
-            });
-            let attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x2, 3 => Float32x3];
-            gfx::churn::create_render_pipeline(device, &wgpu::RenderPipelineDescriptor {
-                label: Some("native world"),
-                layout: Some(&layout),
-                vertex: wgpu::VertexState {
-                    module: shader,
-                    entry_point: Some("vs_main"),
-                    compilation_options: Default::default(),
-                    buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<WorldVertex>() as u64,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &attributes,
-                    })],
-                },
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    // S: the BSP's winding is not checked yet; draw both.
-                    cull_mode: None,
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: depth,
-                    depth_write_enabled: Some(true),
-                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
-                    stencil: wgpu::StencilState::default(),
-                    bias: wgpu::DepthBiasState::default(),
-                }),
-                multisample: wgpu::MultisampleState::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: shader,
-                    entry_point: Some("fs_main"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: color,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
-        })
+    /// Enqueue the selected programs for the live target. A false result leaves
+    /// every selected draw to the guest until a later admission check succeeds.
+    pub fn prewarm_world(
+        &mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, selection: &WorldSelection,
+    ) -> bool {
+        self.selection_ready(device, color, depth, selection, PipelineUse::Preflight)
+    }
+
+    /// Enqueue this BSP's fog, water, or translated scene-layer materials for the bound formats.
+    pub fn prewarm_fog(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) -> bool {
+        self.fog.as_mut().is_some_and(|set| set.prepare_pipelines(device, color, depth, PipelineUse::Preflight))
+    }
+
+    pub fn prewarm_water(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) -> bool {
+        self.water.as_mut().is_some_and(|set| set.prepare_pipelines(device, color, depth, PipelineUse::Preflight))
+    }
+
+    pub fn prewarm_layer(&mut self, layer: u8, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) -> bool {
+        self.layers.get_mut(&layer).is_some_and(|set| set.prepare_pipelines(device, color, depth, PipelineUse::Preflight))
     }
 
     /// Resolve all geometry and program bindings the guest's selected parts need
@@ -1066,13 +1036,19 @@ impl GpuWorld {
     pub fn prepare_selection(
         &mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, selection: &WorldSelection,
     ) -> bool {
+        self.selection_ready(device, color, depth, selection, PipelineUse::Direct)
+    }
+
+    fn selection_ready(
+        &mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat,
+        selection: &WorldSelection, usage: PipelineUse,
+    ) -> bool {
         let Some(p) = &mut self.programs else {
-            self.pipeline(device, color, depth);
-            return true;
+            return self.fixed.prepare(device, color, depth, None, None, &wgpu::StencilState::default(), usage);
         };
         let state = &self.stencil.state;
-        p.selected_pipelines(device, color, depth, state, &selection.materials);
-        selection.spans.iter().all(|&(batch, _, _)| p.batch_textures(batch).is_some())
+        p.selected_pipelines(device, color, depth, state, &selection.materials, usage)
+            && selection.spans.iter().all(|&(batch, _, _)| p.batch_textures(batch).is_some())
             && selection.vertices.iter().all(|&(material, instance)| match instance {
                 Some(n) => p.rigid(material, n, color, depth, state).is_some(),
                 None => p.cluster(material, color, depth, state).is_some(),
@@ -1094,9 +1070,10 @@ impl GpuWorld {
     }
 
     fn prepare_pipelines(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) {
-        self.pipeline(device, color, depth);
         if let Some(p) = &mut self.programs {
             p.pipelines(device, color, depth, &self.stencil.state, self.inherited_cull);
+        } else {
+            self.fixed.prepare(device, color, depth, None, None, &wgpu::StencilState::default(), PipelineUse::Direct);
         }
     }
 
@@ -1450,7 +1427,10 @@ impl GpuWorld {
                 if own != Some(false) {
                     pass.set_viewport(viewport.x, viewport.y, viewport.width, viewport.height, 0.0, 1.0);
                     pass.set_vertex_buffer(0, self.vertices.slice(..));
-                    pass.set_pipeline(&self.pipelines[&(color_format, depth_format)]);
+                    let Some(pipeline) = self.fixed.get(color_format, depth_format, &wgpu::StencilState::default(), None) else {
+                        return 0;
+                    };
+                    pass.set_pipeline(pipeline);
                     pass.set_bind_group(0, &self.frame_group, &[]);
                 }
                 own = Some(false);

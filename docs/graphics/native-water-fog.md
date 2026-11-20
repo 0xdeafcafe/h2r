@@ -47,6 +47,10 @@ gates the player chain after):
 `boot::native_fog_glue`, `native_render::fog`/`fog_gpu`. The most
 self-contained of the four: the same geometry the native world already
 loaded, drawn with each material's own translated layer-16 pass.
+At guest admission, `GpuWorld::prewarm_fog` and `prewarm_water` request
+the pipelines for the bound color and depth formats. D3D keeps the layer
+while its programs compile. Once the formats are ready, later views use
+the cached pipelines with their own uniforms and sampled textures.
 
 - **The look** (`fog_gpu::fog_passes`): every pass of the material's
   layer 16 at the first level of detail, in order, each through
