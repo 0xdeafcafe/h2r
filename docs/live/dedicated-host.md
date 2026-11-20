@@ -638,7 +638,11 @@ bundles or give each deployment its own cache.
 
 **Assignment.** [Ping-aware OptiMatch](live-matchmaking.md#9-ping-aware-optimatch-assignments)
 can reserve an opted-in solo cohort for a registered dedicated endpoint.
-Each client measures the actual UDP route with the existing QoS echo.
+Each client probes a registered endpoint over UDP. For an ad hoc host,
+it measures running or configured regional UDP endpoints and can use a
+ticket-authenticated WebSocket echo on its Live origin. Cloudflare routes
+the echo through a running pack when available or answers in the regional
+pool room. Native Live answers the service echo itself.
 A registered endpoint can use its existing account. For an ad hoc host the
 matchmaker binds the lease to the assignment before the provider starts the
 child. Live attaches that assignment, including `matchmaking.host_lease`, to

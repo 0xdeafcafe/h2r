@@ -44,6 +44,15 @@ fn make_cohort(
     provider: Option<ProviderKind>,
     with_probes: bool,
 ) -> (Lease, Option<HostLease>) {
+    make_cohort_with_probe(config, provider, with_probes.then_some(70))
+}
+
+fn make_cohort_with_probe(
+    config: &DedicatedConfig,
+    provider: Option<ProviderKind>,
+    worst_probe: Option<u16>,
+) -> (Lease, Option<HostLease>) {
+    let with_probes = worst_probe.is_some();
     let rules = Rules { size: 2, team_count: 2, ranked: true };
     let mut bucket = Bucket::default();
     let mut first = ticket(31000);
@@ -60,7 +69,7 @@ fn make_cohort(
     if with_probes {
         let probe = config.regions.candidates().next().unwrap();
         first.samples.push(sample(probe, 65));
-        second.samples.push(sample(probe, 70));
+        second.samples.push(sample(probe, worst_probe.unwrap()));
     }
     bucket.submit(&first, FIRST, a, 5, FORMED, regions).unwrap();
     bucket.submit(&second, SECOND, b, 6, FORMED, regions).unwrap();
@@ -125,6 +134,17 @@ fn ad_hoc_cohort_requests_configured_lobby_in_measured_region() {
         assert!(assignment.dedicated);
         assert_eq!(assignment.rtt_ms, BTreeMap::from([(FIRST, 65), (SECOND, 70)]));
     }
+}
+
+#[test]
+fn only_a_fully_measured_slow_region_defers_to_the_better_reserved_peer() {
+    let config = config(true, HOPPER);
+    let (lease, request) = make_cohort_with_probe(&config, Some(ProviderKind::Local), Some(121));
+    assert!(request.is_none());
+    assert_eq!(lease.assignment.host, FIRST);
+    assert!(!lease.assignment.dedicated);
+    assert!(make_cohort_with_probe(&config, Some(ProviderKind::Local), Some(120)).1.is_some());
+    assert!(make_cohort_with_probe(&config, Some(ProviderKind::Local), None).1.is_some());
 }
 
 #[test]

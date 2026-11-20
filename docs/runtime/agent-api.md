@@ -1075,6 +1075,14 @@ mutations respect `session.claim`, and a concurrent mutation is `BUSY`.
   Halo 1 Options and Skulls summaries. After changing the settings,
   close the dialog and read the panel again.
 
+- **`host.peer_rtts`** (`h2 agent host.peer_rtts '{}'`) reads the active simulation
+  membership's reliable-channel RTT at a game boundary. The result contains
+  `players` with the same slot, peer, name, bars and nullable RTT as
+  `ui.lobby.players`. Local players, phantoms and unsampled routes have
+  null RTT. The method returns `UNAVAILABLE` without a simulation membership.
+  Compare a remote client's `rtt_ms` to its matchmaking assignment's regional
+  probe sample during the match.
+
 - **`ui.lobby.players`** (`h2 agent ui.lobby.players`, no parameters):
   reads the pregame player list on a game boundary without UI watch
   (`crates/extensions/game/src/lobby_quality.rs`). Each entry has its

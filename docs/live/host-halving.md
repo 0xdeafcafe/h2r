@@ -8,7 +8,7 @@ A light match costs 6–10 ms of CPU per 33 ms tick and about 340 MB of
 resident memory in the original three-match, 1 vCPU / 3 GiB sizing model
 ([Packed hosts](dedicated-host.md#packed-hosts)). The targets are to halve both
 figures per match, start a match in under 2 s from a template process, and
-lets the fleet follow lease demand from one match to a thousand. One rule
+let the fleet follow lease demand from one match to a thousand. One rule
 holds throughout: a host is ad hoc. Nothing runs, warm or otherwise, unless
 somebody is searching or playing, and every mechanism here works on the
 local home and on Cloudflare.
@@ -278,29 +278,19 @@ cap or exhausted budget prevents new capacity.
 
 ### Region placement by ping
 
-Live picks the region whose worst cohort member has the lowest RTT
-(`RegionTable::pick`, `crates/live/live-server/src/matchmaking/dedicated.rs`).
-Its probes are UDP echo endpoints from `LIVE_HOST_REGIONS`, which only
-exist where something is already running. Three sources replace the need
-for an always-on endpoint, used in this order:
+The queue advertises running managed UDP endpoints, configured UDP probes
+and a ticket-authenticated WebSocket echo. Native Live answers the service
+echo itself. On Cloudflare a regional pool tries an active pack's tunnel
+and otherwise answers in the room. Neither fallback starts a host. The
+matchmaker prefers the running UDP sample, then configured UDP, then the
+service echo. It selects the lowest worst-member RTT among regions sampled
+by every member. A warm slot within 10 ms wins. Above 120 ms, a better
+reserved peer wins. Incomplete coverage uses the configured default.
 
-1. **A running pack.** Every pack answers the QoS echo on its first slot's
-   port range (and over the tunnel), so a region with any match in it has
-   a real probe. The pool publishes its address to the region table.
-2. **The pool room.** On Cloudflare the pool is a Durable Object placed by
-   the region's location hint. It answers a WebSocket ping at
-   `/v1/hosts/regions/<region>/echo` with no container running. That
-   measures the client's path to the place the container will run, short
-   one local hop.
-3. **History.** Each host reports its clients' RTT at match end. Live
-   keeps a median per client network (Cloudflare colo or /24) and region,
-   and uses it when a member has no live sample.
-
-The choice adds two rules: a region with a free warm slot wins over one
-within 10 ms of it that would cold-start, and when the best region's worst
-member is above 120 ms and the reserved peer host measures better, the
-cohort goes to the peer. Locally there is one region and the probe is the
-Live server's own host.
+The host agent exposes live per-peer RTT for the same-client comparison.
+A historical network median still needs a trusted association between
+the measured guest peer, its Live account and its network at match time.
+[Probe protocol and selection](live-matchmaking.md#ad-hoc-dedicated-hosts)
 
 ### Caps
 
@@ -421,7 +411,7 @@ The table lists outstanding implementation work. Measurement results go in a dat
 | # | Slice | Files it owns | Tests | Measurement gate |
 |---|---|---|---|---|
 | 6 | Template process | new `host_cmd/template.rs`, `host_cmd/pack.rs`, `crates/extensions/game/src/snapshot_glue.rs`, the clock-only audio section in `crates/platform/dsound`, `crates/live/host-data` (the bundle entry) | fork of a fake template in `pack_tests.rs`; two children differ in nonce and time base; a mismatched snapshot is a named error; audio section round trip | Allocation to joinable under 2 s at p95 over 50 warm starts; a forked match equals a booted one in hashes from the same seed |
-| 10 | Region probes without a host | `matchmaking/dedicated.rs`, `selection.rs`, `crates/live/live-hle/src/qos.rs`, the pool room's echo route, `docs/live/live-matchmaking.md` | `matchmaking/tests.rs`: the three sources in order, the warm tie-break, the peer fallback | Probe RTT within 10 ms of the in-match RTT for the same client and region |
+| 10 | Historical region RTT fallback | Match-end telemetry and matchmaking | Synthetic peer-to-account and network attribution, expiry and median fallback | Probe RTT within 10 ms of in-match RTT for the same remote client and region |
 | 11 | Cost by share and the caps | `host_costs.rs`, `live-proto/src/hosts.rs`, `hosts/lifecycle.rs`, `wrangler.toml` | `host_costs.rs` tests: four matches in one pack sum to one container | The month's estimate within 20% of the invoice |
 | 12 | Packs on Fly | `hosts/fly.rs` | the fake-API tests: windows per slot, a stopped pool, destroy on silence | One packed Machine, four matches, UDP |
 | – | Sound, effects, Havok | the rewrite plan's phases 4, 6 and 5 | their ladders | Their exit criteria; the CPU table above is re-read after each |

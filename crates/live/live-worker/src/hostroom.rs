@@ -12,6 +12,8 @@
 //!
 //! Calls only go lease → pool → pack, so the rooms' locks cannot deadlock.
 
+#[path = "hostroom/region_echo.rs"]
+pub(super) mod region_echo;
 #[path = "hostroom/lease.rs"]
 mod lease;
 
@@ -472,6 +474,12 @@ impl Room {
             (Some(Role::Lease), Method::Get, "/alive") => self.alive().await,
             (Some(Role::Pool), Method::Post, "/pool/preview") => self.preview(req.json().await?).await,
             (Some(Role::Pool), Method::Post, "/pool/demand") => self.demand(req.json().await?).await,
+            (Some(Role::Pool), Method::Get, "/pool/echo") if is_upgrade(&req)? => {
+                region_echo::pool(self).await
+            }
+            (Some(Role::Pack), Method::Get, "/pack/echo") if is_upgrade(&req)? => {
+                region_echo::pack(self).await
+            }
             (Some(Role::Pool), Method::Post, "/pool/place") => self.place(req.json().await?).await,
             (Some(Role::Pool), Method::Post, "/pool/release") => {
                 self.release(req.json().await?).await
@@ -940,6 +948,10 @@ impl Room {
 
     fn start_container(&self, container: &Container) -> Result<()> {
         // The image entrypoint execs `h2 host pack`, which starts empty.
+        let mut env = pack_env(&self.class, self.max_matches);
+        if let Ok(features) = self.env.var("H2_FEATURES") {
+            env.insert("H2_FEATURES", features.to_string());
+        }
         let options = serde_json::json!({
             "entrypoint": ["/opt/h2/entrypoint.sh"],
             "enableInternet": true,
@@ -1095,10 +1107,6 @@ impl Room {
         Response::empty()
     }
 
-        let mut env = pack_env(&self.class, self.max_matches);
-        if let Ok(features) = self.env.var("H2_FEATURES") {
-            env.insert("H2_FEATURES", features.to_string());
-        }
     async fn pack_alive(&self, lease: &str) -> Result<Response> {
         let container = self.container()?;
         let pack = self.load_pack().await?;

@@ -61,7 +61,9 @@ pub(crate) fn routes() -> Router<Arc<Live>> {
         )
         .route("/v1/admin/hosts/{lease}/stop", post(stop));
     #[cfg(feature = "native")]
-    let router = router.route("/v1/hosts/{lease}/tunnel", get(host_tunnel::upgrade));
+    let router = router
+        .route("/v1/hosts/{lease}/tunnel", get(host_tunnel::upgrade))
+        .route("/v1/hosts/regions/{region}/echo", get(host_tunnel::region_echo));
     router
 }
 

@@ -1018,9 +1018,38 @@ impl Worker {
         let me = Xuid(user.xuid);
         let value = serde_json::from_slice(&bytes).map_err(|_| Error::Protocol)?;
         let step = match queue_action(value, ticket.hopper, me).ok_or(Error::Protocol)? {
-            QueueAction::Probe(candidates) => {
-                let samples = crate::qos::measure(candidates, Duration::from_millis(450))
-                    .map_err(|_| Error::Transport)?;
+            QueueAction::Probe(candidates, region_echoes) => {
+                let connection = self.connection.as_ref().ok_or(Error::Protocol)?;
+                // Echo targets carry a validated region code. Only the discovery
+                // origin may receive a bearer, including on a failed upgrade.
+                let mut probes = Vec::new();
+                for probe in region_echoes {
+                    let mut url = Url::parse(&format!("{}/hosts/regions/{}/echo", connection.api, probe.region))
+                        .map_err(|_| Error::Protocol)?;
+                    let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
+                    url.set_scheme(scheme).map_err(|_| Error::Protocol)?;
+                    let token = issue_token(&user.key, &self.author(user), &connection.id, lxm::SESSIONS_RELAY, now());
+                    probes.push((probe, url, token));
+                }
+                let samples = std::thread::scope(|scope| {
+                    let mut pending = Vec::new();
+                    for (probe, url, token) in probes {
+                        let task = std::thread::Builder::new()
+                            .name("live-region-qos".into())
+                            .spawn_scoped(scope, move || crate::tunnel_client::region_echo(url.as_str(), &token));
+                        pending.push((probe, task));
+                    }
+                    let mut samples = crate::qos::measure(candidates, Duration::from_millis(450))
+                        .map_err(|_| Error::Transport)?;
+                    for (probe, task) in pending {
+                        samples.push(live_proto::matchmaking::Sample {
+                            target: probe.xuid,
+                            generation: probe.generation,
+                            rtt_ms: task.ok().and_then(|t| t.join().ok()).flatten(),
+                        });
+                    }
+                    Ok::<_, Error>(samples)
+                })?;
                 Step::Retry(samples)
             }
             QueueAction::Wait => Step::Retry(Vec::new()),

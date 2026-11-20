@@ -503,6 +503,26 @@ impl Live {
             .unwrap()
             .leases
             .get(lease_id)
+    pub(crate) fn regional_udp_probes(&self) -> BTreeMap<String, (String, std::net::SocketAddrV4)> {
+        let registry = self.hosts.registry.read().unwrap();
+        let mut probes = BTreeMap::new();
+        // The active index excludes terminal history. Only a managed host may
+        // supply a probe target; a hand-launched lease has no provider reference.
+        for id in &registry.active {
+            let host = &registry.leases[id];
+            if host.provider_ref.is_some()
+                && let Some(region) = &host.lease.region
+                && !probes.contains_key(region)
+                && let Some(endpoint) = &host.endpoint
+                && endpoint.transport == Transport::Udp
+                && let Some(addr) = endpoint.udp.as_deref().and_then(|s| s.parse().ok())
+            {
+                probes.insert(region.clone(), (id.clone(), addr));
+            }
+        }
+        probes
+    }
+
             .cloned()
     }
 

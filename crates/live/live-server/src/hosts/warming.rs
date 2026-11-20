@@ -58,6 +58,9 @@ impl Live {
             if let Err(error) = &result {
                 eprintln!("live: host pool warm request failed: {error}");
             }
+            self.matchmaking.lock().unwrap().observe_warm_slots(
+                region.as_deref(), &class, result.unwrap_or(0), now_ms(),
+            );
         }
     }
 }

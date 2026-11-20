@@ -323,6 +323,7 @@ impl Matchmaker {
         let bucket = self.buckets.entry(ticket.hopper).or_default();
         bucket.submit(&ticket, xuid, endpoint, level, clock, regions)?;
         let mut request = None;
+        let probe_rooms = matches!(provider, Some(ProviderKind::Local | ProviderKind::Cloudflare));
         if let Some((lease, host_request)) =
             bucket.assign(ticket.hopper, rules, clock, &self.config, provider)?
         {
@@ -335,15 +336,20 @@ impl Matchmaker {
                 return Ok((reply, request));
             }
         }
-        let reply = Queue::Probing {
-            candidates: bucket.waiting.values()
-                .filter(|w| w.candidate.xuid != xuid && (!ticket.dedicated || !w.dedicated))
-                .map(|w| &w.candidate)
-                .chain(regions.into_iter().flat_map(RegionTable::candidates))
-                .take(MAX_CANDIDATES)
-                .cloned()
-                .collect(),
-        };
+        let candidates: Vec<_> = bucket.waiting.values()
+            .filter(|w| w.candidate.xuid != xuid && (!ticket.dedicated || !w.dedicated))
+            .map(|w| &w.candidate)
+            .chain(regions.into_iter().flat_map(RegionTable::candidates))
+            .take(MAX_CANDIDATES)
+            .cloned()
+            .collect();
+        let region_echoes = regions.filter(|_| probe_rooms)
+            .into_iter()
+            .flat_map(RegionTable::echoes)
+            .take((MAX_CANDIDATES - candidates.len()).min(live_proto::matchmaking::MAX_REGION_ECHOES))
+            .cloned()
+            .collect();
+        let reply = Queue::Probing { candidates, region_echoes };
         Ok((reply, request))
     }
 }
@@ -483,8 +489,16 @@ impl Bucket {
         };
         let mut placement = Placement::PeerOrRegistered;
         let mut until = clock + ASSIGNMENT_SECONDS;
-        let request = ad_hoc.map(|(provider, playlist)| {
+        let request = ad_hoc.and_then(|(provider, playlist)| {
             let choice = config.regions.pick(&group);
+            if let Some(measured) = &choice
+                && measured.rtt_ms.len() == group.len()
+                && let Some(worst) = measured.rtt_ms.values().max()
+                && *worst > 120
+                && assignment.rtt_ms.values().max().is_some_and(|peer| peer < worst)
+            {
+                return None;
+            }
             let region = choice.as_ref().map(|c| c.region.to_owned());
             let dedicated = Assignment {
                 // The ad-hoc host authenticates with its lease, without an XUID.
@@ -497,7 +511,7 @@ impl Bucket {
                 fallback: std::mem::replace(&mut assignment, dedicated),
             };
             until = clock + BOOT_SECONDS;
-            host_request(&assignment, playlist, provider, region)
+            Some(host_request(&assignment, playlist, provider, region))
         });
         self.remove(host);
         for &member in &assignment.members {
@@ -629,8 +643,12 @@ pub(crate) async fn queue(State(live): State<Arc<Live>>, req: Request) -> Result
     let endpoint = SocketAddrV4::new(addr, ticket.port);
     let clock = now();
     let provider = live.host_provider_kind();
+    let running = if matches!(provider, Some(ProviderKind::Local | ProviderKind::Fly)) {
+        Some(live.regional_udp_probes())
+    } else { None };
     let (mut result, request) = {
         let mut matcher = live.matchmaking.lock().unwrap();
+        if let Some(running) = running { matcher.refresh_udp_probes(running)?; }
         if let Some((assignment, lease_id)) = matcher.booting_host(xuid, ticket.hopper) {
             // Provider callbacks also take the matcher lock.
             drop(matcher);
@@ -670,7 +688,7 @@ pub(crate) async fn queue(State(live): State<Arc<Live>>, req: Request) -> Result
             matcher.expire(clock);
             result = match matcher.leases.get(&assignment_id) {
                 Some(lease) => lease.queue(xuid, &live.model),
-                None => Queue::Probing { candidates: Vec::new() },
+                None => Queue::Probing { candidates: Vec::new(), region_echoes: Vec::new() },
             };
         }
     }
