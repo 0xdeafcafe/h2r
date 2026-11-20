@@ -633,3 +633,23 @@ pub fn sim_hash(&self) -> u64;                // hash_sim(HALO2) ⊕ ext, when e
 4. **Per-function switches go as each subsystem lands.** The 32
    `impl.sim.native_*` switches are deleted when their subsystem's switch
    replaces them. Their bodies stay only as test oracles.
+
+### After the Fable reviews (the user, 2026-11-20)
+
+5. **Both routes run.** The sim-tier experiment from
+   [sim-review.md](sim-review.md) (the tick closure recompiled under a
+   looser contract, checked by per-phase arena hashes) runs alongside the
+   hand rewrites in this plan. Neither waits on the other. The experiment's
+   one-week gate (four leaf families, 5x) decides how far it goes; a hand
+   rewrite that the tier later covers is kept only if it is still faster.
+6. **Havok stays bit-exact (decision 1 stands).** Halo's physics,
+   superbounces included, are part of the game. The sim review's advice to
+   drop the bit-exact port is declined. Superbounces must also survive at
+   120 fps: the tick stays 30 Hz and only the picture is interpolated
+   ([high-framerate.md](../game/high-framerate.md),
+   [superbounce.md](../game/superbounce.md)). No phase may raise the tick
+   rate or change `dt` for physics.
+7. **The recompiler contract changes, starting with thin transfers and
+   flat RAM.** From [architecture-review-2026-11.md](../architecture-review-2026-11.md):
+   cheaper guest/host transfers, and flat RAM as the only memory model.
+   The other items in that review wait.
