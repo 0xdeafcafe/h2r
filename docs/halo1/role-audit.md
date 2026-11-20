@@ -84,8 +84,7 @@ integration run. There is no new pass count or play result yet.
   A source vehicle without physics skips the dispatch at
   `0x398ea`. Converted aircraft supply the resulting forces and moments
   before the H2 contact solve. H2 supplies the contact geometry and rigid-body
-  integration. The campaign disc check rebuilds the driving records separately
-  from attachments so a missing widget cannot hide a controller regression.
+  integration.
 - The seat entry test needs positive distance and angle limits (`0xc9040`).
   `+0x258` and `+0x2e4` keep their definition defaults. Neither has an
   identified read in the ground or hover drive equations.
@@ -97,6 +96,41 @@ integration run. There is no new pass count or play result yet.
   scope effect's screen vertex shader and the player emblem are native
   rendering dependencies. The primary HUD and source bitmap slots use
   converted Halo 1 tags.
+
+### Retail vehicle scan
+
+**Built.** An offline scan of both Xbox discs found no inputs that trigger
+the vehicle-drive conversion errors on the ten campaign or thirteen
+multiplayer maps.
+It read every `vehi` entry, including vehicles with no placements. Counts
+are per map, so a vehicle present on two maps counts twice.
+
+| Source maps | Maps | Vehicle tags | Drive entries | Friction points | Hover points | Powered-seat records |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Campaign | 10 | 57 | 55 | 66 | 51 | 58 |
+| Multiplayer | 13 | 39 | 39 | 156 | 39 | 39 |
+
+The two redirected tags are a10’s Halo ring (scenery) and b30’s falling
+box (crate). c20 has no vehicle tags. Of the 94 vehicle entries, 90 have
+a positive-volume solid collision cell. The other four supply 18 or 19
+positive-radius mass points each. All 89 vehicle physics tags have inertia
+data. The five vehicles without a physics tag have collision hulls.
+
+All 222 friction points use the supported forward/up frame. Their axis is
+0 on 146 points and 1 on 76. Powered groups and normalized marker names
+are consistent on every vehicle. The maximum is eight friction contacts
+per vehicle (limit 16) and 136 bytes of wheel and surface data (limit 264).
+Every vehicle fits the two seat-power channels.
+
+Each source map has 32 material responses. The scan applied the source
+mass threshold and resolved the responses for all 41 ground-vehicle
+entries against each of the three destination globals tables. Each table
+contains 182 materials, with ice at index 101. No response was missing
+or conflicted with another response at the same destination index.
+
+The ignored `retail_vehicle_drive_laws_round_trip` regression reads the
+map directory, selects each map’s conversion base, and rebuilds the drive
+record separately from its attachments.
 
 ## Retail fallback inventory
 

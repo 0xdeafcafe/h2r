@@ -1595,40 +1595,100 @@ fn blood_gulch_drive_commands_follow_the_source_on_both_bases() {
 /// each vehicle, including the cinematics with a null physics reference.
 #[test]
 #[ignore = "reads H1_ISO and H2_DISC"]
-fn campaign_vehicle_drive_laws_round_trip() {
+fn retail_vehicle_drive_laws_round_trip() {
     use h1objects::rebuild::{Point, VehicleSpec, vehicle};
     use tags::object::{direct_drive as ground, h1_flight as air};
-    let base = Base::read(&mut h2_map("05a_deltaapproach")).unwrap();
-    let ice = base
-        .materials
-        .iter()
-        .position(|name| name == "hard_terrain_ice")
-        .unwrap() as u16;
+    let mut iso = xiso::Xiso::open(BufReader::new(
+        File::open(disc("H1_ISO", "halo1.iso")).unwrap(),
+    ))
+    .unwrap();
+    let retail = h1map::disc::Disc::open(&mut iso).unwrap();
+    let materials = BTreeMap::from(
+        ["05a_deltaapproach", "coagulation", "beavercreek"]
+            .map(|name| (name, Base::read(&mut h2_map(name)).unwrap().materials)),
+    );
     let mut aircraft = HashSet::new();
     let mut warthog = false;
     let mut scorpion = false;
-    for level in h1map::disc::CAMPAIGN_LEVELS {
-        let map = h1_level(level).unwrap();
+    let (mut campaign, mut multiplayer, mut redirects, mut vehicles) = (0, 0, 0, 0);
+    let (mut wheels, mut lifts, mut channels) = (0, 0, 0);
+    let mut solid_hulls = 0;
+    for entry in &retail.maps {
+        let level = h1map::disc::map_stem(entry);
+        if level == "ui" {
+            continue;
+        }
+        let base_name = if h1map::disc::CAMPAIGN_LEVELS.contains(&level) {
+            campaign += 1;
+            "05a_deltaapproach"
+        } else {
+            multiplayer += 1;
+            h1convert::convert::known(level)
+                .unwrap_or_else(|| panic!("unknown retail map {level}"))
+                .1
+        };
+        let base_materials = &materials[base_name];
+        let ice = base_materials
+            .iter()
+            .position(|s| s == "hard_terrain_ice")
+            .unwrap() as u16;
+        let map = H1Map::from_reader(Cursor::new(iso.read(entry).unwrap())).unwrap();
         for t in map
             .tags()
             .iter()
             .filter(|t| t.group == h1map::Group::new(b"vehi"))
         {
             if h1objects::scripted_props::replacement_group(&t.name).is_some() {
+                redirects += 1;
                 continue;
             }
+            vehicles += 1;
             let name = &t.name;
             let source = map.tag_data(t).unwrap();
             let obj = h1::Object::read(&map, source).unwrap();
             let ty = u32_at(source, H1_VEHICLE_TYPE) as u16;
+            assert!(
+                matches!(ty, 0 | 1 | 3 | 4 | 5 | 6),
+                "{level} {name}: type {ty}"
+            );
             let tag = obj.physics.map(|id| map.tag(id).unwrap());
             let physics = tag.map(|t| map.tag_data(t).unwrap());
             let p = tag.map(|t| h1::Physics::read(&map, t).unwrap());
+            if let Some(phys) = physics {
+                assert!(
+                    !h1::elements(&map, phys, 0x5c, 0x24).unwrap().is_empty(),
+                    "{level} {name}: inertia"
+                );
+            }
+            let solid_hull = obj.collision.is_some_and(|id| {
+                let coll = h1::Collision::read(&map, map.tag(id).unwrap()).unwrap();
+                coll.nodes
+                    .iter()
+                    .filter_map(|node| node.bsps.first())
+                    .any(|src| {
+                        let bsp = h1convert::collision::convert(src)
+                            .unwrap_or_else(|e| panic!("{level} {name}: {e}"));
+                        !h1objects::physics::solid_cells(&bsp).is_empty()
+                    })
+            });
+            assert!(
+                solid_hull
+                    || p.as_ref().is_some_and(|p| p
+                        .mass_points
+                        .iter()
+                        .any(|m| m.radius.is_finite() && m.radius > 0.0)),
+                "{level} {name}: body"
+            );
+            solid_hulls += usize::from(solid_hull);
             let points: Vec<_> = p
                 .iter()
                 .flat_map(|p| {
                     p.mass_points.iter().filter_map(move |m| {
                         let g = usize::try_from(m.powered_mass_point).ok()?;
+                        assert!(
+                            matches!(p.powered_flags.get(g).copied(), Some(1 | 0x40)),
+                            "{level} {name}: powered group {g}"
+                        );
                         Some(Point {
                             sphere: [m.position[0], m.position[1], m.position[2], m.radius],
                             marker: h1objects::coll::sid_name(&m.name),
@@ -1641,10 +1701,22 @@ fn campaign_vehicle_drive_laws_round_trip() {
                     })
                 })
                 .collect();
+            let names: HashSet<_> = points.iter().map(|p| &p.marker).collect();
+            assert_eq!(
+                names.len(),
+                points.len(),
+                "{level} {name}: duplicate marker"
+            );
+            let hover_count = points.iter().filter(|p| p.antigravity.is_some()).count();
+            lifts += hover_count;
+            wheels += points.len() - hover_count;
             let contacts = points.first().filter(|p| p.antigravity.is_none()).map(|_| {
-                h1::GroundContacts::read(&map, physics.unwrap(), &base.materials).unwrap()
+                h1::GroundContacts::read(&map, physics.unwrap(), base_materials)
+                    .unwrap_or_else(|e| panic!("{level} {name} on {base_name}: {e}"))
             });
-            let power = h1::powered_seats(&map, source).unwrap();
+            let power =
+                h1::powered_seats(&map, source).unwrap_or_else(|e| panic!("{level} {name}: {e}"));
+            channels += power.len();
             let root = vehicle(&VehicleSpec {
                 source,
                 object: &obj,
@@ -1747,6 +1819,9 @@ fn campaign_vehicle_drive_laws_round_trip() {
             }
         }
     }
+    assert_eq!((campaign, multiplayer), (10, 13));
+    assert_eq!((vehicles, redirects, solid_hulls), (94, 2, 90));
+    assert_eq!((wheels, lifts, channels), (222, 90, 97));
     assert!(warthog && scorpion);
     assert_eq!(
         aircraft,
