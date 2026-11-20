@@ -58,9 +58,13 @@ impl Halo1Physics {
         Ok(p)
     }
 
+    pub(crate) fn contact(self) -> [f32; 2] {
+        [self.friction, self.bounce]
+    }
+
     /// E (Halo 1) 0x00080886 applies the signed buoyancy times
     /// [0x1fb648] * 30² in world units per second squared.
-    fn point_physics(self, type_flags: u32, radius: f32) -> PointPhysics {
+    pub(crate) fn point_physics(self, type_flags: u32, radius: f32) -> PointPhysics {
         const GRAVITY: f32 = 0.0035651792 * 30.0 * 30.0;
         PointPhysics {
             flags: self.flags,

@@ -97,6 +97,7 @@ impl Converter<'_> {
         let object = def(*b"scen").child("object").expect("shared object header");
         let widget = object.child("widgets").expect("object widgets");
         let mut bindings = Vec::new();
+        let mut has_flag = false;
         for row in rows {
             let binding = TagRef::read(row, 0).ok_or(Error::Truncated("object widget"))?;
             let id = binding.id;
@@ -114,8 +115,29 @@ impl Converter<'_> {
                 )));
             }
             let group = source.group.0.to_be_bytes();
+            if &group == b"flag" {
+                if has_flag {
+                    return Err(h1convert::Error::no_rebuild(
+                        &self.h1.header().name,
+                        &source.name,
+                        format!("{} has multiple cloth widgets", owner.name),
+                    )
+                    .into());
+                }
+                has_flag = true;
+                let panels = self.flag(source).map_err(|e| {
+                    h1convert::Error::no_rebuild(&self.h1.header().name, &source.name, e)
+                })?;
+                for id in panels {
+                    let mut row = defs::default_record(widget);
+                    set(&mut row, "widget", Val::tag(FourCC(*b"clwd"), id))?;
+                    bindings.push(row);
+                }
+                continue;
+            }
             let converted = match &group {
                 b"ant!" => self.antenna(source),
+                b"elec" => self.lightning(source),
                 b"mgs2" | b"glw!" => continue, // Bound at its own marker by object_attachments.
                 _ => Err(Error::Invalid(format!(
                     "unsupported {} widget on {}",
@@ -124,7 +146,14 @@ impl Converter<'_> {
             }
             .map_err(|e| h1convert::Error::no_rebuild(&self.h1.header().name, &source.name, e))?;
             let mut binding = defs::default_record(widget);
-            set(&mut binding, "widget", Val::tag(FourCC(group), converted))?;
+            set(
+                &mut binding,
+                "widget",
+                Val::tag(
+                    FourCC(if &group == b"elec" { *b"tdtl" } else { group }),
+                    converted,
+                ),
+            )?;
             bindings.push(binding);
         }
         if bindings.is_empty() {
@@ -370,6 +399,95 @@ mod tests {
         assert_eq!(evaluate("layers[0].data_20", 1.0), 0.9375);
         assert!(light_volume(&source, &frame, 257, TagId(19)).is_err());
     }
+    #[test]
+    fn lightning_passes_keep_each_bolts_endpoint_styles() {
+        use tags::effects::h1_lightning::{Endpoint, HEADER, STRIDE};
+        let mut root = [0; 0x108];
+        root[2] = 2;
+        let mut a = [0; 0xe4];
+        a[..4].copy_from_slice(b"mast");
+        a[0x24] = 3;
+        a[0x84..0x88].copy_from_slice(&0.75f32.to_le_bytes());
+        let mut b = a;
+        b[0x20] = 1;
+        b[0x74..0x78].copy_from_slice(&0.25f32.to_le_bytes());
+        let mut shader = [0; 0xb4];
+        shader[0x24] = 1;
+        shader[0x28] = 2;
+        shader[0x2a] = 3;
+        let root = lightning(&root, &[&a, &b], &shader, TagId(42)).unwrap();
+        let r = defs::from_built(def(*b"tdtl"), &root).unwrap();
+        assert_eq!(r.at("marker"), Some(&Val::text("mast")));
+        for n in 0..2 {
+            let field = format!("layers[{n}].displacement");
+            let Some(Val::Data(blob)) = r.at(&field) else {
+                panic!("{field}")
+            };
+            assert_eq!(&blob[0x10..0x14], &[n, 0, 2, 0]);
+            let end = |i: usize| {
+                Endpoint::decode(
+                    blob[HEADER + i * STRIDE..HEADER + (i + 1) * STRIDE]
+                        .try_into()
+                        .unwrap(),
+                )
+            };
+            assert_eq!(end(0).depth, 3);
+            assert_eq!(end(0).width, 0.75);
+            assert!(end(1).end);
+            assert_eq!(end(1).jitter, [0.25, 0., 0.]);
+        }
+    }
+
+    #[test]
+    fn full_flag_grid_keeps_every_source_vertex_and_the_mast_pins() {
+        let grid = FlagGrid {
+            width: 16,
+            height: 13,
+            spacing: [0.025, 0.025],
+            contact: [0.5, 0.75],
+            physics: tags::effects::h1_attachment::PointPhysics {
+                flags: 0,
+                particle_type_flags: 0,
+                mass: 1.,
+                acceleration: [-3., 0.],
+                drag: [1., 3.],
+                radius: 0.02,
+            },
+        };
+        let panel = |upper, marker, shader| {
+            defs::from_built(
+                def(*b"clwd"),
+                &grid.panel(upper, marker, TagId(shader)).unwrap(),
+            )
+            .unwrap()
+        };
+        let lo = panel(false, "bottom", 1);
+        let hi = panel(true, "top", 2);
+        assert_eq!(lo.at("marker"), Some(&Val::text("bottom")));
+        assert_eq!(hi.at("marker"), Some(&Val::text("top")));
+        assert_eq!(lo.at("vertices[0].uv"), Some(&Val::floats(&[0., 0.])));
+        assert_eq!(hi.at("vertices[0].uv"), Some(&Val::floats(&[0., 1.])));
+        for p in [&lo, &hi] {
+            let Some(Val::Block(vertices)) = p.at("vertices") else {
+                panic!("vertices")
+            };
+            let Some(Val::Block(triangles)) = p.at("triangles") else {
+                panic!("triangles")
+            };
+            assert_eq!(vertices.len(), 112);
+            assert_eq!(triangles.len(), 6 * 15 * 6);
+        }
+        for i in 96..112 {
+            assert_eq!(
+                lo.at(&format!("vertices[{i}].position")),
+                hi.at(&format!("vertices[{i}].position"))
+            );
+            assert_eq!(
+                lo.at(&format!("vertices[{i}].uv")),
+                hi.at(&format!("vertices[{i}].uv"))
+            );
+        }
+    }
 }
 
 impl Converter<'_> {
@@ -443,5 +561,318 @@ impl Converter<'_> {
                 raw: vec![],
             },
         )
+    }
+}
+
+fn short(b: &[u8], at: usize) -> u16 {
+    u16::from_le_bytes([b[at], b[at + 1]])
+}
+
+fn lightning(b: &[u8], markers: &[&[u8]], shader: &[u8], bitmap: TagId) -> Result<Block> {
+    use tags::effects::h1_lightning::{Endpoint, MAGIC};
+    let bolts = short(b, 2);
+    if !(1..=3).contains(&bolts)
+        || !(2..=64).contains(&markers.len())
+        || short(b, 0x2c) != 0
+        || short(b, 0x32) != 0
+        || short(b, 0x2e) > 4
+        || short(b, 0x30) > 4
+    {
+        return Err(Error::Invalid(
+            "unsupported lightning bolt count, endpoints or modulation".into(),
+        ));
+    }
+    let blend = short(shader, 0x28);
+    if !matches!(blend, 2 | 3) || short(shader, 0x24) != 1 || short(shader, 0x2a) != 3 {
+        return Err(Error::Invalid(format!(
+            "unsupported lightning material {blend}"
+        )));
+    }
+    let mut endpoints = Vec::new();
+    let mut depth = 2;
+    for marker in markers {
+        let subdivisions = short(marker, 0x24);
+        if subdivisions > 6 || short(marker, 0x20) & !1 != 0 {
+            return Err(Error::Invalid(
+                "unsupported lightning subdivision or endpoint flag".into(),
+            ));
+        }
+        depth = depth.max(subdivisions);
+        endpoints.push(Endpoint {
+            end: short(marker, 0x20) & 1 != 0,
+            depth: subdivisions as u8,
+            jitter: std::array::from_fn(|i| real(marker, 0x74 + 4 * i)),
+            displacement: real(marker, 0x80),
+            width: real(marker, 0x84),
+            argb: std::array::from_fn(|i| real(marker, 0x88 + 4 * i)),
+        });
+    }
+    let d = def(*b"tdtl");
+    let mut r = defs::default_record(d);
+    set(
+        &mut r,
+        "marker",
+        Val::text(&h1::name32(markers[0], 0).to_ascii_lowercase()),
+    )?;
+    let layer = d.child("layers").expect("lightning layers");
+    let mut layers = Vec::new();
+    for bolt in 0..bolts {
+        let mut profile = curve(FunctionType::Constant, [1.; 2], &[]).to_bytes();
+        profile[0xc..0x10].copy_from_slice(&MAGIC);
+        profile[0x10..0x14].copy_from_slice(&[
+            bolt as u8,
+            h1convert::shad::halo2_change_colour_slot(short(b, 0x30))
+                .map_or(0, |slot| slot as u8 + 1),
+            blend as u8,
+            short(b, 0x2e) as u8,
+        ]);
+        profile.extend_from_slice(&(endpoints.len() as u32).to_le_bytes());
+        for endpoint in &endpoints {
+            endpoint.encode(&mut profile);
+        }
+        let mut row = defs::default_record(layer);
+        set(&mut row, "flags", Val::Flags(1))?;
+        set(&mut row, "subdivision", Val::Int((depth - 2).into()))?;
+        set(&mut row, "length", Val::Float(1.))?;
+        set(&mut row, "copies", Val::Int(1))?;
+        set(&mut row, "bitmap", Val::tag(FourCC(*b"bitm"), bitmap))?;
+        set(
+            &mut row,
+            "passes",
+            Val::Block(vec![defs::default_record(
+                layer.child("passes").expect("lightning pass"),
+            )]),
+        )?;
+        set(&mut row, "displacement", Val::Data(profile))?;
+        layers.push(row);
+    }
+    set(&mut r, "layers", Val::Block(layers))?;
+    built(d, &r)
+}
+
+impl Converter<'_> {
+    pub(super) fn lightning(&mut self, tag: &Tag) -> Result<TagId> {
+        if let Some(&id) = self.done.get(&tag.id.0) {
+            return Ok(id);
+        }
+        let b = h1::tag_bytes(self.h1, tag, b"elec", 0xb0)?;
+        let markers = h1::elements(self.h1, b, 0x98, 0xe4)?;
+        let shaders = h1::elements(self.h1, b, 0xa4, 0xb4)?;
+        let [shader] = shaders.as_slice() else {
+            return Err(Error::Invalid(format!(
+                "lightning has {} shaders",
+                shaders.len()
+            )));
+        };
+        let id = reference(b, 0x34)?;
+        if id.is_none() {
+            return Err(Error::Invalid("lightning has no bitmap".into()));
+        }
+        let bitmap = self.widget_bitmap(id)?;
+        let root = lightning(b, &markers, shader, bitmap)?;
+        self.cached(
+            tag,
+            Converted {
+                group: FourCC(*b"tdtl"),
+                root,
+                raw: vec![],
+            },
+        )
+    }
+}
+
+struct FlagGrid {
+    width: usize,
+    height: usize,
+    spacing: [f32; 2],
+    physics: tags::effects::h1_attachment::PointPhysics,
+    contact: [f32; 2],
+}
+
+impl FlagGrid {
+    fn panel(&self, upper: bool, marker: &str, shader: TagId) -> Result<Block> {
+        let seam = (self.height - 1) / 2;
+        let w = self.width;
+        let h = if upper { self.height - seam } else { seam + 1 };
+        if w * h > 128 {
+            return Err(Error::Invalid(format!(
+                "cloth panel has {} vertices (maximum 128)",
+                w * h
+            )));
+        }
+        let d = def(*b"clwd");
+        let mut r = defs::default_record(d);
+        // 0x1173ae assigns vertex 0 to a single marker. Number both
+        // panels from their own mast anchor toward the overlap.
+        let source_y = |row: usize| if upper { self.height - 1 - row } else { row };
+        set(&mut r, "marker", Val::text(marker))?;
+        set(&mut r, "shader", Val::tag(FourCC(*b"shad"), shader))?;
+        set(&mut r, "columns", Val::Int(w as i64))?;
+        set(&mut r, "rows", Val::Int(h as i64))?;
+        set(&mut r, "spacing", Val::floats(&self.spacing))?;
+        set(&mut r, "iterations", Val::Int(1))?;
+        // The H1 integrator owns these two values on marked cloth panels.
+        set(&mut r, "damping", Val::Float(self.contact[0]))?;
+        set(&mut r, "wind_perpendicular", Val::Float(self.contact[1]))?;
+        let p = self.physics;
+        let key = if upper { *b"H1F1" } else { *b"H1F0" };
+        let mut profile = key.to_vec();
+        for f in [
+            p.mass,
+            p.acceleration[0],
+            p.acceleration[1],
+            p.drag[0],
+            p.drag[1],
+        ] {
+            profile.extend_from_slice(&f.to_le_bytes());
+        }
+        set(&mut r, "unknown_34", Val::Bytes(profile))?;
+        let mut vertices = Vec::new();
+        for row in 0..h {
+            let y = source_y(row);
+            for x in 0..w {
+                let mut v = defs::default_record(d.child("vertices").expect("cloth vertices"));
+                set(
+                    &mut v,
+                    "position",
+                    Val::floats(&[x as f32 * self.spacing[0], 0., y as f32 * self.spacing[1]]),
+                )?;
+                set(
+                    &mut v,
+                    "uv",
+                    Val::floats(&[
+                        x as f32 / (w - 1) as f32,
+                        y as f32 / (self.height - 1) as f32,
+                    ]),
+                )?;
+                vertices.push(v);
+            }
+        }
+        set(&mut r, "vertices", Val::Block(vertices))?;
+        // Preserve one winding and the full cloth's texture coordinates
+        // through both halves, even though their in-memory rows run apart.
+        let idx = |x: usize, y: usize| (if upper { y } else { h - 1 - y }) * w + x;
+        let mut triangles = Vec::new();
+        let mut strip = Vec::new();
+        let mut edges = std::collections::BTreeSet::new();
+        for y in 0..h - 1 {
+            if y > 0 {
+                strip.push(idx(0, y));
+            }
+            for x in 0..w {
+                let a = idx(x, y);
+                let c = idx(x, y + 1);
+                strip.extend([a, c]);
+                if x + 1 == w {
+                    continue;
+                }
+                let b = idx(x + 1, y);
+                let e = idx(x + 1, y + 1);
+                triangles.extend([a, c, b, b, c, e]);
+                for (i, j) in [(a, b), (a, c), (c, e), (b, e), (a, e), (b, c)] {
+                    edges.insert((i.min(j), i.max(j)));
+                }
+            }
+            strip.push(idx(w - 1, y + 1));
+        }
+        for (field, indices) in [("triangles", triangles), ("strip", strip)] {
+            let mut rows = Vec::new();
+            for i in indices {
+                let mut row = defs::default_record(d.child(field).expect("cloth indices"));
+                set(&mut row, "index", Val::Int(i as i64))?;
+                rows.push(row);
+            }
+            set(&mut r, field, Val::Block(rows))?;
+        }
+        let mut constraints = Vec::new();
+        for (a, b) in edges {
+            let dx = (a % w).abs_diff(b % w) as f32 * self.spacing[0];
+            let dz = (a / w).abs_diff(b / w) as f32 * self.spacing[1];
+            let mut c = defs::default_record(d.child("constraints").expect("cloth constraints"));
+            set(&mut c, "a", Val::Int(a as i64))?;
+            set(&mut c, "b", Val::Int(b as i64))?;
+            set(&mut c, "rest_length", Val::Float(dx.hypot(dz)))?;
+            set(&mut c, "weight", Val::Float(1.))?;
+            constraints.push(c);
+        }
+        set(&mut r, "constraints", Val::Block(constraints))?;
+        built(d, &r)
+    }
+}
+
+impl Converter<'_> {
+    fn flag(&mut self, tag: &Tag) -> Result<[TagId; 2]> {
+        if let Some(ids) = self.flag_panels.get(&tag.id.0) {
+            return Ok(*ids);
+        }
+        let b = h1::tag_bytes(self.h1, tag, b"flag", 0x60)?;
+        let width = usize::from(short(b, 0xc));
+        let height = usize::from(short(b, 0xe));
+        if width < 2 || height < 3 || width * height >= 225 || b[..0xc].iter().any(|v| *v != 0) {
+            return Err(Error::Invalid(format!(
+                "unsupported cloth grid or flags ({width} by {height})"
+            )));
+        }
+        let rows = h1::elements(self.h1, b, 0x54, 0x34)?;
+        let mut anchors = [None, None];
+        for row in rows {
+            let idx = short(row, 0) as usize;
+            let slot = if idx == 0 {
+                0
+            } else if idx == height - 1 {
+                1
+            } else {
+                return Err(Error::Invalid(format!("unsupported cloth pin {idx}")));
+            };
+            if anchors[slot].replace(h1::name32(row, 0x14)).is_some() {
+                return Err(Error::Invalid(format!("duplicate cloth anchor {idx}")));
+            }
+        }
+        let [Some(lower), Some(upper)] = anchors else {
+            return Err(Error::Invalid("cloth needs both mast pins".into()));
+        };
+        let source_physics =
+            crate::particle_movement::Halo1Physics::read(self.h1, reference(b, 0x28)?)?;
+        let physics = source_physics.point_physics(0, 0.02);
+        if real(b, 0x38) != 0. {
+            return Err(Error::Invalid("unsupported cloth wind noise".into()));
+        }
+        if physics.flags != 0 {
+            return Err(Error::Invalid(format!(
+                "unsupported cloth point-physics flags {:#x}",
+                physics.flags
+            )));
+        }
+        let grid = FlagGrid {
+            width,
+            height,
+            spacing: [real(b, 0x10), real(b, 0x14)],
+            physics,
+            contact: source_physics.contact(),
+        };
+        let mut shader = |at| {
+            let src = self.h1_tag(reference(b, at)?)?;
+            let entry = h1models::h1::ShaderRef {
+                group: src.group,
+                tag: src.id,
+                permutation: 0,
+            };
+            self.model_shader(src, &entry, None)
+        };
+        let red = shader(0x18)?;
+        let blue = shader(0x44)?;
+        let panel = |root| Converted {
+            group: FourCC(*b"clwd"),
+            root,
+            raw: vec![],
+        };
+        let bottom = panel(grid.panel(false, &lower, red)?);
+        let top = panel(grid.panel(true, &upper, blue)?);
+        let ids = [
+            self.cached(tag, bottom)?,
+            self.tree.push(&format!("{}\\upper", tag.name), top),
+        ];
+        self.flag_panels.insert(tag.id.0, ids);
+        Ok(ids)
     }
 }

@@ -931,7 +931,17 @@ fn every_retail_widget_reaches_its_owner() {
                             let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
                             String::from_utf8(name[..end].to_vec()).unwrap()
                         });
-                        expected.push((dst_offset, map::FourCC(dst_group), &tag.name, marker));
+                        expected.push((dst_offset, map::FourCC(dst_group), tag.name.clone(), marker));
+                        if &group == b"flag" {
+                            expected.push((0x9c, map::FourCC(dst_group), format!("{}\\upper", tag.name), None));
+                        }
+                        if &group == b"elec" {
+                            for end in elements(&map, map.tag_data(tag).unwrap(), 0x98, 0xe4).unwrap() {
+                                let n = end[..32].iter().position(|&c| c == 0).unwrap_or(32);
+                                let name = std::str::from_utf8(&end[..n]).unwrap().to_ascii_lowercase();
+                                expected.push((0x94, map::FourCC(dst_group), tag.name.clone(), Some(name)));
+                            }
+                        }
                         *counts.entry((src_offset, group)).or_insert(0usize) += 1;
                     }
                 }
@@ -955,7 +965,7 @@ fn every_retail_widget_reaches_its_owner() {
                             let Some(f) = child.fixups.iter().find(|f| f.offset == at) else { return false };
                             let FixupKind::TagRef(target) = &f.kind else { return false };
                             let Some((name, built)) = local_index(*target).and_then(|i| tree.get(i)) else { return false };
-                            name == path && built.group == group && marker.as_ref().is_none_or(|want| {
+                            *name == path && built.group == group && marker.as_ref().is_none_or(|want| {
                                 child.fixups.iter().any(|f| f.offset == at + 8
                                     && matches!(&f.kind, FixupKind::StringId(s) if s == want))
                                     || (want.is_empty() && child.bytes[at as usize + 8..at as usize + 12] == [0; 4])

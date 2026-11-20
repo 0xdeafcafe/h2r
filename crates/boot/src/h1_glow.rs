@@ -197,8 +197,8 @@ fn prepare(m: &mut dyn GuestMemory, sp: u32, job: u32, layer: u32) -> Result<boo
             1.
         };
         let mut colour = ((opacity * fade).clamp(0., 1.) * 255.).round() as u32;
-        for shift in [16, 8, 0] {
-            let values = glow.colours.map(|c| ((c >> shift) & 255) as f32);
+        for shift in [16u32, 8, 0] {
+            let values = glow.colours.map(|c| ((c >> shift) & 255u32) as f32);
             colour = (colour << 8) | lerp(values, tint).round() as u32;
         }
         let p = dst + i * 0x18;

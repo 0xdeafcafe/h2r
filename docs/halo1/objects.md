@@ -40,7 +40,8 @@ time and print counts, names and values only.
 ## Source widgets
 
 **Built in code.** The Xbox discs contain 51 antenna references, 175 light-volume
-widget references, eight sword-glow references and one additional volume attached to
+widget references, 15 lightning references, 13 cloth references, eight sword-glow
+references and one additional volume attached to
 the beam emitter on a10. The ignored `every_retail_widget_reaches_its_owner`
 test follows each source occurrence through the public object converter and
 checks the destination block, local tag, group and attachment marker.
@@ -64,6 +65,23 @@ checks the destination block, local tag, group and attachment marker.
   At the volume submission `0x4f792`, the context-only glow hook reads the
   consecutive marker frames and writes the orbiting sprites into the native
   sample array. The per-instance random sequence uses the owner and tag datums.
+- **Lightning.** Each `elec` becomes a native `tdtl` widget with one layer per bolt
+  and one attachment per source marker, in order. H2 queues the marker frames at
+  `0x429a0` and submits the ribbon at `0x51648`. The marked displacement curve
+  carries each endpoint's jitter, width, colour, break flag and subdivision depth.
+  The renderer interpolates the endpoint styles over recursively displaced midpoints
+  (H1 `0x96de0..0x97332`) and passes the samples to H2. The material setup applies
+  the source double-multiply or additive blend equation from H1 `0x7f4e0`.
+- **Multiplayer flag.** H2 pins vertex zero to a marker (`0x1171a0..0x1173ae`)
+  and has space for 128 vertices per cloth datum. Two native `clwd` panels each
+  hold 112 vertices, sharing the middle 16 to preserve the source 16 × 13
+  grid, its UVs and both mast pins. H2 solves constraints and calculates normals at
+  `0x1168a0`. The marked panels share their seam positions, velocities and normals.
+  Their integration stage uses H1's point mass, air/liquid buoyancy and drag,
+  plus its three-impact sweep (`0x9a56d`, `0x80970..0x80b5a`) against the H2
+  structure. The marked panel stores friction at +0x24 and restitution at +0x2c.
+  The material lookup at `0x116ac0` selects between the two converted H1 shaders
+  using the objective's team (H1 `0x9a92e`).
 
 ## Reading Halo 1
 

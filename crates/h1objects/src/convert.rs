@@ -780,6 +780,8 @@ pub struct Converter<'a> {
     coll_materials: HashMap<(u32, bool), Vec<crate::rebuild::ModelMaterial>>,
     /// Each template `nhdt` given the health meter.
     health_huds: HashMap<TagId, TagId>,
+    /// Lower and upper native panels per source flag cloth.
+    flag_panels: HashMap<u32, [TagId; 2]>,
     /// Widgets per converted `unhi` ([`Self::unit_hud`]).
     unit_hud_widgets: HashMap<u32, usize>,
     /// Per converted `wphi`, its entries with no widget
@@ -843,6 +845,7 @@ impl<'a> Converter<'a> {
             coll_materials: HashMap::new(),
             health_huds: HashMap::new(),
             unit_hud_widgets: HashMap::new(),
+            flag_panels: HashMap::new(),
             weapon_hud_skips: HashMap::new(),
             hud_bitmaps: HashMap::new(),
             sprite_bitmaps: HashMap::new(),

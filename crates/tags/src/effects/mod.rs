@@ -15,6 +15,7 @@ pub mod effect;
 pub mod function;
 pub mod h1_attachment;
 pub mod h1_glow;
+pub mod h1_lightning;
 pub mod lens;
 pub mod light;
 pub mod mem;

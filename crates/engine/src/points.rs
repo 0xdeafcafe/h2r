@@ -317,6 +317,12 @@ points! { ALL;
     EFFECT_STEP_EMITTERS @ 0x0017_9020: [fn(effect: stack 0, elapsed: stack 1, dt: stack 2) ret 12]; "docs/halo1/objects.md";
     /// Dispatch one native movement operator over an emitter's particle list.
     PARTICLE_MOVEMENT_STAGE @ 0x002b_8da0: [fn(stage: eax, head: esi, dt: stack 1) ret 12]; "docs/halo1/objects.md";
+    /// Cloth geometry update, per-node integration and material lookup.
+    CLOTH_UPDATE @ 0x0011_68a0: [fn() ret 0]; "docs/halo1/objects.md";
+    CLOTH_INTEGRATE @ 0x0011_8140: [fn(cloth: eax) ret 0]; "docs/halo1/objects.md";
+    CLOTH_SHADER @ 0x0011_6ac0: [fn(cloth: stack 0) -> eax ret 4]; "docs/halo1/objects.md";
+    /// Queue an attachment endpoint with its animated marker transform (0x41bb3).
+    LIGHTNING_QUEUE @ 0x0004_29a0: [fn(owner: stack 0, tag: stack 1) ret 24]; "docs/halo1/objects.md";
     /// Submit 0x18-byte light-volume samples (0x4f792).
     LIGHT_VOLUME_SPRITES @ 0x0004_f7e0: [fn(bitmap: ecx, samples: stack 0, count: stack 1) -> al ret 32]; "docs/halo1/objects.md";
     /// Initialise a particle's local position and velocity at birth.

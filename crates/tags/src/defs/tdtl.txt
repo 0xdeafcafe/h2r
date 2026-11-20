@@ -1,0 +1,32 @@
+# Lightning. Native draw 0x508d0 and shape generator 0x516d0.
+group tdtl 0x70 align 4
+  0x0 unknown 0x4
+  0x4 string marker
+  0x8 unknown 0x38
+  0x40 f32[2] distance_fade
+  0x48 unknown 0x20
+  0x68 block layers 0xec align 4
+    0x0 flags16 flags
+    0x2 i16 subdivision
+    0x4 f32 length
+    0x8 i16 copies
+    0xa unknown 0x12
+    0x1c tagref material_effect
+    0x24 tagref bitmap groups=bitm
+    0x2c unknown 0x8
+    0x34 data data_34 align 4
+    0x3c data data_3c align 4
+    0x44 unknown 0x4
+    0x48 data data_48 align 4
+    0x50 unknown 0x84
+    0xd4 block passes 0x38 align 4
+      0x0 unknown 0xc
+      0xc i16 image
+      0xe unknown 0x2
+      0x10 data data_10 align 4
+      0x18 data data_18 align 4
+      0x20 data data_20 align 4
+      0x28 data data_28 align 4
+      0x30 data data_30 align 4
+    0xdc data displacement align 4
+    0xe4 data data_e4 align 4
