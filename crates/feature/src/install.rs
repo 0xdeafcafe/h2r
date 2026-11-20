@@ -147,8 +147,13 @@ impl Plan {
         // Bodies, and the hooks a missing original leaves out.
         let mut off: Vec<(&'static str, String)> = Vec::new();
         let mut bodies = Vec::new();
+        // A point that is not what it says is left out like one with no
+        // original, and its features with it (crate::verify).
+        let wrong = crate::verify::mismatches(rt, self.chains.values());
         for chain in self.chains.values() {
+            let mismatch = wrong.get(&chain.addr);
             let body = match &chain.implement {
+                _ if mismatch.is_some() => None,
                 Some(h) => match &h.run {
                     Run::Implement(f) => Some(Body::Implement(Arc::clone(f))),
                     _ => unreachable!("implement slot holds an implementation"),
@@ -159,7 +164,10 @@ impl Plan {
             };
             if body.is_none() {
                 for h in chain.hooks() {
-                    let why = format!("{} has no generated original", chain.point.name);
+                    let why = match mismatch {
+                        Some(why) => why.clone(),
+                        None => format!("{} has no generated original", chain.point.name),
+                    };
                     if h.optional {
                         out.notes.push(format!(
                             "{}: {} {} dropped: {why}",

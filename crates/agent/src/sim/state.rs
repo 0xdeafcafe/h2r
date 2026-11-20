@@ -1,7 +1,7 @@
 //! `sim.state.set`'s host writes and the `player` fields `sim.view` adds,
-//! at the addresses Live telemetry reads (`live_telemetry::layout`,
-//! `engine::view`): the player record's team, and its unit's team,
-//! vitality, grenades and held weapon's magazine.
+//! through the typed guest views (`guest_layout`, `engine::view`): the
+//! player record's team, and its unit's team, vitality, grenades and held
+//! weapon's magazine.
 //!
 //! A position or facing is not a write here: the biped's physics put the
 //! body back at the next tick. They go to the game's own teleport
@@ -15,7 +15,7 @@ use agent_proto::{RpcError, code};
 use engine::GuestMemory;
 use engine::view::objects::{self, Body};
 use engine::view::players::{self, Player};
-use live_telemetry::layout as l;
+use guest_layout::{Off, Unit, Weapon};
 use serde_json::{Value, json};
 
 /// The highest shield vitality accepted: an overshield charges to 3.
@@ -79,12 +79,8 @@ pub fn unit_handle(m: &dyn GuestMemory, index: u32) -> Result<u32, RpcError> {
 /// The weapon object the unit holds now, as 8 hex digits.
 pub fn held_object(m: &dyn GuestMemory, index: u32) -> Option<String> {
     let u = unit(m, player(m, index).ok()?).ok()??;
-    let i = m.u8(u.addr + l::UNIT_WEAPON_INDEX).ok()? as i8;
-    if !(0..l::UNIT_WEAPON_SLOTS).contains(&i) {
-        return None;
-    }
-    let d = m.u32(u.addr + l::UNIT_WEAPONS + 4 * i as u32).ok()?;
-    (d != u32::MAX).then(|| format!("{d:08x}"))
+    let d = Unit::at(u.addr).held_weapon(m).ok()??;
+    Some(format!("{:08x}", d.raw()))
 }
 
 /// Writes a weapon object's first magazine (the fields `ammo` names).
@@ -98,12 +94,21 @@ pub fn set_magazine(
     let (_, w) = objects::get(m, h)
         .map_err(fault)?
         .ok_or_else(|| RpcError::new(code::GONE, format!("weapon {weapon:08x} is gone")))?;
-    for (o, n) in [
-        (l::WEAPON_MAGAZINE_LOADED, a.loaded),
-        (l::WEAPON_MAGAZINE_RESERVE, a.reserve),
+    write_magazine(m, Weapon::at(w.addr), a)
+}
+
+/// The first magazine's loaded and reserve rounds, each when given.
+fn write_magazine(
+    m: &mut dyn GuestMemory,
+    w: Weapon,
+    a: agent_proto::sim::Ammo,
+) -> Result<(), RpcError> {
+    for (field, n) in [
+        (Weapon::MAGAZINE_LOADED, a.loaded),
+        (Weapon::MAGAZINE_RESERVE, a.reserve),
     ] {
         if let Some(n) = n {
-            m.set_u16(w.addr + o, n as u16).map_err(fault)?;
+            w.set(m, field, n).map_err(fault)?;
         }
     }
     Ok(())
@@ -119,14 +124,10 @@ pub fn validate_ammo(a: &agent_proto::sim::Ammo) -> Result<(), RpcError> {
 
 /// The held weapon's body, if the unit holds one.
 fn held_weapon(m: &dyn GuestMemory, unit: Body) -> Result<Option<Body>, RpcError> {
-    let i = m.u8(unit.addr + l::UNIT_WEAPON_INDEX).map_err(fault)? as i8;
-    if !(0..l::UNIT_WEAPON_SLOTS).contains(&i) {
+    let Some(datum) = Unit::at(unit.addr).held_weapon(m).map_err(fault)? else {
         return Ok(None);
-    }
-    let datum = m
-        .u32(unit.addr + l::UNIT_WEAPONS + 4 * i as u32)
-        .map_err(fault)?;
-    let Some(h) = engine::DatumHandle::from_raw(datum) else {
+    };
+    let Some(h) = engine::DatumHandle::from_raw(datum.raw()) else {
         return Ok(None);
     };
     Ok(objects::get(m, h).map_err(fault)?.map(|(_, b)| b))
@@ -143,18 +144,15 @@ pub fn vitals(m: &dyn GuestMemory, index: u32) -> Result<serde_json::Map<String,
     };
     out.insert("health".into(), json!(u.health(m).map_err(fault)?));
     out.insert("shield".into(), json!(u.shield(m).map_err(fault)?));
-    let g = |i: u32| m.u8(u.addr + l::UNIT_GRENADE_COUNTS + i).map(|v| v as i8);
-    out.insert(
-        "grenades".into(),
-        json!({ "frag": g(0).map_err(fault)?, "plasma": g(1).map_err(fault)? }),
-    );
+    let [frag, plasma] = Unit::at(u.addr).grenade_counts(m).map_err(fault)?;
+    out.insert("grenades".into(), json!({ "frag": frag, "plasma": plasma }));
     if let Some(w) = held_weapon(m, u)? {
-        let a = |o: u32| m.u16(w.addr + o).map(|v| v as i16);
+        let w = Weapon::at(w.addr);
         out.insert(
             "ammo".into(),
             json!({
-                "loaded": a(l::WEAPON_MAGAZINE_LOADED).map_err(fault)?,
-                "reserve": a(l::WEAPON_MAGAZINE_RESERVE).map_err(fault)?,
+                "loaded": w.magazine_loaded(m).map_err(fault)?,
+                "reserve": w.magazine_reserve(m).map_err(fault)?,
             }),
         );
     }
@@ -248,7 +246,7 @@ pub fn apply(
     if let Some(t) = p.team {
         pl.set_team(m, t as i8).map_err(fault)?;
         if let Some(u) = u {
-            m.set_u16(u.addr + l::UNIT_TEAM, t as u16).map_err(fault)?;
+            Unit::at(u.addr).set(m, Unit::TEAM, t as i16).map_err(fault)?;
         }
         wrote.push("team");
     }
@@ -266,21 +264,15 @@ pub fn apply(
     if let Some(g) = p.grenades {
         for (i, n) in [(0, g.frag), (1, g.plasma)] {
             if let Some(n) = n {
-                m.write(u.addr + l::UNIT_GRENADE_COUNTS + i, &[n as u8])
-                    .map_err(fault)?;
+                // One count of the pair, so the other is left as it is.
+                let count = Off::<i8>::new(Unit::GRENADE_COUNTS.offset + i);
+                Unit::at(u.addr).set(m, count, n).map_err(fault)?;
             }
         }
         wrote.push("grenades");
     }
     if let (Some(a), Some(w)) = (p.ammo, weapon) {
-        for (o, n) in [
-            (l::WEAPON_MAGAZINE_LOADED, a.loaded),
-            (l::WEAPON_MAGAZINE_RESERVE, a.reserve),
-        ] {
-            if let Some(n) = n {
-                m.set_u16(w.addr + o, n as u16).map_err(fault)?;
-            }
-        }
+        write_magazine(m, Weapon::at(w.addr), a)?;
         wrote.push("ammo");
     }
     Ok(wrote)

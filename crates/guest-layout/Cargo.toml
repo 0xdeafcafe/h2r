@@ -1,0 +1,11 @@
+[package]
+name = "guest-layout"
+description = "Typed guest layouts: every Halo 2 structure offset and global address, written once (docs/engine/guest-layout.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+# No dependencies, on purpose: bots, telemetry, the agent API, the engine
+# and the native renderer all read guest structures, and none of them
+# should pull another to do it.
+[dependencies]

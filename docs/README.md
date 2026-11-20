@@ -149,6 +149,7 @@ every page here and the plan to bring them to those rules.
 
 - [engine-map.md](engine/engine-map.md) (**start here**): survey of the retail engine's subsystems and where to start overriding
 - [feature-engine.md](engine/feature-engine.md): the feature engine: Rust subsystems at clean boundaries, hooks, settings; design and build log (phases 0 to 3 built, phase 4 in part)
+- [guest-layout.md](engine/guest-layout.md): `crates/guest-layout`: guest structure offsets and globals, the `impl.*` switch table, hook point shapes
 - [README.md](engine/README.md): contracts for the engine functions rewritten in Rust (`crates/engine`) and their differential tests, indexing:
   [datum_new.md](engine/datum_new.md), [tag_get_checked.md](engine/tag_get_checked.md),
   [locale_string_id_find.md](engine/locale_string_id_find.md), [memory_pool.md](engine/memory_pool.md)

@@ -9,13 +9,10 @@
 //! code would fault on must fault here too, so callers propagate [`MemFault`]
 //! with `?` rather than substituting a default.
 
-/// A failed guest access. `addr` is where the access started.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MemFault {
-    pub addr: u32,
-    pub len: u32,
-    pub write: bool,
-}
+/// A failed guest access. `addr` is where the access started. The same
+/// type as `guest_layout::Fault`, so a typed view's fault needs no
+/// conversion.
+pub use guest_layout::Fault as MemFault;
 
 /// Byte-addressed guest memory (linear addresses, no segment base).
 ///
@@ -179,6 +176,40 @@ impl FlatMemory {
         (end <= self.bytes.len()).then_some(off..end)
     }
 }
+
+/// Typed views (`guest_layout`) read whatever engine code holds: a
+/// `dyn GuestMemory`, the fake guest, or flat memory.
+impl guest_layout::Mem for dyn GuestMemory + '_ {
+    #[inline]
+    fn read_bytes(&self, addr: u32, buf: &mut [u8]) -> Result<(), MemFault> {
+        self.read(addr, buf)
+    }
+}
+
+impl guest_layout::MemMut for dyn GuestMemory + '_ {
+    #[inline]
+    fn write_bytes(&mut self, addr: u32, data: &[u8]) -> Result<(), MemFault> {
+        self.write(addr, data)
+    }
+}
+
+macro_rules! layout_mem {
+    ($($t:ty),*) => {$(
+        impl guest_layout::Mem for $t {
+            #[inline]
+            fn read_bytes(&self, addr: u32, buf: &mut [u8]) -> Result<(), MemFault> {
+                GuestMemory::read(self, addr, buf)
+            }
+        }
+        impl guest_layout::MemMut for $t {
+            #[inline]
+            fn write_bytes(&mut self, addr: u32, data: &[u8]) -> Result<(), MemFault> {
+                GuestMemory::write(self, addr, data)
+            }
+        }
+    )*};
+}
+layout_mem!(FlatMemory, crate::testing::FakeGuest);
 
 impl GuestMemory for FlatMemory {
     fn read(&self, addr: u32, buf: &mut [u8]) -> Result<(), MemFault> {
