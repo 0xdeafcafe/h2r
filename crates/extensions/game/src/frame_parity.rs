@@ -274,6 +274,93 @@ mod tests {
     }
 
     #[test]
+    fn parity_rpc_compares_the_display_surface_to_a_fresh_gpu_draw() {
+        use std::sync::mpsc;
+        use agent::render::{CAPTURE, HOSTED};
+        use d3d::backend::Backend;
+        use d3d::scene_sink::ReplayOp;
+        use frame_scene::{SceneBuilder, SceneId, Slot, SlotAt, Stamp};
+        use gfx::{Clear, D3DFormat, GfxContext};
+        use serde_json::{Value, json};
+
+        struct Reader(u64);
+        impl agent::Reader for Reader {
+            fn status(&mut self) -> agent::GameStatus {
+                agent::GameStatus { tick: Some(self.0), ..Default::default() }
+            }
+            fn objects(&mut self) -> Result<Vec<agent_proto::Object>, String> {
+                Ok(Vec::new())
+            }
+        }
+
+        let ctx = match GfxContext::headless() {
+            Ok(ctx) => ctx,
+            Err(e) => {
+                eprintln!("skipping GPU parity test: {e}");
+                return;
+            }
+        };
+        // This test owns the process's parity source for its duration.
+        install();
+        struct Installed;
+        impl Drop for Installed {
+            fn drop(&mut self) { uninstall(); }
+        }
+        let _installed = Installed;
+        let agent = agent::Agent::new();
+        agent::render::add_frame_methods(&agent, &CAPTURE, &HOSTED);
+        let (tx, replies) = mpsc::sync_channel(4);
+        let conn = agent.connect(tx);
+
+        let mut display = d3d::GfxBackend::new(crate::d3d_glue::share_context(&ctx));
+        display.observe_guest_present(reference_observer());
+        let mut private = d3d::GfxBackend::new(ctx);
+        let (frames, replayed) = mpsc::channel();
+        let mut sink = d3d::SceneSink::new(display, || Some(SlotAt { slot: Slot::Opaque, view: 0 }))
+            .with_replay(move |frame| {
+                bind(frame.present, 40 + frame.present as u32);
+                frames.send(frame).unwrap();
+            });
+        let target = sink.create_surface(D3DFormat::LinA8R8G8B8, 8, 4, false).unwrap();
+        for n in 1..=2 {
+            let request = json!({"jsonrpc":"2.0","id":n,"method":"render.parity","params":{"arm":true}});
+            agent.submit(conn, &request.to_string());
+            agent.on_tick(&mut Reader(40 + n));
+            assert!(armed());
+
+            let clear = Clear { color: Some([1., 0., 0., 1.]), ..Clear::NONE };
+            sink.clear(target, None, clear).unwrap();
+            sink.present(target, 0).unwrap();
+            let mut frame = replayed.try_recv().unwrap();
+            assert_eq!(frame.present, n);
+            assert!(wanted(n));
+            assert!(replies.try_recv().is_err(), "the private draw still owes its pixels");
+            if n == 2 {
+                // An intentionally damaged private command demonstrates the
+                // reference was actually read from the separate GPU target.
+                let ReplayOp::Clear { clear, .. } = &mut frame.ops.first_mut().unwrap().1 else {
+                    panic!("expected the synthetic clear");
+                };
+                clear.color = Some([0., 0., 1., 1.]);
+            }
+            let mut builder = SceneBuilder::default();
+            builder.begin(SceneId { frame: n, tick: 40 + n as u32, ..Default::default() });
+            let scene = builder.seal(Stamp::default()).unwrap();
+            let drawn = native_render::frame_graph::draw_private(
+                &mut private, &scene, &frame, 1, d3d::Lighting::Retail,
+            ).unwrap();
+            native(n, Ok(Rgba { width: drawn.size[0], height: drawn.size[1], pixels: drawn.rgba }));
+            agent.on_tick(&mut Reader(41 + n));
+            let reply: Value = serde_json::from_str(&replies.try_recv().unwrap()).unwrap();
+            let result = &reply["result"];
+            assert_eq!(result["tick"], 40 + n);
+            assert_eq!(result["size"], json!([8, 4]));
+            assert_eq!(result["max_channel"], if n == 1 { 0 } else { 255 });
+            assert_eq!(result["differing"], if n == 1 { 0 } else { 32 });
+        }
+    }
+
+    #[test]
     fn parity_refuses_missing_or_duplicate_images() {
         let mut frame = pair();
         assert!(frame.push(101, Side::Native, Err("incomplete targets".into())).unwrap()
