@@ -24,11 +24,9 @@
 //!
 //! It also registers the "Video" row on the top-level Settings list (after
 //! Player Profiles and Game Variants) and the Video screen that row opens
-//! (`crate::video_screen`): a Controls
-//! screen whose rows are Field of View (with the first-person camera hook
-//! that applies it, `crate::fov_row`), Frame
-//! Rate, Resolution, Lighting and Mute Button, through the same entries plus the
-//! screen header builder and the Settings list's row text and row chosen.
+//! (`crate::video_screen`). Its display settings reuse the Controls layout,
+//! the screen header builder and the Settings list callbacks. The Field of
+//! View row also installs the first-person camera hook (`crate::fov_row`).
 //!
 //! Each hook says once on stderr when it first runs ("layouts: <name>
 //! active"), so one run shows which hooks the game reaches.

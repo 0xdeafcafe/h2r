@@ -295,6 +295,9 @@ pub enum AgentSource {
 /// What [`register_late`] needs: the registrations after the host's d3d,
 /// audio and input are in.
 pub struct LateInputs<'a> {
+    /// The effective resolution source of the backend drawing this run.
+    #[cfg(feature = "gpu")]
+    pub view: Option<&'a crate::d3d_glue::DrawingView>,
     pub rt: &'a Arc<Runtime>,
     pub lockstep: lockstep_glue::Config,
     pub agent: AgentSource,
@@ -414,6 +417,15 @@ pub(crate) fn register_late_for_profile(
     features.add(&i.pipeline).map_err(|e| anyhow::anyhow!("pipeline render: {e}"))?;
     #[cfg(feature = "gpu")]
     if render_hooks == film::RenderHooks::Gpu {
+        use render_bridge::native_scene_lists::NativeSceneLists;
+
+        let lod = if let Some(view) = i.view {
+            let lod = crate::lod_distance::LodDistance::new(i.settings.as_deref(), view.scale_stats.clone())?;
+            let enabled = features.add(&lod).map_err(|e| anyhow::anyhow!("LOD distance: {e}"))?;
+            enabled.then_some(lod)
+        } else {
+            None
+        };
         features
             .add(&render_bridge::native_map_work::NativeMapWork)
             .map_err(|e| anyhow::anyhow!("native map lifecycle: {e}"))?;
@@ -481,9 +493,12 @@ pub(crate) fn register_late_for_profile(
         features
             .add(&render_bridge::native_world_layers::NativeWorldLayers)
             .map_err(|e| anyhow::anyhow!("native world layers: {e}"))?;
-        features
-            .add(&render_bridge::native_scene_lists::NativeSceneLists)
-            .map_err(|e| anyhow::anyhow!("native scene lists: {e}"))?;
+        if let Some(lod) = lod {
+            let scale = Arc::new(move || lod.multiplier());
+            features.add(&NativeSceneLists::with_lod_scale(scale))
+        } else {
+            features.add(&NativeSceneLists)
+        }.map_err(|e| anyhow::anyhow!("native scene lists: {e}"))?;
         // Mark the sorted geometry entries so their resolved indexed draws
         // can use a cached vertex binding in the game's order (off by default).
         features

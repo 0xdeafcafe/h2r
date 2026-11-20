@@ -11,7 +11,7 @@ simulation memory except through a hook that says so (the clamp global in
 "Field of view").
 
 - The top-level Settings list has a **Video** row that opens our Video screen:
-  field of view, frame rate, resolution and lighting ("Video screen",
+  field of view, frame rate, resolution, lighting and LOD distance ("Video screen",
   "Field of view").
 - The Controls screen has rows for the controller speaker, the Steam
   Controller (speaker, trackpad aim, left trackpad) and, on iOS, the touch
@@ -160,7 +160,7 @@ privacy screen sets it; [live-custom-games.md](../live/live-custom-games.md)),
 ## Video screen
 
 The top-level Settings list (Player Profiles, Game Variants) has a third
-row, **Video**. A on it opens a screen titled "Video" with four display options:
+row, **Video**. A on it opens a screen titled "Video" with five display options:
 
 | Row | Values | Saved as | Applies | Locked by |
 |---|---|---|---|---|
@@ -168,9 +168,13 @@ row, **Video**. A on it opens a screen titled "Video" with four display options:
 | Frame Rate | 30, 60, 120, Uncapped | `[graphics] fps` | at once | `--fps`, `H2_FPS` |
 | Resolution | 640x480, 1280x960, 1920x1440, 2560x1920 (scale 1 to 4; shown as the size, saved as the scale) | `[graphics] render_scale` | next frame | `H2_RENDER_SCALE` |
 | Lighting | Retail, E3 (default Retail) | `[graphics] lighting` (`"retail"`, `"e3"`) | next frame | `H2_LIGHTING` |
+| LOD Distance | Retail, 0.5x, 1x (default), 1.5x, 2x, 3x, 4x | `[graphics] lod_distance` (number or `"retail"`) | next view | environment override in [switches.md](../runtime/switches.md#settings) |
 
-A steps the row's value and saves it to `<data>/settings.toml` at once,
-keeping every other key. The window follows the frame rate at its next turn
+A on **LOD Distance** opens the value picker with the current distance selected.
+Choose **1x** to match the rendering resolution, a higher multiplier to keep
+detail farther away, or **Retail** for the original 640x480 distances at any
+resolution. A saves the selection and B cancels. The other Video rows step
+on A. Changes are saved to `<data>/settings.toml`, keeping every other key. The window follows the frame rate at its next turn
 (`app::fps::FpsControl`), the view backend makes its targets again at the
 next frame boundary on the render thread (`ScaledBackend::follow_scale`,
 [high-resolution.md](../graphics/high-resolution.md)), and so does the lighting
@@ -187,11 +191,11 @@ the screen; `boot::video_screen::model` builds the screen as
 `ui::extend(List::Settings, 2)` and the speaker row as
 `ui::extend(List::Controls, 6)` ([Settings as a schema](#settings-as-a-schema));
 the hooks registered by `layout_glue::install` ask that model for counts,
-texts and presses. `h2 play` reads the saved frame rate, scale, lighting
-and mute button when no flag or variable sets them. Tests:
+texts and presses. `h2 play` reads the saved frame rate, scale, lighting,
+LOD distance and mute button when no flag or variable sets them. Tests:
 `setting_defs::tests::lighting_is_retail_unless_asked_and_has_a_video_row`
 (default Retail, the row on this screen, live, the file's names, the
-variable's lock) and `video_screen`'s tests for the four rows, their exact
+variable's lock) and `video_screen`'s tests for the five rows, their exact
 labels and values, and saving live changes.
 
 ### How the screen is made (Local, static reading of the retail XBE)
@@ -409,7 +413,7 @@ the list per account. A host row would call that same HLE.
 `game::pause_menu::tests` covers the exact Settings labels and row order,
 native controller/player settings routes, and B and Back restoring the
 Settings list at the same row. It also covers live Video and Voice
-changes. `game::video_screen::tests` checks the four display options,
+changes. `game::video_screen::tests` checks the five display options,
 Mute Button in Voice and Aim Assist on the iOS Controls list.
 `game::speaker_row::tests` checks the read-only iOS Aim Assist row.
 
@@ -423,7 +427,7 @@ screen after each step.
    for `class: "pause-settings"` in campaign or
    `class: "mp-pause-settings"` in multiplayer.
 2. Select Video and press A. Check for `class: "video"` on the same
-   window and slot, and the four display options. Press B, wait for
+   window and slot, and the five display options. Press B, wait for
    Settings, then move down to Voice and press A. Check for
    `class: "voice"` on the same window and slot and **Mute Button** below
    **Voice Volume**. Press Back and check that Settings is active again.
@@ -699,7 +703,7 @@ and which it wants on ([skulls.md](skulls.md)).
 - Which retail option lives in the profile and which in the preferences file,
   and their layouts. Nothing here reads or writes the retail values.
 - Which row-level behaviours only a game run shows: the Video rows apply as
-  the tables say (frame rate, resolution and lighting without a flash or a
+  the tables say (frame rate, resolution, lighting and LOD distance without a flash or a
   black frame); the Video and Voice screens return to the Settings list
   with B; in split screen each page opens in the pressing player's
   quarter.

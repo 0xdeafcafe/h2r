@@ -4,6 +4,7 @@
 
 use crate::light_constants::constant::{HALF, ONE, QUARTER, TWO};
 use crate::memory::GuestMemory;
+use crate::points::PIXEL_SCALE;
 use crate::render_loop::occlusion::guest::{MAIN_VIS, VIS_KIND};
 use x87::{F80, Mode};
 
@@ -21,7 +22,6 @@ const ATTACHMENTS: u32 = 0x004c_0ed6;
 const SUBPART_POOL: u32 = 0x25c;
 const SUBPART_WORDS_USED: u32 = 0xa5c;
 const PROJECTION_DEPTH: u32 = 0x004b_9e20;
-const PIXEL_SCALE: u32 = 0x004b_9ed0;
 const MIN_DEPTH: u32 = 0x0045_dc68;
 const SMALL_RADIUS: u32 = 0x0045_dd08;
 const SMALL_SCALE: u32 = 0x0045_e18c;
@@ -342,6 +342,36 @@ mod tests {
         assert_eq!(publish_slice(&mut m, MAIN_VIS, Walk::Clusters, 0x1f80, 0x027f, Some(1)), None);
         assert_eq!(m.bytes, hot);
         assert_eq!(publish(&mut m, MAIN_VIS+4, Walk::Clusters, 0x1f80, 0x027f), None);
+    }
+
+    #[test]
+    fn placement_fade_and_packed_size_follow_the_view_pixel_scale() {
+        for (render_scale, lod_distance, expected) in [
+            (1., 1., None),                // At the fade start: culled.
+            (4., 1., Some((48, 143))),     // Partly faded.
+            (4., 2., Some((96, 255))),     // Full opacity.
+            (6., 4., Some((255, 255))),    // Packed size saturates.
+        ] {
+            let mut m = fixture(Walk::Placements);
+            // Radius equals depth. The small-placement factor halves the diameter,
+            // so the projected size in pixels equals the view's scale here.
+            m.set_f32(BSP + 0x1800 + 0x48, 3.).unwrap();
+            m.set_f32(SMALL_RADIUS, 4.).unwrap();
+            m.set_f32(SMALL_SCALE, 0.5).unwrap();
+            m.set_f32(FADE_START, 48.).unwrap();
+            m.set_f32(FADE_SLOPE, 1. / 256.).unwrap();
+            m.set_f32(PIXEL_SCALE, 48. * render_scale * lod_distance).unwrap();
+
+            let count = publish(&mut m, MAIN_VIS, Walk::Placements, 0x1f80, 0x027f);
+            if let Some((size, alpha)) = expected {
+                assert_eq!(count, Some(1));
+                assert_eq!(m.u8(PIXEL_SIZES).unwrap(), size);
+                assert_eq!(m.u8(RECORDS + 26).unwrap(), alpha);
+            } else {
+                assert_eq!(count, Some(0));
+                assert_eq!(m.u16(FLAGS).unwrap(), 1);
+            }
+        }
     }
 
     #[test]

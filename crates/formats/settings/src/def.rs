@@ -79,9 +79,9 @@ pub enum Kind {
         steps: &'static [i64],
         unit: Unit,
     },
-    /// One of a list, stepped in its order (wrapping). A number is written
-    /// to the file as a TOML integer when its name is that number, else as
-    /// its name.
+    /// One of a list, stepped in order. Its name is stored as a TOML float
+    /// for canonical decimal names, an integer when it spells the choice's number,
+    /// or a string.
     Choice(&'static [Choice]),
 }
 
@@ -230,12 +230,15 @@ impl Def {
     }
 
     /// A value read from `settings.toml`. A bool must be a TOML boolean;
-    /// an integer a TOML integer; a choice either (its name as a string).
+    /// an integer a TOML integer. Choices accept their name as text or a number.
     pub fn from_toml(&self, v: &toml::Value) -> Result<Value, String> {
         let text = match (&self.kind, v) {
             (Kind::Bool, toml::Value::Boolean(b)) => return Ok(Value::Bool(*b)),
             (Kind::Bool, _) => return Err("must be true or false".into()),
             (Kind::Int { .. } | Kind::Choice(_), toml::Value::Integer(i)) => i.to_string(),
+            // Keep the decimal point for whole floats: an integer choice
+            // such as "60" still requires a TOML integer or string.
+            (Kind::Choice(_), toml::Value::Float(f)) => format!("{f:?}"),
             (Kind::Choice(_), toml::Value::String(s)) => s.clone(),
             (Kind::Int { .. }, _) => return Err("must be a whole number".into()),
             (Kind::Choice(_), _) => return Err(format!("must be {}", self.expected())),
@@ -249,9 +252,10 @@ impl Def {
         match (&self.kind, v) {
             (_, Value::Bool(b)) => toml::Value::Boolean(b),
             (Kind::Choice(c), Value::Int(i)) => match c.iter().find(|c| c.value == i) {
-                Some(c) if c.name.parse::<i64>().ok() != Some(i) => {
-                    toml::Value::String(c.name.into())
-                }
+                Some(c) if c.name.parse::<i64>().ok() != Some(i) => match c.name.parse::<f64>() {
+                    Ok(f) if f.is_finite() && format!("{f:?}") == c.name => toml::Value::Float(f),
+                    _ => toml::Value::String(c.name.into()),
+                },
                 _ => toml::Value::Integer(i),
             },
             (_, Value::Int(i)) => toml::Value::Integer(i),
