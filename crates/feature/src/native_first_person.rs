@@ -1,7 +1,5 @@
-//! The first-person arms and weapon drawn by the native GPU renderer.
-//! On by default (since 2026-11-20); `H2_FEATURES=impl.render.native_first_person=off`
-//! turns it off for the comparison against the D3D path (exactly that
-//! key: `impl.render=off` does not).
+//! The first-person arms and weapon drawn by the native GPU renderer,
+//! on with it (`impl.render.native`).
 //!
 //! One context-only observer before `LAYER_DRAW` acts only on the layer-3
 //! call in `0x0003fdf0` (return `0x00040136`). Both invocations are
@@ -36,17 +34,10 @@ use crate::native_world::Mem;
 use crate::{BuildError, Builder, Feature, Manifest};
 
 pub const ID: &str = "native-first-person";
-pub const SWITCH: &str = "impl.render.native_first_person";
-pub const WALK_SWITCH: &str = "impl.render.native_first_person_walk";
 pub(crate) const FIRST_PERSON_ITEMS: u32 = 0x004c_8740;
 
-pub fn walk_on(switches: &crate::Switches) -> bool {
-    crate::switches::native_walk_on(switches, SWITCH, WALK_SWITCH)
-}
-
-
 pub fn on(switches: &crate::Switches) -> bool {
-    crate::switches::native_stage_on(switches, SWITCH)
+    crate::switches::native_render_on(switches)
 }
 
 /// Tentative mask edits and the candidate identities, committed only after
@@ -238,13 +229,11 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         let (Some(object), Ok(rows)) = (object, rows) else {
             continue;
         };
-        let shadow = set.shadowed.contains(&(model as u16));
         items.push(ItemDraw {
             index: i,
             object,
             key: *key,
             rows,
-            shadow,
         });
     }
     if items.is_empty() {
@@ -256,10 +245,7 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     let masks = ItemMasks {
         plan,
         candidates: cleared,
-        offered: items
-            .iter()
-            .map(|item| (!item.shadow).then_some(item.index))
-            .collect(),
+        offered: items.iter().map(|item| Some(item.index)).collect(),
     };
     let Some(cleared) = host.draw(m.0, set.generation, frames, items, models, masks) else {
         REFUSED.fetch_add(1, Ordering::Relaxed);
@@ -331,7 +317,7 @@ impl Feature for NativeFirstPerson {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        if !walk_on(b.switches()) {
+        if !on(b.switches()) {
             return Ok(());
         }
         b.raw()

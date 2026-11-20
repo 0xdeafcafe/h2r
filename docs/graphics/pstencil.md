@@ -1,25 +1,28 @@
 # pstencil: the Digsite study tags and the shadow technique
 
-A companion to [e3-lighting.md](e3-lighting.md). That page has the history,
-the evidence for how the E3 2003 lighting worked, phase 0 (the light record
-and render path in retail) and the shadowlab prototype. This page adds what a
+Status: Built (research). A reading of published tags and a decision; it states nothing about our code beyond what it cites.
+
+A companion to [e3-lighting.md](e3-lighting.md). That page has the design,
+the Lighting setting, and phase 0 (the light record and render path in retail);
+the history of the cut renderer is in [pstencil-history.md](pstencil-history.md)
+and the shadowlab prototype results in [notes/e3-lighting.md](notes/e3-lighting.md). This page adds what a
 study of the Digsite crew's published tag set says about lights, corrects
 some readings of it, and records why the shadow technique stays shadow maps
 when the study notes argued for stencil volumes.
 
 It folds in two research notes written by another session on 2026-11-16 (a
 history of pstencil and a design for "pstencil-class lighting"). They were
-not committed. What was new in them is here; what e3-lighting.md already had
+not committed. What was new in them is here; what pstencil-history.md already had
 is not repeated.
 
 ## Provenance
 
-The sources are the same as e3-lighting.md's, plus three published
+The sources are the same as pstencil-history.md's, plus three published
 repositories:
 
 - `digsite/H2E3`: the restored E3 2003 level for MCC, released by the
-  Digsite crew with Halo Studios' approval (see "Digsite is not a leak" in
-  e3-lighting.md). It ships the level's tags. They are under the MCC EULA,
+  Digsite crew with Halo Studios' approval (see pstencil-history.md,
+  section 12). It ships the level's tags. They are under the MCC EULA,
   not open source.
 - `digsite/h2`: the crew's Halo 2 repository for the MCC editing kit, the
   retail tag set as the kit has it. Same terms.
@@ -31,7 +34,7 @@ Rules for these, which the notes followed and this page keeps:
 - Nothing comes from the December 2024 and December 2025 leaks. The history
   note discussed them through news coverage only and drew no technical
   fact from them; that discussion is not carried over beyond the paragraph
-  e3-lighting.md already has.
+  pstencil-history.md section 12 has.
 - Study copies only. Tag files and shaders are fetched into a temporary
   directory outside the repository, read, and not committed or shipped. This
   page states layouts as encoding semantics ("flags dword, bit 3 = no
@@ -41,7 +44,7 @@ Rules for these, which the notes followed and this page keeps:
 Checked: every technical claim in the design note traces to those three
 repositories or to public documentation. The history note's quotes are from
 Vice's oral history, the Bernie Freidin profile, Halopedia and the Steam
-Workshop Q&A, all cited in e3-lighting.md already.
+Workshop Q&A, all cited in pstencil-history.md.
 
 ## What the E3 tag set holds
 
@@ -136,7 +139,7 @@ Poisson disk. The E3 variants differ only for that tag set.
 
 This is the same shape as retail's layer 11 (shadow apply, `ShadowFunc
 GREATER` on the shadow depth level), and what phase 1 already does in the
-view: scale the shadow map and force one tap ("Phase 1 as built").
+view: scale the shadow map and force one tap (e3-lighting.md, "The Lighting setting").
 
 ## The technique: why shadow maps
 
@@ -147,7 +150,7 @@ project's decision stays **shadow maps with a one-tap comparison**, for four
 reasons:
 
 1. **Measured cost.** shadowlab on Zanzibar (Apple M1 Max, GPU timestamps,
-   "Phase 3: shadow prototype" in e3-lighting.md) put volumes at or above
+   notes/e3-lighting.md) put volumes at or above
    one-tap maps everywhere: the sun at 0.71 ms against 0.25 ms at 1x, level
    at 4x (1.11 against 1.13 ms); the point light at 1.12 against 0.76 ms at
    1x and 3.33 against 2.93 ms at 4x. Fill is cheaper than on the NV2A, not
@@ -159,7 +162,7 @@ reasons:
    volume's 2,511 side quads come from open edges. The prototype's volumes
    stay closed by construction, but where light enters an open mesh and
    meets a face turned away from it the volume lets light through that the
-   map stops: the leak e3-lighting.md's tests describe. Alpha-tested casters
+   map stops: the leak the prototype tests in notes/e3-lighting.md describe. Alpha-tested casters
    would cast solid with volumes and need a map anyway.
 3. **The look does not need volumes.** Volume and one-tap map disagree on
    0.03% to 0.28% of lit pixels, falling with resolution. Every public
@@ -169,7 +172,7 @@ reasons:
 4. **The authors' own record.** Digsite's lights are "not pstencil" and the
    crew's restoration gets its look from shadow maps (Sev's one-tap mode).
    Bungie's stated reasons for leaving volumes were exteriors, fill and
-   caster complexity (e3-lighting.md, "Why it was cut"), the cases point 2
+   caster complexity (pstencil-history.md, section 5), the cases point 2
    and the Pelican measure. Retail and Halo 3 both went to shadow maps.
 
 What volumes would still buy is exact edges at grazing angles and no bias.
@@ -222,7 +225,7 @@ if needed. Delete the directory when done.
 ## Sources
 
 Added 2026-11-16, all cited, nothing copied, no leaked file opened. The rest
-are in e3-lighting.md.
+are in pstencil-history.md.
 
 - Digsite, `H2E3` (tags, `H2E3_builder.py`, README): <https://github.com/digsite/H2E3>
 - Digsite, `h2` (MCC editing kit tag set): <https://github.com/digsite/h2>

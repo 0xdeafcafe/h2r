@@ -1,8 +1,7 @@
 //! The HUD's and the UI's screen draws as the native renderer sees them
-//! (docs/graphics/native-renderer.md, "Stage 5: post and HUD", "The UI and
-//! HUD"). Pure: what the hooks read out of guest memory, the plan a
-//! native draw would take, and how the plan pairs with what the D3D path
-//! drew. The GPU side is not here.
+//! (docs/graphics/native-post-hud.md, "Stage 5: post and HUD", "The UI and
+//! HUD"). Pure: what the hooks read out of guest memory and the plan a
+//! native draw would take. The GPU side is not here.
 //!
 //! Two primitives carry nearly everything the HUD and the menus draw
 //! (Code, `h2 disasm`):
@@ -457,105 +456,6 @@ pub fn a4r4g4b4_to_rgba(
     Some(out)
 }
 
-/// What a hooked call draws, as the compare expects to meet it among
-/// the D3D path's resolved draws (`DrawAdmission`, which sees each one
-/// in issue order).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind {
-    /// A screen quad (`0x000363a0`): a pushed four-vertex fan.
-    Screen,
-    /// A HUD shader quad (`0x0022a664`): a fan through `D3DDevice_End`.
-    Hud,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Expect {
-    pub kind: Kind,
-    /// The positions the call pushes, corner by corner.
-    pub corners: [[f32; 2]; 4],
-}
-
-/// Whether two quads' corners are the same positions (the guest's floats
-/// go into the draw unchanged, so equal bits; a little slack for a
-/// stream that stores them narrower).
-pub fn same_corners(a: &[[f32; 2]; 4], b: &[[f32; 2]; 4]) -> bool {
-    a.iter()
-        .zip(b)
-        .all(|(p, q)| (p[0] - q[0]).abs() <= 1e-3 && (p[1] - q[1]).abs() <= 1e-3)
-}
-
-/// Expectations waiting for their draws, at most this many (older ones
-/// are counted lost: their draws never came, or came unmatched).
-pub const EXPECT_CAP: usize = 256;
-
-/// The compare's account: expectations in call order, met by draws in
-/// issue order.
-#[derive(Debug, Default)]
-pub struct Pairing {
-    expected: std::collections::VecDeque<Expect>,
-    /// Paired, by [`Kind`] (screen, HUD).
-    pub paired: [u64; 2],
-    /// Four-vertex fans that matched no waiting expectation's corners.
-    pub other: u64,
-    /// Expectations passed over: a later one paired first, or the queue
-    /// was full.
-    pub lost: [u64; 2],
-}
-
-fn slot(kind: Kind) -> usize {
-    match kind {
-        Kind::Screen => 0,
-        Kind::Hud => 1,
-    }
-}
-
-impl Pairing {
-    pub fn expect(&mut self, e: Expect) {
-        if self.expected.len() >= EXPECT_CAP
-            && let Some(old) = self.expected.pop_front()
-        {
-            self.lost[slot(old.kind)] += 1;
-        }
-        self.expected.push_back(e);
-    }
-
-    pub fn waiting(&self) -> usize {
-        self.expected.len()
-    }
-
-    /// A four-vertex fan with `corners`: the first waiting expectation it
-    /// matches is paired (those before it are lost), returned.
-    pub fn draw(&mut self, corners: &[[f32; 2]; 4]) -> Option<Expect> {
-        let Some(i) = self
-            .expected
-            .iter()
-            .position(|e| same_corners(&e.corners, corners))
-        else {
-            self.other += 1;
-            return None;
-        };
-        for e in self.expected.drain(..i) {
-            self.lost[slot(e.kind)] += 1;
-        }
-        let e = self.expected.pop_front()?;
-        self.paired[slot(e.kind)] += 1;
-        Some(e)
-    }
-
-    /// One line of totals.
-    pub fn line(&self) -> String {
-        format!(
-            "{} screen quads and {} HUD quads paired with their D3D draws; {} screen and {} HUD lost; {} other fans; {} waiting",
-            self.paired[0],
-            self.paired[1],
-            self.lost[0],
-            self.lost[1],
-            self.other,
-            self.expected.len()
-        )
-    }
-}
-
 /// The glyph cache's ring of shelves (`0x0001f5c0`): halfwords at
 /// `+0x2`, `+0x4`, `+0x6` and `+0xa` of these three words change whenever
 /// a glyph is added (and may evict another). A native text segment is
@@ -901,61 +801,5 @@ mod tests {
             None,
             "pitch below the row"
         );
-    }
-
-    fn quad(x: f32) -> [[f32; 2]; 4] {
-        [[x, 0.0], [x + 1.0, 0.0], [x + 1.0, 1.0], [x, 1.0]]
-    }
-
-    #[test]
-    fn draws_pair_with_their_expectations_in_order() {
-        let mut p = Pairing::default();
-        p.expect(Expect {
-            kind: Kind::Screen,
-            corners: quad(0.0),
-        });
-        p.expect(Expect {
-            kind: Kind::Hud,
-            corners: quad(10.0),
-        });
-        p.expect(Expect {
-            kind: Kind::Screen,
-            corners: quad(20.0),
-        });
-        assert_eq!(p.draw(&quad(5.0)), None, "a fan of another caller");
-        assert_eq!(p.draw(&quad(0.0)).map(|e| e.kind), Some(Kind::Screen));
-        // The HUD quad's draw never came: passed over by the next.
-        assert_eq!(p.draw(&quad(20.0)).map(|e| e.kind), Some(Kind::Screen));
-        assert_eq!(
-            (p.paired, p.lost, p.other, p.waiting()),
-            ([2, 0], [0, 1], 1, 0)
-        );
-        assert!(
-            p.line()
-                .starts_with("2 screen quads and 0 HUD quads paired"),
-            "{}",
-            p.line()
-        );
-    }
-
-    #[test]
-    fn a_full_queue_loses_its_oldest() {
-        let mut p = Pairing::default();
-        for i in 0..=EXPECT_CAP {
-            p.expect(Expect {
-                kind: Kind::Hud,
-                corners: quad(i as f32),
-            });
-        }
-        assert_eq!((p.lost, p.waiting()), ([0, 1], EXPECT_CAP));
-        assert!(p.draw(&quad(0.0)).is_none(), "the lost one");
-    }
-
-    #[test]
-    fn corners_match_within_a_thousandth() {
-        let mut q = quad(3.0);
-        assert!(same_corners(&quad(3.0), &q));
-        q[2][1] += 0.01;
-        assert!(!same_corners(&quad(3.0), &q));
     }
 }

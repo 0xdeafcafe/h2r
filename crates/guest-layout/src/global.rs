@@ -1,0 +1,106 @@
+//! Named guest globals: a word or a structure at a fixed address in the
+//! base (1.0) image, each with the page that records the evidence.
+//!
+//! This is the one table of global addresses. `engine::points` re-exports
+//! it, so `engine::points::GAME_GLOBALS` and `guest_layout::global::GAME_GLOBALS`
+//! are the same item; addresses here and hook points there are checked
+//! together for duplicates (`engine::points` tests).
+
+/// A named guest global.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Global {
+    pub name: &'static str,
+    /// Address in the base (1.0) image.
+    pub base: u32,
+    /// The page that records the evidence.
+    pub doc: &'static str,
+}
+
+impl Global {
+    /// The pointer the global holds, for globals that hold one, or `None`
+    /// while it is null.
+    pub fn pointer<M: crate::Mem + ?Sized>(&self, m: &M) -> Result<Option<u32>, crate::Fault> {
+        let p = crate::Off::<u32>::new(0).read(m, self.base)?;
+        Ok((p != 0).then_some(p))
+    }
+}
+
+crate::globals! { GLOBALS;
+    /// Multiplayer engine state and its per-variant views (§3.7). Points
+    /// at [`crate::game::GameEngine`].
+    GAME_ENGINE @ 0x004e_9ae8; "docs/game/bots.md";
+    CTF_ASSAULT_GLOBALS @ 0x0051_ec80; "docs/game/bots.md";
+    ODDBALL_GLOBALS @ 0x0051_ecc4; "docs/game/bots.md";
+    KOTH_GLOBALS @ 0x0051_ecc8; "docs/game/bots.md";
+    TERRITORIES_GLOBALS @ 0x0051_eccc; "docs/game/bots.md";
+    JUGGERNAUT_GLOBALS @ 0x0051_0c9c; "docs/game/bots.md";
+    /// Loaded matg metadata. Its multiplayer reference leads to the weapon list.
+    GLOBALS_TAG @ 0x004e_034c; "docs/game/bots.md";
+    /// Pointer to the game globals ([`crate::game::GameGlobals`]): active
+    /// options at `+8`, "map active" at `+0x1120`, the end latch at
+    /// `+0x1128`.
+    GAME_GLOBALS @ 0x004e_6948; "docs/runtime/level-boot.md";
+    /// Pointer to the game-time record ([`crate::game::GameTime`]); `+8` is
+    /// the tick count.
+    GAME_TIME @ 0x0051_0c54; "docs/game/high-framerate.md";
+    /// Pointer to the players datum array (`0x21c`-byte
+    /// [`crate::player::Player`]s).
+    PLAYERS @ 0x004e_8c24; "docs/live/live-gamestate.md";
+    /// Pointer to the objects datum array (`0xc`-byte
+    /// [`crate::object::ObjectHeader`]s).
+    OBJECTS @ 0x004e_0300; "docs/formats/objects.md";
+    /// Pointer to the loaded scenario tag (`scnr`): player starting
+    /// locations at `+0x100` (count) and `+0x104`, `0x34` each.
+    SCENARIO @ 0x004e_0350; "docs/editor/scenario-editor.md";
+    /// Holds the guest address of the tag-index header.
+    TAG_INDEX @ 0x0054_7f00; "docs/engine/tag_get_checked.md";
+    /// Holds the guest address of the 16-byte tag-entry table.
+    TAG_ENTRIES @ 0x004e_3b44; "docs/engine/tag_get_checked.md";
+    /// The Controls screen's vtable (28 slots).
+    CONTROLS_SCREEN_VTABLE @ 0x0045_be30; "docs/formats/ui.md";
+    /// The Controls list handler's vtable (22 slots).
+    CONTROLS_LIST_VTABLE @ 0x0045_d240; "docs/formats/ui.md";
+    /// Pointer to the simulation globals: the world's mode at `+8` (0
+    /// none, 1 local, 2 sync-server, 3 sync-client, 4 dist-server, 5
+    /// dist-client; not the game mode's numbering, see `0x68da8`), the update number at `+0x28`, the out-of-sync latch
+    /// byte at `+0x2c`.
+    SIM_GLOBALS @ 0x004c_f77c; "docs/live/live-coop.md";
+    /// The simulation's "ended" latch byte.
+    SIM_ENDED @ 0x004c_f772; "docs/live/live-coop.md";
+    /// The network life cycle's ready byte.
+    NETWORK_READY @ 0x0052_7330; "docs/live/live-custom-games.md";
+    /// Pointer to the squad (lobby) network session.
+    SQUAD_SESSION @ 0x0052_7364; "docs/live/live-custom-games.md";
+    /// The base address of the game-state block (`0x3fe000` bytes).
+    GAME_STATE_BASE @ 0x004e_6080; "docs/runtime/checkpoints.md";
+    /// Pointer to the players globals ([`crate::game::PlayerGlobals`]): the
+    /// local player count (`i16`) at `+8`, the four local users' player
+    /// datums at `+0xc` (-1 for none).
+    PLAYER_GLOBALS @ 0x004e_8c20; "docs/game/bots.md";
+    /// The loaded map's short name in the cache header (`lockout`), 32
+    /// bytes, NUL-terminated.
+    CACHE_MAP_NAME @ 0x0054_7898; "docs/live/live-gamestate.md";
+    /// The skull array: one byte per skull, 1 = on (15). Written only by
+    /// the pickup (`0x1df3e0`) and our campaign start; every reader gates
+    /// on a campaign.
+    SKULLS @ 0x004f_55dc; "docs/game/skulls.md";
+    /// Pointer to the actor datum array (`0x888`-byte actors).
+    ACTORS @ 0x004f_55f0; "docs/live/live-gamestate.md";
+    /// likely: the four local player slots, one per controller, `0xc70`
+    /// apart; a signed-in slot embeds its `0x1e0`-byte profile at `+0x18`.
+    PLAYER_SLOTS @ 0x0054_e8e0; "docs/live/live-gamestate.md";
+    /// Pointer to the `0x24`-byte cinematic globals: `+5` is "a cinematic
+    /// is playing", the byte the game itself asks (`0x0013cb40`).
+    CINEMATIC_GLOBALS @ 0x0051_0c50; "docs/live/live-gamestate.md";
+    /// Pointer to the physics component datum array (`0xa0`-byte
+    /// components; an object's index at body `+0xb4`).
+    PHYSICS_COMPONENTS @ 0x0051_e9b8; "docs/engine/havok-runtime.md";
+    /// Pointer to the Havok world (`0x001c2f07` stores it after
+    /// `0x003101c0`).
+    HAVOK_WORLD @ 0x0051_e9a4; "docs/engine/havok-runtime.md";
+}
+
+/// The global at `base`, if the table names one.
+pub fn by_base(base: u32) -> Option<&'static Global> {
+    GLOBALS.iter().copied().find(|g| g.base == base)
+}

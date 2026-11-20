@@ -2,7 +2,7 @@
 //! implementation, its vertex program and pixel shader definition, stage
 //! textures, sampler states and instance constants, from `tags::material`
 //! (docs/formats/shader-instances.md). The native pass runs these through
-//! `shaders` instead of a program of ours (docs/graphics/native-renderer.md,
+//! `shaders` instead of a program of ours (docs/graphics/native-world.md,
 //! "What a world pass reads"). A material that does not fit the rules here
 //! stays on the D3D path, with the reason.
 
@@ -124,7 +124,7 @@ pub struct WorldPass {
 /// states, or blends, stays on the D3D path. Where the implementation does
 /// not set `CULLMODE` itself it inherits the previous draw's: the D3D
 /// path's draws of placement 282 on 03a cull `Front` (`CULL_CW`, front face
-/// `CW`) where the pass leaves it unset (`d3d::uniform_compare`). Such a
+/// `CW`) where the pass leaves it unset. Such a
 /// pass is marked [`WorldPass::inherits_cull`] and takes the device's cull
 /// at the pass; its own state culls nothing, for where that is not known
 /// (an open, single-sided girder seen from behind then draws its back

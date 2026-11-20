@@ -818,8 +818,7 @@ impl<B: Backend> Device<B> {
         self.rtt_direct = on;
     }
 
-    /// Lazy depth levels (on by default, `H2_D3D_LAZY_DEPTH=0` turns them
-    /// off): with lazy render-to-texture and a backend that samples depth
+    /// Lazy depth levels (on by default): with lazy render-to-texture and a backend that samples depth
     /// surfaces ([`Backend::can_sample_depth_surfaces`]), a depth level is
     /// written back only where a colour level is, not at every binding
     /// change, and draws sample it through [`Backend::depth_level_texture`].
@@ -828,8 +827,8 @@ impl<B: Backend> Device<B> {
     }
 
     /// Whether a lazy level left as a target is read from guest memory
-    /// every time (`H2_D3D_LEAVE_READ=1`), not only when its pages were
-    /// written since its match was made (the default).
+    /// every time, not only when its pages were written since its match
+    /// was made (the default). Tests compare the two.
     pub fn set_leave_read(&mut self, on: bool) {
         self.leave_read = on;
     }
@@ -1484,7 +1483,7 @@ impl<B: Backend> Device<B> {
     /// not read again: that read was a whole level's copy at every target
     /// change. It trusts the tracker as
     /// [`rtt_guest_stores`](Self::rtt_guest_stores) does for the same
-    /// question. `H2_D3D_LEAVE_READ=1` reads the level every time.
+    /// question. [`Device::set_leave_read`] reads the level every time.
     fn resync_on_leave(&mut self, mem: &dyn GuestMemory, h: u32) -> Result<(), D3dError> {
         let Some(t) = self.rtt.get(&h).copied() else {
             return Ok(());
@@ -1518,7 +1517,7 @@ impl<B: Backend> Device<B> {
     /// read them, as colour levels do lazily, and draws sample them through
     /// [`Backend::depth_level_texture`]: lazy render-to-texture, a backend
     /// that can ([`Backend::can_sample_depth_surfaces`]), and not turned off
-    /// (`H2_D3D_LAZY_DEPTH=0`).
+    /// ([`Device::set_lazy_depth`]).
     pub(super) fn rtt_lazy_depth(&self) -> bool {
         self.lazy_depth && self.rtt_lazy() && self.backend.can_sample_depth_surfaces()
     }

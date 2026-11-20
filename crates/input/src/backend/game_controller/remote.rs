@@ -2,7 +2,7 @@
 //!
 //! The remote has a touch surface that also clicks, a select click, Back
 //! (`buttonMenu`) and Play/Pause. [`RemoteNav`] turns them into what a menu
-//! needs (docs/runtime/tvos.md, "The remote"):
+//! needs (docs/runtime/tvos.md, "Controls"):
 //!
 //! * a click near an edge of the clickpad is that d-pad direction, held as
 //!   long as the click is; a click in the middle is A;

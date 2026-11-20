@@ -1,6 +1,6 @@
 //! The node rows and decompression an object's layer-3 draw uploads as
 //! vertex constants, read from the render record at hook time
-//! (docs/graphics/native-renderer.md, "Object programs"). Pure; the
+//! (docs/graphics/native-objects.md, "Object programs"). Pure; the
 //! feature's hook copies them into the frame ([`crate::objects`]).
 //!
 //! Research points (Code, `h2 disasm`):

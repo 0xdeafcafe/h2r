@@ -1,5 +1,8 @@
 # The HUD editor
 
+Status: Built. Code: `crates/hud-edit/src`, the HUD tool in `crates/studio/src`. Tests: in-source unit tests.
+Switch: none.
+
 The editor's **HUD** tool shows a map's HUDs (`nhdt` tags) as the game
 places them on a 640 by 480 screen, at a state you pick (shield, health,
 grenades, ammunition, zoom, split screen), and edits their widgets: drag

@@ -1,5 +1,9 @@
 # Xbox storage boundary
 
+Status: Built.
+Code: `crates/vfs/src`. Tests: `crates/vfs/tests/`, `crates/vfs/src/host_write_behind_tests.rs`.
+Switch: `H2_MAP_DIR` (unset), listed in [switches.md](switches.md).
+
 `crates/vfs` owns storage names, mounted filesystems, open file objects and
 filesystem status results. It is safe Rust and has no dependency on guest
 memory, `kernel`, `runtime`, or `cli`. The kernel translates guest pointers,
@@ -167,7 +171,7 @@ stream byte runs over the base. BPS reads use the materialised
 through `stat`, and a streamed overlay can be read through the VFS even
 though it has no contiguous host file. A damaged layer or mismatched
 base fails the mod read. [VFS content maps](../../crates/vfs/src/content_maps.rs) ·
-[Patch resolution](../game/maps.md#7-what-is-built)
+[Patch resolution](../game/maps.md#2-applying-layers-at-load)
 
 Live installs and removals publish a new registry and trigger a content
 scan on the next main-menu tick. An open file keeps its resolved bytes
@@ -343,7 +347,7 @@ NtWriteFile pairs), a 250 Hz profile put 10.8% of that thread in file
 calls, most of it (355 of their samples) in the write syscall itself. `HostBackend` therefore queues the host data write
 on a per-backend `vfs-write-behind` thread and returns.
 
-What stays on the calling thread, exactly as before: path resolution,
+What stays on the calling thread: path resolution,
 capacity and growth checks (DiskFull, FileTooLarge), allocation and usage
 accounting, the dirty set, write metadata (`touch`), and the returned
 byte count (the whole buffer: the queued write is a `pwrite` loop that
@@ -389,11 +393,9 @@ back to synchronous speed, never further.
 
 A crash, `process::exit` without `flush_pending_metadata`, or a signal
 loses at most the queued bytes; a process that exits normally or drops
-its backends loses nothing. `H2_VFS_WRITE_BEHIND=0` (or `off`, `false`,
-`no`) restores synchronous writes; so does
-`HostBackend::with_write_behind(false)`, and a failure to spawn the
-thread (logged). A differential test runs the same random sequence of
-creates, overlapping writes, reads, stats, truncations, flushes,
+its backends loses nothing. `HostBackend::with_write_behind(false)` gives
+synchronous writes, as does a failure to spawn the thread (logged). A
+differential test runs the same random sequence of creates, overlapping writes, reads, stats, truncations, flushes,
 cleanups, removals, listings and volume queries with write-behind on and
 off and compares every result and the final host bytes
 (`crates/vfs/src/host_write_behind_tests.rs`). `cargo test -p vfs

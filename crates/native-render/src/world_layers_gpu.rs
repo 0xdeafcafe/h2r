@@ -32,7 +32,7 @@ pub struct Cache {
 
 impl Default for Cache {
     fn default() -> Self {
-        Self { devices: Mutex::default(), fetch: FetchMode::from_env() }
+        Self { devices: Mutex::default(), fetch: FetchMode::Gpu }
     }
 }
 
@@ -562,7 +562,7 @@ impl IndexedPass {
         for scissor in clip {
             packets.push(packets[0].clone().with_scissor(scissor, target.size));
         }
-        Some(ExternalDraws { ranges: 1, packets, discards: shader.discards })
+        Some(ExternalDraws { ranges: 1, packets, discards: shader.discards, writes: Vec::new() })
     }
 }
 

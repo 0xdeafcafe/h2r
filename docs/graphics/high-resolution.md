@@ -1,43 +1,51 @@
 # High resolution: 4K and arbitrary internal resolution
 
-Above 1x, the default renderer records each guest draw once. Disabling
-`graphics.single_copy` restores the original exact-reference design
-described below. The sizes and cost estimates on this page come from
-synthetic frames and the linked profiles.
+Status: Built, with one scale for both axes. A per-axis scale for anamorphic
+widescreen is Design (not built).
+Code: `crates/d3d/src/scaled.rs` and `crates/d3d/src/scaled/single.rs`
+(`ScaledBackend`), `crates/gfx/src/renderer.rs` (`window_shift`),
+`crates/boot/src/d3d_glue.rs` (wiring). Tests: `crates/d3d/tests/render_scale.rs`,
+`seams_gpu.rs`, `glyph_text.rs`.
+Switch: `H2_RENDER_SCALE` (1), `H2_SINGLE_COPY` (on), `H2_SMOOTH_TEXT` (off),
+listed in [switches.md](../runtime/switches.md).
 
-The setting is `[graphics] render_scale`, the Resolution row on the Video
-screen ([settings-menu.md](../game/settings-menu.md), "Video screen").
-`H2_RENDER_SCALE` is the developer flag and locks the scale when set. This
-page also proposes a per-axis form for widescreen.
+Above 1x the renderer draws each guest draw once, into surfaces at the
+render scale, and the guest never learns the resolution. The setting is
+`[graphics] render_scale`, the Resolution row on the Video screen
+([settings-menu.md](../game/settings-menu.md), "Video screen");
+`H2_RENDER_SCALE` (1 to 6) locks the scale when set
+(`d3d::render_scale_from`, `crates/cli/src/play_cmd.rs`). The default,
+`graphics.single_copy` on, is described first. With it off, an exact 1x
+reference is rendered beside the scaled view ("Exact mode: reference and
+view").
 
 ## Summary
 
 - **The guest never learns the resolution.** The device (`d3d::Device`) keeps
-  every size, viewport, scissor, header and return value in guest pixels, as
-  today. Scaling lives below the `d3d::Backend` trait.
-- **One draw per target.** At scale > 1 the display encoder owns the draw
-  stream, including draws to guest-size intermediates. Native replacements
-  prepare and commit a single display recording. Set `H2_SINGLE_COPY=0`
-  for a separately rendered 1x reference.
+  every size, viewport, scissor, header and return value in guest pixels.
+  Scaling lives below the `d3d::Backend` trait.
+- **One draw per target.** At scale above 1 the display encoder owns the draw
+  stream, including draws to guest-size intermediates. Guest reads sample the
+  scaled image at guest pixel positions.
 - **Scale with the back buffer:** the frame buffers, the depth buffer, the
   textures the game builds over both, and any render target the size of the
-  back buffer. **Leave at guest size at first:** the small square targets
-  (bloom, blur, reflection and shadow buffers).
-- **Integer scale per axis is the exact class.** Fractional scales work for
-  geometry but break 1:1 point-sampled copies, so they come later and are
-  marked experimental. 4K output is an integer internal size plus the
-  presenter's resample.
-- **Shadow maps scale last**, because sampled depth levels went through guest
-  memory. They are built now, as E3 lighting's phase 1 (Lighting row,
-  [e3-lighting.md](e3-lighting.md)): the view keeps a scaled copy of each depth
-  level and samples it with one tap.
-- **MSAA and forced anisotropy are separate, later options** on the view only.
+  back buffer. **Leave at guest size:** the small square targets (bloom,
+  blur, reflection and shadow buffers).
+- **One integer scale for both axes.** Fractional scales work for geometry
+  but break 1:1 point-sampled copies, so they are not offered. 4K output is
+  an integer internal size plus the presenter's resample.
+- **Shadow maps** scale only with E3 lighting: the view keeps a scaled copy
+  of each depth level and samples it with one tap ([e3-lighting.md](e3-lighting.md),
+  "The Lighting setting").
+- **MSAA and forced anisotropy** are not built; both would be view-only.
 
 ## Single-copy readbacks
 
-The scale policy is selected at launch. In `settings.toml`, set
+The policy is selected at launch (`d3d_glue::single_copy`,
+`graphics.single_copy` in `crates/boot/src/setting_defs.rs`). Set
 `single_copy = false` under `[graphics]` for exact-reference captures or
 replays. The lighting A/B capture always uses its separate reference.
+
 
 The frame buffers, frame-sized RTT levels and their depth attachment are
 authoritative at display resolution. An RTT bind shares the actual texture.
@@ -69,9 +77,13 @@ not require a CPU mapping.
 **Parity trade-off.** Coverage, interpolated values and the outcome of
 depth and stencil tests can differ at scaled sample positions. A value
 written to guest memory or returned by a visibility test can therefore
-differ from a separate 1x render. The scale report includes reference and
-display draw counts, downsamples and completed CPU reads. In exact mode
-headless capture also writes the separately rendered `-1x.png` frame.
+differ from a separate 1x render. The scale report (`ScaleStats`) includes
+reference and display draw counts, downsamples and completed CPU reads.
+Tests: `single_copy_records_once_and_only_resolves_when_the_cpu_reads`,
+`single_copy_depth_and_stencil_read_at_guest_resolution`,
+`single_copy_visibility_counts_guest_pixels` and the other `single_copy_*`
+tests in `render_scale.rs`.
+
 
 ## Terms
 
@@ -81,7 +93,10 @@ headless capture also writes the separately rendered `-1x.png` frame.
 - **Scale** `(sx, sy)`: host pixels per guest pixel, per axis. Halo 2's
   widescreen is anamorphic 640x480 shown at 16:9 ([app.md](../runtime/app.md),
   "Scaling"), so a 16:9 output wants `sx` larger than `sy`.
-- **Reference** and **view**: the two backends above.
+- **Reference** and **view**: the two backends of exact mode (below). In
+  single-copy mode the view is the display encoder and the reference keeps
+  the guest-size state.
+
 
 ## What the guest can observe
 
@@ -103,7 +118,10 @@ game does with them is not fully traced. The callback at `0x24970` reads
 texels and its purpose is not recorded in our docs; the flare ratio at least
 feeds rendering. Until that is traced, assume both can reach the simulation.
 
-## Exact mode design: reference and view
+
+## Exact mode: reference and view
+
+With `graphics.single_copy` off, `ScaledBackend` wraps two `GfxBackend`s:
 
 ```text
  Device (guest pixels, unchanged)
@@ -119,23 +137,53 @@ Each `Backend` call falls into one class:
 
 1. **Reads and outcomes** (`read_surface`, `read_depth`, `read_pixel_count`,
    `judge`, every `DrawOutcome`): the reference answers. The view is not
-   consulted.
+   consulted and never counts samples.
 2. **Mutations** (`draw`, `clear_rects`, `write_surface`, `copy_surface`,
    `snapshot_surface`, `create_surface`, `create_texture_target`,
    `surface_texture`, `depth_alias_texture`): go to both. Handles are pairs.
-3. **`upload_texture`**: decoded once. The two backends should share one wgpu
-   device and the uploaded texture, so ordinary textures are not held twice.
-4. **`present`**: the view presents. The reference still rotates its swap ring,
-   because textures over the display surface read the previous frame.
+3. **`upload_texture`**: decoded once and shared by the two backends, which
+   share one wgpu device.
+4. **`present`**: the view presents. The reference still rotates its swap
+   ring, because textures over the display surface read the previous frame.
 
-A view failure (a draw it cannot make, an allocation that fails at 4K) must
-not stop or alter the guest. It is counted, and the frame falls back to the
-reference image. This differs from the render thread, where a disagreement
-stops the run, because there the disagreeing backend is the one the guest
-observes.
+What scales in the view: surfaces made with `create_surface` at the frame
+size (the first colour surface's, the back buffer), `PersistDisplay`'s copy,
+back-buffer-sized render-to-texture levels
+(`ScaleView::create_scaled_texture_target`) and depth aliases of the whole
+depth buffer (`ScaleStats::scaled_depth_aliases`). Other levels live only in
+the reference and the view samples the reference's textures of them.
+Scissors and clears are scaled inside `GfxBackend` for a scaled surface.
 
-The default single-copy policy trades this guarantee for one fewer
-recording per scaled draw. Both policies use the same size classification.
+A view failure (a draw it cannot make, an allocation that fails at 4K) does
+not stop or alter the guest. It is counted (`ScaleStats::view_errors`) and
+that frame is shown from the reference (`present_reference`). A draw into a
+scaled target that the view cannot make, or makes with another outcome than
+the reference's, replaces the view's target with the reference's, each guest
+pixel repeated (`color_resyncs`, `depth_resyncs`); each kind of repair is
+logged once. A draw that writes depth into a guest-size target with the
+scaled depth buffer bound is drawn again into the view's depth through a
+scaled colour surface of the depth's size (`proxy_depth_draws`). Guest bytes
+written into a scaled depth surface reach the view through `fill_from`.
+Stipple is indexed by host pixel in the view.
+
+This differs from the render thread, where a disagreement stops the run,
+because there the disagreeing backend is the one the guest observes.
+Headless runs (`H2_BOOT_GFX` with `H2_RENDER_SCALE`) write `frame-NNNNN.png`
+from the view and `frame-NNNNN-1x.png` from the reference
+(`crates/boot/src/d3d_glue.rs`, [BOOT.md](../runtime/BOOT.md)).
+
+### Changing the scale during a run
+
+`ScaledBackend::follow_scale` reads the setting at every present. A new
+scale is made at that frame boundary, on the thread that presents (the
+render thread under `ThreadedBackend`): every scaled surface is made again at
+the new size and filled from the reference's, and the device's surface
+handles are mapped onto the new ones. At 1 with retail lighting the view
+sleeps and each frame is the reference's (`ScaleStats::reference_frames`).
+With E3 lighting it stays awake at 1 (shadow maps at 2x). Tests:
+`the_scale_changes_at_a_frame_boundary_with_no_fallback_frames` and
+`on_the_render_thread_the_change_is_made_there_and_shown_at_once` in
+`render_scale.rs`.
 
 ## Which surfaces scale
 
@@ -144,10 +192,10 @@ recording per scaled draw. Both policies use the same size classification.
 | Back buffer, display surface, third buffer | Scale | The image. |
 | Depth buffer | Scale, always with the frame buffers | Attachments must match. The existing depth-larger-than-colour stand-in (`prepare_target`) scales both sides. |
 | Textures over the frame buffers (`0x509354`, `0x509358`; `snapshot_surface`) | Scale: the snapshot is a copy of the scaled buffer | Current-frame feedback and the previous-frame crossfade sample them in screen space. |
-| Textures and the colour surface over the depth buffer (`0x509368`, `0x50936C`, `0x509370`) | Scale: built from the view's depth buffer | The menu's fog and distortion pass reads depth per pixel. Needs the GPU depth-to-colour pass (below). |
-| A render-to-texture level the size of the back buffer | Scale | Halo-2-HD reports one intermediate target, texaccum, that follows the back-buffer size (see "Prior art"). A full-screen intermediate left at 640x480 would undo the whole feature. Not yet confirmed in our own captures. |
-| Fixed-size square targets (the `0x14850` 64x64 pair, the 128x128 and 512x512 targets seen in the first level) | Do not scale in the first phases | Bloom and blur kernels are measured in texels. Scaling the target shrinks the blur on screen. |
-| Shadow maps (depth levels bound as `pNewZStencil`, sampled as `LIN_D24S8`) | 1x with retail lighting. With E3 lighting the view keeps a copy at the render scale, at least 2x, sampled with one tap ([e3-lighting.md](e3-lighting.md), "Phase 1 as built") | The comparison indexes the host texels it has (`textureDimensions`) at the guest's coordinate, so a bigger map needs no shader change; a sharper map with retail's 2x2 filter alone only narrows the soft edge. |
+| Textures and the colour surface over the depth buffer (`0x509368`, `0x50936C`, `0x509370`) | Scale: built from the view's depth buffer | The menu's fog and distortion pass reads depth per pixel. Made on the GPU (see "Depth as a texture"). |
+| A render-to-texture level the size of the back buffer | Scale | Halo-2-HD reports one intermediate target, texaccum, that follows the back-buffer size (see "Prior art"). A full-screen intermediate left at 640x480 would undo the whole feature. |
+| Fixed-size square targets (the `0x14850` 64x64 pair, the 128x128 and 512x512 targets seen in the first level) | Do not scale | Bloom and blur kernels are measured in texels. Scaling the target shrinks the blur on screen. |
+| Shadow maps (depth levels bound as `pNewZStencil`, sampled as `LIN_D24S8`) | 1x with retail lighting. With E3 lighting the view keeps a copy at the render scale, at least 2x (`d3d::scaled::shadow_scale`), sampled with one tap ([e3-lighting.md](e3-lighting.md), "The Lighting setting") | The comparison indexes the host texels it has (`textureDimensions`) at the guest's coordinate, so a bigger map needs no shader change; a sharper map with retail's 2x2 filter alone only narrows the soft edge. |
 | Ordinary textures | Never | They are the game's assets. |
 
 The rule for classifying a render-to-texture level is its guest size against
@@ -157,33 +205,29 @@ fallback if a level needs an exception.
 
 ### Mixed-scale sampling
 
-A draw can sample a scaled surface into an unscaled target. The first
-downsample of a bloom chain does this: back buffer in, small target out. At 4x
-a single bilinear tap then skips most of the source and the bloom shimmers.
-
-The original two-copy design proposed a lazily made **guest-size resolve**: a
-box filter of the scaled image. The rule:
-
-- target scaled, source scaled: sample the scaled surface;
-- target unscaled, source scaled: sample the resolve;
-- source unscaled: sample it as it is, whatever the target.
-
-This is the only place the view needs a downsample. It never reads back to the
-CPU.
+A draw can sample a scaled surface into an unscaled target; the first
+downsample of a bloom chain does this. In single-copy mode a mixed draw runs
+once at guest size: `ScaledBackend::guest_image` box-resizes the scaled
+partner to its guest-size handle (`ScaleStats::downsamples`), and a scaled
+partner that the draw modified is transferred back on the GPU
+(`crates/d3d/src/scaled/single.rs`, `draw_single`). In exact mode the
+reference draws every guest-size target from its own 1x surfaces and the view
+samples the reference's result, so no resolve is needed. The view never reads
+back to the CPU.
 
 ### Depth as a texture
 
-Textures over the depth buffer are made today by a CPU readback, a decode and
-an upload, once per depth generation ([d3d.md](d3d.md), "Frame buffers as
-textures"). At 3840x2160 that is about 33 MB each way per generation, on a
-pass the menu runs every frame. The view needs the pass [d3d.md](d3d.md)
-already lists as wanted ("Depth as a texture on the GPU"): a full-screen pass
-that writes the depth and stencil bits into a colour texture in the alias's
-channel order. It is a prerequisite here, and a speed-up at 1x too.
+Textures over the whole depth buffer are made on the GPU from the view's
+scaled depth, by a full-screen pass that writes the depth and stencil bits
+into a colour texture in the alias's channel order
+(`ScaleStats::scaled_depth_aliases`; tests `the_depth_buffer_as_a_texture_matches_downsampled`
+and `tests/gpu_depth_alias.rs`). Partial or swizzled aliases stay the
+reference's 1x textures in exact mode ([d3d.md](d3d.md), "Frame buffers as
+textures").
 
 Those textures hold packed bits. They must be point sampled, at any scale.
-A stage that samples one with a linear filter is already wrong at 1x and
-should be counted, not fixed here.
+A stage that samples one with a linear filter is already wrong at 1x.
+
 
 ## Coordinates
 
@@ -231,7 +275,7 @@ same world vertex and land a few ulps apart in window coordinates. The
 likely route, not yet confirmed in a capture: another material's template
 has another vertex program, or the host compiler contracts the same
 `dp4`s differently in two pipelines. The NV2A, and
-the fixup at every scale before this change, truncate x and y to 1/16 of a
+the fixup at 1x, truncate x and y to 1/16 of a
 guest pixel. Where the exact value sits just under a grid line, a few ulps
 move one copy a whole step: the two sides of the seam then disagree by
 1/16 of a guest pixel along the whole edge. At 1x that sliver covers about
@@ -261,9 +305,9 @@ ulp apart), clear-colour pixels inside the mesh:
 
 | Fixup | 2x | 3x | 4x | 6x |
 |---|---|---|---|---|
-| guest grid (before) | 8 + 0 | 14 + 22 | 29 + 0 | 56 + 0 |
+| guest grid | 8 + 0 | 14 + 22 | 29 + 0 | 56 + 0 |
 | 1/16 host pixel | 3 + 0 | 6 + 0 | 5 + 0 | 8 + 0 |
-| none (built) | 0 | 0 | 0 | 0 |
+| none (used) | 0 | 0 | 0 | 0 |
 
 (T-junctions + ulp seam.) At 1x the image is, pixel for pixel, the mesh's
 with its positions truncated on the CPU first, before and after.
@@ -290,11 +334,10 @@ wrong for inclusive bounds at one point (xemu issue 1054).
 
 The game and D3D put half-pixel offsets in the viewport offset constant, and
 the pre-transformed path adds its own (`FF_HALF_PIXEL`). These are lengths in
-guest pixels. Scaled, a 0.5 guest-pixel offset is `0.5 * s` host pixels. The
-first draft called this harmless for geometry. It is not: edges then sit half
-a guest pixel off the scaled scissors and clears, and the screen's first row
-and column stay empty. Phase 1 shifts positions in the view to fix it (see
-"Phase 1 as built").
+guest pixels. Scaled, a 0.5 guest-pixel offset is `0.5 * s` host pixels.
+Unshifted, they move geometry half a guest pixel off the scaled scissors and
+clears, and the screen's first row and column stay empty. The view shifts
+positions to fix it (see "Half-pixel shift" below).
 
 It matters for screen-space copies. Take a pass that maps guest pixel centres
 onto guest texel centres with a shift of `d` guest texels. A host pixel centre
@@ -318,9 +361,37 @@ Three rules follow:
 2. Code that indexes texels must use the host texture's real dimensions for
    the index and the guest size for the coordinate. The shadow comparison
    (`floor(uv * size)`, [shaders.md](shaders.md), "Shadow maps") is the one
-   known case and matters only once shadow maps scale.
+   known case and matters for the scaled shadow maps of E3 lighting.
 3. Passes whose source and target are both unscaled are untouched. This is
    the main reason to leave the blur chain at guest size.
+
+
+### Half-pixel shift
+
+At scale `s` positions move by `(2s - 1) / (4s)` guest pixels
+(`gfx::renderer::window_shift`, `VertexUniforms::shift`, the built-in
+shader's `shift_x/y`), with no 1/16 truncation (see "Subpixel snapping and
+cracks"). It is 0 at 1x, so the reference's shaders compute what they did.
+
+D3D-convention geometry puts edges, and the texel corners of a 1:1 copy,
+exactly on pixel centres, so at 1x the tie rules decide. Scaled without a
+shift, a full-screen quad leaves the first host column and row empty (the
+margin artefact of xemu issues 57 and 508), and a point-sampled 1:1 copy
+reads the neighbouring texel. With the shift, the `s x s` host pixels of a
+guest pixel sample it at offsets `(k + 1/4) / s`, all inside the pixel and
+none on a tie. Then an edge on a pixel centre covers whole blocks, the
+top-left rule included, and a 1:1 copy reads the texel 1x reads. A shift of
+exactly `(s - 1) / (2s)` puts the first sample on the tie and fails at 3x
+through rounding; the extra quarter is what makes it robust.
+
+The shift moves everything up and left by `(2s - 1) / 4` host pixels, so
+geometry that ends on the target's far edge instead of a pixel centre (the
+D3D 1:1 texel mapping, a quad from -0.5 to the size less 0.5, which Halo's
+menus use to composite their blurred level) would stop short of the last host
+columns. A scaled draw therefore holds any position past the last pixel
+centre at least on the far edge (`xvs_fixup`, the built-in shader). At 1x
+those positions all cover the last pixel exactly as the edge does. Test:
+`a_full_screen_pass_reaches_the_far_edges_at_every_scale`.
 
 ## Post-processing
 
@@ -331,7 +402,7 @@ crossfade (`0x002ab270`) and the depth-based fog and distortion pass on the
 menu. Halo-2-HD's write-up counts about 25 render targets in four or five
 allocations, from 512x512 down to 64x64.
 
-Policy for the first phases: every pass runs on targets at guest size, and
+Policy: every pass runs on targets at guest size, and
 only the final composite onto the back buffer is at the view's scale. The
 bloom is then exactly as wide on screen as in retail, upsampled bilinearly.
 That is what a blur wants.
@@ -345,6 +416,7 @@ Known failure modes to test for, all seen in xemu at more than 1x:
 - water and texture seams in Halo: Combat Evolved (issues 865, 602).
 
 No scale-specific Halo 2 issue was found in xemu's tracker.
+
 
 ## The game's 640x480 assumptions
 
@@ -376,6 +448,7 @@ Two things remain:
   quads in guest window units they will scale for free. Whether Halo 2 draws
   lines in retail paths is not known.
 
+
 ## Filtering, anisotropy and MSAA
 
 **Mip selection** needs nothing. The host computes derivatives per host pixel,
@@ -383,9 +456,9 @@ so a scaled target picks sharper mips by `log2(s)` and bottoms out at the top
 level. The engine's own LOD inputs (`MIPMAPLODBIAS`, `MAXMIPLEVEL`, the
 per-draw LOD term) are guest state and stay.
 
-**Anisotropy.** Today the sampler is anisotropic only when the guest asks
+**Anisotropy.** The sampler is anisotropic only when the guest asks
 (`gfx::translate`: an `Anisotropic` filter with `MAXANISOTROPY` above 1).
-A view-only override, off by default, may raise the clamp on a stage when all
+A view-only override (not built) may raise the clamp on a stage when all
 of these hold:
 
 - the guest's min and mag filters are linear and it has a mip filter;
@@ -408,14 +481,14 @@ on the view is possible but is the weaker tool:
   programs emulate alpha test with `discard`;
 - every snapshot and depth alias needs a resolve first, and depth has no
   meaningful average;
-- render-to-texture surfaces have no MSAA in `gfx` today;
+- render-to-texture surfaces have no MSAA in `gfx`;
 - the W-buffer path writes `frag_depth`, which is per pixel, not per sample;
 - the sample count is part of the pipeline key, so every pipeline compiles
   again, at about 220 ms per Metal pipeline on a cold cache
-  ([gameplay-budget.md](../perf/gameplay-budget.md)).
+  ([gameplay-budget.md](../perf/notes/gameplay-budget.md)).
 
-Supersampling through the scale handles all of those uniformly. MSAA is a
-later option for hosts that cannot afford the fill. It must never reach the
+Supersampling through the scale handles all of those uniformly. MSAA (not built) would be an
+option for hosts that cannot afford the fill. It must never reach the
 reference, where sample counts are guest-visible.
 
 ### Text
@@ -447,17 +520,18 @@ The view redraws it from the same texels:
 - Nothing is uploaded twice or stored: the upscale is computed per
   fragment from the texture the game already uploads, so a glyph the game
   adds to the cache is sharp on the next draw.
-- off by default (letters looked bloated in play); `H2_SMOOTH_TEXT=1` (or `on`, `true`) turns it on;
-  `Device::set_glyph_smoothing` does the same in tests.
+- Off by default (`d3d::glyph::smoothing_from`); `H2_SMOOTH_TEXT=1` (or
+  `on`, `true`) turns it on; `Device::set_glyph_smoothing` does the same in
+  tests.
 
-Measured on a synthetic glyph cache (`crates/d3d/tests/glyph_text.rs`: a
+Measured by `crates/d3d/tests/glyph_text.rs` on a synthetic glyph cache (a
 ring, a letter, a thick and a thin slanted stroke, a dot), drawn 1:1 on
 the 64x64 corner of an 80x80 target (clear of the target's edge, where
 scaled positions are clamped). Along the thick stroke's edge, the largest
 distance between where alpha crosses one half and the true edge, and the
 edge's width (rows between 0.1 and 0.9):
 
-| Scale | Bilinear (before) | Point (before) | Glyph filter |
+| Scale | Bilinear | Point | Glyph filter |
 |---|---|---|---|
 | 2x | 0.28 px, 3.0 rows | 0.88 px, 1.9 rows | 0.19 px, 1.6 rows |
 | 3x | 0.49 px, 4.5 rows | 1.58 px, 2.8 rows | 0.28 px, 1.7 rows |
@@ -475,38 +549,29 @@ frame stays at 1x like the rest of that surface. The view's half-pixel
 shift (above) moves the redrawn text by the same fraction of a pixel as
 everything else.
 
+
 ## Determinism
 
-With `graphics.single_copy = false`, the guest reads the same values at
-every scale on the same host. The reference is today's backend
-with today's inputs. The view receives copies of the same calls and returns
-nothing the device uses.
+With `graphics.single_copy` off, the guest reads the same values at every
+scale on the same host: the reference is the plain backend with the plain
+inputs, and the view receives copies of the same calls and returns nothing
+the device uses. In single-copy mode reads are sampled from the scaled image
+and can differ ("Single-copy readbacks", parity trade-off).
 
 What this does not claim: identical values across different GPUs or drivers.
 That is not true at 1x either, since readbacks come from the host rasteriser.
 
-What must hold for the claim, and how each is checked:
+What must hold in exact mode, and how each is checked:
 
 | Requirement | Check |
 |---|---|
-| The device's code path does not depend on the scale | The scale is not visible above `Backend`. A device test with `RecordingBackend` produces the same call list under a wrapped and an unwrapped backend. |
+| The device's code path does not depend on the scale | The scale is not visible above `Backend`. `the_guest_sees_the_same_answers_at_every_scale` compares a plain backend with the wrapper at 1x, 2x and 4x: the count, written-back bytes, guest memory and skipped draws. |
 | The view never writes guest memory, the logical clock or the scheduler | It holds no guest handle, like the render thread. |
 | The view never causes a guest-visible wait | Its work is not on the class-1 read path. Any wait is on wall time and charges no logical time ([render-thread.md](render-thread.md)). |
-| View errors do not surface as backend errors | They are counted, and the frame falls back. A test injects a failing view. |
+| View errors do not surface as backend errors | They are counted, and the frame falls back (`a_draw_the_view_cannot_repeat_shows_the_reference_not_a_hole`). |
 | Screenshots used as goldens come from the reference | `H2_BOOT_GFX` PNGs and capture snapshots stay 1x unless asked. |
 
-The acceptance test is a digest comparison: the same input timeline at scale
-1 and at scale N must give the same guest memory digest, the same D3D return
-trace and the same reference frames.
-
 ## Cost
-
-At 4x, a frame with N draws that previously ran on both backends saves N
-draw recordings plus the associated reference pass encodes and submits.
-The total approaches half of the duplicate backend CPU work when most
-draws target the frame. Guest decode and fixed-size draws still run.
-CPU-visible reads pay for the GPU transfer. The historical numbers below
-describe the two-copy design; they are not a timing of single-copy mode.
 
 Pixels and attachment memory for the scaled set (three frame buffers at
 4 bytes a pixel, one depth buffer at 8, one snapshot and one resolve in
@@ -518,305 +583,54 @@ flight):
 | 1280x960 | 2 x 2 | 1.23 M | 4 | about 34 MB |
 | 1920x1440 | 3 x 3 | 2.76 M | 9 | about 77 MB |
 | 2560x1920 | 4 x 4 | 4.92 M | 16 | about 138 MB |
-| 3840x2400 | 6 x 5 | 9.22 M | 30 | about 258 MB |
+| 3840x2880 | 6 x 6 | 11.06 M | 36 | about 310 MB |
 
-A back-buffer-sized render target adds 4 bytes a pixel each. 3840x2400 is the
-integer size for a 16:9 4K display: the presenter resamples it to 3840x2160.
-A 4:3 4K image (2880x2160) is 4.5x, so it renders at 5 x 5 or 4 x 4 and is
-resampled.
+A back-buffer-sized render target adds 4 bytes a pixel each. One scale per axis means a 4K output (3840x2160) renders at 6x
+(3840x2880) and the presenter resamples it; a per-axis 6 x 4.5 form is Design.
 
 - **GPU.** Fragment work on scaled targets grows with the pixel count. Work on
-  unscaled targets does not grow. Snapshots are full copies of the back
-  buffer: at 3840x2400 each is about 37 MB, and the menu took five a frame
-  when [menu-budget.md](../perf/menu-budget.md) was measured. That is about 185 MB of
-  GPU copies a frame, which is tolerable but is the first thing to measure.
-- **CPU.** This is the real cost. The runtime is CPU-bound today: about 11-16
-  fps on the menu ([menu-budget.md](../perf/menu-budget.md), latest
-  flyover). The second backend repeats per-draw work (uniforms, bind
-  groups, recording, encoding, submission) but not push-buffer decode, draw
-  resolve, texture decode or shader translation. When the render thread was
-  measured, the backend's CPU share was about 42 ms of a 168 ms menu frame
-  ([render-thread.md](render-thread.md), "Measurements"); a second backend
-  would have added roughly that again. Merged passes have cut it since. The
-  view should run on its own thread, so the cost is cores, not frame time.
-- **Readbacks.** None are added. The view never reads back.
-- **Counts.** The count pass (a second draw into an `R16Float` target against
-  a scratch depth copy) runs only on the reference. At 4K a scratch copy per
-  counted draw would be about 70 MB; the split avoids it.
+  unscaled targets does not. Snapshots are full copies of the back buffer
+  (about 44 MB each at 3840x2880); on GPU-visible copies the menu's five a
+  frame ([menu-budget.md](../perf/notes/menu-budget.md)) are the first thing to measure.
+- **CPU.** Single-copy mode records each scaled draw once. Exact mode
+  repeats per-draw work (uniforms, bind groups, recording, encoding,
+  submission) on the second backend but not push-buffer decode, draw resolve,
+  texture decode or shader translation. Timings are in
+  [menu-budget.md](../perf/notes/menu-budget.md) and [render-thread.md](render-thread.md).
+- **Readbacks.** None are added by the view; single-copy mode resolves CPU
+  reads on the GPU at guest size.
+- **Counts.** In exact mode the count pass (a second draw into an `R16Float`
+  target against a scratch depth copy) runs only on the reference.
 
-A lazy reference (queue the reference's draws into scaled surfaces until
-something reads them, drop what a whole clear overwrites unread) was built
-and removed: on a synthetic 4x frame it saved 1-10% of render-thread time
-when nothing read the frame and cost 15-25% more when a snapshot of the back
-buffer did, and Halo's frames take such snapshots (the crossfade, bloom
-sources). See [render-switches.md](render-switches.md), "Removed".
+## Tests
 
-## Test plan
+No test needs a game build. Tests invent their data; captures from the
+owner's runs stay in `$TMPDIR` and never go into Git. GPU tests skip when no
+adapter exists.
 
-No test here needs a game build or a game run in CI. Tests invent their data.
-Captures come from the owner's own runs and stay in `$TMPDIR`; they hold
-game-derived data and never go into Git.
+- `crates/d3d/tests/render_scale.rs` (headless wgpu): the guest sees the same
+  answers at every scale; the view's frame box-filtered equals the reference
+  except on geometry edges; only frame-sized surfaces scale; scales outside 1
+  to 6 are rejected; frame-sized targets, small targets with the scaled depth
+  buffer, depth-level fills, the depth buffer as a texture and colour over
+  depth memory match the reference downsampled; the scale and the lighting
+  change at a frame boundary; the E3 shadow-map tests; the `single_copy_*`
+  tests.
+- `crates/d3d/tests/seams_gpu.rs`: clear-colour pixels inside a mesh with
+  T-junctions and a one-ulp seam, at 2x to 6x ("Subpixel snapping and
+  cracks").
+- `crates/d3d/tests/glyph_text.rs`: the glyph filter against a synthetic
+  cache ("Text").
+- `crates/d3d/tests/gpu_depth_alias.rs`, `external_pass.rs`: depth aliases and
+  external passes through `ScaledBackend`.
 
-**Unit tests (`gfx`).**
-
-- Scaled `SurfaceStore`: scissor, viewport and rectangle clears at 2x, 3x and
-  4x, and at a per-axis scale, checked by pixel.
-- Split scissor pieces stay disjoint and gapless at fractional scales: an
-  additive draw over the pieces touches every host pixel once.
-- A point-sampled 1:1 full-screen copy is an exact replication at integer
-  scales. The same copy with a half-texel shift shows the documented seam at
-  odd scales, so the detector below is proven to work.
-- The guest-size resolve of a flat colour is that colour; of a checkerboard at
-  the scale's period it is the mean.
-- The depth-to-colour pass gives the same bytes as the CPU decode at 1x.
-- Stipple indexed by guest pixel.
-
-**Device tests (`d3d`).**
-
-- The call list reaching the reference is identical with and without the
-  wrapper (`RecordingBackend`).
-- Guest memory after a synthetic frame with a write-back, a pixel count and a
-  depth alias is byte-identical at scale 1 and scale 4 (in the style of
-  `tests/rtt_direct.rs` and `tests/round7.rs`).
-- A view that fails a draw or an allocation leaves the device unlatched and
-  the guest bytes unchanged.
-- Mixed-scale sampling picks the resolve or the scaled surface by the rule.
-
-**Offline replay of captures.** `H2_BOOT_CAPTURE` already records what a
-backend needs to redraw one frame: textures, surfaces, guest writes and each
-`ResolvedDraw` with its streams ([BOOT.md](../runtime/BOOT.md)). No replayer was found on
-master, so one is part of this work: read a capture, feed it to a backend at
-1x and at N, and compare.
-
-- Box-filter the scaled frame down and diff it against the 1x frame.
-  Differences should sit on geometry edges. A difference covering an area
-  means a pass is misaligned or a target has the wrong policy.
-- Seam detector: rows or columns that differ from both neighbours along the
-  whole target, and the first and last row and column.
-- Bisect with per-draw snapshots (`H2_BOOT_CAPTURE_SNAP`): the first draw after
-  which the downsampled view leaves the reference names the pass.
-- Capture set: the main menu (depth fog, blue tint), the first level's intro
-  (crossfade, shadow map, 512x512 and 128x128 targets), a frame with the sun
-  and its flare in view, and split screen once it runs.
-
-**Live check, by the owner.** One run with an input timeline at scale 1 and
-scale N, comparing the guest digest. This is the only step that runs the game,
-and it is an acceptance check, not a development loop.
-
-## Phases
-
-| Phase | Work | Depends on |
-|---|---|---|
-| 0 | Capture replayer and the diff tools. Count, in a real run, which write-backs and counts happen per frame and at which guest call sites. | Nothing |
-| 1 (built) | `ScaledBackend` with integer scales, frame buffers and depth only. Snapshots scale. Depth aliases fall back to the reference's 1x texture. | 0 (built without it) |
-| 2 (partly built) | Back-buffer-sized render targets scale; depth aliases of the whole buffer scale; per-draw repairs from the reference (see "Phase 2 as built"). Not yet: guest-size resolves for sampling a scaled surface into a small target. | 1 |
-| 3 | Per-axis scale for anamorphic widescreen. Presenter resample to the display. | 2 |
-| 4 | Optional extras, each its own flag: anisotropy override, shadow-map scale (built as E3 lighting's phase 1, the Lighting row), MSAA, fractional scales. | 3 |
-| Single copy (built) | Default above 1x. GPU sampling retains display detail, and CPU readbacks resolve at guest size. | See “Single-copy readbacks” |
-
-### Phase 1 as built
-
-Phase 1 is built without phase 0 (no capture replayer yet), so it is proven
-with synthetic frames, not captures.
-
-- **`d3d::scaled::ScaledBackend<R, V>`** wraps a reference and a view. `V`
-  implements `ScaleView<R>` (scaled surfaces, sharing the reference's
-  textures, a nearest fill from a reference surface, presenting the
-  reference's image). `GfxBackend` implements it for itself; the two share a
-  device.
-- **What scales**: surfaces made with `create_surface` at the frame size, the
-  size of the first colour surface (the back buffer). That is the frame
-  buffers, the depth buffer and `PersistDisplay`'s copy. Snapshots of them
-  are copies of the scaled image.
-- **What does not**: render-to-texture levels and surfaces of other sizes live
-  only in the reference, and the view samples the reference's textures of
-  them. So offscreen passes run once, not twice, and the view's second
-  backend only redoes the frame-buffer draws. Uploaded textures are shared,
-  not uploaded twice. Depth-level and depth-alias textures are the
-  reference's 1x ones, as planned.
-- **Ordering**: the view's recorded pass is submitted before the reference
-  changes a surface the view may sample (one queue, two backends).
-- **Reads and outcomes** come from the reference only: `read_surface`,
-  `read_depth`, every pixel-count call, `judge`, every `can_*`, the mirror.
-  The view never counts samples (`count_samples` off).
-- **Scissors and clears** are scaled inside `GfxBackend` for a scaled
-  surface. Geometry keeps guest window coordinates (`surface` stays the guest
-  size; the built-in pre-transformed shader takes `gfx::Draw::window`).
-- **Half-pixel shift** (new, see below): at scale `s` positions move by
-  `(2s - 1) / (4s)` guest pixels (`gfx::renderer::window_shift`,
-  `VertexUniforms::shift`, the built-in shader's `shift_x/y`), with no
-  1/16 truncation at scale (see "Subpixel snapping and cracks"). It is 0 at 1x, so the reference's shaders compute
-  what they did.
-- **Failures**: a view error is counted (`ScaleStats`), never returned, and
-  that frame is shown from the reference (`present_reference` calls the
-  view's present hook on the reference's store).
-- **Flag**: `H2_RENDER_SCALE=1..6` in `h2 play` sets the scale and locks
-  it; `H2_RENDER_SCALE=1` builds nothing extra (one backend, as before the
-  setting). The presenter needed no change: it already fits any frame size
-  into the window. With the variable unset, the Video screen's Resolution
-  row decides (640x480 to 2560x1920, saved as `[graphics] render_scale` in
-  `<data>/settings.toml`; docs/game/settings-menu.md "Video screen"), and the
-  view is always built so the row can change it.
-- **Changing the scale during a run**: `ScaledBackend::follow_scale` reads
-  the setting at every present. A new scale is made at that frame boundary,
-  on the thread that presents (the render thread under `ThreadedBackend`):
-  every scaled surface is made again at the new size and filled from the
-  reference's (nearest), and the device's surface handles are mapped onto
-  the new ones, so the guest and the device see nothing. At 1 with
-  retail lighting the view sleeps: it draws nothing and each frame is the
-  reference's (`ScaleStats::reference_frames`, not a fallback). With E3
-  lighting it stays awake at 1 (shadow maps at 2x). Tests:
-  `crates/d3d/tests/render_scale.rs`, `the_scale_changes_at_a_frame_boundary_with_no_fallback_frames`
-  (1x, 2x, 3x, 1x, 4x, 2x: each frame after a change is at the new size,
-  byte for byte what a run started at that scale draws, with no fallback
-  frame) and `on_the_render_thread_the_change_is_made_there_and_shown_at_once`.
-
-The half-pixel offset is not harmless for geometry, as "Half-pixel and texel
-offsets" first said. D3D-convention geometry puts edges, and the texel corners
-of a 1:1 copy, exactly on pixel centres, so at 1x the tie rules decide. Scaled
-without a shift, a full-screen quad leaves the first host column and row
-empty (the margin artefact of xemu issues 57 and 508), and a point-sampled
-1:1 copy reads the neighbouring texel. With the shift, the `s x s` host
-pixels of a guest pixel sample it at offsets `(k + 1/4) / s`, all inside the
-pixel and none on a tie. Then an edge on a pixel centre covers whole blocks,
-the top-left rule included, and a 1:1 copy reads the texel 1x reads. A shift
-of exactly `(s - 1) / (2s)` puts the first sample on the tie and fails at 3x
-through rounding; the extra quarter is what makes it robust.
-
-The shift moves everything up and left by `(2s - 1) / 4` host pixels, so
-geometry that ends on the target's far edge instead of a pixel centre (the
-D3D 1:1 texel mapping, a quad from -0.5 to the size less 0.5, which Halo's
-menus use to composite their blurred level) stopped short of the last
-host columns and rows: one at 2x and 3x, two at 4x, holding whatever the
-target held before, and spreading inwards when a later pass sampled the
-target. A scaled draw therefore holds any position past the last pixel
-centre at least on the far edge (`xvs_fixup`, the built-in shader). At 1x
-those positions all cover the last pixel exactly as the edge does.
-`a_full_screen_pass_reaches_the_far_edges_at_every_scale` checks it.
-
-Measured, by tests in `crates/d3d/tests/render_scale.rs` on a headless Metal
-device:
-
-- One synthetic frame (render-to-texture with a write-back, rectangle clears,
-  a quad through two scissor rectangles, a 1:1 textured copy of the level, a
-  triangle, a visibility test) gives the guest identical answers with a
-  plain backend and with the wrapper at 1x, 2x and 4x: the count, the
-  level's written-back bytes, the device's guest memory and the skipped
-  draws. The reference's frame is byte-identical to the plain one.
-- The view's back buffer is `64s x 64s`. Box-filtered to 64x64 it equals the
-  reference exactly in every row the triangle does not touch, at 2x, 3x and
-  4x. Over the whole frame the mean difference is 1.5-1.8 levels per
-  channel, all on the triangle's edges.
-- `640x480` surfaces from `create_surface` are `2560x1920` at 4x; other sizes
-  and render-to-texture levels have no view surface; a snapshot of an
-  unscaled surface is the reference's texture.
-
-Not measured: CPU or GPU cost in the game, since phase 1 rules out game runs
-here. The design's estimate stands, but it is now an upper bound, since
-offscreen passes are not repeated.
-
-Known gaps in phase 1, all view-only, so the guest cannot tell (the first
-two are closed in phase 2, below):
-
-- A draw into a guest-size target with the scaled depth buffer bound updates
-  only the reference's depth (`ScaleStats::depth_missed`). Clears of that
-  depth go through a scaled colour surface of its size, so they do reach the
-  view.
-- Guest bytes written into a scaled depth surface do not reach the view.
-- Stipple is indexed by host pixel, and lines are one host pixel wide.
-- Per-axis scale and the 16:9 4K size (3840x2400) wait for phase 3.
-- The view runs on the same render thread as the reference, so its CPU cost
-  is frame time, not another core.
-
-### Phase 2 as built
-
-The gaps above showed in the game: with the scale on, Ascension's sea and
-terrain below the platforms were a flat grey void and the frame looked
-washed out, while 1x was fine. The likely cause, from the code (no capture
-yet): a pass drawn into a guest-size render-to-texture level with the
-depth buffer bound, writing depth (Halo's texaccum, the size of the back
-buffer), reached only the reference. The view's depth never got that
-geometry, so the pass that composites onto the back buffer with a depth
-test found nothing to draw against, and the fog and sky showed through.
-Phase 1 counted this as `depth_missed` and left the hole.
-
-What phase 2 changes, in `d3d::scaled`:
-
-- **Back-buffer-sized render targets scale.** A render-to-texture level of
-  the frame size gets a scaled view surface
-  (`ScaleView::create_scaled_texture_target`), so passes into it, with the
-  scaled depth buffer, run in the view. Draws that sample it read the
-  scaled surface; the texel-addressing size stays the guest's (it comes
-  from `TextureInfo`), so a 1:1 screen-space read lines up. Smaller levels
-  (bloom, reflections, shadows) stay at 1x in the reference.
-- **A guest-size target with the scaled depth buffer.** A draw that writes
-  depth or stencil is drawn again into the view's depth through a scaled
-  colour surface of the depth's size, colour writes off and the target size
-  set to the depth's (`ScaleStats::proxy_depth_draws`). Without such a
-  surface the view's depth is replaced by the reference's.
-- **Guest bytes into a scaled depth surface** (a frame-sized depth level
-  filled from guest memory, a mirror load) reach the view: the reference's
-  depth is read back as `D24S8`/`D16` words, each repeated into an `s x s`
-  block, and drawn into the view's depth (`fill_from`).
-- **Textures over the whole depth buffer** (Halo's `0x509368` and
-  `0x50936C`, a linear texture of the buffer's size at offset 0) are made
-  by the view from its own scaled depth on the GPU
-  (`ScaleStats::scaled_depth_aliases`). Partial or swizzled aliases, and
-  depth levels (shadow maps, compared texel by texel), stay the
-  reference's 1x textures. A colour surface over the depth buffer's memory
-  (the loading screen's target 3) was already a scaled surface and its
-  texture a scaled snapshot.
-- **No holes: repair from the reference.** A draw into a scaled target that
-  the view cannot make (a texture it cannot sample, a depth surface that is
-  not scaled) or makes with another outcome than the reference's replaces
-  the view's target with the reference's, each guest pixel repeated
-  (`color_resyncs`, and `depth_resyncs` when the draw writes depth). That
-  target is then at 1x until it is drawn again. Each kind of repair is
-  logged once (`d3d: render scale N: ... (repaired from the 1x
-  reference; logged once)`); errors still fall back for the whole frame.
-- **Larger depth than colour.** `GfxBackend` now makes the colour's
-  depth-sized stand-in before recording a draw, not only before a clear or
-  a flush, so a smaller target with the full depth buffer draws at 1x too.
-
-Sampling a scaled surface into a guest-size target needs no resolve in
-this design: the reference draws every guest-size target from its own 1x
-surfaces, and the view samples the reference's result.
-
-`h2 run` with `H2_BOOT_GFX` and `H2_RENDER_SCALE` renders through the
-wrapper headlessly: `frame-NNNNN.png` is the view's image and
-`frame-NNNNN-1x.png` the reference's, and the run report ends with a
-`render scale N:` line of the counts (docs/runtime/BOOT.md).
-
-Measured by `crates/d3d/tests/render_scale.rs` on a headless Metal device,
-each scene drawn by a plain backend and the wrapper, the reference equal to
-the plain image and the view box-filtered to the guest size equal to the
-reference, pixel for pixel: a frame-sized level drawn with the depth buffer
-and composited with a depth-equal test (2x, 3x, 4x); the same with a 32x32
-level (proxy depth draws); a frame-sized depth level filled from guest
-bytes; the depth buffer sampled as a colour texture; a colour surface over
-the depth buffer's memory; and a depth level larger than the frame (the
-repair). With phase 1's behaviour the first three leave the view at the
-clear colour where the reference drew.
-
-Not covered yet: stipple by host pixel, per-axis scale, and whether the
-texaccum explanation is the whole story in the game (that needs a run).
-
-Shadow-map scale is built as E3 lighting's phase 1 ([e3-lighting.md](e3-lighting.md),
-"Phase 1 as built"): the view keeps a scaled copy of each `D24S8` depth
-level and samples it with one tap, and with E3 the view is awake at 1x
-too. Shadow-map scale needed two things first, both done: sampling a depth
-level in place instead of through guest memory, and the comparison indexing
-host texels. A sharper shadow map also narrows the 2x2 percentage-closer filter on screen, so shadow edges get
-harder. Whether that is wanted is a taste question; xemu issue 1996 shows
-shadows are where scaling artefacts get reported.
-
-Rough effort, as guesses: phase 0 one week, phase 1 two, phase 2 two to
-three, phase 3 one, each item of phase 4 one to two.
+Not covered by a test: a capture replayer for whole frames; stipple by guest
+pixel; the per-axis scale.
 
 ## Prior art
 
 Read for behaviour and cited only. No code or data was copied. xemu is GPL.
-Read 2026-11-15. The xemu source facts are from a summary of the files on its
+The xemu source facts are from a summary of the files on its
 master branch, not a line-by-line reading, and the Halo-2-HD blog was read
 through a mirror because the site refused direct fetches.
 
@@ -921,14 +735,21 @@ ones about the renderer's structure:
 - the game looks right with every other target at stock size, which supports
   leaving the square targets alone at first.
 
-## Open questions
 
-- Which write-backs and counts happen in gameplay, and does any value reach
-  the simulation? Phase 0 counts them; `0x24970` needs tracing.
-- Is there a back-buffer-sized render target in our captures, as Halo-2-HD
-  describes, and does any pass sample it with a texel-exact offset?
-- Does any retail pass point-sample a half-texel-shifted source? If so, odd
-  scales need a per-pass fix or must be refused.
-- Does Halo 2 draw lines outside debug paths?
-- How large is the second backend's CPU cost on current master, with merged
-  passes?
+## Not verified
+
+- Which write-backs and counts happen in gameplay, and whether any value
+  reaches the simulation (the callback at `0x24970` is not traced). Only a
+  run with counters can show it.
+- Whether a retail pass point-samples a half-texel-shifted source. If so, odd
+  scales need a per-pass fix.
+- Whether Halo 2 draws lines outside debug paths.
+- The CPU cost of exact mode's second backend on current master.
+- Whether the back-buffer-sized target that Halo-2-HD reports is the only
+  full-screen intermediate in our captures.
+
+## Related
+
+[d3d.md](d3d.md), [render-thread.md](render-thread.md),
+[e3-lighting.md](e3-lighting.md), [shaders.md](shaders.md),
+[settings-menu.md](../game/settings-menu.md).

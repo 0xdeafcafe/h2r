@@ -1,7 +1,7 @@
 //! Frame-time stats: where each frame's wall time goes, split into a few
 //! phases, with a rolling window (fps, p50, p99, max) and a whole-run
 //! report of the worst frames. `H2_FRAME_STATS=1` turns it on for `h2 run`
-//! and `h2 play` (docs/perf/gameplay-budget.md).
+//! and `h2 play` (docs/perf/notes/gameplay-budget.md).
 //!
 //! Each thread has one current phase. [`enter`] switches it until the
 //! returned guard drops, so nested phases are self time: a `Submit` inside
@@ -170,6 +170,14 @@ pub enum Counter {
     LightWalkBuilds,
     LightWalkHandlersSkipped,
     ShadowWalkLayers,
+    /// Command buffers handed to `queue.submit` by the wgpu backend: its
+    /// encoders, upload patches and every native stage's private command
+    /// buffer (`native_<stage>_command_buffers`).
+    CommandBuffers,
+    /// Packet runs whose persistent rows (the world's view) were copied in
+    /// draw order, splitting the pass, because the submission's front
+    /// already held other bytes for them (`GfxBackend::write_ahead`).
+    OrderedWrites,
 }
 
 /// Number of [`Counter`]s.
@@ -181,7 +189,7 @@ pub fn counter_columns() -> impl Iterator<Item = (usize, &'static str)> {
 }
 
 impl Counter {
-    pub const ALL: [Counter; 29] = [
+    pub const ALL: [Counter; 31] = [
         Counter::Draws,
         Counter::Submits,
         Counter::Pipelines,
@@ -211,6 +219,8 @@ impl Counter {
         Counter::LightWalkBuilds,
         Counter::LightWalkHandlersSkipped,
         Counter::ShadowWalkLayers,
+        Counter::CommandBuffers,
+        Counter::OrderedWrites,
     ];
 
     pub fn label(self) -> &'static str {
@@ -243,6 +253,8 @@ impl Counter {
             Counter::LightWalkBuilds => "light_walk_layer_builds",
             Counter::LightWalkHandlersSkipped => "light_walk_handlers_skipped",
             Counter::ShadowWalkLayers => "shadow_walk_layers",
+            Counter::CommandBuffers => "command_buffers",
+            Counter::OrderedWrites => "ordered_writes",
             Counter::FileIoUs => "file_io_us",
         }
     }

@@ -948,7 +948,7 @@ pub(crate) fn prepare_mp_with<R: Read + Seek>(
 
 /// Writes a converted multiplayer map as `<out_root>/h1_<map>/`: its
 /// variant file and the package manifest, this run's variant beside any
-/// other already there (docs/halo1/multiplayer.md, "Package"). Returns
+/// other already there (docs/halo1/multiplayer.md, "Importing"). Returns
 /// the map file's and the manifest's paths.
 pub(crate) fn write_mp_package(
     out: &OutDir,

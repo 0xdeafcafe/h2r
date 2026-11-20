@@ -1,689 +1,67 @@
-# Agent API: driving the running game without pixels (design)
+# Agent API: driving the running game without pixels
 
-Status: phase 1 built ([below](#phase-1-what-was-built)): the socket,
-`session.*`, `world.count`/`query`/`object`, `profile.counters`,
-`features.list`, `h2 serve` and `h2 agent`. Raw and recorded input and
-`profile.capture` built too ([below](#phase-3-and-4-what-was-built)).
-Phase 5 ([plan and what was built](#phase-5-testing-in-the-lightest-way-plan)):
-`render.frame`, `render.stats`, spike causes, `profile.fallbacks`,
-`load.timeline`, `h2 testmap` and `h2 agent run`.
-`sim.*` (simulated players, host writes, expectations, lobby steps) built
-over a bots stand-in ([below](#sim-simulated-players-and-direct-state)).
-`trace.*` and `flight.*` (per-tick rows taken in the game, a flight
-recorder with input, `h2 agent flight show`) built
-([below](#tick-traces-and-the-flight-recorder)). `state.save`, `load`,
-`list`, `drop` and `fork` (machine snapshots) built, not yet run against
-the game ([`state`](#state-put-the-game-where-you-want-it)).
-Everything else on this page is design; its Rust and JSON blocks are
-sketches, not code that compiles. The front end is the `h2 agent` CLI
-only: the MCP server is dropped (decided 2026-11-17).
+Status: Built. Every method below is registered by the code; the ones no run has exercised are named under "Not verified".
+Code: `crates/agent-proto` (wire types, blocking client), `crates/agent` (server, tick-boundary executor, most methods), `crates/boot/src/agent_glue.rs` (the methods the host answers), `crates/cli/src/agent_cmd.rs` (`h2 agent`). Tests: `crates/agent/src/exec/tests.rs`, `crates/agent/src/sim/tests.rs`, `crates/agent/src/trace/tests.rs`, `crates/boot/tests/feature_plan.rs`.
+Switch: `agent` feature (`H2_FEATURES=-agent` removes the tick hooks), `H2_AGENT` (the socket), listed in [switches.md](switches.md).
 
-This page designs one interface through which an agent (or a script, or a
-test) can see and drive a running Halo 2. That means: what is on screen,
-what is in the level, where frame time goes, and how to put the game into a
-given state, act in it, and compare variants of a mission to find fps.
+An agent, a script or a test reads and drives a running Halo 2 through one
+JSON-RPC interface: what is in the level, where frame time goes, what the
+menus show, how to put the game in a state and act in it. It replaces
+screenshots, pasted logs and environment variables read at launch. The
+front end is the `h2 agent` CLI; there is no other client.
 
-## Evidence labels
+The rule that must hold: every answer is read at one tick boundary on the
+game's thread, and says which moment it describes (the `at` stamp).
 
-- **Code**: read from this repository at `51a3810c`. File given.
-- **Doc**: stated by another page here; follow the link.
-- **S**: speculation or a design choice. Check it before building on it.
+## Method index
 
-Nothing on this page was established by running the game. No game data is
-in this page.
+`session.methods` lists what the running process registers; a host method
+appears only where the host adds it. Access (`agent::Access`): **read**
+answers any connection; **act** answers any connection while none holds
+control, else only the controller (`NOT_CONTROLLER`); **claim** needs this
+connection to hold `session.claim`.
 
-## Why
-
-Every agent working on this project today sees the game in one of three
-ways: logs the user pastes back, screenshots taken by a headless run, or
-unit tests over synthetic data. Recent work shows the cost:
-
-- The firefight fps drop could not be profiled, because no agent can put
-  the game into a firefight. It waits on the user's frame stats.
-- An E3 lighting comparison came out wrong because the capture tool grabbed
-  frames during a fade to black. Nothing told it the screen was black.
-- Two headless runs of the same level stop matching a few minutes in, so
-  comparing a run with a change against a run without it measures noise.
-- The skulls page and the co-op screen were built from the game's code;
-  whether the presses arrive, or which screen actually opened, comes back
-  only as "send me the `skulls page:` lines".
-
-What exists already, and what this design builds on (**Code**):
-
-| Need | Existing piece | Gap |
+| Method | Access | Section |
 |---|---|---|
-| Who and what is in the level | `live-telemetry::memory::{snapshot, players, actors, world, placements, object}` | Read for the Live service, not on demand. No projectiles, effects, squads, scripts. |
-| Is the run deterministic | `lockstep`: RAM hash per tick and present, first divergence | Offline comparison of traces; no "start both from the same state". |
-| Recorded input | `xapi::tap` (record pad packets, replay by read index); `H2_BOOT_INPUT` scripted presses | Launch-time only. |
-| Turn things on and off | `feature::Switches` (`H2_FEATURES`, `impl.<subsystem>` switches) | Read once from the environment. |
-| Where time goes | `perf` sampler, `timeline` (Perfetto JSON), `H2_FRAME_STATS`, `perf::budget` | Whole-run captures; no per-object or per-squad attribution. |
-| UI layout | `h2 ui` and `tags::ui`: a screen's static widget tree | Static only: nothing says which screens are open now, or what has focus. |
-| Lights | `h2 lights <map>` | Static only. |
-| Start a level | `--level` / `H2_LEVEL` ([level-boot.md](level-boot.md)) | Starts at the level's beginning, not at a moment in it. |
-| Snapshots | the game's own checkpoint save and revert ([checkpoints.md](checkpoints.md)) | Tested, not reachable from outside. |
-
-Nothing in the game process takes commands while it runs; every knob is an
-environment variable read at launch (**Code**: no listener outside
-`live-server`).
-
-## Principles
-
-1. **Attach, don't build.** The API is served by an already-built image
-   that is already running. A client never compiles, never relaunches,
-   never changes `H2_OPT`. Everything a client can change, it changes
-   live: switches, state, input, overrides. A client that needs new code
-   is out of scope; it writes tests instead, as now.
-2. **Text first, pixels on request.** Every answer is structured JSON with
-   stable ids. Screenshots exist, but come annotated with the same ids, and
-   a client is never expected to read pixels to learn what a screen is.
-3. **Every answer says when it is from.** Each reply carries `tick`,
-   `present`, `map`, `bsp` and `phase` (menu, loading, cinematic, gameplay,
-   paused, fading). A capture taken during a fade says so.
-4. **Read at a tick boundary, on the game's thread.** World reads happen
-   between guest ticks, inside a hook on the game's own thread, so a reply
-   is one consistent moment, never half of one tick and half of the next.
-   The candidate point is the post-tick hook `lockstep` already uses; no
-   end-of-tick point has been verified safe yet, and co-op's per-tick
-   simulation hash ([live-coop.md](../live/live-coop.md)) is the closest
-   precedent (**S**). Reads from Rust are uncharged and invisible to the
-   guest (as in `lockstep`). See [pitfalls](#pitfalls-from-the-live-work).
-5. **Small answers by default.** Counts and summaries first, details by id,
-   paging everywhere. An agent's context is the scarce resource; a 3,000
-   object dump is a bug.
-6. **Reproducible by construction.** An experiment is a snapshot plus
-   recorded input plus a set of overrides. Same three, same result, checked
-   with `lockstep` hashes. Anything that breaks that says so up front.
-7. **Sim versus view.** Every override is labelled the way the feature
-   engine labels features ([feature-engine.md](../engine/feature-engine.md),
-   `sim: Host | View | Sim`). A `Host` or `View` override can't change the
-   simulation, so A/B runs stay tick-identical. A `Sim` override changes the
-   simulation on purpose, and the result says from which tick the runs
-   diverge.
-
-## Shape
-
-```
-          agent (Claude, Codex, a script, a test)
-                    │  `h2 agent …` CLI      │  JSONL scenario files
-                    └──────────┬─────────────┘
-                        │ JSON-RPC 2.0, one Unix socket per game process
-                        ▼
-  ┌──────────────── game process (h2 play, or headless h2 serve) ─────────────┐
-  │ agent server thread: parses, queues, never touches guest RAM itself       │
-  │        │ requests                         ▲ replies, events                │
-  │        ▼                                  │                                │
-  │ tick-boundary executor (post-tick hook, between scheduler slices)          │
-  │   reads: telemetry views, ui stack, hud, profile counters                  │
-  │   writes: input queue, switches, overrides, snapshot save/load             │
-  └────────────────────────────────────────────────────────────────────────────┘
-```
-
-- **Transport.** JSON-RPC 2.0 over a Unix socket the game opens when started
-  with `H2_AGENT=<path>` (or `--agent`). Off by default; no listener, no
-  cost. One client at a time holds control (`session.claim`); others may
-  read. (**S**)
-- **Two front ends, one protocol.** A CLI (`h2 agent <method> [json]`)
-  for agents, shells and the user, and a scenario runner
-  (`h2 agent run scenario.jsonl`) for repeatable experiments. Both are
-  thin; the protocol is the contract. There is no MCP server: dropped
-  (decided 2026-11-17), the CLI is what agents use.
-- **Events.** `session.subscribe(["screen", "phase", "death", "checkpoint",
-  "frame_budget_miss", …])` streams notifications, so a client waits on
-  "the skulls page opened" instead of polling.
-- **Headless.** `h2 serve` is `h2 run` with the agent socket on, no window,
-  optional GPU rendering and optional real-time pacing (`H2_BOOT_REALTIME=1`).
-  `h2 serve --system-link --host-light` always paces to real time. It is the
-  shared instance agents use. The [dedicated host guide](../live/dedicated-host.md#light-host)
-  describes the profile and the measurement procedure.
-
-Method names are `domain.verb`. Every reply has the stamp:
-
-```json
-{"at": {"tick": 48211, "present": 96400, "map": "03a_oldmombasa", "bsp": 1,
-        "phase": "gameplay", "fade": 0.0, "paused": false}}
-```
-
-## Domains
-
-### `session`: what is running and its clock
-
-| Method | Does |
-|---|---|
-| `session.status` | build id, image hash, disc map list, switches, phase, fps right now |
-| `session.claim` / `release` | take or give up control |
-| `session.pause` / `resume` / `step {ticks}` | freeze the sim; step exact ticks (render keeps presenting the paused frame) |
-| `session.wait {until: <predicate>, timeout_ticks}` | block until a predicate holds: `{"screen": "skulls"}`, `{"phase": "gameplay"}`, `{"tick": 50000}`, `{"hs_global": ["x", ">", 3]}` |
-| `session.subscribe {events}` | stream events |
-
-`wait` is the replacement for every "sleep and screenshot" loop: it is
-evaluated at the tick boundary, so it never misses a one-tick state.
-
-### `host.metrics`
-
-Read with `h2 agent hostmetrics`. This method takes no parameters. It
-reports the latest complete window of 30 intervals between returns from
-`GAME_TICK` (`0x00137fe0`). The first reading is available after 31 tick
-returns. Until then it returns `UNAVAILABLE`.
-
-| Field | Meaning |
-|---|---|
-| `ticks` | Tick intervals in the sample, currently 30 |
-| `game_cpu_ms_per_tick` | CPU time on the game thread per tick interval, including work between ticks |
-| `process_cpu_ms_per_tick` | CPU time on all process threads per tick interval |
-| `wall_ms_per_tick` | Elapsed wall time per tick interval, including pacing sleeps and any pause or load crossed by the window |
-| `cpu_percent` | Whole-process CPU over the wall interval. 100 means one fully used core |
-| `rss_bytes` | Resident bytes at the end of the interval on macOS and Linux. This includes resident shared pages |
-| `age_ms` | Time since the sample ended |
-| `host_light` | Whether the process uses the light host profile |
-
-A platform counter that is unavailable is returned as `null`. Compare
-active gameplay windows after loading. A stale sample can survive a gap in
-ticks. The CPU fields exclude sleeping. The wall field shows the pace the
-host actually sustained. [Tick sampler](../../crates/boot/src/host_metrics.rs)
-
-### `host.audit`
-
-Set `H2_HOST_AUDIT=/path/to/audit.json` before boot to enable this method.
-`h2 agent hostaudit` takes no parameters. It writes a snapshot to that
-configured path and returns the path, ticks, observed and registered
-function counts, tag range count and inclusive CPU timing. An orderly
-exit writes the final snapshot. Call the method before terminating a
-dedicated process externally. The collector changes dispatch and memory
-watch costs, so use `host.metrics` in an ordinary run for sizing.
-[Report fields and corpus](sim.md#host-audit-corpus)
-
-### `host.lobby`
-
-Start a System Link light host with `H2_HOST_LOBBY=1`. On that process,
-`session.methods` lists these four methods. Each result object also carries
-the agent's usual `at` boundary stamp.
-
-| Method | Parameters | Result fields |
-|---|---|---|
-| `host.lobby.open` | `{"map":"lockout","variant":"team_slayer","max_players":8,"live":false}` | System Link returns an empty object. Live returns the advertised `session_id`. |
-| `host.lobby.state` | `{}` | `{"phase":"lobby","players":[{"slot":3,"peer":1,"name":"Example"}],"ready":true}` |
-| `host.lobby.start` | `{}` | An empty object when retail accepts the start request. Observe `state` for load and play. |
-| `host.lobby.close` | `{}` | An empty object once the network lobby has closed and the host is back at the menu. |
-
-The host looks up `map` by short name, scenario path or English display
-name. The optional `variant` defaults to Slayer. It accepts a disc variant,
-a signed and valid saved variant present at boot, a stock game type or a
-built-in Live playlist variant key. Names are case-insensitive. If a name
-matches two different saved or disc rulesets, open returns `INVALID_PARAMS`.
-
-`max_players` is an integer from 1 to 16. The required `live` boolean
-selects System Link or a Live custom game. Live requires a working
-service identity that can publish sessions. Open waits for retail to
-publish the requested lobby parameters. Repeating the same open in
-pregame returns the existing lobby. Close it before changing parameters.
-
-The phases are `menu`, `lobby`, `loading`, `playing`, and `postgame`. Player
-slots are retail membership slots and can have gaps. Split-screen players
-on a remote console share a peer index. An empty, joinable lobby reports
-`"players":[]` and `"ready":false`. Readiness requires a remote player,
-party leadership, the requested map and limit, loaded maps on every peer,
-and retail's ready-to-start result. Any connection may read state.
-Mutations respect `session.claim` and a concurrent mutation receives
-`BUSY`. [Playerless lobby and the two-console check](../live/dedicated-host.md#playerless-lobby)
-
-### `ui`: what the menus and HUD show
-
-The client gets the **stack of open screens**, not pixels:
-
-```json
-{"at": {…, "phase": "menu"},
- "stack": [
-   {"screen": "main_menu", "tag": "ui\\screens\\…", "layer": 0},
-   {"screen": "campaign_difficulty", "tag": "…", "layer": 1,
-    "focus": "row.2",
-    "widgets": [
-      {"id": "title",  "kind": "text",   "string_id": "…", "text": "Select Difficulty"},
-      {"id": "row.0",  "kind": "button", "text": "Easy",      "enabled": true},
-      {"id": "row.2",  "kind": "button", "text": "Heroic",    "enabled": true, "focused": true},
-      {"id": "row.3",  "kind": "button", "text": "Legendary", "enabled": true}
-    ]}],
- "native": false}
-```
-
-- **Static layout** comes from what `h2 ui` decodes today (`tags::ui`:
-  widget kinds, rects, string ids). **Live state** (which screens are open,
-  focus, list contents, enabled rows) comes from reading the game's screen
-  stack. Where that lives in guest memory is a research point (**S**).
-  Screens already moved to Rust (the Video screen, the skulls page, the
-  account, co-op and sign-in screens; [feature-engine.md](../engine/feature-engine.md)
-  Phase 3) report their own state directly, marked `"native": true`. They
-  share one list-screen implementation (`crates/boot/src/list_class.rs`,
-  **Code**), so one reader there covers all of them. Nobody reads the
-  retail screens' live state yet; that is the new part.
-- **Text is resolved at runtime** from the user's own disc and returned to
-  the client. It is never written into the repository; tests use made-up
-  strings, as `h2 ui` does today.
-- **Acting on the UI** by meaning, not by stick presses:
-  - `ui.focus {id}` and `ui.activate {id}` turn into the direction and
-    button events that reach that widget, then wait for the stack to
-    change. The game's menus receive these as menu events (kinds 1 to 4
-    for directions, 5 for buttons, per the Live work), so injecting menu
-    events is cleaner than faking pad packets and doesn't depend on
-    repeat timing or the opening-press guard. `ui.press` keeps the pad path
-    for tests of the input route itself.
-  - `ui.navigate {path: ["Campaign", "Outskirts", "Heroic", "Start"]}` does
-    the same across screens.
-  - `ui.press {button}` stays for raw tests: "does Left reach the skulls
-    page?" becomes `ui.press Left` followed by checking `widgets[i].text`.
-- **HUD** is a separate view, `ui.hud`: health and shield, weapons and
-  ammo, grenades, motion tracker contacts (as world ids and bearings),
-  objective text, subtitles, the crosshair's target. Mostly read from the
-  player and unit state `live-telemetry` already finds (**Code**:
-  `PlayerState`, `Weapon`); subtitles and objectives are research points
-  (**S**).
-- `ui.screenshot {annotate: true}` returns a PNG path plus every widget's
-  rect in pixels, so a client checking layout ("does the long skull name
-  fit its row?") compares rects, not glyphs.
-
-### `world`: what the level is and what is in it
-
-Two layers. The **map** is static and comes from the tags. The **world** is
-what is alive now.
-
-**Audio routing** (`h2 agent audio.voices`, no parameters). Available with
-DirectSound. The result has `distance_reverb` (host enhancement enabled),
-`reverb_active` (audible environment configured), and `voices`. Each
-playing buffer, queued unpaused stream and playing mix-in has a mixer
-`id`, `kind`, `volume_mb` and `distance_units` (listener-relative
-world units, null for an unpositioned voice). Match a stream's output
-`bin` to a mix-in's `input_bin` to find the positioned emitter.
-
-`direct_gain` and `room_gain` are linear low-frequency gains including
-voice volume and headroom. `direct_hf_db` and `room_hf_db` give the
-additional loss at `reference_hz`. Each ordered entry in `bins` has
-its raw `bin`, `volume_mb` and its linear `gain` including that pair's
-volume and path gain. These are routing settings before spatial panning,
-master gain and the reverb return. A disabled environment or unconnected
-bus can have a configured send gain and deliver silence. Plain stereo
-routing has `bins: null`.
-
-**Map** (`world.map`). One call gives the shape of the level as a summary:
-
-```json
-{"map": "03a_oldmombasa", "bsps": [{"index": 0, "name": "…", "bounds": [[…],[…]]}, …],
- "counts": {"squads": 41, "spawns": 12, "trigger_volumes": 88, "scripts": 160,
-            "device_groups": 30, "lights": 12, "cutscene_flags": 54},
- "zones": [{"id": "zone.3", "name": "…", "bsp": 1, "bounds": […],
-            "squads": ["squad.12", "squad.13"], "triggers": ["tv.20"]}]}
-```
-
-Then per kind, by id or by filter: `world.map.squads {zone}`,
-`world.map.scripts {name_like}`, `world.map.triggers`,
-`world.map.lights` (what `h2 lights` reads), `world.map.placements`
-(reusing `scenario-edit` and `live-telemetry::placements`). Zones are
-derived (**S**): trigger volumes and BSP regions grouped with the squads
-and scripts that name them, so "the courtyard fight" is something a client
-can point at.
-
-**World** (`world.query`). Live objects, filtered and paged:
-
-```json
-{"method": "world.query",
- "params": {"kind": ["actor", "vehicle", "projectile"], "near": {"player": 0, "radius": 30},
-            "fields": ["pos", "team", "health", "squad", "state", "target"], "limit": 50}}
-```
-
-- Kinds: player, actor (AI: squad, state, target, combat status), biped,
-  vehicle, weapon, projectile, equipment, scenery, machine, effect, light,
-  sound source, particle system. The first six exist in `live-telemetry`
-  (**Code**); effects, particles and sound sources are new reads (**S**).
-  Built (**Code**): player, actor, vehicle, machine, body, scenery,
-  weapon, equipment, control, crate, creature (see "Every kind of object"
-  under Phase 1).
-- `world.count {group_by: "kind" | "squad" | "bsp" | "zone"}` is the cheap
-  first call. It answers "how much is alive" before anything is listed.
-- `world.object {id}` gives everything about one object, including its tag
-  path and the effects attached to it.
-- **Facing** (**Code**, 2026-11-19). `forward` is where an object faces;
-  for a unit (a player's, an actor, a body) it is where the unit aims:
-  its aiming vector (unit `+0x168`, the vector the held weapon's targeting
-  ray follows, `0x000cf3d0`), which turns with the camera. A biped's body
-  turns only as it moves, so its own forward (`+0x70`) stayed put while the
-  view turned; that is `body_forward` now. `yaw` (degrees about +z from
-  +x, 0 to 360) and `pitch` (degrees up from level) are `forward` as
-  angles, on every object with a `forward`. A unit whose aim reads as not
-  finite or not unit length falls back to the body's forward.
-  Units also carry `physics` (**Code**): crouch amount, the crouch request
-  (unit flags bit 23, which stays set after release until there is room to
-  stand), physics mode, the biped airborne bit (`+0x348` bit 0, likely) and
-  its tick count (`+0x399`), the hitbox offset a melee lunge leaves
-  (`+0x3aa`, ticks and units; docs/game/superbounce.md), and the raw unit
-  and biped flag words. Polling
-  `object player.0` on one `h2 agent -` connection and keeping one reply per
-  stamped tick gives a per-tick movement trace.
-  `physics.havok_pos` and `havok_velocity` are the object's first Havok
-  body; [`havok.*`](#havok-the-physics-world) has every body and contact.
-  Bipeds also carry `physics.support` (**Code**, layout in
-  `live-telemetry`'s `layout.rs`, `BIPED_SUPPORT_*` and
-  `CHARACTER_CONTACT_*`): what the biped physics update (`0x000dd990`)
-  keeps of the ground. `flags` is biped `+0x349`, the high byte of the
-  biped flags word at `+0x348` (`copied`: its bit 4, biped flags bit 12, set
-  when this tick's update copied a support contact, `0x000ddeda`);
-  `words` are `+0x354..+0x364` (what supports the biped, all `ffffffff`
-  for nothing); `point`, `normal` and `contact_point` are `+0x368`,
-  `+0x374` and `+0x380` (the support contact's normal and point,
-  `0x000dde99..0x000ddef5`); `ground_state` is `+0x3ec`, the vector the
-  ground test `0x001f19c0` measures first. `contacts` are the character
-  contacts that test walks, on the biped's physics component (`+0x88`,
-  count `+0x8c`, `0x48` each, at most 32): `key` (`+0x04`, the shape key),
-  `other` (`+0x14`), `point` (`+0x1c`), `normal` (`+0x28`), `value`
-  (`+0x38`; the first pass wants it at least 1e-4) and `flags` (`+0x44`).
-  These are the contacts the airborne bit is decided from, unlike
-  `havok.contacts`, which lists the solver's contact constraints. Step a
-  replay (`claim`, `pause`, `step 1`) to read them tick by tick.
-- `world.raycast`, `world.visible {from: "camera" | player}`: what the player
-  can see, for both "is this on screen" and closed-loop movement.
-- `world.overhead {bsp, size}` renders a top-down map image with numbered
-  markers whose numbers are the ids in the JSON. A text form (a coarse grid
-  with letters) exists for clients without vision.
-
-Ids are stable for an object's lifetime and readable: `actor.squad12.3`,
-`vehicle.warthog.1`, with the guest datum handle alongside for debugging.
-
-### `profile`: where a frame goes, and who caused it
-
-Frame time is broken down **twice**: by phase (what the engine was doing)
-and by owner (which thing in the level made it do it).
-
-```json
-{"method": "profile.capture", "params": {"ticks": 600, "by": ["phase", "owner"]}}
-→
-{"frames": 1200, "ms": {"p50": 14.1, "p95": 22.8, "p99": 31.0},
- "phase": [
-   {"name": "sim.ai",         "ms_p50": 3.2, "share": 0.23},
-   {"name": "sim.objects",    "ms_p50": 2.0},
-   {"name": "sim.effects",    "ms_p50": 1.4},
-   {"name": "sim.hs",         "ms_p50": 0.3},
-   {"name": "render.views",   "ms_p50": 5.1,
-    "children": [{"name": "pass.shadow", "ms_p50": 1.9, "draws": 412}, …]},
-   {"name": "audio.mix",      "ms_p50": 0.6},
-   {"name": "present.wait",   "ms_p50": 0.0}],
- "owner": [
-   {"id": "squad.12", "ms_p50": 1.8, "what": "ai.update 1.1, objects 0.4, effects 0.3"},
-   {"id": "effect_class.plasma_impact", "ms_p50": 1.2, "count_p50": 37}],
- "spikes": [{"present": 96841, "ms": 48.3, "top": ["sim.effects", "pass.transparent"]}],
- "trace": "$RUSH_KEEP/…/trace.json", "samples": "$RUSH_KEEP/…/profile.folded"}
-```
-
-- **Phases** come from `timeline` spans already placed in the runtime, kernel
-  and d3d (**Code**), plus new spans at the engine's own top-level update
-  calls (AI, objects, effects, scripts) placed as feature-registry hooks
-  (**S**). Render passes are known by name since `render_views` became Rust
-  (feature-engine 7a).
-- **Owners.** The cheap way: per-tick counts of what is alive (actors per
-  squad, live effects per class, particles, projectiles, dynamic lights,
-  draws per object) correlated with frame time across the capture. The
-  precise way: a hook on the per-object update loop that times each
-  object's update and charges it to its squad, effect class or tag (**S**;
-  it adds dispatch cost, so the reply says it was on, like `lockstep`'s
-  observer).
-- **Spikes.** Each frame over budget is kept with its own breakdown. A
-  p99 problem is mostly a few frames, so the average hides it.
-- **Sampling** reuses `perf::Session` with guest symbols; the reply gives
-  the top functions as names, and the folded stacks as a file.
-- `profile.counters` is the always-on, near-free version: the last N
-  frames' phase totals and counts, so a client can ask "what was that
-  hitch" right after it happens.
-
-### `state`: put the game where you want it
-
-**Snapshots** are the core: the whole machine at one tick boundary, named,
-saved and loaded in well under a second (**S**: not measured).
-
-Built (types in `crates/agent-proto/src/state.rs`, the executor's part in
-`crates/agent/src/exec/snap.rs`, the machine in
-`crates/boot/src/snapshot_glue.rs`; tested over fakes, not run against
-the game; [snapshots.md](snapshots.md#phase-5-what-was-built)):
-
-| Method | Does |
-|---|---|
-| `state.save {name, replace?, cow?, max_ticks?}` | guest RAM, the kernel and its threads, D3D, audio, XAPI with the input cursor, every feature's section, and a RAM hash, at the first quiescent slice boundary after a tick. `cow: true` also writes a sparse raw RAM image `<name>.ram` beside the snapshot |
-| `state.load {name, cow?, max_ticks?}` | back to exactly that tick; the RAM hash (`lockstep::hash_guest`) checked against the saved one, naming the MiBs that differ. `cow: true` maps that RAM image private copy-on-write in place of decoding RAM in — pages the match never writes stay shared with every process on the same image; refused, naming the file, when the save wrote no image |
-| `state.list`, `state.drop {name}` | this build's snapshots, answered at once |
-| `state.fork {from, name, replace?}` | load `from` and save it again as `name`, for branching experiments |
-
-A save or load waits for the next tick, then retries at each tick while
-something is live, for `max_ticks` (90) ticks, then fails with code 7
-(`BUSY`) and the blockers in `data.blockers`. One sent while the game is
-paused runs at the end of the held tick's slice; the game holds again at
-the next tick. Calls other than `state.list` need control when another
-connection holds it. CLI: `h2 agent state save NAME [replace]`,
-`state load NAME`, `state list`, `state drop NAME`,
-`state fork FROM NAME [replace]`.
-
-Until 2026-11-19 every save on a serve answered `BUSY` with
-"occlusion/native-world/native-objects/native-transparents/native-lights/native-post:
-not audited for snapshots": each of those features declared its policy
-after the early return it takes when its switch is off, so it counted as
-unaudited. They declare it first now; switched on, each is a derived
-render cache whose load drops what it holds (occlusion streaks, pending
-guest-bit restores, light runs) or holds nothing past a frame
-([snapshots.md, "The render features"](snapshots.md#the-render-features)).
-
-The user plays to the fight once, presses a key (or the agent does it via
-`session.wait` on a script global), and that moment becomes a fixture:
-`oldmombasa.courtyard_fight`. Agents load it as often as they like. That
-removes "wait for the user's frame stats" from the firefight work.
-
-Snapshots are a superset of the game's checkpoint (which saves game state,
-not the machine; [checkpoints.md](checkpoints.md)), so they need runtime
-support: serialisable kernel objects, audio voices and render resources
-rebuilt from guest state. That is the largest piece of work here and the
-riskiest (**S**). The fallback is the game's own checkpoint plus level
-boot: coarser, but it exists.
-
-The design, the inventory of host-side state and the phases are in
-[snapshots.md](snapshots.md).
-
-Snapshots never enter the repository: they contain game data.
-
-**Edits** change the state directly, at a tick boundary:
-
-- `state.set {id, field, value}`: position, health, shields, ammo, team.
-- `state.give {player, weapon}`, `state.teleport {player, to}`: built as
-  `sim.give` and `sim.state.set {pos, yaw}`
-  ([the game's own functions](#the-games-own-functions-teleport-give-spawn)),
-  and `sim.spawn` for an object.
-- `state.game {difficulty, skulls}`.
-- `hs.eval {expr}`: run a HaloScript expression in the level, e.g.
-  `(ai_place squad_12)`, `(ai_erase squad_12)`, `(object_create crate_3)`,
-  `(device_set_position door_2 1)`. HaloScript is the designers' own control
-  surface, so it already speaks squads, objects and devices. The native VM
-  exists but isn't wired into the game ([hs_vm.md](../engine/hs_vm.md));
-  the first version compiles one expression with `crates/hs` and runs it
-  through the guest's evaluator. How to inject a node into the guest's
-  script pool is a research point (**S**).
-### HaloScript state
-
-These read methods take an empty parameter object and sample guest state at a
-tick boundary. Each returns `UNAVAILABLE` if its backing state is unreadable
-or uninitialized.
-
-- `hs.threads` returns a `threads` array of live slots. Each row has
-  `slot`, numeric thread `category`, and signed `wake` tick. Scenario
-  script threads also have their definition's `script` name and `kind`.
-  These two fields are null for transient evaluation threads.
-- `hs.globals` returns a `globals` array in scenario declaration order.
-  Each row has `name`, `type`, `type_index`, and `value.bits`. For scalar
-  types the value also includes `boolean`, `real`, or signed `number`.
-  Scenario declarations start after the interpreter's external-global cells.
-
-- `hs.player_actions` returns three unsigned masks from local player control.
-  `latched` records inputs seen since the script's last action-test reset.
-  `capture` identifies inputs claimed by script tests. `until_release`
-  retains suppression through button-up after a reset. Bit 0 of each
-  mask denotes the mapped action/reload button. This state is shared by
-  local controls. The method takes no player index.
-
-### `input`: act like a player
-
-Three levels, all ending up as pad packets through the normal input path,
-so the game can't tell an agent from a person:
-
-1. **Raw**: `input.pad {player, at_tick, steps: [{buttons, left, right,
-   lt, rt, ms, ticks, reads}]}`; a queue of timed steps per player
-   (**Code**, "Phase 3 and 4" below).
-2. **Recorded**: `input.record {name}` / `input.replay {name}`, the
-   `xapi::tap` log (**Code**), stored next to a snapshot so the pair replays
-   exactly.
-3. **Intent**: `input.look_at {target}`, `input.move_to {point}`,
-   `input.fire {target, burst}`. These are small closed loops in the server
-   that read `world` each tick and steer the sticks. They're for getting
-   somewhere and shooting something, not for playing well (**S**).
-
-Raw and recorded input keep runs deterministic. Intent input is
-deterministic too, as long as it starts from the same snapshot, because
-it only reads the simulation.
-
-### `override`: replace parts of a mission
-
-This is how a client asks "what if this weren't there". An override is a
-named, reversible change, applied live:
-
-| Override | Label | Example |
-|---|---|---|
-| `switch {name, on}` | as the feature says | `impl.render.views=on`, `e3_lighting=off` |
-| `render.pass {name, off}` | View | drop the shadow pass |
-| `render.lod_bias`, `render.scale` | View | |
-| `effects.cap {class?, max}` | Sim | at most 8 live plasma impacts |
-| `particles.cap {max}` | View if particles are render-only, else Sim (**S**) | |
-| `ai.erase {squad}`, `ai.limit {squad, max}` | Sim | remove the second wave |
-| `hs.script {name, off}` | Sim | stop a looping ambient script |
-| `objects.cull {kind, beyond}` | Sim | no scenery past 80 world units |
-| `tag.patch {tag, field, value}` | Sim | weaker emitter rate on one effect, in memory only (reusing `scenario-edit`'s patch model) |
-| `impl {subsystem, backing: "bridge" \| "native"}` | as the subsystem says | run the Rust render loop against the recompiled one |
-
-Overrides are switches from the feature registry, so they get its rules
-for free: conflicts found when planned, ordered hook chains, one place
-that touches dispatch ([feature-engine.md](../engine/feature-engine.md)).
-None writes to the disc or to `.map` files.
-
-### `experiment`: A/B a mission for fps
-
-The loop the user asked for: same start, same input, different overrides,
-compared.
-
-```json
-{"method": "experiment.run",
- "params": {
-   "start": "oldmombasa.courtyard_fight",
-   "input": "oldmombasa.courtyard_fight.input",
-   "ticks": 1800,
-   "measure": ["frame_ms", "phase", "owner", "draws"],
-   "variants": {
-     "base": [],
-     "no_wave2": [{"ai.erase": {"squad": "squad.13"}}],
-     "fx8": [{"effects.cap": {"class": "plasma_impact", "max": 8}}],
-     "no_shadow": [{"render.pass": {"name": "shadow", "off": true}}]},
-   "repeat": 3,
-   "frames": {"every": 300, "skip_black": true}}}
-```
-
-For each variant the server loads the snapshot, replays the input, applies
-the overrides, measures, and repeats. The reply is a table against `base`:
-
-```json
-{"variants": [
-  {"name": "no_wave2",  "p50": -2.9, "p99": -11.4, "sim_diverges_at": 48230,
-   "phase_delta": {"sim.ai": -1.6, "sim.effects": -0.7}},
-  {"name": "no_shadow", "p50": -1.8, "p99": -2.0, "sim_diverges_at": null,
-   "image_diff": 0.031}],
- "noise": {"base_p50_spread": 0.2},
- "frames": "$RUSH_KEEP/…/frames/"}
-```
-
-- `repeat` and `noise` give the run-to-run spread, so a 0.3 ms "win" inside a
-  0.4 ms spread is reported as nothing.
-- `sim_diverges_at` comes from `lockstep` hashes: `null` proves a View
-  override changed nothing in the simulation.
-- **Counterfactual frames.** `render.compare {variants}` renders one paused
-  frame once per variant, in the same run. Only the variant differs, so the
-  image diff measures the change, not noise between two runs (the E3
-  lighting work needed exactly this). `skip_black` uses the `fade`
-  stamp, so blank frames are never compared.
-- A finished experiment is a JSONL file (`h2 agent run`) that anyone can
-  run again. Its numbers live in `$RUSH_KEEP`, never in the repo.
-
-The output of an experiment is a pointer, not a fix: "wave two costs 3 ms
-at p50 because of its plasma impacts". The fix is a normal change with
-tests; the experiment is how the agent found it, and how it checks the
-fix later.
-
-### Live and accounts
-
-`session.live` reads `live-hle`'s state: sign-in, the account list, co-op
-sessions, with sign-in calls coming from the in-game sign-in work. The
-`live-server` HTTP API stays the way to read the server side; the API
-doesn't wrap it.
-
-## Pitfalls from the Live work
-
-`live-telemetry` has read guest memory in a shipping feature for a while.
-What it learned, and what this design takes from it:
-
-- **Reuse the readers, not the transport.** `memory.rs` (readers),
-  `layout.rs` (offsets) and `event.rs` (types) are tested and shared. The
-  sink and session layer is not: it sends signed records in the background
-  and drops them when its queue fills. The agent server reads on demand.
-- **Check a handle's salt before trusting its slot.** Slots are reused
-  within a tick. Every `world` id carries the datum handle with its salt,
-  and a stale id answers `gone`, never another object's data.
-- **Some data must be read before the game's function runs**, because that
-  function clears it (hit reports, for example). Those reads are pre-hooks
-  feeding a per-tick buffer, not reads at the tick boundary.
-- **Layouts differ between campaign and multiplayer.** Readers branch on the
-  game mode in the stamp, and tests cover both.
-- **Hooks on shared per-tick entry points need an explicit order**, or the
-  feature plan refuses to build (co-op hit this). The `agent` feature
-  declares its order against `lockstep`, co-op and telemetry.
-
-## Where the pieces go
-
-| Piece | Crate | Notes |
-|---|---|---|
-| Protocol types, method table, JSON schema | new `agent-proto` | no runtime deps; the CLI uses it too |
-| Server thread and tick-boundary executor | new `agent` | installed through the feature registry as feature `agent`, `sim: Host` |
-| World reads | `live-telemetry::memory`, grown | shared with the Live service; one place for guest layouts |
-| UI stack and HUD | `agent` + `tags::ui` | static trees from tags, live state from the screen stack |
-| Profile | `perf`, `timeline` | new spans as hooks; owner attribution behind its own switch |
-| Snapshots | `runtime`, `kernel`, `xapi` | serialisable host state; the biggest piece |
-| HS eval | `hs` | compile one expression; inject via the guest evaluator |
-| Overrides | `feature` | live-settable switches |
-| CLI, scenario runner | `cli` (`h2 agent`, `h2 serve`) | no MCP server (dropped) |
-
-## Phases
-
-Each phase is useful on its own, and each is proven with tests over
-synthetic guest memory and synthetic tags, as now.
-
-1. **Socket and status.** `H2_AGENT`, `session.*` (status, pause, step,
-   wait, subscribe), `world.count`/`world.query` over what `live-telemetry`
-   reads, `profile.counters` from frame stats, switches settable live, the
-   `fade` and `phase` stamp. The CLI front end. This alone fixes the
-   black-frame captures and lets agents watch a session the user is playing.
-2. **UI.** The screen stack, focus, `ui.press`, `ui.activate`,
-   `ui.navigate`, `ui.screenshot` with rects; native screens first, since
-   they already know their own state. Answers "did Left reach the skulls
-   page" and "which screen did co-op open" in one call.
-3. **Input and checkpoint-based state.** `input.*` raw and recorded,
-   `state.*` on top of the game's own checkpoint plus level boot, `hs.eval`.
-   Experiments become possible, coarsely.
-4. **Profile by owner.** Engine-phase spans, per-object timing, spikes.
-5. **Machine snapshots and experiments.** `state.save`/`load` of the
-   whole machine, `experiment.run`, `render.compare`. The full loop.
-6. **Map and intent.** `world.map` zones, overhead images, intent input.
-
-## Phase 1: what was built
-
-Crates `agent-proto` (wire types and a blocking client; no game
-dependencies) and `agent` (the executor, the socket, the `agent` feature).
-Boot wiring is `crates/boot/src/agent_glue.rs`; the CLI is
-`crates/cli/src/agent_cmd.rs` and `h2 serve` in `boot_cmd.rs`.
+| `session.status`, `methods`, `claim`, `release`, `wait`, `subscribe` | read | [`session`](#session-what-is-running-and-its-clock) |
+| `session.pause`, `resume`, `step` | claim | [Control](#control) |
+| `world.count`, `world.query`, `world.object` | read | [`world`](#world-what-is-in-the-level) |
+| `world.ai` | read | [`world.ai`](#worldai) |
+| `world.raw` | read | [`world.raw`](#worldraw-an-objects-bytes-before-and-after) |
+| `world.poke` | claim | [`world.poke`](#worldpoke-replace-bytes-in-one-object-part) |
+| `havok.bodies`, `havok.agents`, `havok.contacts` | read | [`havok`](#havok-the-physics-world) |
+| `profile.counters`, `profile.capture`, `profile.fallbacks` | read | [`profile`](#profile-where-a-frame-goes) |
+| `profile.sample.start`, `profile.sample.stop` | act | [`profile`](#profile-where-a-frame-goes) |
+| `profile.sample.status` | read | [`profile`](#profile-where-a-frame-goes) |
+| `render.frame`, `render.stats` | read | [`render`](#render-the-frame-and-the-pipeline) |
+| `render.coop_look` | read | [`render`](#render-the-frame-and-the-pipeline) |
+| `render.overrides`, `render.programs` | read | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
+| `render.reload`, `render.dump`, `render.param`, `render.toggle` | act | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
+| `edit.tags`, `edit.get`, `edit.changes` | read | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
+| `edit.set`, `edit.revert` | act | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
+| `load.timeline` | read | [Load timeline](#load-timeline) |
+| `features.list` | read | [`session`](#session-what-is-running-and-its-clock) |
+| `host.metrics`, `host.audit`, `host.perf` | read | [`host`](#host-the-process-and-its-lobby) |
+| `host.lobby.open`, `close`, `start` | act | [`host.lobby`](#hostlobby) |
+| `host.lobby.state` | read | [`host.lobby`](#hostlobby) |
+| `ui.screen`, `ui.campaign` | read | [`ui`](#ui-what-the-menus-show) |
+| `audio.voices` | read | [`audio`](#audio-voice-routing) |
+| `hs.threads`, `hs.globals`, `hs.player_actions` | read | [HaloScript state](#haloscript-state) |
+| `input.pad`, `release`, `record`, `replay`, `stop` | act | [`input`](#input-act-like-a-player) |
+| `input.state`, `input.host` | read | [`input`](#input-act-like-a-player) |
+| `state.save`, `load`, `list`, `drop`, `fork` | act (`list` read) | [`state`](#state-machine-snapshots) |
+| `sim.*` | read or act | [`sim`](#sim-simulated-players-and-direct-state) |
+| `match.status`, `match.report`, `match.stop` | read, read, act | [Sim matches](#sim-matches) |
+| `settings.list`, `settings.set`, `perf.overlay`, `cheat.list`, `cheat.set` | read or act | [Menu methods](#menu-methods-settings-perf-overlay-cheats) |
+| `theater.*` | read or act | [Theater transport](#theater-transport) |
+| `trace.*`, `flight.*` | read | [Tick traces and the flight recorder](#tick-traces-and-the-flight-recorder) |
+
+A new method gets a row here and a section for its domain. The names
+live in `crates/agent-proto/src` (`method::ALL`, `hot::method::ALL`,
+`state::method::ALL`, `sim`, `trace`, `theater`) and where the host adds
+them (`Agent::add_method`, `Agent::add_game_method`).
+
+## Connecting
 
 ```sh
 H2_OPT=2 h2 serve disc/halo2.iso --out <the image you built>   # never builds
@@ -694,189 +72,757 @@ h2 agent watch phase map
 printf 'claim\npause\nstep 30\ncount\nresume\n' | h2 agent -
 ```
 
-How it behaves (**Code**, with tests in `crates/agent`):
+- **The game that serves.** `h2 serve` is `h2 run` with the agent socket
+  on, no window, optional GPU rendering and optional real-time pacing
+  (`H2_BOOT_REALTIME=1`); it is the shared instance agents use. `h2 play`
+  with `H2_AGENT` set serves the same API with a window, which is what
+  `h2 lab run --serve` and `h2 lab bench` launch. Frame cost measured on
+  `h2 serve` without a GPU view backend is not what a player sees. Agents
+  attach to a running game and never build one. `h2 serve --system-link
+  --host-light` always paces to real time ([dedicated-host.md](../live/dedicated-host.md)).
+- **The socket.** `--socket PATH`, else `$H2_AGENT`, else
+  `~/Library/Caches/h2recomp/agent.sock` (`$XDG_CACHE_HOME` or `~/.cache`
+  elsewhere), not `$TMPDIR`, which differs between agent sessions
+  (`agent_proto::default_socket`). A socket file nobody answers on is
+  replaced; a live one is an error. `tcp://HOST:PORT` listens or connects
+  over TCP instead (`agent_proto::Endpoint`), which is how the Xbox app is
+  reached (`h2 agent --xbox HOST`, port 4720; [xbox.md](xbox.md), "Remote
+  control"). TCP has no authentication; Unix sockets are Unix only.
+  `h2 serve` removes its socket on Ctrl-C or SIGTERM.
+- **Another Mac.** `h2 lab agent --host H <run id> <call>` runs `h2 agent
+  <call>` against that run's socket; `h2 lab bench` does a wait, capture,
+  `render` and `counters` in one command ([lab.md](lab.md#driving-a-run-the-agent-api)).
+- **The CLI.** `h2 agent <method> [JSON]` calls any method; short forms
+  exist for common ones (`h2 agent --help` lists them). `h2 agent -` reads
+  a script on stdin, one call per line, on one connection. `h2 agent run
+  <script>` is the same with `expect` lines and one JSON verdict
+  ([Scripted scenarios](#scripted-scenarios-with-a-verdict)). A call
+  `h2 agent poke ...` takes a claim for its connection. A result prints as
+  JSON; an error prints to stderr and exits 1.
+- **Settings of a headless run.** A headless run has no settings store
+  unless given one, so menus built on settings stay retail and the log
+  says so. `--settings DIR` on `serve` and `run` builds the store as
+  `h2 play` does (`boot::setting_defs::load`, `crates/cli/src/boot_cmd.rs`):
+  `DIR/settings.toml`, then the `H2_*` variables, then the defaults. A
+  setting changed in a menu is written back to that file, so pass a copy.
+- **Cost.** The agent is one more observer on `GAME_TICK`, which costs
+  dispatch transfers as `lockstep`'s does: compare runs that all have it,
+  or all lack it. With `H2_FEATURES=-agent` requests are answered only
+  between slices, and pause and step are refused.
 
-- **Wire.** JSON-RPC 2.0, one object per line. The socket is `--socket`,
-  else `$H2_AGENT`, else `~/Library/Caches/h2recomp/agent.sock`
-  (`$XDG_CACHE_HOME` or `~/.cache` elsewhere), not `$TMPDIR`, which differs
-  between agent sessions. A socket file nobody answers on is replaced; a
-  live one is an error. `tcp://HOST:PORT` (as `--socket` or `H2_AGENT`)
-  listens or connects over TCP instead (`agent_proto::Endpoint`), which
-  is how the Xbox app is reached (`h2 agent --xbox HOST`, port 4720;
-  [xbox.md](xbox.md) "Remote control"). TCP has no authentication. Unix
-  sockets are Unix only; elsewhere use TCP.
-- **Where answers are read.** The `agent` feature observes `GAME_TICK`
-  last, after telemetry and lockstep (`boot/tests/feature_plan.rs`), and
-  answers there with `boundary: "tick"`. Between slices it answers what
-  doesn't read the world at once; world reads wait for the next tick
-  while the game ticks, and are answered between slices
-  (`boundary: "slice"`) once no tick has come for 500 ms.
-- **Phase.** `loading` (no tick for 500 ms), `menu` (mode `main_menu`),
+## Wire
+
+JSON-RPC 2.0, one JSON object per line each way (`crates/agent-proto/src/lib.rs`).
+A request with an `id` gets one response with that `id`. Valid JSON that is
+not a request gets `-32600`; params fields a method does not know are
+refused; batches are not supported. Method names are `domain.verb`.
+
+**The stamp.** Every result carries `at` (`agent_proto::At`):
+
+```json
+{"at": {"tick": 48211, "ticks": 52000, "map_ticks": 1900, "present": 96400,
+        "map": "<map>", "mode": "campaign", "bsp": 1,
+        "phase": "gameplay", "paused": false, "boundary": "tick"}}
+```
+
+`tick` is the game's own count (absent when no game state is readable),
+`ticks` the agent's count since the game started (never resets),
+`map_ticks` ticks since the map loaded, `present` frames presented.
+
+- **Phase.** `loading` (no tick for 500 ms: `agent::TICK_STALE`), `menu`
+  (mode `main_menu`, always: its background runs `cinematic_start` too),
   `gameplay` (campaign or multiplayer), `cinematic` (between HaloScript's
-  `cinematic_start` and `cinematic_stop` in a campaign or multiplayer game,
-  observed; cleared when the map changes). The main menu is always `menu`:
-  its background runs `cinematic_start` too. A level's first tick comes
-  before its scripts start the opening cutscene, so every stamp has
-  `map_ticks` (ticks since the map loaded) and `wait` takes it: ask for
-  `{"phase":"gameplay","map_ticks":30}` to mean "playing". Fades to black aren't detected yet.
-- **World.** Players (their units), AI bipeds, vehicles, machines and dead
-  bodies, from `live-telemetry::memory`. Ids keep the datum's salt:
-  a slot reused by another object answers `gone` (code 3). A turret is a
-  vehicle with `mounted_on` set; its `pos` is relative to that vehicle. `near` sorts
-  nearest first; `fields` trims; pages default to 50, at most 500.
-- **Every kind of object** (**Code**, 2026-11-19). Besides those, a
-  second pass over the object header table (`live_telemetry::things`)
-  lists the engine's other object types by the header's type byte
-  (`+3`): `scenery` (6), `weapon` (2), `equipment` (3), `control` (8, a
-  device's switch or panel), `crate` (11) and `creature` (12), each with
-  `pos`, `forward`, `yaw`/`pitch`, `tag` and `placement` (the scenario
-  placement that made it). An object attached to another (a weapon a unit
-  holds) is left out: its pose is relative to its holder, and the unit's
-  `weapon` names it. So `weapon` and `equipment` are what lies in the
-  world. `kind` filters, `near` and `world.count` cover the new kinds.
-  Garbage, projectiles, light fixtures and sound scenery are not listed.
-- **Tag names** (**Code**, 2026-11-19). Every object with a `tag` also
-  has `tag_name`, the definition's path in the loaded map
-  (`objects\vehicles\warthog\warthog`), from the map file's tag names as
-  `edit.tags` reads them; it is absent when the names can't be read. A
-  query's `tag` keeps one tag: a datum (8 hex digits, `0x` optional), or
-  text the tag's name contains (any case, `/` for `\`). Halo 1 Blood
-  Gulch's teleporter receivers, nearest first:
+  `cinematic_start` and `cinematic_stop`, observed by the agent feature;
+  cleared when the map changes). A level's first tick comes before its
+  scripts start the opening cutscene, so ask for
+  `{"phase":"gameplay","map_ticks":30}` to mean "playing". Fades to black
+  are not detected. During a load the mode reads as none.
+- **Boundary.** `tick`: read right after a tick returned, one consistent
+  simulation state. `slice`: read between scheduler slices with no tick for
+  500 ms, where guest memory may be mid-update. While the game ticks,
+  answers between slices keep the last tick's state and say `tick`. The
+  agent feature observes `GAME_TICK` last, after telemetry and lockstep
+  (`crates/boot/tests/feature_plan.rs`).
 
-  ```sh
-  h2 agent query '{"kind":["scenery"],"tag":"teleporter_base","near":{"player":0,"radius":500},"fields":["pos","tag_name"]}'
-  h2 agent sim set player.0 'pos=[x,y,z]' 'forward=[1,0,0]'
-  ```
+**Errors** (`agent_proto::code`):
 
-  The names come from the file the game actually loaded. The loaded
-  map's name is its cache header's (`0x00547898`); a converted map is
-  served under a disc map's file name with its own name in its header
-  (Blood Gulch is `h1_bloodgulch` in `H2_MAP_DIR`'s `coagulation.map`),
-  so looking for `maps\h1_bloodgulch.map` found nothing, and every
-  `edit.tags` name was null; now `h2 agent edit tags scen` names
-  `scenery\teleporter_base\teleporter_base`.
-  `boot::map_override::map_file` now tries the file name first, then the
-  maps folder's files by their header's name (`+0x198`), each through
-  the VFS's own layers, so the override is the file found. Telemetry,
-  the native world, our skulls and `sim.give`/`sim.spawn` find the map
-  the same way. If two files in the folder carry the same name, the
-  first in folder order wins. A map installed as content on the data
-  partition (not under the disc's `maps`) is not searched.
-- **Control.** `pause`, `resume` and `step` need `session.claim`; one
-  connection holds it. A pause blocks the game thread inside the tick
-  observer, still answering requests, and resumes by itself after `max_ms`
-  (default 60 s, at most 600 s; a second pause re-arms it), when the
-  controller releases or disconnects, or when the game exits. A pause
-  asked for while loading takes hold at the next tick; its limit runs
-  meanwhile. `step N` runs N ticks and answers once paused again; a resume,
-  a new pause or a release first answers it with `INTERRUPTED` (code 6).
-  With the tick observer off, pause and step are refused (`UNAVAILABLE`).
-  In `h2 play` a pause also stops the window's event loop, so it is meant
-  for `h2 serve`.
-- **Connections.** A client that half-closes (`nc -N`, `shutdown(SHUT_WR)`)
-  still gets answers to what it sent; the connection closes after the
-  last one. Closing releases control. Valid JSON that isn't a request
-  gets `-32600`; unknown params fields are refused; batches aren't
-  supported. Each connection queues at most 4096 lines for its client;
-  a client that lets it fill isn't reading and is dropped (its control
-  released), so the game thread never waits on a client.
-- **Consistency between slices.** While the game ticks, answers between
-  slices keep the last tick's state (and say `boundary: "tick"`) instead of
-  reading mid-tick. During a load the mode reads as none, not `unknown_0`.
-- **Stopping.** `h2 serve` removes its socket on Ctrl-C or SIGTERM. A
-  socket left by a crash is replaced at the next start.
-- **Settings.** A headless run has no settings store unless given one, and
-  the menus built on it stay retail: the campaign's Game Options page
-  (Start Level, the Halo 1 options, the skulls), the Video screen's rows,
-  the Halo 1 options on Game Setup. Its log says `skulls: off: no settings
-  store (a headless run); pickups are not kept`. `--settings DIR` (on
-  `serve` and `run`) builds the store as `h2 play` builds its own
-  (`boot::setting_defs::load`,
-  `crates/cli/src/boot_cmd.rs`): `DIR/settings.toml`, then the `H2_*`
-  variables, then the defaults, logged as `h2 serve: settings from
-  DIR/settings.toml`. A setting changed in a menu is written back to that
-  file, so give a copy, or a scratch directory, unless the run should
-  change it. `h2 play`'s file is `<data>/settings.toml`, the same `--data`
-  both commands default to (**Code**).
+| Code | Name | Meaning |
+|---|---|---|
+| 1 | `NOT_CONTROLLER` | a control or act method while another connection holds control |
+| 2 | `TIMEOUT` | `session.wait` or a deferred answer ran out of time |
+| 3 | `GONE` | the object id names an object no longer in the world, or its slot now holds another |
+| 4 | `UNAVAILABLE` | the game cannot answer now: nothing loaded, a read faulted, frame stats off, a feature absent |
+| 5 | `SHUTDOWN` | the server is stopping |
+| 6 | `INTERRUPTED` | a `session.step` ended early |
+| 7 | `BUSY` | `state.save` or `state.load` never found a quiescent boundary; `data.blockers` says what stayed live |
 
-  ```sh
-  H2_OPT=2 H2_UI_WATCH=1 h2 serve disc/halo2.iso --out <image> --settings <dir>
-  ```
+**Connections.** A client that half-closes (`nc -N`) still gets answers to
+what it sent. Closing releases control. Each connection queues at most
+4096 lines for its client (`OUT_QUEUE` in `crates/agent/src/server.rs`); a
+client that lets it fill is dropped and its control released, so the game
+thread never waits on a client.
 
-  For a headless System Link lobby, pass `--system-link` to `h2 serve`.
-  This enables XNet with no service URL or Live accounts. The coordinator
-  recipe uses one native process per console. [Dedicated host experiment](../live/dedicated-host.md#mac-system-link-spike)
+**Host methods.** A host adds methods with `Agent::add_method(name,
+Access::Read | Act | Claimed, f)` (answered between slices too, where the
+method does not read guest memory) or `Agent::add_game_method` (answered
+on the game's thread with guest memory at hand, at a tick boundary while
+the game ticks).
 
-  **Built — campaign menu inspection.** `h2 agent ui.campaign` is a
-  read-only tick-boundary query and takes no parameters. With no installed
-  Halo 1 campaign it returns `{"installed":false}`. With one installed it
-  reports `page` (`picker`, `options`, `levels`, `difficulty`, `dialog` or
-  `other`), `game` (selected campaign key on the three game-specific
-  pages), `rows`, `focused_row` (zero-based) and `focused`. Unknown
-  selection/focus is null. On the picker, rows are installed campaign keys.
-  On Campaign Options the action keys are `resume`, `new_game`,
-  `select_level` and `co_op`. Other pages report an empty row list.
-  This query reads the guest screen and focus directly without UI watch.
+## `session`: what is running and its clock
 
-  From the main menu's Campaign row, `h2 agent press a` opens the picker
-  for fresh and returning profiles. Read `ui.campaign`, then press A on a
-  game and inspect again. For example, a fresh Halo 1 menu reports
-  `{"installed":true,"page":"options","game":"halo1","rows":["new_game","select_level","co_op"],"focused_row":0,"focused":"new_game"}`.
-  Choose Select Level for that game's unlocked missions, or New Game for
-  the first mission's difficulty. With UI watch on, `lobby mode campaign`
-  also recognizes the installed picker. Main menu row zero requests the
-  native campaign dialog from `0x230888`; the picker intercepts it before
-  the later profile-dependent solo branch at `0x2b16ad`.
-- **Waits.** `session.wait` settles at tick boundaries (and between
-  slices for wall-clock timeouts and while loading). A condition already
-  true answers at once; `timeout_ticks` and `timeout_ms` (default 30 s,
-  at most 600 s) give `TIMEOUT` (code 2) with the stamp.
-- **Counters.** `profile.counters` is the frame-stats rolling window
-  (`timeline::phase`), the same numbers as `H2_FRAME_STATS`. When nothing
-  else collects them, the glue starts a quiet 5 s window.
-- **Features.** `features.list` returns the plan text the game printed at
-  start. Switches can't change while the game runs yet.
-- **Cost.** One more observer on the tick (dispatch transfers, as
-  lockstep's), so compare runs that all have the agent on, or all off.
-  `H2_FEATURES=-agent` removes the hooks; requests then get answers only
-  between slices.
+| Method | Params | Result |
+|---|---|---|
+| `session.status` | none | `at`, `protocol`, `fps` (frame-stats window, when collected), `controller` (this connection holds control), `claimed` (any does) |
+| `session.methods` | none | every method this process answers |
+| `session.claim`, `session.release` | none | take or give up control; closing the connection releases it |
+| `session.wait` | `{until, timeout_ticks?, timeout_ms?}` | `{at, ticks}` once every field of `until` holds |
+| `session.subscribe` | `{events: ["phase","map","bsp","pause"]}` | then `event` notifications: `phase {from,to}`, `map {from,to}`, `bsp {from,to}`, `paused`, `resumed {why: request, timeout or released}` |
+| `features.list` | none | `{at, plan}`: the feature plan text the game printed at start |
 
-- **Host methods.** A host adds its own methods with
-  `Agent::add_method(name, Access::Read | Access::Act, f)`; an `Act`
-  method is refused (`NOT_CONTROLLER`) while another connection holds
-  control. `boot::agent_glue` adds `profile.sample.start`, `.stop` and
-  `.status` (the in-process sampler, with boot's `perf` feature;
-  [xbox.md](xbox.md) "Profiling on the console") and `host.perf` (the
-  last host perf line), and `ui.screen` (`h2 agent ui`): with
-  `H2_UI_WATCH=1`, the menu screen player one's input goes to, read each
-  tick (`boot::ui_watch`; `{"screen", "window", "slot",
-  "live_menu_row", "mode", "dialog", "age_ms"}`, docs/live/live-coop.md
-  12.6). `dialog` is the dialog up (the first screen on windows 0 to 4,
-  any slot), or `null`: `{"id", "name", "window", "slot"}`, with `name`
-  the dialog's tag (`dialog_live_signin` for the account picker,
-  `confirmation_dialog`, `error_dialog_ok`, ...; `boot::ui_watch::
-  dialog_name`) or `null` for an id not named yet. For the Clanker player
-  card, `dialog.name` is `clanker_player_options`, resolved from the
-  active screen's kit class. Its numeric id belongs to the retail base
-  class and can also identify other screens. Dialogs read as
-  `"screen": null`, so this is how a driver tells one from another; the
-  `ui: screen none` line names it the same way (`, dialog 0x14
-  dialog_live_signin (window 3, slot 4)`). The input
-  methods are host methods too, added with the agent's input tap (phase 3
-  below).
+`until` takes `tick`, `ticks` (more ticks than when the wait began),
+`map_ticks`, `present`, `phase`, `map` and `paused`; all given must hold,
+at least one is required. `wait` settles at tick boundaries (and between
+slices for wall-clock timeouts and while loading); a condition already true
+answers at once. `timeout_ms` defaults to 30 s, at most 600 s; the failure
+is `TIMEOUT` with the stamp.
 
-Not built in phase 1: fade detection, the UI stack, HUD, snapshots,
-input, overrides, experiments, live switch changes. (The MCP front end
-is dropped, not pending.)
+```sh
+h2 agent wait '{"phase":"gameplay","map_ticks":30}' 5000
+h2 agent watch phase map          # events until interrupted
+```
 
-## Phase 3 and 4: what was built
+`session.wait` replaces every "sleep and screenshot" loop. Switches do not
+change through `features.list`; live changes go through [`render.toggle`](#edit-and-hot-render-live-tag-and-shader-changes)
+and [`cheat.set`](#menu-methods-settings-perf-overlay-cheats).
 
-Raw and recorded input (phase 3 without `state.*` and `hs.eval`), and a
-profile capture with spikes (phase 4 without owners or engine spans).
-Input is `crates/agent/src/tap.rs` over `input::backend::remote`'s step
-queue, the capture `crates/agent/src/capture.rs` and
-`timeline::phase::capture_begin`/`capture_end`; boot puts the tap on
-`xapi` in `crates/boot/src/agent_glue.rs`.
+### Control
+
+`session.pause`, `session.resume` and `session.step` need `session.claim`
+(one connection holds it). A pause blocks the game thread inside the tick
+observer, still answering requests. It resumes by itself after `max_ms`
+(default 60 s, at most 600 s; a second pause re-arms it), when the
+controller releases or disconnects, or when the game exits. A pause asked
+for while loading takes hold at the next tick; its limit runs meanwhile.
+`step {ticks}` (1 to 1800) runs that many ticks and answers once paused
+again; a resume, a new pause or a release first answers it with
+`INTERRUPTED`. With the tick observer off, pause and step answer
+`UNAVAILABLE`. In `h2 play` a pause also stops the window's event loop, so
+it is meant for `h2 serve`. Input calls need no claim while nobody holds
+control.
+
+```sh
+printf 'claim\npause\nstep 1\nobject player.0\nrelease\n' | h2 agent -
+```
+
+## `world`: what is in the level
+
+Objects come from `live-telemetry::memory` and `live_telemetry::things`,
+read at the tick boundary. Ids are `player.<index>` or `<kind>.<datum>`
+with the datum handle as 8 hex digits, salt included, so a slot reused by
+another object answers `GONE` and never another object's data.
+
+| Method | Params | Result |
+|---|---|---|
+| `world.count` | `{group_by: "kind" \| "team"}` | `{at, total, groups}`: the cheap first call |
+| `world.query` | `{kind?, near?, tag?, fields?, limit?, offset?}` | `{at, total, offset, objects, more}` |
+| `world.object` | `{id}` | `{at, object}`: every field the reader has for one object |
+
+- **Kinds** (`agent_proto::Kind`): `player`, `actor` (AI biped), `vehicle`,
+  `machine`, `body` (a dead biped), `scenery`, `weapon` and `equipment`
+  (lying in the world; held ones are their unit's `weapon`), `control` (a
+  device's switch or panel), `crate`, `creature`. The last six come from a
+  second pass over the object header table by the header's type byte
+  (`Kind::of_object_type`). Projectiles, effects, particles, garbage,
+  light fixtures and sound scenery are not listed.
+- **Query.** `near` is `{point | player, radius}` and sorts nearest first,
+  adding `distance`. `fields` trims each object (`id` and `kind` stay).
+  `tag` keeps one definition tag: a datum (8 hex digits, `0x` optional) or
+  text its name contains (any case, `/` for `\`). Pages default to 50, at
+  most 500.
+- **Tag names.** An object with a `tag` also has `tag_name`, the
+  definition's path from the loaded map file's names (as `edit.tags`
+  reads them); it is absent when the names cannot be read. A name filter
+  then matches nothing. The map file is found as `boot::map_override::map_file`
+  finds it: by file name first, then by the cache header's name (`+0x198`)
+  among the maps folder's files, so a converted map served under a disc
+  map's file name is the one read. With two files of the same header name
+  the first in folder order wins. A map installed as content on the data
+  partition is not searched.
+- **Fields.** `pos`, `velocity`, `team`, `tag`, `tag_name`, `vehicle`,
+  `weapon`, `name` and `local_user` and `unit` (players), `mounted_on` (a
+  turret is a vehicle with `mounted_on` set; its `pos` and `forward` are
+  relative to that vehicle), `occupied`, `placement` (the scenario
+  placement that made it), `position` (a machine's device position, 0 to
+  1) and `physics`.
+- **Facing.** `forward` is where an object faces. For a unit it is the
+  aiming vector (unit `+0x168`, the vector the held weapon's targeting ray
+  follows, `0x000cf3d0`), which turns with the camera; a biped's body turns
+  only as it moves, so its own forward (`+0x70`) is `body_forward`. `yaw`
+  (degrees about +z from +x, 0 to 360) and `pitch` (degrees up) are
+  `forward` as angles. A unit whose aim is not finite or not unit length
+  falls back to the body's forward.
+- **`physics`** (units): `crouch`, `crouch_request` (unit flags bit 23,
+  which stays set after release until there is room to stand), `mode`,
+  `airborne` (biped `+0x348` bit 0, likely) and `airborne_ticks`
+  (`+0x399`), `hitbox_offset_ticks` and `hitbox_offset` (the offset a melee
+  lunge leaves, `+0x3aa`; [superbounce.md](../game/superbounce.md)),
+  `unit_flags`, `biped_flags`, `havok_pos` and `havok_velocity` (the first
+  Havok body; [`havok`](#havok-the-physics-world) has every body and
+  contact), and for bipeds `support`: what the biped physics update
+  (`0x000dd990`) keeps of the ground (layout in `live-telemetry`'s
+  `layout.rs`, `BIPED_SUPPORT_*` and `CHARACTER_CONTACT_*`). `support.flags`
+  is biped `+0x349` (`copied`: its bit 4, set when this tick's update copied
+  a support contact, `0x000ddeda`); `words` are `+0x354..+0x364` (all
+  `ffffffff` for nothing); `point`, `normal`, `contact_point` are `+0x368`,
+  `+0x374`, `+0x380`; `ground_state` is `+0x3ec`, the vector the ground
+  test `0x001f19c0` measures first; `contacts` are the character contacts
+  that test walks (physics component `+0x88`, count `+0x8c`, `0x48` each, at
+  most 32): `key`, `other`, `point`, `normal`, `value` (the first pass
+  wants at least 1e-4), `flags`. The airborne bit is decided from these,
+  unlike `havok.contacts`, which lists the solver's contact constraints.
+  Poll `object player.0` on one `h2 agent -` connection and keep one reply
+  per stamped tick for a movement trace, or use [a trace](#tick-traces-and-the-flight-recorder).
+
+```sh
+h2 agent count team
+h2 agent query '{"kind":["scenery"],"tag":"<part of a tag name>","near":{"player":0,"radius":500},"fields":["pos","tag_name"]}'
+h2 agent object player.0
+```
+
+## `world.ai`
+
+`h2 agent world.ai` returns `{at, actors}` at one game boundary and takes
+no parameters (`crates/agent/src/ai.rs`). Each allocated actor has its
+salted AI `datum`, its `unit` ID (for `world.object`), character tag
+datum, team, scenario squad index, current behavior ID, its retail name
+when available (`behavior_name`), and combat status. A missing unit,
+squad or behavior is JSON null. The actor datum and unit ID have separate
+lifetimes: compare the same unit across ticks to measure movement, weapon
+and vehicle changes.
+
+`sector` is the actor's cached sector index in the active BSP when in
+range, otherwise null; `location_cached` distinguishes a pending refresh
+from a completed lookup. The observer only reads this cache. Retail
+`0x0026c180` refreshes it, and `0x00297e15` passes its sector to the mesh
+walk at `0x0026c590`, which bounds it against the mesh's sector count. The
+behavior ID comes from the top of the four-frame stack used at
+`0x001a813d`; its label from the loaded executable's parallel name table
+at `0x0046f0c8`. Combat status is the signed value the `ai_combat_status`
+builtin reads per actor (`0x00276070`). `focus_object` follows the
+actor's selected perception record to the object datum used at
+`0x001b368a`; the fight behavior reads the same record at `0x001af0c2`.
+Compare it with the player's `unit` in `world.query` to see attention on
+the player. A remembered object can stay selected after contact is lost.
+
+## `world.raw`: an object's bytes, before and after
+
+A game method, read only, no claim (`agent::raw::install`; reader
+`crates/live-telemetry/src/raw.rs`). It exists to look for state a forced
+crouch leaves behind ([superbounce.md](../game/superbounce.md)).
+
+`world.raw {id, parts?, len?}` returns `id`, `datum` and `parts`, each
+`{part, base, hex}` or `{part, missing}` (why: an unset pointer, a fault).
+Each part is found through the one before it ([havok-runtime.md](../engine/havok-runtime.md)):
+
+| Part | Where | Bytes |
+|---|---|---|
+| `object` | the object's body (`player.N`: its unit) | the header's size (`+0x06`), else `len` (default `0x400`), at most `0x2000` |
+| `physics_component` | body `+0xb4` into the component array | `0xa0` |
+| `entity` | the component's first rigid body (`+0x70`, `+0x40`) | `0x200` |
+| `motion` | entity `+0x3c` | `0x140` |
+| `shape` | entity `+0x0c` | `0x80` |
+
+`h2 agent raw-diff a.json b.json` needs no game: per part it prints the
+32-bit words that differ, with their offset from the part's base, and
+both as floats where they read as ones. A part on one side only, or whose
+base moved, is listed, not compared. It reads what `h2 agent raw` prints,
+or a `-` script's last line (`crates/cli/src/agent_raw.rs`).
+
+```sh
+h2 agent raw player.0 > before.json             # world.raw {"id":"player.0"}
+# ... force a crouch, walk out, stand ...
+h2 agent raw player.0 > after.json
+h2 agent raw-diff before.json after.json
+h2 agent raw player.0 entity,shape              # some parts
+h2 agent world.raw '{"id":"player.0","parts":["object"],"len":2048}'
+```
+
+## `world.poke`: replace bytes in one object part
+
+`world.poke {id, part?, offset, hex}` (access: claim) writes 1 to 64 bytes
+at a tick boundary. `id` and `part` use `world.raw`'s names; `part`
+defaults to `object`. `offset` is a nonnegative byte offset from the
+part's base; `hex` is two hex digits per byte. The whole range must fit
+in the part `world.raw` reads with its default lengths.
+
+The connection must hold `session.claim`. `sim.session` reports whether
+the session allows host writes; a session refusal is `INVALID_REQUEST`
+with `data.session`, and a request served between slices is `UNAVAILABLE`
+when the session allows writes. The result has `id`, `datum`, `part`,
+`base` (the part's first address), `offset`, `at`, and `before` and
+`after` (the bytes at the offset, lowercase hex).
+
+```sh
+h2 agent poke <id> <part> <offset> <hex>    # takes a claim for its connection; offset decimal or 0x
+```
+
+## `havok`: the physics world
+
+Game methods (`agent::havok::install`), read only, answered at a tick
+boundary. Layout and evidence: [havok-runtime.md](../engine/havok-runtime.md).
+
+| Method | Params | Result |
+|---|---|---|
+| `havok.bodies` | `{near?, radius?, limit?}` | rigid bodies: `entity` (address, the key contacts use), `state` (`active`, `inactive`, `fixed`), `object` and `datum`, `pos`, `velocity`, `angular_velocity`, `inv_mass`, `mass`, `friction`, `restitution`, and `shape` where it reads: `addr`, `vtable`, `kind` (`capsule`: `a`, `b`, `radius`, `height`; `sphere`: `radius`; `transform`: `translation`, `child`; else `other`). `near` (an object id) keeps bodies within `radius` (default 5) of its body, nearest first, with `distance`; `limit` defaults to 64 |
+| `havok.agents` | `{object}` | collision pairs and cached state ([below](#havokagents)) |
+| `havok.contacts` | `{object?}` | contact constraints: `a`, `b` (`entity`, `object`, `datum`, `fixed` for the level and static bodies) and `points`: `pos`, `normal` (from `b` toward `a`, **S**), `distance` (negative is penetration), `impulse` (what the solver applied on its last step), `friction`, `restitution`. With `object`, only its contacts, with it as `a` |
+
+```sh
+h2 agent havok.agents '{"object":"player.0"}'
+h2 agent havok.contacts '{"object":"player.0"}'
+h2 agent havok.bodies '{"near":"player.0","radius":3}'
+```
+
+For a superbounce, poll `havok.contacts {object: player.0}` once a tick on
+one `h2 agent -` connection next to `object player.0`: the contact with
+`b.fixed` is the level, and `impulse` over the body's `mass` is the
+velocity it gave. A type-`0x17` wrapper reports `kind: "other"` in
+`havok.bodies`; its current pill is the pointer at `shape+0x30`
+([Shapes](../engine/havok-runtime.md#shapes)). A direct biped capsule's
+`shape.height` tells standing from crouching.
+
+### `havok.agents`
+
+`object` is required. The reply has `object`, a stamp (`at`) and `agents`.
+Each entry is a pair with an allocated agent on any rigid body of that
+object. A live object with no such pair returns an empty list. A
+malformed selector is `INVALID_PARAMS`; an absent object or a player
+between lives is `GONE`.
+
+- `entry`, `island` and `collidables: [a,b]` are guest addresses in native
+  pair order. `object_side` is `a` or `b`, and `entity` is the requested
+  object's participating rigid body. `other` identifies the partner
+  entity, with its `datum`, object ID and fixed-island flag where
+  available; it is omitted for a partner without an entity. `pair_word`
+  keeps the last four bytes of the pair record.
+- `cache` has `base`, `vtable`, `manager`, `kind` and `hex`. Addresses,
+  keys and raw words are eight lowercase hex digits. `hex` is two digits
+  per guest byte from `base`, including the allocation header and padding.
+- A `bv_tree` or `welded_bv_tree` also has `tree`: `min` and `max` (the
+  cached query box in the tree's frame) and, per immediate child, `entry`,
+  `key`, raw `word_04` and its own `cache`. A type-1 structure MOPP key
+  also has `surface`, the numeric collision BSP surface index. A filtered
+  child is `kind: "empty"` with its shared header.
+- A `convex` or `swept_convex` cache has a `convex` block: `vertices_a`
+  and `vertices_b` (active support vertex IDs in that agent's dispatch
+  order; for convex against tree, A is the convex body and B the selected
+  tree shape), `contact_ids` (the child manifold's IDs in the shared
+  manager), `separating_axis` and `separating_distance` (the bound used to
+  skip a closest-feature search while positive; non-finite values are
+  null). `swept_sides` on the swept agent records A in bit 0 and B in
+  bit 1.
+- Unrecognised agents are `kind: "other"` with their inline bytes. The
+  bounds are 32,768 scanned pairs, 512 children per tree, 4 KiB per
+  allocation and 256 KiB of raw cache bytes per request; a failed read or
+  an exceeded bound is `UNAVAILABLE`.
+
+To compare ticks around a crouch, match a child by its partner and
+complete `key`, and record both agent bases to see replacements.
+Allocators can reuse an address between samples, and the raw dump
+contains pointers, unused slots and padding. A cached surface with an
+empty manifold is still a candidate in the query box.
+
+## `profile`: where a frame goes
+
+| Method | Params | Result |
+|---|---|---|
+| `profile.counters` | none | the frame-stats rolling window (`timeline::phase`), the numbers `H2_FRAME_STATS` prints: `frames`, `fps`, frame ms, `phase_ms`, `counts`. When nothing else collects them the glue starts a quiet 5 s window |
+| `profile.capture` | `{ticks \| ms, budget_ms?, spikes?, sample?}` | percentiles, phases, counters and spikes over a window (below) |
+| `profile.fallbacks` | `{top?}` | where the fallback interpreter runs |
+| `profile.sample.start`, `.stop`, `.status` | `{hz?}`, `{inline?}`, none | the in-process sampler |
+
+```sh
+h2 agent counters
+h2 agent capture 900                 # 900 game ticks, about 30 s
+h2 agent capture 10000ms sample      # h2 built --features perf
+h2 agent fallbacks 20
+```
+
+- **`profile.capture`** keeps every frame-stats row over the window and
+  answers `frames`, `fps`, `frame_ms` and `busy_ms` (frame less pacing) as
+  mean, p50, p95, p99, max and total; the same for each phase (`cpu`,
+  `decode`, `encode`, `submit`, `gpu-wait`, `pace`, `render-wait`, `d3d`,
+  and `render` when the render-timing feature measures it); mean, max and
+  total of each counter (`draws`, `passes`, `uploads`, ...); `over_budget`,
+  the frames longer than `budget_ms` (default 33.3); and `spikes`, the
+  worst of them (20 by default, at most 500), each with its present
+  number, game tick and map, its own phases and counters, its three
+  biggest phases (pacing left out) and `causes`. Every frame is also
+  written as a CSV row (present, end, tick, map, total and busy us, each
+  phase in us, each counter) under the cache directory's `captures/`, and
+  the reply gives its path. A frame belongs to the last tick that had ended
+  when it did. By ticks the window is 1 to 36000 (it gives up after 600 s
+  with `complete: false`); by `ms`, 1 to 600000. One capture at a time; it
+  is read-only. With frame stats off it answers `UNAVAILABLE`
+  (`crates/agent/src/capture.rs`).
+- **Causes.** The reply's `causes` counts every frame over budget, listed
+  or not, by cause (`crates/agent/src/capture.rs`, `causes`):
+  `shader_compile` and `pipeline_compile` (any on the critical path),
+  `texture_uploads` and `gpu_readback` (more than twice the window's
+  median, and at least one), `file_io` (the guest's file calls took at
+  least 2 ms of host time in the frame, or at least a tenth of its busy
+  time: the `file_io_us` counter; bytes read alone never count), `gpu`,
+  `render_thread` and `pushbuf_decode` (that phase is at least 40% of the
+  frame's busy time), else `guest_cpu` when the guest's own time is the
+  biggest phase. These are what the counters show, not a proof.
+- **Native renderer counters.** `profile.counters` and `profile.capture`
+  use the field names of `H2_FRAME_STATS_CSV`. Each response and capture
+  CSV includes native columns with activity in its window; the streaming
+  CSV writes a fixed header at startup. Each `native_<stage>_` prefix has
+  examined and suppressed guest items, refusals by reason, prepare and
+  encode nanoseconds, GPU buffers and bind groups created, upload bytes and
+  pipeline misses; per-view columns count reference and display ranges
+  attempted and committed and invariant failures. For example
+  `native_world_v1_display_recorded` can be positive while
+  `native_world_v1_display_ranges` is zero when the display copy fails
+  validation. Frame captures also include `native_lights_worker_round_trips`
+  and `native_lights_reference_passes` / `native_lights_display_passes`.
+  Definitions: [native-renderer.md](../graphics/native-renderer.md#frame-counters).
+- **Fallbacks.** `profile.fallbacks {top}` (20 by default, 1 to 500)
+  returns the fallback interpreter's totals and its entry addresses ranked
+  by instructions interpreted, each with hits, x87 instructions and the
+  function it is in (the nearest analysed start at or below it). Kept per
+  address in `boot::fallback::Stats::by_site`, at most 4096 addresses
+  (`sites_full` says when later ones count in the totals only). Slim host
+  modules also report `cold_entries` (interpreter invocations for omitted
+  owners) and `cold_sites` (distinct owner/selector pairs); the boot log
+  names each pair on first use.
+- **Sampling.** `sample: true` also runs the in-process sampler
+  (`profile.sample.*`, `boot::sampling`) over the window, and `sampling` is
+  what `profile.sample.stop` answers: the module-relative dump
+  (`profile.h2prof` under `H2_SAMPLE_DIR`, which `h2 profile remote`
+  resolves) and its sample count. Only an h2 built with `--features perf`
+  on a host with a sampler has it; otherwise, or while a
+  `profile.sample.start` run holds it, the capture still runs and
+  `sampling.unavailable` says why ([xbox.md](xbox.md), "Profiling on the
+  console").
+
+## `render`: the frame and the pipeline
+
+`render.frame` and `render.stats` are host methods (types in
+`crates/agent-proto/src/render.rs`, logic in `crates/agent/src/render.rs`).
+
+```sh
+h2 agent frame                     # the next whole frame: passes, totals
+h2 agent frame draws               # ... and every draw, with its depth state
+h2 agent frame constants -38..-35,58,59   # ... and those vertex constants on each
+h2 agent frame snap 0,3            # ... and passes 0 and 3 read back as PNGs
+h2 agent render                    # render.stats
+```
+
+### `render.frame`
+
+`render.frame {"arm": true, "draws", "max_draws", "constants", "snap"}`
+arms the recorder; the next present starts the frame and the one after
+ends it, then it disarms. `render.frame {}` reads the state and the last
+frame (`frame.seq` is the arming's number). `h2 agent frame` does both and
+waits up to 10 s; a paused or loading game presents nothing. Unarmed, the
+cost is one relaxed load per draw, clear and present in the draw wrapper
+(`boot::d3d_diag`), which sits in front of the backend, so the frame is
+the guest's as the D3D layer handed it over.
+
+- **The frame.** `totals` (passes, draws by outcome, vertices, clears,
+  copies, reads, distinct targets); `passes`: runs of work on one colour
+  surface and depth (a return to an earlier target is a new pass), each
+  with its target (`640x480 X8R8G8B8`), clears, draws, vertices, outcomes,
+  primitives, D3D entries, texture formats, and counts of pixel-program,
+  blended and depth-writing draws; `ops`: copies and readbacks with the
+  draw count before them. Surfaces are the backend's handles as text.
+- **A draw** (with `draws`; at most `max_draws`, 2000 by default;
+  `truncated` says when there were more). Its pass, D3D entry, primitive,
+  vertex and index counts, outcome, texture formats, whether it has a
+  pixel program, blends or writes depth; `vs`, the vertex side: `fvf 0x...`
+  or `prog @start n=slots #hash` for a vertex program (the low 32 bits of
+  the words' FNV-1a hash, the same in every frame, so one program's draws
+  can be picked out); and `depth`: `mode` (`D3DRS_ZENABLE`: `off`, `z`,
+  `w`), `w` (W-buffered as drawn: `SET_CONTROL0`'s z-perspective bit once
+  pushed, else `mode`), `func` and `write` (`D3DRS_ZFUNC`,
+  `D3DRS_ZWRITEENABLE`), `viewport` (`[MinZ, MaxZ]`), `scale`
+  (`SET_VIEWPORT_SCALE` z and `SET_VIEWPORT_OFFSET` z), `clip`
+  (`[SET_CLIP_MIN, SET_CLIP_MAX]`), `full` (the depth target's full scale;
+  0 with no depth target) and `clamp` (`D3DRS_DEPTHCLIPCONTROL` clamps
+  rather than culls; shown only when on). A W-buffered draw of a vertex
+  program stores its w clipped (or clamped) to `clip`, over `full`; a
+  z-buffered one its z over `full`.
+- **Constants.** `constants` (with `draws`; at most 32 registers, D3D
+  numbering -96..=95, hardware register = number + 96) records those
+  vertex shader constants on each listed draw:
+  `"constants": {"-38": [x, y, z, w], ...}`. The CLI takes ranges
+  (`constants -38..-35,58`), implies `draws`, and `max N` sets `max_draws`.
+- **Snapshots.** `snap` (at most 4 pass numbers): when such a pass ends,
+  its colour target is read back as BGRA and written as a PNG under the
+  cache directory's `frames/` (`frame-<seq>-pass-<n>.png`); `snaps` gives
+  each file or error. A pass with no draw has no known size and says so.
+  This is a GPU round trip, only when asked.
+
+### `render.stats`
+
+No params. `interp` is `d3d::interp::InterpStats` with every field
+(frames blended and held, replays, warps, and the hold reasons `unsure_*`,
+`mismatch_*`, `dropped`), read from its `Debug` text so fields added there
+appear with no change here; `pipeline` is the pipelined render's totals
+(`pipelined`, `completed`, `serial` reasons, `fallbacks` by call, joins,
+snapshot coverage, and times in ms including `overlap_ms` for the worker's
+execution before the game-thread join); `counters` is the frame-stats
+window's line. Each is `null` where that piece is not running.
+
+`interp` exists when in-between frames run: in `h2 play`, or in an `h2
+serve` that renders on the GPU off-screen (`H2_BOOT_GFX`) with an
+interpolation switch on. The in-between frames are paced on the wall
+clock at the frame rate and made and classified for real, so the hold
+reasons are the game's ([high-framerate.md](../game/high-framerate.md),
+"Headless"). `interp.holds` lists the draws a held frame was held for,
+each with its guest draw and pass number (as `render.frame` numbers
+them), vertex program, transform and where it lands
+([high-framerate.md](../game/high-framerate.md), "Held frames, draw by
+draw"). Without `H2_BOOT_GFX`, with `H2_RENDER_THREAD=0` or under
+`impl.render.pipelined_frame`, `interp` is `null`. `H2_BOOT_GFX_BETWEEN=N`
+writes the first N in-between frames as PNGs, with the guest frame before
+and after each ([switches.md](switches.md)).
+
+```sh
+H2_OPT=2 H2_BOOT_GFX=$TMPDIR/h2-gfx H2_BOOT_GFX_EVERY=never \
+  H2_FPS=60 H2_FEATURES=impl.render.reproject \
+  h2 serve disc/halo2.iso --out <the image you built>
+```
+
+### `render.coop_look`
+
+A read-only host method registered with the Live co-op prediction
+feature (`crates/boot/src/coop_look.rs`). With no parameters it returns
+the most recent 256 rendered local views, oldest first; `{"after":123}`
+returns samples newer than that cursor. `latest` is the most recent
+sample number, initially zero; a gap in sample numbers means the reader
+fell behind. One frame can contain several local users.
+
+```sh
+h2 agent --socket ~/Library/Caches/h2recomp/coop-bravo.sock render.coop_look
+```
+
+Each entry in `frames` has a monotonic `sample`, the guest render `frame`,
+the local `user` (0 to 3), and a `status` such as `active`, `waiting`
+(awaiting a baseline), `host`, `setting off`, `cinematic`, `dead`,
+`director`, `vehicle`, or `no local control`. These are guest draws;
+additional display-rate replays reuse the guest frame.
+
+| Field | Meaning |
+|---|---|
+| `sent` | Latest outgoing retail look, also recorded with the setting off for A/B timing |
+| `confirmed` | Local player's yaw and pitch from the last applied update carrying that player's action |
+| `predicted` | Current absolute target from the still-pending sends, or confirmed aim once they have drained |
+| `camera`, `drawn` | First render camera before and after the adjustment; all aims are `{yaw,pitch}` in radians, or null when unavailable |
+| `correction_rad` | Largest reconciliation error for this draw in radians (Euclidean length of shortest yaw difference and pitch difference); a pending turn's lead is measured by comparing predicted and confirmed |
+| `update`, `last_send`, `matched_send`, `matched_update` | Last applied update, last sent sequence, and the sequence/update pair most recently matched by quantized aim; null before the event |
+| `pending`, `dropped` | Unmatched sends, and the number superseded or expired since this continuous camera began; identical quantized actions have indistinguishable echoes |
+
+## Load timeline
+
+`load.timeline {"last": N}` is a core method (8 by default, 1 to 32 kept;
+`crates/agent/src/loads.rs`).
+
+```sh
+h2 agent loads                     # the last 8 loads, BSP switches and stalls
+h2 agent wait '{"phase":"gameplay","map_ticks":30}' && h2 agent loads 1
+```
+
+- **What a load is.** Read at each tick: the map changed (`map`), the BSP
+  changed (`bsp`), or no tick came for 500 ms (`stall`, the point the
+  `loading` phase starts). The run's first tick ends a `boot` load timed
+  from when the agent started. Each load has a `stall` segment (the last
+  tick before to the first after) and a `settle` segment (the next 30
+  ticks); a load cut short by the next one says `settled: false`.
+- **What each segment counted.** The difference of the frame-stats running
+  totals (`timeline::phase::totals`) across it: frames, ms per phase
+  (`cpu`, `gpu-wait`, `render-wait`, ...) and each counter that moved
+  (`read_bytes`, `uploads`, `shaders`, `pipelines`, `readbacks`, ...).
+  Frames are counted by present, so a load screen that presents shows its
+  frames; one that does not shows the stall's time only. With frame stats
+  off, `no_frame_stats` says the counts are missing.
+- **Now.** While no tick has come for 500 ms, `current` is the stall so far,
+  with what it has counted.
+- Seeks and cache hits are not counted (the kernel's file I/O counts bytes
+  and the host time of each file call: `read_bytes` and `file_io_us`).
+
+## `host`: the process and its lobby
+
+### `host.perf`
+
+The newest host perf line (`boot::host_perf`): `{line, age_ms}`;
+`UNAVAILABLE` until one exists (`H2_HOST_PERF=1`; one every 100 frames or
+5 s). `h2 agent hostperf`.
+
+### `host.metrics`
+
+`h2 agent hostmetrics`; no parameters. It reports the latest complete
+window of 30 intervals between returns from `GAME_TICK` (`0x00137fe0`).
+The first reading is available after 31 tick returns; until then it
+answers `UNAVAILABLE` ([`crates/boot/src/host_metrics.rs`](../../crates/boot/src/host_metrics.rs)).
+
+| Field | Meaning |
+|---|---|
+| `ticks` | Tick intervals in the sample (30) |
+| `game_cpu_ms_per_tick` | CPU time on the game thread per tick interval, including work between ticks |
+| `process_cpu_ms_per_tick` | CPU time on all process threads per tick interval |
+| `wall_ms_per_tick` | Elapsed wall time per tick interval, including pacing sleeps and any pause or load crossed by the window |
+| `cpu_percent` | Whole-process CPU over the wall interval; 100 is one fully used core |
+| `rss_bytes` | Resident bytes at the end of the interval on macOS and Linux, including resident shared pages |
+| `age_ms` | Time since the sample ended |
+| `host_light` | Whether the process uses the light host profile |
+
+A platform counter that is unavailable is `null`. Compare active
+gameplay windows after loading; a stale sample can survive a gap in ticks.
+The CPU fields exclude sleeping; the wall field shows the pace the host
+sustained.
+
+### `host.audit`
+
+Set `H2_HOST_AUDIT=/path/to/audit.json` before boot to register this
+method (`crates/boot/src/host_audit.rs`). `h2 agent hostaudit` takes no
+parameters. It writes a snapshot to the configured path and returns the
+path, ticks, observed and registered function counts, tag range count and
+inclusive CPU timing. An orderly exit writes the final snapshot; call the
+method before terminating a dedicated process externally. The collector
+changes dispatch and memory-watch costs, so use `host.metrics` for sizing.
+Report fields and corpus: [sim.md](sim.md#host-audit-corpus).
+
+### `host.lobby`
+
+A System Link light host started with `H2_HOST_LOBBY=1` registers these
+four game methods (`crates/boot/src/host_lobby.rs`, types
+`crates/agent-proto/src/host_lobby.rs`). Each result also carries `at`.
+
+| Method | Parameters | Result |
+|---|---|---|
+| `host.lobby.open` | `{"map":"<short name>","variant":"<name>","max_players":8,"live":false}` | System Link: an empty object. Live: the advertised `session_id` |
+| `host.lobby.state` | `{}` | `{"phase":"lobby","players":[{"slot":3,"peer":1,"name":"<name>"}],"ready":true}` |
+| `host.lobby.start` | `{}` | an empty object when retail accepts the start request; observe `state` for load and play |
+| `host.lobby.close` | `{}` | an empty object once the network lobby has closed and the host is back at the menu |
+
+The host looks up `map` by short name, scenario path or English display
+name. The optional `variant` defaults to Slayer; it accepts a disc
+variant, a signed and valid saved variant present at boot, a stock game
+type or a built-in Live playlist variant key, case-insensitively. If a
+name matches two different saved or disc rulesets, open is
+`INVALID_PARAMS`. `max_players` is an integer from 1 to 16. The required
+`live` boolean selects System Link or a Live custom game; Live needs a
+working service identity that can publish sessions. Open waits for retail
+to publish the requested lobby parameters. Repeating the same open in
+pregame returns the existing lobby; close it before changing parameters.
+
+The phases are `menu`, `lobby`, `loading`, `playing` and `postgame`.
+Player slots are retail membership slots and can have gaps; split-screen
+players on a remote console share a peer index. An empty, joinable lobby
+reports `"players":[]` and `"ready":false`. Readiness needs a remote
+player, party leadership, the requested map and limit, loaded maps on every
+peer, and retail's ready-to-start result. Any connection may read state;
+mutations respect `session.claim`, and a concurrent mutation is `BUSY`.
+[Playerless lobby and the two-console check](../live/dedicated-host.md#playerless-lobby).
+
+## `ui`: what the menus show
+
+Both methods are read-only. `ui.screen` needs `H2_UI_WATCH=1`.
+
+- **`ui.screen`** (`h2 agent ui`): the menu screen player one's input goes
+  to, read each tick (`boot::ui_watch`): `{screen, window, slot,
+  live_menu_row, mode, dialog, age_ms}`, or `UNAVAILABLE` before the first
+  read. `dialog` is the dialog up (the first screen on windows 0 to 4, any
+  slot), or `null`: `{id, name, window, slot}`, with `name` the dialog's
+  tag name (`dialog_live_signin` for the account picker,
+  `confirmation_dialog`, `error_dialog_ok`, ...; `boot::ui_watch::dialog_name`)
+  or `null` for an id not named yet. For the Clanker player card
+  `dialog.name` is `clanker_player_options`, resolved from the active
+  screen's kit class; its numeric id belongs to the retail base class and
+  can identify other screens too. Dialogs read as `"screen": null`, so this
+  is how a driver tells one from another. The `ui: screen none` log line
+  names it the same way ([live-coop.md](../live/live-coop.md), 12.6).
+- **`ui.campaign`** (`h2 agent ui.campaign`, no parameters): a tick-boundary
+  read of the campaign menu from the guest screen and focus, without UI
+  watch (`crates/boot/src/campaign_menu.rs`). With no installed Halo 1
+  campaign it returns `{"installed":false}`. With one it reports `page`
+  (`picker`, `options`, `levels`, `difficulty`, `dialog` or `other`),
+  `game` (the selected campaign key on the three game-specific pages),
+  `rows`, `focused_row` (zero-based) and `focused`; unknown selection or
+  focus is null. On the picker the rows are installed campaign keys; on
+  Campaign Options the action keys are `resume`, `new_game`,
+  `select_level` and `co_op`; other pages report an empty row list. For
+  example `{"installed":true,"page":"options","game":"halo1","rows":["new_game","select_level","co_op"],"focused_row":0,"focused":"new_game"}`.
+  From the main menu's Campaign row, `h2 agent press a` opens the picker for
+  fresh and returning profiles. Main menu row zero requests the native
+  campaign dialog from `0x230888`; the picker intercepts it before the
+  later profile-dependent solo branch at `0x2b16ad`. With UI watch on,
+  `lobby mode campaign` also recognizes the installed picker.
+
+Screens already moved to Rust (the Video screen, the skulls page, the
+account, co-op and sign-in screens; [feature-engine.md](../engine/feature-engine.md))
+share one list-screen implementation (`crates/boot/src/list_class.rs`).
+Menus are driven with `input.pad` and checked with `ui.screen`; there is no
+widget-level focus or activate method.
+
+## `audio`: voice routing
+
+`h2 agent audio.voices` takes no parameters and is registered with
+DirectSound (`crates/boot/src/dsound_glue.rs`). The result has
+`distance_reverb` (host enhancement enabled), `reverb_active` (audible
+environment configured), and `voices`. Each playing buffer, queued
+unpaused stream and playing mix-in has a mixer `id`, `kind`, `volume_mb`
+and `distance_units` (listener-relative world units, null for an
+unpositioned voice). Match a stream's output `bin` to a mix-in's
+`input_bin` to find the positioned emitter.
+
+`direct_gain` and `room_gain` are linear low-frequency gains including
+voice volume and headroom. `direct_hf_db` and `room_hf_db` give the
+additional loss at `reference_hz`. Each ordered entry in `bins` has its
+raw `bin`, `volume_mb` and its linear `gain` including that pair's volume
+and path gain. These are routing settings before spatial panning, master
+gain and the reverb return. A disabled environment or unconnected bus can
+have a configured send gain and deliver silence. Plain stereo routing has
+`bins: null`.
+
+## HaloScript state
+
+Three game methods with an empty parameter object (`crates/agent/src/hs_state.rs`)
+that sample guest state at a tick boundary. Each answers `UNAVAILABLE` if
+its backing state is unreadable or uninitialized.
+
+- `hs.threads` returns a `threads` array of live slots. Each row has
+  `slot`, numeric thread `category` and signed `wake` tick. Scenario script
+  threads also have their definition's `script` name and `kind`; both are
+  null for transient evaluation threads.
+- `hs.globals` returns a `globals` array in scenario declaration order.
+  Each row has `name`, `type`, `type_index` and `value.bits`; scalar types
+  also have `boolean`, `real` or signed `number`. Scenario declarations
+  start after the interpreter's external-global cells.
+- `hs.player_actions` returns three unsigned masks from local player
+  control. `latched` records inputs seen since the script's last
+  action-test reset; `capture` identifies inputs claimed by script tests;
+  `until_release` retains suppression through button-up after a reset. Bit
+  0 of each mask denotes the mapped action/reload button. The state is
+  shared by local controls, so the method takes no player index.
+
+## `input`: act like a player
+
+Input goes through the normal pad path, so the game cannot tell an agent
+from a person. The agent's tap is an `xapi::tap::InputTap` (the layer
+`H2_INPUT_RECORD` and `H2_INPUT_REPLAY` use, `crates/agent/src/tap.rs`
+over `input::backend::remote`'s step queue): it sees each
+`XInputGetState` result just before the guest gets it. Every host that
+runs the game through boot's XAPI has it: `h2 serve` (headless pad),
+`h2 play` and the Xbox app. It wraps the tap those variables set: a replay
+runs first (it stands in for the pad) and agent steps go on top; a
+recording runs last, so it logs agent steps too. Taps are told which port
+each handle opened on (`InputTap::opened`), which is how a step for
+`player` 1 finds controller port 1. Without XAPI input there is no tap and
+the input methods are not listed.
 
 ```sh
 h2 agent press a                                # A for 150 ms
@@ -886,76 +832,53 @@ h2 agent padstate                               # every port, open ports, mode
 h2 agent record courtyard                       # ...play or pad...
 h2 agent stop                                   # writes inputs/courtyard.input
 h2 agent replay courtyard
-h2 agent capture 900                            # 900 ticks, about 30 s
-h2 agent capture 10000ms sample                 # h2 built --features perf
 printf 'claim\npress start\nwait {"ticks":30}\ncapture 300\n' | h2 agent -
 ```
 
-Methods: `input.pad`, `input.release`, `input.state`, `input.record`,
-`input.replay`, `input.stop` (host methods the input tap adds; `Act`
-access but `input.state`, so no claim is needed while nobody holds
-control), and `profile.capture` (core, read-only).
-
-How it behaves (**Code**, with tests in `crates/agent`, `crates/xapi` and
-`crates/timeline`):
-
-- **Where input goes in.** The agent's tap is an `xapi::tap::InputTap`,
-  the layer `H2_INPUT_RECORD` and `H2_INPUT_REPLAY` use: it sees each
-  `XInputGetState` result just before the guest gets it, so the game reads
-  agent input exactly as it reads a pad. Every host that runs the game
-  through boot's XAPI has it: `h2 serve` (headless pad), `h2 play` and
-  the Xbox app. (The first Xbox build merged steps into the app shell's
-  player-one pad, `KeyboardFallback`, which `h2 serve` doesn't use; the
-  tap replaced it so there is one mechanism.) It wraps the tap those env
-  vars set: a replay runs first (it stands in for the pad) and agent
-  steps go on top; a recording runs last, so it logs agent steps too.
-  Taps are told which port each handle opened on (`InputTap::opened`),
-  which is how a step for `player` 1 finds controller port 1. Without
-  XAPI input there is no tap, and the input methods aren't listed.
-- **Pad steps.** `input.pad {player, at_tick, steps, append}`, each step
+- **`input.pad {player, at_tick, steps, append}`.** Each step is
   `{buttons, left, right, lt, rt, ms, ticks, reads}`. `player` is the
-  controller port (0 to 3, default 0). Each port has a queue of steps
-  (`input::backend::remote::Remote`). A step holds for `ms` of wall time,
-  `ticks` of game time (the stamp's `tick`, the same on every run), or
-  both, and until the game has read the pad `reads` times (default once),
-  so a short press is never lost to a slow frame; with neither `ms` nor
-  `ticks` it holds until replaced. `at_tick` (a tick, or `"now"`, the
-  default) holds the first step back until the game's tick reaches it.
-  `append` adds to the queue, otherwise it replaces it; `input.release
-  {player}` empties one port's queue, or all of them. A step merges over
-  what the read returns (`input::backend::fallback::merge`, as the
-  keyboard merges over a pad): buttons are or'd, a stick or trigger the
-  step moves wins. Buttons are `a b x y black white lt rt` (analog, fully
-  pressed), `up down left right start back ls rs`; sticks `[x, y]` from
-  -1 to 1 (up is +y); triggers 0 to 1. The packet number moves whenever
-  the pad the game gets changes, as a real pad's does; until the first
-  step, reads pass untouched, so a run with the agent on and no steps is
-  byte for byte the same input. Queues outlive the connection that filled
-  them (so a one-shot `h2 agent press` works) and are emptied when the map
-  changes, since the tick starts again. The reply says `open: false` when
-  the game hasn't opened that controller: the steps are kept, but nothing
-  reads them. `input.state` gives `pad` (player one), `pads` (every port:
-  `active`, `queued`, `done`, what is held), `open` ports, `tick`, and the
-  recording or replay below.
-- **Recording and replay.** `input.record {name, replace}` logs every
-  read (status, handle, the 22 bytes, the game tick) to the cache
-  directory's `inputs/<name>.input` in `xapi::tap`'s text format, the one
-  `H2_INPUT_RECORD` writes; it's written at `input.stop`, or when the game
-  exits. Names are letters, digits, `.`, `_`, `-`; an existing log is kept
-  unless `replace` is true. `input.replay {name}` answers reads from a log
-  read for read (keyed by read index, as `H2_INPUT_REPLAY`). `input.state`
-  and `input.stop` give its counts: `reads` in the log, `replayed`,
-  `matched` (same handle as recorded), `handle_mismatches` (the runs have
-  parted) and `past_end` (left live). One recording or replay at a time.
-  A replay only reproduces a run from the same starting state: until
-  `state.*` exists, that means starting both from the same boot.
+  controller port (0 to 3, default 0); each port has a queue of steps. A
+  step holds for `ms` of wall time, `ticks` of game time (the stamp's
+  `tick`, the same on every run), or both, and until the game has read the
+  pad `reads` times (default once), so a short press is never lost to a
+  slow frame; with neither `ms` nor `ticks` it holds until replaced.
+  `at_tick` (a tick, or `"now"`, the default) holds the first step back
+  until the game's tick reaches it. `append` adds to the queue, otherwise
+  it replaces it. A step merges over what the read returns
+  (`input::backend::fallback::merge`): buttons are or'd, a stick or trigger
+  the step moves wins. Buttons are `a b x y black white lt rt` (analog,
+  fully pressed), `up down left right start back ls rs`; sticks `[x, y]`
+  from -1 to 1 (up is +y); triggers 0 to 1. The packet number moves
+  whenever the pad the game gets changes; until the first step, reads pass
+  untouched, so a run with the agent on and no steps is byte for byte the
+  same input. Queues outlive the connection that filled them (so a
+  one-shot `h2 agent press` works) and are emptied when the map changes,
+  since the tick starts again. The reply says `open: false` when the game
+  has not opened that controller: the steps are kept, but nothing reads
+  them.
+- **`input.release {player}`** empties one port's queue, or all of them.
+- **`input.state`** gives `pad` (player one), `pads` (every port: `active`,
+  `queued`, `done`, what is held), `open` ports, `tick`, and the recording
+  or replay. It needs no claim while nobody holds control.
+- **`input.record {name, replace}`** logs every read (status, handle, the
+  22 bytes, the game tick) to the cache directory's `inputs/<name>.input`
+  in `xapi::tap`'s text format, the one `H2_INPUT_RECORD` writes; it is
+  written at `input.stop`, or when the game exits. Names are letters,
+  digits, `.`, `_`, `-`; an existing log is kept unless `replace` is true.
+- **`input.replay {name}`** answers reads from a log read for read (keyed
+  by read index, as `H2_INPUT_REPLAY`). `input.state` and `input.stop` give
+  its counts: `reads` in the log, `replayed`, `matched` (same handle as
+  recorded), `handle_mismatches` (the runs have parted) and `past_end`
+  (left live). One recording or replay at a time. A replay reproduces a
+  run only from the same starting state: the same boot, or the same
+  [snapshot](#state-machine-snapshots).
 
 #### `input.host`: the host controllers
 
 `input.host` (`h2 agent hostpads`, read-only, no params) shows the
 controllers the host's input layer has, before the game sees anything.
-Use it when a pad, a button or the touchpad doesn't do what it should.
-It answers from the last input sync (`syncs` counts them), which runs
+Use it when a pad, a button or the touchpad does not do what it should. It
+answers from the last input sync (`syncs` counts them), which runs
 whenever the game reads its pads. Boot adds it wherever the game has XAPI
 input (`crates/boot/src/debug_menu_glue.rs`, `crates/agent/src/hostpads.rs`).
 
@@ -964,8 +887,8 @@ input (`crates/boot/src/debug_menu_glue.rs`, `crates/agent/src/hostpads.rs`).
   `backend` (`game-controller`), `id`, `name` (the vendor name), `profile`
   (the extended profile's class: `dualsense`, `dualshock4`, `extended`, or
   `micro` for an Apple TV remote), `category` (the framework's product
-  category, such as "DualShock 4"), and the state below. Other backends
-  don't describe their pads yet; theirs show under `pads`.
+  category), and the state below. Other backends do not describe their
+  pads yet; theirs show under `pads`.
 - `pads`: each pad the input manager polled, as the debug menu's gate is
   handed it: `backend` (the top-level one, such as `keyboard-fallback`),
   `key` (backend index and id, the gate's key), `name`, `physical`, `port`
@@ -990,462 +913,158 @@ input (`crates/boot/src/debug_menu_glue.rs`, `crates/agent/src/hostpads.rs`).
 H2_AGENT=/tmp/h2-play.sock h2 play           # then, holding the touchpad down:
 h2 agent --socket /tmp/h2-play.sock hostpads
 ```
-- **Capture.** `profile.capture {ticks | ms, budget_ms, spikes, sample}`
-  keeps every frame-stats row (`timeline::phase`, the numbers
-  `H2_FRAME_STATS` prints) over the window, then answers: `frames`, `fps`,
-  `frame_ms` and `busy_ms` (frame less pacing) as mean, p50, p95, p99, max
-  and total; the same for each phase (`cpu`, `decode`, `encode`, `submit`,
-  `gpu-wait`, `pace`, `render-wait`, `d3d`, and `render` when the
-  render-timing feature measures it); mean, max and total of each counter
-  (`draws`, `passes`, `uploads`, …); `over_budget`, the frames longer than
-  `budget_ms` (default 33.3); and `spikes`, the worst of them (20 by
-  default, at most 500), each with its present number, the game tick and
-  map it ended in, its own phases and counters, and its three biggest
-  phases (pacing left out). Every frame is also written as a CSV row
-  (present, end, tick, map, total and busy us, each phase in us, each
-  counter) under the cache directory's `captures/`, and the reply gives
-  its path. A frame belongs to the last tick that had ended when it did.
-  By ticks the window is 1 to 36000 game ticks (it gives up after 600 s
-  with `complete: false`); by `ms`, 1 to 600000. One capture at a time; it
-  is read-only, so it needs no claim. With frame stats off it answers
-  `UNAVAILABLE` (the agent starts a quiet collection when nothing else
-  does, so they are on unless something stopped them).
-- **Native renderer counters.** `profile.counters` and `profile.capture`
-  use the field names of `H2_FRAME_STATS_CSV`. Each agent response and
-  capture CSV includes native columns with activity in its window. The
-  streaming `H2_FRAME_STATS_CSV` writes a fixed header at startup. Each
-  `native_<stage>_` prefix includes examined and suppressed guest items,
-  refusals by reason, prepare and encode nanoseconds, GPU buffers and bind
-  groups created, upload bytes and pipeline misses. Per-view columns
-  distinguish reference and display ranges attempted and committed and
-  invariant failures. For instance, `native_world_v1_display_recorded` can
-  be positive while `native_world_v1_display_ranges` is zero when the
-  display copy fails validation. [Field definitions](../graphics/native-renderer.md#ordered-replacement-handoff).
-  Frame captures include `native_lights_worker_round_trips` for synchronous
-  light reservations and `native_lights_reference_passes` /
-  `native_lights_display_passes` for committed light runs encoded on each
-  physical copy. Compare these with the per-view light range counts.
-- **Sampling.** `sample: true` also runs the in-process sampler
-  (`profile.sample.*`, boot's `sampling`) over the window, and `sampling`
-  is what `profile.sample.stop` answers: the module-relative dump
-  (`profile.h2prof` under `H2_SAMPLE_DIR`, which `h2 profile remote`
-  resolves) and its sample count. Only an h2 built with `--features perf`
-  on a host with a sampler has it; otherwise, or while a
-  `profile.sample.start` run holds it, the capture still runs and
-  `sampling.unavailable` says why.
-- **World counts of effects, projectiles and particles.** Not built.
-  `live-telemetry` doesn't read them: its world scan reads every object
-  header, so projectiles would be a cheap count by the header's type byte
-  once the projectile type number is established here (only biped 0,
-  vehicle 1, weapon 2 and machine 7 are); effects and particles live in
-  their own datum arrays, whose guest addresses are research points.
 
-Not built in phases 3 and 4: `state.*` (machine snapshots are being
-designed separately), `hs.eval`, intent input (`look_at`, `move_to`),
-per-owner attribution and engine-phase spans, events for frame-budget
-misses, and the effect, projectile and particle counts above. Nothing
-here was run against the game: input reaching the guest is proven at the
-`xapi` tap with synthetic pads, captures with synthetic frames and a fake
-sampler.
+## `state`: machine snapshots
 
-## Phase 5: testing in the lightest way (plan)
+`state.save`, `load`, `list`, `drop` and `fork` (types in
+`crates/agent-proto/src/state.rs`, the executor's part in
+`crates/agent/src/exec/snap.rs`, the machine in
+`crates/boot/src/snapshot_glue.rs`). A snapshot is the whole machine at one
+tick boundary, named. What is in it, how a load works and where files live:
+[snapshots.md](snapshots.md). Snapshots stay in the cache directory, one
+directory per build, and never enter the repository: they contain game
+data. The game answers `UNAVAILABLE` when it has no snapshot support
+installed.
 
-What an agent can already do per area, what's missing, and the lightest
-way to provide it. The rule stays: agents never build an image or run the
-game; they use the user-started shared `h2 serve` through `h2 agent`, and
-tests. Everything below is a method on that serve, a CLI verb, or a
-host-only tool. (**S** for the plan; the built parts say so.)
+| Method | Params | Does |
+|---|---|---|
+| `state.save` | `{name, replace?, cow?, max_ticks?}` | guest RAM, the kernel and its threads, D3D, audio, XAPI with the input cursor, every feature's section, and a RAM hash, at the first quiescent slice boundary after a tick. `cow: true` also writes a sparse raw RAM image `<name>.ram` beside it |
+| `state.load` | `{name, cow?, max_ticks?}` | back to exactly that tick; the RAM hash (`lockstep::hash_guest`) is checked against the saved one, naming the MiBs that differ. `cow: true` maps that RAM image private copy-on-write in place of decoding RAM in; it is refused, naming the file, when the save wrote no image |
+| `state.list`, `state.drop {name}` | | this build's snapshots, answered at once |
+| `state.fork` | `{from, name, replace?}` | load `from` and save it again as `name` |
 
-Domains `edit.*` (live tag writes in the running game) and the hot-reload
-half of `render.*` (render passes and shaders reloaded in place) belong to
-a separate effort; this phase leaves their names free and builds neither.
+Names are `a-z 0-9 . _ -`, 1 to 64, not starting with a dot. A save or
+load waits for the next tick, then retries at each tick while something is
+live, for `max_ticks` (default 90, at most 1800), then answers `BUSY` with
+the blockers in `data.blockers`. One sent while the game is paused runs at
+the end of the held tick's slice and the game holds again at the next tick.
+Calls other than `state.list` need control when another connection holds
+it. A snapshot is refused while `agent-calls` writes are queued.
 
-| Area | Have | Missing | Lightest way |
+```sh
+h2 agent state save NAME [replace]
+h2 agent state load NAME
+h2 agent state list
+h2 agent state drop NAME
+h2 agent state fork FROM NAME [replace]
+```
+
+## `edit` and hot `render`: live tag and shader changes
+
+Host methods answered where the game's host registers them
+(`crates/agent/src/hot.rs`, names in `crates/agent-proto/src/hot.rs`).
+The design, the override directory and the rules are in
+[hot-iteration.md](../graphics/hot-iteration.md). The override directory
+is `$H2_RENDER_OVERRIDES`, else `render-overrides` in the cache directory.
+
+| Method | Access | Params | Does |
 |---|---|---|---|
-| Profiling | `profile.capture`: per-frame phases (`cpu`, `render`, `decode`, `encode`, `submit`, `gpu-wait`, `render-wait`, `d3d`), counters, spikes; the sampler | why a spike happened; where the fallback interpreter runs; per-subsystem guest time; A/B of two feature sets on one recording | spike `causes` from the frame's own counters (built); `profile.fallbacks` (built); engine-phase spans as feature-registry hooks (phase 4 plan); A/B as two `h2 lab` runs of the same input log, run by the user or coordinator |
-| Render pipeline | frame counters (`draws`, `passes`, pass splits); `H2_BOOT_CAPTURE`, `H2_BOOT_DRAWLOG` at launch only | a frame's passes, draws and targets on request; interp and pipelined-render counters and hold reasons; which native paths a frame took; one pass's image | `render.frame` and `render.stats` (built) |
-| Features | `features.list` (the plan text) | state as data; setting a switch live | `features.list` grows `{name, on, sim, live}` per switch; a `features.set` for the `Host`/`View` switches whose hooks read a flag each call, and for the rest the reason a restart is needed (the switch places or removes hooks at build) |
-| Loading | `present N: last 100 at X fps` lines; `read_bytes` per frame | a load's timeline; stalls; loading a named level or BSP | `load.timeline` (built: stall and settle with bytes, uploads, compiles, phase times); seeks and cache hits need kernel I/O counters (later); `load.level` needs a runtime level switch (the game's own map change, through `hs.eval` once it exists) |
-| Editing, test maps | `scenario-edit` (placements, undo, save), `h2-editor`, `h2 map testbuild` | a scripted, headless way to make a small test map | `h2 testmap`: a JSON edit script (clear blocks, keep, add, set, remove) over `scenario-edit`, saved to a new `.map` (built, on disk only) |
-| Lightest testing | unit tests over synthetic data; `h2 agent -` scripts | assertions; one call that runs a scenario and returns a verdict | `h2 agent run script.txt`: the `-` script with `expect` lines (JSON-pointer comparisons on the last answer) and one JSON verdict with each call's timing (built) |
-
-What to reach for first, cheapest first:
-
-1. **A unit test** over synthetic data (as every crate here does). Seconds,
-   no game.
-2. **The shared serve**, read-only: `status`, `count`, `counters`,
-   `render`, `loads`, `fallbacks`, `frame`. No claim, nothing changes.
-3. **A scripted scenario on the shared serve** (`h2 agent run`): claim,
-   pause, step, press, capture, `expect`, release. Deterministic up to the
-   starting state; replays an input log for longer runs.
-4. **A test map** made by `h2 testmap` and loaded by the user or
-   coordinator (`H2_MAP_DIR`), for a repro that needs one thing in an
-   empty room.
-
-What would make each cheaper (not built): a test map whose BSP is one room
-loads in seconds instead of a campaign level's tens; `state.*` snapshots
-make replays start anywhere; `load.level` makes the shared serve switch
-level without a restart.
-
-## Phase 5: what was built
-
-### Render frame and pipeline counters
+| `edit.tags` | read | `{group?, name?, limit?}` | the loaded map's tags: `tag`, `group`, `name`, `address`, `size`, `defined` |
+| `edit.get` | read | `{tag, group?, path?}` | a field by path (`postprocess[0].colors[1].color`), or an element's fields; `tag` is a datum or a name |
+| `edit.set` | act | `{tag, group?, path, value}` | writes the field now, journalled; returns the change |
+| `edit.changes` | read | none | the journal: `live` changes and `stale` ones (made on another map) |
+| `edit.revert` | act | `{id?}` | puts back one change, or all |
+| `render.overrides` | read | none | the override directory, what is loaded and how each fared |
+| `render.reload` | act | `{dir?}` | reads the directory again (`dir` moves it) |
+| `render.programs` | read | `{vertex?, limit?}` | the translated programs, by id |
+| `render.dump` | act | `{program?, to?}` | writes translated WGSL, the start of an override |
+| `render.param` | act | none, `{name}`, `{name, value}` | lists, reads, sets (`value: null` resets) a parameter |
+| `render.toggle` | act | none, `{name, on}` | lists, sets (`on: null` resets) a toggle |
 
 ```sh
-h2 agent frame                     # the next whole frame: passes, totals, paths
-h2 agent frame draws               # ... and every draw, with its depth state
-h2 agent frame constants -38..-35,58,59   # ... and those vertex constants on each
-h2 agent frame snap 0,3            # ... and passes 0 and 3 read back as PNGs
-h2 agent render                    # interp, pipelined render, native paths
+h2 agent edit tags weap
+h2 agent edit get <tag name> <path>
+h2 agent render toggle <name> off
 ```
 
-Methods `render.frame` and `render.stats` (host methods: boot's agent glue
-adds them; types in `crates/agent-proto/src/render.rs`, logic in
-`crates/agent/src/render.rs`). How it behaves (**Code**, tested in
-`crates/agent`, `crates/boot`'s `d3d_diag` and `render_probe`, and
-`crates/feature/tests/render_loop.rs`; not run against the game):
+Tag names come from the map file the game loaded ([`world`](#world-what-is-in-the-level)).
 
-- **Recording.** `render.frame {"arm": true, "draws", "max_draws",
-  "constants", "snap"}` arms the recorder; the next present starts the frame and the
-  one after ends it, then it disarms. `render.frame {}` reads the state
-  and the last frame (`frame.seq` is the arming's number). `h2 agent
-  frame` does both and waits up to 10 s; a paused or loading game
-  presents nothing. Unarmed, the cost is one relaxed load per draw, clear
-  and present in the draw wrapper (`boot::d3d_diag`), which sits in front
-  of the backend (the render thread and in-between frames are behind it,
-  so the frame is the guest's, as the D3D layer handed it over).
-- **The frame.** `totals` (passes, draws by outcome, vertices, clears,
-  copies, reads, distinct targets); `passes`: runs of work on one colour
-  surface and depth (a return to an earlier target is a new pass), each
-  with its target (`640x480 X8R8G8B8`), clears, draws, vertices, outcomes,
-  primitives, D3D entries, texture formats, and counts of pixel-program,
-  blended and depth-writing draws; `ops`: copies and readbacks with the
-  draw count before them; `paths`: calls into each native render path
-  during the frame. Surfaces are the backend's handles as text. With
-  `draws`, each draw (at most `max_draws`, 2000 by default; `truncated`
-  says when there were more).
-- **A draw.** Its pass, D3D entry, primitive, vertex and index counts,
-  outcome, texture formats, whether it has a pixel program, blends or
-  writes depth; `vs`, the vertex side: `fvf 0x…`, or `prog @start n=slots
-  #hash` for a vertex program (the low 32 bits of the words' FNV-1a hash,
-  the same in every frame, so one program's draws can be picked out);
-  and `depth`, how it tests and stores depth: `mode` (`D3DRS_ZENABLE`:
-  `off`, `z`, `w`), `w` (W-buffered as drawn: `SET_CONTROL0`'s
-  z-perspective bit once pushed, else `mode`), `func` and `write`
-  (`D3DRS_ZFUNC`, `D3DRS_ZWRITEENABLE`), `viewport` (the D3D viewport's
-  `[MinZ, MaxZ]`), `scale` (`SET_VIEWPORT_SCALE` z and
-  `SET_VIEWPORT_OFFSET` z), `clip` (`[SET_CLIP_MIN, SET_CLIP_MAX]`),
-  `full` (the depth target's full scale, 16777215 for D24S8; 0 with no
-  depth target) and `clamp` (`D3DRS_DEPTHCLIPCONTROL` clamps out-of-range
-  depth rather than culling it; shown only when on). A W-buffered draw of
-  a vertex program stores its w clipped (or clamped) to `clip`, over
-  `full`; a z-buffered one its z over `full`.
-- **Constants.** `constants` (with `draws`; at most 32 registers, D3D
-  numbering -96..=95, hardware register = number + 96) records those
-  vertex shader constant registers on each listed draw, as it saw them:
-  `"constants": {"-38": [x, y, z, w], ...}`. Only on request: the block
-  is the draw's own (shared with the backend), copied out per listed
-  draw. `h2 agent frame constants -38..-35,58` takes ranges and implies
-  `draws`; `max N` sets `max_draws`.
-- **Snapshots.** `snap` (at most 4 pass numbers): when such a pass ends
-  (the next pass starts, or the present), its colour target is read back
-  as BGRA and written as a PNG under the cache directory's `frames/`
-  (`frame-<seq>-pass-<n>.png`); `snaps` gives each file or error. A pass
-  with no draw has no known size and says so. This is a GPU round trip,
-  only when asked.
-- **Residual render census.** With
-  `H2_NATIVE_RESIDUAL_PROBE=2000,3000` at launch,
-  `render.stats` includes `counters.residual`. It lists completed
-  present numbers and, for each view kind, the invocation count and
-  distinct Direct3D entry and return-PC pairs, with ordinary backend
-  draw attempts. Use the stage counters
-  in the same reply to identify submitted native draws. See the
-  [residual caller inventory](../graphics/native-renderer.md#residual-render-callers).
-- **Shadow maps.** `render.shadows {}` reads completed GPU comparisons when
-  `impl.render.native_shadows=on` and `H2_NATIVE_SHADOWS_COMPARE=1`.
-  It accepts no parameters. `comparing` reports the requested mode.
-  `maps.completed`, `nonempty` (at least one caster packet) and `mismatched`
-  count physical maps since process start. `maps.recent` keeps the latest 32
-  in readback completion order. Each includes the present (`frame`), generation,
-  view, parent identity, site, map kind, physical copy, extent, candidate count,
-  projection (nine vectors of four raw u32 words), packet count,
-  differing texel count and first differing pixel or null. A dropped or pending
-  readback contributes no sample. See [native shadows](../graphics/native-shadows.md).
-- **Counters.** `render.stats`: `interp` is `d3d::interp::InterpStats`
-  with every field (frames blended and held, replays, warps, and the hold
-  reasons `unsure_*`, `mismatch_*`, `dropped`), read from its `Debug`
-  text so fields added there appear with no change here; `pipeline` is the
-  pipelined render's totals (`pipelined`, `completed`, `serial` reasons,
-  `fallbacks` by call, joins, snapshot coverage, and times in ms including
-  `overlap_ms` for the worker's execution before the game-thread join).
-  `paths` counts calls into each native render path since the start (`feature::render_loop::path_calls`:
-  `render_views`, `layer_draw`, `layer_entries`, `render_game_view`,
-  `render_scene_passes`, `render_states`); `counters` the frame-stats window's line. Each is
-  `null` where that piece isn't running.
-- **Interp on a headless serve.** `interp` is there when in-between
-  frames run: in `h2 play`, or in an `h2 serve` that renders on the GPU
-  off-screen (`H2_BOOT_GFX`) with a switch on (its counters move while
-  the frame rate is above 30).
-  The in-between frames are paced on the wall clock at the frame rate
-  (no display) and made and classified for real, so the hold reasons are
-  the game's ([high-framerate.md](../game/high-framerate.md) "Headless").
-  The serve, for E1:
+## Menu methods: settings, perf overlay, cheats
 
-  ```sh
-  H2_OPT=2 H2_BOOT_GFX=$TMPDIR/h2-gfx H2_BOOT_GFX_EVERY=never \
-    H2_FPS=60 H2_FEATURES=impl.render.reproject \
-    h2 serve disc/halo2.iso --out <the image you built>
-  ```
+The in-game debug menu is a client of this API ([debug-menu.md](debug-menu.md));
+the methods it added beside the agent's own are in
+`crates/debug-menu/src/sources.rs` (`method`).
 
-  `impl.render.interpolate` gives D instead. `H2_BOOT_GFX_BETWEEN=N`
-  also writes the first N in-between frames as PNGs to that directory,
-  with the guest frame before and after each. `interp.holds` lists the
-  draws E1's screen guard held frames for, kind by kind, each with its
-  guest draw and pass number (as `render.frame` numbers them), vertex
-  program, transform and where it lands
-  ([high-framerate.md](../game/high-framerate.md) "Held frames, draw by
-  draw").
-  Without `H2_BOOT_GFX`, with `H2_RENDER_THREAD=0` or under
-  `impl.render.pipelined_frame`, `interp` stays `null`.
-
-### Co-op look per rendered view
-
-`render.coop_look` is a read-only host method registered with the Live
-co-op prediction feature. With no parameters it returns the most recent
-256 rendered local views, oldest first. Pass `{"after":123}` to read
-samples newer than that cursor. `latest` is the most recent sample
-number, initially zero. A gap in sample numbers means the reader fell
-behind. One frame can contain several local users.
-
-```sh
-h2 agent --socket ~/Library/Caches/h2recomp/coop-bravo.sock render.coop_look
-```
-
-Each entry in `frames` has a monotonic `sample`, the guest render
-`frame`, the local `user` (0–3), and a `status` such as `active`,
-`waiting` (awaiting a baseline), `host`, `setting off`, `cinematic`,
-`dead`, `director`, `vehicle`, or `no local control`. These are guest
-draws. Additional display-rate replays reuse the guest frame.
-
-| Field | Meaning |
-|---|---|
-| `sent` | Latest outgoing retail look, also recorded with the setting off for A/B timing. |
-| `confirmed` | Local player's yaw and pitch from the last applied update carrying that player's action. |
-| `predicted` | Current absolute target from the still-pending sends, or confirmed aim once they have drained. |
-| `camera`, `drawn` | First render camera before and after the adjustment. All aims are `{yaw,pitch}` in radians, or null when unavailable. |
-| `correction_rad` | Largest reconciliation error observed for this draw in radians (Euclidean length of shortest yaw difference and pitch difference). A pending turn's total lead is measured separately by comparing predicted and confirmed. |
-| `update`, `last_send`, `matched_send`, `matched_update` | Last applied update, last sent sequence, and the sequence/update pair most recently matched by quantized aim. Null before the corresponding event. |
-| `pending`, `dropped` | Unmatched sends and the number superseded or expired since this continuous camera began. Identical quantized actions have indistinguishable echoes. |
-
-### Hitch causes and fallback hits
-
-```sh
-h2 agent capture 900               # spikes now say why, and "causes" counts them
-h2 agent fallbacks 20              # where the fallback interpreter runs
-```
-
-- **Causes.** Each spike in `profile.capture` has `causes`, and the reply
-  has `causes` counting every frame over budget (listed or not) by
-  cause (`crates/agent/src/capture.rs`, `causes`):
-  `shader_compile` and `pipeline_compile` (any on the critical path),
-  `texture_uploads` and `gpu_readback` (more than twice the window's
-  median, and at least one), `file_io` (the guest's file calls took at
-  least 2 ms of host time in the frame, on any guest thread, or at least
-  a tenth of its busy time: the `file_io_us` counter; bytes read alone
-  never count, since a read finishes inside the call at about 38 us per
-  32 KB and the I/O pool's thread is not the game's), `gpu`, `render_thread` and
-  `pushbuf_decode` (that phase is at least 40% of the frame's busy time),
-  else `guest_cpu` when the guest's own time is the biggest phase. These
-  are what the counters show, not a proof: a frame can be slow for a
-  reason nothing counts.
-- **Fallbacks.** `profile.fallbacks {"top": N}` (host method; 20 by
-  default, 1 to 500): the fallback interpreter's totals and its entry
-  addresses ranked by instructions interpreted, each with hits, x87
-  instructions and the function it is in (the nearest analysed start at
-  or below it). Kept per address in `boot::fallback::Stats::by_site`, at
-  most 4096 addresses (`sites_full` says when later ones count in the
-  totals only). Slim host modules also report `cold_entries` (total
-  interpreter invocations for omitted owners) and `cold_sites` (distinct
-  owner/selector pairs). The boot log names each pair on first use and
-  reports its final count at shutdown.
-
-### Load timeline
-
-```sh
-h2 agent loads                     # the last 8 loads, BSP switches and stalls
-h2 agent wait '{"phase":"gameplay","map_ticks":30}' && h2 agent loads 1
-```
-
-`load.timeline {"last": N}` (core method; 8 by default, 1 to 32 kept;
-`crates/agent/src/loads.rs`). How it behaves (**Code**, tested in
-`crates/agent` and `crates/timeline`; not run against the game):
-
-- **What a load is.** Read at each tick: the map changed (`map`), the BSP
-  changed (`bsp`), or no tick came for 500 ms (`stall`, the same point
-  the `loading` phase starts). The run's first tick ends a `boot` load
-  timed from when the agent started. Each load has a `stall` segment
-  (the last tick before to the first after) and a `settle` segment (the
-  next 30 ticks); a load cut short by the next one says `settled: false`.
-- **What each segment counted.** The difference of the frame-stats
-  running totals (`timeline::phase::totals`, new) across it: frames, ms
-  per phase (`cpu`, `gpu-wait`, `render-wait`, …) and each counter that
-  moved (`read_bytes`, `uploads`, `shaders`, `pipelines`, `readbacks`,
-  …). Frames are counted by present, so a load screen that presents
-  shows its frames; one that doesn't shows the stall's time only. With
-  frame stats off, `no_frame_stats` says the counts are missing.
-- **Now.** While no tick has come for 500 ms, `current` is the stall so
-  far, with what it has counted.
-- Seeks and cache hits aren't counted (the kernel's file I/O counts bytes
-  and the host time of each file call: `read_bytes` and `file_io_us`, the
-  latter in microseconds), and per-frame I/O stalls are the `file_io_us`
-  counter and the `file_io` spike cause above.
-
-### Test maps on disk
-
-```sh
-h2 testmap ~/maps/zanzibar.map one-weapon.json --out $TMPDIR/tm/zanzibar.map
-```
-
-`h2 testmap <source.map> <script.json | -> --out <new.map> [--force]`
-(`crates/cli/src/testmap_cmd.rs`) runs a JSON edit script
-(`scenario_edit::script`, `crates/scenario-edit/src/script.rs`) over the
-source's placement blocks through the editor's own `Session`, so every
-edit is checked as the editor checks it, and saves a new map (the source
-is never written). It prints what each operation did and the entries
-left per block. Operations: `clear` (blocks, or `"all"`; a block the
-editor won't empty is reported and left), `keep` (these entries of a
-block, renumbered from 0), `add` (a copy of `like`, or a zeroed entry
-with the palette's first item, then `set`), `set` (fields by the
-editor's names: `position` `[x, y, z]`, `rotation`, `facing`, `team`,
-palette `type`, …), `remove`. `allow_growth` lets a block grow past its
-source size, as the editor's switch. Blocks: `scenery`, `vehicles`,
-`equipment`, `weapons`, `machines`, `sound_scenery`, `crates`,
-`starting_locations`, `netgame_flags`, `netgame_equipment`,
-`starting_equipment`. Tested on the editor's invented fixture map
-(`crates/scenario-edit`); no game data.
-
-The user or coordinator loads the result (`H2_MAP_DIR`); agents don't.
-Not covered: AI (squads and their spawn points aren't in the editor's
-blocks yet), and tag references other than through a palette index.
-Live edits in a running game are the separate `edit.*` effort.
-
-### Scripted scenarios with a verdict
-
-```sh
-cat > grenade.txt <<'X'
-wait {"phase":"gameplay","map_ticks":30}
-expect /at/phase == "gameplay"
-claim
-press rt 100
-capture 90
-expect /over_budget <= 2
-expect /causes missing
-release
-X
-h2 agent run grenade.txt          # one JSON verdict; exit 1 unless it passed
-```
-
-`h2 agent run <script|->` (`crates/cli/src/agent_run.rs`): the `h2 agent
--` script on one connection, plus `expect <pointer> <op> [JSON]` on the
-last answer (a JSON pointer; ops `==`, `!=`, `<`, `<=`, `>`, `>=` on
-numbers, `contains` for a substring, an array element or an object key,
-`exists`, `missing`, and `near {"to", "within"}` since `sim`) and `keep`
-(put the last answer in the verdict). The expectations are
-`agent_proto::expect`, which `sim.expect` judges in the game too.
-The verdict is `{"pass", "failed", "ms", "calls": [{line, call, ms, ok,
-error}], "expects": [{line, expect, want, pass, got}], "kept",
-"stopped"}`. A failed expect is recorded and the script goes on; a failed
-call stops it. Answers aren't printed except kept ones, so a long
-scenario costs a few lines of context. Tested with a fake caller; not run
-against the game.
-
-Not built in phase 5 so far: per-subsystem guest time (engine-phase
-spans), A/B of feature sets, features set live, kernel I/O seeks and
-cache hits, `load.level`.
+| Method | Access | Params | Does |
+|---|---|---|---|
+| `settings.list` | read | `{prefix?}` | settings (`settings.toml`) and how each applies (`crates/agent/src/menu.rs`) |
+| `settings.set` | act | `{key, value}` | saves the value and applies it as the setting applies; `UNAVAILABLE` when something else set it for this run |
+| `perf.overlay` | act | `{}` reads, `{on}` sets | the perf overlay (the watermark) |
+| `cheat.list` | read | `{}` | the cheats, their values, and why any is refused (`crates/boot/src/cheats.rs`) |
+| `cheat.set` | act | `{name, value}` | sets one, for example `{"name":"hide_hud","value":true}` |
 
 ## `sim`: simulated players and direct state
 
-Built 2026-11-18, tested over synthetic guest memory, fakes and a socket;
-not run against the game. Agreed with the Live and co-op coordinator
-(bed6c8dc), who reviews this section.
-
 `sim.*` lets an agent test co-op, multiplayer and Live flows from one
-running game: players that aren't people, game state written directly,
+running game: players that are not people, game state written directly,
 and assertions that answer pass or fail with what was seen. It never
-starts another game instance.
+starts another game instance. They are game methods
+(`Agent::add_game_method`, `crates/agent/src/sim/`): answered on the
+game's thread with guest memory at hand, and like `world.*` at a tick
+boundary while the game ticks. The wire types are `agent_proto::sim`.
 
-### Methods
-
-| Method | Access | What |
+| Method | Access | Params and result |
 |---|---|---|
-| `sim.player.add` | act | `{kind: "phantom", identity: {xuid, gamertag}, source: script\|recording\|brain, team?, steps?, recording?}` adds a phantom peer and returns its `sim.<n>` id. A request with `kind: "local"` returns `INVALID_PARAMS`. |
+| `sim.player.add` | act | `{kind: "phantom", identity: {xuid, gamertag}, source: script\|recording\|brain, team?, steps?, recording?}` adds a phantom peer and returns its `sim.<n>` id. `kind: "local"` is `INVALID_PARAMS` |
 | `sim.player.remove` | act | `{id}` or `{all: true}` |
-| `sim.player.list` | read | `players` lists simulated players and their game player (`player.<i>`). `clankers` lists the host's brain-driven bots and their current brain state. |
-| `sim.player.pad` | act | `{id, steps, append?}` sets or appends pad steps for a phantom with a script source. The steps use the `input.pad` format. |
-| `sim.state.set` | act | `{player, pos?, yaw?, pitch?, facing? (or forward?), team?, health?, shield?, grenades?, ammo?}`: host writes; `pos` and the facing are the game's own teleport, answered after the next tick |
+| `sim.player.list` | read | `players` (simulated players and their game player `player.<i>`) and `clankers` (the host's brain-driven bots and their brain state) |
+| `sim.player.pad` | act | `{id, steps, append?}` sets or appends pad steps for a phantom with a script source, in `input.pad`'s step format |
+| `sim.state.set` | act | `{player, pos?, yaw?, pitch?, facing? (or forward?), team?, health?, shield?, grenades?, ammo?}`: host writes; `pos` and the facing go through the game's own teleport, answered after the next tick |
 | `sim.give` | act | `{player, weapon, ammo?, keep?}`: the game makes a weapon from a `weap` tag (datum or name) and gives it to the player's unit; answered after the next tick |
 | `sim.spawn` | act | `{tag, pos, yaw?}`: the game makes an object from its tag at `pos`; answered after the next tick |
 | `sim.view` | read | `{roots?}`: the game as one JSON document |
 | `sim.expect` | read | `{checks}`: expectations judged against `sim.view`, at one tick |
 | `sim.session` | read | the session kind and whether writes are allowed |
 
-For a brain-driven simulated player, `sim.player.add`, `sim.player.list`
-and the `sim` root of `sim.view` include `brain` when the backend provides
-it. The list response's `clankers` array includes brain-driven phantom
-bots added by the game, headless matches and sim. Each entry includes
-`name`, `kind` and `brain`. Once joined, it also includes `player`.
-Script and recording sources have no brain state.
+**Brains.** For a brain-driven simulated player, `sim.player.add`,
+`sim.player.list` and the `sim` root of `sim.view` include `brain` when
+the backend provides it. The list's `clankers` array includes brain-driven
+phantom bots added by the game, headless matches and sim; each entry has
+`name`, `kind` and `brain`, and once joined `player`. Script and recording
+sources have no brain state. The `brain` object has `skill`,
+`personality` (the nine 0 to 1 traits in
+[the Clankers trait table](../game/bots.md#personality-and-temperament) and
+`favorite_weapon`: `spray`, `precise`, `scatter`, `sniper`, `blast` or
+`blade`) and `mood` (`confidence`, `tilt`, `fear`, `streak`, and an
+optional `revenge_target` `player.<i>` while a killer is remembered).
 
 For a joined phantom, `h2 agent sim list` includes `clankers[].aim` once
 the host has gathered input for its current unit. `tick` is the gather
-tick. `stick` (right, up) and `trigger` are the brain's latest report.
+tick. `stick` (right, up) and `trigger` are the brain's latest report;
 `arrived_stick` and `arrived_trigger` are the report delivered by the
-uplink for that gather. `action_deg` contains the accepted slot record's
+uplink for that gather. `action_deg` is the accepted slot record's
 absolute [yaw, pitch] in degrees, or null if the gather was rejected.
-`fire_primary` is the accepted primary fire bit and `assist_strength` holds
-the two weapon strengths. A rejected gather reports false and zeros.
+`fire_primary` is the accepted primary fire bit and `assist_strength` the
+two weapon strengths; a rejected gather reports false and zeros.
 `unit_forward` is the unit's actual aiming vector at query time.
 `assist_player` identifies the player controlling the selected aim-assist
-target when one exists. To verify damage, use `h2 agent sim view player`
-to read the target's shield and health.
-
-The `brain` object has `skill`, `personality` and `mood`. Personality
-contains the nine 0–1 traits in [the Clankers trait table](../game/bots.md#personality-and-temperament)
-and `favorite_weapon` (`spray`, `precise`, `scatter`, `sniper`, `blast`,
-or `blade`). Mood has `confidence`, `tilt`, `fear`, `streak`, and an
-optional `revenge_target` (`player.<i>`) while a killer is remembered.
-
-They are game methods (`Agent::add_game_method`, `crates/agent/src/sim/`):
-answered on the game's thread with guest memory at hand, and, like
-`world.*`, at a tick boundary while the game ticks. The wire types are
-`agent_proto::sim`.
+target when one exists. To verify damage, read the target's shield and
+health with `h2 agent sim view player`.
 
 **`sim.view`'s roots.** `at` (the stamp), `session`, `ui` (`ui.screen`'s
-answer, `null` without `H2_UI_WATCH=1`), `player` (by index: the
-`world` object plus `health`, `shield`, `grenades {frag, plasma}` and the
-held weapon's `ammo {loaded, reserve}`), `object` (every `world` object by
-id; only when asked for), `count` (by kind, `team` counting players per
-team, `total`), `sim` (simulated players by `<n>`, and `count`) and
-`input` (`input.state`). Pointers read straight off it:
-`/player/1/team`, `/object/vehicle.e2000003/occupied`, `/count/team/1`,
-`/sim/1/player`.
+answer, `null` without `H2_UI_WATCH=1`), `player` (by index: the `world`
+object plus `health`, `shield`, `grenades {frag, plasma}` and the held
+weapon's `ammo {loaded, reserve}`), `object` (every `world` object by id;
+only when asked for), `count` (by kind, `team` counting players per team,
+`total`), `sim` (simulated players by `<n>`, and `count`) and `input`
+(`input.state`). Pointers read straight off it: `/player/1/team`,
+`/object/<id>/occupied`, `/count/team/1`, `/sim/1/player`.
 
 **Expectations** are `h2 agent run`'s: `"<pointer> <op> [JSON]"` or
 `{"pointer", "op", "want"}`, ops `==` `!=` `<` `<=` `>` `>=` `contains`
 `exists` `missing` and `near {"to": number or array, "within": d}` (for
 positions and vitality, read from `f32`s). One implementation,
-`agent_proto::expect`, serves both: `h2 agent run` judges the last
-answer on the client, `sim.expect` judges `sim.view` in the game. Its
-answer is the verdict's fields, `{"pass", "failed", "expects": [{expect,
-pass, want, got}], "at"}`.
+`agent_proto::expect`, serves both: `h2 agent run` judges the last answer
+on the client, `sim.expect` judges `sim.view` in the game. Its answer is
+the verdict's fields, `{"pass", "failed", "expects": [{expect, pass, want,
+got}], "at"}`.
 
 ### `h2 agent sim` and scripts
 
 There is one script format: `h2 agent run`'s. Any line may be a `sim`
 verb, and `h2 agent sim run <script>` is `h2 agent run` that also removes
-the simulated players the script added (`"cleanup"` in the verdict).
-
-Run this against a game this console hosts. Replace `ROSTER_XUID` and
+the simulated players the script added (`"cleanup"` in the verdict). Run
+this against a game this console hosts; replace `ROSTER_XUID` and
 `ROSTER_GAMERTAG` with a bot identity issued by the local Live server.
 
 ```sh
@@ -1464,23 +1083,23 @@ X
 h2 agent sim run bot-team.txt
 ```
 
-The verbs in `crates/cli/src/agent_sim.rs` include
-`add phantom [source] xuid=X gamertag=G [key=JSON...]`, `remove <sim.N|all>`, `list`, `pad <sim.N> <steps>
-[append]`, `set <player.N|sim.N> key=JSON...`, `give <player.N|sim.N>
-<weap tag> [loaded=N] [reserve=N] [keep]`, `spawn <tag> pos=[x,y,z]
-[yaw=DEG]`, `view [root...]`,
-`expect <expectation>`, `until <ticks> <expectation>` (`sim.expect` every
-5 ticks until it passes; a timeout fails with the last verdict),
-`session`, `lobby ...` and `run`. In `h2 agent run`, a failed `sim
-until` is a failed call, so it stops the script.
+The verbs in `crates/cli/src/agent_sim.rs`: `add phantom [source]
+xuid=X gamertag=G [key=JSON...]`, `remove <sim.N|all>`, `list`, `pad
+<sim.N> <steps> [append]`, `set <player.N|sim.N> key=JSON...`, `give
+<player.N|sim.N> <weap tag> [loaded=N] [reserve=N] [keep]`, `spawn <tag>
+pos=[x,y,z] [yaw=DEG]`, `view [root...]`, `expect <expectation>`, `until
+<ticks> <expectation>` (`sim.expect` every 5 ticks until it passes; a
+timeout fails with the last verdict), `session`, `lobby ...` and `run`. In
+`h2 agent run`, a failed `sim until` is a failed call, so it stops the
+script.
 
 **Lobby steps** (`agent_proto::sim::menu`) press player one's pad
 (`input.pad`) and check each step on `ui.screen`, with a timeout, on the
 client, since a step spans many ticks:
 
-- `lobby mode <campaign|xbox_live|split_screen|system_link>`: from the
-  main menu, down to the row and A; expects the campaign screen or the
-  players' screen in that mode.
+- `lobby mode <campaign|xbox_live|split_screen|system_link>`: from the main
+  menu, down to the row and A; expects the campaign screen or the players'
+  screen in that mode.
 - `lobby host live_coop`: from the players' screen in Xbox Live mode (or
   the Live menu): A, then down from the restored row to Co-op Campaign
   (row 4), A; expects the Live menu to go.
@@ -1489,24 +1108,23 @@ client, since a step spans many ticks:
 - `lobby press <b[+b...]> [JSON expect]`: any presses, then wait for
   `{"screen", "main_menu", "mode", "not"}`.
 
-Their screen ids and rows are the ones `h2 coop test --drive` uses,
-moved to `agent_proto::sim::menu` and re-exported by `coop_drive`. Like
-the driver, they assume a menu opens on row 0; a wrong row shows as the
-wrong screen, and the step fails saying what it saw. `invite` and `start`
-follow the driver and `boot::coop_live`'s docs; neither has been pressed
-through by `sim` in a run.
+Their screen ids and rows are the ones `h2 coop test --drive` uses
+(`agent_proto::sim::menu`, re-exported by `coop_drive`). They assume a menu
+opens on row 0; a wrong row shows as the wrong screen and the step fails
+saying what it saw.
 
 ### Determinism
 
-`sim.session` reads the simulation mode (`coop_probe::read_sim`, docs/live/live-coop.md
-1.1) and the squad session (`coop_probe::read_session`) through boot's
-probe (`boot::agent_glue::session_view`):
+`sim.session` reads the simulation mode (`coop_probe::read_sim`,
+[live-coop.md](../live/live-coop.md) 1.1) and the squad session
+(`coop_probe::read_session`) through boot's probe
+(`boot::agent_glue::session_view`):
 
 | Mode | Kind | `sim.state.set` |
 |---|---|---|
 | 0 | `none` (menus) | allowed (no players to write) |
 | 1 | `local` (campaign, split screen) | allowed |
-| 2, 3 | `coop_host`, `coop_guest` (synchronous) | **refused**: a write on one machine desyncs the others and trips the sim hash |
+| 2, 3 | `coop_host`, `coop_guest` (synchronous) | refused: a write on one machine desyncs the others and trips the sim hash |
 | 4 | `mp_host` (distributed server world) | allowed: host-authoritative |
 | 5 | `mp_client` (distributed client world) | refused: the host owns the state and overwrites it |
 | unreadable | `unknown` | refused |
@@ -1515,36 +1133,33 @@ A refusal is `INVALID_REQUEST` with the session in `data`. In co-op, drive
 players with pads instead (`sim.player.pad`, `input.pad`): pads are
 inputs, which the pad schedule carries to every machine. Writes happen at
 a tick boundary only (`UNAVAILABLE` between slices), and every value is
-checked before the first write, so a refused set writes nothing. A
-`h2 lockstep` comparison run is local (mode 1) and isn't detected: a
-write there makes the runs differ by design.
+checked before the first write, so a refused set writes nothing. A `h2
+lockstep` comparison run is local (mode 1) and is not detected: a write
+there makes the runs differ by design.
 
 ### What `sim.state.set` writes
 
-At the addresses Live telemetry reads (`live_telemetry::layout`, now
-public, and `engine::view`): the player record's team (`+0xc0`); the
-unit's team (`+0x138`), body and shield vitality (`+0xec`, `+0xf0`,
-docs/halo1/health.md; added to `engine::view::objects::Body`), grenade
-counts (`+0x23e`) and the held weapon's first magazine (`+0x22c` loaded,
-`+0x22a` reserve). Not built: spawning a player between lives (that needs
-the game's respawn, not a write).
+Teleport and facing go through the game ([below](#the-games-own-functions-teleport-give-spawn)).
+The other fields are host writes at the addresses Live telemetry reads
+(`live_telemetry::layout`, `engine::view`): the player record's team
+(`+0xc0`); the unit's team (`+0x138`), body and shield vitality (`+0xec`,
+`+0xf0`, [health.md](../halo1/health.md); `engine::view::objects::Body`),
+grenade counts (`+0x23e`) and the held weapon's first magazine (`+0x22c`
+loaded, `+0x22a` reserve). Spawning a player between lives is not a
+write; it needs the game's respawn and is not provided.
 
 ### The game's own functions: teleport, give, spawn
 
-Built 2026-11-19 (`crates/agent/src/sim/calls.rs`), tested over fake
-guests with the callees played by the tests; a live check is pending.
+A host write of a position cannot move a player: the biped's physics puts
+the body back at the next tick. So a move goes through the game
+(`crates/agent/src/sim/calls.rs`), and its physics, cluster and vehicle
+seat hear of it.
 
-**Why.** Until then `pos` wrote the body's position (`+0x64`) and zeroed
-its velocity: the answer said `"wrote": ["pos"]`, and the biped's physics
-put the body back at the next tick, so the player never moved. A move
-has to go through the game, so its physics, cluster and vehicle seat
-hear of it.
-
-**How.** A game method answers in the tick observer, after the tick, where
-nothing can call into the guest. So it queues a call and defers its
-answer (`GameCtx::defer`, the executor's deferred answers: polled at each
-tick boundary from the next, `TIMEOUT` after 30 ticks, held while
-paused). The `agent-calls` feature (a `before` on `game_tick`, first,
+A game method answers in the tick observer, after the tick, where nothing
+can call into the guest. So it queues a call and defers its answer
+(`GameCtx::defer`, the executor's deferred answers: polled at each tick
+boundary from the next, `TIMEOUT` after 30 ticks, held while paused). The
+`agent-calls` feature (a `before` on `game_tick`, first;
 `H2_FEATURES=-agent-calls` turns it off) finds the queue full at the start
 of the next tick, makes the calls, then runs the tick itself, as our
 skulls do. The answer comes after that tick. A snapshot is refused while
@@ -1553,58 +1168,53 @@ calls are queued.
 - **Teleport** (`sim.state.set` with `pos`, `yaw`/`pitch` or `facing`) is
   HaloScript `object_teleport`'s body (`0x29ffb0`) for a player's unit,
   with our position in place of a cutscene flag's. The position goes to
-  the co-op placement `PLAYER_PLACE_NEAR` (`0x14e970`; EBX the player,
-  ESI the point, anchor -1, as `0x2a01ec` calls it), which takes the unit
-  out of a vehicle (`0xe68c0` action `0x1e`) and places it through
-  `0x14e200` a little above the point. The facing: the unit's desired
-  facing, aiming and looking vectors (`+0x150`, `+0x15c`, `+0x180`, as
-  `0x2a019e..0x2a01d9` writes them), a local player's view (`0x1874b0`:
-  yaw and pitch into the player controls, `[0x4ed284] + 0x14 + 0x94 *
-  user`, `+0x10`, `+0x14`), then `object_set_position` (`0xb75a0`) with no
-  position for the orientation. A seated unit's facing is left (its
-  seat's); the answer says so. Other fields of the same call are written
-  at once. The answer: `wrote` (with `pos`, `facing`) and `teleport`
-  (`pos` and `body_forward` where the game put it, `faced`, `unit`).
-  `yaw` is degrees about +z from +x and `pitch` degrees up (-89 to 89),
-  as `world.query` reports them; or `facing: [x,y,z]` (also taken as
-  `forward`, `world.query`'s name for it), so a check can turn the
-  player to face what a query found.
-- **`sim.give`** gives a weapon as a starting profile does (`0xcce78`)
-  and as an AI's equipment does (`0x1e05c8`): `placement_data_new`
-  (`0xb7930`, owner the unit), `object_new` (`0xb7b40`), then
-  `unit_add_weapon` (`0xcd0c0`, stdcall `(unit, weapon, mode)`), deleting
-  the weapon (`0xb8540`) if the unit refuses it. Default mode 2: the
-  unit's weapon slots are emptied first (`0xccff0`) and it readies the
-  new one. `keep: true` is mode 1, the starting profile's: added, held
-  only if the unit's own weapon choice (`0xcdeb0`) picks it. `ammo`
-  writes the new weapon's first magazine once it is made. The tag is a
-  datum or a name with `/` or `\` (names come from the map file, as
-  `edit.tags` lists them: `h2 agent edit tags weap`). A bare name is
-  looked for among `weap` tags only: a weapon shares its name with its
-  model, render model, collision and animations (`hlmt mode coll jmad`),
-  so on Halo 1 Blood Gulch `weapons\sniper rifle\sniper rifle` named five
-  tags and was refused. `group:name` (`weap:weapons\sniper rifle\sniper
-  rifle`) or `name.group` gives the group outright. The answer:
-  `weapon` (`tag`, `group`, `name`), `object`, `mode`, `held`.
+  the co-op placement `PLAYER_PLACE_NEAR` (`0x14e970`; EBX the player, ESI
+  the point, anchor -1, as `0x2a01ec` calls it), which takes the unit out
+  of a vehicle (`0xe68c0` action `0x1e`) and places it through `0x14e200` a
+  little above the point. The facing: the unit's desired facing, aiming and
+  looking vectors (`+0x150`, `+0x15c`, `+0x180`, as `0x2a019e..0x2a01d9`
+  writes them), a local player's view (`0x1874b0`: yaw and pitch into the
+  player controls, `[0x4ed284] + 0x14 + 0x94 * user`, `+0x10`, `+0x14`),
+  then `object_set_position` (`0xb75a0`) with no position for the
+  orientation. A seated unit's facing is left (its seat's); the answer says
+  so. Other fields of the same call are written at once. The answer:
+  `wrote` (with `pos`, `facing`) and `teleport` (`pos` and `body_forward`
+  where the game put it, `faced`, `unit`). `yaw` is degrees about +z from
+  +x and `pitch` degrees up (-89 to 89), as `world.query` reports them; or
+  `facing: [x,y,z]` (also taken as `forward`, `world.query`'s name for it),
+  so a check can turn the player to face what a query found.
+- **`sim.give`** gives a weapon as a starting profile does (`0xcce78`) and
+  as an AI's equipment does (`0x1e05c8`): `placement_data_new` (`0xb7930`,
+  owner the unit), `object_new` (`0xb7b40`), then `unit_add_weapon`
+  (`0xcd0c0`, stdcall `(unit, weapon, mode)`), deleting the weapon
+  (`0xb8540`) if the unit refuses it. Default mode 2: the unit's weapon
+  slots are emptied first (`0xccff0`) and it readies the new one. `keep:
+  true` is mode 1, the starting profile's: added, held only if the unit's
+  own weapon choice (`0xcdeb0`) picks it. `ammo` writes the new weapon's
+  first magazine once it is made. The tag is a datum or a name with `/` or
+  `\` (names come from the map file, as `edit.tags` lists them: `h2 agent
+  edit tags weap`). A bare name is looked for among `weap` tags only, since
+  a weapon shares its name with its model, render model, collision and
+  animations (`hlmt mode coll jmad`); `group:name` or `name.group` gives
+  the group outright. The answer: `weapon` (`tag`, `group`, `name`),
+  `object`, `mode`, `held`.
 - **`sim.spawn`** makes an object as the netgame equipment spawn does
-  (`0x15ab94..0x15abe6`): `placement_data_new` with no owner, the
-  position at placement `+0x1c`, forward and up at `+0x28`/`+0x34`, then
+  (`0x15ab94..0x15abe6`): `placement_data_new` with no owner, the position
+  at placement `+0x1c`, forward and up at `+0x28`/`+0x34`, then
   `object_new`. Any object group `object_new` knows (`bipd vehi weap eqip
-  garb proj scen mach ctrl lifi ssce bloc crea`). A bare name is looked
-  for among those groups, so `vehicles\warthog\warthog` finds the `vehi`
-  and not its model's tags; if it names tags in more than one of them
-  the answer asks for the group (`vehi:vehicles\warthog\warthog`). The
-  answer: `object`, `pos` (where it was made), `tag`.
+  garb proj scen mach ctrl lifi ssce bloc crea`). A bare name is looked for
+  among those groups; if it names tags in more than one, the answer asks for
+  the group (`vehi:<tag name>`). The answer: `object`, `pos` (where it was
+  made), `tag`.
 
-All three are host writes: refused in a co-op session or on a
-multiplayer client, and only at a tick boundary, as `sim.state.set`.
+All three are host writes: refused in a co-op session or on a multiplayer
+client, and only at a tick boundary, as `sim.state.set`.
 
 ```sh
 h2 agent sim set player.0 'pos=[36.7,-80.8,1.7]' yaw=90 pitch=-10
 h2 agent query '{"kind":["player"],"fields":["pos","forward","yaw","pitch"]}'
-h2 agent edit tags weap
-h2 agent sim give player.0 objects/weapons/rifle/battle_rifle/battle_rifle reserve=108
-h2 agent sim spawn objects/vehicles/warthog/warthog 'pos=[40,-80,2]' yaw=180
+h2 agent sim give player.0 <weap tag name> reserve=108
+h2 agent sim spawn <vehi tag name> 'pos=[40,-80,2]' yaw=180
 ```
 
 ### Phantom backend
@@ -1612,17 +1222,14 @@ h2 agent sim spawn objects/vehicles/warthog/warthog 'pos=[40,-80,2]' yaw=180
 `boot::sim_bots::SimBots` implements `agent::sim::bots::Bots` over the
 process-wide phantom registry. It places a player through
 `bots::phantom::add(identity, team, source)` using a
-`bots::pad_source::PadSource`. The bots feature must be enabled. A light
-host also needs `--host-bots` to accept simulated players.
-
-A script source uses the same `input::backend::remote::Remote` step
-queue as `input.pad`. Phantom gather samples it once per game tick.
-A recording supplies successful reads of the input log's first pad.
-A brain supplies its own pad. `sim.player.remove` removes players
-created through `sim.player.add`.
-
-Phantoms join multiplayer games this console hosts. In a level-boot
-`h2 serve` session, drive the existing player with `input.pad`,
+`bots::pad_source::PadSource`. The bots feature must be enabled; a light
+host also needs `--host-bots` to accept simulated players. A script source
+uses the same `input::backend::remote::Remote` step queue as `input.pad`;
+phantom gather samples it once per game tick. A recording supplies
+successful reads of the input log's first pad. A brain supplies its own
+pad. `sim.player.remove` removes players created through
+`sim.player.add`. Phantoms join multiplayer games this console hosts; in a
+level-boot `h2 serve` session, drive the existing player with `input.pad`,
 `sim.state.set` or `sim.give`.
 
 ### Live
@@ -1631,203 +1238,89 @@ Sim never talks to a Live server and never makes accounts or sessions. A
 phantom needs `identity: {xuid, gamertag}`, and the only place to get one
 is the local embedded server (`h2 play --live-local`,
 `live_server::start_embedded`), which issues bot identities and accepts
-`bot: true` only for xuids it issued. Server-side bot accounts are
-bed6c8dc's. Never point a sim run at live.forbes.red.
+`bot: true` only for xuids it issued. Never point a sim run at the public
+Live server.
 
 ## Sim matches
 
-Built 2026-11-19, tested over pure inputs; not run against the game.
 Host methods while sim mode is on (`H2_SIM=<match file>`, `h2 sim run
-<match> --socket PATH`; `boot::sim_glue::Sim::add_methods`,
-[sim.md](sim.md)). Sim mode is a whole headless match with bots and no
-rendering, ending in a report; these let a client watch it, read its
-numbers so far and end it. (The `sim.*` methods above are a different
-thing: simulated players added to an ordinary run.)
+<match> --socket PATH`; `boot::sim_glue::Sim::add_methods`, [sim.md](sim.md)).
+Sim mode is a whole headless match with bots and no rendering, ending in a
+report; these let a client watch it, read its numbers so far and end it.
+The `sim.*` methods above are a different thing: simulated players added to
+an ordinary run.
 
 | Method | Access | What |
 |---|---|---|
 | `match.status` | read | `match` (the file), `map`, `game_type`, `bots`, `phase` (`waiting` until the match's game starts, `binding` until every distributed seat has a player and unit, `playing`, `over`), `bound_seats` (logical seat to player index for a distributed match), `ticks` (game ticks counted since the start), `max_ticks`, `game_seconds`, `wall_s` (since the boot), `match_s` (since the first tick), `speedup` (game over match wall time), `frames` (`skipped` world frames, `rendered_world` by `render_every`, `other` menu and loading frames, `stub_faults`), `end` (`game_over`, `tick_limit`, `wall_limit`, `stopped`; `null` while it plays) |
-| `match.report` | read | the report as it would be written now (`h2-sim-report/1`, sim.md §6): players, kills so far, a note while the match has not ended (its `result.end` is then `aborted`) |
+| `match.report` | read | the report as it would be written now (`h2-sim-report/1`, sim.md section 6): players, kills so far, a note while the match has not ended (its `result.end` is then `aborted`) |
 | `match.stop` | act | end the match: `end` becomes `stopped` (unless it had ended), the boot loop stops at the next slice and the report is written. `{stopping, end, already_over}` |
 
 ```sh
-h2 sim run docs/runtime/sim-examples/lockout-2v2.toml --socket /tmp/sim.sock &
+h2 sim run docs/runtime/sim-examples/aim-net-2v2.toml --socket /tmp/sim.sock &
 H2_AGENT=/tmp/sim.sock h2 agent match.status
 H2_AGENT=/tmp/sim.sock h2 agent match.report
 H2_AGENT=/tmp/sim.sock h2 agent match.stop
 ```
 
-Use `session.pause` and `session.step N` to step a match.
+`session.pause` and `session.step N` step a match.
 
-## `havok`: the physics world
+## Theater transport
 
-Built 2026-11-18, tested over synthetic guest memory; not run against the
-game. Layout and evidence: [havok-runtime.md](../engine/havok-runtime.md).
-Game methods (`agent::havok::install`), answered at a tick boundary.
+The game agent lists these host methods in `session.methods`
+(`crates/agent-proto/src/theater.rs`, `crates/boot/src/theater/controls.rs`).
+In an ordinary CLI-hosted game, `theater.play` with a library ID starts an
+isolated playback process; subsequent transport requests through that
+game agent go to its player. During startup the caller can retry after a
+temporary unavailable response. The playback process also accepts calls
+directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
 
-| Method | Access | What |
+| Method | Parameters | Result |
 |---|---|---|
-| `havok.bodies` | read | `{near?, radius?, limit?}`: rigid bodies: `entity` (address, the key contacts use), `state` (`active`, `inactive`, `fixed`), `object` (agent id) and `datum`, `pos`, `velocity`, `angular_velocity`, `inv_mass`, `mass`, `friction`, `restitution`, and `shape` where it reads: `addr`, `vtable`, `kind` (`capsule`: `a`, `b` in the body's frame, `radius`, `height`; `sphere`: `radius`; `transform`: `translation`, `child`; else `other`). `near` (an object id) keeps bodies within `radius` (default 5) of its body, nearest first, with `distance`; `limit` default 64 |
-| `havok.agents` | read | `{object}` lists collision pairs and cached state. Details below. |
-| `havok.contacts` | read | `{object?}`: contact constraints, each `a`, `b` (`entity`, `object`, `datum`, `fixed` for the level and static bodies) and `points`: `pos`, `normal` (from `b` toward `a`, **S**), `distance` (negative is penetration), `impulse` (what the solver applied on its last step), `friction`, `restitution`. With `object`, only its contacts, with it as `a` |
+| `theater.play` | `{"id":"film-id","range":[300,900]}` to open, `{}` to resume; omit `range` for the whole film | `{id, starting:true}` on launch, otherwise transport state |
+| `theater.state` | `{}` | transport state, or `{id:null}` with no player |
+| `theater.pause` | `{}` | holds guest execution and reports state |
+| `theater.speed` | `{"speed":0.5}` | sets host pacing from 0.25 to 4 times realtime |
+| `theater.seek` | `{"tick":900}`, optionally `"clip_marks":[300,null]` | restarts the player and fast-forwards to the target, carrying camera and timeline state; direct socket clients reconnect after the restart |
+| `theater.camera` | `{"mode":"orbit","player":"<name>","look":[0.2,-0.1],"zoom":-1}` or `{"mode":"first_person","seat":3}` | selects the view and returns transport state; an absolute film seat is 0 to 15 |
+
+The rendered player starts at the clip's first tick and loops at its end.
+Its overlay uses the player's agent socket for transport and `cheat.set
+{"name":"hide_hud","value":true}` for the HUD. A paused player accepts HUD
+and camera changes and applies them to the next rendered frame.
+
+Rendered host playback starts in `free`; its other modes are `orbit`,
+`follow`, `first-person` and `default`. In a playerless version 2 or 3
+host film, `default` uses the first available player's eye position.
+`orbit`, `follow` and `first-person` accept a player name or an absolute
+film seat; with neither, they use the first spawned player. `look` adjusts
+yaw and pitch in radians for `free` and `orbit`. In `free`, `movement`
+adjusts strafe, forward and rise in world units. In `orbit`, `zoom` changes
+the radius in world units. Local playback starts in `default` and shows
+the whole retail frame; version 3 also accepts `first-person` with a local
+player's name or seat to select a drawn viewport. Headless playback
+(`--render-every 0`) accepts only `default`.
+
+Transport state carries `id`, `tick`, `length_ticks`, `paused`, `speed`,
+`seeking`, `camera`, optional `camera_player` and `camera_seat`, and
+discovered kill marker ticks in `kills`, alongside the usual `at` stamp.
+Tick zero is boot. A paused seek holds at its target until play. The HLE
+compares the recorded call index and game-thread hash samples during
+fast-forward ([theater.md](../game/theater.md)).
 
 ```sh
-h2 agent havok.agents '{"object":"player.0"}'
-h2 agent havok.contacts '{"object":"player.0"}'
-h2 agent havok.bodies '{"near":"player.0","radius":3}'
-```
-
-For a superbounce, poll `havok.contacts {object: player.0}` once a tick
-on one `h2 agent -` connection next to `object player.0`: the contact
-with `b.fixed` is the level, and `impulse` over the body's `mass` is the
-velocity it gave. Read the matching agent's child keys and contact IDs
-to see which structure surfaces have a cached manifold at that tick.
-
-For a direct biped capsule, `shape.height` distinguishes the standing and
-crouching pills (0.725 and 0.5 for `masterchief_mp`). A type-`0x17`
-wrapper reports `kind: "other"` in `havok.bodies`; its current pill is the
-pointer at `shape+0x30`. See [Shapes](../engine/havok-runtime.md#shapes).
-
-### `havok.agents`
-
-`object` is required. The reply contains `object`, a tick stamp (`at`) and
-`agents`. Each entry covers a pair with an allocated agent on any rigid
-body of that object. A live object with no such pair returns an empty list.
-A malformed selector returns `INVALID_PARAMS`. An absent object or a player
-between lives returns `GONE`.
-
-- `entry`, `island` and `collidables: [a,b]` are guest addresses in native
-  pair order. `object_side` is `a` or `b`, and `entity` is the requested
-  object's participating rigid body. `other` identifies the partner entity,
-  with its `datum`, object ID and fixed-island flag where available. It is
-  omitted for a partner without an entity. `pair_word` preserves the last
-  four bytes of the pair record.
-- `cache` contains `base`, `vtable`, `manager`, `kind` and `hex`. Addresses,
-  keys and raw words are eight lowercase hex digits. `hex` is two digits per
-  guest byte starting at `base`, including the allocation header and padding.
-- A `bv_tree` or `welded_bv_tree` also has `tree`. Its `min` and `max` are the
-  cached query box in the tree's frame. Each immediate child has `entry`,
-  `key`, raw `word_04` and its own `cache`. A type-1 structure MOPP key also
-  has `surface`, the numeric collision BSP surface index. A filtered child
-  appears as `kind: "empty"` with its shared header.
-- A `convex` or `swept_convex` cache has a `convex` block. `vertices_a` and
-  `vertices_b` are active support vertex IDs in that agent's dispatch order.
-  For convex against tree, child A is the convex body and child B is the
-  selected tree shape. `contact_ids` are the child manifold's IDs in the
-  shared manager. `separating_axis` and `separating_distance` describe the
-  separation bound used to skip a closest-feature search while positive.
-  Nonfinite decoded vectors or distances are null. `swept_sides` on the
-  swept agent records A in bit 0 and B in bit 1.
-- Unrecognised agents report `kind: "other"` and their inline bytes. Bounds
-  include 32,768 scanned pairs, 512 children per tree, 4 KiB per allocation
-  and 256 KiB of raw cache bytes per request. A failed memory read or exceeded
-  bound returns `UNAVAILABLE`.
-
-To compare ticks around a crouch, match a child by the partner and complete
-`key`. Record both agent bases to see replacements and inspect the active
-vertices, contact IDs and separation bound. Allocators can reuse an address
-between samples. The raw dump also contains
-pointers, unused slots and padding. A cached surface with an empty manifold
-is still a candidate in the query box.
-
-## `world.ai`
-
-`h2 agent --socket <socket> world.ai` returns `{at, actors}` at one game
-boundary. It takes no parameters. Each allocated actor has its salted AI
-`datum`, its `unit` ID (for `world.object`), character tag datum, team,
-scenario squad index, current behavior ID, its retail name when available
-(`behavior_name`), and combat status. A missing unit,
-squad or behavior is JSON null. The actor datum and unit ID have separate
-lifetimes. Compare the same unit across ticks to measure movement, weapon
-and vehicle changes.
-
-`sector` is the actor's cached sector index in the active BSP when in
-range, otherwise null. `location_cached` distinguishes a pending refresh
-from a completed lookup. The observer only reads this cache. Retail
-`0x0026c180` refreshes it, and `0x00297e15` passes its sector to the
-mesh walk at `0x0026c590`, which bounds it against the mesh's sector count.
-The behavior ID comes from the top of the four-frame stack used at
-`0x001a813d`. Its label comes from the loaded executable's parallel name
-table at `0x0046f0c8`. Combat status is the signed value read per actor by the
-`ai_combat_status` builtin at `0x00276070`. `focus_object` follows the actor's selected
-perception record to the object datum used at `0x001b368a`. The fight
-behavior reads the same record at `0x001af0c2`. Compare it with
-the player's `unit` in `world.query` to identify attention on the player.
-A remembered object can remain selected after contact is lost.
-
-## `world.raw`: an object's bytes, before and after
-
-Built 2026-11-19 to look for state a forced crouch leaves behind (the
-superbounce, [superbounce.md](../game/superbounce.md)); tested over
-synthetic guest memory, not run against the game. A game method
-(`agent::raw::install`; reader `crates/live-telemetry/src/raw.rs`), read
-only, no claim.
-
-| Method | Access | What |
-|---|---|---|
-| `world.raw` | read | `{id, parts?, len?}`: `id`, `datum`, and `parts`, each `{part, base, hex}` or `{part, missing}` (why: an unset pointer, a fault) |
-
-The parts, each found through the one before it
-([havok-runtime.md](../engine/havok-runtime.md)):
-
-| Part | Where | Bytes |
-|---|---|---|
-| `object` | the object's body (`player.N`: its unit) | the header's size (`+0x06`), else `len` (default `0x400`), at most `0x2000` |
-| `physics_component` | body `+0xb4` into the component array | `0xa0` |
-| `entity` | the component's first rigid body (`+0x70`, `+0x40`) | `0x200` |
-| `motion` | entity `+0x3c` | `0x140` |
-| `shape` | entity `+0x0c` | `0x80` |
-
-`h2 agent raw-diff a.json b.json` (no game needed) prints, per part, the
-32-bit words that differ, with their offset from the part's base, and
-both as floats where they read as ones. A part on one side only, or
-whose base moved (another structure), is listed, not compared. It reads
-what `h2 agent raw` prints, or a `-` script's output (its last line).
-
-```sh
-h2 agent raw player.0 > before.json             # world.raw {"id":"player.0"}
-# ... force a crouch, walk out, stand ...
-h2 agent raw player.0 > after.json
-h2 agent raw-diff before.json after.json
-h2 agent raw player.0 entity,shape              # some parts
-h2 agent world.raw '{"id":"player.0","parts":["object"],"len":2048}'
-```
-
-## `world.poke`: replace bytes in one object part
-
-| Method | Access | What |
-|---|---|---|
-| `world.poke` | claim | `{id, part?, offset, hex}` |
-
-Writes 1 to 64 bytes at a tick boundary. `id` and `part` use the same
-names as `world.raw`, and `part` defaults to `object`. `offset` is a
-nonnegative byte offset from the part's base. `hex` takes two hex digits
-per byte. The entire range must fit in the part that `world.raw` reads
-with its default lengths.
-
-The calling connection must hold `session.claim`. `sim.session` reports
-whether the current session allows host writes. A session refusal
-returns `INVALID_REQUEST` with `data.session`, and a request served
-between slices returns `UNAVAILABLE` when the session allows writes.
-
-The result includes `id`, `datum`, `part`, `base`, `offset`, and `at`.
-`base` is the first address of the part. `before` and `after` give the
-bytes at the requested offset as lowercase hex.
-
-The standalone short form takes a claim for the life of its connection.
-Its offset can be decimal or prefixed with `0x`. In a script, send
-`claim` on the same connection first.
-
-```sh
-h2 agent poke <id> <part> <offset> <hex>
+h2 agent theater.state '{}' --socket "$film_run/play.sock"
+h2 agent theater.pause '{}' --socket "$film_run/play.sock"
+h2 agent theater.seek '{"tick":30}' --socket "$film_run/play.sock"
+h2 agent theater.play '{}' --socket "$film_run/play.sock"
 ```
 
 ## Tick traces and the flight recorder
 
 Polling `world.object` from outside (`h2 agent -`) drops ticks when the
-game or the client is busy. These take the rows inside the game, in the
-tick observer, before queued requests are served, so each tick gives
-exactly one row. Code: `crates/agent/src/trace.rs` (tests in
+game or the client is busy. `trace.*` and `flight.*` take the rows inside
+the game, in the tick observer, before queued requests are served, so each
+tick gives exactly one row. Code: `crates/agent/src/trace.rs` (tests in
 `trace/tests.rs`), wire types and `show` in `crates/agent-proto/src/trace.rs`,
 CLI in `crates/cli/src/agent_flight.rs`.
 
@@ -1840,9 +1333,6 @@ h2 agent flight show ~/Library/Caches/h2recomp/flights/crouch-bug.jsonl \
     --from 4100 --to 4160 --field physics.crouch --field physics.airborne --field input
 ```
 
-How it behaves (**Code**, proven with a fake reader and the input tap fed
-synthetic packets; nothing here was run against the game):
-
 - **Rows.** One JSON line per tick: `{tick, ticks, map, objects: {id:
   Object}, gone, error}`. `tick` is the stamp's game tick, `ticks` the
   agent's count (never resets, one more each row). `objects` holds each
@@ -1851,103 +1341,141 @@ synthetic packets; nothing here was run against the game):
   tick are in `gone`; a failed world read gives `error` and still a row.
   The world is read once a tick when either recorder runs, and not at all
   otherwise. A paused game writes no rows; each `session.step` tick does.
-- **`trace.start {objects, fields?, path?}`.** 1 to 64 ids. Streams rows
-  to `path` (a bare file name in the cache directory's `traces/`, since
-  the socket may be unauthenticated TCP; default `traces/trace-<ms>.jsonl`; an existing file is replaced) through
-  one buffered writer, flushed every 30 rows, at `trace.stop` and at exit:
-  memory doesn't grow with length. `trace.stop` and `trace.status` give
-  `rows`, `bytes`, `first_tick`, `last_tick`, `path` and `error` (a write
-  failure ends the trace there). One trace at a time; the last one's
-  counts stay for `trace.status`.
-- **`flight.start {objects, fields?, seconds?}`.** Keeps the last
-  `seconds` (default 30, 1 to 600) × 30 rows in memory, at most 64 MiB of
-  JSON (the oldest go first). Each row also has `input`: every
-  `XInputGetState` result the game got since the last tick, taken at the
-  agent's input tap after agent steps merge in (`{port, handle, status,
-  packet, buttons, left, right, raw}`, `raw` the 18 pad bytes in hex), at
-  most 64 a tick (`input_dropped` counts the rest, as during a load).
-  Without XAPI input there is no tap and rows have no `input`.
-  `flight.dump {path?}` writes the ring (default `flights/flight-<ms>.jsonl`)
-  and keeps recording; `flight.stop` drops it; `flight.status` gives
-  `capacity`, `rows`, `bytes`, `ticks` seen and the ring's tick range.
+- **`trace.start {objects, fields?, path?}`.** 1 to 64 ids. Streams rows to
+  `path` (a bare file name in the cache directory's `traces/`, since the
+  socket may be unauthenticated TCP; default `traces/trace-<ms>.jsonl`; an
+  existing file is replaced) through one buffered writer, flushed every 30
+  rows, at `trace.stop` and at exit: memory does not grow with length.
+  `trace.stop` and `trace.status` give `rows`, `bytes`, `first_tick`,
+  `last_tick`, `path` and `error` (a write failure ends the trace there).
+  One trace at a time; the last one's counts stay for `trace.status`.
+- **`flight.start {objects, fields?, seconds?}`.** Keeps the last `seconds`
+  (default 30, 1 to 600) x 30 rows in memory, at most 64 MiB of JSON (the
+  oldest go first). Each row also has `input`: every `XInputGetState`
+  result the game got since the last tick, taken at the agent's input tap
+  after agent steps merge in (`{port, handle, status, packet, buttons,
+  left, right, raw}`, `raw` the 18 pad bytes in hex), at most 64 a tick
+  (`input_dropped` counts the rest, as during a load). Without XAPI input
+  there is no tap and rows have no `input`. `flight.dump {path?}` writes
+  the ring (default `flights/flight-<ms>.jsonl`) and keeps recording;
+  `flight.stop` drops it; `flight.status` gives `capacity`, `rows`,
+  `bytes`, `ticks` seen and the ring's tick range.
 - **Scrub.** `h2 agent flight show <file>` reads a trace or flight file
   without a game: whole rows, or with `--field` one line per tick of each
   object's dotted paths (`physics.crouch`) and `input`'s reads, between
-  `--from` and `--to` game ticks. It doesn't re-simulate; replaying a
-  stretch needs machine snapshots (separate work).
-- **Access.** Read-only (no claim), answered between slices too. Files
-  are written where asked, as `input.record`'s are.
+  `--from` and `--to` game ticks. It does not re-simulate; replaying a
+  stretch starts from a [snapshot](#state-machine-snapshots).
+- **Access.** Read-only (no claim), answered between slices too. Files are
+  written where asked, as `input.record`'s are.
 
-## Open decisions
+## Scripted scenarios with a verdict
 
-- **Who runs the game the API talks to.** Decided (2026-11-17): one
-  shared headless `h2 serve` that the user starts from an image they
-  built. Agents connect to it, one controller at a time, and never build.
-- **MCP versus CLI.** Decided (2026-11-17): the `h2 agent` CLI only. The
-  MCP front end is dropped.
-- **Snapshot depth.** Full machine snapshots (phase 5) are a large
-  runtime change; the checkpoint fallback may be enough for a long time.
+```sh
+cat > grenade.txt <<'X'
+wait {"phase":"gameplay","map_ticks":30}
+expect /at/phase == "gameplay"
+claim
+press rt 100
+capture 90
+expect /over_budget <= 2
+expect /causes missing
+release
+X
+h2 agent run grenade.txt          # one JSON verdict; exit 1 unless it passed
+```
+
+`h2 agent run <script|->` (`crates/cli/src/agent_run.rs`) is the `h2
+agent -` script on one connection, plus `expect <pointer> <op> [JSON]` on
+the last answer (a JSON pointer; ops `==`, `!=`, `<`, `<=`, `>`, `>=` on
+numbers, `contains` for a substring, an array element or an object key,
+`exists`, `missing`, and `near {"to", "within"}`) and `keep` (put the last
+answer in the verdict). The expectations are `agent_proto::expect`, which
+`sim.expect` judges in the game too. The verdict is `{"pass", "failed",
+"ms", "calls": [{line, call, ms, ok, error}], "expects": [{line, expect,
+want, pass, got}], "kept", "stopped"}`. A failed expect is recorded and
+the script goes on; a failed call stops it. Answers are not printed
+except kept ones, so a long scenario costs a few lines of context.
+
+### Test maps on disk
+
+`h2 testmap <source.map> <script.json | -> --out <new.map> [--force]`
+(`crates/cli/src/testmap_cmd.rs`) is a host-only tool for a repro that
+needs one thing in an empty room. It runs a JSON edit script
+(`scenario_edit::script`, `crates/scenario-edit/src/script.rs`) over the
+source's placement blocks through the editor's own `Session`, so every
+edit is checked as the editor checks it, and saves a new map (the source
+is never written). It prints what each operation did and the entries left
+per block. Operations: `clear` (blocks, or `"all"`; a block the editor
+will not empty is reported and left), `keep` (these entries of a block,
+renumbered from 0), `add` (a copy of `like`, or a zeroed entry with the
+palette's first item, then `set`), `set` (fields by the editor's names:
+`position` `[x, y, z]`, `rotation`, `facing`, `team`, palette `type`, ...),
+`remove`. `allow_growth` lets a block grow past its source size, as the
+editor's switch. Blocks: `scenery`, `vehicles`, `equipment`, `weapons`,
+`machines`, `sound_scenery`, `crates`, `starting_locations`,
+`netgame_flags`, `netgame_equipment`, `starting_equipment`. AI (squads and
+their spawn points) and tag references other than through a palette index
+are not covered. The user or coordinator loads the result (`H2_MAP_DIR`);
+agents do not.
+
+## Rules and limits
+
+- Agents attach to a running game; a client never builds, relaunches or
+  changes `H2_OPT`. A client that needs new code writes a test instead.
+- Answers are small by default: counts first, details by id, paging
+  everywhere.
+- World reads happen between guest ticks inside a hook on the game's own
+  thread, so a reply is one consistent moment. Reads from Rust are
+  uncharged and invisible to the guest.
+- Hooks on shared per-tick entry points need an explicit order, or the
+  feature plan refuses to build; the `agent` feature declares its order
+  against `lockstep`, co-op and telemetry.
+- Text resolved from the user's disc (tag names, strings) is returned to
+  the client and never written into the repository; tests use made-up
+  names.
+- Snapshots, captures, input logs, traces and flights live in the cache
+  directory (`agent_proto::cache_dir`), never in the repository.
+- Methods a method table names but this build does not register (an
+  `input.*` method without XAPI input, `audio.voices` without
+  DirectSound, `host.*` without the light host) are absent from
+  `session.methods`.
+
+## Evidence
+
+Statements are **Code** (read from this repository, the path given) unless
+labelled. Guest addresses are **E** (read from the retail XBE with `h2
+disasm`) and are research points, not data. Tests that cover the page:
+`crates/agent/src/exec/tests.rs` (wire, control, wait, deferred answers),
+`crates/agent/src/sim/tests.rs` (`sim.*`, with the callees played by the
+tests), `crates/agent/src/trace/tests.rs`, `crates/agent/src/havok.rs` and
+`crates/agent/src/raw.rs` (synthetic guest memory), `crates/agent-proto`
+(wire types), `crates/boot/tests/feature_plan.rs` (the observer order).
+
+## Not verified
+
+- Nothing here was checked by running the game unless a section says so:
+  the tests above use fake readers, synthetic guest memory, synthetic pads,
+  synthetic frames and a fake sampler.
+- `state.*` against the real machine: the tests run over fakes.
+- `sim.give`, `sim.spawn` and teleport against a running game: the callees
+  are played by the tests.
+- Lobby steps `invite` and `start` have not been pressed through by `sim`
+  in a run.
+- `render.frame`, `load.timeline`, `world.raw`, `havok.*` and the
+  `trace`/`flight` recorder against a running game.
+- Not provided: effect, projectile and particle counts; per-subsystem
+  guest time; owner attribution of frame cost; kernel I/O seeks and cache
+  hits in the load timeline; fade detection; a widget-level UI stack and
+  HUD; setting a feature switch through the API; loading a named level.
 
 ## Related
 
-- [feature-engine.md](../engine/feature-engine.md): switches, hooks, Sim
-  labels, native UI screens
+- [feature-engine.md](../engine/feature-engine.md): switches, hooks, native UI screens
 - [high-framerate.md](../game/high-framerate.md): `lockstep` and `xapi::tap`
-- [profiling.md](../perf/profiling.md), [gameplay-budget.md](../perf/gameplay-budget.md)
-- [level-boot.md](level-boot.md), [checkpoints.md](checkpoints.md)
+- [profiling.md](../perf/profiling.md), [gameplay-budget.md](../perf/notes/gameplay-budget.md)
+- [level-boot.md](level-boot.md), [checkpoints.md](checkpoints.md), [snapshots.md](snapshots.md)
 - [lab.md](lab.md): `h2 lab`, runs on a second Mac over SSH with replays and frame stats
-- [hot-iteration.md](../graphics/hot-iteration.md): `edit.*` (live tag edits) and `render.*` (hot WGSL overrides, parameters, toggles)
-- [debug-menu.md](debug-menu.md): the in-game debug menu, an in-process client of this API; `settings.list`/`settings.set`, `perf.overlay` and `cheat.list`/`cheat.set`
-- [hs_vm.md](../engine/hs_vm.md)
-- [docs/live](../live/): the Live service, the other reader of
-  `live-telemetry`
-
-## Theater transport
-
-The game agent lists the following host methods in `session.methods`.
-In an ordinary CLI-hosted game, `theater.play` with a library ID starts
-an isolated playback process. Subsequent transport requests through that
-game agent go to its player. During startup the caller can retry after a
-temporary unavailable response. The playback process also accepts calls
-directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
-
-| Method | Parameters | Result |
-|---|---|---|
-| `theater.play` | `{"id":"film-id","range":[300,900]}` to open, `{}` to resume. Omit `range` for the whole film | `{id, starting:true}` on launch, otherwise transport state |
-| `theater.state` | `{}` | Transport state, or `{id:null}` with no player |
-| `theater.pause` | `{}` | Holds guest execution and reports state |
-| `theater.speed` | `{"speed":0.5}` | Sets host pacing from 0.25 to 4 times realtime |
-| `theater.seek` | `{"tick":900}`, optionally `"clip_marks":[300,null]` | Restarts the player and fast-forwards to the target, carrying camera and timeline state. Direct socket clients reconnect after the restart. |
-| `theater.camera` | `{"mode":"orbit","player":"Player","look":[0.2,-0.1],"zoom":-1}` or `{"mode":"first_person","seat":3}` | Selects the view and returns transport state. An absolute film seat is in the range 0–15. |
-
-The rendered player starts at the clip's first tick and loops at its end.
-Its overlay uses the player's agent socket for transport and
-`cheat.set {"name":"hide_hud","value":true}` for the HUD. A paused player
-accepts HUD and camera changes and applies them to the next rendered frame.
-
-Rendered host playback starts in `free`. Its other modes are `orbit`,
-`follow`, `first-person` and `default`. In a playerless version 2 or 3
-host film, `default` uses the first available player’s eye position.
-`orbit`, `follow` and `first-person` accept a player name or an absolute
-film seat. With neither, they use the first spawned player. `look` adjusts
-yaw and pitch in radians for `free` and `orbit`. In `free`, `movement`
-adjusts strafe, forward and rise in world units. In `orbit`, `zoom`
-changes the radius in world units.
-
-Local playback starts in `default` and shows the whole retail frame.
-Version 3 also accepts `first-person` with a local player’s name or seat
-to select a drawn viewport. Headless playback (`--render-every 0`)
-accepts only `default`.
-
-Transport state carries `id`, `tick`, `length_ticks`, `paused`, `speed`,
-`seeking`, `camera`, optional `camera_player` and `camera_seat` fields,
-and discovered kill marker ticks in `kills`, alongside the agent’s usual
-`at` stamp. Tick zero is boot. A paused seek holds at its target until play. The HLE compares
-the recorded call index and game-thread hash samples during fast-forward.
-
-```sh
-h2 agent theater.state '{}' --socket "$film_run/play.sock"
-h2 agent theater.pause '{}' --socket "$film_run/play.sock"
-h2 agent theater.seek '{"tick":30}' --socket "$film_run/play.sock"
-h2 agent theater.play '{}' --socket "$film_run/play.sock"
-```
+- [hot-iteration.md](../graphics/hot-iteration.md): `edit.*` and hot `render.*`
+- [debug-menu.md](debug-menu.md): the in-game debug menu, an in-process client of this API
+- [sim.md](sim.md): sim mode and the match report
+- [docs/live](../live/): the Live service, the other reader of `live-telemetry`

@@ -1,6 +1,6 @@
 //! Isolated prototype of the fastmem write watch on macOS arm64: page
 //! protection plus a Mach exception server instead of a per-store dirty mark.
-//! See docs/perf/fastmem-proto.md for the design choices, the measured costs and what the
+//! See docs/perf/notes/fastmem-proto.md for the design choices, the measured costs and what the
 //! fastmem design has to carry over.
 //!
 //! The library's Mach server is macOS arm64 only. The Linux x86-64

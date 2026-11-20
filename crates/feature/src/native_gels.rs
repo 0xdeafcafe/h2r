@@ -1,7 +1,6 @@
-//! Shader-gel production at its original template/quad sites. On by
-//! default (since 2026-11-20; `impl.render.native_gels=off` turns it off
-//! for the comparison against the D3D path). Guest setup and geometry
-//! assembly execute; draw admission
+//! Shader-gel production at its original template/quad sites. On with
+//! the native renderer (`impl.render.native`, on by default). Guest setup
+//! and geometry assembly execute; draw admission
 //! transactionally replaces only complete target-13 packets.
 
 use crate::{BuildError, Builder, Feature, Flow, Manifest};
@@ -10,10 +9,9 @@ use native_render::gels;
 use std::sync::{Arc, Mutex};
 
 pub const ID: &str = "native-gels";
-pub const SWITCH: &str = "impl.render.native_gels";
 
 pub fn on(switches: &crate::Switches) -> bool {
-    crate::switches::native_stage_on(switches, SWITCH)
+    crate::switches::native_render_on(switches)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,7 +24,7 @@ pub trait Host: Send + Sync {
     /// Every template entry invalidates the previous pending gel. Only
     /// the exact gel site has `Some(call)`.
     fn template(&self, mem: &dyn GuestMemory, call: Option<Call>);
-    fn quad(&self, mem: &mut dyn GuestMemory, mxcsr: u32);
+    fn quad(&self, mem: &mut dyn GuestMemory);
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
@@ -86,7 +84,7 @@ impl Feature for NativeGels {
                 {
                     let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
                     if let Some(host) = host {
-                        host.quad(&mut *mem, c.cpu.mxcsr);
+                        host.quad(&mut *mem);
                     }
                 }
                 Ok(Flow::Continue)

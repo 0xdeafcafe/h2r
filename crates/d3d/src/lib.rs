@@ -57,8 +57,6 @@ pub mod state;
 mod texdesc;
 #[cfg(feature = "gpu")]
 pub mod threaded;
-#[cfg(feature = "gpu")]
-pub mod uniform_compare;
 pub mod vblank;
 pub mod vertex_cache;
 
@@ -70,7 +68,7 @@ pub use backend::{
 pub use device::{
     DepthScale, Device, DeviceConfig, DrawScope, ExternalRefusal, GuestRange, OcclusionSink, PreparedExternal,
     PresentParameters, Stats, Swallow, SwallowCall, SwallowOriginal, SwallowPass, SwallowRefusal,
-    SwallowTarget, Traced, TracedDraw, WritebackCause, WritebackCauses,
+    SwallowTarget, WritebackCause, WritebackCauses,
 };
 pub use dirty::{UploadPolicy, WriteTracker};
 pub use events::{D3dError, Event, HleStop};

@@ -1,7 +1,7 @@
 //! Independently selectable simulation replacements for the base Xbox image.
 use crate::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 use engine::{points, sim_native as sim};
-use runtime::{CpuAbi, Guest};
+use runtime::{CpuAbi, ExecCtx, Guest, GuestFault, TransferAbi};
 
 pub struct SimNative {
     ray_dispatch: bool,
@@ -22,15 +22,16 @@ const ENTRIES: &[(&points::Point, &'static str, Body)] = &[
         "sim.native_transform_compose",
         sim::compose,
     ),
+    // The root transform is two or three transform compositions.
+    (
+        &points::OBJECT_ROOT_TRANSFORM,
+        "sim.native_transform_compose",
+        sim::root::transform,
+    ),
     (
         &points::OBJECT_POSE_MATRIX,
         "sim.native_pose_matrix",
         sim::pose_matrix,
-    ),
-    (
-        &points::ANIM_ROTATION_CODEC,
-        "sim.native_rotation_codec",
-        sim::rotation_codec,
     ),
     (
         &points::COLLISION_POINT_TO_LEAF,
@@ -46,11 +47,6 @@ const ENTRIES: &[(&points::Point, &'static str, Body)] = &[
         &points::SIM_UNIT_POSE,
         "sim.native_unit_pose",
         sim::unit::pose,
-    ),
-    (
-        &points::SIM_ANIMATION_STREAM,
-        "sim.native_animation_stream",
-        sim::stream::select,
     ),
     (
         &points::SIM_GRAPH_RESOLVE,
@@ -153,22 +149,80 @@ impl Feature for SimNative {
                             }
                             return Ok(transfer);
                         }
-                        if let Some(original) = ctx.runtime().resolve_original(addr) {
-                            return Ok(original.invoke(cpu, ctx, addr));
-                        }
-                        let event = ctx.emit(runtime::Event::UnsupportedTarget {
-                            pc: cpu.eip,
-                            target: addr,
-                            kind: runtime::abi::JUMP,
-                            route: runtime::abi::ENTRY,
-                        });
-                        Ok(runtime::TransferAbi::fault(event))
+                        original(cpu, ctx, addr)
                     })
                     .context_only();
             }
         }
-        b.snapshot(SnapshotPolicy::Stateless);
+        let anim = anim_on(b.switches());
+        if anim {
+            install_anim(b);
+        }
+        // The clip store is derived from guest memory and holds no state of
+        // its own; a load only has to invalidate it.
+        b.snapshot(if anim {
+            SnapshotPolicy::section(Vec::new, |_, _| {
+                engine::sim_anim::invalidate();
+                Ok(())
+            })
+        } else {
+            SnapshotPolicy::Stateless
+        });
         Ok(())
+    }
+}
+
+/// The original at `addr`, for calls a native body declines.
+fn original(cpu: &mut CpuAbi, ctx: &mut ExecCtx, addr: u32) -> Result<TransferAbi, GuestFault> {
+    if let Some(original) = ctx.runtime().resolve_original(addr) {
+        return Ok(original.invoke(cpu, ctx, addr));
+    }
+    let event = ctx.emit(runtime::Event::UnsupportedTarget {
+        pc: cpu.eip,
+        target: addr,
+        kind: runtime::abi::JUMP,
+        route: runtime::abi::ENTRY,
+    });
+    Ok(TransferAbi::fault(event))
+}
+
+/// `impl.sim.native.anim`: animation sampling, phase 1a of the simulation
+/// rewrite (docs/engine/anim-sampling.md). It replaces the stream call
+/// `0x2798a0` and everything under it, so the per-function codec,
+/// evaluator and stream ports it covers are test oracles only.
+pub const ANIM: &str = "sim.native.anim";
+
+fn anim_on(switches: &crate::Switches) -> bool {
+    switches.implementation(ANIM, false)
+}
+
+/// Points after which guest memory no longer matches the clip store: map
+/// load, checkpoint revert and full restore (snapshot load is the
+/// section's `load`).
+const ANIM_INVALIDATE: [(&points::Point, &str); 3] = [
+    (&points::CACHE_TAGS_LOAD, "anim-invalidate-map"),
+    (&points::GAME_STATE_REVERT, "anim-invalidate-revert"),
+    (&points::GAME_STATE_RESTORE, "anim-invalidate-restore"),
+];
+
+fn install_anim(b: &mut Builder) {
+    let point = &points::SIM_ANIMATION_STREAM;
+    b.raw()
+        .implement(point, ANIM, move |cpu, ctx, addr| {
+            if addr == point.base && sim::supported(cpu) {
+                let mut mem = ctx.memory();
+                if let Some(transfer) =
+                    engine::sim_anim::stream(cpu, &mut *mem, &engine::sim_anim::STORE)?
+                {
+                    return Ok(transfer);
+                }
+            }
+            original(cpu, ctx, addr)
+        })
+        .context_only();
+    for (point, label) in ANIM_INVALIDATE {
+        b.raw()
+            .observe_before(point, label, |_| engine::sim_anim::invalidate());
     }
 }
 
@@ -187,13 +241,43 @@ mod tests {
             let mut registry = Registry::new(switches);
             registry.add(&SimNative { ray_dispatch: true }).unwrap();
             let plan = registry.build(&Base).unwrap();
-            assert_eq!(plan.chains.len(), usize::from(enabled.is_some()));
-            if let Some((point, key, _)) = enabled {
+            // A switch installs every entry that shares it, and only those.
+            let sharing: Vec<_> = enabled
+                .map(|(_, key, _)| ENTRIES.iter().filter(|e| e.1 == *key).collect())
+                .unwrap_or_default();
+            assert_eq!(plan.chains.len(), sharing.len());
+            for (point, key, _) in sharing {
                 assert_eq!(
                     plan.chains[&point.base].implement.as_ref().unwrap().label,
                     *key
                 );
             }
+        }
+    }
+
+    #[test]
+    fn anim_replaces_the_stream_call_and_invalidates_on_reload() {
+        let mut registry = Registry::new(Switches::defaults().with(&format!("impl.{ANIM}"), true));
+        registry.add(&SimNative { ray_dispatch: true }).unwrap();
+        let plan = registry.build(&Base).unwrap();
+        let stream = &plan.chains[&points::SIM_ANIMATION_STREAM.base];
+        assert_eq!(stream.implement.as_ref().unwrap().label, ANIM);
+        for (point, label) in ANIM_INVALIDATE {
+            let chain = &plan.chains[&point.base];
+            assert!(chain.implement.is_none());
+            assert_eq!(chain.observe_before.len(), 1, "{label}");
+        }
+        assert_eq!(plan.chains.len(), 1 + ANIM_INVALIDATE.len());
+        assert_eq!(plan.save_sections(), vec![("sim-native", Vec::new())]);
+
+        // Off by default; the retired per-function switches install nothing.
+        for key in ["sim.native_rotation_codec", "sim.native_animation_stream"] {
+            let mut registry =
+                Registry::new(Switches::defaults().with(&format!("impl.{key}"), true));
+            registry.add(&SimNative { ray_dispatch: true }).unwrap();
+            let plan = registry.build(&Base).unwrap();
+            assert!(plan.chains.is_empty(), "{key}");
+            assert!(plan.save_sections().is_empty());
         }
     }
 

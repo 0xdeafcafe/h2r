@@ -1,28 +1,19 @@
 # Halo 2 retail Xbox engine map
 
-Surveyed 2026-11-14. **Start with cache/tag loading, guest-compatible allocation,
-localized strings, and the D3D boundary. Keep the main loop, object creation,
-HaloScript, and physics generated until the menu actually renders.** A first
-`mainmenu.map` frame requires more than a device and a clear: the normal path
-loads a scenario/BSP, runs lifecycle callbacks, builds views, draws world/UI
-geometry, and swaps. A boot/loading-screen swap is a useful earlier milestone,
-but is not that goal.
-
-This is an address guide for incremental Rust overrides, following
-[ARCHITECTURE.md](../ARCHITECTURE.md), [LIFTER.md](../lifter/LIFTER.md), and
-[map-format.md](../formats/map-format.md). It is static analysis, **not a successful boot or
-an observed frame trace**. Names below are assigned descriptions, not recovered
-Bungie symbols. No executable bytes, disassembly listings, assets, or string
-tables are included.
+A map of the retail engine by subsystem: where each part starts, what calls
+it and what it reads, with guest addresses and a confidence label on each
+claim. It is the first page to read before touching a guest function. It
+follows [ARCHITECTURE.md](../ARCHITECTURE.md), [LIFTER.md](../lifter/LIFTER.md)
+and [map-format.md](../formats/map-format.md). It is static analysis, **not an
+observed frame trace**. Names are assigned descriptions, not recovered Bungie
+symbols. No executable bytes, disassembly listings, assets or string tables
+are included.
 
 ## Identity, evidence, and limitations
 
 - XBE SHA-256: `03215919bb7163259257d361f4c7bf802a7ab12aa85e2689436369b5c427935d`.
   Title ID `4D530064`, retail certificate version 3, entry `0x002d0aee`.
   The linked XDK library records report build 5849, including `D3D8LTCG`.
-- Repository HEAD at survey: `169378a492a2fb52d53fe0e16f2b3d183573859f`.
-  Used the existing `target/release/h2`; no crate edits or rebuilds. XDK matches
-  came from `h2 symbols` in the same binary.
 - `h2 analyze`: 18,735 discovered functions across executable sections;
   `.text` has 16,072 starts, 3,453,203 decoded code bytes out of 3,570,764 bytes.
   Its 99.90% *known* coverage includes data and padding. This is not proof of
@@ -289,29 +280,28 @@ low-address renderer routine a BSP renderer. `mode`, `bitm`, shader families,
 `sbsp` and `ltmp` are relevant asset classes; their role does not prove a literal
 FourCC test exists in each path.
 
-For the menu, preserve the normal views and UI renderer first. `wgtz`/`wigl`/
+For the menu, `wgtz`/`wigl`/
 `wgit`, `unic`, bitmaps, fonts and scenario background assets are the relevant
 public tag families, but this survey has not assigned all their constructors.
 The font initialization at `0x00121fc0`, localized resolver above, and per-layer
 virtual calls are concrete entry points. Profile-list constructor `0x00249f0d`
 has a diagnostic xref at `0x00459efc`; it is not the entire main-menu constructor.
 
-**D3D replacement cannot consist only of CreateDevice and Swap.** State setters,
+**The D3D boundary is more than CreateDevice and Swap.** State setters,
 resource methods and GPU push-buffer work are linked/inlined into engine code.
-Retain generated engine rendering while implementing the reached D3D semantics
-on wgpu, then replace higher-level geometry/material operations. The D3D section
+The D3D section
 has 237 analyzer starts and 57,105 decoded code bytes; the section's virtual
 size is 78,948 bytes, including data/tails. [LTCG and boundary design](../lifter/LIFTER.md)
 
 ## Sound, physics, networking, and persistence
 
-| Subsystem / anchors | Confidence | Evidence and first-frame strategy |
+| Subsystem / anchors | Confidence | Evidence |
 |---|---|---|
-| Sound initialization `0x001253d0` → `0x0021e4b0` → `0x0037d797` | Confirmed | Named source/cache/controller arrays; DirectSoundCreate match, capabilities, distance/rolloff/doppler settings, buffer creation/play. A silent backend still needs correct buffer lifetimes and completion/status behavior. |
-| Sound frame service `0x00125b40`; looping `0x0021a0c0`; effects `0x0021d490` | Confirmed | Allocation names, shared sound globals, cache/listener helpers. `snd!` expected-group constant at `0x00188c03` is in an object-related sound path. Decode only needed menu resources initially. |
+| Sound initialization `0x001253d0` → `0x0021e4b0` → `0x0037d797` | Confirmed | Named source/cache/controller arrays; DirectSoundCreate match, capabilities, distance/rolloff/doppler settings, buffer creation/play. |
+| Sound frame service `0x00125b40`; looping `0x0021a0c0`; effects `0x0021d490` | Confirmed | Allocation names, shared sound globals, cache/listener helpers. `snd!` expected-group constant at `0x00188c03` is in an object-related sound path. |
 | Havok world setup `0x001c2d40` → `0x003101c0` | Confirmed | Publishes world pointer `0x0051e9a4`; constructor has Havok version-mismatch diagnostic and hkWorld source-file xref `0x00413978`. Presence of Havok is established; exact product/version is not inferred from the numeric compatibility token. |
 | Havok BSP integration `0x001c2910` | Confirmed | Diagnostic at `0x004558f0` describes building BSP physics; reads active BSP and creates collision representation. |
-| Physics step `0x001c3d30` → `0x00311100` | Confirmed wrapper; likely inner step identity | Called between object phases; reads tick delta and world pointer, manages x87/MXCSR, invokes Havok and collision callbacks. Preserve generated behavior first. |
+| Physics step `0x001c3d30` → `0x00311100` | Confirmed wrapper; likely inner step identity | Called between object phases; reads tick delta and world pointer, manages x87/MXCSR, invokes Havok and collision callbacks. |
 | Collision query `0x0016a8e0` | Likely sphere/world contact query | Geometry/planes, radius and contact adjustment math, used by effects; exact API name and argument ABI are unresolved. Collision includes Halo geometry queries as well as Havok. |
 | Transport `0x000b4d50`, `0x000b4fa0`, `0x000b5000`, `0x000b5060`, `0x000b5110` | Guess: create/read/write/read-from/write-to | SDK/XNet-linked neighborhood; roles unverified, full socket ABI and error paths not audited. |
 | Network pumps `0x0008df50` / `0x0008dfc0` | Likely semantic phases | Link polling via `0x0008d7e0` reaches matched XNetGetEthernetLinkStatus `0x0036c47d`; state/session operations surround ticks. Do not remove local simulation merely because Xbox Live is offline. |
@@ -337,28 +327,28 @@ ownership is **guess**; counts/spans are measured. This avoids pretending a
 partial symbol map establishes complete subsystem totals. Startup/frame is
 scattered; its row measures selected known bodies instead.
 
-P0 = unblock the menu frame now; P1 = next useful readable Rust; P2 = preserve
-scaffolding and defer. These are implementation recommendations, not measured
-runtime costs.
+The order in which subsystems are rewritten is in
+[sim-rewrite.md](sim-rewrite.md) for the simulation; the feature pages of
+each area say the rest.
 
-| Subsystem | Survey size: functions / bytes | Window(s), hex | Coupling | Rewrite priority |
-|---|---:|---|---|---|
-| Startup/frame orchestration | ≥10 / 1,679 body bytes | Explicit anchors below | Very high; lifecycle callbacks, threads, all services | P0 trace/run; P2 full rewrite |
-| Cache/tag core | 46 / 8,048 | `122870–122f90`, `2136c0–214f10` | Very high fan-out; relatively small loader core | P0; best typed-engine investment |
-| Localized strings | 6 / 560 | `1a0180–1a03b0` | Moderate; tags, locale blobs, conversion/fonts | P0 for menu labels |
-| Datum/pool primitives | 30 / 3,120 | `16b570–16bc90`, `18e1f0–18e700` | Very high; inlined layout users | P0 guest-compatible leaves; P1 ownership redesign |
-| Game time core | 9 / 1,088 | `146550–146990` | High; simulation, scripts, camera, audio | P1; keep exact timing initially |
-| Objects/units/weapons | 1,194 / 415,328 | `0b67c0–11be20` | Very high; physics, tags, network, animation | P1 object identity; P2 behaviors |
-| Player core | 98 / 33,728 | `14b4b0–153870` | High; input, objects, simulation | P1; local-user setup still needed now |
-| AI actor neighborhood | 426 / 112,176 | `1a6f70–1c25a0` | Very high; objects, world queries, scripts | P2; estimate excludes much squad/pathfinding code |
-| HaloScript core | 65 / 12,784 | `207cf0–20aee0` | High; builtin dispatch reaches most engine systems | P1 VM; P0 preserve reached menu scripts |
-| Rasterizer/renderer core | 641 / 265,120 | `012560–053100` | Very high; resource caches, materials, GPU state | P0 D3D HLE; P1 native engine renderer |
-| Camera neighborhoods | 76 / 20,016 | `1552e0–155f70`, `16c840–1709e0` | High; script/player/observer/view state | P1; keep generated menu camera initially |
-| Sound core | 164 / 41,984 | `2185d0–2229d0` | High; cache, objects, workers, SDK | P0 minimal backend; P2 mixer/voice rewrite |
-| Physics integration | 97 / 20,976 | `1c25a0–1c7790` | Very high; excludes Havok library and other collision code | P2; retain initialization/step behavior |
-| UI neighborhood | 582 / 57,616 | `22e000–23c110` | High; vtables, strings, input, profiles, renderer | P0 reached widgets; P1 UI model |
-| Network core | 2,032 / 400,976 | `053420–0b5270` | Very high; session and simulation cross gameplay | P0 offline service behavior; P2 protocol rewrite |
-| Save/profile core | 93 / 11,328 | `214f80–217bc0` | Moderate/high; VFS, signatures, UI, async work | P0 defaults/storage behavior; P1 typed profiles |
+| Subsystem | Survey size: functions / bytes | Window(s), hex | Coupling |
+|---|---:|---|---|
+| Startup/frame orchestration | ≥10 / 1,679 body bytes | Explicit anchors below | Very high; lifecycle callbacks, threads, all services |
+| Cache/tag core | 46 / 8,048 | `122870–122f90`, `2136c0–214f10` | Very high fan-out; relatively small loader core |
+| Localized strings | 6 / 560 | `1a0180–1a03b0` | Moderate; tags, locale blobs, conversion/fonts |
+| Datum/pool primitives | 30 / 3,120 | `16b570–16bc90`, `18e1f0–18e700` | Very high; inlined layout users |
+| Game time core | 9 / 1,088 | `146550–146990` | High; simulation, scripts, camera, audio |
+| Objects/units/weapons | 1,194 / 415,328 | `0b67c0–11be20` | Very high; physics, tags, network, animation |
+| Player core | 98 / 33,728 | `14b4b0–153870` | High; input, objects, simulation |
+| AI actor neighborhood | 426 / 112,176 | `1a6f70–1c25a0` | Very high; objects, world queries, scripts |
+| HaloScript core | 65 / 12,784 | `207cf0–20aee0` | High; builtin dispatch reaches most engine systems |
+| Rasterizer/renderer core | 641 / 265,120 | `012560–053100` | Very high; resource caches, materials, GPU state |
+| Camera neighborhoods | 76 / 20,016 | `1552e0–155f70`, `16c840–1709e0` | High; script/player/observer/view state |
+| Sound core | 164 / 41,984 | `2185d0–2229d0` | High; cache, objects, workers, SDK |
+| Physics integration | 97 / 20,976 | `1c25a0–1c7790` | Very high; excludes Havok library and other collision code |
+| UI neighborhood | 582 / 57,616 | `22e000–23c110` | High; vtables, strings, input, profiles, renderer |
+| Network core | 2,032 / 400,976 | `053420–0b5270` | Very high; session and simulation cross gameplay |
+| Save/profile core | 93 / 11,328 | `214f80–217bc0` | Moderate/high; VFS, signatures, UI, async work |
 
 The 10 startup/body anchors are `2d0aee`, `12190`, `12000`, `12420`, `12b400`,
 `137c20`, `12b690`, `12b450`, `137f70`, `137fe0`. Their sizes are the existing
@@ -370,26 +360,7 @@ Coupling also has direct evidence: unique Ghidra function owners referencing
 object-array pointer `0x004e0300`: **1,387**; tag entries `0x004e3b44`: **995**;
 game time `0x00510c54`: **486**; actor array `0x004f55f0`: **502**; active BSP
 `0x004e0348`: **184**. These are consumers, not subsystem-owned function counts,
-and omit indirect aliases and Ghidra's undiscovered functions. They explain why
-maintaining guest-facing tables is more practical than migrating ownership all
-at once.
-
-### A concrete first-frame sequence
-
-1. Run through both startup device lifetimes and async I/O initialization.
-   Track the eventual scenario identity; a successful boot Swap is insufficient.
-2. Supply cache reads with real completion, load mainmenu index/metadata,
-   shared raw resources, selected BSP/lightmap and language tables. Preserve
-   the resident pointers and publish the same guest data structures.
-3. Keep subsystem/new-map/BSP callbacks and the initial tick/script/camera
-   work generated. Replace only understood leaf contracts with Rust.
-4. Implement reached D3D resource/state/draw behavior, fonts and menu UI layers.
-   Give audio, input, storage and offline networking coherent observable state.
-5. Record the first normal `0x00223240` → view render → `0x00013f10` → Swap
-   sequence with mainmenu active, completed resource loads and actual world/UI
-   draws. Validate an image against Xbox/xemu evidence when available.
-6. Replay captured calls to grow typed Rust from tag lookup, locale lookup and
-   datum/pool primitives into resource interpretation and geometry submission.
+and omit indirect aliases and Ghidra's undiscovered functions. They show how much outside code reads each structure directly.
 
 ## Top 20 functions to understand first
 
@@ -445,15 +416,17 @@ Raw pointer scans were only candidate generators; relevant candidates were
 checked against instructions. Size-window counts use analyzer starts, while
 coupling counts use unique Ghidra owners with direct references to the named
 global. Neither uses transitive call-graph reachability as subsystem ownership.
-Scratch scripts and private analysis exports remained in session temporary
-storage. Only this guide is the requested repository output.
 
-Remaining work is explicit: audit the unit/biped callback behaviors;
-recover a general StringID-to-name resolver if present; name individual render
-passes and UI constructors; establish all register/stack ABIs; trace menu
-scripts, asynchronous resource completion, and offline simulation conditions;
-measure actual menu-frame reachability and screenshots. No confidence label
-here substitutes for those runtime checks.
+## Not verified
+
+- the unit/biped callback behaviors;
+- a general StringID-to-name resolver, if one exists;
+- the names of individual render passes and UI constructors;
+- every register/stack ABI;
+- menu scripts, asynchronous resource completion and offline simulation conditions;
+- actual menu-frame reachability.
+
+No confidence label here substitutes for those runtime checks.
 
 ## Pinned public references
 
@@ -463,7 +436,7 @@ here substitutes for those runtime checks.
 
 [xbsym]: https://github.com/Cxbx-Reloaded/XbSymbolDatabase/tree/20eced544726f5558c5a408458f38a086cc4e543
 
-## Collision and physics model layouts (2026-11-15)
+## Collision and physics model layouts
 
 Static analysis of the same XBE (Ghidra decompilation plus `h2 disasm`), done to
 establish the `coll` and `phmo` layouts in [collision.md](../formats/collision.md). Addresses
@@ -487,7 +460,7 @@ passes around. Names are assigned descriptions. No executable bytes are quoted.
 | `0x001ef070` rigid-body transform fetch | Confirmed | Rigid body = `index * 0x90 + [phmo+0x3c]`; `i16` at `+0` is the node (-1 = none, otherwise a 0x34-byte node matrix), the pointer at `+0x38` is the resolved shape (reference count at its `+6`). |
 | Havok class names, `.rdata` `0x0040de98`-`0x00410178` | Confirmed | `hkSphereShape` `0x40e000`, `hkCapsuleShape` `0x40dfd8`, `hkBoxShape` `0x40ef2c`, `hkTriangleShape` `0x40ed64`, `hkConvexVerticesShape` `0x40edc8` (member `planeEquations` `0x40edac`), `hkListShape` `0x40ee40`, `hkMoppBvTreeShape` `0x40ee8c`, `hkMultiSphereShape` `0x40ecfc`, `hkTransformShape` `0x40e054`, `hkRigidBody` `0x40fde4` with `mass` `0x40fc60`, `centerOfMass` `0x40fc68`, `inertiaTensor` `0x40fc78`. These are class names only; no Havok SDK layout was consulted. |
 
-## UI tag walkers (2026-11-15)
+## UI tag walkers
 
 Appended by the UI tag survey. Found with an `iced-x86` sweep of analyzer
 function starts and checked against the disc; field layouts are in
@@ -668,7 +641,7 @@ in [effects.md](../formats/effects.md).
 | `0x00173cb0` particle tag class check | Confirmed | Accepts exactly `prt3` and `PRTM` for a particle system's particle reference (compares `0x70727433`, `0x5052544d`). |
 | `0x00174180` `particle_system_delete` | Likely | Frees a `particle_system` entry and walks its child chain. |
 
-## Object definitions and models (added 2026-11-15)
+## Object definitions and models
 
 These addresses support the tag layouts in [objects.md](../formats/objects.md). Every
 row was checked with `h2 disasm`, and with Ghidra where it has a function.
@@ -701,7 +674,7 @@ It also reserves 8 bytes per attachment and `0x18` bytes per change-colour
 entry, and spawns the effect at definition `+0x50`. Ghidra has no functions at
 `0x000c4410`, `0x000dc540`, `0x000eeb80` or `0x000ee910`; use `h2 disasm`.
 
-## Shader instance setup (appended 2026-11-15)
+## Shader instance setup
 
 Static analysis of the draw-time material path, used to derive the `shad`,
 `stem` and `spas` layouts in [shader-instances.md](../formats/shader-instances.md).

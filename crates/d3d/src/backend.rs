@@ -334,6 +334,18 @@ pub trait ExternalPass: Send {
         _request: ExternalPassRequest,
     ) -> Option<Result<ExternalDraws, &'static str>> { None }
 
+    /// Commands for the frame's open encoder, issued at commit after the
+    /// pending pass: for a stage that draws into targets of its own or
+    /// copies between them (post, water's view copy), so it needs no
+    /// command buffer of its own. Tried after [`ExternalPass::record_draws`];
+    /// `None` falls back to [`ExternalPass::record_ranges`].
+    #[cfg(feature = "gpu")]
+    fn record_encoded(
+        &mut self,
+        _target: &ExternalAttachments,
+        _request: ExternalPassRequest,
+    ) -> Option<Result<ExternalEncoded, &'static str>> { None }
+
     /// The pass validates cached GPU resources when creating them and
     /// checks attachment compatibility, usage and draw bounds explicitly.
     fn uses_validated_resources(&self) -> bool { false }
@@ -410,7 +422,7 @@ pub struct DepthClip {
 
 /// How many vertex constants [`ExternalPass::view_constants`] gives: the
 /// per-view block the game uploads before a view's draws
-/// (docs/graphics/native-renderer.md, "What a world pass reads").
+/// (docs/graphics/native-world.md, "What a world pass reads").
 pub const VIEW_CONSTANTS: usize = 18;
 
 #[cfg(feature = "gpu")]
@@ -633,15 +645,35 @@ impl ExternalBundles {
 
 #[cfg(feature = "gpu")]
 pub struct ExternalDraws {
-    /// Guest ranges represented by the packets (a range may have several scissors).
+    /// Guest ranges represented by the packets (a range may have several
+    /// scissors, and adjacent ranges may share a packet).
     pub ranges: usize,
     pub packets: Vec<gfx::RecordedDraw>,
     pub discards: bool,
+    /// Persistent buffer ranges the packets read, written ahead of them:
+    /// at the front of the submission when it holds no other bytes for
+    /// them, otherwise in draw order before the run (`GfxBackend`).
+    pub writes: Vec<(wgpu::Buffer, u64, Vec<u8>)>,
+}
+
+/// Commands a pass issues into the frame's open encoder at commit
+/// ([`ExternalPass::record_encoded`]). Everything they use is made and
+/// written at prepare; the closure only records, once on a scratch encoder
+/// under a validation scope and once for real.
+#[cfg(feature = "gpu")]
+pub struct ExternalEncoded {
+    /// Guest ranges recorded.
+    pub ranges: usize,
+    /// Render passes the commands begin (a submission's passes are bounded).
+    pub passes: usize,
+    pub commands: Box<dyn Fn(&mut wgpu::CommandEncoder) + Send>,
 }
 
 #[cfg(feature = "gpu")]
 pub enum ExternalCommands {
     Standalone(wgpu::CommandBuffer),
+    /// Recorded into the open encoder at commit, after the pending pass.
+    Encoded(ExternalEncoded),
     Draws {
         targets: (gfx::surface::SurfaceId, gfx::surface::SurfaceId),
         draws: ExternalDraws,
@@ -710,6 +742,7 @@ pub(crate) fn prepare_external_recordings<T: AsRef<[ExternalAttachments]>>(
     }
     enum Prepared {
         Draws(ExternalDraws),
+        Encoded(ExternalEncoded),
         Commands(wgpu::CommandEncoder),
     }
     // Native wgpu resolves validation scopes synchronously on the CPU.
@@ -729,6 +762,17 @@ pub(crate) fn prepare_external_recordings<T: AsRef<[ExternalAttachments]>>(
     for (slot, target) in prepared.iter_mut().zip(targets) {
         let result = if let Some(draws) = pass.record_draws(target, request) {
             draws.map(Prepared::Draws).map_err(|_| Metric::RefusedInputs)
+        } else if let Some(encoded) = pass.record_encoded(target, request) {
+            encoded.map_err(|_| Metric::RefusedInputs).and_then(|encoded| {
+                if check_recording {
+                    let scope = target.device.push_error_scope(wgpu::ErrorFilter::Validation);
+                    let mut scratch = target.device.create_command_encoder(&Default::default());
+                    (encoded.commands)(&mut scratch);
+                    drop(scratch.finish());
+                    if !validated(scope.pop()) { return Err(Metric::RefusedValidation); }
+                }
+                Ok(Prepared::Encoded(encoded))
+            })
         } else {
             let scope = check_recording.then(|| target.device.push_error_scope(wgpu::ErrorFilter::Validation));
             let mut encoder = target.device.create_command_encoder(&Default::default());
@@ -755,10 +799,12 @@ pub(crate) fn prepare_external_recordings<T: AsRef<[ExternalAttachments]>>(
         let (ranges, commands, valid) = match prepared {
             Prepared::Draws(draws) => {
                 let ranges = draws.ranges;
-                let valid = ranges <= draws.packets.len()
+                // A packet can join adjacent ranges (the world's triangle lists).
+                let valid = !draws.packets.is_empty()
                     && !draws.packets.iter().any(gfx::RecordedDraw::counts_samples);
                 (ranges, ExternalCommands::Draws { targets: target.targets, draws }, valid)
             }
+            Prepared::Encoded(encoded) => (encoded.ranges, ExternalCommands::Encoded(encoded), true),
             Prepared::Commands(mut encoder) => {
                 let scope = check_recording.then(|| target.device.push_error_scope(wgpu::ErrorFilter::Validation));
                 let bundles = pass.record_bundles(&mut target.target(request, &mut encoder, Some(&mut on_submit)));

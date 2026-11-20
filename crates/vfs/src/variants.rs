@@ -1,5 +1,5 @@
 //! Converted Halo 1 maps served in the sandbox chosen for the next game
-//! (docs/halo1/multiplayer.md, "Setting, Halo 1 maps sandbox").
+//! (docs/halo1/multiplayer.md, "The setting and the map list").
 //!
 //! A converted multiplayer map has one whole map per sandbox
 //! (`<data>/maps/h1_<map>/{h1,h2}/h1_<map>.map`). 1.0 opens a new map from

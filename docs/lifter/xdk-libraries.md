@@ -1,5 +1,9 @@
 # XDK library identification
 
+Status: Built. `h2 symbols` identifies XDK library functions by byte signature.
+Code: `crates/symbols/src/lib.rs`, `h2 symbols` in `crates/cli/src/main.rs`. Tests: unit tests in `crates/symbols/src/scan.rs` and `solve.rs`.
+Switch: none.
+
 The plan replaces Direct3D 8, DirectSound and XAPI at the API level, so we
 need to know which functions in the XBE are statically linked Xbox SDK (XDK)
 library code and which library function each one is. `h2 symbols` does that

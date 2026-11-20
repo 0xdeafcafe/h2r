@@ -32,7 +32,7 @@ fn table_members() -> Vec<(&'static str, Vec<u32>)> {
     vec![
         (
             "layouts and speaker",
-            ids(layout_glue::served_strings(true, true)),
+            ids(layout_glue::served_strings(true)),
         ),
         (
             "ui model",

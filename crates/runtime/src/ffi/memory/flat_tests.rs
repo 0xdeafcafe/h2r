@@ -17,35 +17,154 @@ const SIGNAL: i32 = libc::SIGSEGV;
 #[cfg(target_os = "macos")]
 const SIGNAL: i32 = libc::SIGBUS;
 
-fn store(memory: &Memory, va: u32, value: u8) {
+/// Issue the same byte store as generated code. Returns true if it used
+/// the faulting mirror. The native emitter fixture exercises the C decision.
+fn store(memory: &Memory, va: u32, value: u8) -> bool {
     assert!(memory.try_gate());
-    // SAFETY: this models generated C with an exclusive gate and a live
-    // view. Require the experimental path to be available for this test.
-    unsafe {
-        let d = &*memory.shared.data.get();
-        assert_ne!(d.watching >> 31, 0);
+    let mirrored = unsafe {
+        let d = &mut *memory.shared.data.get();
         let p = *d.pages.add((va >> 12) as usize);
-        assert_eq!(
-            p.permissions & (crate::flat::FLAT | 2),
-            crate::flat::FLAT | 2
-        );
+        assert_ne!(p.permissions & 2, 0);
         let pa = p.physical | (va & 4095);
-        let plane = (pa >> 12) & d.flat.plane_mask;
-        assert!(!d.flat.stores.is_null());
-        d.flat
-            .stores
-            .add(((plane as usize) << 26) + pa as usize)
-            .write_volatile(value);
-        assert_eq!(d.flat.base.add(va as usize).read_volatile(), value);
-    }
+        let page = pa as usize >> 12;
+        let bit = 1u64 << (page % 64);
+        let mut stores = ptr::null_mut();
+        if d.watching >> 31 != 0 {
+            stores = d.flat.stores;
+            if stores.is_null()
+                && d.watching & (1 << 30) != 0
+                && *d.flat.software_pages.add(page / 64) & bit == 0
+            {
+                stores = d.flat.cold_stores;
+            }
+        }
+        if stores.is_null() {
+            d.ram.add(pa as usize).write_volatile(value);
+            if d.watching & 1 != 0 {
+                d.dirty[page / 64] |= bit;
+                d.dirty_lo = d.dirty_lo.min((page / 64) as u32);
+                d.dirty_hi = d.dirty_hi.max((page / 64) as u32 + 1);
+            }
+        } else {
+            let plane = (page as u32 & d.flat.plane_mask) as usize;
+            stores
+                .add((plane << 26) + pa as usize)
+                .write_volatile(value);
+        }
+        assert_eq!(d.ram.add(pa as usize).read_volatile(), value);
+        if d.watching >> 31 != 0 && p.permissions & crate::flat::FLAT != 0 {
+            assert_eq!(d.flat.base.add(va as usize).read_volatile(), value);
+        }
+        !stores.is_null()
+    };
     memory.release_gate();
+    mirrored
+}
+
+fn hot_epochs() {
+    let mut g = Guest::new();
+    for va in [VA, ALIAS] {
+        g.map(va, 4 * PAGE, 0, Permissions::RW).unwrap();
+    }
+    let a = g.subscribe_writes("each tick");
+    let b = g.subscribe_writes("every fourth tick");
+    for id in [a, b] {
+        g.watch_writes(id, CONTIGUOUS_BASE, 4 * PAGE).unwrap();
+    }
+    let m = Memory::new(g);
+    m.fast_shared();
+    let range = |page: u32| crate::DirtyRange {
+        addr: CONTIGUOUS_BASE + page * PAGE,
+        len: PAGE,
+    };
+    for tick in 0..16 {
+        let va = if tick % 2 == 0 { VA } else { ALIAS };
+        // Two first-write epochs through either VA, then the software barrier.
+        assert_eq!(store(&m, va + PAGE, 7), tick < 2);
+        let mut g = m.lock();
+        assert_eq!(g.u8(ALIAS + PAGE).unwrap(), 7);
+        assert_eq!(g.take_dirty(a).unwrap(), [range(1)]);
+        if tick % 4 == 3 {
+            assert_eq!(g.take_dirty(b).unwrap(), [range(1)]);
+        }
+    }
+    assert!(store(&m, VA + 2 * PAGE, 9), "a cold sibling still faults");
+    assert_eq!(m.lock().take_dirty(a).unwrap(), [range(2)]);
+    assert_eq!(m.lock().take_dirty(b).unwrap(), [range(2)]);
+}
+
+fn file_restore_with_live_mirror() {
+    use std::fs::{self, File};
+    use std::io::Write;
+    let path = std::env::temp_dir().join(format!("h2-flat-restore-{}", std::process::id()));
+    let mut file = File::create_new(&path).unwrap();
+    file.set_len(crate::guest::RAM_SIZE as u64).unwrap();
+    file.write_all(&[12]).unwrap();
+    drop(file);
+    let guest = || {
+        let mut g = Guest::new();
+        for va in [VA, ALIAS] {
+            g.map(va, PAGE, 0, Permissions::RW).unwrap();
+        }
+        let id = g.subscribe_writes("private");
+        g.watch_writes(id, CONTIGUOUS_BASE, PAGE).unwrap();
+        let m = Memory::new(g);
+        m.fast_shared();
+        (m, id)
+    };
+    let (first, id) = guest();
+    let (other, other_id) = guest();
+    let layout = first.lock().layout();
+    {
+        let (view, _) = guest();
+        for value in [20, 21] {
+            store(&first, ALIAS, value);
+            view.lock().cow_refresh(&first.lock());
+            assert_eq!(view.lock().u8(VA).unwrap(), value);
+            assert!(!store(&view, VA, 90));
+            assert_eq!(first.lock().u8(ALIAS).unwrap(), value);
+            store(&first, VA, 80);
+            assert_eq!(view.lock().u8(ALIAS).unwrap(), 90);
+        }
+    }
+    for (m, w) in [(&first, id), (&other, other_id)] {
+        assert!(store(m, VA, 42));
+        assert!(
+            m.lock()
+                .restore_cow(&layout, &path.with_extension("absent"))
+                .is_err()
+        );
+        assert!(store(m, ALIAS, 43));
+        let mut g = m.lock();
+        g.restore_cow(&layout, &path).unwrap();
+        assert_eq!(g.u8(ALIAS).unwrap(), 12);
+        assert_eq!(g.take_dirty(w).unwrap().len(), 1);
+    }
+    // Even with the old canonical address (Linux MAP_FIXED), no old
+    // mirror or memfd translation may be returned to generated code.
+    assert!(!store(&first, ALIAS, 73));
+    assert!(first.lock().has_dirty(id));
+    assert_eq!(first.lock().u8(VA).unwrap(), 73);
+    assert_eq!(other.lock().u8(VA).unwrap(), 12);
+    assert!(!other.lock().has_dirty(other_id));
+    assert_eq!(first.lock().cow_census().unwrap().unwrap().0, 1);
+    assert_eq!(other.lock().cow_census().unwrap().unwrap().0, 0);
+    first.lock().restore_cow(&layout, &path).unwrap();
+    assert_eq!(first.lock().u8(VA).unwrap(), 12);
+    fs::remove_file(path).unwrap();
 }
 
 #[test]
 fn flat_faults_and_exact_watch_epochs() {
     const KEY: &str = "H2_TEST_FLAT_FAULT_CHILD";
     let Some(mode) = std::env::var_os(KEY) else {
-        for (mode, expected) in [("watch", 0), ("foreign", 79), ("siginfo", 81)] {
+        for (mode, expected) in [
+            ("watch", 0),
+            ("hot", 0),
+            ("cow", 0),
+            ("foreign", 79),
+            ("siginfo", 81),
+        ] {
             let output = Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
@@ -55,6 +174,7 @@ fn flat_faults_and_exact_watch_epochs() {
                 .env(KEY, mode)
                 .env("H2_FLAT_RAM", "1")
                 .env("H2_FLAT_WRITE_WATCH", "1")
+                .env("H2_FLAT_STATS", "1")
                 .output()
                 .unwrap();
             assert_eq!(
@@ -64,9 +184,25 @@ fn flat_faults_and_exact_watch_epochs() {
                 String::from_utf8_lossy(&output.stderr)
             );
             assert!(String::from_utf8_lossy(&output.stdout).contains("running 1 test"));
+            if mode == "hot" {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                assert!(
+                    stderr.contains(
+                        "faults=3 retries=3 re-protects=2 pages-armed=6 software-pages=1"
+                    ),
+                    "{stderr}"
+                );
+            }
         }
         return;
     };
+
+    if mode == "cow" {
+        return file_restore_with_live_mirror();
+    }
+    if mode == "hot" {
+        return hot_epochs();
+    }
 
     if mode != "watch" {
         extern "C" fn previous(_: i32) {

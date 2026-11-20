@@ -1,5 +1,8 @@
 # Bink HLE
 
+Status: Built. Code: `crates/bink-hle/src`, `crates/boot/src/movies_glue.rs`. Tests: `crates/bink-hle` (`xbe_pins` is ignored).
+Switch: `--movies`, `--no-movies`, `--no-bink` (command-line flags).
+
 `crates/bink-hle` replaces the Bink 1.x player that Halo 2 links statically
 (sections `BINK*`, `BINKDATA`). It has no Bink decoder; see
 [movies.md](movies.md) for the optional install-time MOV transcode.
@@ -28,32 +31,23 @@ call-site scanner: the Bink code has no signature database (`h2 symbols`
 covers XDK libraries only, see [xdk-libraries.md](../lifter/xdk-libraries.md)), so each
 function is named from its call shape and the Bink 1.x public API.
 
-## Two execution options
+## Execution
 
-**(a) Let the lifted library run.** Bink is linked into the XBE, not an
-imported DLL: the lifter already sees the code at `BinkOpen` (`0x003e0af0`),
-`BinkDoFrame` (`0x003e2870`), and `BinkCopyToBuffer` (`0x003e2830`). Leaving
-those addresses alone executes the retail decoder as translated soft code.
-It still needs the library's file I/O, allocation callbacks, CPU operations,
-DirectSound opener (`0x003e3c90`) and D3D copy path to behave correctly. It
-avoids install-time conversion, but decoder correctness and performance
-become part of the full recompiler bring-up. We do not extract that library
-or copy any of its code into this public repository.
-
-**(b) Override the public API at function entries.** `BinkOpen` resolves a
-manifest entry; `BinkDoFrame` obtains a host BGRA frame;
-`BinkCopyToBuffer` copies the retained picture into the guest's locked
-texture. `BinkWait`, `BinkNextFrame`, and `BinkClose` preserve pacing,
-position, looping, and lifetime. The engine wrapper remains compiled code.
-The table below gives all ten override addresses. This is what playback
-mode does (option (a) is not pursued).
-Missing or corrupt transcodes make the source decline the open; the
-existing HLE's NULL return uses the wrapper's failed-open handling.
+Bink is linked into the XBE, not an imported DLL. The lifted library is not
+run: the HLE overrides the public API at function entries. `BinkOpen`
+(`0x003e0af0`) resolves a manifest entry; `BinkDoFrame` (`0x003e2870`)
+obtains a host BGRA frame; `BinkCopyToBuffer` (`0x003e2830`) copies the
+retained picture into the guest's locked texture. `BinkWait`,
+`BinkNextFrame` and `BinkClose` preserve pacing, position, looping and
+lifetime. The engine wrapper remains compiled code. The table below gives
+all ten override addresses. Missing or corrupt transcodes make the source
+decline the open; the HLE's NULL return uses the wrapper's failed-open
+handling. No Bink code is extracted or copied into this repository.
 
 ### Read-only address verification
 
 Rechecked on the local retail image using the repository's `h2 disasm`
-command (2026-11-15), for example:
+command, for example:
 
 ```sh
 h2 disasm /path/to/own/default.xbe 0x156090 300
@@ -227,20 +221,20 @@ missing file is a skip in this mode too.
   NextFrame 0.2 ms and 0.6 ms; AVFoundation 1.1 to 1.6 ms a frame at
   640x480 in order. `DoFrame` never decodes the picture already in the
   buffer, and the AVFoundation stream keeps its last picture: asking for it
-  again used to restart the reader from frame 0 (201 ms at frame 90, and
-  growing), now 28 us. Copy and decode were not the cause of the slow
+  again would restart the reader from frame 0 (201 ms at frame 90, and
+  growing); it costs 28 us. Copy and decode are not the cause of a slow
   intro.
 
 `BinkHle::requests()` lists every movie asked for and whether it was played.
 
 ### What the wrapper does around the API
 
-Read from the retail image (2026-11-18), addresses only:
+Read from the retail image, addresses only:
 
 - `MovieStart` (`0x156090`) calls `GlobalMemoryStatus` (`0x331336`, which
   calls `MmQueryStatistics`, kernel ordinal 181) and stores the free memory
   in KiB at `0x47ff80`; it is informational. The kernel implements 181 from
-  its own page accounting (it used to stop there).
+  its own page accounting.
 - It allocates the read buffer through the game's own cache allocator
   (`0x12d2f0`, 4 MiB, or 20 MiB with start flag bit 8), protects it
   write-combined (`0x2d15da`, `MmSetAddressProtect` with `0x404`), calls
@@ -382,10 +376,10 @@ BinkOpen, the four `MovieStart` call sites, the `ST_*` state words in
 `IsPlaying` and the service function):
 `H2_XBE=/path/to/default.xbe cargo test -p bink-hle --test xbe_pins -- --ignored`.
 
-## Not yet proven in a running game
+## Not verified
 
-Everything above is tested against synthetic guest state; none of it has
-run in the full lifted game. Until a live run:
+Everything above is tested against synthetic guest state. A run of the full
+lifted game is needed to show:
 
 1. The texture path: `0x23e340` creating the X8R8G8B8 linear texture under
    crates/d3d, the lock helper's pitch, and the quad draw (`0x156960`)
@@ -398,7 +392,7 @@ run in the full lifted game. Until a live run:
    mixer). They stay together only while logical time keeps to the wall;
    a run that falls behind drops frames to keep the picture on time while
    the sound lags.
-4. `H2_PIPELINE_RENDER=1`: the Bink overrides are not on the render
+4. `impl.render.pipelined_frame=on`: the Bink overrides are not on the render
    thread's allow list, and the stop path is reachable from the render
    (`0x2c8a0`); [pipelined-render.md](../graphics/pipelined-render.md) says
    to turn pipelining off while a movie plays. Pipelining is off by default.

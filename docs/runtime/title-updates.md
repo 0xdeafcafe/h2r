@@ -1,9 +1,11 @@
 # Title updates
 
-Status: design only. Nothing here is implemented. We now have an update to
-test with: the Multiplayer Map Pack disc carries one, certificate version
-`0x303` for our 1.0 disc (section 6, and [map-pack.md](../game/map-pack.md)).
-`h2 import-mappack` copies it to `<data>/updates/4D530064/00000303/default.xbe`.
+Status: Design. Nothing here is built: `crates/imagemap`, `h2 image`,
+`h2 play --image`, `H2_IMAGE` and `H2_XBE_UPDATE` do not exist yet.
+Code: none. The inputs exist: the Multiplayer Map Pack disc carries an update,
+certificate version `0x303` for our 1.0 disc (section 6, and
+[map-pack.md](../game/map-pack.md)); `h2 import-mappack` copies it to
+`<data>/updates/4D530064/00000303/default.xbe`.
 
 Halo 2 shipped on disc as 1.0. Xbox Live title updates (1.1 and later) don't
 patch the disc. They put a new `default.xbe` on the console's hard disk under
@@ -229,7 +231,7 @@ of an unrelated function.
 | xapi | game allocator called from Rust (`GAME_ALLOCATE`) | 1 | `register.rs:445` | none |
 | bink-hle | Bink API hooks | 11 | `crates/bink-hle/src/addr.rs` | none (third-party, no XDK database) |
 | bink-hle | game movie-wrapper functions, plus the `WRAPPER_STATE` global and its offsets | 15 + 1 | `addr.rs`, installed by `lib.rs:65-118` | none |
-| boot | `VOICE_INIT` stopgap, `X_MOUNT_UTILITY_DRIVE` (`--no-xapi`), `CREATE_DEVICE` (duplicates d3d) | 3 | `crates/boot/src/game_glue.rs:28`, `xapi_glue.rs:248`, `d3d_glue.rs:311` | none |
+| boot | `X_MOUNT_UTILITY_DRIVE` (`--no-xapi`), `CREATE_DEVICE` (duplicates d3d) | 2 | `xapi_glue.rs:248`, `d3d_glue.rs:311` | none |
 | runtime | `HALO2_PHYSICAL_ARENA`, applied to every image | 1 range | `crates/runtime/src/loader.rs:24`, used by `boot/src/lib.rs:353` | none. It was read off the 1.0 startup code |
 
 Runtime total: about 250 hook addresses, about 30 data globals, and about 80
@@ -323,7 +325,7 @@ with iced-x86, table contents.
 - **Kernel**: imports go by ordinal. The thunk table is decoded from the
   header (`kernel/src/image.rs:127`), the title ID comes from the certificate
   (`kernel/src/lib.rs:381-396`), and so does XAPI's cache-row title ID
-  (`xapi/src/cache.rs:165`). `boot/src/stopgaps.rs` and `wrappers.rs` are
+  (`xapi/src/cache.rs:165`). `boot/src/stopgaps.rs` is
   keyed by ordinal, and sections come from the header.
 - **XDK identification** (`crates/symbols`, `docs/lifter/xdk-libraries.md`): it reads
   the library build from the XBE's library table and matches in waves, so it
@@ -380,7 +382,7 @@ is not a precedent for adding update fingerprints to the repository.
 
 ### 3.2 Per-version address map, built at analysis time
 
-New crate `crates/imagemap`. It depends on `xbe`, `analyze` and,
+The design adds a crate, `crates/imagemap`. It depends on `xbe`, `analyze` and,
 optionally, `symbols`. Its input is the base XBE and the target XBE (both
 local), and it produces:
 
@@ -715,7 +717,7 @@ per-build D3D and DSound layout work on top, probably another week.
   clock and audio quanta, and scripts are keyed to present counts or
   `at_ticks`. An update that does different work per frame, or loads for
   longer, shifts every scripted timeline and menu bench, so input scripts
-  and bench baselines have to be per image. Golden traces (`docs/lifter/golden-trace.md`)
+  and bench baselines have to be per image. Kernel traces (`kernel-trace.tsv`, [BOOT.md](BOOT.md))
   are also per image by construction. Comparing 1.0 and 1.1 runs for a
   regression only works at the level of state (menu reached, level loaded),
   not frame-exactly.

@@ -1,6 +1,11 @@
 # `locale_string_id_find` (0x1a02d0) and `locale_string_id_exists` (0x1a0310)
 
-Recovered 2026-11-14 from `h2 disasm` of the retail XBE (`03215919…935d`).
+Status: Built. Code: `crates/engine/src/locale.rs`, adapters in
+`crates/engine/src/abi.rs`. Tests: `crates/engine/tests/differential.rs`.
+Switch: `impl.engine.locale` (on by default;
+[switches.md](../runtime/switches.md)).
+
+Recovered from `h2 disasm` of the retail XBE (`03215919…935d`).
 Names are assigned. Rust: `crates/engine/src/locale.rs`; adapters in
 `crates/engine/src/abi.rs`.
 

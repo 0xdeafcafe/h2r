@@ -1,6 +1,6 @@
 # deca: decal. Layout and evidence: docs/formats/effects.md ("deca", V the
 # disc, E the placement code). Halo 1's deca holds the same fields in the
-# same order (docs/formats/tag-definitions.md, "Decals from definitions").
+# same order (docs/formats/effects.md, "deca (decal)").
 group deca 0xac align 4
   0x0 u16 flags -- V values 0, 1, 8, 0x100, 0x108, 0x148, 0x168; Halo 1's +0 holds the same bits (8, 0x68, 0x168); meaning unreviewed
   0x2 u16 kind -- V 0..=3, Halo 1's +2 the same range; name D

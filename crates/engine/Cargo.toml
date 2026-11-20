@@ -6,6 +6,9 @@ license.workspace = true
 description = "Hand-written Rust replacements for Halo 2 engine functions, over guest memory"
 
 [dependencies]
+# Guest structure layouts and the globals table (src/points.rs re-exports
+# the globals; src/view.rs takes its offsets).
+guest-layout = { path = "../guest-layout" }
 # Field names for the accessors `record!` generates (src/view.rs).
 paste = "1"
 mopp = { path = "../mopp", optional = true }
@@ -13,6 +16,10 @@ mopp = { path = "../mopp", optional = true }
 # for bit.
 simd.workspace = true
 x87.workspace = true
+# The native simulation subsystems (docs/engine/sim-rewrite.md): float
+# rules and host lanes, and animation sampling behind src/sim_anim.rs.
+sim-core.workspace = true
+sim-anim.workspace = true
 # For src/runtime_glue.rs (feature `runtime-glue`): registration of the
 # adapters with the runtime's dispatch table.
 runtime = { workspace = true, optional = true }
@@ -23,8 +30,16 @@ ir = { workspace = true, optional = true }
 lift = { workspace = true, optional = true }
 # For tests/sim_tier_differential.rs: the reference and sim tiers.
 emit = { workspace = true, optional = true }
+# For the disc sweep in tests/sim_anim_differential.rs only.
+tags = { workspace = true, optional = true }
+map = { workspace = true, optional = true }
+xiso = { workspace = true, optional = true }
 
 [features]
 runtime-glue = ["dep:runtime", "dep:mopp"]
 # Seeded differential test against the lifted original (tests/differential.rs).
-differential = ["runtime-glue", "dep:analyze", "dep:xbe", "dep:ir", "dep:lift", "dep:emit"]
+differential = ["runtime-glue", "dep:analyze", "dep:xbe", "dep:ir", "dep:lift", "sim-core/override", "dep:tags", "dep:map", "dep:xiso", "dep:emit"]
+
+[dev-dependencies]
+# `lanes::with` for the unit tests that compare host lanes and the scalar loop.
+sim-core = { workspace = true, features = ["override"] }

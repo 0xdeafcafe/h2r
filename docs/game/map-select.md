@@ -1,5 +1,9 @@
 # Multiplayer map selection
 
+Status: Built. The category dialog, the separate mod slots and the live refresh are in the code; the game checks under "Game verification" are open.
+Code: `crates/boot/src/map_select.rs` (`map_select::MapSelect`, `Catalogue`, `page`). Tests: `crates/boot/src/map_select.rs`.
+Switch: none.
+
 Game Setup's **Change Map** uses the game's Select Map dialog to show
 categories. Choose a category with **A**, then choose a map. **B** goes
 back. Picking a map returns to Game Setup with that map selected.
@@ -29,10 +33,7 @@ Halo 1 maps and any other content. When the list fills, the category
 shows `Mods (N mods not shown, list full)`. Overflow packages remain
 installed and can appear when a slot becomes available.
 
-On the first boot after upgrading from the old override setup, disc and
-Map Pack maps return to their original categories. Installed mods appear
-in their own slots when space allows. Legacy `active.toml` selections are
-ignored. See [generated offers](maps.md#package-offers) for slot
+Installed mods appear in their own slots when space allows. See [generated offers](maps.md#package-offers) for slot
 allocation, IDs and load paths.
 
 ## Names, descriptions and pictures
@@ -129,9 +130,9 @@ for those instances only (`map_select::MapSelect`, feature `map-select`).
   It can't close by window and slot (`0x14800c`) as B does. The stack's
   free (`0x2351ea`, from the UI update's free loop `0x148148`) zeroes the
   window's top word (`+8`) for the screen it frees before it calls the
-  destructor. So `0x2351d4` read `0 + 0x42`, the first build's crash on
-  picking a map (`MemoryFault ... addr: 42`, `0x2351d9`, the window object
-  `0x54d84c` for window 3, slot 4).
+  destructor. Closing by window and slot would read
+  `0 + 0x42` (`0x2351d9`, the window object `0x54d84c` for window 3,
+  slot 4) and fault.
 - **Message 3 stays inside its own screen.** `0x22eeee` walks the
   widget's parents (`+0x10`) to its root, the Select Map screen.
   `0x22e957` builds a kind-3 message (`0x22e65e`) and hands it to that
@@ -144,16 +145,6 @@ for those instances only (`map_select::MapSelect`, feature `map-select`).
   The main-menu refresh calls it after the content scan. The categorized
   lists read the retail array for its lock bytes.
 
-## An earlier Map Pack report
-
-On 2026-11-19 the owner saw Warlock, Sanctuary, Turf, Backwash and
-Elongation. Containment, Gemini, Relic and Terminal were missing.
-Offline, all nine installed records passed CRC and type checks, had
-unique IDs and no lock flag, and fit with the disc and the 13 converted
-Halo 1 maps. The dialog has 14 row widgets. If it still reproduces,
-compare the catalogue's IDs with the loaded list. The map-select log
-names rows whose IDs have no loaded slot.
-
 ## Game verification
 
 Use the agent API for game checks. With an existing data directory,
@@ -164,3 +155,29 @@ Download a mod while in the menu and verify it appears without a
 restart. With two Live clients, join a host whose selected mod is absent
 on the guest and start the match. Switch the host back to retail and
 verify the next advertisement clears the mod's content ID.
+
+Open items:
+
+- All nine Map Pack maps appear under **Map Pack**. The dialog has 14 row
+  widgets; if a map is missing, compare the catalogue's IDs with the
+  loaded list. The map-select log names rows whose IDs have no loaded slot.
+- Two mods of the same base, one with an image and one using the base
+  fallback: pick both, go back to the category list with B, and switch to
+  the retail sibling. The Mods browser and its detail page use the base
+  filename for their previews, and a missing base bitmap uses the neutral
+  lobby picture.
+- The Mods browser on a cold open with a multi-row catalogue, a retry, and
+  a background refresh that must not replace the map under the cursor.
+- The pack screen: X with no focus, an empty pack, an unavailable pack
+  and a full 40-map response with Download All.
+- Footers per focus and state: Download All, loading, installed, failed
+  and removal rows each advertise their own commands, and the detail
+  footer changes after a download finishes or a removal.
+- Failed downloads show on the row, with recovery instructions on the
+  button that retries; batch progress counts completed bytes.
+- Detail page text: long credits and feature lists stay inside their
+  columns, and the checklist heading aligns with its cells.
+- A row without a slot image shows the lobby's unknown-map picture, and a
+  resolved picture replaces it while focus stays put.
+- B restores focus on the parent row; bitmap replacement, transition
+  timing and the lobby's presentation need a run through the agent API.

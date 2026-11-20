@@ -1,12 +1,11 @@
 # Controller button layouts
 
-Status: built and unit tested. The first version's rows did not appear in
-the game; the cause was found statically and fixed (see "Why the rows did
-not show"), but the fix is not yet seen in the game; "To check in the game"
-lists what to look at. The symbolic tables are in `crates/input/src/layouts.rs`; the hooks are
-in `crates/boot/src/layout_glue.rs`, installed by `boot::run` unless
-`H2_NO_LAYOUTS=1`. This page records how the retail game implements layouts
-and what the hooks touch.
+Status: Built. Unit tested; the in-game behaviour is under "Not verified".
+Code: `crates/input/src/layouts.rs` (the symbolic tables), `crates/boot/src/layout_glue.rs` (the hooks, installed by `boot::run`). Tests: the same two files.
+Switch: none.
+
+The retail game offers four button layouts. This page records how the retail
+game implements them and what our hooks touch to add three more.
 
 No game data is here. Addresses are guest virtual addresses of the retail XBE
 (SHA-256 `03215919…935d`), named only as hook points. Strings were read with
@@ -128,8 +127,7 @@ is "drawn". The list rows are not in the tag. Code fills them:
 Every change is at a function entry, because the game is statically
 recompiled: `rt.edit_dispatch(|d| d.register_override(addr, name, closure))`
 replaces a function at its entry, `rt.resolve_original(addr)` runs the
-generated original, and the shadow-page pattern in `crates/boot/src/wrappers.rs`
-and `d3d_glue.rs` runs the original and then continues in Rust through
+generated original, and the shadow-page pattern in `d3d_glue.rs` runs the original and then continues in Rust through
 `ctx.call_guest`. There is no way to patch inside a function, so a site that
 is a switch inside a big function needs the whole function wrapped.
 
@@ -139,15 +137,17 @@ is a switch inside a big function needs the whole function wrapped.
    creates that many datums). When the name is the button list's (the address
    `0x45ce18`) and EAX is 4, make EAX 4 plus the number of added layouts. The
    list then builds that many rows. The screen constructor pushes element
-   size 4 and loads count 4, so the two look alike; see "Why the rows did not
-   show" below.
+   size 4 and loads count 4, so the two look alike. The hook sets EAX, not
+   `[esp+8]` (`layout_glue::grown_count`, test
+   `the_list_count_is_eax_not_the_element_size`).
 2. Row text: replace `0x2c6512`. For rows 4 and up call `0x22edb8` (this =
    widget, args 0, 0, 6) and `0x253b1a` with our string id, through
    `call_guest`; otherwise run the original.
 3. Selection: wrap `0x2c6567` (thiscall, `ret 8`; the pointer to the chosen
-   row's word is the **second** argument, `[esp+8]`). Run the original, then
-   write the chosen number to `0x54e6d8` ourselves (the original writes 0 for
-   rows 4 and up).
+   row's word is the **second** argument, `[esp+8]`, read by
+   `layout_glue::chosen_row`, test `the_chosen_row_is_the_second_argument`).
+   Run the original, then write the chosen number to `0x54e6d8` ourselves
+   (the original writes 0 for rows 4 and up).
 4. Initial row: wrap `0x2b463d` the same way so a saved layout 4 and up
    selects its own row.
 5. Value text on the other screens: `0x24a978` and `0x2c866d` are inside
@@ -168,7 +168,7 @@ is a switch inside a big function needs the whole function wrapped.
    help-text id, then point the screen's pane block at the larger array. Pane
    and block layouts are in `docs/formats/ui.md`. Patch at first use of screen 40 by
    wrapping the screen finder `0x148098`; do it once.
-9. Persistence (traced statically, 2026-11-16; unverified in the game).
+9. Persistence (read from the XBE, not seen in a run).
    The Controls edit buffer is the whole 0x1e0-byte settings block at
    `0x54e5d8` (0x78 dwords): `0x54e6d4` is its `+0xfc` flags word (the
    toggles' bits) and `0x54e6d8` its `+0x100` layout byte. `0x148ad8` fills
@@ -192,59 +192,32 @@ is a switch inside a big function needs the whole function wrapped.
 10. Retail behaviour of 0 to 3: every hook above must pass those through to the
     original, and a test must prove it.
 
-## Why the rows did not show (fixed 2026-11-15)
+## What the hooks guard against
 
-The rows were reported missing in the game. Read statically, with no run:
+Each hook acts only when what it relies on is there, so a screen or list
+that is not the one we grew keeps its retail behaviour.
 
-- **Every hook resolves.** All fifteen addresses are function entries in our
-  own analysis (the generated registry of the last `h2 play` build lists an
-  `h2fn_` entry for each), and calls to them go through the dispatcher
-  (`H2_XFER`), so the overrides are reached. `0x2c6567`, `0x2b463d` and
-  `0x24a886` are missing from the Ghidra export only because they are
-  reached through vtables (`0x2c64d4` stores `0x2c6567` as the list's press
-  handler; `0x45b88c` and `0x45b0c4` hold the other two); the byte before
-  each is a `ret` or `int3`.
-- **The list-size hook changed the wrong number.** It rewrote `[esp+8]`, the
-  element size, from 4 to 7, and left the count in EAX at 4. The list kept
-  four rows, so nothing else in this module ever had a row 4 to 6 to act on.
-  The Controls screen's constructor (`0x2c84b8`: element size 4, count 6)
-  shows the two apart. Now the hook sets EAX (`layout_glue::grown_count`,
-  test `the_list_count_is_eax_not_the_element_size`).
-- **The row-chosen hook read the wrong argument.** It took the row from
-  `[esp+4]`; `0x2c6567` reads `[esp+8]`. Choosing an added row would have
-  saved the wrong layout, and a retail row could have been overwritten if
-  the first argument's word happened to be 4 to 6. Now `chosen_row` reads
-  `[esp+8]` (test `the_chosen_row_is_the_second_argument`).
+- **Every hook resolves.** All the addresses above are function entries in
+  our analysis. `0x2c6567`, `0x2b463d` and `0x24a886` are reached through
+  vtables, not direct calls (`0x2c64d4` stores `0x2c6567` as the list's
+  press handler; `0x45b88c` and `0x45b0c4` hold the other two), and calls
+  to all of them go through the dispatcher, so the overrides are reached.
+  A missing generated entry prints `layouts: no generated entry at <addr>;
+  hook skipped` (`layout_glue::original`).
 - **Seven rows fit.** The list embeds only four item widgets (the vector
   constructor `0x20670` at `0x2c64a3`), but each item holds a datum handle
   at `+0x70` and steps to the next or previous datum (`0x16bcc0`,
   `0x16bbc0`, from `0x24c63e`), so the extra rows are reached by scrolling.
-
-Each hook now prints `layouts: <name> active` the first time it runs, and
-the list hook prints `layouts: list 0x45ce18 grows from 4 to 7 rows` once.
-A run that opens Settings, Controls, Button Layout should print the list,
-row text, pane and screen tag lines; any of them missing names the next
-place to look.
-
-## Guards after the in-game crash (2026-11-16)
-
-Opening the in-game Button Layout screen with Recon saved crashed inside
-D3D (a write through a garbage pointer while drawing; the faults before it
-at `0x336f0` and `0x33980` are jump-table switches in the renderer's state
-flush that the fallback interpreter handles). Read statically: that screen
-also has id 40, but its tag is not the one `extend_panes` grows (it needs
-exactly 8 panes and a 13-text default pane, and says nothing otherwise;
-the run printed no "panes extended"). The pane hook still sent rows 4 to 6
-to panes 8 to 13, past the tag's 8. So each hook now acts only when what it
-relies on is there:
-
-- **Pane** (`0x230427`): for an added row on screen 40, the hook first calls
-  the screen-tag function (`0x22f871`, EAX = screen; our hook on it extends
-  the tag on first sight) and moves the row's pane only when that tag has
-  14 panes (`pane_row(row, base, panes)`). Otherwise the row keeps its
-  retail pane, and stderr says once `layouts: pane for row N left retail
-  (tag has M panes)`. A tag the screen-tag hook could not extend also says
-  once how many panes it has.
+- **Pane** (`0x230427`): a second screen also has id 40, but only the
+  button-layout tag has the 8 panes and the 13-text default pane that
+  `extend_panes` needs. For an added row on screen 40 the hook
+  first calls the screen-tag function (`0x22f871`, EAX = screen; our hook on
+  it extends the tag on first sight) and moves the row's pane only when
+  that tag has 14 panes (`pane_row(row, base, panes)`). Otherwise the row
+  keeps its retail pane, and stderr says once `layouts: pane for row N left
+  retail (tag has M panes)`. A tag the screen-tag hook could not extend
+  also says once how many panes it has. Test
+  `panes_are_only_moved_on_a_tag_we_extended`.
 - **Row text, row chosen, initial row** (`0x2c6512`, `0x2c6567`,
   `0x2b463d`): only for a row below the list's real datum count
   (`[handler+0x70]`, the count at `+0x20`, which the constructors loop
@@ -253,9 +226,15 @@ relies on is there:
   20, and its press record at `+0x28c` points at `0x2c6567`); the initial
   row is the screen's, with its list handler at `this + 0x614` (what it
   hands `0x24c591`). A list that did not grow keeps its retail behaviour.
+  Test `row_hooks_act_only_on_rows_the_list_has`.
 - **Action table** (`0x190c34`): only for players 0 to 3. The settings
   blocks and tables hold four, and the commit path checks the same range
-  (`0x148b8c`).
+  (`0x148b8c`). Test `the_action_table_is_left_alone_past_the_fourth_player`.
+
+Each hook prints `layouts: <name> active` the first time it runs, and the
+list hook prints `layouts: list 0x45ce18 grows from 4 to 7 rows` once. A
+run that opens Settings, Controls, Button Layout prints the list, row text,
+pane and screen tag lines; a missing line names the hook that did not run.
 
 ## Risks
 
@@ -289,7 +268,9 @@ the speaker row and the Video screen's rows saves them all to `<data>/settings.t
 `install` returns on a synthetic runtime (`resolve_original` must run before
 `edit_dispatch`, which holds the dispatch lock).
 
-## To check in the game
+## Not verified
+
+Only a game run shows these:
 
 1. Settings, a profile, Controls, Button Layout: seven rows, the last three
    "Bumper Jumper", "Recon", "Walkie Talkie" (the list has five visible
@@ -306,9 +287,7 @@ the speaker row and the Video screen's rows saves them all to `<data>/settings.t
 6. Save, quit, reload: the layout is kept (needs a named profile; the Default
    profile cannot save). The profile select dialog's summary has not been
    traced for a layout byte of 4 and up; check it does not show garbage or crash.
-7. Retail rows 0 to 3 still behave as before. `H2_NO_LAYOUTS=1` turns the
-   layouts off (the Controller Speaker row on the Controls screen has its own
-   switch, `H2_NO_SPEAKER_ROW=1`; docs/audio/playstation-audio.md).
+7. Retail rows 0 to 3 still behave as before.
 8. The hooks install with no stall at boot.
 
 ## Known gaps
@@ -317,5 +296,6 @@ the speaker row and the Video screen's rows saves them all to `<data>/settings.t
 - Which of the retail text widgets the Controls and Edit Profile screens
   fill with an empty id is inferred; the value-text hook substitutes the
   first empty text while the function runs.
-- The memory addresses we map for our data (`0xa2f00000`, `0xa2f10000`) were
-  picked to avoid the other boot mappings, which overlapped at `0xa0ff....`.
+- The guest addresses we map for our data (`DATA_BASE` `0xa2f00000`,
+  `SHADOW_BASE` `0xa2f10000`, `EXTRA_BASE` `0xa2f20000` in `layout_glue.rs`)
+  are picked to stay clear of the other boot mappings.

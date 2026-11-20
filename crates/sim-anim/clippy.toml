@@ -1,0 +1,2 @@
+# Float rules (docs/engine/sim-rewrite.md section 3): no fused multiply-add.
+disallowed-methods = ["f32::mul_add", "f64::mul_add"]

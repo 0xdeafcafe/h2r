@@ -1,5 +1,5 @@
 //! Objects in guest memory, read once per view by the stage-2 hook, and
-//! the skip of their layer-3 items (docs/graphics/native-renderer.md,
+//! the skip of their layer-3 items (docs/graphics/native-objects.md,
 //! "Stage 2: objects and skinning").
 //!
 //! Research points (Code, `h2 disasm`):
@@ -213,15 +213,13 @@ pub fn item_key(mem: &dyn GuestRead, item: u32) -> Option<ItemKey> {
 /// One accepted item handed to the host, in the list's order: `index` its
 /// place in [`ClearedObjects`], `object` its object's frame in the frames
 /// handed with it, its key, and the node rows its record uploads at
-/// `c[50..]` ([`record_rows`]). A `shadow` item keeps its D3D draw whatever
-/// the host says (the comparison's, `NativeSet::shadowed`).
+/// `c[50..]` ([`record_rows`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ItemDraw {
     pub index: usize,
     pub object: usize,
     pub key: ItemKey,
     pub rows: Vec<Row>,
-    pub shadow: bool,
 }
 
 /// The node rows render record `record`'s draw uploads at `c[50..]`

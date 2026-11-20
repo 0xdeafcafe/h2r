@@ -7,7 +7,7 @@ use bytemuck::{Pod, Zeroable};
 
 /// One world vertex (76 bytes): what the lightmap pass reads. The first
 /// four fields are what stage 1's own program reads; the rest are what the
-/// game's world programs read (docs/graphics/native-renderer.md, "What a
+/// game's world programs read (docs/graphics/native-world.md, "What a
 /// world pass reads"): `v2..v4` the tangent frame, `v5` the lighting
 /// vector.
 #[repr(C)]
@@ -154,7 +154,7 @@ fn section_inputs(s: &SectionInput, lit: bool) -> u16 {
 
 /// One transparent part (kind 4) of a section, placed in the world: what
 /// a sorted transparent entry names by its owner and part index
-/// (docs/graphics/native-renderer.md, "Stage 3: transparents"). Not in
+/// (docs/graphics/native-transparents.md, "Stage 3: transparents"). Not in
 /// any batch: the transparents draw them one entry at a time.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TransparentDraw {

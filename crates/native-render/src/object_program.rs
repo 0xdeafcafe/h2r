@@ -2,7 +2,7 @@
 //! [`crate::program`] path draws a world pass: the pass's vertex program
 //! and pixel shader translated once per material, and per drawn object a
 //! vertex constant block holding what the game's upload would hold
-//! (docs/graphics/native-renderer.md, "Object programs"):
+//! (docs/graphics/native-objects.md, "Object programs"):
 //!
 //! - `c[0..18]`, the view's, from the device each frame
 //!   ([`crate::program::frame_vertex`]);
@@ -125,7 +125,7 @@ pub struct ObjectPass {
     pub texaccum: [bool; 4],
     /// The vertex program's instruction words (four per instruction, no
     /// header) and the translation's options: what the D3D path's draw of
-    /// the same part is compared by (`d3d::uniform_compare`).
+    /// the same part binds.
     pub words: Vec<u32>,
     pub options: shaders::vsh::VertexOptions,
 }

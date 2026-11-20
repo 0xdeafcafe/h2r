@@ -1,10 +1,16 @@
-# Render loop in Rust (stage 7a)
+# Render loop (the retail front-end)
 
-Stage 7a of the rasterizer front-end ([feature-engine.md](../engine/feature-engine.md),
-"7. Rasterizer front-end"): Rust owns the view loop and the pass loop, as
-Port-grade code that calls the recompiled pass bodies. This page holds the
-read of the four orchestrators in the 1.0 XBE, what is built, and its
-evidence. Evidence labels as in feature-engine.md: **Code** (read in the
+Status: Built. The read of the four orchestrators is reference; of the code, only the render-state list port (`engine::render_loop::states::RenderStates`) is placed, by the native world's BSP walk.
+Code: `crates/engine/src/render_loop.rs` and `render_loop/` (addresses, record layouts, `states`, `layer`); `crates/feature/src/render_loop.rs` (`world_states`). Tests: `crates/engine/tests/states_differential.rs`.
+Switch: none. The native world runs the state list under `impl.render.native` ([switches.md](../runtime/switches.md)).
+
+This page holds the read of the four orchestrators in the 1.0 XBE, the
+render-state list, and what `engine::render_loop` keeps. The native renderer
+([native-renderer.md](native-renderer.md)) reads the addresses and record
+layouts here. The Rust ports of `render_views`, `render_game_view`,
+`render_scene_passes` and the layer draw are not in the tree (see
+[notes/not-adopted.md](notes/not-adopted.md)). Evidence labels as in
+[feature-engine.md](../engine/feature-engine.md): **Code** (read in the
 disassembly, `h2 disasm`), **Test**, **S** (supposed).
 
 No game data here: addresses and offsets are research points.
@@ -130,58 +136,21 @@ vertical one). Not ported: the records are camera state other code reads.
 - **Registers.** `xmm1` is set before `0x0002afa0` (which passes it on
   to its own callee), so the port carries `xmm1` as well as `xmm0`.
 
-## What is built
+## What `engine::render_loop` keeps
 
-- `engine::render_loop` (`crates/engine/src/render_loop.rs`): `render_views`
-  as a state machine. `Machine::start` / `resume` run the port to its next
-  guest call and return `Step::Call { target, site, cleanup }` with every
-  general register and `xmm0` as the original has them at that `call`,
-  and the stack arguments pushed; `Step::Return { to }` at the end. Pure:
-  works on any `GuestMemory`.
-- `feature::render_loop` (`crates/feature/src/render_loop.rs`): the
-  `render-loop` feature places it as the implementation of
-  `RENDER_VIEWS` when `H2_FEATURES=impl.render.views=on` (or
-  `impl.render=on`). Off by default. The driver makes each call with
-  `call_guest` and resumes the port in the continuation, so a callee that
-  blocks unwinds to the scheduler as usual.
-- The layer draw `0x00044550` and its entry loop `0x0003bc30`
-  (`engine::render_loop::layer`, `impl.render.layer_draw` and
-  `impl.render.layer_entries`, off by default): see
-  [layer-draw.md](layer-draw.md).
-- `render_game_view` and `render_scene_passes`
-  (`engine::render_loop::scene`, `GameView` and `ScenePasses`;
-  `impl.render.game_view` and `impl.render.scene_passes`, off by default).
-  Both are block machines: the state is the original's address the port
-  continues at (after a call, that call's return address), and each block
-  is the original's instructions in order, with the partial-register
-  writes (`mov al, ..`, `movsx cx, ..`), the frame locals and the argument
-  slots the original reuses. So every register at every call, including
-  what the callees leave in EBX and EDI, is the original's.
-  `ScenePasses::at()` names the call in progress by its original return
-  address: the pass identity a `PassTag` needs. `Regs` gained `xmm1` for
-  `render_scene_passes`' `0x0002afa0` call.
-- The shader draw's render-state list (`engine::render_loop::states`;
-  `impl.render.states` exact, `impl.render.states_skip` skipping the
-  redundant D3D calls; off by default), below.
-- The layer sort (`0x0013da70`) and the transparents' index sort
-  (`0x0013df80`) were ported with their comparators and removed: they
-  matched the lifted originals, but the profile puts both at about
-  0.01 ms a frame (30 samples over 142 s in the 2026-11-17 Old Mombasa
-  run), and each cost a hooked call
-  ([render-switches.md](render-switches.md), "Removed").
-- The one guest-visible difference: callees see the continuation token
-  as their return address, not `0x0002b6b9` etc., as with every chain that
-  runs something after a body. That includes `render-timing`'s per-site
-  breakdown inside the scene passes, which keys on those return addresses:
-  with `impl.render.scene_passes` on, the site lines are empty and the time
-  stays in the stages. Read the site lines with the switch off.
+- The addresses and record layouts above, which the native renderer reads
+  (`views`, `layer`, `occlusion`, the world walk and material modules).
+- The render-state list (`states::RenderStates`), below. The native
+  world's BSP walk runs it with redundant calls skipped
+  (`feature::render_loop::world_states`).
+- The layer entry loop (`layer::Entries`), unplaced: tests drive the loop
+  through it ([layer-draw.md](layer-draw.md)).
 
-### The render-state list (`0x0001a170`, `impl.render.states`, `impl.render.states_skip`)
+### The render-state list (`0x0001a170`)
 
-The first target ranked below. The shader draw `0x00016b90` (under layer
-3: 8.26 ms a frame and 1,882 D3D calls in the census run) calls
-`0x0001a170` once per draw to apply the shader's engine-driven render
-states.
+The shader draw `0x00016b90` (under layer 3) calls `0x0001a170` once per
+draw to apply the shader's engine-driven render states. The time it takes
+is in [notes/scene-pass-timing.md](notes/scene-pass-timing.md).
 
 Read (Code): stdcall with one argument, the address of a list word
 `count << 9 | first`. EBX is the draw context, and it returns with
@@ -244,62 +213,13 @@ The deferred states (`0x5c..0x88`) are already memory-only in the
 original. The setters stay as calls, because they are recompiled guest
 code that does more than update the shadow.
 
-**Cost model.** With either switch on, `0x0001a170` becomes a hooked
-call. The shader draw leaves the direct path once per draw, and the
-colour and setter calls become `call_guest` transfers where they were
-direct calls before. In return, every `SetRenderState_Simple` call is
-made from Rust. It is a Rust HLE override, so it was already a runner
-round trip, but it no longer unwinds the generated frames above it. The
-redundant calls are not made at all. Whether this is a net win needs the
-in-game measurement below. `impl.render.states` alone measures the
-hook's cost, and the counters show how many calls were skipped.
-
-**Counters.** Every 100,000 lists the feature logs
-`render-states: lists L entries E simple S skipped K (P%) deferred D setters T`.
-These are running totals: `simple` counts the calls made and `skipped`
-the calls not made.
+The native world's walk (`feature::render_loop::world_states`) runs the
+list in skip mode inside its own hook, so it adds no exit of its own, and
+counts the skipped calls in the native world's timeline metrics
+(`StateCallsSkipped`).
 
 ## Evidence
 
-- **Differential against the lifted original (Test, needs the XBE).**
-  `crates/engine/tests/render_loop_differential.rs` (feature
-  `differential`). For each seeded state (globals, 0 to 5 view records
-  of random bytes with `[view]` zero two times in three, a negative count
-  in some, the debug hook in a third, a signalling-NaN frame time in
-  some, random registers and stack alignment), it runs the original on
-  the IR interpreter and the port, with every callee a stub on both sides
-  that logs the call and answers from the same generator (EAX, ECX, EDX,
-  `xmm0`, the camera block `render_game_view` leaves). It requires equal
-  call logs (target, all eight registers, `xmm0`, stack arguments, and
-  the frame record EAX points at), equal registers at return, and all 64
-  MB equal. The call stream into the pass bodies is what decides the draw
-  stream, so equal call streams with equal memory mean equal draws: this
-  is the draw-stream comparison at the orchestrator's boundary, without
-  running a frame.
-- **The runtime driver (Test, no game code).**
-  `crates/feature/tests/render_loop.rs`: the plan places the Rust
-  `render_views`; the nine callees are Rust overrides at their addresses
-  that log and `ret n`. The runtime's call stream (targets and seven
-  registers) and return state equal the port's driven directly, through
-  the debug hook, a drawn view, two skipped views and an alternate view.
-- **`render_game_view` and `render_scene_passes` against the lifted
-  originals (Test, needs the XBE).** `crates/engine/tests/scene_differential.rs`,
-  the same method: every callee a stub on both sides that logs target,
-  eight registers, `xmm0`, `xmm1` and stack arguments, and answers EAX,
-  ECX, EDX, `xmm0`, `xmm1`, and in one call in five a changed EBX or EDI
-  (the port must use what the callee left). Predicates answer AL 0 or 1,
-  the early-outs rarely fire, the object lookups answer small indices or
-  -1 into synthetic object, cluster and shader tables, whose floats include
-  both zeros and NaN. Globals (the layer mask, target kind, fog bytes,
-  flags, the player), the six arguments, and the stack under the frame
-  are random per state, so the branches on frame bytes the callees would
-  fill go both ways. Call logs, registers at return and all 64 MB must be
-  equal. Every callee is reached.
-- **The runtime driver for the new ports (Test, no game code).**
-  `crates/feature/tests/render_loop.rs` places `render_game_view` and
-  `render_scene_passes` and checks the runtime's calls against the port
-  driven directly, through the targeted base layers, the light pass and
-  the transparents.
 - **The render-state list against the lifted original (Test, needs the
   XBE).** `crates/engine/tests/states_differential.rs`.
   - Inputs: 1,200 seeded states (three seeds of 400). Each has a list of
@@ -339,130 +259,13 @@ the calls not made.
 
   The skip rate depends on draw order. The game's real share is in the
   counters' line.
-- **The render-state driver (Test, no game code).**
-  `crates/feature/tests/render_loop.rs` places `0x0001a170` with each
-  switch, over a list holding every kind of entry. The runtime's calls
-  equal the port's driven directly: setters pop their argument, the
-  colour function keeps ECX, and the runtime's x87 control word is used.
-  The skipping switch makes two fewer Simple calls, one for a repeated
-  entry and one for a value the shadow already holds.
-- **Not covered.** A `RecordingBackend` capture of a real frame with the
-  switch on and off (needs a game run; see the check below); faults inside
-  the port (it reads and writes in a different order from the original,
-  so a bad pointer faults at a possibly different address; the original
-  would crash the game either way).
+- **Not covered.** Faults inside the list (it reads and writes in a
+  different order from the original, so a bad pointer faults at a possibly
+  different address; the original would crash the game either way).
 
-## Checking it in game
+## Related
 
-No image rebuild: the ports are Rust in the `render-loop` feature, placed
-on points the runtime already resolves. Rebuild the `h2` binary only. All
-switches are off by default; `impl.render=on` turns on every
-`impl.render.*` port at once.
-
-```sh
-# The orchestrator ports.
-H2_FEATURES=impl.render.game_view=on,impl.render.scene_passes=on
-
-# The render-state list skipping redundant Simple calls (logs the
-# render-states counter line).
-H2_FRAME_STATS=1 H2_FEATURES=impl.render.states_skip=on
-# The list port without skipping: the hook's own cost.
-H2_FRAME_STATS=1 H2_FEATURES=impl.render.states=on
-
-# Frame stats and the stage split (the site lines need scene_passes off).
-H2_FRAME_STATS=1 H2_FEATURES=render-timing,impl.render.game_view=on,impl.render.scene_passes=on
-
-# Draw streams: the same frame of a run with and without, then diff.
-H2_BOOT_DRAWLOG=$R/on.txt H2_BOOT_DRAWLOG_FRAMES=600 H2_FEATURES=impl.render=on
-H2_BOOT_DRAWLOG=$R/off.txt H2_BOOT_DRAWLOG_FRAMES=600
-```
-
-What to expect: the orchestrator ports change no draw and save no time on
-their own (each adds a runner round trip per call they make, about 100 a
-view for the scene passes; compare `render` with and without). Draw logs from two runs line up only when the
-two runs render the same frame (same input and timing, or a replay).
-
-For the render-state list, compare `render` across three runs:
-
-- no switch;
-- `impl.render.states`, which shows the hook's cost alone (one exit from
-  the direct path per draw);
-- `impl.render.states_skip`, which shows that cost minus the skipped
-  calls.
-
-With `impl.render.states_skip`, the draw log should show the same draws,
-and the D3D call log should be shorter by the `skipped` count.
-
-## Where the scene passes' time goes (measured)
-
-`render-timing` site lines from the 2026-11-17 Old Mombasa census run,
-weighted over the 100 one-second windows with `render` above 15 ms (2,607
-frames, mean `render` 24.9 ms with the observers on). A site's time is
-its callee's, inclusive, minus the stages carved out (the per-light pass
-`0x00031170` is `light_passes`). ms per frame:
-
-| Site | Callee | ms | guest | D3D | D3D calls | What |
-|---|---|---|---|---|---|---|
-| `0x0002bed0` | `0x00044550` | 8.26 | 5.51 | 2.75 | 1,882 | layer 3, the opaque scene ([layer-draw.md](layer-draw.md)) |
-| `0x0002c19a` | `0x0001e370` | 2.58 | 2.29 | 0.29 | 1,010 | sorted transparents |
-| `0x0002c03e` | `0x00031c80` | 1.88 | 1.88 | 0.00 | 0 | dynamic lights, without the per-light passes |
-| `0x0002c021` | `0x000335e0` | 1.24 | 1.05 | 0.19 | 182 | |
-| `0x0002bd2d` | `0x00040e90` | 0.91 | 0.91 | 0.00 | 0 | visibility |
-| `0x0002c2b3` | `0x0003fdf0` | 0.84 | 0.69 | 0.15 | 404 | |
-| `0x0002c322` | `0x00013870` | 0.76 | 0.64 | 0.12 | 164 | |
-| `0x0002c2b9` | `0x000404b0` | 0.39 | 0.32 | 0.08 | 173 | |
-| `0x0002be45` | `0x00044550` | 0.32 | 0.24 | 0.08 | 56 | layer 1 |
-| `0x0002c05b` | `0x00044550` | 0.29 | 0.22 | 0.07 | 120 | layer 2 |
-
-Everything else is under 0.3 ms. The pass sequence's own code is nothing:
-the cost is in the pass bodies, and two thirds of it in the layer draws.
-
-## Next port targets, ranked by measured ms
-
-A port only saves time when it removes guest work or guest transfers
-without adding them: a Rust function that calls back into guest code pays
-a runner round trip per call ([layer-draw.md](layer-draw.md), "Hooked
-calls leave the direct path"). So the targets are whole subtrees or
-leaves.
-
-1. **The shader draw under layer 3 (`0x0001bbf0` / `0x00016b90`, most of
-   8.26 ms).** The render-state list `0x0001a170` is built (above).
-   Still left in this subtree:
-   - The second list, `0x0001ab50`. It is not read yet.
-   - The parameter evaluation.
-   - The bigger step: porting `0x00016b90` whole, so that its calls to
-     the lists, the setters and the HLE entries stop leaving the direct
-     path. That would also make the list port's hook free.
-
-   [layer-draw.md](layer-draw.md) records that the original already
-   skips unchanged textures, constants and pixel shaders.
-2. **The transparents (`0x0001e370`, 2.58 ms).** The sort is about
-   0.01 ms (a port was built and removed, above). The rest of the time is in the
-   per-entry handlers, which are called through a pointer per entry.
-3. **The dynamic lights' bookkeeping (`0x00031c80`, 1.88 ms, no D3D).**
-   Per light: collection (`0x00031910`), object and cluster gathering
-   (`0x000c1d90`), `0x001320f0`, `0x00031660`. This is also 7b's seam.
-4. **`0x000335e0` (1.24 ms) and the visibility `0x00040e90` (0.91 ms,
-   no D3D).** Guest-only subtrees; read them before choosing.
-   `0x00040e90` consumes the object render records; the objects are
-   chosen earlier, in `render_view_scene` (`0x0003f2c0`), read in
-   [occlusion-culling.md](occlusion-culling.md) with the per-object skip
-   point `0x00133790`.
-5. **Pass tags.** With `render_scene_passes` in Rust, set the device's
-   `PassTag` from `ScenePasses::at()` before each layer call
-   ([feature-engine.md](../engine/feature-engine.md), "Rendering").
-   `render_game_views` stays recompiled (camera records are contract).
-
-## Later stages
-
-- **7b.** Replace the `0x00031c80` call site (dynamic lights) in the
-  ported pass sequence with a Rust lighting pass; E3 lighting becomes a
-  pass rather than a draw rewrite.
-- **7c.** Targets and post-processing: the `0x00014bc0` / `0x00015680` /
-  `0x00015370` target and state calls in the pass sequence are where a
-  Rust pass loop picks view-resolution targets.
-- **7d.** Geometry submission and materials (`0x00041040`, `0x0001bbf0`),
-  after the pass loop is Rust.
-- **Measure first.** `render-timing` ([gameplay-budget.md](../perf/gameplay-budget.md),
-  "Render front-end versus simulation") says how many ms the stages
-  hold; the port itself saves no time until a pass body moves.
+- [layer-draw.md](layer-draw.md): the layer draw and the shader draw begin.
+- [native-renderer.md](native-renderer.md): the renderer that replaces the front-end.
+- [notes/scene-pass-timing.md](notes/scene-pass-timing.md): where the scene passes' time goes.
+- [notes/not-adopted.md](notes/not-adopted.md): the stage 7a ports.

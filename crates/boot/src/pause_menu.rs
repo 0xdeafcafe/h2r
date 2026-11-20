@@ -46,11 +46,6 @@ pub const ITEM_ROW: u32 = 0x70;
 /// The feature switch of our rows (`features.pause-rows`).
 pub const FEATURE: &str = "pause-rows";
 
-/// Whether our pause rows are on: `H2_NO_PAUSE_ROWS` takes them out.
-pub fn rows_on() -> bool {
-    std::env::var_os("H2_NO_PAUSE_ROWS").is_none()
-}
-
 /// The count the datum array named `name` is made with, `count` being what
 /// it would be made with otherwise: the Settings dialog's grows by our rows.
 pub fn list_count(m: &Model, name: u32, count: u32) -> u32 {

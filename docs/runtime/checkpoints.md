@@ -1,5 +1,9 @@
 # Checkpoint acceptance
 
+Status: Built. An ignored acceptance test; it needs the retail XBE.
+Code: `crates/xapi/tests/checkpoints.rs`.
+Switch: none.
+
 `crates/xapi/tests/checkpoints.rs` is an ignored retail acceptance harness. It
 reads `$H2_XBE`, lifts the storage owners, compiles generated C for the host,
 and registers it with the real Runtime and kernel. Its game-state bytes and
@@ -68,13 +72,12 @@ per-title/console signing-key policy before generated signing runs; the test's
 synthetic key is not a retail key or an interoperability claim. Runtime's
 unconfigured key DATA exports remain placeholders.
 
-## Reached kernel/VFS fix
+## SaveMeta.xbx initial allocation
 
 Generated XCreateSaveGame at `0x330f74` passes a one-byte initial allocation for
 SaveMeta.xbx, aliasing that LARGE_INTEGER with its output IO_STATUS_BLOCK.
-NtCreateFile formerly stopped on every nonzero allocation. It now reads the
-input before publishing the IOSB and passes it through VFS's allocated-open
-methods. Negative sizes are rejected.
+NtCreateFile reads the input allocation before publishing the IOSB and
+passes it through VFS's allocated-open methods. Negative sizes are rejected.
 
 HostBackend reserves cluster-rounded **logical FATX capacity** without extending
 EOF. Writes consume the reservation; EOF changes and the owner's last handle

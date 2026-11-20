@@ -1,4 +1,4 @@
-//! The `native-fog` feature (docs/graphics/native-renderer.md, "Stage
+//! The `native-fog` feature (docs/graphics/native-water-fog.md, "Stage
 //! 4b"): its plan next to the world's hook on the layer draw, and its one
 //! observer on synthetic guest memory — the BSP items the host draws lose
 //! layer 16's bit for the layer (only at the late passes' call, with the
@@ -84,7 +84,7 @@ fn draw(m: &mut FlatMemory) {
 
 #[test]
 fn the_plan_orders_it_inside_render_timing_and_the_world() {
-    let switches = "impl.render.native_fog=on,render-timing=on,impl.render.native_world=on";
+    let switches = "impl.render.native=on,render-timing=on";
     let mut r = Registry::new(Switches::parse(switches).unwrap());
     assert!(r.add(&feature::render_timing::RenderTiming::new()).unwrap());
     assert!(r.add(&feature::native_world::NativeWorld).unwrap());
@@ -100,7 +100,7 @@ fn the_plan_orders_it_inside_render_timing_and_the_world() {
 
 #[test]
 fn its_layer_draw_chain_runs_on_the_render_thread() {
-    let mut r = Registry::new(Switches::parse("impl.render.native_fog=on").unwrap());
+    let mut r = Registry::new(Switches::parse("impl.render.native=on").unwrap());
     assert!(r.add(&NativeFog).unwrap());
     let plan = r.build(&Base).unwrap();
     let chain = plan
@@ -113,9 +113,9 @@ fn its_layer_draw_chain_runs_on_the_render_thread() {
 }
 
 #[test]
-fn it_is_on_by_default_and_the_switch_turns_it_off() {
-    assert!(native_fog::DEFAULT);
-    let mut r = Registry::new(Switches::parse("impl.render.native_fog=off").unwrap());
+fn it_is_on_by_default_and_the_master_switch_turns_it_off() {
+    assert!(native_fog::on(&Switches::parse("").unwrap()));
+    let mut r = Registry::new(Switches::parse("impl.render.native=off").unwrap());
     assert!(r.add(&NativeFog).unwrap());
     assert!(!r.build(&Base).unwrap().text().contains("native_fog"));
 }

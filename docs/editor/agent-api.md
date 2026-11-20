@@ -1,5 +1,8 @@
 # h2-editor's agent API
 
+Status: Built. Code: `crates/studio-proto/src`, `crates/studio/src`. Tests: in-source unit tests.
+Switch: `H2_STUDIO` (the socket path; `crates/studio-proto/src/lib.rs`).
+
 An agent (or a script, or a test) edits what the editor edits: maps and
 their tags, scenario placements, game variants, playlists and UI screens,
 through JSON methods on a local socket. The style is the game's agent API
@@ -64,7 +67,7 @@ the caller gets the log lines it wrote or why it failed. An action that
 would drop unsaved edits is refused (`UNSAVED`) unless the call passes
 `"discard": true`; the API never holds one for a prompt.
 
-What goes through actions now, from both sides:
+What goes through actions, from both sides:
 
 | Edit | Action | Window | API |
 |---|---|---|---|
@@ -83,8 +86,8 @@ What goes through actions now, from both sides:
 The playlist fields apply their `PlaylistEdit`s inside the frame's
 `HopperSession::edit_with`, so a typing run stays one undo step (merged
 under the field's key) where the API's `playlist.set` is one step per
-call. Not yet through actions: the playlist table's map pickers, which
-edit the working copy in place the same way.
+call. The playlist table's map pickers do not go through actions; they edit
+the working copy in place the same way.
 
 The tests check that the window's path and the API's path make the same
 document: the same scenario changes and byte-identical saved maps for a
@@ -231,7 +234,7 @@ the window and the API stay one path.
 ## Planned: player models and customisation
 
 Design notes for the `model.*` and `custom.*` providers. Nothing here is
-built; the table's stubs answer `NOT_YET` with these lanes. Each part
+built; the table's stubs answer `NOT_YET`. Each part
 says what it reads, what it edits, through which action, and what is
 still to establish.
 
@@ -244,14 +247,14 @@ still to establish.
   tags linked.
 - `native-render::model_load` loads a `mode` and picks a variant's
   sections (`pick_sections`): what a preview draws.
-- `bots::guest` has the player look bytes the game checks
-  (`0x153750`): four colour indices (armour primary and secondary,
+- `bots::guest::bot_look` builds the eight player look bytes the game
+  checks (`0x153750`; `crates/bots/src/phantom/session.rs`): four colour indices (armour primary and secondary,
   emblem primary and secondary, each below 18), the model (below 4), the
   emblem foreground (below 0x40), background (below 0x20) and flags.
 - The Tags tool (`app::tag_doc`) writes any tag field with undo and saves
   with the map; the scenario viewport renders offscreen (`view.snapshot`).
 
-### `model.*` (lane: player models)
+### `model.*`
 
 A Models tool (`ToolKind::Models`, its state beside the HUD tool's) over
 the map open in the scenario tool, and a provider in `api/models.rs`:
@@ -286,7 +289,7 @@ through the Tags tool, so they share its undo and save. `model.read`
 returns the `tag.set` path of each editable value so an agent can go
 straight there.
 
-### `custom.*` (lane: customisation, after models)
+### `custom.*`
 
 Retail Halo 2 has no armour choice: a player's model is one of four and
 its permutations are picked by the variant's probabilities. Armour
@@ -305,7 +308,7 @@ permutation from the profile instead of by probability, and the network
 carrying the choice. Until that lands the methods stay planned; the
 editor side is small once the profile document exists.
 
-### Tests each lane brings
+### Tests the providers need
 
 As the HUD provider's: every method runs its example in
 `every_method_in_methods_has_a_test` (on an invented map with a biped,

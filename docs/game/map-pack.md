@@ -3,15 +3,19 @@
 To install it: put the map pack ISO next to `halo2.iso` as `mappack.iso`.
 `h2 play` and `h2 run` do the rest at start-up ([section 4](#4-automatic-install)).
 
-Status: `h2 import-mappack` installs the nine maps as nine content
-packages, one map each, with a version 2 `patch.lvl` made from the map's
-`patch_v3.lvl` record, so **1.0 should list them without the title update**
-([section 8](#8-playing-the-map-pack-on-10)). Each package is signed for this
-console as the disc's installer would
+Status: Partly built. `h2 import-mappack` and the automatic install are
+built; playing the maps in the game on 1.0 is open ([Not verified](#not-verified)),
+and running the title update is design only.
+Code: `crates/cli/src/mappack_cmd.rs` (`h2 import-mappack`), `crates/content/src/patch_lvl.rs` (`v2_from_v3`), `crates/kernel/src/content.rs` (`sign`). Tests: `mappack_cmd::tests`, `crates/kernel/tests/misc.rs`, `crates/vfs/tests/storage.rs`.
+Switch: `H2_MAPPACK` (on) and `--no-mappack`, listed in [switches.md](../runtime/switches.md).
+
+`h2 import-mappack` installs the nine maps as nine content packages, one
+map each, with a version 2 `patch.lvl` made from the map's `patch_v3.lvl`
+record, so 1.0 lists them without the title update
+([section 8](#8-playing-the-map-pack-on-10)). Each package is signed for
+this console as the disc's installer would
 ([section 7](#7-why-the-game-said-the-content-was-damaged)), and the title
-update is kept aside. Tests pass on synthetic discs and on the user's map
-pack ISO, and the owner has played the maps in the game (2026-11-17; the
-check is [section 8.6](#86-what-to-change-and-the-check)).
+update is kept aside.
 
 The official Halo 2 Multiplayer Map Pack disc (2005) holds the nine
 downloadable multiplayer maps, a Halo 2 title update, an installer and some
@@ -123,17 +127,16 @@ find a package, but it reads `patch.lvl`, and that only names Lockout. The
 new maps need the update. This is why the disc carries both files: an
 un-updated console sees a package that adds nothing. Our import therefore
 doesn't install the disc's packages as they are: it serves 1.0 its own
-`patch.lvl` per map ([section 8](#8-playing-the-map-pack-on-10)). Nobody has
-run either path here yet, so this is a reading of the files, not an
-observation.
+`patch.lvl` per map ([section 8](#8-playing-the-map-pack-on-10)). This
+section is a reading of the files (**S**), not an observation.
 
-To be confirmed once the update runs:
+Open until the update runs:
 
 - the offer ID the update expects. The disc packages' own offer IDs (field
   `0x28` of each `ContentMeta.xbx`) are the title ID in the high half and
   the package number in the low half (`4d53006400000001`), the usual
   convention. Our import uses its own per-map IDs instead (section 5), the
-  same in the directory name and the header (8.4's safe choice);
+  same in the directory name and the header (8.4);
 - which drive the game enumerates. The format takes a drive letter; `T:` is
   where installed content lives;
 - whether the update checks the per-file hashes in `ContentMeta.xbx`. The
@@ -164,15 +167,11 @@ version, the ISO's size, its modification time and the base disc's
 certificate version, and
 `<data>/disk/Partition1/TDATA/4D530064/$c` still exists. Replace the ISO, change
 the game disc version, or empty the data dir (`--fresh-data`), and the next
-start installs again. The format version is bumped when older imports wrote
-something wrong, so an older install is written again once, at the next
-start:
-
-- version 2 signs `ContentMeta.xbx` (an unversioned stamp copied it
-  unsigned);
-- version 3 installs one package per map with our own `patch.lvl`, and
-  removes the three disc-shaped packages version 2 wrote, whose `patch.lvl`
-  took over the Lockout slot (8.5).
+start installs again. A stamp with another format version
+(`STAMP_VERSION` in `crates/cli/src/mappack_cmd.rs`) also installs again.
+The current format signs `ContentMeta.xbx` and installs one package per
+map with our own `patch.lvl`; it removes disc-shaped packages from an
+older format, whose `patch.lvl` would take over the Lockout slot (8.5).
 
 It never stops the game from starting: a problem is printed as
 `map pack: not installed: <why>` and the game runs on. `--no-mappack` or
@@ -224,8 +223,8 @@ Offer IDs: Halo 2's title ID in the high half, and
 counting from 1 in that package's `patch_v3.lvl`. So package 1's two maps
 are `4d53006400000101` and `4d53006400000102`, package 2's are `...0201`
 and `...0202`, and package 3's five are `...0301` to `...0305`. They never
-equal the bare package numbers (`...0001` to `...0003`) the older layout
-used. After writing, the import removes those older package directories
+equal the bare package numbers (`...0001` to `...0003`) of the disc-shaped
+layout. After writing, the import removes those package directories
 (nothing else under `$c`), with or without `--force`.
 
 It also writes the update copy that matches your Halo 2 disc to
@@ -233,10 +232,10 @@ It also writes the update copy that matches your Halo 2 disc to
 `.../00000303/default.xbe`.
 
 The update is deliberately **not** put in `TDATA\4D530064\$u`. If it were
-there, 1.0 would try to relaunch into an image we can't run yet
+there, 1.0 would try to relaunch into an image we can't run
 ([title-updates.md](../runtime/title-updates.md) 3.6 says the same). It waits under
 `updates/` until the update can be run. `h2 image list` and `h2 image map`
-do not exist yet: they are design only ([title-updates.md](../runtime/title-updates.md)
+are design only ([title-updates.md](../runtime/title-updates.md)
 section 3.6).
 
 Options:
@@ -274,8 +273,7 @@ installer stay on the disc.
 
 ### Tests
 
-- `content` `patch_lvl::tests` (synthetic records; the module moved from
-  `cli` so the boot can build records too): the CRC against the
+- `content` `patch_lvl::tests` (synthetic records): the CRC against the
   CRC-32 check value, a v3 record's own CRC recomputed, the v2 mapping
   (copied span, dropped checksum, shift, map id, new CRC that 1.0's check
   accepts), and refusals of wrong lengths, versions, types and CRCs.
@@ -291,7 +289,7 @@ installer stay on the disc.
   accepts and otherwise unchanged, each `patch.lvl` valid for 1.0 and
   naming the map beside it, no Lockout record anywhere, nothing in `$u`,
   `--force`, `--dry-run`, removal of the older layout, and that installs
-  with an unversioned or version 2 stamp are redone once.
+  with an unversioned or version 2 stamp are redone.
 - `cli` `real_map_pack_gives_nine_packages_1_0_can_read` (ignored, reads
   the user's map pack ISO, writes nothing): nine packages with distinct
   offer IDs and map ids, each `patch.lvl` passing 1.0's check and naming a
@@ -304,55 +302,57 @@ installer stay on the disc.
   host there open and list through `T:\$c\<offer ID>\` (case-insensitive).
 - `xiso` `zero_filled_directory_is_empty`: see below.
 
-### An `xiso` fix found on this disc
+### Empty directories in the image
 
-extract-xiso writes an empty directory as one zero-filled sector. That
-holds a single record with an empty name, which the reader used to list as
-`<dir>/`, a file of size 0. This disc has four (`/videos`,
-`/movies/movie4`, `/movies/soundtest`, `/movies/movie2/subtitle`), and
-`h2 extract` refused the whole disc as having an unsafe path. Nameless
-records are now skipped.
+extract-xiso writes an empty directory as one zero-filled sector, which
+holds a single record with an empty name. `xiso` skips nameless records
+(test `zero_filled_directory_is_empty`), so the four empty directories on
+this disc (`/videos`, `/movies/movie4`, `/movies/soundtest`,
+`/movies/movie2/subtitle`) do not make `h2 extract` refuse the disc as
+having an unsafe path.
 
-## 6. What's left before the maps can be played
+## 6. How the maps play on 1.0
 
-On 1.0 (section 8), only the in-game check in 8.6. The rest of this section
-is for playing them through the title update instead.
+The nine maps play on the retail 1.0 executable with no title update.
+`h2 import-mappack` (section 5) writes nine packages under `T:\$c`, each
+with one map, a signed `ContentMeta.xbx` (section 7) and a version 2
+`patch.lvl` of one record. 1.0's content scan (8.1) reads that record,
+puts the map in a free slot of the multiplayer map list, and loads the map
+from the package directory. The Select Map dialog lists the maps under
+**Map Pack** ([map-select.md](map-select.md)). Multiplayer is the only way
+to play them: custom games over Live and system link
+([live-custom-games.md](../live/live-custom-games.md)). Section 8 holds the
+reading of 1.0 that this rests on, and 8.6 the check that is still open.
 
-1. **Run the update** ([title-updates.md](../runtime/title-updates.md)): an address map
-   from 1.0 to `0x303`, hooks placed through it, and `--image` so `h2 play`
-   boots `<data>/updates/4D530064/00000303/default.xbe` with the 1.0 disc
-   as `D:`. That's the big piece: about 11-17 days before files and 6-11
-   after, by that page's estimate. The update's XDK build is the same as
-   1.0's, which removes the worst case there.
-2. **Kernel ordinal 270** (`RtlCompareString`), which the update imports and
-   1.0 doesn't.
-3. **Check the content path** on the update. Trace its `T:\$c` enumeration
-   (kernel trace) and confirm the offer ID directory name, then fix
-   `vfs::offer_id` if it's wrong.
-4. **Multiplayer**. The maps are multiplayer only. Custom games over Live
-   and system link are the way to play them
-   ([live-custom-games.md](../live/live-custom-games.md)); none has been
-   tried on these maps yet (8.6).
+### The title update (design)
 
-The one-package-per-map layout doesn't serve the update: its packages hold
-no `patch_v3.lvl`, and the update checks that file's digest against the
-package's signed table (8.4), so a trimmed copy wouldn't pass. When the
-update runs, the import will need a second layout (the disc's three
-packages, without their `patch.lvl`) for it.
+Playing through the update instead is not built. It needs the update to
+run (an address map from 1.0 to `0x303`, hooks placed through it, an
+image option so `h2 play` boots `<data>/updates/4D530064/00000303/default.xbe`
+with the 1.0 disc as `D:`; [title-updates.md](../runtime/title-updates.md)),
+kernel ordinal 270 (`RtlCompareString`, which the update imports and 1.0
+doesn't), and a trace of its `T:\$c` enumeration to confirm the offer ID
+directory name (`vfs::offer_id`). The one-package-per-map layout does not
+serve the update: its packages hold no `patch_v3.lvl`, and the update
+checks that file's digest against the package's signed table (8.4). The
+import would need a second layout, the disc's three packages without their
+`patch.lvl`.
 
 ## 7. Why the game said the content was damaged
 
-With the packages copied byte for byte, Halo 2 listed them at the main menu
-and then said **FILE DAMAGED**. Each package's `ContentMeta.xbx` on the disc
-is unsigned: its first 20 bytes are zero and its "installed" flag is clear.
-On an Xbox the disc's installer signs each one for the console it installs
-on. Our import didn't, and our kernel couldn't have checked a signature
-anyway: `XcHMAC` (kernel ordinal 340) was an unimplemented export.
-
-Everything here was read from Halo 2 1.0's own XAPI and XONLINE code with
-`h2 disasm` and `h2 analyze`. No public description of the `ContentMeta.xbx`
-layout was found, so the field names are ours. Public references for the
-pieces: the kernel exports `XcHMAC`, `XboxHDKey`, `XboxSignatureKey` and
+The game lists a package only if its `ContentMeta.xbx` has the `XCSF`
+magic and a valid HMAC-SHA1 signature for the console, and it treats the
+package as usable only with flags bit 0 (installed) set. The disc's files
+are unsigned with the flag clear, so the disc's installer signs each one
+for the console it installs on. `kernel::content::sign` does the same for
+`h2 import-mappack` and the automatic install, with the console key
+`kernel::crypto::XBOX_HD_KEY` (all zero: there is no EEPROM, and no real
+console's key is in the repo) that the kernel also writes into the
+`XboxHDKey` export, so the guest and the importer use one key. The
+details below were read from Halo 2 1.0's XAPI and XONLINE code with
+`h2 disasm` and `h2 analyze` (**E**). No public description of the layout
+was found, so the field names are ours. Public references for the pieces:
+the kernel exports `XcHMAC`, `XboxHDKey`, `XboxSignatureKey` and
 `XboxAlternateSignatureKeys` in the [xboxdevwiki kernel export
 list](https://xboxdevwiki.net/Kernel); the per-console hard disk key in the
 [EEPROM](https://xboxdevwiki.net/EEPROM) page; HMAC in RFC 2104, with the
@@ -380,8 +380,8 @@ Only the signature and the flag are left for the installer.
   `T:\$c\<16-digit offer ID>\ContentMeta.xbx` and reads 0x88 bytes. It
   checks the `XCSF` magic, takes the offer ID, and treats the package as
   usable only if **flags bit 0** is set. A package with the flag clear is
-  still listed, but as unusable. That fits what we saw: listed, then
-  "damaged".
+  still listed, but as unusable. An unsigned package therefore shows
+  as damaged.
 - **XAPI's readers** (`0x2d2f6d` and `0x2d0f25`) read the header through
   `0x2d2a1d` with verification on, then require the same flag bit:
   - `0x2d2a1d` reads 0x1c bytes, then the rest up to `min(header size,
@@ -406,24 +406,18 @@ The content key comes from `XboxHDKey`, the per-console key. That is why
 the signature can't ship on the disc: it would differ on every console.
 This is the "non-roamable" signature.
 
-### The fix
+### Our signing
 
-We do what the installer does, with the keys our kernel gives the guest:
-
-- `kernel::crypto::XBOX_HD_KEY` is this console's hard disk key. It is all
-  zero: there is no EEPROM, and no real console's key is in the repo. The
-  kernel writes it into the `XboxHDKey` DATA export at start-up, so the
-  guest and the importer always use the same key.
-- The kernel now implements `XcHMAC`: HMAC-SHA1 over both input spans. A
-  key longer than 64 bytes stops, since nothing here needs that case.
+- `kernel::crypto::XBOX_HD_KEY` is this console's hard disk key (above).
+- The kernel implements `XcHMAC`: HMAC-SHA1 over both input spans. A key
+  longer than 64 bytes stops, since nothing here needs that case.
 - `kernel::content::sign` sets flags bit 0 and writes
   `HMAC-SHA1(HMAC-SHA1(XBOX_HD_KEY, title ID), bytes 0x14..header size)`
-  into bytes `0..20`. `h2 import-mappack` and the automatic install run it
-  on every package's `ContentMeta.xbx` and copy everything else byte for
+  into bytes `0..20`. Everything else in a package is copied byte for
   byte.
 
-We don't patch the guest's check. We don't fake the original console
-signature either: no console signature ships on the disc.
+The guest's check is not patched, and no original console signature is
+faked: none ships on the disc.
 
 ### Tests
 
@@ -446,22 +440,21 @@ signature either: no console signature ships on the disc.
 
 ## 8. Playing the map pack on 1.0
 
-Can retail 1.0 list and load the nine maps without running the title update,
-if we hand it a suitable `patch.lvl`? This section is a static reading of
+Retail 1.0 lists and loads the nine maps without the title update, given
+a suitable `patch.lvl` per package. This section is a static reading of
 1.0's executable, the update (`default.xbe.03`, certificate version
-`0x303`) and the user's files. Nothing was built or run.
+`0x303`) and the user's files.
 
 Labels: **E** read from an XBE, **V** measured on the user's files,
 **S** speculation.
 
-**Verdict: probably yes, with one catch. Unknown until one map has been
-loaded in game.** 1.0 already has the whole mechanism: it reads `patch.lvl`
-from every package, fills free slots in the multiplayer map list, and loads
-maps from `t:\`. A `patch.lvl` made from a `patch_v3.lvl` record is a pure
-field mapping. The catch is that 1.0 takes **one map per package**, so nine
-maps need nine packages (or a hook). Nothing found in 1.0's path would refuse
-the DLC maps, and the update's loader is the same code. The update does add
-checks, but they only make it stricter than 1.0.
+1.0 has the whole mechanism: it reads `patch.lvl` from every package,
+fills free slots in the multiplayer map list, and loads maps from `t:\`.
+A `patch.lvl` made from a `patch_v3.lvl` record is a pure field mapping.
+1.0 takes **one map per package**, so nine maps need nine packages. Nothing
+found in 1.0's path refuses the DLC maps, and the update's loader is the
+same code; the update adds checks, but they only make it stricter than
+1.0.
 
 ### 8.1 Where 1.0 reads `patch.lvl`
 
@@ -609,43 +602,45 @@ the 12 retail ids (V).
   XONLINE. The safe choice is matching names and a rebuilt or copied
   table.
 
-### 8.5 A side effect of the older import
+### 8.5 Why the disc's `patch.lvl` is never installed
 
-With the import as it was (stamp version 2), 1.0 read the disc's `patch.lvl` from every
-package. Its record has Lockout's id, so 1.0 overwrites the **retail Lockout
-slot** and sets its path to `t:\$C\<offer ID>\lockout`. No package holds a
-`lockout.map` (E for the rewrite, V for the files). Lockout may fail to load
-on 1.0 while the map pack is installed (S, not observed). On a real Xbox
-this never happened, because the installer always put the update in `$u`.
-Serving our own `patch.lvl` instead of the disc's removes the problem. The
-import now does (stamp version 3), and removes the older packages.
+1.0 reads the `patch.lvl` of every package. The disc's one has Lockout's
+id, so 1.0 would overwrite the **retail Lockout slot** and set its path to
+`t:\$C\<offer ID>\lockout`; no package holds a `lockout.map` (E for the
+rewrite, V for the files). Lockout may then fail to load (S). On a real
+Xbox this never happens, because the installer always puts the update in
+`$u`. The import serves its own `patch.lvl` instead, so the retail slot
+is untouched.
 
-### 8.6 What to change, and the check
+### 8.6 The layout and the check
 
-Built: option 1, in `h2 import-mappack` (section 5): nine packages, offer
-IDs `4d530064000001NN` to `...03NN`, a v2 `patch.lvl` per map made by
-`content` `patch_lvl::v2_from_v3`, the file table copied, the disc's
-`patch.lvl` never installed. On the user's disc the test in section 5 finds
-nine packages whose `patch.lvl` passes 1.0's check. The design as written
-before it was built:
+`h2 import-mappack` (section 5) writes nine packages with offer IDs
+`4d530064000001NN` to `...03NN`: a `ContentMeta.xbx` made from the source
+package's with the offer ID changed and signed by `kernel::content::sign`,
+the map file, and a v2 `patch.lvl` made by `content::patch_lvl::v2_from_v3`
+from that map's `patch_v3.lvl` record (8.2). The file table is copied and
+the disc's `patch.lvl` is never installed. On the user's disc the
+`real_map_pack_gives_nine_packages_1_0_can_read` test finds nine packages
+whose `patch.lvl` passes 1.0's check (V).
 
-1. Serve **one package per map**, nine in all, under `T:\$C\` with distinct
-   offer IDs. Each holds a `ContentMeta.xbx` made from its source package's,
-   with the offer ID changed and signed by `kernel::content::sign`, the
-   map file, and a `patch.lvl` made from that map's `patch_v3.lvl` record
-   (8.2). This can be done in `h2 import-mappack` (bump the stamp format,
-   place each map once, no copies) or in `vfs` as a view over the three
-   real packages. Never serve the disc's `patch.lvl`.
-2. The alternative is a hook on `0x19bfd0` that reads `patch_v3.lvl`,
-   converts each record and calls `0x19be00` for each. That keeps the three
-   real packages and needs no new metadata, but it's guest code to
-   maintain.
+A hook on `0x19bfd0` that reads `patch_v3.lvl`, converts each record and
+calls `0x19be00` would keep the three real packages and need no new
+metadata, but it is guest code to maintain; it is not built.
 
-The check, for the user (not run yet): start 1.0 with the import done (put
-the ISO beside the disc as `mappack.iso` and `h2 play`, which redoes an
-older import once and prints `map pack: installed 9 maps ...`), and open a
-local custom game's map choice. The **nine new maps should be listed with
-their names and previews** (their sort orders are all above the retail
-ones, V). Start a game on **Turf**: the largest metadata of the nine, so it
-also tests the arena. If it reaches spawn, 1.0 plays the map pack. Then
-load **Lockout** once, to confirm 8.5 is gone.
+## Not verified
+
+The in-game check: start 1.0 with the import done (the ISO beside the disc
+as `mappack.iso`, then `h2 play`) and open a local custom game's map
+choice.
+
+- The nine new maps are listed with their names and previews (their sort
+  orders are all above the retail ones, V).
+- A game on **Turf** reaches spawn. It has the largest metadata of the
+  nine, so it also tests the arena (8.3). If it spawns, 1.0 plays the map
+  pack.
+- **Lockout** loads once, to confirm 8.5.
+- Custom games over Live and system link on these maps.
+- Whether 1.0 compares the package directory name with the header's offer
+  ID, and whether a stale file table in a `ContentMeta.xbx` matters outside
+  XONLINE (8.4).
+- The offer ID, drive and file-hash checks of the update (section 3).

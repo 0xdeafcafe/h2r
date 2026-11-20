@@ -1,7 +1,11 @@
 # Screens of ours: the UI kit
 
+Status: Built. The kit and its static checks and offline preview are tested; the in-game checks are listed under "Not verified".
+Code: `crates/boot/src/ui_kit/`, `crates/boot/src/list_class.rs`. Tests: `ui_kit::screens::tests`, `ui_kit::page::tests`, `string_ids.rs`.
+Switch: none (a kit screen's texts are the feature `ui-kit-texts.<name>`).
+
 Every screen we add to Halo 2's menus is a list screen of our own class
-(`crates/boot/src/list_class.rs`, docs/formats/ui.md "Screen and list
+(`crates/boot/src/list_class.rs`, [ui.md](../formats/ui.md) "Screen and list
 classes"). Each one we built by hand failed in the same few ways first. The
 kit (`crates/boot/src/ui_kit/`) is there so those mistakes can't be made
 again, and so a screen can be seen and checked before anyone runs the game.
@@ -15,6 +19,27 @@ again, and so a screen can be seen and checked before anyone runs the game.
 | `ui_kit::screen` | `KitScreen`: a declared screen on the list class |
 | `ui_kit::screens` | The skulls, co-op, sign-in and account screens described, with sample states |
 | `ui_kit::preview` | A screen drawn offline from the disc's tags and fonts |
+
+## Ids
+
+String ids come from one registry, `ui_kit::ids::FAMILIES`, checked at compile time: no two families share an id, and a family whose lookup compares fewer than 32 bits says so with `mask`, so the registry checks that masked range against every other family (the co-op texts and the community variants once collided that way). A screen takes its ids by name (`ids::family("my.screen")`); "Adding a screen" has the steps.
+
+## Input
+
+`ui_kit::input::Input::from_event` is the one place an event is read. The screen's event slot (screen slot 10) is handed an event whose kind word (`+0`) is a direction or a button: the controller update raises kind 1 up, 2 left, 3 down and 4 right (d-pad or left stick), first when pushed and then every 250 ms while held. Buttons are kind 5 with the button in `+8` (A 0, B 1, X 2, Y 3, Start 12, Back 13), raised only on the frame the button goes down. Directions never arrive as buttons 8 to 11.
+
+- **The opener's press.** The press that opens a screen can be seen again by it. `input::OpenerGuard` drops a confirm that comes within 50 ms of opening (`input::OPENER_GUARD`).
+- **Glyphs.** Prompts are `Glyph`s, not raw code points (U+E100 A, U+E101 B, U+E102 X, U+E103 Y, U+E108 to U+E10B the d-pad, U+E10C Start, U+E10D Back). `input::footer_legend` lays them out as retail's footers do (below).
+
+## Lifecycle
+
+`ui_kit::lifecycle` opens a screen with `0x149f1e(player mask, loader)` and closes one with `0x14800c` (EAX the screen's slot `+0x78`, ECX its window `+0x74`), as the generic back handler closes on B. The close starts the out transition; the stack frees the screen when that ends, calling the destructor (screen slot 0) first.
+
+Anything that must run on the screen underneath (a retail press, a level start) waits for the destructor: `lifecycle::AfterClose`, which `Then::CloseThen` uses for every kit screen. Running it while the page is still closing lets the closing page's teardown undo it (the skulls page's difficulty press stored the difficulty and the teardown reset it, so Start seemed stuck).
+
+## Describe
+
+A screen is data a check can read. `ui_kit::spec::ScreenSpec` says what a screen shows and what each row does, and the `Describe` trait (`fn spec(&self) -> ScreenSpec`) is what an existing screen that keeps its own `Rows` implements to get the checks and the preview. The static checks, the offline preview, the open-screen log line and the agent API's UI stack all read the same spec.
 
 ## Adding a screen
 
@@ -48,7 +73,7 @@ again, and so a screen can be seen and checked before anyone runs the game.
    `Then::Open(screen)`, `Then::Close` or `Then::CloseThen(work)`),
    `Row::value` (left and right step through the values and wrap; A opens
    the value picker on them, retail's `low_level_settings`, see
-   docs/game/ui-builder.md "The value picker"; a toggle is two values), `Row::info` (read-only), and `Row::text`
+   [ui-builder.md](ui-builder.md) "The value picker"; a toggle is two values), `Row::info` (read-only), and `Row::text`
    (A opens the game's keyboard; the typed text comes back once the keyboard
    closes). `.layout(ListLayout, ValueStyle::Inline)` moves the list onto a
    one-text skin and puts values in the label (`Mythic: < On >`), as the skulls
@@ -63,7 +88,7 @@ again, and so a screen can be seen and checked before anyone runs the game.
    page that should look like the game's own (Clankers, Halo 1 Options)
    is this and nothing more: no `.layout`, no `.description`. Or
    `DialogBase::Large`, the one the game maps have; see
-   docs/game/ui-builder.md "The Dialog kind". The prompts go in the footer
+   [ui-builder.md](ui-builder.md) "The Dialog kind". The prompts go in the footer
    (below). `.scrolls()` says more rows than the list shows is meant.
    **Choice rows.** A row of many choices over a setting is a
    `ui_kit::choice::ChoiceRow`, the sibling of the Halo 1 options'
@@ -105,7 +130,7 @@ again, and so a screen can be seen and checked before anyone runs the game.
    `h2 ui preview <screen> [--state NAME|all] [--focus N] [--press up,a,...] [--disc disc.iso] [--out DIR]`
    prints the log line and every check, then draws each state as a PNG
    with a JSON of its widget rects beside it; `h2 ui sheet` draws every
-   screen in every state on one page (docs/game/ui-builder.md). The test
+   screen in every state on one page ([ui-builder.md](ui-builder.md)). The test
    `ui_kit::screens::tests::preview_and_check_against_the_disc` with
    `H2_UI_PREVIEW_DIR=<dir>` draws every screen at its first and last row.
    Previews go to a scratch or keep directory, never into git (they come from
@@ -190,75 +215,21 @@ The action row retains focus while the download progresses or removal
 awaits confirmation. The Mods classes return a `Rows::focused_footer`
 slot when focus or download state changes. The list class sets it on the
 footer widget when it sets the description. The preview reads the same
-commands from the focused `RowSpec::prompts`. The review records the player
-journeys, findings and integration checks. [Mods UI review](mods-ui-review.md)
+commands from the focused `RowSpec::prompts`.
 
-The skulls page logs `skulls page: ...` lines (docs/game/skulls.md "What it
-logs"); the sign-in prompt logs `signin prompt: ...` lines (docs/live/live.md).
+The skulls page logs `skulls page: ...` lines ([skulls.md](skulls.md) "What it
+logs"); the sign-in prompt logs `signin prompt: ...` lines ([live.md](../live/live.md)).
 
-## Pitfalls we hit, and why
+## Rules and limits
 
-- **A continue on X, or on A over any row.** The skulls page went on with
-  A on any row, X or Start, and X read as a mystery. It now does what the
-  game's own lists do: a visible Start Level row first, A selects the
-  focused row (Start Level goes on, a value row changes), B goes back, and
-  the class takes no extra buttons (`ListClass::action_buttons(&[])`).
-- **A widget of ours left on screen as its screen leaves.** A text or
-  bitmap block with animation 0 has no transition: it stays fully drawn
-  through its screen's out transition. Give it the animation the retail
-  screen it copies uses (`TextBlock::animation`, `PictureSpec::animation`).
-- **A list that stops a third of the way down.** Our screens are built on
-  the Controls tag, whose list lays out 6 rows (5 seen). A layout that
-  wants the page's height sets `ListLayout::visible`; the rows past the
-  Controls handler's six item widgets come from item widgets of ours
-  (`list_class::extra_items`).
-- **A level start that waits for a close.** Running a retail press from
-  the destructor of a closed screen of ours makes the player watch the
-  screen underneath come back first, and races the stack when the close
-  comes early. When the press itself pushes the next screen (the
-  difficulty's loading screen), run it from the press with our screen up.
-
-- **Start "stuck" on the skulls page.** The kept difficulty press
-  (`0x2c9d38`) ran while the page was closing. It stored the difficulty, and
-  the closing page's teardown reset it. The fix: close first (`0x14800c`) and
-  run the press from the destructor slot, once the stack has freed the page.
-  `lifecycle::AfterClose` and `Then::CloseThen` do this for every screen.
-- **The press that opened a screen, seen again.** A button event is raised
-  only on the frame the button goes down, so a held A gives no second event.
-  But a continue that comes within 50 ms of opening is the opener's press,
-  and is dropped (`input::OpenerGuard`; `H2_SKULLS_GUARD_MS` for the skulls
-  page).
-- **The skull labels over the campaign picker's ids** (`0x22fff0xx`). Both
-  were hand-picked bases. The registry now fails the build on an overlap.
-- **Co-op texts showing "Zombies" and "SWAT".** The co-op ids were
-  `0x20ffe0xx`, and the community variants' lookup then matched only the low
-  24 bits (`0x??ffe0xx`), so it answered first. The co-op texts moved to
-  `0x20ffd0xx`, and the variants now match the whole id. A family whose lookup
-  compares fewer bits has to say so with `mask`, and the registry then
-  checks that masked range against every other family.
-- **The d-pad as buttons 8 to 11.** Directions never arrive that way. The
-  controller update raises event kinds 1 up, 2 left, 3 down and 4 right (d-pad
-  or left stick), first when pushed and then every 250 ms while held. Buttons
-  are kind 5, only on the frame they go down (A 0, B 1, X 2, Y 3, Start 12,
-  Back 13). `input::Input::from_event` is the one place an event is read.
-- **Raw code points in prompts.** `\u{e10a}` reads as nothing in review.
-  Prompts are `Glyph`s (U+E100 A, U+E101 B, U+E102 X, U+E103 Y, U+E108 to
-  U+E10B the d-pad, U+E10C Start, U+E10D Back). `input::footer_legend` lays
-  them out as retail's footers do (below), and the skulls page's footer is
-  checked against it glyph for glyph.
-- **A legend under the description.** On the skulls page it pushed 10 of
-  the 21 descriptions past the 5 lines their rectangle holds. Retail never
-  puts a legend there: every game shell screen has a footer text widget
-  (`screen +0x338`, made with the header at `0x22ff53`, in the `wigl`
-  header layout's second rectangle, filled from the tag's `panes[0] +2`
-  string by `0x2300cf`), and retail's footer strings read
-  `<glyph> SELECT  <glyph> BACK` (glyph, space, capitals; two spaces between
-  prompts). Kit screens and the skulls page now set the footer
-  (`ListClass::footer`, `list_class::setup_pane_footer`) and keep the
-  description to the description.
-- **Shipping blind** on row count, text width, where the description sits,
-  which glyphs draw, and what's on top. The checks and the preview cover all
-  but the last.
+- **Continue on A over the focused row only.** A selects the focused row (Start Level goes on, a value row changes), B goes back, and the class takes no extra buttons (`ListClass::action_buttons(&[])`). A list has a visible Start Level row first. X, Start or A over any row as a continue reads as a mystery.
+- **Give a widget of ours the animation of the retail screen it copies.** A text or bitmap block with animation 0 has no transition: it stays fully drawn through its screen's out transition (`TextBlock::animation`, `PictureSpec::animation`).
+- **Our screens are built on the Controls tag, whose list lays out 6 rows (5 seen).** A layout that wants the page's height sets `ListLayout::visible`; the rows past the Controls handler's six item widgets come from item widgets of ours (`list_class::extra_items`).
+- **Run a level start from the press with our screen up when the press itself pushes the next screen** (the difficulty's loading screen). Running a retail press from the destructor of a closed screen of ours makes the player watch the screen underneath come back first, and races the stack when the close comes early. Otherwise run it after the close (Lifecycle).
+- **Family ids are never hand-picked.** The registry fails the build on an overlap, including a masked family's range (Ids).
+- **Read an event only through `Input::from_event`** (Input).
+- **The footer holds the legend; the description holds the description.** Retail never puts a legend under the description: every game shell screen has a footer text widget (`screen +0x338`, made with the header at `0x22ff53`, in the `wigl` header layout's second rectangle, filled from the tag's `panes[0] +2` string by `0x2300cf`), and retail's footer strings read `<glyph> SELECT  <glyph> BACK` (glyph, space, capitals; two spaces between prompts). Kit screens and the skulls page set the footer (`ListClass::footer`, `list_class::setup_pane_footer`), and the skulls page's footer is checked against `input::footer_legend` glyph for glyph.
+- **Check row count, text width, where the description sits and which glyphs draw before a game run.** The checks and the preview cover all of that; what is on top of what they do not.
 
 ## The preview
 
@@ -276,7 +247,9 @@ logs"); the sign-in prompt logs `signin prompt: ...` lines (docs/live/live.md).
   others at 55%; the frame (flag bit 0) on every row, lit on the focused
   one; text with a drop shadow, button glyphs in the font's own colours.
 
-**Font ids.** A text block's font index (`+0xa`, read at `0x2537d7`; flag
+### Font ids
+
+A text block's font index (`+0xa`, read at `0x2537d7`; flag
 bit 3 forces 1) becomes the widget's font id. Every text measure and draw
 maps an id through the 11-entry table at `0x4e28f4` (`0x1407d8`,
 `0x122540`) to a slot (`0x1224c0`, under 10, stride `0x1d0` from
@@ -285,7 +258,9 @@ from `font_table.txt`. So id N is line N: 1 conduit-12, 2 the header font,
 4 conduit-13. The widget's draw call itself was followed only as far as that
 table.
 
-**Item spacing.** An item's height is its bounding box over its texts and
+### Item spacing
+
+An item's height is its bounding box over its texts and
 its bitmaps without flag bit 0 (`0x2bafa4`). Inside an item a bitmap covers
 its point's `y` up to `y` plus its height (Y up): the Controls skin's row
 bar (508 by 26 at 0,0) then gives 26, the spacing in the game's screenshot.
@@ -293,26 +268,23 @@ Taking the point as the bitmap's top (as screen-level bitmaps are) would
 give 49 for the Controls skin, which the screenshot rules out. Skin 0
 (the skulls page) gives 22 by the same rule.
 
-**Side by side.** With `H2_UI_COMPARE=<png>` (a 640 by 480 frame of the game)
-and `H2_UI_PREVIEW_DIR`, the disc test also writes `coop-vs-game.png`: the
-co-op screen focused on row 4 beside the frame. Rows, bars, frame and
-header line up. What differs:
+### Differences from the game
 
-- the game fills above and below `framing_center` with dark blue (we
-  leave it black), and the track lines scroll;
+Drawn beside a 640 by 480 frame of the game, the co-op screen focused on row 4 lines up in rows, bars, frame and header. What differs (not verified further):
+
+- the game fills above and below `framing_center` with dark blue (we leave it black), and the track lines scroll;
 - unfocused rows' dimming is a guess (55%);
-- the D-pad left and right glyphs are drawn from the header font as the
-  font has them (a white diamond each), not checked in game;
+- the D-pad left and right glyphs are drawn from the header font as the font has them (a white diamond each);
 - the skulls page's picture and the list's scroll arrows are not drawn.
 
-## Open (needs a game run)
+## Not verified
 
 - 5 or 6 Controls rows. `0x24bc12` lays out up to the list block's
   visible count, which the Controls tag gives as 6, and the Controls handler
   embeds 6 items. Yet in game our co-op screen (6 rows on the Controls tag)
   shows 5. The Xbox Live menu (a retail list, not ours) has one child item
   widget per row, six with the co-op row, laid out in its own tag's room
-  (docs/live/live-custom-games.md §5). The checks use the 5 seen; what
+  ([live-custom-games.md](../live/live-custom-games.md) §5). The checks use the 5 seen; what
   takes one away is not found.
 - Whether the footer widget keeps our legend, or the screen's tag string
   (`0x2300cf`) overwrites it after the pane is set up.
@@ -321,3 +293,7 @@ header line up. What differs:
 - The kit's keyboard row: it opens the game keyboard for controller 0 with
   context 20 (no check on Done). The sign-in prompt's keyboard path is the
   proven one.
+
+## Related
+
+[ui-builder.md](ui-builder.md), [ui.md](../formats/ui.md), [skulls.md](skulls.md), [map-select.md](map-select.md).

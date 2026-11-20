@@ -38,10 +38,7 @@ fn write(funcs: Vec<ir::IrFunction>, name: &str, accounting: bool) -> Option<(Pa
     emit::write_module_with(
         &owners,
         &src,
-        emit::Codegen {
-            accounting,
-            ..emit::Codegen::default()
-        },
+        emit::Codegen { accounting },
     )
     .unwrap();
     emit::compile::install_header(&src, &abi).unwrap();

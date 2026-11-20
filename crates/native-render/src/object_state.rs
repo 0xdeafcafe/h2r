@@ -1,5 +1,5 @@
 //! The render state an object's layer-3 draw takes, field by field
-//! (docs/graphics/native-renderer.md, "Object programs"): what its
+//! (docs/graphics/native-objects.md, "Object programs"): what its
 //! implementation sets on entry (`0x00018900`), and for every other field
 //! the value the device holds when layer 3 is drawn, read from the guest's
 //! render-state array at the layer-3 call ([`EntryStates`]). A field the
@@ -13,8 +13,7 @@
 //!
 //! S: the layer's earlier draws leave the fields an implementation does
 //! not set as they were at the layer-3 call (as the world's inherited
-//! cull, `look::WorldPass::inherits_cull`); the uniform compare
-//! (`H2_NATIVE_OBJECTS_COMPARE`) prints the D3D draws' own.
+//! cull, `look::WorldPass::inherits_cull`).
 
 use gfx::state::{CompareFunc, DepthBufferMode, FillMode, RenderState, RenderStateType as R, StencilState};
 use gfx::xdk::{HALO2_BUILD, RenderStateTable};

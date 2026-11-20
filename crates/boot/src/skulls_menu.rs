@@ -120,8 +120,7 @@ pub const FOOTER_ID: u32 = SKULLS_ID_BASE + 0x13;
 /// `[177 39 -30 259]` (top, left, bottom, right; Y up, screen centre
 /// origin), description text `[-30 39 -133 260]`, font 1. The Controls
 /// frame art right of the centre (`br_06`, `[-30 150 -286 406]`) is left out:
-/// it sits where the description goes. `H2_SKULLS_LIST_AT=x,y` and
-/// `H2_SKULLS_LIST_SKIN=n` change the list without a rebuild.
+/// it sits where the description goes.
 pub const LIST_LAYOUT: ListLayout = ListLayout {
     skin: 0,
     anchor: [-215, 130],
@@ -137,7 +136,7 @@ pub const LEVEL_SELECT_SCREEN_ID: i16 = 11;
 /// for this list at this anchor. The Controls tag's bracket (`ul_03`) was
 /// made for the Controls list, 39 units further left and on another skin:
 /// kept under this list it framed an empty box and the first row's end cap
-/// cut its arm off (docs/game/ui-builder.md, slice 3), so none of the
+/// cut its arm off (docs/game/ui-builder.md, "The checks"), so none of the
 /// Controls frame art is kept ([`LIST_LAYOUT`]`.bitmaps_left_of`).
 pub const FRAME: PictureSpec = PictureSpec {
     screen_id: LEVEL_SELECT_SCREEN_ID as u32,
@@ -190,7 +189,6 @@ pub const PICTURE_BOX: [i16; 4] = [177, 39, -30, 259];
 
 /// The description text: the level select's (rectangle, font and colour,
 /// a pale blue: 99, 148, 193), under its picture.
-/// `H2_SKULLS_TEXT_RECT=top,left,bottom,right` moves it without a rebuild.
 pub const DESCRIPTION_TEXT: TextBlock = TextBlock {
     rect: [-30, 39, -133, 260],
     font: 1,
@@ -215,7 +213,7 @@ pub const SKULL_ART: [i16; 4] = [17, 3, 209, 208];
 /// bitmap, `difficulty_options` image 3 (a 256 by 256 skull, drawn at its
 /// size: a bitmap widget has no scale), placed so its visible part sits
 /// centred in the level select's picture box with its top on the box's
-/// top: top-left (36, 180). `H2_SKULLS_PICTURE_AT=x,y` moves it.
+/// top: top-left (36, 180).
 pub const PICTURE: PictureSpec = PictureSpec {
     screen_id: DIFFICULTY_SCREEN_ID as u32,
     pane: 3,
@@ -406,71 +404,9 @@ pub fn strings() -> Vec<(u32, &'static str)> {
     v
 }
 
-/// The description block, moved by `H2_SKULLS_TEXT_RECT` (`env`) when it
-/// holds four numbers; the line to log when it is set.
-pub fn description_block(env: Option<&str>) -> (TextBlock, Option<String>) {
-    let Some(v) = env else {
-        return (DESCRIPTION_TEXT, None);
-    };
-    let n: Vec<i16> = v.split(',').filter_map(|s| s.trim().parse().ok()).collect();
-    match <[i16; 4]>::try_from(n) {
-        Ok(rect) => (
-            TextBlock {
-                rect,
-                ..DESCRIPTION_TEXT
-            },
-            Some(format!(
-                "skulls menu: description text at {rect:?} (H2_SKULLS_TEXT_RECT)"
-            )),
-        ),
-        Err(_) => (
-            DESCRIPTION_TEXT,
-            Some(format!(
-                "skulls menu: H2_SKULLS_TEXT_RECT={v:?} is not top,left,bottom,right; description text at {:?}",
-                DESCRIPTION_TEXT.rect
-            )),
-        ),
-    }
-}
-
-/// `n` comma-separated numbers, or `None`.
-fn numbers<const N: usize>(v: &str) -> Option<[i16; N]> {
-    let n: Vec<i16> = v.split(',').filter_map(|s| s.trim().parse().ok()).collect();
-    <[i16; N]>::try_from(n).ok()
-}
-
-/// The list layout and picture, moved by `H2_SKULLS_LIST_AT=x,y`,
-/// `H2_SKULLS_LIST_SKIN=n` and `H2_SKULLS_PICTURE_AT=x,y` (read by `env`);
-/// the lines to log for those set.
-pub fn placement(env: impl Fn(&str) -> Option<String>) -> (ListLayout, PictureSpec, Vec<String>) {
-    let (mut layout, mut picture, mut lines) = (LIST_LAYOUT, PICTURE, Vec::new());
-    let mut take = |key: &str, ok: &mut dyn FnMut(&str) -> bool| {
-        if let Some(v) = env(key) {
-            lines.push(if ok(&v) {
-                format!("skulls menu: {key}={v}")
-            } else {
-                format!("skulls menu: {key}={v:?} not understood; the default stays")
-            });
-        }
-    };
-    take("H2_SKULLS_LIST_AT", &mut |v| {
-        numbers::<2>(v).map(|a| layout.anchor = a).is_some()
-    });
-    take("H2_SKULLS_LIST_SKIN", &mut |v| {
-        numbers::<1>(v).map(|[n]| layout.skin = n).is_some()
-    });
-    take("H2_SKULLS_PICTURE_AT", &mut |v| {
-        numbers::<2>(v).map(|a| picture.at = a).is_some()
-    });
-    (layout, picture, lines)
-}
-
-/// Whether the menu is on (`H2_NO_SKULLS` or `H2_NO_SKULLS_MENU` take it
-/// out) for a store that has the skull settings.
+/// Whether the menu is on: for a store that has the skull settings.
 pub fn enabled(store: &Store) -> bool {
-    std::env::var_os("H2_NO_SKULLS").is_none()
-        && std::env::var_os("H2_NO_SKULLS_MENU").is_none()
-        && store.def(SKULLS[0].key).is_some()
+    store.def(SKULLS[0].key).is_some()
 }
 
 /// The local player index of a list callback (`[[esp+4]]+4`), as
@@ -1044,15 +980,7 @@ mod tests {
     }
 
     #[test]
-    fn the_description_text_can_be_moved() {
-        assert_eq!(description_block(None), (DESCRIPTION_TEXT, None));
-        let (b, line) = description_block(Some("100, -200, 0, 200"));
-        assert_eq!(b.rect, [100, -200, 0, 200]);
-        assert_eq!(b.font, DESCRIPTION_TEXT.font);
-        assert!(line.unwrap().contains("[100, -200, 0, 200]"));
-        let (b, line) = description_block(Some("1,2,3"));
-        assert_eq!(b, DESCRIPTION_TEXT);
-        assert!(line.unwrap().contains("is not top,left,bottom,right"));
+    fn the_description_text_is_on_screen() {
         let [top, left, bottom, right] = DESCRIPTION_TEXT.rect;
         assert!(top > bottom && right > left, "Y up: top above bottom");
         assert!(
@@ -1249,24 +1177,6 @@ mod tests {
             top <= 240 && bottom >= -240 && left >= -320 && right <= 320,
             "on screen"
         );
-    }
-
-    #[test]
-    fn the_list_and_picture_can_be_moved_without_a_rebuild() {
-        let none = placement(|_| None);
-        assert_eq!(none, (LIST_LAYOUT, PICTURE, vec![]));
-        let env = |k: &str| match k {
-            "H2_SKULLS_LIST_AT" => Some("-250, 120".to_string()),
-            "H2_SKULLS_LIST_SKIN" => Some("8".to_string()),
-            "H2_SKULLS_PICTURE_AT" => Some("x".to_string()),
-            _ => None,
-        };
-        let (layout, picture, lines) = placement(env);
-        assert_eq!(layout.anchor, [-250, 120]);
-        assert_eq!(layout.skin, 8);
-        assert_eq!(picture, PICTURE, "not understood: kept");
-        assert_eq!(lines.len(), 3);
-        assert!(lines[2].contains("not understood"), "{lines:?}");
     }
 
     /// Each row's label carries its state, and fits the list skin's 190

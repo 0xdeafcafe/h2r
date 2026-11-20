@@ -1,11 +1,11 @@
-//! Planar fog, layer 16 (docs/graphics/native-renderer.md, "Stage 4b"):
+//! Planar fog, layer 16 (docs/graphics/native-water-fog.md, "Stage 4b"):
 //! the world's materials drawn again with their own layer-16 passes
 //! (`crate::fog_gpu`, with the `gpu` feature), blended over the finished
 //! scene by the fog the device holds. This module is the skip: what the
 //! layer's items are, the layer draw's own gate, and the walk that
 //! clears their bit ([`clear_fog`]).
 //!
-//! Research points (Code, the lifted ports `engine::render_loop::scene`
+//! Research points (Code, read from the removed lifted ports `scene`
 //! and `layer`):
 //!
 //! - `render_scene_passes` calls `0x0002_5d50` between its state call and

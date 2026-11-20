@@ -1188,24 +1188,6 @@ mod tests {
                 }
             }
         }
-        // The co-op screen as the 2026-11-16 screenshot has it (focus on
-        // row 4) beside that screenshot, scaled to 640 by 480, when
-        // `H2_UI_COMPARE` names it.
-        if let (Some(dir), Some(shot)) = (&out, std::env::var_os("H2_UI_COMPARE")) {
-            let shot =
-                crate::ui_kit::preview::Canvas::read_png(std::path::Path::new(&shot)).unwrap();
-            let s = ScreenSpec {
-                focus: 4,
-                ..sample("coop").unwrap()
-            };
-            let path = dir.join("coop-vs-game.png");
-            disc.render(&s)
-                .unwrap()
-                .beside(&shot)
-                .write_png(&path)
-                .unwrap();
-            eprintln!("wrote {}", path.display());
-        }
         for r in &report {
             eprintln!("finding: {r}");
         }

@@ -1309,10 +1309,6 @@ pub fn install(
         eprintln!("skulls-custom: off: no settings store (a headless run)");
         return Ok(false);
     };
-    if std::env::var_os("H2_NO_SKULLS").is_some() {
-        eprintln!("skulls-custom: off: H2_NO_SKULLS is set");
-        return Ok(false);
-    }
     let reveal = std::env::var("H2_SKULLS_REVEAL").is_ok_and(|v| v == "1");
     let shared = Arc::new(Custom::new(store, telemetry, maps, reveal));
     let added = registry

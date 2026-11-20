@@ -1,6 +1,6 @@
 //! Stage 4, dynamic lights and shadows: what the native renderer takes of
 //! one dynamic light, and the runs it draws lights in
-//! (docs/graphics/native-renderer.md, "Stage 4: lights and shadows").
+//! (docs/graphics/native-lights.md, "Stage 4: lights and shadows").
 //!
 //! Research points (Code, `h2 disasm`):
 //!
@@ -85,7 +85,7 @@ pub struct Light {
 }
 
 /// One light's constants as its passes read them, words as the game
-/// stores them (docs/graphics/native-renderer.md, "Stage 4", "Engine
+/// stores them (docs/graphics/native-lights.md, "Stage 4", "Engine
 /// constants"); `engine::light_constants` and `engine::light_passes`
 /// compute them without writing guest memory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

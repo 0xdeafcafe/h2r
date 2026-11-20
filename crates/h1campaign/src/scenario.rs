@@ -767,7 +767,7 @@ pub const FRESH_NULL_REFS: [(u32, [u8; 4]); 4] = [
 /// The scenario root a fresh level starts from: every field empty, the
 /// null references of [`FRESH_NULL_REFS`], and every other root tag
 /// reference null. What the base's root held and a fresh level does not
-/// take (docs/halo1/campaign.md, "Fresh levels"): its light volumes and
+/// take (docs/halo1/campaign.md, "The ten levels on a pinned base"): its light volumes and
 /// their palette (`+0xe8`, `+0xf0`), decals and their palette (`+0x138`, `+0x140`), AI styles (`+0x150`;
 /// every converted order has style -1), mission scenes (`+0x170`), its
 /// chapter title, subtitles and objectives references (`+0x200`, `+0x358`,
