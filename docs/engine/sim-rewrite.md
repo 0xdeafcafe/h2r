@@ -542,19 +542,20 @@ pub fn sim_hash(&self) -> u64;                // hash_sim(HALO2) ⊕ ext, when e
   - `sim-state` gives a dedicated host the scoreboard and events without
     memory scraping.
 
-## 8. Open questions for the user
+## 8. Decisions (the user, 2026-11-20)
 
-1. **Bar D for physics.** Once phases 1-3 are exact, may Havok's replacement
-   (phase 4) be deterministic but not retail-bit-exact? It would be checked
-   by behaviour suites, including superbounces, and every film and golden
-   would be re-recorded per build. If not, phase 4 is a structural port held
-   to bar E, with a much smaller win.
-2. **Cross-architecture films.** Should a film recorded on a Linux x86-64
-   host replay on a Mac arm64 build? This plan's float rules assume yes. Today
-   films require the same image.
-3. **North star after phase 2.** Campaign frame rate (AI, scripts, actors) or
-   host density (collision, objects, Havok)? The phase 0 census gives the
-   numbers. The question is which one wins a tie.
-4. **Per-function switches.** Delete the 32 `impl.sim.native_*` switches (16 in `sim_native`, 16 in `sim_physics`) as
-   each subsystem switch replaces them, and keep their bodies only as test
-   oracles? This plan assumes yes.
+1. **Physics stays bit-exact with retail.** Phase 4 replaces Havok with a
+   structural port held to bar E. Films and goldens stay valid across builds;
+   the win is smaller than a free rewrite would give.
+2. **Films replay across architectures.** A film recorded on a Linux x86-64
+   host must replay on a Mac arm64 build. The `sim-core` float rules are
+   mandatory, and every phase's exit criteria include matching x86-64 and
+   arm64 tick hashes.
+3. **After phase 2, both campaign frame rate and host density, measured on
+   co-op campaign.** Co-op campaign carries AI, scripts and actors and also
+   runs as a hosted, lockstepped match, so one census and one benchmark
+   cover both goals. The phase 0 census and the exit timings for phase 3 and
+   later use a co-op campaign run as well as Waterworks.
+4. **Per-function switches go as each subsystem lands.** The 32
+   `impl.sim.native_*` switches are deleted when their subsystem's switch
+   replaces them. Their bodies stay only as test oracles.
