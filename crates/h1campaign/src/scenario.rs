@@ -1125,7 +1125,12 @@ pub fn write(
         if let Some(subjects) = subjects {
             let groups = retained.encounters.len() + ai_options.platoon_groups.len();
             let selected = crate::ai_control_roster::prepare(
-                &ai_src, &mut retained, &roster, &subjects, &requests, groups,
+                &ai_src,
+                &mut retained,
+                &roster,
+                &subjects,
+                &requests,
+                groups,
             )?;
             generated_starts = selected.generated_starts.iter().copied().collect();
             selection = Some((selected, subjects));
@@ -1135,17 +1140,24 @@ pub fn write(
         }
     }
     let weapons = if opts.ai {
-        let tags: Vec<_> = ai_src.actor_palette.iter().enumerate().map(|(i, v)| {
-            v.as_ref().and_then(|v| kit.weapon(&v.name))
-                .unwrap_or_else(|| ai_weapon_tags.get(i).copied().flatten())
-        }).collect();
+        let tags: Vec<_> = ai_src
+            .actor_palette
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                v.as_ref()
+                    .and_then(|v| kit.weapon(&v.name))
+                    .unwrap_or_else(|| ai_weapon_tags.get(i).copied().flatten())
+            })
+            .collect();
         Some(ai_weapons::install(&mut root, weapon_palette, &tags)?)
     } else {
         None
     };
     let mut plan = h1map::phase::time("ai", || {
         h1ai::convert::convert_for_map(&retained, &ai_options, pathfinding, weapons.as_deref())
-    }).map_err(|e| invalid(format!("{} AI: {e}", h1.header().name)))?;
+    })
+    .map_err(|e| invalid(format!("{} AI: {e}", h1.header().name)))?;
     let mut ai_control = if let Some((retained, _)) = &selection {
         h1ai::control::prepare_with_indices(
             &ai_src, &mut plan, &ai_options, &requests, retained.squad_indices.clone(),
@@ -1154,7 +1166,8 @@ pub fn write(
         h1ai::control::prepare_with_indices(&ai_src, &mut plan, &ai_options, &requests, indices)
     } else {
         h1ai::control::prepare(&ai_src, &mut plan, &ai_options, &requests)
-    }.map_err(|e| invalid(format!("{} AI roster: {e}", h1.header().name)))?;
+    }
+    .map_err(|e| invalid(format!("{} AI roster: {e}", h1.header().name)))?;
     if opts.ai && opts.scripts.is_some() {
         ai_control.bind_script_indices(&plan);
     }
@@ -1317,8 +1330,12 @@ pub fn write(
                 &ai_control,
                 &ai_src.conversations,
                 &if opts.ai {
-                    h1ai::conversations::SpeakerScopes::from_plan(&plan, &ai_control, &ai_src.conversations)
-                        .map_err(|e| invalid(format!("{} AI conversations: {e}", h1.header().name)))?
+                    h1ai::conversations::SpeakerScopes::from_plan(
+                        &plan,
+                        &ai_control,
+                        &ai_src.conversations,
+                    )
+                    .map_err(|e| invalid(format!("{} AI conversations: {e}", h1.header().name)))?
                 } else {
                     Default::default()
                 },

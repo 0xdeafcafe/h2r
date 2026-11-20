@@ -188,19 +188,24 @@ pub fn convert_for_map(
         if indices.len() != src.actor_palette.len() {
             return Err(Error::Invalid(format!(
                 "{} weapon bindings for {} actor palette entries",
-                indices.len(), src.actor_palette.len()
+                indices.len(),
+                src.actor_palette.len()
             )));
         }
         for (i, (entry, index)) in src.actor_palette.iter().zip(indices).enumerate() {
             let armed = entry.as_ref().is_some_and(|v| !v.weapon.id.is_none());
             if armed != index.is_some() || index.is_some_and(|k| k < 0) {
                 let name = entry.as_ref().map_or("empty actor", |v| v.name.as_str());
-                return Err(Error::Invalid(format!("{name}: invalid weapon binding {index:?} for actor {i}")));
+                return Err(Error::Invalid(format!(
+                    "{name}: invalid weapon binding {index:?} for actor {i}"
+                )));
             }
         }
     }
     let weapon = |actor: i16| {
-        weapons.and_then(|w| w.get(actor as usize).copied().flatten()).unwrap_or(-1)
+        weapons
+            .and_then(|w| w.get(actor as usize).copied().flatten())
+            .unwrap_or(-1)
     };
     let mut notes = Vec::new();
     let mut ai = ScenarioAi::default();
@@ -222,12 +227,18 @@ pub fn convert_for_map(
     // Character palette: one entry per distinct retail character, in the
     // order the actor palette first needs it.
     let mut characters: Vec<CharacterChoice> = Vec::new();
-    let palette: Vec<Option<usize>> = src.actor_palette.iter().enumerate()
+    let palette: Vec<Option<usize>> = src
+        .actor_palette
+        .iter()
+        .enumerate()
         .map(|(i, entry)| {
             let Some(v) = entry else { return Ok(None) };
-            let actor = src.actor_of(i).ok_or_else(|| Error::Invalid(format!(
-                "{}: actor palette entry {i} has no actor definition", v.name
-            )))?;
+            let actor = src.actor_of(i).ok_or_else(|| {
+                Error::Invalid(format!(
+                    "{}: actor palette entry {i} has no actor definition",
+                    v.name
+                ))
+            })?;
             let kind = actor.kind;
             let uncover = actor.uncover;
             let (path, grenade) = character_for(kind, &v.name);
@@ -261,9 +272,13 @@ pub fn convert_for_map(
     };
 
     for (ei, e) in src.encounters.iter().enumerate() {
-        let zone_index = i16::try_from(ei).map_err(|_| Error::Invalid(format!("{}: zone index overflow", e.name)))?;
+        let zone_index = i16::try_from(ei)
+            .map_err(|_| Error::Invalid(format!("{}: zone index overflow", e.name)))?;
         if e.platoons.len() > usize::from(u8::MAX) + 1 {
-            return Err(Error::Invalid(format!("{}: platoon count exceeds the Halo 1 selection byte", e.name)));
+            return Err(Error::Invalid(format!(
+                "{}: platoon count exceeds the Halo 1 selection byte",
+                e.name
+            )));
         }
         // Halo 1's manual BSP is only an editor input. Its compiled choice
         // names the collision mesh that the firing positions index.
@@ -359,9 +374,10 @@ pub fn convert_for_map(
             parent: -1,
             initial_order: -1,
         });
-        let group_index = |n: usize| i16::try_from(n - 1).map_err(|_| Error::Invalid(
-            format!("{}: squad group index overflow", e.name),
-        ));
+        let group_index = |n: usize| {
+            i16::try_from(n - 1)
+                .map_err(|_| Error::Invalid(format!("{}: squad group index overflow", e.name)))
+        };
         let encounter_group = group_index(ai.squad_groups.len())?;
         script_groups.insert(ei as u32, 0x4000_0000 | encounter_group as u32);
         // Platoons the scripts name become child groups of the encounter's,
@@ -380,7 +396,10 @@ pub fn convert_for_map(
             });
             let id = group_index(ai.squad_groups.len())?;
             platoon_of[pi] = Some(id);
-            script_groups.insert(0x4000_0000 | ((pi as u32) << 16) | ei as u32, 0x4000_0000 | id as u32);
+            script_groups.insert(
+                0x4000_0000 | ((pi as u32) << 16) | ei as u32,
+                0x4000_0000 | id as u32,
+            );
         }
 
         for s in &e.squads {
@@ -403,13 +422,17 @@ pub fn convert_for_map(
             // squad only on -1. An explicit H1 override naming no actor
             // fails that spawn. Keep such a start selectable in H2 with
             // neither character set, moving the default to inherited starts.
-            let per_start_character = character.is_some() && s.starting_locations.iter()
-                .any(|l| l.actor != -1 && char_of(l.actor).is_none());
+            let per_start_character = character.is_some()
+                && s.starting_locations
+                    .iter()
+                    .any(|l| l.actor != -1 && char_of(l.actor).is_none());
             // H2 also inherits a squad weapon on -1. An explicitly unarmed
             // variant must keep its hands empty in an otherwise armed squad.
             let squad_weapon = weapon(s.actor);
-            let per_start_weapon = squad_weapon != -1 && s.starting_locations.iter()
-                .any(|l| l.actor != -1 && weapon(l.actor) == -1);
+            let per_start_weapon = squad_weapon != -1
+                && s.starting_locations
+                    .iter()
+                    .any(|l| l.actor != -1 && weapon(l.actor) == -1);
             // The order: the areas of the attacking groups, or every area.
             let mut set: Vec<AreaRef> = letters
                 .iter()
@@ -445,9 +468,9 @@ pub fn convert_for_map(
                     secondary_areas: Vec::new(),
                     endings: 0,
                 });
-                i16::try_from(ai.orders.len() - 1).map_err(|_| Error::Invalid(
-                    format!("{full_name}: initial order index overflow"),
-                ))?
+                i16::try_from(ai.orders.len() - 1).map_err(|_| {
+                    Error::Invalid(format!("{full_name}: initial order index overflow"))
+                })?
             };
             let grenade = character.map(|c| characters[c].grenade).unwrap_or(0);
             let starting_locations = s
@@ -455,18 +478,26 @@ pub fn convert_for_map(
                 .iter()
                 .enumerate()
                 .map(|(i, l)| {
-                    let (placement_script, placement_script_index) = match (l.command_list, opts.first_command_script) {
-                        (-1, _) => (String::new(), -1),
-                        (list, _) if list < 0 || list as usize >= src.command_lists.len() => {
-                            return Err(Error::Invalid(format!("{full_name} start {i}: command list {list} out of range")));
-                        }
-                        (_, None) => (String::new(), -1), // AI-only conversion
-                        (list, Some(first)) => {
-                            let index = i16::try_from(u32::from(first) + list as u32)
-                                .map_err(|_| Error::Invalid(format!("{full_name} start {i}: command script index overflow")))?;
-                            (h1::command_script_name(list as usize), index)
-                        }
-                    };
+                    let (placement_script, placement_script_index) =
+                        match (l.command_list, opts.first_command_script) {
+                            (-1, _) => (String::new(), -1),
+                            (list, _) if list < 0 || list as usize >= src.command_lists.len() => {
+                                return Err(Error::Invalid(format!(
+                                    "{full_name} start {i}: command list {list} out of range"
+                                )));
+                            }
+                            (_, None) => (String::new(), -1), // AI-only conversion
+                            (list, Some(first)) => {
+                                let index = i16::try_from(u32::from(first) + list as u32).map_err(
+                                    |_| {
+                                        Error::Invalid(format!(
+                                            "{full_name} start {i}: command script index overflow"
+                                        ))
+                                    },
+                                )?;
+                                (h1::command_script_name(list as usize), index)
+                            }
+                        };
                     let actor = if l.actor != -1 { l.actor } else { s.actor };
                     Ok(h2::StartingLocation {
                         name: 0,
@@ -479,7 +510,11 @@ pub fn convert_for_map(
                         } else {
                             -1
                         },
-                        initial_weapon: if per_start_weapon { weapon(actor) } else { weapon(l.actor) },
+                        initial_weapon: if per_start_weapon {
+                            weapon(actor)
+                        } else {
+                            weapon(l.actor)
+                        },
                         initial_secondary_weapon: -1,
                         vehicle: -1,
                         seat_type: 0,
@@ -523,7 +558,11 @@ pub fn convert_for_map(
                 insane_count: if unplaced { 0 } else { s.insane_count },
                 major_upgrade: s.major_upgrade,
                 vehicle: -1,
-                character: if per_start_character { -1 } else { character.map_or(-1, |c| c as i16) },
+                character: if per_start_character {
+                    -1
+                } else {
+                    character.map_or(-1, |c| c as i16)
+                },
                 initial_zone: zone_index,
                 initial_weapon: if per_start_weapon { -1 } else { squad_weapon },
                 initial_secondary_weapon: -1,

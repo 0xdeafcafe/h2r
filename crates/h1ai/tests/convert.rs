@@ -319,10 +319,14 @@ fn variant_loadouts_and_compiled_bsp_survive_serialization() {
     encounter.squads[0].starting_locations[1].actor = 2;
     let plan = h1ai::convert::convert_for_map(
         &src,
-        &Options { halo2_assets: true, ..Default::default() },
+        &Options {
+            halo2_assets: true,
+            ..Default::default()
+        },
         &[mesh(0), mesh(1)],
         Some(&[Some(4), None, Some(9)]),
-    ).unwrap();
+    )
+    .unwrap();
     let (ai, _) = build_and_read(&plan);
     let squad = &ai.squads[0];
     assert_eq!(squad.initial_weapon, -1);
@@ -361,7 +365,14 @@ fn a_built_plan_reads_back_unchanged() {
 fn placement_list_reads_back_as_a_command_script() {
     let mut src = invented();
     src.encounters[0].squads[0].starting_locations[0].command_list = 0;
-    let plan = convert(&src, &Options { first_command_script: Some(23), ..Default::default() }).unwrap();
+    let plan = convert(
+        &src,
+        &Options {
+            first_command_script: Some(23),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let (back, _) = build_and_read(&plan);
     let starts = &back.squads[0].starting_locations;
     assert_eq!(starts[0].placement_script, "h1_cmd_0");
@@ -482,7 +493,8 @@ fn named_platoons_become_child_squad_groups() {
             platoon_groups: named,
             ..Default::default()
         },
-    ).unwrap();
+    )
+    .unwrap();
     let ai = &plan.ai;
     // The encounter's group, then the named platoon's as its child.
     assert_eq!(ai.squad_groups.len(), 2);
@@ -723,7 +735,11 @@ fn explicit_missing_actor_never_inherits_a_valid_squad_actor() {
     let (ai, _) = build_and_read(&plan);
     let squad = &ai.squads[0];
     assert_eq!(squad.character, -1);
-    let actors: Vec<_> = squad.starting_locations.iter().map(|s| s.character).collect();
+    let actors: Vec<_> = squad
+        .starting_locations
+        .iter()
+        .map(|s| s.character)
+        .collect();
     assert_eq!(actors, [0, -1, -1, -1, 1]);
 }
 
@@ -732,15 +748,28 @@ fn unresolved_weapon_and_command_bindings_identify_the_source() {
     let mut src = invented();
     src.actor_palette[1].as_mut().unwrap().weapon.id = TagId(25);
     let error = h1ai::convert::convert_for_map(&src, &Options::default(), &[], Some(&[None; 3]))
-        .unwrap_err().to_string();
-    assert!(error.contains("grunt minor") && error.contains("weapon"), "{error}");
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("grunt minor") && error.contains("weapon"),
+        "{error}"
+    );
     src.encounters[0].squads[0].starting_locations[0].command_list = 1;
     let error = convert(&src, &Options::default()).unwrap_err().to_string();
-    assert!(error.contains("first/elites start 0: command list 1"), "{error}");
+    assert!(
+        error.contains("first/elites start 0: command list 1"),
+        "{error}"
+    );
     src.encounters[0].squads[0].starting_locations[0].command_list = 0;
-    let opts = Options { first_command_script: Some(32768), ..Default::default() };
+    let opts = Options {
+        first_command_script: Some(32768),
+        ..Default::default()
+    };
     let error = convert(&src, &opts).unwrap_err().to_string();
-    assert!(error.contains("first/elites start 0: command script index overflow"), "{error}");
+    assert!(
+        error.contains("first/elites start 0: command script index overflow"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -759,19 +788,30 @@ fn counted_spawn_addresses_duplicate_squad_names_by_ordinal() {
     control.bind_script_indices(&plan);
     for (i, r) in requests.iter().enumerate() {
         assert_eq!(control.actions[r], [Action::Spawn(i as u16)]);
-        assert_eq!(control.script_index(r.reference).unwrap().unwrap(), i as u32);
+        assert_eq!(
+            control.script_index(r.reference).unwrap().unwrap(),
+            i as u32
+        );
     }
     use h1ai::conversations::{Conversation, Participant, SpeakerScopes};
     let scene = Conversation {
-        name: "guard".into(), flags: 0, trigger_distance: 0.0, run_to_player_distance: 0.0,
+        name: "guard".into(),
+        flags: 0,
+        trigger_distance: 0.0,
+        run_to_player_distance: 0.0,
         lines: Vec::new(),
         participants: vec![Participant {
-            flags: 0, selection: 0, actor_type: 0, existing_name: None, assigned_name: None,
-            voices: [-1; 6], encounter: Some(requests[1].reference),
+            flags: 0,
+            selection: 0,
+            actor_type: 0,
+            existing_name: None,
+            assigned_name: None,
+            voices: [-1; 6],
+            encounter: Some(requests[1].reference),
         }],
     };
     let scopes = SpeakerScopes::from_plan(&plan, &control, &[scene]).unwrap();
-    assert_eq!(scopes.for_selector(requests[1].reference), Some(1));
+    assert_eq!(scopes.for_selector(requests[1].reference).unwrap(), Some(1));
     assert_eq!(control.script_index(u32::MAX).unwrap().unwrap(), u32::MAX);
     assert_eq!(control.script_index(0).unwrap().unwrap(), 0x4000_0000);
     assert!(control.script_index(0x8003_0000).unwrap().is_err());
@@ -782,18 +822,28 @@ fn empty_spawn_selections_and_missing_converted_targets_are_distinct() {
     use h1ai::control::{Operation, Request, prepare_with_indices};
     use h1ai::h1::{Platoon, PlatoonTrigger};
     let mut src = invented();
-    src.encounters[0].platoons = vec![Platoon {
-        name: "shared".into(),
-        flags: 0,
-        change: PlatoonTrigger::DISABLED,
-        maneuver: PlatoonTrigger::DISABLED,
-    }; 2];
-    let opts = Options { platoon_groups: [(0, 1)].into(), ..Default::default() };
+    src.encounters[0].platoons = vec![
+        Platoon {
+            name: "shared".into(),
+            flags: 0,
+            change: PlatoonTrigger::DISABLED,
+            maneuver: PlatoonTrigger::DISABLED,
+        };
+        2
+    ];
+    let opts = Options {
+        platoon_groups: [(0, 1)].into(),
+        ..Default::default()
+    };
     let mut retained = src.clone();
     retained.encounters[0].squads.pop();
     let mut plan = convert(&retained, &opts).unwrap();
     let rows = vec![vec![Some(0), Some(1), None]];
-    let request = |reference| Request { operation: Operation::Spawn, reference, target: None };
+    let request = |reference| Request {
+        operation: Operation::Spawn,
+        reference,
+        target: None,
+    };
     let empty = [request(0), request(0x4001_0000)];
     let mut control = prepare_with_indices(&src, &mut plan, &opts, &empty, rows.clone()).unwrap();
     control.bind_script_indices(&plan);
@@ -801,8 +851,16 @@ fn empty_spawn_selections_and_missing_converted_targets_are_distinct() {
         assert!(control.actions[&r].is_empty());
     }
     assert!(control.script_index(0x4000_0000).unwrap().is_err());
-    assert_eq!(control.script_index(0x4001_0000).unwrap().unwrap(), 0x4000_0001);
+    assert_eq!(
+        control.script_index(0x4001_0000).unwrap().unwrap(),
+        0x4000_0001
+    );
     let dropped = request(0x8002_0000);
-    let err = prepare_with_indices(&src, &mut plan, &opts, &[dropped], rows).err().unwrap();
-    assert!(err.to_string().contains("first/empty: source squad 2"), "{err}");
+    let err = prepare_with_indices(&src, &mut plan, &opts, &[dropped], rows)
+        .err()
+        .unwrap();
+    assert!(
+        err.to_string().contains("first/empty: source squad 2"),
+        "{err}"
+    );
 }

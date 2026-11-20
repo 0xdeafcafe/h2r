@@ -131,7 +131,7 @@ impl Line {
 #[derive(Debug, Default)]
 pub struct SpeakerScopes {
     by_type: BTreeMap<u16, Vec<u32>>,
-    by_selector: BTreeMap<u32, u32>,
+    by_selector: Option<BTreeMap<u32, u32>>,
     pub voice_definitions: Vec<crate::voices::Definition>,
     pub squad_voices: Vec<crate::voices::Squad>,
 }
@@ -146,11 +146,18 @@ impl SpeakerScopes {
         for scene in conversations {
             for role in &scene.participants {
                 if let Some(selector) = role.encounter
-                    && !role.radio() && role.existing_name.is_none()
+                    && !role.radio()
+                    && role.existing_name.is_none()
                 {
-                    let bound = control.script_index(selector).ok_or_else(|| {
-                        Error::Invalid(format!("{}: no roster for conversation selector {selector:#010x}", scene.name))
-                    })?.map_err(|e| Error::Invalid(format!("{}: {e}", scene.name)))?;
+                    let bound = control
+                        .script_index(selector)
+                        .ok_or_else(|| {
+                            Error::Invalid(format!(
+                                "{}: no roster for conversation selector {selector:#010x}",
+                                scene.name
+                            ))
+                        })?
+                        .map_err(|e| Error::Invalid(format!("{}: {e}", scene.name)))?;
                     by_selector.insert(selector, bound);
                 }
             }
@@ -184,7 +191,10 @@ impl SpeakerScopes {
             // Only collapse a homogeneous set of direct members into a leaf.
             let leaf = !plan.ai.squad_groups.iter().any(|child| child.parent == group);
             if let Some(&kind) = common.filter(|_| leaf) {
-                result.entry(kind).or_default().push(0x4000_0000 | group as u32);
+                result
+                    .entry(kind)
+                    .or_default()
+                    .push(0x4000_0000 | group as u32);
             } else {
                 for ((index, _), types) in squads.into_iter().zip(kinds) {
                     for kind in types {
@@ -194,15 +204,22 @@ impl SpeakerScopes {
             }
         }
         Ok(Self {
-            by_selector,
+            by_selector: Some(by_selector),
             by_type: result,
             voice_definitions: plan.voice_definitions.clone(),
             squad_voices: plan.squad_voices.clone(),
         })
     }
 
-    pub fn for_selector(&self, selector: u32) -> Option<u32> {
-        self.by_selector.get(&selector).copied()
+    /// An AI-free output has no actors to cast. In a populated roster every
+    /// explicit cast selector must resolve, even if its display text is empty.
+    pub fn for_selector(&self, selector: u32) -> Result<Option<u32>> {
+        let Some(indices) = &self.by_selector else {
+            return Ok(None);
+        };
+        indices.get(&selector).copied().map(Some).ok_or_else(|| {
+            Error::Invalid(format!("unbound conversation AI selector {selector:#010x}"))
+        })
     }
 
     pub fn for_actor_type(&self, actor_type: u16) -> &[u32] {

@@ -134,9 +134,15 @@ fn select(src: &mut H1Ai, uses: &Uses, groups: usize) -> crate::Result<Selection
         indices.push(rows);
     }
     if output_index > usize::from(u16::MAX) {
-        return Err(crate::invalid("AI roster exceeds the native squad index range"));
+        return Err(crate::invalid(
+            "AI roster exceeds the native squad index range",
+        ));
     }
-    Ok(Selection { generated, indices, required_squads: HashSet::new() })
+    Ok(Selection {
+        generated,
+        indices,
+        required_squads: HashSet::new(),
+    })
 }
 
 pub(crate) fn prepare(
@@ -150,11 +156,16 @@ pub(crate) fn prepare(
     // Without converted scripts nothing names or places a squad, and the
     // automatic migration orders (installed with the scripts' subjects) are
     // not written. Keeping those squads would only fill the native pool:
-    // a50 has 485 squads that way, past its 384 slots.
+    // a50 has 485 squads that way, past the native reservation.
     let mut uses = if scripted { Uses::read(tables) } else { Uses::default() };
     if scripted {
-        for role in src.conversations.iter().flat_map(|scene| &scene.participants) {
-            if !role.radio() && role.existing_name.is_none()
+        for role in src
+            .conversations
+            .iter()
+            .flat_map(|scene| &scene.participants)
+        {
+            if !role.radio()
+                && role.existing_name.is_none()
                 && let Some(selector) = role.encounter
             {
                 uses.named.insert(selector & 0xc0ff_ffff);
@@ -163,10 +174,27 @@ pub(crate) fn prepare(
     }
     // Preserve directly referenced rows before expanding membership to
     // optional empty squads. These ordinals must survive the pool budget.
-    let required_squads = uses.named.iter()
+    let mut required_squads: HashSet<_> = uses
+        .named
+        .iter()
         .filter(|&&id| id >> 30 == 2)
         .map(|&id| (usize::from(id as u16), usize::from((id >> 16) as u8)))
         .collect();
+    // Counted spawns of a platoon address its first source squad, even
+    // when that squad starts empty and has no direct script literal.
+    for request in requests {
+        if request.operation == h1ai::control::Operation::Spawn && request.reference >> 30 == 1 {
+            let ei = usize::from(request.reference as u16);
+            let platoon = i16::from((request.reference >> 16) as u8);
+            if let Some(si) = src
+                .encounters
+                .get(ei)
+                .and_then(|e| e.squads.iter().position(|s| s.platoon == platoon))
+            {
+                required_squads.insert((ei, si));
+            }
+        }
+    }
     let mut maneuver = h1ai::control::maneuver_targets(src, requests);
     if scripted {
         maneuver.extend(h1ai::control::automatic_migration_targets(src, followed));
@@ -309,8 +337,12 @@ mod tests {
                 let si = ((id >> 16) & 0x7fff) as usize;
                 let q = &before[ei].squads[si];
                 let index = selection.indices[ei][si].expect("named squad retained");
-                let target = ai.encounters.iter().flat_map(|e| &e.squads)
-                    .nth(usize::from(index)).unwrap();
+                let target = ai
+                    .encounters
+                    .iter()
+                    .flat_map(|e| &e.squads)
+                    .nth(usize::from(index))
+                    .unwrap();
                 assert_eq!(target.name, q.name);
                 // A placed empty squad takes its sites from its move
                 // positions or its firing groups. b40's

@@ -112,7 +112,25 @@ A read-only census of the 23 playable Xbox maps found 10,129 authored
 starts. Of these, 8,206 inherit the squad actor, 112 have no effective
 actor, and 1,614 specify a starting command list. The ignored
 `retail_spawn_bindings_keep_every_actor_weapon_and_command` check compares
-those bindings with the decoded v8 scenario for every location.
+those bindings with the decoded v8 scenario for every location. The source
+script tables also contain 4,695 literal AI operands: 2,041 encounters,
+235 platoons and 2,419 squads. Each names an existing source row.
+
+#### Coordinator verification
+
+Run from the conversion worktree with `H1_ISO` and `H2_DISC` set to the
+absolute paths of the two retail Xbox discs.
+
+```sh
+cargo test -p h1ai -p h1models -p h1convert -p h1campaign -p h1scripts -p engine --lib
+cargo test -p h1ai --test convert
+cargo test --release -p h1models --lib retail_overlay_defaults_round_trip_on_all_23_maps -- --ignored
+cargo test --release -p h1ai --test disc retail_spawn_bindings_keep_every_actor_weapon_and_command -- --ignored
+cargo test --release -p h1objects --test sandbox_disc halo2_sandbox_places_a_vehicle_without_a_counterpart -- --ignored
+cargo test --release -p h1scripts --test disc encounter_controls_emit_live_evaluators_and_native_orders -- --ignored
+cargo test --release -p h1scripts --test conversations_disc every_campaign_conversation_compiles_with_its_source_sounds -- --ignored
+cargo test --release -p h1campaign --test disc both_sandboxes_rebuild_every_retail_map -- --ignored
+```
 
 ### `actr` and `actv`
 
@@ -783,13 +801,13 @@ A level converted without its scripts keeps none of these: nothing names
 or places a squad, and the automatic migration orders are written with
 the scripts. Squads of encounters only the scripts create are left out
 while the pool is over (a `dropped` line counts them), so a50 fits its
-384 slots either way.
+386 slots either way.
 
 The campaign squad-pool hook runs before `0x00200b30` initializes the
 arrays. Retail allocates consecutive `0xc760` and `0x163c` buffers
-at `0x00200957` and `0x0020098a`. When necessary, it moves the boundary
-within those buffers using the new scenario's counts. Smaller maps restore
-the retail capacities. The converter uses the same capacity calculation.
+at `0x00200957` and `0x0020098a`. The hook reserves space for 386 squad
+records at startup and sets the active capacity from the scenario on each
+map load. Smaller maps restore the retail squad capacity. The converter uses the same capacity calculation.
 
 The ignored disc tests cover the a30/a10 sector readback, every campaign's
 scripted squad references, and the a10/c40 character-to-animation resource

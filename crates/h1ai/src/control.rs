@@ -151,7 +151,9 @@ impl Control {
             _ => source & 0xc0ff_ffff,
         };
         Some(indices.get(&selector).copied().ok_or_else(|| {
-            crate::Error::Invalid(format!("AI selector {source:#010x} has no converted roster entry"))
+            crate::Error::Invalid(format!(
+                "AI selector {source:#010x} has no converted roster entry"
+            ))
         }))
     }
 }
@@ -274,19 +276,27 @@ pub fn prepare(
         for squad in &encounter.squads {
             let name = squad_name(encounter, squad);
             if plan.squad_names.get(next) != Some(&name)
-                || plan.ai.squads.get(next).is_none_or(|q| q.initial_zone as usize != ei)
+                || plan
+                    .ai
+                    .squads
+                    .get(next)
+                    .is_none_or(|q| q.initial_zone as usize != ei)
             {
-                return Err(crate::Error::Invalid(format!("source squad {ei}/{name} has no ordinal {next} in roster")));
+                return Err(crate::Error::Invalid(format!(
+                    "source squad {ei}/{name} has no ordinal {next} in roster"
+                )));
             }
-            rows.push(Some(u16::try_from(next).map_err(|_| crate::Error::Invalid(
-                format!("{name}: squad index {next} exceeds native range"),
-            ))?));
+            rows.push(Some(u16::try_from(next).map_err(|_| {
+                crate::Error::Invalid(format!("{name}: squad index {next} exceeds native range"))
+            })?));
             next += 1;
         }
         indices.push(rows);
     }
     if next != plan.ai.squads.len() {
-        return Err(crate::Error::Invalid("control roster has extra squads".into()));
+        return Err(crate::Error::Invalid(
+            "control roster has extra squads".into(),
+        ));
     }
     prepare_with_indices(source, plan, opts, requests, indices)
 }
@@ -300,18 +310,31 @@ pub fn prepare_with_indices(
     indices: Vec<Vec<Option<u16>>>,
 ) -> crate::Result<Control> {
     if indices.len() != source.encounters.len() || plan.ai.zones.len() != indices.len() {
-        return Err(crate::Error::Invalid("AI roster has the wrong encounter count".into()));
+        return Err(crate::Error::Invalid(
+            "AI roster has the wrong encounter count".into(),
+        ));
     }
     let mut seen = BTreeSet::new();
     for (ei, (encounter, rows)) in source.encounters.iter().zip(&indices).enumerate() {
         if rows.len() != encounter.squads.len() {
-            return Err(crate::Error::Invalid(format!("{}: AI roster has the wrong squad count", encounter.name)));
+            return Err(crate::Error::Invalid(format!(
+                "{}: AI roster has the wrong squad count",
+                encounter.name
+            )));
         }
         for (si, &id) in rows.iter().enumerate() {
             if let Some(id) = id
-                && (!seen.insert(id) || plan.ai.squads.get(usize::from(id)).is_none_or(|q| q.initial_zone as usize != ei))
+                && (!seen.insert(id)
+                    || plan
+                        .ai
+                        .squads
+                        .get(usize::from(id))
+                        .is_none_or(|q| q.initial_zone as usize != ei))
             {
-                return Err(crate::Error::Invalid(format!("{} squad {si}: invalid native squad {id}", encounter.name)));
+                return Err(crate::Error::Invalid(format!(
+                    "{} squad {si}: invalid native squad {id}",
+                    encounter.name
+                )));
             }
         }
     }
@@ -627,12 +650,25 @@ fn prepare_platoon_rules(
                 rule.members.push(id);
                 if rule.change.is_some() || initial == Operation::Defend {
                     // Cache the attacking order before installing a defensive default.
-                    let attack = cached_order(plan, opts, orders, ei as u16, q, id, Operation::Attack)?;
-                    let defend = cached_order(plan, opts, orders, ei as u16, q, id, Operation::Defend)?;
-                    plan.ai.squads[usize::from(id)].initial_order =
-                        if initial == Operation::Attack { attack } else { defend } as i16;
+                    let attack =
+                        cached_order(plan, opts, orders, ei as u16, q, id, Operation::Attack)?;
+                    let defend =
+                        cached_order(plan, opts, orders, ei as u16, q, id, Operation::Defend)?;
+                    plan.ai.squads[usize::from(id)].initial_order = if initial == Operation::Attack
+                    {
+                        attack
+                    } else {
+                        defend
+                    } as i16;
                     if rule.change.is_some() {
-                        rule.orders.push((id, if changed == Operation::Attack { attack } else { defend }));
+                        rule.orders.push((
+                            id,
+                            if changed == Operation::Attack {
+                                attack
+                            } else {
+                                defend
+                            },
+                        ));
                     }
                 }
                 if can_arm
@@ -866,7 +902,9 @@ fn follow_actions(
     radius: f32,
 ) -> crate::Result<Option<Vec<Action>>> {
     let target = if request.operation == Operation::FollowAi {
-        let Some((to_encounter, _, Selection::Squad(to))) = request.target.and_then(|ai| decode(source, ai)) else {
+        let Some((to_encounter, _, Selection::Squad(to))) =
+            request.target.and_then(|ai| decode(source, ai))
+        else {
             return Ok(None);
         };
         // Each retail call targets a squad in its own encounter. Those
@@ -875,7 +913,11 @@ fn follow_actions(
         if to_encounter != encounter_index {
             return Ok(None);
         }
-        Some(required_squad(encounter, &indices[usize::from(to_encounter)], usize::from(to))?)
+        Some(required_squad(
+            encounter,
+            &indices[usize::from(to_encounter)],
+            usize::from(to),
+        )?)
     } else {
         None
     };
