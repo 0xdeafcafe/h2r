@@ -220,6 +220,10 @@ pub mod method {
     pub const RENDER_CAPTURE: &str = "render.capture";
     /// Position the world camera at a loaded player starting location.
     pub const RENDER_SPAWN_VIEW: &str = "render.spawn_view";
+    /// Arm a sequence of headless display presents, including in-between frames.
+    pub const RENDER_CAPTURE_CLIP: &str = "render.capture_clip";
+    /// Read the number of display frames written by a clip capture.
+    pub const RENDER_CAPTURE_CLIP_STATUS: &str = "render.capture_clip.status";
     /// The last sealed `FrameScene`'s counts ([`crate::SceneParams`]).
     pub const RENDER_SCENE: &str = "render.scene";
     /// Arm the in-process two-path comparison for one frame

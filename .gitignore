@@ -13,4 +13,5 @@
 /.claude/worktrees/
 /web/node_modules
 /web/dist
+/docs/images/readme/frames/
 __pycache__/

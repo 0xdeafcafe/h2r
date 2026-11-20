@@ -35,6 +35,7 @@ connection to hold `session.claim`.
 | `profile.sample.start`, `profile.sample.stop` | act | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.status` | read | [`profile`](#profile-where-a-frame-goes) |
 | `render.frame`, `render.stats` | read | [`render`](#render-the-frame-and-the-pipeline) |
+| `render.capture_clip`, `render.capture_clip.status` | act, read | [Headless display clips](#rendercapture_clip) |
 | `render.coop_look` | read | [`render`](#render-the-frame-and-the-pipeline) |
 | `render.compare`, `render.capture`, `render.scene`, `sim.hashes` | read | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
 | `render.spawn_view` | act | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
@@ -680,9 +681,9 @@ window's line. Each is `null` where that piece is not running.
 
 `interp` exists when in-between frames run: in `h2 play`, or in an `h2
 serve` that renders on the GPU off-screen (`H2_BOOT_GFX`) with an
-interpolation switch on. The in-between frames are paced on the wall
-clock at the frame rate and made and classified for real, so the hold
-reasons are the game's ([high-framerate.md](../game/high-framerate.md),
+interpolation switch on. Outside a [display clip](#rendercapture_clip),
+the in-between frames follow the wall clock. The hold reasons describe
+the in-game render ([high-framerate.md](../game/high-framerate.md),
 "Headless"). `interp.holds` lists the draws a held frame was held for,
 each with its guest draw and pass number (as `render.frame` numbers
 them), vertex program, transform and where it lands
@@ -697,6 +698,30 @@ H2_OPT=2 H2_BOOT_GFX=$TMPDIR/h2-gfx H2_BOOT_GFX_EVERY=never \
   H2_FPS=60 H2_FEATURES=impl.render.reproject \
   h2 serve disc/halo2.iso --out <the image you built>
 ```
+
+### `render.capture_clip`
+
+`render.capture_clip {"tick":9000,"ticks":180,"fps":120}` arms a clip on
+the game thread. `tick` is 1 to 240 ticks ahead, `ticks` is 1 to 300, and
+`fps` is 30, 60 or 120. The reply contains `id`, `path`, `frames` and
+`written`. The GPU hooks write `frame-00000.png` onward under `path`, a
+clip folder under the headless graphics output directory.
+
+`render.capture_clip.status {"id":1}` returns the same fields for the
+latest clip. When `written` equals `frames`, all PNG files are closed.
+A lost guest tick or missing display slot fails the request. Read
+`render.stats` for the replay's hold reasons.
+
+Clip capture needs headless GPU rendering. The [graphics size switch](switches.md)
+sets the clip's output dimensions. Above 30 fps, enable interpolated
+replay on the render thread and select a display rate at least as high
+as the clip's. The render thread emits the guest present and one or
+three intermediate presents for each 30 Hz tick pair, at even blend
+fractions. PNG readback and encoding may slow capture. The saved frame
+sequence retains the requested rate.
+
+The state is in `crates/extensions/agent/src/render/clip.rs`. The GPU
+writer is in `crates/extensions/game/src/d3d_glue/clip_png.rs`.
 
 ### `render.coop_look`
 
