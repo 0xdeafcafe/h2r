@@ -23,7 +23,7 @@ struct Glue;
 pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
     device: &d3d::abi::SharedDevice<B>,
 ) {
-    if !feature::Switches::from_env().is_ok_and(|s| feature::native_decals::hooks_on(&s)) {
+    if !feature::Switches::from_env().is_ok_and(|s| feature::native_decals::on(&s)) {
         return;
     }
     let Ok(mut d) = device.lock() else { return };
@@ -200,38 +200,18 @@ impl DrawAdmission for Glue {
         &self,
         snapshot: &DrawSnapshot<'_>,
     ) -> Option<(ExternalPlan, Box<dyn d3d::ExternalPass>)> {
-        let (mode, list) = feature::native_decals::current()?;
+        let (mode, _) = feature::native_decals::current()?;
         if snapshot.draw.entry != "D3DDevice_DrawVertices" {
             return None;
         }
         feature::native_decals::note_examined();
-        let comparing = feature::native_decals::comparing(mode, list);
         let prepared = match prepare(mode, snapshot) {
             Ok(p) => p,
             Err(why) => {
                 feature::native_decals::note_refusal(why);
-                if comparing {
-                    feature::native_decals::note_compared();
-                    eprintln!(
-                        "native-decals: compare mode {} list {}: {why}",
-                        mode.index(),
-                        list
-                    );
-                }
                 return None;
             }
         };
-        if comparing {
-            feature::native_decals::note_compared();
-            eprintln!(
-                "native-decals: compare mode {} list {}: {} quads, textures {:?}: prepared",
-                mode.index(),
-                list,
-                prepared.vertices.len() / 4,
-                snapshot.draw.textures,
-            );
-            return None;
-        }
         feature::native_decals::note_admitted();
         Some((
             ExternalPlan {

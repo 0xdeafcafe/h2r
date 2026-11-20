@@ -240,7 +240,7 @@ fn check_combiner_state(def: &PixelShaderDef) -> Result<(), &'static str> {
 }
 
 /// Validates the complete shader translation without creating GPU objects,
-/// so compare-only admission exercises the same refusal cases.
+/// so admission refuses before it reserves anything.
 pub fn check_program(mode: Mode, shader: &ShaderSnapshot) -> Result<(), &'static str> {
     check_state(mode, &shader.render, &shader.stages, &shader.extras)?;
     check_combiner_state(&shader.combiner)?;
