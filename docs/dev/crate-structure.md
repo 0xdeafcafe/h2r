@@ -1,10 +1,10 @@
 # Crate structure: domains, and the windows that move to them
 
-Status: In progress. Windows W1 to W3 and S1 to S3 have run (tags
-`move-<id>`); S4 to S7 are designed. Built: the domain rules
+Status: In progress. Windows W1 to W3 and S1 to S5 have run (tags
+`move-<id>`); S6 and S7 are designed. Built: the domain rules
 (`scripts/crate-domains.toml`), their check (`scripts/crate-graph.py layers
 --check`), the crate table generator (`scripts/crate-table.py`) and the
-move scripts under `scripts/moves/`. S1 to S3 were written and run without
+move scripts under `scripts/moves/`. S1 to S5 were written and run without
 cargo; `cargo check` on them is the coordinator's (see "Not verified").
 Measured at: `crate-map` on master `100f13cef`, 2026-11-20, with
 `scripts/crate-graph.py`. Nothing here runs cargo.
@@ -219,9 +219,9 @@ ports stay as oracles until each `impl.sim.native.<subsystem>` lands.
 
 | Part | Lines | Goes to | Window |
 |---|---:|---|---|
-| Composition root: `lib.rs`, `registration`, the tests | 6,325 | `crates/apps/boot` | stays |
+| Composition root: `lib.rs`, `registration`, the tests | 2,637 in `src` | `crates/apps/boot` | stays |
 | Build and load: `fallback`, `shim`, `sse`, `x87`, `tier`, `host_coverage`, `host_report`, `build.rs`, `c/`, and the pipeline in `lib.rs` | 3,575 | `crates/runtime/recomp` | S4, done |
-| Everything else, as one crate first | 146,827 | `crates/extensions/game` | S5 |
+| Everything else, as one crate first, with the run types (`RunOpts`, `Host`) and the build script | 145,555 | `crates/extensions/game` | S5, done |
 | Render glue: 29 modules (`native_*_glue`, `d3d_glue`, `d3d_diag`, `render_thread`, `opaque_streams`, ...) | 18,694 | `crates/rewrites/render-bridge`, below `game` | S6 |
 | Halo 1 runtime: 14 `h1_*` modules | 20,572 | `crates/extensions/h1-runtime` | S6 |
 | UI toolkit: `ui_kit`, `list_class`, `ui`, `icons`, `keyboard_glue` | 17,136 | `crates/extensions/ui-kit`, below `game` | S6 |
@@ -360,7 +360,7 @@ git -c merge.renameLimit=30000 -c merge.directoryRenames=true merge -X rename-th
 | S2 | `guest-layout` takes `engine`'s guest boundary and points | `s2-guest-layout.py` | 7 files, 3,505 lines | ran: `move-s2`; `entry.rs` stays in `engine` |
 | S3 | `hooks` gives away the sim, render and Halo 1 hooks | `split.py s3-sim-bridge`, `s3-render-bridge`, `s3-h1-hooks` | 8 + 27 + 2 modules, 25,037 lines | ran: `move-s3-sim-bridge`, `move-s3-render-bridge`, `move-s3-h1-hooks` |
 | S4 | `recomp` out of `boot` | `s4-recomp.py` | 7 modules, 922 lines of `lib.rs`, `build.rs`, `c/`, 1 test | ran: `move-s4` |
-| S5 | `boot` keeps the root, `game` takes the rest | `s5-boot-root.py` | 151 modules, 291 files, 146,827 lines | 96 references to cut, about 30 of them S4's |
+| S5 | `boot` keeps the root, `game` takes the rest | `s5-boot-root.py` | 149 modules, 289 files, 145,555 lines | ran: `move-s5` |
 | S6 | `game` gives away the render glue, the Halo 1 runtime, the UI toolkit and the Live glue | `split.py s6-*` (six specs) | 71 modules, 92,695 lines | 3 to 82 references each |
 | S7 | `cli` becomes `main.rs` and ten command crates | `split.py s7-*` (ten specs) | 91 modules, 76,883 lines | four specs now, the rest 1 to 29 references each |
 
@@ -581,25 +581,55 @@ until the first cargo command adds it.
 
 ### S5. `boot` keeps the root
 
-`scripts/moves/s5-boot-root.py`. Every top-level module of `boot/src`
-except `lib.rs` and `registration` moves, unchanged, to
-`crates/extensions/game/src`. `boot` depends on `game`, forwards its
-features, and starts with `pub use game::*;`, so `crate::skulls` in the
-root and `boot::tier` in `cli`, `studio` and the hosts still resolve, and
-no other crate changes. `game`'s manifest is a copy of `boot`'s without
-the dependencies `extensions` may not have (`analyze`, `lift`, `emit`,
-`clif`, `ir`, `x87`, the Halo 1 converters, `perf`): what still needs one
-of those is a layering error that `cargo check` then names.
+`scripts/moves/s5-boot-root.py`, run as `scripts/moves/window.sh run s5`
+(tags `move-s5-pre`, `move-s5`; replay with `scripts/moves/window.sh
+replay s5`). Every top-level module of `boot/src` except `lib.rs` and
+`registration` moves, unchanged, to `crates/extensions/game/src`, with the
+build script (the campaign cards' hash), so `boot` has none. `boot`
+depends on `game`, forwards its features, and its root starts with `pub
+use game::*;`, so `crate::skulls` in the root and `boot::tier` in `cli`,
+`studio` and the hosts still resolve, and no other crate changes.
 
-- Stops it today, 96 references from modules to the root:
-  `crate::telemetry` 32, `crate::log` 14, `crate::registration` 10
-  (`d3d_glue` reads `compiled_render_hooks`), `RunOpts` 5, `Host` 2,
-  `LiveConfig` 1, and S4's. Each moves into a module first.
-- `pub(crate)` becomes `pub` in the moved files: the root is another
-  crate.
-- Lanes: every branch with work under `boot/src`. Replay.
-- By itself this saves nothing. It makes each S6 window a move out of
-  `game` that does not touch the root.
+Two parts of the root go with the modules, so the moved files say what
+they said:
+
+- every top-level `pub use` of the root (`pub use recomp::*;`, `pub use
+  live_telemetry as telemetry;`, `pub use live_hle::{HostPublisher,
+  LiveConfig};`), with the comment above it, is `game`'s: `crate::log`,
+  `crate::telemetry` and `crate::fallback` in a moved module mean what
+  they meant;
+- `RunOpts`, `RunReport`, `Host`, `VfsReady` and `BetweenSlices`, cut from
+  the root by name, are `game/src/run_opts.rs`, which `game`'s root
+  re-exports. A module the root named bare in them (`theater::HostView`)
+  is `crate::theater::HostView` there.
+
+In the moved files `pub(crate)` is `pub`, and so is `pub(super)` at the
+top of a module the root declared: the root is another crate. `game`'s
+manifest is a copy of `boot`'s without `analyze` and `emit`, which
+`extensions` may not use. `perf` stays, behind `game`'s `perf` feature,
+as an exception the window adds to `scripts/crate-domains.toml`:
+`sampling` reaches the profiler, and `agent_glue` answers
+`profile.sample.*` with it, until the sampler is a hook `boot` installs.
+
+Cut first (`S5 prep`):
+
+- `compiled_render_hooks` and `register_telemetry`, which `d3d_glue` and
+  the theater called in `registration`, are `run_plan`'s; `registration`
+  uses them from there.
+- The render-thread plan test, which builds the whole plan with
+  `registration`'s test helpers, is `registration`'s (its tests, behind
+  `desktop-runtime`); it builds the campaign picker's state from
+  `content`'s fixtures instead of `campaign_menu`'s test helper, which is
+  `game`'s and test-only.
+- The theater reads the host triple from `recomp::host_triple`, not
+  `emit`.
+
+What S4 left in the root's 96 references (the recomp names) resolve
+through the carried `pub use recomp::*;`, as `telemetry` (34), `log`
+(11) and `LiveConfig` (1) do through theirs; `RunOpts` (5) and `Host` (2)
+through `run_opts`; `registration` (10) is the prep's. By itself this
+saves nothing. It makes each S6 window a move out of `game` that does not
+touch the root.
 
 ### S6. `game` gives away its groups
 
@@ -973,6 +1003,14 @@ becomes `sim-bench`; `viewer` stays whole in `tools`.
 - W3: an item that was `pub(crate)` in a small crate is now visible
   across the merged one, and two merged modules may glob-import the same
   name. Both are compile errors if they bite, not silent changes.
+- S4 and S5 have not been compiled either. What `cargo check` is most
+  likely to find: a private field or method of a moved type that `boot`'s
+  root reads (the `pub(crate)` and top-level `pub(super)` ones were
+  widened; `stamp_path` and `Module::slim` by name), an unused import in
+  `boot`'s root after the cut, a dependency of `game` or `boot` nothing
+  uses any more (not trimmed), and doc links into the other crate.
+  `Cargo.lock` names neither `recomp` nor `game` until the first cargo
+  command adds them.
 - The splits copy a manifest and trim it by the domain rules only, do not
   make an item `pub` when the other crate needs it (S5 widens
   `pub(crate)` in bulk; the others do not), and cannot see an `impl` the

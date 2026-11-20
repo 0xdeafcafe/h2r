@@ -45,6 +45,13 @@
 //!   `placement_data_new` with owner -1, the position at placement `+0x1c`,
 //!   forward and up at `+0x28` and `+0x34` (`0x11df60` fills them from the
 //!   entry's angles at `0x15abcc`), then `object_new`.
+//! - **Queue a game** is the level boot's sequence (docs/runtime/level-boot.md)
+//!   run from a tick: the host gives the steps ([`GameStep`]: the game's
+//!   option builders, our field writes, its options check and its queue,
+//!   `0x18e790`), over an options block in the scratch
+//!   ([`SCRATCH_OPTIONS`]). The game loads the queued options at its next
+//!   transition, as it does the main menu's own start. `maps.test.load`
+//!   uses it (docs/game/test-maps.md).
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -78,12 +85,53 @@ pub mod addr {
     pub const MODE_REPLACE: u32 = 2;
 }
 
-/// Scratch layout: the placement, then three vectors.
+/// Scratch layout: the placement, then three vectors, then a game options
+/// block.
 const SCRATCH_POS: u32 = 0xd0;
 const SCRATCH_FORWARD: u32 = 0xdc;
 const SCRATCH_UP: u32 = 0xe8;
+/// Where [`Call::QueueGame`] builds its options.
+pub const SCRATCH_OPTIONS: u32 = 0x100;
+/// The game options block's size (docs/runtime/level-boot.md).
+pub const OPTIONS_SIZE: u32 = 0x1118;
 /// The scratch [`CallsFeature`] allocates.
-pub const SCRATCH_SIZE: u32 = 0x100;
+pub const SCRATCH_SIZE: u32 = 0x1300;
+const _: () = assert!(SCRATCH_OPTIONS + OPTIONS_SIZE <= SCRATCH_SIZE);
+
+/// A value a [`GameStep::Call`] passes: a number, or an address in the
+/// options block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arg {
+    Value(u32),
+    /// The options block plus this offset.
+    Options(u32),
+}
+
+impl Arg {
+    pub fn resolve(self, options: u32) -> u32 {
+        match self {
+            Arg::Value(v) => v,
+            Arg::Options(o) => options.wrapping_add(o),
+        }
+    }
+}
+
+/// One step of building and queueing game options.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GameStep {
+    /// Write `bytes` at this offset of the options block.
+    Write { offset: u32, bytes: Vec<u8> },
+    /// Call the game: stack arguments first argument first, and EAX and
+    /// ESI when the callee takes them there. With `report`, the answer
+    /// says whether it returned AL nonzero, under that name.
+    Call {
+        target: u32,
+        args: Vec<Arg>,
+        eax: Option<Arg>,
+        esi: Option<Arg>,
+        report: Option<&'static str>,
+    },
+}
 
 /// One piece of work for the game.
 #[derive(Debug, Clone, PartialEq)]
@@ -105,6 +153,9 @@ pub enum Call {
         pos: [f32; 3],
         facing: Option<[f32; 3]>,
     },
+    /// Build game options with `steps` and queue them: a new game loads
+    /// at the game's next transition.
+    QueueGame { steps: Vec<GameStep> },
 }
 
 /// What came of a call: the answer's fields, or why not.
@@ -443,6 +494,47 @@ pub async fn run(cx: &Cx, call: &Call, scratch: u32) -> Result<Outcome, EntryErr
             let at = cx.read(|m| body_of(m, made).and_then(|b| b.position(m).ok()));
             Ok(Ok(json!({ "object": hex(made), "pos": at })))
         }
+        Call::QueueGame { ref steps } => {
+            let options = scratch + SCRATCH_OPTIONS;
+            let mut out = serde_json::Map::new();
+            let mut calls = 0;
+            for step in steps {
+                match step {
+                    GameStep::Write { offset, bytes } => {
+                        if offset.saturating_add(bytes.len() as u32) > OPTIONS_SIZE {
+                            return Ok(Err(format!(
+                                "a write at {offset:#x} runs past the options block"
+                            )));
+                        }
+                        cx.write(|m| m.write(options + offset, bytes))?;
+                    }
+                    GameStep::Call {
+                        target,
+                        args,
+                        eax,
+                        esi,
+                        report,
+                    } => {
+                        let mut c = GuestCall::new(*target)
+                            .args(args.iter().map(|a| a.resolve(options)));
+                        if let Some(a) = eax {
+                            c = c.eax(a.resolve(options));
+                        }
+                        if let Some(a) = esi {
+                            c = c.esi(a.resolve(options));
+                        }
+                        let r = cx.call(c).await?;
+                        calls += 1;
+                        if let Some(name) = report {
+                            out.insert((*name).into(), json!(r.eax & 0xff != 0));
+                        }
+                    }
+                }
+            }
+            out.insert("queued".into(), json!(true));
+            out.insert("calls".into(), json!(calls));
+            Ok(Ok(Value::Object(out)))
+        }
     }
 }
 
@@ -485,7 +577,7 @@ impl hooks::Feature for CallsFeature {
     fn manifest(&self) -> hooks::Manifest {
         hooks::Manifest::new(
             FEATURE,
-            "Agent API: the game's own functions for sim.give, sim.spawn and teleports",
+            "Agent API: the game's own functions for sim.give, sim.spawn, teleports and maps.test.load",
         )
         .doc("docs/runtime/agent-api.md")
     }

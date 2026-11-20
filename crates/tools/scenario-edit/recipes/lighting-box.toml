@@ -1,0 +1,22 @@
+# An enclosed room of the base with one spawn, a weapon and a piece of the
+# base's scenery in front of it as shadow casters. The light is the base's
+# own. docs/game/test-maps.md
+name = "lighting-box"
+title = "Lighting box"
+purpose = "An indoor spot with one spawn, a weapon on the floor and a piece of scenery ahead: lightmap and dynamic-object lighting under the base's own lights."
+base = "lockout"
+fidelity = "approximate"
+note = "No light is placed: scenario edits here can't add light fixtures, so the lights are the base map's baked lightmap and its own fixtures. The casters are a weapon and the base's first scenery type."
+clear = "all"
+
+[[place]]
+block = "starting_locations"
+
+[[place]]
+block = "netgame_equipment"
+at = [3, 0, 0]
+each = { group = "weap", contains = ['rifle\'], exclude = ['\multiplayer\'], max = 1 }
+
+[[place]]
+block = "scenery"
+at = [5, 1.5, 0]

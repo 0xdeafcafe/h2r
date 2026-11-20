@@ -1,4 +1,4 @@
-//! Link previews for the web app's pages (web/README.md, "Names, icons
+//! Link previews for the web app's pages (docs/live/web-app.md, "Names, icons
 //! and link previews"): the `<title>`, description, Open Graph and Twitter card
 //! tags that Discord, iMessage and X read when a page is shared.
 //!

@@ -1,12 +1,15 @@
 //! The composition root: the module `recomp` built (`boot::build`, the
 //! re-exported pipeline), registered with the runtime, the kernel HLE
-//! attached, every feature planned onto the hooks, and the entry thread run
-//! until something stops it. See docs/runtime/BOOT.md.
+//! attached, every feature `game` holds planned onto the hooks
+//! (`registration`), and the entry thread run until something stops it.
+//! `game` is re-exported whole, so `boot::skulls` and `boot::RunOpts`
+//! resolve. See docs/runtime/BOOT.md.
 //!
 //! Nothing derived from the disc is written outside the caller's output
 //! directory, which should be under `$TMPDIR` or `target/`.
 
 pub use game::*;
+// maps.test.*: test maps from recipes (docs/game/test-maps.md).
 pub mod registration;
 
 use std::collections::BTreeMap;
@@ -932,6 +935,18 @@ fn run_configured(
         }
         // world.* results name their tags the same way.
         a.agent.set_tag_names(Box::new(hot_glue::map_tags(&loaded.runtime, maps())));
+    }
+    // maps.test.*: test maps built from recipes and loaded through the
+    // agent's guest calls (test_maps.rs, docs/game/test-maps.md).
+    #[cfg(feature = "test-maps")]
+    if let Some(a) = &agent {
+        test_maps::install(
+            &a.agent,
+            a.sim.as_ref().and_then(|s| s.calls()),
+            &opts.disc,
+            &opts.data_root,
+            k.vfs(),
+        );
     }
     // The debug menu's host methods and connection (debug_menu_glue.rs).
     if let Some(a) = &agent {

@@ -1,6 +1,9 @@
 #define H2_FASTMEM 1
 #define H2_RAM_PAGE_CACHE 1
-#define H2_FLAT_RAM 1
+/* The opt-in span image, on the paged model. */
+#undef H2_FLAT_RAM
+#define H2_FLAT_RAM 0
+#define H2_FLAT_SPAN 1
 #include "h2fastmem.h"
 #include <assert.h>
 #include <stdlib.h>

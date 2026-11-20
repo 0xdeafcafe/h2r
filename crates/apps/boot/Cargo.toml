@@ -92,12 +92,15 @@ serde_json.workspace = true
 perf = { path = "../../tools/perf", optional = true }
 
 [features]
-default = ["gpu", "movie-playback", "local-io"]
+default = ["gpu", "movie-playback", "local-io", "test-maps"]
 desktop-runtime = ["render-bridge/native-render", "recomp/desktop-runtime", "game/desktop-runtime"]
 gpu = ["desktop-runtime", "gfx/gpu", "d3d/gpu", "agent/render-overrides", "dep:wgpu", "dep:native-render", "dep:shaders", "dep:hot-render", "game/gpu"]
 movie-playback = ["desktop-runtime", "bink-hle/playback", "dep:movies", "game/movie-playback"]
 local-io = ["desktop-runtime", "dep:voice", "dsound/playback", "game/local-io"]
 perf = ["dep:perf", "game/perf"]
+# maps.test.* on the agent: test maps built from recipes (test_maps.rs,
+# docs/game/test-maps.md). The scenario editor's crate pulls in wgpu.
+test-maps = ["game/test-maps"]
 
 [dev-dependencies]
 # The fixture generated module, for hooks run through the real Runner.

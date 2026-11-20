@@ -2,8 +2,11 @@
 //! and slice 4): for each guest entry slices 4 and 5 would replace whole,
 //! what the guest still does under it that a replacement would have to
 //! draw, keep or reproduce. The entries are every `LAYER_DRAW` by its site
-//! and layer, `RENDER_LIGHT_PASSES`, `OBJECT_SHADOW` and
-//! `RENDER_SCREEN_EFFECTS`. Per entry:
+//! and layer, `RENDER_LIGHT_PASSES`, `OBJECT_SHADOW`,
+//! `RENDER_SCREEN_EFFECTS`, and under it the colour pass `COLOUR_PASS` and
+//! each screen effect `SCREEN_EFFECT` (slice 5). The late passes' fog and
+//! water calls of the layer draw (layers 16 and 6 from
+//! `render_scene_passes`, [`late_site`]) are the scene's. Per entry:
 //!
 //! - `d3d_draws`: guest draws handed to the D3D backend under it
 //!   (`d3d::device::backend_draws`, registered by boot). Rule 1 of 8.2 (no
@@ -84,6 +87,8 @@ pub enum Entry {
     LightPasses,
     ObjectShadow,
     ScreenEffects,
+    ColourPass,
+    ScreenEffect,
 }
 
 /// An entry without its layer: what an exit observer knows.
@@ -93,6 +98,8 @@ pub enum Kind {
     LightPasses,
     ObjectShadow,
     ScreenEffects,
+    ColourPass,
+    ScreenEffect,
 }
 
 impl Entry {
@@ -102,6 +109,8 @@ impl Entry {
             Entry::LightPasses => Kind::LightPasses,
             Entry::ObjectShadow => Kind::ObjectShadow,
             Entry::ScreenEffects => Kind::ScreenEffects,
+            Entry::ColourPass => Kind::ColourPass,
+            Entry::ScreenEffect => Kind::ScreenEffect,
         }
     }
 
@@ -112,7 +121,21 @@ impl Entry {
             Entry::LightPasses => "light_passes".into(),
             Entry::ObjectShadow => "object_shadow".into(),
             Entry::ScreenEffects => "screen_effects".into(),
+            Entry::ColourPass => "colour_pass".into(),
+            Entry::ScreenEffect => "screen_effect".into(),
         }
+    }
+}
+
+/// The site of a layer draw called with `layer` current, returning to
+/// `ret`: the layer table's, and for the late passes' fog (layer 16) and
+/// water (layer 6) calls in `render_scene_passes`, which the table does
+/// not place, the scene's.
+pub fn late_site(layer: u32, ret: u32) -> Site {
+    match (layer, ret) {
+        (16, native_render::fog::SCENE_FOG_RETURN) => Site::Scene,
+        (6, crate::native_water::SCENE_WATER_RETURN) => Site::Scene,
+        _ => layer_site(layer, ret),
     }
 }
 
@@ -289,7 +312,7 @@ pub fn install(b: &mut Builder) {
             let at = sample(&*g);
             drop(g);
             let layer = u8::try_from(layer).unwrap_or(u8::MAX);
-            let site = layer_site(u32::from(layer), ret);
+            let site = late_site(u32::from(layer), ret);
             with(|c| {
                 let at_site = c.layer_at(site);
                 c.enter(Entry::Layer { at: at_site, layer }, at);
@@ -301,6 +324,8 @@ pub fn install(b: &mut Builder) {
         (&points::RENDER_LIGHT_PASSES, Entry::LightPasses, "entry_census_light_passes"),
         (&points::OBJECT_SHADOW, Entry::ObjectShadow, "entry_census_object_shadow"),
         (&points::RENDER_SCREEN_EFFECTS, Entry::ScreenEffects, "entry_census_screen_effects"),
+        (&points::COLOUR_PASS, Entry::ColourPass, "entry_census_colour_pass"),
+        (&points::SCREEN_EFFECT, Entry::ScreenEffect, "entry_census_screen_effect"),
     ] {
         b.raw()
             .observe_before(point, label, move |o| {
@@ -314,6 +339,8 @@ pub fn install(b: &mut Builder) {
         (&points::RENDER_LIGHT_PASSES, Kind::LightPasses, "entry_census_light_passes_end"),
         (&points::OBJECT_SHADOW, Kind::ObjectShadow, "entry_census_object_shadow_end"),
         (&points::RENDER_SCREEN_EFFECTS, Kind::ScreenEffects, "entry_census_screen_effects_end"),
+        (&points::COLOUR_PASS, Kind::ColourPass, "entry_census_colour_pass_end"),
+        (&points::SCREEN_EFFECT, Kind::ScreenEffect, "entry_census_screen_effect_end"),
     ] {
         b.raw()
             .observe_after(point, label, move |o| {
@@ -442,5 +469,37 @@ mod tests {
         assert_eq!(Entry::Layer { at: LayerAt::ObjectShadow, layer: 10 }.name(), "layer.object_shadow.10");
         assert_eq!(Entry::ObjectShadow.name(), "object_shadow");
         assert_eq!(Entry::ScreenEffects.name(), "screen_effects");
+        assert_eq!(Entry::ColourPass.name(), "colour_pass");
+        assert_eq!(Entry::ScreenEffect.name(), "screen_effect");
+    }
+
+    #[test]
+    fn the_late_passes_fog_and_water_calls_are_the_scenes() {
+        let c = Census::default();
+        let fog = late_site(16, native_render::fog::SCENE_FOG_RETURN);
+        let water = late_site(6, crate::native_water::SCENE_WATER_RETURN);
+        assert_eq!((c.layer_at(fog), c.layer_at(water)), (LayerAt::Scene, LayerAt::Scene));
+        assert_eq!(Entry::Layer { at: c.layer_at(fog), layer: 16 }.name(), "layer.scene.16");
+        // Another caller, or the other layer at that return, is not.
+        assert_eq!(late_site(16, 0), Site::Other);
+        assert_eq!(late_site(6, native_render::fog::SCENE_FOG_RETURN), Site::Other);
+        // The table's sites are unchanged.
+        assert_eq!(late_site(3, 0x0002_bed5), Site::Scene);
+    }
+
+    #[test]
+    fn the_post_callees_nest_under_the_screen_effects() {
+        let mut c = Census::default();
+        c.enter(Entry::ScreenEffects, at(0, 0, 0));
+        c.enter(Entry::ColourPass, at(0, 0, 0));
+        c.leave(Kind::ColourPass, at(0, 0, 4));
+        c.enter(Entry::ScreenEffect, at(0, 0, 4));
+        c.leave(Kind::ScreenEffect, at(0, 0, 6));
+        c.leave(Kind::ScreenEffects, at(0, 0, 7));
+        let counts: BTreeMap<String, Counts> = c.counts().into_iter().collect();
+        assert_eq!(counts["colour_pass"].d3d_draws, 4);
+        assert_eq!(counts["screen_effect"].d3d_draws, 2);
+        assert_eq!(counts["screen_effects"].d3d_draws, 7);
+        assert_eq!(c.unbalanced(), 0);
     }
 }

@@ -82,6 +82,8 @@ pub mod movies_glue;
 #[cfg(feature = "gpu")]
 pub mod native_decals_glue;
 #[cfg(feature = "gpu")]
+pub mod native_decorators_glue;
+#[cfg(feature = "gpu")]
 pub mod native_first_person_glue;
 #[cfg(feature = "gpu")]
 pub mod native_first_person_load;
@@ -89,6 +91,8 @@ pub mod native_first_person_load;
 pub mod native_fog_glue;
 #[cfg(feature = "gpu")]
 pub mod native_gels_glue;
+#[cfg(feature = "gpu")]
+pub mod native_layers_glue;
 #[cfg(feature = "gpu")]
 pub mod native_gels_replace;
 #[cfg(feature = "gpu")]
@@ -128,6 +132,8 @@ pub mod opaque_streams;
 #[cfg(feature = "gpu")]
 pub mod scene_glue;
 pub mod new_maps;
+#[cfg(feature = "test-maps")]
+pub mod test_maps;
 pub mod pad_speaker;
 pub mod precision;
 #[cfg(feature = "desktop-runtime")]

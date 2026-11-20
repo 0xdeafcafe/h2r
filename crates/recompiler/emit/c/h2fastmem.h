@@ -1,6 +1,15 @@
-/* Optional host RAM view. No guest pointer is ever treated as a host pointer.
- * All RAM/page-table/dirty-bit accesses hold the gate shared with Rust.
- * Failed fast checks release it before calling the ordinary ABI helper. */
+/* Inline guest memory, in one of two models.
+ *
+ * Paged (H2_FASTMEM without H2_FLAT_RAM): an optional host RAM view. No
+ * guest pointer is ever treated as a host pointer. All RAM/page-table/
+ * dirty-bit accesses hold the gate shared with Rust. Failed fast checks
+ * release it before calling the ordinary ABI helper.
+ *
+ * Flat (H2_FLAT_RAM with H2_FASTMEM, H2_FLAT_ below; module feature 16):
+ * every access is one host instruction at the runtime's window base plus
+ * the guest address, with a fixup row that sends a faulting one to the
+ * same helper (docs/runtime/contract-thin-transfers-flat-ram.md, section
+ * 4.1, slice F3). No gate, no page table. */
 #ifndef H2FASTMEM_H
 #define H2FASTMEM_H
 #include "h2abi.h"
@@ -24,6 +33,48 @@ _Static_assert(offsetof(H2MemoryShared, data) == 8 && sizeof(H2FastAccess) == 32
 #endif
 #ifndef H2_ACCOUNTING
 #define H2_ACCOUNTING 0
+#endif
+/* Which model. H2_FLAT_SPAN is the opt-in span image (H2_EMIT_FLAT_RAM=1,
+ * the M0 measurement's), on the paged model; it goes when M0 is taken. */
+#ifndef H2_FLAT_RAM
+#define H2_FLAT_RAM 0
+#endif
+#ifndef H2_FLAT_SPAN
+#define H2_FLAT_SPAN 0
+#endif
+#if H2_FLAT_RAM && H2_FASTMEM
+#define H2_FLAT_ 1
+#else
+#define H2_FLAT_ 0
+#endif
+#if H2_FLAT_ && H2_FLAT_SPAN
+#error "H2_FLAT_RAM and H2_FLAT_SPAN are two memory models: build one"
+#endif
+#if H2_FLAT_ && (defined(_WIN32) || !(defined(__aarch64__) || defined(__x86_64__)))
+#error "H2_FLAT_RAM: this target has no flat RAM window yet (contract slice F7)"
+#endif
+/* The flat model's per-context block: the context's third word points to
+ * it (runtime ffi/mem_block.rs). `base` is the host address of guest
+ * address 0, fixed for the runtime, or a window with nothing mapped for a
+ * context whose fast memory is off; `cards` has one byte per 4 KiB guest
+ * page (0: written), and one per 4 MiB region at cards - 1024. The count
+ * and budget work as H2FastAccess's: the runtime sets the budget before it
+ * invokes a handler and settles the count after. A handler loads base and
+ * cards once, at entry. */
+typedef struct H2Mem {
+    uint8_t *base;
+    uint8_t *cards;
+    uint64_t accesses, budget;
+    uint32_t *preempt;
+} H2Mem;
+#if UINTPTR_MAX == UINT64_MAX
+_Static_assert(sizeof(H2Mem) == 40, "flat context layout");
+#endif
+/* What a handler counts and charges in: its view, or its block. */
+#if H2_FLAT_
+typedef H2Mem H2View;
+#else
+typedef H2FastAccess H2View;
 #endif
 /* Preempt word bit 16, IRQ_QUEUED (runtime preempt.rs): set while the
  * interrupt queue is non-empty, not a wake reason. Polls mask it out; the
@@ -176,7 +227,22 @@ static H2_COLD H2_PRESERVE void h2_cold_note(uint32_t why) {
 #define H2_COLD_NOTE(g) ((void)0)
 #define H2_COLD_NOTE_AFTER(g) ((void)0)
 #endif
-#if H2_FASTMEM
+#if H2_FLAT_
+/* The context's third word: the flat block. Never null for a flat module
+ * (the runtime and the emitter's test host both set it). */
+static inline H2Mem *h2_mem_block(ExecCtxOpaque *ctx) {
+    H2Mem *m;
+    memcpy(&m, (const char *)ctx + 2 * sizeof(void *), sizeof m);
+    return m;
+}
+#define H2_FAST_LOCALS()                                                        \
+    H2Mem *const h2_mem_ = h2_mem_block(ctx);                                   \
+    uint8_t *const h2_base_ = h2_mem_->base;                                    \
+    uint8_t *const h2_cards_ = h2_mem_->cards;                                  \
+    H2Gate h2g_ = {.dirtied = UINT32_MAX};                                      \
+    (void)h2_mem_; (void)h2_base_; (void)h2_cards_; (void)h2g_
+#define H2_FAST_RELEASE() ((void)0)
+#elif H2_FASTMEM
 #define H2_FAST_LOCALS() H2FastAccess *h2_mem_ = h2abi_v1_fast_acquire(ctx); H2Gate h2g_ = {.dirtied = UINT32_MAX}; (void)h2_mem_
 #define H2_FAST_RELEASE() h2abi_v1_fast_release(ctx)
 #else
@@ -184,10 +250,11 @@ static H2_COLD H2_PRESERVE void h2_cold_note(uint32_t why) {
 #define H2_FAST_RELEASE() ((void)0)
 #endif
 
-static inline void h2_fast_charge(H2FastAccess *f) {
+static inline void h2_fast_charge(H2View *f) {
     if (++f->accesses == f->budget)
         __atomic_fetch_or(f->preempt, 1u, __ATOMIC_RELEASE); /* SLICE */
 }
+#if !H2_FLAT_
 /* read/write are constants at emitted call sites. Width/alignment remain
  * checked here, so even a nonstandard caller cannot bypass the slow rules. */
 static inline int h2_fast_copy(H2FastAccess *f, uint32_t addr, uint32_t width,
@@ -225,6 +292,271 @@ static inline int h2_fast_copy(H2FastAccess *f, uint32_t addr, uint32_t width,
     H2_FAST_CHARGE(f);
     return 1;
 }
+#endif
+#if H2_FLAT_
+/* ---- The flat model's accesses (section 4.1, "An access is one host
+ * instruction"). Each is an `asm goto` statement: one load or store at
+ * base + (uint64_t)addr, and a row in the module's fixup table (section
+ * h2_fix) giving the instruction's address and the site's `slow_` label,
+ * as two 32-bit self-relative words (hostfault::Format::Relative32). A
+ * fault on the instruction resumes at `slow_` (the runtime's window
+ * region, hostfault::fixup), where the site calls the checked helper:
+ * fault order, whole-span validation, MMIO and the access trap stay the
+ * helper's. Every site using these has a `__label__ slow_` in scope.
+ *
+ * The address wraps at 32 bits by construction, and a span that runs off
+ * the end of the window lands in its guard. A span crossing a 4 KiB page
+ * is native when both pages are in the window. The statement reads or
+ * writes memory ("memory" clobber), so the compiler keeps guest order
+ * between accesses through different addresses: no fence is needed.
+ *
+ * Ten bytes are two instructions, two rows and one label. A 10-byte store
+ * whose second half faults has written its first eight bytes when the
+ * helper runs: the helper then writes all ten or faults, and a fault there
+ * is a guest crash, which the paged model would have left unwritten. */
+#if defined(__APPLE__)
+#define H2_FIX_PUSH ".pushsection __DATA_CONST,__h2_fix,regular\n"
+#else
+/* A C identifier, so the linker defines __start_h2_fix and __stop_h2_fix. */
+#define H2_FIX_PUSH ".pushsection h2_fix,\"a\"\n"
+#endif
+#define H2_FIX_ROW(insn) H2_FIX_PUSH ".p2align 2\n.long " insn " - .\n.long %l[slow_] - .\n.popsection\n"
+/* The table's bounds, for the module table (h2gen.h H2GenModule). The
+ * rows are in address order as long as the module's text is: every row is
+ * emitted right after its instruction, and the runtime refuses an unsorted
+ * table by name (RegistrationError::FixupTable) rather than sort it. */
+#if defined(__APPLE__)
+extern const char h2_fix_start_[] __asm("section$start$__DATA_CONST$__h2_fix");
+extern const char h2_fix_end_[] __asm("section$end$__DATA_CONST$__h2_fix");
+#else
+extern const char __start_h2_fix[] __attribute__((weak, visibility("hidden")));
+extern const char __stop_h2_fix[] __attribute__((weak, visibility("hidden")));
+#define h2_fix_start_ __start_h2_fix
+#define h2_fix_end_ __stop_h2_fix
+#endif
+#define H2_FIX_BOUNDS (const void *)h2_fix_start_, (const void *)h2_fix_end_, 0u
+/* Operand names are never a macro parameter's name (`a`, `v`): the
+ * preprocessor would rename the operand but not its uses in the string. */
+typedef uint8_t h2_flat_v16 __attribute__((vector_size(16)));
+
+#if defined(__aarch64__)
+#define H2_FLAT_LDW_(insn, dst, base, a)                                        \
+    do {                                                                        \
+        uint32_t v_;                                                            \
+        __asm__ goto("1: " insn " %w[gv], [%[b], %w[ga], uxtw]\n" H2_FIX_ROW("1b") \
+                     : [gv] "=r"(v_) : [b] "r"(base), [ga] "r"(a) : "memory" : slow_); \
+        (dst) = v_;                                                             \
+    } while (0)
+#define H2_FLAT_STW_(insn, v, base, a)                                          \
+    __asm__ goto("1: " insn " %w[gv], [%[b], %w[ga], uxtw]\n" H2_FIX_ROW("1b")    \
+                 : : [gv] "r"((uint32_t)(v)), [b] "r"(base), [ga] "r"(a) : "memory" : slow_)
+#define H2_FLAT_LD_1(dst, base, a) H2_FLAT_LDW_("ldrb", dst, base, a)
+#define H2_FLAT_LD_2(dst, base, a) H2_FLAT_LDW_("ldrh", dst, base, a)
+#define H2_FLAT_LD_4(dst, base, a) H2_FLAT_LDW_("ldr", dst, base, a)
+#define H2_FLAT_ST_1(v, base, a) H2_FLAT_STW_("strb", v, base, a)
+#define H2_FLAT_ST_2(v, base, a) H2_FLAT_STW_("strh", v, base, a)
+#define H2_FLAT_ST_4(v, base, a) H2_FLAT_STW_("str", v, base, a)
+#define H2_FLAT_LD_8(dst, base, a)                                              \
+    do {                                                                        \
+        uint64_t v_;                                                            \
+        __asm__ goto("1: ldr %x[gv], [%[b], %w[ga], uxtw]\n" H2_FIX_ROW("1b")     \
+                     : [gv] "=r"(v_) : [b] "r"(base), [ga] "r"(a) : "memory" : slow_); \
+        (dst) = v_;                                                             \
+    } while (0)
+#define H2_FLAT_ST_8(v, base, a)                                                \
+    __asm__ goto("1: str %x[gv], [%[b], %w[ga], uxtw]\n" H2_FIX_ROW("1b")         \
+                 : : [gv] "r"((uint64_t)(v)), [b] "r"(base), [ga] "r"(a) : "memory" : slow_)
+#define H2_FLAT_LD_16(dst, base, a)                                             \
+    do {                                                                        \
+        h2_flat_v16 v_;                                                         \
+        __asm__ goto("1: ldr %q[gv], [%[b], %w[ga], uxtw]\n" H2_FIX_ROW("1b")     \
+                     : [gv] "=w"(v_) : [b] "r"(base), [ga] "r"(a) : "memory" : slow_); \
+        memcpy(&(dst), &v_, 16);                                                \
+    } while (0)
+#define H2_FLAT_ST_16(v, base, a)                                               \
+    do {                                                                        \
+        h2_flat_v16 x_;                                                         \
+        memcpy(&x_, &(v), 16);                                                  \
+        __asm__ goto("1: str %q[gv], [%[b], %w[ga], uxtw]\n" H2_FIX_ROW("1b")     \
+                     : : [gv] "w"(x_), [b] "r"(base), [ga] "r"(a) : "memory" : slow_); \
+    } while (0)
+#define H2_FLAT_LD_10(dst, base, a)                                             \
+    do {                                                                        \
+        uint64_t lo_;                                                           \
+        uint32_t hi_;                                                           \
+        const uint8_t *t_;                                                      \
+        __asm__ goto("add %[t], %[b], %w[ga], uxtw\n"                            \
+                     "1: ldr %x[lo], [%[t]]\n" H2_FIX_ROW("1b")                 \
+                     "2: ldrh %w[hi], [%[t], #8]\n" H2_FIX_ROW("2b")            \
+                     : [lo] "=&r"(lo_), [hi] "=&r"(hi_), [t] "=&r"(t_)          \
+                     : [b] "r"(base), [ga] "r"(a) : "memory" : slow_);           \
+        (dst) = (unsigned __int128)lo_ | (unsigned __int128)hi_ << 64;                              \
+    } while (0)
+#define H2_FLAT_ST_10(v, base, a)                                               \
+    do {                                                                        \
+        uint64_t lo_ = (uint64_t)(v);                                           \
+        uint32_t hi_ = (uint32_t)((v) >> 64);                                   \
+        uint8_t *t_;                                                            \
+        __asm__ goto("add %[t], %[b], %w[ga], uxtw\n"                            \
+                     "1: str %x[lo], [%[t]]\n" H2_FIX_ROW("1b")                 \
+                     "2: strh %w[hi], [%[t], #8]\n" H2_FIX_ROW("2b")            \
+                     : [t] "=&r"(t_)                                            \
+                     : [lo] "r"(lo_), [hi] "r"(hi_), [b] "r"(base), [ga] "r"(a)  \
+                     : "memory" : slow_);                                       \
+    } while (0)
+/* A bulk copy's probe of one byte: a load, or a load and a store of the
+ * same byte. */
+#define H2_FLAT_PROBE_R_(base, a)                                               \
+    do {                                                                        \
+        uint32_t v_;                                                            \
+        __asm__ goto("1: ldrb %w[gv], [%[b], %w[ga], uxtw]\n" H2_FIX_ROW("1b")    \
+                     : [gv] "=r"(v_) : [b] "r"(base), [ga] "r"(a) : "memory" : slow_); \
+        (void)v_;                                                               \
+    } while (0)
+#define H2_FLAT_PROBE_RW_(base, a)                                              \
+    do {                                                                        \
+        uint32_t v_;                                                            \
+        __asm__ goto("1: ldrb %w[gv], [%[b], %w[ga], uxtw]\n" H2_FIX_ROW("1b")    \
+                     "2: strb %w[gv], [%[b], %w[ga], uxtw]\n" H2_FIX_ROW("2b")    \
+                     : [gv] "=&r"(v_) : [b] "r"(base), [ga] "r"(a) : "memory" : slow_); \
+        (void)v_;                                                               \
+    } while (0)
+#elif defined(__x86_64__)
+typedef long long h2_flat_x16 __attribute__((vector_size(16)));
+/* The address operand is the 32-bit guest address zero-extended. */
+#define H2_FLAT_LDX_(insn, reg, dst, base, a)                                   \
+    do {                                                                        \
+        uint64_t v_;                                                            \
+        __asm__ goto("1: " insn " (%[b],%[ga]), %" reg "[gv]\n" H2_FIX_ROW("1b")  \
+                     : [gv] "=r"(v_) : [b] "r"(base), [ga] "r"((uint64_t)(a)) : "memory" : slow_); \
+        (dst) = v_;                                                             \
+    } while (0)
+#define H2_FLAT_STX_(insn, reg, v, base, a)                                     \
+    __asm__ goto("1: " insn " %" reg "[gv], (%[b],%[ga])\n" H2_FIX_ROW("1b")      \
+                 : : [gv] "r"((uint64_t)(v)), [b] "r"(base), [ga] "r"((uint64_t)(a)) : "memory" : slow_)
+/* A 32-bit destination zero-extends into the whole register. */
+#define H2_FLAT_LD_1(dst, base, a) H2_FLAT_LDX_("movzbl", "k", dst, base, a)
+#define H2_FLAT_LD_2(dst, base, a) H2_FLAT_LDX_("movzwl", "k", dst, base, a)
+#define H2_FLAT_LD_4(dst, base, a) H2_FLAT_LDX_("movl", "k", dst, base, a)
+#define H2_FLAT_LD_8(dst, base, a) H2_FLAT_LDX_("movq", "q", dst, base, a)
+#define H2_FLAT_ST_1(v, base, a) H2_FLAT_STX_("movb", "b", v, base, a)
+#define H2_FLAT_ST_2(v, base, a) H2_FLAT_STX_("movw", "w", v, base, a)
+#define H2_FLAT_ST_4(v, base, a) H2_FLAT_STX_("movl", "k", v, base, a)
+#define H2_FLAT_ST_8(v, base, a) H2_FLAT_STX_("movq", "q", v, base, a)
+#define H2_FLAT_LD_16(dst, base, a)                                             \
+    do {                                                                        \
+        h2_flat_x16 v_;                                                         \
+        __asm__ goto("1: movdqu (%[b],%[ga]), %[gv]\n" H2_FIX_ROW("1b")           \
+                     : [gv] "=x"(v_) : [b] "r"(base), [ga] "r"((uint64_t)(a)) : "memory" : slow_); \
+        memcpy(&(dst), &v_, 16);                                                \
+    } while (0)
+#define H2_FLAT_ST_16(v, base, a)                                               \
+    do {                                                                        \
+        h2_flat_x16 x_;                                                         \
+        memcpy(&x_, &(v), 16);                                                  \
+        __asm__ goto("1: movdqu %[gv], (%[b],%[ga])\n" H2_FIX_ROW("1b")           \
+                     : : [gv] "x"(x_), [b] "r"(base), [ga] "r"((uint64_t)(a)) : "memory" : slow_); \
+    } while (0)
+#define H2_FLAT_LD_10(dst, base, a)                                             \
+    do {                                                                        \
+        uint64_t lo_, hi_;                                                      \
+        __asm__ goto("1: movq (%[b],%[ga]), %q[lo]\n" H2_FIX_ROW("1b")           \
+                     "2: movzwl 8(%[b],%[ga]), %k[hi]\n" H2_FIX_ROW("2b")        \
+                     : [lo] "=&r"(lo_), [hi] "=&r"(hi_)                         \
+                     : [b] "r"(base), [ga] "r"((uint64_t)(a)) : "memory" : slow_); \
+        (dst) = (unsigned __int128)lo_ | (unsigned __int128)hi_ << 64;                              \
+    } while (0)
+#define H2_FLAT_ST_10(v, base, a)                                               \
+    do {                                                                        \
+        uint64_t lo_ = (uint64_t)(v), hi_ = (uint64_t)((v) >> 64);              \
+        __asm__ goto("1: movq %q[lo], (%[b],%[ga])\n" H2_FIX_ROW("1b")           \
+                     "2: movw %w[hi], 8(%[b],%[ga])\n" H2_FIX_ROW("2b")          \
+                     : : [lo] "r"(lo_), [hi] "r"(hi_), [b] "r"(base), [ga] "r"((uint64_t)(a)) \
+                     : "memory" : slow_);                                       \
+    } while (0)
+#define H2_FLAT_PROBE_R_(base, a)                                               \
+    do {                                                                        \
+        uint64_t v_;                                                            \
+        __asm__ goto("1: movzbl (%[b],%[ga]), %k[gv]\n" H2_FIX_ROW("1b")          \
+                     : [gv] "=r"(v_) : [b] "r"(base), [ga] "r"((uint64_t)(a)) : "memory" : slow_); \
+        (void)v_;                                                               \
+    } while (0)
+#define H2_FLAT_PROBE_RW_(base, a)                                              \
+    do {                                                                        \
+        uint64_t v_;                                                            \
+        __asm__ goto("1: movzbl (%[b],%[ga]), %k[gv]\n" H2_FIX_ROW("1b")          \
+                     "2: movb %b[gv], (%[b],%[ga])\n" H2_FIX_ROW("2b")            \
+                     : [gv] "=&r"(v_) : [b] "r"(base), [ga] "r"((uint64_t)(a)) : "memory" : slow_); \
+        (void)v_;                                                               \
+    } while (0)
+#endif
+/* A width no site has (a one-bit value): the helper decides. */
+#define H2_FLAT_LD_0(dst, base, a) do { (void)(base); goto slow_; } while (0)
+#define H2_FLAT_ST_0(v, base, a) do { (void)(v); (void)(base); goto slow_; } while (0)
+/* After a store: its page's card and its region's, zero meaning written
+ * (section 4.1, "Dirty tracking is card marking"). The fold reports the
+ * page after each written page too, so a store that crosses needs no
+ * second card. */
+#define H2_FLAT_CARD(cards, a)                                                  \
+    do {                                                                        \
+        (cards)[(a) >> 12] = 0;                                                 \
+        (cards)[(int32_t)((a) >> 22) - 1024] = 0;                               \
+    } while (0)
+#else
+#define H2_FIX_BOUNDS 0, 0, 0u
+#endif
+#if H2_FLAT_
+/* A bounded REP MOVS chunk, flat (section 4.1, "Bulk copies"): the paged
+ * form's chunking and count. Both spans stay within their current 4 KiB
+ * guest page, so each lies in one host page of the window, whose access
+ * is the same throughout: a probe of the source's first byte (a load) and
+ * of the destination's (a load and a store of the same byte) checks the
+ * whole chunk. A fixup on a probe rejects the chunk having changed
+ * nothing, and the ordinary iteration runs, with its faults, MMIO and
+ * partial progress. Overlap is judged on guest addresses: two guest pages
+ * aliasing one physical page are not seen (a propagating copy between
+ * such aliases copies as memmove does). `limit` is the next accounting
+ * safe point. */
+static inline uint32_t h2_fast_movs(H2Mem *f, uint32_t src, uint32_t dst,
+                                  uint32_t count, uint32_t width, int reverse,
+                                  uint64_t limit) {
+    __label__ slow_;
+    if (!f || !count || !(width == 1u || width == 2u || width == 4u)) return 0;
+    uint32_t so = src & 4095u, doff = dst & 4095u;
+    if (so > 4096u - width || doff > 4096u - width) return 0;
+    uint32_t sn = reverse ? so / width + 1u : (4096u - so) / width;
+    uint32_t dn = reverse ? doff / width + 1u : (4096u - doff) / width;
+    uint32_t n = count < sn ? count : sn;
+    if (n > dn) n = dn;
+    uint64_t iterations = limit / 2u + (limit & 1u);
+    if (!iterations) iterations = 1u; /* the original loop polls after a trip */
+    if (n > iterations) n = (uint32_t)iterations;
+#if H2_ACCOUNTING
+    if (f->preempt && (__atomic_load_n(f->preempt, __ATOMIC_RELAXED) & ~H2_IRQ_QUEUED)) n = 1u;
+#endif
+    uint32_t from = src, to = dst, bytes = n * width;
+    if (reverse) { from -= bytes - width; to -= bytes - width; }
+    /* Propagating overlap is element-ordered x86 copying, not memmove.
+     * In 64 bits: a chunk on the last page ends at 2^32. */
+    if ((uint64_t)from < (uint64_t)to + bytes && (uint64_t)to < (uint64_t)from + bytes && from != to &&
+        (reverse ? to < from : to > from)) return 0;
+    uint8_t *base = f->base;
+    H2_FLAT_PROBE_R_(base, from);
+    H2_FLAT_PROBE_RW_(base, to);
+    memmove(base + to, base + from, bytes);
+    H2_FLAT_CARD(f->cards, to);
+#if !H2_ACCOUNTING
+    uint64_t previous = f->accesses, charged = (uint64_t)n * 2u;
+    f->accesses += charged;
+    /* Distance to the first matching increment, including unsigned wrap. */
+    if (f->budget - previous - 1u < charged)
+        __atomic_fetch_or(f->preempt, 1u, __ATOMIC_RELEASE);
+#endif
+    return n;
+slow_:
+    return 0;
+}
+#else
 /* A bounded REP MOVS chunk. Both spans stay within their current RAM page;
  * rejection performs no accesses, so the ordinary iteration retains faults,
  * MMIO and partial progress. `limit` is the next accounting safe point. */
@@ -284,6 +616,7 @@ static inline uint32_t h2_fast_movs(H2FastAccess *f, uint32_t src, uint32_t dst,
     return 0;
 #endif
 }
+#endif
 /* ---- Accesses under a held gate. ---------------------------------------
  * Take a clear gate: the view, or NULL. Once per hold, not per access. */
 static inline H2MemoryData *h2_gate_try(H2FastAccess *f) {
@@ -333,7 +666,7 @@ static H2_ALWAYS_INLINE void h2_gate_tick(H2FastAccess *f, H2Gate *g) {
 #ifndef H2_ENTRY_GATE
 #define H2_ENTRY_GATE 0
 #endif
-#if H2_ENTRY_GATE && H2_FASTMEM
+#if H2_ENTRY_GATE && H2_FASTMEM && !H2_FLAT_
 #define H2_GATE_ENTER_(f, g)                                                    \
     do {                                                                        \
         if (!(g).held && (f)) h2_gate_adopt(&(g), h2_gate_try(f));              \
@@ -350,7 +683,7 @@ static H2_ALWAYS_INLINE void h2_gate_tick(H2FastAccess *f, H2Gate *g) {
  * accesses left when last settled (all ones: none would expire), so the
  * spend that reaches it is the one whose charge would have expired the
  * slice, and raises SLICE on the preempt word as that charge does. */
-static H2_ALWAYS_INLINE void h2_view_spend(H2FastAccess *f, uint64_t n) {
+static H2_ALWAYS_INLINE void h2_view_spend(H2View *f, uint64_t n) {
     uint64_t previous = f->accesses;
     f->accesses = previous + n;
     /* Distance to the first matching increment, including unsigned wrap. */
@@ -358,7 +691,7 @@ static H2_ALWAYS_INLINE void h2_view_spend(H2FastAccess *f, uint64_t n) {
 }
 /* What h2abi_v1_budget answers: the accesses left before the slice
  * expires, or all ones when nothing would (unarmed, or already spent). */
-static H2_ALWAYS_INLINE uint64_t h2_view_left(const H2FastAccess *f) {
+static H2_ALWAYS_INLINE uint64_t h2_view_left(const H2View *f) {
     return f->budget == UINT64_MAX || f->accesses >= f->budget ? UINT64_MAX : f->budget - f->accesses;
 }
 /* Whether physical page `physical` is already marked dirty. A set bit lies
@@ -446,10 +779,11 @@ static H2_COLD H2_PRESERVE void h2_mark_dirty(H2MemoryData *d, uint32_t physical
 #else
 #define H2_PAGED_TRY H2_HELD_TRY
 #endif
-/* The original view's watching field was always 0 or 1. Bit 31 opts
- * into the appended flat descriptor. Never read past the v1 prefix without
- * it, including when running a new module against an older runtime. */
-#if H2_FLAT_RAM && H2_FASTMEM
+/* The opt-in span image (H2_FLAT_SPAN). The original view's watching
+ * field was always 0 or 1. Bit 31 opts into the appended flat descriptor.
+ * Never read past the v1 prefix without it, including when running a new
+ * module against an older runtime. */
+#if H2_FLAT_SPAN && H2_FASTMEM
 typedef struct H2FlatView {
     uint8_t *base;
     uint8_t *stores;
@@ -554,6 +888,7 @@ static H2_ALWAYS_INLINE void h2_copy_width(uint8_t *dst, const uint8_t *src, uin
     default: memcpy(dst, src, width); break;
     }
 }
+#if !H2_FLAT_
 static H2_COLD H2_PRESERVE H2Cold h2_access_cold(ExecCtxOpaque *ctx, H2FastAccess *f, uint32_t held, uint32_t pc,
                                                  uint32_t addr, uint32_t width, int write, uint8_t *buf) {
     H2Cold r = {0};
@@ -565,7 +900,7 @@ static H2_COLD H2_PRESERVE H2Cold h2_access_cold(ExecCtxOpaque *ctx, H2FastAcces
         h2_gate_adopt(&g, h2_gate_try(f));
         H2FastPage page;
         uint8_t *host;
-#if H2_FLAT_RAM
+#if H2_FLAT_SPAN
         H2_SITE_TRY(f, g, addr, width, write, page, host, helper, H2_COLD_FLAT(r));
 #else
         H2_HELD_TRY(f, g, addr, width, write, page, host, helper);
@@ -601,4 +936,11 @@ static inline uint32_t h2_mem_write(H2FastAccess *f, ExecCtxOpaque *ctx, uint32_
 #endif
     return H2_MEM_WRITE_SLOW(ctx, pc, addr, width, alignment, value);
 }
+#else
+/* The flat model has no gate: what the shared macros hold, drop and tick
+ * is nothing (h2gen.h's H2_GATE_DROP, the emitter's REP loop tick). */
+#undef h2_gate_drop
+#define h2_gate_drop(f, g) ((void)(f), (void)(g))
+#define h2_gate_tick(f, g) ((void)(f), (void)(g))
+#endif
 #endif

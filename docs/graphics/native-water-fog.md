@@ -81,9 +81,12 @@ loaded, drawn with each material's own translated layer-16 pass.
   (`[esp] == 0x0002c0e9`), the layer-draw's own gate holds
   (`[0x0048574c] == 3` or a fog byte set) and the list holds a BSP item
   in the layer, asks the host; the host plans the skip over a preview,
-  reserves the replacement through the ordered handoff (recording on
-  every copy before anything is surrendered), checks that the same
-  map and BSP load is current, applies the mask edits and commits.
+  writes the view's fog into the frame step's scene and builds the pass
+  from the scene's copy (framescene.md, slice 5), reserves it (a scene
+  stage the render thread prepares and records when it takes them,
+  else through the ordered handoff, recording on every copy before
+  anything is surrendered), checks that the same map and BSP load is
+  current, applies the mask edits and commits.
   The shared fog and water mask walk requires the accepted items to
   form a prefix of the layer's list so the guest remainder draws in
   order after the native pass. A later accepted item leaves the
@@ -110,8 +113,8 @@ loaded, drawn with each material's own translated layer-16 pass.
 `feature::native_water`,
 `native_render::water_gpu` and `boot::native_water_glue`. Two parts:
 
-- **The water edge blend, drawn natively (layer 6).** The skip is the
-  fog's shape: one context-only observer before the layer draw, ordered
+- **The water edge blend, drawn natively (layer 6).** The skip, the
+  scene and the reservation are the fog's: one context-only observer before the layer draw, ordered
   after the world's and the fog's. It runs for layer 6 when the caller
   is the late passes' call
   (`[esp] == 0x0002c120`), gated by the water branch's own gate (bit 4

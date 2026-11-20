@@ -115,8 +115,8 @@ without the bit.
 | `H2GEN_FEATURE_IMPRECISE_FAULTS` | 128 | `H2_PASSES=…,imprecise-faults` | accepted; the census counts `continued_imprecise` |
 
 Bits 2, 4, 8 and 32 are direct calls, the lent view, the entry table and
-host calls; 16 is kept for flat RAM
-([contract-thin-transfers-flat-ram.md](contract-thin-transfers-flat-ram.md)).
+host calls; 16 is flat RAM (`H2_FLAT_RAM=1`,
+[contract-thin-transfers-flat-ram.md](contract-thin-transfers-flat-ram.md)).
 None of them changes the clock.
 
 - `Runtime::fault_census()`: `snapshot()` gives `FaultCounts`; `reset()`

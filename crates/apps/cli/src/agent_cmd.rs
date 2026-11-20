@@ -90,6 +90,8 @@ or a short form:
   fallbacks [N]          profile.fallbacks: the N (20) fallback interpreter
                          entry addresses that interpreted most, with their
                          function, hits and instructions
+  flatmem                profile.memory: the flat RAM window's fixups,
+                         pages outside it and bytes skipped for congruence
   faults [N]             profile.faults: the fault census, every guest memory
                          fault and whether execution went on from it, with
                          the N (20) most frequent fault PCs
@@ -106,6 +108,7 @@ or a short form:
   state fork <from> <name> [replace]  state.fork: load <from>, save it as <name>
 {HOT}
 {SIM}
+{MAPS}
 {FLIGHT}
 {RAW}
 
@@ -124,6 +127,7 @@ fn usage() -> String {
     USAGE
         .replace("{HOT}", crate::agent_hot_cmd::USAGE)
         .replace("{SIM}", crate::agent_sim::USAGE)
+        .replace("{MAPS}", crate::agent_maps::USAGE)
         .replace("{FLIGHT}", crate::agent_flight::USAGE)
         .replace("{RAW}", crate::agent_raw::USAGE)
 }
@@ -198,6 +202,11 @@ pub fn run(args: Vec<String>) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&v)?);
             Ok(())
         }
+        "maps" => {
+            let v = crate::agent_maps::run(&mut c, &rest[1..])?;
+            println!("{}", serde_json::to_string_pretty(&v)?);
+            Ok(())
+        }
         _ => {
             let (m, p) = parse_call(&rest)?;
             if first == "poke" {
@@ -227,6 +236,7 @@ fn looks_like_host(w: &str) -> bool {
             && !w.starts_with("edit.")
             && !w.starts_with("render.")
             && !w.starts_with("sim.")
+            && !w.starts_with("maps.")
             && !w.starts_with("trace.")
             && !w.starts_with("flight.")
     }
@@ -278,6 +288,8 @@ fn script(c: &mut Client) -> Result<()> {
             frame(c, &words)?
         } else if words[0] == "sim" {
             sim(c, &words[1..])?
+        } else if words[0] == "maps" {
+            crate::agent_maps::run(c, &words[1..])?
         } else {
             let (m, p) = parse_call(&words)?;
             call(c, &m, p)?
@@ -321,6 +333,9 @@ fn run_script(c: &mut Client, args: &[String], sim: bool) -> Result<()> {
         |words| {
             if words[0] == "frame" {
                 return frame(c, words).map_err(|e| format!("{e:#}"));
+            }
+            if words[0] == "maps" {
+                return crate::agent_maps::run(c, &words[1..]).map_err(|e| format!("{e:#}"));
             }
             if words[0] == "sim" {
                 added |= words.get(1).is_some_and(|w| w == "add");
@@ -603,6 +618,7 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
         "hostmetrics" => Some(method::HOST_METRICS),
         "hostaudit" => Some(method::HOST_AUDIT),
         "render" => Some(method::RENDER_STATS),
+        "flatmem" => Some(method::PROFILE_MEMORY),
         "ui" => Some(method::UI_SCREEN),
         _ => None,
     };
@@ -892,6 +908,7 @@ mod tests {
         assert_eq!(c("hostmetrics"), ("host.metrics".into(), Value::Null));
         assert_eq!(c("ui"), ("ui.screen".into(), Value::Null));
         assert_eq!(c("render"), ("render.stats".into(), Value::Null));
+        assert_eq!(c("flatmem"), ("profile.memory".into(), Value::Null));
         assert_eq!(
             c("fallbacks 5"),
             ("profile.fallbacks".into(), json!({"top": 5}))

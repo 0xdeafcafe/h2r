@@ -1246,6 +1246,12 @@ pub fn prepare_at_boot(data_root: &Path, disc: &Path, overflow: usize) -> Option
     Some(prepare(cat))
 }
 
+/// Whether the boot prepared the catalogue ([`packages_changed`] has
+/// something to refresh).
+pub fn prepared() -> bool {
+    PREPARED.get().is_some() && SOURCES.get().is_some()
+}
+
 /// Rebuild the offers and catalogue on the download or removal thread.
 pub fn packages_changed(disc: &Path) {
     let (Some(sel), Some(sources)) = (PREPARED.get(), SOURCES.get()) else {

@@ -120,7 +120,7 @@ pub struct Report {
     pub bytes: Option<u64>,
 }
 
-fn value(ty: FieldType, field: &str, v: &serde_json::Value) -> Result<Value> {
+pub(crate) fn value(ty: FieldType, field: &str, v: &serde_json::Value) -> Result<Value> {
     let bad = |what: &'static str| Error::Value(layout_name(field), what);
     Ok(match ty {
         FieldType::Vec3 => {

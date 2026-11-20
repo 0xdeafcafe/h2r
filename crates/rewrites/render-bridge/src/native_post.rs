@@ -3,8 +3,10 @@
 //! the native renderer (`impl.render.native`, on by default).
 //!
 //! The colour pass and each screen effect run their guest code. Entry
-//! hooks supply the call's arguments and stack identity. Return hooks
-//! close that exact call before its caller can issue another draw.
+//! hooks supply the call's arguments and stack identity, and put them in
+//! the frame step's scene under the view's post passes
+//! (`scene_step::post_colour`, `post_effect`). Return hooks close that
+//! exact call before its caller can issue another draw.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -168,6 +170,9 @@ pub fn on_colour_pass(mem: &mut dyn GuestMemory, esp: u32, fp: Fp) -> bool {
         };
         *a = v;
     }
+    // The frame step's scene takes the call's arguments by value
+    // (docs/graphics/framescene.md, slice 5), whatever the host does.
+    crate::scene_step::post_colour(&*mem, args);
     // HOST is only held to clone the host: never across its calls.
     let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
         return false;
@@ -200,6 +205,7 @@ pub fn on_screen_effect(mem: &mut dyn GuestMemory, eax: u32, esp: u32, fp: Fp) -
         rows: w[2],
         corners: w[3],
     };
+    crate::scene_step::post_effect(&*mem, call.datum, call.values, call.columns, call.rows);
     let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
         return false;
     };

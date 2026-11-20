@@ -15,7 +15,8 @@ use shaders::vsh::VertexUniforms;
 
 use crate::gpu::{Image, texture};
 use crate::light_look::{FRAME_DWORDS, LightProgram, LightStage, colour_uniforms, light_vertex};
-use crate::program::{Cull, INPUTS, ViewInputs, pipeline_state, bias_signed, frame_pixel, frame_vertex, sampler_descriptor};
+use crate::object_program::{MAX_PALETTE, POSITION_DECOMPRESSION, Row};
+use crate::program::{Cull, INPUTS, MODEL_ROWS, TEXCOORD_DECOMPRESSION, ViewInputs, pipeline_state, bias_signed, frame_pixel, frame_vertex, sampler_descriptor};
 use crate::world::WorldVertex;
 
 /// The texture shapes a light stage binds.
@@ -219,7 +220,50 @@ pub struct LightGpu {
     /// By the gel target's view: both target copies' kept hot, a resized
     /// target evicting the oldest.
     gel_target_groups: Vec<(wgpu::TextureView, Option<wgpu::BindGroup>)>,
-    pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, Option<Cull>), Option<(PipelineKey, Arc<PendingPipeline>)>>,
+    /// By target formats, cull and vertex layout (`None` the world's
+    /// [`WorldVertex`], else a [`ModelLayout::id`]).
+    pipelines: HashMap<PipelineFor, Option<(PipelineKey, Arc<PendingPipeline>)>>,
+}
+
+type PipelineFor = (wgpu::TextureFormat, wgpu::TextureFormat, Option<Cull>, Option<u64>);
+
+/// A model section's vertex buffer layout for the light passes: each
+/// register its declaration supplies in a slot
+/// (`crate::object_streams::gather`), read by
+/// `crate::object_program_gpu::attributes`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelLayout {
+    /// Distinct per distinct `stride` and `attributes`: what a pipeline
+    /// is cached by.
+    pub id: u64,
+    pub stride: u64,
+    pub attributes: Vec<wgpu::VertexAttribute>,
+}
+
+/// A light draw over a model's part (docs/graphics/native-lights.md,
+/// "Gathered groups in the scene"): its section's buffers through the
+/// declaration its pass was compiled for
+/// ([`crate::light_look::compile_light_model`]), the entry's node rows
+/// (`c[50..]`, as the geometry handler uploads them) and the section's
+/// decompression (`c[170..172]`).
+#[derive(Clone)]
+pub struct ModelGeometry<'a> {
+    pub vertices: wgpu::Buffer,
+    pub indices: wgpu::Buffer,
+    pub layout: &'a ModelLayout,
+    pub nodes: &'a [Row],
+    pub decompression: [Row; 3],
+}
+
+/// `u` with a model draw's node rows and decompression put in; `None`
+/// when the rows run past the palette.
+pub fn model_vertex(mut u: VertexUniforms, nodes: &[Row], decompression: [Row; 3]) -> Option<VertexUniforms> {
+    if nodes.len() > 3 * MAX_PALETTE {
+        return None;
+    }
+    u.constants[MODEL_ROWS..MODEL_ROWS + nodes.len()].copy_from_slice(nodes);
+    u.constants[POSITION_DECOMPRESSION..=TEXCOORD_DECOMPRESSION].copy_from_slice(&decompression);
+    Some(u)
 }
 
 /// The light passes' pipelines in a packet's description (diagnostics
@@ -334,14 +378,19 @@ impl LightGpu {
     }
 
     /// Makes the pipeline for these target formats, with the pass's own
-    /// blend, depth and cull state, once; with the state a packet
-    /// describes it by.
-    pub fn pipeline(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, cull: Option<Cull>) -> Option<&(PipelineKey, Arc<PendingPipeline>)> {
+    /// blend, depth and cull state, over the world's vertices or a
+    /// model's (`model`), once; with the state a packet describes it by.
+    pub fn pipeline(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, cull: Option<Cull>,
+        model: Option<&ModelLayout>) -> Option<&(PipelineKey, Arc<PendingPipeline>)>
+    {
         let (module, layout, s) = (&self.module, &self.layout, self.program.state);
-        self.pipelines.entry((color, depth, cull)).or_insert_with(|| {
-            let attributes = INPUTS.map(|(location, offset, format)| wgpu::VertexAttribute {
-                format, offset, shader_location: location,
-            });
+        self.pipelines.entry((color, depth, cull, model.map(|m| m.id))).or_insert_with(|| {
+            let (stride, attributes) = match model {
+                Some(m) => (m.stride, m.attributes.clone()),
+                None => (std::mem::size_of::<WorldVertex>() as u64, INPUTS.map(|(location, offset, format)| wgpu::VertexAttribute {
+                    format, offset, shader_location: location,
+                }).to_vec()),
+            };
             let primitive = pipeline_state(Some(&s), cull).0;
             let depth_stencil = wgpu::DepthStencilState {
                 format: depth,
@@ -359,7 +408,7 @@ impl LightGpu {
                     entry_point: Some("vs_main"),
                     compilation_options: Default::default(),
                     buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<WorldVertex>() as u64,
+                        array_stride: stride,
                         step_mode: wgpu::VertexStepMode::Vertex,
                         attributes: &attributes,
                     })],
@@ -460,7 +509,10 @@ pub struct LightDraw<'a> {
     /// Current target copy and guest-coordinate scale for engine texture 10.
     pub gel_view: Option<&'a wgpu::TextureView>,
     pub gel_scale: Option<[f32; 4]>,
+    /// Ranges of the world's indices, or of `model`'s.
     pub ranges: &'a [std::ops::Range<u32>],
+    /// A model part's buffers and rows; `None` the world's buffers.
+    pub model: Option<ModelGeometry<'a>>,
 }
 
 impl LightDraw<'_> {
@@ -470,7 +522,12 @@ impl LightDraw<'_> {
         let (vertex, pixel) = colour_uniforms(self.program, a, b);
         let mut pixel = frame_pixel(&pixel, view);
         apply_gel_scale(&mut pixel, &self.program.stages, self.gel_scale);
-        (light_vertex(&frame_vertex(&vertex, view), self.frame), pixel)
+        let mut vertex = light_vertex(&frame_vertex(&vertex, view), self.frame);
+        if let Some(m) = &self.model {
+            // Checked before the run is prepared ([`LightSet::draws`]).
+            vertex = model_vertex(vertex.clone(), m.nodes, m.decompression).unwrap_or(vertex);
+        }
+        (vertex, pixel)
     }
 }
 
@@ -594,8 +651,9 @@ impl LightSet {
                 pass.static_groups.insert(static_gel, group.clone());
                 group?
             };
-            resident &= pass.pipelines.contains_key(&(color, depth, d.cull));
-            let pipeline = pass.pipeline(device, color, depth, d.cull)?.clone();
+            let model = d.model.as_ref().map(|m| m.layout);
+            resident &= pass.pipelines.contains_key(&(color, depth, d.cull, model.map(|m| m.id)));
+            let pipeline = pass.pipeline(device, color, depth, d.cull, model)?.clone();
             ready.push(Prepared { draw: d, pipeline, textures, resident });
         }
         // Pooled per submission slot: steady frames copy only changed rows.
@@ -614,9 +672,11 @@ impl LightSet {
     /// The run's packets for the D3D pass open on `target`'s attachments:
     /// one per index range, in order, each with its draw's pipeline, groups
     /// and blend constant, clipped to `scissor` (this copy's texels) and
-    /// drawn with stencil reference 0. Pipelines and texture groups are the
-    /// passes' own, made once; the uniforms take the submission's resident
-    /// slot. Refuses the whole run when any draw cannot be issued exactly.
+    /// drawn with stencil reference 0. A draw over a model's part
+    /// ([`LightDraw::model`]) draws its own buffers, the rest `vertices`
+    /// and `indices`. Pipelines and texture groups are the passes' own,
+    /// made once; the uniforms take the submission's resident slot.
+    /// Refuses the whole run when any draw cannot be issued exactly.
     #[allow(clippy::too_many_arguments)]
     pub fn draws(&mut self, target: &LightTarget<'_>,
         vertices: &wgpu::Buffer, indices: &wgpu::Buffer,
@@ -629,6 +689,11 @@ impl LightSet {
             view.texture() == target.color.texture() || view.texture() == target.depth.texture()
         }) {
             return Err("light gel samples its own attachment");
+        }
+        if draws.iter().filter_map(|d| d.model.as_ref()).any(|m| {
+            m.nodes.len() > 3 * MAX_PALETTE || m.vertices.size() == 0 || m.indices.size() == 0
+        }) {
+            return Err("model light geometry unavailable");
         }
         let (device, color, depth) = (target.device, target.color_format, target.depth_format);
         let (uniforms, prepared) = self.prepare(
@@ -650,6 +715,10 @@ impl LightSet {
                 BoundGroup { index: 0, group: uniforms.group.clone(), offsets: uniforms.offsets(i).to_vec() },
                 BoundGroup::new(1, prepared.textures.clone()),
             ];
+            let (vertices, indices) = match &draw.model {
+                Some(m) => (&m.vertices, &m.indices),
+                None => (vertices, indices),
+            };
             for range in draw.ranges {
                 if range.is_empty() || u64::from(range.end) > indices.size() / 4 {
                     return Err("light index range unavailable");
@@ -676,6 +745,20 @@ impl LightSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_model_draw_puts_its_node_rows_at_c50_and_its_decompression_at_c170() {
+        let base = light_vertex(&VertexUniforms::default(), &[1.0f32.to_bits(); FRAME_DWORDS]);
+        let nodes: Vec<Row> = (0..6).map(|r| [r as f32; 4]).collect();
+        let decompression = [[2.0; 4], [3.0; 4], [4.0; 4]];
+        let u = model_vertex(base.clone(), &nodes, decompression).expect("fits");
+        assert_eq!(&u.constants[MODEL_ROWS..MODEL_ROWS + 6], nodes.as_slice());
+        assert_eq!(u.constants[MODEL_ROWS + 6], base.constants[MODEL_ROWS + 6], "past the rows: untouched");
+        assert_eq!(u.constants[POSITION_DECOMPRESSION..=TEXCOORD_DECOMPRESSION], decompression);
+        assert_eq!(u.constants[31], [1.0; 4], "the light frame stays");
+        let too_many = vec![[0.0; 4]; 3 * MAX_PALETTE + 1];
+        assert!(model_vertex(base, &too_many, decompression).is_none());
+    }
 
     #[test]
     fn isolated_lights_reuse_warm_gpu_resources_with_distinct_uniform_ranges() {
@@ -725,6 +808,7 @@ mod tests {
         let draw = LightDraw {
             program: &program, key: light_gpu_key(&program), cull: None, colours: [[0.; 3]; 2],
             frame: &[0; FRAME_DWORDS], gel: None, gel_view: Some(&gel), gel_scale: None, ranges: &[0..3],
+            model: None,
         };
         let pool = gfx::ring::UploadPool::default();
         // Runs in one submission take distinct resident slots; the next
@@ -826,7 +910,7 @@ mod tests {
         fn draw<'a>(program: &'a LightProgram, ranges: &'a [std::ops::Range<u32>]) -> LightDraw<'a> {
             LightDraw {
                 program, key: light_gpu_key(program), cull: None, colours: [[0.; 3]; 2],
-                frame: &[0; FRAME_DWORDS], gel: None, gel_view: None, gel_scale: None, ranges,
+                frame: &[0; FRAME_DWORDS], gel: None, gel_view: None, gel_scale: None, ranges, model: None,
             }
         }
         let (once, twice): ([std::ops::Range<u32>; 1], [std::ops::Range<u32>; 2]) = ([0..3], [3..6, 0..3]);

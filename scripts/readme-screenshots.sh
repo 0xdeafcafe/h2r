@@ -17,7 +17,8 @@
 # image's build, or the image recompiles), and passes H2_FLAT_RAM through if
 # you set it. Use `h2` from $H2 or $PATH (cargo install --force from master).
 # The frames come from a scratch folder that is deleted on exit; only the
-# JPEGs are kept. Game screenshots may only be committed as documentation
+# JPEGs are kept; scripts/readme-art.sh then rebuilds the README header and
+# montage from them. Game screenshots may only be committed as documentation
 # shots under docs/images/** (Git LFS): see CONTRIBUTING.md.
 set -euo pipefail
 

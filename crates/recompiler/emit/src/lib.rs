@@ -609,7 +609,9 @@ fn registry(
         _ => ("0", 0, 0),
     };
     s.push_str(&format!(
-        "H2_EXPORT const H2GenModule h2gen_module = {{H2_ABI_VERSION, {}u, {}u, {features}, entries, resumes, {pcmap}, {lo:#010x}u, {hi:#010x}u}};\n",
+        // H2GEN_FEATURE_FLAT is the flat model's bit when the build selects
+        // it (h2gen.h), with the fixup table's bounds after pcmap.
+        "H2_EXPORT const H2GenModule h2gen_module = {{H2_ABI_VERSION, {}u, {}u, {features} | H2GEN_FEATURE_FLAT, entries, resumes, {pcmap}, {lo:#010x}u, {hi:#010x}u, H2_FIX_BOUNDS, 0u}};\n",
         entries.len(),
         resumes.len(),
     ));
@@ -722,10 +724,10 @@ mod tests {
             "    [0x1000] = 3u,\n",
             "};\n",
         )), "{table}");
-        assert!(table.contains("entries, resumes, pcmap, 0x00001000u, 0x00002001u};"), "{table}");
+        assert!(table.contains("entries, resumes, pcmap, 0x00001000u, 0x00002001u, H2_FIX_BOUNDS, 0u};"), "{table}");
         // No entries: no map.
         let none = registry(&[], &[], &BTreeMap::new(), "", Codegen::default());
-        assert!(none.contains("entries, resumes, 0, 0x00000000u, 0x00000000u};"), "{none}");
+        assert!(none.contains("entries, resumes, 0, 0x00000000u, 0x00000000u, H2_FIX_BOUNDS, 0u};"), "{none}");
     }
 
     #[test]

@@ -19,6 +19,16 @@
 //! statements against the operation the runtime performs. One deliberate
 //! difference: a fault on an unmapped operand is reported as the read the
 //! interpreter reports, where the runtime reports a write-access check.
+//!
+//! A module built for the flat model (`H2_FLAT_RAM=1`, module feature 16)
+//! reads and writes guest memory at a window base plus the guest address
+//! (docs/runtime/contract-thin-transfers-flat-ram.md, section 4.1). This
+//! host keeps one window of its own for the process: for a run, the whole
+//! host pages inside the [`FlatMemory`] are mapped in it, its bytes copied
+//! in and back out after, and every other address faults and takes its
+//! fixup to the helpers. [`Ctx::null_window`] runs the same module with
+//! nothing mapped, so every access takes the helpers: the reference a
+//! window run is compared with. Flat runs hold one process-wide lock.
 
 use std::collections::HashMap;
 use std::ffi::{CStr, c_char, c_void};
@@ -282,6 +292,70 @@ struct GenModule {
     resumes: *const GenResume,
 }
 
+/// `H2GenModule` whole, for a module with [`FEATURE_FLAT_RAM`].
+#[repr(C)]
+struct GenFlatModule {
+    head: GenModule,
+    pcmap: *const u16,
+    text_lo: u32,
+    text_hi: u32,
+    fix_start: *const u8,
+    fix_end: *const u8,
+    fix_format: u32,
+    fix_pad: u32,
+}
+
+/// h2gen.h `H2GEN_FEATURE_FLAT_RAM`.
+pub const FEATURE_FLAT_RAM: u32 = 16;
+
+/// h2fastmem.h `H2Mem`: the flat model's per-context block, at the
+/// context's third word. Unused by a paged module.
+#[repr(C)]
+struct FlatBlock {
+    base: *mut u8,
+    cards: *mut u8,
+    accesses: u64,
+    budget: u64,
+    preempt: *const std::sync::atomic::AtomicU32,
+}
+
+/// Owns a [`FlatBlock`] through a raw pointer, as generated code keeps it
+/// while callbacks borrow the [`Ctx`]. One word.
+#[repr(transparent)]
+struct BlockPtr(std::ptr::NonNull<FlatBlock>);
+
+impl BlockPtr {
+    fn new() -> Self {
+        let b = Box::new(FlatBlock {
+            base: std::ptr::null_mut(),
+            cards: std::ptr::null_mut(),
+            accesses: 0,
+            budget: u64::MAX,
+            preempt: std::ptr::null(),
+        });
+        Self(std::ptr::NonNull::new(Box::into_raw(b)).expect("Box is non-null"))
+    }
+    fn get(&self) -> *mut FlatBlock {
+        self.0.as_ptr()
+    }
+    fn take_accesses(&mut self) -> u64 {
+        // SAFETY: ours; C is suspended in a callback or not running.
+        unsafe {
+            let field = &raw mut (*self.get()).accesses;
+            let n = field.read();
+            field.write(0);
+            n
+        }
+    }
+}
+
+impl Drop for BlockPtr {
+    fn drop(&mut self) {
+        // SAFETY: made by Box::into_raw; no handler runs while Ctx drops.
+        unsafe { drop(Box::from_raw(self.get())) };
+    }
+}
+
 /// A diagnostic the generated code reported through a helper or shim.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostEvent {
@@ -302,6 +376,8 @@ pub struct Ctx {
     /// The direct-call block (RUNTIME-CONTRACT.md §4, "Direct calls"):
     /// always null here, so every call leaves for this host's own loop.
     direct: *mut std::ffi::c_void,
+    /// The flat block (RUNTIME-CONTRACT.md, "Flat RAM"): third.
+    block: BlockPtr,
     pub mem: FlatMemory,
     pub events: Vec<HostEvent>,
     /// Calls to the atomic accessors, by `H2_ATOMIC_*` tag (`xchg` is 15,
@@ -330,16 +406,40 @@ pub struct Ctx {
     /// charge spends the last one, the preempt word is set, as the
     /// runtime's slice expiry sets its bit.
     pub slice: Option<u64>,
+    /// A flat module runs against the null window: nothing mapped, every
+    /// access through its fixup to the helpers (the runtime's context
+    /// with fast memory off).
+    pub null_window: bool,
+    /// Faulting flat accesses sent to their fixups, over all runs.
+    pub fixups: u64,
+    /// The window's mapped guest bytes during a flat run.
+    win: Option<WinView>,
+}
+
+/// Guest `[lo, hi)` is mapped at `base + guest` for the current run.
+#[derive(Clone, Copy)]
+struct WinView {
+    base: *mut u8,
+    lo: u64,
+    hi: u64,
+}
+
+impl WinView {
+    fn holds(&self, a: u64) -> bool {
+        self.lo <= a && a < self.hi
+    }
 }
 
 const _: () = assert!(std::mem::offset_of!(Ctx, preempt) == 0);
 const _: () = assert!(std::mem::offset_of!(Ctx, direct) == size_of::<*const u32>());
+const _: () = assert!(std::mem::offset_of!(Ctx, block) == 2 * size_of::<*const u32>());
 
 impl Ctx {
     pub fn new(mem: FlatMemory) -> Self {
         Ctx {
             preempt: Box::default(),
             direct: std::ptr::null_mut(),
+            block: BlockPtr::new(),
             mem,
             events: Vec::new(),
             atomics: Vec::new(),
@@ -351,11 +451,73 @@ impl Ctx {
             counted: 0,
             exits: 0,
             slice: None,
+            null_window: false,
+            fixups: 0,
+            win: None,
         }
     }
 
-    /// The runtime's `spend_accesses`.
+    /// The runtime's `spend_accesses`, after taking what a flat handler
+    /// counted in its block (`sync_accesses`); leaves the block's budget
+    /// at what remains.
     fn spend(&mut self, n: u64) {
+        let n = n + self.block.take_accesses();
+        self.spend_counted(n);
+        let budget = self.budget();
+        // SAFETY: as in BlockPtr::take_accesses.
+        unsafe { (&raw mut (*self.block.get()).budget).write(budget) };
+    }
+    /// Settle the block with nothing new charged.
+    fn sync(&mut self) {
+        self.spend(0);
+    }
+    /// Before a handler: the block's preempt word and budget.
+    fn enter(&mut self) {
+        let preempt: *const std::sync::atomic::AtomicU32 = &*self.preempt;
+        // SAFETY: as in BlockPtr::take_accesses.
+        unsafe { (&raw mut (*self.block.get()).preempt).write(preempt) };
+        self.sync();
+    }
+    /// Point the block at a window and its cards.
+    fn point(&mut self, base: *mut u8, cards: *mut u8) {
+        // SAFETY: as in BlockPtr::take_accesses.
+        unsafe {
+            (&raw mut (*self.block.get()).base).write(base);
+            (&raw mut (*self.block.get()).cards).write(cards);
+        }
+    }
+
+    /// Read guest memory as the helpers see it: [`Ctx::mem`]'s bounds and
+    /// faults, with the bytes the window maps during a flat run.
+    fn mem_read(&mut self, addr: u32, buf: &mut [u8]) -> Result<(), MemFault> {
+        self.mem.read(addr, buf)?;
+        if let Some(w) = self.win {
+            for (i, b) in buf.iter_mut().enumerate() {
+                let a = addr as u64 + i as u64;
+                if w.holds(a) {
+                    // SAFETY: mapped for this run (`WinView`).
+                    *b = unsafe { w.base.add(a as usize).read() };
+                }
+            }
+        }
+        Ok(())
+    }
+    /// Write guest memory as the helpers see it ([`Ctx::mem_read`]).
+    fn mem_write(&mut self, addr: u32, data: &[u8]) -> Result<(), MemFault> {
+        self.mem.write(addr, data)?;
+        if let Some(w) = self.win {
+            for (i, &b) in data.iter().enumerate() {
+                let a = addr as u64 + i as u64;
+                if w.holds(a) {
+                    // SAFETY: as in mem_read.
+                    unsafe { w.base.add(a as usize).write(b) };
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn spend_counted(&mut self, n: u64) {
         self.charged += n;
         if let Some(left) = self.slice.filter(|&l| l > 0 && n > 0) {
             if n >= left {
@@ -462,7 +624,9 @@ unsafe extern "C" fn cb_exit(c: *mut c_void, n: u64) {
 }
 
 unsafe extern "C" fn cb_budget(c: *mut c_void) -> u64 {
-    unsafe { &*c.cast::<Ctx>() }.budget()
+    let ctx = unsafe { &mut *c.cast::<Ctx>() };
+    ctx.sync();
+    ctx.budget()
 }
 
 unsafe fn read(c: *mut c_void, pc: u32, addr: u32, width: u32, align: u32, out: *mut u8) -> u32 {
@@ -472,7 +636,7 @@ unsafe fn read(c: *mut c_void, pc: u32, addr: u32, width: u32, align: u32, out: 
     if align > 1 && !addr.is_multiple_of(align) {
         return ctx.emit(HostEvent::Guest { pc, saved_eip: pc, code: 7, arg: addr });
     }
-    match ctx.mem.read(addr, buf) {
+    match ctx.mem_read(addr, buf) {
         Ok(()) => {
             unsafe { std::ptr::copy_nonoverlapping(buf.as_ptr(), out, buf.len()) };
             0
@@ -487,7 +651,7 @@ unsafe fn write(c: *mut c_void, pc: u32, addr: u32, width: u32, align: u32, v: *
         return ctx.emit(HostEvent::Guest { pc, saved_eip: pc, code: 7, arg: addr });
     }
     let data = unsafe { std::slice::from_raw_parts(v, width as usize) };
-    match ctx.mem.write(addr, data) {
+    match ctx.mem_write(addr, data) {
         Ok(()) => 0,
         Err(fault) => ctx.emit(HostEvent::Memory { pc, fault }),
     }
@@ -549,14 +713,14 @@ fn arith(cpu: &mut CpuAbi, a: u32, b: u32, bits: u32, sub: bool) -> u32 {
 /// Read the operand (a fault reports the first unmapped byte, as a read).
 fn atomic_read(ctx: &mut Ctx, pc: u32, addr: u32, width: u32) -> Result<u32, u32> {
     let mut b = [0u8; 4];
-    match ctx.mem.read(addr, &mut b[..width as usize]) {
+    match ctx.mem_read(addr, &mut b[..width as usize]) {
         Ok(()) => Ok(u32::from_le_bytes(b)),
         Err(fault) => Err(ctx.emit(HostEvent::Memory { pc, fault })),
     }
 }
 
 fn atomic_write(ctx: &mut Ctx, pc: u32, addr: u32, width: u32, v: u32) -> Result<(), u32> {
-    ctx.mem.write(addr, &v.to_le_bytes()[..width as usize]).map_err(|fault| ctx.emit(HostEvent::Memory { pc, fault }))
+    ctx.mem_write(addr, &v.to_le_bytes()[..width as usize]).map_err(|fault| ctx.emit(HostEvent::Memory { pc, fault }))
 }
 
 fn bad_width(ctx: &mut Ctx, pc: u32, addr: u32) -> u32 {
@@ -704,7 +868,11 @@ unsafe extern "C" fn cb_cmpxchg(
 
 /// A loaded generated module.
 pub struct Generated {
+    /// A flat module's fixup table, unregistered before the library goes.
+    _fixups: Option<hostfault::Table>,
     _lib: libloading::Library,
+    /// The module has [`FEATURE_FLAT_RAM`].
+    pub flat: bool,
     pub entries: HashMap<u32, Handler>,
     /// Continuation PC to (owner handler, start selector).
     pub resumes: HashMap<u32, (Handler, u32)>,
@@ -770,7 +938,13 @@ impl Generated {
                 .iter()
                 .filter_map(|r| Some((r.pc, (*by_owner.get(&r.owner)?, r.start))))
                 .collect();
-            Ok(Generated { _lib: lib, entries, resumes })
+            let flat = m.features & FEATURE_FLAT_RAM != 0;
+            let fixups = if flat {
+                Some(flat_fixups(std::ptr::from_ref(m).cast::<GenFlatModule>())?)
+            } else {
+                None
+            };
+            Ok(Generated { _fixups: fixups, _lib: lib, flat, entries, resumes })
         }
     }
 
@@ -792,6 +966,33 @@ impl Generated {
     /// fault/stop, a return to [`HARNESS_EXIT`], or `max` handler calls.
     /// Returns the final transfer.
     pub fn run(&self, cpu: &mut CpuAbi, ctx: &mut Ctx, start: TransferAbi, max: usize) -> (TransferAbi, usize) {
+        if !self.flat {
+            return self.run_loop(cpu, ctx, start, max);
+        }
+        #[cfg(unix)]
+        {
+            let mut w = window::windows().unwrap_or_else(|e| panic!("the test host's flat RAM window: {e}"));
+            let before = w.fixups();
+            if ctx.null_window {
+                ctx.point(w.null_base(), w.cards());
+            } else {
+                let view = w.load(&ctx.mem);
+                ctx.win = Some(view);
+                ctx.point(view.base, w.cards());
+            }
+            let result = self.run_loop(cpu, ctx, start, max);
+            if ctx.win.take().is_some() {
+                w.store(&mut ctx.mem);
+            }
+            ctx.point(std::ptr::null_mut(), std::ptr::null_mut());
+            ctx.fixups += w.fixups() - before;
+            result
+        }
+        #[cfg(not(unix))]
+        unreachable!("`Generated::load` refuses a flat module on this host")
+    }
+
+    fn run_loop(&self, cpu: &mut CpuAbi, ctx: &mut Ctx, start: TransferAbi, max: usize) -> (TransferAbi, usize) {
         let mut t = start;
         for calls in 0..max {
             if matches!(t.kind, FAULT | STOP) || (t.kind == RETURN && t.target_pc == HARNESS_EXIT) {
@@ -809,8 +1010,10 @@ impl Generated {
             let Some((h, selector)) = resolved else { return (t, calls) };
             cpu.eip = target;
             ctx.cpu = cpu;
+            ctx.enter();
             // SAFETY: generated handlers follow the ABI; ctx outlives the call.
             t = unsafe { h(cpu, (ctx as *mut Ctx).cast(), selector) };
+            ctx.sync();
             ctx.cpu = std::ptr::null();
         }
         (t, max)
@@ -832,3 +1035,187 @@ unsafe extern "C" fn cb_profile(c: *mut c_void, loops: u64, x87: u64) {
 
 unsafe extern "C" fn cb_fast_acquire(_: *mut c_void) -> *mut c_void { std::ptr::null_mut() }
 unsafe extern "C" fn cb_fast_release(_: *mut c_void) {}
+
+/// A flat module's fixup table, registered with `hostfault`.
+///
+/// # Safety
+/// `m` is a loaded flat module's `h2gen_module`, kept loaded while the
+/// table lives.
+#[cfg(unix)]
+unsafe fn flat_fixups(m: *const GenFlatModule) -> Result<hostfault::Table, String> {
+    // SAFETY: the caller's contract.
+    let m = unsafe { &*m };
+    let format = hostfault::Format::from_raw(m.fix_format)
+        .ok_or_else(|| format!("unknown fixup table format {}", m.fix_format))?;
+    // SAFETY: the module's own section, which stays loaded with it.
+    unsafe { hostfault::register_table(m.fix_start, m.fix_end, format) }
+        .map_err(|e| format!("fixup table: {e}"))
+}
+
+#[cfg(not(unix))]
+unsafe fn flat_fixups(_: *const GenFlatModule) -> Result<hostfault::Table, String> {
+    Err("this host has no flat RAM window: rebuild without H2_FLAT_RAM".into())
+}
+
+/// The test host's two windows: one mapped per run, one never.
+#[cfg(unix)]
+mod window {
+    use super::WinView;
+    use ir::interp::FlatMemory;
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    const VA: usize = 1 << 32;
+    const REGIONS: usize = 1024;
+
+    #[cfg(target_os = "linux")]
+    const RESERVE: libc::c_int = libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE;
+    #[cfg(not(target_os = "linux"))]
+    const RESERVE: libc::c_int = libc::MAP_PRIVATE | libc::MAP_ANONYMOUS;
+
+    /// A 4 GiB reservation with a guard host page at each end, its faults
+    /// sent to the fixups for the process's life.
+    struct Space {
+        start: *mut u8,
+        host: usize,
+        fixups: &'static AtomicU64,
+    }
+
+    impl Space {
+        fn new(host: usize) -> Result<Self, String> {
+            let len = VA + 2 * host;
+            // SAFETY: an anonymous reservation the system places.
+            let p = unsafe { libc::mmap(std::ptr::null_mut(), len, libc::PROT_NONE, RESERVE, -1, 0) };
+            if p == libc::MAP_FAILED {
+                return Err(format!("reserve: {}", std::io::Error::last_os_error()));
+            }
+            let fixups: &'static AtomicU64 = Box::leak(Box::new(AtomicU64::new(0)));
+            let region = hostfault::register_region(
+                p as usize,
+                len,
+                on_fault,
+                std::ptr::from_ref(fixups) as usize,
+            )
+            .map_err(|e| e.to_string())?;
+            // For the process's life, as the reservation.
+            std::mem::forget(region);
+            Ok(Self { start: p.cast(), host, fixups })
+        }
+        fn base(&self) -> *mut u8 {
+            self.start.wrapping_add(self.host)
+        }
+    }
+
+    fn on_fault(fault: &mut hostfault::Fault, data: usize) -> bool {
+        if !hostfault::fixup(fault, 0) {
+            return false;
+        }
+        // SAFETY: `data` is a leaked counter.
+        unsafe { &*(data as *const AtomicU64) }.fetch_add(1, Relaxed);
+        true
+    }
+
+    pub(super) struct Windows {
+        window: Space,
+        null: Space,
+        cards: Box<[u8]>,
+        /// Guest `[lo, hi)` mapped in `window` for the current run.
+        mapped: Option<(usize, usize, u32)>,
+    }
+
+    // SAFETY: the reservations are plain address space; every use is
+    // under the one Mutex.
+    unsafe impl Send for Windows {}
+
+    /// The windows, locked for one run.
+    pub(super) fn windows() -> Result<MutexGuard<'static, Windows>, String> {
+        static W: OnceLock<Result<Mutex<Windows>, String>> = OnceLock::new();
+        let w = W.get_or_init(|| {
+            // SAFETY: sysconf takes no pointers.
+            let host = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
+                .map_err(|e| e.to_string())?;
+            Ok(Mutex::new(Windows {
+                window: Space::new(host)?,
+                null: Space::new(host)?,
+                cards: vec![1u8; REGIONS + (VA >> 12)].into_boxed_slice(),
+                mapped: None,
+            }))
+        });
+        match w {
+            Ok(m) => Ok(m.lock().unwrap_or_else(|e| e.into_inner())),
+            Err(e) => Err(e.clone()),
+        }
+    }
+
+    impl Windows {
+        /// Fixups taken in either window, in all.
+        pub(super) fn fixups(&self) -> u64 {
+            self.window.fixups.load(Relaxed) + self.null.fixups.load(Relaxed)
+        }
+        pub(super) fn null_base(&self) -> *mut u8 {
+            self.null.base()
+        }
+        /// `cards[va >> 12]`, with the regions 1,024 bytes below.
+        pub(super) fn cards(&mut self) -> *mut u8 {
+            self.cards.as_mut_ptr().wrapping_add(REGIONS)
+        }
+        /// Map the whole host pages inside `mem` and copy its bytes in.
+        pub(super) fn load(&mut self, mem: &FlatMemory) -> WinView {
+            let host = self.window.host;
+            let base = self.window.base();
+            let start = mem.base as usize;
+            let end = (start + mem.bytes.len()).min(VA);
+            let lo = start.next_multiple_of(host);
+            let hi = end / host * host;
+            // A run that panicked left its pages mapped.
+            self.guard_mapped();
+            self.cards.fill(1);
+            if lo >= hi {
+                return WinView { base, lo: 0, hi: 0 };
+            }
+            // SAFETY: MAP_FIXED inside our own reservation.
+            let p = unsafe {
+                libc::mmap(
+                    base.add(lo).cast(),
+                    hi - lo,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED,
+                    -1,
+                    0,
+                )
+            };
+            assert_ne!(p, libc::MAP_FAILED, "map the test window: {}", std::io::Error::last_os_error());
+            // SAFETY: just mapped, `hi - lo` bytes; the source is in `mem`.
+            unsafe {
+                std::ptr::copy_nonoverlapping(mem.bytes.as_ptr().add(lo - start), base.add(lo), hi - lo);
+            }
+            self.mapped = Some((lo, hi, mem.base));
+            WinView { base, lo: lo as u64, hi: hi as u64 }
+        }
+        /// Copy the mapped bytes back into `mem` and guard them again.
+        pub(super) fn store(&mut self, mem: &mut FlatMemory) {
+            let Some((lo, hi, from)) = self.mapped.take() else {
+                return;
+            };
+            let base = self.window.base();
+            assert_eq!(from, mem.base, "the run's memory");
+            // SAFETY: mapped by `load` for `hi - lo` bytes.
+            unsafe {
+                std::ptr::copy_nonoverlapping(base.add(lo), mem.bytes.as_mut_ptr().add(lo - from as usize), hi - lo);
+            }
+            self.mapped = Some((lo, hi, from));
+            self.guard_mapped();
+        }
+        /// Guard whatever `load` mapped.
+        fn guard_mapped(&mut self) {
+            let Some((lo, hi, _)) = self.mapped.take() else {
+                return;
+            };
+            // SAFETY: MAP_FIXED inside our own reservation.
+            let p = unsafe {
+                libc::mmap(self.window.base().add(lo).cast(), hi - lo, libc::PROT_NONE, RESERVE | libc::MAP_FIXED, -1, 0)
+            };
+            assert_ne!(p, libc::MAP_FAILED, "guard the test window");
+        }
+    }
+}

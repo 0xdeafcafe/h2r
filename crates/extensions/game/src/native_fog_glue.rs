@@ -18,7 +18,15 @@
 //!   the device holds (`d3d::nv2a::d3d_fog` over the `D3DRS_FOG*` words,
 //!   read through `Device::render_state` as `stencil_state` reads the
 //!   stencil, each material's own words resolved over them), and one
-//!   external pass. Unreadable fog words leave the view to the D3D path.
+//!   pass. Unreadable fog words leave the view to the D3D path.
+//! - **The scene** (docs/graphics/framescene.md, slice 5): the device's
+//!   fog words, each material's resolved words and the parts the skip
+//!   surrenders go into the view's `frame_scene::FogState`
+//!   (`render_bridge::scene_step::late_layer`), and the pass draws the
+//!   scene's copy. With a render thread that records scene stages the
+//!   pass is one ([`commit_late`]): prepared and recorded there; else it
+//!   is reserved here. Any refusal before the commit leaves the layer to
+//!   the D3D path.
 //! - **The pass** (`FogViewPass`): the device's view constants and W clip
 //!   at the issue, then `GpuWorld::encode_fog` over the loaded depth.
 //!   The GPU set is uploaded by the world's `upload` ([`upload_fog`]).
@@ -35,6 +43,7 @@ use native_render::gpu::Image;
 use native_render::look::{self, Stage};
 use native_render::program::{self, ViewInputs};
 use native_render::world::{LightmapKey, Owner, World};
+use frame_scene::{LateMaterial, LatePart};
 
 use crate::native_world_glue::{ReadMemory, Ready, StageDecoder, StageImages, State, current_ready, palettes_hold};
 
@@ -239,27 +248,25 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         {
             return None;
         }
+        // With a render thread that records scene stages, everything here
+        // is extraction: the guest reads and the checks that can refuse.
+        // The fog's preparation and recording run on the render thread
+        // (docs/graphics/framescene.md, slice 5).
+        let scene = d.queues_scene_stages(Stage::Fog);
+        let planning = timeline::native::Timer::start(Stage::Fog, if scene { Metric::ExtractNs } else { Metric::PrepareNs });
         // The fog state the device holds, each material's own words over
         // it. A slot that does not read leaves the view to the D3D path:
         // its fog cannot be established.
         let device_words = device_fog_words(&d, mem);
-        let mut fogs = HashMap::new();
-        for (&material, words) in &fog.words {
-            let resolved = match words.resolve(&device_words) {
-                Some(w) => w,
-                None => {
-                    if !FOG_UNREADABLE.swap(true, Ordering::Relaxed) {
-                        eprintln!("native-fog: the device's fog state does not read; the D3D path draws the fog");
-                    }
-                    return None;
-                }
-            };
-            fogs.insert(material, fog_of(&resolved));
-        }
+        let Some(materials) = resolve_materials(&fog.words, &device_words) else {
+            if !FOG_UNREADABLE.swap(true, Ordering::Relaxed) {
+                eprintln!("native-fog: the device's fog state does not read; the D3D path draws the fog");
+            }
+            return None;
+        };
         // The skip over a preview: nothing touches the guest until the
         // reservation has recorded on every copy
         // (`native_render::skip::MaskPreview`).
-        let planning = timeline::native::Timer::start(Stage::Fog, Metric::PrepareNs);
         let read = ReadMemory(mem);
         let mut preview = native_render::skip::MaskPreview::new(&read)?;
         let (selected, cleared) = native_render::fog::clear_fog(&mut preview, native_render::fog::FOG_LAYER as u32, &|item| {
@@ -271,10 +278,16 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             accepted
         })?;
         let masks = preview.finish()?;
-        let ranges = selected.len();
-        if ranges == 0 {
+        if selected.is_empty() {
             return None;
         }
+        // The view's fog into the frame step's scene; the stage draws the
+        // scene's copy. A view the scene cannot take stays on the D3D path.
+        let parts: Vec<LatePart> = selected.iter().map(|item| LatePart { owner: item.owner, part: item.part }).collect();
+        let late = render_bridge::scene_step::late_layer(&*mem, FOG_LATE_LAYER, true, device_words, &materials, &parts)?;
+        let fogs = late_fogs(&late.materials);
+        let selected = late_selected(&late.parts);
+        let ranges = selected.len();
         // What the passes write: colour always (they blend over the
         // scene), depth when any of their states writes it.
         let writes_depth = fog
@@ -283,31 +296,110 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             .any(|passes| passes.iter().any(|p| p.state.depth_write));
         let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
         let plan = d3d::ExternalPlan { stage: Stage::Fog, view, ranges, slots: Vec::new() };
-        let pass = Box::new(FogViewPass {
-            ready: Arc::clone(&ready),
-            selected: selected.into_iter().map(|item| (item.owner, item.part)).collect(),
-            fogs,
-            view: None,
-            w_clip: None,
-            writes_depth,
-            run: u64::from(d.swap_count()).wrapping_add(1),
-        });
+        let run = u64::from(d.swap_count()).wrapping_add(1);
+        let pass = || -> Box<dyn d3d::ExternalPass> {
+            Box::new(FogViewPass {
+                ready: Arc::clone(&ready),
+                selected: selected.clone(),
+                fogs: fogs.clone(),
+                view: None,
+                w_clip: None,
+                writes_depth,
+                run,
+            })
+        };
         drop(planning);
-        let reservation = d
-            .prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass, Vec::new())
-            .ok()??;
-        // Keep this load pinned until the masks and the sealed commands commit.
-        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if !current_ready(&state, mem).is_some_and(|current| Arc::ptr_eq(current, &ready)) {
+        if !commit_late(&mut d, mem, &self.state, &ready, scene, plan, &pass, &masks) {
             return None;
         }
-        if !masks.apply(&mut render_bridge::native_fog::Mem(mem)) {
-            Stage::Fog.count(Metric::RefusedMasks, ranges as u64);
-            return None;
-        }
-        reservation.commit();
+        render_bridge::scene_step::late_drawn(late.key, FOG_LATE_LAYER);
         Some(cleared)
     }
+}
+
+/// The fog's layer, as the scene names it.
+const FOG_LATE_LAYER: u8 = native_render::fog::FOG_LAYER as u8;
+
+/// Each material's own fog words resolved over the device's, ordered by
+/// material (`frame_scene::LateMaterial`); `None` when a slot nothing sets
+/// does not read.
+pub fn resolve_materials(words: &HashMap<u16, FogWords>, device: &[Option<u32>; 7]) -> Option<Vec<LateMaterial>> {
+    let mut out = words
+        .iter()
+        .map(|(&material, w)| Some(LateMaterial { material, words: w.resolve(device)? }))
+        .collect::<Option<Vec<_>>>()?;
+    out.sort_by_key(|m| m.material);
+    Some(out)
+}
+
+/// The scene's resolved materials as the fog unit and colour the passes
+/// draw with.
+pub fn late_fogs(materials: &[LateMaterial]) -> HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])> {
+    materials.iter().map(|m| (m.material, fog_of(&m.words))).collect()
+}
+
+/// The scene's parts as the GPU world names them.
+pub fn late_selected(parts: &[LatePart]) -> Vec<(Owner, u8)> {
+    parts.iter().map(|p| (p.owner, p.part)).collect()
+}
+
+/// A late layer's pass reserved and committed (docs/graphics/framescene.md,
+/// slice 5): as a scene stage the render thread prepares and records when
+/// it takes them (`scene`, from `Device::queues_scene_stages`), else bound
+/// on the game thread. Either way the load stays pinned until the masks and
+/// the sealed commands commit. `false`: nothing was committed and the
+/// guest draws the layer (the D3D path).
+#[allow(clippy::too_many_arguments)]
+pub fn commit_late<B: d3d::backend::Backend + Send + 'static>(
+    d: &mut d3d::Device<B>,
+    mem: &mut dyn GuestMemory,
+    state: &State,
+    ready: &Arc<Ready>,
+    scene: bool,
+    plan: d3d::ExternalPlan,
+    pass: &dyn Fn() -> Box<dyn d3d::ExternalPass>,
+    masks: &native_render::skip::MaskPlan,
+) -> bool {
+    let (stage, ranges) = (plan.stage, plan.ranges as u64);
+    let pinned_masks = |mem: &mut dyn GuestMemory, pinned: bool| -> bool {
+        if !pinned {
+            return false;
+        }
+        if !masks.apply(&mut render_bridge::native_fog::Mem(mem)) {
+            stage.count(timeline::native::Metric::RefusedMasks, ranges);
+            return false;
+        }
+        true
+    };
+    // A scene stage: queued now, prepared and recorded when the render
+    // thread reaches it. Not taken, the pass is reserved here as before.
+    if scene {
+        match d.reserve_scene_stage(&mut crate::native_lights_glue::DeviceMemory(mem), plan.clone(), pass()) {
+            Ok(Some(reservation)) => {
+                let state = state.lock().unwrap_or_else(|e| e.into_inner());
+                let pinned = current_ready(&state, mem).is_some_and(|current| Arc::ptr_eq(current, ready));
+                if !pinned_masks(mem, pinned) {
+                    return false;
+                }
+                reservation.commit();
+                return true;
+            }
+            Ok(None) => {}
+            Err(_) => return false,
+        }
+    }
+    let Ok(Some(reservation)) = d.prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass(), Vec::new())
+    else {
+        return false;
+    };
+    // Keep this load pinned until the masks and the sealed commands commit.
+    let state = state.lock().unwrap_or_else(|e| e.into_inner());
+    let pinned = current_ready(&state, mem).is_some_and(|current| Arc::ptr_eq(current, ready));
+    if !pinned_masks(mem, pinned) {
+        return false;
+    }
+    reservation.commit();
+    true
 }
 
 /// Installs the host over the world's state (`native_world_glue::install`).

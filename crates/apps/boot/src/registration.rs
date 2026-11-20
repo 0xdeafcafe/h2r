@@ -426,11 +426,24 @@ pub(crate) fn register_late_for_profile(
         features
             .add(&render_bridge::native_fog::NativeFog)
             .map_err(|e| anyhow::anyhow!("native fog: {e}"))?;
+        // World layers 1, 5, 7, 8 and 20 drawn from the scene's plan
+        // (frame-scene.layers, an option; docs/graphics/framescene.md,
+        // slice 4). The layer sets load with the world (native_layers_glue).
+        features
+            .add(&render_bridge::native_layers::NativeLayers)
+            .map_err(|e| anyhow::anyhow!("native layers: {e}"))?;
         // Water edge blend (layer 6) and the water, camouflage and hologram
         // census. The layer observer follows impl.render.native.
         features
             .add(&render_bridge::native_water::NativeWater)
             .map_err(|e| anyhow::anyhow!("native water: {e}"))?;
+        // Model decorators (layer 3), instanced on the native GPU renderer
+        // (docs/graphics/native-decorators.md). Its layer-draw observer
+        // follows the frame scene's; the passes load with the world
+        // (native_world_glue's worker, native_decorators_glue's load).
+        features
+            .add(&render_bridge::native_decorators::NativeDecorators)
+            .map_err(|e| anyhow::anyhow!("native decorators: {e}"))?;
         // Objects' render models on the native GPU renderer, skinned on the
         // GPU (on by default since 2026-11-20;
         // H2_FEATURES=impl.render.native=off turns it off for the

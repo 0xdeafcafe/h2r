@@ -1,0 +1,19 @@
+# Every scenery type the base's palette holds (at most 16), in a row ahead
+# of a spawn: each type renders with its own shaders. docs/game/test-maps.md
+name = "shader-row"
+title = "Shader row"
+purpose = "Every scenery type the map has, in a row ahead of the spawn: object shaders side by side under one light."
+base = "zanzibar"
+fidelity = "approximate"
+note = "A row of the base's own objects, not a wall of one surface per shader type: placement edits can't add geometry or new shaders. The level's own surfaces keep the base's shaders."
+clear = "all"
+allow_growth = true
+
+[[place]]
+block = "starting_locations"
+
+[[place]]
+block = "scenery"
+at = [10, -30, 0]
+step = [0, 4, 0]
+each = { max = 16 }

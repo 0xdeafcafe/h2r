@@ -6,6 +6,8 @@ pub mod entry_census;
 #[cfg(feature = "native-render")]
 pub mod native_decals;
 #[cfg(feature = "native-render")]
+pub mod native_decorators;
+#[cfg(feature = "native-render")]
 pub mod native_first_person;
 #[cfg(feature = "native-render")]
 pub mod native_fog;
@@ -13,6 +15,8 @@ pub mod native_fog;
 pub mod native_gels;
 #[cfg(feature = "native-render")]
 pub mod native_hud;
+#[cfg(feature = "native-render")]
+pub mod native_layers;
 #[cfg(feature = "native-render")]
 pub mod native_lights;
 #[cfg(feature = "native-render")]

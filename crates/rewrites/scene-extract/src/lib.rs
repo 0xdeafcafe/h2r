@@ -23,6 +23,7 @@
 pub mod decorators;
 pub mod extract;
 mod guest;
+pub mod late;
 pub mod layout;
 pub mod light_groups;
 pub mod testing;

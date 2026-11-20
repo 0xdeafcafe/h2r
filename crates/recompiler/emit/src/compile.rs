@@ -100,8 +100,17 @@ pub fn profile_flags(opt: Option<&str>, debug: Option<&str>) -> Result<Vec<Strin
 ///   handler's accesses in the RAM view (`H2_VIEW_CHARGE`, on since
 ///   feddd0402; its off path stays until a profile in the game settles
 ///   it).
-/// - Off unless `1`, awaiting a measurement in full images: flat RAM
-///   (`H2_FLAT_RAM`), the per-hold RAM page cache (`H2_RAM_PAGE_CACHE`),
+/// - Off unless `1`, the flat memory model (`H2_FLAT_RAM`, module feature
+///   16): every access one host instruction through the runtime's flat RAM
+///   window, a fixup row sending a faulting one to the checked helper
+///   (docs/runtime/contract-thin-transfers-flat-ram.md, slice F3). The
+///   runtime takes the model from the module, so the variable only builds.
+///   `H2_EMIT_FLAT_RAM=1` builds the opt-in span image instead
+///   (`H2_FLAT_SPAN`, the M0 measurement's image), and with it set
+///   `H2_FLAT_RAM` is the runtime's switch for that image alone and
+///   leaves the flags (and the stamp) alone.
+/// - Off unless `1`, awaiting a measurement in full images: the per-hold
+///   RAM page cache (`H2_RAM_PAGE_CACHE`),
 ///   checked x87 TOP specialisation (`H2_X87_TOP`), the RAM gate taken at
 ///   a handler's start (`H2_ENTRY_GATE`, `h2fastmem.h`), store sites
 ///   testing the dirty bit before marking a page (`H2_DIRTY_INLINE`), and
@@ -137,7 +146,6 @@ pub fn cflags_for(arch: Arch) -> Result<Vec<String>, Error> {
         ("H2_X87_TOP", false),
         ("H2_SSE_NATIVE", true),
         ("H2_RAM_PAGE_CACHE", false),
-        ("H2_FLAT_RAM", false),
         ("H2_DIRECT_CALLS", true),
         ("H2_DIRTY_INLINE", false),
         ("H2_COLD_STATS", false),
@@ -146,14 +154,16 @@ pub fn cflags_for(arch: Arch) -> Result<Vec<String>, Error> {
         ("H2_ENTRY_GATE", false),
         ("H2_VIEW_CHARGE", true),
     ] {
-        let enabled = if name == "H2_FLAT_RAM" {
-            flat_image_flag(env("H2_EMIT_FLAT_RAM").as_deref(), env(name).as_deref())?
-        } else {
-            flag(name, env(name).as_deref(), default)?
-        };
-        if enabled {
+        if flag(name, env(name).as_deref(), default)? {
             v.push(format!("-D{name}=1"));
         }
+    }
+    let (span, flat) = flat_image_flags(env("H2_EMIT_FLAT_RAM").as_deref(), env("H2_FLAT_RAM").as_deref())?;
+    if span {
+        v.push("-DH2_FLAT_SPAN=1".to_string());
+    }
+    if flat {
+        v.push("-DH2_FLAT_RAM=1".to_string());
     }
     if let Some(owner) = env("H2_FLAT_STATS_OWNER").filter(|s| !s.is_empty()) {
         let pc = u32::from_str_radix(owner.strip_prefix("0x").unwrap_or(&owner), 16)
@@ -185,10 +195,14 @@ fn flag(name: &str, value: Option<&str>, default: bool) -> Result<bool, Error> {
     }
 }
 
-fn flat_image_flag(image: Option<&str>, runtime: Option<&str>) -> Result<bool, Error> {
+/// The two flat memory models' image flags, `(H2_FLAT_SPAN, H2_FLAT_RAM)`:
+/// with `H2_EMIT_FLAT_RAM` set, the opt-in span image or none, whatever
+/// `H2_FLAT_RAM` (then the run's switch for that image) says; else the
+/// flat model when `H2_FLAT_RAM=1`.
+fn flat_image_flags(image: Option<&str>, runtime: Option<&str>) -> Result<(bool, bool), Error> {
     match image {
-        None | Some("") => flag("H2_FLAT_RAM", runtime, false),
-        value => flag("H2_EMIT_FLAT_RAM", value, false),
+        None | Some("") => Ok((false, flag("H2_FLAT_RAM", runtime, false)?)),
+        value => Ok((flag("H2_EMIT_FLAT_RAM", value, false)?, false)),
     }
 }
 
@@ -1259,12 +1273,15 @@ mod tests {
     #[test]
     fn pinned_flat_image_flags_are_identical_for_both_runtime_settings() {
         for setting in [None, Some("0"), Some("1")] {
-            assert!(flat_image_flag(Some("1"), setting).unwrap());
-            assert!(!flat_image_flag(Some("0"), setting).unwrap());
+            assert_eq!(flat_image_flags(Some("1"), setting).unwrap(), (true, false));
+            assert_eq!(flat_image_flags(Some("0"), setting).unwrap(), (false, false));
         }
-        assert!(flat_image_flag(None, Some("1")).unwrap());
-        assert!(!flat_image_flag(None, Some("0")).unwrap());
-        assert!(flat_image_flag(Some("invalid"), None).is_err());
+        assert_eq!(flat_image_flags(None, Some("1")).unwrap(), (false, true));
+        assert_eq!(flat_image_flags(Some(""), Some("1")).unwrap(), (false, true));
+        assert_eq!(flat_image_flags(None, Some("0")).unwrap(), (false, false));
+        assert_eq!(flat_image_flags(None, None).unwrap(), (false, false));
+        assert!(flat_image_flags(Some("invalid"), None).is_err());
+        assert!(flat_image_flags(None, Some("yes")).is_err());
     }
 
     #[test]

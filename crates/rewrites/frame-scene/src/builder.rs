@@ -87,6 +87,10 @@ pub enum BuildError {
     NoLight,
     /// An object-shadow group with no object shadow in the open view.
     NoShadow,
+    /// A late layer other than 16 or 6, or one the open view does not have.
+    NotLate,
+    /// A post callee's call with no post passes open in the view.
+    NoPost,
 }
 
 /// What the builder remembers of the scene before, for cuts.
@@ -184,6 +188,9 @@ impl SceneBuilder {
             layers: p..p,
             decorators: d..d,
             decorator_remainder: 0,
+            fog: None,
+            water: None,
+            post: None,
         });
         self.open = Some(scene.views.len() - 1);
         Ok(scene.views.last().expect("just pushed"))
@@ -193,6 +200,15 @@ impl SceneBuilder {
         let scene = self.scene.as_mut().ok_or(BuildError::NoScene)?;
         let open = self.open.ok_or(BuildError::NoView)?;
         Ok((scene, open))
+    }
+
+    /// The scene and the index of its last view of `key`, open or sealed:
+    /// a write that does not extend a view's ranges (the late passes,
+    /// `crate::late`) may land in a view another has followed.
+    pub(crate) fn keyed_mut(&mut self, key: ViewKey) -> Result<(&mut FrameScene, usize), BuildError> {
+        let scene = self.scene.as_mut().ok_or(BuildError::NoScene)?;
+        let index = scene.views.iter().rposition(|v| v.key == key).ok_or(BuildError::NoView)?;
+        Ok((scene, index))
     }
 
     /// The open view's visible clusters, replacing any set before.
