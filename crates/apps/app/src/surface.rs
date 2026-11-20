@@ -3,10 +3,16 @@
 
 use gfx::GfxContext;
 
+use crate::frame::MAX_FRAME_DIMENSION;
+use crate::scale::{NativeSize, limit_drawable};
+use crate::AppConfig;
+
 /// The window's swapchain. gfx's `Presenter` always uses `AutoVsync` and
 /// allocates a depth buffer; the shell needs neither restriction.
 pub(crate) struct WindowSurface {
     pub(crate) surface: wgpu::Surface<'static>,
+    pub(crate) native_size: NativeSize,
+    dimension_limit: u32,
     pub(crate) config: wgpu::SurfaceConfiguration,
     /// The surface needs `configure` before the next acquire: the window
     /// was resized, or the last configure failed (wgpu could not wait for
@@ -20,7 +26,7 @@ impl WindowSurface {
         ctx: &GfxContext,
         surface: wgpu::Surface<'static>,
         size: (u32, u32),
-        vsync: bool,
+        app: &AppConfig,
     ) -> anyhow::Result<Self> {
         let caps = surface.get_capabilities(&ctx.adapter);
         let format = caps
@@ -30,12 +36,14 @@ impl WindowSurface {
             .find(|f| !f.is_srgb())
             .or_else(|| caps.formats.first().copied())
             .ok_or_else(|| anyhow::anyhow!("window surface reports no formats"))?;
+        let dimension_limit = ctx.device.limits().max_texture_dimension_2d.min(MAX_FRAME_DIMENSION);
+        let size = limit_drawable(size, dimension_limit);
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
-            width: size.0.max(1),
-            height: size.1.max(1),
-            present_mode: if vsync {
+            width: size.0.clamp(1, dimension_limit),
+            height: size.1.clamp(1, dimension_limit),
+            present_mode: if app.fps.vsync(app.vsync) {
                 wgpu::PresentMode::AutoVsync
             } else {
                 wgpu::PresentMode::AutoNoVsync
@@ -52,6 +60,8 @@ impl WindowSurface {
         surface.configure(&ctx.device, &config);
         Ok(Self {
             surface,
+            native_size: NativeSize::new(app.aspect, app.scaling, size),
+            dimension_limit,
             config,
             stale: false,
             last_configure_error: None,
@@ -63,7 +73,12 @@ impl WindowSurface {
     }
 
     pub(crate) fn resize(&mut self, size: (u32, u32)) {
-        if size.0 == 0 || size.1 == 0 || size == self.size() {
+        if size.0 == 0 || size.1 == 0 {
+            return;
+        }
+        let size = limit_drawable(size, self.dimension_limit);
+        self.native_size.update(size);
+        if size == self.size() {
             return;
         }
         // Only recorded: reconfiguring inside the window's resize callback

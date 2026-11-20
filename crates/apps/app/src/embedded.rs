@@ -112,7 +112,7 @@ impl Embedded {
         // SAFETY: the caller guarantees the layer and its lifetime.
         let surface = unsafe { instance.create_surface_unsafe(host_surface::target(layer)) }?;
         let ctx = pollster::block_on(GfxContext::new(instance, Some(&surface)))?;
-        let surface = WindowSurface::new(&ctx, surface, size, config.fps.vsync(config.vsync))?;
+        let surface = WindowSurface::new(&ctx, surface, size, &config)?;
         let info = ctx.adapter.get_info();
         eprintln!(
             "app: {} ({:?}), surface {:?} {}x{}, features {:?}",
@@ -138,6 +138,7 @@ impl Embedded {
         let kept_keyboard = keyboard.clone();
         let pace_stats = Arc::default();
         let host = GuestHost {
+            native_size: surface.native_size.clone(),
             gfx: crate::share_context(&ctx),
             sink,
             input: Some(input),
@@ -269,7 +270,7 @@ fn caps_present_modes(ctx: &GfxContext, surface: &WindowSurface) -> Vec<wgpu::Pr
 }
 
 /// The shell settings a tvOS or iOS host starts from: full screen with the
-/// 4:3 guest picture fitted, pads (the remote, the on-screen controls) on,
+/// drawable's native aspect, pads (the remote, the on-screen controls) on,
 /// no mouse, and `h2 play`'s shutdown grace. `keyboard` stays on for the
 /// player-one pad that merges the devices and records the one last used,
 /// and for the host's text in the game's virtual keyboard.
@@ -277,6 +278,7 @@ pub fn device_config() -> AppConfig {
     AppConfig {
         title: "Halo 2".into(),
         fullscreen: true,
+        aspect: crate::DisplayAspect::Source,
         keyboard: true,
         mouse_capture: false,
         gamepads: true,
@@ -301,7 +303,7 @@ mod tests {
         });
         assert!(keyboard.is_some());
         assert!(!c.audio, "boot's DirectSound owns the device");
-        assert_eq!(c.aspect, crate::DisplayAspect::Standard);
+        assert_eq!(c.aspect, crate::DisplayAspect::Source);
         assert_eq!(c.scaling, crate::Scaling::Fit);
     }
 

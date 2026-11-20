@@ -365,8 +365,10 @@ fn publish_with(
     Ok(seq)
 }
 
+pub(crate) const MAX_FRAME_DIMENSION: u32 = 8192;
+
 fn check_size(size: (u32, u32)) -> Result<(), FrameError> {
-    if size.0 == 0 || size.1 == 0 || size.0 > 8192 || size.1 > 8192 {
+    if size.0 == 0 || size.1 == 0 || size.0 > MAX_FRAME_DIMENSION || size.1 > MAX_FRAME_DIMENSION {
         return Err(FrameError::Size(size.0, size.1));
     }
     Ok(())
