@@ -1,5 +1,9 @@
 # Graphics: D3D8 on wgpu
 
+Status: Built. Reference for `crates/gfx`.
+Code: `crates/gfx/src/`. Tests: `crates/gfx/tests/`.
+Switch: none of its own; the variables it reads are in [switches.md](../runtime/switches.md).
+
 `crates/gfx` is the graphics foundation. It replaces Direct3D 8 (Xbox flavour)
 at the API level; it does not emulate the NV2A GPU. `crates/d3d`
 ([d3d.md](d3d.md)) calls into it from the D3D entry points and from the
@@ -358,9 +362,7 @@ on that run and are not proven in general. The default is the loose rule
 below, which drops both. `GfxBackend::set_merge_passes(false)` gives one
 render pass per draw, which is the exact reference; the tests use both
 setters, and `H2_GFX_MERGE_CHECK=N` (headless `h2 run`) compares the
-merged and per-draw passes of frame N in game. The environment variable
-`H2_GFX_MERGE_PASSES` that chose a rule went in the 2026-11-20 flag
-cleanup.
+merged and per-draw passes of frame N in game.
 
 The first case: in the main menu (frame 480) a strip drawn additively at
 draw 594 of the frame came out up to 91 levels different on 32 edge pixels
@@ -417,13 +419,7 @@ render pass and 38cd3f7 onwards at 200, and the later commits in that
 range (compile workers, render thread, W-buffer) change neither count
 nor cost.
 
-**The fast rule** (the default from 38cd3f7's follow-up until
-2026-11-18) gave a discarding draw a render pass of its own only after a
-partly masked draw. It was not exact either (The Heretic's frame 4216: 61
-edge pixels off by up to 4 levels in two passes, after additive draws),
-and the loose rule superseded it; it was removed in the flag cleanup.
-
-**The loose rule** (the default since 2026-11-18;
+**The loose rule** (the default;
 `GfxBackend::set_merge_masks`) drops the
 merge-rule splits altogether: no draw starts a render pass of its own
 because of the draw before it. Counted draws and target switches still
@@ -488,7 +484,7 @@ pipeline cache (`PipelineCacheDescriptor`) is a no-op on Metal
 (`Features::PIPELINE_CACHE` is Vulkan-only), so nothing compiled can be
 persisted through wgpu. What is done instead:
 
-- **Off the drawing thread.** `Renderer::record` no longer builds a missing
+- **Off the drawing thread.** `Renderer::record` does not build a missing
   pipeline. It makes a `PendingPipeline` and queues it on gfx's compile
   workers (`gfx::compile::Compiler`, `H2_GFX_COMPILE_THREADS`, default half
   the cores clamped to 2-4). The draw is recorded as usual. The pipeline is
@@ -519,7 +515,7 @@ persisted through wgpu. What is done instead:
   Several processes may append to it at once; torn or unparsable lines are
   skipped. `h2 play` and `h2 run` (`H2_BOOT_GFX`) use it.
 
-In frame stats (`H2_FRAME_STATS`) the `pipelines` counter now counts the
+In frame stats (`H2_FRAME_STATS`) the `pipelines` counter counts the
 pipelines the game thread had to wait for or build at encode time (the
 `pipeline wait` span), not cache misses: a miss a worker finished in time
 costs the frame nothing. Workers record no timeline spans, so their work
@@ -568,7 +564,7 @@ its own small WGSL pipeline through `GfxContext`/`Presenter`, or into an
 shading only; no shaders or textures yet. Its `bsp` binary validates and
 software-renders structure BSPs through the same shared geometry decoder
 (`tags::geometry`, see structure-bsp.md). Its `shadowlab` binary compares shadow volumes with shadow maps
-(e3-lighting.md, "Phase 3: shadow prototype").
+(notes/e3-lighting.md).
 
 All three open a map by its name on the disc (`/maps/<name>.map`), else a
 `.map` file by path, else a Halo 1 map `h2 import halo1` converted under the

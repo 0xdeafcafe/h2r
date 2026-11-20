@@ -54,6 +54,7 @@ dependencies = [
  "debug-menu",
  "engine",
  "feature",
+ "guest-layout",
  "hot-render",
  "hot-tags",
  "input",
@@ -1905,6 +1906,7 @@ name = "engine"
 version = "0.1.0"
 dependencies = [
  "analyze",
+ "guest-layout",
  "ir",
  "lift",
  "mopp",
@@ -2442,6 +2444,10 @@ dependencies = [
  "thiserror 2.0.21",
  "windows",
 ]
+
+[[package]]
+name = "guest-layout"
+version = "0.1.0"
 
 [[package]]
 name = "h1ai"
@@ -3596,6 +3602,7 @@ version = "0.1.0"
 dependencies = [
  "engine",
  "feature",
+ "guest-layout",
  "live-proto",
  "live-server",
  "map",

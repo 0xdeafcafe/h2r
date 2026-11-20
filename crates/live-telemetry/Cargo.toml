@@ -10,6 +10,8 @@ timeline = { path = "../timeline" }
 runtime.workspace = true
 feature = { path = "../feature", default-features = false }
 engine = { path = "../engine", features = ["runtime-glue"] }
+# Guest structure offsets and global addresses (src/layout.rs aliases them).
+guest-layout = { path = "../guest-layout" }
 live-proto.workspace = true
 map.workspace = true
 # Animation names (jmad) for frames' `anim`.

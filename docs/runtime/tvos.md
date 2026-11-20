@@ -1,5 +1,9 @@
 # Apple TV (tvOS)
 
+Status: Partly built. A spike: the app boots to the menu and plays the bundled levels slowly ("Known gaps").
+Code: `platform/tvos/`, `crates/apple-host`, `crates/input/src/backend/game_controller/remote.rs`. Tests: in `remote.rs`.
+Switch: `H2_EMIT_TARGET=tvos` and the build variables, see [switches.md](switches.md).
+
 The game runs on an Apple TV as an app built from `platform/tvos/`. It is a
 spike: expect a few frames a second, and only the menu, The Heretic and
 Zanzibar on board. It needs a real Apple TV (arm64, tvOS 17 or later); there
@@ -137,7 +141,7 @@ name), the app makes an invisible `UIKeyInput` view
 system keyboard, and turns controller interaction on so the remote drives
 it. What is typed goes into the game's field through the same path as the
 Mac's typing (docs/input/host-keyboard.md); Done submits, Back on the game's own
-keyboard still cancels. Not yet tried on the Apple TV.
+keyboard still cancels.
 
 ## Known gaps
 

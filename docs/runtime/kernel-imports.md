@@ -1,7 +1,9 @@
-# Halo 2 kernel imports
+# Halo 2 kernel import inventory
 
-Work list for the Rust kernel replacement: retail Halo 2, title `4D530064`,
-linked against XBOXKRNL `1.0.5849`. The supplied XBE imports **152 exports:
+Status: Reference. The kernel that serves these imports is `crates/kernel`.
+
+Every kernel import of retail Halo 2, title `4D530064`, linked against
+XBOXKRNL `1.0.5849`. The supplied XBE imports **152 exports:
 135 functions and 17 data symbols**. All appear below, sorted by decimal
 ordinal. No game bytes, keys or executable contents are reproduced.
 
@@ -260,13 +262,14 @@ channel layouts rather than allocating host Rust equivalents.
   failure behavior. SHA/RC4/DES contexts remain guest-readable across calls.
   See [RTL HLE][hle-rtl] and [crypto HLE][hle-xc].
 
-These bullets cover every row rated hard. Replacing a linked SDK subsystem
-may bypass some of its kernel calls later; import presence alone does not
-establish which subset the first-frame milestone will execute.
+These bullets cover every row rated hard, and name the contracts
+`crates/kernel` has to keep (`memory.rs`, `sections.rs`, `timers.rs`,
+`threads.rs`, `files.rs`, `crypto.rs`). Import presence alone does not
+establish which subset a run executes.
 
 ## Calls that do not return
 
-Keep the existing noreturn set **49, 95, 96, 258** for Xbox guest execution.
+The noreturn set is **49, 95, 96, 258** for Xbox guest execution.
 The [nxdk declarations][nxdk] explicitly mark all four noreturn:
 
 | Ordinal | Export | Imported here? | Runtime behavior |
@@ -285,12 +288,11 @@ thread. `HalInitiateShutdown` (360) only requests shutdown and **can return**.
 `RtlRaiseException` (302) can resume after a handler; `RtlUnwind` (312)
 transfers control in some paths but is not an unconditional noreturn export.
 
-## Unverified details and source disagreements
+## Not verified
 
 All 152 ordinal/name pairs and their function/data split were verified
 against the XBE and public ordinal table. Retail behavior was not observed
-on hardware. The following are unresolved implementation inputs, not grounds
-for inventing a host ABI:
+on hardware. The following are open, and are not grounds for inventing a host ABI:
 
 | Export(s) | Disagreement or missing evidence | Working entry above |
 | --- | --- | --- |
@@ -300,8 +302,8 @@ for inventing a host ABI:
 | 252 PhyGetLinkState; 253 PhyInitialize | [Cxbx][xbox] uses a 32-bit first argument; [nxdk][nxdk] uses `BOOLEAN`. Both still occupy a guest stack argument slot. | nxdk `BOOLEAN`; confirm low-byte versus full-word interpretation. |
 | 359 IoMarkIrpMustComplete | [Cxbx][io] returns `CCHAR`; [nxdk][nxdk] returns `VOID`. | nxdk `VOID`; verify return-value use and completion bookkeeping. |
 | 360 HalInitiateShutdown | [Cxbx HAL HLE][hle-hal] returns `NTSTATUS`; [nxdk][nxdk] returns `VOID`. | nxdk `VOID`; this is returning, not noreturn. |
-| Hardware/driver controls and crypto contexts | Public HLE contains incomplete paths; required AV options, PCI fields, IOCTL/FSCTL codes, exact callback ordering and guest crypto context layouts were not exhaustively traced. | Work items describe required contracts; do not treat stubs as specifications. |
-| Imported functions with no direct calls | Address loads, callbacks and unrecognized code can hide later calls. Ghidra labels `IoCreateDevice` and `IoInvalidDeviceRequest` as external Labels even though both are functions. | Keep both in the function work list, including the zero-reference import. |
+| Hardware/driver controls and crypto contexts | Public HLE contains incomplete paths; required AV options, PCI fields, IOCTL/FSCTL codes, exact callback ordering and guest crypto context layouts were not exhaustively traced. | Do not treat stubs as specifications. |
+| Imported functions with no direct calls | Address loads, callbacks and unrecognized code can hide later calls. Ghidra labels `IoCreateDevice` and `IoInvalidDeviceRequest` as external Labels even though both are functions. | Keep both in the function table, including the zero-reference import. |
 
 The [XboxDev export list][wiki] corroborates ordinal/data classifications;
 [Cxbx implementations][hle-root] explain operational contracts, and

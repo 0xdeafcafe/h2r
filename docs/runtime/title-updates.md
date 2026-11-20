@@ -1,9 +1,11 @@
 # Title updates
 
-Status: design only. Nothing here is implemented. We now have an update to
-test with: the Multiplayer Map Pack disc carries one, certificate version
-`0x303` for our 1.0 disc (section 6, and [map-pack.md](../game/map-pack.md)).
-`h2 import-mappack` copies it to `<data>/updates/4D530064/00000303/default.xbe`.
+Status: Design. Nothing here is built: `crates/imagemap`, `h2 image`,
+`h2 play --image`, `H2_IMAGE` and `H2_XBE_UPDATE` do not exist yet.
+Code: none. The inputs exist: the Multiplayer Map Pack disc carries an update,
+certificate version `0x303` for our 1.0 disc (section 6, and
+[map-pack.md](../game/map-pack.md)); `h2 import-mappack` copies it to
+`<data>/updates/4D530064/00000303/default.xbe`.
 
 Halo 2 shipped on disc as 1.0. Xbox Live title updates (1.1 and later) don't
 patch the disc. They put a new `default.xbe` on the console's hard disk under
@@ -380,7 +382,7 @@ is not a precedent for adding update fingerprints to the repository.
 
 ### 3.2 Per-version address map, built at analysis time
 
-New crate `crates/imagemap`. It depends on `xbe`, `analyze` and,
+The design adds a crate, `crates/imagemap`. It depends on `xbe`, `analyze` and,
 optionally, `symbols`. Its input is the base XBE and the target XBE (both
 local), and it produces:
 
@@ -715,7 +717,7 @@ per-build D3D and DSound layout work on top, probably another week.
   clock and audio quanta, and scripts are keyed to present counts or
   `at_ticks`. An update that does different work per frame, or loads for
   longer, shifts every scripted timeline and menu bench, so input scripts
-  and bench baselines have to be per image. Golden traces (`docs/lifter/golden-trace.md`)
+  and bench baselines have to be per image. Kernel traces (`kernel-trace.tsv`, [BOOT.md](BOOT.md))
   are also per image by construction. Comparing 1.0 and 1.1 runs for a
   regression only works at the level of state (menu reached, level loaded),
   not frame-exactly.

@@ -1,19 +1,22 @@
 # Booting the recompiled XBE natively
 
+Status: Built.
+Code: `crates/boot/src/lib.rs` (`build`, `run`, `run_hosted`), `crates/boot/src/registration.rs`, `crates/cli/src/boot_cmd.rs` (`h2 build`, `h2 run`, `h2 serve`). Tests: `crates/boot/tests/`.
+Switches: the boot runner's own are below; every other one is in [switches.md](switches.md).
+
 `h2 build` lifts the whole `default.xbe` and compiles it to a host dylib.
 `h2 run` loads that dylib into the runtime with the kernel, VFS, XAPI, D3D,
 DSound and Bink HLE registered, then starts the guest at the XBE entry
-point. It started as a tracer bullet to find, in order, what stopped Halo 2
-on its way to the main menu. It runs headless; `h2 play` ([app.md](app.md))
-runs the same boot in a window with live input and sound.
+point. It runs headless; `h2 play` ([app.md](app.md)) runs the same boot in
+a window with live input and sound.
 
 ## Running it
 
 ```sh
-# lift + emit + clang the whole XBE (about 6-7 min of clang, about 400 MB of C)
+# lift + emit + clang the whole XBE (clang takes minutes)
 cargo h2 build /abs/path/to/disc/halo2.iso
 
-# boot it (runs `build` first if the dylib is missing or stale)
+# boot it (the tier flag below says what runs while a build is missing or stale)
 cargo h2 run /abs/path/to/disc/halo2.iso
 ```
 
@@ -23,9 +26,10 @@ copies. Nothing is ever written next to it.
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--out DIR` | `$TMPDIR/h2boot` | generated C (`src/`), objects, `libh2game.dylib` and its `.stamp` (image hash, generator source hash, IR passes, `H2_ACCESS_COUNT`, ABI, compiler flags: `run` rebuilds a dylib stamped for another image or generator), `kernel-trace.tsv` |
+| `--tier auto\|fast\|clang` | `auto` | which module `run` boots: clang's optimised one when it is current, else the Cranelift fast tier with clang's build started in the background (`H2_TIER` is the same; `crates/boot/src/tier.rs`, [cranelift-tier.md](../lifter/cranelift-tier.md)) |
 | `--data DIR` | `~/Library/Application Support/h2recomp/data` | VFS host storage (`disk/PartitionN`, `metadata/PartitionN`) |
 | `--jobs N` | cores | clang parallelism |
-| `--slices N` | 100000 | cooperative scheduler slices before giving up |
+| `--slices N` | 100000 (`h2 serve`: no limit) | cooperative scheduler slices before giving up |
 | `--transfers N` | 50M | runner transfers per slice |
 | `--no-stopgaps` | | run on the bare kernel: no boot stopgaps or wrappers, and no fallback interpreter (an unsupported instruction stops the run where generated code reported it) |
 | `--fresh-data` | | empty `<data>/disk` and `<data>/metadata` first; refused, deleting nothing, if the disc, image or `--out` is inside either |
@@ -33,45 +37,29 @@ copies. Nothing is ever written next to it.
 | `--movies DIR` | app data (`~/Library/Application Support/h2recomp/movies`) | where `h2 movies` installed the transcodes; the current ones play ([bink-hle.md](../audio/bink-hle.md)); the run logs `movies: playback (...)` or `movies: skip (...)` |
 | `--no-movies` | | skip every movie (Bink HLE skip mode) |
 | `--no-mappack` | | skip installing a `mappack.iso` beside the disc into `--data` (`H2_MAPPACK=0` does the same; [map-pack.md](../game/map-pack.md)) |
+| `--no-halo1` | | skip the Halo 1 content setup |
 
-Every environment variable and `H2_FEATURES` switch, one line each, is in [switches.md](switches.md); the table below has the boot runner's details.
+The other flags are in `h2 --help` (`--arch`, `--settings`, `--film`, `--system-link`, `--host-light`, `--socket`).
+
+Environment variables the boot runner reads. Every other variable and
+`H2_FEATURES` switch, one line each, is in [switches.md](switches.md).
 
 | Environment | Effect |
 | --- | --- |
-| `H2_FASTMEM=0` | **On by default.** Generated code does inline RAM checks/copies; unsupported accesses use Rust. `0` compiles without them; set it for both `h2 build` and `h2 run`/`play`, since changing compiler flags invalidates the dylib stamp. Requires the current boot bridge. This is the gated inline path, not fault-driven fastmem. |
-| `H2_PERF=1` | compile generated loop/x87 counters; forwarded by boot's versioned bridge to contexts with profiling enabled. Part of the dylib stamp. |
+| `H2_FASTMEM=0` | **On by default.** Generated code does inline RAM checks/copies; unsupported accesses use Rust. `0` compiles without them; set it for both `h2 build` and `h2 run`/`play`, since changing compiler flags invalidates the dylib stamp. This is the gated inline path, not fault-driven fastmem. |
 | `H2_X87_NATIVE=0` | **On by default.** Generated code runs range-guarded x87 arithmetic in native binary64 (see [x87-native.md](../lifter/x87-native.md)). `0` keeps every operation on the `h2x87_v1_*` helpers. A compiler flag: part of the dylib stamp and object cache keys, so set it for both build and run. |
 | `H2_SSE_NATIVE=0` | **On by default.** Generated code runs guarded SSE add, subtract, multiply, divide and square root in native SIMD ([sse-native.md](../lifter/sse-native.md)). `0` uses the integer `h2s_*` helpers for every operation. A compiler flag, like `H2_X87_NATIVE`: set it for both build and run. |
 | `H2_ACCESS_COUNT=0` | **On by default.** Generated handlers count their own guest memory accesses and charge them in bulk (see crates/emit/RUNTIME-CONTRACT.md). `0` lets the runtime charge each accessor call. It changes the C: part of the dylib stamp and the emit cache key, as `H2_PASSES` is. |
-| `H2_EMIT_TARGET=tvos` / `ios` | `h2 build` compiles and links the module for the Apple TV (`arm64-apple-tvos17.0`, against the appletvos SDK) or an iPhone or iPad (`arm64-apple-ios17.0`, the iphoneos SDK) instead of the Mac; its stamp names the target, so only that app accepts it ([tvos.md](tvos.md), [ios.md](ios.md)). Unset, `host` or `macos`: the Mac, unchanged |
-| `H2_BOOT_VERBOSE=1` | log boot notes, fallback analysis and cache diagnostics, each sampled bot join gate, and repeat messages while Mods has no in-game Live session. Also enables `H2_FEATURE_PLAN` detail. |
-| `H2_FEATURE_PLAN=1` | list features, hooks, entries, locale sources, and hot-point warnings. Also log the first time each hook runs and show the skull and health install reports. The default prints a one-line installation summary and any problems. |
-| `H2_FEATURES=impl.render.native=off` | disable the native GPU renderer: every stage, scene walk and the scene list builders return to the D3D path. It is the renderer's only switch. The `impl.render` switch still controls the lifted render-loop ports independently. |
-| `H2_NATIVE_VERBOSE=1` | show the native renderer's per-definition and per-material load lines. With verbose logging off, a stage that finds no work logs when it stands down for the map. See [native-renderer.md](../graphics/native-renderer.md). |
+| `H2_BOOT_VERBOSE=1` | log boot notes, fallback analysis and cache diagnostics |
 | `H2_BOOT_GFX=<dir>` | run D3D on a headless `GfxBackend` with the nv2a shaders and write presented frames to `<dir>/frame-NNNNN.png` |
 | `H2_BOOT_UPLOAD_ALWAYS` | Any value, even `0`, counts as set. D3D re-reads every resource on every use, instead of trusting the write barrier (`UploadPolicy::Tracked`) |
 | `H2_BOOT_GFX_EVERY=N` | with `H2_BOOT_GFX`, keep the first frame and every Nth (default 30); `never` renders on the GPU but writes no PNGs |
-| `H2_BOOT_GFX_SHADOWS=N` | with `H2_BOOT_GFX`, also write the first N frames that sample a shadow map (a drawn draw with a depth texture bound: Halo's shadow apply, layer 11), whatever `H2_BOOT_GFX_EVERY` says, except all-black ones (a cinematic draws its lights' shadow passes under a fade to black too); the same frames in every run of the same input, so a retail and an `H2_LIGHTING=e3` run can be compared frame for frame. The draw diagnostics list those frames either way (`shadow-map frames K  a-b, c, ...`) |
-| `H2_BOOT_GFX_LIGHTING_AB=1` | with `H2_BOOT_GFX` (any value but `0` turns it on; [e3-lighting.md](../graphics/e3-lighting.md)): one run, both lighting modes. The 1x reference answers the guest as always; a retail view and an E3 view draw the same calls at `H2_RENDER_SCALE` (at least 2; `d3d::LightingAb`), compared on every shadow-map frame; the first `H2_BOOT_GFX_SHADOWS` (default 40) pairs that differ are written as `frame-NNNNN-retail.png` and `frame-NNNNN-e3.png`, and the report says how many of how many differ (`lighting A/B: K of M ...`). `H2_BOOT_GFX_EVERY` still writes `-1x`, `-retail` and `-e3` frames as usual. Two separate runs are not comparable this deep (host timing changes what the game does: d3d.md "Visibility tests"); a pair from one run differs only where lighting does. The report gives both views' `render scale` lines. `H2_LIGHTING` is ignored |
-| `H2_RENDER_SCALE=N` | with `H2_BOOT_GFX` (as in `h2 play`), N = 2..6: the guest talks to a 1x reference and a second backend on the same device renders the frame at N times its size (`d3d::ScaledBackend`, [high-resolution.md](../graphics/high-resolution.md)). `frame-NNNNN.png` is then the scaled image and `frame-NNNNN-1x.png` the reference's, and the run report ends with a `render scale N:` line counting view frames, fallback frames, view errors, mismatches, missed depth and repairs |
-| `H2_LIGHTING=e3` | with `H2_BOOT_GFX` (as in `h2 play`, where it locks the Video screen's Lighting row): E3 lighting's phase 1 in the view, the game's shadow maps at the render scale (at least 2x) compared with one tap ([e3-lighting.md](../graphics/e3-lighting.md)). Builds the view even at `H2_RENDER_SCALE=1`; the `-1x.png` frames and everything the guest reads stay retail. `retail` (or unset) is the default |
-| `H2_GFX_MERGE_CHECK=N` | with `H2_BOOT_GFX`, render each pending pass of frame N both merged and one pass per draw and print what differs, down to the draws involved (`GfxBackend::set_merge_check`; slow) |
-| `H2_RENDER_THREAD=0` | **On by default; `0` turns it off.** With `H2_BOOT_GFX` or in `h2 play`, run the `GfxBackend`'s work (shader preparation, encoding, uploads, submission, present, the `D3DSWAP_FINISH` wait) on a `d3d-render` thread (`d3d::ThreadedBackend`); the guest waits only for read-backs. Same frames and guest-visible state; see [render-thread.md](../graphics/render-thread.md) |
 | `H2_BOOT_STOP_AT_PRESENT=N` | end the run once N frames are presented |
-| `H2_PIPELINE_CACHE=<file>` | the persistent pipeline cache (docs/graphics/graphics.md "Pipeline compiles"): pipelines recorded there are built on worker threads at startup; `off` disables it. Default `~/Library/Caches/h2recomp/pipelines-v2.jsonl` |
-| `H2_GFX_COMPILE_THREADS=N` | pipeline compile workers (default half the cores, 2-4; `0` builds each pipeline on the game thread when its pass is encoded) |
-| `H2_FRAME_STATS=1` | frame-time stats by phase: a line a second on stderr and the worst frames at the end (docs/runtime/app.md "Frame stats", docs/perf/gameplay-budget.md); `H2_FRAME_STATS_CSV=<file>` writes every frame, `H2_FRAME_STATS_FROM=N` starts the end report at frame N |
-| `H2_AGENT=<socket>` | listen on a Unix socket for the agent API (JSON-RPC: status, waits, pause and step, world reads, frame counters; [agent-api.md](agent-api.md)). `h2 serve` is `h2 run` with this on and no building. Adds the `agent` feature, a tick observer, so compare runs that all have it on or all off |
-| `H2_PERF_FROM=N` or `level` | with an `h2` built with `--features perf`: open `perf::Session::from_env()` (`H2_PROFILE`, `H2_TIMELINE`) at present N, finished at the end of the run (docs/perf/profiling.md "Boot hook"). `level`: at the first present after the level loaded (`H2_LEVEL`'s, else the first game that is not the main menu); the run prints `perf: session from present N, the first after <map> loaded` |
-| `H2_LEVEL=<map>`, `H2_DIFFICULTY=easy\|normal\|heroic\|legendary` | start that level (a map file name) in place of the main menu with one default player: no title, profile or menus. A campaign level (`03a_oldmombasa`) at that difficulty (default normal); a multiplayer map (`ascension`) as a local Slayer game with the default variant. A name the disc lacks stops the run with the list. `h2 play --level`/`--difficulty` are the same ([level-boot.md](level-boot.md)) |
-| `H2_SIM=<match file>`, `H2_SIM_REPORT=<file>` | sim mode: a headless System Link host with the match file's multiplayer map and 1 to 15 phantom peers, no keyboard pad, the world render skipped (`sim-frame`), no kernel trace file, no background nav builds, the match's pace (unpaced by default, over `H2_BOOT_REALTIME`); the run ends at the game's end, `max_ticks`, `max_wall_s` or `match.stop`, and writes the JSON report to `H2_SIM_REPORT`. Refuses `H2_BOOT_GFX`. `h2 sim run` sets these ([sim.md](sim.md)) |
 | `H2_BOOT_FPS_FROM=N` | measure the report's fps window from present N (default: the last 100) |
 | `H2_BOOT_REALTIME=1` | pace the scheduler to wall-clock time (`Pacer::real_time`); off by default, so runs go as fast as the host allows |
 | `H2_BOOT_CACHE=<dir>` or `off` | the boot cache (default `$TMPDIR/h2boot-cache`), shared by every `--out`: the fallback's unread jump-table targets, and the image's analysis (`analysis-<hash>-<size>-<analyzer>.h2a`), keyed on the XBE hash and size and on `ANALYSIS_SOURCE_HASH` (xbe and analyze sources, `Cargo.lock`, rustc version). `h2 build` writes the analysis and the fallback reads it at run time; `H2_TRACE` skips it. `off` caches nothing |
 | `H2_BOOT_INPUT=BUTTONS@WHEN,...` | scripted pad timeline through the keyboard pad and XInputGetState. BUTTONS: `A B X Y BLACK WHITE LT RT UP DOWN LEFT RIGHT START BACK LS RS LUP LDOWN LLEFT LRIGHT` or a key name, joined with `\|`. WHEN: `T`, `T+D` or `T-U`, a slice or (`f` prefix) a present count; held 4 presents or 100 slices by default. Each press is printed. |
 | `H2_BOOT_INPUT_FILE=<file>` | the same entries, one per line, `#` comments; merged with `H2_BOOT_INPUT` |
-| `H2_MAP_DIR=<dir>` | serve `D:\maps\<name>.map` from `<dir>/<name>.map` where that file exists, e.g. a map saved by the scenario editor ([storage.md](storage.md) "Map overrides", [scenario-editor.md](../editor/scenario-editor.md) §5); unset or empty mounts the disc unchanged |
-| `H2_ICONS=auto\|xbox\|xbox360\|playstation\|keyboard\|remote\|steam` | add the icon sets to the fonts and draw that set's button pictures ([button-icons.md](../input/button-icons.md)); unset leaves the fonts and glyph lookups alone |
 | `H2_BOOT_CAPTURE=<dir>`, `H2_BOOT_CAPTURE_FRAME=N` | record frame N for offline replay (see `crates/boot/src/d3d_diag.rs`): every texture upload, surface, guest write, and the frame's `ResolvedDraw`s with their streams |
 | `H2_BOOT_CAPTURE_SNAP=K[-L],...` | with a capture, read the colour target back after those draws of frame N (`snap-K.bin`, guest BGRA bytes) |
 | `H2_BOOT_CAPTURE_SKIP=K[-L],...` | with a capture, drop those draws of frame N |
@@ -79,12 +67,6 @@ Every environment variable and `H2_FEATURES` switch, one line each, is in [switc
 | `H2_BOOT_CAPTURE_TEX=K[-L],...` | with a lite capture, still keep these texture uploads' bytes (`tex-K-L.bin`; ids from `textures.txt` and `frame.txt`, stable across `--fresh-data` runs) |
 | `H2_BOOT_DRAWLOG=<file>` | log every backend call of the frames in `H2_BOOT_DRAWLOG_FRAMES` (present counts, default `240`; frame N matches `frame-N.png`) |
 | `H2_BOOT_DRAWLOG_VERTS=1` | with `H2_BOOT_DRAWLOG`, add the vertex layout and the first 8 vertices of each stream |
-
-The startup log shows the selected Live account before the game signs
-in. The Mods list uses the in-game Xbox Live session and reports once
-when that session is unavailable. The controller-speaker indexer skips
-empty cache slots, including slots whose headers the game has zeroed
-while replacing a map.
 
 The run prints a report when it ends. It covers:
 
@@ -97,16 +79,16 @@ The run prints a report when it ends. It covers:
 
 `kernel-trace.tsv` has one row per kernel import call: seq, thread, ordinal,
 name, return address, args, EAX and decoded detail (object names for the
-file APIs). Use it to diff against a golden trace (docs/lifter/golden-trace.md).
+file APIs). Diff two of them to compare runs.
 It is written through a 64 KiB buffer, flushed at the end of the run
 (`trace::flush`), so a crash can lose the last rows; the report's last 40
-calls come from memory and are complete. (One `write` per call was 2.8% of
-an Old Mombasa frame in `h2 run`.)
+calls come from memory and are complete.
 
 ## Hosted runs
 
-`run` is `run_hosted(xbe, dylib, opts, Host::default())`. A host (today
-`h2 play`, docs/runtime/app.md "Playing") fills in `boot::Host`:
+`run` is `run_hosted(xbe, dylib, opts, Host::default())`. A host (`h2 play`,
+[app.md](app.md) "Playing"; the agent and dedicated-host paths) fills in
+`boot::Host` (`crates/boot/src/lib.rs`). The fields a plain host sets:
 
 | Field | Instead of | Goes to |
 | --- | --- | --- |
@@ -117,8 +99,10 @@ an Old Mombasa frame in `h2 run`.)
 | `trace_limit: Option<usize>` | every call in memory | `trace::install_bounded`: the last N calls, and at most N older ones still open (calls that never return, such as thread exits, age out), stay in memory; the TSV still gets every completed call |
 | `between_slices: Option<BetweenSlices>` | nothing | called after every slice, input pump and audio advance with the kernel; `false` ends the run with outcome `HostStop` (the output is halted as on any end) |
 
-Everything else (stopgaps, fallback, vblanks, report) is the same in both
-modes. `tests/hosted.rs` (ignored; needs `$H2_XBE`, `$H2_DISC`,
+`Host` has more fields (`film_out`, `host_light`, `host_bots`, `settings`,
+`level`, `debug_menu`, `theater`, `on_vfs` and others); each is documented on
+the struct. Everything else (stopgaps, fallback, vblanks, report) is the
+same in both modes. `tests/hosted.rs` (ignored; needs `$H2_XBE`, `$H2_DISC`,
 `$H2_BOOT_DYLIB`) checks the sink is opened once off the runner thread and
 fed on the guest's clock, the callback count, a monotonic clock and
 `HostStop`; `trace.rs` tests the bounded trace.
@@ -134,11 +118,7 @@ fed on the guest's clock, the callback count, a monotonic clock and
     implements the `h2shim_*` imports in `shim.rs`.
   - `run` reads the module's `h2gen_module` tables and registers every
     generated entry and resume as itself, so the module's direct calls
-    (`H2_DIRECT_CALLS`) match. Until 2026-11 every entry went through one
-    trampoline in `fallback.rs`, which no direct call matched, so every
-    call between generated functions went through the runner. The
-    trampoline and its `H2_BOOT_TRAMPOLINE` A/B switch were removed in
-    the 2026-11-20 flag cleanup. A slim host module's left-out owners are
+    (`H2_DIRECT_CALLS`) match. A slim host module's left-out owners are
     registered to the interpreter (`fallback::register_cold`).
 - **`fallback.rs`, `x87.rs`, `sse.rs`**: mixed-mode fallback. `x87.rs`
   does all of its arithmetic, conversions and transcendentals in
@@ -178,110 +158,13 @@ fed on the guest's clock, the callback count, a monotonic clock and
   (`sweep_diag.rs`) logs one level loading-screen frame: every draw's
   combiner words and blend state, and the target read back after each.
 
-## Current state
+## Measuring the idle menu
 
-**The main menu renders and takes input, and the campaign starts.** On
-master, with no overlay:
+The main menu, idle, for performance work. Fresh data makes every run take
+the same path; the script picks the Default profile and leaves the main menu
+up, then the run stops on its own.
 
-- the loading screen, the 3D title scene (the Covenant ship over New
-  Mombasa), the HALO 2 logo and "PRESS START TO CONTINUE" render, with the
-  menu's blue grade;
-- scripted input takes START, CHOOSE PROFILE, the main menu, CAMPAIGN and
-  SELECT LEVEL, and loads The Heretic (`00a_introduction`);
-- the level renders past 8,000 presents, shadow maps included: one run
-  there took 50,207 shadow-map samples and skipped none.
-
-Preemption makes slices short, so raise `--slices` for long runs. The
-present numbers below are from master fd3e969 with the default script
-timing: the title screen is at about present 300, CHOOSE PROFILE about
-400, the main menu about 480 (21,000 slices).
-
-Screenshots are kept in the issue threads linked from the README, not in
-the repo.
-
-Rendering notes from the menu frame (present 480):
-
-- dotted dark horizontal lines across the screen at a few heights are the
-  menu's own scrolling glyph strips, drawn as authored. In frame 480 they
-  are draws 1439-1481 of 1578 (after the full-screen grade at 1437): 43
-  `Begin/End` quads in pairs (the second of each pair wraps the scroll),
-  each a 1024-wide DXT3 strip 4, 8 or 16 texels tall, `SrcAlpha/InvSrcAlpha`,
-  with dark blue texels at alpha 2/15 to 4/15. With the blue grade (d5f82c6)
-  they sit on blue;
-- the CAMPAIGN OPTIONS highlight bar draws as horizontal stripes, not
-  noise: draws 985-986 of frame 570, a 200x21 `LinA8R8G8B8` texture
-  (pitch 832) written once by the game when the screen opens, light blue
-  with alpha alternating 52 and 36 every two rows. The same with
-  `H2_BOOT_UPLOAD_ALWAYS` set, so no CPU write is missed.
-
-Unguarded switch targets the analyzer still doesn't read go through the
-fallback (blocker 1): about 45k fallback entries by the main menu.
-
-### Milestones, from the entry point
-
-1. Entry `0x2d0aee` and the XAPI startup (`xapi::register`).
-2. XMountUtilityDrive (Partition 5 cache, `CACHE_ROW`).
-3. CRT static init (its x87 is lifted now; it ran in the fallback first).
-4. Game main:
-   - AV pack, video and the push buffer;
-   - `Direct3D_CreateDevice`, with the NV2A base stand-in and the
-     back/depth backing from the boot;
-   - the first Swap.
-5. The world pool at physical `0x61000` (`LoadOptions::halo2()`, mapped at
-   `0x80061000` and `0xf0061000`).
-6. The second thread, the mutants and the fonts.
-7. Cache files on Z: and N: (Partition4), the save games and `sgf`.
-8. XcSHA, XInitDevices and the D3D state setup.
-9. XHV voice engine passes `0x33337d` (DSound round 2).
-10. Network: PhyInitialize and the XNet 20 ms timer DPC on thread 0.
-11. `cpuid` at `0x34881d` (lifted now; emulated in the fallback first).
-12. The `d:\bink\intro_60.bik` probe and the movie loop `0x1639c2`.
-    SwitchToThread hands off since kernel round 5.
-13. `d:\maps\mainmenu.map` is opened on thread 3. The stream purge
-    callback `0x213fa0` waits for the read (preempted since backedge).
-14. Loading screen: the unbounded switch tables `0x216a54` and `0x216b01`
-    run through the fallback. The "LOADING nn%" frames render; `t:\$C\`
-    and `u:\` are probed.
-15. Offscreen render targets: render-to-texture and the same-size
-    SetRenderTarget fast path `0x3f7b30` through crates/d3d.
-16. Inline draws through BeginPush and SetStateVB (vertex array formats,
-    d3d-r6).
-17. Unaligned memcpy/memmove and the zero-holed table at `0x336f0`
-    through the fallback (blocker 1).
-18. The title screen, then START (scripted), CHOOSE PROFILE, A on
-    Default, and the main menu.
-
-19. With a frame-timed script (`START@f310,DOWN@f408,A@f419,A@f524,A@f585,
-    A@f632`): CAMPAIGN, CAMPAIGN OPTIONS (New Campaign), then PROFILE NAME
-    (the Default profile cannot save, so the game asks for a new one), DONE.
-    Saving the new profile used to stop on `NtCreateFile` of
-    `u:\<id>\SaveMeta.xbx` with an AllocationSize; the kernel now treats
-    it as a hint on backends that cannot reserve (b906763).
-
-    With fresh partitions the Default profile is accepted and no profile
-    name is asked for: `START@f310,DOWN@f408,A@f419,A@f524,A@f585,A@f632,
-    A@f700,A@f760` goes CAMPAIGN, CAMPAIGN OPTIONS, SELECT LEVEL (The
-    Heretic), difficulty, then loads `maps\00a_introduction.map`
-    (loading screen from present ~830). About present 4210 the first
-    level frame needs depth render-to-texture, which d3d has had since
-    850fe2f; the level then renders past 8,000 presents.
-
-When this was written the main menu ran at about 5-6 fps on an unloaded
-M-series Mac (1.9 fps at fd3e969); current in-level numbers are in
-[gameplay-budget.md](../perf/gameplay-budget.md). Audio runs on logical time through a
-`NullSink` (its frames are counted as dropped, by design), vblanks on
-the 60 Hz logical clock. When every thread waits with nothing timed but
-audio is still playing, the runner moves logical time on one audio
-quantum (5.3 ms) at a time (`dsound_glue::wake_idle`, at most 10 s with
-no thread running) instead of stopping with a deadlock.
-
-### Menu idle benchmark
-
-For performance work: the main menu, idle. Fresh data
-makes every run take the same path; the script picks the Default profile
-and leaves the main menu up, then the run stops on its own.
-
-```
+```sh
 T=$TMPDIR/h2bench; OUT=$TMPDIR/h2boot
 cargo build --release -p cli            # target/release/h2
 # Once per generator (h2 run rebuilds a dylib whose .stamp doesn't match):
@@ -292,131 +175,70 @@ H2_BOOT_FPS_FROM=440 H2_BOOT_STOP_AT_PRESENT=560 \
 target/release/h2 run disc/halo2.iso --out $OUT --data $T/data --fresh-data
 ```
 
-- Window: presents 440-560, the main menu after it has faded in (the
-  profile is chosen at 419). The run report's `frames:` line gives fps,
-  mean, median and worst frame time over that window, and every 100
-  presents the run prints `present N: last 100 at X fps`.
-- `H2_BOOT_GFX_EVERY=never` keeps the GPU path but writes no PNGs; drop
-  it for a screenshot every N.
+- Window: presents 440-560, the main menu after it has faded in. The run
+  report's `frames:` line gives fps, mean, median and worst frame time over
+  that window, and every 100 presents the run prints `present N: last 100 at
+  X fps`.
+- `H2_BOOT_GFX_EVERY=never` keeps the GPU path but writes no PNGs.
 - The fallback loads or computes the image analysis on a background
-  thread. It reuses the cache from `h2 build` when available, and reads
-  the unread-target cache for the current image and analyzer. Boot
-  continues on a cache miss. An unsupported instruction or a transfer
-  that needs the fallback can still wait for the analysis. The run
-  reports waits over 100 ms, and `H2_BOOT_VERBOSE=1` shows when analysis
-  finishes. Compare warm runs to avoid competition from cold analysis.
-- Numbers are only meaningful on a quiet machine: with heavy builds
-  running alongside (load average 170-430) the same run fell to a
-  fraction of its quiet-machine rate, and the analysis went from 15 s to
-  190 s.
-- Profile with `sample <pid> 10` or Instruments once `present 400`
-  appears.
+  thread, reusing the cache from `h2 build` when there is one. Boot
+  continues on a cache miss; an unsupported instruction or a transfer that
+  needs the fallback can still wait for the analysis. The run reports waits
+  over 100 ms, and `H2_BOOT_VERBOSE=1` shows when analysis finishes.
+  Compare warm runs.
+- Numbers mean something only on a quiet machine, and only from the same
+  data directory state: use `--fresh-data` (or a new `--data`) and never
+  share one between two runs at once.
 
-Runs compare frame for frame only from the same data directory state:
-use `--fresh-data` (or a new `--data`), and never share one between two
-runs at once. On master a run that shared the data directory with another
-stopped with a divide error at `0x223cff` (a zero stride in loaded data).
+`cargo build --release -p boot --example menu_cpu` builds a bounded driver
+(`crates/boot/examples/menu_cpu.rs`): `menu_cpu DISC OUT FRESH_DATA_DIR`. It
+runs boot's normal headless backend, keeps 4096 trace rows and stops after
+present 560. Its `MENU_CPU` line reports wall FPS, process user+system CPU
+milliseconds per frame for presents 480 to 560, and
+`guest_thread_cpu_ms_per_frame`, the runner thread's own CPU time. Process
+CPU includes every process thread; GPU execution and time descheduled are
+not CPU time. For pixel fidelity, `H2_GFX_MERGE_CHECK=N` renders frame N
+both merged and one pass per draw and reports the differences
+([graphics.md](../graphics/graphics.md) "Merged passes"). Runs with the
+numbers are in [menu-budget.md](../perf/notes/menu-budget.md).
 
-### Process CPU
+## Boot stopgaps in force
 
-Inline fast memory won its A/B against the checked accessors; the run-time
-switch for that comparison (`H2_BOOT_FASTMEM`) was removed in the
-2026-11-20 flag cleanup, and `tests/bridge.rs` still checks both bridges
-on one image. Measure with the default merged passes,
-`H2_BOOT_GFX_EVERY=never`, input `START@f310,DOWN@f408,A@f419`, and a new
-data directory for each run.
-
-`cargo build --release -p boot --example menu_cpu` builds a bounded driver:
-`menu_cpu DISC OUT FRESH_DATA_DIR`. It runs boot's normal headless backend,
-keeps 4096 trace rows, and stops after present 560. `MENU_CPU` reports wall
-FPS, process user+system CPU milliseconds per frame for presents 480–560, and
-`guest_thread_cpu_ms_per_frame`, the runner thread's own CPU time (every guest
-thread; the backend's work runs on the render thread unless `H2_RENDER_THREAD=0`).
-Process CPU includes every process thread; GPU execution and time descheduled are
-not CPU time. Samples are taken between scheduler slices at those presents,
-so boundaries can differ slightly from the backend's frame timestamps.
-Compare CPU as well as FPS when shared-machine load changes. For pixel
-fidelity, `H2_GFX_MERGE_CHECK=N` renders frame N both merged and one pass
-per draw and reports the differences (docs/graphics/graphics.md, "Merged
-passes").
-
-### Ranked blockers
-
-Sizes are S (under a day), M (a few days) or L (a week or more).
-
-| # | Blocker | Owner | What's needed | Size |
-| --- | --- | --- | --- | --- |
-| 1 | ~~Holed jump tables~~ | analyze | Read on master. The CRT copy's masked and negative-index tables since bceed11; the unguarded enum tables with long runs of nulls (`0x336f0`, five in a row; `0x33980`, seven; `0x22dcd9`, eight) since an unguarded table placed after its own code may skip up to 16 nulls. `xbe_pins::unguarded_tables_hold_every_case_the_boot_fallback_would_find` pins that the boot's run-time read finds no target the analyzer lacks. | done |
-| 2 | **Fog and sky on the title scene** | gfx / shaders | Seen at fd3e969: brown fog over everything, no sky colour, 8x8 blocky patterns. Fog has followed the NV2A fog unit since 5c2845d and 5b8ec7d; recheck before working on it. | ? |
-| 3 | **RTT write-back replayed as a CPU write** | d3d (runtime_glue) or runtime | The barrier reports the device's own write-back pages at the next entry, so an unchanged render texture uploads again. Boot cannot tell them apart from other contexts' stores during the call: d3d's handlers would need to run under `Guest::writes_unreported(id)` for the boot's watch, or the device would need to report its own write ranges. Performance only. | S |
-| 4 | ~~x87 not lowered~~ | lift / emit | Lowered on master (e5c4251). The boot dylib links emit's x87 bridge, and the fallback's x87 runs on the same crates/x87 abi helpers. | done |
-
-### Boot stopgaps in force
+A stopgap replaces a kernel export the kernel stops on; the table in
+`crates/boot/src/stopgaps.rs` installs an entry only if its ordinal is in
+`Kernel::stopped_ordinals()`, and only with stopgaps on (`--no-stopgaps`
+turns them off). The other stopgaps:
 
 | Stopgap | Where | Retire when |
 | --- | --- | --- |
-| Back/depth surface backing at CreateDevice, `0xf0000000` write-combined alias | d3d_glue.rs `install_back_surfaces`, lib.rs | d3d / runtime |
-| Fallback from unread jump-table targets (every unguarded switch's, read from the image), and the unknown-switch stops they cause, allowed only for the site's own table. On the retail image it finds nothing analyze has not read (blocker 1); kept as a net for a table read short | fallback.rs `unread_targets`, `start_analysis` | analyze (#1): remove |
-| Interpreting past instructions the lifter doesn't lower | fallback.rs `recover` (the runtime's stop-recovery hook), `set_recovery` | lift |
-| `--no-xapi` only: XMountUtilityDrive `0x2d5b77` | xapi_glue.rs | n/a |
+| Back/depth surface backing at CreateDevice, `0xf0000000` write-combined alias | `d3d_glue::install_back_surfaces`, called from `lib.rs` | d3d or the runtime provides it |
+| Fallback from unread jump-table targets (every unguarded switch's, read from the image), and the unknown-switch stops they cause, allowed only for the site's own table. A net for a table the analyzer read short; the test `xbe_pins::unguarded_tables_hold_every_case_the_boot_fallback_would_find` pins that the boot's run-time read finds no target the analyzer lacks | `fallback::unread_targets`, `fallback::start_analysis` | the analyzer reads every table |
+| Interpreting past instructions the lifter does not lower | `fallback::recover` (the runtime's stop-recovery hook), `fallback::set_recovery` | the lifter lowers them |
+| `--no-xapi` only: XMountUtilityDrive `0x2d5b77` (research point) | `xapi_glue::install_no_xapi_mount` | not retired |
 
-### Retired
+## Known gaps
 
-- backedge (a7ca4f5) and d3d-r6 (a41dae4): the `0x213fa0` stream purge
-  wait; the SetRenderTarget fast path `0x3f7b30`; Get2DSurfaceDesc,
-  BeginPush and SetStateVB as retail bodies (`RUN_NATIVE`); the
-  device+0x934 NV2A stand-in (now `DeviceConfig::nv2a_window`).
+- **RTT write-back replayed as a CPU write.** The barrier reports the
+  device's own write-back pages at the next entry, so an unchanged render
+  texture uploads again. Boot cannot tell them apart from other contexts'
+  stores during the call: d3d's handlers would need to run under
+  `Guest::writes_unreported(id)` for the boot's watch, or the device would
+  need to report its own write ranges. Performance only.
 
-- Lift leftovers (0775c97): the fallback's `cpuid` and `rdtsc` emulation
-  and the unknown-switch-target path. `0x216a54` and `0x216b01` are lifted
-  now. The boot bridge forwards `h2shim_v1_rdtsc` to the runtime's guest
-  TSC, and the interpreter's TSC is seeded from it at each fallback entry.
+## Retired
 
-- Kernel round 5 (2a2b197):
-  - NtYieldExecution as a 1 ms delay (the yield starvation is fixed, and
-    the movie loop `0x1639c2` still progresses);
-  - AvSendTVEncoderOption 0xb.
-- D3D round 4 (f5f7390 and earlier):
-  - the fragment no-ops `0x3f6190`, `0x3f6390`, `0x3f6840` and `0x3f6f40`;
-  - SetSoftDisplayFilter `0x3f8c70`;
-  - the boot's `0x12b2e0` frame wait (now `d3d::register_frame_wait`);
-  - the `0x3fb710` resource busy check and `0x3f8cc0` (SetStipple,
-    method `0x1480`), both implemented by crates/d3d;
-  - the SetRenderTarget stopgap (render-to-texture is in crates/d3d; its
-    `H2_BOOT_RTT` switch is gone).
+The kernel, XAPI and DSound rounds retired the boot's wrappers and game
+overrides; only the `--no-xapi` XMountUtilityDrive override above stays.
+The list of what was retired, with the commits, is in
+[boot-log.md](notes/boot-log.md).
 
-Master covers these now. The kernel stopgap table installs nothing,
-because `Kernel::stopped_ordinals()` is empty for every entry.
+## Not verified
 
-- Kernel rounds 3 and 4 retired every entry in the stopgap table:
-  - ExQueryNonVolatileSetting;
-  - HalRegisterShutdownNotification;
-  - KeInitializeDpc, KeInitializeTimerEx, KeSetTimer(Ex) and
-    KeCancelTimer (DPCs now run);
-  - KeStallExecutionProcessor and KeSetBasePriorityThread;
-  - Ke Save/Restore FloatingPointState;
-  - RtlCompareMemoryUlong;
-  - PhyGetLinkState and PhyInitialize (252/253);
-  - MmCreate/DeleteKernelStack;
-  - ObReferenceObjectByHandle and ObfDereferenceObject;
-  - MmSetAddressProtect (182);
-  - XcSHAInit, XcSHAUpdate and XcSHAFinal (335-337);
-  - MmPersistContiguousMemory and NtOpenSymbolicLinkObject.
-- Also retired by kernel round 3 (the code, kept for a while behind
-  `H2_BOOT_OLD_GLUE`, was deleted in the 2026-11-20 flag cleanup):
-  - the mutant semaphores (192/221);
-  - the root -3 and FILE_SYNCHRONOUS_IO_ALERT rewrite;
-  - EEPROM XC_MAX_ALL;
-  - MEM_TOP_DOWN;
-  - FileAllocationInformation and NtQueryFullAttributesFile;
-  - MEM_RELEASE.
-- The widened arena: `LoadOptions::halo2()` reserves
-  [0x61000, 0x3145000).
-- XAPI round 2: the N: interim override and `0x2d5d0a`
-  (VfsStorage + `CACHE_ROW`; N: mounts as Partition4).
-- DSound round 2: the `0x55810` voice-off. XHV now passes `0x33337d`.
-  The override (`game_glue.rs`) was deleted with the rest of the retired
-  glue in the 2026-11-20 flag cleanup.
-- Before these rounds: the class-34 wrapper, XeLoad/UnloadSection, the
-  boot XMountUtilityDrive (back with `--no-xapi`), and the deletion of the
-  pre-created T:/U:/Z: links.
+- Which entries of the kernel stopgap table install on the retail image:
+  `Kernel::stopped_ordinals()` depends on the kernel's exports and on
+  whether it has storage.
+
+## Related
+
+[switches.md](switches.md), [app.md](app.md), [kernel-imports.md](kernel-imports.md),
+[notes/boot-log.md](notes/boot-log.md), [../lifter/cranelift-tier.md](../lifter/cranelift-tier.md).

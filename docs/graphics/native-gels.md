@@ -1,17 +1,14 @@
 # Native shader gels
 
-The native gels are on by default and go off with the rest of the native
-renderer (`impl.render.native=off`). Supported shader
-gel quad packets are replaced through `DrawAdmission`. The handoff records
-both required target copies transactionally, then commits the commands
-before suppressing the original D3D packet. Any preparation, resource,
-validation or range-count failure retains the original packet.
+Status: Built. Replaces supported gel quad packets through `DrawAdmission`; parity with D3D is not verified.
+Code: `crates/feature/src/native_gels.rs`, `crates/boot/src/native_gels_glue.rs`, `native_gels_replace.rs`, `crates/native-render/src/gels.rs`, `gels_gpu.rs`. Tests: `crates/feature/tests/native_gels.rs`, `crates/native-render/tests/gels_gpu.rs`, `native_gels_replace::tests` and `native_gels_glue::tests` in `boot`.
+Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
-No builds or tests were run in this lane. Source formatting and diff
-checks are the only checks performed; runtime coverage/parity remain for
-the single integration build after all lanes finish.
+A light's gel is a shader drawn into render target 13 before the light passes sample it as engine texture 10. The stage replaces that quad draw. The ordered handoff records the quad on both required target copies, then commits before it suppresses the original packet. Any preparation, resource, validation or range-count failure retains the original packet. Part of [native-renderer.md](native-renderer.md).
 
-## Production order
+## How it works
+
+### Production order
 
 **Code**, independently read with `h2 disasm` on the owner's XBE:
 
@@ -21,8 +18,7 @@ the single integration build after all lanes finish.
   `0x00485a77` while its shader is being generated.
 - `0x0003a5ab`, return `0x0003a5b0`, calls
   `0x00016610(shader, 1, -1, 0, 13, 1)`: **shader layer 1 into target
-  13**, not shader layer 13. The earlier native-renderer description
-  conflated those numbers.
+  13**, not shader layer 13.
 - The template sets up each implementation and loads classification 0.
   Its full-target quad helper `0x00015ec0`, return `0x0001675a`, binds
   target 13, resets viewport/scissors through SetRenderTarget, and draws
@@ -45,15 +41,14 @@ complete native quad is recorded into **the real target-13 attachment**.
 It declares colour writes and no depth/stencil writes, so the handoff
 maintains D3D surface coherency and aliases. No queue submission, queue
 write or update to a live texture escapes the isolated command encoder.
-The commit and suppression are owned by the core handoff (merged through
-`bd56af41`), not by a hook-side boolean.
+The commit and suppression belong to the ordered handoff, not to a hook-side boolean.
 
 Guest shader setup, geometry assembly and target/state effects continue.
 Consecutive native and D3D gel packets therefore keep their original
 order. The actual target retains old pixels for blend, colour masks and
 fragment discard. Uniform/vertex buffers belong to each recording.
 
-## Resources and current limits
+### Resources
 
 Replacement consumes the **resolved draw**, including its live microcode,
 constant banks, combiner definition, defaults, render/sampler state,
@@ -78,14 +73,13 @@ Repeated frames do not rebuild their pipelines. Per-recording buffers are never 
 The resident program cache is bounded; eviction retains no live mutable
 GPU storage and recorded commands retain their resource references.
 
-## Interface for the lights lane
+## Interfaces
 
 `boot::native_gels_glue::install(device) -> Arc<Outputs>` installs the
 host. Admission is registered once, lazily, only when the enabled feature
 first reaches replacement mode after its ordered boundary. Disabled
 calls do not add a gels admission or cause extra draw
-snapshots/palette reads. Retain that owner when installing the light graph
-(the current world installer discards only the extra returned Arc).
+snapshots/palette reads. The light graph retains that owner.
 `Binding` is re-exported from `native_gels_glue`.
 
 1. At light entry, before original constants run, retain
@@ -111,60 +105,18 @@ snapshots/palette reads. Retain that owner when installing the light graph
 
 This binding means “target 13 as the producer leaves it,” including D3D
 fallback or later D3D gel packets. It does not claim a particular packet
-committed natively. `native_gels_suppressed` and the per-copy range counters
-in `H2_FRAME_STATS` establish actual replacement. Lights should use
-`binding_after`.
+committed natively. The `gels` stage counters in `H2_FRAME_STATS` (suppressed and per-copy ranges) establish actual replacement. Lights use `binding_after`.
 
-## End-of-integration checks
 
-Commands for the coordinator's single integration build/test phase;
-**not run by this lane**:
+## Rules and limits
 
-```sh
-cargo test -p engine --lib gel::tests
-cargo test -p feature --test native_gels
-cargo test -p native-render --lib gels
-cargo test -p native-render --test gels_gpu
-cargo test -p boot --lib native_gels_glue::tests
-cargo test -p boot --lib native_gels_replace::tests
-cargo test -p boot --lib registration::tests
-cargo test -p boot --lib render_thread::tests
-```
+A refused quad is never partly recorded. The limits are the admission list in "Resources". Unsupported inputs and missing copies leave the D3D draw.
 
-The ignored `boot --test render_points_xbe` list now includes
-`TEMPLATE_QUAD`. Synthetic cases cover admission identities, float4 stream
-ordering/refusal, SSE depth, output/cache generation, preserved masked
-channels on the live target and stale-light binding checkpoints. Core
-handoff fixtures cover rejection of a display copy after reference
-recording without committing either copy.
+## Not verified
 
-Requested runtime proof, only after integration:
+- Pixel parity and positive suppression and range counters on a level with a supported gel (the Old Mombasa level may have none), at render scale 1 and 2.
+- Mixed native and D3D lights with the lights stage's binding.
 
-- `H2_LEVEL=03a_oldmombasa`, `H2_RENDER_SCALE=1`,
-  `H2_FRAME_STATS=1`, `H2_BOOT_STOP_AT_PRESENT=4000`, against the same
-  run with `H2_FEATURES=impl.render.native=off`. Require positive gel
-  suppression/range counters. If 03a has no supported gel, report zero coverage and choose a
-  level with one before judging parity.
-- Repeat at `H2_RENDER_SCALE=2`; require both copy counts, stable refusal
-  counts and no partial recording invariants. Keep other switches equal.
-- Check mixed native/D3D lights with the light lane's binding.
+## Related
 
-Agent-API decision: no running game/editor inspection was performed.
-Neither API was used or expanded. Static XBE reading used the existing
-disassembler. Coordinator runtime proof must use `h2 agent`.
-
-## Shared files edited by this lane
-
-- `Cargo.lock`, `crates/boot/Cargo.toml`: direct shaders dependency.
-- `crates/boot/src/lib.rs`: gel modules.
-- `crates/boot/src/native_world_glue.rs`: install gel host.
-- `crates/boot/src/registration.rs`: register default-off feature.
-- `crates/boot/src/registration/tests.rs`, `crates/boot/src/render_thread.rs`:
-  include the switch in all-on hook checks.
-- `crates/boot/tests/render_points_xbe.rs`: ignored quad discovery point.
-- `crates/engine/src/lib.rs`, `crates/engine/src/points.rs`: gel module and
-  named quad hook.
-- `crates/feature/src/lib.rs`, `crates/native-render/src/lib.rs`: module lists.
-
-Other shared-file changes on the branch belong to the explicitly requested
-handoff merge `f7918d3e`; they were not independently edited by this lane.
+[native-lights.md](native-lights.md), [native-shadows.md](native-shadows.md), [native-renderer.md](native-renderer.md).

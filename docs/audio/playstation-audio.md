@@ -1,8 +1,9 @@
 # PlayStation controller audio: speaker, mute button, microphone
 
-Status: the speaker routing and the mute button are built and unit tested
-end to end, up to the device, and the owner has them working on a DualSense
-(2026-11-17; "Checking with a real pad" below has the list). The microphone is a design only.
+Status: Partly built. The speaker routing and the mute button are built; the microphone is a design only.
+Code: `crates/dsound/src/padroute.rs`, `crates/boot/src/pad_speaker.rs`, `crates/boot/src/speaker_setting.rs`, `crates/boot/src/speaker_row.rs`, `crates/input/src/pad_hid.rs`. Tests: `crates/dsound/tests/padroute.rs`.
+Switch: `H2_PAD_SPEAKER`, `H2_PAD_SPEAKER_EXCLUSIVE`, `H2_PAD_MUTE`, listed in [switches.md](../runtime/switches.md).
+
 Three things were asked for, on a DualSense (and a DualShock 4 where it can):
 
 1. the controller's microphone as the Xbox Communicator's;
@@ -12,14 +13,11 @@ Three things were asked for, on a DualSense (and a DualShock 4 where it can):
 
 | Part | Over USB | Over Bluetooth | Built here |
 |---|---|---|---|
-| Speaker | Yes, as a CoreAudio output, once an HID report moves the output path to the speaker | Only with our own Opus encoder speaking a reverse-engineered HID protocol; not attempted | All of it: the sound index from the maps the game opens, the split mix into a second sink, the speaker-path report. Not checked on hardware. |
-| Mute button + LED | Yes, raw HID | Yes, raw HID (78-byte reports with CRC) | All of it: IOKit in shared mode, the toggle, the LED report (`H2_PAD_MUTE`). Not checked on hardware. |
+| Speaker | Yes, as a CoreAudio output, once an HID report moves the output path to the speaker | Only with our own Opus encoder speaking a reverse-engineered HID protocol; not attempted | All of it: the sound index from the maps the game opens, the split mix into a second sink, the speaker-path report. Run: works on a USB DualSense. |
+| Mute button + LED | Yes, raw HID | Yes, raw HID (78-byte reports with CRC) | All of it: IOKit in shared mode, the toggle, the LED report (`H2_PAD_MUTE`). Run: works on a DualSense. |
 | Mic as Communicator | Mic capture works (CoreAudio lists a 2-channel 48 kHz input over USB); the game side needs XHV and Communicator HLE first | Opus over HID; not attempted | Design only (below) |
 
-No PlayStation controller was connected when this was written
-(`system_profiler SPUSBDataType SPBluetoothDataType` listed only an Xbox
-pad), so nothing below was tried on hardware. **Hardware** marks claims
-that need a check with a real pad. No game data is in this document or in
+**Hardware** marks claims that need a check with a real pad. No game data is in this document or in
 the code; sound tags are matched against the player's own maps at run time.
 
 ## What macOS gives us
@@ -48,7 +46,7 @@ the code; sound tags are matched against the player's own maps at run time.
   input and asks for mic permission ([pitch-midi]); the Mac guide above says
   "0 ins". Sony says the built-in mic and speaker are not supported on a
   Mac, and the headset jack works wired ([sony-mac]). **Seen on a real pad
-  (2026-11-15, macOS, USB):** CoreAudio lists "DualSense Wireless
+  (macOS, USB):** CoreAudio lists "DualSense Wireless
   Controller" twice, once with 4 output channels and once with **2 input
   channels**, both at 48 kHz. So the mic is capturable on macOS over USB.
   The same pad's HID descriptor declares output report 0x02 as 47 bytes
@@ -122,8 +120,6 @@ and LED, however, work the same over Bluetooth (below).
   `XGetDevices`/`XGetDeviceChanges` masks, and `XInputOpen` fails. The real
   XPP (USB) stack is skipped. There is no XHV, voice microphone or voice
   headphone HLE anywhere.
-- The Live docs (`docs/live*.md`) do not mention voice. `crates/live-hle`
-  carries plain UDP; a test sends a `voice-frame` payload, nothing more.
 
 So the mic cannot matter until the game sees a Communicator. That is not a
 small HLE: see the design below.
@@ -215,7 +211,7 @@ sound name, with one rule on top: a voice the game positions in 3D (a
 routed, whatever it is called. Routing knows no player or port: on a
 console with local Clankers (docs/game/bots.md §4.3, "Listeners") a
 bot's own sounds reached the controller while its user counted as a
-listener, and now it does not. These are generic words,
+listener; it is not routed. These are generic words,
 not tag paths from the disc: check them against your maps with `h2 tags
 <map>` (filter `snd!`) and narrow them. Globs ignore case and treat `/` as `\`.
 In the settings menu this belongs with the restart-only audio settings
@@ -464,8 +460,8 @@ who owns the voice transport. This document owns the device and capture side.
 
 ## Checking with a real pad
 
-Confirmed on a USB DualSense on 2026-11-15: the routed sounds play from the
-pad's speaker, so the speaker is now on by default. To re-check, run `h2
+The routed sounds play from a USB DualSense's speaker, and the speaker is on
+by default. To re-check, run `h2
 play` with the pad plugged in, and check:
 
 1. **The speaker plays the chosen sounds.** stderr says `controller speaker
@@ -500,7 +496,7 @@ The in-game row:
    settings dialog has a last row "Controller Speaker: On" that toggles the
    same setting.
 6. A on it: the value flips to the "off" text at once, no dialog opens, stderr
-   says `pad speaker: off`. Reload sounds now come from the TV. A again:
+   says `pad speaker: off`. Reload sounds come from the TV. A again:
    back to "on", they come from the pad. Vibration and the other five rows
    open their usual dialogs.
 7. Quit and start again: the row shows the last value, and `settings.toml`

@@ -1,13 +1,19 @@
 # HaloScript VM (`hs::vm`)
 
+Status: Partly built. The VM runs scenario scripts against a mock `Engine`;
+nothing in `crates/boot` or `crates/feature` calls it, and the game still runs
+the recompiled interpreter. Code: `crates/hs/src/vm`. Tests:
+`crates/hs/src/tests.rs`, `crates/hs/tests/vm_disc.rs` (`#[ignore]`).
+Switch: none.
+
 A native Rust runtime for compiled HaloScript, in `crates/hs/src/vm`. It runs
 a decoded `hs::Scenario` against the XBE's `hs::Catalog` and an `Engine`
 trait. It follows the retail interpreter's own structure, so the semantics
 come from the evaluators: threads with frame stacks, evaluators re-entered
 once per loop iteration, value slots cast through the retail table, and the
 scheduler's slot-order tick. Decoding and table provenance are in
-[../haloscript.md](../formats/haloscript.md). It is not wired into the game yet;
-see "Next steps".
+[haloscript.md](../formats/haloscript.md). It is not wired into the game;
+see "Not verified".
 
 Evidence is `h2 disasm` of the owner's `default.xbe` (SHA-256 `03215919…935d`).
 Some functions were read through Ghidra decompilation and checked against
@@ -228,23 +234,15 @@ leaves the others running:
    given 300 ticks per batch of 16;
 3. every dormant script woken, then 3,000 more ticks.
 
-Result on 2026-11-15: **0 faults**, 90 runs, 1.4 s in release.
+Every map runs with no fault. The counts per builtin kind, the casts
+performed and the share of scripts started are in
+[notes/feature-engine.md](notes/feature-engine.md). Per-builtin lists are
+printed by the test; they come from map tokens, so they are not reproduced
+here.
 
-| Kind | Reachable | Called | Reachable, not called |
-|---|---|---|---|
-| Native | 26 | 26 | 0 |
-| Discarded stub | 10 | 10 | 0 |
-| Engine-facing | 354 | 292 | 62 |
+## Not verified
 
-That is 390 reachable builtin indices, the same count as the map-derived names
-in haloscript.md. The 62 not called sit behind conditions the mock never
-satisfies. Casts performed include short to boolean (15), real to short
-(17,356), object name to object (67,568 plus the typed variants) and object to
-object list. Scripts started at least once: 13,524 of 15,891 (script, run) pairs, 85%. Per-builtin lists
-are printed by the test; they come from map tokens, so they are not
-reproduced here.
-
-## Next steps
+Open items, in the order the game wiring needs them:
 
 1. Differential check against the generated code. Run `hs_update` lifted or
    recompiled and the VM from the same guest state, then compare thread

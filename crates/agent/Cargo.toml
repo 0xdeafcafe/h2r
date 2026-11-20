@@ -16,6 +16,8 @@ serde_json.workspace = true
 runtime.workspace = true
 feature = { path = "../feature", default-features = false }
 engine = { path = "../engine", features = ["runtime-glue"] }
+# Typed guest views (src/sim/state.rs).
+guest-layout = { path = "../guest-layout" }
 live-telemetry = { path = "../live-telemetry" }
 timeline = { path = "../timeline" }
 xapi = { path = "../xapi" }

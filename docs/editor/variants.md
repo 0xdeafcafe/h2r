@@ -1,5 +1,8 @@
 # Game variants: record, schema and saved files
 
+Status: Built. Code: `crates/variants/src`. Tests: in-source unit tests; `crates/variants/tests/disc.rs` (ignored, needs a disc).
+Switch: none.
+
 `crates/variants` is the game variant editor of the editor suite: the
 0x130-byte variant record, the settings schema, saved-variant files and the
 editor's state and commands (`VariantEditor`, drawn by `h2-editor`). No
