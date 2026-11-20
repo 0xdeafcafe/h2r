@@ -18,8 +18,8 @@ use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
 use serde::Serialize;
 
 use crate::code::Code;
-pub use check::{ByteRun, Diff, Outcome, PortFn, TransferDiff, View, check, MAX_RUNS};
 pub use check::Overlay;
+pub use check::{ByteRun, Diff, MAX_RUNS, Outcome, PortFn, TransferDiff, View, check};
 
 /// Mismatches kept; later ones are counted in `mismatches_dropped`.
 pub const MAX_MISMATCHES: usize = 64;
@@ -249,9 +249,16 @@ impl Shadow {
     /// Turn checks on for `names` (ports, groups or `all`), resetting their
     /// counts and mismatches. `every`: check one call in that many (default
     /// 1, or what it was). Builds the lifted original first if needed.
-    pub fn enable(&self, names: &[String], every: Option<u64>, step_limit: Option<u64>) -> Result<Enabled, Error> {
+    pub fn enable(
+        &self,
+        names: &[String],
+        every: Option<u64>,
+        step_limit: Option<u64>,
+    ) -> Result<Enabled, Error> {
         if names.is_empty() {
-            return Err(Error::Invalid("name at least one port, group, or all".into()));
+            return Err(Error::Invalid(
+                "name at least one port, group, or all".into(),
+            ));
         }
         if every == Some(0) || step_limit == Some(0) {
             return Err(Error::Invalid("every and step_limit are at least 1".into()));
@@ -259,10 +266,9 @@ impl Shadow {
         let mut s = self.lock();
         let selected = Self::select(&s, names)?;
         if s.code.is_none() {
-            let source = s
-                .source
-                .as_mut()
-                .ok_or_else(|| Error::Unavailable("no image for the lifted original in this process".into()))?;
+            let source = s.source.as_mut().ok_or_else(|| {
+                Error::Unavailable("no image for the lifted original in this process".into())
+            })?;
             let code = source().map_err(Error::Unavailable)?;
             s.code = Some(code);
         }
@@ -292,8 +298,14 @@ impl Shadow {
             enabled.push(p.name);
         }
         s.mismatches.retain(|m| !enabled.contains(&m.port));
-        self.on.store(s.ports.values().any(|p| p.on), Ordering::Relaxed);
-        Ok(Enabled { enabled, not_installed, every: s.every, step_limit: s.step_limit })
+        self.on
+            .store(s.ports.values().any(|p| p.on), Ordering::Relaxed);
+        Ok(Enabled {
+            enabled,
+            not_installed,
+            every: s.every,
+            step_limit: s.step_limit,
+        })
     }
 
     /// Turn checks off for `names`, or for every port when empty. Counts
@@ -381,9 +393,13 @@ impl Shadow {
         if let (Ok(t), Some((copy_cpu, copy_t))) = (&live, copy)
             && (copy_cpu != *cpu || copy_t != *t)
         {
-            let mut registers =
-                crate::cpu::diff(&crate::cpu::to_interp(cpu), &crate::cpu::to_interp(&copy_cpu));
-            registers.iter_mut().for_each(|r| r.name = format!("{} (live, copy)", r.name));
+            let mut registers = crate::cpu::diff(
+                &crate::cpu::to_interp(cpu),
+                &crate::cpu::to_interp(&copy_cpu),
+            );
+            registers
+                .iter_mut()
+                .for_each(|r| r.name = format!("{} (live, copy)", r.name));
             outcome = Outcome::Mismatched(Box::new(Diff {
                 kind: "nondeterministic",
                 summary: format!(
@@ -391,8 +407,10 @@ impl Shadow {
                     show_transfer(t),
                     show_transfer(&copy_t)
                 ),
-                transfer: (copy_t != *t)
-                    .then(|| TransferDiff { port: show_transfer(t), original: show_transfer(&copy_t) }),
+                transfer: (copy_t != *t).then(|| TransferDiff {
+                    port: show_transfer(t),
+                    original: show_transfer(&copy_t),
+                }),
                 registers,
                 memory: Vec::new(),
                 memory_bytes: 0,
@@ -403,15 +421,26 @@ impl Shadow {
         live
     }
 
-    fn record(s: &mut State, name: &'static str, pc: u32, call: u64, tick: Option<u64>, entry: &CpuAbi, outcome: Outcome) {
-        let Some(p) = s.ports.get_mut(name) else { return };
+    fn record(
+        s: &mut State,
+        name: &'static str,
+        pc: u32,
+        call: u64,
+        tick: Option<u64>,
+        entry: &CpuAbi,
+        outcome: Outcome,
+    ) {
+        let Some(p) = s.ports.get_mut(name) else {
+            return;
+        };
         p.checked += 1;
         match outcome {
             Outcome::Matched { .. } => p.matched += 1,
             Outcome::Skipped(why) => {
                 p.checked -= 1;
                 p.skipped += 1;
-                let key = if p.skip_reasons.len() < MAX_REASONS || p.skip_reasons.contains_key(&why) {
+                let key = if p.skip_reasons.len() < MAX_REASONS || p.skip_reasons.contains_key(&why)
+                {
                     why
                 } else {
                     "other".into()
@@ -442,7 +471,10 @@ impl Shadow {
 }
 
 fn show_transfer(t: &TransferAbi) -> String {
-    format!("kind {} to {:#010x} resume {:#010x}", t.kind, t.target_pc, t.resume_pc)
+    format!(
+        "kind {} to {:#010x} resume {:#010x}",
+        t.kind, t.target_pc, t.resume_pc
+    )
 }
 
 /// Every register of `c` by name, as hex: the entry state of a mismatch.
@@ -473,8 +505,18 @@ pub fn registers(c: &CpuAbi) -> BTreeMap<String, String> {
         out.insert(n.to_string(), format!("{v:#06x}"));
     }
     for i in 0..8 {
-        out.insert(format!("xmm{i}"), format!("{:#034x}", u128::from_le_bytes(c.xmm[i])));
-        out.insert(format!("st{i}"), c.x87.st[i].iter().rev().map(|b| format!("{b:02x}")).collect());
+        out.insert(
+            format!("xmm{i}"),
+            format!("{:#034x}", u128::from_le_bytes(c.xmm[i])),
+        );
+        out.insert(
+            format!("st{i}"),
+            c.x87.st[i]
+                .iter()
+                .rev()
+                .map(|b| format!("{b:02x}"))
+                .collect(),
+        );
     }
     out
 }

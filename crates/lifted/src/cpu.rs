@@ -82,13 +82,25 @@ pub fn diff(port: &Cpu, original: &Cpu) -> Vec<RegisterDiff> {
     let mut out = Vec::new();
     let mut field = |name: &str, a: String, b: String| {
         if a != b {
-            out.push(RegisterDiff { name: name.into(), port: a, original: b });
+            out.push(RegisterDiff {
+                name: name.into(),
+                port: a,
+                original: b,
+            });
         }
     };
     for (i, name) in GPR.iter().enumerate() {
-        field(name, format!("{:#010x}", port.gpr[i]), format!("{:#010x}", original.gpr[i]));
+        field(
+            name,
+            format!("{:#010x}", port.gpr[i]),
+            format!("{:#010x}", original.gpr[i]),
+        );
     }
-    field("eip", format!("{:#010x}", port.eip), format!("{:#010x}", original.eip));
+    field(
+        "eip",
+        format!("{:#010x}", port.eip),
+        format!("{:#010x}", original.eip),
+    );
     field(
         "eflags_defined",
         format!("{:#010x}", port.flags_valid),
@@ -100,8 +112,16 @@ pub fn diff(port: &Cpu, original: &Cpu) -> Vec<RegisterDiff> {
         format!("{:#010x}", port.eflags & defined),
         format!("{:#010x}", original.eflags & defined),
     );
-    field("fs_base", format!("{:#010x}", port.fs_base), format!("{:#010x}", original.fs_base));
-    field("mxcsr", format!("{:#010x}", port.mxcsr), format!("{:#010x}", original.mxcsr));
+    field(
+        "fs_base",
+        format!("{:#010x}", port.fs_base),
+        format!("{:#010x}", original.fs_base),
+    );
+    field(
+        "mxcsr",
+        format!("{:#010x}", port.mxcsr),
+        format!("{:#010x}", original.mxcsr),
+    );
     for i in 0..8 {
         field(
             &format!("xmm{i}"),
@@ -109,9 +129,18 @@ pub fn diff(port: &Cpu, original: &Cpu) -> Vec<RegisterDiff> {
             format!("{:#034x}", original.xmm[i]),
         );
     }
-    let hex80 = |b: &[u8; 10]| b.iter().rev().map(|x| format!("{x:02x}")).collect::<String>();
+    let hex80 = |b: &[u8; 10]| {
+        b.iter()
+            .rev()
+            .map(|x| format!("{x:02x}"))
+            .collect::<String>()
+    };
     for i in 0..8 {
-        field(&format!("st{i}"), hex80(&port.x87.st[i]), hex80(&original.x87.st[i]));
+        field(
+            &format!("st{i}"),
+            hex80(&port.x87.st[i]),
+            hex80(&original.x87.st[i]),
+        );
     }
     let (p, o) = (&port.x87, &original.x87);
     for (name, a, b) in [

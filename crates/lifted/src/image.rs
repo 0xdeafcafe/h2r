@@ -18,7 +18,9 @@ pub const IMAGE_SHA256: &str = "03215919bb7163259257d361f4c7bf802a7ab12aa85e2689
 pub fn xbe_path() -> Option<PathBuf> {
     let p = std::env::var_os("H2_XBE")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../disc/default.xbe"));
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../disc/default.xbe")
+        });
     p.is_file().then_some(p)
 }
 
@@ -41,16 +43,31 @@ impl Image {
         IMAGE
             .get_or_init(|| {
                 let Some(path) = xbe_path() else {
-                    assert!(std::env::var_os("H2_XBE").is_none(), "H2_XBE does not name a readable file");
+                    assert!(
+                        std::env::var_os("H2_XBE").is_none(),
+                        "H2_XBE does not name a readable file"
+                    );
                     eprintln!("SKIPPED: tests against the lifted original need H2_XBE");
                     return None;
                 };
-                let bytes: &'static [u8] = Box::leak(std::fs::read(&path).unwrap().into_boxed_slice());
-                assert_eq!(sha256(bytes), IMAGE_SHA256, "{} is not the base image", path.display());
-                let xbe: &'static xbe::Xbe<'static> = Box::leak(Box::new(xbe::Xbe::parse(bytes).unwrap()));
+                let bytes: &'static [u8] =
+                    Box::leak(std::fs::read(&path).unwrap().into_boxed_slice());
+                assert_eq!(
+                    sha256(bytes),
+                    IMAGE_SHA256,
+                    "{} is not the base image",
+                    path.display()
+                );
+                let xbe: &'static xbe::Xbe<'static> =
+                    Box::leak(Box::new(xbe::Xbe::parse(bytes).unwrap()));
                 let analysis = Box::leak(Box::new(analyze::analyze(xbe).unwrap()));
                 let ram = lift::harness::load_image(xbe).unwrap();
-                Some(Image { bytes, xbe, analysis, ram })
+                Some(Image {
+                    bytes,
+                    xbe,
+                    analysis,
+                    ram,
+                })
             })
             .as_ref()
     }
@@ -98,17 +115,33 @@ pub fn sha256(data: &[u8]) -> String {
         for i in 16..64 {
             let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
             let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
-            w[i] = w[i - 16].wrapping_add(s0).wrapping_add(w[i - 7]).wrapping_add(s1);
+            w[i] = w[i - 16]
+                .wrapping_add(s0)
+                .wrapping_add(w[i - 7])
+                .wrapping_add(s1);
         }
         let mut v = h;
         for i in 0..64 {
             let s1 = v[4].rotate_right(6) ^ v[4].rotate_right(11) ^ v[4].rotate_right(25);
             let ch = (v[4] & v[5]) ^ (!v[4] & v[6]);
-            let t1 = v[7].wrapping_add(s1).wrapping_add(ch).wrapping_add(K[i]).wrapping_add(w[i]);
+            let t1 = v[7]
+                .wrapping_add(s1)
+                .wrapping_add(ch)
+                .wrapping_add(K[i])
+                .wrapping_add(w[i]);
             let s0 = v[0].rotate_right(2) ^ v[0].rotate_right(13) ^ v[0].rotate_right(22);
             let maj = (v[0] & v[1]) ^ (v[0] & v[2]) ^ (v[1] & v[2]);
             let t2 = s0.wrapping_add(maj);
-            v = [t1.wrapping_add(t2), v[0], v[1], v[2], v[3].wrapping_add(t1), v[4], v[5], v[6]];
+            v = [
+                t1.wrapping_add(t2),
+                v[0],
+                v[1],
+                v[2],
+                v[3].wrapping_add(t1),
+                v[4],
+                v[5],
+                v[6],
+            ];
         }
         for (a, b) in h.iter_mut().zip(v) {
             *a = a.wrapping_add(b);
@@ -142,7 +175,13 @@ mod tests {
 
     #[test]
     fn sha256_known_answers() {
-        assert_eq!(sha256(b""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
-        assert_eq!(sha256(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert_eq!(
+            sha256(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            sha256(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 }

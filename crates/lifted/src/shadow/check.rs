@@ -35,7 +35,9 @@ pub type PortFn<'a> = dyn FnMut(&mut CpuAbi, &mut Guest) -> Result<TransferAbi, 
 pub enum Outcome {
     /// The original reached the port's transfer with the same registers
     /// and the same changed bytes, after `steps` instructions.
-    Matched { steps: u64 },
+    Matched {
+        steps: u64,
+    },
     Mismatched(Box<Diff>),
     /// Not comparable here (the reason): the port faulted on its copy, the
     /// original reached code the interpreter cannot run, the step limit.
@@ -131,12 +133,20 @@ pub struct Overlay<'a> {
 
 impl<'a> Overlay<'a> {
     pub fn new(live: &'a Guest) -> Self {
-        Overlay { live, writes: BTreeMap::new() }
+        Overlay {
+            live,
+            writes: BTreeMap::new(),
+        }
     }
 
     /// Calls `each(offset, folded)` for each page-contiguous piece of
     /// `[addr, addr + len)`; the first unmapped address is the error.
-    fn pieces(&self, addr: u32, len: usize, mut each: impl FnMut(usize, u32, usize)) -> Result<(), u32> {
+    fn pieces(
+        &self,
+        addr: u32,
+        len: usize,
+        mut each: impl FnMut(usize, u32, usize),
+    ) -> Result<(), u32> {
         let mut done = 0;
         while done < len {
             let va = addr.wrapping_add(done as u32);
@@ -160,9 +170,10 @@ impl<'a> Overlay<'a> {
 
 impl interp::Memory for Overlay<'_> {
     fn read(&mut self, addr: u32, buf: &mut [u8]) -> Result<(), MemFault> {
-        self.live
-            .read_bytes(addr, buf, 1)
-            .map_err(|f| MemFault { addr: f.addr, write: false })?;
+        self.live.read_bytes(addr, buf, 1).map_err(|f| MemFault {
+            addr: f.addr,
+            write: false,
+        })?;
         if self.writes.is_empty() {
             return Ok(());
         }
@@ -172,13 +183,21 @@ impl interp::Memory for Overlay<'_> {
                 buf[at + (a - folded) as usize] = v;
             }
         })
-        .map_err(|va| MemFault { addr: va, write: false })
+        .map_err(|va| MemFault {
+            addr: va,
+            write: false,
+        })
     }
 
     fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), MemFault> {
         let mut spans = Vec::with_capacity(2);
-        self.pieces(addr, data.len(), |at, folded, n| spans.push((at, folded, n)))
-            .map_err(|va| MemFault { addr: va, write: true })?;
+        self.pieces(addr, data.len(), |at, folded, n| {
+            spans.push((at, folded, n))
+        })
+        .map_err(|va| MemFault {
+            addr: va,
+            write: true,
+        })?;
         for (at, folded, n) in spans {
             for i in 0..n {
                 self.writes.insert(folded + i as u32, data[at + i]);
@@ -201,7 +220,8 @@ fn port_changes(view: &mut Guest, id: WatchId, live: &Guest) -> BTreeMap<u32, u8
     for r in view.take_dirty(id).unwrap_or_default() {
         for page in (r.addr..r.addr + r.len).step_by(PAGE_SIZE as usize) {
             let physical = page & !CONTIGUOUS_BASE;
-            let (Some(after), Some(before)) = (view.physical_page(physical), live.physical_page(physical))
+            let (Some(after), Some(before)) =
+                (view.physical_page(physical), live.physical_page(physical))
             else {
                 continue;
             };
@@ -225,7 +245,10 @@ fn show(t: &TransferAbi, esp: u32) -> String {
         _ => "?",
     };
     match t.kind {
-        abi::CALL => format!("call {:#010x} returning to {:#010x}, esp {esp:#010x}", t.target_pc, t.resume_pc),
+        abi::CALL => format!(
+            "call {:#010x} returning to {:#010x}, esp {esp:#010x}",
+            t.target_pc, t.resume_pc
+        ),
         _ => format!("{kind} to {:#010x}, esp {esp:#010x}", t.target_pc),
     }
 }
@@ -233,7 +256,10 @@ fn show(t: &TransferAbi, esp: u32) -> String {
 fn show_flow(flow: Option<&Flow>, cpu: &Cpu) -> String {
     let esp = cpu.gpr[4];
     match flow {
-        Some(Flow::Call { target, continuation }) => {
+        Some(Flow::Call {
+            target,
+            continuation,
+        }) => {
             format!("call {target:#010x} returning to {continuation:#010x}, esp {esp:#010x}")
         }
         Some(Flow::Return { target }) => format!("return to {target:#010x}, esp {esp:#010x}"),
@@ -244,13 +270,19 @@ fn show_flow(flow: Option<&Flow>, cpu: &Cpu) -> String {
 /// Whether the original's last step is the kind of transfer the port made.
 fn same_kind(t: &TransferAbi, flow: Option<&Flow>) -> bool {
     match t.kind {
-        abi::CALL => matches!(flow, Some(Flow::Call { continuation, .. }) if *continuation == t.resume_pc),
+        abi::CALL => {
+            matches!(flow, Some(Flow::Call { continuation, .. }) if *continuation == t.resume_pc)
+        }
         abi::RETURN => matches!(flow, Some(Flow::Return { .. })),
         _ => true,
     }
 }
 
-fn byte_runs(live: &Guest, port: &BTreeMap<u32, u8>, original: &BTreeMap<u32, u8>) -> (Vec<ByteRun>, usize) {
+fn byte_runs(
+    live: &Guest,
+    port: &BTreeMap<u32, u8>,
+    original: &BTreeMap<u32, u8>,
+) -> (Vec<ByteRun>, usize) {
     let mut addresses: Vec<u32> = port
         .keys()
         .chain(original.keys())
@@ -272,9 +304,15 @@ fn byte_runs(live: &Guest, port: &BTreeMap<u32, u8>, original: &BTreeMap<u32, u8
     let runs = runs
         .into_iter()
         .map(|run| {
-            let before: Vec<u8> = run.iter().map(|&a| live_byte(live, a).unwrap_or(0)).collect();
+            let before: Vec<u8> = run
+                .iter()
+                .map(|&a| live_byte(live, a).unwrap_or(0))
+                .collect();
             let side = |m: &BTreeMap<u32, u8>| -> Vec<u8> {
-                run.iter().zip(&before).map(|(a, &b)| m.get(a).copied().unwrap_or(b)).collect()
+                run.iter()
+                    .zip(&before)
+                    .map(|(a, &b)| m.get(a).copied().unwrap_or(b))
+                    .collect()
             };
             ByteRun {
                 address: format!("{:#010x}", run[0]),
@@ -313,16 +351,36 @@ fn compare(
     let registers = cpu::diff(port_cpu, original);
     let (memory, memory_bytes) = byte_runs(live, port_bytes, &overlay.changed());
     let (kind, summary) = if let Some(t) = &transfer {
-        ("transfer", format!("port: {}; original: {}", t.port, t.original))
+        (
+            "transfer",
+            format!("port: {}; original: {}", t.port, t.original),
+        )
     } else if let Some(r) = registers.first() {
         let more = registers.len() - 1;
-        ("registers", format!("{} port {} original {} (+{more} more)", r.name, r.port, r.original))
+        (
+            "registers",
+            format!(
+                "{} port {} original {} (+{more} more)",
+                r.name, r.port, r.original
+            ),
+        )
     } else if let Some(r) = memory.first() {
-        ("memory", format!("{memory_bytes} bytes differ, first at {}", r.address))
+        (
+            "memory",
+            format!("{memory_bytes} bytes differ, first at {}", r.address),
+        )
     } else {
         return None;
     };
-    Some(Diff { kind, summary, transfer, registers, memory, memory_bytes, steps })
+    Some(Diff {
+        kind,
+        summary,
+        transfer,
+        registers,
+        memory,
+        memory_bytes,
+        steps,
+    })
 }
 
 /// Run `port` on a copy of `live` and the lifted original from the same
@@ -341,12 +399,18 @@ pub fn check(
     let t = match port(&mut port_abi, copy) {
         Ok(t) => t,
         Err(f) => {
-            return (Outcome::Skipped(format!("the port faulted on the copy at {:#010x}", f.addr)), None);
+            return (
+                Outcome::Skipped(format!("the port faulted on the copy at {:#010x}", f.addr)),
+                None,
+            );
         }
     };
     let ran = Some((port_abi, t));
     if !matches!(t.kind, abi::CALL | abi::JUMP | abi::RETURN) {
-        return (Outcome::Skipped(format!("the port ended with transfer kind {}", t.kind)), ran);
+        return (
+            Outcome::Skipped(format!("the port ended with transfer kind {}", t.kind)),
+            ran,
+        );
     }
     let port_bytes = port_changes(copy, id, live);
     let mut port_cpu = cpu::to_interp(&port_abi);
@@ -358,7 +422,16 @@ pub fn check(
     let mut first: Option<Diff> = None;
     for steps in 0..=limit {
         if original.eip == t.target_pc && original.gpr[4] == port_cpu.gpr[4] {
-            match compare(live, &t, &port_cpu, &port_bytes, &original, last.as_ref(), &overlay, steps) {
+            match compare(
+                live,
+                &t,
+                &port_cpu,
+                &port_bytes,
+                &original,
+                last.as_ref(),
+                &overlay,
+                steps,
+            ) {
                 None => return (Outcome::Matched { steps }, ran),
                 Some(d) => {
                     first.get_or_insert(d);
@@ -399,6 +472,12 @@ pub fn check(
     }
     match first {
         Some(d) => (Outcome::Mismatched(Box::new(d)), ran),
-        None => (Outcome::Skipped(format!("original: step limit ({limit}) at {:#010x}", original.eip)), ran),
+        None => (
+            Outcome::Skipped(format!(
+                "original: step limit ({limit}) at {:#010x}",
+                original.eip
+            )),
+            ran,
+        ),
     }
 }

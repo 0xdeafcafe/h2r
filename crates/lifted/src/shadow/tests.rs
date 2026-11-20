@@ -13,7 +13,12 @@ const RETURN_TO: u32 = 0x5555;
 /// `eax = [esp+4] + 1; [OUT] = eax; ret` with no flags written:
 /// `mov eax,[esp+4]` `lea eax,[eax+1]` `mov [OUT],eax` `ret`.
 fn increment() -> Assembled {
-    Assembled::new(CODE, &[0x8b, 0x44, 0x24, 0x04, 0x8d, 0x40, 0x01, 0xa3, 0x00, 0x20, 0x00, 0x00, 0xc3])
+    Assembled::new(
+        CODE,
+        &[
+            0x8b, 0x44, 0x24, 0x04, 0x8d, 0x40, 0x01, 0xa3, 0x00, 0x20, 0x00, 0x00, 0xc3,
+        ],
+    )
 }
 
 fn live() -> Guest {
@@ -25,7 +30,11 @@ fn live() -> Guest {
 }
 
 fn entry() -> CpuAbi {
-    CpuAbi { esp: STACK, eip: CODE, ..CpuAbi::default() }
+    CpuAbi {
+        esp: STACK,
+        eip: CODE,
+        ..CpuAbi::default()
+    }
 }
 
 fn word(g: &Guest, a: u32) -> u32 {
@@ -36,7 +45,11 @@ fn word(g: &Guest, a: u32) -> u32 {
 
 /// The port: `[OUT] = arg + stored`, `eax = arg + 1`, return popping
 /// `cleanup` argument bytes.
-fn port(stored: u32, eax: u32, cleanup: u32) -> impl FnMut(&mut CpuAbi, &mut Guest) -> Result<TransferAbi, GuestFault> {
+fn port(
+    stored: u32,
+    eax: u32,
+    cleanup: u32,
+) -> impl FnMut(&mut CpuAbi, &mut Guest) -> Result<TransferAbi, GuestFault> {
     move |c: &mut CpuAbi, g: &mut Guest| {
         let arg = word(g, c.esp + 4);
         g.write_bytes(OUT, &(arg + stored).to_le_bytes(), 1)?;
@@ -73,7 +86,11 @@ fn a_different_store_is_a_memory_mismatch() {
     assert_eq!(d.memory[0].before, "00");
     assert_eq!(d.memory[0].port, "2b");
     assert_eq!(d.memory[0].original, "2a");
-    assert!(d.memory[0].virtual_addresses.contains(&format!("{OUT:#010x}")));
+    assert!(
+        d.memory[0]
+            .virtual_addresses
+            .contains(&format!("{OUT:#010x}"))
+    );
 }
 
 #[test]
@@ -94,7 +111,12 @@ fn a_wrong_stack_cleanup_never_meets_the_original() {
 #[test]
 fn the_original_reads_its_own_writes() {
     // mov dword [OUT], 5; mov eax, [OUT]; ret
-    let mut code = Assembled::new(CODE, &[0xc7, 0x05, 0x00, 0x20, 0x00, 0x00, 5, 0, 0, 0, 0xa1, 0x00, 0x20, 0x00, 0x00, 0xc3]);
+    let mut code = Assembled::new(
+        CODE,
+        &[
+            0xc7, 0x05, 0x00, 0x20, 0x00, 0x00, 5, 0, 0, 0, 0xa1, 0x00, 0x20, 0x00, 0x00, 0xc3,
+        ],
+    );
     let g = live();
     let mut p = |c: &mut CpuAbi, g: &mut Guest| {
         g.write_bytes(OUT, &5u32.to_le_bytes(), 1)?;
@@ -107,9 +129,20 @@ fn the_original_reads_its_own_writes() {
 
 #[test]
 fn a_port_fault_on_the_copy_skips() {
-    let mut p = |_: &mut CpuAbi, g: &mut Guest| g.ret(&mut CpuAbi { esp: 0xfff0_0000, ..CpuAbi::default() }, 0);
+    let mut p = |_: &mut CpuAbi, g: &mut Guest| {
+        g.ret(
+            &mut CpuAbi {
+                esp: 0xfff0_0000,
+                ..CpuAbi::default()
+            },
+            0,
+        )
+    };
     let (outcome, _) = run_check(&mut p);
-    assert!(matches!(outcome, Outcome::Skipped(ref why) if why.contains("faulted")), "{outcome:?}");
+    assert!(
+        matches!(outcome, Outcome::Skipped(ref why) if why.contains("faulted")),
+        "{outcome:?}"
+    );
 }
 
 fn registry() -> Shadow {
@@ -137,7 +170,10 @@ fn enable_selects_by_group_and_reports_what_is_not_installed() {
     let e = s.enable(&["test".into()], None, None).unwrap();
     assert_eq!(e.enabled, ["test.inc"]);
     assert_eq!(e.not_installed, ["test.off"]);
-    assert_eq!(s.enable(&["nope".into()], None, None).unwrap_err(), Error::Unknown(vec!["nope".into()]));
+    assert_eq!(
+        s.enable(&["nope".into()], None, None).unwrap_err(),
+        Error::Unknown(vec!["nope".into()])
+    );
     assert!(s.enable(&[], None, None).is_err());
     assert!(s.status().on);
     assert_eq!(s.disable(&[]).unwrap(), ["test.inc"]);
@@ -148,7 +184,10 @@ fn enable_selects_by_group_and_reports_what_is_not_installed() {
 fn enable_without_an_image_is_unavailable() {
     let s = Shadow::new();
     s.register("test.inc", "test", "INCREMENT", CODE, true);
-    assert!(matches!(s.enable(&["all".into()], None, None), Err(Error::Unavailable(_))));
+    assert!(matches!(
+        s.enable(&["all".into()], None, None),
+        Err(Error::Unavailable(_))
+    ));
     s.set_source(Box::new(|| Ok(Box::new(increment()) as Box<dyn Code>)));
     assert!(s.enable(&["all".into()], None, None).is_ok());
     assert!(s.status().ready);
@@ -166,13 +205,19 @@ fn checks_count_and_the_live_call_still_runs() {
     let (c, g) = call(&s, &mut port(1, 1, 0));
     assert_eq!((c.eax, c.esp, word(&g, OUT)), (42, STACK + 4, 42));
     let st = s.status();
-    assert_eq!((st.calls, st.checked, st.matched, st.mismatched), (1, 1, 1, 0));
+    assert_eq!(
+        (st.calls, st.checked, st.matched, st.mismatched),
+        (1, 1, 1, 0)
+    );
 
     call(&s, &mut port(2, 1, 0));
     let st = s.status();
     assert_eq!((st.checked, st.mismatched), (2, 1));
     let m = &st.mismatches[0];
-    assert_eq!((m.port, m.tick, m.call, m.diff.kind), ("test.inc", Some(7), 2, "memory"));
+    assert_eq!(
+        (m.port, m.tick, m.call, m.diff.kind),
+        ("test.inc", Some(7), 2, "memory")
+    );
     assert_eq!(m.function, "0x00001000");
     assert_eq!(m.entry["esp"], format!("{STACK:#010x}"));
 }

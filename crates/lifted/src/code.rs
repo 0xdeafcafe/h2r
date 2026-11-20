@@ -37,7 +37,10 @@ pub struct Original {
 const NEAREST: usize = 64;
 
 impl Original {
-    pub fn new(analysis: &'static analyze::Analysis, xbe: &'static xbe::Xbe<'static>) -> Result<Self, String> {
+    pub fn new(
+        analysis: &'static analyze::Analysis,
+        xbe: &'static xbe::Xbe<'static>,
+    ) -> Result<Self, String> {
         let lifter = lift::Lifter::new(analysis, xbe).map_err(|e| format!("lifter: {e}"))?;
         Ok(Original {
             lifter,
@@ -69,8 +72,13 @@ impl Code for Original {
             let below = self.functions.partition_point(|&e| e <= pc);
             for i in (below.saturating_sub(NEAREST)..below).rev() {
                 let entry = self.functions[i];
-                let Some(f) = self.lifter.lift(entry) else { continue };
-                let has = f.blocks.values().any(|b| b.insns.iter().any(|x| x.pc == pc));
+                let Some(f) = self.lifter.lift(entry) else {
+                    continue;
+                };
+                let has = f
+                    .blocks
+                    .values()
+                    .any(|b| b.insns.iter().any(|x| x.pc == pc));
                 self.take(f);
                 if has {
                     break;
@@ -98,7 +106,8 @@ pub struct Assembled {
 impl Assembled {
     pub fn new(base: u32, code: &[u8]) -> Self {
         let env = lift::Env::default();
-        let decoder = iced_x86::Decoder::with_ip(32, code, base as u64, iced_x86::DecoderOptions::NONE);
+        let decoder =
+            iced_x86::Decoder::with_ip(32, code, base as u64, iced_x86::DecoderOptions::NONE);
         let insns = decoder
             .into_iter()
             .map(|i| {
@@ -139,7 +148,11 @@ impl std::fmt::Display for StepError {
 }
 
 /// One instruction at `cpu.eip`; `cpu.eip` is then where control went.
-pub fn step<M: Memory>(code: &mut (impl Code + ?Sized), cpu: &mut Cpu, mem: &mut M) -> Result<Flow, StepError> {
+pub fn step<M: Memory>(
+    code: &mut (impl Code + ?Sized),
+    cpu: &mut Cpu,
+    mem: &mut M,
+) -> Result<Flow, StepError> {
     let pc = cpu.eip;
     let insn = code.insn(pc).ok_or(StepError::NoCode(pc))?;
     let flow = interp::step(cpu, mem, insn).map_err(StepError::Exit)?;
@@ -158,7 +171,10 @@ pub fn segment<M: Memory>(
     for _ in 0..limit {
         match step(code, cpu, mem)? {
             Flow::Return { target } => return Ok(TransferAbi::ret(target)),
-            Flow::Call { target, continuation } => return Ok(TransferAbi::call(target, continuation)),
+            Flow::Call {
+                target,
+                continuation,
+            } => return Ok(TransferAbi::call(target, continuation)),
             _ => {}
         }
     }
@@ -202,7 +218,10 @@ mod tests {
         let mut mem = SparseMemory::new();
         mem.map(0x8000 - 0x40, 0x80);
         mem.load(0x8000, &0xdead_0000u32.to_le_bytes());
-        let mut cpu = Cpu { eip: BASE, ..Cpu::default() };
+        let mut cpu = Cpu {
+            eip: BASE,
+            ..Cpu::default()
+        };
         cpu.gpr[4] = 0x8000;
         let t = segment(&mut asm, &mut cpu, &mut mem, 100).unwrap();
         assert_eq!(t, TransferAbi::call(0x100a, 0x100a));
@@ -218,7 +237,10 @@ mod tests {
         // jmp 0x2000
         let code = [0xe9, 0xfb, 0x0f, 0, 0];
         let mut asm = Assembled::new(BASE, &code);
-        let mut cpu = Cpu { eip: BASE, ..Cpu::default() };
+        let mut cpu = Cpu {
+            eip: BASE,
+            ..Cpu::default()
+        };
         let r = run_until(&mut asm, &mut cpu, &mut SparseMemory::new(), 10, |_| false);
         assert_eq!(r, Err(StepError::NoCode(0x2000)));
     }
@@ -228,11 +250,17 @@ mod tests {
         // inc eax; jmp -3 (back to inc)
         let code = [0x40, 0xeb, 0xfd];
         let mut asm = Assembled::new(BASE, &code);
-        let mut cpu = Cpu { eip: BASE, ..Cpu::default() };
+        let mut cpu = Cpu {
+            eip: BASE,
+            ..Cpu::default()
+        };
         let mut mem = SparseMemory::new();
         assert_eq!(run_until(&mut asm, &mut cpu, &mut mem, 10, |_| true), Ok(0));
         let n = run_until(&mut asm, &mut cpu, &mut mem, 100, |c| c.gpr[0] == 3).unwrap();
         assert_eq!(n, 5);
-        assert_eq!(run_until(&mut asm, &mut cpu, &mut mem, 4, |_| false), Err(StepError::Limit(BASE + 1)));
+        assert_eq!(
+            run_until(&mut asm, &mut cpu, &mut mem, 4, |_| false),
+            Err(StepError::Limit(BASE + 1))
+        );
     }
 }
