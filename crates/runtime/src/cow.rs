@@ -83,6 +83,7 @@ impl Ram {
                         ptr,
                         len,
                         backing: Backing::MachLive,
+                        cow_base: None,
                     };
                 }
                 unsafe { libc::munmap(p, len) };
