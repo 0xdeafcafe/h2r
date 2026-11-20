@@ -77,6 +77,9 @@ pub const PORTS: &[Port] = {
         // The pose root runs under the pose-matrix switch: it inlines that
         // leaf and transform composition for the whole skeleton walk.
         port(&OBJECT_NODE_MATRICES, "sim.native_pose_matrix", Sse, &node_matrices::SITES, node_matrices::update),
+        // Node evaluators run the native codecs inline under the codec switch.
+        // Other codecs are guest calls that resume at the call's return.
+        port(&ANIM_ADDITIVE_NODES, "sim.native_rotation_codec", Sse, &crate::sim_native::evaluator::ADDITIVE_SITES, crate::sim_native::evaluator::additive),
         port(&OBJECT_CHANGE_COLORS, "sim.native_object_change_colors", Sse, &colors::SITES, colors::update),
         port(&OBJECT_SPATIAL_VISIT, "sim.native_spatial_visit", Sse, &visit::SITES, visit::objects),
         port(&OBJECT_SPATIAL_PORTAL, "sim.native_spatial_portal", Mixed, &spatial::SITES, spatial::portal),

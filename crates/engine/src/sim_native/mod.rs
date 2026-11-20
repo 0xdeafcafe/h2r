@@ -5,6 +5,7 @@ use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
 pub mod bsp;
 pub mod codec;
 pub mod collision;
+pub mod evaluator;
 pub mod graph;
 mod lanes;
 pub mod marker;

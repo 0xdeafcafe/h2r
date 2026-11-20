@@ -329,6 +329,8 @@ points! { ALL;
     ANIM_FRAME_ROTATION @ 0x0028_c960: [fn() ret 0], Hot; "docs/perf/sim-budget.md";
     ANIM_BLEND_ROTATION @ 0x0028_c790: [fn() ret 0], Hot; "docs/perf/sim-budget.md";
     ANIM_KEYED_TRANSLATION @ 0x0028_cb70: [fn() ret 0], Hot; "docs/perf/sim-budget.md";
+    /// Additive-layer node evaluator: blends two samples per channel into the pose.
+    ANIM_ADDITIVE_NODES @ 0x0028_0ac0: [fn() ret 0], Hot; "docs/perf/sim-budget.md";
     COLLISION_POINT_TO_LEAF @ 0x0014_a280: [fn(node: eax, bsp: ecx, point: edx) -> eax ret 0], Hot; "docs/perf/sim-budget.md";
     COLLISION_GEOMETRY_TEST @ 0x0011_e5e0: [fn(origin: eax, center: ecx, direction: edx, radius: stack 0) -> al ret 4], Hot; "docs/perf/sim-budget.md";
     /// The HaloScript evaluator shared by argument-evaluating discarded builtins.

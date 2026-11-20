@@ -533,6 +533,88 @@ fn node_fixture(m: &mut FlatMemory, _: &mut Cpu, case: u32) {
     }
 }
 
+/// A synthetic channel codec the native evaluator must call in the guest.
+const GUEST_CODEC: u32 = 0x006e_0200;
+
+/// The additive node evaluator over synthetic stream state. Rotation and
+/// translation slots hold native codecs (static, single-frame, two-frame,
+/// blend-screen; keyed translation), which run inline on both sides; the
+/// scale slot, and every slot in case 5, is a guest call. Counts cover no
+/// nodes, a partial group, skipped groups and a second mask word.
+fn evaluator_fixture(m: &mut FlatMemory, _: &mut Cpu, case: u32) {
+    let pose = RECORDS;
+    let groups = DATA;
+    let mask = DATA + 0x40;
+    let block = 0x0062_0000;
+    let count = [0u32, 3, 9, 17, 40, 6][case as usize];
+    let rotation = [0, 0x28c470, 0x28c960, 0x28c790, 0x28c530, GUEST_CODEC][case as usize];
+    let translation = if case == 5 { GUEST_CODEC } else { 0x28cb70 };
+    for (slot, codec) in [rotation, translation, GUEST_CODEC].into_iter().enumerate() {
+        word(m, 0x0050_4484 + 4 * slot as u32, codec);
+    }
+    word(m, 0x0050_445c, count);
+    word(m, 0x0050_449c, pose);
+    word(m, 0x0050_447c, mask);
+    word(m, mask, 0xffff_fff7 ^ case);
+    word(m, mask + 4, 0x0f0f_ff0f);
+    let bytes: [[u8; 5]; 3] = [
+        [0xff, 0x00, 0xa5, 0x01, 0x7e],
+        [0x5b, 0xff, 0x00, 0x81, 0x3c],
+        [0x0f, 0x00, 0xf0, 0xff, 0x24],
+    ];
+    for (channel, stream) in bytes.into_iter().enumerate() {
+        let at = groups + 0x10 * channel as u32;
+        word(m, 0x0050_4490 + 4 * channel as u32, at);
+        for (i, b) in stream.into_iter().enumerate() {
+            m.bytes[(at + i as u32) as usize] = b;
+        }
+    }
+    for n in 0..40u32 {
+        let q = [0.125 * (n as f32 + 1.0), -0.25, 0.5 - 0.0625 * n as f32, 0.75];
+        let rest = [n as f32 * 0.5, -1.5, 2.25, 1.0 + n as f32 / 16.0];
+        for (i, v) in q.into_iter().chain(rest).enumerate() {
+            word(m, pose + 0x20 * n + 4 * i as u32, v.to_bits());
+        }
+    }
+    // Frames, weights and the blend fraction for both samples.
+    for (a, v) in [(0x0050_4464, case % 3), (0x0050_4468, (case + 1) % 3),
+                   (0x0050_44a4, (case + 2) % 3), (0x0050_44a8, case % 2)] {
+        word(m, a, v);
+    }
+    word(m, 0x0050_446c, 0.625f32.to_bits());
+    word(m, 0x0050_44ac, 0.25f32.to_bits());
+    word(m, 0x0050_44b0, [0.5f32, 0.0, 1.0, 0.3, -0.2, 0.75][case as usize].to_bits());
+    // Rotation records: 48 bytes per track from +0x20, as int16 halves or,
+    // for the blend-screen codec, float quaternions.
+    word(m, 0x0050_4480, block);
+    word(m, block + 0x14, 48);
+    for i in 0..0x7e0 / 4 {
+        let a = block + 0x20 + 4 * i;
+        if rotation == 0x28c530 {
+            let v = [0.5f32, -0.375, 0.25 + i as f32 / 512.0, 0.8][(i % 4) as usize];
+            word(m, a, v.to_bits());
+        } else {
+            let lo = (i.wrapping_mul(7919) % 30000) as u16;
+            let hi = 0x8000u16.wrapping_add((i * 4099 % 29000) as u16);
+            word(m, a, u32::from(lo) | u32::from(hi) << 16);
+        }
+    }
+    // Keyed translation: track table, frame bytes and 12-byte keys.
+    word(m, block + 0xc, 0x1800);
+    word(m, block + 0x18, 0x1a00);
+    word(m, block + 0x24, 0x1c00);
+    for t in 0..40u32 {
+        let keys = 1 + (t + case) % 5;
+        word(m, block + 0x1800 + 4 * t, keys | (2 * t) << 12);
+    }
+    for i in 0..96u32 {
+        m.bytes[(block + 0x1a00 + i) as usize] = (i % 6 * 2) as u8;
+        for j in 0..3 {
+            word(m, block + 0x1c00 + 12 * i + 4 * j, ((i + j) as f32 * 0.375 - 3.0).to_bits());
+        }
+    }
+}
+
 fn abi_cpu(c: &Cpu) -> CpuAbi {
     let [eax, ecx, edx, ebx, esp, ebp, esi, edi] = c.gpr;
     let x = &c.x87;
@@ -552,7 +634,10 @@ fn abi_cpu(c: &Cpu) -> CpuAbi {
 
 /// Guest leaves a port runs in Rust. The guest side steps through them, so
 /// the next boundary is the port's own next call or return.
-const INLINED: &[(u32, &[u32])] = &[(0xbd090, &[0x1421f0, 0x142a60, 0xbdc40])];
+const INLINED: &[(u32, &[u32])] = &[
+    (0xbd090, &[0x1421f0, 0x142a60, 0xbdc40]),
+    (0x280ac0, &[0x28c470, 0x28c960, 0x28c790, 0x28c530, 0x28cb70]),
+];
 
 fn inlined(point: u32) -> &'static [u32] {
     INLINED.iter().find(|(p, _)| *p == point).map_or(&[], |(_, leaves)| leaves)
@@ -612,6 +697,7 @@ fn compare(port: &Port, insns: &BTreeMap<u32, ir::IrInsn>, mut mem: FlatMemory, 
             SOLVER_CHILD | 0x131c20 | 0x31c7d0 => 0,
             0x31c520 | 0x31c530 => 4,
             0xbff60 | 0x168311 | 0x1cc260 | 0x166c39 | 0x1469f0 => 4,
+            GUEST_CODEC => 0,
             0x16674e | 0x1cb5b0 | 0x1cb520 | 0x259d0 | 0x16760c=>8,
             0x1cb710=>20,0x166992=>12,
             0x155760|0x24590|0xc8a10|0xd03b0|0x1c63f0|0x1c6ea0|0x373b6a|
@@ -726,7 +812,8 @@ fn compare(port: &Port, insns: &BTreeMap<u32, ir::IrInsn>, mut mem: FlatMemory, 
         // object walks also get arbitrary caller-saved register clobbers.
         if [points::UNIT_UPDATE.base,points::OBJECTS_PRE_PHYSICS.base,
             points::OBJECTS_POST_PHYSICS.base,points::OBJECT_PRE_UPDATE.base,
-            points::OBJECT_POST_UPDATE.base,points::OBJECT_NODE_MATRICES.base].contains(&port.point.base) {
+            points::OBJECT_POST_UPDATE.base,points::OBJECT_NODE_MATRICES.base,
+            points::ANIM_ADDITIVE_NODES.base].contains(&port.point.base) {
             cpu.gpr[1] = answer.rotate_left(9);
             cpu.gpr[2] = !answer;
         }
@@ -825,6 +912,7 @@ differential!(objects_post_physics, OBJECTS_POST_PHYSICS, true, 6, |_,_,_| {});
 differential!(object_pre_update, OBJECT_PRE_UPDATE, true, 6, |m,_,n| object_fixture(m,n));
 differential!(object_post_update, OBJECT_POST_UPDATE, true, 6, |m,_,n| object_fixture(m,n));
 differential!(object_node_matrices, OBJECT_NODE_MATRICES, false, 6, node_fixture);
+differential!(anim_additive_nodes, ANIM_ADDITIVE_NODES, false, 6, evaluator_fixture);
 differential!(object_change_colors, OBJECT_CHANGE_COLORS, true, 6, |m,_,n| color_fixture(m,n));
 differential!(object_spatial_visit, OBJECT_SPATIAL_VISIT, false, 6, |m,_,n| visit_fixture(m,n));
 differential!(object_spatial_portal, OBJECT_SPATIAL_PORTAL, false, 6, portal_fixture);
