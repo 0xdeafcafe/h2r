@@ -259,14 +259,21 @@ pub fn object_shadow(mem: &dyn GuestMemory, identity: Option<[u32; 2]>) {
 /// last object shadow for [`GroupSite::ObjectShadow`], with what the first
 /// geometry handler would supply (`scene_extract::light_groups`). The
 /// light is in the view from its passes' entry, the object shadow from
-/// its call; without one, nothing is written.
-pub fn light_group(mem: &dyn GuestMemory, list: u32, layer: u32, site: GroupSite, sorted: &[Sorted]) {
-    let Ok(layer) = u8::try_from(layer) else { return };
+/// its call; without one, nothing is written. The group written, copied
+/// out, when every sorted entry is in it.
+pub fn light_group(
+    mem: &dyn GuestMemory,
+    list: u32,
+    layer: u32,
+    site: GroupSite,
+    sorted: &[Sorted],
+) -> Option<crate::native_lights::SceneGroup> {
+    let layer = u8::try_from(layer).ok()?;
     let m = Ro(mem);
     with_step(|step| {
         let open = if site == GroupSite::ObjectShadow { step.shadow_open } else { step.light_open };
         if !open || step.builder.view().is_none() {
-            return;
+            return None;
         }
         match light_groups::push(&m, list, layer, site, sorted, &mut step.builder) {
             Ok(got) => {
@@ -278,12 +285,22 @@ pub fn light_group(mem: &dyn GuestMemory, list: u32, layer: u32, site: GroupSite
                 for (counter, n) in LIGHT_ENTRY_REMAINDER.iter().zip(got.remainder) {
                     counter.fetch_add(u64::from(n), Ordering::Relaxed);
                 }
+                let scene = step.builder.scene()?;
+                let groups = if site == GroupSite::ObjectShadow { &scene.shadow_groups } else { &scene.light_groups };
+                let group = groups.last()?.clone();
+                if !group.whole() {
+                    return None;
+                }
+                let entries = scene.entries_of(&group).to_vec();
+                let rows = entries.iter().map(|e| scene.pose_rows(e).to_vec()).collect();
+                Some(crate::native_lights::SceneGroup { group, entries, rows })
             }
             Err(_) => {
                 REFUSED.fetch_add(1, Ordering::Relaxed);
+                None
             }
         }
-    });
+    })
 }
 
 /// Runs `f` with the scene being written and its open view (`None`
@@ -337,6 +354,7 @@ pub fn counters() -> Vec<(&'static str, u64)> {
         ("scene_light_groups", LIGHT_GROUPS.load(Ordering::Relaxed)),
         ("scene_light_groups_whole", LIGHT_GROUPS_WHOLE.load(Ordering::Relaxed)),
         ("scene_light_entries", LIGHT_ENTRIES.load(Ordering::Relaxed)),
+        ("scene_light_layers_alone", crate::native_lights::drawn_alone()),
     ]
     .into_iter()
     .chain(LIGHT_ENTRY_REMAINDER_NAMES.into_iter().zip(LIGHT_ENTRY_REMAINDER.iter().map(|c| c.load(Ordering::Relaxed))))

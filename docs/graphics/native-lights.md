@@ -117,12 +117,32 @@ remainder, counted by cause in `render.scene`
 (`0x00032350`, matched to its caster entry as the shadow stage matches
 it) is a `frame_scene::ObjectShadow` of the view with its call's two
 arguments, and its layers 10 and 11 are its groups
-(`GroupSite::ObjectShadow`, `FrameScene::shadow_groups_of`). `native_render::light_scene::plan` gives a whole group's draws
-from the scene alone, against the resident geometry (`Resident`): the
-sorted order and duplicates kept, adjacent list ranges of one stream,
-binding, class and pose joined, a missing stream or placement transform
-refused by name. No GPU recorder draws those plans yet, so every group
-still runs its first handler.
+(`GroupSite::ObjectShadow`, `FrameScene::shadow_groups_of`).
+`native_render::light_scene::plan` gives a whole group's draws from the
+scene alone, against the native geometry (`Resident`, each entry's part
+and its index range there): the sorted order and duplicates kept,
+adjacent list ranges of one stream, binding, class and pose joined, an
+entry whose part is not held refused by name.
+
+A light's layer 12 or 13 whose group is whole and of structure
+geometry (clusters and placements) is drawn from the scene with no
+handler: `boot::native_lights_glue` (`Glue::alone`, behind
+`render_bridge::native_lights::Host::draw_alone`) holds the world's
+parts as the `Resident` (`Structure`), resolves each entry's material
+pass for the light as the resolved-draw path does, takes the scissor,
+stencil, W-buffer, palettes and cull from the device at that point, and
+issues the pass at once (`Device::external_pass_now`), with no resolved
+fallback. It refuses, issuing nothing, a model entry (the light passes
+hold no model streams), a shader gel (its target-13 slot is pinned
+through a draw's plan), a remainder, and any state the resolved-draw
+path refuses. When it draws, the walk hands the guest's entry loop no
+entries, so none of the layer's handlers runs, and the layer leaves the
+light's candidate (`render.scene`'s `scene_light_layers_alone` counts
+them). Otherwise the layer takes the gathered or resolved-draw path as
+before. Shadow layers 10, 11 and 14 (the light's, the additional
+casters' and the object shadows') have no recorder from the scene: the
+shadow stage records from resolved draws, so their groups are in the
+scene but their handlers run.
 
 Frame stats count completed dynamic lights in `lights_walked_native`,
 `lights_walked_fallback` and `lights_walk_empty`. Each fallback adds
@@ -388,7 +408,7 @@ The host takes each of layers 12 and 13 a light's steps draw, shadowed or not, w
 
 ## Rules and limits
 
-- Only cluster geometry is drawn natively. Models and rigid placements keep their D3D handlers. A split may consume a contiguous native prefix; the remaining entries run in guest order.
+- Only structure geometry is drawn natively. Models keep their D3D handlers. A split may consume a contiguous native prefix; the remaining entries run in guest order. A whole structure group of layer 12 or 13 is drawn from the scene with no handler.
 - A light that samples a shadow map (engine textures 13 and 8), an animated input, an engine-driven state or an unsupplied constant keeps its D3D passes (`light_look`).
 - The visible-light gather at `0x00031c80`, the object-model lights, the object-shadow call `0x00032350`'s lights and the first-person lights (`0x000404b0`) run in the guest. The first-person records at `0x004c6b00` would need writing before the gather can be skipped.
 - Diagnostics print as `native-lights:` on stderr: at load, each light texture with its size or why it did not load, and the surfaces left to D3D; at run time, each refusal reason on its first occurrence, and counts by reason every 1800 host decisions.
