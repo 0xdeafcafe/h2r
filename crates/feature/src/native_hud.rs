@@ -56,7 +56,7 @@ pub fn walk_on(switches: &crate::Switches) -> bool {
 }
 
 pub(crate) const HUD_QUAD_READY: points::Point = points::Point::new(
-    "HUD_QUAD_READY", 0x0022_a7f6, points::Sig::Opaque, "docs/graphics/native-renderer.md",
+    "HUD_QUAD_READY", 0x0022_a7f6, points::Sig::Site, "docs/graphics/native-renderer.md",
 );
 const HUD_QUAD_TAIL: u32 = 0x0022_a854;
 const HUD_QUAD_LOCAL_BYTES: u32 = 0x70;

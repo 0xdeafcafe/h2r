@@ -41,6 +41,10 @@ pub enum Loc {
 pub enum Sig {
     /// Not read: observers and after-hooks only, never typed arguments.
     Opaque,
+    /// An instruction boundary inside a function (a researched resume
+    /// point), not a call: no arguments, and a before-hook may only
+    /// continue or resume a researched transfer, never return a value.
+    Site,
     Fn {
         args: &'static [(&'static str, Loc)],
         ret: Option<Loc>,
@@ -56,7 +60,7 @@ impl Sig {
     /// The location of the named argument.
     pub fn arg(&self, name: &str) -> Option<Loc> {
         match self {
-            Sig::Opaque => None,
+            Sig::Opaque | Sig::Site => None,
             Sig::Fn { args, .. } => args.iter().find(|(n, _)| *n == name).map(|(_, l)| *l),
         }
     }

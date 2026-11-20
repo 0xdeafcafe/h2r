@@ -11,8 +11,8 @@ const fn points(site: Site) -> (Site, Point, Point) {
     let (begin, end) = site.boundaries();
     (
         site,
-        Point::new("EFFECT_IMMEDIATE_BEGIN", begin, Sig::Opaque, DOC),
-        Point::new("EFFECT_IMMEDIATE_END", end, Sig::Opaque, DOC),
+        Point::new("EFFECT_IMMEDIATE_BEGIN", begin, Sig::Site, DOC),
+        Point::new("EFFECT_IMMEDIATE_END", end, Sig::Site, DOC),
     )
 }
 static BOUNDARIES: [(Site, Point, Point); 5] = [
@@ -24,21 +24,21 @@ static BOUNDARIES: [(Site, Point, Point); 5] = [
 ];
 static REFUSALS: [(Point, &str); 3] = [
     (
-        Point::new("EFFECT_QUERY", 0x0002_e9b6, Sig::Opaque, DOC),
+        Point::new("EFFECT_QUERY", 0x0002_e9b6, Sig::Site, DOC),
         "VisibilityQuery",
     ),
     (
-        Point::new("EFFECT_LAYERED_A", 0x0004_1cc0, Sig::Opaque, DOC),
+        Point::new("EFFECT_LAYERED_A", 0x0004_1cc0, Sig::Site, DOC),
         "OtherLaneLayeredGeometry",
     ),
     (
-        Point::new("EFFECT_LAYERED_B", 0x0004_23c0, Sig::Opaque, DOC),
+        Point::new("EFFECT_LAYERED_B", 0x0004_23c0, Sig::Site, DOC),
         "OtherLaneLayeredGeometry",
     ),
 ];
-static CALLBACK_QUEUE: Point = Point::new("EFFECT_CALLBACK_QUEUE", 0x0004_1490, Sig::Opaque, DOC);
+static CALLBACK_QUEUE: Point = Point::new("EFFECT_CALLBACK_QUEUE", 0x0004_1490, Sig::Site, DOC);
 static CALLBACK_WRAPPER: Point =
-    Point::new("EFFECT_CALLBACK_WRAPPER", 0x0004_8e40, Sig::Opaque, DOC);
+    Point::new("EFFECT_CALLBACK_WRAPPER", 0x0004_8e40, Sig::Site, DOC);
 pub(crate) fn instruction_entries() -> impl Iterator<Item = u32> {
     BOUNDARIES.iter().flat_map(|(_, begin, end)| [begin.base, end.base])
         .chain(REFUSALS.iter().map(|(point, _)| point.base))

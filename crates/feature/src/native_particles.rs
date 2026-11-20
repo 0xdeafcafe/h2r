@@ -33,7 +33,7 @@ pub fn effects_walk_on(switches: &crate::Switches) -> bool {
 pub const EMIT: Point = Point::new(
     "PARTICLE_EMIT_QUAD",
     particles::EMIT_QUAD,
-    Sig::Opaque,
+    Sig::Site,
     "docs/graphics/native-particles.md",
 );
 
@@ -42,7 +42,7 @@ pub const EMIT: Point = Point::new(
 pub const EMIT_READY: Point = Point::new(
     "PARTICLE_EMIT_READY",
     0x0023_ed5c,
-    Sig::Opaque,
+    Sig::Site,
     "docs/graphics/native-particles.md",
 );
 
@@ -51,37 +51,37 @@ pub const EMIT_READY: Point = Point::new(
 pub const EMIT_PUBLISH: Point = Point::new(
     "PARTICLE_PUBLISH",
     0x0023_ef77,
-    Sig::Opaque,
+    Sig::Site,
     "docs/graphics/native-particles.md",
 );
 pub const EMIT_END: Point = Point::new(
     "PARTICLE_END",
     0x0023_ef79,
-    Sig::Opaque,
+    Sig::Site,
     "docs/graphics/native-particles.md",
 );
 pub const DYNAMIC: Point = Point::new(
     "EFFECT_DYNAMIC",
     effect_geometry::DYNAMIC_DRAW,
-    Sig::Opaque,
+    Sig::Site,
     "docs/graphics/native-particles.md",
 );
 pub const DYNAMIC_QUAD_READY: Point = Point::new(
     "EFFECT_QUAD_READY",
     0x0004_b252,
-    Sig::Opaque,
+    Sig::Site,
     "docs/graphics/native-particles.md",
 );
 pub const DYNAMIC_PUBLISH: Point = Point::new(
     "EFFECT_PUBLISH",
     0x0004_b28c,
-    Sig::Opaque,
+    Sig::Site,
     "docs/graphics/native-particles.md",
 );
 pub const DYNAMIC_END: Point = Point::new(
     "EFFECT_END",
     0x0004_b2a3,
-    Sig::Opaque,
+    Sig::Site,
     "docs/graphics/native-particles.md",
 );
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

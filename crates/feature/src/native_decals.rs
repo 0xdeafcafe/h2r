@@ -184,10 +184,10 @@ pub fn hooks_on(switches: &crate::Switches) -> bool {
 // The per-record duplicate marker, bitmap and default registers have
 // already been set. ESI still names the record about to build a draw.
 pub(crate) const DECAL_ITEM_GEOMETRY: points::Point = points::Point::new(
-    "DECAL_ITEM_GEOMETRY", 0x0004_4161, points::Sig::Opaque, "docs/graphics/native-decals-research.md",
+    "DECAL_ITEM_GEOMETRY", 0x0004_4161, points::Sig::Site, "docs/graphics/native-decals-research.md",
 );
 pub(crate) const DECAL_RENDER_END: points::Point = points::Point::new(
-    "DECAL_RENDER_END", 0x0004_41aa, points::Sig::Opaque, "docs/graphics/native-decals-research.md",
+    "DECAL_RENDER_END", 0x0004_41aa, points::Sig::Site, "docs/graphics/native-decals-research.md",
 );
 const DECAL_ITEM_NEXT: u32 = 0x0004_4195;
 const GEOMETRY_ALLOCATOR: u32 = 0x0050_9448;

@@ -45,6 +45,12 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ("native-map-work", "GAME_STATE_REVERT", AFTER),
     #[cfg(feature = "gpu")]
     (
+        "native-objects",
+        "GAME_ACTIVATE",
+        "the map-load model preload runs on the game thread; the render never meets it",
+    ),
+    #[cfg(feature = "gpu")]
+    (
         "native-transparents",
         "GAME_ACTIVATE",
         "game activation runs on the game thread; the render never meets it",

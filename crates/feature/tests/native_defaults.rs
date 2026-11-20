@@ -100,7 +100,7 @@ fn stages() -> Vec<Stage> {
         Stage {
             switch: feature::native_particles::SWITCH,
             on: feature::native_particles::on,
-            label: "native_particles_emit",
+            label: "native_particles_walk_emit",
             feature: Some(&feature::native_particles::NativeParticles),
             off_with: &[],
             compare_env: None,

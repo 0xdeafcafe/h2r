@@ -552,7 +552,7 @@ pub(super) fn install(b: &mut Builder) {
         phase::count(Counter::LightWalkBuilds, 1);
         c.cpu.eax = built.count() as u32;
         Ok(Flow::Return(guest.ret(c.cpu, 16)?))
-    }).context_only();
+    }).after_feature(crate::native_world::ID).context_only();
 }
 
 pub struct NativeLightWalk;
