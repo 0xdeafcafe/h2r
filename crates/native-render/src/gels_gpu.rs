@@ -169,13 +169,20 @@ pub struct Output {
     pub size: (u32, u32),
 }
 
+/// The packets' pipeline id ([`gfx::pipeline::PipelineKey::shader`]).
+const GEL_PROGRAM: gfx::pipeline::ShaderId = gfx::pipeline::ShaderId(u32::MAX - 6);
+
+/// A cached pipeline: its description for packets and the validated
+/// pipeline (`None` when it was refused).
+type Pipeline = (gfx::pipeline::PipelineKey, Arc<gfx::compile::PendingPipeline>);
+
 pub struct Producer {
     program: Program,
     textures: wgpu::BindGroup,
     uniforms_layout: wgpu::BindGroupLayout,
     layout: wgpu::PipelineLayout,
     module: wgpu::ShaderModule,
-    pipelines: Mutex<HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>>,
+    pipelines: Mutex<HashMap<wgpu::TextureFormat, Pipeline>>,
 }
 
 impl Producer {
@@ -261,9 +268,11 @@ impl Producer {
             entries: &std::array::from_fn::<_, 2, _>(|n| wgpu::BindGroupLayoutEntry {
                 binding: n as u32,
                 visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                // At dynamic offsets: the submission's arena for packets
+                // ([`Producer::packet`]), 0 in a buffer of their own.
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
+                    has_dynamic_offset: true,
                     min_binding_size: wgpu::BufferSize::new(if n == 0 {
                         VertexUniforms::SIZE
                     } else {
@@ -383,13 +392,7 @@ impl Producer {
         if guest_size.0 == 0 || guest_size.1 == 0 || size.0 == 0 || size.1 == 0 {
             return Err("empty gel target".into());
         }
-        let mut vu = frame.vertex.clone();
-        vu.surface = [guest_size.0 as f32, guest_size.1 as f32];
-        vu.shift = gfx::renderer::window_shift(guest_size.0, size.0);
-        let mut vb = vec![0; VertexUniforms::SIZE];
-        vu.write_bytes(&mut vb);
-        let mut pb = vec![0; PixelUniforms::SIZE];
-        frame.pixel.write_bytes(&mut pb);
+        let (vu, pu) = Self::uniforms(frame, guest_size, size);
         let uniform = |bytes: &[u8]| {
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("native gel uniforms"),
@@ -397,8 +400,8 @@ impl Producer {
                 usage: wgpu::BufferUsages::UNIFORM,
             })
         };
-        let vertex = uniform(&vb);
-        let pixel = uniform(&pb);
+        let vertex = uniform(&vu);
+        let pixel = uniform(&pu);
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("native gel uniforms"),
             layout: &self.uniforms_layout,
@@ -418,51 +421,9 @@ impl Producer {
             contents: bytemuck::cast_slice(&frame.vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
-        let attributes: [wgpu::VertexAttribute; 7] =
-            std::array::from_fn(|n| wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32x4,
-                offset: n as u64 * 16,
-                shader_location: n as u32,
-            });
-        let pipeline = {
-            let mut pipelines = self.pipelines.lock().unwrap_or_else(|e| e.into_inner());
-            pipelines
-                .entry(format)
-                .or_insert_with(|| {
-                    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                        label: Some("native target 13"),
-                        layout: Some(&self.layout),
-                        vertex: wgpu::VertexState {
-                            module: &self.module,
-                            entry_point: Some("vs_main"),
-                            compilation_options: Default::default(),
-                            buffers: &[Some(wgpu::VertexBufferLayout {
-                                array_stride: std::mem::size_of::<Vertex>() as u64,
-                                step_mode: wgpu::VertexStepMode::Vertex,
-                                attributes: &attributes,
-                            })],
-                        },
-                        primitive: wgpu::PrimitiveState {
-                            topology: wgpu::PrimitiveTopology::TriangleStrip,
-                            ..self.program.state.primitive
-                        },
-                        depth_stencil: None,
-                        multisample: Default::default(),
-                        fragment: Some(wgpu::FragmentState {
-                            module: &self.module,
-                            entry_point: Some("fs_main"),
-                            compilation_options: Default::default(),
-                            targets: &[Some(wgpu::ColorTargetState {
-                                format,
-                                blend: self.program.state.blend,
-                                write_mask: self.program.state.color_writes,
-                            })],
-                        }),
-                        multiview_mask: None,
-                        cache: None,
-                    })
-                })
-                .clone()
+        let (_, pipeline) = self.pipeline(device, format);
+        let Some(pipeline) = pipeline.get().clone() else {
+            return Err("gel pipeline refused".into());
         };
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("native target 13"),
@@ -479,12 +440,145 @@ impl Producer {
         });
         pass.set_pipeline(&pipeline);
         pass.set_blend_constant(self.program.state.blend_constant);
-        pass.set_bind_group(0, &group, &[]);
+        pass.set_bind_group(0, &group, &[0, 0]);
         pass.set_bind_group(1, &self.textures, &[]);
         pass.set_vertex_buffer(0, vertices.slice(..));
         pass.draw(0..4, 0..1);
         drop(pass);
         Ok(())
+    }
+
+    /// The native gel as a packet for the D3D pass already open on the
+    /// real guest target (colour `format`, no depth): the same pipeline,
+    /// groups and uniforms as [`Self::encode_into`], the uniforms, quad
+    /// and its strip indices staged in the submission's `uploads`. No
+    /// render pass or command buffer of its own.
+    #[allow(clippy::too_many_arguments)]
+    pub fn packet(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        uploads: &gfx::ring::SubmissionUploads,
+        frame: &Frame,
+        format: wgpu::TextureFormat,
+        guest_size: (u32, u32),
+        size: (u32, u32),
+    ) -> Result<gfx::RecordedDraw, String> {
+        if guest_size.0 == 0 || guest_size.1 == 0 || size.0 == 0 || size.1 == 0 {
+            return Err("empty gel target".into());
+        }
+        let (key, pipeline) = self.pipeline(device, format);
+        if pipeline.get().is_none() {
+            return Err("gel pipeline refused".into());
+        }
+        let (vu, pu) = Self::uniforms(frame, guest_size, size);
+        let sizes = [VertexUniforms::SIZE, PixelUniforms::SIZE];
+        let uniforms = uploads
+            .uniform_run(device, queue, &self.uniforms_layout, sizes, 1, |_, v, p| {
+                v.copy_from_slice(&vu);
+                p.copy_from_slice(&pu);
+            })
+            .ok_or("gel uniforms unavailable")?;
+        let quad: &[u8] = bytemuck::cast_slice(&frame.vertices);
+        let (vertices, at) = uploads.stage(device, queue, quad);
+        let strip: &[u8] = bytemuck::cast_slice(&[0u32, 1, 2, 3]);
+        let (indices, index_at) = uploads.stage(device, queue, strip);
+        Ok(gfx::RecordedDraw::prepared_indexed(
+            &key,
+            pipeline,
+            vec![(vertices, at, quad.len() as u64)],
+            (indices, index_at, strip.len() as u64),
+            4,
+            vec![
+                gfx::BoundGroup {
+                    index: 0,
+                    group: uniforms.group.clone(),
+                    offsets: uniforms.offsets(0).to_vec(),
+                },
+                gfx::BoundGroup::new(1, self.textures.clone()),
+            ],
+            &gfx::RenderState::default(),
+            size,
+            gfx::ScissorRect::full(size.0, size.1),
+        )
+        .with_blend_constant(self.program.state.blend_constant))
+    }
+
+    /// The vertex and pixel uniforms' bytes for a target `guest_size`
+    /// guest pixels, `size` texels.
+    fn uniforms(frame: &Frame, guest_size: (u32, u32), size: (u32, u32)) -> (Vec<u8>, Vec<u8>) {
+        let mut vu = frame.vertex.clone();
+        vu.surface = [guest_size.0 as f32, guest_size.1 as f32];
+        vu.shift = gfx::renderer::window_shift(guest_size.0, size.0);
+        let mut vb = vec![0; VertexUniforms::SIZE];
+        vu.write_bytes(&mut vb);
+        let mut pb = vec![0; PixelUniforms::SIZE];
+        frame.pixel.write_bytes(&mut pb);
+        (vb, pb)
+    }
+
+    /// The pipeline for colour `format`, made once and validated: the
+    /// quad as a triangle strip, drawn or indexed (`Uint32`, so a
+    /// packet's strip indices restart nothing), no depth.
+    fn pipeline(&self, device: &wgpu::Device, format: wgpu::TextureFormat) -> Pipeline {
+        let mut pipelines = self.pipelines.lock().unwrap_or_else(|e| e.into_inner());
+        pipelines
+            .entry(format)
+            .or_insert_with(|| {
+                let attributes: [wgpu::VertexAttribute; 7] =
+                    std::array::from_fn(|n| wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x4,
+                        offset: n as u64 * 16,
+                        shader_location: n as u32,
+                    });
+                let primitive = wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleStrip,
+                    strip_index_format: Some(wgpu::IndexFormat::Uint32),
+                    ..self.program.state.primitive
+                };
+                let color_target = wgpu::ColorTargetState {
+                    format,
+                    blend: self.program.state.blend,
+                    write_mask: self.program.state.color_writes,
+                };
+                let pipeline = gfx::program::validated_resource(device, || {
+                    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                        label: Some("native target 13"),
+                        layout: Some(&self.layout),
+                        vertex: wgpu::VertexState {
+                            module: &self.module,
+                            entry_point: Some("vs_main"),
+                            compilation_options: Default::default(),
+                            buffers: &[Some(wgpu::VertexBufferLayout {
+                                array_stride: std::mem::size_of::<Vertex>() as u64,
+                                step_mode: wgpu::VertexStepMode::Vertex,
+                                attributes: &attributes,
+                            })],
+                        },
+                        primitive,
+                        depth_stencil: None,
+                        multisample: Default::default(),
+                        fragment: Some(wgpu::FragmentState {
+                            module: &self.module,
+                            entry_point: Some("fs_main"),
+                            compilation_options: Default::default(),
+                            targets: &[Some(color_target.clone())],
+                        }),
+                        multiview_mask: None,
+                        cache: None,
+                    })
+                });
+                let key = gfx::pipeline::PipelineKey {
+                    shader: GEL_PROGRAM,
+                    vertex_buffers: Vec::new(),
+                    primitive,
+                    depth_stencil: None,
+                    color_target,
+                    samples: 1,
+                };
+                (key, gfx::compile::Pending::ready(pipeline))
+            })
+            .clone()
     }
 }
 
@@ -522,7 +616,12 @@ impl ResidentCache {
         if let Some(producer) = cache.get(&key) {
             return Ok(Arc::clone(producer));
         }
-        let producer = Arc::new(Producer::resident(device, program, stages)?);
+        // Validated here: a packet ([`Producer::packet`]) runs in the D3D
+        // pass with no validation of its own.
+        let producer =
+            gfx::program::validated_resource(device, || Producer::resident(device, program, stages))
+                .ok_or("gel textures refused")??;
+        let producer = Arc::new(producer);
         if cache.len() >= 64 {
             cache.clear();
         }

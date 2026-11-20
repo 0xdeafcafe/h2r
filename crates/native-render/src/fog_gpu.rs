@@ -23,7 +23,7 @@ use crate::gpu::Image;
 use crate::look::{implementation_look, PassLook, Refusal, Stage};
 use crate::pass_state::{pass_state, PassState, StateRefusal};
 use crate::program::{
-    compile_pass, world_constants_read, Gpu, MaterialProgram, Rigid, RigidProgram, ViewInputs,
+    compile_pass, described_pipeline, world_constants_read, Gpu, MaterialProgram, Rigid, RigidProgram, ViewInputs,
 };
 use crate::world::{LightmapKey, ModelRows, Owner, World};
 use gfx::state::RenderStateType;
@@ -45,6 +45,11 @@ const FOG_END: u32 = 95;
 const FOG_DENSITY: u32 = 96;
 const FOG_RANGE: u32 = 97;
 const FOG_COLOR: u32 = 138;
+
+/// Shader ids the fog's packets report to the pass they join (for
+/// diagnostics; the pipelines are the passes' own).
+const FOG_CLUSTER_PROGRAM: gfx::pipeline::ShaderId = gfx::pipeline::ShaderId(u32::MAX - 3);
+const FOG_RIGID_PROGRAM: gfx::pipeline::ShaderId = gfx::pipeline::ShaderId(u32::MAX - 4);
 
 /// The fog-state words a pass implementation sets itself, by slot
 /// ([`FOG_WORD_SLOTS`]): `None` where it leaves the device's. The words
@@ -535,6 +540,112 @@ impl FogSet {
         }
     }
 
+    /// [`FogSet::draw`]'s selection as packets for the D3D pass already
+    /// open on these attachments, and [`FogSet::prepare`]'s bytes for what
+    /// they read as writes ahead of them
+    /// (`d3d::backend::ExternalDraws::writes`): one packet per selected
+    /// part per pass in reservation order, with the pass's pipeline, its
+    /// uniform group (a placement's at its slot's dynamic offset), the
+    /// part's texture group, the pass's blend constant, the part's index
+    /// range and the whole target as viewport and scissor. The writes are
+    /// the selected materials' blocks (and the selected placements'
+    /// slots) only: nothing else is read. `cache` holds the described
+    /// pipelines ([`crate::gpu::GpuWorld::fog_draws`]); the pipelines
+    /// are made ([`FogSet::pipelines`]). Refused when a pass, group or
+    /// fog state is missing, as `draw` records nothing then.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn draws(
+        &self,
+        cache: &mut HashMap<wgpu::RenderPipeline, std::sync::Arc<gfx::compile::PendingPipeline>>,
+        vertices: &wgpu::Buffer,
+        indices: &wgpu::Buffer,
+        color: wgpu::TextureFormat,
+        depth: wgpu::TextureFormat,
+        target_size: (u32, u32),
+        selected: &[(Owner, u8)],
+        view: &ViewInputs,
+        fogs: &HashMap<u16, (psh::fog::Fog, [f32; 4])>,
+    ) -> Result<d3d::backend::ExternalDraws, &'static str> {
+        use gfx::{BoundGroup, RecordedDraw, ScissorRect};
+        let stencil = wgpu::StencilState::default();
+        let scissor = ScissorRect::full(target_size.0, target_size.1);
+        let render = gfx::state::RenderState::default();
+        let mut packets = Vec::new();
+        // The materials the selection reads, and per material the
+        // placements it draws.
+        let mut used: BTreeMap<u16, std::collections::BTreeSet<u32>> = BTreeMap::new();
+        for &(owner, part) in selected {
+            let &(first_index, index_count, lightmap, material) =
+                self.parts.get(&(owner, part)).ok_or("a selected fog part did not bind")?;
+            if index_count == 0 {
+                return Err("a selected fog part draws nothing");
+            }
+            let end = u64::from(first_index) + u64::from(index_count);
+            if end * 4 > indices.size() {
+                return Err("a selected fog part reaches past the indices");
+            }
+            let m = self.materials.get(&material).ok_or("a selected fog material did not bind")?;
+            let groups = m.groups.get(&lightmap).ok_or("a selected fog part's textures did not bind")?;
+            if !fogs.contains_key(&material) {
+                return Err("a selected fog material has no resolved fog");
+            }
+            let slots = used.entry(material).or_default();
+            for ((g, state, rigid), textures) in m.passes.iter().zip(groups) {
+                let (shader, pipeline, uniforms, offsets) = match owner {
+                    Owner::Instance(n) => {
+                        let r = rigid.as_ref().ok_or("a fog placement has no rigid program")?;
+                        let offset = r.offset(n).ok_or("a fog placement has no slot")?;
+                        let pipeline = r.pipeline_at(color, depth, None, &stencil).ok_or("a fog pipeline is not made")?;
+                        slots.insert(n);
+                        (FOG_RIGID_PROGRAM, pipeline, r.uniforms.clone(), vec![offset])
+                    }
+                    Owner::Cluster(_) => {
+                        let pipeline = g.pipelines.get(&(color, depth)).ok_or("a fog pipeline is not made")?;
+                        (FOG_CLUSTER_PROGRAM, pipeline, g.uniforms.clone(), Vec::new())
+                    }
+                };
+                let key = described_pipeline(shader, color, depth, Some(state), None, stencil.clone());
+                let pipeline = cache
+                    .entry(pipeline.clone())
+                    .or_insert_with(|| gfx::compile::Pending::ready(Some(pipeline.clone())))
+                    .clone();
+                packets.push(
+                    RecordedDraw::prepared_indexed(
+                        &key,
+                        pipeline,
+                        vec![(vertices.clone(), 0, vertices.size())],
+                        (indices.clone(), u64::from(first_index) * 4, u64::from(index_count) * 4),
+                        index_count,
+                        vec![BoundGroup { index: 0, group: uniforms, offsets }, BoundGroup::new(1, textures.clone())],
+                        &render,
+                        target_size,
+                        scissor,
+                    )
+                    .with_blend_constant(state.blend_constant),
+                );
+            }
+        }
+        if packets.is_empty() {
+            return Err("fog selection draws nothing");
+        }
+        let mut writes = Vec::new();
+        for (material, slots) in &used {
+            let m = &self.materials[material];
+            let (fog, color) = &fogs[material];
+            for (g, _, rigid) in &m.passes {
+                let mut pixel = g.program.pixel;
+                pixel.fog = fog.uniform();
+                pixel.fog_color = *color;
+                writes.extend(g.prepare_writes(view, &pixel));
+                if let Some(r) = rigid {
+                    writes.extend(r.prepare_writes(view, slots.iter().copied()));
+                }
+            }
+        }
+        // Conservative: the programs' alpha tests and kill sources discard.
+        Ok(d3d::backend::ExternalDraws { ranges: selected.len(), packets, discards: true, writes })
+    }
+
     /// Makes the pipelines for these target formats (before the pass).
     pub fn pipelines(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) {
         for m in self.materials.values_mut() {
@@ -582,5 +693,242 @@ impl FogSet {
             }
         }
         selected.len()
+    }
+}
+
+/// Synthetic scenes shared by the packet tests of this stage and the
+/// water's ([`crate::water_gpu`]): no game data.
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::program::{compile_pass_rigid, MODEL_ROWS};
+    use crate::world::{PartInput, Placement, SectionInput, WorldBuilder};
+    use shaders::psh::TextureDim;
+    use shaders::vsh::encode::{program, Inst, Operand as O};
+    use shaders::vsh::{MacOp, OutReg};
+    use wgpu::{TextureFormat as F, TextureUsages as U};
+
+    pub(crate) const SIZE: u32 = 32;
+
+    pub(crate) fn look(stage0: Stage) -> PassLook {
+        PassLook {
+            pass: map::TagId(0xe000_0001),
+            implementation: 0,
+            vertex_shader: map::TagId(0xe000_0002),
+            textures: [stage0, Stage::Empty, Stage::Empty, Stage::Empty],
+            stage_states: Vec::new(),
+            pixel_shader: shaders::PixelShaderDef::default().to_bytes(),
+            vertex_constants: Vec::new(),
+            vertex_defaults: Vec::new(),
+            per_draw_inputs: false,
+        }
+    }
+
+    /// `dp4 oPos, v0, c[0..3]; mov oT0, v1`.
+    fn cluster_code() -> Vec<u8> {
+        let row = |c, mask| Inst::mac(MacOp::Dp4, Some(O::v(0)), Some(O::c(c)), None).to_out(false, OutReg::Pos, mask);
+        program(&[
+            row(0, 8),
+            row(1, 4),
+            row(2, 2),
+            row(3, 1),
+            Inst::mac(MacOp::Mov, Some(O::v(1)), None, None).to_out(false, OutReg::T(0), 0xf),
+        ])
+    }
+
+    /// `r10 = v0 · c[170] + c[171]`, `dph r0.xyz, r10, c[50..52]`, then
+    /// `dph oPos, r0, c[0..3]`, `mov oT0, v1`: the rigid classification.
+    fn rigid_code() -> Vec<u8> {
+        let mut code = vec![
+            Inst::mac(MacOp::Mul, Some(O::v(0)), Some(O::c(170)), None).to_temp(10, 0xf),
+            Inst::mac(MacOp::Add, Some(O::r(10)), None, Some(O::c(171))).to_temp(10, 0xf),
+        ];
+        for k in 0..3u8 {
+            code.push(Inst::mac(MacOp::Dph, Some(O::r(10)), Some(O::c(MODEL_ROWS as u8 + k)), None).to_temp(0, 8 >> k));
+        }
+        for k in 0..4u8 {
+            code.push(Inst::mac(MacOp::Dph, Some(O::r(0)), Some(O::c(k)), None).to_out(false, OutReg::Pos, 8 >> k));
+        }
+        code.push(Inst::mac(MacOp::Mov, Some(O::v(1)), None, None).to_out(false, OutReg::T(0), 0xf));
+        program(&code)
+    }
+
+    pub(crate) fn state() -> PassState {
+        PassState {
+            blend: None,
+            blend_constant: wgpu::Color { r: 0.25, g: 0.5, b: 0.75, a: 1.0 },
+            color_writes: wgpu::ColorWrites::ALL,
+            depth_write: false,
+            depth_compare: wgpu::CompareFunction::LessEqual,
+            primitive: wgpu::PrimitiveState::default(),
+            alpha_test: None,
+        }
+    }
+
+    /// A pass sampling `stage0` at stage 0 with both classifications.
+    pub(crate) fn pass(stage0: Stage) -> (FogPass, FogProgram) {
+        let look = look(stage0);
+        let mut program = compile_pass(&look, &cluster_code(), None).expect("compiles");
+        if stage0 != Stage::Empty {
+            program.dims[0] = Some(TextureDim::D2);
+            program.stages[0] = stage0;
+        }
+        let rigid = compile_pass_rigid(&look, None, &rigid_code()).expect("rigid compiles");
+        let state = state();
+        (
+            FogPass { look, state, fog: FogWords::default() },
+            FogProgram { program, state, words: FogWords::default(), rigid: Some(rigid) },
+        )
+    }
+
+    /// A cluster (material 0) at x = 10 and a placement of the same
+    /// material at x = 12 with identity rows, both facing the camera.
+    pub(crate) fn world() -> World {
+        let wall = |x: f32| SectionInput {
+            positions: vec![[x, 2.0, -2.0], [x, -2.0, -2.0], [x, 2.0, 2.0], [x, -2.0, 2.0]],
+            uvs: vec![[0.5; 2]; 4],
+            normals: vec![[-1.0, 0.0, 0.0]; 4],
+            parts: vec![PartInput { material: 0, transparent: false, triangles: vec![[0, 1, 2], [1, 3, 2]] }],
+            ..Default::default()
+        };
+        let mut b = WorldBuilder::new();
+        b.add_section(Owner::Cluster(0), &wall(10.0), &Placement::IDENTITY, None);
+        b.add_section(Owner::Instance(5), &wall(12.0), &Placement::IDENTITY, None);
+        b.place_rows(5, [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]]);
+        b.finish()
+    }
+
+    pub(crate) type Parts = Vec<((Owner, u8), (u32, u32, Option<LightmapKey>, u16))>;
+
+    pub(crate) fn parts(world: &World) -> Parts {
+        world
+            .draws
+            .iter()
+            .map(|d| ((d.owner, d.part), (d.first_index, d.index_count, d.lightmap, d.material)))
+            .collect()
+    }
+
+    pub(crate) fn selected() -> Vec<(Owner, u8)> {
+        vec![(Owner::Cluster(0), 0), (Owner::Instance(5), 0)]
+    }
+
+    pub(crate) fn view() -> ViewInputs {
+        let mut constants = [[0.0; 4]; crate::program::VIEW_CONSTANTS];
+        constants[..4].copy_from_slice(&[[0.0, -2.0, 0.0, 16.0], [0.0, 0.0, -2.0, 16.0], [0.5, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]]);
+        ViewInputs { constants, guest_size: (SIZE, SIZE), size: (SIZE, SIZE), z_scale: 16_777_215.0, w_clip: None }
+    }
+
+    pub(crate) fn fogs() -> HashMap<u16, (psh::fog::Fog, [f32; 4])> {
+        [(0, (psh::fog::Fog::OFF, [0.2, 0.4, 0.6, 1.0]))].into()
+    }
+
+    /// Renders into fresh targets cleared to transparent and depth 1,
+    /// `draw` recording after the clear and the arena's front writes
+    /// submitted first; returns the colour and depth texels.
+    pub(crate) fn render(
+        ctx: &gfx::GfxContext,
+        draw: impl FnOnce(&mut wgpu::CommandEncoder, &gfx::ring::SubmissionUploads, &gfx::RenderTarget<'_>),
+    ) -> (Vec<u8>, Vec<u8>) {
+        let texture = |format| ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: None, size: wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format,
+            usage: U::RENDER_ATTACHMENT | U::COPY_SRC, view_formats: &[],
+        });
+        let (color, depth) = (texture(F::Rgba8Unorm), texture(F::Depth32Float));
+        let (cv, dv) = (color.create_view(&Default::default()), depth.create_view(&Default::default()));
+        let target = gfx::RenderTarget {
+            color: &cv, color_format: F::Rgba8Unorm, depth: Some(&dv), depth_format: Some(F::Depth32Float),
+            size: (SIZE, SIZE), samples: 1,
+        };
+        let arena = gfx::ring::UploadPool::default().begin();
+        let mut enc = ctx.device.create_command_encoder(&Default::default());
+        drop(enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &cv, depth_slice: None, resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &dv, stencil_ops: None,
+                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+            }),
+            timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
+        }));
+        draw(&mut enc, &arena, &target);
+        let front = arena.upload_commands(&ctx.queue);
+        ctx.queue.submit(front.into_iter().chain([enc.finish()]));
+        ctx.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let read = |t, aspect| gfx::readback::read_texture(ctx, t, aspect, 4, (SIZE, SIZE));
+        (read(&color, wgpu::TextureAspect::All), read(&depth, wgpu::TextureAspect::DepthOnly))
+    }
+
+    /// The fog's packets with their uniforms written at the front of the
+    /// submission draw what `encode_fog` draws on its own pass after
+    /// `prepare_fog`'s in-order writes, a cluster and a placement (its
+    /// slot's dynamic offset) alike, and write the bytes `prepare` does
+    /// for what is drawn.
+    #[test]
+    fn fog_packets_draw_what_the_fog_pass_draws_with_the_uniforms_written_up_front() {
+        use crate::gpu::GpuWorld;
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        let world = world();
+        let parts = parts(&world);
+        let mut gpu = GpuWorld::new(&ctx.device, &ctx.queue, world, &mut |_| None, &mut |_| None);
+        let (_, program) = pass(Stage::Bitmap { bitmap: map::TagId(7), image: 1 });
+        let set = FogSet::new(
+            &ctx.device, &ctx.queue, gpu.world(), parts, [(0, vec![program])].into(),
+            &mut |_| Some(Image::solid([200, 100, 50, 255])), &mut |_| None,
+        );
+        assert_eq!(set.len(), 1);
+        gpu.set_fog(set);
+        let (selected, view, fogs) = (selected(), view(), fogs());
+        let mut images = Vec::new();
+        // Packets first: the uniforms they read are only those written ahead.
+        for packets in [true, false] {
+            images.push(render(&ctx, |enc, arena, target| {
+                let draws = gpu.fog_draws(&ctx.device, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), &selected, &view, &fogs).unwrap();
+                assert_eq!((draws.ranges, draws.packets.len()), (2, 2), "one pass each, cluster and placement");
+                assert_eq!(draws.writes.len(), 2 + 2, "the pass's two blocks, the placement's view prefix and tail");
+                if packets {
+                    for (buffer, offset, bytes) in &draws.writes {
+                        arena.write_front(&ctx.device, &ctx.queue, buffer, *offset, bytes);
+                    }
+                    gfx::Renderer::encode_pass(&ctx, enc, target, gfx::Clear::NONE, &draws.packets, None).unwrap();
+                } else {
+                    let mut uploads = gfx::ring::EncoderUploads { device: &ctx.device, queue: &ctx.queue, arena, encoder: enc };
+                    gpu.prepare_fog(&mut uploads, &view, &fogs);
+                    assert!(draws.writes.iter().all(|(buffer, ..)| arena.wrote_in_order(buffer)));
+                    let recorded = gpu.encode_fog(
+                        &ctx.device, enc, target.color, F::Rgba8Unorm, target.depth.unwrap(), F::Depth32Float, (SIZE, SIZE), &selected,
+                    );
+                    assert_eq!(recorded, 2);
+                }
+            }));
+        }
+        assert!(images[0].0.iter().any(|&b| b != 0), "the fog drew something");
+        assert_eq!(images[0], images[1]);
+    }
+
+    #[test]
+    fn fog_packets_refuse_a_selection_the_pass_would_not_record() {
+        use crate::gpu::GpuWorld;
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        let world = world();
+        let parts = parts(&world);
+        let mut gpu = GpuWorld::new(&ctx.device, &ctx.queue, world, &mut |_| None, &mut |_| None);
+        let (_, program) = pass(Stage::Bitmap { bitmap: map::TagId(7), image: 1 });
+        let set = FogSet::new(
+            &ctx.device, &ctx.queue, gpu.world(), parts, [(0, vec![program])].into(),
+            &mut |_| Some(Image::solid([1; 4])), &mut |_| None,
+        );
+        gpu.set_fog(set);
+        let (view, fogs) = (view(), fogs());
+        let draws = |gpu: &mut GpuWorld, selected: &[(Owner, u8)], fogs: &HashMap<u16, (psh::fog::Fog, [f32; 4])>| {
+            gpu.fog_draws(&ctx.device, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), selected, &view, fogs)
+        };
+        assert!(draws(&mut gpu, &selected(), &fogs).is_ok());
+        assert!(draws(&mut gpu, &[(Owner::Cluster(9), 0)], &fogs).is_err(), "a part the set does not hold");
+        assert!(draws(&mut gpu, &[], &fogs).is_err(), "nothing to draw");
+        assert!(draws(&mut gpu, &selected(), &HashMap::new()).is_err(), "a material with no resolved fog");
     }
 }

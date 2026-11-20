@@ -12,7 +12,7 @@ use engine::memory::{GuestMemory, MemFault};
 use feature::native_lights::{Dispatch, Host};
 use map::{Map, TagId};
 use native_render::gpu::Image;
-use native_render::light_gpu::{LayeredImage, LightDraw, LightSet, StaticLightTexture, TextureDim, light_gpu_key};
+use native_render::light_gpu::{LayeredImage, LightDraw, LightSet, LightTarget, StaticLightTexture, TextureDim, light_gpu_key};
 use native_render::light_look::{
     DIFFUSE_LAYER, LightInputs, LightProgram, LightRefusal, LightStage, LookCache, SPECULAR_LAYER, compile_light, engine_inputs, light_look,
 };
@@ -24,7 +24,7 @@ use native_render::world::{Owner, World, WorldDraw};
 use native_render::program::InheritedCull;
 use tags::material::{EngineInputs, Material, ShaderLibrary, TextureSource};
 
-use crate::native_world_glue::{Load, Ready, State, ReadMemory, StagePalettes, current_ready, inherited_cull, light_image, upload};
+use crate::native_world_glue::{Load, Ready, State, ReadMemory, StagePalettes, current_ready, inherited_cull, light_image, upload_on};
 
 /// The hook's guest memory as the device's.
 pub struct DeviceMemory<'a>(pub &'a mut dyn GuestMemory);
@@ -242,7 +242,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         if !matches!(&state.1, Load::Ready(current) if Arc::ptr_eq(current, &plan.ready)) {
             return Err(Keep::Unsupported("world changed during light preparation"));
         }
-        let layer = LightLayer::new(view_target, key, plan, &sorted.entries[..count])
+        let layer = LightLayer::new(view_target, plan, &sorted.entries[..count])
             .ok_or(Keep::Unsupported("light ranges differ from its sorted entries"))?;
         *self.admission.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(layer);
         order.previous = (!isolated).then_some((serial, targets, key));
@@ -259,9 +259,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         if shader_gel && ok { t.shader_gels += 1; }
         for msg in t.count(result) { eprintln!("{msg}"); }
         if t.asked == 1 || (ok && t.planned.is_power_of_two()) || (ok && shader_gel && t.shader_gels == 1) || t.asked % SUMMARY_EVERY == 0 {
-            let [reference, display] = d3d::GfxBackend::native_bundle_passes();
-            eprintln!("native-lights: {} admitted, {} shader gels, {} reference passes, {} scaled passes, {} worker round trips",
-                t.planned, t.shader_gels, reference, display,
+            // Admitted lights join the open D3D pass as packets: they add no
+            // passes of their own (`native_lights_*_passes` in profile.counters).
+            eprintln!("native-lights: {} admitted, {} shader gels, {} worker round trips",
+                t.planned, t.shader_gels,
                 d3d::threaded::LIGHT_WORKER_WAITS.load(Ordering::Relaxed));
         }
         ok
@@ -285,13 +286,12 @@ struct LightAdmission(Mutex<Option<LightLayer>>);
 
 struct LightLayer {
     targets: [u32; 8],
-    key: u64,
     light: PreparedLight,
     draws: HashMap<u32, (SortedItem, Planned)>,
 }
 
 impl LightLayer {
-    fn new(targets: [u32; 8], key: u64, mut light: PreparedLight, entries: &[SortedItem]) -> Option<Self> {
+    fn new(targets: [u32; 8], mut light: PreparedLight, entries: &[SortedItem]) -> Option<Self> {
         let mut draws = HashMap::with_capacity(entries.len());
         let mut entries = entries.iter();
         for pass in std::mem::take(&mut light.draws) {
@@ -306,7 +306,7 @@ impl LightLayer {
         if entries.next().is_some() {
             return None;
         }
-        Some(Self { targets, key, light, draws })
+        Some(Self { targets, light, draws })
     }
 }
 
@@ -345,7 +345,7 @@ impl d3d::DrawAdmission for LightAdmission {
         };
         let gel_slot = light.binding.map(|binding| binding.append(&mut plan));
         let pass = RunPass {
-            light, view: None, clip: None, key: run.key, gel_slot, bundles: [None, None],
+            light, view: None, clip: None, gel_slot,
             fallback: Arc::new(draw.clone()),
         };
         Some((plan, Box::new(pass)))
@@ -998,13 +998,14 @@ fn scale_scissor(rect: [u32;4], guest: (u32,u32), target: (u32,u32)) -> Option<[
     Some([x * scale, y * scale, w * scale, h * scale])
 }
 
+/// One admitted light draw, appended as packets to the D3D pass open on
+/// its attachments ([`d3d::ExternalPass::record_draws`]) with the light
+/// passes' cached pipelines and texture groups and resident uniforms.
 struct RunPass {
     light: PreparedLight,
     view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
     clip: Option<d3d::DepthClip>,
-    key: u64,
     gel_slot: Option<usize>,
-    bundles: [Option<(native_render::light_gpu::LightBundles, [u32; 4])>; 2],
     fallback: Arc<d3d::ResolvedDraw>,
 }
 
@@ -1022,9 +1023,10 @@ impl d3d::ExternalPass for RunPass {
         Some(Arc::clone(&self.fallback))
     }
 
-    fn record_bundles(&mut self, target: &mut d3d::ExternalTarget<'_>) -> Option<d3d::backend::ExternalBundles> {
-        let (recorded, scissor) = self.bundles[usize::from(target.copy == d3d::TargetCopy::Display)].take()?;
-        Some(recorded.into_packet(self.key, scissor))
+    fn record_draws(
+        &mut self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
+    ) -> Option<Result<d3d::backend::ExternalDraws, &'static str>> {
+        Some(self.draws(t, request))
     }
 
     fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
@@ -1034,30 +1036,37 @@ impl d3d::ExternalPass for RunPass {
     fn depth_clip(&mut self, clip: d3d::DepthClip) {
         self.clip = Some(clip);
     }
+}
 
-    fn prepare_copy(&mut self, t: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
-        self.prepare_gpu(t)
-    }
+/// Target 13's sample view on this copy: the plan's pinned slot, when its
+/// guest size is the binding's (`Binding::sample` over pinned slots).
+fn gel_sample(binding: Binding, slots: &[Option<d3d::ExternalColor>], slot: usize) -> Option<&wgpu::TextureView> {
+    let surface = slots.get(slot)?.as_ref()?;
+    (surface.guest_size == binding.guest_size).then_some(&surface.sample)
 }
 
 impl RunPass {
-    fn prepare_gpu(&mut self, t: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
-        let copy = usize::from(t.copy == d3d::TargetCopy::Display);
-        if self.bundles[copy].is_some() { return Err("ambiguous target copy"); }
-        let scissor = scale_scissor(self.light.scissor, t.guest_size, t.size).ok_or("unsupported scissor scale")?;
+    /// Each copy records on its own: the scissor scaled to its texels, the
+    /// gel sampled from its own pinned slot.
+    fn draws(
+        &self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
+    ) -> Result<d3d::backend::ExternalDraws, &'static str> {
+        let guest_size = request.surface_size;
+        let scissor = scale_scissor(self.light.scissor, guest_size, t.size).ok_or("unsupported scissor scale")?;
         let constants = self.view.ok_or("missing view constants")?;
         let clip = self.clip.filter(|c| c.w_buffered == Some(true)).ok_or("unknown W-buffer at issue")?;
-        let view = ViewInputs { constants, guest_size: t.guest_size, size: t.size, z_scale: t.z_scale, w_clip: Some((clip.range, clip.clamp)) };
+        let view = ViewInputs { constants, guest_size, size: t.size, z_scale: request.z_scale, w_clip: Some((clip.range, clip.clamp)) };
         let ready = &self.light.ready;
         let lw = ready.lights.as_ref().ok_or("world lights unavailable")?;
-        let mut gpu = upload(ready, t);
+        let mut gpu = upload_on(ready, &t.device, &t.queue);
         let gpu = gpu.as_mut().ok_or("world upload failed")?;
         if gpu.lights().is_none() {
-            gpu.set_lights(LightSet::new(t.device, t.queue, lw.normalization.as_deref(), lw.attenuation.as_deref()));
+            gpu.set_lights(LightSet::new(&t.device, &t.queue, lw.normalization.as_deref(), lw.attenuation.as_deref()));
         }
         // Resolve the pinned slot on this copy before replacing the guest draw.
-        let sample = match &self.light.binding {
-            Some(binding) => Some(binding.sample(t, self.gel_slot.ok_or("missing gel slot")?).ok_or("target 13 has no matching sample view on this copy")?),
+        let sample = match self.light.binding {
+            Some(binding) => Some(gel_sample(binding, &t.slots, self.gel_slot.ok_or("missing gel slot")?)
+                .ok_or("target 13 has no matching sample view on this copy")?),
             None => None,
         };
         let draws: Vec<_> = self.light.draws.iter().map(|p| {
@@ -1065,16 +1074,19 @@ impl RunPass {
             draw.gel_view = sample;
             draw
         }).collect();
-        let recorded = gpu.prepare_lights(
-            t, &view, &draws,
+        let target = LightTarget {
+            device: &t.device, queue: &t.queue, uploads: &t.uploads,
+            color: &t.color, color_format: t.color_format,
+            depth: &t.depth, depth_format: t.depth_format, size: t.size,
+        };
+        gpu.prepare_lights(
+            &target, scissor, &view, &draws,
             &mut |stage, s| match s {
                 LightStage::Bitmap { bitmap, image } => lw.images.get(&(stage, bitmap, image)).cloned(),
                 _ => None,
             },
             &mut |g| lw.gels.get(&g).cloned(),
-        ).ok_or("incomplete GPU resources or ranges")?;
-        self.bundles[copy] = Some((recorded, scissor));
-        Ok(())
+        )
     }
 }
 

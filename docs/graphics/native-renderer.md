@@ -119,12 +119,18 @@ World placement transforms are initialized once at map load.
 | `prepare_ns`, `encode_ns` | Host wall nanoseconds in native selection/resource preparation and private command recording, respectively. |
 | `buffers`, `bind_groups`, `upload_bytes`, `pipeline_misses` | Actual creations and bytes charged through the submission arena and counted `gfx::churn` operations during the stage. |
 | `cache_hits`, `cache_misses` | Draws whose pipeline and bindings were already resident, and draws that created one. |
-| `command_buffers` | Committed recordings with a private command buffer (`record_ranges`). Each also ends the open encoder and adds a render pass. Packets (`record_draws`) and bundles add none. |
+| `command_buffers` | Committed recordings with a private command buffer (`record_ranges`). Each also ends the open encoder and adds a render pass. Packets (`record_draws`), encoded commands (`record_encoded`) and bundles add none. |
 | `v<V>_<C>_recorded`, `v<V>_<C>_ranges` | Ranges the stage recorded on this copy, including discarded attempts, and ranges committed. |
 | `v<V>_invariants`, `v<V>_<C>_invariants`, `v<V>_<C>_refused` | Range-count mismatches across copies, mismatches on this copy, and transactions refused by this copy. Each stage/view/copy mismatch logs once. |
 
 The frame-wide `command_buffers` counter counts every command buffer the
 wgpu backend hands to `queue.submit`, next to `submits` and `passes`.
+`ordered_writes` counts packet runs whose persistent rows (the world's
+view rows) could not go at the front of the submission, because it
+already held other bytes for them or a command wrote them in draw order.
+Each one copies the rows in order and starts a render pass, so it should
+stay near the number of extra views per submission (split screen, two
+target copies).
 
 `V` is player view `0` through `3`, or `other`. `C` is `reference` or
 `display`. Confirmed passes account for both physical copies and count a
@@ -3497,19 +3503,45 @@ goes to 0 after warm-up, `native_objects_worker_round_trips` falls to
 about the number of non-adjacent object runs, and `native_objects_encode_ns`
 and `native_objects_prepare_ns` fall.
 
+Second round (same day, code only, not measured yet):
+
+- World: `GpuWorld::selection_draws` returns packets in the open D3D pass,
+  adjacent triangle lists joined (a packet may cover several guest
+  ranges). Its view rows go as `ExternalDraws::writes`: the backend writes
+  them at the front of the submission when it holds no other bytes for
+  those ranges and nothing writes them in draw order, and otherwise copies
+  them in order before the packets (`ordered_writes`). The world pass
+  takes the swap's batch key, so the render thread pins its attachments
+  instead of a round trip. The fixed stage still records standalone.
+- Fog and water: packets with their uniform blocks as writes; water that
+  samples the view copies it in the open encoder (`record_encoded`).
+  Decals, particles and gels: packets, per-draw data in the submission
+  arena, pipelines and groups cached.
+- Post (screen effects and glow) draw into targets of their own:
+  `ExternalPass::record_encoded` issues their passes into the frame's open
+  encoder at commit, validated once on a scratch encoder at prepare. No
+  command buffer of their own.
+- Lights admitted at `RunPass`: packets with resident uniforms and cached
+  pipelines and groups, in place of a render bundle per draw each frame in
+  a run pass of their own. `GfxBackend::native_bundle_passes` stays 0 for
+  lights; the native-lights summary no longer prints it.
+
+Expected: `native_<stage>_command_buffers` about 0 for world, fog, water,
+decals, particles, gels and post; `native_world_worker_round_trips` and
+fog's about 0; `native_lights_reference_passes` and `display_passes` count
+only the D3D passes the packets join; `command_buffers` and `passes` fall
+by the stages' former runs; `ordered_writes` near the number of extra
+views per submission.
+
 Still open:
 
-- Stages that record with `record_ranges` still use their own command
-  buffer and render pass, and pay a synchronous worker round trip: world,
-  fog, water, decals, particles, gels and post. Read
-  `native_<stage>_command_buffers` and `worker_round_trips` to rank them.
-  The world needs its per-view uniforms in the submission arena, rather
-  than encoder copies, before it can return packets.
-- Dynamic lights admitted at the resolved draw (`RunPass`) still record
-  bundles every frame into their own run pass.
-- At a render scale above 1, side passes are not deferred, so each costs
-  its own submissions. Compare `submits` and `pass_side` with native on
-  and off.
+- Side passes at a render scale above 1 stay undeferred. Not exact yet:
+  in single-copy mode the reference backend still records guest-size
+  intermediates and reads that the view samples, and the reverse. Deferring
+  needs either one ordered command stream shared by the two backends or a
+  flush of the other backend's deferred side work wherever
+  `ScaledBackend` switches backends.
+- Walk fallbacks and refused lights (needs research).
 - The object walk still returns about 14 objects a frame to D3D as
   `walk_unsupported`. Their parts use stencil marking, conditional
   stream ranges or the auxiliary state toggle (`object_walk::read_part`).

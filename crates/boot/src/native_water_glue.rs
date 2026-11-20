@@ -287,6 +287,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             view: None,
             w_clip: None,
             writes_depth,
+            run: u64::from(d.swap_count()).wrapping_add(1),
         });
         drop(planning);
         let reservation = d
@@ -330,9 +331,81 @@ struct WaterViewPass {
     view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
     w_clip: Option<([f32; 2], bool)>,
     writes_depth: bool,
+    /// The swap the view is in: the run's key, so attachments are pinned
+    /// once when no render target is sampled
+    /// (`d3d::ExternalPass::batch_key`).
+    run: u64,
+}
+
+impl WaterViewPass {
+    /// What a copy must hold for the pass to draw there: the sampled
+    /// render targets (live, not attachments, filterable) and, when a
+    /// material samples the view, a bound colour that can be copied and
+    /// filtered.
+    fn preflight(
+        &self,
+        sampled: &[Option<d3d::backend::SampledLevel>],
+        color: &wgpu::TextureView,
+        color_format: wgpu::TextureFormat,
+        depth: &wgpu::TextureView,
+        size: (u32, u32),
+        features: wgpu::Features,
+    ) -> Result<(), &'static str> {
+        if self.view.is_none() || self.w_clip.is_none() {
+            return Err("water view constants or W-buffer clip unavailable");
+        }
+        if sampled.len() != self.headers.len() {
+            return Err("a water target sample is unavailable on this copy");
+        }
+        for level in sampled {
+            let level = level.as_ref().ok_or("a water target sample is unavailable on this copy")?;
+            let texture = level.view.texture();
+            if texture == color.texture() || texture == depth.texture() {
+                return Err("a water sample aliases an attachment");
+            }
+            if !gfx::program::filterable(texture.format(), features) {
+                return Err("a water sample is not filterable");
+            }
+        }
+        if self.samples_view {
+            if !gfx::program::filterable(color_format, features) {
+                return Err("the bound colour is not filterable for the scene stages");
+            }
+            if color.texture().format() != color_format || !WaterSet::can_copy(color, size) {
+                return Err("the bound colour cannot be copied for the scene stages");
+            }
+        }
+        Ok(())
+    }
+
+    /// The view inputs and sampled views of a pinned copy, after its
+    /// preflight.
+    fn inputs(
+        &self,
+        t: &d3d::backend::ExternalAttachments,
+        request: d3d::ExternalPassRequest,
+    ) -> Result<(ViewInputs, Vec<Option<wgpu::TextureView>>), &'static str> {
+        self.preflight(&t.sampled, &t.color, t.color_format, &t.depth, t.size, t.device.features())?;
+        let constants = self.view.ok_or("water view constants unavailable")?;
+        let view = ViewInputs {
+            constants,
+            guest_size: request.surface_size,
+            size: t.size,
+            z_scale: request.z_scale,
+            w_clip: self.w_clip,
+        };
+        let sampled = t.sampled.iter().map(|s| s.as_ref().map(|s| s.view.clone())).collect();
+        Ok((view, sampled))
+    }
 }
 
 impl d3d::ExternalPass for WaterViewPass {
+    /// Pinned attachments only when no render target is sampled: the pin
+    /// carries no sampled levels (`d3d::ThreadedBackend`).
+    fn batch_key(&self) -> Option<u64> {
+        self.headers.is_empty().then_some(self.run)
+    }
+
     fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
         self.view = Some(*constants);
     }
@@ -349,31 +422,7 @@ impl d3d::ExternalPass for WaterViewPass {
     }
 
     fn prepare_copy(&mut self, t: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
-        if self.view.is_none() || self.w_clip.is_none() {
-            return Err("water view constants or W-buffer clip unavailable");
-        }
-        if t.sampled.len() != self.headers.len() {
-            return Err("a water target sample is unavailable on this copy");
-        }
-        let features = t.device.features();
-        for level in t.sampled {
-            let level = level.as_ref().ok_or("a water target sample is unavailable on this copy")?;
-            let texture = level.view.texture();
-            if texture == t.color.texture() || texture == t.depth.texture() {
-                return Err("a water sample aliases an attachment");
-            }
-            if !gfx::program::filterable(texture.format(), features) {
-                return Err("a water sample is not filterable");
-            }
-        }
-        if self.samples_view {
-            if !gfx::program::filterable(t.color_format, features) {
-                return Err("the bound colour is not filterable for the scene stages");
-            }
-            if t.color.texture().format() != t.color_format || !WaterSet::can_copy(t.color, t.size) {
-                return Err("the bound colour cannot be copied for the scene stages");
-            }
-        }
+        self.preflight(t.sampled, t.color, t.color_format, t.depth, t.size, t.device.features())?;
         let guard = crate::native_world_glue::upload(&self.ready, t);
         let gpu = guard.as_ref().ok_or("world geometry unavailable")?;
         let set = gpu.water().ok_or("water materials unavailable")?;
@@ -387,6 +436,46 @@ impl d3d::ExternalPass for WaterViewPass {
 
     fn writes(&self) -> d3d::ExternalWrites {
         d3d::ExternalWrites { color: true, depth_stencil: self.writes_depth }
+    }
+
+    /// Without a scene copy the water's draws join the D3D render pass
+    /// already open on these attachments, their uniforms written ahead of
+    /// them (`ExternalDraws::writes`). A set that samples the view's own
+    /// target needs a copy first: [`WaterViewPass::record_encoded`].
+    fn record_draws(
+        &mut self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
+    ) -> Option<Result<d3d::backend::ExternalDraws, &'static str>> {
+        if self.samples_view {
+            return None;
+        }
+        let (view, sampled) = match self.inputs(t, request) {
+            Ok(inputs) => inputs,
+            Err(why) => return Some(Err(why)),
+        };
+        let mut guard = crate::native_world_glue::upload_on(&self.ready, &t.device, &t.queue);
+        let Some(gpu) = guard.as_mut() else { return Some(Err("world geometry unavailable")) };
+        Some(gpu.water_draws(&t.device, t.color_format, t.depth_format, t.size, &self.selected, &sampled, &view, &self.fogs))
+    }
+
+    /// The set that samples the view: the scene copy and the pass as
+    /// commands in the frame's open encoder, their uniforms staged now
+    /// (`GpuWorld::water_encoded`): no command buffer of their own.
+    fn record_encoded(
+        &mut self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
+    ) -> Option<Result<d3d::backend::ExternalEncoded, &'static str>> {
+        if !self.samples_view {
+            return None;
+        }
+        let (view, sampled) = match self.inputs(t, request) {
+            Ok(inputs) => inputs,
+            Err(why) => return Some(Err(why)),
+        };
+        let mut guard = crate::native_world_glue::upload_on(&self.ready, &t.device, &t.queue);
+        let Some(gpu) = guard.as_mut() else { return Some(Err("world geometry unavailable")) };
+        Some(gpu.water_encoded(
+            &t.device, &t.queue, &t.uploads, &t.color, t.color_format, &t.depth, t.depth_format,
+            t.size, t.copy, &self.selected, &sampled, &view, &self.fogs,
+        ))
     }
 
     fn record_ranges(&mut self, mut t: d3d::ExternalTarget<'_>) -> usize {
@@ -475,6 +564,7 @@ mod tests {
                     view: Some([[0.0; 4]; d3d::VIEW_CONSTANTS]),
                     w_clip: Some(([0.0, 1.0], false)),
                     writes_depth: false,
+                    run: 0,
                 };
                 pass.prepare_copy(&d3d::ExternalTarget {
                     device: &ctx.device,

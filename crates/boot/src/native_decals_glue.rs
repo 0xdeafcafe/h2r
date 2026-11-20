@@ -4,19 +4,30 @@
 //! complete draw resolves; the handoff records it transactionally on both
 //! target copies before suppressing D3D.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
-use d3d::backend::{DrawAdmission, DrawSnapshot, ExternalPlan, ExternalWrites};
+use d3d::backend::{
+    DrawAdmission, DrawSnapshot, ExternalAttachments, ExternalDraws, ExternalPlan, ExternalWrites,
+};
 use d3d::shader::VertexProcessing;
 use gfx::vertex::{PrimitiveType, VertexDataType, VertexRegister};
 use native_render::decal::{Mode, VERTEX_SIZE, Vertex};
 use native_render::decal_gpu::{
-    ClipRect, DecalClip, DecalGpu, DecalTarget, Prepared, ShaderSnapshot, StageExtras,
+    ClipRect, DecalCache, DecalClip, DecalGpu, DecalTarget, PacketTarget, Prepared, ShaderSnapshot,
+    StageExtras,
 };
 use shaders::vsh::VertexUniforms;
 use timeline::native::Stage;
 
-struct Glue;
+/// The per-device caches of the decals' programs, pipelines and texture
+/// groups, shared by every admitted draw.
+type Caches = Arc<Mutex<HashMap<wgpu::Device, DecalCache>>>;
+
+#[derive(Default)]
+struct Glue {
+    caches: Caches,
+}
 
 /// Registers the admission with the device. No callback suppression or custom
 /// geometry/texture loader is installed.
@@ -27,7 +38,7 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
         return;
     }
     let Ok(mut d) = device.lock() else { return };
-    let admission = Arc::new(Glue);
+    let admission = Arc::new(Glue::default());
     d.add_draw_admission(admission.clone());
     feature::native_decals::set_walk_host(Arc::new(Walk {
         device: device.clone(),
@@ -224,6 +235,7 @@ impl DrawAdmission for Glue {
                 prepared,
                 clip: None,
                 gpu: None,
+                caches: self.caches.clone(),
             }),
         ))
     }
@@ -233,6 +245,7 @@ struct DecalPass {
     prepared: Prepared,
     clip: Option<d3d::DepthClip>,
     gpu: Option<DecalGpu>,
+    caches: Caches,
 }
 
 impl DecalPass {
@@ -261,6 +274,54 @@ impl d3d::ExternalPass for DecalPass {
 
     fn prepare_copy(&mut self, t: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
         self.prepare(t)
+    }
+
+    /// The draw's packets appended to the D3D pass open on these
+    /// attachments, from the device's cached program and pipeline: no
+    /// command buffer, render pass, shader or buffer of its own. `None`
+    /// (the isolated recording below) when the guest clipped it all away.
+    fn record_draws(
+        &mut self,
+        t: &ExternalAttachments,
+        request: d3d::ExternalPassRequest,
+    ) -> Option<Result<ExternalDraws, &'static str>> {
+        let refuse = |why: &'static str| {
+            feature::native_decals::note_refusal(why);
+            Some(Err(why))
+        };
+        let Some(clip) = self.clip else {
+            return refuse("issue snapshot");
+        };
+        let clip = DecalClip {
+            range: clip.range,
+            clamp: clip.clamp,
+            w_buffered: clip.w_buffered,
+        };
+        // A decal sampling the target it draws into cannot share its pass.
+        let stage0 = t.stages[0].as_ref();
+        if stage0.is_some_and(|v| [t.color.texture(), t.depth.texture()].contains(&v.texture())) {
+            return refuse("texture is the target");
+        }
+        let target = PacketTarget {
+            color_format: t.color_format,
+            depth_format: t.depth_format,
+            guest_size: request.surface_size,
+            size: t.size,
+            z_scale: request.z_scale,
+            stage0,
+        };
+        let mut caches = self.caches.lock().unwrap_or_else(|e| e.into_inner());
+        let cache = caches.entry(t.device.clone()).or_default();
+        match cache.draws(&t.device, &t.queue, &t.uploads, &self.prepared, clip, &target) {
+            Ok(Some((packets, discards))) => Some(Ok(ExternalDraws {
+                ranges: 1,
+                packets,
+                discards,
+                writes: Vec::new(),
+            })),
+            Ok(None) => None,
+            Err(why) => refuse(why),
+        }
     }
 
     fn record_ranges(&mut self, mut t: d3d::ExternalTarget<'_>) -> usize {

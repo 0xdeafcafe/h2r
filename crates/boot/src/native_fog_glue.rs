@@ -290,6 +290,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             view: None,
             w_clip: None,
             writes_depth,
+            run: u64::from(d.swap_count()).wrapping_add(1),
         });
         drop(planning);
         let reservation = d
@@ -332,9 +333,18 @@ struct FogViewPass {
     /// Whether any of the passes' states writes depth (the write
     /// declaration).
     writes_depth: bool,
+    /// The swap the view is in: the run's key, so attachments are pinned
+    /// once (`d3d::ExternalPass::batch_key`).
+    run: u64,
 }
 
 impl d3d::ExternalPass for FogViewPass {
+    /// Packets need no worker round trip, and the pass samples no guest
+    /// texture, level or slot (its stage textures are its own).
+    fn batch_key(&self) -> Option<u64> {
+        Some(self.run)
+    }
+
     fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
         self.view = Some(*constants);
     }
@@ -360,6 +370,29 @@ impl d3d::ExternalPass for FogViewPass {
 
     fn writes(&self) -> d3d::ExternalWrites {
         d3d::ExternalWrites { color: true, depth_stencil: self.writes_depth }
+    }
+
+    /// The fog's draws join the D3D render pass already open on these
+    /// attachments, their uniforms written ahead of them
+    /// (`ExternalDraws::writes`): no pass or command buffer of their own.
+    /// A refusal here leaves the D3D draws.
+    fn record_draws(
+        &mut self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
+    ) -> Option<Result<d3d::backend::ExternalDraws, &'static str>> {
+        let Some(constants) = self.view else { return Some(Err("fog view constants unavailable")) };
+        if self.w_clip.is_none() {
+            return Some(Err("fog W-buffer clip unavailable"));
+        }
+        let mut guard = crate::native_world_glue::upload_on(&self.ready, &t.device, &t.queue);
+        let Some(gpu) = guard.as_mut() else { return Some(Err("world geometry unavailable")) };
+        let view = ViewInputs {
+            constants,
+            guest_size: request.surface_size,
+            size: t.size,
+            z_scale: request.z_scale,
+            w_clip: self.w_clip,
+        };
+        Some(gpu.fog_draws(&t.device, t.color_format, t.depth_format, t.size, &self.selected, &view, &self.fogs))
     }
 
     fn record_ranges(&mut self, mut t: d3d::ExternalTarget<'_>) -> usize {

@@ -509,8 +509,38 @@ fn target_level_surface(mem: &dyn GuestMemory, index: u32) -> Option<u32> {
     descriptor.checked_add(0x18)
 }
 
-fn slot<'a>(target: &d3d::ExternalTarget<'a>, slot: usize) -> Option<&'a d3d::ExternalColor> {
-    target.slots.get(slot)?.as_ref()
+fn slot(slots: &[Option<d3d::ExternalColor>], slot: usize) -> Option<&d3d::ExternalColor> {
+    slots.get(slot)?.as_ref()
+}
+
+/// What a post pass prepares against on one target copy: the copy's
+/// device, queue and arena, its slots and stages, and the request's depth
+/// scale. Read from an `ExternalTarget` (`record_ranges`) or an
+/// `ExternalAttachments` (`record_encoded`) alike.
+struct PostCopy<'a> {
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    uploads: &'a gfx::ring::SubmissionUploads,
+    slots: &'a [Option<d3d::ExternalColor>],
+    stages: [Option<&'a wgpu::TextureView>; 4],
+    z_scale: f32,
+}
+
+impl<'a> PostCopy<'a> {
+    fn of_target(t: &d3d::ExternalTarget<'a>) -> Self {
+        Self { device: t.device, queue: t.queue, uploads: t.uploads, slots: t.slots, stages: t.stages, z_scale: t.z_scale }
+    }
+
+    fn of_attachments(t: &'a d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest) -> Self {
+        Self {
+            device: &t.device,
+            queue: &t.queue,
+            uploads: &t.uploads,
+            slots: &t.slots,
+            stages: t.stages.each_ref().map(Option::as_ref),
+            z_scale: request.z_scale,
+        }
+    }
 }
 
 fn call_entry(kind: PostCall) -> u32 {
@@ -538,7 +568,9 @@ impl ScreenPass {
         self.effects.program(self.call.egor, key.1, key.2)
     }
 
-    fn record(&self, t: d3d::ExternalTarget<'_>) -> Result<usize, screen_gpu::ScreenRefused> {
+    /// The call on one copy, prepared: the cache's lock is released when
+    /// this returns; the commands hold their own handles.
+    fn prepare(&self, t: PostCopy<'_>) -> Result<screen_gpu::ScreenCommands, screen_gpu::ScreenRefused> {
         let mut screens = self.screens.lock().unwrap_or_else(|e| e.into_inner());
         if !screens.0.ptr_eq(&Arc::downgrade(&self.effects)) {
             screens.1.clear();
@@ -555,13 +587,13 @@ impl ScreenPass {
             ScreenStage::Bitmap { bitmap, image } => images.get(&(bitmap, image)).cloned(),
             _ => None,
         };
-        let bound = slot(&t, SLOT_BOUND as usize).ok_or(screen_gpu::ScreenRefused::Attachment(0))?;
-        let target1 = slot(&t, SLOT_TARGET1 as usize).map(|s| &s.attachment);
-        let convolutions = std::array::from_fn(|i| slot(&t, usize::from(SLOT_STAND_INS) + i).map(|s| &s.attachment));
+        let bound = slot(t.slots, SLOT_BOUND as usize).ok_or(screen_gpu::ScreenRefused::Attachment(0))?;
+        let target1 = slot(t.slots, SLOT_TARGET1 as usize).map(|s| &s.attachment);
+        let convolutions = std::array::from_fn(|i| slot(t.slots, usize::from(SLOT_STAND_INS) + i).map(|s| &s.attachment));
         let target = ScreenTarget {
             device: t.device,
             queue: t.queue,
-            encoder: t.encoder,
+            uploads: t.uploads,
             color: &bound.attachment,
             target1,
             convolutions,
@@ -569,7 +601,11 @@ impl ScreenPass {
             size: bound.size,
             z_scale: t.z_scale,
         };
-        screens.1.encode(target, &draws, self.call.frame.as_ref(), &mut stage_image)
+        screens.1.prepare(target, &draws, self.call.frame.as_ref(), &mut stage_image)
+    }
+
+    fn refused(&self, error: screen_gpu::ScreenRefused) {
+        log_rejection(|| format!("screen effect {:#010x} on live target: {error:?}", self.call.egor.0));
     }
 }
 
@@ -580,13 +616,36 @@ impl d3d::ExternalPass for ScreenPass {
     fn encode(&mut self, _: d3d::ExternalTarget<'_>) {}
 
     fn record_ranges(&mut self, t: d3d::ExternalTarget<'_>) -> usize {
-        match self.record(t) {
-            Ok(count) => count,
+        match self.prepare(PostCopy::of_target(&t)) {
+            Ok(commands) => {
+                commands.record(t.encoder);
+                commands.ranges()
+            }
             Err(error) => {
-                log_rejection(|| format!("screen effect {:#010x} on live target: {error:?}", self.call.egor.0));
+                self.refused(error);
                 0
             }
         }
+    }
+
+    // Target 1, the stand-ins and the view's feedback copy are targets
+    // of the call's own: its passes go in the frame's open encoder.
+    fn record_encoded(
+        &mut self,
+        t: &d3d::backend::ExternalAttachments,
+        request: d3d::ExternalPassRequest,
+    ) -> Option<Result<d3d::backend::ExternalEncoded, &'static str>> {
+        Some(match self.prepare(PostCopy::of_attachments(t, request)) {
+            Ok(commands) => Ok(d3d::backend::ExternalEncoded {
+                ranges: commands.ranges(),
+                passes: commands.passes(),
+                commands: Box::new(move |encoder: &mut wgpu::CommandEncoder| commands.record(encoder)),
+            }),
+            Err(error) => {
+                self.refused(error);
+                Err("screen effect refused on the live target")
+            }
+        })
     }
 }
 
@@ -820,13 +879,44 @@ impl d3d::ExternalPass for GlowPass {
     fn encode(&mut self, _: d3d::ExternalTarget<'_>) {}
 
     fn record_ranges(&mut self, t: d3d::ExternalTarget<'_>) -> usize {
-        let Some(view) = slot(&t, 0) else { return 0 };
-        let intermediates = [1, 2].map(|i| slot(&t, i).map(|s| &s.attachment));
-        let result = self.gpu.lock().unwrap_or_else(|e| e.into_inner()).encode(
+        match self.prepare(PostCopy::of_target(&t)) {
+            Some(commands) => {
+                commands.record(t.encoder);
+                self.plan.draws.len()
+            }
+            None => 0,
+        }
+    }
+
+    // The blur levels are targets of the glow's own: its quads go in the
+    // frame's open encoder.
+    fn record_encoded(
+        &mut self,
+        t: &d3d::backend::ExternalAttachments,
+        request: d3d::ExternalPassRequest,
+    ) -> Option<Result<d3d::backend::ExternalEncoded, &'static str>> {
+        Some(match self.prepare(PostCopy::of_attachments(t, request)) {
+            Some(commands) => Ok(d3d::backend::ExternalEncoded {
+                ranges: self.plan.draws.len(),
+                passes: commands.passes(),
+                commands: Box::new(move |encoder: &mut wgpu::CommandEncoder| commands.record(encoder)),
+            }),
+            None => Err("glow refused on the live target"),
+        })
+    }
+}
+
+impl GlowPass {
+    /// The plan's quads on one copy, prepared; `None` (logged) when
+    /// refused. The cache's lock is released when this returns.
+    fn prepare(&self, t: PostCopy<'_>) -> Option<glow::GlowCommands> {
+        let view = slot(t.slots, 0)?;
+        let intermediates = [1, 2].map(|i| slot(t.slots, i).map(|s| &s.attachment));
+        let result = self.gpu.lock().unwrap_or_else(|e| e.into_inner()).prepare(
             GlowTarget {
                 device: t.device,
                 queue: t.queue,
-                encoder: t.encoder,
+                uploads: t.uploads,
                 color: &view.attachment,
                 entry_sources: t.stages,
                 intermediates,
@@ -835,13 +925,7 @@ impl d3d::ExternalPass for GlowPass {
             },
             &self.plan,
         );
-        match result {
-            Ok(()) => self.plan.draws.len(),
-            Err(error) => {
-                log_rejection(|| format!("glow on live target: {error:?}"));
-                0
-            }
-        }
+        result.map_err(|error| log_rejection(|| format!("glow on live target: {error:?}"))).ok()
     }
 }
 

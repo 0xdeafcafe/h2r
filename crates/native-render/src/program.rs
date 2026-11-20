@@ -1057,6 +1057,15 @@ impl Gpu {
         uploads.write(&self.pixel_buffer, 0, &frame_pixel(pixel, view).to_bytes());
     }
 
+    /// [`Gpu::prepare_with`]'s two blocks as writes ahead of a pass's
+    /// packets (`d3d::backend::ExternalDraws::writes`).
+    pub(crate) fn prepare_writes(&self, view: &ViewInputs, pixel: &PixelUniforms) -> [(wgpu::Buffer, u64, Vec<u8>); 2] {
+        [
+            (self.vertex_buffer.clone(), 0, frame_vertex(&self.program.vertex, view).to_bytes().to_vec()),
+            (self.pixel_buffer.clone(), 0, frame_pixel(pixel, view).to_bytes().to_vec()),
+        ]
+    }
+
     /// Makes the pipeline for these target formats: the world's opaque
     /// state without `state`, a transparent pass's with it.
     pub(crate) fn pipeline(
@@ -1278,6 +1287,23 @@ impl Rigid {
         let tail = VertexUniforms::SIZE - 32;
         uploads.repeat(&self.buffer, 0, self.stride, self.slots.len(), &v[..VIEW_CONSTANTS * 16]);
         uploads.repeat(&self.buffer, tail as u64, self.stride, self.slots.len(), &v[tail..]);
+    }
+
+    /// [`Rigid::prepare`]'s view rows for the slots of `instances` only, as
+    /// writes ahead of a pass's packets. Unknown instances are skipped.
+    pub(crate) fn prepare_writes(
+        &self, view: &ViewInputs, instances: impl IntoIterator<Item = u32>,
+    ) -> Vec<(wgpu::Buffer, u64, Vec<u8>)> {
+        let v = frame_vertex(&self.program.vertex, view).to_bytes();
+        let tail = VertexUniforms::SIZE - 32;
+        let mut writes = Vec::new();
+        for instance in instances {
+            let Some(offset) = self.offset(instance) else { continue };
+            let offset = u64::from(offset);
+            writes.push((self.buffer.clone(), offset, v[..VIEW_CONSTANTS * 16].to_vec()));
+            writes.push((self.buffer.clone(), offset + tail as u64, v[tail..].to_vec()));
+        }
+        writes
     }
 
     /// The dynamic offset of `instance`'s slot.

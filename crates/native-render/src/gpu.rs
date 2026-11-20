@@ -9,7 +9,7 @@ use bytemuck::{Pod, Zeroable};
 use crate::camera::{Mat4, RenderCamera};
 use crate::cull::{CullStats, Frustum, IndirectSlot, SLOT_SIZE, cull, indirect_slots};
 use crate::fog_gpu::FogSet;
-use crate::light_gpu::{LightDraw, LightSet};
+use crate::light_gpu::{LightDraw, LightSet, LightTarget};
 use crate::light_look::LightStage;
 use crate::program::{MaterialUse, ProgramSet, ViewInputs};
 use crate::world::{LightmapKey, Owner, World, WorldDraw, WorldVertex};
@@ -665,6 +665,122 @@ impl GpuWorld {
         set.draw(device, &mut pass, color_format, depth_format, copy.as_ref(), selected, sampled)
     }
 
+    /// [`GpuWorld::encode_water`] as packets for the D3D pass already open
+    /// on these attachments, for a set that does not sample the view's own
+    /// target: one packet per selected part per pass, the render targets'
+    /// views `sampled` in the set's `targets` order, and the uniforms
+    /// ([`WaterSet::prepare`]'s bytes for the selected materials) as writes
+    /// ahead of them.
+    #[allow(clippy::too_many_arguments)]
+    pub fn water_draws(
+        &mut self,
+        device: &wgpu::Device,
+        color_format: wgpu::TextureFormat,
+        depth_format: wgpu::TextureFormat,
+        target_size: (u32, u32),
+        selected: &[(Owner, u8)],
+        sampled: &[Option<wgpu::TextureView>],
+        view: &ViewInputs,
+        fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
+    ) -> Result<d3d::backend::ExternalDraws, &'static str> {
+        let Self { water, packet_pipelines, program_vertices, indices, .. } = self;
+        let set = water.as_mut().ok_or("water materials unavailable")?;
+        if set.samples_view {
+            return Err("the water samples the view's own target");
+        }
+        set.pipelines(device, color_format, depth_format);
+        if packet_pipelines.len() > 4096 {
+            packet_pipelines.clear();
+        }
+        let items = set.items(device, color_format, depth_format, None, selected, sampled)?;
+        let packets = crate::water_gpu::item_packets(&items, packet_pipelines, program_vertices, indices, target_size)?;
+        let writes = set.writes(view, fogs, selected)?;
+        // Conservative: the programs' alpha tests and kill sources discard.
+        Ok(d3d::backend::ExternalDraws { ranges: selected.len(), packets, discards: true, writes })
+    }
+
+    /// [`GpuWorld::prepare_water`] and [`GpuWorld::encode_water`] as
+    /// commands for the frame's open encoder (`d3d::ExternalPass::
+    /// record_encoded`): the uniforms staged now and copied into their
+    /// buffers by the commands, the view copy's scratch texture made now
+    /// and filled by them, then the pass. The commands only record, so
+    /// they run any number of times.
+    #[allow(clippy::too_many_arguments)]
+    pub fn water_encoded(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        uploads: &gfx::ring::SubmissionUploads,
+        color: &wgpu::TextureView,
+        color_format: wgpu::TextureFormat,
+        depth: &wgpu::TextureView,
+        depth_format: wgpu::TextureFormat,
+        target_size: (u32, u32),
+        target_copy: d3d::TargetCopy,
+        selected: &[(Owner, u8)],
+        sampled: &[Option<wgpu::TextureView>],
+        view: &ViewInputs,
+        fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
+    ) -> Result<d3d::backend::ExternalEncoded, &'static str> {
+        let Self { water, program_vertices, indices, .. } = self;
+        let set = water.as_mut().ok_or("water materials unavailable")?;
+        set.pipelines(device, color_format, depth_format);
+        let scene = set.samples_view.then(|| set.scene_copy(device, color, target_copy));
+        let items = set.items(device, color_format, depth_format, scene.as_ref().map(|s| &s.view), selected, sampled)?;
+        if items.iter().any(|it| (u64::from(it.first) + u64::from(it.count)) * 4 > indices.size()) {
+            return Err("a selected water part reaches past the indices");
+        }
+        let copies: Vec<(wgpu::Buffer, u64, wgpu::Buffer, u64, u64)> = set
+            .writes(view, fogs, selected)?
+            .into_iter()
+            .map(|(dst, offset, bytes)| {
+                let (src, at) = uploads.stage(device, queue, &bytes);
+                (src, at, dst, offset, bytes.len() as u64)
+            })
+            .collect();
+        let (color, depth) = (color.clone(), depth.clone());
+        let (vertices, indices) = (program_vertices.clone(), indices.clone());
+        let has_stencil = depth_format.has_stencil_aspect();
+        let ranges = selected.len();
+        let commands = move |encoder: &mut wgpu::CommandEncoder| {
+            for (src, at, dst, offset, len) in &copies {
+                encoder.copy_buffer_to_buffer(src, *at, dst, *offset, *len);
+            }
+            if let Some(scene) = &scene {
+                encoder.copy_texture_to_texture(scene.from.as_image_copy(), scene.to.as_image_copy(), scene.extent);
+            }
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("native water"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &color,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth,
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
+                    stencil_ops: has_stencil
+                        .then_some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_viewport(0.0, 0.0, target_size.0 as f32, target_size.1 as f32, 0.0, 1.0);
+            pass.set_vertex_buffer(0, vertices.slice(..));
+            pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
+            for it in &items {
+                pass.set_pipeline(&it.pipeline);
+                pass.set_bind_group(0, &it.uniforms, &[]);
+                pass.set_bind_group(1, &it.textures, &[]);
+                pass.set_blend_constant(it.blend);
+                pass.draw_indexed(it.first..it.first + it.count, 0, 0..1);
+            }
+        };
+        Ok(d3d::backend::ExternalEncoded { ranges, passes: 1, commands: Box::new(commands) })
+    }
+
     /// The fog uniforms for one view ([`FogSet::prepare`]), through the
     /// submission's upload arena (the reservation records into an
     /// isolated encoder, where a queue write would escape cancellation).
@@ -737,6 +853,29 @@ impl GpuWorld {
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
         set.draw(&mut pass, color_format, depth_format, selected)
     }
+    /// [`GpuWorld::prepare_fog`] and [`GpuWorld::encode_fog`] as packets for
+    /// the D3D pass already open on these attachments, the uniforms as
+    /// writes ahead of them ([`FogSet::draws`]).
+    #[allow(clippy::too_many_arguments)]
+    pub fn fog_draws(
+        &mut self,
+        device: &wgpu::Device,
+        color_format: wgpu::TextureFormat,
+        depth_format: wgpu::TextureFormat,
+        target_size: (u32, u32),
+        selected: &[(Owner, u8)],
+        view: &ViewInputs,
+        fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
+    ) -> Result<d3d::backend::ExternalDraws, &'static str> {
+        let Self { fog, packet_pipelines, program_vertices, indices, .. } = self;
+        let set = fog.as_mut().ok_or("fog materials unavailable")?;
+        set.pipelines(device, color_format, depth_format);
+        if packet_pipelines.len() > 4096 {
+            packet_pipelines.clear();
+        }
+        set.draws(packet_pipelines, program_vertices, indices, color_format, depth_format, target_size, selected, view, fogs)
+    }
+
     /// Draws lights with `set` from now on.
     pub fn set_lights(&mut self, set: LightSet) {
         self.lights = Some(set);
@@ -747,21 +886,22 @@ impl GpuWorld {
         self.lights.as_ref()
     }
 
-    /// Records one run of lights' draws over the world's parts (each
-    /// draw's index ranges from the active gathered cluster items),
-    /// added into the target over the depth
-    /// (loaded and kept), in order. Nothing without [`Self::set_lights`].
-    /// Returns the bundles and their range count.
+    /// One run of lights' draws over the world's parts (each draw's index
+    /// ranges from the active gathered cluster items) as packets for the
+    /// D3D pass open on `target`, added over its depth, in order, within
+    /// `scissor` ([`LightSet::draws`]). Refused without
+    /// [`Self::set_lights`].
     pub fn prepare_lights(
         &mut self,
-        target: &d3d::ExternalTarget<'_>,
+        target: &LightTarget<'_>,
+        scissor: [u32; 4],
         view: &ViewInputs,
         draws: &[LightDraw<'_>],
         stage_image: &mut dyn FnMut(usize, LightStage) -> Option<Image>,
         gel_image: &mut dyn FnMut(u32) -> Option<Image>,
-    ) -> Option<crate::light_gpu::LightBundles> {
-        self.lights.as_mut()?.bundles(
-            target, &self.program_vertices, &self.indices, view, draws, stage_image, gel_image,
+    ) -> Result<d3d::backend::ExternalDraws, &'static str> {
+        self.lights.as_mut().ok_or("light passes unavailable")?.draws(
+            target, &self.program_vertices, &self.indices, view, scissor, draws, stage_image, gel_image,
         )
     }
 
