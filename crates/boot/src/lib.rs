@@ -34,7 +34,6 @@ pub mod d3d_diag;
 pub mod d3d_glue;
 pub mod debug_menu_glue;
 pub mod dsound_glue;
-pub mod effect_census;
 pub mod fallback;
 pub mod fov_row;
 pub mod game_setup_help;
@@ -2035,16 +2034,6 @@ fn run_configured(
     if let Some(note) = d3d_glue::frame_stats_gpu_note(frame_stats && d3d_calls.is_some(), gpu) {
         eprintln!("{note}");
     }
-    // H2_EFFECT_CENSUS=1: a line per new timed light (EXPLOSION for a
-    // grenade-sized one) and an exit summary (effect_census.rs).
-    let mut effect_census =
-        effect_census::requested_by(std::env::var(effect_census::ENV).ok().as_deref()).then(|| {
-            eprintln!(
-                "effects: census on ({}): a line per new timed light, a summary at exit",
-                effect_census::ENV
-            );
-            (effect_census::Census::new(), u64::MAX)
-        });
     // H2_PERF_FROM=N (cli built with `--features perf`): open
     // `perf::Session::from_env()` (H2_PROFILE, H2_TIMELINE) at present N;
     // H2_PERF_FROM=level at the first present after the level loaded
@@ -2147,16 +2136,6 @@ fn run_configured(
                 .is_err()
         {
             input_errors += 1;
-        }
-        if let Some((census, last)) = &mut effect_census {
-            let present = d3d_diag::presents();
-            if present != *last {
-                *last = present;
-                let mem = loaded.runtime.memory();
-                for line in census.at_present(&*mem, present) {
-                    eprintln!("{line}");
-                }
-            }
         }
         if let Some(h) = &harness {
             h.after_slice(&loaded.runtime, d3d_diag::presents());
@@ -2354,9 +2333,6 @@ fn run_configured(
     }
     if let Some(i) = &d3d_calls {
         eprintln!("{}", d3d_glue::describe(i));
-    }
-    if let Some((census, _)) = &effect_census {
-        eprintln!("{}", census.summary());
     }
     if let Some(s) = fallback::STATS.lock().unwrap().as_ref() {
         let first: Vec<String> = s.first.iter().map(|f| format!("{:#x}", f.0)).collect();
