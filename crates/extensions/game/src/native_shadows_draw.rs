@@ -120,7 +120,6 @@ impl Range {
         let draw = self.draw.for_copy(copy);
         let draw = draw.as_ref();
         if &ctx.device != device
-            || copy != d3d::TargetCopy::Reference
             || target.size != guest_size
             || target.size != (draw.target.width, draw.target.height)
             || (draw.state.render.stencil.enable

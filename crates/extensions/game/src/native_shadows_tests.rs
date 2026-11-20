@@ -193,11 +193,15 @@ fn layer11_uses_only_its_map_and_preserves_rgb_stencil_and_alpha_test() {
         queue: ctx.queue.clone(),
         caps: ctx.caps,
     }, false);
-    for (map, stencil, alpha_test, want) in [
-        (&light, 3, false, 255),
-        (&blocked, 3, false, 0),
-        (&light, 4, false, 64),
-        (&blocked, 3, true, 64),
+    // A locked retail-size single-copy window submits the display target.
+    // Both target policies can use a receiver drawn at its exact guest extent.
+    use d3d::TargetCopy::{Display, Reference};
+    for (map, stencil, alpha_test, want, copy) in [
+        (&light, 3, false, 255, Reference),
+        (&light, 3, false, 255, Display),
+        (&blocked, 3, false, 0, Reference),
+        (&light, 4, false, 64, Reference),
+        (&blocked, 3, true, 64, Reference),
     ] {
         let mut d = receiver();
         d.state.render.alpha_test_enable = alpha_test;
@@ -224,7 +228,7 @@ fn layer11_uses_only_its_map_and_preserves_rgb_stencil_and_alpha_test() {
         )
         .unwrap();
         let (packets, _) = range.prepare(
-            &ctx.device, d3d::TargetCopy::Reference, (16, 16), target,
+            &ctx.device, copy, (16, 16), target,
             [Some(&fallback.view), None, None, None],
         ).unwrap();
         assert_eq!(packets.len(), 1);

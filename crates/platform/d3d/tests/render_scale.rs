@@ -2002,6 +2002,7 @@ fn a_frame_covered_by_a_small_level_shows_no_lighting_difference() {
 #[test]
 fn forced_widescreen_at_guest_resolution_preserves_the_selected_readback_policy() {
     let Some(ctx) = context() else { return };
+    let (w, h) = (640, 480);
     let wide = (1920, 1080);
     for single in [false, true] {
         let mut b = ScaledBackend::with_single_copy(
@@ -2010,7 +2011,9 @@ fn forced_widescreen_at_guest_resolution_preserves_the_selected_readback_policy(
         let width = Arc::new(AtomicU32::new(1440));
         let current = width.clone();
         b.follow_presentation(move |_| (current.load(Ordering::Relaxed), 1080));
-        let (mut d, mut m) = create(b, UploadPolicy::Tracked);
+        let (mut d, mut m) = create_with(b, UploadPolicy::Tracked, |params| {
+            (params.width, params.height) = (w, h);
+        });
         let bb = d.back_buffer().unwrap();
         assert!(d.backend.view_surface(&bb).is_none());
         width.store(wide.0, Ordering::Relaxed);
@@ -2022,14 +2025,14 @@ fn forced_widescreen_at_guest_resolution_preserves_the_selected_readback_policy(
         d.set_ui_fit(&mut m, d3d::backend::UiFit::about(wide, [0., 0.]));
         flat_quad(&mut d, &mut m, (24., 8., 48., 40.), 0xffff_ffff);
 
-        let lit = |bytes: &[u8], x: u32| bytes[((20 * W + x) * 4) as usize] != 0;
-        let read = d.backend.read_surface(bb, gfx::D3DFormat::LinA8R8G8B8, W, H,
-            d3d::GuestLayoutKind::Linear { pitch: W * 4 }).unwrap();
+        let lit = |bytes: &[u8], x: u32| bytes[((20 * w + x) * 4) as usize] != 0;
+        let read = d.backend.read_surface(bb, gfx::D3DFormat::LinA8R8G8B8, w, h,
+            d3d::GuestLayoutKind::Linear { pitch: w * 4 }).unwrap();
         assert_eq!((lit(&read, 20), lit(&read, 44)), (single, !single));
         if !single {
             let v = d.backend.view_surface(&bb).unwrap();
             let (px, extent) = pixels(d.backend.view_mut(), v);
-            assert_eq!(extent, (W, H));
+            assert_eq!(extent, (w, h));
             assert!(lit(&px, 20) && !lit(&px, 44));
         }
         let stats = d.backend.stats();
