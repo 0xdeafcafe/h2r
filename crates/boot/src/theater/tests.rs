@@ -30,15 +30,16 @@ fn theater_replays_checkpoints_reports_first_divergence_and_registers_controls()
         rec.checkpoint(&g);
     }
     rec.finish(90, true).unwrap();
-    let open = |facts| {
+    let open = |facts, render_every| {
         Session::open(
             None,
             Some(Replay {
                 path: file.clone(),
-                render_every: 0,
+                render_every,
                 speed: 1.,
                 seek_tick: 0,
                 paused_at_target: false,
+                presentation: Presentation::default(),
                 restart: dir.join("restart"),
                 window_closed: None,
             }),
@@ -47,12 +48,12 @@ fn theater_replays_checkpoints_reports_first_divergence_and_registers_controls()
             &opts,
         )
     };
-    let wrong = open(Facts {
-        stamp: "other image".into(),
-        ..facts()
-    });
+    let wrong = open(
+        Facts { stamp: "other image".into(), ..facts() },
+        0,
+    );
     assert!(wrong.is_err_and(|e| e.to_string().contains("image stamp differs")));
-    let replay = || open(facts()).unwrap().unwrap();
+    let replay = || open(facts(), 0).unwrap().unwrap();
     let matching = replay();
     for _ in 0..60 {
         matching.checkpoint(&g);
@@ -99,12 +100,28 @@ fn theater_replays_checkpoints_reports_first_divergence_and_registers_controls()
     assert!(call(api::SPEED, json!({"speed":5}))["error"].is_object());
     assert_eq!(
         call(api::CAMERA, json!({"mode":"free"}))["error"]["message"],
-        "unavailable until keyframes"
+        "playback has no rendered view"
     );
     assert_eq!(
         call(api::CAMERA, json!({"mode":"default"}))["result"]["camera"],
         "default"
     );
+    let rendered = open(facts(), 1).unwrap().unwrap();
+    rendered.add_methods(&a);
+    assert_eq!(
+        call(api::CAMERA, json!({"mode":"orbit","player":"A","zoom":2}))["result"]["camera_player"],
+        "A"
+    );
+    assert_eq!(
+        call(api::CAMERA, json!({"mode":"first-person","player":"A"}))["result"]["camera"],
+        "first-person"
+    );
+    rendered.lock().header.meta.source = Source::Local;
+    assert_eq!(
+        call(api::CAMERA, json!({"mode":"first-person"}))["error"]["message"],
+        "first person requires an exact host film"
+    );
+    player.add_methods(&a);
     for _ in 0..30 {
         player.checkpoint(&g);
     }

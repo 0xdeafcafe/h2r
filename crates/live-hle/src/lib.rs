@@ -325,6 +325,11 @@ impl Hle {
             .set_accounts(accounts);
         Ok(n)
     }
+    /// The account signed into Live on this controller, when it has a key.
+    pub fn signed_in_account(&self, controller: u32) -> Option<(live_proto::Xuid, String)> {
+        self.lock().signed_in_account(controller)
+    }
+
     /// The in-game sign-in prompt, while a logon waits for a code
     /// ([`signin`]). Takes in a finished server call; no guest memory.
     pub fn signin(&self) -> Option<signin::Prompt> {

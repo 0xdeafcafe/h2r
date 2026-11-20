@@ -1940,16 +1940,26 @@ directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
 | `theater.state` | `{}` | Transport state, or `{id:null}` with no player |
 | `theater.pause` | `{}` | Holds guest execution and reports state |
 | `theater.speed` | `{"speed":0.5}` | Sets host pacing from 0.25 to 4 times realtime |
-| `theater.seek` | `{"tick":900}` | Requests restart and unpaced replay to that tick. Direct socket clients reconnect after the restart |
-| `theater.camera` | `{"mode":"default"}` | Returns state. Other modes return `UNAVAILABLE` with `unavailable until keyframes` |
+| `theater.seek` | `{"tick":900}`, optionally `"clip_marks":[300,null]` | Requests restart and unpaced replay to that tick, carrying camera and timeline state. Direct socket clients reconnect after the restart |
+| `theater.camera` | `{"mode":"orbit","player":"Player","look":[0.2,-0.1],"zoom":-1}` | Sets the camera and returns transport state |
 
 The rendered player starts at the clip's first tick and loops at its end.
 Its overlay uses the player's agent socket for transport and
 `cheat.set {"name":"hide_hud","value":true}` for the HUD. A paused player
-accepts the HUD setting and applies it when rendering resumes.
+accepts HUD and camera changes and applies them to the next rendered frame.
+
+Camera modes are `free`, `orbit`, `follow`, `first-person` and `default`.
+`default` uses the retail view. Rendered playback starts in `free`.
+`orbit`, `follow` and `first-person` accept an optional `player` name,
+defaulting to the first spawned player. `look` applies optional yaw and
+pitch offsets in radians to `free` or `orbit`. `movement` applies
+optional strafe, forward and rise distances in world units to `free`.
+`zoom` changes the `orbit` radius in world units. First person requires a
+host film. `--render-every 0` only accepts `default`.
 
 Transport state carries `id`, `tick`, `length_ticks`, `paused`, `speed`,
-`seeking` and `camera`, alongside the agent's usual `at` stamp. Tick zero
+`seeking`, `camera`, an optional `camera_player` and discovered kill
+marker ticks in `kills`, alongside the agent's usual `at` stamp. Tick zero
 is boot. A paused seek holds at its target until play. The HLE compares
 the recorded call index and game-thread hash samples during fast-forward.
 
