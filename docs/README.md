@@ -175,7 +175,8 @@ every page here and the plan to bring them to those rules.
 - [map-pack.md](game/map-pack.md): the Multiplayer Map Pack disc, `h2 import-mappack` and how 1.0 lists its maps
 - [map-select.md](game/map-select.md): Change Map categories for Halo 2, Map Pack, Mods and Halo: CE, with separate retail and mod slots
 - [mods-ui-review.md](game/mods-ui-review.md): offline Mods browser, pack and detail review, with integrated slot behaviour and remaining game checks
-- [high-framerate.md](game/high-framerate.md): 60 and 120 fps keeping the 30 Hz tick exact (`H2_FPS`); the determinism harness is built
+- [high-framerate.md](game/high-framerate.md): 60 and 120 fps with the 30 Hz tick exact (`H2_FPS`): the determinism harness, the interpolated replay and reprojection (built, not yet run in game)
+- [notes/high-framerate.md](game/notes/high-framerate.md): prior art and measurements behind it
 - [theater.md](game/theater.md): design for saved films, free camera and spectating; the first slice is built on the film format below
 - [film-format.md](game/film-format.md): the `.h2film` container a host records and Theater replays: layout, keyframes, seeking, determinism checks
 - [forge.md](game/forge.md): design for Forge on Halo 2 multiplayer maps (not built)
