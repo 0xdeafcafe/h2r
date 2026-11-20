@@ -293,16 +293,15 @@ fn dedup(failures: Vec<String>) -> Vec<String> {
 
 #[test]
 fn viewer_skips_follow_the_light_profile_and_independent_switches() {
-    use engine::points::{LIGHT_RECORD_UPDATE, PREDICT_RESOURCES, SOUND_SUBMIX_FX};
-    let points = [&LIGHT_RECORD_UPDATE, &PREDICT_RESOURCES, &SOUND_SUBMIX_FX];
+    use engine::points::{PREDICT_RESOURCES, SOUND_SUBMIX_FX};
+    let points = [&PREDICT_RESOURCES, &SOUND_SUBMIX_FX];
     for (light, spec, expected) in [
-        (false, "", [false; 3]),
-        (false, "impl.sim=on", [false; 3]),
-        (true, "", [true; 3]),
-        (true, "-impl.sim.static-light", [false, true, true]),
-        (true, "-impl.sim.observer-resources", [true, false, true]),
-        (true, "-impl.sim.submix-fx", [true, true, false]),
-        (true, "-impl.sim", [false; 3]),
+        (false, "", [false; 2]),
+        (false, "impl.sim=on", [false; 2]),
+        (true, "", [true; 2]),
+        (true, "-impl.sim.observer-resources", [false, true]),
+        (true, "-impl.sim.submix-fx", [true, false]),
+        (true, "-impl.sim", [false; 2]),
     ] {
         let mut registry = hooks::Registry::new(hooks::Switches::parse(spec).unwrap());
         super::register_viewer_skips(&mut registry, light).unwrap();

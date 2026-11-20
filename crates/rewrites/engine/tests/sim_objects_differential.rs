@@ -320,6 +320,7 @@ fn cleanup(target: u32) -> u32 {
         t if let Some(&(_, pop)) = STEP_CALLEES.iter().find(|c| c.0 == t) => pop,
         // Slice 4's callouts.
         t if let Some(&(_, pop)) = SLICE_4_CALLEES.iter().find(|c| c.0 == t) => pop,
+        t if let Some(&(_, pop)) = SLICE_5_CALLEES.iter().find(|c| c.0 == t) => pop,
         _ => panic!("no stub for callee {target:#x}: add its cleanup"),
     }
 }
@@ -335,6 +336,9 @@ fn mutates(target: u32) -> bool {
 /// The transfer a stub returns: the callee's effects on the state at a
 /// callout, the same in every run.
 fn answer(cpu: &mut Cpu, g: &mut Guest, target: u32, n: usize, case: u32) {
+    if slice_5_answer(cpu, g, target) {
+        return;
+    }
     let sp = cpu.gpr[4];
     let ret = g.u32(sp).unwrap();
     if target == STACK_PROBE {
@@ -480,6 +484,8 @@ std::thread_local! {
 const FLOAT_OPT_OUT: &[(u32, &str)] = &[
     (0x000b_d090, "OBJECT_NODE_MATRICES: the body does not keep retail's XMM state (slice 4)"),
     (0x000b_c820, "OBJECT_POST_UPDATE: fuses OBJECT_NODE_MATRICES (slice 4)"),
+    (0x000c_1400, "LIGHTS_UPDATE: the body does not keep retail's XMM state (slice 5)"),
+    (0x000c_0c80, "LIGHT_RECORD_UPDATE: the body does not keep retail's XMM state (slice 5)"),
 ];
 
 /// Whether `root` compares the float state.
@@ -1626,8 +1632,6 @@ fn dressed_step(point: &points::Point, cases: u32) {
     }
 }
 
-#[test]
-
 // Slice 4: the post-update shell (`bc5e0`, `bd090`, `bdef0`, `bef30`,
 // `be1d0`) and the transform setters and getters (`b7430`, `b7740`,
 // `b9dd0`, `b9fc0`, `ba1d0`). Their roots run over the pool dressed with
@@ -1879,6 +1883,224 @@ fn shell(point: &points::Point, cases: u32) {
     }
 }
 
+// Slice 5: lights. A synthetic light datum array of eight elements whose
+// owners and marker parents are pool objects, one light definition with
+// the three modulation blocks, and a game-time record; the roots are the
+// walk, the record update, its modulation step and the three list
+// operations. The light lists, the datum iterator and the cluster
+// queries stay callouts: the iterator is answered from the synthetic
+// bitmap, so the walk visits the lights retail would. No light has a
+// function source (`+54` is `ffff`), so the record update's `bab40` path
+// and the link's owner-marker path (`b8c40`, `16640f`, `b8d30`) are not
+// reached here; the marker-parent path is.
+
+/// Every guest function a slice 5 body calls that no earlier table
+/// lists, with the bytes its `ret` pops (docs/engine/object-update.md,
+/// "Slice 5 bodies").
+const SLICE_5_CALLEES: &[(u32, u32)] = &[
+    (0x16bc00, 0),
+    (0x1cae40, 8),
+    (0xbad50, 0),
+    (0x131d60, 8),
+    (0x17ca10, 0),
+    (0xb9ce0, 0),
+    (0xb9d20, 0),
+    (0x13b390, 8),
+    (0x13bc00, 4),
+    (0xc0840, 8),
+    (0xb8c40, 0),
+    (0x16640f, 16),
+    (0xc28b0, 0),
+    (0x16a8e0, 28),
+    (0x11bed0, 0),
+    (0x1cac60, 36),
+    (0x16ba40, 0),
+];
+
+const LIGHT_ARRAY_GLOBAL: u32 = 0x004e_030c;
+const LIGHT_ARRAY: u32 = 0x0066_0000;
+const LIGHT_DATA: u32 = 0x0066_1000;
+const LIGHT_BITS: u32 = 0x0066_2000;
+const LIGHT_TAGS: u32 = 0x0066_3000;
+const LIGHT_DEF: u32 = 0x0066_4000;
+const LIGHT_BLOCKS: u32 = 0x0066_5000;
+const LIGHT_TIME: u32 = 0x0066_6000;
+const LIGHT_STRIDE: u32 = 0x110;
+const LIGHT_COUNT: u32 = 8;
+
+fn light_handle(i: u32) -> u32 {
+    ((0x0100 + i) << 16) | i
+}
+
+fn light(i: u32) -> u32 {
+    LIGHT_DATA + LIGHT_STRIDE * i
+}
+
+/// The datum iterator `16bc00(array: ecx, start: edx) -> eax` (the next
+/// live index at or after `start`, or none), answered from the synthetic
+/// array when a slice 5 body calls it. False for every other callout,
+/// which `answer` handles.
+fn slice_5_answer(cpu: &mut Cpu, g: &mut Guest, target: u32) -> bool {
+    let sp = cpu.gpr[4];
+    let ret = g.u32(sp).unwrap();
+    match (target, ret) {
+        (0x16bc00, 0xc1420 | 0xc32da) => {
+            let array = cpu.gpr[1];
+            let high = g.u32(array + 0x38).unwrap();
+            let bits = g.u32(array + 0x48).unwrap();
+            let start = cpu.gpr[2];
+            cpu.gpr[0] = (start..high)
+                .find(|&i| g.u32(bits + 4 * (i >> 5)).unwrap() & (1 << (i & 31)) != 0)
+                .unwrap_or(u32::MAX);
+            cpu.gpr[1] = 0x1600_0000 | start;
+            cpu.gpr[2] = high;
+            cpu.gpr[4] = sp + 4;
+            cpu.eip = ret;
+            true
+        }
+        _ => false,
+    }
+}
+
+/// The light array, its definition and the game time, varied by `case`.
+fn lights(g: &mut Guest, case: u32) {
+    word(g, LIGHT_ARRAY_GLOBAL, LIGHT_ARRAY);
+    word(g, LIGHT_ARRAY + 0x24, LIGHT_STRIDE);
+    word(g, LIGHT_ARRAY + 0x38, [0, 3, 5, 8, 8, 6][case as usize % 6]);
+    word(g, LIGHT_ARRAY + 0x44, LIGHT_DATA);
+    word(g, LIGHT_ARRAY + 0x48, LIGHT_BITS);
+    word(g, LIGHT_BITS, [0, 0b101, 0b1_1110, 0xff, 0b1001_0110, 0b10_0001][case as usize % 6]);
+    // Objects are ready (the byte `c0c80` tests before a link) in odd
+    // cases.
+    byte(g, PHASE, (case % 2) as u8);
+    word(g, points::GAME_TIME.base, LIGHT_TIME);
+    g.set_u16(LIGHT_TIME + 2, 30).unwrap();
+    f32w(g, LIGHT_TIME + 4, 1.0 / 30.0);
+    word(g, LIGHT_TIME + 8, 1000 + case);
+    // Tag 0: the pool objects' (empty) definition; tag 1: the light's.
+    word(g, points::TAG_ENTRIES.base, LIGHT_TAGS);
+    word(g, LIGHT_TAGS + 8, LIGHT_DEF + 0x800);
+    word(g, LIGHT_TAGS + 0x18, LIGHT_DEF);
+    // Definition flags: bit 3, the cluster query's bit 15.
+    word(g, LIGHT_DEF, [0x8000, 0x8008, 0, 0x8008, 0x8000, 8][case as usize % 6]);
+    f32w(g, LIGHT_DEF + 8, 0.25);
+    f32w(g, LIGHT_DEF + 0xc, 2.0);
+    for (i, off) in (0x40..0x78).step_by(4).enumerate() {
+        f32w(g, LIGHT_DEF + off, [0.5, 1.5, -0.25, 0.0, 0.75][(i + case as usize) % 5]);
+    }
+    f32w(g, LIGHT_DEF + 0xb0, 1.0);
+    g.set_u16(LIGHT_DEF + 0xb6, 3).unwrap();
+    // The modulation blocks at `+c0`: flags, then three (count,
+    // function) pairs.
+    let counts = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 1), (1, 0, 1)][case as usize % 6];
+    word(g, LIGHT_DEF + 0xc0, case % 2);
+    word(g, LIGHT_DEF + 0xc4, counts.0);
+    word(g, LIGHT_DEF + 0xc8, LIGHT_BLOCKS);
+    word(g, LIGHT_DEF + 0xcc, counts.1);
+    word(g, LIGHT_DEF + 0xd0, LIGHT_BLOCKS + 0x40);
+    word(g, LIGHT_DEF + 0xd4, counts.2);
+    word(g, LIGHT_DEF + 0xd8, LIGHT_BLOCKS + 0x80);
+    word(g, LIGHT_BLOCKS + 4, LIGHT_BLOCKS + 0x100);
+    byte(g, LIGHT_BLOCKS + 0x101, if case % 3 == 1 { 0x10 } else { 0 });
+    f32w(g, LIGHT_BLOCKS + 0x104, 0.25);
+    f32w(g, LIGHT_BLOCKS + 0x108, 0.75);
+    for i in 0..LIGHT_COUNT {
+        let l = light(i);
+        g.set_u16(l, (light_handle(i) >> 16) as u16).unwrap();
+        // Flags: active, linked, timed, and the two path bits.
+        g.set_u16(l + 2, [0x0a, 0x02, 0x08, 0x1a, 0x00, 0x0b, 0x12, 0x0e][((i + case) % 8) as usize]).unwrap();
+        word(g, l + 4, 0xe001_0001);
+        word(g, l + 0x14, 1000 - 50 * i);
+        for (k, v) in [1.0f32, -2.0, 0.5].into_iter().enumerate() {
+            f32w(g, l + 0x18 + 4 * k as u32, v * (i + 1) as f32);
+        }
+        f32w(g, l + 0x24, [2.0, 0.0, -1.0, 4.0][((i + case) % 4) as usize]);
+        g.set_u16(l + 0x48, if (i + case) % 5 == 2 { 3 } else { u16::MAX }).unwrap();
+        // Owner (a biped or vehicle in some cases, so the damage
+        // attenuation runs), marker parent, both or neither.
+        let owner = match (i + case) % 4 {
+            0 => handle(1),
+            1 => handle(13 - case % 13),
+            _ => u32::MAX,
+        };
+        word(g, l + 0x4c, owner);
+        g.set_u16(l + 0x54, u16::MAX).unwrap();
+        word(g, l + 0x58, if (i + case) % 3 == 1 { handle(3) } else { u32::MAX });
+        g.set_u16(l + 0x5c, 0).unwrap();
+        for k in 0..9 {
+            f32w(g, l + 0x60 + 4 * k, 0.1 * (k + i) as f32);
+        }
+        f32w(g, l + 0xcc, [1.0, 0.5, 0.0][((i + case) % 3) as usize]);
+        f32w(g, l + 0xd0, 0.5);
+    }
+    // The owners' damage amount the attenuation reads (body `+2b0`).
+    for slot in 0..SLOTS {
+        f32w(g, RECORDS + BODY * slot + 0x2b0, [0.0, 0.4, 1.5][(slot % 3) as usize]);
+    }
+}
+
+/// The arguments of a slice 5 root, on the planted stack and in registers.
+fn light_entry(g: &mut Guest, cpu: &mut Cpu, root: u32, case: u32) {
+    let i = case % LIGHT_COUNT;
+    let h = light_handle(i);
+    let l = light(i);
+    match root {
+        r if r == points::LIGHT_UNLINK.base => cpu.gpr[0] = h,
+        r if r == points::LIGHT_RECORD_PHASE.base => {
+            cpu.gpr[0] = l + 0xd4;
+            cpu.gpr[1] = LIGHT_DEF + 0xc0;
+            word(g, STACK + 4, h);
+            f32w(g, STACK + 8, 0.5);
+            word(g, STACK + 12, l + 0xec);
+            word(g, STACK + 16, l + 0xf0);
+        }
+        _ => {
+            word(g, STACK + 4, h);
+            word(g, STACK + 8, case % 2);
+        }
+    }
+}
+
+/// [`transcripts`] over the light array.
+fn lit(point: &points::Point, cases: u32) {
+    let Some((image, ram)) = image() else { return };
+    let table: &Table = &*sim_objects::TABLE;
+    let mut code = image.original();
+    code.prime(point.base);
+    for body in table.bodies() {
+        code.prime(body.point.base);
+    }
+    assert!(code.insn(point.base).is_some(), "{}", point.name);
+    assert!(table.owns(point.base), "{} is a body", point.name);
+    FLOATS.with(|x| x.set(floats(point.base)));
+    let mut h = Harness { code: &mut code, table, root: point.base, case: 0 };
+    for case in 0..cases {
+        h.case = case;
+        let fresh = || {
+            let (mut cpu, mut g) = start(ram, point.base, case);
+            lights(&mut g, case);
+            light_entry(&mut g, &mut cpu, point.base, case);
+            (cpu, g)
+        };
+        let (cpu, g) = fresh();
+        let reference = h.run(cpu, g, &|_| false);
+        let (cpu, g) = fresh();
+        let fused = h.run(cpu, g, &|_| true);
+        check(&format!("{} case {case} fused", point.name), &reference, &fused);
+        for (k, &pc) in reference.resumes.iter().enumerate() {
+            if table.at(pc).is_none() {
+                continue;
+            }
+            let (cpu, g) = fresh();
+            let into = h.run(cpu, g, &|i| i >= k);
+            check(&format!("{} case {case} lifted then Rust at {k} ({pc:#x})", point.name), &reference, &into);
+            let (cpu, g) = fresh();
+            let out = h.run(cpu, g, &|i| i < k);
+            check(&format!("{} case {case} Rust then lifted at {k} ({pc:#x})", point.name), &reference, &out);
+        }
+    }
+}
+
 #[test]
 fn projectile_step() {
     dressed_step(&points::PROJECTILE_STEP, 12);
@@ -1917,6 +2139,7 @@ fn the_harness_sees_a_float_difference() {
     assert_ne!(a.callouts[0], c.callouts[0], "the x87 state is compared");
 }
 
+#[test]
 fn object_bounds() {
     shell(&points::OBJECT_BOUNDS, 6);
 }
@@ -1959,4 +2182,34 @@ fn object_transform_getters() {
 #[test]
 fn object_post_update_over_the_shell() {
     shell(&points::OBJECT_POST_UPDATE, 6);
+}
+
+#[test]
+fn lights_update() {
+    lit(&points::LIGHTS_UPDATE, 6);
+}
+
+#[test]
+fn light_record_update() {
+    lit(&points::LIGHT_RECORD_UPDATE, 8);
+}
+
+#[test]
+fn light_record_phase() {
+    lit(&points::LIGHT_RECORD_PHASE, 6);
+}
+
+#[test]
+fn light_link() {
+    lit(&points::LIGHT_LINK, 8);
+}
+
+#[test]
+fn light_unlink() {
+    lit(&points::LIGHT_UNLINK, 8);
+}
+
+#[test]
+fn light_expire() {
+    lit(&points::LIGHT_EXPIRE, 8);
 }

@@ -8,5 +8,4 @@ pub mod sim_native;
 pub mod sim_objects;
 pub mod sim_physics;
 pub mod sim_observer;
-pub mod sim_static_light;
 pub mod sim_submix;

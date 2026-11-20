@@ -1,7 +1,7 @@
 # Object update: entries, conventions and liveness
 
-Status: Partly built. Slice 1's, slice 3's, slice 4's, slice 8's and slice 11's bodies are in the body table behind the switch: the three walks, the per-object pre- and post-update, the four type dispatchers, the wake leaves and the early-mover wake; function values, the export evaluator, the import dispatcher, every type level's import handler and change colours; the damage update `d5de0`, with the tick's `Damage` and `Kill` events; the item, scenery, device, machine, crate, creature and projectile updates, and the projectile step `f8eb0`; the post-update shell (component transform, node matrices, bounds, attachment refresh, node-matrix notify) and the transform setters and getters. The other slices of [sim-rewrite-objects.md](sim-rewrite-objects.md) add the rest.
-Code: `crates/rewrites/sim-objects` (kernels and typed views, no `runtime` dependency: `src/wake.rs` the wake leaves, `src/events.rs` the tick's events, `src/damage.rs` the damage and kill event reads, `src/bounds.rs` the bounds kernel), `crates/rewrites/engine/src/sim_objects` (the guest boundary: `BODIES`, `drive`, `supported`, retail frame helpers; `walks.rs`, `object.rs`, `wake.rs` the slice 1 bodies; `functions/` the slice 3 bodies; `damage.rs` the slice 8 body and the event recorders; `item.rs`, `scenery.rs`, `device.rs`, `machine.rs`, `bloc.rs`, `creature.rs`, `projectile.rs`, `projectile_step.rs` the slice 11 bodies over `sse.rs` (scalar SSE on the guest registers) and `alu.rs` (shift and 16-bit flag idioms); `post.rs`, `pose.rs`, `bounds.rs`, `transform.rs` the slice 4 bodies over `xform.rs` (the node-matrix rows)), `crates/rewrites/sim-bridge/src/sim_objects.rs` (installer). Tests: `crates/rewrites/engine/src/sim_objects/tests.rs` (the dispatcher, guarding, finalize and a leaf on a synthetic pool), `crates/rewrites/engine/src/sim_objects/functions/tests.rs` (the slice 3 helpers and the import dispatcher on synthetic memory), `crates/rewrites/engine/src/sim_objects/damage/tests.rs` (the damage update's frame and the recorders), `crates/rewrites/sim-bridge/src/sim_objects.rs` (the installer, the guard and the event observers), `crates/rewrites/engine/tests/sim_objects_differential.rs` (fused transcripts and mixed frames against the lifted original for every slice 1, slice 3, slice 4, slice 8 and slice 11 root, comparing the integer registers, flags, memory, XMM registers and x87 state at every callout and return (`FLOAT_OPT_OUT` lists the roots that do not, each with its reason), feature `differential`), `crates/rewrites/sim-objects/src/wake/tests.rs` (the wake kernels), `crates/rewrites/sim-objects/src/damage/tests.rs` (the event reads), `crates/rewrites/sim-objects/src/bounds/tests.rs` (the bounds kernel), `crates/rewrites/engine/src/sim_objects/bounds/tests.rs` (`bdef0` against that kernel), and the views in `crates/rewrites/sim-objects` and `crates/rewrites/sim-state`.
+Status: Partly built. Slice 1's, slice 3's, slice 4's, slice 5's, slice 8's and slice 11's bodies are in the body table behind the switch: the three walks, the per-object pre- and post-update, the four type dispatchers, the wake leaves and the early-mover wake; function values, the export evaluator, the import dispatcher, every type level's import handler and change colours; the light walk, the light record update and its phase step, and the light-list link, unlink and expire; the damage update `d5de0`, with the tick's `Damage` and `Kill` events; the item, scenery, device, machine, crate, creature and projectile updates, and the projectile step `f8eb0`; the post-update shell (component transform, node matrices, bounds, attachment refresh, node-matrix notify) and the transform setters and getters. The other slices of [sim-rewrite-objects.md](sim-rewrite-objects.md) add the rest.
+Code: `crates/rewrites/sim-objects` (kernels and typed views, no `runtime` dependency: `src/wake.rs` the wake leaves, `src/events.rs` the tick's events, `src/damage.rs` the damage and kill event reads, `src/bounds.rs` the bounds kernel), `crates/rewrites/engine/src/sim_objects` (the guest boundary: `BODIES`, `drive`, `supported`, retail frame helpers; `walks.rs`, `object.rs`, `wake.rs` the slice 1 bodies; `functions/` the slice 3 bodies; `lights/` the slice 5 bodies; `damage.rs` the slice 8 body and the event recorders; `item.rs`, `scenery.rs`, `device.rs`, `machine.rs`, `bloc.rs`, `creature.rs`, `projectile.rs`, `projectile_step.rs` the slice 11 bodies over `sse.rs` (scalar SSE on the guest registers) and `alu.rs` (shift and 16-bit flag idioms); `post.rs`, `pose.rs`, `bounds.rs`, `transform.rs` the slice 4 bodies over `xform.rs` (the node-matrix rows)), `crates/rewrites/sim-bridge/src/sim_objects.rs` (installer). Tests: `crates/rewrites/engine/src/sim_objects/tests.rs` (the dispatcher, guarding, finalize and a leaf on a synthetic pool), `crates/rewrites/engine/src/sim_objects/functions/tests.rs` (the slice 3 helpers and the import dispatcher on synthetic memory), `crates/rewrites/engine/src/sim_objects/damage/tests.rs` (the damage update's frame and the recorders), `crates/rewrites/engine/src/sim_objects/lights/tests.rs` (the slice 5 bodies' frames, sites and stores on a synthetic light array), `crates/rewrites/sim-bridge/src/sim_objects.rs` (the installer, the guard and the event observers), `crates/rewrites/engine/tests/sim_objects_differential.rs` (fused transcripts and mixed frames against the lifted original for every slice 1, slice 3, slice 4, slice 5, slice 8 and slice 11 root, comparing the integer registers, flags, memory, XMM registers and x87 state at every callout and return (`FLOAT_OPT_OUT` lists the roots that do not, each with its reason), feature `differential`), `crates/rewrites/sim-objects/src/wake/tests.rs` (the wake kernels), `crates/rewrites/sim-objects/src/damage/tests.rs` (the event reads), `crates/rewrites/sim-objects/src/bounds/tests.rs` (the bounds kernel), `crates/rewrites/engine/src/sim_objects/bounds/tests.rs` (`bdef0` against that kernel), and the views in `crates/rewrites/sim-objects` and `crates/rewrites/sim-state`.
 Switch: `impl.sim.native.objects` (default off), listed in [switches.md](../runtime/switches.md).
 
 The contract page for phase 3 of the simulation rewrite: the object walks,
@@ -34,7 +34,8 @@ virtual addresses; bare numbers in tables are hex. Names are ours.
   owns (`sim_physics::PORTS`, `sim_native::ENTRIES`) stands down while the
   switch is on (`sim_bridge::sim_objects::owns`). The ports the slice 1
   bodies replaced (the two walks and the two per-object updates) and
-  change colours are in `sim_physics::ORACLES`: never installed, kept as
+  change colours, and the light record update `c0c80` that slice 5's body
+  takes over, are in `sim_physics::ORACLES`: never installed, kept as
   test oracles. The function value, import and base import ports
   (`sim_native::object`, `sim_native::object_base`) are not installed
   either; `tests/sim_native_differential.rs` keeps them as oracles. The
@@ -119,12 +120,12 @@ How the slice 4 bodies keep the contract is in "Slice 4 bodies" below.
 
 | Entry | Point | ABI | Kind |
 |---|---|---|---|
-| `c1400` | none yet | no arguments; `ret` | segment |
+| `c1400` | `LIGHTS_UPDATE` | no arguments; `ret` | segment |
 | `c0c80` | `LIGHT_RECORD_UPDATE` | `(light: stack 0)`; `ret 4` | segment |
-| `c0b00` | none yet | `(state: eax, functions: ecx, stack 0..3)`; `ret 10`. `c0c80` passes the light datum's `+d4` block in `eax` and the definition's `+c0` block in `ecx`. Names L | segment |
-| `c2d00` | none yet | `(stack 0)`; `ret 4` | segment |
-| `c3220` | none yet | `(light: eax)`, light array `[4e030c]`, stride `110`; `ret` | segment |
-| `c3260` | none yet | `(stack 0, stack 1)`; `ret 8` | segment |
+| `c0b00` | `LIGHT_RECORD_PHASE` | `(colour: eax, block: ecx, light: stack 0, input: stack 1, brightness: stack 2, out: stack 3)`; `ret 10`. `c0c80` passes the light element's `+d4` colour triple in `eax` and the definition's `+c0` block in `ecx` | segment |
+| `c2d00` | `LIGHT_LINK` | `(light: stack 0)`; `ret 4` | segment |
+| `c3220` | `LIGHT_UNLINK` | `(light: eax)`, light array `[4e030c]`, stride `110`; `ret` | segment |
+| `c3260` | `LIGHT_EXPIRE` | `(light: stack 0, notify: stack 1)`; `ret 8` | segment |
 
 ### Slice 8: damage
 
@@ -760,6 +761,83 @@ after it); `faa30` is entered with `xmm0` set. Callee cleanup: `fd410`,
   ricochets covers those values.
 - Callee `ret` sizes for `1d24a0` and `1c6620` are read from their tails
   (`1c6620` jumps to `1c6560`, `ret 4`); the rest from their first `ret`.
+
+## Slice 5 bodies
+
+Each is **C** for its control flow and accesses: read at its address
+with `h2 disasm`, and compared with the lifted original by
+`tests/sim_objects_differential.rs` (roots `c1400`, `c0c80`, `c0b00`,
+`c2d00`, `c3220` and `c3260`). Field names are ours and **L**. The module
+header of `sim_objects/lights/mod.rs` names the element fields; each body
+file's header records its frame, the registers it keeps across calls and
+the order of its calls. This section records what a caller or a later
+slice relies on.
+
+**Shared rules.** Integer registers, `esp` and the frame slots match
+retail at every transfer. The arithmetic flags are undefined at every
+call and return: the liveness table shows no flag reader at any slice 5
+entry or site, nor after any call of these entries from `bef30`. Scalar
+SSE goes through `sim_objects::sse`; the colour scaling in `c0b00` runs
+on the guest's x87 state through `x87::abi`, so its last-instruction
+pointer and data pointer are retail's (`c0c48` and the blue channel).
+The light lists themselves stay guest: `1cac60` adds, `1cae40` removes,
+`16ba40` frees the datum, `16bc00` is the datum iterator.
+
+**Walk `c1400`.** Per live light, in index order: `c0c80(handle)`; a
+linked light whose owner or marker parent is a live object with POST set
+is removed (`1cae40`, when active) and relinked (`c2d00`); a timed light
+past its definition's lifetime expires (`c3260(handle, 1)`). The array
+header, high-water mark and bitmap are re-read after each light, so
+lights a callee creates or deletes are seen as retail sees them.
+
+**Record `c0c80`.** The body is the per-function port of
+`LIGHT_RECORD_UPDATE` (kept as the oracle `oracle.light_record` in
+`sim_physics::ORACLES`) with its transfers returned to `drive`, so its
+calls to `c0b00`, `baf80`, `bab40`, `c2d00` and `c3220` are fused. It
+links a light that turns on (with no owner, or when `b9ce0` answers no
+and `b9d20` yes) only while the object globals' first byte
+`[[4de2f4]]` is set, and unlinks a linked light that turns off. The body
+takes every light through the same arithmetic, so the old placed-light
+bypass has no switch of its own.
+
+**Phase `c0b00`.** The phase is game time `+8` × `+4`, or a per-light
+offset `((handle × 1387) & 7fffffff) mod (ticks per second × 3c)` added
+to game time `+8`, × `+4`. A zero ticks-per-second is the guest's divide
+error, reported as a fault at the `idiv` (`c0b3b`). Then up to three
+function blocks: brightness (`13b390`, clamped and mapped unless the
+function's flags byte `+1` has a bit of `f0` set), colour (`13b390`, then
+`13bc00`, whose packed RGB scales the three channels), and two
+`13bb90` values into `[out]` and `[out + 4]`. The colour bytes are stored
+over the input's argument slot, high first, as retail does.
+
+**Link `c2d00`, unlink `c3220`, expire `c3260`.** `c2d00` computes the
+world position from the owner's node matrices or marker (`b8c40`,
+`16640f`, `b8d30`) or a marker parent's node matrix (`142570`, then the
+two local directions rotated by its rows in retail's operand order),
+finds the cluster (`16a8e0`, `11bed0`, `ba300`) and adds the light
+(`1cac60`), then sets flags bit 3. `c3220` removes an active light and
+clears bit 3. `c3260` removes a linked, active light, updates the marker
+parent's body flags `+4` bit 6 when `notify` is set (scanning the other
+lights with `16bc00`), and frees the light (`16ba40`).
+
+**Callee `ret` sizes.** None: `16bc00`, `bad50`, `17ca10`, `131c20`,
+`b9ce0`, `b9d20`, `b8c40`, `c28b0`, `11bed0`, `ba300`, `16ba40`. `4`:
+`13bc00`, `142570`. `8`: `1cae40`, `131d60`, `13b390`, `13bb90`,
+`c0840`. `c`: `b8d30`. `10`: `16640f`. `1c`: `16a8e0`. `24`: `1cac60`.
+
+### Not verified for slice 5
+
+- Captures from campaign and multiplayer: registers and RAM at the n-th
+  call of `c0c80` and `c2d00` on a level with lights that have a function
+  source (owner node matrices and markers) and marker-parent lights,
+  compared with `impl.sim.native.objects` off. The harness has no light
+  with a function source, so `bab40` and the owner-marker path (`b8c40`,
+  `16640f`, `b8d30`) are reached only by those captures.
+- `c0c80` writes whole `xmm` registers where retail writes the low lane,
+  so the harness compares `xmm` state only for the `c0b00`, `c2d00`,
+  `c3220` and `c3260` roots, not `c1400` or `c0c80`.
+- The harness answers `16bc00` from the synthetic bitmap; the iterator's
+  own behaviour is not compared.
 
 ## Register liveness
 

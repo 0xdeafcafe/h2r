@@ -43,6 +43,8 @@ mod pose;
 mod post;
 mod transform;
 mod xform;
+// Slice 5: lights.
+mod lights;
 
 use crate::points::{self, Point};
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
@@ -147,6 +149,14 @@ pub const BODIES: &[Body] = &[
     Body { point: &points::OBJECT_WORLD_POSITION, sites: &[], run: transform::world_position },
     Body { point: &points::OBJECT_WORLD_BASIS, sites: &[], run: transform::world_basis },
     Body { point: &points::OBJECT_ROOT_VELOCITY, sites: &transform::VELOCITY_SITES, run: transform::root_velocity },
+    // Slice 5: the light walk, the record update and its modulation step,
+    // and the light-list operations (`lights`).
+    Body { point: &points::LIGHTS_UPDATE, sites: &lights::walk::WALK_SITES, run: lights::walk::walk },
+    Body { point: &points::LIGHT_RECORD_UPDATE, sites: &lights::record::RECORD_SITES, run: lights::record::record },
+    Body { point: &points::LIGHT_RECORD_PHASE, sites: &lights::phase::PHASE_SITES, run: lights::phase::phase },
+    Body { point: &points::LIGHT_LINK, sites: &lights::list::LINK_SITES, run: lights::list::link },
+    Body { point: &points::LIGHT_UNLINK, sites: &lights::list::UNLINK_SITES, run: lights::list::unlink },
+    Body { point: &points::LIGHT_EXPIRE, sites: &lights::list::EXPIRE_SITES, run: lights::list::expire },
 ];
 
 /// The bodies [`drive`] runs and fuses, indexed by entry and site.

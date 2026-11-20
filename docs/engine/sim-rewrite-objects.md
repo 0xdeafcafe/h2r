@@ -1,11 +1,13 @@
 # Simulation rewrite, phase 3: the object and unit update
 
-Status: design, 2026-11-20. Slices 0 to 4, 8 and 11 are built: the
+Status: design, 2026-11-20. Slices 0 to 5, 8 and 11 are built: the
 dispatcher and the switch (default off), the views and `sim-state`,
 slice 1's bodies (the walks, the per-object updates, the type
 dispatchers, the wake leaves and the early-mover wake), slice 3's
 (function values, the export evaluator, the import dispatcher, the seven
-type import handlers and change colours, all segments), slice 8's (the
+type import handlers and change colours, all segments), slice 5's
+(the light walk, the light record update and its phase step, and the
+light-list link, unlink and expire; the lists stay guest), slice 8's (the
 damage update, and the `Damage` and `Kill` events), slice 4's (the
 bounds, attachment refresh, node-matrix notify and component transform,
 the transform setters and getters, and `bd090` as the phase 1 port run
