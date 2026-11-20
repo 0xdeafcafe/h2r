@@ -1,7 +1,7 @@
 //! The game page's pre-rendered header (web/src/stats/gameHeader.ts, the
 //! web side's half and the source of the fixtures this file is held to).
 //!
-//! Both homes write the game header into the initial HTML. Each player's
+//! Both homes write the game hero into an inert template in the initial HTML. Each player's
 //! image points directly at the composed emblem route ([`crate::emblem`]).
 //!
 //! [`model_for`] builds the header's model from the read model, as an
@@ -403,8 +403,8 @@ fn type_line(summary: &GameSummary) -> String {
 
 // ---- rendering (the client renders these same bytes) ----
 
-/// The header's markup (web/src/stats/gameHeader.ts `gameHeaderHtml`): one
-/// line, no whitespace between tags, so both sides write the same bytes.
+/// The hero's markup (web/src/stats/gameHeader.ts `gameHeaderHtml`). Both
+/// sides write the same bytes.
 pub fn render(m: &GameHeaderModel) -> String {
     let e = page_meta::escape;
     let on = if m.campaign == Some(true) {
@@ -416,13 +416,13 @@ pub fn render(m: &GameHeaderModel) -> String {
     let result = m
         .result
         .as_ref()
-        .map(|r| format!("<span>{}</span>", e(r)))
+        .map(|r| format!(" <span>{}</span>", e(r)))
         .unwrap_or_default();
-    let bot = r#"<i class="s-gamehead-bot">bot</i>"#;
+    let bot = r#" <i class="s-gamehead-bot">bot</i>"#;
     let player = |p: &HeaderPlayer| {
         let score = p
             .score
-            .map(|s| format!(r#"<b class="s-gamehead-pscore">{s}</b>"#))
+            .map(|s| format!(r#" <b class="s-gamehead-pscore">{s}</b>"#))
             .unwrap_or_default();
         format!(
             r#"<li class="s-gamehead-player" style="--row:{}">{}<span>{}</span>{}{}</li>"#,
@@ -439,7 +439,7 @@ pub fn render(m: &GameHeaderModel) -> String {
             for team in teams {
                 let _ = write!(
                     t,
-                    r#"<li class="s-gamehead-team" style="--row:{}"><header><span>{}</span><b>{}</b></header><ul class="s-gamehead-players">"#,
+                    r#"<li class="s-gamehead-team" style="--row:{}"><header><span>{}</span> <b>{}</b></header><ul class="s-gamehead-players">"#,
                     e(&team.colour),
                     e(&team.name),
                     team.score
@@ -462,7 +462,7 @@ pub fn render(m: &GameHeaderModel) -> String {
         }
     };
     format!(
-        r#"<div class="s-gamehead" data-game="{}"><div class="s-gamehead-info"><p class="s-gamehead-title"><b>{}</b>{}</p><p class="s-gamehead-sub"><i class="s-gamehead-flag{}">{}</i>{}<small>{}</small></p></div><div class="s-gamehead-side">{}</div></div>"#,
+        r#"<div class="s-gamehead" data-game="{}"><div class="s-gamehead-info"><p class="s-gamehead-title"><b>{}</b>{}</p><p class="s-gamehead-sub"><i class="s-gamehead-flag{}">{}</i>{} <small>{}</small></p></div><div class="s-gamehead-side">{}</div></div>"#,
         e(&m.game),
         e(&m.title),
         on,
@@ -623,18 +623,19 @@ mod tests {
     }
 
     #[test]
-    fn injection_puts_the_header_above_the_app_once() {
+    fn injection_puts_the_hero_in_the_template_once() {
         let model: GameHeaderModel = serde_json::from_str(FIXTURE_JSON.trim()).unwrap();
-        let index = "<!doctype html>\n<body>\n  <!-- game-header -->\n  <!-- /game-header -->\n  <div id=\"root\"></div>\n</body>";
+        let index = include_str!("../../../../web/index.html");
         let out = inject(index, &model);
         assert!(out.contains(r#"<div id="game-header" class="s-gamehead-shell" data-game="0123abcd">"#), "{out}");
         // The model beside it, as JSON that cannot close its script.
         assert!(out.contains(r#"<script type="application/json" id="game-header-model">"#), "{out}");
         assert!(out.contains("<b>Team Slayer</b> on Orchard"), "{out}");
-        // The app's node still there, after the header.
-        let root = out.find(r#"<div id="root">"#).unwrap();
+        let source = out.find(r#"<template id="game-header-source">"#).unwrap();
         let head = out.find(r#"id="game-header""#).unwrap();
-        assert!(head < root);
+        let end = out.find("</template>").unwrap();
+        let root = out.find(r#"<div id="root">"#).unwrap();
+        assert!(source < head && head < end && end < root);
         // Once only, and injecting again keeps it once.
         assert_eq!(out.matches("s-gamehead\"").count(), 1);
         let twice = inject(&out, &model);

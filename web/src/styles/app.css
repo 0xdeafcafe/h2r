@@ -54,15 +54,18 @@ code { font-family: var(--font-mono); }
 
 /* Kill feed ("Field Report") */
 .killfeed { list-style: none; margin: 0; padding: 0; max-height: 262px; overflow-y: auto; font-size: 11px; line-height: 14px; scrollbar-width: thin; scrollbar-color: #555 #111; }
-.kf { display: flex; align-items: center; flex-wrap: wrap; gap: 0 4px; padding: 2px 6px; border-top: 1px solid #000; animation: kf-in .4s ease; }
-.kf:nth-child(odd) { background: #181818; } .kf:nth-child(even) { background: #252525; }
+.kf { display: flex; align-items: center; flex-wrap: wrap; gap: 0 4px; padding: 2px 6px; border-top: 1px solid #000; }
+.kf { background: #181818; }
 .kf-name { font-weight: bold; color: var(--kf-colour, #fff); }
 .kf-team { display: none; }
 .kf-verb { color: #bbb; }
 .kf-weapon { font-size: 10px; color: var(--s-gold); }
 .kf .verify { margin-left: auto; }
 .killfeed__empty { color: var(--s-ink-soft); padding: 10px 8px; font-style: italic; }
-@keyframes kf-in { from { background: #585858; } }
+@media (prefers-reduced-motion: no-preference) {
+  .kf--new { animation: kf-in 140ms ease-out; }
+}
+@keyframes kf-in { from { transform: translateY(-2px); opacity: .8; } }
 /* On the stats site the feed is plain: names in the link colour with a
    small team square, a muted weapon, and one quiet signature mark in the
    feed's header instead of one per row. */

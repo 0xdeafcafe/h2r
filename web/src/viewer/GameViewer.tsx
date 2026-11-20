@@ -42,6 +42,8 @@ export function keyIsForControl(target: EventTarget | null): boolean {
 const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 export default function GameViewer(props: {
+  id?: string;
+  open?: boolean;
   game: GameState;
   title: string;
   /** "Live coverage" or "Recorded replay", beside the title. */
@@ -99,12 +101,15 @@ export default function GameViewer(props: {
       cancelAnimationFrame(waiting);
       if (full() === "api") void setFullscreen(box, false, doc(), "api");
     });
-    // Sent here from the old pop-out address (or a link to the 3D view): bring the viewer into view.
-    if (!props.director && params.view === "3d") {
+    const bringIntoView = () => {
       box.scrollIntoView?.({ block: "start", behavior: reducedMotion() ? "auto" : "smooth" });
       focusInside();
-      focus3dWhenReady();
-    }
+      if (mode() === "3d") focus3dWhenReady();
+    };
+    // Hash links can arrive after the viewer is mounted or while the game
+    // detail is still loading. The older 3D link also opens the viewer.
+    if (params.view === "3d" && !props.open) bringIntoView();
+    createEffect(on(() => props.open, (open) => { if (open) bringIntoView(); }));
   });
   // The page under a box laid over the window doesn't scroll.
   createEffect(() => {
@@ -167,6 +172,7 @@ export default function GameViewer(props: {
   return (
     <section
       ref={box}
+      id={props.id}
       class="gv"
       classList={{ "gv--full": full() !== null, "gv--window": full() === "window" }}
       aria-label={`Game viewer: ${props.title}`}
@@ -176,7 +182,7 @@ export default function GameViewer(props: {
       onKeyDown={onKeyDown}
     >
       <header class="gv-bar">
-        <h2>Game Viewer<small>{props.title}</small></h2>
+        <h2>Game Viewer<small>{" "}{props.title}</small></h2>
         <span class="gv-status">{props.status}</span>
         <span class="gv-buttons">
           <Show when={props.director} fallback={

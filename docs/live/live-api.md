@@ -590,8 +590,9 @@ return 429.
 Film and clip reads follow [game visibility](#co-op-games), including
 when an optional `read` bearer is sent on a public server. Hidden games
 and their clips are omitted from lists and read as 404 by id. Public
-link previews at `/theater/<game>` and `/theater/<game>/clip/<id>` follow
-anonymous visibility. The server-signed Theater mutation events are
+link previews on Game Details and at `/theater/<game>/clip/<id>` follow
+anonymous visibility. A whole-film link at `/theater/<game>` redirects to
+the Game Viewer on Game Details. The server-signed Theater mutation events are
 visible in the log to admins and the operator.
 
 A game's archive is exempt from pruning while any player has it saved.

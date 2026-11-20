@@ -60,17 +60,19 @@ manifest's `maps` table. When a map has them, the game page's Tactical Map
 lays players over the picture using the view's `world_to_pixel` matrix
 (`src/map/views.ts`, `src/map/ViewMap.tsx`), with a switcher for the views
 and pan and zoom; without them it is the fitted grid as before. The game
-page's viewer (`src/viewer/GameViewer.tsx`) sits at the top of the page,
-across the content column, about 16:9 and short enough that the scoreboard
-under it still shows on a laptop, with the scoreboard, field report and
-overview below. Its **2D map** / **3D view** switch shows the tactical map or
-the level in 3D (`src/viewer/`): three.js, loaded as its
-own chunk only then, with a sun and soft shadows, ambient occlusion (turned
-off by itself on a machine that can't keep up), orbit, top-down,
+page's viewer (`src/viewer/GameViewer.tsx`) sits under the match hero,
+with the scoreboard, field report and overview below. The Field Report
+keeps visible rows keyed by kill event as the replay advances. A new row
+can enter once, with motion disabled when the browser requests reduced
+motion. The viewer switches between the tactical map and the 3D view
+(`src/viewer/`). The 3D view loads three.js when selected and draws a sun,
+soft shadows and ambient occlusion that switches off if the device can't
+keep up. It offers orbit, top-down,
 follow-a-player and free-fly cameras (F; WASD, Q/E down and up, drag with
 either button to look or click to lock the mouse, wheel or trackpad for
 speed, Shift to go faster, one finger to look and two to fly on a touch
-screen, or a gamepad: `viewer/flycam.ts`), and a grid floor when the map has no geometry. The
+screen, or a gamepad, `viewer/flycam.ts`). A grid floor appears when the
+map has no geometry. The
 **Full screen** button puts the viewer's box full screen with the Fullscreen
 API (Escape leaves), or lays it over the window where there is none (an
 iPhone; Escape leaves that too); the canvas and the 2D map refit either way
@@ -79,7 +81,11 @@ iPhone; Escape leaves that too); the canvas and the 2D map refit either way
 focus or the pointer is over it, so the page keeps them otherwise. The 2D
 map, the 3D view and the scrubber share one session (`src/viewer/session.ts`).
 Finished games autoplay without audio from the first recorded frame.
-Use `?t=12.5` to start playing 12.5 seconds into the recording. Playback
+**Watch in Theater**, links from the film library, and legacy
+`/theater/:id` links open Game Details at `#game-viewer`. The same viewer
+offers playback, camera controls, the HUD and clip creation. A shared
+`/theater/:id/clip/:clip` link opens the requested range on a loop.
+Use `?t=12.5` to start playing 12.5 seconds into a full recording. Playback
 controls used in one replay tab also apply to other open tabs on that game.
 Live games open at the live edge. Scrub back through up to 450 recent
 frames (about 30 seconds at 15 frames per second), or select **Live** to

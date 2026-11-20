@@ -27,13 +27,7 @@
   box-shadow: 0 0 0 1px #1b2029;
 }
 
-/* The game page's header, pre-rendered into the HTML by the servers above
-   the app (stats/gameHeader.ts) and adopted by the client as it is: the
-   page's ground and column width so it stands as the column's first band
-   before the app has rendered, and the strip itself. */
-.s-gamehead-shell { background: #060709; }
-#game-header[hidden] { display: none; }
-.s-gamehead-col { width: min(var(--s-width), 100%); margin: 0 auto; background: var(--s-column); box-shadow: 0 0 0 1px #1b2029; }
+/* Game Details hero, in the content column below the breadcrumbs. */
 .s-gamehead { display: flex; align-items: stretch; justify-content: space-between; gap: 14px; padding: 8px 14px 7px 16px; background: linear-gradient(180deg, #0c1a2c, #070f1b); border-bottom: 1px solid #000; }
 .s-gamehead-info { min-width: 0; }
 .s-gamehead-title { font: bold 14px/18px var(--font-ui); color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
