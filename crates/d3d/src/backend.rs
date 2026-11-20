@@ -296,6 +296,10 @@ impl IndexedTail {
 pub trait ExternalPass: Send {
     fn indexed_tail(&self) -> Option<IndexedTail> { None }
 
+    /// All these ranges share the textures resolved at the first draw.
+    /// Refuse if a later original draw could observe an earlier write.
+    fn requires_independent_samples(&self) -> bool { false }
+
     #[cfg(feature = "gpu")]
     /// Records the pass once per active target copy on the GPU thread.
     /// Single-copy scaling records the display. Exact scaling records both
@@ -1028,6 +1032,13 @@ pub struct ResolvedDraw {
     /// cache ([`crate::glyph`]): text a view backend may magnify with the
     /// glyph filter. Zero when smoothing is off.
     pub glyph_cache: u8,
+}
+
+impl ResolvedDraw {
+    /// Whether submission can change the attached guest depth or stencil.
+    pub fn writes_depth_stencil(&self) -> bool {
+        crate::device::writes_depth_or_stencil(&self.state.render, self.target.depth_format)
+    }
 }
 
 /// Predicts a backend's [`Backend::draw`] outcomes without running it, so

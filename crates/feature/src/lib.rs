@@ -84,6 +84,7 @@ pub fn scene_effect_instruction_entries() -> impl Iterator<Item = u32> {
         native_particles::DYNAMIC_END.base,
     ].into_iter().chain(native_effects::instruction_entries())
         .chain(native_scene_lists::instruction_entries())
+        .chain(native_hud::instruction_entries())
 }
 
 /// Log the full startup plan and first use of each hook. Read once.

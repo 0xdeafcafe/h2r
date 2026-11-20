@@ -10,7 +10,8 @@ The native stages default on. Set `H2_FEATURES=impl.render.native=off`
 to disable them as a group. An explicit stage switch wins in either
 order, so `impl.render.native=off,impl.render.native_world=on` restores
 only the world and its material programs. Those programs follow the
-world by default and can be disabled separately. The older `impl.render`
+world by default and can be disabled separately. The UI stage requires
+the master switch. The older `impl.render`
 switch controls the lifted render-loop ports independently.
 
 Verdicts: **keep** (the default path, a user setting, a diagnostic or a
@@ -49,7 +50,7 @@ environment variable is then only the in-game A/B for a recent default.
 | `impl.render.native_water` | the water edge blend, layer 6 ([native-renderer.md](native-renderer.md), "Stage 4b: water and the rest") | **on since 2026-11-20** (`=off` compares against the D3D path) | the all-native A/B above | `feature::native_water`, `boot::native_water_glue` | ask |
 | `impl.render.native_first_person` | the first-person arms and weapon, the other layer-3 caller's items ([native-renderer.md](native-renderer.md), "First person versus third person") | **on since 2026-11-20** (`=off` compares against the D3D path) | the all-native A/B above | `feature::native_first_person`, `boot::native_first_person_glue` | ask |
 | `impl.render.native_post` | the view's post passes, glow and screen effects ([native-renderer.md](native-renderer.md), "Stage 5: post and HUD") | **on since 2026-11-20** (`=off` compares against the D3D path) | the all-native A/B above | `feature::native_post`, `boot::native_post_glue` | ask |
-| `impl.render.native_hud` | the HUD's and the UI's screen draws ([native-renderer.md](native-renderer.md), "Stage 5: post and HUD") | **on since 2026-11-20** (`=off` compares against the D3D path) | the all-native A/B above | `feature::native_hud`, `boot::native_hud_glue` | ask |
+| `impl.render.native_ui` | Menu, HUD, loading and overlay draws with ordered per-draw fallback ([native-renderer.md](native-renderer.md#native-ui)) | on with the master. The old `impl.render.native_hud=off` disables it too | Pending runtime A/B | `feature::native_hud`, `boot::native_hud_glue` | keep |
 | `impl.render.native_residual` | view scopes for the native renderer's remaining D3D calls (the sky model's indexed strip among them) | **on since 2026-11-20** (`=off` compares against the D3D path) | the all-native A/B above | `feature::native_residual`, `boot::native_residual_glue` | ask |
 | `impl.render.views` | Rust `render_views` (`engine::render_loop`) | off | orchestrator: no saving, one runner round trip per call ([render-loop.md](render-loop.md)) | `feature::render_loop` | ask |
 | `impl.render.layer_draw`, `impl.render.layer_entries` | the layer draw `0x00044550` and its entry loop ([layer-draw.md](layer-draw.md)) | off | none in game; hooked calls leave the direct path | `feature::render_loop` | ask |

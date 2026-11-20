@@ -479,13 +479,8 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::native_post::NativePost)
         .map_err(|e| anyhow::anyhow!("native post: {e}"))?;
-    // The HUD's and the UI's screen draws on the native GPU renderer
-    // (on by default since 2026-11-20; H2_FEATURES=impl.render.native_hud=off
-    // turns them off for the comparison against the D3D path, or
-    // H2_NATIVE_HUD_COMPARE; docs/graphics/native-renderer.md, stage 5):
-    // context-only hooks on the screen-quad batch (text) and the HUD shader
-    // quad. Its host (native_hud_glue) draws accepted quads natively and
-    // pairs the plans for D3D draws in compare mode.
+    // Native UI producers and the ordered menu, HUD and loading callbacks.
+    // impl.render.native_ui=off returns these draws to the ordinary device path.
     #[cfg(feature = "gpu")]
     features
         .add(&feature::native_hud::NativeHud)

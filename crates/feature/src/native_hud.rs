@@ -1,32 +1,11 @@
-//! `native-hud`: the HUD's and the UI's screen draws met by the native
-//! renderer (docs/graphics/native-renderer.md, "Stage 5: post and HUD",
-//! "The UI and HUD"). On by default (since 2026-11-20);
-//! `H2_FEATURES=impl.render.native_hud=off` turns it off for the
-//! comparison against the D3D path (exactly that key).
-//!
-//! Four hooks, all context-only with nothing after a body, so the
-//! pipelined render runs them on its own thread:
-//!
-//! - `SCREEN_QUADS_BEGIN` (`0x00035b90`): a batch of screen quads begins
-//!   with its record (text: `0x0001f070` over the glyph cache). The
-//!   [`Host`] plans the batch (`native_render::hud::Batch`) or says why it
-//!   stays on D3D. The begin always runs: it sets the state the game
-//!   expects after it.
-//! - `SCREEN_QUAD` (`0x000363a0`): one quad of the batch. When the host
-//!   answers it ([`Host::screen_quad`] `true`), the hook returns `ret 4`
-//!   in its place and the quad's words are never pushed. The host answers
-//!   a quad of a planned text batch once a native pass holding it is
-//!   reserved on the device (docs/graphics/native-renderer.md, "Native
-//!   text"); every other quad keeps its D3D draw.
-//! - `SCREEN_QUADS_END` (`0x00036560`): the batch ends.
-//! - `HUD_SHADER_QUAD` (`0x0022a664`): one HUD shader quad (ECX the
-//!   corners, EAX the coordinate rectangle, stack the bitmap datum, its
-//!   index and the shader). The host notes the corners; the quad's own
-//!   draw is claimed, or not, where D3D resolves it (a draw admission).
-//!
-//! `H2_NATIVE_HUD_COMPARE` ([`compare_spec`]): the host queues the first
-//! quads' corners and pairs each with the draw the D3D path resolves for
-//! it, through a draw admission on the device that claims nothing.
+//! Native UI and HUD hooks, plus the optional screen-quad comparison.
+//! Producers may skip emission after a complete native reservation. The UI
+//! walk keeps the game's order, state setup and layout callbacks.
+
+mod backdrop;
+mod model;
+mod outline;
+mod ui;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -41,18 +20,24 @@ use crate::{BuildError, Builder, Feature, Flow, Manifest};
 pub const ID: &str = "native-hud";
 /// The switch, looked up exactly.
 pub const SWITCH: &str = "impl.render.native_hud";
+pub const UI_SWITCH: &str = "impl.render.native_ui";
 
-/// Whether the native HUD is on (on by default since 2026-11-20;
-/// `impl.render.native_hud=off` turns it off for the comparison against
-/// the D3D path).
+pub(crate) use ui::instruction_entries;
+pub use outline::{PUSH_BYTES as OUTLINE_PUSH_BYTES, Vertices as OutlineVertices};
+pub use ui::UiScope;
+
+/// Both names select the same UI renderer. The old HUD key remains an
+/// exact opt-out and cannot override a disabled native renderer.
 pub fn on(switches: &crate::Switches) -> bool {
-    crate::switches::native_stage_on(switches, SWITCH)
+    crate::switches::native_render_default(switches)
+        && switches.feature(UI_SWITCH, true)
+        && switches.feature(SWITCH, true)
 }
 
 pub const WALK_SWITCH: &str = "impl.render.native_hud_walk";
 
 pub fn walk_on(switches: &crate::Switches) -> bool {
-    crate::switches::native_walk_on(switches, SWITCH, WALK_SWITCH)
+    on(switches) && switches.feature(WALK_SWITCH, true)
 }
 
 pub(crate) const HUD_QUAD_READY: points::Point = points::Point::new(
@@ -89,13 +74,13 @@ fn vertices(mem: &dyn GuestMemory, frame: u32, colour: u32) -> Option<HudVertice
 }
 
 fn walk_quad(mem: &mut dyn GuestMemory, frame: u32, colour: u32) -> bool {
-    Stage::Hud.count(Metric::WalkExamined, 1);
+    Stage::Ui.count(Metric::WalkExamined, 1);
     let Some(vertices) = vertices(mem, frame, colour) else {
-        Stage::Hud.count(Metric::WalkRefusedInputs, 1);
+        Stage::Ui.count(Metric::WalkRefusedInputs, 1);
         return false;
     };
     let drawn = host().is_some_and(|host| host.draw_quad(mem, &vertices));
-    Stage::Hud.count(if drawn { Metric::WalkSuppressed } else { Metric::WalkRefusedReservation }, 1);
+    ui::record(drawn);
     drawn
 }
 
@@ -115,6 +100,46 @@ pub trait Host: Send + Sync {
     fn draw_quad(&self, _mem: &mut dyn GuestMemory, _vertices: &HudVertices) -> bool {
         false
     }
+
+    fn screen_fan(&self, _mem: &mut dyn GuestMemory, _vertices: &HudVertices) -> bool {
+        false
+    }
+
+    fn fade_fan(&self, _mem: &mut dyn GuestMemory, _vertices: &[[(u8, [f32; 4]); 1]; 4]) -> bool {
+        false
+    }
+
+    fn loading_bitmap_fan(&self, _mem: &mut dyn GuestMemory, _vertices: &[[(u8, [f32; 4]); 2]; 4]) -> bool {
+        false
+    }
+
+    fn backdrop_wash(&self, _mem: &mut dyn GuestMemory, _vertices: &HudVertices) -> bool {
+        false
+    }
+
+    fn backdrop_composite(
+        &self,
+        _mem: &mut dyn GuestMemory,
+        _vertices: &engine::ui_backdrop::Fan<2>,
+    ) -> bool {
+        false
+    }
+
+    fn model_ranges(&self, _mem: &mut dyn GuestMemory, _ranges: &[engine::ui_model::Range]) -> bool {
+        false
+    }
+
+    fn outline(&self, _mem: &mut dyn GuestMemory, _vertices: &OutlineVertices) -> bool {
+        false
+    }
+
+    fn inline_ui_quad(&self, _mem: &mut dyn GuestMemory, _primitive: u32, _bytes: Vec<u8>) -> bool {
+        false
+    }
+
+    fn enter_ui(&self, _mem: &mut dyn GuestMemory, _scope: UiScope, _stack: u32, _eligible: bool) {}
+
+    fn leave_ui(&self, _mem: &mut dyn GuestMemory, _scope: UiScope, _stack: u32) {}
 
     /// A batch begins with the record at `record`.
     fn begin(&self, mem: &mut dyn GuestMemory, record: u32);
@@ -249,7 +274,7 @@ pub fn on_hud_quad(mem: &mut dyn GuestMemory, ecx: u32, eax: u32, esp: u32) {
 }
 
 pub fn compare_on(switches: &crate::Switches) -> Option<u64> {
-    if on(switches) || crate::switches::native_render_default(switches) {
+    if crate::switches::native_render_default(switches) {
         compare_spec()
     } else {
         None
@@ -268,55 +293,67 @@ impl Feature for NativeHud {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        if !on(b.switches()) && compare_on(b.switches()).is_none() {
+        let compare = compare_on(b.switches()).is_some();
+        if !on(b.switches()) && !compare {
             return Ok(());
         }
-        b.raw()
-            .before(&points::SCREEN_QUADS_BEGIN, "native_hud_begin", |c| {
-                let rt = Arc::clone(c.ctx.runtime());
-                let mut mem = rt.memory();
-                on_begin(&mut *mem, c.cpu.esp);
-                Ok(Flow::Continue)
-            })
-            .context_only();
-        b.raw()
-            .before(&points::SCREEN_QUAD, "native_hud_quad", |c| {
-                let rt = Arc::clone(c.ctx.runtime());
-                let answered = {
+        if compare {
+            b.raw()
+                .before(&points::SCREEN_QUADS_BEGIN, "native_hud_begin", |c| {
+                    let rt = Arc::clone(c.ctx.runtime());
                     let mut mem = rt.memory();
-                    on_screen_quad(&mut *mem, c.cpu.esp)
-                };
-                if answered {
-                    c.ret(4).map(Flow::Return)
-                } else {
+                    on_begin(&mut *mem, c.cpu.esp);
                     Ok(Flow::Continue)
-                }
-            })
-            .context_only();
-        b.raw()
-            .before(&points::SCREEN_QUADS_END, "native_hud_end", |c| {
-                let rt = Arc::clone(c.ctx.runtime());
-                let mut mem = rt.memory();
-                on_end(&mut *mem);
-                Ok(Flow::Continue)
-            })
-            .context_only();
-        b.raw()
-            .before(&points::HUD_SHADER_QUAD, "native_hud_shader_quad", |c| {
-                let rt = Arc::clone(c.ctx.runtime());
-                let mut mem = rt.memory();
-                on_hud_quad(&mut *mem, c.cpu.ecx, c.cpu.eax, c.cpu.esp);
-                Ok(Flow::Continue)
-            })
-            .context_only();
-        if walk_on(b.switches()) && compare_on(b.switches()).is_none() {
+                })
+                .context_only()
+                .optional();
+            b.raw()
+                .before(&points::SCREEN_QUAD, "native_hud_quad", |c| {
+                    let rt = Arc::clone(c.ctx.runtime());
+                    let answered = {
+                        let mut mem = rt.memory();
+                        on_screen_quad(&mut *mem, c.cpu.esp)
+                    };
+                    if answered {
+                        c.ret(4).map(Flow::Return)
+                    } else {
+                        Ok(Flow::Continue)
+                    }
+                })
+                .context_only()
+                .optional();
+            b.raw()
+                .before(&points::SCREEN_QUADS_END, "native_hud_end", |c| {
+                    let rt = Arc::clone(c.ctx.runtime());
+                    let mut mem = rt.memory();
+                    on_end(&mut *mem);
+                    Ok(Flow::Continue)
+                })
+                .context_only()
+                .optional();
+            b.raw()
+                .before(&points::HUD_SHADER_QUAD, "native_hud_shader_quad", |c| {
+                    let rt = Arc::clone(c.ctx.runtime());
+                    let mut mem = rt.memory();
+                    on_hud_quad(&mut *mem, c.cpu.ecx, c.cpu.eax, c.cpu.esp);
+                    Ok(Flow::Continue)
+                })
+                .context_only()
+                .optional();
+        } else {
+            ui::place(b);
+        }
+        if walk_on(b.switches()) && !compare {
             b.raw().before(&HUD_QUAD_READY, "native_hud_walk_quad", |c| {
                 let rt = Arc::clone(c.ctx.runtime());
                 if !rt.read_dispatch(|dispatch| dispatch.has_resume(HUD_QUAD_TAIL)) {
                     return Ok(Flow::Continue);
                 }
                 let Some(esp) = c.cpu.esp.checked_add(4) else { return Ok(Flow::Continue) };
-                if !walk_quad(&mut *rt.memory(), c.cpu.ebp, c.cpu.ebx) {
+                let mut mem = rt.memory();
+                if mem.u32(c.cpu.esp).ok() != Some(7)
+                    || !walk_quad(&mut *mem, c.cpu.ebp, c.cpu.ebx)
+                {
                     return Ok(Flow::Continue);
                 }
                 // The fan primitive word is already on the stack.

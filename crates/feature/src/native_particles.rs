@@ -249,6 +249,9 @@ pub fn on_dynamic(mem: &mut dyn GuestMemory, esp: u32, stride: u32) {
             return;
         }
     };
+    if call.return_address == engine::points::ui_render::RECT_SUBMIT_RETURN {
+        return;
+    }
     let ordinal = DYNAMIC_CALLS.fetch_add(1, Ordering::Relaxed);
     let compare = compare_budget();
     if compare.is_some_and(|budget| ordinal >= budget) {

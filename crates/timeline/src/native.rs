@@ -5,9 +5,9 @@ use std::sync::OnceLock;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(usize)]
-pub enum Stage { World, Objects, Transparents, Lights, Post, Particles, Decals, Hud, Gels, Fog, Water, Shadows, FirstPerson, Effects }
+pub enum Stage { World, Objects, Transparents, Lights, Post, Particles, Decals, Hud, Gels, Fog, Water, Shadows, FirstPerson, Effects, Ui }
 
-const STAGES: [&str; 14] = ["world", "objects", "transparents", "lights", "post", "particles", "decals", "hud", "gels", "fog", "water", "shadows", "first_person", "effects"];
+const STAGES: [&str; 15] = ["world", "objects", "transparents", "lights", "post", "particles", "decals", "hud", "gels", "fog", "water", "shadows", "first_person", "effects", "ui"];
 #[derive(Clone, Copy, Debug)]
 #[repr(usize)]
 pub enum Metric {
@@ -246,7 +246,7 @@ const SCENE_LIST_RESULTS: [&str; 11] = [
     "native", "fallback", "memory", "layout", "unsupported", "residency", "lighting",
     "palette", "object_model", "compared", "mismatch",
 ];
-pub(crate) const COLUMNS: usize = SCENE_LIST_START + SCENE_LISTS.len() * SCENE_LIST_RESULTS.len();
+
 
 #[derive(Clone, Copy)]
 #[repr(usize)]
@@ -290,6 +290,61 @@ impl SceneList {
                 + result as usize,
             1,
         );
+    }
+}
+
+const UI_COLUMNS: [&str; Ui::OutlineReservation as usize + 1] = [
+    "items", "item_refused", "fallback_geometry", "fallback_order", "fallback_target",
+    "fallback_state", "fallback_shader", "fallback_texture", "fallback_upload",
+    "fallback_reservation", "guest_builder_draw", "model_guest_builder_draw",
+    "backdrop_native", "backdrop_fallback_entry",
+    "backdrop_fallback_inputs", "backdrop_fallback_reservation", "model_idle",
+    "model_native_group", "model_fallback_widget", "model_fallback_entry",
+    "model_fallback_camera", "model_fallback_caller", "model_fallback_geometry",
+    "model_fallback_range_limit", "model_fallback_texture_commit", "model_fallback_reservation",
+    "outline_native", "outline_fallback_entry", "outline_fallback_inputs", "outline_fallback_reservation",
+];
+const UI_OFFSET: usize = SCENE_LIST_START + SCENE_LISTS.len() * SCENE_LIST_RESULTS.len();
+pub(crate) const COLUMNS: usize = UI_OFFSET + UI_COLUMNS.len();
+
+#[derive(Clone, Copy, Debug)]
+#[repr(usize)]
+pub enum Ui {
+    Items,
+    ItemRefused,
+    Geometry,
+    Order,
+    Target,
+    State,
+    Shader,
+    Texture,
+    Upload,
+    Reservation,
+    GuestBuilderDraw,
+    ModelGuestBuilderDraw,
+    BackdropNative,
+    BackdropEntry,
+    BackdropInputs,
+    BackdropReservation,
+    ModelIdle,
+    ModelNativeGroup,
+    ModelWidgetFallback,
+    ModelEntry,
+    ModelCamera,
+    ModelCaller,
+    ModelGeometry,
+    ModelRangeLimit,
+    ModelTextureCommit,
+    ModelReservation,
+    OutlineNative,
+    OutlineEntry,
+    OutlineInputs,
+    OutlineReservation,
+}
+
+impl Ui {
+    pub fn count(self) {
+        phase::count_index(phase::Counter::ALL.len() + UI_OFFSET + self as usize, 1);
     }
 }
 
@@ -337,6 +392,7 @@ pub(crate) fn labels() -> &'static [String] {
                 out.push(format!("native_scene_lists_{stage}_{result}"));
             }
         }
+        out.extend(UI_COLUMNS.map(|name| format!("native_ui_{name}")));
         out
     })
 }
