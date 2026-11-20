@@ -16,6 +16,9 @@ use std::ops::Range;
 use frame_scene::decorator::{FIRST_REGISTER, REGISTERS};
 use frame_scene::{DecoratorDraw, FrameScene, Row, View};
 
+/// The skip: layer 3's bit cleared on the planned items, all or nothing.
+pub use scene_extract::decorators::clear_slots;
+
 /// Bytes of one instance in the instance buffer: `v11..v15`, four floats
 /// each.
 pub const INSTANCE_STRIDE: u64 = (REGISTERS * 16) as u64;
