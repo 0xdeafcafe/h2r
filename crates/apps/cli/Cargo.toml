@@ -24,6 +24,7 @@ xiso = { workspace = true, optional = true }
 h1map = { path = "../../tools/h1map", optional = true }
 # Halo 1 multiplayer maps converted (`h2 h1 convert`).
 h1convert = { path = "../../tools/h1convert", optional = true }
+viewer = { path = "../../tools/viewer", optional = true }
 scenario-edit = { path = "../../tools/scenario-edit", optional = true }
 # Halo 1 campaign levels converted (`h2 h1 convert <iso> a30`).
 h1campaign = { path = "../../tools/h1campaign", optional = true }
@@ -129,6 +130,7 @@ desktop = [
     "dep:h1map",
     "dep:h1convert",
     "dep:scenario-edit",
+    "dep:viewer",
     "dep:h1campaign",
     "dep:h1-assets",
     "dep:h1objects",
