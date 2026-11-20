@@ -230,6 +230,10 @@ fn albedo(v: V) -> vec4<f32> {
 @fragment fn fs_sky_blend(v: V) -> @location(0) vec4<f32> {
     return albedo(v);
 }
+// An added sky layer (blend one, one): black adds nothing.
+@fragment fn fs_sky_add(v: V) -> @location(0) vec4<f32> {
+    return vec4<f32>(albedo(v).rgb, 0.0);
+}
 "#;
 
 /// How much brighter than its stored value a lightmap texel lights. The
@@ -385,6 +389,8 @@ struct BatchParams {
 struct GpuScene {
     world: Option<GpuMesh>,
     sky: Option<GpuMesh>,
+    /// Linear RGB behind the sky model ([`crate::scene::SceneSky::clear`]).
+    sky_clear: [f32; 3],
     models: Vec<Option<GpuMesh>>,
     instances: Option<wgpu::Buffer>,
     ranges: Vec<(usize, Range<u32>)>,
@@ -485,10 +491,8 @@ impl MeshContext<'_> {
         let mut vertices: Vec<SceneVertex> = Vec::new();
         let mut indices: Vec<u32> = Vec::new();
         let mut batches = Vec::new();
-        // Solid first, then cut-outs, then see-through.
-        let mut order: Vec<&crate::scene::Batch> = mesh.batches.iter().collect();
-        order.sort_by_key(|b| b.blend);
-        for b in order {
+        // Solid first, then cut-outs, then see-through in part order.
+        for b in mesh.draw_sequence() {
             let base = vertices.len() as u32;
             let start = indices.len() as u32;
             vertices.extend_from_slice(&b.vertices);
@@ -520,9 +524,11 @@ pub struct Viewport {
     /// [`Self::pipeline`] blended at [`OVERLAY_ALPHA`] over everything.
     ghost: wgpu::RenderPipeline,
     sky: wgpu::RenderPipeline,
-    /// The sky model: solid, then see-through batches.
+    /// The sky model: solid, then see-through batches, alpha-blended or
+    /// added ([`Blend::Additive`]).
     sky_opaque: wgpu::RenderPipeline,
     sky_blend: wgpu::RenderPipeline,
+    sky_add: wgpu::RenderPipeline,
     /// The sky's camera ([`Camera::sky_view_proj`]) and its bind group.
     sky_uniforms: wgpu::Buffer,
     sky_bind: wgpu::BindGroup,
@@ -817,6 +823,19 @@ impl Viewport {
             Some(wgpu::BlendState::ALPHA_BLENDING),
             false,
         );
+        let add = wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::One,
+            dst_factor: wgpu::BlendFactor::One,
+            operation: wgpu::BlendOperation::Add,
+        };
+        let sky_add = scene_pipeline(
+            "fs_sky_add",
+            Some(wgpu::BlendState {
+                color: add,
+                alpha: add,
+            }),
+            false,
+        );
         let opaque = scene_pipeline("fs_opaque", None, true);
         let mask = scene_pipeline("fs_mask", None, true);
         let translucent = scene_pipeline(
@@ -886,6 +905,7 @@ impl Viewport {
             sky,
             sky_opaque,
             sky_blend,
+            sky_add,
             sky_uniforms,
             sky_bind,
             opaque,
@@ -1014,6 +1034,7 @@ impl Viewport {
         self.scene = Some(GpuScene {
             world: ctx.mesh(&scene.world),
             sky: scene.sky.as_ref().and_then(|s| ctx.mesh(&s.mesh)),
+            sky_clear: scene.sky.as_ref().map_or([0.0; 3], |s| s.clear),
             models: scene.models.iter().map(|m| ctx.mesh(m)).collect(),
             instances: None,
             ranges: Vec::new(),
@@ -1160,10 +1181,19 @@ impl Viewport {
         };
         let mut enc = device.create_command_encoder(&Default::default());
         // The sky first, in a pass of its own: its depth is its own (the
-        // model at infinity) and is cleared again for the level.
+        // model at infinity) and is cleared again for the level. The
+        // model is drawn over its clear colour (black unless the tag sets
+        // one), not the gradient: its added layers add onto what is
+        // behind them, as in the game.
         let sky = self.scene.as_ref().and_then(|s| s.sky.as_ref());
         if let Some(sky) = sky {
-            let color = color_attachment(background);
+            let clear = self.scene.as_ref().map_or([0.0; 3], |s| s.sky_clear);
+            let color = color_attachment(wgpu::LoadOp::Clear(wgpu::Color {
+                r: f64::from(clear[0]),
+                g: f64::from(clear[1]),
+                b: f64::from(clear[2]),
+                a: 1.0,
+            }));
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("scenario viewport sky"),
                 color_attachments: &color,
@@ -1172,17 +1202,16 @@ impl Viewport {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_bind_group(0, &self.bind, &[]);
-            pass.set_pipeline(&self.sky);
-            pass.draw(0..3, 0..1);
             pass.set_bind_group(0, &self.sky_bind, &[]);
             pass.set_vertex_buffer(0, sky.vertices.slice(..));
             pass.set_vertex_buffer(1, self.identity.slice(..));
             pass.set_index_buffer(sky.indices.slice(..), wgpu::IndexFormat::Uint32);
-            // Batches come solid first, see-through last.
+            // Batches come solid first, see-through last in part order
+            // (`Mesh::draw_sequence`).
             for (indices, bind, blend) in &sky.batches {
                 pass.set_pipeline(match blend {
                     Blend::Translucent => &self.sky_blend,
+                    Blend::Additive => &self.sky_add,
                     Blend::Opaque | Blend::Mask => &self.sky_opaque,
                 });
                 pass.set_bind_group(1, bind, &[]);
@@ -1244,13 +1273,13 @@ impl Viewport {
             pass.set_vertex_buffer(1, instances.slice(..));
             pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
             for (indices, bind, blend) in &mesh.batches {
-                if (*blend == Blend::Translucent) != translucent {
+                if blend.see_through() != translucent {
                     continue;
                 }
                 pass.set_pipeline(match blend {
                     Blend::Opaque => &self.opaque,
                     Blend::Mask => &self.mask,
-                    Blend::Translucent => &self.translucent,
+                    Blend::Translucent | Blend::Additive => &self.translucent,
                 });
                 pass.set_bind_group(1, bind, &[]);
                 pass.draw_indexed(indices.clone(), 0, range.clone());

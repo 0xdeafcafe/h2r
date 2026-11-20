@@ -885,7 +885,7 @@ fn disc_zanzibar_world_is_lightmapped() {
         .world
         .batches
         .iter()
-        .filter(|b| b.blend != crate::scene::Blend::Translucent)
+        .filter(|b| !b.blend.see_through())
         .fold((0, 0), |(l, a), b| {
             let n = b.indices.len() / 3;
             (l + if b.lightmap.is_some() { n } else { 0 }, a + n)
@@ -1989,6 +1989,19 @@ fn sky_box_at(half: f32, uv: [f32; 2]) -> crate::scene::Mesh {
 
 /// [`sky_box_at`] drawn with `look`.
 fn sky_box_look(half: f32, uv: [f32; 2], look: &crate::scene::Look) -> crate::scene::Mesh {
+    let mut mesh = crate::scene::Mesh::default();
+    push_sky_box(&mut mesh, half, uv, look, crate::scene::Blend::Opaque);
+    mesh
+}
+
+/// Adds a box around the eye to `mesh`, drawn with `look` and `blend`.
+fn push_sky_box(
+    mesh: &mut crate::scene::Mesh,
+    half: f32,
+    uv: [f32; 2],
+    look: &crate::scene::Look,
+    blend: crate::scene::Blend,
+) {
     let mut part = geometry::WorldPart::default();
     for z in [-half, half] {
         for y in [-half, half] {
@@ -2011,9 +2024,7 @@ fn sky_box_look(half: f32, uv: [f32; 2], look: &crate::scene::Look) -> crate::sc
         part.tris.push([a, b, c]);
         part.tris.push([a, c, d]);
     }
-    let mut mesh = crate::scene::Mesh::default();
-    mesh.push_look(look, None, crate::scene::Blend::Opaque, &part);
-    mesh
+    mesh.push_look(look, None, blend, &part);
 }
 
 /// A 64x64 viewport's centre pixel after [`crate::render::Viewport::render`].
@@ -2083,6 +2094,7 @@ fn a_clamped_sky_texture_is_not_repeated() {
         sky: Some(SceneSky {
             name: "test_sky".into(),
             mesh: sky_box_at(5.0, [0.5, 1.25]),
+            clear: [0.0; 3],
         }),
         ..Scene::default()
     };
@@ -2144,6 +2156,7 @@ fn a_detail_map_multiplies_the_base_map_at_its_scale() {
             sky: Some(SceneSky {
                 name: "test_sky".into(),
                 mesh: sky_box_look(5.0, [0.25, 0.5], &look),
+                clear: [0.0; 3],
             }),
             ..Scene::default()
         };
@@ -2192,6 +2205,7 @@ fn the_sky_model_is_drawn_behind_the_level_wherever_the_eye_is() {
         sky: Some(SceneSky {
             name: "test_sky".into(),
             mesh: sky_box(5.0),
+            clear: [0.0; 3],
         }),
         ..Scene::default()
     };
@@ -2241,6 +2255,78 @@ fn the_sky_model_is_drawn_behind_the_level_wherever_the_eye_is() {
     scene.sky = None;
     vp.set_scene(&device, &queue, &scene);
     assert!(!vp.has_sky());
+}
+
+/// A sky's added layers add onto what is drawn before them, and black
+/// adds nothing (Halo 1's Derelict: an additive space dome, then an
+/// additive galaxy whose picture is black around it, then alpha-blended
+/// planets). Drawn alpha-blended, the galaxy's black covered the dome.
+/// Behind the model is its clear colour (black), not the gradient.
+#[test]
+fn added_sky_layers_add_over_the_dome_and_black_adds_nothing() {
+    use crate::scene::{Blend, Image, Look, Scene, SceneSky};
+    let instance = wgpu::Instance::default();
+    let Ok(adapter) =
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+    else {
+        eprintln!("no wgpu adapter; skipping");
+        return;
+    };
+    let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+    let size = [64u32, 64];
+    let one = |rgba: [u8; 4]| Image {
+        width: 1,
+        height: 1,
+        rgba: rgba.to_vec(),
+    };
+    let (blue, black, red) = (0, 1, 2);
+    let cam = Camera {
+        distance: 40.0,
+        ..Camera::default()
+    };
+    let mut vp = crate::render::Viewport::new(&device);
+    let mut draw = |layers: &[(usize, Blend)]| {
+        let mut mesh = crate::scene::Mesh::default();
+        for (k, &(texture, blend)) in layers.iter().enumerate() {
+            // Nearer boxes for later layers, as the planets are nearer
+            // than the dome: depth must not decide the order.
+            let half = 50.0 - 10.0 * k as f32;
+            push_sky_box(&mut mesh, half, [0.5, 0.5], &Look::plain(Some(texture)), blend);
+        }
+        let scene = Scene {
+            textures: vec![
+                one([10, 10, 200, 255]),
+                one([0, 0, 0, 255]),
+                one([200, 10, 10, 255]),
+            ],
+            lifts: vec![1.0; 3],
+            sky: Some(SceneSky {
+                name: "test_sky".into(),
+                mesh,
+                clear: [0.0; 3],
+            }),
+            ..Scene::default()
+        };
+        vp.set_scene(&device, &queue, &scene);
+        vp.render(&device, &queue, &cam, size);
+        center_pixel(&device, &queue, &vp, size)
+    };
+    // The dome alone, added onto black: its own colour, no gradient.
+    let dome = draw(&[(blue, Blend::Additive)]);
+    assert!(dome[2] > 180 && dome[0] < 60 && dome[1] < 60, "the dome: {dome:?}");
+    // The galaxy's black, added over it, leaves it.
+    let px = draw(&[(blue, Blend::Additive), (black, Blend::Additive)]);
+    assert!(px[2] > 180 && px[0] < 60, "black added: {px:?}");
+    // A red layer added over it: both.
+    let px = draw(&[(blue, Blend::Additive), (red, Blend::Additive)]);
+    assert!(px[2] > 180 && px[0] > 180, "red added: {px:?}");
+    // An alpha-blended (opaque) planet after the added layers covers them.
+    let px = draw(&[
+        (blue, Blend::Additive),
+        (red, Blend::Translucent),
+        (black, Blend::Additive),
+    ]);
+    assert!(px[0] > 180 && px[2] < 60, "the planet: {px:?}");
 }
 
 /// A map's shared caches come from beside it, or from `shared` when the

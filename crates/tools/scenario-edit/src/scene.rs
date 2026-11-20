@@ -64,11 +64,38 @@ pub enum Blend {
     Mask,
     /// Drawn see-through after everything solid, without depth writes.
     Translucent,
+    /// See-through and added to what is behind it (glows, starfields, a
+    /// sky's galaxy): black adds nothing. The sky pass adds it
+    /// (`render::Viewport`); the level's pass draws it as
+    /// [`Self::Translucent`].
+    Additive,
+}
+
+impl Blend {
+    /// Drawn after everything solid, without depth writes, and neither
+    /// framed nor picked.
+    pub fn see_through(self) -> bool {
+        matches!(self, Self::Translucent | Self::Additive)
+    }
+
+    /// The order a mesh's batches are drawn in: solid, then cut-out, then
+    /// every see-through batch together, so alpha-blended and added
+    /// layers keep the order of their parts (a sky's additive starfield
+    /// under its alpha-blended planets).
+    pub fn draw_order(self) -> u8 {
+        match self {
+            Self::Opaque => 0,
+            Self::Mask => 1,
+            Self::Translucent | Self::Additive => 2,
+        }
+    }
 }
 
 /// How a shader template draws its base map: see-through for templates in
-/// a `transparent` or `water` folder and for plain `overlay` decals, cut
-/// out when the name says `alpha_test`, else solid (after the rule of
+/// a `transparent` or `water` folder and for plain `overlay` decals (added
+/// when a word of the stem is `add`: `one_add`, `one_add_illum_detail`,
+/// the template converted Halo 1 additive sky shaders use), cut out when
+/// the name says `alpha_test`, else solid (after the rule of
 /// `cli::live_looks`, but `tex_bump_detail_overlay`, Coagulation's rock,
 /// is solid).
 pub fn template_blend(template: &str) -> Blend {
@@ -79,7 +106,11 @@ pub fn template_blend(template: &str) -> Blend {
         .any(|c| c == "transparent" || c == "water")
         || stem == "overlay"
     {
-        Blend::Translucent
+        if stem.split('_').any(|w| w == "add" || w == "additive") {
+            Blend::Additive
+        } else {
+            Blend::Translucent
+        }
     } else if stem.contains("alpha_test") {
         Blend::Mask
     } else {
@@ -561,7 +592,7 @@ impl Mesh {
         let b = &mut self.batches[i];
         let base = b.vertices.len() as u32;
         for (k, &p) in part.positions.iter().enumerate() {
-            if blend != Blend::Translucent {
+            if !blend.see_through() {
                 self.bounds.add(p);
             }
             b.vertices.push(SceneVertex {
@@ -579,6 +610,15 @@ impl Mesh {
         }
     }
 
+    /// The batches in the order they are drawn ([`Blend::draw_order`]):
+    /// solid, cut-out, then see-through, each group in the order its
+    /// first part was pushed.
+    pub fn draw_sequence(&self) -> Vec<&Batch> {
+        let mut order: Vec<&Batch> = self.batches.iter().collect();
+        order.sort_by_key(|b| b.blend.draw_order());
+        order
+    }
+
     pub fn triangle_count(&self) -> usize {
         self.batches.iter().map(|b| b.indices.len() / 3).sum()
     }
@@ -589,7 +629,7 @@ impl Mesh {
         for b in self
             .batches
             .iter()
-            .filter(|b| b.blend != Blend::Translucent)
+            .filter(|b| !b.blend.see_through())
         {
             for t in b.indices.as_chunks::<3>().0 {
                 let p = [0, 1, 2].map(|k| b.vertices[t[k] as usize].position);
@@ -640,12 +680,45 @@ pub struct Scene {
 }
 
 /// The scenario's sky as the viewport draws it: its render model in
-/// model space, centred on the eye, turning with the camera only.
+/// model space, centred on the eye, turning with the camera only, over
+/// its clear colour.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SceneSky {
     /// The `sky ` tag's file name.
     pub name: String,
     pub mesh: Mesh,
+    /// Linear RGB behind the model ([`sky_clear`]).
+    pub clear: [f32; 3],
+}
+
+/// `sky +0x10`: flags; bit 5 says the clear colour at [`SKY_CLEAR`]
+/// replaces the view's (docs/formats/structure-bsp.md, cluster `+6e`).
+pub const SKY_FLAGS: usize = 0x10;
+/// `sky +0xa0`: the clear colour, RGB 0..1.
+pub const SKY_CLEAR: usize = 0xa0;
+/// The [`SKY_FLAGS`] bit that turns [`SKY_CLEAR`] on.
+pub const SKY_CLEAR_FLAG: u32 = 1 << 5;
+
+/// What the viewport clears to behind a sky model, from the `sky ` tag's
+/// root bytes: its clear colour when its flag is set and the colour reads
+/// (finite, clamped to 0..1; the game's gamma-space value, returned
+/// linear for the sRGB target), else black. Black, not the editor's
+/// gradient: a sky's additive layers (Halo 1's space dome and galaxy) add
+/// onto what is behind them, and a pale horizon added under a starfield
+/// is not the game's picture.
+pub fn sky_clear(root: &[u8]) -> [f32; 3] {
+    let word = |at: usize| {
+        root.get(at..at + 4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    };
+    let on = word(SKY_FLAGS).is_some_and(|f| f & SKY_CLEAR_FLAG != 0);
+    let rgb = [0, 1, 2].map(|k| word(SKY_CLEAR + 4 * k).map(f32::from_bits));
+    match rgb {
+        [Some(r), Some(g), Some(b)] if on && [r, g, b].iter().all(|c| c.is_finite()) => {
+            [r, g, b].map(|c| c.clamp(0.0, 1.0).powf(2.2))
+        }
+        _ => [0.0; 3],
+    }
 }
 
 impl Scene {
@@ -805,7 +878,7 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
         let mut bitmaps: HashMap<TagId, Option<Box<tags::Bitmap>>> = HashMap::new();
         for part in parts {
             let (look, mut blend) = self.look(part.shader);
-            if part.transparent {
+            if part.transparent && !blend.see_through() {
                 blend = Blend::Translucent;
             }
             let lightmap = part.lightmap.and_then(|r| {
@@ -905,7 +978,8 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
                 .and_then(|t| t.name.clone())
                 .unwrap_or_default();
             let name = name.rsplit(['\\', '/']).next().unwrap_or(&name).to_owned();
-            self.scene.sky = Some(SceneSky { name, mesh });
+            let clear = sky_clear(&sky.opaque);
+            self.scene.sky = Some(SceneSky { name, mesh, clear });
             return;
         }
     }
@@ -999,7 +1073,8 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
                     place_part(&mut out, &at);
                 }
                 let (look, mut blend) = self.look(out.shader);
-                if out.transparent {
+                // Part kind 4 is see-through; an added layer stays added.
+                if out.transparent && !blend.see_through() {
                     blend = Blend::Translucent;
                 }
                 mesh.push_look(&look, None, blend, &out);
@@ -1637,7 +1712,30 @@ mod tests {
         );
         assert_eq!(
             template_blend("shaders\\shader_templates\\transparent\\one_add"),
+            Blend::Additive
+        );
+        // The template converted Halo 1 additive sky shaders use (the
+        // galaxy and starfield domes), and the alpha-blended sky pictures.
+        assert_eq!(
+            template_blend("shaders\\shader_templates\\transparent\\one_add_illum_detail"),
+            Blend::Additive
+        );
+        assert_eq!(
+            template_blend("shaders\\shader_templates\\transparent\\sky_one_alpha_env"),
             Blend::Translucent
+        );
+        assert_eq!(
+            template_blend("shaders\\shader_templates\\transparent\\two_alpha_clouds"),
+            Blend::Translucent
+        );
+        // A word of the stem, not any `add` in it.
+        assert_eq!(
+            template_blend("shaders\\shader_templates\\transparent\\ladder_glass"),
+            Blend::Translucent
+        );
+        assert_eq!(
+            template_blend("shaders\\shader_templates\\opaque\\one_add"),
+            Blend::Opaque
         );
         assert_eq!(
             template_blend("shaders\\shader_templates\\opaque\\tex_bump_detail_overlay"),
@@ -1768,6 +1866,78 @@ mod tests {
         glass.push(None, None, Blend::Translucent, &quad(true));
         assert_eq!(glass.hit(&down), None);
         assert!(glass.bounds.is_empty());
+    }
+
+    /// See-through batches are drawn in the order of their parts, alpha
+    /// and added alike: a sky's added dome and galaxy, then its
+    /// alpha-blended planet, then another added layer. Solid batches
+    /// come first, cut-outs next. Added ones are neither framed nor hit.
+    #[test]
+    fn see_through_batches_keep_their_part_order() {
+        let mut m = Mesh::default();
+        m.push(Some(0), None, Blend::Additive, &quad(true));
+        m.push(Some(1), None, Blend::Additive, &quad(true));
+        m.push(Some(2), None, Blend::Translucent, &quad(true));
+        m.push(Some(3), None, Blend::Additive, &quad(true));
+        m.push(Some(4), None, Blend::Mask, &quad(false));
+        m.push(Some(5), None, Blend::Opaque, &quad(false));
+        let order: Vec<(Option<usize>, Blend)> = m
+            .draw_sequence()
+            .iter()
+            .map(|b| (b.texture, b.blend))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                (Some(5), Blend::Opaque),
+                (Some(4), Blend::Mask),
+                (Some(0), Blend::Additive),
+                (Some(1), Blend::Additive),
+                (Some(2), Blend::Translucent),
+                (Some(3), Blend::Additive),
+            ]
+        );
+        let mut glow = Mesh::default();
+        glow.push(None, None, Blend::Additive, &quad(true));
+        let down = Ray {
+            origin: [0.25, 0.25, 5.0],
+            dir: [0.0, 0.0, -1.0],
+        };
+        assert_eq!(glow.hit(&down), None);
+        assert!(glow.bounds.is_empty());
+        assert!(Blend::Additive.see_through() && Blend::Translucent.see_through());
+        assert!(!Blend::Opaque.see_through() && !Blend::Mask.see_through());
+    }
+
+    /// The sky's clear colour is used only when its flag (bit 5 of
+    /// `+0x10`) is set; otherwise, or when it doesn't read, black.
+    #[test]
+    fn the_sky_clears_to_its_colour_only_when_flagged() {
+        let mut root = vec![0u8; 0xac];
+        let put = |root: &mut Vec<u8>, at: usize, v: u32| {
+            root[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        };
+        for (k, c) in [1.0f32, 0.5, 0.0].into_iter().enumerate() {
+            put(&mut root, SKY_CLEAR + 4 * k, c.to_bits());
+        }
+        // A colour without the flag (a converted Halo 1 sky writes 0).
+        assert_eq!(sky_clear(&root), [0.0; 3]);
+        put(&mut root, SKY_FLAGS, SKY_CLEAR_FLAG | 1);
+        let c = sky_clear(&root);
+        assert_eq!(c[0], 1.0);
+        assert!((c[1] - 0.5f32.powf(2.2)).abs() < 1e-6, "linear: {c:?}");
+        assert_eq!(c[2], 0.0);
+        // Other flag bits alone don't turn it on.
+        put(&mut root, SKY_FLAGS, !SKY_CLEAR_FLAG);
+        assert_eq!(sky_clear(&root), [0.0; 3]);
+        // Out of range is clamped; not finite, or cut short, is black.
+        put(&mut root, SKY_FLAGS, SKY_CLEAR_FLAG);
+        put(&mut root, SKY_CLEAR, 4.0f32.to_bits());
+        assert_eq!(sky_clear(&root)[0], 1.0);
+        put(&mut root, SKY_CLEAR, f32::NAN.to_bits());
+        assert_eq!(sky_clear(&root), [0.0; 3]);
+        put(&mut root, SKY_CLEAR, 1.0f32.to_bits());
+        assert_eq!(sky_clear(&root[..SKY_CLEAR + 8]), [0.0; 3]);
     }
 
     #[test]

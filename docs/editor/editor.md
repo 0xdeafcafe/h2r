@@ -490,18 +490,30 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   the view's translation is dropped (`Camera::sky_view_proj`, an
   infinite far plane), so it turns with the camera and never comes
   nearer, and the level's pass clears depth over it. Its parts are
-  textured as object models are; see-through parts blend over the
-  opaque ones. Behind it, or alone when there is none, a gradient from
+  textured as object models are. Solid parts are drawn first; then
+  the see-through ones, in the order of their parts, each
+  alpha-blended or, for an `add` template ("Blends", below), added:
+  Halo 1's Derelict draws an added space dome, an added galaxy whose
+  picture is black around it, and two alpha-blended planets. Behind
+  the model is the sky's clear colour (`scene::sky_clear`: `sky +0xa0`
+  when bit 5 of `+0x10` is set, else black), not the gradient, since
+  an added layer adds onto it. With no sky model, the gradient from
   the zenith to a pale horizon. `tests::skies_are_read_from_the_scenario_root`,
-  `tests::the_sky_turns_with_the_camera_and_never_comes_nearer` and
+  `tests::the_sky_turns_with_the_camera_and_never_comes_nearer`,
+  `scene::tests::see_through_batches_keep_their_part_order`,
+  `scene::tests::the_sky_clears_to_its_colour_only_when_flagged`,
   `tests::the_sky_model_is_drawn_behind_the_level_wherever_the_eye_is`
+  and `tests::added_sky_layers_add_over_the_dome_and_black_adds_nothing`
   (GPU) hold it. Solid surfaces are
   one-sided, as in the game, so the camera sees into a level through the
   backs of the cliffs and walls around it.
 - **Blends.** Templates in a `transparent` or `water` folder, plain
   `overlay` decals and part kind 4 are drawn see-through after everything
   else and are neither framed nor picked; `alpha_test` templates are cut
-  out.
+  out. A see-through template with `add` as a word of its stem
+  (`one_add`, `one_add_illum_detail`) is `Blend::Additive`: the sky
+  pass adds it (blend one, one), and the level's pass draws it as the
+  other see-through surfaces.
 - **Object models.** Every palette entry (and netgame equipment's item
   collection, by its first entry) resolves object → `hlmt` → `mode`
   through `tags::object`; each region's first permutation at its best LOD
