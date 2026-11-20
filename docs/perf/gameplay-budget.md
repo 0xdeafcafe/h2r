@@ -782,6 +782,13 @@ measures nothing and says so once.
   them. Before-only observers need no shadow call, so each costs tens of
   nanoseconds: 10,000 foreign calls a frame would be a fraction of a ms.
 
+For the scene list A/B, use the `game_view` stage for the object gather
+and setup before `render_scene_passes`. Within `render_scene_passes`, the
+relevant sites are `0x0002bd2d` (transparent geometry and effect producers),
+`0x0002c03e` (dynamic-light bookkeeping) and `0x0002c19a` (transparent
+ordering and draw handlers). Compare those times alongside the list
+counters with `impl.render.native_scene_lists` toggled. See [native-renderer.md](../graphics/native-renderer.md#scene-list-builders).
+
 **Overhead.** Twelve observer calls per frame plus two per view and per
 light, each a mutex and a clock read, a few microseconds a frame; plus
 the hooked functions leaving the direct-call path. The split is valid to

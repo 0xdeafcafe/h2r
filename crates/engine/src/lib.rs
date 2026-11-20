@@ -48,6 +48,7 @@ pub mod memory;
 pub mod points;
 pub mod render;
 pub mod render_loop;
+pub mod scene_list_math;
 pub mod screen_effect;
 pub mod screen_effects;
 pub mod screen_grid;
