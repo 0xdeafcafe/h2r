@@ -3,8 +3,10 @@
 //! FNV-1a over the content, in order: the tick, the cut, and every view's
 //! key, camera, clusters, world state, remainder, auxiliary depth,
 //! instances (key, definition, model, nodes, sphere, lighting, defaults),
-//! parts (slot, key, layer, flags, subparts, rows) and lights (handle,
-//! definition, flags, additional casters, steps). Floats by their
+//! parts (slot, key, layer, flags, subparts, rows), lights (handle,
+//! definition, flags, additional casters, steps) and layer draws (layer,
+//! flags, remainder, items with their owner, model, rows and lighting).
+//! Floats by their
 //! bits. Not the map epoch, the present number or the stamp: they count
 //! this process, not the frame.
 
@@ -133,8 +135,45 @@ pub fn summary_hash(scene: &FrameScene) -> u64 {
                 h.word(u32::from(s.draws));
             }
         }
+        let passes = scene.layers_of(v);
+        h.word(passes.len() as u32);
+        for p in passes {
+            h.word(u32::from(p.layer));
+            h.word(u32::from(p.stencil_off));
+            h.word(u32::from(p.texaccum));
+            h.word(p.remainder);
+            let items = scene.items_of(p);
+            h.word(items.len() as u32);
+            for i in items {
+                h.word(i.slot);
+                h.word(u32::from(i.key.record));
+                h.word(i.key.shader);
+                h.word(u32::from(i.key.section));
+                h.word(u32::from(i.key.part));
+                h.word(i.key.implementation as u32);
+                match i.owner {
+                    crate::layer::LayerOwner::Cluster(c) => h.word(0x1_0000 | u32::from(c)),
+                    crate::layer::LayerOwner::Placement(c) => h.word(0x2_0000 | u32::from(c)),
+                    crate::layer::LayerOwner::Object(k) => {
+                        h.word(0x3_0000);
+                        h.word(k.0);
+                    }
+                }
+                h.word(i.model);
+                let rows = slice_rows(scene, &i.rows);
+                h.word(rows.len() as u32);
+                for r in rows {
+                    h.floats(r);
+                }
+                lighting(&mut h, i.lighting.as_ref());
+            }
+        }
     }
     h.0
+}
+
+fn slice_rows<'a>(scene: &'a FrameScene, r: &std::ops::Range<u32>) -> &'a [crate::scene::Row] {
+    scene.rows.get(r.start as usize..r.end as usize).unwrap_or(&[])
 }
 
 fn lighting(h: &mut Fnv, l: Option<&Lighting>) {

@@ -39,6 +39,7 @@ pub fn layer_site(layer: u32, return_address: u32) -> Site {
         | (3, 0x0002_bed5)
         | (5, 0x0002_bf39)
         | (8, 0x0002_bfaa)
+        | (20, 0x0002_c010)
         | (7, 0x0002_c039)
         | (2, 0x0002_c060) => Site::Scene,
         (1, 0x0002_bd5c) | (3, 0x0002_bd74) | (5, 0x0002_bd8c) | (2, 0x0002_bda8) => {
@@ -224,6 +225,7 @@ mod tests {
         assert_eq!(layer_site(1, 0x0004_00ab), Site::FirstPerson);
         assert_eq!(layer_site(3, 0x0002_be4a), Site::Other);
         assert_eq!(layer_site(2, 0x0002_c060), Site::Scene);
+        assert_eq!(layer_site(20, 0x0002_c010), Site::Scene, "after layer 8, before the object shadows");
     }
 
     #[test]

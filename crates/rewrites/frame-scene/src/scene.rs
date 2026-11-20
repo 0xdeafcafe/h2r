@@ -3,7 +3,8 @@
 //! ([`crate::FreeList`]) and can be walked without chasing pointers.
 //!
 //! Slice 1 fills the views, their cameras, clusters, object instances,
-//! parts and palette rows; slice 3 the lights and their passes' steps.
+//! parts and palette rows; slice 3 the lights and their passes' steps,
+//! the world layers' and the first person's items.
 //! Shadow maps, the carried part and texture uploads join in the slices
 //! that type or carry them (3 and 6).
 
@@ -14,6 +15,7 @@ use std::time::Instant;
 use serde::Serialize;
 
 use crate::camera::Camera;
+use crate::layer::{LayerItem, LayerPass};
 use crate::light::{LightStep, SceneLight};
 use crate::node::NodeMatrix;
 use crate::object::{Defaults, ItemKey, Lighting};
@@ -90,6 +92,9 @@ pub enum ViewKind {
     Game,
     Cinematic,
     Alternate,
+    /// The first-person draw `0x0003fdf0` of a game view: its own
+    /// projection and lists.
+    FirstPerson,
 }
 
 /// A view's identity across scenes.
@@ -108,6 +113,7 @@ impl fmt::Display for ViewKey {
             ViewKind::Game => "game",
             ViewKind::Cinematic => "cinematic",
             ViewKind::Alternate => "alternate",
+            ViewKind::FirstPerson => "first_person",
         };
         write!(f, "{kind}:{}:{}", self.player, self.view)
     }
@@ -160,6 +166,8 @@ pub struct View {
     pub aux_depth: Option<AuxDepth>,
     /// Into [`FrameScene::lights`], in the guest's light order.
     pub lights: Range<u32>,
+    /// Into [`FrameScene::layer_passes`], in the guest's draw order.
+    pub layers: Range<u32>,
 }
 
 /// An object's identity across scenes: its datum handle with its salt.
@@ -313,6 +321,9 @@ pub struct FrameScene {
     pub lights: Vec<SceneLight>,
     /// Each light's steps; lights index ranges of it.
     pub light_steps: Vec<LightStep>,
+    pub layer_passes: Vec<LayerPass>,
+    /// Each layer pass's items; passes index ranges of it.
+    pub layer_items: Vec<LayerItem>,
 }
 
 fn slice<'a, T>(v: &'a [T], r: &Range<u32>) -> &'a [T] {
@@ -334,6 +345,8 @@ impl FrameScene {
         self.rows.clear();
         self.lights.clear();
         self.light_steps.clear();
+        self.layer_passes.clear();
+        self.layer_items.clear();
     }
 
     pub fn view(&self, key: ViewKey) -> Option<&View> {
@@ -366,6 +379,14 @@ impl FrameScene {
 
     pub fn steps_of(&self, light: &SceneLight) -> &[LightStep] {
         slice(&self.light_steps, &light.steps)
+    }
+
+    pub fn layers_of(&self, view: &View) -> &[LayerPass] {
+        slice(&self.layer_passes, &view.layers)
+    }
+
+    pub fn items_of(&self, pass: &LayerPass) -> &[LayerItem] {
+        slice(&self.layer_items, &pass.items)
     }
 
     /// The part of `view` at `slot` of the guest's list, with its
@@ -410,6 +431,11 @@ impl FrameScene {
             flagged,
             lights: lights.len() as u32,
             shadows: lights.iter().filter(|l| l.shadowed()).count() as u32,
+            layers: self
+                .layers_of(view)
+                .iter()
+                .map(|p| (p.layer, p.items.len() as u32, p.remainder))
+                .collect(),
         }
     }
 
@@ -424,13 +450,15 @@ impl FrameScene {
             }
             Ok(())
         }
-        let mut last = [0u32; 4];
+        let mut last = [0u32; 5];
         for (n, v) in self.views.iter().enumerate() {
             within(&v.clusters, self.clusters.len(), &format!("view {n} clusters"))?;
             within(&v.instances, self.instances.len(), &format!("view {n} instances"))?;
             within(&v.order, self.order.len(), &format!("view {n} order"))?;
             within(&v.lights, self.lights.len(), &format!("view {n} lights"))?;
-            for (k, (r, l)) in [&v.clusters, &v.instances, &v.order, &v.lights].into_iter().zip(&mut last).enumerate() {
+            within(&v.layers, self.layer_passes.len(), &format!("view {n} layers"))?;
+            let ranges = [&v.clusters, &v.instances, &v.order, &v.lights, &v.layers];
+            for (k, (r, l)) in ranges.into_iter().zip(&mut last).enumerate() {
                 if r.start < *l {
                     return Err(format!("view {n} range {k} {r:?} overlaps the view before"));
                 }
@@ -465,6 +493,12 @@ impl FrameScene {
         for (n, l) in self.lights.iter().enumerate() {
             within(&l.steps, self.light_steps.len(), &format!("light {n} steps"))?;
         }
+        for (n, p) in self.layer_passes.iter().enumerate() {
+            within(&p.items, self.layer_items.len(), &format!("layer pass {n} items"))?;
+            for (k, i) in self.items_of(p).iter().enumerate() {
+                within(&i.rows, self.rows.len(), &format!("layer pass {n} item {k} rows"))?;
+            }
+        }
         Ok(())
     }
 }
@@ -483,4 +517,6 @@ pub struct ViewCounts {
     pub lights: u32,
     /// Lights that cast their shadow: the shadow maps the view draws.
     pub shadows: u32,
+    /// Each layer pass: its layer, items and remainder.
+    pub layers: Vec<(u8, u32, u32)>,
 }

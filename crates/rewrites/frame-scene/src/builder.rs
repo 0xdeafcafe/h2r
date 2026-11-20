@@ -8,6 +8,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::camera::Camera;
+use crate::layer::{LayerItem, LayerPass};
 use crate::light::{LightStep, SceneLight};
 use crate::node::NodeMatrix;
 use crate::object::{Defaults, ItemKey, Lighting};
@@ -79,6 +80,8 @@ pub enum BuildError {
     NotLastInstance,
     /// A part's slot not after the instance's previous part's.
     SlotOrder,
+    /// A layer item with no layer pass open in the view.
+    NoLayer,
 }
 
 /// What the builder remembers of the scene before, for cuts.
@@ -160,6 +163,7 @@ impl SceneBuilder {
         let cut = !self.previous.views.contains(&key);
         let (c, i, o) = (scene.clusters.len() as u32, scene.instances.len() as u32, scene.order.len() as u32);
         let l = scene.lights.len() as u32;
+        let p = scene.layer_passes.len() as u32;
         scene.views.push(View {
             key,
             cut,
@@ -171,6 +175,7 @@ impl SceneBuilder {
             remainder: 0,
             aux_depth: None,
             lights: l..l,
+            layers: p..p,
         });
         self.open = Some(scene.views.len() - 1);
         Ok(scene.views.last().expect("just pushed"))
@@ -283,6 +288,43 @@ impl SceneBuilder {
         scene.lights.push(SceneLight { steps: s..scene.light_steps.len() as u32, ..light });
         scene.views[open].lights.end = index + 1;
         Ok(index)
+    }
+
+    /// Adds a layer draw to the open view, after its others; its items
+    /// follow ([`Self::push_layer_item`]). The builder sets `pass.items`.
+    pub fn push_layer(&mut self, pass: LayerPass) -> Result<u32, BuildError> {
+        let (scene, open) = self.open_mut()?;
+        let i = scene.layer_items.len() as u32;
+        let index = scene.layer_passes.len() as u32;
+        scene.layer_passes.push(LayerPass { items: i..i, ..pass });
+        scene.views[open].layers.end = index + 1;
+        Ok(index)
+    }
+
+    /// Adds an item, with its palette rows, to the open view's last layer
+    /// draw. The builder sets `item.rows`.
+    pub fn push_layer_item(&mut self, item: LayerItem, rows: &[Row]) -> Result<(), BuildError> {
+        let (scene, open) = self.open_mut()?;
+        if scene.views[open].layers.is_empty() {
+            return Err(BuildError::NoLayer);
+        }
+        let r = scene.rows.len() as u32;
+        scene.rows.extend_from_slice(rows);
+        scene.layer_items.push(LayerItem { rows: r..scene.rows.len() as u32, ..item });
+        let end = scene.layer_items.len() as u32;
+        scene.layer_passes.last_mut().expect("the view's last pass").items.end = end;
+        Ok(())
+    }
+
+    /// Items extraction left to the guest in the open view's last layer
+    /// draw.
+    pub fn add_layer_remainder(&mut self, items: u32) -> Result<(), BuildError> {
+        let (scene, open) = self.open_mut()?;
+        if scene.views[open].layers.is_empty() {
+            return Err(BuildError::NoLayer);
+        }
+        scene.layer_passes.last_mut().expect("the view's last pass").remainder += items;
+        Ok(())
     }
 
     /// Seals the open view: its parts ordered by the guest's list.
@@ -477,6 +519,46 @@ mod tests {
         let mut bad = (*s).clone();
         bad.views[1].lights = 1..3;
         assert!(bad.check().is_err());
+    }
+
+    #[test]
+    fn a_views_layer_draws_keep_their_items_and_rows_and_a_first_person_view_is_its_own() {
+        use crate::layer::{LayerItem, LayerOwner, LayerPass};
+        let pass = |layer| LayerPass { layer, stencil_off: false, texaccum: layer == 1, items: 0..0, remainder: 0 };
+        let entry = |slot, owner| LayerItem { slot, key: item(1), owner, model: u32::MAX, rows: 0..0, lighting: None };
+        let mut b = SceneBuilder::default();
+        b.begin(SceneId::default());
+        b.open_view(key(0), camera()).unwrap();
+        assert_eq!(b.push_layer_item(entry(0, LayerOwner::Cluster(1)), &[]).unwrap_err(), BuildError::NoLayer);
+        assert_eq!(b.add_layer_remainder(1).unwrap_err(), BuildError::NoLayer);
+        b.push_layer(pass(1)).unwrap();
+        b.push_layer_item(entry(0, LayerOwner::Cluster(1)), &[]).unwrap();
+        b.push_layer_item(entry(4, LayerOwner::Object(InstanceKey(7))), &rows(3, 5.0)).unwrap();
+        b.add_layer_remainder(2).unwrap();
+        b.push_layer(pass(5)).unwrap();
+        let first_person = ViewKey { kind: ViewKind::FirstPerson, ..key(0) };
+        b.open_view(first_person, camera()).unwrap();
+        assert_eq!(b.push_layer_item(entry(0, LayerOwner::Cluster(1)), &[]).unwrap_err(), BuildError::NoLayer, "a sealed view's");
+        b.push_layer(pass(3)).unwrap();
+        b.push_layer_item(entry(2, LayerOwner::Object(InstanceKey(9))), &rows(6, 1.0)).unwrap();
+        let s = b.seal(Stamp::default()).unwrap();
+        s.check().unwrap();
+        let v = &s.views[0];
+        let passes = s.layers_of(v);
+        assert_eq!(passes.iter().map(|p| p.layer).collect::<Vec<_>>(), [1, 5]);
+        assert!(passes[0].texaccum && passes[0].remainder == 2);
+        let items = s.items_of(&passes[0]);
+        assert_eq!(items.iter().map(|i| i.slot).collect::<Vec<_>>(), [0, 4]);
+        assert!(items[0].rows.is_empty());
+        assert_eq!(&s.rows[items[1].rows.start as usize..items[1].rows.end as usize], rows(3, 5.0).as_slice());
+        assert!(s.items_of(&passes[1]).is_empty());
+        assert_eq!(s.counts(v).layers, [(1, 2, 2), (5, 0, 0)]);
+        let w = &s.views[1];
+        assert_eq!(w.key.to_string(), "first_person:0:0");
+        assert_eq!(s.counts(w).layers, [(3, 1, 0)]);
+        let mut bad = (*s).clone();
+        bad.layer_items[1].rows = 0..100;
+        assert!(bad.check().unwrap_err().contains("rows"));
     }
 
     #[test]

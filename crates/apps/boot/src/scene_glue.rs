@@ -55,6 +55,11 @@ fn reply(scene: &FrameScene, counters: BTreeMap<String, u64>) -> SceneReply {
                     lights: c.lights,
                     shadows: c.shadows,
                     light_layers: light_layers(scene, v),
+                    layer_items: c.layers.iter().fold(BTreeMap::new(), |mut m, &(layer, items, _)| {
+                        *m.entry(layer.to_string()).or_insert(0) += items;
+                        m
+                    }),
+                    layer_remainder: c.layers.iter().map(|&(_, _, r)| r).sum(),
                     remainder: c.remainder,
                     part_flags: c.flagged.iter().map(|&(name, n)| (name.to_owned(), n)).collect(),
                     carried: BTreeMap::new(),
@@ -104,8 +109,8 @@ fn write_dump(scene: &FrameScene) -> Result<String, String> {
 mod tests {
     use super::*;
     use frame_scene::{
-        InstanceInput, InstanceKey, ItemKey, LightStep, LightTarget, NodeMatrix, PartFlags, RenderCamera, SceneBuilder, SceneId,
-        SceneLight, Stamp, ViewKey, ViewKind,
+        InstanceInput, InstanceKey, ItemKey, LayerItem, LayerOwner, LayerPass, LightStep, LightTarget, NodeMatrix, PartFlags,
+        RenderCamera, SceneBuilder, SceneId, SceneLight, Stamp, ViewKey, ViewKind,
     };
 
     #[test]
@@ -145,6 +150,11 @@ mod tests {
         };
         b.push_light(light(1, 4), &[step(11), step(12)]).unwrap();
         b.push_light(light(2, 0), &[step(12)]).unwrap();
+        b.push_layer(LayerPass { layer: 5, stencil_off: false, texaccum: false, items: 0..0, remainder: 0 }).unwrap();
+        let world = LayerItem { slot: 0, key, owner: LayerOwner::Cluster(3), model: u32::MAX, rows: 0..0, lighting: None };
+        b.push_layer_item(world.clone(), &[]).unwrap();
+        b.push_layer_item(LayerItem { slot: 1, ..world }, &[]).unwrap();
+        b.add_layer_remainder(1).unwrap();
         let scene = b.seal(Stamp::default()).unwrap();
         let r = reply(&scene, BTreeMap::new());
         assert!(r.sealed);
@@ -155,6 +165,7 @@ mod tests {
         assert_eq!((v.clusters, v.instances, v.parts, v.rows, v.remainder), (2, 1, 2, 6, 1));
         assert_eq!((v.lights, v.shadows), (2, 1));
         assert_eq!(v.light_layers, BTreeMap::from([("11".to_owned(), 1), ("12".to_owned(), 2)]));
+        assert_eq!((v.layer_items.clone(), v.layer_remainder), (BTreeMap::from([("5".to_owned(), 2)]), 1));
         assert_eq!(v.part_flags, BTreeMap::from([("stencil_mark".to_owned(), 1)]));
         assert!(serde_json::to_string(&*scene).unwrap().contains("\"slot\":4"));
     }

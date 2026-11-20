@@ -367,6 +367,14 @@ pub struct SceneViewRecord {
     /// no light draws are left out.
     #[serde(default)]
     pub light_layers: BTreeMap<String, u32>,
+    /// Items of each typed layer draw, by layer (`"1"`, `"5"`, ...);
+    /// a layer drawn twice sums.
+    #[serde(default)]
+    pub layer_items: BTreeMap<String, u32>,
+    /// Items of the typed layer draws the guest still draws (refused by
+    /// extraction).
+    #[serde(default)]
+    pub layer_remainder: u32,
     /// Instances the guest still draws (refused by extraction).
     pub remainder: u32,
     /// Parts by how they draw beyond their material (`stencil_mark`,
