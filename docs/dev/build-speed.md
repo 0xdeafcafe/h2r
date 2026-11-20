@@ -111,9 +111,9 @@ The other build scripts were read and left alone:
 
 ### One test binary per crate (`tests/it.rs`)
 
-For `h1objects` (27 files), `h1convert` (16), `engine` (18) and `d3d`
+For `h1objects` (27 files), `h1convert` (16), `engine` (16) and `d3d`
 (37 of 50), the integration test files now build into one executable
-named `it`. 111 executables become 4.
+named `it`. 96 executables become 4.
 
 - No test file moved. `tests/it.rs` names each file as a module with
   `#[path = "name.rs"]`. A file loaded that way resolves its own
