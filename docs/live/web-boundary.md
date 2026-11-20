@@ -61,10 +61,9 @@ Three consequences:
   Playlists (hoppers), the message of the day, custom content and mods.
   It stays where it is, in the stats site's style.
 - **Live admin** (`/dash/admin`, dashboard, in the dense style of §3): the
-  Live service and its people. Accounts, messages, player reports (the
-  report queue the voice work is building lands here), usage, and the raw
-  event log. The server screens (`/dash/server`: invites, accounts,
-  import) lead into it.
+  hub for usage, dedicated hosts, the raw event log and the style sample.
+  Confirmed server admins open it from the dashboard's Settings.
+  Account, invite and player report tools sit under `/dash/server`.
 
 The line: if it changes what the game shows or plays, it is Halo Admin;
 if it is about the service, the accounts on it or what they do, it is
@@ -93,8 +92,8 @@ The protocol has one thing, Xbox Live Teams; the site has two faces of it.
   Medals are derived from game kills.
 - **Dashboard: the raw log** (`/dash/admin/events`): every event, every
   stream the API makes available to the signed-in admin. Open **Event Log**
-  from dashboard Settings. The log opens at the latest page, with
-  older and newer pages and expandable event data.
+  from dashboard Settings or the Live admin hub. The log opens at the
+  latest page, with older and newer pages and expandable event data.
 
 The API does not change: `GET /v1/events` keeps its access rules (the
 privacy redaction in `crates/live/live-server/src/sessions.rs` decides what
@@ -122,7 +121,9 @@ Every route and every page-level component, checked against §1.
 | Account and recovery, recover, sign in | `/dash/account`, `/dash/recover`, `/dash/signin` | stays | Your account. |
 | Server overview | `/dash/server` | stays | Running the service. |
 | Invites, accounts, import, connect | `/dash/server/{invites,accounts,import,connect}` | stays | Running the service. |
-| Live admin: usage (new) | `/dash/admin`, `/dash/admin/usage` | new | Usage accounting (§5), in the dense style. |
+| Live admin hub | `/dash/admin` | stays | Admin-only entry in Settings. Links to usage, hosts, the event log and the style sample. |
+| Live admin: usage | `/dash/admin/usage` | stays | Usage accounting (§5), in the dense style. |
+| Live admin: hosts | `/dash/admin/hosts` | stays | Running and recently ended dedicated hosts. |
 | Live admin: accounts and player reports | `/dash/server/{accounts,reports}` | stays | Service administration. |
 | Live admin: Event Log | `/dash/admin/events` | stays | The raw event log, admin-only in the web UI (§1.3). |
 | Dense style page (new) | `/dash/admin/style` | new | The dense style on fixed data (§3). |
@@ -293,9 +294,10 @@ picture in `docs/images/`.
 
 ## 5. Usage
 
-Who uses the most of the server, and on what: the Live admin's usage
-screen, `/dash/admin/usage` (`/dash/admin` opens it; the accounts screen
-has a pod to it). The counting and the two endpoints it reads are in
+The Live admin's usage screen (`/dash/admin/usage`) shows who uses the
+most of the server and what they use it for. Open **Usage** from the hub
+(`/dash/admin`) or from the pod on Server → Accounts. The counting and
+the two endpoints it reads are in
 [live-api.md](live-api.md) "Usage"; this section is what the screen
 shows and where its numbers stop.
 

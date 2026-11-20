@@ -13,6 +13,7 @@ import { USAGE_SORTS, usageView } from "./usageView";
 import UsageBoard from "./UsageBoard";
 import { fetchUsage, fetchUsageAccounts, type AccountSort, type AccountsPage, type UsageOverview } from "../admin/usage";
 import { adminState } from "../admin/state";
+import { LIVE_ADMIN } from "../routes";
 import { identity } from "../state/identity";
 import { live } from "../state/live";
 
@@ -61,7 +62,7 @@ export default function UsagePage() {
   const gate = (title: string, body: JSX.Element) => <Panel title={title}><p class="dk-note">{body}</p></Panel>;
   return (
     <DeckPage
-      trail={[["dashboard", "/"], ["server", "/dash/server"], ["live admin"], ["usage"]]}
+      trail={[["dashboard", "/"], ["server", "/dash/server"], ["live admin", LIVE_ADMIN], ["usage"]]}
       title="usage"
       back="/dash/server"
       filters={<Show when={admin() === true}>

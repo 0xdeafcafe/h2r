@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { lockedHint, menuFor } from "../src/dash/menu";
+import { lockedHint, menuFor, settingsRows } from "../src/dash/menu";
 import { fetchDevices, parseKeys, shortKid } from "../src/state/devices";
 import { INVITE_DAY_CHOICES, INVITE_MAX_DAYS, nextInviteDays } from "../src/admin/server";
 
@@ -21,6 +21,19 @@ describe("the main menu", () => {
     expect(items).toEqual(["live", "games", "sessions", "friends", "players", "account", "settings"]);
     expect(items.filter((i) => lockedHint(i, true))).toEqual([]);
     expect(items).not.toContain("signin");
+  });
+});
+
+describe("settings", () => {
+  test("only a confirmed admin gets the Live admin row and raw event log", () => {
+    for (const admin of [null, false]) {
+      const rows = settingsRows(true, admin);
+      expect(rows.find((r) => r.label === "live admin")).toBeUndefined();
+      expect(rows.find((r) => r.label === "event log")?.key).toBe("/games/halo2/events");
+    }
+    const rows = settingsRows(true, true);
+    expect(rows.find((r) => r.label === "live admin")?.key).toBe("/dash/admin");
+    expect(rows.find((r) => r.label === "event log")?.key).toBe("/dash/admin/events");
   });
 });
 

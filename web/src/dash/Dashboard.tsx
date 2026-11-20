@@ -35,6 +35,7 @@ import { ReportsQueue } from "./Reports";
 import { BanControl, BanNotice, BansList } from "./Bans";
 import { MuteButton, MutedList } from "./Mutes";
 import { adminState } from "../admin/state";
+import { DECK_ENTRY } from "../deck/back";
 import type { BladeControls } from "./Blades";
 import { fetchServerFacts, serverPods } from "../admin/server";
 import "../styles/dash-server.css";
@@ -61,8 +62,8 @@ import GamesScreen from "./Games";
 import "../styles/social.css";
 import { DASH_NAME } from "../brand";
 import Legal from "../components/Legal";
-import { lockedHint, menuFor, type SectionId } from "./menu";
-import { STATS_ROOT, statsPath } from "../routes";
+import { lockedHint, menuFor, settingsRows, type SectionId } from "./menu";
+import { LIVE_ADMIN, STATS_ROOT, statsPath } from "../routes";
 
 type ScreenId = "menu" | "games" | "list" | "player" | "signup" | "recovery" | "recover" | "server" | "social" | "sessions" | "signins";
 
@@ -182,10 +183,11 @@ export default function Dashboard() {
     setDir(d);
     // Off to the stats site: the veil carries it (and plays this screen out).
     if (sideOf(href) === "stats") { crossTo(href, { replace }); return; }
-    if (reducedMotion()) { navigate(href, { replace }); return; }
+    const state = !replace && (href === LIVE_ADMIN || href.startsWith(LIVE_ADMIN + "/")) ? DECK_ENTRY : undefined;
+    if (reducedMotion()) { navigate(href, { replace, state }); return; }
     setLeaving(true);
     clearTimeout(timer);
-    timer = setTimeout(() => { navigate(href, { replace }); setLeaving(false); }, 190);
+    timer = setTimeout(() => { navigate(href, { replace, state }); setLeaving(false); }, 190);
   }
   onCleanup(() => clearTimeout(timer));
   createEffect(() => { lastScreen = screen(); });
@@ -199,12 +201,7 @@ export default function Dashboard() {
       : online();
   });
 
-  const settings = createMemo(() => [
-    { key: "/dash/signup", label: identity.me() ? "profile" : "sign up", glyph: "key" },
-    { key: "/dash/games", label: "games", glyph: "disc" },
-    { key: adminState.isMeAdmin() === true ? "/dash/admin/events" : statsPath("/events"), label: "event log", glyph: "history" },
-    { key: "/dash/server", label: "server", glyph: "server" },
-  ] satisfies (Row & { glyph: GlyphName })[]);
+  const settings = createMemo(() => settingsRows(!!identity.me(), adminState.isMeAdmin()));
 
   const rows = createMemo((): Row[] => {
     switch (section()) {

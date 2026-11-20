@@ -15,7 +15,7 @@ import { ApiError } from "../api/http";
 import type { LocalAccount } from "../state/account";
 import { eventBody, signEvent } from "../state/sign";
 import { issueToken, randomId } from "./token";
-import { STATS_ROOT, statsPath } from "../routes";
+import { LIVE_ADMIN, STATS_ROOT, statsPath } from "../routes";
 
 export const ADMIN_READ = "admin.read";
 export const INVITES_WRITE = "invites.write";
@@ -280,7 +280,7 @@ export type ServerView = "overview" | "invites" | "accounts" | "import" | "repor
 export const HALO_ADMIN = statsPath("/admin");
 
 /** The Live admin's usage screen (docs/live/web-boundary.md §5), in the dense style. */
-export const LIVE_ADMIN_USAGE = "/dash/admin/usage";
+export const LIVE_ADMIN_USAGE = `${LIVE_ADMIN}/usage`;
 
 /** The pods of each server screen. Admin tools only for an admin
  *  (`isMeAdmin() === true`); everyone else, and anyone while that is still

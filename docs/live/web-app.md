@@ -69,6 +69,11 @@ and settings (the ones that need an account show greyed with a hint).
 Signed in it is live now, games, find a game, friends, players,
 account (recovery code, authenticator, devices, sign out) and settings;
 profile and the server (`/dash/server`: service admin) sit under settings.
+Server admins can open **Live admin** (`/dash/admin`) from Settings for
+usage, dedicated hosts, the raw event log and the style sample. On these
+pages, the Back link, B, Escape and Backspace go to the previous page
+when opened from the dashboard or another admin page. Direct visits fall
+back to Settings or Server. The **Live admin** breadcrumb opens the hub.
 Open **Games** (`/dash/games`) and select **Halo 2** to see recent games and,
 when signed in, your service record. Its link to the stats site (named by
 `STATS_NAME` in `src/brand.ts`) opens `/games/halo2`.

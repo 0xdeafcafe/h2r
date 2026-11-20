@@ -4,6 +4,9 @@
 // items and the account (recovery code, authenticator, devices, sign out).
 // Profile and the server live under settings.
 
+import { LIVE_ADMIN, statsPath } from "../routes";
+import type { GlyphName } from "./parts";
+
 export type SectionId = "live" | "games" | "sessions" | "friends" | "teams" | "players" | "settings" | "signup" | "server" | "signin" | "recover" | "account";
 
 export function menuFor(signedIn: boolean): SectionId[] {
@@ -21,4 +24,14 @@ export function lockedHint(id: SectionId, signedIn: boolean): string | null {
     case "settings": return "sign in for settings";
     default: return null;
   }
+}
+
+export function settingsRows(signedIn: boolean, admin: boolean | null): { key: string; label: string; glyph: GlyphName }[] {
+  return [
+    { key: "/dash/signup", label: signedIn ? "profile" : "sign up", glyph: "key" },
+    { key: "/dash/games", label: "games", glyph: "disc" },
+    { key: admin === true ? `${LIVE_ADMIN}/events` : statsPath("/events"), label: "event log", glyph: "history" },
+    { key: "/dash/server", label: "server", glyph: "server" },
+    ...(admin === true ? [{ key: LIVE_ADMIN, label: "live admin", glyph: "gear" as const }] : []),
+  ];
 }

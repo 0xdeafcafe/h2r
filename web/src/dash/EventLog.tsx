@@ -1,7 +1,8 @@
 import { For, Show, createMemo, createResource, createSignal, onCleanup, onMount } from "solid-js";
-import { A, useNavigate } from "@solidjs/router";
+import { A } from "@solidjs/router";
 import { adminState } from "../admin/state";
 import { DeckPage, Panel } from "../deck/Deck";
+import { LIVE_ADMIN } from "../routes";
 import { eventSummary, EVENT_WINDOW, eventWindowStart, readEventWindow } from "../lib/eventLog";
 import { identity } from "../state/identity";
 import { live } from "../state/live";
@@ -15,13 +16,8 @@ export default function EventLog() {
     const me = identity.me();
     return me && live.wellKnown() && adminState.isMeAdmin() === true && JSON.stringify([live.server().api, me.xuid]);
   };
-  const navigate = useNavigate();
-  onMount(() => onCleanup(watchGamepads((action) => {
-    if (action === "back") navigate(BACK);
-  })));
-
   return (
-    <DeckPage title="Event Log" trail={[["dashboard", "/"], ["server", "/dash/server"], ["live admin", "/dash/admin"], ["event log"]]} back={BACK}>
+    <DeckPage title="Event Log" trail={[["dashboard", "/"], ["server", "/dash/server"], ["live admin", LIVE_ADMIN], ["event log"]]} back={BACK}>
       <Show when={scope()} keyed fallback={
         <Panel title="Admin access">
           <p class="dk-note">
