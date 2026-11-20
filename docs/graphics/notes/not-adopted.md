@@ -1,13 +1,13 @@
-# Render switches
+# Graphics: not adopted
 
-What is left of the render side's switches is in
-[switches.md](../runtime/switches.md), with every other switch. This file
-keeps what was removed and why, so the next lane does not re-add an
-experiment that already lost.
+Evidence for [native-renderer.md](../native-renderer.md) and
+[graphics.md](../graphics.md). The switches that remain are in
+[switches.md](../../runtime/switches.md).
 
-The native GPU renderer has one switch, `impl.render.native` (on;
-`=off` turns every stage off together). The per-stage and per-walk keys
-are gone. Naming one in `H2_FEATURES` now changes nothing.
+Experiments and switches that were built, measured and removed, one row
+each, so that the next lane does not build them again. The native GPU
+renderer has one switch, `impl.render.native` (on; `=off` turns every
+stage off together). Naming a removed key in `H2_FEATURES` changes nothing.
 
 ## Removed
 
@@ -29,10 +29,3 @@ numbers.
 | `2d562b08` | the lazy 1x reference at render scale (`H2_LAZY_REFERENCE`, `ScaledBackend::set_lazy_reference`), `scale_bench` | 1-10% saved on unread frames, 15-25% lost on frames with a back-buffer snapshot, which Halo's frames take (09590f5c); off since |
 | `7e4529f0` | `GfxBackend::without_shaders` | no caller |
 | `ff6f7d6b` | `impl.render.layer_sort` and `impl.render.transparent_sort`: `engine::render_loop::sort` and `sort_indexed`, their differential tests, the `render-loop` feature's two placements and path counters | the profile puts both sorts at about 0.01 ms a frame (30 samples over 142 s, Old Mombasa 2026-11-17), and each port cost a hooked call per sort; off since built. The points `LAYER_SORT` and `TRANSPARENT_SORT` stay in `engine::points` as research notes |
-
-## Dead code left for the owner
-
-| Item | Note |
-|---|---|
-| `boot::d3d_glue::map_write_combined` | no caller since `map_reserved_write_combined` |
-| `Device::set_transform`, `Device::set_zbias`, `Device::present_parameters` | no caller; part of the D3D API mirror |
