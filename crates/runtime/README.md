@@ -1,7 +1,7 @@
 # crates/runtime
 
 The machine the lifted code runs on: guest memory and CPU state, the
-kernel, the filesystem, snapshots, the host fault handler, timeline
+kernel, the filesystem, snapshots, timeline
 events, and the build-and-load driver that turns an XBE into a running
 module. A crate here may depend on `formats` and `recompiler` and on other
 runtime crates (`scripts/crate-domains.toml`, checked by
@@ -13,7 +13,6 @@ apps sit above it and use it. See
 | Crate | What |
 |---|---|
 | [background](background/) | Background work: threads below the game's priority, the worker cap for background jobs |
-| [hostfault](hostfault/) | Process-wide host fault handler: regions and fixup tables |
 | [kernel](kernel/) | The Xbox kernel's services over the runtime |
 | [lifted](lifted/) | The lifted original on the IR interpreter, the oracle for ports |
 | [recomp](recomp/) | Build and load: lift, emit, compile, load, and the interpreter fallback |

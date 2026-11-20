@@ -10,6 +10,7 @@ The composition root. It runs a built module on the runtime with the kernel HLE 
 
 - `src/lib.rs`: `run`, `run_hosted`, `run_with_live`, `run_hosted_with_live`, `run_hosted_with_publisher`, `run_sim` and `run_theater`, one per way to start the game. `game` is re-exported whole.
 - `src/registration.rs`, `src/registration/`: the feature plan that attaches every feature to the hooks.
+- `src/test_maps_recipes.rs`: `game`'s `Recipes` over the scenario editor, for `maps.test.*` (`test-maps` feature).
 - `tests/`: headless runs of the guest (interpreter, hosted, live, sign-in, audio, render points).
 - `examples/`: small drivers.
 
@@ -21,7 +22,7 @@ The composition root. It runs a built module on the runtime with the kernel HLE 
 - `movie-playback`: Bink movie decode and playback.
 - `local-io`: host audio and voice.
 - `perf`: the in-process sampling profiler.
-- `test-maps`: `maps.test.*` on the agent API.
+- `test-maps`: `maps.test.*` on the agent API; `src/test_maps_recipes.rs` builds the recipes with the scenario editor.
 
 ## Tests
 

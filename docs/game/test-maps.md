@@ -1,7 +1,7 @@
 # Test maps: rigs built from recipes and loaded through the agent API
 
 Status: Built. Not run against the game: the load path is tested over a fake guest only ([Not verified](#not-verified)).
-Code: `crates/tools/scenario-edit/src/recipe.rs` (recipes, `build`, `build_package`), `crates/tools/scenario-edit/recipes/*.toml` (the built-in recipes), `crates/extensions/game/src/test_maps.rs` (`maps.test.*`), `crates/extensions/agent/src/sim/calls.rs` (`Call::QueueGame`), `crates/apps/cli/src/agent_maps.rs` (`h2 agent maps`). Tests: `crates/tools/scenario-edit/src/recipe/tests.rs`, `crates/extensions/game/src/test_maps/tests.rs`, `crates/extensions/agent/src/sim/calls/tests.rs`, `crates/extensions/agent-proto/src/test_maps.rs`, `crates/apps/cli/src/agent_maps.rs`.
+Code: `crates/tools/scenario-edit/src/recipe.rs` (recipes, `build`, `build_package`), `crates/tools/scenario-edit/recipes/*.toml` (the built-in recipes), `crates/extensions/game/src/test_maps.rs` (`maps.test.*`, and the `Recipes` trait that builds), `crates/apps/boot/src/test_maps_recipes.rs` (`Recipes` over the scenario editor), `crates/extensions/agent/src/sim/calls.rs` (`Call::QueueGame`), `crates/apps/cli/src/agent_maps.rs` (`h2 agent maps`). Tests: `crates/tools/scenario-edit/src/recipe/tests.rs`, `crates/extensions/game/src/test_maps/tests.rs`, `crates/apps/boot/src/test_maps_recipes.rs`, `crates/extensions/agent/src/sim/calls/tests.rs`, `crates/extensions/agent-proto/src/test_maps.rs`, `crates/apps/cli/src/agent_maps.rs`.
 Switch: the `agent-calls` feature (`H2_FEATURES=-agent-calls` leaves `maps.test.load` unavailable), listed in [switches.md](../runtime/switches.md). Built with the `test-maps` cargo feature of `boot` (on in `h2`'s desktop build).
 
 An agent asks the running game for a purpose-built test map and loads
@@ -25,7 +25,9 @@ user's data and cache directories.
    `state: building`, and builds on a thread of its own
    (`test_maps::build`): the base map from the user's disc
    (`IsoDisc::map_file`, an image region or an extracted file), then
-   `recipe::build_package`, which opens it in a `Session`, runs
+   `Recipes::build`, which `boot` implements over
+   `recipe::build_package` (`game` is an extension and may not use the
+   scenario editor, a tool), which opens it in a `Session`, runs
    `recipe::build` and saves package `test-<name>` under `<data>/maps/`
    (`Session::save_package`, docs/game/maps.md §8). The build's report is
    written to `<cache>/test-maps/<MapId>.json`.

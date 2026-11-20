@@ -11,6 +11,8 @@
 pub use game::*;
 // maps.test.*: test maps from recipes (docs/game/test-maps.md).
 pub mod registration;
+#[cfg(feature = "test-maps")]
+pub mod test_maps_recipes;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -942,6 +944,7 @@ fn run_configured(
     if let Some(a) = &agent {
         test_maps::install(
             &a.agent,
+            Arc::new(test_maps_recipes::ScenarioRecipes),
             a.sim.as_ref().and_then(|s| s.calls()),
             &opts.disc,
             &opts.data_root,

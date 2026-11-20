@@ -8,8 +8,9 @@ handler) and fixup tables that send a faulting access to its slow path.
 
 ## Where it sits
 
-Domain `runtime`; no workspace dependencies. `runtime` registers regions
-and `emit` generates the fixup tables it reads.
+Domain `recompiler`; no workspace dependencies. `emit` generates the fixup
+tables it reads and `runtime` registers regions. It sits in `recompiler`
+because `emit` uses it and `runtime`, which also does, may use `recompiler`.
 
 ## Layout
 

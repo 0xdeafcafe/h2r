@@ -281,7 +281,7 @@ COFF). The module exports the section bounds. At
 registration the runtime checks the rows are sorted by address and fails
 with a named error if not; it never sorts or skips.
 
-**The fault handler.** A new crate, `crates/runtime/hostfault`, with no
+**The fault handler.** A new crate, `crates/recompiler/hostfault`, with no
 dependency but `libc` (for `sigaction` and the saved machine context),
 owns the process-wide handler: `SIGBUS` and `SIGSEGV` on
 macOS, `SIGSEGV` on Linux, a vectored handler on Windows. It keeps a
@@ -659,7 +659,7 @@ gone.
 
 ### F1. `hostfault` and the fixup spike
 
-- New `crates/runtime/hostfault`: handler install and chaining, region registry,
+- New `crates/recompiler/hostfault`: handler install and chaining, region registry,
   fixup-table registration and lookup.
 - A C fixture in `crates/recompiler/emit/tests/c/` with one `asm goto` load and store
   per width, built for every target `Arch` knows
@@ -872,7 +872,7 @@ off.
 **Files.** This lane owns `crates/recompiler/emit/c/h2gen.h`, `h2fastmem.h`,
 `crates/recompiler/emit/src/c.rs`, `c/span.rs`, `compile.rs`' flag list,
 `crates/runtime/runtime/src/{flat*,direct,runner,ffi*,cow,watch,preempt}.rs`,
-`guest.rs`' fast-page and allocation code, `crates/runtime/hostfault` and
+`guest.rs`' fast-page and allocation code, `crates/recompiler/hostfault` and
 RUNTIME-CONTRACT.md. The sim tier adds new files only (its own emit
 module, header and runtime module) and one registration call. A change it
 needs in a file above goes through a slice here.

@@ -1,6 +1,6 @@
 [package]
 name = "h1-runtime"
-description = "Halo 1 in the running game: AI control, conversations, HUD text, script builtins, cinematics, and the hooks only converted maps need (docs/halo1/README.md)"
+description = "Hooks that only converted Halo 1 maps need: projectile velocity curves and the scope zoom (docs/halo1/README.md); the rest of Halo 1 in the game is game's h1_* modules"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
