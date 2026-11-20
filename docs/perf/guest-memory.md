@@ -701,9 +701,11 @@ write barrier's `take_dirty` and guard (about 700).
 
 ## Handler entry and exit: gate at entry, inline charge, dirty bits (2026-11-18)
 
-Three generated-code switches and one x87 switch, all off by default. The
-C ones are in `cflags_for`'s list, so they are in the object cache key and
-the boot stamp: set them identically for `h2 build` and `h2 run`.
+Three generated-code switches and one x87 experiment, all off when this
+was written; `H2_VIEW_CHARGE` has been on by default since feddd0402
+(2026-11-20). The C ones are in `cflags_for`'s list, so they are in the
+object cache key and the boot stamp: set them identically for `h2 build`
+and `h2 run`.
 
 - **`H2_ENTRY_GATE=1`.** A handler with inline loads or stores takes the
   RAM gate as it starts (after acquire and the budget), and again when a
