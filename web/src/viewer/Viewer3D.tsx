@@ -84,7 +84,7 @@ export default function Viewer3D(props: Viewer3DProps) {
   const fly = (on: boolean) => {
     if (!scene || scene.flying === on) return;
     scene.setFly(on);
-    if (scene.flying) hint("Flycam: WASD or arrows move, Q E or Ctrl Space down and up, drag (either button) to look, click to lock the mouse, wheel for speed, Shift for faster, F to leave. Touch: one finger looks, two fly.", 6000);
+    if (scene.flying) hint("Move with WASD or the arrow keys. Q and E move down and up. Drag to look, click to lock the pointer, scroll to change speed, and hold Shift to boost. Press F to leave. On touch screens, one finger looks and two fingers fly.", 6000);
     else setFlyHint("");
   };
   const toggleFly = () => {
@@ -232,7 +232,8 @@ export default function Viewer3D(props: Viewer3DProps) {
   // A killcam (or another window's) asks for a camera: take each new one,
   // and one made just before this view opened (it opened for it).
   let opened = false;
-  let chosen = false;
+  let opening: CameraStart | null = null;
+  let openingApplied = false;
   let adopted: number | null = null;
   let explicit = props.mode !== undefined;
   createEffect(on(() => props.camera?.() ?? null, (c) => {
@@ -252,9 +253,12 @@ export default function Viewer3D(props: Viewer3DProps) {
 
   onMount(() => {
     if (!hasWebGl()) { setFailed("This browser can't draw 3D here (WebGL is off or unavailable). The 2D map still shows the game."); return; }
+    const perf = new URLSearchParams(location.search).has("perf");
+    const still = reducedMotion();
     try {
       scene = new ViewerScene(host, {
-        reducedMotion: reducedMotion(),
+        reducedMotion: still,
+        reveal: !perf,
         onPick: (i) => props.director ? props.director.pick("follow", i) : pick("follow", i),
       });
     } catch {
@@ -264,16 +268,22 @@ export default function Viewer3D(props: Viewer3DProps) {
     const s = scene;
     // `?perf` in the address: the scene on window for the perf harness
     // (web/bench/viewer.bench.ts) to read its renderer's counts.
-    if (/[?&]perf\b/.test(location.search)) (window as unknown as { h2Viewer?: ViewerScene }).h2Viewer = s;
+    if (perf) (window as unknown as { h2Viewer?: ViewerScene }).h2Viewer = s;
     s.onAoDropped = () => setAo(false);
     s.onFlyChange = setFlying;
     s.onFlySpeed = setFlySpeed;
     s.onSurfaceProgress = (done, total) => setSurfaces({ done, total });
-    s.onFirstMapFrame = () => {
-      setProgress(loadProgress("reveal"));
-      setReveal("started");
-      clearTimeout(revealTimer);
-      revealTimer = setTimeout(() => setReveal("done"), reducedMotion() ? 200 : 760);
+    let revealedAt = 0;
+    s.onReveal = (state) => {
+      if (state === "started") {
+        revealedAt = performance.now();
+        setProgress(loadProgress("reveal"));
+        setReveal("started");
+      } else {
+        const remaining = (still ? 200 : 420) - (performance.now() - revealedAt);
+        if (remaining > 0) revealTimer = setTimeout(() => setReveal("done"), remaining);
+        else setReveal("done");
+      }
     };
     s.setCurtain(true);
     setSceneReady(true);
@@ -298,25 +308,34 @@ export default function Viewer3D(props: Viewer3DProps) {
       const frame = props.frame(now);
       const sought = props.soughtAt?.() ?? 0;
       if (adopted === null && !props.glb() && (gameArtReady() || late())) adopted = now;
-      const choose = !chosen && adopted !== null && (frame.players.length > 0 || now - adopted >= 1500);
-      if (choose) {
-        chosen = true;
+      const automatic = () => props.start?.(frame, props.player) ?? { kind: "bounds" } as const;
+      if (!opening && (frame.players.length > 0 || (adopted !== null && now - adopted >= 1500))) {
+        opening = explicit || props.director ? { kind: "bounds" } : automatic();
+      }
+      if (opening && !openingApplied && adopted !== null) {
+        openingApplied = true;
         if (!explicit && !props.director && !s.flying) {
-          const start = props.start?.(frame, props.player) ?? { kind: "bounds" };
+          // A player can leave while the geometry is still on the wire.
+          const index = opening.kind === "player" ? opening.index : null;
+          const start = index !== null && !frame.players.some(p => p.index === index) ? automatic() : opening;
           s.setStart(start);
           setMode(start.kind === "player" ? "follow" : "orbit");
           if (start.kind === "player") setFollow(start.index);
+        } else {
+          if (props.director) applySelection();
+          let index = follow();
+          if (onPlayer(mode()) && index === null) {
+            index = people()[0]?.index ?? null;
+            setFollow(index);
+          }
+          if (!s.flying) s.setInitialMode(mode(), index);
         }
       }
-      if (adopted !== null && (chosen || phase() !== "ok") && sourced !== adopted) {
+      if (adopted !== null && (openingApplied || phase() !== "ok") && sourced !== adopted) {
         sourced = adopted;
         s.setCurtain(false);
       }
       s.update(now, frame, props.roster(), props.highlight?.() ?? null, sought !== seen, props.priorityPlayers?.());
-      if (choose) {
-        if (props.director) applySelection();
-        else if (explicit) pick(mode(), follow());
-      }
       seen = sought;
       if (!!frame.actors?.length !== hasActors()) setHasActors(!!frame.actors?.length);
       if (!!frame.cinematic !== cutscene()) setCutscene(!!frame.cinematic);

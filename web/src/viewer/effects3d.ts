@@ -55,7 +55,7 @@ export class Effects3D {
   /** Damage-report origins and the final observed segment of a projectile.
    * Deletion alone draws no explosion. Age is measured on the film clock,
    * so these effects freeze, rewind and resume with the simulation. */
-  film(events: readonly VisibleFilmEffect[], still: boolean) {
+  film(events: readonly VisibleFilmEffect[], still: boolean, visible?: (at: THREE.Vector3) => boolean) {
     let used = 0, changed = false;
     for (const e of events) {
       if (e.kind === "barrel") continue;
@@ -87,13 +87,15 @@ export class Effects3D {
           mark.position.addScaledVector(this.a, -half);
         }
       }
-      mark.visible = true;
+      mark.visible = visible?.(mark.position) ?? true;
       mark.material.color.setHex(blast ? 0xff932f : terminal ? 0xffe0aa : 0xffc76b);
       mark.material.opacity = (1 - life) * (still ? .45 : .82);
       changed = true;
     }
-    for (let i = used; i < this.sparks.length && this.sparks[i]!.visible; i++) {
-      this.sparks[i]!.visible = false;
+    for (let i = used; i < this.sparks.length; i++) {
+      const spark = this.sparks[i]!;
+      if (!spark.visible) continue;
+      spark.visible = false;
       changed = true;
     }
     return changed;
@@ -139,7 +141,7 @@ export class Effects3D {
   /** Draws this moment's damage and recorded projectiles. `S` is the scene's marker
    *  scale; `still` (reduced motion) keeps numbers in place. Returns
    *  whether anything is (or just stopped being) on screen. */
-  update(hits: readonly LiveHit[], trails: readonly ProjectileTrail[], S: number, still: boolean): boolean {
+  update(hits: readonly LiveHit[], trails: readonly ProjectileTrail[], S: number, still: boolean, visible?: (at: THREE.Vector3) => boolean): boolean {
     let changed = hits.length > 0 || trails.length > 0;
     const kept = new Set<number>();
     for (const h of hits) {
@@ -148,6 +150,7 @@ export class Effects3D {
       kept.add(h.id);
       const colour = hitColour(h);
       const to = this.a.set(...gameToGl(h.x, h.y, h.z + CHEST));
+      o.group.visible = visible?.(to) ?? true;
       const far = this.camera.position.distanceTo(to);
       o.mark.position.copy(to);
       o.mark.scale.setScalar((h.kill ? 0.04 : 0.027) * (h.age < 90 ? 1.5 - h.age / 180 : 1));
@@ -197,6 +200,7 @@ export class Effects3D {
       o.trail.visible = p.points.length > 1;
       positions.needsUpdate = true;
       o.ball.position.set(...gameToGl(...end));
+      o.group.visible = visible?.(o.ball.position) ?? true;
       o.ball.scale.setScalar(Math.max(0.035 * S, this.camera.position.distanceTo(o.ball.position) * 0.0045));
       const colour = projectileColour(p.kind);
       o.mat.color.set(colour);

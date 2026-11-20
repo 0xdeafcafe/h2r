@@ -58,6 +58,7 @@ import { cameraFit, eyeView, followDistance, markerScale, orbitDirection, type B
 import { cutHeight, cutRange, meshRole, seeTargets, takesSeeThrough, type SeeMode } from "./cutaway";
 import { declutter, type TagIn, type TagState } from "./declutter";
 import { easeOutExpo, playableBounds, type CameraStart } from "./start";
+import { revealAt, revealBand } from "./reveal";
 import { CutawayMaterials } from "./cutaway3d";
 
 /** `eyes`: first person, through the followed player's eyes along their aim. */
@@ -65,6 +66,8 @@ export type ViewMode = "orbit" | "top" | "follow" | "eyes";
 
 export interface SceneOptions {
   reducedMotion: boolean;
+  /** Skip the opening sweep for stills and renderer measurements. */
+  reveal?: boolean;
   /** Called when a player's label is clicked. */
   onPick?: (index: number) => void;
   /** Players as the game draws them, without their rings, aim rays or
@@ -233,8 +236,8 @@ export class ViewerScene {
   private cut = { on: false, height: 0 };
   private cutShown: number | null = null;
   private seeMode: SeeMode = "auto";
-  private cutaway = new CutawayMaterials(this.cutPlane, this.camera.position);
-  private filmWorld = new FilmWorld3D((node) => this.cutaway.attachModel(node));
+  private cutaway: CutawayMaterials;
+  private filmWorld: FilmWorld3D;
   private v0 = new THREE.Vector3();
   private e0 = new THREE.Euler();
   private v1 = new THREE.Vector3();
@@ -245,9 +248,14 @@ export class ViewerScene {
   private frameBox: Box3 | null = null;
   private frameMap = false;
   private opening: CameraStart | null = null;
+  private initialMode: { mode: ViewMode; follow: number | null } | null = null;
+  private sweep: { start: number; origin: THREE.Vector3; reach: number; band: number } | null = null;
+  private visibleRadius = Infinity;
+  private shellRevealed = true;
+  private revealFinished = false;
   private hasMap = false;
   private curtain = false;
-  onFirstMapFrame?: () => void;
+  onReveal?: (state: "started" | "done") => void;
   onSurfaceProgress?: (done: number, total: number) => void;
   private drewMap = false;
   private scale = 1;
@@ -281,6 +289,8 @@ export class ViewerScene {
 
   /** Throws when the browser can't give a WebGL context. */
   constructor(host: HTMLElement, private opts: SceneOptions) {
+    this.cutaway = new CutawayMaterials(this.cutPlane, this.camera.position, this.sweepEnabled);
+    this.filmWorld = new FilmWorld3D(node => this.cutaway.attachModel(node));
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
     this.renderer = renderer;
     renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
@@ -430,12 +440,12 @@ export class ViewerScene {
         const mesh = o as THREE.Mesh;
         // Decals and effects: their own blending, the level's cuts, no part in the framing.
         if (mesh.isMesh && path.some((n) => layerNode(n)) && dressLayer(mesh)) {
-          this.cutaway.attach(mesh.material as THREE.Material);
+          this.cutaway.attach(mesh.material as THREE.Material, true, null);
         } else if (mesh.isMesh && !Array.isArray(mesh.material) && plasma.has(mesh.material)) {
           // Plasma is already dressed and shared across its instances.
           used.add(mesh.material);
           mesh.castShadow = mesh.receiveShadow = false;
-          this.cutaway.attach(mesh.material);
+          this.cutaway.attach(mesh.material, true, null);
         } else if (mesh.isMesh) {
           if (role === "machine") mesh.material = Array.isArray(mesh.material) ? mesh.material.map(own) : own(mesh.material);
           const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
@@ -454,7 +464,7 @@ export class ViewerScene {
             // Machines are ordinary models and keep the side they came with,
             // and so does anything cut out by alpha (a grate reads from both sides).
             if (role === "level" && !m.transparent && !m.alphaTest) m.side = THREE.FrontSide;
-            this.cutaway.attach(m, takesSeeThrough(role, vehicle));
+            this.cutaway.attach(m, takesSeeThrough(role, vehicle), role === "machine" || vehicle ? "objects" : "level");
           }
           mesh.castShadow = solid;
           mesh.receiveShadow = true;
@@ -475,6 +485,10 @@ export class ViewerScene {
       this.look.wet = wet;
       this.textures.adopt(pairs);
       this.scenarioObjects.adopt(root, this.textures);
+      if (this.sweepEnabled) root.traverse(o => {
+        const mesh = o as THREE.Mesh;
+        if (mesh.isMesh) this.cutaway.attachShadow(mesh);
+      });
       this.frameObjects.reset();
       // Machine roots and their optional device clips are both driven by the frames.
       const deviceClips = new Map(gltf.animations.map((clip) => [clip.name, clip]));
@@ -488,6 +502,7 @@ export class ViewerScene {
       this.scene.add(root);
       this.hasMap = true;
       this.drewMap = false;
+      this.revealFinished = false;
       mark("h2-viewer:map-loaded");
       if (this.grid) { this.scene.remove(this.grid); this.grid = null; this.gridKey = ""; }
       // glTF (x, y, z) is game (x, -z, y).
@@ -526,6 +541,7 @@ export class ViewerScene {
     if (this.featureGroup) { this.scene.remove(this.featureGroup); disposeTree(this.featureGroup); this.featureGroup = null; }
     if (this.features && this.featuresOn) {
       this.featureGroup = buildFeatures(this.features, Math.max(1, this.scale * 0.8));
+      this.featureGroup.visible = this.shellRevealed;
       this.scene.add(this.featureGroup);
     }
     this.dirty = true;
@@ -598,6 +614,7 @@ export class ViewerScene {
       if (!g.position.equals(this.v0) || !g.quaternion.equals(this.q0)) this.dirty = true;
       g.position.copy(this.v0);
       g.quaternion.copy(this.q0);
+      g.visible = this.insideReveal(g.position);
     }
     for (const [id, o] of this.looseMachines) {
       const m = this.shownMachines.get(id);
@@ -737,6 +754,57 @@ export class ViewerScene {
     this.features = null;
     this.showFeatures();
     this.hasMap = false;
+    this.frameMap = false;
+    this.sweep = null;
+    this.visibleRadius = Infinity;
+    this.shellRevealed = true;
+    this.sun.shadow.intensity = 1;
+    this.cutaway.clearReveal();
+  }
+
+  private get sweepEnabled() { return this.opts.reveal !== false && !this.opts.bare && !this.opts.reducedMotion; }
+
+  /** Starts once, when the loaded map can be drawn with its opening shot. */
+  private advanceReveal(now: number) {
+    if (!this.hasMap || this.curtain) return;
+    if (!this.drewMap && this.sweepEnabled && this.bounds && this.frameBox) {
+      const focus = this.opening?.kind === "player" ? this.opening.index
+        : this.initialMode ? this.initialMode.follow : this.followIndex;
+      const p = focus === null || this.fly ? undefined : this.shown.get(focus);
+      const { min, max } = this.frameBox;
+      const origin = p
+        ? new THREE.Vector3(...gameToGl(p.x, p.y, p.z))
+        : new THREE.Vector3(...gameToGl((min[0] + max[0]) / 2, (min[1] + max[1]) / 2, min[2]));
+      let reach = 0;
+      for (const x of [this.bounds.min[0], this.bounds.max[0]])
+        for (const y of [this.bounds.min[1], this.bounds.max[1]])
+          for (const z of [this.bounds.min[2], this.bounds.max[2]]) {
+            reach = Math.max(reach, origin.distanceTo(this.v0.set(...gameToGl(x, y, z))));
+          }
+      this.sweep = { start: now, origin, reach, band: revealBand(reach) };
+      for (const p of this.players.values()) p.el.classList.remove("v3-label--revealed");
+    }
+    const sweep = this.sweep;
+    if (!sweep) return;
+    const frame = revealAt(now - sweep.start, sweep.reach);
+    this.cutaway.setReveal(sweep.origin, sweep.band, this.scale, frame);
+    this.shellRevealed = frame.shadows === 1;
+    this.look.setReveal(frame.sky, this.shellRevealed);
+    this.sun.shadow.intensity = frame.shadows;
+    if (this.featureGroup) this.featureGroup.visible = this.shellRevealed;
+    this.visibleRadius = this.shellRevealed ? Infinity : Math.max(0, frame.radius - sweep.band);
+    if (frame.done) this.sweep = null;
+    this.dirty = true;
+  }
+
+  private insideReveal = (at: THREE.Vector3) => {
+    return !this.sweep || at.distanceToSquared(this.sweep.origin) < this.visibleRadius ** 2;
+  };
+
+  private revealLabel(p: PlayerObj) {
+    if (!this.sweep) return;
+    if (!p.group.visible) p.el.classList.remove("v3-label--revealed");
+    else if (p.label.visible) p.el.classList.add("v3-label--revealed");
   }
 
   /** Sizes the lights, shadows, fog, ground and camera limits to a box
@@ -841,8 +909,16 @@ export class ViewerScene {
   }
 
   setStart(start: CameraStart) { this.opening = start; }
+  setInitialMode(mode: ViewMode, follow: number | null) {
+    this.initialMode = { mode, follow: mode === "eyes" || mode === "follow" ? follow : null };
+  }
 
   private beginOpening() {
+    if (this.initialMode) {
+      const { mode, follow } = this.initialMode;
+      this.initialMode = null;
+      this.setMode(mode, follow, true);
+    }
     const start = this.opening;
     if (!start) return;
     this.opening = null;
@@ -866,8 +942,9 @@ export class ViewerScene {
     }
   }
 
-  setMode(mode: ViewMode, follow: number | null = null) {
+  setMode(mode: ViewMode, follow: number | null = null, immediate = false) {
     this.endFly(false);
+    this.tween = null;
     const was = this.mode;
     this.mode = mode;
     this.followIndex = mode === "follow" || mode === "eyes" ? follow : null;
@@ -889,10 +966,10 @@ export class ViewerScene {
         if (was === "top" || dir.y / dir.length() > 0.9) dir.set(0.6, 0.55, 0.6);
         // Close to the player, however big the level is.
         const want = followDistance(dir.length(), this.scale, !!this.players.get(follow!)?.biped, this.controls.minDistance);
-        this.moveCamera(target.clone().addScaledVector(dir.normalize(), want), target, false);
+        this.moveCamera(target.clone().addScaledVector(dir.normalize(), want), target, immediate);
       }
-    } else if (top || was !== mode) {
-      this.frameCamera(false);
+    } else if (top || was !== mode || immediate) {
+      this.frameCamera(immediate);
     }
     this.dirty = true;
   }
@@ -1414,7 +1491,7 @@ export class ViewerScene {
   private followZone(now: number, reported: number | null, highlight: number | null, seeking: boolean) {
     const players: Array<{ x: number; y: number; z: number }> = [];
     for (const s of this.shown.values()) if (!s.actor && s.alive) players.push(s);
-    const fi = this.followIndex ?? highlight;
+    const fi = (this.opening?.kind === "player" ? this.opening.index : this.initialMode?.follow ?? this.followIndex) ?? highlight;
     const f = fi !== null ? this.shown.get(fi) : undefined;
     const focus = f && f.alive && !f.actor ? f : null;
     const bsp = this.zone.update(now, this.look.zoneBoxes(), { reported, focus, players }, { cinematic: this.look.cinematicOn(), snap: seeking });
@@ -1424,7 +1501,7 @@ export class ViewerScene {
     if (!box || this.look.info().zoneCount < 2) return;
     const reframed = this.frameBox !== box;
     this.frameBox = box;
-    if ((changed || reframed) && !this.opening && this.mode !== "follow" && this.mode !== "eyes" && !this.fly) this.frameCamera(seeking);
+    if ((changed || reframed) && !this.opening && !this.initialMode && this.mode !== "follow" && this.mode !== "eyes" && !this.fly) this.frameCamera(seeking);
   }
 
   /** Leaves a player's body where they fell: a copy of their model, made
@@ -1469,6 +1546,7 @@ export class ViewerScene {
       o.group.position.set(x, y, z);
       o.group.rotation.y = yawToGl(b.yaw);
       o.group.scale.setScalar(MODEL_SCALE);
+      o.group.visible = this.insideReveal(o.group.position);
       if (!an) continue;
       const dieMs = an.duration(clipFor(an.names, o.cls, "die")) ?? 0;
       const st = o.anim.update(now, { alive: false });
@@ -1569,6 +1647,7 @@ export class ViewerScene {
         }
       }
       kept.add(shot.id);
+      t.group.visible = this.insideReveal(t.group.position);
       t.beamMat.opacity = shot.alpha * 0.85;
       t.flash.visible = shot.age < FLASH_MS && this.shotLook(shot.index).kind !== "melee";
       t.flashMat.opacity = flashAlpha(shot.age);
@@ -1670,12 +1749,12 @@ export class ViewerScene {
 
     for (const p of frame.players) if (p.alive && p.z < this.lowZ) this.lowZ = p.z;
     this.fitGrid(frame.seen);
-    if (this.frameMap && this.bounds) {
+    if (this.frameMap && !this.curtain && this.bounds) {
       this.frameMap = false;
       const features = this.features ? [...this.features.teleporters, ...this.features.lifts] : [];
       this.frameBox = this.look.info().zoneCount > 1
         ? this.bounds : playableBounds(this.bounds, this.spots().values(), frame.seen, features);
-      if (!this.opening && this.mode !== "follow" && this.mode !== "eyes" && !this.fly) this.frameCamera(true);
+      if (!this.opening && !this.initialMode && this.mode !== "follow" && this.mode !== "eyes" && !this.fly) this.frameCamera(true);
     }
 
     const snap = seeking || this.opts.reducedMotion;
@@ -1703,6 +1782,9 @@ export class ViewerScene {
       this.dirty = true;
     }
     this.followZone(now, frame.bsp ?? null, highlight, seeking);
+    this.advanceReveal(now);
+    // First-person's own model must be hidden on the very first draw.
+    if (this.initialMode?.mode === "eyes") this.beginOpening();
     const S = this.scale;
     const still = this.opts.reducedMotion;
 
@@ -1731,7 +1813,7 @@ export class ViewerScene {
       if (!m) return null;
       const file = m.table.objects[p.kind] ?? (p.class === "weap" ? weaponFile(m.table, p.kind) : null);
       return file ? this.library.vehicle(modelUrl(m.root, file, m.table.stamp))?.root ?? null : null;
-    })) this.dirty = true;
+    }, this.insideReveal)) this.dirty = true;
     this.frameObjects.update(frame.objects, (frame.vehicles?.length ?? 0) > 0);
 
     // Vehicles first: whoever is in one is drawn as the vehicle. A turret
@@ -1753,6 +1835,7 @@ export class ViewerScene {
       if (g.position.x !== x || g.position.y !== y || g.position.z !== z || g.scale.x !== k || q.x !== qx || q.y !== qy || q.z !== qz) this.dirty = true;
       g.position.set(x, y, z);
       g.scale.setScalar(k);
+      g.visible = this.insideReveal(g.position);
       if (o.turrets.length) this.aimTurrets(o, mounts.aims.get(id) ?? [], dt, snap);
     }
     for (const [id, o] of this.vehicles) {
@@ -1779,17 +1862,18 @@ export class ViewerScene {
         const seated = this.sit(p, s, ride, s.vehicle !== hull, firstRider.get(hull!) === index, dt);
         if (seated) {
           // In their seat, drawn; the label above the vehicle.
-          g.visible = !this.isEyes(index);
+          g.visible = !this.isEyes(index) && this.insideReveal(ride.group.position);
           p.turn.visible = true;
           p.ring.visible = p.ray.visible = false;
           p.label.visible = !this.opts.bare && (!p.actor || this.actorNames);
           p.label.position.y = ride.height * ride.group.scale.x + 0.25 * S - (g.position.y - ride.group.position.y);
           p.el.classList.toggle("on", highlight === index || this.followIndex === index);
+          this.revealLabel(p);
           continue;
         }
         // In a vehicle with no seat to show them in: the vehicle stands for them, and carries their label.
         if (p.turn.visible || !g.visible || !g.position.equals(ride.group.position)) this.dirty = true;
-        g.visible = !this.isEyes(index);
+        g.visible = !this.isEyes(index) && this.insideReveal(ride.group.position);
         g.position.copy(ride.group.position);
         p.turn.visible = p.ring.visible = p.ray.visible = false;
         p.turn.rotation.set(0, yawToGl(s.yaw), 0);
@@ -1797,6 +1881,7 @@ export class ViewerScene {
         p.label.visible = !this.opts.bare && (!p.actor || this.actorNames);
         p.label.position.y = ride.height * ride.group.scale.x + 0.25 * S;
         p.el.classList.toggle("on", highlight === index || this.followIndex === index);
+        this.revealLabel(p);
         continue;
       }
       // An AI's body comes in the frames (the `dead` stance) and is drawn
@@ -1821,9 +1906,10 @@ export class ViewerScene {
         : S * (big ? 1.25 : 1) * (p.actor ? 0.8 : 1);
       const yaw = yawToGl(s.yaw);
       if (g.visible !== show || g.position.x !== x || g.position.y !== y || g.position.z !== z || turn.scale.x !== k || turn.rotation.y !== yaw) this.dirty = true;
-      g.visible = show && !this.isEyes(index);
-      p.label.visible = !dead && !this.opts.bare && (!p.actor || this.actorNames);
       g.position.set(x, y, z);
+      g.visible = show && !this.isEyes(index) && this.insideReveal(g.position);
+      p.label.visible = !dead && !this.opts.bare && (!p.actor || this.actorNames);
+      this.revealLabel(p);
       // Level again after a seat that leaned with its vehicle.
       turn.rotation.set(0, yaw, 0);
       turn.scale.setScalar(k);
@@ -1861,15 +1947,15 @@ export class ViewerScene {
     }
     this.updateBodies(now, dt, seeking);
     this.drawShots(now, frame);
-    if (this.effects.film(frame.filmEffects ?? [], still)) this.dirty = true;
-    if (this.projectiles.update(now)) this.dirty = true;
-    if (this.effects.update(hits, still ? [] : frame.projectileTrails ?? [], S, still)) this.dirty = true;
+    if (this.effects.film(frame.filmEffects ?? [], still, this.insideReveal)) this.dirty = true;
+    if (this.projectiles.update(now, this.insideReveal)) this.dirty = true;
+    if (this.effects.update(hits, still ? [] : frame.projectileTrails ?? [], S, still, this.insideReveal)) this.dirty = true;
     frame.markers.forEach((m, i) => {
       const o = this.mark(i);
       const a = Math.max(0, Math.min(1, m.alpha));
       if (!o.group.visible || Math.abs(o.mat.opacity - a) > 0.004) this.dirty = true;
-      o.group.visible = a > 0;
       o.group.position.set(...gameToGl(m.x, m.y, m.z + 0.06 * S));
+      o.group.visible = a > 0 && this.insideReveal(o.group.position);
       o.group.scale.setScalar(S * 1.3);
       o.mat.color.set(m.colour);
       o.mat.opacity = a;
@@ -1937,7 +2023,7 @@ export class ViewerScene {
     this.look.beforeDraw(this.camera, this.camera.position.distanceTo(this.controls.target));
     this.scenarioObjects.beforeDraw();
     // The soft ground stands in for a sky's horizon only when there is none.
-    this.ground.visible = !this.look.skyShown();
+    this.ground.visible = this.shellRevealed && !this.look.skyShown();
     // The world matrices once a frame: the passes and the labels would
     // each walk the whole tree (every bone of every biped) again.
     this.scene.updateMatrixWorld();
@@ -1953,7 +2039,12 @@ export class ViewerScene {
     if (this.hasMap && !this.drewMap) {
       this.drewMap = true;
       mark("h2-viewer:first-map-frame");
-      this.onFirstMapFrame?.();
+      this.onReveal?.("started");
+    }
+    if (this.hasMap && !this.sweep && !this.revealFinished) {
+      this.revealFinished = true;
+      mark("h2-viewer:revealed");
+      this.onReveal?.("done");
     }
     // Ambient occlusion is the one costly step: drop it on a machine that
     // can't keep up (under ~25 frames a second for a couple of seconds),

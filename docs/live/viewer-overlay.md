@@ -1,6 +1,6 @@
 # The 3D view's opening camera, overlay and reveal
 
-Status: Partly built. The opening camera, loading overlay and name-tag declutter are available. The progressive reveal is a design.
+Status: Built. The opening camera, loading overlay, name-tag layout and progressive reveal are part of the 3D viewer.
 Code: `web/src/viewer/Viewer3D.tsx` (the 3D view), `web/src/viewer/scene.ts` (`ViewerScene`), `web/src/viewer/camera.ts`, `web/src/viewer/GameViewer.tsx`. Tests: `web/test/`.
 Switch: none. Address parameters `player`, `dmg` and `fx`, and three `localStorage` keys, are listed under [Interfaces](#interfaces).
 
@@ -497,9 +497,8 @@ pure), which returns `{ holo, radius, objectsRadius, sky, shadows, done }`:
 - A player, vehicle, body or projectile is hidden until its distance from
   the origin is under `radius - band`; its tag then fades in (`opacity 0
   → 1`, 160 ms linear).
-- The ambient occlusion reads the scene's depth, so it follows the
-  discard. Its normal pass, where it has one, takes the same patch as it
-  takes the see-through's.
+- The viewer's ambient occlusion reads the scene's rendered depth, so it
+  follows the discard (`LevelAoPass`, `aopass.ts`).
 - At `done` the scene marks `h2-viewer:revealed`.
 
 **When it runs.** Once per map load. A zone change, a seek and a camera
@@ -532,15 +531,8 @@ menu and status strip.
 
 ## Build order
 
-Each slice is one branch, with the pure module and its test first. All
-tests are `bun test` files in `web/test/`.
-
-| # | Slice | Files | Tests that prove it |
-|---|---|---|---|
-| 4 | Progressive reveal | new `viewer/reveal.ts`; `viewer/scene.ts` (map section: `cutaway`, uniforms, entity gating, `SceneOptions.reveal`); `viewer/level3d.ts` (`setReveal`); `viewer/sky3d.ts` (fade) | `reveal.test.ts`: `revealAt` at 0, 200, mid and end; `T` at its clamps; `objectsRadius` trails by 180 ms; `done` sets the radius off; `patchReveal` fits `THREE.ShaderLib` standard, lambert, phong and basic, with and without the see-through patch, and returns null without its hooks (as `cutaway.test.ts` does for `patchSeeThrough`); a JS mirror of the shader's `revealK` agrees at the band's edges |
-| 5 on | Damage and combat effects | [viewer-effects.md](viewer-effects.md#build-order) | there |
-
-The progressive reveal uses the overlay veil.
+Damage and combat effects share the viewer overlay. Their build order is
+in [viewer-effects.md](viewer-effects.md#build-order).
 
 ## Interfaces
 
@@ -585,6 +577,7 @@ The progressive reveal uses the overlay veil.
 - **Test** `web/test/viewer-overlay.test.ts` covers load states, progress ARIA and conditional menu rows.
 - **Code** `web/src/viewer/cutaway.ts` `SEE_FRAGMENT_BODY`: the map
   materials already `discard` and already carry `vSeeWorld`.
+- **Test** `web/test/reveal.test.ts` covers the sweep timeline and shared shader uniforms.
 - **S** The art server sends a `Content-Length` for `map.glb`, so the
   bar is determinate. The chase covers the case where it does not.
 - **Design** Every size, colour, curve and duration on this page.
