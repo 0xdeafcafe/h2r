@@ -1112,10 +1112,9 @@ Everything else is in `boot::render_thread::REFUSED`, with its reason:
   `SCENE_TRANSPARENTS` returns. The return continuation takes the
   game-thread fallback. Inside the call, an eligible indexed draw uses
   the native vertex binding at its resolved position in the D3D stream.
-- `render-timing`, `render-loop` and `render-census` are off by default.
-  Timing writes the game thread's frame table and needs after
-  continuations. The render-loop ports park in Rust continuations around
-  their guest calls. Pipelining is off while the census is on.
+- `render-timing` and `render-census` are off by default. Timing writes
+  the game thread's frame table and needs after continuations.
+  Pipelining is off while the census is on.
 - On `RENDER_FRAME`, the pipeline's own implementation and map-slots'
   observer run on the game thread.
 - Game-thread points have after parts: health, precision, level-boot,
