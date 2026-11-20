@@ -1194,8 +1194,8 @@ impl Emitter<'_> {
             }
             // A call through a pointer, back to this handler: H2_ICALL finds
             // the target's handler in the direct slots the runner filled
-            // and calls it as H2_DCALL would (H2_INDIRECT_CALLS), or leaves
-            // for the runner as below.
+            // and calls it as H2_DCALL would, or leaves for the runner as
+            // below.
             Control::Call { target: Target::Dynamic(v), continuation, kind: CallKind::Indirect, .. }
                 if self.shape.functions.is_some() && self.shape.selectors.contains(continuation) =>
             {

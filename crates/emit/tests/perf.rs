@@ -1905,14 +1905,6 @@ fn image_direct_count_code_size() {
     image_switch_code_size("H2_VIEW_BUDGET+H2_DIRECT_COUNT", emit::Codegen { accounting: true, ..emit::Codegen::default() });
 }
 
-/// As [`image_direct_gate_code_size`], for `H2_INDIRECT_CALLS=1`.
-/// `cargo test -p emit --release --test perf image_indirect_calls_code_size -- --ignored --nocapture`
-#[test]
-#[ignore = "reads the retail XBE (H2_XBE)"]
-fn image_indirect_calls_code_size() {
-    image_switch_code_size("H2_INDIRECT_CALLS", emit::Codegen { accounting: true, ..emit::Codegen::default() });
-}
-
 /// `switch`: the names to set, joined by `+`.
 fn image_switch_code_size(switch: &str, codegen: emit::Codegen) {
     let name = format!("{switch} code size");

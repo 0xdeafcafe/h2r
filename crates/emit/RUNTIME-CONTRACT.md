@@ -600,7 +600,7 @@ Its semantics:
   - A static `call` or tail `jmp` to a function entry of the module may
     use its linked symbol (`H2_DCALL`, `H2_DJUMP`). Indirect calls and
     jumps may use the cached handler for the evaluated target PC
-    (`H2_ICALL`, `H2_IJUMP`, on unless `H2_INDIRECT_CALLS=0`). Both call
+    (`H2_ICALL`, `H2_IJUMP`). Both call
     forms require a continuation selector in the calling handler. Lazy
     flags and the access count are settled before entering the target.
   - It is direct only if, at that moment: the preempt word is 0 and the

@@ -97,9 +97,8 @@ pub fn profile_flags(opt: Option<&str>, debug: Option<&str>) -> Result<Vec<Strin
 /// RAM gate across direct calls (`H2_DIRECT_GATE`, `h2gen.h`), reading
 /// the access budget from the RAM view (`H2_VIEW_BUDGET`) and carrying the
 /// access count across direct calls (`H2_DIRECT_COUNT`) and taking the RAM
-/// gate at a handler's start (`H2_ENTRY_GATE`, `h2fastmem.h`). Indirect calls
-/// and jumps through the target's direct slot (`H2_INDIRECT_CALLS`) and
-/// charging accesses in the RAM view (`H2_VIEW_CHARGE`) default on.
+/// gate at a handler's start (`H2_ENTRY_GATE`, `h2fastmem.h`). Charging
+/// accesses in the RAM view (`H2_VIEW_CHARGE`) defaults on.
 /// Profile-guided optimisation (`H2_PGO`) and the target CPU (`H2_CPU`,
 /// arm64 only: see [`pgo::for_arch`]) are off unless set ([`pgo`]).
 ///
@@ -134,7 +133,6 @@ pub fn cflags_for(arch: Arch) -> Result<Vec<String>, Error> {
         ("H2_DIRECT_GATE", false),
         ("H2_VIEW_BUDGET", false),
         ("H2_DIRECT_COUNT", false),
-        ("H2_INDIRECT_CALLS", true),
         ("H2_ENTRY_GATE", false),
         ("H2_VIEW_CHARGE", true),
     ] {
@@ -1483,7 +1481,6 @@ mod tests {
             "H2_X87_NATIVE",
             "H2_SSE_NATIVE",
             "H2_DIRECT_CALLS",
-            "H2_INDIRECT_CALLS",
             "H2_VIEW_CHARGE",
         ] {
             let on = std::env::var(name).as_deref() != Ok("0");

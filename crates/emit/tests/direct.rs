@@ -656,8 +656,7 @@ fn nested_calls_and_a_stdcall_callee() {
     assert_eq!(direct_count(NEST, None), 12);
 }
 
-/// Calls through a register (`H2_ICALL`): with `H2_INDIRECT_CALLS=1` the
-/// warm run finds both targets in their slots and calls them directly, and
+/// Calls through a register (`H2_ICALL`): the warm run finds both targets in their slots and calls them directly, and
 /// every mode still ends the same; an override on one target between runs
 /// stops its calls going direct, and disabling it lets them again.
 #[test]
@@ -681,10 +680,9 @@ fn indirect_calls() {
         out
     });
     assert_eq!(calls.load(Ordering::Relaxed), 3 * MODES.len() as u32);
-    // 3 trips: NEST_B's call of NEST_C and its return are direct either
-    // way; with the switch, IND's two calls and their returns too.
-    let on = std::env::var("H2_INDIRECT_CALLS").as_deref() != Ok("0");
-    assert_eq!(direct_count(IND, None), if on { 18 } else { 6 });
+    // 3 trips: NEST_B's call of NEST_C and its return, and IND's two
+    // calls and their returns.
+    assert_eq!(direct_count(IND, None), 18);
 }
 
 #[test]
@@ -722,8 +720,7 @@ fn an_indirect_jump_respects_dispatch_and_execute_permissions() {
         out
     });
 
-    let on = std::env::var("H2_INDIRECT_CALLS").as_deref() != Ok("0");
-    assert_eq!(direct_count(IND_JUMP, None), u64::from(on));
+    assert_eq!(direct_count(IND_JUMP, None), 1);
 }
 
 #[test]

@@ -1276,10 +1276,7 @@ static inline int h2_direct_back(H2Direct *d, ExecCtxOpaque *ctx, H2FastAccess *
 /* Indirect transfers use the same generation, execute and safe-point
  * checks as static ones. Evaluate the guest target once before charging,
  * spilling or invoking the target; a miss hands the same PC to the runner. */
-#ifndef H2_INDIRECT_CALLS
-#define H2_INDIRECT_CALLS 0
-#endif
-#if H2_DIRECT_CALLS && H2_INDIRECT_CALLS
+#if H2_DIRECT_CALLS
 #define H2_ICALL(target, cont, label, spill, reload, refresh, dirty)                        \
     do {                                                                                    \
         uint32_t it_ = (target);                                                            \
