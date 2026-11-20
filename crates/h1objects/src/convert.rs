@@ -953,10 +953,11 @@ impl<'a> Converter<'a> {
                     && !map::h1_tactical_dialogue_line(*slot)
                     && !map::h1_grenade_dialogue_line(*slot)
                     && !map::h1_postcombat_line(*slot)
+                    && !map::h1_unselected_dialogue_line(*slot)
                     && !map::h1_allied_reply_line(*slot)
                     && !matches!(
                         *slot,
-                        map::H1_KILLING_SPREE_LINE | map::H1_KILLING_SPREE_REPLY_LINE | map::H1_DEATH_FLYING_LINE | map::H1_SEARCH_QUERY_LINE | map::H1_SEARCH_REPLY_LINE
+                        map::H1_KILLING_SPREE_LINE | map::H1_KILLING_SPREE_REPLY_LINE | map::H1_DEATH_FLYING_LINE | map::H1_REVIVAL_LINE | map::H1_SEARCH_QUERY_LINE | map::H1_SEARCH_REPLY_LINE
                     )
             }) {
                 let sound = self.h1_tag(id)?;

@@ -131,6 +131,26 @@ fn flying_death(m: &dyn GuestMemory, stack: u32, unit: u32) -> Result<Option<u32
 
 pub(super) fn install(b: &mut Builder, reactions: Queue) {
     b.raw().before(
+        &points::UNIT_REANIMATE,
+        "queue Halo 1 Flood revival dialogue",
+        move |call| {
+            let unit = call.cpu.eax;
+            let m = &mut *call.ctx.runtime().memory();
+            (|| {
+                if dialogue::source_offset_row(m, unit, map::H1_REVIVAL_LINE)?.is_some()
+                    && let Some(body) = object_address(m, unit)?
+                    && m.u8(body + 0x10a)? & 4 != 0
+                    && m.f32(body + 0xec)? > 0.0
+                {
+                    reactions.push(m, unit, map::H1_REVIVAL_LINE, 14)?;
+                }
+                Ok(())
+            })()
+            .map_err(guest_fault)?;
+            Ok(Flow::Continue)
+        },
+    );
+    b.raw().before(
         &points::UNIT_DIALOGUE_CHECK,
         "resolve the Halo 1 flying-death line for the victim",
         |call| {

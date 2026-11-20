@@ -259,6 +259,8 @@ points! { ALL;
     UNIT_DIALOGUE_SET_LINE @ 0x0011_4680: [fn(unit: eax, line: ebx) ret 0]; "docs/halo1/ai.md";
     /// Update the unit's playing and queued speech.
     UNIT_DIALOGUE_UPDATE @ 0x0011_4c60: [fn(unit: eax) ret 0], Hot; "docs/halo1/ai.md";
+    /// Clears body depletion and restores a reanimating unit.
+    UNIT_REANIMATE @ 0x000c_af00: [fn(unit: eax) ret 0]; "docs/halo1/ai.md";
     /// Reports a nonlethal hit to the victim's and aggressor's AI.
     AI_INJURY_NOTICE @ 0x001c_9c80: [fn(victim: eax, owner: edx, category: stack 0, amount: stack 1, direction: stack 2, deferred: stack 3) ret 16]; "docs/halo1/ai.md";
     /// Reports a depleted unit body and the player or unit responsible.

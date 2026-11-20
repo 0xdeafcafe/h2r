@@ -214,3 +214,12 @@ pub const fn h1_postcombat_line(offset: usize) -> bool {
         0xbf0 | 0xc10 | 0xc60 | 0xc70 | 0xc80 | 0xc90 | 0xca0 | 0xcb0 | 0xcc0 | 0xcd0
     )
 }
+
+/// Involuntary Flood speech when the unit resumes life.
+pub const H1_REVIVAL_LINE: usize = 0xb80;
+
+/// Authored source lines with no selection rule or incoming fallback in the
+/// retail executable. Preserve their indices for explicit sound lookup.
+pub const fn h1_unselected_dialogue_line(offset: usize) -> bool {
+    matches!(offset, 0xa90 | 0xaa0 | 0xb60)
+}

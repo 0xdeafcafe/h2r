@@ -858,7 +858,7 @@ fn automatic_damage_dialogue_has_retail_trigger_evidence() {
     let leap = h1.bytes_at(0x001e_f9d0, 0x28).unwrap();
     assert_eq!(u16_at(leap, 0), 47);
     assert_eq!(u16_at(leap, 4), slot(0xb70));
-    let tactics = h1.bytes_at(0x001e_f2a0, 32 * 0x28).unwrap();
+    let tactics = h1.bytes_at(start, 104 * 0x28).unwrap();
     for (offset, event) in [
         (0x760, 11),
         (0x770, 12),
@@ -893,6 +893,28 @@ fn automatic_damage_dialogue_has_retail_trigger_evidence() {
     }
     assert_eq!(h1.read_u32(0x001f_0bcc).unwrap(), 0.8f32.to_bits());
     let responses = h1.bytes_at(0x001e_fbd8, 45 * 0x24).unwrap();
+    let fallbacks = h1.bytes_at(0x001e_0720, 0x100 * 2).unwrap();
+    for offset in [0xa90, 0xaa0, 0xb60] {
+        assert!(map::h1_unselected_dialogue_line(offset));
+        let index = slot(offset);
+        assert_eq!(u16_at(fallbacks, usize::from(index) * 2), u16::MAX);
+        assert!(!fallbacks.chunks_exact(2).any(|row| u16_at(row, 0) == index));
+        assert!(
+            !tactics
+                .chunks_exact(0x28)
+                .any(|row| u16_at(row, 4) == index)
+        );
+        assert!(
+            !responses
+                .chunks_exact(0x24)
+                .any(|row| { u16_at(row, 0) == index || u16_at(row, 6) == index })
+        );
+    }
+    assert_eq!(h1.bytes_at(0x0004_508a, 2).unwrap(), &[0x6a, 5]);
+    assert_eq!(
+        h1.read_u32(0x0004_6c85).unwrap(),
+        u32::from(slot(map::H1_REVIVAL_LINE))
+    );
     for (primary, response) in [
         (0x180, 0x190),
         (0x320, 0x330),

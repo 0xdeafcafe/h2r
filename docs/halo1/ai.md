@@ -833,3 +833,16 @@ out in `0xfe618`.
 - Vehicle actor variants (`warthog gunner`, `banshee` pilots) become plain
   characters; Halo 2 puts them in vehicles through the starting location's
   vehicle and seat fields, which need the vehicle palette.
+
+Halo 1's active Flood revival passes involuntary speech type 5 at
+`0x4508c` after the revival timer expires with positive body vitality.
+That type selects `udlg+0xb80` at `0x46c84`. Halo 2's reanimation
+path calls `0xcaf00` to clear depletion and restore the unit. Converted
+units with that authored slot queue it there.
+
+The Xbox retail dialogue scheduler never selects slots `0xa90` (partial
+sighting), `0xaa0` (nothing there), or `0xb60` (uncover exclamation).
+They appear in neither the primary or reply tables nor the hard-coded
+involuntary selectors, and no entry in the fallback table selects them.
+The converted bank preserves the original sounds and indices for explicit
+source-slot lookup.
