@@ -34,10 +34,19 @@ pub(super) struct Unit {
 
 impl Unit {
     pub(super) fn read(m: &dyn GuestMemory, handle: u32) -> Result<Option<Self>, MemFault> {
+        Self::read_unit(m, handle, true)
+    }
+
+    pub(super) fn read_unit(
+        m: &dyn GuestMemory,
+        handle: u32,
+        require_alive: bool,
+    ) -> Result<Option<Self>, MemFault> {
         let Some(body) = object_address(m, handle)? else {
             return Ok(None);
         };
-        if !matches!(m.u8(body + 0xaa)?, 0 | 1) || m.f32(body + crate::health::BODY_HEALTH)? <= 0.0
+        if !matches!(m.u8(body + 0xaa)?, 0 | 1)
+            || (require_alive && m.f32(body + crate::health::BODY_HEALTH)? <= 0.0)
         {
             return Ok(None);
         }

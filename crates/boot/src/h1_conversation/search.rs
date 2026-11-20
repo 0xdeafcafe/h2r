@@ -53,6 +53,16 @@ pub(super) fn encounter(m: &dyn GuestMemory, actor: u32) -> Result<Option<u16>, 
     Ok((group != u16::MAX).then_some(group))
 }
 
+pub(super) fn unit_encounter(m: &dyn GuestMemory, unit: u32) -> Result<Option<u16>, MemFault> {
+    let Some(actor) = cast::actor_handle(m, unit)? else {
+        return Ok(None);
+    };
+    match datum(m, cast::ACTORS, actor)? {
+        Some(at) => encounter(m, at),
+        None => Ok(None),
+    }
+}
+
 fn reply(m: &dyn GuestMemory, unit: u32, actor: u32) -> Result<Option<Line>, MemFault> {
     let Some(source) = cast::Unit::read(m, unit)? else {
         return Ok(None);

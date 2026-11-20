@@ -828,6 +828,28 @@ fn automatic_damage_dialogue_has_retail_trigger_evidence() {
         }
     }
 
+    for (offset, relationship, attacker_class) in [
+        (0x630, 2, u16::MAX),
+        (0x640, 2, 1),
+        (0x650, 3, u16::MAX),
+        (0x660, 3, 1),
+        (0x670, 3, 4),
+        (0x680, 3, 56),
+        (0x690, 3, 64),
+    ] {
+        assert!(map::h1_kill_witness_line(offset));
+        assert!(patterns.chunks_exact(0x28).any(|row| {
+            u16_at(row, 0) == 0
+                && u16_at(row, 4) == slot(offset)
+                && u16_at(row, 8) == 2
+                && u16_at(row, 0x1c) == relationship
+                && u16_at(row, 0x22) == attacker_class
+        }));
+    }
+    let spree = h1.bytes_at(0x001e_eff8, 0x28).unwrap();
+    assert_eq!(u16_at(spree, 0), 1);
+    assert_eq!(u16_at(spree, 4), slot(map::H1_KILLING_SPREE_LINE));
+    assert_eq!(h1.bytes_at(0x0004_155f, 3).unwrap(), &[0x83, 0xc1, 120]);
     let responses = h1.bytes_at(0x001e_fbd8, 45 * 0x24).unwrap();
     for (primary, response) in [
         (0x180, 0x190),

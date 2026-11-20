@@ -947,10 +947,11 @@ impl<'a> Converter<'a> {
                     && !kill_variant
                     && !map::h1_injury_line(*slot)
                     && !map::h1_friendly_kill_line(*slot)
+                    && !map::h1_kill_witness_line(*slot)
                     && !map::h1_allied_reply_line(*slot)
                     && !matches!(
                         *slot,
-                        map::H1_DEATH_FLYING_LINE | map::H1_SEARCH_QUERY_LINE | map::H1_SEARCH_REPLY_LINE
+                        map::H1_KILLING_SPREE_LINE | map::H1_KILLING_SPREE_REPLY_LINE | map::H1_DEATH_FLYING_LINE | map::H1_SEARCH_QUERY_LINE | map::H1_SEARCH_REPLY_LINE
                     )
             }) {
                 let sound = self.h1_tag(id)?;

@@ -476,7 +476,7 @@ salted speaker until its next native speech update.
 
 **Built.** The killer addresses friendly victims and player victims
 using separate source rows. The Halo 1 kill patterns distinguish
-friendly and hostile victims at `0x146816` and test the victim's
+friendly and hostile victims at `0x1467e0` and test the victim's
 class at `0x146842`. Halo 2's lethal damage notification at
 `0x1c95d0` captures friendly kills for the attacker. Hostile kills of
 a player use the same candidate as the other victim-class lines.
@@ -492,6 +492,24 @@ their source slot so that native and source-only remarks can both
 trigger their own replies. Nearby allied actors are selected from the
 same group and BSP visibility region and speak through their own
 cached bank after the half-second reply delay.
+
+**Built.** Ally witnesses speak from the victim's side. The Halo 1
+kill stimulus uses speaker kind 2 for these remarks. Its branch at
+`0x14696b` searches the victim's encounter, or its team when there
+is no encounter, within ten units. The patterns at `0x1eeeb8`
+through `0x1eef80` match friendly or hostile fire and can specialize
+by the killer's class. The Halo 2 lethal damage hook casts a living
+witness at the victim's location and selects the matching player,
+Covenant, Flood, or Sentinel remark from that actor's voice.
+
+**Built.** Halo 1 `0x4154b` tracks successive hostile kills and resets
+the counter when more than 120 ticks have elapsed since the previous
+kill. It dispatches stimulus 1 after three kills for an AI or five
+for a player, then clears the count. The Halo 2 lethal damage hook
+tracks the same count per salted killer, scaling the interval to the
+engine tick rate. An AI can speak its own spree line. The player is a
+silent speaker whose nearby ally can give the dedicated response,
+as in the Halo 1 silent-response dispatch at `0x1472a9`.
 
 Automatic stimuli without a verified route remain conversion errors
 (see [role-audit.md](role-audit.md#retail-gaps-that-stop-conversion)).

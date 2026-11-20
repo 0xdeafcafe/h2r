@@ -1,11 +1,13 @@
 //! Automatic source reactions captured at Halo 2's AI notifications.
 
+use map::H1DialogueClass;
+
 use super::{
-    automatic::source_damage,
+    automatic::{actor_class, source_damage},
     cast,
     dialogue::{self, Line},
     leaders::guest_fault,
-    *,
+    replies, search, visibility, *,
 };
 
 const OBJECT_CAPACITY: u32 = 2048;
@@ -165,9 +167,107 @@ pub(super) fn ai_vocalizes(m: &dyn GuestMemory) -> Result<bool, MemFault> {
     Ok(ai != 0 && m.u8(ai + 1)? != 0 && m.u8(ai + 0x20)? != 0 && read_i16(m, ai + 0x22)? <= 0)
 }
 
-fn friendly_kill(
+fn witness(
     m: &mut dyn GuestMemory,
     queue: Queue,
+    victim: u32,
+    attacker: u32,
+    allied: bool,
+) -> Result<(), MemFault> {
+    let Some(anchor) = cast::Unit::read_unit(m, victim, false)? else {
+        return Ok(());
+    };
+    let encounter = search::unit_encounter(m, victim)?;
+    let kind = actor_class(m, attacker)?;
+    let general = if allied { 0x630 } else { 0x650 };
+    let specific = match (allied, kind) {
+        (true, H1DialogueClass::Player) => Some(0x640),
+        (false, H1DialogueClass::Player) => Some(0x660),
+        (false, H1DialogueClass::Covenant) => Some(0x670),
+        (
+            false,
+            H1DialogueClass::CombatForm | H1DialogueClass::Carrier | H1DialogueClass::InfectionForm,
+        ) => Some(0x680),
+        (false, H1DialogueClass::Sentinel) => Some(0x690),
+        _ => None,
+    };
+    let pool = DatumArray::at(m.u32(cast::ACTORS)?);
+    let mut next = 0;
+    let mut nearest = 10.0;
+    let mut best = None;
+    while let Some(index) = pool.next_index(m, next)? {
+        next = index + 1;
+        let Some(actor) = pool.get_absolute(m, index)? else {
+            continue;
+        };
+        let speaker = m.u32(actor + cast::ACTOR_UNIT)?;
+        if speaker == attacker
+            || speaker == victim
+            || (encounter.is_some() && search::encounter(m, actor)? != encounter)
+        {
+            continue;
+        }
+        let Some(unit) = cast::Unit::read(m, speaker)? else {
+            continue;
+        };
+        let distance = cast::distance(anchor.pos, unit.pos);
+        if distance < nearest
+            && cast::allied(m, anchor.team, unit.team)?
+            && visibility::in_pvs(m, anchor.cluster, unit.cluster)?
+            && let Some(offset) = pick_offset(m, speaker, specific, general)?
+        {
+            nearest = distance;
+            best = Some((speaker, offset));
+        }
+    }
+    if let Some((speaker, offset)) = best {
+        queue.push(m, speaker, offset, if offset == 0x640 { 4 } else { 3 })?;
+    }
+    Ok(())
+}
+
+const SPREE_RECORD: u32 = 12;
+const SPREE_BYTES: u32 = OBJECT_CAPACITY * SPREE_RECORD;
+
+fn spree(
+    m: &mut dyn GuestMemory,
+    queue: Queue,
+    records: u32,
+    attacker: u32,
+) -> Result<(), MemFault> {
+    let index = attacker & 0xffff;
+    let clock = m.u32(points::GAME_TIME.base)?;
+    if index >= OBJECT_CAPACITY || clock == 0 {
+        return Ok(());
+    }
+    let player = cast::is_player(m, attacker)?;
+    if !player && dialogue::source_offset_row(m, attacker, map::H1_KILLING_SPREE_LINE)?.is_none() {
+        return Ok(());
+    }
+    let now = m.u32(clock + 8)?;
+    let rate = u32::from(m.u16(clock + 2)?);
+    let record = records + index * SPREE_RECORD;
+    // The original counter resets after 120 Halo 1 ticks between kills.
+    let recent = m.u32(record)? == attacker && now.wrapping_sub(m.u32(record + 4)?) <= rate * 4;
+    let count = if recent { m.u32(record + 8)? + 1 } else { 1 };
+    let threshold = if player { 5 } else { 3 };
+    m.set_u32(record, attacker)?;
+    m.set_u32(record + 4, now)?;
+    m.set_u32(record + 8, if count >= threshold { 0 } else { count })?;
+    if count >= threshold {
+        if player {
+            replies::player_spree(m, queue, attacker, now, rate)?;
+        } else {
+            queue.push(m, attacker, map::H1_KILLING_SPREE_LINE, 4)?;
+        }
+    }
+    Ok(())
+}
+
+fn kill(
+    m: &mut dyn GuestMemory,
+    queue: Queue,
+    spree_records: u32,
     victim: u32,
     owner: u32,
     category: u16,
@@ -175,7 +275,7 @@ fn friendly_kill(
     let Some(attacker) = cast::damage_owner(m, owner, category == 9)? else {
         return Ok(());
     };
-    if attacker == victim || cast::is_player(m, attacker)? {
+    if attacker == victim {
         return Ok(());
     }
     let (Some(victim_team), Some(attacker_team)) =
@@ -183,25 +283,30 @@ fn friendly_kill(
     else {
         return Ok(());
     };
-    if cast::allied(m, victim_team, attacker_team)? {
-        let player = cast::is_player(m, victim)?.then_some(0x340);
-        if let Some(offset) = pick_offset(m, attacker, player, 0x320)? {
-            queue.push(m, attacker, offset, 5)?;
+    let allied = cast::allied(m, victim_team, attacker_team)?;
+    if allied {
+        if !cast::is_player(m, attacker)? {
+            let player = cast::is_player(m, victim)?.then_some(0x340);
+            if let Some(offset) = pick_offset(m, attacker, player, 0x320)? {
+                queue.push(m, attacker, offset, 5)?;
+            }
         }
+    } else {
+        spree(m, queue, spree_records, attacker)?;
     }
-    Ok(())
+    witness(m, queue, victim, attacker, allied)
 }
 
 pub(super) fn install(b: &mut Builder) -> Result<Queue, BuildError> {
     let queue = Queue(b.guest_alloc(BYTES, Permissions::RW)?);
+    let spree_records = b.guest_alloc(SPREE_BYTES, Permissions::RW)?;
     b.raw().before(
         &points::HS_CONVERSATION_MAP_DISPOSE,
         "clear queued Halo 1 reactions",
         move |call| {
-            call.ctx
-                .memory()
-                .fill(queue.0, BYTES, 0)
-                .map_err(guest_fault)?;
+            let mut m = call.ctx.memory();
+            m.fill(queue.0, BYTES, 0).map_err(guest_fault)?;
+            m.fill(spree_records, SPREE_BYTES, 0).map_err(guest_fault)?;
             Ok(Flow::Continue)
         },
     );
@@ -229,7 +334,7 @@ pub(super) fn install(b: &mut Builder) -> Result<Queue, BuildError> {
     );
     b.raw().before(
         &points::AI_KILL_NOTICE,
-        "capture the killer's friendly-fire reaction",
+        "capture the original lethal damage reactions",
         move |call| {
             let cpu = *call.cpu;
             let m = &mut *call.ctx.runtime().memory();
@@ -241,7 +346,7 @@ pub(super) fn install(b: &mut Builder) -> Result<Queue, BuildError> {
                 let owner = m.u32(cpu.esp + 8)?;
                 let native = m.u16(cpu.esp + 12)?;
                 let category = source_damage(m, cpu.ebp)?.map_or(native, |(_, category)| category);
-                friendly_kill(m, queue, victim, owner, category)
+                kill(m, queue, spree_records, victim, owner, category)
             })()
             .map_err(guest_fault)?;
             Ok(Flow::Continue)

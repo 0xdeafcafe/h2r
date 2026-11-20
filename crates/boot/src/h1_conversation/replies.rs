@@ -50,13 +50,7 @@ fn responder(
     source: cast::Unit,
     reply: Reply,
 ) -> Result<Option<u32>, MemFault> {
-    let source_encounter = match cast::actor_handle(m, unit)? {
-        Some(id) => match datum(m, cast::ACTORS, id)? {
-            Some(actor) => search::encounter(m, actor)?,
-            None => None,
-        },
-        None => None,
-    };
+    let source_encounter = search::unit_encounter(m, unit)?;
     let mut nearest = reply.range;
     let pool = DatumArray::at(m.u32(cast::ACTORS)?);
     let mut next = 0;
@@ -86,6 +80,36 @@ fn responder(
         }
     }
     Ok(best)
+}
+
+pub(super) fn player_spree(
+    m: &mut dyn GuestMemory,
+    queue: Queue,
+    player: u32,
+    now: u32,
+    rate: u32,
+) -> Result<(), MemFault> {
+    let Some(source) = cast::Unit::read(m, player)? else {
+        return Ok(());
+    };
+    // Halo 1 performs this reply directly when the player is the
+    // unspeaking participant in the multikill stimulus.
+    let reply = Reply {
+        offset: map::H1_KILLING_SPREE_REPLY_LINE,
+        chance: 100,
+        priority: 3,
+        range: RECOGNITION_RANGE,
+    };
+    if let Some(speaker) = responder(m, player, source, reply)? {
+        queue.push_at(
+            m,
+            speaker,
+            reply.offset,
+            reply.priority,
+            now.wrapping_add(rate.div_ceil(2)).max(1),
+        )?;
+    }
+    Ok(())
 }
 
 pub(super) fn on_speech_tick(
