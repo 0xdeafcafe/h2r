@@ -998,6 +998,9 @@ impl GfxBackend {
         let index = {
             let _p = timeline::phase::enter(timeline::phase::Phase::Submit);
             timeline::phase::count(timeline::phase::Counter::Submits, 1);
+            let buffers = patches.len() + usize::from(copies.is_some()) + self.external_prefix.len()
+                + usize::from(open.is_some()) + 1;
+            timeline::phase::count(timeline::phase::Counter::CommandBuffers, buffers as u64);
             let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "queue submit");
             for callback in self.external_on_submit.drain(..) {
                 callback();
@@ -1754,6 +1757,7 @@ impl Backend for GfxBackend {
                     self.external_prefix.push(enc.finish());
                 }
                 self.external_prefix.push(commands);
+                recording.stage.count(timeline::native::Metric::CommandBuffers, 1);
             }
         }
         recording.stage.recorded(recording.view, recording.copy == crate::TargetCopy::Display, recording.ranges);

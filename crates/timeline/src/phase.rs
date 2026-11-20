@@ -170,6 +170,10 @@ pub enum Counter {
     LightWalkBuilds,
     LightWalkHandlersSkipped,
     ShadowWalkLayers,
+    /// Command buffers handed to `queue.submit` by the wgpu backend: its
+    /// encoders, upload patches and every native stage's private command
+    /// buffer (`native_<stage>_command_buffers`).
+    CommandBuffers,
 }
 
 /// Number of [`Counter`]s.
@@ -181,7 +185,7 @@ pub fn counter_columns() -> impl Iterator<Item = (usize, &'static str)> {
 }
 
 impl Counter {
-    pub const ALL: [Counter; 29] = [
+    pub const ALL: [Counter; 30] = [
         Counter::Draws,
         Counter::Submits,
         Counter::Pipelines,
@@ -211,6 +215,7 @@ impl Counter {
         Counter::LightWalkBuilds,
         Counter::LightWalkHandlersSkipped,
         Counter::ShadowWalkLayers,
+        Counter::CommandBuffers,
     ];
 
     pub fn label(self) -> &'static str {
@@ -243,6 +248,7 @@ impl Counter {
             Counter::LightWalkBuilds => "light_walk_layer_builds",
             Counter::LightWalkHandlersSkipped => "light_walk_handlers_skipped",
             Counter::ShadowWalkLayers => "shadow_walk_layers",
+            Counter::CommandBuffers => "command_buffers",
             Counter::FileIoUs => "file_io_us",
         }
     }
