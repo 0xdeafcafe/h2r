@@ -272,6 +272,8 @@ pub struct WriteReport {
     pub back_edges: usize,
     /// What the IR passes did, summed over owners.
     pub opt: opt::Report,
+    /// Handlers cut into parts ([`c::Split`]).
+    pub split: usize,
 }
 
 /// Write `content` unless the file already holds exactly that, so build
@@ -329,6 +331,12 @@ pub fn write_module_with(owners: &[Owner], dir: &Path, codegen: Codegen) -> io::
     write_module_with_hot(owners, dir, codegen, None)
 }
 
+/// [`write_module_with`], cutting handlers into parts by `split` instead
+/// of [`c::Split::DEFAULT`].
+pub fn write_module_split(owners: &[Owner], dir: &Path, codegen: Codegen, split: c::Split) -> io::Result<WriteReport> {
+    write_selected(owners, dir, codegen, None, None, split)
+}
+
 /// Keep all entry and resume records. Owners outside an audited allowlist
 /// are replaced by a faulting ABI body rather than leaving stale pointers.
 pub fn write_module_with_hot(
@@ -337,7 +345,7 @@ pub fn write_module_with_hot(
     codegen: Codegen,
     hot: Option<&BTreeSet<u32>>,
 ) -> io::Result<WriteReport> {
-    write_selected(owners, dir, codegen, hot, None)
+    write_selected(owners, dir, codegen, hot, None, c::Split::DEFAULT)
 }
 
 /// Emit native bodies only for the selected owners, keeping exact entry
@@ -348,7 +356,7 @@ pub fn write_slim_module(
     codegen: Codegen,
     native: &BTreeSet<u32>,
 ) -> io::Result<WriteReport> {
-    write_selected(owners, dir, codegen, None, Some(native))
+    write_selected(owners, dir, codegen, None, Some(native), c::Split::DEFAULT)
 }
 
 fn write_selected(
@@ -357,6 +365,7 @@ fn write_selected(
     codegen: Codegen,
     strict_hot: Option<&BTreeSet<u32>>,
     slim_native: Option<&BTreeSet<u32>>,
+    split: c::Split,
 ) -> io::Result<WriteReport> {
     std::fs::create_dir_all(dir)?;
     // Defined ahead of the header in every generated file, so all of a
@@ -380,9 +389,12 @@ fn write_selected(
 
     // Which file (stem) defines each owner's handler.
     let mut home: BTreeMap<u32, String> = BTreeMap::new();
+    // The registry's rows, and each function entry's index in it, which a
+    // static direct call names (RUNTIME-CONTRACT.md §2, the entry table).
+    let rows = entry_rows(&native)?;
+    let functions = function_indices(&native, &rows);
     // Each owner's C is independent of the others': generate it on every
     // core, then lay it out in owner order as before.
-    let functions: BTreeSet<u32> = native.iter().map(|o| o.func.entry).collect();
     let texts = par::map(&native, |o| {
         if strict_hot.is_some_and(|hot| !hot.contains(&o.func.entry)) {
             return cold_owner(o.func.entry);
@@ -393,7 +405,7 @@ fn write_selected(
             accounting: codegen.accounting,
             functions: Some(&functions),
         };
-        c::function(&o.func, &shape)
+        c::function_with(&o.func, &shape, split)
     });
     for (o, text) in native.iter().zip(texts) {
         let stem = if text.len() > OVERSIZED {
@@ -408,6 +420,7 @@ fn write_selected(
         });
         file.push_str(&text);
         file.push('\n');
+        report.split += text.contains("H2_PART_LENT();") as usize;
         home.insert(o.func.entry, stem);
         report.entries += o.entries.len();
         report.resumes += o.resumes.len();
@@ -415,7 +428,7 @@ fn write_selected(
         report.back_edges += o.loops.back_edges.len();
         report.opt += o.opt;
     }
-    let mut table = registry(&native, &home, &banner, codegen);
+    let mut table = registry(&native, &rows, &home, &banner, codegen);
     if slim_native.is_some() {
         write_cold_table(&mut table, &cold);
     }
@@ -460,8 +473,47 @@ fn cold_owner(owner: u32) -> String {
     )
 }
 
-/// The registration object: ABI version export and the entry/resume tables.
-fn registry(owners: &[&Owner], home: &BTreeMap<u32, String>, banner: &str, codegen: Codegen) -> String {
+/// The registry's entry rows, sorted by address: (address, kind, owner).
+/// Row `r` has entry index `r + 1`; index 0 is no entry. The indices are
+/// 16-bit (`pcmap`), so a module has at most [`MAX_ENTRY_ROWS`] rows.
+fn entry_rows(owners: &[&Owner]) -> io::Result<Vec<(u32, EntryKind, u32)>> {
+    let mut rows: Vec<(u32, EntryKind, u32)> =
+        owners.iter().flat_map(|o| o.entries.iter().map(move |(a, k)| (*a, *k, o.func.entry))).collect();
+    rows.sort();
+    if rows.len() > MAX_ENTRY_ROWS {
+        return Err(io::Error::other(format!(
+            "{} entry rows: the entry table's 16-bit indices take at most {MAX_ENTRY_ROWS}",
+            rows.len()
+        )));
+    }
+    Ok(rows)
+}
+
+/// The most entry rows a module can have: indices 1..=65535 fit `pcmap`'s
+/// 16 bits, and 0 is no entry.
+pub const MAX_ENTRY_ROWS: usize = u16::MAX as usize;
+
+/// Each owner's function entry and its entry index: what a static direct
+/// call or tail jump names (`H2_DCALL`, `H2_DJUMP`).
+fn function_indices(owners: &[&Owner], rows: &[(u32, EntryKind, u32)]) -> BTreeMap<u32, u32> {
+    let index: BTreeMap<u32, u32> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, k, _))| *k == EntryKind::Function)
+        .map(|(i, (a, _, _))| (*a, i as u32 + 1))
+        .collect();
+    owners.iter().filter_map(|o| Some((o.func.entry, *index.get(&o.func.entry)?))).collect()
+}
+
+/// The registration object: ABI version export, the entry/resume tables
+/// and the entry table's `pcmap`.
+fn registry(
+    owners: &[&Owner],
+    entries: &[(u32, EntryKind, u32)],
+    home: &BTreeMap<u32, String>,
+    banner: &str,
+    codegen: Codegen,
+) -> String {
     let mut s = format!("{banner}#define H2_FLAT_STATS_REGISTRY 1\n#include \"h2gen.h\"\n\nH2_EXPORT H2_DEFINE_GENERATED_ABI_NAMED(h2gen_module_abi_version)\n\n");
     let stems: BTreeSet<&String> = home.values().collect();
     for stem in stems {
@@ -470,11 +522,8 @@ fn registry(owners: &[&Owner], home: &BTreeMap<u32, String>, banner: &str, codeg
     for o in owners {
         s.push_str(&format!("TransferAbi {}(CpuAbi *, ExecCtxOpaque *, uint32_t);\n", c::symbol(o.func.entry)));
     }
-    let mut entries: Vec<(u32, EntryKind, u32)> =
-        owners.iter().flat_map(|o| o.entries.iter().map(move |(a, k)| (*a, *k, o.func.entry))).collect();
-    entries.sort();
     s.push_str("\nstatic const H2GenEntry entries[] = {\n");
-    for (a, k, owner) in &entries {
+    for (a, k, owner) in entries {
         let probe = format!("h2gen_abi_version_{}", home[owner]);
         s.push_str(&format!("    {{{a:#010x}u, {}u, {}, {probe}}},\n", *k as u32, c::symbol(*owner)));
     }
@@ -486,8 +535,25 @@ fn registry(owners: &[&Owner], home: &BTreeMap<u32, String>, banner: &str, codeg
         s.push_str(&format!("    {{{pc:#010x}u, {owner:#010x}u, {pc:#010x}u}},\n"));
     }
     s.push_str("    {0u, 0u, 0u},\n};\n\n");
+    // pcmap: the entry index of the entry at each byte of [lo, hi), as
+    // designated initialisers, so the source lists only the entries.
+    let (pcmap, lo, hi) = match (entries.first(), entries.last()) {
+        (Some(first), Some(last)) => {
+            let (lo, hi) = (first.0, last.0 as u64 + 1);
+            s.push_str(&format!("static const uint16_t pcmap[{:#x}] = {{\n", hi - lo as u64));
+            for (i, (a, _, _)) in entries.iter().enumerate() {
+                s.push_str(&format!("    [{:#x}] = {}u,\n", a - lo, i + 1));
+            }
+            s.push_str("};\n\n");
+            // An entry at 0xffffffff would end the range at 2^32, which a
+            // uint32_t cannot hold: the range then stops short of it, and
+            // calls to it take the runner.
+            ("pcmap", lo, hi.min(u32::MAX as u64) as u32)
+        }
+        _ => ("0", 0, 0),
+    };
     s.push_str(&format!(
-        "H2_EXPORT const H2GenModule h2gen_module = {{H2_ABI_VERSION, {}u, {}u, {}, entries, resumes}};\n",
+        "H2_EXPORT const H2GenModule h2gen_module = {{H2_ABI_VERSION, {}u, {}u, {}, entries, resumes, {pcmap}, {lo:#010x}u, {hi:#010x}u}};\n",
         entries.len(),
         resumes.len(),
         if codegen.accounting { "H2GEN_FEATURE_ACCOUNTING | H2GEN_FEATURE_DIRECT" } else { "H2GEN_FEATURE_DIRECT" }
@@ -545,6 +611,7 @@ mod tests {
         cold.resumes.push(0x2030);
         let mut table = registry(
             &[&hot],
+            &entry_rows(&[&hot]).unwrap(),
             &BTreeMap::from([(0x1000, "shard_00001".to_owned())]),
             "",
             Codegen::default(),
@@ -559,6 +626,67 @@ mod tests {
             "    0x00002020u, 0x00002000u,\n",
             "    0x00002030u, 0x00002000u,",
         )));
+    }
+
+    #[test]
+    fn registry_numbers_rows_and_maps_each_entry_byte() {
+        fn owner(entry: u32, interior: &[u32]) -> Owner {
+            let mut entries = vec![(entry, EntryKind::Function)];
+            entries.extend(interior.iter().map(|&a| (a, EntryKind::Interior)));
+            Owner {
+                func: IrFunction {
+                    entry,
+                    blocks: BTreeMap::new(),
+                    interior_entries: Vec::new(),
+                    errors: Vec::new(),
+                },
+                selectors: BTreeSet::from([entry]),
+                entries,
+                resumes: Vec::new(),
+                entry_exits: 0,
+                loops: Default::default(),
+                opt: Default::default(),
+            }
+        }
+        // Out of address order on purpose: rows are sorted by address.
+        let (b, a) = (owner(0x2000, &[]), owner(0x1000, &[0x1008]));
+        let owners = [&b, &a];
+        let rows = entry_rows(&owners).unwrap();
+        assert_eq!(
+            rows,
+            vec![(0x1000, EntryKind::Function, 0x1000), (0x1008, EntryKind::Interior, 0x1000), (0x2000, EntryKind::Function, 0x2000)]
+        );
+        // Static calls name function entries by index; interior ones never.
+        assert_eq!(function_indices(&owners, &rows), BTreeMap::from([(0x1000, 1), (0x2000, 3)]));
+        let home = BTreeMap::from([(0x1000, "shard_a".to_owned()), (0x2000, "shard_b".to_owned())]);
+        let table = registry(&owners, &rows, &home, "", Codegen::default());
+        assert!(table.contains(concat!(
+            "static const uint16_t pcmap[0x1001] = {\n",
+            "    [0x0] = 1u,\n",
+            "    [0x8] = 2u,\n",
+            "    [0x1000] = 3u,\n",
+            "};\n",
+        )), "{table}");
+        assert!(table.contains("entries, resumes, pcmap, 0x00001000u, 0x00002001u};"), "{table}");
+        // No entries: no map.
+        let none = registry(&[], &[], &BTreeMap::new(), "", Codegen::default());
+        assert!(none.contains("entries, resumes, 0, 0x00000000u, 0x00000000u};"), "{none}");
+    }
+
+    #[test]
+    fn a_module_has_at_most_65535_entry_rows() {
+        let mut o = Owner {
+            func: IrFunction { entry: 0, blocks: BTreeMap::new(), interior_entries: Vec::new(), errors: Vec::new() },
+            selectors: BTreeSet::new(),
+            entries: (1..=MAX_ENTRY_ROWS as u32).map(|a| (a, EntryKind::Interior)).collect(),
+            resumes: Vec::new(),
+            entry_exits: 0,
+            loops: Default::default(),
+            opt: Default::default(),
+        };
+        assert_eq!(entry_rows(&[&o]).unwrap().len(), MAX_ENTRY_ROWS);
+        o.entries.push((0x10_0000, EntryKind::Interior));
+        assert!(entry_rows(&[&o]).is_err());
     }
 
     #[test]

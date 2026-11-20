@@ -101,7 +101,7 @@ pub const ORACLES: &[Port] = {
         port(&OBJECT_PRE_UPDATE, "oracle.object_pre_update", Integer, &object_update::PRE, object_update::pre),
         port(&OBJECT_POST_UPDATE, "oracle.object_post_update", Integer, &object_update::POST, object_update::post),
         // Other codecs are guest calls that resume at the call's return.
-        port(&ANIM_ADDITIVE_NODES, "sim.native_rotation_codec", Sse, &crate::sim_native::evaluator::ADDITIVE_SITES, crate::sim_native::evaluator::additive),
+        port(&ANIM_ADDITIVE_NODES, "sim.native.anim", Sse, &crate::sim_native::evaluator::ADDITIVE_SITES, crate::sim_native::evaluator::additive),
     ]
 };
 

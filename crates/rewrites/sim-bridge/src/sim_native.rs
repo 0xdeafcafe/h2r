@@ -370,14 +370,9 @@ mod tests {
         assert_eq!(plan.chains.len(), 1 + ANIM_INVALIDATE.len());
         assert_eq!(plan.save_sections(), vec![("sim-native", Vec::new())]);
 
-        // Off by default; the retired per-function switches install nothing.
+        // The retired per-function switches are gone from the table.
         for key in ["sim.native_rotation_codec", "sim.native_animation_stream"] {
-            let mut registry =
-                Registry::new(Switches::defaults().with(&format!("impl.{key}"), true));
-            registry.add(&SimNative { ray_dispatch: true }).unwrap();
-            let plan = registry.build(&Base).unwrap();
-            assert!(plan.chains.is_empty(), "{key}");
-            assert!(plan.save_sections().is_empty());
+            assert!(Switches::parse(&format!("impl.{key}")).is_err(), "{key}");
         }
     }
 

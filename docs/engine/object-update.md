@@ -28,11 +28,11 @@ virtual addresses; bare numbers in tables are hex. Names are ours.
 - `engine::sim_objects::drive` is the one local dispatcher: a call or
   return between two enabled bodies stays in Rust; anything else returns a
   `TransferAbi` to the runtime.
-- `hooks::sim_objects` registers each body's entry and sites under
+- `sim_bridge::sim_objects` registers each body's entry and sites under
   `impl.sim.native.objects`. Where the float environment check fails, the
   original runs from the same frame. A per-function port at a point a body
   owns (`sim_physics::PORTS`, `sim_native::ENTRIES`) stands down while the
-  switch is on (`hooks::sim_objects::owns`). The ports the slice 1 bodies
+  switch is on (`sim_bridge::sim_objects::owns`). The ports the slice 1 bodies
   replaced (the two walks and the two per-object updates) are in
   `sim_physics::ORACLES`: never installed, kept as test oracles.
 - A body whose point another feature hooks too is guarded
@@ -41,7 +41,7 @@ virtual addresses; bare numbers in tables are hex. Names are ours.
   runtime, so the point's chain runs its hooks around the body. The Halo
   1 health model's `before` and `after` on `OBJECT_DAMAGE_UPDATE` make
   that body guarded whenever both are on.
-- `hooks::sim_objects` also installs the event observers: the buffer is
+- `sim_bridge::sim_objects` also installs the event observers: the buffer is
   emptied at `GAME_TICK`'s entry, and `Damage` and `Kill` events are
   appended at `DAMAGE_REPORT` and `PLAYER_KILLED` ("Slice 8 body").
 
@@ -425,7 +425,7 @@ whether stun timers hold (0), and `d8b50` the recent-damage accumulators
 **Events.** The function applies no damage itself: damage reaches an
 object through the damage report `d9640` and a kill is credited at
 `15ce70` (`PLAYER_KILLED`), whichever code calls them (`dbfb0` from
-here, projectiles, melee, explosions). So `hooks::sim_objects` records
+here, projectiles, melee, explosions). So `sim_bridge::sim_objects` records
 the events with observers at those two entries, the same places the
 Live telemetry's hooks read, and the events equal the hook-derived
 ones over a match:

@@ -175,8 +175,13 @@ that lives only until clang finishes.
 - **Direct calls** (`H2_DCALL`) are not built: every call
   goes back to the runner. The module declares no
   `H2GEN_FEATURE_DIRECT_CALLS`, which the runtime already handles. They
-  can be added later by porting `h2_direct_enter`/`h2_direct_back`; the
-  slot table layout is in `h2gen.h`.
+  can be added later by porting `h2_direct_enter`/`h2_direct_back` and
+  emitting the entry table (`H2GEN_FEATURE_ENTRY_TABLE`) and declaring
+  host calls in place (`H2GEN_FEATURE_HOST_CALLS`: call whatever `live`
+  holds, and the block's `thunk` for an indirect target outside the
+  text); the `H2Direct` layout is in `h2gen.h`. Its loop polls compare the whole preempt word,
+  so the module must not set the entry-table bit until they mask
+  `IRQ_QUEUED` (RUNTIME-CONTRACT.md section 4, "Loop safe points").
 - **Loop safe points**: each loop header polls the context's preempt word
   (the first pointer in the context) with one load and leaves with
   `JUMP`/`RESUME` to the header when it is set, as `H2_LOOP_POLL` does.
@@ -245,10 +250,10 @@ the next start uses clang's module.** No hot swap.
   builds and runs clang's module unless told `--tier`.
 - **Why not hot-swap**: a running guest has handlers on the host stack
   (direct calls), resumes recorded as `(owner handler, start)`, and the
-  runtime's direct slots keyed by handler pointer and dispatch generation.
+  runtime's entry table holding handler pointers (`direct::Live`).
   Swapping at a safe point is feasible in principle, since every resume
-  and entry is by guest address and a dispatch generation bump invalidates
-  the slots, but it needs every guest thread parked outside generated
+  and entry is by guest address and the table is rebuilt from dispatch,
+  but it needs every guest thread parked outside generated
   code, and the old library kept loaded until then. The payoff is one
   session; the risk is a whole class of use-after-unload bugs. A later
   stage can add it behind a flag once the fast tier is trusted.

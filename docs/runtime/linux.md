@@ -140,9 +140,7 @@ addresses, aliases, permissions and MMIO still go through the Xbox page
 table, whose pages are 4 KiB. Linux snapshots copy the RAM bytes into a
 separate guarded reservation. [Runtime storage](../../crates/runtime/runtime/src/cow.rs)
 
-Game writes use the runtime's software dirty marks. Hardware write
-watching by page protection was prototyped and not adopted
-([fastmem-proto.md](../perf/notes/fastmem-proto.md)).
+Game writes use the runtime's software dirty marks.
 
 ### Host clocks and workers
 

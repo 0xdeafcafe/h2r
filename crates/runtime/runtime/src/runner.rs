@@ -167,7 +167,7 @@ impl Runner {
                 }
                 return stop;
             }
-            match step::<SCOPED, DIAG>(cpu, ctx, transfer, scope, &mut remaining, &mut diag) {
+            match step::<SCOPED, DIAG, false>(cpu, ctx, transfer, scope, &mut remaining, &mut diag) {
                 Step::Next(next) => transfer = next,
                 Step::Done(done) => return done,
             }
@@ -178,7 +178,7 @@ impl Runner {
 /// Whether this run takes the diagnostic instance: always in a debug build,
 /// and whenever a switch that exists asks for something only it records.
 /// Chosen once per run; a switch turned on mid-run applies from the next.
-fn diagnostics(ctx: &ExecCtx) -> bool {
+pub(crate) fn diagnostics(ctx: &ExecCtx) -> bool {
     cfg!(debug_assertions)
         || es::enabled()
         || ctx.profile.is_some()
@@ -204,6 +204,14 @@ impl Diag {
             came: es::Came::Start,
         }
     }
+    /// The host-call thunk's (direct.rs): what it routes, a generated
+    /// handler returned.
+    pub(crate) fn thunk<const DIAG: bool>(ctx: &ExecCtx) -> Self {
+        Self {
+            came: es::Came::Thunk,
+            ..Self::new::<DIAG>(ctx)
+        }
+    }
 }
 
 /// What one routed transfer led to.
@@ -217,9 +225,12 @@ pub(crate) enum Step {
 /// One transfer past the safe point: the diagnostic frame record, the scope
 /// and transfer-limit tests, then the continuation, token, resolution and
 /// execute checks, the handler and stop recovery. The runner's loop calls
-/// it after every safe point; the host-call thunk (contract slice T3) will
-/// call it where the caller has just seen the leave word zero.
-pub(crate) fn step<const SCOPED: bool, const DIAG: bool>(
+/// it after every safe point; the host-call thunk (`THUNK`, direct.rs)
+/// calls it where its generated caller has just seen the leave word zero.
+/// The thunk has replayed the transfer's frame record itself, and its
+/// caller's runner counts the transfer and any its handler made directly,
+/// so with `THUNK` neither is recorded here.
+pub(crate) fn step<const SCOPED: bool, const DIAG: bool, const THUNK: bool>(
     cpu: &mut CpuAbi,
     ctx: &mut ExecCtx,
     transfer: TransferAbi,
@@ -232,13 +243,15 @@ pub(crate) fn step<const SCOPED: bool, const DIAG: bool>(
     // has passed, so returns, `ret n` and longjmp-style ESP restores
     // followed by a JUMP all forget the frames they abandoned. A tail
     // jump leaves ESP at its own return slot and keeps its frame.
-    ctx.frames.unwind(cpu.esp);
-    match transfer.kind {
-        abi::CALL => ctx
-            .frames
-            .call(transfer.target_pc, transfer.resume_pc, cpu.esp),
-        abi::RETURN => {}
-        _ => ctx.frames.enter(transfer.target_pc),
+    if !THUNK {
+        ctx.frames.unwind(cpu.esp);
+        match transfer.kind {
+            abi::CALL => ctx
+                .frames
+                .call(transfer.target_pc, transfer.resume_pc, cpu.esp),
+            abi::RETURN => {}
+            _ => ctx.frames.enter(transfer.target_pc),
+        }
     }
     let returned = if SCOPED {
         cpu.esp > scope.0 && transfer.target_pc == scope.1
@@ -253,7 +266,7 @@ pub(crate) fn step<const SCOPED: bool, const DIAG: bool>(
         return Step::Done(TransferAbi::fault(ctx.emit(Event::TransferLimit)));
     }
     *remaining -= 1;
-    if DIAG && let Some(p) = &mut ctx.profile {
+    if DIAG && !THUNK && let Some(p) = &mut ctx.profile {
         p.transfers += 1;
     }
     if transfer.kind == abi::RETURN
@@ -271,7 +284,7 @@ pub(crate) fn step<const SCOPED: bool, const DIAG: bool>(
             ctx,
             transfer.target_pc,
         );
-        *remaining = ctx.direct_end(*remaining);
+        *remaining = ctx.direct_end(*remaining, !THUNK);
         return Step::Next(next);
     }
     // Tokens belong exclusively to the continuation namespace. A stale
@@ -312,7 +325,6 @@ pub(crate) fn step<const SCOPED: bool, const DIAG: bool>(
         handler,
         selector,
         function,
-        generation,
         ..
     } = resolution;
     let native = matches!(handler, Handler::Native(_) | Handler::NativeAdapter(_));
@@ -323,19 +335,13 @@ pub(crate) fn step<const SCOPED: bool, const DIAG: bool>(
         let c = if generated {
             let routed =
                 transfer.route == abi::ENTRY && matches!(transfer.kind, abi::CALL | abi::JUMP);
-            let slot =
-                routed.then(|| ctx.direct_slot_state(transfer.target_pc, &handler, generation));
+            let slot = routed.then(|| ctx.live_state(transfer.target_pc));
             es::cause(diag.came, &transfer, slot)
         } else {
             es::RUST_HANDLER
         };
         es::note(c, &transfer);
         diag.came = if generated { es::Came::Native } else { es::Came::Rust };
-    }
-    // Sample the slot before warming it. Generated code may now
-    // use the resolution while the generation stays the same.
-    if generated && transfer.route == abi::ENTRY && selector == transfer.target_pc {
-        ctx.note_direct(transfer.target_pc, &handler, generation);
     }
     // Direct calls the handler makes spend this run's transfers.
     ctx.direct_begin(*remaining);
@@ -349,8 +355,10 @@ pub(crate) fn step<const SCOPED: bool, const DIAG: bool>(
     if let Some((prev, target, thread)) = hle {
         crate::trap::hle_leave(prev, target, thread, next.kind == abi::STOP);
     }
-    *remaining = ctx.direct_end(*remaining);
-    if DIAG && diag.census {
+    *remaining = ctx.direct_end(*remaining, !THUNK);
+    // The census counts generated handlers handing control back to the
+    // runner; one the thunk invoked hands it back to generated code.
+    if DIAG && diag.census && !(THUNK && generated) {
         let count = if generated {
             DispatchCount::native_exit(next)
         } else {

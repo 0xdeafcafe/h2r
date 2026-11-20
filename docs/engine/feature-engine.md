@@ -111,7 +111,8 @@ feature's), then by feature id. Two mutating hooks (`before` or `after`) of
 different features in one `Order` class with no `after_feature` between them
 are a conflict, so boot refuses the plan and the game stops at boot
 (`crates/apps/boot/src/registration.rs`). A hook on a `hot` point makes the plan
-warn: an overridden entry leaves the direct-call fast path
+warn: an overridden entry leaves the direct-call fast path; its calls
+run in place through the host-call thunk, one runner step each
 (`crates/runtime/runtime/src/direct.rs`).
 
 **Test:** `crates/hooking/hooks/tests/plan.rs`
@@ -412,7 +413,7 @@ the camera's field of view are still raw hooks in
 
 The render front-end is replaced by the native renderer
 ([native-renderer.md](../graphics/native-renderer.md)), whose stages are
-features in `crates/hooking/hooks/src/native_*`; its one switch is
+features in `crates/rewrites/render-bridge/src/native_*`; its one switch is
 `impl.render.native`. The reads of the retail call tree are in
 [render-loop.md](../graphics/render-loop.md). `render-timing`
 (`crates/rewrites/render-bridge/src/render_timing.rs`, off by default) puts observers on both
