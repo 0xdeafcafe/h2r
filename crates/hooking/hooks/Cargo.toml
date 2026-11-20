@@ -10,7 +10,6 @@ status = "in progress"
 
 [dependencies]
 runtime.workspace = true
-tags.workspace = true
 engine = { path = "../../rewrites/engine", features = ["runtime-glue"] }
 timeline = { path = "../../runtime/timeline" }
 

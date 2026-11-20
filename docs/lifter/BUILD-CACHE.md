@@ -1,7 +1,7 @@
 # Iteration builds and caches
 
 Status: Built.
-Code: `crates/recompiler/emit/src/compile.rs` (object cache, `obj_dir_with`, `prune_obj_cache`), `crates/apps/boot/src/tier.rs`, `h2 emit` and `h2 build` in `crates/apps/cli/src/main.rs`. Tests: `crates/recompiler/emit/src/compile.rs` (unit tests), `crates/apps/boot/src/tier.rs`.
+Code: `crates/recompiler/emit/src/compile.rs` (object cache, `obj_dir_with`, `prune_obj_cache`), `crates/recompiler/emit/src/compile/tiers.rs` (optimisation tiers), `crates/recompiler/emit/src/c.rs` (`Split`, handler parts), `crates/apps/boot/src/tier.rs`, `h2 emit` and `h2 build` in `crates/apps/cli/src/main.rs`. Tests: `crates/recompiler/emit/src/compile.rs` and `compile/tiers.rs` (unit tests), `crates/recompiler/emit/tests/split.rs`, `crates/recompiler/emit/tests/direct.rs` (`Mode::SplitOn`), `crates/apps/boot/src/tier.rs`.
 Switch: `H2_OBJ_CACHE`, `H2_OBJ_CACHE_MAX`, `H2_OPT`, `H2_DEBUG`, `H2_CPU`, `H2_PGO*`, `H2_HOT`, `H2_OPT_COLD`, listed in [switches.md](../runtime/switches.md).
 
 `cargo h2 emit /path/to/default.xbe --run-entry` builds only the host
@@ -157,30 +157,53 @@ a fresh temporary at its destination.
 
 ## Profiles and timing
 
-The default remains `H2_OPT=1 H2_DEBUG=lines`: `-O1 -gline-tables-only`,
+The default is `H2_OPT=1 H2_DEBUG=lines`: `-O1 -gline-tables-only`,
 with strict floating-point behavior. `H2_OPT` also accepts `0`, `g`, `s`,
 `2`, `3`; `H2_DEBUG` accepts `none`, `lines`, `full`. Both are cache-keyed.
 `H2_OPT=0 H2_DEBUG=none` is available for compile-speed experiments, but
 can make guest execution slower; it is not the default.
 
-### Optimisation tiers (opt-in)
+### Optimisation tiers
 
-`H2_OPT_COLD=<level>` with `H2_HOT=<file>` compiles every source that
-holds none of the file's guest addresses at `<level>` (`0`, `1`, `g`, `s`
-or `2`) and the rest at `H2_OPT`. Off unless both are set; setting only
-one is an error. A source is hot when it holds the instruction marker
-(`/* 0x0001234 */`) of any listed address. The file can be a profiler's
-`profile.folded` or `profile.txt` as written (`guest 0x…` and `@0x…`
-frames), or any list of `0x…` addresses or `h2fn_…` names.
+An optimised build compiles only hot code at `H2_OPT`. With `H2_OPT` at
+`2` or `3` and `H2_OPT_COLD` unset, every source that holds none of the
+hot guest addresses compiles at `-O1`; the hot list is
+`crates/recompiler/emit/src/compile/hot.txt`, guest function entries from
+the profiles in docs/perf (`emit::compile::Tiers::from_settings`). At the
+default `H2_OPT=1` and below, tiers are off. `H2_OPT_COLD=<level>` (`0`,
+`1`, `g`, `s` or `2`) names another cold level and turns tiers on at any
+`H2_OPT`; `H2_OPT_COLD=off` turns them off. `H2_HOT=<file>` replaces the
+shipped list; giving it while tiers are off is an error. A source is hot
+when it holds the instruction marker (`/* 0x0001234 */`) of any listed
+address. The file can be a profiler's `profile.folded` or `profile.txt`
+as written (`guest 0x…` and `@0x…` frames), or any list of `0x…`
+addresses or `h2fn_…` names; `hot.txt` says how to regenerate it from a
+profile.
 
 Each tier has its own flags in its objects' keys and its own dependency
 and driver probes, so moving a source between tiers recompiles exactly
 that source, and turning tiers off reuses every object built hot. The boot
 stamp records the cold level and a hash of the hot list, so `h2 run` and
 `h2 play` rebuild when either changes; with tiers off the stamp is the
-same as before. `h2 build` prints how many sources were cold. It only
-changes how fast cold code runs, never what it does; measure fps before
-relying on it (notes/build-perf.md has the compile-time side).
+same as without them. `h2 build` prints how many sources were cold. Tiers
+change only how fast cold code runs, never what it does
+(notes/build-perf.md has the compile-time side).
+
+### Handler parts
+
+A handler whose C is longer than 3000 lines is emitted as static parts of
+about 1500 lines behind a router that keeps the handler's name
+(`emit::c::Split`, "Handler parts" in `h2gen.h`). Clang's time on one
+function grows about as lines^1.4, so the parts cost less than the whole,
+and the largest handlers are about half of a cold build
+(notes/build-perf.md). A local edge between parts leaves through the
+part's epilogue, as an exit to the runner does, and the router enters the
+other part at the block, so the lowering inside each part is unchanged
+and the module registers the same entries and resumes. Cuts are at block
+starts in address order and avoid the inside of a loop until a part
+reaches three times its size, since every crossing costs a handler exit
+and entry. `h2 build` prints how many handlers it cut. There is no switch:
+the C changes with the generator, and the stamp with it.
 
 ### Compiler switches (opt-in): `-O3`, the CPU, PGO
 

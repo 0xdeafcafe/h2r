@@ -853,3 +853,33 @@ fn capture_rejects_unreproducible_layout_changes_even_if_a_known_allocation_foll
     let (_, recovered) = g.capture_hle_writes(1, |g| g.set_u8(0x10000, 9).unwrap());
     assert_eq!(recovered.unwrap().writes, [(0x10000, vec![9])]);
 }
+
+/// The entry table re-reads execute bits only when `code_id` moves
+/// (`runtime::direct`), so every change that can take Execute from lifted
+/// code must move it, and the ones that cannot must leave it.
+#[test]
+fn code_id_moves_exactly_when_lifted_code_can_lose_execute() {
+    let mut g = Guest::new();
+    g.map_zeroed(0x10000, 4 * P, Permissions::RX).unwrap();
+    g.map_zeroed(0x20000, P, Permissions::RW).unwrap();
+    let before = g.code_id();
+    g.guard_code(0x11000, P).unwrap();
+    let guarded = g.code_id();
+    assert_ne!(guarded, before, "a guard moves it");
+    // Range changes cannot take Execute from lifted code, and a
+    // whole-mapping protect elsewhere does not touch it. The range protect
+    // splits the code mapping: [0x10000, 0x11000) is a mapping of its own
+    // now, with no lifted code in it.
+    g.protect_range(0x10000, P, Permissions::READ).unwrap();
+    g.protect(0x20000, Permissions::READ).unwrap();
+    g.protect(0x10000, Permissions::RX).unwrap();
+    assert_eq!(g.code_id(), guarded);
+    // A whole-mapping protect over lifted code does, even keeping Execute.
+    g.protect(0x11000, Permissions::RX).unwrap();
+    let protected = g.code_id();
+    assert_ne!(protected, guarded);
+    // Restoring a snapshot layout moves it too.
+    let layout = g.layout();
+    g.restore(&layout, &vec![0u8; RAM_SIZE]).unwrap();
+    assert_ne!(g.code_id(), protected);
+}

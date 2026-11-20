@@ -237,7 +237,8 @@ native, inactive and declined calls by reason.
 - The same file's ignored `every_disc_animation_matches_the_guest`
   (`H2_XBE`, `H2_DISC`): every resource animation on the disc at frame 0,
   middle, last and an interpolated fraction. Aggregate counts only.
-- The retired per-function ports (`impl.sim.native_rotation_codec`,
-  `impl.sim.native_animation_stream`, the additive evaluator `0x280ac0`)
-  remain as oracles in `sim_native_differential` and
-  `sim_physics_differential` (`sim_physics::ORACLES`).
+- The retired per-function ports (the five rotation codecs, the stream
+  call and the additive evaluator `0x280ac0`) remain as oracles in
+  `sim_native_differential` and `sim_physics_differential`
+  (`sim_physics::ORACLES`). Their switches are deleted; the codecs and the
+  stream are not in `sim_native::ENTRIES`.

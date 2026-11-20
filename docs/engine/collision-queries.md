@@ -183,7 +183,7 @@ held, their bytes, and precision controls. The agent API serves it as
 ```sh
 cargo test -p sim-core
 cargo test -p sim-collision
-cargo test -p hooks sim_native
+cargo test -p sim-bridge sim_native
 cargo test -p agent collision
 H2_XBE=/path/to/default.xbe cargo test -p engine --features differential --test it sim_collision_differential::
 ```

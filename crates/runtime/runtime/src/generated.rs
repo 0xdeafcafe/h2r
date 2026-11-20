@@ -123,13 +123,15 @@ pub struct H2GenResume {
 }
 
 /// `H2GenModule`: both tables have `count` rows followed by a zero row.
+/// A module with [`FEATURE_ENTRY_TABLE`] continues as
+/// [`H2GenEntryModule`].
 #[repr(C)]
 #[derive(Debug)]
 pub struct H2GenModule {
     pub abi_version: u32,
     pub entry_count: u32,
     pub resume_count: u32,
-    /// [`FEATURE_ACCOUNTING`], or 0. A bit this runtime does not know is a
+    /// A set of `FEATURE_*` bits. A bit this runtime does not know is a
     /// registration error, so a newer module never runs on assumptions an
     /// older runtime cannot honour.
     pub features: u32,
@@ -137,9 +139,27 @@ pub struct H2GenModule {
     pub resumes: *const H2GenResume,
 }
 
+/// `H2GenModule` as h2gen.h declares it for a module with
+/// [`FEATURE_ENTRY_TABLE`]: the head, then the entry table's `pcmap`.
+#[repr(C)]
+#[derive(Debug)]
+pub struct H2GenEntryModule {
+    pub module: H2GenModule,
+    /// `text_hi - text_lo` entry indices, one per byte of
+    /// `[text_lo, text_hi)`: entry row `r` (index `r + 1`) at its address,
+    /// 0 elsewhere. Null when the module has no entries.
+    pub pcmap: *const u16,
+    pub text_lo: u32,
+    pub text_hi: u32,
+}
+
 const _: () = assert!(size_of::<H2GenResume>() == 12);
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(size_of::<H2GenEntry>() == 24 && size_of::<H2GenModule>() == 32);
+const _: () = assert!(
+    size_of::<H2GenEntry>() == 24
+        && size_of::<H2GenModule>() == 32
+        && size_of::<H2GenEntryModule>() == 48
+);
 
 pub const ENTRY_FUNCTION: u32 = 0;
 pub const ENTRY_INTERIOR: u32 = 1;
@@ -165,8 +185,29 @@ pub const FEATURE_DIRECT_CALLS: u32 = 2;
 /// callee neither acquires nor releases one ([`crate::direct`]). A runtime
 /// whose block ends before that word must refuse the module.
 pub const FEATURE_DIRECT_VIEW: u32 = 4;
+/// Module feature (`H2GEN_FEATURE_ENTRY_TABLE`): entry row `r` has entry
+/// index `r + 1`, the module exports `pcmap` ([`H2GenEntryModule`]), and
+/// its loop and bulk-copy polls mask
+/// [`IRQ_QUEUED`](crate::preempt::IRQ_QUEUED) out of the preempt word while
+/// its direct calls test the whole word. Registering it makes the runtime
+/// keep its entry table ([`crate::direct`]) and turns on
+/// [`Runtime::enable_leave_word`](crate::Runtime::enable_leave_word).
+/// [`FEATURE_DIRECT_CALLS`] needs it: an image built before it is refused.
+pub const FEATURE_ENTRY_TABLE: u32 = 8;
+/// Module feature (`H2GEN_FEATURE_HOST_CALLS`, every direct-call module):
+/// host calls in place. The direct-call block carries the runtime's
+/// host-call thunk (`h2rt_thunk`, [`crate::direct`]); a direct call invokes
+/// whatever the entry table holds, which is the thunk for an overridden
+/// entry, and an indirect call or jump outside the module's text calls the
+/// thunk. [`FEATURE_DIRECT_CALLS`] needs it: an image built before it reads
+/// the block at the old offsets and is refused. (16 is kept for flat RAM.)
+pub const FEATURE_HOST_CALLS: u32 = 32;
 /// Every module feature this runtime implements.
-pub const FEATURES: u32 = FEATURE_ACCOUNTING | FEATURE_DIRECT_CALLS | FEATURE_DIRECT_VIEW;
+pub const FEATURES: u32 = FEATURE_ACCOUNTING
+    | FEATURE_DIRECT_CALLS
+    | FEATURE_DIRECT_VIEW
+    | FEATURE_ENTRY_TABLE
+    | FEATURE_HOST_CALLS;
 
 /// What `register_generated_module` added.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,10 +255,19 @@ impl Dispatch {
     /// The whole module is validated before anything is added, so an error
     /// leaves this dispatch unchanged. Errors name the row.
     ///
+    /// A module with [`FEATURE_ENTRY_TABLE`] also has its `pcmap` checked
+    /// against its rows (every row's byte maps to the row), and becomes
+    /// this dispatch's entry table; a second one is refused. A module with
+    /// [`FEATURE_DIRECT_CALLS`] and no entry table, or without
+    /// [`FEATURE_HOST_CALLS`], is refused.
+    ///
     /// # Safety
     /// `module` and its tables (each `count` rows plus a zero row) must be
     /// valid, and its handlers and probes must obey the ABI v1 contract in
-    /// ffi.rs and h2abi.h and stay loaded while registered.
+    /// ffi.rs and h2abi.h and stay loaded while registered. With
+    /// [`FEATURE_ENTRY_TABLE`], `module` must be the head of an
+    /// [`H2GenEntryModule`] whose `pcmap` is null or valid for
+    /// `text_hi - text_lo` elements.
     pub unsafe fn register_generated_module(
         &mut self,
         module: &H2GenModule,
@@ -235,6 +285,16 @@ impl Dispatch {
         if module.features & !FEATURES != 0 {
             return Err(RegistrationError::UnknownFeatures(module.features & !FEATURES));
         }
+        let with_table = module.features & FEATURE_ENTRY_TABLE != 0;
+        if module.features & FEATURE_DIRECT_CALLS != 0 && !with_table {
+            return Err(RegistrationError::DirectCallsWithoutEntryTable);
+        }
+        if module.features & FEATURE_DIRECT_CALLS != 0 && module.features & FEATURE_HOST_CALLS == 0 {
+            return Err(RegistrationError::DirectCallsWithoutHostCalls);
+        }
+        if with_table && self.entry_table().is_some() {
+            return Err(RegistrationError::SecondEntryTable);
+        }
         // SAFETY: the caller guarantees the table shapes.
         let entries = unsafe { table(module.entries, module.entry_count, ModuleTable::Entries)? };
         // SAFETY: as above.
@@ -250,6 +310,15 @@ impl Dispatch {
             }
         })?;
         entries_ok(self, entries)?;
+        let entry_table = if with_table {
+            // SAFETY: the caller guarantees the extended layout with the
+            // feature.
+            let ext = unsafe { &*std::ptr::from_ref(module).cast::<H2GenEntryModule>() };
+            // SAFETY: as above, for pcmap.
+            Some(unsafe { entry_table(entries, ext)? })
+        } else {
+            None
+        };
         let kinds: HashMap<u32, u32> = entries.iter().map(|e| (e.addr, e.kind)).collect();
         let mut seen = std::collections::HashSet::with_capacity(resumes.len());
         for (index, r) in resumes.iter().enumerate() {
@@ -276,12 +345,64 @@ impl Dispatch {
             self.register_resume(r.pc, r.owner, r.start)
                 .expect("validated resume row");
         }
+        if let Some(t) = entry_table {
+            self.set_entry_table(t);
+        }
         Ok(RegisteredModule {
             entries: entries.len(),
             resumes: resumes.len(),
             features: module.features,
         })
     }
+}
+
+/// The entry table of a module with [`FEATURE_ENTRY_TABLE`], checked: at
+/// most 65,535 rows, and `pcmap` is non-zero exactly at the rows'
+/// addresses, where it holds the row's own index (a row its range leaves
+/// out is called through the runner).
+///
+/// # Safety
+/// `ext.pcmap` is null or valid for `text_hi - text_lo` elements.
+unsafe fn entry_table(
+    rows: &[H2GenEntry],
+    ext: &H2GenEntryModule,
+) -> Result<crate::direct::EntryTable, RegistrationError> {
+    let bad = |what: String| Err(RegistrationError::EntryTable(what));
+    if rows.len() > u16::MAX as usize {
+        return bad(format!("{} rows, more than 16-bit indices hold", rows.len()));
+    }
+    let (lo, hi) = (ext.text_lo, ext.text_hi);
+    if hi < lo || (hi > lo && ext.pcmap.is_null()) {
+        return bad(format!("pcmap {:p} for [{lo:#x}, {hi:#x})", ext.pcmap));
+    }
+    let map: &[u16] = if hi > lo {
+        // SAFETY: the caller guarantees pcmap covers [lo, hi).
+        unsafe { std::slice::from_raw_parts(ext.pcmap, (hi - lo) as usize) }
+    } else {
+        &[]
+    };
+    for (r, e) in rows.iter().enumerate() {
+        if !(lo..hi).contains(&e.addr) {
+            continue;
+        }
+        let at = map[(e.addr - lo) as usize];
+        if usize::from(at) != r + 1 {
+            return bad(format!("pcmap at {:#010x} is {at}, row {r} has index {}", e.addr, r + 1));
+        }
+    }
+    // And nothing else: an index anywhere else would send an indirect call
+    // to a handler that does not start there.
+    for (off, &at) in map.iter().enumerate() {
+        let addr = lo + off as u32;
+        if at != 0 && rows.get(usize::from(at) - 1).is_none_or(|e| e.addr != addr) {
+            return bad(format!("pcmap at {addr:#010x} is {at}, which is no row there"));
+        }
+    }
+    let table = rows
+        .iter()
+        .map(|e| (e.addr, (e.kind == ENTRY_FUNCTION).then_some(e.handler).flatten()))
+        .collect();
+    Ok(crate::direct::EntryTable::new(table, ext.pcmap, (lo, hi)))
 }
 
 /// Drop the zero row after the counted rows, checking it is one.

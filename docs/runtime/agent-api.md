@@ -700,7 +700,7 @@ h2 agent render.parity '{"arm": true}'
   content (framescene.md 9.2).
 - **`render.scene`.** The last sealed `FrameScene`, from the source the
   frame step registers (`agent::render::set_scene_source`, in boot's
-  `scene_glue` over `hooks::scene_step`): whether
+  `scene_glue` over `render_bridge::scene_step`): whether
   one has been sealed, its map epoch, frame, tick, summary hash and cut
   reasons; per view (`key` is `kind:player:view`, `game:0:0`, the first
   person's `first_person:0:0`) whether it

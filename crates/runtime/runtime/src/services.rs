@@ -20,6 +20,9 @@ pub struct Runtime {
     pub(crate) words: crate::preempt::Words,
     pub(crate) coverage: OnceLock<crate::coverage::Coverage>,
     pub(crate) dispatch_census: Option<crate::entry_stats::DispatchCensus>,
+    /// The entry table, once dispatch has a module with one
+    /// ([`crate::direct`]).
+    live: OnceLock<crate::direct::Live>,
 }
 
 /// Waits on the guest memory lock that found it held by another thread.
@@ -67,7 +70,7 @@ impl LockContention {
 
 impl Runtime {
     pub fn new(memory: Guest, dispatch: Dispatch) -> Arc<Self> {
-        Arc::new(Self {
+        let rt = Arc::new(Self {
             memory: crate::ffi::Memory::new(memory),
             dispatch: RwLock::new(dispatch),
             dispatch_gen: AtomicU64::new(1),
@@ -77,7 +80,56 @@ impl Runtime {
             coverage: OnceLock::new(),
             dispatch_census: (std::env::var("H2_DISPATCH_STATS").as_deref() == Ok("1"))
                 .then(crate::entry_stats::DispatchCensus::default),
-        })
+            live: OnceLock::new(),
+        });
+        let d = rt.dispatch.read().unwrap_or_else(|e| e.into_inner());
+        rt.adopt_entry_table(&d);
+        drop(d);
+        rt
+    }
+    /// Dispatch has (or has just gained) a module with an entry table: the
+    /// leave word goes on before the table can hold anything, then the
+    /// table follows dispatch's overrides. Called with the dispatch lock.
+    fn adopt_entry_table(&self, d: &Dispatch) {
+        let Some(rows) = d.entry_table() else {
+            return;
+        };
+        let live = self.live.get_or_init(|| {
+            // Before any element is filled: a direct call's quiet test
+            // reads the word alone (direct.rs).
+            self.enable_leave_word();
+            crate::direct::Live::new(rows.clone())
+        });
+        live.sync_overrides(d);
+    }
+    /// The entry table, if dispatch has a module with one.
+    #[inline]
+    pub(crate) fn live(&self) -> Option<&crate::direct::Live> {
+        self.live.get()
+    }
+    /// The entry table, checked against the guest's lifted code as the
+    /// last memory guard left it: re-read when the code identity moved.
+    #[inline]
+    pub(crate) fn live_checked(&self) -> Option<&crate::direct::Live> {
+        let live = self.live.get()?;
+        if live.checked() != self.memory.code() {
+            self.check_live(live);
+        }
+        Some(live)
+    }
+    /// Read each row's lifted-code execute bit under one memory guard, then
+    /// rewrite the table under the dispatch read lock (lock order: the two
+    /// are never held together here; dispatch before the table's own).
+    #[cold]
+    #[inline(never)]
+    fn check_live(&self, live: &crate::direct::Live) {
+        let (code, executable) = {
+            let g = self.memory();
+            let executable = live.addrs().iter().map(|&a| g.lifted_executable(a)).collect();
+            (g.code_id(), executable)
+        };
+        let d = self.dispatch.read().unwrap_or_else(|e| e.into_inner());
+        live.check_code(code, executable, &d);
     }
     /// Runtime dispatch counters, enabled when constructed with
     /// `H2_DISPATCH_STATS=1`.
@@ -156,6 +208,10 @@ impl Runtime {
     pub fn edit_dispatch<R>(&self, f: impl FnOnce(&mut Dispatch) -> R) -> R {
         let mut d = self.dispatch.write().unwrap_or_else(|e| e.into_inner());
         let r = f(&mut d);
+        // Under the write lock: an override registered, enabled or
+        // disabled reaches the entry table before the edit returns, so no
+        // direct call made after it skips the override.
+        self.adopt_entry_table(&d);
         // Under the write lock: a context that resolves after this sees the
         // new tables and the new generation together.
         self.dispatch_gen.fetch_add(1, Ordering::AcqRel);
@@ -168,11 +224,6 @@ impl Runtime {
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .stop_recovery()
-    }
-    /// The generation counter itself, for generated code's direct calls
-    /// (`direct.rs`); it lives as long as the runtime.
-    pub(crate) fn dispatch_generation_ptr(&self) -> *const AtomicU64 {
-        &self.dispatch_gen
     }
     /// The dispatch tables' generation (see [`edit_dispatch`](Self::edit_dispatch)).
     pub fn dispatch_generation(&self) -> u64 {

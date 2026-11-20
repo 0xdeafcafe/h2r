@@ -4,13 +4,14 @@
 use engine::handle::DatumHandle;
 use engine::memory::GuestMemory;
 use engine::render_loop::occlusion::guest::{CAMERA, VIEW_PLAYER, body};
-use engine::tags::{entry_layout, tag_entry_checked};
 use runtime::guest::Permissions;
-use tags::scope_zoom::{MAGIC, Profile, WORDS};
+use tags::scope_zoom::MAGIC;
+
+// The profile reads native_post shares (src/scope_zoom_hud.rs there).
+use render_bridge::scope_zoom_hud::{HUD_SCREEN_RETURN, hud_profile, profile, tag_def};
 
 use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy, points};
 
-const HUD_SCREEN_RETURN: u32 = 0x0022_bbc0;
 const CONVOLUTION_RETURN: u32 = 0x0002_da9b;
 // 0x0002d140 copies all four caller values here. 0x000338bf/0x000338c8
 // supply the first two to the shader as scalar inputs 41 and 42.
@@ -79,35 +80,6 @@ impl Feature for ScopeZoom {
             .context_only();
         Ok(())
     }
-}
-
-fn tag_def(mem: &dyn GuestMemory, tag: u32, group: [u8; 4]) -> Option<(u32, u32)> {
-    let entry = tag_entry_checked(mem, DatumHandle::from_raw(tag)?).ok()??;
-    if mem.u32(entry + entry_layout::GROUP).ok()? != u32::from_be_bytes(group) {
-        return None;
-    }
-    let def = mem.u32(entry + entry_layout::ADDRESS).ok()?;
-    let size = mem.u32(entry + entry_layout::SIZE).ok()?;
-    (def != 0).then_some((def, size))
-}
-
-fn profile(mem: &dyn GuestMemory, datum: u32) -> Option<Profile> {
-    let (def, size) = tag_def(mem, datum, *b"egor")?;
-    if size < (WORDS * 4) as u32 || mem.u32(def).ok()? != MAGIC {
-        return None;
-    }
-    let mut bytes = [0; WORDS * 4];
-    mem.read(def, &mut bytes).ok()?;
-    Profile::decode(std::array::from_fn(|i| {
-        u32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap())
-    }))
-}
-
-pub(crate) fn hud_profile(mem: &dyn GuestMemory, datum: u32, esp: u32) -> Option<Profile> {
-    if mem.u32(esp).ok()? != HUD_SCREEN_RETURN {
-        return None;
-    }
-    profile(mem, datum)
 }
 
 fn local_state(mem: &dyn GuestMemory, states: u32, unit: u32) -> Option<u32> {
@@ -252,8 +224,8 @@ fn prepare_blur(mem: &mut dyn GuestMemory, esp: u32) -> Option<()> {
 mod tests {
     use super::*;
     use engine::memory::FlatMemory;
-    use engine::tags::{TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL, index_layout};
-    use tags::scope_zoom::{Blur, Filter};
+    use engine::tags::{TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL, entry_layout, index_layout};
+    use tags::scope_zoom::{Blur, Filter, Profile};
 
     #[test]
     fn flashlight_edges_fade_once_per_simulation_tick() {

@@ -1,16 +1,17 @@
 # Occlusion culling of objects
 
-Status: Partly built. The test, the hooks and the device's depth grid are built and tested on synthetic data; the switch waits for a first in-game check ([Status](#status)).
-Code: `crates/rewrites/engine/src/render_loop/occlusion.rs`, `crates/rewrites/render-bridge/src/occlusion.rs`, `crates/platform/gfx` (depth grid), `crates/platform/d3d/src/backend.rs` (`Backend` depth-grid ask). Tests: `crates/rewrites/render-bridge/tests/occlusion.rs`, `crates/platform/d3d/tests/occlusion_grid.rs`, `crates/platform/gfx/tests/depth_grid.rs`.
-Switch: `impl.render.occlusion` (off), listed in [switches.md](../runtime/switches.md).
+Status: Research. The read below is current; the Hi-Z culling built on it
+was not adopted and is deleted ([not-adopted.md](notes/not-adopted.md)).
+Code: `crates/rewrites/engine/src/render_loop/occlusion/guest.rs` (the
+addresses), `crates/hooking/guest-layout/src/points.rs` (`OBJECT_RENDER_RECORDS`,
+`OBJECT_RENDER_SETUP`, `SCENE_TRANSPARENTS`).
 
 The game's render front-end is CPU-bound guest code: each draw costs
-about 8 to 14 µs on the game thread before it reaches the GPU, and heavy
-Old Mombasa frames have about 2,000 draws at about 36 ms. The GPU has
-headroom. This page is the read of how the game picks what to draw each
-frame, where a per-object "skip" can go so a hidden object costs almost
-nothing, and the design and status of a Hi-Z occlusion test against the
-previous frame's depth.
+about 8 to 14 µs on the game thread before it reaches the GPU. This page
+is the read of how the game picks the objects it draws each frame, where
+a per-object skip can go so a hidden object costs almost nothing, and how
+the game scales the W-buffer. The native renderer's stages, `FrameScene`'s
+camera and the scene step read the same addresses.
 
 Evidence labels as in [feature-engine.md](../engine/feature-engine.md):
 **Code** (read in the disassembly, `h2 disasm`), **Test**, **S**
@@ -122,9 +123,7 @@ reads only AL: non-zero with view kind 1 re-runs the same index.
   vertical half-angle's tangent. Two things the read does not settle: with
   `[0x00485ac2]` set (and `[0x00510c50]+5`) the aspect is multiplied by a
   constant (`0x0045dfdc`; S: an anamorphic or widescreen mode), and the
-  frustum extents can come from the caller instead of the default. The
-  occlusion camera uses the plain viewport aspect. **This is the first
-  thing to check in game** (below).
+  frustum extents can come from the caller instead of the default.
 - The projection `0x004b9e14` (built by `0x0002fd90`): world-to-view 4x3
   at `+0`, view-to-world at `+0x34`, four frustum bounds at `+0x68`, pixel
   scales at `+0xb8`/`+0xbc` (`0x004b9ed0` is the LOD pixel scale).
@@ -156,65 +155,10 @@ The alternative, rejecting at the gather's accept (`0x0013312d`), also
 drops the object from the list: no lens flares or light volumes on it and
 no shadow from it onto visible ground. Not used.
 
-Keyed by handle, not list index (`0x00134240` reorders the list). The
+A skip is keyed by handle, not list index (`0x00134240` reorders the list). The
 light views (`0x0054aa68`) and other view kinds are never touched.
 
-## The design
-
-```text
-frame N, game thread                    render thread
-OBJECT_RENDER_RECORDS (main view):      .
-  arm a capture: view, frame, camera    .
-SCENE_TRANSPARENTS 0x0001e370:          .
-  capture(tag) -> Device::              .
-  request_depth_grid (pending)          .
-next D3D entry, after the drain:  --->  Backend::request_depth_grid:
-  W-buffer parameters read              DepthGrid::reduce in the command
-                                        stream after the opaque draws
-Swap                              --->  present: map; a later present:
-                                        sink(grid, W parameters)
-                                          -> occlusion::deliver: view
-                                          depth, ignore_nearer, HiZ,
-                                          Frame -> MAILBOX
-frame N+1, game thread
-OBJECT_RENDER_RECORDS: camera, protected handles, newest Frame
-OBJECT_RENDER_SETUP per object: sphere -> footprint -> pyramid max
-  -> streak -> skip or run
-```
-
-- **Capture point** (`feature::occlusion`, observer `occlusion_capture`
-  on `SCENE_TRANSPARENTS` `0x0001e370`): the first transparents call after
-  a main view's records were built, so the depth holds the opaque layers
-  (and the dynamic lights' passes) but not the transparents or the
-  first-person chain, which `render_scene_passes` runs after it. The
-  observer tags the ask with the view index, the frame (`[0x004ba034]`)
-  and the camera read at the records build.
-- **In order with the draws** (`d3d::Device::request_depth_grid`): the
-  ask waits on the device until the next D3D entry has drained the push
-  buffer, so everything the game queued before the transparents is
-  recorded first; the grid is then recorded through
-  `Backend::request_depth_grid` (additive, default "cannot"):
-  `ThreadedBackend` posts it to the render thread, `ScaledBackend` asks
-  the view's scaled depth (what the screen shows) or the reference's,
-  `InterpBackend` passes it on (a replay never asks), boot's `DiagBackend`
-  passes it on, and `GfxBackend` records `gfx::depth_grid` into the open
-  encoder, maps it at the next present and hands it to the sink at a
-  present after the map completed (no wait). The viewport in guest pixels
-  is scaled to the texture's texels (`grid_rect`).
-- **Not recorded** (counted in `Stats::depth_grids_skipped`) when the
-  bound depth is not the device's own depth buffer, the depth is not
-  W-buffered (`SET_CONTROL0` z-perspective), the W parameters are not
-  finite, or the backend cannot (a multisampled or unsampleable depth).
-- **W-buffer to view depth**: the stored depth is `floor(view_depth ·
-  z_scale / far) / z_scale`, `z_scale` the device's `+0x948` (D24's full
-  scale) and `far` the camera's far plane (below), so
-  `DepthMapping::w_buffer(1 / far, z_scale)`, which takes the far end of
-  each stored step. Boot hands the grid over with the device's W
-  parameters (`w_buffer_mapping`: `+0x944`, `+0x948`); the feature
-  rescales it to the camera's far read with the capture
-  (`DepthMapping::with_w_far`).
-
-### The W scale (Code, confirmed by the probe)
+## The W scale (Code, confirmed by the probe)
 
 The device's `+0x944` (1 / w far) is not the scale Halo's draws use. D3D
 derives it in `SetTransform(D3DTS_PROJECTION)` (`0x3f7ff0`), and the game
@@ -231,141 +175,9 @@ scales w itself:
   `+0x1C14` and sets `+0x1C18` bit 1 (the game owns it), so D3D's own
   `[944 · 93C · 948, 948]` is never pushed.
 
-So w reaches the W-buffer scaled by `zs / far`. The first probe run in Old
-Mombasa showed the mismatch: `w far 1.00`, finite depths `0.00..0.04`
-(up to `0.26` on long views), 1929 of 2048 cells under the 0.5-unit floor,
-nothing culled. Rescaled by the camera's far, those raw values read as
-`raw · far` units (`the_observed_raw_values_map_to_street_depths_with_the_camera_far`).
-
-- **Depth grid on the GPU** (`gfx::depth_grid`, built): one compute
-  thread per cell takes the largest raw depth of the pixels whose centre
-  falls in the cell; the grid is copied to a mappable buffer and mapped
-  without a wait (`PendingGrid::try_take`). 64x32 is 8 KB a frame.
-- **Pyramid and test on the CPU** (`engine::render_loop::occlusion`,
-  built): `DepthGrid` maps raw depth to view depth (`DepthMapping`; the
-  game's W-buffer stores `floor(w·scale)/zmax`, mapped up to the bucket's
-  far end so the floor never brings an occluder nearer), `HiZ` is the max
-  pyramid, `Camera::project` turns a sphere into a cell rectangle and its
-  nearest view depth, `HiZ::test` reads the lowest level where the
-  rectangle spans at most 2x2 texels. Linear depth makes the compare a
-  plain `near > max + bias`.
-- **The test uses the depth's own camera.** The sphere (where the object
-  is now) is projected with frame N's camera against frame N's depth, a
-  consistent pair, and the radius grows by the camera's displacement since
-  then, so parallax cannot uncover an object the old view hid.
-- **Results used next frame.** The decision in frame N+1 uses frame N's
-  depth (at most two frames old, else nothing is culled).
-
-### Rules (`Rules::default`)
-
-| Rule | Value | Why |
-|---|---|---|
-| skip after consecutive occluded frames | 2 | one bad frame never culls; the first frame an object is hidden it still draws |
-| radius x, + margin | 1.1, + 0.05 wu | sphere inflation |
-| + camera displacement since the depth | per frame | parallax |
-| depth bias | 0.15 wu | an object just behind a wall is kept |
-| cells nearer than a floor are far | `DepthGrid::ignore_nearer` | the first-person weapon and the player's body must not occlude the world |
-| spheres reaching the near plane, off screen, non-finite | never culled | the test cannot say |
-| radius >= 50 wu | never culled | level-sized objects |
-| the player's unit, its parents (vehicle), anything attached to them | never culled | `guest::protected`, `guest::exempt` |
-| camera cut (moved > 2 wu or turned > ~45° in a frame), time backwards | all streaks reset, the depth dropped | teleports, cinematics, snapshot restore |
-| light views, other view kinds | not touched | |
-
-Transparent objects behind opaque depth are hidden too, so they need no
-rule; only opaque layers are in the depth if it is taken before the
-transparents (`0x0001e370`). Effects, decals and lights are not in the
-object list. Shadows: a skipped object casts no dynamic shadow that frame
-(the same as the game's own "too small" case); a caster hidden behind a
-wall whose shadow falls on visible ground is the one visible difference
-(S: rare, and the inflation narrows it).
-
-### Counters
-
-Once a second, with the switch on:
-
-```text
-occlusion: tested T culled C (P%) unknown U (no depth N) exempt E resets R cull X ms/frame over F frames grids G
-occlusion probe: object H depth D radius R near N rect x X0..X1 y Y0..Y1 of 64x32 grid max M -> occluded|visible streak S age A; grid 2048 cells far F near-dropped K depth A..B w far W z scale Z
-```
-
-`tested` counts setup calls in the main view, `unknown` the ones without
-usable depth or footprint (`no depth` those without a depth frame at
-most two frames old), `cull` the hooks' own time per frame; `grids` the
-depth frames published so far. `unknown` close to `tested` with `grids`
-not growing means no depth arrives (see "Not recorded" above).
-
-The probe line is one object from the window, the one that came nearest
-to being occluded (`near - max` largest; with no margin anywhere, the
-largest object, then the farthest): its sphere's centre view depth,
-the inflated radius, the nearest depth of its bounds, the grid rectangle,
-the farthest grid depth the pyramid read over it, the answer, its streak
-and the depth's age in frames. Its second half is the newest grid as
-delivered: far (cleared) cells, cells the 0.5-unit floor dropped, the
-nearest and farthest finite view depths before the drop, and the W
-parameters it was mapped with (`w far` is the camera's far plane the
-grid was rescaled to, or `1 / +0x944` when the camera gave none). How to
-read it:
-
-| Probe says | Means |
-|---|---|
-| `far` near 2048 | the grid holds no opaque depth (taken before the draws, or another texture) |
-| `near-dropped` near 2048, depths under 0.5 | the W scale is too small for what the draws stored (the first run: `w far 1.00`, fixed by "The W scale") |
-| depths far beyond the street, `max` huge | the W scale is too large |
-| sane depths, `max` far, `near` beyond the walls | the rectangle misses the wall: projection, FOV, viewport or y flip |
-| `occluded` but `culled 0` | the streak never reaches 2 (`age`, `no depth`) |
-
-Tests: `a_w_buffered_wall_at_20_hides_an_object_at_60` (engine: raw
-W-buffer values of a 640x480 wall at 20 through the mapping, the drop,
-the pyramid and the tracker; the object at 60 behind it is skipped from
-the second frame with depth, the probe reads the wall's depth over its
-rectangle), `a_w_scale_off_by_the_far_plane_hides_nothing_and_the_probe_says_why`,
-`a_wall_stored_with_the_game_w_scale_hides_an_object_at_60`, and the
-feature's runtime test, which delivers a wall stored with the game's
-scale under the device's parameters (w far 1) and a camera far in the
-guest's camera block: the object behind it is skipped.
-
-## Status
-
-Built and tested, all behind `impl.render.occlusion` (exactly that key;
-`impl.render=on` does not turn it on), off by default:
-
-- the pure pyramid, projection, test, tracker and meter, and the raw grid
-  to view depth (`cargo test -p engine --lib occlusion`), with synthetic
-  depth buffers and spheres;
-- the camera's FOV reading (`camera_fov_is_vertical_and_x_takes_the_aspect`):
-  a synthetic camera block at `0x004b9da0` with a 16:9 viewport projects
-  points at the vertical and horizontal edges where `0x0002fb70` would put
-  them. It proves the reading follows the code above, not that the game's
-  live block has no other aspect in it;
-- the GPU grid reduction against a CPU max per cell (`cargo test -p gfx
-  --test depth_grid`, any wgpu adapter);
-- the device's grid: the depth the draws before the ask left, not what
-  comes after, the W parameters, nothing when not W-buffered, on the
-  device's thread, through the render thread and through `InterpBackend`
-  (`cargo test -p d3d --test it occlusion_grid::`, needs
-  `DEPTH32FLOAT_STENCIL8`), and the viewport-to-texel rectangle
-  (`cargo test -p d3d --lib grid_rect`);
-- the guest side (`occlusion::guest`) and the feature on the runtime
-  (`cargo test -p hooks --test occlusion`): the records, setup and
-  transparents hooks over the synthetic generated module, one capture per
-  main view and frame, grids delivered as the device would, skipping from
-  the second occluded frame and running the original otherwise.
-
-Not covered by a test: boot's glue (`install_occlusion_capture`, a few
-lines from the feature's capture to the device's ask and back) and a real
-frame.
-
-**First check in game: the FOV.** With the switch on, look for objects
-that vanish while visible near the left and right screen edges (an x
-scale that is too narrow) or that are never culled while hidden (too
-wide). Then compare `render` and the draw count with the switch on and off.
-
-## Expected saving (S)
-
-The setup and its records are per object; each object is several draws
-(one per mesh part and layer). With a culled share of P% of the objects'
-draws, the saving is about P% of the object part of layer 3 and the
-transparents, plus the setup itself. Old Mombasa streets with buildings
-between the player and most props are the good case; open terrain is the
-bad case (nothing to hide behind). The hooks cost one hooked call per
-listed object (it leaves the direct path) and one observer per view.
+So w reaches the W-buffer scaled by `zs / far`: the stored depth is
+`floor(view_depth · zs / far) / zs`, so a stored `d` in `[0, 1]` is a view
+depth of about `d · far`. The device's `+0x944` stays at 1. The deleted
+culling's probe confirmed it in Old Mombasa: with `+0x944` as the scale,
+1929 of 2048 grid cells read nearer than half a world unit; rescaled by
+the camera's far plane they read as street depths.

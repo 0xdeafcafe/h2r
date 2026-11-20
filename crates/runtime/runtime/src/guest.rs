@@ -166,6 +166,8 @@ pub struct Guest {
     hle_writes: Option<HleWrites>,
     /// Names the current mappings and permissions ([`Guest::layout_id`]).
     layout: u64,
+    /// Names what lifted code can run ([`Guest::code_id`]).
+    code_id: u64,
     /// The access trap, when a research observer installed one
     /// ([`crate::trap`]).
     trap: Option<Box<crate::trap::AccessTrap>>,
@@ -248,6 +250,7 @@ impl Guest {
             watch: Default::default(),
             hle_writes: None,
             layout: fresh_layout(),
+            code_id: fresh_layout(),
             trap: None,
             cow_source_layout: 0, watch_revision: 0,
         }
@@ -259,6 +262,26 @@ impl Guest {
     /// has moved ([`crate::Runtime::layout_epoch`]).
     pub(crate) fn layout_id(&self) -> u64 {
         self.layout
+    }
+    /// Identifies which lifted code ([`Guest::guard_code`]) has the
+    /// execute bit: a new value, never seen before, after a guard is added,
+    /// after a whole-mapping [`Guest::protect`] of a mapping with lifted
+    /// code, and after a snapshot layout or a view's source layout is
+    /// adopted. The other mapping changes cannot take Execute from lifted
+    /// code (`LiftedCode`), so they leave it. The runtime's entry table is
+    /// checked again only once this has moved ([`crate::direct`]).
+    pub fn code_id(&self) -> u64 {
+        self.code_id
+    }
+    /// The code identity moves on ([`Guest::code_id`]).
+    pub(crate) fn code_moved(&mut self) {
+        self.code_id = fresh_layout();
+    }
+    /// `addr` is lifted code ([`Guest::guard_code`]) mapped with the execute
+    /// bit: what the entry table needs before a direct call may skip the
+    /// runner's execute check.
+    pub(crate) fn lifted_executable(&self, addr: u32) -> bool {
+        self.touches_code(addr as u64, addr as u64 + 1) && self.check(addr, 1, Access::Execute, 1).is_ok()
     }
     /// Identity of the virtual layout and revision of unreported RAM replacements.
     /// Together with a write subscription these validate cached virtual reads.
@@ -314,6 +337,7 @@ impl Guest {
         }
         self.code
             .push((va as u64 & !(PAGE_SIZE as u64 - 1), page_end(end)));
+        self.code_moved();
         Ok(())
     }
     /// Page-rounded ranges passed to `guard_code`; ends may equal 2^32.
@@ -431,6 +455,10 @@ impl Guest {
         m.permissions = permissions;
         let end = m.virtual_start as u64 + m.len as u64;
         self.refresh_fast_range(va as u64, end);
+        // Unguarded: this can take Execute from lifted code.
+        if self.touches_code(va as u64, end) {
+            self.code_moved();
+        }
         Ok(())
     }
 

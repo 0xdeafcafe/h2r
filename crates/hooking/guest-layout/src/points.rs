@@ -689,11 +689,10 @@ points! { ALL;
     /// One listed object's render setup (view depth, LOD, nodes, children,
     /// the `0x004ba138` records): ESI the visibility struct, stack
     /// `(list index, byte, byte*, -1, arg)`, AL a retry flag, `ret 0x14`.
-    /// The occlusion skip point.
     OBJECT_RENDER_SETUP @ 0x0013_3790: [fn(vis: esi, index: stack 0) -> al ret 20]; "docs/graphics/occlusion-culling.md";
     /// The sorted transparents of a scene pass (`render_scene_passes`
     /// calls it after the opaque layers and before the first-person
-    /// chain): the occlusion depth capture point.
+    /// chain).
     SCENE_TRANSPARENTS @ 0x0001_e370: [opaque]; "docs/graphics/occlusion-culling.md";
     /// Queue an effect callback with inline payload and view depth.
     TRANSPARENT_EFFECT_ENTRY @ 0x0001_e4e0: [fn(size: ecx, position: edx, handler: stack 0, payload: stack 1) -> al ret 8]; "docs/graphics/native-renderer.md";

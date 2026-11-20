@@ -179,17 +179,16 @@ mod tests {
         assert_eq!(plan.snapshot_blockers(), vec![], "{policies:?}");
     }
 
-    /// The render features boot always registers, switched off (occlusion
-    /// is off by default, the native ones go with `impl.render.native=off`):
+    /// The render features boot always registers, switched off (the native
+    /// ones go with `impl.render.native=off`):
     /// each declares its policy before it returns, so none is left
     /// unaudited and none blocks a save (the agent's `state.save` once
-    /// refused with all six "not audited").
+    /// refused with every one "not audited").
     #[cfg(feature = "desktop-runtime")]
     #[test]
     fn switched_off_render_features_block_nothing() {
         let off = "impl.render.native=off";
         let mut r = hooks::Registry::new(hooks::Switches::parse(off).unwrap());
-        r.add(&render_bridge::occlusion::OcclusionCull).unwrap();
         r.add(&render_bridge::native_world::NativeWorld).unwrap();
         r.add(&render_bridge::native_objects::NativeObjects).unwrap();
         r.add(&render_bridge::native_transparents::NativeTransparents)
@@ -202,7 +201,7 @@ mod tests {
             .iter()
             .map(|f| (f.id, f.policy.name()))
             .collect();
-        assert_eq!(policies.len(), 6, "{policies:?}");
+        assert_eq!(policies.len(), 5, "{policies:?}");
         assert!(
             policies.iter().all(|(_, p)| *p == "stateless"),
             "{policies:?}"

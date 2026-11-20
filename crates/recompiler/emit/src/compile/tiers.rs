@@ -1,13 +1,19 @@
-//! Tiered optimisation, off unless asked for: sources that hold none of a
-//! profile's hot guest code compile at a cheaper `-O` level.
+//! Tiered optimisation: sources that hold none of a profile's hot guest
+//! code compile at a cheaper `-O` level.
 //!
 //! Clang's time on a shard is mostly the optimiser and the register
 //! allocator, and both grow faster than linearly with a function's size
 //! (docs/lifter/notes/build-perf.md). `-O0` compiles a shard about eight times
 //! faster than `-O2`, `-O1` about a sixth faster. The game does the same
-//! thing at any level; only how fast cold code runs changes, so this stays
-//! off by default and is a measured choice: `H2_OPT_COLD` names the cold
-//! level and `H2_HOT` a file naming hot guest addresses.
+//! thing at any level; only how fast cold code runs changes.
+//!
+//! On by default for an optimised build: with `H2_OPT` at `2` or `3` and
+//! `H2_OPT_COLD` unset, the cold level is `1` and the hot list is
+//! [`HOT_LIST`], the repository's list of profiled guest functions. With
+//! `H2_OPT` at `1` or below there is no cheaper level worth its cost by
+//! default, and tiers are off. `H2_OPT_COLD` names another cold level, or
+//! `off`; `H2_HOT` a file naming the hot guest addresses instead of
+//! [`HOT_LIST`].
 //!
 //! A source is hot when it holds the instruction marker (`/* 0x0001234 */`,
 //! which `c.rs` writes before every guest instruction) of any hot address.
@@ -19,6 +25,15 @@
 use super::{Error, err};
 use crate::fnv64;
 
+/// The default hot list: guest function entries from the profiles in
+/// docs/perf, one per line (`hot.txt`, which says how to replace it).
+pub const HOT_LIST: &str = include_str!("hot.txt");
+
+/// The cold level when `H2_OPT` is `2` or `3` and `H2_OPT_COLD` is unset:
+/// `-O1` costs 84% of `-O2`'s clang time, and leaves cold code about a
+/// sixth more instructions (notes/build-perf.md, docs/runtime/xbox.md).
+pub const DEFAULT_COLD: &str = "1";
+
 /// Which sources compile at which level.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tiers {
@@ -29,32 +44,55 @@ pub struct Tiers {
 }
 
 impl Tiers {
-    /// From `H2_OPT_COLD` and `H2_HOT`. `None` when `H2_OPT_COLD` is unset
-    /// or empty (the default: every source at `H2_OPT`).
+    /// From `H2_OPT_COLD`, `H2_HOT` and `H2_OPT` ([`Tiers::from_settings`]).
     pub fn from_env() -> Result<Option<Tiers>, Error> {
-        let cold = std::env::var("H2_OPT_COLD").ok().filter(|v| !v.is_empty());
+        let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
         let hot = std::env::var_os("H2_HOT").filter(|v| !v.is_empty());
-        let Some(cold) = cold else {
-            if hot.is_some() {
-                return Err(err(
-                    "H2_HOT is set without H2_OPT_COLD: set both, or neither",
-                ));
+        let list = match &hot {
+            Some(path) => {
+                let text = std::fs::read(path)
+                    .map_err(|e| err(format!("H2_HOT={}: {e}", path.to_string_lossy())))?;
+                Some(String::from_utf8_lossy(&text).into_owned())
             }
-            return Ok(None);
+            None => None,
         };
-        let hot = hot.ok_or_else(|| {
-            err("H2_OPT_COLD needs H2_HOT, a file naming the hot guest addresses")
-        })?;
-        let text = std::fs::read(&hot)
-            .map_err(|e| err(format!("H2_HOT={}: {e}", hot.to_string_lossy())))?;
-        Tiers::new(&cold, &String::from_utf8_lossy(&text)).map(Some)
+        Tiers::from_settings(var("H2_OPT_COLD").as_deref(), list.as_deref(), var("H2_OPT").as_deref())
+    }
+
+    /// The tiers for `H2_OPT_COLD` = `cold`, a hot list `list` (the text of
+    /// `H2_HOT`'s file; `None` for [`HOT_LIST`]) and `H2_OPT` = `opt`.
+    /// `None` (every source at `H2_OPT`) when `cold` is `off`, or unset with
+    /// `opt` below `2`. A hot list given with tiers off is an error: it
+    /// would do nothing.
+    pub fn from_settings(cold: Option<&str>, list: Option<&str>, opt: Option<&str>) -> Result<Option<Tiers>, Error> {
+        let cold = match cold {
+            Some("off") => {
+                if list.is_some() {
+                    return Err(err("H2_HOT is set with H2_OPT_COLD=off: unset one"));
+                }
+                return Ok(None);
+            }
+            Some(level) => level,
+            None => match opt.unwrap_or("1") {
+                "2" | "3" => DEFAULT_COLD,
+                level => {
+                    if list.is_some() {
+                        return Err(err(format!(
+                            "H2_HOT is set but H2_OPT={level} has no default cold level: set H2_OPT_COLD, or H2_OPT=2"
+                        )));
+                    }
+                    return Ok(None);
+                }
+            },
+        };
+        Tiers::new(cold, list.unwrap_or(HOT_LIST)).map(Some)
     }
 
     /// Cold sources at `cold`, hot ones holding an address in `list` (see
     /// [`hot_addresses`]).
     pub fn new(cold: &str, list: &str) -> Result<Tiers, Error> {
         if !["0", "1", "g", "s", "2"].contains(&cold) {
-            return Err(err(format!("H2_OPT_COLD={cold}: expected 0, 1, g, s or 2")));
+            return Err(err(format!("H2_OPT_COLD={cold}: expected 0, 1, g, s, 2 or off")));
         }
         let hot = hot_addresses(list);
         if hot.is_empty() {
@@ -194,6 +232,40 @@ mod tests {
         let caller = b"TransferAbi h2fn_00073100(CpuAbi *, ExecCtxOpaque *, uint32_t);\n    case 0x00073100u: goto L;\n    /* 0x00073105 */ {\n";
         assert!(!t.is_hot(caller));
         assert!(!t.is_hot(b"/* 0x0007310 */ /* 0x"));
+    }
+
+    #[test]
+    fn tiers_are_on_by_default_for_an_optimised_build_only() {
+        // H2_OPT 2 or 3: the shipped list, cold at -O1.
+        for opt in ["2", "3"] {
+            let t = Tiers::from_settings(None, None, Some(opt)).unwrap().unwrap();
+            assert_eq!(t.cold, DEFAULT_COLD);
+            assert_eq!(t.hot, hot_addresses(HOT_LIST));
+        }
+        // The default level and below: off.
+        for opt in [None, Some("1"), Some("0"), Some("g"), Some("s")] {
+            assert_eq!(Tiers::from_settings(None, None, opt).unwrap(), None, "{opt:?}");
+        }
+        // Off, or another level, on request; another list replaces the
+        // shipped one.
+        assert_eq!(Tiers::from_settings(Some("off"), None, Some("2")).unwrap(), None);
+        let t = Tiers::from_settings(Some("0"), Some("0x1234"), None).unwrap().unwrap();
+        assert_eq!((t.cold.as_str(), t.hot.as_slice()), ("0", &[0x1234][..]));
+        let t = Tiers::from_settings(None, Some("0x1234"), Some("2")).unwrap().unwrap();
+        assert_eq!((t.cold.as_str(), t.hot.as_slice()), (DEFAULT_COLD, &[0x1234][..]));
+        // A list that would do nothing is an error, not ignored.
+        assert!(Tiers::from_settings(Some("off"), Some("0x1234"), Some("2")).is_err());
+        assert!(Tiers::from_settings(None, Some("0x1234"), Some("1")).is_err());
+    }
+
+    #[test]
+    fn the_shipped_hot_list_names_only_addresses_in_its_lines() {
+        let hot = hot_addresses(HOT_LIST);
+        let lines: Vec<&str> = HOT_LIST.lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()).collect();
+        // Every address is on a line of its own; the comments name none.
+        assert_eq!(hot.len(), lines.len(), "{lines:?}");
+        assert!(hot.len() > 50);
+        assert!(hot.iter().all(|&a| (0x1_0000..0x80_0000).contains(&a)), "{hot:x?}");
     }
 
     #[test]

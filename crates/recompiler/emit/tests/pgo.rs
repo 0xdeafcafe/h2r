@@ -125,11 +125,13 @@ fn pgo_cpu_and_o3_build_run_and_key_apart() {
         .join("profiles");
     let _ = std::fs::remove_dir_all(&scratch);
     std::fs::create_dir_all(&scratch).unwrap();
-    for k in ["H2_PGO", "H2_CPU", "H2_OPT_COLD", "H2_HOT"] {
+    for k in ["H2_PGO", "H2_CPU", "H2_HOT"] {
         // SAFETY: as in `set`.
         unsafe { std::env::remove_var(k) };
     }
     set("H2_OPT", "2");
+    // Every source at H2_OPT: tiers would compile this synthetic one cold.
+    set("H2_OPT_COLD", "off");
 
     let (plain, plain_keys) = build(&header, "plain");
     assert_eq!(run_sum(&plain, 100), 5050);

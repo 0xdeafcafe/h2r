@@ -23,15 +23,12 @@ fn the_table_is_within_its_budget_and_names_each_switch_once() {
             s.name,
             s.added
         );
-        if let Initial::Follows(other) = s.initial {
-            assert!(get(other).is_some(), "{} follows {other}, which is not listed", s.name);
-        }
     }
 }
 
 #[test]
 fn rows_parents_and_engine_leaves_are_known_and_nothing_else() {
-    assert!(known("impl.render.native_fog"));
+    assert!(known("impl.render.native"));
     assert!(known("impl.render"), "a parent");
     assert!(known("impl.sim"), "a parent");
     assert!(known("impl.audio"), "a parent of impl.audio.packet-clock");
@@ -39,7 +36,7 @@ fn rows_parents_and_engine_leaves_are_known_and_nothing_else() {
     let key = format!("impl.engine.{}.{leaf}", crate::leaves::group(leaf));
     assert!(known(&key), "{key}");
     assert!(!known("impl.engine.tags.no_such_function"));
-    assert!(!known("impl.render.native_fo"), "not a parent at a dot");
+    assert!(!known("impl.render.nat"), "not a parent at a dot");
     assert!(!known("impl.render.no_such_stage"));
     assert!(!known("impl.ui"));
 }
@@ -48,7 +45,9 @@ fn rows_parents_and_engine_leaves_are_known_and_nothing_else() {
 fn an_unknown_impl_switch_does_not_parse() {
     let e = crate::Switches::parse("impl.render.native_fgo=off").unwrap_err();
     assert!(e.contains("impl.render.native_fgo"), "{e}");
-    assert!(crate::Switches::parse("impl.render.native_fog=off,-impl.sim").is_ok());
+    assert!(crate::Switches::parse("impl.render.native=off,-impl.sim").is_ok());
+    // Stage keys with no reader were deleted from the table: they refuse to parse.
+    assert!(crate::Switches::parse("impl.render.native_fog=off").is_err());
     // Feature ids are not in the table: they are registered features.
     assert!(crate::Switches::parse("lockstep,-render-census").is_ok());
 }
@@ -195,7 +194,7 @@ fn every_switch_the_code_reads_is_listed_with_its_default() {
         let want = match row.initial {
             Initial::On => Some(true),
             Initial::Off => Some(false),
-            Initial::Follows(_) | Initial::Group => None,
+            Initial::Group => None,
         };
         if let (Some(want), Some(got)) = (want, r.default)
             && want != got
@@ -217,5 +216,5 @@ fn every_switch_the_code_reads_is_listed_with_its_default() {
 fn the_text_lists_every_row() {
     let text = text();
     assert_eq!(text.lines().count(), TABLE.len());
-    assert!(text.contains("impl.render.native_fog [= impl.render.native] render"));
+    assert!(text.contains("impl.render.native [on] render"));
 }
