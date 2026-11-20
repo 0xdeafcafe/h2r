@@ -1,13 +1,13 @@
 //! Source hashes (FNV-1a over file names and contents), so cached results
 //! are dropped whenever what produced them can have changed:
 //!
-//! - `UNREAD_SOURCE_HASH`: the analyze crate and the boot's fallback, for
+//! - `UNREAD_SOURCE_HASH`: the analyze crate and the fallback, for
 //!   the cached unread-target set (fallback.rs).
 //! - `ANALYSIS_SOURCE_HASH`: xbe, analyze, Cargo.lock and the rustc
 //!   version, for the cached analysis (lib.rs, `analysis_cache`).
 //! - `GENERATOR_SOURCE_HASH`: everything that turns an XBE into the native
 //!   module (xbe, analyze, ir, lift, the IR passes, emit and its C, x87, the
-//!   runtime ABI header and the boot's bridge C), for the dylib's build stamp
+//!   runtime ABI header and the boot bridge C), for the dylib's build stamp
 //!   (lib.rs).
 //! - `FAST_TIER_SOURCE_HASH`: the same plus crates/recompiler/clif and Cargo.lock, for
 //!   the Cranelift fast tier's stamp (tier.rs).

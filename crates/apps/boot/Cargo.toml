@@ -1,6 +1,6 @@
 [package]
 name = "boot"
-description = "Boot glue: lift, emit and compile the whole XBE, then run it on the runtime with kernel HLE"
+description = "The composition root: a built module run on the runtime with the kernel HLE, the hooks and every feature attached"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
@@ -18,13 +18,7 @@ rustc-hash = "2"
 xbe.workspace = true
 xiso.workspace = true
 analyze.workspace = true
-lift.workspace = true
-# The lifted original for shadow checks (fallback.rs, docs/engine/shadow-exec.md).
-lifted = { path = "../../runtime/lifted" }
 emit.workspace = true
-# The Cranelift fast tier (tier.rs, docs/lifter/cranelift-tier.md).
-clif = { workspace = true, optional = true }
-ir.workspace = true
 runtime.workspace = true
 kernel.workspace = true
 vfs.workspace = true
@@ -61,7 +55,6 @@ native-render = { path = "../../rewrites/native-render", optional = true }
 frame-scene = { path = "../../rewrites/frame-scene" }
 shaders = { path = "../../formats/shaders", optional = true }
 serde.workspace = true
-x87 = { path = "../../recompiler/x87" }
 dsound = { path = "../../platform/dsound", default-features = false }
 # Voice chat's media objects (voice_glue); devices come from the host.
 voice = { workspace = true, optional = true }
@@ -99,7 +92,7 @@ perf = { path = "../../tools/perf", optional = true }
 
 [features]
 default = ["gpu", "movie-playback", "local-io"]
-desktop-runtime = ["dep:clif", "render-bridge/native-render", "recomp/desktop-runtime"]
+desktop-runtime = ["render-bridge/native-render", "recomp/desktop-runtime"]
 gpu = ["desktop-runtime", "gfx/gpu", "d3d/gpu", "agent/render-overrides", "dep:wgpu", "dep:native-render", "dep:shaders", "dep:hot-render"]
 movie-playback = ["desktop-runtime", "bink-hle/playback", "dep:movies"]
 local-io = ["desktop-runtime", "dep:voice", "dsound/playback"]

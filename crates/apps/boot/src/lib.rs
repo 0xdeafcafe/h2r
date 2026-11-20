@@ -1,11 +1,7 @@
-//! Boot glue: the whole XBE through lift, emit and clang into one host
-//! dylib, then that dylib registered with the runtime, the kernel HLE
-//! attached, and the entry thread run until something stops it.
-//!
-//! This is a tracer bullet, not the final shape of the engine: the
-//! generated code is loaded as a dylib (with `c/boot_bridge.c` forwarding
-//! its ABI imports to the runtime) so the host binary needs no link-time
-//! knowledge of the generated symbols. See docs/runtime/BOOT.md.
+//! The composition root: the module `recomp` built (`boot::build`, the
+//! re-exported pipeline), registered with the runtime, the kernel HLE
+//! attached, every feature planned onto the hooks, and the entry thread run
+//! until something stops it. See docs/runtime/BOOT.md.
 //!
 //! Nothing derived from the disc is written outside the caller's output
 //! directory, which should be under `$TMPDIR` or `target/`.
@@ -188,7 +184,7 @@ pub mod xapi_glue;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
