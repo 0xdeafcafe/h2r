@@ -164,12 +164,13 @@ impl Guest {
             .len();
         if bytes != RAM_SIZE as u64 {
             return Err(RestoreError::RamBase(format!(
-                "{} is {bytes} bytes, guest RAM is {RAM_SIZE}"
+                "{} is {bytes} bytes, guest RAM is {RAM_SIZE}",
+                file.display()
             )));
         }
         self.ram
             .become_private_of(&image)
-            .map_err(RestoreError::RamBase)?;
+            .map_err(|e| RestoreError::RamBase(e.to_string()))?;
         self.adopt(layout);
         Ok(())
     }
@@ -188,7 +189,7 @@ impl Guest {
                 format!("{base:?} is {bytes} bytes, guest RAM is {RAM_SIZE}"),
             ));
         }
-        let page = super::PAGE_SIZE;
+        let page = super::PAGE_SIZE as usize;
         let mut chunk = vec![0u8; 1 << 20];
         let mut written = 0u64;
         let mut runs: Vec<(u32, u32)> = Vec::new();
@@ -465,9 +466,9 @@ mod tests {
 
         // The census counts the written pages and their runs.
         let (written, total, runs) = target.census_against(image.path()).unwrap();
-        assert_eq!(total, (RAM_SIZE / super::PAGE_SIZE) as u64);
+        assert_eq!(total, (RAM_SIZE / super::PAGE_SIZE as usize) as u64);
         assert_eq!(written, 1, "{runs:?}");
-        assert_eq!(runs, [(0x2000_0000 / super::PAGE_SIZE as u32, 1)]);
+        assert_eq!(runs, [(0x2000_0000 / super::PAGE_SIZE, 1)]);
 
         // A wrong-sized image is a named error, not a mapping.
         let short = RamImage::new("short", &[0u8; 4096]);

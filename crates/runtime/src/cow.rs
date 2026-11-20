@@ -89,7 +89,6 @@ impl Ram {
     /// block its own page. Several Guests over the same file share the
     /// pages none of them writes. On failure the block is unchanged.
     pub(crate) fn become_private_of(&mut self, file: &std::fs::File) -> std::io::Result<()> {
-        use std::os::fd::AsRawFd;
         let len = self.len;
         let bytes = file.metadata()?.len();
         if bytes != len as u64 {
@@ -100,6 +99,7 @@ impl Ram {
         }
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         {
+            use std::os::fd::AsRawFd;
             // SAFETY: MAP_FIXED over exactly this block's data range
             // [ptr, ptr + len): the guard pages of the reservation around
             // it stay, and the fast-memory path keeps its fixed base. A
@@ -121,6 +121,7 @@ impl Ram {
         }
         #[cfg(all(unix, not(all(target_os = "linux", target_arch = "x86_64"))))]
         {
+            use std::os::fd::AsRawFd;
             // SAFETY: a whole-file private mapping; a write anywhere in it
             // gives this process its own page. The old block is dropped by
             // the assignment, after the new one is in hand.

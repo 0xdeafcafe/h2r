@@ -184,7 +184,7 @@ pub mod record {
     }
 
     #[cfg(test)]
-    pub(super) mod tests {
+    pub(in crate::sim_store) mod tests {
         use super::*;
 
         /// Drive note+flush against an installed target, not the process
@@ -814,7 +814,7 @@ mod tests {
         if path.exists() {
             return path;
         }
-        let mut image = vec![0u8; 40 * 2048];
+        let mut image = vec![0u8; 42 * 2048];
         image[32 * 2048..][..20].copy_from_slice(b"MICROSOFT*XBOX*MEDIA");
         image[32 * 2048 + 20..][..4].copy_from_slice(&33u32.to_le_bytes());
         let dirent = |left: u16, sector: u32, size: u32, directory: bool, name: &str| -> Vec<u8> {
