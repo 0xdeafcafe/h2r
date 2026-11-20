@@ -10,3 +10,12 @@
 //! has no `runtime` dependency and keeps no per-object state across a
 //! guest call or a tick.
 #![deny(clippy::disallowed_methods)]
+
+pub mod defs;
+pub mod view;
+
+#[cfg(any(test, feature = "synth"))]
+pub mod synth;
+
+pub use defs::{Def, DefTable};
+pub use view::{ObjRef, Objects};

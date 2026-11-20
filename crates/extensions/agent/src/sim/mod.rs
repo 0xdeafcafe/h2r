@@ -14,6 +14,8 @@
 //! - `sim.view`, `sim.expect`: the game as one JSON document, and
 //!   `h2 agent run`'s expectations judged against it at one tick.
 //! - `sim.session`: the session kind, from the host's [`SessionProbe`].
+//! - `sim.objects`: every live object through `sim-state`'s typed views
+//!   ([`objects`]).
 //!
 //! They are game methods ([`crate::Agent::add_game_method`]): answered on
 //! the game's thread at a tick boundary while the game ticks, with guest
@@ -22,6 +24,7 @@
 pub mod bots;
 pub mod calls;
 pub mod hashes;
+pub mod objects;
 pub mod state;
 
 use std::collections::BTreeMap;
@@ -127,6 +130,7 @@ pub fn install(agent: &Agent, bots: Box<dyn Bots>, probe: Option<SessionProbe>) 
     add(method::SESSION, Access::Read, Sim::session_method);
     add(method::GIVE, Access::Act, Sim::give);
     add(method::SPAWN, Access::Act, Sim::spawn);
+    add(method::OBJECTS, Access::Read, Sim::objects_method);
     h
 }
 
@@ -509,6 +513,12 @@ impl Sim {
             }),
         );
         Ok(Value::Null)
+    }
+
+    fn objects_method(&mut self, v: Value, ctx: &mut GameCtx<'_>) -> R {
+        let p: wire::objects::ObjectsParams = params(v)?;
+        let reply = ctx.with_guest(|m| objects::list(&*m, &p))?;
+        Ok(serde_json::to_value(reply).expect("serialises"))
     }
 
     fn session_method(&mut self, _: Value, ctx: &mut GameCtx<'_>) -> R {

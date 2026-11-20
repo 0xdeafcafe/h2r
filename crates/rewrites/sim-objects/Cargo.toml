@@ -11,3 +11,8 @@ description = "The object update in Rust: typed views over the object pool, the 
 guest-layout = { path = "../../hooking/guest-layout" }
 # Float rules, lanes and the epoch derived state is keyed by.
 sim-core.workspace = true
+
+[features]
+# `synth`: synthetic object pools and definition tags in guest form, for
+# the tests here and in the readers built on this crate. No game data.
+synth = []
