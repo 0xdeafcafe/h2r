@@ -325,7 +325,16 @@ points! { ALL;
     SIM_MOPP_RAY @ 0x0030_09e0: [fn(query: ecx, state: stack 0, program: stack 1, segment: stack 2) ret 12], Hot; "docs/perf/sim-budget.md";
     OBJECT_TRANSFORM_COMPOSE @ 0x0014_2a60: [fn(parent: ecx, child: edx, out: stack 0) -> eax ret 4], Hot; "docs/perf/sim-budget.md";
     OBJECT_POSE_MATRIX @ 0x0014_21f0: [fn(out: stack 0, pose: stack 1) ret 8], Hot; "docs/perf/sim-budget.md";
+    /// Root node transform from two axes, scale and an optional parent.
+    OBJECT_ROOT_TRANSFORM @ 0x000b_dc40: [fn(forward: eax, up: ecx, position: stack 0, scale: stack 1, mirror: stack 2, parent: stack 3, out: stack 4) ret 20], Hot; "docs/perf/sim-budget.md";
     ANIM_ROTATION_CODEC @ 0x0028_c530: [fn() ret 0], Hot; "docs/perf/sim-budget.md";
+    /// Animation channel codecs the node evaluators call per node.
+    ANIM_STATIC_ROTATION @ 0x0028_c470: [fn() ret 0], Hot; "docs/perf/sim-budget.md";
+    ANIM_FRAME_ROTATION @ 0x0028_c960: [fn() ret 0], Hot; "docs/perf/sim-budget.md";
+    ANIM_BLEND_ROTATION @ 0x0028_c790: [fn() ret 0], Hot; "docs/perf/sim-budget.md";
+    ANIM_KEYED_TRANSLATION @ 0x0028_cb70: [fn() ret 0], Hot; "docs/perf/sim-budget.md";
+    /// Additive-layer node evaluator: blends two samples per channel into the pose.
+    ANIM_ADDITIVE_NODES @ 0x0028_0ac0: [fn() ret 0], Hot; "docs/perf/sim-budget.md";
     COLLISION_POINT_TO_LEAF @ 0x0014_a280: [fn(node: eax, bsp: ecx, point: edx) -> eax ret 0], Hot; "docs/perf/sim-budget.md";
     COLLISION_GEOMETRY_TEST @ 0x0011_e5e0: [fn(origin: eax, center: ecx, direction: edx, radius: stack 0) -> al ret 4], Hot; "docs/perf/sim-budget.md";
     /// The HaloScript evaluator shared by argument-evaluating discarded builtins.
@@ -432,6 +441,8 @@ points! { ALL;
     OBJECT_CHANGE_COLORS @ 0x000b_e8e0: [fn(object: stack 0) -> al ret 4], Hot; "docs/perf/sim-budget.md";
     OBJECT_PRE_UPDATE @ 0x000b_c470: [fn(object: stack 0) -> al ret 4], Hot; "docs/perf/sim-budget.md";
     OBJECT_POST_UPDATE @ 0x000b_c820: [fn(object: stack 0) ret 4], Hot; "docs/perf/sim-budget.md";
+    /// Per-object node matrices: orientation block, root transform, skeleton walk.
+    OBJECT_NODE_MATRICES @ 0x000b_d090: [fn(object: stack 0) ret 4], Hot; "docs/perf/sim-budget.md";
     UNIT_AIM_UPDATE @ 0x000c_7840: [opaque], Hot; "docs/perf/sim-budget.md";
     UNIT_UPDATE @ 0x000c_6b30: [fn(unit: stack 0) -> al ret 4], Hot; "docs/perf/sim-budget.md";
     OBJECTS_FINALIZE @ 0x000b_7150: [opaque], Optional; "docs/engine/engine-map.md";
@@ -1031,6 +1042,8 @@ points! { ALL;
     GAME_STATE_SAVE @ 0x0012_3e20: [opaque], Optional; "docs/runtime/checkpoints.md";
     /// Revert the game state to a saved slot.
     GAME_STATE_REVERT @ 0x0012_3f60: [opaque], Optional; "docs/runtime/checkpoints.md";
+    /// Restore the whole game state from a saved image (header checked).
+    GAME_STATE_RESTORE @ 0x0012_4380: [opaque], Optional; "docs/runtime/checkpoints.md";
     /// Switch the structure BSP (prepare, dispose, load, publish).
     BSP_SWITCH @ 0x0011_c1b0: [opaque], Optional; "docs/runtime/level-preflight.md";
     /// HaloScript `cinematic_start`.
