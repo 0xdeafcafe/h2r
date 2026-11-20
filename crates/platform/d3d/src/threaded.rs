@@ -224,6 +224,9 @@ struct Shared {
     /// A [`Backend::try_pixel_count`] miss has queued a batch the render
     /// thread has not run yet (one at a time).
     land_kick: std::sync::atomic::AtomicBool,
+    /// The inner backend's [`Backend::runs_scene_stages`], as the render
+    /// thread last saw it (after each batch).
+    scene_stages: std::sync::atomic::AtomicBool,
 }
 
 static READS: AtomicU64 = AtomicU64::new(0);
@@ -485,6 +488,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
         let surface_aliases = inner.handles_surface_aliases();
         let external_pass = inner.supports_external_pass();
         let reusable_external_attachments = inner.reusable_external_attachments();
+        shared.scene_stages.store(inner.runs_scene_stages(), Ordering::Relaxed);
         let mirror = inner.can_mirror();
         let s = Arc::clone(&shared);
         let join = std::thread::Builder::new()
@@ -493,6 +497,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
                 if let Some(hook) = RENDER_THREAD_START.get() {
                     hook();
                 }
+                timeline::native::mark_render_thread();
                 let mut w = Worker {
                     inner,
                     surfaces: HashMap::new(),
@@ -560,6 +565,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
                     w.shared.busy_ns.fetch_add(ns, Ordering::Relaxed);
                     BUSY_NS.fetch_add(ns, Ordering::Relaxed);
                     w.return_spent();
+                    w.shared.scene_stages.store(w.inner.runs_scene_stages(), Ordering::Relaxed);
                     // Ask once nothing is queued: a batch already waiting
                     // is taken first (a zero timeout). Backends without
                     // idle work answer `None` and the loop blocks again.
@@ -1326,6 +1332,44 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             let outcome = result?;
             if outcome != DrawOutcome::Drawn {
                 w.shared.miss(format!("{}: answered Drawn, the backend gave {outcome:?}", draw.entry));
+            }
+            Ok(())
+        });
+        true
+    }
+
+    /// Taken while the inner backend runs scene stages (as the render
+    /// thread last saw it) and no error is latched.
+    fn queues_scene_stages(&self) -> bool {
+        self.external_pass && self.check().is_ok() && self.shared.scene_stages.load(Ordering::Relaxed)
+    }
+
+    /// One command in the queue: the render thread maps the attachments,
+    /// prepares and records the stage when it reaches it, in order with
+    /// the draws around it. The game thread does none of that work and
+    /// does not wait for it. A stage the render thread cannot record is
+    /// dropped and counted ([`crate::scene_stage::dropped`]).
+    fn queue_scene_stage(&mut self, stage: crate::SceneStage<u32>) -> bool {
+        if !self.queues_scene_stages() {
+            return false;
+        }
+        let kind = stage.plan.stage;
+        crate::scene_stage::queued(kind);
+        // A stage changes what a pinned run's attachments hold.
+        self.pinned_external_run = None;
+        self.post(move |w| {
+            let crate::SceneStage { surfaces, request, plan, pass } = stage;
+            let ranges = plan.ranges;
+            let Some(surfaces) = surfaces.try_map(|s| w.surfaces.get(s).copied()) else {
+                crate::scene_stage::dropped(kind, ranges, "a target is not live on the render thread");
+                return Ok(());
+            };
+            if !w.inner.runs_scene_stages() {
+                crate::scene_stage::dropped(kind, ranges, "the backend stopped taking scene stages");
+                return Ok(());
+            }
+            if !w.inner.run_scene_stage(crate::SceneStage { surfaces, request, plan, pass })? {
+                crate::scene_stage::dropped(kind, ranges, "the render thread could not record it");
             }
             Ok(())
         });
