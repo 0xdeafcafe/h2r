@@ -34,6 +34,8 @@ copies. Nothing is ever written next to it.
 | `--no-movies` | | skip every movie (Bink HLE skip mode) |
 | `--no-mappack` | | skip installing a `mappack.iso` beside the disc into `--data` (`H2_MAPPACK=0` does the same; [map-pack.md](../game/map-pack.md)) |
 
+Every environment variable and `H2_FEATURES` switch, one line each, is in [switches.md](switches.md); the table below has the boot runner's details.
+
 | Environment | Effect |
 | --- | --- |
 | `H2_FASTMEM=0` | **On by default.** Generated code does inline RAM checks/copies; unsupported accesses use Rust. `0` compiles without them; set it for both `h2 build` and `h2 run`/`play`, since changing compiler flags invalidates the dylib stamp. Requires the current boot bridge. This is the gated inline path, not fault-driven fastmem. |
