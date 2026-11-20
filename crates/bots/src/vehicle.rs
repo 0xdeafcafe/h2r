@@ -346,11 +346,17 @@ pub struct Memory {
     /// Each vehicle's last position, the tick, and its speed (world units
     /// a second) from the one before.
     tracks: Vec<(u32, Vec3, u32, f32)>,
+    next_tracks: Vec<(u32, Vec3, u32, f32)>,
     /// Vehicles left alone until a tick: given up on, or just left.
     shunned: Vec<(u32, u32)>,
     pub going: Option<Going>,
     pub lock: lock::Lock,
     pub route: Option<drive::Route>,
+    pub(crate) route_points: Vec<Vec3>,
+    pub(crate) route_plan: crate::work::PlanSchedule,
+    pub(crate) route_refresh: bool,
+    pub(crate) route_blocked: bool,
+    was_driver: bool,
     pub(crate) paths: crate::nav::VehiclePaths,
     pub unstick: drive::Unstick,
     pub flight: flight::Flight,
@@ -370,7 +376,7 @@ impl Memory {
     pub fn update(&mut self, tick: u32) {
         let dt = self.last_tick.map_or(1, |t| tick.wrapping_sub(t).max(1));
         self.last_tick = Some(tick);
-        let mut tracks = Vec::with_capacity(self.sight.vehicles.len());
+        self.next_tracks.clear();
         for v in &self.sight.vehicles {
             let speed = match self.tracks.iter().find(|t| t.0 == v.id) {
                 Some(&(_, at, t, _)) if tick > t => {
@@ -383,11 +389,19 @@ impl Memory {
                 Some(&(_, _, _, s)) => s,
                 None => 0.0,
             };
-            tracks.push((v.id, v.position, tick, speed));
+            self.next_tracks.push((v.id, v.position, tick, speed));
         }
-        self.tracks = tracks;
+        std::mem::swap(&mut self.tracks, &mut self.next_tracks);
         self.shunned.retain(|&(_, until)| tick < until);
         let mine = self.sight.mine().map(|v| (v.id, v.upright()));
+        let driver = self
+            .sight
+            .riding
+            .is_some_and(|r| r.role == SeatRole::Driver);
+        if driver != self.was_driver || mine.map(|(id, _)| id) != self.was_in {
+            self.clear_route();
+        }
+        self.was_driver = driver;
         let driven = mine.is_some_and(|(id, _)| {
             self.sight
                 .crew(id)
@@ -398,7 +412,6 @@ impl Memory {
                 if self.was_in != Some(id) {
                     // In: whatever it was going for is done.
                     self.going = None;
-                    self.route = None;
                     self.unstick.reset();
                     self.flight = flight::Flight::default();
                     self.leaving = None;
@@ -414,7 +427,6 @@ impl Memory {
                     // get straight back in.
                     self.shun(left, tick);
                     self.leaving = None;
-                    self.route = None;
                 }
             }
         }
@@ -438,16 +450,31 @@ impl Memory {
             .any(|&(v, until)| v == id && tick < until)
     }
 
+    pub(crate) fn recycle_route(&mut self) {
+        if let Some(route) = self.route.take() {
+            self.route_points = route.into_points();
+            self.route_points.clear();
+        }
+    }
+
+    pub(crate) fn clear_route(&mut self) {
+        self.recycle_route();
+        self.route_plan = Default::default();
+        self.route_refresh = false;
+        self.route_blocked = false;
+    }
+
     /// A new life: nothing it was doing with vehicles carries on.
     pub fn reset(&mut self) {
         self.going = None;
         self.lock.reset();
-        self.route = None;
+        self.clear_route();
         self.unstick.reset();
         self.leaving = None;
         self.flipped = 0;
         self.driverless = 0;
         self.was_in = None;
+        self.was_driver = false;
     }
 }
 

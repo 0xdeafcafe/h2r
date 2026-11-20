@@ -36,11 +36,25 @@ impl Search {
         mesh: &NavMesh,
         start: u32,
         goal: u32,
-        mut skip: impl FnMut(u32, &Edge) -> bool,
+        skip: impl FnMut(u32, &Edge) -> bool,
     ) -> Option<Vec<u32>> {
+        let mut path = Vec::new();
+        self.corridor_into(mesh, start, goal, skip, &mut path)
+            .then_some(path)
+    }
+
+    pub(super) fn corridor_into(
+        &mut self,
+        mesh: &NavMesh,
+        start: u32,
+        goal: u32,
+        mut skip: impl FnMut(u32, &Edge) -> bool,
+        path: &mut Vec<u32>,
+    ) -> bool {
+        path.clear();
         let n = mesh.polys.len();
         if start as usize >= n || goal as usize >= n {
-            return None;
+            return false;
         }
         let goal_at = mesh.polys[goal as usize].center;
         // A straight-line lower bound stops being admissible when a link
@@ -64,7 +78,6 @@ impl Search {
             .push(Open(estimate(mesh.polys[start as usize].center), start));
         while let Some(Open(_, i)) = self.heap.pop() {
             if i == goal {
-                let mut path = Vec::new();
                 let mut at = goal;
                 while at != start {
                     let e = self.came[at as usize];
@@ -72,7 +85,7 @@ impl Search {
                     at = mesh.edges[e as usize].from;
                 }
                 path.reverse();
-                return Some(path);
+                return true;
             }
             let here = mesh.polys[i as usize].center;
             for &ei in mesh.out.get(i as usize).into_iter().flatten() {
@@ -108,6 +121,6 @@ impl Search {
                 }
             }
         }
-        None
+        false
     }
 }

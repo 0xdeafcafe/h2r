@@ -1041,21 +1041,42 @@ pub(crate) struct Ground {
 /// With `near` (the bot's feet), the same scan looks for live grenades
 /// close to it (crate::incoming).
 pub(crate) fn ground(m: &dyn GuestMemory, near: Option<crate::brain::Vec3>) -> R<Ground> {
-    use crate::incoming::{DANGER, Grenade, PROJECTILE, grenade_defs};
-
     let mut out = Ground {
         held_power: Vec::new(),
         weapons: Vec::new(),
-        supplies: None,
+        supplies: Some(Vec::new()),
         grenades: Vec::new(),
     };
+    ground_into(m, near, &mut out, None)?;
+    Ok(out)
+}
+
+pub(crate) fn ground_into(
+    m: &dyn GuestMemory,
+    near: Option<crate::brain::Vec3>,
+    out: &mut Ground,
+    mut vehicle_headers: Option<&mut Vec<crate::vehicle::read::VehicleHeader>>,
+) -> R<()> {
+    use crate::incoming::{DANGER, Grenade, PROJECTILE, grenade_defs};
+
+    out.held_power.clear();
+    out.weapons.clear();
+    out.grenades.clear();
     let Some(array) = objects::array(m)? else {
-        return Ok(out);
+        out.supplies = None;
+        return Ok(());
     };
-    out.supplies = Some(Vec::new());
+    out.supplies.get_or_insert_with(Vec::new).clear();
     let senses = near.and_then(|at| grenade_defs(m).map(|defs| (at, defs)));
-    for (h, header) in array.live(m, OBJECT_LIMIT)? {
+    for record in array.live_iter(m, OBJECT_LIMIT)? {
+        let (h, header) = record?;
         let site = match header.kind(m)? {
+            objects::VEHICLE => {
+                if let Some(headers) = &mut vehicle_headers {
+                    headers.push((h, header));
+                }
+                continue;
+            }
             PROJECTILE => {
                 if let Some((at, defs)) = senses
                     && let Ok(addr @ 1..) = header.body(m)
@@ -1113,7 +1134,7 @@ pub(crate) fn ground(m: &dyn GuestMemory, near: Option<crate::brain::Vec3>) -> R
             Err(_) => out.supplies = None,
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 #[cfg(test)]

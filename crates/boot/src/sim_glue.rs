@@ -179,6 +179,8 @@ pub fn skill(s: sim::config::Skill) -> bots::mind::Skill {
 
 /// A tuning file's numbers as the bots crate takes them.
 pub fn tuning(p: &BotParams) -> bots::tuning::Tuning {
+    let work = bots::tuning::WorkRates::default();
+    let rate = |value: Option<u32>, default| value.unwrap_or(default).clamp(1, 30);
     bots::tuning::Tuning {
         reaction: p.reaction,
         error: p.error,
@@ -205,6 +207,12 @@ pub fn tuning(p: &BotParams) -> bots::tuning::Tuning {
             .aim_model
             .as_deref()
             .and_then(bots::tuning::AimModel::parse),
+        work: bots::tuning::WorkRates {
+            foot_plan_ticks: rate(p.foot_plan_ticks, work.foot_plan_ticks),
+            vehicle_plan_ticks: rate(p.vehicle_plan_ticks, work.vehicle_plan_ticks),
+            vehicle_lookahead_ticks: rate(p.vehicle_lookahead_ticks, work.vehicle_lookahead_ticks),
+            player_los_ticks: rate(p.player_los_ticks, work.player_los_ticks),
+        },
     }
 }
 
@@ -1082,9 +1090,20 @@ mod tests {
             phantom_ping_ms: Some(80.0),
             phantom_jitter_ms: Some(2.5),
             aim_model: Some("net".into()),
+            foot_plan_ticks: Some(2),
+            player_los_ticks: Some(4),
+            ..BotParams::default()
         };
         let t = tuning(&p);
         assert_eq!(t.aim_model, Some(bots::tuning::AimModel::Net));
+        assert_eq!(
+            t.work,
+            bots::tuning::WorkRates {
+                foot_plan_ticks: 2,
+                player_los_ticks: 4,
+                ..Default::default()
+            }
+        );
         assert_eq!(
             tuning(&BotParams {
                 aim_model: Some("code".into()),

@@ -145,3 +145,39 @@ fn infantry_in_front_and_in_reach_is_run_over() {
         "far"
     );
 }
+
+#[test]
+fn cached_lookahead_still_checks_the_live_span_ahead() {
+    use crate::los::Walls;
+    use crate::nav::{NavMesh, Poly};
+    use crate::vehicle::Class;
+
+    let floor = Poly::new(vec![
+        [-1., -4., 0.],
+        [10., -4., 0.],
+        [10., 4., 0.],
+        [-1., 4., 0.],
+    ]);
+    let wall = [[3., -2., -1.], [3., 2., -1.], [3., 2., 3.], [3., -2., 3.]];
+    let map = MapData {
+        nav: NavMesh::new(vec![floor], vec![]),
+        walls: Walls::from_polygons([wall.as_slice()]),
+        ..Default::default()
+    };
+    let spec = Class::Scout.spec();
+    let goal = [7., 3., 0.];
+    let mut route = Route::straight(goal);
+    assert_eq!(
+        route.steer(&map, spec, [0., 3., 0.], 0., 0, Some(0), 3),
+        Some(goal)
+    );
+    assert!(!clear(&map, spec, [0.; 3], goal));
+    assert_eq!(
+        route.steer(&map, spec, [0.; 3], 0., 1, Some(0), 3),
+        Some(goal)
+    );
+    assert_eq!(
+        route.steer(&map, spec, [2.5, 0., 0.], 0., 2, Some(0), 3),
+        None
+    );
+}
