@@ -4,8 +4,13 @@
 //! (off) or `id=on|off`. An `impl.` prefix names an implementation switch
 //! (`impl.engine=on`). Anything not named keeps its default. These become
 //! settings (`Def`s) when the overlay lists them; the variable stays.
+//!
+//! Every `impl.*` switch is a row of [`table::TABLE`] with its default,
+//! owner, age and removal condition; one not there does not parse.
 
 use std::collections::BTreeMap;
+
+pub mod table;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Switches {
@@ -42,6 +47,11 @@ impl Switches {
             };
             if name.is_empty() {
                 return Err(format!("H2_FEATURES: empty name in {item:?}"));
+            }
+            if name.starts_with("impl.") && !table::known(name) {
+                return Err(format!(
+                    "H2_FEATURES: {name} is not a switch (crates/feature/src/switches/table.rs lists them)"
+                ));
             }
             set.insert(name.to_owned(), on);
         }
