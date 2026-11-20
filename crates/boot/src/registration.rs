@@ -330,8 +330,8 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     // (on by default, H2_FEATURES=impl.render.native_world=off turns it
     // off; docs/graphics/native-renderer.md). Its layer-draw observer is
     // context-only, so the pipelined render runs it on its own thread. It
-    // runs after render-timing's; the world's map file comes from the
-    // locator boot sets (native_world_glue::set_locator).
+    // runs after render-timing's. The world reads its map and resources
+    // through the VFS (native_map).
     #[cfg(feature = "gpu")]
     features
         .add(&feature::native_world::NativeWorld)
