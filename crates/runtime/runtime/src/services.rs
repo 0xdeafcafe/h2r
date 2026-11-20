@@ -17,7 +17,9 @@ pub struct Runtime {
     dispatch_gen: AtomicU64,
     pub(crate) interrupts: crate::interrupt::InterruptQueue,
     tsc: Tsc,
-    pub(crate) words: crate::preempt::Words,
+    /// Shared with the memory, which sets [`crate::preempt::PARK`] on the
+    /// running context's word.
+    pub(crate) words: Arc<crate::preempt::Words>,
     pub(crate) coverage: OnceLock<crate::coverage::Coverage>,
     pub(crate) dispatch_census: Option<crate::entry_stats::DispatchCensus>,
     fault_census: crate::fault_census::FaultCensus,
@@ -28,6 +30,8 @@ pub struct Runtime {
     /// The entry table, once dispatch has a module with one
     /// ([`crate::direct`]).
     live: OnceLock<crate::direct::Live>,
+    /// Dispatch has a flat-RAM module ([`Runtime::flat_ram`]).
+    flat: std::sync::atomic::AtomicBool,
 }
 
 /// Waits on the guest memory lock that found it held by another thread.
@@ -76,24 +80,75 @@ impl LockContention {
 impl Runtime {
     pub fn new(memory: Guest, dispatch: Dispatch) -> Arc<Self> {
         let module_features = dispatch.module_features();
+        let memory = crate::ffi::Memory::new(memory);
+        let words = memory.words.clone();
         let rt = Arc::new(Self {
-            memory: crate::ffi::Memory::new(memory),
+            memory,
             dispatch: RwLock::new(dispatch),
             dispatch_gen: AtomicU64::new(1),
             interrupts: Default::default(),
             tsc: Tsc::default(),
-            words: Default::default(),
+            words,
             coverage: OnceLock::new(),
             dispatch_census: (std::env::var("H2_DISPATCH_STATS").as_deref() == Ok("1"))
                 .then(crate::entry_stats::DispatchCensus::default),
             fault_census: Default::default(),
             module_features: module_features.into(),
             live: OnceLock::new(),
+            flat: Default::default(),
         });
         let d = rt.dispatch.read().unwrap_or_else(|e| e.into_inner());
         rt.adopt_entry_table(&d);
+        let flat = rt.adopt_flat_dispatch(&d);
         drop(d);
+        if flat {
+            rt.memory.make_flat();
+        }
         rt
+    }
+    /// Dispatch has (or has just gained) a flat-RAM module
+    /// ([`crate::generated::FEATURE_FLAT_RAM`]): send window faults to the
+    /// fixups, make the null window, and park generated code for memory
+    /// guards, all before any flat handler can be resolved. Called with
+    /// the dispatch lock; true the first time, when the caller then moves
+    /// RAM into an aliasable backing ([`crate::ffi::Memory::make_flat`])
+    /// once the lock is dropped. Until then the window guards every page,
+    /// which is slow but right.
+    fn adopt_flat_dispatch(&self, d: &Dispatch) -> bool {
+        use std::sync::atomic::Ordering::AcqRel;
+        if !d.flat_ram() || self.flat.swap(true, AcqRel) {
+            return false;
+        }
+        let window = self
+            .memory
+            .window()
+            .expect("a flat-RAM module needs this runtime's flat RAM window, which the system refused");
+        if let Err(e) = window.catch_faults() {
+            panic!("a flat-RAM module needs window faults caught: {e}");
+        }
+        crate::window::null_window()
+            .expect("a flat-RAM module needs the null window, which the system refused");
+        self.memory.enable_parking();
+        true
+    }
+    /// Dispatch has a flat-RAM module: generated code reads and writes
+    /// guest RAM through the window ([`Runtime::flat_base`]) and parks for
+    /// memory guards.
+    pub fn flat_ram(&self) -> bool {
+        self.flat.load(Ordering::Acquire)
+    }
+    /// Where a flat-RAM handler's block points for one call: the window
+    /// and its cards, or the null window while the context's fast memory
+    /// is off (`ExecCtx::enable_fast_memory`).
+    #[inline]
+    pub(crate) fn flat_block_target(&self, fast: bool) -> (*mut u8, *mut u8) {
+        match self.memory.window() {
+            Some(w) if fast => (w.base(), w.cards()),
+            _ => {
+                let null = crate::window::null_window().expect("made with the flat-RAM module");
+                (null.base(), null.cards())
+            }
+        }
     }
     /// Dispatch has (or has just gained) a module with an entry table: the
     /// leave word goes on before the table can hold anything, then the
@@ -226,6 +281,47 @@ impl Runtime {
     pub(crate) fn fast_memory(&self) -> *const crate::ffi::MemoryShared {
         self.memory.fast_shared()
     }
+    /// The memory itself, for [`crate::ffi::call_native`]'s state word.
+    pub(crate) fn memory_state(&self) -> &crate::ffi::Memory {
+        &self.memory
+    }
+    /// Use the memory's state word and [`crate::preempt::PARK`] in place
+    /// of the gate from now on (docs/runtime/contract-thin-transfers-flat-ram.md,
+    /// section 4.1, "No gate in generated code"; `ffi::memory`'s module
+    /// docs). For the flat model, which has no gate: a paged image keeps
+    /// the gate and never needs it. It cannot be turned off again.
+    pub fn enable_parking(&self) {
+        self.memory.enable_parking();
+    }
+    /// The host address of guest address 0 in this runtime's flat RAM
+    /// window ([`crate::window`]), fixed for the runtime's life, or `None`
+    /// where there is no window. A page is readable there only while the
+    /// window holds it; anything else faults.
+    pub fn flat_base(&self) -> Option<*mut u8> {
+        self.memory.window().map(|w| w.base())
+    }
+    /// The window's cards (`cards[va >> 12]`, one byte per 4 KiB page;
+    /// one per 4 MiB region at `cards - 1024`; zero means written), made on
+    /// first use, or `None` without a window. Written cards are folded into
+    /// the write watch before it is read or changed.
+    pub fn flat_cards(&self) -> Option<*mut u8> {
+        self.memory.window().map(|w| w.cards())
+    }
+    /// Send faults inside the window to the fixup rows registered with
+    /// `hostfault`, counting them ([`crate::window::WindowStats::fixups`]).
+    /// Idempotent. Without a window, `Ok` and nothing to catch.
+    pub fn catch_window_faults(&self) -> Result<(), hostfault::Error> {
+        self.memory
+            .window()
+            .map_or(Ok(()), |w| w.catch_faults())
+    }
+    /// This runtime's window counters (zeros without a window).
+    pub fn window_stats(&self) -> crate::window::WindowStats {
+        self.memory
+            .window()
+            .map(|w| w.stats())
+            .unwrap_or_default()
+    }
     /// Reads the dispatch tables (override names, say) without a new
     /// generation.
     pub fn read_dispatch<R>(&self, f: impl FnOnce(&Dispatch) -> R) -> R {
@@ -239,9 +335,17 @@ impl Runtime {
         // disabled reaches the entry table before the edit returns, so no
         // direct call made after it skips the override.
         self.adopt_entry_table(&d);
+        // Under the write lock: no flat handler is resolved before its
+        // faults are caught and parking is on.
+        let flat = self.adopt_flat_dispatch(&d);
         // Under the write lock: a context that resolves after this sees the
         // new tables and the new generation together.
         self.dispatch_gen.fetch_add(1, Ordering::AcqRel);
+        drop(d);
+        // The memory lock, after the dispatch lock.
+        if flat {
+            self.memory.make_flat();
+        }
         r
     }
     /// The hook for a generated handler's STOP

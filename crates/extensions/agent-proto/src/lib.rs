@@ -161,6 +161,10 @@ pub mod method {
     /// The fallback interpreter's entry addresses, by instructions
     /// interpreted (`{"top": 20}`): where generated code still stops.
     pub const PROFILE_FALLBACKS: &str = "profile.fallbacks";
+    /// The flat RAM window's counters (`runtime::window`): fixups taken,
+    /// mapped pages outside the window, bytes the congruent allocator
+    /// skipped; where a slow page shows.
+    pub const PROFILE_MEMORY: &str = "profile.memory";
     /// The fault census (`{"top": 20}`): every guest memory fault, who
     /// raised it, and whether guest execution went on from its state
     /// (`runtime::fault_census`).

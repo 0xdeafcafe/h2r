@@ -1247,3 +1247,114 @@ fn an_entry_table_turns_the_leave_word_on() {
     });
     assert_ne!(ctx.leave_word() & IRQ_QUEUED, 0);
 }
+
+// ---- flat RAM (FEATURE_FLAT_RAM) -------------------------------------------
+
+use runtime::generated::{FEATURE_FLAT_RAM, H2GenFlatModule};
+
+/// Fixup rows (`hostfault::Format::Relative32`) whose instructions are
+/// `insns` bytes past the table's start, each landing on the start
+/// (leaked, as a loaded module's section outlives its registration).
+fn fixup_rows(insns: &[usize]) -> &'static [[i32; 2]] {
+    let rows: &'static mut [[i32; 2]] = vec![[0i32; 2]; insns.len()].leak();
+    let base = rows.as_ptr() as isize;
+    for (i, &insn) in insns.iter().enumerate() {
+        let at = base + 8 * i as isize;
+        rows[i] = [(base + insn as isize - at) as i32, (base - (at + 4)) as i32];
+    }
+    rows
+}
+
+/// Register a flat module over the entry table of [`TABLE_ROWS`].
+fn with_flat(d: &mut Dispatch, features: u32, rows: &'static [[i32; 2]], format: u32) -> Result<RegisteredModule, RegistrationError> {
+    let mut entries: Vec<H2GenEntry> = TABLE_ROWS.iter().map(|&(a, k)| entry(a, k, good_probe)).collect();
+    entries.push(ZERO_ENTRY);
+    let entries = entries.leak();
+    let resumes = vec![ZERO_RESUME].leak();
+    let range = rows.as_ptr_range();
+    let module = Box::leak(Box::new(H2GenFlatModule {
+        entry: runtime::H2GenEntryModule {
+            module: H2GenModule {
+                abi_version: runtime::cpu::ABI_VERSION,
+                entry_count: TABLE_ROWS.len() as u32,
+                resume_count: 0,
+                features,
+                entries: entries.as_ptr(),
+                resumes: resumes.as_ptr(),
+            },
+            pcmap: table_pcmap(|_| {}).leak().as_ptr(),
+            text_lo: TABLE_TEXT.0,
+            text_hi: TABLE_TEXT.1,
+        },
+        fix_start: range.start.cast(),
+        fix_end: range.end.cast(),
+        fix_format: format,
+        fix_pad: 0,
+    }));
+    // SAFETY: each table holds count + 1 rows, pcmap covers the text, the
+    // fixup rows are in `format` or refused, and all of it is leaked.
+    unsafe { d.register_generated_module(&module.entry.module, good_probe) }
+}
+
+/// A flat module needs the entry table its fixup bounds follow, a host
+/// with a window, and a sorted table; a refused one registers nothing.
+#[test]
+fn flat_ram_needs_an_entry_table_and_a_sorted_fixup_table() {
+    let mut d = Dispatch::default();
+    assert_eq!(
+        with_flat(&mut d, FEATURE_FLAT_RAM, fixup_rows(&[8, 16]), 0),
+        Err(RegistrationError::FlatRamWithoutEntryTable)
+    );
+    let flat = FEATURE_FLAT_RAM | FEATURE_ENTRY_TABLE;
+    if !runtime::window::supported() {
+        assert_eq!(with_flat(&mut d, flat, fixup_rows(&[8, 16]), 0), Err(RegistrationError::FlatRamUnsupported));
+        return;
+    }
+    let refused = |rows, format| {
+        let mut d = Dispatch::default();
+        let r = with_flat(&mut d, flat, rows, format);
+        assert!(!d.has_generated(0x1000) && !d.flat_ram(), "nothing registered");
+        r
+    };
+    assert_eq!(
+        refused(fixup_rows(&[16, 8]), 0),
+        Err(RegistrationError::FixupTable(hostfault::Error::Unsorted { index: 1 }))
+    );
+    assert_eq!(refused(fixup_rows(&[8, 16]), 7), Err(RegistrationError::FixupTable(hostfault::Error::BadTable)));
+    assert_eq!(
+        with_flat(&mut d, flat, fixup_rows(&[8, 16, 24]), 0),
+        Ok(RegisteredModule { entries: 3, resumes: 0, features: flat })
+    );
+    assert!(d.flat_ram());
+}
+
+/// A runtime with a flat module, from the start or registered later,
+/// reports it and has its RAM aliased into the window.
+#[test]
+fn a_flat_module_makes_ram_aliasable() {
+    if !runtime::window::supported() {
+        return;
+    }
+    let flat = FEATURE_FLAT_RAM | FEATURE_ENTRY_TABLE;
+    let guest = || {
+        let mut g = Guest::new();
+        g.map_zeroed(DATA, 0x4000, Permissions::RW).unwrap();
+        g.set_u32(DATA, 0x1234_5678).unwrap();
+        g
+    };
+    let mut d = Dispatch::default();
+    with_flat(&mut d, flat, fixup_rows(&[]), 0).unwrap();
+    let rt = Runtime::new(guest(), d);
+    assert!(rt.flat_ram());
+    assert_eq!(rt.window_stats().aliased, 1, "RAM aliased into the window");
+    let base = rt.flat_base().expect("a window");
+    // SAFETY: the page is mapped readable and congruent, so the window
+    // holds it.
+    assert_eq!(unsafe { (base.add(DATA as usize) as *const u32).read_volatile() }, 0x1234_5678);
+
+    let rt = Runtime::new(guest(), Dispatch::default());
+    assert!(!rt.flat_ram());
+    rt.edit_dispatch(|d| with_flat(d, flat, fixup_rows(&[]), 0).unwrap());
+    assert!(rt.flat_ram());
+    assert_eq!(rt.window_stats().aliased, 1);
+}

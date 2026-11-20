@@ -176,6 +176,18 @@ pub struct Guest {
     cow_source_layout: u64,
     /// RAM replaced without per-page notifications (COW refresh or rollback).
     watch_revision: u64,
+    /// The runtime memory's flat RAM window ([`crate::window`]), once a
+    /// memory has attached this Guest. It shows this Guest's mappings only
+    /// while its owner is `ident`: a replaced Guest no longer touches it.
+    window: Option<std::sync::Arc<crate::window::Window>>,
+    /// Unique in the process, for the window's owner test.
+    ident: u64,
+    /// Physical bytes the congruent allocator has skipped
+    /// ([`Guest::map_zeroed`]).
+    congruence_skipped: u64,
+    /// The runtime runs a flat-RAM module: RAM is kept in a backing the
+    /// window can alias ([`Guest::require_aliasable_ram`]).
+    aliasable_ram: bool,
 }
 
 /// Guest ABI outputs. The caller recreates zeroed allocations with
@@ -224,6 +236,13 @@ fn page_aligned(v: u64) -> bool {
 fn page_end(v: u64) -> u64 {
     v.div_ceil(PAGE_SIZE as u64) * PAGE_SIZE as u64
 }
+/// The lowest address at or after page-aligned `start` congruent with
+/// `va`'s page modulo [`crate::window::CONGRUENCE`].
+fn congruent_at_or_after(start: u64, va: u32) -> u64 {
+    let c = crate::window::CONGRUENCE as u64;
+    let want = va as u64 & (c - 1) & !(PAGE_SIZE as u64 - 1);
+    start + ((want + c - (start & (c - 1))) & (c - 1))
+}
 
 impl Default for Guest {
     fn default() -> Self {
@@ -253,6 +272,10 @@ impl Guest {
             code_id: fresh_layout(),
             trap: None,
             cow_source_layout: 0, watch_revision: 0,
+            window: None,
+            ident: fresh_layout(),
+            congruence_skipped: 0,
+            aliasable_ram: false,
         }
     }
     /// Identifies the mappings and their permissions: a new value, never
@@ -364,6 +387,7 @@ impl Guest {
         if self.physical_reserved(physical as u64, physical as u64 + len as u64) {
             return Err(MapError::Reserved);
         }
+        self.fold_cards();
         self.insert_mapping(va, len, physical, permissions);
         self.next_physical = self.next_physical.max(physical + len);
         Ok(())
@@ -395,10 +419,14 @@ impl Guest {
         self.refresh_fast_range(va as u64, va as u64 + len as u64);
     }
 
-    /// Allocate distinct page-aligned physical storage for a virtual range.
-    /// Storage comes from never-used RAM above every earlier mapping, skipping
-    /// physical reservations. When that runs out, the lowest free page-aligned
-    /// gap left by [`Guest::unmap`] is reused and zeroed first.
+    /// Allocate distinct page-aligned physical storage for a virtual range,
+    /// congruent with `va` modulo [`crate::window::CONGRUENCE`] so the flat
+    /// RAM window can hold it ([`crate::window`]). Storage comes from
+    /// never-used RAM above every earlier mapping, skipping physical
+    /// reservations and up to 12 KiB to reach the residue (counted in
+    /// [`crate::window::WindowStats::congruence_skipped`]). When that runs
+    /// out, the lowest free gap left by [`Guest::unmap`] is reused and zeroed
+    /// first ([`Guest::find_free_physical_for`]).
     pub fn map_zeroed(
         &mut self,
         va: u32,
@@ -407,11 +435,17 @@ impl Guest {
     ) -> Result<(), MapError> {
         self.check_virtual(va, len)?;
         let before = self.layout;
-        if let Some(physical) = self.fresh_physical(len) {
+        if let Some((physical, skipped)) = self.fresh_physical(va, len) {
             self.map(va, len, physical, permissions)?;
+            if skipped != 0 {
+                self.congruence_skipped += skipped;
+                if let Some(w) = self.owned_window() {
+                    w.set_skipped(self.congruence_skipped);
+                }
+            }
         } else {
             let physical = self
-                .find_free_physical(len, 0..RAM_SIZE as u32, PAGE_SIZE)
+                .find_free_physical_for(va, len, 0..RAM_SIZE as u32)
                 .ok_or(MapError::OutOfMemory)?;
             self.map(va, len, physical, permissions)?;
             self.fill_zero(physical as usize, len as usize);
@@ -427,9 +461,15 @@ impl Guest {
         }
         Ok(())
     }
-    fn fresh_physical(&self, len: u32) -> Option<u32> {
+    /// Never-used RAM for `[va, va + len)`, congruent with `va`, and the
+    /// bytes skipped to reach the residue.
+    fn fresh_physical(&self, va: u32, len: u32) -> Option<(u32, u64)> {
         let mut start = page_end(self.next_physical as u64);
+        let mut skipped = 0;
         loop {
+            let congruent = congruent_at_or_after(start, va);
+            skipped += congruent - start;
+            start = congruent;
             let end = start + len as u64;
             if end > RAM_SIZE as u64 {
                 return None;
@@ -442,11 +482,45 @@ impl Guest {
                 .max()
             {
                 Some(next) => start = page_end(next),
-                None => return Some(start as u32),
+                None => return Some((start as u32, skipped)),
             }
         }
     }
+    /// Lowest page-aligned base inside `range` with `len` free bytes per
+    /// [`Guest::physical_free`] for a mapping at `va`: congruent with `va`
+    /// modulo [`crate::window::CONGRUENCE`] when there is one, so the flat
+    /// RAM window can hold it, else any (slow through the window, not
+    /// wrong; counted in [`crate::window::WindowStats::pages_outside`]).
+    /// None if `len` is zero or nothing fits.
+    pub fn find_free_physical_for(
+        &self,
+        va: u32,
+        len: u32,
+        range: std::ops::Range<u32>,
+    ) -> Option<u32> {
+        if len == 0 {
+            return None;
+        }
+        let limit = (range.end as u64).min(RAM_SIZE as u64);
+        let mut start = range.start as u64;
+        loop {
+            start = congruent_at_or_after(page_end(start), va);
+            let end = start + page_end(len as u64);
+            if end > limit {
+                break;
+            }
+            match self.physical_conflict_end(start, end) {
+                Some(next) => start = next,
+                None => return Some(start as u32),
+            }
+        }
+        self.find_free_physical(len, range, PAGE_SIZE)
+    }
     pub fn protect(&mut self, va: u32, permissions: Permissions) -> Result<(), MapError> {
+        if !self.mappings.iter().any(|m| m.virtual_start == va) {
+            return Err(MapError::InvalidRange);
+        }
+        self.fold_cards();
         let m = self
             .mappings
             .iter_mut()
@@ -629,6 +703,7 @@ impl Guest {
         }) {
             return Err(MapError::Overlap);
         }
+        self.fold_cards();
         self.insert_mapping(va, len, physical, permissions);
         Ok(())
     }
@@ -813,6 +888,7 @@ impl Guest {
         self.mappings.insert(i + 1, tail);
     }
     fn apply_protect(&mut self, start: u64, end: u64, permissions: Permissions) {
+        self.fold_cards();
         self.split_at(start);
         self.split_at(end);
         for m in &mut self.mappings {
@@ -823,6 +899,7 @@ impl Guest {
         self.refresh_fast_range(start, end);
     }
     fn apply_unmap(&mut self, start: u64, end: u64) {
+        self.fold_cards();
         self.layout = fresh_layout();
         self.split_at(start);
         self.split_at(end);
@@ -833,6 +910,7 @@ impl Guest {
         }
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
         self.refresh_flat(start, end);
+        self.refresh_window(start, end);
     }
 
     /// Zero physical bytes, reporting the change to the write watch.
@@ -861,6 +939,7 @@ impl Guest {
     // so this is where the layout moves on.
     fn refresh_fast_range(&mut self, start: u64, end: u64) {
         self.layout = fresh_layout();
+        self.refresh_window(start, end);
         let Some(pages) = &mut self.fast_pages else {
             return;
         };
@@ -932,6 +1011,8 @@ impl Guest {
                 }
             }
         }
+        // Armed pages are guards in the window.
+        self.refresh_window(0, 1u64 << 32);
     }
     /// Makes `pages` (virtual page numbers) sticky, and every other page
     /// not: armed for both kinds, every access to them is logged.
@@ -950,12 +1031,17 @@ impl Guest {
                 fast[p].permissions &= !3;
             }
         }
+        for &p in pages {
+            let va = (p as u64 & ((1 << 20) - 1)) << 12;
+            self.refresh_window(va, va + PAGE_SIZE as u64);
+        }
     }
     /// Arm read-only watches of selected virtual pages. Read masks cover
     /// 64-byte lines, so this tracks ranges rather than individual fields.
     pub fn watch_read_lines(&mut self, pages: impl IntoIterator<Item = u32>) {
         self.install_trap(4096);
         let Some(trap) = &self.trap else { return };
+        let mut armed = Vec::new();
         for page in pages.into_iter().filter(|p| *p < (1 << 20)) {
             let page = page as usize;
             trap.arm(page, true, false);
@@ -963,6 +1049,11 @@ impl Guest {
             if let Some(fast) = &mut self.fast_pages {
                 fast[page].permissions &= !1;
             }
+            armed.push(page);
+        }
+        for page in armed {
+            let va = (page as u64) << 12;
+            self.refresh_window(va, va + PAGE_SIZE as u64);
         }
     }
 
@@ -1003,6 +1094,12 @@ impl Guest {
                 if let Some(fast) = &mut self.fast_pages {
                     fast[p].permissions &= !3;
                 }
+            }
+        }
+        for &w in words {
+            for page in [w >> 12, w.wrapping_add(3) >> 12] {
+                let va = (page as u64) << 12;
+                self.refresh_window(va, va + PAGE_SIZE as u64);
             }
         }
     }
@@ -1073,6 +1170,7 @@ impl Guest {
                 permissions: flags | (entry.permissions & !still),
             };
         }
+        self.refresh_window(va, va + PAGE_SIZE as u64);
     }
 
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
@@ -1109,6 +1207,246 @@ impl Guest {
         if let Some(arena) = &mut self.flat {
             arena.publish(&mut self.watch);
         }
+    }
+
+    /// Show this Guest in `window` from now on ([`crate::window`]): the
+    /// runtime memory calls it for a new Guest and for one put in place of
+    /// another. Rebuilds the whole window and forgets written cards.
+    pub(crate) fn attach_window(&mut self, window: std::sync::Arc<crate::window::Window>) {
+        window.claim(self.ident, self.congruence_skipped);
+        window.clear_cards();
+        self.window = Some(window);
+        self.refresh_window(0, 1u64 << 32);
+    }
+    /// `window` shows this Guest.
+    pub(crate) fn shown_in(&self, window: &std::sync::Arc<crate::window::Window>) -> bool {
+        self.window
+            .as_ref()
+            .is_some_and(|w| std::sync::Arc::ptr_eq(w, window))
+            && window.owner() == self.ident
+    }
+    /// The window, while it shows this Guest.
+    fn owned_window(&self) -> Option<&std::sync::Arc<crate::window::Window>> {
+        self.window.as_ref().filter(|w| w.owner() == self.ident)
+    }
+    /// Rebuild the window's view of `[start, end)` (rounded out to whole
+    /// host pages) from the mappings and the trap. Every mapping, permission
+    /// and trap change ends here.
+    fn refresh_window(&self, start: u64, end: u64) {
+        let Some(w) = self.owned_window() else {
+            return;
+        };
+        let k = w.pages_per_host();
+        let first = (start >> 12) as usize / k * k;
+        let last = ((page_end(end) >> 12) as usize).div_ceil(k) * k;
+        let last = last.min(1 << 20);
+        // At most 64 Ki pages (512 KiB of slots) at a time.
+        const CHUNK: usize = 1 << 16;
+        let mut at = first;
+        while at < last {
+            let to = (at + CHUNK).min(last);
+            let slots = self.window_slots(at, to, w.host_page() as u64);
+            w.refresh(&self.ram, self.aliases_ram(), at, &slots);
+            at = to;
+        }
+    }
+    /// What guest pages `[first, last)` are to the window.
+    fn window_slots(&self, first: usize, last: usize, host: u64) -> Vec<crate::window::Slot> {
+        use crate::window::Slot;
+        let mut slots = vec![Slot::Unmapped; last - first];
+        let (lo, hi) = ((first as u64) << 12, (last as u64) << 12);
+        // Mappings are sorted and disjoint, so their ends are sorted too.
+        let from = self
+            .mappings
+            .partition_point(|m| m.virtual_start as u64 + m.len as u64 <= lo);
+        for m in &self.mappings[from..] {
+            let (start, end) = (m.virtual_start as u64, m.virtual_start as u64 + m.len as u64);
+            if start >= hi {
+                break;
+            }
+            let readable = m.permissions.allows(Access::Read);
+            for vpn in (start.max(lo) >> 12)..(page_end(end).min(hi) >> 12) {
+                let va = vpn << 12;
+                let i = vpn as usize - first;
+                let whole = start <= va && va + PAGE_SIZE as u64 <= end;
+                if !whole {
+                    // A byte-granular piece: the helper path only.
+                    if readable {
+                        slots[i] = Slot::Out;
+                    }
+                    continue;
+                }
+                let physical = m.physical_start as u64 + va - start;
+                slots[i] = if !readable {
+                    Slot::Unmapped
+                } else if !physical.is_multiple_of(PAGE_SIZE as u64)
+                    || physical % host != va % host
+                {
+                    Slot::Out
+                } else {
+                    Slot::In {
+                        physical: physical as u32,
+                        write: m.permissions.allows(Access::Write),
+                    }
+                };
+            }
+        }
+        if let Some(trap) = &self.trap {
+            for (i, slot) in slots.iter_mut().enumerate() {
+                let page = first + i;
+                if *slot != Slot::Unmapped && (trap.armed(page, false) || trap.armed(page, true)) {
+                    *slot = Slot::Out;
+                }
+            }
+        }
+        slots
+    }
+    /// The Guest's RAM was replaced under unchanged mappings: retire the
+    /// window's aliases of the old RAM and alias the new, if it is to be.
+    pub(crate) fn window_ram_replaced(&self) {
+        if self.owned_window().is_some_and(|w| w.is_aliased() || self.aliases_ram()) {
+            self.refresh_window(0, 1u64 << 32);
+        }
+    }
+    /// The window is to alias this Guest's RAM, where the backing can be:
+    /// a flat-RAM runtime's Guest ([`Guest::require_aliasable_ram`]), or
+    /// RAM `H2_FLAT_RAM=1` made aliasable from the start. A paged runtime's
+    /// view or file restore, which macOS could alias, keeps the window's
+    /// bookkeeping only.
+    fn aliases_ram(&self) -> bool {
+        self.aliasable_ram || self.ram.can_alias()
+    }
+    /// Turn the window's written cards into write-watch notes: the
+    /// physical page of each written guest page and of the page after it
+    /// (a store may cross). Runs before anything reads or changes watch
+    /// state and before a mapping change, so cards are translated under
+    /// the mappings they were written under. With no active watch the
+    /// cards are only cleaned.
+    pub(crate) fn fold_cards(&mut self) {
+        let Some(w) = self.owned_window().filter(|w| w.has_cards()).cloned() else {
+            return;
+        };
+        if !self.watch.active() {
+            w.clear_cards();
+            return;
+        }
+        w.take_cards(|vpn| {
+            self.note_virtual(vpn as u64);
+            self.note_virtual(vpn as u64 + 1);
+        });
+    }
+    /// Note the physical bytes behind guest page `vpn`, whichever
+    /// mappings cover them.
+    fn note_virtual(&mut self, vpn: u64) {
+        let (lo, hi) = (vpn << 12, (vpn + 1) << 12);
+        if hi > 1u64 << 32 {
+            return;
+        }
+        let from = self
+            .mappings
+            .partition_point(|m| m.virtual_start as u64 + m.len as u64 <= lo);
+        for m in &self.mappings[from..] {
+            let (start, end) = (m.virtual_start as u64, m.virtual_start as u64 + m.len as u64);
+            if start >= hi {
+                break;
+            }
+            let (a, b) = (start.max(lo), end.min(hi));
+            let physical = (m.physical_start as u64 + a - start) as usize;
+            self.watch.note(physical, (b - a) as usize);
+        }
+    }
+    /// Whether a written card reaches a physical page `watched` says
+    /// (by physical page number), leaving the cards.
+    pub(crate) fn cards_reach(&self, watched: impl Fn(usize) -> bool) -> bool {
+        let Some(w) = self.owned_window() else {
+            return false;
+        };
+        if !self.watch.active() {
+            return false;
+        }
+        w.any_card(|vpn| {
+            [vpn as u64, vpn as u64 + 1].into_iter().any(|vpn| {
+                let (lo, hi) = (vpn << 12, (vpn + 1) << 12);
+                if hi > 1u64 << 32 {
+                    return false;
+                }
+                let from = self
+                    .mappings
+                    .partition_point(|m| m.virtual_start as u64 + m.len as u64 <= lo);
+                self.mappings[from..]
+                    .iter()
+                    .take_while(|m| (m.virtual_start as u64) < hi)
+                    .any(|m| {
+                        let (start, end) =
+                            (m.virtual_start as u64, m.virtual_start as u64 + m.len as u64);
+                        let (a, b) = (start.max(lo), end.min(hi));
+                        let p = m.physical_start as u64 + a - start;
+                        let q = p + (b - a) - 1;
+                        ((p >> 12)..=(q >> 12)).any(|page| watched(page as usize))
+                    })
+            })
+        })
+    }
+    /// This Guest's window, for a test.
+    #[cfg(test)]
+    pub(crate) fn window(&self) -> Option<&std::sync::Arc<crate::window::Window>> {
+        self.owned_window()
+    }
+    /// The runtime runs a flat-RAM module (`generated::FEATURE_FLAT_RAM`):
+    /// keep RAM in a backing the window can alias
+    /// ([`crate::cow::Ram::can_share`]) and alias it, through a
+    /// copy-on-write restore ([`Guest::restore_cow`]) and a view's refresh
+    /// ([`Guest::cow_refresh`]) too
+    /// (docs/runtime/contract-thin-transfers-flat-ram.md, slice F5). RAM
+    /// that cannot be aliased (made before the module registered, a Linux
+    /// file restore, a heap copy) is copied over, its bytes and every
+    /// mapping unchanged.
+    pub(crate) fn require_aliasable_ram(&mut self) {
+        let aliased = self.aliases_ram();
+        self.aliasable_ram = true;
+        if self.ensure_aliasable_ram() {
+            self.refresh_fast_range(0, 1u64 << 32);
+        } else if !aliased {
+            // Already shareable (a macOS snapshot or file restore), but
+            // shown unaliased until now.
+            self.refresh_window(0, 1u64 << 32);
+        }
+    }
+    /// Copy RAM into an aliasable backing if this Guest needs one and does
+    /// not have it; true if RAM moved. The caller then rebuilds the page
+    /// table and the window from the new RAM.
+    pub(crate) fn ensure_aliasable_ram(&mut self) -> bool {
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+        {
+            if !self.aliasable_ram || self.ram.can_share() {
+                return false;
+            }
+            self.fold_cards();
+            if !self.ram.make_aliasable() {
+                return false;
+            }
+            // The span model's aliases were of the old RAM. A flat-RAM
+            // module never reads them.
+            self.flat = None;
+            self.flat_requested = false;
+            self.watch_revision = self.watch_revision.wrapping_add(1);
+            true
+        }
+        #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64"))))]
+        false
+    }
+    /// RAM is the copy-on-write file mapping of the last
+    /// [`Guest::restore_cow`], not a copy of the image, for a test.
+    #[cfg(test)]
+    pub(crate) fn ram_maps_file(&self) -> bool {
+        self.ram.maps_file()
+    }
+    /// A Guest whose RAM the window can alias, for a test.
+    #[cfg(test)]
+    pub(crate) fn new_aliasable() -> Self {
+        let mut g = Self::new();
+        g.ram = crate::cow::Ram::zeroed_with(RAM_SIZE, true);
+        g
     }
 
     pub(crate) fn fast_parts(&mut self) -> (*mut u8, *const FastPage, bool) {

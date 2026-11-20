@@ -342,6 +342,18 @@ pub fn add_host_methods(agent: &agent::Agent) {
             .unwrap_or_default();
         Ok(stats.sites_json(top))
     });
+    // The flat RAM window's counters, summed over the process's runtimes
+    // (docs/runtime/contract-thin-transfers-flat-ram.md, slice F2).
+    agent.add_method(method::PROFILE_MEMORY, Access::Read, |_| {
+        let w = runtime::window_process_stats();
+        Ok(json!({
+            "windows": w.windows,
+            "aliased": w.aliased,
+            "fixups": w.fixups,
+            "pages_outside": w.pages_outside,
+            "congruence_skipped": w.congruence_skipped,
+        }))
+    });
     // Shadow checks of the native ports (docs/engine/shadow-exec.md).
     agent::shadow::add_methods(agent);
     agent.add_method(method::SAMPLE_STATUS, Access::Read, |_| {

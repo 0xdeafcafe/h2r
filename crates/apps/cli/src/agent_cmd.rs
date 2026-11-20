@@ -90,6 +90,8 @@ or a short form:
   fallbacks [N]          profile.fallbacks: the N (20) fallback interpreter
                          entry addresses that interpreted most, with their
                          function, hits and instructions
+  flatmem                profile.memory: the flat RAM window's fixups,
+                         pages outside it and bytes skipped for congruence
   faults [N]             profile.faults: the fault census, every guest memory
                          fault and whether execution went on from it, with
                          the N (20) most frequent fault PCs
@@ -603,6 +605,7 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
         "hostmetrics" => Some(method::HOST_METRICS),
         "hostaudit" => Some(method::HOST_AUDIT),
         "render" => Some(method::RENDER_STATS),
+        "flatmem" => Some(method::PROFILE_MEMORY),
         "ui" => Some(method::UI_SCREEN),
         _ => None,
     };
@@ -892,6 +895,7 @@ mod tests {
         assert_eq!(c("hostmetrics"), ("host.metrics".into(), Value::Null));
         assert_eq!(c("ui"), ("ui.screen".into(), Value::Null));
         assert_eq!(c("render"), ("render.stats".into(), Value::Null));
+        assert_eq!(c("flatmem"), ("profile.memory".into(), Value::Null));
         assert_eq!(
             c("fallbacks 5"),
             ("profile.fallbacks".into(), json!({"top": 5}))

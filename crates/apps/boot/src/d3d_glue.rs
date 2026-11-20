@@ -1670,6 +1670,13 @@ pub fn pipeline_allow(entries: &[u32]) -> impl Fn(u32, &str) -> bool + Send + Sy
 ///
 /// The device's tracker keeps only the pages it watches, so watching all of
 /// RAM here costs a bit per store and nothing more.
+///
+/// The drain is `Guest::take_dirty`, which folds the window's cards first
+/// (`Guest::fold_cards`): with a flat-RAM image, generated stores mark
+/// cards rather than the paged model's dirty bitmap, and every page stored
+/// to since the last drain (and the page after it, since a store may
+/// cross) reaches the device at the next entry
+/// (docs/runtime/contract-thin-transfers-flat-ram.md, slice F4).
 fn install_write_barrier<B: d3d::backend::Backend + Send + 'static>(
     rt: &runtime::Runtime,
     device: &Arc<Mutex<d3d::Device<B>>>,
@@ -1743,6 +1750,13 @@ pub fn barrier_handler(
 mod tests {
     use super::*;
     use d3d::backend::Backend;
+
+    #[test]
+    fn the_feature_arena_starts_after_the_device_pages() {
+        assert!(PUSH_BASE + PUSH_LEN <= SCRATCH_BASE);
+        assert!(SCRATCH_BASE + 0x1000 <= hooks::arena::ARENA_START);
+        assert!(hooks::arena::ARENA_END <= crate::community_variants::DATA_BASE);
+    }
 
     #[cfg(feature = "gpu")]
     #[test]

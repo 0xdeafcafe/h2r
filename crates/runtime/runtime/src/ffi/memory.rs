@@ -1,13 +1,67 @@
 //! Optional generated-C RAM path. The atomic gate excludes C accesses from
 //! Rust memory guards; C never holds it while calling a Rust helper.
+//!
+//! The memory also owns the flat RAM window ([`crate::window`]) and, for
+//! the flat model, the state word that replaces the gate (contract change
+//! section 4.1, "No gate in generated code"):
+//!
+//! - **Idle**: no generated code runs on this memory and no guard is held.
+//! - **Locked**: a guard taken while idle is held.
+//! - **Running**: a context's generated code runs ([`call_native`]); the
+//!   word carries that context's preempt word.
+//! - **In Rust**: that thread's helper is taking or holds a guard.
+//!
+//! A guard on another thread while the state is running sets [`PARK`] on
+//! the running context's word and waits, holding the Guest mutex, until
+//! the state leaves running. Generated code reaches a safe point within one
+//! loop trip or one call and returns to the runner, which takes the bit
+//! like any wake bit (a park is not a preemption: no slice ends and no
+//! transfer is spent) and waits at its next entry until the guard is gone.
+//! A helper on the running thread sets "in Rust" before it blocks on the
+//! Guest mutex and restores "running" when its guard drops, so a guard
+//! waiting meanwhile goes first. A Rust helper must not wait for another
+//! thread's guard while its own thread is running generated code without
+//! taking a guard itself: that thread never reaches a safe point.
+//!
+//! The state word is used only once [`crate::Runtime::enable_parking`] has
+//! been called: the flat model (slice F3) has no gate. On the paged path
+//! the gate already excludes generated accesses from guards, and no guard
+//! ever sets [`PARK`].
+//!
+//! [`call_native`]: crate::ffi::call_native
+//! [`PARK`]: crate::preempt::PARK
 use crate::{ExecCtx, Guest};
-use std::cell::UnsafeCell;
+use std::cell::{Cell, UnsafeCell};
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 use std::sync::{
-    Mutex, MutexGuard,
-    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+    Arc, Mutex, MutexGuard,
+    atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
 };
+
+/// The state word: idle, locked, or a context's preempt word with a tag.
+const IDLE: usize = 0;
+const LOCKED: usize = 1;
+const TAG: usize = 3;
+const RUNNING: usize = 2;
+const IN_RUST: usize = 3;
+/// A guard with no state to put back when it drops.
+const NO_RESTORE: usize = usize::MAX;
+
+thread_local! {
+    /// The memory (its address) whose generated code this thread runs.
+    static RUNS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Spin, then yield, as the gate's waiter does.
+fn back_off(spins: &mut u32) {
+    if *spins < 64 {
+        std::hint::spin_loop();
+        *spins += 1;
+    } else {
+        std::thread::yield_now();
+    }
+}
 
 /// Gate bits, as in `h2fastmem.h`: the holder, and a Rust guard waiting.
 const GATE_HELD: u32 = 1;
@@ -59,12 +113,35 @@ pub(crate) struct Memory {
     layout: AtomicU64,
     /// The Guest's [`Guest::code_id`] as the last guard left it.
     code: AtomicU64,
+    /// The flat RAM window, for the memory's whole life, where there is one.
+    window: Option<Arc<crate::window::Window>>,
+    /// The state word (module docs); used once `parking` is on.
+    state: AtomicUsize,
+    parking: AtomicBool,
+    /// A flat-RAM module runs on this memory ([`Memory::make_flat`]).
+    flat: AtomicBool,
+    /// Guards waiting for generated code to park: it may not start again
+    /// until they have had the Guest.
+    waiters: AtomicUsize,
+    /// Every context's preempt word ([`crate::Runtime`] shares it), to set
+    /// [`crate::preempt::PARK`] on the running one.
+    pub(crate) words: Arc<crate::preempt::Words>,
 }
 impl Memory {
-    pub(crate) fn new(guest: Guest) -> Self {
+    pub(crate) fn new(mut guest: Guest) -> Self {
+        let window = crate::window::Window::new();
+        if let Some(w) = &window {
+            guest.attach_window(w.clone());
+        }
         Self {
             layout: AtomicU64::new(guest.layout_id()),
             code: AtomicU64::new(guest.code_id()),
+            window,
+            state: AtomicUsize::new(IDLE),
+            parking: AtomicBool::new(false),
+            flat: AtomicBool::new(false),
+            waiters: AtomicUsize::new(0),
+            words: Default::default(),
             guest: Mutex::new(guest),
             contention: Default::default(),
             shared: Box::new(MemoryShared {
@@ -79,14 +156,23 @@ impl Memory {
         self.contention.snapshot()
     }
     pub(crate) fn lock(&self) -> MemoryGuard<'_> {
+        let parking = self.parking.load(Ordering::Relaxed);
+        let mut restore = if parking { self.leave_running() } else { NO_RESTORE };
         let guard = self.contention.lock(&self.guest);
+        if parking && restore == NO_RESTORE {
+            restore = self.wait_for_park();
+        }
+        // The flat model ends here: no paged view was ever lent
+        // (`h2abi_v1_fast_acquire` refuses one in a flat-RAM runtime), so
+        // there is no gate to take and no C dirty bitmap to drain. Its
+        // stores are on the window's cards, which the write watch folds
+        // itself (`Guest::fold_cards`) before anything reads it.
         if !self.enabled.load(Ordering::Acquire) {
             return MemoryGuard {
                 guard,
                 shared: None,
-                ready: &self.ready,
-                layout: &self.layout,
-                code: &self.code,
+                memory: self,
+                restore,
             };
         }
         // C holds the gate across runs of accesses and retakes it at once,
@@ -118,11 +204,11 @@ impl Memory {
         let mut result = MemoryGuard {
             guard,
             shared: Some(&self.shared),
-            ready: &self.ready,
-            layout: &self.layout,
-            code: &self.code,
+            memory: self,
+            restore,
         };
-        // Publish every C store to subscribers before exposing Guest to HLE.
+        // The paged model only: publish every C store to subscribers
+        // before exposing Guest to HLE.
         // SAFETY: result owns the gate and Guest mutex until its Drop.
         let data = unsafe { &mut *self.shared.data.get() };
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
@@ -192,6 +278,126 @@ impl Memory {
         }
         &*self.shared
     }
+    /// The flat RAM window, where there is one.
+    pub(crate) fn window(&self) -> Option<&Arc<crate::window::Window>> {
+        self.window.as_ref()
+    }
+    /// A flat-RAM module runs on this memory: its Guest, and any Guest put
+    /// in its place, keeps RAM in a backing the window can alias
+    /// ([`Guest::require_aliasable_ram`]). Takes the Guest. From here on
+    /// no paged view is lent (`h2abi_v1_fast_acquire`); one lent before,
+    /// by a paged module that ran first, keeps the gate and its bitmap.
+    /// The boot path registers the image's one module before any code
+    /// runs, so that never happens there.
+    pub(crate) fn make_flat(&self) {
+        if self.flat.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        self.lock().require_aliasable_ram();
+    }
+    /// Use the state word from now on (module docs).
+    pub(crate) fn enable_parking(&self) {
+        self.parking.store(true, Ordering::Release);
+    }
+    #[inline]
+    pub(crate) fn parking(&self) -> bool {
+        self.parking.load(Ordering::Relaxed)
+    }
+    fn me(&self) -> usize {
+        self as *const Self as usize
+    }
+    /// Before a guard blocks on the Guest mutex: on the thread running
+    /// this memory's generated code, go "in Rust", and give the running
+    /// state to put back when the guard drops.
+    #[cold]
+    #[inline(never)]
+    fn leave_running(&self) -> usize {
+        if RUNS.with(Cell::get) != self.me() {
+            return NO_RESTORE;
+        }
+        let s = self.state.load(Ordering::Acquire);
+        if s & TAG != RUNNING || s == LOCKED {
+            return NO_RESTORE;
+        }
+        self.state.store((s & !TAG) | IN_RUST, Ordering::Release);
+        s
+    }
+    /// With the Guest mutex held, on any other thread: wait until no
+    /// generated code runs, asking the running context to park. Returns the
+    /// state to put back when the guard drops.
+    #[cold]
+    #[inline(never)]
+    fn wait_for_park(&self) -> usize {
+        self.waiters.fetch_add(1, Ordering::AcqRel);
+        let mut spins = 0;
+        let mut asked = IDLE;
+        let restore = loop {
+            let s = self.state.load(Ordering::Acquire);
+            if s == IDLE {
+                if self
+                    .state
+                    .compare_exchange(IDLE, LOCKED, Ordering::AcqRel, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    break IDLE;
+                }
+                continue;
+            }
+            if s != LOCKED && s & TAG == IN_RUST {
+                // Its helper waits for this mutex and puts "running" back
+                // only once it has had it.
+                break NO_RESTORE;
+            }
+            if s != LOCKED && s & TAG == RUNNING && s != asked {
+                self.words.request_on(s & !TAG, crate::preempt::PARK);
+                asked = s;
+            } else if s & TAG != RUNNING {
+                asked = IDLE;
+            }
+            back_off(&mut spins);
+        };
+        self.waiters.fetch_sub(1, Ordering::AcqRel);
+        restore
+    }
+    /// [`crate::ffi::call_native`]'s entry: mark this thread as running
+    /// generated code with `word`, once no guard holds or waits for the
+    /// Guest. Returns what [`Memory::stop_running`] puts back.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn start_running(&self, word: *const AtomicU32) -> (usize, usize) {
+        let running = word as usize | RUNNING;
+        let outer = RUNS.with(|r| r.replace(self.me()));
+        if outer == self.me() {
+            // Generated code entered again from a helper on this thread.
+            return (self.state.swap(running, Ordering::AcqRel), outer);
+        }
+        let mut spins = 0;
+        let mut asked = IDLE;
+        loop {
+            if self.waiters.load(Ordering::Acquire) == 0
+                && self
+                    .state
+                    .compare_exchange(IDLE, running, Ordering::AcqRel, Ordering::Relaxed)
+                    .is_ok()
+            {
+                return (IDLE, outer);
+            }
+            // Another thread's generated code: one runs at a time.
+            let s = self.state.load(Ordering::Acquire);
+            if s != LOCKED && s & TAG == RUNNING && s != asked {
+                self.words.request_on(s & !TAG, crate::preempt::PARK);
+                asked = s;
+            } else if s & TAG != RUNNING {
+                asked = IDLE;
+            }
+            back_off(&mut spins);
+        }
+    }
+    /// [`crate::ffi::call_native`]'s exit.
+    pub(crate) fn stop_running(&self, (state, outer): (usize, usize)) {
+        self.state.store(state, Ordering::Release);
+        RUNS.with(|r| r.set(outer));
+    }
     #[cold]
     #[inline(never)]
     fn prepare_fast_shared(&self) {
@@ -212,9 +418,9 @@ impl Memory {
 pub struct MemoryGuard<'a> {
     guard: MutexGuard<'a, Guest>,
     shared: Option<&'a MemoryShared>,
-    ready: &'a AtomicBool,
-    layout: &'a AtomicU64,
-    code: &'a AtomicU64,
+    memory: &'a Memory,
+    /// The state word to put back as the guard drops, or [`NO_RESTORE`].
+    restore: usize,
 }
 impl Deref for MemoryGuard<'_> {
     type Target = Guest;
@@ -229,12 +435,31 @@ impl DerefMut for MemoryGuard<'_> {
 }
 impl Drop for MemoryGuard<'_> {
     fn drop(&mut self) {
+        let memory = self.memory;
+        // A Guest put in place of another is shown in the window from now,
+        // over RAM the window can alias if a flat-RAM module runs.
+        if let Some(w) = &memory.window
+            && !self.guard.shown_in(w)
+        {
+            if memory.flat.load(Ordering::Acquire) {
+                self.guard.require_aliasable_ram();
+            }
+            self.guard.attach_window(w.clone());
+        }
         // Still holding the Guest (and the gate, if any): see Memory::layout.
-        self.layout.store(self.guard.layout_id(), Ordering::Release);
-        self.code.store(self.guard.code_id(), Ordering::Release);
-        let Some(shared) = self.shared else {
-            return;
-        };
+        memory.layout.store(self.guard.layout_id(), Ordering::Release);
+        memory.code.store(self.guard.code_id(), Ordering::Release);
+        if let Some(shared) = self.shared {
+            self.publish(shared);
+        }
+        // Last, still holding the Guest mutex: see Memory::wait_for_park.
+        if self.restore != NO_RESTORE {
+            memory.state.store(self.restore, Ordering::Release);
+        }
+    }
+}
+impl MemoryGuard<'_> {
+    fn publish(&mut self, shared: &MemoryShared) {
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
         let flat = self.guard.flat_view();
         let (ram, pages, watching) = self.guard.fast_parts();
@@ -252,7 +477,7 @@ impl Drop for MemoryGuard<'_> {
                 data.watching |= 1 << 30;
             }
         }
-        self.ready.store(!pages.is_null(), Ordering::Release);
+        self.memory.ready.store(!pages.is_null(), Ordering::Release);
         shared.gate.store(0, Ordering::Release);
     }
 }
@@ -327,10 +552,13 @@ impl Drop for OwnedFastAccess {
 }
 
 pub(crate) fn sync_accesses(ctx: &mut ExecCtx) {
+    // A flat-RAM handler counts in the context's block, a paged one in its
+    // view; only one of them is ever non-zero.
     let count = ctx
         .fast_memory
         .as_mut()
-        .map_or(0, OwnedFastAccess::take_accesses);
+        .map_or(0, OwnedFastAccess::take_accesses)
+        + ctx.mem_block.take_accesses();
     if count != 0 {
         if let Some(p) = &mut ctx.profile {
             p.fast_memory_accesses += count;
@@ -371,7 +599,11 @@ pub unsafe extern "C" fn h2abi_v1_fast_acquire(exec: *mut crate::ExecCtxOpaque) 
     // SAFETY: the invocation-scoped exclusive context is the caller contract.
     let ctx = unsafe { &mut *exec.cast::<ExecCtx>() };
     sync_accesses(ctx);
-    if !ctx.fast_memory_enabled {
+    // A flat-RAM runtime lends no paged view: its write watch is the
+    // window's cards, and a guard there never takes the gate or drains the
+    // C dirty bitmap (`Memory::lock`). A paged module beside the flat one
+    // takes the checked helpers, as with its fast memory off.
+    if !ctx.fast_memory_enabled || ctx.runtime().flat_ram() {
         return std::ptr::null_mut();
     }
     let memory = ctx.runtime().fast_memory();
@@ -605,3 +837,6 @@ mod tests {
 
 #[cfg(all(test, not(miri), any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64"))))]
 mod flat_tests;
+
+#[cfg(all(test, not(miri)))]
+mod park_tests;
