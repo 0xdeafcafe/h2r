@@ -206,3 +206,11 @@ pub const fn h1_firing_line(offset: usize) -> bool {
 pub const fn h1_grenade_dialogue_line(offset: usize) -> bool {
     matches!(offset, 0x280 | 0x760 | 0x770 | 0x780 | 0x790)
 }
+
+/// Remarks and replies spoken during the original combat aftermath.
+pub const fn h1_postcombat_line(offset: usize) -> bool {
+    matches!(
+        offset,
+        0xbf0 | 0xc10 | 0xc60 | 0xc70 | 0xc80 | 0xc90 | 0xca0 | 0xcb0 | 0xcc0 | 0xcd0
+    )
+}

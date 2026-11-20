@@ -594,6 +594,23 @@ update compares requested movement and actual velocity and looks
 for the allied unit occupying the requested direction. The reply
 goes to that exact blocker after the request has finished.
 
+**Built.** Postcombat remarks are assigned from the combat
+outcome in Halo 1 at `0x13d66c`–`0x13d760`. That check uses the
+pre-combat and remaining group size and the speaker's original
+and current body vitality. It distinguishes serious wounds,
+an isolated survivor, heavy losses, a rout, and a healthy survivor.
+Halo 2's actor control hook records starting strength and vitality.
+Entry to its postcombat behavior at `0x1b4240` selects the remark
+after contact ends for the group. Three original aftermath rules
+allow nearby allies to answer after the initial line has finished.
+
+**Built.** The source corpse-action stimulus at `0x16d20e` uses
+the body's relationship and class. Halo 2 event 98 at `0x1b3c3e`
+checks an allied body and uses the original allied check remark.
+The actual corpse-firing callback at `0x1b39ce` identifies the
+target. The speaker uses its separate authored line when that
+target is a player unit.
+
 Automatic stimuli without a verified route remain conversion errors
 (see [role-audit.md](role-audit.md#retail-gaps-that-stop-conversion)).
 

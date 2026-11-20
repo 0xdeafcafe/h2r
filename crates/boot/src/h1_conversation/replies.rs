@@ -34,13 +34,16 @@ impl Reply {
             0x8a0 => (0x8b0, 100, 3),
             0x8e0 => (0x8f0, 70, 4),
             0x9d0 => (0x9e0, 50, 3),
+            0xc80 => (0xc90, 80, 3),
+            0xca0 => (0xcb0, 80, 3),
+            0xcc0 => (0xcd0, 80, 3),
             _ => return None,
         };
         Some(Self {
             offset,
             chance,
             priority,
-            range: if matches!(offset, 0x190 | 0x810) {
+            range: if matches!(offset, 0x190 | 0x810 | 0xc90 | 0xcb0 | 0xcd0) {
                 RESPONSE_RANGE
             } else {
                 RECOGNITION_RANGE

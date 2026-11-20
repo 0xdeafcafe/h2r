@@ -269,6 +269,10 @@ points! { ALL;
     AI_DISMOUNT_NOTICE @ 0x001b_ba20: [fn(actor: eax) ret 0]; "docs/halo1/ai.md";
     /// Enters the leaping variant of the native melee charge.
     AI_MELEE_LEAP_ENTER @ 0x001a_b380: [fn(actor: stack 0, state: stack 1) -> al ret 8]; "docs/halo1/ai.md";
+    /// Dispatches the global vocalization stimulus and its two participants.
+    AI_DIALOGUE_STIMULUS @ 0x0020_ba60: [fn(event: stack 0, speaker: stack 1, object: stack 2, relation: stack 3, other: stack 4, context: stack 5) -> al ret 24]; "docs/halo1/ai.md";
+    /// Enters native postcombat behavior.
+    AI_POSTCOMBAT_ENTER @ 0x001b_4240: [fn(actor: stack 0, state: stack 1) -> al ret 8]; "docs/halo1/ai.md";
     HS_CONVERSATION_MAP_DISPOSE @ 0x0020_9290: [fn() ret 0]; "docs/halo1/ai.md";
     /// `game_tick`: the per-tick phases, then the tick count. Called once per
     /// simulated tick by `game_update_ticks`.

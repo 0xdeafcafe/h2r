@@ -14,6 +14,7 @@ mod cast;
 mod combat;
 pub(crate) mod dialogue;
 mod leaders;
+mod postcombat;
 mod reactions;
 mod replies;
 mod tactics;
@@ -53,6 +54,7 @@ impl feature::Feature for Conversations {
         automatic::install(b, reactions);
         combat::install(b, reactions)?;
         tactics::install(b, reactions)?;
+        postcombat::install(b, reactions)?;
         search::install(b, reactions)?;
         let opcode = u32::from(BUILTINS[0].1);
         b.raw().before(

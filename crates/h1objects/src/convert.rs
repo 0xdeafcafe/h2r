@@ -952,6 +952,7 @@ impl<'a> Converter<'a> {
                     && !map::h1_firing_line(*slot)
                     && !map::h1_tactical_dialogue_line(*slot)
                     && !map::h1_grenade_dialogue_line(*slot)
+                    && !map::h1_postcombat_line(*slot)
                     && !map::h1_allied_reply_line(*slot)
                     && !matches!(
                         *slot,
