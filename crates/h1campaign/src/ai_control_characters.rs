@@ -384,7 +384,7 @@ mod tests {
 
     #[test]
     fn a_substitutes_promotion_keeps_its_authored_thresholds() {
-        let (set, major, built, pinned, alias) = set_with_major();
+        let (mut set, major, built, pinned, alias) = set_with_major();
         assert_eq!(major_character(&set, built), Some(major));
         assert_eq!(major_character(&set, pinned), Some(major));
         assert_eq!(major_character(&set, alias), Some(major));
