@@ -237,7 +237,7 @@ replayed simulation.
 
 ### Film compatibility
 
-The film page shows one of four states, computed before any download of
+The film page shows one of three states, computed before any download of
 the exact recording from the film's front JSON and the installed images
 (`boot::theater::image_match`, `Session::check_simulation_hooks`):
 
@@ -245,15 +245,15 @@ the exact recording from the film's front JSON and the installed images
 |---|---|---|
 | **Exact** | native stamp and target equal (`ImageMatch::Native`) | film keyframes; warm seeks |
 | **Verified** | guest image contract, `h2-sim/1` and hook digest equal (`ImageMatch::FromBoot`) | from boot with every hash checked; sidecar keyframes after the first pass |
-| **Poses only** | anything else with the same game | the film's public pose and event records drawn by the independent view, with the same bar, cameras, screenshots and clips. No first-person weapon or HUD. |
-| **Unavailable** | a different XBE, or a missing map or initial file | the reason, and what to install |
+| **Unavailable** | a different simulation contract or XBE, or a missing map or initial file | the reason: the film predates a breaking change to the simulation, or what to install |
 
 A film is never played against a simulation whose contract differs:
-`check_simulation_hooks` stays a refusal. The pose track is the part of
-a film that outlives the build, since it is decoded without the guest
-([film-format.md](film-format.md#tag-3-presentation-records)); playing it
-in the game uses `film::blam` chunk reads and the scene checkpoints in
-`CIDX`, and a jump is a chunk fetch.
+`check_simulation_hooks` stays a refusal, and the film page says so. A
+film plays on every build until the next breaking change to the
+simulation contract; after one it is unavailable in the game. There is no
+pose-only fallback in the game. The web viewer still draws the pose
+track, which is decoded without the guest
+([film-format.md](film-format.md#tag-3-presentation-records)).
 
 Engine-level films change this once they exist: an arena keyframe and
 the per-tick actions the film already records (tag 1, the 92-byte retail
@@ -262,6 +262,17 @@ because the arena keeps the retail layout
 ([sim-rewrite.md](../engine/sim-rewrite.md) section 2).
 
 ### Sharing through Live
+
+- **Live film.** A Live game streams its film to the server as it is
+  played. Ingest scrubs the private section as the parts arrive: the HLE
+  tape's sender addresses and account identifiers are replaced by the
+  game id and each seat's gamertag, and keyframes (guest RAM) are dropped.
+  When the game ends, a compaction pass rewrites the scrubbed film into
+  its smallest playable form under the game id: the per-tick actions,
+  barrier marks, the pose and event chunks and the `CIDX` directory, and
+  nothing a client rebuilds itself. That compact film is what every
+  download serves, so a download carries gamertags and the game id and no
+  other identity. Each player's machine builds keyframes as a sidecar.
 
 - **Share copy.** `film::share` writes a copy of a sealed film without
   its `KEYF` envelopes and their disk deltas, keeping the barrier marks,
@@ -289,9 +300,10 @@ A share link is the web address of the film or clip:
 `/theater/<film>` or `/theater/<film>/clip/<clip>`
 (`web/src/routes.ts`, `theaterHref`), with optional `t=<tick>`,
 `seat=<n>` and `camera=<mode>`. The page's **Open in Halo 2** button
-opens `h2://theater/<film>?clip=<clip>&t=<tick>&seat=<n>&camera=<mode>&server=<origin>`.
+opens `h2recomp://theater/<film>?clip=<clip>&t=<tick>&seat=<n>&camera=<mode>&server=<origin>`.
 
-- The app bundle registers the `h2` scheme. A running game receives the
+- The app bundle registers the `h2recomp` scheme, the same scheme a
+  Live join link uses. A running game receives the
   URL and opens the film page with **Watch** focused; a game that is not
   running starts and does the same. Nothing plays without a press.
 - `h2 theater open <url>` does the same from a shell, and
@@ -335,7 +347,7 @@ under 8.3 ms. The bar shows the speed reached.
 
 | Check | When | On failure |
 |---|---|---|
-| Gameplay digest (tag 4) | every tick that has one, in play and in replay (`EngineReplay::completed`) | playback stops at that tick with "film diverged at mm:ss"; the film page offers poses only |
+| Gameplay digest (tag 4) | every tick that has one, in play and in replay (`EngineReplay::completed`) | playback stops at that tick with "film diverged at mm:ss" |
 | Arena hash (`lockstep::hash_sim(SimRegion::HALO2)`) | every 30 ticks | the same |
 | HLE call cursor and D3D barrier outcome | at each recorded call and barrier | the same |
 | Whole-RAM hash (`lockstep::hash_guest`, per MiB) | after every keyframe restore, film, sidecar or ring | a film keyframe: the film is damaged, reported. A sidecar: the file is deleted and written again. A ring entry: cold restart, warm restores off |
@@ -351,8 +363,8 @@ transient state does not exist between ticks, and extension state is a
 feature section in the snapshot. Each rewrite phase therefore owes
 Theater two things, both already in its own exit criteria: a
 `SnapshotPolicy` for its feature, and an epoch bump on a keyframe load.
-A rewrite phase changes the hook digest, so films recorded before it
-drop to **Poses only** on builds after it.
+A rewrite phase that changes the hook digest is a breaking change: films
+recorded before it are unavailable on builds after it.
 
 | | Before the rewrite | After `sim_state::Keyframe` exists and the keyframe experiment passes |
 |---|---|---|
@@ -438,9 +450,9 @@ runs and measures. "Starts" says what the slice waits for.
 | 5 | **One camera rig.** The rig and `camera_pose` in state for both film kinds, field of view, follow and orbit on local films, the game HUD and bar toggles as `theater.hud`. | now | `theater::tests`: the rig survives a seek; a camera change leaves the digests of a synthetic replay unchanged; `first-person` on a seat without a viewport falls to follow and says so in state. In a run: `theater.verify` with a free camera moving on a local film returns no divergence. |
 | 6 | **Screenshots and clip export.** Scaled screenshots, the frame sink, PNG and ffmpeg output, export jobs. | now for the sink and the job; the scaled screenshot after slice 4 | A headless synthetic replay with the sink yields exactly `(to − from) × fps ÷ 30` frames. The ffmpeg argument list is tested without running ffmpeg. A missing ffmpeg gives the `h2 movies` exit reason and leaves the PNG option. |
 | 7 | **The bar and the pause menu** as UI-builder pages. | now | Page-model tests for every row and state, the `theater.playback` preview with a jump in progress, a divergence and each compatibility state; `ui.screen` reports each page; controller and keyboard reach every action. |
-| 8 | **Compatibility states and pose playback.** `theater.compat`, the film page's state line, the pose-track player in the independent view. | now | `image_match` table tests for the four states. A v3 film's pose chunks drive the view to the same object transforms as the web decoder's fixtures; a jump reads at most 16 chunks. |
-| 9 | **Share.** `film::share`, the upload routes on both homes, visibility, quotas, the Films tab rows, **Share** and **Copy Link** in the game. | now | A share copy holds no `KEYF` and no guest RAM bytes, and replays from boot to the same digests as its source. Route tests: scope, quota, visibility on every read, private ranges refused. The parity suite passes on both homes. |
-| 10 | **The link.** The `h2` scheme, `h2 theater open`, `theater.open`, the web button. | after slice 9 for end to end; the parser now | Parser tests: every malformed id, bound and server is refused by name. `theater.open` lands on the film page with Watch focused and plays nothing. A web test finds the button on film and clip pages with the encoded target. |
+| 8 | **Compatibility states.** `theater.compat` and the film page's state line, with the breaking-change reason. | now | `image_match` table tests for the three states; a film from before a simulation contract change is unavailable with that reason. |
+| 9 | **Share.** `film::share`, ingest scrubbing and the end-of-game compaction under the game id, the upload routes on both homes, visibility, quotas, the Films tab rows, **Share** and **Copy Link** in the game. | now | A share copy and a compacted Live film hold no `KEYF`, no guest RAM bytes and no identity but the game id and gamertags, and replay from boot to the same digests as their source; the compacted film is smaller than the streamed one. Route tests: scope, quota, visibility on every read, private ranges refused. The parity suite passes on both homes. |
+| 10 | **The link.** The `h2recomp` scheme, `h2 theater open`, `theater.open`, the web button. | after slice 9 for end to end; the parser now | Parser tests: every malformed id, bound and server is refused by name. `theater.open` lands on the film page with Watch focused and plays nothing. A web test finds the button on film and clip pages with the encoded target. |
 | 11 | **Arena keyframes.** The keyframe experiment, then `sim_state::Keyframe` in the ring at 1 s, engine-level playback, scrubbing, cross-build films. | after the sim rewrite's object phase and `sim_state::Keyframe` | The experiment's 3,000 ticks on a campaign level and a multiplayer game. Then: a film recorded on build A plays on build B with matching arena hashes. |
 
 Slices 1, 2, 3, 5, 6, 7, 8 and 9 touch separate files and can run as
@@ -522,9 +534,10 @@ measurement.
 2. **Warm restore leaks host state** in ways synthetic machines do not
    show. Contained by the RAM hash, the digests and the cold fallback;
    the cost is that the ring gives nothing on affected films.
-3. **The hook digest churns during the rewrite.** Every phase turns the
-   existing library into pose-only films. Pose playback (slice 8) is the
-   answer until slice 11; without it a rebuild empties Theater.
+3. **The hook digest churns during the rewrite.** Every breaking phase
+   makes the existing library unavailable in the game until slice 11.
+   Accepted: the simulation is expected to settle within days, and the
+   web viewer still draws the pose track.
 4. **Ring captures perturb rendered local films** through the D3D
    section's device work even at a recorded barrier, if the playback's
    render cadence differs from the recording's. The verification row in
@@ -532,11 +545,12 @@ measurement.
    film.
 5. **A shared exact film discloses more than its poses**: the HLE tape
    holds received packets and their senders, and the initial disk holds a
-   profile. See the first open question.
+   profile. Live scrubs these at ingest and serves only the compacted
+   film; the scrub needs a test for each tape field.
 6. **Replay is slow on heavy maps.** At 14.12 ms a tick a 30 s gap is
    12.7 s. The ring and the 5 s cadence bound the common case; the
    rewrite's 7.5 ms halves the rest.
-7. **A `h2://` link is input from the web.** The parser, the server
+7. **A `h2recomp://` link is input from the web.** The parser, the server
    match and the press-to-play rule are the whole defence, and each has a
    test.
 8. **Storage.** Player uploads are new stored bytes on Live. The quota
@@ -544,32 +558,20 @@ measurement.
 
 ## Open questions
 
-1. **Who may download a shared exact film?** The private section holds
-   the HLE tape (packets and sender addresses), account identifiers and
-   the initial guest disk. The design sends it to any signed-in account
-   the visibility admits. The alternatives: participants only, with
-   everyone else on poses; or a redaction pass in `film::share`, which
-   needs a review of each tape field first.
-2. **Is serving guest RAM to participants acceptable to keep?** Host
-   films on Live hold keyframes, which are game memory. The design stops
-   new copies leaving a player's machine but leaves host films as they
-   are. Stripping them at ingest would make every Live film a from-boot
-   film until its sidecar exists.
-3. **Old builds.** Is pose playback enough for films whose build has
-   gone, until arena keyframes arrive? The alternative is keeping the
-   last few player builds and their images installed side by side.
-4. **Host film picture.** Most shared films are playerless host films,
+1. **Host film picture.** Most shared films are playerless host films,
    drawn without effects, sky or HUD. Is that acceptable for the first
    release, or should clients in a Live match also record their own
    film, which replays with the full picture and that player's HUD?
-5. **Clip video.** Is the user's own ffmpeg acceptable, as for movies,
-   or should the app encode with the platform encoder? Should Live ever
-   store video, or only ranges?
-6. **Budgets.** 256 MiB for the ring and 4 GiB for sidecars by default,
+2. **Budgets.** 256 MiB for the ring and 4 GiB for sidecars by default,
    both settings?
-7. **Rewind feel.** Jumps of 5 s and 30 s, as Halo 3 had, or is
+3. **Rewind feel.** Jumps of 5 s and 30 s, as Halo 3 had, or is
    tick-accurate backward stepping worth its cost before slice 11?
-8. **The scheme name** `h2`, and which hosts need it beyond macOS.
+4. **Hosts beyond macOS** that register the `h2recomp` scheme.
+
+Settled: downloads serve the scrubbed, compacted Live film (sharing
+above); films after a breaking simulation change are refused, not drawn
+as poses (film compatibility); clip video is the user's ffmpeg and Live
+stores only tick ranges; the scheme is `h2recomp`.
 
 ## Related
 
