@@ -1,5 +1,6 @@
 #define H2_FASTMEM 1
 #define H2_RAM_PAGE_CACHE 1
+#define H2_FLAT_RAM 1
 #include "h2fastmem.h"
 #include <assert.h>
 #include <stdlib.h>
@@ -55,6 +56,36 @@ static void translated_spans(H2FastAccess *f, H2FastPage *pages, uint8_t *ram) {
     d->dirty_hi = 0;
 }
 
+/* Old views may end immediately after the v1 prefix. A new handler must
+ * negotiate the suffix before reading any of it. Span preflight neither
+ * spends an access nor dirties a page, even with write rights. */
+static void flat_spans(H2FastPage *pages, uint8_t *ram) {
+    H2MemoryData old = {.pages = pages, .watching = 1};
+    H2Gate g = {.held = 1, .data = &old};
+    assert(!h2_flat_span(&g, 0, 4, 1));
+    H2FlatMemoryData ext = {
+        .prefix = {.pages = pages, .watching = UINT32_C(0x80000000)},
+        .flat = {.base = ram}
+    };
+    g.data = &ext.prefix;
+    pages[0] = (H2FastPage){4096, 8 | 3};
+    assert(h2_flat_span(&g, 16, 32, 3) == ram + 16);
+    assert(h2_flat_span(&g, 4095, 1, 3) == ram + 4095);
+    assert(!h2_flat_span(&g, 4095, 2, 1));
+    pages[0].permissions = 8 | 1;
+    assert(!h2_flat_span(&g, 0, 4, 3));
+    pages[0].permissions = 3;
+    assert(!h2_flat_span(&g, 0, 4, 1));
+    pages[0].permissions |= 8;
+    ext.prefix.watching |= 1;
+    assert(!h2_flat_span(&g, 0, 4, 2)); /* mirror setup failed */
+    ext.flat.stores = ram;
+    assert(h2_flat_span(&g, 16, 32, 3) == ram + 4096 + 16);
+    assert(!ext.prefix.dirty[0]);
+    g.held = 0;
+    assert(!h2_flat_span(&g, 0, 4, 1));
+}
+
 int main(void) {
     H2FastPage *pages = calloc(1u << 20, sizeof *pages);
     uint8_t *ram = malloc(1u << 26);
@@ -66,6 +97,7 @@ int main(void) {
     m.data.dirty_lo = 256;
     uint32_t preempt = 0;
     H2FastAccess f = {&m, 0, 100, &preempt};
+    flat_spans(pages, ram);
     translated_spans(&f, pages, ram);
     for (unsigned width = 1; width <= 4; width *= 2) {
         for (int reverse = 0; reverse <= 1; reverse++) {

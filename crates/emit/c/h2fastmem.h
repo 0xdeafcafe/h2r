@@ -173,7 +173,7 @@ static inline int h2_fast_copy(H2FastAccess *f, uint32_t addr, uint32_t width,
     uint8_t *ram = d->ram + page.physical + (addr & 4095u);
     if (write) {
         memcpy(ram, value, width);
-        if (d->watching) {
+        if (d->watching & 1u) {
             uint32_t p = page.physical >> 12, word = p >> 6;
             d->dirty[word] |= UINT64_C(1) << (p & 63u);
             if (word < d->dirty_lo) d->dirty_lo = word;
@@ -225,7 +225,7 @@ static inline uint32_t h2_fast_movs(H2FastAccess *f, uint32_t src, uint32_t dst,
         H2_GATE_RELEASE(m); return 0;
     }
     memmove(d->ram + to, d->ram + from, bytes);
-    if (d->watching) {
+    if (d->watching & 1u) {
         uint32_t p = dp.physical >> 12, word = p >> 6;
         d->dirty[word] |= UINT64_C(1) << (p & 63u);
         if (word < d->dirty_lo) d->dirty_lo = word;
@@ -373,7 +373,7 @@ static H2_COLD H2_PRESERVE void h2_mark_dirty(H2MemoryData *d, uint32_t physical
         (page) = (g).data->pages[(addr) >> 12];                                 \
         if (!((page).permissions & ((write) ? 2u : 1u))) goto slow;             \
         if ((page).physical > 0x04000000u - 4096u) goto slow;                   \
-        if ((write) && (g).data->watching && (page).physical != (g).dirtied) {  \
+        if ((write) && ((g).data->watching & 1u) && (page).physical != (g).dirtied) {  \
             if (!H2_DIRTY_INLINE || !H2_DIRTY_MARKED((g).data, (page).physical)) \
                 h2_mark_dirty((g).data, (page).physical);                       \
             (g).dirtied = (page).physical;                                      \
@@ -391,7 +391,7 @@ static H2_COLD H2_PRESERVE void h2_mark_dirty(H2MemoryData *d, uint32_t physical
  * host pointer until the range check succeeds. Cold helpers and direct
  * callees may have released the gate: adoption clears both slots. */
 #if H2_RAM_PAGE_CACHE && H2_FASTMEM
-#define H2_SITE_TRY(f, g, addr, width, write, page, host, slow)                 \
+#define H2_PAGED_TRY(f, g, addr, width, write, page, host, slow)                 \
     do {                                                                        \
         H2RamPage *slot_ = &(g).ram_page[(write)];                              \
         uint64_t off_ = (uint64_t)(addr) + 4096u - slot_->end;                  \
@@ -405,7 +405,46 @@ static H2_COLD H2_PRESERVE void h2_mark_dirty(H2MemoryData *d, uint32_t physical
         }                                                                       \
     } while (0)
 #else
-#define H2_SITE_TRY H2_HELD_TRY
+#define H2_PAGED_TRY H2_HELD_TRY
+#endif
+/* The original view's watching field was always 0 or 1. Bit 31 opts
+ * into the appended flat descriptor. Never read past the v1 prefix without
+ * it, including when running a new module against an older runtime. */
+#if H2_FLAT_RAM && H2_FASTMEM
+typedef struct H2FlatView {
+    uint8_t *base;
+    uint8_t *stores;
+    uint32_t plane_mask;
+} H2FlatView;
+typedef struct H2FlatMemoryData { H2MemoryData prefix; H2FlatView flat; } H2FlatMemoryData;
+#if UINTPTR_MAX == UINT64_MAX
+_Static_assert(offsetof(H2FlatMemoryData, flat) == 2080 && sizeof(H2FlatView) == 24, "flat memory layout");
+#endif
+
+static H2_ALWAYS_INLINE uint8_t *h2_flat_span(const H2Gate *g, uint32_t addr,
+                                              uint32_t size, uint32_t rights) {
+    if (!g->held || !(g->data->watching & UINT32_C(0x80000000))) return NULL;
+    const H2FlatView *v = &((const H2FlatMemoryData *)g->data)->flat;
+    H2FastPage p = g->data->pages[addr >> 12];
+    if ((p.permissions & (8u | rights)) != (8u | rights) ||
+        !size || size > 4096u - (addr & 4095u)) return NULL;
+    if ((rights & 2u) && (g->data->watching & 1u)) {
+        if (!v->stores) return NULL;
+        uint32_t pa = p.physical | (addr & 4095u);
+        size_t plane = (pa >> 12) & v->plane_mask;
+        return v->stores + (plane << 26) + pa;
+    }
+    return v->base + addr;
+}
+#define H2_SITE_TRY(f, g, addr, width, write, page, host, slow)                 \
+    do {                                                                        \
+        (host) = H2_FAST_WIDTH_OK(width) ?                                      \
+            h2_flat_span(&(g), (addr), (width), (write) ? 2u : 1u) : NULL;       \
+        if (host) { H2_FAST_CHARGE(f); }                                        \
+        else { H2_PAGED_TRY(f, g, addr, width, write, page, host, slow); }       \
+    } while (0)
+#else
+#define H2_SITE_TRY H2_PAGED_TRY
 #endif
 /* What h2_access_cold leaves: the view if the handler now holds the gate
  * (else NULL), and the ordinary helper's status (0: it accessed). */
@@ -447,7 +486,11 @@ static H2_COLD H2_PRESERVE H2Cold h2_access_cold(ExecCtxOpaque *ctx, H2FastAcces
         h2_gate_adopt(&g, h2_gate_try(f));
         H2FastPage page;
         uint8_t *host;
+#if H2_FLAT_RAM
+        H2_SITE_TRY(f, g, addr, width, write, page, host, helper);
+#else
         H2_HELD_TRY(f, g, addr, width, write, page, host, helper);
+#endif
         if (write) h2_copy_width(host, buf, width);
         else h2_copy_width(buf, host, width);
         r.held = g.data;

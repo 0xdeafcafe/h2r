@@ -133,6 +133,23 @@ pub static RENDER_SCALE: Def = Def {
     }),
 };
 
+/// Select the readback and draw policy when rendering above guest resolution.
+pub static SINGLE_COPY: Def = Def {
+    key: "graphics.single_copy",
+    label: "Single-copy scaled rendering",
+    help: "Draw once at the selected resolution. Guest reads sample that image at guest pixel positions. Disable for exact 1x readbacks.",
+    kind: Kind::Bool,
+    default: Value::Bool(true),
+    env: Some("H2_SINGLE_COPY"),
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Restart,
+    scope: Scope::Sim,
+    tier: Tier::Advanced,
+    menu: None,
+};
+
 /// [`LIGHTING`]'s values.
 pub const LIGHTING_RETAIL: i64 = 0;
 pub const LIGHTING_E3: i64 = 1;
@@ -754,6 +771,7 @@ pub static ALL: &[&Def] = &[
     &FOV,
     &FPS,
     &RENDER_SCALE,
+    &SINGLE_COPY,
     &LIGHTING,
     &PAD_SPEAKER,
     &PAD_MUTE,
@@ -911,6 +929,7 @@ mod tests {
         assert_eq!(s.get(FOV.key), Some(Value::Int(95)));
         assert_eq!(s.get(FPS.key), Some(Value::Int(0)));
         assert_eq!(s.get(RENDER_SCALE.key), Some(Value::Int(2)));
+        assert_eq!(s.get(SINGLE_COPY.key), Some(Value::Bool(true)));
         assert_eq!(s.get(PAD_SPEAKER.key), Some(Value::Bool(false)));
         assert_eq!(s.get(PAD_MUTE.key), Some(Value::Bool(true)));
         // `fov = 0` was retail.
@@ -929,6 +948,7 @@ mod tests {
                 ("H2_FOV", "0"),
                 ("H2_FPS", "Uncapped"),
                 ("H2_RENDER_SCALE", "6"),
+                ("H2_SINGLE_COPY", "0"),
                 ("H2_PAD_SPEAKER", "0"),
                 ("H2_PAD_MUTE", "0"),
                 ("H2_LIVE_VISIBILITY", "friends"),
@@ -991,6 +1011,7 @@ mod tests {
         assert_eq!(s.get(FOV.key), Some(Value::Int(70)));
         assert_eq!(s.get(FPS.key), Some(Value::Int(0)));
         assert_eq!(s.get(RENDER_SCALE.key), Some(Value::Int(6)));
+        assert_eq!(s.get(SINGLE_COPY.key), Some(Value::Bool(false)));
         assert_eq!(s.get(PAD_SPEAKER.key), Some(Value::Bool(false)));
         assert_eq!(s.get(PAD_MUTE.key), Some(Value::Bool(false)));
         assert!(

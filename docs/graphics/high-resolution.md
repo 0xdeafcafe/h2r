@@ -1,13 +1,9 @@
 # High resolution: 4K and arbitrary internal resolution
 
-A design for rendering above the game's 640x480, as an opt-in setting. Phase 1
-is built (`d3d::scaled`, `H2_RENDER_SCALE`; see "Phase 1 as built" below), and
-part of phase 2 ("Phase 2 as built"); the rest is design, apart from the
-shadow-map scale (below). It was written from the code and docs
-on master ([d3d.md](d3d.md), [graphics.md](graphics.md), [shaders.md](shaders.md),
-[render-thread.md](render-thread.md)) and from public prior art, without
-building or running the game. Every number under "Cost" is arithmetic or a
-figure quoted from another doc, not a new measurement.
+Above 1x, the default renderer records each guest draw once. Disabling
+`graphics.single_copy` restores the original exact-reference design
+described below. The sizes and cost estimates on this page come from
+synthetic frames and the linked profiles.
 
 The setting is `[graphics] render_scale`, the Resolution row on the Video
 screen ([settings-menu.md](../game/settings-menu.md), "Video screen").
@@ -19,10 +15,10 @@ page also proposes a per-axis form for widescreen.
 - **The guest never learns the resolution.** The device (`d3d::Device`) keeps
   every size, viewport, scissor, header and return value in guest pixels, as
   today. Scaling lives below the `d3d::Backend` trait.
-- **Two backends, one draw stream.** A *reference* backend renders at 1x and
-  answers everything the guest can observe. A *view* backend renders the same
-  `ResolvedDraw`s at the chosen scale and owns what is presented. Guest-visible
-  state is then the 1x run's by construction, not by argument.
+- **One draw per target.** At scale > 1 the display encoder owns the draw
+  stream, including draws to guest-size intermediates. Native replacements
+  prepare and commit a single display recording. Set `H2_SINGLE_COPY=0`
+  for a separately rendered 1x reference.
 - **Scale with the back buffer:** the frame buffers, the depth buffer, the
   textures the game builds over both, and any render target the size of the
   back buffer. **Leave at guest size at first:** the small square targets
@@ -36,6 +32,46 @@ page also proposes a per-axis form for widescreen.
   [e3-lighting.md](e3-lighting.md)): the view keeps a scaled copy of each depth
   level and samples it with one tap.
 - **MSAA and forced anisotropy are separate, later options** on the view only.
+
+## Single-copy readbacks
+
+The scale policy is selected at launch. In `settings.toml`, set
+`single_copy = false` under `[graphics]` for exact-reference captures or
+replays. The lighting A/B capture always uses its separate reference.
+
+The frame buffers, frame-sized RTT levels and their depth attachment are
+authoritative at display resolution. An RTT bind shares the actual texture.
+Feedback and previous-frame snapshots copy it on the GPU so that later
+writes cannot change the snapshot. The guest dimensions in `TextureInfo`
+still normalize texel coordinates. The GPU decoder for 32-bit depth aliases
+maps guest word addresses (pitch, offset or swizzle) into the scaled depth
+and stencil block. Other alias layouts and headers over a colour surface
+drawn into the depth allocation decode on the GPU as well. The decoder
+addresses guest bytes for each mip, cube face or volume slice while
+preserving the subpixel position in the source. Guest-size intermediate
+draws sample these same images.
+
+A CPU surface read, lock or writeback transfers one sample per guest pixel
+into a guest-size GPU surface, then uses the existing guest format, pitch
+and swizzle encoder. Colour, depth and stencil select the first host texel
+of each block. With `window_shift` this is the nearest host sample to the
+1x raster position. Visibility counts make the same selection in the GPU
+coverage reduction, so a covered guest pixel contributes once at 4x.
+Mirror stores encode directly from the scaled image into guest-layout words.
+
+Fixed-size intermediates retain their guest dimensions. When a draw pairs
+a guest-size colour target with scaled depth, both attachments must use
+the same raster grid. The renderer draws the pair once at guest size and
+transfers its modified scaled partner back on the GPU. Changing the render
+scale transfers the last image to the new allocation. These transfers do
+not require a CPU mapping.
+
+**Parity trade-off.** Coverage, interpolated values and the outcome of
+depth and stencil tests can differ at scaled sample positions. A value
+written to guest memory or returned by a visibility test can therefore
+differ from a separate 1x render. The scale report includes reference and
+display draw counts, downsamples and completed CPU reads. In exact mode
+headless capture also writes the separately rendered `-1x.png` frame.
 
 ## Terms
 
@@ -67,7 +103,7 @@ game does with them is not fully traced. The callback at `0x24970` reads
 texels and its purpose is not recorded in our docs; the flare ratio at least
 feeds rendering. Until that is traced, assume both can reach the simulation.
 
-## Design: reference and view
+## Exact mode design: reference and view
 
 ```text
  Device (guest pixels, unchanged)
@@ -98,14 +134,8 @@ reference image. This differs from the render thread, where a disagreement
 stops the run, because there the disagreeing backend is the one the guest
 observes.
 
-Why not scale a single backend, as xemu does? Because its readbacks then come
-from the scaled image. xemu decimates on download (one host pixel per block)
-and replicates on upload. That is deterministic, but the bytes differ from a
-1x run wherever an edge crosses a pixel, and sample counts differ by more than
-the scale factor's square. A single scaled backend is described under
-"Phases" as a later, explicitly inexact mode.
-
-The cost of the second backend is CPU, not GPU, and is under "Cost".
+The default single-copy policy trades this guarantee for one fewer
+recording per scaled draw. Both policies use the same size classification.
 
 ## Which surfaces scale
 
@@ -131,7 +161,7 @@ A draw can sample a scaled surface into an unscaled target. The first
 downsample of a bloom chain does this: back buffer in, small target out. At 4x
 a single bilinear tap then skips most of the source and the bloom shimmers.
 
-The view keeps, per scaled surface, a lazily made **guest-size resolve**: a
+The original two-copy design proposed a lazily made **guest-size resolve**: a
 box filter of the scaled image. The rule:
 
 - target scaled, source scaled: sample the scaled surface;
@@ -447,8 +477,8 @@ everything else.
 
 ## Determinism
 
-The claim: **with scaling on, every value the guest reads is the value it
-reads with scaling off, on the same host.** The reference is today's backend
+With `graphics.single_copy = false`, the guest reads the same values at
+every scale on the same host. The reference is today's backend
 with today's inputs. The view receives copies of the same calls and returns
 nothing the device uses.
 
@@ -470,6 +500,13 @@ The acceptance test is a digest comparison: the same input timeline at scale
 trace and the same reference frames.
 
 ## Cost
+
+At 4x, a frame with N draws that previously ran on both backends saves N
+draw recordings plus the associated reference pass encodes and submits.
+The total approaches half of the duplicate backend CPU work when most
+draws target the frame. Guest decode and fixed-size draws still run.
+CPU-visible reads pay for the GPU transfer. The historical numbers below
+describe the two-copy design; they are not a timing of single-copy mode.
 
 Pixels and attachment memory for the scaled set (three frame buffers at
 4 bytes a pixel, one depth buffer at 8, one snapshot and one resolve in
@@ -575,7 +612,7 @@ and it is an acceptance check, not a development loop.
 | 2 (partly built) | Back-buffer-sized render targets scale; depth aliases of the whole buffer scale; per-draw repairs from the reference (see "Phase 2 as built"). Not yet: guest-size resolves for sampling a scaled surface into a small target. | 1 |
 | 3 | Per-axis scale for anamorphic widescreen. Presenter resample to the display. | 2 |
 | 4 | Optional extras, each its own flag: anisotropy override, shadow-map scale (built as E3 lighting's phase 1, the Lighting row), MSAA, fractional scales. | 3 |
-| Later | Single scaled backend with downsampled readbacks, for hosts that cannot run two. Guest-visible values differ from 1x, so it is excluded from deterministic replays and labelled as such. | Phase 0's counts |
+| Single copy (built) | Default above 1x. GPU sampling retains display detail, and CPU readbacks resolve at guest size. | See “Single-copy readbacks” |
 
 ### Phase 1 as built
 
@@ -833,9 +870,8 @@ Its known problems above 1x, by issue:
 
 What we take from it: the surface policy (scale colour and depth together,
 leave guest sizes alone), and the list of failure classes as a test list.
-What we do differently: readbacks come from a 1x reference, not from a
-decimated scaled surface, and intermediate targets are classified, not scaled
-uniformly.
+We classify intermediate targets by guest size. In exact mode readbacks come
+from a 1x reference. Single-copy mode samples the scaled surface on demand.
 
 ### Halo-2-HD
 

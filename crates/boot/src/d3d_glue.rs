@@ -72,7 +72,7 @@ impl<B: d3d::backend::Backend + Send + 'static> DeviceSnapshot for Mutex<d3d::De
 /// `frame-NNNNN.png`. With `H2_RENDER_SCALE=N` (2..6) the frames come
 /// from a view backend at N times the guest's size (`d3d::ScaledBackend`,
 /// docs/graphics/high-resolution.md), `frame-NNNNN.png` is the view's image and
-/// `frame-NNNNN-1x.png` the 1x reference's, and the run report gives the
+/// exact two-copy mode also writes `frame-NNNNN-1x.png`. The run report gives the
 /// view's counts. `H2_LIGHTING=e3` gives the view E3 lighting's scaled,
 /// one-tap shadow maps (docs/graphics/e3-lighting.md), with a view at 1x
 /// too when the scale is 1. `H2_BOOT_GFX_LIGHTING_AB=1` draws a retail and
@@ -115,6 +115,28 @@ pub fn install_light(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
 pub fn install_headless(
     rt: &runtime::Runtime,
     interp: Option<Interpolation>,
+) -> anyhow::Result<Installed> {
+    install_headless_with_settings(rt, interp, None)
+}
+
+#[cfg(feature = "gpu")]
+pub(crate) fn single_copy(store: Option<&settings::Store>) -> anyhow::Result<bool> {
+    let def = &crate::setting_defs::SINGLE_COPY;
+    let value = match store {
+        Some(store) => store.get(def.key).unwrap_or(def.default),
+        None => match std::env::var("H2_SINGLE_COPY") {
+            Ok(raw) => def.parse_env_text(&raw).map_err(anyhow::Error::msg)?,
+            Err(_) => def.default,
+        },
+    };
+    Ok(value == settings::Value::Bool(true))
+}
+
+#[cfg(feature = "gpu")]
+pub(crate) fn install_headless_with_settings(
+    rt: &runtime::Runtime,
+    interp: Option<Interpolation>,
+    settings: Option<&settings::Store>,
 ) -> anyhow::Result<Installed> {
     match std::env::var_os("H2_BOOT_GFX") {
         None => install_with(rt, Headless::default()),
@@ -295,10 +317,8 @@ pub fn install_headless(
                 };
             }
             if scale > 1 || lighting != d3d::Lighting::Retail {
-                // The reference answers the guest at 1x; the view, on the
-                // same device, renders at `scale` and presents.
-                // In-between frames show on the view; the reference's
-                // replay hook keeps its `-1x` swap count the guest's.
+                // The display presents scaled frames. Exact reference captures
+                // use their own hook and swap count on the shared device.
                 let reference = configure_gfx(
                     "reference",
                     d3d::GfxBackend::new(share_context(&ctx))
@@ -311,11 +331,12 @@ pub fn install_headless(
                         .on_present(shots("", shadow_shots, Some(Arc::clone(&between))))
                         .on_present_replay(between.hook(dir.clone(), "")),
                 );
+                let single = single_copy(settings)?;
                 let mut b =
-                    d3d::ScaledBackend::new(reference, view, scale).map_err(anyhow::Error::msg)?;
+                    d3d::ScaledBackend::with_single_copy(reference, view, scale, single).map_err(anyhow::Error::msg)?;
                 b.set_lighting(lighting);
                 eprintln!(
-                    "d3d: rendering at {scale}x (H2_RENDER_SCALE), {lighting:?} lighting (H2_LIGHTING); the guest sees a 1x reference"
+                    "d3d: rendering at {scale}x (H2_RENDER_SCALE), {lighting:?} lighting (H2_LIGHTING); single copy {single}"
                 );
                 let report = scale_report(&mut b);
                 return if render_thread_requested() {
@@ -1196,6 +1217,9 @@ impl d3d::backend::Backend for Headless {
     fn mirror_read(&mut self, offset: u32, len: u32) -> Result<Vec<u8>, String> {
         self.0.mirror_read(offset, len)
     }
+    fn handles_surface_aliases(&self) -> bool {
+        self.0.handles_surface_aliases()
+    }
     fn defers_depth_aliases(&self) -> bool {
         self.0.defers_depth_aliases()
     }
@@ -1260,10 +1284,11 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
     };
     d3d::runtime_glue::map_device_memory(&mut rt.memory(), &cfg)?;
     let device = d3d::runtime_glue::shared(cfg, backend);
+    let watch = subscribe_write_barrier(rt)?;
     install_occlusion_capture(&device);
     #[cfg(feature = "gpu")]
     let shadow_admission = {
-        let shadows = crate::native_world_glue::install(&device);
+        let shadows = crate::native_world_glue::install(&device, watch);
         crate::native_objects_glue::install(&device);
         crate::native_decals_glue::install(&device);
         crate::native_particles_glue::install(&device);
@@ -1291,7 +1316,7 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
         .chain(&r.stopping)
         .map(|e| e.0)
         .collect();
-    install_write_barrier(rt, &device, &entries)?;
+    install_write_barrier(rt, &device, &entries, watch);
     #[cfg(feature = "gpu")]
     crate::native_world_layers_glue::install(rt, &device);
     #[cfg(feature = "gpu")]
@@ -1554,15 +1579,8 @@ fn install_write_barrier<B: d3d::backend::Backend + Send + 'static>(
     rt: &runtime::Runtime,
     device: &Arc<Mutex<d3d::Device<B>>>,
     entries: &[u32],
-) -> anyhow::Result<()> {
-    use runtime::watch::CONTIGUOUS_BASE;
-    let id = {
-        let mut mem = rt.memory();
-        let id = mem.subscribe_writes(WATCH_OWNER);
-        mem.watch_writes(id, CONTIGUOUS_BASE, 0x0400_0000)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        id
-    };
+    id: runtime::WatchId,
+) {
     rt.edit_dispatch(|d| {
         for &addr in entries {
             let Some(prev) = d.override_handler(addr) else {
@@ -1582,7 +1600,15 @@ fn install_write_barrier<B: d3d::backend::Backend + Send + 'static>(
             );
         }
     });
-    Ok(())
+}
+
+/// Subscribe before installing native render hosts. Opaque section prepare,
+/// sorted emit and D3D guest entries must consume the same stream of stores.
+fn subscribe_write_barrier(rt: &runtime::Runtime) -> anyhow::Result<runtime::WatchId> {
+    let mut mem = rt.memory();
+    let id = mem.subscribe_writes(WATCH_OWNER);
+    mem.watch_writes(id, runtime::watch::CONTIGUOUS_BASE, 0x0400_0000)?;
+    Ok(id)
 }
 
 /// One entry's write barrier: drains watch `id` into `note` (when anything

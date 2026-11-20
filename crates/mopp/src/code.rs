@@ -103,3 +103,13 @@ impl Code {
         (f64::from(p) - f64::from(self.offset[axis])) * f64::from(self.scale)
     }
 }
+
+/// Decode an inline key or the 1..4 big-endian bytes following a terminal
+/// opcode. The byte source can be a parsed program or live guest memory.
+pub fn terminal_key<E>(op: u8, operand: impl FnOnce(usize) -> Result<u32, E>) -> Result<u32, E> {
+    match op {
+        0x30..=0x4f => Ok(u32::from(op - 0x30)),
+        0x50..=0x53 => operand(usize::from(op - 0x50) + 1),
+        _ => unreachable!("expected a MOPP terminal"),
+    }
+}

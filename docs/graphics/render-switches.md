@@ -10,7 +10,8 @@ The native stages default on. Set `H2_FEATURES=impl.render.native=off`
 to disable them as a group. An explicit stage switch wins in either
 order, so `impl.render.native=off,impl.render.native_world=on` restores
 only the world and its material programs. Those programs follow the
-world by default and can be disabled separately. The older `impl.render`
+world by default and can be disabled separately. The UI stage requires
+the master switch. The older `impl.render`
 switch controls the lifted render-loop ports independently.
 
 Verdicts: **keep** (the default path, a user setting, a diagnostic or a
@@ -32,7 +33,8 @@ environment variable is then only the in-game A/B for a recent default.
 | `impl.render.interpolate` | D, host replay of frame N's draws with interpolated matrices ([high-framerate.md](../game/high-framerate.md) section 7) | off | `replay mode` ms in its exit line; geometry replay per display frame does not fit 60/120 yet (section 3) | `boot::d3d_glue` | ask |
 | `impl.render.occlusion` | Hi-Z occlusion culling of object setups from the previous frame's depth ([occlusion-culling.md](occlusion-culling.md)) | off (exact key only) | not run in game; expected saving depends on the culled share | `feature::occlusion`, `boot` capture glue, `d3d` depth grid | ask |
 | `impl.render.native` | default for every native GPU stage and its optional comparison hooks. Explicit stage switches override it | on | | `feature::switches` | keep |
-| `impl.render.pipelined_frame` | prepares the render front-end on a COW worker and checks its observed snapshot pages ([pipelined-render.md](pipelined-render.md)) | off | the prototype still joins before the game tick | `feature::pipeline_render` | research |
+| `impl.render.pipelined_frame` | finishes the prepared render frame on a COW worker ([pipelined-render.md](pipelined-render.md)) | off | the tick-entry join is removed | `feature::pipeline_render` | research |
+| `impl.render.native_scene_lists` | camera and light visibility lists, object LOD inputs and supported records, and transparent entry publication and ordering | on with the master native renderer | scene list counters and `H2_NATIVE_LISTS_COMPARE=1` | `feature::native_scene_lists` | keep |
 | `impl.render.native_world` | the static world (structure BSP, layer 3) drawn by the native GPU renderer, the game's world entries skipped ([native-renderer.md](native-renderer.md)) | **on since 2026-11-20** (`=off` compares against the D3D path); runs on the pipelined render thread | all-native 03a A/B, 2026-11-19/20: identical frames, 15.4 against 25.6 fps at equal load ([native-renderer.md](native-renderer.md), "The all-native push") | `feature::native_world`, `boot::native_world_glue`, `d3d` external pass | ask |
 | `impl.render.native_world_programs` | the native world's look: each world material whose layer-3 pass translates draws with its own vertex program, pixel shader, stages, constants and render states, and every other material keeps its D3D draws; `=off` draws stage 1's base map times lightmap instead, for the A/B only ([native-renderer.md](native-renderer.md), "Order of work" 4) | on with the native world | the all-native A/B above; the load lines give the coverage and each refusal's reason | `native_render::program`, `boot::native_world_glue` | ask |
 | `impl.render.native_world_layers` | the world's other base layers (1, 5, 7, 8) and the combined materials in layer 3 recorded natively at the resolved indexed draw ([native-renderer.md](native-renderer.md), "Native opaque layers") | **on since 2026-11-20** (`=off` compares against the D3D path) | the all-native A/B above | `feature::native_world_layers`, `boot::native_world_layers_glue` | ask |
@@ -49,7 +51,7 @@ environment variable is then only the in-game A/B for a recent default.
 | `impl.render.native_water` | the water edge blend, layer 6 ([native-renderer.md](native-renderer.md), "Stage 4b: water and the rest") | **on since 2026-11-20** (`=off` compares against the D3D path) | the all-native A/B above | `feature::native_water`, `boot::native_water_glue` | ask |
 | `impl.render.native_first_person` | the first-person arms and weapon, the other layer-3 caller's items ([native-renderer.md](native-renderer.md), "First person versus third person") | **on since 2026-11-20** (`=off` compares against the D3D path) | the all-native A/B above | `feature::native_first_person`, `boot::native_first_person_glue` | ask |
 | `impl.render.native_post` | the view's post passes, glow and screen effects ([native-renderer.md](native-renderer.md), "Stage 5: post and HUD") | **on since 2026-11-20** (`=off` compares against the D3D path) | the all-native A/B above | `feature::native_post`, `boot::native_post_glue` | ask |
-| `impl.render.native_hud` | the HUD's and the UI's screen draws ([native-renderer.md](native-renderer.md), "Stage 5: post and HUD") | **on since 2026-11-20** (`=off` compares against the D3D path) | the all-native A/B above | `feature::native_hud`, `boot::native_hud_glue` | ask |
+| `impl.render.native_ui` | Menu, HUD, loading and overlay draws with ordered per-draw fallback ([native-renderer.md](native-renderer.md#native-ui)) | on with the master. The old `impl.render.native_hud=off` disables it too | Pending runtime A/B | `feature::native_hud`, `boot::native_hud_glue` | keep |
 | `impl.render.native_residual` | view scopes for the native renderer's remaining D3D calls (the sky model's indexed strip among them) | **on since 2026-11-20** (`=off` compares against the D3D path) | the all-native A/B above | `feature::native_residual`, `boot::native_residual_glue` | ask |
 | `impl.render.views` | Rust `render_views` (`engine::render_loop`) | off | orchestrator: no saving, one runner round trip per call ([render-loop.md](render-loop.md)) | `feature::render_loop` | ask |
 | `impl.render.layer_draw`, `impl.render.layer_entries` | the layer draw `0x00044550` and its entry loop ([layer-draw.md](layer-draw.md)) | off | none in game; hooked calls leave the direct path | `feature::render_loop` | ask |
@@ -94,6 +96,7 @@ still taken where the new one cannot apply, or a test compares the two.
 
 | Variable | Restores | Measured win of the default | Why the old path stays |
 |---|---|---|---|
+| `H2_SINGLE_COPY=0` / `graphics.single_copy=false` | separately rendered 1x readbacks at scales above 1 | default saves one recording per duplicated draw, including native passes; frame-time gain unmeasured | scaled colour, depth and visibility samples can differ from 1x at edges; use for exact captures and replays |
 | `H2_GFX_SWAP_FINISH=full` | `D3DSWAP_FINISH` waits for this frame too | GPU overlaps the next frame's encode | `SwapFinish::Full` makes `occlusion_grid` deterministic |
 | `H2_GFX_SIDE_SUBMIT=1` | side work submitted on its own | two submissions per call saved (about 0.1 ms each) | it is what a render scale above 1 uses |
 | `H2_GFX_STAGED_UPLOADS=0` | a queue write per persistent buffer | most of 537 queue writes at 2000 draws | the pool's tests compare staged and not |

@@ -33,6 +33,7 @@ pub mod native_particles;
 mod native_effects;
 pub mod native_post;
 pub mod native_residual;
+pub mod native_scene_lists;
 pub mod native_shadows;
 pub mod native_transparents;
 
@@ -46,6 +47,7 @@ pub mod render_census;
 pub mod render_loop;
 pub mod render_timing;
 pub mod sim_frame;
+pub mod sim_native;
 pub mod snapshot;
 pub mod switches;
 
@@ -82,6 +84,8 @@ pub fn scene_effect_instruction_entries() -> impl Iterator<Item = u32> {
         native_particles::DYNAMIC_PUBLISH.base,
         native_particles::DYNAMIC_END.base,
     ].into_iter().chain(native_effects::instruction_entries())
+        .chain(native_scene_lists::instruction_entries())
+        .chain(native_hud::instruction_entries())
 }
 
 /// Log the full startup plan and first use of each hook. Read once.
@@ -217,6 +221,26 @@ impl Call<'_> {
     ) -> Result<Flow, GuestFault> {
         entry::start_with(self.cpu, self.ctx, self.addr, make).map(Flow::Return)
     }
+    /// Answer with an owned render operation. The body reads guest RAM
+    /// through its Cx on each poll. It may carry immutable prepared
+    /// resources and the shared rendering device across guest calls.
+    /// It must not capture a runtime, memory guard, thread-local state
+    /// or resources tied to the executor on which it was started.
+    pub fn answer_render_async(
+        &mut self,
+        make: impl FnOnce(Cx) -> EntryFuture,
+    ) -> Result<Flow, GuestFault> {
+        entry::start_render(self.cpu, self.ctx, self.addr, make).map(Flow::Return)
+    }
+    /// As `answer_render_async`, with an in-process register setter for
+    /// the renderer's ordinary no-callback case.
+    pub fn answer_render_async_with(
+        &mut self,
+        setter: entry::RegisterSetter,
+        make: impl FnOnce(Cx) -> EntryFuture,
+    ) -> Result<Flow, GuestFault> {
+        entry::start_render_with(self.cpu, self.ctx, self.addr, Some(setter), make).map(Flow::Return)
+    }
     pub fn arg_u32(&mut self, name: &str) -> Option<u32> {
         let rt = Arc::clone(self.ctx.runtime());
         let mem = rt.memory();
@@ -348,8 +372,8 @@ impl HookRef<'_> {
     /// writes the registers, the guest stack and memory through its
     /// `Call`/`Obs` (or `ExecCtx`), never live RAM through the runtime,
     /// never host state it shares with the game thread except to read it,
-    /// and returns without a Rust continuation (no guest call it waits
-    /// on). The pipelined render runs such a chain on its own thread
+    /// and either returns synchronously or uses [`Call::answer_render_async`]
+    /// for an owned render operation. The pipelined render runs such a chain on its own thread
     /// against its view instead of falling back
     /// (docs/graphics/pipelined-render.md).
     pub fn context_only(self) -> Self {

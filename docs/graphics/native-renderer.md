@@ -4,7 +4,8 @@ Every stage has defaulted on since the all-native A/B on 2026-11-19/20
 (below, "The all-native push"). The frames matched D3D and the frame rate
 was lower. Set `H2_FEATURES=impl.render.native=off` for the D3D path or
 use a stage's `impl.render.native_*=off` for a narrower comparison.
-An explicit stage switch takes precedence in either order. Enabling
+An explicit stage switch takes precedence in either order. The UI stage
+also requires the master switch. Enabling
 `native_world` also enables its material programs unless
 `impl.render.native_world_programs=off` is set. The split lights diagnostic
 still requires `impl.render.native_lights_split=on`. The goal is every frame drawn from GPU-resident data, with the game's recompiled
@@ -112,7 +113,7 @@ World placement transforms are initialized once at map load.
 **Frame counters.** `H2_FRAME_STATS`, its CSV, `profile.counters` and
 `profile.capture` use the same stage names. Prefix each suffix below with
 `native_<stage>_`, where stage is `world`, `objects`, `transparents`,
-`lights`, `post`, `particles`, `decals`, `hud`, `gels`, `fog` or `water`.
+`lights`, `post`, `particles`, `decals`, `hud`, `gels`, `fog`, `water` or `ui`.
 
 | Suffix | Measurement |
 | --- | --- |
@@ -160,12 +161,79 @@ have drawn it. A skipped subtree costs nothing on the game thread, in
 |---|---|---|---|
 | 1. Static world | Structure BSP clusters and instanced geometry, layer 3 (lightmap) | Layer 3's structure entries: their builds, shader draws (`0x0001bbf0`/`0x00016b90`), geometry submission (`0x00041040`'s callbacks `0x0004cbf0`/`0x0004d0b0`) and the push-buffer words; most of the 8.26 ms layer-3 site, the matching `d3d` decode, encode and submit | Colour target and depth/stencil, viewport, the camera |
 | 1b. World, all layers | The world's layers 1 (base depth / texaccum), 5, 7 (self-illumination) and 8 (environment map) | The rest of the world's entries in the base layers | Texaccum target (when kept), depth |
-| 2. Objects and skinning | Render models: rigid and skinned sections, permutations, LODs; node matrices from the game per frame | `0x00133790`'s render records for drawn objects, their layer entries in every base layer | Node matrices (read only), object list (read only) |
+| 2. Objects and skinning | Render models with rigid and skinned sections, permutations and LODs | Supported layer-3 draw handlers, object list building and whole-call object setup | Node matrices, object and render-record layouts |
 | 3. Transparents and particles | Sorted transparents (`0x0001e370`, 2.58 ms), particle systems, decals, contrails | Persistent native vertex bindings for sorted indexed geometry. Particle and effect handlers still run through D3D. | The guest's sort, resolved per-draw state and the live depth target |
 | 4. Lights and shadows | Dynamic lights (layers 10 to 14, `0x00031c80`, 1.88 ms of bookkeeping), shadow maps; E3 lighting becomes a pass ([e3-lighting.md](e3-lighting.md)) | The per-light passes and their gathering | Light list (read) |
 | 5. Post and HUD | Fog, bloom, active camouflage, screen effects, HUD and text, then the present | `render_screen_effects` (`0x00013870`: the colour pass, screen effects, `0x0002df00`), `0x0002dd30`, layer 17, the fade `0x00040890`, the UI and HUD `0x00147af1` (see "Stage 5: post and HUD") | Nothing left: the D3D path is only a fallback |
 
 Each stage falls back to D3D for the materials or draws it cannot handle.
+
+### Scene list builders
+
+`impl.render.native_scene_lists` defaults on and requires
+`impl.render.native=on`. This stage publishes the engine's original
+visibility lists and render records. A draw can consume the same lists
+through either renderer. The game supplies the camera, clipped cluster
+frusta, live datum arrays and current tag definitions.
+
+| Rust publication | Original work bypassed when the inputs resolve |
+|---|---|
+| Camera and light visibility | `0x00134390` publishes visible BSP clusters and placements. `0x00132220` walks both object reference partitions and the light reference partition. Both start after the portal or sphere cluster pass. |
+| Object order and setup | `0x00134240` promotes model-linked entries with the original swaps of all four columns. Rust returns directly from accepted `OBJECT_RENDER_SETUP` calls (`0x00133790`). It calculates the projection, opacity and flags, selects sections and handles residency (`0x0004b5d0`), builds palettes and walks children (`0x00133ab0`), then publishes the visibility bit and AL retry result. |
+| Object render records | Whole-call setup uses the same Rust writer as the standalone append hook at `0x001341d0`. It publishes the model arm of `0x0002cbf0`, including attachment and group slots, projected scissors, lighting bytes and subpart allocation. The standalone hook also serves guest setup calls that reach the append after a refusal. |
+| Dynamic light order and affected geometry | The pass at `0x0002c03e` calls `0x00031910`, which collects candidates, updates per-view history, ranks lights and fades their weights. Rust replaces this call and its helpers `0x0004a7c0` and `0x0004ac30`. After the per-light visibility pass, Rust applies the caster and receiver flags from `0x00031660` and the optional owner append from `0x00031c20`. |
+| Transparent and effect lists | Rust publishes the geometry append at `0x00041381` and the effect and polygon records from `0x0001e4e0` and `0x0001e5e0`. In the pass at `0x0002c19a`, Rust fills the active u16 index interval and skips `TRANSPARENT_SORT` at `0x0001e3b2`. The original comparator's plane rules, partition swaps and short-sort ties determine the order, including entries with a null callback. |
+
+The object walk uses the live salt, original partition order and visit
+epoch. It writes the accepted object and placement stamps, light record
+stamps, cluster ordinals, visibility bits and masks in guest memory.
+The callers still advance the epochs. The light history retains its
+candidate mask, removal swaps, protected entries and fade accumulators.
+The transparent queue retains the guest's depth calculation, handlers
+and payloads. Consumers read the same addresses and counts.
+
+Object setup touches the requested sections in region order before
+consulting the previous permutations. It tries the cached LOD without
+requesting I/O when selection at the desired LOD fails. It preserves
+the guest's per-view permutation bytes, LOD and palette tokens, resource
+epochs, miss counts, lighting cache data, and object render stamps. New
+palettes use the same transposed node matrices and per-section remaps.
+The object walk emits each parent's sections before descending through
+its child and sibling links. The no-draw exit updates the low byte of
+the original visibility column. The existing caller uses AL to process
+a kind-1 retry, including the retry call's different render flags.
+
+Setup stages writes across the entire object tree. A refusal restarts at
+the original entry with the incoming registers and memory. New resource
+I/O, synchronous waits, request reprioritization, resource relocation,
+live light-probe work, animated pose evaluation, and auxiliary model
+materials use that path. Portal traversal and dynamic light frustum
+setup (`0x000c1d90`) supply the inputs to the Rust gathers. Effect
+producers decide when effects are ready to queue.
+
+Frame stats record `native_scene_lists_<stage>_native`, `_fallback` and
+the associated `_memory`, `_layout` or `_unsupported` reason. Object
+setup also reports `_residency`, `_lighting`, `_palette` and
+`_object_model` for the corresponding guest service paths. Counts are
+per list, setup or append, depending on the stage.
+
+`H2_NATIVE_LISTS_COMPARE=1` builds the Rust result and lets the guest
+publish its own. For object setup it compares the staged palette, cache,
+resource, group and record bytes at the function return, along with the
+visibility word, palette cursor, record counts, object lighting handle
+and AL. It logs the first mismatch per seam and counts additional
+mismatches. Compare mode uses the guest result for draw dispatch.
+Use `H2_FRAME_STATS=1` for the `_compared` and `_mismatch` columns.
+
+For timing, compare `impl.render.native_scene_lists=off` with the
+default, using `H2_FEATURES=render-timing` in both captures. Include the
+`game_view` stage for the main-camera object gather, and sites
+`0x0002bd2d`, `0x0002c03e` and `0x0002c19a` for transparent production,
+dynamic lights and the sorted dispatch. The Old Mombasa census measured
+1.88 ms/frame for the entire dynamic-light bookkeeping site and about
+0.01 ms/frame for the two old sort leaves combined. The census does not
+isolate the object setup or transparent allocation costs. A net saving
+needs a matching A/B with the compare mode off. See [render-loop.md](render-loop.md).
 
 ### Maps with no native work
 
@@ -673,9 +741,9 @@ The crate `native-render` (`crates/native-render`):
   through the VFS with its shared maps, picks the scenario BSP whose tag
   data sits at that address, builds the world, decodes each lightmap page
   (with its mip chain), and translates each material's layer-3 pass
-  ("Order of work" 4). A material is native only when its pass translates
-  and every part of it can be drawn with it; every other material is left
-  out of the world and keeps its D3D draws, never stage 1's look. The skip
+  ("Order of work" 4). After translating the material, the worker checks
+  each part against the inputs of its vertex classification and its
+  lightmap page. Parts that lack an input keep their D3D draws. The skip
   goes by part: the host returns each drawn part, by cluster or placement
   and part index, with its material's shader, and `skip::clear_parts`
   clears an item only when its part is one of them with that shader. An
@@ -926,15 +994,19 @@ vector (`v1`) and view vector (`v0`), and the lightmap (stage 3). Its
      - texture modes that read device state: bump-environment matrices,
        the eye of the reflection modes, BRDF;
      - border addressing on a sampled stage.
-   - `program::world_fit`: every part of the material supplies every
-     vertex register the program reads (`WorldDraw::inputs`: a section
-     without lighting vectors or a tangent frame would read zero), and,
-     where the program samples the lightmap, has a page that decoded. A
-     stage bitmap must decode and be swizzled (a linear texture is
-     addressed in texels on the D3D path, `tex_scale`), and so must a
-     lightmap page. One part that cannot be drawn keeps the whole
-     material on the D3D path (the skip could go per part; the material
-     is the unit the coverage is counted in).
+   - `program::part_fit` checks each cluster against its world-space
+     vertex program and each placement against its rigid program.
+     Every input the program reads must be present in the section.
+     A sampled lightmap needs a decoded page and palette. Other parts
+     sharing the material can still draw with their own inputs.
+   - On a BSP without a matching first lightmap group, the record
+     builder selects implementation 3. The worker resolves that
+     implementation and the normalization cube in the globals tag.
+     For example, the main menu's dynamic detail shader declares five
+     input registers in both its world and rigid classifications.
+     The worker checks those inputs. A lighting vector in `v5` belongs
+     to the per-pixel lightmapped variant. Bitmap cube faces and volume
+     slices retain their shape and mip chain through upload.
    - Palettized stage bitmaps. `tex_bump`'s bump stage (stage 2) is
      `P8Bump`, and `P8` is palettized too: the tag has no palette, and
      `assets` decodes both as their index in every channel. The D3D path
@@ -988,16 +1060,12 @@ vector (`v1`) and view vector (`v0`), and the lightmap (stage 3). Its
 
 ### Native opaque layers
 
-`impl.render.native_world_layers=on` allows the standard geometry
-handler's main-scene indexed ranges in layers 1, 5, 7, 8 and the
-combined materials in layer 3 to record natively. The layer
-hook identifies the scene call and the indexed submission identifies the
-individual cluster, placement or object record. The guest still builds
-and sorts the list and runs its shader and stencil setup and tail. At
-the draw, the native pass reuses the resolved live streams, indices,
-programs, render states, constants and texture views. This preserves
-interleaved D3D draws in their guest order, including subpart slices,
-depth equality, inherited cull and per-record stencil reference.
+The main scene draws ordinary BSP clusters and placements in sorted order in
+layers 1, 3, 5, 7 and 8. The default front end takes these entries at the
+standard geometry handler (`0x0004d0b0`). Native objects and entries left
+with the guest can still use the indexed admission in
+`impl.render.native_world_layers`. Both paths preserve the original subpart
+ranges, topology, live colour/depth attachments and per-record stencil state.
 
 Layer 1 replaces a draw only while target 1's attachment header is
 bound. Texture inputs must resolve to views the program can sample.
@@ -1014,10 +1082,14 @@ hold the same GPU texture on each live copy. The guest dimensions
 must agree and the texture must use linear texel addressing. This works
 with either owner of layer 1, because both write the same attachment.
 
-This slice replaces the backend draw. Its CPU cost includes the guest
-setup and D3D resource resolution. Geometry snapshots can reuse native
-GPU buffers, while native shader, pipeline and texture bindings are
-cached per device. Measure before treating this as a performance gain.
+The sorted BSP path prepares the vertex program for each classification
+and the stage binding recipe for each shader, LOD, layer, pass and
+implementation when the BSP loads. Section preparation reads the live
+section's declaration, bitmap residency and palette, index windows and
+target identities. Render-target samples resolve against their current
+contents in submission order. The menu's unlightmapped implementation
+uses its own declaration and program. A part can draw without a lighting
+vector when its selected implementation has its required inputs.
 
 ### Native BSP scene walk
 
@@ -1033,21 +1105,53 @@ compare the two front ends with the same GPU renderer.
 | `LAYER_ENTRIES`, after layer setup | When the world, water or fog renderer has committed its reservation and every active item has its layer bit clear, return the empty dispatch result immediately. | The GPU reservation already covers the claimed ranges. One remaining bit keeps the dispatcher. Layer setup and end still establish the shared device state. No handler, shader, stencil switch or indexed draw would run in the empty dispatcher. |
 | `RENDER_STATES` and `WORLD_PART_EMIT`, inside an opaque BSP draw | Use the render-state port through the first necessary guest call. Elide repeated simple states when the shadow matches and the push header is unique. Use the one-range emitter when visible subparts tile the part's indices. | Changed states and shared push headers still reach the device. The emitter flushes textures and emits the same indices and topology. A masked strip needs exactly one subpart. The placement constants, shader cache, lightmap binding and stencil tail still execute. |
 
-The default ordered opaque renderer accepts individual draws after resolving
-their live programs, textures, streams and attachments. A visible BSP ID,
-or even complete geometric coverage of a section, cannot authorize an early
-GPU reservation for those draws. In particular, a placement can write the
-lightmap stream offsets and bind a palette in the geometry handler. Omitting
-that handler can change a later draw even when the native world covers
-every triangle. Whole-dispatch skipping currently applies to **pre-reserved**
-world, fog and water layers. The general opaque GPU pass still goes through
-the indexed admission path.
+#### Sorted handler and device handoff
+
+The sorted hook matches the standard builder and draw callback, the scene
+layer, the handler arguments and the caller's current sort slot and counter.
+A native run ends at the first object, custom callback, excluded slot or
+refused section. Each accepted entry reads its own implementation,
+classification, record and visible subparts. Triangle lists coalesce
+contiguous visible index ranges. A masked strip restarts at each subpart.
+The native run returns with ESI on the last consumed slot. The caller
+performs its normal final increment and can dispatch the next guest draw.
+
+The run's `handoff` applies material and device transitions in draw order.
+The portable entry holds the outgoing shader and device cache words in a
+bounded writeback buffer. Native reads through any alias see the most recent
+write. Before a real guest call, a fault or the return to the outer loop,
+the memory guard publishes the final dirty bytes. D3D write watches see
+logical writes at store time. Resource retains, releases and push callbacks
+still execute in device order.
+The shader cache tracks the previous and current shader and implementation,
+dirty parameter banks, live texture headers and sizes, sampler stages and
+the full pixel-shader definition. An implementation switch consumes the
+outgoing restore list before publishing the new states. Component writes
+preserve untouched vector lanes and PS fields. Frame inputs, animation and
+record constants are evaluated against the current view and guest floating
+point control words.
+
+A lit placement updates both offsets in each selected lightmap stream
+descriptor. Its palette, shader, declaration, stream and texture changes
+reach the D3D device in their original order, including device references
+and callbacks when a resource loses its last reference. A missing vertex
+input can suppress emission after the binder has already changed state.
+Stencil, fade and transient target operations bracket the actual draw.
+The next native or guest entry therefore starts with the outgoing device
+and RAM caches already installed. Applying only the last part's bindings
+would lose writes to earlier descriptors and intermediate resource releases.
+
+The per-range submission uses the prepared geometry and validated texture
+and program hints. Stale or dynamic resources still use the ordered D3D
+resolver. A preflight refusal keeps the original sorted handler live. A
+late refusal before the first range can issue the indexed draws under the
+state already applied. A device error after emission follows the fault
+path so a submitted prefix cannot be drawn twice.
 
 For the A/B, capture the same Old Mombasa replay and present numbers with
 `H2_FRAME_STATS=1` and `H2_FEATURES=render-timing`, changing only
 `impl.render.native_world_skip_build=off` to `on`. Use ordinary
-render timing. Deep timing brackets the guest build and dispatch, so its
-run keeps those bodies for attribution. Compare warmed per-frame `render`,
+render timing. Deep timing adds guest brackets that change the cost of the control path. Compare warmed per-frame `render`,
 `scene_passes`, `d3d` and `cpu`, and count differing pixels on both target
 copies at matching presents. Include views with placements, partial
 visibility, fog, water and lights. Expected savings are in gathering,
@@ -1060,6 +1164,44 @@ The frame columns `native_world_walk_sections`, `native_world_sections_prepared`
 `native_world_state_calls_skipped` count published render records, sections
 appended in Rust, guest build callbacks replaced in Rust, whole entry
 dispatches bypassed and redundant Simple state calls respectively.
+
+Frame stats distinguish pre-reserved BSP parts
+(`native_world_opaque_prereserved_draws`) from ordinary world ranges
+that reach the indexed call after guest handler setup
+(`native_world_opaque_guest_indexed_draws`). The latter includes
+ranges later accepted by the native GPU backend. The corresponding
+`_sections` columns count each cluster or placement once per view and
+BSP on each path. A section with parts on both paths counts in both.
+The indexed counters require the world layer hooks. Prepared opaque
+submissions and their device preflight are timed in the D3D phase.
+
+At the sorted handler boundary, `native_world_opaque_handlers_taken` counts
+every ordinary BSP geometry handler consumed by the native path. This is the
+skipped guest handler count. `native_world_opaque_handler_draws` counts
+all ranges those handlers submitted. A masked strip can emit several ranges.
+Within these totals, `native_world_opaque_handlers_indexed` and
+`native_world_opaque_handler_indexed_draws` count the handlers and ranges
+that needed the indexed backend for emission. `native_world_opaque_handlers_fallback`
+counts each whole geometry handler left to the guest once. The
+`native_world_opaque_materials` field in `H2_FRAME_STATS_CSV` breaks down
+each frame by full shader datum, including the reason and handler count
+for indexed emission and for whole-handler refusal. The frame-stats exit
+report sums the same breakdown from `H2_FRAME_STATS_FROM`.
+
+`native_world_opaque_taken_sections` and `native_world_opaque_fallback_sections`
+count distinct clusters and placements for consumed and refused handlers
+respectively. A section with mixed materials can appear in both. Each
+frame counts the section once per BSP, view and outcome across all sorted
+layers. The material field also gives `refused_sections` per shader and
+reason when the render record identifies a valid cluster or placement.
+
+`native_world_opaque_gpu_draws` counts prepared packets recorded on the
+required GPU copies. `native_world_opaque_backend_draws` counts prepared
+packets the ordinary backend drew after a recording refusal. Deferred
+packets report the recording outcome on the worker. The material
+breakdown includes the backend refusal reason. Compare these counters
+with skipped handlers to distinguish CPU preparation savings from changes
+in GPU recording.
 
 ### Opaque-layer comparison
 
@@ -1172,10 +1314,11 @@ After every required target copy records the whole run, the hook adjusts
 ESI and the saved loop count and returns with the handler's normal stack
 cleanup. The guest loop advances to the next entry in its original order.
 If planning or reservation fails, the cursor stays put and the original
-handler runs. Visibility and `OBJECT_RENDER_SETUP` still produce the
-records and palettes consumed by the walk, lights, shadows and later
-passes. The savings come from skipping `0x0004d0b0` and its per-part
-shader and geometry preparation, including `0x0001bbf0` and
+handler runs. The scene list builders supply visibility, LOD inputs and
+supported records. The object setup tail supplies the palettes consumed
+by the walk, lights, shadows and later passes. The draw savings come from
+skipping `0x0004d0b0` and its per-part shader and geometry preparation,
+including `0x0001bbf0` and
 `0x00016b90`, for committed runs.
 
 The activation hook starts an eager scan of the mounted map's object
@@ -1873,12 +2016,12 @@ opaque layers left.
 - `[0x004b6288]`: entries of `0x70` bytes, the live ones from index
   `[0x004b6284]` to `[0x004b6280]` (at most `0x400`), allocated by
   `0x0001e2d0` (and `0x0001e4e0`/`0x0001e5e0` for other kinds).
-- `0x0001e370` fills the `u16` index array `[0x004b628c]`, sorts it
-  with `TRANSPARENT_SORT` (`0x0013df80`, comparator `0x0001e700`: by
-  `+0` first, then through the plane at `+0x10` when `+0xc` is set; the
-  rest is not read),
-  then for each index in order calls `[entry+0x20]` with `entry+0x24`
-  (stdcall), skipping a null handler.
+- `0x0001e370` fills the `u16` index array `[0x004b628c]` and sorts it
+  with `TRANSPARENT_SORT` (`0x0013df80`). Comparator `0x0001e700` uses
+  class `+0`, the plane at `+0x10` when either entry has `+0xc` set,
+  and otherwise depth `+4` then the integer key `+8`. The dispatcher
+  calls `[entry+0x20]` with `entry+0x24` for each index in order,
+  skipping a null handler.
 - A geometry entry (`0x00041040`'s transparent branch, `0x00041381`):
   `+0` a class from `0x00040e10`, `+4` the view depth, `+0xc` a byte
   (plane present), `+0x20` the handler `0x00041020`, `+0x24` the shader
@@ -1985,9 +2128,10 @@ definition flags).
 
 - **Visible lights.** `0x00031c80` builds the visible-light list
   (`0x00031910`, from the candidates at `[0x00547f98]`; entries of `0x14`
-  bytes, `+0` the light datum, `+8` a weight; sorted and trimmed by
-  `0x0004a7c0`/`0x0004ac30`), then walks it. For each light above the
-  weight threshold (`[0x0045dc58]`) it re-poses an attached light
+  bytes with light datum `+4`, root owner `+8`, weight `+0xc` and
+  screen priority `+0x10`). The original `0x0004a7c0`/`0x0004ac30`
+  helpers merge and rank that list before the pass walks it. For each
+  light above the weight threshold (`[0x0045dc58]`) it re-poses an attached light
   (`0x00031dac`), records it for the first-person pass (`0x004c6b00`,
   stride `0x408`, at most eight, count `[0x00509440]`), decides the
   shadow (`0x00031e02`), gathers the light's geometry into the light's
@@ -2810,114 +2954,98 @@ words itself (`[0x00407488]`) and calls the D3D entry at `0x003fb520`.
 `0x00135a30`), calls `0x00013d80`, and swaps at `0x000140fc`
 (`0x003f9d00`, between two `0x003f9df0`).
 
-**Built** (`impl.render.native_hud`, off by default;
-`feature::native_hud`, `boot::native_hud_glue`,
-`native_render::hud`, `native_render::hud_gpu`). Four context-only
-hooks: the screen-quad begin, quad and end, and the HUD shader quad.
-The host plans each batch (`hud::Batch::read`: the record, the blend
-through the game's tables, the screen transform with the begin's own
-arithmetic, the bitmap) and refuses, logged once per reason
-(`hud::Refused`), every batch that is not one stage over the glyph
-cache with the text's second block. Planned batches are drawn natively
-(below, "Native text"), and so are HUD shader quads (below, "Native HUD
-quads").
+#### Native UI
 
-`H2_NATIVE_HUD_COMPARE=N` (empty: 512) pairs the plan with the D3D
-path for the first `N` quads, over the handoff's seam: the hooks queue
-each quad's corners as the call pushes them (`hud::Expect`), and a
-`d3d::DrawAdmission` the host adds to the device reads the position of
-every resolved four-vertex fan, in issue order, and pairs it with the
-first waiting quad of the same corners (`hud::Pairing`; quads passed
-over are lost). It claims no draw. It prints, for the first screen quad
-and the first HUD quad, what D3D resolved (entry, colour target, stage
-0's texture, blend) beside the batch's plan, and every 64 pairings one
-line: `native-hud: compare: <s> screen quads and <h> HUD quads paired
-with their D3D draws; <ls> screen and <lh> HUD lost; <o> other fans; <w>
-waiting`. Every quad paired and none lost is the pass mark. A quad
-drawn natively is skipped on D3D and never queued.
+`impl.render.native_ui` defaults on. Set it to `off` to return the UI
+draws to D3D. `impl.render.native=off` disables UI even if explicitly
+enabled. The old `impl.render.native_hud=off` disables the same stage.
+`impl.render.native_hud_walk=off` disables the early HUD shader fan only.
 
-#### Native text
+The guest selects the visible screens and widgets, sorts them, and sets
+up layout, animation, text shaping, bitmap selection and shaders. At the
+sorted virtual draw call `0x00235445`, the hook reads the ordinal, list
+record, widget and vtable and verifies that they name the called entry.
+The scope closes at `0x0023544d`, reached by fall-through from the call's
+return address. List entries keep their original order, depth bounds and
+pre/post callbacks. `UI_RENDER_LAYERS` scopes the surrounding screen
+managers and layer callbacks. This covers the retail and UI-kit menus
+through the same runtime objects. The per-user HUD scope starts at
+`0x001917eb` and ends at either return of its tail-called HUD function.
+The loading draw at `0x000289e0` also has a scope through both return
+paths. The fade and solid rectangle helpers own their separate scopes.
 
-A planned batch is drawn in segments, each one external pass
-(`hud_gpu::TextDraw`, recorded by `hud_gpu::TextGpu`):
+| Producer | What Rust reads | Guest instructions skipped after a successful reservation |
+|---|---|---|
+| Screen quads, including glyphs and full-screen bitmaps | The four corners at `0x000363c4`, after the engine and XDK state commits. The original writes RGBA to register 9, UV to 3 and position to 0. | The inline Begin, vertex writes and End, and the push-pointer updates for those words. A wrap or pending fence keeps the original. |
+| Shader bitmaps and HUD widgets | The four completed positions and UVs at `0x0022a7f6`, after the shader setup. | Begin and vertex setter calls through End, resuming at `0x0022a854`. |
+| Full-screen fade | The two signed-short extents at `0x00040d86`, with the fade's selected combiner and blend already set. | Begin, four position setters and End. The fade epilogue runs at `0x00040db8`. |
+| Menu fade rectangles, cinematic bars and split-screen dividers | The completed quad copy at the `0x0004b252` uploader with return address `0x00052ce7`. The callback, mode, topology and copy length must agree. | The copy callback and inline packet publication. The common uploader's caller runs its original state tail. |
+| Loading spinners and background/sweep bitmaps | The spinner's two sets of completed UVs at `0x0002a1f4`. The bitmap at `0x0002ae60` supplies its two rectangles and UV divisors and Rust evaluates the multiplications with the live MXCSR. | The immediate-mode submission of each fan. The loading animation, clears, target binds and presentation remain in guest order. |
+| Menu backdrop wash, tint, and composite | The wash uses the live tint and sample spread at `0x00254b95`. The tint at `0x00254e28` reads the active title's immediate operands. The composite at `0x00255083` reads the selected center and half extent. | Each fan's geometry builder through End. Material and target changes keep their original order. |
+| Model widgets | At the sorted call, Rust checks the selector and definition. For an active view it verifies the selected object and light handles, camera scale, animated offsets, field of view and viewport against the camera arguments. It walks the live mesh section, material group and visibility mask at `0x0004d621`. | The entire virtual draw for an inactive widget or an empty name list. An accepted material group skips the indexed geometry builder at `0x0004daa0` and resumes at `0x0004d626`. |
+| Debug/widget outlines | Five signed-short points and the converted colour at `0x0001ed98`, with the caller and the open line-strip Begin verified. | The packed colour and vertex loop. The guest End closes the empty stream and restores line state. |
 
-- **Reservation, before any skip.** At a quad of a planned batch the
-  host reads what the begin set: the render states (`ZENABLE` off,
-  no stencil, alpha test, fog or stipple, solid fill, not flat; blend,
-  colour writes, cull and front face taken as they are), the combiner
-  block at `0x00484f68` and that the bound combiner is it (render
-  states 0..57 equal its code words; constants and the texture modes
-  come from the states, as `d3d::nv2a::guest_def` takes them, with
-  D3D's default final combiner), the clip area as one rectangle
-  (`Device::clip_area`), the viewport, and the glyph cache's texels
-  (its header read as `LIN_A4R4G4B4` 256x256, mirrored as RGBA,
-  `hud::a4r4g4b4_to_rgba`). It then calls
-  `Device::prepare_external_pass` (the drain of everything before,
-  then the pass recorded on every live copy) and commits. Only then is
-  the quad skipped (`ret 4`). Anything not established, or the
-  reservation refused, and the quad and the rest of the batch keep
-  their D3D draws (`native_hud_glue::Kept`, logged once). The states
-  are read again after the drain and before commit. If the drain changed
-  them, the recording is discarded and the quad stays on D3D.
-- **Extension.** The pass draws its quads with an indexed indirect
-  draw over buffers it made at recording (128 quads). A later quad
-  joins it while the device's counters (`Device::stats`), its bound
-  target, viewport, clip, render states and the glyph cache's ring
-  (`hud::GLYPH_RING`, which every glyph added moves) still match the
-  reservation. Its corners and the new count go in through the queue
-  (`hud_gpu::Segment::append`), and it is skipped. The backend seals
-  the segment before submitting either copy, under the lock that guards
-  both queue writes. Accepted writes reach the draw before submission.
-  If the state changes or the segment fills or seals, the quad tries a
-  new reservation. If that fails, D3D draws it. Ending the batch ends the
-  segment.
-  This is why the pass is committed at the reservation and filled up to
-  the end, not committed at the end: `PreparedExternal` borrows the
-  device and cannot be held across hooks.
-- **What a quad is.** S, the screen-transform assumption
-  (`hud::text_quad`, with a synthetic test): the batch's vertex
-  program takes `oPos` from the begin's rows (`hud::ScreenTransform`)
-  then to the viewport as Xbox D3D's viewport constants do, and scales
-  the coordinate by the record's `+0x40`/`+0x44` (texels for the linear
-  glyph cache, normalised by its size as the D3D path's `tex_scale`
-  does). The colour is the pushed bytes over 255. The vertex stage
-  (`hud_gpu::TEXT_VERTEX`) snaps window coordinates as the translated
-  programs do (`xvs_fixup`: 1/16 at 1x, the render scale's shift
-  above), the fragment stage is the combiner through `shaders::psh`
-  with fog off; the clamp sampler filters as the record's `+0x96` says.
-  The clip is the scissor, scaled to each copy.
+Active model widgets still use the guest's scenario-object updates, view
+and layer construction, and the material and transform uploads. When
+textures change, the same guest commit runs before native recording and
+updates the applied mirror. A refused range lets the guest emitter run
+at that draw position. Separate masked strips and disjoint triangle-list
+ranges reserve together, in guest order, and require that all draws can
+use the first draw's texture views. Each material group commits
+independently, so an active model widget can contain both native and guest
+groups. The menu backdrop
+currently reserves each fan independently. The outline keeps the
+guest's rectangle transformation and state setup.
 
-S to verify on a run: text on 03a and the menus drawn as on D3D (no
-half-pixel shift, the same weight), `Kept` lines, and segments per
-batch (`native_hud_glue::text_counts`).
+Uncovered HUD and widget helpers still build their draw packets.
+The scoped recorder can consume these packets with the resolved D3D
+draw available as ordered fallback. The host debug menu is already
+drawn by the host over the presented frame. See
+[The debug menu](../runtime/debug-menu.md).
 
-#### Native HUD quads
+**Draw state.** Native packets take their vertex and combiner programs,
+textures, flat shading, alpha comparison, fog and stipple from the
+same NV2A inputs as D3D. The GPU pipeline takes depth test/write,
+stencil operations and reference, fill, winding, clip, colour writes and
+blend from the live draw. Point or wireframe fill requires the matching
+device feature. The 1× and display copies have separate clip transforms
+and the display uses the existing glyph shader option when enabled.
+Native UI uses the live textures, including the glyph cache. The
+previous text-only atlas mirror and fixed text shader have been removed.
+Ordered native packets can join the same GPU pass as adjacent compatible
+draws.
 
-A HUD shader quad (`0x0022a664`) is one resolved draw, so it goes
-through a `DrawAdmission` (`native_hud_glue::HudAdmission`): the hook
-notes the open call's corners; the admission claims the
-`D3DDevice_End` four-vertex fan with those corners and hands the device
-a pass that draws it with what D3D resolved (`hud_gpu::ScreenDraw`):
-the vertex program (`shaders::vsh`, every register a float4 at `16 r`
-as the device's immediate draws lay them out) with the draw's
-constants and defaults, the combiner as `d3d::nv2a::guest_def` builds
-it with D3D's default final combiner (`shaders::psh`, fog off), each
-sampled stage's resident view (`ExternalTarget::stages`) with its
-sampler, `tex_scale` for linear stages, bias and bump environment, the
-blend, colour writes and cull, the clip as the scissor. The device
-reserves the pass on every copy before it gives up the draw and draws
-it on D3D when that fails. Refused, logged once per reason: fixed
-function on either side, not the immediate layout, depth on,
-stencil, alpha test, fog, stipple or not solid fill, W-buffered, a clip
-of several rectangles, and a sampled stage that is not a 2D texture, is
-P8, has signed channels or a border. Programs are translated once per
-code (`hud_gpu::ScreenGpu::program`). Counts:
-`native_hud_glue::hud_counts`.
+**Fallback.** Each early producer observes the state point of the original
+operation, including the distinction between API Begin and inline pushed
+state. Register carry is installed only on commit. The device validates
+the packet against every required target copy and commits before the hook
+changes control flow. Either an early refusal leaves the guest to issue
+its original draw or an issued draw retains its resolved D3D packet for
+ordered fallback. Outstanding push callbacks, visibility queries, replay,
+unavailable resources or attachments, unsupported shaders or methods,
+and GPU preparation failure all preserve the original path. In particular,
+the built-in diffuse shader, backend-specific shadow textures and enabled
+shader overrides use the original renderer.
 
-**Next.** (1) The A/B on 03a and the main menu with
-`impl.render.native_hud=on`: text and HUD identical, few segments per
-batch, the `Kept` and HUD lines. (2) Alpha test in both passes (the
-combiner compiler takes it). (3) The other immediate draws.
+`H2_FRAME_STATS=1` adds `native_ui_*` counters, including widget visits
+and list validation refusals (`items`, `item_refused`), early
+geometry submissions skipped (`builds_skipped`, `walk_suppressed`),
+and native ranges committed on each copy. `fallback_*` distinguishes
+geometry, order, target, state, shader, texture, upload and reservation.
+A preparation refusal may accompany a failed early reservation.
+`guest_builder_draw` counts draws that still arrive as guest packets
+and `model_guest_builder_draw` counts those inside a model widget.
+`backdrop_fallback_*` and `outline_fallback_*` distinguish a missing
+entry, incompatible inputs and failed reservations.
+`model_fallback_widget` counts widgets with a recorded refusal.
+`model_fallback_*` gives the entry, camera, caller, geometry, range
+limit, texture commit or reservation reason. The standard per-copy
+resource, validation and replay counters still apply.
+
+`H2_NATIVE_HUD_COMPARE=N` (empty means 512) disables UI replacement
+and pairs the screen/HUD fan inputs with their resolved D3D draws. The
+diagnostic does not require a native draw to succeed. The generated image
+must expose the new instruction sites for the native walk.
 
 ### Stage 5 status
 
@@ -3421,7 +3549,7 @@ to back with its native run under the same load.
 native_world_programs, native_world_layers, native_objects,
 native_transparents, native_decals, native_particles, native_lights,
 native_gels, native_shadows, native_fog, native_water,
-native_first_person, native_residual, native_post, native_hud`.
+native_first_person, native_residual, native_post, native_ui`.
 
 ### Pixels
 
@@ -3492,7 +3620,7 @@ stage switch.
 | Decals | `native_decals_walk` | At `0x00044161` ESI names one record in the callback's linked list. Read its live allocation and quad count, then skip the array submission through `0x00044190`. The guest has already marked duplicates and selected the bitmap and attribute defaults. |
 | Particles | `native_particles_walk` | At `0x0023ed5c` the guest allocator has succeeded and the emitter inputs are still live. Replace the one quad and skip its attribute writes and geometry publication in the guest. Restore EBP and return with the original stack cleanup. |
 | Effects | `native_effects_walk` | The four-vertex copy callback's source is available at `0x0004b252`. Read it directly and skip the copy and publication. For contrails, read the completed callback output at `0x0004b28c` and skip publication. Both use the live inline declaration, then return `-1` with the original stack cleanup. |
-| HUD | `native_hud_walk` | At `0x0022a7f6` the bitmap shader is set and the four transformed corners and UVs are in the local vertex array. Skip the Begin and per-vertex calls, then resume at `0x0022a854`. Text retains the existing glyph-batch path. |
+| UI and HUD | `native_ui` | The sorted widget dispatch, HUD and loading callbacks delimit ownership. Known fans and inline rectangles bypass their guest submission as described under “Native UI”. |
 | Post | `native_post_walk` | At `0x0002d565` the screen strip's Begin is published. Read the active pass and two corner rows and evaluate them with the call's MXCSR. Supply those vertices to the ordered post transaction and resume at `0x0002d8b2`. |
 
 A direct native draw drains preceding work and resolves the same streams,

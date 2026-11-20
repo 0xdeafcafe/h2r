@@ -288,7 +288,7 @@ impl RenderStates {
         match r.eax {
             2 => {
                 r.eax = 0;
-                let v = fistp(float as f64, self.fcw);
+                let v = integer_value(float, self.fcw);
                 m.set_u32(r.esp.wrapping_add(0x10), v)?;
                 r.esi = m.u16(r.ecx)? as u32;
                 self.apply_local(r, m, Path::Int)
@@ -304,8 +304,7 @@ impl RenderStates {
                 m.set_u32(r.esp.wrapping_add(0x1c), r.xmm0 as u32)?;
                 m.set_u32(r.esp.wrapping_add(0x14), 0)?;
                 let scale = f32::from_bits(r.xmm0 as u32);
-                let product = round_precision(float as f64 * scale as f64, self.fcw);
-                let v = fistp(product, self.fcw) << 24;
+                let v = alpha_value(float, scale, self.fcw);
                 m.set_u32(r.esp.wrapping_add(0x14), v)?;
                 r.edi = m.u16(r.ecx)? as u32;
                 r.eax = v;
@@ -511,6 +510,17 @@ fn pop(r: &mut Regs, m: &mut dyn GuestMemory) -> Result<u32, MemFault> {
     let v = m.u32(r.esp)?;
     r.esp = r.esp.wrapping_add(4);
     Ok(v)
+}
+
+/// Integer parameter conversion used by the render and sampler binding lists.
+pub fn integer_value(value: f32, fcw: u16) -> u32 {
+    fistp(f64::from(value), fcw)
+}
+
+/// Scaled alpha parameter, in the high byte of a D3D colour word.
+pub fn alpha_value(value: f32, scale: f32, fcw: u16) -> u32 {
+    let product = round_precision(f64::from(value) * f64::from(scale), fcw);
+    fistp(product, fcw) << 24
 }
 
 /// Rounds an integer-valued-or-not `x` by the control word's rounding

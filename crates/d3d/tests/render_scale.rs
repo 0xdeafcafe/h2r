@@ -58,10 +58,11 @@ fn share(ctx: &GfxContext) -> GfxContext {
 }
 
 fn scaled(ctx: &GfxContext, scale: u32) -> Scaled {
-    ScaledBackend::new(
+    ScaledBackend::with_single_copy(
         GfxBackend::new(share(ctx)),
         GfxBackend::new(share(ctx)),
         scale,
+        false,
     )
     .unwrap()
 }
@@ -1944,4 +1945,174 @@ fn a_frame_covered_by_a_small_level_shows_no_lighting_difference() {
     let i = ((48 * 2 * W + 40) * 4) as usize;
     assert_eq!(&e3_px[i..i + 3], &retail_px[i..i + 3]);
     assert!(e3_px.chunks(4).all(|p| p == &e3_px[i..i + 4]), "one colour over the frame");
+}
+
+#[test]
+fn single_copy_records_once_and_only_resolves_when_the_cpu_reads() {
+    let Some(ctx) = context() else { return };
+    let backend = ScaledBackend::new(GfxBackend::new(share(&ctx)), GfxBackend::new(share(&ctx)), 4).unwrap();
+    let mut d = scene(backend, Scene::FrameSizedTarget);
+    let bb = d.back_buffer().unwrap();
+    assert_eq!(d.backend.reference().batch_stats().draws, 0);
+    assert_eq!(d.backend.view().batch_stats().draws, 3);
+    assert_eq!(d.backend.stats().display_draws, 3);
+    assert_eq!(d.backend.stats().downsamples, 0);
+    assert!(d.stats().rtt_direct_samples > 0);
+    let pixels = d.backend.read_surface(bb, gfx::D3DFormat::LinA8R8G8B8, W, H,
+        d3d::GuestLayoutKind::Linear { pitch: W * 4 }).unwrap();
+    assert_eq!(pixels.len(), (W * H * 4) as usize);
+    assert_eq!(argb(&pixels, 20, 20), 0xffff0000);
+    assert_eq!(argb(&pixels, 4, 16), 0xff00ff00);
+    assert_eq!(argb(&pixels, 50, 50), 0xff102030);
+    assert_eq!(d.backend.stats().downsamples, 1);
+    assert_eq!(d.backend.stats().cpu_readbacks, 1);
+}
+
+#[test]
+fn single_copy_rtt_binds_the_scaled_allocation_and_snapshots_preserve_its_texels() {
+    let Some(ctx) = context() else { return };
+    let mut b = ScaledBackend::new(GfxBackend::new(share(&ctx)), GfxBackend::new(share(&ctx)), 4).unwrap();
+    let format = gfx::D3DFormat::LinA8R8G8B8;
+    b.create_surface(format, W, H, false).unwrap();
+    let rtt = b.create_texture_target(format, W, H).unwrap();
+    let scaled = b.view().store.get(b.view_surface(&rtt).unwrap()).unwrap().texture().clone();
+    let live = b.surface_texture(rtt).unwrap().unwrap();
+    assert_eq!(live.view.unwrap().texture, scaled);
+    assert_eq!(live.reference.texture, scaled);
+    b.clear(rtt, None, gfx::Clear::all([1., 0., 0., 1.])).unwrap();
+    let snap = b.snapshot_surface(rtt, true).unwrap().unwrap().view.unwrap().texture;
+    b.clear(rtt, None, gfx::Clear::all([0., 1., 0., 1.])).unwrap();
+    b.view_mut().flush().unwrap();
+    assert_ne!(snap, scaled);
+    assert_eq!((snap.width(), snap.height()), (W * 4, H * 4));
+    let old = gfx::readback::read_texture(&ctx, &snap, wgpu::TextureAspect::All, 4, (1, 1));
+    assert_eq!(old, [0, 0, 255, 255]);
+    assert_eq!(b.stats().downsamples, 0);
+    assert_eq!(b.stats().cpu_readbacks, 0);
+}
+
+#[test]
+fn single_copy_depth_and_stencil_read_at_guest_resolution() {
+    let Some(ctx) = context() else { return };
+    if !ctx.caps.depth32_stencil8 { return; }
+    let mut b = ScaledBackend::new(GfxBackend::new(share(&ctx)), GfxBackend::new(share(&ctx)), 4).unwrap();
+    let c = b.create_surface(gfx::D3DFormat::LinA8R8G8B8, W, H, false).unwrap();
+    let df = gfx::D3DFormat::LinD24S8;
+    let z = b.create_surface(df, W, H, true).unwrap();
+    b.clear(c, Some(z), gfx::Clear { color: None, depth: Some(1.0), stencil: Some(0x5a) }).unwrap();
+    b.clear_rects(c, Some(z), &d3d::RectClear {
+        rects: vec![d3d::PixelRect { x: 3, y: 4, width: 5, height: 6 }], color: None,
+        depth: Some(0.0), stencil: Some(0xa5),
+    }).unwrap();
+    // Reinterpret the first cleared word through an offset, one-texel
+    // colour header. It covers a 4x4 block in the GPU alias texture.
+    let desc = gfx::TextureDesc::new(gfx::D3DFormat::LinA8R8G8B8, gfx::texture::TextureKind::D2, 1, 1, 1, 1);
+    let offset = ((4 * W + 3) * 4) as usize;
+    let alias = b.depth_alias_texture(z, df, W, H, W * 4, 1, offset, &desc, Default::default())
+        .unwrap().unwrap().view.unwrap().texture;
+    b.view_mut().flush().unwrap();
+    assert_eq!((alias.width(), alias.height()), (4, 4));
+    assert_eq!(gfx::readback::read_texture(&ctx, &alias, wgpu::TextureAspect::All, 4, (1, 1)), [0, 0, 0xa5, 0]);
+    let small = gfx::TextureDesc::new(gfx::D3DFormat::LinL8, gfx::texture::TextureKind::D2, 1, 1, 1, 1);
+    let luminance = b.depth_alias_texture(z, df, W, H, W * 4, 1, offset, &small, Default::default())
+        .unwrap().unwrap().view.unwrap().texture;
+    b.view_mut().flush().unwrap();
+    assert_eq!(gfx::readback::read_texture(&ctx, &luminance, wgpu::TextureAspect::All, 4, (1, 1)), [0xa5, 0xa5, 0xa5, 255]);
+    assert_eq!(b.stats().downsamples, 0);
+    let words = b.read_depth(z, df, W, H, d3d::GuestLayoutKind::Linear { pitch: W * 4 }).unwrap().unwrap();
+    assert_eq!(words.len(), (W * H * 4) as usize);
+    assert_eq!(u32::from_le_bytes(pixel(&words, 3, 4)), 0xa5);
+    assert_eq!(u32::from_le_bytes(pixel(&words, 8, 10)), 0xffff_ff5a);
+    assert_eq!((b.stats().downsamples, b.stats().cpu_readbacks), (1, 1));
+}
+
+#[test]
+fn single_copy_visibility_counts_guest_pixels() {
+    let Some(ctx) = context() else { return };
+    let backend = ScaledBackend::new(GfxBackend::new(share(&ctx)), GfxBackend::new(share(&ctx)), 4).unwrap();
+    let (_, _, answers) = frame(backend);
+    assert_eq!(answers.count, 32 * 16 + 7 * 11);
+    assert_eq!(answers.skipped, 0);
+}
+
+#[test]
+fn single_copy_retains_pixels_and_count_tickets_when_returning_to_one() {
+    let Some(ctx) = context() else { return };
+    let mut b = ScaledBackend::new(GfxBackend::new(share(&ctx)), GfxBackend::new(share(&ctx)), 4).unwrap();
+    let format = gfx::D3DFormat::LinA8R8G8B8;
+    let color = b.create_surface(format, W, H, false).unwrap();
+    b.clear(color, None, gfx::Clear::all([0., 1., 0., 1.])).unwrap();
+    b.clear_pixel_count().unwrap();
+    let ticket = b.report_pixel_count().unwrap().unwrap();
+    b.follow_scale(|| 1);
+    b.present(color, 0).unwrap();
+    assert_eq!(b.scale(), 1);
+    assert_eq!(b.read_pixel_count(ticket).unwrap(), 0);
+    let bytes = b.read_surface(color, format, W, H, d3d::GuestLayoutKind::Linear { pitch: W * 4 }).unwrap();
+    assert_eq!(pixel(&bytes, 15, 19), [0, 255, 0, 255]);
+}
+
+#[test]
+fn single_copy_mixed_size_draw_updates_depth_without_a_second_draw() {
+    let Some(ctx) = context() else { return };
+    let backend = ScaledBackend::new(GfxBackend::new(share(&ctx)), GfxBackend::new(share(&ctx)), 4).unwrap();
+    let mut d = scene(backend, Scene::SmallTargetWritesDepth);
+    let bb = d.back_buffer().unwrap();
+    let bytes = d.backend.read_surface(bb, gfx::D3DFormat::LinA8R8G8B8, W, H,
+        d3d::GuestLayoutKind::Linear { pitch: W * 4 }).unwrap();
+    assert_eq!(argb(&bytes, 16, 16), 0xff0080ff);
+    assert_eq!(argb(&bytes, 48, 48), 0xff102030);
+    assert_eq!(d.backend.reference().batch_stats().draws, 0);
+    assert_eq!(d.backend.view().batch_stats().draws, 3);
+}
+
+#[test]
+fn single_copy_reinterprets_colour_memory_on_gpu() {
+    use gfx::texture::{DecodeOptions, TextureKind, decode_texture};
+    use gfx::D3DFormat::*;
+
+    let Some(ctx) = context() else { return };
+    let mut b = ScaledBackend::new(GfxBackend::new(share(&ctx)), GfxBackend::new(share(&ctx)), 4).unwrap();
+    let color = b.create_surface(LinA8R8G8B8, W, H, false).unwrap();
+    let source = gfx::TextureDesc::new(LinA8R8G8B8, TextureKind::D2, W, H, 1, 1);
+    let bytes: Vec<u8> = (0..W * H * 4).map(|i| (i.wrapping_mul(53) >> 1) as u8).collect();
+    assert!(b.write_surface(color, &source, &bytes).unwrap());
+
+    let options = DecodeOptions { bc_supported: false, signed: [true, false, true, false] };
+    for format in [LinL8, LinR5G6B5, A8L8, Dxt1, Dxt3, Dxt5, Yuy2, LinR8G8B8A8] {
+        let desc = gfx::TextureDesc::new(format, TextureKind::D2, 8, 8, 1, 1);
+        let expected = decode_texture(&desc, &bytes[3..], None, options).unwrap();
+        let alias = b.depth_alias_texture(color, LinA8R8G8B8, W, H, W * 4, 1, 3, &desc, options)
+            .unwrap().unwrap().view.unwrap().texture;
+        b.view_mut().flush().unwrap();
+        let (w, h) = (alias.width(), alias.height());
+        assert_eq!((w, h), (32, 32));
+        let pixels = gfx::readback::read_texture(&ctx, &alias, wgpu::TextureAspect::All, 4, (w, h));
+        for y in 0..h {
+            for x in 0..w {
+                let actual = ((y * w + x) * 4) as usize;
+                let guest = ((y / 4 * desc.width + x / 4) * 4) as usize;
+                assert_eq!(pixels[actual..actual + 4], expected.levels[0].data[guest..guest + 4], "{format:?} {x},{y}");
+            }
+        }
+    }
+    assert_eq!((b.stats().downsamples, b.stats().cpu_readbacks), (0, 0));
+}
+
+#[test]
+fn single_copy_feedback_draw_snapshots_the_active_level() {
+    let Some(ctx) = context() else { return };
+    let backend = ScaledBackend::new(GfxBackend::new(share(&ctx)), GfxBackend::new(share(&ctx)), 4).unwrap();
+    let (mut d, mut m) = create(backend, UploadPolicy::Tracked);
+    d.set_rtt_direct(true);
+    square_level(&mut m, TEX_B, LEVEL_B, 0x12, DATA_B, W, &[0; FRAME_LEN as usize]);
+    d.set_render_target(&mut m, LEVEL_B, 0).unwrap();
+    set_states(&mut d, &mut m);
+    z_state(&mut m, false, false, Z_ALWAYS);
+    d.clear(&mut m, 0, 0, 0xf0, 0xffff8000, 1.0, 0).unwrap();
+    d.set_texture(&mut m, 0, TEX_B).unwrap();
+    texel_quad(&mut d, &mut m, (0.0, 0.0, W as f32, H as f32), 0.5);
+    assert_eq!(d.backend.stats().display_draws, 1);
+    assert_eq!(d.stats().rtt_direct_samples, 1);
+    assert_eq!((d.backend.stats().downsamples, d.backend.stats().cpu_readbacks), (0, 0));
 }

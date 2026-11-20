@@ -36,8 +36,8 @@ pub struct Override {
     handler: Handler,
     pub enabled: bool,
     /// The handler acts only on the context it runs on (its registers,
-    /// stack and the memory that context sees) and returns without a Rust
-    /// continuation, so a second executor may run it as it is
+    /// stack and the memory that context sees). Any suspended state must
+    /// be portable with the guest stack so a second executor can run it
     /// ([`Dispatch::mark_context_only`]).
     pub context_only: bool,
 }

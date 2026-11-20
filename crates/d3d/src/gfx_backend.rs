@@ -165,7 +165,7 @@ pub struct GfxBackend {
     /// [`set_merge_masks`](Self::set_merge_masks).
     merge_masks: bool,
     /// Made at the first counted draw.
-    counter: Option<PixelCounter>,
+    pub(crate) counter: Option<PixelCounter>,
     /// The depth-bits pass ([`Backend::depth_level_texture`]), made on first use.
     depth_bits: Option<gfx::depth_bits::DepthBits>,
     /// The occlusion grid pass ([`Backend::request_depth_grid`]), made on
@@ -184,7 +184,7 @@ pub struct GfxBackend {
     /// Surface and depth read-backs so far ([`readbacks`](Self::readbacks)).
     pub(crate) readbacks: u64,
     /// The alias mirror ([`Backend::mirror_reserve`]).
-    mirror: Option<wgpu::Buffer>,
+    pub(crate) mirror: Option<wgpu::Buffer>,
     reports: HashMap<u64, PixelReport>,
     /// Reports recorded into the open encoder, told their submission when
     /// it is made ([`set_defer_side_passes`](Self::set_defer_side_passes)).
@@ -203,6 +203,9 @@ pub struct GfxBackend {
     /// answers every count).
     pub(crate) count_samples: bool,
     /// Fills of scaled surfaces from guest-size ones, made on first use.
+    resizer: Option<gfx::resize::Resizer>,
+    alias_decoder: gfx::surface_alias::AliasDecoder,
+    pub(crate) single_copy_aliases: bool,
     pub(crate) blitter: Option<gfx::blit::Blitter>,
     /// The interpolated reprojection's warp pass (made on first use).
     warper: Option<gfx::blit::Warper>,
@@ -272,6 +275,30 @@ pub struct BatchStats {
 }
 
 impl GfxBackend {
+    /// GPU-only transfer between single-sampled render-scale attachments.
+    pub(crate) fn resize_image(&mut self, src: gfx::surface::SurfaceId, dst: gfx::surface::SurfaceId, extent: Option<(u32, u32)>) -> Result<(), String> {
+        let s = self.store.get(src).map_err(|e| e.to_string())?;
+        let d = self.store.get(dst).map_err(|e| e.to_string())?;
+        if s.kind() != d.kind() || s.desc().samples != 1 || d.desc().samples != 1
+            || s.texture().format().has_stencil_aspect() != d.texture().format().has_stencil_aspect() {
+            return Err("incompatible render scale transfer".into());
+        }
+        if extent.is_some() && (s.wgpu_format() != d.wgpu_format() || s.kind() != gfx::surface::SurfaceKind::Color) {
+            return Err("incompatible CopyRects formats".into());
+        }
+        let (s, d) = (s.texture().clone(), d.texture().clone());
+        let extent = extent.unwrap_or((d.width(), d.height()));
+        if extent.0 == 0 || extent.1 == 0 || extent.0 > d.width() || extent.1 > d.height() {
+            return Err("render-scale transfer outside destination".into());
+        }
+        let (mut encoder, passes) = self.side_encoder()?;
+        let ctx = &self.ctx;
+        self.resizer.get_or_insert_with(|| gfx::resize::Resizer::new(&ctx.device))
+            .encode(&ctx.device, &mut encoder, &s, &d, extent);
+        self.side_done(encoder, passes);
+        Ok(())
+    }
+
     /// Counters of the GPU buffers kept for vertex cache snapshots
     /// ([`crate::vertex_cache`]).
     pub fn persistent_vertex_stats(&self) -> gfx::persistent::PersistentStats {
@@ -340,6 +367,9 @@ impl GfxBackend {
             scales: HashMap::new(),
             count_samples: true,
             blitter: None,
+            resizer: None,
+            alias_decoder: Default::default(),
+            single_copy_aliases: false,
             warper: None,
             last_submit: None,
             prev_frame_end: None,
@@ -757,7 +787,11 @@ impl GfxBackend {
                 .draws
                 .iter()
                 .any(RecordedDraw::counts_samples)
-                .then(|| self.counter.get_or_insert_with(|| PixelCounter::new(ctx)));
+                .then(|| {
+                    let counter = self.counter.get_or_insert_with(|| PixelCounter::new(ctx));
+                    counter.set_sample_stride(self.scales.get(&p.color).copied().unwrap_or(1));
+                    counter
+                });
             let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "render encode");
             if let Some(observer) = &mut self.recorded_pass_observer {
                 let source = self.store.get(p.color).map_err(|e| e.to_string())?.texture();
@@ -1731,7 +1765,7 @@ impl Backend for GfxBackend {
                 targets: (surfaces.color, surfaces.depth),
                 uploads,
                 device: self.ctx.device.clone(), queue: self.ctx.queue.clone(), color: cv, color_format: cf,
-                depth: dv, depth_format: df, size, sampled, slots, copy, stages,
+                depth: dv, depth_format: df, size, sampled, slots, copy, stages, single_display: false,
             }]))
         })();
         Ok(match attachments? {
@@ -1759,7 +1793,7 @@ impl Backend for GfxBackend {
             }
         }
         recording.stage.recorded(recording.view, recording.copy == crate::TargetCopy::Display, recording.ranges);
-        if recording.copy == crate::TargetCopy::Reference {
+        if recording.copy == crate::TargetCopy::Reference || recording.single_display {
             recording.stage.count(timeline::native::Metric::Suppressed, recording.items as u64);
         }
         self.retain_uploads(recording.uploads);
@@ -1815,6 +1849,10 @@ impl Backend for GfxBackend {
         Ok(true)
     }
 
+    fn handles_surface_aliases(&self) -> bool {
+        self.single_copy_aliases
+    }
+
     fn defers_depth_aliases(&self) -> bool {
         // Depth24Plus cannot be read at all (nor by `read_depth`).
         self.gpu_depth_aliases && self.ctx.caps.depth32_stencil8
@@ -1843,9 +1881,14 @@ impl Backend for GfxBackend {
             _ => None,
         };
         // The pass reads `D24S8` words in rows of the surface's width.
+        let scale = if (width, height) == (d.width, d.height) {
+            1
+        } else {
+            self.scales.get(&depth).copied().unwrap_or(1)
+        };
         let gpu = format == D3DFormat::LinD24S8
             && pitch == width * 4
-            && (d.width, d.height) == (width, height)
+            && (d.width, d.height) == (width.saturating_mul(scale), height.saturating_mul(scale))
             && d.samples == 1
             && texture.format() == wgpu::TextureFormat::Depth32FloatStencil8
             && offset.is_multiple_of(4)
@@ -1859,13 +1902,20 @@ impl Backend for GfxBackend {
             let words = self.guest_words.get_or_insert_with(|| gfx::guest_words::GuestWords::new(ctx));
             let layout = gfx::guest_words::WordLayout { base: (offset / 4) as u32, pitch_words };
             let flip = gfx::guest_words::sign_flip(options.signed);
-            let made = words.depth_alias(ctx, &mut enc, &texture, desc.format, (desc.width, desc.height), layout, flip);
+            let made = words.depth_alias_scaled(ctx, &mut enc, &texture, desc.format, (desc.width, desc.height), layout, flip, scale);
             // A failed pass records nothing; the passes before it stay.
             self.side_done(enc, passes);
             // Out of bounds or an odd swizzle: the CPU path says why.
             if let Ok(out) = made {
                 return Ok(Some(self.host_texture(out, TextureKind::D2)));
             }
+        }
+        if self.single_copy_aliases || !format.is_depth() {
+            let (mut enc, passes) = self.side_encoder()?;
+            let result = self.alias_decoder.encode(&self.ctx.device, &mut enc, &texture, format,
+                (width, height), pitch, offset, desc, options.signed);
+            self.side_done(enc, passes);
+            return result.map(|t| Some(self.host_texture(t, desc.kind)));
         }
         // The CPU path, as the device runs it: one read-back per depth
         // generation, decoded per texture.
@@ -1936,9 +1986,10 @@ impl Backend for GfxBackend {
         let (mut enc, passes) = self.side_encoder()?;
         let ctx = &self.ctx;
         let words = self.guest_words.get_or_insert_with(|| gfx::guest_words::GuestWords::new(ctx));
+        let scale = self.scales.get(&surface).copied().unwrap_or(1);
         let stored = match kind {
-            SurfaceKind::Color => words.store_color(ctx, &mut enc, &texture, format, (width, height), &m, layout),
-            SurfaceKind::DepthStencil => words.store_depth(ctx, &mut enc, &texture, (width, height), &m, layout),
+            SurfaceKind::Color => words.store_color_scaled(ctx, &mut enc, &texture, format, (width, height), &m, layout, scale),
+            SurfaceKind::DepthStencil => words.store_depth_scaled(ctx, &mut enc, &texture, (width, height), &m, layout, scale),
         };
         self.side_done(enc, passes);
         stored.map_err(|e| format!("mirror_store: {e}"))

@@ -61,6 +61,8 @@ use ir::{
 
 use crate::lazy::{self, Lazy, Pend};
 
+mod span;
+
 /// Everything the emitter needs to know about one owner's place in the
 /// image, decided by [`crate::plan`].
 pub struct OwnerShape<'a> {
@@ -266,6 +268,7 @@ pub fn function(f: &IrFunction, shape: &OwnerShape<'_>) -> String {
         x87,
         polled,
         fp_ready: false,
+        span: None,
         top: if x87 { crate::x87::top::hints(f) } else { BTreeMap::new() },
         lazy,
         pend: Pend::default(),
@@ -327,6 +330,7 @@ struct Emitter<'a> {
     polled: bool,
     /// A host FP control sample dominates the current register-only run.
     fp_ready: bool,
+    span: Option<(u32, span::Span)>,
     /// Guarded x87 TOP predictions at instruction entry.
     top: BTreeMap<u32, u8>,
     /// The handler's lazy flags, if it has any.
@@ -541,7 +545,21 @@ impl Emitter<'_> {
                     self.fp_ready = false;
                     self.line(0, format!("L_{:08x}:;", insn.pc));
                 }
+                if self.span.is_none() {
+                    if let Some(span) = span::group(&b.insns[i..], self.shape.selectors) {
+                        let base = span.reg.map_or_else(|| "0u".into(), |r| {
+                            let name = reg_name(r);
+                            if self.home & (1 << r.index()) != 0 { name.to_string() } else { format!("cpu->{name}") }
+                        });
+                        self.line(1, format!("H2_SPAN(sp_{:08x}, (uint32_t)({base} + {:#x}u), {}u, {}u);",
+                            insn.pc, span.start, span.len, span.rights));
+                        self.span = Some((insn.pc, span));
+                    }
+                }
                 self.insn(insn, last);
+                if self.span.as_ref().is_some_and(|(_, s)| s.offsets.is_empty()) {
+                    self.span = None;
+                }
             }
         }
         if x87 {
@@ -917,14 +935,28 @@ impl Emitter<'_> {
                 Stmt::Load { dst, addr } => {
                     let a = self.addr(addr);
                     let w = dst.width;
-                    let m = if self.in_repeat { "H2_LDR" } else { "H2_LD" };
-                    self.line(d, format!("{m}({}, {}, t{}, {pc:#x}u, {a});", ty(w), w.bytes(), dst.id));
+                    let args = format!("{}, {}, t{}, {pc:#x}u, {a}", ty(w), w.bytes(), dst.id);
+                    if let Some((start, group)) = &mut self.span {
+                        let off = group.offsets.pop_front().expect("group covers this load");
+                        let call = format!("H2_SPAN_LD(sp_{start:08x}, {off}u, {args});");
+                        self.line(d, call);
+                    } else {
+                        let m = if self.in_repeat { "H2_LDR" } else { "H2_LD" };
+                        self.line(d, format!("{m}({args});"));
+                    }
                 }
                 Stmt::Store { addr, value } => {
                     let a = self.addr(addr);
                     let w = value.width();
-                    let m = if self.in_repeat { "H2_STR" } else { "H2_ST" };
-                    self.line(d, format!("{m}({}, {}, {pc:#x}u, {a}, {});", ty(w), w.bytes(), val(value)));
+                    let args = format!("{}, {}, {pc:#x}u, {a}, {}", ty(w), w.bytes(), val(value));
+                    if let Some((start, group)) = &mut self.span {
+                        let off = group.offsets.pop_front().expect("group covers this store");
+                        let call = format!("H2_SPAN_ST(sp_{start:08x}, {off}u, {args});");
+                        self.line(d, call);
+                    } else {
+                        let m = if self.in_repeat { "H2_STR" } else { "H2_ST" };
+                        self.line(d, format!("{m}({args});"));
+                    }
                 }
                 Stmt::FaultIf { cond, fault } => {
                     self.line(d, format!("if ({}) {{ {}{} }}", val(cond), self.restore(), raise(*fault, insn)));

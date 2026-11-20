@@ -66,7 +66,7 @@ use crate::context::GfxContext;
 pub const COUNT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
 
 const SUM_WGSL: &str = r#"
-struct Rect { x: u32, y: u32, w: u32, h: u32 }
+struct Rect { x: u32, y: u32, w: u32, h: u32, stride: u32 }
 @group(0) @binding(0) var counts: TEXTURE;
 @group(0) @binding(1) var<storage, read_write> total: atomic<u32>;
 @group(0) @binding(2) var<uniform> rect: Rect;
@@ -79,7 +79,7 @@ fn sum(@builtin(global_invocation_id) id: vec3<u32>, @builtin(local_invocation_i
     }
     workgroupBarrier();
     if (id.x < rect.w && id.y < rect.h) {
-        let p = vec2<u32>(rect.x + id.x, rect.y + id.y);
+        let p = vec2<u32>(rect.x + id.x * rect.stride, rect.y + id.y * rect.stride);
         var n = 0u;
         LOAD
         if (n != 0u) {
@@ -233,6 +233,8 @@ impl std::fmt::Debug for PixelReport {
 
 /// The running sample counter (see the module docs).
 pub struct PixelCounter {
+    /// Spacing of guest pixel centres in the current host count target.
+    sample_stride: u32,
     total: wgpu::Buffer,
     single: (wgpu::BindGroupLayout, wgpu::ComputePipeline),
     multi: (wgpu::BindGroupLayout, wgpu::ComputePipeline),
@@ -285,7 +287,7 @@ fn sum_pipeline(
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(16),
+                    min_binding_size: wgpu::BufferSize::new(20),
                 },
                 count: None,
             },
@@ -323,11 +325,17 @@ impl PixelCounter {
         );
         Self {
             total,
+            sample_stride: 1,
             single: sum_pipeline(&ctx.device, false),
             multi: sum_pipeline(&ctx.device, true),
             targets: HashMap::new(),
             depths: HashMap::new(),
         }
+    }
+
+    /// Sum one coverage texel per guest pixel for a render-scaled pass.
+    pub fn set_sample_stride(&mut self, stride: u32) {
+        self.sample_stride = stride.max(1);
     }
 
     /// `CLEAR_REPORT_VALUE`: the count restarts at zero once `encoder`
@@ -437,6 +445,12 @@ impl PixelCounter {
         if rect[2] == 0 || rect[3] == 0 {
             return;
         }
+        let stride = self.sample_stride;
+        let x = rect[0].next_multiple_of(stride);
+        let y = rect[1].next_multiple_of(stride);
+        let w = (rect[0] + rect[2]).saturating_sub(x).div_ceil(stride);
+        let h = (rect[1] + rect[3]).saturating_sub(y).div_ceil(stride);
+        if w == 0 || h == 0 { return; }
         let view = self.target(ctx, size, samples).clone();
         let (bgl, pipeline) = if samples > 1 {
             &self.multi
@@ -447,7 +461,7 @@ impl PixelCounter {
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("gfx pixel count rect"),
-                contents: &rect
+                contents: &[x, y, w, h, stride]
                     .iter()
                     .flat_map(|v| v.to_le_bytes())
                     .collect::<Vec<u8>>(),
@@ -478,6 +492,6 @@ impl PixelCounter {
         });
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &group, &[]);
-        pass.dispatch_workgroups(rect[2].div_ceil(8), rect[3].div_ceil(8), 1);
+        pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
     }
 }

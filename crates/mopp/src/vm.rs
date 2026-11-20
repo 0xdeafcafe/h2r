@@ -270,14 +270,8 @@ fn walk(
                 pc += 7;
             }
             0x30..=0x53 => {
-                let key = match op {
-                    0x30..=0x4f => i64::from(op - 0x30),
-                    0x50 => byte(code, pc + 1)?,
-                    0x51 => be(code, pc + 1, 2)?,
-                    0x52 => be(code, pc + 1, 3)?,
-                    _ => be(code, pc + 1, 4)?,
-                };
-                out.push(f.key_offset.wrapping_add(key as u32));
+                let key = crate::code::terminal_key(op, |n| be(code, pc + 1, n).map(|v| v as u32))?;
+                out.push(f.key_offset.wrapping_add(key));
                 return Ok(());
             }
             0x60 => {

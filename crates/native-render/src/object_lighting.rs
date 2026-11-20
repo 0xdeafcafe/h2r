@@ -226,6 +226,12 @@ pub fn object(mem: &dyn GuestRead, handle: u32) -> Option<u32> {
 /// resolve, a parent is -1, or a parent's element holds no object.
 /// `None` when memory does not read or the chain does not end.
 pub fn root_value(mem: &dyn GuestRead, handle: u32) -> Option<u32> {
+    root_word(mem, handle).map(|v| clamp01(f32::from_bits(v)).to_bits())
+}
+
+/// Root object input before the evaluator's two COMISS instructions.
+/// The live material binder applies them under the current guest MXCSR.
+pub fn root_word(mem: &dyn GuestRead, handle: u32) -> Option<u32> {
     let zero = Some(0.0f32.to_bits());
     let mut body = object(mem, handle)?;
     if body == 0 {
@@ -241,8 +247,7 @@ pub fn root_value(mem: &dyn GuestRead, handle: u32) -> Option<u32> {
         let word = mem.read_u32(body.checked_add(OBJECT_ATTACHED & !3)?)?;
         if (word >> (8 * (OBJECT_ATTACHED & 3))) & 0xff == 0 {
             let root = at(last)?;
-            let v = f32::from_bits(mem.read_u32(root.checked_add(OBJECT_ROOT_VALUE)?)?);
-            return Some(clamp01(v).to_bits());
+            return mem.read_u32(root.checked_add(OBJECT_ROOT_VALUE)?);
         }
         let parent = mem.read_u32(body.checked_add(OBJECT_PARENT)?)?;
         if parent == u32::MAX {

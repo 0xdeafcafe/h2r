@@ -457,21 +457,7 @@ impl<B: Backend> Device<B> {
         // description, so that is checked here once per description, on
         // zeros, and the draw skips exactly as below.
         if self.backend.defers_depth_aliases() {
-            let known = self
-                .depth_alias_decodes
-                .iter()
-                .find(|(d, sign, _)| *d == desc && *sign == key.1);
-            let verdict = match known {
-                Some((_, _, v)) => v.clone(),
-                None => {
-                    let v = decode_texture(&desc, &vec![0; (len - offset as u64) as usize], None, options)
-                        .map(|_| ())
-                        .map_err(|e| e.to_string());
-                    self.depth_alias_decodes.push((desc.clone(), key.1, v.clone()));
-                    v
-                }
-            };
-            if let Err(e) = verdict {
+            if let Err(e) = self.check_alias_decode(&desc, key.1, options, total as usize) {
                 return skip(e);
             }
             if self.depth_read_generation != Some(generation) {
@@ -529,6 +515,15 @@ impl<B: Backend> Device<B> {
             },
         );
         Ok(FrameTexture::DepthAlias(info, key))
+    }
+
+    fn check_alias_decode(&mut self, desc: &gfx::TextureDesc, sign: u32, options: DecodeOptions, len: usize) -> Result<(), String> {
+        if let Some((_, _, verdict)) = self.depth_alias_decodes.iter().find(|(d, s, _)| d == desc && *s == sign) {
+            return verdict.clone();
+        }
+        let verdict = decode_texture(desc, &vec![0; len], None, options).map(|_| ()).map_err(|e| e.to_string());
+        self.depth_alias_decodes.push((desc.clone(), sign, verdict.clone()));
+        verdict
     }
 
     /// Texture `header` (`pc`) over the depth buffer's memory from byte
@@ -614,35 +609,44 @@ impl<B: Backend> Device<B> {
                 desc.format, desc.width, desc.height, c.format
             ));
         }
-        let bytes = self
-            .backend
-            .read_surface(
-                surface,
-                c.format,
-                c.width,
-                c.height,
-                GuestLayoutKind::Linear { pitch },
-            )
-            .map_err(D3dError::Backend)?;
-        if (bytes.len() as u64) < len {
-            return Err(D3dError::Backend(format!(
-                "read_surface returned {} bytes for a {len}-byte surface",
-                bytes.len()
-            )));
-        }
         let options = DecodeOptions {
             bc_supported: self.backend.bc_supported(),
             ..DecodeOptions::default()
         }
         .with_color_sign(sign);
-        let decoded = match decode_texture(&desc, &bytes[offset as usize..], None, options) {
-            Ok(d) => d,
-            Err(e) => return skip(e.to_string()),
+        let texture = if self.backend.handles_surface_aliases() {
+            if let Err(e) = self.check_alias_decode(&desc, sign, options, total as usize) {
+                return skip(e);
+            }
+            self.backend.depth_alias_texture(surface, c.format, c.width, c.height, pitch, generation,
+                offset as usize, &desc, options).map_err(D3dError::Backend)?
+                .ok_or_else(|| D3dError::Backend("missing colour alias texture".into()))?
+        } else {
+            let bytes = self
+                .backend
+                .read_surface(
+                    surface,
+                    c.format,
+                    c.width,
+                    c.height,
+                    GuestLayoutKind::Linear { pitch },
+                )
+                .map_err(D3dError::Backend)?;
+            if (bytes.len() as u64) < len {
+                return Err(D3dError::Backend(format!(
+                    "read_surface returned {} bytes for a {len}-byte surface",
+                    bytes.len()
+                )));
+            }
+            let decoded = match decode_texture(&desc, &bytes[offset as usize..], None, options) {
+                Ok(d) => d,
+                Err(e) => return skip(e.to_string()),
+            };
+            self
+                .backend
+                .upload_texture(&decoded)
+                .map_err(D3dError::Backend)?
         };
-        let texture = self
-            .backend
-            .upload_texture(&decoded)
-            .map_err(D3dError::Backend)?;
         self.stats.depth_alias_uploads += 1;
         self.depth_alias.insert(
             key,
@@ -957,6 +961,55 @@ impl<B: Backend> Device<B> {
         };
         self.stats.rtt_direct_samples += 1;
         Ok(Some((info, texture)))
+    }
+
+    /// A feedback bind needs an immutable image. Headers that reinterpret a
+    /// single drawn level can also read its GPU pixels, with guest addressing.
+    pub(super) fn rtt_alias_texture(
+        &mut self, mem: &mut dyn GuestMemory, header: u32, color_sign: u32,
+    ) -> Result<Option<(TextureInfo, B::Texture)>, D3dError> {
+        if self.rtt.is_empty() || !self.backend.handles_surface_aliases() || !self.rtt_lazy() {
+            return Ok(None);
+        }
+        let pc = PixelContainer::read(mem, header)?;
+        if pc.resource.kind() != ResourceType::Texture { return Ok(None); }
+        let data = self.cfg.address_map.to_virtual(pc.resource.data);
+        let Some((&h, &t)) = self.rtt.iter().find(|(_, t)| t.dirty && data.wrapping_sub(t.data) < t.len()) else {
+            return Ok(None);
+        };
+        let Ok(desc) = crate::texdesc::from_header(pc.format, pc.size) else { return Ok(None) };
+        let Ok(len) = crate::texdesc::total_size(&desc) else { return Ok(None) };
+        let offset = (data - t.data) as usize;
+        if len > t.len() as usize - offset || self.dirty_level_overlap(h, &t) {
+            return Ok(None); // multiple owners have to merge their bytes
+        }
+        let sign = texture_color_sign(desc.format, color_sign);
+        let options = DecodeOptions { bc_supported: self.backend.bc_supported(), ..Default::default() }.with_color_sign(sign);
+        if self.check_alias_decode(&desc, sign, options, len).is_err() {
+            return Ok(None); // e.g. P8 also requires the guest's palette
+        }
+        if h != self.render_target && h != self.depth_stencil {
+            self.refresh_rtt(mem, h)?;
+        }
+        let info = TextureInfo { header, palette: 0, format: desc.format, kind: desc.kind,
+            width: desc.width, height: desc.height, depth: desc.depth, levels: desc.levels };
+        let same = offset == 0 && sign == 0 && desc.kind == gfx::texture::TextureKind::D2 && desc.levels == 1
+            && desc.format == t.format && (desc.width, desc.height) == (t.width, t.height)
+            && match t.layout {
+                GuestLayoutKind::Linear { pitch } => pitch == desc.pitch,
+                GuestLayoutKind::Swizzled => true,
+            };
+        let texture = if same && !t.depth && gfx::format::WordFormat::of(t.format).is_some() {
+            self.backend.snapshot_surface(t.surface, t.format.texel() == gfx::format::TexelFormat::X8R8G8B8)
+        } else {
+            let pitch = match t.layout { GuestLayoutKind::Linear { pitch } => pitch, GuestLayoutKind::Swizzled => 0 };
+            self.backend.depth_alias_texture(t.surface, t.format, t.width, t.height, pitch,
+                self.depth_generation, offset, &desc, options)
+        }.map_err(D3dError::Backend)?;
+        Ok(texture.map(|texture| {
+            self.stats.rtt_direct_samples += 1;
+            (info, texture)
+        }))
     }
 
     /// Select the live level a sample can bind without decoding guest pixels.

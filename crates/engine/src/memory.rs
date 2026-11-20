@@ -28,6 +28,14 @@ pub trait GuestMemory {
     /// Store `data` at `addr`. All or nothing.
     fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), MemFault>;
 
+    /// Consume a runtime write subscription on this specific memory view.
+    /// Render hosts which enter D3D directly share its subscription with
+    /// the ABI handlers. A synthetic memory has no pending runtime writes.
+    #[cfg(feature = "runtime-glue")]
+    fn take_write_watch(&mut self, _id: runtime::WatchId) -> Result<Vec<runtime::DirtyRange>, runtime::WatchError> {
+        Ok(Vec::new())
+    }
+
     fn u8(&self, addr: u32) -> Result<u8, MemFault> {
         let mut b = [0; 1];
         self.read(addr, &mut b)?;

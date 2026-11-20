@@ -70,3 +70,55 @@ fn a_refused_native_array_leaves_the_one_ordinary_draw_for_the_caller() {
     device.draw_vertices(&mut mem, QUADLIST, 0, 4).unwrap();
     assert_eq!(device.backend.draws().len(), 1);
 }
+
+#[test]
+fn refused_native_pushed_ui_fan_preserves_state_and_the_guest_draw() {
+    use gfx::state::CullMode;
+    use gfx::vertex::PrimitiveType;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct Refuse(Mutex<Vec<d3d::ResolvedDraw>>);
+    impl d3d::DrawAdmission for Refuse {
+        fn admit(&self, snapshot: &d3d::DrawSnapshot<'_>) -> Option<(d3d::ExternalPlan, Box<dyn d3d::ExternalPass>)> {
+            self.0.lock().unwrap().push(snapshot.draw.clone());
+            None
+        }
+    }
+    let mut backend = RecordingBackend::new();
+    backend.external_passes = true;
+    let (mut device, mut mem) = create(backend, UploadPolicy::Tracked);
+    set_states(&mut device, &mut mem);
+    quad_vb(&mut mem, 0.0, 0.0, 16.0, 16.0, 0xff_11_22_33);
+    bind_quad(&mut device, &mut mem);
+    let fan = PrimitiveType::TriangleFan;
+    // Pin the simple state just as a prior Begin would. A subsequent raw
+    // guest store alone must not reach an inline draw.
+    device.begin(&mut mem, fan.xbox_value()).unwrap();
+    device.end(&mut mem).unwrap();
+    let cull = d3d::GuestLayout::HALO2.render_state_slot(d3d::state::slot::CULLMODE);
+    mem.write_u32(cull, CullMode::Cw.xbox_value()).unwrap();
+
+    let vertices = [[1., 2.], [4., 2.], [4., 7.], [1., 7.]]
+        .map(|[x, y]| [(3, [0.0, 1.0, 0.0, 1.0]), (0, [x, y, 0.0, 1.0])]);
+    let owner = Refuse::default();
+    assert!(!device.try_native_pushed_draw(&mut mem, fan, &vertices, &owner).unwrap());
+    assert!(!device.try_native_immediate_draw(&mut mem, fan, &vertices, &owner).unwrap());
+    assert!(device.backend.draws().is_empty());
+    let captured = owner.0.lock().unwrap();
+    assert_eq!(captured.len(), 2);
+    assert_eq!(captured[0].state.render.cull_mode, CullMode::None);
+    assert_eq!(captured[1].state.render.cull_mode, CullMode::Cw);
+    assert_eq!(captured[0].streams, captured[1].streams);
+
+    device.begin(&mut mem, fan.xbox_value()).unwrap();
+    for vertex in &vertices {
+        for &(register, value) in vertex {
+            device.set_vertex_data(&mut mem, i32::from(register), value).unwrap();
+        }
+    }
+    device.end(&mut mem).unwrap();
+    let draws = device.backend.draws();
+    assert_eq!(draws.len(), 1);
+    assert_eq!(*draws[0], captured[1]);
+}

@@ -930,10 +930,14 @@ makes the refused call with the render's CPU at that call
 the generated code's resume points; the render's last `ret` lands in a
 continuation that restores the game thread and carries on (the next
 launch, or the sim's D3D call). The frame wait inside it is skipped (it
-ran at the launch). A refusal beneath a Rust continuation on the render
-thread (a D3D push callback, a destroy delivery) cannot move to the game
-thread's context: it is counted as `unresumable:<call>` and the run stops
-with that name. Faults stop the run as they would serially.
+ran at the launch). When the render stack holds only callbacks created by
+`Call::answer_render_async`, the game thread takes the render's callback
+pool with its stack. Return tokens keep their identities, including any
+saved in guest registers. Each resumed poll reads and writes the current
+executor's RAM through its `Cx`. The outer render return restores the
+original game callback pool. Other live Rust callbacks, including a D3D
+push callback or a destroy delivery, still stop a fallback with
+`unresumable:<call>`. Faults stop the run as they would serially.
 
 A fallback after serviced calls had two more faults, fixed with the
 crash at present 1825 (a render-thread fault in object code at
@@ -1050,9 +1054,10 @@ followed by `after_fallback` serial frames. Rather than allowing one hook
 per run, an override can now be marked context-only
 (`Dispatch::mark_context_only`): it acts only on the context it runs on
 (its registers, guest stack and the memory that context sees, plus host
-state it only reads) and returns without a Rust continuation. The
-executor's fork keeps every marked override, whatever `allow` says, and a
-new override at the same address clears the mark. Plan hooks say it on
+state it only reads). It returns synchronously or suspends through
+`Call::answer_render_async` with owned render state. The executor's fork
+keeps every marked override, whatever `allow` says, and a new override at
+the same address clears the mark. Plan hooks say it on
 declaration (`HookRef::context_only`). The plan marks a chain when every
 hook in it says so and nothing runs after the body (`Chain::render_thread`):
 an `after` or `observe_after` hook means the body is called through the

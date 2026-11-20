@@ -8,6 +8,7 @@ description = "Hand-written Rust replacements for Halo 2 engine functions, over 
 [dependencies]
 # Field names for the accessors `record!` generates (src/view.rs).
 paste = "1"
+mopp = { path = "../mopp", optional = true }
 # For src/light_constants.rs: the original's SSE and x87 arithmetic, bit
 # for bit.
 simd.workspace = true
@@ -22,6 +23,6 @@ ir = { workspace = true, optional = true }
 lift = { workspace = true, optional = true }
 
 [features]
-runtime-glue = ["dep:runtime"]
+runtime-glue = ["dep:runtime", "dep:mopp"]
 # Seeded differential test against the lifted original (tests/differential.rs).
 differential = ["runtime-glue", "dep:analyze", "dep:xbe", "dep:ir", "dep:lift"]
