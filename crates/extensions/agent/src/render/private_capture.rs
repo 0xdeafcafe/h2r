@@ -271,7 +271,7 @@ impl FrameCapture {
         s.private.active = None;
         Some(result.map(|(reply, mut file)| {
             s.private.pinned.clone_from(&job.scene);
-            file.0.take();
+            file.0 = None;
             reply
         }))
     }
