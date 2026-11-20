@@ -10,7 +10,7 @@ use std::time::Instant;
 #[derive(Serialize, Deserialize)]
 struct Playing {
     version: u8,
-    clock: sim::metrics::TickCursor,
+    clock: sim_bench::metrics::TickCursor,
     bindings: BTreeMap<u8, u8>,
     machines: BTreeMap<u8, [u8; 6]>,
 }
@@ -105,17 +105,17 @@ pub(super) fn policy(
 mod tests {
     use super::*;
     use crate::sim_glue::Sim;
-    use sim::metrics::TickSample;
+    use sim_bench::metrics::TickSample;
     use std::path::PathBuf;
 
     #[test]
     fn restoring_an_active_sim_keeps_setup_latched_and_its_tick_limit_clock() {
-        let config = sim::config::parse_match(
+        let config = sim_bench::config::parse_match(
             "map = \"lockout\"\nmax_ticks = 3\n[[bot]]\nkind = \"phantom\"\n[[bot]]\n",
             false,
         )
         .unwrap();
-        let matched = sim::config::resolve(config, &|_| Err("no tuning files".into())).unwrap();
+        let matched = sim_bench::config::resolve(config, &|_| Err("no tuning files".into())).unwrap();
         let source = Sim::new(PathBuf::from("match"), matched.clone(), None);
         let bytes = {
             let mut s = source.0.lock();

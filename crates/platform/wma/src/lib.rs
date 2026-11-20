@@ -7,6 +7,8 @@ pub mod boundary;
 mod container;
 mod decoder;
 pub mod diagnostics;
+#[cfg(feature = "oracle")]
+pub mod oracle;
 mod tables;
 mod transform;
 pub use container::{Decoded, decode_asf};

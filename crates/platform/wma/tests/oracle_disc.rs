@@ -1,8 +1,8 @@
-#![cfg(feature = "unicorn")]
+#![cfg(feature = "oracle")]
 //! Native WMAv2 against the game's own decoder under Unicorn, on the owner's
 //! retail disc. Ignored: it reads the disc by absolute path and nothing from it
 //! is stored in the repository. Run with
-//! `cargo test -p oracle --features unicorn --release --test wma_disc -- --ignored`.
+//! `cargo test -p wma --features oracle --release --test oracle_disc -- --ignored`.
 use std::path::Path;
 
 const ISO: &str = "/Users/afr/Source/github.com/0xdeafcafe/h2recomp/disc/halo2.iso";
@@ -52,7 +52,7 @@ fn native_matches_game_decoder_within_one_lsb() {
             format.bytes_per_second, bytes_per_second,
             "stream {index} profile"
         );
-        let reference = oracle::wma::Decoder::new(&image, format, packets(&bytes))
+        let reference = wma::oracle::Decoder::new(&image, format, packets(&bytes))
             .unwrap()
             .decode(1_000_000)
             .unwrap();

@@ -33,7 +33,7 @@ fn menu() -> FakeGuest {
 fn config() -> Config {
     Config {
         map: MAP,
-        variant: Variant::Stock(sim::config::GameType::Slayer),
+        variant: Variant::Stock(sim_bench::config::GameType::Slayer),
         max_players: 2,
         live: false,
     }
@@ -132,12 +132,12 @@ fn reply(f: &GuestCall, m: &mut dyn GuestMemory) -> Regs {
 fn a_sim_waits_for_its_full_roster_and_keeps_variant_settings() {
     let test = |cx: Cx| -> EntryFuture {
         Box::pin(async move {
-            let config = sim::config::parse_match(
+            let config = sim_bench::config::parse_match(
                 "map='midship'\nscore_limit=17\n[[bot]]\n[[bot]]\n",
                 false,
             )
             .unwrap();
-            let matched = sim::config::resolve(config, &|_| unreachable!()).unwrap();
+            let matched = sim_bench::config::resolve(config, &|_| unreachable!()).unwrap();
             let mut lobby = Machine::default();
             assert!(
                 !lobby
@@ -262,14 +262,14 @@ fn a_playerless_lobby_with_only_phantoms_is_eligible_and_says_what_holds_it() {
 fn an_all_phantom_sim_starts_with_zero_local_users_and_four_phantoms() {
     let test = |cx: Cx| -> EntryFuture {
         Box::pin(async move {
-            let config = sim::config::parse_match(
+            let config = sim_bench::config::parse_match(
                 "map='lockout'\nteam_play=true\n\
                  [[bot]]\nkind='phantom'\nteam=0\n[[bot]]\nkind='phantom'\nteam=1\n\
                  [[bot]]\nkind='phantom'\nteam=0\n[[bot]]\nkind='phantom'\nteam=1\n",
                 false,
             )
             .unwrap();
-            let matched = sim::config::resolve(config, &|_| unreachable!()).unwrap();
+            let matched = sim_bench::config::resolve(config, &|_| unreachable!()).unwrap();
             let mut lobby = Machine::default();
             while !lobby
                 .open_sim(&cx, MAP, &matched, SCRATCH)
@@ -358,12 +358,12 @@ fn an_all_phantom_sim_starts_with_zero_local_users_and_four_phantoms() {
 fn a_refused_retail_start_check_is_a_wait_with_its_reason() {
     let test = |cx: Cx| -> EntryFuture {
         Box::pin(async move {
-            let config = sim::config::parse_match(
+            let config = sim_bench::config::parse_match(
                 "map='lockout'\n[[bot]]\nkind='phantom'\n[[bot]]\nkind='phantom'\n",
                 false,
             )
             .unwrap();
-            let matched = sim::config::resolve(config, &|_| unreachable!()).unwrap();
+            let matched = sim_bench::config::resolve(config, &|_| unreachable!()).unwrap();
             let mut lobby = Machine::default();
             while !lobby
                 .open_sim(&cx, MAP, &matched, SCRATCH)

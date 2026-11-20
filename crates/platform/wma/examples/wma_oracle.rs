@@ -51,7 +51,7 @@ fn main() -> Result<()> {
         format.bytes_per_second * 8,
         packets.len()
     );
-    let mut decoder = oracle::wma::Decoder::new(&image, format, packets)?;
+    let mut decoder = wma::oracle::Decoder::new(&image, format, packets)?;
     let pcm = decoder.decode(1_000_000)?;
     ensure!(!pcm.is_empty(), "oracle returned no PCM");
     let mut out = OpenOptions::new()

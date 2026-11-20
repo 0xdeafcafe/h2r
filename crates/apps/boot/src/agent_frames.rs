@@ -1,6 +1,6 @@
 //! The agent's tick marks for `render.capture` and the rows of
 //! `sim.hashes` (crates/extensions/agent's `render::CAPTURE` and
-//! `sim::hashes::HASHES`; docs/graphics/framescene.md, sections 9.2 and
+//! `sim_bench::hashes::HASHES`; docs/graphics/framescene.md, sections 9.2 and
 //! 9.3).
 //!
 //! A read-only tick observer, `agent-frames`, added with the agent's
