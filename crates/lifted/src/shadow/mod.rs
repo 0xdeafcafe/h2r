@@ -504,18 +504,14 @@ pub fn registers(c: &CpuAbi) -> BTreeMap<String, String> {
     ] {
         out.insert(n.to_string(), format!("{v:#06x}"));
     }
-    for i in 0..8 {
+    for (i, (xmm, st)) in c.xmm.iter().zip(&c.x87.st).enumerate() {
         out.insert(
             format!("xmm{i}"),
-            format!("{:#034x}", u128::from_le_bytes(c.xmm[i])),
+            format!("{:#034x}", u128::from_le_bytes(*xmm)),
         );
         out.insert(
             format!("st{i}"),
-            c.x87.st[i]
-                .iter()
-                .rev()
-                .map(|b| format!("{b:02x}"))
-                .collect(),
+            st.iter().rev().map(|b| format!("{b:02x}")).collect(),
         );
     }
     out

@@ -84,6 +84,7 @@ impl Image {
 }
 
 /// Plain SHA-256 (FIPS 180-4) as hex, only to pin the image.
+#[allow(clippy::needless_range_loop)]
 pub fn sha256(data: &[u8]) -> String {
     const K: [u32; 64] = [
         0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
@@ -154,7 +155,7 @@ pub fn sha256(data: &[u8]) -> String {
 pub struct Rng(pub u64);
 
 impl Rng {
-    pub fn next(&mut self) -> u64 {
+    pub fn next_u64(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
         let mut z = self.0;
         z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -162,7 +163,7 @@ impl Rng {
         z ^ (z >> 31)
     }
     pub fn u32(&mut self) -> u32 {
-        self.next() as u32
+        self.next_u64() as u32
     }
     pub fn below(&mut self, n: u32) -> u32 {
         self.u32() % n

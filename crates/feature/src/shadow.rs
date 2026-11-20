@@ -8,7 +8,7 @@
 //! API's `shadow.enable` turns checks on. There is no switch or variable:
 //! the agent call is the switch.
 
-pub use lifted::shadow::{Enabled, Error, Mismatch, Port, SHADOW, Shadow, Status};
+pub use lifted::shadow::{Enabled, Error, Mismatch, Port, PortFn, SHADOW, Shadow, Status};
 
 use engine::points;
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
@@ -46,7 +46,7 @@ pub fn run(
     cpu: &mut CpuAbi,
     guest: &mut Guest,
     pc: u32,
-    port: &mut dyn FnMut(&mut CpuAbi, &mut Guest) -> Result<TransferAbi, GuestFault>,
+    port: &mut PortFn<'_>,
 ) -> Result<TransferAbi, GuestFault> {
     SHADOW.run(name, cpu, guest, pc, game_tick, port)
 }

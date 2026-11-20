@@ -122,11 +122,11 @@ pub fn diff(port: &Cpu, original: &Cpu) -> Vec<RegisterDiff> {
         format!("{:#010x}", port.mxcsr),
         format!("{:#010x}", original.mxcsr),
     );
-    for i in 0..8 {
+    for (i, (a, b)) in port.xmm.iter().zip(&original.xmm).enumerate() {
         field(
             &format!("xmm{i}"),
-            format!("{:#034x}", port.xmm[i]),
-            format!("{:#034x}", original.xmm[i]),
+            format!("{a:#034x}"),
+            format!("{b:#034x}"),
         );
     }
     let hex80 = |b: &[u8; 10]| {
@@ -135,12 +135,8 @@ pub fn diff(port: &Cpu, original: &Cpu) -> Vec<RegisterDiff> {
             .map(|x| format!("{x:02x}"))
             .collect::<String>()
     };
-    for i in 0..8 {
-        field(
-            &format!("st{i}"),
-            hex80(&port.x87.st[i]),
-            hex80(&original.x87.st[i]),
-        );
+    for (i, (a, b)) in port.x87.st.iter().zip(&original.x87.st).enumerate() {
+        field(&format!("st{i}"), hex80(a), hex80(b));
     }
     let (p, o) = (&port.x87, &original.x87);
     for (name, a, b) in [
