@@ -321,7 +321,14 @@ points! { ALL;
     SIM_MOPP_RAY @ 0x0030_09e0: [fn(query: ecx, state: stack 0, program: stack 1, segment: stack 2) ret 12], Hot; "docs/perf/sim-budget.md";
     OBJECT_TRANSFORM_COMPOSE @ 0x0014_2a60: [fn(parent: ecx, child: edx, out: stack 0) -> eax ret 4], Hot; "docs/perf/sim-budget.md";
     OBJECT_POSE_MATRIX @ 0x0014_21f0: [fn(out: stack 0, pose: stack 1) ret 8], Hot; "docs/perf/sim-budget.md";
+    /// Root node transform from two axes, scale and an optional parent.
+    OBJECT_ROOT_TRANSFORM @ 0x000b_dc40: [fn(forward: eax, up: ecx, position: stack 0, scale: stack 1, mirror: stack 2, parent: stack 3, out: stack 4) ret 20], Hot; "docs/perf/sim-budget.md";
     ANIM_ROTATION_CODEC @ 0x0028_c530: [fn() ret 0], Hot; "docs/perf/sim-budget.md";
+    /// Animation channel codecs the node evaluators call per node.
+    ANIM_STATIC_ROTATION @ 0x0028_c470: [fn() ret 0], Hot; "docs/perf/sim-budget.md";
+    ANIM_FRAME_ROTATION @ 0x0028_c960: [fn() ret 0], Hot; "docs/perf/sim-budget.md";
+    ANIM_BLEND_ROTATION @ 0x0028_c790: [fn() ret 0], Hot; "docs/perf/sim-budget.md";
+    ANIM_KEYED_TRANSLATION @ 0x0028_cb70: [fn() ret 0], Hot; "docs/perf/sim-budget.md";
     COLLISION_POINT_TO_LEAF @ 0x0014_a280: [fn(node: eax, bsp: ecx, point: edx) -> eax ret 0], Hot; "docs/perf/sim-budget.md";
     COLLISION_GEOMETRY_TEST @ 0x0011_e5e0: [fn(origin: eax, center: ecx, direction: edx, radius: stack 0) -> al ret 4], Hot; "docs/perf/sim-budget.md";
     /// The HaloScript evaluator shared by argument-evaluating discarded builtins.

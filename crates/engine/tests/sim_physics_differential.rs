@@ -552,7 +552,7 @@ fn abi_cpu(c: &Cpu) -> CpuAbi {
 
 /// Guest leaves a port runs in Rust. The guest side steps through them, so
 /// the next boundary is the port's own next call or return.
-const INLINED: &[(u32, &[u32])] = &[(0xbd090, &[0x1421f0, 0x142a60])];
+const INLINED: &[(u32, &[u32])] = &[(0xbd090, &[0x1421f0, 0x142a60, 0xbdc40])];
 
 fn inlined(point: u32) -> &'static [u32] {
     INLINED.iter().find(|(p, _)| *p == point).map_or(&[], |(_, leaves)| leaves)

@@ -43,13 +43,13 @@ const ANIMATION_VALID: u32 = 0x000b_6780;
 const ANIMATION_GRAPH: u32 = 0x001c_6440;
 const MOTION_POSITION: u32 = 0x000a_98b0;
 const MOTION_BASIS: u32 = 0x000a_9940;
-const ROOT_TRANSFORM: u32 = 0x000b_dc40;
 const AFTER_ROOT: u32 = 0x0010_90d0;
 
-/// Return sites of the guest callees. The two inlined leaves have none.
-pub(super) const SITES: [u32; 18] = [
+/// Return sites of the guest callees. The inlined leaves (pose matrix,
+/// composition and the root transform) have none.
+pub(super) const SITES: [u32; 16] = [
     0xbd191, 0xbd1ac, 0xbd24c, 0xbd2a6, 0xbd2b4, 0xbd2c3, 0xbd30c, 0xbd328, 0xbd336, 0xbd358,
-    0xbd36a, 0xbd377, 0xbd382, 0xbd437, 0xbd467, 0xbd4d1, 0xbd50c, 0xbd5f5,
+    0xbd36a, 0xbd377, 0xbd382, 0xbd437, 0xbd467, 0xbd50c,
 ];
 
 fn at(a: u32, b: u32) -> u32 {
@@ -134,6 +134,14 @@ fn pose(c: &mut CpuAbi, g: &mut Guest, resume: u32) -> Result<()> {
 fn compose(c: &mut CpuAbi, g: &mut Guest, resume: u32) -> Result<()> {
     push(c, g, resume)?;
     let back = sim_native::compose(c, g)?;
+    debug_assert_eq!(back.target_pc, resume);
+    Ok(())
+}
+
+/// `call bdc40` after the caller pushed its five arguments.
+fn root(c: &mut CpuAbi, g: &mut Guest, resume: u32) -> Result<()> {
+    push(c, g, resume)?;
+    let back = sim_native::root::transform(c, g)?;
     debug_assert_eq!(back.target_pc, resume);
     Ok(())
 }
@@ -547,7 +555,8 @@ pub(super) fn update(c: &mut CpuAbi, g: &mut Guest, mut pc: u32) -> Result<Trans
                 push(c, g, c.edx)?;
                 c.eax = at(c.esp, 0x4c);
                 c.ecx = at(c.esp, 0x64);
-                return g.call(c, ROOT_TRANSFORM, SITES[15]);
+                root(c, g, 0xbd4d1)?;
+                0xbd4d1
             }
             0xbd4d1 => {
                 // Root: local pose, then the root transform as its parent.
@@ -567,7 +576,7 @@ pub(super) fn update(c: &mut CpuAbi, g: &mut Guest, mut pc: u32) -> Result<Trans
                 c.eax = ld(g, c.esp, 0x1c)?;
                 c.ebx = ld(g, c.esp, 0xfc)?;
                 push(c, g, c.eax)?;
-                return g.call(c, AFTER_ROOT, SITES[16]);
+                return g.call(c, AFTER_ROOT, SITES[15]);
             }
             0xbd50c => {
                 c.eax = ld(g, c.ebp, 0x48)?;
@@ -614,7 +623,8 @@ pub(super) fn update(c: &mut CpuAbi, g: &mut Guest, mut pc: u32) -> Result<Trans
                 c.ebx = arithmetic(c, c.ebx, 0x64, false);
                 push(c, g, c.ebx)?;
                 c.ebx = byte(c.ebx, c.edx as u8);
-                return g.call(c, ROOT_TRANSFORM, SITES[17]);
+                root(c, g, 0xbd5f5)?;
+                0xbd5f5
             }
             0xbd5f5 => return leave(c, g),
             _ => unreachable!("node matrices entered at {pc:#x}"),
