@@ -189,7 +189,6 @@ pub(crate) fn init_with_cold(
     // CLAIMED guarantees these are unset.
     let set = XBE.set(Box::leak(xbe_bytes.to_vec().into_boxed_slice())).is_ok() && TABLES.set(tables).is_ok();
     assert!(set, "fallback tables set outside init");
-    sim_bridge::shadow::SHADOW.set_source(Box::new(shadow_original));
     *STATS.lock().unwrap() = Some(Stats::default());
     Ok(())
 }
@@ -197,8 +196,9 @@ pub(crate) fn init_with_cold(
 /// The lifted original for the shadow checks (`shadow.enable`,
 /// docs/engine/shadow-exec.md): this image's own analysis, from the cache
 /// the build left, without the interpreter's unread jump-table targets.
-/// Built when checks are first turned on.
-fn shadow_original() -> Result<Box<dyn lifted::Code>, String> {
+/// Built when checks are first turned on; the run hands it to
+/// `sim_bridge::shadow::SHADOW` once the module is loaded.
+pub fn shadow_original() -> Result<Box<dyn lifted::Code>, String> {
     let bytes = *XBE.get().ok_or("no image loaded")?;
     let x: &'static xbe::Xbe<'static> =
         Box::leak(Box::new(xbe::Xbe::parse(bytes).map_err(|e| e.to_string())?));
