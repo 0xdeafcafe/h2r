@@ -6,11 +6,13 @@
 //! attachments. Only display hands its final target to the presenter.
 
 mod lighting;
+mod private;
 pub use lighting::{E3Report, PassWork};
 
 use std::ops::Range;
 
 use d3d::gfx_backend::{BatchStats, GuestDrawPass};
+use d3d::scaled::{ScaledBackend, ScaledScenePass, ScaledSurface, ScaledTexture};
 use d3d::scene_sink::{ReplayFrame, ReplayOp};
 use d3d::threaded::owner::Outputs;
 use d3d::{GfxBackend, Lighting};
@@ -126,8 +128,31 @@ fn pass_rows(frame: &ReplayFrame) -> Vec<PassRow> {
     rows
 }
 
+trait FramePass {
+    fn apply(&mut self, op: &ReplayOp) -> Result<(), String>;
+    fn read_target(&mut self, target: TargetRef) -> ReadColour;
+}
+
+impl FramePass for GuestDrawPass<'_> {
+    fn apply(&mut self, op: &ReplayOp) -> Result<(), String> {
+        GuestDrawPass::apply(self, op)
+    }
+    fn read_target(&mut self, target: TargetRef) -> ReadColour {
+        GuestDrawPass::read_target(self, target)
+    }
+}
+
+impl FramePass for ScaledScenePass<'_> {
+    fn apply(&mut self, op: &ReplayOp) -> Result<(), String> {
+        ScaledScenePass::apply(self, op)
+    }
+    fn read_target(&mut self, target: TargetRef) -> ReadColour {
+        ScaledScenePass::read_target(self, target)
+    }
+}
+
 fn record(
-    pass: &mut GuestDrawPass<'_>,
+    pass: &mut impl FramePass,
     frame: &ReplayFrame,
     fresh_targets: bool,
     lighting: Lighting,
@@ -182,6 +207,9 @@ pub fn draw_private_with_observer(
     lighting: Lighting,
     observer: Option<&mut dyn PassObserver>,
 ) -> Result<CapturedFrame, String> {
+    if scale > 1 && replay.has_mixed_target_sizes() {
+        return private::draw_mixed(backend, scene, replay, scale, lighting, observer);
+    }
     let before = backend.batch_stats();
     let mut pass = GuestDrawPass::new(backend, replay, scale)?;
     let e3 = record(&mut pass, replay, true, lighting, observer)?;
@@ -241,6 +269,35 @@ pub fn draw_display_on(
     let outputs = pass.present_with_outputs(flags, gamma)?;
     Ok((
         FrameReport::new(scene.id, lighting, e3, before, backend.batch_stats()),
+        outputs,
+    ))
+}
+
+/// Present on the scaled wrapper's authoritative images even when a row
+/// pairs a guest-size auxiliary colour level with the main scaled depth.
+pub fn draw_scaled_display_on(
+    backend: &mut ScaledBackend<GfxBackend, GfxBackend>,
+    scene: &FrameScene,
+    replay: &ReplayFrame,
+    observer: Option<&mut dyn PassObserver>,
+    targets: &std::collections::HashMap<
+        TargetRef,
+        ScaledSurface<gfx::surface::SurfaceId, gfx::surface::SurfaceId>,
+    >,
+) -> Result<
+    (
+        FrameReport,
+        Outputs<ScaledTexture<d3d::gfx_backend::HostTexture, d3d::gfx_backend::HostTexture>>,
+    ),
+    String,
+> {
+    let lighting = backend.lighting();
+    let before = backend.view().batch_stats();
+    let mut pass = ScaledScenePass::new(backend, replay, targets)?;
+    let e3 = record(&mut pass, replay, false, lighting, observer)?;
+    let (after, outputs) = pass.present(replay.flags, replay.gamma.as_deref())?;
+    Ok((
+        FrameReport::new(scene.id, lighting, e3, before, after),
         outputs,
     ))
 }

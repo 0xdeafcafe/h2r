@@ -65,7 +65,7 @@
 //! translation) counts nothing. Clearing and reporting the counter submit
 //! the pending pass first, so they stay in order with the counted draws.
 
-mod guest_draw_pass;
+pub(crate) mod guest_draw_pass;
 mod native_runs;
 
 pub use guest_draw_pass::GuestDrawPass;
@@ -1099,7 +1099,7 @@ impl GfxBackend {
         result
     }
 
-    fn submit_present(
+    pub(crate) fn submit_present(
         &mut self,
         from: Option<&GfxBackend>,
         surface: SurfaceId,
@@ -1271,6 +1271,10 @@ fn word_layout(layout: GuestLayoutKind, offset: u32) -> Result<gfx::guest_words:
 impl Backend for GfxBackend {
     type Surface = SurfaceId;
     type Texture = HostTexture;
+
+    fn frozen_images(&self, texture: &HostTexture) -> Option<crate::scene_sink::FrozenImages> {
+        Some(crate::scene_sink::FrozenImages::single(&self.ctx.device, texture))
+    }
 
     fn create_surface(
         &mut self,

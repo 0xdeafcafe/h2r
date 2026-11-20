@@ -4,17 +4,16 @@
 
 use frame_scene::TargetRef;
 
-use super::GuestDrawPass;
+use super::GfxBackend;
 use crate::backend::{Backend, ExternalCopies, SceneStage, TargetCopy};
 
-impl GuestDrawPass<'_> {
-    pub(super) fn record_stage(&mut self, stage: &SceneStage<TargetRef>) -> Result<(), String> {
+impl GfxBackend {
+    pub(crate) fn record_replay_stage(&mut self, stage: &SceneStage<TargetRef>, surfaces: crate::ExternalSurfaces<gfx::surface::SurfaceId>) -> Result<(), String> {
         let mut pass = stage.pass.lock().map_err(|_| "scene stage poisoned")?;
         if !pass.replays_scene() {
             return Err("scene stage cannot be recorded again".into());
         }
-        let surfaces = stage.surfaces.try_map(|r| self.surface(*r).ok()).ok_or("missing scene stage target")?;
-        let ExternalCopies::Ready(targets) = self.gpu.external_attachments(surfaces, [None; 4], TargetCopy::Display)? else {
+        let ExternalCopies::Ready(targets) = self.external_attachments(surfaces, [None; 4], TargetCopy::Display)? else {
             return Err("scene stage attachment is unavailable".into());
         };
         let [target] = targets.as_slice() else {
@@ -32,23 +31,23 @@ impl GuestDrawPass<'_> {
                 return Err("scene stage did not produce the promised draw packets".into());
             }
             let count = draws.packets.len();
-            (self.gpu.append_native_draws(stage.plan.stage, target.copy, target.targets, draws, &target.uploads), count)
+            (self.append_native_draws(stage.plan.stage, target.copy, target.targets, draws, &target.uploads), count)
         } else if let Some(encoded) = pass.record_encoded(target, stage.request) {
             let encoded = encoded?;
             if encoded.ranges != ranges {
                 return Err("scene stage did not encode the promised ranges".into());
             }
             let count = encoded.draws;
-            (self.gpu.append_native_encoded(stage.plan.stage, target.copy, encoded), count)
+            (self.append_native_encoded(stage.plan.stage, target.copy, encoded), count)
         } else {
             return Err("scene stage has no repeatable recording".into());
         };
         if !issued {
-            return Err(self.gpu.external_ordering_error.take().unwrap_or_else(|| "could not record scene stage".into()));
+            return Err(self.external_ordering_error.take().unwrap_or_else(|| "could not record scene stage".into()));
         }
-        self.gpu.stats.draws += draws as u64;
-        self.gpu.retain_uploads(target.uploads.clone());
-        self.gpu.submit_full_external_batch();
+        self.stats.draws += draws as u64;
+        self.retain_uploads(target.uploads.clone());
+        self.submit_full_external_batch();
         Ok(())
     }
 }
@@ -56,6 +55,7 @@ impl GuestDrawPass<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gfx_backend::GuestDrawPass;
     use crate::backend::{ExternalAttachments, ExternalEncoded};
     use crate::scene_sink::{ReplayFrame, ReplayOp};
     use crate::{ExternalPass, ExternalPassRequest, ExternalPlan, ExternalSurfaces, GfxBackend};

@@ -76,7 +76,9 @@
 //! it, so the guest sees retail's bytes. With E3 lighting the view is
 //! awake at render scale 1 too (frame buffers at 1x, shadow maps at 2x).
 
+pub mod private_scene;
 mod scene_targets;
+pub use scene_targets::ScaledScenePass;
 mod single;
 
 use std::sync::{Arc, Mutex};
@@ -378,6 +380,11 @@ pub struct ScaledBackend<R: Backend, V: ScaleView<R>> {
     reference: R,
     view: V,
     single_copy: bool,
+    /// The sealed game frame currently owns the shared images, including at 1x.
+    scene_active: bool,
+    /// At 1x E3 these original handles last left a native frame with
+    /// coherent reference, view and exported attachment contents.
+    scene_coherent: Vec<R::Surface>,
     scale: u32,
     /// The frame size: the first colour surface's (the back buffer).
     frame: Option<(u32, u32)>,
@@ -479,6 +486,8 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
         }
         Ok(Self {
             single_copy,
+            scene_active: false,
+            scene_coherent: Vec::new(),
             reference,
             view,
             scale,
@@ -567,6 +576,7 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
     /// Takes the wanted scale and lighting at a frame boundary.
     fn retarget(&mut self, scale: u32, lighting: Lighting) {
         let scale = scale.clamp(1, MAX_SCALE);
+        if scale != self.scale || lighting != self.lighting { self.scene_coherent.clear(); }
         let was_awake = self.awake();
         // A scaled shadow can be the only up-to-date image in single-copy
         // mode. Preserve it before retiring or handing it to the exact path.
@@ -973,6 +983,7 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
 
     /// The reference, mutably.
     pub fn reference_mut(&mut self) -> &mut R {
+        self.scene_coherent.clear();
         &mut self.reference
     }
 
@@ -983,6 +994,7 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
 
     /// The view, mutably.
     pub fn view_mut(&mut self) -> &mut V {
+        self.scene_coherent.clear();
         &mut self.view
     }
 
@@ -1036,6 +1048,7 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
     /// Before the reference changes guest-size surface `s`: the view's
     /// recorded draws that sample it must reach the GPU first.
     fn before_shared_write(&mut self, s: &ScaledSurface<R::Surface, V::Surface>) {
+        self.scene_coherent.clear();
         if self.live(s.view).is_none() && self.view_pending {
             self.view_pending = false;
             if let Err(e) = self.view.submit_recorded() {
@@ -1181,6 +1194,12 @@ type Tex<R, V> = ScaledTexture<<R as Backend>::Texture, <V as Backend>::Texture>
 impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
     type Surface = Surf<R, V>;
     type Texture = Tex<R, V>;
+
+    fn frozen_images(&self, texture: &Self::Texture) -> Option<crate::scene_sink::FrozenImages> {
+        let reference = self.reference.frozen_images(&texture.reference)?.reference;
+        let display = texture.view.as_ref().and_then(|t| self.view.frozen_images(t)?.display);
+        Some(crate::scene_sink::FrozenImages { reference, display })
+    }
 
     fn create_surface(
         &mut self,
@@ -1416,6 +1435,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         flags: u32,
         gamma: Option<&[u8; 768]>,
     ) -> Result<(), String> {
+        self.scene_coherent.clear();
         if self.single() {
             self.view.present_with_gamma(self.image(surface), flags, gamma)?;
             self.stats.view_frames += 1;
@@ -1470,6 +1490,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         dst: Self::Surface,
         h: [[f32; 3]; 3],
     ) -> Result<bool, String> {
+        self.scene_coherent.clear();
         if self.single() {
             return self.view.warp_surface(self.image(src), self.image(dst), h);
         }
@@ -1879,6 +1900,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
     }
 
     fn commit_external(&mut self, recording: crate::ExternalRecording) {
+        self.scene_coherent.clear();
         if recording.copy == crate::TargetCopy::Display {
             self.stats.display_draws += recording.ranges as u64;
         } else {
@@ -1905,6 +1927,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         request: crate::backend::ExternalPassRequest,
         pass: Box<dyn crate::backend::ExternalPass>,
     ) -> Result<bool, String> {
+        self.scene_coherent.clear();
         if self.single() {
             let levels = sampled.into_iter().map(|s| s.map(|s| self.image(s))).collect();
             let pass = SharedPass(Arc::new(Mutex::new(pass)), crate::TargetCopy::Display);
