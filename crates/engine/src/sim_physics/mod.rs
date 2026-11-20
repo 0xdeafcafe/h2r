@@ -7,6 +7,8 @@ use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
 
 mod colors;
 mod havok;
+mod first_person;
+mod light;
 mod support;
 mod observer;
 mod objects;
@@ -25,6 +27,12 @@ pub struct Port {
 }
 
 pub const PORTS: &[Port] = &[
+    Port { point: &points::FIRST_PERSON_POSE_UPDATE, switch: "sim.native_first_person_pose",
+           resumes: first_person::POSE_SITES, generated_sites: first_person::POSE_REST, run: first_person::pose },
+    Port { point: &points::FIRST_PERSON_FILTER_UPDATE, switch: "sim.native_first_person_filters",
+           resumes: first_person::FILTER_SITES, generated_sites: first_person::FILTER_REST, run: first_person::filters },
+    Port { point: &points::LIGHT_RECORD_UPDATE, switch: "sim.native_light_record",
+           resumes: light::SITES, generated_sites: &[], run: light::update },
     Port { point: &points::HAVOK_SOLVER, switch: "sim.native_havok_solver",
            resumes: havok::SOLVER_SITES, generated_sites: havok::SOLVER_REST, run: havok::solve },
     Port { point: &points::HAVOK_SUPPORT_VERTICES, switch: "sim.native_havok_support_vertices",
@@ -125,9 +133,9 @@ pub fn supported(port: &Port, cpu: &CpuAbi, guest: &Guest) -> bool {
             return false;
         }
     }
-    if [points::HAVOK_SOLVER.base, points::OBJECT_SPATIAL_PORTAL.base, points::OBSERVER_RESULT.base].contains(&entry)
+    if [points::FIRST_PERSON_FILTER_UPDATE.base, points::HAVOK_SOLVER.base, points::OBJECT_SPATIAL_PORTAL.base, points::OBSERVER_RESULT.base].contains(&entry)
         && cpu.x87.control & 0x3f != 0x3f { return false; }
-    ![points::HAVOK_SOLVER.base, points::HAVOK_SUPPORT_VERTICES.base, points::OBJECT_SPATIAL_PORTAL.base, points::OBJECT_SPATIAL_VISIT.base,
+    ![points::FIRST_PERSON_FILTER_UPDATE.base, points::LIGHT_RECORD_UPDATE.base, points::HAVOK_SOLVER.base, points::HAVOK_SUPPORT_VERTICES.base, points::OBJECT_SPATIAL_PORTAL.base, points::OBJECT_SPATIAL_VISIT.base,
       points::OBJECT_CHANGE_COLORS.base, points::OBSERVER_RESULT.base].contains(&entry)
         || cpu.mxcsr & 0x1f80 == 0x1f80
 }

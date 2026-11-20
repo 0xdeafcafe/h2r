@@ -144,6 +144,61 @@ fn solver_fixture(m: &mut FlatMemory, c: &mut Cpu, case: u32) {
     c.mxcsr |= (case%4)<<13;
 }
 
+fn light_fixture(m:&mut FlatMemory, case:u32) {
+    let (lights,light,def,tags,object,clock)=(DATA+0x9000,RECORDS+0x7000,DATA+0xa000,DATA+0xb000,RECORDS+0xa000,DATA+0xc000);
+    word(m,0x4e030c,lights);
+    word(m,lights+68,light);
+    word(m,STACK+4,0);
+    word(m,light+4,1);
+    word(m,points::TAG_ENTRIES.base,tags);
+    word(m,tags+16+8,def);
+    word(m,DATA+12+8,object);
+    word(m,light+76,if case>=3 {1} else {u32::MAX});
+    word(m,light+88,u32::MAX);
+    word(m,light+84,if case==2 {1} else {65535});
+    m.bytes[(light+2) as usize]=[0,1,1,16,3,10][case as usize];
+    word(m,light+204,0.5f32.to_bits());
+    for off in (64..120).step_by(4) {
+        word(m,def+off,((off as f32-80.0)/17.0).to_bits());
+    }
+    for (off,v) in [(8,0.5f32),(12,0.25),(176,1.5)] {word(m,def+off,v.to_bits());}
+    word(m,0x510c54,clock);
+    word(m,clock,30<<16);
+    word(m,clock+8,19);
+    word(m,object+688,0.4f32.to_bits());
+    m.bytes[(object+170) as usize]=0;
+}
+
+fn first_person_fixture(m:&mut FlatMemory,case:u32) {
+    let (user,palette,identity,weapon,object,tags)=(RECORDS,RECORDS+0x10000,DATA+0x5000,DATA+0x6000,DATA+0x7000,DATA+0x8000);
+    let (variant,model,body,globals,types,clock)=(DATA+0x9000,DATA+0xa000,DATA+0xb000,DATA+0xc000,DATA+0xd000,DATA+0xe000);
+    word(m,STACK+4,0);word(m,STACK+8,0);
+    word(m,0x4e9bc8,user);word(m,0x4e9bc4,palette);word(m,0x4687d8,identity);
+    word(m,user+4,if case==0 {u32::MAX} else {1});
+    let slot=user+12;
+    word(m,slot+4,if case==0 {u32::MAX} else {1});
+    word(m,user+8,0);word(m,DATA+12+8,object);word(m,object,2);
+    word(m,points::TAG_ENTRIES.base,tags);word(m,tags+2*16+8,weapon);
+    word(m,weapon+684,variant);word(m,variant+4,3);word(m,tags+3*16+8,model);
+    word(m,0x4e034c,globals);word(m,globals+316,types);word(m,types+4,4);
+    word(m,tags+4*16+8,body);
+    for (i,def) in [model,body].into_iter().enumerate() {
+        let count=case.saturating_sub(1)%4;
+        let nodes=DATA+0xf000+i as u32*512;
+        word(m,def+72,count);word(m,def+76,nodes);
+        for j in 0..3 {
+            word(m,slot+252+256*i as u32+4*j,if j==1 {65535} else {j});
+            for k in 0..24 {word(m,nodes+96*j+4*k,0xabc0+j*90+k+i as u32);}
+        }
+        word(m,slot+244+4*i as u32,if case==3 {0} else {count});
+    }
+    for j in 0..8 {word(m,identity+4*j,0x2000+j);}
+    word(m,0x510c54,clock);word(m,clock+4,(1.0f32/30.0).to_bits());
+    for (i,v) in [0.25f32,-0.0,1.0,f32::NAN].into_iter().enumerate() {
+        word(m,weapon+736+4*i as u32,v.to_bits());
+    }
+}
+
 fn observer_fixture(m: &mut FlatMemory, c: &mut Cpu, case: u32) {
     let view = RECORDS;
     let axis = RECORDS + 0x400;
@@ -299,7 +354,7 @@ fn compare(port: &Port, insns: &BTreeMap<u32, ir::IrInsn>, mut mem: FlatMemory, 
             let first = mem.bytes.iter().zip(ram).position(|(a,b)| a != b).unwrap();
             panic!("{} first different byte at {first:#x}", why());
         }
-        if stop.is_some() { return; }
+        if stop.is_some() || (actual.kind == abi::CALL && port.generated_sites.contains(&actual.resume_pc)) { return; }
         if actual.kind == abi::RETURN {
             assert_eq!(actual.target_pc, EXIT);
             return;
@@ -312,6 +367,10 @@ fn compare(port: &Port, insns: &BTreeMap<u32, ir::IrInsn>, mut mem: FlatMemory, 
             0x131c20 | 0x31c7d0 => 0,
             0x31c520 | 0x31c530 => 4,
             SUPPORT_CHILD => 12,
+            0x16898b | 0x1c62f0 | 0x1cbd30 | 0x166561 => 0,
+            0x167e86 => 8, 0x11eed0 => 20,
+            0xbad50 | 0x17ca10 | 0xbaf80 | 0xb9ce0 | 0xb9d20 | 0xc3220 => 0,
+            0xc2d00 => 4, 0xc0b00 => 16, 0x131d60 => 8,
             0xbef30 | 0x14a5b0 => 20,
             0xb8940 | 0xb8a10 => 8,
             0xbba20 | 0xa9570 | 0x1cd4e0 | 0x1ced00 | 0x108cd0 | 0xbe1d0 => 0,
@@ -355,6 +414,8 @@ fn compare(port: &Port, insns: &BTreeMap<u32, ir::IrInsn>, mut mem: FlatMemory, 
         cpu.gpr[0] = match target {
             0x31c520 | 0x31c530 => cpu.gpr[1] + mem.read_u32(sp+4).unwrap()
                 * if target == 0x31c520 {32} else {48},
+            0x16898b => 0, 0x1cbd30 => case%4,
+            0xbaf80 => 1,
             0x120850 => case % 3,
             0xbab40 => n % 2,
             0x14a5b0 => 2,
@@ -362,7 +423,8 @@ fn compare(port: &Port, insns: &BTreeMap<u32, ir::IrInsn>, mut mem: FlatMemory, 
             _ => answer,
         };
         cpu.gpr[1] = answer.rotate_left(9);
-        cpu.gpr[2] = !answer;
+        // 16898b is a leaf called with the live tag table in EDX.
+        if target != 0x16898b {cpu.gpr[2] = !answer;}
         cpu.gpr[4] = sp + 4 + cleanup;
         cpu.eip = next;
         regs = abi_cpu(&cpu);
@@ -400,6 +462,10 @@ fn native_simulation_matches_xbe() {
             if [points::OBJECT_PRE_UPDATE.base, points::OBJECT_POST_UPDATE.base].contains(&port.point.base) {
                 object_fixture(&mut m, case);
             }
+            if [points::FIRST_PERSON_POSE_UPDATE.base,points::FIRST_PERSON_FILTER_UPDATE.base].contains(&port.point.base) {
+                first_person_fixture(&mut m,case);
+            }
+            if port.point.base == points::LIGHT_RECORD_UPDATE.base { light_fixture(&mut m,case); }
             if port.point.base == points::HAVOK_SOLVER.base { solver_fixture(&mut m,&mut cpu,case); }
             if port.point.base == points::HAVOK_SUPPORT_VERTICES.base { support_fixture(&mut m,&mut cpu,case); }
             if port.point.base == points::OBSERVER_RESULT.base { observer_fixture(&mut m, &mut cpu, case); }

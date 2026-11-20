@@ -354,6 +354,10 @@ impl Dispatch {
         self.generated.get(&addr).cloned()
     }
     /// The owner's original handler, its selector and the owner address.
+    pub(crate) fn original_resume(&self, pc: u32) -> Option<(Handler,u32)> {
+        let r = self.resumes.get(&pc)?;
+        Some((self.resolve_original(r.owner)?, r.selector))
+    }
     pub(crate) fn resolve_resume(&self, pc: u32) -> Option<(Handler, u32, u32)> {
         let r = self.resumes.get(&pc)?;
         if let Some(owner) = r.native_owner

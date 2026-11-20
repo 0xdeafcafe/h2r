@@ -203,6 +203,11 @@ impl Runtime {
             .unwrap_or_else(|e| e.into_inner())
             .fork(keep, refuse)
     }
+    /// Original owner and selector for a guest return or loop checkpoint.
+    pub fn resolve_original_resume(&self, pc: u32) -> Option<(OriginalHandler,u32)> {
+        self.dispatch.read().unwrap_or_else(|e| e.into_inner()).original_resume(pc)
+            .map(|(handler,selector)| (OriginalHandler(handler),selector))
+    }
     pub fn resolve_original(&self, pc: u32) -> Option<OriginalHandler> {
         self.dispatch
             .read()
