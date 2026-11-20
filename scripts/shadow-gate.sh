@@ -61,7 +61,6 @@ sim_physics=(
   sim.native_spatial_portal
   sim.native_unit_aim
   sim.native_unit_update
-  sim.native_light_record
   sim.native_first_person_pose
   sim.native_first_person_filters
   sim.native_observer_camera

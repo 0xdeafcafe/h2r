@@ -38,7 +38,7 @@ Caller chains are static paths through the retail image identified in the engine
 | `0x0031c940` | 0.55 | 0.63 | 0.62 | Tick → world physics → 311100 → 30fef0 → 316a20 → 31c100 → 31c940 | Havok world step. The specific solver operation is unresolved. | Yes |
 | `0x0014a280` | 0.54 | 0.55 | 0.55 | Sound service → 127400 → 11bed0 → 14a280 | BSP point-to-leaf. Shared with observer 16f280 and collision query 1697c0. | Yes |
 | `0x000bd090` | 0.53 | 1.81 | 0.58 | Tick → post → bc820 → bd090 | Object transform/animation update. Also called from the object creation path b7b40 → bd020. | Yes |
-| `0x000c0c80` | 0.49 | 1.02 | 0.51 | Tick → c1400 → c0c80 | Light record update. Reads object function outputs and writes the light datum. | Yes, except the fixed point below |
+| `0x000c0c80` | 0.49 | 1.02 | 0.51 | Tick → c1400 → c0c80 | Light record update. Reads object function outputs and writes the light datum. | Yes |
 | `0x002ff8b0` | 0.48 | 0.49 | 0.49 | Structure collision → 1eea50 → 2df640 → 300150 → 2ff8b0 | Integer MOPP box traversal for contact candidates. Recursive. | Yes |
 | `0x003048a0` | 0.48 | 0.64 | 0.56 | Convex collision agent → 2daf70 → 2ee610 → 3048a0 | Reconstructs support vertices from cached feature IDs. Also reachable through agent method table slot 412c68. | Yes |
 | `0x001697c0` | 0.47 | 1.35 | 0.52 | Weapon fire → 1a4c00 → 1697c0 | Collision query shared with observer 16f280 → 170fd0 → 171830 and decal placement 17e670. | Yes |
@@ -81,14 +81,14 @@ The instruction list identifies 11 more owners. Their hottest instruction can ra
 ### Headless guest dependencies
 
 - **First person.** At `1380a0` the tick calls `165dc1`. Its four slot checks at `165de2` already bypass `166d75` and `16760c` for unmapped local users. A signed-in local player has a mapped slot. Sim hosts leave all four slots unmapped. In that case `166d75` advances the second engine RNG word (`[4e7408]+4`, writes at `1674f9` and `167539`). The pose path through `16760c → bd970 → 1cb410 → 1cb3b0 → 1dd630` can select either RNG word, including the hashed seed at `1dd6e1`. Evaluation also requests shared animation resources (`1678d7 → 1c6f60 → 1dd9d0 → 1236f0`). Effect update `176e40 → 1792b0 → 179fb0 → 17aec0 → 1664da` reads the resulting hand node matrices, and the observer reads the transform at slot `+2098` through `16ebf0`. Keep the weapon and animation update for every mapped seat.
-- **Lights.** `c1400` owns the datum walk, expiry and spatial links. `c0c80` can evaluate an attached object's functions at `c0dc4` and change light-list membership through `c2d00` or `c3220`. The light profile's `impl.sim.static-light` bypasses only a repeated update from `c1484` when the unowned, untimed, already active light and its current tag agree on every value the guest would write. With no parent, function or timer, `c0f05` copies intensity from datum `+cc` and the two RGB triples and brightness from the tag. Zero counts at tag `+c4/+cc/+d4` make `c0b00` discard its phase calculation. At unit intensity the radius calculation at `c11d7` returns the upper radius. The hook compares all output bits, including the doubled brightness, and admits in-range finite values only. With positive radius and a nonblack colour, the already-set active bit takes the exit at `c125c` without relinking. The comparisons use live memory on every invocation. All other records run the guest body. The enclosing walk always runs.
+- **Lights.** `c1400` owns the datum walk, expiry and spatial links. `c0c80` can evaluate an attached object's functions at `c0dc4` and change light-list membership through `c2d00` or `c3220`. Under `impl.sim.native.objects` the walk, the record update, its modulation step `c0b00` and the list operations are Rust bodies ([object-update.md](../engine/object-update.md), "Slice 5 bodies"), so a placed light's update runs with no runtime dispatch between it and the walk; the lists themselves (`1cac60`, `1cae40`, `16ba40`) stay guest code.
 - **Observer.** `171d90` rewrites the per-seat basis at `+20..+37`, FOV at `+4c` and scale at `+50`. After its call at `171291`, `170fd0` uses the basis to place the camera and calls `171830` for collision. Particle input at `248a31` uses that same scale. The observer also reaches the shared resource cache through `3f450 → 3bcb0 → 12ce00`. Keep camera derivation, collision and resource requests. [Render and simulation dependencies](../graphics/pipelined-render.md)
 - **Sound.** `127805` passes a listener point to `11bed0`, which calls `14a280` and returns the leaf, cluster and BSP. The listener stores the result at `127b04..127b0d`. Code at `221dd6..221e14` uses the cluster for a transmission threshold. The verdict at `127d9e` affects nearest-listener selection. Substituting a constant can change which voices play and when their packets complete, even on the silent clock. Keep the listener update, BSP queries, sound service and voice scheduling. Weapon collision shares `14a280`. [Listener ownership](../game/bots.md#43-hiding-the-views-traced) · [Clock-only host](../live/dedicated-host.md#light-host)
 
 - `impl.sim.observer-resources` shortens the current cluster's prediction list at `3f549 → 16e5e0`. In mode 1, types 0, 7 and 8 branch at `16e61c`, `16e6d6` and `16e6e8` straight to the common loop tail. Those cases issue no calls, touch no persistent state and leave accumulated success unchanged. The hook checks up to 64 trailing entries and passes a shortened block header in two unused caller stack words. The guest still executes the prefix over the same loaded BSP metadata and handles every cache request. The cluster's neighbour scan and its separate call at `3f619` run as before. Counting each retail cluster once, 298 of 616 entries qualify on Lockout (16 clusters) and 864 of 1,495 on Waterworks (56 clusters). Tick cost depends on which clusters the cameras visit. [Cluster resource layout](../formats/structure-bsp.md)
 - `impl.sim.submix-fx` skips conversion of obstruction and room levels into reverb and filter coefficients at `2211e0`. Its caller at `220fbd` updates the submix state, calls the leaf, then marks the record valid. The leaf builds two stack descriptors. The silent path supplies neutral descriptors to the same `SetI3DL2Source` and `SetFilter` calls, in order, reloading the buffer handle between calls and returning the final HRESULT. Either setter can deliver a pending stream callback. These parameters shape PCM on a mix-in. The clock-only mixer advances voice cursors and completion events without using the mix-in filter or room gains. The guest's sound admission, pitch, DSP submission points and callback processing still run. [DirectSound setters](../../crates/platform/dsound/src/state.rs) · [Callback delivery](../../crates/platform/dsound/src/register.rs) · [Audio clock](../../crates/platform/audio/src/mixer.rs)
 
-All three switches default on only in the light profile. Normal play and a sim with `-host-light` install none of the hooks. Static analysis used the retail image and map data offline. The coordinator can use the existing sim report for both state hashes and timing.
+Both switches default on only in the light profile. Normal play and a sim with `-host-light` install none of the hooks. Static analysis used the retail image and map data offline. The coordinator can use the existing sim report for both state hashes and timing.
 
 ## Subsystem boundaries
 
@@ -148,8 +148,8 @@ Use one optimised coordinator-built CLI and its full clang image for every arm. 
 set -euo pipefail
 out=$(mktemp -d "${RUSH_KEEP:?}/guest-skips.XXXXXX")
 unset H2_PROFILE H2_TIMELINE H2_HOST_AUDIT H2_LOCKSTEP H2_HOST_MODULE H2_SERVER_MAP_DIR
-off='-impl.sim.static-light,-impl.sim.observer-resources,-impl.sim.submix-fx'
-on='impl.sim.static-light,impl.sim.observer-resources,impl.sim.submix-fx'
+off='-impl.sim.observer-resources,-impl.sim.submix-fx'
+on='impl.sim.observer-resources,impl.sim.submix-fx'
 
 run_arm() (
     arm=$1; pass=$2; arena=$3
@@ -180,17 +180,17 @@ for case_id in lockout waterworks; do
         bot: [range(4) as $i | {name: (["Red 1","Blue 1","Red 2","Blue 2"][$i]),
             skill: "legendary", team: ($i % 2)}]
     }' > "$out/$case_id.json"
-    for arm in off repeat static-light observer-resources submix-fx all; do
+    for arm in off repeat observer-resources submix-fx all; do
         run_arm "$arm" parity on
         diff -u <(jq -c '."match", .state_hashes_v1[]' "$out/$case_id.parity.off.json") \
                 <(jq -c '."match", .state_hashes_v1[]' "$out/$case_id.parity.$arm.json")
     done
     for pass in 1 2 3; do
-        arms=(off static-light observer-resources submix-fx all)
-        if [[ $pass == 2 ]]; then arms=(all submix-fx observer-resources static-light off); fi
+        arms=(off observer-resources submix-fx all)
+        if [[ $pass == 2 ]]; then arms=(all submix-fx observer-resources off); fi
         for arm in "${arms[@]}"; do run_arm "$arm" "$pass" off; done
     done
-    for arm in off static-light observer-resources submix-fx all; do
+    for arm in off observer-resources submix-fx all; do
         for pass in 1 2 3; do
             diff -u <(jq -c '."match", .state_hashes_v1[]' "$out/$case_id.1.off.json") \
                     <(jq -c '."match", .state_hashes_v1[]' "$out/$case_id.$pass.$arm.json")
@@ -202,7 +202,7 @@ for case_id in lockout waterworks; do
 done
 ```
 
-The `repeat` arm checks baseline repeatability before any flag comparison. A diff shows the first differing tick, including whether the gameplay or checkpoint-arena digest changed. If A/A differs, keep both reports and resolve repeatability before attributing a difference to a skip. For each case report each arm's median, its difference from `off` in ms/tick and the ratio `off / arm`. Only an all-on ratio of at least 2 meets the throughput target. For guest attribution, run the pair below in the same shell with a profiling-enabled CLI. Compare on-CPU guest sample shares and per-function counts across the same 1,800 ticks. Use the unprofiled medians for the speedup. The 1.02% inclusive light sample covers all light records; only qualifying records can contribute. The profile gives no isolated savings estimate for observer prediction or submix coefficients.
+The `repeat` arm checks baseline repeatability before any flag comparison. A diff shows the first differing tick, including whether the gameplay or checkpoint-arena digest changed. If A/A differs, keep both reports and resolve repeatability before attributing a difference to a skip. For each case report each arm's median, its difference from `off` in ms/tick and the ratio `off / arm`. Only an all-on ratio of at least 2 meets the throughput target. For guest attribution, run the pair below in the same shell with a profiling-enabled CLI. Compare on-CPU guest sample shares and per-function counts across the same 1,800 ticks. Use the unprofiled medians for the speedup. The profile gives no isolated savings estimate for observer prediction or submix coefficients.
 
 ```bash
 case_id=waterworks

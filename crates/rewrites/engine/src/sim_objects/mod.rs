@@ -35,6 +35,8 @@ mod machine;
 mod projectile;
 mod scenery;
 mod sse;
+// Slice 5: lights.
+mod lights;
 
 use crate::points::{self, Point};
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
@@ -124,6 +126,14 @@ pub const BODIES: &[Body] = &[
     Body { point: &points::CRATE_UPDATE, sites: &bloc::CRATE_SITES, run: bloc::crate_update },
     Body { point: &points::CREATURE_UPDATE, sites: &creature::CREATURE_SITES, run: creature::creature_update },
     Body { point: &points::CREATURE_POST_UPDATE, sites: &creature::CREATURE_POST_SITES, run: creature::creature_post_update },
+    // Slice 5: the light walk, the record update and its modulation step,
+    // and the light-list operations (`lights`).
+    Body { point: &points::LIGHTS_UPDATE, sites: &lights::walk::WALK_SITES, run: lights::walk::walk },
+    Body { point: &points::LIGHT_RECORD_UPDATE, sites: &lights::record::RECORD_SITES, run: lights::record::record },
+    Body { point: &points::LIGHT_RECORD_PHASE, sites: &lights::phase::PHASE_SITES, run: lights::phase::phase },
+    Body { point: &points::LIGHT_LINK, sites: &lights::list::LINK_SITES, run: lights::list::link },
+    Body { point: &points::LIGHT_UNLINK, sites: &lights::list::UNLINK_SITES, run: lights::list::unlink },
+    Body { point: &points::LIGHT_EXPIRE, sites: &lights::list::EXPIRE_SITES, run: lights::list::expire },
 ];
 
 /// The bodies [`drive`] runs and fuses, indexed by entry and site.

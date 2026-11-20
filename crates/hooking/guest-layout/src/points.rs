@@ -1233,6 +1233,17 @@ points! { ALL;
     CREATURE_UPDATE @ 0x0011_8700: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
     /// Creature post-physics update: slot `+44` of `crea`.
     CREATURE_POST_UPDATE @ 0x0011_8b80: [fn(object: stack 0) ret 4], Hot; "docs/engine/object-update.md";
+    // Slice 5 of docs/engine/sim-rewrite-objects.md: lights.
+    /// The tick's light walk: every live light's record update, relink and expiry.
+    LIGHTS_UPDATE @ 0x000c_1400: [fn() ret 0], Hot; "docs/engine/object-update.md";
+    /// A light record's modulation step (brightness, colour and the two outputs at `[out]`), called by `LIGHT_RECORD_UPDATE`.
+    LIGHT_RECORD_PHASE @ 0x000c_0b00: [fn(colour: eax, block: ecx, light: stack 0, input: stack 1, brightness: stack 2, out: stack 3) ret 16], Hot; "docs/engine/object-update.md";
+    /// Place an active light and add it to the light lists.
+    LIGHT_LINK @ 0x000c_2d00: [fn(light: stack 0) ret 4], Hot; "docs/engine/object-update.md";
+    /// Remove an active light from the light lists.
+    LIGHT_UNLINK @ 0x000c_3220: [fn(light: eax) ret 0], Hot; "docs/engine/object-update.md";
+    /// Expire a light: unlink it, update its marker parent's flag when `notify`, free the datum.
+    LIGHT_EXPIRE @ 0x000c_3260: [fn(light: stack 0, notify: stack 1) ret 8], Hot; "docs/engine/object-update.md";
 }
 
 /// The point at `base`, if the table names one.
