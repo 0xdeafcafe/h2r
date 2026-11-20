@@ -430,6 +430,7 @@ struct Inner {
     /// When the list was last asked for, and whether that read failed.
     asked: Option<Instant>,
     failed: bool,
+    signin_wait_logged: bool,
     in_flight: bool,
     /// The maps' pictures by map file name; None until read (again).
     pictures: Option<BTreeMap<String, u32>>,
@@ -471,6 +472,7 @@ impl Repo {
                 removing: None,
                 asked: None,
                 failed: false,
+                signin_wait_logged: false,
                 in_flight: false,
                 pictures: None,
             }),
@@ -605,7 +607,15 @@ impl Repo {
                     }
                 }
                 Err(e) => {
-                    eprintln!("mods: no list: {e}");
+                    if e == ModsError::NotSignedIn {
+                        // The CLI's account selection precedes the guest's Live logon.
+                        if !g.signin_wait_logged || crate::log::verbose() {
+                            eprintln!("mods: the list requires an active in-game Xbox Live sign-in");
+                            g.signin_wait_logged = true;
+                        }
+                    } else {
+                        eprintln!("mods: no list: {e}");
+                    }
                     // A list already read stays shown through a failed refresh.
                     if !matches!(&g.list, List::Loaded(rows) if !rows.is_empty()) {
                         g.list = List::Failed(e);

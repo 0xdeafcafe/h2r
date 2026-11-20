@@ -108,7 +108,7 @@ impl Body {
 /// One hook with its "active" line, printed the first time it runs.
 struct Link<F: ?Sized> {
     f: Arc<F>,
-    name: String,
+    name: Option<String>,
     seen: AtomicBool,
 }
 
@@ -116,20 +116,19 @@ impl<F: ?Sized> Link<F> {
     fn new(h: &Hook, f: Arc<F>) -> Arc<Self> {
         Arc::new(Link {
             f,
-            name: format!(
-                "{} {} {}:{}",
-                h.point.name,
-                h.kind().as_str(),
-                h.feature,
-                h.label
-            ),
+            name: crate::plan_verbose().then(|| {
+                format!("{} {} {}:{}", h.point.name, h.kind().as_str(), h.feature, h.label)
+            }),
             seen: AtomicBool::new(false),
         })
     }
     fn announce(&self) {
         // A load first: the swap is a write, and hot points run this often.
-        if !self.seen.load(Ordering::Relaxed) && !self.seen.swap(true, Ordering::Relaxed) {
-            eprintln!("feature: {} active", self.name);
+        if let Some(name) = &self.name
+            && !self.seen.load(Ordering::Relaxed)
+            && !self.seen.swap(true, Ordering::Relaxed)
+        {
+            eprintln!("feature: {name} active");
         }
     }
 }

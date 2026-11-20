@@ -45,12 +45,15 @@ pub struct Override {
 /// See [`Dispatch::set_stop_recovery`].
 pub type StopRecovery = dyn Fn(&mut CpuAbi, &mut ExecCtx, TransferAbi) -> TransferAbi + Send + Sync;
 
+pub(crate) type EntryFallback = dyn Fn(u32) -> Option<Handler> + Send + Sync;
+
 #[derive(Default)]
 pub struct Dispatch {
     generated: HashMap<u32, Handler>,
     overrides: HashMap<u32, Override>,
     resumes: HashMap<u32, Resume>,
     stop_recovery: Option<Arc<StopRecovery>>,
+    entry_fallback: Option<Arc<EntryFallback>>,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -290,6 +293,27 @@ impl Dispatch {
     pub(crate) fn stop_recovery(&self) -> Option<Arc<StopRecovery>> {
         self.stop_recovery.clone()
     }
+    /// Supply a handler for known targets with no entry or return resume.
+    /// The runtime calls `matches` outside the dispatch lock, and checks
+    /// execute permissions before calling the handler as for any other entry.
+    /// A true result must stay valid until the dispatch generation changes.
+    /// Isolated executors do not inherit this last-resort handler.
+    pub fn set_entry_fallback(
+        &mut self,
+        matches: impl Fn(u32) -> bool + Send + Sync + 'static,
+        run: impl Fn(&mut CpuAbi, &mut ExecCtx, u32) -> Result<TransferAbi, GuestFault>
+            + Send
+            + Sync
+            + 'static,
+    ) {
+        let handler = Handler::Rust(Arc::new(run));
+        self.entry_fallback = Some(Arc::new(move |pc| matches(pc).then(|| handler.clone())));
+    }
+
+    pub(crate) fn entry_fallback(&self) -> Option<Arc<EntryFallback>> {
+        self.entry_fallback.clone()
+    }
+
     /// A copy for a second executor ([`crate::executor`]): the generated
     /// handlers, resumes and stop recovery hook as they are, and each
     /// override, enabled or not, kept where it is
@@ -322,6 +346,7 @@ impl Dispatch {
             overrides,
             resumes: self.resumes.clone(),
             stop_recovery: self.stop_recovery.clone(),
+            entry_fallback: None,
         }
     }
     /// Use the title's generated functions in an isolated executor. HLE-only

@@ -356,8 +356,7 @@ fn ended_off_live(l: &Log) -> Option<(&'static str, String)> {
     ended
 }
 
-/// The account picker opening, as port 1's join gate names it (one line
-/// per change, so one per opening).
+/// A sample of port 1's join gate while the account picker is open.
 fn picker_opened(text: &str) -> bool {
     text.starts_with("bots: join gate port 1: ") && text.contains(", dialog 0x14 (")
 }
@@ -385,7 +384,16 @@ fn picker_openings(texts: &[&str]) -> usize {
     if by_ui > 0 {
         by_ui
     } else {
-        texts.iter().filter(|t| picker_opened(t)).count()
+        let mut up = false;
+        let mut by_gate = 0;
+        for t in texts.iter().filter(|t| gate_port(t) == Some(1)) {
+            let now = picker_opened(t);
+            if now && !up {
+                by_gate += 1;
+            }
+            up = now;
+        }
+        by_gate
     }
 }
 

@@ -809,6 +809,65 @@ mod tests {
     }
 
     #[test]
+    fn missing_entry_fallback_respects_routes_permissions_and_explicit_entries() {
+        const CODE: u32 = 0x0001_0000;
+        const MISSING: u32 = CODE + 0x10;
+        const UNKNOWN: u32 = CODE + 0x20;
+        const RESUME: u32 = CODE + 0x30;
+        let mut dispatch = Dispatch::default();
+        dispatch
+            .register_generated_rust(CODE, |cpu, _, selector| {
+                cpu.eax = selector;
+                Ok(TransferAbi::stop(0))
+            })
+            .unwrap();
+        dispatch.register_resume(RESUME, CODE, RESUME).unwrap();
+        dispatch.set_entry_fallback(
+            |pc| pc != UNKNOWN,
+            |cpu, _, selector| {
+                cpu.eax = selector + 1;
+                Ok(TransferAbi::stop(0))
+            },
+        );
+        let rt = Runtime::new(Guest::new(), dispatch);
+        rt.memory().map_zeroed(CODE, 0x1000, Permissions::RX).unwrap();
+        let mut ctx = ExecCtx::new(rt.clone(), 1);
+        let mut cpu = CpuAbi::default();
+        let runner = Runner::default();
+        for (transfer, expected) in [
+            (TransferAbi::jump(CODE), CODE),
+            (TransferAbi::ret(RESUME), RESUME),
+            (TransferAbi::ret(MISSING), MISSING + 1),
+            (TransferAbi::jump(MISSING), MISSING + 1),
+        ] {
+            let result = runner.run_from(&mut cpu, &mut ctx, transfer);
+            assert_eq!(result.kind, abi::STOP);
+            assert_eq!(cpu.eax, expected);
+        }
+
+        for transfer in [TransferAbi::resume(MISSING), TransferAbi::jump(UNKNOWN)] {
+            let result = runner.run_from(&mut cpu, &mut ctx, transfer);
+            assert!(matches!(ctx.event(result.event_id), Some(Event::UnsupportedTarget { .. })));
+        }
+
+        rt.memory().protect(CODE, Permissions::READ).unwrap();
+        let result = runner.run(&mut cpu, &mut ctx, MISSING);
+        assert!(matches!(ctx.event(result.event_id), Some(Event::MemoryFault { fault, .. })
+            if fault.access == Access::Execute && fault.addr == MISSING));
+
+        rt.memory().protect(CODE, Permissions::RX).unwrap();
+        rt.edit_dispatch(|d| {
+            d.register_override(MISSING, "new explicit entry", |cpu, _, selector| {
+                cpu.eax = selector;
+                Ok(TransferAbi::stop(0))
+            });
+        });
+        let result = runner.run(&mut cpu, &mut ctx, MISSING);
+        assert_eq!(result.kind, abi::STOP);
+        assert_eq!(cpu.eax, MISSING);
+    }
+
+    #[test]
     fn wrapped_event_ids_skip_retained_records_and_zero() {
         let mut ctx = ExecCtx::new(Runtime::new(Guest::new(), crate::Dispatch::default()), 1);
         let first = ctx.emit(Event::TransferLimit);

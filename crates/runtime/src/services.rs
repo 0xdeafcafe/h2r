@@ -188,9 +188,24 @@ impl Runtime {
         &self,
         t: TransferAbi,
     ) -> (u64, Option<(Handler, u32, u32)>) {
-        let d = self.dispatch.read().unwrap_or_else(|e| e.into_inner());
-        let generation = self.dispatch_gen.load(Ordering::Acquire);
-        (generation, Self::resolve_in(&d, t))
+        loop {
+            let d = self.dispatch.read().unwrap_or_else(|e| e.into_inner());
+            let generation = self.dispatch_gen.load(Ordering::Acquire);
+            let found = Self::resolve_in(&d, t);
+            if found.is_some() || !matches!(t.route, abi::ENTRY | abi::RETURN_TARGET) {
+                return (generation, found);
+            }
+            let Some(fallback) = d.entry_fallback() else {
+                return (generation, None);
+            };
+            drop(d);
+            let pc = t.target_pc;
+            let found = fallback(pc).map(|h| (h, pc, pc));
+            // A slow entry fallback can race a new explicit registration.
+            if self.dispatch_generation() == generation {
+                return (generation, found);
+            }
+        }
     }
     fn resolve_in(d: &Dispatch, t: TransferAbi) -> Option<(Handler, u32, u32)> {
         let entry = |pc: u32| d.resolve(pc).map(|h| (h, pc, pc));

@@ -261,6 +261,16 @@ pub fn join_gate(
     screen_open && signed_in == Some(false)
 }
 
+/// The observations that can change a port's join decision or explain a wait.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct GateState {
+    screen: std::mem::Discriminant<Screen>,
+    top: Option<u32>,
+    // Keep an unread dialog id distinct from an absent dialog.
+    dialog: Option<Option<u32>>,
+    signed_in: Option<bool>,
+}
+
 /// The log line for one port's gate: the screen it thinks is up
 /// ([`Screen::name`]) and the top screen read, what it read and what it
 /// decided, with the slot's flags (`flags`, slot `+0`: `0x10` a profile,
@@ -484,8 +494,8 @@ pub struct Bots {
     frame: Arc<AtomicU64>,
     render: Arc<Mutex<Option<Hidden>>>,
     sound: Arc<Mutex<Option<Hidden>>>,
-    /// Each port's last join-gate line, so it is logged on a change.
-    gates: Arc<Mutex<[String; 4]>>,
+    /// Each port's last join-gate state, so it is logged on a change.
+    gates: Arc<Mutex<[Option<GateState>; 4]>>,
     /// A sign-in or sign-out is running the frame itself: its own
     /// `SOUND_UPDATE` call must not start another.
     signing_out: Arc<AtomicBool>,
@@ -816,6 +826,7 @@ impl feature::Feature for Bots {
         );
         let lobby_said = Arc::clone(&self.lobby_said);
         let players_said = Arc::clone(&self.players_said);
+        let verbose_gates = crate::log::verbose();
         b.raw().before(
             &points::RENDER_FRAME,
             "bot pads; hide bot views",
@@ -900,17 +911,23 @@ impl feature::Feature for Bots {
                 {
                     let mut said = lock(&gates);
                     for port in 0..4u8 {
+                        let last = &mut said[usize::from(port)];
                         if joining & 1 << port == 0 {
-                            said[usize::from(port)].clear();
+                            *last = None;
                             continue;
                         }
                         let signed_in = guest::signed_in(g, u32::from(port)).ok();
                         open[usize::from(port)] = join_gate(on, dialog, signed_in);
-                        let flags = g.u32(guest::slot(u32::from(port))).ok();
-                        let line = gate_line(port, on, top, dialog, signed_in, flags);
-                        if said[usize::from(port)] != line {
-                            eprintln!("{line}");
-                            said[usize::from(port)] = line;
+                        let state = Some(GateState {
+                            screen: std::mem::discriminant(&on),
+                            top: top.map(|t| t.id),
+                            dialog: dialog.map(|d| d.id),
+                            signed_in,
+                        });
+                        if verbose_gates || *last != state {
+                            let flags = g.u32(guest::slot(u32::from(port))).ok();
+                            eprintln!("{}", gate_line(port, on, top, dialog, signed_in, flags));
+                            *last = state;
                         }
                     }
                 }

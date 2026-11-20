@@ -1062,10 +1062,7 @@ fn run_configured(
     // Interpreting past unsupported instructions is a stopgap too.
     fallback::set_recovery(opts.stopgaps);
     if opts.stopgaps {
-        let unread = fallback::install_unread_targets(&loaded.runtime);
-        crate::log::note(&format!(
-            "fallback: {unread} unread jump-table targets registered"
-        ));
+        fallback::start_analysis(&loaded.runtime);
     }
     eprintln!(
         "registered {} entries, {} resumes in {:.1}s",
@@ -1786,12 +1783,13 @@ fn run_configured(
         let c: Vec<String> = conflicts.iter().map(ToString::to_string).collect();
         anyhow::anyhow!("feature plan refused: {}", c.join("; "))
     })?;
-    for line in plan.text().lines() {
-        eprintln!("feature plan: {line}");
-    }
+    let verbose_plan = feature::plan_verbose();
     let installed = plan
         .install(&loaded.runtime)
         .context("installing the feature plan")?;
+    for line in plan.startup_text(&installed, verbose_plan).lines() {
+        eprintln!("feature plan: {line}");
+    }
     if let Some(audit) = &audit {
         if let Some(why) = installed.off_reason("host-audit") {
             anyhow::bail!("host audit needs its feature hooks: {why}");
@@ -1806,9 +1804,6 @@ fn run_configured(
     if host_light && let Some(why) = installed.off_reason(feature::sim_frame::ID) {
         anyhow::bail!("light host needs sim-frame: {why}");
     }
-    for n in &installed.notes {
-        eprintln!("feature plan: {n}");
-    }
     if let Some(a) = &agent {
         a.set_plan(&plan, &installed);
         if let Some(why) = installed.off_reason("agent") {
@@ -1816,17 +1811,19 @@ fn run_configured(
             eprintln!("agent: answering between slices only, no pausing: {why}");
         }
     }
-    if let Some(store) = host.settings.as_ref().filter(|_| skulls_on) {
-        eprintln!("{}", skulls::report(&plan, &installed, store));
-    }
-    if skulls_mp_on {
-        eprintln!("{}", skulls_mp::report(&plan, &installed));
-    }
-    if skulls_custom_on {
-        eprintln!("{}", skulls_custom::report(&plan, &installed));
-    }
-    if health_on {
-        eprintln!("{}", health::report(&plan, &installed));
+    if verbose_plan {
+        if let Some(store) = host.settings.as_ref().filter(|_| skulls_on) {
+            eprintln!("{}", skulls::report(&plan, &installed, store));
+        }
+        if skulls_mp_on {
+            eprintln!("{}", skulls_mp::report(&plan, &installed));
+        }
+        if skulls_custom_on {
+            eprintln!("{}", skulls_custom::report(&plan, &installed));
+        }
+        if health_on {
+            eprintln!("{}", health::report(&plan, &installed));
+        }
     }
     if let (Some(h), Some(why)) = (harness.as_mut(), installed.off_reason("lockstep")) {
         eprintln!("lockstep: hashing presents only: {why}");
@@ -2364,8 +2361,12 @@ fn run_configured(
 
 /// Shared note sink (stderr when `H2_BOOT_VERBOSE` is set).
 pub mod log {
+    pub(crate) fn verbose() -> bool {
+        std::env::var_os("H2_BOOT_VERBOSE").is_some()
+    }
+
     pub fn note(s: &str) {
-        if std::env::var_os("H2_BOOT_VERBOSE").is_some() {
+        if verbose() {
             eprintln!("note: {s}");
         }
     }
