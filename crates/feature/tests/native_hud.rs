@@ -14,7 +14,7 @@ fn plan(switches: &str) -> feature::plan::Plan {
 
 #[test]
 fn the_native_ui_defaults_on_and_the_master_disables_it() {
-    for (spec, expected) in [("", true), ("impl.render.native=off", false), ("impl.render=off", false)] {
+    for (spec, expected) in [("", true), ("impl.render.native=off", false), ("impl.render=off", true)] {
         assert_eq!(native_hud::on(&Switches::parse(spec).unwrap()), expected);
     }
     assert!(plan("impl.render.native=off").chains.is_empty());

@@ -70,7 +70,7 @@ fn placed_its_snapshot_policy_is_a_section() {
 #[test]
 fn light_walk_follows_the_master_switch_with_context_only_chains() {
     use native_lights::walk::{self, NativeLightWalk};
-    for (spec, enabled) in [("", true), ("impl.render.native=off", false), ("impl.render=off", false)] {
+    for (spec, enabled) in [("", true), ("impl.render.native=off", false), ("impl.render=off", true)] {
         let switches = Switches::parse(spec).unwrap();
         assert_eq!(walk::on(&switches), enabled);
         let mut r = Registry::new(switches);

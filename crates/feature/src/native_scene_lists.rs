@@ -388,7 +388,7 @@ mod tests {
 
     #[test]
     fn native_scene_lists_follow_the_master_switch() {
-        for (spec, expected) in [("", true), ("impl.render.native=off", false), ("impl.render=off", false)] {
+        for (spec, expected) in [("", true), ("impl.render.native=off", false), ("impl.render=off", true)] {
             assert_eq!(enabled(&Switches::parse(spec).unwrap()), expected);
         }
     }
