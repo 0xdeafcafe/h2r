@@ -247,6 +247,24 @@ fn graph_rejects_damage() {
 }
 
 #[test]
+fn a_graph_whose_blocks_sit_in_another_tag_decodes_through_the_whole_space() {
+    // A built map places a shared block once, so a graph's arrays may
+    // sit in an earlier tag's bytes. Here every block lies before the
+    // header: the header alone rejects them, the whole space reads them.
+    let mut space = sample_graph();
+    let address = BASE + space.len() as u32;
+    let header = space[..HEADER_SIZE].to_vec();
+    space.extend_from_slice(&header);
+    assert!(AnimationGraph::decode(&header, address).is_err());
+    let g = AnimationGraph::decode_in(&space, BASE, address).unwrap();
+    let own = AnimationGraph::decode(&sample_graph(), BASE).unwrap();
+    assert_eq!(format!("{g:?}"), format!("{own:?}"));
+    // A header outside the space is a bounds error, not a panic.
+    assert!(AnimationGraph::decode_in(&space, BASE, BASE - 4).is_err());
+    assert!(AnimationGraph::decode_in(&space, BASE, address + 4).is_err());
+}
+
+#[test]
 fn empty_graph_is_valid() {
     let g = AnimationGraph::decode(&[0u8; HEADER_SIZE], BASE).unwrap();
     assert!(g.animations.is_empty() && g.nodes.is_empty() && g.modes.is_empty());

@@ -369,17 +369,39 @@ impl AnimationGraph {
     /// modelled stride must not overlap each other (they are separate
     /// allocations in the cache).
     pub fn decode(bytes: &[u8], base: u32) -> Result<Self> {
-        if bytes.len() < HEADER_SIZE {
+        Self::decode_parts(bytes, bytes, base)
+    }
+
+    /// Decode the `jmad` tag at virtual `address` inside `space`, the
+    /// bytes loaded at `base` (a map's whole metadata). A map built with
+    /// shared blocks (`map::build::Block::share`) may point a graph's
+    /// blocks into another tag's bytes, which [`Self::decode`] over the
+    /// tag's own payload rejects.
+    pub fn decode_in(space: &[u8], base: u32, address: u32) -> Result<Self> {
+        let root = address
+            .checked_sub(base)
+            .and_then(|start| space.get(start as usize..))
+            .ok_or(Error::Bounds {
+                address,
+                size: HEADER_SIZE as u64,
+            })?;
+        Self::decode_parts(root, space, base)
+    }
+
+    /// Decode the header in `root`, its blocks from `tag` loaded at `base`.
+    fn decode_parts(root: &[u8], tag: &[u8], base: u32) -> Result<Self> {
+        let block = |off, stride| sub_block(tag, base, root, off, stride);
+        if root.len() < HEADER_SIZE {
             return Err(Error::RecordSize {
-                actual: bytes.len(),
+                actual: root.len(),
                 expected: HEADER_SIZE,
             });
         }
         let parent = TagReference {
-            group: FourCC::from_u32(u32_at(bytes, 0)),
-            id: TagId(u32_at(bytes, 4)),
+            group: FourCC::from_u32(u32_at(root, 0)),
+            id: TagId(u32_at(root, 4)),
         };
-        let nodes = block(bytes, base, hdr::NODES, NODE_SIZE)?
+        let nodes = block(hdr::NODES, NODE_SIZE)?
             .chunks_exact(NODE_SIZE)
             .map(|e| Node {
                 name: StringId(u32_at(e, 0)),
@@ -393,7 +415,7 @@ impl AnimationGraph {
             })
             .collect::<Vec<_>>();
         let references = |off| -> Result<Vec<Reference>> {
-            Ok(block(bytes, base, off, REFERENCE_SIZE)?
+            Ok(block(off, REFERENCE_SIZE)?
                 .chunks_exact(REFERENCE_SIZE)
                 .map(|e| Reference {
                     tag: TagReference {
@@ -406,7 +428,7 @@ impl AnimationGraph {
         };
         let sound_refs = references(hdr::SOUND_REFS)?;
         let effect_refs = references(hdr::EFFECT_REFS)?;
-        let blend_screens = block(bytes, base, hdr::BLEND_SCREENS, BLEND_SCREEN_SIZE)?
+        let blend_screens = block(hdr::BLEND_SCREENS, BLEND_SCREEN_SIZE)?
             .chunks_exact(BLEND_SCREEN_SIZE)
             .map(|e| BlendScreen {
                 name: StringId(u32_at(e, 0)),
@@ -416,15 +438,15 @@ impl AnimationGraph {
                 pitch_frames: [u16_at(e, 0x18), u16_at(e, 0x1a)],
             })
             .collect();
-        let animations = block(bytes, base, hdr::ANIMATIONS, ANIMATION_SIZE)?
+        let animations = block(hdr::ANIMATIONS, ANIMATION_SIZE)?
             .chunks_exact(ANIMATION_SIZE)
-            .map(|e| decode_animation(e, bytes, base))
+            .map(|e| decode_animation(e, tag, base))
             .collect::<Result<Vec<_>>>()?;
-        let modes = block(bytes, base, hdr::MODES, MODE_SIZE)?
+        let modes = block(hdr::MODES, MODE_SIZE)?
             .chunks_exact(MODE_SIZE)
-            .map(|e| decode_mode(e, bytes, base))
+            .map(|e| decode_mode(e, tag, base))
             .collect::<Result<Vec<_>>>()?;
-        let inheritance = block(bytes, base, hdr::INHERITANCE, INHERITANCE_SIZE)?
+        let inheritance = block(hdr::INHERITANCE, INHERITANCE_SIZE)?
             .chunks_exact(INHERITANCE_SIZE)
             .map(|e| Inheritance {
                 graph: TagReference {
@@ -434,11 +456,11 @@ impl AnimationGraph {
                 raw: e[8..].try_into().expect("slice length"),
             })
             .collect();
-        let name_pairs = block(bytes, base, hdr::NAME_PAIRS, 8)?
+        let name_pairs = block(hdr::NAME_PAIRS, 8)?
             .chunks_exact(8)
             .map(|e| [StringId(u32_at(e, 0)), StringId(u32_at(e, 4))])
             .collect();
-        let resources = block(bytes, base, hdr::RESOURCES, RESOURCE_SIZE)?
+        let resources = block(hdr::RESOURCES, RESOURCE_SIZE)?
             .chunks_exact(RESOURCE_SIZE)
             .map(|e| DataResource {
                 owner: TagId(u32_at(e, 0)),
@@ -448,7 +470,7 @@ impl AnimationGraph {
                 flags: u32_at(e, 0x10),
             })
             .collect();
-        let static_poses = block(bytes, base, hdr::STATIC_POSES, STATIC_POSE_SIZE)?
+        let static_poses = block(hdr::STATIC_POSES, STATIC_POSE_SIZE)?
             .chunks_exact(STATIC_POSE_SIZE)
             .map(|e| StaticPose {
                 rotation: [i16_at(e, 0), i16_at(e, 2), i16_at(e, 4), i16_at(e, 6)],
@@ -458,13 +480,13 @@ impl AnimationGraph {
             .collect();
         let mut unmodelled_blocks = Vec::new();
         for off in [hdr::UNMODELLED_A, hdr::UNMODELLED_B] {
-            let count = u32_at(bytes, off);
+            let count = u32_at(root, off);
             if count != 0 {
-                let address = u32_at(bytes, off + 4);
+                let address = u32_at(root, off + 4);
                 // Without a stride only the start can be range-checked.
                 if address
                     .checked_sub(base)
-                    .is_none_or(|s| s as usize >= bytes.len())
+                    .is_none_or(|s| s as usize >= tag.len())
                 {
                     return Err(Error::Bounds {
                         address,
@@ -480,12 +502,12 @@ impl AnimationGraph {
         }
         let tail_words = (0x5c..0x88)
             .step_by(4)
-            .map(|o| (o as u16, u32_at(bytes, o)))
+            .map(|o| (o as u16, u32_at(root, o)))
             .filter(|&(_, w)| w != 0)
             .collect();
         let g = Self {
             parent,
-            version_word: u32_at(bytes, 8),
+            version_word: u32_at(root, 8),
             nodes,
             sound_refs,
             effect_refs,
@@ -499,7 +521,7 @@ impl AnimationGraph {
             unmodelled_blocks,
             tail_words,
         };
-        g.check_disjoint(bytes, base)?;
+        g.check_disjoint(root, base)?;
         Ok(g)
     }
 

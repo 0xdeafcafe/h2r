@@ -3049,7 +3049,14 @@ fn rebuilt_crew_and_sentinel_characters_reach_their_own_animation_resources() {
                 m.tag(graph_id).unwrap().name.as_deref(),
                 Some(source_graph.name.as_str())
             );
-            let graph = tags::anim::AnimationGraph::read(&mut m, graph_id).unwrap();
+            // Through the whole metadata too: a shared block can put the
+            // graph's arrays in another tag's bytes.
+            let graph = tags::anim::AnimationGraph::decode_in(
+                &meta,
+                space.virtual_base,
+                m.tag(graph_id).unwrap().location.unwrap().address,
+            )
+            .unwrap();
             assert_eq!(
                 graph.animations.len(),
                 h1models::graph_names(&h1, source_graph).unwrap().len()
