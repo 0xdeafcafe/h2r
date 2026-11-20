@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createMemo, createResource, createSignal, on } from "solid-js";
+import { For, Show, createEffect, createMemo, createResource, createSignal, on, onCleanup } from "solid-js";
 import { A, useNavigate, useParams, useSearchParams } from "@solidjs/router";
 import { live } from "../state/live";
 import { identity } from "../state/identity";
@@ -12,9 +12,10 @@ import {
 } from "../lib/mods";
 import { mapCount, packAdvisoryText, packHref, packPath, memberName, packCoverSources, packDownloads, memberCoverSources, galleryUrl, parseModPack, filterPacks, type ModPack } from "../lib/modPacks";
 import ModPicture, { ModPhoto } from "../components/ModPicture";
-import { PackMetadataForm, ScreenshotForm } from "./ModForms";
+import { PackMetadataForm, ScreenshotCaptureHelp } from "./ModForms";
 import { ApiError } from "../api/http";
 import { reportPack, reportMap } from "../admin/content";
+import { reportScreenshot } from "../admin/screenshots";
 import MapPicture from "../components/MapPicture";
 import { statsPath } from "../routes";
 import { HOME_CRUMB } from "./modes";
@@ -208,20 +209,23 @@ export function ModPackPage() {
     },
   );
   const loaded = () => !pack.error && !pack.loading ? pack() : null;
+  const screenshot = screenshotReportStatus(() => void refetch());
   return <>
     <Crumbs trail={[HOME_CRUMB, CRUMB, [loaded()?.name ?? "Mod Pack"]]} />
     <div class="s-cols"><ModSide /><div class="s-right">
+      <p class="s-mod-screenshot-status" role="status">{screenshot.notice()}</p>
       <Show when={!pack.error} fallback={<p class="s-empty s-bad">{pack.error instanceof ApiError && pack.error.status === 410 ? "This pack was taken down." : "Couldn’t load this pack."}</p>}>
         <Show when={loaded()} keyed fallback={<p class="s-loading">Loading pack…</p>}>
-          {(p) => <PackDetail pack={p} changed={() => void refetch()} />}
+          {(p) => <PackDetail pack={p} changed={() => void refetch()} screenshotReported={screenshot.reported} />}
         </Show>
       </Show>
     </div></div>
   </>;
 }
 
-export function PackDetail(props: { pack: ModPack; changed: () => void }) {
+export function PackDetail(props: { pack: ModPack; changed: () => void; screenshotReported?: () => void }) {
   const p = props.pack;
+  const screenshotReported = () => (props.screenshotReported ?? props.changed)();
   const [reason, setReason] = createSignal("");
   const [note, setNote] = createSignal("");
   const [busy, setBusy] = createSignal(false);
@@ -261,13 +265,13 @@ export function PackDetail(props: { pack: ModPack; changed: () => void }) {
       <div class="s-mod-get"><b>Install in the game</b><p>Select this pack in the Xbox Live Mods menu. Your disc supplies the base maps.</p></div>
     </div>
     <Title class="s-title--rule">Included maps</Title><PackMembers pack={p} />
-    <Show when={p.images.length} fallback={<MemberScreenshots pack={p} />}>
+    <Show when={p.images.length} fallback={<MemberScreenshots pack={p} reported={screenshotReported} />}>
       <Title class="s-title--rule">Pack screenshots</Title>
-      <ModShots images={p.images} url={(i) => galleryUrl(live.server().api, packPath(p.id), p.images[i]!, i)} />
+      <ModShots images={p.images} url={(i) => galleryUrl(live.server().api, packPath(p.id), p.images[i]!, i)} reported={screenshotReported} />
     </Show>
     <Show when={identity.me()?.xuid === p.uploader.xuid}>
       <details class="s-pack-tools"><summary>Edit pack</summary><PackMetadataForm pack={p} changed={props.changed} /></details>
-      <ScreenshotForm path={packPath(p.id)} changed={props.changed} />
+      <ScreenshotCaptureHelp id={p.id} />
     </Show>
     <div class="s-mod-report">
       <Show when={identity.me()} fallback={<span><A href="/dash/signin">Sign in</A> to report this pack.</span>}>
@@ -284,18 +288,24 @@ export function PackDetail(props: { pack: ModPack; changed: () => void }) {
 
 /** A pack without a dedicated gallery can still show its member shots.
  * Show one per map, linking through to the map's complete gallery. */
-function MemberScreenshots(props: { pack: ModPack }) {
+function MemberScreenshots(props: { pack: ModPack; reported: () => void }) {
   const covers = () => props.pack.members.map((member) => ({
     member, sources: memberCoverSources(live.server().api, member),
   })).filter((row) => row.sources.length);
   return <Show when={covers().length}>
     <Title class="s-title--rule">Map screenshots</Title>
-    <ul class="s-mod-shots"><For each={covers()}>{({ member, sources }) => <li>
-      <A href={modHref(member.map_id)} class="s-member-shot">
-        <ModPicture name={member.name} sources={sources} base={member.base.map} />
-      </A>
-      <p class="s-mod-shot-cap"><A href={modHref(member.map_id)}>{memberName(props.pack, member)}</A></p>
-    </li>}</For></ul>
+    <ul class="s-mod-shots"><For each={covers()}>{({ member, sources }) => {
+      const [selected, setSelected] = createSignal<string>();
+      const photo = () => member.images?.find((image, i) => image.reportable &&
+        galleryUrl(live.server().api, `/maps/${member.map_id}`, image, i) === selected());
+      return <li>
+        <A href={modHref(member.map_id)} class="s-member-shot">
+          <ModPicture name={member.name} sources={sources} base={member.base.map} onSource={setSelected} />
+        </A>
+        <p class="s-mod-shot-cap"><A href={modHref(member.map_id)}>{memberName(props.pack, member)}</A></p>
+        <Show when={photo()} keyed>{(image) => <ScreenshotReport image={image} reported={props.reported} />}</Show>
+      </li>;
+    }}</For></ul>
   </Show>;
 }
 
@@ -314,16 +324,18 @@ export function ModPage() {
     },
   );
   const mod = () => { const l = lookup.loading ? undefined : lookup(); return l?.state === "ok" ? l.map : null; };
+  const screenshot = screenshotReportStatus(() => void refetch());
   return (
     <>
       <Crumbs trail={[HOME_CRUMB, CRUMB, [mod()?.name ?? "Mod"]]} />
       <div class="s-cols">
         <ModSide />
         <div class="s-right">
+          <p class="s-mod-screenshot-status" role="status">{screenshot.notice()}</p>
           <Show when={!lookup.loading && lookup()} fallback={<div class="s-loading">Loading mod…</div>}>
             {(l) => (
               <Show when={mod()} keyed fallback={<ModMissing state={l().state as "unknown" | "gone" | "error"} />}>
-                {(m) => <ModDetail m={m} missing={(l() as { missing?: string[] }).missing ?? []} changed={() => void refetch()} />}
+                {(m) => <ModDetail m={m} missing={(l() as { missing?: string[] }).missing ?? []} screenshotReported={screenshot.reported} />}
               </Show>
             )}
           </Show>
@@ -335,15 +347,16 @@ export function ModPage() {
 
 /** The gallery screenshots, each with its caption and credit; one
  *  that fails to load is left out. */
-function ModShots(props: { images: MapImage[]; url: (n: number) => string }) {
+function ModShots(props: { images: MapImage[]; url: (n: number) => string; reported?: () => void }) {
   const [broken, setBroken] = createSignal<number[]>([]);
   return (
     <ul class="s-mod-shots">
       <For each={props.images}>
-        {(img, i) => (
-          <Show when={!broken().includes(i())}>
+        {(img, i) => {
+          const [loaded, setLoaded] = createSignal(false);
+          return <Show when={!broken().includes(i())}>
             <li>
-              <ModPhoto src={props.url(i())} alt={img.caption ?? "Mod screenshot"} fullSize failed={() => setBroken((b) => [...b, i()])} />
+              <ModPhoto src={props.url(i())} alt={img.caption ?? "Mod screenshot"} fullSize loaded={() => setLoaded(true)} failed={() => setBroken((b) => [...b, i()])} />
               <Show when={img.caption || img.credit || img.source_url}>
                 <p class="s-mod-shot-cap">
                   {img.caption}
@@ -354,12 +367,62 @@ function ModShots(props: { images: MapImage[]; url: (n: number) => string }) {
                   </Show>
                 </p>
               </Show>
+              <Show when={loaded() && props.reported}>{(reported) => <ScreenshotReport image={img} reported={reported()} />}</Show>
             </li>
-          </Show>
-        )}
+          </Show>;
+        }}
       </For>
     </ul>
   );
+}
+
+// Keep the confirmation visible when refetching the gallery shifts its image indices.
+function screenshotReportStatus(refetch: () => void) {
+  const params = useParams();
+  const gallery = () => JSON.stringify([live.server().api, identity.me()?.xuid, params.id]);
+  const [last, setLast] = createSignal<string>();
+  return {
+    notice: () => last() === gallery() ? "Screenshot reported and hidden pending review." : "",
+    reported() {
+      setLast(gallery());
+      refetch();
+    },
+  };
+}
+
+function ScreenshotReport(props: { image: MapImage; reported: () => void }) {
+  const [busy, setBusy] = createSignal(false);
+  const [problem, setProblem] = createSignal("");
+  const session = createMemo(() => {
+    const me = identity.me(), wk = live.wellKnown();
+    return me && wk && me.server_id === wk.id ? { api: live.server().api, aud: wk.id, me } : null;
+  });
+  let active = true;
+  onCleanup(() => { active = false; });
+  async function send() {
+    const current = session();
+    if (busy() || !current) return;
+    setProblem("");
+    setBusy(true);
+    try {
+      await reportScreenshot(current, props.image.sha256);
+      if (active && current === session()) props.reported();
+    } catch (error) {
+      if (active && current === session()) setProblem(errorText(error));
+    } finally {
+      if (active) setBusy(false);
+    }
+  }
+  return <Show when={props.image.reportable && session()}>
+    <details class="s-pack-tools s-screenshot-report">
+      <summary>Report screenshot</summary>
+      <p>Reporting hides this screenshot until an admin reviews it.</p>
+      <button type="button" class="s-btn" disabled={busy()} onClick={() => void send()}>
+        {busy() ? "Sending…" : "Send report"}
+      </button>
+      <Show when={problem()}><p class="s-bad" role="alert">{problem()}</p></Show>
+    </details>
+  </Show>;
 }
 
 function ModMissing(props: { state: "unknown" | "gone" | "error" }) {
@@ -372,7 +435,7 @@ function ModMissing(props: { state: "unknown" | "gone" | "error" }) {
   );
 }
 
-function ModDetail(props: { m: MapDetail; missing: string[]; changed: () => void }) {
+function ModDetail(props: { m: MapDetail; missing: string[]; screenshotReported: () => void }) {
   const m = () => props.m;
   const navigate = useNavigate();
   const [said, setSaid] = createSignal<{ ok: boolean; text: string } | null>(null);
@@ -434,10 +497,10 @@ function ModDetail(props: { m: MapDetail; missing: string[]; changed: () => void
           <Show when={props.missing.length}><p class="s-bad">The server is missing {props.missing.length} of this mod's files, so it can't be downloaded right now.</p></Show>
         </div>
       </div>
-      <Show when={identity.me()?.xuid === m().author.xuid}><ScreenshotForm path={`/maps/${m().map_id}`} changed={props.changed} /></Show>
+      <Show when={identity.me()?.xuid === m().author.xuid}><ScreenshotCaptureHelp id={m().map_id} /></Show>
       <Show when={m().images?.length}>
         <Title class="s-title--rule">Screenshots</Title>
-        <ModShots images={m().images ?? []} url={(n) => galleryUrl(live.server().api, `/maps/${m().map_id}`, m().images![n]!, n)} />
+        <ModShots images={m().images ?? []} url={(n) => galleryUrl(live.server().api, `/maps/${m().map_id}`, m().images![n]!, n)} reported={props.screenshotReported} />
       </Show>
       <Show when={(m().report?.lines ?? m().contents ?? []).length}>
         <Title class="s-title--rule" help="Read off the mod's map against the retail map it is built on: the tags it adds or changes, the references it swaps, the stats it changes and what it places.">What's Inside</Title>

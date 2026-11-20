@@ -74,6 +74,8 @@ export interface MapPack {
 /** One screenshot of a mod and where it came from. */
 export interface MapImage {
   sha256: string;
+  /** Whether a signed-in player may report this gallery image. */
+  reportable?: boolean;
   caption?: string;
   /** The page it was found on; kept only when it is http or https. */
   source_url?: string;
@@ -188,6 +190,7 @@ export function parseMapImages(raw: unknown): MapImage[] {
   return list.map((i) => {
     const o = obj(i)!;
     const out: MapImage = { sha256: o.sha256 as string };
+    if (o.reportable === true && isMapId(out.sha256)) out.reportable = true;
     const caption = text(o.caption), credit = text(o.credit), licence = text(o.licence), source = safeSourceUrl(o.source_url);
     if (caption) out.caption = caption;
     if (credit) out.credit = credit;

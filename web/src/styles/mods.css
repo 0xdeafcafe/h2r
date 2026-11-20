@@ -89,3 +89,7 @@
 .s-pack-form button { justify-self: start; }
 .s-pack-advisory { color: #f3c77b; }
 .s-member-shot { display: block; aspect-ratio: 4 / 3; }
+
+.s-mod-screenshot-status:not(:empty) { margin: 8px; }
+.s-screenshot-report { margin: 4px 0 0; font-size: 11px; }
+.s-screenshot-report p { margin: 4px 0; }

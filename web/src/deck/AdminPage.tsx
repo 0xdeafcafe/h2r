@@ -11,6 +11,7 @@ const LINKS = [
   { label: "usage", href: LIVE_ADMIN_USAGE },
   { label: "hosts", href: `${LIVE_ADMIN}/hosts` },
   { label: "event log", href: `${LIVE_ADMIN}/events` },
+  { label: "screenshot review", href: `${LIVE_ADMIN}/screenshots` },
   { label: "style", href: `${LIVE_ADMIN}/style` },
 ];
 

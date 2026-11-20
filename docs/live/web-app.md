@@ -224,10 +224,13 @@ description, source and gallery. With no pack artwork it uses its members'
 screenshots. A stock map preview is labelled **Stock map picture**.
 Members keep their own URLs (`/games/halo2/mods/:id`), galleries,
 contents and layer sizes. Signed-in players can report a pack or a
-member. Its uploader can edit the release metadata and upload PNG, JPEG
-or WebP screenshots to a cover and two additional slots on either page.
-The Live server validates and stores the images. Installation runs in
-the game. The mock serves invented pack metadata and member artwork.
+member, and can report a screenshot directly from its gallery. Its uploader
+can edit the release metadata and submit in-game screenshots using
+`h2 live mods capture`. Pending screenshots stay out of the gallery. Server
+admins open **Screenshot review** from Live Admin, show an image on demand
+and approve or remove it. Installation runs in the game. The mock serves
+invented pack metadata and member artwork.
+[Admin screenshot review](live-admin.md#screenshot-review)
 
 ### Server stats
 

@@ -555,7 +555,7 @@ pub(crate) async fn get_pack(
 }
 
 #[derive(Deserialize)]
-pub(super) struct ImageQuery {
+pub(crate) struct ImageQuery {
     v: Option<String>,
 }
 
