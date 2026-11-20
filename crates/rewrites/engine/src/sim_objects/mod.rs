@@ -51,6 +51,8 @@ mod unit;
 mod weapon;
 // Slice 10: the vehicle update.
 mod vehicle;
+// Slice 6b: the unit update's state children.
+mod unit_state;
 
 use crate::points::{self, Point};
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
@@ -178,6 +180,13 @@ pub const BODIES: &[Body] = &[
     Body { point: &points::VEHICLE_UPDATE, sites: &vehicle::VEHICLE_SITES, run: vehicle::vehicle_update },
     Body { point: &points::VEHICLE_UPDATE_GATE, sites: &[], run: vehicle::vehicle_update_gate },
     Body { point: &points::VEHICLE_CONTACTS_RESET, sites: &[], run: vehicle::vehicle_contacts_reset },
+    // Slice 6b: the unit update's control, state and powered seats (its
+    // first, second and fourth calls) and the control refresh the seats
+    // call (`unit_state`).
+    Body { point: &points::UNIT_UPDATE_CONTROL, sites: &unit_state::control::CONTROL_SITES, run: unit_state::control::control },
+    Body { point: &points::UNIT_UPDATE_STATE, sites: &unit_state::state::STATE_SITES, run: unit_state::state::state },
+    Body { point: &points::UNIT_POWERED_SEATS, sites: &unit_state::seats::SEATS_SITES, run: unit_state::seats::seats },
+    Body { point: &points::UNIT_CONTROL_REFRESH, sites: &unit_state::seats::REFRESH_SITES, run: unit_state::seats::refresh },
 ];
 
 /// The bodies [`drive`] runs and fuses, indexed by entry and site.

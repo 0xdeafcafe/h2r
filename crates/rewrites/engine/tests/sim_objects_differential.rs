@@ -337,6 +337,7 @@ fn cleanup(target: u32) -> u32 {
         t if let Some(&(_, pop)) = SLICE_6A_CALLEES.iter().find(|c| c.0 == t) => pop,
         t if let Some(&(_, pop)) = SLICE_9_CALLEES.iter().find(|c| c.0 == t) => pop,
         t if let Some(&(_, pop)) = SLICE_10_CALLEES.iter().find(|c| c.0 == t) => pop,
+        t if let Some(&(_, pop)) = SLICE_6B_CALLEES.iter().find(|c| c.0 == t) => pop,
         _ => panic!("no stub for callee {target:#x}: add its cleanup"),
     }
 }
@@ -445,6 +446,7 @@ fn answer(cpu: &mut Cpu, g: &mut Guest, target: u32, n: usize, case: u32) {
     slice_4_answer(cpu, g, &at_call, target, n, case);
     step_answer(cpu, g, &at_call, target, case);
     slice_6a_answer(cpu, g, &at_call, target, n, case);
+    slice_6b_answer(cpu, g, target, n, case);
     cpu.gpr[4] = sp + 4 + cleanup(target);
     cpu.eip = ret;
 }
@@ -2843,4 +2845,237 @@ fn vehicle_update() {
 #[test]
 fn type_update_dispatch_reaches_the_vehicle() {
     dressed_with(&points::OBJECT_TYPE_UPDATE, 11, dress_vehicle);
+}
+
+// Slice 6b: the unit update's control `c49b0`, state `c58f0`, powered
+// seats `c5eb0` and the control refresh `ce0c0` the seats call. The unit
+// update root above reaches the first three through the shell; the roots
+// below run each over the slice 6a dressing plus the fields they branch
+// on: the definition's early-out bits, powered seats and `+1d4..+1e0`
+// rates, the unit's flag words, timers, linked objects, held weapons and
+// control history.
+
+/// Every guest function a slice 6b body calls, with the bytes its `ret`
+/// pops (docs/engine/object-update.md, "Slice 6b bodies"). `cc380` is
+/// slice 10's, `138880` the damage update's.
+const SLICE_6B_CALLEES: &[(u32, u32)] = &[
+    // The control `c49b0`.
+    (0xd0d20, 0),
+    (0xd0080, 0),
+    (0x10f5f0, 0),
+    (0xc7070, 0),
+    (0x10f720, 4),
+    (0x1143d0, 0),
+    (0xf42f0, 0),
+    // The state `c58f0`.
+    (0xe68c0, 4),
+    (0x113da0, 0),
+    (0x113d20, 4),
+    (0x113df0, 0),
+    (0x113d60, 4),
+    (0x110ab0, 4),
+    (0xcbec0, 0),
+    (0x189210, 0),
+    (0x100430, 12),
+    (0xd1540, 4),
+    // The seats `c5eb0` and the refresh `ce0c0`.
+    (0xd0c10, 0),
+    (0xe4050, 0),
+    (0xd1080, 8),
+];
+
+/// Slice 6b's callouts whose `al` the bodies branch on.
+const SLICE_6B_ANSWERS_AL: &[u32] = &[0xc7070, 0x1143d0, 0xf42f0, 0x113da0, 0x113df0, 0x110ab0, 0xe4050];
+
+const UNIT_STATE_SEATS: u32 = 0x0069_8000;
+const UNIT_STATE_MATG: u32 = 0x0069_8100;
+const UNIT_STATE_MATG_RECORD: u32 = 0x0069_8200;
+const UNIT_STATE_PLAYERS: u32 = 0x0069_8300;
+
+/// The slice 6b stubs' answers beyond [`answer`]'s: the name `10f5f0`
+/// gives is one the bodies test for (read from the instructions that
+/// compare it) or another by turns, `10f720` answers 0 to 2, `cbec0` none
+/// or a seat, and `d1080` fills the control frame its two arguments point
+/// at and answers whether it has one.
+fn slice_6b_answer(cpu: &mut Cpu, g: &mut Guest, target: u32, n: usize, case: u32) {
+    let k = n as u32 + case;
+    match target {
+        t if SLICE_6B_ANSWERS_AL.contains(&t) => cpu.gpr[0] = k % 2,
+        0x10f5f0 => {
+            cpu.gpr[0] = match k % 3 {
+                0 => g.u32(0xc4cf5).unwrap(),
+                1 => g.u32(0xc4cfd).unwrap(),
+                _ => 0x0abc_0004,
+            }
+        }
+        0x10f720 => cpu.gpr[0] = k % 3,
+        0xcbec0 => cpu.gpr[0] = if k % 2 == 0 { 0xffff } else { 0x0001_0001 },
+        0xd1080 => {
+            let sp = cpu.gpr[4];
+            let (frame, scales) = (g.u32(sp + 4).unwrap(), g.u32(sp + 8).unwrap());
+            // Three scales, then the two thresholds (positive in turns).
+            let thresholds = [[0.5, -1.0], [0.0, 0.25], [2.0, 0.0], [0.125, 0.125]][(k % 4) as usize];
+            for (i, v) in [1.0, 0.5, 2.0, thresholds[0], thresholds[1]].into_iter().enumerate() {
+                f32w(g, scales + 4 * i as u32, v);
+            }
+            // A basis and a position: 13 floats.
+            for i in 0..13u32 {
+                f32w(g, frame + 4 * i, (i as f32 - 4.0) * 0.25 + case as f32);
+            }
+            cpu.gpr[0] = u32::from(case % 4 != 3);
+        }
+        _ => {}
+    }
+}
+
+/// [`unit_dress`], then the fields the slice 6b bodies branch on, varied
+/// by `case`.
+fn unit_state_dress(g: &mut Guest, case: u32) {
+    unit_dress(g, case);
+    let c = case as usize % 8;
+    // Definition: `+bc` bits 10 (no states), 11 (no update) and 28 (the
+    // `+334` floats); the powered seats; the `+1d4..+1e0` rates.
+    let bits = [0, 1 << 28, 1 << 11, 1 << 10 | 1 << 28, 1 << 28, 1 << 10, 0, 1 << 28][c];
+    let bc = g.u32(DEFINITION + 0xbc).unwrap() & !(1 << 10 | 1 << 11 | 1 << 28);
+    word(g, DEFINITION + 0xbc, bc | bits);
+    word(g, DEFINITION + 0x1b8, [0, 1, 2, 2, 3, 2, 1, 2][c]);
+    word(g, DEFINITION + 0x1bc, UNIT_STATE_SEATS);
+    for (i, t) in [0.5f32, 0.0, 0.25].into_iter().enumerate() {
+        f32w(g, UNIT_STATE_SEATS + 8 * i as u32, t);
+    }
+    for (i, r) in [1.0f32, 2.0, 0.5, 0.25].into_iter().enumerate() {
+        f32w(g, DEFINITION + 0x1d4 + 4 * i as u32, r);
+    }
+    // The weapon definition (the held weapon's is this one too): its
+    // `+1fe` count and two names.
+    g.set_u16(DEFINITION + 0x1fe, [0, 1, 3][c % 3]).unwrap();
+    word(g, DEFINITION + 0x270, if c == 6 { u32::MAX } else { 0x00e7_0001 });
+    word(g, DEFINITION + 0x278, 0x00e7_0002);
+    // The globals' record the state update falls back to.
+    word(g, points::GLOBALS_TAG.base, UNIT_STATE_MATG);
+    word(g, UNIT_STATE_MATG + 0x134, UNIT_STATE_MATG_RECORD);
+    word(g, UNIT_STATE_MATG_RECORD + 0xb8, [0, 1, 4][c % 3]);
+    word(g, UNIT_STATE_MATG_RECORD + 0xc8, if c == 1 { u32::MAX } else { 0x00e7_0003 });
+    word(g, UNIT_STATE_MATG_RECORD + 0xd0, 0x00e7_0004);
+    word(g, points::PLAYER_GLOBALS.base, UNIT_STATE_PLAYERS);
+    byte(g, UNIT_STATE_PLAYERS + 6, u8::from(c % 3 == 1));
+
+    let body = g.u32(DATA + 12 * (object(case) & 0xffff) + 8).unwrap();
+    // Flag words: `+134` bits 1, 21, 22, 25, 26 and 28; `+148`.
+    word(g, body + 0x134, [1 << 21, 2, 0, 1 << 26 | 1 << 22, 1 << 28 | 1 << 25, 1 << 26 | 2, 1 << 21 | 1 << 26, 0][c]);
+    word(g, body + 0x148, [0, 0x0800_0000, 0x4000, 0x1000_0000, 0x0001_0005, 0xffff_0000, 0x20, 0x3fff_0000][c]);
+    // The timed bit, only where the image's rate gives a non-zero divisor.
+    let rate = f32::from_bits(g.u32(0x0045_dc20).unwrap()) * 30.0;
+    let timed = (1.0..1.0e6).contains(&rate);
+    word(g, body + 0x1ec, if timed { [0, 3, 15, 1, 0, 30, 2, 0][c] } else { 0 });
+    word(g, body + 0x1f0, [0, 0x10000, 0x10000, 0x10005, 0, 0x10000, 0, 0][c]);
+    // Timers.
+    byte(g, body + 0x1f5, [0, 1, 3, 0x80, 1, 0, 2, 0][c]);
+    byte(g, body + 0x1fa, [0, 2, 0, 1, 0, 1, 0, 3][c]);
+    byte(g, body + 0x1fb, [1, 0, 0, 2, 0, 0, 1, 0][c]);
+    byte(g, body + 0x19, if c == 5 { 8 } else { 0 });
+    byte(g, body + 0xaa, [0, 1, 0, 1, 1, 0, 0, 1][c]);
+    // Linked objects: none, or live pool objects.
+    word(g, body + 0x248, [u32::MAX, handle(3), handle(5), u32::MAX, handle(3), handle(1), u32::MAX, handle(5)][c]);
+    word(g, body + 0x24c, [u32::MAX, u32::MAX, handle(3), handle(5), handle(3), u32::MAX, handle(1), handle(4)][c]);
+    // Held weapons: the previous indices, the seats, the animation state.
+    byte(g, body + 0x216, [0xff, 0, 1, 0, 0xff, 1, 0, 0xff][c]);
+    byte(g, body + 0x217, [0xff, 0xff, 1, 1, 0, 0xff, 0, 1][c]);
+    byte(g, body + 0x23c, [0, 1, 2, 2, 0, 3, 1, 0][c]);
+    byte(g, body + 0x23d, [0, 2, 2, 1, 1, 3, 0, 2][c]);
+    byte(g, body + 0x240, [0xff, 0, 1, 0xff, 2, 0, 0xff, 1][c]);
+    byte(g, body + 0x241, [0, 0, 2, 1, 0xff, 1, 3, 1][c]);
+    g.set_u16(body + 0x1fc, if c % 2 == 0 { 0xffff } else { 1 }).unwrap();
+    // Seat power, control history and smoothed changes, the `+334` pair.
+    for (i, p) in [0.0f32, 1.0, 0.5].into_iter().enumerate() {
+        f32w(g, body + 0x25c + 4 * i as u32, p);
+    }
+    for i in 0..12u32 {
+        f32w(g, body + 0x270 + 4 * i, (i as f32 - 6.0) * 0.5 * (c as f32 + 1.0));
+    }
+    f32w(g, body + 0x334, [0.0, 1.0, 0.5, 4.0, 0.25, 0.0, 2.0, 1.5][c]);
+    f32w(g, body + 0x338, [0.0, 0.0, 0.5, 1.0, 0.0, 0.25, 0.0, 2.0][c]);
+    f32w(g, body + 0x1c0, 0.75);
+    f32w(g, body + 0x1c4, 0.25);
+}
+
+/// The arguments of a slice 6b root: the unit on the stack (`c49b0`,
+/// `c58f0`), in `eax` (`c5eb0`) or in `edi` (`ce0c0`).
+fn unit_state_entry(g: &mut Guest, cpu: &mut Cpu, root: u32, case: u32) {
+    let unit = object(case);
+    match root {
+        r if r == points::UNIT_POWERED_SEATS.base => cpu.gpr[0] = unit,
+        r if r == points::UNIT_CONTROL_REFRESH.base => cpu.gpr[7] = unit,
+        _ => word(g, STACK + 4, unit),
+    }
+}
+
+/// [`transcripts`] of a slice 6b root over a [`unit_state_dress`]ed pool;
+/// the float state is compared like every root's.
+fn unit_state_transcripts(point: &points::Point, cases: u32) {
+    let Some((image, ram)) = image() else { return };
+    let table: &Table = &*sim_objects::TABLE;
+    let mut code = image.original();
+    code.prime(point.base);
+    for body in table.bodies() {
+        code.prime(body.point.base);
+    }
+    assert!(code.insn(point.base).is_some(), "{}", point.name);
+    assert!(table.owns(point.base), "{} is a body", point.name);
+    FLOATS.with(|x| x.set(floats(point.base)));
+    UNIT.with(|u| u.set(true));
+    let mut h = Harness { code: &mut code, table, root: point.base, case: 0 };
+    for case in 0..cases {
+        h.case = case;
+        let fresh = || {
+            let (mut cpu, mut g) = start(ram, point.base, case);
+            unit_state_dress(&mut g, case);
+            unit_state_entry(&mut g, &mut cpu, point.base, case);
+            (cpu, g)
+        };
+        let (cpu, g) = fresh();
+        let reference = h.run(cpu, g, &|_| false);
+        let (cpu, g) = fresh();
+        let fused = h.run(cpu, g, &|_| true);
+        check(&format!("{} case {case} fused", point.name), &reference, &fused);
+        for (k, &pc) in reference.resumes.iter().enumerate() {
+            if table.at(pc).is_none() {
+                continue;
+            }
+            let (cpu, g) = fresh();
+            let into = h.run(cpu, g, &|i| i >= k);
+            check(&format!("{} case {case} lifted then Rust at {k} ({pc:#x})", point.name), &reference, &into);
+            let (cpu, g) = fresh();
+            let out = h.run(cpu, g, &|i| i < k);
+            check(&format!("{} case {case} Rust then lifted at {k} ({pc:#x})", point.name), &reference, &out);
+        }
+    }
+    UNIT.with(|u| u.set(false));
+}
+
+#[test]
+fn unit_update_control() {
+    unit_state_transcripts(&points::UNIT_UPDATE_CONTROL, 8);
+}
+
+#[test]
+fn unit_update_state() {
+    unit_state_transcripts(&points::UNIT_UPDATE_STATE, 8);
+}
+
+#[test]
+fn unit_powered_seats() {
+    unit_state_transcripts(&points::UNIT_POWERED_SEATS, 8);
+}
+
+#[test]
+fn unit_control_refresh() {
+    unit_state_transcripts(&points::UNIT_CONTROL_REFRESH, 8);
+}
+
+/// The unit update over the slice 6b dressing: the shell fuses the
+/// control, the state, the movement and the seats.
+#[test]
+fn unit_update_over_the_state_children() {
+    unit_state_transcripts(&points::UNIT_UPDATE, 8);
 }
