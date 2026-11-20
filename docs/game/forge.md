@@ -1,7 +1,6 @@
-# Forge for Halo 2 multiplayer maps (design, nothing built)
+# Forge for Halo 2 multiplayer maps
 
-Status: research and design only. No code, no hooks, no file format exists
-yet. This page says what Halo 3's Forge is, what retail Halo 2 already has
+Status: Design. Nothing is built: no code, no hooks, no file format. This page says what Halo 3's Forge is, what retail Halo 2 already has
 that a Forge could sit on, and a phased plan with a small first slice.
 
 No game data is in this page. Addresses are guest virtual addresses of the
