@@ -1462,25 +1462,12 @@ pub fn install(
     // press), with the level select's layout.
     if with_skulls {
         let screen = Arc::new(skulls_menu::SkullsScreen::new(Arc::clone(model.store())));
-        let (block, line) =
-            skulls_menu::description_block(std::env::var("H2_SKULLS_TEXT_RECT").ok().as_deref());
-        if let Some(line) = line {
-            eprintln!("{line}");
-        }
-        let (layout, picture, lines) = skulls_menu::placement(|k| std::env::var(k).ok());
-        for line in lines {
-            eprintln!("{line}");
-        }
-        let (flow, line) = crate::skulls_screen::PageFlow::from_env();
-        if let Some(line) = line {
-            eprintln!("{line}");
-        }
-        let flow = Arc::new(flow);
+        let flow = Arc::new(crate::skulls_screen::PageFlow::default());
         let class = crate::skulls_screen::class(
             Arc::clone(&screen),
-            block,
-            layout,
-            picture,
+            skulls_menu::DESCRIPTION_TEXT,
+            skulls_menu::LIST_LAYOUT,
+            skulls_menu::PICTURE,
             Arc::clone(&flow),
         );
         match registry.add(&class) {

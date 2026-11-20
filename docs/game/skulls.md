@@ -295,7 +295,7 @@ How the flow is made (static reading, not seen running):
 - The press that opened the page (A on the difficulty list) is handled
   by that list, and the dispatch stops there; it is not seen again. As
   a guard all the same, a continue within 50 ms of the page opening
-  (`skulls_screen::GUARD`, `H2_SKULLS_GUARD_MS=n` to change it) is
+  (`skulls_screen::GUARD`) is
   dropped: `skulls page: Start Level <n> ms after the page opened: the
   press that opened it; ignored`. Two presses of a thumb are further
   apart than that, so A spammed goes straight through.
@@ -313,8 +313,6 @@ How the flow is made (static reading, not seen running):
   list [screen/id ..]`), and after it whether the loading screen (`0xd1`)
   is among them, so a Start Level that loads nothing says whether the
   press opened its loading screen (`boot::ui_watch::stack`).
-- `H2_SKULLS_CONTINUE=freed` or `=stay` forces either order, for trying
-  in game only.
 
 **The layout** is the campaign level select's
 (`ui\screens\game_shell\load_level\load_level`, screen 11, mainmenu.map;
@@ -345,13 +343,9 @@ drops both Controls bitmaps. The pane builder's bitmap step (`0x22fa30`)
 adds the picture from a copy of the difficulty screen's pane 3 bitmap.
 Its text step (`0x22f9bf`) adds the description from our text block.
 
-Env overrides, read at boot, each logged when set:
-
-- `H2_SKULLS_LIST_AT=x,y`: the list's anchor (default `-215,130`);
-- `H2_SKULLS_LIST_SKIN=n`: the list skin (default 0);
-- `H2_SKULLS_PICTURE_AT=x,y`: the skull's top-left (default `36,180`);
-- `H2_SKULLS_TEXT_RECT=top,left,bottom,right`: the description
-  (default `-30,39,-133,260`).
+The list's anchor is `-215,130` on skin 0, the skull's top-left
+`36,180` and the description `-30,39,-133,260` (`skulls_menu::LIST_LAYOUT`,
+`PICTURE`, `DESCRIPTION_TEXT`).
 
 The multiplayer screen uses the same layout, picture and description.
 Video keeps the Controls list at (-254, 130) on skin 2, with separate
@@ -903,12 +897,8 @@ The page (step numbers kept for the multiplayer steps below):
      right, A, B) (if they show as boxes
      or blanks, report it). The list's left bracket wraps its top-left
      corner as on the level select; no frame art bottom right.
-   If something sits wrong, try without a rebuild and say which values
-   look right: `H2_SKULLS_LIST_AT=x,y` (default `-215,130`),
-   `H2_SKULLS_LIST_SKIN=n` (default 0), `H2_SKULLS_PICTURE_AT=x,y`
-   (default `36,180`), `H2_SKULLS_TEXT_RECT=top,left,bottom,right`
-   (default `-30,39,-133,260`); screen centre origin, Y up, 640x480.
-   Also note: whether long labels ("Unlimited Grenades: Locked",
+   If something sits wrong, say where (screen centre origin, Y up,
+   640x480). Also note: whether long labels ("Unlimited Grenades: Locked",
    "Grunt Birthday Party: < Off >") fit their row; the button prompts (the Controls screen's own: B may still
    say "Done", though it goes back).
 10. Left or right (d-pad or left stick) on a collected skull flips On
@@ -939,8 +929,7 @@ The page (step numbers kept for the multiplayer steps below):
     last says where: no "freed" line (the stack did not call our
     destructor: the page is back on the difficulty list and nothing
     starts), or "returned" with no level (the press ran but did
-    nothing from there). Then try `H2_SKULLS_CONTINUE=now` and
-    `H2_SKULLS_CONTINUE=stay` and say which starts the level. B after
+    nothing from there). B after
     picking: `the page 0x... is freed (B); nothing started`.
 13. Select Level: pick a level, then a difficulty: the same page (the
     kept line says "chosen on Select Level"), and A loads that level (the other loader, `0x2bb432`).

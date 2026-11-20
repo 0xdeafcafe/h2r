@@ -226,8 +226,7 @@ logs"); the sign-in prompt logs `signin prompt: ...` lines (docs/live/live.md).
 - **The press that opened a screen, seen again.** A button event is raised
   only on the frame the button goes down, so a held A gives no second event.
   But a continue that comes within 50 ms of opening is the opener's press,
-  and is dropped (`input::OpenerGuard`; `H2_SKULLS_GUARD_MS` for the skulls
-  page).
+  and is dropped (`input::OpenerGuard`).
 - **The skull labels over the campaign picker's ids** (`0x22fff0xx`). Both
   were hand-picked bases. The registry now fails the build on an overlap.
 - **Co-op texts showing "Zombies" and "SWAT".** The co-op ids were
