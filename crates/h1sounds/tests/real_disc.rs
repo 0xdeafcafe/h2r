@@ -744,7 +744,7 @@ fn mouth_resource<'a>(e: &h1sounds::gestalt::Nested, file: &'a [u8]) -> (&'a [u8
     assert_eq!(loc.count, 2);
     assert_eq!(&loc.bytes[..8], &[1, 2, 0, 0, 0, 0, 255, 255]);
     assert_eq!(&loc.bytes[16..24], &[0, 2, 8, 0, 8, 0, 16, 0]);
-    let child = |at| {
+    let child = |at: usize| {
         let start = 24 + word(&loc.bytes, at + 12);
         assert_eq!(&raw[start - 4..start], b"crsr");
         &raw[start..][..word(&loc.bytes, at + 8)]

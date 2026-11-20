@@ -266,7 +266,7 @@ pub fn plasma_stem(pass: TagId) -> Result<Block> {
 
 /// A layer-15 material binding consecutive local sampler and vector parameters.
 pub(super) fn transparent_stem(pass: TagId, samplers: u8, vectors: &[u16]) -> Result<Block> {
-    let range = |start, count| IndexRange { start, count };
+    let range = |start: u16, count: u8| IndexRange { start, count };
     let mut layers = vec![IndexRange::default(); 25];
     layers[15] = range(0, 1);
     let mut bindings: Vec<_> = (0..samplers)
@@ -299,8 +299,12 @@ pub(super) fn transparent_stem(pass: TagId, samplers: u8, vectors: &[u16]) -> Re
                 implementations: range(0, 1),
             }],
             implementations: vec![ImplementationBindings {
-                bitmaps: range(0, u16::from(samplers)),
-                vertex_constants: range(u16::from(samplers), vectors.len() as u16),
+                bitmaps: range(0, samplers),
+                vertex_constants: range(
+                    u16::from(samplers),
+                    u8::try_from(vectors.len())
+                        .map_err(|_| Error::Invalid("transparent stem: more vectors than a range holds"))?,
+                ),
                 ..Default::default()
             }],
             bindings,
