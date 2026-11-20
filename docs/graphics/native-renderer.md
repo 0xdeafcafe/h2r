@@ -1981,32 +1981,65 @@ definition flags).
   first-person view, with its own constants (`0x0004a1e0`) and layers on
   `0x004c1a60`.
 
-### Skip point and order
+### Gathered light and shadow geometry
 
-The observer at `RENDER_LIGHT_PASSES` captures the light and lets its body
-run. The guest projects its bounding sphere, sets the scissor, produces
-any shader gel, selects the layer, runs the build callbacks and sorts
-their output. The native decision is at the first BSP geometry handler
-called from the sorted dispatch loop (`0x0004d0b0`, return
-`0x0003bc90`). The owning light-layer call site and list must match.
-The ported layer loop supplies a named continuation for the same call.
-The original layer setup, teardown and light tail run on both paths.
+`impl.render.native_light_walk` defaults on with the native renderer.
+`impl.render.native=off` disables it with the other stages. The lights
+and shadows switches control ownership of their respective layers. The
+light and shadow comparison modes and render timing keep the original
+builder available for comparison.
 
-`light_list::sorted` reads the dispatcher's stack array, skips its
-`[[entry+0x10]+0x100] == -1` exclusions and retains its exact order,
-duplicates, handler records and implementation bytes. A light with an
-earlier executed handler, shadow or stencil work, layer 14, or two active
-light layers stays on D3D. Each layer builds a different sorted array;
-the second array cannot be confirmed at the first dispatch.
+At `RENDER_LIGHT_PASSES` the game has chosen the light, receivers and
+casters. It still computes the projection and scissor and produces the
+gel. Immediately before `LAYER_BUILD` runs, Rust reads the active
+interval of the appropriate gathered list. Layers 11–14 use receivers
+and layer 10 uses casters. The caller identifies the dynamic light, an
+additional caster, or an object shadow. Each candidate must have the
+standard geometry build/draw pair. Rust resolves the live material
+implementation, render section, part and vertex program classification.
+It preserves the scratch bytes the callbacks leave alone, rejects the
+same unusable programs, and sorts the surviving 24-byte entries with
+the original tie order. A failed read or unknown callback leaves the
+guest builder at its entry with its original output buffer.
 
-The host reserves every range on the bound reference and each required
-display copy. It then advances the guest dispatch cursor with one checked
-stack write and a register update, and commits the reservation. A refused
-copy or failed write drops all recordings. Adjacent whole lights with the
-same gel and attachments can share one load/store pass. Guest draws,
-clears, a view change, light fallback and shadow or gel dependencies end a
-run. The GPU keeps each light's scissor, draw and blend order. Threaded
-preparation still waits synchronously for each reservation.
+A dynamic light can skip handlers when only one reachable layer
+has active geometry. Empty intervals still run their target setup and clears. An object shadow can do so separately for generation
+and application. All sorted entries must share one record, shader,
+selector, implementation, vertex class, topology and per-part state.
+The first `LIGHT_GEOMETRY_DRAW` runs to its complete-part indexed
+emission. That supplies the live streams, pose, constants, texture
+bindings (including the gel), scissor and depth/stencil state. Each
+remaining part supplies its own index span and vertex window. The GPU
+records each range in sorted order, including duplicates. Shadow draws
+also go through the existing gate for their site, projection, caster
+generation and sampled map.
+
+The device verifies the indexed call and loop counter and records every
+required target copy before shortening the loop to one. The guest then
+finishes the first handler and exits the loop normally. A missing
+resource, different binding, target feedback, incomplete copy or failed
+cursor write leaves the original draw and every remaining handler in
+place. Multi-layer dynamic lights and additional-caster chains can use
+the Rust builder and retain their original draw dispatch. Clears, map
+freezes, object shadow filters, gel updates and target restores run at
+their original points. The live-binding requirement still costs one
+guest handler even for a successful group.
+
+Frame stats count completed dynamic lights in `lights_walked_native`,
+`lights_walked_fallback` and `lights_walk_empty`. Each fallback adds
+one `lights_walk_fallback_*` reason (graph, memory, callback, material,
+geometry or GPU). `light_walk_layer_builds` counts replaced builds.
+`light_walk_handlers_skipped` counts the remaining handlers actually
+bypassed. `shadow_walk_layers` counts committed shadow layers, including
+object shadows outside a dynamic light.
+
+For a coordinator A/B, use the linked `shadow_run` function with the same
+image, camera/input and render scale. Set the tenth argument to `off`
+and then `on`. Compare the per-present colour and shadow captures for
+03a_oldmombasa at scale 1 and 00a_introduction at scale 2. Require a
+nonzero skipped-handler count on the compared frames. Repeat with the
+capture interval set to `never` for the CPU timing comparison.
+[Run commands and capture criteria](native-shadows.md#scene-walk-ab).
 
 ### What a native light draws
 

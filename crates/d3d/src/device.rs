@@ -1165,6 +1165,10 @@ struct ScopeState {
 #[must_use]
 pub struct DrawScope(Arc<ScopeState>);
 
+impl DrawScope {
+    pub fn committed(&self) -> bool { self.0.committed.load(AtomicOrdering::Acquire) }
+}
+
 impl Drop for DrawScope {
     fn drop(&mut self) { self.0.closed.store(true, AtomicOrdering::Release); }
 }
@@ -5392,6 +5396,7 @@ impl<B: Backend> Device<B> {
         let mut keys = [None; 4];
         let mut texture_info = [None; 4];
         let mut glyph_cache = 0u8;
+        let mut reads_frame_copy = false;
         let mut snapshots: [Option<B::Texture>; 4] = Default::default();
         let mut aliases: [Option<raster::DepthAliasKey>; 4] = [None; 4];
         let mut depth_levels: [Option<u32>; 4] = [None; 4];
@@ -5414,6 +5419,7 @@ impl<B: Backend> Device<B> {
                 match self.frame_texture(mem, header, sampled[stage], extras[stage].color_sign)? {
                     FrameTexture::No => {}
                     FrameTexture::Snapshot(info, t) => {
+                        reads_frame_copy |= sampled[stage];
                         // Snapshots are not stored biased, so COLORSIGN
                         // cannot apply to them (docs/graphics/shaders.md).
                         extras[stage].color_sign = 0;
@@ -5422,6 +5428,7 @@ impl<B: Backend> Device<B> {
                         continue;
                     }
                     FrameTexture::DepthAlias(info, key) => {
+                        reads_frame_copy |= sampled[stage];
                         extras[stage].color_sign = key.1;
                         texture_info[stage] = Some(info);
                         aliases[stage] = Some(key);
@@ -5538,6 +5545,11 @@ impl<B: Backend> Device<B> {
         };
         let replacement = admission.and_then(|(plan, mut pass)| {
             use timeline::native::Metric;
+            if pass.indexed_tail().is_some_and(|tail| tail.remaining > 1)
+                && (reads_frame_copy || !self.independent_samples(mem, &sampled)) {
+                plan.stage.count(Metric::RefusedResources, 1);
+                return None;
+            }
             match self.external_binding(mem, &plan, &mut *pass, None) {
                 Ok(binding) if native.is_none()
                     || (binding.surfaces.color == color
@@ -5584,7 +5596,8 @@ impl<B: Backend> Device<B> {
             // Layer-level mask edits and helper scopes need the answer immediately.
             // At a resolved draw the original packet is sufficient for worker fallback
             // when both routes make precisely the same guest-visible writes.
-            let fallback = if native.is_none() && scoped.is_none()
+            let tail = pass.indexed_tail();
+            let fallback = if native.is_none() && tail.is_none() && scoped.is_none()
                 && binding.same_draw_writes(self.render_target, color, depth, writes_depth)
                 && !(parts.indexed_esp.is_some() && compatible_geometry_target && (self.indexed_geometry_scope)())
             {
@@ -5613,11 +5626,15 @@ impl<B: Backend> Device<B> {
             );
             if let Ok(Some(recordings)) = commands && complete_recordings(&plan, &recordings) {
                 for &(_, surface) in &binding.colors { self.before_target_write(surface)?; }
-                PreparedExternal { device: self, binding, recordings }.commit();
-                if let Some((_, committed)) = native.as_mut() { **committed = true; }
-                if let Some((scope, _)) = scoped { scope.committed.store(true, AtomicOrdering::Release); }
-                *streams = draw.streams;
-                return Ok(());
+                // The original first draw is still intact. On a stale
+                // cursor or a stack fault, drop every unpublished copy.
+                if tail.is_none_or(|t| t.consume(mem, parts.indexed_esp)) {
+                    PreparedExternal { device: self, binding, recordings }.commit();
+                    if let Some((_, committed)) = native.as_mut() { **committed = true; }
+                    if let Some((scope, _)) = scoped { scope.committed.store(true, AtomicOrdering::Release); }
+                    *streams = draw.streams;
+                    return Ok(());
+                }
             }
             self.stats.external_passes_dropped += 1;
         }
@@ -5780,6 +5797,51 @@ impl<B: Backend> Device<B> {
         indices: u32,
     ) -> Result<(), D3dError> {
         self.draw_indexed_vertices_at(mem, primitive, count, indices, None)
+    }
+
+    // A later draw would resolve an overlapping texture again after the
+    // first target write. Different headers can name the same guest bytes.
+    fn independent_samples(&self, mem: &dyn GuestMemory, sampled: &[bool; 4]) -> bool {
+        let targets = [self.render_target, self.depth_stencil];
+        for (&read, &texture) in sampled.iter().zip(&self.textures) {
+            if !read || texture == 0 { continue; }
+            let Ok((start, end)) = self.resource_span(mem, texture) else { return false };
+            for &target in &targets {
+                if target == 0 { continue; }
+                let Ok((a, b)) = self.resource_span(mem, target) else { return false };
+                // The resource decoder uses a one-byte span for unknown layouts.
+                if end - start <= 1 || b - a <= 1 || (start < b && a < end) { return false; }
+            }
+        }
+        true
+    }
+
+    /// Read the other complete parts of a native scene batch with the
+    /// leader's current stream bindings. Use the normal index rebasing,
+    /// vertex base, address translation and write-tracked stream cache.
+    pub fn indexed_siblings(
+        &mut self, mem: &dyn GuestMemory, ranges: &[(u32, u32)],
+    ) -> Result<Vec<crate::backend::IndexedStreams>, D3dError> {
+        const E: &str = "native light geometry";
+        if ranges.is_empty() { return Ok(Vec::new()); }
+        if ranges.len() > 2560 { return Err(D3dError::invalid(E, "too many parts")); }
+        let base = mem.read_u32(self.cfg.layout.device + field::BASE_VERTEX)?;
+        let (layout, _, sources) = self.vertex_setup(mem, E)?;
+        let mut out = Vec::with_capacity(ranges.len());
+        let mut budget = 32u64 << 20;
+        for &(addr, count) in ranges {
+            vertex_limit(E, count)?;
+            if count < 3 { return Err(D3dError::invalid(E, "incomplete part")); }
+            let (lo, hi, indices) = self.index_list(mem, addr, span(E, count, 2)?)?;
+            base.checked_add(u32::from(hi)).ok_or_else(|| D3dError::invalid(E, "vertex base overflow"))?;
+            let window = u32::from(hi) - u32::from(lo) + 1;
+            let bytes = u64::from(count) * 4 + sources.iter().map(|s| u64::from(s.stride) * u64::from(window)).sum::<u64>();
+            budget = budget.checked_sub(bytes).ok_or_else(|| D3dError::invalid(E, "vertex window budget"))?;
+            let streams = sources.iter().map(|s| self.read_stream(mem, E, s, base + u32::from(lo), window))
+                .collect::<Result<Vec<_>, _>>()?;
+            out.push(crate::backend::IndexedStreams { layout: layout.clone(), vertex_count: window, streams, indices });
+        }
+        Ok(out)
     }
 
     pub(crate) fn draw_indexed_vertices_at(

@@ -1,7 +1,8 @@
-//! Admit resolved geometry draws inside a dynamic light. The guest gathers,
-//! builds, sorts and applies its per-light state before planning. Each
-//! handler still emits the D3D packet used for fallback.
+//! Dynamic light geometry. The gathered walk can build and sort entries
+//! before the original geometry handlers. The resolved-draw path below
+//! admits individual packets when those handlers execute.
 mod reference;
+pub mod walk;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
@@ -356,6 +357,12 @@ impl Feature for NativeLights {
         b.raw()
             .before(&points::LIGHT_GEOMETRY_DRAW, "native_lights_geometry", |c| {
                 if Stage::Lights.standing_down() {
+                    return Ok(Flow::Continue);
+                }
+                if walk::waiting() {
+                    // The gathered walk will verify the actual first emission.
+                    // On refusal its entire original sorted suffix still runs.
+                    CANDIDATE.take();
                     return Ok(Flow::Continue);
                 }
                 let rt = Arc::clone(c.ctx.runtime());

@@ -77,7 +77,7 @@ Use an integrated `h2`, a matching optimized image at `H2_SHADOW_IMAGE` and a GP
 ```sh
 shadow_run() {
     local name="$1" level="$2" end="$3" scale="$4" lighting="$5"
-    local shadows="$6" lights="$7" compare="$8" every="$9"
+    local shadows="$6" lights="$7" compare="$8" every="$9" walk="${10:-off}"
     local out="$RUSH_KEEP/$name" data shots=8 probe=1
     if [ "$every" = never ]; then
         shots=0
@@ -90,7 +90,7 @@ shadow_run() {
     H2_FRAME_STATS=1 H2_FRAME_STATS_FROM=750 H2_FRAME_STATS_CSV="$out/frames.csv" \
     H2_NATIVE_SHADOWS_COMPARE="$compare" H2_NATIVE_SHADOWS_PROBE="$probe" \
     H2_BOOT_STOP_AT_PRESENT="$end" \
-    H2_FEATURES="impl.render.native_world=on,impl.render.native_lights=$lights,impl.render.native_shadows=$shadows,impl.render.interpolate=off,impl.render.reproject=off" \
+    H2_FEATURES="impl.render.native_world=on,impl.render.native_lights=$lights,impl.render.native_shadows=$shadows,impl.render.native_light_walk=$walk,impl.render.interpolate=off,impl.render.reproject=off" \
     "$HOME/.cargo/bin/h2" run "$PWD/disc/halo2.iso" --out "${H2_SHADOW_IMAGE:?set to the matching image directory}" \
         --data "$data" --no-movies --no-mappack --no-halo1 >"$out/run.log" 2>&1
 }
@@ -118,3 +118,23 @@ Compare RGBA on identically numbered, visible frames, including 01000, 02000, 03
 | `crates/boot/Cargo.toml`, `Cargo.lock` | Test-only shader fixture dependency. |
 | `crates/agent-proto/src/lib.rs`, `crates/boot/src/agent_glue.rs`, `docs/runtime/agent-api.md` | Register and document the read-only comparison method. |
 | `docs/graphics/layer-draw.md` | Correct the list of layers the dispatcher draws. |
+
+### Scene walk A/B
+
+Use the function above from the integrated checkout with the same optimized
+image. Each pair changes only the light walk switch. The first four runs
+capture pixels and shadow maps. The last pair measures timing.
+
+```sh
+shadow_run walk-03a-off 03a_oldmombasa 4087 1 retail on on 0 250 off
+shadow_run walk-03a-on  03a_oldmombasa 4087 1 retail on on 0 250 on
+shadow_run walk-00a-off 00a_introduction 4520 2 e3 on on 0 250 off
+shadow_run walk-00a-on  00a_introduction 4520 2 e3 on on 0 250 on
+shadow_run walk-time-off 03a_oldmombasa 4087 1 retail on on 0 never off
+shadow_run walk-time-on  03a_oldmombasa 4087 1 retail on on 0 never on
+```
+
+Compare matching presents, including both physical copies at scale 2.
+Inspect `light_walk_handlers_skipped` alongside the light and shadow
+range counts. For sites absent from these captures, use the same gameplay
+replay on both sides and check the corresponding nonzero counters.

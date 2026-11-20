@@ -264,11 +264,38 @@ pub struct DepthGridResult {
 /// (the render thread under [`crate::ThreadedBackend`]); it must not block.
 pub type DepthGridSink = std::sync::Arc<dyn Fn(DepthGridResult) + Send + Sync>;
 
+/// Geometry in the vertex window selected by one complete part.
+pub struct IndexedStreams {
+    pub layout: VertexLayout,
+    pub vertex_count: u32,
+    pub streams: Vec<StreamBytes>,
+    pub indices: IndexData,
+}
+
+/// Remaining dispatches on the caller's stack. An indexed scene batch
+/// consumes them only with a synchronous, complete GPU reservation.
+#[derive(Clone, Copy)]
+pub struct IndexedTail {
+    pub indexed_esp: u32,
+    pub counter: u32,
+    pub remaining: u32,
+}
+
+impl IndexedTail {
+    pub(crate) fn consume(self, mem: &mut dyn crate::GuestMemory, esp: Option<u32>) -> bool {
+        esp == Some(self.indexed_esp) && self.remaining > 0
+            && mem.read_u32(self.counter).ok() == Some(self.remaining)
+            && (self.remaining == 1 || mem.try_write(self.counter, &1u32.to_le_bytes()))
+    }
+}
+
 /// A host render pass drawn into the guest's own colour target and depth,
 /// in order with the draws (docs/graphics/native-renderer.md): the native
 /// world. The device decides where (the bound targets and viewport); the
 /// backend gives the pass its encoder and the targets' views.
 pub trait ExternalPass: Send {
+    fn indexed_tail(&self) -> Option<IndexedTail> { None }
+
     #[cfg(feature = "gpu")]
     /// Records the pass, on the thread that owns the GPU. Called once per
     /// copy of the targets: twice under the render scale (the 1x
@@ -2056,5 +2083,42 @@ impl Backend for RecordingBackend {
             self.external_sampled.push(sampled);
         }
         Ok(self.external_passes)
+    }
+}
+
+#[cfg(test)]
+mod indexed_tail_tests {
+    use super::IndexedTail;
+    use crate::{GuestError, GuestMemory, SparseMemory};
+
+    #[test]
+    fn indexed_tail_consumes_only_the_matching_live_loop() {
+        let mut mem = SparseMemory::new();
+        mem.map(0x6000, 4096);
+        mem.write_u32(0x6040, 3).unwrap();
+        let tail = IndexedTail { indexed_esp: 0x6000, counter: 0x6040, remaining: 3 };
+        assert!(!tail.consume(&mut mem, None));
+        assert!(!tail.consume(&mut mem, Some(0x6004)));
+        assert!(!IndexedTail { remaining: 2, ..tail }.consume(&mut mem, Some(0x6000)));
+        assert_eq!(mem.read_u32(0x6040).unwrap(), 3);
+        assert!(tail.consume(&mut mem, Some(0x6000)));
+        assert_eq!(mem.read_u32(0x6040).unwrap(), 1);
+        assert!(!tail.consume(&mut mem, Some(0x6000)));
+    }
+
+    #[test]
+    fn indexed_tail_refuses_an_unwritable_stack_before_commit() {
+        struct ReadOnly;
+        impl GuestMemory for ReadOnly {
+            fn read(&self, _: u32, out: &mut [u8]) -> Result<(), GuestError> {
+                out.copy_from_slice(&5u32.to_le_bytes());
+                Ok(())
+            }
+            fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), GuestError> {
+                Err(GuestError { addr, len: data.len() as u32 })
+            }
+        }
+        let tail = IndexedTail { indexed_esp: 40, counter: 80, remaining: 5 };
+        assert!(!tail.consume(&mut ReadOnly, Some(40)));
     }
 }

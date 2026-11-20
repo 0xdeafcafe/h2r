@@ -157,6 +157,18 @@ pub enum Counter {
     /// (open, read, write, metadata, directory queries), on any guest
     /// thread: the async I/O pool's thread competes with the game's.
     FileIoUs = 16,
+    LightWalkNative,
+    LightWalkFallback,
+    LightWalkGraph,
+    LightWalkEmpty,
+    LightWalkMemory,
+    LightWalkCallback,
+    LightWalkMaterial,
+    LightWalkGeometry,
+    LightWalkGpu,
+    LightWalkBuilds,
+    LightWalkHandlersSkipped,
+    ShadowWalkLayers,
 }
 
 /// Number of [`Counter`]s.
@@ -168,7 +180,7 @@ pub fn counter_columns() -> impl Iterator<Item = (usize, &'static str)> {
 }
 
 impl Counter {
-    pub const ALL: [Counter; 17] = [
+    pub const ALL: [Counter; 29] = [
         Counter::Draws,
         Counter::Submits,
         Counter::Pipelines,
@@ -186,6 +198,18 @@ impl Counter {
         Counter::PassCounted,
         Counter::PassSide,
         Counter::FileIoUs,
+        Counter::LightWalkNative,
+        Counter::LightWalkFallback,
+        Counter::LightWalkGraph,
+        Counter::LightWalkEmpty,
+        Counter::LightWalkMemory,
+        Counter::LightWalkCallback,
+        Counter::LightWalkMaterial,
+        Counter::LightWalkGeometry,
+        Counter::LightWalkGpu,
+        Counter::LightWalkBuilds,
+        Counter::LightWalkHandlersSkipped,
+        Counter::ShadowWalkLayers,
     ];
 
     pub fn label(self) -> &'static str {
@@ -206,6 +230,18 @@ impl Counter {
             Counter::PassDiscard => "pass_discard",
             Counter::PassCounted => "pass_counted",
             Counter::PassSide => "pass_side",
+            Counter::LightWalkFallback => "lights_walked_fallback",
+            Counter::LightWalkGraph => "lights_walk_fallback_graph",
+            Counter::LightWalkEmpty => "lights_walk_empty",
+            Counter::LightWalkNative => "lights_walked_native",
+            Counter::LightWalkMemory => "lights_walk_fallback_memory",
+            Counter::LightWalkCallback => "lights_walk_fallback_callback",
+            Counter::LightWalkMaterial => "lights_walk_fallback_material",
+            Counter::LightWalkGeometry => "lights_walk_fallback_geometry",
+            Counter::LightWalkGpu => "lights_walk_fallback_gpu",
+            Counter::LightWalkBuilds => "light_walk_layer_builds",
+            Counter::LightWalkHandlersSkipped => "light_walk_handlers_skipped",
+            Counter::ShadowWalkLayers => "shadow_walk_layers",
             Counter::FileIoUs => "file_io_us",
         }
     }

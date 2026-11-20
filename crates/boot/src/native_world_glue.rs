@@ -320,7 +320,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
 }
 
 /// Installs the world host and the other native stages on the device.
-pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
+pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) -> Option<Arc<dyn d3d::DrawAdmission>> {
     let state: State = Arc::new(Mutex::new((None, Load::Idle)));
     let switches = feature::Switches::from_env().unwrap_or_default();
     feature::native_world::set_host(Arc::new(Glue {
@@ -336,8 +336,9 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
     crate::native_lights_glue::install(device, state, gels);
     // The post loads its own screen effects (`native_post_glue::EffectsSlot`).
     crate::native_post_glue::install(device);
-    crate::native_shadows_glue::install(device);
+    let shadows = crate::native_shadows_glue::install(device);
     crate::native_hud_glue::install(device);
+    shadows
 }
 
 /// The world's GPU side, uploaded from its CPU side by the first pass that

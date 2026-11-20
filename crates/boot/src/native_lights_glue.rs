@@ -1,6 +1,7 @@
 //! Native light draws over sorted guest geometry. Each target copy prepares
 //! immutable draw resources alongside the exact resolved fallback.
 mod compare;
+pub(crate) mod walk;
 
 use crate::native_gels_glue::{Binding, Checkpoint, Outputs};
 use compare::{Begin, End, ProbeState};

@@ -391,6 +391,9 @@ points! { ALL;
     RENDER_STENCIL_MODE @ 0x0001_5370: [opaque]; "docs/graphics/native-renderer.md";
     /// The additional shadow-caster pass (layer 10/11 pair after the main lights).
     ADDITIONAL_SHADOW_CASTERS @ 0x0003_0ed0: [opaque]; "docs/graphics/native-shadows.md";
+    /// Target selection helper. The light tail restores its view target here
+    /// after the last geometry, including on a light with no active layer.
+    LIGHT_RESTORE_TARGET @ 0x0001_4bc0: [opaque]; "docs/graphics/native-renderer.md";
     /// The scene call that walks the object shadow list.
     OBJECT_SHADOW_LIST @ 0x0003_35e0: [opaque]; "docs/graphics/native-shadows.md";
     /// Gathers the object shadow candidates.

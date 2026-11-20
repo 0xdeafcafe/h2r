@@ -78,3 +78,20 @@ fn placed_its_snapshot_policy_is_a_section() {
     assert_eq!(policies, vec![(native_lights::ID, "section")]);
     assert!(plan.snapshot_blockers().is_empty());
 }
+
+#[test]
+fn light_walk_has_its_own_default_on_switch_and_context_only_chains() {
+    use native_lights::walk::{self, NativeLightWalk};
+    for (spec, enabled) in [("", true), ("impl.render.native=off", false),
+        ("impl.render.native_light_walk=off", false),
+        ("impl.render.native=off,impl.render.native_lights=on,impl.render.native_light_walk=on", false),
+        ("impl.render.native_lights=off,impl.render.native_shadows=off", false)] {
+        let switches = Switches::parse(spec).unwrap();
+        assert_eq!(walk::on(&switches), enabled);
+        let mut r = Registry::new(switches);
+        r.add(&NativeLightWalk).unwrap();
+        let plan = r.build(&Base).unwrap();
+        assert_eq!(plan.text().contains("walk gathered light geometry"), enabled);
+        for chain in plan.chains.values() { assert!(chain.render_thread().is_ok()); }
+    }
+}
