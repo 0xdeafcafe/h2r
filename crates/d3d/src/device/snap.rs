@@ -720,7 +720,6 @@ impl<B: Backend> Device<B> {
             indexed_geometry_scope: _,
             swallowing: _,
             swallow_mismatch: _,
-            trace: _,
             display,
             // Written back by save_snapshot, then dropped by a load.
             rtt: _,

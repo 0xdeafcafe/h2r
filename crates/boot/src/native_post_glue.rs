@@ -966,7 +966,6 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             shapes: Vec::new(),
             drop: true,
             pass,
-            capture: None,
         })
     }
 
@@ -1057,7 +1056,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             .map(|index| index.and_then(|index| target_level_surface(mem, index))).to_vec();
         let pass = Box::new(ScreenPass { effects, call, screens: Arc::clone(&self.screens), raster: OnceLock::new() });
         self.arm(mem, d3d::Swallow {
-            call: Some(swallow_call(site)), end_returns, headers, targets, primitive, vertices, shapes, drop: true, pass, capture: None,
+            call: Some(swallow_call(site)), end_returns, headers, targets, primitive, vertices, shapes, drop: true, pass,
         })
 
     }
@@ -1293,7 +1292,6 @@ mod tests {
                 shapes: Vec::new(),
                 drop: true,
                 pass: Box::new(CapturePass(None)),
-                capture: None,
             };
             assert!(device.swallow(&mut dm, swallow).unwrap());
 
