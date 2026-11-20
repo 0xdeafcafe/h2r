@@ -381,8 +381,12 @@ enum Mode {
     /// v2 bridge table.
     OldOff,
     OldOn,
+    /// [`Mode::On`] with every handler cut into parts at every block
+    /// (`emit::c::Split::EVERY_BLOCK`): a direct callee's parts borrow the
+    /// view lent to it one after another.
+    SplitOn,
 }
-const MODES: [Mode; 5] = [Mode::Off, Mode::Disabled, Mode::On, Mode::OldOff, Mode::OldOn];
+const MODES: [Mode; 6] = [Mode::Off, Mode::Disabled, Mode::On, Mode::OldOff, Mode::OldOn, Mode::SplitOn];
 
 impl Mode {
     fn direct(self) -> bool {
@@ -390,6 +394,9 @@ impl Mode {
     }
     fn old(self) -> bool {
         matches!(self, Mode::OldOff | Mode::OldOn)
+    }
+    fn split(self) -> bool {
+        matches!(self, Mode::SplitOn)
     }
 }
 
@@ -399,11 +406,13 @@ struct Module {
     version: runtime::ffi::GeneratedAbiVersion,
 }
 
-fn build(direct: bool, old: bool) -> Module {
+fn build(direct: bool, old: bool, split: bool) -> Module {
     let owners = emit::plan_with(funcs(), emit::opt::Passes::from_env().unwrap());
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("direct-{direct}-{old}"));
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("direct-{direct}-{old}-{split}"));
     let src = dir.join("src");
-    emit::write_module_with(&owners, &src, emit::Codegen { accounting: true }).unwrap();
+    let parts = if split { emit::c::Split::EVERY_BLOCK } else { emit::c::Split::NEVER };
+    let w = emit::write_module_split(&owners, &src, emit::Codegen { accounting: true }, parts).unwrap();
+    assert_eq!(w.split > 0, split, "{} handlers cut", w.split);
     // The flag as `h2 emit` passes it, whatever the environment says.
     let header = src.join("h2gen.h");
     let content = std::fs::read_to_string(&header).unwrap();
@@ -497,18 +506,28 @@ unsafe extern "C" fn exit(c: *mut runtime::ExecCtxOpaque, n: u64) {
 }
 
 /// Every build, once per test binary: direct calls off and on, then the
-/// same two with the old exits.
-fn modules() -> &'static [Module; 4] {
-    struct Shared([Module; 4]);
+/// same two with the old exits, then direct calls on with split handlers.
+fn modules() -> &'static [Module; 5] {
+    struct Shared([Module; 5]);
     // SAFETY: the tables are immutable statics of libraries kept loaded.
     unsafe impl Sync for Shared {}
     unsafe impl Send for Shared {}
     static M: std::sync::OnceLock<Shared> = std::sync::OnceLock::new();
-    &M.get_or_init(|| Shared([build(false, false), build(true, false), build(false, true), build(true, true)])).0
+    &M.get_or_init(|| {
+        Shared([
+            build(false, false, false),
+            build(true, false, false),
+            build(false, true, false),
+            build(true, true, false),
+            build(true, false, true),
+        ])
+    })
+    .0
 }
 
 fn dispatch(mode: Mode) -> Dispatch {
-    let m = &modules()[usize::from(mode.direct()) + 2 * usize::from(mode.old())];
+    let i = if mode.split() { 4 } else { usize::from(mode.direct()) + 2 * usize::from(mode.old()) };
+    let m = &modules()[i];
     let mut d = Dispatch::default();
     unsafe { d.register_generated_module(&*m.table, m.version) }.unwrap();
     d
@@ -543,7 +562,7 @@ impl Machine {
         mem.set_u32(DATA, LOG).unwrap();
         mem.set_u32(STACK, runtime::exec::HARNESS_EXIT).unwrap();
         let mut ctx = ExecCtx::new(Runtime::new(mem, dispatch(mode)), 1);
-        ctx.enable_direct_calls(matches!(mode, Mode::On | Mode::OldOn));
+        ctx.enable_direct_calls(matches!(mode, Mode::On | Mode::OldOn | Mode::SplitOn));
         ctx.enable_profiling(true);
         Machine {
             ctx,

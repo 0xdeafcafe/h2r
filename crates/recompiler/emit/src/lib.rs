@@ -272,6 +272,8 @@ pub struct WriteReport {
     pub back_edges: usize,
     /// What the IR passes did, summed over owners.
     pub opt: opt::Report,
+    /// Handlers cut into parts ([`c::Split`]).
+    pub split: usize,
 }
 
 /// Write `content` unless the file already holds exactly that, so build
@@ -329,6 +331,12 @@ pub fn write_module_with(owners: &[Owner], dir: &Path, codegen: Codegen) -> io::
     write_module_with_hot(owners, dir, codegen, None)
 }
 
+/// [`write_module_with`], cutting handlers into parts by `split` instead
+/// of [`c::Split::DEFAULT`].
+pub fn write_module_split(owners: &[Owner], dir: &Path, codegen: Codegen, split: c::Split) -> io::Result<WriteReport> {
+    write_selected(owners, dir, codegen, None, None, split)
+}
+
 /// Keep all entry and resume records. Owners outside an audited allowlist
 /// are replaced by a faulting ABI body rather than leaving stale pointers.
 pub fn write_module_with_hot(
@@ -337,7 +345,7 @@ pub fn write_module_with_hot(
     codegen: Codegen,
     hot: Option<&BTreeSet<u32>>,
 ) -> io::Result<WriteReport> {
-    write_selected(owners, dir, codegen, hot, None)
+    write_selected(owners, dir, codegen, hot, None, c::Split::DEFAULT)
 }
 
 /// Emit native bodies only for the selected owners, keeping exact entry
@@ -348,7 +356,7 @@ pub fn write_slim_module(
     codegen: Codegen,
     native: &BTreeSet<u32>,
 ) -> io::Result<WriteReport> {
-    write_selected(owners, dir, codegen, None, Some(native))
+    write_selected(owners, dir, codegen, None, Some(native), c::Split::DEFAULT)
 }
 
 fn write_selected(
@@ -357,6 +365,7 @@ fn write_selected(
     codegen: Codegen,
     strict_hot: Option<&BTreeSet<u32>>,
     slim_native: Option<&BTreeSet<u32>>,
+    split: c::Split,
 ) -> io::Result<WriteReport> {
     std::fs::create_dir_all(dir)?;
     // Defined ahead of the header in every generated file, so all of a
@@ -393,7 +402,7 @@ fn write_selected(
             accounting: codegen.accounting,
             functions: Some(&functions),
         };
-        c::function(&o.func, &shape)
+        c::function_with(&o.func, &shape, split)
     });
     for (o, text) in native.iter().zip(texts) {
         let stem = if text.len() > OVERSIZED {
@@ -408,6 +417,7 @@ fn write_selected(
         });
         file.push_str(&text);
         file.push('\n');
+        report.split += text.contains("H2_PART_LENT();") as usize;
         home.insert(o.func.entry, stem);
         report.entries += o.entries.len();
         report.resumes += o.resumes.len();
