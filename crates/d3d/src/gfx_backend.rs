@@ -1849,6 +1849,10 @@ impl Backend for GfxBackend {
         Ok(true)
     }
 
+    fn handles_surface_aliases(&self) -> bool {
+        self.single_copy_aliases
+    }
+
     fn defers_depth_aliases(&self) -> bool {
         // Depth24Plus cannot be read at all (nor by `read_depth`).
         self.gpu_depth_aliases && self.ctx.caps.depth32_stencil8

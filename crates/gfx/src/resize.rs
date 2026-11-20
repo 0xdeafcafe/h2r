@@ -129,6 +129,7 @@ impl Resizer {
                 view: &output, depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
                 stencil_ops: None,
             }), timestamp_writes: None, occlusion_query_set: None,
+            multiview_mask: None,
         });
         pass.set_scissor_rect(0, 0, width, height);
         pass.set_pipeline(pipe);

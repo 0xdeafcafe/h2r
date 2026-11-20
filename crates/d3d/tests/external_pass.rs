@@ -953,17 +953,39 @@ fn light_walk_cursor_and_both_gpu_copies_commit_together_at_the_indexed_abi() {
 }
 
 #[test]
-fn single_copy_commits_only_the_scaled_native_recording() {
+fn single_copy_commits_world_and_objects_once_at_display_size() {
+    struct NativeRange(Probe);
+
+    impl ExternalPass for NativeRange {
+        fn writes(&self) -> d3d::ExternalWrites {
+            d3d::ExternalWrites { color: true, depth_stencil: false }
+        }
+
+        fn record_ranges(&mut self, target: ExternalTarget<'_>) -> usize {
+            self.0.encode(target);
+            1
+        }
+    }
+
     let Some(reference) = backend() else { return };
     let display = GfxBackend::new(app::share_context(&reference.ctx));
-    let (mut d, mut m) = create(d3d::ScaledBackend::new(reference, display, 4).unwrap(), UploadPolicy::Always);
-    let seen = Arc::default();
-    let pass = Counting { seen: Arc::clone(&seen), display_ranges: 1 };
-    d.prepare_external_pass(&mut m, plan(1), Box::new(pass)).unwrap().unwrap().commit();
-    assert_eq!(*seen.lock().unwrap(), [d3d::TargetCopy::Display]);
+    let scaled = d3d::ScaledBackend::new(reference, display, 4).unwrap();
+    let (mut d, mut m) = create(ThreadedBackend::new(scaled).unwrap(), UploadPolicy::Always);
+    for stage in [timeline::native::Stage::World, timeline::native::Stage::Objects] {
+        let seen: Got = Arc::default();
+        let pass = NativeRange(Probe(Arc::clone(&seen)));
+        let plan = d3d::ExternalPlan { stage, view: 0, ..plan(1) };
+        d.prepare_external_bound(&mut m, plan, Box::new(pass), Vec::new()).unwrap().unwrap().commit();
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "{stage:?}");
+        assert_eq!(seen[0].copy, d3d::TargetCopy::Display, "{stage:?}");
+        assert_eq!(seen[0].sizes, ((W, H), (4 * W, 4 * H)), "{stage:?}");
+        assert_eq!(seen[0].viewport, [0., 0., (4 * W) as f32, (4 * H) as f32]);
+    }
     let back = d.back_buffer().unwrap();
     let pixels = d.backend.read_surface(back, gfx::D3DFormat::LinA8R8G8B8, W, H,
         d3d::GuestLayoutKind::Linear { pitch: W * 4 }).unwrap();
     assert_eq!(&pixels[..4], &[0, 0, 255, 255]);
-    assert_eq!((d.backend.stats().reference_draws, d.backend.stats().display_draws), (0, 1));
+    let stats = d.backend.with_inner(|b| b.stats()).unwrap();
+    assert_eq!((stats.reference_draws, stats.display_draws), (0, 2));
 }

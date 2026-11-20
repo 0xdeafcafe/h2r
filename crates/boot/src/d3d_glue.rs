@@ -1219,6 +1219,9 @@ impl d3d::backend::Backend for Headless {
     fn mirror_read(&mut self, offset: u32, len: u32) -> Result<Vec<u8>, String> {
         self.0.mirror_read(offset, len)
     }
+    fn handles_surface_aliases(&self) -> bool {
+        self.0.handles_surface_aliases()
+    }
     fn defers_depth_aliases(&self) -> bool {
         self.0.defers_depth_aliases()
     }

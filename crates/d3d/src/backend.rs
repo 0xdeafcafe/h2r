@@ -297,9 +297,9 @@ pub trait ExternalPass: Send {
     fn indexed_tail(&self) -> Option<IndexedTail> { None }
 
     #[cfg(feature = "gpu")]
-    /// Records the pass, on the thread that owns the GPU. Called once per
-    /// copy of the targets: twice under the render scale (the 1x
-    /// reference and the scaled view), with the same frame each time.
+    /// Records the pass once per active target copy on the GPU thread.
+    /// Single-copy scaling records the display. Exact scaling records both
+    /// the 1x reference and the display with the same frame inputs.
     fn encode(&mut self, target: ExternalTarget<'_>) { self.record_ranges(target); }
 
     /// The guest is deciding whether to skip the work this pass replaces.
@@ -1460,9 +1460,11 @@ pub trait Backend: Send {
     fn judge(&self) -> Option<Box<dyn DrawJudge>> {
         None
     }
-    /// Whether depth_alias_texture can also reinterpret a colour or depth RTT
+    /// Whether [`depth_alias_texture`](Self::depth_alias_texture) can also reinterpret a colour or depth RTT
     /// at any byte offset. A zero source pitch selects Morton order.
-    fn handles_surface_aliases(&self) -> bool { false }
+    fn handles_surface_aliases(&self) -> bool {
+        false
+    }
 
     /// Whether [`depth_alias_texture`](Self::depth_alias_texture) makes
     /// depth-alias textures (default false).
