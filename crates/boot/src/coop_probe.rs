@@ -98,7 +98,7 @@ pub fn parse(get: impl Fn(&str) -> Option<String>) -> Result<Option<Config>, Str
 }
 
 /// The level the host sets, resolved against the disc.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Want {
     pub name: String,
     pub campaign: u32,
@@ -171,7 +171,7 @@ pub fn clamp_players(n: i64) -> u32 {
 }
 
 /// A squad session, read.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Session {
     pub addr: u32,
     pub state: u32,
@@ -703,6 +703,7 @@ pub const LIVE_ID: &str = "coop-live";
 #[derive(Debug)]
 pub struct Arm {
     forced: bool,
+    pub(crate) film: bool,
     on: AtomicBool,
     want: Mutex<Option<Want>>,
     /// The host's co-op player limit (`coop.max_players`), 2 to
@@ -714,6 +715,7 @@ impl Default for Arm {
     fn default() -> Arm {
         Arm {
             forced: false,
+            film: false,
             on: AtomicBool::new(false),
             want: Mutex::new(None),
             max_players: AtomicU32::new(MAX_PLAYERS),
@@ -724,7 +726,12 @@ impl Default for Arm {
 impl Arm {
     /// Armed for the whole run (the probe).
     pub fn forced(want: Option<Want>) -> Arc<Arm> {
+        Self::forced_film(want, false)
+    }
+
+    fn forced_film(want: Option<Want>, film: bool) -> Arc<Arm> {
         Arc::new(Arm {
+            film,
             forced: true,
             on: AtomicBool::new(true),
             want: Mutex::new(want),
@@ -1114,9 +1121,48 @@ impl feature::Feature for Probe {
                 .optional();
         }
         let (arm, st) = (Arc::clone(&self.arm), Arc::clone(&self.state));
-        b.snapshot(feature::SnapshotPolicy::forbid_while(move || {
-            probe_live(&arm, &st)
-        }));
+        if arm.film {
+            let (check, save, load) = (st.clone(), st.clone(), st);
+            let (control, restored) = (arm.clone(), arm.clone());
+            b.snapshot(feature::SnapshotPolicy::section_forbid_while(
+                move || {
+                    if crate::theater::in_keyframe() {
+                        return lock(&check).pending.is_some().then(|| "co-op session start has a masked peer count".into());
+                    }
+                    probe_live(&arm, &check)
+                },
+                move || {
+                    let s = lock(&save);
+                    serde_json::to_vec(&(control.active(), control.want(), control.max_players(),
+                        &s.setup_for, s.setup_last_tick, s.setup_attempts, s.setup_done))
+                        .expect("serialisable co-op probe")
+                },
+                move |bytes, _| {
+                    if !crate::theater::in_keyframe() { return Err("co-op hook state requires film replay".into()); }
+                    type Saved = (bool, Option<Want>, u32, Option<Want>, Option<u32>, u32, bool);
+                    let (on, want, max, setup, tick, attempts, done): Saved =
+                        serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+                    if !(MAX_PLAYERS..=CEILING).contains(&max) || attempts > SETUP_ATTEMPTS ||
+                        want.iter().chain(setup.iter()).any(|w| w.difficulty > 3) {
+                        return Err("invalid co-op probe checkpoint".into());
+                    }
+                    if restored.is_forced() && (!on || restored.want() != want) {
+                        return Err("co-op probe launch differs from checkpoint".into());
+                    }
+                    restored.set_max_players(i64::from(max));
+                    if on { restored.arm(want); } else { restored.disarm(); }
+                    // Console diagnostics (last log message and wall time) do
+                    // not enter the game. The start/setup retry cursor does.
+                    *lock(&load) = State {
+                        setup_for: setup, setup_last_tick: tick, setup_attempts: attempts,
+                        setup_done: done, ..Default::default()
+                    };
+                    Ok(())
+                },
+            ));
+        } else {
+            b.snapshot(feature::SnapshotPolicy::forbid_while(move || probe_live(&arm, &st)));
+        }
         Ok(())
     }
 }
@@ -1394,6 +1440,17 @@ pub fn install(
     disc: &Path,
     data_root: &Path,
 ) -> anyhow::Result<Installed> {
+    install_film(rt, registry, config, disc, data_root, false)
+}
+
+pub(crate) fn install_film(
+    rt: &runtime::Runtime,
+    registry: &mut feature::Registry,
+    config: Option<Config>,
+    disc: &Path,
+    data_root: &Path,
+    film: bool,
+) -> anyhow::Result<Installed> {
     let Some(config) = config else {
         return Ok(Installed::Off);
     };
@@ -1427,7 +1484,7 @@ pub fn install(
     };
     let level = want.as_ref().map(|w| w.name.clone());
     let dir = data_root.join("coop-probe");
-    match registry.add(&Probe::new(want, dir)) {
+    match registry.add(&Probe::armed(Arm::forced_film(want, film), dir)) {
         Ok(_) => Ok(Installed::Added { level }),
         Err(e) => anyhow::bail!("coop-probe: {e}"),
     }
@@ -1442,6 +1499,15 @@ pub fn install_live(
     registry: &mut feature::Registry,
     data_root: &Path,
 ) -> anyhow::Result<Option<Arc<Arm>>> {
+    install_live_film(rt, registry, data_root, false)
+}
+
+pub(crate) fn install_live_film(
+    rt: &runtime::Runtime,
+    registry: &mut feature::Registry,
+    data_root: &Path,
+    film: bool,
+) -> anyhow::Result<Option<Arc<Arm>>> {
     let mut taken = Vec::new();
     rt.edit_dispatch(|d| taken = occupied(|a| d.override_name(a).map(str::to_owned)));
     if !taken.is_empty() {
@@ -1451,7 +1517,7 @@ pub fn install_live(
         eprintln!("coop-live: off: an address it needs is already overridden");
         return Ok(None);
     }
-    let arm = Arm::session();
+    let arm = Arc::new(Arm { film, ..Arm::default() });
     match registry.add(&Probe::armed(
         Arc::clone(&arm),
         data_root.join("coop-probe"),

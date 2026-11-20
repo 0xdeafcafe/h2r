@@ -654,7 +654,7 @@ fn open(name: &str, palettes: StagePalettes, formats: Option<StreamFormats>) -> 
 
 /// The map's tag whose index is the datum's low word (the guest's datum
 /// and the map's agree on the index; the salt is not relied on).
-fn tag_of(map: &NativeMap, datum: u32) -> Option<TagId> {
+pub(crate) fn tag_of(map: &NativeMap, datum: u32) -> Option<TagId> {
     if let Ok(t) = map.tag(TagId(datum)) {
         return Some(t.id);
     }

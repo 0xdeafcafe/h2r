@@ -22,6 +22,33 @@ pub const KINDS: [&str; 6] = [
 pub const DEFAULT_IDLE_TIMEOUT_S: u32 = 120;
 pub const DEFAULT_MAX_MATCH_S: u32 = 1800;
 
+/// Archive policy for a leased host. Both modes record a film. During
+/// migration, dual mode also publishes the live telemetry projection.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HostArchive {
+    #[default]
+    Dual,
+    Film,
+}
+
+impl HostArchive {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "dual" => Ok(Self::Dual),
+            "film" => Ok(Self::Film),
+            _ => Err("host archive must be dual or film".into()),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Dual => "dual",
+            Self::Film => "film",
+        }
+    }
+}
+
 /// The lease metadata shown on public game and session pages.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DedicatedHostFields {

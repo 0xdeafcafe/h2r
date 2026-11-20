@@ -29,6 +29,11 @@ pub trait Backend: Send {
     fn map_id(&mut self, _path: &str) -> Option<content::MapId> {
         None
     }
+    /// Readable ranges (offset and length) of a sparse sim-store map.
+    /// A regular or overlaid map has its entire logical file available.
+    fn map_ranges(&mut self, _path: &str) -> Option<Vec<(u64, u64)>> {
+        None
+    }
     /// A file object was opened on `path` (after a successful open, files
     /// only). Paired with [`closed`](Self::closed) when its last handle
     /// closes. Backends whose contents can change while the game runs

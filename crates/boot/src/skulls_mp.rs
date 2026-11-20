@@ -455,6 +455,30 @@ impl MpSkulls {
         self.set_profiles(profiles);
         let hle = self.hle.clone();
         let (set, line) = at_start(role, &own, || match &hle {
+            Some(h) if h.film_service_taped() => {
+                let bits = h.game_setting("HostSkulls", &[], || {
+                    match Heard::from_hle(h.host_skulls(HOST_WAIT)) {
+                        Heard::Set { skulls, .. } => Some(
+                            skulls
+                                .into_iter()
+                                .filter(|s| live_proto::skulls::MULTIPLAYER.contains(s))
+                                .fold(0u32, |bits, s| bits | (1 << s))
+                                .to_le_bytes(),
+                        ),
+                        Heard::Nothing(_) => None,
+                    }
+                });
+                match bits {
+                    Some(bits) => Heard::Set {
+                        skulls: live_proto::skulls::MULTIPLAYER
+                            .into_iter()
+                            .filter(|s| u32::from_le_bytes(bits) & (1 << s) != 0)
+                            .collect(),
+                        fresh: false,
+                    },
+                    None => Heard::Nothing("no host skulls".into()),
+                }
+            }
             Some(h) => Heard::from_hle(h.host_skulls(HOST_WAIT)),
             None => Heard::Nothing("Live is off here; System Link shares no skulls".into()),
         });

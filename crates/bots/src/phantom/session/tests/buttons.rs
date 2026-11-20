@@ -158,6 +158,7 @@ fn missed_build_revalidates_one_previous_action_then_resumes_fresh_input() {
         ..Default::default()
     });
     let mut g = gather(&ph, g, slot);
+    let first_pad = ph.gathered_pads(100)[1].expect("accepted action source");
     let mut previous = [0; ACTION_SIZE];
     g.read(OUT, &mut previous).unwrap();
     at_tick(&mut g, 101);
@@ -176,6 +177,7 @@ fn missed_build_revalidates_one_previous_action_then_resumes_fresh_input() {
     );
     assert_eq!(run.result, Ok(Ret::new(1, 8)));
     assert_eq!(run.guest.u32(slot + SLOT_STAMP).unwrap(), 101);
+    assert_eq!(ph.gathered_pads(101)[1], Some(first_pad));
     let repeat = call_with_builder(
         &ph,
         run.guest,
@@ -190,6 +192,7 @@ fn missed_build_revalidates_one_previous_action_then_resumes_fresh_input() {
     let missed = call_with_builder(&ph, g, slot, |_| None, |_, _| panic!("replayed twice"));
     assert_eq!(missed.result, Ok(Ret::new(0, 8)));
     assert_eq!(missed.guest.u32(slot + SLOT_STAMP).unwrap(), 101);
+    assert!(ph.gathered_pads(102).iter().all(Option::is_none));
     let repeat = call_with_builder(
         &ph,
         missed.guest,
@@ -285,7 +288,9 @@ fn arrived_pad_publishes_the_whole_local_action_once_per_tick() {
             } else {
                 pads[((tick - 100 - delay) % 3) as usize]
             };
-            let local = fixture_record(pad.to_gamepad(&Default::default(), false));
+            let arrived = pad.to_gamepad(&Default::default(), false);
+            assert_eq!(ph.gathered_pads(tick)[1], Some(arrived));
+            let local = fixture_record(arrived);
             let mut got = [0; ACTION_SIZE];
             g.read(OUT, &mut got).unwrap();
             assert_eq!(got, local);

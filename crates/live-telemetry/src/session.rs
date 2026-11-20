@@ -174,6 +174,8 @@ pub struct Session {
     /// array holds only the engine's fifteen.
     campaign_custom_skulls: Option<Vec<u8>>,
     output: Vec<Output>,
+    /// Even a joined client can make an offline film of its local view.
+    pub(crate) filming: bool,
 }
 
 /// A matchmaking game's playlist, as its record names it
@@ -276,6 +278,7 @@ impl Session {
             multiplayer_skulls: None,
             campaign_custom_skulls: None,
             output: Vec::new(),
+            filming: false,
         }
     }
 
@@ -340,6 +343,53 @@ impl Session {
 
     pub fn take_output(&mut self) -> Vec<Output> {
         std::mem::take(&mut self.output)
+    }
+
+    pub(crate) fn live_frames(&self) -> bool {
+        self.current.as_ref().is_some_and(|m| !m.frames_from_host)
+    }
+
+    pub(crate) fn match_clock(&self) -> Option<u64> {
+        self.current.as_ref().filter(|m| !m.ended).map(|m| m.clock(m.tick))
+    }
+
+    pub(crate) fn frame_due(&self, tick: u64) -> bool {
+        let Some(m) = self.current.as_ref().filter(|_| self.filming) else {
+            return tick.is_multiple_of(2);
+        };
+        // Use the actual engine rate. At 30 Hz this is every second tick;
+        // at other rates the integer schedule still gives 15 frames/second.
+        let phase = tick % m.tick_rate;
+        let samples = m.tick_rate.min(15);
+        phase == 0 || phase * samples / m.tick_rate != (phase - 1) * samples / m.tick_rate
+    }
+
+    pub(crate) fn match_clock_at(&self, tick: u64) -> Option<u64> {
+        self.current.as_ref().filter(|m| !m.ended).map(|m| m.clock(tick))
+    }
+
+    pub(crate) fn film_damage(&self, hit: &HitRecord) -> Option<live_proto::film::events::Record> {
+        let current = self.current.as_ref().filter(|m| !m.ended && !m.cinematic)?;
+        let tick = hit.tick.unwrap_or(current.tick);
+        let player = |unit| {
+            current.players.iter().find(|p| p.unit == unit).map(|p| p.player.index)
+        };
+        Some(live_proto::film::events::Record {
+            tick: current.clock(tick),
+            event: live_proto::film::events::Event::Damage(
+                frame_hit(hit, tick, player, current.tags.as_ref())?
+            ),
+        })
+    }
+
+    pub(crate) fn film_weapon(&self, definition: u32) -> Option<String> {
+        self.current.as_ref()?.tags.as_ref()?.weapon(definition)
+    }
+
+    pub(crate) fn name_scene(&self, scene: &mut live_proto::film::objects::Scene) {
+        if let Some(tags) = self.current.as_ref().and_then(|m| m.tags.as_ref()) {
+            tags.name_film_scene(scene);
+        }
     }
 
     #[cfg(test)]
@@ -550,6 +600,7 @@ impl Session {
         let signed_in = self.signed_in;
         let bots = self.bots.as_ref();
         let sim = self.is_sim();
+        let render_frame = self.frame_due(snapshot.tick);
         let Some(current) = &mut self.current else {
             return;
         };
@@ -572,7 +623,7 @@ impl Session {
         }
         let scores = snapshot.scores();
         if snapshot.has_stats
-            && snapshot.tick >= current.last_score_tick + current.tick_rate
+            && (self.filming || snapshot.tick >= current.last_score_tick + current.tick_rate)
             && (scores != current.last_emitted_scores
                 || snapshot.teams != current.last_emitted_teams)
         {
@@ -595,7 +646,7 @@ impl Session {
         current.cinematic = snapshot.cinematic;
         // dh-identity: the joined client's one frame-upload gate. Scores,
         // joins, leaves and the end of the game still go through as usual.
-        if current.frames_from_host {
+        if current.frames_from_host && !self.filming {
             return;
         }
         for (player, object) in snapshot.players.iter().zip(&snapshot.objects) {
@@ -651,7 +702,7 @@ impl Session {
             current.actor_shots.clear();
             current.hits.clear();
             current.units.clear();
-            if snapshot.tick.is_multiple_of(2) {
+            if render_frame {
                 current.sent_tick = current.sent_tick.max(clock);
                 self.output.push(Output::Frame(Frame {
                     game_id: current.game_id.clone(),
@@ -669,7 +720,7 @@ impl Session {
         let over = current.hits.len().saturating_sub(MAX_FRAME_HITS);
         current.hits.drain(..over);
 
-        if snapshot.tick.is_multiple_of(2) {
+        if render_frame {
             let game_id = current.game_id.clone();
             let tags = current.tags.as_ref();
             let hits = std::mem::take(&mut current.hits);
@@ -1639,42 +1690,45 @@ fn frame_hits(
     player_of_unit: &BTreeMap<u32, u32>,
     tags: Option<&TagNames>,
 ) -> Vec<FrameHit> {
+    hits.iter()
+        .filter_map(|h| frame_hit(h, tick, |unit| player_of_unit.get(&unit).copied(), tags))
+        .take(MAX_FRAME_HITS)
+        .collect()
+}
+
+fn frame_hit(
+    h: &HitRecord,
+    tick: u64,
+    player_of_unit: impl Fn(u32) -> Option<u32>,
+    tags: Option<&TagNames>,
+) -> Option<FrameHit> {
     let object = |datum: u32| {
-        (datum != u32::MAX).then(|| match player_of_unit.get(&datum) {
+        (datum != u32::MAX).then(|| match player_of_unit(datum) {
             Some(index) => format!("p{index}"),
             None => hex(datum),
         })
     };
-    hits.iter()
-        .filter_map(|h| {
-            let pos = h.pos?;
-            let (kind, weapon) = layout::damage_reporting_type(h.code);
-            let from = if h.owner_player != u32::MAX {
-                Some(format!("p{}", h.owner_player & 0xffff))
-            } else {
-                object(h.owner_object)
-            };
-            let amount = f64::from(h.body.max(0.0)) + f64::from(h.shield.max(0.0));
-            Some(FrameHit {
-                from,
-                to: object(h.victim),
-                weapon: weapon.map(str::to_owned).or_else(|| {
-                    tags.and_then(|t| t.damage_effect(h.effect))
-                        .filter(|s| live_proto::game::valid_model_id(s))
-                }),
-                pos,
-                amount: amount.is_finite().then_some(amount),
-                kind: Some(kind.into()),
-                // Engine ticks on both sides: the run's offset cancels.
-                ago: h
-                    .tick
-                    .and_then(|t| tick.checked_sub(t))
-                    .and_then(|a| u32::try_from(a).ok())
-                    .filter(|a| *a <= live_proto::game::MAX_FRAME_AGO),
-            })
-        })
-        .take(MAX_FRAME_HITS)
-        .collect()
+    let (kind, weapon) = layout::damage_reporting_type(h.code);
+    let from = if h.owner_player != u32::MAX {
+        Some(format!("p{}", h.owner_player & 0xffff))
+    } else {
+        object(h.owner_object)
+    };
+    let amount = f64::from(h.body.max(0.0)) + f64::from(h.shield.max(0.0));
+    Some(FrameHit {
+        from,
+        to: object(h.victim),
+        weapon: weapon.map(str::to_owned).or_else(|| {
+            tags.and_then(|t| t.damage_effect(h.effect))
+                .filter(|s| live_proto::game::valid_model_id(s))
+        }),
+        pos: h.pos?,
+        amount: amount.is_finite().then_some(amount),
+        kind: Some(kind.into()),
+        ago: h.tick.and_then(|t| tick.checked_sub(t))
+            .and_then(|a| u32::try_from(a).ok())
+            .filter(|a| *a <= live_proto::game::MAX_FRAME_AGO),
+    })
 }
 
 #[cfg(test)]

@@ -16,7 +16,7 @@ mod supervisor;
 const USAGE: &str = "usage:
   h2 host run --lease ID --live URL --token TOKEN --data-url URL --data-sha SHA256
               [--region REGION] [--base-port 31000] [--tunnel-listen 0.0.0.0:31100]
-              [--out DIR] [--data DIR] [--film FILE]
+              [--out DIR] [--data DIR] [--film FILE] [--archive dual|film]
   h2 host bundle --disc ISO --out DIR
 
 See docs/live/dedicated-host.md for environment variables and boot inputs.";

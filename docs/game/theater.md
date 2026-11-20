@@ -1,5 +1,9 @@
 # Theater: saved films, free camera and spectating
 
+For the unified host recording, binary layout, reader API and current replay path, see
+[the film format](film-format.md). The tier-B v1 design and its baseline
+experiments follow below.
+
 This is the design for a Halo 3-style Theater in h2recomp: record a game
 as a film, then watch it again with pause, fast forward, rewind, a free
 camera, another player's view, clips and screenshots. It also covers the

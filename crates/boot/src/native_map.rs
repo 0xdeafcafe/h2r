@@ -35,9 +35,19 @@ pub(crate) fn open_from_vfs(
     vfs: &Mutex<Vfs>,
     name: &str,
 ) -> Result<(NativeMap, ResourceFiles), Error> {
+    open_source_from_vfs(vfs, name, None)
+}
+
+pub(crate) fn open_source_from_vfs(
+    vfs: &Mutex<Vfs>,
+    name: &str,
+    slot_source: Option<&str>,
+) -> Result<(NativeMap, ResourceFiles), Error> {
     let (local, shared) = {
         let mut vfs = vfs.lock().unwrap_or_else(|e| e.into_inner());
-        let local = if let Some(path) = vfs.content_map_path(name) {
+        let local = if let Some(path) = slot_source {
+            vfs.file_source(path)
+        } else if let Some(path) = vfs.content_map_path(name) {
             vfs.file_source(&path)
         } else {
             let path = format!("{}\\maps\\{name}.map", vfs::CDROM_DEVICE);

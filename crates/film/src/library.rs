@@ -8,8 +8,15 @@ use std::{
 #[derive(Clone, Debug)]
 pub struct LibraryEntry {
     pub meta: FilmMeta,
+    /// None for v1 films, which have only the original header score line.
+    pub summary: Option<crate::blam::Summary>,
+    pub version: u32,
+    pub runtime_stamp: String,
+    pub xbe_sha256: String,
+    pub guest_image: Option<crate::image::GuestImage>,
     pub saved: bool,
     pub lease_id: Option<String>,
+    pub game_id: Option<String>,
     pub path: PathBuf,
 }
 impl std::ops::Deref for LibraryEntry {
@@ -38,12 +45,34 @@ impl Library {
             }
             // A recorder may still be writing its first HEAD. Keep the
             // other films available when a recording has no readable header.
-            let file = fs::File::open(&path)?;
-            let Ok(reader) = Reader::new(file) else {
+            let Ok(mut file) = fs::File::open(&path) else {
                 continue;
             };
-            let header = reader.header;
+            let (header, summary) = match crate::range::listing(&mut file) {
+                Ok(Some((header, summary))) => (header, Some(summary)),
+                Ok(None) => {
+                    let Ok(mut reader) = Reader::new(file) else {
+                        continue;
+                    };
+                    let summary = if reader.header.version == 2 {
+                        let Ok(summary) = crate::blam::summary(&mut reader) else {
+                            continue;
+                        };
+                        Some(summary)
+                    } else {
+                        None
+                    };
+                    (reader.header, summary)
+                }
+                Err(_) => continue,
+            };
             rows.push(LibraryEntry {
+                version: header.version,
+                runtime_stamp: header.runtime_stamp,
+                xbe_sha256: header.xbe_sha256,
+                guest_image: header.guest_image,
+                summary,
+                game_id: header.game_id.or_else(|| header.lease_id.clone()),
                 lease_id: header.lease_id,
                 saved: path.with_extension("h2film.saved").is_file(),
                 path,

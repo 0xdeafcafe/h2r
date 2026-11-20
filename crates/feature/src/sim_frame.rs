@@ -258,9 +258,34 @@ impl Feature for SimFrame {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        // Only counters outside guest RAM, and a skipped frame finishes
-        // within its own continuation.
-        b.snapshot(SnapshotPolicy::Stateless);
+        // Every nth world frame takes a different guest path. Restoring
+        // this index preserves the same render/skip choice after a seek.
+        if self.render_every > 1 {
+            let save = self.shared.clone();
+            let load = self.shared.clone();
+            let cadence = self.render_every.to_le_bytes();
+            b.snapshot(SnapshotPolicy::section(
+                move || {
+                    let mut bytes = Vec::from(cadence);
+                    bytes.extend(save.world.load(Ordering::Relaxed).to_le_bytes());
+                    bytes
+                },
+                move |bytes, _| {
+                    let suffix = bytes
+                        .strip_prefix(cadence.as_slice())
+                        .ok_or("snapshot world render cadence differs")?;
+                    let index = u64::from_le_bytes(
+                        suffix
+                            .try_into()
+                            .map_err(|_| "invalid world frame cursor")?,
+                    );
+                    load.world.store(index, Ordering::Relaxed);
+                    Ok(())
+                },
+            ));
+        } else {
+            b.snapshot(SnapshotPolicy::Stateless);
+        }
         let me = self.clone();
         b.raw().implement(
             &points::RENDER_FRAME,
@@ -398,6 +423,35 @@ mod tests {
         ] {
             assert!(!skip(k, 1, 0), "{k:?}");
         }
+    }
+
+    #[test]
+    fn restoring_a_world_frame_cursor_resumes_on_the_same_render() {
+        let plan = |f: &SimFrame| {
+            let mut registry = crate::Registry::new(crate::Switches::default());
+            registry.add(f).unwrap();
+            registry.build(&crate::Base).unwrap()
+        };
+        let g = world();
+        let original = SimFrame::with(A, 3);
+        let source = plan(&original);
+        assert!(!original.decide(&g)); // frame 0
+        let sections = source
+            .save_sections()
+            .into_iter()
+            .map(|(name, bytes)| (name.to_owned(), bytes))
+            .collect::<Vec<_>>();
+        let replay = SimFrame::with(A, 3);
+        let rt = runtime::Runtime::new(runtime::Guest::new(), runtime::Dispatch::default());
+        plan(&replay).load_sections(&sections, &rt).unwrap();
+        for _ in 0..5 {
+            assert_eq!(original.decide(&g), replay.decide(&g));
+        }
+        assert!(
+            plan(&SimFrame::with(A, 2))
+                .load_sections(&sections, &rt)
+                .is_err()
+        );
     }
 
     #[test]

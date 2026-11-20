@@ -165,14 +165,16 @@ fn a_delta_loads_over_its_base() {
     );
     // The base's RAM comes from decoding the base file.
     let base_snapshot = Snapshot::open(&base_bytes, &build()).unwrap();
-    let mut base_decoded = vec![0u8; RAM_SIZE];
-    snapshot::pages::decode(
-        &base_snapshot.require(guest::RAM, 1..=1).unwrap(),
-        &mut base_decoded,
-        None,
-    )
-    .unwrap();
-    guest::load_guest(&snapshot, &mut target.memory(), Some(&base_decoded)).unwrap();
+    let base_decoded = guest::standalone_ram(&base_snapshot).unwrap();
+    assert!(guest::standalone_ram(&snapshot).is_err());
+    let mut base = Base {
+        name: "wrong-name",
+        ram: &base_decoded,
+        dirty: None,
+    };
+    assert!(guest::load_guest_delta(&snapshot, &mut target.memory(), &base).is_err());
+    base.name = "base";
+    guest::load_guest_delta(&snapshot, &mut target.memory(), &base).unwrap();
     assert_eq!(lockstep::hash_guest(&target.memory()), want);
 }
 

@@ -283,3 +283,46 @@ fn headphone_filter_snapshot_keeps_history_and_an_in_progress_ramp() {
         assert_eq!(carry_on(&mut loaded, stream), carry_on(&mut source, stream));
     }
 }
+
+#[test]
+fn clock_snapshot_resumes_buffer_cursor_and_exact_packet_completion() {
+    let fmt = WaveFormat::pcm16(1, RATE).unwrap();
+    let mut a = Mixer::new(RATE);
+    a.set_packet_clock(true);
+    let buffer = a.add_buffer(SoundBuffer::for_clock(fmt, 4096).unwrap());
+    a.buffer_mut(buffer).unwrap().play(true);
+    let stream = a.add_stream(Stream::for_clock(fmt));
+    let packet = a.stream_mut(stream).unwrap().submit_for_clock(256).unwrap();
+    a.advance_clock(24);
+
+    let mut w = SnapshotWriter::new(Header {
+        build: key(),
+        name: "clock".into(),
+        tick: 1,
+        presents: 0,
+        notes: vec![],
+    });
+    a.save_output_snapshot(&mut w, true).unwrap();
+    let bytes = w.finish().unwrap();
+    let snap = Snapshot::open(&bytes, &key()).unwrap();
+    let mut b = Mixer::new(RATE);
+    assert!(b.load_snapshot(&snap).is_err());
+    assert!(b.check_output_snapshot(&snap, true).is_err());
+    b.set_packet_clock(true);
+    let loaded = b.check_output_snapshot(&snap, true).unwrap();
+    b.apply_snapshot(loaded);
+
+    for m in [&mut a, &mut b] {
+        assert_eq!(m.buffer(buffer).unwrap().size_bytes(), 4096);
+        assert!(m.buffer(buffer).unwrap().bytes().is_empty());
+        assert_eq!(m.buffer(buffer).unwrap().current_position(), 48);
+        m.advance_clock(103);
+        assert!(m.stream_mut(stream).unwrap().take_completed().is_empty());
+        assert_eq!(m.buffer(buffer).unwrap().current_position(), 254);
+        m.advance_clock(1);
+        assert_eq!(
+            m.stream_mut(stream).unwrap().take_completed(),
+            vec![(packet, audio::dsound::PacketStatus::Success)]
+        );
+    }
+}

@@ -8,6 +8,7 @@ mod event;
 pub mod havok;
 pub mod havok_agents;
 mod hooks;
+mod impacts;
 pub mod layout;
 mod memory;
 mod motion;
@@ -23,10 +24,10 @@ pub use event::{
     ActorState, Appearance, CharacterContact, GameEvent, GameInfo, HitRecord, MachineState, Motion,
     ObjectState, PlayerState, PlayerStats, Shots, Snapshot, Support, VehicleState, Weapon, World,
 };
-pub use hooks::{Telemetry, TelemetryFeature, install};
+pub use hooks::{FilmObserver, Telemetry, TelemetryFeature, install, install_film};
 pub use layout::LIKELY_FIELDS;
 pub use memory::{
-    ThingState, active_bsp, actors, game_info, game_tick, hit, loaded_map_name, object,
+    FilmSceneReader, ThingState, active_bsp, actors, film_scene, game_info, game_tick, hit, loaded_map_name, object,
     object_definition, players, sim_snapshot, snapshot, team_scores, things, world, yaw,
 };
 pub use pipeline::Pipeline;

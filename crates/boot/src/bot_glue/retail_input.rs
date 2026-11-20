@@ -67,14 +67,62 @@ pub(super) async fn gather(
     cpu: CpuAbi,
     seat: SeatInput,
     cx: &engine::entry::Cx,
+    film: Option<&dyn film::tape::Tap>,
 ) -> Option<[u8; ACTION_SIZE]> {
     let attempt = |refresh| {
+        const OP: &str = "Bot.BuildAction";
+        let args = [
+            seat.tick,
+            seat.player.raw(),
+            seat.unit.raw(),
+            u32::from(refresh),
+        ];
+        if let Some(film) = film.filter(|film| film.replaying()) {
+            let Some(call) = film.next(OP, &args, 0) else {
+                return Ok(None);
+            };
+            match (call.result, call.outputs.as_slice()) {
+                (Ok(0), []) => return Ok(None),
+                (Ok(1), [data]) if data.len() == ACTION_SIZE => {
+                    return Ok(data.as_slice().try_into().ok());
+                }
+                (Ok(2), [data]) if data.len() == 12 => {
+                    return Err(AnimationRead::from_film(
+                        data.as_slice().try_into().unwrap(),
+                    ));
+                }
+                _ => {
+                    film.fault("malformed phantom action build".into());
+                    return Ok(None);
+                }
+            }
+        }
+
         let mut guard = input.lock().unwrap_or_else(|e| e.into_inner());
         let builder = guard.get_or_insert_with(|| Builder::new(main, workspace));
         if refresh {
             builder.tick = None;
         }
-        builder.sample(main, cpu, seat)
+        let outcome = builder.sample(main, cpu, seat);
+        if let Some(film) = film {
+            let (kind, outputs) = match &outcome {
+                Ok(None) => (0, vec![]),
+                Ok(Some(bytes)) => (1, vec![bytes.to_vec()]),
+                Err(cold) => (2, vec![cold.for_film().to_vec()]),
+            };
+            film.record(
+                film::tape::BTAP,
+                film::tape::Call {
+                    index: 0,
+                    op: OP.into(),
+                    args: args.to_vec(),
+                    thread: 0,
+                    result: Ok(kind),
+                    outputs,
+                },
+            );
+        }
+        outcome
     };
     let read = match attempt(false) {
         Ok(action) => return action,

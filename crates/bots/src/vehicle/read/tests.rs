@@ -311,3 +311,19 @@ fn reads_a_seat_entry_marker_in_its_live_node_and_checks_the_tag_radius() {
         [9.75, 21.4, 1.0]
     ));
 }
+
+#[test]
+fn an_unmarked_biped_eye_follows_its_live_crouch_and_parent_pose() {
+    let mut g = world();
+    // Reuse the synthetic tag's backing memory as the passenger's biped.
+    g.put_u32(body(0), tag(0))
+        .put_u32(TAG_ENTRIES, u32::from_be_bytes(*b"bipd"))
+        .put_f32(TAGS + 0x268, 0.725)
+        .put_f32(TAGS + 0x26c, 0.5)
+        .put_f32(TAGS + 0x270, 0.175);
+    // The riding unit's origin [0.2, 0.3, 0.4] is relative to its vehicle
+    // at [10, 20, 1] facing +Y. The upper collision cap uses height-radius.
+    assert!(near(unit_eye(&g, handle(0), 0.0).unwrap().unwrap(), [9.7, 20.2, 1.95]));
+    assert!(near(unit_eye(&g, handle(0), 1.0).unwrap().unwrap(), [9.7, 20.2, 1.725]));
+    assert!(unit_eye(&g, DatumHandle::new(1, 0), 0.0).unwrap().is_none());
+}

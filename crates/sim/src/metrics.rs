@@ -526,6 +526,15 @@ impl Finish<'_> {
     }
 }
 
+/// The part of the tally which controls tick limits and detects a rewind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TickCursor {
+    started: Option<u32>,
+    last_tick: Option<u32>,
+    ticks: u64,
+    resets: u32,
+}
+
 /// Aggregates a match.
 #[derive(Clone, Debug, Default)]
 pub struct Tally {
@@ -564,6 +573,35 @@ impl Tally {
     /// Game ticks counted since the start.
     pub fn ticks(&self) -> u64 {
         self.ticks
+    }
+
+    pub fn cursor(&self) -> TickCursor {
+        TickCursor {
+            started: self.started,
+            last_tick: self.last_tick,
+            ticks: self.ticks,
+            resets: self.resets,
+        }
+    }
+
+    /// Continue a film's tick-limit and discontinuity decisions from the
+    /// recorded boundary. Theater does not produce a training report.
+    pub fn resume_playback(&mut self, cursor: TickCursor) -> Result<(), String> {
+        let elapsed = cursor.last_tick.zip(cursor.started)
+            .and_then(|(last, start)| last.checked_sub(start));
+        if elapsed.is_none_or(|ticks| cursor.ticks == 0 || cursor.ticks > u64::from(ticks) + 1)
+            || cursor.resets == u32::MAX
+        {
+            return Err("invalid sim keyframe clock".into());
+        }
+        *self = Self {
+            started: cursor.started,
+            last_tick: cursor.last_tick,
+            ticks: cursor.ticks,
+            resets: cursor.resets,
+            ..Default::default()
+        };
+        Ok(())
     }
 
     /// How many times the tick went backwards (a snapshot load) and the

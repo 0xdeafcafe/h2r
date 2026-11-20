@@ -588,6 +588,7 @@ impl feature::Feature for ScrollArrowLayout {
     }
 
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+        b.snapshot(feature::SnapshotPolicy::Stateless);
         b.raw().before(&points::UI_QUAD_TO_SCREEN, "place scroll arrows", |c| {
             let mut mem = c.ctx.runtime().memory();
             place_scroll_arrow(&mut *mem, c.cpu, |vtable| {

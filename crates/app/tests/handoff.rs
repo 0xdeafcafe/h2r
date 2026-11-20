@@ -258,6 +258,31 @@ fn present_hook_copies_the_back_buffer() {
     assert_eq!(&px[..3], &[37, 81, 129]);
     assert!((126..=129).contains(&px[3]));
     assert_eq!(source.stats().published, 3);
+
+    // Put a mark at the centre of player three's quadrant so this checks
+    // both the crop dimensions and translation of its texture coordinates.
+    ctx.queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: store.get(xrgb).unwrap().texture(),
+            mip_level: 0,
+            origin: wgpu::Origin3d { x: 478, y: 358, z: 0 },
+            aspect: wgpu::TextureAspect::All,
+        },
+        &[255; 4 * 4 * 4],
+        wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(16), rows_per_image: None },
+        wgpu::Extent3d { width: 4, height: 4, depth_or_array_layers: 1 },
+    );
+    let (sink, local_view) = frame::channel(&ctx);
+    let mut crop = sink.into_cropped_present_hook(2, || Some([320, 240, 320, 240]));
+    crop(&ctx, &store, xrgb, 0, None);
+    let seat = local_view.latest().unwrap();
+    assert_eq!(seat.size, (320, 240));
+    let pixels = read_texture(&ctx, &seat.texture, wgpu::TextureAspect::All, 4, seat.size);
+    assert_eq!(&pixels[..4], &[0, 255, 0, 255]);
+    let centre = (120 * 320 + 160) * 4;
+    assert_eq!(&pixels[centre..centre + 4], &[255; 4]);
+    crop(&ctx, &store, xrgb, 0, None);
+    assert_eq!(local_view.stats().published, 1);
 }
 
 fn composite(

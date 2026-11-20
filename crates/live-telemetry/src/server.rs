@@ -997,6 +997,19 @@ impl ServerSink {
         self.send_pending_sim_frames()
             .map_err(|e| format!("final sim frames: {e:?}"))?;
         self.settle_sim_events()?;
+        let result = self.put_report(&id, &report);
+        drop(guard);
+        result
+    }
+
+    pub(crate) fn report_after_film(
+        mut self, id: &str, report: &serde_json::Value,
+    ) -> Result<(), String> {
+        self.discovery = Some(self.discover().map_err(|e| format!("sim report discovery: {e:?}"))?);
+        self.put_report(id, report)
+    }
+
+    fn put_report(&self, id: &str, report: &serde_json::Value) -> Result<(), String> {
         let api = resolve_api(&self.base_url, &self.discovery().api);
         let url = format!("{}/admin/sim-runs/{id}/report", api.trim_end_matches('/'));
         if !live_proto::bearer_allowed(&url) {
@@ -1011,7 +1024,7 @@ impl ServerSink {
             let response = Self::agent()
                 .put(&url)
                 .set("Authorization", &format!("Bearer {token}"))
-                .send_json(&report);
+                .send_json(report);
             match response {
                 Ok(_) => {
                     eprintln!("sim: Live recording {id}");
@@ -1023,7 +1036,6 @@ impl ServerSink {
                 Err(e) => result = Err(format!("uploading sim report: {e}")),
             }
         }
-        drop(guard);
         result
     }
 }

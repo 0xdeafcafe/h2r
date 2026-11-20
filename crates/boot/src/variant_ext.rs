@@ -565,7 +565,23 @@ impl feature::Feature for Transport {
                         let Some(h) = &hle else {
                             return Ok(Flow::Continue);
                         };
-                        match wait_for_host(own, HOST_WAIT, |w| h.host_variant_ext(w)) {
+                        let answer = if h.film_service_taped() {
+                            h.game_setting("HostVariant", &[own as u32, (own >> 32) as u32], || {
+                                match wait_for_host(own, HOST_WAIT, |w| h.host_variant_ext(w)) {
+                                    Heard::Take(bytes) => Some(bytes),
+                                    Heard::Nothing(why) => {
+                                        eprintln!("variant options: {why}");
+                                        None
+                                    }
+                                    Heard::Wait => None,
+                                }
+                            })
+                            .map(Heard::Take)
+                            .unwrap_or_else(|| Heard::Nothing("no matching options".into()))
+                        } else {
+                            wait_for_host(own, HOST_WAIT, |w| h.host_variant_ext(w))
+                        };
+                        match answer {
                             Heard::Take(b) => {
                                 if b != block {
                                     let mut mem = rt.memory();
@@ -596,7 +612,29 @@ impl feature::Feature for Transport {
             });
         // The host's block goes to `live_hle`, whose state is the Live
         // subsystem's; a guest keeps the host's block here.
-        b.snapshot(feature::SnapshotPolicy::forbid_while(transport_live));
+        if self.hle.as_ref().is_some_and(|h| h.film_service_taped()) {
+            b.snapshot(feature::SnapshotPolicy::section_forbid_while(
+                || {
+                    if crate::theater::in_keyframe() {
+                        None
+                    } else {
+                        transport_live()
+                    }
+                },
+                || from_host().map(|b| b.to_vec()).unwrap_or_default(),
+                |bytes, _| {
+                    let block = if bytes.is_empty() {
+                        None
+                    } else {
+                        Some(bytes.try_into().map_err(|_| "invalid host variant block")?)
+                    };
+                    set_from_host(block);
+                    Ok(())
+                },
+            ));
+        } else {
+            b.snapshot(feature::SnapshotPolicy::forbid_while(transport_live));
+        }
         Ok(())
     }
 }

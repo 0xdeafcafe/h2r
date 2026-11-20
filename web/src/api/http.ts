@@ -4,6 +4,7 @@ import type { AccountKeyEntry, Frame, GameDetail, GameSummary, MapOutline, WireE
 import type { SimDetail, SimFilter, SimRun } from "../admin/simRuns";
 import type { ServerTarget } from "./server";
 import { formatSkullsParam } from "../lib/skulls";
+import { openHostFilm } from "./host-film";
 import { decodeKeyframes } from "./pack";
 import { CHUNK_TYPE, chunkFrames, chunkIndex, chunksIn, type ChunkIndex, type RecordingChunk } from "./chunk";
 
@@ -150,6 +151,8 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
     return new Uint8Array(await r.arrayBuffer());
   }
   return {
+    hostFilm: (id: string, s?: AbortSignal) => openHostFilm(
+      (range, signal) => reading(u("/games/" + encodeURIComponent(id) + "/film"), {signal, headers: {Range: range}}), s),
     health: (s?: AbortSignal) => getJson<{ ok: boolean; position: number }>(t.base + "/healthz", s),
     accounts: (s?: AbortSignal) => all<AccountSummary>("/accounts", { limit: 1000 }, s),
     account: async (tag: string, s?: AbortSignal) =>

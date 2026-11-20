@@ -306,6 +306,8 @@ points! { ALL;
     /// One weapon barrel fires: stdcall `(weapon object datum, barrel
     /// index)`. One call is one shot (likely).
     WEAPON_FIRE @ 0x0010_4150: [fn(weapon: stack 0, barrel: stack 1) ret 8], Optional; "docs/live/live-gamestate.md";
+    /// Object deletion before the salted header and body are freed.
+    OBJECT_DELETE @ 0x000b_8540: [fn(object: stack 0) ret 4], Optional; "docs/game/skulls.md";
     /// Attach a weapon to a unit, or detach when the unit is -1.
     ITEM_SET_UNIT @ 0x0010_ca80: [fn(item: eax, unit: stack 0) ret 4], Optional; "docs/game/bots.md";
     /// Successful power-up application before the consumed equipment is deleted.
@@ -806,7 +808,7 @@ points! { ALL;
     SIM_STATE_RECEIVED @ 0x0006_aa20: [fn(world: edi, length: stack 0) -> al ret 4], Optional; "docs/live/live-coop.md";
     /// Apply one update record (stack): player entries, the player-set
     /// change (`+0xDD0`, mask `+0xDD4`), events, the save flag (`+0x403C`).
-    SIM_UPDATE_APPLY @ 0x0006_83a0: [opaque], Optional; "docs/live/live-coop.md";
+    SIM_UPDATE_APPLY @ 0x0006_83a0: [fn(update: stack 0) ret 4], Optional; "docs/live/live-coop.md";
     /// Synchronous: send this console's player actions for the tick to
     /// the machine that builds the updates (message `0x28`, `0x180`
     /// bytes, up to four local players).

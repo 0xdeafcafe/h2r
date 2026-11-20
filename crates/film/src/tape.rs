@@ -1,7 +1,26 @@
-//! The two HLE streams share one call index so moving a random draw across
-//! a socket read is a divergence even if both streams' values still match.
+//! Network calls, randomness and XAPI reads share one call index so a change
+//! in their interleaving is a divergence even if each result still matches.
 use crate::Tag;
 use serde::{Deserialize, Serialize};
+
+/// XAPI reads share the HLE call cursor; topology changes are sparse and
+/// indexed by the XAPI pump (the guest also sees its device-change globals).
+pub const PADR: Tag = *b"PADR";
+/// Retail virtual-keyboard commands, interleaved with other guest calls.
+pub const TEXT: Tag = *b"TEXT";
+/// Private retail phantom builder outcomes, on the shared call cursor.
+pub const BTAP: Tag = *b"BTAP";
+/// Sparse changes to the host's bot membership and controller-port assignments.
+pub const BOTR: Tag = *b"BOTR";
+pub const PDEV: Tag = *b"PDEV";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PortChange {
+    /// 0 describes the state before the first pump.
+    pub sync: u64,
+    /// Each occupied port holds (generation, rumble supported).
+    pub ports: [Option<(u32, bool)>; 4],
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Call {
@@ -24,6 +43,8 @@ pub struct Check {
 /// replay even an exhausted stream stays disconnected.
 pub trait Tap: Send + Sync {
     fn replaying(&self) -> bool;
+    /// v2 films tape the full guest-facing asynchronous service ABI.
+    fn service_calls(&self) -> bool { false }
     fn next(&self, op: &str, args: &[u32], thread: u32) -> Option<Call>;
     fn record(&self, tag: Tag, call: Call);
     fn fault(&self, reason: String);
@@ -41,6 +62,11 @@ pub enum Mark {
         slices: u64,
         tick: u64,
         calls: u64,
+    },
+    D3dBarrier {
+        slices: u64,
+        tick: u64,
+        saved: bool,
     },
     Bookmark {
         tick: u64,
@@ -84,6 +110,8 @@ pub struct Playback {
     pub reader: Reader<File>,
     streams: VecDeque<Entry>,
     batch: VecDeque<Call>,
+    // File offset, scheduler slice, completed tick, save succeeded.
+    barriers: VecDeque<(u64, u64, u64, bool)>,
     pub checks: VecDeque<Check>,
     pub lobby: VecDeque<(u64, String, serde_json::Value)>,
     pub end: Option<(u64, u64, u64)>,
@@ -93,16 +121,17 @@ impl Playback {
     pub fn load(mut reader: Reader<File>) -> FilmResult<Self> {
         let mut streams = VecDeque::new();
         let mut checks = VecDeque::new();
+        let mut barriers = VecDeque::new();
         let mut lobby = VecDeque::new();
         let mut end = None;
         let mut data = 0;
-        for e in reader.entries.clone() {
+        for e in reader.machine_section().entries().cloned().collect::<Vec<_>>() {
             ensure!(
                 end.is_none() || e.tag == crate::HEAD,
                 "unexpected data after film end"
             );
             match e.tag {
-                crate::NETR | crate::RAND => streams.push_back(e),
+                crate::NETR | crate::RAND | PADR | TEXT | BTAP => streams.push_back(e),
                 crate::DATA => data += 1,
                 crate::HASH => {
                     let check: Check = reader.read(&e)?;
@@ -123,40 +152,84 @@ impl Playback {
                         tick,
                         calls,
                     } => end = Some((slices, tick, calls)),
+                    Mark::D3dBarrier { slices, tick, saved } => {
+                        ensure!(reader.header.version >= 2 && barriers.back().is_none_or(
+                            |&(_, last, last_tick, _)| slices > last && tick >= last_tick),
+                            "invalid D3D capture boundary");
+                        barriers.push_back((e.offset, slices, tick, saved));
+                    }
                     Mark::Bookmark { .. } => {}
                 },
                 _ => {}
             }
         }
         ensure!(data == 1, "film requires one start manifest");
-        let last = checks
-            .back()
-            .context("film has no complete hash interval")?
-            .tick;
-        ensure!(
-            checks.iter().any(|c| c.sim.is_some()),
-            "film has no simulation hashes"
-        );
+        let legacy = reader.header.version == 1;
+        if legacy {
+            ensure!(!checks.is_empty(), "film has no complete hash interval");
+            ensure!(
+                checks.iter().any(|c| c.sim.is_some()),
+                "film has no simulation hashes"
+            );
+        }
+        let last = checks.back().map_or(0, |check| check.tick);
         if let Some((_, tick, calls)) = end {
             ensure!(
                 tick / 30 == last / 30
                     && tick == reader.header.meta.length_ticks
-                    && calls >= checks.back().unwrap().calls,
+                    && checks.back().is_none_or(|check| calls >= check.calls),
                 "inconsistent film end"
             );
         } else {
-            ensure!(!reader.finalized, "finalized film has no end");
+            ensure!(!reader.finalized && legacy, "film has no end");
         }
         let length = end.map_or(last, |(_, t, _)| t);
         Ok(Self {
             reader,
             streams,
             batch: VecDeque::new(),
+            barriers,
             checks,
             lobby,
             end,
             length,
         })
+    }
+    /// Start a fresh call reader at the machine snapshot. The recorder
+    /// flushes its pending call batch before each keyframe. No intervening
+    /// network payload needs to be inflated to seek the call timeline.
+    pub fn resume_keyframe(
+        &mut self,
+        offset: u64,
+        tick: u64,
+        calls: u64,
+        lobby_boundary: u64,
+    ) -> FilmResult<()> {
+        ensure!(self.batch.is_empty(), "keyframe seek requires a fresh tape");
+        self.reader.machine_section().keyframe_at(offset)?;
+        ensure!(
+            self.end.is_some_and(|(_, end_tick, end_calls)| tick <= end_tick && calls <= end_calls),
+            "keyframe past film end"
+        );
+        self.streams.retain(|e| e.offset > offset);
+        self.barriers.retain(|&(at, _, _, _)| at > offset);
+        self.checks.retain(|check| check.tick > tick);
+        self.lobby.retain(|(at, _, _)| *at > lobby_boundary);
+        Ok(())
+    }
+    /// A linear run repeats D3D's push-buffer drain, target writeback and
+    /// visibility queries at the same scheduler boundary as the recorder.
+    pub fn d3d_barrier(&mut self, slices: u64, tick: u64) -> FilmResult<Option<bool>> {
+        let Some(&(_, at, expected_tick, saved)) = self.barriers.front() else {
+            return Ok(None);
+        };
+        if slices < at {
+            return Ok(None);
+        }
+        ensure!(slices == at && tick == expected_tick,
+            "first divergence at tick {tick}: expected D3D capture at slice {at}, tick {expected_tick}");
+        self.barriers.pop_front();
+        Ok(Some(saved))
     }
     pub fn call(&mut self, index: u64, op: &str, args: &[u32], thread: u32) -> FilmResult<Call> {
         if self.batch.is_empty() {
@@ -169,9 +242,22 @@ impl Playback {
             ensure!(
                 batch
                     .iter()
-                    .all(|c| (matches!(c.op.as_str(), "Random" | "CreateKey")
-                        || c.op.starts_with("Entropy."))
-                        == (entry.tag == crate::RAND)),
+                    .all(|c| {
+                        let tag = if c.op == "Bot.BuildAction" {
+                            BTAP
+                        } else if c.op == "VirtualKeyboard" {
+                            TEXT
+                        } else if c.op == "XInputGetState" {
+                            PADR
+                        } else if matches!(c.op.as_str(), "Random" | "CreateKey")
+                            || c.op.starts_with("Entropy.")
+                        {
+                            crate::RAND
+                        } else {
+                            crate::NETR
+                        };
+                        tag == entry.tag
+                    }),
                 "wrong film stream"
             );
             self.batch = batch;
@@ -188,6 +274,7 @@ impl Playback {
     }
     pub fn exhausted(&self) -> bool {
         self.streams.is_empty()
+            && self.barriers.is_empty()
             && self.batch.is_empty()
             && self.checks.is_empty()
             && self.lobby.is_empty()

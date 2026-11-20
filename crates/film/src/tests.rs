@@ -15,7 +15,7 @@ impl Drop for Temp {
         let _ = fs::remove_dir_all(&self.0);
     }
 }
-fn header(id: u64) -> Header {
+pub(super) fn header(id: u64) -> Header {
     Header {
         version: 1,
         meta: FilmMeta {
@@ -34,8 +34,11 @@ fn header(id: u64) -> Header {
         },
         title_id: 1,
         xbe_sha256: "test".into(),
+        runtime_stamp: String::new(),
+        guest_image: None,
         epoch_100ns: 0,
         lease_id: Some("lease".into()),
+        game_id: None,
         xnet_addr: "127.0.0.1:3074".into(),
         transfers_per_slice: 10,
         lobby: false,
@@ -202,7 +205,7 @@ fn upload_rejects_large_files_before_making_a_request() {
         upload("http://127.0.0.1", "test", "game", &p)
             .unwrap_err()
             .to_string()
-            .contains("64 MiB")
+            .contains("2 GiB")
     );
 }
 
@@ -262,4 +265,158 @@ fn referenced_start_files_require_matching_content() {
             .restore_with(&dir.0.join("again"), Some(&dir.0))
             .is_err()
     );
+}
+
+#[test]
+fn v2_menu_reads_the_summary_without_decoding_gameplay() {
+    let dir = Temp::new();
+    let path = dir.0.join("local.h2film");
+    let mut head = header(7);
+    head.version = 2;
+    head.meta.source = Source::Local;
+    let summary = blam::Summary {
+        level: "ascension".into(),
+        mode: blam::Mode::SystemLink,
+        game_type: "Slayer".into(),
+        variant_name: "Team Slayer".into(),
+        duration_ticks: 42,
+        ..Default::default()
+    };
+    let mut w = Writer::new(File::create(&path).unwrap(), &head).unwrap();
+    w.chunk_bytes(blam::INPT, b"broken gameplay").unwrap();
+    w.chunk(blam::SUMM, &summary).unwrap();
+    w.finish().unwrap();
+    let entry = Library::open(&dir.0).unwrap().get("7").unwrap();
+    assert_eq!(entry.version, 2);
+    assert_eq!(entry.summary.as_ref(), Some(&summary));
+    assert!(entry.meta.playable_here("image A"));
+}
+
+#[test]
+fn v2_requires_a_complete_index_and_footer() {
+    let mut h = header(0);
+    h.version = 2;
+    let mut w = Writer::new(Cursor::new(Vec::new()), &h).unwrap();
+    w.chunk_bytes(blam::INPT, &[1, 2, 3]).unwrap();
+    let bytes = w.finish().unwrap().into_inner();
+    for n in [1, 8, 16, 17] {
+        assert!(Reader::new(Cursor::new(&bytes[..bytes.len() - n])).is_err());
+    }
+    let mut corrupt = bytes;
+    let pointer = corrupt.len() - 8;
+    corrupt[pointer..].copy_from_slice(&u64::MAX.to_le_bytes());
+    assert!(Reader::new(Cursor::new(corrupt)).is_err());
+}
+
+#[test]
+fn machine_seek_resumes_at_next_hle_call_and_lobby_boundary() {
+    let dir = Temp::new();
+    let path = dir.0.join("resume.h2film");
+    let mut h = header(0);
+    h.version = 2;
+    h.meta.length_ticks = 31;
+    let mut w = Writer::new(File::create(&path).unwrap(), &h).unwrap();
+    let call = |index| Call {
+        index,
+        op: "Random".into(),
+        thread: 1,
+        args: vec![4],
+        result: Ok(0),
+        outputs: vec![vec![index as u8; 4]],
+    };
+    let lobby = |boundary| Mark::Lobby {
+        boundary,
+        method: "host.lobby.state".into(),
+        params: serde_json::Value::Null,
+    };
+    w.chunk(DATA, &manifest::Manifest::default()).unwrap();
+    w.chunk(RAND, &vec![call(0)]).unwrap();
+    w.chunk(MARK, &lobby(9)).unwrap();
+    w.chunk(
+        HASH,
+        &Check {
+            tick: 30,
+            calls: 1,
+            sim: Some(6),
+        },
+    )
+    .unwrap();
+    // A failed capture can still have drained some guest push-buffer
+    // work. Its barrier is replayed even though it produced no snapshot.
+    w.chunk(MARK, &Mark::D3dBarrier { slices: 50, tick: 25, saved: false }).unwrap();
+    w.chunk(MARK, &Mark::D3dBarrier { slices: 60, tick: 30, saved: true }).unwrap();
+    w.chunk_bytes(KEYF, b"snapshot restored by the machine")
+        .unwrap();
+    w.chunk(MARK, &lobby(10)).unwrap();
+    w.chunk(MARK, &Mark::D3dBarrier { slices: 64, tick: 31, saved: true }).unwrap();
+    w.chunk(RAND, &vec![call(1)]).unwrap();
+    w.chunk(
+        MARK,
+        &Mark::End {
+            slices: 70,
+            tick: 31,
+            calls: 2,
+        },
+    )
+    .unwrap();
+    w.finish().unwrap();
+    let mut linear = Playback::load(Reader::open(&path).unwrap()).unwrap();
+    assert_eq!(linear.d3d_barrier(48, 24).unwrap(), None);
+    assert!(linear.d3d_barrier(50, 24).is_err());
+    assert_eq!(linear.d3d_barrier(50, 25).unwrap(), Some(false));
+    assert_eq!(linear.d3d_barrier(60, 30).unwrap(), Some(true));
+    let reader = Reader::open(path).unwrap();
+    let offset = reader
+        .entries
+        .iter()
+        .find(|entry| entry.tag == KEYF)
+        .unwrap()
+        .offset;
+    let mut tape = Playback::load(reader).unwrap();
+    assert!(tape.resume_keyframe(offset + 1, 30, 1, 9).is_err());
+    tape.resume_keyframe(offset, 30, 1, 9).unwrap();
+    assert_eq!(tape.d3d_barrier(60, 30).unwrap(), None);
+    assert_eq!(tape.d3d_barrier(64, 31).unwrap(), Some(true));
+    assert!(tape.checks.is_empty());
+    assert_eq!(tape.lobby.pop_front().unwrap().0, 10);
+    assert_eq!(tape.call(1, "Random", &[4], 1).unwrap(), call(1));
+    assert!(tape.exhausted());
+}
+
+#[test]
+fn keyframe_restores_guest_disk_changes_into_a_private_directory() {
+    let dir = Temp::new();
+    let disk = dir.0.join("disk");
+    fs::create_dir(&disk).unwrap();
+    fs::write(disk.join("profile"), b"start").unwrap();
+    fs::write(disk.join("retired"), b"old").unwrap();
+    fs::write(disk.join("unchanged"), b"keep").unwrap();
+    let start = manifest::Manifest::capture(&dir.0).unwrap();
+    assert!(start.keyframe_delta(&dir.0).unwrap().is_empty());
+
+    fs::write(disk.join("profile"), b"mid-match").unwrap();
+    fs::rename(disk.join("retired"), disk.join("renamed")).unwrap();
+    let delta = start.keyframe_delta(&dir.0).unwrap();
+    let private = dir.0.join("replay");
+    start.restore_keyframe(&private, None, &delta).unwrap();
+    assert_eq!(
+        fs::read(private.join("disk/profile")).unwrap(),
+        b"mid-match"
+    );
+    assert_eq!(fs::read(private.join("disk/unchanged")).unwrap(), b"keep");
+    assert_eq!(fs::read(private.join("disk/renamed")).unwrap(), b"old");
+    assert!(!private.join("disk/retired").exists());
+}
+
+
+#[test]
+fn a_single_chunk_cannot_hide_a_second_zstd_frame() {
+    let mut packed = zstd::stream::encode_all(&b"first"[..], 1).unwrap();
+    packed.extend(zstd::stream::encode_all(&b""[..], 1).unwrap());
+    let size = u32::try_from(packed.len()).unwrap();
+    let mut data = b"TICK".to_vec();
+    data.extend_from_slice(&size.to_le_bytes());
+    data.extend_from_slice(&packed);
+    let e = Entry { tag: *b"TICK", offset: 0, size };
+    assert!(read_bytes(&mut Cursor::new(data), &e, 256).is_err());
 }

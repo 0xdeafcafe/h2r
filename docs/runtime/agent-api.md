@@ -1941,7 +1941,7 @@ directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
 | `theater.pause` | `{}` | Holds guest execution and reports state |
 | `theater.speed` | `{"speed":0.5}` | Sets host pacing from 0.25 to 4 times realtime |
 | `theater.seek` | `{"tick":900}` | Requests restart and unpaced replay to that tick. Direct socket clients reconnect after the restart |
-| `theater.camera` | `{"mode":"default"}` | Returns state. Other modes return `UNAVAILABLE` with `unavailable until keyframes` |
+| `theater.camera` | `{"mode":"first_person","seat":3}` or `{"mode":"default"}` | Selects a player by their absolute film seat (0–15), or restores the default view. The reply includes `camera` and, for a selected player, `camera_seat`. Returns `UNAVAILABLE` if the seat has no first-person view in the current frame. |
 
 The rendered player starts at the clip's first tick and loops at its end.
 Its overlay uses the player's agent socket for transport and

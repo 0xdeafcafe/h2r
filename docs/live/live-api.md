@@ -406,15 +406,17 @@ Set by `crates/live-server/src/caching.rs` on GET and HEAD responses whose handl
 
 ## Web Theater
 
-Films use the [game's spectator track](replay-fidelity.md). These routes
-store pins and clip ranges alongside the game log. Playback still uses
-the game's chunk or archive endpoints.
+Web Theater reads the host film's timed presentation records. Older recordings
+use the [spectator archive](replay-fidelity.md). Pins and clips reference
+the canonical game ID and the original tick range.
 
 | Method and path | Token scope | Result |
 |---|---|---|
 | `GET /v1/films?player=<xuid>&kind=recent` | public or `read` | Up to 25 of the player's visible games, newest first. |
 | `GET /v1/films?player=<xuid>&kind=saved` | public or `read` | Games pinned by that player, newest game first. |
 | `GET /v1/films?player=<xuid>&kind=clips` | public or `read` | Clips authored by that player across all games, newest clip first. Each item is `{clip, film}`. |
+| `GET /v1/games/{game}/film` | public or `read` | Fetch one permitted range of a visible version 3 film. Returns 206. |
+| `POST /v1/games/{game}/film` | lease `telemetry.ingest` | Upload the authoritative host recording to the lease's game. Returns 204. |
 | `POST /v1/films/{game}/save` | `films.write` | Save the game for the caller. The caller must have played in it. Returns 204, including a repeated save. |
 | `DELETE /v1/films/{game}/save` | `films.write` | Remove the caller's own pin. The caller must have played in the game. Returns 204 even if the pin is already absent. |
 | `GET /v1/films/{game}/clips` | public or `read` | The game's clips, newest first. |
@@ -429,15 +431,97 @@ Recent films have `next: null`. The game record supplies each film:
 ```json
 { "game_id": "9ab0", "map": "lockout", "mode": "multiplayer",
   "variant": "Team Slayer", "started_at": "2026-11-19T19:30:00Z",
-  "duration_s": 230, "result": "win" }
+  "duration_s": 230, "result": "win", "has_host_film": false }
 ```
 
 `variant` can be null. For a finished game, `duration_s` measures whole
-seconds from the start and end ticks. Old games without a start tick use
+seconds from the start and end ticks. The listing supplies `ticks_per_second`
+from the host film. Legacy recordings use 30 Hz. Clip length limits and
+previews use the same rate. Old games without a start tick use
 elapsed wall time, with zero for lost games from that era. Live games have
 `duration_s: null`. The player's `result` is `win`, `loss`, `draw` or null
 when there is no result for that player. On an authored clip's film, the
 result is for the author if they played.
+
+A successful host upload sets `has_host_film` on that game's listings.
+Versions 2 and 3 also supply `summary` from the recording's menu block, including
+`level`, `game_type`, `mode`, `variant_name`, `duration_ticks` and the players'
+seats, names, XUIDs, teams, scores and medal counts. An XUID is a string of
+16 hex digits or null. Older uploads have no summary. The existing game
+visibility check applies to the whole row, including this summary.
+
+Use `Range: bytes=0-31` for the fixed prefix, then read the public front JSON
+by its declared length. Use `Range: bytes=-40` to locate the compressed cinema
+index. Fetch one entire indexed time chunk (including the eight-byte envelope)
+per range for decoding. Reads within any one public extent can also request a
+smaller byte range. Visibility is checked on every request. A missing or hidden v3 film
+returns 404. Requests for the full file, private ranges or multiple ranges
+return 416. See the [film format](../game/film-format.md) for offsets.
+
+The lease credential must own the named game. The host sends the sealed
+`.h2film` as the request body up to 64 MiB. For a larger file, it uses
+PUT on the same path with `?part=0`, `?part=1`, etc. Every part except the last
+contains exactly 16 MiB. A part can be sent again to replace that part
+before publication. An empty POST with `?complete=<total-bytes>&sha256=<hex>`
+assembles the parts in order and checks the total size and SHA-256 digest.
+The upload limit is 2 GiB. Missing and mismatched parts leave the game
+unpublished and can be retried under the same lease.
+
+Live streams the bytes into private storage, checks the chunk directory
+and reads the menu summary. V2 uses a trailing index pointer. V3 stores its selector summary at the front and indexes the tagged tick chunks separately.
+The server writes an immutable private object under `films/<game>/<upload>.h2film`.
+A signed Theater receipt selects the winning object, so two simultaneous
+requests cannot replace the bytes referenced by the game. Older receipts
+resolve to `films/<game>.h2film`.
+A retry after publication preserves the first recording and summary.
+Successful publication removes staging parts. An interrupted transfer
+retains its numbered parts under `film-staging/<game>/` for a retry.
+
+### Switching a host to film ingestion
+
+Deploy the v3 reader and event importer to Live before changing host policy.
+Set `LIVE_HOST_ARCHIVE` on native Live or as a Worker binding to configure new local, Fly and Cloudflare leases. Leased hosts default to `h2 host run --archive dual` (`H2_HOST_ARCHIVE=dual`).
+They publish live frames and events during play, then upload the sealed film
+under their canonical lease game ID. During this overlap Live reconciles the
+film's event sequence against the game's existing events. A retry of the
+same film preserves the original stats and ranking awards.
+
+Live checks every stats-bearing record against the original game roster and
+the changes made by joins and leaves. An existing live event sequence must
+match the film from its start. Live appends only the missing suffix. For a
+completed telemetry game, the whole sequence, including the final scores,
+must agree before the film can be attached. A mismatch returns 409.
+
+A film-first upload creates the game with the lease's canonical ID, or the
+signed `sim-<run_id>` assignment for private training. Matchmade games
+retain their published reservation and playlist, including after the session
+closes. An unadvertised custom game is permitted under its signed custom
+lease. The importer validates the map and roster and binds the host identity
+from the credential. Existing arbitration and ranked eligibility rules apply.
+
+During import, Live spools the six canonical record kinds into private pages
+of at most 128 records and approximately 256 KiB each. After checking the
+complete sequence it selects the immutable object and the page hashes in
+the signed log. Each write commits its stats records and next-page cursor
+together. The final write also publishes the selector receipt. A retry or a
+Live sweep resumes at that cursor, including after a Worker restart. Live
+discards the temporary pages as they are applied. Highlights and presentation
+data stay in the film.
+
+Once a host uses `--archive film` or `H2_HOST_ARCHIVE=film`, it captures the
+same events, poses and simulation inputs locally and publishes one match
+recording when play ends. Live creates the game from the recorded start,
+applies the recorded final results and publishes the film for Theater. The
+match page and web archive become available after ingestion. Use `dual` for
+matches that need the live spectator relay. Change the policy on the next
+lease to roll back. Existing telemetry archives and non-leased clients keep
+their existing readers and upload routes.
+
+For a hosted training job the sim run ID remains its canonical game ID.
+The child submits its private performance report after film ingestion
+has applied `GameEnded`, using the existing sim report endpoint. A
+failed film publication ends a film-only host with an error. The
+supervisor preserves its sealed file for recovery. [Film format](../game/film-format.md)
 
 A clip is:
 

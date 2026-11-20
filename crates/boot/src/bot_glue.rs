@@ -475,7 +475,9 @@ pub fn go_live_line(port: u8, name: &str, r: guest::GoLive) -> String {
 }
 
 /// The feature over a set of local bots.
+#[derive(Clone)]
 pub struct Bots {
+    film: Option<Arc<crate::theater::Session>>,
     local: Local,
     phantoms: bots::phantom::Phantoms,
     /// Where each map's data is written (`h2 bots nav`, `bots_nav_auto`).
@@ -520,6 +522,7 @@ impl Bots {
         data_root: &std::path::Path,
     ) -> Self {
         Bots {
+            film: None,
             local,
             phantoms,
             dir: data_root.join("bots"),
@@ -749,6 +752,7 @@ impl feature::Feature for Bots {
         let phantoms = self.phantoms.clone();
         let workspace = b.guest_alloc(retail_input::WORK_BYTES, runtime::guest::Permissions::RW)?;
         let input = Arc::new(std::sync::Mutex::new(None));
+        let film = self.film.clone();
         b.raw().before(
             &points::SIMULATION_SLOT_ACTION,
             "phantoms: sample the pad for this simulation tick",
@@ -760,12 +764,21 @@ impl feature::Feature for Bots {
                 }
                 let phantoms = phantoms.clone();
                 let input = Arc::clone(&input);
+                let film = film.clone();
                 let cpu = *c.cpu;
                 c.answer_async(move |cx| {
                     Box::pin(async move {
                         phantoms
                             .slot_action(cx.clone(), slot, |sample| {
-                                retail_input::gather(&input, &rt, workspace, cpu, sample, &cx)
+                                retail_input::gather(
+                                    &input,
+                                    &rt,
+                                    workspace,
+                                    cpu,
+                                    sample,
+                                    &cx,
+                                    film.as_deref().map(|s| s as &dyn film::tape::Tap),
+                                )
                             })
                             .await
                     })
@@ -816,6 +829,7 @@ impl feature::Feature for Bots {
         );
         let lobby_said = Arc::clone(&self.lobby_said);
         let players_said = Arc::clone(&self.players_said);
+        let film = self.film.clone();
         b.raw().before(
             &points::RENDER_FRAME,
             "bot pads; hide bot views",
@@ -829,16 +843,26 @@ impl feature::Feature for Bots {
                 // Clankermatch lobby its bots: before any bot is in, so
                 // this runs with none.
                 let rt = Arc::clone(c.ctx.runtime());
-                crate::clankers::frame(f, || {
-                    let mem = rt.memory();
-                    // In the lobby this console hosts, its session
-                    // player's team (no player datum before a game, and a
-                    // stale one after); else its player's.
-                    let s = bots::phantom::session::lobby_host_team(&*mem)
-                        .ok()
-                        .flatten();
-                    s.or_else(|| bots::phantom::session::host_team(&*mem).ok().flatten())
-                });
+                if film
+                    .as_ref()
+                    .is_none_or(|s| !film::tape::Tap::replaying(s.as_ref()))
+                {
+                    crate::clankers::frame(f, || {
+                        let mem = rt.memory();
+                        // In the lobby this console hosts, its session
+                        // player's team (no player datum before a game, and a
+                        // stale one after); else its player's.
+                        let s = bots::phantom::session::lobby_host_team(&*mem)
+                            .ok()
+                            .flatten();
+                        s.or_else(|| bots::phantom::session::host_team(&*mem).ok().flatten())
+                    });
+                }
+                if let Some(session) = &film
+                    && let Err(error) = session.bot_boundary()
+                {
+                    film::tape::Tap::fault(session.as_ref(), error.to_string());
+                }
                 if bots == 0 && !any_phantoms {
                     return Ok(Flow::Continue);
                 }
@@ -1237,9 +1261,12 @@ impl feature::Feature for Bots {
                 Ok(())
             });
 
-        // The hidden users are put back before either point returns; the
-        // pads are host input, which a snapshot does not carry.
-        b.snapshot(feature::SnapshotPolicy::Stateless);
+        if let Some(session) = &self.film {
+            session.enable_bot_tape();
+            film_state::install(b, self, session);
+        } else {
+            b.snapshot(feature::SnapshotPolicy::Stateless);
+        }
         Ok(())
     }
 }
@@ -1320,12 +1347,22 @@ pub fn install(
     registry: &mut feature::Registry,
     data_root: &std::path::Path,
 ) -> anyhow::Result<bool> {
+    install_film(registry, data_root, None)
+}
+
+pub(crate) fn install_film(
+    registry: &mut feature::Registry,
+    data_root: &std::path::Path,
+    film: Option<Arc<crate::theater::Session>>,
+) -> anyhow::Result<bool> {
+    let mut bots = Bots::new(
+        local::global().clone(),
+        bots::phantom::global().clone(),
+        data_root,
+    );
+    bots.film = film;
     let added = registry
-        .add(&Bots::new(
-            local::global().clone(),
-            bots::phantom::global().clone(),
-            data_root,
-        ))
+        .add(&bots)
         .map_err(|e| anyhow::anyhow!("bots: {e}"))?;
     if !added {
         eprintln!("bots: off: switched off (H2_FEATURES)");
@@ -1703,3 +1740,5 @@ mod tests {
 }
 
 mod retail_input;
+
+mod film_state;

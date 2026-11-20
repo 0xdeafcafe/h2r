@@ -30,6 +30,8 @@ pub struct Seek {
 #[serde(deny_unknown_fields)]
 pub struct Camera {
     pub mode: String,
+    #[serde(default)]
+    pub seat: Option<u8>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct State {
@@ -40,4 +42,6 @@ pub struct State {
     pub speed: f64,
     pub seeking: bool,
     pub camera: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera_seat: Option<u8>,
 }

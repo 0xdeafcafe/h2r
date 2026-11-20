@@ -30,6 +30,7 @@ fn boot_env_preserves_the_complete_lease_and_signed_url() {
         token: "lease-scoped-token".into(),
         data_url: "https://data.example/bundle?sig=a%2Bb&expires=123".into(),
         data_sha256: "ab".repeat(32),
+        archive: live_proto::hosts::HostArchive::Film,
     };
     // Include the round trip through the provider's internal start request.
     let mut lease = cloud_lease();
@@ -54,6 +55,7 @@ fn boot_env_preserves_the_complete_lease_and_signed_url() {
             "H2_TOKEN": boot.token,
             "H2_DATA_URL": boot.data_url,
             "H2_DATA_SHA": boot.data_sha256,
+            "H2_HOST_ARCHIVE": "film",
             "H2_REGION": "enam",
             "H2_AGENT": "tcp://127.0.0.1:14720",
             "H2_TUNNEL_LISTEN": "0.0.0.0:31100",

@@ -1,3 +1,7 @@
+mod film;
+use film::FilmProjection;
+pub use film::{FilmObserver, install_film};
+
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -11,9 +15,10 @@ use crate::event::{PlayerState, Shots, World};
 use crate::layout;
 use crate::memory;
 use crate::pipeline::{Kill, Names, Pipeline, Start, Work};
-use crate::server::ServerSink;
 use crate::session::{Playlist, Session};
-use crate::sink::{JsonlSink, Sink};
+use crate::sink::Sink;
+#[cfg(test)]
+use crate::sink::JsonlSink;
 use crate::tags::{BotsLocator, MapIdLocator, MapLocator, PlaylistLocator};
 
 /// Weapons with uncollected shots are few (only those fired since the last
@@ -23,9 +28,11 @@ const MAX_FIRING_WEAPONS: usize = 256;
 const MAX_PENDING_HITS: usize = 256;
 
 pub struct Telemetry {
-    /// The session runs on the pipeline's worker; the game thread only
-    /// reads the guest and queues what it read.
+    /// Legacy projection and transport run on the worker. During a film the
+    /// game thread owns projection and queues only legacy transport work.
     pub(crate) pipeline: Pipeline,
+    film: Option<FilmProjection>,
+    film_hooks: bool,
     disabled: AtomicBool,
     last_tick: Mutex<Option<u64>>,
     /// Shots by weapon object datum since the last sample, from the weapon
@@ -52,6 +59,8 @@ impl Telemetry {
     pub(crate) fn new(session: Session, sink: impl Sink) -> Self {
         Self {
             pipeline: Pipeline::new(session, sink),
+            film: None,
+            film_hooks: false,
             disabled: AtomicBool::new(false),
             last_tick: Mutex::new(None),
             shots: Mutex::default(),
@@ -66,7 +75,7 @@ impl Telemetry {
 
     /// Finish the ordinary game stream and wait for Live to store its report.
     pub fn finish_sim(&self, report: serde_json::Value) -> Result<(), String> {
-        self.pipeline.push(Work::FinishSim(report))?;
+        self.submit(Work::FinishSim(report))?;
         self.pipeline.settle();
         self.pipeline.worker_error().map_or(Ok(()), Err)
     }
@@ -121,7 +130,7 @@ impl Telemetry {
     /// A setting for the session, after everything already queued. Once
     /// telemetry has failed there is no session to set.
     pub(crate) fn configure(&self, f: impl FnOnce(&mut Session) + Send + 'static) {
-        let _ = self.pipeline.push(Work::Configure(Box::new(f)));
+        let _ = self.submit(Work::Configure(Box::new(f)));
     }
 
     /// Where the loaded map's names are, if the host has its file; the
@@ -158,6 +167,13 @@ impl Telemetry {
         if self.disabled() {
             return;
         }
+        if let Some(film) = &self.film && film.observer.active()
+            && let Some(damage) = film.session.lock().unwrap().film_damage(&hit)
+            && let Err(error) = film.observer.record(damage)
+        {
+            self.disable(error);
+            return;
+        }
         let mut hits = self.hits.lock().unwrap();
         if hits.len() >= MAX_PENDING_HITS {
             hits.remove(0);
@@ -167,10 +183,14 @@ impl Telemetry {
 
     pub fn disabled(&self) -> bool {
         self.disabled.load(Ordering::Acquire)
+            || self.film.as_ref().is_some_and(|f| !f.transport && !f.observer.active())
     }
 
     fn disable(&self, reason: impl AsRef<str>) {
         if !self.disabled.swap(true, Ordering::AcqRel) {
+            if let Some(film) = &self.film {
+                film.observer.failed(reason.as_ref());
+            }
             self.pipeline.log_error(reason.as_ref());
         }
     }
@@ -179,7 +199,7 @@ impl Telemetry {
         if self.disabled() {
             return;
         }
-        if let Some(error) = self.pipeline.worker_error() {
+        if self.film.is_none() && let Some(error) = self.pipeline.worker_error() {
             self.disable(error);
             return;
         }
@@ -247,7 +267,7 @@ impl Telemetry {
             }
         }
         let tick = info.tick;
-        self.pipeline.push(Work::Start(Box::new(Start {
+        self.submit(Work::Start(Box::new(Start {
             info,
             players,
             teams,
@@ -273,6 +293,11 @@ impl Telemetry {
     /// no allocation and no system call once steady (`bench.rs`'s
     /// `the_game_threads_tick_does_not_allocate`).
     pub(crate) fn observe_tick(&self, guest: &runtime::Guest) -> Result<bool, String> {
+        // The in-game clock also advances in the main menu. A film has no
+        // roster or active world to observe there.
+        if self.film.as_ref().is_some_and(|f| f.session.lock().unwrap().match_clock().is_none()) {
+            return Ok(false);
+        }
         // An unchanged tick reads nothing else.
         let tick = memory::game_tick(guest).map_err(|e| format!("read tick snapshot: {e:?}"))?;
         if *self.last_tick.lock().unwrap() == Some(tick) {
@@ -297,9 +322,13 @@ impl Telemetry {
         }
         std::mem::swap(&mut snapshot.shots, &mut *self.shots.lock().unwrap());
         std::mem::swap(&mut snapshot.hits, &mut *self.hits.lock().unwrap());
-        // Actors, vehicles and machines only go out in frames (every second
-        // tick), and not in a cinematic's (they hold no entities).
-        if snapshot.tick.is_multiple_of(2) && !snapshot.cinematic {
+        // The film's full scene and supplemental legacy frame describe
+        // the same simulation boundary, including on non-30 Hz maps.
+        let frame_due = self.film.as_ref().map_or_else(
+            || snapshot.tick.is_multiple_of(2),
+            |f| f.session.lock().unwrap().frame_due(snapshot.tick),
+        );
+        if frame_due && !snapshot.cinematic {
             let mut world = World {
                 actors: std::mem::take(&mut snapshot.actors),
                 vehicles: std::mem::take(&mut snapshot.vehicles),
@@ -319,7 +348,22 @@ impl Telemetry {
             snapshot.projectiles = world.projectiles;
             snapshot.items = world.items;
         }
-        self.pipeline.push(Work::Tick(snapshot))?;
+        // Only a recording needs the full salted object census. The web
+        // metadata frame and its object scene are gathered at the same tick.
+        if frame_due
+            && let Some(film) = &self.film
+            && film.observer.active()
+        {
+            let session = film.session.lock().unwrap();
+            if session.match_clock().is_some() {
+                // An unreadable/loading object array is not an empty world.
+                if let Ok(mut scene) = film.scene.lock().unwrap().read(guest) {
+                    session.name_scene(&mut scene);
+                    film.observer.scene(scene)?;
+                }
+            }
+        }
+        self.submit(Work::Tick(snapshot))?;
         Ok(true)
     }
 
@@ -337,7 +381,7 @@ impl Telemetry {
         }
         let snapshot =
             memory::snapshot(guest).map_err(|e| format!("read final snapshot: {e:?}"))?;
-        self.pipeline.push(Work::End(Box::new(snapshot)))
+        self.submit(Work::End(Box::new(snapshot)))
     }
 
     fn kill(&self, guest: &runtime::Guest, attacker: u32, victim: u32) -> Result<(), String> {
@@ -349,7 +393,7 @@ impl Telemetry {
             .find(|p| p.player.index == victim_index)
             .map_or(u32::MAX, |p| p.unit);
         let object = memory::object(guest, unit).map_err(|e| format!("read kill object: {e:?}"))?;
-        self.pipeline.push(Work::Kill(Box::new(Kill {
+        self.submit(Work::Kill(Box::new(Kill {
             tick,
             attacker: (attacker != u32::MAX).then_some(attacker & 0xffff),
             victim: victim_index,
@@ -374,6 +418,9 @@ impl feature::Feature for TelemetryFeature {
     }
 
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+        if self.0.film_hooks {
+            crate::impacts::install(b, self.0.clone());
+        }
         let t = Arc::clone(&self.0);
         b.game()
             .on_start("match start", move |o| t.protect(|| t.start(&o.guest())));
@@ -402,6 +449,7 @@ impl feature::Feature for TelemetryFeature {
         let t = Arc::clone(&self.0);
         b.raw()
             .observe_before(&points::DAMAGE_REPORT, "hits", move |o| {
+                if t.disabled() { return; }
                 let (Some(report), Some(victim)) = (o.arg_u32("report"), o.arg_u32("victim"))
                 else {
                     return;
@@ -415,6 +463,7 @@ impl feature::Feature for TelemetryFeature {
         let t = Arc::clone(&self.0);
         b.raw()
             .observe_before(&points::PLAYER_KILLED, "kill", move |o| {
+                if t.disabled() { return; }
                 let esp = o.cpu.esp;
                 let observation = {
                     let guest = o.guest();
@@ -447,40 +496,7 @@ pub fn install(
     registry: &mut feature::Registry,
     config: &TelemetryConfig,
 ) -> Result<Option<Arc<Telemetry>>, String> {
-    if !config.enabled {
-        return Ok(None);
-    }
-    let session =
-        Session::new("h2recomp", Some("h2recomp".into())).with_signed_in(signed_in(config));
-    let telemetry = Arc::new(match &config.sink {
-        TelemetrySinkConfig::File(path) => Telemetry::new(session, JsonlSink::create(path)?),
-        TelemetrySinkConfig::Server { base_url, account } => {
-            Telemetry::new(session, ServerSink::new(base_url.clone(), account.clone())?)
-        }
-        TelemetrySinkConfig::Host { base_url, token, game } => {
-            let sink = ServerSink::for_host(base_url.clone(), token.clone())?;
-            if let Some(game) = game {
-                Telemetry::new(session.with_sim(game.clone()), sink.with_sim(game, None))
-            } else {
-                Telemetry::new(session, sink)
-            }
-        }
-        TelemetrySinkConfig::Simulation {
-            base_url,
-            account,
-            game,
-            deferred_lock,
-        } => Telemetry::new(
-            session.with_sim(game.clone()),
-            ServerSink::new(base_url.clone(), account.clone())?
-                .with_sim(game, deferred_lock.clone()),
-        ),
-    });
-    match registry.add(&TelemetryFeature(Arc::clone(&telemetry))) {
-        Ok(true) => Ok(Some(telemetry)),
-        Ok(false) => Ok(None),
-        Err(e) => Err(e.to_string()),
-    }
+    install_film(registry, config, None)
 }
 
 /// The Live account the game is signed in with: the one whose key signs the
@@ -488,7 +504,8 @@ pub fn install(
 fn signed_in(config: &TelemetryConfig) -> Option<live_proto::Xuid> {
     match &config.sink {
         TelemetrySinkConfig::Server { account, .. } => live_proto::Xuid::parse(&account.xuid).ok(),
-        TelemetrySinkConfig::File(_)
+        TelemetrySinkConfig::Discard { .. }
+        | TelemetrySinkConfig::File(_)
         | TelemetrySinkConfig::Simulation { .. }
         | TelemetrySinkConfig::Host { .. } => None,
     }

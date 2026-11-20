@@ -11,7 +11,10 @@ import { TICKS_PER_SECOND, type FrameBuffer } from "../state/frames";
 import { frameHub, live } from "../state/live";
 import type { GameState } from "../state/reducer";
 import { ReplayTimeline, fetchRecording, inTickRange, playbackRange, type ReplayKill, type TickRange } from "../state/replay";
-import { ArchiveWindow } from "./archive";
+import { Movie } from "../api/film-ticks";
+import type { TimelineSegment } from "../api/chunk";
+import { ArchiveWindow, ReplayWindow } from "./archive";
+import { sampleFilmEffects, sampleFilmWorld } from "./film-world";
 import { ViewerPlayback } from "./playback";
 import { applyClock, clockAgrees, isSyncMessage, nextCamera, readClock, syncChannelName, type CameraRequest, type SyncMessage } from "./sync";
 
@@ -19,6 +22,8 @@ export interface ReplaySession {
   timeline: Accessor<ReplayTimeline | null>;
   error: Accessor<string | null>;
   range?: Accessor<TickRange | undefined>;
+  /** The match clock used by persisted clips. */
+  clipTick(tick: number): number;
   /** The clock's tick, refreshed about ten times a second for the UI. */
   tick: Accessor<number>;
   playing: Accessor<boolean>;
@@ -53,9 +58,12 @@ export function createReplaySession(
   options: { range?: TickRange; sync?: boolean } = {},
 ): ReplaySession {
   const [timeline, setTimeline] = createSignal<ReplayTimeline | null>(null);
+  const [savedRange, setSavedRange] = createSignal<TickRange | undefined>(options.range);
+  let activeMovie: Movie | null = null;
   const range = createMemo(() => {
     const tl = timeline();
-    return options.range && tl ? playbackRange(tl, options.range) : undefined;
+    const clip = savedRange();
+    return clip && tl ? playbackRange(tl, clip) : undefined;
   });
   const [error, setError] = createSignal<string | null>(null);
   const [tick, setTick] = createSignal(0);
@@ -70,7 +78,8 @@ export function createReplaySession(
   let liveEdge = (_now: number) => 0;
   let liveFrame: ReturnType<typeof liveFrameSource> | null = null;
   let sought = 0;
-  let archive: ArchiveWindow | undefined;
+  type Window = Pick<ReplayWindow<TimelineSegment>, "segments" | "at" | "ready" | "frames" | "events">;
+  let archive: Window | undefined;
   let seekArchive: ((tick: number) => void) | undefined;
   const tickAt = (now: number) => {
     const loops = playback.clock?.loops;
@@ -102,6 +111,8 @@ export function createReplaySession(
     const ac = new AbortController();
     const openedLive = isLive();
     playback = new ViewerPlayback(openedLive, options.range);
+    activeMovie = null;
+    setSavedRange(options.range);
     liveFrame = liveFrameSource(id, roster);
     liveEdge = (now) => frameHub.get(id).renderTick(now);
     let buffer: FrameBuffer | undefined;
@@ -170,33 +181,52 @@ export function createReplaySession(
       onCleanup(() => { request.abort(); archive = undefined; archiveFramesChanged = undefined; });
       const signal = request.signal;
       const time = startTime();
+      let resumeTick: number | undefined;
       const open = (recording: ReplayTimeline) => {
         const now = performance.now();
         if (recordingOpen) playback.updateRecording(recording, now);
-        else { playback.openRecording(recording, now, time); sought = now; }
+        else { playback.openRecording(recording, now, time, resumeTick); sought = now; }
         recordingOpen = true;
         setError(null);
         reflect(now);
       };
       const api = live.api();
       const read = async () => {
-        const index = await api.chunks(id, signal, revision);
+        const film = await api.hostFilm(id, signal);
         if (signal.aborted) return;
-        if (index?.archive_sha256) {
-          const window = new ArchiveWindow(
-            index,
-            (c, segmentSignal) => api.chunk(id, c, AbortSignal.any([signal, segmentSignal])),
-            options.range?.from_tick,
-          );
-          const bounds = new ReplayTimeline([], [], window.segments);
+        const movie = film && new Movie(await film.index(signal), film.front.match_start_tick, game().start_tick, id, film.chunk, film.front.ticks_per_second ?? TICKS_PER_SECOND);
+        const segments = movie?.segments;
+        const index = segments?.length ? null : await api.chunks(id, signal, revision);
+        if (signal.aborted) return;
+        const clip = options.range && movie && segments?.length
+          ? {from_tick: movie.playTick(options.range.from_tick), to_tick: movie.playTick(options.range.to_tick)} : options.range;
+        const combined = (s: AbortSignal) => AbortSignal.any([signal, s]);
+        const window: Window | undefined = movie && segments?.length
+          ? new ReplayWindow(segments, (c, s) => movie.read(c, combined(s)), clip?.from_tick)
+          : index?.archive_sha256 ? new ArchiveWindow(index, (c, s) => api.chunk(id, c, combined(s)), options.range?.from_tick) : undefined;
+        if (window) {
+          const bounds = new ReplayTimeline([], [], window.segments, movie?.ticksPerSecond);
           const clock = playback.clock;
           const seconds = Number(Array.isArray(time) ? time[0] : time);
-          const target = clock
-            ? (recordingOpen ? clock.tickAt(performance.now()) : bounds.tickFromLatestRun(clock.tickAt(performance.now())))
-            : options.range?.from_tick ?? bounds.startTick + (Number.isFinite(seconds) ? seconds * TICKS_PER_SECOND : 0);
+          const previous = clock?.tickAt(performance.now());
+          if (previous !== undefined) {
+            const guest = activeMovie?.clipTick(previous) ?? previous;
+            resumeTick = movie && segments?.length ? movie.playTick(guest)
+              : recordingOpen ? guest : bounds.tickFromLatestRun(guest);
+          }
+          const target = clip?.from_tick ?? resumeTick ?? bounds.startTick + (Number.isFinite(seconds) ? seconds * bounds.ticksPerSecond : 0);
           await window.at(bounds.clamp(target));
           if (signal.aborted) return;
+          playback.range = clip;
+          setSavedRange(clip);
+          if (recordingOpen && resumeTick !== undefined && Boolean(activeMovie) !== Boolean(segments?.length)) playback.seek(resumeTick, performance.now());
+          activeMovie = segments?.length ? movie : null;
           archive = window;
+          if (segments?.length) {
+            archiveFramesChanged = () => open(new ReplayTimeline(window.frames, window.events, window.segments, movie?.ticksPerSecond));
+            archiveFramesChanged();
+            return;
+          }
           let events = eventsFromState(game());
           archiveFramesChanged = () => open(new ReplayTimeline(window.frames, events, window.segments));
           archiveFramesChanged();
@@ -277,6 +307,7 @@ export function createReplaySession(
 
   return {
     timeline, error, range, tick, playing, speed, isLive, followingLive, frame,
+    clipTick: (t) => activeMovie?.clipTick(t) ?? t,
     soughtAt: () => sought,
     goLive() {
       if (!isLive()) return;
@@ -346,7 +377,7 @@ export function createReplaySession(
  *  and the knockouts of the last six seconds, fading. The game page's
  *  replay and the stats home's "last game" loop both draw from it. */
 export function replayFrame(tl: ReplayTimeline, at: number, r: Map<number, RosterEntry>): MapFrame {
-  const fade = 6 * TICKS_PER_SECOND;
+  const fade = 6 * tl.ticksPerSecond;
   return {
     players: tl.sample(at),
     actors: tl.sampleActors(at),
@@ -356,6 +387,8 @@ export function replayFrame(tl: ReplayTimeline, at: number, r: Map<number, Roste
     machines: tl.sampleMachines(at),
     machinePositions: tl.sampleMachinePositions(at),
     objects: tl.sampleObjects(at),
+    filmWorld: sampleFilmWorld(tl.frames, at),
+    filmEffects: sampleFilmEffects(tl.frames, at),
     cinematic: tl.cinematicAt(at),
     markers: tl.killsBetween(at - fade, at).filter((k) => k.at).map((k) => ({
       ...k.at!, alpha: 1 - (at - k.tick) / fade, colour: r.get(k.victim)?.colour ?? "#555",

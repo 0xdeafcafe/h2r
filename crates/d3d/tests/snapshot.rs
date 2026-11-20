@@ -178,3 +178,30 @@ fn a_save_inside_begin_end_is_refused() {
     let err = a.save_snapshot(&mut ma, &mut writer()).unwrap_err();
     assert!(matches!(err, SnapshotError::Busy(_)), "{err}");
 }
+
+#[test]
+fn film_keyframe_creates_a_matching_device_before_guest_execution() {
+    use d3d::device::DeviceConfig;
+    let (mut recorded, mut ram) = create(RecordingBackend::new(), UploadPolicy::Tracked);
+    frame(&mut recorded, &mut ram, 1);
+    let mut writer = writer();
+    recorded.save_snapshot(&mut ram, &mut writer).unwrap();
+    let file = writer.finish().unwrap();
+    let snap = Snapshot::open(&file, &key()).unwrap();
+    let mut replay = Device::new(
+        DeviceConfig { upload: UploadPolicy::Tracked, ..DeviceConfig::halo2(PB, SCRATCH) },
+        RecordingBackend::new(),
+    );
+    assert!(!replay.snapshot_blockers().is_empty());
+    assert!(replay.film_load_blockers().is_empty());
+    assert!(replay.load_snapshot(&snap).is_err());
+    replay.load_film_snapshot(&snap, &ram).unwrap();
+    let mut replay_ram = ram.clone();
+    let record_at = recorded.backend.calls.len();
+    let replay_at = replay.backend.calls.len();
+    frame(&mut recorded, &mut ram, 2);
+    frame(&mut replay, &mut replay_ram, 2);
+    assert_eq!(stream(&recorded.backend.calls[record_at..]), stream(&replay.backend.calls[replay_at..]));
+    let device = d3d::GuestLayout::HALO2.device;
+    assert_eq!(read(&ram, device, 0x3000), read(&replay_ram, device, 0x3000));
+}

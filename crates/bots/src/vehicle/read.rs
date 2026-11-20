@@ -25,6 +25,7 @@ use crate::guest::{BODY_DEPLETED, Who};
 type R<T> = Result<T, MemFault>;
 
 mod entry;
+pub use entry::unit_eye;
 
 /// Unit `+0x1fc`: the seat in the vehicle it rides (`i16`, -1 none).
 /// Confirmed (`crates/live-telemetry/src/layout.rs`, `UNIT_SEAT`): the

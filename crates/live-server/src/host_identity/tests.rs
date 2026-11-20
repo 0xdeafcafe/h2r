@@ -191,7 +191,7 @@ fn end() -> (&'static str, Value) {
 
 /// A publication already persisted by matchmaking. Exercising the log also
 /// checks that rank admission works after the transient ticket expires.
-async fn assigned_game(live: &Live, lease: &HostLease) -> (String, String) {
+async fn assigned_lease(live: &Live, lease: &HostLease) -> String {
     let assignment = json!({"id":ASSIGNMENT, "hopper":1, "host":Xuid(0), "dedicated":true,
         "members":lease.roster, "rtt_ms":{}, "host_lease":lease.id});
     let mut advertisement = ad();
@@ -218,13 +218,50 @@ async fn assigned_game(live: &Live, lease: &HostLease) -> (String, String) {
         ],
     )
     .await;
-    let token = live.issue_host_token(lease);
+    live.issue_host_token(lease)
+}
+
+async fn assigned_game(live: &Live, lease: &HostLease) -> (String, String) {
+    let token = assigned_lease(live, lease).await;
     let game = live.start_game(Some(&token), new_game()).await.unwrap();
     assert_eq!(
         live.start_game(Some(&token), new_game()).await.unwrap(),
         game
     );
     (token, game.game_id)
+}
+
+// The stream inspector needs only the envelope, version and summary. Use the
+// same index entry representation as the film crate without linking native
+// zstd into the Worker build.
+fn film_fixture(version: u32, summary: &Value) -> Vec<u8> {
+    use ruzstd::encoding::{CompressionLevel, compress_to_vec};
+    let mut bytes = Vec::new();
+    let mut entries = Vec::new();
+    let mut push = |tag: &[u8; 4], value: &Value, bytes: &mut Vec<u8>| {
+        let raw = serde_json::to_vec(value).unwrap();
+        let data = compress_to_vec(raw.as_slice(), CompressionLevel::Uncompressed);
+        let offset = bytes.len() as u64;
+        bytes.extend_from_slice(tag);
+        bytes.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&data);
+        entries.push(json!({"tag": tag, "size": data.len(), "offset": offset}));
+    };
+    push(b"HEAD", &json!({"version": version}), &mut bytes);
+    if version == 2 {
+        push(b"SUMM", summary, &mut bytes);
+    }
+    let index = bytes.len() as u64;
+    let raw = serde_json::to_vec(&entries).unwrap();
+    let data = compress_to_vec(raw.as_slice(), CompressionLevel::Uncompressed);
+    bytes.extend_from_slice(b"INDX");
+    bytes.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    bytes.extend(data);
+    if version == 2 {
+        bytes.extend_from_slice(b"H2FILM2!");
+        bytes.extend_from_slice(&index.to_le_bytes());
+    }
+    bytes
 }
 
 #[tokio::test]
@@ -284,8 +321,15 @@ async fn only_the_games_lease_can_upload_a_bounded_host_film() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    // A valid leading chunk followed by a large body without a length.
+    let mut start = film_fixture(1, &Value::Null);
+    let head_len = u32::from_le_bytes(start[4..8].try_into().unwrap()) as usize;
+    start.truncate(8 + head_len);
+    start.extend_from_slice(b"KEYF");
+    start.extend_from_slice(&(65_u32 << 20).to_le_bytes());
     let chunk = Bytes::from(vec![0; 1 << 20]);
-    let chunks = (0..65).map(move |_| Ok::<_, std::io::Error>(chunk.clone()));
+    let chunks = std::iter::once(Ok::<_, std::io::Error>(Bytes::from(start)))
+        .chain((0..65).map(move |_| Ok(chunk.clone())));
     let response = upload(
         Some(&token),
         None,
@@ -297,13 +341,42 @@ async fn only_the_games_lease_can_upload_a_bounded_host_film() {
     assert!(store.get(&key).await.unwrap().is_none());
     assert_eq!(list().await["items"][0]["has_host_film"], false);
 
-    // A retry must leave the first successful film intact.
-    for payload in ["film", "retry"] {
-        let response = upload(Some(&token), None, Body::from(payload)).await.unwrap();
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
-    }
-    assert_eq!(store.get(&key).await.unwrap().unwrap().as_ref(), b"film");
+    let summary = json!({
+        "level": "lockout", "game_type": "Slayer", "mode": "matchmaking",
+        "variant_name": "Team Slayer", "duration_ticks": 900,
+        "players": [{"seat": 0, "name": "Guest", "xuid": "feeddeadbeef0001",
+            "team": 0, "score": 10, "medals": {"Double Kill": 2}}]
+    });
+    let film = film_fixture(2, &summary);
+    let incomplete = upload(Some(&token), None, Body::from(film[..film.len()-1].to_vec())).await.unwrap();
+    assert_eq!(incomplete.status(), StatusCode::BAD_REQUEST);
+    assert!(store.get(&key).await.unwrap().is_none());
+
+    let call = |query: &str, body: Body| router.clone().oneshot(
+        Request::builder().method(if query.starts_with("part=") { "PUT" } else { "POST" })
+            .uri(format!("/v1/games/{id}/film?{query}"))
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(body).unwrap()
+    );
+    use sha2::{Digest, Sha256};
+    let complete = format!("complete={}&sha256={:x}", film.len(), Sha256::digest(&film));
+    assert_eq!(call(&complete, Body::empty()).await.unwrap().status(), StatusCode::BAD_REQUEST);
+    assert_eq!(call("part=0", Body::from(film.clone())).await.unwrap().status(), StatusCode::NO_CONTENT);
+    assert_eq!(list().await["items"][0]["has_host_film"], false);
+    let wrong = format!("complete={}&sha256={}", film.len(), "0".repeat(64));
+    assert_eq!(call(&wrong, Body::empty()).await.unwrap().status(), StatusCode::BAD_REQUEST);
+    assert!(store.get(&key).await.unwrap().is_none());
+    assert_eq!(call(&complete, Body::empty()).await.unwrap().status(), StatusCode::NO_CONTENT);
+    assert_eq!(list().await["items"][0]["summary"], summary);
+    assert!(store.list(&format!("film-staging/{id}/")).await.unwrap().is_empty());
+
+    // A retry must leave the first successful film and its summary intact.
+    let response = upload(Some(&token), None, Body::from(film_fixture(1, &Value::Null))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let chosen = live.model.read().games[&id].film_blob.clone().unwrap();
+    assert_eq!(store.get(&chosen).await.unwrap().unwrap().as_ref(), &film[..]);
     assert_eq!(list().await["items"][0]["has_host_film"], true);
+    assert_eq!(list().await["items"][0]["summary"], summary);
 }
 
 #[tokio::test]
@@ -601,3 +674,5 @@ async fn peer_session_keeps_account_arbitration() {
         assert_eq!(live.model.read().ranks.standing(account.xuid, "1").games, 1);
     }
 }
+
+mod film;

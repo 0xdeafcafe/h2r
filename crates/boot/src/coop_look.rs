@@ -2,7 +2,7 @@
 //! outgoing 0x28 and the 0x27 record actually applied to the local player.
 //! Only render_game_view receives the camera adjustment, in its own copy.
 mod prediction;
-mod view;
+pub(crate) mod view;
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -22,7 +22,7 @@ const USERS: usize = 4;
 const HISTORY: usize = 256;
 const ACTION_BYTES: u32 = 0x5c;
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct User {
     subject: Option<Subject>,
     prediction: Prediction,
@@ -326,10 +326,29 @@ impl Feature for Look {
                 .optional();
         }
         let look = self.clone();
-        b.snapshot(feature::SnapshotPolicy::section(Vec::new, move |_, _| {
-            look.state().users = Default::default();
-            Ok(())
-        }));
+        if self.arm.film {
+            let save = look.clone();
+            b.snapshot(feature::SnapshotPolicy::section(
+                move || serde_json::to_vec(&save.state().users).expect("finite co-op look samples"),
+                move |bytes, _| {
+                    if !crate::theater::in_keyframe() || bytes.len() > 128 << 10 {
+                        return Err("invalid co-op film look section".into());
+                    }
+                    let users: [User; USERS] = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+                    if users.iter().any(|u| u.prediction.pending() > prediction::MAX_PENDING ||
+                        u.subject.is_some_and(|s| s.player.index() >= 16 || s.unit == engine::DatumHandle::NONE)) {
+                        return Err("invalid co-op film prediction history".into());
+                    }
+                    look.state().users = users;
+                    Ok(())
+                },
+            ));
+        } else {
+            b.snapshot(feature::SnapshotPolicy::section(Vec::new, move |_, _| {
+                look.state().users = Default::default();
+                Ok(())
+            }));
+        }
         Ok(())
     }
 }

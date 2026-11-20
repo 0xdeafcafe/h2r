@@ -11,8 +11,8 @@ live-proto.workspace = true
 # MapId, manifests and hashing for the content store (docs/game/maps.md §5).
 content.workspace = true
 anyhow.workspace = true
-serde.workspace = true
-serde_json.workspace = true
+serde = { workspace = true, features = ["rc"] }
+serde_json = { workspace = true, features = ["raw_value"] }
 thiserror.workspace = true
 # Without `native` (default-features = false), the routes, the read model
 # and the store trait build for wasm32-unknown-unknown, for the Cloudflare
@@ -39,6 +39,8 @@ mime_guess = "2"
 percent-encoding = "2"
 png = "0.18"
 sha2 = "0.10"
+# Decode bounded film metadata and chronological chunks on both native and wasm.
+ruzstd = "0.9.1"
 hmac = "0.12"
 getrandom = "0.3"
 time = "0.3"

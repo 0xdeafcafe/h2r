@@ -42,16 +42,27 @@ pub(super) fn equipment_event(
     unit: u32,
     definition: u32,
 ) -> R<Option<Take>> {
-    if m.u32(sp)? != 0x151fd2 {
+    let Some(object) = consumed_equipment(m, sp)? else {
         return Ok(None);
-    }
+    };
     take(
         m,
-        m.u32(sp.wrapping_add(0x20))?,
+        object.raw(),
         unit,
         super::intel::EQUIPMENT,
         Some(definition),
     )
+}
+
+/// The equipment datum delivered to the verified successful pickup call site.
+pub fn consumed_equipment(
+    m: &dyn GuestMemory,
+    sp: u32,
+) -> Result<Option<DatumHandle>, engine::MemFault> {
+    if m.u32(sp)? != 0x151fd2 {
+        return Ok(None);
+    }
+    Ok(DatumHandle::from_raw(m.u32(sp.wrapping_add(0x20))?))
 }
 
 fn store(event: Take) {

@@ -3567,6 +3567,7 @@ dependencies = [
  "png",
  "reqwest",
  "rustls",
+ "ruzstd",
  "s3s",
  "s3s-fs",
  "send_wrapper",

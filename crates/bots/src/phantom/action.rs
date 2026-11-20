@@ -133,7 +133,7 @@ fn arrived_trigger(
     held
 }
 
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum Publication {
     #[default]
     Missing,
@@ -145,6 +145,27 @@ enum Publication {
 pub(super) struct GatherState {
     sample: Option<(DatumHandle, u32)>,
     publication: Publication,
+    /// Source of the accepted record, retained when the one-tick fallback
+    /// repeats it. The player index is the simulation slot, not the peer ID.
+    published_pad: Option<(u8, input::Gamepad)>,
+}
+
+/// Replay still runs slot validation and bridges at most one missed sample.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub(super) struct FilmGather {
+    sample: Option<(u32, u32)>,
+    publication: Publication,
+}
+impl GatherState {
+    pub(super) fn for_film(self) -> FilmGather {
+        FilmGather { sample: self.sample.map(|(u,t)| (u.raw(),t)), publication:self.publication }
+    }
+}
+impl FilmGather {
+    pub(super) fn restore(&self) -> GatherState {
+        GatherState { sample: self.sample.map(|(u,t)| (DatumHandle(u),t)), publication:self.publication,
+            published_pad:None }
+    }
 }
 
 /// The arrived XInput report and the identity for one retail action build.
@@ -174,6 +195,26 @@ pub struct AimView {
 }
 
 impl Phantoms {
+    /// The XINPUT_GAMEPAD that produced each accepted phantom action in the
+    /// current simulation update (after the emulated network delay).
+    pub fn gathered_pads(&self, tick: u32) -> [Option<input::Gamepad>; session::MAX as usize] {
+        let mut pads = [None; session::MAX as usize];
+        let books = self.lock();
+        if books.hosted_game.is_some() {
+            for p in &books.list {
+                let state = &p.buttons;
+                if p.made
+                    && state.sample.is_some_and(|(_, t)| t == tick)
+                    && state.publication != Publication::Missing
+                    && let Some((seat, pad)) = state.published_pad
+                {
+                    pads[usize::from(seat)] = Some(pad);
+                }
+            }
+        }
+        pads
+    }
+
     /// Read the last controller sample, the validated slot record and the
     /// current unit at one agent boundary. A respawn invalidates the sample.
     pub fn aim_view(&self, m: &dyn GuestMemory, handle: super::PhantomHandle) -> Option<AimView> {
@@ -355,6 +396,11 @@ impl Phantoms {
                         m.write(slot + SLOT_ACTION, &bytes)?;
                         m.set_u32(slot + SLOT_STAMP, tick)
                     })?;
+                    if publication == Publication::Built {
+                        // index was checked against session::MAX above.
+                        state.published_pad =
+                            Some((sample.player.index() as u8, sample.pad.gamepad));
+                    }
                     state.publication = publication;
                 }
             }

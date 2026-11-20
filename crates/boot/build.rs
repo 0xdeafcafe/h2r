@@ -77,6 +77,28 @@ fn main() {
     println!("cargo:rustc-env=CAMPAIGN_CARDS_SOURCE_HASH={cards:016x}");
     let unread = hash(&["../analyze/src"], &["rs"], &["src/fallback.rs"]);
     println!("cargo:rustc-env=UNREAD_SOURCE_HASH={unread:016x}");
+    // The generated image stamp covers lifting, code generation and the native ABI.
+    // The recording also depends on host-side interpretation of actions, services,
+    // scheduler hooks, map options and restored machine state. Hash their shared
+    // sources and feature declarations, independently of this binary's target
+    // and optional presentation backends. BOOT, MOVI and the machine build key
+    // check the guest-visible configuration the match actually used.
+    let film_dirs = [
+        "src", "../runtime/src", "../kernel/src", "../feature/src", "../engine/src",
+        "../film/src", "../live-proto/src", "../live-hle/src", "../live-telemetry/src",
+        "../lockstep/src", "../snapshot/src", "../xapi/src", "../vfs/src", "../input/src",
+        "../d3d/src", "../audio/src", "../dsound/src", "../bink-hle/src", "../bots/src",
+        "../sim/src", "../agent/src", "../coop/src", "../variants/src", "../settings/src",
+        "../hs/src", "../h1scripts/src", "../h1text/src", "../map/src", "../tags/src",
+        "../x87/src", "../simd/src",
+    ];
+    let manifests: Vec<_> = film_dirs.iter().map(|dir| {
+        Path::new(dir).with_file_name("Cargo.toml")
+    }).collect();
+    let mut film_inputs: Vec<_> = manifests.iter().map(|p| p.to_str().unwrap()).collect();
+    film_inputs.extend(["../../Cargo.toml", "../../Cargo.lock"]);
+    let film_runtime = hash(&film_dirs, &["rs"], &film_inputs);
+    println!("cargo:rustc-env=FILM_RUNTIME_HASH={film_runtime:016x}");
     let generator = hash(
         &["../xbe/src", "../analyze/src", "../ir/src", "../lift/src", "../opt/src", "../emit/src", "../emit/c", "../x87/src", "../runtime/include", "c"],
         &["rs", "c", "h"],

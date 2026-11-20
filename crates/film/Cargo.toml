@@ -1,6 +1,6 @@
 [package]
 name = "film"
-description = "Append-only Halo 2 host films and the local film library"
+description = "Seekable Halo 2 engine films, presentation records and the local film library"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

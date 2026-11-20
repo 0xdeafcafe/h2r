@@ -6,7 +6,7 @@ use std::f32::consts::{PI, TAU};
 
 use serde::{Deserialize, Serialize};
 
-const MAX_PENDING: usize = 64;
+pub(super) const MAX_PENDING: usize = 64;
 const MAX_UPDATE_AGE: u32 = 30;
 const SNAP: f32 = PI / 6.0;
 
@@ -48,7 +48,7 @@ impl Aim {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 struct Sent {
     seq: u32,
     after: u32,
@@ -59,7 +59,7 @@ fn newer(n: u32, old: u32) -> bool {
     (n.wrapping_sub(old) as i32) > 0
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub(super) struct Prediction {
     queue: VecDeque<Sent>,
     pub update: Option<u32>,

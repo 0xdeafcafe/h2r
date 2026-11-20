@@ -211,11 +211,19 @@ struct State {
 
 /// The local bots of one machine. Cheap to clone; clones share.
 #[derive(Clone, Default)]
-pub struct Local(Arc<Mutex<State>>);
+pub struct Local(Arc<Mutex<State>>, Arc<std::sync::atomic::AtomicU64>);
 
 impl Local {
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn roster_revision(&self) -> u64 {
+        self.1.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn changed(&self) {
+        self.1.fetch_add(1, std::sync::atomic::Ordering::Release);
     }
 
     /// How many bots it takes: [`MAX_LOCAL`], leaving port 0 to a human,
@@ -229,6 +237,7 @@ impl Local {
     /// (docs/runtime/sim.md §4).
     pub fn set_capacity(&self, n: usize) {
         self.lock().capacity = Some(n.clamp(1, 4));
+        self.changed();
     }
 
     /// Puts a bot named `name` on `port`, driven by `source`.
@@ -253,6 +262,7 @@ impl Local {
             b.leaving = false;
             b.pad = HostPadState::default();
             b.account = None;
+            self.changed();
             return Ok(b.handle);
         }
         if s.bots.len() >= s.capacity.unwrap_or(MAX_LOCAL) {
@@ -270,6 +280,7 @@ impl Local {
             leaving: false,
             account: None,
         });
+        self.changed();
         Ok(handle)
     }
 
@@ -296,7 +307,10 @@ impl Local {
             .find(|b| b.handle == handle && !b.leaving)
             .ok_or(Error::NoSuchBot(handle))?;
         b.source.set_roster_personality(personality);
-        b.account = account;
+        if b.account != account {
+            b.account = account;
+            self.changed();
+        }
         Ok(())
     }
 
@@ -339,6 +353,7 @@ impl Local {
             .find(|b| b.handle == handle && !b.leaving)
             .ok_or(Error::NoSuchBot(handle))?;
         b.leaving = true;
+        self.changed();
         b.pad = HostPadState::default();
         Ok(())
     }
@@ -359,7 +374,11 @@ impl Local {
         let mut s = self.lock();
         let before = s.bots.len();
         s.bots.retain(|b| !(b.handle == handle && b.leaving));
-        s.bots.len() != before
+        let removed = s.bots.len() != before;
+        if removed {
+            self.changed();
+        }
+        removed
     }
 
     /// The bots on the books (not those leaving).
@@ -569,10 +588,16 @@ impl HostBackend for Backend {
     fn placed(&mut self, id: HostPadId, port: usize) {
         let Some(h) = handle_of(id) else { return };
         if let Some(b) = self.0.lock().bots.iter_mut().find(|b| b.handle == h) {
-            b.port = u8::try_from(port).ok();
+            let port = u8::try_from(port).ok();
+            if b.port != port {
+                b.port = port;
+                self.0.changed();
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests;
+
+pub mod film;

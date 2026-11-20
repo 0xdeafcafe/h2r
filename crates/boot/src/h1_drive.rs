@@ -177,6 +177,7 @@ impl Feature for DirectDrive {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        b.snapshot(feature::SnapshotPolicy::Stateless);
         for (point, tank) in [
             (&VEHICLE_TREAD_UPDATE, true),
             (&VEHICLE_WHEEL_UPDATE, false),

@@ -1,6 +1,24 @@
 //! Host film lifetime: boot facts before guest entry, observer-only checkpoints,
 //! then seal and optionally upload at the first slice after game over.
+mod actions;
+mod camera;
+#[cfg(feature = "gpu")]
+mod host_view;
+#[cfg(feature = "gpu")]
+pub use host_view::HostView;
+pub use camera::FilmCamera;
+pub(crate) mod bot_tape;
 mod controls;
+mod metadata;
+mod unified;
+mod objectives;
+mod record;
+pub(crate) use record::in_keyframe;
+mod startup;
+pub(crate) use startup::Startup;
+pub use startup::configure_replay_child;
+mod replay;
+mod local_pads;
 use anyhow::{Context, Result, bail, ensure};
 pub(crate) use controls::library_methods;
 use film::{
@@ -24,6 +42,7 @@ pub struct Replay {
     pub paused_at_target: bool,
     /// Receiver for a requested restart, consumed by the CLI parent.
     pub restart: PathBuf,
+    pub camera: FilmCamera,
     pub window_closed: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
 }
 
@@ -32,6 +51,12 @@ struct Recording {
     batch: Batch,
     file: PathBuf,
     match_over: bool,
+    track: film::blam::TrackWriter,
+    meta: metadata::Capture,
+    frame: record::Capture,
+    unified: unified::Capture,
+    data_root: PathBuf,
+    start_manifest: film::manifest::Manifest,
     upload: Option<UploadTarget>,
 }
 
@@ -42,14 +67,11 @@ struct UploadTarget {
 }
 
 impl UploadTarget {
-    fn from_env(lease: Option<&str>, env: impl Fn(&str) -> Option<String>) -> Result<Option<Self>> {
+    fn from_env(game_id: Option<&str>, env: impl Fn(&str) -> Option<String>) -> Result<Option<Self>> {
         let (Some(url), Some(token)) = (env("H2_HOST_LIVE_URL"), env("H2_HOST_TOKEN")) else {
             return Ok(None);
         };
-        // Live uses the lease ID as the canonical game ID for its host.
-        let game = env("H2_FILM_GAME_ID")
-            .or_else(|| lease.map(str::to_owned))
-            .context("no lease game ID for film")?;
+        let game = game_id.context("no lease game ID for film")?.to_owned();
         Ok(Some(Self { url, token, game }))
     }
 }
@@ -60,6 +82,7 @@ enum Mode {
 }
 struct State {
     mode: Mode,
+    engine: Option<replay::EngineReplay>,
     header: Header,
     tick: u64,
     calls: u64,
@@ -70,6 +93,25 @@ struct State {
     failure: Option<String>,
     complete: bool,
 }
+/// Check an installed, current module against the recording. The launcher also
+/// uses this result to choose the disk state matching the replay's starting RAM.
+pub fn image_match(
+    version: u32,
+    original: &str,
+    runtime: &str,
+    guest: Option<&film::image::GuestImage>,
+    candidate: &str,
+    xbe_sha256: &str,
+) -> Result<film::image::ImageMatch> {
+    ensure!(version == 1 || runtime == env!("FILM_RUNTIME_HASH"), "film runtime stamp differs");
+    if version >= 3 && let Some(guest) = guest {
+        return guest.compare(original, candidate, emit::compile::Arch::host().triple(), xbe_sha256)
+            .map_err(|reason| anyhow::anyhow!("film image stamp differs: {reason}"));
+    }
+    ensure!(!candidate.is_empty() && original == candidate, "film requires its exact native image stamp");
+    Ok(film::image::ImageMatch::Native)
+}
+
 pub(crate) struct Facts {
     pub stamp: String,
     pub title_id: u32,
@@ -80,8 +122,14 @@ pub(crate) struct Facts {
     pub live_service: bool,
 }
 pub(crate) struct Session {
+    version: u32,
+    replaying: bool,
     state: Mutex<State>,
-    upload: Mutex<Option<std::thread::JoinHandle<()>>>,
+    #[cfg(feature = "gpu")]
+    view: std::sync::OnceLock<Mutex<host_view::MountedView>>,
+    bots: Mutex<bot_tape::BotTape>,
+    upload: Mutex<Option<std::thread::JoinHandle<Result<()>>>>,
+    require_upload: bool,
 }
 impl Session {
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -106,12 +154,14 @@ impl Session {
         let switches = feature::Switches::from_env()
             .map_err(anyhow::Error::msg)?
             .spec();
+        let mut image = film::image::ImageMatch::Native;
         let (mode, header, speed, seeking, paused) = if let Some(r) = replay {
             ensure!(record.is_none(), "cannot record and replay the same boot");
             ensure!((0.25..=4.).contains(&r.speed), "speed must be 0.25 to 4");
             let tape = Playback::load(Reader::open(&r.path)?)?;
             let mut h = tape.reader.header.clone();
-            ensure!(h.meta.playable_here(&stamp), "film image stamp differs");
+            image = image_match(h.version, &h.meta.image_stamp, &h.runtime_stamp,
+                h.guest_image.as_ref(), &stamp, &h.xbe_sha256)?;
             ensure!(
                 h.xbe_sha256 == film::xbe_digest(xbe)
                     && h.title_id == title_id
@@ -130,12 +180,25 @@ impl Session {
             (Mode::Replay(tape, r), h, speed, target, paused)
         } else if let Some(path) = record {
             let started_ms = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
+            let lease_id = std::env::var("H2_LEASE").ok().filter(|id| !id.is_empty());
+            let host_recording = host_light || lease_id.is_some();
+            let game_id = host_recording.then(|| {
+                std::env::var("H2_FILM_GAME_ID").ok().filter(|id| !id.is_empty())
+                    .or_else(|| lease_id.clone())
+            }).flatten();
+            let xbe_sha256 = film::xbe_digest(xbe);
+            let guest_image = film::image::GuestImage::capture(
+                &stamp, emit::compile::Arch::host().triple(), &xbe_sha256,
+            );
             let header = Header {
-                version: 1,
+                version: 3,
                 title_id,
-                xbe_sha256: film::xbe_digest(xbe),
+                xbe_sha256,
+                guest_image: Some(guest_image),
+                runtime_stamp: env!("FILM_RUNTIME_HASH").into(),
                 epoch_100ns: epoch,
-                lease_id: std::env::var("H2_LEASE").ok(),
+                lease_id,
+                game_id,
                 xnet_addr: address,
                 lobby: std::env::var("H2_HOST_LOBBY").as_deref() == Ok("1"),
                 lobby_machine_start: std::env::var("H2_HOST_LOBBY_MACHINE_START").as_deref()
@@ -153,19 +216,19 @@ impl Session {
                     length_ticks: 0,
                     players: vec![],
                     image_stamp: stamp,
-                    source: if host_light {
+                    source: if host_recording {
                         Source::Host
                     } else {
                         Source::Local
                     },
                 },
             };
-            let upload = if host_light {
-                UploadTarget::from_env(header.lease_id.as_deref(), |key| std::env::var(key).ok())?
+            let upload = if host_recording {
+                UploadTarget::from_env(header.game_id.as_deref(), |key| std::env::var(key).ok())?
             } else {
                 None
             };
-            let manifest = film::manifest::Manifest::capture(&opts.data_root)?;
+            let manifest = film::manifest::Manifest::capture_v2(&opts.data_root)?;
             let mut file = File::options();
             file.write(true).create_new(true);
             #[cfg(unix)]
@@ -185,6 +248,12 @@ impl Session {
                     batch: Batch::default(),
                     file: path,
                     match_over: false,
+                    track: Default::default(),
+                    meta: metadata::Capture::new(&header),
+                    frame: Default::default(),
+                    unified: Default::default(),
+                    data_root: opts.data_root.clone(),
+                    start_manifest: manifest,
                     upload,
                 }),
                 header,
@@ -195,9 +264,22 @@ impl Session {
         } else {
             return Ok(None);
         };
+        let engine = match &mode {
+            Mode::Replay(_, r) if header.version >= 2 => Some(replay::EngineReplay::open(r, image)?),
+            _ => None,
+        };
+        let bot_tape = bot_tape::BotTape::new(&mode, header.version);
         Ok(Some(Arc::new(Self {
+            version: header.version,
+            replaying: matches!(&mode, Mode::Replay(_, _)),
+            require_upload: matches!(&mode, Mode::Record(rec) if rec.upload.is_some())
+                && std::env::var("H2_HOST_ARCHIVE").as_deref() == Ok("film"),
+            bots: Mutex::new(bot_tape),
+            #[cfg(feature = "gpu")]
+            view: Default::default(),
             state: Mutex::new(State {
                 mode,
+                engine,
                 header,
                 speed,
                 seeking,
@@ -218,6 +300,10 @@ impl Session {
             s.header.telemetry = enabled;
         }
     }
+    pub(crate) fn has_engine_track(&self) -> bool {
+        self.version >= 2
+    }
+
     pub fn has_telemetry(&self) -> bool {
         self.lock().header.telemetry
     }
@@ -233,6 +319,17 @@ impl Session {
             s.seeking = None;
             s.paused = matches!(&s.mode, Mode::Replay(_,r) if r.paused_at_target);
         }
+        if s.header.version >= 2 {
+            let hash = crate::sim_glue::film_gameplay_hash(guest);
+            if let Mode::Record(rec) = &mut s.mode {
+                if let Err(e) = rec.post_tick(guest, tick, hash) {
+                    s.fail(format!("writing engine tick: {e:#}"));
+                    return;
+                }
+            } else {
+                Session::check_replay_tick(&mut s, guest, hash);
+            }
+        }
         if !tick.is_multiple_of(30) {
             return;
         }
@@ -244,15 +341,13 @@ impl Session {
         if matches!(s.mode, Mode::Record(_)) {
             s.roster(guest);
         }
-        let header = s.header.clone();
         match &mut s.mode {
             Mode::Record(rec) => {
                 if let Some(out) = &mut rec.out {
                     let r = rec
                         .batch
                         .flush(out)
-                        .and_then(|()| out.chunk(film::HASH, &actual))
-                        .and_then(|()| out.chunk(film::HEAD, &header));
+                        .and_then(|()| out.chunk(film::HASH, &actual));
                     if let Err(e) = r {
                         s.fail(e.to_string());
                     }
@@ -278,7 +373,10 @@ impl Session {
         agent: Option<&crate::agent_glue::AgentGlue>,
         rt: &runtime::Runtime,
     ) -> Result<bool> {
+        self.bot_boundary()?;
         loop {
+            #[cfg(feature = "gpu")]
+            self.draw_host_view(rt);
             {
                 let mut s = self.lock();
                 s.check_end(slices)?;
@@ -294,7 +392,7 @@ impl Session {
                 if let Some(target) = s.restart {
                     std::fs::write(
                         &r.restart,
-                        serde_json::to_vec(&(target, s.speed, s.paused))?,
+                        serde_json::to_vec(&(target, s.speed, s.paused, r.camera.requested_seat()))?,
                     )?;
                     return Ok(false);
                 }
@@ -323,13 +421,29 @@ impl Session {
         }
     }
 
+    /// The sim's tick, wall or stop limit may end a match without GAME_END.
+    /// A successful report means Live has settled its canonical game row.
+    pub(crate) fn finish_uploaded_sim(&self, slices: u64, published: bool) -> Result<()> {
+        if let Mode::Record(r) = &mut self.lock().mode {
+            r.match_over = published;
+        }
+        self.finish(slices, true)
+    }
+
     pub fn finish(&self, slices: u64, teardown: bool) -> Result<()> {
         self.finish_output(slices, teardown)?;
-        if teardown
-            && let Some(job) = self.upload.lock().unwrap_or_else(|e| e.into_inner()).take()
-            && job.join().is_err()
-        {
-            eprintln!("theater: film upload worker stopped");
+        if teardown {
+            if let Some(job) = self.upload.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                let result = job.join().unwrap_or_else(|_| Err(anyhow::anyhow!("film upload worker stopped")));
+                if self.require_upload {
+                    result?;
+                } else if let Err(error) = result {
+                    eprintln!("theater: {error:#}");
+                }
+            }
+            if self.require_upload && let Some(error) = self.lock().failure.as_ref() {
+                bail!("host film: {error}");
+            }
         }
         Ok(())
     }
@@ -359,10 +473,18 @@ impl Session {
         let Mode::Record(rec) = &s.mode else {
             unreachable!()
         };
-        if !teardown && !rec.match_over {
+        if !teardown && (!rec.match_over || rec.frame.actions.is_some()) {
             return Ok(());
         }
         let matched = rec.match_over;
+        let summary = rec.meta.summary(s.tick);
+        if !summary.level.is_empty() {
+            s.header.meta.map.clone_from(&summary.level);
+            s.header.meta.variant.clone_from(&summary.variant_name);
+            s.header.meta.players = summary.players.iter().map(|player| film::Player {
+                name: player.name.clone(), team: player.team, score: player.score
+            }).collect();
+        }
         let (tick, calls) = (s.tick, s.calls);
         s.header.meta.length_ticks = tick;
         let header = s.header.clone();
@@ -373,8 +495,11 @@ impl Session {
         let path = rec.file.clone();
         let upload = rec.upload.take();
         let done = (|| -> Result<()> {
+            rec.track.closing_events(std::mem::take(&mut rec.frame.events))?;
+            rec.track.append_to_last(rec.unified.take_records(false)?)?;
             rec.batch.flush(&mut out)?;
             out.chunk(film::HEAD, &header)?;
+            rec.track.finish(&mut out, rec.meta.descriptor(), &summary)?;
             out.chunk(
                 film::MARK,
                 &Mark::End {
@@ -390,18 +515,36 @@ impl Session {
             s.fail(format!("closing film: {e}"));
             return Ok(());
         }
+        // Release the retained physical RAM anchor when a local game returns to the lobby.
+        rec.frame = Default::default();
         s.complete = true;
         drop(s);
         if matched && let Some(target) = upload {
+            // Create before spawning so a stopped uploader leaves its sealed
+            // output recoverable when the supervisor cleans the lease.
+            let receipt = std::env::var_os("H2_FILM_PENDING_RECEIPT").map(PathBuf::from)
+                .and_then(|p| {
+                    match File::create_new(&p) {
+                        Ok(_) => Some(p),
+                        Err(e) => {
+                            eprintln!("theater: could not mark pending upload: {e}");
+                            None
+                        }
+                    }
+                });
             let worker = std::thread::Builder::new()
                 .name("film-upload".into())
                 .spawn(move || {
-                    if let Err(e) = film::upload(&target.url, &target.token, &target.game, &path) {
-                        eprintln!("theater: upload failed for {}: {e}", path.display())
+                    film::upload(&target.url, &target.token, &target.game, &path)
+                        .with_context(|| format!("upload failed for {}", path.display()))?;
+                    if let Some(p) = receipt {
+                        let _ = std::fs::remove_file(p);
                     }
+                    Ok(())
                 });
             match worker {
                 Ok(job) => *self.upload.lock().unwrap_or_else(|e| e.into_inner()) = Some(job),
+                Err(e) if self.require_upload => return Err(e).context("starting host film upload"),
                 Err(e) => eprintln!("theater: could not start film upload: {e}"),
             }
         }
@@ -428,12 +571,19 @@ impl State {
         Ok(())
     }
     fn fail(&mut self, why: String) {
+        self.fail_at(self.tick, why)
+    }
+
+    fn fail_at(&mut self, tick: u64, why: String) {
         if self.failure.is_some() {
             return;
         }
-        let reason = match self.mode {
-            Mode::Record(_) => format!("recording stopped at tick {}: {why}", self.tick),
-            Mode::Replay(_, _) => format!("first divergence at tick {}: {why}", self.tick),
+        let reason = match &mut self.mode {
+            Mode::Record(rec) => {
+                rec.frame = Default::default();
+                format!("recording stopped at tick {tick}: {why}")
+            }
+            Mode::Replay(_, _) => format!("first divergence at tick {tick}: {why}"),
         };
         eprintln!("theater: {reason}");
         self.failure = Some(reason);
@@ -461,8 +611,11 @@ impl State {
     }
 }
 impl Tap for Session {
+    fn service_calls(&self) -> bool {
+        self.version >= 2
+    }
     fn replaying(&self) -> bool {
-        matches!(self.lock().mode, Mode::Replay(_, _))
+        self.replaying
     }
     fn next(&self, op: &str, args: &[u32], thread: u32) -> Option<Call> {
         let mut s = self.lock();
@@ -547,16 +700,28 @@ impl feature::Feature for Observer {
         feature::Manifest::new("theater-film", "Exact host film").doc("docs/game/theater.md")
     }
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+        // Hook installation changes guest dispatch boundaries. A v1 tape
+        // must use the observer set that recorded its scheduler/call stream.
+        if self.0.lock().header.version >= 2 {
+            if self.0.version >= 3 {
+                objectives::install(b, self.0.clone());
+            }
+            metadata::install(&self.0, b);
+            camera::install(b, &self.0);
+            actions::install(b, self.0.clone());
+        }
         let session = self.0.clone();
         b.snapshot(feature::SnapshotPolicy::forbid_while(move || {
             let state = session.lock();
-            (!state.complete && state.failure.is_none()).then(|| "film cursor is live".into())
+            (!in_keyframe() && !state.complete && state.failure.is_none()).then(|| "film cursor is live".into())
         }));
         let session = self.0.clone();
         let agent = self.1.clone();
         b.frame().on_tick("film checkpoint", move |o| {
             session.checkpoint(&o.guest());
             loop {
+                #[cfg(feature = "gpu")]
+                session.draw_host_view(o.runtime);
                 {
                     let s = session.lock();
                     let Mode::Replay(_, r) = &s.mode else { break };
@@ -578,11 +743,11 @@ impl feature::Feature for Observer {
                 a.poll_theater(&mut agent::GuestReader::new(|| o.runtime.memory()));
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
-        });
+        }).after_feature("live-telemetry");
         let session = self.0.clone();
         b.game().on_end("film scoreboard", move |o| {
             let mut s = session.lock();
-            if !matches!(s.mode, Mode::Record(_)) || s.complete {
+            if !matches!(s.mode, Mode::Record(_)) || s.complete || s.failure.is_some() {
                 return;
             }
             let g = o.guest();
@@ -596,7 +761,15 @@ impl feature::Feature for Observer {
                 && crate::telemetry::game_info(&g).is_ok_and(|i| i.is_match())
             {
                 s.roster(&g);
+                let tick = s.tick;
                 if let Mode::Record(r) = &mut s.mode {
+                    match r.meta.observe(&g, tick) {
+                        Ok(events) => r.frame.events.extend(events),
+                        Err(error) => {
+                            s.fail(format!("capturing final scoreboard: {error:#}"));
+                            return;
+                        }
+                    }
                     r.match_over = true
                 }
             }

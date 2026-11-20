@@ -66,6 +66,7 @@ impl Guest {
             code: Vec::new(),
             next_id: 1,
             watch: Default::default(),
+            hle_writes: None,
             layout: fresh_layout(),
             trap: None,
             cow_source_layout: 0,

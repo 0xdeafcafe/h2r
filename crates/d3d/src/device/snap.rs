@@ -45,7 +45,7 @@ use ::snapshot::{Codec, Snapshot, SnapshotWriter, Tag};
 
 /// The section's tag.
 pub const SECTION: Tag = Tag::new("d3d");
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 /// Most entries any saved list may claim (scissors are at most 8, the
 /// rest are bounded by the guest's index and header spaces).
 const MAX_ITEMS: usize = 1 << 16;
@@ -544,10 +544,17 @@ impl<B: Backend> Device<B> {
     /// does. Checked between slices; the push buffer is drained by the
     /// save itself.
     pub fn snapshot_blockers(&self) -> Vec<String> {
-        let mut why = Vec::new();
+        let mut why = self.film_load_blockers();
         if !self.created {
             why.push("no device created".to_string());
         }
+        why
+    }
+
+    /// A film load may construct the device on a fresh backend after RAM
+    /// restore. All in-flight-work blockers still apply.
+    pub fn film_load_blockers(&self) -> Vec<String> {
+        let mut why = Vec::new();
         if let Some(f) = &self.fault {
             why.push(format!("faulted: {f}"));
         }
@@ -607,6 +614,9 @@ impl<B: Backend> Device<B> {
         self.flush_render_targets(mem)?;
         self.resolve_visibility()?;
         let mut w = Writer::new();
+        let params = self.params
+            .ok_or_else(|| SnapshotError::Mismatch("missing present parameters".into()))?;
+        put_words(&mut w, &params.words());
         self.saved()?.put(&mut w);
         out.section(SECTION, VERSION, Codec::Zstd, w.into_bytes())?;
         Ok(())
@@ -840,8 +850,54 @@ impl<B: Backend> Device<B> {
     /// parameters), and guest RAM already loaded: host caches are dropped
     /// and refill from it. Nothing changes if the section does not fit.
     pub fn load_snapshot(&mut self, snapshot: &Snapshot<'_>) -> Result<(), SnapshotError> {
-        let bytes = snapshot.require(SECTION, VERSION..=VERSION)?;
-        let s = Saved::get(&bytes)?;
+        self.restore_device(snapshot, None)
+    }
+
+    /// Load in an isolated film player, where the guest has not executed
+    /// CreateDevice. Only host surfaces and the encode table are rebuilt.
+    /// Guest RAM already contains the device object and register pages.
+    pub fn load_film_snapshot(
+        &mut self,
+        snapshot: &Snapshot<'_>,
+        mem: &dyn GuestMemory,
+    ) -> Result<(), SnapshotError> {
+        self.restore_device(snapshot, Some(mem))
+    }
+
+    fn restore_device(
+        &mut self,
+        snapshot: &Snapshot<'_>,
+        cold: Option<&dyn GuestMemory>,
+    ) -> Result<(), SnapshotError> {
+        let (version, bytes) = snapshot.section(SECTION)?
+            .ok_or(::snapshot::Error::MissingSection(SECTION))?;
+        let (params, s) = match version {
+            1 => (None, Saved::get(&bytes)?),
+            VERSION => {
+                let mut r = Reader::new(&bytes, "d3d");
+                let mut words = [0; 17];
+                get_words(&mut r, &mut words)?;
+                let remaining = r.remaining();
+                let saved = Saved::get(r.raw(remaining)?)?;
+                (Some(PresentParameters::from_words(words)), saved)
+            }
+            other => return Err(::snapshot::Error::SectionVersion(SECTION, other).into()),
+        };
+        if !self.created && let Some(mem) = cold {
+            let p = params.ok_or_else(|| {
+                SnapshotError::Mismatch("cold restore needs the recorded present parameters".into())
+            })?;
+            self.allocate_frame_buffers(mem, p)?;
+            self.regs = self.cfg.nv2a_window
+                .map(RegisterWindow::new)
+                .transpose()
+                .map_err(SnapshotError::Mismatch)?;
+            self.params = Some(p);
+            self.created = true;
+        }
+        if params.is_some() && params != self.params {
+            return Err(SnapshotError::Mismatch("present parameters differ".into()));
+        }
         self.check(&s)?;
         self.drop_host_caches()?;
         self.scoped_admission = None;

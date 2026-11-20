@@ -1182,7 +1182,7 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes, switch
     }, bsps.len()))
 }
 
-fn decode_lightmap(
+pub(crate) fn decode_lightmap(
     image: &tags::Image,
     palette: &[u32; 256],
     files: &mut assets::ResourceFiles,
@@ -1295,7 +1295,7 @@ fn drawn_natively(d: &WorldDraw, rigid: &HashSet<u16>) -> bool {
 
 /// The world with only the draws `keep` takes, batched again (the draws
 /// stay in their order, so a batch is a run of one material and page).
-fn keep_draws(mut world: World, keep: &dyn Fn(&WorldDraw) -> bool) -> World {
+pub(crate) fn keep_draws(mut world: World, keep: &dyn Fn(&WorldDraw) -> bool) -> World {
     world.draws.retain(|d| keep(d));
     world.batches.clear();
     for (i, d) in world.draws.iter_mut().enumerate() {

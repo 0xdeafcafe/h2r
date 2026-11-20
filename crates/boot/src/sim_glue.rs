@@ -49,12 +49,28 @@ use sim::metrics::{BotInfo, BrainTick, End, Finish, PlayerSample, Report, Tally,
 
 use crate::level_boot;
 use std::collections::BTreeMap;
+mod film_state;
 pub(crate) mod hosted;
 mod state_hash;
 
 /// The engine's shared random seed: a pointer to the struct whose first
 /// word it is (docs/graphics/pipelined-render.md, "random").
 pub const RANDOM_SEED_PTR: u32 = 0x004e_7408;
+
+/// Film checkpoints use the simulation report's post-tick digest. Campaigns
+/// without a multiplayer statborg can still verify the engine's game-state arena.
+pub(crate) fn film_gameplay_hash(guest: &runtime::Guest) -> Option<u64> {
+    if let Ok(snapshot) = telemetry::sim_snapshot(guest) {
+        let rng = guest.u32(RANDOM_SEED_PTR).ok().filter(|p| *p != 0)
+            .and_then(|p| guest.u32(p).ok());
+        return Some(state_hash::gameplay(&snapshot, rng));
+    }
+    match level_boot::active_mode(guest) {
+        Some(level_boot::MODE_CAMPAIGN | level_boot::MODE_MULTIPLAYER) =>
+            lockstep::hash_sim(guest, lockstep::SimRegion::HALO2),
+        _ => None,
+    }
+}
 
 /// Weapons fired between two ticks that are kept for attribution.
 const MAX_FIRED: usize = 512;
@@ -461,8 +477,14 @@ impl Sim {
 
     /// Match-specific hooks. Boot installs the light profile separately.
     pub fn install(&self, features: &mut feature::Registry) -> Result<()> {
+        self.install_with_film(features, None)
+    }
+
+    pub(crate) fn install_with_film(
+        &self, features: &mut feature::Registry, film_playback: Option<bool>,
+    ) -> Result<()> {
         features
-            .add(&SimMetrics(Arc::clone(&self.0)))
+            .add(&SimMetrics { sim: Arc::clone(&self.0), film_playback })
             .map_err(|e| anyhow::anyhow!("sim metrics: {e}"))?;
         eprintln!(
             "sim: {} on {}, {} bot(s), {} ({})",
@@ -733,7 +755,10 @@ impl PadSource for Metered {
 /// The metrics feature (`sim-metrics`): read-only observers, and one
 /// `before` on the game tick that writes the seed and the teams once a
 /// match.
-struct SimMetrics(Arc<Inner>);
+struct SimMetrics {
+    sim: Arc<Inner>,
+    film_playback: Option<bool>,
+}
 
 impl feature::Feature for SimMetrics {
     fn manifest(&self) -> feature::Manifest {
@@ -742,12 +767,19 @@ impl feature::Feature for SimMetrics {
     }
 
     fn build(&self, b: &mut feature::Builder) -> std::result::Result<(), feature::BuildError> {
-        // A load (a fork) winds the tick back; the tally starts again there.
-        b.snapshot(feature::SnapshotPolicy::Stateless);
-        if self.0.matched.distributed() {
-            hosted::install(b, Arc::clone(&self.0))?;
-        }
-        let me = Arc::clone(&self.0);
+        let lobby = if self.sim.matched.distributed() {
+            Some(hosted::install(b, Arc::clone(&self.sim))?)
+        } else {
+            None
+        };
+        let policy = match self.film_playback {
+            Some(playback) => film_state::policy(&self.sim, lobby, playback),
+            // Ordinary sim snapshot loads are forks. The tally detects the
+            // guest tick rewinding and begins a new trial there.
+            None => feature::SnapshotPolicy::Stateless,
+        };
+        b.snapshot(policy);
+        let me = Arc::clone(&self.sim);
         b.game().on_start("sim: match start", move |o| {
             let g = o.guest();
             let mode = level_boot::active_mode(&*g);
@@ -776,7 +808,7 @@ impl feature::Feature for SimMetrics {
             s.first_tick = (s.phase == Phase::Playing).then(Instant::now);
             eprintln!("sim: match started at tick {tick}");
         });
-        let me = Arc::clone(&self.0);
+        let me = Arc::clone(&self.sim);
         let arena_buffer = b
             .switches()
             .implementation("sim.arena-hash", false)
@@ -872,7 +904,7 @@ impl feature::Feature for SimMetrics {
                 me.end(&mut s, End::TickLimit);
             }
         });
-        let me = Arc::clone(&self.0);
+        let me = Arc::clone(&self.sim);
         b.game().on_end("sim: match end", move |o| {
             let g = o.guest();
             let ended = g
@@ -887,7 +919,7 @@ impl feature::Feature for SimMetrics {
                 me.end(&mut s, End::GameOver);
             }
         });
-        let me = Arc::clone(&self.0);
+        let me = Arc::clone(&self.sim);
         b.raw()
             .observe_before(&points::WEAPON_FIRE, "sim: shots", move |o| {
                 if let Some(w) = o.arg_u32("weapon") {
@@ -910,7 +942,7 @@ impl feature::Feature for SimMetrics {
                 }
             })
             .optional();
-        let me = Arc::clone(&self.0);
+        let me = Arc::clone(&self.sim);
         b.raw()
             .observe_before(&points::DAMAGE_REPORT, "sim: hits", move |o| {
                 let (Some(report), Some(victim)) = (o.arg_u32("report"), o.arg_u32("victim"))
@@ -933,7 +965,7 @@ impl feature::Feature for SimMetrics {
                 );
             })
             .optional();
-        let me = Arc::clone(&self.0);
+        let me = Arc::clone(&self.sim);
         b.raw()
             .observe_before(&points::PLAYER_KILLED, "sim: kills", move |o| {
                 let esp = o.cpu.esp;
@@ -968,7 +1000,7 @@ impl feature::Feature for SimMetrics {
                     );
                 }
             });
-        let me = Arc::clone(&self.0);
+        let me = Arc::clone(&self.sim);
         b.raw()
             .before(&points::GAME_TICK, "sim: seed and teams", move |c| {
                 {

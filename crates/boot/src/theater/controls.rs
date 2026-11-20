@@ -74,15 +74,21 @@ impl Session {
                             s.restart = Some(p.tick);
                         }
                         api::CAMERA => {
-                            if params::<api::Camera>(p)?.mode != "default" {
-                                return Err(RpcError::new(
-                                    code::UNAVAILABLE,
-                                    "unavailable until keyframes",
-                                ));
-                            }
+                            let p = params::<api::Camera>(p)?;
+                            let selection = match (p.mode.as_str(), p.seat) {
+                                ("default", None) => None,
+                                ("first_person", Some(seat @ 0..=15)) => Some(seat),
+                                ("first_person" | "default", _) => return Err(RpcError::new(
+                                    code::INVALID_PARAMS, "first_person takes a player seat from 0 to 15, default takes none")),
+                                _ => return Err(RpcError::new(code::UNAVAILABLE, "unsupported film camera mode")),
+                            };
+                            let Mode::Replay(_, replay) = &s.mode else { unreachable!() };
+                            replay.camera.select(selection).map_err(|e| RpcError::new(code::UNAVAILABLE, e))?;
                         }
                         _ => unreachable!(),
                     }
+                    let Mode::Replay(_, replay) = &s.mode else { unreachable!() };
+                    let seat = replay.camera.requested_seat();
                     Ok(serde_json::json!(api::State {
                         id: s.header.meta.id.clone(),
                         tick: s.tick,
@@ -90,7 +96,8 @@ impl Session {
                         paused: s.paused,
                         speed: s.speed,
                         seeking: s.seeking.is_some() || s.restart.is_some(),
-                        camera: "default".into(),
+                        camera: if seat.is_some() { "first_person".into() } else { "default".into() },
+                        camera_seat: seat,
                     }))
                 },
             );

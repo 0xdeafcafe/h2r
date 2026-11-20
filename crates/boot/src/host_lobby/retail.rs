@@ -13,6 +13,8 @@ use feature::points;
 use live_proto::hopper::variant;
 use serde_json::{Value, json};
 
+mod checkpoint;
+
 const CREATE_BROWSER_SQUAD: u32 = 0x0019_9df9;
 const LIVE_MENU_PREPARE: u32 = 0x0019_9e2e;
 const CREATE_SQUAD: u32 = 0x0005_9890;
@@ -244,19 +246,15 @@ impl Machine {
     ) -> Option<String> {
         let hle = live?;
         match cmd {
-            Command::Open(config) if config.live => hle.hosted_session(),
+            Command::Open(config) if config.live => hle.lobby_hosted_session(),
             Command::Close => {
                 let owner = self.owned.as_ref().filter(|o| o.config.live)?;
                 if let Some(ours) = &owner.live_id {
                     // The current listing can change before ours is deleted.
                     // Confirm withdrawal of the actual ID returned by open.
-                    return hle
-                        .local_sessions()
-                        .iter()
-                        .any(|s| live_proto::sign::hex(&s.id) == *ours)
-                        .then(|| ours.clone());
+                    return hle.hosts_session(ours).then(|| ours.clone());
                 }
-                hle.hosted_session()
+                hle.lobby_hosted_session()
             }
             _ => None,
         }

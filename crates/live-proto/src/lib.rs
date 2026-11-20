@@ -11,6 +11,7 @@ pub mod audit;
 pub mod bans;
 pub mod bots;
 pub mod chunk;
+pub mod film;
 pub mod game;
 pub mod hopper;
 pub mod hosts; // dh-lease

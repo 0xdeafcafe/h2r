@@ -1,5 +1,5 @@
 import { Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
-import type { FrameObject, MapOutline } from "../api/types";
+import type { FilmWorld, FrameObject, MapOutline } from "../api/types";
 import type { SampledHit, SampledMachine, SampledMachinePosition, SampledPlayer, SampledVehicle } from "../state/frames";
 import type { MapFeatures } from "../map/features";
 import { onAnimationFrame } from "../map/scheduler";
@@ -28,6 +28,8 @@ export interface MapFrame {
   objects?: FrameObject[] | null;
   /** A cutscene is playing: there is no one to draw, and the views say so. */
   cinematic?: boolean;
+  filmWorld?: FilmWorld;
+  filmEffects?: import("../viewer/film-world").VisibleFilmEffect[];
 }
 
 export default function MapCanvas(props: {

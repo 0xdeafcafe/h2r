@@ -1,17 +1,24 @@
 //! Theater lists archived games and tracks their exact host films. Film
 //! availability, pins and clips are projected in both homes from signed events.
 
+mod import;
+pub(crate) use import::resume as resume_import;
+mod inspect;
+mod ranges;
+pub(crate) use ranges::{WebIndexCache, WebRanges, read_film_range};
+mod upload;
+pub(crate) use upload::upload_host_film;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::Hash;
 use std::ops::Bound::{self, Excluded, Unbounded};
 use std::sync::Arc;
 
-use axum::body::{Body, Bytes};
+use axum::body::Bytes;
 use axum::extract::rejection::BytesRejection;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use futures_util::StreamExt;
 use live_proto::game::{self, Winner};
 use live_proto::sign::{parse_time, random_id};
 use live_proto::{Author, ErrorCode, Page, Xuid, lxm};
@@ -19,26 +26,25 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::app::{ApiError, Live, forbidden, invalid, not_found};
-use crate::host_identity::{TELEMETRY_INGEST, lease_id};
 use crate::http::{bearer, body_bytes, game_id, json, paging};
 use crate::model::{Game, State as Model};
 use crate::sessions::Viewer;
 use crate::store::RecordedEvent;
 
 pub(crate) const STREAM: &str = "theater";
+pub(crate) const IMPORT_PREFIX: &str = "film-import-";
+pub(crate) fn import_stream(game: &str) -> String {
+    format!("{IMPORT_PREFIX}{game}")
+}
 const SAVED: &str = "FilmSaved";
 const UNSAVED: &str = "FilmUnsaved";
 const CLIP_CREATED: &str = "ClipCreated";
 const CLIP_DELETED: &str = "ClipDeleted";
 const HOST_FILM_STORED: &str = "HostFilmStored";
-pub(crate) const KINDS: [&str; 5] = [SAVED, UNSAVED, CLIP_CREATED, CLIP_DELETED, HOST_FILM_STORED];
+pub(crate) const KINDS: [&str; 7] = [SAVED, UNSAVED, CLIP_CREATED, CLIP_DELETED, HOST_FILM_STORED, import::STARTED, import::ADVANCED];
 pub(crate) const HOST_FILM_PREFIX: &str = "films/";
-// Mirrors the film writer's upload cap. The server does not decode exact films.
-const MAX_HOST_FILM: u64 = 64 << 20;
 
-const TICKS_PER_SECOND: u64 = 30;
-const MIN_CLIP_TICKS: u64 = 30 * TICKS_PER_SECOND;
-const MAX_CLIP_TICKS: u64 = 300 * TICKS_PER_SECOND;
+const LEGACY_TICKS_PER_SECOND: u16 = 30;
 const MAX_TITLE_CHARS: usize = 60;
 const DAILY_CLIPS: usize = 20;
 const DAY_MS: i64 = 86_400_000;
@@ -69,9 +75,16 @@ pub(crate) struct Clip {
     created_ms: i64,
 }
 
+fn film_tick_rate(game: &Game) -> u16 {
+    game.film_web_ranges.as_ref()
+        .and_then(|ranges| ranges.ticks_per_second)
+        .filter(|&rate| rate > 0)
+        .unwrap_or(LEGACY_TICKS_PER_SECOND)
+}
+
 impl Clip {
-    pub(crate) fn duration_s(&self) -> u64 {
-        self.to_tick.saturating_sub(self.from_tick) / TICKS_PER_SECOND
+    pub(crate) fn duration_s(&self, game: &Game) -> u64 {
+        self.to_tick.saturating_sub(self.from_tick) / u64::from(film_tick_rate(game))
     }
 }
 
@@ -84,8 +97,33 @@ struct ClipRequest {
     camera: Option<String>,
 }
 
+/// Concurrent live hosts only wait for a finalising film of their own game.
+/// The durable import-stream version arbitrates separate server processes.
+#[derive(Default)]
+pub(crate) struct HostGameWrites {
+    games: std::sync::Mutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>,
+}
+
+impl HostGameWrites {
+    pub(crate) async fn lock(&self, id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = {
+            let mut games = self.games.lock().expect("host event locks");
+            if let Some(lock) = games.get(id).and_then(std::sync::Weak::upgrade) {
+                lock
+            } else {
+                games.retain(|_, lock| lock.strong_count() != 0);
+                let lock = Arc::new(tokio::sync::Mutex::new(()));
+                games.insert(id.into(), Arc::downgrade(&lock));
+                lock
+            }
+        };
+        lock.lock_owned().await
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct Films {
+    pub(crate) imports: HashMap<String, import::Pending>,
     next_version: u64,
     // By player, then by game start position (the same order as recent).
     saved: HashMap<Xuid, BTreeMap<u64, String>>,
@@ -148,13 +186,37 @@ fn remove_position<K: Eq + Hash>(index: &mut HashMap<K, BTreeSet<u64>>, key: &K,
 
 pub(crate) fn project(model: &mut Model, event: &RecordedEvent) {
     let films = &mut model.films;
-    films.next_version = event.version + 1;
+    if event.body.stream == STREAM {
+        films.next_version = event.version + 1;
+    }
     match event.body.kind.as_str() {
+        import::STARTED => {
+            if let Ok(p) = serde_json::from_value::<import::Pending>(event.body.data.clone())
+                && let Some(id) = p.receipt["game"].as_str()
+            {
+                films.imports.insert(id.to_owned(), p);
+            }
+        }
+        import::ADVANCED => {
+            if let Some(id) = event.body.data["game"].as_str()
+                && let Some(p) = films.imports.get_mut(id)
+                && event.body.data["page"].as_u64() == Some(p.next as u64)
+            {
+                p.skip = p.skip.saturating_sub(p.page_count());
+                p.next += 1;
+            }
+        }
         HOST_FILM_STORED => {
             if let Some(id) = event.body.data["game"].as_str()
                 && let Some(game) = model.games.get_mut(id)
             {
+                films.imports.remove(id);
                 game.has_host_film = true;
+                game.film_blob = event.body.data["blob"].as_str().map(str::to_owned);
+                game.film_web_ranges = event.body.data.get("web_ranges")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok());
+                game.film_summary = event.body.data.get("summary")
+                    .and_then(|s| serde_json::from_value(s.clone()).ok());
             }
         }
         SAVED | UNSAVED => {
@@ -200,16 +262,20 @@ struct Film<'a> {
     variant: Option<&'a str>,
     started_at: &'a str,
     duration_s: Option<u64>,
+    ticks_per_second: u16,
     result: Option<&'static str>,
     has_host_film: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<&'a live_proto::film::Summary>,
 }
 
 impl<'a> Film<'a> {
     fn new(game: &'a Game, player: Xuid) -> Self {
         let start = &game.started.game;
+        let ticks_per_second = film_tick_rate(game);
         let duration_s = game.ended.as_ref().and_then(|(end, at)| {
             if let Some(tick) = start.tick {
-                return Some(end.tick.saturating_sub(tick) / TICKS_PER_SECOND);
+                return Some(end.tick.saturating_sub(tick) / u64::from(ticks_per_second));
             }
             if end.reason == "lost" {
                 return Some(0);
@@ -225,8 +291,10 @@ impl<'a> Film<'a> {
             variant: start.variant.as_deref(),
             started_at: &game.started_at,
             duration_s,
+            ticks_per_second,
             result: game_result(game, player),
             has_host_film: game.has_host_film,
+            summary: game.film_summary.as_ref(),
         }
     }
 }
@@ -409,84 +477,6 @@ pub(crate) fn host_film_key(id: &str) -> String {
     format!("{HOST_FILM_PREFIX}{id}.h2film")
 }
 
-fn host_film_too_large() -> ApiError {
-    ApiError::new(ErrorCode::TooLarge, "a host film is at most 64 MiB")
-}
-
-pub(crate) async fn upload_host_film(
-    State(live): Shared,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-    body: Body,
-) -> ApiResult<StatusCode> {
-    let lease = live.verify_host_token(bearer(&headers), TELEMETRY_INGEST)?;
-    game_id(&id)?;
-    let film_version = || {
-        let model = live.model.read();
-        let game = model.games.get(&id).ok_or_else(|| not_found("no such game"))?;
-        if lease_id(&game.started.host) != Some(lease.as_str()) {
-            return Err(forbidden("the game belongs to another host"));
-        }
-        // Uploads can arrive after lease teardown. The persisted game owner
-        // and the token expiry still enforce the original lease binding.
-        Ok((!game.has_host_film).then_some(model.films.next_version))
-    };
-    if headers
-        .get(header::CONTENT_LENGTH)
-        .and_then(|v| v.to_str().ok()?.parse::<u64>().ok())
-        .is_some_and(|size| size > MAX_HOST_FILM)
-    {
-        return Err(host_film_too_large());
-    }
-    film_version()?;
-
-    let store = live
-        .blobs()
-        .ok_or_else(|| ApiError::new(ErrorCode::Unavailable, "the film store is unavailable"))?;
-    let key = host_film_key(&id);
-    let blob_error = |error| {
-        eprintln!("live: film: {key}: {error}");
-        ApiError::new(ErrorCode::Unavailable, "the film store cannot write")
-    };
-    let meta = crate::blobs::Meta {
-        content_type: Some("application/octet-stream".into()),
-        ..Default::default()
-    };
-    let mut writer = Some(store.private.writer(&key, &meta).map_err(blob_error)?);
-    let result = async {
-        let out = writer.as_mut().expect("upload is open");
-        let mut data = body.into_data_stream();
-        while let Some(chunk) = data.next().await {
-            let chunk = chunk.map_err(|_| invalid("the film upload was cut off"))?;
-            if out.size().saturating_add(chunk.len() as u64) > MAX_HOST_FILM {
-                return Err(host_film_too_large());
-            }
-            out.write(&chunk).await.map_err(blob_error)?;
-        }
-        if out.size() == 0 {
-            return Err(invalid("empty host film"));
-        }
-
-        let _guard = live.film_writes.lock().await;
-        if let Some(version) = film_version()? {
-            writer
-                .take()
-                .expect("upload is open")
-                .finish()
-                .await
-                .map_err(blob_error)?;
-            live.append_film(version, HOST_FILM_STORED, json!({"game": id}))
-                .await?;
-        }
-        Ok(StatusCode::NO_CONTENT)
-    }
-    .await;
-    if let Some(out) = writer {
-        out.abort().await;
-    }
-    result
-}
-
 pub(crate) async fn save(
     State(live): Shared,
     headers: HeaderMap,
@@ -554,9 +544,6 @@ pub(crate) async fn create_clip(
         serde_json::from_slice(&body_bytes(body)?).map_err(|e| invalid(format!("clip: {e}")))?;
     let title = clip_title(&body.title)?;
     let duration = body.to_tick.saturating_sub(body.from_tick);
-    if !(MIN_CLIP_TICKS..=MAX_CLIP_TICKS).contains(&duration) {
-        return Err(invalid("a clip must be 30 seconds to 5 minutes long"));
-    }
     if body.to_tick > (1_u64 << 53) - 1 {
         return Err(invalid("clip ticks must be safe JSON integers"));
     }
@@ -570,7 +557,11 @@ pub(crate) async fn create_clip(
     let created_ms = (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64;
     let version = {
         let model = live.model.read();
-        visible_game(&model, &id, viewer).ok_or_else(|| not_found("no such game"))?;
+        let game = visible_game(&model, &id, viewer).ok_or_else(|| not_found("no such game"))?;
+        let rate = u64::from(film_tick_rate(game));
+        if !(30 * rate..=300 * rate).contains(&duration) {
+            return Err(invalid("a clip must be 30 seconds to 5 minutes long"));
+        }
         let day = created_ms.div_euclid(DAY_MS);
         if model
             .films

@@ -378,6 +378,28 @@ fn string(m: &Guest, p: u32) -> Parsed<String> {
     }
     Err(ParseError::Status(STAT_BAD_REQUEST))
 }
+/// A film may fill only the type/value words of the buffers supplied to
+/// XOnlineStatReadGetResult. The XUID/leaderboard specs are inputs.
+pub(crate) fn film_output(m: &Guest, a: &[u32], address: u32, len: usize) -> bool {
+    if len != 12 || a[1] > MAX_READ_SPECS {
+        return false;
+    }
+    (0..a[1]).any(|i| {
+        let Some(spec) = a[2].checked_add(i * SPEC_SIZE) else {
+            return false;
+        };
+        let Some(last) = spec.checked_add(20) else {
+            return false;
+        };
+        let (Ok(count), Ok(base)) = (m.u32(last - 4), m.u32(last)) else {
+            return false;
+        };
+        count <= MAX_STATS
+            && address
+                .checked_sub(base)
+                .is_some_and(|n| n % STAT_SIZE == 4 && n / STAT_SIZE < count)
+    })
+}
 fn read_specs(m: &Guest, p: u32, count: u32) -> Parsed<Vec<ReadSpec>> {
     if count > MAX_READ_SPECS {
         return Err(ParseError::Status(STAT_TOO_MANY_SPECS));

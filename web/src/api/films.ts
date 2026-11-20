@@ -6,11 +6,15 @@ import { issueToken } from "../admin/token";
 import type { LocalAccount } from "../state/account";
 import type { TickRange } from "../state/replay";
 import { getJson, requireOk, type Page, type Reader } from "./http";
+import type { HostFilmSummary } from "./host-film";
 import type { Xuid } from "./types";
 
 export type FilmKind = "recent" | "saved";
 
 export interface FilmSummary {
+  has_host_film?: boolean;
+  ticks_per_second?: number | null;
+  summary?: HostFilmSummary | null;
   game_id: string;
   map: string;
   mode: string;

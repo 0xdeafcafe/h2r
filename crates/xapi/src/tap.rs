@@ -31,6 +31,18 @@ pub trait InputTap: Send {
     /// is written to the guest's `XINPUT_STATE`.
     fn read(&mut self, handle: u32, status: &mut u32, packet: &mut [u8; PACKET]);
 
+    /// Pump the four controller ports. A film replays device arrivals and
+    /// removals here, including a replacement on the same port between reads.
+    fn sync(&mut self, input: &mut input::InputManager) {
+        input.sync();
+    }
+
+    /// Restore any devices supplied by the tap before XAPI reopens its
+    /// saved handles. Ordinary read logs only need to seek their cursor.
+    fn restore_input(&mut self, cursor: u64, _input: &mut input::InputManager) -> Result<(), String> {
+        self.seek(cursor)
+    }
+
     /// The guest opened `handle` on controller `port` (`XInputOpen`), so a
     /// tap that acts per player knows which port a read is for.
     fn opened(&mut self, _handle: u32, _port: u32) {}

@@ -132,11 +132,11 @@ function Library(props: { player: string; api: string; tab: Tab; select: (id: st
               <ul class="film-library">
                 <For each={items()}>{({ film, clip }) => {
                   const mapId = () => live.state.games[film.game_id]?.map_id;
-                  const card = createMemo(() => filmCard(film, gameMapTitle({ map: film.map, map_id: mapId() }), clip));
+                  const card = createMemo(() => filmCard(film, gameMapTitle({ map: film.summary?.level || film.map, map_id: mapId() }), clip));
                   return (
                     <li class="film-card">
                       <A href={card().href} class="film-card-link">
-                        <MapPicture map={film.map} mapId={mapId()} class="film-card-image" fallback={<span class="film-card-image film-card-image--empty" aria-hidden="true">{card().mapName}</span>} />
+                        <MapPicture map={film.summary?.level || film.map} mapId={mapId()} class="film-card-image" fallback={<span class="film-card-image film-card-image--empty" aria-hidden="true">{card().mapName}</span>} />
                         <div class="film-card-body">
                           <strong>{card().title}</strong>
                           <span>{card().gameType}{clip ? ` on ${card().mapName}` : ""}</span>

@@ -35,12 +35,20 @@ pub struct Installed {
 pub trait DeviceSnapshot: Send + Sync {
     /// What keeps the device from being saved now.
     fn blockers(&self) -> Vec<String>;
+    /// Pending device operations which prevent an isolated film restore.
+    fn film_load_blockers(&self) -> Vec<String> {
+        self.blockers()
+    }
     /// The `d3d` section. Writes guest memory (render targets written
     /// back), so it runs before guest RAM is saved.
     fn save(&self, rt: &runtime::Runtime, out: &mut snapshot::SnapshotWriter)
     -> Result<(), String>;
     /// After guest RAM is loaded.
     fn load(&self, snapshot: &snapshot::Snapshot<'_>) -> Result<(), String>;
+    /// Recreate host resources from a cold film keyframe after guest RAM loads.
+    fn load_film(&self, _rt: &runtime::Runtime, snapshot: &snapshot::Snapshot<'_>) -> Result<(), String> {
+        self.load(snapshot)
+    }
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> DeviceSnapshot for Mutex<d3d::Device<B>> {
@@ -48,6 +56,9 @@ impl<B: d3d::backend::Backend + Send + 'static> DeviceSnapshot for Mutex<d3d::De
         self.lock()
             .unwrap_or_else(|e| e.into_inner())
             .snapshot_blockers()
+    }
+    fn film_load_blockers(&self) -> Vec<String> {
+        self.lock().unwrap_or_else(|e| e.into_inner()).film_load_blockers()
     }
     fn save(
         &self,
@@ -64,6 +75,12 @@ impl<B: d3d::backend::Backend + Send + 'static> DeviceSnapshot for Mutex<d3d::De
     fn load(&self, snapshot: &snapshot::Snapshot<'_>) -> Result<(), String> {
         let mut device = self.lock().unwrap_or_else(|e| e.into_inner());
         device.load_snapshot(snapshot).map_err(|e| e.to_string())
+    }
+    fn load_film(&self, rt: &runtime::Runtime, snapshot: &snapshot::Snapshot<'_>) -> Result<(), String> {
+        let mut device = self.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guest = rt.memory();
+        device.load_film_snapshot(snapshot, &d3d::runtime_glue::GuestAdapter::new(&mut guest))
+            .map_err(|e| e.to_string())
     }
 }
 

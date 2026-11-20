@@ -69,6 +69,8 @@ pub(crate) struct HostEnv {
     h2_token: String,
     h2_data_url: String,
     h2_data_sha: String,
+    #[serde(default)]
+    h2_host_archive: live_proto::hosts::HostArchive,
     #[serde(skip_serializing_if = "Option::is_none")]
     h2_region: Option<String>,
     h2_agent: String,
@@ -84,6 +86,7 @@ impl HostEnv {
             h2_token: boot.token.clone(),
             h2_data_url: boot.data_url.clone(),
             h2_data_sha: boot.data_sha256.clone(),
+            h2_host_archive: boot.archive,
             h2_region: lease.region.clone(),
             // Port 31100 is reserved for the WebSocket tunnel. The diagnostic
             // agent is private even inside the container network.

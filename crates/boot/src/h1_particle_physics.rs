@@ -40,6 +40,7 @@ impl Feature for H1ParticlePhysics {
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         use feature::points::{EFFECT_STEP_EMITTERS, PARTICLE_INITIALISE, PARTICLE_MOVEMENT_STAGE};
+        b.snapshot(feature::SnapshotPolicy::Stateless);
         b.raw().after(
             &PARTICLE_INITIALISE,
             "apply Halo 1 particle birth velocity",

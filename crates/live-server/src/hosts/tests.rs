@@ -81,6 +81,7 @@ fn config(max_hosts: usize) -> HostConfig {
         live_url: "https://live.test".into(),
         data_url: "https://private.test/bundle?signature=secret".into(),
         data_sha256: "ab".repeat(32),
+        archive: "dual".into(),
     }
 }
 
@@ -521,6 +522,8 @@ async fn only_lease_identity_may_register_or_report_and_only_roster_or_admin_may
 #[test]
 fn max_hosts_defaults_to_four_and_zero_disables_launches() {
     assert_eq!(HostConfig::from_env(&|_| None).max_hosts, 4);
+    assert_eq!(HostConfig::from_env(&|_| None).archive, "dual");
+    assert_eq!(HostConfig::from_env(&|k| (k == "LIVE_HOST_ARCHIVE").then(|| "film".into())).archive, "film");
     assert_eq!(
         HostConfig::from_env(&|k| (k == "LIVE_MAX_HOSTS").then(|| "0".into())).max_hosts,
         0

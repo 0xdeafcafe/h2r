@@ -7,7 +7,7 @@ use serde::Deserialize;
 
 use crate::{LiveConfig, account_setup};
 
-const MAX_REPLY: u64 = 64 * 1024;
+const MAX_REPLY: u64 = 25 * (live_proto::film::MAX_SUMMARY_BYTES as u64 + 4096);
 
 #[derive(Debug, Deserialize)]
 pub struct RecentFilm {
@@ -18,6 +18,9 @@ pub struct RecentFilm {
     pub started_at: String,
     pub duration_s: Option<u64>,
     pub result: Option<String>,
+    #[serde(default)]
+    pub has_host_film: bool,
+    pub summary: Option<live_proto::film::Summary>,
 }
 
 /// Read the account handed to the game by the launcher, as telemetry does.
@@ -129,5 +132,7 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].game_id, "archived-game");
         assert_eq!(rows[0].map, "h1_bloodgulch");
+        assert!(!rows[0].has_host_film);
+        assert!(rows[0].summary.is_none());
     }
 }

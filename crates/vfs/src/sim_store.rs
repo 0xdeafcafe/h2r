@@ -754,6 +754,21 @@ impl<B: Backend> Backend for SimStoreBackend<B> {
         }
         self.inner.host_file(path)
     }
+    fn map_ranges(&mut self, path: &str) -> Option<Vec<(u64, u64)>> {
+        if let Some(key) = self.ensure(path)
+            && let Some(Held::Store(store)) = self.stores.get(&key)
+        {
+            return Some(
+                store
+                    .index
+                    .ranges
+                    .iter()
+                    .map(|r| (r.logical, r.len))
+                    .collect(),
+            );
+        }
+        self.inner.map_ranges(path)
+    }
     /// Stores serve the retail map, whose identity is the disc's.
     fn map_id(&mut self, path: &str) -> Option<content::MapId> {
         self.inner.map_id(path)

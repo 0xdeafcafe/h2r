@@ -82,14 +82,31 @@ pub struct Core {
 
 /// Registers everything from the telemetry hooks to the touch glue.
 pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> anyhow::Result<Core> {
+    register_core_film(features, i, None)
+}
+
+pub(crate) fn register_core_film(
+    features: &mut feature::Registry,
+    i: CoreInputs<'_>,
+    film: Option<Arc<crate::theater::Session>>,
+) -> anyhow::Result<Core> {
     let rt: &Runtime = i.rt;
-    let telemetry = i
-        .telemetry
-        .and_then(|config| telemetry::install(features, &config))
-        .unwrap_or_else(|error| {
+    let observer = film.as_ref().and_then(|f| f.film_observer());
+    let recording = observer.is_some();
+    let config = i.telemetry.unwrap_or_else(|error| {
+        eprintln!("live telemetry transport disabled: {error}");
+        telemetry::TelemetryConfig::default()
+    });
+    let telemetry = match telemetry::install_film(features, &config, observer) {
+        Ok(Some(t)) => Some(t),
+        Ok(None) if recording => anyhow::bail!("film recording requires the telemetry observer"),
+        Ok(None) => None,
+        Err(error) if recording => anyhow::bail!("installing the film observer: {error}"),
+        Err(error) => {
             eprintln!("live telemetry disabled: {error}");
             None
-        });
+        }
+    };
     if let Some(vfs) = i.vfs.clone() {
         features
             .add(&map_slots::MapSlots { vfs })
@@ -240,7 +257,7 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
         crate::clanker_card::install(features, i.live.clone())
             .context("installing Clanker player options")?;
         bot_glue::add_from_env(i.data_root, i.settings.as_deref());
-        bots_on = bot_glue::install(features, i.data_root).context("installing the bots")?;
+        bots_on = bot_glue::install_film(features, i.data_root, film).context("installing the bots")?;
         // The Clankers page and its Game Setup row (stage 7).
         if let Some(store) = i.settings.as_ref() {
             clankers::install(features, store, i.live.clone(), telemetry.as_ref()).context("installing the Clankers page")?;
@@ -259,6 +276,8 @@ pub enum AgentSource {
     None,
     /// An agent with no socket, for the debug menu.
     Local,
+    /// Full tick and input observers for film capture, without a listener.
+    Recording,
     /// H2_AGENT=<socket or host:port>.
     Socket(PathBuf),
 }
@@ -333,6 +352,9 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
             features, path, xa, input_replay, i.allow_bot_add,
         )?),
         // The debug menu talks to an agent: a local one, with no socket.
+        AgentSource::Recording => Some(agent_glue::AgentGlue::with_endpoint(
+            features, None, xa, input_replay, i.allow_bot_add,
+        )?),
         AgentSource::Local => Some(agent_glue::AgentGlue::local()),
         AgentSource::None => None,
     };
@@ -509,7 +531,8 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     // (docs/live/live-coop.md section 9). Added last, so it can see every
     // override placed outside the plan and refuse instead of failing it.
     let probe_on = i.coop_probe.is_some();
-    coop_probe::install(i.rt, features, i.coop_probe, i.disc, i.data_root)?;
+    let taped = i.live.as_ref().is_some_and(|hle| hle.film_service_taped());
+    coop_probe::install_film(i.rt, features, i.coop_probe, i.disc, i.data_root, taped)?;
     // Co-op over Live (docs/live/live-coop.md, "Co-op over Live (built)"):
     // the Xbox Live menu's Co-op Campaign row and screens, and the probe's
     // hooks armed only for a co-op session. With H2_COOP_PROBE on, the
@@ -518,7 +541,7 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
         let arm = if probe_on {
             None
         } else {
-            coop_probe::install_live(i.rt, features, i.data_root)?
+            coop_probe::install_live_film(i.rt, features, i.data_root, taped)?
         };
         if let Some(arm) = &arm {
             crate::coop_look::install(

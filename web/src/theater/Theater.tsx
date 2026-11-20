@@ -6,7 +6,6 @@ import { GEOMETRY_CHANGED_NOTE } from "../lib/maps";
 import { colourFor, rosterFor } from "../lib/game";
 import { clock } from "../lib/format";
 import { STATS_ROOT, statsPath, theaterHref } from "../routes";
-import { TICKS_PER_SECOND } from "../state/frames";
 import { identity } from "../state/identity";
 import { live } from "../state/live";
 import { gameMapTitle, geometryChanged } from "../state/maps";
@@ -125,7 +124,7 @@ function Film(props: { game: GameState; clip?: Clip }) {
   const partialClip = () => {
     const range = session.range?.();
     const clip = props.clip;
-    return range && clip && (range.from_tick !== clip.from_tick || range.to_tick !== clip.to_tick);
+    return range && clip && (session.clipTick(range.from_tick) !== clip.from_tick || session.clipTick(range.to_tick) !== clip.to_tick);
   };
   const title = () => isCampaign(props.game) ? gameMapTitle(props.game) : `${gameTitle(props.game)} on ${gameMapTitle(props.game)}`;
   const author = () => props.clip ? live.state.accounts[props.clip.by.toLowerCase()]?.gamertag : undefined;
@@ -175,7 +174,7 @@ function Film(props: { game: GameState; clip?: Clip }) {
         <Transport session={session} matchStartTick={props.game.start_tick} selection={editing() ? marks() : undefined}
           killColour={(index) => index === null ? undefined : colourFor(props.game, props.game.players[index]?.team ?? 0, index)} />
         <Show when={editing() && identity.me()}>
-          <ClipEditor game={props.game.game_id} bounds={bounds()} tick={session.tick} marks={marks()} setMarks={setMarks} view={clipView} close={closeEditor} />
+          <ClipEditor game={props.game.game_id} bounds={bounds()} tick={session.tick} clipTick={session.clipTick} hz={recording()!.ticksPerSecond} marks={marks()} setMarks={setMarks} view={clipView} close={closeEditor} />
         </Show>
       </Show>
     </>
@@ -203,7 +202,7 @@ function Film(props: { game: GameState; clip?: Clip }) {
             </div>
           )}</Show>
           <Show when={director.selection().mode === "eyes"}><span class="theater-reticle" aria-hidden="true" /></Show>
-          <time>{clock((session.tick() - (session.range?.()?.from_tick ?? recording()!.startTick)) / TICKS_PER_SECOND)}</time>
+          <time>{clock((session.tick() - (session.range?.()?.from_tick ?? recording()!.startTick)) / recording()!.ticksPerSecond)}</time>
         </div>
       </Show>
     );

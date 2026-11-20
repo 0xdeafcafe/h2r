@@ -241,6 +241,13 @@ impl<B: Backend> Backend for CampaignMapsBackend<B> {
     fn volume_info(&mut self) -> Result<VolumeInfo> {
         self.inner.volume_info()
     }
+    fn map_ranges(&mut self, path: &str) -> Option<Vec<(u64, u64)>> {
+        if self.ours(path).is_some() {
+            None
+        } else {
+            self.inner.map_ranges(path)
+        }
+    }
     /// A campaign map is a user map, identified by its whole file.
     fn map_id(&mut self, path: &str) -> Option<content::MapId> {
         let host = {

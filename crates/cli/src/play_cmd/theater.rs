@@ -19,7 +19,17 @@ impl Library for FilmLibrary {
         let entries = self.0.list().map_err(|e| e.to_string())?;
         Ok(entries
             .into_iter()
-            .map(|entry| film_meta(entry.meta, entry.saved, stamp, entry.lease_id))
+            .map(|entry| {
+                let compatible = entry.version >= 2 && boot::theater::image_match(
+                    entry.version, &entry.meta.image_stamp, &entry.runtime_stamp,
+                    entry.guest_image.as_ref(), stamp, &entry.xbe_sha256,
+                ).is_ok();
+                let mut row = film_meta(entry.meta, entry.saved, stamp, entry.game_id);
+                if entry.version >= 2 {
+                    row.playable_here = compatible;
+                }
+                row
+            })
             .collect())
     }
 
@@ -40,7 +50,7 @@ pub(crate) fn film_meta(
     meta: film::FilmMeta,
     saved: bool,
     stamp: &str,
-    lease_id: Option<String>,
+    game_id: Option<String>,
 ) -> FilmMeta {
     let host_film = meta.source == film::Source::Host;
     let playable_here = host_film && meta.playable_here(stamp);
@@ -69,7 +79,7 @@ pub(crate) fn film_meta(
         saved,
         result: None,
         host: None,
-        web_game_id: lease_id.filter(|_| host_film),
+        web_game_id: game_id.filter(|_| host_film),
     }
 }
 

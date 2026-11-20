@@ -1,3 +1,6 @@
+mod film;
+pub use film::{FilmSceneReader, film_scene};
+
 use live_proto::game::{Player, TeamScore};
 use runtime::{Guest, GuestFault};
 
@@ -782,28 +785,41 @@ fn clear(world: &mut World) {
     world.items.clear();
 }
 
-fn scan(guest: &Guest, buffers: &mut ScanBuffers, out: &mut World) -> ReadResult<()> {
+/// Fetch the allocated object headers once while the simulation is stopped.
+fn object_headers(guest: &Guest, headers: &mut Vec<u8>) -> ReadResult<()> {
     let array = ptr(guest, layout::OBJECTS_PTR)?;
     let high_water = guest
         .u32(array + layout::DATUM_HIGH_WATER)?
         .min(layout::OBJECT_CAPACITY);
     let data = ptr(guest, array + layout::DATUM_DATA)?;
+    headers.resize((high_water * layout::OBJECT_HEADER_SIZE) as usize, 0);
+    guest.read_bytes(data, headers, 1)
+}
+
+/// Allocated salted datum, header type and body pointer in slot order.
+/// A missing body in an allocated slot is distinguishable from a free slot.
+fn object_rows(headers: &[u8]) -> impl Iterator<Item = (u32, u8, u32)> + '_ {
+    const HEADER: usize = layout::OBJECT_HEADER_SIZE as usize;
+    headers
+        .as_chunks::<HEADER>()
+        .0
+        .iter()
+        .enumerate()
+        .filter_map(|(slot, header)| {
+            let salt = u16::from_le_bytes([header[0], header[1]]);
+            let at = layout::OBJECT_BODY as usize;
+            let body = u32::from_le_bytes(header[at..at + 4].try_into().unwrap());
+            let datum = (u32::from(salt) << 16) | slot as u32;
+            (salt != 0).then_some((datum, header[layout::OBJECT_TYPE as usize], body))
+        })
+}
+
+fn scan(guest: &Guest, buffers: &mut ScanBuffers, out: &mut World) -> ReadResult<()> {
     let ScanBuffers { headers, ridden } = buffers;
     let objects = Objects::new(guest);
-    headers.clear();
-    headers.resize((high_water * layout::OBJECT_HEADER_SIZE) as usize, 0);
-    guest.read_bytes(data, headers, 1)?;
+    object_headers(guest, headers)?;
     ridden.clear();
-    const HEADER: usize = layout::OBJECT_HEADER_SIZE as usize;
-    for (slot, header) in headers.as_chunks::<HEADER>().0.iter().enumerate() {
-        let salt = u16::from_le_bytes([header[0], header[1]]);
-        let at = layout::OBJECT_BODY as usize;
-        let body = u32::from_le_bytes(header[at..at + 4].try_into().unwrap());
-        let kind = header[layout::OBJECT_TYPE as usize];
-        if salt == 0 || body == 0 {
-            continue;
-        }
-        let datum = (u32::from(salt) << 16) | slot as u32;
+    for (datum, kind, body) in object_rows(headers).filter(|&(_, _, body)| body != 0) {
         // Not from a placement or a spawn, and no parent: loose.
         let mut loose = false;
         if let Some(kind) = placed_kind(kind) {
@@ -1011,30 +1027,19 @@ pub struct ThingState {
 /// API's object kinds the telemetry scan does not follow (scenery, items
 /// on the ground, device controls, crates).
 pub fn things(guest: &Guest, wanted: impl Fn(u8) -> bool) -> ReadResult<Vec<ThingState>> {
-    let array = ptr(guest, layout::OBJECTS_PTR)?;
-    let high_water = guest
-        .u32(array + layout::DATUM_HIGH_WATER)?
-        .min(layout::OBJECT_CAPACITY);
-    let data = ptr(guest, array + layout::DATUM_DATA)?;
-    let mut headers = vec![0u8; (high_water * layout::OBJECT_HEADER_SIZE) as usize];
-    guest.read_bytes(data, &mut headers, 1)?;
-    const HEADER: usize = layout::OBJECT_HEADER_SIZE as usize;
+    let mut headers = Vec::new();
+    object_headers(guest, &mut headers)?;
     let mut out = Vec::new();
-    for (slot, header) in headers.as_chunks::<HEADER>().0.iter().enumerate() {
-        let salt = u16::from_le_bytes([header[0], header[1]]);
-        let at = layout::OBJECT_BODY as usize;
-        let body = u32::from_le_bytes(header[at..at + 4].try_into().unwrap());
-        let object_type = header[layout::OBJECT_TYPE as usize];
-        if salt == 0 || body == 0 || !wanted(object_type) {
-            continue;
-        }
+    for (datum, object_type, body) in
+        object_rows(&headers).filter(|&(_, kind, body)| body != 0 && wanted(kind))
+    {
         let read = || -> ReadResult<ThingState> {
             let (definition, [pos, forward, up]) = transform(guest, body)?;
             let parent = Some(guest.u32(body + layout::BODY_PARENT)?).filter(|p| *p != u32::MAX);
             let placement =
                 Some(guest.u16(body + layout::BODY_PLACEMENT_INDEX)?).filter(|p| (*p as i16) >= 0);
             Ok(ThingState {
-                datum: (u32::from(salt) << 16) | slot as u32,
+                datum,
                 object_type,
                 definition,
                 parent,

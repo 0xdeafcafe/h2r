@@ -403,7 +403,12 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         .route("/v1/games/{id}/chunks", get(game_chunks))
         .route("/v1/games/{id}/chunks/{tick}", get(game_chunk))
         .route("/v1/games/{id}/events", post(game_events))
-        .route("/v1/games/{id}/film", post(crate::films::upload_host_film))
+        .route(
+            "/v1/games/{id}/film",
+            get(crate::films::read_film_range)
+                .post(crate::films::upload_host_film)
+                .put(crate::films::upload_host_film),
+        )
         .route("/v1/local/signin", any(crate::local_signin::redeem))
         .route(
             "/v1/{*rest}",
@@ -646,7 +651,7 @@ async fn cors(req: Request, next: Next) -> Response {
             );
             h.insert(
                 header::ACCESS_CONTROL_ALLOW_HEADERS,
-                HeaderValue::from_static("authorization, if-none-match"),
+                HeaderValue::from_static("authorization, if-none-match, range"),
             );
             h.insert(
                 header::ACCESS_CONTROL_MAX_AGE,
@@ -664,7 +669,7 @@ async fn cors(req: Request, next: Next) -> Response {
         );
         h.insert(
             header::ACCESS_CONTROL_EXPOSE_HEADERS,
-            HeaderValue::from_static("etag, x-next, x-position"),
+            HeaderValue::from_static("etag, x-next, x-position, content-range, accept-ranges"),
         );
     }
     resp

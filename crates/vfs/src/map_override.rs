@@ -362,6 +362,13 @@ impl<B: Backend> Backend for MapOverrideBackend<B> {
     fn volume_info(&mut self) -> Result<VolumeInfo> {
         self.inner.volume_info()
     }
+    fn map_ranges(&mut self, path: &str) -> Option<Vec<(u64, u64)>> {
+        if self.chosen(path).is_some() {
+            None
+        } else {
+            self.inner.map_ranges(path)
+        }
+    }
     /// An overridden map is a user map: the identity of a derived manifest
     /// whose one layer is the whole file, so a local edit is never taken
     /// for retail. Hashed once, on first ask.

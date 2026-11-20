@@ -8,6 +8,7 @@
 
 import * as THREE from "three";
 import { CSS2DObject } from "three/examples/jsm/renderers/CSS2DRenderer.js";
+import type { VisibleFilmEffect } from "./film-world";
 import { gameToGl } from "../map/views";
 import { grenadeColour, grenadeTrail, hitColour, type Grenade, type LiveHit } from "../map/events";
 
@@ -38,6 +39,7 @@ function markTexture(kill: boolean): THREE.Texture {
 }
 
 export class Effects3D {
+  private sparks: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>[] = [];
   private hits = new Map<number, HitObj>();
   private spareHits: HitObj[] = [];
   private nades = new Map<number, NadeObj>();
@@ -50,6 +52,53 @@ export class Effects3D {
   private b = new THREE.Vector3();
 
   constructor(private scene: THREE.Scene, private camera: THREE.Camera) {}
+
+  /** Damage-report origins and the final observed segment of a projectile.
+   * Deletion alone draws no explosion. Age is measured on the film clock,
+   * so these effects freeze, rewind and resume with the simulation. */
+  film(events: readonly VisibleFilmEffect[], still: boolean) {
+    let used = 0, changed = false;
+    for (const e of events) {
+      if (e.kind === "barrel") continue;
+      let mark = this.sparks[used++];
+      if (!mark) {
+        const mat = new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
+        mark = new THREE.Mesh(this.geoBall, mat);
+        mark.renderOrder = 3;
+        this.scene.add(mark);
+        this.sparks.push(mark);
+      }
+      const blast = e.kind === "blast";
+      const terminal = e.kind === "terminal";
+      const life = e.age / (blast ? 12 : 4);
+      const r = blast ? .14 + (still ? .13 : life * .45) : terminal ? .017 : .04 + life * .06;
+      mark.position.set(...gameToGl(...e.pos));
+      mark.scale.setScalar(r);
+      mark.quaternion.identity();
+      if (terminal && e.direction) {
+        // Show the direction in which it arrived. Clamp the visual trail
+        // length so a high-speed shot cannot span the entire level.
+        this.a.set(...gameToGl(...e.direction));
+        const speed = this.a.length();
+        if (speed > 1e-6) {
+          const half = Math.min(.65, speed / 60);
+          this.a.divideScalar(speed);
+          mark.quaternion.setFromUnitVectors(AXIS_X, this.a);
+          mark.scale.x = Math.max(r, half);
+          mark.position.addScaledVector(this.a, -half);
+        }
+      }
+      mark.visible = true;
+      mark.material.color.setHex(blast ? 0xff932f : terminal ? 0xffe0aa : 0xffc76b);
+      mark.material.opacity = (1 - life) * (still ? .45 : .82);
+      changed = true;
+    }
+    for (let i = used; i < this.sparks.length && this.sparks[i]!.visible; i++) {
+      this.sparks[i]!.visible = false;
+      changed = true;
+    }
+    return changed;
+  }
 
   private hit(): HitObj {
     const old = this.spareHits.pop();
@@ -163,6 +212,8 @@ export class Effects3D {
   }
 
   dispose(): void {
+    for (const mark of this.sparks) { mark.removeFromParent(); mark.material.dispose(); }
+    this.sparks.length = 0;
     for (const o of [...this.hits.values(), ...this.spareHits]) { o.label.removeFromParent(); o.el.remove(); o.beamMat.dispose(); o.markMat.dispose(); }
     for (const o of [...this.nades.values(), ...this.spareNades]) { o.trail.geometry.dispose(); o.mat.dispose(); o.trailMat.dispose(); }
     this.geoBeam.dispose(); this.geoBall.dispose();

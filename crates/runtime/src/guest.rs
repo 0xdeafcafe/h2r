@@ -157,6 +157,7 @@ pub struct Guest {
     code: Vec<(u64, u64)>,
     next_id: u32,
     pub(crate) watch: crate::watch::WriteWatch,
+    hle_writes: Option<HleWrites>,
     /// Names the current mappings and permissions ([`Guest::layout_id`]).
     layout: u64,
     /// The access trap, when a research observer installed one
@@ -165,6 +166,14 @@ pub struct Guest {
     /// For a copy-on-write view ([`Guest::cow_refresh`]): the source's
     /// layout its mappings and page table were last copied under (0: none).
     cow_source_layout: u64,
+}
+
+/// Writes issued by one synchronous host ABI call under exclusive guest access.
+#[derive(Default)]
+struct HleWrites {
+    records: Vec<(u32, Vec<u8>)>,
+    remaining: usize,
+    overflow: bool,
 }
 
 /// Layout identities, unique across every [`Guest`] in the process, so a
@@ -203,6 +212,7 @@ impl Guest {
             code: Vec::new(),
             next_id: 1,
             watch: Default::default(),
+            hle_writes: None,
             layout: fresh_layout(),
             trap: None,
             cow_source_layout: 0,
@@ -1196,6 +1206,23 @@ impl Guest {
         }
         Ok(())
     }
+    /// Observe only host writes made through this guest guard. Generated CPU
+    /// stores use write_bytes_from directly. A large transaction is reported
+    /// as incomplete and leaves the original call's result intact.
+    pub fn capture_hle_writes<T>(
+        &mut self,
+        byte_limit: usize,
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> (T, Option<Vec<(u32, Vec<u8>)>>) {
+        let previous = self.hle_writes.replace(HleWrites { remaining: byte_limit, ..Default::default() });
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self)));
+        let captured = std::mem::replace(&mut self.hle_writes, previous).unwrap();
+        match result {
+            Ok(value) => (value, (!captured.overflow).then_some(captured.records)),
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
+
     /// No bytes change unless every mapping in the access is writable.
     pub fn write_bytes(
         &mut self,
@@ -1203,7 +1230,19 @@ impl Guest {
         value: &[u8],
         alignment: u32,
     ) -> Result<(), GuestFault> {
-        self.write_bytes_from(0, addr, value, alignment)
+        self.write_bytes_from(0, addr, value, alignment)?;
+        if let Some(w) = &mut self.hle_writes
+            && !value.is_empty()
+            && !w.overflow
+        {
+            if w.records.len() == 4096 || value.len() > w.remaining {
+                w.overflow = true;
+            } else {
+                w.remaining -= value.len();
+                w.records.push((addr, value.to_vec()));
+            }
+        }
+        Ok(())
     }
     /// [`write_bytes`](Self::write_bytes) for guest code at `pc` (the ABI
     /// helpers; 0 is the host): attributed to `pc` by the access trap.

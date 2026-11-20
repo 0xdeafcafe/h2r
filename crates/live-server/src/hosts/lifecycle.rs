@@ -135,6 +135,8 @@ impl Live {
             live_url,
             data_url: config.data_url,
             data_sha256: config.data_sha256,
+            archive: live_proto::hosts::HostArchive::parse(&config.archive)
+                .map_err(|_| unavailable("LIVE_HOST_ARCHIVE must be dual or film"))?,
             token: self.issue_host_token(&lease),
         };
         self.host_event(

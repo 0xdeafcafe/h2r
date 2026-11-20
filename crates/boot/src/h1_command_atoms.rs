@@ -291,6 +291,7 @@ impl feature::Feature for CommandAtoms {
             .doc("docs/halo1/ai.md")
     }
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+        b.snapshot(feature::SnapshotPolicy::Stateless);
         control::install(b);
         performance::install(b)?;
         motion::install(b)?;

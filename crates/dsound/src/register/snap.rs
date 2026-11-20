@@ -118,9 +118,6 @@ impl Hle {
     /// What refuses a save now. Empty when [`Hle::save_snapshot`] may run.
     pub fn snapshot_blockers(&self) -> Vec<String> {
         let mut why = Vec::new();
-        if self.direct_sound().clock_only() {
-            why.push("clock-only DirectSound has no sample storage for snapshots".into());
-        }
         let batches = lock(&self.outbox).len();
         if batches > 0 {
             why.push(format!("{batches} event batches not yet delivered"));
@@ -176,7 +173,7 @@ impl Hle {
         });
         let queued: Vec<StreamCallback> = lock(callbacks).iter().copied().collect();
         w.list(&queued, put_callback);
-        lock(&**ds.mixer()).save_snapshot(out)?;
+        lock(&**ds.mixer()).save_output_snapshot(out, ds.clock_only())?;
         out.section(SECTION, VERSION, Codec::Zstd, w.into_bytes())?;
         Ok(())
     }
@@ -185,9 +182,6 @@ impl Hle {
     /// (`kcore`) must already be loaded. Everything is decoded and checked,
     /// and the pins made again, before anything changes.
     pub fn load_snapshot(&self, snapshot: &Snapshot<'_>) -> Result<(), SnapshotError> {
-        if self.direct_sound().clock_only() {
-            return Err(SnapshotError::Busy(self.snapshot_blockers()));
-        }
         let batches = lock(&self.outbox).len();
         if batches > 0 {
             return Err(SnapshotError::Busy(vec![format!(
@@ -206,7 +200,7 @@ impl Hle {
         ds.check_snapshot(&saved).map_err(SnapshotError::Mismatch)?;
         let mixer = Arc::clone(ds.mixer());
         let mut mixer = lock(&*mixer);
-        let loaded = mixer.check_snapshot(snapshot)?;
+        let loaded = mixer.check_output_snapshot(snapshot, ds.clock_only())?;
         let mut adopted: HashMap<u64, Box<dyn EventRef>> = HashMap::new();
         {
             let mut events = lock(&self.events);
