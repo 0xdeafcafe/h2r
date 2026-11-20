@@ -32,21 +32,21 @@ impl Countdown {
         if name != "d40" {
             return;
         }
-        #[cfg(not(feature = "gpu"))]
-        return;
         #[cfg(feature = "gpu")]
-        let Ok((cache, _)) = crate::native_map::open(name) else {
-            return;
-        };
-        for (index, entry) in cache.strings().iter().enumerate() {
-            let Some(text) = entry.as_deref() else {
-                continue;
+        {
+            let Ok((cache, _)) = crate::native_map::open(name) else {
+                return;
             };
-            if let Some(place) = COUNTDOWN_DIGITS.iter().position(|&name| name == text)
-                && self.ids[place] == 0
-                && let Ok(id) = map::build::string_id(index, text)
-            {
-                self.ids[place] = id;
+            for (index, entry) in cache.strings().iter().enumerate() {
+                let Some(text) = entry.as_deref() else {
+                    continue;
+                };
+                if let Some(place) = COUNTDOWN_DIGITS.iter().position(|&name| name == text)
+                    && self.ids[place] == 0
+                    && let Ok(id) = map::build::string_id(index, text)
+                {
+                    self.ids[place] = id;
+                }
             }
         }
     }
