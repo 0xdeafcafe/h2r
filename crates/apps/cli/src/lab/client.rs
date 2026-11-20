@@ -566,8 +566,9 @@ fn sync(r: &Remote, branches: &[String]) -> Result<Vec<(String, String)>> {
         let (source, _) = transfer::branch_refs(branch)?;
         let commit = transfer::resolve_commit(repo, &source)?
             .with_context(|| format!("no local branch {branch}"))?;
-        let mut conn = r.connect()?;
-        let info = conn.call(json!({"cmd": "sync_bases", "branch": branch, "commit": commit}))?;
+        let info = r
+            .connect()?
+            .call(json!({"cmd": "sync_bases", "branch": branch, "commit": commit}))?;
         let mut bundle = if info["known"] == true {
             None
         } else {
@@ -582,6 +583,7 @@ fn sync(r: &Remote, branches: &[String]) -> Result<Vec<(String, String)>> {
             bytes <= proto::BUNDLE_MAX,
             "git bundle is too large for lab sync"
         );
+        let mut conn = r.connect()?;
         conn.call(json!({"cmd": "sync", "branch": branch, "commit": commit, "bytes": bytes}))?;
         if let Some(bundle) = &mut bundle {
             bundle.file.rewind()?;

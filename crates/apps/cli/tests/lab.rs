@@ -371,6 +371,25 @@ fn a_lab_host_runs_waits_stops_fetches_and_builds_branches() {
         busy.contains(&format!("busy: job {long} is running")),
         "{busy}"
     );
+    // A commit the host doesn't have can be synced while the game runs.
+    let commit = git(
+        &lab.dev,
+        &[
+            "commit-tree",
+            "HEAD^{tree}",
+            "-p",
+            "HEAD",
+            "-m",
+            "sync during a run",
+        ],
+    );
+    git(&lab.dev, &["branch", "while-running", &commit]);
+    let synced = ok(&lab.lan(&["sync", "--branch", "while-running"]));
+    assert_eq!(synced.trim(), format!("lab/while-running {commit}"));
+    assert_eq!(
+        git(&lab.repo, &["rev-parse", "refs/heads/lab/while-running"]),
+        commit
+    );
     // A short wait times out (exit 3) while it runs.
     let w = lab.local(&["wait", &long, "--timeout", "0.2"]);
     assert_eq!(w.status.code(), Some(3));

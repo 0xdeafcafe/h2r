@@ -1,8 +1,10 @@
 //! The per-user macOS LaunchAgent for the lab host (docs/runtime/lab.md).
 
+mod log;
+
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -12,7 +14,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::json;
 
-use super::{host, host::HostConfig, host_config, lan};
+use super::{host, host::HostConfig, host_config, install_config, lan};
 
 const LABEL: &str = "com.0xdeafcafe.h2recomp.lab";
 const SERVICE_ABI: &str = "h2 lab LaunchAgent 1";
@@ -206,7 +208,7 @@ pub(super) fn command(op: &str, args: &[String]) -> Result<()> {
         .context("locking the lab LaunchAgent configuration")?;
 
     match op {
-        "install" => install(&job, &ctl, &plist, host_config(args)?),
+        "install" => install(&job, &ctl, &plist, install_config(args)?),
         "uninstall" => {
             no_args(op, args)?;
             uninstall(&job, &ctl, &plist)
@@ -284,7 +286,7 @@ fn install(job: &Job, ctl: &impl Launchctl, path: &Path, mut cfg: HostConfig) ->
         }
         fs::create_dir_all(cfg.dir("logs"))?;
         if !installed || !stable_binary(&cfg).is_file() {
-            install_binary(&std::env::current_exe()?, &stable_binary(&cfg))?;
+            install_binary(&std::env::current_exe()?, &stable_binary(&cfg), None)?;
         }
         let code = lan::new_pairing(&cfg.root)?;
         if !installed {
@@ -328,15 +330,27 @@ fn uninstall(job: &Job, ctl: &impl Launchctl, plist: &Path) -> Result<()> {
         ensure!(!loaded, "{LABEL} is loaded without its plist");
         return Ok(());
     }
-    if loaded {
-        let root = installed_path(plist, "--root")?;
-        let _activity = host::activity_lock(&root)?;
-        job.bootout(ctl)?;
-        fs::remove_file(plist)?;
-    } else {
-        fs::remove_file(plist)?;
-    }
+    let root = installed_path(plist, "--root")?;
+    remove_installation(job, ctl, plist, &root, loaded)?;
     println!("Lab LaunchAgent uninstalled.");
+    Ok(())
+}
+
+fn remove_installation(
+    job: &Job,
+    ctl: &impl Launchctl,
+    plist: &Path,
+    root: &Path,
+    loaded: bool,
+) -> Result<()> {
+    let _activity = host::activity_lock(root)?;
+    lan::revoke(root)?;
+    if loaded {
+        job.bootout(ctl)?;
+    }
+    // Keeping the plist until both steps finish lets the user retry with the
+    // same root if bootout or removal fails.
+    fs::remove_file(plist)?;
     Ok(())
 }
 
@@ -368,7 +382,19 @@ pub(super) fn managed(args: &[String]) -> Result<()> {
         cfg!(target_os = "macos"),
         "the lab LaunchAgent requires macOS"
     );
-    host::serve(managed_config(args)?)
+    let cfg = managed_config(args)?;
+    let stdout = log::redirect(libc::STDOUT_FILENO, cfg.dir(OUT_LOG))?;
+    let stderr = log::redirect(libc::STDERR_FILENO, cfg.dir(ERR_LOG))?;
+    let outcome = host::serve(cfg);
+    if let Err(error) = &outcome {
+        eprintln!("lab: {error:#}");
+    }
+    // Retain startup failures even if the process returns before the drainers
+    // have had a chance to write their current pipe buffers.
+    let _ = std::io::stdout().flush();
+    stderr.finish()?;
+    stdout.finish()?;
+    outcome
 }
 
 fn managed_config(args: &[String]) -> Result<HostConfig> {
@@ -508,33 +534,43 @@ fn xml_string(xml: &mut String, s: &str) -> Result<()> {
 pub(super) fn stage_update(cfg: &HostConfig) -> Result<()> {
     ensure!(cfg.managed, "updates require an installed lab LaunchAgent");
     fs::create_dir_all(cfg.dir("logs"))?;
-    let log_path = cfg.dir(UPDATE_LOG);
-    let mut log = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)?;
+    let mut log = log::Log::open(cfg.dir(UPDATE_LOG))?;
     let mut git = Command::new("git");
     git.args(["pull", "--ff-only"])
         .env("GIT_TERMINAL_PROMPT", "0");
-    run_update_step(cfg, &mut git, &mut log, "git pull")?;
+    run_update_step(cfg, git, &mut log, "git pull")?;
 
     let mut cargo = Command::new(&cfg.cargo);
     cargo
         .args(["build", "--release", "-p", "cli", "--bin", "h2"])
         .env("CARGO_TARGET_DIR", cfg.repo.join("target"));
-    run_update_step(cfg, &mut cargo, &mut log, "cargo build")?;
-    install_binary(&built_binary(cfg), &stable_binary(cfg))
+    run_update_step(cfg, cargo, &mut log, "cargo build")?;
+    install_binary(&built_binary(cfg), &stable_binary(cfg), None)
 }
 
-fn run_update_step(cfg: &HostConfig, cmd: &mut Command, log: &mut File, what: &str) -> Result<()> {
+fn run_update_step(
+    cfg: &HostConfig,
+    mut cmd: Command,
+    log: &mut log::Log,
+    what: &str,
+) -> Result<()> {
     writeln!(log, "lab host update: {what} in {}", cfg.repo.display())?;
-    let status = cmd
+    let (mut reader, writer) = io::pipe()?;
+    let mut child = cmd
         .current_dir(&cfg.repo)
         .stdin(Stdio::null())
-        .stdout(log.try_clone()?)
-        .stderr(log.try_clone()?)
-        .status()
+        .stdout(writer.try_clone()?)
+        .stderr(writer)
+        .spawn()
         .with_context(|| format!("starting {what}"))?;
+    // Close the parent's write ends so draining completes at child exit.
+    drop(cmd);
+    let copied = io::copy(&mut reader, log);
+    if copied.is_err() {
+        let _ = child.kill();
+    }
+    let status = child.wait()?;
+    copied.with_context(|| format!("writing {}", cfg.dir(UPDATE_LOG).display()))?;
     ensure!(
         status.success(),
         "{what} failed ({status}); see {}",
@@ -551,36 +587,89 @@ pub(super) fn restart() -> Result<()> {
     Job::current().kickstart(&SystemLaunchctl)
 }
 
-/// Call with the lab activity lock held. Launchd restarts the host if this
-/// finds and installs a newer compatible executable built in the checkout.
-pub(super) fn adopt_newer(cfg: &HostConfig) -> Result<bool> {
-    let source = built_binary(cfg);
-    let dest = stable_binary(cfg);
-    let src = match fs::metadata(&source) {
-        Ok(src) if src.is_file() => src,
-        Ok(_) => return Ok(false),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(e) => return Err(e.into()),
-    };
-    match fs::metadata(&dest) {
-        Ok(installed) => {
-            // Include ctime for tools that restore an output via a cached hard link.
-            if src.modified()? <= installed.modified()?
-                && (src.ctime(), src.ctime_nsec()) <= (installed.ctime(), installed.ctime_nsec())
-            {
-                return Ok(false);
+#[derive(Default)]
+pub(super) struct AutoUpdate {
+    identical: Option<(BinaryIdentity, BinaryIdentity)>,
+}
+
+impl AutoUpdate {
+    /// Call with the lab activity lock held. Returns true when launchd should
+    /// restart the host on the stable copy.
+    pub(super) fn adopt_newer(&mut self, cfg: &HostConfig) -> Result<bool> {
+        let source = built_binary(cfg);
+        let dest = stable_binary(cfg);
+        let src = match fs::metadata(&source) {
+            Ok(src) if src.is_file() => src,
+            Ok(_) => return Ok(false),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e.into()),
+        };
+        match fs::metadata(&dest) {
+            Ok(installed) => {
+                // A cached hard link can move ctime with no change to mtime.
+                if src.modified()? <= installed.modified()?
+                    && (src.ctime(), src.ctime_nsec())
+                        <= (installed.ctime(), installed.ctime_nsec())
+                {
+                    return Ok(false);
+                }
+                let pair = (binary_identity(&src), binary_identity(&installed));
+                if self.identical == Some(pair) {
+                    return Ok(false);
+                }
+                if src.len() == installed.len() && same_bytes(&source, &dest, src.len(), pair)? {
+                    self.identical = Some(pair);
+                    return Ok(false);
+                }
             }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
         }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e.into()),
+        install_binary(&source, &dest, Some(binary_identity(&src)))?;
+        Ok(true)
     }
-    install_binary(&source, &dest)?;
+}
+
+fn same_bytes(
+    source: &Path,
+    dest: &Path,
+    mut remaining: u64,
+    pair: (BinaryIdentity, BinaryIdentity),
+) -> Result<bool> {
+    let mut src = File::open(source)?;
+    let mut installed = File::open(dest)?;
+    ensure!(
+        pair == (
+            binary_identity(&src.metadata()?),
+            binary_identity(&installed.metadata()?)
+        ),
+        "lab host executable changed while opening it"
+    );
+    let mut a = [0; 64 << 10];
+    let mut b = [0; 64 << 10];
+    while remaining != 0 {
+        let count = remaining.min(a.len() as u64) as usize;
+        src.read_exact(&mut a[..count])?;
+        installed.read_exact(&mut b[..count])?;
+        if a[..count] != b[..count] {
+            return Ok(false);
+        }
+        remaining -= count as u64;
+    }
+    check_binary_identity(source, pair.0)?;
+    check_binary_identity(dest, pair.1)?;
     Ok(true)
 }
 
-fn install_binary(source: &Path, dest: &Path) -> Result<()> {
+fn install_binary(source: &Path, dest: &Path, expected: Option<BinaryIdentity>) -> Result<()> {
     let mut input = File::open(source).with_context(|| format!("opening {}", source.display()))?;
     let before = input.metadata()?;
+    let source_id = binary_identity(&before);
+    ensure!(
+        expected.is_none_or(|expected| expected == source_id),
+        "{} changed before it could be installed; retry after the build finishes",
+        source.display()
+    );
     ensure!(
         before.is_file() && before.permissions().mode() & 0o111 != 0,
         "{} is not an executable file",
@@ -608,17 +697,23 @@ fn install_binary(source: &Path, dest: &Path) -> Result<()> {
                 "{} does not support this lab LaunchAgent",
                 source.display()
             );
-            ensure!(
-                binary_identity(&before) == binary_identity(&fs::metadata(source)?),
-                "{} changed while installing it; retry after the build finishes",
-                source.display()
-            );
-            Ok(())
+            check_binary_identity(source, source_id)
         },
     )
 }
 
-fn binary_identity(metadata: &fs::Metadata) -> (u64, u64, u64, i64, i64, i64, i64) {
+type BinaryIdentity = (u64, u64, u64, i64, i64, i64, i64);
+
+fn check_binary_identity(path: &Path, expected: BinaryIdentity) -> Result<()> {
+    ensure!(
+        binary_identity(&fs::metadata(path)?) == expected,
+        "{} changed while checking for an update; retry after the build finishes",
+        path.display()
+    );
+    Ok(())
+}
+
+fn binary_identity(metadata: &fs::Metadata) -> BinaryIdentity {
     (
         metadata.dev(),
         metadata.ino(),
@@ -682,9 +777,34 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn plist_pins_the_gui_session_binary_arguments_and_logs() {
-        let cfg = HostConfig {
+    pub(super) struct Scratch(pub(super) PathBuf);
+
+    impl Scratch {
+        pub(super) fn new() -> Self {
+            static NEXT: AtomicU32 = AtomicU32::new(0);
+            loop {
+                let dest = std::env::temp_dir().join(format!(
+                    "h2lab-service-{}-{}",
+                    std::process::id(),
+                    NEXT.fetch_add(1, Ordering::Relaxed)
+                ));
+                match fs::create_dir(&dest) {
+                    Ok(()) => return Self(dest),
+                    Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+                    Err(e) => panic!("creating {}: {e}", dest.display()),
+                }
+            }
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn fixture() -> HostConfig {
+        HostConfig {
             root: "/lab & jobs".into(),
             socket: "/run/lab.sock".into(),
             repo: "/src/<checkout>".into(),
@@ -700,7 +820,56 @@ mod tests {
             }),
             managed: false,
             explicit_h2: true,
+        }
+    }
+
+    #[test]
+    fn identical_cached_binary_is_skipped_and_a_real_change_is_adopted() {
+        let scratch = Scratch::new();
+        let cfg = HostConfig {
+            root: scratch.0.join("lab"),
+            repo: scratch.0.join("checkout"),
+            ..fixture()
         };
+        let built = built_binary(&cfg);
+        let stable = stable_binary(&cfg);
+        fs::create_dir_all(built.parent().unwrap()).unwrap();
+        fs::create_dir_all(stable.parent().unwrap()).unwrap();
+        let script = format!("#!/bin/sh\nprintf '%s\\n' '{SERVICE_ABI}'\n# first\n");
+        fs::write(&stable, &script).unwrap();
+        let cached = scratch.0.join("cached-h2");
+        fs::write(&cached, &script).unwrap();
+        fs::set_permissions(&cached, fs::Permissions::from_mode(0o700)).unwrap();
+        File::open(&cached)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() + Duration::from_secs(60))
+            .unwrap();
+        fs::hard_link(&cached, &built).unwrap();
+
+        let initial = binary_identity(&fs::metadata(&stable).unwrap());
+        let mut update = AutoUpdate::default();
+        assert!(!update.adopt_newer(&cfg).unwrap());
+        assert!(update.identical.is_some());
+        assert!(!update.adopt_newer(&cfg).unwrap());
+        assert_eq!(binary_identity(&fs::metadata(&stable).unwrap()), initial);
+
+        let changed = script.replace("# first", "# newer");
+        assert_eq!(changed.len(), script.len());
+        fs::remove_file(&built).unwrap();
+        fs::write(&built, &changed).unwrap();
+        fs::set_permissions(&built, fs::Permissions::from_mode(0o700)).unwrap();
+        File::open(&built)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() + Duration::from_secs(120))
+            .unwrap();
+        assert!(update.adopt_newer(&cfg).unwrap());
+        assert_eq!(fs::read_to_string(&stable).unwrap(), changed);
+        assert!(!update.adopt_newer(&cfg).unwrap());
+    }
+
+    #[test]
+    fn plist_pins_the_gui_session_binary_arguments_and_logs() {
+        let cfg = fixture();
         let args = launch_args(&cfg).unwrap();
         assert_eq!(
             args,
@@ -766,6 +935,44 @@ mod tests {
                     code: Some(0),
                     ..LaunchOutput::default()
                 }))
+        }
+    }
+
+    #[test]
+    fn uninstall_revokes_pairing_even_if_the_job_is_unloaded_or_bootout_fails() {
+        let scratch = Scratch::new();
+        let job = Job::new(501);
+        for loaded in [false, true] {
+            let dir = scratch.0.join(if loaded { "loaded" } else { "unloaded" });
+            let root = dir.join("lab");
+            let plist = dir.join("agent.plist");
+            lan::new_pairing(&root).unwrap();
+            fs::write(&plist, "installed").unwrap();
+            let pairing = root.join("auth/pairing.json");
+            let mut original: serde_json::Value =
+                serde_json::from_slice(&fs::read(&pairing).unwrap()).unwrap();
+            original["key"] = json!(vec![9; 32]);
+            fs::write(&pairing, serde_json::to_vec(&original).unwrap()).unwrap();
+            let ctl = FakeLaunchctl {
+                calls: RefCell::default(),
+                outputs: RefCell::new(VecDeque::from([LaunchOutput {
+                    code: Some(1),
+                    ..LaunchOutput::default()
+                }])),
+            };
+
+            let result = remove_installation(&job, &ctl, &plist, &root, loaded);
+            assert_eq!(result.is_err(), loaded);
+            assert_eq!(plist.exists(), loaded);
+            assert_eq!(ctl.calls.borrow().len(), loaded as usize);
+            let revoked: serde_json::Value =
+                serde_json::from_slice(&fs::read(&pairing).unwrap()).unwrap();
+            assert!(revoked["offer"].is_null() && revoked["key"].is_null());
+            if loaded {
+                remove_installation(&job, &ctl, &plist, &root, true).unwrap();
+                assert!(!plist.exists());
+                assert_eq!(ctl.calls.borrow().len(), 2);
+            }
         }
     }
 

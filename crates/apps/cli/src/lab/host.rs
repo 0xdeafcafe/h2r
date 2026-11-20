@@ -11,7 +11,6 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -21,6 +20,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use super::proto::{self, BuildSpec, INPUT_FILE, Manifest, Request, RunReq};
+use super::transfer::Transfers;
 use super::{discovery, lan, service, transfer};
 
 /// Where the host keeps everything, and what it runs.
@@ -104,6 +104,8 @@ struct Shared {
     service_name: Option<String>,
     inner: Mutex<Inner>,
     cv: Condvar,
+    transfers: Transfers,
+    checkout: Mutex<()>,
 }
 
 /// A job ended because it was asked to stop.
@@ -147,6 +149,8 @@ pub fn serve(cfg: HostConfig) -> Result<()> {
         service_name,
         inner: Mutex::new(Inner::default()),
         cv: Condvar::new(),
+        transfers: Transfers::default(),
+        checkout: Mutex::new(()),
     });
     recover(&shared);
     eprintln!(
@@ -163,13 +167,16 @@ pub fn serve(cfg: HostConfig) -> Result<()> {
     }
     if shared.cfg.managed {
         let sh = Arc::clone(&shared);
-        std::thread::spawn(move || refresh_when_idle(&sh.cfg));
+        std::thread::spawn(move || refresh_when_idle(&sh));
     }
     for conn in listener.incoming() {
         let Ok(conn) = conn else { continue };
         let sh = Arc::clone(&shared);
         std::thread::spawn(move || {
-            let _ = connection(&sh, conn, |_| Ok(true));
+            let timeout = Some(Duration::from_secs(120));
+            if conn.set_read_timeout(timeout).is_ok() && conn.set_write_timeout(timeout).is_ok() {
+                let _ = connection(&sh, conn, |_| Ok(true));
+            }
         });
     }
     Ok(())
@@ -200,24 +207,32 @@ fn open_lan(listen: &lan::Listen) -> Result<(SocketAddr, Option<String>, TcpList
 }
 
 fn serve_lan(sh: Arc<Shared>, listener: TcpListener, authority: lan::Server) {
-    const MAX_HANDSHAKES: usize = 32;
+    const MIN_DELAY: Duration = Duration::from_millis(50);
+    const MAX_DELAY: Duration = Duration::from_secs(2);
     let authority = Arc::new(authority);
-    let handshakes = Arc::new(AtomicUsize::new(0));
-    for conn in listener.incoming().flatten() {
-        if handshakes
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                (n < MAX_HANDSHAKES).then_some(n + 1)
-            })
-            .is_err()
-        {
+    let mut retry_delay = MIN_DELAY;
+    loop {
+        let (conn, peer) = match listener.accept() {
+            Ok(connected) => connected,
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(err) => {
+                if retry_delay == MIN_DELAY {
+                    eprintln!("lab: accepting LAN connections: {err}");
+                }
+                std::thread::sleep(retry_delay);
+                retry_delay = (retry_delay * 2).min(MAX_DELAY);
+                continue;
+            }
+        };
+        retry_delay = MIN_DELAY;
+        let Some(reservation) = authority.reserve_handshake(peer.ip()) else {
             continue;
-        }
+        };
         let authority = Arc::clone(&authority);
         let sh = Arc::clone(&sh);
-        let handshakes = Arc::clone(&handshakes);
         std::thread::spawn(move || {
             let authenticated = authority.authenticate(conn);
-            handshakes.fetch_sub(1, Ordering::Relaxed);
+            drop(reservation);
             if let Ok(Some(conn)) = authenticated {
                 let _ = connection(&sh, conn, |conn: &lan::Authenticated| conn.is_authorized());
             }
@@ -247,14 +262,17 @@ pub(super) fn activity_lock(root: &Path) -> Result<File> {
     try_activity_lock(root)?.context("busy: a lab job or host maintenance is active")
 }
 
-fn refresh_when_idle(cfg: &HostConfig) {
+fn refresh_when_idle(sh: &Shared) {
+    let cfg = &sh.cfg;
+    let mut updates = service::AutoUpdate::default();
     loop {
         std::thread::sleep(Duration::from_secs(15));
         let result = (|| -> Result<()> {
             let Some(_lock) = try_activity_lock(&cfg.root)? else {
                 return Ok(());
             };
-            if service::adopt_newer(cfg)? {
+            if updates.adopt_newer(cfg)? {
+                sh.transfers.drain();
                 // KeepAlive starts the stable copy. Hold the lock until we exit.
                 std::process::exit(0);
             }
@@ -329,14 +347,19 @@ fn connection<S: Read + Write>(
     let mut conn = BufReader::new(conn);
     let mut line = String::new();
     loop {
-        line.clear();
-        if (&mut conn)
-            .take(proto::REQUEST_MAX + 1)
-            .read_line(&mut line)?
-            == 0
-        {
+        // Put carries its bytes in the JSON line. Admit the transfer before
+        // reading the rest of that line, without counting idle connections.
+        if conn.fill_buf()?.is_empty() {
             return Ok(());
         }
+        let transfer = match sh.transfers.begin() {
+            Ok(transfer) => transfer,
+            Err(error) => return reply(conn.get_mut(), Err(error)),
+        };
+        line.clear();
+        (&mut conn)
+            .take(proto::REQUEST_MAX + 1)
+            .read_line(&mut line)?;
         ensure!(
             line.len() as u64 <= proto::REQUEST_MAX,
             "lab request too large"
@@ -363,18 +386,22 @@ fn connection<S: Read + Write>(
                 sync(sh, &mut conn, &branch, &commit, bytes, &authorized)?;
                 return Ok(());
             }
+            Request::Put { .. } => reply(conn.get_mut(), handle(sh, r))?,
             Request::Update => {
+                drop(transfer);
                 let staged = (|| {
                     ensure!(
                         sh.cfg.managed,
                         "install the lab LaunchAgent before updating it"
                     );
                     let lock = activity_lock(&sh.cfg.root)?;
+                    let _checkout = sh.checkout.lock().unwrap();
                     service::stage_update(&sh.cfg)?;
                     Ok(lock)
                 })();
                 match staged {
                     Ok(_lock) => {
+                        sh.transfers.drain();
                         let _ = reply(conn.get_mut(), Ok(json!({ "restarting": true })));
                         if let Err(e) = service::restart() {
                             eprintln!("lab: kickstart failed, exiting for KeepAlive: {e:#}");
@@ -384,7 +411,10 @@ fn connection<S: Read + Write>(
                     Err(e) => reply(conn.get_mut(), Err(e))?,
                 }
             }
-            _ => reply(conn.get_mut(), handle(sh, r))?,
+            _ => {
+                drop(transfer);
+                reply(conn.get_mut(), handle(sh, r))?;
+            }
         }
     }
 }
@@ -449,8 +479,10 @@ fn sync<S: Read + Write>(
             let actual = io::copy(&mut (&mut *conn).take(bytes), &mut bundle.file)?;
             ensure!(actual == bytes, "truncated git bundle");
         }
+        // Jobs use immutable commits in detached worktrees. Serialize only
+        // mutations to the checkout, and leave the upload outside this lock.
+        let _checkout = sh.checkout.lock().unwrap();
         ensure!(authorized(conn.get_ref())?, "the lab pairing was revoked");
-        let _lock = activity_lock(&sh.cfg.root)?;
         let repo = &sh.cfg.repo;
         transfer::ensure_unchecked(repo, &dest)?;
         if let Some(bundle) = &bundle {
