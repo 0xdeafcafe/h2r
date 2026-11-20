@@ -240,13 +240,15 @@ pub(crate) mod tests {
         }
     }
 
-    /// The model vertex `v0` placed by the instance's rows (`dph` with
-    /// `v12..v14`), then `dph oPos, r0, c[0..3]`; the colour `v15` times
-    /// `c[53]`, the normal `v11` to `oT0`, and `extra` read as well.
+    /// The model vertex `v0` moved to `r1` (an instruction reads one input
+    /// register, as the encoding has one field for it), placed by the
+    /// instance's rows (`dph` with `v12..v14`), then `dph oPos, r0,
+    /// c[0..3]`; the colour `v15` times `c[53]`, the normal `v11` to
+    /// `oT0`, and `extra` read as well.
     pub(crate) fn code(extra: Option<O>) -> Vec<u8> {
-        let mut code = Vec::new();
+        let mut code = vec![Inst::mac(MacOp::Mov, Some(O::v(0)), None, None).to_temp(1, 0xf)];
         for k in 0..3u8 {
-            code.push(Inst::mac(MacOp::Dph, Some(O::v(0)), Some(O::v(12 + k)), None).to_temp(0, 8 >> k));
+            code.push(Inst::mac(MacOp::Dph, Some(O::r(1)), Some(O::v(12 + k)), None).to_temp(0, 8 >> k));
         }
         for k in 0..4u8 {
             code.push(Inst::mac(MacOp::Dph, Some(O::r(0)), Some(O::c(k)), None).to_out(false, OutReg::Pos, 8 >> k));
