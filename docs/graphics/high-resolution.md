@@ -42,6 +42,19 @@ view").
   of each depth level and samples it with one tap ([e3-lighting-setting.md](e3-lighting-setting.md)).
 - **MSAA and forced anisotropy** are not built; both would be view-only.
 
+Render scale and LOD Distance have `View` scope. Theater restores both
+settings from the film's private startup record and strips the viewer's
+environment overrides. The local playback window uses a 1x render target,
+so it can display a different level of detail from a higher-resolution
+recording even with the same LOD Distance.
+[Film startup settings](../game/film-format.md#private-machine-state-section).
+
+At the default LOD Distance, performance numbers above 1x include the cost
+of retaining more detailed models and structure geometry. To compare raster
+cost at different resolutions with the original detail choices, select
+**Retail** at every resolution. Record both settings with the timings.
+[Lab benchmarks](../runtime/lab.md#--serve-and-bench).
+
 ## Single-copy readbacks
 
 The policy is selected at launch (`d3d_glue::single_copy`,

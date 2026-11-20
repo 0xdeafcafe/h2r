@@ -29,6 +29,7 @@ pub const RUN_ENV: &[&str] = &[
     "H2_AUDIO_STATS",
     "H2_FPS",
     "H2_RENDER_SCALE",
+    "H2_LOD_DISTANCE",
     "H2_WATERMARK",
     "H2_MAPPACK",
     "H2_HALO1",
@@ -582,6 +583,7 @@ mod tests {
             assert!(run(&j).is_err(), "{k} must be refused");
         }
         assert!(run(r#"{"cmd":"run","env":{"H2_FRAME_STATS_FROM":"300"}}"#).is_ok());
+        assert!(run(r#"{"cmd":"run","env":{"H2_RENDER_SCALE":"4","H2_LOD_DISTANCE":"retail"}}"#).is_ok());
         assert!(run(r#"{"cmd":"run","env":{"H2_FPS":"6\n0"}}"#).is_err());
     }
 
