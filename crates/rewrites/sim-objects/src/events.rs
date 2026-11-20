@@ -1,11 +1,11 @@
 //! The tick's simulation events (docs/engine/sim-rewrite-objects.md
 //! section 8): appended only on the game thread, at the retail moment of
-//! the event (by the serial bodies, and by `hooks::sim_objects`' observers
+//! the event (by the serial bodies, and by `sim_bridge::sim_objects`' observers
 //! at the guest functions that apply damage and credit kills), and read at
 //! tick end.
 //!
 //! The buffer belongs to the thread that runs the simulation. It is
-//! cleared when a tick starts (`hooks::sim_objects` at `GAME_TICK`'s
+//! cleared when a tick starts (`sim_bridge::sim_objects` at `GAME_TICK`'s
 //! entry), so at tick end it holds that tick's events. Events are not
 //! persistent state: not in keyframes, snapshots or the hash, and nothing
 //! in the simulation reads them.

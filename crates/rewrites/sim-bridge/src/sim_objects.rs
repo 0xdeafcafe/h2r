@@ -23,21 +23,21 @@
 //!
 //! [`crate::sim_native::SimNative`] calls [`install`]: the bodies hold no
 //! state, so the feature's snapshot policy does not change.
-use crate::Builder;
+use hooks::Builder;
 use engine::points;
 use engine::sim_objects::{self as objects, Table, damage};
 use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
 
 /// The switch, without its `impl.` prefix.
-pub const OBJECTS: &str = crate::install::SIM_OBJECTS;
+pub const OBJECTS: &str = hooks::install::SIM_OBJECTS;
 
-pub fn on(switches: &crate::Switches) -> bool {
+pub fn on(switches: &hooks::Switches) -> bool {
     switches.implementation(OBJECTS, false)
 }
 
 /// Whether the per-function port at `addr` stands down: the switch is on
 /// and a body owns the point.
-pub fn owns(switches: &crate::Switches, addr: u32) -> bool {
+pub fn owns(switches: &hooks::Switches, addr: u32) -> bool {
     owns_in(on(switches), &objects::TABLE, addr)
 }
 
@@ -102,7 +102,7 @@ fn original(cpu: &mut CpuAbi, ctx: &mut ExecCtx, pc: u32, site: bool) -> Result<
 mod tests {
     use super::*;
     use crate::sim_native::SimNative;
-    use crate::{Base, Registry, Switches};
+    use hooks::{Base, Registry, Switches};
     use engine::points::{self, Point};
     use engine::sim_objects::{Body, Cx, Next};
 
@@ -202,13 +202,13 @@ mod tests {
     /// health model has.
     struct HooksDamage;
 
-    impl crate::Feature for HooksDamage {
-        fn manifest(&self) -> crate::Manifest {
-            crate::Manifest::new("damage-hook-test", "a before at the damage update")
+    impl hooks::Feature for HooksDamage {
+        fn manifest(&self) -> hooks::Manifest {
+            hooks::Manifest::new("damage-hook-test", "a before at the damage update")
         }
-        fn build(&self, b: &mut Builder) -> Result<(), crate::BuildError> {
-            b.snapshot(crate::SnapshotPolicy::Stateless);
-            b.raw().before(&points::OBJECT_DAMAGE_UPDATE, "test", |_| Ok(crate::Flow::Continue));
+        fn build(&self, b: &mut Builder) -> Result<(), hooks::BuildError> {
+            b.snapshot(hooks::SnapshotPolicy::Stateless);
+            b.raw().before(&points::OBJECT_DAMAGE_UPDATE, "test", |_| Ok(hooks::Flow::Continue));
             Ok(())
         }
     }
@@ -221,7 +221,7 @@ mod tests {
         registry.add(&Installs(&T)).unwrap();
         registry.add(&HooksDamage).unwrap();
         let plan = registry.build(&Base).unwrap();
-        crate::install::guard_shared_bodies(&T, plan.chains.values());
+        hooks::install::guard_shared_bodies(&T, plan.chains.values());
         assert!(T.guarded(points::OBJECT_DAMAGE_UPDATE.base));
         assert!(!T.guarded(points::OBJECTS_PRE_PHYSICS.base));
 
@@ -231,7 +231,7 @@ mod tests {
         let mut registry = Registry::new(Switches::defaults());
         registry.add(&Installs(&U)).unwrap();
         let plan = registry.build(&Base).unwrap();
-        crate::install::guard_shared_bodies(&U, plan.chains.values());
+        hooks::install::guard_shared_bodies(&U, plan.chains.values());
         assert!(!U.guarded(points::OBJECT_DAMAGE_UPDATE.base));
     }
 
@@ -239,12 +239,12 @@ mod tests {
     /// on bodies of its own.
     struct Installs(&'static Table);
 
-    impl crate::Feature for Installs {
-        fn manifest(&self) -> crate::Manifest {
-            crate::Manifest::new("sim-objects-test", "test bodies")
+    impl hooks::Feature for Installs {
+        fn manifest(&self) -> hooks::Manifest {
+            hooks::Manifest::new("sim-objects-test", "test bodies")
         }
-        fn build(&self, b: &mut Builder) -> Result<(), crate::BuildError> {
-            b.snapshot(crate::SnapshotPolicy::Stateless);
+        fn build(&self, b: &mut Builder) -> Result<(), hooks::BuildError> {
+            b.snapshot(hooks::SnapshotPolicy::Stateless);
             install_table(b, self.0);
             Ok(())
         }

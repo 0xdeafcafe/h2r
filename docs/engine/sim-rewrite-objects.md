@@ -296,7 +296,7 @@ crates/rewrites/engine/src/sim_objects/    the guest boundary (needs `runtime`)
   wake.rs                         the wake leaves' bodies over src/wake.rs; 109580
   damage.rs                       d5de0; the Damage and Kill recorders
   ...                             one file per ported segment body
-crates/hooking/hooks/src/sim_objects.rs installer, `impl.sim.native.objects` (called by `sim_native`)
+crates/rewrites/sim-bridge/src/sim_objects.rs installer, `impl.sim.native.objects` (called by `sim_native`)
 docs/engine/object-update.md      the contract page (engine README format)
 ```
 

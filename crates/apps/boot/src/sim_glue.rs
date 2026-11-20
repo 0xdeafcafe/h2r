@@ -10,7 +10,7 @@
 //!   skill, its seed (from the match seed and its logical seat) and its tuning, in a
 //!   [`Metered`] wrapper that counts what only the brain knows.
 //! - **The render front-end** is skipped in world frames on the light
-//!   host ([`hooks::sim_frame`]). Full headless runs can opt into the
+//!   host ([`sim_bridge::sim_frame`]). Full headless runs can opt into the
 //!   render worker and collect the same tick hashes. The kernel trace
 //!   file is off and nav meshes are never built in the background
 //!   (`bots_nav_auto`).
@@ -38,7 +38,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 use bots::pad_source::{Frame, PadSource, Sampled};
-use hooks::sim_frame::SimFrame;
+use sim_bridge::sim_frame::SimFrame;
 
 use crate::telemetry;
 use hooks::{Flow, points};

@@ -5,7 +5,7 @@ use engine::points;
 use runtime::guest::Access;
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
 
-use crate::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
+use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
 
 const TICK_RETURN: u32 = 0x000c_1489;
 
@@ -127,7 +127,7 @@ fn skip(mem: &Guest, cpu: &mut CpuAbi) -> Result<Option<TransferAbi>, GuestFault
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Base, Registry, Switches};
+    use hooks::{Base, Registry, Switches};
     use runtime::guest::Permissions;
 
     #[test]

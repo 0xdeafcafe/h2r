@@ -5,7 +5,7 @@
 use engine::memory::GuestMemory;
 use engine::points;
 
-use crate::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
+use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
 
 const CAMERA_CLUSTER_RETURN: u32 = 0x0003_f54e;
 const ENTRY_BYTES: usize = 8;
@@ -90,7 +90,7 @@ fn trim_tail(mem: &mut dyn GuestMemory, sp: u32, mode: u32) -> Option<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Base, Registry, Switches};
+    use hooks::{Base, Registry, Switches};
     use engine::testing::FakeGuest;
 
     const SP: u32 = 0x1100;

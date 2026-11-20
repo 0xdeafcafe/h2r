@@ -16,7 +16,7 @@
 //! the damage report `d9640` and kills are credited at `15ce70`, whoever
 //! calls them (`dbfb0` from here, projectiles, melee, explosions). So the
 //! events are recorded at those two functions' entries
-//! ([`damage_report`], [`player_killed`], from `hooks::sim_objects`'
+//! ([`damage_report`], [`player_killed`], from `sim_bridge::sim_objects`'
 //! observers), which makes them the same events the existing hooks there
 //! see.
 //!
