@@ -43,6 +43,7 @@ connection to hold `session.claim`.
 | `edit.set`, `edit.revert` | act | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
 | `load.timeline` | read | [Load timeline](#load-timeline) |
 | `features.list` | read | [`session`](#session-what-is-running-and-its-clock) |
+| `live.join.open`, `live.join.status` | act, read | [Live session links](#live-session-links) |
 | `host.metrics`, `host.audit`, `host.perf` | read | [`host`](#host-the-process-and-its-lobby) |
 | `host.lobby.open`, `close`, `start` | act | [`host.lobby`](#hostlobby) |
 | `host.lobby.state` | read | [`host.lobby`](#hostlobby) |
@@ -904,6 +905,28 @@ h2 agent wait '{"phase":"gameplay","map_ticks":30}' && h2 agent loads 1
   with what it has counted.
 - Seeks and cache hits are not counted (the kernel's file I/O counts bytes
   and the host time of each file call: `read_bytes` and `file_io_us`).
+
+## Live session links
+
+`live.join.open {"url":"..."}` submits a website link to the same inbox as
+the macOS app and `h2 play --join`. It returns `{"id":1}` on acceptance.
+Malformed links return `INVALID_PARAMS`. Reopening the same pending link
+returns its existing ID. A different link during a join returns `BUSY`.
+If the run disables joining, the method returns `UNAVAILABLE`.
+
+`live.join.status` takes no parameters. Its `join` field is null until the
+first request. It then contains `id`, `server`, `session` and `phase`.
+`queued` means the game has yet to claim the request. `signing_in` waits
+for the account picker, `resolving` checks admission, `confirm` includes
+the host's gamertag when known, and `joining` waits for the title to connect.
+The last outcome stays available as `joined`, `cancelled` or `failed`
+with a human-readable `reason` on failure. Use `ui.press` to operate the
+in-game confirmation. [Live session links](../live/live-custom-games.md#join-in-halo-2)
+
+```sh
+h2 agent live.join.open '{"url":"h2recomp://join?server=https%3A%2F%2Flive.forbes.red&session=8000000000000001"}'
+h2 agent live.join.status
+```
 
 ## `host`: the process and its lobby
 

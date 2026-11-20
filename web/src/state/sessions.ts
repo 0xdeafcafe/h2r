@@ -58,14 +58,29 @@ export function useSessions(everyMs = SESSIONS_REFRESH_MS): { items: Accessor<Se
   poll(async (signal) => {
     try {
       const page = await live.api().sessions(signal);
+      if (signal.aborted) return;
       setItems(parseSessions(page.items));
       setStatus("ok");
     } catch (e) {
       if (signal.aborted) return;
       if (e instanceof ApiError && e.status === 404) { setItems([]); setStatus("unsupported"); } else setStatus("error");
     }
-  }, () => { setItems([]); setStatus("loading"); }, everyMs);
+  }, () => { identity.me(); setItems([]); setStatus("loading"); }, everyMs);
   return { items, status };
+}
+
+/** The reader's current link for a specific game, including a game opened by a deep link. */
+export function useGameJoin(id: Accessor<string>): Accessor<string | null> {
+  const [session, setSession] = createSignal<string | null>(null);
+  poll(async (signal) => {
+    try {
+      const result = await live.api().gameJoin(id(), signal);
+      if (!signal.aborted) setSession(result.session_id);
+    } catch {
+      if (!signal.aborted) setSession(null);
+    }
+  }, () => { id(); identity.me(); setSession(null); }, SESSIONS_REFRESH_MS);
+  return session;
 }
 
 export type CoopStatus = "loading" | "ok" | "unsupported" | "error";

@@ -1,3 +1,6 @@
+import { JoinLink } from "../components/JoinLink";
+import { joinHref } from "../lib/join";
+import { useGameJoin } from "../state/sessions";
 import { gameMapTitle, packageLookup } from "../state/maps";
 import { isHalo1Map, mapTitle } from "../state/gameart";
 import { identity } from "../state/identity";
@@ -195,9 +198,15 @@ function viewerTitle(g: GameState): string {
   return isCampaign(g) ? gameMapTitle(g) : `${gameTitle(g)} on ${gameMapTitle(g)}`;
 }
 
+function LiveGameJoin(props: { id: string }) {
+  const session = useGameJoin(() => props.id);
+  const href = () => joinHref(live.server().base, session() ?? "");
+  return <Show when={href()}>{(url) => <JoinLink href={url()} />}</Show>;
+}
+
 const PageTitle = (props: { game: GameState }) => (
   <Title class="s-title--bar" back={["see all games", statsPath("/games")]}
-    right={<Show when={props.game.status === "ended"}><A href={theaterHref(props.game.game_id)}>Watch in Theater</A></Show>}>
+    right={<Show when={props.game.status === "ended"} fallback={<LiveGameJoin id={props.game.game_id} />}><A href={theaterHref(props.game.game_id)}>Watch in Theater</A></Show>}>
     Game Details
   </Title>
 );

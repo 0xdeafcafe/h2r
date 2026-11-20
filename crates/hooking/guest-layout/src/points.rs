@@ -1083,6 +1083,9 @@ points! { ALL;
     /// them every player's unit (`0x14df40`, `0x14deb0`) and "some player
     /// dead" (`players_globals+5`); AL 1 when safe.
     SAVE_SAFE @ 0x0022_6190: [fn() -> al ret 0]; "docs/live/live-coop.md";
+    /// The Live join lifecycle. Its update promotes the target squad or records
+    /// the title's reason for declining the join.
+    LIVE_JOIN_UPDATE @ 0x0006_fd10: [fn(context: ecx) -> al ret 0], Optional; "docs/live/live-custom-games.md";
     /// The host's answer to a join request (session in EAX, request in
     /// EDI): 0 accepts, 3 refuses unless the session state (`S+0x741c`)
     /// is 5 (the lobby), 2 for an invite-only session, 4 when full.

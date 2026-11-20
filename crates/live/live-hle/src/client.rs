@@ -116,6 +116,7 @@ pub(crate) enum Reply {
     MatchmakingUnsupported,
     Social(SocialSnapshot),
     InviteAccepted(live_proto::mailbox::Invite),
+    JoinLink(Result<live_proto::mailbox::Invite, String>),
     /// A mute list, oldest first.
     Mutes(Vec<u64>),
     Ranks(Vec<live_proto::rank::LeaderboardRow>),
@@ -170,6 +171,9 @@ impl Session {
     }
     fn cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
+    }
+    pub fn same_logon(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.cancelled, &other.cancelled)
     }
     pub fn status(&self) -> u32 {
         self.status.load(Ordering::Acquire)
@@ -234,6 +238,7 @@ pub(crate) enum SocialRequest {
     Send { to: Vec<Xuid>, session_id: String },
     Answer(live_proto::mailbox::Answered),
     Join { from: Xuid, session_id: String },
+    JoinLink(String),
 }
 /// A player report ([`crate::feedback`]).
 #[derive(Clone)]
@@ -1427,18 +1432,20 @@ impl Worker {
         }
         Ok(page.items)
     }
+    fn friends_for(&self, user: &Identity) -> Result<live_proto::Friends, Error> {
+        self.team_json(
+            user,
+            &format!(
+                "/accounts/{}/friends",
+                url::form_urlencoded::byte_serialize(user.gamertag.as_bytes()).collect::<String>()
+            ),
+        )
+    }
     fn social_request(&self, user: &Identity, request: &SocialRequest) -> Result<Reply, Error> {
-        use live_proto::mailbox::{self, Answer, Invite};
+        use live_proto::mailbox::{self, Answer};
         match request {
             SocialRequest::Refresh => {
-                let friends: live_proto::Friends = self.team_json(
-                    user,
-                    &format!(
-                        "/accounts/{}/friends",
-                        url::form_urlencoded::byte_serialize(user.gamertag.as_bytes())
-                            .collect::<String>()
-                    ),
-                )?;
+                let friends = self.friends_for(user)?;
                 let invites = self.mailbox(user)?;
                 let sessions = self.matches_request(
                     user,
@@ -1484,14 +1491,7 @@ impl Worker {
                 })
             }
             SocialRequest::Join { from, session_id } => {
-                let friends: live_proto::Friends = self.team_json(
-                    user,
-                    &format!(
-                        "/accounts/{}/friends",
-                        url::form_urlencoded::byte_serialize(user.gamertag.as_bytes())
-                            .collect::<String>()
-                    ),
-                )?;
+                let friends = self.friends_for(user)?;
                 if !friends.friends.iter().any(|f| f.xuid == *from) {
                     return Err(Error::Status(403));
                 }
@@ -1500,15 +1500,36 @@ impl Worker {
                     .into_iter()
                     .find(|v| v.host_xuid == *from)
                     .ok_or(Error::Status(404))?;
-                Ok(Reply::InviteAccepted(Invite {
-                    id: 0,
-                    from: *from,
-                    to: Xuid(user.xuid),
-                    gamertag: row.host_gamertag,
-                    session_id: session_id.clone(),
-                    sent_at: time::OffsetDateTime::now_utc().unix_timestamp(),
-                    answer: None,
-                }))
+                Ok(Reply::InviteAccepted(crate::join_resolver::friend_join(
+                    row,
+                    Xuid(user.xuid),
+                )))
+            }
+            SocialRequest::JoinLink(id) => {
+                let Some(row) = self.fetch_match(user, id)?.into_iter().next() else {
+                    return Ok(Reply::JoinLink(Err(
+                        "This game is no longer available.".into()
+                    )));
+                };
+                let friend =
+                    if row.advertisement.visibility == live_proto::session::Visibility::Friends {
+                        self.friends_for(user)?
+                            .friends
+                            .iter()
+                            .any(|f| f.xuid == row.host_xuid)
+                    } else {
+                        false
+                    };
+                let viewer = Xuid(user.xuid);
+                if !crate::matchmaking::valid_address(row.endpoint.addr, row.endpoint.port) {
+                    return Ok(Reply::JoinLink(Err(
+                        "This game has an invalid host address.".into(),
+                    )));
+                }
+                Ok(Reply::JoinLink(
+                    row.check_join_link(Some(viewer), |_, _| friend)
+                        .map(|()| crate::join_resolver::friend_join(row, viewer)),
+                ))
             }
         }
     }

@@ -3230,6 +3230,141 @@ fn invites_friend_send_decline_remove_accept_and_join_are_asynchronous() {
     assert_eq!(peer.bytes(INV_RECORD + 40, 8), host.bytes(MATCH_ID, 8));
 }
 
+fn resolve_link(peer: &World, id: &str) -> Result<live_hle::join_resolver::ResolvedJoin, String> {
+    let lookup = peer.hle.resolve_join_link(id)?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(result) = lookup.poll() {
+            return result;
+        }
+        assert!(Instant::now() < deadline, "join lookup timed out");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[test]
+fn a_join_link_resolves_as_the_console_account_and_delivers_an_accepted_invite_once() {
+    let server = Server::new();
+    let a = server.account("Host");
+    let b = server.account("Friend");
+    let c = server.account("Stranger");
+    friend_pair(&server, &a, &b);
+    let mut host = World::new(&server.embedded.url, &[&a]);
+    let mut peer = World::new(&server.embedded.url, &[&b]);
+    let mut stranger = World::new(&server.embedded.url, &[&c]);
+    host.logon();
+    let logon = peer.logon();
+    stranger.logon();
+    host.hle
+        .set_session_visibility(live_hle::Visibility::Friends);
+    invite_host(&mut host);
+    let id = live_proto::sign::hex(&host.bytes(MATCH_ID, 8));
+    assert!(peer.hle.join_link_ready());
+    assert!(peer.hle.resolve_join_link("../bad").is_err());
+    assert_eq!(
+        resolve_link(&stranger, &id).err().as_deref(),
+        Some("Only Host's friends can join this game.")
+    );
+    let join = resolve_link(&peer, &id).unwrap();
+    assert_eq!(join.host(), "Host");
+    assert_eq!(join.controller(), 0);
+    drop(peer.hle.accept_join_link(join).unwrap());
+    assert_eq!(
+        peer.call("XOnlineFriendsGetAcceptedGameInvite", &[INV_RECORD]),
+        NO_ACCEPTED_INVITE
+    );
+    let receipt = peer
+        .hle
+        .accept_join_link(resolve_link(&peer, &id).unwrap())
+        .unwrap();
+    assert!(!receipt.consumed());
+    assert_eq!(
+        peer.call("XOnlineFriendsGetAcceptedGameInvite", &[INV_RECORD]),
+        0
+    );
+    assert!(receipt.consumed());
+    assert_eq!(peer.bytes(INV_RECORD + 40, 8), host.bytes(MATCH_ID, 8));
+    assert_eq!(peer.bytes(INV_RECORD + 88, 8), b.xuid.0.to_le_bytes());
+    assert_eq!(
+        peer.call("XOnlineFriendsGetAcceptedGameInvite", &[INV_RECORD]),
+        NO_ACCEPTED_INVITE
+    );
+    let stale = resolve_link(&peer, &id).unwrap();
+    assert_eq!(peer.call("XOnlineTaskClose", &[logon]), 0);
+    assert!(peer.hle.accept_join_link(stale).is_err());
+    assert!(!peer.hle.join_link_ready());
+}
+
+#[test]
+fn zero_count_lobby_advertisements_follow_the_host_squad_capacity() {
+    let server = Server::new();
+    let a = server.account("Host");
+    let b = server.account("Joiner");
+    let mut host = World::new(&server.embedded.url, &[&a]);
+    let mut peer = World::new(&server.embedded.url, &[&b]);
+    host.logon();
+    peer.logon();
+    assert_eq!(
+        host.call("XOnlineMatchSessionCreate", &[0, 0, 0, 0, 0, 0, 0, OUT]),
+        OK
+    );
+    let task = host.u32(OUT);
+    assert_eq!(host.wait(task), TASK_SUCCESS);
+    assert_eq!(
+        host.call("XOnlineMatchSessionGetInfo", &[task, MATCH_ID, MATCH_KEY]),
+        OK
+    );
+    let id = live_proto::sign::hex(&host.bytes(MATCH_ID, 8));
+    let capacity = |filled, open| live_hle::SessionSlots {
+        public_filled: filled,
+        public_open: open,
+        ..Default::default()
+    };
+    for slots in [capacity(1, 1), capacity(2, 0)] {
+        server.until(|| {
+            host.hle.sync_squad_slots(slots);
+            host.hle.local_sessions()[0].slots == slots
+        });
+        let join = resolve_link(&peer, &id);
+        if slots.public_open == 0 {
+            assert_eq!(join.err().as_deref(), Some("Host's game is full."));
+        } else {
+            assert!(join.is_ok());
+        }
+    }
+    // A title update with reserved seats takes ownership back.
+    let lo = host.u32(MATCH_ID);
+    let hi = host.u32(MATCH_ID + 4);
+    assert_eq!(
+        host.call(
+            "XOnlineMatchSessionUpdate",
+            &[lo, hi, 1, 0, 0, 3, 0, 0, 0, OUT]
+        ),
+        OK
+    );
+    let task = host.u32(OUT);
+    assert_eq!(host.wait(task), TASK_SUCCESS);
+    host.hle.sync_squad_slots(capacity(1, 2));
+    assert!(
+        resolve_link(&peer, &id)
+            .err()
+            .unwrap()
+            .contains("invitation")
+    );
+    host.hle
+        .set_session_visibility(live_hle::Visibility::Invite);
+    server.until(|| {
+        server
+            .get_as_operator::<Page<live_proto::session::Session>>("/v1/sessions")
+            .items
+            .is_empty()
+    });
+    assert_eq!(
+        resolve_link(&peer, &id).err().as_deref(),
+        Some("Host's game is invite-only.")
+    );
+}
+
 #[test]
 fn invites_invalid_arguments_faults_and_unreachable_answers_never_launch_a_join() {
     let s = Server::new();

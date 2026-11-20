@@ -32,6 +32,39 @@ Labels follow [live-boundary.md](live-boundary.md): **confirmed** means read
 statically in the retail code, **likely** means consistent with that code but
 not proven. Addresses are guest VAs in the retail 5849 image.
 
+## Join in Halo 2
+
+On the Live website, **Join in Halo 2** opens a joinable game in the
+installed player. A friend in a joinable lobby has the same action.
+The browser may ask permission to open Halo 2. If the player doesn't
+open, the page offers installation instructions.
+
+On macOS, install the desktop CLI from the checkout, then run
+`just mac-install iso=/path/to/halo2.iso`. The bundle uses the player's own
+disc and registers the `h2recomp` scheme with Launch Services.
+[CLI installation](../../README.md) · [Build recipes](../runtime/building.md)
+
+Clicking a link starts the app or delivers it to its open window. The CLI accepts
+the same URL on platforms that support `h2 play`.
+
+```sh
+h2 play /path/to/halo2.iso --join 'h2recomp://join?server=https%3A%2F%2Flive.forbes.red&session=8000000000000001'
+```
+
+The action host is `join`. The two query parameters are the URL-encoded
+HTTP(S) base of the Live service and its 16-character lowercase hex session
+ID. A link contains no account, token, invitation or host network address.
+Halo 2 uses the player's selected service. To join a different service,
+choose that service explicitly with `h2 play --live-server URL --join LINK`.
+
+From the main menu, sign in if prompted. During a match or campaign,
+the game asks before leaving and names the host when signed in. The game checks
+the advertisement as the signed-in player and uses the accepted-invite
+path to enter the host's session. A link to an invite-only, full or closed
+session reports why the join failed. Friends-only sessions require the
+console's player to be a friend of the host. The agent exposes the request
+and its outcome. [Game agent API](../runtime/agent-api.md#live-session-links)
+
 ## 1. How the System Link browser works
 
 **Discovery on a LAN (confirmed).**

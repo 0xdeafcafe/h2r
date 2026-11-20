@@ -63,6 +63,7 @@ pub mod hud;
 pub mod hud_swap;
 pub mod h1_hud_text;
 pub mod icons;
+pub mod join_link;
 pub mod keyboard_glue;
 pub mod layout_glue;
 pub mod level_boot;

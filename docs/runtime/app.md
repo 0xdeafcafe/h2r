@@ -119,7 +119,7 @@ offline), `--live-server URL` to that service, and `--live-local` runs one
 in the process (`--offline` or `--no-live` say "no Live" outright;
 `--gamertag`, `--invite`, `--signin-terminal`, `--live-listen` and
 `--live-tunnel` and its name and URL flags are in [live.md](../live/live.md)
-"Playing on Live"). Signed in, the account's saves are merged into U:
+"Playing on Live"). `--join URL` opens a [Live session link](../live/live-custom-games.md#join-in-halo-2) on the selected service. Signed in, the account's saves are merged into U:
 before the game starts and pushed as it writes them
 ([live-cloud-saves.md](../live/live-cloud-saves.md)). The boot's environment variables still
 apply; `H2_BOOT_INPUT` presses keys on the window's keyboard pad, so a

@@ -41,6 +41,7 @@ struct Task {
 }
 #[derive(Clone)]
 struct Accepted {
+    delivery: Option<crate::join_resolver::Delivery>,
     invite: Invite,
     controller: usize,
     at: u64,
@@ -103,6 +104,34 @@ impl Invites {
             }
         }
     }
+    pub fn queue_accepted(
+        &mut self,
+        invite: Invite,
+        controller: usize,
+        users: [u64; 4],
+        flags: [u32; 4],
+        delivery: Option<crate::join_resolver::Delivery>,
+    ) {
+        // An older invitation from the same host can name a session already gone.
+        self.accepted.retain(|v| v.invite.from != invite.from);
+        if self.accepted.len() >= 16 {
+            self.accepted.pop_front();
+        }
+        let accepted = Accepted {
+            delivery,
+            invite,
+            controller,
+            at: filetime(time::OffsetDateTime::now_utc().unix_timestamp()),
+            users,
+            flags,
+        };
+        // A confirmed web join is consumed immediately on the title thread.
+        if accepted.delivery.is_some() {
+            self.accepted.push_front(accepted);
+        } else {
+            self.accepted.push_back(accepted);
+        }
+    }
     fn finish(&mut self, mut task: Task, users: &[u64; 4], flags: &[u32; 4]) -> Task {
         if let Some(reply) = task.pending.as_ref().and_then(Pending::take) {
             task.pending = None;
@@ -112,19 +141,7 @@ impl Invites {
                 {
                     self.cache[task.controller].hidden.insert(invite.id);
                     self.cache[task.controller].next = None;
-                    // A newer invitation from the same host names its
-                    // current session: the older ones would join one gone.
-                    self.accepted.retain(|v| v.invite.from != invite.from);
-                    if self.accepted.len() >= 16 {
-                        self.accepted.pop_front();
-                    }
-                    self.accepted.push_back(Accepted {
-                        invite,
-                        controller: task.controller,
-                        at: filetime(time::OffsetDateTime::now_utc().unix_timestamp()),
-                        users: *users,
-                        flags: *flags,
-                    });
+                    self.queue_accepted(invite, task.controller, *users, *flags, None);
                     TASK_SUCCESS
                 }
                 Ok(Reply::Done) => TASK_SUCCESS,
@@ -340,7 +357,10 @@ impl Invites {
             filetime(time::OffsetDateTime::now_utc().unix_timestamp()).saturating_sub(v.at)
                 < 900 * 10_000_000
         });
-        let result = if let Some(v) = self.accepted.pop_front() {
+        // A newer URL or a cancellation can withdraw its unread offer.
+        let next = std::iter::from_fn(|| self.accepted.pop_front())
+            .find(|v| v.delivery.as_ref().is_none_or(|d| d.take()));
+        let result = if let Some(v) = next {
             let mut f = friend(
                 v.invite.from.0,
                 &v.invite.gamertag,
@@ -359,7 +379,7 @@ impl Invites {
                 record[116 + i * 12..120 + i * 12].copy_from_slice(&v.flags[i].to_le_bytes());
             }
             self.read = Some(v.invite.clone());
-            self.last = Some(v);
+            self.last = v.delivery.is_none().then_some(v);
             0
         } else {
             NO_ACCEPTED_INVITE
@@ -776,6 +796,7 @@ mod tests {
         let ids = [2, 3, 0, 0];
         let flags = [0, 1, 0, 0];
         state.accepted.push_back(Accepted {
+            delivery: None,
             invite: invite(),
             controller: 1,
             at,
@@ -826,6 +847,7 @@ mod tests {
             .unwrap();
         let wall = filetime(time::OffsetDateTime::now_utc().unix_timestamp());
         let accepted = || Accepted {
+            delivery: None,
             invite: invite(),
             controller: 0,
             at: wall,
@@ -872,6 +894,7 @@ mod tests {
             .unwrap();
         let mut state = Invites::default();
         state.accepted.push_back(Accepted {
+            delivery: None,
             invite: invite(),
             controller: 0,
             at: 0,
@@ -896,6 +919,7 @@ mod tests {
         let mut state = Invites::default();
         let at = filetime(time::OffsetDateTime::now_utc().unix_timestamp());
         state.accepted.push_back(Accepted {
+            delivery: None,
             invite: invite(),
             controller: 0,
             at,

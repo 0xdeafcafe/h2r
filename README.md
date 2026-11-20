@@ -42,6 +42,11 @@ h2 play disc/halo2.iso --level 03a_oldmombasa   # straight into a level, no menu
 
 The first run builds the game library into `$TMPDIR/h2boot`, which is slow. Every run after that reuses it. WASD and the mouse move and look, Enter is A, Escape is Start and Cmd+F goes fullscreen. `--follow` keeps you on the latest master, building each new commit in the background. Every flag is in [docs/runtime/app.md](docs/runtime/app.md).
 
+On macOS, run `just mac-install iso=disc/halo2.iso` after installing the CLI
+to open **Join in Halo 2** links from the Live website. It installs
+`~/Applications/Halo 2.app` and remembers where your disc is. Run the
+recipe again after updating the CLI or moving the disc.
+
 ## How fast
 
 I'm targeting uncapped frame rates, and it currently runs a steady 30/60/120 fps (the measured numbers are in [docs/features.md](docs/features.md#speed)).

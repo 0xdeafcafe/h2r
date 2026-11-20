@@ -12,6 +12,8 @@ mod feedback;
 mod film_service;
 pub mod films;
 mod invites;
+pub mod join_resolver;
+pub mod join_link;
 pub mod maps;
 pub mod mods;
 mod messages;
@@ -931,6 +933,12 @@ impl Hle {
             .unwrap_or_else(|e| e.into_inner())
             .set_auto(crate::auto::Auto::from_values(invite, accept_from));
     }
+    /// Publish the active host squad's actual capacity for lobbies whose
+    /// title advertisement omits the slot counts.
+    pub fn sync_squad_slots(&self, slots: SessionSlots) {
+        self.lock().sync_squad_slots(slots);
+    }
+
     /// The signed-in player on controller `controller`, 0 for none.
     pub fn user(&self, controller: usize) -> u64 {
         if self.offline_film && self.film_service_taped() {

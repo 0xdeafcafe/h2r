@@ -991,11 +991,15 @@ dependencies = [
  "kernel",
  "libc",
  "lift",
+ "live-hle",
  "live-proto",
  "live-server",
  "lockstep",
  "map",
  "movies",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "perf",
  "png",
  "scenario-edit",
@@ -3593,6 +3597,7 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.21",
  "time",
+ "url",
 ]
 
 [[package]]
