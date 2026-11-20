@@ -399,18 +399,12 @@ static inline uint64_t h2_acc_budget(ExecCtxOpaque *ctx, const H2FastAccess *f) 
  * all exits, runtime atomics and direct calls (including a callee that
  * transfers out instead of returning inline). Masks and indices are
  * compile-time constants. */
-#if H2_XMM_LOCALS
 #define H2_EACH_XMM(F, m) F(0,m) F(1,m) F(2,m) F(3,m) F(4,m) F(5,m) F(6,m) F(7,m)
 #define H2_XMM_INIT(i,m) h2u128 xmm##i = H2_HOMED(9+i) ? h2_rx(cpu, i) : 0;
 #define H2_XMM_SAVE(i,m) if (H2_HOMED(9+i) && (((m) >> (9+i)) & 1u)) h2_wx(cpu, i, xmm##i);
 #define H2_XMM_LOAD(i,m) if (H2_HOMED(9+i)) xmm##i = h2_rx(cpu, i);
 #define H2_READ_XMM(i) (H2_HOMED(9+i) ? xmm##i : h2_rx(cpu, i))
 #define H2_WRITE_XMM(i,v) (xmm##i = (v))
-#else
-#define H2_EACH_XMM(F, m)
-#define H2_READ_XMM(i) h2_rx(cpu, i)
-#define H2_WRITE_XMM(i,v) h2_wx(cpu, i, v)
-#endif
 #define H2_LOCALS_HOMED(m)                                                      \
     enum { h2_home_ = (m) }; H2_EACH_XMM(H2_XMM_INIT, 0)                         \
     uint32_t eax = H2_HOMED(0) ? cpu->eax : 0u, ecx = H2_HOMED(1) ? cpu->ecx : 0u; \
