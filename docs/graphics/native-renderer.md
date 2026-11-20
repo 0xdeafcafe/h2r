@@ -1090,6 +1090,15 @@ The frame columns `native_world_walk_sections`, `native_world_sections_prepared`
 appended in Rust, guest build callbacks replaced in Rust, whole entry
 dispatches bypassed and redundant Simple state calls respectively.
 
+Frame stats distinguish pre-reserved BSP parts
+(`native_world_opaque_prereserved_draws`) from ordinary world ranges
+that reach the indexed call after guest handler setup
+(`native_world_opaque_guest_indexed_draws`). The latter includes
+ranges later accepted by the native GPU backend. The corresponding
+`_sections` columns count each cluster or placement once per view and
+BSP on each path. A section with parts on both paths counts in both.
+The indexed counters require the world layer hooks.
+
 ### Opaque-layer comparison
 
 `H2_NATIVE_WORLD_LAYERS_COMPARE=2000,3000` prints the indexed D3D

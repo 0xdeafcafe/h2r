@@ -34,7 +34,25 @@ const OBJECT_WALK_COLUMNS: [&str; 9] = [
     "walk_native", "walk_fallback", "walk_unsupported", "walk_order", "walk_unreadable",
     "walk_model", "walk_inputs", "walk_state", "walk_reservation",
 ];
-pub(crate) const COLUMNS: usize = STAGE_COLUMNS + OBJECT_WALK_COLUMNS.len();
+const WORLD_OPAQUE_COLUMNS: [&str; 4] = [
+    "prereserved_draws", "prereserved_sections", "guest_indexed_draws", "guest_indexed_sections",
+];
+const WORLD_OPAQUE_BASE: usize = STAGE_COLUMNS + OBJECT_WALK_COLUMNS.len();
+pub(crate) const COLUMNS: usize = WORLD_OPAQUE_BASE + WORLD_OPAQUE_COLUMNS.len();
+
+/// Count at the front-end boundary, independently of which backend
+/// records the GPU draw. Section counts are deduplicated by the caller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum WorldOpaque { Prereserved, GuestIndexed }
+
+impl WorldOpaque {
+    pub fn count(self, draws: u64, sections: u64) {
+        let offset = match self { Self::Prereserved => 0, Self::GuestIndexed => 2 };
+        let start = phase::Counter::ALL.len() + WORLD_OPAQUE_BASE + offset;
+        phase::count_index(start, draws);
+        phase::count_index(start + 1, sections);
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 #[repr(usize)]
@@ -73,6 +91,7 @@ pub(crate) fn labels() -> &'static [String] {
             }
         }
         out.extend(OBJECT_WALK_COLUMNS.map(|name| format!("native_objects_{name}")));
+        out.extend(WORLD_OPAQUE_COLUMNS.map(|name| format!("native_world_opaque_{name}")));
         out
     })
 }

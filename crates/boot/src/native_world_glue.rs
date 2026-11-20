@@ -234,7 +234,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         self.ordered_scene_world && !Diagnostics::get().requires_mask_pass()
     }
 
-    fn ask(&self, mem: &mut dyn GuestMemory, _bsp: u32, camera: &RenderCamera, plan: &StencilPlan) -> Option<native_render::skip::Cleared> {
+    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, camera: &RenderCamera, plan: &StencilPlan) -> Option<native_render::skip::Cleared> {
         let ready = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             Arc::clone(current_ready(&state, mem)?)
@@ -297,6 +297,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         if ranges == 0 { return None; }
         let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
         let plan = d3d::ExternalPlan { stage: timeline::native::Stage::World, view, ranges, slots: Vec::new() };
+        let counted = timeline::phase::enabled().then(|| selected.iter().map(|p| p.0).collect::<Vec<_>>());
         let pass = Box::new(WorldPass {
             selected,
             selection: None,
@@ -318,6 +319,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             return None;
         }
         reservation.commit();
+        if let Some(owners) = counted {
+            crate::native_world_layers_glue::count_frontend(crate::d3d_diag::presents() + 1, view, bsp,
+                timeline::native::WorldOpaque::Prereserved, owners);
+        }
         Some(cleared)
     }
 }

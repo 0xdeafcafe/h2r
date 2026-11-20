@@ -1,6 +1,7 @@
 //! Pairs the layer hook with the actual indexed D3D call and state.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use d3d::backend::{
@@ -37,6 +38,38 @@ pub(crate) struct DrawContext {
 
 thread_local! {
     static DRAW: Cell<Option<DrawContext>> = const { Cell::new(None) };
+}
+
+/// Count a section once per front-end path and view of its BSP. A
+/// section with a mixture of early and late parts appears in both.
+#[derive(Default)]
+struct SectionCounts {
+    frame: u64,
+    seen: HashSet<(timeline::native::WorldOpaque, u32, u32, native_render::world::Owner)>,
+}
+
+impl SectionCounts {
+    fn add(&mut self, frame: u64, view: u32, bsp: u32, path: timeline::native::WorldOpaque,
+        owners: impl IntoIterator<Item = native_render::world::Owner>) -> (u64, u64) {
+        if frame != self.frame {
+            self.seen.clear();
+            self.frame = frame;
+        }
+        let mut draws = 0;
+        let mut sections = 0;
+        for owner in owners {
+            draws += 1;
+            sections += u64::from(self.seen.insert((path, view, bsp, owner)));
+        }
+        (draws, sections)
+    }
+}
+
+pub(crate) fn count_frontend(frame: u64, view: u32, bsp: u32, path: timeline::native::WorldOpaque,
+    owners: impl IntoIterator<Item = native_render::world::Owner>) {
+    thread_local! { static SECTIONS: RefCell<SectionCounts> = RefCell::default(); }
+    let (draws, sections) = SECTIONS.with_borrow_mut(|s| s.add(frame, view, bsp, path, owners));
+    path.count(draws, sections);
 }
 
 /// Clears the context even when the D3D handler returns a fault or calls
@@ -104,12 +137,23 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
                     } else {
                         [0; 8]
                     };
+                    let geometry = Geometry::read(&mem, cpu.esp, layer.number);
+                    if timeline::phase::enabled() && layer.site == Site::Scene && matches!(layer.number, 1 | 3 | 5 | 7 | 8)
+                        && let Some(owner) = geometry.and_then(|g| match g.owner {
+                            Owner::Cluster(n) => Some(native_render::world::Owner::Cluster(n)),
+                            Owner::Placement(n) => Some(native_render::world::Owner::Instance(n)),
+                            Owner::Object { .. } => None,
+                        })
+                        && let Some(bsp) = mem.read_u32(feature::native_world::ACTIVE_BSP)
+                    {
+                        count_frontend(frame, layer.view, bsp, timeline::native::WorldOpaque::GuestIndexed, [owner]);
+                    }
                     Some(DrawContext {
                         layer,
                         frame,
                         compare,
                         target,
-                        geometry: Geometry::read(&mem, cpu.esp, layer.number),
+                        geometry,
                         index_count: cpu.esp.checked_add(8).and_then(|a| mem.read_u32(a)),
                         return_address,
                     })
@@ -421,5 +465,24 @@ mod admission_tests {
         assert_eq!(layer3_texaccum(None, 10, textures, [true; 4]), None);
         assert_eq!(layer3_texaccum(Some(target), 20, textures, [true; 4]), None);
         assert_eq!(layer3_texaccum(Some(target), 10, textures, [true; 4]), Some(Some(target)));
+    }
+}
+
+#[cfg(test)]
+mod section_count_tests {
+    use super::SectionCounts;
+    use native_render::world::Owner::*;
+    use timeline::native::WorldOpaque::*;
+
+    #[test]
+    fn counts_ranges_and_distinct_sections_in_each_view_and_path() {
+        let mut s = SectionCounts::default();
+        let owners = [Cluster(3), Cluster(3), Instance(3)];
+        assert_eq!(s.add(5, 0, 42, GuestIndexed, owners), (3, 2));
+        assert_eq!(s.add(5, 0, 42, GuestIndexed, owners), (3, 0));
+        assert_eq!(s.add(5, 0, 42, Prereserved, owners), (3, 2));
+        assert_eq!(s.add(5, 1, 42, GuestIndexed, owners), (3, 2));
+        assert_eq!(s.add(5, 0, 43, GuestIndexed, owners), (3, 2));
+        assert_eq!(s.add(6, 0, 42, GuestIndexed, owners), (3, 2));
     }
 }
