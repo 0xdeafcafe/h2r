@@ -15,6 +15,7 @@ pub mod late;
 pub mod layer;
 pub mod light;
 pub mod light_group;
+pub mod mailbox;
 pub mod node;
 pub mod object;
 pub mod scene;
