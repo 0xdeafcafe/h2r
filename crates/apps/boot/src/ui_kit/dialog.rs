@@ -285,13 +285,34 @@ pub fn quick_icon(image: u16) -> PaneArt {
         depth: QUICK_PICTURE_DEPTH,
     }
 }
-/// `mp_games2.bitm`'s icons (read off `mainmenu.map`, 2026-11-19), as
-/// the pages of ours use them.
+/// `mp_games2.bitm`'s icons (read off `mainmenu.map`, 2026-11-19, and
+/// looked at with `h2 bitmap`), by what each shows. The pages of ours give
+/// each row one (`crate::h1_options::OptionRow::icon`,
+/// `crate::ui_kit::choice::ChoiceRow::icon`), shown in Quick Options'
+/// game type picture while the row has the focus.
 pub mod icon {
-    /// A Spartan standing: Slayer's. The Clankers page's.
+    /// A Spartan standing: Slayer's.
     pub const SPARTAN: u16 = 0;
-    /// A banner of three stars. The Halo 1 Options page's.
+    /// A crown on a hill: King of the Hill's.
+    pub const CROWN: u16 = 1;
+    /// A lightning bolt.
+    pub const LIGHTNING: u16 = 2;
+    /// A skull in a circle: Oddball's.
+    pub const SKULL: u16 = 3;
+    /// A helmet in a sunburst.
+    pub const HELMET: u16 = 4;
+    /// A hanging sack.
+    pub const SACK: u16 = 5;
+    /// A flag: Capture the Flag's.
+    pub const FLAG: u16 = 6;
+    /// A bomb with a lit fuse: Assault's.
+    pub const BOMB: u16 = 7;
+    /// Four squares in a diamond: Territories'.
+    pub const SQUARES: u16 = 8;
+    /// A banner of three stars (41 wide, the others 40).
     pub const BANNER: u16 = 9;
+    /// A question mark.
+    pub const QUESTION: u16 = 10;
     /// How many there are.
     pub const COUNT: u16 = 11;
 }
@@ -692,7 +713,7 @@ pub fn dialog_view(
     }
     w.extend(row_widgets(s, d, g, m));
     // The screen's own art (a page's icon in Quick Options' picture).
-    for (k, a) in s.art.iter().enumerate() {
+    for (k, a) in s.shown_art().iter().enumerate() {
         let r = art_rect(a);
         w.push(Widget {
             id: format!("art.{k}"),

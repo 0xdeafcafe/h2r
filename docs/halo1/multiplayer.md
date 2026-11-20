@@ -994,9 +994,11 @@ choice means). Adding an option is a setting in `setting_defs` (choices
   docs/game/ui-builder.md "The Dialog kind"): its panel, its header
   ("HALO 1 OPTIONS"), its `setting_lists` list with each row's name left
   and its choice alone in the value column ("Sandbox  Halo 1"), the
-  row's one-line help (`OptionRow::help`) in Quick Options' help line,
-  and the legend in its footer. Left, right or A changes a row; B backs
-  out.
+  focused row's one-line help (`OptionRow::help`) in Quick Options' help
+  line and its icon (`OptionRow::icon`: Sandbox a bomb, HUD a helmet) in
+  Quick Options' game type picture, and the legend in its footer. Left
+  or right changes a row; A opens the value picker, which explains the
+  option and both choices (`OptionRow::explain`); B backs out.
 - **Campaign:** a Halo 1 level's Game Options page (the skulls page after
   the difficulty, docs/game/skulls.md) lists Assets and HUD under Start
   Level, above the skulls, and opens even with no skull collected.

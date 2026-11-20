@@ -13,11 +13,12 @@
 //!   (`DialogBase::QuickOptions`, docs/game/ui-builder.md "The Dialog
 //!   kind"): its list on the `setting_lists` skin, each row's name left
 //!   and its choice alone in the value column ("Sandbox  Halo 1"),
-//!   Quick Options' header (the screen's icon, [`ICON`], in its game
-//!   type picture and its line, [`HEADER_HELP`], in its help line;
-//!   docs/game/ui-builder.md "A page's header"), its title bar and its
-//!   footer. A on a row opens the value picker, which says what each
-//!   choice means ([`description`]).
+//!   Quick Options' header (the focused row's icon, [`OptionRow::icon`],
+//!   in its game type picture and the row's one line,
+//!   [`OptionRow::help`], in its help line; docs/game/ui-builder.md "A
+//!   page's header"), its title bar and its footer. A on a row opens the
+//!   value picker, which says what the option does and what each choice
+//!   means ([`OptionRow::explain`]).
 //!
 //! Each row is one setting of the store with two choices, Halo 1's and
 //! Halo 2's ([`OptionRow`]); a new option is one more [`OptionRow`] in the
@@ -75,9 +76,20 @@ pub struct OptionRow {
     pub means: [&'static str; 2],
     /// One line for the multiplayer screen's help line (Quick Options'
     /// one-line `quick_options_help`, [`HELP_UNITS`] at most): what the
-    /// option switches.
+    /// option switches, shown while the row has the focus.
     pub help: &'static str,
+    /// What the value picker A opens says: what the option does, what
+    /// each choice means and when it takes effect, in a few short
+    /// sentences ([`EXPLAIN_UNITS`] at most).
+    pub explain: &'static str,
+    /// The row's icon in Quick Options' game type picture while it has
+    /// the focus (`crate::ui_kit::dialog::icon`).
+    pub icon: u16,
 }
+
+/// The longest picker text: about seven lines of the picker's
+/// description block (235 units wide in font 1).
+pub const EXPLAIN_UNITS: usize = 200;
 
 /// The longest help line: retail's own ("Temporarily change settings for
 /// this game variant.") is 51.
@@ -104,6 +116,11 @@ pub static SANDBOX: OptionRow = OptionRow {
         "Halo 2's nearest ones, and its health. From the next game.",
     ],
     help: "Weapons, vehicles and health, from the next game.",
+    explain: "Which weapons, vehicles and health this map plays with. \
+              Halo 1 keeps its own, health packs included. Halo 2 swaps in \
+              Halo 2's nearest weapons and vehicles, and its health. \
+              From the next game.",
+    icon: crate::ui_kit::dialog::icon::BOMB,
 };
 
 pub static ASSETS: OptionRow = OptionRow {
@@ -114,6 +131,10 @@ pub static ASSETS: OptionRow = OptionRow {
         "Halo 2's; cutscenes stay Halo 1's. From the next level.",
     ],
     help: "Characters, weapons, vehicles: from the next level.",
+    explain: "Which characters, weapons and vehicles this level uses. \
+              Halo 1 keeps its own. Halo 2 swaps in Halo 2's; the \
+              cutscenes stay Halo 1's. Changes from the next level.",
+    icon: crate::ui_kit::dialog::icon::SPARTAN,
 };
 
 pub static HUD: OptionRow = OptionRow {
@@ -124,6 +145,10 @@ pub static HUD: OptionRow = OptionRow {
         "Halo 2's. From the next game.",
     ],
     help: "Shields, health, motion tracker and ammo counter.",
+    explain: "Which HUD you play with. Halo 1 shows its own shield and \
+              health meters, motion tracker and ammo counter. Halo 2 \
+              shows Halo 2's. Changes from the next game.",
+    icon: crate::ui_kit::dialog::icon::HELMET,
 };
 
 /// The campaign's options, above the skulls on the Game Options page.
@@ -136,17 +161,7 @@ pub static ALL: &[&OptionRow] = &[&SANDBOX, &ASSETS, &HUD];
 /// The multiplayer screen's strings, after the rows': the two choices
 /// (its value column), then each row's name and each row's help line.
 const MP_IDS: u32 = ROW_IDS + PER_ROW * 3;
-const _: () = assert!(MP_IDS + 2 + 2 * 3 < IDS.len);
-
-/// The multiplayer screen's own line at its top, in Quick Options' help
-/// line beside its icon (docs/game/ui-builder.md "A page's header"):
-/// [`ROW_HELP`] said in the one line the help line holds (371 of its 494
-/// units in the disc's font 1; [`ROW_HELP`] is 562).
-pub const HEADER_ID: u32 = IDS.id(MP_IDS + 2 + 2 * 3);
-pub const HEADER_HELP: &str = "Halo 1's weapons, vehicles and HUD on this map, or Halo 2's.";
-/// The screen's icon in Quick Options' game type picture: the banner of
-/// three stars.
-pub const ICON: u16 = crate::ui_kit::dialog::icon::BANNER;
+const _: () = assert!(MP_IDS + 2 + 2 * 3 <= IDS.len);
 
 fn index(row: &OptionRow) -> u32 {
     ALL.iter()
@@ -201,7 +216,6 @@ static STRINGS: std::sync::LazyLock<Vec<(u32, String)>> = std::sync::LazyLock::n
         (FOOTER_ID, PROMPT.to_string()),
         (ROW_LABEL_ID, ROW_LABEL.to_string()),
         (ROW_HELP_ID, ROW_HELP.to_string()),
-        (HEADER_ID, HEADER_HELP.to_string()),
         (choice_id(true), choice(true).to_string()),
         (choice_id(false), choice(false).to_string()),
     ];
@@ -271,7 +285,7 @@ pub fn pick(store: &Arc<Store>, row: &'static OptionRow) -> crate::ui_kit::picke
         row.label,
         vec![choice(true).to_string(), choice(false).to_string()],
         usize::from(!is_halo1(store, row)),
-        &description(row),
+        row.explain,
         set,
     )
     .over(crate::ui_kit::view::Opener::GAME_SETUP)
@@ -347,13 +361,19 @@ impl Rows for OptionsScreen {
             step(&self.store, r)
         ))
     }
-    /// The screen's own line ([`HEADER_HELP`]), whatever the focus: Quick
-    /// Options' header. A row's own help shows in the value picker.
+    /// The focused row's one line ([`OptionRow::help`]) in Quick
+    /// Options' help line; the value picker says more.
     fn description(&self, row: i16) -> Option<u32> {
-        option_at(MULTIPLAYER, row).map(|_| HEADER_ID)
+        option_at(MULTIPLAYER, row).map(help_id)
     }
+    /// The first row's icon: the focus starts there.
     fn picture_image(&self) -> Option<u16> {
-        DIALOG.picture().map(|_| ICON)
+        self.row_image(0)
+    }
+    /// The focused row's icon in Quick Options' game type picture.
+    fn row_image(&self, row: i16) -> Option<u16> {
+        DIALOG.picture()?;
+        option_at(MULTIPLAYER, row).map(|r| r.icon)
     }
     fn describe(&self, count: usize) -> Option<String> {
         let rows: Vec<String> = MULTIPLAYER
@@ -386,11 +406,6 @@ impl crate::ui_kit::spec::Describe for OptionsScreen {
         )));
         s.style = base.style();
         s.description = base.help().map(Into::into);
-        s.help = Some(HEADER_HELP.into());
-        if base.picture().is_some() {
-            s.art.push(crate::ui_kit::dialog::quick_icon(ICON));
-        }
-        s.ids.push(HEADER_ID);
         s.footer = true;
         s.prompts = vec![
             Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
@@ -413,12 +428,15 @@ impl crate::ui_kit::spec::Describe for OptionsScreen {
                 .map(|(_, id)| id)
                 .collect();
             ids.push(help_id(r));
-            s.rows.push(
+            let mut spec =
                 RowSpec::value(r.label, &[choice(true), choice(false)], usize::from(!halo1))
                     .press(Press::Step)
                     .describe(r.help)
-                    .ids(&ids),
-            );
+                    .ids(&ids);
+            if base.picture().is_some() {
+                spec = spec.art(crate::ui_kit::dialog::quick_icon(r.icon));
+            }
+            s.rows.push(spec);
         }
         s.dialog = Some(DialogSpec {
             base,
@@ -535,24 +553,64 @@ mod tests {
             ("Sandbox", Some("Halo 1"))
         );
         assert_eq!(s.rows[1].description.as_deref(), Some(HUD.help));
-        // Quick Options' header: the screen's own line in the help line
-        // whatever the focus, its icon in the game type picture.
-        assert_eq!(screen.description(0), Some(HEADER_ID));
-        assert_eq!(screen.description(1), Some(HEADER_ID));
+        // Quick Options' header: the focused row's one line in the help
+        // line and its icon in the game type picture, following the focus.
+        assert_eq!(screen.description(0), Some(help_id(&SANDBOX)));
+        assert_eq!(screen.description(1), Some(help_id(&HUD)));
         assert_eq!(screen.description(2), None);
-        assert_eq!(s.help.as_deref(), Some(HEADER_HELP));
-        assert_eq!(s.description_text().as_deref(), Some(HEADER_HELP));
-        assert_eq!(s.art, [crate::ui_kit::dialog::quick_icon(ICON)]);
-        assert_eq!(screen.picture_image(), Some(ICON));
-        assert!(ICON < crate::ui_kit::dialog::icon::COUNT);
+        assert_eq!(s.help, None, "no page line in place of the rows'");
+        assert!(s.art.is_empty(), "the icon is the focused row's");
         let text = strings();
         let text = |id| text.iter().find(|(i, _)| *i == id).map(|(_, t)| *t);
-        assert_eq!(text(HEADER_ID), Some(HEADER_HELP));
-        // One line: the kit's own measure (7.5 units a character) inside
-        // Quick Options' 494-unit help line.
         let room = i32::from(crate::ui_kit::dialog::QUICK_HELP.right)
             - i32::from(crate::ui_kit::dialog::QUICK_HELP.left);
-        assert!(crate::ui_kit::spec::fallback::width(HEADER_HELP) <= room);
+        for (row, r) in MULTIPLAYER.iter().enumerate() {
+            let focused = crate::ui_kit::spec::ScreenSpec {
+                focus: row,
+                ..s.clone()
+            };
+            assert_eq!(focused.description_text().as_deref(), Some(r.help));
+            assert_eq!(text(help_id(r)), Some(r.help));
+            assert_eq!(
+                focused.shown_art(),
+                [crate::ui_kit::dialog::quick_icon(r.icon)],
+                "{}",
+                r.label
+            );
+            assert_eq!(screen.row_image(row as i16), Some(r.icon));
+            // One line: the kit's own measure (7.5 units a character)
+            // inside Quick Options' 494-unit help line.
+            assert!(crate::ui_kit::spec::fallback::width(r.help) <= room, "{}", r.label);
+        }
+        assert_eq!(screen.row_image(MULTIPLAYER.len() as i16), None);
+        assert_eq!(screen.picture_image(), Some(MULTIPLAYER[0].icon));
+    }
+
+    /// Every option, on either page, has an icon of Quick Options'
+    /// picture, a one-line help, and an explanation for the value picker
+    /// that says more than the help and is player copy, not a note.
+    #[test]
+    fn every_option_has_an_icon_a_line_and_real_picker_copy() {
+        use crate::ui_kit::dialog::{PICKER_HELP_TEXT, icon};
+        use crate::ui_kit::spec::{fallback, wrap};
+        let width = i32::from(PICKER_HELP_TEXT.rect[3]) - i32::from(PICKER_HELP_TEXT.rect[1]);
+        let height = i32::from(PICKER_HELP_TEXT.rect[0]) - i32::from(PICKER_HELP_TEXT.rect[2]);
+        for r in ALL {
+            assert!(r.icon < icon::COUNT, "{}", r.label);
+            assert!(!r.help.is_empty() && r.help.encode_utf16().count() <= HELP_UNITS);
+            let e = r.explain;
+            assert!(!e.is_empty() && e != r.help, "{}", r.label);
+            assert!(e.encode_utf16().count() <= EXPLAIN_UNITS, "{}: {e}", r.label);
+            let lines = wrap(e, width, &fallback::width).len() as i32;
+            assert!(lines * fallback::LINE <= height, "{}: {lines} lines", r.label);
+            let lower = e.to_lowercase();
+            for bad in ["docs/", "todo", "placeholder", "lorem", "tbd"] {
+                assert!(!lower.contains(bad), "{}: {e}", r.label);
+            }
+        }
+        // Rows of one page show different icons.
+        assert_ne!(SANDBOX.icon, HUD.icon);
+        assert_ne!(ASSETS.icon, HUD.icon);
     }
 
     /// Left and right each step to the other choice, A opens the value
@@ -590,7 +648,7 @@ mod tests {
         assert_eq!(p.title, "HUD");
         assert_eq!(p.values, ["Halo 1", "Halo 2"]);
         assert_eq!(p.current, 0);
-        assert_eq!(p.description, description(&HUD));
+        assert_eq!(p.description, HUD.explain);
         assert!(
             (p.set)(0).contains("stays Halo 1"),
             "the held one: nothing changes"
