@@ -226,12 +226,15 @@ optional; a frame without them draws as before.
   under a second (the amount is a share of the victim's vitality, shown in
   percent); sustained fire on one victim is one marker with a rising
   number; the last hit before a victim is found dead is the kill: red,
-  ringed, bigger, and it stays longer. A grenade throw draws the arc of the
-  throw from the hand along the aim (the frames don't carry the grenade
-  itself, so it shows the throw, not where it bounced). The 3D view
-  (`viewer/effects3d.ts`) and both 2D maps draw them; with reduced motion
-  the numbers stay put, the line holds instead of flashing, and no grenade
-  flies.
+  ringed, bigger, and it stays longer. In the telemetry viewer a player's
+  `grenade` action starts an estimated arc at their hand along their sampled
+  aim. The 3D view (`viewer/effects3d.ts`) and the 2D maps draw this arc
+  without testing level collision. Packed frames from version 6 carry
+  sampled grenade objects in `projectiles`, but the telemetry view does
+  not use their paths. The 3D Theater film view draws recorded world
+  objects and suppresses the estimated arc. With reduced motion the
+  numbers stay put, the hit line holds and the estimated arc is hidden.
+  [Lockout recording](notes/grenade-trajectories.md)
 - *Vehicles.* All of them are drawn; one nobody is in is darker (3D) or a
   faint grey outline (2D) and has no label. Once the frames carry
   vehicles the level's own copies (`vehi` placements and multiplayer

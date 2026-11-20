@@ -224,6 +224,7 @@ Reading and converting Halo 1 data:
 - [web-boundary.md](live/web-boundary.md): what goes on the dashboard and what on the stats site, and the dashboard's dense style for admin and ops screens
 - [web-app.md](live/web-app.md): the Live web app: its pages, the mock server and its `H2_MOCK_*` knobs, derived stats, sign-up, social features, link previews and the state architecture
 - [web-viewer.md](live/web-viewer.md): the web app's optional game art and the game page's 2D map and 3D viewer
+- [Grenade trajectories](live/notes/grenade-trajectories.md) compares the telemetry viewer’s grenade arcs with recorded Lockout projectiles.
 - [dash-concepts.md](live/dash-concepts.md): the Live dashboard as it is now: the orb, the menu blades, the Games screen and its Halo 2 panel
 - [live-hosting.md](live/live-hosting.md): hosting a server for friends (Cloudflare Tunnel, docker compose)
 - [live-worker.md](live/live-worker.md): the Live service on Workers, Durable Objects and R2, including the game header and cutover runbook
