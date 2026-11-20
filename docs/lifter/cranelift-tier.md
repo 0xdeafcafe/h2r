@@ -1,11 +1,12 @@
 # A Cranelift fast tier for the first build
 
-Status: design, 2026-11-18, with the first stages built (`crates/clif`).
-Where this text and the code differ, the code wins.
+Status: Partly built. `crates/clif` lowers all integer, control-flow, memory, transfer, flag, atomic and REP constructs, and x87 and SSE through helper calls; `boot::tier` starts on it and builds clang's module in the background. Not built: inline fast memory, direct calls, native floating point and hot swap (section 8).
+Code: `crates/clif/src/lib.rs` (`compile_shard`), `crates/clif/src/lower.rs`, `crates/boot/src/tier.rs`. Tests: `crates/clif/tests/differential.rs`, `crates/boot/tests/fast_tier.rs`.
+Switch: `H2_TIER` and `--tier` (`fast`, `clang`, `auto`), `H2_CLIF_OPT`, listed in [switches.md](../runtime/switches.md).
 
 The cold `h2 build` spends about eleven minutes in clang on 1,001 shards of
-generated C ([build-perf.md](build-perf.md)); everything before clang takes
-under two seconds when cached. This note adds a second backend that lowers
+generated C ([notes/build-perf.md](notes/build-perf.md)); everything before clang takes
+under two seconds when cached. The fast tier is a second backend that lowers
 the same planned IR (`emit::Owner`) straight to machine code with
 Cranelift, so a first build is ready in seconds. Clang's optimised build
 still happens, in the background, and replaces the fast one when it is
@@ -60,7 +61,7 @@ The module is three kinds of object:
    the same for every image, so it compiles once and stays in the object
    cache.
 
-Plus the bridge (`boot::BRIDGE`, or the test host's), as now.
+Plus the bridge (`boot::BRIDGE`, or the test host's).
 
 ## 3. Lowering
 
@@ -147,7 +148,7 @@ the IR requires.
 
 ### 3.5 Memory
 
-The first version calls the ABI's checked accessors for every guest load
+The tier calls the ABI's checked accessors for every guest load
 and store: `h2abi_v1_read(ctx, pc, addr, width, 1, buf)` with `buf` a
 stack slot, and `h2abi_v1_write` likewise. A non-zero status is the event
 id; the handler leaves through the exit with `FAULT`. `Segment::Fs` adds
@@ -171,7 +172,7 @@ that lives only until clang finishes.
   `JUMP`/`ENTRY`. The runner dispatches all of them, so a Cranelift
   handler and a clang one can call each other freely: the only interface
   is the transfer, the entry table and the resume table.
-- **Direct calls** (`H2_DCALL`) are not in the first version: every call
+- **Direct calls** (`H2_DCALL`) are not built: every call
   goes back to the runner. The module declares no
   `H2GEN_FEATURE_DIRECT_CALLS`, which the runtime already handles. They
   can be added later by porting `h2_direct_enter`/`h2_direct_back`; the
@@ -229,8 +230,8 @@ the next start uses clang's module.** No hot swap.
   stamp (`crates/boot/src/tier.rs`): it starts `tier fast` and names the
   image, the generator's sources plus crates/clif and Cargo.lock, the IR
   passes, Cranelift's optimisation level and the module ABI. Neither
-  tier's stamp passes for the other's. Plain `h2 build` still builds
-  clang's module in `<out>/libh2game.dylib`, as before.
+  tier's stamp passes for the other's. Plain `h2 build` builds clang's
+  module in `<out>/libh2game.dylib`.
 - `h2 run` and `h2 play` (`--tier auto`, the default, or `H2_TIER`) run
   clang's module when it is current; else the fast tier's, building it
   first if need be, and start clang's build as a separate process:
@@ -240,7 +241,7 @@ the next start uses clang's module.** No hot swap.
   builds in place: `boot::build` removes the old stamp first and writes the
   new one last, so a half-built module is never current. The next start
   finds clang's module current and uses it. `--tier fast` runs the fast
-  tier only; `--tier clang` is the old foreground build. `h2 serve` never
+  tier only; `--tier clang` is the foreground clang build. `h2 serve` never
   builds and runs clang's module unless told `--tier`.
 - **Why not hot-swap**: a running guest has handlers on the host stack
   (direct calls), resumes recorded as `(owner handler, start)`, and the
@@ -270,7 +271,7 @@ input:
 Points 1 and 2 hold by construction: integer semantics are the IR's
 (checked against the interpreter), and all FP arithmetic is the same
 compiled helper code the clang tier uses or its proved-equal native
-twins. No host FP instruction is emitted by Cranelift in this version.
+twins. Cranelift emits no host FP instruction.
 
 Point 3 does **not** hold across tiers. The fast tier charges every access
 through the runtime and makes no direct calls; clang's module counts
@@ -290,11 +291,7 @@ change for whoever owns them.
 
 ## 6. What the fast tier refuses
 
-A function the backend cannot lower (an unsupported construct, a
-Cranelift verifier error) fails the fast build loudly during development.
-For production the plan is to emit a stop handler for it (`STOP` with
-`H2SHIM_UNKNOWN_TARGET`), which the boot fallback already recovers from,
-and report the count; it must be zero on the retail image.
+A function the backend cannot lower (an unsupported construct, a Cranelift verifier error) fails the fast build with an error naming the entry (`clif::compile_shard`, `lower::Unsupported`). There is no stop-handler fallback; the count of refused functions on the retail image is not recorded here.
 
 ## 7. Proof
 
@@ -304,19 +301,19 @@ and report the count; it must be zero on the retail image.
   random states, and requires identical ends, CPU state and memory.
 - The x87 and SSE fixtures of the same harness, then `native_x87.rs` and
   `native_sse.rs`, cover the FP paths.
-- Timing: `crates/clif/tests/image.rs` (ignored; `H2_XBE`) compiles the
-  retail XBE, compile-only: 18,647 owners in 1,000 shards, 37.5 s wall on
-  4 threads of a heavily loaded machine (78 s of CPU), 206 MB dylib.
 - `crates/boot/tests/fast_tier.rs`: a fast-tier module links with boot's
   bridges and exports what `load_module` looks up; `tier.rs`'s tests
   cover the stamps, the choice of module and the background command.
 
 ## 8. Stages
 
-1. (a) `crates/clif`: integer, control flow, memory, transfers, flags,
-   atomics, REP; then x87 and SSE through helper calls.
-2. (b) the differential harness above, against the interpreter and C.
-3. (c) whole-image fast build, timed; target 30 s cold.
-4. (d) boot loads either tier, the background clang build, the switch at
-   the next start.
-5. Later: inline fast memory, direct calls, native FP, hot swap.
+1. **Built**: `crates/clif/src/lower.rs`: integer, control flow, memory, transfers, flags, atomics and REP; `crates/clif/src/x87.rs` and the SSE wrappers in `c/h2clif_helpers.c`: x87 and SSE through helper calls.
+2. **Built**: the differential harness, `crates/clif/tests/differential.rs`, against the interpreter and the C tier.
+3. **Not recorded**: the timed whole-image fast build against the 30 s cold target. No test in the tree times it.
+4. **Built**: `boot::tier` (`Tier`, `Choice`, `build_fast`, `background_build`) loads either tier and starts clang's build in the background; `crates/boot/tests/fast_tier.rs` covers the link.
+5. **Not built**: inline fast memory, direct calls, native Cranelift floating point and hot swap.
+
+## Not verified
+
+- Wall time of a cold fast build on the retail image.
+- Lockstep behaviour of two peers on different tiers (refused by design, section 5; the handshake check belongs to the co-op crates).

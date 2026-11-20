@@ -1,5 +1,9 @@
 # SSE1 floating-point reference semantics
 
+Status: Built.
+Code: `crates/simd/src/lib.rs` (Rust side), `crates/simd/c/h2simd.h` (C side). Tests: `crates/simd/tests/` (`differential.rs`, `header.rs`, `oracle_corpus.rs`, `hardware.rs`).
+Switch: none.
+
 `crates/simd` defines what every SSE1 floating-point instruction the Pentium
 III runs does, down to the bit: results, NaN payloads, signed zeros, the
 MXCSR sticky flags and whether the instruction raises `#XM`. It has two

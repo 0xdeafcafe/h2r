@@ -1,5 +1,9 @@
 # Iteration builds and caches
 
+Status: Built.
+Code: `crates/emit/src/compile.rs` (object cache, `obj_dir_with`, `prune_obj_cache`), `crates/boot/src/tier.rs`, `h2 emit` and `h2 build` in `crates/cli/src/main.rs`. Tests: `crates/emit/src/compile.rs` (unit tests), `crates/boot/src/tier.rs`.
+Switch: `H2_OBJ_CACHE`, `H2_OBJ_CACHE_MAX`, `H2_OPT`, `H2_DEBUG`, `H2_CPU`, `H2_PGO*`, `H2_HOT`, `H2_OPT_COLD`, listed in [switches.md](../runtime/switches.md).
+
 `cargo h2 emit /path/to/default.xbe --run-entry` builds only the host
 architecture. Use `--arch all` for both arm64 and x86_64, or select one
 with `--arch arm64` / `--arch x86_64`. Running the entry requires a host
@@ -77,16 +81,15 @@ was deleted the profiler lost every instruction (`perf::symbolize` reads
 the shard sources for its markers). The flag is left out of the key on
 purpose, since every tree maps to the same `.`; a constant in the key
 retires objects built under the old naming.
-These keys supersede earlier header-only keys, so existing objects rebuild
-once without requiring a manual cache clear.
+A change of key naming retires the objects built under the old one, so the
+cache needs no manual clear.
 
 ### Sharing probes between sources
 
-Both probes used to run for every translation unit, about 0.1 s each, so a
-full image paid about 2000 clang processes on every build, even one where
-every object was cached. Generated sources look alike to both probes, so
-one run now serves many sources. The keys are the same as before; only the
-number of probes changes.
+Running both probes for every translation unit would cost about 0.1 s each,
+about 2000 clang processes on every build even when every object is cached.
+Generated sources look alike to both probes, so one run serves many sources;
+the keys are the same either way.
 
 - **Driver (`-###`).** The driver sees a source only as its path. One dry
   run serves every source in a directory with the same extension: the
@@ -177,7 +180,7 @@ stamp records the cold level and a hash of the hot list, so `h2 run` and
 `h2 play` rebuild when either changes; with tiers off the stamp is the
 same as before. `h2 build` prints how many sources were cold. It only
 changes how fast cold code runs, never what it does; measure fps before
-relying on it (build-perf.md has the compile-time side).
+relying on it (notes/build-perf.md has the compile-time side).
 
 ### Compiler switches (opt-in): `-O3`, the CPU, PGO
 
@@ -247,7 +250,7 @@ change one function in a private XBE copy and use the same output; compare
 `clang` wrapper on `PATH` that forwards to the real compiler, records wall
 time and exit status, and handles version/resource probes unchanged. Use
 the same wrapper for before/after runs: changing its contents changes the
-object cache identity. Measured results are in [build-perf.md](build-perf.md).
+object cache identity. Measured results are in [notes/build-perf.md](notes/build-perf.md).
 
 ## The `h2 build` and `h2 play` path
 
@@ -265,7 +268,7 @@ what they compile for; the target is in the objects' flags and the stamp
   `runtime/include` (`h2abi.h`), so a runtime change keeps the dylib.
 - **Generator change** (xbe, analyze, ir, lift, opt, emit, x87, or boot's
   bridge in `crates/boot/c`): the whole pipeline runs again, but most of
-  it is now cheap.
+  it is cheap.
   - *Analysis* is cached in the boot cache (`H2_BOOT_CACHE`, default
     `$TMPDIR/h2boot-cache`; `off` disables it), keyed by the image's hash
     and size and by `ANALYSIS_SOURCE_HASH`: the xbe and analyze sources,
