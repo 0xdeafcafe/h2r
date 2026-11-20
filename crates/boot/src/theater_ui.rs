@@ -4,38 +4,19 @@ pub mod adapter;
 mod overlay;
 mod pages;
 pub mod preview;
+mod selector;
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use adapter::{Clip, FilmMeta, Library, OpenLibrary};
 pub use overlay::{Control, Key, OverlayView};
+use selector::Selector;
 
 pub const FILMS: &str = "theater.films";
 pub const DETAIL: &str = "theater.film";
 pub const OVERLAY: &str = "theater.playback";
-
-/// The title menu's retail list constructor, item text and press (screen 6).
-pub(crate) mod menu {
-    pub const LIST_NAME: u32 = 0x0045_8b38;
-    pub const VTABLE: u32 = 0x0045_8a70;
-    pub const ROW: i16 = 5;
-    pub const ROW_TEXT: u32 = 0x0023_07c8;
-    pub const ROW_CHOSEN: u32 = 0x0023_0827;
-    pub const LABEL: &str = "Theater";
-    pub const LABEL_ID: u32 = crate::ui_kit::ids::family("theater menu").id(0);
-
-    pub fn count(name: u32, count: u32) -> u32 {
-        if name == LIST_NAME && count == ROW as u32 {
-            count + 1
-        } else {
-            count
-        }
-    }
-
-    // The retail tag's sole pane already shows six items. Only the
-    // constructor's five datums and five embedded widgets need growing.
-}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Tab {
@@ -65,6 +46,7 @@ impl Tab {
 struct Entry {
     film: FilmMeta,
     clip: Option<Clip>,
+    archive_clip: Option<(String, String)>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -81,7 +63,10 @@ struct State {
     selected: Option<Entry>,
     roster_page: usize,
     confirm_delete: bool,
-    web: bool,
+    selector: Selector,
+    recent_archives: HashSet<String>,
+    archive_clips: Vec<Entry>,
+    working: bool,
     status: String,
     clips: Vec<Clip>,
     clips_error: Option<String>,
@@ -90,6 +75,8 @@ struct State {
     revision: u64,
     open_generation: u64,
     player: Option<String>,
+    controller: u32,
+    account: Option<live_proto::Xuid>,
 }
 
 impl State {
@@ -105,42 +92,59 @@ impl State {
     }
 
     fn library_error(&self) -> Option<&str> {
-        if self.tab == Tab::Recent {
-            self.local_error.as_deref().or(self.archive_error.as_deref())
-        } else {
-            self.local_error.as_deref()
-        }
+        self.local_error
+            .as_deref()
+            .or(self.archive_error.as_deref())
     }
 
-    fn entries(&self) -> Vec<Entry> {
+    fn tab_entries(&self) -> Vec<Entry> {
         if self.tab == Tab::Clips {
-            return self
+            let mut entries: Vec<_> = self
                 .clips
                 .iter()
                 .rev()
                 .filter_map(|clip| {
                     let film = self.films().iter().find(|film| film.id == clip.film)?;
-                    if clip.to_tick > film.length_ticks {
+                    if film.length_ticks != 0 && clip.to_tick > film.length_ticks {
                         return None;
                     }
                     Some(Entry {
                         film: film.clone(),
                         clip: Some(clip.clone()),
+                        archive_clip: None,
                     })
                 })
                 .collect();
+            entries.extend(self.archive_clips.iter().cloned());
+            return entries;
         }
         self.films()
             .iter()
-            .filter(|film| self.tab == Tab::Recent || film.saved)
-            .take(if self.tab == Tab::Recent {
-                25
-            } else {
-                pages::MAX_ROWS - 1
+            .filter(|film| match self.tab {
+                Tab::Recent => {
+                    film.archive_id().is_none() || self.recent_archives.contains(&film.id)
+                }
+                Tab::Saved => film.saved,
+                Tab::Clips => false,
             })
             .cloned()
-            .map(|film| Entry { film, clip: None })
+            .map(|film| Entry {
+                film,
+                clip: None,
+                archive_clip: None,
+            })
             .collect()
+    }
+
+    fn entries(&self) -> Vec<Entry> {
+        let mut entries = self.tab_entries();
+        self.selector.apply(&mut entries);
+        entries.truncate(if self.tab == Tab::Recent {
+            25
+        } else {
+            pages::FILM_ROWS
+        });
+        entries
     }
 
     fn select(&mut self, entry: Entry) {
@@ -148,12 +152,12 @@ impl State {
         self.roster_page = 0;
         self.confirm_delete = false;
         self.status.clear();
-        self.web = false;
         self.changed();
     }
 
     fn change_tab(&mut self, right: bool) {
         self.tab = self.tab.next(right);
+        self.selector.clear_filters();
         self.changed();
     }
 }
@@ -162,8 +166,9 @@ impl State {
 struct Location {
     open: OpenLibrary,
     dir: PathBuf,
-    stamp: String,
+    stamps: Vec<String>,
     live: live_hle::LiveConfig,
+    signed_in: Option<Arc<live_hle::Hle>>,
 }
 
 /// The guest screens and desktop compositor share one controller.
@@ -176,6 +181,7 @@ struct Shared {
     library: Mutex<Option<Box<dyn Library>>>,
     location: Mutex<Option<Location>>,
     playback: Mutex<overlay::Session>,
+    archive_done: Mutex<Vec<(u64, pages::Action, Entry, Result<Option<Clip>, String>)>>,
     playback_dir: Option<PathBuf>,
 }
 
@@ -184,6 +190,7 @@ impl Theater {
     pub fn playback(
         film: FilmMeta,
         range: Option<[u64; 2]>,
+        clip_marks: [Option<u64>; 2],
         socket: PathBuf,
         dir: PathBuf,
     ) -> std::io::Result<Self> {
@@ -194,7 +201,15 @@ impl Theater {
         });
         let rpc = adapter::Playback::socket(socket)?;
         Ok(Self(Arc::new(Shared {
-            playback: Mutex::new(overlay::Session::playback(&Entry { film, clip }, rpc)),
+            playback: Mutex::new(overlay::Session::playback(
+                &Entry {
+                    film,
+                    clip,
+                    archive_clip: None,
+                },
+                rpc,
+                clip_marks,
+            )),
             playback_dir: Some(dir),
             ..Shared::default()
         })))
@@ -208,28 +223,45 @@ impl Theater {
         &self,
         registry: &mut feature::Registry,
         dir: &Path,
-        stamp: String,
+        stamps: Vec<String>,
         live: &live_hle::LiveConfig,
+        signed_in: Option<Arc<live_hle::Hle>>,
         open: OpenLibrary,
     ) -> anyhow::Result<()> {
         *self.0.location.lock().unwrap_or_else(|e| e.into_inner()) = Some(Location {
             open,
             dir: dir.to_owned(),
-            stamp,
+            stamps,
             live: live.clone(),
+            signed_in,
         });
         pages::install(registry, self.clone())
     }
 
     /// Opening Theater reads the local library and Live archives in the background.
-    pub(crate) fn open(&self, player: Option<String>) {
+    pub(crate) fn open(&self, controller: u32, player: Option<String>) {
+        let account = self
+            .0
+            .location
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .and_then(|location| location.signed_in.as_ref()?.signed_in_account(controller));
         let generation = {
             let mut state = self.state();
-            state.player = player;
+            state.controller = controller;
+            state.account = account.as_ref().map(|(xuid, _)| *xuid);
+            state.player = account.map(|(_, name)| name).or(player);
             state.open_generation = state.open_generation.wrapping_add(1);
             state.tab = Tab::Recent;
             state.selected = None;
-            state.web = false;
+            state.working = false;
+            state.status.clear();
+            state.selector = Selector::default();
+            state.recent_archives.clear();
+            state.archive_clips.clear();
+            state.clips.clear();
+            state.clips_error = None;
             state.load = Load::Loading;
             state.local_error = None;
             state.archive_error = None;
@@ -259,30 +291,13 @@ impl Theater {
             .clone();
         let Some(location) = location else { return };
         let local = (location.open)(&location.dir).and_then(|library| {
-            let films = library.list(&location.stamp)?;
+            let films = library.list(&location.stamps)?;
             Ok((library, films))
         });
-        let (opened, mut films, local_error) = match local {
+        let (opened, films, local_error) = match local {
             Ok((library, films)) => (Some(library), films, None),
             Err(error) => (None, Vec::new(), Some(error)),
         };
-        let archive = live_hle::films::recent(&location.live).and_then(|rows| {
-            rows.into_iter()
-                .map(FilmMeta::try_from)
-                .collect::<Result<Vec<_>, _>>()
-        });
-        let archive_error = match archive {
-            Ok(rows) => {
-                films.extend(rows);
-                None
-            }
-            Err(error) => Some(error),
-        };
-        films.sort_by(|a, b| {
-            b.started_ms
-                .cmp(&a.started_ms)
-                .then_with(|| a.id.cmp(&b.id))
-        });
         let clips = adapter::load_clips(&adapter::clips_path(&location.dir));
         let mut library = self.0.library.lock().unwrap_or_else(|e| e.into_inner());
         let mut state = self.state();
@@ -292,20 +307,96 @@ impl Theater {
         *library = opened;
         state.load = Load::Ready(films);
         state.local_error = local_error;
-        state.archive_error = archive_error;
         match clips {
-            Ok(clips) => {
-                state.clips = clips;
-                state.clips_error = None;
-            }
+            Ok(clips) => state.clips = clips,
             Err(error) => state.clips_error = Some(error),
         }
+        let account = state.account;
+        state.changed();
+        drop(state);
+        drop(library);
+        self.read_archives(generation, &location, account);
+    }
+
+    fn read_archives(
+        &self,
+        generation: u64,
+        location: &Location,
+        account: Option<live_proto::Xuid>,
+    ) {
+        let mut errors = Vec::new();
+        let Ok(Some(archive)) = live_hle::films::Archive::connect(&location.live, account)
+            .inspect_err(|error| errors.push(error.clone()))
+        else {
+            if let Some(error) = errors.pop() {
+                let mut state = self.state();
+                if state.open_generation == generation {
+                    state.archive_error = Some(error);
+                    state.changed();
+                }
+            }
+            return;
+        };
+        let recent = archive.recent().unwrap_or_else(|error| {
+            errors.push(error);
+            Vec::new()
+        });
+        let saved = archive.saved().unwrap_or_else(|error| {
+            errors.push(error);
+            Vec::new()
+        });
+        let clips = archive.clips().unwrap_or_else(|error| {
+            errors.push(error);
+            Vec::new()
+        });
+        let mut films = std::collections::BTreeMap::new();
+        let mut recent_ids = HashSet::new();
+        let mut archive_clips = Vec::new();
+        for (rows, pinned) in [(recent, false), (saved, true)] {
+            for row in rows {
+                if let Ok(mut film) = FilmMeta::try_from(row) {
+                    if !pinned {
+                        recent_ids.insert(film.id.clone());
+                    }
+                    film.saved = pinned;
+                    films.insert(film.id.clone(), film);
+                }
+            }
+        }
+        for row in clips {
+            let Ok(film) = FilmMeta::try_from(row.film) else {
+                continue;
+            };
+            if row.clip.from_tick >= row.clip.to_tick || !live_proto::game::valid_id(&row.clip.id) {
+                continue;
+            }
+            let film = films.entry(film.id.clone()).or_insert(film);
+            archive_clips.push(Entry {
+                film: film.clone(),
+                clip: Some(Clip {
+                    film: film.id.clone(),
+                    from_tick: row.clip.from_tick,
+                    to_tick: row.clip.to_tick,
+                }),
+                archive_clip: Some((row.clip.id, row.clip.title)),
+            });
+        }
+        let mut state = self.state();
+        if state.open_generation != generation {
+            return;
+        }
+        if let Load::Ready(list) = &mut state.load {
+            list.extend(films.into_values());
+        }
+        state.archive_clips = archive_clips;
+        state.recent_archives = recent_ids;
+        state.archive_error = errors.into_iter().next();
         state.changed();
     }
 
     fn change_library(&self, action: pages::Action, entry: &Entry) -> Result<(), String> {
         let id = &entry.film.id;
-        {
+        if entry.clip.is_none() {
             let library = self.0.library.lock().unwrap_or_else(|e| e.into_inner());
             let library = library.as_ref().ok_or("Film library is unavailable")?;
             match action {
@@ -362,7 +453,9 @@ impl Theater {
 
     fn refresh_clips(&self) {
         let location = self.0.location.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(location) = location.as_ref() else { return };
+        let Some(location) = location.as_ref() else {
+            return;
+        };
         let clips = adapter::load_clips(&adapter::clips_path(&location.dir));
         let mut state = self.state();
         match clips {
@@ -375,38 +468,150 @@ impl Theater {
         state.changed();
     }
 
-    fn url(&self, entry: &Entry) -> Option<String> {
-        let game_id = entry.film.web_game_id.as_deref()?;
-        let web = self
+    fn archive_action(&self, action: pages::Action, entry: Entry) {
+        let Some(location) = self
             .0
             .location
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .and_then(|l| l.live.server_url.clone())
-            .unwrap_or_else(|| live_proto::DEFAULT_SERVER.to_owned());
-        let web = web.trim_end_matches('/');
-        if game_id.is_empty() || matches!(game_id, "." | "..") {
-            return None;
-        }
-        let mut id = String::new();
-        use std::fmt::Write;
-        for b in game_id.bytes() {
-            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'~' | b'.') {
-                id.push(char::from(b));
-            } else {
-                let _ = write!(id, "%{b:02X}");
+            .clone()
+        else {
+            return;
+        };
+        let (generation, account) = {
+            let mut state = self.state();
+            if state.working {
+                return;
             }
+            state.working = true;
+            state.status = match action {
+                pages::Action::Watch => "Downloading host film...",
+                _ => "Updating account films...",
+            }
+            .into();
+            state.changed();
+            (state.open_generation, state.account)
+        };
+        let this = self.clone();
+        let work = std::thread::Builder::new()
+            .name("h2-theater-archive".into())
+            .spawn(move || {
+                let result = (|| {
+                    let archive = live_hle::films::Archive::connect(&location.live, account)?
+                        .ok_or("Live archives are unavailable")?;
+                    let game = entry.film.archive_id().ok_or("Missing Live film ID")?;
+                    match action {
+                        pages::Action::Watch => adapter::download_film(
+                            &archive,
+                            &location.dir,
+                            game,
+                            entry.archive_clip.as_ref().and(entry.clip.as_ref()),
+                            entry.film.live_start_tick,
+                        ),
+                        pages::Action::Save => {
+                            archive.set_saved(game, !entry.film.saved).map(|()| None)
+                        }
+                        pages::Action::Delete => {
+                            let (id, _) = entry.archive_clip.as_ref().ok_or("Missing clip ID")?;
+                            archive.delete_clip(id).map(|()| None)
+                        }
+                    }
+                })();
+                // Keep guest navigation and mutations on the menu's own pump.
+                let mut done = this
+                    .0
+                    .archive_done
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                done.push((generation, action, entry, result));
+            });
+        if let Err(error) = work {
+            let mut state = self.state();
+            state.working = false;
+            state.status = error.to_string();
+            state.changed();
         }
-        Some(format!("{web}/theater/{id}"))
     }
 
-    pub fn web_url(&self) -> Option<String> {
-        let entry = {
+    fn finish_archive_action(
+        &self,
+        generation: u64,
+        action: pages::Action,
+        entry: Entry,
+        result: Result<Option<Clip>, String>,
+    ) {
+        let result = result.and_then(|playback_clip| {
+            if action != pages::Action::Watch {
+                return Ok(());
+            }
             let state = self.state();
-            state.web.then(|| state.selected.clone()).flatten()?
+            let still_selected = state.open_generation == generation
+                && state
+                    .selected
+                    .as_ref()
+                    .is_some_and(|e| e.film.id == entry.film.id && e.clip == entry.clip);
+            drop(state);
+            if still_selected {
+                let mut playback = entry.clone();
+                if playback_clip.is_some() {
+                    playback.clip = playback_clip;
+                }
+                self.session().play(&playback)
+            } else {
+                Ok(())
+            }
+        });
+        let mut state = self.state();
+        if state.open_generation != generation {
+            return;
+        }
+        state.working = false;
+        let selected = state
+            .selected
+            .as_ref()
+            .is_some_and(|e| e.film.id == entry.film.id && e.clip == entry.clip);
+        let message = match result {
+            Err(error) => error,
+            Ok(()) => match action {
+                pages::Action::Watch => "Opening film...".into(),
+                pages::Action::Save => {
+                    let saved = !entry.film.saved;
+                    if let Load::Ready(films) = &mut state.load
+                        && let Some(film) = films.iter_mut().find(|f| f.id == entry.film.id)
+                    {
+                        film.saved = saved;
+                    }
+                    for clip in state
+                        .archive_clips
+                        .iter_mut()
+                        .filter(|c| c.film.id == entry.film.id)
+                    {
+                        clip.film.saved = saved;
+                    }
+                    if let Some(film) = state.selected.as_mut().filter(|_| selected) {
+                        film.film.saved = saved;
+                    }
+                    if saved {
+                        "Added to Saved".into()
+                    } else {
+                        "Removed from Saved".into()
+                    }
+                }
+                pages::Action::Delete => {
+                    state
+                        .archive_clips
+                        .retain(|clip| clip.archive_clip != entry.archive_clip);
+                    if selected {
+                        state.confirm_delete = false;
+                    }
+                    "Deleted".into()
+                }
+            },
         };
-        self.url(&entry)
+        if selected {
+            state.status = message;
+        }
+        state.changed();
     }
 
     pub(crate) fn connect(&self, agent: &agent::Agent) {
@@ -423,6 +628,22 @@ impl Theater {
 
     pub fn key(&self, key: Key, down: bool, repeat: bool) -> bool {
         self.session().key(key, down, repeat)
+    }
+
+    pub fn mouse_look(&self, dx: f64, dy: f64) -> bool {
+        self.session().mouse_look(dx, dy)
+    }
+
+    pub fn mouse_zoom(&self, amount: f32) -> bool {
+        self.session().mouse_zoom(amount)
+    }
+
+    pub fn scrub(&self, fraction: f32) -> bool {
+        self.session().scrub(fraction)
+    }
+
+    pub fn playing(&self) -> bool {
+        self.session().owns_pads()
     }
 
     pub fn release_keys(&self) {
@@ -455,6 +676,16 @@ impl Theater {
     /// Called outside the compositor and guest memory lock. A completed
     /// in/out pair becomes a range entry in the local Clips tab.
     pub fn pump(&self) {
+        let done = std::mem::take(
+            &mut *self
+                .0
+                .archive_done
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        );
+        for (generation, action, entry, result) in done {
+            self.finish_archive_action(generation, action, entry, result);
+        }
         let (clip, open_error) = {
             let mut session = self.session();
             session.pump();
@@ -474,17 +705,5 @@ impl Theater {
                 self.session().notice = Some(error);
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn theater_grows_only_the_main_menu_list() {
-        assert_eq!(menu::count(menu::LIST_NAME, 5), 6);
-        assert_eq!(menu::count(menu::LIST_NAME, 6), 6);
-        assert_eq!(menu::count(crate::custom_games::LIST_NAME, 5), 5);
     }
 }

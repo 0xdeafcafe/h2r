@@ -4,6 +4,10 @@
 use std::{collections::BTreeSet, ops::Range};
 
 use bytes::Bytes;
+use futures_util::{
+    StreamExt, TryStreamExt,
+    stream::{self, BoxStream},
+};
 use live_proto::film::{MAX_UPLOAD_BYTES, PART_BYTES};
 use serde::{Deserialize, Serialize};
 
@@ -124,6 +128,41 @@ pub(in crate::films) async fn retained_keys(
     Ok(keys)
 }
 
+/// Stream the original bytes in order. Each part's object stream opens
+/// on demand so Worker memory and open R2 requests stay bounded.
+pub(super) async fn get_stream(
+    store: &BlobStore,
+    key: &str,
+) -> Result<Option<(u64, BoxStream<'static, Result<Bytes>>)>> {
+    if !key.ends_with(".parts") {
+        return store.get_stream(key).await;
+    }
+    let Some(manifest) = load_manifest(store, key).await? else {
+        return Ok(None);
+    };
+    let size = manifest.size;
+    let store = store.clone();
+    let key = key.to_owned();
+    let stream = stream::iter(manifest.parts.into_iter().enumerate())
+        .then(move |(n, digest)| {
+            let key = part_key(&key, n as u64, &digest);
+            let store = store.clone();
+            async move {
+                let (stored, body) = store
+                    .get_stream(&key)
+                    .await?
+                    .ok_or_else(|| BlobError::Changed(key.clone()))?;
+                if stored != (size - n as u64 * PART_BYTES).min(PART_BYTES) {
+                    return Err(BlobError::Changed(key));
+                }
+                Ok(body)
+            }
+        })
+        .try_flatten()
+        .boxed();
+    Ok(Some((size, stream)))
+}
+
 /// Read a right-exclusive byte range and return the total recording length.
 /// Only read parts intersecting the requested range. Missing selected parts
 /// indicate an inconsistent recording; a missing manifest denotes no film.
@@ -206,6 +245,18 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(&bytes[..], b"ABend");
+
+        let (declared, mut original) = get_stream(&store, KEY).await.unwrap().unwrap();
+        assert_eq!(declared, size);
+        let mut position = 0u64;
+        let mut last_five = Vec::new();
+        while let Some(chunk) = original.try_next().await.unwrap() {
+            let skip = (size - 5).saturating_sub(position).min(chunk.len() as u64) as usize;
+            last_five.extend_from_slice(&chunk[skip..]);
+            position += chunk.len() as u64;
+        }
+        assert_eq!(position, size);
+        assert_eq!(last_five, b"ABend");
 
         publish(&store, KEY, size, &hashes).await.unwrap();
         assert!(publish(&store, KEY, size - 1, &hashes).await.is_err());

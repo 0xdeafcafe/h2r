@@ -404,11 +404,12 @@ Set by `crates/live-server/src/caching.rs` on GET and HEAD responses whose handl
 - Everything else under `/v1/` is `private, no-store`: any request with `Authorization` or an `auth` query mark (the web app adds `auth=1` to every read it sends with a token, because a CDN's cache key leaves out `Authorization`), any error, and every other route.
 - Art (`/art/*`) and title files keep their own headers.
 
-## Web Theater
+## Theater
 
-Web Theater reads the host film's timed presentation records. Older recordings
-use the [spectator archive](replay-fidelity.md). Pins and clips reference
-the canonical game ID and the original tick range.
+Web Theater reads presentation and event records from the host film. Older
+recordings use the [spectator archive](replay-fidelity.md). In-game Theater
+downloads the private host recording for exact playback. Pins and clips
+reference the canonical game ID and the original tick range.
 
 | Method and path | Token scope | Result |
 |---|---|---|
@@ -420,6 +421,7 @@ the canonical game ID and the original tick range.
 | `PUT /v1/games/{game}/film?part=<n>` | lease `telemetry.ingest` | Submit the next numbered part. Returns 202 while processing and 204 when ready for the next part. |
 | `POST /v1/films/{game}/save` | `films.write` | Save the game for the caller. The caller must have played in it. Returns 204, including a repeated save. |
 | `DELETE /v1/films/{game}/save` | `films.write` | Remove the caller's own pin. The caller must have played in the game. Returns 204 even if the pin is already absent. |
+| `GET /v1/games/{game}/film` without a range | `read`, game participant | Streams the private exact host recording (up to 2 GiB). |
 | `GET /v1/films/{game}/clips` | public or `read` | The game's clips, newest first. |
 | `POST /v1/films/{game}/clips` | `films.write` | An account that can see the game can create a clip. Returns the clip with 201. |
 | `GET /v1/clips/{id}` | public or `read` | The clip. |
@@ -432,13 +434,18 @@ Recent films have `next: null`. A film with game telemetry has this shape:
 ```json
 { "game_id": "9ab0", "map": "lockout", "mode": "multiplayer",
   "variant": "Team Slayer", "started_at": "2026-11-19T19:30:00Z",
-  "duration_s": 230, "result": "win", "has_host_film": false }
+  "duration_s": 230, "result": "win", "has_host_film": true,
+  "ticks_per_second": 30, "start_tick": 90,
+  "kind": "matchmaking", "playlist": "Team Slayer",
+  "difficulty": null, "online": null, "players": [], "scoreboard": [] }
 ```
 
-`variant` can be null. For a finished game, `duration_s` measures whole
-seconds from the start and end ticks. The listing supplies `ticks_per_second`
-from the host film. Legacy recordings use 30 Hz. Clip length limits and
-previews use the same rate. Old games without a start tick use
+`players` and `scoreboard` use the same entries as the game detail.
+`variant`, `playlist`, `difficulty` and `online` can be null.
+For a finished game, `duration_s` measures whole seconds from the start and
+end ticks. The listing supplies `ticks_per_second` from the host film.
+Legacy recordings use 30 Hz. Clip length limits and previews use the same
+rate. When available, `start_tick` is the ledger’s guest tick for GameStarted. Old games without a start tick use
 elapsed wall time, with zero for lost games from that era. Live games have
 `duration_s: null`. The player's `result` is `win`, `loss`, `draw` or null
 when there is no result for that player. On an authored clip's film, the
@@ -460,8 +467,9 @@ by its declared length. Use `Range: bytes=-40` to locate the compressed cinema
 index. Fetch one entire indexed time chunk (including the eight-byte envelope)
 per range for decoding. Reads within any one public extent can also request a
 smaller byte range. Live checks visibility on each origin request. A missing or hidden v3 film
-returns 404. Requests for the full file, private ranges or multiple ranges
-return 416. See the [film format](../game/film-format.md) for offsets.
+returns 404. Private ranges and multiple ranges return 416. To download
+the full file, a participant in the game ledger sends an authenticated GET
+without a range or any of the range query parameters. See the [film format](../game/film-format.md) for offsets.
 
 A successful range read of an immutable host upload returns a strong ETag
 of the form `"film-<revision>"`. For an indexed time chunk, append

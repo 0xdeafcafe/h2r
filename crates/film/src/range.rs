@@ -138,9 +138,7 @@ pub fn read_front<R: Read + Seek>(input: &mut R) -> Result<Front> {
 }
 
 /// Read the finalised local menu data in constant I/O, regardless of match length.
-pub(super) fn listing<R: Read + Seek>(
-    input: &mut R,
-) -> Result<Option<(crate::Header, blam::Summary)>> {
+pub(super) fn listing<R: Read + Seek>(input: &mut R) -> Result<Option<(crate::Header, Front)>> {
     let mut magic = [0; 8];
     input.rewind()?;
     input.read_exact(&mut magic)?;
@@ -165,7 +163,7 @@ pub(super) fn listing<R: Read + Seek>(
     );
     let header: Header = crate::decode(input, &head)?;
     validate_header(&header, &front)?;
-    Ok(Some((header, front.summary)))
+    Ok(Some((header, front)))
 }
 
 fn validate_header(header: &Header, front: &Front) -> Result<()> {
@@ -283,8 +281,14 @@ pub(super) fn open<R: Read + Seek>(mut input: R, len: u64) -> Result<Reader<R>> 
         "incorrect final film header reference"
     );
     let header: Header = crate::decode(&mut input, last)?;
-    ensure!(initial.telemetry_hooks == header.telemetry_hooks, "film telemetry hook plan changed");
-    ensure!(initial.render_hooks == header.render_hooks, "film render hook profile changed");
+    ensure!(
+        initial.telemetry_hooks == header.telemetry_hooks,
+        "film telemetry hook plan changed"
+    );
+    ensure!(
+        initial.render_hooks == header.render_hooks,
+        "film render hook profile changed"
+    );
     for h in [&initial, &header] {
         validate_header(h, &front)?;
     }

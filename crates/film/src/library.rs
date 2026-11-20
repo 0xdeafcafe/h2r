@@ -10,6 +10,7 @@ pub struct LibraryEntry {
     pub meta: FilmMeta,
     /// None for v1 films, which have only the original header score line.
     pub summary: Option<crate::blam::Summary>,
+    pub ticks_per_second: Option<u16>,
     pub version: u32,
     pub runtime_stamp: String,
     pub xbe_sha256: String,
@@ -19,6 +20,51 @@ pub struct LibraryEntry {
     pub game_id: Option<String>,
     pub path: PathBuf,
 }
+impl LibraryEntry {
+    /// Read the selector row for one file, including a downloaded archive
+    /// outside the local library. V3 needs only the front, footer and final HEAD.
+    pub fn read(path: &Path) -> Result<Self> {
+        let mut file = fs::File::open(path)?;
+        let (header, summary, ticks_per_second) = match crate::range::listing(&mut file)? {
+            Some((header, front)) => (header, Some(front.summary), front.ticks_per_second),
+            None => {
+                let mut reader = Reader::new(file)?;
+                let (summary, rate) = if reader.header.version == 2 {
+                    let summary = crate::blam::summary(&mut reader)?;
+                    let rate = if let Some(entry) = reader
+                        .entries
+                        .iter()
+                        .find(|e| e.tag == crate::blam::DESC)
+                        .cloned()
+                    {
+                        let desc: crate::blam::MatchHeader = reader.read(&entry)?;
+                        desc.ticks_per_second
+                    } else {
+                        None
+                    };
+                    (Some(summary), rate)
+                } else {
+                    (None, None)
+                };
+                (reader.header, summary, rate)
+            }
+        };
+        Ok(Self {
+            version: header.version,
+            runtime_stamp: header.runtime_stamp,
+            xbe_sha256: header.xbe_sha256,
+            guest_image: header.guest_image,
+            summary,
+            ticks_per_second,
+            game_id: header.game_id.or_else(|| header.lease_id.clone()),
+            lease_id: header.lease_id,
+            saved: path.with_extension("h2film.saved").is_file(),
+            path: path.into(),
+            meta: header.meta,
+        })
+    }
+}
+
 impl std::ops::Deref for LibraryEntry {
     type Target = FilmMeta;
     fn deref(&self) -> &FilmMeta {
@@ -43,41 +89,10 @@ impl Library {
             if !file.file_type()?.is_file() || path.extension().is_none_or(|s| s != "h2film") {
                 continue;
             }
-            // A recorder may still be writing its first HEAD. Keep the
-            // other films available when a recording has no readable header.
-            let Ok(mut file) = fs::File::open(&path) else {
-                continue;
-            };
-            let (header, summary) = match crate::range::listing(&mut file) {
-                Ok(Some((header, summary))) => (header, Some(summary)),
-                Ok(None) => {
-                    let Ok(mut reader) = Reader::new(file) else {
-                        continue;
-                    };
-                    let summary = if reader.header.version == 2 {
-                        let Ok(summary) = crate::blam::summary(&mut reader) else {
-                            continue;
-                        };
-                        Some(summary)
-                    } else {
-                        None
-                    };
-                    (reader.header, summary)
-                }
-                Err(_) => continue,
-            };
-            rows.push(LibraryEntry {
-                version: header.version,
-                runtime_stamp: header.runtime_stamp,
-                xbe_sha256: header.xbe_sha256,
-                guest_image: header.guest_image,
-                summary,
-                game_id: header.game_id.or_else(|| header.lease_id.clone()),
-                lease_id: header.lease_id,
-                saved: path.with_extension("h2film.saved").is_file(),
-                path,
-                meta: header.meta,
-            });
+            // The first HEAD or the final index may still be in flight.
+            if let Ok(entry) = LibraryEntry::read(&path) {
+                rows.push(entry);
+            }
         }
         rows.sort_by(|a, b| {
             b.meta

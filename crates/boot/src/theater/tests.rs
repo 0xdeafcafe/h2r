@@ -1,3 +1,5 @@
+mod bot_inputs;
+
 use super::*;
 use agent_proto::theater as api;
 use runtime::guest::Permissions;
@@ -30,15 +32,16 @@ fn theater_replays_checkpoints_reports_first_divergence_and_registers_controls()
         rec.checkpoint(&g);
     }
     rec.finish(90, true).unwrap();
-    let open = |facts| {
+    let open = |facts, render_every| {
         Session::open(
             None,
             Some(Replay {
                 path: file.clone(),
-                render_every: 0,
+                render_every,
                 speed: 1.,
                 seek_tick: 0,
                 paused_at_target: false,
+                presentation: Presentation::default(),
                 restart: dir.join("restart"),
                 camera: Default::default(),
                 window_closed: None,
@@ -48,12 +51,12 @@ fn theater_replays_checkpoints_reports_first_divergence_and_registers_controls()
             &opts,
         )
     };
-    let wrong = open(Facts {
-        stamp: "other image".into(),
-        ..facts()
-    });
+    let wrong = open(
+        Facts { stamp: "other image".into(), ..facts() },
+        0,
+    );
     assert!(wrong.is_err_and(|e| e.to_string().contains("image stamp differs")));
-    let replay = || open(facts()).unwrap().unwrap();
+    let replay = || open(facts(), 0).unwrap().unwrap();
     let matching = replay();
     for _ in 0..60 {
         matching.checkpoint(&g);
@@ -100,22 +103,26 @@ fn theater_replays_checkpoints_reports_first_divergence_and_registers_controls()
     assert!(call(api::SPEED, json!({"speed":5}))["error"].is_object());
     assert_eq!(
         call(api::CAMERA, json!({"mode":"free"}))["error"]["message"],
-        "unsupported film camera mode"
+        "playback has no rendered view"
     );
-    let camera = match &player.lock().mode {
-        Mode::Replay(_, selected) => selected.camera.clone(),
+    let rendered = open(facts(), 1).unwrap().unwrap();
+    rendered.add_methods(&a);
+    let camera = match &rendered.lock().mode {
+        Mode::Replay(_, replay) => replay.camera.clone(),
         Mode::Record(_) => unreachable!(),
     };
     camera.host_seats(&[4, 7]);
     let chosen = call(api::CAMERA, json!({"mode":"first_person", "seat":7}));
-    assert_eq!(chosen["result"]["camera"], "first_person");
+    assert_eq!(chosen["result"]["camera"], "first-person");
     assert_eq!(chosen["result"]["camera_seat"], 7);
     assert_eq!(camera.requested_seat(), Some(7));
-    assert!(call(api::CAMERA, json!({"mode":"first_person","seat":3}))["error"].is_object());
-    assert_eq!(
-        call(api::CAMERA, json!({"mode":"default"}))["result"]["camera"],
-        "default"
-    );
+    assert!(call(api::CAMERA, json!({"mode":"first-person","seat":3}))["error"].is_object());
+    assert_eq!(call(api::CAMERA, json!({"mode":"orbit","seat":4,"zoom":2}))["result"]["camera"], "orbit");
+    assert_eq!(call(api::CAMERA, json!({"mode":"default"}))["result"]["camera"], "default");
+    rendered.lock().header.meta.source = Source::Local;
+    assert!(call(api::CAMERA, json!({"mode":"orbit"}))["error"].is_object());
+    assert_eq!(call(api::CAMERA, json!({"mode":"first-person","seat":7}))["result"]["camera_seat"], 7);
+    player.add_methods(&a);
     for _ in 0..30 {
         player.checkpoint(&g);
     }
@@ -217,6 +224,7 @@ fn sealed_film_reinstalls_the_recorders_telemetry_and_impact_hook_chains() {
                     speed: 1.,
                     seek_tick: 0,
                     paused_at_target: false,
+                    presentation: Presentation::default(),
                     restart: dir.join("restart"),
                     camera: Default::default(),
                     window_closed: None,
@@ -424,6 +432,7 @@ fn seek_restores_machine_and_replays_only_the_remaining_ticks() {
         speed: 1.,
         seek_tick: 31,
         paused_at_target: true,
+        presentation: Presentation::default(),
         restart: dir.join("restart"),
         camera: Default::default(),
                 window_closed: None,

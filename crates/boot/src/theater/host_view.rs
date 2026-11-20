@@ -43,7 +43,7 @@ pub(super) struct MountedView {
     target: OffscreenTarget,
     pool: gfx::ring::UploadPool,
     map: Option<(Bsp, Option<Scene>)>,
-    last: Option<(u64, Option<u8>)>,
+    last: Option<(u64, u64)>,
     error: Option<String>,
     unavailable: Vec<String>,
     blank: bool,
@@ -86,19 +86,23 @@ impl Session {
             }
             (s.tick, r.render_every, s.paused, r.camera.clone())
         };
-        let selection = camera.requested_seat();
+        let revision = camera.revision();
         let mut view = view.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(last) = view.last {
-            if last == (tick, selection)
-                || (!paused && selection == last.1 && !tick.is_multiple_of(u64::from(every)))
+            if last == (tick, revision)
+                || (!paused && revision == last.1 && !tick.is_multiple_of(u64::from(every)))
             {
                 return;
             }
         }
-        view.last = Some((tick, selection));
+        view.last = Some((tick, revision));
         // Release the guest memory gate before reading files, uploading or presenting.
         let mut unavailable = Vec::new();
-        let frame = Frame::read(&rt.memory(), &mut unavailable);
+        let frame = Frame::read(
+            &rt.memory(),
+            view.map.as_ref().map(|(bsp, _)| bsp),
+            &mut unavailable,
+        );
         if unavailable != view.unavailable {
             for message in &unavailable {
                 if !view.unavailable.contains(message) {
@@ -107,7 +111,7 @@ impl Session {
             }
             view.unavailable = unavailable;
         }
-        if let Err(e) = view.draw(frame, &camera, selection) {
+        if let Err(e) = view.draw(frame, &camera) {
             if view.error.as_deref() != Some(&e) {
                 eprintln!("theater: playerless observer: {e}");
                 view.error = Some(e);
@@ -138,7 +142,11 @@ struct Frame {
 }
 
 impl Frame {
-    fn read(g: &runtime::Guest, unavailable: &mut Vec<String>) -> Option<Self> {
+    fn read(
+        g: &runtime::Guest,
+        previous: Option<&Bsp>,
+        unavailable: &mut Vec<String>,
+    ) -> Option<Self> {
         let eyes: Vec<_> = players::array(g)
             .ok()??
             .live(g, 16)
@@ -159,18 +167,23 @@ impl Frame {
                 }
             })
             .collect();
-        if eyes.is_empty() {
+        if eyes.is_empty() && previous.is_none() {
             return None;
         }
         let map = crate::telemetry::loaded_map_name(g).unwrap_or_default();
         let address = g.u32(feature::native_world::ACTIVE_BSP).ok();
         let index = world_glue::active_bsp_index(g);
         let (Some(index), Some(address)) = (index, address.filter(|&a| a != 0)) else {
-            unavailable.push(format!("map {map:?} has player views but no active BSP"));
+            if !eyes.is_empty() {
+                unavailable.push(format!("map {map:?} has player views but no active BSP"));
+            }
             return None;
         };
         if map.is_empty() {
-            unavailable.push("player views are ready but the active cache has no map name".into());
+            if !eyes.is_empty() {
+                unavailable
+                    .push("player views are ready but the active cache has no map name".into());
+            }
             return None;
         }
         let bsp = Bsp {
@@ -180,6 +193,11 @@ impl Frame {
             source: crate::map_slots::current_source(g)
                 .and_then(|p| crate::map_slots::slot_file(&p)),
         };
+        // While every player is respawning, continue rendering a detached
+        // camera in the last map it actually saw. Never open a menu BSP for it.
+        if eyes.is_empty() && previous != Some(&bsp) {
+            return None;
+        }
         let mem = ReadMemory(g);
         let objects = objects::array(g)
             .ok()??
@@ -261,6 +279,7 @@ struct Scene {
     ctx: tags::object::Context,
     raw: Raw,
     uploaded: HashMap<u32, Option<u32>>,
+    previous_view: Option<RenderCamera>,
 }
 
 fn textures(
@@ -340,6 +359,7 @@ impl Scene {
             ctx,
             raw,
             uploaded: Default::default(),
+            previous_view: None,
         })
     }
 
@@ -376,12 +396,7 @@ impl Scene {
 }
 
 impl MountedView {
-    fn draw(
-        &mut self,
-        frame: Option<Frame>,
-        camera: &FilmCamera,
-        selection: Option<u8>,
-    ) -> Result<(), String> {
+    fn draw(&mut self, frame: Option<Frame>, camera: &FilmCamera) -> Result<(), String> {
         let gfx = &self.output.gfx;
         let target = self.target.target();
         let depth = target.depth.expect("offscreen depth");
@@ -401,13 +416,34 @@ impl MountedView {
             }
             if let Some((_, Some(scene))) = &mut self.map {
                 camera.host_seats(&frame.eyes.iter().map(|e| e.seat).collect::<Vec<_>>());
-                let eye = match selection {
-                    Some(slot) => frame.eyes.iter().find(|e| e.seat == slot),
-                    None => frame.eyes.first(),
-                };
-                if let Some(eye) = eye {
-                    scene.models(gfx, &frame.objects);
-                    visible = Some((scene, eye, &frame.objects));
+                let eyes = frame
+                    .eyes
+                    .iter()
+                    .map(|e| (e.seat, e.camera.position, e.camera.forward))
+                    .collect::<Vec<_>>();
+                if let Some((seat, position, forward, first_person)) = camera.host_pose(&eyes) {
+                    let eye = frame.eyes.iter().find(|e| e.seat == seat);
+                    let lens = eye
+                        .map(|e| e.camera)
+                        .or(scene.previous_view.filter(|_| !first_person));
+                    if let Some(lens) = lens {
+                        let up = if first_person {
+                            lens.up
+                        } else if forward[2].abs() > 0.9999 {
+                            [1., 0., 0.]
+                        } else {
+                            [0., 0., 1.]
+                        };
+                        let view = RenderCamera {
+                            position,
+                            forward,
+                            up,
+                            ..lens
+                        };
+                        scene.previous_view = Some(view);
+                        scene.models(gfx, &frame.objects);
+                        visible = Some((scene, view, eye.filter(|_| first_person), &frame.objects));
+                    }
                 }
             } else {
                 camera.host_seats(&[])
@@ -415,7 +451,7 @@ impl MountedView {
         } else {
             camera.host_seats(&[])
         }
-        // On death or during a map transition discard the previous POV.
+        // A map transition or lost first-person subject clears the last POV.
         let blank = visible.is_none();
         if blank && self.blank {
             return Ok(());
@@ -448,10 +484,13 @@ impl MountedView {
             multiview_mask: None,
         }));
         let arena = self.pool.begin();
-        if let Some((scene, eye, objects)) = visible {
+        if let Some((scene, view, hidden, objects)) = visible {
             let instances: Vec<_> = objects
                 .iter()
-                .filter(|o| o.handle != eye.unit && !eye.weapons.contains(&o.handle))
+                .filter(|o| {
+                    hidden
+                        .is_none_or(|eye| o.handle != eye.unit && !eye.weapons.contains(&o.handle))
+                })
                 .filter_map(|o| {
                     Some(ObjectInput {
                         model: (*scene.uploaded.get(&o.definition)?)?,
@@ -466,16 +505,10 @@ impl MountedView {
                 encoder: &mut encoder,
                 arena: &arena,
             };
+            scene.world.prepare(&mut uploads, &view, DepthRule::D24);
             scene
-                .world
-                .prepare(&mut uploads, &eye.camera, DepthRule::D24);
-            scene.models.prepare(
-                &gfx.device,
-                &mut uploads,
-                &eye.camera,
-                DepthRule::D24,
-                &instances,
-            );
+                .models
+                .prepare(&gfx.device, &mut uploads, &view, DepthRule::D24, &instances);
             let viewport = PassViewport {
                 x: 0.,
                 y: 0.,

@@ -835,8 +835,6 @@ impl feature::Feature for Bots {
             "bot pads; hide bot views",
             move |c| {
                 let _cpu = timeline::host::Subsystem::Bots.span();
-                let bots = local.port_mask();
-                let any_phantoms = !phantoms.is_empty();
                 let f = frame.fetch_add(1, Ordering::Relaxed);
                 // A Live session made after the Clankers page was set gets
                 // its roster (docs/game/bots.md stage 6c), and a
@@ -863,6 +861,8 @@ impl feature::Feature for Bots {
                 {
                     film::tape::Tap::fault(session.as_ref(), error.to_string());
                 }
+                let bots = local.port_mask();
+                let any_phantoms = !phantoms.is_empty();
                 if bots == 0 && !any_phantoms {
                     return Ok(Flow::Continue);
                 }

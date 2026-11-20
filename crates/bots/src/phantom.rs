@@ -160,6 +160,8 @@ pub fn lobby_wanted(v: Option<&str>) -> bool {
 struct Books {
     list: Vec<Phantom>,
     hosted_game: Option<u32>,
+    /// Last sampled game tick and whether the opening fade was still active.
+    opening_fade: Option<(u32, bool)>,
     /// A headless sim that deliberately has no local player configuration to copy.
     playerless_host: bool,
     next: u32,
@@ -432,9 +434,12 @@ impl Phantoms {
             Some(Phase::Game(session)) => Some(session),
             _ => None,
         };
-        if b.hosted_game.is_some() && b.hosted_game != hosted_game {
-            for p in &mut b.list {
-                p.reset_input();
+        if b.hosted_game != hosted_game {
+            b.opening_fade = None;
+            if b.hosted_game.is_some() {
+                for p in &mut b.list {
+                    p.reset_input();
+                }
             }
         }
         b.hosted_game = hosted_game;

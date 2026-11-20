@@ -169,7 +169,9 @@ test("public lifecycle ignores extra private members and rejects invalid seats",
 });
 
 test("legacy or absent film goes through archive fallback; invalid v3 fails closed", async () => {
-  expect(await openHostFilm(async () => new Response(null, {status: 404}))).toBeNull();
+  for (const status of [401, 403, 404]) {
+    expect(await openHostFilm(async () => new Response(null, {status}))).toBeNull();
+  }
   expect(await openHostFilm(async () => new Response("no Range support"))).toBeNull();
   const f = fixture();
   f.bytes[8] = 7;
@@ -217,6 +219,9 @@ test("the REST reader pins each range URL to the film revision from its first re
   try {
     globalThis.fetch = (async (input: string, init: RequestInit) => {
       const url = new URL(input);
+      // Three initialises its decoder by fetching an embedded WASM data
+      // URL, including when this test runs on its own with a cold decoder.
+      if (url.protocol === "data:") return original(input, init);
       urls.push(url);
       const range = new Headers(init.headers).get("Range")!;
       if (urls.length > 1) {

@@ -1940,17 +1940,32 @@ directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
 | `theater.state` | `{}` | Transport state, or `{id:null}` with no player |
 | `theater.pause` | `{}` | Holds guest execution and reports state |
 | `theater.speed` | `{"speed":0.5}` | Sets host pacing from 0.25 to 4 times realtime |
-| `theater.seek` | `{"tick":900}` | Requests restart and unpaced replay to that tick. Direct socket clients reconnect after the restart |
-| `theater.camera` | `{"mode":"first_person","seat":3}` or `{"mode":"default"}` | Selects a player by their absolute film seat (0–15), or restores the default view. The reply includes `camera` and, for a selected player, `camera_seat`. Returns `UNAVAILABLE` if the seat has no first-person view in the current frame. |
+| `theater.seek` | `{"tick":900}`, optionally `"clip_marks":[300,null]` | Restarts the player and fast-forwards to the target, carrying camera and timeline state. Direct socket clients reconnect after the restart. |
+| `theater.camera` | `{"mode":"orbit","player":"Player","look":[0.2,-0.1],"zoom":-1}` or `{"mode":"first_person","seat":3}` | Selects the view and returns transport state. An absolute film seat is in the range 0–15. |
 
 The rendered player starts at the clip's first tick and loops at its end.
 Its overlay uses the player's agent socket for transport and
 `cheat.set {"name":"hide_hud","value":true}` for the HUD. A paused player
-accepts the HUD setting and applies it when rendering resumes.
+accepts HUD and camera changes and applies them to the next rendered frame.
+
+Rendered host playback starts in `free`. Its other modes are `orbit`,
+`follow`, `first-person` and `default`. In a playerless version 2 or 3
+host film, `default` uses the first available player’s eye position.
+`orbit`, `follow` and `first-person` accept a player name or an absolute
+film seat. With neither, they use the first spawned player. `look` adjusts
+yaw and pitch in radians for `free` and `orbit`. In `free`, `movement`
+adjusts strafe, forward and rise in world units. In `orbit`, `zoom`
+changes the radius in world units.
+
+Local playback starts in `default` and shows the whole retail frame.
+Version 3 also accepts `first-person` with a local player’s name or seat
+to select a drawn viewport. Headless playback (`--render-every 0`)
+accepts only `default`.
 
 Transport state carries `id`, `tick`, `length_ticks`, `paused`, `speed`,
-`seeking` and `camera`, alongside the agent's usual `at` stamp. Tick zero
-is boot. A paused seek holds at its target until play. The HLE compares
+`seeking`, `camera`, optional `camera_player` and `camera_seat` fields,
+and discovered kill marker ticks in `kills`, alongside the agent’s usual
+`at` stamp. Tick zero is boot. A paused seek holds at its target until play. The HLE compares
 the recorded call index and game-thread hash samples during fast-forward.
 
 ```sh

@@ -1501,13 +1501,19 @@ fn run_configured(
             .map(PathBuf::from)
             .unwrap_or_else(|| opts.data_root.join("films"))
     };
+    let film_out = {
+        let parent = dylib.parent().unwrap_or(Path::new("."));
+        if tier == tier::Tier::Fast { parent.parent().unwrap_or(parent) } else { parent }
+    };
+    let film_stamps = || theater::playback_images(xbe_bytes, film_out)
+        .into_iter().map(|(_, stamp)| stamp).collect::<Vec<_>>();
     let theater = if let Some((theater, open)) = host.theater.take() {
-        let stamp = running_stamp();
         theater.install(
             &mut features,
             &film_dir(),
-            stamp,
+            film_stamps(),
             live,
+            _live.clone(),
             open,
         )?;
         Some(theater)
@@ -1940,18 +1946,13 @@ fn run_configured(
         }
     }
     if !replaying && let Some(a) = &agent {
-        let parent = dylib.parent().unwrap_or(Path::new("."));
-        let out = if tier == tier::Tier::Fast {
-            parent.parent().unwrap_or(parent)
-        } else {
-            parent
-        };
         theater::library_methods(
             &a.agent,
             film_dir(),
             opts.disc.clone(),
-            out.to_owned(),
+            film_out.to_owned(),
             opts.data_root.clone(),
+            film_stamps(),
         );
     }
     // Part of a machine snapshot's build key (snapshot_glue.rs).

@@ -170,8 +170,9 @@ async function unpack(bytes: Uint8Array, tag: string, rawSize: number, inflate: 
 
 export async function openHostFilm(read: Read, signal?: AbortSignal, inflate: FilmInflate = expand) {
   const probe = await read("bytes=0-31", signal);
-  // Old servers, legacy uploads and games without a range-readable film.
-  if ([200, 404, 405, 416].includes(probe.status)) { await probe.body?.cancel(); return null; }
+  // On servers with the participant-only download route even a public
+  // game can answer 401/403 to the probe. Its telemetry has its own ACL.
+  if ([200, 401, 403, 404, 405, 416].includes(probe.status)) { await probe.body?.cancel(); return null; }
   if (!probe.ok) {
     await probe.body?.cancel();
     throw new Error(`Host film request failed (HTTP ${probe.status})`);

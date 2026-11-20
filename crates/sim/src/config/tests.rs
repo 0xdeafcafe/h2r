@@ -817,3 +817,21 @@ fn swapped_layout_can_be_playerless_but_still_has_at_most_four_pads() {
             .contains("at most 4 controller ports")
     );
 }
+
+#[test]
+fn bot_work_rates_overlay_per_field_and_validate_tick_limits() {
+    let base: BotParams = toml::from_str("foot_plan_ticks = 6\nplayer_los_ticks = 3").unwrap();
+    let overlay: BotParams = toml::from_str(
+        "player_los_ticks = 1\nvehicle_lookahead_ticks = 2\nvehicle_plan_ticks = 30",
+    )
+    .unwrap();
+    let merged = base.overlay(&overlay);
+    assert_eq!(merged.foot_plan_ticks, Some(6));
+    assert_eq!(merged.player_los_ticks, Some(1));
+    assert_eq!(merged.vehicle_lookahead_ticks, Some(2));
+    assert_eq!(merged.vehicle_plan_ticks, Some(30));
+    assert!(merged.problems("bot").is_empty());
+
+    let bad: BotParams = toml::from_str("foot_plan_ticks = 0\nvehicle_plan_ticks = 31").unwrap();
+    assert_eq!(bad.problems("bot").len(), 2);
+}

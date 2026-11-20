@@ -823,6 +823,8 @@ pub fn restore_pads(m: &mut dyn GuestMemory, h: &HiddenPads) -> R<()> {
 pub const OPTIONS: u32 = 8;
 pub const MODE_MULTIPLAYER: u32 = 2;
 pub const VARIANT_FLAGS: u32 = 0x134 + 0x48;
+/// The game-time record's ticks per second (`[GAME_TIME] + 2`).
+pub(crate) const GAME_TIME_RATE: u32 = 2;
 /// The game-time record's tick count (`[GAME_TIME] + 8`).
 pub const GAME_TIME_TICK: u32 = 8;
 /// Unit `+0x168`: the aim, a world-space unit vector.
@@ -833,6 +835,32 @@ const BIPED_CROUCH_REQUEST: u32 = 1 << 23;
 
 /// Object body damage flags bit 2: the body is depleted (dead).
 pub const BODY_DEPLETED: u16 = 1 << 2;
+
+/// A fast same-tick check before reusing a local bot's already sampled pad.
+pub(crate) fn same_live_unit(m: &dyn GuestMemory, who: Who, slot: u32, unit: u32) -> bool {
+    let check = || -> R<bool> {
+        if game_mode(m) != Some(MODE_MULTIPLAYER) {
+            return Ok(false);
+        }
+        let Some(array) = players::array(m)? else {
+            return Ok(false);
+        };
+        let Some(p) = array.get_absolute(m, slot as i32)? else {
+            return Ok(false);
+        };
+        if !p.listed(m)? || !is(m, &p, who)? {
+            return Ok(false);
+        }
+        let Some(handle) = p.unit(m)?.filter(|h| h.raw() == unit) else {
+            return Ok(false);
+        };
+        let Some((kind, body)) = objects::get(m, handle)? else {
+            return Ok(false);
+        };
+        Ok(kind == objects::BIPED && body.damage_flags(m)? & BODY_DEPLETED == 0)
+    };
+    check().unwrap_or(false)
+}
 
 /// A player's living unit: its origin (in the world: a rider's is its
 /// vehicle's), aim and body.
@@ -901,6 +929,65 @@ pub enum Who {
 /// Player `+0x14`: the player's machine id, 6 bytes.
 pub const PLAYER_MACHINE: u32 = 0x14;
 
+/// Player `+0x194`: spawn protection. Retail sets it to the tick rate
+/// at every spawn (`0x14f68e`) and subtracts one per player update
+/// (`0x15bb4f`). It gives us the age of a phantom's own spawn.
+pub(crate) const PLAYER_SPAWN_GRACE: u32 = 0x194;
+
+/// `GAME_ENGINE + 0xe4`: four local-user opacities for the black overlay
+/// drawn at `0x1599b0`. Match activation and local spawns set opacity to 1.
+pub(crate) const LOCAL_BLACK_OPACITY: u32 = 0xe4;
+
+/// Match opening on a console with local users follows the actual black
+/// overlay. A dedicated host uses retail's earliest fade schedule.
+pub(crate) fn match_opening_fading(m: &dyn GuestMemory, tick: u32, rate: u16) -> R<bool> {
+    let users = m.u32(points::PLAYER_GLOBALS.base)?;
+    let engine = m.u32(points::GAME_ENGINE.base)?;
+    if users != 0 && engine != 0 {
+        let mut has_local_user = false;
+        for user in 0..LOCAL_USER_COUNT {
+            if m.u32(users + LOCAL_MAP + 4 * user)? != u32::MAX {
+                has_local_user = true;
+                if m.f32(engine + LOCAL_BLACK_OPACITY + 4 * user)? > 0.0 {
+                    return Ok(true);
+                }
+            }
+        }
+        if has_local_user {
+            return Ok(false);
+        }
+    }
+    // Retail starts subtracting when tick > round(1.5 * rate) at
+    // 0x15c4c6. Gather sees those changes on the following tick.
+    let first_update = (f32::from(rate) * 1.5).round_ties_even() as u32 + 1;
+    Ok(black_fade_active(rate, tick.saturating_sub(first_update)))
+}
+
+/// Phantoms have no local opacity slot. Apply the same fade step to a
+/// full black overlay for each tick since this player's spawn.
+pub(crate) fn phantom_spawn_fading(m: &dyn GuestMemory, player: u32, rate: u16) -> R<bool> {
+    let remaining = m.i32(player + PLAYER_SPAWN_GRACE)?;
+    let age = i32::from(rate) - remaining.clamp(0, i32::from(rate));
+    Ok(remaining > 0 && black_fade_active(rate, age as u32))
+}
+
+fn black_fade_active(rate: u16, updates: u32) -> bool {
+    if rate == 0 {
+        return false;
+    }
+    // Match the retail f32 subtraction at 0x15c4ea, including rounding
+    // when the step is not exactly representable.
+    let step = 3.0 / f32::from(rate);
+    let mut opacity = 1.0;
+    for _ in 0..updates {
+        opacity -= step;
+        if opacity <= 0.0 {
+            return false;
+        }
+    }
+    true
+}
+
 /// Player `p`'s machine id.
 pub fn player_machine(m: &dyn GuestMemory, p: u32) -> R<[u8; 6]> {
     let mut id = [0; 6];
@@ -929,41 +1016,71 @@ pub fn perceive(m: &dyn GuestMemory, port: u32) -> R<Perception> {
 /// player with a living unit, the weapons lying about and the objective.
 /// Outside one, nothing.
 pub fn perceive_as(m: &dyn GuestMemory, who: Who) -> R<Perception> {
-    Ok(perception(m, who, false)?.0)
+    let mut out = Perception::default();
+    perception_into(m, who, false, &mut out, &mut Vec::new(), None)?;
+    Ok(out)
 }
 
+#[cfg(test)]
 pub(crate) fn perceive_for_brain(
     m: &dyn GuestMemory,
     who: Who,
 ) -> R<(Perception, Vec<crate::incoming::Grenade>)> {
-    perception(m, who, true)
+    let mut out = Perception::default();
+    let mut grenades = Vec::new();
+    perception_into(m, who, true, &mut out, &mut grenades, None)?;
+    Ok((out, grenades))
 }
 
-fn perception(
+pub(crate) fn perception_into(
     m: &dyn GuestMemory,
     who: Who,
     sense_grenades: bool,
-) -> R<(Perception, Vec<crate::incoming::Grenade>)> {
-    let mut out = Perception::default();
-    let mut grenades = Vec::new();
+    out: &mut Perception,
+    grenades: &mut Vec<crate::incoming::Grenade>,
+    vehicle_headers: Option<&mut Vec<crate::vehicle::read::VehicleHeader>>,
+) -> R<()> {
+    out.me = None;
+    out.teams = false;
+    out.tick = 0;
+    out.objective = None;
+    out.observations.player = None;
+    out.observations.ahead = false;
+    out.observations.service_rate = None;
+    out.observations.pickups_scanned = false;
+    out.observations.contacts.clear();
+    out.observations.supply_players.clear();
+    out.observations.held_power.clear();
+    out.observations.takes.clear();
+    out.others.clear();
+    out.pickups.clear();
+    grenades.clear();
+    if let Some(sites) = &mut out.observations.supplies {
+        sites.clear();
+    }
     let globals = m.u32(points::GAME_GLOBALS.base)?;
     if globals == 0 || m.u32(globals + OPTIONS)? != MODE_MULTIPLAYER {
-        return Ok((out, grenades));
+        out.observations.supplies = None;
+        return Ok(());
     }
     out.teams = m.u32(globals + OPTIONS + VARIANT_FLAGS)? & 1 != 0;
     out.tick = game_tick(m).unwrap_or(0);
     let Some(array) = players::array(m)? else {
-        return Ok((out, grenades));
+        out.observations.supplies = None;
+        return Ok(());
     };
     let mut me_index = None;
-    let mut scoreboard = Vec::new();
-    for (handle, p) in array.live(m, 16)? {
+    let mut scoreboard = [(0, 0); 16];
+    let mut listed = 0;
+    for player in array.live_iter(m, 16)? {
+        let (handle, p) = player?;
         if !p.listed(m)? {
             continue;
         }
         let id = u32::from(handle.index());
         let team = i16::from(p.team(m)?);
-        scoreboard.push((id, team));
+        scoreboard[listed] = (id, team);
+        listed += 1;
         let ours = is(m, &p, who)?;
         if ours {
             out.observations.player = Some((id, team));
@@ -1026,22 +1143,37 @@ fn perception(
         }
     }
     if let Some(me) = me_index {
-        out.observations.ahead = intel::ahead(m, me, out.teams, &scoreboard).unwrap_or(false);
+        out.observations.ahead =
+            intel::ahead(m, me, out.teams, &scoreboard[..listed]).unwrap_or(false);
         let near = out.me.filter(|_| sense_grenades).map(|me| me.position);
-        if let Ok(ground) = crate::arms::ground(m, near) {
-            out.pickups = ground.weapons;
-            out.observations.held_power = ground.held_power;
-            out.observations.takes = pickups::recent(out.tick);
-            out.observations.supplies = ground.supplies;
+        let mut ground = crate::arms::Ground {
+            weapons: std::mem::take(&mut out.pickups),
+            held_power: std::mem::take(&mut out.observations.held_power),
+            supplies: out.observations.supplies.take(),
+            grenades: std::mem::take(grenades),
+        };
+        let scanned = crate::arms::ground_into(m, near, &mut ground, vehicle_headers).is_ok();
+        out.pickups = ground.weapons;
+        out.observations.held_power = ground.held_power;
+        out.observations.supplies = ground.supplies;
+        *grenades = ground.grenades;
+        if scanned {
+            pickups::recent_into(out.tick, &mut out.observations.takes);
             out.observations.service_rate = intel::service_rate(m);
             out.observations.pickups_scanned = true;
-            grenades = ground.grenades;
+        } else {
+            out.pickups.clear();
+            out.observations.held_power.clear();
+            out.observations.supplies = None;
+            grenades.clear();
         }
         // The objective is extra too: a fault leaves the bot playing as in
         // Slayer (section 3.7).
         out.objective = crate::objective::read(m, me).ok().flatten();
+    } else {
+        out.observations.supplies = None;
     }
-    Ok((out, grenades))
+    Ok(())
 }
 
 #[cfg(test)]

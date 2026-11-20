@@ -8,7 +8,14 @@ fn film() -> Vec<u8> {
     h.version = 3;
     let mut w = Writer::new(Cursor::new(Vec::new()), &h).unwrap();
     w.chunk(DATA, &"PRIVATE-GUEST-DISK").unwrap();
-    w.chunk(blam::DESC, &blam::MatchHeader::default()).unwrap();
+    w.chunk(
+        blam::DESC,
+        &blam::MatchHeader {
+            ticks_per_second: Some(60),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     w.chronological_scene(1, 6, true, &[1, 6]).unwrap();
     w.chunk_bytes(KEYF, &[6, 0, 0, 0]).unwrap();
     w.chronological_scene(7, 8, false, &[7, 2]).unwrap();
@@ -68,6 +75,7 @@ fn independent_summary_directory_and_time_ranges() {
     let front = read_front(&mut Allowed::new(&bytes, vec![metadata.clone()])).unwrap();
     assert_eq!(front.summary.level, "ascension");
     assert_eq!(front.image_stamp, "image A");
+    assert_eq!(front.ticks_per_second, Some(60));
     let json = std::str::from_utf8(&bytes[PREFIX_BYTES..metadata.end as usize]).unwrap();
     assert!(!json.contains("xnet_addr") && !json.contains("127.0.0.1"));
     let index = directory(
@@ -198,6 +206,10 @@ fn guest_clock_index_handles_pause_revert_and_missing_observations() {
     assert_eq!(index.film_tick_for_guest(91), Some(3));
     assert_eq!(index.film_tick_for_guest(92), Some(8));
     assert_eq!(index.film_tick_for_guest(94), None);
+    assert_eq!(index.film_range_for_guest(90, 92, 1, 90), Some([2, 8]));
+    assert_eq!(index.film_range_for_guest(90, 94, 6, 90), Some([6, 10]));
+    assert_eq!(index.film_range_for_guest(94, 96, 6, 90), None);
+    assert_eq!(index.film_range_for_guest(94, 95, 1, 90), Some([5, 6])); // no clock at 5
 }
 
 #[test]

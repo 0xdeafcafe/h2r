@@ -405,7 +405,7 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         .route("/v1/games/{id}/events", post(game_events))
         .route(
             "/v1/games/{id}/film",
-            get(crate::films::read_film_range)
+            get(crate::films::read_film)
                 .post(crate::films::upload_host_film)
                 .put(crate::films::upload_host_film),
         )

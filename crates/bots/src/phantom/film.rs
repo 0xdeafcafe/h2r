@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 pub struct Roster {
     seats: Vec<(PhantomInfo, bool, action::FilmGather)>,
     hosted_game: Option<u32>,
+    #[serde(default)]
+    opening_fade: Option<(u32, bool)>,
     next: u32,
     gone: Vec<[u8; 6]>,
     playerless_host: bool,
@@ -24,6 +26,7 @@ impl Phantoms {
                 .map(|p| (p.info.clone(), p.made, p.buttons.for_film()))
                 .collect(),
             hosted_game: b.hosted_game,
+            opening_fade: b.opening_fade,
             next: b.next,
             gone: b.gone.clone(),
             playerless_host: b.playerless_host,
@@ -48,7 +51,7 @@ impl Phantoms {
                 info: info.clone(),
                 source: Box::new(crate::local::Recorded::new(Vec::new())),
                 made: *made,
-                buttons: buttons.restore(),
+                buttons: buttons.restore()?,
                 uplink: action::Uplink::new(info.identity.xuid),
                 samples: 0,
                 waiting: None,
@@ -57,6 +60,7 @@ impl Phantoms {
         *self.lock() = Books {
             list,
             hosted_game: r.hosted_game,
+            opening_fade: r.opening_fade,
             next: r.next,
             gone: r.gone.clone(),
             playerless_host: r.playerless_host,

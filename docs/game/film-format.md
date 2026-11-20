@@ -480,6 +480,13 @@ serialisable state can prevent a keyframe. The reader can only seek using
 the snapshots the recording actually contains. [Machine snapshot policies](../runtime/snapshots.md)
 and [sim determinism](../runtime/sim.md#8-determinism) describe these constraints.
 
+Live clip endpoints use the guest match clock. The in-game player translates
+the half-open interval to film ticks using the clock spans in `CIDX`. During
+a span without a recorded guest clock, the player aligns the film’s match
+boundary with the ledger’s start tick. Local clip markers already use film
+ticks. For version 1 and 2 host films the selector retains the original
+assumption that the saved clip endpoints refer directly to film ticks.
+
 ## Choosing a player's view
 
 In local playback the guest renders its original camera, first-person weapon
@@ -501,11 +508,22 @@ view of the running simulation. It uses the selected unit’s posed camera
 marker, aim and unzoomed field of view. When the marker is unavailable,
 it estimates eye height from the biped’s collision capsule and crouch state.
 The scene uses the active BSP with its base textures and lightmaps, and
-the posed opaque models of the other objects. The selected
-unit and its held weapons are hidden. The independent view omits retail
+the posed opaque models of the visible objects. First-person mode hides
+the selected unit and its held weapons. The independent view omits retail
 HUD and weapon overlays, transparent effects, sky and post-processing.
-A dead seat has a blank view until its camera becomes available again.
-The default host view uses the first available seat.
+
+Rendered host playback starts with a free camera at the first available
+player. Select `first-person` with a roster name or an absolute seat to
+follow a particular player's eye. The spelling `first_person` also works.
+The `default` host view follows the first available eye. A targeted
+first-person view clears during death or disconnect and resumes when the
+seat has a camera again. Follow, orbit and free modes keep their last pose
+when a subject disappears. The player carries the rig, target, clip marks
+and discovered kill markers through a seek.
+
+```sh
+h2 agent theater.camera '{"mode":"orbit","seat":3,"look":[0.25,0],"zoom":-1}'
+```
 
 The dedicated guest retains its recorded world-render cadence. Changing
 POV or display cadence therefore does not add render calls to its RNG or

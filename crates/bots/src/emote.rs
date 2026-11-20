@@ -90,11 +90,16 @@ impl KillLog {
 
     /// The deaths after `cursor`, and the new cursor.
     pub fn since(&self, cursor: u64) -> (Vec<Kill>, u64) {
+        let mut out = Vec::new();
+        let tick = self.since_into(cursor, &mut out);
+        (out, tick)
+    }
+
+    pub(crate) fn since_into(&self, cursor: u64, out: &mut Vec<Kill>) -> u64 {
         let g = self.kills.lock().unwrap_or_else(|e| e.into_inner());
-        (
-            g.1.iter().filter(|k| k.seq > cursor).copied().collect(),
-            g.0,
-        )
+        out.clear();
+        out.extend(g.1.iter().filter(|k| k.seq > cursor).copied());
+        g.0
     }
 }
 

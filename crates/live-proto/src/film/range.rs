@@ -193,7 +193,7 @@ impl Chunk {
         }
         true
     }
-    fn locate_guest(&self, tick: u64) -> Option<u64> {
+    fn locate_guest(&self, tick: u64, minimum: u64) -> Option<u64> {
         for (i, (offset, start)) in self.clock.iter().copied().enumerate() {
             let Some(delta) = start.and_then(|start| tick.checked_sub(start)) else {
                 continue;
@@ -203,7 +203,10 @@ impl Chunk {
                 .get(i + 1)
                 .map_or(self.last - self.first + 1, |(next, _)| u64::from(*next));
             if delta < end - u64::from(offset) {
-                return Some(self.first + u64::from(offset) + delta);
+                let film = self.first + u64::from(offset) + delta;
+                if film >= minimum {
+                    return Some(film);
+                }
             }
         }
         None
@@ -301,9 +304,45 @@ impl Directory {
     /// Earliest recorded occurrence of the guest tick, including clocks which
     /// have repeated after a campaign revert or while the simulation was paused.
     pub fn film_tick_for_guest(&self, tick: u64) -> Option<u64> {
-        self.chunks
+        self.film_tick_since(tick, 0)
+    }
+
+    fn film_tick_since(&self, guest: u64, minimum: u64) -> Option<u64> {
+        let from = self.chunks.partition_point(|c| c.last < minimum);
+        self.chunks[from..]
             .iter()
-            .find_map(|chunk| chunk.locate_guest(tick))
+            .find_map(|c| c.locate_guest(guest, minimum))
+    }
+
+    /// Live clip bounds use the match clock. Playback addresses the whole
+    /// tape. Resolve the end after the start even if a campaign clock reset.
+    pub fn film_range_for_guest(
+        &self,
+        from: u64,
+        to: u64,
+        match_start: u64,
+        game_start: u64,
+    ) -> Option<[u64; 2]> {
+        if from >= to {
+            return None;
+        }
+        let locate = |guest: u64, minimum: u64| {
+            self.film_tick_since(guest, minimum).or_else(|| {
+                // Web clips in spans without clocks use display ticks relative
+                // to the ledger's GameStarted and the tape's match boundary.
+                let projected = match_start.checked_add(guest.checked_sub(game_start)?)?;
+                let i = self.chunks.partition_point(|c| c.last < projected);
+                let chunk = self.chunks.get(i)?;
+                (projected >= minimum
+                    && projected >= chunk.first
+                    && chunk.guest_tick(projected).is_none())
+                .then_some(projected)
+            })
+        };
+        let first = locate(from, match_start)?;
+        let end =
+            locate(to, first.checked_add(1)?).or_else(|| locate(to - 1, first)?.checked_add(1))?;
+        Some([first, end])
     }
 
     pub fn nearest_keyframe(&self, tick: u64) -> Option<&Keyframe> {

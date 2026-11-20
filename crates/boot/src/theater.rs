@@ -9,6 +9,7 @@ mod host_view;
 pub use host_view::HostView;
 pub use camera::FilmCamera;
 pub(crate) mod bot_tape;
+mod legacy_camera;
 mod controls;
 mod metadata;
 mod unified;
@@ -21,13 +22,17 @@ pub use startup::configure_replay_child;
 mod replay;
 mod local_pads;
 use anyhow::{Context, Result, bail, ensure};
+use legacy_camera::ReplayCamera;
 pub(crate) use controls::library_methods;
+pub use controls::{playable_entry, playback_images};
 use film::{
     FilmMeta, Header, Reader, Source, Writer,
     tape::{Batch, Call, Check, Mark, Playback, Tap},
 };
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
+    collections::BTreeSet,
     fs::File,
     path::PathBuf,
     sync::{Arc, Mutex, MutexGuard},
@@ -41,10 +46,21 @@ pub struct Replay {
     pub speed: f64,
     pub seek_tick: u64,
     pub paused_at_target: bool,
+    pub presentation: Presentation,
     /// Receiver for a requested restart, consumed by the CLI parent.
     pub restart: PathBuf,
     pub camera: FilmCamera,
     pub window_closed: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+}
+
+/// View and timeline state carried across an exact replay restart.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Presentation {
+    camera: ReplayCamera,
+    #[serde(default)]
+    camera_seat: Option<u8>,
+    kills: BTreeSet<u64>,
+    pub clip_marks: [Option<u64>; 2],
 }
 
 struct Recording {
@@ -89,6 +105,7 @@ struct State {
     paused: bool,
     speed: f64,
     seeking: Option<u64>,
+    presentation: Presentation,
     restart: Option<u64>,
     failure: Option<String>,
     complete: bool,
@@ -287,6 +304,19 @@ impl Session {
             _ => None,
         };
         let bot_tape = bot_tape::BotTape::new(&mode, header.version);
+        let mut presentation = match &mode {
+            Mode::Replay(_, opts) => opts.presentation.clone(),
+            Mode::Record(_) => Presentation::default(),
+        };
+        if !matches!(&mode, Mode::Replay(_, opts) if opts.render_every != 0) {
+            presentation.camera.mode = agent_proto::theater::CameraMode::Default;
+        }
+        if let Mode::Replay(_, opts) = &mode {
+            if header.version >= 2 && header.meta.source == Source::Local && presentation.camera_seat.is_none() {
+                presentation.camera.mode = agent_proto::theater::CameraMode::Default;
+            }
+            opts.camera.restore(&presentation);
+        }
         Ok(Some(Arc::new(Self {
             version: header.version,
             replaying: matches!(&mode, Mode::Replay(_, _)),
@@ -302,6 +332,7 @@ impl Session {
                 speed,
                 seeking,
                 paused,
+                presentation,
                 tick: 0,
                 calls: 0,
                 restart: None,
@@ -407,9 +438,11 @@ impl Session {
                     return Ok(false);
                 }
                 if let Some(target) = s.restart {
+                    let mut presentation = s.presentation.clone();
+                    if s.header.version >= 2 { r.camera.save(&mut presentation); }
                     std::fs::write(
                         &r.restart,
-                        serde_json::to_vec(&(target, s.speed, s.paused, r.camera.requested_seat()))?,
+                        serde_json::to_vec(&(target, s.speed, s.paused, &presentation))?,
                     )?;
                     return Ok(false);
                 }
@@ -764,6 +797,25 @@ impl feature::Feature for Observer {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
         }).after_feature("live-telemetry");
+        if !self.0.has_engine_track() {
+            legacy_camera::install(b, &self.0)?;
+        }
+        // V3 already dispatches PLAYER_KILLED when its recorded telemetry
+        // profile enables events. An additional observer shares that dispatch.
+        if (!self.0.has_engine_track() && self.0.replaying())
+            || (self.0.has_unified_track() && self.0.telemetry_plan().enabled())
+        {
+            let session = self.0.clone();
+            b.raw().observe_before(
+                &engine::points::PLAYER_KILLED,
+                "film kill marker",
+                move |_| {
+                    let mut s = session.lock();
+                    let tick = s.tick;
+                    s.presentation.kills.insert(tick);
+                },
+            );
+        }
         let session = self.0.clone();
         b.game().on_end("film scoreboard", move |o| {
             let mut s = session.lock();

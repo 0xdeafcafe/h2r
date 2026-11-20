@@ -11,6 +11,81 @@ fn params<T: DeserializeOwned>(v: Value) -> Result<T, RpcError> {
     })
     .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))
 }
+impl State {
+    fn camera_request(&mut self, request: api::Camera) -> Result<(), RpcError> {
+        use api::CameraMode::*;
+        let Mode::Replay(_, replay) = &self.mode else {
+            unreachable!()
+        };
+        let unavailable = |msg| RpcError::new(code::UNAVAILABLE, msg);
+        if request.mode != Default && replay.render_every == 0 {
+            return Err(unavailable("playback has no rendered view"));
+        }
+        if request.seat.is_some_and(|s| s >= 16)
+            || (request.mode == Default && (request.seat.is_some() || request.player.is_some()))
+        {
+            return Err(RpcError::new(code::INVALID_PARAMS, "invalid camera target"));
+        }
+        let Some(engine) = &self.engine else {
+            if request.seat.is_some() {
+                return Err(unavailable("legacy camera requires a player name"));
+            }
+            self.presentation
+                .camera
+                .control(request)
+                .map_err(|e| RpcError::new(code::INVALID_PARAMS, e))?;
+            return Ok(());
+        };
+        let local = self.header.meta.source == Source::Local;
+        if local
+            && request.mode != Default
+            && !(self.header.version >= 3 && request.mode == FirstPerson)
+        {
+            return Err(unavailable(
+                "local playback provides the recorded retail viewports",
+            ));
+        }
+        let seat = match request.player.as_deref() {
+            Some(name) => {
+                let seats: BTreeSet<_> = engine
+                    .track
+                    .descriptor
+                    .roster
+                    .iter()
+                    .filter(|p| p.name == name)
+                    .map(|p| p.seat)
+                    .chain(
+                        engine
+                            .track
+                            .summary
+                            .players
+                            .iter()
+                            .filter(|p| p.name == name)
+                            .map(|p| p.seat),
+                    )
+                    .collect();
+                match request.seat {
+                    Some(seat) if seats.contains(&seat) => Some(seat),
+                    Some(_) => {
+                        return Err(unavailable(
+                            "player and seat do not match the recorded roster",
+                        ));
+                    }
+                    None if seats.len() == 1 => seats.first().copied(),
+                    None => return Err(unavailable("select a recorded player seat")),
+                }
+            }
+            None => request.seat,
+        };
+        if local && request.mode == FirstPerson && seat.is_none() {
+            return Err(unavailable("select a local player viewport"));
+        }
+        replay.camera.control(request, seat).map_err(unavailable)?;
+        replay.camera.save(&mut self.presentation);
+        Ok(())
+    }
+}
+
 impl Session {
     pub(crate) fn add_methods(self: &Arc<Self>, a: &agent::Agent) {
         a.set_lobby_tape(self.clone());
@@ -71,23 +146,32 @@ impl Session {
                                     "seek beyond film",
                                 ));
                             }
+                            if let Some(marks) = p.clip_marks {
+                                let [start, end] = marks;
+                                if start.is_some_and(|tick| tick > s.header.meta.length_ticks)
+                                    || end.is_some_and(|tick| {
+                                        tick > s.header.meta.length_ticks.saturating_add(1)
+                                            || start.is_none_or(|start| tick <= start)
+                                    })
+                                {
+                                    return Err(RpcError::new(
+                                        code::INVALID_PARAMS,
+                                        "invalid clip marks",
+                                    ));
+                                }
+                                s.presentation.clip_marks = marks;
+                            }
                             s.restart = Some(p.tick);
                         }
                         api::CAMERA => {
                             let p = params::<api::Camera>(p)?;
-                            let selection = match (p.mode.as_str(), p.seat) {
-                                ("default", None) => None,
-                                ("first_person", Some(seat @ 0..=15)) => Some(seat),
-                                ("first_person" | "default", _) => return Err(RpcError::new(
-                                    code::INVALID_PARAMS, "first_person takes a player seat from 0 to 15, default takes none")),
-                                _ => return Err(RpcError::new(code::UNAVAILABLE, "unsupported film camera mode")),
-                            };
-                            let Mode::Replay(_, replay) = &s.mode else { unreachable!() };
-                            replay.camera.select(selection).map_err(|e| RpcError::new(code::UNAVAILABLE, e))?;
+                            s.camera_request(p)?;
                         }
                         _ => unreachable!(),
                     }
-                    let Mode::Replay(_, replay) = &s.mode else { unreachable!() };
+                    let Mode::Replay(_, replay) = &s.mode else {
+                        unreachable!()
+                    };
                     let seat = replay.camera.requested_seat();
                     Ok(serde_json::json!(api::State {
                         id: s.header.meta.id.clone(),
@@ -96,8 +180,10 @@ impl Session {
                         paused: s.paused,
                         speed: s.speed,
                         seeking: s.seeking.is_some() || s.restart.is_some(),
-                        camera: if seat.is_some() { "first_person".into() } else { "default".into() },
                         camera_seat: seat,
+                        camera: s.presentation.camera.mode,
+                        camera_player: s.presentation.camera.player.clone(),
+                        kills: s.presentation.kills.iter().copied().collect(),
                     }))
                 },
             );
@@ -105,7 +191,39 @@ impl Session {
     }
 }
 
-/// In the original game, Watch selects a film from the local library and
+/// Installed modules accepted by exact film playback, in preference order.
+pub fn playback_images(xbe: &[u8], out: &std::path::Path) -> Vec<(PathBuf, String)> {
+    [crate::tier::clang_dylib(out), crate::tier::fast_dylib(out)]
+        .into_iter()
+        .filter_map(|path| {
+            let stamp = if let Some(slim) = crate::current_slim_stamp(xbe, &path) {
+                slim
+            } else {
+                match crate::tier::module_tier(xbe, &path)? {
+                    crate::tier::Tier::Clang => crate::build_stamp(xbe),
+                    crate::tier::Tier::Fast => crate::tier::fast_stamp(xbe),
+                    crate::tier::Tier::Host => return None,
+                }
+            };
+            Some((path, stamp))
+        })
+        .collect()
+}
+
+pub fn playable_entry(entry: &film::LibraryEntry, stamp: &str) -> bool {
+    (entry.version >= 2 || entry.meta.source == Source::Host)
+        && image_match(
+            entry.version,
+            &entry.meta.image_stamp,
+            &entry.runtime_stamp,
+            entry.guest_image.as_ref(),
+            stamp,
+            &entry.xbe_sha256,
+        )
+        .is_ok()
+}
+
+/// In the original game, Watch selects a local or downloaded film and
 /// launches its isolated player. Transport requests follow that player.
 pub(crate) fn library_methods(
     a: &agent::Agent,
@@ -113,6 +231,7 @@ pub(crate) fn library_methods(
     disc: PathBuf,
     out: PathBuf,
     data: PathBuf,
+    image_stamps: Vec<String>,
 ) {
     struct PlayerProcess {
         child: std::process::Child,
@@ -120,8 +239,10 @@ pub(crate) fn library_methods(
         id: String,
     }
     let player = Arc::new(Mutex::new(None::<PlayerProcess>));
+    let image_stamps = Arc::new(image_stamps);
     for name in api::METHODS {
         let player = player.clone();
+        let image_stamps = image_stamps.clone();
         let (dir, disc, out, data) = (dir.clone(), disc.clone(), out.clone(), data.clone());
         a.add_method(
             name,
@@ -144,16 +265,31 @@ pub(crate) fn library_methods(
                 }
                 if name == api::PLAY {
                     let request = params::<api::Play>(p.clone())?;
-                    if let Some(id) = request.id
-                        && player.is_none()
-                    {
-                        let entry = film::Library::open(&dir)
-                            .and_then(|lib| lib.get(&id))
-                            .map_err(|e| unavailable(e.to_string()))?;
-                        if request
-                            .range
-                            .is_some_and(|[start, end]| start >= end || end > entry.meta.length_ticks)
+                    if let Some(id) = request.id {
+                        if player.is_some() {
+                            return Err(unavailable("A film is already playing".into()));
+                        }
+                        let entry = if let Some(game) = id.strip_prefix("live:") {
+                            let path = crate::theater_ui::adapter::archive_path(&dir, game)
+                                .map_err(unavailable)?;
+                            crate::theater_ui::adapter::archive_entry(&path, game)
+                        } else {
+                            film::Library::open(&dir).and_then(|lib| lib.get(&id))
+                        }
+                        .map_err(|e| unavailable(e.to_string()))?;
+                        if !image_stamps
+                            .iter()
+                            .any(|stamp| playable_entry(&entry, stamp))
                         {
+                            return Err(unavailable(
+                                "Recording needs a compatible game build and an engine film".into(),
+                            ));
+                        }
+                        let meta = entry.meta;
+                        let path = entry.path;
+                        if request.range.is_some_and(|[start, end]| {
+                            start >= end || end > meta.length_ticks.saturating_add(1)
+                        }) {
                             return Err(RpcError::new(code::INVALID_PARAMS, "invalid clip range"));
                         }
                         let socket = std::env::temp_dir()
@@ -168,13 +304,14 @@ pub(crate) fn library_methods(
                         let mut command = std::process::Command::new(exe);
                         command
                             .env("H2_FILM_DIR", &dir)
+                            .env("H2_THEATER_FILM_ID", &id)
                             .env_remove("H2_THEATER_RANGE");
                         if let Some([start, end]) = request.range {
                             command.env("H2_THEATER_RANGE", format!("{start}:{end}"));
                         }
                         let child = command
                             .args(["theater", "play"])
-                            .arg(entry.path)
+                            .arg(path)
                             .arg("--data")
                             .arg(&data)
                             .arg("--disc")

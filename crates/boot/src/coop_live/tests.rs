@@ -753,51 +753,68 @@ fn a_host_shows_and_advertises_its_guests_report() {
 // ---- the Live menu ----
 
 #[test]
-fn the_live_menu_has_seven_rows_with_co_op_above_custom_game() {
+fn the_live_menu_puts_co_op_above_custom_game_and_theater_last() {
     use crate::custom_games::*;
-    assert_eq!(list_count_with(LIST_NAME, VANILLA_ROWS, true), 7);
-    assert_eq!(list_count_with(LIST_NAME, VANILLA_ROWS, false), 6);
-    assert_eq!(list_count_with(LIST_NAME, 7, true), 7, "not twice");
-    let kinds: Vec<Row> = (0..8).map(|r| row_kind_with(r, true)).collect();
-    assert_eq!(
-        kinds,
-        [
-            Row::Retail,
-            Row::Retail,
-            Row::Clankermatch,
-            Row::Coop,
-            Row::CustomGame,
-            Row::Browser,
-            Row::Download,
-            Row::Retail
-        ]
-    );
-    assert_eq!(
-        row_kind_with(5, false),
-        Row::Download,
-        "co-op off: Content Download right after the browser"
-    );
-    let off: Vec<Row> = (0..7).map(|r| row_kind_with(r, false)).collect();
-    assert_eq!(
-        off,
-        [
-            Row::Retail,
-            Row::Retail,
-            Row::Clankermatch,
-            Row::CustomGame,
-            Row::Browser,
-            Row::Download,
-            Row::Retail
-        ],
-        "co-op off: the rows close up"
-    );
+
+    let with_coop = [
+        (Row::Retail, Pane::Retail),
+        (Row::Retail, Pane::Retail),
+        (Row::Clankermatch, Pane::Show(CLANKERMATCH_PANE)),
+        (Row::Coop, Pane::Show(COOP_PANE)),
+        (Row::CustomGame, Pane::Show(2)),
+        (Row::Browser, Pane::Show(BROWSER_PANE)),
+        (Row::Download, Pane::Show(3)),
+        (Row::Theater, Pane::Show(7)),
+    ];
+    let without_coop = [
+        (Row::Retail, Pane::Retail),
+        (Row::Retail, Pane::Retail),
+        (Row::Clankermatch, Pane::Show(CLANKERMATCH_PANE)),
+        (Row::CustomGame, Pane::Show(2)),
+        (Row::Browser, Pane::Show(BROWSER_PANE)),
+        (Row::Download, Pane::Show(3)),
+        (Row::Theater, Pane::Show(6)),
+    ];
+
+    for (coop, count, expected) in [
+        (true, 8, with_coop.as_slice()),
+        (false, 7, without_coop.as_slice()),
+    ] {
+        let menu = Menu {
+            custom_games: true,
+            coop,
+            theater: true,
+        };
+        assert_eq!(menu.rows(), count);
+        assert_eq!(menu.count(LIST_NAME, VANILLA_ROWS), count);
+        assert_eq!(menu.count(LIST_NAME, count), count, "not twice");
+        assert_eq!(menu.visible(), 7);
+        for (row, &(kind, pane)) in expected.iter().enumerate() {
+            assert_eq!(menu.row_kind(row as i16), kind, "co-op {coop}, row {row}");
+            assert_eq!(
+                menu.pane_of(row as i16, count),
+                pane,
+                "co-op {coop}, row {row}"
+            );
+        }
+        assert_eq!(menu.row_kind(count as i16), Row::Retail, "past the last row");
+        assert_eq!(menu.pane_of(count as i16 - 1, count - 1), Pane::Keep);
+
+        let regular = Menu {
+            theater: false,
+            ..menu
+        };
+        assert_eq!(regular.count(LIST_NAME, VANILLA_ROWS), count - 1);
+    }
+
+    let menu = Menu {
+        custom_games: true,
+        coop: true,
+        theater: true,
+    };
     assert_eq!(COOP_ROW + 1, CUSTOM_GAME_ROW, "co-op directly above Custom Game");
-    assert_eq!(pane_of_with(COOP_ROW, 7, true), Pane::Show(COOP_PANE));
-    assert_eq!(pane_of_with(ROW, 7, true), Pane::Show(BROWSER_PANE));
-    assert_eq!(pane_of_with(DOWNLOAD_ROW, 7, true), Pane::Show(3));
-    assert_eq!(pane_of_with(COOP_ROW, 6, true), Pane::Keep, "no co-op pane");
-    assert_eq!(pane_of_with(COOP_ROW, 4, true), Pane::Keep);
-    assert_eq!(extended_panes(true), 7);
+    assert_eq!(menu.pane_of(COOP_ROW, 6), Pane::Keep, "no co-op pane");
+    assert_eq!(menu.pane_of(COOP_ROW, 4), Pane::Keep);
     let ids: Vec<u32> = strings().iter().map(|(i, _)| *i).collect();
     assert!(ids.contains(&COOP_TEXT_ID) && ids.contains(&COOP_HELP_ID));
     assert!(

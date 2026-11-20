@@ -8,6 +8,9 @@ use engine::GuestMemory;
 #[derive(Default)]
 struct Views {
     requested: Option<u8>,
+    rig: super::ReplayCamera,
+    revision: u64,
+    last_seat: Option<u8>,
     drawing: [Option<[u32; 4]>; 16],
     available: u16,
     host: bool,
@@ -31,16 +34,57 @@ impl FilmCamera {
             .fold(0, |mask, &seat| mask | (1u16 << seat));
     }
 
-    pub fn restore_selection(&self, seat: Option<u8>) {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).requested = seat.filter(|s| *s < 16);
+    pub(super) fn restore(&self, presentation: &super::Presentation) {
+        let mut v = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        v.requested = presentation.camera_seat.filter(|s| *s < 16);
+        v.rig = presentation.camera.clone();
     }
 
-    pub(super) fn select(&self, seat: Option<u8>) -> Result<(), &'static str> {
-        let mut views = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        if seat.is_some_and(|slot| slot >= 16 || views.available & (1 << slot) == 0) {
-            return Err("that seat has no first-person view in the current frame");
+    pub(super) fn save(&self, presentation: &mut super::Presentation) {
+        let v = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        presentation.camera_seat = v.requested;
+        presentation.camera = v.rig.clone();
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).revision
+    }
+
+    pub fn host_pose(
+        &self,
+        eyes: &[(u8, [f32; 3], [f32; 3])],
+    ) -> Option<(u8, [f32; 3], [f32; 3], bool)> {
+        let mut v = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let subject = match v.requested {
+            Some(seat) => eyes.iter().find(|e| e.0 == seat),
+            None => eyes.first(),
+        };
+        let Some(&(seat, eye, aim)) = subject else {
+            let (position, forward) = v.rig.saved_view()?;
+            return Some((
+                v.requested.or(v.last_seat).unwrap_or(0),
+                position,
+                forward,
+                false,
+            ));
+        };
+        v.last_seat = Some(seat);
+        let (position, forward, first_person) = v.rig.host_pose(eye, aim)?;
+        Some((seat, position, forward, first_person))
+    }
+
+    pub(super) fn control(
+        &self,
+        request: agent_proto::theater::Camera,
+        seat: Option<u8>,
+    ) -> Result<(), &'static str> {
+        let mut v = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if seat.is_some_and(|s| s >= 16 || v.available & (1 << s) == 0) {
+            return Err("that seat has no camera view in the current frame");
         }
-        views.requested = seat;
+        v.rig.control(request)?;
+        v.requested = seat;
+        v.revision = v.revision.wrapping_add(1);
         Ok(())
     }
 
@@ -121,21 +165,68 @@ fn local_view(m: &dyn GuestMemory, view: u32) -> Option<(u16, [u32; 4])> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_proto::theater::{Camera, CameraMode};
+    fn request(mode: CameraMode, seat: Option<u8>) -> Camera {
+        Camera {
+            mode,
+            seat,
+            player: None,
+            look: [0.; 2],
+            movement: [0.; 3],
+            zoom: 0.,
+        }
+    }
     #[test]
     fn selection_follows_a_player_only_while_their_view_is_presented() {
         let camera = FilmCamera::default();
         let rect = [0, 240, 640, 240];
         camera.drawn(7, rect);
         assert_eq!(camera.present_crop(), None);
-        assert!(camera.select(Some(0)).is_err());
-        camera.select(Some(7)).unwrap();
+        assert!(
+            camera
+                .control(request(CameraMode::FirstPerson, Some(0)), Some(0))
+                .is_err()
+        );
+        camera
+            .control(request(CameraMode::FirstPerson, Some(7)), Some(7))
+            .unwrap();
         camera.drawn(7, rect);
         assert_eq!(camera.present_crop(), Some(rect));
         assert_eq!(camera.present_crop(), None);
-        assert!(camera.select(Some(7)).is_err());
+        assert!(
+            camera
+                .control(request(CameraMode::FirstPerson, Some(7)), Some(7))
+                .is_err()
+        );
         camera.host_seats(&[3, 5]);
-        camera.select(Some(3)).unwrap();
+        camera
+            .control(request(CameraMode::FirstPerson, Some(3)), Some(3))
+            .unwrap();
         assert_eq!(camera.present_crop(), None);
         assert_eq!(camera.requested_seat(), Some(3));
+    }
+    #[test]
+    fn host_seek_restores_free_pose_and_first_person_requires_a_live_eye() {
+        let camera = FilmCamera::default();
+        let eyes = [(5, [12., 5., 1.5], [1., 0., 0.])];
+        camera.host_seats(&[5]);
+        camera
+            .control(request(CameraMode::FirstPerson, Some(5)), Some(5))
+            .unwrap();
+        assert_eq!(
+            camera.host_pose(&eyes),
+            Some((5, eyes[0].1, eyes[0].2, true))
+        );
+        assert!(camera.host_pose(&[]).is_none());
+        let mut fly = request(CameraMode::Free, Some(5));
+        fly.movement[1] = 2.;
+        camera.control(fly, Some(5)).unwrap();
+        let view = camera.host_pose(&eyes).unwrap();
+        assert_eq!(view, (5, [14., 5., 1.5], [1., 0., 0.], false));
+        let mut saved = super::super::Presentation::default();
+        camera.save(&mut saved);
+        let reopened = FilmCamera::default();
+        reopened.restore(&saved);
+        assert_eq!(reopened.host_pose(&[]), Some(view));
     }
 }

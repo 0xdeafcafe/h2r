@@ -173,6 +173,7 @@ impl Site {
 pub(super) struct Timers {
     sites: Vec<Site>,
     holders: Vec<Holder>,
+    visible_players: Vec<Player>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -364,8 +365,10 @@ impl Timers {
             }
             tick.wrapping_sub(h.seen) < 300
         });
-        let visible_players: Vec<_> = players.iter().filter(|p| visible(p.position)).collect();
-        for p in &visible_players {
+        let visible_players = &mut self.visible_players;
+        visible_players.clear();
+        visible_players.extend(players.iter().copied().filter(|p| visible(p.position)));
+        for p in visible_players.iter() {
             for &object in p.hands.iter().flatten() {
                 if let Some(site) = self
                     .sites

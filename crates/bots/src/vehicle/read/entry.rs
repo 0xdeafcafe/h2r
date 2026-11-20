@@ -9,13 +9,15 @@ use engine::view::{Tags, objects};
 
 /// Entry marker (0xc6fb0) and admission limits (0xc9040). See
 /// h1objects/tests/vehicle_ground_disc.rs.
-pub(super) fn read(
+pub(super) fn read_into(
     m: &dyn GuestMemory,
     mode: Option<u32>,
     seat: u32,
     body: objects::Body,
     world: [Vec3; 3],
-) -> R<Vec<Entry>> {
+    out: &mut Vec<Entry>,
+) -> R<()> {
+    out.clear();
     let name = m.u32(seat + 0xc)?;
     let radius = m.f32(seat + 0x98)?;
     let facing = m.f32(seat + 0x9c)?;
@@ -25,7 +27,7 @@ pub(super) fn read(
         .into_iter()
         .all(|n| n.is_finite() && n > 0.0)
     {
-        return Ok(Vec::new());
+        return Ok(());
     }
     let make = |(at, forward)| Entry {
         at,
@@ -36,18 +38,23 @@ pub(super) fn read(
         max_distance,
     };
     if name == 0 {
-        return Ok(vec![make((world[0], world[1]))]);
+        out.push(make((world[0], world[1])));
+        return Ok(());
     }
     let Some(mode) = mode else {
-        return Ok(Vec::new());
+        return Ok(());
     };
-    let mut out = Vec::new();
-    for marker in markers(m, mode, name)? {
-        if let Some(pose) = world_marker(m, body, marker)? {
-            out.push(make(pose));
+    if let Some((count, base)) = markers(m, mode, name)? {
+        for j in 0..count {
+            let marker = base + j * 0x24;
+            if (count == 1 || m.u16(marker)? == 0xffff)
+                && let Some(pose) = world_marker(m, body, marker)?
+            {
+                out.push(make(pose));
+            }
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 pub(super) fn reference(m: &dyn GuestMemory, at: u32, group: [u8; 4]) -> R<Option<u32>> {
@@ -133,15 +140,20 @@ fn camera_marker(m: &dyn GuestMemory, body: objects::Body, unit: u32) -> R<Optio
     let Some(mode) = model(m, unit)? else {
         return Ok(None);
     };
-    for marker in markers(m, mode, name)? {
-        if let Some((eye, _)) = world_marker(m, body, marker)? {
-            return Ok(Some(eye));
+    if let Some((count, base)) = markers(m, mode, name)? {
+        for j in 0..count {
+            let marker = base + j * 0x24;
+            if (count == 1 || m.u16(marker)? == 0xffff)
+                && let Some((eye, _)) = world_marker(m, body, marker)?
+            {
+                return Ok(Some(eye));
+            }
         }
     }
     Ok(None)
 }
 
-fn markers(m: &dyn GuestMemory, mode: u32, name: u32) -> R<Vec<u32>> {
+fn markers(m: &dyn GuestMemory, mode: u32, name: u32) -> R<Option<(u32, u32)>> {
     // mode.txt: marker groups at +0x58, 0xc each; markers at group+4,
     // 0x24 each. A group can have several entry points (e.g. Scorpion).
     let count = m.i32(mode + 0x58)?.clamp(0, 512) as u32;
@@ -153,20 +165,11 @@ fn markers(m: &dyn GuestMemory, mode: u32, name: u32) -> R<Vec<u32>> {
                 continue;
             }
             let count = m.i32(g + 4)?.clamp(0, 64) as u32;
-            let p = m.u32(g + 8)?;
-            let mut common = Vec::new();
-            if p != 0 {
-                for j in 0..count {
-                    let at = p + j * 0x24;
-                    if count == 1 || m.u16(at)? == 0xffff {
-                        common.push(at);
-                    }
-                }
-            }
-            return Ok(common);
+            let base = m.u32(g + 8)?;
+            return Ok((base != 0).then_some((count, base)));
         }
     }
-    Ok(Vec::new())
+    Ok(None)
 }
 
 fn world_marker(m: &dyn GuestMemory, body: objects::Body, marker: u32) -> R<Option<(Vec3, Vec3)>> {

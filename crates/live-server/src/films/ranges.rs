@@ -256,14 +256,21 @@ impl WebRanges {
     }
 }
 
-pub(crate) async fn read_film_range(
+pub(crate) async fn read_film(
     State(live): Shared,
     Path(id): Path<String>,
     Query(query): Query<RangeQuery>,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
-    let viewer = live.read_viewer(bearer(&headers))?;
     game_id(&id)?;
+    if !headers.contains_key(header::RANGE)
+        && query.rev.is_none()
+        && query.span.is_none()
+        && query.auth.is_none()
+    {
+        return super::download_host_film(&live, &headers, &id).await;
+    }
+    let viewer = live.read_viewer(bearer(&headers))?;
     let (receipt, immutable_key, ended) = visible_game(&live.model.read(), &id, viewer)
         .and_then(super::Source::range_receipt)
         .filter(|(receipt, _, _)| receipt.public_safe)

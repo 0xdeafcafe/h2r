@@ -152,7 +152,21 @@ impl<'a> Source<'a> {
             },
             variant: (!s.summary.variant_name.is_empty())
                 .then_some(s.summary.variant_name.as_str()),
+            kind: match s.summary.mode {
+                Mode::Campaign | Mode::CoopCampaign => Some("campaign"),
+                Mode::Matchmaking => Some("matchmaking"),
+                Mode::Custom | Mode::SystemLink => Some("custom"),
+                Mode::Unknown => None,
+            },
+            playlist: None,
+            difficulty: None,
+            online: None,
+            // No game stats have been committed. The sealed summary supplies
+            // the display roster and scores to both selectors.
+            players: Vec::new(),
+            scoreboard: &[],
             started_at: &s.started_at,
+            start_tick: None,
             duration_s: Some(s.summary.duration_ticks / u64::from(rate)),
             ticks_per_second: rate,
             result: None,

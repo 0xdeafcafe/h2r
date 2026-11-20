@@ -10,7 +10,7 @@ mod legacy;
 pub(crate) use legacy::advance as continue_staged;
 pub(crate) mod parts;
 mod ranges;
-pub(crate) use ranges::{WebIndexCache, WebRanges, read_film_range};
+pub(crate) use ranges::{WebIndexCache, WebRanges, read_film};
 mod upload;
 pub(crate) use upload::{cleanup_published, upload_host_film};
 
@@ -342,7 +342,14 @@ struct Film<'a> {
     map: &'a str,
     mode: &'a str,
     variant: Option<&'a str>,
+    kind: Option<&'a str>,
+    playlist: Option<&'a str>,
+    difficulty: Option<&'a str>,
+    online: Option<bool>,
+    players: Vec<&'a game::Player>,
+    scoreboard: &'a [game::PlayerScore],
     started_at: &'a str,
+    start_tick: Option<u64>,
     duration_s: Option<u64>,
     ticks_per_second: u16,
     result: Option<&'static str>,
@@ -368,12 +375,25 @@ impl<'a> Film<'a> {
             let wall = parse_time(at)? - parse_time(&game.started_at)?;
             Some(wall.whole_seconds().max(0) as u64)
         });
+        let mut players: Vec<_> = game.players.iter().collect();
+        for player in &start.players {
+            if !players.iter().any(|p| p.index == player.index) {
+                players.push(player);
+            }
+        }
         Self {
             game_id: &game.started.game_id,
             map: &start.map,
             mode: &start.mode,
             variant: start.variant.as_deref(),
+            kind: Some(start.kind()),
+            playlist: start.playlist.as_deref(),
+            difficulty: start.difficulty.as_deref(),
+            online: start.online,
+            players,
+            scoreboard: &game.scoreboard,
             started_at: &game.started_at,
+            start_tick: start.tick,
             duration_s: game.film_stats_discrepancy.as_ref()
                 .and(game.film_summary.as_ref())
                 .map(|s| s.duration_ticks / u64::from(ticks_per_second))
@@ -556,6 +576,41 @@ fn account(author: &Author) -> ApiResult<Xuid> {
 
 pub(crate) fn host_film_key(id: &str) -> String {
     format!("{HOST_FILM_PREFIX}{id}.h2film")
+}
+
+/// Exact playback includes private machine and network state. A catalogue
+/// reservation can list the film before a real start establishes who played.
+async fn download_host_film(live: &Live, headers: &HeaderMap, id: &str) -> ApiResult<Response> {
+    use axum::{body::Body, http::header};
+
+    let author = live.authenticate(bearer(headers), lxm::READ)?;
+    let player = account(&author)?;
+    let viewer = live.viewer_of(&author);
+    let key = {
+        let model = live.model.read();
+        let Some(Source::Game(g)) = visible_game(&model, id, viewer) else {
+            return Err(not_found("no host film for this account"));
+        };
+        if !g.has_host_film || !g.xuids.contains(&player) {
+            return Err(not_found("no host film for this account"));
+        }
+        g.film_blob.clone().unwrap_or_else(|| host_film_key(id))
+    };
+    let store = live.blobs().ok_or_else(|| ApiError::new(ErrorCode::Unavailable, "the film store is unavailable"))?;
+    let (size, stream) = parts::get_stream(&store.private, &key)
+        .await
+        .map_err(|error| {
+            eprintln!("live: film {id}: {error}");
+            ApiError::new(ErrorCode::Unavailable, "the film store cannot read")
+        })?
+        .filter(|(size, _)| (1..=live_proto::film::MAX_UPLOAD_BYTES).contains(size))
+        .ok_or_else(|| not_found("the host film is not stored"))?;
+    Ok(Response::builder()
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(header::CACHE_CONTROL, "private, no-store")
+        .header(header::CONTENT_LENGTH, size.to_string())
+        .body(Body::from_stream(stream))
+        .expect("valid host film response headers"))
 }
 
 pub(crate) async fn save(

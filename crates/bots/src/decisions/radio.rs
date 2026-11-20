@@ -108,33 +108,44 @@ impl Radio {
         self.pending.retain(surviving);
     }
 
+    #[cfg(test)]
     pub fn listen(&self, p: &Perception) -> Vec<Call> {
-        let Some((id, team)) = p.observations.player.filter(|_| p.teams) else {
-            return Vec::new();
-        };
-        self.ready
-            .iter()
-            .copied()
-            .filter(|c| {
-                c.sender != id
-                    && c.team == team
-                    && p.others.iter().any(|o| o.id == c.sender && o.team == team)
-            })
-            .collect()
+        let mut calls = Vec::new();
+        self.listen_into(p, &mut calls);
+        calls
     }
 
-    pub fn supply_calls(&self, p: &Perception) -> Vec<SupplyCall> {
+    pub fn listen_into(&self, p: &Perception, calls: &mut Vec<Call>) {
+        calls.clear();
         let Some((id, team)) = p.observations.player.filter(|_| p.teams) else {
-            return vec![];
+            return;
         };
-        let mut calls: Vec<_> = self
-            .supplies
-            .iter()
-            .copied()
-            .filter(|c| c.sender != id && c.team == team)
-            .collect();
-        calls.sort_by_key(|c| (c.tick, c.sender));
+        calls.extend(self.ready.iter().copied().filter(|c| {
+            c.sender != id
+                && c.team == team
+                && p.others.iter().any(|o| o.id == c.sender && o.team == team)
+        }));
+    }
+
+    #[cfg(test)]
+    pub fn supply_calls(&self, p: &Perception) -> Vec<SupplyCall> {
+        let mut calls = Vec::new();
+        self.supply_calls_into(p, &mut calls);
         calls
+    }
+
+    pub fn supply_calls_into(&self, p: &Perception, calls: &mut Vec<SupplyCall>) {
+        calls.clear();
+        let Some((id, team)) = p.observations.player.filter(|_| p.teams) else {
+            return;
+        };
+        calls.extend(
+            self.supplies
+                .iter()
+                .copied()
+                .filter(|c| c.sender != id && c.team == team),
+        );
+        calls.sort_by_key(|c| (c.tick, c.sender));
     }
 
     pub fn publish_supply(&mut self, c: SupplyCall, now: u32) {

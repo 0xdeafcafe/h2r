@@ -230,6 +230,15 @@ pub struct BotParams {
     /// `code` (the hand-written tracking) or `net` (the aim net).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aim_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foot_plan_ticks: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vehicle_plan_ticks: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vehicle_lookahead_ticks: Option<u32>,
+    /// Accepted for older tuning files. Player sight is sampled every tick.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub player_los_ticks: Option<u32>,
 }
 
 /// The aim models a tuning can name (`bots::tuning::AimModel`).
@@ -265,6 +274,13 @@ impl BotParams {
             phantom_ping_ms: pick(&self.phantom_ping_ms, &over.phantom_ping_ms),
             phantom_jitter_ms: pick(&self.phantom_jitter_ms, &over.phantom_jitter_ms),
             aim_model: pick(&self.aim_model, &over.aim_model),
+            foot_plan_ticks: pick(&self.foot_plan_ticks, &over.foot_plan_ticks),
+            vehicle_plan_ticks: pick(&self.vehicle_plan_ticks, &over.vehicle_plan_ticks),
+            vehicle_lookahead_ticks: pick(
+                &self.vehicle_lookahead_ticks,
+                &over.vehicle_lookahead_ticks,
+            ),
+            player_los_ticks: pick(&self.player_los_ticks, &over.player_los_ticks),
         }
     }
 
@@ -341,6 +357,18 @@ impl BotParams {
             && !AIM_MODELS.contains(&m.as_str())
         {
             out.push(format!("{at}: aim_model = {m:?}: code or net"));
+        }
+        for (name, ticks) in [
+            ("foot_plan_ticks", self.foot_plan_ticks),
+            ("vehicle_plan_ticks", self.vehicle_plan_ticks),
+            ("vehicle_lookahead_ticks", self.vehicle_lookahead_ticks),
+            ("player_los_ticks", self.player_los_ticks),
+        ] {
+            if let Some(ticks) = ticks
+                && !(1..=30).contains(&ticks)
+            {
+                out.push(format!("{at}: {name} = {ticks}: 1 to 30 ticks"));
+            }
         }
         let on_off = self.burst_on.is_some() || self.burst_off.is_some();
         if self.burst == Some(false) && on_off {

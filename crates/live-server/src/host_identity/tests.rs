@@ -223,9 +223,13 @@ async fn assigned_lease(live: &Live, lease: &HostLease) -> String {
 
 async fn assigned_game(live: &Live, lease: &HostLease) -> (String, String) {
     let token = assigned_lease(live, lease).await;
-    let game = live.start_game(Some(&token), new_game()).await.unwrap();
+    let mut start = new_game();
+    for (player, xuid) in start.players.iter_mut().zip(&lease.roster) {
+        player.xuid = Some(*xuid);
+    }
+    let game = live.start_game(Some(&token), start.clone()).await.unwrap();
     assert_eq!(
-        live.start_game(Some(&token), new_game()).await.unwrap(),
+        live.start_game(Some(&token), start).await.unwrap(),
         game
     );
     (token, game.game_id)
@@ -273,7 +277,15 @@ async fn only_the_games_lease_can_upload_a_bounded_host_film() {
     use tower::ServiceExt;
 
     let live = live().await;
-    let lease = lease();
+    let mut lease = lease();
+    let mut readers = Vec::new();
+    for tag in ["FilmPlayer", "FilmGuest"] {
+        let key = KeyPair::generate();
+        let request = live_proto::sign::AccountRequest::sign(&key, tag, None, &live.identity.id, now());
+        let account = live.create_account(&request).await.unwrap();
+        readers.push((key, account));
+    }
+    lease.roster[0] = readers[0].1.xuid;
     let (token, id) = assigned_game(&live, &lease).await;
     let store = crate::blobs::BlobStore::memory();
     live.set_blobs(crate::blobs::Blobs {
@@ -388,6 +400,45 @@ async fn only_the_games_lease_can_upload_a_bounded_host_film() {
     assert_eq!((selected.0.as_ref(), selected.1), (film.as_slice(), film.len() as u64));
     assert_eq!(list().await["items"][0]["has_host_film"], true);
     assert_eq!(list().await["items"][0]["summary"], public_summary);
+
+    let download = |token: Option<String>| {
+        let mut req = Request::get(format!("/v1/games/{id}/film"));
+        if let Some(token) = token {
+            req = req.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        router.clone().oneshot(req.body(Body::empty()).unwrap())
+    };
+    assert_eq!(download(None).await.unwrap().status(), StatusCode::UNAUTHORIZED);
+    let read_token = |reader: usize| {
+        let (key, account) = &readers[reader];
+        issue_token(key, &account.id, &live.identity.id, lxm::READ, now())
+    };
+    assert_eq!(
+        download(Some(read_token(1))).await.unwrap().status(),
+        StatusCode::NOT_FOUND
+    );
+    let response = download(Some(read_token(0))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "private, no-store");
+    assert_eq!(
+        response.headers()[header::CONTENT_LENGTH].to_str().unwrap().parse::<usize>().unwrap(),
+        film.len()
+    );
+    let downloaded = to_bytes(response.into_body(), film.len()).await.unwrap();
+    assert_eq!(downloaded.as_ref(), film.as_slice());
+
+    // A participant cannot use a public-range request to fetch private
+    // machine data or silently fall back to a whole-film response.
+    for (suffix, range) in [("", Some("bytes=0-31")), ("?span=0-31", None)] {
+        let mut request = Request::get(format!("/v1/games/{id}/film{suffix}"))
+            .header(header::AUTHORIZATION, format!("Bearer {}", read_token(0)));
+        if let Some(span) = range {
+            request = request.header(header::RANGE, span);
+        }
+        let response = router.clone().oneshot(request.body(Body::empty()).unwrap()).await.unwrap();
+        // This v2 artifact has no approved public range directory.
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
 }
 
 /// Keep the actual start and end of the small v3 match fixture. Add time

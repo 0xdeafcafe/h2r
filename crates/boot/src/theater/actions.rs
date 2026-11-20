@@ -33,7 +33,11 @@ fn read_block(m: &dyn GuestMemory, at: u32) -> Result<[u8; ACTION_BLOCK]> {
     Ok(block)
 }
 
-fn capture(m: &dyn GuestMemory, update: u32) -> Result<Vec<SeatInput>> {
+fn capture(
+    m: &dyn GuestMemory,
+    update: u32,
+    pads: &[Option<input::Gamepad>; MAX_SEATS],
+) -> Result<Vec<SeatInput>> {
     let block = read_block(m, block_address(update)?)?;
     let mask = u32::from_le_bytes(block[..4].try_into()?);
     ensure!(
@@ -46,7 +50,7 @@ fn capture(m: &dyn GuestMemory, update: u32) -> Result<Vec<SeatInput>> {
             inputs.push(SeatInput {
                 seat: seat as u8,
                 action: Some(record.try_into()?),
-                pad: None,
+                pad: pads[seat].map(|pad| pad.to_bytes()),
             });
         }
     }
@@ -96,21 +100,20 @@ pub(super) fn install(b: &mut feature::Builder, session: Arc<Session>) {
             let mut memory = c.ctx.memory();
             let result = match update {
                 Err(e) => Err(e),
-                Ok(ptr) if matches!(&state.mode, Mode::Record(_)) => match capture(&*memory, ptr) {
-                    Ok(mut inputs) => {
-                        if let Some(tick) = bots::guest::game_tick(&*memory) {
-                            let pads = bots::phantom::global().gathered_pads(tick);
-                            for input in &mut inputs {
-                                input.pad = pads[usize::from(input.seat)].map(|pad| pad.to_bytes());
-                            }
+                Ok(ptr) if matches!(&state.mode, Mode::Record(_)) => {
+                    let pads = bots::guest::game_tick(&*memory)
+                        .map(|tick| bots::phantom::global().gathered_pads(tick))
+                        .unwrap_or([None; MAX_SEATS]);
+                    match capture(&*memory, ptr, &pads) {
+                        Ok(inputs) => {
+                            drop(memory);
+                            drop(state);
+                            session.record_actions(inputs);
+                            return Ok(feature::Flow::Continue);
                         }
-                        drop(memory);
-                        drop(state);
-                        session.record_actions(inputs);
-                        return Ok(feature::Flow::Continue);
+                        Err(e) => Err(e),
                     }
-                    Err(e) => Err(e),
-                },
+                }
                 Ok(ptr) => (|| -> Result<()> {
                     let engine = state
                         .engine
@@ -163,7 +166,26 @@ mod tests {
             },
         ];
         apply(&mut mem, update, &players).unwrap();
-        assert_eq!(capture(&mem, update).unwrap(), vec![players[0], players[2]]);
+        assert_eq!(
+            capture(&mem, update, &[None; MAX_SEATS]).unwrap(),
+            vec![players[0], players[2]]
+        );
+        // The phantom gate reported an accepted neutral pad for seat 15.
+        // A human in slot zero has only an authoritative command here.
+        let mut pads = [None; MAX_SEATS];
+        pads[15] = Some(input::Gamepad::default());
+        pads[7] = Some(input::Gamepad::default()); // No published retail action.
+        let rows = capture(&mem, update, &pads).unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                players[0],
+                SeatInput {
+                    pad: Some([0; 18]),
+                    ..players[2]
+                }
+            ]
+        );
         assert_eq!(mem.u32(update + MASK).unwrap(), 0x8001);
         assert!(mem.bytes[..8].iter().all(|v| *v == 0xa5));
         assert!(
@@ -191,6 +213,6 @@ mod tests {
         assert!(apply(&mut mem, 32 + 0x4044, &[good]).is_err());
         assert_eq!(mem.bytes, before);
         mem.set_u32(32 + MASK, 1 << 16).unwrap();
-        assert!(capture(&mem, 32).is_err());
+        assert!(capture(&mem, 32, &[None; MAX_SEATS]).is_err());
     }
 }
