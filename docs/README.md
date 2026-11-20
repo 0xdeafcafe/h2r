@@ -46,6 +46,10 @@ goals, the two-stage plan, the crate table and milestones.
 - [xbox.md](runtime/xbox.md): the UWP app for an Xbox in Dev Mode, packaged, signed and deployed from a Mac (`platform/xbox`, `H2_EMIT_TARGET=windows`)
 - [title-updates.md](runtime/title-updates.md): design for title-update XBEs (1.1 and later): what assumes the 1.0 image, the address-map plan; design only, the one built part is `h2 import-mappack` copying the Map Pack's update aside
 
+## Development (`dev/`)
+
+- [build-speed.md](dev/build-speed.md): the Rust build and test loop: the dev profile, one test binary per crate (`tests/it.rs`), building many worktrees (target directories, the cache), `scripts/affected.py`, the test ledger and `scripts/gate.py`; the measurement plan and what is left
+
 ## Input (`input/`)
 
 - [input.md](input/input.md) (**start here**): XInput replacement, device model, backends, bindings and input timelines (`crates/input`)
