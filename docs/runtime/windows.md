@@ -122,7 +122,7 @@ passes no CRT state across the host boundary ([xbox.md](xbox.md)).
 | audio | cpal on CoreAudio | cpal on WASAPI |
 | data root | `~/Library/Application Support/h2recomp` | `%LOCALAPPDATA%\h2recomp` (`vfs::default_data_root`) |
 | pipeline cache | `~/Library/Caches/h2recomp` | `%LOCALAPPDATA%\h2recomp\cache` |
-| utility-drive format | handle-anchored walk (openat, unlinkat) | by path, never following links or junctions (`vfs` `empty_by_path`) |
+| [utility-drive format](storage.md#filesystem-implementations) | descriptor-relative staged swaps and rollback | path-based staged swaps and rollback in the app's private directories |
 | Live sockets (Live on) | BSD sockets | stand-in: every socket fails with WSASYSNOTREADY (Winsock port to do) |
 | movies (Bink, AVFoundation) | AVFoundation | compiled out: movies are skipped |
 | `h2 emit` output lock | flock | std `File::lock` (LockFileEx) |
