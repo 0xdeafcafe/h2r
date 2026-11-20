@@ -10,6 +10,7 @@ const VA_SIZE: usize = 1usize << 32;
 const PAGE: usize = 4096;
 
 pub(crate) fn enabled() -> bool {
+    protection::enable_stats();
     std::env::var_os("H2_FLAT_RAM").is_some_and(|s| s == "1")
 }
 
@@ -33,6 +34,9 @@ pub(crate) struct View {
     pub(crate) base: *mut u8,
     pub(crate) stores: *mut u8,
     pub(crate) plane_mask: u32,
+    // Appended after the original descriptor. Visible only with bit 30.
+    pub(crate) cold_stores: *mut u8,
+    pub(crate) software_pages: *const u64,
 }
 
 struct Reservation {
@@ -83,6 +87,9 @@ pub(crate) struct Arena {
 
 impl Arena {
     pub(crate) fn new(ram: &Ram, pages: &mut [FastPage]) -> Option<Self> {
+        if !ram.can_alias() {
+            return None;
+        }
         let host = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).ok()?;
         if !matches!(host, 4096 | 16384) || !(ram.as_ptr() as usize).is_multiple_of(host) {
             return None;
@@ -233,8 +240,17 @@ impl Arena {
             stores: self
                 .watch
                 .as_ref()
+                .filter(|w| !w.has_hot_pages())
                 .map_or(std::ptr::null_mut(), |w| w.base()),
             plane_mask: (self.page_size / PAGE - 1) as u32,
+            cold_stores: self
+                .watch
+                .as_ref()
+                .map_or(std::ptr::null_mut(), |w| w.base()),
+            software_pages: self
+                .watch
+                .as_ref()
+                .map_or(std::ptr::null(), |w| w.software_pages()),
         }
     }
     pub(crate) fn publish(&mut self, watch: &mut crate::watch::WriteWatch) {

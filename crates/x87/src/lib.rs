@@ -36,7 +36,6 @@ mod consts;
 mod convert;
 mod round;
 mod trans;
-mod trans_f64;
 mod wide;
 
 #[cfg(feature = "abi")]
@@ -44,7 +43,6 @@ pub mod abi;
 
 pub use arith::{Cmp, add, compare, div, mul, prem, prem1, rndint, scale, sqrt, sub, xtract};
 pub use trans::{cos, patan, sin, sincos, tan, x2m1, yl2x, yl2xp1};
-pub use trans_f64::{f64_transcendentals, set_f64_transcendentals};
 
 /// Whether the transcendentals are *proven* correctly rounded.
 ///

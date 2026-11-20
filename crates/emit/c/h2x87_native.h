@@ -239,7 +239,6 @@ static inline H2X87N_FAST uint32_t h2x87n_unary(X87Abi *s, uint32_t op) {
     s->status = h2x87n_status(s->status, err != 0.0, err > 0.0);
     return H2X87_OK;
 }
-#if H2_X87_STORE_BITS
 /* FST narrows ext80 to its destination precision regardless of PC. For
  * canonical normals in the target exponent range the only possible flag
  * is PE; a carry out of the largest exponent goes to the authority.
@@ -278,47 +277,20 @@ static inline H2X87N_FAST int h2x87n_store_bits(const X87Abi *s, unsigned p,
     *sw = h2x87n_status(s->status, lost != 0, up);
     return 1;
 }
-#endif
 static inline H2X87N_FAST uint32_t h2x87n_st_f64_at(X87Abi *s, unsigned top, uint32_t i, uint64_t *value, uint16_t *sw) {
-#if H2_X87_STORE_BITS
     if (h2x87n_store_bits(s, (top + i) & 7u, 52, 1023, value, sw)) return H2X87_OK;
     return h2x87_v1_st_f64(s, i, value, sw);
-#else
-    double a;
-    if (!h2x87n_mode(s) || !h2x87n_get(s, ((top + i) & 7u), &a))
-        return h2x87_v1_st_f64(s, i, value, sw);
-    *value = h2x87n_bits(a); *sw = (uint16_t)(s->status & ~0x200u);
-    return H2X87_OK;
-#endif
 }
 static inline H2X87N_FAST uint32_t h2x87n_st_f64(X87Abi *s, uint32_t i, uint64_t *value, uint16_t *sw) {
     return h2x87n_st_f64_at(s, h2x87n_phys(s, 0), i, value, sw);
 }
 static inline H2X87N_FAST uint32_t h2x87n_st_f32_at(X87Abi *s, unsigned top, uint32_t i, uint32_t *value, uint16_t *sw) {
-#if H2_X87_STORE_BITS
     uint64_t bits;
     if (h2x87n_store_bits(s, (top + i) & 7u, 23, 127, &bits, sw)) {
         *value = (uint32_t)bits;
         return H2X87_OK;
     }
     return h2x87_v1_st_f32(s, i, value, sw);
-#else
-    double a;
-    if (!h2x87n_mode(s) || !h2x87n_get(s, ((top + i) & 7u), &a)) goto slow;
-    /* Exclude the binary32 underflow/overflow ranges (including rounding
-     * across their boundaries), preserving ext80's range and sticky bits. */
-    uint64_t b = h2x87n_bits(a) & UINT64_C(0x7fffffffffffffff);
-    if (b && (b < UINT64_C(0x3810000000000000) || b > UINT64_C(0x47efffffe0000000))) goto slow;
-    H2X87N_BARRIER(a);
-    float q = (float)a;
-    memcpy(value, &q, 4);
-    double err = a - (double)q;
-    *sw = h2x87n_status(s->status, err != 0.0,
-        (q < 0.0f && err > 0.0) || (q > 0.0f && err < 0.0));
-    return H2X87_OK;
-slow:
-    return h2x87_v1_st_f32(s, i, value, sw);
-#endif
 }
 static inline H2X87N_FAST uint32_t h2x87n_st_f32(X87Abi *s, uint32_t i, uint32_t *value, uint16_t *sw) {
     return h2x87n_st_f32_at(s, h2x87n_phys(s, 0), i, value, sw);

@@ -67,8 +67,8 @@ or a short form:
   frame [draws] [max N] [constants R[..S][,...]] [snap N[,M...]]
                          render.frame: record the next whole frame and
                          print it: passes (target, clears, draws by outcome,
-                         primitive, entry, texture formats), copies and reads,
-                         native render paths; `draws` lists each draw (at
+                         primitive, entry, texture formats), copies and
+                         reads; `draws` lists each draw (at
                          most `max`, 2000) with its vertex side and depth
                          state (mode, W-buffered, func, write, viewport z,
                          viewport scale/offset z, clip range, full scale,
@@ -85,7 +85,7 @@ or a short form:
                          entry addresses that interpreted most, with their
                          function, hits and instructions
   render                 render.stats: in-between frames and why they held,
-                         the pipelined render, native render path calls
+                         the pipelined render, the frame-stats counters
   state save <name> [replace]  state.save: the whole machine at the next tick
                          boundary where nothing is live, under the cache
                          directory's snapshots/ (retries for 90 ticks, then

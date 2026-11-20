@@ -37,18 +37,9 @@ use std::sync::atomic::{AtomicU64, AtomicUsize};
 /// Room in the per-context table; `h2_direct_slot` in h2gen.h hashes the
 /// same way, into the first `slot_mask + 1`.
 pub(crate) const SLOTS: usize = 8192;
-/// Slots in use: a power of two up to [`SLOTS`] from `H2_DIRECT_SLOTS`
-/// (runtime environment), else 4096.
-fn slots_in_use() -> u32 {
-    static N: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    *N.get_or_init(|| {
-        std::env::var("H2_DIRECT_SLOTS")
-            .ok()
-            .and_then(|v| v.parse::<u32>().ok())
-            .filter(|n| n.is_power_of_two() && *n as usize <= SLOTS)
-            .unwrap_or(4096)
-    })
-}
+/// Slots in use: a power of two up to [`SLOTS`].
+const SLOTS_IN_USE: u32 = 4096;
+const _: () = assert!(SLOTS_IN_USE.is_power_of_two() && SLOTS_IN_USE as usize <= SLOTS);
 /// The deepest nesting the block has room to record.
 pub const MAX_DEPTH: u32 = 64;
 /// The default nesting cap: each level is one generated handler's host
@@ -148,7 +139,7 @@ impl Direct {
         state.generation = runtime.dispatch_generation_ptr();
         state.interrupts = runtime.interrupts.pending_ptr();
         state.cap = DEFAULT_DEPTH;
-        state.slot_mask = slots_in_use() - 1;
+        state.slot_mask = SLOTS_IN_USE - 1;
         let owned = NonNull::from(Box::leak(state));
         Self { owned }
     }
@@ -316,6 +307,5 @@ mod tests {
             assert_eq!(slot_of(pc, 255), ((pc ^ (pc >> 8)) & 255) as usize);
             assert_eq!(slot_of(pc, 4095), ((pc ^ (pc >> 8)) & 4095) as usize);
         }
-        assert!(slots_in_use().is_power_of_two() && slots_in_use() as usize <= SLOTS);
     }
 }

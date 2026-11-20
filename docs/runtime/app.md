@@ -1,5 +1,9 @@
 # App: the host shell
 
+Status: Built.
+Code: `crates/app/src` (`shell.rs`, `embedded.rs`, `lib.rs`), `crates/cli/src/play_cmd.rs` (`h2 play`). Tests: `crates/app/tests/`.
+Switch: `H2_FPS` (30), the rest in [switches.md](switches.md).
+
 `crates/app` is the platform layer the game runs inside on macOS: a window
 with a Metal surface, presentation of the guest's frames, live keyboard,
 mouse and controller input, the audio device, and the guest thread's
@@ -87,9 +91,10 @@ CARGO_TARGET_DIR=$TMPDIR/app-play-target cargo build --release -p cli
 $TMPDIR/app-play-target/release/h2 play /abs/path/to/disc/halo2.iso
 ```
 
-It builds the dylib first when `--out` (default `$TMPDIR/h2boot`) has none,
-or one whose `.stamp` names another image, generator or module ABI
-(`boot::dylib_current`), like `h2 run`. Flags: `--out DIR`, `--data DIR`, `--slices N` (unlimited by
+Like `h2 run`, it picks the module by `--tier`: when `--out` (default
+`$TMPDIR/h2boot`) has no clang module, or one whose `.stamp` names another
+image, generator or module ABI (`boot::dylib_current`), `auto` runs the fast
+tier and builds clang's in the background. Flags: `--out DIR`, `--data DIR`, `--slices N` (unlimited by
 default), `--transfers N`, `--aspect 4:3|16:9|source`, `--scaling
 fit|integer|stretch`, `--nearest`, `--fullscreen`, `--no-audio`,
 `--no-gamepads`, `--no-vsync`, `--unpaced`, `--fps 30|60|120|uncapped`,
@@ -98,7 +103,7 @@ disc is otherwise installed into `--data` once, docs/game/map-pack.md), `--bindi
 TOML), `--icons auto|xbox|xbox360|playstation|keyboard|remote|steam` (button pictures in
 prompts; `auto`, the default, follows the device last used, see
 [button-icons.md](../input/button-icons.md)), `--input-timeline FILE` (an input timeline, docs/input/input.md, played on
-guest time in place of live input), `--status` (frame rates once a second,
+guest time in place of live input), `--tier auto|fast|clang` ([BOOT.md](BOOT.md)), `--movies DIR` / `--no-movies`, `--no-halo1`, `--film FILE`, `--follow`, `--tile`, `--title` (see `play_cmd.rs` for the last three), `--status` (frame rates once a second,
 the slice count every 1000 slices), `--frame-stats` (frame-time stats, below),
 `--level MAP [--difficulty easy|normal|heroic|legendary]` (start that
 campaign level, or a local Slayer game on that multiplayer map, in place of
@@ -123,11 +128,9 @@ as a person's keys. Hold keys for one present at the menu's frame rate
 (`START@f330+2,DOWN@f455+1,Enter@f475+1`): the menus autorepeat, and at one
 or two presents a second a 4-present hold moves the cursor twice.
 `H2_BOOT_GFX` is ignored: frames go to the window. As for `h2 run`,
-consecutive draws to one target share a render pass, and
-`H2_GFX_MERGE_PASSES=0` gives one render pass per draw. Alpha-tested
-draws are merged too by default (the fast rule; a few edge pixels in a
-level can differ), and `H2_GFX_MERGE_PASSES=exact` gives each its own
-render pass (docs/runtime/BOOT.md).
+consecutive draws to one target share a render pass under the loose
+rule (a few edge pixels in a level can differ from one render pass per
+draw; docs/graphics/graphics.md, "Merged passes").
 
 How it is wired (all through `boot::run_hosted` and `boot::Host`, docs/runtime/BOOT.md
 "Hosted runs"):
@@ -615,7 +618,7 @@ fit|integer|stretch`, `--nearest`, `--no-vsync`, `--no-audio`,
 `--no-gamepads`, `--pause-on-blur`, `--fullscreen`, `--input-config PATH`,
 `--input-script PATH`.
 
-A synthetic guest drives the real shell exactly like the game will: 60 Hz of
+A synthetic guest drives the real shell the way the game does: 60 Hz of
 logical time through `tick`, input through `InputManager`, frames through a
 `FrameSink`, a tone through the shared mixer. Check:
 
@@ -629,10 +632,6 @@ logical time through `tick`, input through `InputManager`, frames through a
   change is printed;
 - a quiet 220 Hz tone: left stick pans it, right stick Y bends it an octave
   either way, A toggles it, Cmd+P pauses it with the guest.
-
-Checked on an M1 Max: window, Metal surface, 59-60 fps guest and display,
-pattern geometry and audio device all as above. Physical controllers and
-mouse capture were not exercised in that check.
 
 ## Embedded hosts
 
@@ -650,12 +649,6 @@ system keyboard through `Embedded::keyboard`
 ([host-keyboard.md](../input/host-keyboard.md)). `device_config()` is the
 `AppConfig` the apps start from: fullscreen, mouse capture off, pads on,
 and `audio: false` (boot's output owns the device).
-
-## Health meter
-
-The window draws no health meter. Halo 1's health meter is a widget in the
-converted Halo 1 player's HUD, drawn by the game (see
-[health.md](../halo1/health.md) "HUD").
 
 ## Known gaps
 

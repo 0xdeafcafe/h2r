@@ -1,0 +1,13 @@
+# Precedent projects for the lifter
+
+Evidence for [LIFTER.md](../LIFTER.md). Method: reading, no commit (external projects). Public projects read for how they split generated code from a runtime. Read in 2026-11 from their public READMEs and sources (links inline); nothing here was run. Reproduce by opening the links.
+
+## 2026-11-14
+
+N64Recomp translates instructions into C functions, uses labels/switches for internal control flow, and runtime lookup for indirect calls. XenonRecomp emits C++, exposes generated originals behind replaceable functions, and requires a separate runtime. Unleashed supplies address lookup, thread contexts, and typed hook adapters. These demonstrate a useful generated-code/runtime boundary; their MIPS/PowerPC assumptions do not establish x86 correctness. ([N64Recomp](https://github.com/N64Recomp/N64Recomp/blob/main/README.md#how-it-works), [XenonRecomp](https://github.com/hedge-dev/XenonRecomp/blob/main/README.md#implementation-details), [Unleashed adapters](https://github.com/hedge-dev/UnleashedRecomp/blob/main/UnleashedRecomp/kernel/function.h))
+
+ReXGlue is a verified public, experimental Xbox 360 toolkit: it emits batched C++23, preserves originals for overrides, and supplies a Xenia-derived runtime with function dispatch. Its documented implementation is a precedent, not an original-Xbox solution. ([ReXGlue SDK](https://github.com/rexglue/rexglue-sdk/blob/main/README.md), [generated structure](https://github.com/rexglue/rexglue-sdk/wiki/Generated-Code-Structure), [overrides](https://github.com/rexglue/rexglue-sdk/wiki/Function-Overrides))
+
+McSema separates control-flow recovery from Remill instruction lifting; Remill explicitly models state and memory. rev.ng uses QEMU-based lifting/helpers and LLVM analysis, and documents recompilable C plus an editable model. SR's DOS and SRW's Win32 game ports use executable-specific annotations and assembly/`llasm`, with `llasm` translated to LLVM IR: describing these as x86-to-C ports would be inaccurate. Their lesson is to retain corrections as inputs, separate from regenerated output. ([McSema](https://github.com/lifting-bits/mcsema), [Remill design](https://github.com/lifting-bits/remill/blob/master/docs/DESIGN.md), [rev.ng helpers](https://docs.rev.ng/developer-manual/qemu-helpers/), [rev.ng overview](https://docs.rev.ng/what-is-revng/), [SR](https://github.com/M-HT/SR/blob/master/SR/README.md), [SRW](https://github.com/M-HT/SR/blob/master/SRW/README.md), [llasm](https://github.com/M-HT/SR/blob/master/llasm/README.md))
+
+Cxbx supplies reverse-engineered Xbox kernel and D3D interception contracts; xemu supplies CPU/device models and potential traces. Neither proves this title's HLE coverage. Their evidence is cited on the pages that use it.

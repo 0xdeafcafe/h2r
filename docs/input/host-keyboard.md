@@ -1,5 +1,9 @@
 # Host typing in the virtual keyboard
 
+Status: Built. Unit tested on synthetic screen memory; no game run is recorded.
+Code: `crates/boot/src/keyboard_glue.rs`, `crates/app/src/keymap.rs`. Tests: the same files.
+Switch: none.
+
 When the game's virtual keyboard is focused, host typing edits it directly.
 Printable BMP characters insert, Backspace deletes, Enter runs Done, and Escape
 runs Cancel/Back. Arrows keep their existing pad bindings, so they navigate the

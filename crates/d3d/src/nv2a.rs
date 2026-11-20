@@ -937,34 +937,6 @@ impl ShaderProvider for Nv2aShaders {
             (want == have).then_some(textures[n]).flatten()
         });
         let samplers = draw::samplers(draw, border, ctx.caps);
-        if crate::uniform_compare::armed()
-            && let VertexSource::Microcode(words) = &key.vertex
-        {
-            let render = &draw.state.render;
-            crate::uniform_compare::observe(
-                words,
-                &vu,
-                &pu,
-                &key.vertex_options,
-                (&def, &key.pixel_options),
-                (
-                    &gfx::translate::primitive_state(render, draw.primitive.host_topology(), ctx.caps),
-                    gfx::translate::depth_stencil_state(
-                        render,
-                        Some(wgpu::TextureFormat::Depth24PlusStencil8),
-                        draw.primitive.host_topology(),
-                    )
-                    .as_ref(),
-                    crate::uniform_compare::ColorState {
-                        blend: gfx::translate::blend_state(render),
-                        write_mask: gfx::translate::color_writes(render.color_write),
-                        blend_constant: gfx::translate::blend_constant(render),
-                    },
-                ),
-                &samplers,
-                &draw.texture_info,
-            );
-        }
         // Stand-ins carry the stage's signed channels too.
         let signed =
             signs.map(|m| [m & SIGN_R, m & SIGN_G, m & SIGN_B, m & SIGN_A].map(|b| b != 0));

@@ -213,11 +213,6 @@ const SQUAD_SESSION: u32 = 0x0052_7364;
 const SESSION_STATE: u32 = 0x741c;
 const SESSION_PRIVACY: u32 = 0x498c;
 
-/// Whether the row is on (`H2_NO_CUSTOM_GAMES_ROW=1` takes it out).
-pub fn row_enabled() -> bool {
-    std::env::var_os("H2_NO_CUSTOM_GAMES_ROW").is_none()
-}
-
 /// Whether the Co-op Campaign row is on (`H2_NO_COOP_ROW=1` takes it out;
 /// it needs our Live service, see `crate::coop_live`).
 pub fn coop_row_enabled() -> bool {
@@ -233,7 +228,7 @@ pub fn set_coop_row(on: bool) {
 }
 
 /// Whether Content Download opens the Mods screen (`crate::mods_screen`,
-/// installed with Live and a map gate; `H2_NO_MODS_ROW=1` takes it out).
+/// installed with Live and a map gate).
 pub fn mods_row_enabled() -> bool {
     MODS_ROW_ON.load(std::sync::atomic::Ordering::SeqCst)
 }
@@ -625,20 +620,8 @@ pub const MIN_PITCH: i16 = 22;
 
 /// The pitch for `rows` rows inside the room the retail four take, from
 /// the first row's top to the hint block less [`MIN_GAP`]: the retail 43
-/// for four, 36 for five, 29 for six. `H2_LIVE_MENU_PITCH` overrides it
-/// (clamped to [`MIN_PITCH`]..=43), to tune it in game without a build.
+/// for four, 36 for five, 29 for six, never under [`MIN_PITCH`].
 pub fn pitch(rows: u32) -> i16 {
-    if let Some(p) = std::env::var("H2_LIVE_MENU_PITCH")
-        .ok()
-        .and_then(|v| v.trim().parse::<i16>().ok())
-    {
-        return p.clamp(MIN_PITCH, ITEM_HEIGHT);
-    }
-    pitch_for(rows)
-}
-
-/// [`pitch`] with no override.
-pub fn pitch_for(rows: u32) -> i16 {
     if rows <= VANILLA_ITEMS {
         return ITEM_HEIGHT;
     }
@@ -1318,10 +1301,10 @@ mod tests {
 
     #[test]
     fn seven_rows_fit_with_the_retail_gaps_and_no_scroll() {
-        assert_eq!(pitch_for(4), ITEM_HEIGHT, "retail: as it was");
-        assert_eq!(pitch_for(5), 36);
-        assert_eq!(pitch_for(6), 29);
-        assert_eq!(pitch_for(7), 24);
+        assert_eq!(pitch(4), ITEM_HEIGHT, "retail: as it was");
+        assert_eq!(pitch(5), 36);
+        assert_eq!(pitch(6), 29);
+        assert_eq!(pitch(7), 24);
         assert_eq!(regular_menu(false).visible() - VANILLA_ITEMS, 2);
         assert_eq!(regular_menu(true).visible() - VANILLA_ITEMS, 3, "a child item per row: no scroll");
         assert_eq!(regular_menu(true).visible(), 7);
@@ -1332,7 +1315,7 @@ mod tests {
         let (anchor, hint) = (95i16, -70i16);
         assert_eq!(hint, anchor - 3 * ITEM_HEIGHT + ITEM_BOTTOM - RETAIL_GAP);
         for rows in [5u32, 6, 7] {
-            let p = pitch_for(rows);
+            let p = pitch(rows);
             let last_bottom = anchor - (rows as i16 - 1) * p + ITEM_BOTTOM;
             assert!(
                 last_bottom >= hint + MIN_GAP,
@@ -1382,7 +1365,7 @@ mod tests {
         let mut m = Fake::default();
         let handler = 0x50_0000;
         let items = laid_out(&mut m, handler, HANDLER_VTABLE, 6, 95);
-        let p = pitch_for(6);
+        let p = pitch(6);
         assert_eq!(repitch(&mut m, handler, HANDLER_VTABLE, p), Some(5));
         let top = |m: &Fake, i: usize| i16_at(m, items[i] + 0x100 + 0x20);
         let bar_bottom = |m: &Fake, i: usize| i16_at(m, items[i] + 0x200 + 0x24);

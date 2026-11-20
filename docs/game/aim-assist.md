@@ -1,6 +1,6 @@
 # Aim assist strength
 
-Status: built and tested on synthetic tags. Confirmed in the game by the owner (2026-11-17).
+Status: Built. Tested on synthetic tags and seen working in the game.
 
 The ask: aiming with the iOS on-screen touch controls is much harder than
 with a stick, so the game's aim assist should be able to help more. The

@@ -65,14 +65,14 @@ fn plan_registers_each_loop_header_as_a_resume_of_its_owner() {
     assert_eq!(o.loops.headers, BTreeSet::from([header]));
     assert_eq!(o.resumes, vec![header]);
     assert!(o.selectors.contains(&header));
-    let text = emit::c::function(&o.func, &emit::c::OwnerShape { selectors: &o.selectors, loops: &o.loops, accounting: false, functions: None, reg_homes: true });
+    let text = emit::c::function(&o.func, &emit::c::OwnerShape { selectors: &o.selectors, loops: &o.loops, accounting: false, functions: None });
     assert_eq!(text.matches("H2_LOOP_POLL(").count(), 1, "{text}");
     assert_eq!(text.matches("H2_PREEMPT_LOCALS();").count(), 1);
     // A function without loops polls nothing.
     let straight = function(A, |a| a.ret());
     let owners = emit::plan(vec![straight]);
     let o = &owners[0];
-    let text = emit::c::function(&o.func, &emit::c::OwnerShape { selectors: &o.selectors, loops: &o.loops, accounting: false, functions: None, reg_homes: true });
+    let text = emit::c::function(&o.func, &emit::c::OwnerShape { selectors: &o.selectors, loops: &o.loops, accounting: false, functions: None });
     assert!(!text.contains("H2_PREEMPT") && !text.contains("H2_LOOP_POLL"), "{text}");
 }
 

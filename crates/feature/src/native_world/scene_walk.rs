@@ -134,16 +134,13 @@ pub(super) fn install(b: &mut Builder) {
     // A before hook returning a transfer bypasses after observers. Deep
     // timing brackets both of these points, so use the per-item path there.
     if b.switches().feature(crate::render_timing::DEEP, false) { return; }
-    if !b.switches().implementation("render.states", false) &&
-        !b.switches().implementation("render.states_skip", false) {
-        b.raw().before(&points::RENDER_STATES, "native_world_shader_states", |c| {
-            let Some(layer) = crate::native_world_layers::current() else { return Ok(Flow::Continue) };
-            if layer.site != native_render::world_layers::Site::Scene { return Ok(Flow::Continue); }
-            let mut m = c.ctx.runtime().memory();
-            if !world_shader_state_list(&*m, c.cpu.esp, layer.number) { return Ok(Flow::Continue); }
-            crate::render_loop::world_states(c.cpu, &mut m).map(Flow::Return)
-        }).context_only();
-    }
+    b.raw().before(&points::RENDER_STATES, "native_world_shader_states", |c| {
+        let Some(layer) = crate::native_world_layers::current() else { return Ok(Flow::Continue) };
+        if layer.site != native_render::world_layers::Site::Scene { return Ok(Flow::Continue); }
+        let mut m = c.ctx.runtime().memory();
+        if !world_shader_state_list(&*m, c.cpu.esp, layer.number) { return Ok(Flow::Continue); }
+        crate::render_loop::world_states(c.cpu, &mut m).map(Flow::Return)
+    }).context_only();
 
     b.raw().before(&points::LAYER_BUILD, "native_world_layer_build", |c| {
         let result = super::layer_build::prefix(&mut *c.ctx.runtime().memory(), c.cpu);
@@ -248,11 +245,9 @@ mod tests {
     }
 
     #[test]
-    fn master_world_and_individual_switch_gate_the_walk() {
-        for (switches, on) in [("", true), ("impl.render.native=off", false),
-            ("impl.render.native_world=off", false), ("impl.render.native_world_skip_build=off", false),
-            ("impl.render.native=off,impl.render.native_world_skip_build=on", false)] {
-            assert_eq!(crate::native_world::skip_build_on(&crate::Switches::parse(switches).unwrap()), on);
+    fn the_master_switch_gates_the_walk() {
+        for (switches, on) in [("", true), ("impl.render.native=off", false)] {
+            assert_eq!(crate::native_world::on(&crate::Switches::parse(switches).unwrap()), on);
         }
     }
 }

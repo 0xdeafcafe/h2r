@@ -450,9 +450,15 @@ typedef struct H2FlatView {
     uint8_t *stores;
     uint32_t plane_mask;
 } H2FlatView;
-typedef struct H2FlatMemoryData { H2MemoryData prefix; H2FlatView flat; } H2FlatMemoryData;
+typedef struct H2FlatMemoryData {
+    H2MemoryData prefix;
+    H2FlatView flat;
+    uint8_t *cold_stores;
+    const uint64_t *software_pages;
+} H2FlatMemoryData;
 #if UINTPTR_MAX == UINT64_MAX
 _Static_assert(offsetof(H2FlatMemoryData, flat) == 2080 && sizeof(H2FlatView) == 24, "flat memory layout");
+_Static_assert(offsetof(H2FlatMemoryData, cold_stores) == 2104 && sizeof(H2FlatMemoryData) == 2120, "flat watch layout");
 #endif
 
 static H2_ALWAYS_INLINE uint8_t *h2_flat_span(const H2Gate *g, uint32_t addr,
@@ -465,10 +471,18 @@ static H2_ALWAYS_INLINE uint8_t *h2_flat_span(const H2Gate *g, uint32_t addr,
     if ((rights & 2u) && (g->data->watching & 1u)) {
         /* The mirror is indexed by physical page. It also covers a full
          * permitted page that could not share a guest VA window. */
-        if (!v->stores || (p.physical & ~UINT32_C(0x03fff000))) return NULL;
+        if (p.physical & ~UINT32_C(0x03fff000)) return NULL;
+        uint8_t *stores = v->stores;
+        if (!stores) {
+            if (!(g->data->watching & UINT32_C(0x40000000))) return NULL;
+            const H2FlatMemoryData *ext = (const H2FlatMemoryData *)g->data;
+            uint32_t page = p.physical >> 12;
+            if ((ext->software_pages[page >> 6] >> (page & 63u)) & 1u) return NULL;
+            stores = ext->cold_stores;
+        }
         uint32_t pa = p.physical | (addr & 4095u);
         size_t plane = (pa >> 12) & v->plane_mask;
-        return v->stores + (plane << 26) + pa;
+        return stores + (plane << 26) + pa;
     }
     if (p.permissions & 8u) return v->base + addr;
     uint32_t window = (p.permissions >> 4) & 3u;
@@ -477,6 +491,20 @@ static H2_ALWAYS_INLINE uint8_t *h2_flat_span(const H2Gate *g, uint32_t addr,
      * stride after its predecessor and shifts guest VA by a further
      * 4 KiB. A v1 flat runtime never sets the window bits. */
     return v->base + window * (UINT64_C(0x100000000) + 3u * 16384u + 4096u) + addr;
+}
+/* An image may run with the flat backend disabled, including a private
+ * file restore. Probe under the gate and preserve the paged entry policy. */
+static H2_ALWAYS_INLINE uint8_t *h2_begin_span(H2FastAccess *f, H2Gate *g,
+                                              uint32_t addr, uint32_t size, uint32_t rights) {
+    if (!g->held && f) {
+        H2MemoryData *d = h2_gate_try(f);
+        if (d && !(d->watching & UINT32_C(0x80000000))) {
+            H2_GATE_RELEASE(f->memory);
+            return NULL;
+        }
+        h2_gate_adopt(g, d);
+    }
+    return h2_flat_span(g, addr, size, rights);
 }
 #define H2_SITE_TRY(f, g, addr, width, write, page, host, slow, on_flat)        \
     do {                                                                        \

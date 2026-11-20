@@ -1,9 +1,13 @@
 # Tag layout schemas (`tags::schema`)
 
-Status: **Built** (2026-11-17) for inference, relocation and the offline
-proof. **Not yet loaded by the game** (see "Load test"). Evidence labels are
-those of [map-format.md](map-format.md): **V** checked on the owner's disc
-and map pack, **Design** an implementation choice.
+Status: Built.
+Code: `crates/tags/src/schema.rs` (`Schema`, `Relocator`). Tests: `crates/tags/tests/tag_schema.rs`.
+Switch: none.
+Inference, relocation and the offline proof are built. A map with every
+relocatable tag moved has loaded and run headless ("Load test"); the
+source-layout variant has not been run. Evidence labels are those of
+[map-format.md](map-format.md): **V** checked on the owner's disc and map
+pack, **Run** seen in a running game, **Design** an implementation choice.
 
 A converted Halo 1 map is going to be built fresh from an assembled tag set
 rather than by pinning a retail base map ([map-builder.md](map-builder.md),
@@ -459,7 +463,7 @@ disc and are skipped. Blood Gulch:
 The file is larger because resources the retail compiler overlapped are
 copied once per pointer. Fixing that needs a raw reference with an
 interior offset. It also carries every base tag, not only the closure the
-scenario reaches. Nothing has been run in game yet.
+scenario reaches.
 
 ## Load test
 
@@ -478,10 +482,10 @@ and plays like the disc's. A crash or wrong objects means a field the
 schema gets wrong (a pointer the check missed, or a layout the engine needs
 in its original order); bisect by building with fewer groups.
 
-**Game result** (user run, 2026-11-17, depth-first layout before the
-switch): 4,177 of 4,512 tags at new addresses, with the moved index
-table. The map loaded headless and ran 2,000+ ticks of gameplay with no
-fault.
+**Run:** with the depth-first layout, 4,177 of 4,512 tags at new
+addresses and the moved index table loaded headless and ran 2,000+ ticks of
+gameplay with no fault (owner's run on lockout; the source-layout variant
+above has not been run).
 
 ## Open
 
@@ -496,7 +500,7 @@ fault.
 - The 8 maps at the bound move only in place (slot order). Real movement
   there needs a placement that does not fragment the freed space.
 - Moved tags load in game in depth-first order (above). The source
-  layout, the relaxed padding rule and fresh maps have not been run.
+  layout and the relaxed padding rule have not been run.
 - Ambiguous fields are not marked unknown in the file. The per-tag check
   stands in for that. A new map whose tags put an address in such a field
   will be refused, not mis-relocated.

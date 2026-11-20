@@ -1,5 +1,9 @@
 # Campaign cache integration gate
 
+Status: Built.
+Code: `crates/boot/src/map_slots.rs`, `crates/boot/src/map_copy.rs`, `crates/vfs/src/campaign_maps.rs`. Tests: `crates/kernel/tests/cache_slots.rs` (ignored; needs the disc).
+Switch: none.
+
 `crates/kernel/tests/cache_slots.rs` is an opt-in retail integration test.
 It reads and analyzes the supplied XBE at runtime, lifts the cache path and its
 callees, compiles a bounded C module in scratch space, and runs it against the
@@ -80,7 +84,7 @@ The full active Cairo payload is compared against the ISO after every injected
 failure and after recovery; the recovered tutorial payload is also compared.
 This pause/reopen test does not terminate and relaunch the whole runner.
 
-## Converted Halo 1 campaign slots (**Built**)
+## Converted Halo 1 campaign slots
 
 At boot an installed converted level larger than 280 MiB increases the
 capacity of slots 4 and 5. Both the allocator and the selector read the

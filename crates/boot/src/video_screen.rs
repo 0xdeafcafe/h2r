@@ -72,11 +72,10 @@ pub fn is_model_id(id: u32) -> bool {
     MODEL_IDS.contains(&id) || MORE_MODEL_IDS.contains(&id)
 }
 
-/// Which of our rows are on: `H2_NO_SPEAKER_ROW`, `H2_NO_STEAM_ROWS`,
-/// `H2_NO_TOUCH_ROWS`, `H2_NO_FOV_ROW` and `H2_NO_VIDEO_SCREEN` take theirs
-/// out. On iOS the touch controls' rows take the Steam Controller's place
-/// (no Steam Controller reaches an iPhone or iPad); elsewhere there are no
-/// touch controls, so no touch rows.
+/// Which of our rows the model has. A game gets [`Switches::PLATFORM`]:
+/// every row, with the touch controls' rows in the Steam Controller's
+/// place on iOS (no Steam Controller reaches an iPhone or iPad) and no
+/// touch rows elsewhere. Tests build models with rows left out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Switches {
     pub speaker_row: bool,
@@ -104,18 +103,13 @@ impl Switches {
         pause_rows: true,
     };
 
-    pub fn from_env() -> Switches {
-        let off = |k: &str| std::env::var_os(k).is_some();
-        Switches {
-            speaker_row: !off("H2_NO_SPEAKER_ROW"),
-            steam_rows: !IOS && !off("H2_NO_STEAM_ROWS"),
-            touch_rows: IOS && !off("H2_NO_TOUCH_ROWS"),
-            fov_row: !off("H2_NO_FOV_ROW"),
-            video_screen: !off("H2_NO_VIDEO_SCREEN"),
-            voice_screen: !off("H2_NO_VOICE_SCREEN"),
-            pause_rows: crate::pause_menu::rows_on(),
-        }
-    }
+    /// This platform's rows: [`Switches::ALL`] with the touch rows in
+    /// place of Steam's on iOS.
+    pub const PLATFORM: Switches = Switches {
+        steam_rows: !IOS,
+        touch_rows: IOS,
+        ..Switches::ALL
+    };
 }
 
 /// The touch controls' rows replace the Steam Controller's here.
@@ -409,9 +403,9 @@ mod tests {
         );
         const { assert!(!Switches::ALL.touch_rows, "no touch controls off iOS") };
         if cfg!(target_os = "ios") {
-            assert_eq!(Switches::from_env(), ios);
+            assert_eq!(Switches::PLATFORM, ios);
         } else {
-            assert!(!Switches::from_env().touch_rows);
+            assert_eq!(Switches::PLATFORM, Switches::ALL);
         }
     }
 
@@ -692,7 +686,7 @@ mod tests {
         let mut ids: Vec<u32> = all.iter().map(|(i, _)| *i).collect();
         assert!(ids.iter().all(|i| is_ours(*i) && is_model_id(*i)));
         ids.extend(
-            crate::layout_glue::served_strings(true, true)
+            crate::layout_glue::served_strings(true)
                 .iter()
                 .map(|(i, _)| *i),
         );

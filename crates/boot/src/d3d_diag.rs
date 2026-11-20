@@ -724,8 +724,6 @@ impl<B: Backend> Backend for DiagBackend<B> {
             self.origin(id, || {
                 format!("render-to-texture surface {surface:?} in place")
             });
-            #[cfg(feature = "gpu")]
-            crate::native_world_layers_glue::sample_surface(surface, id);
             Tracked { id, inner }
         }))
     }
@@ -779,9 +777,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
         textures: [Option<&Self::Texture>; 4],
     ) -> bool {
         let draw = &candidate.fallback;
-        if self.capturing().is_some() || self.logging() || self.sweep.is_some() || self.probe.armed()
-            || native_observing()
-        {
+        if self.capturing().is_some() || self.logging() || self.sweep.is_some() || self.probe.armed() {
             return false;
         }
         let stats = Arc::clone(&self.stats);
@@ -997,20 +993,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
         }
         let inner: [Option<&B::Texture>; 4] =
             std::array::from_fn(|i| textures[i].map(|t| &t.inner));
-        #[cfg(feature = "gpu")]
-        crate::native_residual_glue::backend_draw(draw.entry);
         let r = self.inner.draw(color, depth, draw, inner);
-        #[cfg(feature = "gpu")]
-        if crate::native_world_layers_glue::comparing() {
-            crate::native_world_layers_glue::compare_draw(
-                self.in_frame,
-                draw,
-                color,
-                depth,
-                std::array::from_fn(|n| textures[n].map(|t| t.id)),
-                &r,
-            );
-        }
         if probing {
             self.probe.draw(probe_draw(color, depth, draw, &r));
         }
@@ -1122,15 +1105,10 @@ impl<B: Backend> Backend for DiagBackend<B> {
     ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
         // Capturing, logging and the sweep diagnostic read the draw after
         // the inner backend has drawn it.
-        #[cfg(feature = "gpu")]
-        let comparing = crate::native_world_layers_glue::comparing();
-        #[cfg(not(feature = "gpu"))]
-        let comparing = false;
         if self.capturing().is_some()
             || self.logging()
             || self.sweep.is_some()
             || self.probe.armed()
-            || comparing
         {
             let r = self.draw(color, depth, &draw, textures);
             return (r, draw.streams);
@@ -1138,8 +1116,6 @@ impl<B: Backend> Backend for DiagBackend<B> {
         let (target, info) = (draw.target, draw.texture_info);
         let inner: [Option<&B::Texture>; 4] =
             std::array::from_fn(|i| textures[i].map(|t| &t.inner));
-        #[cfg(feature = "gpu")]
-        crate::native_residual_glue::backend_draw(draw.entry);
         let (r, spare) = self.inner.draw_owned(color, depth, draw, inner);
         self.tally(&r, &target, &info);
         (r, spare)
@@ -1740,16 +1716,4 @@ mod tests {
         let missing: Vec<_> = tr.difference(&headless).collect();
         assert!(missing.is_empty(), "Headless does not forward {missing:?}");
     }
-}
-
-/// A native-renderer comparison or residual observer wants the ordered D3D path.
-#[cfg(feature = "gpu")]
-fn native_observing() -> bool {
-    crate::native_world_layers_glue::comparing() || crate::native_residual_glue::observing_draw()
-}
-
-/// Headless builds have no native renderer to compare against.
-#[cfg(not(feature = "gpu"))]
-fn native_observing() -> bool {
-    false
 }

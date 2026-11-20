@@ -1,14 +1,8 @@
 # Floating-point IR ops and runtime ABI
 
-2026-11-15. Status: `crates/x87` implements §4 and §6. Event 14 (#MF) is in
-the runtime, `h2abi.h` and `h2gen.h`, and MMX instructions and `emms` check
-for it (§2.2). The IR, lifter and emitter (`crates/ir`, `crates/lift`,
-`crates/emit`) lower every x87 instruction to these helpers (e5c4251). Revised after
-the design review (APPROVE WITH CHANGES): the helpers run on master's
-`X87Abi`, #MF has an event code, and stores and environment operations are
-split into phases. Revised again after the re-review (COMMIT AFTER FIXES):
-exception priority, unmasked exact underflow, FNSTENV discarding a pending
-#MF, an explicit status for suppressed compares, and FSCALE normalisation.
+Status: Built. `crates/x87` implements sections 4 and 6; event 14 (#MF) is in the runtime, `h2abi.h` and `h2gen.h`, and MMX instructions and `emms` check for it (section 2.2); `crates/ir`, `crates/lift` and `crates/emit` lower every x87 instruction to these helpers.
+Code: `crates/x87` (`x87::abi`, `crates/x87/include/h2x87.h`), `crates/lift/src/lower/x87.rs`, `crates/emit/src/x87.rs`. Tests: `crates/x87/src`, `crates/lift/tests/oracle_x87/`.
+Switch: `H2_X87_NATIVE` (on), listed in [switches.md](../runtime/switches.md).
 
 This is the interface the lifter and emitter build against for x87 floating
 point. It follows the correctness-first decision in [FLOAT.md](FLOAT.md). The
@@ -132,7 +126,7 @@ stack unchanged. Neither is modelled: both return `H2X87_UNMODELLED` with the
 state unchanged. With `CW = 0x036f`, `2^-16382 * 0.5` and an `fst m32` of
 exactly 2^-149 both stop.
 
-Measured, the game masks every exception (FLOAT.md §1.2), so neither path
+The game masks every exception (FLOAT.md §1.2), so neither path
 should execute. Both must exist rather than be assumed away.
 
 With an exception masked, the masked response is applied and committed
@@ -274,9 +268,8 @@ Decoder mappings with no op of their own:
   six defined in `eflags_defined` (§4.4).
 
 The IR keeps the comparison and the flag transfer as separate ops, so the
-`fnstsw`/`test ah`/`jcc` fusion (FLOAT.md §2.6) is a peephole over the IR
-rather than a decoder special case. Fusion must leave `status` correct
-whenever it is observable.
+`fnstsw`/`test ah`/`jcc` sequence (FLOAT.md §2.6) needs no fusion, because
+`fnstsw` reads `status`, which the compare helper has already updated.
 
 ## 4. x87 runtime ABI
 
@@ -419,12 +412,11 @@ exceptions), but generated code handles it like any helper: stop with code 12.
 
 So for the status-word forms the low 16 bits are always the C3/C2/C0 that
 `fnstsw` would read after the instruction, on both `OK` and `SUPPRESS`, and a
-fused branch may test `ret & mask` without checking the status first (it still
-must check for `MF`). For FCOMI the lifter must branch on the status before
+caller may test `ret & mask` without reading the status first (it still
+must check for `MF`; the lifter does not do this today, see FLOAT.md §2.6). For FCOMI the lifter must branch on the status before
 merging.
 
-Returning the bits makes the `fnstsw ax; test ah, M; jcc` fusion a compare on
-the return value. For `sahf` fusion, `AH` = `status >> 8`:
+For `sahf`, `AH` = `status >> 8`:
 
 | AH bit | flag | source |
 |---|---|---|
@@ -559,8 +551,7 @@ destination, so the ABI's reversed forms (`subr`, `divr`) call the internal
 
 ### 6.2 Transcendental accuracy
 
-`TRANSCENDENTAL_IS_CORRECTLY_ROUNDED` is **false**. The flag now agrees with
-this document: the previous text said `true` while the crate had `false`.
+`TRANSCENDENTAL_IS_CORRECTLY_ROUNDED` is **false**.
 
 - **Method.** Each function evaluates its series in a 512-bit truncating
   software float, `Wf<8>`. The constants come from 1024-bit tables, which are
@@ -603,7 +594,7 @@ this document: the previous text said `true` while the crate had `false`.
   | div | 65 ns |
 
   There are 522 inline `fsin`/`fcos` sites. Guarded lower working precision
-  is now available for the measured hot log/exp subset described
+  is available for the measured hot log/exp subset described
   above. Trigonometric argument reduction still uses the reference;
   no speed or error bound for a lower-precision trig path is claimed.
 
@@ -654,7 +645,7 @@ All the tests below pass.
   - the FFI symbols;
   - a bad selector panicking;
   - directed RC stopping the transcendentals;
-  - the re-review regressions: unmasked UE on an exact tiny product and an
+  - regressions: unmasked UE on an exact tiny product and an
     exact tiny `fst m32`; ZE outranking DE (register and memory operands); no
     PE recorded under a suppressing DE (arithmetic, `fsqrt`, `fpatan`);
     FNSTENV discarding a pending #MF; suppressed compares (`fcom`, `fcomi`,
@@ -664,31 +655,4 @@ All the tests below pass.
 - **Library unit tests** in `crates/x87/src`: the constant-table generator and
   the 180,000-case precision run are ignored, as are the table printers and
   timing experiments of `fast-trans`, whose tests
-  ([x87-transcendentals.md](x87-transcendentals.md)) now make up most of them.
-
-## 7. Where the measurement tool fits now
-
-`h2 fpstats`'s stack walk is no longer a correctness precondition. It stays
-as measurement, and feeds two optional later steps:
-
-- choosing which functions are worth a `double` fast path, which needs the
-  value-level proof in FLOAT.md §2.8 and not just a depth proof;
-- reporting the shape of the work: which helpers dominate, where the stack is
-  live across calls, and which CRT helpers to override by hand.
-
-Only `Proven` walk results may feed an optimisation. `Convention` and
-`Heuristic` results are for reporting only.
-
-## 8. Resolved questions
-
-1. **Split `h2x87_v1_arith` per source kind?** Yes, eventually, as thin
-   per-kind entry points over the same core. `fld`/`fmul`/`fadd` with an `m32`
-   source dominate. v1 keeps the single entry point. Adding
-   `h2x87_v1_arith_f32` and friends later is ABI-compatible.
-2. **Eager or lazy status-word sync?** Moot. TOP lives in `status`, and the
-   helpers keep `status` exact, so there is nothing to sync.
-3. **Emit `fwait`?** Yes. It is `h2x87_v1_wait` and it can deliver #MF (§2.2).
-   It may be dropped only where the masks are proven set and no flag can be
-   pending, which is an optimisation needing a proof.
-4. **Register storage size?** Moot. The registers are master's
-   `uint8_t st[8][10]` (80 bytes).
+  ([x87-transcendentals.md](x87-transcendentals.md)) make up most of them.
