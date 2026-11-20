@@ -7,18 +7,26 @@ use d3d::gfx_backend::GuestDrawPass;
 use d3d::scene_sink::{ReplayFrame, ReplayOp, ReplaySample, ReplayTexture};
 use d3d::{GfxBackend, RecordingBackend, UploadPolicy};
 use frame_scene::carried::CameraUse;
-use frame_scene::{AuxTarget, TargetRef};
+use frame_scene::{AuxTarget, Slot, SlotAt, TargetRef};
 use gfx::{Clear, D3DFormat, GfxContext};
 
 fn colour() -> AuxTarget {
-    AuxTarget { width: W, height: H, format: D3DFormat::LinA8R8G8B8 as u32, depth: false }
+    AuxTarget {
+        width: W,
+        height: H,
+        format: D3DFormat::LinA8R8G8B8 as u32,
+        depth: false,
+    }
 }
 
 fn clear(colour: TargetRef, rgba: [f32; 4]) -> ReplayOp {
     ReplayOp::Clear {
         colour,
         depth: TargetRef::None,
-        clear: Clear { color: Some(rgba), ..Clear::NONE },
+        clear: Clear {
+            color: Some(rgba),
+            ..Clear::NONE
+        },
     }
 }
 
@@ -34,7 +42,7 @@ fn a_carried_copy_samples_scene_colour_as_it_was_before_the_copy() {
     assert!(draw.texture_info[0].is_some());
     let scene = TargetRef::SceneColour;
     let aux = TargetRef::Aux(0);
-    let frame = ReplayFrame {
+    let mut frame = ReplayFrame {
         aux: vec![colour()],
         colour: Some(colour()),
         presented: scene,
@@ -44,14 +52,33 @@ fn a_carried_copy_samples_scene_colour_as_it_was_before_the_copy() {
         clear(scene, [1., 0., 0., 1.]),
         ReplayOp::Copy { from: scene, to: aux },
         clear(scene, [0., 0., 1., 1.]),
-        ReplayOp::Sample { of: aux, id: 0, how: ReplaySample::InPlace },
-        ReplayOp::Bind { colour: scene, depth: TargetRef::None },
+        ReplayOp::Sample {
+            of: aux,
+            id: 0,
+            how: ReplaySample::InPlace,
+        },
+        ReplayOp::Bind {
+            colour: scene,
+            depth: TargetRef::None,
+        },
         ReplayOp::Draw {
             draw: Box::new(draw),
             textures: [Some(ReplayTexture::Sample(0)), None, None, None],
             camera: CameraUse::Screen,
         },
     ];
+    frame.ops = ops
+        .into_iter()
+        .map(|op| {
+            (
+                SlotAt {
+                    slot: Slot::Opaque,
+                    view: 0,
+                },
+                op,
+            )
+        })
+        .collect();
     let ctx = match GfxContext::headless() {
         Ok(ctx) => ctx,
         Err(e) => {
@@ -63,7 +90,7 @@ fn a_carried_copy_samples_scene_colour_as_it_was_before_the_copy() {
     let mut gpu = GfxBackend::new(ctx);
     for scale in [1, 4] {
         let mut pass = GuestDrawPass::new(&mut gpu, &frame, scale).unwrap();
-        for op in &ops {
+        for (_, op) in &frame.ops {
             pass.apply(op).unwrap();
         }
         let ([w, h], pixels) = pass.read_rgba().unwrap();
@@ -93,23 +120,105 @@ fn a_private_capture_keeps_the_window_target_and_swap_finish_does_not_wait() {
     let sent = flags.clone();
     let mut gpu = GfxBackend::new(ctx).on_present(move |_, _, _, flags, _| sent.lock().unwrap().push(flags));
     let scene = TargetRef::SceneColour;
-    let frame = ReplayFrame {
+    let mut frame = ReplayFrame {
         colour: Some(colour()),
         presented: scene,
         ..Default::default()
     };
+    let at = SlotAt {
+        slot: Slot::Opaque,
+        view: 0,
+    };
+    frame.ops.push((at, clear(scene, [0., 1., 0., 1.])));
     for _ in 0..2 {
         let mut display = GuestDrawPass::new_display(&mut gpu, &frame, 1).unwrap();
-        display.apply(&clear(scene, [0., 1., 0., 1.])).unwrap();
+        display.apply(&frame.ops[0].1).unwrap();
         display.present(4, None).unwrap();
     }
     let shown = gpu.last_presented().unwrap();
+    frame.ops[0].1 = clear(scene, [1., 0., 0., 1.]);
     let mut private = GuestDrawPass::new(&mut gpu, &frame, 1).unwrap();
-    private.apply(&clear(scene, [1., 0., 0., 1.])).unwrap();
+    private.apply(&frame.ops[0].1).unwrap();
     let (_, rgba) = private.read_rgba().unwrap();
     assert_eq!(&rgba[..4], [255, 0, 0, 255]);
     assert_eq!(gpu.last_presented(), Some(shown));
     assert_eq!(&gpu.read_color(shown).unwrap().0[..4], [0, 255, 0, 255]);
     assert_eq!(gpu.batch_stats().swap_waits, 0);
     assert_eq!(*flags.lock().unwrap(), [4, 4]);
+}
+
+#[test]
+fn an_in_place_frame_retains_pixels_outside_its_scissor_and_releases_no_live_surface() {
+    use d3d::{Backend, ChannelMask, PixelRect, RectClear};
+    use std::collections::HashMap;
+    let ctx = match GfxContext::headless() {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            eprintln!("skipping GPU test: {e}");
+            return;
+        }
+    };
+    let mut gpu = GfxBackend::new(ctx);
+    let info = colour();
+    let id = gpu
+        .create_surface(D3DFormat::LinA8R8G8B8, info.width, info.height, false)
+        .unwrap();
+    gpu.clear(
+        id,
+        None,
+        Clear {
+            color: Some([0., 0., 1., 1.]),
+            ..Clear::NONE
+        },
+    )
+    .unwrap();
+    let scene = TargetRef::SceneColour;
+    let frame = ReplayFrame {
+        ops: vec![(
+            SlotAt {
+                slot: Slot::Opaque,
+                view: 0,
+            },
+            ReplayOp::ClearRects {
+                colour: scene,
+                depth: TargetRef::None,
+                clear: RectClear {
+                    rects: vec![PixelRect {
+                        x: 1,
+                        y: 1,
+                        width: 3,
+                        height: 3,
+                    }],
+                    color: Some((
+                        [1., 0., 0., 1.],
+                        ChannelMask {
+                            red: true,
+                            green: true,
+                            blue: true,
+                            alpha: true,
+                        },
+                    )),
+                    depth: None,
+                    stencil: None,
+                },
+            },
+        )],
+        colour: Some(info),
+        presented: scene,
+        ..Default::default()
+    };
+    assert!(
+        GuestDrawPass::new(&mut gpu, &frame, 1).is_err(),
+        "needs prior scene colour"
+    );
+    let targets = HashMap::from([(scene, id)]);
+    let mut pass = GuestDrawPass::on_existing(&mut gpu, &frame, &targets).unwrap();
+    pass.apply(&frame.ops[0].1).unwrap();
+    let (_, pixels) = pass.read_target(scene).unwrap();
+    assert_eq!(pixel(&pixels, 20, 20), [0, 0, 255, 255]);
+    assert_eq!(pixel(&pixels, 2, 2), [255, 0, 0, 255]);
+    pass.present(4, None).unwrap();
+    assert_eq!(gpu.last_presented(), Some(id));
+    assert_eq!(gpu.surface_extent(id), Some((W, H)));
+    gpu.destroy_surface(id).unwrap();
 }

@@ -32,6 +32,7 @@ pub struct GuestDrawPass<'a> {
     presented: TargetRef,
     display: bool,
     old_count_samples: bool,
+    old_gpu_only_aliases: bool,
     owns_targets: bool,
 }
 
@@ -58,7 +59,10 @@ impl<'a> GuestDrawPass<'a> {
     }
 
     fn start(
-        gpu: &'a mut GfxBackend, frame: &ReplayFrame, scale: u32, display: bool,
+        gpu: &'a mut GfxBackend,
+        frame: &ReplayFrame,
+        scale: u32,
+        display: bool,
         existing: Option<&HashMap<TargetRef, SurfaceId>>,
     ) -> Result<Self, String> {
         if !(1..=crate::MAX_SCALE).contains(&scale) {
@@ -67,8 +71,16 @@ impl<'a> GuestDrawPass<'a> {
         if !frame.refusals.is_empty() {
             return Err(format!("scene cannot be replayed: {}", frame.refusals.join(", ")));
         }
+        if existing.is_none()
+            && let Some(cause) = frame.private_target_refusal()
+        {
+            return Err(cause.into());
+        }
         gpu.scene_uploads.retain(|_, (owner, _)| owner.strong_count() != 0);
         let old_count_samples = std::mem::replace(&mut gpu.count_samples, display);
+        // Scene aliases must stay GPU operations, including aliased
+        // formats that don't take the dedicated aligned depth-word pass.
+        let old_gpu_only_aliases = std::mem::replace(&mut gpu.single_copy_aliases, true);
         let mut pass = Self {
             gpu,
             scale,
@@ -78,6 +90,7 @@ impl<'a> GuestDrawPass<'a> {
             presented: frame.presented,
             display,
             old_count_samples,
+            old_gpu_only_aliases,
             owns_targets: existing.is_none(),
         };
         if let Some(colour) = frame.colour {
@@ -95,18 +108,30 @@ impl<'a> GuestDrawPass<'a> {
     }
 
     fn resolve_target(
-        &mut self, target: TargetRef, desc: AuxTarget, existing: Option<&HashMap<TargetRef, SurfaceId>>,
+        &mut self,
+        target: TargetRef,
+        desc: AuxTarget,
+        existing: Option<&HashMap<TargetRef, SurfaceId>>,
     ) -> Result<(), String> {
         let limit = self.gpu.ctx.device.limits().max_texture_dimension_2d / self.scale;
         if desc.width == 0 || desc.height == 0 || desc.width > limit || desc.height > limit {
-            return Err(format!("scene target {target:?} has invalid extent {}x{} at {}x", desc.width, desc.height, self.scale));
+            return Err(format!(
+                "scene target {target:?} has invalid extent {}x{} at {}x",
+                desc.width, desc.height, self.scale
+            ));
         }
-        let format = D3DFormat::from_raw(desc.format).ok_or_else(|| format!("unknown scene target format {}", desc.format))?;
+        let format =
+            D3DFormat::from_raw(desc.format).ok_or_else(|| format!("unknown scene target format {}", desc.format))?;
         let surface = if let Some(existing) = existing {
-            let &id = existing.get(&target).ok_or_else(|| format!("missing existing target {target:?}"))?;
+            let &id = existing
+                .get(&target)
+                .ok_or_else(|| format!("missing existing target {target:?}"))?;
             let physical = self.gpu.store.get(id).map_err(|e| e.to_string())?;
             let actual = physical.desc();
-            if actual.width != desc.width || actual.height != desc.height || actual.format != format || actual.samples != 1
+            if actual.width != desc.width
+                || actual.height != desc.height
+                || actual.format != format
+                || actual.samples != 1
                 || (physical.kind() == gfx::surface::SurfaceKind::DepthStencil) != desc.depth
                 || self.gpu.scales.get(&id).copied().unwrap_or(1) != 1
             {
@@ -115,7 +140,12 @@ impl<'a> GuestDrawPass<'a> {
             id
         } else {
             <GfxBackend as ScaleView<GfxBackend>>::create_scaled_surface(
-                self.gpu, format, desc.width, desc.height, desc.depth, self.scale,
+                self.gpu,
+                format,
+                desc.width,
+                desc.height,
+                desc.depth,
+                self.scale,
             )?
         };
         self.targets.insert(target, surface);
@@ -124,12 +154,19 @@ impl<'a> GuestDrawPass<'a> {
 
     /// Resolves a scene attachment for a typed stage.
     pub fn surface(&self, target: TargetRef) -> Result<SurfaceId, String> {
-        self.targets.get(&target).copied().ok_or_else(|| format!("missing scene target {target:?}"))
+        self.targets
+            .get(&target)
+            .copied()
+            .ok_or_else(|| format!("missing scene target {target:?}"))
     }
 
     fn attachments(&self, colour: TargetRef, depth: TargetRef) -> Result<(SurfaceId, Option<SurfaceId>), String> {
         let colour = self.surface(colour)?;
-        let depth = if depth == TargetRef::None { None } else { Some(self.surface(depth)?) };
+        let depth = if depth == TargetRef::None {
+            None
+        } else {
+            Some(self.surface(depth)?)
+        };
         Ok((colour, depth))
     }
 
@@ -153,7 +190,9 @@ impl<'a> GuestDrawPass<'a> {
                         *handle = Some(self.texture(texture)?);
                     }
                 }
-                let outcome = self.gpu.draw(colour, depth, draw, handles.each_ref().map(Option::as_ref))?;
+                let outcome = self
+                    .gpu
+                    .draw(colour, depth, draw, handles.each_ref().map(Option::as_ref))?;
                 drawn(outcome)?;
             }
             ReplayOp::Clear { colour, depth, clear } => {
@@ -177,9 +216,26 @@ impl<'a> GuestDrawPass<'a> {
                     ReplaySample::Snapshot { opaque } => self.gpu.snapshot_surface(of, *opaque)?,
                     ReplaySample::InPlace => self.gpu.surface_texture(of)?,
                     ReplaySample::Depth => self.gpu.depth_level_texture(of)?,
-                    ReplaySample::Alias { format, width, height, pitch, generation, offset, desc, options } => {
-                        self.gpu.depth_alias_texture(of, *format, *width, *height, *pitch, *generation, *offset, desc, *options)?
-                    }
+                    ReplaySample::Alias {
+                        format,
+                        width,
+                        height,
+                        pitch,
+                        generation,
+                        offset,
+                        desc,
+                        options,
+                    } => self.gpu.depth_alias_texture(
+                        of,
+                        *format,
+                        *width,
+                        *height,
+                        *pitch,
+                        *generation,
+                        *offset,
+                        desc,
+                        *options,
+                    )?,
                 };
                 let texture = texture.ok_or_else(|| format!("could not produce scene sample {id}"))?;
                 if self.samples.insert(*id, texture).is_some() {
@@ -192,7 +248,9 @@ impl<'a> GuestDrawPass<'a> {
                 }
             }
             ReplayOp::EndFlareQuery(report) => {
-                if self.display && let Some(report) = report {
+                if self.display
+                    && let Some(report) = report
+                {
                     self.gpu.record_flare_report(report)?;
                 }
             }
@@ -208,25 +266,42 @@ impl<'a> GuestDrawPass<'a> {
                     return Ok(resident.shared());
                 }
                 let resident = self.gpu.upload_texture(asset)?;
-                self.gpu.scene_uploads.insert(key, (Arc::downgrade(asset), resident.shared()));
+                self.gpu
+                    .scene_uploads
+                    .insert(key, (Arc::downgrade(asset), resident.shared()));
                 Ok(resident)
             }
-            ReplayTexture::Sample(id) => self.samples.get(id).map(HostTexture::shared)
+            ReplayTexture::Sample(id) => self
+                .samples
+                .get(id)
+                .map(HostTexture::shared)
                 .ok_or_else(|| format!("scene texture sample {id} used before it was produced")),
-            ReplayTexture::Placeholder(desc) => Err(format!("missing uploaded scene texture {}x{} {:?}", desc.width, desc.height, desc.format)),
+            ReplayTexture::Placeholder(desc) => Err(format!(
+                "missing uploaded scene texture {}x{} {:?}",
+                desc.width, desc.height, desc.format
+            )),
         }
     }
 
     fn upload(&mut self, to: TargetRef, desc: &TextureDesc, bytes: &[u8]) -> Result<(), String> {
         let target = self.surface(to)?;
         if self.scale == 1 {
-            return if self.gpu.write_surface(target, desc, bytes)? { Ok(()) } else { Err("scene upload refused".into()) };
+            return if self.gpu.write_surface(target, desc, bytes)? {
+                Ok(())
+            } else {
+                Err("scene upload refused".into())
+            };
         }
         // Upload guest texels with their own pitch/format at their own size,
         // then expand on the GPU, including depth/stencil. The bytes never
         // have a scaled layout.
         let info = *self.gpu.store.get(target).map_err(|e| e.to_string())?.desc();
-        let stage = self.gpu.create_surface(info.format, info.width / self.scale, info.height / self.scale, info.format.is_depth())?;
+        let stage = self.gpu.create_surface(
+            info.format,
+            info.width / self.scale,
+            info.height / self.scale,
+            info.format.is_depth(),
+        )?;
         let result = (|| {
             if !self.gpu.write_surface(stage, desc, bytes)? {
                 return Err("scene upload refused".into());
@@ -245,7 +320,10 @@ impl<'a> GuestDrawPass<'a> {
     /// Reads a pass snapshot as tightly packed RGBA, in display pixels.
     pub fn read_target(&mut self, colour: TargetRef) -> Result<([u32; 2], Vec<u8>), String> {
         let target = self.surface(colour)?;
-        let (width, height) = self.gpu.surface_extent(target).ok_or("scene target lost before readback")?;
+        let (width, height) = self
+            .gpu
+            .surface_extent(target)
+            .ok_or("scene target lost before readback")?;
         let (mut pixels, order) = self.gpu.read_color(target)?;
         if order == gfx::encode::HostPixelOrder::Bgra8 {
             for pixel in pixels.chunks_exact_mut(4) {
@@ -269,7 +347,11 @@ impl<'a> GuestDrawPass<'a> {
         }
         let target = self.surface(self.presented)?;
         self.gpu.submit_present(None, target, flags, gamma, false)?;
-        let retained = if self.owns_targets { self.targets.remove(&self.presented) } else { None };
+        let retained = if self.owns_targets {
+            self.targets.remove(&self.presented)
+        } else {
+            None
+        };
         if let Some(old) = std::mem::replace(&mut self.gpu.scene_presented, retained) {
             self.gpu.scales.remove(&old);
             self.gpu.store.remove(old);
@@ -297,5 +379,6 @@ impl Drop for GuestDrawPass<'_> {
             }
         }
         self.gpu.count_samples = self.old_count_samples;
+        self.gpu.single_copy_aliases = self.old_gpu_only_aliases;
     }
 }
