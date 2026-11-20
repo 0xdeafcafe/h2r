@@ -128,7 +128,7 @@ fn native_pass_and_deferred_draw_keep_bound_surfaces_after_settings_changes() {
 
     let Some(reference) = backend() else { return };
     let display = GfxBackend::new(app::share_context(&reference.ctx));
-    let mut scaled = ScaledBackend::new(reference, display, 4).unwrap();
+    let mut scaled = ScaledBackend::with_single_copy(reference, display, 4, false).unwrap();
     scaled.follow_scale(|| 1);
     let threaded = ThreadedBackend::new(scaled).unwrap();
     let (mut d, mut m) = create_copy_swap(threaded, UploadPolicy::Always);
@@ -403,7 +403,7 @@ fn refusal_of_the_display_discards_even_the_recorded_reference_clear() {
         instance: ctx.instance.clone(), adapter: ctx.adapter.clone(), device: ctx.device.clone(),
         queue: ctx.queue.clone(), caps: ctx.caps,
     });
-    let (mut d, mut m) = create(d3d::ScaledBackend::new(reference, display, 2).unwrap(), UploadPolicy::Always);
+    let (mut d, mut m) = create(d3d::ScaledBackend::with_single_copy(reference, display, 2, false).unwrap(), UploadPolicy::Always);
     let back = d.back_buffer().unwrap();
     d.clear(&mut m, 0, 0, 0xf0, 0xff00ff00, 1., 0).unwrap();
     let seen = Arc::default();
@@ -608,7 +608,7 @@ fn display_preflight_can_refuse_before_any_copy_records() {
         instance: ctx.instance.clone(), adapter: ctx.adapter.clone(), device: ctx.device.clone(),
         queue: ctx.queue.clone(), caps: ctx.caps,
     });
-    let (mut d, mut m) = create(d3d::ScaledBackend::new(reference, display, 2).unwrap(), UploadPolicy::Always);
+    let (mut d, mut m) = create(d3d::ScaledBackend::with_single_copy(reference, display, 2, false).unwrap(), UploadPolicy::Always);
     let seen = Arc::default();
     assert!(d.prepare_external_pass(&mut m, plan(1), Box::new(CheckCopies(Arc::clone(&seen)))).unwrap().is_none());
     assert_eq!(*seen.lock().unwrap(), [d3d::TargetCopy::Reference, d3d::TargetCopy::Display]);
@@ -684,7 +684,7 @@ fn an_indexed_intermediate_can_be_drawn_and_read_at_1x_and_refuses_a_mixed_scale
             instance: ctx.instance.clone(), adapter: ctx.adapter.clone(), device: ctx.device.clone(),
             queue: ctx.queue.clone(), caps: ctx.caps,
         });
-        let (mut d, mut m) = create(d3d::ScaledBackend::new(reference, display, scale).unwrap(), UploadPolicy::Always);
+        let (mut d, mut m) = create(d3d::ScaledBackend::with_single_copy(reference, display, scale, false).unwrap(), UploadPolicy::Always);
         let header = MISC + 0x7800;
         d3d::resource::SurfaceHeader::linear(gfx::D3DFormat::LinA8R8G8B8, 16, 16, 64, 0x0021_0000)
             .write(&mut m, header).unwrap();
@@ -798,7 +798,7 @@ fn compatible_lights_share_one_pass_per_copy_and_refusal_keeps_both_pixels() {
     let ctx = &reference.ctx;
     let display = GfxBackend::new(GfxContext { instance: ctx.instance.clone(), adapter: ctx.adapter.clone(),
         device: ctx.device.clone(), queue: ctx.queue.clone(), caps: ctx.caps });
-    let (mut d, mut m) = create(d3d::ScaledBackend::new(reference, display, 2).unwrap(), UploadPolicy::Always);
+    let (mut d, mut m) = create(d3d::ScaledBackend::with_single_copy(reference, display, 2, false).unwrap(), UploadPolicy::Always);
     let back = d.back_buffer().unwrap();
     let seen: Got = Arc::default();
     assert!(d.external_pass_now(&mut m, Box::new(Probe(seen.clone()))).unwrap());
@@ -926,7 +926,7 @@ fn light_walk_cursor_and_both_gpu_copies_commit_together_at_the_indexed_abi() {
         instance: ctx.instance.clone(), adapter: ctx.adapter.clone(), device: ctx.device.clone(),
         queue: ctx.queue.clone(), caps: ctx.caps,
     });
-    let scaled = d3d::ScaledBackend::new(reference, display, 2).unwrap();
+    let scaled = d3d::ScaledBackend::with_single_copy(reference, display, 2, false).unwrap();
     let (mut device, mut mem) = create(scaled, UploadPolicy::Always);
     set_states(&mut device, &mut mem);
     quad_vb(&mut mem, 8., 8., 16., 16., 0xffff00ff);
@@ -950,4 +950,20 @@ fn light_walk_cursor_and_both_gpu_copies_commit_together_at_the_indexed_abi() {
             assert_eq!(pixels[1], if expected { 0 } else { 255 });
         }
     }
+}
+
+#[test]
+fn single_copy_commits_only_the_scaled_native_recording() {
+    let Some(reference) = backend() else { return };
+    let display = GfxBackend::new(app::share_context(&reference.ctx));
+    let (mut d, mut m) = create(d3d::ScaledBackend::new(reference, display, 4).unwrap(), UploadPolicy::Always);
+    let seen = Arc::default();
+    let pass = Counting { seen: Arc::clone(&seen), display_ranges: 1 };
+    d.prepare_external_pass(&mut m, plan(1), Box::new(pass)).unwrap().unwrap().commit();
+    assert_eq!(*seen.lock().unwrap(), [d3d::TargetCopy::Display]);
+    let back = d.back_buffer().unwrap();
+    let pixels = d.backend.read_surface(back, gfx::D3DFormat::LinA8R8G8B8, W, H,
+        d3d::GuestLayoutKind::Linear { pitch: W * 4 }).unwrap();
+    assert_eq!(&pixels[..4], &[0, 0, 255, 255]);
+    assert_eq!((d.backend.stats().reference_draws, d.backend.stats().display_draws), (0, 1));
 }

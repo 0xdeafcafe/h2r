@@ -670,6 +670,8 @@ impl<B: Backend> Backend for DiagBackend<B> {
     fn mirror_read(&mut self, offset: u32, len: u32) -> Result<Vec<u8>, String> {
         self.inner.mirror_read(offset, len)
     }
+    fn handles_surface_aliases(&self) -> bool { self.inner.handles_surface_aliases() }
+
     fn defers_depth_aliases(&self) -> bool {
         self.inner.defers_depth_aliases()
     }

@@ -551,6 +551,8 @@ pub struct ExternalAttachments {
     pub sampled: Vec<Option<SampledLevel>>,
     pub slots: Vec<Option<ExternalColor>>,
     pub stages: [Option<wgpu::TextureView>; 4],
+    /// The active scaled policy requires just the display recording.
+    pub(crate) single_display: bool,
     pub copy: TargetCopy,
 }
 
@@ -577,6 +579,8 @@ pub struct ExternalRecording {
     pub stage: timeline::native::Stage,
     pub view: u32,
     pub items: usize,
+    /// The active scaled policy requires just the display recording.
+    pub(crate) single_display: bool,
     pub copy: TargetCopy,
     pub ranges: usize,
     #[cfg(feature = "gpu")]
@@ -695,7 +699,7 @@ pub(crate) fn prepare_external_recordings<T: AsRef<[ExternalAttachments]>>(
         Err(e) => { plan.stage.count(Metric::RefusedResources, item_count); return Err(e) }
     };
     let targets = targets.as_ref();
-    if !matches!(targets, [one] if one.copy == copy)
+    if !matches!(targets, [one] if one.copy == copy || (one.copy == TargetCopy::Display && one.single_display))
         && !matches!(targets, [r, d] if r.copy == TargetCopy::Reference && d.copy == TargetCopy::Display)
     {
         return refuse(Metric::RefusedResources);
@@ -786,6 +790,7 @@ pub(crate) fn prepare_external_recordings<T: AsRef<[ExternalAttachments]>>(
             view: plan.view,
             items: item_count as usize,
             copy: target.copy,
+            single_display: target.single_display,
             ranges,
             commands,
             uploads: target.uploads.clone(),
@@ -1455,6 +1460,10 @@ pub trait Backend: Send {
     fn judge(&self) -> Option<Box<dyn DrawJudge>> {
         None
     }
+    /// Whether depth_alias_texture can also reinterpret a colour or depth RTT
+    /// at any byte offset. A zero source pitch selects Morton order.
+    fn handles_surface_aliases(&self) -> bool { false }
+
     /// Whether [`depth_alias_texture`](Self::depth_alias_texture) makes
     /// depth-alias textures (default false).
     fn defers_depth_aliases(&self) -> bool {

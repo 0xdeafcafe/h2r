@@ -33,6 +33,10 @@ pub mod depth_bits;
 pub mod depth_grid;
 #[cfg(feature = "gpu")]
 pub(crate) mod depth_fill;
+#[cfg(feature = "gpu")]
+pub mod resize;
+#[cfg(feature = "gpu")]
+pub mod surface_alias;
 pub mod dxt;
 #[cfg(feature = "gpu")]
 pub mod encode;

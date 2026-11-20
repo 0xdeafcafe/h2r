@@ -1199,7 +1199,7 @@ impl<S: Copy + Eq> ExternalBinding<S> {
 }
 
 pub(crate) fn complete_recordings(plan: &crate::ExternalPlan, c: &[crate::ExternalRecording]) -> bool {
-    let copies = matches!(c, [r] if r.copy == crate::TargetCopy::Reference)
+    let copies = matches!(c, [one] if one.copy == crate::TargetCopy::Reference || one.single_display)
         || matches!(c, [r, d] if r.copy == crate::TargetCopy::Reference && d.copy == crate::TargetCopy::Display);
     copies && c.iter().all(|r| plan.complete(r.copy, r.ranges))
 }
@@ -5461,6 +5461,11 @@ impl<B: Backend> Device<B> {
                 {
                     texture_info[stage] = Some(info);
                     depth_levels[stage] = Some(level);
+                    continue;
+                }
+                if let Some((info, t)) = self.rtt_alias_texture(mem, header, extras[stage].color_sign)? {
+                    texture_info[stage] = Some(info);
+                    snapshots[stage] = Some(t);
                     continue;
                 }
                 self.flush_for_texture(mem, header, WritebackCause::Sample)?;

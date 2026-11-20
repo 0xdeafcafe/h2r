@@ -1825,6 +1825,8 @@ where
         self.inner.judge()
     }
 
+    fn handles_surface_aliases(&self) -> bool { self.inner.handles_surface_aliases() }
+
     fn defers_depth_aliases(&self) -> bool {
         self.inner.defers_depth_aliases()
     }

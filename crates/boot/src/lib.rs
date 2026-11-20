@@ -1502,8 +1502,9 @@ fn run_configured(
         (false, _) => None,
         (true, Some(b)) => Some(match host.gfx_view.take() {
             Some((view, scale)) => {
-                let mut b = d3d::ScaledBackend::new(b, view, scale).map_err(anyhow::Error::msg)?;
-                eprintln!("d3d: rendering at {scale}x; the guest sees a 1x reference");
+                let single = d3d_glue::single_copy(host.settings.as_deref())?;
+                let mut b = d3d::ScaledBackend::with_single_copy(b, view, scale, single).map_err(anyhow::Error::msg)?;
+                eprintln!("d3d: rendering at {scale}x; single copy {single}");
                 // The Video screen's Resolution row changes the scale at the
                 // next frame boundary (docs/graphics/high-resolution.md).
                 // The Lighting row (E3 lighting, docs/graphics/e3-lighting.md)
@@ -1528,7 +1529,7 @@ fn run_configured(
             None => d3d_glue::install_with(&loaded.runtime, b)?,
         }),
         (true, None) if host_light => Some(d3d_glue::install_light(&loaded.runtime)?),
-        (true, None) => Some(d3d_glue::install_headless(&loaded.runtime, interp)?),
+        (true, None) => Some(d3d_glue::install_headless_with_settings(&loaded.runtime, interp, host.settings.as_deref())?),
     };
     #[cfg(not(feature = "gpu"))]
     let mut d3d_calls = opts.d3d.then(|| {

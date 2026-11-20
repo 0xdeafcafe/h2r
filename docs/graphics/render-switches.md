@@ -93,6 +93,7 @@ still taken where the new one cannot apply, or a test compares the two.
 
 | Variable | Restores | Measured win of the default | Why the old path stays |
 |---|---|---|---|
+| `H2_SINGLE_COPY=0` / `graphics.single_copy=false` | separately rendered 1x readbacks at scales above 1 | default saves one recording per duplicated draw, including native passes; frame-time gain unmeasured | scaled colour, depth and visibility samples can differ from 1x at edges; use for exact captures and replays |
 | `H2_GFX_SWAP_FINISH=full` | `D3DSWAP_FINISH` waits for this frame too | GPU overlaps the next frame's encode | `SwapFinish::Full` makes `occlusion_grid` deterministic |
 | `H2_GFX_SIDE_SUBMIT=1` | side work submitted on its own | two submissions per call saved (about 0.1 ms each) | it is what a render scale above 1 uses |
 | `H2_GFX_STAGED_UPLOADS=0` | a queue write per persistent buffer | most of 537 queue writes at 2000 draws | the pool's tests compare staged and not |
