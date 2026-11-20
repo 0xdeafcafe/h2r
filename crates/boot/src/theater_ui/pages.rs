@@ -33,8 +33,13 @@ const TAB_PANEL: u32 = DETAIL_ROWS + 4;
 const PANEL: u32 = TAB_PANEL + 1;
 
 const FILMS_LAYOUT: ListLayout = crate::skulls_menu::LIST_LAYOUT;
+// The right column has its own band for tabs above the preview.
+const TAB_STRIP: TextBlock = TextBlock {
+    rect: [176, 39, 152, 260],
+    ..lobby::BODY
+};
 const LIST_PICTURE: PictureSpec = PictureSpec {
-    at: crate::campaign_menu::PICTURE.at,
+    at: [TAB_STRIP.rect[1], TAB_STRIP.rect[2] - 4],
     animation: crate::campaign_menu::PICTURE.animation,
     ..lobby::PICTURE
 };
@@ -55,16 +60,17 @@ const FILM_PANEL_ART: [PictureSpec; 2] = [
     },
 ];
 const LIST_STATUS: TextBlock = TextBlock {
-    rect: [-33, 39, -154, 260],
+    rect: [
+        LIST_PICTURE.at[1] - lobby::PICTURE_SIZE[1] as i16 - 4,
+        TAB_STRIP.rect[1],
+        -174,
+        TAB_STRIP.rect[3],
+    ],
     ..crate::skulls_menu::DESCRIPTION_TEXT
 };
 const FILM_STATUS: TextBlock = TextBlock {
     rect: [66, -258, 47, 40],
     ..lobby::STATUS
-};
-const TAB_STRIP: TextBlock = TextBlock {
-    rect: [170, -205, 146, 33],
-    ..lobby::BODY
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
