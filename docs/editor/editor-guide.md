@@ -1186,11 +1186,17 @@ fit the game's 128 KiB download buffer, or the game would ignore it and
 keep its built-in playlists. Remove some entries.
 
 **Parts of a level are untextured, or an object has only a marker.**
-The viewport draws the level's textures with its baked lighting, but
-not everything the game draws (no detail maps or the real sky, for
-example). The status bar says how many shaders and objects could be
-drawn; the rest show flat-shaded or as markers only. Editing works the
-same.
+The viewport draws the level's textures with its baked lighting, its
+sky, and its sky's sun and fog, but not everything the game draws (no
+bump, environment or specular layers, for example). The status bar says
+how many shaders and objects could be drawn; the rest show flat-shaded
+or as markers only. Editing works the same.
+
+**A level looks flat, without baked lighting.** Some levels have none:
+the main menu's backdrop (mainmenu) was never lightmapped, and the
+status bar says so (`0 lightmap pages (mainmenu: empty lightmap group,
+lit by its sky's sun)`). The viewport lights such a level with its sky's
+sun.
 
 **A package isn't in the Maps list.** The list shows the packages in the
 editor's data folder: check `--data`. A folder without a readable

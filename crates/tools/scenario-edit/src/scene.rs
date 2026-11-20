@@ -19,8 +19,15 @@
 //!
 //! - The BSP's lightmap pages ([`geometry::world_parts_lit`]) are decoded
 //!   from `P8` through their group's palette ([`lightmap_page`]) and light
-//!   the parts that have them; the rest, and the models, are lit by one
-//!   directional light.
+//!   the parts that have them; the rest are lit by the map's sun
+//!   ([`Atmosphere`], from its sky), and placed objects by the lightmap of
+//!   the floor under them ([`Scene::light_at`]).
+//! - See-through shaders blend as their passes or template name say
+//!   ([`material_blend`], [`template_blend`]); the sky's fog ([`Fog`])
+//!   covers the level.
+//! - [`Scene::materials`], [`Scene::lighting`] and [`Scene::atmosphere`]
+//!   are what `view.stats` reports (docs/editor/editor.md, "What the
+//!   viewport shows").
 use crate::geometry::{
     self, Bounds, Marker, Ray, Vec3, WorldPart, add, dot, normalize, scale, sub,
 };
@@ -55,36 +62,154 @@ pub struct SceneVertex {
     pub lightmap_uv: [f32; 2],
 }
 
-/// How a batch is blended.
+/// How a batch is blended. The see-through ones ([`Blend::see_through`])
+/// are drawn after everything solid, without depth writes, in this order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Blend {
     /// Solid: the texture's alpha (often a specular mask) is ignored.
     Opaque,
     /// Cut out where the texture's alpha is low (grates, leaves).
     Mask,
-    /// Drawn see-through after everything solid, without depth writes.
+    /// See-through at a fixed opacity: water, and see-through templates
+    /// whose blend neither their passes nor their name tell.
     Translucent,
+    /// Blended by the picture's alpha (`SRCALPHA`, `INVSRCALPHA`): clouds,
+    /// glass, decals.
+    Alpha,
+    /// The picture times what is behind it (`DESTCOLOR`, `ZERO`).
+    Multiply,
+    /// Twice the picture times what is behind it (`DESTCOLOR`, `SRCCOLOR`):
+    /// mid-grey leaves the surface as it is.
+    Double,
+    /// Added to what is behind it (`ONE` or `SRCALPHA`, `ONE`): lights,
+    /// light shafts, glows. Black adds nothing.
+    Additive,
 }
 
-/// How a shader template draws its base map: see-through for templates in
-/// a `transparent` or `water` folder and for plain `overlay` decals, cut
-/// out when the name says `alpha_test`, else solid (after the rule of
-/// `cli::live_looks`, but `tex_bump_detail_overlay`, Coagulation's rock,
-/// is solid).
+impl Blend {
+    /// Drawn after the solid surfaces, over them, without writing depth.
+    pub fn see_through(self) -> bool {
+        !matches!(self, Blend::Opaque | Blend::Mask)
+    }
+
+    /// Its name in `view.stats`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Blend::Opaque => "opaque",
+            Blend::Mask => "mask",
+            Blend::Translucent => "translucent",
+            Blend::Alpha => "alpha",
+            Blend::Multiply => "multiply",
+            Blend::Double => "double",
+            Blend::Additive => "additive",
+        }
+    }
+
+    /// Every blend, in draw order.
+    pub const ALL: [Blend; 7] = [
+        Blend::Opaque,
+        Blend::Mask,
+        Blend::Translucent,
+        Blend::Alpha,
+        Blend::Multiply,
+        Blend::Double,
+        Blend::Additive,
+    ];
+}
+
+/// How a shader template draws its base map, from its name: see-through
+/// for templates in a `transparent` or `water` folder and for plain
+/// `overlay` decals, cut out when the name says `alpha_test`, else solid
+/// (after the rule of `cli::live_looks`, but `tex_bump_detail_overlay`,
+/// Coagulation's rock, is solid). A see-through template's words say how:
+/// `add` adds (`one_add_illum_detail`, mainmenu's light shafts), `mult`
+/// multiplies, `alpha` blends by the picture's alpha
+/// (`sky_two_alpha_clouds`); water and the rest are [`Blend::Translucent`].
+/// The material's own passes, where they say, win over the name
+/// ([`material_blend`]).
 pub fn template_blend(template: &str) -> Blend {
     let lower = template.to_ascii_lowercase();
     let stem = lower.rsplit('\\').next().unwrap_or(&lower);
-    if lower
-        .split('\\')
-        .any(|c| c == "transparent" || c == "water")
-        || stem == "overlay"
-    {
+    let water = lower.split('\\').any(|c| c == "water");
+    if water {
         Blend::Translucent
+    } else if lower.split('\\').any(|c| c == "transparent") || stem == "overlay" {
+        let words: Vec<&str> = stem.split('_').collect();
+        if words.contains(&"add") {
+            Blend::Additive
+        } else if words.iter().any(|w| w.starts_with("mult")) {
+            Blend::Multiply
+        } else if words.contains(&"alpha") {
+            Blend::Alpha
+        } else {
+            Blend::Translucent
+        }
     } else if stem.contains("alpha_test") {
         Blend::Mask
     } else {
         Blend::Opaque
     }
+}
+
+/// Whether a template lives in a `water` folder (its blend stays
+/// [`Blend::Translucent`]: the water passes are not reproduced).
+pub fn is_water_template(template: &str) -> bool {
+    template
+        .to_ascii_lowercase()
+        .split('\\')
+        .any(|c| c == "water")
+}
+
+/// Whether a template is the opaque self-illuminated one (`opaque\illum`:
+/// mainmenu's lit building windows): its picture is its own light, drawn
+/// as it is and not shaded.
+pub fn template_emits(template: &str) -> bool {
+    let lower = template.to_ascii_lowercase();
+    lower.rsplit('\\').next() == Some("illum")
+}
+
+/// A blend state (`native_render::pass_state`, the pass's own
+/// `ALPHABLENDENABLE`, `SRCBLEND` and `DESTBLEND` as the native renderer
+/// reads them) as the viewport's [`Blend`]; `None` for factors it does not
+/// draw. The pairs are the Live site's (`cli::live_models::blend_of_pass`).
+pub fn blend_of_state(state: &wgpu::BlendState) -> Option<Blend> {
+    use wgpu::BlendFactor as F;
+    let c = state.color;
+    if c.operation != wgpu::BlendOperation::Add {
+        return None;
+    }
+    match (c.src_factor, c.dst_factor) {
+        (F::Dst, F::Src) | (F::Src, F::Dst) => Some(Blend::Double),
+        (F::Dst, F::Zero) | (F::Zero, F::Src) => Some(Blend::Multiply),
+        (F::One | F::SrcAlpha, F::One) => Some(Blend::Additive),
+        (F::SrcAlpha, F::OneMinusSrcAlpha) => Some(Blend::Alpha),
+        _ => None,
+    }
+}
+
+/// How a resolved material composites: the first pass of its first level
+/// of detail that blends in a way [`blend_of_state`] knows, read through
+/// the native renderer's render-state decoder
+/// (`native_render::pass_state::pass_state`, each pass's first
+/// implementation). `None` when no pass says.
+pub fn material_blend(material: &tags::material::Material) -> Option<Blend> {
+    material
+        .layers
+        .iter()
+        .filter(|l| l.lod == 0)
+        .flat_map(|l| &l.passes)
+        .filter_map(|p| p.implementations.first())
+        .filter_map(|imp| native_render::pass_state::pass_state(&imp.render_states).ok())
+        .find_map(|state| state.blend.as_ref().and_then(blend_of_state))
+}
+
+/// Whether a bitmap is an engine one (the `rasterizer` and
+/// `default_bitmaps` folders), never a surface's own picture.
+pub fn is_engine_bitmap(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower
+        .split('\\')
+        .any(|c| c == "rasterizer" || c == "default_bitmaps")
 }
 
 /// Whether a shader template draws its base map clamped to its edges: a
@@ -458,6 +583,8 @@ pub struct Look {
     pub texture: Option<usize>,
     pub scale: [f32; 2],
     pub details: [Option<Layer>; MAX_DETAILS],
+    /// Self-illuminated ([`template_emits`]): drawn as it is, unshaded.
+    pub emissive: bool,
 }
 
 impl Look {
@@ -467,6 +594,7 @@ impl Look {
             texture,
             scale: [1.0, 1.0],
             details: [None; MAX_DETAILS],
+            emissive: false,
         }
     }
 }
@@ -480,6 +608,8 @@ pub struct Batch {
     pub scale: [f32; 2],
     /// Detail maps multiplied in ([`Look::details`]).
     pub details: [Option<Layer>; MAX_DETAILS],
+    /// [`Look::emissive`].
+    pub emissive: bool,
     /// The lightmap page lighting it, an index into [`Scene::textures`];
     /// `None` is lit by the sun.
     pub lightmap: Option<usize>,
@@ -495,6 +625,7 @@ impl Batch {
             texture: self.texture,
             scale: self.scale,
             details: self.details,
+            emissive: self.emissive,
         }
     }
 }
@@ -550,6 +681,7 @@ impl Mesh {
                     texture: look.texture,
                     scale: look.scale,
                     details: look.details,
+                    emissive: look.emissive,
                     lightmap,
                     blend,
                     vertices: Vec::new(),
@@ -561,7 +693,7 @@ impl Mesh {
         let b = &mut self.batches[i];
         let base = b.vertices.len() as u32;
         for (k, &p) in part.positions.iter().enumerate() {
-            if blend != Blend::Translucent {
+            if !blend.see_through() {
                 self.bounds.add(p);
             }
             b.vertices.push(SceneVertex {
@@ -589,7 +721,7 @@ impl Mesh {
         for b in self
             .batches
             .iter()
-            .filter(|b| b.blend != Blend::Translucent)
+            .filter(|b| !b.blend.see_through())
         {
             for t in b.indices.as_chunks::<3>().0 {
                 let p = [0, 1, 2].map(|k| b.vertices[t[k] as usize].position);
@@ -637,6 +769,291 @@ pub struct Scene {
     /// ([`template_clamps`]).
     pub clamped: std::collections::HashSet<usize>,
     pub stats: SceneStats,
+    /// Every shader the scene drew, in the order first met, with how it
+    /// draws (`view.stats`).
+    pub materials: Vec<MaterialInfo>,
+    /// Each scenario BSP and how it is lit.
+    pub lighting: Vec<BspLightingInfo>,
+    /// The map's own sun and fog, from its sky.
+    pub atmosphere: Atmosphere,
+    /// The lightmapped floor under placed objects ([`Scene::light_at`]).
+    pub floor: LightFloor,
+}
+
+/// One shader as the scene draws it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MaterialInfo {
+    /// The shader's tag name.
+    pub shader: String,
+    /// Its template's tag name (empty when it does not read).
+    pub template: String,
+    pub blend: Blend,
+    /// Whether [`Self::blend`] came from the material's passes
+    /// ([`material_blend`]) rather than the template's name.
+    pub blend_from_passes: bool,
+    pub emissive: bool,
+    /// The bitmap drawn as its picture, when one decoded.
+    pub base: Option<String>,
+    /// Detail maps multiplied in.
+    pub details: usize,
+}
+
+/// One scenario BSP's lighting, for `view.stats` and the log.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BspLightingInfo {
+    /// The BSP's tag name.
+    pub bsp: String,
+    pub lighting: geometry::BspLighting,
+}
+
+/// The sky's light, for surfaces no lightmap lights.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Sun {
+    /// Unit vector toward the light, above the horizon.
+    pub direction: Vec3,
+    /// The light's colour as the tag stores it.
+    pub color: [f32; 3],
+    pub power: f32,
+}
+
+/// The sky's fog (its `fog_a` block's first element, the one
+/// `0x00131030` blends into the view; docs/halo1/sky.md, "Halo 2's sky
+/// fog").
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Fog {
+    /// Clamped to 0..1, as the tag stores it (gamma space).
+    pub color: [f32; 3],
+    /// Up to 1: the most the fog covers.
+    pub density: f32,
+    /// Distance where the fog starts.
+    pub start: f32,
+    /// Distance where it reaches its density; past `start`.
+    pub opaque: f32,
+}
+
+/// What the map's sky says about light and fog.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Atmosphere {
+    /// The `sky ` tag read (its file name).
+    pub sky: Option<String>,
+    pub sun: Option<Sun>,
+    pub fog: Option<Fog>,
+    /// The sky's fallback object-lighting colour (`sky +0x34`).
+    pub fallback_rgb: Option<[f32; 3]>,
+}
+
+/// The direction toward a sky light from its yaw and pitch (radians, the
+/// light record's `+0x0c`, `+0x10`): z up, yaw about z from +x. A light
+/// whose vector points below the horizon is turned above it: the
+/// viewport's sun lights from above.
+pub fn sun_direction(yaw: f32, pitch: f32) -> Vec3 {
+    let d = [pitch.cos() * yaw.cos(), pitch.cos() * yaw.sin(), pitch.sin()];
+    let d = if d[2] < 0.0 { scale(d, -1.0) } else { d };
+    normalize(d)
+}
+
+/// The sun's colour scaled so its brightest channel is 1: the viewport
+/// keeps its own brightness for unlit surfaces and takes the hue. Black
+/// or not finite: white.
+pub fn sun_tint(color: [f32; 3]) -> [f32; 3] {
+    let max = color.iter().copied().fold(0.0f32, f32::max);
+    if !(max.is_finite() && max > 1e-4) || color.iter().any(|c| !c.is_finite()) {
+        return [1.0; 3];
+    }
+    color.map(|c| (c / max).max(0.0))
+}
+
+/// The engine's check of a blended fog (`0x001301c0`): a density above
+/// zero keeps the fog, its colour clamped to 0..1, its opaque distance
+/// raised to at least one unit past its start and its density to at most
+/// 1. A density of zero (or not finite values) is no fog.
+pub fn fog_of(color: [f32; 3], density: f32, start: f32, opaque: f32) -> Option<Fog> {
+    if !(density.is_finite() && start.is_finite() && opaque.is_finite()) || density <= 0.0 {
+        return None;
+    }
+    if color.iter().any(|c| !c.is_finite()) {
+        return None;
+    }
+    let start = start.max(0.0);
+    Some(Fog {
+        color: color.map(|c| c.clamp(0.0, 1.0)),
+        density: density.min(1.0),
+        start,
+        opaque: opaque.max(start + 1.0),
+    })
+}
+
+/// How much of the fog covers a point `distance` from the eye: none
+/// before its start, rising evenly to its density at its opaque distance.
+pub fn fog_amount(fog: &Fog, distance: f32) -> f32 {
+    let t = ((distance - fog.start) / (fog.opaque - fog.start)).clamp(0.0, 1.0);
+    fog.density * t
+}
+
+/// A lightmapped floor triangle: its corners, their lightmap coordinates
+/// and the page (an index into [`Scene::textures`]).
+#[derive(Clone, Debug, PartialEq)]
+struct FloorTri {
+    p: [Vec3; 3],
+    uv: [[f32; 2]; 3],
+    page: usize,
+}
+
+/// The lightmapped solid world's triangles by column (a grid over x and
+/// y), for finding the floor under a point.
+#[derive(Clone, Debug, Default)]
+pub struct LightFloor {
+    tris: Vec<FloorTri>,
+    cells: HashMap<(i32, i32), Vec<u32>>,
+    /// Triangles too wide to list per cell, tested by every query.
+    wide: Vec<u32>,
+}
+
+/// The side of a [`LightFloor`] cell, in world units.
+pub const FLOOR_CELL: f32 = 8.0;
+/// The most cells a triangle spans per axis before it is tested by every
+/// query instead.
+const FLOOR_SPAN: i32 = 16;
+/// How far above a point a floor may be and still be under it (an
+/// object's origin can sit a little into the ground).
+pub const FLOOR_ABOVE: f32 = 0.5;
+/// How far below a point the floor under it is looked for.
+pub const FLOOR_BELOW: f32 = 64.0;
+
+impl LightFloor {
+    /// The lightmapped solid batches of `mesh`.
+    pub fn of(mesh: &Mesh) -> Self {
+        let mut floor = LightFloor::default();
+        for b in mesh.batches.iter().filter(|b| !b.blend.see_through()) {
+            let Some(page) = b.lightmap else {
+                continue;
+            };
+            for t in b.indices.as_chunks::<3>().0 {
+                let Some(v) = t.iter().map(|&i| b.vertices.get(i as usize)).collect::<Option<Vec<_>>>() else {
+                    continue;
+                };
+                floor.push(FloorTri {
+                    p: [v[0].position, v[1].position, v[2].position],
+                    uv: [v[0].lightmap_uv, v[1].lightmap_uv, v[2].lightmap_uv],
+                    page,
+                });
+            }
+        }
+        floor
+    }
+
+    fn cell(x: f32) -> i32 {
+        (x / FLOOR_CELL).floor() as i32
+    }
+
+    fn push(&mut self, t: FloorTri) {
+        let i = self.tris.len() as u32;
+        let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+        for p in &t.p {
+            for k in 0..2 {
+                lo[k] = lo[k].min(p[k]);
+                hi[k] = hi[k].max(p[k]);
+            }
+        }
+        if !(lo.iter().chain(&hi).all(|v| v.is_finite())) {
+            return;
+        }
+        self.tris.push(t);
+        let (x0, x1, y0, y1) = (Self::cell(lo[0]), Self::cell(hi[0]), Self::cell(lo[1]), Self::cell(hi[1]));
+        if x1 - x0 >= FLOOR_SPAN || y1 - y0 >= FLOOR_SPAN {
+            self.wide.push(i);
+            return;
+        }
+        for x in x0..=x1 {
+            for y in y0..=y1 {
+                self.cells.entry((x, y)).or_default().push(i);
+            }
+        }
+    }
+
+    /// The highest floor point under `p` (at most [`FLOOR_ABOVE`] above
+    /// it, [`FLOOR_BELOW`] below): its page and lightmap coordinates.
+    pub fn under(&self, p: Vec3) -> Option<(usize, [f32; 2])> {
+        let cell = (Self::cell(p[0]), Self::cell(p[1]));
+        let listed = self.cells.get(&cell).map_or(&[][..], Vec::as_slice);
+        let mut best: Option<(f32, usize, [f32; 2])> = None;
+        for &i in listed.iter().chain(&self.wide) {
+            let t = &self.tris[i as usize];
+            let Some(w) = barycentric_xy(&t.p, [p[0], p[1]]) else {
+                continue;
+            };
+            let z = w[0] * t.p[0][2] + w[1] * t.p[1][2] + w[2] * t.p[2][2];
+            if z > p[2] + FLOOR_ABOVE || z < p[2] - FLOOR_BELOW {
+                continue;
+            }
+            if best.is_none_or(|b| z > b.0) {
+                let uv = [0, 1].map(|k| w[0] * t.uv[0][k] + w[1] * t.uv[1][k] + w[2] * t.uv[2][k]);
+                best = Some((z, t.page, uv));
+            }
+        }
+        best.map(|(_, page, uv)| (page, uv))
+    }
+}
+
+/// The barycentric weights of `q` in a triangle seen from above (x, y),
+/// when it is inside; `None` outside or for a triangle seen edge-on
+/// (a wall).
+pub fn barycentric_xy(t: &[Vec3; 3], q: [f32; 2]) -> Option<[f32; 3]> {
+    let (a, b, c) = (t[0], t[1], t[2]);
+    let det = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1]);
+    if det.abs() < 1e-6 {
+        return None;
+    }
+    let w0 = ((b[1] - c[1]) * (q[0] - c[0]) + (c[0] - b[0]) * (q[1] - c[1])) / det;
+    let w1 = ((c[1] - a[1]) * (q[0] - c[0]) + (a[0] - c[0]) * (q[1] - c[1])) / det;
+    let w2 = 1.0 - w0 - w1;
+    const EDGE: f32 = -1e-4;
+    (w0 >= EDGE && w1 >= EDGE && w2 >= EDGE).then_some([w0, w1, w2])
+}
+
+/// An sRGB-encoded channel (0..255) in linear light.
+pub fn srgb_to_linear(c: u8) -> f32 {
+    let c = f32::from(c) / 255.0;
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+impl Image {
+    /// The colour at texture coordinates `uv` (clamped to the edges),
+    /// bilinearly filtered, in linear light: what sampling the uploaded
+    /// sRGB texture gives.
+    pub fn sample_linear(&self, uv: [f32; 2]) -> [f32; 3] {
+        if self.width == 0 || self.height == 0 || self.rgba.len() < (self.width * self.height * 4) as usize {
+            return [0.0; 3];
+        }
+        let (w, h) = (self.width as f32, self.height as f32);
+        let x = (uv[0].clamp(0.0, 1.0) * w - 0.5).clamp(0.0, w - 1.0);
+        let y = (uv[1].clamp(0.0, 1.0) * h - 0.5).clamp(0.0, h - 1.0);
+        let (x0, y0) = (x.floor() as u32, y.floor() as u32);
+        let (x1, y1) = ((x0 + 1).min(self.width - 1), (y0 + 1).min(self.height - 1));
+        let (fx, fy) = (x - x0 as f32, y - y0 as f32);
+        let texel = |x: u32, y: u32| -> [f32; 3] {
+            let i = ((y * self.width + x) * 4) as usize;
+            [0, 1, 2].map(|c| srgb_to_linear(self.rgba[i + c]))
+        };
+        let (a, b, c, d) = (texel(x0, y0), texel(x1, y0), texel(x0, y1), texel(x1, y1));
+        [0, 1, 2].map(|k| {
+            let top = a[k] + (b[k] - a[k]) * fx;
+            let bottom = c[k] + (d[k] - c[k]) * fx;
+            top + (bottom - top) * fy
+        })
+    }
+}
+
+/// The light a lightmap texel (linear) gives, as the scene shader applies
+/// it to a lightmapped surface: doubled in gamma space
+/// ([`crate::render::LIGHTMAP_SCALE`]) plus the faint fill
+/// ([`crate::render::LIGHTMAP_FILL`]).
+pub fn lightmap_light(texel: [f32; 3]) -> [f32; 3] {
+    texel.map(|c| c * crate::render::LIGHTMAP_SCALE + crate::render::LIGHTMAP_FILL)
 }
 
 /// The scenario's sky as the viewport draws it: its render model in
@@ -649,6 +1066,40 @@ pub struct SceneSky {
 }
 
 impl Scene {
+    /// The light on the floor under `p` (the lightmap texel there, as a
+    /// lightmapped surface is lit: [`lightmap_light`]), when a lightmapped
+    /// solid surface is under it. What a placed object is lit by: the game
+    /// lights objects from the lightmap they stand on.
+    pub fn light_at(&self, p: Vec3) -> Option<[f32; 3]> {
+        let (page, uv) = self.floor.under(p)?;
+        let image = self.textures.get(page)?;
+        Some(lightmap_light(image.sample_linear(uv)))
+    }
+
+    /// For the status line: how the BSPs without a lightmap are lit
+    /// (`""` when all are lightmapped), e.g. ` (mainmenu: empty lightmap
+    /// group, lit by its sky's sun)`.
+    pub fn unlit_note(&self) -> String {
+        let unlit: Vec<String> = self
+            .lighting
+            .iter()
+            .filter(|l| l.lighting != geometry::BspLighting::Lightmapped)
+            .map(|l| {
+                let name = l.bsp.rsplit(['\\', '/']).next().unwrap_or(&l.bsp);
+                format!("{name}: {}", l.lighting.name())
+            })
+            .collect();
+        if unlit.is_empty() {
+            return String::new();
+        }
+        let by = if self.atmosphere.sun.is_some() {
+            "its sky's sun"
+        } else {
+            "the editor's sun"
+        };
+        format!(" ({}, lit by {by})", unlit.join(", "))
+    }
+
     /// The model a placement draws, if any.
     pub fn model_of(&self, m: &Marker) -> Option<usize> {
         m.object.and_then(|o| self.objects.get(&o).copied())
@@ -805,7 +1256,7 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
         let mut bitmaps: HashMap<TagId, Option<Box<tags::Bitmap>>> = HashMap::new();
         for part in parts {
             let (look, mut blend) = self.look(part.shader);
-            if part.transparent {
+            if part.transparent && !blend.see_through() {
                 blend = Blend::Translucent;
             }
             let lightmap = part.lightmap.and_then(|r| {
@@ -872,8 +1323,65 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
         }
     }
 
-    pub fn finish(self) -> Scene {
+    pub fn finish(mut self) -> Scene {
+        self.scene.floor = LightFloor::of(&self.scene.world);
         self.scene
+    }
+
+    /// How each scenario BSP is lit ([`geometry::world_parts_lit`]), named.
+    pub fn lighting(&mut self, bsps: &[geometry::BspLit]) {
+        for b in bsps {
+            let bsp = self
+                .map
+                .tag(b.bsp)
+                .ok()
+                .and_then(|t| t.name.clone())
+                .unwrap_or_else(|| format!("{}", b.bsp));
+            self.scene.lighting.push(BspLightingInfo {
+                bsp,
+                lighting: b.lighting.clone(),
+            });
+        }
+    }
+
+    /// The sun and fog of the first of the scenario's skies that reads
+    /// (`h1_assets::sky::h2`, the Halo 2 `sky ` reader): its first light
+    /// with parameters is the sun of surfaces no lightmap lights, its
+    /// first `fog_a` element ([`fog_of`]) the fog over the level.
+    pub fn atmosphere(&mut self) {
+        for id in scenario_skies(self.map) {
+            if id == TagId::NULL {
+                continue;
+            }
+            let Ok(sky) = h1_assets::sky::h2::Sky::read_from_map(self.map, id) else {
+                continue;
+            };
+            let name = self
+                .map
+                .tag(id)
+                .ok()
+                .and_then(|t| t.name.clone())
+                .unwrap_or_default();
+            let sun = sky.lights.iter().find_map(|l| {
+                let p = l.params.as_ref()?;
+                Some(Sun {
+                    direction: sun_direction(l.yaw, l.pitch),
+                    color: p.color,
+                    power: p.power,
+                })
+            });
+            let fog = sky
+                .gradients_a
+                .first()
+                .and_then(|g| fog_of(g.color, g.fraction, g.tail[0], g.tail[1]));
+            self.scene.atmosphere = Atmosphere {
+                sky: Some(name.rsplit(['\\', '/']).next().unwrap_or(&name).to_owned()),
+                sun,
+                fog,
+                fallback_rgb: Some(sky.fallback_rgb),
+            };
+            return;
+        }
     }
 
     /// The first of the scenario's skies ([`scenario_skies`]) whose
@@ -999,7 +1507,7 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
                     place_part(&mut out, &at);
                 }
                 let (look, mut blend) = self.look(out.shader);
-                if out.transparent {
+                if out.transparent && !blend.see_through() {
                     blend = Blend::Translucent;
                 }
                 mesh.push_look(&look, None, blend, &out);
@@ -1024,7 +1532,12 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
         Some(())
     }
 
-    /// A shader's base map and blend, read the first time it is asked for.
+    /// A shader's base map and blend, read the first time it is asked for
+    /// (and listed in [`Scene::materials`]). A see-through shader's blend
+    /// is its passes' ([`material_blend`]) where they say, else its
+    /// template name's ([`template_blend`]). A see-through or
+    /// self-illuminated shader whose bitmaps have no diffuse name draws its
+    /// first own bitmap: a light shaft's picture is named for what it is.
     fn look(&mut self, shader: TagId) -> (Look, Blend) {
         if shader == TagId::NULL {
             return (Look::plain(None), Blend::Opaque);
@@ -1033,25 +1546,56 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
             return *l;
         }
         self.scene.stats.shaders += 1;
+        let name_of = |map: &Map<R>, id: TagId| -> Option<String> {
+            map.tag(id).ok().and_then(|t| t.name.clone())
+        };
+        let mut info = MaterialInfo {
+            shader: name_of(&*self.map, shader).unwrap_or_else(|| format!("{shader}")),
+            template: String::new(),
+            blend: Blend::Opaque,
+            blend_from_passes: false,
+            emissive: false,
+            base: None,
+            details: 0,
+        };
         let look = match shader_bitmaps(self.map, shader) {
             Ok((template, bitmaps)) => {
-                let blend = template_blend(&template);
-                let base = bitmaps.into_iter().find(|id| {
-                    self.map
-                        .tag(*id)
-                        .ok()
-                        .and_then(|t| t.name.as_deref())
-                        .is_some_and(|n| bitmap_role(n) == BitmapRole::Diffuse)
-                });
+                let mut blend = template_blend(&template);
+                if blend.see_through()
+                    && !is_water_template(&template)
+                    && let Some(b) = self.blend_of_passes(shader)
+                {
+                    blend = b;
+                    info.blend_from_passes = true;
+                }
+                let emissive = template_emits(&template);
+                let named = |id: TagId| name_of(&*self.map, id);
+                let base = bitmaps
+                    .iter()
+                    .find(|id| named(**id).is_some_and(|n| bitmap_role(&n) == BitmapRole::Diffuse))
+                    .or_else(|| {
+                        (blend.see_through() || emissive).then(|| {
+                            bitmaps
+                                .iter()
+                                .find(|id| named(**id).is_some_and(|n| !is_engine_bitmap(&n)))
+                        })?
+                    })
+                    .copied();
                 let clamp = template_clamps(&template);
                 let texture = base.and_then(|b| self.texture(b, blend == Blend::Mask, clamp));
-                let look = match (base, texture) {
+                let mut look = match (base, texture) {
                     (Some(base), Some(_)) => {
                         let plan = self.detail_plan(shader, base);
                         look_of(texture, &plan, |b| self.texture(b, false, false))
                     }
                     _ => Look::plain(texture),
                 };
+                look.emissive = emissive;
+                info.template = template;
+                info.blend = blend;
+                info.emissive = emissive;
+                info.base = base.filter(|_| texture.is_some()).and_then(|b| name_of(&*self.map, b));
+                info.details = look.details.iter().flatten().count();
                 (look, blend)
             }
             Err(_) => (Look::plain(None), Blend::Opaque),
@@ -1059,8 +1603,19 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
         if look.0.texture.is_some() {
             self.scene.stats.textured += 1;
         }
+        self.scene.materials.push(info);
         self.looks.insert(shader, look);
         look
+    }
+
+    /// [`material_blend`] of a shader's resolved material, through the
+    /// map's shader library; `None` when it does not resolve.
+    fn blend_of_passes(&mut self, shader: TagId) -> Option<Blend> {
+        let library = self
+            .library
+            .get_or_insert_with(|| tags::material::ShaderLibrary::read(&mut *self.map).ok());
+        let material = library.as_mut()?.material(shader, None).ok()?;
+        material_blend(&material)
     }
 
     /// The scales and detail maps of a shader's base map `base`, from its
@@ -1637,6 +2192,29 @@ mod tests {
         );
         assert_eq!(
             template_blend("shaders\\shader_templates\\transparent\\one_add"),
+            Blend::Additive
+        );
+        // mainmenu's light shafts add; its cloud deck blends by alpha.
+        assert_eq!(
+            template_blend("shaders\\shader_templates\\transparent\\one_add_illum_detail"),
+            Blend::Additive
+        );
+        assert_eq!(
+            template_blend("shaders\\shader_templates\\transparent\\sky_two_alpha_clouds"),
+            Blend::Alpha
+        );
+        assert_eq!(
+            template_blend("shaders\\shader_templates\\transparent\\one_mult"),
+            Blend::Multiply
+        );
+        // A see-through template whose name does not say: fixed opacity.
+        assert_eq!(
+            template_blend("shaders\\shader_templates\\transparent\\meter"),
+            Blend::Translucent
+        );
+        // "additive" is not the word "add"; nor is "address".
+        assert_eq!(
+            template_blend("shaders\\shader_templates\\transparent\\additive_x"),
             Blend::Translucent
         );
         assert_eq!(
@@ -1661,6 +2239,173 @@ mod tests {
         ] {
             assert_eq!(bitmap_role(other), BitmapRole::Other, "{other}");
         }
+    }
+
+    /// The native renderer's blend factors read as the viewport's blends;
+    /// factors it does not draw are none.
+    #[test]
+    fn blend_states_map_to_blends() {
+        use wgpu::{BlendComponent, BlendFactor as F, BlendOperation, BlendState};
+        let state = |src, dst| BlendState {
+            color: BlendComponent {
+                src_factor: src,
+                dst_factor: dst,
+                operation: BlendOperation::Add,
+            },
+            alpha: BlendComponent::REPLACE,
+        };
+        assert_eq!(blend_of_state(&state(F::One, F::One)), Some(Blend::Additive));
+        assert_eq!(blend_of_state(&state(F::SrcAlpha, F::One)), Some(Blend::Additive));
+        assert_eq!(
+            blend_of_state(&state(F::SrcAlpha, F::OneMinusSrcAlpha)),
+            Some(Blend::Alpha)
+        );
+        assert_eq!(blend_of_state(&state(F::Dst, F::Zero)), Some(Blend::Multiply));
+        assert_eq!(blend_of_state(&state(F::Zero, F::Src)), Some(Blend::Multiply));
+        assert_eq!(blend_of_state(&state(F::Dst, F::Src)), Some(Blend::Double));
+        assert_eq!(blend_of_state(&state(F::One, F::Zero)), None);
+        let mut sub = state(F::One, F::One);
+        sub.color.operation = BlendOperation::ReverseSubtract;
+        assert_eq!(blend_of_state(&sub), None);
+        assert!(Blend::Additive.see_through() && !Blend::Mask.see_through());
+        assert_eq!(Blend::ALL.len(), 7);
+        assert!(Blend::ALL.windows(2).all(|w| w[0] < w[1]), "draw order");
+    }
+
+    #[test]
+    fn illum_templates_emit_and_engine_bitmaps_are_never_pictures() {
+        assert!(template_emits("shaders\\shader_templates\\opaque\\illum"));
+        assert!(!template_emits(
+            "shaders\\shader_templates\\opaque\\tex_bump_env_illum_combined"
+        ));
+        assert!(is_water_template("shaders\\shader_templates\\water\\water_pool"));
+        assert!(!is_water_template("shaders\\shader_templates\\transparent\\one_add"));
+        assert!(is_engine_bitmap("shaders\\default_bitmaps\\bitmaps\\gray_50_percent"));
+        assert!(is_engine_bitmap("rasterizer\\vector_normalization"));
+        assert!(!is_engine_bitmap("scenarios\\bitmaps\\solo\\light_volume"));
+    }
+
+    fn close3(a: [f32; 3], b: [f32; 3]) -> bool {
+        a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-4)
+    }
+
+    #[test]
+    fn sky_lights_point_up_and_tint_by_hue() {
+        // Yaw 0, pitch 90 degrees: straight up.
+        assert!(close3(sun_direction(0.0, std::f32::consts::FRAC_PI_2), [0.0, 0.0, 1.0]));
+        // Pitch -45 degrees along +y: turned above the horizon.
+        let d = sun_direction(std::f32::consts::FRAC_PI_2, -std::f32::consts::FRAC_PI_4);
+        let h = std::f32::consts::FRAC_1_SQRT_2;
+        assert!(close3(d, [0.0, -h, h]), "{d:?}");
+        assert!(close3(sun_tint([2.0, 1.0, 0.5]), [1.0, 0.5, 0.25]));
+        assert_eq!(sun_tint([0.0; 3]), [1.0; 3]);
+        assert_eq!(sun_tint([f32::NAN, 1.0, 1.0]), [1.0; 3]);
+    }
+
+    /// The engine's fog check (`0x001301c0`): no density, no fog; colour
+    /// and density clamped; the opaque distance past the start.
+    #[test]
+    fn fog_follows_the_engines_check() {
+        assert_eq!(fog_of([0.5; 3], 0.0, 0.0, 200.0), None);
+        assert_eq!(fog_of([0.5; 3], f32::NAN, 0.0, 200.0), None);
+        let f = fog_of([1.5, 0.25, -1.0], 2.0, 10.0, 5.0).unwrap();
+        assert_eq!(f.color, [1.0, 0.25, 0.0]);
+        assert_eq!(f.density, 1.0);
+        assert_eq!((f.start, f.opaque), (10.0, 11.0));
+        let f = fog_of([0.5; 3], 0.6, 5.0, 205.0).unwrap();
+        assert_eq!(fog_amount(&f, 0.0), 0.0);
+        assert!((fog_amount(&f, 105.0) - 0.3).abs() < 1e-6);
+        assert!((fog_amount(&f, 1000.0) - 0.6).abs() < 1e-6);
+    }
+
+    #[test]
+    fn colour_conversion_and_bilinear_samples_are_linear() {
+        assert_eq!(srgb_to_linear(0), 0.0);
+        assert!((srgb_to_linear(255) - 1.0).abs() < 1e-6);
+        // sRGB 188 is about linear 0.5.
+        assert!((srgb_to_linear(188) - 0.5).abs() < 0.01);
+        let img = image(2, 1, |x, _| if x == 0 { [0, 0, 0, 255] } else { [255, 255, 255, 255] });
+        // Texel centres, and halfway between them.
+        assert!(close3(img.sample_linear([0.25, 0.5]), [0.0; 3]));
+        assert!(close3(img.sample_linear([0.75, 0.5]), [1.0; 3]));
+        assert!(close3(img.sample_linear([0.5, 0.5]), [0.5; 3]));
+        // Clamped at the edges.
+        assert!(close3(img.sample_linear([-3.0, 9.0]), [0.0; 3]));
+        let lit = lightmap_light([0.5; 3]);
+        let want = 0.5 * crate::render::LIGHTMAP_SCALE + crate::render::LIGHTMAP_FILL;
+        assert!(close3(lit, [want; 3]));
+    }
+
+    #[test]
+    fn barycentric_weights_find_points_inside_a_floor_triangle() {
+        let t = [[0.0, 0.0, 1.0], [4.0, 0.0, 1.0], [0.0, 4.0, 1.0]];
+        let w = barycentric_xy(&t, [1.0, 1.0]).unwrap();
+        assert!(close3(w, [0.5, 0.25, 0.25]), "{w:?}");
+        assert_eq!(barycentric_xy(&t, [3.0, 3.0]), None, "outside");
+        let wall = [[0.0, 0.0, 0.0], [4.0, 0.0, 0.0], [4.0, 0.0, 3.0]];
+        assert_eq!(barycentric_xy(&wall, [2.0, 0.0]), None, "edge-on");
+    }
+
+    /// A floor of two lightmapped quads at different heights, one page
+    /// dark and one bright: a point takes the highest floor under it (not
+    /// one above it), at its interpolated lightmap coordinates.
+    #[test]
+    fn objects_take_the_light_of_the_floor_under_them() {
+        let quad = |z: f32, x0: f32| WorldPart {
+            positions: vec![[x0, 0.0, z], [x0 + 10.0, 0.0, z], [x0 + 10.0, 10.0, z], [x0, 10.0, z]],
+            normals: vec![[0.0, 0.0, 1.0]; 4],
+            uvs: vec![[0.0; 2]; 4],
+            lightmap_uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            tris: vec![[0, 1, 2], [0, 2, 3]],
+            ..WorldPart::default()
+        };
+        let dark = image(1, 1, |_, _| [64, 64, 64, 255]);
+        let bright = image(2, 1, |x, _| if x == 0 { [255, 0, 0, 255] } else { [0, 0, 255, 255] });
+        let mut scene = Scene {
+            textures: vec![dark, bright],
+            lifts: vec![1.0; 2],
+            ..Scene::default()
+        };
+        scene.world.push(None, Some(0), Blend::Opaque, &quad(0.0, 0.0));
+        scene.world.push(None, Some(1), Blend::Opaque, &quad(5.0, 0.0));
+        // A see-through deck above is no floor.
+        scene.world.push(None, Some(0), Blend::Translucent, &quad(6.0, 0.0));
+        scene.floor = LightFloor::of(&scene.world);
+        // On the upper floor: its left texel (red) at u = 0.1.
+        let on_top = scene.light_at([1.0, 5.0, 5.2]).unwrap();
+        assert!(on_top[0] > on_top[2] * 4.0, "{on_top:?}");
+        // At its right edge, the blue texel.
+        let right = scene.light_at([9.9, 5.0, 5.0]).unwrap();
+        assert!(right[2] > right[0] * 4.0, "{right:?}");
+        // Under the upper floor (between the two): the lower, dark one.
+        let below = scene.light_at([5.0, 5.0, 2.0]).unwrap();
+        let want = lightmap_light([srgb_to_linear(64); 3]);
+        assert!(close3(below, want), "{below:?}");
+        // Off the floor: nothing.
+        assert_eq!(scene.light_at([50.0, 50.0, 0.0]), None);
+        // Far above both (past FLOOR_BELOW): nothing.
+        assert_eq!(scene.light_at([5.0, 5.0, 500.0]), None);
+    }
+
+    /// A triangle wider than the grid's span is still found.
+    #[test]
+    fn wide_floor_triangles_are_found_anywhere_under_them() {
+        let big = WorldPart {
+            positions: vec![[-1000.0, -1000.0, 0.0], [1000.0, -1000.0, 0.0], [0.0, 1000.0, 0.0]],
+            normals: vec![[0.0, 0.0, 1.0]; 3],
+            uvs: vec![[0.0; 2]; 3],
+            lightmap_uvs: vec![[0.5; 2]; 3],
+            tris: vec![[0, 1, 2]],
+            ..WorldPart::default()
+        };
+        let mut scene = Scene {
+            textures: vec![image(1, 1, |_, _| [128, 128, 128, 255])],
+            lifts: vec![1.0],
+            ..Scene::default()
+        };
+        scene.world.push(None, Some(0), Blend::Opaque, &big);
+        scene.floor = LightFloor::of(&scene.world);
+        assert!(scene.light_at([300.0, -200.0, 1.0]).is_some());
     }
 
     #[test]
@@ -2052,6 +2797,7 @@ mod tests {
                     }),
                     None
                 ],
+                emissive: false,
             }
         );
         let mut mesh = Mesh::default();

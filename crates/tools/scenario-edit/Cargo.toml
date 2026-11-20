@@ -18,6 +18,11 @@ toml = "0.9"
 wgpu = "30"
 bytemuck = { version = "1", features = ["derive"] }
 xiso.workspace = true
+# The native renderer's world path: an instance's own lightmap coordinates
+# (the lightmap group's buckets) and a pass's blend from its render states.
+native-render = { path = "../../rewrites/native-render" }
+# The Halo 2 `sky ` reader: the sky's lights and fog for the viewport.
+h1-assets = { path = "../h1-assets" }
 
 [dev-dependencies]
 pollster = "1"

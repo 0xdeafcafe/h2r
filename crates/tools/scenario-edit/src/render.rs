@@ -8,7 +8,7 @@
 //! toolkit is used here; `h2-editor` registers [`Viewport::ui_view`]
 //! with `dear-imgui-wgpu`.
 use crate::geometry::{Camera, Marker, Tri, Vec3, block_color, cross, marker_triangles, normalize};
-use crate::scene::{Blend, Scene, SceneVertex};
+use crate::scene::{Atmosphere, Blend, Scene, SceneVertex, sun_tint};
 use std::ops::Range;
 use wgpu::util::DeviceExt;
 
@@ -82,6 +82,50 @@ struct Uniforms {
     up: [f32; 4],
     forward: [f32; 4],
     lens: [f32; 4],
+    /// The map's sun ([`AtmosphereUniforms`]); the sky shader and the
+    /// glyph shader read only the fields before it.
+    sun: [f32; 4],
+    sun_color: [f32; 4],
+    fog_color: [f32; 4],
+    fog_range: [f32; 4],
+}
+
+/// The scene shader's sun and fog words for an [`Atmosphere`]: the sun's
+/// direction (w 1 when the map has one) and hue ([`sun_tint`]), the fog's
+/// colour in linear light with its density, and its start, opaque
+/// distance and whether there is one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AtmosphereUniforms {
+    pub sun: [f32; 4],
+    pub sun_color: [f32; 4],
+    pub fog_color: [f32; 4],
+    pub fog_range: [f32; 4],
+}
+
+impl AtmosphereUniforms {
+    /// No sun of the map's and no fog: the editor's own sun, white.
+    pub const NONE: Self = Self {
+        sun: [0.0, 0.0, 1.0, 0.0],
+        sun_color: [1.0, 1.0, 1.0, 0.0],
+        fog_color: [0.0; 4],
+        fog_range: [0.0; 4],
+    };
+
+    pub fn of(a: &Atmosphere) -> Self {
+        let mut out = Self::NONE;
+        if let Some(sun) = &a.sun {
+            let d = sun.direction;
+            out.sun = [d[0], d[1], d[2], 1.0];
+            let t = sun_tint(sun.color);
+            out.sun_color = [t[0], t[1], t[2], 0.0];
+        }
+        if let Some(f) = &a.fog {
+            let lin = f.color.map(|c| c.max(0.0).powf(2.2));
+            out.fog_color = [lin[0], lin[1], lin[2], f.density];
+            out.fog_range = [f.start, f.opaque, 1.0, 0.0];
+        }
+        out
+    }
 }
 
 /// A sky behind a map with art: a gradient from the zenith to a pale
@@ -135,12 +179,25 @@ struct V { @builtin(position) clip: vec4<f32>, @location(0) n: vec3<f32>, @locat
 }
 "#;
 
-/// Textured meshes: placed per instance, lit by one sun and the sky.
+/// Textured meshes: placed per instance, lit by their lightmap page or by
+/// the map's sun, fogged by the map's fog, blended as their shader says.
 const SCENE_SHADER: &str = r#"
-struct U { view_proj: mat4x4<f32>, eye: vec4<f32> };
+struct U {
+    view_proj: mat4x4<f32>, eye: vec4<f32>,
+    right: vec4<f32>, up: vec4<f32>, forward: vec4<f32>, lens: vec4<f32>,
+    // xyz toward the map's sun, w 1 when the map has one.
+    sun: vec4<f32>,
+    // rgb the sun's hue (brightest channel 1).
+    sun_color: vec4<f32>,
+    // rgb the fog colour (linear), a its density.
+    fog_color: vec4<f32>,
+    // start, opaque distance, 1 when there is fog.
+    fog_range: vec4<f32>,
+};
 struct P {
-    lift: f32, lit: f32, details: f32, pad0: f32,
-    base_scale: vec2<f32>, detail0_scale: vec2<f32>, detail1_scale: vec2<f32>, pad1: vec2<f32>,
+    lift: f32, lit: f32, details: f32, textured: f32,
+    base_scale: vec2<f32>, detail0_scale: vec2<f32>, detail1_scale: vec2<f32>,
+    emissive: f32, pad1: f32,
 };
 @group(0) @binding(0) var<uniform> u: U;
 @group(1) @binding(0) var tex: texture_2d<f32>;
@@ -156,6 +213,7 @@ struct V {
     @location(1) uv: vec2<f32>,
     @location(2) tint: vec4<f32>,
     @location(3) luv: vec2<f32>,
+    @location(4) world: vec3<f32>,
 };
 @vertex fn vs(
     @location(0) pos: vec3<f32>, @location(1) n: vec3<f32>, @location(2) uv: vec2<f32>,
@@ -165,18 +223,34 @@ struct V {
 ) -> V {
     var o: V;
     let m = mat4x4<f32>(x, y, z, t);
-    o.clip = u.view_proj * m * vec4<f32>(pos, 1.0);
+    let world = m * vec4<f32>(pos, 1.0);
+    o.clip = u.view_proj * world;
     o.n = (m * vec4<f32>(n, 0.0)).xyz;
     o.uv = uv;
     o.luv = luv;
     o.tint = tint;
+    o.world = world.xyz;
     return o;
 }
 // Roll off highlights (snow, sand) instead of clipping them.
 fn roll(lin: vec3<f32>) -> vec3<f32> {
     return lin / (vec3<f32>(1.0) + max(lin - vec3<f32>(0.7), vec3<f32>(0.0)));
 }
+// How much of the map's fog covers this point (0 without fog).
+fn fog_amount(v: V) -> f32 {
+    if (u.fog_range.z < 0.5) { return 0.0; }
+    let d = length(v.world - u.eye.xyz);
+    let t = clamp((d - u.fog_range.x) / max(u.fog_range.y - u.fog_range.x, 1.0), 0.0, 1.0);
+    return u.fog_color.a * t;
+}
+fn fogged(v: V, c: vec3<f32>) -> vec3<f32> {
+    return mix(c, u.fog_color.rgb, fog_amount(v));
+}
 fn lit(v: V, albedo: vec3<f32>) -> vec3<f32> {
+    if (p.emissive > 0.5) {
+        // Self-illuminated: the picture is its own light.
+        return mix(albedo, vec3<f32>(1.0, 0.78, 0.25), v.tint.a);
+    }
     var light: vec3<f32>;
     if (p.lit > 0.5) {
         // The baked lightmap, as the game draws it: albedo × light × 2
@@ -185,13 +259,15 @@ fn lit(v: V, albedo: vec3<f32>) -> vec3<f32> {
         // going pure black.
         light = textureSample(lm, samp, v.luv).rgb * LIGHTMAP_SCALE + vec3<f32>(LIGHTMAP_FILL);
     } else {
-        // One sun and the sky; dark base maps are lifted (`p.lift`)
-        // because the game would draw them under detail maps and light.
+        // The map's sun (else one of the editor's) and the sky; dark base
+        // maps are lifted (`p.lift`) because the game would draw them
+        // under detail maps and light.
         let n = normalize(v.n + vec3<f32>(0.0, 0.0, 1e-5));
-        let sun = normalize(vec3<f32>(0.45, 0.3, 0.84));
+        var sun = normalize(vec3<f32>(0.45, 0.3, 0.84));
+        if (u.sun.w > 0.5) { sun = u.sun.xyz; }
         let d = max(dot(n, sun), 0.0);
         let sky = 0.5 + 0.5 * n.z;
-        light = vec3<f32>(1.4 * (0.36 + 0.14 * sky + 0.5 * d) * p.lift);
+        light = (0.36 + 0.14 * sky + 0.5 * d * u.sun_color.rgb) * 1.4 * p.lift;
     }
     let c = roll(albedo * light * v.tint.rgb);
     return mix(c, vec3<f32>(1.0, 0.78, 0.25), v.tint.a);
@@ -212,16 +288,43 @@ fn albedo(v: V) -> vec4<f32> {
     return c;
 }
 @fragment fn fs_opaque(v: V) -> @location(0) vec4<f32> {
-    return vec4<f32>(lit(v, albedo(v).rgb), 1.0);
+    return vec4<f32>(fogged(v, lit(v, albedo(v).rgb)), 1.0);
 }
 @fragment fn fs_mask(v: V) -> @location(0) vec4<f32> {
     let c = albedo(v);
     if (c.a < 0.5) { discard; }
-    return vec4<f32>(lit(v, c.rgb), 1.0);
+    return vec4<f32>(fogged(v, lit(v, c.rgb)), 1.0);
 }
+// Water and see-through surfaces of unknown blend: a fixed opacity.
 @fragment fn fs_translucent(v: V) -> @location(0) vec4<f32> {
     let c = albedo(v);
-    return vec4<f32>(c.rgb * (0.6 + 0.4 * v.tint.rgb), 0.3);
+    return vec4<f32>(fogged(v, c.rgb * (0.6 + 0.4 * v.tint.rgb)), 0.3);
+}
+// Blended by the picture's alpha, lit as a solid surface is.
+@fragment fn fs_alpha(v: V) -> @location(0) vec4<f32> {
+    let c = albedo(v);
+    return vec4<f32>(fogged(v, lit(v, c.rgb)), c.a);
+}
+// Added to what is behind it, unshaded (lights, shafts, glows); faded by
+// the fog. Without a picture it adds nothing.
+@fragment fn fs_additive(v: V) -> @location(0) vec4<f32> {
+    if (p.textured < 0.5) { discard; }
+    let c = albedo(v).rgb * (1.0 - fog_amount(v));
+    return vec4<f32>(c, 1.0);
+}
+// Times what is behind it; the fog fades it to white (no change).
+@fragment fn fs_multiply(v: V) -> @location(0) vec4<f32> {
+    if (p.textured < 0.5) { discard; }
+    let c = mix(albedo(v).rgb, vec3<f32>(1.0), fog_amount(v));
+    return vec4<f32>(c, 1.0);
+}
+// Twice the picture times what is behind it, in gamma space as the game
+// does: the blend doubles, the factor 2^1.2 makes the rest of 2^2.2 in
+// linear light (mid-grey leaves the surface as it is). Fogged to neutral.
+@fragment fn fs_double(v: V) -> @location(0) vec4<f32> {
+    if (p.textured < 0.5) { discard; }
+    let c = min(albedo(v).rgb * DOUBLE_SCALE, vec3<f32>(1.0));
+    return vec4<f32>(mix(c, vec3<f32>(0.5), fog_amount(v)), 1.0);
 }
 // The sky: its base maps as they are, unlit (the sky is its own light).
 @fragment fn fs_sky(v: V) -> @location(0) vec4<f32> {
@@ -241,6 +344,10 @@ pub const LIGHTMAP_SCALE: f32 = 4.595;
 /// window intact ([`Viewport::ui_view`]); 0.22 had been compensating for
 /// a window that showed linear values as encoded ones.
 pub const LIGHTMAP_FILL: f32 = 0.05;
+/// What a [`Blend::Double`] surface's linear picture is scaled by before
+/// the blend doubles it: `2^2.2 / 2`, so the product is the game's
+/// doubled modulation in gamma space.
+pub const DOUBLE_SCALE: f32 = 2.297;
 
 /// BSP triangles as vertices, shaded by slope: floors light, walls darker.
 pub fn world_vertices(tris: &[Tri]) -> Vec<Vertex> {
@@ -319,6 +426,14 @@ pub fn glyph_vertices(
     out
 }
 
+/// The tint of an object standing on a lightmapped floor whose light is
+/// `light` ([`Scene::light_at`]): the floor's light over the unlit
+/// shading's mean (about 1), kept between a twentieth and three, so the
+/// object is as bright and as coloured as the floor it stands on.
+pub fn object_light(light: [f32; 3]) -> [f32; 3] {
+    light.map(|c| if c.is_finite() { c.clamp(0.05, 3.0) } else { 1.0 })
+}
+
 /// Each model's placements as instances, grouped by model: the instances
 /// and, per model, its range in them.
 pub fn placement_instances(
@@ -330,10 +445,12 @@ pub fn placement_instances(
         .iter()
         .filter_map(|m| {
             let model = scene.model_of(m)?;
-            Some((
-                model,
-                Instance::of(m, selected.contains(&(m.block, m.index))),
-            ))
+            let mut instance = Instance::of(m, selected.contains(&(m.block, m.index)));
+            if let Some(light) = scene.light_at(m.position) {
+                let t = object_light(light);
+                instance.tint = [t[0], t[1], t[2], instance.tint[3]];
+            }
+            Some((model, instance))
         })
         .collect();
     placed.sort_by_key(|(model, _)| *model);
@@ -373,11 +490,14 @@ struct BatchParams {
     lit: f32,
     /// How many detail maps multiply the base map (0..=2).
     details: f32,
-    pad: f32,
+    /// 1 when the batch has its own picture.
+    textured: f32,
     /// Texture-coordinate scales: the base map's, then each detail map's.
     base_scale: [f32; 2],
     detail_scales: [[f32; 2]; 2],
-    pad1: [f32; 2],
+    /// 1 for a self-illuminated batch ([`crate::scene::Look::emissive`]).
+    emissive: f32,
+    pad1: f32,
 }
 
 /// A [`Scene`] uploaded: the world and the models, each batch bound to its
@@ -426,10 +546,11 @@ impl MeshContext<'_> {
             } else {
                 0.0
             },
-            pad: 0.0,
+            textured: if base.is_some() { 1.0 } else { 0.0 },
             base_scale: b.scale,
             detail_scales: std::array::from_fn(|k| details.get(k).map_or([1.0; 2], |d| d.1)),
-            pad1: [0.0; 2],
+            emissive: if b.emissive { 1.0 } else { 0.0 },
+            pad1: 0.0,
         };
         let buffer = self
             .device
@@ -529,6 +650,12 @@ pub struct Viewport {
     opaque: wgpu::RenderPipeline,
     mask: wgpu::RenderPipeline,
     translucent: wgpu::RenderPipeline,
+    alpha: wgpu::RenderPipeline,
+    additive: wgpu::RenderPipeline,
+    multiply: wgpu::RenderPipeline,
+    double: wgpu::RenderPipeline,
+    /// The scene's sun and fog, written into the uniforms each frame.
+    atmosphere: AtmosphereUniforms,
     texture_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     clamp_sampler: wgpu::Sampler,
@@ -657,6 +784,7 @@ impl Viewport {
                 SCENE_SHADER
                     .replace("LIGHTMAP_SCALE", &format!("{LIGHTMAP_SCALE:.3}"))
                     .replace("LIGHTMAP_FILL", &format!("{LIGHTMAP_FILL:.3}"))
+                    .replace("DOUBLE_SCALE", &format!("{DOUBLE_SCALE:.3}"))
                     .into(),
             ),
         });
@@ -824,6 +952,28 @@ impl Viewport {
             Some(wgpu::BlendState::ALPHA_BLENDING),
             false,
         );
+        // The target's alpha is kept: the window shows the viewport's
+        // texture as an image and would see through it.
+        let keep_alpha = wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::Zero,
+            dst_factor: wgpu::BlendFactor::One,
+            operation: wgpu::BlendOperation::Add,
+        };
+        let colour = |src, dst| {
+            Some(wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: src,
+                    dst_factor: dst,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: keep_alpha,
+            })
+        };
+        use wgpu::BlendFactor as F;
+        let alpha = scene_pipeline("fs_alpha", colour(F::SrcAlpha, F::OneMinusSrcAlpha), false);
+        let additive = scene_pipeline("fs_additive", colour(F::One, F::One), false);
+        let multiply = scene_pipeline("fs_multiply", colour(F::Dst, F::Zero), false);
+        let double = scene_pipeline("fs_double", colour(F::Dst, F::Src), false);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("scenario viewport"),
             address_mode_u: wgpu::AddressMode::Repeat,
@@ -891,6 +1041,11 @@ impl Viewport {
             opaque,
             mask,
             translucent,
+            alpha,
+            additive,
+            multiply,
+            double,
+            atmosphere: AtmosphereUniforms::NONE,
             texture_layout,
             sampler,
             clamp_sampler,
@@ -967,6 +1122,7 @@ impl Viewport {
     pub fn set_world(&mut self, device: &wgpu::Device, tris: &[Tri]) {
         self.world = Self::upload(device, &world_vertices(tris));
         self.scene = None;
+        self.atmosphere = AtmosphereUniforms::NONE;
     }
     pub fn set_markers(&mut self, device: &wgpu::Device, v: &[Vertex]) {
         self.markers = Self::upload(device, v);
@@ -1011,6 +1167,7 @@ impl Viewport {
             white: &white,
         };
         self.world = None;
+        self.atmosphere = AtmosphereUniforms::of(&scene.atmosphere);
         self.scene = Some(GpuScene {
             world: ctx.mesh(&scene.world),
             sky: scene.sky.as_ref().and_then(|s| ctx.mesh(&s.mesh)),
@@ -1117,6 +1274,10 @@ impl Viewport {
                 up: w(cross(r, f)),
                 forward: w(f),
                 lens: [(camera.fov_y * 0.5).tan(), aspect, 0.0, 0.0],
+                sun: self.atmosphere.sun,
+                sun_color: self.atmosphere.sun_color,
+                fog_color: self.atmosphere.fog_color,
+                fog_range: self.atmosphere.fog_range,
             }),
         );
         queue.write_buffer(
@@ -1129,6 +1290,11 @@ impl Viewport {
                 up: w(cross(r, f)),
                 forward: w(f),
                 lens: [(camera.fov_y * 0.5).tan(), aspect, 0.0, 0.0],
+                // The sky is not fogged or sunlit: it is its own light.
+                sun: AtmosphereUniforms::NONE.sun,
+                sun_color: AtmosphereUniforms::NONE.sun_color,
+                fog_color: AtmosphereUniforms::NONE.fog_color,
+                fog_range: AtmosphereUniforms::NONE.fog_range,
             }),
         );
         let background = wgpu::LoadOp::Clear(wgpu::Color {
@@ -1182,7 +1348,10 @@ impl Viewport {
             // Batches come solid first, see-through last.
             for (indices, bind, blend) in &sky.batches {
                 pass.set_pipeline(match blend {
-                    Blend::Translucent => &self.sky_blend,
+                    Blend::Translucent | Blend::Alpha => &self.sky_blend,
+                    Blend::Additive => &self.additive,
+                    Blend::Multiply => &self.multiply,
+                    Blend::Double => &self.double,
                     Blend::Opaque | Blend::Mask => &self.sky_opaque,
                 });
                 pass.set_bind_group(1, bind, &[]);
@@ -1244,13 +1413,17 @@ impl Viewport {
             pass.set_vertex_buffer(1, instances.slice(..));
             pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
             for (indices, bind, blend) in &mesh.batches {
-                if (*blend == Blend::Translucent) != translucent {
+                if blend.see_through() != translucent {
                     continue;
                 }
                 pass.set_pipeline(match blend {
                     Blend::Opaque => &self.opaque,
                     Blend::Mask => &self.mask,
                     Blend::Translucent => &self.translucent,
+                    Blend::Alpha => &self.alpha,
+                    Blend::Additive => &self.additive,
+                    Blend::Multiply => &self.multiply,
+                    Blend::Double => &self.double,
                 });
                 pass.set_bind_group(1, bind, &[]);
                 pass.draw_indexed(indices.clone(), 0, range.clone());
