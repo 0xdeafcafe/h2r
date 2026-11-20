@@ -44,6 +44,7 @@
 .dx-brand { font-weight: 800; font-size: calc(var(--u) * 16); letter-spacing: .2em; color: var(--g-bright); text-shadow: 0 0 calc(var(--u) * 10) rgba(126, 255, 48, .45); margin-right: auto; }
 .dx-chip { display: inline-flex; align-items: center; gap: calc(var(--u) * 7); height: calc(var(--u) * 22); padding: 0 calc(var(--u) * 11); border: calc(var(--u) * 1) solid rgba(130, 225, 70, .32); border-radius: calc(var(--u) * 2) calc(var(--u) * 8) calc(var(--u) * 2) calc(var(--u) * 8); background: rgba(8, 44, 6, .5); color: inherit; text-decoration: none; white-space: nowrap; transition: background .15s, border-color .15s, color .15s; }
 .dx-chip--me { color: var(--y-1); }
+.dx-chip--admin { flex-shrink: 0; }
 .dx-chip--link { color: var(--g-bright); }
 .dx-chip--link::after { content: ""; width: 0; height: 0; border-left: calc(var(--u) * 5) solid currentColor; border-top: calc(var(--u) * 3.5) solid transparent; border-bottom: calc(var(--u) * 3.5) solid transparent; }
 .dx-chip--link:hover, .dx-chip--link:focus-visible, .dx-chip--me:focus-visible { background: rgba(120, 240, 50, .22); border-color: rgba(190, 255, 120, .7); color: var(--g-pale); outline: none; }

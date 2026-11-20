@@ -11,7 +11,7 @@
 
 import { gameMapTitle } from "../state/maps";
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, on, onCleanup, onMount, untrack, type JSX } from "solid-js";
-import { useNavigate, useParams } from "@solidjs/router";
+import { A, useNavigate, useParams } from "@solidjs/router";
 import { live } from "../state/live";
 import { identity, download } from "../state/identity";
 import { accountByGamertag, liveGames, standings, teamStandings, type GameState, type AccountState } from "../state/reducer";
@@ -577,6 +577,9 @@ export default function Dashboard() {
         <span class="dx-chip dx-chip--server"><i class={`dx-led dx-led--${live.status()}`} />{live.wellKnown()?.id ?? new URL(live.server().base).host}</span>
         <Show when={identity.me()} fallback={<Show when={section() !== "signin"}><a class="dx-chip dx-chip--link dx-chip--join" href="/dash/signin" onClick={(e) => { e.preventDefault(); go("/dash/signin", "deeper"); }}>sign in</a></Show>}>
           {(me) => <a class="dx-chip dx-chip--me" href="/dash/signup" onClick={(e) => { e.preventDefault(); if (screen() !== "player" || section() !== "signup") go("/dash/signup", section() === "signup" ? "back" : "deeper"); }}>{me().gamertag}</a>}
+        </Show>
+        <Show when={identity.me() && adminState.isMeAdmin() === true}>
+          <A class="dx-chip dx-chip--link dx-chip--admin" href={LIVE_ADMIN} state={DECK_ENTRY}>live admin</A>
         </Show>
         <Show when={section() !== "games"}>
           <a class="dx-chip dx-chip--link" href="/dash/games">games</a>
