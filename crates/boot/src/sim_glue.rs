@@ -50,6 +50,7 @@ use sim::metrics::{BotInfo, BrainTick, End, Finish, PlayerSample, Report, Tally,
 use crate::level_boot;
 use std::collections::BTreeMap;
 pub(crate) mod hosted;
+mod state_hash;
 
 /// The engine's shared random seed: a pointer to the struct whose first
 /// word it is (docs/graphics/pipelined-render.md, "random").
@@ -141,7 +142,7 @@ pub fn use_light_host() -> Result<bool> {
 
 /// The match file `H2_SIM` names, read and checked; `None` when unset.
 /// `H2_BOOT_GFX` is refused: sim mode has no GPU.
-pub fn from_env() -> Result<Option<Sim>> {
+pub fn from_env(data: &Path) -> Result<Option<Sim>> {
     let Some(path) = std::env::var_os(sim::ENV).filter(|v| !v.is_empty()) else {
         return Ok(None);
     };
@@ -156,8 +157,9 @@ pub fn from_env() -> Result<Option<Sim>> {
         );
     }
     let path = PathBuf::from(path);
-    let matched = sim::config::load_match(&path)
-        .map_err(|e| anyhow::anyhow!("{}: {}", sim::ENV, e.replace('\n', "; ")))?;
+    let matched =
+        sim::config::load_match_with_seating(&path, crate::setting_defs::bots_all_phantom_at(data))
+            .map_err(|e| anyhow::anyhow!("{}: {}", sim::ENV, e.replace('\n', "; ")))?;
     let report_path = std::env::var_os(sim::REPORT_ENV)
         .filter(|v| !v.is_empty())
         .map(PathBuf::from);
@@ -414,6 +416,7 @@ impl Sim {
     pub fn add_bots(&self) -> Result<()> {
         let local = bots::local::global();
         local.set_capacity(4);
+        bots::phantom::global().set_playerless_host(self.0.matched.playerless_host());
         for b in &self.0.matched.bots {
             let brain = bots::Brain::new(skill(b.skill), b.seed).with_tuning(tuning(&b.params));
             let source = Metered {
@@ -772,6 +775,11 @@ impl feature::Feature for SimMetrics {
             eprintln!("sim: match started at tick {tick}");
         });
         let me = Arc::clone(&self.0);
+        let arena_buffer = b
+            .switches()
+            .implementation("sim.arena-hash", false)
+            .then(|| Mutex::new(Vec::new()));
+        let projected = b.switches().implementation("sim.metrics-projection", true);
         b.frame().on_tick("sim: tick sample", move |o| {
             if !matches!(me.lock().phase, Phase::Playing | Phase::Binding) {
                 return;
@@ -783,13 +791,26 @@ impl feature::Feature for SimMetrics {
             {
                 return;
             }
-            let snap = telemetry::snapshot(&g);
+            let snap = if projected {
+                telemetry::sim_snapshot(&g)
+            } else {
+                telemetry::snapshot(&g)
+            };
+            let rng = g
+                .u32(RANDOM_SEED_PTR)
+                .ok()
+                .filter(|p| *p != 0)
+                .and_then(|p| g.u32(p).ok());
             let ended = g
                 .u32(telemetry::layout::GAME_GLOBALS_PTR)
                 .ok()
                 .filter(|p| *p != 0)
                 .and_then(|p| g.u8(p + telemetry::layout::GAME_ENDED).ok())
                 .is_some_and(|b| b != 0);
+            let arena = arena_buffer.as_ref().and_then(|buffer| {
+                let mut bytes = buffer.lock().unwrap_or_else(|e| e.into_inner());
+                lockstep::hash_sim_buffered(&g, lockstep::SimRegion::HALO2, &mut bytes)
+            });
             drop(g);
             let mut s = me.lock();
             match snap {
@@ -810,7 +831,15 @@ impl feature::Feature for SimMetrics {
                         s.dispatch_start = o.runtime.dispatch_counts();
                     }
                     let resets = s.tally.resets();
-                    s.tally.tick(&sample);
+                    let tick = sample.tick;
+                    s.tally
+                        .tick_hashed(sample, state_hash::gameplay(&snap, rng), arena);
+                    if arena_buffer.is_some() && arena.is_none() {
+                        const NOTE: &str = "arena hash unavailable on one or more sampled ticks";
+                        if !s.notes.iter().any(|n| n == NOTE) {
+                            s.notes.push(NOTE.into());
+                        }
+                    }
                     s.dispatch_end = o.runtime.dispatch_counts();
                     if s.tally.resets() != resets {
                         // A snapshot load (a forked run): the match is
@@ -819,8 +848,7 @@ impl feature::Feature for SimMetrics {
                         s.dispatch_start = s.dispatch_end;
                         s.set_up = false;
                         eprintln!(
-                            "sim: the tick jumped to {} (a snapshot load); counting from here",
-                            sample.tick
+                            "sim: the tick jumped to {tick} (a snapshot load); counting from here"
                         );
                     }
                     for p in shooters(&snap, &fired) {
@@ -1160,6 +1188,26 @@ mod tests {
             },
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn tick_hash_detects_motion_inventory_and_rng_before_score_changes() {
+        let mut snap = telemetry::Snapshot {
+            tick: 77,
+            players: vec![player(0, Some(0), 0xe001)],
+            objects: vec![Some(object(Some(0xa1), None, 1.0, 2))],
+            ..Default::default()
+        };
+        let hash = |s: &telemetry::Snapshot| state_hash::gameplay(s, Some(7));
+        let original = hash(&snap);
+        snap.players[0].player.name = "renamed".into();
+        assert_eq!(hash(&snap), original);
+        assert_ne!(state_hash::gameplay(&snap, Some(8)), original);
+        snap.objects[0].as_mut().unwrap().pos[0] = 0.5;
+        let moved = hash(&snap);
+        assert_ne!(moved, original);
+        snap.objects[0].as_mut().unwrap().motion.magazine = Some((0, 0));
+        assert_ne!(hash(&snap), moved);
     }
 
     #[test]

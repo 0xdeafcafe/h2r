@@ -172,6 +172,7 @@ host is the one source. A `frames_from_host: bool` field rides on
 | `POST /v1/hosts/{lease}/report` | host token | body `{ state: "playing"\|"ended", players, reason? }` → `HostPlaying`/`HostEnded` |
 | `GET /v1/hosts/{lease}` | admin or roster member | lease + state + endpoint |
 | `GET /v1/admin/hosts` | admin | running + recent hosts with cost (contract 8) |
+| `POST /v1/admin/hosts` | admin (`admin.write`) | starts a custom host by hand: `{lease}` when launched, `{lease, token}` with `launch: false` (the only route that returns the token) |
 | `POST /v1/admin/hosts/{lease}/stop` | admin | stops it (`Stopped`) |
 | `GET /v1/hosts/{lease}/tunnel` | roster member's `sessions.relay` bearer on upgrade (like the co-op relay) | WebSocket datagram tunnel (contract 6) |
 

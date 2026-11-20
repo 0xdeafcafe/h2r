@@ -703,6 +703,7 @@ dependencies = [
  "live-proto",
  "map",
  "pathfind",
+ "rustc-hash 2.1.3",
  "serde",
  "serde_json",
  "tags",

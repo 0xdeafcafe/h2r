@@ -131,10 +131,14 @@ Engine, read with `h2 disasm` and a scan of `.text` for calls:
   `+0x24`, in EDX; `ret 0x14`). That builds the player's action, the
   input handed to the simulation (`[0x4cf77c]`). Inside it, `0x1a4900`
   (local user in EAX, per-user control `[0x4ed284]` stride `0x94`) asks
-  `0x1a50a0` for the cone, runs the target search (`0x1a5370`), and writes
-  the target and the aim-assist levels into the action (`+0x28`); then
-  `slowdown` and `follow` slow and drag the look. None of this runs for a
-  remote player: a remote player's action arrives over the network.
+  `0x1a50a0` for the cone and runs the target search (`0x1a5370`).
+  The control update uses slowdown and follow for the look response.
+  The action builder copies nine dwords of shot assist to `+0x34..+0x57`
+  at `0x187074..0x187083`. The earlier block at `+0x28` holds the
+  interaction target. A remote machine sends its completed action. For
+  a phantom, the host runs the same builder with the phantom's profile,
+  camera and control history in a private copy of the world.
+  [Phantom action trace](bots.md#51-what-has-to-be-made-up-traced)
 - **Simulation.** The barrel fire `0x104150` calls `0x1a4c00` (`0x104886`)
   to aim the shot. With the simulation mode byte (`[[0x4e6948]+0xc]`) 4 or
   5 (distributed client or server) and bit `0x2` of the aim data's `+0x18`,

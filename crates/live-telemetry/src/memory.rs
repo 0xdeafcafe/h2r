@@ -444,6 +444,14 @@ pub fn object(guest: &Guest, datum: u32) -> ReadResult<Option<ObjectState>> {
 
 /// [`object`], its lookups through `objects`.
 pub(crate) fn object_in(objects: &Objects, datum: u32) -> ReadResult<Option<ObjectState>> {
+    object_with_motion(objects, datum, true)
+}
+
+fn object_with_motion(
+    objects: &Objects,
+    datum: u32,
+    diagnostics: bool,
+) -> ReadResult<Option<ObjectState>> {
     let guest = objects.guest;
     let Some((kind, body)) = objects.body(datum)? else {
         return Ok(None);
@@ -458,7 +466,7 @@ pub(crate) fn object_in(objects: &Objects, datum: u32) -> ReadResult<Option<Obje
     let aim = aim(guest, body).ok().flatten();
     let held = held_weapon(objects, datum, body).ok().flatten();
     let weapon = held.map(|(w, _)| w);
-    let motion = motion(guest, kind, body, held.map(|(_, b)| b));
+    let motion = motion(guest, kind, body, held.map(|(_, b)| b), diagnostics);
     let team = guest
         .u16(body + layout::UNIT_TEAM)
         .ok()
@@ -542,7 +550,7 @@ fn vehicle_mount(objects: &Objects, body: u32) -> ReadResult<Option<(u32, u32)>>
 /// A unit's movement and inventory state; each field independently `None`
 /// when its read faults or reads as nonsense.
 /// `weapon` is the held weapon's body.
-fn motion(guest: &Guest, kind: u8, body: u32, weapon: Option<u32>) -> Motion {
+fn motion(guest: &Guest, kind: u8, body: u32, weapon: Option<u32>, diagnostics: bool) -> Motion {
     let velocity = vector(guest, body + layout::BODY_VELOCITY)
         .ok()
         .filter(|v| v.iter().all(|c| c.is_finite()))
@@ -598,8 +606,12 @@ fn motion(guest: &Guest, kind: u8, body: u32, weapon: Option<u32>) -> Motion {
         .then(|| guest.u8(body + layout::BIPED_HITBOX_OFFSET).ok())
         .flatten()
         .map(|t| t as i8);
-    let havok = havok_body(guest, body).ok().flatten();
-    let support = biped.then(|| support(guest, body).ok()).flatten();
+    let havok = diagnostics
+        .then(|| havok_body(guest, body).ok().flatten())
+        .flatten();
+    let support = (diagnostics && biped)
+        .then(|| support(guest, body).ok())
+        .flatten();
     Motion {
         velocity,
         crouch,
@@ -1208,12 +1220,26 @@ pub fn snapshot(guest: &Guest) -> ReadResult<Snapshot> {
 /// [`snapshot`], its roster read by [`players_after`] (names from
 /// `previous` while they are unchanged).
 pub fn snapshot_after(guest: &Guest, previous: &mut [PlayerState]) -> ReadResult<Snapshot> {
+    snapshot_with_motion(guest, previous, true)
+}
+
+/// The sim observer reads the player pose, inventory and stats each tick.
+/// The live inspector alone consumes the optional Havok body and contact lists.
+pub fn sim_snapshot(guest: &Guest) -> ReadResult<Snapshot> {
+    snapshot_with_motion(guest, &mut [], false)
+}
+
+fn snapshot_with_motion(
+    guest: &Guest,
+    previous: &mut [PlayerState],
+    diagnostics: bool,
+) -> ReadResult<Snapshot> {
     let players = players_after(guest, previous)?;
     let teams = team_scores(guest, &players)?;
     let lookups = Objects::new(guest);
     let objects = players
         .iter()
-        .map(|p| object_in(&lookups, p.unit))
+        .map(|p| object_with_motion(&lookups, p.unit, diagnostics))
         .collect::<ReadResult<Vec<_>>>()?;
     let engine = ptr(guest, layout::ENGINE_GLOBALS_PTR)?;
     Ok(Snapshot {
@@ -2112,6 +2138,34 @@ mod tests {
                 .collect::<Vec<_>>(),
             [fixture::object_datum(2)]
         );
+    }
+
+    #[test]
+    fn sim_snapshot_matches_live_except_physics_diagnostics() {
+        let mut guest = fixture::memory();
+        fixture::put_object(&mut guest, 1, u32::MAX);
+        fixture::put_player(&mut guest, 0, "A", 1, true, fixture::object_datum(1));
+        let (array, component, bodies, rigid, movement, contacts) =
+            (0x170000, 0x171000, 0x174000, 0x175000, 0x176000, 0x178000);
+        for (address, value) in [
+            (fixture::body(1) + layout::BODY_PHYSICS, 0),
+            (layout::PHYSICS_COMPONENTS_PTR, array),
+            (array + layout::DATUM_DATA, component),
+            (component + layout::COMPONENT_BODIES, bodies),
+            (bodies + layout::COMPONENT_BODY_RIGID, rigid),
+            (rigid + layout::RIGID_MOTION, movement),
+            (component + layout::COMPONENT_CHARACTER_CONTACTS, contacts),
+            (component + layout::COMPONENT_CHARACTER_CONTACT_COUNT, 1),
+        ] {
+            guest.set_u32(address, value).unwrap();
+        }
+        let full = snapshot(&guest).unwrap();
+        let mut expected = full.clone();
+        let motion = &mut expected.objects[0].as_mut().unwrap().motion;
+        assert_eq!(motion.support.take().unwrap().contacts.len(), 1);
+        assert!(motion.havok.take().is_some());
+        assert_eq!(sim_snapshot(&guest).unwrap(), expected);
+        assert_eq!(snapshot(&guest).unwrap(), full);
     }
 
     #[test]

@@ -126,18 +126,34 @@ use feature::{BuildError, Builder, Flow, Manifest};
 
 pub const ID: &str = "bots";
 
-/// Adds the `H2_BOTS` brains to the process-wide bots, on ports 1 up.
-pub fn add_from_env() {
+/// Adds the requested boot bots independently of the Game Setup roster.
+pub fn add_from_env(data: &std::path::Path, store: Option<&settings::Store>) {
     let v = std::env::var(bots::ENV).ok();
     match bots::from_env_value(v.as_deref()) {
         Ok(0) => {}
         Ok(n) => {
+            let all_phantom = store.map_or_else(
+                || crate::setting_defs::bots_all_phantom_at(data),
+                crate::setting_defs::bots_all_phantom,
+            );
             for port in 1..=n as u8 {
                 let skill = std::env::var(bots::SKILL_ENV)
                     .ok()
                     .and_then(|v| bots::mind::Skill::parse(&v))
                     .unwrap_or_default();
                 let brain = bots::Brain::new(skill, 0x5eed ^ u64::from(port));
+                if all_phantom {
+                    // Custom-game rosters use host-made XUIDs 1 through 15.
+                    let identity = bots::phantom::Identity {
+                        xuid: live_proto::bots::local_xuid(16 + u32::from(port)).0,
+                        gamertag: format!("Boot Clanker {port}"),
+                    };
+                    match bots::phantom::add(identity, None, Box::new(brain)) {
+                        Ok(_) => eprintln!("bots: Boot Clanker {port} joins as a phantom"),
+                        Err(e) => eprintln!("bots: {e}"),
+                    }
+                    continue;
+                }
                 match local::add(port, Box::new(brain)) {
                     Ok(h) => eprintln!("bots: Clanker {port} (bot {}) wants port {port}", h.0),
                     Err(e) => eprintln!("bots: {e}"),
@@ -748,16 +764,8 @@ impl feature::Feature for Bots {
                 c.answer_async(move |cx| {
                     Box::pin(async move {
                         phantoms
-                            .slot_action(cx, slot, |sample| {
-                                let mut guard = input.lock().unwrap_or_else(|e| e.into_inner());
-                                let builder = guard.get_or_insert_with(|| {
-                                    retail_input::Builder::new(&rt, workspace)
-                                });
-                                builder.action(&rt, cpu, sample).map_err(|e| {
-                                    engine::entry::EntryError::IsolatedCall(format!(
-                                        "phantom player {}: {e:#}", sample.player.index()
-                                    ))
-                                })
+                            .slot_action(cx.clone(), slot, |sample| {
+                                retail_input::gather(&input, &rt, workspace, cpu, sample, &cx)
                             })
                             .await
                     })

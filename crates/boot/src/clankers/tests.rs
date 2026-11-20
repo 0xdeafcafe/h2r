@@ -90,6 +90,29 @@ fn the_driver_keeps_that_many_bots_on_the_ports_no_one_else_asked_for() {
 }
 
 #[test]
+fn all_phantom_keeps_every_local_port_free_as_the_roster_changes() {
+    use crate::setting_defs::{ALL, BOTS_ALL_PHANTOM};
+    let (settings, problems) = Store::load(
+        ALL,
+        None,
+        &|k| (k == BOTS_ALL_PHANTOM.env.unwrap()).then(|| "1".to_owned()),
+        &[],
+    );
+    assert!(problems.is_empty());
+    let store = Arc::new(settings);
+    let local = Local::default();
+    let ph = Phantoms::default();
+    let _driver = drive(&store, Driver::with_phantoms(local.clone(), ph.clone()));
+    for count in [1, 3, 7, 2] {
+        on(&store, count, 1);
+        assert!(local.list().is_empty());
+        assert_eq!(ph.list().len(), count as usize);
+    }
+    store.set(ENABLED.key, Value::Bool(false)).unwrap();
+    assert!(ph.list().is_empty());
+}
+
+#[test]
 fn past_the_free_ports_the_driver_adds_phantoms() {
     let local = Local::default();
     let ph = bots::phantom::Phantoms::default();

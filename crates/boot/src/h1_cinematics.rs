@@ -219,6 +219,7 @@ impl Frame {
     }
 }
 
+#[cfg_attr(not(feature = "gpu"), allow(dead_code))]
 type Draw = dyn Fn(&mut dyn GuestMemory, Frame) + Send + Sync;
 static DRAW: Mutex<Option<Arc<Draw>>> = Mutex::new(None);
 

@@ -220,7 +220,7 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     if i.bots {
         crate::clanker_card::install(features, i.live.clone())
             .context("installing Clanker player options")?;
-        bot_glue::add_from_env();
+        bot_glue::add_from_env(i.data_root, i.settings.as_deref());
         bots_on = bot_glue::install(features, i.data_root).context("installing the bots")?;
         // The Clankers page and its Game Setup row (stage 7).
         if let Some(store) = i.settings.as_ref() {

@@ -171,6 +171,12 @@ impl SimRegion {
 /// the guest has set the pointer, or with the range not mapped). Reads
 /// guest memory from Rust: uncharged, and it writes nothing.
 pub fn hash_sim(guest: &Guest, region: SimRegion) -> Option<u64> {
+    hash_sim_buffered(guest, region, &mut Vec::new())
+}
+
+/// The same hash for a series of ticks. Reuse the allocation, rereading
+/// both the arena pointer and every byte covered by the hash on each call.
+pub fn hash_sim_buffered(guest: &Guest, region: SimRegion, bytes: &mut Vec<u8>) -> Option<u64> {
     let (base, len) = match region {
         SimRegion::Fixed { base, len } => (base, len),
         SimRegion::Indirect { pointer, len } => (guest.u32(pointer).ok()?, len),
@@ -178,9 +184,9 @@ pub fn hash_sim(guest: &Guest, region: SimRegion) -> Option<u64> {
     if base == 0 {
         return None;
     }
-    let mut bytes = vec![0u8; len as usize];
-    guest.read_bytes(base, &mut bytes, 1).ok()?;
-    Some(hash_bytes(u64::from(len), &bytes))
+    bytes.resize(len as usize, 0);
+    guest.read_bytes(base, bytes, 1).ok()?;
+    Some(hash_bytes(u64::from(len), bytes))
 }
 
 /// What a record marks.
@@ -762,6 +768,27 @@ mod tests {
             hash_guest(&g),
             hash_guest(&guest_with(&[(0x10000, 0x4000), (0x40000, 0x1000)]))
         );
+    }
+
+    #[test]
+    fn buffered_arena_hash_rereads_after_a_fault_or_relocation() {
+        let mut g = guest_with(&[(0x10000, 0x4000), (0x40000, 0x1000)]);
+        let region = SimRegion::Indirect {
+            pointer: 0x40000,
+            len: 0x1000,
+        };
+        let mut bytes = Vec::new();
+        g.set_u32(0x40000, 0x10000).unwrap();
+        let first = hash_sim_buffered(&g, region, &mut bytes).unwrap();
+        let allocation = bytes.as_ptr();
+        g.set_u32(0x40000, 0x13800).unwrap();
+        assert_eq!(hash_sim_buffered(&g, region, &mut bytes), None);
+        g.set_u32(0x40000, 0x11000).unwrap();
+        g.set_u32(0x11010, 3).unwrap();
+        let relocated = hash_sim_buffered(&g, region, &mut bytes).unwrap();
+        assert_ne!(relocated, first);
+        assert_eq!(Some(relocated), hash_sim(&g, region));
+        assert_eq!(bytes.as_ptr(), allocation);
     }
 
     #[test]

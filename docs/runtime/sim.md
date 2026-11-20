@@ -210,12 +210,28 @@ so **the direct path is four bots**: free-for-all, or 2 v 2 with teams.
 ### More than four
 
 A `[[bot]]` with `kind = "phantom"` selects a distributed System Link
-match for the whole roster. `kind = "local"` is the default. Specify one
-to four local pads and up to sixteen seats in total. File order is the
-logical seat number starting at zero. Local seats receive controller
-ports in order. Each phantom receives its own machine identity.
+match for the whole roster. `kind = "local"` is the file default. A match
+can have up to four local pads, fifteen phantom peers and sixteen players
+in total. File order gives the logical seat numbers starting at zero.
+Local seats receive controller ports in order. Each phantom receives its
+own machine identity.
 
-The headless host signs in the local pads (`0x18fb34`), creates a System
+With `H2_BOTS_ALL_PHANTOM=1` (or `clankers.all_phantom = true` in the
+settings file) the run and batch planners convert every
+configured seat to a phantom before assigning ports. Names, teams, seeds
+and tuning follow the logical seat. A roster of only phantoms uses a
+playerless System Link host. The host occupies one peer slot and signs
+in no controller. The other fifteen peer slots are available for bots.
+Each simulated peer supplies its own marked name, appearance and team
+because the host has no local profile to copy.
+The sim uses the dedicated lobby's readiness checks and machine load
+request (`0x5a220`) when the controller countdown has no signed-in user.
+Playerless sim startup is inferred, needs a run. The lobby waits for one
+host peer plus one peer per bot. Verify that `match.status` reaches
+`playing` with every logical seat in `bound_seats` and that the match
+report lists just those players.
+
+For a mixed roster the headless host signs in the local pads (`0x18fb34`), creates a System
 Link squad (`0x199df9(0,0)`, `0x199a03(2)`), and applies the map and
 variant with retail's lobby setters (`0x19a6f2`, `0x19a728`). It waits
 for the roster and retail start state 9 before requesting the countdown
@@ -282,7 +298,7 @@ reaction = 5
   `phantom_jitter_ms` (0–50 ms bounded one-way variation). These fields
   apply when the source drives a phantom;
 - `aim_model`: `code` (the hand-written tracking, the default) or `net`
-  (the aim net; [bots.md §3.4.1](../game/bots.md#341-the-aim-net-built-not-compared-in-a-game-yet)).
+  (the aim net; [bots.md §3.4.1](../game/bots.md#341-the-aim-net-compared-the-code-aim-stays)).
 
 Anything left out keeps the built-in value. The bots crate takes them as
 `bots::tuning::Tuning` through `Brain::with_tuning`. The aim table and awareness are
@@ -464,18 +480,22 @@ H2_OPT=2 h2 sim batch docs/runtime/sim-examples/aim-net-vs-code.toml --disc disc
 ```
 
 How to read it and the rule for which model stays are in
-[bots.md §3.4.1](../game/bots.md#341-the-aim-net-built-not-compared-in-a-game-yet).
+[bots.md §3.4.1](../game/bots.md#341-the-aim-net-compared-the-code-aim-stays).
 
 ### Local and phantom seat swaps
 
 `mode = "seat_swap"` schedules two legs per map, game type, skill and
 seed. The second leg exchanges every local and phantom seat. Both
 lineups must fit on a host. Each bot keeps its name, team, tuning, arm
-and brain seed. The checked-in Legendary Midship example plays ten seed
-pairs, two red against two blue, with normal phantom latency.
+and brain seed. The Legendary Midship example plays ten seed pairs, two
+red against two blue. Its arm requests zero phantom ping and jitter so
+the action builder sees each pad on its sample tick. To measure the cost
+of network timing, rerun the same seeds in a separate output directory
+with the example's two transport overrides removed. The ordinary seeded
+40–80 ms round trip adds one or two ticks at 30 Hz to aim and fire.
 
 ```sh
-H2_OPT=2 h2 sim batch docs/runtime/sim-examples/midship-seat-swap.toml --disc disc/halo2.iso --parallel 3 --pace unpaced
+H2_BOTS_ALL_PHANTOM=0 H2_OPT=2 h2 sim batch docs/runtime/sim-examples/midship-seat-swap.toml --disc disc/halo2.iso --parallel 3 --pace unpaced
 ```
 
 Read `compare.txt` or `compare.json` under
@@ -485,8 +505,20 @@ means, and their signed `local_minus_phantom` gap for shots, opposing
 hits, damage dealt and damage taken. Each pair of legs contributes one
 sample. Its two observations for each logical seat are matched across
 the legs. Only full rosters ending at game over or the tick limit count.
-Incomplete pairs appear in `excluded`; absent reports appear in
-`missing`. These are counts per game, so game length affects the result.
+Each excluded pair has a reason in `exclusion_reasons` and in the text
+table. A leg that ends during lineup binding has zero measured ticks.
+The reason includes the missing seats when the report names them.
+Absent reports appear in `missing`. These are counts per game, so game
+length affects the result.
+
+Keep all-phantom mode off for this comparison. The planner refuses a
+seat swap when every seat is forced to use the same transport. Compare
+opposing hits divided by shots for matched seats with shots, and check
+damage dealt across the same seeds. The sim counts positive opposing
+damage events, including melee. To compare directly with the November 19
+bullet-only baseline, filter the replay damage events to bullets.
+The default changes to all-phantom once the paired runs show matching
+local and phantom hit rates.
 
 ### Watching in Uplink
 
@@ -664,6 +696,56 @@ of available effective cores and available memory divided by measured
 incremental RAM. With eight effective cores and 12 GiB available, start
 sizing from at most eight workers before allowing for headroom. Use
 `wall.speedup` from an ordinary batch and `host.metrics` for RSS and CPU.
+
+### Post-tick state hashes
+
+Each new sim report records `state_hashes_v1` in guest tick order. A row
+has the guest `tick` and a 16-digit hexadecimal `gameplay` digest. The
+digest covers the shared engine RNG, BSP, cinematic and stats flags, team
+scores, and each player slot's datum, score line, pose, aim, velocity,
+vitality, vehicle, seat, inventory and animation channel. The encoding
+uses fixed-width little-endian words, option presence tags, and the float
+bits from telemetry. Player names and wall time have no bearing on it.
+Repeat observations replace the same tick. Reloading a snapshot restarts
+the list with the tally. A failed snapshot leaves a gap. Older reports
+have no series.
+
+For a stricter comparison, `H2_FEATURES=impl.sim.arena-hash` adds an
+`arena` field to each row using the existing lockstep hash of the
+`0x3fe000`-byte checkpoint arena. It follows the pointer on every tick
+and reuses a read buffer. An unreadable arena leaves the field absent
+and adds a report note. Compare the tick sequence, check every expected
+digest is present, and find the first differing tick. The default digest
+can detect player or RNG divergence before the first kill, while the
+arena check also covers hidden state inside that allocation.
+`H2_LOCKSTEP` provides the wider whole-RAM check. Time matches with arena
+verification off so copying and hashing the arena does not enter the budget.
+
+The silent audio packet clock and the sim's reduced telemetry reads can
+be toggled separately with `-impl.audio.packet-clock` and
+`-impl.sim.metrics-projection` in `H2_FEATURES`. The post-bot-change
+Waterworks all-local run measured 14.12 ms/tick, with 70.76% of main-thread
+samples in guest code. The caller table, skip boundaries and A/B procedure
+are in the [simulation budget](../perf/sim-budget.md).
+
+### Bot navigation performance
+
+On 2026-11-20, a five-minute all-local Lockout match took about 10 ms/tick.
+Across 12 retail maps the baseline was 10.4–19.5 ms/tick, including
+Zanzibar at 19.5, Colossus at 17.9, Headlong at 17.4 and Foundation at 17.1.
+A 15-second macOS sample of unpaced, light-profile Waterworks 2v2 (two
+local bots and two phantoms) put 3,241 of 5,201 game-thread samples in
+bot glue and 2,917 in ground-vehicle pathfinding. Wall checks accounted
+for 1,866 top-of-stack samples across threads. The hash-table growth
+under those checks came from the temporary set of triangle IDs per ray.
+
+Drivers now reuse corridors, unreachable results and portal clearance.
+Wall probes within one grid cell test its triangles directly. Longer
+probes use reusable visit marks. A* reuses its heap and polygon records,
+and the tally takes ownership of each tick sample. The 2× target still
+needs a matched before/after run. Compare ms/tick and per-tick hashes
+with the same build profile, map, seed, seats and tick limit, including
+an all-local Lockout control.
 
 ## Host audit corpus
 

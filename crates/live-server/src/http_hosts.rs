@@ -7,11 +7,16 @@
 //! - `admin_hosts(bearer) -> Result<serde_json::Value, ApiError>` (running and recent with cost)
 //! - `async admin_stop_host(bearer, lease_id) -> Result<HostView, ApiError>`
 //!
+//! `POST /v1/admin/hosts` (`async admin_start_host(bearer, AdminHostStart)`)
+//! is the admin's manual start: it launches on the configured provider or,
+//! with `launch: false`, records a `Requested` lease and answers its boot
+//! token — the only route that ever returns one.
+//!
 //! The `Live` methods authenticate the bearer once and own authorization and
 //! write limits. They check the lease-bound `hosts.register` and `hosts.report`
 //! scopes, `read` for a roster member or admin, and `admin.read` / `admin.write`
-//! with the existing admin check for the inventory and stop routes. The async
-//! methods supply `Send` futures to the shared Axum router in both homes.
+//! with the existing admin check for the inventory, start and stop routes. The
+//! async methods supply `Send` futures to the shared Axum router in both homes.
 
 use std::sync::Arc;
 
@@ -24,6 +29,7 @@ use axum::response::Response;
 use axum::routing::{get, post};
 use live_proto::hosts::{EndReason, HostEndpoint, HostLease, HostState};
 use serde::Deserialize;
+use serde_json::json;
 
 use crate::app::{ApiError, Live, invalid};
 use crate::http::{bearer, body_bytes, json};
@@ -33,6 +39,7 @@ type ApiResult<T> = Result<T, ApiError>;
 
 const MAX_REGISTER_BODY: usize = 8 * 1024;
 const MAX_REPORT_BODY: usize = 1024;
+const MAX_START_BODY: usize = 1024;
 #[cfg(feature = "native")]
 #[path = "host_tunnel.rs"]
 mod host_tunnel;
@@ -48,7 +55,10 @@ pub(crate) fn routes() -> Router<Arc<Live>> {
             post(report).layer(DefaultBodyLimit::max(MAX_REPORT_BODY)),
         )
         .route("/v1/hosts/{lease}", get(detail))
-        .route("/v1/admin/hosts", get(inventory))
+        .route(
+            "/v1/admin/hosts",
+            get(inventory).merge(post(create).layer(DefaultBodyLimit::max(MAX_START_BODY))),
+        )
         .route("/v1/admin/hosts/{lease}/stop", post(stop));
     #[cfg(feature = "native")]
     let router = router.route("/v1/hosts/{lease}/tunnel", get(host_tunnel::upgrade));
@@ -109,6 +119,23 @@ async fn detail(
 async fn inventory(State(live): Shared, headers: HeaderMap) -> ApiResult<Response> {
     let hosts = live.admin_hosts(bearer(&headers))?;
     Ok(json(StatusCode::OK, &hosts))
+}
+
+/// `POST /v1/admin/hosts`: `201` with `{lease}` when the provider launches
+/// it, or `{lease, token}` when the admin runs the container by hand.
+async fn create(
+    State(live): Shared,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> ApiResult<Response> {
+    let request: crate::hosts::AdminHostStart = serde_json::from_slice(&body_bytes(body)?)
+        .map_err(|e| invalid(format!("host start: {e}")))?;
+    let (lease, token) = live.admin_start_host(bearer(&headers), request).await?;
+    let reply = match token {
+        Some(token) => json!({ "lease": lease, "token": token }),
+        None => json!({ "lease": lease }),
+    };
+    Ok(json(StatusCode::CREATED, &reply))
 }
 
 async fn stop(

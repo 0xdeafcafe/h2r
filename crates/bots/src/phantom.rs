@@ -158,6 +158,8 @@ pub fn lobby_wanted(v: Option<&str>) -> bool {
 struct Books {
     list: Vec<Phantom>,
     hosted_game: Option<u32>,
+    /// A headless sim that deliberately has no local player configuration to copy.
+    playerless_host: bool,
     next: u32,
     /// Machine ids of removed phantoms whose peers are still in the
     /// session, for the game thread to take out.
@@ -259,6 +261,11 @@ impl Phantoms {
     /// game above all. Set by the Clankermatch fill while it runs.
     pub fn set_match_only(&self, on: bool) {
         self.lock().match_only = on;
+    }
+
+    /// Use each bot's identity and team to form its configuration in a playerless sim.
+    pub fn set_playerless_host(&self, playerless: bool) {
+        self.lock().playerless_host = playerless;
     }
 
     /// Whether the phantoms are a Clankermatch's ([`Phantoms::set_match_only`]).
@@ -497,6 +504,7 @@ impl Phantoms {
 
         // In: pending phantoms with no peer yet.
         let team_game = session::team_game(&*m, s)?;
+        let playerless = b.playerless_host;
         for p in &mut b.list {
             if p.made || matches!(p.info.state, State::Failed(_)) {
                 continue;
@@ -506,8 +514,13 @@ impl Phantoms {
                 None if team_game => Some(session::lobby_team(&*m, s)?),
                 None => None,
             };
-            let Some(config) = session::config_in(&*m, s, &p.info.identity.gamertag, team)? else {
-                continue; // no local player to copy yet
+            let name = &p.info.identity.gamertag;
+            let config = if playerless {
+                session::playerless_config(name, team)
+            } else if let Some(config) = session::config_in(&*m, s, name, team)? {
+                config
+            } else {
+                continue; // the local player has not joined yet
             };
             let mac = p.info.machine;
             // A peer of its own still in the session: a session that was

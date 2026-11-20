@@ -23,13 +23,18 @@
 //! saved in a small format of ours ([`NavMesh::to_bytes`]); it is derived
 //! from the disc, so it is cached under the data root, never committed.
 
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use rustc_hash::{FxHashMap, FxHashSet};
+use std::cell::Cell;
 
 use tags::pathfinding::PathfindingData;
 
 use crate::los::Walls;
 
+mod search;
 mod traversal;
+mod vehicle;
+use search::Search;
+pub(crate) use vehicle::VehiclePaths;
 
 pub type V3 = [f32; 3];
 
@@ -304,11 +309,11 @@ pub struct NavMesh {
     pub edges: Vec<Edge>,
     /// Each polygon's outgoing edges (indices into `edges`).
     out: Vec<Vec<u32>>,
-    grid: HashMap<(i32, i32), Vec<u32>>,
+    grid: FxHashMap<(i32, i32), Vec<u32>>,
     /// The vertices on the mesh's boundary: an end of a polygon side that
     /// is not walked across (a wall, a ledge). Portal ends here keep
     /// [`CLEARANCE`].
-    corners: HashSet<Key>,
+    corners: FxHashSet<Key>,
     shortcuts: bool,
 }
 
@@ -325,7 +330,7 @@ impl NavMesh {
                 o.push(i as u32);
             }
         }
-        let mut grid: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
+        let mut grid: FxHashMap<(i32, i32), Vec<u32>> = FxHashMap::default();
         for (i, p) in polys.iter().enumerate() {
             let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
             for v in &p.verts {
@@ -340,12 +345,12 @@ impl NavMesh {
                 }
             }
         }
-        let linked: HashSet<(Key, Key)> = edges
+        let linked: FxHashSet<(Key, Key)> = edges
             .iter()
             .filter(|e| e.kind == Kind::Walk)
             .map(|e| pair(key(e.a), key(e.b)))
             .collect();
-        let mut corners = HashSet::new();
+        let mut corners = FxHashSet::default();
         for p in &polys {
             let n = p.verts.len();
             for i in 0..n {
@@ -451,48 +456,49 @@ impl NavMesh {
     /// to: `p` itself over the polygon, else its nearest point pulled
     /// [`CLEARANCE`] inside.
     pub fn nearest(&self, p: V3, reach: f32, up: f32, down: f32) -> Option<(u32, V3)> {
-        let mut seen = HashSet::new();
-        let mut best: Option<(f32, u32, V3)> = None;
-        for x in cell(p[0] - reach)..=cell(p[0] + reach) {
-            for y in cell(p[1] - reach)..=cell(p[1] + reach) {
-                for &i in self.grid.get(&(x, y)).into_iter().flatten() {
-                    if !seen.insert(i) {
-                        continue;
-                    }
-                    let poly = &self.polys[i as usize];
-                    let q = if poly.contains_xy(p) {
-                        p
-                    } else {
-                        let n = poly.verts.len();
-                        let edge = (0..n)
-                            .map(|k| closest_xy(poly.verts[k], poly.verts[(k + 1) % n], p))
-                            .min_by(|a, b| dist_xy(*a, p).total_cmp(&dist_xy(*b, p)));
-                        let Some(e) = edge else { continue };
-                        let inward = sub(poly.center, e);
-                        let il = (inward[0] * inward[0] + inward[1] * inward[1]).sqrt();
-                        if il < 1e-6 {
-                            e
-                        } else {
-                            add(e, scale(inward, CLEARANCE.min(il) / il))
+        crate::visits::Visits::query(self.polys.len(), |seen| {
+            let mut best: Option<(f32, u32, V3)> = None;
+            for x in cell(p[0] - reach)..=cell(p[0] + reach) {
+                for y in cell(p[1] - reach)..=cell(p[1] + reach) {
+                    for &i in self.grid.get(&(x, y)).into_iter().flatten() {
+                        if !seen.insert(i) {
+                            continue;
                         }
-                    };
-                    let dxy = dist_xy(q, p);
-                    if dxy > reach {
-                        continue;
-                    }
-                    let z = poly.z_at(q);
-                    let dz = z - p[2];
-                    if dz > up || -dz > down {
-                        continue;
-                    }
-                    let score = dxy + 0.5 * dz.abs();
-                    if best.is_none_or(|(s, _, _)| score < s) {
-                        best = Some((score, i, [q[0], q[1], z]));
+                        let poly = &self.polys[i as usize];
+                        let q = if poly.contains_xy(p) {
+                            p
+                        } else {
+                            let n = poly.verts.len();
+                            let edge = (0..n)
+                                .map(|k| closest_xy(poly.verts[k], poly.verts[(k + 1) % n], p))
+                                .min_by(|a, b| dist_xy(*a, p).total_cmp(&dist_xy(*b, p)));
+                            let Some(e) = edge else { continue };
+                            let inward = sub(poly.center, e);
+                            let il = (inward[0] * inward[0] + inward[1] * inward[1]).sqrt();
+                            if il < 1e-6 {
+                                e
+                            } else {
+                                add(e, scale(inward, CLEARANCE.min(il) / il))
+                            }
+                        };
+                        let dxy = dist_xy(q, p);
+                        if dxy > reach {
+                            continue;
+                        }
+                        let z = poly.z_at(q);
+                        let dz = z - p[2];
+                        if dz > up || -dz > down {
+                            continue;
+                        }
+                        let score = dxy + 0.5 * dz.abs();
+                        if best.is_none_or(|(s, _, _)| score < s) {
+                            best = Some((score, i, [q[0], q[1], z]));
+                        }
                     }
                 }
             }
-        }
-        best.map(|(_, i, q)| (i, q))
+            best.map(|(_, i, q)| (i, q))
+        })
     }
 
     /// The polygon a biped at `p` is on, or (off the mesh) the nearest one
@@ -685,105 +691,15 @@ impl NavMesh {
         goal: u32,
         skip: &dyn Fn(&Edge) -> bool,
     ) -> Option<Vec<u32>> {
-        #[derive(PartialEq)]
-        struct Open(f32, u32);
-        impl Eq for Open {}
-        impl PartialOrd for Open {
-            fn partial_cmp(&self, o: &Self) -> Option<std::cmp::Ordering> {
-                Some(self.cmp(o))
-            }
-        }
-        impl Ord for Open {
-            fn cmp(&self, o: &Self) -> std::cmp::Ordering {
-                o.0.total_cmp(&self.0)
-            }
-        }
-        let n = self.polys.len();
-        if start as usize >= n || goal as usize >= n {
-            return None;
-        }
-        let goal_at = self.polys[goal as usize].center;
-        // A straight-line lower bound stops being admissible when a link
-        // can cross that distance more quickly than walking.
-        let estimate = |at| {
-            if self.shortcuts {
-                0.0
-            } else {
-                dist(at, goal_at)
-            }
-        };
-        let mut best = vec![f32::INFINITY; n];
-        let mut came: Vec<Option<u32>> = vec![None; n];
-        let mut heap = BinaryHeap::new();
-        best[start as usize] = 0.0;
-        heap.push(Open(estimate(self.polys[start as usize].center), start));
-        while let Some(Open(_, i)) = heap.pop() {
-            if i == goal {
-                let mut path = Vec::new();
-                let mut at = goal;
-                while at != start {
-                    let e = came[at as usize]?;
-                    path.push(e);
-                    at = self.edges[e as usize].from;
-                }
-                path.reverse();
-                return Some(path);
-            }
-            let here = self.polys[i as usize].center;
-            for &ei in self.out.get(i as usize).into_iter().flatten() {
-                let e = &self.edges[ei as usize];
-                if skip(e) {
-                    continue;
-                }
-                let there = self.polys[e.to as usize].center;
-                let travel = if e.kind.traversal() {
-                    let transit = match e.kind {
-                        // Cost in walking-distance equivalents. At six
-                        // ticks per unit, include trigger/platform wait and
-                        // charge exposed airborne time by duration. These
-                        // rates are estimates shared with supply travel.
-                        Kind::Teleporter => 6.0 / 6.0,
-                        Kind::Lift => (8.0 + dist(e.a, e.b) * 2.7 * 1.25) / 6.0,
-                        Kind::Elevator => (24.0 + dist(e.a, e.b) * 4.8 * 1.25) / 6.0,
-                        _ => dist(e.a, e.b),
-                    };
-                    dist(here, e.a) + transit + dist(e.b, there)
-                } else {
-                    let m = mid(e.a, e.b);
-                    dist(here, m) + dist(m, there)
-                };
-                let g = best[i as usize] + travel + penalty(e.kind);
-                if g < best[e.to as usize] {
-                    best[e.to as usize] = g;
-                    came[e.to as usize] = Some(ei);
-                    heap.push(Open(g + estimate(there), e.to));
-                }
-            }
-        }
-        None
-    }
-
-    /// A ground vehicle uses only walk portals with room for its chassis.
-    /// The portal centers give steering points inside the available span.
-    pub(crate) fn vehicle_path(
-        &self,
-        from: V3,
-        to: V3,
-        half_width: f32,
-        height: f32,
-        walls: &Walls,
-    ) -> Option<Vec<V3>> {
-        let (start, _) = self.nearest(from, 1.2, 0.5, 1.5)?;
-        let (goal, to) = self.nearest(to, 2.0, 0.5, 1.5)?;
-        let corridor = self.corridor_avoiding(start, goal, &|e| {
-            e.kind != Kind::Walk || self.vehicle_portal(e, half_width, height, walls).is_none()
-        })?;
-        let mut points: Vec<_> = corridor
-            .into_iter()
-            .filter_map(|i| self.vehicle_portal(&self.edges[i as usize], half_width, height, walls))
-            .collect();
-        points.push(to);
-        Some(points)
+        // A skip predicate can itself ask for a corridor. Taking the workspace
+        // leaves an empty one available to such a nested search.
+        thread_local! { static SCRATCH: Cell<Search> = Cell::default(); }
+        SCRATCH.with(|slot| {
+            let mut search = slot.take();
+            let path = search.corridor(self, start, goal, |_, e| skip(e));
+            slot.set(search);
+            path
+        })
     }
 
     fn vehicle_portal(&self, e: &Edge, half_width: f32, height: f32, walls: &Walls) -> Option<V3> {

@@ -72,8 +72,18 @@ fn pad(button: HostButton) -> HostPadState {
 
 fn call(
     ph: &Phantoms,
+    g: FakeGuest,
+    slot: u32,
+    callee: impl FnMut(&GuestCall, &mut dyn GuestMemory) -> Regs,
+) -> entry::testing::Run {
+    call_with_builder(ph, g, slot, |s| Some(fixture_record(s.pad.gamepad)), callee)
+}
+
+fn call_with_builder(
+    ph: &Phantoms,
     mut g: FakeGuest,
     slot: u32,
+    build: fn(crate::phantom::SeatInput) -> Option<[u8; ACTION_SIZE]>,
     callee: impl FnMut(&GuestCall, &mut dyn GuestMemory) -> Regs,
 ) -> entry::testing::Run {
     g.map(OUT, ACTION_SIZE as u32)
@@ -84,7 +94,7 @@ fn call(
         &move |cx| {
             let ph = ph.clone();
             Box::pin(async move {
-                ph.slot_action(cx, slot, |s| Ok(fixture_record(s.pad.gamepad)))
+                ph.slot_action(cx, slot, |s| std::future::ready(build(s)))
                     .await
             })
         },
@@ -106,7 +116,15 @@ fn fixture_record(pad: input::Gamepad) -> [u8; ACTION_SIZE] {
     record[4..8].copy_from_slice(&(f32::from(pad.thumb_rx) / 32767.).to_le_bytes());
     record[8..12].copy_from_slice(&(f32::from(pad.thumb_ry) / 32767.).to_le_bytes());
     record[0x14..0x18].copy_from_slice(&(f32::from(rt) / 255.).to_le_bytes());
-    record[0x3c..0x40].copy_from_slice(&0xe0020002u32.to_le_bytes());
+    let (object, player, strengths) = if rt > 0 {
+        (0xb0030003u32, 0xe0020002u32, [0.75f32, 0.125])
+    } else {
+        (u32::MAX, u32::MAX, [0., 0.])
+    };
+    record[0x34..0x38].copy_from_slice(&object.to_le_bytes());
+    record[0x3c..0x40].copy_from_slice(&player.to_le_bytes());
+    record[0x50..0x54].copy_from_slice(&strengths[0].to_le_bytes());
+    record[0x54..0x58].copy_from_slice(&strengths[1].to_le_bytes());
     record
 }
 fn guest_query(q: &GuestCall, _: &mut dyn GuestMemory) -> Regs {
@@ -131,6 +149,109 @@ pub(super) fn gather(ph: &Phantoms, g: FakeGuest, slot: u32) -> FakeGuest {
         guest::game_tick(&g).unwrap()
     );
     g
+}
+
+#[test]
+fn missed_build_revalidates_one_previous_action_then_resumes_fresh_input() {
+    let (ph, g, slot) = game(|f| HostPadState {
+        right_trigger: if f.tick == Some(100) { 1. } else { 0. },
+        ..Default::default()
+    });
+    let mut g = gather(&ph, g, slot);
+    let mut previous = [0; ACTION_SIZE];
+    g.read(OUT, &mut previous).unwrap();
+    at_tick(&mut g, 101);
+    let run = call_with_builder(
+        &ph,
+        g,
+        slot,
+        |_| None,
+        |q, m| {
+            let mut replay = [0; ACTION_SIZE];
+            m.read(OUT, &mut replay).unwrap();
+            assert_eq!(replay, previous);
+            m.set_f32(OUT + 0x50, 0.25).unwrap();
+            guest_query(q, m)
+        },
+    );
+    assert_eq!(run.result, Ok(Ret::new(1, 8)));
+    assert_eq!(run.guest.u32(slot + SLOT_STAMP).unwrap(), 101);
+    let repeat = call_with_builder(
+        &ph,
+        run.guest,
+        slot,
+        |_| panic!("rebuilt"),
+        |_, _| panic!("revalidated"),
+    );
+    assert_eq!(repeat.result, Ok(Ret::new(1, 8)));
+    assert_eq!(repeat.guest.f32(OUT + 0x50).unwrap(), 0.25);
+    let mut g = repeat.guest;
+    at_tick(&mut g, 102);
+    let missed = call_with_builder(&ph, g, slot, |_| None, |_, _| panic!("replayed twice"));
+    assert_eq!(missed.result, Ok(Ret::new(0, 8)));
+    assert_eq!(missed.guest.u32(slot + SLOT_STAMP).unwrap(), 101);
+    let repeat = call_with_builder(
+        &ph,
+        missed.guest,
+        slot,
+        |_| panic!("retried in tick"),
+        |_, _| panic!("validated missing input"),
+    );
+    assert_eq!(repeat.result, Ok(Ret::new(0, 8)));
+    let mut g = repeat.guest;
+    at_tick(&mut g, 103);
+    let g = gather(&ph, g, slot);
+    assert_eq!(g.u32(OUT).unwrap() & 0x40, 0);
+}
+
+#[test]
+fn rejection_of_a_replayed_action_leaves_the_slot_stamp_untouched() {
+    let (ph, g, slot) = game(|_| HostPadState::default());
+    let mut g = gather(&ph, g, slot);
+    at_tick(&mut g, 101);
+    let run = call_with_builder(
+        &ph,
+        g,
+        slot,
+        |_| None,
+        |q, m| {
+            let _ = guest_query(q, m);
+            m.set_u32(OUT, 0x1234).unwrap();
+            Regs::default()
+        },
+    );
+    assert_eq!(run.result, Ok(Ret::new(0, 8)));
+    assert_eq!(run.guest.u32(slot + SLOT_STAMP).unwrap(), 100);
+    assert_eq!(run.guest.u32(slot + SLOT_ACTION).unwrap(), 0);
+}
+
+#[test]
+fn missed_build_ignores_absent_stale_and_respawned_records() {
+    for case in ["first", "lost stamp", "respawn", "tick gap"] {
+        let (ph, mut g, slot) = game(|_| HostPadState::default());
+        if case != "first" {
+            g = gather(&ph, g, slot);
+        }
+        at_tick(&mut g, if case == "tick gap" { 103 } else { 101 });
+        if case == "respawn" {
+            let unit = DatumHandle::new(0xb101, 1);
+            g.put_u32(PLAYERS_DATA + 0x21c + 0x2c, unit.raw());
+            g.put_u16(OBJECTS_DATA + 0xc, unit.salt());
+        }
+        if case == "lost stamp" {
+            g.put_u32(slot + SLOT_STAMP, 97);
+        }
+        let stamp = g.u32(slot + SLOT_STAMP).unwrap();
+        let run = call_with_builder(
+            &ph,
+            g,
+            slot,
+            |_| None,
+            |_, _| panic!("validated stale action"),
+        );
+        assert_eq!(run.result, Ok(Ret::new(0, 8)), "{case}");
+        assert_eq!(run.guest.u32(slot + SLOT_STAMP).unwrap(), stamp);
+    }
 }
 
 #[test]
@@ -170,6 +291,37 @@ fn arrived_pad_publishes_the_whole_local_action_once_per_tick() {
             assert_eq!(got, local);
         }
     }
+}
+
+#[test]
+fn assist_tracks_the_validated_action_across_repeated_gather_and_target_loss() {
+    let (ph, mut g, slot) = game(|f| HostPadState {
+        right_trigger: if f.tick == Some(100) { 1. } else { 0. },
+        ..Default::default()
+    });
+    let handle = ph.list()[0].handle;
+    let run = call(&ph, g, slot, |q, m| {
+        let accepted = guest_query(q, m);
+        // Only the validated output may cross into the stored action.
+        m.set_f32(OUT + 0x50, 0.625).unwrap();
+        accepted
+    });
+    assert_eq!(run.result, Ok(Ret::new(1, 8)));
+    g = run.guest;
+    g.put_u32(OUT + 0x34, 0);
+    let repeat = call(&ph, g, slot, |_, _| panic!("validated twice"));
+    assert_eq!(repeat.result, Ok(Ret::new(1, 8)));
+    g = repeat.guest;
+    assert_eq!(g.u32(OUT + 0x34).unwrap(), 0xb0030003);
+    let aim = ph.aim_view(&g, handle).unwrap();
+    assert_eq!(aim.assist_player, Some(2));
+    assert_eq!(aim.assist_strength, [0.625, 0.125]);
+    at_tick(&mut g, 101);
+    g = gather(&ph, g, slot);
+    let aim = ph.aim_view(&g, handle).unwrap();
+    assert_eq!(g.u32(OUT + 0x34).unwrap(), u32::MAX);
+    assert_eq!(aim.assist_player, None);
+    assert_eq!(aim.assist_strength, [0., 0.]);
 }
 
 #[test]
@@ -217,6 +369,10 @@ fn aim_view_separates_intended_arrived_and_observed_aim() {
     assert_eq!((first.stick, first.trigger), ([1., 0.], 1.));
     assert_eq!((first.arrived_stick, first.arrived_trigger), ([0., 0.], 0.));
     assert_eq!(first.action_deg, Some([0., 0.]));
+    assert_eq!(
+        (first.assist_player, first.assist_strength),
+        (None, [0., 0.])
+    );
     at_tick(&mut g, 101);
     g = gather(&ph, g, slot);
     // Unit state may still lag the newly accepted angle.
@@ -225,6 +381,10 @@ fn aim_view_separates_intended_arrived_and_observed_aim() {
     assert_eq!((next.arrived_stick, next.arrived_trigger), ([1., 0.], 1.));
     assert!((next.action_deg.unwrap()[0] - 1.0f32.to_degrees()).abs() < 0.001);
     assert_eq!(next.unit_forward, [1., 0., 0.]);
+    assert_eq!(
+        (next.assist_player, next.assist_strength),
+        (Some(2), [0.75, 0.125])
+    );
     // Rejected input has no action, even with a prior stamped record.
     at_tick(&mut g, 102);
     let run = call(&ph, g, slot, |q, m| {

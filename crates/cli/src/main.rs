@@ -91,6 +91,8 @@ mod live_geometry;
 #[cfg(feature = "desktop")]
 mod live_halo1;
 #[cfg(feature = "desktop")]
+mod live_hosts;
+#[cfg(feature = "desktop")]
 mod live_layers;
 #[cfg(feature = "desktop")]
 mod live_looks;

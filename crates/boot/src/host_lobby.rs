@@ -16,6 +16,7 @@ use crate::map_select::Catalogue;
 use crate::new_maps::{Disc, IsoDisc};
 
 mod retail;
+pub(crate) use retail::Machine as PlayerlessLobby;
 mod variants;
 use self::variants::Variants;
 #[cfg(test)]
@@ -211,6 +212,14 @@ struct Lobby {
     machine_start: bool,
 }
 
+pub(crate) fn exclude_local_profiles(b: &mut Builder) {
+    // PROFILE_SIGN_IN is void, stdcall (slot, block, file).
+    b.raw()
+        .before(&points::PROFILE_SIGN_IN, "no dedicated local seats", |c| {
+            Ok(Flow::Return(c.ret(12)?))
+        });
+}
+
 impl Feature for Lobby {
     fn manifest(&self) -> Manifest {
         Manifest::new("host-lobby", "Playerless dedicated network lobby")
@@ -221,12 +230,7 @@ impl Feature for Lobby {
         b.snapshot(SnapshotPolicy::forbid_while(|| {
             Some("dedicated network host".into())
         }));
-        // PROFILE_SIGN_IN is void, stdcall (slot, block, file). Even a pad
-        // plugged in to this machine must not enter the reconciled roster.
-        b.raw()
-            .before(&points::PROFILE_SIGN_IN, "no dedicated local seats", |c| {
-                Ok(Flow::Return(c.ret(12)?))
-            });
+        exclude_local_profiles(b);
         let scratch = b.guest_alloc(
             crate::level_boot::VARIANT_SIZE,
             runtime::guest::Permissions::RW,

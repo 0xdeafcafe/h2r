@@ -280,6 +280,44 @@ fn with_nobody_about_the_driver_follows_a_route_turning_by_the_camera() {
     assert!((x * x + y * y).sqrt() < 0.95);
 }
 
+#[test]
+fn seeded_driver_emits_the_same_pads_with_warm_and_cold_searches() {
+    let floor = |x| {
+        Poly::new(vec![
+            [x, 0., 0.],
+            [x + 8., 0., 0.],
+            [x + 8., 8., 0.],
+            [x, 8., 0.],
+        ])
+    };
+    let map = std::sync::Arc::new(MapData {
+        nav: NavMesh::new(vec![floor(0.), floor(18.)], vec![]),
+        ..Default::default()
+    });
+    let start = [2., 2., 0.];
+    let mut warm = Mind::new(Skill::Normal, 13);
+    let mut cold = warm.clone();
+    warm.vehicles.paths.bind_map(&map);
+    for tick in 0..48 {
+        let id = if tick < 32 { 100 } else { 200 };
+        // The target crosses between disconnected floors. A warmed
+        // exhaustive miss and a newly reachable destination both occur.
+        let at = if (16..32).contains(&tick) {
+            [7., 6., 0.]
+        } else {
+            [20., 6., 0.]
+        };
+        let sight = driving(ghost(id, start));
+        warm.see_vehicles(sight.clone());
+        cold.see_vehicles(sight);
+        let think = |m: &mut Mind| step(m, bot(start), vec![enemy(1, at)], tick, Some(&map));
+        assert_eq!(think(&mut warm), think(&mut cold), "pad at tick {tick}");
+        assert_eq!(warm.doing, Doing::Drive(id));
+        assert_eq!(warm.vehicles.route, cold.vehicles.route);
+    }
+    assert!(warm.vehicles.paths.searches < cold.vehicles.paths.searches);
+}
+
 fn rockets() -> Arms {
     Arms {
         held: Some(Gun {

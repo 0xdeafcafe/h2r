@@ -974,7 +974,7 @@ fn run_configured(
     // switch off supplies a stock headless control for the same roster.
     let (sim_mode, upload) = match sim {
         Some((sim, upload)) => (Some(sim), upload),
-        None => (sim_glue::from_env()?, None),
+        None => (sim_glue::from_env(&opts.data_root)?, None),
     };
     let switches = feature::Switches::from_env().map_err(anyhow::Error::msg)?;
     let host_light =
@@ -1584,11 +1584,20 @@ fn run_configured(
             (true, None) => Some(dsound_glue::install(&loaded.runtime, &k, xbe_bytes)?),
         }
     };
-    if let Some(audio) = &ds && !clock_only_audio {
+    if let Some(audio) = &ds {
         let mixer = audio.mixer();
         let mut mixer = mixer.lock().unwrap_or_else(|e| e.into_inner());
-        mixer.set_hrtf(features.switches().audio_hrtf());
-        mixer.set_distance_reverb(features.switches().distance_reverb());
+        if clock_only_audio {
+            mixer.set_packet_clock(
+                (host_light || sim_mode.is_some())
+                    && features
+                        .switches()
+                        .implementation("audio.packet-clock", true),
+            );
+        } else {
+            mixer.set_hrtf(features.switches().audio_hrtf());
+            mixer.set_distance_reverb(features.switches().distance_reverb());
+        }
     }
     if bots && let Some(input) = host.input.as_mut() {
         // Local bots' pads (docs/game/bots.md): after the host's own.

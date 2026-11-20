@@ -37,6 +37,7 @@ pub mod stuck;
 pub mod tactics;
 pub mod tuning;
 pub mod vehicle;
+mod visits;
 pub mod weapons;
 
 use std::collections::VecDeque;
@@ -383,6 +384,9 @@ impl local::PadSource for Brain {
             Default::default()
         };
         let map = cache::current();
+        if let Some(loaded) = &map {
+            self.mind.vehicles.paths.bind_map(loaded);
+        }
         let (mut p, mut vehicles, mut kills) = (p, vehicles, kills);
         perceive::observe(&mut p, &mut vehicles, &mut kills, map.as_deref());
         let pad = self.sample(

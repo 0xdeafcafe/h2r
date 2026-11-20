@@ -591,3 +591,339 @@ async fn retired_matchmaking_assignment_never_reaches_provider_start() {
     assert_eq!(row.ran_ms, Some(0));
     assert_eq!(fake.starts.load(Ordering::Relaxed), 0);
 }
+
+// POST /v1/admin/hosts: an admin's manual start.
+
+fn admin_start(map: &str) -> AdminHostStart {
+    AdminHostStart {
+        map: map.into(),
+        variant: None,
+        max_players: 8,
+        class: HostClass::Small,
+        region: None,
+        transport: None,
+        launch: true,
+    }
+}
+
+/// POSTs a start request through the shared router, answering the response.
+async fn post_start(
+    router: axum::Router,
+    token: Option<String>,
+    body: &str,
+) -> (axum::http::StatusCode, serde_json::Value) {
+    use axum::body::to_bytes;
+    use tower::ServiceExt;
+
+    let mut builder = axum::http::Request::post("/v1/admin/hosts")
+        .header(axum::http::header::CONTENT_TYPE, "application/json");
+    if let Some(token) = token {
+        builder = builder.header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"));
+    }
+    let response = router
+        .oneshot(builder.body(axum::body::Body::from(body.to_owned())).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+    let body = if bytes.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap()
+    };
+    (status, body)
+}
+
+#[tokio::test]
+async fn admin_start_is_admin_only_and_launches_through_the_provider() {
+    let (live, fake) = setup().await;
+    let account = KeyPair::generate();
+    let player = live
+        .create_account(&AccountRequest::sign(
+            &account,
+            "Player",
+            None,
+            live.id(),
+            crate::app::now(),
+        ))
+        .await
+        .unwrap();
+    let player_token = || {
+        sign::issue_token(
+            &account,
+            &player.id,
+            live.id(),
+            crate::admin::LXM_ADMIN_WRITE,
+            crate::app::now(),
+        )
+    };
+    let read_token = || {
+        sign::issue_token(
+            &account,
+            &player.id,
+            live.id(),
+            lxm::READ,
+            crate::app::now(),
+        )
+    };
+    let router = crate::http::router(live.clone());
+    let body = r#"{"map":"lockout","max_players":4}"#;
+    assert_eq!(
+        post_start(router.clone(), None, body).await.0,
+        axum::http::StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        post_start(router.clone(), Some(player_token()), body)
+            .await
+            .0,
+        axum::http::StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        post_start(router.clone(), Some(read_token()), body).await.0,
+        axum::http::StatusCode::UNAUTHORIZED
+    );
+    let (status, reply) = post_start(
+        router,
+        Some(operator(&live, crate::admin::LXM_ADMIN_WRITE)),
+        body,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::CREATED);
+    let lease: HostLease = serde_json::from_value(reply["lease"].clone()).unwrap();
+    assert!(lease.id.starts_with("hl-"));
+    assert!(lease.assignment_id.starts_with("custom-"));
+    assert_eq!(lease.map, "lockout");
+    assert_eq!(lease.max_players, 4);
+    assert_eq!(lease.provider, ProviderKind::Local);
+    // A launch answers the lease only: the boot credential stays private.
+    assert!(reply.get("token").is_none());
+    assert_eq!(fake.starts.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        live.require_host(&lease.id).unwrap().state,
+        HostState::Booting
+    );
+    register(&live, &lease).await;
+}
+
+#[tokio::test]
+async fn admin_manual_lease_answers_a_token_that_registers_and_reports() {
+    let (live, fake) = setup().await;
+    let admin = || operator(&live, crate::admin::LXM_ADMIN_WRITE);
+    let mut request = admin_start("lockout");
+    request.launch = false;
+    request.variant = Some("Slayer".into());
+    request.region = Some("lhr".into());
+    request.class = HostClass::Large;
+    request.max_players = 12;
+    let (lease, token) = live
+        .admin_start_host(Some(&admin()), request)
+        .await
+        .unwrap();
+    assert_eq!(fake.starts.load(Ordering::Relaxed), 0);
+    assert_eq!(lease.variant.as_deref(), Some("Slayer"));
+    assert_eq!(lease.region.as_deref(), Some("lhr"));
+    assert_eq!(lease.class, HostClass::Large);
+    assert!(lease.roster.is_empty() && lease.bots.is_empty());
+    let token = token.expect("the manual lease answers its token");
+    assert_eq!(
+        live.verify_host_token(Some(&token), crate::host_identity::HOST_REGISTER)
+            .unwrap(),
+        lease.id
+    );
+    // The inventory shows the reserved lease as Requested, holding a slot.
+    let inventory = live
+        .admin_hosts(Some(&operator(&live, crate::invites::LXM_ADMIN_READ)))
+        .unwrap();
+    assert_eq!(inventory["running"][0]["lease"]["id"], json!(lease.id));
+    assert_eq!(inventory["running"][0]["state"], json!("requested"));
+    live.set_host_config(config(1));
+    let refused = live
+        .admin_start_host(Some(&admin()), admin_start("blocked"))
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::RateLimited);
+    assert!(live.host_for_assignment("custom-blocked").is_none());
+
+    // The manual container registers straight out of Requested.
+    assert_eq!(
+        live.host_register(Some(&token), &lease.id, endpoint())
+            .await
+            .unwrap(),
+        lease
+    );
+    assert_eq!(
+        live.require_host(&lease.id).unwrap().state,
+        HostState::Joinable
+    );
+    for n in [3, 1] {
+        let row = live
+            .host_report(Some(&token), &lease.id, HostState::Playing, n, None)
+            .await
+            .unwrap();
+        assert_eq!(row.state, HostState::Playing);
+        assert_eq!(row.players_peak, 3);
+    }
+    live.host_report(
+        Some(&token),
+        &lease.id,
+        HostState::Ended,
+        0,
+        Some(EndReason::MatchOver),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        live.require_host(&lease.id).unwrap().state,
+        HostState::Ended
+    );
+    // No HostBooting ever happened, and the token stayed out of the log.
+    let events = live
+        .store
+        .read(&Query {
+            stream: Some(STREAM.into()),
+            ..Query::after(0, 100)
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .map(|e| e.body.kind.as_str())
+            .collect::<Vec<_>>(),
+        [
+            HOST_REQUESTED,
+            HOST_READY,
+            HOST_PLAYING,
+            HOST_PLAYING,
+            HOST_ENDED
+        ]
+    );
+    for e in events {
+        assert!(!e.body.data.to_string().contains(&token));
+    }
+}
+
+#[tokio::test]
+async fn never_registered_manual_lease_times_out_like_any_requested_lease() {
+    let (live, _) = setup().await;
+    live.set_host_config(config(1));
+    let mut start = admin_start("lockout");
+    start.launch = false;
+    let admin = || operator(&live, crate::admin::LXM_ADMIN_WRITE);
+    let (lease, token) = live
+        .admin_start_host(Some(&admin()), start)
+        .await
+        .unwrap();
+    assert_eq!(
+        live.require_host(&lease.id).unwrap().state,
+        HostState::Requested
+    );
+    let due = lease.created_ms + BOOT_MS;
+    assert_eq!(live.host_sweep_due_ms(), Some(due));
+    live.sweep_hosts_at(due - 1).await;
+    assert_eq!(
+        live.require_host(&lease.id).unwrap().state,
+        HostState::Requested
+    );
+    live.sweep_hosts_at(due).await;
+    let row = live.require_host(&lease.id).unwrap();
+    assert_eq!(
+        (row.state, row.reason),
+        (HostState::Failed, Some(EndReason::BootTimeout))
+    );
+    // The timed-out slot is free again, and the token no longer helps: an
+    // ended lease refuses its reports.
+    let token = token.expect("the manual lease answers its token");
+    assert!(
+        live.host_report(Some(&token), &lease.id, HostState::Ended, 0, None)
+            .await
+            .is_err()
+    );
+    assert!(live.request_host(request("next")).await.is_ok());
+}
+
+#[test]
+fn admin_start_validates_map_and_seats() {
+    let mut request = admin_start("lockout");
+    for players in [0, 17] {
+        request.max_players = players;
+        assert_eq!(
+            request.validate().unwrap_err().message,
+            "max_players must be between 1 and 16"
+        );
+    }
+    for players in [1, 8, 16] {
+        request.max_players = players;
+        assert_eq!(request.validate(), Ok(()));
+    }
+    request.max_players = 8;
+    let long = "l".repeat(65);
+    for map in ["", "lockoüt", long.as_str()] {
+        request.map = map.into();
+        assert_eq!(
+            request.validate().unwrap_err().message,
+            "map must be 1 to 64 ASCII characters",
+            "{map:?}"
+        );
+    }
+    request.map = "m".repeat(64);
+    assert_eq!(request.validate(), Ok(()));
+}
+
+#[tokio::test]
+async fn manual_start_still_enforces_budget_and_needs_a_provider_kind() {
+    // No provider configured: neither launch mode can build a lease.
+    let bare = Live::start_with_host_costs(
+        Arc::new(MemoryStore::new()),
+        ServerIdentity {
+            id: "live.test".into(),
+            key: KeyPair::generate(),
+        },
+        Policy::default(),
+        Timers::Driven,
+        HostCosts::default(),
+    )
+    .await
+    .unwrap();
+    let admin = || operator(&bare, crate::admin::LXM_ADMIN_WRITE);
+    let mut request = admin_start("lockout");
+    for launch in [true, false] {
+        request.launch = launch;
+        let refused = bare
+            .admin_start_host(Some(&admin()), request.clone())
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, ErrorCode::Unavailable);
+        assert_eq!(refused.message, "no host provider");
+        assert_eq!(bare.position(), 0);
+    }
+    drop(bare);
+
+    // An exhausted monthly budget refuses before any event is recorded.
+    let broke = Live::start_with_host_costs(
+        Arc::new(MemoryStore::new()),
+        ServerIdentity {
+            id: "live.test".into(),
+            key: KeyPair::generate(),
+        },
+        Policy::default(),
+        Timers::Driven,
+        HostCosts::configured(None, Some("0")).unwrap(),
+    )
+    .await
+    .unwrap();
+    let fake = Arc::new(Fake::new(ProviderKind::Local));
+    broke.set_host_provider(fake.clone());
+    broke.set_host_config(config(1));
+    let mut manual = admin_start("lockout");
+    manual.launch = false;
+    let admin = || operator(&broke, crate::admin::LXM_ADMIN_WRITE);
+    let refused = broke
+        .admin_start_host(Some(&admin()), manual)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Unavailable);
+    assert!(refused.message.contains("budget"));
+    assert_eq!(broke.position(), 0);
+    assert_eq!(fake.starts.load(Ordering::Relaxed), 0);
+}
