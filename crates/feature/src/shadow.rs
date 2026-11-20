@@ -1,0 +1,96 @@
+//! Shadow checks for the native ports (docs/engine/shadow-exec.md): the
+//! glue between the port installers ([`crate::sim_native`],
+//! [`crate::sim_physics`]) and [`lifted::shadow`].
+//!
+//! Every port is registered with the process's registry at plan build,
+//! installed or not, under its switch name and its group. Each installed
+//! body runs through [`run`], which costs one atomic load until the agent
+//! API's `shadow.enable` turns checks on. There is no switch or variable:
+//! the agent call is the switch.
+
+pub use lifted::shadow::{Enabled, Error, Mismatch, Port, SHADOW, Shadow, Status};
+
+use engine::points;
+use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
+
+/// The group of [`crate::sim_native`]'s entries.
+pub const SIM_NATIVE: &str = "sim.native";
+/// The group of [`crate::sim_physics`]'s ports.
+pub const SIM_PHYSICS: &str = "sim.physics";
+
+/// The game's tick: `[GAME_TIME] + 8`, when that reads.
+pub fn game_tick(g: &Guest) -> Option<u64> {
+    let read = |a: u32| {
+        let mut b = [0; 4];
+        g.read_bytes(a, &mut b, 1)
+            .ok()
+            .map(|()| u32::from_le_bytes(b))
+    };
+    let time = read(points::GAME_TIME.base).filter(|&p| p != 0)?;
+    read(time.wrapping_add(8)).map(u64::from)
+}
+
+/// Register a port with the process's registry.
+pub fn register(
+    name: &'static str,
+    group: &'static str,
+    point: &'static points::Point,
+    installed: bool,
+) {
+    SHADOW.register(name, group, point.name, point.base, installed);
+}
+
+/// Run an installed port body through the process's registry.
+pub fn run(
+    name: &'static str,
+    cpu: &mut CpuAbi,
+    guest: &mut Guest,
+    pc: u32,
+    port: &mut dyn FnMut(&mut CpuAbi, &mut Guest) -> Result<TransferAbi, GuestFault>,
+) -> Result<TransferAbi, GuestFault> {
+    SHADOW.run(name, cpu, guest, pc, game_tick, port)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn every_switch() -> impl Iterator<Item = &'static str> {
+        let native = crate::sim_native::ENTRIES.iter().map(|&(_, name, _)| name);
+        native.chain(engine::sim_physics::PORTS.iter().map(|p| p.switch))
+    }
+
+    #[test]
+    fn a_plan_registers_every_port_installed_or_not() {
+        let switches = crate::Switches::defaults().with("impl.sim.native_unit_pose", true);
+        let mut registry = crate::Registry::new(switches);
+        registry
+            .add(&crate::sim_native::SimNative::for_tests())
+            .unwrap();
+        registry.add(&crate::sim_physics::NativePhysics).unwrap();
+        registry.build(&crate::Base).unwrap();
+        let status = SHADOW.status();
+        for name in every_switch() {
+            let port = status.ports.iter().find(|p| p.name == name);
+            assert!(port.is_some(), "{name} is not registered");
+        }
+        let pose = status
+            .ports
+            .iter()
+            .find(|p| p.name == "sim.native_unit_pose")
+            .unwrap();
+        assert_eq!(pose.group, SIM_NATIVE);
+    }
+
+    /// `scripts/shadow-gate.sh` turns every port on by its switch.
+    #[test]
+    fn the_disc_gate_names_every_port() {
+        let script = include_str!("../../../scripts/shadow-gate.sh");
+        for name in every_switch() {
+            assert!(
+                script.contains(&format!(" {name} ")) || script.contains(&format!(" {name}\n")),
+                "scripts/shadow-gate.sh does not list {name}"
+            );
+        }
+    }
+}

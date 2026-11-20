@@ -1,6 +1,7 @@
 //! Shared by interactive play, headless simulation and dedicated hosts.
 use crate::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 use engine::sim_physics::PORTS;
+use runtime::{CpuAbi, Guest};
 
 pub struct NativePhysics;
 
@@ -13,13 +14,19 @@ impl Feature for NativePhysics {
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         b.snapshot(SnapshotPolicy::Stateless);
         for port in PORTS {
-            if b.switches().implementation(port.switch, false) {
+            let installed = b.switches().implementation(port.switch, false);
+            crate::shadow::register(port.switch, crate::shadow::SIM_PHYSICS, port.point, installed);
+            if installed {
                 b.raw().implement(port.point, port.switch, move |cpu, ctx, pc| {
                     let resume = pc != port.point.base && port.resumes.contains(&pc);
                     if pc == port.point.base || resume {
                         let mut mem = ctx.memory();
                         if engine::sim_physics::supported(port, cpu, &mem) {
-                            return port.invoke(cpu, &mut mem, pc);
+                            // Entries and resumes alike: each segment is
+                            // checked from the state it starts in.
+                            return crate::shadow::run(port.switch, cpu, &mut mem, pc, &mut |cpu: &mut CpuAbi, mem: &mut Guest| {
+                                port.invoke(cpu, mem, pc)
+                            });
                         }
                     }
                     let original = if resume {

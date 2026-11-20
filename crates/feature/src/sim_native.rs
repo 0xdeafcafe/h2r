@@ -13,10 +13,16 @@ impl SimNative {
             ray_dispatch: runtime.read_dispatch(|d| d.has_resume(sim::mopp_query::RAY_DISPATCH)),
         }
     }
+
+    /// As if the image had the ray dispatch loop's selector.
+    #[cfg(test)]
+    pub(crate) fn for_tests() -> Self {
+        Self { ray_dispatch: true }
+    }
 }
 
-type Body = fn(&mut CpuAbi, &mut Guest) -> sim::Result;
-const ENTRIES: &[(&points::Point, &'static str, Body)] = &[
+pub(crate) type Body = fn(&mut CpuAbi, &mut Guest) -> sim::Result;
+pub(crate) const ENTRIES: &[(&points::Point, &'static str, Body)] = &[
     (
         &points::OBJECT_TRANSFORM_COMPOSE,
         "sim.native_transform_compose",
@@ -130,28 +136,38 @@ impl Feature for SimNative {
                 && (point.base == points::OBJECT_FUNCTION_IMPORT.base || completes_descriptor);
             // Long programs yield at the float VM dispatch loop. Some
             // generated images omit loop selectors.
-            if point.base == points::SIM_MOPP_RAY.base && !self.ray_dispatch {
-                continue;
-            }
-            if b.switches().implementation(name, false) {
+            let installed = b.switches().implementation(name, false)
+                && (point.base != points::SIM_MOPP_RAY.base || self.ray_dispatch);
+            crate::shadow::register(name, crate::shadow::SIM_NATIVE, point, installed);
+            if installed {
                 b.raw()
                     .implement(point, name, move |cpu, ctx, addr| {
                         if addr == point.base && sim::supported(cpu) {
                             let mut mem = ctx.memory();
-                            let transfer = body(cpu, &mut mem)?;
-                            if completes_query {
-                                return sim::collision::complete_segment(cpu, &mut *mem, transfer);
-                            }
-                            if completes_descriptor || completes_value {
-                                return sim::object::complete_return(
-                                    cpu,
-                                    &mut *mem,
-                                    transfer,
-                                    completes_descriptor,
-                                    completes_value,
-                                );
-                            }
-                            return Ok(transfer);
+                            return crate::shadow::run(
+                                name,
+                                cpu,
+                                &mut mem,
+                                addr,
+                                &mut |cpu: &mut CpuAbi, mem: &mut Guest| {
+                                    let transfer = body(cpu, mem)?;
+                                    if completes_query {
+                                        return sim::collision::complete_segment(
+                                            cpu, mem, transfer,
+                                        );
+                                    }
+                                    if completes_descriptor || completes_value {
+                                        return sim::object::complete_return(
+                                            cpu,
+                                            mem,
+                                            transfer,
+                                            completes_descriptor,
+                                            completes_value,
+                                        );
+                                    }
+                                    Ok(transfer)
+                                },
+                            );
                         }
                         if let Some(original) = ctx.runtime().resolve_original(addr) {
                             return Ok(original.invoke(cpu, ctx, addr));
