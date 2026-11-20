@@ -6,7 +6,7 @@
 #   scripts/readme-video.sh --out-image <dir> [--disc <iso>]
 #       [--only <name>[,<name>]] [--dest <dir>] [--settle <seconds>] [--scale <2-6>]
 #
-# The image must be built with H2_OPT=2. H2_RENDER_SCALE defaults to 2 (1280x960).
+# The image must be built with the same H2_OPT (default 2). H2_RENDER_SCALE defaults to 2 (1280x960).
 # Requires h2 (or $H2), jq and a GPU. Pass --dest to keep the frame folders
 # somewhere else, then pass that directory to scripts/readme-art.sh --frames.
 # Commit only the final documentation media under docs/images/** (Git LFS).
@@ -117,7 +117,7 @@ capture() {
   echo "$name: starting $level at ${scale}x"
   (
     cd "$scratch"
-    exec env H2_OPT=2 H2_LEVEL="$level" H2_RENDER_SCALE="$scale" H2_FPS=30 \
+    exec env H2_OPT="${H2_OPT:-2}" H2_LEVEL="$level" H2_RENDER_SCALE="$scale" H2_FPS=30 \
       H2_BOOT_GFX="$gfx" H2_BOOT_GFX_EVERY=1 H2_BOOT_GFX_LIGHTING_AB=0 \
       "$h2" serve "$disc" --out "$image" --socket "$socket" \
       --data "$scratch/data-$name" --no-mappack --no-halo1
