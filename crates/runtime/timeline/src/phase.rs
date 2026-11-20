@@ -181,11 +181,13 @@ pub enum Counter {
 }
 
 /// Number of [`Counter`]s.
-pub const COUNTERS: usize = Counter::ALL.len() + crate::native::COLUMNS;
+const SETUP_BASE: usize = Counter::ALL.len() + crate::native::COLUMNS;
+pub const COUNTERS: usize = SETUP_BASE + crate::setup::LABELS.len();
 /// Every field in a frame, in storage and CSV order.
 pub fn counter_columns() -> impl Iterator<Item = (usize, &'static str)> {
     Counter::ALL.into_iter().map(|c| (c as usize, c.label()))
         .chain(crate::native::labels().iter().enumerate().map(|(i, s)| (Counter::ALL.len() + i, s.as_str())))
+        .chain(crate::setup::LABELS.into_iter().enumerate().map(|(i, label)| (SETUP_BASE + i, label)))
 }
 
 impl Counter {
@@ -744,9 +746,10 @@ pub fn frame_end(index: u64) {
         l.frame_start.set(now);
         Some((s, WORLD_MATERIALS.with(RefCell::take)))
     });
-    if let Some((s, materials)) = sample {
+    if let Some((mut s, materials)) = sample {
         let mut g = global();
         if let Some(r) = g.as_mut() {
+            r.setup.frame(crate::now_ns(), s.total_ns, &mut s.counts[SETUP_BASE..]);
             let pending = r.pending.entry(index).or_default();
             pending.game = Some(s);
             pending.world_materials.merge(materials);
@@ -1019,6 +1022,22 @@ fn global() -> MutexGuard<'static, Option<Recorder>> {
     GLOBAL.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+pub(crate) fn begin_setup(stage: crate::setup::Stage) -> Option<u64> {
+    if !enabled() {
+        return None;
+    }
+    let mut g = global();
+    let recorder = g.as_mut()?;
+    recorder.setup.begin(stage, crate::now_ns());
+    Some(recorder.generation)
+}
+
+pub(crate) fn end_setup(stage: crate::setup::Stage, generation: u64) {
+    if let Some(recorder) = global().as_mut().filter(|r| r.generation == generation) {
+        recorder.setup.end(stage, crate::now_ns());
+    }
+}
+
 #[derive(Default)]
 struct PendingFrame {
     game: Option<FrameSample>,
@@ -1030,6 +1049,7 @@ struct PendingFrame {
 
 /// Frames collected: the rolling window and what the run report needs.
 pub struct Recorder {
+    setup: crate::setup::Accounting,
     generation: u64,
     pending: BTreeMap<u64, PendingFrame>,
     config: Config,
@@ -1056,6 +1076,7 @@ const WINDOW_MAX: usize = 4096;
 impl Recorder {
     pub fn new(config: Config, csv: Option<std::io::BufWriter<std::fs::File>>) -> Self {
         Recorder {
+            setup: Default::default(),
             generation: 0,
             pending: BTreeMap::new(),
             config,
