@@ -13,7 +13,7 @@ use axum::extract::ConnectInfo;
 use axum::http::{Method, Request, StatusCode};
 use common::{Harness, User, now, start};
 use http_body_util::BodyExt;
-use live_proto::sign::{AccountRequest, KeyPair, random_id};
+use live_proto::sign::{AccountRequest, KeyPair, SignedEvent, random_id};
 use live_proto::{Gamertag, lxm};
 use live_server::Policy;
 use live_server::store::MemoryStore;
@@ -318,7 +318,7 @@ async fn an_admin_makes_an_invite_that_signs_someone_up_once() {
 }
 
 #[tokio::test]
-async fn only_admins_make_invites_and_the_event_must_be_right() {
+async fn invite_creation_needs_permission_and_a_valid_event() {
     let h = server(true, false).await;
     let boss = account(&h, "Boss").await;
     let nobody = account(&h, "Nobody").await;
@@ -336,6 +336,8 @@ async fn only_admins_make_invites_and_the_event_must_be_right() {
     assert_eq!(anon.status, StatusCode::UNAUTHORIZED);
     let r = create_invite(&h, &nobody, created_event(&h, &nobody, &random_id(), exp)).await;
     assert_eq!(r.status, StatusCode::FORBIDDEN);
+    assert_eq!(r.error(), "forbidden");
+    assert_eq!(r.json()["message"], "an admin must enable invite access for this account");
     let r = h
         .call(
             Method::POST,
@@ -420,6 +422,176 @@ async fn only_admins_make_invites_and_the_event_must_be_right() {
         sign_up(&h, "ViaOperator", &code).await.status,
         StatusCode::CREATED
     );
+}
+
+async fn grant_invites(
+    h: &Harness,
+    caller: Option<&User>,
+    tag: &str,
+    cap: Option<u32>,
+) -> common::Resp {
+    let auth = caller.map_or_else(
+        || operator_auth(h, lxm::INVITE_GRANTS_WRITE),
+        |u| h.bearer(u, lxm::INVITE_GRANTS_WRITE),
+    );
+    h.call(
+        Method::POST,
+        &format!("/v1/accounts/{tag}/invite-grant"),
+        &[auth],
+        json!({"open_cap": cap}).to_string(),
+    )
+    .await
+}
+
+async fn my_invites(h: &Harness, user: &User) -> common::Resp {
+    h.call(
+        Method::GET,
+        "/v1/invites/mine",
+        &[h.bearer(user, lxm::INVITES_READ)],
+        Body::empty(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn invite_grants_are_admin_only_and_revocation_is_logged_and_permanent() {
+    let h = server(true, false).await;
+    let boss = account(&h, "Boss").await;
+    let player = account(&h, "Player").await;
+    let path = "/v1/accounts/Player/invite-grant";
+    let stream = live_proto::streams::account(player.xuid);
+    let exp = now() + 86_400;
+
+    assert_eq!(my_invites(&h, &player).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        grant_invites(&h, Some(&player), "Player", None).await.status,
+        StatusCode::FORBIDDEN,
+    );
+    let forged = h.event(
+        &player,
+        &stream,
+        "InviteGrantSet",
+        json!({"xuid": player.xuid, "open_cap": null}),
+    );
+    assert_eq!(
+        h.call(Method::POST, "/v1/events", &[h.bearer(&player, lxm::EVENTS_WRITE)], forged)
+            .await
+            .status,
+        StatusCode::FORBIDDEN,
+    );
+    assert_eq!(
+        grant_invites(&h, None, "Player", Some(0)).await.status,
+        StatusCode::BAD_REQUEST,
+    );
+
+    let granted = grant_invites(&h, Some(&boss), "Player", Some(2)).await;
+    assert_eq!(granted.status, StatusCode::CREATED);
+    let granted = granted.json();
+    let verify = |wire: &Value| {
+        let event = SignedEvent::open(wire["jws"].as_str().unwrap()).unwrap();
+        event.verify(h.operator.public()).unwrap();
+        assert_eq!(event.body.stream, stream);
+        assert_eq!(event.body.data["xuid"], json!(player.xuid));
+        assert_eq!(event.body.data["gamertag"], "Player");
+        event.body.data
+    };
+    assert_eq!(granted["type"], "InviteGrantSet");
+    let data = verify(&granted);
+    assert_eq!(data["by"], boss.author.as_str());
+    assert_eq!(data["open_cap"], 2);
+    assert_eq!(
+        h.get("/v1/accounts/Player").await.json()["invite_grant"],
+        json!({"open_cap": 2}),
+    );
+
+    let other = create_invite(&h, &boss, created_event(&h, &boss, &random_id(), exp)).await;
+    assert_eq!(other.status, StatusCode::CREATED);
+    let other_jti = other.json()["jti"].as_str().unwrap().to_string();
+    assert_eq!(revoke(&h, &player, &other_jti).await.status, StatusCode::NOT_FOUND);
+    let jti = random_id();
+    let r = create_invite(&h, &player, created_event(&h, &player, &jti, exp)).await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    let code = r.json()["invite"].as_str().unwrap().to_string();
+    let list = my_invites(&h, &player).await;
+    assert_eq!(list.status, StatusCode::OK);
+    let items = list.json();
+    let items = items["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["invite"], code.as_str());
+
+    let revoked = h.call(
+        Method::DELETE,
+        path,
+        &[operator_auth(&h, lxm::INVITE_GRANTS_WRITE)],
+        Body::empty(),
+    ).await;
+    assert_eq!(revoked.status, StatusCode::OK);
+    let revoked = revoked.json();
+    assert_eq!(revoked["type"], "InviteGrantRevoked");
+    assert_eq!(verify(&revoked)["by"], "server:live.test");
+    let log = h.get(&format!("/v1/events?stream={stream}")).await.json();
+    let log = log["items"].as_array().unwrap();
+    assert!(log.contains(&granted));
+    assert!(log.contains(&revoked));
+    assert!(h.get("/v1/accounts/Player").await.json().get("invite_grant").is_none());
+    assert_eq!(my_invites(&h, &player).await.status, StatusCode::FORBIDDEN);
+
+    let signed_code = h.operator.sign_json(
+        live_proto::sign::TYP_INVITE,
+        &live_proto::sign::Invite { aud: h.id.clone(), jti, exp },
+    );
+    assert_eq!(sign_up(&h, "Denied", &code).await.json()["message"], "invite: revoked");
+    assert_eq!(sign_up(&h, "LongCode", &signed_code).await.json()["message"], "invite: revoked");
+    assert_eq!(grant_invites(&h, None, "Player", None).await.status, StatusCode::CREATED);
+    assert_eq!(my_invites(&h, &player).await.json()["items"], json!([]));
+    assert_eq!(sign_up(&h, "StillDenied", &code).await.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn invite_cap_counts_only_open_invites_and_serializes_creation() {
+    let h = server(true, false).await;
+    let player = account(&h, "Player").await;
+    assert_eq!(grant_invites(&h, None, "Player", Some(1)).await.status, StatusCode::CREATED);
+    let exp = now() + 86_400;
+    let one = created_event(&h, &player, &random_id(), exp);
+    let two = created_event(&h, &player, &random_id(), exp);
+    let (a, b) = tokio::join!(create_invite(&h, &player, one), create_invite(&h, &player, two));
+    let (made, blocked) = if a.status == StatusCode::CREATED { (a, b) } else { (b, a) };
+    assert_eq!(made.status, StatusCode::CREATED);
+    assert_eq!(blocked.status, StatusCode::CONFLICT);
+    assert_eq!(blocked.json()["message"], "open invite limit reached (1)");
+    let code = made.json()["invite"].as_str().unwrap().to_string();
+    assert_eq!(sign_up(&h, "Guest", &code).await.status, StatusCode::CREATED);
+    assert_eq!(my_invites(&h, &player).await.json()["items"], json!([]));
+
+    let jti = random_id();
+    let r = create_invite(&h, &player, created_event(&h, &player, &jti, exp)).await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    assert_eq!(revoke(&h, &player, &jti).await.status, StatusCode::OK);
+    let r = create_invite(&h, &player, created_event(&h, &player, &random_id(), exp)).await;
+    assert_eq!(r.status, StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn granted_accounts_have_their_own_creation_rate() {
+    let h = server(true, false).await;
+    let a = account(&h, "Player").await;
+    let b = account(&h, "Another").await;
+    let admin = account(&h, "Boss").await;
+    for tag in ["Player", "Another"] {
+        assert_eq!(grant_invites(&h, None, tag, None).await.status, StatusCode::CREATED);
+    }
+    let exp = now() + 86_400;
+    for _ in 0..3 {
+        let r = create_invite(&h, &a, created_event(&h, &a, &random_id(), exp)).await;
+        assert_eq!(r.status, StatusCode::CREATED);
+    }
+    let r = create_invite(&h, &a, created_event(&h, &a, &random_id(), exp)).await;
+    assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS);
+    for author in [&b, &admin] {
+        let r = create_invite(&h, author, created_event(&h, author, &random_id(), exp)).await;
+        assert_eq!(r.status, StatusCode::CREATED);
+    }
 }
 
 #[tokio::test]
@@ -644,6 +816,15 @@ async fn short_codes_generated_and_custom_sign_up_once_in_any_case() {
         (custom["custom"].as_bool(), custom["state"].as_str()),
         (Some(true), Some("used"))
     );
+
+    // A fresh invite can use the same typed code once the old invite closes.
+    let body = json!({
+        "event": created_event(&h, &boss, &random_id(), now() + 86_400),
+        "code": "Party Time",
+    })
+    .to_string();
+    assert_eq!(create_invite(&h, &boss, body).await.status, StatusCode::CREATED);
+    assert_eq!(sign_up(&h, "Seven", "party-time").await.status, StatusCode::CREATED);
 }
 
 #[tokio::test]

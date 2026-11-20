@@ -534,63 +534,70 @@ Actions on these plates are blades (`web/src/dash/Blades.tsx`): focusable
 rows moved through with up and down, A acts, X does a row's second action
 (revoke, on invites), the same on keyboard, gamepad, mouse and touch.
 
-**Invites** (`/dash/server/invites`, `crates/live/live-server/src/invites.rs`):
-pick how long it lasts (1, 7 or 30 days; at most 30), make one, and the
-code is shown and copied. Each is single-use, like the operator's. The
-list shows open invites (copy again, revoke) and recent used, revoked and
-expired ones, with who made and who used them.
+**Invite access.** Every non-admin starts with invitation permissions
+off. On the dashboard, an admin opens a player's page or selects them in
+the players list to change **can invite** and the **open invite cap**.
+A blank cap allows any number of open invites. Changing the cap leaves
+existing invites in place. Switching the grant off revokes the
+account's open invites, and granting it again leaves those codes dead.
+Admin accounts have invite access through their role. An explicit grant
+can also set their open invite cap.
 
-- `POST /v1/invites`: an `invites.write` token from an admin account and,
-  as the body (`application/jose`), an `InviteCreated` event on the
-  `invites` stream, signed by the same key, data `{jti, exp}` (`jti` 16 to
-  64 of `[A-Za-z0-9_-]`, `exp` in unix seconds, at most 30 days ahead).
-  201 `{invite, jti, exp, position}`. The operator's form (no body,
-  `?days=`) is unchanged.
-- `GET /v1/invites`: admins only (`admin.read`); `{items: [{jti, by,
-  by_gamertag?, at, exp, state: open|used|revoked|expired, used_by?,
-  used_by_gamertag?, invite?}]}`, newest first. Open ones carry their code
-  again (the server's signature over the same `jti` and `exp`, which is
-  deterministic).
-- `POST /v1/invites/{jti}/revoke`: an `InviteRevoked` event `{jti}` by an
-  admin; 409 unless it is open.
+The operator uses `h2 live invite grant <gamertag> [--open-cap N]` and
+`h2 live invite ungrant <gamertag>` with the server key in `--data`.
+Both the dashboard and CLI use the grant endpoints in
+[Server invites](live-api.md#server-invites). The server signs
+`InviteGrantSet` or `InviteGrantRevoked` on the target account stream
+and records the acting admin or operator in `by`. The permission is
+replayed from the log at startup.
 
-At sign-up, an invite the log knows must be open and its maker still an
-admin. Rate limit: per author a burst of 10, then one a minute. The
-security reasoning is in [live-security.md](live-security.md) §3.
+**Invites** (`crates/live/live-server/src/invites.rs`). Admins open
+`/dash/server/invites` to manage the server's invites. A player with the
+grant opens **invite someone** on their dashboard profile
+(`/dash/server/my-invites`). Their list shows only their own open invites.
+Pick 1, 7 or 30 days, make a code and copy it to share. Each code works
+once. Admins can revoke any open code and see used, revoked and expired
+ones. Players with the grant can revoke their own open codes.
 
-In the mock (`bun run dev`), `H2_MOCK_ADMIN=1` makes every account signed
-up in the browser an admin, and the mock serves these endpoints
-(`web/mock/admin.ts`; it parses but does not verify tokens and events).
+Account-created invites use a signed `InviteCreated` event and the same
+`invites.write` token scope. A grant allows a burst of three invites for
+a non-admin account, with one slot replenished per minute. Admins have a
+separate burst of ten with the same refill rate.
+[Request tokens](live-security.md#3-request-tokens) covers authorisation
+and [Server invites](live-api.md#server-invites) describes the endpoints.
+
+The browser mock (`bun run dev`) serves the dashboard endpoints
+(`web/mock/admin.ts`). `H2_MOCK_ADMIN=1` makes accounts signed up in the
+browser admins.
 
 ### Invite codes people type
 
-Every invite the log knows has a short code. Generated ones look like old
-Xbox Live codes: 25 characters in five groups (`XXXXX-XXXXX-XXXXX-XXXXX-XXXXX`)
-from `BCDFGHJKMPQRTVWXY2346789` (no vowels, no 0/O, 1/I/L, 5/S). The code is
-derived from the invite's `jti` with a key derived from the server key, so
-it is never in the log and the list can show it again while the invite is
-open. An admin may pick a code instead (4 to 32 printable characters):
-`POST /v1/invites` with `{"event": <InviteCreated JWS>, "code": "..."}`.
-That code goes beside the signed event, never inside it; the server logs
-only its MAC, as a server-signed `InviteCodeSet {jti, mac}` in the same
-append, and the list shows it as a custom code. Codes match ignoring case,
-spaces and dashes; a custom code already held by an open invite is refused
-(409). The operator's invites (`h2 live invite create`, also `--code`)
-are now logged the same way, as server-signed `InviteCreated` events. The
-long signed codes from before still redeem.
+An invite code has 25 characters in five groups
+(`XXXXX-XXXXX-XXXXX-XXXXX-XXXXX`) from `BCDFGHJKMPQRTVWXY2346789`. The
+server derives it from the invite's `jti` with a server-only key. The list
+can show the same code while it is open.
 
-From the CLI: `h2 live invite create [--days N] [--code TEXT]` signs as the
-operator (`--data`) or, with `--as GAMERTAG`, as an admin account; `h2
-live invite list` and `h2 live invite revoke <jti> --as GAMERTAG`.
+An inviter can choose a custom code of 4 to 32 printable characters.
+`POST /v1/invites` takes `{"event": <InviteCreated JWS>, "code": "..."}`.
+The server logs only the custom code's MAC as a server-signed
+`InviteCodeSet {jti, mac}` in the same append. The list labels these as
+custom codes. Codes match ignoring case, spaces and dashes. A custom
+code held by an open invite is refused (409). Older long signed codes
+also redeem.
+
+`h2 live invite create [--days N] [--code TEXT]` signs as the operator
+(`--data`) or, with `--as GAMERTAG`, as an account with permission to
+invite. `h2 live invite list` is for admins and the operator.
+`h2 live invite revoke <jti> --as GAMERTAG` acts with the named account's
+permission to revoke that invite.
 
 ## 6. Security notes
 
-- Grant and revoke are operator-only (a server-key token with `lxm`
-  `admin.write`): an admin can publish content and invite people, not
-  make admins.
-- Admin invites are logged as the admin's own signed `InviteCreated`
-  events, rate-limited, and die with the admin's grant (§5,
-  [live-security.md](live-security.md) §3).
+- Only the operator grants or revokes the admin role using a server-key
+  token with `lxm` `admin.write`.
+- Invites from accounts are logged as their own signed `InviteCreated`
+  events and are rate-limited. Grant revocation closes open invites from
+  that account (§5 and [live-security.md](live-security.md) §3).
 - Admin publishes go through the same event log as operator ones
   (`TitleFilePublished` by the server key), so the audit trail does not
   say who clicked; the operator's own log of grants and the account reads

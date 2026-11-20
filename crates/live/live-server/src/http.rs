@@ -277,6 +277,10 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         .route("/.well-known/h2live.json", get(well_known))
         .route("/v1/accounts", get(list_accounts).post(create_account))
         .route(
+            "/v1/accounts/{gamertag}/invite-grant",
+            post(crate::invites::grant_invites).delete(crate::invites::revoke_grant),
+        )
+        .route(
             "/v1/accounts/{gamertag}/recover",
             post(crate::recovery::post_recover),
         )
@@ -328,6 +332,7 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             "/v1/invites/{jti}/revoke",
             post(crate::invites::revoke_invite),
         )
+        .route("/v1/invites/mine", get(crate::invites::get_my_invites))
         .route("/v1/server", get(crate::status::get_server))
         .route("/v1/stats/summary", get(crate::stats::get_summary))
         .route("/v1/page-meta", get(page_meta))
@@ -1081,7 +1086,7 @@ async fn ping(State(live): Shared, headers: HeaderMap) -> ApiResult<Response> {
 }
 
 /// `POST /v1/invites`: with a signed `InviteCreated` event as the body, an
-/// admin account's invite ([`crate::invites::create`]); with no body, the
+/// permitted account's invite ([`crate::invites::create`]); with no body, the
 /// operator's (`?days=`).
 async fn create_invite(
     State(live): Shared,

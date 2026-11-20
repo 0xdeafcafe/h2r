@@ -151,38 +151,40 @@ JWT themselves, the way AT Protocol service auth works.
   (the server id) and `iat` so it can't be replayed to another server. Servers can
   require an invite code (`--invite-only`).
 
-Server-issued tokens (signed by the server key) are used between servers
-(§5) and by the operator: publishing title files and creating invites need a
-token signed by the server key, so they run on the server's machine, or a
-token from an admin account ([live-admin.md](live-admin.md)).
+The operator signs tokens with the server key for tasks such as
+publishing title files and creating invites. Admin accounts can also
+perform these tasks with self-issued tokens. The server checks an
+explicit per-account grant when a non-admin account asks to create an
+invite ([live-admin.md](live-admin.md) §5).
 
-**Invites from an admin account.** An invite code is always a JWS signed
-by the server key (`{aud, jti, exp}`, typ `h2live-invite`), so account
-creation checks it the same way whoever asked for it. An admin account
-(the browser's dashboard) asks with an `invites.write` token *and* an
-`InviteCreated` event `{jti, exp}` on the `invites` stream signed by its
-own key. The server checks that the author is an admin now, rate-limits
-it (per author: a burst of 10, then one a minute), checks the event like
-any signed write (its key, `at` within 5 minutes, a fresh nonce), that
-`exp` is at most 30 days away and the `jti` new, appends the admin's JWS
-as it is, and only then signs the code. So:
+**Server invites.** An account sends an `invites.write` token and a signed
+`InviteCreated {jti, exp}` event on the `invites` stream. The server
+checks the caller's permission, matches the event author to the token
+issuer, verifies the event with a current key, checks its time (within
+five minutes) and rejects a replayed nonce. Each invite has a fresh
+`jti` and expires within 30 days. Creation uses a separate rate bucket
+per author. Non-admin accounts with the grant can make three at once
+and admins ten, with one slot replenished per minute. A grant can also
+limit the account's open invites. The server checks the cap and appends
+the event in the same write sequence.
 
-- the log holds, for every admin invite, who asked for it, signed by them;
-  the code itself is not in the log (it is a server signature over the
-  `jti` and `exp`, which are);
-- the server key never leaves the server, and an account key cannot mint
-  a code on its own: the server signs only after the audit event is
-  appended;
-- `InviteRevoked` `{jti}` (also admin-signed) ends an open one, and an
-  invite from an account that is no longer an admin is refused at sign-up,
-  so revoking an admin also kills the invites it made. The operator's own
-  invites (`h2 live invite create`) are not logged and work as before.
+The server returns a generated code after the append. Only the server
+has the key that derives the code from the invite id. A custom code goes
+beside the signed event and the log stores its MAC. Operator invites use
+server-signed creation events. Long codes signed by the server also
+redeem.
 
-What it adds to an admin's power: inviting people, which on an
-`--invite-only` server is who may sign up. It does not let an admin make
-admins (grant and revoke stay operator-only), and a stolen admin key
-could mint at most ten invites, then one a minute, each visible in the
-log and revocable.
+An `invite-grants.write` token from an admin or the operator sets or
+revokes the permission. The server signs the resulting account event,
+including the caller's identity, and replays it at startup. A
+revocation closes the account's open invites permanently. Redemption
+checks that the invite is open and its maker still has permission. An
+`InviteRevoked` event also closes a single invite. Admins can close any
+invite and granted players can close their own.
+
+Listing all invites and their open generated codes requires an
+`admin.read` token. The `invites.read` scope gives a caller only their own
+open invites and still requires invite permission.
 
 **Signing a device out.** Each device's key is its sign-in, so ending one
 is revoking its key: `KeyRevoked` (client-signed through `POST
@@ -192,8 +194,9 @@ memory on every request, so the revoked key's next token is refused (401)
 with no session table and no extra lookup.
 
 `lxm` values: `events.write`, `games.write` (game events and ingest),
-`titles.write` (operator or admin), `invites.write` (operator or admin),
-`admin.read` (an admin's status and invite reads), `recovery.read` and
+`titles.write` (operator or admin), `invites.write` (operator, admin or
+granted account), `invites.read` (own open invites), `invite-grants.write`
+(admin or operator), `admin.read` (admin status and all invites), `recovery.read` and
 `recovery.write` (the sign-in code), `signins.read` and `signins.write`
 (the account's own sign-ins), and `read` (every
 read, including the stream, on a `--private` server).

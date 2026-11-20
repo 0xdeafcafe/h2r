@@ -290,6 +290,7 @@ fn may_write(author: &Author, stream: &str, kind: &str) -> bool {
         || live_proto::reports::KINDS.contains(&kind)
         || live_proto::bans::KINDS.contains(&kind)
         || live_proto::mutes::KINDS.contains(&kind)
+        || matches!(kind, crate::invites::GRANTED | crate::invites::GRANT_REVOKED)
     {
         return false;
     }
@@ -873,6 +874,12 @@ impl Live {
         }
         let (req, key) = AccountRequest::open(jws, &self.identity.id, now()).map_err(sign_error)?;
         let tag = Gamertag::new(&req.gamertag).map_err(|e| invalid(e.to_string()))?;
+        // Keep redemption and its account append ordered with invite revocation.
+        let _invite_guard = if self.policy.invite_only && req.invite.is_some() {
+            Some(self.invites.writes.lock().await)
+        } else {
+            None
+        };
         let now = now();
         let invite = match (&req.invite, self.policy.invite_only) {
             // A signed code (the older, long form) or a short one.
@@ -1194,6 +1201,7 @@ impl Live {
             created_at: a.created_at.clone(),
             online: s.presence.contains_key(&a.xuid),
             admin: self.admins.is_admin_of(&a.gamertag, a.xuid),
+            invite_grant: self.invites.grant(a.xuid),
             bot: false,
         }
     }
@@ -1266,6 +1274,7 @@ impl Live {
                 created_at: s.bots.issued_at.get(&b.xuid).cloned().unwrap_or_default(),
                 online: false,
                 admin: false,
+                invite_grant: None,
                 bot: true,
             },
             id: Author::Account {

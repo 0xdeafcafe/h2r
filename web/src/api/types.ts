@@ -361,9 +361,11 @@ export type StreamMessage =
  *  `position` the log head when it was read. */
 export interface ListResponse<T> { items: T[]; next: string | null; position: number }
 
+export interface InviteGrant { open_cap: number | null }
+
 /** `bot` is true for a bot account (docs/game/bots.md §6); absent for humans.
  *  `GET /v1/accounts` never lists bots; `GET /v1/accounts/{tag}` answers for one. */
-export interface AccountSummary { xuid: Xuid; gamertag: string; created_at?: string; online?: boolean; admin?: boolean; bot?: boolean }
+export interface AccountSummary { xuid: Xuid; gamertag: string; created_at?: string; online?: boolean; admin?: boolean; bot?: boolean; invite_grant?: InviteGrant }
 
 export interface PresenceEntry { xuid: Xuid; gamertag: string; state: string; game_id?: GameId | null; activity?: string | null; since: string }
 

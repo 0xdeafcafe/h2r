@@ -277,7 +277,7 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
 
   let m: RegExpMatchArray | null;
   if (path === "/v1/accounts" && req.method === "GET") {
-    return list([...world.accounts.values()].map((a) => ({ ...world.publicAccount(a), ...(admin.isAdmin(a) ? { admin: true } : {}) })).slice(0, limitOf(u)));
+    return list([...world.accounts.values()].map((a) => ({ ...world.publicAccount(a), ...admin.accountRoles(a) })).slice(0, limitOf(u)));
   }
   if (path === "/v1/accounts" && req.method === "POST") {
     // A JWS signed by the new key over {gamertag, jwk, invite?, aud, iat}
@@ -302,7 +302,7 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
     const a = world.accountByTag(decodeURIComponent(m[1]!));
     if (!a) return err(404, "not_found", "no such account");
     const recent = [...world.games.values()].filter((g) => g.players.some((p) => p.p.xuid === a.xuid)).slice(-20).reverse();
-    return json({ ...world.publicAccount(a), ...(admin.isAdmin(a) ? { admin: true } : {}), recent_games: recent.map((g) => world.gameSummary(g)), position: world.log.length });
+    return json({ ...world.publicAccount(a), ...admin.accountRoles(a), recent_games: recent.map((g) => world.gameSummary(g)), position: world.log.length });
   }
   if (path === "/v1/stats/summary") {
     const sum = statsSummary(u.searchParams.get("window") ?? "7d");

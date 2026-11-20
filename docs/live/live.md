@@ -177,6 +177,8 @@ h2 live maps publish|list ...
 h2 live assets extract [--disc PATH] [--out DIR] [--mappack ISO] [--installed DATA]
 h2 live assets check [--out DIR]
 h2 live store copy [--from DB --to DB] [--from-blobs LOC --to-blobs LOC]
+h2 live invite grant <gamertag> [--open-cap N] [--server URL] [--data DIR]
+h2 live invite ungrant <gamertag> [--server URL] [--data DIR]
 h2 live invite create [--days N] [--code TEXT] [--as GAMERTAG] [--server URL] [--data DIR]
 h2 live invite list [--as GAMERTAG] [--server URL] [--data DIR]
 h2 live invite revoke <jti> --as GAMERTAG [--server URL]
@@ -455,8 +457,8 @@ the CLI sign with exactly this code. `crates/live/live-server` is the service
 
 The API is [live-api.md](live-api.md) on `127.0.0.1:8074`. Built: health,
 discovery, accounts (create, list, one, keys by gamertag and by XUID),
-presence (with `POST /v1/presence/ping`), invites (`POST /v1/invites`,
-operator), the event log (`GET /v1/events` with `from`/`cursor`, `type`,
+presence (with `POST /v1/presence/ping`), [server invites](live-api.md#server-invites),
+the event log (`GET /v1/events` with `from`/`cursor`, `type`,
 `exclude`, `stream`, `limit`; `POST /v1/events` for one signed event), the
 `/v1/stream` WebSocket (replay from `?from=`, `caught_up`, then live events
 and game frames, with `types`/`exclude`/`stream`/`games`), title files,

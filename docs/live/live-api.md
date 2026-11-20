@@ -47,6 +47,7 @@ Event types so far (payload fields):
 |---|---|---|
 | `account-<xuid>` | `AccountCreated` | `xuid`, `gamertag` |
 | `account-<xuid>` | `KeyAdded`, `KeyRevoked` | `jwk`, `kid` (security §1) |
+| `account-<xuid>` | `InviteGrantSet`, `InviteGrantRevoked` | `xuid`, `gamertag`, `by`, plus `open_cap` for `InviteGrantSet` ([Server invites](#server-invites)) |
 | `account-<xuid>` | `FriendRequested`, `FriendAccepted`, `FriendDeclined`, `FriendRemoved` | `from`/`to`, or `by`/`friend` ([Friends](#friends), below) |
 | `gamertag-<lower>` | `GamertagReserved` | `xuid` |
 | `title-<id>-file-<name>` | `TitleFilePublished` | `title_id`, `name`, `sha256`, `size` |
@@ -373,7 +374,7 @@ the index once and fetches the one chunk whose window holds the tick.
 | `GET /healthz` | `{ "ok": true, "position": <head> }` |
 | `GET /.well-known/h2live.json` | server id, API base, server keys (security §4), `url`: the public base URL when known ([live-hosting.md](live-hosting.md)), and `ingest_frame_versions` for supported live codecs |
 | `GET /v1/accounts/{gamertag}/keys` | account public keys with validity ranges |
-| `GET /v1/accounts` | accounts: `{xuid, gamertag, created_at, online}` |
+| `GET /v1/accounts` | accounts with `xuid`, `gamertag`, `created_at`, `online`, `admin` and optional `invite_grant: {open_cap}` |
 | `GET /v1/accounts/{gamertag}` | one account plus `recent_games` (without the co-op games the reader may not see: [Co-op games](#co-op-games)) |
 | `GET /v1/accounts/{gamertag}/friends` | friends with presence; pending requests in and out for the player and admins only ([Friends](#friends), below) |
 | `GET /v1/presence` | who is online now: `{xuid, gamertag, state, game_id?, activity?, since, build?, capabilities?}`; a player in a game or session the reader may not see shows no `game_id` and `activity: "In a game"` ([Co-op games](#co-op-games), "Presence") |
@@ -392,7 +393,8 @@ the index once and fetches the one chunk whose window holds the tick.
 | `GET /v1/admin/status` | admins only (`admin.read` token): the facts plus uptime, tunnel, game art, admins, log, invites; the data directory only to this machine (live-admin.md §5) |
 | `GET /v1/admin/usage?days=` | admins only (`admin.read`): the server's usage per UTC day, events by type, stored bytes ([Usage](#usage), below) |
 | `GET /v1/admin/usage/accounts?days=&sort=&limit=` | admins only (`admin.read`): the accounts using the most ([Usage](#usage)) |
-| `GET /v1/invites` | admins only (`admin.read` token): the invites admins made, newest first, open ones with their code (live-admin.md §5) |
+| `GET /v1/invites` | `admin.read` token from an admin or the operator. All invites, newest first ([Server invites](#server-invites)) |
+| `GET /v1/invites/mine` | `invites.read` token from a caller with invite access. Only their open invites ([Server invites](#server-invites)) |
 
 ### Caching
 
@@ -788,12 +790,42 @@ except account creation. Signed bodies are sent raw as a compact JWS with
 | `POST /v1/accounts/by-xuid/{xuid}/signins/sign-out-others` | the account's own `signins.write` token | sign out every device but the caller ([Sign-ins](#sign-ins)) |
 | `PUT /v1/titles/{title}/files/{name}` | raw bytes, operator token | publish a title file (max 2 MiB) |
 | `POST /v1/events` | one compact JWS (an event on a stream the author may write) | append; 201 `{position}` |
-| `POST /v1/invites` | none with an operator token (`?days=&code=`); or a JWS `InviteCreated` event `{jti, exp}` by an admin account with its `invites.write` token, bare or as `{"event": <jws>, "code": "..."}` | create a single-use invite; 201 `{invite, custom, jti, exp, position}`: `invite` is the 25-character code or the custom one (live-admin.md §5, "Invite codes people type") |
-| `POST /v1/invites/{jti}/revoke` | JWS `InviteRevoked` event `{jti}` by an admin | end an open invite an admin made |
+| `POST /v1/accounts/{gamertag}/invite-grant` | `{"open_cap": N}` with an admin or operator's `invite-grants.write` token | enable or update invite access. 201 `InviteGrantSet` wire event |
+| `DELETE /v1/accounts/{gamertag}/invite-grant` | no body, same token scope | revoke invite access and the account's open invites. 200 `InviteGrantRevoked` wire event or 409 if there is no explicit grant |
+| `POST /v1/invites` | `invites.write` token. Signed `InviteCreated {jti, exp}` for an account, bare or in `{"event": <jws>, "code": "..."}`. No body for operator form (`?days=&code=`) | create a single-use invite. 201 `{invite, custom, jti, exp, position}` |
+| `POST /v1/invites/{jti}/revoke` | `invites.write` token and signed `InviteRevoked {jti}` | end an open invite. Admins can end any invite and granted accounts can end their own |
 | `POST /v1/games` | `GameStarted` data without `game_id` | starts a game; returns `{game_id}` |
 | `POST /v1/games/{id}/events` | `[{type, data}]` | append game events in order |
 | `PUT /v1/maps/{map}/outline` | outline JSON, admin or operator's `games.write` token | store or replace a map outline |
 | `POST /v1/local/signin` | `{"once": token}`, no token | embedded server and loopback peers only: answers once with the browser account entry `h2 play --live-local` offered; otherwise 404 (live-admin.md §4) |
+
+## Server invites
+
+An admin or the operator can enable **can invite** on an existing account.
+Both grant events are server-signed and include the acting author's id
+in `by`. The cap is a positive 32-bit integer, or `null` for no cap.
+Omitting `open_cap` also sets no cap. The account list, account detail and
+snapshot include `invite_grant: {open_cap}` only when the explicit grant
+is active. Admins have invite permission through their role.
+
+An authenticated non-admin account without a grant receives HTTP 403
+for `POST /v1/invites`:
+
+```json
+{"error":"forbidden","message":"an admin must enable invite access for this account"}
+```
+
+With a grant, creating at the open invite cap returns 409. Exceeding the
+creation rate returns 429. Non-admin accounts with a grant have a burst
+of three, with one invite slot replenished per minute. Admins have a
+burst of ten and the same refill rate. Redemption or revocation frees
+open-cap space. Lowering a cap leaves existing invites open.
+
+Both list endpoints return `{items, position}`. Each item has `jti`,
+`by`, `at`, `exp`, `state` (`open`, `used`, `revoked` or `expired`) and
+`custom`. It can also have `by_gamertag`, `used_by` and
+`used_by_gamertag`. Open generated invites carry the `invite` code.
+See [Invite codes people type](live-admin.md#invite-codes-people-type).
 
 ## Sign-ins
 

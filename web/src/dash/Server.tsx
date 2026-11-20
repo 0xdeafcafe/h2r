@@ -4,7 +4,8 @@
 // playlists, custom content), reached from the "halo admin" pod.
 //   - the overview: the server's public facts for everyone; for an admin,
 //     "your server": uptime, the address, sign-up, players, game art, the log;
-//   - /dash/server/invites: an admin makes, copies and revokes invite codes;
+//   - /dash/server/invites: admins make, copy and revoke invite codes;
+//   - /dash/server/my-invites: a granted player manages their own open invites;
 //   - /dash/server/accounts: an admin's view of the accounts and the admins;
 //   - /dash/server/reports: an admin's queue of player reports (Reports.tsx);
 //   - /dash/server/bans: an admin's list of bans, with lift (Bans.tsx);
@@ -28,6 +29,7 @@ import {
   createInvite,
   fetchAdminStatus,
   fetchInvites,
+  fetchMyInvites,
   fetchServerFacts,
   formatUptime,
   reachWords,
@@ -156,9 +158,8 @@ export interface InviteControls extends BladeControls {
   copy(): void;
 }
 
-/** Making, copying and revoking invite codes (admins): a column of blades
- *  moved through with up and down; A acts on the row, X revokes. */
-export function InvitesPlate(props: { info: ServerInfo; bind: (c: InviteControls) => void }) {
+/** Making, copying and revoking invite codes. A acts on a row, X revokes. */
+export function InvitesPlate(props: { info: ServerInfo; own?: boolean; bind: (c: InviteControls) => void }) {
   const [days, setDays] = createSignal<number>(7);
   const [custom, setCustom] = createSignal("");
   const [made, setMade] = createSignal<{ invite: string; jti: string; exp: number; custom?: boolean } | null>(null);
@@ -170,46 +171,72 @@ export function InvitesPlate(props: { info: ServerInfo; bind: (c: InviteControls
     const me = identity.me(), wk = live.wellKnown();
     return me && wk ? { me, aud: wk.id, api: live.server().api } : null;
   };
+  const canUse = () => props.own ? adminState.myInviteGrant() !== null : props.info.admin() === true;
   const say = (t: string) => { setFlash(t); setTimeout(() => setFlash((f) => (f === t ? null : f)), 1800); };
+  let scope = 0;
+  let loadSeq = 0;
   async function load() {
     const c = ctx();
-    if (!c || props.info.admin() !== true) return;
-    try { setList(await fetchInvites(c.api, c.aud, c.me)); } catch (x) { setErr((x as Error).message); }
+    if (!c || !canUse()) return;
+    const n = ++loadSeq;
+    try {
+      const read = props.own ? fetchMyInvites : fetchInvites;
+      const items = await read(c.api, c.aud, c.me);
+      if (n !== loadSeq) return;
+      setList(items);
+      if (props.own) setMade((m) => m && items.some((i) => i.jti === m.jti) ? m : null);
+    } catch (x) { if (n === loadSeq) setErr((x as Error).message); }
   }
-  createEffect(on(() => [props.info.admin(), live.server().base], () => void load()));
+  createEffect(on([canUse, () => live.server().api, () => live.wellKnown()?.id, () => identity.me()?.kid], () => {
+    setList([]); setMade(null); setErr(null); setFlash(null); setCustom(""); setBusy(false);
+    onCleanup(() => { scope++; loadSeq++; });
+    if (!canUse()) return;
+    void load();
+    if (props.own) {
+      const timer = setInterval(() => void load(), 15_000);
+      onCleanup(() => clearInterval(timer));
+    }
+  }));
   async function create() {
     const c = ctx();
-    if (!c || busy()) return;
+    if (!c || !canUse() || busy()) return;
+    const n = scope;
     const want = custom().trim();
     const bad = want ? customCodeError(want) : null;
     if (bad) { setErr(`own code: ${bad}`); return; }
     setBusy(true); setErr(null);
     try {
       const r = await createInvite(c.api, c.aud, c.me, days(), undefined, undefined, want || undefined);
+      if (n !== scope) return;
       setMade(r);
       setCustom("");
-      if (await copyText(r.invite)) say("code copied");
+      if (await copyText(r.invite) && n === scope) say("code copied");
+      if (n !== scope) return;
       await load();
-      props.info.refresh();
+      if (n === scope && !props.own) props.info.refresh();
     } catch (x) {
-      setErr(`couldn't make an invite: ${(x as Error).message}`);
-    } finally { setBusy(false); }
+      if (n === scope) setErr(`couldn't make an invite: ${(x as Error).message}`);
+    } finally { if (n === scope) setBusy(false); }
   }
   async function copy(code?: string | null) {
+    if (!canUse()) return;
     const c = code ?? made()?.invite ?? list().find((i) => i.invite)?.invite;
     if (c && (await copyText(c))) say("code copied");
   }
   async function revoke(jti: string) {
     const c = ctx();
-    if (!c) return;
+    if (!c || !canUse()) return;
+    const n = scope;
     setErr(null);
     try {
       await revokeInvite(c.api, c.aud, c.me, jti);
+      if (n !== scope) return;
       if (made()?.jti === jti) setMade(null);
       await load();
-      props.info.refresh();
+      if (n !== scope) return;
+      if (!props.own) props.info.refresh();
       say("invite revoked");
-    } catch (x) { setErr(`couldn't revoke: ${(x as Error).message}`); }
+    } catch (x) { if (n === scope) setErr(`couldn't revoke: ${(x as Error).message}`); }
   }
   const until = (exp: number) => new Date(exp * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" });
   const daysWord = (d: number) => (d === 1 ? "1 day" : `${d} days`);
@@ -239,11 +266,11 @@ export function InvitesPlate(props: { info: ServerInfo; bind: (c: InviteControls
     copy: () => void copy(),
     sel: () => ctl?.sel() ?? 0,
     alt: () => ctl?.alt() ?? null,
-    act: (a) => (props.info.admin() === true && ctl ? ctl.act(a) : false),
+    act: (a) => (canUse() && ctl ? ctl.act(a) : false),
   });
   return (
-    <Plate small="h2 live" title="invites" main>
-      <Show when={props.info.admin() === true} fallback={<p class="dx-note">Only an admin of {host()} makes invite codes.</p>}>
+    <Plate small="h2 live" title={props.own && canUse() ? "invite someone" : "invites"} main>
+      <Show when={canUse()} fallback={<p class="dx-note">An admin of {host()} must enable invite access for this account.</p>}>
         <dl>
           <dt>sign-up</dt><dd>{props.info.facts()?.invite_only ? "invite code needed" : "open to anyone"}</dd>
         </dl>
