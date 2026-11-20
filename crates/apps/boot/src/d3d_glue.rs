@@ -121,7 +121,7 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
     }
     #[cfg(all(not(feature = "gpu"), feature = "desktop-runtime"))]
     {
-        install_headless_cpu_for_profile(rt, crate::registration::compiled_render_hooks())
+        install_headless_cpu_for_profile(rt, crate::run_plan::compiled_render_hooks())
     }
     #[cfg(not(feature = "desktop-runtime"))]
     {
@@ -140,7 +140,7 @@ pub(crate) fn install_headless_cpu_for_profile(
 /// No display backend. Leftover lobby and loading draws carry texture
 /// descriptors and handles through the ABI without copying the pixels.
 pub fn install_light(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
-    install_light_for_profile(rt, crate::registration::compiled_render_hooks())
+    install_light_for_profile(rt, crate::run_plan::compiled_render_hooks())
 }
 
 pub(crate) fn install_light_for_profile(
@@ -171,7 +171,7 @@ pub fn install_headless(
     rt: &runtime::Runtime,
     interp: Option<Interpolation>,
 ) -> anyhow::Result<Installed> {
-    install_headless_for_profile(rt, interp, crate::registration::compiled_render_hooks(), None)
+    install_headless_for_profile(rt, interp, crate::run_plan::compiled_render_hooks(), None)
 }
 
 #[cfg(feature = "gpu")]
@@ -807,7 +807,7 @@ where
     B: d3d::backend::Backend + Send + 'static,
     B::Texture: Sync,
 {
-    install_threaded_for_profile(rt, backend, extra, interp, crate::registration::compiled_render_hooks())
+    install_threaded_for_profile(rt, backend, extra, interp, crate::run_plan::compiled_render_hooks())
 }
 
 #[cfg(feature = "gpu")]
@@ -1340,7 +1340,7 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
     backend: B,
     extra: Option<ExtraReport>,
 ) -> anyhow::Result<Installed> {
-    install_for_profile(rt, backend, extra, crate::registration::compiled_render_hooks())
+    install_for_profile(rt, backend, extra, crate::run_plan::compiled_render_hooks())
 }
 
 pub(crate) fn install_for_profile<B: d3d::backend::Backend + Send + 'static>(
@@ -1350,7 +1350,7 @@ pub(crate) fn install_for_profile<B: d3d::backend::Backend + Send + 'static>(
     profile: film::RenderHooks,
 ) -> anyhow::Result<Installed> {
     anyhow::ensure!(
-        crate::registration::compiled_render_hooks().supports(profile),
+        crate::run_plan::compiled_render_hooks().supports(profile),
         "unavailable D3D hook profile {profile:?}"
     );
     #[cfg(feature = "desktop-runtime")]

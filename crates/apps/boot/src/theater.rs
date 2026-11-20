@@ -349,7 +349,7 @@ impl Session {
 
     pub(crate) fn render_hooks(&self) -> film::RenderHooks {
         self.lock().header.render_hooks
-            .unwrap_or_else(crate::registration::compiled_render_hooks)
+            .unwrap_or_else(crate::run_plan::compiled_render_hooks)
     }
 
     pub(crate) fn telemetry_plan(&self) -> live_proto::film::TelemetryHooks {

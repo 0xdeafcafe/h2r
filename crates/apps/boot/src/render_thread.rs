@@ -7,9 +7,9 @@
 //! the body ([`hooks::plan::Chain::render_thread`]). The plan marks the
 //! chain's override (`Dispatch::mark_context_only`) and the executor's fork
 //! keeps it. Every other hook is listed in [`REFUSED`] with the reason it
-//! stays off. The test builds the plan from every feature boot adds and
-//! fails on a hook that is in neither, so a new hook cannot quietly turn
-//! into a fallback.
+//! stays off. A test in `registration`'s tests builds the plan from every
+//! feature boot adds and fails on a hook that is in neither, so a new hook
+//! cannot quietly turn into a fallback.
 
 /// Why a hook stays on the game thread when its chain has an "after" part:
 /// the chain calls the body through its shadow with a Rust continuation,
@@ -279,104 +279,3 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
          are planned",
     ),
 ];
-
-#[cfg(test)]
-mod tests {
-    use super::REFUSED;
-    use crate::registration::tests::{ALL_ON, Case, NATIVE_OFF, registry};
-
-    fn refused(feature: &str, point: &str) -> Option<usize> {
-        REFUSED
-            .iter()
-            .position(|&(f, p, _)| f == feature && (p == "*" || p == point))
-    }
-
-    /// Every hook boot's features place, with every switch that adds one
-    /// on (and the census in a second build, since pipelining is off with
-    /// it), either runs on the pipelined render thread or is listed in
-    /// [`REFUSED`] with its reason, and every listed entry is still used.
-    /// The ones the render path meets in a default run (the locale lookups,
-    /// Blind, the native world's and objects' layer draw) are context-only,
-    /// and so are the native transparents' geometry handler and the native
-    /// lights' passes. The native post's colour pass and screen effect are
-    /// not: their return hooks commit or replay the held draws.
-    #[test]
-    fn every_feature_hook_runs_on_the_render_thread_or_says_why_not() {
-        let mut unlisted = Vec::new();
-        let mut used = vec![false; REFUSED.len()];
-        let mut safe = Vec::new();
-        // The empty switch string places every native stage (on by default
-        // since 2026-11-20): the native world and objects at the layer draw,
-        // and the transparents' handler, with nothing else there, are
-        // render-thread safe together, and so are the lights' skip and view
-        // observer (placed only without render-timing) and the HUD's
-        // screen-quad and HUD-quad befores.
-        for switches in [
-            String::new(),
-            format!("{ALL_ON},{NATIVE_OFF}"),
-            ALL_ON.to_owned(),
-            format!("{ALL_ON},render-census"),
-        ] {
-            let mut features = registry(&Case::full(&switches));
-            features.add(&crate::campaign_menu::Campaigns {
-                state: std::sync::Arc::new(crate::campaign_menu::tests::state()),
-                picker: std::sync::Arc::new(|| 0),
-            }).unwrap();
-            let plan = features.build(&hooks::Base).unwrap();
-            for c in plan.chains.values() {
-                match c.render_thread() {
-                    Ok(()) => safe.push(c.point.name),
-                    Err(hooks) => {
-                        for (h, why) in hooks {
-                            match refused(h.feature, c.point.name) {
-                                Some(i) => used[i] = true,
-                                None => unlisted.push(format!(
-                                    "{} {} {}:{} ({why})",
-                                    c.point.name,
-                                    h.kind().as_str(),
-                                    h.feature,
-                                    h.label
-                                )),
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        assert!(
-            unlisted.is_empty(),
-            "hooks the pipelined render would fall back on; mark them context_only or list them in REFUSED:\n{}",
-            unlisted.join("\n")
-        );
-        let stale: Vec<_> = REFUSED
-            .iter()
-            .zip(&used)
-            .filter(|(_, u)| !**u)
-            .map(|(r, _)| r)
-            .collect();
-        assert!(stale.is_empty(), "listed but not placed: {stale:?}");
-        for p in [
-            "LOCALE_FIND",
-            "LOCALE_EXISTS",
-            "HUD_SHOWN",
-            "FIRST_PERSON_RENDER",
-            "UI_QUAD_TO_SCREEN",
-        ] {
-            assert!(safe.contains(&p), "{p} runs on the render thread");
-        }
-        #[cfg(feature = "gpu")]
-        for p in [
-            "LAYER_DRAW",
-            "TRANSPARENT_GEOMETRY",
-            "SCENE_TRANSPARENTS",
-            "SCENE_TRANSPARENTS_END",
-            "DECAL_RENDER",
-            "DECAL_RENDER_END",
-            "RENDER_LIGHT_PASSES",
-            "LIGHT_GEOMETRY_DRAW",
-            "RENDER_DYNAMIC_LIGHTS",
-        ] {
-            assert!(safe.contains(&p), "{p} runs on the render thread");
-        }
-    }
-}

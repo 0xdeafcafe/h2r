@@ -136,6 +136,7 @@ pub mod render_probe;
 #[cfg(feature = "desktop-runtime")]
 pub mod render_thread;
 pub mod retail_rows;
+pub mod run_plan;
 pub mod sampling;
 pub use live_telemetry as telemetry;
 pub mod bot_glue;
@@ -622,7 +623,7 @@ fn run_configured(
                 light: host_light,
                 bots,
                 telemetry_hooks: telemetry::image_film_hooks(&loaded.runtime),
-                render_hooks: registration::compiled_render_hooks(),
+                render_hooks: run_plan::compiled_render_hooks(),
                 live_service: live.server_url.is_some(),
                 address: _live
                     .as_ref()
@@ -1009,7 +1010,7 @@ fn run_configured(
         native_shadows_glue::configure_single(b);
     }
     let render_hooks = film.as_ref()
-        .map_or_else(registration::compiled_render_hooks, |s| s.render_hooks());
+        .map_or_else(run_plan::compiled_render_hooks, |s| s.render_hooks());
     #[cfg(feature = "gpu")]
     let mut d3d_calls = match (opts.d3d, host.gfx.take()) {
         (false, _) => None,
