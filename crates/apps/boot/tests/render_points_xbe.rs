@@ -71,3 +71,18 @@ fn the_native_scene_list_sites_are_instruction_boundaries() {
         assert!(analysis.functions.contains_key(&site), "{site:#010x}");
     }
 }
+
+#[test]
+#[ignore = "needs the retail default.xbe in $H2_XBE"]
+fn render_aspect_sites_are_dispatch_blocks_in_the_build_tiers_analysis() {
+    let data = std::fs::read(std::env::var_os("H2_XBE").expect("set H2_XBE")).unwrap();
+    let xbe = xbe::Xbe::parse(&data).unwrap();
+    assert!(recomp::has_retail_render_sites(&xbe));
+    let (analysis, _) = recomp::analyze_cached(&xbe, recomp::analysis_cache(&data).as_deref()).unwrap();
+    let builder = analyze::cfg::CfgBuilder::new(&analysis, &xbe);
+    for pc in points::render_aspect::instruction_entries() {
+        assert!(analysis.functions.contains_key(&pc), "missing render hook entry {pc:#010x}");
+        let cfg = builder.build(pc).unwrap();
+        assert!(cfg.blocks.contains_key(&pc), "no block for render hook {pc:#010x}");
+    }
+}

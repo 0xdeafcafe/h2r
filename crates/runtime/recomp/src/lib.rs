@@ -10,6 +10,8 @@
 pub mod fallback;
 pub mod host_coverage;
 pub mod host_report;
+mod render_entries;
+pub use render_entries::has_retail_render_sites;
 pub mod shim;
 pub mod sse;
 pub mod tier;
@@ -224,14 +226,16 @@ fn analysis_cache_in(xbe_bytes: &[u8], dir: &Path, analyzer: &str) -> PathBuf {
     ))
 }
 
-/// Discovery's result for the image: read from `cache` when an earlier
-/// build by the same analyzer left it there, otherwise computed and saved
-/// there. With no `cache`, always computed. Returns whether the cache
-/// served it.
-pub fn analyze_cached(
-    x: &xbe::Xbe,
-    cache: Option<&Path>,
-) -> Result<(analyze::Analysis, bool)> {
+/// Discovery for native emission, including dispatchable retail render
+/// sites. Only raw discovery is cached; a cache hit takes the same path
+/// through the current hook catalog as a freshly decoded image.
+pub fn analyze_cached(x: &xbe::Xbe, cache: Option<&Path>) -> Result<(analyze::Analysis, bool)> {
+    let (mut analysis, hit) = discover_cached(x, cache)?;
+    render_entries::expose(x, &mut analysis);
+    Ok((analysis, hit))
+}
+
+fn discover_cached(x: &xbe::Xbe, cache: Option<&Path>) -> Result<(analyze::Analysis, bool)> {
     if let Some(cache) = cache
         && let Ok(bytes) = std::fs::read(cache)
         && let Some(a) = analyze::Analysis::decode(&bytes)
@@ -728,6 +732,54 @@ mod tests {
         assert!(!analyze_cached(&x1, None).unwrap().1);
         assert!(!other.exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cached_discovery_exposes_the_same_retail_hud_dispatch_site_as_fresh_discovery() {
+        use guest_layout::points::render_aspect::ANCHOR_READY;
+        // Two tiny executable sections: the entry calls the owner, whose
+        // inc eax falls through to a second inc eax at a named hook site.
+        let entry = 0x002d_0aee_u32;
+        let owner = ANCHOR_READY.base - 1;
+        let mut code = vec![0xe8];
+        code.extend_from_slice(&owner.wrapping_sub(entry + 5).to_le_bytes());
+        code.push(0xc3);
+        let mut bytes = synthetic_xbe(&code);
+        let hook_raw = bytes.len() as u32;
+        bytes.extend_from_slice(&[0x40, 0x40, 0xc3]);
+        let mut x = xbe::Xbe::parse(&bytes).unwrap();
+        x.entry = entry;
+        x.size_of_image = entry + x.sections[0].vsize - x.base;
+        x.sections[0].va = entry;
+        x.sections.push(xbe::Section {
+            name: ".hook".into(),
+            flags: xbe::SectionFlags(xbe::SectionFlags::EXECUTABLE),
+            va: owner,
+            vsize: 3,
+            raw_addr: hook_raw,
+            raw_size: 3,
+        });
+        let raw = analyze::analyze(&x).unwrap();
+        assert_eq!(raw.claim(ANCHOR_READY.base), Some(('I', Some(owner))));
+        assert!(!raw.functions.contains_key(&ANCHOR_READY.base));
+
+        let dir = std::env::temp_dir().join(format!("h2-aspect-entries-{}", std::process::id()));
+        let cache = dir.join("raw.h2a");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&cache, raw.encode()).unwrap();
+        assert!(!analyze_cached(&x, Some(&cache)).unwrap().0.functions.contains_key(&ANCHOR_READY.base),
+            "other titles with the same instruction address keep the discovered owner");
+
+        x.certificate.title_id = 0x4d53_0064;
+        for (source, expected_hit) in [(None, false), (Some(cache.as_path()), true)] {
+            let (analysis, hit) = analyze_cached(&x, source).unwrap();
+            assert_eq!(hit, expected_hit);
+            let cfg = analyze::cfg::CfgBuilder::new(&analysis, &x);
+            assert!(cfg.build(ANCHOR_READY.base).is_some());
+            assert!(cfg.build(owner).unwrap().blocks[&owner].edges.iter()
+                .any(|edge| edge.target == Some(ANCHOR_READY.base) && edge.exits));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// The real cache name carries the analyzer's source hash, so editing

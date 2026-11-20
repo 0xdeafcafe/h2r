@@ -20,6 +20,8 @@
 //! }
 //! ```
 
+pub mod render_aspect;
+
 /// Where one argument or the result lives at the function's entry or exit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Loc {
