@@ -131,6 +131,9 @@ mod opaque_streams;
 #[cfg(feature = "gpu")]
 mod scene_glue;
 pub mod new_maps;
+// maps.test.*: test maps from recipes (docs/game/test-maps.md).
+#[cfg(feature = "test-maps")]
+mod test_maps;
 pub mod pad_speaker;
 pub mod precision;
 pub mod registration;
@@ -1831,6 +1834,18 @@ fn run_configured(
         }
         // world.* results name their tags the same way.
         a.agent.set_tag_names(Box::new(hot_glue::map_tags(&loaded.runtime, maps())));
+    }
+    // maps.test.*: test maps built from recipes and loaded through the
+    // agent's guest calls (test_maps.rs, docs/game/test-maps.md).
+    #[cfg(feature = "test-maps")]
+    if let Some(a) = &agent {
+        test_maps::install(
+            &a.agent,
+            a.sim.as_ref().and_then(|s| s.calls()),
+            &opts.disc,
+            &opts.data_root,
+            k.vfs(),
+        );
     }
     // The debug menu's host methods and connection (debug_menu_glue.rs).
     if let Some(a) = &agent {

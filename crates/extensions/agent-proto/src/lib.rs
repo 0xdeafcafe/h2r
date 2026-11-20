@@ -25,6 +25,7 @@ mod render;
 pub mod shadow;
 pub mod sim;
 pub mod state;
+pub mod test_maps;
 pub mod theater;
 pub mod trace;
 pub use client::{CallError, Client};
@@ -158,6 +159,15 @@ pub mod method {
     pub const HOST_LOBBY_STATE: &str = "host.lobby.state";
     pub const HOST_LOBBY_START: &str = "host.lobby.start";
     pub const HOST_LOBBY_CLOSE: &str = "host.lobby.close";
+    /// Test maps (docs/game/test-maps.md, [`crate::test_maps`]): the
+    /// built-in recipes and the test maps built.
+    pub const MAPS_TEST_LIST: &str = "maps.test.list";
+    /// Build a test map from a recipe, in the background.
+    pub const MAPS_TEST_CREATE: &str = "maps.test.create";
+    /// Queue a built test map as the next game.
+    pub const MAPS_TEST_LOAD: &str = "maps.test.load";
+    /// Delete a test map's package.
+    pub const MAPS_TEST_REMOVE: &str = "maps.test.remove";
     /// The fallback interpreter's entry addresses, by instructions
     /// interpreted (`{"top": 20}`): where generated code still stops.
     pub const PROFILE_FALLBACKS: &str = "profile.fallbacks";

@@ -58,6 +58,8 @@ native-render = { path = "../../rewrites/native-render", optional = true }
 # The frame step's scene (docs/graphics/framescene.md); pure, no GPU.
 frame-scene = { path = "../../rewrites/frame-scene" }
 shaders = { path = "../../formats/shaders", optional = true }
+# Test-map recipes built into packages (test_maps.rs).
+scenario-edit = { path = "../../tools/scenario-edit", optional = true }
 serde.workspace = true
 x87 = { path = "../../recompiler/x87" }
 dsound = { path = "../../platform/dsound", default-features = false }
@@ -96,12 +98,15 @@ serde_json.workspace = true
 perf = { path = "../../tools/perf", optional = true }
 
 [features]
-default = ["gpu", "movie-playback", "local-io"]
+default = ["gpu", "movie-playback", "local-io", "test-maps"]
 desktop-runtime = ["dep:clif", "render-bridge/native-render"]
 gpu = ["desktop-runtime", "gfx/gpu", "d3d/gpu", "agent/render-overrides", "dep:wgpu", "dep:native-render", "dep:shaders", "dep:hot-render"]
 movie-playback = ["desktop-runtime", "bink-hle/playback", "dep:movies"]
 local-io = ["desktop-runtime", "dep:voice", "dsound/playback"]
 perf = ["dep:perf"]
+# maps.test.* on the agent: test maps built from recipes (test_maps.rs,
+# docs/game/test-maps.md). The scenario editor's crate pulls in wgpu.
+test-maps = ["dep:scenario-edit"]
 
 [dev-dependencies]
 # The fixture generated module, for hooks run through the real Runner.

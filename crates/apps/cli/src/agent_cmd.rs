@@ -106,6 +106,7 @@ or a short form:
   state fork <from> <name> [replace]  state.fork: load <from>, save it as <name>
 {HOT}
 {SIM}
+{MAPS}
 {FLIGHT}
 {RAW}
 
@@ -124,6 +125,7 @@ fn usage() -> String {
     USAGE
         .replace("{HOT}", crate::agent_hot_cmd::USAGE)
         .replace("{SIM}", crate::agent_sim::USAGE)
+        .replace("{MAPS}", crate::agent_maps::USAGE)
         .replace("{FLIGHT}", crate::agent_flight::USAGE)
         .replace("{RAW}", crate::agent_raw::USAGE)
 }
@@ -198,6 +200,11 @@ pub fn run(args: Vec<String>) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&v)?);
             Ok(())
         }
+        "maps" => {
+            let v = crate::agent_maps::run(&mut c, &rest[1..])?;
+            println!("{}", serde_json::to_string_pretty(&v)?);
+            Ok(())
+        }
         _ => {
             let (m, p) = parse_call(&rest)?;
             if first == "poke" {
@@ -227,6 +234,7 @@ fn looks_like_host(w: &str) -> bool {
             && !w.starts_with("edit.")
             && !w.starts_with("render.")
             && !w.starts_with("sim.")
+            && !w.starts_with("maps.")
             && !w.starts_with("trace.")
             && !w.starts_with("flight.")
     }
@@ -278,6 +286,8 @@ fn script(c: &mut Client) -> Result<()> {
             frame(c, &words)?
         } else if words[0] == "sim" {
             sim(c, &words[1..])?
+        } else if words[0] == "maps" {
+            crate::agent_maps::run(c, &words[1..])?
         } else {
             let (m, p) = parse_call(&words)?;
             call(c, &m, p)?
@@ -321,6 +331,9 @@ fn run_script(c: &mut Client, args: &[String], sim: bool) -> Result<()> {
         |words| {
             if words[0] == "frame" {
                 return frame(c, words).map_err(|e| format!("{e:#}"));
+            }
+            if words[0] == "maps" {
+                return crate::agent_maps::run(c, &words[1..]).map_err(|e| format!("{e:#}"));
             }
             if words[0] == "sim" {
                 added |= words.get(1).is_some_and(|w| w == "add");
