@@ -1,5 +1,5 @@
 //! Overlapping render-to-texture levels through the alias mirror
-//! (`Device::set_alias_mirror`, `H2_D3D_ALIAS_MIRROR`) against the
+//! (`Device::set_alias_mirror`) against the
 //! synchronous path that writes every overlapping level back to guest
 //! memory: the same back buffer and the same guest memory, byte for byte,
 //! at every point the guest reads it.

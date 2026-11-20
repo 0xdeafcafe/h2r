@@ -87,19 +87,33 @@ pub fn profile_flags(opt: Option<&str>, debug: Option<&str>) -> Result<Vec<Strin
 }
 
 /// Every flag for a generated object: [`CFLAGS`] plus [`profile_flags`]
-/// from the environment, plus the optional paths. `H2_PERF` is off unless
-/// set to `1`; the inline RAM path (`H2_FASTMEM`), native x87
-/// (`H2_X87_NATIVE`) and SSE (`H2_SSE_NATIVE`), and direct calls between
-/// generated handlers (`H2_DIRECT_CALLS`) are on unless set to `0`; store
-/// sites testing the dirty bit before marking a page (`H2_DIRTY_INLINE`,
-/// `h2fastmem.h`) is off unless set to `1`; so is counting cold guest
-/// accesses by cause (`H2_COLD_STATS`, printed to stderr), and lending the
-/// RAM gate across direct calls (`H2_DIRECT_GATE`, `h2gen.h`), reading
-/// the access budget from the RAM view (`H2_VIEW_BUDGET`) and carrying the
-/// access count across direct calls (`H2_DIRECT_COUNT`) and taking the RAM
-/// gate at a handler's start (`H2_ENTRY_GATE`, `h2fastmem.h`). Indirect calls
-/// and jumps through the target's direct slot (`H2_INDIRECT_CALLS`) and
-/// charging accesses in the RAM view (`H2_VIEW_CHARGE`) default on.
+/// from the environment, plus the `-D` switches below. Each is `0` or `1`,
+/// and each is in the object cache key and the boot stamp, so set it the
+/// same for `h2 build` and `h2 run`.
+///
+/// - On unless `0`: the inline RAM path (`H2_FASTMEM`), native x87
+///   (`H2_X87_NATIVE`) and SSE (`H2_SSE_NATIVE`), whose off builds are the
+///   exact reference paths for bisecting a divergence
+///   (docs/runtime/BOOT.md); direct calls between generated handlers
+///   (`H2_DIRECT_CALLS`, module feature 2), whose off build is the
+///   reference the direct-call tests compare with; and charging a counting
+///   handler's accesses in the RAM view (`H2_VIEW_CHARGE`, on since
+///   feddd0402; its off path stays until a profile in the game settles
+///   it).
+/// - Off unless `1`, awaiting a measurement in full images: flat RAM
+///   (`H2_FLAT_RAM`), the per-hold RAM page cache (`H2_RAM_PAGE_CACHE`),
+///   checked x87 TOP specialisation (`H2_X87_TOP`), the RAM gate taken at
+///   a handler's start (`H2_ENTRY_GATE`, `h2fastmem.h`), store sites
+///   testing the dirty bit before marking a page (`H2_DIRTY_INLINE`), and
+///   lending the RAM gate (`H2_DIRECT_GATE`) or the access count
+///   (`H2_DIRECT_COUNT`) across direct calls (`h2gen.h`). Each trades fewer
+///   hot operations for more live state or larger generated code
+///   (docs/perf/guest-memory.md).
+/// - Off unless `1`, diagnostics: loop and x87 counters (`H2_PERF`), and
+///   cold guest accesses counted by cause (`H2_COLD_STATS`, printed to
+///   stderr). `H2_FLAT_STATS_OWNER` (a guest address) counts one owner's
+///   flat-RAM accesses.
+///
 /// Profile-guided optimisation (`H2_PGO`) and the target CPU (`H2_CPU`,
 /// arm64 only: see [`pgo::for_arch`]) are off unless set ([`pgo`]).
 ///
@@ -109,13 +123,6 @@ pub fn profile_flags(opt: Option<&str>, debug: Option<&str>) -> Result<Vec<Strin
 /// targets had flags of their own. The stamp ([`boot`'s `build_stamp`])
 /// takes them for the target it builds for, so a module cross-built for
 /// Windows matches what the app computes on the device.
-///
-/// H2_XMM_LOCALS, H2_SSE_STICKY_PE, H2_SSE_HOST_RUN, H2_SSE_PACKED_X86
-/// and H2_X87_STORE_BITS enable the local vector bank, precision-flag
-/// shortcut, host control reuse, SSE2 packed path and ext80 store rounding.
-/// Each defaults on. H2_FLAT_RAM, H2_RAM_PAGE_CACHE and H2_X87_TOP are opt-in until
-/// measured in full images: both trade fewer hot operations for more
-/// live state or larger generated code.
 pub fn cflags_for(arch: Arch) -> Result<Vec<String>, Error> {
     let env = |k| std::env::var(k).ok();
     let mut v: Vec<String> = CFLAGS.iter().map(|s| s.to_string()).collect();
@@ -127,26 +134,24 @@ pub fn cflags_for(arch: Arch) -> Result<Vec<String>, Error> {
         ("H2_PERF", false),
         ("H2_FASTMEM", true),
         ("H2_X87_NATIVE", true),
-        ("H2_X87_STORE_BITS", true),
         ("H2_X87_TOP", false),
         ("H2_SSE_NATIVE", true),
-        ("H2_SSE_STICKY_PE", true),
-        ("H2_SSE_PACKED_X86", true),
-        ("H2_SSE_HOST_RUN", true),
-        ("H2_XMM_LOCALS", true),
         ("H2_RAM_PAGE_CACHE", false),
         ("H2_FLAT_RAM", false),
         ("H2_DIRECT_CALLS", true),
         ("H2_DIRTY_INLINE", false),
         ("H2_COLD_STATS", false),
         ("H2_DIRECT_GATE", false),
-        ("H2_VIEW_BUDGET", false),
         ("H2_DIRECT_COUNT", false),
-        ("H2_INDIRECT_CALLS", true),
         ("H2_ENTRY_GATE", false),
         ("H2_VIEW_CHARGE", true),
     ] {
-        if flag(name, env(name).as_deref(), default)? {
+        let enabled = if name == "H2_FLAT_RAM" {
+            flat_image_flag(env("H2_EMIT_FLAT_RAM").as_deref(), env(name).as_deref())?
+        } else {
+            flag(name, env(name).as_deref(), default)?
+        };
+        if enabled {
             v.push(format!("-D{name}=1"));
         }
     }
@@ -177,6 +182,13 @@ fn flag(name: &str, value: Option<&str>, default: bool) -> Result<bool, Error> {
         Some("0") => Ok(false),
         Some("1") => Ok(true),
         Some(value) => Err(err(format!("{name}={value}: expected 0 or 1"))),
+    }
+}
+
+fn flat_image_flag(image: Option<&str>, runtime: Option<&str>) -> Result<bool, Error> {
+    match image {
+        None | Some("") => flag("H2_FLAT_RAM", runtime, false),
+        value => flag("H2_EMIT_FLAT_RAM", value, false),
     }
 }
 
@@ -1245,6 +1257,17 @@ mod tests {
     }
 
     #[test]
+    fn pinned_flat_image_flags_are_identical_for_both_runtime_settings() {
+        for setting in [None, Some("0"), Some("1")] {
+            assert!(flat_image_flag(Some("1"), setting).unwrap());
+            assert!(!flat_image_flag(Some("0"), setting).unwrap());
+        }
+        assert!(flat_image_flag(None, Some("1")).unwrap());
+        assert!(!flat_image_flag(None, Some("0")).unwrap());
+        assert!(flat_image_flag(Some("invalid"), None).is_err());
+    }
+
+    #[test]
     fn the_emit_target_defaults_to_the_host_and_accepts_apple_devices() {
         assert_eq!(Arch::target_from(None).unwrap(), Arch::host());
         assert_eq!(Arch::target_from(Some("")).unwrap(), Arch::host());
@@ -1491,7 +1514,6 @@ mod tests {
             "H2_X87_NATIVE",
             "H2_SSE_NATIVE",
             "H2_DIRECT_CALLS",
-            "H2_INDIRECT_CALLS",
             "H2_VIEW_CHARGE",
         ] {
             let on = std::env::var(name).as_deref() != Ok("0");
@@ -1503,7 +1525,7 @@ mod tests {
         assert_eq!(flags.contains(&"-DH2_COLD_STATS=1".to_string()), stats);
         let gate = std::env::var("H2_DIRECT_GATE").as_deref() == Ok("1");
         assert_eq!(flags.contains(&"-DH2_DIRECT_GATE=1".to_string()), gate);
-        for name in ["H2_VIEW_BUDGET", "H2_DIRECT_COUNT", "H2_ENTRY_GATE"] {
+        for name in ["H2_DIRECT_COUNT", "H2_ENTRY_GATE"] {
             let on = std::env::var(name).as_deref() == Ok("1");
             assert_eq!(flags.contains(&format!("-D{name}=1")), on, "{name}");
         }

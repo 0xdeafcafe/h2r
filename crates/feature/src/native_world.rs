@@ -1,9 +1,8 @@
 //! `native-world`: the static world drawn by the native renderer instead
 //! of the game's layer-3 entries (docs/graphics/native-renderer.md, stage
-//! 1). On by default ([`DEFAULT`], since 2026-11-20);
-//! `H2_FEATURES=impl.render.native_world=off` turns it off for the
-//! comparison against the D3D path (exactly that key: `impl.render=off`
-//! does not, since this one changes what draws the world).
+//! 1). On with the native renderer (`impl.render.native`, on by default;
+//! `=off` returns the world to the D3D path with every other native
+//! stage).
 //!
 //! One observer before the layer draw `LAYER_DRAW` (`0x00044550`), an
 //! opaque point, so nothing here replaces guest code:
@@ -50,34 +49,9 @@ use crate::native_map_work::{self, BSP_LOAD_PENDING, Stage};
 use crate::{BuildError, Builder, Feature, Manifest};
 
 pub const ID: &str = "native-world";
-/// The switch, looked up exactly.
-pub const SWITCH: &str = "impl.render.native_world";
-/// The switch's value when `H2_FEATURES` does not name it.
-pub const DEFAULT: bool = true;
-
-/// Whether the native world is on.
+/// Whether the native world is on: the native renderer's master switch.
 pub fn on(switches: &crate::Switches) -> bool {
-    crate::switches::native_stage_on(switches, SWITCH)
-}
-
-/// The world's materials drawn with their own layer-3 pass (vertex
-/// program, pixel shader, stage textures, constants and render states,
-/// `native_render::program`); a material whose pass does not translate
-/// keeps its D3D draws. On with the world ([`PROGRAMS_DEFAULT`]): it is the
-/// native world. `=off` draws every material whose base map decodes as
-/// stage 1's base map times lightmap instead, for the A/B against stage 1
-/// only. Looked up exactly.
-pub const PROGRAMS_SWITCH: &str = "impl.render.native_world_programs";
-/// [`PROGRAMS_SWITCH`]'s value when `H2_FEATURES` does not name it.
-pub const PROGRAMS_DEFAULT: bool = true;
-
-/// Native main-camera BSP gathering and scene preparation.
-pub const SKIP_BUILD_SWITCH: &str = "impl.render.native_world_skip_build";
-
-/// Master and world must both be active to replace front-end work.
-pub fn skip_build_on(switches: &crate::Switches) -> bool {
-    crate::switches::native_render_default(switches) && on(switches)
-        && switches.feature(SKIP_BUILD_SWITCH, true)
+    crate::switches::native_render_on(switches)
 }
 
 mod layer_build;
@@ -104,10 +78,6 @@ fn claimed_entries(layer: u32) -> bool {
     }
 }
 
-/// Whether [`PROGRAMS_SWITCH`] is on (only with the native world on).
-pub fn programs_on(switches: &crate::Switches) -> bool {
-    on(switches) && switches.feature(PROGRAMS_SWITCH, PROGRAMS_DEFAULT)
-}
 /// The active structure BSP's tag data (docs/formats/structure-bsp.md).
 pub const ACTIVE_BSP: u32 = 0x004e_0348;
 
@@ -372,12 +342,8 @@ impl Feature for NativeWorld {
             b.snapshot(crate::SnapshotPolicy::Stateless);
             return Ok(());
         }
-        if skip_build_on(b.switches()) {
-            scene_walk::install(b);
-            if programs_on(b.switches()) && crate::native_world_layers::on(b.switches()) {
-                opaque::install(b);
-            }
-        }
+        scene_walk::install(b);
+        opaque::install(b);
         b.snapshot(crate::SnapshotPolicy::section(Vec::new, |_, _| {
             forget_pending();
             Ok(())

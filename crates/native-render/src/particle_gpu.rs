@@ -6,10 +6,19 @@
 //! must retain the original draw until preparation succeeds for every copy.
 //! No queue writes or reusable per-frame buffers: a prepared draw owns its
 //! vertex/index/uniform uploads until the command encoder retains them.
+//!
+//! [`ParticleRenderer::draws`] is the cheaper form: one packet for the D3D
+//! render pass already open on the game's targets, its geometry and
+//! uniforms staged in the submission's upload arena, its pipeline and
+//! texture group cached across frames. [`ParticleRenderer::prepare`] keeps
+//! the self-contained form (own buffers, own render pass) as the fallback.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use gfx::compile::{Pending, PendingPipeline};
+use gfx::pipeline::{PipelineKey, ShaderId};
+use gfx::{BoundGroup, RecordedDraw, ScissorRect};
 use shaders::{psh, vsh};
 use wgpu::util::DeviceExt;
 
@@ -248,10 +257,40 @@ struct ShaderKey {
 struct Program {
     module: wgpu::ShaderModule,
     layout: wgpu::PipelineLayout,
+    /// The renderer's one uniforms layout (dynamic offsets), shared by every
+    /// program so a submission's pooled uniform group is reused across them.
     uniforms: wgpu::BindGroupLayout,
     textures: wgpu::BindGroupLayout,
     locations: u16,
     sampled: [Option<psh::TextureDim>; 4],
+    /// The pixel program can discard: the backend then keeps the draw out
+    /// of a merged pass, as it does for the D3D draw it replaces.
+    discards: bool,
+}
+
+/// Names the particle pipelines in a recorded packet's description.
+const PARTICLE_PROGRAM: ShaderId = ShaderId(u32::MAX - 1);
+/// Texture groups kept before the cache starts over: bounded so views of
+/// retired textures are not held for ever.
+const GROUP_LIMIT: usize = 256;
+
+/// A pipeline made once: the pipeline itself for the self-contained pass,
+/// and the same pipeline with its description for packets.
+#[derive(Clone)]
+struct Cached {
+    pipeline: wgpu::RenderPipeline,
+    described: PipelineKey,
+    pending: Arc<PendingPipeline>,
+}
+
+/// What a renderer made so far, for tests of a steady scene: a second
+/// identical frame must leave these unchanged.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Created {
+    pub programs: u64,
+    pub pipelines: u64,
+    pub texture_groups: u64,
+    pub samplers: u64,
 }
 
 /// The native translated programs and pipelines, scoped to one host device.
@@ -259,7 +298,11 @@ struct Program {
 pub struct ParticleRenderer {
     device: u64,
     programs: HashMap<ShaderKey, Result<Arc<Program>, Refused>>,
-    pipelines: HashMap<(ShaderKey, String), wgpu::RenderPipeline>,
+    pipelines: HashMap<(ShaderKey, String), Cached>,
+    uniforms: Option<wgpu::BindGroupLayout>,
+    samplers: HashMap<gfx::translate::SamplerKey, wgpu::Sampler>,
+    groups: HashMap<(wgpu::BindGroupLayout, Vec<(u32, wgpu::TextureView, wgpu::Sampler)>), wgpu::BindGroup>,
+    created: Created,
 }
 
 impl ParticleRenderer {
@@ -268,17 +311,38 @@ impl ParticleRenderer {
             device,
             programs: HashMap::new(),
             pipelines: HashMap::new(),
+            uniforms: None,
+            samplers: HashMap::new(),
+            groups: HashMap::new(),
+            created: Created::default(),
         }
     }
 
-    /// Resolves everything and uploads owned geometry/uniforms, without
-    /// recording a render pass or changing an attachment. Prepare *every*
-    /// required target copy before the adapter commits any replacement.
-    pub fn prepare(
+    /// What this renderer created so far.
+    pub fn created(&self) -> Created {
+        self.created
+    }
+
+    /// The sampler for `key`, made once: a texture binding built from it
+    /// keeps the same identity across frames, so its group stays cached.
+    pub fn sampler(&mut self, device: &wgpu::Device, key: &gfx::translate::SamplerKey) -> wgpu::Sampler {
+        let created = &mut self.created;
+        self.samplers
+            .entry(*key)
+            .or_insert_with(|| {
+                created.samplers += 1;
+                device.create_sampler(&key.descriptor())
+            })
+            .clone()
+    }
+
+    /// Validates, then finds or makes the program and pipeline, and checks
+    /// every sampled level. Nothing is uploaded and no group is made.
+    fn resolve(
         &mut self,
         device: &wgpu::Device,
         s: &ImmediateDrawSnapshot,
-    ) -> Result<PreparedDraw, Refused> {
+    ) -> Result<(Arc<Program>, Cached), Refused> {
         s.validate()?;
         if self.device != s.identity.device {
             return Err(Refused::Identity);
@@ -302,10 +366,18 @@ impl ParticleRenderer {
             flat: s.shader.flat_shading,
             provided: s.raw_vertices.as_ref().map_or(u16::MAX, |r| r.provided),
         };
+        let uniforms = self
+            .uniforms
+            .get_or_insert_with(|| crate::light_gpu::uniforms_layout(device))
+            .clone();
+        let created = &mut self.created;
         let program = self
             .programs
             .entry(key.clone())
-            .or_insert_with(|| compile(device, &key).map(Arc::new))
+            .or_insert_with(|| {
+                created.programs += 1;
+                compile(device, &key, &uniforms).map(Arc::new)
+            })
             .clone()?;
         // Check every sampled level before pipeline/groups/uploads. A missing
         // stage cannot turn into a skipped range in the recording loop.
@@ -329,27 +401,34 @@ impl ParticleRenderer {
                 s.raw_vertices.as_ref().map(|r| (r.stride, &r.attributes))
             ),
         );
-        let pipeline = self
-            .pipelines
-            .entry(pipeline_key)
-            .or_insert_with(|| {
-                let attributes: Vec<_> = if let Some(raw) = &s.raw_vertices {
-                    raw.attributes
-                        .iter()
-                        .filter(|a| program.locations & (1u16 << a.shader_location) != 0)
-                        .copied()
-                        .collect()
-                } else {
-                    (0..16u64)
-                        .filter(|&r| program.locations & (1u16 << r) != 0)
-                        .map(|r| wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x4,
-                            offset: r * 16,
-                            shader_location: r as u32,
-                        })
-                        .collect()
-                };
-                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        if let Some(cached) = self.pipelines.get(&pipeline_key) {
+            return Ok((program, cached.clone()));
+        }
+        let attributes: Vec<_> = if let Some(raw) = &s.raw_vertices {
+            raw.attributes
+                .iter()
+                .filter(|a| program.locations & (1u16 << a.shader_location) != 0)
+                .copied()
+                .collect()
+        } else {
+            (0..16u64)
+                .filter(|&r| program.locations & (1u16 << r) != 0)
+                .map(|r| wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: r * 16,
+                    shader_location: r as u32,
+                })
+                .collect()
+        };
+        let color_target = wgpu::ColorTargetState {
+            format: s.target.color_format,
+            blend: s.blend,
+            write_mask: s.color_writes,
+        };
+        let pipeline = gfx::program::validated_resource(device, || {
+            gfx::churn::create_render_pipeline(
+                device,
+                &wgpu::RenderPipelineDescriptor {
                     label: Some("native particle/effect pipeline"),
                     layout: Some(&program.layout),
                     vertex: wgpu::VertexState {
@@ -372,17 +451,148 @@ impl ParticleRenderer {
                         module: &program.module,
                         entry_point: Some("fs_main"),
                         compilation_options: Default::default(),
-                        targets: &[Some(wgpu::ColorTargetState {
-                            format: s.target.color_format,
-                            blend: s.blend,
-                            write_mask: s.color_writes,
-                        })],
+                        targets: &[Some(color_target.clone())],
                     }),
                     multiview_mask: None,
                     cache: None,
-                })
+                },
+            )
+        })
+        .ok_or(Refused::State)?;
+        self.created.pipelines += 1;
+        let cached = Cached {
+            described: PipelineKey {
+                shader: PARTICLE_PROGRAM,
+                vertex_buffers: Vec::new(),
+                primitive: s.primitive,
+                depth_stencil: Some(s.depth.clone()),
+                color_target,
+                samples: 1,
+            },
+            pending: Pending::ready(Some(pipeline.clone())),
+            pipeline,
+        };
+        self.pipelines.insert(pipeline_key, cached.clone());
+        Ok((program, cached))
+    }
+
+    /// The group of `s`'s resident textures for `program`, made once per
+    /// distinct views and samplers.
+    fn texture_group(&mut self, device: &wgpu::Device, program: &Program, s: &ImmediateDrawSnapshot) -> wgpu::BindGroup {
+        let bound: Vec<(u32, wgpu::TextureView, wgpu::Sampler)> = program
+            .sampled
+            .iter()
+            .enumerate()
+            .filter(|(_, dim)| dim.is_some())
+            .map(|(n, _)| {
+                let t = s.textures[n].as_ref().expect("validated before any recording");
+                (n as u32, t.view.clone(), t.sampler.clone())
             })
-            .clone();
+            .collect();
+        let key = (program.textures.clone(), bound);
+        if let Some(group) = self.groups.get(&key) {
+            gfx::churn::native_cache(true);
+            return group.clone();
+        }
+        gfx::churn::native_cache(false);
+        let mut entries = Vec::new();
+        for (n, view, sampler) in &key.1 {
+            entries.push(wgpu::BindGroupEntry {
+                binding: 2 * n,
+                resource: wgpu::BindingResource::TextureView(view),
+            });
+            entries.push(wgpu::BindGroupEntry {
+                binding: 2 * n + 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            });
+        }
+        let group = gfx::churn::create_bind_group(
+            device,
+            &wgpu::BindGroupDescriptor {
+                label: Some("particle resident textures"),
+                layout: &program.textures,
+                entries: &entries,
+            },
+        );
+        if self.groups.len() >= GROUP_LIMIT {
+            self.groups.clear();
+        }
+        self.created.texture_groups += 1;
+        self.groups.insert(key, group.clone());
+        group
+    }
+
+    /// One packet for the D3D render pass open on the target's attachments:
+    /// geometry staged in `uploads`, uniforms at dynamic offsets in a run
+    /// of the same arena, pipeline and texture group cached. It draws what
+    /// [`PreparedDraw::record`] draws: the whole surface as viewport, the
+    /// snapshot's scissor, blend constant and stencil reference. A
+    /// The flag is whether the pixel program discards (`ExternalDraws::discards`).
+    /// A stencil reference above 255 (outside what a packet carries) is
+    /// `Refused::State`; the caller then takes [`ParticleRenderer::prepare`].
+    pub fn draws(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        uploads: &gfx::ring::SubmissionUploads,
+        s: &ImmediateDrawSnapshot,
+    ) -> Result<(RecordedDraw, bool), Refused> {
+        let reference = u8::try_from(s.stencil_reference).map_err(|_| Refused::State)?;
+        let (program, cached) = self.resolve(device, s)?;
+        let textures = self.texture_group(device, &program, s);
+        let run = uploads
+            .uniform_run(
+                device,
+                queue,
+                &program.uniforms,
+                [vsh::VertexUniforms::SIZE, psh::PixelUniforms::SIZE],
+                1,
+                |_, v, p| {
+                    s.vertex_uniforms.write_bytes(v);
+                    s.pixel_uniforms.write_bytes(p);
+                },
+            )
+            .ok_or(Refused::State)?;
+        let vertex_bytes: &[u8] = s
+            .raw_vertices
+            .as_ref()
+            .map_or_else(|| bytemuck::cast_slice(&s.vertices), |r| r.bytes.as_slice());
+        let index_bytes: &[u8] = bytemuck::cast_slice(&s.indices);
+        let (vertices, vertex_at) = uploads.stage(device, queue, vertex_bytes);
+        let (indices, index_at) = uploads.stage(device, queue, index_bytes);
+        let groups = vec![
+            BoundGroup { index: 0, group: run.group.clone(), offsets: run.offsets(0).to_vec() },
+            BoundGroup::new(1, textures),
+        ];
+        let render = gfx::state::RenderState {
+            stencil: gfx::state::StencilState { reference, ..Default::default() },
+            ..Default::default()
+        };
+        let [x, y, width, height] = s.scissor;
+        let draw = RecordedDraw::prepared_indexed(
+            &cached.described,
+            cached.pending,
+            vec![(vertices, vertex_at, vertex_bytes.len() as u64)],
+            (indices, index_at, index_bytes.len() as u64),
+            s.indices.len() as u32,
+            groups,
+            &render,
+            s.target.size,
+            ScissorRect { x, y, width, height },
+        )
+        .with_blend_constant(s.blend_constant);
+        Ok((draw, program.discards))
+    }
+
+    /// Resolves everything and uploads owned geometry/uniforms, without
+    /// recording a render pass or changing an attachment. Prepare *every*
+    /// required target copy before the adapter commits any replacement.
+    pub fn prepare(
+        &mut self,
+        device: &wgpu::Device,
+        s: &ImmediateDrawSnapshot,
+    ) -> Result<PreparedDraw, Refused> {
+        let (program, cached) = self.resolve(device, s)?;
         let buffer = |label, bytes: &[u8], usage| {
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some(label),
@@ -414,32 +624,11 @@ impl ParticleRenderer {
                 },
             ],
         });
-        let mut entries = Vec::new();
-        for (n, dim) in program.sampled.iter().enumerate() {
-            if dim.is_none() {
-                continue;
-            }
-            let t = s.textures[n]
-                .as_ref()
-                .expect("validated before any recording");
-            entries.push(wgpu::BindGroupEntry {
-                binding: 2 * n as u32,
-                resource: wgpu::BindingResource::TextureView(&t.view),
-            });
-            entries.push(wgpu::BindGroupEntry {
-                binding: 2 * n as u32 + 1,
-                resource: wgpu::BindingResource::Sampler(&t.sampler),
-            });
-        }
-        let textures = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("particle resident textures"),
-            layout: &program.textures,
-            entries: &entries,
-        });
+        let textures = self.texture_group(device, &program, s);
         Ok(PreparedDraw {
             identity: s.identity,
             target: s.target,
-            pipeline,
+            pipeline: cached.pipeline,
             uniforms,
             textures,
             vertices: buffer(
@@ -462,7 +651,11 @@ impl ParticleRenderer {
     }
 }
 
-fn compile(device: &wgpu::Device, key: &ShaderKey) -> Result<Program, Refused> {
+fn compile(
+    device: &wgpu::Device,
+    key: &ShaderKey,
+    uniforms: &wgpu::BindGroupLayout,
+) -> Result<Program, Refused> {
     let program = vsh::Program::parse(&key.microcode)
         .map_err(|e| Refused::Shader(format!("vertex: {e:?}")))?;
     if program.writes_constants() {
@@ -490,23 +683,6 @@ fn compile(device: &wgpu::Device, key: &ShaderKey) -> Result<Program, Refused> {
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("native particles"),
         source: wgpu::ShaderSource::Wgsl(wgsl.into()),
-    });
-    let uniform = |binding, size| wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset: false,
-            min_binding_size: wgpu::BufferSize::new(size),
-        },
-        count: None,
-    };
-    let uniforms = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("particle uniforms"),
-        entries: &[
-            uniform(0, vsh::VertexUniforms::SIZE as u64),
-            uniform(1, psh::PixelUniforms::SIZE as u64),
-        ],
     });
     let mut entries = Vec::new();
     for (n, dim) in pixel.textures.iter().enumerate() {
@@ -541,16 +717,17 @@ fn compile(device: &wgpu::Device, key: &ShaderKey) -> Result<Program, Refused> {
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("particle pipeline"),
-        bind_group_layouts: &[Some(&uniforms), Some(&textures)],
+        bind_group_layouts: &[Some(uniforms), Some(&textures)],
         immediate_size: 0,
     });
     Ok(Program {
         module,
         layout,
-        uniforms,
+        uniforms: uniforms.clone(),
         textures,
         locations: vertex.locations,
         sampled: pixel.textures,
+        discards: pixel.discards,
     })
 }
 
@@ -631,7 +808,7 @@ impl PreparedDraw {
         let [x, y, w, h] = self.scissor;
         pass.set_scissor_rect(x, y, w, h);
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.uniforms, &[]);
+        pass.set_bind_group(0, &self.uniforms, &[0, 0]);
         pass.set_bind_group(1, &self.textures, &[]);
         pass.set_blend_constant(self.blend_constant);
         pass.set_stencil_reference(self.stencil_reference);

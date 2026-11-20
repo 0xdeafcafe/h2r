@@ -1,8 +1,9 @@
 # Steam Controller
 
-Status: built and unit tested on synthetic reports, and confirmed on a
-controller by the owner (2026-11-17). "To try on hardware" lists what to check, and "Unverified" what
-the tests cannot show.
+Status: Built. Unit tested on synthetic reports and used on a controller
+by the owner; "Not verified" lists what the tests and that use do not show.
+Code: `crates/input/src/steam.rs`, `trackpad.rs`, `haptics.rs`, `steam_pad.rs`; the table below has the rest. Tests: in those files.
+Switch: `H2_STEAM_PAD`, `H2_STEAM_SPEAKER`, `H2_STEAM_SENSITIVITY`, `H2_STEAM_LEFT_PAD`, `H2_PAD_SPEAKER_DEVICE`, see [switches.md](../runtime/switches.md).
 
 Both Valve controllers are read over raw HID, wired, through their wireless
 receivers and over Bluetooth LE. The game sees an Xbox pad. The right
@@ -141,7 +142,7 @@ most one pulse report when both pads play the same thing, or one per pad
 when they differ. The 2026 controller also gets the rumble report while
 its motors run. Linux throttles the 2015 controller to about 20 reports a
 second of each kind, so the device should accept this rate; see
-"Unverified".
+"Not verified".
 
 - **Rumble.** On the 2015 controller, the game's left (heavy) motor is a
   35 Hz pulse train on the left pad and the right (light) motor is a 90 Hz
@@ -164,7 +165,7 @@ second of each kind, so the device should accept this rate; see
 - **Main output.** A haptic buzz is no substitute for the sound, so with
   haptics the routed sounds stay on the main output as well
   (`PadSpeakerConfig::for_haptics`, `VoiceOutput::Both`). With a DualSense
-  speaker they move to the controller, as before.
+  speaker they move to the controller.
 
 **Which speaker.** `audio::devices::pick_speaker` reads the device list once
 at start. A PlayStation controller's audio device wins. If there isn't one
@@ -181,11 +182,9 @@ Speaker is on; otherwise the routed sounds play on the main output only.
 | `steam_pad.left_pad` | Left Trackpad | `H2_STEAM_LEFT_PAD` | `dpad` (default), `stick` |
 
 The rows sit on the profile's Controls screen, after Controller Speaker.
-All three apply at once. Other switches:
+All three apply at once. The iOS app never shows them; it shows the touch
+rows instead. Other switches:
 
-- `H2_NO_STEAM_ROWS=1`: leave the three rows off the Controls screen (the
-  settings and variables still work). The iOS app never shows them; it
-  shows the touch rows instead.
 - `H2_STEAM_PAD=0`: don't open Steam Controllers at all (lizard mode stays
   as the controller has it).
 - `--no-gamepads`, or a scripted input timeline: no Steam Controllers
@@ -196,7 +195,9 @@ All three apply at once. Other switches:
   DualSense is attached. Any other device name never falls back to
   haptics.
 
-## To try on hardware
+## Not verified
+
+Checks on hardware that no test makes:
 
 1. Plug the 2015 controller in by USB and start `h2 play`. Its mouse and
    keyboard emulation should stop (the right pad no longer moves the
@@ -219,7 +220,7 @@ All three apply at once. Other switches:
    right stick, that rumble goes to its motors, and that lizard mode stays
    off for more than a few seconds.
 
-## Unverified
+Open questions:
 
 - **IOKit filtering.** Whether the primary usages IOKit reports match
   hidapi's on every link, so that only the controller interface is kept.

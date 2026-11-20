@@ -321,25 +321,9 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
     } while (0)
 #define H2_ACC_CHARGE_(n) h2abi_v1_charge(ctx, (n))
 #endif
-/* The budget left after this handler's own count, cached for the polls.
- * H2_VIEW_BUDGET=1 reads it from the inline RAM view when that has no
- * count of its own to settle (h2_acc_budget). */
-#ifndef H2_VIEW_BUDGET
-#define H2_VIEW_BUDGET 0
-#endif
+/* The budget left after this handler's own count, cached for the polls. */
 #if H2_VIEW_CHARGE_
 #define H2_BUDGET_() (h2_mem_ ? h2_view_left(h2_mem_) : h2abi_v1_budget(ctx))
-#elif H2_VIEW_BUDGET && H2_FASTMEM
-/* What h2abi_v1_budget answers, without the call: it settles the view's
- * own count (none here), then gives the slice's accesses left, or all ones
- * when nothing would expire. The runtime keeps the view's budget the same
- * (h2abi_v1_fast_acquire sets it, every spend resets it, and a slice is
- * armed only between invocations). No view, or a count: ask. */
-static inline uint64_t h2_acc_budget(ExecCtxOpaque *ctx, const H2FastAccess *f) {
-    if (f && f->accesses == 0u) return f->budget;
-    return h2abi_v1_budget(ctx);
-}
-#define H2_BUDGET_() h2_acc_budget(ctx, h2_mem_)
 #else
 #define H2_BUDGET_() h2abi_v1_budget(ctx)
 #endif
@@ -399,18 +383,12 @@ static inline uint64_t h2_acc_budget(ExecCtxOpaque *ctx, const H2FastAccess *f) 
  * all exits, runtime atomics and direct calls (including a callee that
  * transfers out instead of returning inline). Masks and indices are
  * compile-time constants. */
-#if H2_XMM_LOCALS
 #define H2_EACH_XMM(F, m) F(0,m) F(1,m) F(2,m) F(3,m) F(4,m) F(5,m) F(6,m) F(7,m)
 #define H2_XMM_INIT(i,m) h2u128 xmm##i = H2_HOMED(9+i) ? h2_rx(cpu, i) : 0;
 #define H2_XMM_SAVE(i,m) if (H2_HOMED(9+i) && (((m) >> (9+i)) & 1u)) h2_wx(cpu, i, xmm##i);
 #define H2_XMM_LOAD(i,m) if (H2_HOMED(9+i)) xmm##i = h2_rx(cpu, i);
 #define H2_READ_XMM(i) (H2_HOMED(9+i) ? xmm##i : h2_rx(cpu, i))
 #define H2_WRITE_XMM(i,v) (xmm##i = (v))
-#else
-#define H2_EACH_XMM(F, m)
-#define H2_READ_XMM(i) h2_rx(cpu, i)
-#define H2_WRITE_XMM(i,v) h2_wx(cpu, i, v)
-#endif
 #define H2_LOCALS_HOMED(m)                                                      \
     enum { h2_home_ = (m) }; H2_EACH_XMM(H2_XMM_INIT, 0)                         \
     uint32_t eax = H2_HOMED(0) ? cpu->eax : 0u, ecx = H2_HOMED(1) ? cpu->ecx : 0u; \
@@ -660,9 +638,10 @@ static inline uint64_t h2_acc_budget(ExecCtxOpaque *ctx, const H2FastAccess *f) 
 #define H2_STOP_EVENT(pc, st) H2_EXIT_(H2_STOP, H2_ENTRY, 0u, 0u, (st), (pc))
 
 /* Distinct host virtual addresses can name the same physical bytes, even
- * when clang proves their C pointer ranges disjoint. Keep copies through
- * alias views ordered against ordinary page-table copies and each other.
- * Empty asm with a memory clobber emits no host instruction. */
+ * when clang proves their C pointer ranges disjoint. Bracket every inline
+ * store so reads through any VA see stores in guest order. Two RAM loads
+ * under one gate need no fence between them. Cold helpers and bulk copies
+ * cross a gate boundary. The clobber emits no host instruction. */
 #if H2_FLAT_RAM && H2_FASTMEM
 #define H2_ALIAS_FENCE() __asm__ __volatile__("" ::: "memory")
 #else
@@ -687,7 +666,7 @@ static inline uint64_t h2_acc_budget(ExecCtxOpaque *ctx, const H2FastAccess *f) 
         H2_FLAT_NOTE(H2FC_TOTAL, 1); H2_ACC_ONE();                              \
         H2_SITE_TRY(h2_mem_, h2g_, a_, (n), 0, pg_, p_, slow_,                 \
                     H2_FLAT_NOTE(H2FC_FLAT, 1));                                \
-        H2_ALIAS_FENCE(); memcpy(&dst, p_, (n)); H2_ALIAS_FENCE();              \
+        memcpy(&dst, p_, (n));                                                  \
         goto done_;                                                             \
     slow_:                                                                      \
         H2_COLD_NOTE(h2g_);                                                     \
@@ -748,14 +727,13 @@ static inline uint64_t h2_acc_budget(ExecCtxOpaque *ctx, const H2FastAccess *f) 
  * PC, MMIO and fault semantics. Taking the gate alone has no guest effect. */
 #if H2_FLAT_RAM && H2_FASTMEM
 #define H2_SPAN(name, addr, n, rw)                                              \
-    if (!h2g_.held && h2_mem_) h2_gate_adopt(&h2g_, h2_gate_try(h2_mem_));       \
-    uint8_t *const name = h2_flat_span(&h2g_, (addr), (n), (rw))
+    uint8_t *const name = h2_begin_span(h2_mem_, &h2g_, (addr), (n), (rw))
 #define H2_SPAN_LD(span, off, T, n, dst, pc, addr)                              \
     T dst = 0;                                                                  \
     if (span) {                                                                 \
         H2_FLAT_NOTE(H2FC_TOTAL, 1); H2_FLAT_NOTE(H2FC_FLAT, 1);                \
         H2_ACC_ONE(); H2_FAST_CHARGE(h2_mem_);                                  \
-        H2_ALIAS_FENCE(); memcpy(&dst, (span) + (off), n); H2_ALIAS_FENCE();    \
+        memcpy(&dst, (span) + (off), n);                                        \
     } else { H2_LD(T, n, slow_value_, pc, addr); dst = slow_value_; }
 #define H2_SPAN_ST(span, off, T, n, pc, addr, value)                            \
     do {                                                                        \
@@ -974,8 +952,7 @@ static inline const uint32_t *h2_preempt_word(ExecCtxOpaque *ctx) {
 #define H2GEN_FEATURE_DIRECT 0u
 #endif
 /* The table has room for H2_DIRECT_SLOTS; the runtime uses the first
- * slot_mask + 1 of them (a power of two, H2_DIRECT_SLOTS in its
- * environment, 4096 unless set). */
+ * slot_mask + 1 of them (a power of two, 4096). */
 #define H2_DIRECT_SLOTS 8192u
 #define H2_DIRECT_MAX_DEPTH 64u
 /* What the runner learnt: entry `pc` resolved to `fn` (selector pc) at
@@ -1282,10 +1259,7 @@ static inline int h2_direct_back(H2Direct *d, ExecCtxOpaque *ctx, H2FastAccess *
 /* Indirect transfers use the same generation, execute and safe-point
  * checks as static ones. Evaluate the guest target once before charging,
  * spilling or invoking the target; a miss hands the same PC to the runner. */
-#ifndef H2_INDIRECT_CALLS
-#define H2_INDIRECT_CALLS 0
-#endif
-#if H2_DIRECT_CALLS && H2_INDIRECT_CALLS
+#if H2_DIRECT_CALLS
 #define H2_ICALL(target, cont, label, spill, reload, refresh, dirty)                        \
     do {                                                                                    \
         uint32_t it_ = (target);                                                            \

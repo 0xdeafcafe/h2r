@@ -650,6 +650,7 @@ dependencies = [
  "feature",
  "film",
  "font",
+ "frame-scene",
  "gfx",
  "h1convert",
  "h1map",
@@ -1976,9 +1977,11 @@ name = "feature"
 version = "0.1.0"
 dependencies = [
  "engine",
+ "frame-scene",
  "native-render",
  "runtime",
  "runtime-test-probe",
+ "scene-extract",
  "tags",
  "timeline",
 ]
@@ -2107,6 +2110,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
+]
+
+[[package]]
+name = "frame-scene"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "serde",
 ]
 
 [[package]]
@@ -3908,11 +3919,13 @@ dependencies = [
  "analyze",
  "bytemuck",
  "d3d",
+ "frame-scene",
  "gfx",
  "ir",
  "lift",
  "map",
  "pollster",
+ "scene-extract",
  "shaders",
  "tags",
  "timeline",
@@ -5629,6 +5642,14 @@ dependencies = [
  "thiserror 2.0.21",
  "wgpu",
  "xiso",
+]
+
+[[package]]
+name = "scene-extract"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "frame-scene",
 ]
 
 [[package]]
@@ -8131,9 +8152,6 @@ checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
 [[package]]
 name = "x87"
 version = "0.1.0"
-dependencies = [
- "libm",
-]
 
 [[package]]
 name = "xapi"

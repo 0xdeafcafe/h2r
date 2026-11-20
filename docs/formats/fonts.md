@@ -1,5 +1,7 @@
 # Fonts (`crates/font`, `h2 font`)
 
+Status: Built. Code: `crates/font`. Switch: none.
+
 Halo 2's fonts are packed files under `/maps/fonts/`, not map tags. `crates/font`
 parses them (bounds-checked, safe on hostile input), decodes glyph bitmaps, and
 rasterises UTF-16 text to RGBA on the CPU. `h2 font` drives it:

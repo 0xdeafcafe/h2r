@@ -119,7 +119,7 @@ int main(int argc, char **argv) {
         uint32_t xm = authority(op, packed, &m_ref, a, b, &r_ref);
         int took;
         (void)m_scalar; (void)r_scalar;
-#if defined(__aarch64__) || (defined(__x86_64__) && H2_SSE_PACKED_X86)
+#if defined(__aarch64__) || defined(__x86_64__)
         if (packed) {
             took = h2sn_arith4(&m_fast, op, op == 4 ? 0 : a, b, &r_fast);
             int took_scalar = h2sn_arith(&m_scalar, op, op == 4 ? 0 : a, b, 4, &r_scalar);

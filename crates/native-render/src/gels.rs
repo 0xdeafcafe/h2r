@@ -53,40 +53,13 @@ impl Target {
 }
 
 /// Identity is per invocation, never just the reused target's address or
-/// the shader datum. A consumer retains the matching producer's ticket.
+/// the shader datum.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Key {
     pub sequence: u64,
     pub definition: u32,
     pub shader: u32,
     pub surface: u32,
-}
-
-/// Byte comparison for the target-13 diagnostic. Padding is removed by
-/// the readback caller; alpha counts too.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Difference {
-    pub bytes: usize,
-    pub changed: usize,
-    pub max: u8,
-    pub sum: u64,
-}
-
-pub fn compare(native: &[u8], d3d: &[u8]) -> Option<Difference> {
-    if native.len() != d3d.len() || native.is_empty() {
-        return None;
-    }
-    let mut d = Difference {
-        bytes: native.len(),
-        ..Default::default()
-    };
-    for (&a, &b) in native.iter().zip(d3d) {
-        let delta = a.abs_diff(b);
-        d.changed += usize::from(delta != 0);
-        d.max = d.max.max(delta);
-        d.sum += u64::from(delta);
-    }
-    Some(d)
 }
 
 #[cfg(test)]
@@ -146,21 +119,6 @@ mod tests {
         }
         mem.0.remove(&(at + 0x88));
         assert!(Target::read(&mem).is_none());
-    }
-
-    #[test]
-    fn comparison_counts_every_channel_and_refuses_unpaired_images() {
-        assert_eq!(
-            compare(&[0, 1, 2, 3], &[0, 3, 2, 7]),
-            Some(Difference {
-                bytes: 4,
-                changed: 2,
-                max: 4,
-                sum: 6
-            })
-        );
-        assert!(compare(&[], &[]).is_none());
-        assert!(compare(&[1], &[1, 2]).is_none());
     }
 
     #[test]

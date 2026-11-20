@@ -247,8 +247,6 @@ pub fn add_host_methods(agent: &agent::Agent) {
     // render.parity (their sources register on agent::render::HOSTED).
     #[cfg(feature = "desktop-runtime")]
     agent::render::add_frame_methods(agent, &agent::render::CAPTURE, &agent::render::HOSTED);
-    #[cfg(feature = "desktop-runtime")]
-    agent.add_method(method::RENDER_SHADOWS, Access::Read, crate::native_shadows_probe::read);
     agent.add_method(method::PROFILE_FALLBACKS, Access::Read, |v| {
         let top = match v.get("top") {
             None => 20,
@@ -452,7 +450,7 @@ mod tests {
             serde_json::from_str(&rx.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap()
         };
         let r = call(method::RENDER_STATS, Value::Null);
-        assert!(r["result"]["paths"].is_object(), "{r}");
+        assert!(r["result"].as_object().is_some_and(|o| o.contains_key("counters")), "{r}");
         let r = call(method::PROFILE_FALLBACKS, json!({"top": 3}));
         assert!(r["result"]["top"].is_array(), "{r}");
         let r = call(method::PROFILE_FALLBACKS, json!({"top": 0}));

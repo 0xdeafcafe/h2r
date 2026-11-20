@@ -9,139 +9,12 @@ use std::sync::{Arc, Mutex};
 use d3d::backend::{ExternalAttachments, ExternalDraws, ExternalPassRequest, IndexedStreams};
 use d3d::{DrawAdmission, DrawSnapshot, ExternalPass, ExternalPlan, ExternalWrites};
 use engine::memory::GuestMemory;
-use feature::native_hud::{Host, HudQuadCall, HudVertices, OUTLINE_PUSH_BYTES, OutlineVertices, UiScope};
-use gfx::vertex::{PrimitiveType, VertexDataType, VertexLayout, VertexRegister};
-use native_render::camera::GuestRead;
-use native_render::hud::{self, Batch, Expect, HudQuad, Kind, Pairing};
+use feature::native_hud::{Host, HudVertices, OUTLINE_PUSH_BYTES, OutlineVertices, UiScope};
+use gfx::vertex::PrimitiveType;
 use native_render::ui_gpu::{Refusal, UiGpu};
 use timeline::native::{Metric, Stage, Ui};
 
 use crate::native_lights_glue::DeviceMemory;
-
-struct Ro<'a>(&'a dyn GuestMemory);
-
-impl GuestRead for Ro<'_> {
-    fn read_u32(&self, addr: u32) -> Option<u32> {
-        self.0.u32(addr).ok()
-    }
-}
-
-/// The positions of a four-vertex fan as the D3D path resolved it
-/// (`ResolvedDraw`'s primitive, count, index presence, layout and
-/// streams): attribute 0 of each vertex, its x and y. `None` for any
-/// other draw, or a position that is not floats.
-pub fn fan_corners(
-    primitive: PrimitiveType,
-    vertex_count: u32,
-    indexed: bool,
-    layout: &VertexLayout,
-    streams: &[d3d::StreamBytes],
-) -> Option<[[f32; 2]; 4]> {
-    if primitive != PrimitiveType::TriangleFan || vertex_count != 4 || indexed {
-        return None;
-    }
-    let (n, a) = layout.streams.iter().enumerate().find_map(|(n, s)| {
-        s.attributes
-            .iter()
-            .find(|a| a.register == VertexRegister::POSITION)
-            .map(|a| (n, a))
-    })?;
-    if !matches!(
-        a.data_type,
-        VertexDataType::Float2 | VertexDataType::Float3 | VertexDataType::Float4
-    ) {
-        return None;
-    }
-    let stream = streams.get(n)?;
-    let bytes: &[u8] = &stream.data;
-    let f = |at: usize| -> Option<f32> {
-        let b = bytes.get(at..at + 4)?;
-        Some(f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-    };
-    let mut out = [[0.0f32; 2]; 4];
-    for (i, c) in out.iter_mut().enumerate() {
-        let at = i * stream.stride as usize + a.offset as usize;
-        *c = [f(at)?, f(at + 4)?];
-    }
-    Some(out)
-}
-
-/// What the compare shares between the hooks and the admission.
-struct Compare {
-    pairing: Mutex<Pairing>,
-    /// Quads still to queue.
-    left: AtomicU64,
-    /// The plan of the last batch begun, said beside the first resolved
-    /// screen quad.
-    plan: Mutex<String>,
-    said: Mutex<[bool; 2]>,
-}
-
-impl Compare {
-    fn expect(&self, e: Expect) {
-        if self
-            .left
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
-            .is_ok()
-        {
-            self.pairing
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .expect(e);
-        }
-    }
-}
-
-impl d3d::DrawAdmission for Compare {
-    fn admit(
-        &self,
-        snapshot: &d3d::DrawSnapshot<'_>,
-    ) -> Option<(d3d::ExternalPlan, Box<dyn d3d::ExternalPass>)> {
-        let d = snapshot.draw;
-        let corners = fan_corners(
-            d.primitive,
-            d.vertex_count,
-            d.indices.is_some(),
-            &d.layout,
-            &d.streams,
-        )?;
-        let mut p = self.pairing.lock().unwrap_or_else(|e| e.into_inner());
-        if p.waiting() == 0 {
-            return None;
-        }
-        let paired = p.draw(&corners)?;
-        let total = p.paired[0] + p.paired[1];
-        let (line, done) = (p.line(), p.waiting() == 0);
-        std::mem::drop(p);
-        let k = match paired.kind {
-            Kind::Screen => 0,
-            Kind::Hud => 1,
-        };
-        let first = {
-            let mut said = self.said.lock().unwrap_or_else(|e| e.into_inner());
-            !std::mem::replace(&mut said[k], true)
-        };
-        if first {
-            let r = &d.state.render;
-            eprintln!(
-                "native-hud: compare: the first {:?} quad resolved as {} into {:#010x}, stage 0 {:?}, blend {} {:?} {:?} {:?}; plan: {}",
-                paired.kind,
-                d.entry,
-                snapshot.color_header,
-                d.texture_info[0],
-                r.blend_enable,
-                r.src_blend,
-                r.dst_blend,
-                r.blend_op,
-                self.plan.lock().unwrap_or_else(|e| e.into_inner())
-            );
-        }
-        if total % 64 == 0 || (done && self.left.load(Ordering::Relaxed) == 0) {
-            eprintln!("native-hud: compare: {line}");
-        }
-        None
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Scope {
@@ -331,7 +204,6 @@ impl ExternalPass for UiPass {
 }
 
 struct Glue<B: d3d::Backend> {
-    compare: Option<Arc<Compare>>,
     device: d3d::abi::SharedDevice<B>,
     admission: Arc<Admission>,
 }
@@ -516,51 +388,11 @@ impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
         }
         SCOPES.with(|scopes| scopes.borrow_mut().0.truncate(index));
     }
-
-    fn begin(&self, mem: &mut dyn GuestMemory, record: u32) {
-        let Some(compare) = &self.compare else { return };
-        if compare.left.load(Ordering::Relaxed) == 0 { return; }
-        *compare.plan.lock().unwrap_or_else(|e| e.into_inner()) = match Batch::read(&Ro(mem), record) {
-            Ok(batch) => format!(
-                "batch at {record:#010x} over {:#010x} ({}x{}, linear {}), {:?}",
-                batch.bitmap.at, batch.bitmap.width, batch.bitmap.height, batch.bitmap.linear, batch.blend
-            ),
-            Err(reason) => format!("batch at {record:#010x}: {}", reason.describe()),
-        };
-    }
-
-    fn screen_quad(&self, mem: &mut dyn GuestMemory, corners: u32) -> bool {
-        if let Some(compare) = &self.compare
-            && mem.u16(hud::QUADS_OFF).ok() == Some(0)
-            && let Some(quad) = hud::read_quad(&Ro(mem), corners)
-        {
-            compare.expect(Expect { kind: Kind::Screen, corners: quad.map(|v| [v.x, v.y]) });
-        }
-        false
-    }
-
-    fn end(&self, _mem: &mut dyn GuestMemory) {}
-
-    fn hud_quad(&self, mem: &mut dyn GuestMemory, call: HudQuadCall) {
-        if let Some(compare) = &self.compare
-            && let Some(quad) = HudQuad::read(&Ro(mem), call.corners, call.rect, call.args)
-        {
-            compare.expect(Expect { kind: Kind::Hud, corners: quad.corners });
-        }
-    }
 }
 
 pub(crate) fn install<B: d3d::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
     let switches = feature::Switches::from_env().unwrap_or_default();
-    let compare = feature::native_hud::compare_on(&switches).map(|n| {
-        Arc::new(Compare {
-            pairing: Mutex::new(Pairing::default()),
-            left: AtomicU64::new(n),
-            plan: Mutex::new(String::new()),
-            said: Mutex::new([false; 2]),
-        })
-    });
-    if !feature::native_hud::on(&switches) && compare.is_none() {
+    if !feature::native_hud::on(&switches) {
         return;
     }
     static OWNER: AtomicU64 = AtomicU64::new(0);
@@ -569,14 +401,9 @@ pub(crate) fn install<B: d3d::Backend + Send + 'static>(device: &d3d::abi::Share
         gpu: Arc::new(Mutex::new(UiGpu::default())),
     });
     if let Ok(mut device) = device.lock() {
-        if let Some(compare) = &compare {
-            device.add_draw_admission(compare.clone());
-        } else {
-            device.add_draw_admission(admission.clone());
-        }
+        device.add_draw_admission(admission.clone());
     }
     feature::native_hud::set_host(Arc::new(Glue {
-        compare,
         device: device.clone(),
         admission,
     }));

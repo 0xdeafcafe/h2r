@@ -1,5 +1,9 @@
 # Occlusion culling of objects
 
+Status: Partly built. The test, the hooks and the device's depth grid are built and tested on synthetic data; the switch waits for a first in-game check ([Status](#status)).
+Code: `crates/engine/src/render_loop/occlusion.rs`, `crates/feature/src/occlusion.rs`, `crates/gfx` (depth grid), `crates/d3d/src/backend.rs` (`Backend` depth-grid ask). Tests: `crates/feature/tests/occlusion.rs`, `crates/d3d/tests/occlusion_grid.rs`, `crates/gfx/tests/depth_grid.rs`.
+Switch: `impl.render.occlusion` (off), listed in [switches.md](../runtime/switches.md).
+
 The game's render front-end is CPU-bound guest code: each draw costs
 about 8 to 14 µs on the game thread before it reaches the GPU, and heavy
 Old Mombasa frames have about 2,000 draws at about 36 ms. The GPU has

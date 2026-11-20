@@ -1,5 +1,8 @@
 # Scenario editor (`crates/scenario-edit`)
 
+Status: Built. Code: `crates/scenario-edit/src`. Tests: in-source unit tests.
+Switch: none.
+
 A Sapien-style placement editor for Halo 2 cache files. It reads the
 scenario's placement blocks, lets you move, rotate, retarget, delete and
 add entries, and writes a new `.map`: the source byte for byte, except the

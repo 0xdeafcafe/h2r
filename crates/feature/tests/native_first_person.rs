@@ -18,7 +18,7 @@ use native_render::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, RENDER_RE
 
 #[test]
 fn the_plan_places_a_render_thread_observer_only_when_on() {
-    let mut off = Registry::new(Switches::parse("impl.render.native_first_person=off").unwrap());
+    let mut off = Registry::new(Switches::parse("impl.render.native=off").unwrap());
     off.add(&NativeFirstPerson).unwrap();
     assert!(
         !off.build(&Base)
@@ -27,7 +27,7 @@ fn the_plan_places_a_render_thread_observer_only_when_on() {
             .contains("native_first_person")
     );
 
-    let mut on = Registry::new(Switches::parse("impl.render.native_first_person=on").unwrap());
+    let mut on = Registry::new(Switches::defaults());
     on.add(&NativeFirstPerson).unwrap();
     let plan = on.build(&Base).unwrap();
     assert!(plan.text().contains("native_first_person_skip"));
@@ -84,7 +84,7 @@ impl Host for Stub {
         if *self.refuse.lock().unwrap() {
             return None;
         }
-        let drawn: Vec<bool> = items.iter().map(|item| !item.shadow).collect();
+        let drawn = vec![true; items.len()];
         masks.apply(mem, &drawn)
     }
 }
@@ -207,7 +207,6 @@ fn first_person_plans_items_and_restores_exactly_the_unplanned_ones() {
         set.definitions.insert(DEF_B as u16, 1);
         set.parts
             .extend([native_part(DEF_A, 0, 0x10), native_part(DEF_B, 0, 0x10)]);
-        set.shadowed.insert(DEF_B as u16);
     }
     native_first_person::set_host(stub.clone());
 
@@ -216,8 +215,8 @@ fn first_person_plans_items_and_restores_exactly_the_unplanned_ones() {
     native_first_person::before_layer(&mut m, FIRST_PERSON_LAYER3_RETURN);
     assert_eq!(
         masks(&m),
-        vec![0b0010, 0b1010, 0b1010, 0b1010],
-        "A's supported item draws, its other material and compared B stay on D3D"
+        vec![0b0010, 0b1010, 0b0010, 0b1010],
+        "A's supported item and B draw, A's other material stays on D3D"
     );
     {
         let offered = stub.offered.lock().unwrap();
@@ -242,14 +241,12 @@ fn first_person_plans_items_and_restores_exactly_the_unplanned_ones() {
             }
         );
         assert_eq!(items[0].rows[0], [1.0, 4.0, 7.0, 10.0]);
-        assert!(!items[0].shadow && items[1].shadow);
         assert_eq!(models.get(&1), Some(&DEF_A));
         assert_eq!(models.get(&3), Some(&DEF_B));
     }
     native_first_person::restore_pending(&mut m);
     assert_eq!(masks(&m), all);
 
-    stub.set.lock().unwrap().shadowed.clear();
     native_first_person::before_layer(&mut m, FIRST_PERSON_LAYER3_RETURN);
     assert_eq!(
         masks(&m),

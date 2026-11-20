@@ -35,10 +35,8 @@ pub mod d3d_diag;
 pub mod d3d_glue;
 pub mod debug_menu_glue;
 pub mod dsound_glue;
-pub mod effect_census;
 pub mod fallback;
 pub mod fov_row;
-pub mod game_glue;
 pub mod game_setup_help;
 mod h1_recordings;
 mod h1_conversation;
@@ -95,8 +93,6 @@ pub mod native_fog_glue;
 #[cfg(feature = "gpu")]
 pub mod native_gels_glue;
 #[cfg(feature = "gpu")]
-mod native_gels_load;
-#[cfg(feature = "gpu")]
 mod native_gels_replace;
 #[cfg(feature = "gpu")]
 pub mod native_hud_glue;
@@ -108,8 +104,6 @@ mod native_map;
 mod native_shadows_draw;
 #[cfg(feature = "gpu")]
 mod native_shadows_scope;
-#[cfg(feature = "desktop-runtime")]
-mod native_shadows_probe;
 #[cfg(feature = "gpu")]
 pub mod native_shadows_glue;
 #[cfg(feature = "gpu")]
@@ -191,7 +185,6 @@ pub mod video_screen;
 #[cfg(feature = "local-io")]
 pub mod voice_glue;
 pub mod voice_settings;
-pub mod wrappers;
 pub mod x87;
 pub mod xapi_glue;
 
@@ -757,61 +750,35 @@ pub unsafe fn load_module(path: &Path, rt: &runtime::Runtime, xbe_bytes: &[u8]) 
             }
             Err(_) => None,
         };
-        let trampoline = std::env::var("H2_BOOT_TRAMPOLINE").as_deref() == Ok("1");
-        anyhow::ensure!(!trampoline || cold.is_none(), "slim host modules require registry dispatch");
         if std::env::var_os(host_audit::ENV).is_some_and(|p| !p.is_empty()) {
-            anyhow::ensure!(!trampoline, "host audit requires registry dispatch");
             anyhow::ensure!(cold.is_none(), "host audit requires a full generated module");
             rt.enable_guest_coverage(entries, resumes);
         }
         let mut rows = Vec::with_capacity(entries.len());
         for e in entries {
-            let (Some(f), Some(v)) = (e.handler, e.abi_version) else {
+            let (Some(_), Some(v)) = (e.handler, e.abi_version) else {
                 bail!("entry {:#x}: null row", e.addr)
             };
             if v() != runtime::cpu::ABI_VERSION {
                 bail!("entry {:#x}: object ABI {}", e.addr, v());
             }
-            rows.push((e.addr, f));
+            rows.push(e.addr);
         }
         let res: Vec<(u32, u32, u32)> = resumes.iter().map(|r| (r.pc, r.owner, r.start)).collect();
-        let conflicts = fallback::init_with_cold(xbe_bytes, &rows, &res, cold)
-            .map_err(anyhow::Error::msg)?;
-        // Each row is registered as itself, and the runtime hands its STOPs
-        // to the fallback (fallback.rs). H2_BOOT_TRAMPOLINE=1 routes every
-        // row through the old trampoline instead, for comparison: that also
-        // turns the module's direct calls off in effect, since a direct call
-        // needs the registered handler to be the callee's own.
-        if trampoline {
-            eprintln!("boot: H2_BOOT_TRAMPOLINE=1: every entry through the fallback trampoline");
-            // The trampoline finds a resume's handler by selector alone.
-            if conflicts != 0 {
-                eprintln!("warning: {conflicts} selectors map to more than one handler");
-            }
-        }
+        fallback::init_with_cold(xbe_bytes, &rows, &res, cold).map_err(anyhow::Error::msg)?;
+        // Each row is registered as itself, a slim module's left-out owners
+        // go to the interpreter, and the runtime hands every generated STOP
+        // to the fallback (fallback.rs).
         rt.edit_dispatch(|d| -> Result<()> {
-            if !trampoline {
-                d.register_generated_module(m, *version)
-                    .context("registering generated module")?;
-                return Ok(());
-            }
-            for &(addr, _) in &rows {
-                d.register_generated(addr, runtime::cpu::ABI_VERSION, fallback::trampoline)
-                    .with_context(|| format!("entry {addr:#x}"))?;
-            }
-            for r in resumes {
-                d.register_resume(r.pc, r.owner, r.start)
-                    .with_context(|| format!("resume {:#x}", r.pc))?;
-            }
+            d.register_generated_module(m, *version)
+                .context("registering generated module")?;
             if let Some(cold) = cold {
                 fallback::register_cold(d, cold, fallback::interpret_cold)
                     .context("registering slim host interpreter routes")?;
             }
             Ok(())
         })?;
-        if !trampoline {
-            fallback::install_stop_recovery(rt);
-        }
+        fallback::install_stop_recovery(rt);
         Ok(Module {
             _lib: lib,
             entries: entries.len(),
@@ -1111,10 +1078,6 @@ fn run_configured(
     let render_every = replay.as_ref().map_or(0, |r| r.render_every);
     if host_audit::module_from_env().is_some() {
         anyhow::ensure!(host_light, "H2_HOST_MODULE requires the light host profile");
-        anyhow::ensure!(
-            std::env::var("H2_BOOT_TRAMPOLINE").as_deref() != Ok("1"),
-            "H2_HOST_MODULE requires registry dispatch"
-        );
     }
     if host.host_light {
         anyhow::ensure!(live.enabled && sim_mode.is_none(),
@@ -1189,7 +1152,7 @@ fn run_configured(
         log::note(&format!("page {:#x} widened to {:?}", n.page, n.effective));
     }
     let t = Instant::now();
-    // Shadow pages: trace 0xa0ff0000, wrappers 0xa0ff1000, d3d 0xa0ff2000,
+    // Shadow pages: trace 0xa0ff0000, d3d 0xa0ff2000,
     // barrier 0xa0ff4000, live notice 0xa0ff6000. Hooks placed by the
     // feature plan (telemetry, lockstep, the level-loaded mark, our strings)
     // take theirs from the feature arena (`feature::arena`).
@@ -1438,31 +1401,13 @@ fn run_configured(
     let uses = opts
         .stopgaps
         .then(|| stopgaps::install(&k, &loaded.runtime));
-    if let Some(u) = &uses {
-        // Retired with the kernel round: the class-34 wrapper
-        // (wrappers::install), XeLoad/UnloadSection (install_sections) and
-        // the FILE_SYNCHRONOUS_IO_ALERT rewrite. H2_BOOT_OLD_GLUE=1 brings
-        // them back.
-        wrappers::map_shadow(&loaded.runtime)?;
-        if std::env::var_os("H2_BOOT_OLD_GLUE").is_some() {
-            wrappers::install(&loaded.runtime, u)?;
-            stopgaps::install_sections(&loaded.runtime, xbe_bytes.to_vec(), u);
-        }
-        if !opts.xapi {
-            xapi_glue::install_no_xapi_mount(&loaded.runtime, &k, 5, u);
-        }
-        // Retired with kernel round 3, XAPI round 2 and DSound round 2
-        // (docs/runtime/BOOT.md "Retired"); H2_BOOT_OLD_GLUE=1 brings them back.
-        if std::env::var_os("H2_BOOT_OLD_GLUE").is_some() {
-            game_glue::install(&loaded.runtime, u);
-            wrappers::install_alertable(&loaded.runtime, u);
-            wrappers::install_eeprom_all(&loaded.runtime, u);
-            wrappers::install_mutants(&loaded.runtime, u);
-            wrappers::install_top_down(&loaded.runtime, u);
-            wrappers::install_free_virtual(&loaded.runtime, u);
-            wrappers::install_set_allocation(&loaded.runtime, u);
-            wrappers::install_full_attributes(&loaded.runtime, u);
-        }
+    // The kernel, XAPI and DSound rounds retired the boot's wrappers and
+    // game overrides (docs/runtime/BOOT.md "Retired"); only the
+    // XMountUtilityDrive override stays, for --no-xapi.
+    if let Some(u) = &uses
+        && !opts.xapi
+    {
+        xapi_glue::install_no_xapi_mount(&loaded.runtime, &k, 5, u);
     }
     // Community variants and the dedicated-host matchmaking status text.
     community_variants::install_with_live(&loaded.runtime, _live.clone())
@@ -1473,7 +1418,7 @@ fn run_configured(
     // (docs/game/settings-menu.md).
     let model = match host.settings.clone() {
         Some(store) => Some(Arc::new(
-            video_screen::model(store, video_screen::Switches::from_env())
+            video_screen::model(store, video_screen::Switches::PLATFORM)
                 .map_err(anyhow::Error::msg)?,
         )),
         None => None,
@@ -1655,13 +1600,8 @@ fn run_configured(
     #[cfg(not(feature = "gpu"))]
     let headless = true;
     #[cfg(feature = "gpu")]
-    if opts.d3d && let Some(b) = &mut host.gfx {
-        native_shadows_glue::configure(b, "reference");
-        if let Some((view, _)) = &mut host.gfx_view {
-            native_shadows_glue::configure(view, "display");
-        } else if interp.is_none() {
-            native_shadows_glue::configure_single(b);
-        }
+    if opts.d3d && host.gfx_view.is_none() && interp.is_none() && let Some(b) = &mut host.gfx {
+        native_shadows_glue::configure_single(b);
     }
     let render_hooks = film.as_ref()
         .map_or_else(registration::compiled_render_hooks, |s| s.render_hooks());
@@ -2143,16 +2083,6 @@ fn run_configured(
     if let Some(note) = d3d_glue::frame_stats_gpu_note(frame_stats && d3d_calls.is_some(), gpu) {
         eprintln!("{note}");
     }
-    // H2_EFFECT_CENSUS=1: a line per new timed light (EXPLOSION for a
-    // grenade-sized one) and an exit summary (effect_census.rs).
-    let mut effect_census =
-        effect_census::requested_by(std::env::var(effect_census::ENV).ok().as_deref()).then(|| {
-            eprintln!(
-                "effects: census on ({}): a line per new timed light, a summary at exit",
-                effect_census::ENV
-            );
-            (effect_census::Census::new(), u64::MAX)
-        });
     // H2_PERF_FROM=N (cli built with `--features perf`): open
     // `perf::Session::from_env()` (H2_PROFILE, H2_TIMELINE) at present N;
     // H2_PERF_FROM=level at the first present after the level loaded
@@ -2277,16 +2207,6 @@ fn run_configured(
                 .is_err()
         {
             input_errors += 1;
-        }
-        if let Some((census, last)) = &mut effect_census {
-            let present = d3d_diag::presents();
-            if present != *last {
-                *last = present;
-                let mem = loaded.runtime.memory();
-                for line in census.at_present(&*mem, present) {
-                    eprintln!("{line}");
-                }
-            }
         }
         if let Some(h) = &harness {
             h.after_slice(&loaded.runtime, d3d_diag::presents());
@@ -2483,20 +2403,6 @@ fn run_configured(
     if let Some(tr) = &tr {
         trace::flush(tr);
     }
-    if std::env::var_os("H2_BOOT_MAPS").is_some() {
-        let mem = loaded.runtime.memory();
-        let mut ms: Vec<_> = mem.mappings().to_vec();
-        ms.sort_by_key(|m| m.physical_start);
-        for m in ms {
-            eprintln!(
-                "map phys {:#010x}..{:#010x} va {:#010x} {:?}",
-                m.physical_start,
-                m.physical_start as u64 + m.len as u64,
-                m.virtual_start,
-                m.permissions
-            );
-        }
-    }
     if let Some(h) = &ds {
         eprintln!("{}", dsound_glue::describe(h));
         if !audio_errors.is_empty() {
@@ -2508,9 +2414,6 @@ fn run_configured(
     }
     if let Some(i) = &d3d_calls {
         eprintln!("{}", d3d_glue::describe(i));
-    }
-    if let Some((census, _)) = &effect_census {
-        eprintln!("{}", census.summary());
     }
     if let Some(s) = fallback::STATS.lock().unwrap().as_ref() {
         let first: Vec<String> = s.first.iter().map(|f| format!("{:#x}", f.0)).collect();
@@ -2548,46 +2451,6 @@ fn run_configured(
                 c.result.map_or("(open)".into(), |r| format!("{r:#x}")),
                 c.detail
             );
-        }
-    }
-    // H2_BOOT_DUMP=addr:len[,addr:len...]: guest words at the end of the run.
-    if let Ok(spec) = std::env::var("H2_BOOT_DUMP") {
-        let mem = loaded.runtime.memory();
-        for item in spec.split(',') {
-            let Some((a, n)) = item.split_once(':') else {
-                continue;
-            };
-            let parse = |v: &str| u32::from_str_radix(v.trim().trim_start_matches("0x"), 16).ok();
-            let (Some(a), Some(n)) = (parse(a), parse(n)) else {
-                continue;
-            };
-            let words: Vec<String> = (0..n.div_ceil(4))
-                .map(|i| {
-                    mem.u32(a + 4 * i)
-                        .map_or("????????".into(), |w| format!("{w:08x}"))
-                })
-                .collect();
-            for (i, row) in words.chunks(8).enumerate() {
-                eprintln!("dump {:#010x}: {}", a + 32 * i as u32, row.join(" "));
-            }
-        }
-    }
-    // H2_BOOT_DUMP_RAW=addr:len:file[;...]: raw guest bytes to host files.
-    if let Ok(spec) = std::env::var("H2_BOOT_DUMP_RAW") {
-        let mem = loaded.runtime.memory();
-        for item in spec.split(';') {
-            let mut it = item.splitn(3, ':');
-            let parse = |v: Option<&str>| {
-                v.and_then(|v| u32::from_str_radix(v.trim().trim_start_matches("0x"), 16).ok())
-            };
-            let (Some(a), Some(n), Some(path)) = (parse(it.next()), parse(it.next()), it.next())
-            else {
-                continue;
-            };
-            let bytes: Vec<u8> = (0..n).map(|i| mem.u8(a + i).unwrap_or(0)).collect();
-            if let Err(e) = std::fs::write(path, bytes) {
-                eprintln!("dump {a:#x}: {e}");
-            }
         }
     }
     let stops: BTreeMap<u32, &str> = k.stop_reasons().into_iter().collect();
@@ -2812,7 +2675,6 @@ mod tests {
             "{:?}",
             emit::Codegen {
                 accounting: on("H2_ACCESS_COUNT"),
-                reg_homes: on("H2_REG_HOMES")
             }
         );
         assert!(stamp.contains(&format!("codegen {accounting} ")), "{stamp}");
@@ -2822,30 +2684,12 @@ mod tests {
     fn passes_and_codegen_are_part_of_the_dylib_stamp() {
         let flags = vec!["-O1".to_owned()];
         let off = format!("{:?}", emit::Codegen::default());
-        let on = format!(
-            "{:?}",
-            emit::Codegen {
-                accounting: true,
-                ..emit::Codegen::default()
-            }
-        );
-        let all_locals = format!(
-            "{:?}",
-            emit::Codegen {
-                reg_homes: false,
-                ..emit::Codegen::default()
-            }
-        );
+        let on = format!("{:?}", emit::Codegen { accounting: true });
         let base = stamp_with(b"synthetic", "all", &off, &flags);
         assert_ne!(
             base,
             stamp_with(b"synthetic", "all", &on, &flags),
             "H2_ACCESS_COUNT"
-        );
-        assert_ne!(
-            base,
-            stamp_with(b"synthetic", "all", &all_locals, &flags),
-            "H2_REG_HOMES"
         );
         assert_ne!(
             base,

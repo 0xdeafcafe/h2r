@@ -478,6 +478,13 @@ impl RecordedDraw {
         }
     }
 
+    /// The blend constant a native pass sets itself (a translated pass's
+    /// own `BLENDCOLOR`), in place of the render state's.
+    pub fn with_blend_constant(mut self, color: wgpu::Color) -> Self {
+        self.blend_constant = color;
+        self
+    }
+
     /// Reuse the pipeline and immutable buffer allocations for another
     /// rectangle of the same validated draw.
     pub fn with_scissor(mut self, scissor: ScissorRect, size: (u32, u32)) -> Self {
@@ -643,14 +650,14 @@ impl Renderer {
                 .next_power_of_two(),
             count_cache: PipelineCache::new(),
             count_fragment: None,
-            vertex_fetch: FetchMode::from_env(),
+            vertex_fetch: FetchMode::Gpu,
             scratch: Vec::new(),
             persistent: PersistentVertices::new(PersistentVertices::budget_from_env()),
         }
     }
 
     /// The vertex fetch mode a shader provider should build programs for
-    /// and set as [`Draw::vertex_fetch`]: [`FetchMode::from_env`] unless
+    /// and set as [`Draw::vertex_fetch`]: [`FetchMode::Gpu`] unless
     /// [`set_vertex_fetch`](Self::set_vertex_fetch) changed it. The renderer
     /// itself follows each draw's own field.
     pub fn vertex_fetch(&self) -> FetchMode {
@@ -1261,18 +1268,14 @@ thread_local! {
 
 /// Whether [`Renderer::encode_pass`] leaves out the render pass of a
 /// counted draw that writes nothing ([`RecordedDraw::writes_nothing`]):
-/// on unless `H2_GFX_IDLE_COUNTED_PASS=1`, or as
-/// [`set_skip_idle_counted`] set it on this thread.
+/// on unless [`set_skip_idle_counted`] turned it off on this thread.
 fn skip_idle_counted() -> bool {
-    static SKIP: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    SKIP_IDLE_COUNTED.get().unwrap_or_else(|| {
-        *SKIP.get_or_init(|| std::env::var_os("H2_GFX_IDLE_COUNTED_PASS").is_none_or(|v| v != "1"))
-    })
+    SKIP_IDLE_COUNTED.get().unwrap_or(true)
 }
 
 /// Overrides, on this thread, whether counted draws that write nothing get
-/// a render pass of their own (`None`: `H2_GFX_IDLE_COUNTED_PASS`). For
-/// tests comparing the two.
+/// a render pass of their own (`None`: the default, skipped). For tests
+/// comparing the two.
 pub fn set_skip_idle_counted(skip: Option<bool>) {
     SKIP_IDLE_COUNTED.set(skip);
 }

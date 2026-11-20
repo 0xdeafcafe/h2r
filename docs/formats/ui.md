@@ -1,5 +1,7 @@
 # User-interface tags
 
+Status: Built. Code: `crates/tags/src/ui.rs`. Tests: `crates/tags/src/ui_tests.rs`. Switch: none.
+
 This describes the menu UI data model in `crates/tags/src/ui.rs`: the tags that
 define screens and widgets, how the retail engine reads them, and what a Rust
 renderer needs to draw a screen. Fonts and localized text are separate pieces
@@ -26,7 +28,7 @@ Labels used in the tables:
 
 Disassembly came from a linear sweep of the analyzer's function starts with
 `iced-x86`, kept in scratch space (`$TMPDIR`). Addresses are guest virtual
-addresses. The walkers are listed in [engine-map.md](../engine/engine-map.md#ui-tag-walkers-2026-11-15).
+addresses. The walkers are listed in [engine-map.md](../engine/engine-map.md#ui-tag-walkers).
 
 ## The tag graph
 

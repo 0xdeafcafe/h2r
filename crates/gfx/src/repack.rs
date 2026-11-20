@@ -21,8 +21,7 @@
 //!
 //! ## GPU fetch
 //!
-//! With [`FetchMode::Gpu`] (the default; `H2_VERTEX_FETCH=cpu` turns it
-//! off) nothing is converted on the CPU: every type maps to a wgpu format
+//! With [`FetchMode::Gpu`] (the default) nothing is converted on the CPU: every type maps to a wgpu format
 //! that reads the guest bytes as they are, and the vertex shader finishes
 //! the job ([`AttributeFetch`], mirrored by `shaders::vsh::InputFetch`):
 //!
@@ -68,26 +67,11 @@ pub enum RepackError {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum FetchMode {
     /// Repack every stream that needs it to floats on the CPU (the old
-    /// path; `H2_VERTEX_FETCH=cpu`).
+    /// path: fixed-function draws, and tests comparing the two).
     Cpu,
     /// Bind guest bytes as they are and decode in the vertex shader.
     #[default]
     Gpu,
-}
-
-impl FetchMode {
-    /// `H2_VERTEX_FETCH`: `cpu` selects [`FetchMode::Cpu`], anything else
-    /// (or unset) [`FetchMode::Gpu`].
-    pub fn from_env() -> Self {
-        Self::parse(std::env::var("H2_VERTEX_FETCH").ok().as_deref())
-    }
-
-    fn parse(v: Option<&str>) -> Self {
-        match v {
-            Some(v) if v.eq_ignore_ascii_case("cpu") => Self::Cpu,
-            _ => Self::Gpu,
-        }
-    }
 }
 
 /// How the vertex shader turns a host attribute into its `vec4f` register
@@ -786,13 +770,6 @@ mod tests {
         assert_eq!(plan.streams[1].host_stride, 12);
         assert!(plan.needs_repack());
         assert_eq!(plan.buffer_layouts().len(), 2);
-    }
-
-    #[test]
-    fn fetch_mode_from_env_value() {
-        assert_eq!(FetchMode::parse(None), FetchMode::Gpu);
-        assert_eq!(FetchMode::parse(Some("CPU")), FetchMode::Cpu);
-        assert_eq!(FetchMode::parse(Some("gpu")), FetchMode::Gpu);
     }
 
     #[test]

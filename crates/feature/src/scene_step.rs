@@ -205,7 +205,7 @@ impl Feature for FrameSceneStep {
         // Off with the native renderer: no hooks, nothing held. On: the
         // scene being written and the last one sealed, both rebuilt every
         // frame from guest memory; a load marks the next one a cut.
-        if !crate::switches::native_render_default(b.switches()) {
+        if !crate::switches::native_render_on(b.switches()) {
             b.snapshot(crate::SnapshotPolicy::Stateless);
             return Ok(());
         }
@@ -213,10 +213,17 @@ impl Feature for FrameSceneStep {
             forget();
             Ok(())
         }));
-        b.raw().observe_before(&points::RENDER_VIEWS, "frame_scene_begin", |o| {
-            let g = o.guest();
-            begin(&*g);
-        });
+        // Context-only like the layer-draw observer: it reads guest
+        // memory and writes only the step's own state, behind its lock.
+        // Under impl.render.pipelined_frame the views are written on the
+        // render thread and sealed on the game thread after the launch,
+        // so a sealed scene there can be the frame before's.
+        b.raw()
+            .observe_before(&points::RENDER_VIEWS, "frame_scene_begin", |o| {
+                let g = o.guest();
+                begin(&*g);
+            })
+            .context_only();
         b.raw()
             .observe_before(&points::LAYER_DRAW, "frame_scene_view", |o| {
                 let g = o.guest();
@@ -236,7 +243,7 @@ mod tests {
 
     #[test]
     fn the_step_is_on_with_the_native_renderer_only() {
-        let on = |spec| crate::switches::native_render_default(&crate::Switches::parse(spec).unwrap());
+        let on = |spec| crate::switches::native_render_on(&crate::Switches::parse(spec).unwrap());
         assert!(on(""));
         assert!(!on("impl.render.native=off"));
     }

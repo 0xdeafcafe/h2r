@@ -25,8 +25,30 @@ if [ "$cmd" = build ]; then
   echo "fake build opt=$H2_OPT objcache=$H2_OBJ_CACHE"
   exit 0
 fi
+if [ "$cmd" = agent ]; then
+  # `h2 agent ARGS --socket S --timeout T`: answers like a game would when
+  # the socket is there. The host takes the exit code and the output as is.
+  sock=; args=
+  while [ $# -gt 0 ]; do
+    case "$1" in --socket) sock=$2; shift;; --timeout) shift;; *) args="$args|$1";; esac
+    shift
+  done
+  [ -S "$sock" ] || { echo "no socket at $sock" >&2; exit 1; }
+  [ -z "$H2_AGENT$H2_XBOX" ] || { echo "H2_* leaked into the agent call" >&2; exit 1; }
+  IFS='|'; set -- $args; shift; unset IFS
+  case "$1" in
+    wait) echo '{"at":{"phase":"gameplay","map_ticks":31}}';;
+    capture) printf '{"frames":%s,"fps":24.0,"budget_ms":33.3,"over_budget":1,"complete":true,"busy_ms":{"p50":8.0,"p95":12.5},"phases":{"cpu":{"mean":2.0},"render":{"mean":4.0},"pace":{"mean":9.0}},"csv":"a,b\\n1,2\\n"}\n' "$2";;
+    render) echo '{"interp":0}';;
+    counters) echo '{"draws":100}';;
+    fail) echo '{"code":3,"message":"nope"}' >&2; exit 2;;
+    -) while read -r line; do echo "script: $line"; done;;
+    *) p=$(printf '%s' "$2" | sed 's/[\\"]/\\&/g'); printf '{"method":"%s","params":"%s"}\n' "$1" "$p";;
+  esac
+  exit 0
+fi
 echo "fake play $*"
-echo "env level=$H2_LEVEL opt=$H2_OPT replay=$H2_INPUT_REPLAY record=$H2_INPUT_RECORD profile=$H2_PROFILE from=$H2_FRAME_STATS_FROM home=$H2_LEAK"
+echo "env level=$H2_LEVEL opt=$H2_OPT replay=$H2_INPUT_REPLAY record=$H2_INPUT_RECORD profile=$H2_PROFILE from=$H2_FRAME_STATS_FROM home=$H2_LEAK scale=$H2_RENDER_SCALE agent=$H2_AGENT"
 trap 'echo "got TERM"; exit 143' TERM
 n=${H2_BOOT_STOP_AT_PRESENT:-${FAKE_FRAMES:-1000000}}
 [ -n "$H2_FRAME_STATS_CSV" ] && echo "frame,total_us" > "$H2_FRAME_STATS_CSV"
@@ -106,7 +128,11 @@ struct Lab {
 
 impl Lab {
     fn start() -> Lab {
-        let dir = scratch("a");
+        Lab::named("a")
+    }
+
+    fn named(name: &str) -> Lab {
+        let dir = scratch(name);
         let fake_h2 = dir.join("fake-h2");
         script(&fake_h2, FAKE_H2);
         script(&dir.join("fake-ssh"), FAKE_SSH);
@@ -573,4 +599,185 @@ fn record_without_a_host_runs_directly() {
     assert!(m["snapshot"].is_null());
     let meta = fs::read_to_string(root.join("runs/0001/meta.json")).unwrap();
     assert!(meta.contains("\"done\""), "{meta}");
+}
+
+/// Binds a listening socket where the host said run `id`'s game would
+/// (its meta.json, once the run has one), the way a game opens its agent
+/// socket; the fake `h2 agent` only checks that it is there. Returns the
+/// path and the listener to keep alive.
+fn open_agent_socket(root: &Path, id: &str) -> (PathBuf, std::os::unix::net::UnixListener) {
+    let meta = root.join("runs").join(id).join("meta.json");
+    let t = Instant::now();
+    loop {
+        if let Ok(b) = fs::read(&meta) {
+            let v: Value = serde_json::from_slice(&b).unwrap();
+            if let Some(p) = v["agent_socket"].as_str() {
+                let p = PathBuf::from(p);
+                assert!(p.as_os_str().len() <= 100, "{p:?} is too long for SUN_LEN");
+                let l = std::os::unix::net::UnixListener::bind(&p).unwrap();
+                return (p, l);
+            }
+        }
+        assert!(
+            t.elapsed() < Duration::from_secs(20),
+            "run {id} never started"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn lab_agent_forwards_calls_to_a_serve_runs_game_and_returns_exit_codes() {
+    let lab = Lab::named("g");
+    let v = json(&ok(&lab.local(&[
+        "run",
+        "--current",
+        "--level",
+        "ascension",
+        "--serve",
+    ])));
+    let id = v["id"].as_str().unwrap().to_string();
+    let (sock, _listener) = open_agent_socket(&lab.root, &id);
+    // The game got the same path in H2_AGENT; no frame limit was set.
+    let t = Instant::now();
+    let log = lab.root.join("runs").join(&id).join("run.log");
+    while !fs::read_to_string(&log)
+        .unwrap_or_default()
+        .contains("agent=")
+    {
+        assert!(t.elapsed() < Duration::from_secs(10), "no run.log");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let text = fs::read_to_string(&log).unwrap();
+    assert!(
+        text.contains(&format!("agent={}", sock.display())),
+        "{text}"
+    );
+    assert!(
+        sock.starts_with(lab.root.join("a")) || sock.starts_with("/tmp"),
+        "{sock:?}"
+    );
+
+    // A short form, a method with JSON, and the same through ssh + pipe.
+    let out = json(&ok(&lab.local(&[
+        "agent",
+        &id,
+        "capture",
+        "12",
+        "--timeout",
+        "20",
+    ])));
+    assert_eq!(out["frames"], 12);
+    assert_eq!(out["busy_ms"]["p95"], 12.5);
+    let out = json(&ok(&lab.ssh(&[
+        "agent",
+        &id,
+        "session.wait",
+        r#"{"until":{"phase":"gameplay"}}"#,
+    ])));
+    assert_eq!(out["method"], "session.wait");
+    assert_eq!(out["params"], r#"{"until":{"phase":"gameplay"}}"#);
+
+    // The exit code and stderr of the call come back as they were.
+    let f = lab.ssh(&["agent", &id, "fail"]);
+    assert_eq!(f.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&f.stderr).contains(r#""code":3"#));
+    assert!(f.stdout.is_empty());
+
+    // A script on stdin.
+    let mut c = Command::new(env!("CARGO_BIN_EXE_h2"));
+    c.args(["lab", "agent", "--host", "local", "--socket"])
+        .arg(&lab.socket)
+        .args([id.as_str(), "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped());
+    let mut child = c.spawn().unwrap();
+    {
+        use std::io::Write;
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"status\ncount\n")
+            .unwrap();
+    }
+    let o = child.wait_with_output().unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&o.stdout),
+        "script: status\nscript: count\n"
+    );
+
+    // What isn't forwarded.
+    assert!(err(&lab.local(&["agent", &id, "flight", "show", "x"])).contains("reads files"));
+    assert!(err(&lab.local(&["agent", "9999", "status"])).contains("no job 9999"));
+    assert!(
+        err(&lab.local(&["run", "--current", "--serve", "--frames", "5"])).contains("never stops")
+    );
+
+    // Stopping the run ends it, removes the socket, and calls are refused.
+    ok(&lab.local(&["stop", &id]));
+    let w = lab.local(&["wait", &id, "--timeout", "10"]);
+    assert_eq!(w.status.code(), Some(1));
+    assert!(!sock.exists(), "the host removes the socket after the run");
+    assert!(err(&lab.local(&["agent", &id, "status"])).contains("is stopped"));
+}
+
+#[test]
+fn lab_bench_measures_a_level_and_saves_the_answers_for_an_ab() {
+    let lab = Lab::named("b");
+    let to = lab.dir.join("fetched");
+    let mut dirs = Vec::new();
+    for (n, env, scale) in [(1, "H2_FPS=60", "4"), (2, "H2_FPS=30", "2")] {
+        let id = format!("{n:04}");
+        let root = lab.root.clone();
+        let opener = {
+            let id = id.clone();
+            std::thread::spawn(move || open_agent_socket(&root, &id))
+        };
+        let out = ok(&lab.local(&[
+            "bench",
+            "--current",
+            "--level",
+            "03a_oldmombasa",
+            "--scale",
+            scale,
+            "--ticks",
+            "12",
+            "--env",
+            env,
+            "--to",
+            to.to_str().unwrap(),
+            "--",
+            "--unpaced",
+        ]));
+        let _held = opener.join().unwrap();
+        let line = out.lines().next().unwrap();
+        assert_eq!(
+            line,
+            format!(
+                "bench 03a_oldmombasa {env} H2_RENDER_SCALE={scale}: 24.0 fps, busy p50 8.00 p95 12.50 ms over 12 frames (1 over 33.3 ms); phase mean ms: render 4.00, cpu 2.00"
+            )
+        );
+        let dest = to.join(&id);
+        assert_eq!(out.lines().nth(1).unwrap(), dest.to_str().unwrap());
+        let cap: Value =
+            serde_json::from_slice(&fs::read(dest.join("capture.json")).unwrap()).unwrap();
+        assert_eq!(cap["frames"], 12);
+        assert!(dest.join("render-stats.json").is_file());
+        let counters: Value =
+            serde_json::from_slice(&fs::read(dest.join("profile-counters.json")).unwrap()).unwrap();
+        assert_eq!(counters["draws"], 100);
+        let log = fs::read_to_string(dest.join("run.log")).unwrap();
+        assert!(
+            log.contains(&format!("scale={scale}")) && log.contains("--unpaced"),
+            "{log}"
+        );
+        assert!(log.contains("got TERM"), "the bench stops its game: {log}");
+        dirs.push(dest);
+    }
+    let runs = ok(&lab.local(&["runs"]));
+    assert_eq!(runs.matches("run stopped").count(), 2, "{runs}");
+    assert_ne!(dirs[0], dirs[1]);
+    // Needs a level; a build that fails to start is reported, not hung on.
+    assert!(err(&lab.local(&["bench", "--current"])).contains("needs --level"));
 }

@@ -15,7 +15,37 @@ const SIGNAL: i32 = libc::SIGBUS;
 #[cfg(target_os = "linux")]
 const SIGNAL: i32 = libc::SIGSEGV;
 
+// Process totals include mirrors retired by restore or guest destruction.
+// Only the two relaxed increments in fault() can execute in a signal handler.
+static FAULTS: AtomicU64 = AtomicU64::new(0);
+static RETRIES: AtomicU64 = AtomicU64::new(0);
+static REPROTECTS: AtomicU64 = AtomicU64::new(0);
+static ARMED: AtomicU64 = AtomicU64::new(0);
+static PROMOTED: AtomicU64 = AtomicU64::new(0);
+static STATS: OnceLock<bool> = OnceLock::new();
+
+extern "C" fn report_stats() {
+    use std::io::Write;
+    let _ = writeln!(
+        std::io::stderr().lock(),
+        "flat RAM: faults={} retries={} re-protects={} pages-armed={} software-pages={}",
+        FAULTS.load(Relaxed),
+        RETRIES.load(Relaxed),
+        REPROTECTS.load(Relaxed),
+        ARMED.load(Relaxed),
+        PROMOTED.load(Relaxed)
+    );
+}
+
+pub(super) fn enable_stats() -> bool {
+    *STATS.get_or_init(|| {
+        std::env::var_os("H2_FLAT_STATS").is_some_and(|v| v == "1")
+            && unsafe { libc::atexit(report_stats) } == 0
+    })
+}
+
 struct State {
+    stats: bool,
     base: usize,
     host: usize,
     open: [AtomicU64; WORDS],
@@ -39,6 +69,9 @@ impl State {
         }
         // No allocation, logging or locks here. The writer holds the memory
         // gate. Only this kind of data-write fault may open this exact alias.
+        if self.stats {
+            FAULTS.fetch_add(1, Relaxed);
+        }
         let res = unsafe {
             libc::mprotect(
                 self.page_address(p) as *mut _,
@@ -52,6 +85,9 @@ impl State {
         self.open[p / 64].fetch_or(bit, Relaxed);
         self.pending[p / 64].fetch_or(bit, Relaxed);
         self.any.store(true, Release);
+        if self.stats {
+            RETRIES.fetch_add(1, Relaxed);
+        }
         true
     }
 }
@@ -149,6 +185,11 @@ pub(super) struct Mirror {
     reservation: Reservation,
     slot: usize,
     epoch: u64,
+    // Under the gate: a page faulting in a second protection epoch stays
+    // open and uses the ordinary per-store physical dirty bits thereafter.
+    seen: Box<[u64; WORDS]>,
+    hot: Box<[u64; WORDS]>,
+    has_hot: bool,
 }
 impl Mirror {
     pub(super) fn new(ram: &Ram, host: usize, watch: &WriteWatch) -> Option<Self> {
@@ -165,6 +206,7 @@ impl Mirror {
             return None;
         }
         let state = Arc::new(State {
+            stats: enable_stats(),
             base: base as usize,
             host,
             any: AtomicBool::new(false),
@@ -183,6 +225,9 @@ impl Mirror {
             reservation,
             slot,
             epoch: watch.epoch.wrapping_sub(1),
+            seen: Box::new([0; WORDS]),
+            hot: Box::new([0; WORDS]),
+            has_hot: false,
         };
         if !mirror.rearm(watch) {
             return None;
@@ -192,7 +237,14 @@ impl Mirror {
     pub(super) fn base(&self) -> *mut u8 {
         self.reservation.ptr.as_ptr()
     }
-    pub(super) fn publish(&self, watch: &mut WriteWatch) {
+    pub(super) fn software_pages(&self) -> *const u64 {
+        self.hot.as_ptr()
+    }
+    pub(super) fn has_hot_pages(&self) -> bool {
+        self.has_hot
+    }
+
+    pub(super) fn publish(&mut self, watch: &mut WriteWatch) {
         if !self.state.any.load(Acquire) {
             return;
         }
@@ -203,6 +255,15 @@ impl Mirror {
                 continue;
             }
             word.store(0, Relaxed);
+            let repeat = bits & self.seen[w] & !self.hot[w];
+            if repeat != 0 {
+                self.hot[w] |= repeat;
+                self.has_hot = true;
+                if self.state.stats {
+                    PROMOTED.fetch_add(repeat.count_ones().into(), Relaxed);
+                }
+            }
+            self.seen[w] |= bits;
             while bits != 0 {
                 watch.note((w * 64 + bits.trailing_zeros() as usize) * PAGE, PAGE);
                 bits &= bits - 1;
@@ -218,11 +279,20 @@ impl Mirror {
         self.epoch = watch.epoch;
         // Consecutive physical host pages in each plane share one syscall.
         let mut runs = [None; 4];
-        let protect = |(start, end): (usize, usize)| unsafe {
-            libc::mprotect(start as *mut _, end - start, libc::PROT_READ) == 0
+        let protect = |(start, end, repeats): (usize, usize, u64)| {
+            let ok = unsafe { libc::mprotect(start as *mut _, end - start, libc::PROT_READ) == 0 };
+            if ok && self.state.stats {
+                ARMED.fetch_add(((end - start) / self.state.host) as u64, Relaxed);
+                REPROTECTS.fetch_add(repeats, Relaxed);
+            }
+            ok
         };
         for (w, word) in self.state.open.iter().enumerate() {
-            let mut bits = word.load(Relaxed) & watch.awaiting_writes(w);
+            let eligible = word.load(Relaxed) & !self.hot[w];
+            if eligible == 0 {
+                continue;
+            }
+            let mut bits = eligible & watch.awaiting_writes(w);
             let rearmed = bits;
             while bits != 0 {
                 let bit = bits & bits.wrapping_neg();
@@ -230,13 +300,14 @@ impl Mirror {
                 bits &= !bit;
                 let at = self.state.page_address(p);
                 let run = &mut runs[p & (self.state.host / PAGE - 1)];
+                let again = u64::from(self.seen[w] & bit != 0);
                 *run = Some(match *run {
-                    Some((lo, hi)) if hi == at => (lo, at + self.state.host),
+                    Some((lo, hi, n)) if hi == at => (lo, at + self.state.host, n + again),
                     previous => {
                         if previous.is_some_and(|r| !protect(r)) {
                             return false;
                         }
-                        (at, at + self.state.host)
+                        (at, at + self.state.host, again)
                     }
                 });
             }

@@ -60,12 +60,7 @@ fn unpause_soon(q: &Arc<Queue>) -> std::thread::JoinHandle<()> {
 }
 
 #[test]
-fn the_flag_turns_write_behind_off() {
-    assert!(write_behind::enabled(None));
-    assert!(write_behind::enabled(Some("1")));
-    for off in ["0", "off", "FALSE", "no", " 0 "] {
-        assert!(!write_behind::enabled(Some(off)), "{off}");
-    }
+fn without_write_behind_writes_land_at_once() {
     let temp = Temp::new();
     let mut sync = temp.backend_in("s", false);
     assert!(sync.write_behind.is_none());

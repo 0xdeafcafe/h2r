@@ -32,16 +32,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use agent_proto::{
-    CaptureParams, CaptureReply, CompareParams, CompareReply, DepthRecord, DrawRecord,
+    FrameCaptureParams, CaptureReply, CompareParams, CompareReply, DepthRecord, DrawRecord,
     FrameParams, FrameRecord, FrameReply, OpRecord, ParityParams, ParityReply, PassRecord,
     RenderStats, RpcError, SceneParams, SceneReply, SnapRecord, code, method,
 };
 use serde_json::{Map, Value, json};
 
 use crate::exec::{Access, Agent, DEFER_TICKS_MAX, GameCtx};
-
-/// The calls into each native render path so far (name, calls).
-pub type PathCalls = fn() -> Vec<(&'static str, u64)>;
 
 /// One draw, as the backend wrapper describes it.
 #[derive(Debug, Clone, Default)]
@@ -91,7 +88,6 @@ struct ProbeState {
     stage: Stage,
     last: Option<FrameRecord>,
     presents: u64,
-    paths: Option<PathCalls>,
 }
 
 enum Stage {
@@ -113,7 +109,6 @@ struct Arming {
 struct Recording {
     arming: Arming,
     began: Instant,
-    paths_before: Vec<(&'static str, u64)>,
     rec: FrameRecord,
     targets: BTreeSet<String>,
     /// The current pass's colour and depth.
@@ -138,7 +133,6 @@ impl FrameProbe {
                 stage: Stage::Idle,
                 last: None,
                 presents: 0,
-                paths: None,
             }),
         }
     }
@@ -151,12 +145,6 @@ impl FrameProbe {
     #[inline]
     pub fn armed(&self) -> bool {
         self.armed.load(Ordering::Relaxed)
-    }
-
-    /// Where native render path calls are counted (boot's
-    /// `feature::render_loop::path_calls`).
-    pub fn set_paths(&self, paths: PathCalls) {
-        self.lock().paths = Some(paths);
     }
 
     /// Arms for the next whole frame; forgets the last one.
@@ -314,7 +302,6 @@ impl FrameProbe {
         if !self.armed() {
             return None;
         }
-        let paths = s.paths;
         match std::mem::replace(&mut s.stage, Stage::Idle) {
             Stage::Idle => None,
             Stage::Waiting(arming) => {
@@ -326,7 +313,6 @@ impl FrameProbe {
                     },
                     arming,
                     began: Instant::now(),
-                    paths_before: paths.map(|f| f()).unwrap_or_default(),
                     targets: BTreeSet::new(),
                     key: None,
                 }));
@@ -341,15 +327,6 @@ impl FrameProbe {
                 r.rec.ms = (r.began.elapsed().as_secs_f64() * 1e5).round() / 100.0;
                 r.rec.totals.passes = r.rec.passes.len();
                 r.rec.totals.targets = r.targets.len();
-                if let Some(f) = paths {
-                    let before: BTreeMap<&str, u64> = r.paths_before.iter().copied().collect();
-                    for (name, calls) in f() {
-                        let d = calls.saturating_sub(before.get(name).copied().unwrap_or(0));
-                        if d > 0 {
-                            r.rec.paths.insert(name.to_owned(), d);
-                        }
-                    }
-                }
                 s.last = Some(r.rec);
                 if ask.is_none() {
                     self.armed.store(false, Ordering::Relaxed);
@@ -522,15 +499,11 @@ pub fn pipeline_json(s: &feature::pipeline_render::Stats) -> Value {
 pub struct RenderSources {
     pub interp: Box<dyn Fn() -> Option<Value> + Send>,
     pub pipeline: Box<dyn Fn() -> Option<Value> + Send>,
-    pub paths: Option<PathCalls>,
     pub counters: Box<dyn Fn() -> Option<Value> + Send>,
 }
 
 /// Adds `render.frame` (over `probe`) and `render.stats` (over `sources`).
 pub fn add_methods(agent: &Agent, probe: &'static FrameProbe, sources: RenderSources) {
-    if let Some(p) = sources.paths {
-        probe.set_paths(p);
-    }
     agent.add_method(method::RENDER_FRAME, Access::Read, move |v| {
         let p: FrameParams = if v.is_null() {
             FrameParams::default()
@@ -563,10 +536,6 @@ pub fn add_methods(agent: &Agent, probe: &'static FrameProbe, sources: RenderSou
         let s = RenderStats {
             interp: (sources.interp)().unwrap_or(Value::Null),
             pipeline: (sources.pipeline)().unwrap_or(Value::Null),
-            paths: sources
-                .paths
-                .map(|f| f().into_iter().map(|(k, v)| (k.to_owned(), v)).collect())
-                .unwrap_or_default(),
             counters: (sources.counters)().unwrap_or(Value::Null),
         };
         serde_json::to_value(s).map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))
@@ -788,7 +757,7 @@ impl FrameCapture {
     /// Arms for `p.tick` (default: the tick after the last one ended); the
     /// image goes under `dir`. Replaces a capture still waiting. Answers
     /// the arming's number for [`finish`](Self::finish).
-    pub fn arm(&self, p: &CaptureParams, dir: &Path) -> Result<u64, RpcError> {
+    pub fn arm(&self, p: &FrameCaptureParams, dir: &Path) -> Result<u64, RpcError> {
         let Some(last) = self.hosted.last_tick() else {
             return Err(RpcError::new(
                 code::UNAVAILABLE,
@@ -802,12 +771,12 @@ impl FrameCapture {
                 format!("tick {target} has ended (the last was {last}); ask for a later one"),
             ));
         }
-        if target - last > CaptureParams::MAX_AHEAD {
+        if target - last > FrameCaptureParams::MAX_AHEAD {
             return Err(RpcError::new(
                 code::INVALID_PARAMS,
                 format!(
                     "tick {target} is more than {} ticks ahead of {last}",
-                    CaptureParams::MAX_AHEAD
+                    FrameCaptureParams::MAX_AHEAD
                 ),
             ));
         }
@@ -1047,8 +1016,8 @@ pub fn add_frame_methods(agent: &Agent, capture: &'static FrameCapture, hosted: 
         reply(serde_json::to_value(r))
     });
     agent.add_game_method(method::RENDER_CAPTURE, Access::Read, move |v, ctx| {
-        let p: CaptureParams = if v.is_null() {
-            CaptureParams::default()
+        let p: FrameCaptureParams = if v.is_null() {
+            FrameCaptureParams::default()
         } else {
             serde_json::from_value(v).map_err(invalid)?
         };
@@ -1156,15 +1125,7 @@ mod tests {
 
     #[test]
     fn a_whole_frame_between_two_presents_in_passes() {
-        static PATHS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        fn paths() -> Vec<(&'static str, u64)> {
-            vec![
-                ("render_views", PATHS.load(Ordering::Relaxed)),
-                ("layer_sort", 0),
-            ]
-        }
         let p = FrameProbe::new();
-        p.set_paths(paths);
         p.present(10);
         let armed = p
             .arm(&FrameParams {
@@ -1180,7 +1141,6 @@ mod tests {
         );
         // The rest of the frame being drawn when it was armed: not kept.
         p.draw(draw("shadow", "drawn", 99));
-        PATHS.store(5, Ordering::Relaxed);
         p.present(11);
         p.clear("shadow", Some("z"));
         p.draw(draw("shadow", "drawn", 30));
@@ -1188,7 +1148,6 @@ mod tests {
         p.op("copy", "main", "-> mirror".into());
         p.draw(draw("main", "skipped empty", 3));
         p.draw(draw("shadow", "drawn", 3));
-        PATHS.store(7, Ordering::Relaxed);
         p.present(12);
         assert!(!p.armed(), "one frame, then disarmed");
         // After it: not recorded.
@@ -1217,8 +1176,6 @@ mod tests {
         assert_eq!(f.draws.len(), 3);
         assert!(f.truncated, "four draws, three listed");
         assert_eq!(f.draws[2].pass, 1);
-        assert_eq!(f.paths.get("render_views"), Some(&2));
-        assert!(!f.paths.contains_key("layer_sort"), "no calls, not listed");
     }
 
     #[test]
@@ -1420,8 +1377,8 @@ mod frame_scene_tests {
         (probe, hosted, leak(FrameCapture::new(probe, hosted)))
     }
 
-    fn whole(tick: u64) -> CaptureParams {
-        CaptureParams {
+    fn whole(tick: u64) -> FrameCaptureParams {
+        FrameCaptureParams {
             tick: Some(tick),
             pass: None,
         }
@@ -1447,7 +1404,7 @@ mod frame_scene_tests {
         c.set_writer();
         assert_eq!(c.arm(&whole(10), dir).unwrap_err().code, code::INVALID_PARAMS);
         assert_eq!(
-            c.arm(&whole(11 + CaptureParams::MAX_AHEAD), dir)
+            c.arm(&whole(11 + FrameCaptureParams::MAX_AHEAD), dir)
                 .unwrap_err()
                 .code,
             code::INVALID_PARAMS,
@@ -1516,7 +1473,7 @@ mod frame_scene_tests {
         assert_eq!(e.code, code::UNAVAILABLE);
         assert!(e.message.contains("readback failed"), "{}", e.message);
         // Default tick: the next one; the scene's hash comes along.
-        let seq = c.arm(&CaptureParams::default(), Path::new(DIR)).unwrap();
+        let seq = c.arm(&FrameCaptureParams::default(), Path::new(DIR)).unwrap();
         c.tick_ended(14);
         c.present(51);
         c.written(51, Ok(()));
@@ -1539,7 +1496,7 @@ mod frame_scene_tests {
     fn a_pass_capture_reads_the_pass_of_that_ticks_frame_through_the_frame_recorder() {
         let (probe, _, c) = rigs();
         c.tick_ended(20);
-        let p = CaptureParams {
+        let p = FrameCaptureParams {
             tick: Some(22),
             pass: Some(1),
         };
@@ -1567,7 +1524,7 @@ mod frame_scene_tests {
 
         // A pass the frame doesn't have.
         let seq = c.arm(
-            &CaptureParams {
+            &FrameCaptureParams {
                 tick: None,
                 pass: Some(5),
             },

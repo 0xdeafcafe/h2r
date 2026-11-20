@@ -4,6 +4,11 @@
 //! uniform buffers on each copy and returns a real range count.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+
+use gfx::compile::{Pending, PendingPipeline};
+use gfx::pipeline::{PipelineKey, ShaderId};
+use gfx::{BoundGroup, RecordedDraw, ScissorRect};
 
 use gfx::state::{
     BlendFactor, BlendOp, CompareFunc, CullMode, DepthBufferMode, RenderState, TextureAddress,
@@ -239,8 +244,54 @@ fn check_combiner_state(def: &PixelShaderDef) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// The draw's pixel uniforms before the target and clip fill in the depth
+/// terms: the combiner's embedded constants, alpha reference, LOD bias,
+/// bump terms and the linear texture scale.
+fn base_pixel(shader: &ShaderSnapshot) -> PixelUniforms {
+    let def = &shader.combiner;
+    let (c0, c1) = def.embedded_constants();
+    let mut pixel = PixelUniforms {
+        c0,
+        c1,
+        fog: psh::fog::Fog::OFF.uniform(),
+        alpha_ref: [shader.render.alpha_ref as f32, 0.0, 0.0, 0.0],
+        lod_bias: shader.stages.map(|s| {
+            if s.mip_lod_bias.is_finite() {
+                s.mip_lod_bias
+            } else {
+                0.0
+            }
+        }),
+        ..Default::default()
+    };
+    for n in 0..4 {
+        let e = &shader.extras[n];
+        pixel.bump_mat[n] = e.bump_env_mat;
+        pixel.bump_lum[n] = [e.bump_env_lscale, e.bump_env_loffset, 0.0, 0.0];
+    }
+    if let Some(scale) = shader.tex_scale {
+        pixel.tex_scale[0] = scale;
+    }
+    pixel
+}
+
+/// The pixel translation options a decal's state and mode select.
+fn pixel_options(mode: Mode, shader: &ShaderSnapshot) -> PixelOptions {
+    PixelOptions {
+        texture_dims: [Some(TextureDim::D2), None, None, None],
+        alpha_kill: shader.extras.map(|e| e.alpha_kill & 4 != 0),
+        alpha_test: shader
+            .render
+            .alpha_test_enable
+            .then(|| alpha_func(shader.render.alpha_func)),
+        w_buffer: mode.w_buffered(),
+        flat_shading: shader.render.shade_mode == gfx::state::ShadeMode::Flat,
+        ..Default::default()
+    }
+}
+
 /// Validates the complete shader translation without creating GPU objects,
-/// so compare-only admission exercises the same refusal cases.
+/// so admission refuses before it reserves anything.
 pub fn check_program(mode: Mode, shader: &ShaderSnapshot) -> Result<(), &'static str> {
     check_state(mode, &shader.render, &shader.stages, &shader.extras)?;
     check_combiner_state(&shader.combiner)?;
@@ -264,17 +315,7 @@ pub fn check_program(mode: Mode, shader: &ShaderSnapshot) -> Result<(), &'static
     if !def.has_final_combiner() {
         return Err("final combiner");
     }
-    let options = PixelOptions {
-        texture_dims: [Some(TextureDim::D2), None, None, None],
-        alpha_kill: shader.extras.map(|e| e.alpha_kill & 4 != 0),
-        alpha_test: shader
-            .render
-            .alpha_test_enable
-            .then(|| alpha_func(shader.render.alpha_func)),
-        w_buffer: mode.w_buffered(),
-        flat_shading: shader.render.shade_mode == gfx::state::ShadeMode::Flat,
-        ..Default::default()
-    };
+    let options = pixel_options(mode, shader);
     let ps = psh::translate(&def, &options);
     if !ps.warnings.is_empty()
         || ps
@@ -307,17 +348,7 @@ fn compile(
     )
     .map_err(|_| "vertex translation")?;
     let def = shader.combiner.clone();
-    let options = PixelOptions {
-        texture_dims: [Some(TextureDim::D2), None, None, None],
-        alpha_kill: shader.extras.map(|e| e.alpha_kill & 4 != 0),
-        alpha_test: shader
-            .render
-            .alpha_test_enable
-            .then(|| alpha_func(shader.render.alpha_func)),
-        w_buffer: mode.w_buffered(),
-        flat_shading: shader.render.shade_mode == gfx::state::ShadeMode::Flat,
-        ..Default::default()
-    };
+    let options = pixel_options(mode, shader);
     let ps = psh::translate(&def, &options);
     if !ps.warnings.is_empty()
         || ps
@@ -377,29 +408,7 @@ fn compile(
         )
         .descriptor(),
     );
-    let (c0, c1) = def.embedded_constants();
-    let mut pixel = PixelUniforms {
-        c0,
-        c1,
-        fog: psh::fog::Fog::OFF.uniform(),
-        alpha_ref: [shader.render.alpha_ref as f32, 0.0, 0.0, 0.0],
-        lod_bias: shader.stages.map(|s| {
-            if s.mip_lod_bias.is_finite() {
-                s.mip_lod_bias
-            } else {
-                0.0
-            }
-        }),
-        ..Default::default()
-    };
-    for n in 0..4 {
-        let e = &shader.extras[n];
-        pixel.bump_mat[n] = e.bump_env_mat;
-        pixel.bump_lum[n] = [e.bump_env_lscale, e.bump_env_loffset, 0.0, 0.0];
-    }
-    if let Some(scale) = shader.tex_scale {
-        pixel.tex_scale[0] = scale;
-    }
+    let pixel = base_pixel(shader);
     let primitive = gfx::translate::primitive_state(
         &shader.render,
         wgpu::PrimitiveTopology::TriangleList,
@@ -429,6 +438,51 @@ fn compile(
         color_writes: gfx::translate::color_writes(shader.render.color_write),
         sampled,
     })
+}
+
+/// The vertex and pixel uniforms of a draw on a target of `size` texels
+/// for a guest surface of `guest_size` (`z_scale` the depth format's full
+/// scale): the surface, the half-texel shift under a render scale, and for
+/// a W-buffered mode the clip and the depth terms.
+fn draw_uniforms(
+    mode: Mode,
+    render: &RenderState,
+    integer_depth: bool,
+    vertex: &VertexUniforms,
+    pixel: PixelUniforms,
+    (guest_size, size, z_scale): ((u32, u32), (u32, u32), f32),
+    clip: DecalClip,
+) -> (VertexUniforms, PixelUniforms) {
+    let mut vu = vertex.clone();
+    vu.surface = [guest_size.0 as f32, guest_size.1 as f32];
+    vu.z_max = z_scale;
+    let scale = size.0 as f32 / guest_size.0 as f32;
+    vu.shift = if scale > 1.0 {
+        (2.0 * scale - 1.0) / (4.0 * scale)
+    } else {
+        0.0
+    };
+    vu.w_clip = mode.w_buffered().then_some(clip.range);
+    vu.w_clamp = mode.w_buffered() && clip.clamp;
+    let mut pu = pixel;
+    if mode.w_buffered() {
+        pu.depth = [
+            z_scale,
+            if render.solid_offset_enable {
+                render.depth_bias
+            } else {
+                0.0
+            },
+            if render.solid_offset_enable {
+                render.depth_bias_slope_scale
+            } else {
+                0.0
+            },
+            if integer_depth { 1.0 } else { 0.0 },
+        ];
+        pu.depth_range = [clip.range[0], clip.range[1], 0.0, 0.0];
+    }
+    (vu, pu)
 }
 
 impl DecalGpu {
@@ -551,35 +605,15 @@ impl DecalGpu {
         if clips.is_empty() {
             return true;
         }
-        let mut vu = self.compiled.vertex.clone();
-        vu.surface = [t.guest_size.0 as f32, t.guest_size.1 as f32];
-        vu.z_max = t.z_scale;
-        let scale = t.size.0 as f32 / t.guest_size.0 as f32;
-        vu.shift = if scale > 1.0 {
-            (2.0 * scale - 1.0) / (4.0 * scale)
-        } else {
-            0.0
-        };
-        vu.w_clip = self.mode.w_buffered().then_some(clip.range);
-        vu.w_clamp = self.mode.w_buffered() && clip.clamp;
-        let mut pu = self.compiled.pixel;
-        if self.mode.w_buffered() {
-            pu.depth = [
-                t.z_scale,
-                if self.render.solid_offset_enable {
-                    self.render.depth_bias
-                } else {
-                    0.0
-                },
-                if self.render.solid_offset_enable {
-                    self.render.depth_bias_slope_scale
-                } else {
-                    0.0
-                },
-                if self.integer_depth { 1.0 } else { 0.0 },
-            ];
-            pu.depth_range = [clip.range[0], clip.range[1], 0.0, 0.0];
-        }
+        let (vu, pu) = draw_uniforms(
+            self.mode,
+            &self.render,
+            self.integer_depth,
+            &self.compiled.vertex,
+            self.compiled.pixel,
+            (t.guest_size, t.size, t.z_scale),
+            clip,
+        );
         let vertex_buffer = t.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("native decal vertex uniforms"),
             size: VertexUniforms::SIZE as u64,
@@ -679,6 +713,406 @@ impl DecalGpu {
         }
         true
     }
+}
+
+/// Texture groups kept before the cache starts over, so views of retired
+/// textures are not held for ever.
+const GROUP_LIMIT: usize = 64;
+
+/// What a program is made from; the combiner's constants are uniforms, not
+/// part of the translation.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct ProgramKey {
+    microcode: Vec<u8>,
+    provided_inputs: u16,
+    combiner: PixelShaderDef,
+    options: PixelOptions,
+}
+
+struct CachedProgram {
+    id: ShaderId,
+    module: wgpu::ShaderModule,
+    layout: wgpu::PipelineLayout,
+    textures: wgpu::BindGroupLayout,
+    /// The group of a program that samples nothing.
+    unsampled: Option<wgpu::BindGroup>,
+    sampled: bool,
+    discards: bool,
+}
+
+#[derive(Clone)]
+struct CachedPipeline {
+    described: PipelineKey,
+    pending: Arc<PendingPipeline>,
+}
+
+/// What a cache made so far, for tests of a steady scene.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Created {
+    pub programs: u64,
+    pub pipelines: u64,
+    pub texture_groups: u64,
+    pub samplers: u64,
+}
+
+/// The target a decal's packets draw into: the attachments' formats and
+/// sizes, the guest surface they stand for, the depth format's full scale
+/// and the colour of stage 0's texture if the program samples one.
+pub struct PacketTarget<'a> {
+    pub color_format: wgpu::TextureFormat,
+    pub depth_format: wgpu::TextureFormat,
+    pub guest_size: (u32, u32),
+    pub size: (u32, u32),
+    pub z_scale: f32,
+    pub stage0: Option<&'a wgpu::TextureView>,
+}
+
+/// Programs, pipelines, samplers and texture groups of the decals' packets,
+/// scoped to one device and kept across frames: a steady scene makes
+/// nothing. Geometry and uniforms come from the submission's arena.
+#[derive(Default)]
+pub struct DecalCache {
+    uniforms: Option<wgpu::BindGroupLayout>,
+    programs: HashMap<ProgramKey, Result<Arc<CachedProgram>, &'static str>>,
+    pipelines: HashMap<PipelineKey, CachedPipeline>,
+    samplers: HashMap<gfx::translate::SamplerKey, wgpu::Sampler>,
+    groups: HashMap<(wgpu::BindGroupLayout, wgpu::TextureView, wgpu::Sampler), wgpu::BindGroup>,
+    created: Created,
+}
+
+impl DecalCache {
+    pub fn created(&self) -> Created {
+        self.created
+    }
+
+    fn program(
+        &mut self,
+        device: &wgpu::Device,
+        key: ProgramKey,
+    ) -> Result<Arc<CachedProgram>, &'static str> {
+        if let Some(found) = self.programs.get(&key) {
+            return found.clone();
+        }
+        let uniforms = self
+            .uniforms
+            .get_or_insert_with(|| crate::light_gpu::uniforms_layout(device))
+            .clone();
+        self.created.programs += 1;
+        let made = build_program(device, &key, &uniforms, ShaderId(u32::MAX - 2 - self.created.programs as u32))
+            .map(Arc::new);
+        self.programs.insert(key, made.clone());
+        made
+    }
+
+    /// One packet per clip rectangle for the D3D pass open on the
+    /// target's attachments, with what `DecalGpu::encode` records: the
+    /// whole surface as viewport, each clip as scissor, the draw's blend
+    /// constant, no stencil. The flag is whether the pixel program
+    /// discards. `Ok(None)` when the whole draw is clipped away (the caller
+    /// takes the isolated recording, which then records no draw).
+    pub fn draws(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        uploads: &gfx::ring::SubmissionUploads,
+        prepared: &Prepared,
+        clip: DecalClip,
+        t: &PacketTarget<'_>,
+    ) -> Result<Option<(Vec<RecordedDraw>, bool)>, &'static str> {
+        let mode = prepared.mode;
+        let shader = &prepared.shader;
+        if clip.w_buffered != Some(mode.w_buffered()) || t.guest_size.0 == 0 || t.guest_size.1 == 0 {
+            return Err("issue snapshot");
+        }
+        let caps = gfx::translate::Capabilities::from_features(device.features());
+        let (sx, sy) = (t.size.0 / t.guest_size.0, t.size.1 / t.guest_size.1);
+        if sx == 0 || sy == 0 || t.size != (t.guest_size.0 * sx, t.guest_size.1 * sy) {
+            return Err("target scale");
+        }
+        if prepared.clips.is_empty() {
+            return Ok(None);
+        }
+        let mut depth = gfx::translate::depth_stencil_state(
+            &shader.render,
+            Some(wgpu::TextureFormat::Depth24PlusStencil8),
+            wgpu::PrimitiveTopology::TriangleList,
+        )
+        .ok_or("depth state")?;
+        if gfx::translate::depth_stencil_state(
+            &shader.render,
+            Some(t.depth_format),
+            wgpu::PrimitiveTopology::TriangleList,
+        )
+        .is_none()
+        {
+            return Err("depth state");
+        }
+        if mode.w_buffered() {
+            depth.bias = wgpu::DepthBiasState::default();
+        }
+        depth.format = t.depth_format;
+        let mut combiner = shader.combiner.clone();
+        combiner.constant0 = [0; 8];
+        combiner.constant1 = [0; 8];
+        combiner.final_constant0 = 0;
+        combiner.final_constant1 = 0;
+        let program = self.program(
+            device,
+            ProgramKey {
+                microcode: shader.microcode.clone(),
+                provided_inputs: shader.provided_inputs,
+                combiner,
+                options: pixel_options(mode, shader),
+            },
+        )?;
+        let color_target = wgpu::ColorTargetState {
+            format: t.color_format,
+            blend: gfx::translate::blend_state(&shader.render),
+            write_mask: gfx::translate::color_writes(shader.render.color_write),
+        };
+        let described = PipelineKey {
+            shader: program.id,
+            vertex_buffers: Vec::new(),
+            primitive: gfx::translate::primitive_state(&shader.render, wgpu::PrimitiveTopology::TriangleList, caps),
+            depth_stencil: Some(depth),
+            color_target,
+            samples: 1,
+        };
+        let pipeline = match self.pipelines.get(&described) {
+            Some(found) => found.clone(),
+            None => {
+                let made = decal_pipeline(device, &program, &described).ok_or("pipeline")?;
+                self.created.pipelines += 1;
+                self.pipelines.insert(described.clone(), made.clone());
+                made
+            }
+        };
+        let textures = if program.sampled {
+            let view = t.stage0.ok_or("texture view")?;
+            let key = gfx::translate::SamplerKey::from_stage(&shader.stages[0], caps);
+            let created = &mut self.created;
+            let sampler = self
+                .samplers
+                .entry(key)
+                .or_insert_with(|| {
+                    created.samplers += 1;
+                    device.create_sampler(&key.descriptor())
+                })
+                .clone();
+            let group_key = (program.textures.clone(), view.clone(), sampler);
+            if let Some(group) = self.groups.get(&group_key) {
+                gfx::churn::native_cache(true);
+                group.clone()
+            } else {
+                gfx::churn::native_cache(false);
+                let group = gfx::churn::create_bind_group(
+                    device,
+                    &wgpu::BindGroupDescriptor {
+                        label: Some("native decal textures"),
+                        layout: &program.textures,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(&group_key.1),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::Sampler(&group_key.2),
+                            },
+                        ],
+                    },
+                );
+                if self.groups.len() >= GROUP_LIMIT {
+                    self.groups.clear();
+                }
+                self.created.texture_groups += 1;
+                self.groups.insert(group_key, group.clone());
+                group
+            }
+        } else {
+            program.unsampled.clone().ok_or("texture group")?
+        };
+        let (vertex, pixel) = draw_uniforms(
+            mode,
+            &shader.render,
+            shader.integer_depth,
+            &shader.vertex,
+            base_pixel(shader),
+            (t.guest_size, t.size, t.z_scale),
+            clip,
+        );
+        let layout = self.uniforms.as_ref().ok_or("uniforms layout")?;
+        let run = uploads
+            .uniform_run(
+                device,
+                queue,
+                layout,
+                [VertexUniforms::SIZE, PixelUniforms::SIZE],
+                1,
+                |_, v, p| {
+                    vertex.write_bytes(v);
+                    pixel.write_bytes(p);
+                },
+            )
+            .ok_or("decal constants")?;
+        let vertex_bytes: &[u8] = bytemuck::cast_slice(&prepared.vertices);
+        let indices = quad_indices(prepared.vertices.len() as u32 / 4);
+        let index_bytes: &[u8] = bytemuck::cast_slice(&indices);
+        let (vertices, vertex_at) = uploads.stage(device, queue, vertex_bytes);
+        let (index_buffer, index_at) = uploads.stage(device, queue, index_bytes);
+        let blend_constant = gfx::translate::blend_constant(&shader.render);
+        let render = RenderState::default();
+        let packets = prepared
+            .clips
+            .iter()
+            .map(|c| {
+                RecordedDraw::prepared_indexed(
+                    &pipeline.described,
+                    pipeline.pending.clone(),
+                    vec![(vertices.clone(), vertex_at, vertex_bytes.len() as u64)],
+                    (index_buffer.clone(), index_at, index_bytes.len() as u64),
+                    indices.len() as u32,
+                    vec![
+                        BoundGroup { index: 0, group: run.group.clone(), offsets: run.offsets(0).to_vec() },
+                        BoundGroup::new(1, textures.clone()),
+                    ],
+                    &render,
+                    t.size,
+                    ScissorRect {
+                        x: c.x.saturating_mul(sx),
+                        y: c.y.saturating_mul(sy),
+                        width: c.width.saturating_mul(sx),
+                        height: c.height.saturating_mul(sy),
+                    },
+                )
+                .with_blend_constant(blend_constant)
+            })
+            .collect();
+        Ok(Some((packets, program.discards)))
+    }
+}
+
+fn build_program(
+    device: &wgpu::Device,
+    key: &ProgramKey,
+    uniforms: &wgpu::BindGroupLayout,
+    id: ShaderId,
+) -> Result<CachedProgram, &'static str> {
+    let program = vsh::Program::parse(&key.microcode).map_err(|_| "vertex program")?;
+    let vs = vsh::translate(
+        &program,
+        &VertexOptions {
+            provided_inputs: key.provided_inputs,
+            flat_shading: key.options.flat_shading,
+            ..Default::default()
+        },
+    )
+    .map_err(|_| "vertex translation")?;
+    let ps = psh::translate(&key.combiner, &key.options);
+    if !ps.warnings.is_empty()
+        || ps.textures.iter().enumerate().any(|(n, d)| n != 0 && d.is_some())
+    {
+        return Err("pixel translation");
+    }
+    let wgsl = shaders::link(&vs, &ps).map_err(|_| "shader link")?;
+    shaders::validate(&wgsl).map_err(|_| "shader validation")?;
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("native decal program"),
+        source: wgpu::ShaderSource::Wgsl(wgsl.into()),
+    });
+    let sampled = ps.textures[0].is_some();
+    let entries: Vec<_> = if sampled {
+        vec![
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ]
+    } else {
+        Vec::new()
+    };
+    let textures = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("native decal textures"),
+        entries: &entries,
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("native decal program"),
+        bind_group_layouts: &[Some(uniforms), Some(&textures)],
+        immediate_size: 0,
+    });
+    let unsampled = (!sampled).then(|| {
+        gfx::churn::create_bind_group(
+            device,
+            &wgpu::BindGroupDescriptor {
+                label: Some("native decal no textures"),
+                layout: &textures,
+                entries: &[],
+            },
+        )
+    });
+    Ok(CachedProgram { id, module, layout, textures, unsampled, sampled, discards: ps.discards })
+}
+
+fn decal_pipeline(
+    device: &wgpu::Device,
+    program: &CachedProgram,
+    key: &PipelineKey,
+) -> Option<CachedPipeline> {
+    let attributes = [
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x3,
+            offset: 0,
+            shader_location: 0,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Unorm8x4Bgra,
+            offset: 12,
+            shader_location: 3,
+        },
+    ];
+    let pipeline = gfx::program::validated_resource(device, || {
+        gfx::churn::create_render_pipeline(
+            device,
+            &wgpu::RenderPipelineDescriptor {
+                label: Some("native decal program"),
+                layout: Some(&program.layout),
+                vertex: wgpu::VertexState {
+                    module: &program.module,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: VERTEX_SIZE as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &attributes,
+                    })],
+                },
+                primitive: key.primitive,
+                depth_stencil: key.depth_stencil.clone(),
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &program.module,
+                    entry_point: Some("fs_main"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(key.color_target.clone())],
+                }),
+                multiview_mask: None,
+                cache: None,
+            },
+        )
+    })?;
+    Some(CachedPipeline { described: key.clone(), pending: Pending::ready(Some(pipeline)) })
 }
 
 #[cfg(test)]

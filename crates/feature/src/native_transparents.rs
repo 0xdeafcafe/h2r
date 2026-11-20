@@ -9,19 +9,13 @@ use std::sync::{Arc, Mutex};
 
 use engine::{memory::GuestMemory, points};
 use native_render::camera::GuestRead;
-use native_render::transparent::{self, Entry, Source};
+use native_render::transparent::{self, Entry};
 
 use crate::{BuildError, Builder, Feature, Flow, Manifest};
 use runtime::abi::TransferAbi;
 use timeline::native::{Metric, Stage};
 
 pub const ID: &str = "native-transparents";
-pub const SWITCH: &str = "impl.render.native_transparents";
-pub const WALK_SWITCH: &str = "impl.render.native_transparents_walk";
-
-pub fn walk_on(switches: &crate::Switches) -> bool {
-    crate::switches::native_walk_on(switches, SWITCH, WALK_SWITCH)
-}
 
 // The contiguous-range branch of the standard geometry emitter, after
 // state commit. EDI holds the index array, ESI its count, BL its topology.
@@ -83,14 +77,14 @@ thread_local! {
     static WALK_DATA: Cell<Option<u32>> = const { Cell::new(None) };
 }
 
-fn walk_stage(mem: &dyn GuestRead, esp: u32, transparents: bool, first_person: bool) -> Option<Stage> {
+fn walk_stage(mem: &dyn GuestRead, esp: u32) -> Option<Stage> {
     let word = |offset| mem.read_u32(esp.checked_add(offset)?);
     if word(0x18)? != GEOMETRY_EMITTER_CALLER {
         return None;
     }
     let layer = word(0x78)?;
     match word(0x68)? {
-        TRANSPARENT_DRAW_CALLER if transparents && layer == 15 => {
+        TRANSPARENT_DRAW_CALLER if layer == 15 => {
             indexed_entry(mem, esp)?;
             let frame_data = SCOPE.with(|slot| {
                 let scope = slot.take();
@@ -100,7 +94,7 @@ fn walk_stage(mem: &dyn GuestRead, esp: u32, transparents: bool, first_person: b
             })?;
             (WALK_DATA.get() == Some(frame_data)).then_some(Stage::Transparents)
         }
-        LAYER_DRAW_CALLER if first_person => {
+        LAYER_DRAW_CALLER => {
             use native_render::world_layers::{Site, layer_site};
             let caller = word(FIRST_PERSON_LAYER_FRAME)?;
             let first_person_layer = layer_site(layer, caller) == Site::FirstPerson
@@ -128,7 +122,7 @@ fn walk_range(mem: &mut dyn GuestMemory, stage: Stage, range: IndexRange) -> boo
 }
 
 pub fn on(switches: &crate::Switches) -> bool {
-    crate::switches::native_stage_on(switches, SWITCH)
+    crate::switches::native_render_on(switches)
 }
 
 static ACTIVATION: AtomicU64 = AtomicU64::new(1);
@@ -201,7 +195,7 @@ impl Scope {
         self.handler = None;
     }
 
-    pub fn begin_entry(&mut self, mem: &dyn GuestRead, esp: u32, objects: bool) {
+    pub fn begin_entry(&mut self, mem: &dyn GuestRead, esp: u32) {
         if let Some(scene) = &mut self.scene
             && scene.frame.is_none()
             && esp < scene.esp
@@ -210,10 +204,10 @@ impl Scope {
             // its first geometry handler.
             scene.frame = Frame::read(mem, scene.esp);
         }
-        self.handler = self.read_handler(mem, esp, objects);
+        self.handler = self.read_handler(mem, esp);
     }
 
-    fn read_handler(&self, mem: &dyn GuestRead, esp: u32, objects: bool) -> Option<Handler> {
+    fn read_handler(&self, mem: &dyn GuestRead, esp: u32) -> Option<Handler> {
         let scene = self.scene?;
         let frame = Frame::read(mem, esp)?;
         // The next function after the sorted-list dispatch is the effects
@@ -226,9 +220,6 @@ impl Scope {
         }
         let data = mem.read_u32(esp.checked_add(4)?)?;
         let entry = transparent::read_entry(mem, data)?;
-        if !objects && matches!(entry.source, Source::Object(_)) {
-            return None;
-        }
         Some(Handler { frame, data, entry })
     }
 
@@ -295,34 +286,26 @@ impl Feature for NativeTransparents {
         // Both dispatch scopes last one view. A save occurs after the
         // render has drained, and the next view starts with fresh scopes.
         b.snapshot(crate::SnapshotPolicy::Stateless);
-        let transparents = walk_on(b.switches())
-            && std::env::var_os("H2_NATIVE_TRANSPARENTS_COMPARE").is_none()
-            && std::env::var_os("H2_NATIVE_TRANSPARENTS_PROBE").is_none();
-        let first_person = crate::native_first_person::walk_on(b.switches())
-            && std::env::var_os("H2_NATIVE_FIRST_PERSON_COMPARE").is_none();
-        if transparents || first_person {
-            b.raw().before(&GEOMETRY_RANGE_READY, "native_scene_walk_indexed", move |c| {
-                let rt = Arc::clone(c.ctx.runtime());
-                if !rt.read_dispatch(|dispatch| dispatch.has_resume(GEOMETRY_RANGE_TAIL)) {
-                    return Ok(Flow::Continue);
-                }
-                let mut mem = rt.memory();
-                let Some(stage) = walk_stage(&ReadMemory(&*mem), c.cpu.esp, transparents, first_person) else {
-                    return Ok(Flow::Continue);
-                };
-                let strip = c.cpu.ebx as u8 != 0;
-                let range = IndexRange { indices: c.cpu.edi, count: c.cpu.esi, strip };
-                if !walk_range(&mut *mem, stage, range) {
-                    return Ok(Flow::Continue);
-                }
-                c.cpu.edx = 5 + u32::from(strip);
-                Ok(Flow::Return(TransferAbi::resume(GEOMETRY_RANGE_TAIL)))
-            }).context_only().optional();
-        }
         if !on(b.switches()) {
             return Ok(());
         }
-        let objects = crate::native_objects::on(b.switches());
+        b.raw().before(&GEOMETRY_RANGE_READY, "native_scene_walk_indexed", |c| {
+            let rt = Arc::clone(c.ctx.runtime());
+            if !rt.read_dispatch(|dispatch| dispatch.has_resume(GEOMETRY_RANGE_TAIL)) {
+                return Ok(Flow::Continue);
+            }
+            let mut mem = rt.memory();
+            let Some(stage) = walk_stage(&ReadMemory(&*mem), c.cpu.esp) else {
+                return Ok(Flow::Continue);
+            };
+            let strip = c.cpu.ebx as u8 != 0;
+            let range = IndexRange { indices: c.cpu.edi, count: c.cpu.esi, strip };
+            if !walk_range(&mut *mem, stage, range) {
+                return Ok(Flow::Continue);
+            }
+            c.cpu.edx = 5 + u32::from(strip);
+            Ok(Flow::Return(TransferAbi::resume(GEOMETRY_RANGE_TAIL)))
+        }).context_only().optional();
         b.raw()
             .observe_before(&points::GAME_ACTIVATE, "native_transparents_generation", |_| {
                 ACTIVATION.fetch_add(1, Ordering::AcqRel);
@@ -344,16 +327,14 @@ impl Feature for NativeTransparents {
             })
             .context_only();
         b.raw()
-            .observe_before(&points::TRANSPARENT_GEOMETRY, "native_transparents_entry", move |c| {
+            .observe_before(&points::TRANSPARENT_GEOMETRY, "native_transparents_entry", |c| {
                 let mem = c.guest();
-                if transparents {
-                    let data = (mem.u32(c.cpu.esp).ok() == Some(SORTED_HANDLER_RETURN))
-                        .then(|| sorted_data(&*mem, c.cpu.esi)).flatten();
-                    WALK_DATA.set(data);
-                }
+                let data = (mem.u32(c.cpu.esp).ok() == Some(SORTED_HANDLER_RETURN))
+                    .then(|| sorted_data(&*mem, c.cpu.esi)).flatten();
+                WALK_DATA.set(data);
                 SCOPE.with(|slot| {
                     let mut scope = slot.take();
-                    scope.begin_entry(&ReadMemory(&*mem), c.cpu.esp, objects);
+                    scope.begin_entry(&ReadMemory(&*mem), c.cpu.esp);
                     slot.set(scope);
                 });
             })
@@ -394,7 +375,7 @@ mod walk_tests {
         mem.set_u32(stack + FIRST_PERSON_LAYER_FRAME, 0x0004_0271).unwrap();
         mem.set_u32(CURRENT_LIST, list).unwrap();
         mem.set_u32(list + 0x14, crate::native_first_person::FIRST_PERSON_ITEMS).unwrap();
-        let classify = |mem: &FlatMemory| walk_stage(&ReadMemory(mem), stack, true, true);
+        let classify = |mem: &FlatMemory| walk_stage(&ReadMemory(mem), stack);
         assert_eq!(classify(&mem), Some(Stage::FirstPerson));
         mem.set_u32(list + 0x14, 0x0050_0000).unwrap();
         assert_eq!(classify(&mem), None);

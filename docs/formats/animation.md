@@ -1,5 +1,7 @@
 # Animation graphs (`jmad`) and animation data
 
+Status: Built. Code: `crates/tags/src/anim.rs`, `crates/tags/src/anim_sample.rs`. Tests: `crates/tags/src/anim_tests.rs`. Switch: none.
+
 This describes `crates/tags/src/anim.rs` (the `jmad` tag), `crates/tags/src/anim_sample.rs`
 (decompression and sampling) and `h2 anim` in `crates/cli`. Like
 [sound.md](sound.md) it is hand-written and self-contained: it does not use the

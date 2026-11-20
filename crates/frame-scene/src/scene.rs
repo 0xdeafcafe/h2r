@@ -208,7 +208,7 @@ pub struct FrameScene {
     pub rows: Vec<Row>,
 }
 
-fn slice<T>(v: &[T], r: &Range<u32>) -> &[T] {
+fn slice<'a, T>(v: &'a [T], r: &Range<u32>) -> &'a [T] {
     v.get(r.start as usize..r.end as usize).unwrap_or(&[])
 }
 

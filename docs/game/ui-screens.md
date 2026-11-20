@@ -226,8 +226,7 @@ logs"); the sign-in prompt logs `signin prompt: ...` lines (docs/live/live.md).
 - **The press that opened a screen, seen again.** A button event is raised
   only on the frame the button goes down, so a held A gives no second event.
   But a continue that comes within 50 ms of opening is the opener's press,
-  and is dropped (`input::OpenerGuard`; `H2_SKULLS_GUARD_MS` for the skulls
-  page).
+  and is dropped (`input::OpenerGuard`).
 - **The skull labels over the campaign picker's ids** (`0x22fff0xx`). Both
   were hand-picked bases. The registry now fails the build on an overlap.
 - **Co-op texts showing "Zombies" and "SWAT".** The co-op ids were
@@ -293,10 +292,9 @@ Taking the point as the bitmap's top (as screen-level bitmaps are) would
 give 49 for the Controls skin, which the screenshot rules out. Skin 0
 (the skulls page) gives 22 by the same rule.
 
-**Side by side.** With `H2_UI_COMPARE=<png>` (a 640 by 480 frame of the game)
-and `H2_UI_PREVIEW_DIR`, the disc test also writes `coop-vs-game.png`: the
-co-op screen focused on row 4 beside the frame. Rows, bars, frame and
-header line up. What differs:
+**Side by side.** The co-op screen focused on row 4, drawn beside a 640 by
+480 frame of the game (2026-11-16; the one-off compare was removed after),
+lined up in rows, bars, frame and header. What differed:
 
 - the game fills above and below `framing_center` with dark blue (we
   leave it black), and the track lines scroll;

@@ -37,7 +37,9 @@ reader.
 | [objects.md](objects.md) | `weap`, `proj`, `eqip`, `bipd`, `vehi`, `coll`, `phys` | `h1objects` |
 | [role-audit.md](role-audit.md) | Halo 2 values left in converted tags (role words, counterpart references), each allowed or a bug | `h1objects` |
 | [ai.md](ai.md) | Actors, encounters, command lists to Halo 2's scenario AI | `h1ai` |
+| [ai-control.md](ai-control.md) | Encounter script controls bound to Halo 2 evaluators; orders and migration | `h1scripts`, `h1ai` |
 | [scripts.md](scripts.md) | Campaign scripts to Halo 2 builtins and nodes | `h1scripts` |
+| [script-builtins.md](script-builtins.md) | Unit, object and miscellaneous script builtins: retail equivalents and the hooks on converted campaign maps | `h1scripts`, `boot` |
 | [sky.md](sky.md) | `sky ` | `h1sky` |
 | [text.md](text.md) | `ustr`, `hmt ` to Halo 2 `unic` | `h1text` |
 

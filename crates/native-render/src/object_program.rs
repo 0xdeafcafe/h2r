@@ -125,7 +125,7 @@ pub struct ObjectPass {
     pub texaccum: [bool; 4],
     /// The vertex program's instruction words (four per instruction, no
     /// header) and the translation's options: what the D3D path's draw of
-    /// the same part is compared by (`d3d::uniform_compare`).
+    /// the same part binds.
     pub words: Vec<u32>,
     pub options: shaders::vsh::VertexOptions,
 }

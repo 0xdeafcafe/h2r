@@ -78,10 +78,6 @@ pub struct FrameRecord {
     /// More draws than `max_draws`: the list stops there.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
-    /// Calls into each native render path (`impl.render.*`) during the
-    /// frame; a path not listed made none.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub paths: BTreeMap<String, u64>,
     /// Surface copies and readbacks, in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ops: Vec<OpRecord>,
@@ -232,9 +228,6 @@ pub struct RenderStats {
     /// The pipelined render (`impl.render.pipelined_frame`): frame counts,
     /// serial and fallback reasons, joins, snapshot coverage and times in ms.
     pub pipeline: Value,
-    /// Calls into each native render path (`impl.render.*` placed as an
-    /// implementation) since the start; 0 for a path that is off.
-    pub paths: BTreeMap<String, u64>,
     /// The frame-stats window's per-frame means of the render counters.
     pub counters: Value,
 }
@@ -292,9 +285,9 @@ impl CompareReply {
 /// `render.capture`: the frame of a sim tick as a PNG.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct CaptureParams {
+pub struct FrameCaptureParams {
     /// The game tick (as `at.tick` counts) whose frame is wanted; default
-    /// the next one. At most [`CaptureParams::MAX_AHEAD`] ticks ahead.
+    /// the next one. At most [`FrameCaptureParams::MAX_AHEAD`] ticks ahead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tick: Option<u64>,
     /// A pass of that frame (as `render.frame` numbers them) read back
@@ -303,7 +296,7 @@ pub struct CaptureParams {
     pub pass: Option<usize>,
 }
 
-impl CaptureParams {
+impl FrameCaptureParams {
     /// How far ahead a tick may be asked for: the answer must come within
     /// the agent's deferred-answer limit (300 ticks).
     pub const MAX_AHEAD: u64 = 240;
@@ -484,9 +477,9 @@ mod tests {
     fn params_take_their_defaults_and_refuse_strangers() {
         let s: SceneParams = serde_json::from_value(serde_json::json!({})).unwrap();
         assert!(!s.dump);
-        let c: CaptureParams = serde_json::from_value(serde_json::json!({})).unwrap();
-        assert_eq!(c, CaptureParams::default());
-        assert!(serde_json::from_value::<CaptureParams>(serde_json::json!({"tik": 3})).is_err());
+        let c: FrameCaptureParams = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(c, FrameCaptureParams::default());
+        assert!(serde_json::from_value::<FrameCaptureParams>(serde_json::json!({"tik": 3})).is_err());
         assert!(serde_json::from_value::<CompareParams>(serde_json::json!({"a": "x"})).is_err());
         let v = serde_json::to_value(CaptureReply::default()).unwrap();
         assert_eq!(v["scene_hash"], Value::Null, "null, not missing");

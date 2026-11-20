@@ -21,7 +21,7 @@
 //! run time against the setting definitions (`sily` tags) the game itself
 //! offers in the editor, and a variant with a pair the game would not offer
 //! is left out. Retail entries are copied unchanged and saved variants are
-//! never touched. Set `H2_NO_COMMUNITY_VARIANTS=1` to skip all of it.
+//! never touched.
 
 use std::sync::Arc;
 
@@ -742,30 +742,19 @@ pub(crate) fn install_with_live(
     rt: &runtime::Runtime,
     live: Option<Arc<live_hle::Hle>>,
 ) -> anyhow::Result<()> {
-    let community = std::env::var_os("H2_NO_COMMUNITY_VARIANTS").is_none();
-    let options = crate::variant_options::enabled();
-    if !community && !options && live.is_none() {
-        return Ok(());
-    }
-    if community {
-        rt.memory()
-            .map_zeroed(DATA_BASE, DATA_SIZE, Permissions::RW)?;
-    }
-    if options {
-        rt.memory().map_zeroed(
-            crate::variant_options::BASE,
-            crate::variant_options::SIZE,
-            Permissions::RW,
-        )?;
-    }
+    rt.memory()
+        .map_zeroed(DATA_BASE, DATA_SIZE, Permissions::RW)?;
+    rt.memory().map_zeroed(
+        crate::variant_options::BASE,
+        crate::variant_options::SIZE,
+        Permissions::RW,
+    )?;
     // Resolve the originals first: `resolve_original` takes the dispatch
     // read lock, which `edit_dispatch` holds for writing.
     let (load, strings, numbers) = (
-        (community || options)
-            .then(|| original(rt, BUILTINS_LOAD))
-            .flatten(),
+        original(rt, BUILTINS_LOAD),
         original(rt, LOCALIZED_STRING),
-        community.then(|| original(rt, NUMBER_STRING_ID)).flatten(),
+        original(rt, NUMBER_STRING_ID),
     );
     rt.edit_dispatch(|d| {
         if let Some(o) = load {
@@ -776,25 +765,23 @@ pub(crate) fn install_with_live(
                     let tags = mem.u32(TAG_INSTANCES)?;
                     // Our choices first: the community variants below are
                     // checked against the lists as the editor will show them.
-                    if options {
-                        use crate::variant_options as vo;
-                        match vo::extend(&mut *mem, goof, tags, vo::BASE, vo::SIZE) {
-                            Some(d) if d.lists > 0 || d.no_room > 0 => eprintln!(
-                                "variant options: {} choices added to {} option lists{}",
-                                d.choices,
-                                d.lists,
-                                if d.no_room > 0 {
-                                    format!("; {} lists left as retail (no room)", d.no_room)
-                                } else {
-                                    String::new()
-                                }
-                            ),
-                            Some(_) => {}
-                            None => eprintln!("variant options: could not read the setting pages"),
-                        }
+                    use crate::variant_options as vo;
+                    match vo::extend(&mut *mem, goof, tags, vo::BASE, vo::SIZE) {
+                        Some(d) if d.lists > 0 || d.no_room > 0 => eprintln!(
+                            "variant options: {} choices added to {} option lists{}",
+                            d.choices,
+                            d.lists,
+                            if d.no_room > 0 {
+                                format!("; {} lists left as retail (no room)", d.no_room)
+                            } else {
+                                String::new()
+                            }
+                        ),
+                        Some(_) => {}
+                        None => eprintln!("variant options: could not read the setting pages"),
                     }
                 }
-                if community {
+                {
                     let mut mem = ctx.runtime().memory();
                     let goof = mem.u32(cpu.esp + 4)?;
                     let tags = mem.u32(TAG_INSTANCES)?;

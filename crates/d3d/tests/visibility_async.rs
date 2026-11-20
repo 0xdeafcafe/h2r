@@ -228,7 +228,7 @@ fn a_caught_up_render_thread_answers_like_the_synchronous_backend() {
     );
 }
 
-/// The old behaviour (`H2_D3D_VISIBILITY_POLL=0`): with the render thread
+/// The old behaviour (`Device::set_visibility_poll(false)`): with the render thread
 /// lagging by random amounts, every call waits and the guest sees exactly
 /// what the synchronous backend gives.
 #[test]
@@ -412,7 +412,7 @@ pub fn bench() {
         .unwrap_or(30u32);
     println!("visibility results, {frames} frames of {OBJECTS} lens flares, render thread lagging");
     for (name, poll) in [
-        ("wait (H2_D3D_VISIBILITY_POLL=0)", false),
+        ("wait (set_visibility_poll(false))", false),
         ("poll (default)", true),
     ] {
         let (mut d, mut m) = device(threaded(Some(0x9e37_79b9)), poll);
