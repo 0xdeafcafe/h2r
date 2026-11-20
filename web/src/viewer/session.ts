@@ -9,9 +9,11 @@ import type { RosterEntry } from "../map/render";
 import { onAnimationFrame } from "../map/scheduler";
 import { TICKS_PER_SECOND, type FrameBuffer } from "../state/frames";
 import { frameHub, live } from "../state/live";
+import { identity } from "../state/identity";
 import type { GameState } from "../state/reducer";
 import { ReplayTimeline, fetchRecording, inTickRange, playbackRange, type ReplayKill, type TickRange } from "../state/replay";
 import { Movie } from "../api/film-ticks";
+import type { HostFilm } from "../api/host-film";
 import type { TimelineSegment } from "../api/chunk";
 import { ArchiveWindow, ReplayWindow } from "./archive";
 import { sampleFilmEffects, sampleFilmWorld } from "./film-world";
@@ -55,7 +57,7 @@ export function createReplaySession(
   game: Accessor<GameState>,
   roster: Accessor<Map<number, RosterEntry>>,
   startTime: Accessor<string | string[] | undefined>,
-  options: { range?: TickRange; sync?: boolean } = {},
+  options: { range?: TickRange; sync?: boolean; hostFilm?: () => HostFilm | undefined } = {},
 ): ReplaySession {
   const [timeline, setTimeline] = createSignal<ReplayTimeline | null>(null);
   const [savedRange, setSavedRange] = createSignal<TickRange | undefined>(options.range);
@@ -107,7 +109,7 @@ export function createReplaySession(
     setFollowingLive(playback.followingLive);
   });
 
-  createEffect(on(gameId, (id) => {
+  createEffect(on([gameId, () => live.server().api, () => identity.me()?.xuid], ([id]) => {
     const ac = new AbortController();
     const openedLive = isLive();
     playback = new ViewerPlayback(openedLive, options.range);
@@ -192,7 +194,7 @@ export function createReplaySession(
       };
       const api = live.api();
       const read = async () => {
-        const film = await api.hostFilm(id, signal);
+        const film = options.hostFilm?.() ?? await api.hostFilm(id, signal);
         if (signal.aborted) return;
         const movie = film && new Movie(await film.index(signal), film.front.match_start_tick, game().start_tick, id, film.chunk, film.front.ticks_per_second ?? TICKS_PER_SECOND);
         const segments = movie?.segments;

@@ -36,7 +36,7 @@ impl fmt::Debug for HostToken {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TelemetrySinkConfig {
     /// Install the recorded hooks during playback without producing files.
-    Discard { film_effects: bool },
+    Discard {},
     File(PathBuf),
     Server {
         base_url: String,
@@ -79,6 +79,11 @@ struct StoredAccount {
 }
 
 impl TelemetryConfig {
+    /// Reuse the film's dispatch hooks with all outbound transport disabled.
+    pub fn playback() -> Self {
+        Self { enabled: false, sink: TelemetrySinkConfig::Discard {} }
+    }
+
     pub fn file(path: PathBuf) -> Self {
         Self {
             enabled: true,

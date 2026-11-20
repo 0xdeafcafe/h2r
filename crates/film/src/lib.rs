@@ -69,15 +69,37 @@ impl FilmMeta {
         !stamp.is_empty() && self.image_stamp == stamp
     }
 }
+/// Render feature groups the recording executable could place on the guest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderHooks {
+    Slim,
+    Desktop,
+    Gpu,
+}
+
+impl RenderHooks {
+    pub fn supports(self, recording: Self) -> bool {
+        match recording {
+            Self::Slim => true,
+            Self::Desktop => matches!(self, Self::Desktop | Self::Gpu),
+            Self::Gpu => self == Self::Gpu,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Header {
     pub version: u32,
     pub meta: FilmMeta,
     pub title_id: u32,
     pub xbe_sha256: String,
-    /// Source fingerprint of the simulator and host shims (introduced in v2).
+    /// Simulator ABI. Early v2/v3 writers stored a source fingerprint here.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub runtime_stamp: String,
+    /// Effective simulation hooks, computed after feature placement, in the sealed HEAD.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub simulation_hooks: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guest_image: Option<image::GuestImage>,
     pub epoch_100ns: u64,
@@ -90,10 +112,28 @@ pub struct Header {
     pub lobby: bool,
     pub lobby_machine_start: bool,
     pub host_bots: bool,
+    /// Legacy presence bit used by earlier readers.
     pub telemetry: bool,
+    /// The exact observer chain chosen before guest execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry_hooks: Option<live_proto::film::TelemetryHooks>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub render_hooks: Option<RenderHooks>,
     pub live_service: bool,
     pub features: String,
 }
+impl Header {
+    pub fn telemetry_plan(&self) -> live_proto::film::TelemetryHooks {
+        use live_proto::film::TelemetryHooks;
+        self.telemetry_hooks
+            .unwrap_or_else(|| match (self.telemetry, self.version) {
+                (false, _) => TelemetryHooks::OFF,
+                (true, 1 | 2) => TelemetryHooks::EVENTS,
+                (true, _) => TelemetryHooks::UNIFIED,
+            })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
     pub tag: Tag,
@@ -223,8 +263,9 @@ impl<W: Write + Seek> Writer<W> {
                     .directory
                     .chunks
                     .last()
-                    .is_none_or(|c| c.last < first),
-            "overlapping or invalid film tick range"
+                    .map_or(Some(1), |c| c.last.checked_add(1))
+                    == Some(first),
+            "nonconsecutive or invalid film tick range"
         );
         ensure!(
             self.index.len() < MAX_ENTRIES && !raw.is_empty() && raw.len() <= range::MAX_TICK_BYTES,

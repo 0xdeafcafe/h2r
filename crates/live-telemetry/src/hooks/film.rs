@@ -20,7 +20,7 @@ pub trait FilmObserver: Send + Sync + 'static {
     fn scene(&self, scene: Scene) -> Result<(), String>;
     fn record(&self, record: live_proto::film::events::Record) -> Result<(), String>;
     fn clock(&self, clock: Option<u64>);
-    fn failed(&self, reason: &str);
+    fn dropped(&self, source: &'static str);
 }
 
 pub(super) struct FilmProjection {
@@ -101,6 +101,12 @@ impl Telemetry {
         Ok(())
     }
 
+    pub(crate) fn dropped_film_sample(&self, source: &'static str) {
+        if let Some(film) = &self.film {
+            film.observer.dropped(source);
+        }
+    }
+
     pub(crate) fn film_observing(&self) -> bool {
         self.film.as_ref().is_some_and(|f| f.observer.active())
     }
@@ -148,8 +154,9 @@ pub fn install_film(
     registry: &mut feature::Registry,
     config: &TelemetryConfig,
     observer: Option<Box<dyn FilmObserver>>,
+    hooks: live_proto::film::TelemetryHooks,
 ) -> Result<Option<Arc<Telemetry>>, String> {
-    if !config.enabled && observer.is_none() {
+    if !hooks.enabled() {
         return Ok(None);
     }
     let mut session =
@@ -184,11 +191,7 @@ pub fn install_film(
     } else {
         Telemetry::new(session, sink)
     };
-    telemetry.film_hooks = telemetry.film.is_some()
-        || matches!(
-            config.sink,
-            TelemetrySinkConfig::Discard { film_effects: true }
-        );
+    telemetry.hooks = hooks;
     // Replay needs the same hook addresses for scheduler parity. Its viewer
     // consumes the film: no second live telemetry session needs to observe it.
     if matches!(config.sink, TelemetrySinkConfig::Discard { .. }) {
@@ -247,6 +250,8 @@ mod tests {
         events: Mutex<Vec<String>>,
         frames: Mutex<Vec<u64>>,
         clock: Mutex<Option<u64>>,
+        dropped: Mutex<Vec<&'static str>>,
+        records: Mutex<Vec<live_proto::film::events::Record>>,
     }
 
     impl FilmObserver for Arc<CaptureLog> {
@@ -267,12 +272,88 @@ mod tests {
         fn scene(&self, _: Scene) -> Result<(), String> {
             Ok(())
         }
-        fn record(&self, _: live_proto::film::events::Record) -> Result<(), String> {
+        fn record(&self, record: live_proto::film::events::Record) -> Result<(), String> {
+            self.records.lock().unwrap().push(record);
             Ok(())
         }
-        fn failed(&self, error: &str) {
-            panic!("film capture failed: {error}")
+        fn dropped(&self, source: &'static str) {
+            self.dropped.lock().unwrap().push(source);
         }
+    }
+
+    #[test]
+    fn bad_event_observations_are_counted_and_the_next_tick_recovers() {
+        use crate::{layout, memory::fixture};
+        use live_proto::film::{TelemetryHooks, events::Event};
+
+        let log = Arc::new(CaptureLog::default());
+        let mut registry = feature::Registry::new(feature::Switches::defaults());
+        let t = install_film(
+            &mut registry,
+            &TelemetryConfig::default(),
+            Some(Box::new(log.clone())),
+            TelemetryHooks::UNIFIED,
+        )
+        .unwrap()
+        .unwrap();
+        t.protect(|| t.start(&runtime::Guest::new()));
+        assert!(!t.disabled());
+
+        let mut g = fixture::memory();
+        g.set_u32(fixture::GLOBALS + layout::OPTIONS + layout::OPTIONS_TYPE, 2)
+            .unwrap();
+        g.set_u16(
+            fixture::GLOBALS + layout::OPTIONS + layout::OPTIONS_TICK_RATE,
+            30,
+        )
+        .unwrap();
+        g.write_bytes(layout::CACHE_MAP_NAME, b"lockout\0", 1)
+            .unwrap();
+        // Tick retries the failed start after loading the roster.
+        t.protect(|| t.sample(&g));
+        assert_eq!(*log.events.lock().unwrap(), ["GameStarted"]);
+        g.set_u32(fixture::TIME + layout::TIME_TICK, 1).unwrap();
+        let runtime = runtime::Runtime::new(g, runtime::Dispatch::default());
+        let cpu = runtime::CpuAbi::default();
+        let o = feature::Obs {
+            thread_id: 1,
+            cpu: &cpu,
+            runtime: &runtime,
+            addr: engine::points::DAMAGE_REPORT.base,
+            point: &engine::points::DAMAGE_REPORT,
+        };
+        for source in ["weapon_fire", "impact", "projectile_end"] {
+            crate::impacts::observe(&t, source, &o, |guest| {
+                engine::GuestMemory::u32(guest, 0x7000_0000).map(|_| None)
+            });
+        }
+        crate::impacts::observe(&t, "impact", &o, |_| {
+            Ok(Some(Event::Pickup { unit: "p0".into() }))
+        });
+        assert_eq!(log.records.lock().unwrap().len(), 1);
+        t.protect(|| t.sample(&runtime::Guest::new()));
+        t.protect(|| t.sample(&runtime.memory()));
+        assert_eq!(*log.clock.lock().unwrap(), Some(1));
+        {
+            let mut g = runtime.memory();
+            g.set_u8(fixture::GLOBALS + layout::GAME_ENDED, 1).unwrap();
+            g.set_u32(layout::PLAYERS_PTR, 0x7000_0000).unwrap();
+        }
+        t.protect(|| t.end(&runtime.memory()));
+        assert_eq!(
+            *log.dropped.lock().unwrap(),
+            [
+                "match_start",
+                "weapon_fire",
+                "impact",
+                "projectile_end",
+                "tick_clock",
+                "final_scoreboard"
+            ]
+        );
+        t.close_film();
+        assert_eq!(*log.events.lock().unwrap(), ["GameStarted", "GameEnded"]);
+        assert!(!t.disabled());
     }
 
     #[test]
@@ -283,6 +364,7 @@ mod tests {
             &mut registry,
             &TelemetryConfig::default(),
             Some(Box::new(log.clone())),
+            live_proto::film::TelemetryHooks::UNIFIED,
         )
         .unwrap()
         .unwrap();

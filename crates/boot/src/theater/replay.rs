@@ -69,7 +69,7 @@ impl EngineReplay {
         tick: u64,
         gameplay: Option<u64>,
     ) -> Result<()> {
-        metadata::verify_start(guest, tick, &self.track.descriptor, self.map_vfs.as_deref())?;
+        metadata::verify_start(guest, tick, &self.track.descriptor, self.map_vfs.as_ref())?;
         let applied = self.saw_actions;
         let observed = std::mem::take(&mut self.pause_edges);
         let frame = self.next_tick()?;
@@ -138,7 +138,7 @@ impl Session {
             presents: 0,
             notes: vec![],
         });
-        let saved = device.save(host.rt, &mut scratch);
+        let saved = device.save_film(host.rt, &mut scratch);
         ensure!(
             saved.is_ok() == expected,
             "first divergence at tick {tick}: D3D capture at slice {slices} expected success={expected}, observed {saved:?}"
@@ -220,7 +220,7 @@ impl Session {
             .match_start_tick
             .is_some_and(|start| start <= frame.tick)
         {
-            metadata::verify_restored_map(&engine.track.descriptor, engine.map_vfs.as_deref())?;
+            metadata::verify_restored_map(&engine.track.descriptor, engine.map_vfs.as_ref())?;
         }
         let offset = engine
             .track

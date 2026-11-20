@@ -43,6 +43,10 @@ pub trait DeviceSnapshot: Send + Sync {
     /// back), so it runs before guest RAM is saved.
     fn save(&self, rt: &runtime::Runtime, out: &mut snapshot::SnapshotWriter)
     -> Result<(), String>;
+    /// A film keyframe includes the parameters needed to create a cold device.
+    fn save_film(&self, rt: &runtime::Runtime, out: &mut snapshot::SnapshotWriter) -> Result<(), String> {
+        self.save(rt, out)
+    }
     /// After guest RAM is loaded.
     fn load(&self, snapshot: &snapshot::Snapshot<'_>) -> Result<(), String>;
     /// Recreate host resources from a cold film keyframe after guest RAM loads.
@@ -71,6 +75,16 @@ impl<B: d3d::backend::Backend + Send + 'static> DeviceSnapshot for Mutex<d3d::De
         device
             .save_snapshot(&mut mem, out)
             .map_err(|e| e.to_string())
+    }
+    fn save_film(
+        &self,
+        rt: &runtime::Runtime,
+        out: &mut snapshot::SnapshotWriter,
+    ) -> Result<(), String> {
+        let mut device = self.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guest = rt.memory();
+        let mut mem = d3d::runtime_glue::GuestAdapter::new(&mut guest);
+        device.save_film_snapshot(&mut mem, out).map_err(|e| e.to_string())
     }
     fn load(&self, snapshot: &snapshot::Snapshot<'_>) -> Result<(), String> {
         let mut device = self.lock().unwrap_or_else(|e| e.into_inner());
@@ -118,10 +132,17 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
 /// No display backend. Leftover lobby and loading draws carry texture
 /// descriptors and handles through the ABI without copying the pixels.
 pub fn install_light(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
+    install_light_for_profile(rt, crate::registration::compiled_render_hooks())
+}
+
+pub(crate) fn install_light_for_profile(
+    rt: &runtime::Runtime,
+    profile: film::RenderHooks,
+) -> anyhow::Result<Installed> {
     let backend = d3d::descriptor::DescriptorBackend::default();
     #[cfg(not(feature = "desktop-runtime"))]
     let backend = backend.with_present(crate::d3d_diag::note_descriptor_present);
-    install_with(rt, backend)
+    install_for_profile(rt, backend, None, profile)
 }
 
 #[cfg(feature = "gpu")]
@@ -142,8 +163,17 @@ pub fn install_headless(
     rt: &runtime::Runtime,
     interp: Option<Interpolation>,
 ) -> anyhow::Result<Installed> {
+    install_headless_for_profile(rt, interp, crate::registration::compiled_render_hooks())
+}
+
+#[cfg(feature = "gpu")]
+pub(crate) fn install_headless_for_profile(
+    rt: &runtime::Runtime,
+    interp: Option<Interpolation>,
+    profile: film::RenderHooks,
+) -> anyhow::Result<Installed> {
     match std::env::var_os("H2_BOOT_GFX") {
-        None => install_with(rt, Headless::default()),
+        None => install_for_profile(rt, Headless::default(), None, profile),
         Some(dir) => {
             let dir = std::path::PathBuf::from(dir);
             std::fs::create_dir_all(&dir)?;
@@ -315,9 +345,9 @@ pub fn install_headless(
                     )
                 });
                 return if render_thread_requested() {
-                    install_with_report(rt, d3d::ThreadedBackend::new(b)?, Some(report))
+                    install_for_profile(rt, d3d::ThreadedBackend::new(b)?, Some(report), profile)
                 } else {
-                    install_with_report(rt, b, Some(report))
+                    install_for_profile(rt, b, Some(report), profile)
                 };
             }
             if scale > 1 || lighting != d3d::Lighting::Retail {
@@ -345,9 +375,9 @@ pub fn install_headless(
                 );
                 let report = scale_report(&mut b);
                 return if render_thread_requested() {
-                    install_threaded(rt, b, Some(report), interp)
+                    install_threaded_for_profile(rt, b, Some(report), interp, profile)
                 } else {
-                    install_with_report(rt, b, Some(report))
+                    install_for_profile(rt, b, Some(report), profile)
                 };
             }
             let mut backend = configure_gfx(
@@ -364,9 +394,9 @@ pub fn install_headless(
             // (docs/graphics/render-thread.md), unless H2_RENDER_THREAD=0;
             // behind the in-between frames when `interp` is given.
             if render_thread_requested() {
-                return install_threaded(rt, backend, None, interp);
+                return install_threaded_for_profile(rt, backend, None, interp, profile);
             }
-            install_with(rt, backend)
+            install_for_profile(rt, backend, None, profile)
         }
     }
 }
@@ -758,15 +788,30 @@ where
     B: d3d::backend::Backend + Send + 'static,
     B::Texture: Sync,
 {
+    install_threaded_for_profile(rt, backend, extra, interp, crate::registration::compiled_render_hooks())
+}
+
+#[cfg(feature = "gpu")]
+pub(crate) fn install_threaded_for_profile<B>(
+    rt: &runtime::Runtime,
+    backend: B,
+    extra: Option<ExtraReport>,
+    interp: Option<Interpolation>,
+    profile: film::RenderHooks,
+) -> anyhow::Result<Installed>
+where
+    B: d3d::backend::Backend + Send + 'static,
+    B::Texture: Sync,
+{
     match interp {
         Some(Interpolation { rate, mode }) => {
             let interp = d3d::InterpBackend::new(backend, rate).with_mode(mode);
             // The agent's render.stats reads its counters.
             crate::render_probe::set_interp(interp.stats());
             crate::render_probe::set_interp_holds(interp.holds());
-            install_with_report(rt, d3d::ThreadedBackend::new(interp)?, extra)
+            install_for_profile(rt, d3d::ThreadedBackend::new(interp)?, extra, profile)
         }
-        None => install_with_report(rt, d3d::ThreadedBackend::new(backend)?, extra),
+        None => install_for_profile(rt, d3d::ThreadedBackend::new(backend)?, extra, profile),
     }
 }
 
@@ -1267,6 +1312,19 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
     backend: B,
     extra: Option<ExtraReport>,
 ) -> anyhow::Result<Installed> {
+    install_for_profile(rt, backend, extra, crate::registration::compiled_render_hooks())
+}
+
+pub(crate) fn install_for_profile<B: d3d::backend::Backend + Send + 'static>(
+    rt: &runtime::Runtime,
+    backend: B,
+    extra: Option<ExtraReport>,
+    profile: film::RenderHooks,
+) -> anyhow::Result<Installed> {
+    anyhow::ensure!(
+        crate::registration::compiled_render_hooks().supports(profile),
+        "unavailable D3D hook profile {profile:?}"
+    );
     #[cfg(feature = "desktop-runtime")]
     let (backend, draw_stats) = crate::d3d_diag::DiagBackend::new(backend);
     // Tracked uploads trust the write barrier below; H2_BOOT_UPLOAD_ALWAYS
@@ -1293,9 +1351,11 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
     d3d::runtime_glue::map_device_memory(&mut rt.memory(), &cfg)?;
     let device = d3d::runtime_glue::shared(cfg, backend);
     #[cfg(feature = "desktop-runtime")]
-    install_occlusion_capture(&device);
+    if profile != film::RenderHooks::Slim {
+        install_occlusion_capture(&device);
+    }
     #[cfg(feature = "gpu")]
-    {
+    if profile == film::RenderHooks::Gpu {
         crate::native_world_glue::install(&device);
         crate::native_objects_glue::install(&device);
         crate::native_decals_glue::install(&device);
@@ -1325,9 +1385,10 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
         .collect();
     install_write_barrier(rt, &device, &entries)?;
     #[cfg(feature = "gpu")]
-    crate::native_world_layers_glue::install(rt, &device);
-    #[cfg(feature = "gpu")]
-    crate::native_residual_glue::install(rt, &device, &r.implemented);
+    if profile == film::RenderHooks::Gpu {
+        crate::native_world_layers_glue::install(rt, &device);
+        crate::native_residual_glue::install(rt, &device, &r.implemented);
+    }
     let vblank: Option<kernel::periodic::Handler> =
         Some(Box::new(d3d::vblank::clocked_vblanks(Arc::clone(&device))));
     let snapshot: Arc<dyn DeviceSnapshot> = device.clone();
@@ -1688,6 +1749,19 @@ pub fn w_buffer_mapping(s: d3d::DepthScale) -> engine::render_loop::occlusion::D
 mod tests {
     use super::*;
     use d3d::backend::Backend;
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn slim_film_keeps_the_dedicated_indexed_draw_dispatch_on_a_gpu_player() {
+        let rt = runtime::Runtime::new(runtime::Guest::new(), runtime::Dispatch::default());
+        install_light_for_profile(&rt, film::RenderHooks::Slim).unwrap();
+        rt.edit_dispatch(|dispatch| {
+            assert_eq!(
+                dispatch.override_name(native_render::world_layers::DRAW_INDEXED_VERTICES),
+                Some("boot:d3d write barrier"),
+            );
+        });
+    }
 
     #[test]
     fn light_textures_use_handles_without_retaining_payloads() {

@@ -212,3 +212,25 @@ fn territory_owner_uses_the_salted_player_and_juggernaut_uses_engine_role_mask()
         })]
     );
 }
+
+#[test]
+fn corrupt_registration_keeps_the_previous_salted_carrier() {
+    let mut m = game(3);
+    let mut tracker = Tracker::default();
+    m.put_u32(E + objectives::OBJECTIVE_COUNT, 1);
+    registration(&mut m, 0, 0xb001_0001, 0, u32::MAX, u32::MAX);
+    assert_eq!(tracker.observe(&m).unwrap().len(), 1);
+    m.put_u32(E + objectives::OBJECTIVE_COUNT, u32::MAX);
+    assert!(tracker.observe(&m).is_err());
+    m.put_u32(E + objectives::OBJECTIVE_COUNT, 1);
+    assert!(tracker.observe(&m).unwrap().is_empty());
+    registration(&mut m, 0, 0xb001_0001, 0, 0xb002_0002, 0xc001_0002);
+    assert!(matches!(
+        tracker.observe(&m).unwrap()[..],
+        [Event::ObjectiveState(Change::Item {
+            change: ItemChange::CarrierChanged,
+            player: Some(2),
+            ..
+        })]
+    ));
+}

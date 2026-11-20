@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::Read,
+    io::{Read, Seek},
     path::Path,
     time::{Duration, Instant},
 };
@@ -49,12 +49,25 @@ pub fn upload(live_url: &str, token: &str, game_id: &str, path: impl AsRef<Path>
             .request(method, url.as_str())
             .timeout(left)
             .set("Authorization", &format!("Bearer {token}"))
+            .set("X-H2-Film-Continue", "1")
             .set("Content-Type", "application/octet-stream")
             .set("Content-Length", &len.to_string()))
     };
+    let mut next = url.clone();
+    next.query_pairs_mut().append_pair("continue", "1");
+    let acknowledge = |mut status: u16| -> Result<()> {
+        while status == 202 {
+            status = send_status(|| Ok(request("POST", &next, 0)?.send_bytes(&[])?))?;
+        }
+        ensure!(status == 204, "unexpected film upload status {status}");
+        Ok(())
+    };
     if size <= SINGLE_UPLOAD_BYTES {
-        request("POST", &url, size)?.send(file)?;
-        return Ok(());
+        let status = send_status(|| {
+            file.rewind()?;
+            Ok(request("POST", &url, size)?.send((&mut file).take(size))?)
+        })?;
+        return acknowledge(status);
     }
 
     let mut hash = Sha256::new();
@@ -68,19 +81,27 @@ pub fn upload(live_url: &str, token: &str, game_id: &str, path: impl AsRef<Path>
         part_url
             .query_pairs_mut()
             .append_pair("part", &part.to_string());
-        // The same numbered part may safely be sent again after a lost
-        // response. Committing the upload checks the concatenated digest.
-        let send = || -> Result<()> {
-            request("PUT", &part_url, len)?.send_bytes(bytes)?;
-            Ok(())
-        };
-        if send().is_err() {
-            send().with_context(|| format!("upload film part {part}"))?;
-        }
+        let status = send_status(|| Ok(request("PUT", &part_url, len)?.send_bytes(bytes)?))
+            .with_context(|| format!("upload film part {part}"))?;
+        acknowledge(status).with_context(|| format!("process film part {part}"))?;
     }
     url.query_pairs_mut()
         .append_pair("complete", &size.to_string())
         .append_pair("sha256", &format!("{:x}", hash.finalize()));
-    request("POST", &url, 0)?.send_bytes(&[])?;
-    Ok(())
+    let status = send_status(|| Ok(request("POST", &url, 0)?.send_bytes(&[])?))?;
+    acknowledge(status)
+}
+
+/// A response can be lost after Live has stored the bytes or advanced its
+/// cursor. The upload protocol makes repeating that exact request safe.
+fn send_status(mut send: impl FnMut() -> Result<ureq::Response>) -> Result<u16> {
+    let response = match send() {
+        Err(error)
+            if matches!(
+                error.downcast_ref::<ureq::Error>(),
+                Some(ureq::Error::Transport(_) | ureq::Error::Status(500..=599, _))
+            ) => send()?,
+        result => result?,
+    };
+    Ok(response.status())
 }

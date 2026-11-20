@@ -1997,6 +1997,7 @@ dependencies = [
  "sha2 0.10.9",
  "ureq",
  "url",
+ "windows-sys 0.61.2",
  "zstd",
 ]
 
@@ -3574,6 +3575,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "sha2 0.11.1",
  "sqlx",
  "thiserror 2.0.21",
  "time",

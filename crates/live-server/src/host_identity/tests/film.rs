@@ -1,5 +1,8 @@
 //! Through the same HTTP route on native Live and the Worker. A real v3
 //! stream can finish an absent, partly uploaded or already completed game.
+mod cache;
+mod privacy;
+
 use super::*;
 use axum::{
     body::{Body, to_bytes},
@@ -11,7 +14,12 @@ use live_proto::film::{
 };
 use tower::ServiceExt;
 
-fn chunk(buf: &mut Vec<u8>, entries: &mut Vec<Value>, tag: &[u8; 4], raw: &[u8]) -> (u64, u32) {
+pub(super) fn chunk(
+    buf: &mut Vec<u8>,
+    entries: &mut Vec<Value>,
+    tag: &[u8; 4],
+    raw: &[u8],
+) -> (u64, u32) {
     let compressed =
         ruzstd::encoding::compress_to_vec(raw, ruzstd::encoding::CompressionLevel::Uncompressed);
     let offset = buf.len() as u64;
@@ -34,11 +42,23 @@ fn kill() -> game::PlayerKilled {
     }
 }
 
-fn fixture(id: &str, new: game::NewGame, kills: usize) -> Vec<u8> {
+pub(super) fn fixture(id: &str, new: game::NewGame, kills: usize) -> Vec<u8> {
     fixture_at(id, new, kills, now(), 30)
 }
 
 fn fixture_at(id: &str, new: game::NewGame, kills: usize, started: i64, hz: u16) -> Vec<u8> {
+    fixture_observations(id, Some(new), kills, started, hz, true, None)
+}
+
+fn fixture_observations(
+    id: &str,
+    new: Option<game::NewGame>,
+    kills: usize,
+    started: i64,
+    hz: u16,
+    ended: bool,
+    dropped: Option<&str>,
+) -> Vec<u8> {
     let front = range::Front {
         final_head: range::DATA_OFFSET,
         id: id.into(),
@@ -52,6 +72,7 @@ fn fixture_at(id: &str, new: game::NewGame, kills: usize, started: i64, hz: u16)
         roster: vec![],
         summary: live_proto::film::Summary {
             level: "lockout".into(),
+            dropped_samples: dropped.into_iter().map(|key| (key.to_owned(), 1)).collect(),
             ..Default::default()
         },
     };
@@ -72,6 +93,7 @@ fn fixture_at(id: &str, new: game::NewGame, kills: usize, started: i64, hz: u16)
     );
 
     let mut tick = stream::ChunkWriter::new(1, 100).unwrap();
+    privacy::private_lifecycle(&mut tick);
     let mut add = |tick_no, event| {
         let mut payload = vec![stream::STATS_EVENT];
         payload.extend(
@@ -84,23 +106,36 @@ fn fixture_at(id: &str, new: game::NewGame, kills: usize, started: i64, hz: u16)
         );
         tick.record(tick_no, stream::EVENT, &payload).unwrap();
     };
-    add(
-        1,
-        Event::GameStarted(game::GameStarted {
-            game_id: id.into(),
-            host: "host-local-name-is-not-trusted".into(),
-            dedicated: Default::default(),
-            game: new,
-        }),
-    );
+    if let Some(game) = new {
+        add(
+            1,
+            Event::GameStarted(game::GameStarted {
+                game_id: id.into(),
+                host: "host-local-name-is-not-trusted".into(),
+                dedicated: Default::default(),
+                game,
+            }),
+        );
+    }
     for _ in 0..kills {
         add(35, Event::PlayerKilled(kill()));
     }
-    add(
-        90,
-        Event::GameEnded(serde_json::from_value(end().1).unwrap()),
-    );
-    let raw = tick.finish();
+    if ended {
+        add(
+            90,
+            Event::GameEnded(serde_json::from_value(end().1).unwrap()),
+        );
+    }
+    let projection = live_proto::film::privacy::project(&tick.finish()).unwrap();
+    if let Some(raw) = projection.private {
+        chunk(
+            &mut bytes,
+            &mut entries,
+            &live_proto::film::privacy::PRIVATE_TAG,
+            &raw,
+        );
+    }
+    let raw = projection.public;
     let (offset, size) = chunk(&mut bytes, &mut entries, b"TICK", &raw);
     let directory = range::Directory {
         chunks: vec![range::Chunk {
@@ -133,11 +168,19 @@ async fn upload(live: &Arc<Live>, id: &str, token: &str, bytes: Vec<u8>) -> Stat
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::from(bytes))
         .unwrap();
-    crate::http::router(live.clone())
-        .oneshot(req)
-        .await
-        .unwrap()
-        .status()
+    let app = crate::http::router(live.clone());
+    let mut status = app.clone().oneshot(req).await.unwrap().status();
+    for _ in 0..128 {
+        if status != StatusCode::ACCEPTED {
+            return status;
+        }
+        let req = Request::post(format!("/v1/games/{id}/film?continue=1"))
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        status = app.clone().oneshot(req).await.unwrap().status();
+    }
+    panic!("film did not finish within fixture work budget");
 }
 
 #[tokio::test]
@@ -161,12 +204,6 @@ async fn film_finishes_absent_partial_and_completed_games_exactly_once() {
             live.append_game_events(Some(&token), id, &batch(&live, &token, id, &rows))
                 .await
                 .unwrap();
-            // A pending/live or finalised telemetry stream cannot attach a
-            // conflicting film. A later matching upload remains possible.
-            assert_eq!(
-                upload(&live, id, &token, fixture(id, new_game(), 0)).await,
-                StatusCode::CONFLICT
-            );
         }
         let film = fixture(id, new_game(), 1);
         for _ in 0..2 {
@@ -231,6 +268,156 @@ async fn film_finishes_absent_partial_and_completed_games_exactly_once() {
 }
 
 #[tokio::test]
+async fn idle_swept_and_conflicting_telemetry_keep_the_film_and_original_stats() {
+    use live_proto::film::DiscrepancyCause;
+    for swept in [true, false] {
+        let live = Live::start_with(
+            Arc::new(MemoryStore::new()),
+            identity(),
+            Policy {
+                game_idle_s: -1,
+                ..Default::default()
+            },
+            Timers::Driven,
+        )
+        .await
+        .unwrap();
+        let (token, id) = assigned_game(&live, &lease()).await;
+        let store = crate::blobs::BlobStore::memory();
+        live.set_blobs(crate::blobs::Blobs {
+            private: store.clone(),
+            public: None,
+        });
+        if swept {
+            live.sweep().await;
+            assert_eq!(
+                live.model.read().games[&id]
+                    .ended
+                    .as_ref()
+                    .unwrap()
+                    .0
+                    .reason,
+                "lost"
+            );
+        } else {
+            live.append_game_events(Some(&token), &id, &batch(&live, &token, &id, &[end()]))
+                .await
+                .unwrap();
+        }
+        let film = fixture(&id, new_game(), 1);
+        for _ in 0..2 {
+            assert_eq!(
+                upload(&live, &id, &token, film.clone()).await,
+                StatusCode::NO_CONTENT
+            );
+        }
+        let detail = live.game(&id).unwrap();
+        let problem = detail.stats_discrepancy.unwrap();
+        assert_eq!(
+            problem.cause,
+            if swept {
+                DiscrepancyCause::IdleTimeout
+            } else {
+                DiscrepancyCause::DifferentEvent
+            }
+        );
+        assert_eq!((problem.event_index, problem.film_tick), (1, Some(35)));
+        let committed = live
+            .store
+            .read(&crate::store::Query {
+                stream: Some(game::stream(&id)),
+                types: vec![game::GAME_ENDED.into(), game::PLAYER_KILLED.into()],
+                limit: 8,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(committed.len(), 1);
+        assert_eq!(Some(committed[0].position), problem.telemetry_position);
+        let game = live.model.read().games[&id].clone();
+        assert!(game.has_host_film && game.kills.is_empty());
+        assert_eq!(
+            store
+                .get(game.film_blob.as_deref().unwrap())
+                .await
+                .unwrap()
+                .unwrap()
+                .as_ref(),
+            film.as_slice()
+        );
+    }
+}
+
+#[tokio::test]
+async fn missing_end_or_dropped_stats_observation_retains_the_archive() {
+    use live_proto::film::DiscrepancyCause;
+    for (ended, dropped, cause) in [
+        (false, None, DiscrepancyCause::MissingEnd),
+        (
+            true,
+            Some("stats_budget"),
+            DiscrepancyCause::IncompleteObservations,
+        ),
+    ] {
+        let live = live().await;
+        let (token, id) = assigned_game(&live, &lease()).await;
+        live.set_blobs(crate::blobs::Blobs {
+            private: crate::blobs::BlobStore::memory(),
+            public: None,
+        });
+        let film = fixture_observations(&id, Some(new_game()), 1, now(), 30, ended, dropped);
+        assert_eq!(
+            upload(&live, &id, &token, film).await,
+            StatusCode::NO_CONTENT
+        );
+        let game = live.model.read().games[&id].clone();
+        assert!(game.has_host_film && game.ended.is_none() && game.kills.is_empty());
+        assert_eq!(game.film_stats_discrepancy.unwrap().cause, cause);
+        live.append_game_events(Some(&token), &id, &batch(&live, &token, &id, &[end()]))
+            .await
+            .unwrap();
+        assert!(live.model.read().games[&id].ended_by_host);
+    }
+}
+
+#[tokio::test]
+async fn a_missing_match_start_can_publish_the_engine_film_before_telemetry_arrives() {
+    let live = live().await;
+    let lease = lease();
+    let id = &lease.id;
+    let token = assigned_lease(&live, &lease).await;
+    let store = crate::blobs::BlobStore::memory();
+    live.set_blobs(crate::blobs::Blobs {
+        private: store.clone(),
+        public: None,
+    });
+    let film = fixture_observations(id, None, 1, now(), 30, true, None);
+    assert_eq!(
+        upload(&live, id, &token, film.clone()).await,
+        StatusCode::NO_CONTENT
+    );
+    let blob = {
+        let model = live.model.read();
+        assert!(!model.games.contains_key(id));
+        model.films.standalone_host_blob(id).unwrap().1.to_owned()
+    };
+    assert_eq!(
+        store.get(&blob).await.unwrap().unwrap().as_ref(),
+        film.as_slice()
+    );
+    live.start_game(Some(&token), new_game()).await.unwrap();
+    live.append_game_events(Some(&token), id, &batch(&live, &token, id, &[end()]))
+        .await
+        .unwrap();
+    let game = live.model.read().games[id].clone();
+    assert!(game.has_host_film && game.ended_by_host && game.kills.is_empty());
+    assert_eq!(
+        game.film_stats_discrepancy.unwrap().cause,
+        live_proto::film::DiscrepancyCause::MissingStart
+    );
+}
+
+#[tokio::test]
 async fn multiple_film_stats_pages_keep_every_event_in_order() {
     let live = live().await;
     let lease = lease();
@@ -257,6 +444,46 @@ async fn multiple_film_stats_pages_keep_every_event_in_order() {
     assert_eq!(rows.len(), 261);
     assert_eq!(rows.last().unwrap().body.kind, game::GAME_ENDED);
     assert!(live.model.read().films.imports.is_empty());
+}
+
+#[tokio::test]
+async fn first_disagreement_after_a_long_matching_telemetry_prefix_is_preserved() {
+    let live = live().await;
+    let (token, id) = assigned_game(&live, &lease()).await;
+    live.set_blobs(crate::blobs::Blobs {
+        private: crate::blobs::BlobStore::memory(),
+        public: None,
+    });
+    let mut telemetry = vec![(game::PLAYER_KILLED, json!(kill())); 259];
+    telemetry.push(end());
+    for rows in telemetry.chunks(16) {
+        live.append_game_events(Some(&token), &id, &batch(&live, &token, &id, rows))
+            .await
+            .unwrap();
+    }
+    let film = fixture(&id, new_game(), 260);
+    assert_eq!(
+        upload(&live, &id, &token, film).await,
+        StatusCode::NO_CONTENT
+    );
+    let ledger = live.model.read().games[&id].clone();
+    let problem = ledger.film_stats_discrepancy.unwrap();
+    assert_eq!((problem.event_index, problem.film_tick), (260, Some(35)));
+    assert_eq!(
+        problem.cause,
+        live_proto::film::DiscrepancyCause::DifferentEvent
+    );
+    let kills = live
+        .store
+        .read(&crate::store::Query {
+            stream: Some(game::stream(&id)),
+            types: vec![game::PLAYER_KILLED.into()],
+            limit: 300,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(kills.len(), 259);
 }
 
 #[tokio::test]
@@ -500,4 +727,136 @@ async fn event_wall_times_use_the_recorded_guest_rate() {
     let page: Value = serde_json::from_slice(&json).unwrap();
     assert_eq!(page["items"][0]["ticks_per_second"], 45);
     assert_eq!(page["items"][0]["duration_s"], 1);
+}
+
+#[tokio::test]
+async fn a_legacy_host_can_disconnect_at_202_and_the_restarted_sweeper_finishes_its_game() {
+    let log = Arc::new(MemoryStore::new());
+    let first_identity = identity();
+    let restored_identity = ServerIdentity {
+        id: first_identity.id.clone(),
+        key: KeyPair::from_secret_b64(&first_identity.key.secret_b64()).unwrap(),
+    };
+    let live = Live::start_with(
+        log.clone(),
+        first_identity,
+        Policy::default(),
+        Timers::Driven,
+    )
+    .await
+    .unwrap();
+    let objects = crate::blobs::BlobStore::memory();
+    let configure_store = |live: &Live| {
+        live.set_blobs(crate::blobs::Blobs {
+            private: objects.clone(),
+            public: None,
+        })
+    };
+    configure_store(&live);
+    let lease = lease();
+    let id = &lease.id;
+    let token = assigned_lease(&live, &lease).await;
+    let film = fixture(id, new_game(), 1);
+    let request = Request::post(format!("/v1/games/{id}/film"))
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(film))
+        .unwrap();
+    let response = crate::http::router(live.clone())
+        .oneshot(request)
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    assert!(live.model.read().films.ingesting(id));
+    let queued = live
+        .store
+        .read(&crate::store::Query {
+            stream: Some(format!("film-import-{id}:validation")),
+            limit: 2,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(queued.len(), 1);
+    let data = &queued[0].body.data;
+    assert!(data.get("event_key").is_none() && data.get("roster").is_none());
+    let permit = data["permit"].as_str().unwrap();
+    let bytes = objects
+        .get(&format!("film-staging/{id}/permit-{permit}"))
+        .await
+        .unwrap()
+        .unwrap();
+    let attrs: Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(attrs.get("event_key").is_none() && attrs.get("lxm").is_none());
+    drop(live);
+
+    let live = Live::start_with(log, restored_identity, Policy::default(), Timers::Driven)
+        .await
+        .unwrap();
+    configure_store(&live);
+    assert!(live.sweep_due().is_some());
+    // No client polling and no replay of a bearer token.
+    for _ in 0..24 {
+        live.sweep().await;
+        if live
+            .model
+            .read()
+            .games
+            .get(id)
+            .is_some_and(|g| g.has_host_film)
+        {
+            break;
+        }
+    }
+    let model = live.model.read();
+    let game = &model.games[id];
+    assert!(game.has_host_film);
+    assert_eq!(game.kills.len(), 1);
+    assert!(!model.films.ingesting(id));
+}
+
+#[tokio::test]
+async fn a_rejected_legacy_job_releases_its_selection_for_a_valid_retry() {
+    let live = live().await;
+    let lease = lease();
+    let id = &lease.id;
+    let token = assigned_lease(&live, &lease).await;
+    let objects = crate::blobs::BlobStore::memory();
+    live.set_blobs(crate::blobs::Blobs {
+        private: objects,
+        public: None,
+    });
+    let film = fixture(id, new_game(), 1);
+    let mut damaged = film.clone();
+    damaged.pop(); // detected at seal, after the request's inspection budget
+    let request = Request::post(format!("/v1/games/{id}/film"))
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(damaged))
+        .unwrap();
+    assert_eq!(
+        crate::http::router(live.clone())
+            .oneshot(request)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::ACCEPTED
+    );
+    for _ in 0..24 {
+        live.sweep().await;
+        if !live.model.read().films.ingesting(id) {
+            break;
+        }
+    }
+    assert!(!live.model.read().films.ingesting(id));
+    assert!(
+        live.model
+            .read()
+            .games
+            .get(id)
+            .is_none_or(|g| !g.has_host_film)
+    );
+    assert_eq!(
+        upload(&live, id, &token, film).await,
+        StatusCode::NO_CONTENT
+    );
+    assert!(live.model.read().games[id].has_host_film);
 }

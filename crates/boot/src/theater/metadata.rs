@@ -1,8 +1,6 @@
 //! Match facts, read from the host's active game options and player datums.
 //! The slot in a tick is absolute. A participant in the results is salted:
 //! another player can take the same slot without inheriting scores or medals.
-use live_proto::film::events::medals;
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, Weak};
 
@@ -20,6 +18,7 @@ use crate::{
 
 pub(super) struct Capture {
     descriptor: MatchHeader,
+    map_digest: Option<std::thread::JoinHandle<Result<MapIdentity>>>,
     variant_name: String,
     vfs: Option<Arc<Mutex<vfs::Vfs>>>,
     live: Weak<live_hle::Hle>,
@@ -27,11 +26,10 @@ pub(super) struct Capture {
     active: BTreeMap<u8, u32>,
     results: BTreeMap<u32, PlayerSummary>,
     quitting: BTreeSet<u32>,
-    medals: medals::Tally,
+    result_order: Vec<u32>,
     host_machine: Option<String>,
     live_service: bool,
     lease_mode: Option<Mode>,
-    team_play: bool,
 }
 
 impl Capture {
@@ -51,18 +49,18 @@ impl Capture {
         });
         Self {
             descriptor: MatchHeader::default(),
+            map_digest: None,
             lease_mode,
             variant_name: String::new(),
             active: BTreeMap::new(),
             results: BTreeMap::new(),
             quitting: BTreeSet::new(),
-            medals: Default::default(),
+            result_order: Vec::new(),
             host_machine: None,
             vfs: None,
             live: Weak::new(),
             sim_bots: vec![],
             live_service: header.live_service,
-            team_play: false,
         }
     }
 
@@ -70,8 +68,16 @@ impl Capture {
         &self.descriptor
     }
 
+    pub(super) fn finish_map(&mut self) -> Result<()> {
+        if let Some(job) = self.map_digest.take() {
+            self.descriptor.map = job.join().map_err(|_| anyhow::anyhow!("film map digest worker panicked"))??;
+        }
+        Ok(())
+    }
+
     pub(super) fn summary(&self, tick: u64) -> Summary {
         Summary {
+            dropped_samples: Default::default(),
             level: self.descriptor.map.name.clone(),
             game_type: self.descriptor.game_type.clone(),
             mode: self.descriptor.mode,
@@ -81,18 +87,19 @@ impl Capture {
                 .match_start_tick
                 .map_or(0, |start| tick.saturating_sub(start) + 1),
             players: self
-                .results
+                .result_order
                 .iter()
-                .map(|(&handle, p)| {
-                    let mut p = p.clone();
-                    p.medals = self.medals.counts(handle);
-                    p
-                })
+                .map(|id| self.results[id].clone())
                 .collect(),
         }
     }
 
-    pub(super) fn observe(&mut self, g: &Guest, tick: u64) -> Result<Vec<Event>> {
+    pub(super) fn observe(
+        &mut self,
+        g: &Guest,
+        tick: u64,
+        mut dropped: impl FnMut(&'static str),
+    ) -> Result<Vec<Event>> {
         let mut events = Vec::new();
         let Some(options) = active_options(g) else {
             return Ok(events);
@@ -111,7 +118,10 @@ impl Capture {
             }
             let vfs = self.vfs.as_ref().context("film map VFS is unavailable")?;
             let cache_path = crate::map_slots::current_source(g);
-            self.descriptor.map = map_identity(vfs, &info.map, cache_path.as_deref(), None)?;
+            let (identity, source) = prepare_map(vfs, &info.map, cache_path.as_deref(), None)?;
+            self.descriptor.map = identity.clone();
+            self.map_digest = Some(std::thread::Builder::new().name("film-map-hash".into())
+                .spawn(move || hash_map(identity, source))?);
             self.descriptor
                 .variant_blob
                 .resize(level_boot::VARIANT_SIZE as usize, 0);
@@ -130,11 +140,14 @@ impl Capture {
                 .map(|v| v.name())
                 .filter(|v| !v.is_empty())
                 .unwrap_or_else(|| self.descriptor.game_type.clone());
-            self.team_play = info.team_play;
             self.descriptor.difficulty = info.difficulty;
             self.descriptor.mode = if info.mode == "campaign" {
-                if g.u8(options + level_boot::OPT_SPLIT)? != 0
-                    || s.is_some_and(|s| g.u32(s + net::PLAYER_COUNT).is_ok_and(|n| n > 1))
+                let split = g.u8(options.wrapping_add(level_boot::OPT_SPLIT)).unwrap_or_else(|_| {
+                    dropped("campaign_mode");
+                    0
+                });
+                if split != 0
+                    || s.is_some_and(|s| g.u32(s.wrapping_add(net::PLAYER_COUNT)).is_ok_and(|n| n > 1))
                 {
                     Mode::CoopCampaign
                 } else {
@@ -147,7 +160,7 @@ impl Capture {
             {
                 Mode::Matchmaking
             } else if !self.live_service
-                && s.is_some_and(|s| g.u32(s + net::PROTOCOL).is_ok_and(|p| matches!(p, 1 | 2)))
+                && s.is_some_and(|s| g.u32(s.wrapping_add(net::PROTOCOL)).is_ok_and(|p| matches!(p, 1 | 2)))
             {
                 Mode::SystemLink
             } else {
@@ -169,46 +182,70 @@ impl Capture {
                 .get_or_insert_with(|| machine.clone());
             self.host_machine = Some(machine);
         }
-        let Some(array) =
-            players::array(g).map_err(|e| anyhow::anyhow!("film players array: {e:?}"))?
-        else {
-            return Ok(events);
+        let rows = match players::array(g)
+            .and_then(|array| array.map(|array| array.live(g, 16)).transpose())
+        {
+            Ok(Some(rows)) => rows,
+            Ok(None) => return Ok(events),
+            Err(_) => {
+                dropped("roster");
+                return Ok(events);
+            }
         };
-        let rows = array
-            .live(g, 16)
-            .map_err(|e| anyhow::anyhow!("film players: {e:?}"))?;
         let initial = self.results.is_empty();
         let mut active = BTreeMap::new();
         let mut joins = Vec::new();
-        let stats = g
-            .u32(layout::ENGINE_GLOBALS_PTR)
-            .ok()
-            .filter(|&p| p != 0 && g.u32(p + layout::ENGINE_STATBORG).is_ok_and(|v| v != 0));
+        let stats = g.u32(layout::ENGINE_GLOBALS_PTR).and_then(|base| {
+            if base == 0 {
+                Ok(None)
+            } else {
+                g.u32(base.wrapping_add(layout::ENGINE_STATBORG))
+                    .map(|p| (p != 0).then_some(base))
+            }
+        }).unwrap_or_else(|_| {
+            dropped("scoreboard");
+            None
+        });
         for (handle, row) in rows {
             let seat = handle.index() as u8;
             let datum = handle.raw();
-            if !row
-                .listed(g)
-                .map_err(|e| anyhow::anyhow!("film player flags: {e:?}"))?
-            {
-                // The retail iterator hides a quitting player before the engine
-                // releases its datum. Emit both transitions at their own ticks.
-                if self.active.get(&seat) == Some(&datum) {
-                    active.insert(seat, datum);
-                    if self.quitting.insert(datum) {
-                        events.push(Event::Quit { seat });
-                    }
+            // Commit this seat only after reading its identity. A stale row
+            // must not manufacture a departure, team change or duplicate join.
+            let describe = || -> Result<_> {
+                if !row.listed(g).map_err(|e| anyhow::anyhow!("{e:?}"))? {
+                    return Ok(None);
                 }
-                continue;
-            }
+                let team = i32::from(row.team(g).map_err(|e| anyhow::anyhow!("{e:?}"))?);
+                let joining = if self.active.get(&seat) == Some(&datum) {
+                    None
+                } else {
+                    Some(self.seat(g, row, seat, team, s)?)
+                };
+                Ok(Some((team, joining)))
+            };
+            let (team, joining) = match describe() {
+                Ok(Some(seat)) => seat,
+                Ok(None) => {
+                    // Retail hides a quitting player before releasing its datum.
+                    if self.active.get(&seat) == Some(&datum) {
+                        active.insert(seat, datum);
+                        if self.quitting.insert(datum) {
+                            events.push(Event::Quit { seat });
+                        }
+                    }
+                    continue;
+                }
+                Err(_) => {
+                    dropped("roster_player");
+                    if let Some(&previous) = self.active.get(&seat) {
+                        active.insert(seat, previous);
+                    }
+                    continue;
+                }
+            };
             self.quitting.remove(&datum);
             active.insert(seat, datum);
-            let team = i32::from(
-                row.team(g)
-                    .map_err(|e| anyhow::anyhow!("film player team: {e:?}"))?,
-            );
-            if self.active.get(&seat) != Some(&datum) {
-                let player = self.seat(g, row, seat, team, s)?;
+            if let Some(player) = joining {
                 if self.descriptor.host_id.is_none()
                     && matches!(player.kind, SeatKind::Local | SeatKind::Bot)
                     && s.is_none()
@@ -222,6 +259,9 @@ impl Capture {
                                 .filter(|m| *m != [0; 6])
                                 .map(|m| m.iter().map(|b| format!("{b:02x}")).collect())
                         });
+                }
+                if !self.results.contains_key(&datum) {
+                    self.result_order.push(datum);
                 }
                 self.results.insert(
                     datum,
@@ -245,9 +285,12 @@ impl Capture {
                 result.team = team;
                 if let Some(base) = stats {
                     let at = base
-                        + layout::ENGINE_PLAYER_STATS
-                        + u32::from(seat) * layout::PLAYER_STAT_SIZE;
-                    result.score = i64::from(g.u16(at + layout::STAT_SCORE)? as i16);
+                        .wrapping_add(layout::ENGINE_PLAYER_STATS)
+                        .wrapping_add(u32::from(seat) * layout::PLAYER_STAT_SIZE);
+                    match g.u16(at.wrapping_add(layout::STAT_SCORE)) {
+                        Ok(score) => result.score = i64::from(score as i16),
+                        Err(_) => dropped("scoreboard"),
+                    }
                 }
             }
         }
@@ -278,7 +321,7 @@ impl Capture {
         let machine = row
             .machine(g)
             .map_err(|e| anyhow::anyhow!("film player machine: {e:?}"))?;
-        let port = u8::try_from(g.u32(row.addr + layout::PLAYER_CONTROLLER)?)
+        let port = u8::try_from(g.u32(row.addr.wrapping_add(layout::PLAYER_CONTROLLER))?)
             .ok()
             .filter(|&v| v < 4);
         let bot = port.and_then(|port| {
@@ -370,7 +413,7 @@ fn active_skulls(info: &telemetry::GameInfo) -> Vec<String> {
 
 pub(super) fn verify_restored_map(
     expected: &MatchHeader,
-    vfs: Option<&Mutex<vfs::Vfs>>,
+    vfs: Option<&Arc<Mutex<vfs::Vfs>>>,
 ) -> Result<()> {
     verify_map(vfs.context("film map VFS unavailable")?, &expected.map)
 }
@@ -379,7 +422,7 @@ pub(super) fn verify_start(
     g: &Guest,
     tick: u64,
     expected: &MatchHeader,
-    vfs: Option<&Mutex<vfs::Vfs>>,
+    vfs: Option<&Arc<Mutex<vfs::Vfs>>>,
 ) -> Result<()> {
     if expected.match_start_tick != Some(tick) {
         return Ok(());
@@ -399,7 +442,9 @@ pub(super) fn verify_start(
     let mut variant = [0; level_boot::VARIANT_SIZE as usize];
     g.read_bytes(opts + level_boot::OPT_VARIANT, &mut variant, 1)?;
     ensure!(
-        expected.ticks_per_second.is_none_or(|hz| hz == info.tick_rate.max(1))
+        expected
+            .ticks_per_second
+            .is_none_or(|hz| hz == info.tick_rate.max(1))
             && variant.as_slice() == expected.variant_blob.as_slice()
             && info.difficulty == expected.difficulty
             && active_skulls(&info) == expected.skulls,
@@ -422,13 +467,13 @@ fn brain_parameters(v: bots::BrainView) -> Value {
 }
 
 fn host_machine(g: &Guest, s: u32) -> Option<String> {
-    let host = g.u32(s + net::HOST_PEER).ok()?;
-    if host >= g.u32(s + net::PEER_COUNT).ok()?.min(16) {
+    let host = g.u32(s.wrapping_add(net::HOST_PEER)).ok()?;
+    if host >= g.u32(s.wrapping_add(net::PEER_COUNT)).ok()?.min(16) {
         return None;
     }
     let mut mac = [0; 6];
     g.read_bytes(
-        s + net::PEERS + host * net::PEER_SIZE + net::PEER_MAC,
+        s.wrapping_add(net::PEERS + host * net::PEER_SIZE + net::PEER_MAC),
         &mut mac,
         1,
     )
@@ -439,16 +484,16 @@ fn host_machine(g: &Guest, s: u32) -> Option<String> {
 /// Match by originating machine and machine *user*, including split-screen peers.
 fn session_xuid(g: &Guest, s: u32, machine: [u8; 6], player: u32) -> Option<u64> {
     let peer = bots::phantom::session::find_peer(g, s, machine).ok()??;
-    let user = u32::from(g.u16(player + 0x1c).ok()?);
-    let mask = g.u32(s + net::PLAYER_MASK).ok()?;
+    let user = u32::from(g.u16(player.wrapping_add(0x1c)).ok()?);
+    let mask = g.u32(s.wrapping_add(net::PLAYER_MASK)).ok()?;
     for i in 0..16 {
-        let p = s + net::PLAYERS + i * net::PLAYER_SIZE;
+        let p = s.wrapping_add(net::PLAYERS + i * net::PLAYER_SIZE);
         if mask & (1 << i) != 0
-            && g.u32(p + net::P_PEER).ok()? == peer
-            && g.u32(p + net::P_USER).ok()? == user
+            && g.u32(p.wrapping_add(net::P_PEER)).ok()? == peer
+            && g.u32(p.wrapping_add(net::P_USER)).ok()? == user
         {
             let mut id = [0; 8];
-            g.read_bytes(p + net::P_ID, &mut id, 1).ok()?;
+            g.read_bytes(p.wrapping_add(net::P_ID), &mut id, 1).ok()?;
             let id = u64::from_le_bytes(id);
             return (id != 0).then_some(id);
         }
@@ -456,12 +501,12 @@ fn session_xuid(g: &Guest, s: u32, machine: [u8; 6], player: u32) -> Option<u64>
     None
 }
 
-fn map_identity(
-    vfs: &Mutex<vfs::Vfs>,
+fn prepare_map(
+    vfs: &Arc<Mutex<vfs::Vfs>>,
     name: &str,
     cache_path: Option<&str>,
     recorded: Option<&MapIdentity>,
-) -> Result<MapIdentity> {
+) -> Result<(MapIdentity, vfs::FilmMap)> {
     ensure!(
         !name.is_empty()
             && name.len() <= 32
@@ -470,44 +515,54 @@ fn map_identity(
                 .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b' ')),
         "invalid film map name"
     );
-    let mut vfs = vfs.lock().unwrap_or_else(|e| e.into_inner());
     let path = match cache_path {
         Some(path) => crate::map_slots::slot_file(path).context("invalid film cache path")?,
-        None => vfs
+        None => vfs.lock().unwrap_or_else(|e| e.into_inner())
             .content_map_path(name)
             .unwrap_or_else(|| format!("{}\\maps\\{name}.map", vfs::CDROM_DEVICE)),
     };
-    let package_id = vfs.map_id(&path).map(|id| id.to_string());
-    let ranges = match recorded {
-        Some(id) => id.ranges.clone(),
-        None => vfs.map_ranges(&path)?,
-    };
-    let sha256 = vfs
-        .file_sha256(&path, ranges.as_deref())
-        .with_context(|| format!("hashing mounted map {name}"))?
-        .to_string();
+    let source = vfs::FilmMap::open(vfs, &path, recorded.map(|r| r.ranges.as_deref()))
+        .with_context(|| format!("opening mounted map {name}"))?;
+    let ranges = source.ranges().map(Vec::from);
     let origin = if crate::h1_options_row::is_halo1_map(name)
         || crate::health::HALO1_LEVELS.contains(&name)
     {
         "converted_halo1"
-    } else if package_id.is_some()
-        || cache_path.is_some_and(|p| p.to_ascii_lowercase().starts_with("t:"))
+    } else if cache_path.is_some_and(|p| p.to_ascii_lowercase().starts_with("t:"))
     {
         "mod"
     } else {
         "retail"
     };
-    Ok(MapIdentity {
+    Ok((MapIdentity {
         name: name.into(),
         origin: origin.into(),
-        sha256,
+        sha256: String::new(),
         ranges,
-        package_id,
+        package_id: None,
         cache_path: cache_path.map(str::to_owned),
-    })
+    }, source))
 }
 
-pub(super) fn verify_map(vfs: &Mutex<vfs::Vfs>, expected: &MapIdentity) -> Result<()> {
+fn hash_map(mut id: MapIdentity, source: vfs::FilmMap) -> Result<MapIdentity> {
+    let (digest, package) = source.digest(&agent_proto::cache_dir().join("film-map-digests"))
+        .with_context(|| format!("hashing mounted map {}", id.name))?;
+    if id.origin == "retail" && package.is_some() {
+        id.origin = "mod".into();
+    }
+    id.package_id = package.map(|p| p.to_string());
+    id.sha256 = digest.to_string();
+    Ok(id)
+}
+
+fn map_identity(
+    vfs: &Arc<Mutex<vfs::Vfs>>, name: &str, cache_path: Option<&str>, recorded: Option<&MapIdentity>,
+) -> Result<MapIdentity> {
+    let (identity, source) = prepare_map(vfs, name, cache_path, recorded)?;
+    hash_map(identity, source)
+}
+
+pub(super) fn verify_map(vfs: &Arc<Mutex<vfs::Vfs>>, expected: &MapIdentity) -> Result<()> {
     let actual = map_identity(
         vfs,
         &expected.name,
@@ -565,36 +620,6 @@ pub(super) fn install(session: &Arc<super::Session>, b: &mut feature::Builder) {
                 }
             }
         });
-    let s = Arc::clone(session);
-    b.raw()
-        .observe_before(&feature::points::PLAYER_KILLED, "film medals", move |o| {
-            let g = o.guest();
-            let Ok(victim) = g.u32(o.cpu.esp.wrapping_add(8)) else {
-                return;
-            };
-            let Ok(attacker) = g.u32(o.cpu.esp.wrapping_add(4)) else {
-                return;
-            };
-            let mut state = s.lock();
-            let tick = state.tick;
-            if let super::Mode::Record(rec) = &mut state.mode {
-                if rec.meta.descriptor.game_type.is_empty() || victim == u32::MAX {
-                    return;
-                }
-                let scoring = attacker != u32::MAX
-                    && attacker != victim
-                    && rec.meta.results.get(&attacker).is_some_and(|a| {
-                        rec.meta
-                            .results
-                            .get(&victim)
-                            .is_some_and(|v| !rec.meta.team_play || a.team < 0 || a.team != v.team)
-                    });
-                rec.meta
-                    .medals
-                    .kill(tick, scoring.then_some(attacker), victim);
-            }
-        })
-        .optional();
 }
 
 /// Verify the final transition affecting each seat on this tick. A replacement
@@ -691,7 +716,7 @@ mod tests {
         std::fs::create_dir(&dir).unwrap();
         let iso = crate::map_override::tests::iso_at(&dir, b"film map on disc");
         let cfg = vfs::Config::new(dir.join("data"), 0x4d53_0064);
-        let vfs = Mutex::new(vfs::Vfs::with_disc(cfg, &iso).unwrap());
+        let vfs = Arc::new(Mutex::new(vfs::Vfs::with_disc(cfg, &iso).unwrap()));
         let path = "d:\\maps\\level.map";
         let id = map_identity(&vfs, "level", Some(path), None).unwrap();
         assert_eq!(
@@ -711,8 +736,8 @@ mod tests {
         )
         .unwrap();
         let mut config = vfs::Config::new(dir.join("sparse"), 0x4d53_0064);
-        config.sim_store = Some(store);
-        let sparse = Mutex::new(
+        config.sim_store = Some(store.clone());
+        let sparse = Arc::new(Mutex::new(
             crate::map_override::mount(
                 config,
                 &iso,
@@ -721,12 +746,28 @@ mod tests {
                 &[],
             )
             .unwrap(),
-        );
+        ));
         let sparse_id = map_identity(&sparse, "level", Some(path), None).unwrap();
         assert_eq!(sparse_id.ranges, Some(vec![(0, 4), (9, 4)]));
         assert_ne!(sparse_id.sha256, id.sha256);
         verify_map(&vfs, &sparse_id).unwrap();
         drop(sparse);
+
+        // Replace just the store, leaving the original ISO and the logical
+        // range table intact. A second dedicated host must read the new body.
+        let file = store.join("level.h2store");
+        let mut bytes = std::fs::read(&file).unwrap();
+        *bytes.last_mut().unwrap() ^= 1;
+        let replacement = store.join("replacement");
+        std::fs::write(&replacement, bytes).unwrap();
+        std::fs::rename(replacement, &file).unwrap();
+        let mut config = vfs::Config::new(dir.join("sparse"), 0x4d53_0064);
+        config.sim_store = Some(store);
+        let updated = Arc::new(Mutex::new(crate::map_override::mount(
+            config, &iso, None::<crate::map_override::tests::Upper>, None, &[],
+        ).unwrap()));
+        assert!(verify_map(&updated, &sparse_id).is_err());
+        drop(updated);
         let mut wrong = id;
         wrong.sha256 = "00".repeat(32);
         assert!(verify_map(&vfs, &wrong).is_err());

@@ -85,28 +85,42 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     register_core_film(features, i, None)
 }
 
+pub(crate) fn register_telemetry(
+    features: &mut feature::Registry,
+    config: &telemetry::TelemetryConfig,
+    film: Option<&Arc<crate::theater::Session>>,
+) -> anyhow::Result<Option<Arc<telemetry::Telemetry>>> {
+    let Some(film) = film else {
+        return Ok(
+            telemetry::install(features, config).unwrap_or_else(|error| {
+                eprintln!("live telemetry disabled: {error}");
+                None
+            }),
+        );
+    };
+    // Guest transfers depend on the installed hook addresses. The recorder
+    // and player consume the same header plan even when their sinks differ.
+    let hooks = film.telemetry_plan();
+    let installed = telemetry::install_film(features, config, film.film_observer(), hooks)
+        .map_err(anyhow::Error::msg)?;
+    anyhow::ensure!(
+        installed.is_some() == hooks.enabled(),
+        "film telemetry hook plan {hooks:?} could not be installed"
+    );
+    Ok(installed)
+}
+
 pub(crate) fn register_core_film(
     features: &mut feature::Registry,
     i: CoreInputs<'_>,
     film: Option<Arc<crate::theater::Session>>,
 ) -> anyhow::Result<Core> {
     let rt: &Runtime = i.rt;
-    let observer = film.as_ref().and_then(|f| f.film_observer());
-    let recording = observer.is_some();
     let config = i.telemetry.unwrap_or_else(|error| {
         eprintln!("live telemetry transport disabled: {error}");
         telemetry::TelemetryConfig::default()
     });
-    let telemetry = match telemetry::install_film(features, &config, observer) {
-        Ok(Some(t)) => Some(t),
-        Ok(None) if recording => anyhow::bail!("film recording requires the telemetry observer"),
-        Ok(None) => None,
-        Err(error) if recording => anyhow::bail!("installing the film observer: {error}"),
-        Err(error) => {
-            eprintln!("live telemetry disabled: {error}");
-            None
-        }
-    };
+    let telemetry = register_telemetry(features, &config, film.as_ref())?;
     if let Some(vfs) = i.vfs.clone() {
         features
             .add(&map_slots::MapSlots { vfs })
@@ -257,7 +271,8 @@ pub(crate) fn register_core_film(
         crate::clanker_card::install(features, i.live.clone())
             .context("installing Clanker player options")?;
         bot_glue::add_from_env(i.data_root, i.settings.as_deref());
-        bots_on = bot_glue::install_film(features, i.data_root, film).context("installing the bots")?;
+        let bot_tape = film.filter(|f| f.has_bot_tape());
+        bots_on = bot_glue::install_film(features, i.data_root, bot_tape).context("installing the bots")?;
         // The Clankers page and its Game Setup row (stage 7).
         if let Some(store) = i.settings.as_ref() {
             clankers::install(features, store, i.live.clone(), telemetry.as_ref()).context("installing the Clankers page")?;
@@ -313,6 +328,18 @@ pub fn pipeline_for(
     }
 }
 
+/// Group availability follows boot's Cargo features. A desktop playback binary
+/// can select the smaller registration plan recorded by a dedicated host.
+pub(crate) fn compiled_render_hooks() -> film::RenderHooks {
+    if cfg!(feature = "gpu") {
+        film::RenderHooks::Gpu
+    } else if cfg!(feature = "desktop-runtime") {
+        film::RenderHooks::Desktop
+    } else {
+        film::RenderHooks::Slim
+    }
+}
+
 /// What [`register_late`] made, for the run.
 pub struct Late {
     pub harness: Option<lockstep_glue::Lockstep>,
@@ -322,6 +349,18 @@ pub struct Late {
 
 /// Registers everything from the lockstep harness to the snapshot probe.
 pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> anyhow::Result<Late> {
+    register_late_for_profile(features, i, compiled_render_hooks())
+}
+
+pub(crate) fn register_late_for_profile(
+    features: &mut feature::Registry,
+    i: LateInputs<'_>,
+    render_hooks: film::RenderHooks,
+) -> anyhow::Result<Late> {
+    anyhow::ensure!(
+        compiled_render_hooks().supports(render_hooks),
+        "unavailable render hook profile {render_hooks:?}"
+    );
     let lockstep_on = i.lockstep.enabled();
     let input_replay = i.lockstep.replay.is_some();
     let xa = i.xa.map(|x| &**x);
@@ -387,143 +426,134 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     // Stage 7a: the Rust render_views, when H2_FEATURES has
     // impl.render.views=on (off by default; docs/graphics/render-loop.md).
     #[cfg(feature = "desktop-runtime")]
-    features
-        .add(&feature::render_loop::RenderLoop)
-        .map_err(|e| anyhow::anyhow!("render loop: {e}"))?;
+    if render_hooks != film::RenderHooks::Slim {
+        features
+            .add(&feature::render_loop::RenderLoop)
+            .map_err(|e| anyhow::anyhow!("render loop: {e}"))?;
+    }
     // Occlusion culling of objects (H2_FEATURES=impl.render.occlusion=on,
     // off by default; docs/graphics/occlusion-culling.md).
     features
         .add(&feature::occlusion::OcclusionCull)
         .map_err(|e| anyhow::anyhow!("occlusion: {e}"))?;
     #[cfg(feature = "gpu")]
-    features
-        .add(&feature::native_map_work::NativeMapWork)
-        .map_err(|e| anyhow::anyhow!("native map lifecycle: {e}"))?;
-    // The static world on the native GPU renderer
-    // (on by default, H2_FEATURES=impl.render.native_world=off turns it
-    // off; docs/graphics/native-renderer.md). Its layer-draw observer is
-    // context-only, so the pipelined render runs it on its own thread. It
-    // runs after render-timing's. The world reads its map and resources
-    // through the VFS (native_map).
-    #[cfg(feature = "gpu")]
-    features
-        .add(&feature::native_world::NativeWorld)
-        .map_err(|e| anyhow::anyhow!("native world: {e}"))?;
-    // Planar fog, layer 16, on the native GPU renderer
-    // (on by default since 2026-11-20; H2_FEATURES=impl.render.native_fog=off
-    // turns it off for the comparison against the D3D path;
-    // docs/graphics/native-renderer.md, "Stage 4b"). Its layer-draw
-    // observer sits inside render-timing's and the world's; the fog
-    // materials load with the world (native_world_glue's worker,
-    // native_fog_glue's load).
-    #[cfg(feature = "gpu")]
-    features
-        .add(&feature::native_fog::NativeFog)
-        .map_err(|e| anyhow::anyhow!("native fog: {e}"))?;
-    // Water edge blend (layer 6) and the water, camouflage and hologram
-    // census. The layer observer is enabled by impl.render.native_water.
-    #[cfg(feature = "gpu")]
-    features
-        .add(&feature::native_water::NativeWater)
-        .map_err(|e| anyhow::anyhow!("native water: {e}"))?;
-    // Objects' render models on the native GPU renderer, skinned on the
-    // GPU (on by default since 2026-11-20;
-    // H2_FEATURES=impl.render.native_objects=off turns it off for the
-    // comparison against the D3D path;
-    // docs/graphics/native-renderer.md, stage 2). Its observers on the
-    // layer draw sit inside render-timing's and the world's; the models
-    // load per map through native_objects_glue.
-    #[cfg(feature = "gpu")]
-    features
-        .add(&feature::native_objects::NativeObjects)
-        .map_err(|e| anyhow::anyhow!("native objects: {e}"))?;
-    // The first-person arms and weapon on the native GPU renderer
-    // (on by default since 2026-11-20;
-    // H2_FEATURES=impl.render.native_first_person=off turns it off for
-    // the comparison against the D3D path): both 0x0003fdf0 layer-3
-    // draws, with the light and transparent calls
-    // between and after them left in guest order.
-    #[cfg(feature = "gpu")]
-    features
-        .add(&feature::native_first_person::NativeFirstPerson)
-        .map_err(|e| anyhow::anyhow!("native first person: {e}"))?;
-    #[cfg(feature = "gpu")]
-    features
-        .add(&feature::native_world_layers::NativeWorldLayers)
-        .map_err(|e| anyhow::anyhow!("native world layers: {e}"))?;
-    #[cfg(feature = "gpu")]
-    features
-        .add(&feature::native_residual::NativeResidual)
-        .map_err(|e| anyhow::anyhow!("native residual: {e}"))?;
-    // Mark the sorted geometry entries so their resolved indexed draws
-    // can use a cached vertex binding in the game's order (off by default).
-    #[cfg(feature = "gpu")]
-    features
-        .add(&feature::native_transparents::NativeTransparents)
-        .map_err(|e| anyhow::anyhow!("native transparents: {e}"))?;
-    // Dynamic decals in their seven observed pass positions
-    // (on by default since 2026-11-20; H2_FEATURES=impl.render.native_decals=off
-    // turns them off for the comparison against the D3D path;
-    // docs/graphics/native-decals-research.md). Only a fully resolved callback
-    // is replaced; all others keep their D3D draws.
-    #[cfg(feature = "gpu")]
-    features
-        .add(&feature::native_decals::NativeDecals)
-        .map_err(|e| anyhow::anyhow!("native decals: {e}"))?;
-    #[cfg(feature = "gpu")]
-    features
-        .add(&feature::native_particles::NativeParticles)
-        .map_err(|e| anyhow::anyhow!("native particles: {e}"))?;
-    // The dynamic lights on the native GPU renderer
-    // (on by default since 2026-11-20; H2_FEATURES=impl.render.native_lights=off
-    // turns them off for the comparison against the D3D path;
-    // docs/graphics/native-renderer.md, stage 4): a context-only skip on
-    // each light's passes, in the game's light order. Its host
-    // (native_lights_glue) does the device side of a skipped light's tail
-    // and reports the bound target, but takes no light yet, so every light
-    // keeps its D3D passes.
-    #[cfg(feature = "gpu")]
-    features
-        .add(&feature::native_lights::NativeLights)
-        .map_err(|e| anyhow::anyhow!("native lights: {e}"))?;
-    // Shader-driven gels: observe target-13 production before light consumption.
-    #[cfg(feature = "gpu")]
-    features
-        .add(&feature::native_gels::NativeGels)
-        .map_err(|e| anyhow::anyhow!("native gels: {e}"))?;
-    #[cfg(feature = "gpu")]
-    features
-        .add(&feature::native_shadows::NativeShadows)
-        .map_err(|e| anyhow::anyhow!("native shadows: {e}"))?;
+    if render_hooks == film::RenderHooks::Gpu {
+        features
+            .add(&feature::native_map_work::NativeMapWork)
+            .map_err(|e| anyhow::anyhow!("native map lifecycle: {e}"))?;
+        // The static world on the native GPU renderer
+        // (on by default, H2_FEATURES=impl.render.native_world=off turns it
+        // off; docs/graphics/native-renderer.md). Its layer-draw observer is
+        // context-only, so the pipelined render runs it on its own thread. It
+        // runs after render-timing's. The world reads its map and resources
+        // through the VFS (native_map).
+        features
+            .add(&feature::native_world::NativeWorld)
+            .map_err(|e| anyhow::anyhow!("native world: {e}"))?;
+        // Planar fog, layer 16, on the native GPU renderer
+        // (on by default since 2026-11-20; H2_FEATURES=impl.render.native_fog=off
+        // turns it off for the comparison against the D3D path;
+        // docs/graphics/native-renderer.md, "Stage 4b"). Its layer-draw
+        // observer sits inside render-timing's and the world's; the fog
+        // materials load with the world (native_world_glue's worker,
+        // native_fog_glue's load).
+        features
+            .add(&feature::native_fog::NativeFog)
+            .map_err(|e| anyhow::anyhow!("native fog: {e}"))?;
+        // Water edge blend (layer 6) and the water, camouflage and hologram
+        // census. The layer observer is enabled by impl.render.native_water.
+        features
+            .add(&feature::native_water::NativeWater)
+            .map_err(|e| anyhow::anyhow!("native water: {e}"))?;
+        // Objects' render models on the native GPU renderer, skinned on the
+        // GPU (on by default since 2026-11-20;
+        // H2_FEATURES=impl.render.native_objects=off turns it off for the
+        // comparison against the D3D path;
+        // docs/graphics/native-renderer.md, stage 2). Its observers on the
+        // layer draw sit inside render-timing's and the world's; the models
+        // load per map through native_objects_glue.
+        features
+            .add(&feature::native_objects::NativeObjects)
+            .map_err(|e| anyhow::anyhow!("native objects: {e}"))?;
+        // The first-person arms and weapon on the native GPU renderer
+        // (on by default since 2026-11-20;
+        // H2_FEATURES=impl.render.native_first_person=off turns it off for
+        // the comparison against the D3D path): both 0x0003fdf0 layer-3
+        // draws, with the light and transparent calls
+        // between and after them left in guest order.
+        features
+            .add(&feature::native_first_person::NativeFirstPerson)
+            .map_err(|e| anyhow::anyhow!("native first person: {e}"))?;
+        features
+            .add(&feature::native_world_layers::NativeWorldLayers)
+            .map_err(|e| anyhow::anyhow!("native world layers: {e}"))?;
+        features
+            .add(&feature::native_residual::NativeResidual)
+            .map_err(|e| anyhow::anyhow!("native residual: {e}"))?;
+        // Mark the sorted geometry entries so their resolved indexed draws
+        // can use a cached vertex binding in the game's order (off by default).
+        features
+            .add(&feature::native_transparents::NativeTransparents)
+            .map_err(|e| anyhow::anyhow!("native transparents: {e}"))?;
+        // Dynamic decals in their seven observed pass positions
+        // (on by default since 2026-11-20; H2_FEATURES=impl.render.native_decals=off
+        // turns them off for the comparison against the D3D path;
+        // docs/graphics/native-decals-research.md). Only a fully resolved callback
+        // is replaced; all others keep their D3D draws.
+        features
+            .add(&feature::native_decals::NativeDecals)
+            .map_err(|e| anyhow::anyhow!("native decals: {e}"))?;
+        features
+            .add(&feature::native_particles::NativeParticles)
+            .map_err(|e| anyhow::anyhow!("native particles: {e}"))?;
+        // The dynamic lights on the native GPU renderer
+        // (on by default since 2026-11-20; H2_FEATURES=impl.render.native_lights=off
+        // turns them off for the comparison against the D3D path;
+        // docs/graphics/native-renderer.md, stage 4): a context-only skip on
+        // each light's passes, in the game's light order. Its host
+        // (native_lights_glue) does the device side of a skipped light's tail
+        // and reports the bound target, but takes no light yet, so every light
+        // keeps its D3D passes.
+        features
+            .add(&feature::native_lights::NativeLights)
+            .map_err(|e| anyhow::anyhow!("native lights: {e}"))?;
+        // Shader-driven gels: observe target-13 production before light consumption.
+        features
+            .add(&feature::native_gels::NativeGels)
+            .map_err(|e| anyhow::anyhow!("native gels: {e}"))?;
+        features
+            .add(&feature::native_shadows::NativeShadows)
+            .map_err(|e| anyhow::anyhow!("native shadows: {e}"))?;
+    }
     features
         .add(&feature::h1_scope_zoom::ScopeZoom)
         .map_err(|e| anyhow::anyhow!("Halo 1 scope zoom: {e}"))?;
-    // The view's post passes on the native GPU renderer
-    // (on by default since 2026-11-20; H2_FEATURES=impl.render.native_post=off
-    // turns them off for the comparison against the D3D path;
-    // docs/graphics/native-renderer.md, stage 5): a context-only hook at
-    // the colour pass's entry. Its host (native_post_glue, installed with
-    // the world's) plans the glow, has the device drop exactly its quads
-    // and draws the glow natively in place of the last; the game's code
-    // runs and leaves every state. H2_POST_AB=<dir> places it with the
-    // switch off too, observing, for the frame A/B's captures.
     #[cfg(feature = "gpu")]
-    feature::native_post::place_for_capture(crate::native_post_glue::ab_requested());
-    #[cfg(feature = "gpu")]
-    features
-        .add(&feature::native_post::NativePost)
-        .map_err(|e| anyhow::anyhow!("native post: {e}"))?;
-    // The HUD's and the UI's screen draws on the native GPU renderer
-    // (on by default since 2026-11-20; H2_FEATURES=impl.render.native_hud=off
-    // turns them off for the comparison against the D3D path, or
-    // H2_NATIVE_HUD_COMPARE; docs/graphics/native-renderer.md, stage 5):
-    // context-only hooks on the screen-quad batch (text) and the HUD shader
-    // quad. Its host (native_hud_glue) draws accepted quads natively and
-    // pairs the plans for D3D draws in compare mode.
-    #[cfg(feature = "gpu")]
-    features
-        .add(&feature::native_hud::NativeHud)
-        .map_err(|e| anyhow::anyhow!("native hud: {e}"))?;
+    if render_hooks == film::RenderHooks::Gpu {
+        // The view's post passes on the native GPU renderer
+        // (on by default since 2026-11-20; H2_FEATURES=impl.render.native_post=off
+        // turns them off for the comparison against the D3D path;
+        // docs/graphics/native-renderer.md, stage 5): a context-only hook at
+        // the colour pass's entry. Its host (native_post_glue, installed with
+        // the world's) plans the glow, has the device drop exactly its quads
+        // and draws the glow natively in place of the last; the game's code
+        // runs and leaves every state. H2_POST_AB=<dir> places it with the
+        // switch off too, observing, for the frame A/B's captures.
+        feature::native_post::place_for_capture(crate::native_post_glue::ab_requested());
+        features
+            .add(&feature::native_post::NativePost)
+            .map_err(|e| anyhow::anyhow!("native post: {e}"))?;
+        // The HUD's and the UI's screen draws on the native GPU renderer
+        // (on by default since 2026-11-20; H2_FEATURES=impl.render.native_hud=off
+        // turns them off for the comparison against the D3D path, or
+        // H2_NATIVE_HUD_COMPARE; docs/graphics/native-renderer.md, stage 5):
+        // context-only hooks on the screen-quad batch (text) and the HUD shader
+        // quad. Its host (native_hud_glue) draws accepted quads natively and
+        // pairs the plans for D3D draws in compare mode.
+        features
+            .add(&feature::native_hud::NativeHud)
+            .map_err(|e| anyhow::anyhow!("native hud: {e}"))?;
+    }
     // H2_UI_WATCH=1: the screen player one's input goes to, a line on each
     // change and `ui.screen` (`h2 coop test --drive`; ui_watch.rs).
     ui_watch::install(features)?;

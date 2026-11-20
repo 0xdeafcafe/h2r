@@ -2,19 +2,20 @@
 //! inspection verifies each time-index entry against an actual chunk. The
 //! signed receipt binds that exact index to the game's visibility record.
 use std::{
+    collections::VecDeque,
     ops::Range,
     sync::{Arc, Mutex},
 };
 
 use axum::{
     body::{Body, Bytes},
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode, header},
     response::Response,
 };
 use live_proto::{
     ErrorCode,
-    film::range::{Directory, FOOTER_BYTES, PREFIX_BYTES},
+    film::range::{FOOTER_BYTES, PREFIX_BYTES},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -24,6 +25,10 @@ use crate::blobs::BlobStore;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct WebRanges {
+    /// Set by field-level validation of the front, directory and all TICKs.
+    /// Old signed receipts authenticated extents only.
+    #[serde(default)]
+    pub public_safe: bool,
     pub size: u64,
     /// JSON byte length of the public front summary; reserve padding is private.
     pub summary_bytes: u32,
@@ -35,27 +40,69 @@ pub(crate) struct WebRanges {
     pub ticks_per_second: Option<u16>,
 }
 
-/// Keep the most recently decoded time index across seeks. The signed index
-/// digest is its identity. Bound residency to one directory per Live home.
+/// Each entry retains only the physically validated byte extents needed by
+/// this endpoint, independently of the size of the directory's clock maps.
+#[derive(Clone, Copy, Deserialize)]
+struct Extent {
+    offset: u64,
+    size: u32,
+}
+
+#[derive(Deserialize)]
+struct Extents {
+    chunks: Box<[Extent]>,
+}
+
+const MAX_CACHED_FILMS: usize = 16;
+const MAX_CACHED_BYTES: usize = 4 << 20;
+
 #[derive(Default)]
-pub(crate) struct WebIndexCache(Mutex<Option<(String, Arc<Directory>)>>);
+pub(crate) struct WebIndexCache(Mutex<VecDeque<(String, Arc<Extents>)>>);
 
 impl WebIndexCache {
-    fn get(&self, digest: &str) -> Option<Arc<Directory>> {
-        self.0
-            .lock()
-            .expect("film index cache")
-            .as_ref()
-            .filter(|(key, _)| key == digest)
-            .map(|(_, dir)| Arc::clone(dir))
+    fn get(&self, digest: &str) -> Option<Arc<Extents>> {
+        let mut lru = self.0.lock().expect("film index cache");
+        let at = lru.iter().position(|(key, _)| key == digest)?;
+        let entry = lru.remove(at)?;
+        let index = entry.1.clone();
+        lru.push_front(entry);
+        Some(index)
     }
 
-    fn insert(&self, digest: &str, dir: Directory) -> Arc<Directory> {
+    fn insert(&self, digest: &str, dir: Extents) -> Arc<Extents> {
         let dir = Arc::new(dir);
-        *self.0.lock().expect("film index cache") = Some((digest.into(), Arc::clone(&dir)));
+        let bytes = |dir: &Extents| std::mem::size_of_val(&*dir.chunks);
+        if bytes(&dir) > MAX_CACHED_BYTES {
+            return dir;
+        }
+        let mut lru = self.0.lock().expect("film index cache");
+        // Two readers may have missed concurrently while fetching from R2.
+        lru.retain(|(key, _)| key != digest);
+        lru.push_front((digest.into(), dir.clone()));
+        let mut used = lru.iter().map(|(_, d)| bytes(d)).sum::<usize>();
+        while lru.len() > MAX_CACHED_FILMS || used > MAX_CACHED_BYTES {
+            let (_, old) = lru.pop_back().expect("nonempty index cache");
+            used -= bytes(&old);
+        }
         dir
     }
 }
+
+/// A strong validator for a single immutable upload. The CIDX digest
+/// identifies offsets, not the bytes at those offsets in different films.
+fn revision(key: &str) -> String {
+    format!("{:x}", Sha256::digest(key.as_bytes()))
+}
+
+#[derive(Deserialize, Default)]
+pub(crate) struct RangeQuery {
+    rev: Option<String>,
+    span: Option<String>,
+    auth: Option<String>,
+}
+
+const PRIVATE: &str = "private, no-store, no-transform";
+use crate::caching::IMMUTABLE_FILM_CHUNK as PUBLIC;
 
 fn unavailable() -> ApiError {
     ApiError::new(ErrorCode::Unavailable, "the film range is unavailable")
@@ -91,18 +138,23 @@ fn range_response(
     range: Option<&Range<u64>>,
     total: u64,
     body: Bytes,
+    shared: bool,
+    rev: Option<&str>,
 ) -> Response {
     let span = match range {
         Some(r) => format!("bytes {}-{}/{total}", r.start, r.end - 1),
         None => format!("bytes */{total}"),
     };
-    Response::builder()
-        .status(status)
+    let mut response = Response::builder().status(status);
+    if let Some(rev) = rev {
+        response = response.header(header::ETAG, format!("\"film-{rev}\""));
+    }
+    response
         .header(header::ACCEPT_RANGES, "bytes")
         .header(header::CONTENT_RANGE, span)
         .header(header::CONTENT_LENGTH, body.len().to_string())
         .header(header::CONTENT_TYPE, "application/octet-stream")
-        .header(header::CACHE_CONTROL, "private, no-store, no-transform")
+        .header(header::CACHE_CONTROL, if shared { PUBLIC } else { PRIVATE })
         .header(header::VARY, "Authorization, Range")
         .header("x-content-type-options", "nosniff")
         .body(Body::from(body))
@@ -119,8 +171,7 @@ impl WebRanges {
     }
 
     async fn fetch(&self, store: &BlobStore, key: &str, range: Range<u64>) -> ApiResult<Bytes> {
-        let (bytes, size) = store
-            .get_range(key, range)
+        let (bytes, size) = super::parts::get_range(store, key, range)
             .await
             .map_err(|_| unavailable())?
             .ok_or_else(|| not_found("no such film"))?;
@@ -136,9 +187,15 @@ impl WebRanges {
         store: &BlobStore,
         key: &str,
         range: &Range<u64>,
-    ) -> ApiResult<Option<Bytes>> {
+    ) -> ApiResult<Option<(Bytes, bool)>> {
+        if !self.public_safe {
+            return Ok(None);
+        }
         if self.front_or_footer(range) {
-            return self.fetch(store, key, range.clone()).await.map(Some);
+            return self
+                .fetch(store, key, range.clone())
+                .await
+                .map(|b| Some((b, false)));
         }
         let end = self
             .index_offset
@@ -163,10 +220,9 @@ impl WebRanges {
         };
         if in_index {
             let bytes = get_index().await?;
-            return Ok(Some(bytes.slice(
-                (range.start - index_range.start) as usize
-                    ..(range.end - index_range.start) as usize,
-            )));
+            let subrange = (range.start - index_range.start) as usize
+                ..(range.end - index_range.start) as usize;
+            return Ok(Some((bytes.slice(subrange), false)));
         }
         let dir = if let Some(hit) = cache.get(&self.index_sha256) {
             hit
@@ -176,7 +232,7 @@ impl WebRanges {
                 &index[8..],
                 live_proto::film::range::MAX_INDEX_BYTES,
             )?;
-            let dir: Directory = serde_json::from_slice(&raw).map_err(|_| unavailable())?;
+            let dir: Extents = serde_json::from_slice(&raw).map_err(|_| unavailable())?;
             cache.insert(&self.index_sha256, dir)
         };
         let upper = dir.chunks.partition_point(|c| c.offset <= range.start);
@@ -195,46 +251,69 @@ impl WebRanges {
         {
             return Err(unavailable());
         }
-        Ok(Some(bytes))
+        let complete = range.start == chunk.offset && range.end == end;
+        Ok(Some((bytes, complete)))
     }
 }
 
 pub(crate) async fn read_film_range(
     State(live): Shared,
     Path(id): Path<String>,
+    Query(query): Query<RangeQuery>,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
     let viewer = live.read_viewer(bearer(&headers))?;
     game_id(&id)?;
-    let (receipt, key) = visible_game(&live.model.read(), &id, viewer)
-        .and_then(|game| {
-            Some((
-                game.film_web_ranges.clone()?,
-                game.film_blob.clone().unwrap_or_else(|| host_film_key(&id)),
-            ))
-        })
+    let (receipt, immutable_key, ended) = visible_game(&live.model.read(), &id, viewer)
+        .and_then(super::Source::range_receipt)
+        .filter(|(receipt, _, _)| receipt.public_safe)
         .ok_or_else(|| not_found("no such film"))?;
+    let rev = immutable_key.as_deref().map(revision);
+    if query.rev.is_some() && query.rev != rev {
+        return Err(not_found("no such film revision"));
+    }
+    let key = immutable_key.unwrap_or_else(|| host_film_key(&id));
     let denied = || {
         range_response(
             StatusCode::RANGE_NOT_SATISFIABLE,
             None,
             receipt.size,
             Bytes::new(),
+            false,
+            None,
         )
     };
     let Some(range) = parse_range(&headers, receipt.size) else {
         return Ok(denied());
     };
+    let request_span = headers[header::RANGE]
+        .to_str()
+        .ok()
+        .and_then(|v| v.strip_prefix("bytes="));
+    if query.rev.is_some() != query.span.is_some()
+        || (query.span.is_some() && query.span.as_deref() != request_span)
+    {
+        return Ok(denied());
+    }
+    // read_viewer has authorised anonymous access under this home's read
+    // policy and visible_game checked this game's visibility above.
+    // An open co-op session can switch from public to friends-only.
+    let shareable = ended
+        && viewer == crate::sessions::Viewer::Anonymous
+        && !headers.contains_key(header::AUTHORIZATION)
+        && query.auth.as_deref().is_none_or(|a| a == "0");
     let store = &live.blobs().ok_or_else(unavailable)?.private;
     match receipt
         .read(&live.web_film_index, store, &key, &range)
         .await?
     {
-        Some(bytes) => Ok(range_response(
+        Some((bytes, complete)) => Ok(range_response(
             StatusCode::PARTIAL_CONTENT,
             Some(&range),
             receipt.size,
             bytes,
+            complete && shareable && query.rev.is_some(),
+            rev.as_deref(),
         )),
         None => Ok(denied()),
     }

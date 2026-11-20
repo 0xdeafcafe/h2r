@@ -151,8 +151,23 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
     return new Uint8Array(await r.arrayBuffer());
   }
   return {
-    hostFilm: (id: string, s?: AbortSignal) => openHostFilm(
-      (range, signal) => reading(u("/games/" + encodeURIComponent(id) + "/film"), {signal, headers: {Range: range}}), s),
+    hostFilm: (id: string, s?: AbortSignal) => {
+      const path = "/games/" + encodeURIComponent(id) + "/film";
+      let rev: string | undefined;
+      return openHostFilm(async (range, signal) => {
+        const query = rev ? {rev, span: range.slice("bytes=".length)} : undefined;
+        const response = await reading(u(path, query), {signal, headers: {Range: range}});
+        if (response.status === 206) {
+          const observed = /^"film-([0-9a-f]{64})"$/.exec(response.headers.get("etag") ?? "")?.[1];
+          if (rev && rev !== observed) {
+            await response.body?.cancel();
+            throw new Error("Host film revision changed during playback");
+          }
+          if (range === "bytes=0-31") rev = observed;
+        }
+        return response;
+      }, s);
+    },
     health: (s?: AbortSignal) => getJson<{ ok: boolean; position: number }>(t.base + "/healthz", s),
     accounts: (s?: AbortSignal) => all<AccountSummary>("/accounts", { limit: 1000 }, s),
     account: async (tag: string, s?: AbortSignal) =>

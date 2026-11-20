@@ -63,6 +63,7 @@ impl Build {
             "invalid or duplicate front summary"
         );
         self.front.summary = serde_json::from_slice(bytes)?;
+        live_proto::film::privacy::public_summary(&mut self.front.summary);
         self.has_summary = true;
         Ok(())
     }
@@ -282,6 +283,8 @@ pub(super) fn open<R: Read + Seek>(mut input: R, len: u64) -> Result<Reader<R>> 
         "incorrect final film header reference"
     );
     let header: Header = crate::decode(&mut input, last)?;
+    ensure!(initial.telemetry_hooks == header.telemetry_hooks, "film telemetry hook plan changed");
+    ensure!(initial.render_hooks == header.render_hooks, "film render hook profile changed");
     for h in [&initial, &header] {
         validate_header(h, &front)?;
     }

@@ -16,7 +16,15 @@ export interface HostFilmSummary {
   mode: typeof modes[number];
   variant_name: string;
   duration_ticks: number;
-  players: {seat: number; name: string; xuid: string | null; team: number; score: number; medals: Record<string, number>}[];
+  dropped_samples?: Record<string, number>;
+  players: {seat: number; name: string; xuid?: string | null; team: number; score: number; medals: Record<string, number>}[];
+}
+
+export interface FilmSeat {
+  seat: number;
+  name: string;
+  team: number;
+  kind: "local" | "remote" | "phantom" | "bot";
 }
 
 export interface FilmFront {
@@ -26,7 +34,7 @@ export interface FilmFront {
   started_ms: number;
   map_sha256: string;
   map_origin: string;
-  roster: {seat: number; name: string; team: number; kind: string}[];
+  roster: FilmSeat[];
   ticks_per_second?: number | null;
   match_start_tick: number | null;
   summary: HostFilmSummary;
@@ -71,12 +79,14 @@ export function decodeFilmFront(bytes: Uint8Array): FilmFront {
   if (typeof f.image_stamp !== "string" || typeof f.runtime_stamp !== "string" || !uint(f.started_ms) ||
     typeof f.map_sha256 !== "string" || typeof f.map_origin !== "string" || !Array.isArray(f.roster) ||
     !f.roster.every(p => object(p) && uint(p.seat) && p.seat < 16 && typeof p.name === "string" &&
-      integer(p.team) && typeof p.kind === "string")) bad("header roster or identity");
+      integer(p.team) && (p.kind === "local" || p.kind === "remote" || p.kind === "phantom" || p.kind === "bot"))) bad("header roster or identity");
   if (f.ticks_per_second != null && (!uint(f.ticks_per_second) || !f.ticks_per_second || f.ticks_per_second > 65535)) bad("tick rate");
   const s = f.summary;
   if (!object(s) || typeof s.level !== "string" || typeof s.game_type !== "string" ||
     typeof s.variant_name !== "string" || !modes.some(m => m === s.mode) ||
     !uint(s.duration_ticks) || !Array.isArray(s.players)) bad("summary");
+  if (s.dropped_samples !== undefined && (!object(s.dropped_samples) || !Object.values(s.dropped_samples).every(uint)))
+    bad("dropped sample counts");
   for (const p of s.players) {
     if (!object(p) || !uint(p.seat) || p.seat > 15 || typeof p.name !== "string" ||
       !(p.xuid == null || typeof p.xuid === "string") || !integer(p.team) || !integer(p.score) ||
@@ -125,12 +135,12 @@ export function decodeFilmIndex(bytes: Uint8Array, indexOffset: number): FilmSeg
     priorKeyOffset = k.offset;
   }
   let end = FRONT_SIZE + FRONT_CAPACITY;
-  let previous = -1;
+  let previous = 0;
   let base = 0, baseOrdinal = 0;
   return v.chunks.map((entry: unknown, ordinal): FilmSegment => {
     if (!object(entry)) bad("time index row");
     const {first, last, offset, size, raw_size} = entry;
-    if (!uint(first) || !uint(last) || first <= previous || last < first || last - first >= 128 ||
+    if (!uint(first) || !uint(last) || first !== previous + 1 || last < first || last - first >= 128 ||
       !uint(size) || !size || size > MAX_PACKED || !uint(raw_size) || !raw_size || raw_size > MAX_RAW ||
       !uint(offset) || offset < end || offset + size + 8 > indexOffset) bad("time index bounds");
     const scene = entry.scene;
@@ -192,3 +202,5 @@ export async function openHostFilm(read: Read, signal?: AbortSignal, inflate: Fi
     unpack(await range(c.offset, c.size + 8, s), "TICK", c.raw_size, inflate);
   return {front, index, chunk};
 }
+
+export type HostFilm = NonNullable<Awaited<ReturnType<typeof openHostFilm>>>;

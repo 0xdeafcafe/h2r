@@ -1249,6 +1249,8 @@ fn run_configured(
                 epoch: clock.system_time() - clock.counter(),
                 light: host_light,
                 bots,
+                telemetry_hooks: telemetry::image_film_hooks(&loaded.runtime),
+                render_hooks: registration::compiled_render_hooks(),
                 live_service: live.server_url.is_some(),
                 address: _live
                     .as_ref()
@@ -1257,7 +1259,7 @@ fn run_configured(
             xbe_bytes,
             opts,
         ) {
-            Err(e) if !replaying && host_light => {
+            Err(e) if !replaying => {
                 eprintln!("theater: recording could not start: {e:#}");
                 None
             }
@@ -1518,16 +1520,7 @@ fn run_configured(
             rt: &loaded.runtime,
             telemetry: match upload {
                 Some(config) => Ok(config),
-                None if replaying => Ok(if film.as_ref().is_some_and(|f| f.has_telemetry()) {
-                    telemetry::TelemetryConfig {
-                        enabled: true,
-                        sink: telemetry::TelemetrySinkConfig::Discard {
-                            film_effects: film.as_ref().is_some_and(|f| f.has_unified_track()),
-                        },
-                    }
-                } else {
-                    telemetry::TelemetryConfig::default()
-                }),
+                None if replaying => Ok(telemetry::TelemetryConfig::playback()),
                 None => telemetry::TelemetryConfig::from_live(
                     live.enabled,
                     live.accounts_path.as_deref(),
@@ -1546,7 +1539,7 @@ fn run_configured(
             perf_level: perf_from == Some(level_boot::PerfFrom::Level),
             bots,
         },
-        film.as_ref().filter(|f| f.has_bot_tape()).cloned(),
+        film.clone(),
     )?;
     let (skulls_on, skulls_mp_on, skulls_custom_on, health_on) = (
         core.skulls_on,
@@ -1573,7 +1566,6 @@ fn run_configured(
         if let Some(view) = host.film_view.take() {
             f.attach_host_view(view, k.vfs().context("Theater observer requires a mounted map")?)?;
         }
-        f.record_telemetry(_telemetry.is_some());
         f.set_match_sources(k.vfs(), _live.clone(), sim_mode.as_ref().map(|s| s.matched()));
     }
     if uploading_sim && _telemetry.is_none() {
@@ -1657,6 +1649,8 @@ fn run_configured(
             native_shadows_glue::configure_single(b);
         }
     }
+    let render_hooks = film.as_ref()
+        .map_or_else(registration::compiled_render_hooks, |s| s.render_hooks());
     #[cfg(feature = "gpu")]
     let mut d3d_calls = match (opts.d3d, host.gfx.take()) {
         (false, _) => None,
@@ -1677,29 +1671,29 @@ fn run_configured(
                 }
                 let report = Some(d3d_glue::scale_report(&mut b));
                 if host.render_thread {
-                    d3d_glue::install_threaded(&loaded.runtime, b, report, interp)?
+                    d3d_glue::install_threaded_for_profile(&loaded.runtime, b, report, interp, render_hooks)?
                 } else {
-                    d3d_glue::install_with_report(&loaded.runtime, b, report)?
+                    d3d_glue::install_for_profile(&loaded.runtime, b, report, render_hooks)?
                 }
             }
             None if host.render_thread => {
-                d3d_glue::install_threaded(&loaded.runtime, b, None, interp)?
+                d3d_glue::install_threaded_for_profile(&loaded.runtime, b, None, interp, render_hooks)?
             }
-            None => d3d_glue::install_with(&loaded.runtime, b)?,
+            None => d3d_glue::install_for_profile(&loaded.runtime, b, None, render_hooks)?,
         }),
-        (true, None) if host_light => Some(d3d_glue::install_light(&loaded.runtime)?),
-        (true, None) => Some(d3d_glue::install_headless(&loaded.runtime, interp)?),
+        (true, None) if host_light => Some(d3d_glue::install_light_for_profile(&loaded.runtime, render_hooks)?),
+        (true, None) => Some(d3d_glue::install_headless_for_profile(&loaded.runtime, interp, render_hooks)?),
     };
     #[cfg(all(not(feature = "gpu"), feature = "desktop-runtime"))]
     let mut d3d_calls = opts.d3d.then(|| {
         if host_light {
-            d3d_glue::install_light(&loaded.runtime)
+            d3d_glue::install_light_for_profile(&loaded.runtime, render_hooks)
         } else {
             d3d_glue::install(&loaded.runtime)
         }
     }).transpose()?;
     #[cfg(not(feature = "desktop-runtime"))]
-    let mut d3d_calls = Some(d3d_glue::install_light(&loaded.runtime)?);
+    let mut d3d_calls = Some(d3d_glue::install_light_for_profile(&loaded.runtime, render_hooks)?);
     // Vblanks on the 60 Hz logical clock (docs/graphics/d3d.md "Vertical blank"),
     // delivered as DPCs; the frame wait above is the clocked one.
     if let Some(handler) = d3d_calls.as_mut().and_then(|i| i.vblank.take()) {
@@ -1833,7 +1827,7 @@ fn run_configured(
     native_map::set_vfs(k.vfs());
     // The lockstep harness, the agent, our cheats, the render features and
     // the probes (registration.rs, the rest of the plan's features).
-    let late = registration::register_late(
+    let late = registration::register_late_for_profile(
         &mut features,
         registration::LateInputs {
             rt: &loaded.runtime,
@@ -1849,6 +1843,7 @@ fn run_configured(
             disc: &opts.disc,
             data_root: &opts.data_root,
         },
+        render_hooks,
     )?;
     let mut harness = late.harness;
     let agent = late.agent;
@@ -1971,6 +1966,9 @@ fn run_configured(
     let installed = plan
         .install(&loaded.runtime)
         .context("installing the feature plan")?;
+    if let Some(session) = &film {
+        session.check_simulation_hooks(&plan, &installed)?;
+    }
     if let Some(audit) = &audit {
         if let Some(why) = installed.off_reason("host-audit") {
             anyhow::bail!("host audit needs its feature hooks: {why}");
@@ -1982,7 +1980,7 @@ fn run_configured(
     {
         bail!("film observer unavailable: {why}");
     }
-    if film.as_ref().is_some_and(|f| f.has_unified_track() && f.has_telemetry())
+    if film.as_ref().is_some_and(|f| f.telemetry_plan().enabled())
         && let Some(why) = installed.off_reason("live-telemetry")
     {
         bail!("film event observer unavailable: {why}");

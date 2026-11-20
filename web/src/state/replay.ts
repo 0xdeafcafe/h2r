@@ -1,6 +1,7 @@
 // Frames plus the game's events, sampled at any tick, with the marks,
 // steps and killcams the viewer offers.
 
+import { lifecycleLabel, type FilmLifecycleBatch } from "../api/film-lifecycle";
 import type { Frame, FrameObject, PlayerKilled, PlayerScore, ScoreChanged, WireEvent } from "../api/types";
 import { chunkAt, type TimelineSegment } from "../api/chunk";
 import { isMachineBaseline, markMachineBaseline, recordedFrame } from "../api/pack";
@@ -196,6 +197,9 @@ export class ReplayTimeline {
         for (const t of d.teams ?? []) running.teams[t.team] = t.score;
         this.scores.push(running);
         endTick = Math.max(endTick, tick);
+      } else if (ev.type === "FilmLifecycle") {
+        const batch = ev.data as FilmLifecycleBatch;
+        for (const change of batch.changes) this.chapters.push({kind: "chapter", tick: batch.tick, label: lifecycleLabel(change)});
       } else if (ev.type === "FilmChapter") {
         const d = ev.data as {tick: number; label: string};
         this.chapters.push({kind: "chapter", tick: d.tick, label: d.label});

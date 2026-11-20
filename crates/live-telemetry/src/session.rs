@@ -997,6 +997,12 @@ impl Session {
         );
     }
 
+    pub(crate) fn end_without_scoreboard(&mut self, tick: Option<u64>) {
+        if let Some(current) = &self.current {
+            self.end(&Snapshot { tick: tick.unwrap_or(current.tick), ..Snapshot::default() });
+        }
+    }
+
     pub fn end(&mut self, snapshot: &Snapshot) {
         let Some(current) = &mut self.current else {
             return;

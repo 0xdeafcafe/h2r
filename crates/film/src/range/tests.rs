@@ -199,3 +199,26 @@ fn guest_clock_index_handles_pause_revert_and_missing_observations() {
     assert_eq!(index.film_tick_for_guest(92), Some(8));
     assert_eq!(index.film_tick_for_guest(94), None);
 }
+
+#[test]
+fn range_directory_and_writer_reject_a_missing_first_or_interior_tick() {
+    let bytes = film();
+    let footer = footer(&mut Cursor::new(&bytes), bytes.len() as u64).unwrap();
+    let valid = directory(&mut Cursor::new(&bytes), &footer).unwrap();
+    for row in [0, 1] {
+        let mut index = valid.clone();
+        index.chunks[row].first += 1;
+        if row == 0 {
+            index.chunks[0].scene = 2;
+            index.chunks[1].scene = 2;
+        }
+        assert!(index.validate(&footer).is_err());
+    }
+    let mut h = crate::tests::header(3);
+    h.version = 3;
+    let mut w = Writer::new(Cursor::new(Vec::new()), &h).unwrap();
+    assert!(w.chronological(2, 2, &[2, 1]).is_err());
+    w.chronological(1, 1, &[1, 1]).unwrap();
+    assert!(w.chronological(3, 3, &[3, 1]).is_err());
+    w.chronological(2, 3, &[2, 2]).unwrap();
+}

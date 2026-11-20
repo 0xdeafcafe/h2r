@@ -36,6 +36,7 @@ impl State {
         if e == 0 {
             return Ok(state);
         }
+        objectives::check_span(e, objectives::ENGINE_INDEX + 4)?;
         let engine = m.i32(e + objectives::ENGINE_INDEX)?;
         state.item = match engine {
             1 => Some(Item::Flag),
@@ -50,8 +51,16 @@ impl State {
             4 => {
                 let k = m.u32(objectives::KOTH_GLOBALS)?;
                 if k != 0 {
+                    objectives::check_span(k, objectives::HILL_OCCUPANTS + 2)?;
                     let hill = m.i32(k + objectives::KOTH_HILL)?;
-                    if (0..i32::from(objectives::kind::HILLS)).contains(&hill) {
+                    if !(-1..i32::from(objectives::kind::HILLS)).contains(&hill) {
+                        return Err(MemFault {
+                            addr: k + objectives::KOTH_HILL,
+                            len: 4,
+                            write: false,
+                        });
+                    }
+                    if hill >= 0 {
                         state.hill = Some((hill as u8, m.u16(k + objectives::HILL_OCCUPANTS)?));
                     }
                 }
@@ -161,10 +170,14 @@ impl Tracker {
         self.state = State::default();
     }
 
+    pub(super) fn take_pickups(&mut self) -> Vec<Event> {
+        std::mem::take(&mut self.pickups)
+    }
+
     pub(super) fn observe(&mut self, m: &dyn GuestMemory) -> Result<Vec<Event>, String> {
         let next =
             State::read(m).map_err(|e| format!("cannot read film objective at {:#x}", e.addr))?;
-        let mut changes = std::mem::take(&mut self.pickups);
+        let mut changes = Vec::new();
         self.state.changes(&next, &mut changes);
         self.state = next;
         Ok(changes)
@@ -192,7 +205,12 @@ fn powerup(
     let mut player = None;
     if let Some(handle) = DatumHandle::from_raw(unit)
         && let Some((objects::BIPED, biped)) = objects::get(m, handle)?
-        && let Some(owner) = DatumHandle::from_raw(m.u32(biped.addr + 0x13c)?)
+        && let Some(owner) =
+            DatumHandle::from_raw(m.u32(biped.addr.checked_add(0x13c).ok_or(MemFault {
+                addr: biped.addr,
+                len: 4,
+                write: false,
+            })?)?)
         && let Some(players) = players::array(m)?
         && let Some(p) = players.get(m, owner)?
         && p.listed(m)?
@@ -227,7 +245,11 @@ pub(super) fn install(b: &mut feature::Builder, session: Arc<Session>) {
                     }
                 }
                 Ok(None) => {}
-                Err(e) => state.fail(format!("reading applied power-up at {:#x}", e.addr)),
+                Err(_) => {
+                    if let Mode::Record(r) = &mut state.mode {
+                        r.unified.dropped("powerup");
+                    }
+                }
             }
         })
         .optional();

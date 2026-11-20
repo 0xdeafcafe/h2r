@@ -25,6 +25,17 @@ pub use event::{
     ObjectState, PlayerState, PlayerStats, Shots, Snapshot, Support, VehicleState, Weapon, World,
 };
 pub use hooks::{FilmObserver, Telemetry, TelemetryFeature, install, install_film};
+/// The optional observer chains the loaded image can install before guest entry.
+pub fn image_film_hooks(rt: &runtime::Runtime) -> live_proto::film::TelemetryHooks {
+    use engine::points::{DAMAGE_REPORT, OBJECT_DELETE, WEAPON_FIRE};
+    live_proto::film::TelemetryHooks {
+        weapon_fire: rt.resolve_original(WEAPON_FIRE.base).is_some(),
+        damage_report: rt.resolve_original(DAMAGE_REPORT.base).is_some(),
+        object_delete: rt.resolve_original(OBJECT_DELETE.base).is_some(),
+        ..live_proto::film::TelemetryHooks::UNIFIED
+    }
+}
+
 pub use layout::LIKELY_FIELDS;
 pub use memory::{
     FilmSceneReader, ThingState, active_bsp, actors, film_scene, game_info, game_tick, hit, loaded_map_name, object,

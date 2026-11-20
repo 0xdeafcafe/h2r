@@ -45,7 +45,8 @@ use ::snapshot::{Codec, Snapshot, SnapshotWriter, Tag};
 
 /// The section's tag.
 pub const SECTION: Tag = Tag::new("d3d");
-const VERSION: u32 = 2;
+const DEVICE_VERSION: u32 = 1;
+const FILM_VERSION: u32 = 2;
 /// Most entries any saved list may claim (scissors are at most 8, the
 /// rest are bounded by the guest's index and header spaces).
 const MAX_ITEMS: usize = 1 << 16;
@@ -599,6 +600,25 @@ impl<B: Backend> Device<B> {
         mem: &mut dyn GuestMemory,
         out: &mut SnapshotWriter,
     ) -> Result<(), SnapshotError> {
+        self.write_snapshot(mem, out, false)
+    }
+
+    /// A film keyframe also records the creation parameters so a new
+    /// playback process can allocate the host surfaces before its first draw.
+    pub fn save_film_snapshot(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        out: &mut SnapshotWriter,
+    ) -> Result<(), SnapshotError> {
+        self.write_snapshot(mem, out, true)
+    }
+
+    fn write_snapshot(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        out: &mut SnapshotWriter,
+        film: bool,
+    ) -> Result<(), SnapshotError> {
         let busy = self.snapshot_blockers();
         if !busy.is_empty() {
             return Err(SnapshotError::Busy(busy));
@@ -614,11 +634,17 @@ impl<B: Backend> Device<B> {
         self.flush_render_targets(mem)?;
         self.resolve_visibility()?;
         let mut w = Writer::new();
-        let params = self.params
-            .ok_or_else(|| SnapshotError::Mismatch("missing present parameters".into()))?;
-        put_words(&mut w, &params.words());
+        let version = if film {
+            let params = self.params.ok_or_else(|| {
+                SnapshotError::Mismatch("missing present parameters".into())
+            })?;
+            put_words(&mut w, &params.words());
+            FILM_VERSION
+        } else {
+            DEVICE_VERSION
+        };
         self.saved()?.put(&mut w);
-        out.section(SECTION, VERSION, Codec::Zstd, w.into_bytes())?;
+        out.section(SECTION, version, Codec::Zstd, w.into_bytes())?;
         Ok(())
     }
 
@@ -867,13 +893,13 @@ impl<B: Backend> Device<B> {
     fn restore_device(
         &mut self,
         snapshot: &Snapshot<'_>,
-        cold: Option<&dyn GuestMemory>,
+        film_memory: Option<&dyn GuestMemory>,
     ) -> Result<(), SnapshotError> {
         let (version, bytes) = snapshot.section(SECTION)?
             .ok_or(::snapshot::Error::MissingSection(SECTION))?;
         let (params, s) = match version {
-            1 => (None, Saved::get(&bytes)?),
-            VERSION => {
+            DEVICE_VERSION => (None, Saved::get(&bytes)?),
+            FILM_VERSION => {
                 let mut r = Reader::new(&bytes, "d3d");
                 let mut words = [0; 17];
                 get_words(&mut r, &mut words)?;
@@ -883,7 +909,7 @@ impl<B: Backend> Device<B> {
             }
             other => return Err(::snapshot::Error::SectionVersion(SECTION, other).into()),
         };
-        if !self.created && let Some(mem) = cold {
+        if !self.created && let Some(mem) = film_memory {
             let p = params.ok_or_else(|| {
                 SnapshotError::Mismatch("cold restore needs the recorded present parameters".into())
             })?;
@@ -895,7 +921,7 @@ impl<B: Backend> Device<B> {
             self.params = Some(p);
             self.created = true;
         }
-        if params.is_some() && params != self.params {
+        if film_memory.is_some() && params.is_some() && params != self.params {
             return Err(SnapshotError::Mismatch("present parameters differ".into()));
         }
         self.check(&s)?;

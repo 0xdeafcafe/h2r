@@ -1,13 +1,18 @@
 //! Theater lists archived games and tracks their exact host films. Film
 //! availability, pins and clips are projected in both homes from signed events.
 
+mod catalogue;
+use catalogue::{Source, Standalone};
 mod import;
 pub(crate) use import::resume as resume_import;
 mod inspect;
+mod legacy;
+pub(crate) use legacy::advance as continue_staged;
+pub(crate) mod parts;
 mod ranges;
 pub(crate) use ranges::{WebIndexCache, WebRanges, read_film_range};
 mod upload;
-pub(crate) use upload::upload_host_film;
+pub(crate) use upload::{cleanup_published, upload_host_film};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::Hash;
@@ -41,7 +46,9 @@ const UNSAVED: &str = "FilmUnsaved";
 const CLIP_CREATED: &str = "ClipCreated";
 const CLIP_DELETED: &str = "ClipDeleted";
 const HOST_FILM_STORED: &str = "HostFilmStored";
-pub(crate) const KINDS: [&str; 7] = [SAVED, UNSAVED, CLIP_CREATED, CLIP_DELETED, HOST_FILM_STORED, import::STARTED, import::ADVANCED];
+const HOST_FILM_CLEANED: &str = "HostFilmCleaned";
+const HOST_FILM_CLEANUP_REQUESTED: &str = "HostFilmCleanupRequested";
+pub(crate) const KINDS: [&str; 11] = [SAVED, UNSAVED, CLIP_CREATED, CLIP_DELETED, HOST_FILM_STORED, import::STARTED, import::ADVANCED, HOST_FILM_CLEANED, legacy::QUEUED, legacy::FINISHED, HOST_FILM_CLEANUP_REQUESTED];
 pub(crate) const HOST_FILM_PREFIX: &str = "films/";
 
 const LEGACY_TICKS_PER_SECOND: u16 = 30;
@@ -75,8 +82,8 @@ pub(crate) struct Clip {
     created_ms: i64,
 }
 
-fn film_tick_rate(game: &Game) -> u16 {
-    game.film_web_ranges.as_ref()
+fn film_tick_rate(ranges: Option<&WebRanges>) -> u16 {
+    ranges
         .and_then(|ranges| ranges.ticks_per_second)
         .filter(|&rate| rate > 0)
         .unwrap_or(LEGACY_TICKS_PER_SECOND)
@@ -84,7 +91,7 @@ fn film_tick_rate(game: &Game) -> u16 {
 
 impl Clip {
     pub(crate) fn duration_s(&self, game: &Game) -> u64 {
-        self.to_tick.saturating_sub(self.from_tick) / u64::from(film_tick_rate(game))
+        self.to_tick.saturating_sub(self.from_tick) / u64::from(film_tick_rate(game.film_web_ranges.as_ref()))
     }
 }
 
@@ -123,8 +130,18 @@ impl HostGameWrites {
 
 #[derive(Default)]
 pub(crate) struct Films {
-    pub(crate) imports: HashMap<String, import::Pending>,
+    pub(crate) imports: BTreeMap<String, import::Pending>,
+    last_import: std::sync::Mutex<String>,
     next_version: u64,
+    standalone: HashMap<String, Standalone>,
+    standalone_order: BTreeMap<u64, String>,
+    // Signed per-game journal versions survive both successful publication and
+    // the later housekeeping event (which has its own stream).
+    import_versions: HashMap<String, u64>,
+    cleanup: BTreeSet<String>,
+    cleanup_versions: HashMap<String, u64>,
+    legacy: legacy::Queue,
+    last_cleanup: std::sync::Mutex<String>,
     // By player, then by game start position (the same order as recent).
     saved: HashMap<Xuid, BTreeMap<u64, String>>,
     clips: BTreeMap<u64, Clip>,
@@ -136,10 +153,46 @@ pub(crate) struct Films {
 }
 
 impl Films {
-    fn pinned_by(&self, game: &Game, player: Xuid) -> bool {
+    pub(crate) fn import_version(&self, id: &str) -> u64 {
+        self.import_versions.get(id).copied().unwrap_or(0)
+    }
+
+    pub(crate) fn next_import(&self) -> Option<String> {
+        let mut last = self.last_import.lock().expect("film import cursor");
+        let (id, _) = self.imports.range((Excluded(last.clone()), Unbounded)).next()
+            .or_else(|| self.imports.first_key_value())?;
+        last.clone_from(id);
+        Some(id.clone())
+    }
+
+    pub(crate) fn film_work_due(&self) -> Option<i64> {
+        self.legacy.due().into_iter().chain(
+            (!self.cleanup.is_empty() || !self.imports.is_empty()).then(|| crate::app::now() + 5)
+        ).min()
+    }
+
+    pub(crate) fn ingesting(&self, id: &str) -> bool {
+        self.imports.contains_key(id) || self.legacy.contains(id)
+    }
+
+    /// Round-robin keeps a broken object or an unavailable bucket from
+    /// starving the other games which still have temporary objects.
+    pub(crate) fn next_cleanup(&self) -> Option<String> {
+        let mut last = self.last_cleanup.lock().expect("film cleanup cursor");
+        let id = self
+            .cleanup
+            .range((Excluded(last.clone()), Unbounded))
+            .next()
+            .or_else(|| self.cleanup.first())?
+            .clone();
+        last.clone_from(&id);
+        Some(id)
+    }
+
+    fn pinned_by(&self, game: Source<'_>, player: Xuid) -> bool {
         self.saved
             .get(&player)
-            .is_some_and(|pins| pins.contains_key(&game.position))
+            .is_some_and(|pins| pins.contains_key(&game.position()))
     }
 
     fn add_clip(&mut self, position: u64, clip: Clip) {
@@ -188,12 +241,18 @@ pub(crate) fn project(model: &mut Model, event: &RecordedEvent) {
     let films = &mut model.films;
     if event.body.stream == STREAM {
         films.next_version = event.version + 1;
+    } else if let Some(id) = event.body.stream.strip_prefix(IMPORT_PREFIX)
+        && game::valid_id(id)
+    {
+        films.import_versions.insert(id.to_owned(), event.version + 1);
     }
     match event.body.kind.as_str() {
+        legacy::QUEUED | legacy::FINISHED => films.legacy.project(event),
         import::STARTED => {
             if let Ok(p) = serde_json::from_value::<import::Pending>(event.body.data.clone())
                 && let Some(id) = p.receipt["game"].as_str()
             {
+                films.legacy.published(id);
                 films.imports.insert(id.to_owned(), p);
             }
         }
@@ -202,42 +261,65 @@ pub(crate) fn project(model: &mut Model, event: &RecordedEvent) {
                 && let Some(p) = films.imports.get_mut(id)
                 && event.body.data["page"].as_u64() == Some(p.next as u64)
             {
-                p.skip = p.skip.saturating_sub(p.page_count());
-                p.next += 1;
+                p.advance(event.body.data["rows"].as_u64());
             }
         }
         HOST_FILM_STORED => {
-            if let Some(id) = event.body.data["game"].as_str()
-                && let Some(game) = model.games.get_mut(id)
-            {
-                films.imports.remove(id);
+            let Some(id) = event.body.data["game"].as_str() else { return };
+            films.imports.remove(id);
+            films.legacy.published(id);
+            films.cleanup.insert(id.to_owned());
+            if let Some(game) = model.games.get_mut(id) {
                 game.has_host_film = true;
                 game.film_blob = event.body.data["blob"].as_str().map(str::to_owned);
                 game.film_web_ranges = event.body.data.get("web_ranges")
                     .and_then(|v| serde_json::from_value(v.clone()).ok());
                 game.film_summary = event.body.data.get("summary")
                     .and_then(|s| serde_json::from_value(s.clone()).ok());
+                if let Some(summary) = &mut game.film_summary {
+                    live_proto::film::privacy::public_summary(summary);
+                }
+                game.film_stats_discrepancy = event.body.data.get("stats_discrepancy")
+                    .and_then(|s| serde_json::from_value(s.clone()).ok());
+            } else if !films.standalone.contains_key(id)
+                && let Some(entry) = Standalone::from_receipt(event)
+            {
+                films.standalone_order.insert(event.position, id.to_owned());
+                films.standalone.insert(id.to_owned(), entry);
+            }
+        }
+        HOST_FILM_CLEANED | HOST_FILM_CLEANUP_REQUESTED => {
+            if let Some(id) = event.body.data["game"].as_str() {
+                films.cleanup_versions.insert(id.to_owned(), event.version + 1);
+                if event.body.kind == HOST_FILM_CLEANED {
+                    films.cleanup.remove(id);
+                } else {
+                    films.cleanup.insert(id.to_owned());
+                }
             }
         }
         SAVED | UNSAVED => {
             let Ok(pin) = serde_json::from_value::<Pin>(event.body.data.clone()) else {
                 return;
             };
-            let Some(game) = model.games.get_mut(&pin.game) else {
+            let save = event.body.kind == SAVED;
+            let position = if let Some(game) = model.games.get_mut(&pin.game) {
+                if save == films.saved.get(&pin.by).is_some_and(|pins| pins.contains_key(&game.position)) {
+                    return;
+                }
+                if save { game.recording.saved_by += 1 } else { game.recording.saved_by -= 1 }
+                game.position
+            } else if let Some(entry) = films.standalone.get_mut(&pin.game) {
+                if save { entry.saved_by.insert(pin.by); } else { entry.saved_by.remove(&pin.by); }
+                entry.position
+            } else {
                 return;
             };
-            if event.body.kind == SAVED {
-                let pins = films.saved.entry(pin.by).or_default();
-                if pins.insert(game.position, pin.game).is_none() {
-                    game.recording.saved_by += 1;
-                }
+            if save {
+                films.saved.entry(pin.by).or_default().insert(position, pin.game);
             } else if let Some(pins) = films.saved.get_mut(&pin.by) {
-                if pins.remove(&game.position).is_some() {
-                    game.recording.saved_by -= 1;
-                }
-                if pins.is_empty() {
-                    films.saved.remove(&pin.by);
-                }
+                pins.remove(&position);
+                if pins.is_empty() { films.saved.remove(&pin.by); }
             }
         }
         CLIP_CREATED => {
@@ -267,12 +349,14 @@ struct Film<'a> {
     has_host_film: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     summary: Option<&'a live_proto::film::Summary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stats_discrepancy: Option<&'a live_proto::film::StatsDiscrepancy>,
 }
 
 impl<'a> Film<'a> {
     fn new(game: &'a Game, player: Xuid) -> Self {
         let start = &game.started.game;
-        let ticks_per_second = film_tick_rate(game);
+        let ticks_per_second = film_tick_rate(game.film_web_ranges.as_ref());
         let duration_s = game.ended.as_ref().and_then(|(end, at)| {
             if let Some(tick) = start.tick {
                 return Some(end.tick.saturating_sub(tick) / u64::from(ticks_per_second));
@@ -290,11 +374,15 @@ impl<'a> Film<'a> {
             mode: &start.mode,
             variant: start.variant.as_deref(),
             started_at: &game.started_at,
-            duration_s,
+            duration_s: game.film_stats_discrepancy.as_ref()
+                .and(game.film_summary.as_ref())
+                .map(|s| s.duration_ticks / u64::from(ticks_per_second))
+                .or(duration_s),
             ticks_per_second,
-            result: game_result(game, player),
+            result: game.film_stats_discrepancy.is_none().then(|| game_result(game, player)).flatten(),
             has_host_film: game.has_host_film,
             summary: game.film_summary.as_ref(),
+            stats_discrepancy: game.film_stats_discrepancy.as_ref(),
         }
     }
 }
@@ -324,11 +412,10 @@ struct ClipWithFilm<'a> {
     film: Film<'a>,
 }
 
-fn visible_game<'a>(model: &'a Model, id: &str, viewer: Viewer) -> Option<&'a Game> {
-    model
-        .games
-        .get(id)
-        .filter(|g| g.shows_to(viewer, |a, b| model.is_friends(a, b)))
+fn visible_game<'a>(model: &'a Model, id: &str, viewer: Viewer) -> Option<Source<'a>> {
+    model.games.get(id).map(Source::Game)
+        .or_else(|| model.films.standalone.get(id).map(Source::Standalone))
+        .filter(|s| s.visible(model, viewer))
 }
 
 pub(crate) fn visible_clip<'a>(model: &'a Model, id: &str, viewer: Viewer) -> Option<&'a Clip> {
@@ -374,14 +461,7 @@ pub(crate) async fn list(
     let shown = |id: &str| visible_game(&model, id, viewer);
     match params.get("kind").map(String::as_str) {
         Some("recent") => {
-            let items = model
-                .games_newest()
-                .filter(|g| g.started.game.sim.is_none())
-                .filter(|g| g.xuids.contains(&player))
-                .filter(|g| g.shows_to(viewer, |a, b| model.is_friends(a, b)))
-                .take(RECENT)
-                .map(|g| Film::new(g, player))
-                .collect();
+            let items = catalogue::recent(&model, player, viewer);
             Ok(json(
                 StatusCode::OK,
                 &Page {
@@ -400,7 +480,7 @@ pub(crate) async fn list(
                 .get(&player)
                 .into_iter()
                 .flat_map(|pins| pins.range((Unbounded, before)).rev())
-                .filter_map(|(&key, id)| Some((key, Film::new(shown(id)?, player))));
+                .filter_map(|(&key, id)| Some((key, shown(id)?.listing(player))));
             Ok(json(StatusCode::OK, &page(rows, paging.limit, position)))
         }
         Some("clips") => {
@@ -414,7 +494,7 @@ pub(crate) async fn list(
                 .flat_map(|clips| clips.range((Unbounded, before)).rev())
                 .filter_map(|key| {
                     let clip = &model.films.clips[key];
-                    let film = Film::new(shown(&clip.game)?, player);
+                    let film = shown(&clip.game)?.listing(player);
                     Some((*key, ClipWithFilm { clip, film }))
                 });
             Ok(json(StatusCode::OK, &page(rows, paging.limit, position)))
@@ -451,10 +531,11 @@ impl Live {
             let model = self.model.read();
             let game =
                 visible_game(&model, &id, viewer).ok_or_else(|| not_found("no such game"))?;
-            if !game.xuids.contains(&by) {
+            let pinned = model.films.pinned_by(game, by);
+            if !game.players().contains(&by) && (save || !pinned) {
                 return Err(forbidden("only a player in the game can save it"));
             }
-            if model.films.pinned_by(game, by) == save {
+            if pinned == save {
                 return Ok(StatusCode::NO_CONTENT);
             }
             model.films.next_version
@@ -558,7 +639,7 @@ pub(crate) async fn create_clip(
     let version = {
         let model = live.model.read();
         let game = visible_game(&model, &id, viewer).ok_or_else(|| not_found("no such game"))?;
-        let rate = u64::from(film_tick_rate(game));
+        let rate = u64::from(film_tick_rate(game.ranges()));
         if !(30 * rate..=300 * rate).contains(&duration) {
             return Err(invalid("a clip must be 30 seconds to 5 minutes long"));
         }

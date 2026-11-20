@@ -273,6 +273,10 @@ fn opened_override_id(map: &str, file: &mut File, mut len: u64) -> std::io::Resu
         h.update(&buf[..n]);
         len -= n as u64;
     }
+    Ok(override_id_from_hash(map, h.finish()))
+}
+
+pub(crate) fn override_id_from_hash(map: &str, sha256: content::Sha256) -> content::MapId {
     let manifest = content::Manifest {
         package: content::manifest::Package {
             format: content::manifest::FORMAT,
@@ -288,14 +292,14 @@ fn opened_override_id(map: &str, file: &mut File, mut len: u64) -> std::io::Resu
         },
         patches: vec![content::manifest::Layer {
             file: format!("{map}.map"),
-            sha256: h.finish(),
+            sha256,
         }],
         packs: Vec::new(),
         result: None,
         list: None,
         variants: Vec::new(),
     };
-    Ok(content::MapId::of(&manifest))
+    content::MapId::of(&manifest)
 }
 
 impl<B: Backend> Backend for MapOverrideBackend<B> {
@@ -361,6 +365,17 @@ impl<B: Backend> Backend for MapOverrideBackend<B> {
     }
     fn volume_info(&mut self) -> Result<VolumeInfo> {
         self.inner.volume_info()
+    }
+    fn film_source(&mut self, path: &str) -> Result<Option<crate::FilmMapSource>> {
+        let derived = !self.server_maps;
+        if let Some(o) = self.chosen(path) {
+            let mut source = crate::FilmMapSource::region(o.file.try_clone()?, 0);
+            if derived && let Some(name) = is_map_path(path) {
+                source.override_name = Some(name[..name.len()-4].to_ascii_lowercase());
+            }
+            return Ok(Some(source));
+        }
+        self.inner.film_source(path)
     }
     fn map_ranges(&mut self, path: &str) -> Option<Vec<(u64, u64)>> {
         if self.chosen(path).is_some() {

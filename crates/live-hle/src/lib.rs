@@ -552,16 +552,20 @@ impl Hle {
     /// The Live session this console hosts (16 lowercase hex digits),
     /// while its advertisement stands. Never waits on the server.
     pub fn hosted_session(&self) -> Option<String> {
-        if self.film_service_taped() {
-            return self
-                .film_view(|v| v.hosted.clone())
-                .unwrap_or_else(|| self.lock().hosted_session());
-        }
-        self.lobby_hosted_session()
+        self.film_view(|v| v.hosted.clone())
+            .unwrap_or_else(|| self.lock().hosted_session())
     }
-    /// Polled only by the dedicated lobby executor while a supervisor request
-    /// is in flight. This observation carries a call cursor; read-only host
-    /// consumers (including bot decisions already on tape) do not advance it.
+    /// The v1 recorder included bot roster polls in its ordered network
+    /// calls. V2 replays bot membership and actions from the film, so even
+    /// an idle roster poll must leave the guest/lobby call cursor alone.
+    pub fn bot_roster_hosted_session(&self) -> Option<String> {
+        if self.network.tap.get().is_some() && !self.film_service_taped() {
+            return self.lobby_hosted_session();
+        }
+        self.hosted_session()
+    }
+    /// Ordered observation for a pending dedicated lobby request. Legacy bot
+    /// roster polls also use it to retain the v1 network call sequence.
     pub fn lobby_hosted_session(&self) -> Option<String> {
         let Some(tap) = self.network.tap.get() else {
             return self.lock().hosted_session();

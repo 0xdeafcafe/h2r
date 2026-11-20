@@ -1,11 +1,18 @@
 //! A completed film materialises the existing Live game stream. Only the six
 //! telemetry-compatible match events enter stats. Temporary, bounded pages let
 //! either Live home finish an arbitrarily long import after a process restart.
-use std::{collections::VecDeque, sync::Arc};
+mod pages;
+
+use pages::{Page, PageIndex, digest, page_key, read_page};
+use std::{
+    collections::{BTreeSet, VecDeque},
+    sync::Arc,
+};
 
 use live_proto::{
-    ErrorCode,
+    ErrorCode, Xuid,
     film::{
+        DiscrepancyCause, StatsDiscrepancy,
         events::{Event, Record},
         stream,
     },
@@ -14,13 +21,12 @@ use live_proto::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
-use super::{ApiResult, HOST_FILM_STORED, STREAM};
+use super::{ApiResult, HOST_FILM_STORED};
 use crate::{
-    app::{ApiError, Live, conflict, forbidden, invalid, now},
+    app::{ApiError, Live, forbidden, invalid, now},
     blobs::{BlobStore, Meta},
-    host_identity::{HostClaims, Publisher},
+    host_identity::{FilmReservation, Publisher},
     store::{NewEvent, Query, RecordedEvent},
 };
 
@@ -36,7 +42,7 @@ struct Row {
     data: Box<serde_json::value::RawValue>,
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub(super) struct FilmEvents {
     pub(super) started_ms: Option<u64>,
     pub(super) tick_rate: Option<u16>,
@@ -44,7 +50,8 @@ pub(super) struct FilmEvents {
 }
 
 impl FilmEvents {
-    pub(super) fn chunk(&mut self, raw: &[u8]) -> ApiResult<(u64, u64)> {
+    pub(super) fn chunk(&mut self, raw: &[u8]) -> ApiResult<usize> {
+        let before = self.rows.len();
         let chunk = stream::Chunk::parse(raw).map_err(invalid)?;
         for record in chunk.records() {
             let record = record.map_err(invalid)?;
@@ -62,23 +69,18 @@ impl FilmEvents {
                 }
             }
         }
-        Ok((
-            chunk.first_tick,
-            chunk.first_tick + u64::from(chunk.tick_count - 1),
-        ))
+        Ok(self.rows.len() - before)
     }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-struct Page {
-    sha256: String,
-    count: usize,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Pending {
     pub(super) receipt: Value,
+    // Earlier Live receipts embedded all page descriptors directly.
+    #[serde(default, skip_serializing_if = "pages_empty")]
     pages: Arc<[Page]>,
+    #[serde(default)]
+    index: Arc<PageIndex>,
     pub(super) next: usize,
     pub(super) skip: usize,
     origin: u64,
@@ -87,18 +89,49 @@ pub(crate) struct Pending {
     sealed: i64,
 }
 
+fn pages_empty(pages: &Arc<[Page]>) -> bool {
+    pages.is_empty()
+}
+
 impl Pending {
-    pub(super) fn page_count(&self) -> usize {
-        self.pages[self.next].count
+    pub(super) fn advance(&mut self, row_count: Option<u64>) {
+        let Some(applied) = row_count
+            .and_then(|n| usize::try_from(n).ok())
+            .or_else(|| self.pages.get(self.next).map(|page| page.count))
+        else {
+            return;
+        };
+        self.skip = self.skip.saturating_sub(applied);
+        self.next += 1;
+    }
+
+    fn page_count(&self) -> usize {
+        if self.pages.is_empty() {
+            self.index.len
+        } else {
+            self.pages.len()
+        }
+    }
+
+    async fn page(&self, store: &BlobStore, blob: &str, n: usize) -> ApiResult<Page> {
+        if self.pages.is_empty() {
+            self.index.page(store, blob, n).await
+        } else {
+            self.pages
+                .get(n)
+                .cloned()
+                .ok_or_else(|| unavailable("missing legacy stats page"))
+        }
     }
 }
 
-fn digest(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
-}
-
-fn page_key(blob: &str, page: usize) -> String {
-    format!("{blob}.import/{page}")
+#[derive(Default, Serialize, Deserialize)]
+struct Comparison {
+    start_position: u64,
+    page: usize,
+    row: usize,
+    matched: usize,
+    after: u64,
 }
 
 fn unavailable(e: impl std::fmt::Display) -> ApiError {
@@ -111,13 +144,18 @@ fn unavailable(e: impl std::fmt::Display) -> ApiError {
 
 /// Pages live only from upload until the winning receipt and game end commit.
 /// Their hashes in the signed import selection bind recovery to validated data.
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub(super) struct Spool {
     start: Option<(u64, game::GameStarted)>,
     ended: Option<u64>,
-    pages: Vec<Page>,
+    index: PageIndex,
     rows: Vec<Row>,
     bytes: usize,
+    roster: Vec<game::Player>,
+    comparison: Option<Comparison>,
+    issue: Option<StatsDiscrepancy>,
+    event_count: usize,
+    participants: BTreeSet<Xuid>,
 }
 
 impl Spool {
@@ -126,23 +164,97 @@ impl Spool {
         events: &mut FilmEvents,
         store: &BlobStore,
         blob: &str,
+        live: &Live,
+        id: &str,
+        publisher: &Publisher,
+        grant: &FilmReservation,
     ) -> ApiResult<()> {
         for row in events.rows.drain(..) {
-            if self.start.is_none() {
-                if row.kind != game::GAME_STARTED {
-                    return Err(invalid("film stats must start with GameStarted"));
+            let index = self.event_count;
+            self.event_count += 1;
+            if row.kind == game::GAME_STARTED {
+                let mut recorded: game::GameStarted =
+                    serde_json::from_str(row.data.get()).expect("typed GameStarted");
+                if recorded.game_id != id || id != grant.canonical_film_id() {
+                    return Err(forbidden("the film is outside the assigned game"));
                 }
-                self.start = Some((
-                    row.tick,
-                    serde_json::from_str(row.data.get()).expect("typed GameStarted"),
-                ));
+                let new = &mut recorded.game;
+                {
+                    let model = live.model.read();
+                    let existing = model.games.get(id);
+                    if existing.is_some_and(|g| !publisher.may_write(g)) {
+                        return Err(forbidden("the game belongs to another host"));
+                    }
+                    if new.session_id.is_none() {
+                        new.session_id = existing.and_then(|g| g.started.game.session_id.clone());
+                    }
+                    grant.bind_film(&model, new)?;
+                }
+                if let Some(sim) = &new.sim {
+                    if game::sim_game_id(&sim.run_id) != id {
+                        return Err(forbidden("simulation belongs to another lease"));
+                    }
+                    crate::sim_runs::validate_hosted_start(sim, new)?;
+                } else if crate::sim_runs::is_sim_id(id) {
+                    return Err(forbidden("the assignment requires a simulation film"));
+                }
+                check_roster(live, publisher, grant, id, new, &new.players)?;
+                if game::validate_new(new).is_err() || self.start.is_some() {
+                    self.flag(DiscrepancyCause::InvalidEventSequence, index, row.tick);
+                    continue;
+                }
+                self.participants.extend(
+                    new.players
+                        .iter()
+                        .filter_map(|p| p.xuid)
+                        .filter(|id| grant.roster.contains(id)),
+                );
+                self.roster = new.players.clone();
+                self.start = Some((row.tick, recorded));
                 continue;
             }
-            if self.ended.is_some() || row.kind == game::GAME_STARTED {
-                return Err(invalid("a film must contain exactly one match"));
+            let Some((_, start)) = &self.start else {
+                self.flag(DiscrepancyCause::MissingStart, index, row.tick);
+                continue;
+            };
+            let data: Value = serde_json::from_str(row.data.get()).expect("typed event");
+            if row.kind == game::PLAYER_JOINED {
+                let joined: game::PlayerJoined =
+                    serde_json::from_value(data.clone()).expect("typed PlayerJoined");
+                if start.game.sim.is_some()
+                    && (!joined.player.is_bot() || joined.player.xuid.is_some())
+                {
+                    return Err(forbidden("simulation players must be local bots"));
+                }
+                check_roster(
+                    live,
+                    publisher,
+                    grant,
+                    id,
+                    &start.game,
+                    std::slice::from_ref(&joined.player),
+                )?;
             }
-            if row.kind == game::GAME_ENDED {
-                self.ended = Some(row.tick);
+            if self.ended.is_some() || game::validate(&row.kind, &data, &self.roster).is_err() {
+                self.flag(DiscrepancyCause::InvalidEventSequence, index, row.tick);
+                continue;
+            }
+            match row.kind.as_str() {
+                game::PLAYER_JOINED => {
+                    let p: game::PlayerJoined = serde_json::from_value(data).expect("validated");
+                    self.participants
+                        .extend(p.player.xuid.filter(|id| grant.roster.contains(id)));
+                    self.roster.push(p.player);
+                }
+                game::PLAYER_LEFT => {
+                    let p: game::PlayerLeft = serde_json::from_value(data).expect("validated");
+                    self.roster.retain(|player| player.index != p.index);
+                }
+                game::GAME_ENDED => self.ended = Some(row.tick),
+                _ => {}
+            }
+            if self.issue.is_some() {
+                continue;
             }
             let size = row.data.get().len() + row.kind.len() + 64;
             if !self.rows.is_empty()
@@ -156,6 +268,15 @@ impl Spool {
         Ok(())
     }
 
+    fn flag(&mut self, cause: DiscrepancyCause, event_index: usize, tick: u64) {
+        self.issue.get_or_insert(StatsDiscrepancy {
+            cause,
+            event_index,
+            film_tick: Some(tick),
+            telemetry_position: None,
+        });
+    }
+
     async fn flush(&mut self, store: &BlobStore, blob: &str) -> ApiResult<()> {
         if self.rows.is_empty() {
             return Ok(());
@@ -164,25 +285,20 @@ impl Spool {
         let page = Page {
             sha256: digest(&bytes),
             count: self.rows.len(),
+            hash_key: true,
         };
         store
             .put(
-                &page_key(blob, self.pages.len()),
+                &page_key(blob, self.index.len, &page),
                 bytes.into(),
                 &Meta::default(),
             )
             .await
             .map_err(unavailable)?;
-        self.pages.push(page);
+        self.index.push(store, blob, page).await?;
         self.bytes = 0;
         self.rows.clear();
         Ok(())
-    }
-
-    pub(super) async fn discard(&self, store: &BlobStore, blob: &str) {
-        for n in 0..self.pages.len() {
-            let _ = store.delete(&page_key(blob, n)).await;
-        }
     }
 
     /// Validate the *whole* roster, event sequence and live prefix before
@@ -192,13 +308,14 @@ impl Spool {
         live: &Live,
         id: &str,
         publisher: &Publisher,
-        grant: &HostClaims,
+        grant: &FilmReservation,
         store: &BlobStore,
-        receipt: Value,
+        mut receipt: Value,
         started_ms: Option<u64>,
         hz: u16,
         v3: bool,
-    ) -> ApiResult<(Vec<NewEvent>, u64, bool)> {
+        page_budget: usize,
+    ) -> ApiResult<Option<(Vec<NewEvent>, u64, bool)>> {
         let blob = receipt["blob"].as_str().expect("our private object key");
         self.flush(store, blob).await?;
         if v3
@@ -211,130 +328,215 @@ impl Spool {
         {
             live.flush_recording(id).await?;
         }
-        let existing = live.model.read().games.get(id).cloned();
-        let version = existing.as_ref().map_or(0, |g| g.recording.next_version);
-        if existing.as_ref().is_some_and(|g| !publisher.may_write(g)) {
-            return Err(forbidden("the game belongs to another host"));
+        // The archived game's kill log can be large. Only its start, status
+        // and ledger cursor are needed to reconcile the paginated events.
+        struct Existing {
+            new: game::NewGame,
+            started_at: String,
+            position: u64,
+            version: u64,
+            ended: bool,
         }
-        let Some((origin, recorded)) = &self.start else {
-            if !v3 && let Some(g) = existing {
-                return Ok((
-                    vec![live.server_event(STREAM.into(), HOST_FILM_STORED, receipt)],
-                    g.recording.next_version,
-                    false,
-                ));
+        let existing = {
+            let m = live.model.read();
+            match m.games.get(id) {
+                Some(g) if !publisher.may_write(g) => {
+                    return Err(forbidden("the game belongs to another host"));
+                }
+                Some(g) => Some(Existing {
+                    new: g.started.game.clone(),
+                    started_at: g.started_at.clone(),
+                    position: g.position,
+                    version: g.recording.next_version,
+                    ended: g.ended.is_some(),
+                }),
+                None => None,
             }
-            return Err(invalid("publishing a unified film requires match events"));
         };
-        let end = self
-            .ended
-            .ok_or_else(|| invalid("film stats require GameEnded"))?;
-        if recorded.game_id != id || id != grant.canonical_film_id() {
+        let version = existing.as_ref().map_or(0, |g| g.version);
+        let cursor = super::import_stream(id);
+        if !v3 {
+            return if existing.is_some() {
+                Ok(Some((
+                    vec![live.server_event(cursor, HOST_FILM_STORED, receipt)],
+                    version,
+                    false,
+                )))
+            } else {
+                Err(invalid("legacy films require an existing match"))
+            };
+        }
+        if id != grant.canonical_film_id() {
             return Err(forbidden("the film is outside the assigned game"));
         }
-        let mut new = recorded.game.clone();
-        if new.session_id.is_none() {
-            new.session_id = existing
-                .as_ref()
-                .and_then(|g| g.started.game.session_id.clone());
-        }
-        grant.bind_film(&live.model.read(), &mut new)?;
-        if let Some(sim) = &new.sim {
-            if game::sim_game_id(&sim.run_id) != id {
-                return Err(forbidden("simulation belongs to another lease"));
+        let missing = if self.start.is_none() {
+            Some(DiscrepancyCause::MissingStart)
+        } else if self.ended.is_none() {
+            Some(DiscrepancyCause::MissingEnd)
+        } else {
+            let drops = &receipt["summary"]["dropped_samples"];
+            [
+                "stats_event",
+                "stats_encoding",
+                "stats_budget",
+                "match_start",
+                "tick_snapshot",
+                "final_scoreboard",
+                "kill",
+                "kill_clock",
+            ]
+            .iter()
+            .any(|key| drops[*key].as_u64().unwrap_or(0) != 0)
+            .then_some(DiscrepancyCause::IncompleteObservations)
+        };
+        if let Some(problem) = self.issue.clone().or_else(|| {
+            missing.map(|cause| StatsDiscrepancy {
+                cause,
+                event_index: if cause == DiscrepancyCause::MissingStart {
+                    0
+                } else {
+                    self.event_count
+                },
+                film_tick: None,
+                telemetry_position: None,
+            })
+        }) {
+            if existing.is_none() && self.start.is_none() {
+                grant.check_catalogue_map(receipt["summary"]["level"].as_str())?;
             }
-            crate::sim_runs::validate_hosted_start(sim, &new)?;
-        } else if crate::sim_runs::is_sim_id(id) {
-            return Err(forbidden("the assignment requires a simulation film"));
+            receipt["stats_discrepancy"] = json!(problem);
+            if existing.is_none() {
+                receipt["catalogue_host"] = json!(publisher.to_string());
+                receipt["catalogue_started_ms"] =
+                    json!(started_ms.unwrap_or_else(|| now().max(0) as u64 * 1000));
+                receipt["catalogue_players"] = if self.start.is_some() {
+                    json!(self.participants)
+                } else {
+                    json!(grant.roster)
+                };
+            }
+            return Ok(Some((
+                vec![live.server_event(cursor, HOST_FILM_STORED, receipt)],
+                version,
+                false,
+            )));
         }
+        let (origin, recorded) = self.start.as_ref().expect("complete film stats");
+        let end = self.ended.expect("complete film stats");
+        let mut new = recorded.game.clone();
         if new.playlist.is_none() {
             new.playlist = match &existing {
-                Some(g) => g.started.game.playlist.clone(),
+                Some(g) => g.new.playlist.clone(),
                 None => live.playlist_name(new.playlist_id.as_deref()).await,
             };
         }
-        game::validate_new(&new).map_err(invalid)?;
-        if existing.as_ref().is_some_and(|g| g.started.game != new) {
-            return Err(conflict(
-                "film and live telemetry describe different game starts",
-            ));
-        }
-        let before = existing.as_ref().map_or(u64::MAX, |g| g.position);
-        let check_players = |players: &[game::Player]| {
-            if new.session_id.is_none()
-                && grant.assignment_id.starts_with("custom-")
-                && !grant.roster.is_empty()
-                && players
-                    .iter()
-                    .filter_map(|p| p.xuid)
-                    .any(|x| !grant.roster.contains(&x))
-            {
-                return Err(forbidden("a player is outside the custom reservation"));
-            }
-            publisher
-                .check_players(
-                    &live.model.read(),
-                    None,
-                    new.session_id.as_deref(),
-                    before,
-                    players,
-                )
-                .map_err(invalid)
-        };
-        let mut roster = new.players.clone();
-        check_players(&roster)?;
-        let mut prefix = Prefix::new(id, existing.as_ref().map(|g| g.position));
+        let mut discrepancy = None;
         let mut matched = 0;
-        for (n, page) in self.pages.iter().enumerate() {
-            for row in read_page(store, blob, n, page).await? {
-                let data: Value = serde_json::from_str(row.data.get()).map_err(unavailable)?;
-                game::validate(&row.kind, &data, &roster).map_err(invalid)?;
-                if let Some(committed) = prefix.next(live).await? {
-                    // Re-canonicalise old senders' sparse JSON/defaults exactly
-                    // as the recorder does before comparing the event bodies.
-                    let old: Event = serde_json::from_value(
-                        json!({"kind":committed.body.kind, "data":committed.body.data}),
-                    )
-                    .map_err(|_| conflict("invalid stored telemetry"))?;
-                    if old
-                        .telemetry()
-                        .is_none_or(|(kind, old)| kind != row.kind || old != data)
-                    {
-                        return Err(conflict("the film disagrees with committed game events"));
-                    }
-                    matched += 1;
+        let complete = existing.as_ref().is_some_and(|g| g.ended);
+        if let Some(g) = &existing {
+            if g.new != new {
+                discrepancy = Some(StatsDiscrepancy {
+                    cause: DiscrepancyCause::DifferentStart,
+                    event_index: 0,
+                    film_tick: Some(*origin),
+                    telemetry_position: Some(g.position),
+                });
+            } else {
+                let progress = self.comparison.get_or_insert_with(Comparison::default);
+                if progress.start_position != g.position {
+                    *progress = Comparison {
+                        start_position: g.position,
+                        after: g.position,
+                        ..Default::default()
+                    };
                 }
-                match row.kind.as_str() {
-                    game::PLAYER_JOINED => {
-                        let p: game::PlayerJoined =
-                            serde_json::from_value(data).expect("validated");
-                        if new.sim.is_some() && (!p.player.is_bot() || p.player.xuid.is_some()) {
-                            return Err(invalid("simulation players must be local bots"));
+                let mut prefix = Prefix::new(id, Some(progress.after));
+                let limit = progress
+                    .page
+                    .saturating_add(page_budget)
+                    .min(self.index.len);
+                'pages: while progress.page < limit {
+                    // Film-first or an interrupted live log need no more page reads
+                    // once the live prefix is exhausted.
+                    let Some(mut old) = prefix.next(live).await? else {
+                        break;
+                    };
+                    let n = progress.page;
+                    let page = self.index.page(store, blob, n).await?;
+                    let rows = read_page(store, blob, n, &page).await?;
+                    for (i, row) in rows.into_iter().skip(progress.row).enumerate() {
+                        if i > 0 {
+                            let Some(next) = prefix.next(live).await? else {
+                                break 'pages;
+                            };
+                            old = next;
                         }
-                        check_players(std::slice::from_ref(&p.player))?;
-                        roster.push(p.player);
+                        let canonical: Option<Event> = serde_json::from_value(json!({
+                            "kind": old.body.kind, "data": old.body.data,
+                        }))
+                        .ok();
+                        let data: Value =
+                            serde_json::from_str(row.data.get()).expect("validated film event");
+                        if canonical
+                            .and_then(|e| e.telemetry())
+                            .is_none_or(|(kind, body)| kind != row.kind || body != data)
+                        {
+                            let idle = old.body.kind == game::GAME_ENDED
+                                && old.body.data["reason"] == "lost"
+                                && old.body.author == live.identity.author();
+                            discrepancy = Some(StatsDiscrepancy {
+                                cause: if idle {
+                                    DiscrepancyCause::IdleTimeout
+                                } else {
+                                    DiscrepancyCause::DifferentEvent
+                                },
+                                event_index: progress.matched + 1,
+                                film_tick: Some(row.tick),
+                                telemetry_position: Some(old.position),
+                            });
+                            break 'pages;
+                        }
+                        progress.row += 1;
+                        progress.matched += 1;
+                        progress.after = old.position;
                     }
-                    game::PLAYER_LEFT => {
-                        let p: game::PlayerLeft = serde_json::from_value(data).expect("validated");
-                        roster.retain(|player| player.index != p.index);
+                    progress.row = 0;
+                    progress.page += 1;
+                }
+                matched = progress.matched;
+                if discrepancy.is_none() {
+                    if let Some(extra) = prefix.next(live).await? {
+                        if progress.page < self.index.len {
+                            // An unconsumed row will be read again from the last
+                            // matched position after restoring the checkpoint.
+                            return Ok(None);
+                        }
+                        discrepancy = Some(StatsDiscrepancy {
+                            cause: DiscrepancyCause::TelemetryExtendsPastFilm,
+                            event_index: matched + 1,
+                            film_tick: None,
+                            telemetry_position: Some(extra.position),
+                        });
+                    } else if complete && matched != self.event_count.saturating_sub(1) {
+                        discrepancy = Some(StatsDiscrepancy {
+                            cause: DiscrepancyCause::TelemetryEndedEarly,
+                            event_index: matched + 1,
+                            film_tick: None,
+                            telemetry_position: None,
+                        });
                     }
-                    _ => {}
                 }
             }
         }
-        if prefix.next(live).await?.is_some() {
-            return Err(conflict("telemetry extends beyond the film"));
+        if let Some(problem) = &discrepancy {
+            receipt["stats_discrepancy"] = json!(problem);
         }
-        let complete = existing.as_ref().is_some_and(|g| g.ended.is_some());
-        if complete && matched != self.pages.iter().map(|p| p.count).sum::<usize>() {
-            return Err(conflict("the telemetry game ended before the film"));
-        }
-        if complete {
-            return Ok((
-                vec![live.server_event(STREAM.into(), HOST_FILM_STORED, receipt)],
+        if complete || discrepancy.is_some() {
+            return Ok(Some((
+                vec![live.server_event(cursor, HOST_FILM_STORED, receipt)],
                 version,
                 false,
-            ));
+            )));
         }
         let sealed = now();
         let lease_floor = live
@@ -383,7 +585,8 @@ impl Spool {
         }
         let pending = Pending {
             receipt,
-            pages: self.pages.clone().into(),
+            index: Arc::new(self.index.clone()),
+            pages: Arc::default(),
             next: 0,
             skip: matched,
             origin: *origin,
@@ -392,8 +595,33 @@ impl Spool {
             sealed,
         };
         events.push(live.server_event(super::import_stream(id), STARTED, json!(pending)));
-        Ok((events, version, true))
+        Ok(Some((events, version, true)))
     }
+}
+
+fn check_roster(
+    live: &Live,
+    publisher: &Publisher,
+    grant: &FilmReservation,
+    id: &str,
+    new: &game::NewGame,
+    players: &[game::Player],
+) -> ApiResult<()> {
+    if new.session_id.is_none()
+        && grant.assignment_id.starts_with("custom-")
+        && !grant.roster.is_empty()
+        && players
+            .iter()
+            .filter_map(|p| p.xuid)
+            .any(|x| !grant.roster.contains(&x))
+    {
+        return Err(forbidden("a player is outside the custom reservation"));
+    }
+    let model = live.model.read();
+    let before = model.games.get(id).map_or(u64::MAX, |g| g.position);
+    publisher
+        .check_players(&model, None, new.session_id.as_deref(), before, players)
+        .map_err(invalid)
 }
 
 struct Prefix {
@@ -433,44 +661,22 @@ impl Prefix {
     }
 }
 
-async fn read_page(store: &BlobStore, blob: &str, n: usize, page: &Page) -> ApiResult<Vec<Row>> {
-    let bytes = store
-        .get(&page_key(blob, n))
-        .await
-        .map_err(unavailable)?
-        .ok_or_else(|| unavailable("missing stats page"))?;
-    if digest(&bytes) != page.sha256 {
-        return Err(unavailable("stats page digest mismatch"));
-    }
-    let rows: Vec<Row> = serde_json::from_slice(&bytes).map_err(unavailable)?;
-    if rows.len() != page.count {
-        return Err(unavailable("stats page length mismatch"));
-    }
-    Ok(rows)
-}
-
 /// Every append includes the cursor and a checked ledger version. A crash,
 /// double finalise or lost HTTP response can only resume at the first unapplied
 /// event page. Workers and native sweepers also recover without a second upload.
-pub(crate) async fn resume(live: &Live, id: &str, all: bool) -> ApiResult<()> {
-    loop {
-        let _film_guard = live.film_writes.lock().await;
+pub(crate) async fn resume(live: &Live, id: &str, page_budget: usize) -> ApiResult<bool> {
+    for _ in 0..page_budget {
         let _host_guard = live.host_game_writes.lock(id).await;
-        let (pending, host, game_version, theater_version) = {
+        let (pending, host, game_version) = {
             let m = live.model.read();
             let Some(p) = m.films.imports.get(id).cloned() else {
-                return Ok(());
+                return Ok(true);
             };
             let g = m
                 .games
                 .get(id)
                 .ok_or_else(|| unavailable("missing import game"))?;
-            (
-                p,
-                g.started.host.clone(),
-                g.recording.next_version,
-                m.films.next_version,
-            )
+            (p, g.started.host.clone(), g.recording.next_version)
         };
         let store = &live
             .blobs()
@@ -480,11 +686,13 @@ pub(crate) async fn resume(live: &Live, id: &str, all: bool) -> ApiResult<()> {
             .as_str()
             .ok_or_else(|| unavailable("no selected blob"))?;
         let n = pending.next;
-        let page = pending
-            .pages
-            .get(n)
-            .ok_or_else(|| unavailable("no selected stats page"))?;
-        let rows = match read_page(store, blob, n, page).await {
+        let page_and_rows = async {
+            let page = pending.page(store, blob, n).await?;
+            let rows = read_page(store, blob, n, &page).await?;
+            Ok((page, rows))
+        }
+        .await;
+        let (page, rows) = match page_and_rows {
             Ok(rows) => rows,
             Err(e) => {
                 // Another Live process may have committed and removed this
@@ -530,22 +738,15 @@ pub(crate) async fn resume(live: &Live, id: &str, all: bool) -> ApiResult<()> {
             })
             .collect();
         append_signed(&mut events, &key, bodies);
-        let last = n + 1 == pending.pages.len();
+        let last = n + 1 == pending.page_count();
         let (kind, data) = if last {
             (HOST_FILM_STORED, pending.receipt.clone())
         } else {
-            (ADVANCED, json!({"game":id,"page":n}))
+            (ADVANCED, json!({"game":id,"page":n,"rows":page.count}))
         };
         let cursor = super::import_stream(id);
-        events.push(live.server_event(
-            if last { STREAM.into() } else { cursor.clone() },
-            kind,
-            data,
-        ));
-        let mut expected = vec![(stream, game_version), (cursor, n as u64 + 1)];
-        if last {
-            expected.push((STREAM.into(), theater_version));
-        }
+        events.push(live.server_event(cursor.clone(), kind, data));
+        let expected = [(stream, game_version), (cursor, n as u64 + 1)];
         let recorded = match live.store.append(events, &expected).await {
             Ok(rows) => rows,
             Err(crate::store::StoreError::Conflict { .. }) => {
@@ -556,20 +757,15 @@ pub(crate) async fn resume(live: &Live, id: &str, all: bool) -> ApiResult<()> {
         };
         live.wait_applied(recorded.last().expect("cursor").position)
             .await?;
-        if let Err(e) = store.delete(&page_key(blob, n)).await {
+        if let Err(e) = store.delete(&page_key(blob, n, &page)).await {
             eprintln!("live: film stats page cleanup: {e}");
         }
         if last {
-            if !all {
-                super::upload::cleanup_published(live, id).await;
-            }
             live.rank_game(id).await?;
-            return Ok(());
-        }
-        if !all {
-            return Ok(());
+            return Ok(true);
         }
     }
+    Ok(!live.model.read().films.imports.contains_key(id))
 }
 
 fn append_signed(events: &mut Vec<NewEvent>, key: &KeyPair, bodies: Vec<EventBody>) {

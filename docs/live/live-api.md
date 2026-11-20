@@ -416,7 +416,8 @@ the canonical game ID and the original tick range.
 | `GET /v1/films?player=<xuid>&kind=saved` | public or `read` | Games pinned by that player, newest game first. |
 | `GET /v1/films?player=<xuid>&kind=clips` | public or `read` | Clips authored by that player across all games, newest clip first. Each item is `{clip, film}`. |
 | `GET /v1/games/{game}/film` | public or `read` | Fetch one permitted range of a visible version 3 film. Returns 206. |
-| `POST /v1/games/{game}/film` | lease `telemetry.ingest` | Upload the authoritative host recording to the lease's game. Returns 204. |
+| `POST /v1/games/{game}/film` | lease `telemetry.ingest` | Upload or finish the authoritative host recording. Returns 202 while work remains and 204 on publication. |
+| `PUT /v1/games/{game}/film?part=<n>` | lease `telemetry.ingest` | Submit the next numbered part. Returns 202 while processing and 204 when ready for the next part. |
 | `POST /v1/films/{game}/save` | `films.write` | Save the game for the caller. The caller must have played in it. Returns 204, including a repeated save. |
 | `DELETE /v1/films/{game}/save` | `films.write` | Remove the caller's own pin. The caller must have played in the game. Returns 204 even if the pin is already absent. |
 | `GET /v1/films/{game}/clips` | public or `read` | The game's clips, newest first. |
@@ -426,7 +427,7 @@ the canonical game ID and the original tick range.
 
 Each list is `{items, next, position}`. Saved films and clip lists take
 `limit` (default 100, max 1000). Pass `next` back as `cursor` until it is null.
-Recent films have `next: null`. The game record supplies each film:
+Recent films have `next: null`. A film with game telemetry has this shape:
 
 ```json
 { "game_id": "9ab0", "map": "lockout", "mode": "multiplayer",
@@ -446,36 +447,64 @@ result is for the author if they played.
 A successful host upload sets `has_host_film` on that game's listings.
 Versions 2 and 3 also supply `summary` from the recording's menu block, including
 `level`, `game_type`, `mode`, `variant_name`, `duration_ticks` and the players'
-seats, names, XUIDs, teams, scores and medal counts. An XUID is a string of
-16 hex digits or null. Older uploads have no summary. The existing game
-visibility check applies to the whole row, including this summary.
+seats, display names, teams, scores and medal counts. The public summary
+omits account identifiers. Older uploads have no summary. Game visibility
+applies to the whole row. When the archive and stats disagree, the
+selector uses the archive duration and leaves the player's result null.
+A film awaiting its first game telemetry appears to its authorised lease
+roster. Its film ranges and clips can be available while the game detail
+endpoint still returns 404.
 
 Use `Range: bytes=0-31` for the fixed prefix, then read the public front JSON
 by its declared length. Use `Range: bytes=-40` to locate the compressed cinema
 index. Fetch one entire indexed time chunk (including the eight-byte envelope)
 per range for decoding. Reads within any one public extent can also request a
-smaller byte range. Visibility is checked on every request. A missing or hidden v3 film
+smaller byte range. Live checks visibility on each origin request. A missing or hidden v3 film
 returns 404. Requests for the full file, private ranges or multiple ranges
 return 416. See the [film format](../game/film-format.md) for offsets.
 
-The lease credential must own the named game. The host sends the sealed
-`.h2film` as the request body up to 64 MiB. For a larger file, it uses
-PUT on the same path with `?part=0`, `?part=1`, etc. Every part except the last
-contains exactly 16 MiB. A part can be sent again to replace that part
-before publication. An empty POST with `?complete=<total-bytes>&sha256=<hex>`
-assembles the parts in order and checks the total size and SHA-256 digest.
-The upload limit is 2 GiB. Missing and mismatched parts leave the game
-unpublished and can be retried under the same lease.
+A successful range read of an immutable host upload returns a strong ETag
+of the form `"film-<revision>"`. For an indexed time chunk, append
+`?rev=<revision>&span=<first>-<last>` to the film URL and send the matching
+`Range: bytes=<first>-<last>` header. Anonymous reads of whole approved
+time chunks from finished public games can be cached for a year. Reads of
+partial chunks, headers, directories and open games, as well as requests
+carrying a bearer or an authentication marker, use private no-store responses.
+A stale revision returns 404 and mismatched URL and header spans return 416.
 
-Live streams the bytes into private storage, checks the chunk directory
-and reads the menu summary. V2 uses a trailing index pointer. V3 stores its selector summary at the front and indexes the tagged tick chunks separately.
-The server writes an immutable private object under `films/<game>/<upload>.h2film`.
-A signed Theater receipt selects the winning object, so two simultaneous
-requests cannot replace the bytes referenced by the game. Older receipts
-resolve to `films/<game>.h2film`.
-A retry after publication preserves the first recording and summary.
-Successful publication removes staging parts. An interrupted transfer
-retains its numbered parts under `film-staging/<game>/` for a retry.
+The lease credential must own the named game. The host sends
+`X-H2-Film-Continue: 1` on every upload request, including numbered
+parts, completion and continuations. Up to 64 MiB, POST the
+sealed `.h2film` to the game's film endpoint. For a larger file, PUT its
+parts in order to that endpoint with `?part=0`, `?part=1`, and so on.
+Every part except the last contains exactly 16 MiB. Once all parts are
+acknowledged, send an empty POST with `?complete=<total-bytes>&sha256=<hex>`.
+The SHA-256 covers the original file in byte order. The maximum upload
+size is 2 GiB.
+
+A **202 Accepted** means Live has stored the submitted bytes and has
+more inspection or import work to do. Send an empty POST to the same
+game's film endpoint with `?continue=1`. Repeat on each 202 until it
+returns **204 No Content**. For a part, 204 permits the next PUT. For a
+whole-file upload or a completion request, 204 confirms publication.
+Every request, including a continuation, carries the lease bearer. If
+the connection drops before a response arrives, repeat the same request
+with the same bytes. After a 202, only the continuation is needed.
+
+For older hosts that omit the capability header, Live accepts consecutive
+parts while inspection is pending. Once it accepts the direct upload or
+multipart completion request, Live schedules the remaining inspection
+and import from the persisted cursor.
+
+Live checkpoints inspection as it goes, including the digest and stats
+import cursor. It verifies the directory against the actual chunks and
+reads the summary from the file. V2 uses a trailing index pointer. V3
+stores its selector summary at the front and indexes its presentation
+records by tick. The signed Theater receipt selects the immutable
+recording under `films/<game>/`. A multipart receipt identifies a
+manifest of immutable parts that together hold the original file.
+A retry after publication preserves the selected bytes and summary.
+Older receipts resolve to `films/<game>.h2film`.
 
 ### Switching a host to film ingestion
 
@@ -487,10 +516,17 @@ film's event sequence against the game's existing events. A retry of the
 same film preserves the original stats and ranking awards.
 
 Live checks every stats-bearing record against the original game roster and
-the changes made by joins and leaves. An existing live event sequence must
-match the film from its start. Live appends only the missing suffix. For a
-completed telemetry game, the whole sequence, including the final scores,
-must agree before the film can be attached. A mismatch returns 409.
+the changes made by joins and leaves. When the existing live events match
+the start of the film, Live appends only the missing suffix. A valid
+authorised archive also remains available if its stats observations are
+incomplete or disagree with the signed ledger, including when the idle
+sweeper closed the game as lost. In that case the selector and the game
+detail expose `stats_discrepancy` with a cause, the first known canonical
+event index (zero for the start), and the film tick and ledger position
+when known. The selector shows the film's summary. Existing player totals,
+final results and rank awards stay intact. With no reliable match start
+or finish, Live can catalogue the assigned archive without creating a
+game or awarding stats. A later real game start attaches that receipt.
 
 A film-first upload creates the game with the lease's canonical ID, or the
 signed `sim-<run_id>` assignment for private training. Matchmade games
@@ -502,7 +538,8 @@ from the credential. Existing arbitration and ranked eligibility rules apply.
 During import, Live spools the six canonical record kinds into private pages
 of at most 128 records and approximately 256 KiB each. After checking the
 complete sequence it selects the immutable object and the page hashes in
-the signed log. Each write commits its stats records and next-page cursor
+the signed log. Page directories use content hashes and 32-way branching so
+long games keep a small signed root. Each write commits its stats records and next-page cursor
 together. The final write also publishes the selector receipt. A retry or a
 Live sweep resumes at that cursor, including after a Worker restart. Live
 discards the temporary pages as they are applied. Highlights and presentation

@@ -549,6 +549,23 @@ impl BlobStore {
         }
     }
 
+    /// At most `limit` existing keys in one directory, in backend order.
+    /// Dropping the listing stream leaves later storage pages unread.
+    pub(crate) async fn first_keys(&self, dir: &str, limit: usize) -> Result<Vec<String>> {
+        let prefix = Self::key(dir.trim_end_matches('/'))?;
+        let mut listing = self.store.list(Some(&prefix));
+        let mut keys = Vec::new();
+        while keys.len() < limit {
+            match listing.next().await {
+                Some(Ok(meta)) => keys.push(meta.location.to_string()),
+                Some(Err(object_store::Error::NotFound { .. })) => continue,
+                Some(Err(error)) => return Err(error.into()),
+                None => break,
+            }
+        }
+        Ok(keys)
+    }
+
     /// Every object whose key starts with `prefix` (a whole directory: end
     /// it with `/`), in key order.
     pub async fn list(&self, prefix: &str) -> Result<Vec<Info>> {

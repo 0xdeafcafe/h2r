@@ -22,6 +22,12 @@ pub trait Backend: Send {
     fn file_source(&mut self, path: &str) -> Option<FileSource> {
         self.host_file(path).map(FileSource::Host)
     }
+    /// Pin the exact bytes served to a film observer so digest I/O can run
+    /// outside the VFS lock. Composed streams without a detachable reader
+    /// use the backend read path one block at a time.
+    fn film_source(&mut self, _path: &str) -> Result<Option<crate::FilmMapSource>> {
+        Ok(None)
+    }
     /// Which map exactly is served at `path`, when that differs from the
     /// retail disc map: a map package's [`content::MapId`], or the identity
     /// of an overriding whole file. `None` (the default) means the

@@ -1,5 +1,7 @@
 // Project the public records onto the same frame and event types as live play.
 import { ByteCursor } from "./pack-v8";
+import { FilmCache } from "./film-cache";
+import { decodeFilmLifecycle } from "./film-lifecycle";
 import { FilmPoses } from "./film-poses";
 import type { FilmSegment } from "./host-film";
 import { applyFilmEffects, isFilmEffect } from "./film-fx";
@@ -34,6 +36,7 @@ function decodeWindow(bytes: Uint8Array, row: FilmSegment, poses: FilmPoses, gam
   let clock = -1;
   let clockRecords = 0;
   let baseline = false;
+  let previousClockStamp = -1;
   for (let stamp = row.first; stamp <= row.last; stamp++) {
     const at = stamp + shift;
     const fx: {kind: string; data: Body; age: number}[] = [];
@@ -44,6 +47,8 @@ function decodeWindow(bytes: Uint8Array, row: FilmSegment, poses: FilmPoses, gam
       const record = next.value;
       next = iterator.next();
       if (record.tag === 6) {
+        if (stamp === previousClockStamp) throw new Error("Duplicate host film clock anchor");
+        previousClockStamp = stamp;
         const cr = new ByteCursor(record.data);
         const guest = cr.end ? cr.uint() : null;
         if (cr.at !== cr.end) throw new Error("Invalid host film clock record");
@@ -76,6 +81,8 @@ function decodeWindow(bytes: Uint8Array, row: FilmSegment, poses: FilmPoses, gam
       });
       if (tag === 5) {
         event("FilmChapter", {label: utf8.decode(data)});
+      } else if (tag === 2 && (data[0] === 0 || data[0] === 2)) {
+        event("FilmLifecycle", {closing: data[0] === 2, changes: decodeFilmLifecycle(data.subarray(1))});
       } else if (tag === 2 && data[0] === 1) {
         if (data.length > 1 + (128 << 10)) throw new Error("Oversized host film event");
         const e: unknown = JSON.parse(utf8.decode(data.subarray(1)));
@@ -108,6 +115,7 @@ export class Movie {
   private readonly first: number;
   private readonly shift: number;
   private readonly spans: {from: number; to: number; guest: number | null}[] = [];
+  private readonly raw = new FilmCache<Uint8Array>(16, 8 << 20);
   private readonly lookup = new Map<number, number>();
   private cursor?: {next: number; scene: number; poses: FilmPoses};
 
@@ -176,9 +184,11 @@ export class Movie {
     const events: WireEvent[] = [];
     for (let i = start; i <= end; i++) {
       const c = this.chunks[i]!;
-      const bytes = await this.fetch(c, signal);
+      const cached = this.raw.get(i);
+      const bytes = cached ?? await this.fetch(c, signal);
       signal.throwIfAborted();
       const block = decodeWindow(bytes, c, poses, this.game, this.shift, this.first, i === end, Math.ceil(this.ticksPerSecond / 15));
+      if (!cached) this.raw.set(i, bytes, bytes.byteLength);
       frames = block.frames;
       for (const event of block.events) events.push(event);
     }

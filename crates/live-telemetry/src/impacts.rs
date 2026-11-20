@@ -12,7 +12,6 @@ use live_proto::film::events::{
     Event, Record,
     ballistics::{Barrel, Endpoint, Impact},
 };
-use runtime::Guest;
 
 use crate::{Telemetry, layout, memory};
 
@@ -48,8 +47,8 @@ fn fired(m: &dyn GuestMemory, weapon: u32, index: u32) -> Result<Event, MemFault
         {
             shot.origin = finite(unit.position(m)?);
             shot.parent = unit.parent(m)?.map(DatumHandle::raw);
-            shot.aim = direction(m.vec3(unit.addr() + layout::UNIT_AIM)?);
-            player = DatumHandle::from_raw(m.u32(unit.addr() + layout::UNIT_PLAYER)?)
+            shot.aim = direction(m.vec3(unit.addr().wrapping_add(layout::UNIT_AIM))?);
+            player = DatumHandle::from_raw(m.u32(unit.addr().wrapping_add(layout::UNIT_PLAYER))?)
                 .filter(|p| p.index() < 16);
         }
     }
@@ -94,53 +93,75 @@ fn ended(m: &dyn GuestMemory, object: u32) -> Result<Option<Event>, MemFault> {
         definition: body.definition(m)?.map(DatumHandle::raw),
         parent: body.parent(m)?.map(DatumHandle::raw),
         position,
-        velocity: finite(m.vec3(body.addr() + layout::BODY_VELOCITY)?),
+        velocity: finite(m.vec3(body.addr().wrapping_add(layout::BODY_VELOCITY))?),
     })))
 }
 
-fn observe(t: &Telemetry, g: &Guest, read: impl FnOnce() -> Result<Option<Event>, MemFault>) {
+pub(crate) fn observe(
+    t: &Telemetry,
+    source: &'static str,
+    o: &feature::Obs<'_>,
+    read: impl FnOnce(&runtime::Guest) -> Result<Option<Event>, MemFault>,
+) {
     if !t.film_observing() {
         return;
     }
     t.protect(|| {
-        // Teardown can delete objects after the match clock is deallocated.
-        let Ok(tick) = memory::game_tick(g) else {
-            return Ok(());
+        let record = {
+            let g = o.guest();
+            match read(&g) {
+                Ok(None) => return Ok(()),
+                Ok(Some(event)) => memory::game_tick(&g)
+                    .ok()
+                    .map(|tick| Record { tick, event }),
+                Err(_) => None,
+            }
         };
-        if let Some(event) = read().map_err(|e| format!("reading film ballistics: {e:?}"))? {
-            t.film_event(Record { tick, event })?;
+        if let Some(record) = record {
+            t.film_event(record)?;
+        } else {
+            t.dropped_film_sample(source);
         }
         Ok(())
     });
 }
 
 pub(crate) fn install(b: &mut feature::Builder, telemetry: Arc<Telemetry>) {
-    let t = telemetry.clone();
-    b.raw()
-        .observe_before(&points::WEAPON_FIRE, "film barrel fire", move |o| {
-            if let (Some(weapon), Some(index)) = (o.arg_u32("weapon"), o.arg_u32("barrel")) {
-                let g = o.guest();
-                observe(&t, &g, || fired(&*g, weapon, index).map(Some));
-            }
-        })
-        .optional();
-    let t = telemetry.clone();
-    b.raw()
-        .observe_before(&points::DAMAGE_REPORT, "film impact geometry", move |o| {
-            if let (Some(report), Some(victim)) = (o.arg_u32("report"), o.arg_u32("victim")) {
-                let g = o.guest();
-                observe(&t, &g, || impact(&*g, report, victim));
-            }
-        })
-        .optional();
-    b.raw()
-        .observe_before(&points::OBJECT_DELETE, "film projectile end", move |o| {
-            if let Some(object) = o.arg_u32("object") {
-                let g = o.guest();
-                observe(&telemetry, &g, || ended(&*g, object));
-            }
-        })
-        .optional();
+    if telemetry.hooks.weapon_fire {
+        let t = telemetry.clone();
+        b.raw()
+            .observe_before(&points::WEAPON_FIRE, "film barrel fire", move |o| {
+                if let (Some(weapon), Some(index)) = (o.arg_u32("weapon"), o.arg_u32("barrel")) {
+                    observe(&t, "weapon_fire", o, |g| fired(g, weapon, index).map(Some));
+                } else {
+                    t.dropped_film_sample("weapon_fire");
+                }
+            })
+            .optional();
+    }
+    if telemetry.hooks.damage_report {
+        let t = telemetry.clone();
+        b.raw()
+            .observe_before(&points::DAMAGE_REPORT, "film impact geometry", move |o| {
+                if let (Some(report), Some(victim)) = (o.arg_u32("report"), o.arg_u32("victim")) {
+                    observe(&t, "impact", o, |g| impact(g, report, victim));
+                } else {
+                    t.dropped_film_sample("impact");
+                }
+            })
+            .optional();
+    }
+    if telemetry.hooks.object_delete {
+        b.raw()
+            .observe_before(&points::OBJECT_DELETE, "film projectile end", move |o| {
+                if let Some(object) = o.arg_u32("object") {
+                    observe(&telemetry, "projectile_end", o, |g| ended(g, object));
+                } else {
+                    telemetry.dropped_film_sample("projectile_end");
+                }
+            })
+            .optional();
+    }
 }
 
 #[cfg(test)]

@@ -3,51 +3,17 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Default, Serialize, Deserialize)]
-struct Delta {
-    removed: Vec<PathBuf>,
-    changed: Vec<Item>,
+#[derive(Serialize, Deserialize)]
+pub(super) struct Delta<P = PathBuf, E = Item> {
+    pub(super) removed: Vec<P>,
+    pub(super) changed: Vec<E>,
 }
 
 impl Manifest {
     pub fn keyframe_delta(&self, root: &Path) -> Result<Vec<u8>> {
-        let mut previous: BTreeMap<_, _> = self
-            .entries
-            .iter()
-            .map(|e| (e.path.as_path(), e.sha256.as_str()))
-            .collect();
-        let mut delta = Delta::default();
-        let mut left = LIMIT;
-        for mut e in Self::capture(root)?.entries {
-            if previous.remove(e.path.as_path()) == Some(e.sha256.as_str()) {
-                continue;
-            }
-            if !e.sha256.is_empty() {
-                // Changed large files have only a digest in the normal start
-                // manifest. A keyframe must carry their actual new contents.
-                if e.data.is_none() {
-                    let mut data = Vec::new();
-                    fs::File::open(root.join(&e.path))?
-                        .take(left as u64 + 1)
-                        .read_to_end(&mut data)?;
-                    ensure!(
-                        data.len() <= left && crate::xbe_digest(&data) == e.sha256,
-                        "changed guest file too large or unstable: {}",
-                        e.path.display()
-                    );
-                    e.data = Some(data);
-                }
-                left = left
-                    .checked_sub(e.data.as_ref().unwrap().len())
-                    .context("changed guest files exceed keyframe limit")?;
-            }
-            delta.changed.push(e);
-        }
-        delta.removed = previous.into_keys().map(Path::to_path_buf).collect();
-        if delta.removed.is_empty() && delta.changed.is_empty() {
-            return Ok(Vec::new());
-        }
-        Ok(serde_json::to_vec(&delta)?)
+        let mut tracker = DiskTracker::new(root);
+        tracker.set_initial(&self.entries);
+        tracker.capture()
     }
 
     pub fn restore_keyframe(

@@ -18,6 +18,7 @@ fn header(length_ticks: u64) -> Header {
         title_id: 1,
         xbe_sha256: "test".into(),
         runtime_stamp: String::new(),
+        simulation_hooks: None,
         guest_image: None,
         epoch_100ns: 123,
         lease_id: Some("lease".into()),
@@ -28,6 +29,8 @@ fn header(length_ticks: u64) -> Header {
         lobby_machine_start: false,
         host_bots: false,
         telemetry: false,
+        telemetry_hooks: None,
+        render_hooks: None,
         live_service: false,
         features: String::new(),
     }
@@ -93,6 +96,7 @@ fn scores() -> Summary {
         mode: Mode::SystemLink,
         variant_name: "Slayer".into(),
         duration_ticks: 299,
+        dropped_samples: Default::default(),
         players: vec![PlayerSummary {
             seat: 15,
             name: "Spartan".into(),
@@ -105,7 +109,13 @@ fn scores() -> Summary {
 }
 
 fn encoded() -> Vec<u8> {
-    let mut writer = Writer::new(Cursor::new(Vec::new()), &header(300)).unwrap();
+    encoded_as(2)
+}
+
+fn encoded_as(version: u32) -> Vec<u8> {
+    let mut header = header(300);
+    header.version = version;
+    let mut writer = Writer::new(Cursor::new(Vec::new()), &header).unwrap();
     let mut track = TrackWriter::default();
     for tick in 1..=300 {
         track.push(&mut writer, sample(tick)).unwrap();
@@ -313,20 +323,26 @@ fn final_score_can_follow_a_keyframe_without_reopening_an_older_time_chunk() {
     assert!(track.begins_chunk());
     for n in 1..=5 {
         track
-            .push_with_records(
-                &mut writer,
-                sample(n),
-                vec![RecordData::pose(vec![n as u8])],
-            )
+            .push_with_records(&mut writer, sample(n), vec![RecordData::marker("Chapter")])
             .unwrap();
         if n == 2 || n == 5 {
             track.keyframe(&mut writer, &key(n)).unwrap();
             assert!(track.begins_chunk());
         }
     }
-    track
-        .append_to_last(vec![RecordData::stats_event(b"final".to_vec())])
-        .unwrap();
+    let final_event = live_proto::film::events::Record {
+        tick: 5,
+        event: live_proto::film::events::Event::GameEnded(live_proto::game::GameEnded {
+            tick: 5,
+            reason: "finished".into(),
+            winner: None,
+            players: Vec::new(),
+        }),
+    }
+    .encode()
+    .unwrap();
+    let final_record = RecordData::stats_event(final_event);
+    track.append_to_last(vec![final_record.clone()]).unwrap();
     track
         .finish(&mut writer, &MatchHeader::default(), &scores())
         .unwrap();
@@ -347,7 +363,10 @@ fn final_score_can_follow_a_keyframe_without_reopening_an_older_time_chunk() {
         .filter(|r| r.tick == 5)
         .collect();
     let hash = end.iter().position(|r| r.tag == stream::HASH).unwrap();
-    let scoreboard = end.iter().position(|r| r.payload == b"\x01final").unwrap();
+    let scoreboard = end
+        .iter()
+        .position(|r| r.tag == stream::EVENT && r.payload == final_record.payload.as_slice())
+        .unwrap();
     assert!(scoreboard > hash);
     let mut replay = TrackReader::new(reader).unwrap();
     assert_eq!(replay.seek(4).unwrap(), Some(key(2)));
@@ -367,7 +386,7 @@ fn inactive_poses_only_need_periodic_scene_checkpoints() {
         let checkpoint = track.needs_pose_baseline();
         assert_eq!(checkpoint, n == 1 || n == 17);
         let records = if checkpoint {
-            vec![RecordData::pose(b"scene".to_vec())]
+            vec![RecordData::pose(vec![0, 0, 0, 0])]
         } else {
             vec![]
         };
@@ -498,4 +517,172 @@ fn match_clock_anchors_cover_stalls_reverts_and_inactive_ticks() {
     );
     assert!(stream::decode_clock(&[0x80, 0]).is_err());
     assert!(stream::decode_clock(&[1, 2]).is_err());
+}
+
+#[test]
+fn identical_v3_captures_have_identical_bytes() {
+    let a = encoded_as(3);
+    let b = encoded_as(3);
+    // Include the front, compressed time chunks, snapshots and both directories.
+    assert_eq!(a.len(), b.len());
+    assert!(a == b);
+}
+
+#[test]
+fn cidx_seeks_return_the_same_inputs_events_and_hashes_as_linear_playback() {
+    let bytes = encoded_as(3);
+    let mut linear = TrackReader::new(Reader::new(Cursor::new(&bytes)).unwrap()).unwrap();
+    let mut expected = Vec::new();
+    while let Some(tick) = linear.step().unwrap() {
+        expected.push(tick);
+    }
+    let mut public = crate::range::RangeReader::new(Cursor::new(&bytes)).unwrap();
+    // Seek in both directions, across a compression boundary (134/135) and
+    // across a machine keyframe (192/193). Each fetched chunk starts from
+    // an empty input dictionary even when seats were held between chunks.
+    for (from, to) in [(182, 197), (128, 141), (6, 7), (300, 300)] {
+        let rows = public.directory.covering(from, to).to_vec();
+        assert_eq!(rows.len(), if from == to { 1 } else { 2 });
+        let mut actual = Vec::new();
+        for row in rows {
+            let index = public
+                .directory
+                .chunks
+                .binary_search_by_key(&row.first, |c| c.first)
+                .unwrap();
+            let raw = public.chunk(index).unwrap();
+            let ticks =
+                unified::decode(&raw, row.first, (row.last - row.first + 1) as usize).unwrap();
+            actual.extend(ticks.into_iter().filter(|t| (from..=to).contains(&t.tick)));
+        }
+        assert_eq!(
+            actual.as_slice(),
+            &expected[(from - 1) as usize..to as usize]
+        );
+    }
+}
+
+fn join_with_name(bytes: usize) -> Event {
+    Event::Join {
+        player: Seat {
+            name: "a".repeat(bytes),
+            ..Default::default()
+        },
+    }
+}
+
+#[test]
+fn closing_event_limits_are_checked_at_admission_and_failed_appends_are_atomic() {
+    let mut h = header(2);
+    h.version = 3;
+    let mut out = Writer::new(Cursor::new(Vec::new()), &h).unwrap();
+    let mut writer = TrackWriter::default();
+    let quit = Event::Quit { seat: 0 };
+    let oversized = join_with_name(ticks::MAX_EVENT_BYTES);
+    let mut first = sample(1);
+    first.closing_events = vec![oversized.clone()];
+    assert!(writer.push(&mut out, first.clone()).is_err());
+    first.closing_events = vec![quit.clone(); 255];
+    writer.push(&mut out, first.clone()).unwrap();
+    assert!(
+        writer
+            .closing_events(vec![quit.clone(), quit.clone()])
+            .is_err()
+    );
+    assert!(
+        writer
+            .closing_events(vec![Event::Quit { seat: 16 }])
+            .is_err()
+    );
+    assert!(writer.closing_events(vec![oversized]).is_err());
+    writer.closing_events(vec![quit.clone()]).unwrap();
+    first.closing_events.push(quit);
+    let mut second = sample(2);
+    second.closing_events = vec![join_with_name(40 << 10)];
+    writer.push(&mut out, second.clone()).unwrap();
+    assert!(
+        writer
+            .closing_events(second.closing_events.clone())
+            .is_err()
+    );
+    writer
+        .finish(&mut out, &MatchHeader::default(), &Summary::default())
+        .unwrap();
+    let mut track = TrackReader::new(Reader::new(out.finish().unwrap()).unwrap()).unwrap();
+    assert_eq!(track.step().unwrap(), Some(first));
+    assert_eq!(track.step().unwrap(), Some(second));
+}
+
+#[test]
+fn closing_events_share_the_chunk_budget_with_pose_and_input_records() {
+    let mut h = header(1);
+    h.version = 3;
+    let mut out = Writer::new(Cursor::new(Vec::new()), &h).unwrap();
+    let mut writer = TrackWriter::default();
+    let mut tick = sample(1);
+    let closing = vec![join_with_name(2048)];
+    let pose = RecordData::pose(vec![0; stream::MAX_BYTES - 1024]);
+    tick.closing_events = closing.clone();
+    assert!(
+        writer
+            .push_with_records(&mut out, tick.clone(), vec![pose.clone()])
+            .is_err()
+    );
+    tick.closing_events.clear();
+    writer
+        .push_with_records(&mut out, tick.clone(), vec![pose])
+        .unwrap();
+    assert!(writer.closing_events(closing).is_err());
+    writer
+        .finish(&mut out, &MatchHeader::default(), &Summary::default())
+        .unwrap();
+    let mut track = TrackReader::new(Reader::new(out.finish().unwrap()).unwrap()).unwrap();
+    assert_eq!(track.step().unwrap(), Some(tick));
+}
+
+#[test]
+fn private_join_and_migration_round_trip_across_a_keyframe() {
+    let mut header = header(2);
+    header.version = 3;
+    let mut out = Writer::new(Cursor::new(Vec::new()), &header).unwrap();
+    let mut recorder = TrackWriter::default();
+    recorder.push(&mut out, sample(1)).unwrap();
+    recorder.keyframe(&mut out, &key(1)).unwrap();
+    let mut last = sample(2);
+    if let Event::Join { player } = &mut last.events[0] {
+        player.xuid = Some(0xaa74_ef82_f031);
+        player.bot_params = Some(serde_json::json!({"observed":"203.0.113.98:3074"}));
+    }
+    last.closing_events.push(Event::HostMigration {
+        host_id: "aa74ef82f031".into(),
+    });
+    recorder.push(&mut out, last.clone()).unwrap();
+    recorder
+        .finish(&mut out, &MatchHeader::default(), &scores())
+        .unwrap();
+    let bytes = out.finish().unwrap().into_inner();
+    let mut remote = crate::range::RangeReader::new(Cursor::new(&bytes)).unwrap();
+    assert!(
+        remote
+            .front
+            .summary
+            .players
+            .iter()
+            .all(|p| p.xuid.is_none())
+    );
+    let public = remote.chunk(1).unwrap();
+    assert!(live_proto::film::privacy::is_public_tick(&public));
+    for field in [
+        "host_id",
+        "xuid",
+        "bot_params",
+        "aa74ef82f031",
+        "203.0.113.98",
+    ] {
+        assert!(!public.windows(field.len()).any(|w| w == field.as_bytes()));
+    }
+    let mut player = TrackReader::new(Reader::new(Cursor::new(&bytes)).unwrap()).unwrap();
+    assert_eq!(player.summary, scores());
+    assert_eq!(player.seek(1).unwrap(), Some(key(1)));
+    assert_eq!(player.step().unwrap(), Some(last));
 }

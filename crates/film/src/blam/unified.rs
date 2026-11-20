@@ -105,7 +105,7 @@ fn lifecycle(
         let mut payload = vec![kind];
         serde_json::to_writer(&mut payload, events)?;
         ensure!(
-            payload.len() - 1 <= 64 << 10,
+            payload.len() - 1 <= ticks::MAX_EVENT_BYTES,
             "film lifecycle events too large"
         );
         writer
@@ -152,7 +152,7 @@ pub(super) fn decode(raw: &[u8], first: u64, count: usize) -> Result<VecDeque<Ti
                     let seen = &mut lifecycle_seen[usize::from(closing)];
                     let json = &record.payload[1..];
                     ensure!(
-                        json.len() <= 64 << 10 && !*seen,
+                        json.len() <= ticks::MAX_EVENT_BYTES && !*seen,
                         "invalid film lifecycle record"
                     );
                     let events: Vec<Event> = serde_json::from_slice(json)?;

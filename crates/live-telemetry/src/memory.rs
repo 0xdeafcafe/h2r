@@ -403,12 +403,13 @@ fn pose(guest: &Guest, body: u32) -> ReadResult<[[f64; 3]; 3]> {
 /// The unit's aiming vector, normalised, or `None` unless it is finite and
 /// within 10% of unit length (the "likely" offset must not send garbage).
 fn aim(guest: &Guest, body: u32) -> ReadResult<Option<[f64; 3]>> {
-    let v = vector(guest, body + layout::UNIT_AIM)?;
+    Ok(normalised_aim(vector(guest, body + layout::UNIT_AIM)?))
+}
+
+fn normalised_aim(v: [f64; 3]) -> Option<[f64; 3]> {
     let len = v.iter().map(|c| c * c).sum::<f64>().sqrt();
-    Ok(
-        (v.iter().all(|c| c.is_finite()) && (0.9..=1.1).contains(&len))
-            .then(|| [v[0] / len, v[1] / len, v[2] / len]),
-    )
+    (v.iter().all(|c| c.is_finite()) && (0.9..=1.1).contains(&len))
+        .then(|| [v[0] / len, v[1] / len, v[2] / len])
 }
 
 /// The weapon the unit holds: current weapon index `+0x212` into the four
@@ -705,6 +706,11 @@ fn havok_body(guest: &Guest, body: u32) -> ReadResult<Option<([f64; 3], [f64; 3]
 /// manager's first channel. `None` without a manager, a graph or an
 /// animation, or when the frame reads as nonsense.
 pub fn animation(guest: &Guest, body: u32) -> ReadResult<Option<Animation>> {
+    Ok(channel_animation(guest, body)?.filter(|a| (0.0..32768.0).contains(&a.frame)))
+}
+
+// Distinguish a missing graph from an active channel containing a damaged sample.
+fn channel_animation(guest: &Guest, body: u32) -> ReadResult<Option<Animation>> {
     let offset = guest.u16(body + layout::OBJECT_ANIMATION_MANAGER)? as i16;
     if !layout::MANAGER_OFFSETS.contains(&offset) {
         return Ok(None);
@@ -716,9 +722,7 @@ pub fn animation(guest: &Guest, body: u32) -> ReadResult<Option<Animation>> {
     let frame = guest.f32(channel + layout::CHANNEL_FRAME)?;
     Ok((graph != u32::MAX
         && index >= 0
-        && inherited >= -1
-        && frame.is_finite()
-        && (0.0..32768.0).contains(&frame))
+        && inherited >= -1)
     .then_some(Animation {
         graph,
         inherited,
@@ -788,10 +792,13 @@ fn clear(world: &mut World) {
 /// Fetch the allocated object headers once while the simulation is stopped.
 fn object_headers(guest: &Guest, headers: &mut Vec<u8>) -> ReadResult<()> {
     let array = ptr(guest, layout::OBJECTS_PTR)?;
-    let high_water = guest
-        .u32(array + layout::DATUM_HIGH_WATER)?
-        .min(layout::OBJECT_CAPACITY);
-    let data = ptr(guest, array + layout::DATUM_DATA)?;
+    let field = |offset| array.checked_add(offset)
+        .ok_or_else(|| fault(engine::MemFault { addr: array, len: 4, write: false }));
+    let high_water = guest.u32(field(layout::DATUM_HIGH_WATER)?)?;
+    if high_water > layout::OBJECT_CAPACITY {
+        return Err(fault(engine::MemFault {addr: array, len: 4, write: false}));
+    }
+    let data = ptr(guest, field(layout::DATUM_DATA)?)?;
     headers.resize((high_water * layout::OBJECT_HEADER_SIZE) as usize, 0);
     guest.read_bytes(data, headers, 1)
 }

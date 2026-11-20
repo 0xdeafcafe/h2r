@@ -83,7 +83,7 @@ pub enum Event {
     Leave { seat: u8 },
     Quit { seat: u8 },
     Team { seat: u8, team: i32 },
-    HostMigration { host_id: String },
+    HostMigration { #[serde(default)] host_id: String },
     Pause { paused: bool },
 }
 

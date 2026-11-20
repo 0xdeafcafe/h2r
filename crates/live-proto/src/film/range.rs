@@ -233,10 +233,16 @@ impl Default for Directory {
 }
 impl Directory {
     pub fn validate(&self, footer: &Footer) -> Result<(), String> {
+        self.validate_at(footer.cidx_offset)
+    }
+
+    /// Validate against the observed CIDX offset while the directory is in
+    /// memory, even when its footer arrives in a later upload part.
+    pub fn validate_at(&self, cidx_offset: u64) -> Result<(), String> {
         if self.version != 1 || self.chunks.len() + self.keyframes.len() > MAX_ROWS {
             return Err("unsupported film range directory".into());
         }
-        let mut previous_tick = None;
+        let mut next_tick = Some(1);
         let mut end = DATA_OFFSET;
         let mut scene = None;
         let mut scene_index = 0;
@@ -244,11 +250,10 @@ impl Directory {
             if c.scene == c.first {
                 scene_index = i;
             }
-            if c.first == 0
+            if Some(c.first) != next_tick
                 || c.first > c.last
                 || c.last - c.first >= 128
                 || !c.valid_clock()
-                || previous_tick.is_some_and(|t| c.first <= t)
                 || (c.scene != c.first && Some(c.scene) != scene)
                 || c.scene > c.first
                 || c.last - c.scene >= SCENE_WINDOW
@@ -265,16 +270,16 @@ impl Directory {
                 .offset
                 .checked_add(8 + u64::from(c.size))
                 .ok_or("film range overflow")?;
-            if end > footer.cidx_offset {
+            if end > cidx_offset {
                 return Err("time chunk overlaps film directory".into());
             }
-            previous_tick = Some(c.last);
+            next_tick = c.last.checked_add(1);
             scene = Some(c.scene);
         }
         let mut previous: Option<&Keyframe> = None;
         for k in &self.keyframes {
             if k.offset < DATA_OFFSET
-                || k.offset >= footer.cidx_offset
+                || k.offset >= cidx_offset
                 || previous.is_some_and(|p| k.tick <= p.tick || k.offset <= p.offset)
             {
                 return Err("invalid film keyframe reference".into());

@@ -31,19 +31,33 @@ const SCOPES: [&str; 4] = [
 pub(crate) struct HostClaims {
     iss: String,
     aud: String,
-    sub: String,
+    #[serde(flatten)]
+    reservation: FilmReservation,
     lxm: Vec<String>,
     iat: i64,
     exp: i64,
-    // Signed reservation details are available even after the QoS queue expires.
+    // A lease-specific Ed25519 seed for the existing event-batch JWS protocol.
+    // This stays inside the private boot credential; never log the claims.
+    event_key: String,
+}
+
+/// Exactly the reservation constraints applied to a staged film. A durable
+/// continuation stores these in private storage; it holds no bearer or signing key.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct FilmReservation {
+    sub: String,
     pub(crate) assignment_id: String,
     pub(crate) roster: Vec<Xuid>,
     pub(crate) hopper: Option<u32>,
     map: String,
     map_id: Option<String>,
-    // A lease-specific Ed25519 seed for the existing event-batch JWS protocol.
-    // This stays inside the private boot credential; never log the claims.
-    event_key: String,
+}
+
+impl std::ops::Deref for HostClaims {
+    type Target = FilmReservation;
+    fn deref(&self) -> &Self::Target {
+        &self.reservation
+    }
 }
 
 fn event_key(identity: &ServerIdentity, subject: &str) -> KeyPair {
@@ -57,15 +71,17 @@ impl HostClaims {
             event_key: event_key(identity, &sub).secret_b64(),
             iss: identity.author(),
             aud: identity.id.clone(),
-            sub,
             lxm: SCOPES.map(String::from).into(),
             iat: clock,
             exp: clock + i64::from(lease.max_match_s) + 300,
-            assignment_id: lease.assignment_id.clone(),
-            roster: lease.roster.clone(),
-            hopper: lease.hopper,
-            map: lease.map.clone(),
-            map_id: lease.map_id.clone(),
+            reservation: FilmReservation {
+                sub,
+                assignment_id: lease.assignment_id.clone(),
+                roster: lease.roster.clone(),
+                hopper: lease.hopper,
+                map: lease.map.clone(),
+                map_id: lease.map_id.clone(),
+            },
         };
         identity.key.sign_json(TYP_TOKEN, &claims)
     }
@@ -116,11 +132,23 @@ impl HostClaims {
     pub(crate) fn bind_game(&self, state: &State, new: &mut game::NewGame) -> Result<(), ApiError> {
         self.bind_game_session(state, new, false)
     }
+}
 
+impl FilmReservation {
     /// A finished film may arrive after the lobby closes. The signed assignment,
     /// session owner, map and hopper must still match the original reservation.
     pub(crate) fn bind_film(&self, state: &State, new: &mut game::NewGame) -> Result<(), ApiError> {
         self.bind_game_session(state, new, true)
+    }
+
+    /// An archive without an observed GameStarted can be catalogued under the
+    /// reservation. Such a receipt grants no game stats or ranks.
+    pub(crate) fn check_catalogue_map(&self, level: Option<&str>) -> Result<(), ApiError> {
+        if level == Some(self.map.as_str()) {
+            Ok(())
+        } else {
+            Err(forbidden("film level is outside the host lease"))
+        }
     }
 
     pub(crate) fn publisher(&self) -> Publisher {

@@ -1258,6 +1258,11 @@ impl Backend for HostBackend {
         self.update_usage(info.allocation_size, after);
         Ok(())
     }
+    fn film_source(&mut self, path: &str) -> Result<Option<crate::FilmMapSource>> {
+        self.host_file(path).map(|h| {
+            Ok(crate::FilmMapSource::region(fs::File::open(h.path)?, h.offset))
+        }).transpose()
+    }
     fn host_file(&mut self, path: &str) -> Option<HostFile> {
         let host = self.resolve(path, false).ok()?;
         // An outside reader sees the bytes; a latched error stays for the

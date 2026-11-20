@@ -91,7 +91,7 @@ at 8 MiB (16 MiB compressed) and has this shape:
 Each row uses inclusive **film ticks since boot**. `offset` points at
 the four-byte tag, `size` excludes the eight-byte envelope prefix and
 `raw_size` is the inflated byte length. Fetch one chunk with
-`bytes=offset-(offset+size+7)`. Rows are ordered and disjoint and each
+`bytes=offset-(offset+size+7)`. Rows start at tick 1 and cover consecutive ticks without gaps. Each row
 covers at most 128 ticks. Seek by binary search. The first ULEB in the
 inflated payload gives `first`, and the second gives `last − first + 1`.
 Each following record has a ULEB tick delta, one-byte type, ULEB payload
@@ -148,6 +148,36 @@ envelope types. HTTP access uses the public `CIDX` time spans checked
 against the actual uploaded `TICK` envelopes. Guest memory, service
 results and start files stay outside those spans, including when an
 adjacent public chunk is selected for a clip.
+
+### Public and private identity fields
+
+A public join contains the seat, name, kind and team. A public host migration
+contains only its event kind. The public stats roster retains appearance and
+player slots. Host identifiers, XUIDs, console names, session identifiers,
+private simulation settings and bot parameters remain in the machine section.
+The public summary omits player XUIDs. When those exist, a private `PSUM`
+envelope stores the full summary JSON.
+
+When a time chunk contains private fields, the writer immediately precedes
+its public `TICK` with a private `IPRV` envelope. Both frames have the same
+first tick, count and record framing. `IPRV` holds the original lifecycle
+and closing batches and all six original stats-import event kinds in order.
+It can also preserve records with unrecognised extensions. Public records
+use the recognised display fields. The matching private `TIDX` block stores
+`identity_sha256`, the SHA-256 of the uncompressed `IPRV` bytes. Engine
+playback checks this digest and reads the original lifecycle batches, including
+when starting from a keyframe. Live imports the original stats from the pair
+once. A chunk with entirely public content can omit `IPRV`.
+
+Live records a positive public-range validation decision on the upload receipt.
+A legacy receipt without that decision, or a film carrying an unrecognised
+or identity-bearing public record, remains available only through private
+storage. User-supplied display names, map names and chapter labels are public
+display text. The first supplemental v8 sample in each time chunk which
+changes appearance starts a fresh predictor. This lets Live check the
+bounded binary pose grammar and consume each packed sample fully before
+admitting its raw bytes as a public range. Object transforms still use the
+sparse scene checkpoints in `CIDX`.
 
 ### Tagged records
 
@@ -303,8 +333,10 @@ of each attempted D3D section capture. During linear playback the device
 drains the same push buffer, writes back dirty render targets and resolves
 visibility queries at that boundary. This also covers captures where a
 later machine section prevented publication of the keyframe. A seek skips
-barriers already reflected in its restored machine state. The D3D section
-stores the creation parameters needed to recreate host surfaces. The
+barriers already reflected in its restored machine state. Film keyframes
+use D3D section v2, which prefixes the v1 payload with the 17 little-endian
+Xbox present-parameter words needed to recreate host surfaces. Ordinary
+machine saves write D3D section v1. Warm restores accept both versions. The
 first displayed frame after a seek can lack the previous frame's pixels.
 
 The disk delta records removed paths and new directory/file records relative
@@ -312,6 +344,21 @@ to `DATA`. Changed files carry their contents and SHA-256, with a total
 budget of 16 MiB per keyframe. The reader materialises the result directly
 into a fresh directory. Machine sections carry their own build, version and
 integrity checks, including a digest of the restored guest RAM.
+
+The recorder indexes `disk/` and `metadata/` while it captures `DATA`.
+At a checkpoint it drains pending VFS metadata and checks filesystem
+identities outside the film session lock. On Unix it reuses directory
+listings and file contents while device, inode, length, modification time
+and status-change time agree. This also detects host-side save replacement
+with a preserved modification time. On Windows, it opens each path for
+attributes with read, write and delete sharing. It compares the volume
+serial number, 128-bit file ID and NT change time from that handle, along
+with the length and last-write time. It rejects reparse points. A stable
+file therefore costs metadata queries per checkpoint and zero content
+reads. On either platform it re-enumerates changed directories and hashes
+changed files. Volumes which omit the Windows identity or change time,
+and platforms without an equivalent identity, fall back to reading contents. A failed capture leaves the last good index available
+for the next attempt.
 
 `TIDX` is `{blocks, keyframes}`. Each array contains
 `{tick, count, offset, sha256}`. The count is zero for a keyframe.
@@ -359,13 +406,45 @@ changes raise the total. The public viewer transfers zero KEYF bytes.
 
 ## Determinism and verification
 
-Match the XBE SHA-256, guest execution contract, runtime build, effective
+Match the XBE SHA-256, guest execution contract, simulation ABI, effective
 features, boot parameters, map content and exact variant bytes. A converted
 Halo 1 or mod map with the same display name can have different bytes.
 Guest storage, RNG, logical clock, scheduling budget, controller topology,
 and the ordering of HLE and lobby calls all affect replay. A film carries
 the host inputs; their apparent effects in telemetry are insufficient to
 reconstruct the simulation.
+
+Current writers put `h2-sim/1` in `HEAD.runtime_stamp`. This ABI covers
+the host scheduler, consumed input and guest-facing HLE semantics. A change
+that breaks those contracts must bump the ABI. The sealed header also stores
+`simulation_hooks`, a SHA-256 of the installed simulation hook chains in
+execution order and the core game, clock, player and object table addresses.
+It includes hook owners, guest addresses, calling conventions, hook kinds,
+guest-callable entries and the allocations placed for those features.
+The player checks it after installing its features and before entering the
+guest. The guest image has its own stamp. Editing Live, the web viewer,
+codecs, diagnostic labels or documentation leaves this contract intact.
+Earlier experimental v2/v3 recordings with source-based runtime stamps
+require their corresponding simulator for engine playback.
+
+`HEAD.telemetry_hooks` selects the observer chains on the guest dispatch
+table. Its `observers` field is `events_and_impacts_v1` for new recordings.
+The `weapon_fire`, `damage_report` and `object_delete` booleans identify the
+optional hook targets present in the recording image. Both machines install
+this plan, including when a full playback image provides more functions than
+the recording host. Playback requires all selected targets and discards the
+observer output. `events_v1` selects the original telemetry hooks and `off`
+installs none. Older headers use their `telemetry` presence bit and format
+version to select the historical plan.
+
+`HEAD.render_hooks` identifies the guest render feature groups compiled into
+the recording executable. `slim` installs the common hooks, `desktop` adds
+the render loop and `gpu` also installs the native renderer features. The
+recorded feature switches still control which members of each group run.
+A desktop can replay a slim host with exactly its guest hook groups while
+the independent spectator window uses the desktop GPU. A player missing a
+required group refuses playback. Older headers use the player's compiled
+groups and retain their original compatibility checks.
 
 Version 3 retains the original native image stamp and additionally records
 `HEAD.guest_image` with `version: 1`, the native target triple and an optional
@@ -433,6 +512,22 @@ POV or display cadence therefore does not add render calls to its RNG or
 scheduler timeline. Compare hashes for a headless replay and a visible
 replay of the same film when verifying this path.
 
+## Missing observations
+
+The front summary's `dropped_samples` maps each affected source to its count.
+A failed guest read can leave a gap in a pose, pickup or damage event. The
+recorder retains each participant's last readable score and team. When the
+engine signals game over with an unreadable final scoreboard, the event keeps
+the finish time and leaves its winner and final rows unavailable.
+
+Within each completed tick the writer allows up to 512 KiB of canonical Live
+events and 512 KiB of highlights, including framing. The same budgets apply
+to the final batch after the last tick. Each event also has a 128 KiB limit.
+An oversized event increments `stats_encoding` or `highlight_encoding`.
+Overflowing either batch increments `stats_budget` or `highlight_budget` for
+each omitted record. The machine tape continues to record simulation inputs
+and post-tick hashes.
+
 ## Weapon fire, damage and projectile endpoints
 
 Each observed retail barrel call produces one `WeaponFire` record. It carries the
@@ -481,6 +576,15 @@ for equipment outside a scenario placement. [Retail objective and pickup
 layouts](bots.md#37-objectives-traced)
 
 ## Tag 3 presentation records
+
+The sealed summary's optional `dropped_samples` object counts rejected
+observations by source. An unreadable object header table holds the whole
+scene until the next census. When the table identifies a live object but its
+body, transform or animation is invalid, the viewer holds that object's
+previous pose. Other objects still move, appear and disappear. An invalid hill
+sample holds the last polygon. A failed objective-registry read retains the
+last object roles. Supplemental player and actor rows recover independently.
+The recorder continues writing simulation inputs and post-tick hashes.
 
 The enclosing `TICK` supplies the time. A client seeks via the `scene` tick in
 `CIDX` and applies pose records from that checkpoint in file order. The host
@@ -595,7 +699,11 @@ the snapshot size discussion for the RAM component. [Snapshot format](../runtime
 Dedicated hosts send a sealed file under the canonical lease game ID through
 `POST /v1/games/{game}/film`. Recent and saved film listings expose
 `has_host_film` and the summary after publication. Live derives the existing
-player and game statistics from canonical event records. Older games may
+player and game statistics from canonical event records. If an idle timeout or
+another recorded event disagrees with the existing signed stats, Live keeps
+the film, publishes its summary and identifies the first disagreement in
+`stats_discrepancy`. The existing ledger remains the source of ranking awards.
+Older games may
 have only a telemetry archive, and older host films may lack a summary.
 A legacy telemetry recording remains readable during migration.
 After a failed upload of a default recording, the supervisor keeps the

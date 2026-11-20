@@ -29,6 +29,8 @@ use axum::response::{IntoResponse, Response};
 use sha2::{Digest, Sha256};
 
 pub const IMMUTABLE: &str = "public, max-age=31536000, immutable";
+/// The Worker stores only partial film responses bearing this exact policy.
+pub const IMMUTABLE_FILM_CHUNK: &str = "public, max-age=31536000, immutable, no-transform";
 pub const REVALIDATE: &str = "no-cache";
 pub const PUBLIC: &str = "public, max-age=0, s-maxage=5, stale-while-revalidate=30";
 pub const PRIVATE: &str = "private, no-store";

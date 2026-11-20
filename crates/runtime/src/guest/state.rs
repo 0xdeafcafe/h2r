@@ -141,6 +141,7 @@ impl Guest {
         self.check_fixed(layout)?;
         Self::check_mappings(&layout.mappings)?;
         self.ram.cow_base = None;
+        self.invalidate_hle_capture();
         if let Err(e) = fill(&mut self.ram) {
             return Ok(Err(e));
         }

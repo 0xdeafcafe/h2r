@@ -32,8 +32,10 @@ pub struct Telemetry {
     /// game thread owns projection and queues only legacy transport work.
     pub(crate) pipeline: Pipeline,
     film: Option<FilmProjection>,
-    film_hooks: bool,
+    pub(crate) hooks: live_proto::film::TelemetryHooks,
     disabled: AtomicBool,
+    /// A film can retry a match start whose options or roster were still loading.
+    retry_start: AtomicBool,
     last_tick: Mutex<Option<u64>>,
     /// Shots by weapon object datum since the last sample, from the weapon
     /// fire hook.
@@ -60,8 +62,9 @@ impl Telemetry {
         Self {
             pipeline: Pipeline::new(session, sink),
             film: None,
-            film_hooks: false,
+            hooks: live_proto::film::TelemetryHooks::EVENTS,
             disabled: AtomicBool::new(false),
+            retry_start: AtomicBool::new(false),
             last_tick: Mutex::new(None),
             shots: Mutex::default(),
             hits: Mutex::new(Vec::new()),
@@ -169,10 +172,9 @@ impl Telemetry {
         }
         if let Some(film) = &self.film && film.observer.active()
             && let Some(damage) = film.session.lock().unwrap().film_damage(&hit)
-            && let Err(error) = film.observer.record(damage)
+            && film.observer.record(damage).is_err()
         {
-            self.disable(error);
-            return;
+            self.dropped_film_sample("damage");
         }
         let mut hits = self.hits.lock().unwrap();
         if hits.len() >= MAX_PENDING_HITS {
@@ -188,9 +190,7 @@ impl Telemetry {
 
     fn disable(&self, reason: impl AsRef<str>) {
         if !self.disabled.swap(true, Ordering::AcqRel) {
-            if let Some(film) = &self.film {
-                film.observer.failed(reason.as_ref());
-            }
+            self.dropped_film_sample("telemetry_disabled");
             self.pipeline.log_error(reason.as_ref());
         }
     }
@@ -205,23 +205,47 @@ impl Telemetry {
         }
         match catch_unwind(AssertUnwindSafe(f)) {
             Ok(Ok(())) => {}
+            Ok(Err(_)) if self.film.is_some() => self.dropped_film_sample("telemetry_observer"),
             Ok(Err(error)) => self.disable(error),
             Err(_) => self.disable("panic in observer"),
         }
     }
 
+    /// Guest observations are supplemental to the machine tape. Keep the
+    /// original error behaviour of a standalone telemetry session.
+    fn missing_sample<T: Default>(
+        &self,
+        source: &'static str,
+        fault: runtime::GuestFault,
+    ) -> Result<T, String> {
+        if self.film.is_some() {
+            self.dropped_film_sample(source);
+            Ok(T::default())
+        } else {
+            Err(format!("read {source}: {fault}"))
+        }
+    }
+
     pub(crate) fn start(&self, guest: &runtime::Guest) -> Result<(), String> {
-        let mut info = memory::game_info(guest).map_err(|e| format!("read game options: {e:?}"))?;
-        let players = if info.is_match() {
-            memory::players(guest).map_err(|e| format!("read players: {e:?}"))?
-        } else {
-            Vec::new()
+        let read = || {
+            let info = memory::game_info(guest)?;
+            let (players, teams) = if info.is_match() {
+                let players = memory::players(guest)?;
+                let teams = memory::team_scores(guest, &players)?;
+                (players, teams)
+            } else {
+                (Vec::new(), Vec::new())
+            };
+            Ok((info, players, teams))
         };
-        let teams = if info.is_match() {
-            memory::team_scores(guest, &players).map_err(|e| format!("read teams: {e:?}"))?
-        } else {
-            Vec::new()
+        let (mut info, players, teams) = match read() {
+            Ok(start) => start,
+            Err(fault) => {
+                self.retry_start.store(self.film.is_some(), Ordering::Relaxed);
+                return self.missing_sample("match_start", fault);
+            }
         };
+        self.retry_start.store(false, Ordering::Relaxed);
         let names = if info.is_match() {
             self.names(guest, &info.map)
         } else {
@@ -293,13 +317,20 @@ impl Telemetry {
     /// no allocation and no system call once steady (`bench.rs`'s
     /// `the_game_threads_tick_does_not_allocate`).
     pub(crate) fn observe_tick(&self, guest: &runtime::Guest) -> Result<bool, String> {
+        if self.retry_start.load(Ordering::Relaxed) {
+            self.start(guest)?;
+            return Ok(false);
+        }
         // The in-game clock also advances in the main menu. A film has no
         // roster or active world to observe there.
         if self.film.as_ref().is_some_and(|f| f.session.lock().unwrap().match_clock().is_none()) {
             return Ok(false);
         }
         // An unchanged tick reads nothing else.
-        let tick = memory::game_tick(guest).map_err(|e| format!("read tick snapshot: {e:?}"))?;
+        let tick = match memory::game_tick(guest) {
+            Ok(tick) => tick,
+            Err(fault) => return self.missing_sample("tick_clock", fault),
+        };
         if *self.last_tick.lock().unwrap() == Some(tick) {
             return Ok(false);
         }
@@ -310,7 +341,7 @@ impl Telemetry {
         let mut snapshot = self.pipeline.snapshot();
         if let Err(e) = memory::snapshot_into(guest, &mut snapshot, roster) {
             self.pipeline.recycle(snapshot);
-            return Err(format!("read tick snapshot: {e:?}"));
+            return self.missing_sample("tick_snapshot", e);
         }
         {
             let mut last = self.last_tick.lock().unwrap();
@@ -339,7 +370,9 @@ impl Telemetry {
                 items: std::mem::take(&mut snapshot.items),
             };
             // A failed scan sends none rather than stopping telemetry.
-            let _ = memory::world_into(guest, buffers, &mut world);
+            if memory::world_into(guest, buffers, &mut world).is_err() {
+                self.dropped_film_sample("telemetry_world");
+            }
             snapshot.actors = world.actors;
             snapshot.vehicles = world.vehicles;
             snapshot.machines = world.machines;
@@ -357,9 +390,12 @@ impl Telemetry {
             let session = film.session.lock().unwrap();
             if session.match_clock().is_some() {
                 // An unreadable/loading object array is not an empty world.
-                if let Ok(mut scene) = film.scene.lock().unwrap().read(guest) {
-                    session.name_scene(&mut scene);
-                    film.observer.scene(scene)?;
+                match film.scene.lock().unwrap().read(guest) {
+                    Ok(mut scene) => {
+                        session.name_scene(&mut scene);
+                        film.observer.scene(scene)?;
+                    }
+                    Err(_) => film.observer.dropped("scene_census"),
                 }
             }
         }
@@ -368,31 +404,46 @@ impl Telemetry {
     }
 
     fn end(&self, guest: &runtime::Guest) -> Result<(), String> {
-        let globals = guest
-            .u32(layout::GAME_GLOBALS_PTR)
-            .map_err(|e| format!("read game globals: {e:?}"))?;
-        if globals == 0
-            || guest
-                .u8(globals + layout::GAME_ENDED)
-                .map_err(|e| format!("read end latch: {e:?}"))?
-                == 0
-        {
-            return Ok(());
+        let latch = guest.u32(layout::GAME_GLOBALS_PTR).and_then(|globals| {
+            if globals == 0 { Ok(0) } else { guest.u8(globals.wrapping_add(layout::GAME_ENDED)) }
+        });
+        match latch {
+            Ok(0) => return Ok(()),
+            Ok(_) => {}
+            Err(fault) => return self.missing_sample("end_latch", fault),
         }
-        let snapshot =
-            memory::snapshot(guest).map_err(|e| format!("read final snapshot: {e:?}"))?;
+        let snapshot = match memory::snapshot(guest) {
+            Ok(snapshot) => snapshot,
+            Err(fault) => {
+                self.missing_sample::<()>("final_scoreboard", fault)?;
+                // Retail has latched game over. Close the real match, leaving
+                // the winner and final scores unknown. Live keeps the last good
+                // scoreboard in that case.
+                let tick = memory::game_tick(guest).ok();
+                return self.submit(Work::Configure(Box::new(move |session| {
+                    session.end_without_scoreboard(tick);
+                })));
+            }
+        };
         self.submit(Work::End(Box::new(snapshot)))
     }
 
     fn kill(&self, guest: &runtime::Guest, attacker: u32, victim: u32) -> Result<(), String> {
-        let tick = memory::game_tick(guest).map_err(|e| format!("read kill tick: {e:?}"))?;
-        let players = memory::players(guest).map_err(|e| format!("read kill players: {e:?}"))?;
+        let tick = match memory::game_tick(guest) {
+            Ok(tick) => tick,
+            Err(fault) => return self.missing_sample("kill_clock", fault),
+        };
         let victim_index = victim & 0xffff;
-        let unit = players
-            .iter()
-            .find(|p| p.player.index == victim_index)
-            .map_or(u32::MAX, |p| p.unit);
-        let object = memory::object(guest, unit).map_err(|e| format!("read kill object: {e:?}"))?;
+        let details = memory::players(guest).and_then(|players| {
+            let unit = players.iter()
+                .find(|p| p.player.index == victim_index)
+                .map_or(u32::MAX, |p| p.unit);
+            memory::object(guest, unit)
+        });
+        let object = match details {
+            Ok(object) => object,
+            Err(fault) => self.missing_sample("kill_position", fault)?,
+        };
         self.submit(Work::Kill(Box::new(Kill {
             tick,
             attacker: (attacker != u32::MAX).then_some(attacker & 0xffff),
@@ -418,7 +469,7 @@ impl feature::Feature for TelemetryFeature {
     }
 
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
-        if self.0.film_hooks {
+        if self.0.hooks.observers == live_proto::film::TelemetryObservers::EventsAndImpactsV1 {
             crate::impacts::install(b, self.0.clone());
         }
         let t = Arc::clone(&self.0);
@@ -435,31 +486,40 @@ impl feature::Feature for TelemetryFeature {
             .on_end("end", move |o| t.protect(|| t.end(&o.guest())));
         // stdcall (weapon object datum, barrel index): the first argument.
         // The point is optional: without it frames carry no `shots`.
-        let t = Arc::clone(&self.0);
-        b.raw()
-            .observe_before(&points::WEAPON_FIRE, "shots", move |o| {
-                if let Some(weapon) = o.arg_u32("weapon") {
-                    t.fired(weapon);
-                }
-            })
-            .optional();
+        if self.0.hooks.weapon_fire {
+            let t = Arc::clone(&self.0);
+            b.raw()
+                .observe_before(&points::WEAPON_FIRE, "shots", move |o| {
+                    if let Some(weapon) = o.arg_u32("weapon") {
+                        t.fired(weapon);
+                    }
+                })
+                .optional();
+        }
         // Custom ABI: EDI = the damage report, the victim object datum on
         // the stack; read before the original applies it. Optional: without
         // it frames carry no `hits`.
-        let t = Arc::clone(&self.0);
-        b.raw()
-            .observe_before(&points::DAMAGE_REPORT, "hits", move |o| {
-                if t.disabled() { return; }
-                let (Some(report), Some(victim)) = (o.arg_u32("report"), o.arg_u32("victim"))
-                else {
-                    return;
-                };
-                let hit = memory::hit(&o.guest(), report, victim);
-                if let Ok(hit) = hit {
-                    t.damaged(hit);
-                }
-            })
-            .optional();
+        if self.0.hooks.damage_report {
+            let t = Arc::clone(&self.0);
+            b.raw()
+                .observe_before(&points::DAMAGE_REPORT, "hits", move |o| {
+                    if t.disabled() { return; }
+                    let (Some(report), Some(victim)) = (o.arg_u32("report"), o.arg_u32("victim"))
+                    else {
+                        t.dropped_film_sample("damage");
+                        return;
+                    };
+                    t.protect(|| {
+                        let hit = memory::hit(&o.guest(), report, victim);
+                        match hit {
+                            Ok(hit) => t.damaged(hit),
+                            Err(_) => t.dropped_film_sample("damage"),
+                        }
+                        Ok(())
+                    });
+                })
+                .optional();
+        }
         let t = Arc::clone(&self.0);
         b.raw()
             .observe_before(&points::PLAYER_KILLED, "kill", move |o| {
@@ -473,12 +533,12 @@ impl feature::Feature for TelemetryFeature {
                         // `[esp+0x0c]` is not a betrayal flag (it is set in
                         // free-for-all too): the session tells betrayals by
                         // the players' teams.
-                        let _packed_damage = guest.u32(esp.wrapping_add(0x10))?;
                         Ok::<_, runtime::GuestFault>((attacker, victim))
                     })()
                 };
-                if let Ok((attacker, victim)) = observation {
-                    t.protect(|| t.kill(&o.guest(), attacker, victim));
+                match observation {
+                    Ok((attacker, victim)) => t.protect(|| t.kill(&o.guest(), attacker, victim)),
+                    Err(_) => t.dropped_film_sample("kill"),
                 }
             });
         // Observers only: nothing here writes the guest or feeds back into
@@ -496,7 +556,9 @@ pub fn install(
     registry: &mut feature::Registry,
     config: &TelemetryConfig,
 ) -> Result<Option<Arc<Telemetry>>, String> {
-    install_film(registry, config, None)
+    use live_proto::film::TelemetryHooks;
+    let hooks = if config.enabled { TelemetryHooks::EVENTS } else { TelemetryHooks::OFF };
+    install_film(registry, config, None, hooks)
 }
 
 /// The Live account the game is signed in with: the one whose key signs the

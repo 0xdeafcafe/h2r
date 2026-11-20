@@ -35,6 +35,7 @@ pub(super) fn header(id: u64) -> Header {
         title_id: 1,
         xbe_sha256: "test".into(),
         runtime_stamp: String::new(),
+        simulation_hooks: None,
         guest_image: None,
         epoch_100ns: 0,
         lease_id: Some("lease".into()),
@@ -45,10 +46,55 @@ pub(super) fn header(id: u64) -> Header {
         lobby_machine_start: true,
         host_bots: false,
         telemetry: false,
+        telemetry_hooks: None,
+        render_hooks: None,
         live_service: false,
         features: String::new(),
     }
 }
+#[test]
+fn older_headers_reconstruct_their_historical_observer_plan() {
+    use live_proto::film::TelemetryHooks as Hooks;
+    let mut h = header(3);
+    assert!(
+        serde_json::to_value(&h)
+            .unwrap()
+            .get("telemetry_hooks")
+            .is_none()
+    );
+    for (version, present, expected) in [
+        (1, false, Hooks::OFF),
+        (1, true, Hooks::EVENTS),
+        (2, true, Hooks::EVENTS),
+        (3, true, Hooks::UNIFIED),
+        (3, false, Hooks::OFF),
+    ] {
+        h.version = version;
+        h.telemetry = present;
+        assert_eq!(h.telemetry_plan(), expected);
+    }
+    // An explicit plan takes precedence over the legacy boolean.
+    h.telemetry_hooks = Some(Hooks::EVENTS);
+    assert_eq!(h.telemetry_plan(), Hooks::EVENTS);
+}
+
+#[test]
+fn render_hook_profiles_round_trip_and_require_the_recorders_groups() {
+    use RenderHooks::{Desktop, Gpu, Slim};
+    let mut h = header(1);
+    let old = serde_json::to_value(&h).unwrap();
+    assert!(old.get("render_hooks").is_none());
+    assert_eq!(serde_json::from_value::<Header>(old).unwrap().render_hooks, None);
+    for (index, recording) in [Slim, Desktop, Gpu].into_iter().enumerate() {
+        h.render_hooks = Some(recording);
+        let bytes = serde_json::to_vec(&h).unwrap();
+        assert_eq!(serde_json::from_slice::<Header>(&bytes).unwrap().render_hooks, Some(recording));
+        for (player_index, player) in [Slim, Desktop, Gpu].into_iter().enumerate() {
+            assert_eq!(player.supports(recording), player_index >= index);
+        }
+    }
+}
+
 fn encoded() -> Vec<u8> {
     let mut w = Writer::new(Cursor::new(Vec::new()), &header(1)).unwrap();
     w.chunk(DATA, &manifest::Manifest::default()).unwrap();
@@ -209,43 +255,119 @@ fn upload_rejects_large_files_before_making_a_request() {
     );
 }
 
+// Reply to each observed request independently so a lost connection or a
+// continuation is visible on the wire. Dropping the wake-up connection after
+// upload returns also fails a script that was still expecting more requests.
+fn run_upload(path: &std::path::Path, serve: impl FnOnce(std::net::TcpListener) + Send + 'static) {
+    use std::net::{TcpListener, TcpStream};
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || serve(listener));
+    let result = upload(&format!("http://{addr}"), "sample", "a/b", path);
+    drop(TcpStream::connect(addr));
+    server.join().unwrap();
+    result.unwrap();
+}
+
+fn film_request(
+    listener: &std::net::TcpListener,
+    expected: &str,
+) -> (std::net::TcpStream, Vec<u8>) {
+    use std::io::{BufRead, BufReader};
+    let (stream, _) = listener.accept().unwrap();
+    let mut reader = BufReader::new(&stream);
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    assert_eq!(line.trim_end(), format!("{expected} HTTP/1.1"));
+    let mut authorised = false;
+    let mut continues = false;
+    let mut len = None;
+    loop {
+        line.clear();
+        assert!(reader.read_line(&mut line).unwrap() > 0);
+        if line == "\r\n" {
+            break;
+        }
+        let (name, value) = line.trim_end().split_once(':').unwrap();
+        if name.eq_ignore_ascii_case("authorization") {
+            authorised = value.trim() == "Bearer sample";
+        }
+        if name.eq_ignore_ascii_case("x-h2-film-continue") {
+            continues = value.trim() == "1";
+        }
+        if name.eq_ignore_ascii_case("content-length") {
+            len = Some(value.trim().parse::<usize>().unwrap());
+        }
+    }
+    assert!(authorised);
+    assert!(continues, "upload must declare continuation support");
+    let mut body = vec![0; len.expect("upload must declare its length")];
+    reader.read_exact(&mut body).unwrap();
+    drop(reader);
+    (stream, body)
+}
+
+fn film_reply(mut stream: std::net::TcpStream, status: &str) {
+    write!(
+        stream,
+        "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+}
+
 #[test]
-fn upload_posts_the_exact_bytes_with_the_host_bearer() {
-    use std::{
-        io::{BufRead, BufReader},
-        net::TcpListener,
-    };
+fn upload_posts_the_exact_bytes_then_advances_without_resending_them() {
     let dir = Temp::new();
     let path = dir.0.join("host.h2film");
     let bytes = encoded();
     fs::write(&path, &bytes).unwrap();
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let base = format!("http://{}", listener.local_addr().unwrap());
-    let server = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut reader = BufReader::new(&mut stream);
-        let mut line = String::new();
-        reader.read_line(&mut line).unwrap();
-        assert_eq!(line, "POST /v1/games/a%2Fb/film HTTP/1.1\r\n");
-        let mut headers = String::new();
-        loop {
-            line.clear();
-            reader.read_line(&mut line).unwrap();
-            if line == "\r\n" {
-                break;
-            }
-            headers.push_str(&line.to_ascii_lowercase());
-        }
-        assert!(headers.contains("authorization: bearer sample\r\n"));
-        let mut body = vec![0; bytes.len()];
-        reader.read_exact(&mut body).unwrap();
+    run_upload(&path, move |listener| {
+        let (stream, body) = film_request(&listener, "POST /v1/games/a%2Fb/film");
         assert_eq!(body, bytes);
-        stream
-            .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
-            .unwrap();
+        film_reply(stream, "202 Accepted");
+        for status in [Some("202 Accepted"), None, Some("204 No Content")] {
+            let (stream, body) = film_request(&listener, "POST /v1/games/a%2Fb/film?continue=1");
+            assert!(body.is_empty());
+            // One continuation advances the cursor but loses its response.
+            if let Some(status) = status {
+                film_reply(stream, status);
+            }
+        }
     });
-    upload(&base, "sample", "a/b", &path).unwrap();
-    server.join().unwrap();
+}
+
+#[test]
+fn multipart_upload_advances_each_part_before_uploading_the_next_and_waits_for_publication() {
+    use live_proto::film::{PART_BYTES, SINGLE_UPLOAD_BYTES};
+    use sha2::{Digest, Sha256};
+    let dir = Temp::new();
+    let path = dir.0.join("split.h2film");
+    let size = SINGLE_UPLOAD_BYTES + 1;
+    File::create(&path).unwrap().set_len(size).unwrap();
+
+    run_upload(&path, move |listener| {
+        let mut hash = Sha256::new();
+        for part in 0..size.div_ceil(PART_BYTES) {
+            let target = format!("PUT /v1/games/a%2Fb/film?part={part}");
+            let (stream, body) = film_request(&listener, &target);
+            assert_eq!(body.len() as u64, (size - part * PART_BYTES).min(PART_BYTES));
+            hash.update(&body);
+            film_reply(stream, "202 Accepted");
+            let (stream, body) = film_request(&listener, "POST /v1/games/a%2Fb/film?continue=1");
+            assert!(body.is_empty());
+            film_reply(stream, "204 No Content");
+        }
+        let complete = format!(
+            "POST /v1/games/a%2Fb/film?complete={size}&sha256={:x}",
+            hash.finalize()
+        );
+        let (stream, body) = film_request(&listener, &complete);
+        assert!(body.is_empty());
+        film_reply(stream, "202 Accepted");
+        let (stream, body) = film_request(&listener, "POST /v1/games/a%2Fb/film?continue=1");
+        assert!(body.is_empty());
+        film_reply(stream, "204 No Content");
+    });
 }
 
 #[test]

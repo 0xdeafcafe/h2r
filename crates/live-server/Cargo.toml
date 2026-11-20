@@ -39,6 +39,8 @@ mime_guess = "2"
 percent-encoding = "2"
 png = "0.18"
 sha2 = "0.10"
+# Persistent multipart inspection needs RustCrypto's serialisable SHA-256 state.
+sha2-checkpoint = { package = "sha2", version = "0.11" }
 # Decode bounded film metadata and chronological chunks on both native and wasm.
 ruzstd = "0.9.1"
 hmac = "0.12"

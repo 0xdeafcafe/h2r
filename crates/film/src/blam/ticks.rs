@@ -5,7 +5,7 @@ use anyhow::{Context, Result, ensure};
 use std::collections::VecDeque;
 
 pub(super) use super::stream::{MAX_TICKS, write_varint as varint};
-const MAX_EVENT_BYTES: usize = 64 << 10;
+pub(super) const MAX_EVENT_BYTES: usize = 64 << 10;
 
 pub(super) fn bytes<'a>(input: &mut &'a [u8], len: usize) -> Result<&'a [u8]> {
     let (head, rest) = input

@@ -9,7 +9,10 @@ use live_proto::{
     film::{events, objects::Scene},
     game::Frame,
 };
-use std::sync::{Arc, Weak};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Weak},
+};
 
 enum Pending {
     Record(RecordData),
@@ -23,18 +26,82 @@ pub(super) struct Capture {
     presentation: film::presentation::Encoder,
     pub(super) objectives: objectives::Tracker,
     pending: Vec<Pending>,
+    /// Reserve room for the score stream regardless of a burst of visual effects.
+    stats_bytes: usize,
+    highlight_bytes: usize,
+    drops: BTreeMap<&'static str, u64>,
     clock: Option<u64>,
     final_clock: Option<u64>,
     ended: bool,
 }
 
 impl Capture {
-    fn records(&mut self, records: Vec<events::Record>) -> Result<(), String> {
-        for record in records {
-            self.pending
-                .push(Pending::Record(RecordData::stats_event(record.encode()?)));
+    pub(super) fn summary_medals(&self, rows: &mut Vec<live_proto::film::PlayerSummary>) {
+        self.stats.summary_medals(rows);
+    }
+
+    pub(super) fn dropped(&mut self, source: &'static str) {
+        self.count_drops(source, 1);
+    }
+
+    fn count_drops(&mut self, source: &'static str, n: u64) {
+        if n == 0 {
+            return;
         }
-        Ok(())
+        let count = self.drops.entry(source).or_default();
+        if *count == 0 {
+            eprintln!("theater: dropped {source} observation (counts in film summary)");
+        }
+        *count = count.saturating_add(n);
+    }
+
+    pub(super) fn drop_counts(&self) -> BTreeMap<String, u64> {
+        self.drops
+            .iter()
+            .map(|(&source, &count)| (source.to_owned(), count))
+            .collect()
+    }
+
+    fn records(&mut self, records: impl IntoIterator<Item = events::Record>) {
+        // A chunk rolls at 4 MiB and can grow to 8 MiB. Bound each tick
+        // independently, including the separate batch after the final tick.
+        const BUDGET: usize = live_proto::film::stream::MAX_BYTES / 16;
+        for record in records {
+            let canonical = matches!(
+                record.event,
+                events::Event::GameStarted(_)
+                    | events::Event::PlayerJoined(_)
+                    | events::Event::PlayerLeft(_)
+                    | events::Event::PlayerKilled(_)
+                    | events::Event::ScoreChanged(_)
+                    | events::Event::GameEnded(_)
+            );
+            let (source, used) = if canonical {
+                ("stats_budget", &mut self.stats_bytes)
+            } else {
+                ("highlight_budget", &mut self.highlight_bytes)
+            };
+            if *used >= BUDGET {
+                self.dropped(source);
+                continue;
+            }
+            let Ok(bytes) = record.encode() else {
+                self.dropped(if canonical {
+                    "stats_encoding"
+                } else {
+                    "highlight_encoding"
+                });
+                continue;
+            };
+            let size = bytes.len() + 13; // subtype and worst-case stream envelope
+            if size > BUDGET - *used {
+                self.dropped(source);
+                continue;
+            }
+            *used += size;
+            self.pending
+                .push(Pending::Record(RecordData::stats_event(bytes)));
+        }
     }
 
     pub(super) fn marker(&mut self, map: &str) {
@@ -46,32 +113,63 @@ impl Capture {
     }
 
     pub(super) fn objectives(&mut self, guest: &runtime::Guest, clock: u64) -> Result<()> {
-        let changes = self.objectives.observe(guest).map_err(anyhow::Error::msg)?;
+        // A successful pickup hook belongs to this tick even if reading
+        // the objective registry fails during the same simulation boundary.
+        let mut changes = self.objectives.take_pickups();
+        match self.objectives.observe(guest) {
+            Ok(sample) => changes.extend(sample),
+            Err(_) => self.dropped("objective"),
+        }
         let records = changes
             .into_iter()
-            .map(|event| events::Record { tick: clock, event })
-            .collect();
-        self.records(records).map_err(anyhow::Error::msg)
+            .map(|event| events::Record { tick: clock, event });
+        self.records(records);
+        Ok(())
     }
 
-    pub(super) fn take_records(&mut self, baseline: bool) -> Result<Vec<RecordData>> {
+    pub(super) fn take_records(&mut self, starts_chunk: bool, baseline: bool) -> Result<Vec<RecordData>> {
         let mut out = Vec::new();
-        if baseline {
-            out.push(RecordData::pose(self.presentation.baseline()?));
+        if starts_chunk {
+            self.presentation.begin_chunk();
         }
-        for item in self.pending.drain(..) {
-            let pose = match item {
+        if baseline {
+            let (checkpoint, dropped) = self.presentation.baseline_observed()?;
+            self.count_drops("frame", u64::from(dropped));
+            out.push(RecordData::pose(checkpoint));
+        }
+        let mut pending = std::mem::take(&mut self.pending);
+        for item in pending.drain(..) {
+            let (source, result) = match item {
                 Pending::Record(record) => {
                     out.push(record);
                     continue;
                 }
-                Pending::Scene(scene) => self.presentation.push(&scene)?,
-                Pending::Frame(frame) => self.presentation.frame(&frame)?,
+                Pending::Scene(scene) => match self.presentation.push_observed(&scene) {
+                    Ok((record, drops)) => {
+                        self.count_drops("object_pose", drops.objects);
+                        self.count_drops("hill", u64::from(drops.hill));
+                        self.count_drops("objective_registry", u64::from(drops.objectives));
+                        ("scene_census", Ok(record))
+                    }
+                    Err(error) => ("scene_census", Err(error)),
+                },
+                Pending::Frame(frame) => match self.presentation.frame_observed(&frame) {
+                    Ok((record, dropped)) => {
+                        self.count_drops("unit_frame", dropped);
+                        ("frame", Ok(record))
+                    }
+                    Err(error) => ("frame", Err(error)),
+                },
             };
-            if let Some(bytes) = pose {
-                out.push(RecordData::pose(bytes));
+            match result {
+                Ok(Some(bytes)) => out.push(RecordData::pose(bytes)),
+                Ok(None) => {}
+                Err(_) => self.dropped(source),
             }
         }
+        self.pending = pending;
+        self.stats_bytes = 0;
+        self.highlight_bytes = 0;
         Ok(out)
     }
 }
@@ -117,15 +215,22 @@ impl FilmObserver for Observer {
         })
     }
 
-    fn failed(&self, reason: &str) {
-        if let Some(film) = self.0.upgrade() {
-            film.lock().fail(format!("capturing film events: {reason}"));
-        }
+    fn dropped(&self, source: &'static str) {
+        let _ = self.write(|rec, _| {
+            rec.unified.dropped(source);
+            Ok(())
+        });
     }
 
     fn event(&self, event: &GameEvent, clock: u64) -> Result<(), String> {
         self.write(|rec, game_id| {
-            let mut records = rec.unified.stats.event(&event.kind, &event.data, clock)?;
+            let mut records = match rec.unified.stats.event(&event.kind, &event.data, clock) {
+                Ok(records) => records,
+                Err(_) => {
+                    rec.unified.dropped("stats_event");
+                    return Ok(());
+                }
+            };
             for record in &mut records {
                 if let events::Event::GameStarted(start) = &mut record.event {
                     if let Some(id) = game_id {
@@ -141,12 +246,16 @@ impl FilmObserver for Observer {
                     rec.unified.final_clock = Some(end.tick);
                 }
             }
-            rec.unified.records(records)
+            rec.unified.records(records);
+            Ok(())
         })
     }
 
     fn record(&self, record: events::Record) -> Result<(), String> {
-        self.write(|rec, _| rec.unified.records(vec![record]))
+        self.write(|rec, _| {
+            rec.unified.records([record]);
+            Ok(())
+        })
     }
 
     fn clock(&self, clock: Option<u64>) {
@@ -161,7 +270,7 @@ impl FilmObserver for Observer {
             // The direct engine hooks already recorded the individual shots
             // and hits. Only changes requiring sampled state go in here.
             let events = rec.unified.stats.frame_changes(&frame);
-            rec.unified.records(events)?;
+            rec.unified.records(events);
             rec.unified.pending.push(Pending::Frame(frame));
             Ok(())
         })

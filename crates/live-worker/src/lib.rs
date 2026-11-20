@@ -11,6 +11,8 @@
 //! well. The Worker itself (`entry`, `dosql`, `r2`) builds only for wasm32.
 
 pub mod doretry;
+#[cfg(any(target_arch = "wasm32", test))]
+mod film_cache;
 pub mod settings;
 pub mod site;
 pub mod sqlstore;

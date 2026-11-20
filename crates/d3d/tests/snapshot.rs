@@ -185,7 +185,7 @@ fn film_keyframe_creates_a_matching_device_before_guest_execution() {
     let (mut recorded, mut ram) = create(RecordingBackend::new(), UploadPolicy::Tracked);
     frame(&mut recorded, &mut ram, 1);
     let mut writer = writer();
-    recorded.save_snapshot(&mut ram, &mut writer).unwrap();
+    recorded.save_film_snapshot(&mut ram, &mut writer).unwrap();
     let file = writer.finish().unwrap();
     let snap = Snapshot::open(&file, &key()).unwrap();
     let mut replay = Device::new(
@@ -204,4 +204,36 @@ fn film_keyframe_creates_a_matching_device_before_guest_execution() {
     assert_eq!(stream(&recorded.backend.calls[record_at..]), stream(&replay.backend.calls[replay_at..]));
     let device = d3d::GuestLayout::HALO2.device;
     assert_eq!(read(&ram, device, 0x3000), read(&replay_ram, device, 0x3000));
+}
+
+#[test]
+fn normal_snapshots_keep_the_v1_payload_and_warm_restore_rules() {
+    use d3d::device::{PresentParameters, SNAPSHOT_SECTION};
+
+    let (mut device, mut ram) = create(RecordingBackend::new(), UploadPolicy::Tracked);
+    host_state(&mut device, &mut ram, 2.0);
+    let mut normal = writer();
+    let mut film = writer();
+    device.save_snapshot(&mut ram, &mut normal).unwrap();
+    device.save_film_snapshot(&mut ram, &mut film).unwrap();
+    let normal = normal.finish().unwrap();
+    let film = film.finish().unwrap();
+    let normal = Snapshot::open(&normal, &key()).unwrap();
+    let film = Snapshot::open(&film, &key()).unwrap();
+
+    // The old reader requires version 1 and starts decoding the device
+    // with the back-buffer header at byte zero.
+    let v1 = normal.require(SNAPSHOT_SECTION, 1..=1).unwrap();
+    let v2 = film.require(SNAPSHOT_SECTION, 2..=2).unwrap();
+    assert_eq!(&v1[..4], &SCRATCH.addr.to_le_bytes());
+    assert_eq!(&v2[PresentParameters::SIZE as usize..], v1.as_slice());
+
+    // Refresh rate differs, but both devices have identical ring shape
+    // and guest header layout. Only film playback requires an exact match.
+    let (mut other, _) = create_with(RecordingBackend::new(), UploadPolicy::Tracked, |p| {
+        p.refresh_rate += 1;
+    });
+    other.load_snapshot(&normal).unwrap();
+    other.load_snapshot(&film).unwrap();
+    assert!(matches!(other.load_film_snapshot(&film, &ram), Err(SnapshotError::Mismatch(_))));
 }

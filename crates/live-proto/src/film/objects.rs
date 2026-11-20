@@ -4,6 +4,16 @@
 pub struct Scene {
     pub objects: Vec<ObjectPose>,
     pub hill: Option<HillPose>,
+    /// Allocated slots whose body could not be read, and optional game state
+    /// unavailable during this census. These are capture-side details only.
+    pub missing: Missing,
+}
+
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Missing {
+    pub objects: Vec<u32>,
+    pub hill: bool,
+    pub objectives: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

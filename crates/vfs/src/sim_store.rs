@@ -381,6 +381,7 @@ pub enum OpenError {
 /// own chunk), never into private heap of the store's own.
 pub struct Store {
     path: PathBuf,
+    pub(crate) file: File,
     map: memmap2::Mmap,
     pub index: StoreIndex,
 }
@@ -401,7 +402,7 @@ impl Store {
                 "the store file is {} bytes, its index says {wanted}", map.len()
             )));
         }
-        Ok(Self { path, map, index })
+        Ok(Self { path, file, map, index })
     }
 
     /// The map's logical length, as the guest sees it in `stat`.
@@ -416,7 +417,7 @@ impl Store {
 
     /// Read `[at, at + buffer.len())` as the map's bytes. A read past the
     /// end is short; a read of bytes no range covers is [`Error::NotInStore`].
-    pub fn read_at(&mut self, at: u64, buffer: &mut [u8]) -> Result<usize> {
+    pub fn read_at(&self, at: u64, buffer: &mut [u8]) -> Result<usize> {
         let len = buffer
             .len()
             .min(self.index.logical_len.saturating_sub(at) as usize);
@@ -549,7 +550,7 @@ pub fn build(
         }
         // Verify: every stored byte, back against the disc.
         {
-            let mut store = Store::open(&tmp).map_err(|e| BuildError::Verify(format!("{e:?}")))?;
+            let store = Store::open(&tmp).map_err(|e| BuildError::Verify(format!("{e:?}")))?;
             let mut have = vec![0u8; buffer_len];
             let mut want = vec![0u8; buffer_len];
             for range in &index.ranges {
@@ -629,7 +630,7 @@ enum Held {
     /// No store of it: the disc serves the map as usual.
     None,
     /// The store, open.
-    Store(Store),
+    Store(std::sync::Arc<Store>),
     /// A store file exists but does not read: reads of the map fail, never
     /// silently fall back to the disc.
     Broken(String),
@@ -673,7 +674,7 @@ impl<B: Backend> SimStoreBackend<B> {
                         store.logical_len(),
                         store.index.ranges.len()
                     );
-                    Held::Store(store)
+                    Held::Store(std::sync::Arc::new(store))
                 }
                 Err(OpenError::Absent) => Held::None,
                 Err(OpenError::Broken(why)) => {
@@ -753,6 +754,16 @@ impl<B: Backend> Backend for SimStoreBackend<B> {
             return None;
         }
         self.inner.host_file(path)
+    }
+    fn film_source(&mut self, path: &str) -> Result<Option<crate::FilmMapSource>> {
+        if let Some(key) = self.ensure(path) {
+            match self.stores.get(&key) {
+                Some(Held::Store(store)) => return Ok(Some(crate::FilmMapSource::store(store.clone()))),
+                Some(Held::Broken(_)) => return Err(Error::FileCorrupt),
+                _ => {}
+            }
+        }
+        self.inner.film_source(path)
     }
     fn map_ranges(&mut self, path: &str) -> Option<Vec<(u64, u64)>> {
         if let Some(key) = self.ensure(path)
@@ -913,7 +924,7 @@ mod tests {
             built.store_len,
             (HEADER + 2 * ROW) as u64 + 0x800 + (LEVEL_LEN as u64 - 0x1800)
         );
-        let mut store = Store::open(dir.join("level.h2store")).unwrap();
+        let store = Store::open(dir.join("level.h2store")).unwrap();
         let mut buffer = [0u8; 8];
         assert_eq!(store.read_at(0, &mut buffer).unwrap(), 8);
         assert_eq!(&buffer, &level_bytes()[..8]);

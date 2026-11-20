@@ -294,19 +294,38 @@ pub(crate) fn invoke(
     let (result, writes) = g.capture_hle_writes(MAX_OUTPUT_BYTES, run);
     let (value, view) = result?;
     {
+        let Some(captured) = writes else {
+            tap.fault(format!(
+                "{} exceeded service output limits or changed unsupported guest state",
+                e.name
+            ));
+            return Ok(value);
+        };
+        let Some(new_claims) = g.virtual_claims().get(start..) else {
+            tap.fault(format!("{} removed guest claims", e.name));
+            return Ok(value);
+        };
+        if new_claims.len() != captured.zeroed.len()
+            || (!new_claims.is_empty()
+                && g.virtual_claims().iter().filter(|c| c.owner == "Live HLE").count() > 8)
+        {
+            tap.fault(format!("{} made an unknown guest allocation", e.name));
+            return Ok(value);
+        }
         let mut arenas = Vec::new();
-        for c in &g.virtual_claims()[start..] {
-            if c.owner != "Live HLE" || !ARENAS.contains(&c.len) {
+        for (c, (address, size, permissions)) in new_claims.iter().zip(captured.zeroed) {
+            if c.owner != "Live HLE"
+                || !ARENAS.contains(&size)
+                || c.virtual_start != address
+                || c.len != size
+                || permissions != runtime::guest::Permissions::RW
+            {
                 tap.fault(format!("{} made an unknown guest allocation", e.name));
                 return Ok(value);
             }
-            arenas.extend(c.virtual_start.to_le_bytes());
-            arenas.extend(c.len.to_le_bytes());
+            arenas.extend(address.to_le_bytes());
+            arenas.extend(size.to_le_bytes());
         }
-        let Some(writes) = writes else {
-            tap.fault(format!("{} exceeded service output limit", e.name));
-            return Ok(value);
-        };
         let view_bytes = if side.view == view {
             Vec::new()
         } else {
@@ -317,7 +336,7 @@ pub(crate) fn invoke(
             return Ok(value);
         }
         let mut outputs = vec![arenas, view_bytes];
-        for (address, bytes) in writes {
+        for (address, bytes) in captured.writes {
             if !allowed(g, side, e, a, address, bytes.len()) {
                 tap.fault(format!("{} wrote an unrecognised ABI output", e.name));
                 return Ok(value);
@@ -354,6 +373,7 @@ mod tests {
     #[derive(Default)]
     struct Tape {
         replay: bool,
+        legacy: bool,
         calls: Mutex<VecDeque<Call>>,
     }
     impl Tap for Tape {
@@ -361,7 +381,7 @@ mod tests {
             self.replay
         }
         fn service_calls(&self) -> bool {
-            true
+            !self.legacy
         }
         fn record(&self, _: film::Tag, call: Call) {
             self.calls.lock().unwrap().push_back(call)
@@ -392,6 +412,58 @@ mod tests {
     }
 
     #[test]
+    fn idle_bot_polls_can_be_skipped_without_consuming_a_lobby_result() {
+        let cfg = crate::NetworkConfig::new("127.0.0.1:3074".parse().unwrap());
+        let recording = crate::Hle::with_network(Default::default(), cfg.clone()).unwrap();
+        let tape = Arc::new(Tape::default());
+        recording.set_film_tap(tape.clone());
+        let session = "000000000000000a";
+        assert_eq!(recording.bot_roster_hosted_session(), None);
+        assert_eq!(recording.lobby_hosted_session(), None);
+        assert_eq!(recording.bot_roster_hosted_session(), None);
+        assert_eq!(recording.hosted_session(), None);
+        assert!(!recording.hosts_session(session));
+        let calls = std::mem::take(&mut *tape.calls.lock().unwrap());
+        assert_eq!(calls.len(), 2);
+
+        let replay = crate::Hle::for_film(cfg, true).unwrap();
+        let tape = Arc::new(Tape {
+            replay: true,
+            calls: Mutex::new(calls),
+            ..Default::default()
+        });
+        replay.set_film_tap(tape.clone());
+        replay.film_side.lock().unwrap().view.hosted = Some(session.into());
+        assert_eq!(replay.hosted_session().as_deref(), Some(session));
+        assert_eq!(replay.lobby_hosted_session(), None);
+        assert!(!replay.hosts_session(session));
+        assert!(tape.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn legacy_bot_poll_consumes_the_original_network_call() {
+        let cfg = crate::NetworkConfig::new("127.0.0.1:3074".parse().unwrap());
+        let replay = crate::Hle::for_film(cfg, true).unwrap();
+        let session = "000000000000000a";
+        let tape = Arc::new(Tape {
+            replay: true,
+            legacy: true,
+            calls: Mutex::new(VecDeque::from([Call {
+                op: "HostedSession".into(),
+                index: 0,
+                thread: 0,
+                args: vec![],
+                result: Ok(0),
+                outputs: vec![session.as_bytes().to_vec()],
+            }])),
+        });
+        replay.set_film_tap(tape.clone());
+        assert_eq!(replay.hosted_session(), None);
+        assert_eq!(replay.bot_roster_hosted_session().as_deref(), Some(session));
+        assert!(tape.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn asynchronous_service_results_and_new_heap_round_trip_without_a_worker() {
         let tape = Tape::default();
         let mut recording = guest();
@@ -407,7 +479,7 @@ mod tests {
             &mut Side::default(),
             |g| {
                 let handle = heap.alloc(g, 8).unwrap();
-                g.set_u32(handle, 42)?;
+                g.write_bytes_from(0x1234, handle, &42_u32.to_le_bytes(), 4)?;
                 g.set_u32(args[2], handle)?;
                 Ok((
                     crate::status::RUNNING_IDLE,
@@ -435,6 +507,24 @@ mod tests {
         assert_eq!(replay.u32(handle).unwrap(), 42);
         assert_eq!(side.view.users, [5, 0, 0, 0]);
         assert!(!allowed(&replay, &side, task, &args, 0x4004, 4));
+    }
+
+    #[test]
+    #[should_panic(expected = "made an unknown guest allocation")]
+    fn unclaimed_service_mappings_fail_recording() {
+        let task = entry("XOnlineOfferingIsNewContentAvailable");
+        let _ = invoke(
+            &Tape::default(),
+            task,
+            &[0, 0, 0x4000],
+            7,
+            &mut guest(),
+            &mut Side::default(),
+            |g| {
+                g.map_zeroed(0xa000_0000, ARENAS[0], runtime::guest::Permissions::RW).unwrap();
+                Ok((0, View::default()))
+            },
+        );
     }
 
     #[test]

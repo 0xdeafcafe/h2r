@@ -241,6 +241,14 @@ impl<B: Backend> Backend for CampaignMapsBackend<B> {
     fn volume_info(&mut self) -> Result<VolumeInfo> {
         self.inner.volume_info()
     }
+    fn film_source(&mut self, path: &str) -> Result<Option<crate::FilmMapSource>> {
+        if let Some((stem, o)) = self.ours(path) {
+            let mut source = crate::FilmMapSource::region(o.file.try_clone()?, 0);
+            source.override_name = Some(stem);
+            return Ok(Some(source));
+        }
+        self.inner.film_source(path)
+    }
     fn map_ranges(&mut self, path: &str) -> Option<Vec<(u64, u64)>> {
         if self.ours(path).is_some() {
             None

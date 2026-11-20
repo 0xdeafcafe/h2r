@@ -86,6 +86,7 @@ impl Guest {
     /// guard, and with `source` borrowed under its own, so no store to
     /// either is in flight.
     pub fn cow_refresh(&mut self, source: &Guest) -> CopyKind {
+        self.invalidate_hle_capture();
         let (ram, kind) = source.ram.cow_copy();
         self.ram = ram;
         if self.cow_source_layout != source.layout {
@@ -133,6 +134,7 @@ impl Guest {
     pub fn restore_from(&mut self, base: &FrozenRam, physical: u32, len: u32) {
         let start = (physical as usize).min(RAM_SIZE);
         let end = (physical as usize + len as usize).min(RAM_SIZE);
+        self.invalidate_hle_capture();
         self.ram[start..end].copy_from_slice(&base.bytes()[start..end]);
     }
 
@@ -169,6 +171,7 @@ impl Guest {
         written: &[WrittenPage],
         owned: &[(u32, u32)],
     ) -> HandBack {
+        self.invalidate_hle_capture();
         let base = base.bytes();
         let mut out = HandBack::default();
         for page in written {
@@ -286,6 +289,7 @@ impl Guest {
         if start >= RAM_SIZE || reference.len() != PAGE_SIZE as usize {
             return out;
         }
+        self.invalidate_hle_capture();
         let end = start + PAGE_SIZE as usize;
         let skip: Vec<(usize, usize)> = skip
             .iter()

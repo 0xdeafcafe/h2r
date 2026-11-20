@@ -26,7 +26,8 @@ pub struct Tally {
 }
 
 impl Tally {
-    pub fn kill(&mut self, tick: u64, scoring_killer: Option<u32>, victim: u32) {
+    #[cfg(test)]
+    fn kill(&mut self, tick: u64, scoring_killer: Option<u32>, victim: u32) {
         self.kill_with(tick, scoring_killer, victim, |_| {});
     }
 
@@ -84,13 +85,13 @@ impl Tally {
         self.last.filter(|_| self.deaths > 1)
     }
 
-    pub fn counts(&self, datum: u32) -> BTreeMap<String, u32> {
+    pub fn counts(&self, datum: u32, ended: bool) -> BTreeMap<String, u32> {
         let mut counts = self
             .players
             .get(&datum)
             .map(|p| p.awards.clone())
             .unwrap_or_default();
-        if self.last_word() == Some(datum) {
+        if ended && self.last_word() == Some(datum) {
             counts.insert("last-word".into(), 1);
         }
         counts
@@ -110,11 +111,11 @@ mod tests {
         tally.kill(130, None, 2);
         tally.kill(131, Some(2), 5);
         assert_eq!(
-            tally.counts(7),
+            tally.counts(7, true),
             BTreeMap::from([("opening-act".into(), 1), ("twofer".into(), 1)])
         );
         assert_eq!(
-            tally.counts(2),
+            tally.counts(2, true),
             BTreeMap::from([("payback".into(), 1), ("last-word".into(), 1)])
         );
     }

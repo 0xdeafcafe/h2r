@@ -1,13 +1,14 @@
 // One cache for a viewer session. Seeking requests the target segment first.
 // Fetch only the adjacent segment near an edge so interpolation has both poses.
 import { chunkAt, recordingFrames, type ArchiveSegment, type ChunkIndex, type RecordingChunk, type TimelineSegment } from "../api/chunk";
+import { FilmCache } from "../api/film-cache";
 import type { Frame, WireEvent } from "../api/types";
 
 export interface ReplayBlock { frames: Frame[]; events?: WireEvent[] }
 
 export class ReplayWindow<T extends TimelineSegment> {
-  private readonly history = new Map<number, WireEvent>();
-  private readonly loaded = new Map<number, Frame[]>();
+  private readonly history = new FilmCache<WireEvent>(4096, 4 << 20);
+  private readonly loaded = new Map<number, ReplayBlock>();
   private readonly pending = new Map<number, {request: Promise<void>; controller: AbortController}>();
   private current = -1;
   private readonly pinned: number | undefined;
@@ -31,14 +32,20 @@ export class ReplayWindow<T extends TimelineSegment> {
     // Only contiguous data around the playhead can contribute to a pose.
     const out: Frame[] = [];
     for (let i = this.current - 1; i <= this.current + 1; i++) {
-      const frames = this.loaded.get(i);
-      if (frames) out.push(...frames);
+      const block = this.loaded.get(i);
+      if (block) out.push(...block.frames);
     }
     return out;
   }
 
   get events(): WireEvent[] {
-    return [...this.history.values()];
+    const all = new Map<number, WireEvent>();
+    for (const event of this.history.values()) all.set(event.position, event);
+    // The active scene keeps its complete events even if one group exceeds
+    // the optional history budget. Only neighbouring frames are retained.
+    for (const block of this.loaded.values())
+      for (const event of block.events ?? []) all.set(event.position, event);
+    return [...all.values()];
   }
 
   private load(meta: T): Promise<void> {
@@ -48,8 +55,11 @@ export class ReplayWindow<T extends TimelineSegment> {
     const controller = new AbortController();
     const request = this.read(meta, controller.signal).then(block => {
       if (controller.signal.aborted) return;
-      this.loaded.set(i, block.frames);
-      for (const event of block.events ?? []) this.history.set(event.position, event);
+      this.loaded.set(i, block);
+      for (const event of block.events ?? []) {
+        if (!this.history.get(event.position))
+          this.history.set(event.position, event, 2 * JSON.stringify(event).length);
+      }
     }).catch(error => { if (!controller.signal.aborted) throw error; }).finally(() => {
       if (this.pending.get(i)?.controller === controller) this.pending.delete(i);
     });

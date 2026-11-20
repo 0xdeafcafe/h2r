@@ -64,8 +64,29 @@ pub struct Registered {
     pub player: Option<DatumHandle>,
 }
 
+/// Check the span of a retail objective table before deriving addresses
+/// from its guest pointer. A transient garbage pointer is a read fault.
+pub fn check_span(base: u32, len: u32) -> Result<(), MemFault> {
+    if u64::from(base) + u64::from(len) > 1 << 32 {
+        return Err(MemFault {
+            addr: base,
+            len,
+            write: false,
+        });
+    }
+    Ok(())
+}
+
 pub fn registered(m: &dyn GuestMemory, e: u32) -> Result<Vec<Registered>, MemFault> {
-    let count = m.i32(e + OBJECTIVE_COUNT)?.clamp(0, OBJECTIVE_MAX as i32) as u32;
+    check_span(e, OBJECTIVES + OBJECTIVE_STRIDE * OBJECTIVE_MAX)?;
+    let count = m.u32(e + OBJECTIVE_COUNT)?;
+    if count > OBJECTIVE_MAX {
+        return Err(MemFault {
+            addr: e + OBJECTIVE_COUNT,
+            len: 4,
+            write: false,
+        });
+    }
     let mut records = Vec::with_capacity(count as usize);
     for i in 0..count {
         let r = e + OBJECTIVES + i * OBJECTIVE_STRIDE;
@@ -93,6 +114,7 @@ pub struct BombState {
 /// The planted and armed bits and live arming timer of team 0..=8.
 pub fn bomb_state(m: &dyn GuestMemory, a: u32, team: u8) -> Result<BombState, MemFault> {
     let team = u32::from(team);
+    check_span(a, 0x1a2 + 2 * team)?;
     let flags = m.u8(a + 0x170 + team)?;
     Ok(BombState {
         arming: m.u16(a + 0x1a0 + 2 * team)? as i16 >= 0,
@@ -111,6 +133,7 @@ pub struct TerritoryState {
 
 /// Scoring ownership and presence, by site (docs/game/bots.md §3.7).
 pub fn territories(m: &dyn GuestMemory, t: u32) -> Result<Vec<TerritoryState>, MemFault> {
+    check_span(t, 0x116)?;
     let count = (m.u16(t + 0x114)? as i16).clamp(0, 8) as usize;
     let players = crate::view::players::array(m)?;
     let mut occupants = [0u16; 8];
@@ -151,6 +174,7 @@ pub fn hill_corners(
     k: u32,
     flags: &[([f32; 3], u16, u16)],
 ) -> Result<Option<(u8, Vec<[f32; 3]>)>, MemFault> {
+    check_span(k, KOTH_HILL + 4)?;
     let id = m.i32(k + KOTH_HILL)?;
     let count = m.i32(k + 0x60)?;
     if !(0..i32::from(kind::HILLS)).contains(&id) || !(4..=16).contains(&count) || count % 2 != 0 {
@@ -176,8 +200,10 @@ pub fn netgame_flags(m: &dyn GuestMemory) -> Result<Vec<([f32; 3], u16, u16)>, M
     if s == 0 {
         return Ok(Vec::new());
     }
+    check_span(s, NETGAME_FLAGS + 8)?;
     let n = m.i32(s + NETGAME_FLAGS)?.clamp(0, NETGAME_FLAG_LIMIT) as u32;
     let at = m.u32(s + NETGAME_FLAGS + 4)?;
+    check_span(at, n * NETGAME_FLAG_STRIDE)?;
     let mut out = Vec::with_capacity(n as usize);
     for i in 0..n {
         let f = at + i * NETGAME_FLAG_STRIDE;

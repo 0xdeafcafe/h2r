@@ -550,7 +550,15 @@ hash (clients' cursors and checkpoints stay valid) and is checked on the
 way in; the copy is idempotent and resumable: run it again and it carries
 on after what the destination has, and it refuses a destination that holds
 a different log. Blobs already at the destination with the same size are
-skipped. Only `content/` and `storage/` are copied, never the key.
+skipped. The blob copy includes custom content, cloud saves, frame chunks,
+sim reports and `films/`. It preserves each private host recording, including
+multipart manifests, their parts and pending stats-import pages. The copy
+also transfers private `film-staging/` objects, including validation cursors
+and reservation details. It refreshes staged objects even when their size
+matches. Quiesce writes during the final copy so journals, parts and mutable
+cursors represent the same cutover. The destination sweeper resumes accepted
+films after the signed log and private objects have both been restored.
+An upload still awaiting its next part can resume when its host reconnects.
 
 For live.forbes.red (a launchd agent running `h2-live-server --data
 "~/Library/Application Support/h2recomp/live/server" --db

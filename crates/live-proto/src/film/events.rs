@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use crate::game;
 pub mod ballistics;
-pub mod medals;
+mod medals;
 pub mod objective;
 
 /// The upper bound applies to a single uncompressed event, before serde.
@@ -158,6 +158,8 @@ impl Record {
 #[derive(Default)]
 pub struct Tracker {
     medals: medals::Tally,
+    participants: BTreeMap<u32, super::PlayerSummary>,
+    ended: bool,
     // The same slot may hold a different participant after a leave.
     generations: BTreeMap<u32, u32>,
     next_generation: u32,
@@ -179,6 +181,65 @@ impl Tracker {
         generation
     }
 
+    fn join(&mut self, player: &game::Player) -> Result<(), String> {
+        let seat = u8::try_from(player.index).map_err(|_| "film player seat exceeds 255")?;
+        let generation = self.generation(player.index);
+        self.participants.insert(
+            generation,
+            super::PlayerSummary {
+                seat,
+                name: player.name.clone(),
+                xuid: player.xuid.map(|x| x.0),
+                team: player.team,
+                ..Default::default()
+            },
+        );
+        Ok(())
+    }
+
+    /// Populate the menu using the same participant generations and medal
+    /// decisions that emitted the TICK records. Guest rows arrive in join
+    /// order. Match account/name first, then slot order for unlinked guests
+    /// whose displayed names differ. A transient participant may appear
+    /// only on the telemetry side between two GAME_TICK observations.
+    pub fn summary_medals(&self, rows: &mut Vec<super::PlayerSummary>) {
+        let mut available: Vec<_> = (0..rows.len()).collect();
+        let mut assigned = BTreeMap::new();
+        // Reserve every exact account before trying names, and every name
+        // before using join order. An unlinked guest must not consume the
+        // only unambiguous row belonging to a later occupant of the seat.
+        for pass in 0..3 {
+            for (&generation, p) in &self.participants {
+                if assigned.contains_key(&generation) {
+                    continue;
+                }
+                let candidate = available.iter().position(|&index| {
+                    let row = &rows[index];
+                    if p.seat != row.seat
+                        || matches!((p.xuid, row.xuid), (Some(a), Some(b)) if a != b)
+                    {
+                        return false;
+                    }
+                    match pass {
+                        0 => p.xuid.is_some() && p.xuid == row.xuid,
+                        1 => p.name == row.name,
+                        _ => true,
+                    }
+                });
+                if let Some(at) = candidate {
+                    assigned.insert(generation, available.remove(at));
+                }
+            }
+        }
+        for (&generation, participant) in &self.participants {
+            let index = assigned.get(&generation).copied().unwrap_or_else(|| {
+                rows.push(participant.clone());
+                rows.len() - 1
+            });
+            rows[index].medals = self.medals.counts(generation, self.ended);
+        }
+    }
+
     pub fn event(
         &mut self,
         kind: &str,
@@ -191,6 +252,9 @@ impl Tracker {
         let tick = match &event {
             Event::GameStarted(start) => {
                 *self = Self::default();
+                for player in &start.game.players {
+                    self.join(player)?;
+                }
                 self.objective_type = start.game.variant.clone().filter(|variant| {
                     matches!(
                         variant.as_str(),
@@ -206,7 +270,10 @@ impl Tracker {
                 });
                 start.game.tick.unwrap_or(fallback_tick)
             }
-            Event::PlayerJoined(_) => fallback_tick,
+            Event::PlayerJoined(joined) => {
+                self.join(&joined.player)?;
+                fallback_tick
+            }
             Event::PlayerLeft(e) => {
                 self.generations.remove(&e.index);
                 self.scores.remove(&e.index);
@@ -242,6 +309,7 @@ impl Tracker {
                 e.tick
             }
             Event::GameEnded(e) => {
+                self.ended = true;
                 self.score_changes(&e.players, &[], &mut extra);
                 if let Some((player, earned_at)) = self
                     .last_scoring
@@ -270,6 +338,13 @@ impl Tracker {
         out: &mut Vec<Event>,
     ) {
         for p in players {
+            if let Some(participant) = self
+                .generations
+                .get(&p.index)
+                .and_then(|g| self.participants.get_mut(g))
+            {
+                participant.score = p.score;
+            }
             let (assists, score) = self
                 .scores
                 .insert(p.index, (p.assists, p.score))
@@ -329,6 +404,8 @@ impl Tracker {
             }
         }
         for p in &frame.players {
+            if !sampled_combat && game::validate_frame_player(p).is_err() { continue; }
+
             self.unit(
                 frame.tick,
                 &format!("p{}", p.index),
@@ -343,6 +420,8 @@ impl Tracker {
             );
         }
         for a in &frame.actors {
+            if !sampled_combat && game::validate_frame_actor(a).is_err() { continue; }
+
             self.unit(
                 frame.tick,
                 &a.id,
@@ -537,6 +616,67 @@ mod tests {
             decode(&left.encode().unwrap()).unwrap(),
             Some((left.tick, kind, data))
         );
+    }
+
+    #[test]
+    fn incomplete_match_preserves_guest_results_and_only_awards_announced_medals() {
+        use crate::film::PlayerSummary;
+        let mut tracker = Tracker::default();
+        tracker
+            .event(
+                game::GAME_STARTED,
+                &json!({"host":"h","game_id":"g","map":"lockout",
+            "mode":"multiplayer","team_play":false,"players":[
+            {"index":2,"name":"Guest","team":0},
+            {"index":3,"name":"Opponent","team":0}]}),
+                0,
+            )
+            .unwrap();
+        for tick in [4, 6] {
+            tracker
+                .event(
+                    game::PLAYER_KILLED,
+                    &json!({"tick":tick,"killer":2,"victim":3,"kind":"kill"}),
+                    tick,
+                )
+                .unwrap();
+        }
+        tracker
+            .event(game::PLAYER_LEFT, &json!({"index":2}), 7)
+            .unwrap();
+        tracker
+            .event(
+                game::PLAYER_JOINED,
+                &json!({"player":{"index":2,"name":"Guest","team":1,"xuid":"0009000000000001"}}),
+                9,
+            )
+            .unwrap();
+        // Registered names match, guest appearances differ, row order is reversed.
+        let mut rows = vec![
+            PlayerSummary {
+                seat: 2,
+                name: "Guest".into(),
+                xuid: Some(0x0009000000000001),
+                score: 42,
+                ..Default::default()
+            },
+            PlayerSummary {
+                seat: 2,
+                name: "Guest".into(),
+                score: 17,
+                ..Default::default()
+            },
+        ];
+        tracker.summary_medals(&mut rows);
+        assert_eq!(rows.len(), 3);
+        assert!(rows[0].medals.is_empty());
+        assert_eq!(rows[0].score, 42);
+        assert_eq!(rows[1].score, 17);
+        assert_eq!(
+            rows[1].medals,
+            BTreeMap::from([("opening-act".into(), 1), ("twofer".into(), 1)])
+        );
+        assert_eq!(rows[2].name, "Opponent");
     }
 
     #[test]

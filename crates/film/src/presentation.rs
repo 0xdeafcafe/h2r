@@ -81,7 +81,10 @@ fn centimetres(p: [f64; 3]) -> Result<[i32; 3]> {
 }
 
 fn angles(d: [f64; 3]) -> Result<[i64; 2]> {
-    ensure!(d.iter().all(|v| v.is_finite()), "invalid pose direction");
+    ensure!(
+        d.iter().all(|v| v.is_finite()) && d.iter().any(|v| *v != 0.),
+        "invalid pose direction"
+    );
     let [x, y, z] = d;
     let yaw = (y.atan2(x) * (65536.0 / TAU)).round() as i64;
     let pitch = (z.atan2(x.hypot(y)) * (65536.0 / TAU)).round() as i64;
@@ -132,12 +135,12 @@ impl Pose {
             v[16] = opt(Some(a.graph));
             v[17] = i64::from(a.inherited);
             v[18] = i64::from(a.index);
-            ensure!(a.frame.is_finite(), "invalid animation frame");
+            ensure!((0.0..32768.0).contains(&a.frame), "invalid animation frame");
             v[19] = (f64::from(a.frame) * 16.0).round() as i64;
         }
         if let Some(value) = o.travel {
-            ensure!(value.is_finite(), "invalid device travel");
-            v[20] = 1 + (value.clamp(0., 1.) * 255.).round() as i64;
+            ensure!((0.0..=1.0).contains(&value), "invalid device travel");
+            v[20] = 1 + (value * 255.).round() as i64;
         }
         v[21] = i64::from(o.depleted);
         v[22] = opt(o.player);
@@ -310,20 +313,58 @@ struct Dictionary {
 }
 
 impl Dictionary {
-    fn from_scene(scene: &Scene) -> Result<Self> {
-        ensure!(scene.objects.len() <= CAPACITY, "too many guest objects");
+    fn from_scene(scene: &Scene, prior: &Self) -> Result<(Self, Dropped)> {
+        ensure!(
+            scene
+                .objects
+                .len()
+                .saturating_add(scene.missing.objects.len())
+                <= CAPACITY,
+            "too many guest objects"
+        );
+        let mut dropped = Dropped::default();
+        // None marks an allocated but unreadable body. Distinguish this from
+        // an absent slot so another object can still move or despawn.
+        let mut rows: Vec<_> = scene
+            .objects
+            .iter()
+            .map(|o| (o.datum, Some(o)))
+            .chain(scene.missing.objects.iter().map(|&id| (id, None)))
+            .collect();
+        rows.sort_unstable_by_key(|row| row.0);
+        ensure!(
+            rows.last().is_none_or(|row| row.0 != u32::MAX)
+                && !rows.windows(2).any(|pair| pair[0].0 == pair[1].0),
+            "invalid census datum"
+        );
         let mut objects = BTreeMap::new();
-        for o in &scene.objects {
-            ensure!(o.datum != u32::MAX, "invalid null object datum");
-            ensure!(
-                objects.insert(o.datum, Pose::quantise(o)?).is_none(),
-                "duplicate object datum"
-            );
+        for (id, row) in rows {
+            let old = prior.objects.get(&id);
+            let pose = if let Some(mut q) = row.and_then(|o| Pose::quantise(o).ok()) {
+                if scene.missing.objectives {
+                    q.v[23] = old.map_or(0, |p| p.v[23]);
+                }
+                Some(q)
+            } else {
+                dropped.objects += 1;
+                old.cloned()
+            };
+            if let Some(pose) = pose {
+                objects.insert(id, pose);
+            }
         }
-        Ok(Self {
-            objects,
-            hill: scene.hill.as_ref().map(Hill::quantise).transpose()?,
-        })
+        dropped.objectives = scene.missing.objectives;
+        let hill = match (
+            scene.missing.hill,
+            scene.hill.as_ref().map(Hill::quantise).transpose(),
+        ) {
+            (false, Ok(hill)) => hill,
+            _ => {
+                dropped.hill = true;
+                prior.hill.clone()
+            }
+        };
+        Ok((Self { objects, hill }, dropped))
     }
 
     fn changes(&self, old: &Self, baseline: bool) -> Option<Vec<u8>> {
@@ -372,6 +413,15 @@ impl Dictionary {
     }
 }
 
+/// Rejected rows in a complete object-header census. An invalid census
+/// itself returns an error and leaves the dictionary untouched.
+#[derive(Default, Debug, PartialEq, Eq)]
+pub struct Dropped {
+    pub objects: u64,
+    pub hill: bool,
+    pub objectives: bool,
+}
+
 /// Scene-only deltas and additional renderer fields use the same outer tag.
 /// A baseline starts a fresh supplemental v8 predictor for each HTTP range.
 #[derive(Default)]
@@ -382,28 +432,49 @@ pub struct Encoder {
 }
 
 impl Encoder {
+    /// The first changed supplemental sample in each time chunk is a v8 key.
+    /// Sleeping objects and unchanged player appearance still take no records.
+    pub fn begin_chunk(&mut self) {
+        self.packer = None;
+    }
+
     pub fn push(&mut self, scene: &Scene) -> Result<Option<Vec<u8>>> {
-        let next = Dictionary::from_scene(scene)?;
+        self.push_observed(scene).map(|(record, _)| record)
+    }
+
+    pub fn push_observed(&mut self, scene: &Scene) -> Result<(Option<Vec<u8>>, Dropped)> {
+        let (next, drops) = Dictionary::from_scene(scene, &self.scene)?;
         let record = next.changes(&self.scene, false);
         self.scene = next;
-        Ok(record)
+        Ok((record, drops))
     }
 
     pub fn baseline(&mut self) -> Result<Vec<u8>> {
+        self.baseline_observed().map(|(bytes, _)| bytes)
+    }
+
+    /// An unrepresentable supplemental key must not suppress the required
+    /// object checkpoint. The next valid supplemental frame starts with a key.
+    pub fn baseline_observed(&mut self) -> Result<(Vec<u8>, bool)> {
         let mut out = self
             .scene
             .changes(&Dictionary::default(), true)
             .expect("baseline is present");
         let mut packer = pack::Encoder::with_version(0, u64::MAX, 8)?;
-        if let Some(frame) = &self.extras {
-            let (bytes, _) = packer.encode(frame)?;
-            var(bytes.len() as u64, &mut out);
-            out.extend_from_slice(&bytes);
-        } else {
-            var(0, &mut out);
+        let packed = self.extras.as_ref().map(|f| packer.encode(f)).transpose();
+        let dropped = packed.is_err();
+        if dropped {
+            self.extras = None;
         }
+        let bytes = packed
+            .ok()
+            .flatten()
+            .map(|(bytes, _)| bytes)
+            .unwrap_or_default();
+        var(bytes.len() as u64, &mut out);
+        out.extend_from_slice(&bytes);
         self.packer = Some(packer);
-        Ok(out)
+        Ok((out, dropped))
     }
 
     /// Retain the named animation/weapon/stance, vitality and timestamped
@@ -411,6 +482,17 @@ impl Encoder {
     /// known transforms. A fallen player's last known location remains useful
     /// after its retail object has been destroyed.
     pub fn frame(&mut self, source: &Frame) -> Result<Option<Vec<u8>>> {
+        self.frame_observed(source).map(|(record, _)| record)
+    }
+
+    pub fn frame_observed(&mut self, source: &Frame) -> Result<(Option<Vec<u8>>, u64)> {
+        use live_proto::game;
+        ensure!(
+            source.players.len() <= game::MAX_PLAYERS
+                && source.actors.len() <= game::MAX_FRAME_ACTORS,
+            "invalid unit census"
+        );
+        let mut dropped = 0;
         let mut f = Frame {
             game_id: source.game_id.clone(),
             tick: source.tick,
@@ -461,20 +543,46 @@ impl Encoder {
                 }
             }};
         }
-        for p in &mut f.players {
+        f.players.retain_mut(|p| {
+            if game::validate_frame_player(p).is_err() || centimetres(p.pos).is_err() {
+                dropped += 1;
+                if let Some(old) = self
+                    .extras
+                    .as_ref()
+                    .and_then(|f| f.players.iter().find(|old| old.index == p.index))
+                {
+                    p.clone_from(old);
+                    return true;
+                }
+                return false;
+            }
             supplement!(p, p.alive.then(|| players.get(&p.index).copied()).flatten());
-        }
-        for a in &mut f.actors {
+            true
+        });
+        f.actors.retain_mut(|a| {
+            if game::validate_frame_actor(a).is_err() || centimetres(a.pos).is_err() {
+                dropped += 1;
+                if let Some(old) = self
+                    .extras
+                    .as_ref()
+                    .and_then(|f| f.actors.iter().find(|old| old.id == a.id))
+                {
+                    a.clone_from(old);
+                    return true;
+                }
+                return false;
+            }
             let pose = u32::from_str_radix(&a.id, 16)
                 .ok()
                 .and_then(|id| self.scene.objects.get(&id));
             supplement!(a, pose);
-        }
+            true
+        });
         let tick = f.tick;
         if let Some(prior) = &self.extras {
             f.tick = prior.tick;
             if f == *prior {
-                return Ok(None);
+                return Ok((None, dropped));
             }
             f.tick = tick;
         }
@@ -487,7 +595,7 @@ impl Encoder {
         out.extend(bytes);
         clear_transients(&mut f);
         self.extras = Some(f);
-        Ok(Some(out))
+        Ok((Some(out), dropped))
     }
 }
 
@@ -516,6 +624,7 @@ impl Decoder {
     /// Decoded transforms in guest world units, sorted by salted datum.
     pub fn scene(&self) -> Scene {
         Scene {
+            missing: Default::default(),
             objects: self
                 .scene
                 .objects
@@ -681,6 +790,7 @@ mod tests {
     fn canonical_wire_and_sleeping_objects_cost_nothing() {
         let mut enc = Encoder::default();
         let mut s = Scene {
+            missing: Default::default(),
             objects: vec![item(1)],
             hill: None,
         };
@@ -708,6 +818,7 @@ mod tests {
     fn graph_pose_hill_and_active_objects_seek_without_prior_samples() {
         let mut enc = Encoder::default();
         let mut s = Scene {
+            missing: Default::default(),
             objects: (0..=12)
                 .map(|kind| {
                     let mut o = item(0xffff_f000 + u32::from(kind));
@@ -762,6 +873,93 @@ mod tests {
         assert_eq!(copy.objects[0].forward, s.objects[0].forward);
         assert!(copy.objects[0].animation.is_none());
         assert!(copy.objects[0].aim.is_none());
+    }
+
+    #[test]
+    fn damaged_rows_hold_their_last_good_values_while_other_slots_change() {
+        let initial = Scene {
+            objects: vec![item(2), item(5), item(9), item(10)],
+            hill: Some(HillPose {
+                index: 1,
+                corners: vec![[2., 0., 0.]],
+            }),
+            ..Default::default()
+        };
+        let mut enc = Encoder::default();
+        let mut viewer = Decoder::default();
+        viewer.apply(&enc.push(&initial).unwrap().unwrap()).unwrap();
+
+        let mut next = initial.clone();
+        next.objects[0].forward[0] = f64::NAN;
+        next.objects[1].pos[0] = 20.;
+        next.objects.truncate(2);
+        next.objects.push(item(13));
+        next.missing.objects.push(9); // inaccessible body, but still allocated
+        next.hill.as_mut().unwrap().corners[0][1] = f64::INFINITY;
+        let (update, drops) = enc.push_observed(&next).unwrap();
+        assert_eq!(
+            drops,
+            Dropped {
+                objects: 2,
+                hill: true,
+                objectives: false
+            }
+        );
+        viewer.apply(&update.unwrap()).unwrap();
+        let decoded = viewer.scene();
+        assert_eq!(
+            decoded.objects.iter().map(|o| o.datum).collect::<Vec<_>>(),
+            [2, 5, 9, 13]
+        );
+        assert_eq!(decoded.objects[0].forward, initial.objects[0].forward);
+        assert_eq!(decoded.objects[1].pos[0], 20.);
+        assert_eq!(decoded.objects[2].pos, initial.objects[2].pos);
+        assert_eq!(decoded.hill.as_ref().unwrap().index, 1);
+
+        let mut recovered = next;
+        recovered.missing.objects.clear();
+        recovered.objects[0].forward = [0., 1., 0.];
+        recovered.hill = None;
+        let (update, drops) = enc.push_observed(&recovered).unwrap();
+        assert_eq!(drops, Dropped::default());
+        viewer.apply(&update.unwrap()).unwrap();
+        let decoded = viewer.scene();
+        assert_eq!(decoded.objects.len(), 3);
+        assert!(decoded.objects[0].forward[1] > 0.9999);
+        assert!(decoded.hill.is_none());
+    }
+
+    #[test]
+    fn nonfinite_player_sample_preserves_only_that_player() {
+        let mut enc = Encoder::default();
+        let mut viewer = Decoder::default();
+        let player = |index| FramePlayer {
+            index,
+            alive: true,
+            ..Default::default()
+        };
+        let mut f = Frame {
+            game_id: "fixture".into(),
+            tick: 1,
+            players: vec![player(0), player(2)],
+            ..Default::default()
+        };
+        viewer.apply(&enc.frame(&f).unwrap().unwrap()).unwrap();
+        f.tick += 2;
+        f.players[0].yaw = f64::NAN;
+        f.players[1].weapon = Some("battle_rifle".into());
+        let (bytes, drops) = enc.frame_observed(&f).unwrap();
+        assert_eq!(drops, 1);
+        viewer.apply(&bytes.unwrap()).unwrap();
+        let p = &viewer.extras().unwrap().players;
+        assert_eq!(p[0].yaw, 0.);
+        assert_eq!(p[1].weapon.as_deref(), Some("battle_rifle"));
+        f.tick += 2;
+        f.players[0].yaw = 1.;
+        let (bytes, drops) = enc.frame_observed(&f).unwrap();
+        assert_eq!(drops, 0);
+        viewer.apply(&bytes.unwrap()).unwrap();
+        assert!((viewer.extras().unwrap().players[0].yaw - 1.).abs() < 0.001);
     }
 
     #[test]
@@ -827,6 +1025,7 @@ mod tests {
         let mut dec = Decoder::default();
         let mut enc = Encoder::default();
         let scene = Scene {
+            missing: Default::default(),
             objects: vec![item(0x8000_0001)],
             hill: None,
         };

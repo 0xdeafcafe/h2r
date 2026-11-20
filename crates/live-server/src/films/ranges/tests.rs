@@ -106,10 +106,12 @@ fn receipt_requires_the_physical_index_and_complete_footer() {
 fn consumption_stops_for_stats_before_the_next_chunk() {
     let film = fixture(false);
     let mut inspector = Inspector::default();
-    let consumed = inspector.consume_one(&film.data).unwrap();
+    let mut consumed = 0;
+    while (consumed as u64) < film.tick.end {
+        consumed += inspector.consume_one(&film.data[consumed..]).unwrap();
+    }
     assert_eq!(consumed as u64, film.tick.end);
-    let tail = &film.data[consumed..];
-    assert_eq!(inspector.consume_one(tail).unwrap(), tail.len());
+    inspector.consume(&film.data[consumed..]).unwrap();
     assert_eq!(inspector.finish().unwrap().events.tick_rate, Some(60));
 }
 
@@ -120,6 +122,11 @@ async fn fetches_only_public_extents_from_the_same_blob() {
     let cache = WebIndexCache::default();
     let store = BlobStore::memory();
     let key = "films/test.h2film";
+    let mut legacy = serde_json::to_value(&receipt).unwrap();
+    legacy.as_object_mut().unwrap().remove("public_safe");
+    let legacy: WebRanges = serde_json::from_value(legacy).unwrap();
+    assert!(!legacy.public_safe);
+    assert!(legacy.read(&cache, &store, key, &(0..32)).await.unwrap().is_none());
     store
         .put(key, Bytes::from(film.data.clone()), &Meta::default())
         .await
@@ -135,13 +142,18 @@ async fn fetches_only_public_extents_from_the_same_blob() {
         film.index.clone(),
         footer,
     ] {
+        let (bytes, complete) = receipt
+            .read(&cache, &store, key, &span)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
-            receipt
-                .read(&cache, &store, key, &span)
-                .await
-                .unwrap()
-                .unwrap()
-                .as_ref(),
+            complete,
+            span == film.tick,
+            "only entire time chunks can be shared"
+        );
+        assert_eq!(
+            bytes.as_ref(),
             &film.data[span.start as usize..span.end as usize]
         );
     }
@@ -187,6 +199,8 @@ fn only_one_explicit_range_or_the_footer_suffix() {
         Some(&(0..3)),
         100,
         Bytes::from_static(b"123"),
+        false,
+        None,
     );
     assert_eq!(res.status(), StatusCode::PARTIAL_CONTENT);
     assert_eq!(res.headers()[header::CONTENT_RANGE], "bytes 0-2/100");
@@ -194,4 +208,28 @@ fn only_one_explicit_range_or_the_footer_suffix() {
         res.headers()[header::CACHE_CONTROL],
         "private, no-store, no-transform"
     );
+}
+
+#[test]
+fn index_cache_retains_recent_films_and_limits_heap_residency() {
+    let cache = WebIndexCache::default();
+    let index = |n| Extents {
+        chunks: vec![Extent { offset: 1, size: 4 }; n].into_boxed_slice(),
+    };
+    let first = cache.insert("first", index(2));
+    for n in 1..MAX_CACHED_FILMS {
+        cache.insert(&n.to_string(), index(1));
+    }
+    assert!(Arc::ptr_eq(&first, &cache.get("first").unwrap()));
+    cache.insert("another", index(1));
+    assert!(cache.get("1").is_none());
+    let count = MAX_CACHED_BYTES / std::mem::size_of::<Extent>();
+    cache.insert("large", index(count));
+    assert!(cache.get("first").is_none());
+    cache.insert("too-big", index(count + 1));
+    assert!(cache.get("too-big").is_none());
+    assert!(cache.get("large").is_some());
+    cache.insert("large", index(3));
+    cache.insert("small", index(2));
+    assert_eq!(cache.get("large").unwrap().chunks.len(), 3);
 }

@@ -56,7 +56,7 @@ impl Recording {
         post_hash: Option<u64>,
     ) -> Result<()> {
         let mut events = std::mem::take(&mut self.frame.events);
-        events.extend(self.meta.observe(guest, tick)?);
+        events.extend(self.meta.observe(guest, tick, |source| self.unified.dropped(source))?);
         let inputs = self.frame.actions.take().unwrap_or_default();
         let out = self.out.as_mut().context("engine tape is closed")?;
         let match_start = self.meta.descriptor().match_start_tick;
@@ -69,7 +69,7 @@ impl Recording {
         }
         let records = self
             .unified
-            .take_records(self.track.needs_pose_baseline())?;
+            .take_records(self.track.begins_chunk(), self.track.needs_pose_baseline())?;
         self.track.push_clocked(
             out,
             Tick {
@@ -169,7 +169,7 @@ impl Session {
         lobby_boundary: u64,
         machine: &mut crate::snapshot_glue::BootMachine<'_>,
     ) {
-        let (tick, calls, anchor) = {
+        let (tick, calls, anchor, disk) = {
             let mut s = self.lock();
             let (tick, calls) = (s.tick, s.calls);
             let Mode::Record(rec) = &mut s.mode else {
@@ -185,7 +185,7 @@ impl Session {
                 .as_ref()
                 .filter(|a| a.deltas < DELTAS_PER_ANCHOR && a.tick >= match_start)
                 .cloned();
-            (tick, calls, anchor)
+            (tick, calls, anchor, std::sync::Arc::clone(&rec.disk))
         };
 
         // Feature policies may inspect this Session themselves. Never hold its
@@ -200,13 +200,7 @@ impl Session {
             };
             ready(machine)?;
             vfs::flush_pending_metadata();
-            let disk_delta = {
-                let s = self.lock();
-                let Mode::Record(rec) = &s.mode else {
-                    anyhow::bail!("film closed")
-                };
-                rec.start_manifest.keyframe_delta(&rec.data_root)?
-            };
+            let disk_delta = disk.lock().unwrap_or_else(|e| e.into_inner()).capture()?;
             let header = snapshot::Header {
                 build: machine.shelf.build().clone(),
                 name: format!("film-{tick}"),

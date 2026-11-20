@@ -9,6 +9,8 @@ mod content_maps;
 mod dir_disc;
 mod disc;
 mod host;
+mod film_map;
+pub use film_map::{FilmMap, FilmMapSource};
 mod map_override;
 mod packages;
 mod path;
@@ -809,59 +811,6 @@ impl Vfs {
     pub fn map_ranges(&mut self, name: &str) -> Result<Option<Vec<(u64, u64)>>> {
         let (mount, path) = self.resolve(name)?;
         Ok(self.mounts[mount].backend.map_ranges(&path))
-    }
-
-    /// Digest the mounted byte stream, including overlay patches and rewritten
-    /// headers. Host observers do not allocate guest handles or move a guest
-    /// cursor. A sparse film supplies the same ranges on a full playback DVD.
-    pub fn file_sha256(
-        &mut self,
-        name: &str,
-        ranges: Option<&[(u64, u64)]>,
-    ) -> Result<content::Sha256> {
-        let (mount, path) = self.resolve(name)?;
-        let backend = &mut self.mounts[mount].backend;
-        let info = backend.stat(&path)?;
-        if info.is_directory() {
-            return Err(Error::FileIsADirectory);
-        }
-        let mut hash = content::Hasher::default();
-        let whole = [(0, info.end_of_file)];
-        if let Some(ranges) = ranges {
-            if ranges.is_empty() || ranges.len() > 1 << 20 {
-                return Err(Error::FileCorrupt);
-            }
-            hash.update(b"H2FILM sparse map v1\0");
-            hash.update(&info.end_of_file.to_le_bytes());
-            hash.update(&(ranges.len() as u64).to_le_bytes());
-        }
-        let mut buf = vec![0; 256 * 1024];
-        let mut previous_end = 0;
-        for &(start, len) in ranges.unwrap_or(&whole) {
-            let end = start
-                .checked_add(len)
-                .filter(|&end| end <= info.end_of_file)
-                .ok_or(Error::FileCorrupt)?;
-            if ranges.is_some() {
-                if start < previous_end || len == 0 {
-                    return Err(Error::FileCorrupt);
-                }
-                hash.update(&start.to_le_bytes());
-                hash.update(&len.to_le_bytes());
-            }
-            previous_end = end;
-            let mut at = start;
-            while at < end {
-                let want = (end - at).min(buf.len() as u64) as usize;
-                let n = backend.read_at(&path, at, &mut buf[..want])?;
-                if n == 0 || n > want {
-                    return Err(Error::FileCorrupt);
-                }
-                hash.update(&buf[..n]);
-                at += n as u64;
-            }
-        }
-        Ok(hash.finish())
     }
 
     pub fn query_volume_information(&mut self, handle: Handle) -> Result<VolumeInfo> {

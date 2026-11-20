@@ -2,6 +2,7 @@
 //! then seal and optionally upload at the first slice after game over.
 mod actions;
 mod camera;
+mod compatibility;
 #[cfg(feature = "gpu")]
 mod host_view;
 #[cfg(feature = "gpu")]
@@ -55,8 +56,7 @@ struct Recording {
     meta: metadata::Capture,
     frame: record::Capture,
     unified: unified::Capture,
-    data_root: PathBuf,
-    start_manifest: film::manifest::Manifest,
+    disk: Arc<Mutex<film::manifest::DiskTracker>>,
     upload: Option<UploadTarget>,
 }
 
@@ -103,7 +103,7 @@ pub fn image_match(
     candidate: &str,
     xbe_sha256: &str,
 ) -> Result<film::image::ImageMatch> {
-    ensure!(version == 1 || runtime == env!("FILM_RUNTIME_HASH"), "film runtime stamp differs");
+    ensure!(version == 1 || runtime == compatibility::SIMULATION_ABI, "film simulation ABI differs (recorded {runtime}, installed {})", compatibility::SIMULATION_ABI);
     if version >= 3 && let Some(guest) = guest {
         return guest.compare(original, candidate, emit::compile::Arch::host().triple(), xbe_sha256)
             .map_err(|reason| anyhow::anyhow!("film image stamp differs: {reason}"));
@@ -120,6 +120,8 @@ pub(crate) struct Facts {
     pub bots: bool,
     pub address: String,
     pub live_service: bool,
+    pub telemetry_hooks: live_proto::film::TelemetryHooks,
+    pub render_hooks: film::RenderHooks,
 }
 pub(crate) struct Session {
     version: u32,
@@ -149,7 +151,7 @@ impl Session {
             light: host_light,
             bots,
             address,
-            live_service,
+            live_service, telemetry_hooks, render_hooks,
         } = facts;
         let switches = feature::Switches::from_env()
             .map_err(anyhow::Error::msg)?
@@ -170,6 +172,20 @@ impl Session {
                     && h.transfers_per_slice == opts.transfers_per_slice,
                 "film boot facts differ"
             );
+            if let Some(required) = h.render_hooks {
+                ensure!(
+                    render_hooks.supports(required),
+                    "playback executable lacks the film's {required:?} render hooks"
+                );
+            }
+            if let Some(plan) = h.telemetry_hooks {
+                ensure!(
+                    (!plan.weapon_fire || telemetry_hooks.weapon_fire)
+                        && (!plan.damage_report || telemetry_hooks.damage_report)
+                        && (!plan.object_delete || telemetry_hooks.object_delete),
+                    "image lacks an observer required by the film telemetry plan"
+                );
+            }
             ensure!(r.seek_tick <= tape.length, "seek beyond film");
             h.meta.length_ticks = tape.length;
             let (speed, target, paused) = (
@@ -195,7 +211,8 @@ impl Session {
                 title_id,
                 xbe_sha256,
                 guest_image: Some(guest_image),
-                runtime_stamp: env!("FILM_RUNTIME_HASH").into(),
+                runtime_stamp: compatibility::SIMULATION_ABI.into(),
+                simulation_hooks: None,
                 epoch_100ns: epoch,
                 lease_id,
                 game_id,
@@ -204,7 +221,9 @@ impl Session {
                 lobby_machine_start: std::env::var("H2_HOST_LOBBY_MACHINE_START").as_deref()
                     != Ok("0"),
                 host_bots: bots,
-                telemetry: false,
+                telemetry: true,
+                telemetry_hooks: Some(telemetry_hooks),
+                render_hooks: Some(render_hooks),
                 live_service,
                 features: switches,
                 transfers_per_slice: opts.transfers_per_slice,
@@ -228,7 +247,7 @@ impl Session {
             } else {
                 None
             };
-            let manifest = film::manifest::Manifest::capture_v2(&opts.data_root)?;
+            let (manifest, disk) = film::manifest::Manifest::capture_for_recording(&opts.data_root)?;
             let mut file = File::options();
             file.write(true).create_new(true);
             #[cfg(unix)]
@@ -252,8 +271,7 @@ impl Session {
                     meta: metadata::Capture::new(&header),
                     frame: Default::default(),
                     unified: Default::default(),
-                    data_root: opts.data_root.clone(),
-                    start_manifest: manifest,
+                    disk: Arc::new(Mutex::new(disk)),
                     upload,
                 }),
                 header,
@@ -294,18 +312,17 @@ impl Session {
         })))
     }
 
-    pub fn record_telemetry(&self, enabled: bool) {
-        let mut s = self.lock();
-        if matches!(s.mode, Mode::Record(_)) {
-            s.header.telemetry = enabled;
-        }
-    }
     pub(crate) fn has_engine_track(&self) -> bool {
         self.version >= 2
     }
 
-    pub fn has_telemetry(&self) -> bool {
-        self.lock().header.telemetry
+    pub(crate) fn render_hooks(&self) -> film::RenderHooks {
+        self.lock().header.render_hooks
+            .unwrap_or_else(crate::registration::compiled_render_hooks)
+    }
+
+    pub(crate) fn telemetry_plan(&self) -> live_proto::film::TelemetryHooks {
+        self.lock().header.telemetry_plan()
     }
 
     fn checkpoint(&self, guest: &runtime::Guest) {
@@ -477,7 +494,8 @@ impl Session {
             return Ok(());
         }
         let matched = rec.match_over;
-        let summary = rec.meta.summary(s.tick);
+        let mut summary = rec.meta.summary(s.tick);
+        rec.unified.summary_medals(&mut summary.players);
         if !summary.level.is_empty() {
             s.header.meta.map.clone_from(&summary.level);
             s.header.meta.variant.clone_from(&summary.variant_name);
@@ -496,9 +514,11 @@ impl Session {
         let upload = rec.upload.take();
         let done = (|| -> Result<()> {
             rec.track.closing_events(std::mem::take(&mut rec.frame.events))?;
-            rec.track.append_to_last(rec.unified.take_records(false)?)?;
+            rec.track.append_to_last(rec.unified.take_records(false, false)?)?;
+            summary.dropped_samples = rec.unified.drop_counts();
             rec.batch.flush(&mut out)?;
             out.chunk(film::HEAD, &header)?;
+            rec.meta.finish_map()?;
             rec.track.finish(&mut out, rec.meta.descriptor(), &summary)?;
             out.chunk(
                 film::MARK,
@@ -763,10 +783,10 @@ impl feature::Feature for Observer {
                 s.roster(&g);
                 let tick = s.tick;
                 if let Mode::Record(r) = &mut s.mode {
-                    match r.meta.observe(&g, tick) {
+                    match r.meta.observe(&g, tick, |source| r.unified.dropped(source)) {
                         Ok(events) => r.frame.events.extend(events),
                         Err(error) => {
-                            s.fail(format!("capturing final scoreboard: {error:#}"));
+                            s.fail(format!("reading required match identity: {error:#}"));
                             return;
                         }
                     }

@@ -790,3 +790,66 @@ fn read_append_copies_what_read_bytes_does_and_nothing_on_a_fault() {
     g.read_append(0x10000, 0, &mut out, 1).unwrap();
     assert_eq!(out, before);
 }
+
+#[test]
+fn hle_outputs_capture_checked_writes_including_fast_and_cross_mapping_accesses() {
+    let mut g = Guest::new();
+    g.map(0x1000, P, 0, Permissions::RW).unwrap();
+    g.map(0x2000, P, 2 * P, Permissions::RW).unwrap();
+    g.map(0x3000, P, 4 * P, Permissions::READ).unwrap();
+    g.prepare_fast_pages();
+    let (_, captured) = g.capture_hle_writes(9, |g| {
+        g.write_bytes_from(11, 0x1000, &[5, 6, 7, 8], 4).unwrap();
+        g.write_bytes_from(12, 0x1ffe, &[1, 2, 3, 4], 1).unwrap();
+        assert!(g.write_bytes_from(13, 0x2ffe, &[9; 4], 1).is_err());
+        g.set_u8(0x1001, 0).unwrap();
+        g.write_bytes(0x1000, &[], 1).unwrap();
+    });
+    let captured = captured.unwrap();
+    assert!(captured.zeroed.is_empty());
+    assert_eq!(
+        captured.writes,
+        [
+            (0x1000, vec![5, 6, 7, 8]),
+            (0x1ffe, vec![1, 2, 3, 4]),
+            (0x1001, vec![0]),
+        ]
+    );
+    assert_eq!(g.u16(0x2ffe).unwrap(), 0);
+    let (_, oversized) = g.capture_hle_writes(3, |g| g.set_u32(0x1000, 55).unwrap());
+    assert!(oversized.is_none());
+    assert_eq!(g.u32(0x1000).unwrap(), 55);
+}
+
+#[test]
+fn capturing_reused_zeroed_storage_records_the_allocation_without_copying_its_bytes() {
+    let mut g = Guest::new();
+    g.map(0x1000, P, RAM_SIZE as u32 - P, Permissions::RW)
+        .unwrap();
+    g.map(0x2000, P, 0, Permissions::RW).unwrap();
+    g.set_u32(0x2000, u32::MAX).unwrap();
+    g.unmap(0x2000, P).unwrap();
+    let (_, captured) = g.capture_hle_writes(0, |g| {
+        g.map_zeroed(0x3000, P, Permissions::RW).unwrap();
+    });
+    let captured = captured.unwrap();
+    assert_eq!(captured.zeroed, [(0x3000, P, Permissions::RW)]);
+    assert!(captured.writes.is_empty());
+    assert_eq!(g.u32(0x3000).unwrap(), 0);
+}
+
+#[test]
+fn capture_rejects_unreproducible_layout_changes_even_if_a_known_allocation_follows() {
+    let mut g = four_pages();
+    let (_, captured) = g.capture_hle_writes(64, |g| {
+        g.protect_range(0x11000, P, Permissions::READ).unwrap();
+        g.map_zeroed(0x20000, P, Permissions::RW).unwrap();
+    });
+    assert!(captured.is_none());
+    let (_, captured) = g.capture_hle_writes(64, |g| {
+        g.reserve_physical(0, P, &[], "test").unwrap();
+    });
+    assert!(captured.is_none());
+    let (_, recovered) = g.capture_hle_writes(1, |g| g.set_u8(0x10000, 9).unwrap());
+    assert_eq!(recovered.unwrap().writes, [(0x10000, vec![9])]);
+}

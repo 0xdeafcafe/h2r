@@ -1,16 +1,20 @@
 //! Validate the directory against physical chunk boundaries as the bytes pass
 //! into storage. The public HTTP range reader trusts only that validated index.
+mod checkpoint;
+mod privacy;
+
 use std::{fmt, io::Read};
 
 use live_proto::film::{
     MAX_SUMMARY_BYTES, Summary,
+    privacy::{PRIVATE_TAG, is_public_tick, project, public_summary},
     range::{self, Directory, Footer, Front, Prefix},
 };
 use serde::{
-    Deserialize, Deserializer,
+    Deserialize, Deserializer, Serialize,
     de::{SeqAccess, Visitor},
 };
-use sha2::{Digest, Sha256};
+use sha2_checkpoint::{Digest, Sha256};
 
 use super::{ApiResult, import::FilmEvents, invalid, ranges::WebRanges};
 
@@ -57,35 +61,49 @@ impl<'de> Visitor<'de> for IndexDigest {
 }
 
 pub(super) struct InspectedFilm {
+    pub(super) unified: bool,
     pub(super) summary: Option<Summary>,
     pub(super) web_ranges: Option<WebRanges>,
     pub(super) events: FilmEvents,
 }
 
+#[derive(Serialize, Deserialize)]
 struct CheckedDirectory {
-    directory: Directory,
     offset: u64,
     packed_size: u32,
     raw_size: u32,
     sha256: String,
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub(super) struct Inspector {
+    #[serde(with = "checkpoint::digest")]
+    file_digest: Sha256,
+    work: usize,
     pos: u64,
     prefix: Vec<u8>,
     tag: [u8; 4],
     packed: u32,
     remaining: usize,
+    #[serde(skip)] // Raw bytes follow the checkpoint JSON.
     collected: Vec<u8>,
     version: Option<u32>,
-    front_buf: Option<Vec<u8>>,
+    reading_front: bool,
     front_size: Option<u32>,
+    // Checkpoints from before field-level admission cannot authorise web reads.
+    #[serde(default)]
+    public_safe: bool,
+    #[serde(default)]
+    private_events: Option<privacy::Overlap>,
     final_head: Option<u64>,
     last_head: Option<u64>,
+    #[serde(with = "checkpoint::digest")]
     observed: Sha256,
+    #[serde(with = "checkpoint::digest")]
     ticks: Sha256,
+    #[serde(skip)] // Two bits per TICK in the checkpoint.
     scene_starts: Vec<Option<bool>>,
+    #[serde(with = "checkpoint::digest")]
     keys: Sha256,
     chunks: usize,
     summary: Option<Summary>,
@@ -126,25 +144,47 @@ impl Inspector {
         Ok(())
     }
 
-    /// Stop at the first complete TICK so the importer can drain its rows
-    /// before expanding another compressed chunk from the same HTTP buffer.
-    pub(super) fn consume_one(&mut self, mut bytes: &[u8]) -> ApiResult<usize> {
+    pub(super) fn sha256(&self) -> String {
+        live_proto::sign::hex(&self.file_digest.clone().finalize())
+    }
+
+    pub(super) fn position(&self) -> u64 {
+        self.pos
+    }
+
+    pub(super) fn completed_work(&self) -> usize {
+        self.work
+    }
+
+    /// Return the consumed prefix after each decoded chunk so the caller
+    /// can journal its events and bound expansion per request.
+    pub(super) fn consume_one(&mut self, bytes: &[u8]) -> ApiResult<usize> {
+        let n = self.parse_bytes(bytes)?;
+        self.file_digest.update(&bytes[..n]);
+        Ok(n)
+    }
+
+    fn parse_bytes(&mut self, mut bytes: &[u8]) -> ApiResult<usize> {
         let input = bytes.len();
         while !bytes.is_empty() {
-            if let Some(front) = self.front_buf.as_mut() {
+            if self.reading_front {
+                let front = &mut self.collected;
                 let n = bytes.len().min(range::DATA_OFFSET as usize - front.len());
                 front.extend_from_slice(&bytes[..n]);
                 self.pos += n as u64;
                 bytes = &bytes[n..];
                 if self.pos == range::DATA_OFFSET {
-                    let buf = self.front_buf.take().expect("front is present");
+                    self.reading_front = false;
+                    let buf = std::mem::take(&mut self.collected);
                     let prefix = Prefix::decode(&buf[..range::PREFIX_BYTES]).map_err(invalid)?;
                     let end = range::PREFIX_BYTES + prefix.json_len as usize;
                     if end > buf.len() || buf[end..].iter().any(|&b| b != 0) {
                         return Err(invalid("invalid film summary reserve"));
                     }
-                    let front: Front = serde_json::from_slice(&buf[range::PREFIX_BYTES..end])
+                    let raw = &buf[range::PREFIX_BYTES..end];
+                    let front: Front = serde_json::from_slice(raw)
                         .map_err(|_| invalid("invalid film front summary"))?;
+                    self.public_safe = privacy::public_front(raw, &front);
                     if front.ticks_per_second == Some(0) {
                         return Err(invalid("film tick rate must be positive"));
                     }
@@ -152,6 +192,8 @@ impl Inspector {
                     self.front_size = Some(prefix.json_len);
                     self.final_head = Some(front.final_head);
                     self.summary = Some(front.summary);
+                    self.work += 1;
+                    return Ok(input - bytes.len());
                 }
                 continue;
             }
@@ -177,7 +219,8 @@ impl Inspector {
                     continue;
                 }
                 if self.pos == 8 && self.prefix.as_slice() == b"H2BLAM3!" {
-                    self.front_buf = Some(std::mem::take(&mut self.prefix));
+                    self.reading_front = true;
+                    self.collected = std::mem::take(&mut self.prefix);
                     continue;
                 }
                 self.tag.copy_from_slice(&self.prefix[..4]);
@@ -193,12 +236,17 @@ impl Inspector {
             self.pos += n as u64;
             self.remaining -= n;
             bytes = &bytes[n..];
-            if self.remaining == 0 && self.collect() {
-                self.finish_chunk()?;
-                self.collected.clear();
-                if self.tag == *b"TICK" {
-                    return Ok(input - bytes.len());
+            if self.remaining == 0 {
+                if self.collect() {
+                    self.finish_chunk()?;
+                    self.collected.clear();
+                } else if self.chunks % 1024 != 0 {
+                    continue;
                 }
+                // A run of tiny opaque frames also has a bounded header
+                // parsing budget even when it contains no expanded payloads.
+                self.work += 1;
+                return Ok(input - bytes.len());
             }
         }
         Ok(input)
@@ -206,6 +254,9 @@ impl Inspector {
 
     fn start_chunk(&mut self) -> ApiResult<()> {
         let offset = self.pos - 8;
+        if self.private_events.is_some() && self.tag != range::TICK {
+            return Err(invalid("private film events must immediately precede their time chunk"));
+        }
         if self.remaining == 0 || self.remaining > MAX_CHUNK {
             return Err(invalid("invalid compressed film chunk size"));
         }
@@ -244,7 +295,7 @@ impl Inspector {
         }
         let max = if self.version.is_none() || self.tag == *b"SUMM" {
             MAX_SUMMARY_BYTES + 1024
-        } else if self.version == Some(3) && self.tag == *b"TICK" {
+        } else if self.version == Some(3) && matches!(self.tag, range::TICK | PRIVATE_TAG) {
             MAX_TICK_PACKED
         } else if self.tag == *b"CIDX" {
             MAX_INDEX_PACKED
@@ -260,7 +311,7 @@ impl Inspector {
     fn collect(&self) -> bool {
         self.version.is_none()
             || matches!(&self.tag, b"SUMM" | b"INDX")
-            || (self.version == Some(3) && matches!(&self.tag, b"CIDX" | b"TICK"))
+            || (self.version == Some(3) && matches!(self.tag, range::CIDX | range::TICK | PRIVATE_TAG))
     }
 
     fn finish_chunk(&mut self) -> ApiResult<()> {
@@ -287,12 +338,30 @@ impl Inspector {
                 );
                 Ok(())
             }
+            tag if *tag == PRIVATE_TAG => {
+                let raw = inflate_limited(&self.collected, MAX_TICK_BYTES)?;
+                let public = project(&raw).map_err(invalid)?.public;
+                let expected = privacy::overlap(&public)?;
+                if expected.stats != self.events.chunk(&raw)? {
+                    return Err(invalid("private film stats have no public equivalent"));
+                }
+                self.private_events = Some(expected);
+                Ok(())
+            }
             b"TICK" => {
                 let raw = inflate_limited(&self.collected, MAX_TICK_BYTES)?;
-                let (first, last) = self.events.chunk(&raw)?;
-                // We already validated each record while importing events.
-                // An explicitly stored scene must start at the first tick.
                 let chunk = live_proto::film::stream::Chunk::parse(&raw).map_err(invalid)?;
+                let first = chunk.first_tick;
+                let last = first + u64::from(chunk.tick_count - 1);
+                if let Some(expected) = self.private_events.take() {
+                    if expected != privacy::overlap(&raw)? {
+                        return Err(invalid("private and public film events disagree"));
+                    }
+                } else {
+                    self.events.chunk(&raw)?;
+                }
+                self.public_safe &= is_public_tick(&raw);
+                // An explicitly stored scene must start at the first tick.
                 let pose = chunk
                     .records()
                     .filter_map(Result::ok)
@@ -314,6 +383,7 @@ impl Inspector {
                 let raw = inflate_limited(&self.collected, MAX_INDEX_BYTES)?;
                 let directory: Directory =
                     serde_json::from_slice(&raw).map_err(|_| invalid("invalid cinema index"))?;
+                self.public_safe &= privacy::public_directory(&raw);
                 let mut ticks = Sha256::new();
                 let mut keys = Sha256::new();
                 let mut saw_pose = false;
@@ -353,12 +423,12 @@ impl Inspector {
                 digest.update(b"CIDX");
                 digest.update(self.packed.to_le_bytes());
                 digest.update(&self.collected);
+                directory.validate_at(offset).map_err(invalid)?;
                 self.cidx = Some(CheckedDirectory {
-                    directory,
                     offset,
                     packed_size: self.packed + 8,
                     raw_size: raw.len() as u32,
-                    sha256: format!("{:x}", digest.finalize()),
+                    sha256: live_proto::sign::hex(&digest.finalize()),
                 });
                 Ok(())
             }
@@ -390,7 +460,7 @@ impl Inspector {
 
     pub(super) fn finish(self) -> ApiResult<InspectedFilm> {
         let index = self.index.ok_or_else(|| invalid("missing film index"))?;
-        if self.remaining != 0 || !self.prefix.is_empty() || self.front_buf.is_some() {
+        if self.remaining != 0 || !self.prefix.is_empty() || self.reading_front {
             return Err(invalid("truncated film"));
         }
         let web_ranges = match self.version {
@@ -414,8 +484,8 @@ impl Inspector {
                 {
                     return Err(invalid("invalid cinema index bounds"));
                 }
-                cidx.directory.validate(&footer).map_err(invalid)?;
                 Some(WebRanges {
+                    public_safe: self.public_safe,
                     size: self.pos,
                     summary_bytes: self.front_size.expect("v3 preamble"),
                     index_offset: cidx.offset,
@@ -426,12 +496,16 @@ impl Inspector {
             }
             _ => return Err(invalid("invalid film footer")),
         };
-        let summary = if self.version == Some(1) {
+        let mut summary = if self.version == Some(1) {
             None
         } else {
             self.summary
         };
+        if let Some(summary) = &mut summary {
+            public_summary(summary);
+        }
         Ok(InspectedFilm {
+            unified: self.version == Some(3),
             summary,
             web_ranges,
             events: self.events,

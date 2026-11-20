@@ -22,6 +22,9 @@ struct Block {
     sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ram_anchor: Option<u64>,
+    /// Hash of the adjacent private IPRV, when one was needed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    identity_sha256: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -121,7 +124,8 @@ impl TrackWriter {
             tick.tick
         );
         ensure!(
-            out.version >= 3 || (records.is_empty() && guest_tick.is_none()),
+            out.version >= 3
+                || (records.is_empty() && guest_tick.is_none() && tick.closing_events.is_empty()),
             "tagged records require film v3"
         );
         let starts_chunk = self.begins_chunk();
@@ -131,15 +135,12 @@ impl TrackWriter {
         }
         tick.inputs.sort_unstable_by_key(|seat| seat.seat);
         ticks::slots(&tick)?;
-        ticks::validate_events(&tick.events)?;
         // Reserve a conservative upper bound for the framing, hash and seat
         // masks. Lifecycle batches can contain user-supplied names and IDs.
-        let mut bytes = 80 + tick.inputs.len() * 128;
-        if !tick.events.is_empty() {
-            let events = serde_json::to_vec(&tick.events)?;
-            ensure!(events.len() <= 64 << 10, "film lifecycle events too large");
-            bytes += events.len() + 16;
-        }
+        let bytes = 80
+            + tick.inputs.len() * 128
+            + lifecycle_budget(&tick.events)?
+            + lifecycle_budget(&tick.closing_events)?;
         let base = if starts_chunk {
             0
         } else {
@@ -190,14 +191,26 @@ impl TrackWriter {
     /// Keep events observed after the last completed simulation update distinct
     /// from observations whose effects the per-tick gameplay hash covers.
     pub fn closing_events(&mut self, events: Vec<super::Event>) -> Result<()> {
-        if !events.is_empty() {
-            ensure!(!self.finished, "film track already finished");
-            self.pending
-                .last_mut()
-                .context("closing event before first tick")?
-                .closing_events
-                .extend(events);
+        if events.is_empty() {
+            return Ok(());
         }
+        ensure!(!self.finished, "film track already finished");
+        ensure!(self.unified, "closing events require film v3");
+        let last = self
+            .pending
+            .last_mut()
+            .context("closing event before first tick")?;
+        ticks::validate_events(&events)?;
+        let previous = lifecycle_budget(&last.closing_events)?;
+        let mut combined = last.closing_events.clone();
+        combined.extend(events);
+        let size = self.estimated_bytes - previous + lifecycle_budget(&combined)?;
+        ensure!(
+            size <= stream::MAX_BYTES,
+            "film time chunk exceeds record budget"
+        );
+        last.closing_events = combined;
+        self.estimated_bytes = size;
         Ok(())
     }
 
@@ -222,6 +235,15 @@ impl TrackWriter {
         if let Some(first) = self.pending.first() {
             let block = if out.version >= 3 {
                 let raw = unified::encode(&self.pending, &self.extra)?;
+                let projection =
+                    live_proto::film::privacy::project(&raw).map_err(anyhow::Error::msg)?;
+                let identity_sha256 = if let Some(private) = &projection.private {
+                    out.chunk_bytes(live_proto::film::privacy::PRIVATE_TAG, private)?;
+                    Some(crate::xbe_digest(private))
+                } else {
+                    None
+                };
+                let raw = projection.public;
                 let has_scene = self
                     .pose_checkpoint
                     .is_some_and(|(tick, _)| tick == first.tick);
@@ -236,6 +258,7 @@ impl TrackWriter {
                         .offset,
                     sha256: crate::xbe_digest(&raw),
                     ram_anchor: None,
+                    identity_sha256,
                 }
             } else {
                 let raw = ticks::encode(&self.pending)?;
@@ -344,10 +367,28 @@ impl TrackWriter {
         // publish duplicate sections even if a later serialisation failed.
         self.finished = true;
         out.chunk(DESC, descriptor)?;
+        if out.version >= 3 && summary.players.iter().any(|player| player.xuid.is_some()) {
+            out.chunk_bytes(*b"PSUM", &bytes)?;
+        }
         out.chunk_bytes(SUMM, &bytes)?;
         out.chunk(TIDX, &self.directory)?;
         Ok(())
     }
+}
+
+/// Charge one lifecycle batch, including its framing and subtype. Closing
+/// observations can arrive in several calls; charge the final JSON array once.
+fn lifecycle_budget(events: &[super::Event]) -> Result<usize> {
+    if events.is_empty() {
+        return Ok(0);
+    }
+    ticks::validate_events(events)?;
+    let size = serde_json::to_vec(events)?.len();
+    ensure!(
+        size <= ticks::MAX_EVENT_BYTES,
+        "film lifecycle events too large"
+    );
+    Ok(size + 16)
 }
 
 fn record_budget(mut bytes: usize, records: &[RecordData]) -> Result<usize> {
@@ -387,6 +428,7 @@ fn write_block<W: Write + Seek>(
         offset,
         sha256: crate::xbe_digest(raw),
         ram_anchor: None,
+        identity_sha256: None,
     })
 }
 
@@ -397,14 +439,26 @@ fn one<R: Read + Seek>(reader: &Reader<R>, tag: crate::Tag) -> Result<Entry> {
 /// Read just the menu block. This does not inflate input, HLE or snapshot data.
 pub fn summary<R: Read + Seek>(reader: &mut Reader<R>) -> Result<Summary> {
     if reader.header.version == 3 {
-        let summary = reader
+        let menu = reader
             .front
             .as_ref()
             .context("missing v3 film front")?
             .summary
             .clone();
-        validate_summary(&summary)?;
-        return Ok(summary);
+        validate_summary(&menu)?;
+        if reader.entries.iter().any(|e| e.tag == *b"PSUM") {
+            let entry = one(reader, *b"PSUM")?;
+            let bytes = reader.read_bytes_limited(&entry, live_proto::film::MAX_SUMMARY_BYTES)?;
+            let summary: Summary = serde_json::from_slice(&bytes)?;
+            let mut projected = summary.clone();
+            live_proto::film::privacy::public_summary(&mut projected);
+            ensure!(
+                menu == projected,
+                "public and private film summaries differ"
+            );
+            return Ok(summary);
+        }
+        return Ok(menu);
     }
     ensure!(
         reader.header.version == 2 && reader.finalized,
@@ -447,10 +501,20 @@ impl<R: Read + Seek> TrackReader<R> {
         let mut keys = directory.keyframes.iter();
         let mut tick = 0u64;
         let mut previous_key = None;
+        let mut identity_pending = false;
         for e in &reader.entries {
+            ensure!(
+                !identity_pending || e.tag == time_tag,
+                "orphaned private film events"
+            );
             match e.tag {
                 tag if tag == time_tag => {
                     let block = blocks.next().context("unindexed film input block")?;
+                    ensure!(
+                        identity_pending == block.identity_sha256.is_some(),
+                        "film identity index mismatch"
+                    );
+                    identity_pending = false;
                     ensure!(
                         block.offset == e.offset
                             && block.ram_anchor.is_none()
@@ -463,6 +527,7 @@ impl<R: Read + Seek> TrackReader<R> {
                         .checked_add(u64::from(block.count))
                         .context("film tick overflow")?;
                 }
+                live_proto::film::privacy::PRIVATE_TAG if unified => identity_pending = true,
                 KEYF => {
                     let key = keys.next().context("unindexed film keyframe")?;
                     ensure!(
@@ -490,7 +555,8 @@ impl<R: Read + Seek> TrackReader<R> {
             }
         }
         ensure!(
-            blocks.next().is_none()
+            !identity_pending
+                && blocks.next().is_none()
                 && keys.next().is_none()
                 && tick == reader.header.meta.length_ticks,
             "film track length or block count disagrees with header"
@@ -599,7 +665,36 @@ impl<R: Read + Seek> TrackReader<R> {
             };
             let raw = read_block(&mut self.reader, block)?;
             self.pending = if self.reader.header.version >= 3 {
-                unified::decode(&raw, block.tick, usize::from(block.count))?
+                let count = usize::from(block.count);
+                let mut public = unified::decode(&raw, block.tick, count)?;
+                if let Some(digest) = &block.identity_sha256 {
+                    let i = self
+                        .reader
+                        .entries
+                        .binary_search_by_key(&block.offset, |e| e.offset)
+                        .ok()
+                        .and_then(|i| i.checked_sub(1))
+                        .context("missing private film events")?;
+                    let entry = self.reader.entries[i].clone();
+                    ensure!(
+                        entry.tag == live_proto::film::privacy::PRIVATE_TAG,
+                        "missing private film events"
+                    );
+                    let private = self.reader.read_bytes_limited(&entry, stream::MAX_BYTES)?;
+                    ensure!(
+                        crate::xbe_digest(&private) == *digest,
+                        "corrupt private events at tick {}",
+                        block.tick
+                    );
+                    for (frame, original) in public
+                        .iter_mut()
+                        .zip(unified::decode(&private, block.tick, count)?)
+                    {
+                        frame.events = original.events;
+                        frame.closing_events = original.closing_events;
+                    }
+                }
+                public
             } else {
                 ticks::decode(&raw, block.tick, usize::from(block.count))?
             };

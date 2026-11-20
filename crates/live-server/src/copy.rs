@@ -8,7 +8,7 @@
 //!   subscribers' checkpoints. Each batch is checked (stream versions, the
 //!   hash chain) and written atomically.
 //! - **Blobs**, `--from-blobs LOC --to-blobs LOC`: everything under
-//!   [`PREFIXES`] (custom content, cloud saves and their indexes).
+//!   [`PREFIXES`] (custom content, cloud saves, recordings and their indexes).
 //!
 //! Both are idempotent and resumable: run it again and it carries on where
 //! it stopped. The log copy picks up after the destination's head, once it
@@ -31,6 +31,8 @@ pub const PREFIXES: &[&str] = &[
     "content/",
     "storage/",
     crate::blobs::FRAMES_PREFIX,
+    crate::films::HOST_FILM_PREFIX,
+    "film-staging/",
     crate::sim_runs::REPORT_PREFIX,
 ];
 
@@ -129,24 +131,32 @@ pub async fn copy_blobs(
 ) -> crate::blobs::Result<BlobReport> {
     let mut report = BlobReport::default();
     for prefix in prefixes {
-        for info in from.list(prefix).await? {
-            if leftover(&info.key) {
+        let mut objects = from.list(prefix).await?;
+        if *prefix == crate::films::HOST_FILM_PREFIX {
+            // A completed manifest is readable as soon as it arrives.
+            // Move its data objects first, including on a resumed copy.
+            objects.sort_by_key(|info| info.key.ends_with(".parts"));
+        }
+        for info in objects {
+            let staging = info.key.starts_with("film-staging/");
+            let film = staging || info.key.starts_with(crate::films::HOST_FILM_PREFIX);
+            if !film && leftover(&info.key) {
                 continue;
             }
-            if to
-                .head(&info.key)
-                .await?
-                .is_some_and(|i| i.size == info.size)
+            // Staging cursors are mutable. An updated cursor can have the same
+            // length as a previous copy, even when the selected bytes differ.
+            if !staging
+                && to
+                    .head(&info.key)
+                    .await?
+                    .is_some_and(|i| i.size == info.size)
             {
                 report.skipped += 1;
                 continue;
             }
-            let Some(bytes) = from.get(&info.key).await? else {
-                continue;
-            };
             let meta = Meta {
                 content_type: Some(
-                    if info.key.ends_with(".json") {
+                    if info.key.ends_with(".json") || (film && info.key.ends_with(".parts")) {
                         "application/json"
                     } else {
                         "application/octet-stream"
@@ -155,8 +165,20 @@ pub async fn copy_blobs(
                 ),
                 ..Meta::default()
             };
-            report.bytes += bytes.len() as u64;
-            to.put(&info.key, bytes, &meta).await?;
+            if film {
+                // Copy physical keys verbatim, including manifests, their
+                // selected parts and any pages of a committed pending import.
+                // Resolving a manifest here would put film bytes at its key.
+                copy_film_object(from, to, &info.key, info.size, &meta).await?;
+                report.bytes += info.size;
+            } else {
+                let Some(bytes) = from.get(&info.key).await? else {
+                    continue;
+                };
+                let len = bytes.len() as u64;
+                to.put(&info.key, bytes, &meta).await?;
+                report.bytes += len;
+            }
             report.copied += 1;
             progress(&info.key);
         }
@@ -164,12 +186,47 @@ pub async fn copy_blobs(
     Ok(report)
 }
 
+/// A legacy film can be a single large object. Bound source requests as
+/// well as destination buffering. Only publish after every byte was read.
+async fn copy_film_object(
+    from: &BlobStore,
+    to: &BlobStore,
+    key: &str,
+    size: u64,
+    meta: &Meta,
+) -> crate::blobs::Result<()> {
+    let mut writer = to.writer(key, meta)?;
+    let copied = async {
+        while writer.size() < size {
+            let start = writer.size();
+            let end = start
+                .saturating_add(crate::blobs::PART_BYTES as u64)
+                .min(size);
+            let (bytes, total) = from
+                .get_range(key, start..end)
+                .await?
+                .ok_or_else(|| crate::blobs::BlobError::Changed(key.into()))?;
+            if total != size {
+                return Err(crate::blobs::BlobError::Changed(key.into()));
+            }
+            writer.write(&bytes).await?;
+        }
+        Ok(())
+    }
+    .await;
+    if let Err(e) = copied {
+        writer.abort().await;
+        return Err(e);
+    }
+    writer.finish().await
+}
+
 pub const USAGE: &str =
     "usage: store copy [--from DB --to DB] [--from-blobs LOC --to-blobs LOC] [--data DIR]
 
   --from DB, --to DB      copy the event log: sqlite://PATH, postgres://...,
                           or file:DIR (the embedded server's log, source only)
-  --from-blobs LOC        copy content and cloud saves: a directory (the
+  --from-blobs LOC        copy private blobs and recordings: a directory (the
   --to-blobs LOC          server's data directory) or s3://BUCKET[/PREFIX]
                           (endpoint and keys from $H2_LIVE_S3_ENDPOINT,
                           $H2_LIVE_S3_ACCESS_KEY_ID, $H2_LIVE_S3_SECRET_ACCESS_KEY)
@@ -579,6 +636,72 @@ mod tests {
         let again = copy_blobs(&from, &to, PREFIXES, |_| {}).await.unwrap();
         assert_eq!((again.copied, again.skipped), (0, 3));
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn copy_preserves_film_manifests_parts_and_pending_import_pages() {
+        use bytes::Bytes;
+        use sha2::{Digest, Sha256};
+
+        let from = BlobStore::memory();
+        let to = BlobStore::memory();
+        let head = "films/match/winner.parts";
+        // Cross a copy request boundary inside one physical film part.
+        let edge = crate::blobs::PART_BYTES;
+        let mut recording = vec![0; edge + 2];
+        recording[edge - 1..].copy_from_slice(b"END");
+        let digest = format!("{:x}", Sha256::digest(&recording));
+        let part = format!("{head}.data/0-{digest}");
+        let page = format!("{head}.import/0");
+        let manifest =
+            serde_json::json!({"version":1, "size":recording.len(), "parts":[digest]}).to_string();
+        for (key, bytes) in [
+            (head, Bytes::from(manifest.clone())),
+            (&part, Bytes::from(recording)),
+            (&page, Bytes::from_static(b"pending")),
+            ("films/legacy.h2film", Bytes::from_static(b"legacy")),
+            (
+                "film-staging/match/candidate.legacy",
+                Bytes::from_static(b"cursor"),
+            ),
+        ] {
+            from.put(key, bytes, &Meta::default()).await.unwrap();
+        }
+        let mut moved = vec![];
+        let report = copy_blobs(&from, &to, PREFIXES, |key| moved.push(key.to_owned()))
+            .await
+            .unwrap();
+        assert_eq!(report.copied, 5);
+        assert!(
+            moved.iter().position(|k| k == &part).unwrap()
+                < moved.iter().position(|k| k == head).unwrap()
+        );
+        assert_eq!(
+            to.get(head).await.unwrap().unwrap().as_ref(),
+            manifest.as_bytes()
+        );
+        assert_eq!(to.get(&page).await.unwrap().unwrap().as_ref(), b"pending");
+        let result = crate::films::parts::get_range(&to, head, edge as u64 - 1..edge as u64 + 2)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.0.as_ref(), b"END");
+        assert_eq!(result.1, edge as u64 + 2);
+        assert_eq!(
+            to.get("films/legacy.h2film")
+                .await
+                .unwrap()
+                .unwrap()
+                .as_ref(),
+            b"legacy"
+        );
+        let stage = "film-staging/match/candidate.legacy";
+        from.put(stage, Bytes::from_static(b"newest"), &Meta::default())
+            .await
+            .unwrap();
+        let resumed = copy_blobs(&from, &to, PREFIXES, |_| {}).await.unwrap();
+        assert_eq!((resumed.copied, resumed.skipped), (1, 4));
+        assert_eq!(to.get(stage).await.unwrap().unwrap().as_ref(), b"newest");
     }
 
     #[tokio::test]

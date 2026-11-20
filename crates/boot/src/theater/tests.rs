@@ -143,6 +143,109 @@ fn theater_replays_checkpoints_reports_first_divergence_and_registers_controls()
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+#[test]
+fn sealed_film_reinstalls_the_recorders_telemetry_and_impact_hook_chains() {
+    use crate::telemetry::TelemetryConfig;
+    use live_proto::film::TelemetryHooks;
+
+    let plan = |session: &Arc<Session>, transport: TelemetryConfig| {
+        let mut features = feature::Registry::new(feature::Switches::defaults());
+        crate::registration::register_telemetry(&mut features, &transport, Some(session))
+            .unwrap()
+            .expect("telemetry hook plan");
+        features.build(&feature::Base).unwrap().text()
+    };
+    let dir = std::env::temp_dir().join(format!("film-hooks-{}", live_proto::sign::random_id()));
+    std::fs::create_dir(&dir).unwrap();
+    let opts = options(&dir);
+    let guest = arena();
+    for hooks in [
+        TelemetryHooks::UNIFIED,
+        TelemetryHooks {
+            object_delete: false,
+            ..TelemetryHooks::UNIFIED
+        },
+    ] {
+        let path = dir.join(if hooks.object_delete {
+            "full.h2film"
+        } else {
+            "slim.h2film"
+        });
+        let rec = Session::open(
+            Some(path.clone()),
+            None,
+            Facts {
+                telemetry_hooks: hooks,
+                render_hooks: film::RenderHooks::Slim,
+                ..host_facts()
+            },
+            b"xbe",
+            &opts,
+        )
+        .unwrap()
+        .unwrap();
+        let captured = plan(&rec, TelemetryConfig::default());
+        for label in [
+            "match start",
+            "sample",
+            "kill",
+            "film barrel fire",
+            "film impact geometry",
+        ] {
+            assert!(captured.contains(label), "missing {label}");
+        }
+        assert_eq!(
+            captured.contains("film projectile end"),
+            hooks.object_delete
+        );
+        for _ in 0..30 {
+            rec.checkpoint(&guest);
+        }
+        rec.finish(40, true).unwrap();
+        let header = Reader::open(&path).unwrap().header;
+        assert_eq!(header.telemetry_hooks, Some(hooks));
+        assert_eq!(header.render_hooks, Some(film::RenderHooks::Slim));
+
+        // A desktop module provides every original, including functions
+        // the host's image did not generate. Replay keeps the sealed plan.
+        let replay = |facts| {
+            Session::open(
+                None,
+                Some(Replay {
+                    path: path.clone(),
+                    render_every: 0,
+                    speed: 1.,
+                    seek_tick: 0,
+                    paused_at_target: false,
+                    restart: dir.join("restart"),
+                    camera: Default::default(),
+                    window_closed: None,
+                }),
+                facts,
+                b"xbe",
+                &opts,
+            )
+        };
+        let desktop = replay(Facts {
+            render_hooks: film::RenderHooks::Gpu,
+            ..host_facts()
+        }).unwrap().unwrap();
+        assert_eq!(desktop.render_hooks(), film::RenderHooks::Slim);
+        assert_eq!(captured, plan(&desktop, TelemetryConfig::playback()));
+        let missing_damage = Facts {
+            telemetry_hooks: TelemetryHooks {
+                damage_report: false,
+                ..hooks
+            },
+            ..host_facts()
+        };
+        assert!(
+            replay(missing_damage).is_err_and(|e| e.to_string().contains("film telemetry plan"))
+        );
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 fn host_facts() -> Facts {
     Facts {
         stamp: "fixture".into(),
@@ -152,6 +255,8 @@ fn host_facts() -> Facts {
         bots: false,
         address: "127.0.0.1:3074".into(),
         live_service: false,
+        telemetry_hooks: live_proto::film::TelemetryHooks::UNIFIED,
+        render_hooks: crate::registration::compiled_render_hooks(),
     }
 }
 
@@ -375,3 +480,129 @@ fn local_film_records_the_consumed_action_and_both_edges_of_a_tickless_pause() {
     assert!(next.events.is_empty());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn malformed_viewer_observations_leave_a_seekable_film_and_count_at_seal() {
+    use live_proto::{
+        film::{
+            objects::{HillPose, Scene},
+            stream,
+        },
+        game::{Frame, FramePlayer},
+    };
+    let dir = std::env::temp_dir().join(format!("film-dropped-{}", live_proto::sign::random_id()));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("observations.h2film");
+    let session = Session::open(
+        Some(path.clone()),
+        None,
+        host_facts(),
+        b"xbe",
+        &options(&dir),
+    )
+    .unwrap()
+    .unwrap();
+    let observer = session.film_observer().unwrap();
+    let mut guest = arena();
+    let engine = engine::objectives::GAME_ENGINE;
+    if guest.u32(engine).is_err() {
+        guest
+            .map_zeroed(engine & !4095, 4096, Permissions::RW)
+            .unwrap();
+    }
+    guest.set_u32(engine, 0).unwrap();
+    let hill = |x| Scene {
+        missing: Default::default(),
+        hill: Some(HillPose {
+            index: 2,
+            corners: vec![[x, 0., 0.], [0., 1., 0.], [1., 1., 0.], [1., 0., 0.]],
+        }),
+        objects: Vec::new(),
+    };
+    let player = |tick, yaw| Frame {
+        game_id: "fixture".into(),
+        tick,
+        players: vec![FramePlayer {
+            index: 0,
+            alive: true,
+            yaw,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    observer.clock(Some(1));
+    observer.scene(hill(0.)).unwrap();
+    observer.frame(player(1, 0.)).unwrap();
+    session.checkpoint(&guest);
+
+    guest.set_u32(engine, 0x3010_0000).unwrap(); // unavailable objective registry
+    observer.clock(Some(2));
+    observer
+        .event(
+            &crate::telemetry::GameEvent::new(
+                "fixture",
+                live_proto::game::PLAYER_KILLED,
+                json!({"victim": "unreadable"}),
+            ),
+            2,
+        )
+        .unwrap();
+    observer
+        .record(live_proto::film::events::Record {
+            tick: 2,
+            event: live_proto::film::events::Event::Pickup {
+                unit: "a".repeat(live_proto::film::events::MAX_EVENT_BYTES),
+            },
+        })
+        .unwrap();
+    observer.scene(hill(f64::NAN)).unwrap();
+    observer.frame(player(2, f64::INFINITY)).unwrap();
+    session.checkpoint(&guest);
+    assert!(observer.active());
+
+    guest.set_u32(engine, 0).unwrap();
+    observer.clock(Some(3));
+    observer.scene(hill(2.)).unwrap();
+    observer.frame(player(3, 1.)).unwrap();
+    session.checkpoint(&guest);
+    // A bad final observation still belongs in the sealed summary.
+    observer.scene(hill(f64::INFINITY)).unwrap();
+    session.finish(3, true).unwrap();
+
+    let mut range = film::range::RangeReader::new(File::open(&path).unwrap()).unwrap();
+    assert_eq!(
+        range.front.summary.dropped_samples,
+        [
+            ("unit_frame".to_owned(), 1),
+            ("highlight_encoding".to_owned(), 1),
+            ("stats_event".to_owned(), 1),
+            ("objective".to_owned(), 1),
+            ("hill".to_owned(), 2),
+        ]
+        .into_iter()
+        .collect()
+    );
+    let mut poses = film::presentation::Decoder::default();
+    let mut observed = Vec::new();
+    for i in 0..range.directory.chunks.len() {
+        let bytes = range.chunk(i).unwrap();
+        for record in stream::Chunk::parse(&bytes).unwrap().records() {
+            let record = record.unwrap();
+            if record.tag == stream::POSE {
+                observed.push(record.tick);
+                poses.apply(record.payload).unwrap();
+            }
+        }
+    }
+    assert!(observed.contains(&1) && !observed.contains(&2) && observed.contains(&3));
+    assert!((poses.scene().hill.unwrap().corners[0][0] - 2.0).abs() < 0.002);
+    assert_eq!(poses.extras().unwrap().tick, 3);
+    let mut replay = film::blam::TrackReader::open(path).unwrap();
+    for tick in 1..=3 {
+        assert_eq!(replay.step().unwrap().unwrap().tick, tick);
+    }
+    assert!(replay.step().unwrap().is_none());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+mod medal_recording;

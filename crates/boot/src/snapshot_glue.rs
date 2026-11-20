@@ -720,7 +720,11 @@ impl Part for D3dPart<'_> {
         self.0.film_load_blockers()
     }
     fn save(&mut self, out: &mut SnapshotWriter) -> Result<(), String> {
-        self.0.save(self.1, out)
+        if crate::theater::in_keyframe() {
+            self.0.save_film(self.1, out)
+        } else {
+            self.0.save(self.1, out)
+        }
     }
     fn load(&mut self, snapshot: &Snapshot<'_>) -> Result<(), String> {
         if crate::theater::in_keyframe() {
