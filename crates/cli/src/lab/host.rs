@@ -4,6 +4,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File};
+use std::io::Read;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -70,6 +71,10 @@ pub struct Meta {
     /// The frame stats report lines from the log.
     pub summary: Vec<String>,
     pub notes: Vec<String>,
+    /// The game's agent API socket, for `h2 lab agent` (runs only).
+    pub agent_socket: Option<String>,
+    /// The `h2` that runs it, which also makes the agent calls.
+    pub h2: Option<String>,
 }
 
 fn is_final(state: &str) -> bool {
@@ -112,7 +117,7 @@ fn now() -> u64 {
 
 /// Serves the lab socket until the process ends.
 pub fn serve(cfg: HostConfig) -> Result<()> {
-    for d in ["runs", "recordings", "pgo", "images", "src", "scratch"] {
+    for d in ["runs", "recordings", "pgo", "images", "src", "scratch", "a"] {
         fs::create_dir_all(cfg.dir(d))
             .with_context(|| format!("creating {}", cfg.dir(d).display()))?;
     }
@@ -215,6 +220,12 @@ fn handle(sh: &Arc<Shared>, r: Request) -> Result<Value> {
         Request::Build(b) => start(sh, Job::Build(b)),
         Request::Wait { id, timeout } => wait(sh, &id, timeout.map(Duration::from_secs_f64)),
         Request::Stop { id } => stop(sh, &id),
+        Request::Agent {
+            id,
+            args,
+            timeout,
+            stdin,
+        } => agent_call(sh, &id, &args, timeout, stdin),
         Request::Runs { limit } => {
             let mut all = disk_metas(cfg);
             let inner = sh.inner.lock().unwrap();
@@ -490,6 +501,7 @@ fn execute(sh: &Arc<Shared>, id: &str, job: Job, commit: Option<String>) {
         state
     };
     let _ = fs::remove_dir_all(sh.cfg.dir("scratch").join(id));
+    let _ = fs::remove_file(agent_socket_path(&sh.cfg, id));
     sh.update(id, |m| {
         m.state = state.into();
         m.error = error;
@@ -531,7 +543,12 @@ fn run_job(
     let Job::Run(run) = job else { return Ok(None) };
     let log = File::create(run_dir.join("run.log"))?;
     let cmd = play_command(cfg, id, run, &image, commit)?;
-    sh.update(id, |m| m.state = "running".into());
+    let sock = agent_socket_path(cfg, id);
+    sh.update(id, |m| {
+        m.state = "running".into();
+        m.agent_socket = Some(sock.display().to_string());
+        m.h2 = Some(image.h2.display().to_string());
+    });
     let st = sh.step(id, cmd, &log)?;
     if let Some(name) = &run.record {
         let input = cfg.dir("recordings").join(name).join(INPUT_FILE);
@@ -618,6 +635,14 @@ fn play_command(
         cmd.env("H2_PERF_FROM", "level");
     }
     cmd.envs(&run.env);
+    // Every run answers the agent API, for `h2 lab agent`. After the
+    // run's own variables, which can't name it (proto::RUN_ENV).
+    let sock = agent_socket_path(cfg, id);
+    if let Some(dir) = sock.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let _ = fs::remove_file(&sock);
+    cmd.env(agent_proto::ENV, &sock);
     if let Some(l) = &level {
         cmd.arg("--level").arg(l);
         if let Some(d) = &difficulty {
@@ -628,6 +653,125 @@ fn play_command(
     cmd.current_dir(&run_dir);
     Ok(cmd)
 }
+
+/// Where run `id`'s game listens for the agent API: `<root>/a/<id>.sock`,
+/// outside `runs/<id>` so a fetch never tars a socket, and short because a
+/// Unix socket path is limited to about 100 bytes. A root too deep for that
+/// gets `/tmp/h2lab-<hash of root>-<id>.sock` instead.
+pub fn agent_socket_path(cfg: &HostConfig, id: &str) -> PathBuf {
+    let p = cfg.dir("a").join(format!("{id}.sock"));
+    if p.as_os_str().len() <= 100 {
+        return p;
+    }
+    let h = hex_sha(cfg.root.as_os_str().as_encoded_bytes());
+    PathBuf::from(format!("/tmp/h2lab-{}-{id}.sock", &h[..8]))
+}
+
+/// `agent`: runs `h2 agent ARGS --socket <the run's socket>` and answers
+/// with its exit code and output, so every `h2 agent` call works as it does
+/// on this machine and nothing is special-cased here. The `h2` is the
+/// run's own image's, so a short form that branch knows is understood.
+fn agent_call(
+    sh: &Arc<Shared>,
+    id: &str,
+    args: &[String],
+    timeout: Option<f64>,
+    stdin: Option<String>,
+) -> Result<Value> {
+    let secs = timeout.unwrap_or(proto::AGENT_TIMEOUT);
+    // Up to two minutes for a just-started game to open its socket.
+    let ready = Instant::now() + Duration::from_secs(120);
+    let (sock, h2) = loop {
+        let m = {
+            let inner = sh.inner.lock().unwrap();
+            inner.jobs.get(id).cloned()
+        };
+        let m = match m {
+            Some(m) => m,
+            None => read_meta(&sh.cfg, id)?,
+        };
+        ensure!(m.kind == "run", "job {id} is a {}, not a run", m.kind);
+        match m.state.as_str() {
+            "queued" | "building" => bail!(
+                "job {id} is {} (h2 lab wait {id} --timeout 5, until it is running)",
+                m.state
+            ),
+            "running" => {}
+            s => bail!("run {id} is {s}: its game has exited"),
+        }
+        let Some(sock) = m.agent_socket.as_deref().map(PathBuf::from) else {
+            bail!("run {id} has no agent socket recorded");
+        };
+        if sock.exists() {
+            let h2 = m.h2.map_or_else(|| sh.cfg.h2.clone(), PathBuf::from);
+            break (sock, h2);
+        }
+        ensure!(
+            Instant::now() < ready,
+            "run {id}'s game opened no agent socket at {} in 120 s (see runs/{id}/run.log)",
+            sock.display()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let mut cmd = Command::new(&h2);
+    cmd.arg("agent")
+        .args(args)
+        .arg("--socket")
+        .arg(&sock)
+        .arg("--timeout")
+        .arg(secs.to_string());
+    for (k, _) in std::env::vars_os() {
+        if k.to_str().is_some_and(|k| k.starts_with("H2_")) {
+            cmd.env_remove(k);
+        }
+    }
+    cmd.stdin(if stdin.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    })
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("starting {}", h2.display()))?;
+    if let (Some(text), Some(mut w)) = (stdin, child.stdin.take()) {
+        std::thread::spawn(move || {
+            let _ = w.write_all(text.as_bytes());
+        });
+    }
+    let out = drain(child.stdout.take().context("no stdout")?);
+    let err = drain(child.stderr.take().context("no stderr")?);
+    // The call has its own socket timeout; this is the backstop.
+    let deadline = Instant::now() + Duration::from_secs_f64(secs) + Duration::from_secs(15);
+    let status = loop {
+        if let Some(st) = child.try_wait()? {
+            break st;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("h2 agent {} did not finish in {secs} s", args.join(" "));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    Ok(json!({
+        "exit": status.code().unwrap_or(1),
+        "stdout": out.join().unwrap_or_default(),
+        "stderr": err.join().unwrap_or_default(),
+    }))
+}
+
+fn drain(r: impl Read + Send + 'static) -> std::thread::JoinHandle<String> {
+    std::thread::spawn(move || {
+        let mut b = Vec::new();
+        let _ = r.take(AGENT_OUT_MAX).read_to_end(&mut b);
+        String::from_utf8_lossy(&b).into_owned()
+    })
+}
+
+/// Most output of one `agent` call kept, in bytes.
+const AGENT_OUT_MAX: u64 = 64 << 20;
 
 /// `h2 lab record` with no host running: the same `h2 play` as a host run
 /// with the host's own image, in this terminal, kept in `runs/<id>`.
