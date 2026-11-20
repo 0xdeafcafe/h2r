@@ -673,9 +673,9 @@ The crate `native-render` (`crates/native-render`):
   through the VFS with its shared maps, picks the scenario BSP whose tag
   data sits at that address, builds the world, decodes each lightmap page
   (with its mip chain), and translates each material's layer-3 pass
-  ("Order of work" 4). A material is native only when its pass translates
-  and every part of it can be drawn with it; every other material is left
-  out of the world and keeps its D3D draws, never stage 1's look. The skip
+  ("Order of work" 4). After translating the material, the worker checks
+  each part against the inputs of its vertex classification and its
+  lightmap page. Parts that lack an input keep their D3D draws. The skip
   goes by part: the host returns each drawn part, by cluster or placement
   and part index, with its material's shader, and `skip::clear_parts`
   clears an item only when its part is one of them with that shader. An
@@ -926,15 +926,19 @@ vector (`v1`) and view vector (`v0`), and the lightmap (stage 3). Its
      - texture modes that read device state: bump-environment matrices,
        the eye of the reflection modes, BRDF;
      - border addressing on a sampled stage.
-   - `program::world_fit`: every part of the material supplies every
-     vertex register the program reads (`WorldDraw::inputs`: a section
-     without lighting vectors or a tangent frame would read zero), and,
-     where the program samples the lightmap, has a page that decoded. A
-     stage bitmap must decode and be swizzled (a linear texture is
-     addressed in texels on the D3D path, `tex_scale`), and so must a
-     lightmap page. One part that cannot be drawn keeps the whole
-     material on the D3D path (the skip could go per part; the material
-     is the unit the coverage is counted in).
+   - `program::part_fit` checks each cluster against its world-space
+     vertex program and each placement against its rigid program.
+     Every input the program reads must be present in the section.
+     A sampled lightmap needs a decoded page and palette. Other parts
+     sharing the material can still draw with their own inputs.
+   - On a BSP without a matching first lightmap group, the record
+     builder selects implementation 3. The worker resolves that
+     implementation and the normalization cube in the globals tag.
+     For example, the main menu's dynamic detail shader declares five
+     input registers in both its world and rigid classifications.
+     The worker checks those inputs. A lighting vector in `v5` belongs
+     to the per-pixel lightmapped variant. Bitmap cube faces and volume
+     slices retain their shape and mip chain through upload.
    - Palettized stage bitmaps. `tex_bump`'s bump stage (stage 2) is
      `P8Bump`, and `P8` is palettized too: the tag has no palette, and
      `assets` decodes both as their index in every channel. The D3D path
@@ -1042,6 +1046,31 @@ that handler can change a later draw even when the native world covers
 every triangle. Whole-dispatch skipping currently applies to **pre-reserved**
 world, fog and water layers. The general opaque GPU pass still goes through
 the indexed admission path.
+
+The lightmap portion of the state handoff is modeled in
+`engine::render_loop::world_lightmap`. It decodes the sorted handler's
+render record after geometry selection. A lit cluster selects its signed
+page and palette. A placement can also update both byte offsets in each
+active bucket stream descriptor. The fold retains the final words for
+**every descriptor touched** across the run, including a descriptor an
+earlier placement used. Palette changes follow the global and stage-3
+cache checks in `0x00015c90` and retain D3D bind order for reference
+accounting. Layer 3 with lighting selector 3 leaves that state alone.
+
+For a full material parameter rebind,
+`ShaderLibrary::selected_implementation` can start from an incoming
+`ParameterState`. Vector writes retain untouched components, including
+the fourth component of engine vector inputs. A bitmap binding copies
+the slot's earlier size to the stage before refreshing the slot. Variant
+pixel shaders retain the untouched words of the previous definition.
+Changing pass implementation emits the previous restore list before
+the new entry list and retains sampler stages outside the new list.
+
+The ordered renderer still enters the geometry handler. It needs a
+device handoff for the shader cache, vertex declarations, streams,
+per-draw overrides, and resource references before it can skip that
+handler. A layer with interleaved objects needs that handoff at each
+native-to-guest boundary.
 
 For the A/B, capture the same Old Mombasa replay and present numbers with
 `H2_FRAME_STATS=1` and `H2_FEATURES=render-timing`, changing only

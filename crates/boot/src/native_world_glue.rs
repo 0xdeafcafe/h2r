@@ -13,11 +13,10 @@
 //! - **Per frame.** The camera and one external pass; the device records it
 //!   after the next drain, in order with the draws.
 //! - **Material programs** (`impl.render.native_world_programs`, on with
-//!   the world). A material is native only when its layer-3 pass
-//!   translates (`native_render::look::layer3_pass`,
-//!   `native_render::program::compile_world`) and every part of it can be
-//!   drawn with it (`program::world_fit`, its stage bitmaps decode); it
-//!   then draws with its own vertex program, pixel shader, stage textures,
+//!   the world). Each part needs a translated layer-3 pass with decoded
+//!   stage bitmaps, the inputs of its vertex classification, and any
+//!   sampled lightmap page (`program::part_fit`). The part draws with
+//!   its own vertex program, pixel shader, stage textures,
 //!   constants and render states, and the device's view constants each
 //!   frame. Every other material is left out of the world and keeps its
 //!   D3D draws (the skip clears only the items of the parts the world
@@ -42,11 +41,14 @@ use feature::native_world::{Host, PartSet};
 use map::{Map, TagId};
 use native_render::camera::RenderCamera;
 use native_render::gpu::{DepthRule, GpuWorld, Image, Owners, PassStencil, PassViewport, WorldSelection};
+use native_render::light_gpu::{LayeredImage, TextureDim};
 use native_render::load::{self, LoadedWorld};
 use native_render::look::{self, Stage};
 use native_render::program::{self, MaterialProgram, ProgramSet, ViewInputs};
 use native_render::skip::StencilPlan;
 use native_render::world::{LightmapKey, Owner, World, WorldDraw};
+
+type LayeredImages = HashMap<(TagId, u32), LayeredImage>;
 
 /// What the worker hands the render thread: the world and its images.
 pub struct CpuWorld {
@@ -59,6 +61,7 @@ pub struct CpuWorld {
     /// stage 1's program.
     pub programs_on: bool,
     pub stage_images: StageImages,
+    layered_images: LayeredImages,
 }
 
 /// One loaded world: CPU data until the first pass uploads it.
@@ -360,6 +363,7 @@ pub(crate) fn upload<'a>(ready: &'a Ready, t: &d3d::ExternalTarget<'_>) -> std::
         programs,
         programs_on,
         stage_images,
+        layered_images,
     } = cpu;
     let mut stage = |s: Stage| match s {
         Stage::Bitmap { bitmap, image } => stage_images.get(&(bitmap, image)).cloned(),
@@ -368,7 +372,8 @@ pub(crate) fn upload<'a>(ready: &'a Ready, t: &d3d::ExternalTarget<'_>) -> std::
     let mut g = if programs_on {
         // Set even when empty: with programs on, a batch without one is
         // never drawn with stage 1's program.
-        let set = ProgramSet::new(device, queue, &world, programs, &mut stage, &mut |k| lightmaps.get(&k).cloned());
+        let set = ProgramSet::with_layered(device, queue, &world, programs, &mut stage,
+            &mut |k| lightmaps.get(&k).cloned(), &layered_images);
         eprintln!(
             "native-world: {} materials draw with their own programs, {} of them their placements with their rigid programs",
             set.len(),
@@ -1057,9 +1062,8 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes, switch
         }
     };
     // What draws natively. With material programs (the default) a
-    // material is native only when its own layer-3 pass translates and
-    // every part of it can be drawn with it: the rest keep their D3D
-    // draws, never stage 1's look. Without them (the A/B against stage 1:
+    // part draws when its layer-3 program translates and its streams
+    // and images supply that program. Without them (the A/B against stage 1:
     // `impl.render.native_world_programs=off`), every material whose base
     // map decodes, drawn as base map times lightmap.
     let mut base_maps = HashMap::new();
@@ -1067,9 +1071,13 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes, switch
     let mut decoder = StageDecoder::new(palettes);
     let mut palettized = Vec::new();
     let mut rigid_refused = Refused::new();
+    let mut layered_images = LayeredImages::new();
+    let mut prepared_parts = HashSet::new();
     let (programs, mut stage_images, refused) = if programs_on {
-        let out = material_programs(&mut map, &mut files, &shaders, &world, &page_ready, &mut decoder);
+        let out = material_programs(&mut map, &mut files, &shaders, &world, &page_ready, &mut decoder,
+            lightmap_bitmap.is_none(), &mut layered_images);
         native.extend(out.programs.keys().copied());
+        prepared_parts = out.parts;
         palettized = out.palettized;
         rigid_refused = out.rigid_refused;
         (out.programs, out.images, out.refused)
@@ -1101,10 +1109,17 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes, switch
         (HashMap::new(), StageImages::new(), Refused::new())
     };
     let rigid: HashSet<u16> = programs.iter().filter(|(_, p)| p.rigid.is_some()).map(|(&m, _)| m).collect();
+    let accepts = |d: &WorldDraw| {
+        if programs_on {
+            prepared_parts.contains(&(d.owner, d.part))
+        } else {
+            native.contains(&d.material) && drawn_natively(d, &rigid)
+        }
+    };
     if feature::native_verbose() && programs_on {
-        log_coverage(&mut map, &world, &shaders, &native, &refused);
+        log_coverage(&mut map, &world, &shaders, &native, &refused, prepared_parts.len());
         let placed = world.draws.iter().filter(|d| native.contains(&d.material) && matches!(d.owner, Owner::Instance(_)));
-        let (with, without) = placed.fold((0, 0), |(w, wo), d| if rigid.contains(&d.material) { (w + 1, wo) } else { (w, wo + 1) });
+        let (with, without) = placed.fold((0, 0), |(w, wo), d| if accepts(d) { (w + 1, wo) } else { (w, wo + 1) });
         eprintln!(
             "native-world: {with} instanced-geometry parts draw natively with their rigid programs (the placement's rows in c[50..52] per draw, as 0x0004d830 uploads them); D3D keeps {without} of native materials without one"
         );
@@ -1126,7 +1141,7 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes, switch
     // The sorted geometry entries identify individual cluster parts and their full shader datums.
     let lights_on = feature::native_lights::on(switches);
     let lights = if lights_on && !native.is_empty() {
-        crate::native_lights_glue::load(&mut map, &mut files, &shaders, &world, &|m| native.contains(&m), &decoder.palettes)
+        crate::native_lights_glue::load(&mut map, &mut files, &shaders, &world, &accepts, &decoder.palettes)
             .map(Arc::new)
     } else {
         None
@@ -1158,7 +1173,7 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes, switch
     // Draw only a native material's clusters, and its placements with its
     // rigid program: the rest keeps its D3D draws.
     let coverage = (native.len(), world.materials().len());
-    let world = keep_draws(world, &|d| native.contains(&d.material) && drawn_natively(d, &rigid));
+    let world = keep_draws(world, &accepts);
     let parts = part_set(&world, &shaders);
     let part_bounds = world.draws.iter().map(|d| ((d.owner, d.part), d.bounds)).collect();
     Ok((Ready {
@@ -1173,6 +1188,7 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes, switch
             programs,
             programs_on,
             stage_images,
+            layered_images,
         })),
         gpu: Mutex::new(None),
         parts: Arc::new(parts),
@@ -1246,6 +1262,7 @@ fn log_coverage<R: std::io::Read + std::io::Seek>(
     shaders: &[TagId],
     native: &HashSet<u16>,
     refused: &Refused,
+    drawn_parts: usize,
 ) {
     let mut parts: HashMap<u16, usize> = HashMap::new();
     for d in &world.draws {
@@ -1253,12 +1270,11 @@ fn log_coverage<R: std::io::Read + std::io::Seek>(
     }
     let count = |ms: &[u16]| ms.iter().map(|m| parts.get(m).copied().unwrap_or(0)).sum::<usize>();
     let materials = world.materials();
-    let drawn: Vec<u16> = native.iter().copied().collect();
     eprintln!(
         "native-world: {} of {} materials draw natively with their own programs ({} of {} parts); {} stay on the D3D path for {} reasons",
         native.len(),
         materials.len(),
-        count(&drawn),
+        drawn_parts,
         world.draws.len(),
         materials.len().saturating_sub(native.len()),
         refused.len()
@@ -1320,6 +1336,7 @@ pub type StageImages = HashMap<(TagId, u32), Image>;
 /// What [`material_programs`] gives.
 #[derive(Default)]
 struct Programs {
+    parts: HashSet<(Owner, u8)>,
     programs: HashMap<u16, MaterialProgram>,
     images: StageImages,
     refused: Refused,
@@ -1330,9 +1347,8 @@ struct Programs {
     palettized: Vec<u16>,
 }
 
-/// The world's materials whose layer-3 pass translates and whose every
-/// part the native pass can draw with it (`program::compile_world`,
-/// `program::world_fit`), with the images their stages sample; and the
+/// The world's layer-3 programs, the parts that supply their inputs
+/// (`program::part_fit`), the images their stages sample, and the
 /// others by the reason they stay on the D3D path. Stage images go
 /// through `decoder` (a palettized one expanded through its stage's
 /// palette, [`StageDecoder`]).
@@ -1343,9 +1359,12 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
     world: &World,
     page_ready: &dyn Fn(LightmapKey) -> Result<(), String>,
     decoder: &mut StageDecoder,
+    no_lightmap_group: bool,
+    layered: &mut LayeredImages,
 ) -> Programs {
     let mut out = Programs::default();
     let Programs {
+        parts,
         programs,
         images,
         refused,
@@ -1366,26 +1385,46 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
             return out;
         }
     };
+    let normalization = map.tags().iter().find(|tag| tag.group.0 == *b"matg")
+        .and_then(|tag| tag.location.as_ref())
+        .and_then(|loc| crate::native_lights_glue::matg_light_bitmaps(lib.metadata(), loc.address).0);
+    let mut dimensions = HashMap::new();
     for m in materials {
         let mut uses_palette = false;
         let Some(&shader) = shaders.get(usize::from(m)) else {
             refused.entry("no shader".into()).or_default().push(m);
             continue;
         };
-        let compiled = lib
-            .material(shader, None)
-            .map_err(|e| format!("material: {e}"))
-            .and_then(|mat| look::layer3_pass(&mat).map_err(|r| format!("layer 3: {r:?}")))
+        let pass = if no_lightmap_group {
+            let selection = tags::material::PassSelection { lod: 0, layer: look::LIGHTMAP_LAYER, pass: 0,
+                implementation: look::UNLIT_BSP_IMPLEMENTATION };
+            lib.selected_implementation(shader, selection, None, None).map_err(|e| format!("material: {e}"))
+                .and_then(|pass| look::unlit_bsp_pass(&pass, normalization).map_err(|r| format!("layer 3: {r:?}")))
+        } else {
+            lib.material(shader, None).map_err(|e| format!("material: {e}"))
+                .and_then(|mat| look::layer3_pass(&mat).map_err(|r| format!("layer 3: {r:?}")))
+        };
+        let compiled = pass
             .and_then(|pass| {
                 let code = look::world_program(map, lib.metadata(), pass.look.vertex_shader).ok_or("no world-space vertex program")?;
-                let mut p = program::compile_world(&pass, &code)?;
+                let mut dims = [None; 4];
+                for (slot, stage) in dims.iter_mut().zip(pass.look.textures) {
+                    *slot = match stage {
+                        Stage::Bitmap { bitmap, image } => Some(*dimensions.entry((bitmap, image))
+                            .or_insert_with(|| bitmap_dimension(map, files, bitmap, image, layered))
+                            .as_ref().map_err(Clone::clone)?),
+                        Stage::Lightmap => Some(TextureDim::D2),
+                        Stage::Empty => None,
+                        Stage::Engine(id) => return Err(format!("unbound engine texture {id}")),
+                    };
+                }
+                let mut p = program::compile_section(&pass, &code, dims)?;
                 if placed.contains(&m) {
                     // Its placements: the pass with the rigid
                     // classification, or they stay on the D3D path.
                     let rigid = look::rigid_program(map, lib.metadata(), pass.look.vertex_shader)
                         .ok_or_else(|| "no rigid vertex program".to_string())
-                        .and_then(|code| program::compile_rigid(&pass, &code))
-                        .and_then(|r| program::rigid_fit(world, m, &r).map(|()| r));
+                        .and_then(|code| program::compile_section_rigid(&pass.look, pass.state.alpha_test, &code, dims));
                     match rigid {
                         Ok(r) => p.rigid = Some(r),
                         Err(why) => rigid_refused.entry(why).or_default().push(m),
@@ -1394,10 +1433,9 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
                 Ok(p)
             })
             .and_then(|p| {
-                program::world_fit(world, m, &p, page_ready)?;
                 for (n, s) in p.stages.iter().enumerate() {
                     let Stage::Bitmap { bitmap, image } = *s else { continue };
-                    if p.dims[n].is_none() {
+                    if p.dims[n].is_none() || layered.contains_key(&(bitmap, image)) {
                         continue;
                     }
                     // A linear texture is addressed in texels on the D3D
@@ -1409,6 +1447,31 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
             });
         match compiled {
             Ok(p) => {
+                let mut any = false;
+                let mut reasons = BTreeMap::<String, usize>::new();
+                for d in world.draws.iter().filter(|d| d.material == m) {
+                    let inputs = match d.owner {
+                        Owner::Cluster(_) => Ok(p.inputs),
+                        Owner::Instance(i) if world.rows(i).is_none() => Err("placement rows unavailable".to_owned()),
+                        Owner::Instance(_) => p.rigid.as_ref().map(|r| r.inputs)
+                            .ok_or_else(|| "rigid vertex program unavailable".to_owned()),
+                    };
+                    match inputs.and_then(|inputs| program::part_fit(d, inputs, &p, page_ready)) {
+                        Ok(()) => { parts.insert((d.owner, d.part)); any = true; }
+                        Err(why) => *reasons.entry(why).or_default() += 1,
+                    }
+                }
+                if !any {
+                    for why in reasons.into_keys() {
+                        refused.entry(why).or_default().push(m);
+                    }
+                    continue;
+                }
+                if feature::native_verbose() {
+                    for (why, count) in reasons {
+                        eprintln!("native-world: material {m} leaves {count} parts to D3D: {why}");
+                    }
+                }
                 programs.insert(m, p);
                 if uses_palette {
                     palettized.push(m);
@@ -1419,6 +1482,35 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
     }
     palettized.sort_unstable();
     out
+}
+
+/// Keep cube faces and volume slices together. Passing face zero to the
+/// two-dimensional image decoder changes both the fetch and its coordinates.
+fn bitmap_dimension<R: std::io::Read + std::io::Seek>(
+    map: &mut Map<R>, files: &mut assets::ResourceFiles, bitmap: TagId, index: u32,
+    images: &mut LayeredImages,
+) -> Result<TextureDim, String> {
+    let tags::TagData::Bitmap(tag) = tags::DecodedTag::read(map, bitmap).map_err(|e| e.to_string())?.data else {
+        return Err("stage datum is not a bitmap".into());
+    };
+    let image = tag.images.get(index as usize).ok_or("bitmap has no such image")?;
+    let dim = match image.kind {
+        tags::TextureKind::D2 => return Ok(TextureDim::D2),
+        tags::TextureKind::D3 => TextureDim::D3,
+        tags::TextureKind::Cube => TextureDim::Cube,
+        tags::TextureKind::Unknown(kind) => return Err(format!("unknown bitmap shape {kind}")),
+    };
+    if matches!(image.format, tags::PixelFormat::P8 | tags::PixelFormat::P8Bump) {
+        return Err("layered bitmap requires a stage palette".into());
+    }
+    let decoded = assets::bitmap::decode_image(image, files).map_err(|e| e.to_string())?;
+    if decoded.desc.format.layout() == gfx::format::Layout::Linear {
+        return Err("layered bitmap uses linear addressing".into());
+    }
+    let pixels = crate::native_lights_glue::layered(decoded.levels, dim)
+        .ok_or("incomplete layered bitmap")?;
+    images.insert((bitmap, index), pixels);
+    Ok(dim)
 }
 
 /// Stage images as their stages sample them, for every native pass that

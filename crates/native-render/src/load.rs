@@ -157,11 +157,11 @@ pub fn load_world<R: Read + Seek>(
     let &(bsp_id, lightmap) = bsps.get(index).ok_or("no such BSP")?;
     let shaders = bsp_shaders(map, bsp_id)?;
     let bsp = StructureRender::read(map, bsp_id)?;
-    let group = lightmap.and_then(|l| Lightmap::read(map, l).ok()).and_then(|l| {
-        l.groups
-            .into_iter()
-            .find(|g| g.structure_checksum == bsp.checksum && g.bitmap.is_some())
-    });
+    // The record builder tests the first group only. A later group with
+    // the same checksum cannot change the lighting implementation.
+    let group = lightmap.map(|id| Lightmap::read(map, id)).transpose()?
+        .and_then(|l| l.groups.into_iter().next())
+        .filter(|g| g.structure_checksum == bsp.checksum && g.bitmap.is_some());
     let (clusters, instances) = group
         .as_ref()
         .map_or((&[][..], &[][..]), |g| (&g.cluster_render_info[..], &g.instance_render_info[..]));

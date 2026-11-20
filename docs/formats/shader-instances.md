@@ -352,8 +352,11 @@ variants and engine constants.
   are returned raw.
 - **Engine input semantics** (which scalar or vector is time, camera, light
   colour and so on) are not named, apart from the root-fed ones.
-- **Stale state.** The engine keeps texture slots, constant banks and the
-  pixel shader buffer across draws. The resolver starts each implementation
+- **Persistent state.** The engine keeps texture slots, constant banks and the
+  pixel shader buffer across draws. For a full rebind,
+  `ShaderLibrary::selected_implementation` accepts an incoming
+  `ParameterState` and preserves unwritten fields. The map-wide material
+  inspector evaluates alternatives independently. It starts each implementation
   from zero and the implementation's own definition. A variant shader's
   untouched fields (compare mode, the `C0/C1Mapping` words) therefore come
   from the implementation's embedded definition, where the engine would
