@@ -652,6 +652,11 @@ pub(crate) fn run_with_theater(
         }
     }
     live.check()?;
+    if live.join.is_some()
+        && (film_out.is_some() || std::env::var_os("H2_FILM_OUT").is_some_and(|p| !p.is_empty()))
+    {
+        bail!("Session links are unavailable while recording a film.");
+    }
     let live_choice = live.play_choice(std::env::var("H2_LIVE_SERVER").ok().as_deref())?;
     // Our settings: flags (--fps, --set), then the environment, then
     // <data>/settings.toml, then each default. A bad value is reported and
@@ -738,7 +743,8 @@ pub(crate) fn run_with_theater(
     // With no Live flag, offline (docs/live/live.md "Playing on Live").
     let session = start_session(&mut live, &opts.disc, live_choice)?;
     if let Some(link) = live.join.take() {
-        live_hle::join_link::submit(link).map_err(anyhow::Error::msg)?;
+        live_hle::join_link::submit(link, live_hle::join_link::Source::CommandLine)
+            .map_err(anyhow::Error::msg)?;
     }
     // Signed in: the account's saves are merged into U: now, before the
     // game reads them, and pushed as the game writes

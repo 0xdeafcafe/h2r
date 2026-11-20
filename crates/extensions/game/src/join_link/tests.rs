@@ -3,12 +3,175 @@ use engine::entry::{EntryFuture, Regs, testing};
 use engine::testing::FakeGuest;
 
 #[test]
-fn a_game_only_leaves_after_consent_and_a_successful_new_lookup() {
-    assert_eq!(after_lookup(Place::Game, false), ReadyAction::Ask);
-    assert_eq!(after_lookup(Place::Game, true), ReadyAction::Leave);
-    // The same check after the menu loads sends the player straight in.
-    assert_eq!(after_lookup(Place::Menu, false), ReadyAction::Join);
-    assert_eq!(after_lookup(Place::Menu, true), ReadyAction::Join);
+fn films_and_offline_runs_add_no_join_hooks_or_dialog_allocations() {
+    let taped = Hle::for_film(
+        live_hle::NetworkConfig::new("127.0.0.1:3074".parse().unwrap()),
+        true,
+    )
+    .unwrap();
+    for (live, unsupported) in [
+        (Some(taped), true),
+        (None, false),
+        (Some(signed_out()), false),
+    ] {
+        let mut features = hooks::Registry::new(hooks::Switches::defaults());
+        install(&mut features, live, unsupported).unwrap();
+        let plan = features.build(&hooks::Base).unwrap();
+        assert!(plan.features.is_empty());
+        assert!(plan.chains.is_empty() && plan.entries.is_empty() && plan.allocs.is_empty());
+    }
+}
+
+#[test]
+fn only_an_explicit_launch_skips_confirmation_at_an_empty_menu() {
+    let squad = Squad { addr: SQUAD, incarnation: 9 };
+    let lobby = Place::Lobby(squad);
+    let game = Place::Game(Some(squad));
+    assert_eq!(
+        join_action(Place::Menu, Source::External, None),
+        ReadyAction::Ask
+    );
+    assert_eq!(
+        join_action(Place::Menu, Source::CommandLine, None),
+        ReadyAction::Join
+    );
+    for source in [Source::CommandLine, Source::External] {
+        for place in [lobby, game] {
+            assert_eq!(join_action(place, source, None), ReadyAction::Ask);
+            assert_eq!(join_action(place, source, Some(place)), ReadyAction::Leave);
+        }
+        assert_eq!(join_action(game, source, Some(lobby)), ReadyAction::Ask);
+        assert_eq!(
+            join_action(Place::Lobby(Squad { incarnation: 10, ..squad }), source, Some(lobby)),
+            ReadyAction::Ask
+        );
+    }
+}
+
+fn job(source: Source) -> Job {
+    Job::new(Request {
+        id: 0,
+        link: "h2recomp://join?server=https%3A%2F%2Flive.example&session=8000000000000001"
+            .parse()
+            .unwrap(),
+        source,
+    })
+}
+
+fn signed_out() -> Arc<Hle> {
+    Hle::new(live_hle::LiveConfig {
+        server_url: Some("https://live.example".into()),
+        ..Default::default()
+    })
+    .unwrap()
+}
+
+const SQUAD: u32 = 0x3000;
+fn memory(mode: u32, squad_state: u32) -> FakeGuest {
+    let mut m = FakeGuest::new();
+    m.put_u32(level_boot::GAME_GLOBALS, 0x1000)
+        .put_u8(0x1000 + 0x1120, 1)
+        .put_u32(0x1000 + 8, mode)
+        .put_u8(points::NETWORK_READY.base, 1)
+        .put_u32(points::SQUAD_SESSION.base, SQUAD)
+        .map(SQUAD, coop_probe::layout::STATE + 4)
+        .put_u32(SQUAD + coop_probe::layout::STATE, squad_state)
+        .put_u32(SQUAD + bots::phantom::session::at::INCARNATION, 9);
+    m
+}
+
+#[test]
+fn confirming_a_lobby_departure_waits_for_teardown_then_resumes_sign_in() {
+    use crate::list_class::Rows;
+    let entry = |cx: Cx| -> EntryFuture {
+        Box::pin(async move {
+            let (hle, dialog, outcome) = (signed_out(), Dialog::default(), Outcome::default());
+            let tick =
+                async |job: &mut Job| advance(&cx, 0, &hle, &dialog, job, &outcome).await.unwrap();
+            let mut job = job(Source::External);
+            let lobby = Place::Lobby(Squad { addr: SQUAD, incarnation: 9 });
+            assert_eq!(cx.read(place), Some(lobby));
+            job.step = Step::Confirm {
+                place: lobby,
+                for_sign_in: true,
+            };
+            dialog.prepare(true, "Join this game?");
+            dialog.press(1);
+            assert!(!tick(&mut job).await);
+            assert!(matches!(job.step, Step::Confirm { .. }));
+            dialog.closed();
+            assert!(!tick(&mut job).await);
+            assert_eq!(job.confirmed, Some(lobby));
+            assert!(!tick(&mut job).await);
+            assert!(matches!(job.step, Step::Returning));
+            assert!(!tick(&mut job).await);
+            assert!(matches!(job.step, Step::Returning));
+            cx.write(|m| m.set_u32(SQUAD + coop_probe::layout::STATE, 0))?;
+            assert!(!tick(&mut job).await);
+            assert_eq!(job.confirmed, Some(Place::Menu));
+            assert!(!tick(&mut job).await);
+            assert!(matches!(job.step, Step::SignIn { opened: false }));
+            Ok(Ret::new(0, 0))
+        })
+    };
+    let run = testing::run(
+        &entry,
+        memory(level_boot::MODE_MAINMENU, 5),
+        Regs::default(),
+        |_, _| Regs::default(),
+    );
+    assert!(run.result.is_ok());
+    assert_eq!(
+        run.calls.iter().map(|c| c.target).collect::<Vec<_>>(),
+        [
+            crate::host_lobby::LEAVE_SESSIONS,
+            level_boot::REQUEST_MAINMENU
+        ]
+    );
+}
+
+#[test]
+fn cancelling_or_rejecting_an_external_request_never_interrupts_the_match() {
+    let entry = |cx: Cx| -> EntryFuture {
+        Box::pin(async move {
+            let (hle, dialog, outcome) = (signed_out(), Dialog::default(), Outcome::default());
+            let mut cancelled = job(Source::External);
+            cancelled.step = Step::Confirm {
+                place: Place::Game(None),
+                for_sign_in: true,
+            };
+            dialog.prepare(true, "Join this game?");
+            dialog.closed(); // B dismisses the question.
+            assert!(
+                advance(&cx, 0, &hle, &dialog, &mut cancelled, &outcome)
+                    .await
+                    .unwrap()
+            );
+            let mut wrong_server = job(Source::External);
+            wrong_server.request.link =
+                "h2recomp://join?server=https%3A%2F%2Fother.example&session=8000000000000001"
+                    .parse()
+                    .unwrap();
+            let err = advance(&cx, 0, &hle, &dialog, &mut wrong_server, &outcome)
+                .await
+                .unwrap_err();
+            wrong_server.fail(err);
+            assert!(
+                advance(&cx, 0, &hle, &dialog, &mut wrong_server, &outcome)
+                    .await
+                    .unwrap()
+            );
+            Ok(Ret::new(0, 0))
+        })
+    };
+    let run = testing::run(
+        &entry,
+        memory(level_boot::MODE_MULTIPLAYER, 0),
+        Regs::default(),
+        |_, _| panic!("unconfirmed request called the game"),
+    );
+    assert!(run.result.is_ok());
+    assert!(run.calls.is_empty());
 }
 
 #[test]

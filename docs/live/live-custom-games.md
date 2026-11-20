@@ -57,13 +57,16 @@ ID. A link contains no account, token, invitation or host network address.
 Halo 2 uses the player's selected service. To join a different service,
 choose that service explicitly with `h2 play --live-server URL --join LINK`.
 
-From the main menu, sign in if prompted. During a match or campaign,
-the game asks before leaving and names the host when signed in. The game checks
-the advertisement as the signed-in player and uses the accepted-invite
-path to enter the host's session. A link to an invite-only, full or closed
-session reports why the join failed. Friends-only sessions require the
-console's player to be a friend of the host. The agent exposes the request
-and its outcome. [Game agent API](../runtime/agent-api.md#live-session-links)
+Halo 2 asks for confirmation when macOS or the agent delivers a joinable link.
+An explicit CLI join skips the question only at an empty main menu. In a
+lobby, match or campaign the player confirms before leaving. When the player
+is signed in the question names the host. After confirmation Halo 2 checks
+admission again as the signed-in player and uses the accepted-invite path
+to enter the host's session. Friends-only sessions require a friendship
+with the host. An invite-only, full or closed session produces a failure
+reason. During play an unconfirmed failure goes to the log and agent status.
+Session links are available in Live player runs outside film recording and
+playback. The agent exposes the request and its outcome. [Game agent API](../runtime/agent-api.md#live-session-links)
 
 ## 1. How the System Link browser works
 

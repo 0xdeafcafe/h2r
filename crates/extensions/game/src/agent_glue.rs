@@ -344,6 +344,7 @@ pub fn add_host_methods(agent: &agent::Agent) {
         crate::sim_bots::stats(v, bots::phantom::global())
     });
     agent.add_method(method::LIVE_JOIN_OPEN, Access::Act, |params| {
+        use live_hle::join_link::{self, Source, SubmitError};
         #[derive(serde::Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Open {
@@ -353,8 +354,7 @@ pub fn add_host_methods(agent: &agent::Agent) {
             .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?;
         let link = open.url.parse::<live_proto::JoinLink>()
             .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?;
-        let id = live_hle::join_link::submit(link).map_err(|e| {
-            use live_hle::join_link::SubmitError;
+        let id = join_link::submit(link, Source::External).map_err(|e| {
             let code = match e {
                 SubmitError::Busy => code::BUSY,
                 SubmitError::Unavailable => code::UNAVAILABLE,

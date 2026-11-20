@@ -14,12 +14,14 @@ use engine::{memory::GuestMemory, points};
 use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
 use live_hle::{
     Hle,
-    join_link::{self, Phase, Request},
+    join_link::{self, Phase, Request, Source},
     join_resolver::{JoinLookup, ResolvedJoin},
 };
 use runtime::guest::Permissions;
 
-use crate::{layout_glue::ReadGm, level_boot, list_class, ui_kit::dialog_tag, ui_watch};
+use crate::{
+    coop_probe, layout_glue::ReadGm, level_boot, list_class, ui_kit::dialog_tag, ui_watch,
+};
 use dialog::Dialog;
 use outcome::Outcome;
 
@@ -43,7 +45,7 @@ enum Step {
     Start,
     SignIn { opened: bool },
     Lookup(JoinLookup),
-    Confirm { for_sign_in: bool },
+    Confirm { place: Place, for_sign_in: bool },
     Returning,
     WaitingForLobby,
     ShowError { reason: String, retry: Instant },
@@ -55,7 +57,7 @@ struct Job {
     step: Step,
     until: Instant,
     /// Consent covers this departure only. A new match needs a new question.
-    may_leave: bool,
+    confirmed: Option<Place>,
 }
 
 impl Job {
@@ -64,7 +66,7 @@ impl Job {
             request,
             step: Step::Start,
             until: Instant::now() + DEADLINE,
-            may_leave: false,
+            confirmed: None,
         }
     }
 
@@ -92,15 +94,32 @@ impl Job {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Squad {
+    addr: u32,
+    incarnation: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Place {
     Menu,
-    Game,
+    Lobby(Squad),
+    Game(Option<Squad>),
 }
 
 fn place(m: &dyn GuestMemory) -> Option<Place> {
-    match level_boot::active_mode(&ReadGm(m))? {
-        level_boot::MODE_MAINMENU => Some(Place::Menu),
-        level_boot::MODE_CAMPAIGN | level_boot::MODE_MULTIPLAYER => Some(Place::Game),
+    let mem = ReadGm(m);
+    let mode = level_boot::active_mode(&mem)?;
+    // Retail can replace a squad at the same address while the prompt is open.
+    let squad = match coop_probe::read_session(&mem).filter(coop_probe::Session::live) {
+        Some(s) => Some(Squad {
+            addr: s.addr,
+            incarnation: m.u32(s.addr.checked_add(bots::phantom::session::at::INCARNATION)?).ok()?,
+        }),
+        None => None,
+    };
+    match mode {
+        level_boot::MODE_MAINMENU => Some(squad.map_or(Place::Menu, Place::Lobby)),
+        level_boot::MODE_CAMPAIGN | level_boot::MODE_MULTIPLAYER => Some(Place::Game(squad)),
         _ => None,
     }
 }
@@ -232,18 +251,25 @@ async fn question(
     cx: &Cx,
     dialog: &Dialog,
     job: &mut Job,
+    location: Place,
     host: Option<&str>,
 ) -> Result<(), String> {
-    let body = match host {
-        Some(host) => format!("Join {host}'s game? You'll leave this one."),
-        None => "Leave this game to sign in and join a game on Xbox Live?".into(),
+    let mut body = match host {
+        Some(host) => format!("Join {host}'s game?"),
+        None => "Sign in to Xbox Live to join this game?".into(),
     };
+    match location {
+        Place::Menu => {}
+        Place::Lobby(_) => body.push_str(" You'll leave your lobby."),
+        Place::Game(_) => body.push_str(" You'll leave your current game."),
+    }
     dialog.prepare(true, &body);
     open_dialog(cx).await?;
     job.phase(Phase::Confirm {
         host: host.map(str::to_owned),
     });
     job.step = Step::Confirm {
+        place: location,
         for_sign_in: host.is_none(),
     };
     Ok(())
@@ -256,11 +282,11 @@ enum ReadyAction {
     Leave,
 }
 
-fn after_lookup(place: Place, may_leave: bool) -> ReadyAction {
-    match (place, may_leave) {
-        (Place::Menu, _) => ReadyAction::Join,
-        (Place::Game, false) => ReadyAction::Ask,
-        (Place::Game, true) => ReadyAction::Leave,
+fn join_action(location: Place, source: Source, confirmed: Option<Place>) -> ReadyAction {
+    match location {
+        Place::Menu if source == Source::CommandLine || confirmed.is_some() => ReadyAction::Join,
+        Place::Lobby(_) | Place::Game(_) if confirmed == Some(location) => ReadyAction::Leave,
+        _ => ReadyAction::Ask,
     }
 }
 
@@ -269,7 +295,7 @@ fn after_lookup(place: Place, may_leave: bool) -> ReadyAction {
 async fn advance(
     cx: &Cx,
     scratch: u32,
-    live: Option<&Hle>,
+    hle: &Hle,
     dialog: &Dialog,
     job: &mut Job,
     outcome: &Outcome,
@@ -277,6 +303,10 @@ async fn advance(
     use Step::*;
     let location = cx.read(place);
     if let ShowError { reason, retry } = &mut job.step {
+        if job.confirmed.is_none() && matches!(location, Some(Place::Game(_) | Place::Lobby(_))) {
+            // fail() has logged the reason and published the terminal agent status.
+            return Ok(true);
+        }
         if location.is_some() && Instant::now() >= *retry {
             dialog.prepare(false, reason);
             if let Err(e) = open_dialog(cx).await {
@@ -292,7 +322,6 @@ async fn advance(
     if matches!(job.step, DismissError) {
         return Ok(dialog.answer().is_some());
     }
-    let hle = live.ok_or("Xbox Live is off. Enable Xbox Live and open the link again.")?;
     let server = hle
         .config()
         .server_url
@@ -314,30 +343,33 @@ async fn advance(
         .into());
     }
     match &mut job.step {
-        Start => {
-            if location.is_none() {
+        Start | SignIn { .. } => {
+            let Some(location) = location else {
                 return Ok(false);
-            }
+            };
             if ready(cx, hle).await? {
                 job.resolve(hle)?;
-            } else if matches!(location, Some(Place::Game)) {
-                question(cx, dialog, job, None).await?;
             } else {
-                job.step = SignIn { opened: false };
-                job.until = Instant::now() + SIGNIN_LIMIT;
-                job.phase(Phase::SigningIn);
-            }
-        }
-        SignIn { opened } => {
-            if ready(cx, hle).await? {
-                job.resolve(hle)?;
-            } else if matches!(location, Some(Place::Game)) {
-                question(cx, dialog, job, None).await?;
-            } else if !*opened && let Some(menu) = cx.read(main_menu) {
-                *opened = true;
-                sign_in(cx, menu, scratch + CONTROLLER)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                match join_action(location, job.request.source, job.confirmed) {
+                    ReadyAction::Ask => question(cx, dialog, job, location, None).await?,
+                    ReadyAction::Leave => return_to_menu(cx, job).await?,
+                    ReadyAction::Join => match &mut job.step {
+                        Start => {
+                            job.step = SignIn { opened: false };
+                            job.until = Instant::now() + SIGNIN_LIMIT;
+                            job.phase(Phase::SigningIn);
+                        }
+                        SignIn { opened } if !*opened => {
+                            if let Some(menu) = cx.read(main_menu) {
+                                *opened = true;
+                                sign_in(cx, menu, scratch + CONTROLLER)
+                                    .await
+                                    .map_err(|e| e.to_string())?;
+                            }
+                        }
+                        _ => {}
+                    },
+                }
             }
         }
         Lookup(lookup) => {
@@ -345,8 +377,10 @@ async fn advance(
                 && let Some(target) = lookup.poll()
             {
                 let target = target?;
-                match after_lookup(location, job.may_leave) {
-                    ReadyAction::Ask => question(cx, dialog, job, Some(target.host())).await?,
+                match join_action(location, job.request.source, job.confirmed) {
+                    ReadyAction::Ask => {
+                        question(cx, dialog, job, location, Some(target.host())).await?
+                    }
                     ReadyAction::Leave => return_to_menu(cx, job).await?,
                     ReadyAction::Join => {
                         dispatch(cx, scratch, hle, target, outcome).await?;
@@ -357,27 +391,29 @@ async fn advance(
                 }
             }
         }
-        Confirm { for_sign_in } => match dialog.answer() {
+        Confirm { place, for_sign_in } => match dialog.answer() {
             None => {}
             Some(false) => {
                 job.phase(Phase::Cancelled);
                 return Ok(true);
             }
             Some(true) => {
-                job.may_leave = true;
+                job.confirmed = Some(*place);
                 // Capacity, privacy and our own identity may have changed
                 // while the prompt was up. Recheck before leaving.
                 if ready(cx, hle).await? {
                     job.resolve(hle)?;
                 } else if *for_sign_in {
-                    return_to_menu(cx, job).await?;
+                    job.step = Start;
+                    job.until = Instant::now() + DEADLINE;
                 } else {
                     return Err("Your Xbox Live sign-in changed. Open the link again.".into());
                 }
             }
         },
         Returning if matches!(location, Some(Place::Menu)) => {
-            job.may_leave = false;
+            // The request is confirmed, but leaving another squad needs fresh consent.
+            job.confirmed = Some(Place::Menu);
             job.step = Start;
         }
         WaitingForLobby => {
@@ -404,7 +440,7 @@ async fn return_to_menu(cx: &Cx, job: &mut Job) -> Result<(), String> {
 }
 
 struct Driver {
-    live: Option<Arc<Hle>>,
+    live: Arc<Hle>,
     dialog: Arc<Dialog>,
 }
 
@@ -458,24 +494,16 @@ impl Feature for Driver {
                 c.answer_async(move |cx| {
                     Box::pin(async move {
                         let elapsed = cx.arg(0)?;
-                        let done = match advance(
-                            &cx,
-                            scratch,
-                            live.as_deref(),
-                            &dialog,
-                            &mut job,
-                            &outcome,
-                        )
-                        .await
-                        {
-                            Ok(done) => done,
-                            Err(error) => {
-                                outcome.clear();
-                                job.fail(error);
-                                job.until = Instant::now() + DEADLINE;
-                                false
-                            }
-                        };
+                        let done =
+                            match advance(&cx, scratch, &live, &dialog, &mut job, &outcome).await {
+                                Ok(done) => done,
+                                Err(error) => {
+                                    outcome.clear();
+                                    job.fail(error);
+                                    job.until = Instant::now() + DEADLINE;
+                                    false
+                                }
+                            };
                         if done {
                             outcome.clear();
                         } else {
@@ -499,6 +527,12 @@ pub fn install(
     live: Option<Arc<Hle>>,
     unsupported: bool,
 ) -> anyhow::Result<()> {
+    let Some(live) =
+        live.filter(|h| !unsupported && h.config().enabled && h.config().server_url.is_some())
+    else {
+        join_link::set_enabled(false);
+        return Ok(());
+    };
     let dialog = Arc::new(Dialog::default());
     let has_dialog = features
         .add(&dialog.class())
@@ -506,7 +540,7 @@ pub fn install(
     let has_driver = features
         .add(&Driver { live, dialog })
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    join_link::set_enabled(has_dialog && has_driver && !unsupported);
+    join_link::set_enabled(has_dialog && has_driver);
     Ok(())
 }
 

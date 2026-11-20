@@ -170,7 +170,7 @@ pub(crate) fn register_core_film(
     // screen opened from the logon's polling (docs/live/live.md, "In-game
     // sign-in").
     signin_screen::install(rt, features, i.live.as_ref()).context("installing the sign-in prompt")?;
-    crate::join_link::install(features, i.live.clone(), non_player)
+    crate::join_link::install(features, i.live.clone(), non_player || film.is_some())
         .context("installing Live join links")?;
     // A campaign level in place of the main menu (`h2 play --level`,
     // H2_LEVEL) and the level-loaded mark H2_PERF_FROM=level waits on

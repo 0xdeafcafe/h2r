@@ -1000,7 +1000,9 @@ h2 agent wait '{"phase":"gameplay","map_ticks":30}' && h2 agent loads 1
 the macOS app and `h2 play --join`. It returns `{"id":1}` on acceptance.
 Malformed links return `INVALID_PARAMS`. Reopening the same pending link
 returns its existing ID. A different link during a join returns `BUSY`.
-If the run disables joining, the method returns `UNAVAILABLE`.
+The player confirms an agent-delivered join, including at the main menu.
+Offline, dedicated host, simulation and film runs return `UNAVAILABLE`, as
+does a player run with join links disabled.
 
 `live.join.status` takes no parameters. Its `join` field is null until the
 first request. It then contains `id`, `server`, `session` and `phase`.

@@ -50,9 +50,12 @@ impl Dialog {
             },
         );
         self.texts.set(1, body);
-        self.texts
-            .set(2, if confirm { "Keep playing" } else { "OK" });
-        self.texts.set(3, "Leave and join");
+        self.texts.set(2, if confirm { "Cancel" } else { "OK" });
+        self.texts.set(3, "Join game");
+    }
+
+    pub(super) fn closed(&self) {
+        self.choice().closed = true;
     }
 
     /// Ignore a selection until the dialog has actually left the screen.
@@ -86,7 +89,7 @@ impl Dialog {
                 Box::pin(async move { dialog_tag::close(&cx, screen).await })
             }))
             .on_free(Arc::new(move |_, _| {
-                closed.choice().closed = true;
+                closed.closed();
                 Box::pin(async { Ok(()) })
             }))
     }

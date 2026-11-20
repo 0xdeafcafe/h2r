@@ -7,11 +7,20 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+/// Only the explicit CLI flag opts in to joining from an empty main menu.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Source {
+    External,
+    CommandLine,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct Request {
     pub id: u64,
     #[serde(flatten)]
     pub link: JoinLink,
+    #[serde(skip)]
+    pub source: Source,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -61,7 +70,7 @@ struct Inbox {
 }
 
 impl Inbox {
-    fn submit(&mut self, link: JoinLink) -> Result<u64, SubmitError> {
+    fn submit(&mut self, link: JoinLink, source: Source) -> Result<u64, SubmitError> {
         if self.disabled {
             return Err(SubmitError::Unavailable);
         }
@@ -75,7 +84,7 @@ impl Inbox {
         }
         let id = self.last.as_ref().map_or(1, |v| v.request.id + 1);
         self.last = Some(Status {
-            request: Request { id, link },
+            request: Request { id, link, source },
             phase: Phase::Queued,
         });
         Ok(id)
@@ -127,9 +136,9 @@ fn inbox() -> std::sync::MutexGuard<'static, Inbox> {
 }
 
 /// Duplicate OS deliveries of the active URL share the same request.
-pub fn submit(link: JoinLink) -> Result<u64, SubmitError> {
+pub fn submit(link: JoinLink, source: Source) -> Result<u64, SubmitError> {
     let mut inbox = inbox();
-    let id = inbox.submit(link)?;
+    let id = inbox.submit(link, source)?;
     if inbox
         .last
         .as_ref()
@@ -183,18 +192,20 @@ mod tests {
         let mut q = Inbox::default();
         let a = link("8000000000000001");
         let b = link("8000000000000002");
-        let first = q.submit(a.clone()).unwrap();
-        assert_eq!(q.submit(a.clone()), Ok(first));
-        assert_eq!(q.take_pending().unwrap().link, a);
+        let first = q.submit(a.clone(), Source::External).unwrap();
+        assert_eq!(q.submit(a.clone(), Source::CommandLine), Ok(first));
+        let pending = q.take_pending().unwrap();
+        assert_eq!(pending.link, a);
+        assert_eq!(pending.source, Source::External);
         assert_eq!(q.take_pending(), None);
         let confirm = Phase::Confirm {
             host: Some("Example".into()),
         };
         q.set_phase(first, confirm.clone());
-        assert!(q.submit(b.clone()).is_err());
+        assert!(q.submit(b.clone(), Source::External).is_err());
         assert_eq!(q.last.as_ref().unwrap().phase, confirm);
         q.set_phase(first, Phase::Cancelled);
-        let second = q.submit(b).unwrap();
+        let second = q.submit(b, Source::External).unwrap();
         q.set_phase(first, Phase::Joined);
         assert_eq!(q.take_pending().unwrap().id, second);
         let fail = Phase::Failed {
@@ -209,22 +220,27 @@ mod tests {
     fn an_unavailable_player_finishes_an_early_url_and_declines_later_ones() {
         let mut q = Inbox::default();
         let a = link("8000000000000001");
-        q.submit(a.clone()).unwrap();
+        q.submit(a.clone(), Source::External).unwrap();
         q.set_enabled(false);
         assert!(matches!(
             q.last.as_ref().unwrap().phase,
             Phase::Failed { .. }
         ));
         assert_eq!(q.take_pending(), None);
-        assert_eq!(q.submit(a.clone()), Err(SubmitError::Unavailable));
+        assert_eq!(
+            q.submit(a.clone(), Source::External),
+            Err(SubmitError::Unavailable)
+        );
         q.set_enabled(true);
-        assert!(q.submit(a).is_ok());
+        assert!(q.submit(a, Source::External).is_ok());
     }
 
     #[test]
     fn snapshot_carries_the_id_service_and_outcome_without_a_live_runtime() {
         let mut q = Inbox::default();
-        let id = q.submit(link("8000000000000001")).unwrap();
+        let id = q
+            .submit(link("8000000000000001"), Source::External)
+            .unwrap();
         assert_eq!(
             serde_json::to_value(&q.last).unwrap(),
             serde_json::json!({

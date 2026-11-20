@@ -47,10 +47,12 @@ define_class!(
 
         #[unsafe(method(openGameURL:withReply:))]
         fn open_url(&self, event: &NSAppleEventDescriptor, _reply: Option<&NSAppleEventDescriptor>) {
-            let result = event_link(event)
-                .and_then(|link| live_hle::join_link::submit(link).map_err(anyhow::Error::msg));
+            let result = event_link(event).and_then(|link| {
+                live_hle::join_link::submit(link, live_hle::join_link::Source::External)
+                    .map_err(anyhow::Error::msg)
+            });
             if let Err(error) = result {
-                alert(self.mtm(), "Can't open this game link", &error.to_string());
+                eprintln!("live: could not open game link: {error}");
             }
         }
     }
