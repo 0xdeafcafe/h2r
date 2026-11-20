@@ -102,7 +102,7 @@ fn fast_stamp_with(xbe_bytes: &[u8], passes: &str, opt: &str) -> String {
 
 /// Whether `dylib` exists and its stamp is the fast tier's for this image.
 pub fn fast_current(xbe_bytes: &[u8], dylib: &Path) -> bool {
-    crate::host_audit::module_from_env().is_none()
+    crate::host_report::module_from_env().is_none()
         && dylib.exists()
         && std::fs::read_to_string(crate::stamp_path(dylib)).is_ok_and(|s| s == fast_stamp(xbe_bytes))
 }
@@ -210,7 +210,7 @@ pub fn build_fast(xbe_bytes: &[u8], out: &Path, jobs: usize) -> Result<PathBuf> 
 #[cfg(feature = "desktop-runtime")]
 pub fn check_fast_target(arch: emit::compile::Arch) -> Result<()> {
     anyhow::ensure!(
-        crate::host_audit::module_from_env().is_none(),
+        crate::host_report::module_from_env().is_none(),
         "H2_HOST_MODULE requires the clang tier"
     );
     if arch != emit::compile::Arch::host() {

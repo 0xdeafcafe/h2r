@@ -26,7 +26,7 @@ copies. Nothing is ever written next to it.
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--out DIR` | `$TMPDIR/h2boot` | generated C (`src/`), objects, `libh2game.dylib` and its `.stamp` (image hash, generator source hash, IR passes, `H2_ACCESS_COUNT`, ABI, compiler flags: `run` rebuilds a dylib stamped for another image or generator), `kernel-trace.tsv` |
-| `--tier auto\|fast\|clang` | `auto` | which module `run` boots: clang's optimised one when it is current, else the Cranelift fast tier with clang's build started in the background (`H2_TIER` is the same; `crates/apps/boot/src/tier.rs`, [cranelift-tier.md](../lifter/cranelift-tier.md)) |
+| `--tier auto\|fast\|clang` | `auto` | which module `run` boots: clang's optimised one when it is current, else the Cranelift fast tier with clang's build started in the background (`H2_TIER` is the same; `crates/runtime/recomp/src/tier.rs`, [cranelift-tier.md](../lifter/cranelift-tier.md)) |
 | `--data DIR` | `~/Library/Application Support/h2recomp/data` | VFS host storage (`disk/PartitionN`, `metadata/PartitionN`) |
 | `--jobs N` | cores | clang parallelism |
 | `--slices N` | 100000 (`h2 serve`: no limit) | cooperative scheduler slices before giving up |

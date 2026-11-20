@@ -1,7 +1,7 @@
 # Iteration builds and caches
 
 Status: Built.
-Code: `crates/recompiler/emit/src/compile.rs` (object cache, `obj_dir_with`, `prune_obj_cache`), `crates/recompiler/emit/src/compile/tiers.rs` (optimisation tiers), `crates/recompiler/emit/src/c.rs` (`Split`, handler parts), `crates/apps/boot/src/tier.rs`, `h2 emit` and `h2 build` in `crates/apps/cli/src/main.rs`. Tests: `crates/recompiler/emit/src/compile.rs` and `compile/tiers.rs` (unit tests), `crates/recompiler/emit/tests/split.rs`, `crates/recompiler/emit/tests/direct.rs` (`Mode::SplitOn`), `crates/apps/boot/src/tier.rs`.
+Code: `crates/recompiler/emit/src/compile.rs` (object cache, `obj_dir_with`, `prune_obj_cache`), `crates/recompiler/emit/src/compile/tiers.rs` (optimisation tiers), `crates/recompiler/emit/src/c.rs` (`Split`, handler parts), `crates/runtime/recomp/src/tier.rs`, `h2 emit` and `h2 build` in `crates/apps/cli/src/main.rs`. Tests: `crates/recompiler/emit/src/compile.rs` and `compile/tiers.rs` (unit tests), `crates/recompiler/emit/tests/split.rs`, `crates/recompiler/emit/tests/direct.rs` (`Mode::SplitOn`), `crates/runtime/recomp/src/tier.rs`.
 Switch: `H2_OBJ_CACHE`, `H2_OBJ_CACHE_MAX`, `H2_OPT`, `H2_DEBUG`, `H2_CPU`, `H2_PGO*`, `H2_HOT`, `H2_OPT_COLD`, listed in [switches.md](../runtime/switches.md).
 
 `cargo h2 emit /path/to/default.xbe --run-entry` builds only the host
@@ -290,7 +290,7 @@ what they compile for; the target is in the objects' flags and the stamp
 - **Runtime only.** The stamp covers the runtime only through
   `runtime/include` (`h2abi.h`), so a runtime change keeps the dylib.
 - **Generator change** (xbe, analyze, ir, lift, opt, emit, x87, or boot's
-  bridge in `crates/apps/boot/c`): the whole pipeline runs again, but most of
+  bridge in `crates/runtime/recomp/c`): the whole pipeline runs again, but most of
   it is cheap.
   - *Analysis* is cached in the boot cache (`H2_BOOT_CACHE`, default
     `$TMPDIR/h2boot-cache`; `off` disables it), keyed by the image's hash
