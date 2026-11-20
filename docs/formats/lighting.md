@@ -157,6 +157,7 @@ editing API that automatically patches the retained bytes.
 | `sky +78/+7c` | lights block, stride `34` | E `0x0003eec0`, `0x000d1a30` |
 | `sky +80` | rotation angle | E `0x0003ebd0`/`0x0003eec0`: sine/cosine |
 | Sky light `+0c/+10` | yaw/pitch angles | E `0x0003eec0`, `0x000d1a30`: spherical direction construction |
+| Sky light `+2c` | Parameter block, stride `28`. The census reports the first parameter’s raw flags at `+00`, or absence for an empty block. | V; the bit meanings are unknown |
 | Sky light `+14` | lens-flare reference | E `0x0003eec0` tests datum `+18` before flare submission; V `lens` class |
 | `fog +38/+40/+50/+58` | `lsnd`, `snde`, `snd!`, `snd!` references | V recognizable class words and datums; sound use not traced |
 | `fpch +14` | `bitm` reference | V recognizable class word/datum; reference resolution checked across all maps; optical formula unreviewed |
@@ -227,9 +228,31 @@ bitmap router. It checks reviewed tag bounds/alignment, full salted references
 and classes, finite reviewed floats, palette/page indices, bitmap layouts and
 pixel decoding, bucket framing and stream conversions. It reports absent
 local payloads separately and counts opaque blocks/streams. `gldf` and `weat`
-are inventoried, not semantically validated. It does not repeat the BSP
-viewer's geometry/placement or bucket-range-against-definition validator.
-`--all` exits nonzero if any map or tag fails.
+are inventoried. `--all` exits nonzero if a map, tag or BSP census fails.
+
+For each scenario BSP, `crates/apps/cli/src/lighting/census.rs` counts clusters with a resolved
+sky and the lights from those distinct skies. A cluster's signed sky index
+at `+6e` selects a scenario sky. The sentinel -1 selects the first sky only
+when scenario byte `+12` bit 1 is set. Empty sky slots and out-of-range
+indices select no sky. The report identifies BSPs without a local lightmap
+and gives the page sizes of group zero even when its BSP checksum differs.
+A mismatch leaves the geometry measurements unavailable. For a matching
+group, including one with no page bitmap, the report gives:
+
+- A histogram of full-resolution bitmap page sizes.
+- Effective linear texels per world unit, the square root of summed texel
+  area divided by summed world area. Both sums use the same opaque
+  triangles with a page, UVs and nonzero area in both spaces. Each placed
+  mesh contributes with its own lightmap UVs and the rigid transform used
+  by the draw.
+- The count and fraction of incident vectors within 15 degrees of any sky
+  light selected in the BSP. Each vertex referenced by opaque triangles
+  counts once per cluster or placement. Stream `30` is decoded as the GPU
+  reads it. On a rigid placement the vertex program rotates its tangent
+  frame and dots the world-space incident vector against it. Sky directions
+  use the object-lighting yaw and pitch convention. A zero vector is an
+  unmatched observation. A missing vector is counted separately. An empty
+  denominator or an unmeasurable density prints `n/a`.
 
 All block reads, in the shared linkage decoder and here (probes, sky lights,
 volume layers, scenario BSP list), are charged to the one `TagView` budget,

@@ -1,4 +1,6 @@
 //! Lighting inspection and bounded, no-clobber lightmap page export.
+mod census;
+
 use crate::safe_out::OutDir;
 use anyhow::{Context, Result, bail};
 use assets::ResourceFiles;
@@ -24,7 +26,8 @@ const USAGE: &str = "usage: h2 lighting <map> [--bsp N] [--disc ISO]
        h2 lighting <map> --bsp N --page N [--group N] [--palette N] --out DIR [--force] [--disc ISO]
        h2 lighting --all [<map>] [--disc ISO]
 Summary only by default. --all validates reviewed metadata, references, bitmap
-pages and bucket resources; opaque fields are reported as unreviewed.
+pages and bucket resources, and reports page sizes, world texel density,
+cluster skies, sky light flags and incident-vector alignment per scenario BSP.
 --page exports one palette-coloured P8 page as PNG; ambiguous palette choices
 require --palette. A page is not the final shaded material.";
 
@@ -278,6 +281,9 @@ fn inspect(name: &str, o: &Options, stats: &mut Stats) -> Result<()> {
                 .failures
                 .push(format!("{name}: {} {}: {e:#}", tag.group, tag.id));
         }
+    }
+    if o.all && !pairs.is_empty() {
+        census::report(name, &mut map, &mut files, &pairs)?;
     }
     if !o.all
         && let Some(b) = o.bsp
