@@ -351,6 +351,7 @@ pub fn dialog_name(id: u32) -> Option<&'static str> {
         ACCOUNT_PICKER => "dialog_live_signin",
         0x15 => "dialog_live_password",
         0x21 => "confirmation_dialog",
+        0xb1 => "party_leader_picker",
         0xee => "tcr_dialog",
         0xf0 => "error_dialog_large",
         _ => return None,
@@ -768,6 +769,15 @@ mod tests {
         // A screen's line is as it was, dialog or not.
         screen(&mut f, WINDOW_1 + 4 * STRIDE_13, 0x8000_3000, 0xb6, 0x1);
         assert_eq!(read(&f).line(), "ui: screen 0xb6 (window 1, slot 4)");
+    }
+
+    #[test]
+    fn ui_screen_names_the_party_leader_picker() {
+        let mut f = Fake::default();
+        screen(&mut f, WINDOW_3 + 4 * STRIDE_13, 0x8000_2000, 0xb1, 1);
+        let v = screen_json(std::time::Duration::ZERO, None, dialog(&f));
+        assert_eq!(v["dialog"]["id"], 0xb1);
+        assert_eq!(v["dialog"]["name"], "party_leader_picker");
     }
 
     #[test]

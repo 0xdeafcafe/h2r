@@ -1328,6 +1328,55 @@ mod lobby {
     }
 
     #[test]
+    fn phantoms_stay_retired_while_matchmaking_dismantles_the_lobby() {
+        let ph = Phantoms::default();
+        ph.set_match_only(true);
+        let a = ph.add(who(1, "A"), None, idle()).unwrap();
+        let b = ph.add(who(2, "B"), None, idle()).unwrap();
+        let mut g = matchmaking();
+        let roster = S + 0x4a00;
+        let host_id = [0x18; 12];
+        g.put(S + PLAYERS, &host_id)
+            .put_u8(S + 0x49fd, 1)
+            .put_u32(roster, 1)
+            .put_u32(roster + 0x184, 1)
+            .put(roster + 0x188, &host_id);
+
+        ph.tick(&mut g, 0).unwrap();
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 3);
+        assert_eq!(g.u32(roster + 0x184).unwrap(), 3);
+        assert!(ph.stands_for(machine_id(a)));
+        // A removed bot may still have a peer until the next tick.
+        ph.remove(b).unwrap();
+        ph.retire_solo_session(&mut g, S).unwrap();
+        assert!(!ph.stands_for(machine_id(a)));
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 1);
+        assert_eq!(g.u32(S + PLAYER_MASK).unwrap(), 1);
+        assert_eq!(g.u32(roster).unwrap(), 1);
+        assert_eq!(g.u32(roster + 0x184).unwrap(), 1);
+        assert_eq!(g.bytes(roster + 0x188, 12).unwrap(), host_id);
+
+        let pending = ph.add(who(3, "C"), None, idle()).unwrap();
+        ph.tick(&mut g, 1).unwrap();
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 1);
+        let saved = serde_json::to_vec(&ph.film_roster()).unwrap();
+        let restored = Phantoms::default();
+        restored
+            .restore_film_roster(&serde_json::from_slice(&saved).unwrap())
+            .unwrap();
+        restored.tick(&mut g, 2).unwrap();
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 1);
+
+        // The next search hosts a new lobby at the same address.
+        g.put_u32(S + INCARNATION, 1);
+        restored.tick(&mut g, 3).unwrap();
+        assert_eq!(find_peer(&g, S, machine_id(a)).unwrap(), Some(1));
+        assert_eq!(find_peer(&g, S, machine_id(pending)).unwrap(), Some(2));
+        assert_eq!(find_peer(&g, S, machine_id(b)).unwrap(), None);
+        assert_eq!(g.u32(roster + 0x184).unwrap(), 3);
+    }
+
+    #[test]
     fn a_full_clankermatch_registers_the_ids_retail_waits_for() {
         let ph = Phantoms::default();
         ph.set_match_only(true);

@@ -2936,6 +2936,32 @@ peers (§5.1). The count is capped by the available session slots. The
 host and clients see each bot's name and team colour in the roster.
 Changing the page in the lobby adds or removes phantoms.
 
+**Leaving the lobby.** When the party leader is the only human, Back in
+the custom-game lobby follows the solo leave path and skips the party
+leader picker. Leave Game keeps its solo confirmation. Accepting Back in
+the matchmaking lobby retires the Clankers from the target session and
+returns to the party. If another human remains, the retail leave flow
+handles the party and only human players qualify for leadership.
+
+`game::bot_glue::party_leave` scopes the squad peer count at `0x199f34`
+to the lobby Back and pause Leave Game checks. It uses the live squad and,
+in matchmaking, the target membership to identify the sole human. The
+leader picker and the automatic successor check both validate squad
+player slots at `0x19a951`. A slot owned by a phantom machine fails
+those checks.
+
+The confirmed leave paths at `0x199e3c` and `0x252150` remove phantom
+players and peers through `bots::phantom::Phantoms::retire_solo_session`.
+Retirement also drops their matchmaking roster entries and holds off new
+seating until the departing session closes. The Clankers page settings
+still apply in the next lobby.
+
+Use `h2 agent ui` to check for `dialog.name = party_leader_picker` while
+driving Back through the agent API. A custom lobby with a solo human
+leader and Clankers exits without that screen. A party with two humans
+on separate consoles and Clankers keeps the leader picker with the other
+human as its only choice.
+
 ## 8. Clankermatch
 
 ### 8.1 What the player sees

@@ -48,6 +48,9 @@ pub mod at {
     pub const CHANNEL_SIZE: u32 = 0x14;
     pub const STATE: u32 = 0x741c;
     pub const CHANGES: u32 = 0x7618;
+    /// The session teardown at 0x5a575 advances this even when the
+    /// next lobby reuses the same session address.
+    pub const INCARNATION: u32 = 0x7650;
     /// The host's peer index. A joining client sets it to 0 and its own
     /// peer to 1 (`0x61050`: the host's address is peer 0, its own
     /// peer 1); becoming the host (state 5, `0x61390` at `0x6141a`) sets
@@ -819,11 +822,55 @@ fn mac_at(m: &dyn GuestMemory, a: u32) -> R<[u8; 6]> {
     Ok(id)
 }
 
+pub(super) fn peer_machine(m: &dyn GuestMemory, s: u32, p: u32) -> R<[u8; 6]> {
+    mac_at(m, peer(s, p) + PEER_MAC)
+}
+
+/// Whether an occupied membership slot belongs to a phantom machine.
+/// This also works on clients, which do not own that phantom's brain.
+pub fn phantom_player(m: &dyn GuestMemory, s: u32, id: u32) -> R<bool> {
+    let slot = id & 0xffff;
+    if slot >= MAX || m.u32(s + PLAYER_MASK)? & (1 << slot) == 0 {
+        return Ok(false);
+    }
+    let p = m.u32(player(s, slot) + P_PEER)?;
+    Ok(p < m.u32(s + PEER_COUNT)?.min(MAX)
+        && super::handle_of(peer_machine(m, s, p)?).is_some())
+}
+
+/// This console hosts the session and has its sole human player.
+/// An unclassified remote peer counts as human even before its players join.
+pub fn solo_host(m: &dyn GuestMemory, s: u32) -> R<bool> {
+    if m.u32(s + STATE)? != STATE_LIVE {
+        return Ok(false);
+    }
+    let local = m.u32(s + LOCAL_PEER)?;
+    let count = m.u32(s + PEER_COUNT)?;
+    if count > MAX || local >= count || m.u32(s + HOST_PEER)? != local {
+        return Ok(false);
+    }
+    for p in (0..count).filter(|&p| p != local) {
+        if super::handle_of(peer_machine(m, s, p)?).is_none() {
+            return Ok(false);
+        }
+    }
+    let mask = m.u32(s + PLAYER_MASK)?;
+    let mut locals = 0;
+    for slot in (0..MAX).filter(|&i| mask & (1 << i) != 0) {
+        let p = m.u32(player(s, slot) + P_PEER)?;
+        if p >= count {
+            return Ok(false);
+        }
+        locals += u32::from(p == local);
+    }
+    Ok(locals == 1)
+}
+
 /// The peer with machine id `mac`.
 pub fn find_peer(m: &dyn GuestMemory, s: u32, mac: [u8; 6]) -> R<Option<u32>> {
     let n = m.u32(s + PEER_COUNT)?.min(MAX);
     for p in 0..n {
-        if mac_at(m, peer(s, p) + PEER_MAC)? == mac {
+        if peer_machine(m, s, p)? == mac {
             return Ok(Some(p));
         }
     }
