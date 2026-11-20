@@ -828,7 +828,7 @@ Built on tests; **no game was built or run for it**. The probe tries the
 retail synchronous path of section 1 with two instances over System Link
 and writes enough on each machine to say how far it got and where the two
 parted. It is off unless `H2_COOP_PROBE=1`. Code:
-`crates/apps/boot/src/coop_probe.rs`, `crates/extensions/lockstep/src/pools.rs`,
+`crates/extensions/game/src/coop_probe.rs`, `crates/extensions/lockstep/src/pools.rs`,
 `h2 coop-probe diff` (`crates/apps/cli/src/coop_probe_cmd.rs`).
 
 ### 9.1 What it changes
@@ -1410,7 +1410,7 @@ this path.
 ### 11.4 Previews
 
 `the_retail_co_op_lobby_on_live_drawn_from_the_disc` (in
-`crates/apps/boot/src/coop_live/tests.rs`) draws the lobby as host and as
+`crates/extensions/game/src/coop_live/tests.rs`) draws the lobby as host and as
 guest, plus the level and difficulty screens, with
 `ui_kit::preview::Disc::render_retail`. It needs `H2_DISC` and writes to
 `H2_UI_PREVIEW_DIR`; never into git. The texts the game fills at run time
@@ -1912,7 +1912,7 @@ So the engine runs 16 players already. What holds at two is the data
   "up to N";
 - a guest takes the limit as 16: the host's lobby already held the start.
 
-**Stage 1b** (feature `coop-players`, `crates/apps/boot/src/coop_players.rs`,
+**Stage 1b** (feature `coop-players`, `crates/extensions/game/src/coop_players.rs`,
 on the co-op arm, so off outside a co-op session; `H2_FEATURES=-coop-players`):
 
 - *Spawn.* A first spawn of a player of index 2 or more runs the spawn,
@@ -2281,7 +2281,7 @@ attempts) are in BSS but not zero: the network setup at
 to 10000). Found while tracing phantom peers (docs/game/bots.md §5.1);
 an earlier note here guessed they stayed zero.
 
-**14.9.4 What is wired** (`crates/apps/boot/src/coop_jip.rs`, feature
+**14.9.4 What is wired** (`crates/extensions/game/src/coop_jip.rs`, feature
 `coop-jip`, on the co-op over Live arm):
 
 - **The lift.** On the host of a co-op campaign with

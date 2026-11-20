@@ -16,8 +16,10 @@
 //!   gives them) takes nothing in layer 1; it asks the geometry cache
 //!   (`0x0012de70`, flags 3) for the placement's geometry record and the
 //!   set's geometry, and declines either one not given; it fills the entry
-//!   with the implementation the shader's template gives for the layer
-//!   (vertex type 1).
+//!   with implementation 0 of the pass the shader's template lists for the
+//!   item's detail level (byte `+0x15`), the layer and the item's pass
+//!   (byte `+0x14`), and declines when that implementation's `vrtx` has no
+//!   program for classification 1 ([`implementation`]).
 //! - The draw `0x0004e260`, once per placement: `TwoSidedLighting` on,
 //!   `c[53]` = (`[0x0052598c + 4·lod]`, `[0x00525998 + 4·lod]`, 0, 1), the
 //!   set's vertex stream (set `+0x34`) and the shader's pass; then for each
@@ -97,6 +99,65 @@ pub const INSTANCE_SIZE: u32 = 0x18;
 
 /// `c[53]`'s two tables, by detail level.
 pub const LOD_FACTORS: [u32; 2] = [0x0052_598c, 0x0052_5998];
+
+/// The build's implementation lookup ([`implementation`], `0x0004deb9`..
+/// `0x0004df86`). A shader tag of group `PRTM` or `prt3` names its
+/// template through a virtual call (`0x00137bd0`, slot `+0x28`); any
+/// other through the pointer at its definition's `+0x24`, whose first
+/// word is the template's datum.
+pub const VIRTUAL_TEMPLATE_GROUPS: [u32; 2] = [0x5052_544d, 0x7072_7433];
+pub const SHADER_TEMPLATE: u32 = 0x24;
+/// Template definition: `+0x5c` its postprocess (`pp`). `pp +4` the
+/// detail levels (10 bytes each, the first layer's index in the low nine
+/// bits of the first half), `pp +0xc` the layers (a half each, the first
+/// pass's index in its low nine bits), `pp +0x14` the passes (10 bytes
+/// each, the `spas` datum at `+4`).
+pub const TEMPLATE_POSTPROCESS: u32 = 0x5c;
+pub const POSTPROCESS_LODS: u32 = 4;
+pub const POSTPROCESS_LAYERS: u32 = 0xc;
+pub const POSTPROCESS_PASSES: u32 = 0x14;
+pub const LOD_SIZE: u32 = 10;
+pub const PASS_SIZE: u32 = 10;
+pub const PASS_TAG: u32 = 4;
+/// The low nine bits of a level's or layer's first index.
+pub const INDEX_MASK: u32 = 0x1ff;
+/// `spas` definition: `+0x20` its postprocess, whose `+4` is the first
+/// implementation (`0x132` bytes each). The build takes implementation
+/// `byte [entry +4]`, which it has just set to 0.
+pub const PASS_POSTPROCESS: u32 = 0x20;
+pub const POSTPROCESS_IMPLEMENTATIONS: u32 = 4;
+pub const IMPLEMENTATION_SIZE: u32 = 0x132;
+/// Implementation: `+0x100` the `vrtx` datum.
+pub const IMPLEMENTATION_VERTEX_SHADER: u32 = 0x100;
+/// `0x0004cbb0`: the build's decision. The `vrtx` definition's `+4`
+/// classification count and `+8` classifications (`0x1c` bytes, the
+/// compiled program's size at `+0xc`); the build draws when the program
+/// of classification 1 is at least 16 bytes (`sar 4`, then nonzero).
+pub const VERTEX_SHADER_CLASSIFICATIONS: u32 = 4;
+pub const CLASSIFICATION_SIZE: u32 = 0x1c;
+pub const CLASSIFICATION_PROGRAM_SIZE: u32 = 0xc;
+/// The classification the build asks for and the draw binds
+/// (`0x0001c590` with 1).
+pub const DECORATOR_CLASSIFICATION: u32 = 1;
+
+/// The set's index buffer (`+0x28` count, `+0x2c` the u16 indices) and
+/// vertex stream (`+0x34`, a vertex buffer descriptor: byte `+0` its
+/// stream type, byte `+1` the stride, `+8` the byte offset, `+0x10` the
+/// D3D vertex buffer), as the draw binds them (`0x0004e458`..
+/// `0x0004e47a`: `0x0001c620`, then `SetVertexShaderInput` through
+/// `0x0001c710`).
+pub const SET_INDEX_COUNT: u32 = 0x28;
+pub const SET_INDICES: u32 = 0x2c;
+pub const SET_STREAM: u32 = 0x34;
+pub const STREAM_STRIDE: u32 = 1;
+pub const STREAM_OFFSET: u32 = 8;
+pub const STREAM_BUFFER: u32 = 0x10;
+/// A D3D resource's `Data` (`+4`): a physical address, read through the
+/// contiguous mapping `0x80000000 | (data & 0x0fffffff)`.
+pub const RESOURCE_DATA: u32 = 4;
+/// Most indices a set may have, and most vertex bytes read for it.
+pub const MAX_SET_INDICES: u32 = 1 << 20;
+pub const MAX_SET_VERTEX_BYTES: u32 = 16 << 20;
 
 /// Where the draw's constants are (the executable's read-only data).
 pub mod constant {
@@ -360,6 +421,110 @@ pub enum Refusal {
     /// The placement's geometry record or the set's geometry is not
     /// resident: the guest's cache request decides.
     NotResident,
+    /// The shader names its template through a virtual call (a `PRTM` or
+    /// `prt3` tag), which is not read here.
+    Virtual,
+}
+
+/// The implementation the build picks for an item: its address (what the
+/// build stores at the entry's `+0x10`) and its `vrtx` datum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Implementation {
+    pub address: u32,
+    pub vertex_shader: u32,
+}
+
+/// The build's implementation lookup for `shader` (the item's `+8`) at
+/// detail level `lod` (the item's byte `+0x15`), layer `layer` and pass
+/// `pass` (byte `+0x14`): implementation 0 of the pass the template lists
+/// there. `Ok(None)` when the build declines: its `vrtx` has no program
+/// for [`DECORATOR_CLASSIFICATION`] (`0x0004cbb0`), so the guest draws
+/// nothing for the item.
+pub fn implementation(mem: &dyn GuestRead, shader: u32, lod: u8, layer: u8, pass: u8) -> Result<Option<Implementation>, Refusal> {
+    let table = word(mem, TAG_TABLE, 0)?;
+    // `movsx`: the shader's index is signed, as the build reads it.
+    let entry = element(table, i32::from(shader as u16 as i16), 0x10);
+    if VIRTUAL_TEMPLATE_GROUPS.contains(&word(mem, entry, 0)?) {
+        return Err(Refusal::Virtual);
+    }
+    let shader_def = word(mem, entry, 8)?;
+    let template = word(mem, word(mem, shader_def, SHADER_TEMPLATE)?, 0)?;
+    let template_def = definition(mem, template).ok_or(Refusal::Unread)?;
+    let pp = word(mem, template_def, TEMPLATE_POSTPROCESS)?;
+    let lods = word(mem, pp, POSTPROCESS_LODS)?;
+    let first_layer = u32::from(half(mem, lods, LOD_SIZE * u32::from(lod))?) & INDEX_MASK;
+    let layers = word(mem, pp, POSTPROCESS_LAYERS)?;
+    let first_pass = u32::from(half(mem, layers, 2 * (first_layer + u32::from(layer)))?) & INDEX_MASK;
+    let passes = word(mem, pp, POSTPROCESS_PASSES)?;
+    let spas = word(mem, passes, PASS_SIZE * (first_pass + u32::from(pass)) + PASS_TAG)?;
+    let spas_def = definition(mem, spas).ok_or(Refusal::Unread)?;
+    let address = word(mem, word(mem, spas_def, PASS_POSTPROCESS)?, POSTPROCESS_IMPLEMENTATIONS)?;
+    let vertex_shader = word(mem, address, IMPLEMENTATION_VERTEX_SHADER)?;
+    if vertex_shader == u32::MAX {
+        return Ok(None);
+    }
+    let vrtx = definition(mem, vertex_shader).ok_or(Refusal::Unread)?;
+    if DECORATOR_CLASSIFICATION >= word(mem, vrtx, VERTEX_SHADER_CLASSIFICATIONS)? {
+        return Ok(None);
+    }
+    let classifications = word(mem, vrtx, VERTEX_SHADER_CLASSIFICATIONS + 4)?;
+    let size = word(mem, classifications, CLASSIFICATION_SIZE * DECORATOR_CLASSIFICATION + CLASSIFICATION_PROGRAM_SIZE)?;
+    Ok(((size as i32) >> 4 != 0).then_some(Implementation { address, vertex_shader }))
+}
+
+/// A set's geometry as the draw binds it: its vertex stream's type and
+/// stride, the stream's bytes for every vertex its indices name, and its
+/// u16 indices (a triangle list per model).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SetGeometry {
+    pub stream_type: u8,
+    pub stride: u8,
+    /// `stride` bytes per vertex, vertex 0 first.
+    pub vertices: Vec<u8>,
+    pub indices: Vec<u16>,
+}
+
+impl SetGeometry {
+    pub fn vertex_count(&self) -> usize {
+        self.vertices.len().checked_div(usize::from(self.stride)).unwrap_or(0)
+    }
+}
+
+/// `len` bytes at `addr`, read a word at a time.
+fn bytes(mem: &dyn GuestRead, addr: u32, len: u32) -> Result<Vec<u8>, Refusal> {
+    let start = addr & !3;
+    let end = addr.checked_add(len).ok_or(Refusal::Unread)?;
+    let mut out = Vec::with_capacity(len as usize + 8);
+    let mut at = start;
+    while at < end {
+        out.extend_from_slice(&word(mem, at, 0)?.to_le_bytes());
+        at = at.checked_add(4).ok_or(Refusal::Unread)?;
+    }
+    let skip = (addr - start) as usize;
+    Ok(out[skip..skip + len as usize].to_vec())
+}
+
+/// The geometry of the set with tag datum `set`, read from where the
+/// draw reads it. The vertex count is one past the largest index. The
+/// caller checks the set's geometry is resident first ([`read`] does).
+pub fn set_geometry(mem: &dyn GuestRead, set: u32) -> Result<SetGeometry, Refusal> {
+    let def = definition(mem, set).ok_or(Refusal::Unread)?;
+    let count = word(mem, def, SET_INDEX_COUNT)?;
+    if count > MAX_SET_INDICES {
+        return Err(Refusal::Unread);
+    }
+    let raw = bytes(mem, word(mem, def, SET_INDICES)?, 2 * count)?;
+    let indices: Vec<u16> = raw.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
+    let stream = word(mem, def, SET_STREAM)?;
+    let stream_type = byte(mem, stream, 0)?;
+    let stride = byte(mem, stream, STREAM_STRIDE)?;
+    let offset = word(mem, stream, STREAM_OFFSET)?;
+    let buffer = word(mem, stream, STREAM_BUFFER)?;
+    let data = 0x8000_0000 | (word(mem, buffer, RESOURCE_DATA)? & 0x0fff_ffff);
+    let vertex_count = indices.iter().map(|&i| u32::from(i) + 1).max().unwrap_or(0);
+    let len = vertex_count.checked_mul(u32::from(stride)).filter(|&n| n <= MAX_SET_VERTEX_BYTES).ok_or(Refusal::Unread)?;
+    let vertices = bytes(mem, data.checked_add(offset).ok_or(Refusal::Unread)?, len)?;
+    Ok(SetGeometry { stream_type, stride, vertices, indices })
 }
 
 /// The tag definition of datum `datum`.
@@ -374,7 +539,8 @@ fn resident(mem: &dyn GuestRead, info: u32) -> Result<bool, Refusal> {
 
 /// The draw of list item `item` (build [`DECORATOR_BUILD`]) at `slot`,
 /// layer `layer`, with its instances: what `0x0004e260` would set and
-/// draw. `Ok(None)` for layer 1, where the build takes nothing.
+/// draw. `Ok(None)` for layer 1, where the build takes nothing, and where
+/// the build declines ([`implementation`]).
 pub fn read(
     mem: &dyn GuestRead, k: &Constants, item: u32, slot: u32, layer: u8,
 ) -> Result<Option<(DecoratorDraw, Vec<DecoratorInstance>)>, Refusal> {
@@ -395,6 +561,10 @@ pub fn read(
     let geometry = element(word(mem, block, BLOCK_GEOMETRY)?, i32::from(geometry_index), GEOMETRY_SIZE);
     if !resident(mem, geometry)? || !resident(mem, def.wrapping_add(SET_GEOMETRY))? {
         return Err(Refusal::NotResident);
+    }
+    // The build's own decision: declined, the guest draws nothing.
+    if implementation(mem, shader, variant, layer, pass)?.is_none() {
+        return Ok(None);
     }
     let lod = argument >> 30;
     let lod_constant = [float(mem, LOD_FACTORS[0], 4 * lod)?, float(mem, LOD_FACTORS[1], 4 * lod)?, 0.0, k.one];
@@ -505,6 +675,132 @@ pub(crate) mod tests {
 
     fn close(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-5
+    }
+
+    /// Where the lookup's records live in the tests, and the tag indices
+    /// of the shader's template, pass and `vrtx` (the shader's own is the
+    /// caller's).
+    const CHAIN: u32 = 0x0066_0000;
+    pub(crate) const TEMPLATE_INDEX: u32 = 3;
+    pub(crate) const PASS_INDEX: u32 = 4;
+    pub(crate) const VRTX_INDEX: u32 = 6;
+
+    /// A made-up lookup chain from the shader with tag index `shader`
+    /// (the tag table must already be at `[TAG_TABLE]`) to a pass whose
+    /// implementation 0's `vrtx` has a classification-1 program of
+    /// `program_size` bytes, at detail level `lod`, layer `layer` and pass
+    /// `pass`: level `lod`'s layers start at 2, that layer's passes at 1.
+    pub(crate) fn put_implementation(m: &mut Mem, shader: u32, lod: u8, layer: u8, pass: u8, program_size: u32) {
+        let tags = m.read_u32(TAG_TABLE).expect("the tag table");
+        let def = |m: &mut Mem, index: u32, group: u32, at: u32| {
+            m.w(tags + 0x10 * index, group);
+            m.w(tags + 0x10 * index + 8, at);
+        };
+        let (shad, reference, stem, pp, lods, layers, passes) =
+            (CHAIN, CHAIN + 0x100, CHAIN + 0x200, CHAIN + 0x300, CHAIN + 0x400, CHAIN + 0x500, CHAIN + 0x600);
+        let (spas, spp, imps, vrtx, classes) = (CHAIN + 0x700, CHAIN + 0x800, CHAIN + 0x900, CHAIN + 0xb00, CHAIN + 0xc00);
+        def(m, shader, u32::from_be_bytes(*b"shad"), shad);
+        m.w(shad + SHADER_TEMPLATE, reference);
+        m.w(reference, 0xe000_0000 | TEMPLATE_INDEX);
+        def(m, TEMPLATE_INDEX, u32::from_be_bytes(*b"stem"), stem);
+        m.w(stem + TEMPLATE_POSTPROCESS, pp);
+        m.w(pp + POSTPROCESS_LODS, lods);
+        m.w(pp + POSTPROCESS_LAYERS, layers);
+        m.w(pp + POSTPROCESS_PASSES, passes);
+        // Halves: write the word holding each, the upper bits set to show
+        // only the low nine bits count.
+        let put_half = |m: &mut Mem, addr: u32, v: u16| {
+            let at = addr & !3;
+            let old = m.read_u32(at).unwrap_or(0);
+            let shift = 8 * (addr & 3);
+            m.w(at, (old & !(0xffff << shift)) | u32::from(v) << shift);
+        };
+        put_half(m, lods + LOD_SIZE * u32::from(lod), 0xfe00 | 2);
+        put_half(m, layers + 2 * (2 + u32::from(layer)), 0xfe00 | 1);
+        m.w(passes + PASS_SIZE * (1 + u32::from(pass)) + PASS_TAG, 0xe000_0000 | PASS_INDEX);
+        def(m, PASS_INDEX, u32::from_be_bytes(*b"spas"), spas);
+        m.w(spas + PASS_POSTPROCESS, spp);
+        m.w(spp + POSTPROCESS_IMPLEMENTATIONS, imps);
+        m.w(imps + IMPLEMENTATION_VERTEX_SHADER, 0xe000_0000 | VRTX_INDEX);
+        def(m, VRTX_INDEX, u32::from_be_bytes(*b"vrtx"), vrtx);
+        m.w(vrtx + VERTEX_SHADER_CLASSIFICATIONS, 2);
+        m.w(vrtx + VERTEX_SHADER_CLASSIFICATIONS + 4, classes);
+        m.w(classes + CLASSIFICATION_SIZE * DECORATOR_CLASSIFICATION + CLASSIFICATION_PROGRAM_SIZE, program_size);
+    }
+
+    fn lookup_memory(program_size: u32) -> Mem {
+        let mut m = Mem::default();
+        m.w(TAG_TABLE, 0x0063_0000);
+        put_implementation(&mut m, 2, 3, 3, 1, program_size);
+        m
+    }
+
+    #[test]
+    fn the_lookup_takes_implementation_0_of_the_pass_the_template_lists() {
+        let m = lookup_memory(0x40);
+        let imp = implementation(&m, 0xe500_0002, 3, 3, 1).unwrap().unwrap();
+        assert_eq!(imp.vertex_shader, 0xe000_0000 | VRTX_INDEX);
+        assert_eq!(imp.address, CHAIN + 0x900);
+        // Another level, layer or pass lands on records that are not there.
+        assert_eq!(implementation(&m, 0xe500_0002, 2, 3, 1), Err(Refusal::Unread));
+        assert_eq!(implementation(&m, 0xe500_0002, 3, 3, 0), Err(Refusal::Unread));
+    }
+
+    #[test]
+    fn the_build_declines_without_a_classification_1_program() {
+        // 15 bytes: `sar 4` leaves nothing.
+        assert_eq!(implementation(&lookup_memory(15), 0xe500_0002, 3, 3, 1), Ok(None));
+        assert!(implementation(&lookup_memory(16), 0xe500_0002, 3, 3, 1).unwrap().is_some());
+        let mut m = lookup_memory(0x40);
+        m.w(CHAIN + 0xb00 + VERTEX_SHADER_CLASSIFICATIONS, 1);
+        assert_eq!(implementation(&m, 0xe500_0002, 3, 3, 1), Ok(None), "only classification 0");
+        let mut m = lookup_memory(0x40);
+        m.w(CHAIN + 0x900 + IMPLEMENTATION_VERTEX_SHADER, u32::MAX);
+        assert_eq!(implementation(&m, 0xe500_0002, 3, 3, 1), Ok(None), "no vrtx");
+    }
+
+    #[test]
+    fn a_particle_shader_is_not_read() {
+        let mut m = lookup_memory(0x40);
+        for group in VIRTUAL_TEMPLATE_GROUPS {
+            m.w(0x0063_0000 + 0x10 * 2, group);
+            assert_eq!(implementation(&m, 0xe500_0002, 3, 3, 1), Err(Refusal::Virtual));
+        }
+    }
+
+    #[test]
+    fn a_sets_geometry_is_its_indices_and_the_vertices_they_name() {
+        const TAGS: u32 = 0x0063_0000;
+        const SET: u32 = 0x0067_0000;
+        const INDICES: u32 = 0x0067_1002;
+        const STREAM: u32 = 0x0067_2000;
+        const BUFFER: u32 = 0x0067_3000;
+        const DATA: u32 = 0x0067_4000;
+        let mut m = Mem::default();
+        m.w(TAG_TABLE, TAGS);
+        m.w(TAGS + 0x10 * 5 + 8, SET);
+        m.w(SET + SET_INDEX_COUNT, 3);
+        m.w(SET + SET_INDICES, INDICES);
+        // Indices 2, 0, 1 from an address two bytes into a word.
+        m.w(INDICES - 2, 2 << 16);
+        m.w(INDICES + 2, 1 << 16);
+        m.w(STREAM, 0x0000_0617); // type 0x17, stride 6
+        m.w(STREAM + STREAM_OFFSET, 2);
+        m.w(STREAM + STREAM_BUFFER, BUFFER);
+        // Physical: the contiguous mapping adds the top bit back.
+        m.w(BUFFER + RESOURCE_DATA, DATA & 0x0fff_ffff);
+        for n in 0..6u32 {
+            m.w(0x8000_0000 | (DATA + 4 * n), 0x0403_0201 + 0x0404_0404 * n);
+        }
+        m.w(SET + SET_STREAM, STREAM);
+        let g = set_geometry(&m, 0xe000_0005).unwrap();
+        assert_eq!((g.stream_type, g.stride), (0x17, 6));
+        assert_eq!(g.indices, [2, 0, 1]);
+        assert_eq!(g.vertex_count(), 3);
+        // From byte 2 of the data: 3, 4, then the next words' bytes.
+        assert_eq!(g.vertices, (3..21).collect::<Vec<u8>>());
+        m.w(SET + SET_INDEX_COUNT, MAX_SET_INDICES + 1);
+        assert_eq!(set_geometry(&m, 0xe000_0005), Err(Refusal::Unread));
     }
 
     #[test]

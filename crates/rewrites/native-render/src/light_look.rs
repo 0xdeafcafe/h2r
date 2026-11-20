@@ -344,6 +344,34 @@ pub fn stage_dim(stage: LightStage) -> Option<TextureDim> {
 /// classification), or says why the light keeps its D3D passes.
 pub fn compile_light(look: &LightLook, microcode: &[u8]) -> Result<LightProgram, String> {
     let options = vertex_options();
+    compile(look, microcode, options.provided_inputs, options.input_fetch, false)
+}
+
+/// Translates `look` for a model's part (docs/graphics/native-lights.md,
+/// "Gathered groups in the scene"): `microcode` the program of the
+/// classification the sorted entry names, over a section's declaration
+/// supplying `provided` (bit `n`: `v<n>`) fetched as `fetch`
+/// (`crate::object_program_gpu::input_fetch`). Beside what
+/// [`compile_light`] allows, the program may read the node rows the
+/// draw puts in (`c[50..]`, [`crate::light_gpu::model_vertex`]), relative
+/// to `a0.x` from there as a skinned program does, and the section's
+/// decompression (`c[170..172]`).
+pub fn compile_light_model(
+    look: &LightLook,
+    microcode: &[u8],
+    provided: u16,
+    fetch: [shaders::vsh::InputFetch; 16],
+) -> Result<LightProgram, String> {
+    compile(look, microcode, provided, fetch, true)
+}
+
+fn compile(
+    look: &LightLook,
+    microcode: &[u8],
+    provided: u16,
+    fetch: [shaders::vsh::InputFetch; 16],
+    model: bool,
+) -> Result<LightProgram, String> {
     let t = translate_pass(&PassParts {
         microcode,
         pixel_shader: &look.pixel_shader,
@@ -353,8 +381,8 @@ pub fn compile_light(look: &LightLook, microcode: &[u8]) -> Result<LightProgram,
         vertex_constants: &look.vertex_constants,
         vertex_defaults: &look.vertex_defaults,
         alpha_test: look.state.alpha_test,
-        provided_inputs: options.provided_inputs,
-        input_fetch: options.input_fetch,
+        provided_inputs: provided,
+        input_fetch: fetch,
         w_buffer: true,
     })?;
     crate::program::pixel_parity(&t.def, &look.stage_states, t.dims.map(|d| d.is_some()))?;
@@ -366,9 +394,21 @@ pub fn compile_light(look: &LightLook, microcode: &[u8]) -> Result<LightProgram,
     }
     let vs = shaders::vsh::Program::parse(microcode).map_err(|e| format!("light vertex program: {e:?}"))?;
     let set = crate::program::set_constants(&look.vertex_constants);
-    if let Some(c) = crate::program::constants_read(&vs)?.into_iter().find(|&c| {
-        !set(c) && !(FRAME_REGISTER..FRAME_REGISTER + FRAME_DWORDS / 4).contains(&usize::from(c))
-    }) {
+    let frame = |c: u8| (FRAME_REGISTER..FRAME_REGISTER + FRAME_DWORDS / 4).contains(&usize::from(c));
+    if model {
+        use crate::program::{MODEL_ROWS, POSITION_DECOMPRESSION};
+        for i in &vs.instructions {
+            for s in i.sources() {
+                let shaders::vsh::SrcReg::Const { index, relative } = s.reg else { continue };
+                if relative && !(MODEL_ROWS..POSITION_DECOMPRESSION).contains(&usize::from(index)) {
+                    return Err(format!("light vertex program reads c[a0.x + {index}], outside the node rows"));
+                }
+                if !relative && !set(index) && !frame(index) {
+                    return Err(format!("light vertex program reads unsupplied c[{index}]"));
+                }
+            }
+        }
+    } else if let Some(c) = crate::program::constants_read(&vs)?.into_iter().find(|&c| !set(c) && !frame(c)) {
         return Err(format!("light vertex program reads unsupplied c[{c}]"));
     }
     let words = microcode[4..4 + 16 * vs.instructions.len()].chunks_exact(4)
@@ -614,6 +654,50 @@ mod tests {
         gel.textures[3] = LightStage::Gel;
         let p = compile_light(&gel, &light_program()).expect("compiles");
         assert_eq!(p.dims[3], Some(TextureDim::D2));
+    }
+
+    /// A skinned model's light program: the position decompressed
+    /// (`c[170..171]`), posed by the node `v3` names (`c[a0.x + 50..53]`),
+    /// projected (`c[0..3]`); the frame's first row as a coordinate.
+    fn skinned_light_program(rows_at: u8) -> Vec<u8> {
+        use shaders::vsh::encode::{Inst, Operand as O, program};
+        use shaders::vsh::{MacOp, OutReg};
+        let r = |n| O::r(n);
+        program(&[
+            Inst::mac(MacOp::Mul, Some(O::v(0)), Some(O::c(170)), None).to_temp(0, 0xf),
+            Inst::mac(MacOp::Add, Some(r(0)), None, Some(O::c(171))).to_temp(0, 0xf),
+            Inst::mac(MacOp::Arl, Some(O::v(3)), None, None),
+            Inst::mac(MacOp::Dp4, Some(r(0)), Some(O::c_rel(rows_at)), None).to_temp(1, 8),
+            Inst::mac(MacOp::Dp4, Some(r(0)), Some(O::c_rel(rows_at + 1)), None).to_temp(1, 4),
+            Inst::mac(MacOp::Dp4, Some(r(0)), Some(O::c_rel(rows_at + 2)), None).to_temp(1, 2),
+            Inst::mac(MacOp::Mov, Some(O::c(170)), None, None).to_temp(1, 1),
+            Inst::mac(MacOp::Dp4, Some(r(1)), Some(O::c(0)), None).to_out(false, OutReg::Pos, 8),
+            Inst::mac(MacOp::Dp4, Some(r(1)), Some(O::c(1)), None).to_out(false, OutReg::Pos, 4),
+            Inst::mac(MacOp::Dp4, Some(r(1)), Some(O::c(2)), None).to_out(false, OutReg::Pos, 2),
+            Inst::mac(MacOp::Dp4, Some(r(1)), Some(O::c(3)), None).to_out(false, OutReg::Pos, 1),
+            Inst::mac(MacOp::Mov, Some(O::v(1)), None, None).to_out(false, OutReg::T(0), 0xf),
+            Inst::mac(MacOp::Mov, Some(O::c(31)), None, None).to_out(false, OutReg::T(3), 0xf),
+        ])
+    }
+
+    #[test]
+    fn a_model_light_pass_reads_its_node_rows_and_its_declarations_registers() {
+        use shaders::vsh::InputFetch;
+        let look = sphere_look();
+        // The world compile has no node palette to address.
+        assert!(compile_light(&look, &skinned_light_program(50)).unwrap_err().contains("relative"));
+        let mut fetch = [InputFetch::Float; 16];
+        fetch[1] = InputFetch::Xyz1;
+        let p = compile_light_model(&look, &skinned_light_program(50), 0b1011, fetch).expect("compiles");
+        shaders::validate(&p.wgsl).expect("valid WGSL");
+        assert_eq!(p.dims, [Some(TextureDim::D2), Some(TextureDim::Cube), None, Some(TextureDim::D3)]);
+        // A palette read below the node rows is not one the draw supplies.
+        let e = compile_light_model(&look, &skinned_light_program(40), 0b1011, fetch).unwrap_err();
+        assert!(e.contains("outside the node rows"), "{e}");
+        // The frame rows stay the light's own.
+        let mut writes = look.clone();
+        writes.vertex_constants.push(Register { index: 33, value: [0.0; 4], written: 0xf, origin: Origin::Instance });
+        assert!(compile_light_model(&writes, &skinned_light_program(50), 0b1011, fetch).unwrap_err().contains("frame constants"));
     }
 
     #[test]

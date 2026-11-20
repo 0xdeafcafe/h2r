@@ -1,7 +1,7 @@
 # The UI builder: native Halo 2 screens built, seen and proven offline
 
 Status: Built. The preview, sheet, checks and page tables are tested offline; the in-game items are under "Not verified". The fidelity loop (`h2 ui compare`, `ui.screenshot`) is design.
-Code: `crates/apps/boot/src/ui_kit/` (`view.rs`, `preview.rs`, `layout.rs`, `dialog.rs`, `dialog_tag.rs`, `picker.rs`, `page/`), `crates/apps/cli/src/ui.rs`. Tests: `ui_kit::screens::tests`, `ui_kit::page::tests`.
+Code: `crates/extensions/game/src/ui_kit/` (`view.rs`, `preview.rs`, `layout.rs`, `dialog.rs`, `dialog_tag.rs`, `picker.rs`, `page/`), `crates/apps/cli/src/ui.rs`. Tests: `ui_kit::screens::tests`, `ui_kit::page::tests`.
 Switch: `H2_SIGNIN_DIALOG`, `H2_UI_SHEET_DIR`, listed in [switches.md](../runtime/switches.md).
 
 A native screen is one we write in Rust and the game draws with its own

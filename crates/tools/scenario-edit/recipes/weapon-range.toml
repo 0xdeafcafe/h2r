@@ -1,0 +1,18 @@
+# One of every weapon the base map's tag index names, in a row two units
+# apart in front of a single spawn, as netgame items (so they respawn).
+# Objective items (flag, ball, bomb) are left out. docs/game/test-maps.md
+name = "weapon-range"
+title = "Weapon range"
+purpose = "One of every weapon the map has, in a row in front of the spawn: pickups, firing, ammo and the HUD per weapon."
+base = "coagulation"
+fidelity = "full"
+clear = "all"
+
+[[place]]
+block = "starting_locations"
+
+[[place]]
+block = "netgame_equipment"
+at = [4, 0, 0]
+step = [0, 2, 0]
+each = { group = "weap", contains = ['weapons\'], exclude = ['\multiplayer\'] }

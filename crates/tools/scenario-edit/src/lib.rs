@@ -8,6 +8,8 @@
 //! - [`save`]: write a new `.map` through `map::writer::MapEditor`: every
 //!   byte identical except the patched fields and the header checksum.
 //! - [`script`]: JSON edit scripts for headless test maps (`h2 testmap`).
+//! - [`recipe`]: test-map recipes, built into map packages
+//!   (docs/game/test-maps.md, the agent API's `maps.test.*`).
 //! - [`package`]: save as a map package (docs/game/maps.md) and open one.
 //! - [`Session`]: the editor state and commands with no UI (open, select,
 //!   add, remove, drag, gizmo gestures, undo, save, packages), drawn by
@@ -30,6 +32,7 @@ pub mod fixture;
 pub mod geometry;
 pub mod layout;
 pub mod package;
+pub mod recipe;
 pub mod render;
 pub mod save;
 pub mod scenario;
@@ -71,6 +74,8 @@ pub enum Error {
     Save(&'static str),
     #[error("package: {0}")]
     Package(String),
+    #[error("recipe: {0}")]
+    Recipe(String),
     #[error(transparent)]
     Store(#[from] content::store::StoreError),
     #[error(transparent)]

@@ -1,7 +1,7 @@
 # Level boot: start a level directly
 
 Status: Built.
-Code: `crates/apps/boot/src/level_boot.rs`. Tests: its unit tests over a fake guest, and the ignored `level_boot::tests::every_disc_level_resolves`.
+Code: `crates/extensions/game/src/level_boot.rs`. Tests: its unit tests over a fake guest, and the ignored `level_boot::tests::every_disc_level_resolves`.
 Switch: `H2_LEVEL`, `H2_DIFFICULTY` (unset), listed in [switches.md](switches.md).
 
 `h2 play disc/halo2.iso --level 03a_oldmombasa [--difficulty heroic]`, or
@@ -9,7 +9,7 @@ Switch: `H2_LEVEL`, `H2_DIFFICULTY` (unset), listed in [switches.md](switches.md
 play`), loads that campaign level in place of the main menu: no title
 screen, profile choice or menus. The difficulty is `easy`, `normal` (the
 default), `heroic` or `legendary`. The game gets one default local player,
-as it does for the main menu itself. Code: `crates/apps/boot/src/level_boot.rs`.
+as it does for the main menu itself. Code: `crates/extensions/game/src/level_boot.rs`.
 
 A multiplayer map from the disc (`--level ascension`, `H2_LEVEL=ascension`)
 starts a local game instead: one player, the game's default Slayer
@@ -97,6 +97,10 @@ request, rather than started directly.
 
 The loaded mark wraps activation: after the original returns AL=1, the
 game globals' active options name the scenario that loaded.
+
+The same steps for a multiplayer map run from a game tick for the agent
+API's `maps.test.load`, over an options block of the agent's
+(`test_maps::game_steps`, [test-maps.md](../game/test-maps.md)).
 
 ### Addresses
 

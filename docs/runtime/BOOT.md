@@ -1,7 +1,7 @@
 # Booting the recompiled XBE natively
 
 Status: Built.
-Code: `crates/apps/boot/src/lib.rs` (`build`, `run`, `run_hosted`), `crates/apps/boot/src/registration.rs`, `crates/apps/cli/src/boot_cmd.rs` (`h2 build`, `h2 run`, `h2 serve`). Tests: `crates/apps/boot/tests/`.
+Code: `crates/runtime/recomp/src/lib.rs` (`build`, `load_module`, the build stamp), `crates/apps/boot/src/lib.rs` (`run`, `run_hosted`), `crates/apps/boot/src/registration.rs`, `crates/apps/cli/src/boot_cmd.rs` (`h2 build`, `h2 run`, `h2 serve`). Tests: `crates/runtime/recomp/` (unit tests, `tests/fast_tier.rs`), `crates/apps/boot/tests/`.
 Switches: the boot runner's own are below; every other one is in [switches.md](switches.md).
 
 `h2 build` lifts the whole `default.xbe` and compiles it to a host dylib.
@@ -26,7 +26,7 @@ copies. Nothing is ever written next to it.
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--out DIR` | `$TMPDIR/h2boot` | generated C (`src/`), objects, `libh2game.dylib` and its `.stamp` (image hash, generator source hash, IR passes, `H2_ACCESS_COUNT`, ABI, compiler flags: `run` rebuilds a dylib stamped for another image or generator), `kernel-trace.tsv` |
-| `--tier auto\|fast\|clang` | `auto` | which module `run` boots: clang's optimised one when it is current, else the Cranelift fast tier with clang's build started in the background (`H2_TIER` is the same; `crates/apps/boot/src/tier.rs`, [cranelift-tier.md](../lifter/cranelift-tier.md)) |
+| `--tier auto\|fast\|clang` | `auto` | which module `run` boots: clang's optimised one when it is current, else the Cranelift fast tier with clang's build started in the background (`H2_TIER` is the same; `crates/runtime/recomp/src/tier.rs`, [cranelift-tier.md](../lifter/cranelift-tier.md)) |
 | `--data DIR` | `~/Library/Application Support/h2recomp/data` | VFS host storage (`disk/PartitionN`, `metadata/PartitionN`) |
 | `--jobs N` | cores | clang parallelism |
 | `--slices N` | 100000 (`h2 serve`: no limit) | cooperative scheduler slices before giving up |
@@ -60,7 +60,7 @@ Environment variables the boot runner reads. Every other variable and
 | `H2_BOOT_CACHE=<dir>` or `off` | the boot cache (default `$TMPDIR/h2boot-cache`), shared by every `--out`: the fallback's unread jump-table targets, and the image's analysis (`analysis-<hash>-<size>-<analyzer>.h2a`), keyed on the XBE hash and size and on `ANALYSIS_SOURCE_HASH` (xbe and analyze sources, `Cargo.lock`, rustc version). `h2 build` writes the analysis and the fallback reads it at run time; `H2_TRACE` skips it. `off` caches nothing |
 | `H2_BOOT_INPUT=BUTTONS@WHEN,...` | scripted pad timeline through the keyboard pad and XInputGetState. BUTTONS: `A B X Y BLACK WHITE LT RT UP DOWN LEFT RIGHT START BACK LS RS LUP LDOWN LLEFT LRIGHT` or a key name, joined with `\|`. WHEN: `T`, `T+D` or `T-U`, a slice or (`f` prefix) a present count; held 4 presents or 100 slices by default. Each press is printed. |
 | `H2_BOOT_INPUT_FILE=<file>` | the same entries, one per line, `#` comments; merged with `H2_BOOT_INPUT` |
-| `H2_BOOT_CAPTURE=<dir>`, `H2_BOOT_CAPTURE_FRAME=N` | record frame N for offline replay (see `crates/apps/boot/src/d3d_diag.rs`): every texture upload, surface, guest write, and the frame's `ResolvedDraw`s with their streams |
+| `H2_BOOT_CAPTURE=<dir>`, `H2_BOOT_CAPTURE_FRAME=N` | record frame N for offline replay (see `crates/extensions/game/src/d3d_diag.rs`): every texture upload, surface, guest write, and the frame's `ResolvedDraw`s with their streams |
 | `H2_BOOT_CAPTURE_SNAP=K[-L],...` | with a capture, read the colour target back after those draws of frame N (`snap-K.bin`, guest BGRA bytes) |
 | `H2_BOOT_CAPTURE_SKIP=K[-L],...` | with a capture, drop those draws of frame N |
 | `H2_BOOT_CAPTURE_LITE=1` | with a capture, record only the frame's draws, surfaces and snapshots (no uploads or guest writes); for snapshots |
@@ -88,7 +88,7 @@ calls come from memory and are complete.
 
 `run` is `run_hosted(xbe, dylib, opts, Host::default())`. A host (`h2 play`,
 [app.md](app.md) "Playing"; the agent and dedicated-host paths) fills in
-`boot::Host` (`crates/apps/boot/src/lib.rs`). The fields a plain host sets:
+`boot::Host` (`crates/extensions/game/src/run_opts.rs`). The fields a plain host sets:
 
 | Field | Instead of | Goes to |
 | --- | --- | --- |
@@ -109,14 +109,18 @@ fed on the guest's clock, the callback count, a monotonic clock and
 
 ## How it fits together
 
-- **`crates/apps/boot/src/lib.rs`**: `build` and `run`.
+- **`crates/runtime/recomp/src/lib.rs`** builds and loads the module;
+  **`crates/apps/boot/src/lib.rs`**, the composition root, runs it and
+  re-exports `game` (`crates/extensions/game`: every module below that is
+  not `recomp`'s, and `RunOpts` and `Host`), which re-exports `recomp`
+  (`boot::build`, `boot::tier`).
   - `build` runs analyze, lifts each function, then `emit::plan` writes
     C11 shards and `h2gen.h`.
   - clang builds the shards for the host architecture, and they are linked
     with `c/boot_bridge.c` into `libh2game.dylib`.
   - The bridge forwards the `h2abi_v1_*` imports to `runtime::ffi`. Rust
     implements the `h2shim_*` imports in `shim.rs`.
-  - `run` reads the module's `h2gen_module` tables and registers every
+  - `load_module` reads the module's `h2gen_module` tables and registers every
     generated entry and resume as itself, so the module's direct calls
     (`H2_DIRECT_CALLS`) match. A slim host module's left-out owners are
     registered to the interpreter (`fallback::register_cold`).
@@ -205,7 +209,7 @@ numbers are in [menu-budget.md](../perf/notes/menu-budget.md).
 ## Boot stopgaps in force
 
 A stopgap replaces a kernel export the kernel stops on; the table in
-`crates/apps/boot/src/stopgaps.rs` installs an entry only if its ordinal is in
+`crates/extensions/game/src/stopgaps.rs` installs an entry only if its ordinal is in
 `Kernel::stopped_ordinals()`, and only with stopgaps on (`--no-stopgaps`
 turns them off). The other stopgaps:
 

@@ -375,3 +375,72 @@ fn up_is_square_to_forward() {
     assert!(dot.abs() < 1e-6, "{u:?}");
     assert_eq!(up_of([0.0, 0.0, 1.0]), [1.0, 0.0, 0.0]);
 }
+
+#[test]
+fn a_queued_game_builds_its_options_in_the_scratch_then_queues_them() {
+    const NEW: u32 = 0x0013_8110;
+    const CHECK: u32 = 0x0013_8180;
+    const QUEUE: u32 = 0x0018_e790;
+    let options = SCRATCH + SCRATCH_OPTIONS;
+    let steps = vec![
+        GameStep::Call {
+            target: NEW,
+            args: vec![],
+            eax: None,
+            esi: Some(Arg::Options(0)),
+            report: None,
+        },
+        GameStep::Write {
+            offset: 0x18,
+            bytes: vec![1, 2, 3, 4],
+        },
+        GameStep::Call {
+            target: CHECK,
+            args: vec![Arg::Options(0), Arg::Value(7)],
+            eax: None,
+            esi: None,
+            report: Some("check"),
+        },
+        GameStep::Call {
+            target: QUEUE,
+            args: vec![],
+            eax: Some(Arg::Options(0)),
+            esi: None,
+            report: None,
+        },
+    ];
+    let (out, calls, g) = one(world(), Call::QueueGame { steps }, |c, _| {
+        if c.target == CHECK { al(0x101) } else { Regs::default() }
+    });
+    let out = out.unwrap();
+    let targets: Vec<u32> = calls.iter().map(|c| c.target).collect();
+    assert_eq!(targets, [NEW, CHECK, QUEUE]);
+    assert_eq!(calls[0].esi, Some(options));
+    assert_eq!(calls[1].args, vec![options, 7]);
+    assert_eq!(calls[2].eax, Some(options));
+    assert_eq!(g.u32(options + 0x18).unwrap(), 0x0403_0201);
+    // AL, not EAX: 0x101 is a pass.
+    assert_eq!(out["check"], true);
+    assert_eq!(out["queued"], true);
+    assert_eq!(out["calls"], 3);
+}
+
+#[test]
+fn a_queued_game_refuses_a_write_past_its_options_block() {
+    let steps = vec![
+        GameStep::Write {
+            offset: OPTIONS_SIZE - 2,
+            bytes: vec![0; 4],
+        },
+        GameStep::Call {
+            target: 0x0018_e790,
+            args: vec![],
+            eax: Some(Arg::Options(0)),
+            esi: None,
+            report: None,
+        },
+    ];
+    let (out, calls, _) = one(world(), Call::QueueGame { steps }, |_, _| Regs::default());
+    assert!(out.unwrap_err().contains("past the options block"));
+    assert!(calls.is_empty());
+}

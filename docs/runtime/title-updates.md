@@ -263,9 +263,9 @@ Bink, unnamed D3D or DSound internals, or XAPI helpers named by hand.
 
 | what | key | where | with an update XBE |
 |---|---|---|---|
-| dylib stamp | fnv64 of the XBE + generator hash + passes + codegen + ABI + cflags | `crates/apps/boot/src/lib.rs:65-95` | rebuilds, never reuses (safe) |
+| dylib stamp | fnv64 of the XBE + generator hash + passes + codegen + ABI + cflags | `crates/runtime/recomp/src/lib.rs` (`build_stamp`) | rebuilds, never reuses (safe) |
 | emit receipt | SHA-256 of the XBE + h2 binary + settings | `crates/apps/cli/src/emit_cache.rs:31-38` | safe |
-| fallback unread-target cache | fnv64 of the XBE + source hash | `crates/apps/boot/src/fallback.rs:503-513` | safe |
+| fallback unread-target cache | fnv64 of the XBE + source hash | `crates/runtime/recomp/src/fallback.rs:503-513` | safe |
 | object cache | per-source fnv64 | `crates/recompiler/emit/src/compile.rs:292` | safe to share between images |
 | default out dirs `$TMPDIR/h2gen`, `$TMPDIR/h2boot` | none | cli | two images thrash one dylib slot |
 | data root `~/Library/Application Support/h2recomp/data` (and `Config::for_title`) | title ID only | `boot/src/lib.rs:378`, `vfs` | 1.0 and the update share saves and the cache partition (see section 4) |

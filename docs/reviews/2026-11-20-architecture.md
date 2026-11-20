@@ -94,7 +94,7 @@ whose clock is the number of guest memory accesses
   strongest part of the repository.
 - **Discovery does not need to be sound, because the fallback makes it
   complete.** A target the analyzer missed stops the handler and the IR
-  interpreter carries on from there (`crates/apps/boot/src/fallback.rs:1-20`).
+  interpreter carries on from there (`crates/runtime/recomp/src/fallback.rs:1-20`).
   That is the right design for a binary with LTCG and jump tables. What
   it lacks is a loop back into the build: see 1.8.
 - **C as the optimising tier.** See 1.6.
@@ -666,7 +666,7 @@ The crate is 37,000 lines of source and 29,000 of tests. `device.rs` is
 6,657 lines. The `Backend` trait has 55 methods (`backend.rs:1075`) and
 six implementations stacked as decorators
 (`ThreadedBackend<InterpBackend<ScaledBackend<GfxBackend>>>`, composed in
-`crates/apps/boot/src/d3d_glue.rs`), so every new capability is written six
+`crates/extensions/game/src/d3d_glue.rs`), so every new capability is written six
 times.
 
 ### 4.2 The native renderer

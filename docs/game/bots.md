@@ -240,7 +240,7 @@ layer before its bots could even stand still.
 - Rows: Quickmatch 0, OptiMatch 1, Clankermatch 2, then Co-op Campaign 3
   (directly above Custom Game), Custom Game 4 (retail row 2, moved), Custom
   Game Browser 5, Content Download 6 (rows close up by one without co-op).
-- `crates/apps/boot/src/custom_games.rs` adds our rows: row text `0x230f36`, row
+- `crates/extensions/game/src/custom_games.rs` adds our rows: row text `0x230f36`, row
   chosen `0x230f92`, last row `0x510a18`.
 
 **Matchmaking** ([live-matchmaking.md](../live/live-matchmaking.md)).
@@ -256,7 +256,7 @@ layer before its bots could even stand still.
 **Game Setup** (`squad_settings_dialog`, screen 23, window 3; row chosen
 `0x2bb801`, jump table `0x2bb884`) already carries our **Halo 1 Options**
 row. That row opens an `OptionsScreen` of `OptionRow`s (Sandbox, Assets,
-HUD) whose values are kept in the settings store (`crates/apps/boot/src/h1_options.rs`).
+HUD) whose values are kept in the settings store (`crates/extensions/game/src/h1_options.rs`).
 
 ## 3. The brain
 
@@ -2938,7 +2938,7 @@ added the same way (`crate::h1_options_row` is the model). The row opens a
 **Clankers** page.
 
 The page is a native ui_kit page: a `ListPage` or a `Page` impl
-(`crates/apps/boot/src/ui_kit/page.rs`). That gives it the kit's preview, its
+(`crates/extensions/game/src/ui_kit/page.rs`). That gives it the kit's preview, its
 layout checks and the `Page` table tests. These are its rows:
 
 | Row | Values | Setting |

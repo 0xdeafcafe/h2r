@@ -2466,7 +2466,7 @@ mod tests {
 
     /// The real builder, watcher, launcher and status file against a
     /// scratch repo whose `cli` crate is a stand-in `h2`: its `build`
-    /// writes an empty dylib stamped with `crates/apps/boot/c/boot_bridge.c`
+    /// writes an empty dylib stamped with `crates/runtime/recomp/c/boot_bridge.c`
     /// (standing in for boot's generator identity), `build --check`
     /// compares that stamp, and `play` records its arguments. The first
     /// child is a shell script that waits for "ready" and exits for a

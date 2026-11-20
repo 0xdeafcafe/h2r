@@ -100,6 +100,7 @@ the moves that put every crate in its domain's directory are in
 | `hostfault` | runtime | The process-wide host fault handler: regions with in-handler callbacks, and fixup tables that send a faulting access to its slow path |  |  |
 | `kernel` | runtime | Xbox kernel HLE: threads, scheduling on a logical clock, sync, memory, files ([kernel-imports.md](runtime/kernel-imports.md), [kernel README](../crates/runtime/kernel/README.md)) † | [kernel-imports.md](runtime/kernel-imports.md), [kernel README](../crates/runtime/kernel/README.md) | in progress: covers the boot to the menu and the first level |
 | `lifted` | runtime | The lifted original on the IR interpreter: the oracle for port differential tests and for runtime shadow checks (docs/engine/shadow-exec.md) | [shadow-exec.md](engine/shadow-exec.md) |  |
+| `recomp` | runtime | Build and load: the XBE lifted, emitted and compiled into one host module, its build stamp, the module loaded with the boot bridge, and the interpreter for what the module leaves out (docs/runtime/BOOT.md) | [BOOT.md](runtime/BOOT.md) |  |
 | `runtime` | runtime | Guest memory, CPU state, dispatch/override table and the runner that drives generated code ([runtime README](../crates/runtime/runtime/README.md)) † | [runtime README](../crates/runtime/runtime/README.md) | done |
 | `runtime-test-probe` | runtime | *(no description)* † |  |  |
 | `snapshot` | runtime | Machine snapshots: the versioned container, compressed guest RAM pages and the snapshot store (docs/runtime/snapshots.md) | [snapshots.md](runtime/snapshots.md) |  |
@@ -143,6 +144,7 @@ the moves that put every crate in its domain's directory are in
 | `agent` | extensions | The agent API server: a Unix socket in the game process, answered at tick boundaries (docs/runtime/agent-api.md) | [agent-api.md](runtime/agent-api.md) |  |
 | `agent-proto` | extensions | The agent API's wire types: JSON-RPC 2.0 over a Unix socket, one JSON object per line (docs/runtime/agent-api.md) | [agent-api.md](runtime/agent-api.md) |  |
 | `debug-menu` | extensions | Our in-game debug menu: a tree of rows over the agent API's registries, its navigation, touchpad and pad input, and the lines the host overlay draws (docs/runtime/debug-menu.md) | [debug-menu.md](runtime/debug-menu.md) |  |
+| `game` | extensions | Our additions to the game: menus and settings screens, skulls, variants, the campaign picker, gameplay hooks and the glue to the platform crates (docs/game/settings-menu.md) | [settings-menu.md](game/settings-menu.md) |  |
 | `h1-runtime` | extensions | Halo 1 in the running game: AI control, conversations, HUD text, script builtins, cinematics, and the hooks only converted maps need (docs/halo1/README.md) | [README.md](halo1/README.md) | in progress |
 | `hot-tags` | extensions | Live edits of the running game's tags in guest memory, by field path from the tag definitions, with a journal to list and revert them (docs/graphics/hot-iteration.md) | [hot-iteration.md](graphics/hot-iteration.md) |  |
 | `lockstep` | extensions | Determinism harness: per-tick guest-RAM hashes, run traces and their comparison (docs/game/high-framerate.md) | [high-framerate.md](game/high-framerate.md) | done |
@@ -159,7 +161,7 @@ the moves that put every crate in its domain's directory are in
 | `viewer` (bin `viewer`, bin `bsp`, bin `bsp_cracks`, bin `shadowlab`) | tools | Render-model (mode) viewer: decodes model geometry from a disc map and draws it with gfx | [structure-bsp.md](formats/structure-bsp.md) | done |
 | `app` (bin `h2-app-demo`) | apps | Host shell for h2recomp: window, presentation, live input, audio device and guest-thread lifecycle (macOS first) | [app.md](runtime/app.md) | done; `h2 play` runs the game in it |
 | `app-icon` | apps | The app icon for the unbundled Mac windows (h2 play, h2-editor) from art/app-icon |  |  |
-| `boot` | apps | Boot glue: lift, emit and compile the whole XBE, then run it on the runtime with kernel HLE | [BOOT.md](runtime/BOOT.md) | done |
+| `boot` | apps | The composition root: a built module run on the runtime with the kernel HLE, the hooks and every feature attached | [BOOT.md](runtime/BOOT.md) | done |
 | `cli` (bin `h2`) | apps | `h2` binary: `build`, `run`, `play`, `info`, `ls`, `extract`, `analyze`, `symbols`, `lift`, `emit`, the tag decoders and more (`cargo h2` lists them) † |  | done |
 | `h2host` (staticlib `h2host`) | apps | The tvOS and iOS apps' Rust half: a static library the UIKit hosts (platform/tvos, platform/ios) call to boot the game into their CAMetalLayer | [tvos.md](runtime/tvos.md), [ios.md](runtime/ios.md) | in progress |
 | `studio` (bin `h2-editor`) | apps | h2-editor: the editor suite on Dear ImGui (docking) + wgpu + winit: scenario placements, game variants, playlists | [editor.md](editor/editor.md) | in progress |

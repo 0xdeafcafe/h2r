@@ -1,7 +1,14 @@
 # Contract change 1: thin transfers and flat RAM
 
-Written 2026-11-20. Slices T1, F1, T2 and T3 are built (section 6);
-none has been measured yet. This is the spec for
+Written 2026-11-20. Slices T1, F1, T2, T3, F3, F4 and F5 are built
+(section 6), and F2 except its first bullet: deleting the opt-in flat RAM
+waits for M0, which has not been taken. M0's span image still builds with
+`H2_EMIT_FLAT_RAM=1`; `H2_FLAT_RAM=1` alone builds F3's model. F3's tests
+are `crates/recompiler/emit/tests/flat.rs` (the emitter's test host),
+`crates/recompiler/emit/tests/flat_runtime.rs` (a flat module in the real
+runtime: the access-trap and MMIO cases) and the runtime's
+`window/tests.rs`. The F2 counters are on the
+agent API, not yet in the sim report. None has been measured yet. This is the spec for
 decision 7 of [sim-rewrite.md](../engine/sim-rewrite.md) section 8: change
 the recompiler contract, starting with two items of
 [2026-11-20-architecture.md](../reviews/2026-11-20-architecture.md):
@@ -202,7 +209,7 @@ All **Code**; the ranking is an **Estimate**.
 | # | Cause | Where |
 |---|---|---|
 | P1 | A flat access does not remove the paged checks, it precedes them. A flat load is: gate held, capability bit, page-table load, permission, size, window bit. That is the same count as `H2_HELD_TRY` and the same page-table cache miss. Each site carries both paths plus the cold call, so the image grows. | `h2fastmem.h:464-494`, `:509-515` |
-| P2 | The D3D write barrier watches all 64 MiB, so a watch is active for the whole run and every store takes the mirror branch: physical-range test, mirror pointer, plane, and a second address formed from the physical page. | `crates/apps/boot/src/d3d_glue.rs:1683-1688`; `h2fastmem.h:471-486` |
+| P2 | The D3D write barrier watches all 64 MiB, so a watch is active for the whole run and every store takes the mirror branch: physical-range test, mirror pointer, plane, and a second address formed from the physical page. | `crates/extensions/game/src/d3d_glue.rs:1683-1688`; `h2fastmem.h:471-486` |
 | P3 | Once any page is promoted, the mirror pointer published to C is null, and every store also loads a bit from the promoted-page bitmap. A store to a promoted page fails the flat probe and then runs the full paged store with dirty marking. Promoted pages are by construction the ones written most. | `flat.rs:240-244`; `h2fastmem.h:476-481`; `protection.rs:258-265` |
 | P4 | Each first store to a watched clean page is a signal and an `mprotect`. Pages are re-protected whenever the watch epoch moves: every `take_dirty`, every mute or unmute, every subscription change. | `protection.rs:60-92`, `:275-319`; `crates/runtime/runtime/src/watch.rs:131`, `:151`, `:312` |
 | P5 | Every Rust guard got heavier: `publish_flat` on take, `flat_view` (with `rearm`) on drop. HLE-heavy ticks take thousands. | `ffi/memory.rs:124`, `:226-241` |
@@ -224,7 +231,7 @@ first:
 
 | # | Hypothesis | Evidence | How to tell |
 |---|---|---|---|
-| D1 | Stale aliases after a copy-on-write restore. `Ram::become_private_of` replaces the canonical mapping; the window and mirror kept aliasing the old backing. Generated code then read and wrote RAM that Rust no longer saw. | Fixed by `bbb2f45b8` (`state.rs:163-170`). The only caller is the snapshot loader's `load_cow` (`crates/apps/boot/src/snapshot_glue.rs:673-677`); whether the measured run went through it is Q2. | After the fix the hashes match. Note what the fix does: it **turns flat RAM off** for that guest. A run that starts through `load_cow` is then not a flat run at all, and `H2_FLAT_STATS` prints zeros. |
+| D1 | Stale aliases after a copy-on-write restore. `Ram::become_private_of` replaces the canonical mapping; the window and mirror kept aliasing the old backing. Generated code then read and wrote RAM that Rust no longer saw. | Fixed by `bbb2f45b8` (`state.rs:163-170`). The only caller is the snapshot loader's `load_cow` (`crates/extensions/game/src/snapshot_glue.rs:673-677`); whether the measured run went through it is Q2. | After the fix the hashes match. Note what the fix does: it **turns flat RAM off** for that guest. A run that starts through `load_cow` is then not a flat run at all, and `H2_FLAT_STATS` prints zeros. |
 | D2 | The source side of `Ram::cow_copy`. The live RAM is a private anonymous mapping with shared aliases; `mach_vm_remap(copy = TRUE)` of it makes the source copy-on-write. If the canonical mapping and its aliases then resolve their writes to different objects, they split. | `crates/runtime/runtime/src/cow.rs:109`, `mach::remap_copy` `:506`, `mach::alias` `:477`. No test covers a store through an alias after a copy of the source (`ffi/memory/flat_tests.rs` has three tests, none does this). | New test in F2: copy, write through the window, read through canonical, and the reverse. On Linux the copy is a full `memcpy` and cannot split. |
 | D3 | A page mapped in a shifted window on a 16 KiB host whose host page holds a second guest page with a different physical neighbour. | `map_ranges`, `flat.rs:195-229`: "a split group can have candidates in different physical host pages". | First differing arena block from `h2 sim diff` maps to a page whose entry has bits 4-5 set. Does not exist on a 4 KiB host: run D-check on Linux x86-64. |
 | D4 | Read-after-write across aliases reordered by the compiler. | The fence exists for this; span members share one pointer. Unlikely. | Divergence disappears at `H2_OPT=0`. |
@@ -238,10 +245,14 @@ windows. The target design has one window and no mirror.
 ### 4.1 Memory
 
 **One window, stable for the life of the `Runtime`.** `Memory`
-(`ffi/memory.rs:52`) owns a guarded 4 GiB reservation, not `Guest`.
-Replacing or restoring the `Guest` re-aliases RAM into the same window.
-`base` (the host address of guest address 0) never changes, so generated
-code may keep it in a register for a whole handler and across calls.
+(`ffi/memory.rs:52`) owns a guarded 4 GiB reservation, not `Guest`
+(`crates/runtime/runtime/src/window.rs`). Replacing or restoring the
+`Guest` re-aliases RAM into the same window. `base`
+(`Runtime::flat_base`, the host address of guest address 0) never
+changes, so generated code may keep it in a register for a whole handler
+and across calls. Which pages the window holds is kept whatever RAM's
+backing; RAM itself is aliased in only when its backing allows, which is
+while flat RAM is selected.
 
 **An access is one host instruction.** `H2_LD` and `H2_ST` become an
 `asm goto` statement: one load or store at `base + (uint64_t)addr`, with
@@ -301,12 +312,17 @@ armed, and non-congruent pages. A guarded page is **slow, not wrong**:
 every access faults, takes the fixup and goes through the helper.
 
 **Congruent physical allocation.** The three shifted windows go.
-`Guest::fresh_physical` (`guest.rs:406`) and `find_free_physical` take the
+`Guest::fresh_physical` and `Guest::find_free_physical_for` take the
 virtual address and return a physical address with
-`physical % 16384 == virtual % 16384`. The rule is 16 KiB on every host,
-so a snapshot's layout does not depend on where it was made. Contiguous
-memory at `0x80000000 + physical` is congruent already. The cost is up to
-12 KiB of skipped physical RAM per allocation whose residue differs.
+`physical % 16384 == virtual % 16384` (`window::CONGRUENCE`). The rule is
+16 KiB on every host, so a snapshot's layout does not depend on where it
+was made. Contiguous memory at `0x80000000 + physical` is congruent
+already, and keeps `find_free_physical`. The kernel's virtual allocations
+place each page with `find_free_physical_for`
+(`crates/runtime/kernel/src/memory.rs`, `physical_pages`). The cost is up
+to 12 KiB of skipped physical RAM per allocation whose residue differs.
+When no congruent space is left, a reused gap of any residue is taken:
+slow through the window, not wrong, and counted.
 
 **Permissions at host-page grain.** On a 16 KiB host a read-only guest
 page next to a writable one is writable through the window, and an
@@ -350,6 +366,10 @@ What replaces the gate:
   end the slice and does not take a transfer from the budget. The loop
   exit and re-entry it causes are an ordinary `JUMP`/`RESUME`, with no
   guest-visible effect.
+- The runtime uses the state word only once `Runtime::enable_parking` is
+  called, which the flat model does. A paged image keeps the gate, and no
+  guard sets `PARK` (`crates/runtime/runtime/src/ffi/memory.rs`, module
+  docs).
 
 A guard no longer drains anything or republishes pointers.
 
@@ -388,6 +408,10 @@ window. `cow_refresh` re-aliases the new copy into it. A copy-on-write
 restore from a file re-aliases too; on macOS a shared remap of a private
 file mapping keeps the clean pages shared. On Linux and Windows two
 mappings cannot share private copy-on-write pages: see open question Q1.
+Which blocks a window may alias is `Ram::can_share` (`cow.rs`); a Guest
+asks for aliasing when its runtime runs a flat module
+(`Guest::require_aliasable_ram`), so a paged runtime's views and restores
+keep the window's bookkeeping only.
 
 ### 4.2 Transfers
 
@@ -684,6 +708,11 @@ Runtime only. Old images keep running on the paged path.
   feature bit, so there is no run-time variable.
 - `crates/recompiler/emit/src/host.rs`: the test host's memory is a window of its
   own with its pages mapped in place.
+- The runtime takes the model at registration: bit 16 needs the entry
+  table and a host with a window; the module's fixup table is checked
+  sorted and registered with `hostfault`. A runtime with such a module
+  catches window faults, turns parking on and moves guest RAM into an
+  aliasable backing, copying what was there. Restores and views: F5.
 - Tests: every existing inline-against-helper test in
   `crates/recompiler/emit/tests/perf.rs` rerun as window against null window;
   `page_crossing_access_is_native`; `access_past_4gib_takes_the_fixup`;
@@ -695,7 +724,15 @@ Runtime only. Old images keep running on the paged path.
 
 - `d3d_glue.rs` barrier and `native_world_glue.rs` drain through
   `fold_cards`. Remove the C dirty bitmap from the guard path.
-- Tests: `barrier_sees_every_store_between_draws`; the existing
+- Both drain with `Guest::take_dirty`, which folds the cards first. A
+  flat-RAM runtime lends no paged view (`h2abi_v1_fast_acquire` returns
+  null there, so a paged module beside the flat one takes the helpers),
+  so its guards never take the gate or drain the bitmap
+  (`ffi/memory.rs`, `Memory::lock`). The bitmap and the gate stay for
+  paged images until F8.
+- Tests: `barrier_sees_every_store_between_draws` (in that file, on a
+  flat runtime); `flat_runtime_lends_no_paged_view`
+  (`crates/runtime/runtime/src/window/tests.rs`); the existing
   `crates/apps/boot/tests/write_barrier.rs`.
 - Exit: gameplay frame time on the lab level not worse than paged with
   rendering on (M5); no signal in a steady-state run.
@@ -704,8 +741,24 @@ Runtime only. Old images keep running on the paged path.
 
 - `cow_refresh`, `restore_cow` and `cow_snapshot` re-alias into the
   window. Q1 decides the Linux and Windows restore.
-- Tests: `view_refresh_realiases`; `restore_cow_keeps_window_coherent`;
-  the pipelined-render hash parity tests.
+- `Ram::can_share` (`crates/runtime/runtime/src/cow.rs`) is what a
+  window may alias: on macOS the live mapping, a snapshot's remap and a
+  copy-on-write file mapping; on Linux a memfd. A flat-RAM Guest's
+  snapshot can be aliased too (`Ram::cow_copy_for`: the remap on macOS,
+  a memfd copy on Linux); a view's frozen base is a plain copy.
+  `cow_snapshot` keeps the source's flat-RAM flag; `cow_refresh` aliases the new copy into the view's window under
+  a new or an unchanged layout (`Guest::window_ram_replaced`), copying
+  it once if it cannot be (a heap fallback). `restore_cow` aliases the
+  private file mapping on macOS and copies the image into a memfd on
+  Linux (Q1). Only a flat-RAM runtime's Guest is aliased
+  (`Guest::aliases_ram`), so a paged image's views and restores are
+  unchanged.
+- Tests: `view_refresh_realiases` and `restore_cow_keeps_window_coherent`
+  (`crates/runtime/runtime/src/window/tests.rs`);
+  `executor_view_runs_native_in_its_window`
+  (`crates/recompiler/emit/tests/flat_runtime.rs`, a flat module run by a
+  second executor with no fixups); the pipelined-render hash parity
+  tests.
 - Exit: pipelined frame time not worse (M5); resident memory per
   dedicated host reported for Q1.
 
@@ -796,8 +849,13 @@ report.
 against the T3 image, and:
 
 ```bash
+export H2_FLAT_RAM=1               # the flat image, at build and every run
+h2 build "$H2_DISC" --out "$H2_IMAGE"
 size -m "$H2_IMAGE/libh2game.dylib" | grep -E '__text|__h2_fix'
 ```
+
+Fixups per tick are `profile.memory`'s `fixups` on the agent API
+(docs/runtime/agent-api.md).
 
 **M5. Frames.** `h2 lab bench --host laptop --branch <slice> --level
 03a_oldmombasa --scale 4` as in lab.md "`--serve` and `bench`", against
@@ -879,7 +937,10 @@ coordinator builds once per step above and both lanes measure on it.
   mappings cannot share private copy-on-write pages on those systems, so
   under one window the restore must copy the image into the guest's own
   backing: up to 64 MiB resident per host instead of only the written
-  pages. macOS keeps sharing. F5 reports the resident-memory difference.
+  pages. macOS keeps sharing. A flat-RAM runtime on Linux copies
+  the image's non-zero pages into a memfd (`Guest::restore_cow`,
+  `Ram::make_aliasable`); a paged one keeps the shared private mapping.
+  The resident-memory difference per dedicated host is to be measured.
   The user decides whether that is acceptable for host density or whether
   Linux hosts need a different restore.
 - **Q2. Does `h2 sim run` always boot through `restore_cow`?** If so,

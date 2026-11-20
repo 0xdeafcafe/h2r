@@ -100,6 +100,12 @@ impl SimHandle {
         self.lock().calls = Some(q);
     }
 
+    /// That queue, once set: other host methods that call the game at the
+    /// next tick use it too (`maps.test.load`).
+    pub fn calls(&self) -> Option<calls::Shared> {
+        self.lock().calls.clone()
+    }
+
     /// Where `sim.give` and `sim.spawn` find tags by name or datum.
     pub fn set_tags(&self, tags: Box<dyn Tags>) {
         self.lock().tags = Some(tags);

@@ -155,7 +155,7 @@ unknown bytes as hex.
 - `crates/extensions/hot-tags`: the tag index in guest memory, paths, values, the
   editor and journal.
 - `crates/extensions/agent/src/hot.rs`, `crates/extensions/agent-proto/src/hot.rs`: the methods.
-- `crates/apps/boot/src/hot_glue.rs`: installs them on the agent with the
+- `crates/extensions/game/src/hot_glue.rs`: installs them on the agent with the
   runtime's memory and the map file's names.
 - `crates/apps/cli/src/agent_hot_cmd.rs`: `h2 agent edit …`, `h2 agent render …`.
 

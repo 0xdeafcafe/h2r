@@ -7,6 +7,16 @@
 //! `mach_vm_remap(copy = TRUE)`. With that mapping,
 //! the kernel copies a host page on the first write to it from either side,
 //! so each side keeps its own writes. Other snapshots copy all RAM bytes.
+//!
+//! **Which blocks a window can alias** ([`Ram::can_share`]): on macOS the
+//! live mapping, a snapshot and a copy-on-write file restore, since a
+//! shared `mach_vm_remap` of a copy-on-write mapping shares its shadow
+//! object, keeping the clean pages shared with the source and the writes
+//! seen through both; on x86-64 Linux only a memfd, since two mappings
+//! cannot share a private mapping's copied pages. A Linux snapshot for a
+//! flat-RAM runtime is a memfd copy ([`Ram::cow_copy_for`]), and a Linux
+//! file restore in one is copied into a memfd (docs/runtime/contract-thin-transfers-flat-ram.md,
+//! Q1 and slice F5).
 
 use std::fs::File;
 use std::ops::{Deref, DerefMut};
@@ -56,15 +66,28 @@ unsafe impl Send for Ram {}
 unsafe impl Sync for Ram {}
 
 impl Ram {
-    /// The live, initially zero physical store.
+    /// The live, initially zero physical store; aliasable when flat RAM
+    /// is selected (`H2_FLAT_RAM=1`).
     pub(crate) fn zeroed(len: usize) -> Self {
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+        let aliasable = crate::flat::enabled();
+        #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64"))))]
+        let aliasable = false;
+        Self::zeroed_with(len, aliasable)
+    }
+    /// The live, initially zero physical store. `aliasable` asks for a
+    /// backing that [`Ram::alias`] can map into a window (a shared memfd on
+    /// Linux, a dedicated mapping on macOS); elsewhere it is ignored.
+    pub(crate) fn zeroed_with(len: usize, aliasable: bool) -> Self {
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         {
-            linux::reserve(len, linux::PREFERRED_BASE, crate::flat::enabled())
+            linux::reserve(len, linux::PREFERRED_BASE, aliasable)
                 .expect("reserve guarded guest physical RAM")
         }
+        #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64"))))]
+        let _ = aliasable;
         #[cfg(target_os = "macos")]
-        if crate::flat::enabled() {
+        if aliasable {
             // A dedicated mapping guarantees host-page alignment for shared
             // aliases, independent of the selected global allocator.
             let p = unsafe {
@@ -107,28 +130,102 @@ impl Ram {
     /// stay on that side. The caller makes sure nothing writes `self`
     /// meanwhile (it holds `&self`, and C stores hold the gate).
     pub(crate) fn cow_copy(&self) -> (Self, CopyKind) {
+        self.cow_copy_for(false)
+    }
+    /// [`Ram::cow_copy`], for a window to alias when `window` is set
+    /// ([`Ram::can_share`]): the remap on macOS is that already; on Linux
+    /// the copy goes into a memfd.
+    pub(crate) fn cow_copy_for(&self, window: bool) -> (Self, CopyKind) {
         if let Some(copy) = self.remap() {
             return (copy, CopyKind::Remapped);
         }
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         let copy = {
-            let mut copy = linux::reserve(self.len, linux::PREFERRED_BASE, false)
+            let mut copy = linux::reserve(self.len, linux::PREFERRED_BASE, window)
                 .expect("reserve guarded snapshot RAM");
             copy.copy_from_slice(self);
             copy
         };
         #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-        let copy = Self::from_box(self[..].into());
+        let copy = {
+            // A heap copy: the window cannot alias it, and the Guest that
+            // needs one copies it again (`Guest::ensure_aliasable_ram`).
+            let _ = window;
+            Self::from_box(self[..].into())
+        };
         (copy, CopyKind::Copied)
     }
-    /// Only these backings can supply writable shared aliases of the live
-    /// bytes. A MAP_PRIVATE file and a snapshot must keep their COW identity.
-    #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+    /// The live aliasable backing: the one flat RAM selects at
+    /// construction (`H2_FLAT_RAM=1`, [`Ram::zeroed_with`]) and the span
+    /// model's arena aliases (`flat.rs`).
     pub(crate) fn can_alias(&self) -> bool {
         #[cfg(target_os = "macos")]
-        { matches!(self.backing, Backing::MachLive) }
+        {
+            matches!(self.backing, Backing::MachLive)
+        }
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        { matches!(self.backing, Backing::Guarded { file: Some(_), .. }) }
+        {
+            matches!(self.backing, Backing::Guarded { file: Some(_), .. })
+        }
+        #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64"))))]
+        {
+            false
+        }
+    }
+    /// A window can alias this block shared ([`Ram::alias`]) and keep its
+    /// copy-on-write identity (module docs): [`Ram::can_alias`]'s backing,
+    /// and on macOS a snapshot or a copy-on-write file restore too.
+    pub(crate) fn can_share(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            matches!(self.backing, Backing::MachLive | Backing::MachCopy | Backing::FilePrivate)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.can_alias()
+        }
+    }
+    /// A copy-on-write file restore ([`Ram::become_private_of`]) backs
+    /// these bytes, not a copy of the file.
+    #[cfg(test)]
+    pub(crate) fn maps_file(&self) -> bool {
+        #[cfg(all(unix, not(all(target_os = "linux", target_arch = "x86_64"))))]
+        {
+            matches!(self.backing, Backing::FilePrivate)
+        }
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            self.cow_base.is_some() && matches!(self.backing, Backing::Guarded { file: None, .. })
+        }
+        #[cfg(not(unix))]
+        {
+            false
+        }
+    }
+
+    /// Move these bytes into a fresh aliasable backing
+    /// ([`Ram::zeroed_with`]), keeping `cow_base`: false, and unchanged,
+    /// if this host gives none. Only non-zero 4 KiB pages are copied, so a
+    /// mostly empty RAM costs little more than a scan. A block a window
+    /// can already alias ([`Ram::can_share`]) stays as it is.
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+    pub(crate) fn make_aliasable(&mut self) -> bool {
+        if self.can_share() {
+            return true;
+        }
+        let mut fresh = Self::zeroed_with(self.len, true);
+        if !fresh.can_alias() {
+            return false;
+        }
+        const CHUNK: usize = 4096;
+        for (to, from) in fresh.chunks_mut(CHUNK).zip(self.chunks(CHUNK)) {
+            if from.iter().any(|&b| b != 0) {
+                to.copy_from_slice(from);
+            }
+        }
+        fresh.cow_base = self.cow_base.take();
+        *self = fresh;
+        true
     }
 
     /// Install a shared alias over a host-page-aligned subrange of a
@@ -139,7 +236,7 @@ impl Ram {
     /// It synchronizes alias accesses with the canonical RAM owner.
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
     pub(crate) unsafe fn alias(&self, dst: *mut u8, offset: usize, len: usize) -> bool {
-        if !self.can_alias() || offset.checked_add(len).is_none_or(|end| end > self.len) {
+        if !self.can_share() || offset.checked_add(len).is_none_or(|end| end > self.len) {
             return false;
         }
         #[cfg(target_os = "macos")]

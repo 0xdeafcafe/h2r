@@ -1,0 +1,34 @@
+[package]
+name = "recomp"
+description = "Build and load: the XBE lifted, emitted and compiled into one host module, its build stamp, the module loaded with the boot bridge, and the interpreter for what the module leaves out (docs/runtime/BOOT.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+xbe.workspace = true
+xiso.workspace = true
+analyze.workspace = true
+lift.workspace = true
+# The lifted original for shadow checks (fallback.rs, docs/engine/shadow-exec.md).
+lifted = { path = "../lifted" }
+emit.workspace = true
+# The Cranelift fast tier (tier.rs, docs/lifter/cranelift-tier.md).
+clif = { workspace = true, optional = true }
+ir.workspace = true
+runtime.workspace = true
+x87 = { path = "../../recompiler/x87" }
+iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info"] }
+libloading = "0.8"
+rustc-hash = "2"
+serde.workspace = true
+serde_json.workspace = true
+
+[features]
+# The Cranelift fast tier and the clang build (tier.rs, `build`).
+desktop-runtime = ["dep:clif"]
+
+[[test]]
+name = "fast_tier"
+required-features = ["desktop-runtime"]

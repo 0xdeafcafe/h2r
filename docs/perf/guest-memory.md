@@ -61,7 +61,7 @@ spill (`crates/runtime/runtime/src/ffi.rs`): the runtime settles the view's coun
 then spends the handler's `n`. Without `H2_FASTMEM` the charge alone stays.
 The boot bridge table has an `exit` slot installed by `h2boot_install_v3`;
 a module built before it is installed through `h2boot_install_v2`
-(`crates/apps/boot/src/lib.rs`). `H2_EXIT_CALL=0` and `H2_DIRECT_VIEW=0` are C
+(`crates/runtime/recomp/src/lib.rs`, `install_bridge`). `H2_EXIT_CALL=0` and `H2_DIRECT_VIEW=0` are C
 defines the equivalence tests set to build the older exit and entries; they
 are not part of `cflags_for`.
 
@@ -131,7 +131,7 @@ Every transfer that leaves generated code goes through the runner
 ### The D3D write barrier
 
 Every D3D entry is wrapped by `boot::d3d_glue::barrier_handler`
-(`crates/apps/boot/src/d3d_glue.rs`): it drains the watch, then invokes the
+(`crates/extensions/game/src/d3d_glue.rs`): it drains the watch, then invokes the
 entry's own handler in place, so a D3D call costs one runner transfer. The
 guest sees the same registers, memory and return; the dead stack word under
 the caller's `ESP` keeps the caller's return address. Nothing is drained on
@@ -158,7 +158,7 @@ D3d, Gfx and Fallback times overlap and are not summed.
 - The module imports `h2abi_v1_fast_acquire`, `h2abi_v1_exit`,
   `h2abi_v1_read` and `h2abi_v1_write` and the other symbols in
   RUNTIME-CONTRACT.md section 1; the boot bridge installs them
-  (`crates/apps/boot/c/boot_bridge.c`).
+  (`crates/runtime/recomp/c/boot_bridge.c`).
 - Every compiler switch is a `-D` define chosen in
   `emit::compile::cflags_for` (`crates/recompiler/emit/src/compile.rs`). They are in the
   object cache key and the boot stamp: set them identically for `h2 build`

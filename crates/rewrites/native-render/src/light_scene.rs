@@ -14,10 +14,10 @@
 //! draw; strips never join. A group with a remainder, an entry whose part
 //! the native geometry does not hold, or an object entry without node
 //! rows, is refused by name and the layer keeps its handlers.
-//! `boot::native_lights_glue` draws a planned group of structure geometry
-//! (clusters and placements, in the world's buffers) in layers 12 and 13;
-//! it holds no model streams for the light passes, so an object entry is
-//! [`Refusal::Stream`].
+//! `boot::native_lights_glue` draws a planned group in layers 12 and 13:
+//! structure geometry (clusters and placements) from the world's buffers,
+//! object entries from the map's model parts built at load
+//! ([`crate::light_models`]), a stream per model section.
 
 use std::ops::Range;
 

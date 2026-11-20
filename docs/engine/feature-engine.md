@@ -306,7 +306,7 @@ against the original's answers on real layouts.
 `default`, `env`, `flag`, `aliases`, `parse_env`, `apply` (`Live`, `NextMap`,
 `Restart`), `scope` (`Host`, `View`, `Sim`), `tier` (`User`, `Advanced`,
 `Diagnostic`) and `menu`. Boot's definitions are
-`crates/apps/boot/src/setting_defs.rs`.
+`crates/extensions/game/src/setting_defs.rs`.
 
 `Store` (`crates/formats/settings/src/store.rs`) is `load`, `handle`, `get`, `set`,
 `step`, `state`, `force`, `on_change`, plus per-profile values. Rules:
@@ -333,7 +333,7 @@ against the original's answers on real layouts.
 
 ## UI
 
-`crates/apps/boot/src/ui.rs` is the `ui` subsystem's Rust model: our list screens
+`crates/extensions/game/src/ui.rs` is the `ui` subsystem's Rust model: our list screens
 and the rows we add to retail lists, as data over the settings `Store`. It is
 pure: no guest memory, and a press goes only through the store.
 
@@ -358,7 +358,7 @@ are read in [ui.md](../formats/ui.md) and
 
 ### UI step b
 
-`boot::list_class` (`crates/apps/boot/src/list_class.rs`) is our own list screen
+`boot::list_class` (`crates/extensions/game/src/list_class.rs`) is our own list screen
 class: a Controls-shaped screen (the Controls tag's layout, built by the
 Controls constructor) whose screen and list handler point at our copies of the
 Controls vtables. Five entries of ours, async entries at arena addresses,
@@ -386,12 +386,12 @@ exists anywhere.
 Built on it: the Video screen, the Skulls screen (`skulls_screen`), the
 campaign picker (`campaign_menu`), the Live sign-in screen (`signin_screen`)
 and the co-op lobby, friends and join screens (`coop_live`).
-**Test:** the plan tests in `crates/apps/boot/src/list_class.rs`.
+**Test:** the plan tests in `crates/extensions/game/src/list_class.rs`.
 
 ### UI step c
 
 Rows of ours on a retail list are data on the plan
-(`crates/apps/boot/src/retail_rows.rs`): an `Extension` answers a retail list's
+(`crates/extensions/game/src/retail_rows.rs`): an `Extension` answers a retail list's
 extension rows from the `ui` model with `before` hooks at the list's row text
 and row chosen, and a retail row goes on to the original. The Settings list
 (the Video row), the Controls list (the speaker row) and the campaign pause
@@ -399,7 +399,7 @@ menu (Video Settings and Voice Settings) use it. A list told apart by index
 can have ours among its rows (`ui::Extension::at`): a retail row shown past
 ours goes to the original with its own row's handle (`retail_rows::moved`).
 
-The retail Controls row text is ported (`crates/apps/boot/src/controls_text.rs`,
+The retail Controls row text is ported (`crates/extensions/game/src/controls_text.rs`,
 feature `controls-text`, an implementation). Every string id is read at run
 time from its instruction in the loaded image and named by instruction address;
 nothing is copied. Our rows' hooks run around it as they did around the
@@ -407,7 +407,7 @@ original. Not ported: the Button Layout list's handlers. The shared list hooks
 (the datum array constructor, the pane, the screen tag, the text set), the
 layouts, the Live menu's Custom Game Browser row, the added item widgets and
 the camera's field of view are still raw hooks in
-`crates/apps/boot/src/layout_glue.rs`.
+`crates/extensions/game/src/layout_glue.rs`.
 
 ## 7. Rasterizer front-end
 

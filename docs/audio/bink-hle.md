@@ -1,13 +1,13 @@
 # Bink HLE
 
-Status: Built. Code: `crates/platform/bink-hle/src`, `crates/apps/boot/src/movies_glue.rs`. Tests: `crates/platform/bink-hle` (`xbe_pins` is ignored).
+Status: Built. Code: `crates/platform/bink-hle/src`, `crates/extensions/game/src/movies_glue.rs`. Tests: `crates/platform/bink-hle` (`xbe_pins` is ignored).
 Switch: `--movies`, `--no-movies`, `--no-bink` (command-line flags).
 
 `crates/platform/bink-hle` replaces the Bink 1.x player that Halo 2 links statically
 (sections `BINK*`, `BINKDATA`). It has no Bink decoder; see
 [movies.md](movies.md) for the optional install-time MOV transcode.
 Every host (`h2 run`, `h2 serve`, `h2 play`, the apps) makes the same choice
-at startup (`crates/apps/boot/src/movies_glue.rs`): **playback** when `h2 movies`
+at startup (`crates/extensions/game/src/movies_glue.rs`): **playback** when `h2 movies`
 has installed transcodes that are current for the disc, **skip** otherwise
 and, by default, on headless runs and level boots, and logs it as one line:
 

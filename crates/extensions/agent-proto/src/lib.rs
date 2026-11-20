@@ -25,6 +25,7 @@ mod render;
 pub mod shadow;
 pub mod sim;
 pub mod state;
+pub mod test_maps;
 pub mod theater;
 pub mod trace;
 pub use client::{CallError, Client};
@@ -34,7 +35,8 @@ pub use pad::{AtTick, Now, PAD_BUTTONS, PadParams, PadStep};
 pub use render::{
     CaptureReply, CompareParams, CompareReply, DepthRecord, DrawRecord,
     FrameCaptureParams, FrameParams, FrameRecord, FrameReply, FrameTotals, OpRecord, ParityParams, ParityReply,
-    PassRecord, RenderStats, SceneEntries, SceneEntryRecord, SceneParams, SceneReply, SceneViewRecord, SnapRecord,
+    PassRecord, RenderStats, SceneEntries, SceneEntryRecord, SceneLateRecord, SceneParams, ScenePostRecord, SceneReply, SceneViewRecord,
+    SnapRecord,
 };
 
 use serde::{Deserialize, Serialize};
@@ -158,9 +160,22 @@ pub mod method {
     pub const HOST_LOBBY_STATE: &str = "host.lobby.state";
     pub const HOST_LOBBY_START: &str = "host.lobby.start";
     pub const HOST_LOBBY_CLOSE: &str = "host.lobby.close";
+    /// Test maps (docs/game/test-maps.md, [`crate::test_maps`]): the
+    /// built-in recipes and the test maps built.
+    pub const MAPS_TEST_LIST: &str = "maps.test.list";
+    /// Build a test map from a recipe, in the background.
+    pub const MAPS_TEST_CREATE: &str = "maps.test.create";
+    /// Queue a built test map as the next game.
+    pub const MAPS_TEST_LOAD: &str = "maps.test.load";
+    /// Delete a test map's package.
+    pub const MAPS_TEST_REMOVE: &str = "maps.test.remove";
     /// The fallback interpreter's entry addresses, by instructions
     /// interpreted (`{"top": 20}`): where generated code still stops.
     pub const PROFILE_FALLBACKS: &str = "profile.fallbacks";
+    /// The flat RAM window's counters (`runtime::window`): fixups taken,
+    /// mapped pages outside the window, bytes the congruent allocator
+    /// skipped; where a slow page shows.
+    pub const PROFILE_MEMORY: &str = "profile.memory";
     /// The fault census (`{"top": 20}`): every guest memory fault, who
     /// raised it, and whether guest execution went on from its state
     /// (`runtime::fault_census`).

@@ -1,7 +1,7 @@
 # Maps: new, edited, patched and shared
 
 Status: Partly built. The package loader, the editor's package tools, the multiplayer slots, Live sharing and the in-game Mods screens are built; applying `map-variant` content packs and the SPPF and Serenity readers are not.
-Code: `crates/formats/content` (manifest, `MapId`, patch readers, resolver), `crates/runtime/vfs/src/packages.rs`, `crates/apps/boot/src/new_maps.rs`, `crates/live/live-hle/src/maps.rs`, `crates/apps/boot/src/mods_screen.rs`. Tests: `crates/formats/content`, `crates/runtime/vfs/tests/packages.rs`, `crates/apps/boot/src/new_maps/tests.rs`.
+Code: `crates/formats/content` (manifest, `MapId`, patch readers, resolver), `crates/runtime/vfs/src/packages.rs`, `crates/extensions/game/src/new_maps.rs`, `crates/live/live-hle/src/maps.rs`, `crates/extensions/game/src/mods_screen.rs`. Tests: `crates/formats/content`, `crates/runtime/vfs/tests/packages.rs`, `crates/extensions/game/src/new_maps/tests.rs`.
 Switch: `H2_MAP_DIR` (developer override for `\maps\<name>.map`), listed in [switches.md](../runtime/switches.md).
 
 A map is a base plus layers, held as a package under `<data>/maps/`. A
@@ -858,7 +858,7 @@ two-column table (each row a white name, left, and a pale-blue value,
 right, 22 units apart from `[177 118 157 276]`). Matchmaking (pane 3)
 shows the same details block, so it is the game's own "game details"
 look. A mod's page is built on it
-(`crates/apps/boot/src/mods_screen/page_layout.rs`; each rectangle, font,
+(`crates/extensions/game/src/mods_screen/page_layout.rs`; each rectangle, font,
 colour, animation and depth bias is the lobby tag's own unless noted):
 
 | Part | Lobby original | On a mod's page |
@@ -1013,6 +1013,7 @@ fail, such as a base whose hash differs from the disc's):
 
 [map-select.md](map-select.md), [map-pack.md](map-pack.md),
 [live-api.md](../live/live-api.md), [live-custom-games.md](../live/live-custom-games.md),
-[scenario-editor.md](../editor/scenario-editor.md).
+[scenario-editor.md](../editor/scenario-editor.md),
+[test-maps.md](test-maps.md) (packages built from recipes for the agent API).
 
 [formats]: https://connortumbleson.com/2020/04/12/halo-2-patch-format-types/

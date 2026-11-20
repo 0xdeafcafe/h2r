@@ -395,14 +395,22 @@ pub fn draw_alone(mem: &mut dyn GuestMemory, layer: u32, group: &SceneGroup) -> 
         }
     });
     ALONE.fetch_add(1, Ordering::Relaxed);
+    let objects = group.entries.iter().filter(|e| matches!(e.owner, frame_scene::LayerOwner::Object(_))).count();
+    ALONE_OBJECTS.fetch_add(objects as u64, Ordering::Relaxed);
     true
 }
 
 static ALONE: AtomicU64 = AtomicU64::new(0);
+static ALONE_OBJECTS: AtomicU64 = AtomicU64::new(0);
 
 /// Light layers drawn from the scene alone, no handler run.
 pub fn drawn_alone() -> u64 {
     ALONE.load(Ordering::Relaxed)
+}
+
+/// Object entries of those layers: model parts drawn from the scene.
+pub fn objects_drawn_alone() -> u64 {
+    ALONE_OBJECTS.load(Ordering::Relaxed)
 }
 
 pub struct NativeLights;

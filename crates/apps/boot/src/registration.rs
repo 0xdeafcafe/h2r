@@ -21,6 +21,8 @@ use std::sync::{Arc, Mutex};
 use anyhow::Context;
 use runtime::Runtime;
 
+use crate::run_plan::{compiled_render_hooks, register_telemetry};
+
 use crate::{
     agent_glue, aim_assist, bot_glue, campaign_menu, cheats, clankers, coop_probe, custom_games,
     game_setup_help, h1_options, h1_options_row, health, hud, hud_swap, layout_glue, level_boot, lockstep_glue,
@@ -83,31 +85,6 @@ pub struct Core {
 /// Registers everything from the telemetry hooks to the touch glue.
 pub fn register_core(features: &mut hooks::Registry, i: CoreInputs<'_>) -> anyhow::Result<Core> {
     register_core_film(features, i, None)
-}
-
-pub(crate) fn register_telemetry(
-    features: &mut hooks::Registry,
-    config: &telemetry::TelemetryConfig,
-    film: Option<&Arc<crate::theater::Session>>,
-) -> anyhow::Result<Option<Arc<telemetry::Telemetry>>> {
-    let Some(film) = film else {
-        return Ok(
-            telemetry::install(features, config).unwrap_or_else(|error| {
-                eprintln!("live telemetry disabled: {error}");
-                None
-            }),
-        );
-    };
-    // Guest transfers depend on the installed hook addresses. The recorder
-    // and player consume the same header plan even when their sinks differ.
-    let hooks = film.telemetry_plan();
-    let installed = telemetry::install_film(features, config, film.film_observer(), hooks)
-        .map_err(anyhow::Error::msg)?;
-    anyhow::ensure!(
-        installed.is_some() == hooks.enabled(),
-        "film telemetry hook plan {hooks:?} could not be installed"
-    );
-    Ok(installed)
 }
 
 pub(crate) fn register_core_film(
@@ -338,18 +315,6 @@ pub fn pipeline_for(
     }
 }
 
-/// Group availability follows boot's Cargo features. A desktop playback binary
-/// can select the smaller registration plan recorded by a dedicated host.
-pub(crate) fn compiled_render_hooks() -> film::RenderHooks {
-    if cfg!(feature = "gpu") {
-        film::RenderHooks::Gpu
-    } else if cfg!(feature = "desktop-runtime") {
-        film::RenderHooks::Desktop
-    } else {
-        film::RenderHooks::Slim
-    }
-}
-
 /// What [`register_late`] made, for the run.
 pub struct Late {
     pub harness: Option<lockstep_glue::Lockstep>,
@@ -464,11 +429,24 @@ pub(crate) fn register_late_for_profile(
         features
             .add(&render_bridge::native_fog::NativeFog)
             .map_err(|e| anyhow::anyhow!("native fog: {e}"))?;
+        // World layers 1, 5, 7, 8 and 20 drawn from the scene's plan
+        // (frame-scene.layers, an option; docs/graphics/framescene.md,
+        // slice 4). The layer sets load with the world (native_layers_glue).
+        features
+            .add(&render_bridge::native_layers::NativeLayers)
+            .map_err(|e| anyhow::anyhow!("native layers: {e}"))?;
         // Water edge blend (layer 6) and the water, camouflage and hologram
         // census. The layer observer follows impl.render.native.
         features
             .add(&render_bridge::native_water::NativeWater)
             .map_err(|e| anyhow::anyhow!("native water: {e}"))?;
+        // Model decorators (layer 3), instanced on the native GPU renderer
+        // (docs/graphics/native-decorators.md). Its layer-draw observer
+        // follows the frame scene's; the passes load with the world
+        // (native_world_glue's worker, native_decorators_glue's load).
+        features
+            .add(&render_bridge::native_decorators::NativeDecorators)
+            .map_err(|e| anyhow::anyhow!("native decorators: {e}"))?;
         // Objects' render models on the native GPU renderer, skinned on the
         // GPU (on by default since 2026-11-20;
         // H2_FEATURES=impl.render.native=off turns it off for the

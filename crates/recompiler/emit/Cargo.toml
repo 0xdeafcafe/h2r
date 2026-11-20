@@ -12,6 +12,9 @@ analyze.workspace = true
 xbe.workspace = true
 x87.workspace = true
 libloading = "0.8"
+# The test host's flat RAM window (src/host.rs, contract slice F3).
+libc = "0.2"
+hostfault = { path = "../../runtime/hostfault" }
 # Independent execution only for opt-in native-lowering validation.
 oracle = { path = "../oracle", optional = true, features = ["unicorn"] }
 
@@ -21,8 +24,5 @@ oracle-tests = ["dep:oracle"]
 [dev-dependencies]
 simd.workspace = true
 sse-oracle = { path = "../sse-oracle" }
-libc = "0.2"
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info", "code_asm"] }
 runtime = { path = "../../runtime/runtime" }
-# The fixup spike (tests/fixup.rs, contract slice F1).
-hostfault = { path = "../../runtime/hostfault" }

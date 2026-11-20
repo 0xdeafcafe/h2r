@@ -113,6 +113,7 @@ desktop = [
     "boot/gpu",
     "boot/movie-playback",
     "boot/local-io",
+    "boot/test-maps",
     "dep:hs",
     "dep:tags",
     "dep:shaders",

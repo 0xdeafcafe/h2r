@@ -7,7 +7,10 @@
 //! after the operation's CPU borrow ends. Optional C RAM views follow the
 //! gate protocol in `memory.rs` and may not escape their invocation.
 
+mod mem_block;
 mod memory;
+pub use mem_block::H2Mem;
+pub(crate) use mem_block::MemBlock;
 pub use memory::{FastAccess, MemoryGuard, h2abi_v1_fast_acquire, h2abi_v1_fast_release};
 pub(crate) use memory::{Memory, MemoryShared, OwnedFastAccess, release_lent_gate, sync_accesses};
 
@@ -25,10 +28,35 @@ pub struct ExecCtxOpaque {
 }
 
 pub(crate) fn call_native(f: GuestFn, cpu: &mut CpuAbi, ctx: &mut ExecCtx, pc: u32) -> TransferAbi {
+    ctx.direct_clear_view();
+    if ctx.runtime().memory_state().parking() {
+        return call_native_parked(f, cpu, ctx, pc);
+    }
     // SAFETY: native registration promises the documented ABI; these disjoint
     // exclusive borrows remain alive for exactly the synchronous call.
-    ctx.direct_clear_view();
     let result = unsafe { f(cpu, (ctx as *mut ExecCtx).cast(), pc) };
+    sync_accesses(ctx);
+    result
+}
+
+/// [`call_native`] with the memory's state word: "running" for the call
+/// (`memory.rs`'s module docs). A flat-RAM module turns parking on, so
+/// with one this also fills the context's flat block ([`MemBlock`]): the
+/// runtime's window, or the null window while the context's fast memory
+/// is off, and the slice's access budget.
+#[inline(never)]
+fn call_native_parked(f: GuestFn, cpu: &mut CpuAbi, ctx: &mut ExecCtx, pc: u32) -> TransferAbi {
+    let runtime = ctx.runtime().clone();
+    if runtime.flat_ram() {
+        let (base, cards) = runtime.flat_block_target(ctx.fast_memory_enabled);
+        let budget = ctx.access_budget();
+        ctx.mem_block.enter(base, cards, budget);
+    }
+    let memory = runtime.memory_state();
+    let entered = memory.start_running(ctx.preempt_ptr());
+    // SAFETY: as in call_native.
+    let result = unsafe { f(cpu, (ctx as *mut ExecCtx).cast(), pc) };
+    memory.stop_running(entered);
     sync_accesses(ctx);
     result
 }

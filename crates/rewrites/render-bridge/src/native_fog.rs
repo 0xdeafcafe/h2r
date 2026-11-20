@@ -138,19 +138,24 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         Some(true) => {}
         Some(false) => {
             GATED.fetch_add(1, Ordering::Relaxed);
+            crate::scene_step::late_kept(&*m.0, FOG_LAYER as u8, false);
             return;
         }
         None => return,
     }
     // A layer 16 without a BSP item draws no world fog (objects only):
-    // the native pass would have nothing to draw.
+    // the native pass would have nothing to draw. The frame step's scene
+    // records what the guest keeps (`scene_step::late_kept`); the glue
+    // writes the fog it takes (docs/graphics/framescene.md, slice 5).
     if skip::has_structure_items(&m, FOG_LAYER as u32) != Some(true) {
+        crate::scene_step::late_kept(&*m.0, FOG_LAYER as u8, true);
         return;
     }
     let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
         return;
     };
     let Some(cleared) = host.ask(&mut *m.0) else {
+        crate::scene_step::late_kept(&*m.0, FOG_LAYER as u8, true);
         return;
     };
     if cleared.items.is_empty() {

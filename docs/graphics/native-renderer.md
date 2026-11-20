@@ -124,10 +124,10 @@ A confirmed admission on the threaded backend needs a synchronous worker
 round trip. `encode_pending` closes the preceding merged D3D pass, and each
 physical copy gets a private command buffer. World and object hooks batch a
 view into one reservation. When the render thread takes scene stages
-(`Device::queues_scene_stages`), the world and objects queue one instead
-(`Device::reserve_scene_stage`): no round trip, and their preparation and
-recording run on the render thread
-([framescene.md](framescene.md), "Slice 2"). A packet holder can batch consecutive native draws
+(`Device::queues_scene_stages`), the world, objects, fog and water queue
+one instead (`Device::reserve_scene_stage`): no round trip, and their
+preparation and recording run on the render thread
+([framescene.md](framescene.md), "Slice 2" and "Slice 5"). A packet holder can batch consecutive native draws
 on the same targets in a single `ExternalPlan` and encode their ranges in
 guest order. End the batch before any guest-owned draw, target/state change
 that the batch does not reproduce, or guest-visible read. A one-draw helper

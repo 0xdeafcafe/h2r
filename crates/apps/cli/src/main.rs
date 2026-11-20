@@ -14,6 +14,7 @@ use xiso::Xiso;
 #[cfg(unix)]
 mod agent_cmd;
 mod agent_flight;
+mod agent_maps;
 #[cfg(unix)]
 mod agent_hot_cmd;
 #[cfg(unix)]

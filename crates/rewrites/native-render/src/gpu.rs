@@ -264,6 +264,10 @@ pub struct GpuWorld {
     programs: Option<ProgramSet>,
     /// The fog materials layer 16 draws ([`crate::fog_gpu`]).
     fog: Option<FogSet>,
+    /// The materials the scene's layers 1, 5, 7, 8 and 20 draw from the
+    /// scene's plan (`crate::layer_pass`), by layer: each layer's passes
+    /// recorded as the fog's are.
+    layers: HashMap<u8, FogSet>,
     /// The water materials layer 6 draws ([`crate::water_gpu`]).
     water: Option<crate::water_gpu::WaterSet>,
     /// The light passes (stage 4), once a light needs them.
@@ -553,6 +557,7 @@ impl GpuWorld {
             pipelines: HashMap::new(),
             programs,
             fog: None,
+            layers: HashMap::new(),
             water: None,
             lights: None,
             unbound_batches: 0,
@@ -578,6 +583,41 @@ impl GpuWorld {
     /// The fog materials, when they are uploaded.
     pub fn fog(&self) -> Option<&FogSet> {
         self.fog.as_ref()
+    }
+
+    /// Draws `layer`'s passes of `set`'s materials from now on.
+    pub fn set_layer(&mut self, layer: u8, set: FogSet) {
+        self.layers.insert(layer, set);
+    }
+
+    /// `layer`'s materials, when they are uploaded.
+    pub fn layer(&self, layer: u8) -> Option<&FogSet> {
+        self.layers.get(&layer)
+    }
+
+    /// One view's draws of `layer`'s selected parts as packets for the
+    /// D3D pass already open on these attachments, the uniforms as writes
+    /// ahead of them ([`FogSet::draws`]; `fogs` the fog unit the passes
+    /// hold, the device's at the layer).
+    #[allow(clippy::too_many_arguments)]
+    pub fn layer_draws(
+        &mut self,
+        layer: u8,
+        device: &wgpu::Device,
+        color_format: wgpu::TextureFormat,
+        depth_format: wgpu::TextureFormat,
+        target_size: (u32, u32),
+        selected: &[(Owner, u8)],
+        view: &ViewInputs,
+        fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
+    ) -> Result<gfx::external::ExternalDraws, &'static str> {
+        let Self { layers, packet_pipelines, program_vertices, indices, .. } = self;
+        let set = layers.get_mut(&layer).ok_or("layer materials unavailable")?;
+        set.pipelines(device, color_format, depth_format);
+        if packet_pipelines.len() > 4096 {
+            packet_pipelines.clear();
+        }
+        set.draws(packet_pipelines, program_vertices, indices, color_format, depth_format, target_size, selected, view, fogs)
     }
 
     /// Draws the water edge blend of `set`'s materials from now on.

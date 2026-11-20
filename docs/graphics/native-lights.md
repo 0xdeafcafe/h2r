@@ -1,7 +1,7 @@
 # Native renderer stage 4: lights and shadows
 
-Status: Partly built. Dynamic lights' layers 12 and 13 over cluster geometry, the light passes and their gathered groups typed into the frame scene, the gathered light and shadow geometry walk and the shadow replacements are built; the visible-light gather, object-model lights, the first-person lights and parity with D3D are not.
-Code: `crates/rewrites/render-bridge/src/native_lights.rs`, `native_lights/walk.rs`, `crates/apps/boot/src/native_lights_glue.rs`, `native_lights_glue/walk.rs`, `crates/rewrites/native-render/src/lights.rs`, `light_look.rs`, `light_gpu.rs`, `light_list.rs`, `light_scene.rs`, `crates/rewrites/scene-extract/src/layout/light_passes.rs`, `crates/rewrites/scene-extract/src/light_groups.rs`, `crates/rewrites/frame-scene/src/light_group.rs`. Tests: `crates/rewrites/render-bridge/tests/native_lights.rs`, `native_lights_split.rs`, `crates/rewrites/engine/tests/light_passes.rs`, `light_constants.rs`.
+Status: Partly built. Dynamic lights' layers 12 and 13 over cluster geometry (and over models, for a group drawn from the scene), the light passes and their gathered groups typed into the frame scene, the gathered light and shadow geometry walk and the shadow replacements are built; the visible-light gather, object-model lights, the first-person lights and parity with D3D are not.
+Code: `crates/rewrites/render-bridge/src/native_lights.rs`, `native_lights/walk.rs`, `crates/extensions/game/src/native_lights_glue.rs`, `native_lights_glue/walk.rs`, `native_lights_glue/models.rs`, `crates/rewrites/native-render/src/lights.rs`, `light_look.rs`, `light_gpu.rs`, `light_list.rs`, `light_scene.rs`, `light_models.rs`, `crates/rewrites/scene-extract/src/layout/light_passes.rs`, `crates/rewrites/scene-extract/src/light_groups.rs`, `crates/rewrites/frame-scene/src/light_group.rs`. Tests: `crates/rewrites/render-bridge/tests/native_lights.rs`, `native_lights_split.rs`, `crates/rewrites/engine/tests/light_passes.rs`, `light_constants.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 Part of [native-renderer.md](native-renderer.md). The dynamic lights are not layers of the scene list: after layer 7, `render_scene_passes` calls `render_dynamic_lights` (`0x00031c80`, `points::RENDER_DYNAMIC_LIGHTS`), which gathers each visible light's geometry into a list of its own and draws layers 10 to 14 over it, one light at a time. The game has two more shadow paths beside it: object shadows before layer 7, and the first-person view's lights after the scene. The pages for the other pieces are [native-shadows.md](native-shadows.md) (layers 10, 11 and 14) and [native-gels.md](native-gels.md) (target 13).
@@ -124,18 +124,42 @@ and its index range there): the sorted order and duplicates kept,
 adjacent list ranges of one stream, binding, class and pose joined, an
 entry whose part is not held refused by name.
 
-A light's layer 12 or 13 whose group is whole and of structure
-geometry (clusters and placements) is drawn from the scene with no
-handler: `boot::native_lights_glue` (`Glue::alone`, behind
+A light's layer 12 or 13 whose group is whole is drawn from the scene
+with no handler: `boot::native_lights_glue` (`Glue::alone`, behind
 `render_bridge::native_lights::Host::draw_alone`) holds the world's
-parts as the `Resident` (`Structure`), resolves each entry's material
-pass for the light as the resolved-draw path does, takes the scissor,
-stencil, W-buffer, palettes and cull from the device at that point, and
-issues the pass at once (`Device::external_pass_now`), with no resolved
-fallback. It refuses, issuing nothing, a model entry (the light passes
-hold no model streams), a shader gel (its target-13 slot is pinned
-through a draw's plan), a remainder, and any state the resolved-draw
-path refuses. When it draws, the walk hands the guest's entry loop no
+structure parts and the map's model parts as the `Resident` (`Held`),
+resolves each entry's material pass for the light as the resolved-draw
+path does, takes the scissor, stencil, W-buffer, palettes and cull from
+the device at that point, and issues the pass at once
+(`Device::external_pass_now`), with no resolved fallback. Structure
+entries (clusters and placements) draw from the world's buffers.
+
+Object entries draw from model parts built once per map on a worker
+(`native_lights_glue/models.rs`, `native_render::light_models`), at the
+first group with an object entry: every `mode` tag's drawn opaque parts,
+their triangles in one index list per section (each part decoded in its
+own topology), the section's decompression rows, and its vertices once
+per (vertex shader, classification) that the parts' materials' layer-12
+and layer-13 implementations name, gathered through the declaration that
+program's input semantics give over the section's streams. Their stage
+images load as the world's do, through the stage palettes bound at the
+ask. At run time the pass is resolved with the light's inputs and
+compiled for the buffer of the program the look names at the entry's
+sorted classification (`light_look::compile_light_model`: the
+declaration's registers and fetch; reads of the node rows `c[50..]`,
+relative to `a0.x` from there as a skinned program does, and of the
+decompression `c[170..172]`), cached by material, layer,
+implementation, inputs, classification and layout. Each object entry
+is a draw of its own: its node rows from the scene at `c[50..]` and its
+section's decompression at `c[170..172]`
+(`light_gpu::ModelGeometry`, `model_vertex`), over a pipeline with the
+section's vertex layout (`LightGpu::pipeline`, `ModelLayout`).
+
+It refuses, issuing nothing, object entries before the model parts
+load, an entry whose part, raw range, topology or classification no
+buffer was built for, node rows past the palette, a shader gel (its
+target-13 slot is pinned through a draw's plan), a remainder, and any
+state the resolved-draw path refuses. When it draws, the walk hands the guest's entry loop no
 entries, so none of the layer's handlers runs, and the layer leaves the
 light's candidate (`render.scene`'s `scene_light_layers_alone` counts
 them). Otherwise the layer takes the gathered or resolved-draw path as
@@ -154,11 +178,13 @@ object shadows outside a dynamic light.
 
 ### What a native light draws
 
-- **Geometry.** The gathered BSP owner, part and full material datum must
-  match a resident cluster draw. The handler's selected implementation
-  chooses the program. Models and rigid placements retain their D3D
-  handlers. A split may consume a contiguous native prefix. All remaining
-  entries run in guest order, even when one shares a shader with the prefix.
+- **Geometry.** On the resolved-draw path, the gathered BSP owner, part
+  and full material datum must match a resident cluster draw. The
+  handler's selected implementation chooses the program. Models and
+  rigid placements retain their D3D handlers there. A split may consume
+  a contiguous native prefix. All remaining entries run in guest order,
+  even when one shares a shader with the prefix. A whole group drawn
+  from the scene takes models too ("Gathered groups in the scene").
 - **Shading.** Each draw takes its view constants and W range at issue,
   the light's 36 frame words in `c[31..39]`, material colours and
   inherited device culling. The guest runs the sphere projection and
@@ -408,7 +434,7 @@ The host takes each of layers 12 and 13 a light's steps draw, shadowed or not, w
 
 ## Rules and limits
 
-- Only structure geometry is drawn natively. Models keep their D3D handlers. A split may consume a contiguous native prefix; the remaining entries run in guest order. A whole structure group of layer 12 or 13 is drawn from the scene with no handler.
+- On the resolved-draw path only structure geometry is drawn natively, and models keep their D3D handlers. A split may consume a contiguous native prefix; the remaining entries run in guest order. A whole group of layer 12 or 13, structure and model entries alike, is drawn from the scene with no handler.
 - A light that samples a shadow map (engine textures 13 and 8), an animated input, an engine-driven state or an unsupplied constant keeps its D3D passes (`light_look`).
 - The visible-light gather at `0x00031c80`, the object-model lights, the object-shadow call `0x00032350`'s lights and the first-person lights (`0x000404b0`) run in the guest. The first-person records at `0x004c6b00` would need writing before the gather can be skipped.
 - Diagnostics print as `native-lights:` on stderr: at load, each light texture with its size or why it did not load, and the surfaces left to D3D; at run time, each refusal reason on its first occurrence, and counts by reason every 1800 host decisions.
@@ -416,6 +442,7 @@ The host takes each of layers 12 and 13 a light's steps draw, shadowed or not, w
 ## Not verified
 
 - A shadowed light's layers 12 and 13 drawn natively over its D3D or shadow-stage layers 10, 11 and 14 (pixel parity on a scene with one).
+- An object entry's layers 12 and 13 drawn from the scene against its handler's draw (`render.compare` on a scene with a lit object); that the sorted entry's classification is the one the model parts are built for (`classification` from the section's `+0x14`), and that the light frame needs no per-object transform.
 - Pixel parity at equal presents, with render scale 1 and 2, with the lights stage on and off (`impl.render.native=off`). Captures from a run with zero native submissions establish no light coverage, and a scene with zero shader-gel admissions says nothing about the target-13 binding.
 - That reservations are not dropped and the invariant counters stay zero, in `native_lights_v*_reference_ranges` and the other `lights` stage counters of `H2_FRAME_STATS`.
 - The time of the light site after parity is established.

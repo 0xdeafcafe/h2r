@@ -1,7 +1,7 @@
 # Campaign cache integration gate
 
 Status: Built.
-Code: `crates/apps/boot/src/map_slots.rs`, `crates/apps/boot/src/map_copy.rs`, `crates/runtime/vfs/src/campaign_maps.rs`. Tests: `crates/runtime/kernel/tests/cache_slots.rs` (ignored; needs the disc).
+Code: `crates/extensions/game/src/map_slots.rs`, `crates/extensions/game/src/map_copy.rs`, `crates/runtime/vfs/src/campaign_maps.rs`. Tests: `crates/runtime/kernel/tests/cache_slots.rs` (ignored; needs the disc).
 Switch: none.
 
 `crates/runtime/kernel/tests/cache_slots.rs` is an opt-in retail integration test.
@@ -146,7 +146,7 @@ of the header outside guest memory during a session, so the on-disk
 slot header does not matter. The record's resident header is the only
 thing checked.
 
-**The fix: the `map-slots` feature** (`crates/apps/boot/src/map_slots.rs`).
+**The fix: the `map-slots` feature** (`crates/extensions/game/src/map_slots.rs`).
 
 - **When it runs.** After `RENDER_FRAME`, on the main thread, where the
   copy machine `0x2141f0` also runs, at most every 500 ms.
@@ -213,7 +213,7 @@ time barely moves and the pacer never sleeps. The load costs 1,744 times
 whatever one loading frame costs the host: 3.2 to 5.7 s headless, far more
 in a window where each present is dearer.
 
-**The fix: the `map-copy` feature** (`crates/apps/boot/src/map_copy.rs`, on by
+**The fix: the `map-copy` feature** (`crates/extensions/game/src/map_copy.rs`, on by
 default, `H2_FEATURES=-map-copy` turns it off). When the copy machine is
 called from the loading-screen loop (return address `0x1639c2`), a
 `before` hook answers with an async body that runs the step the loop

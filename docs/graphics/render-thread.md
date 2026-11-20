@@ -1,7 +1,7 @@
 # Render thread
 
 Status: Built.
-Code: `crates/platform/d3d/src/threaded.rs` (`d3d::ThreadedBackend`), `crates/apps/boot/src/d3d_glue.rs` (`render_thread_requested`, `render_thread_from`). Tests: `crates/platform/d3d/tests/threaded.rs`, `threaded_frame_stats.rs`, `depth_textures.rs`.
+Code: `crates/platform/d3d/src/threaded.rs` (`d3d::ThreadedBackend`), `crates/extensions/game/src/d3d_glue.rs` (`render_thread_requested`, `render_thread_from`). Tests: `crates/platform/d3d/tests/threaded.rs`, `threaded_frame_stats.rs`, `depth_textures.rs`.
 Switch: `H2_RENDER_THREAD=0` turns it off (on by default), listed in [switches.md](../runtime/switches.md).
 
 On the Xbox the NV2A consumes the push buffer while the CPU goes on with the

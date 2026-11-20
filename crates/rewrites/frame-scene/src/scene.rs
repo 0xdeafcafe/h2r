@@ -4,7 +4,8 @@
 //!
 //! Slice 1 fills the views, their cameras, clusters, object instances,
 //! parts and palette rows; slice 3 the lights and their passes' steps,
-//! the world layers' and the first person's items.
+//! the world layers' and the first person's items; slice 5 the fog, the
+//! water and the post passes (`crate::late`).
 //! Shadow maps, the carried part and texture uploads join in the slices
 //! that type or carry them (3 and 6).
 
@@ -16,6 +17,7 @@ use serde::Serialize;
 
 use crate::camera::Camera;
 use crate::decorator::{DecoratorDraw, DecoratorInstance};
+use crate::late::{FogState, LateMaterial, LatePart, PostEffect, PostParams, WaterState};
 use crate::layer::{LayerItem, LayerPass};
 use crate::light::{LightStep, SceneLight};
 use crate::light_group::{LightEntry, LightGroup, ObjectShadow};
@@ -174,6 +176,12 @@ pub struct View {
     pub decorators: Range<u32>,
     /// Decorator draws extraction refused: the guest still draws them.
     pub decorator_remainder: u32,
+    /// The view's layer 16 (slice 5).
+    pub fog: Option<FogState>,
+    /// The view's layer 6.
+    pub water: Option<WaterState>,
+    /// The view's post passes.
+    pub post: Option<PostParams>,
 }
 
 /// An object's identity across scenes: its datum handle with its salt.
@@ -343,6 +351,12 @@ pub struct FrameScene {
     pub object_shadows: Vec<ObjectShadow>,
     /// Each object shadow's groups; shadows index ranges of it.
     pub shadow_groups: Vec<LightGroup>,
+    /// The late layers' resolved materials; late layers index ranges of it.
+    pub late_materials: Vec<LateMaterial>,
+    /// The parts the late layers' stages draw; late layers index ranges of it.
+    pub late_parts: Vec<LatePart>,
+    /// The screen effects of the views' post passes; posts index ranges of it.
+    pub post_effects: Vec<PostEffect>,
 }
 
 fn slice<'a, T>(v: &'a [T], r: &Range<u32>) -> &'a [T] {
@@ -372,6 +386,9 @@ impl FrameScene {
         self.light_entries.clear();
         self.object_shadows.clear();
         self.shadow_groups.clear();
+        self.late_materials.clear();
+        self.late_parts.clear();
+        self.post_effects.clear();
     }
 
     pub fn view(&self, key: ViewKey) -> Option<&View> {
@@ -526,6 +543,7 @@ impl FrameScene {
             }
         }
         crate::decorator::check(self)?;
+        crate::late::check(self)?;
         Ok(())
     }
 }

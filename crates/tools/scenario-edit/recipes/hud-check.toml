@@ -1,0 +1,24 @@
+# One spawn, a rifle and a second weapon to pick up, and a vehicle to
+# enter: the HUD on foot, its pickup and swap prompts, and a seat's HUD.
+# docs/game/test-maps.md
+name = "hud-check"
+title = "HUD check"
+purpose = "One spawn, two weapons to pick up and a vehicle to enter: the HUD on foot, the pickup and swap prompts and a seat's HUD."
+base = "coagulation"
+fidelity = "full"
+clear = "all"
+
+[[place]]
+block = "starting_locations"
+
+[[place]]
+block = "netgame_equipment"
+at = [3, -1, 0]
+step = [0, 2, 0]
+each = { group = "weap", contains = ['rifle\'], exclude = ['\multiplayer\'], max = 2 }
+
+[[place]]
+block = "netgame_equipment"
+at = [9, 0, 0]
+facing = 90
+each = { group = "vehi", contains = ["warthog"], max = 1 }

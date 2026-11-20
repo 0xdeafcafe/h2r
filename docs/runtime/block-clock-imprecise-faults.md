@@ -115,8 +115,8 @@ without the bit.
 | `H2GEN_FEATURE_IMPRECISE_FAULTS` | 128 | `H2_PASSES=…,imprecise-faults` | accepted; the census counts `continued_imprecise` |
 
 Bits 2, 4, 8 and 32 are direct calls, the lent view, the entry table and
-host calls; 16 is kept for flat RAM
-([contract-thin-transfers-flat-ram.md](contract-thin-transfers-flat-ram.md)).
+host calls; 16 is flat RAM (`H2_FLAT_RAM=1`,
+[contract-thin-transfers-flat-ram.md](contract-thin-transfers-flat-ram.md)).
 None of them changes the clock.
 
 - `Runtime::fault_census()`: `snapshot()` gives `FaultCounts`; `reset()`
@@ -155,7 +155,7 @@ None of them changes the clock.
   the pipelined render turns a second-executor fault into a terminal event
   (`crates/rewrites/render-bridge/src/pipeline_render.rs`, `settle`);
   `RtlRaiseException` is a kernel stop (`crates/runtime/kernel/STOPS.md`);
-  stop recovery takes STOPs only (`crates/apps/boot/src/fallback.rs`).
+  stop recovery takes STOPs only (`crates/runtime/recomp/src/fallback.rs`).
 - **Test.** `a_fault_a_run_ends_with_is_counted_once_and_not_as_continued`,
   `going_on_from_a_generated_fault_needs_a_precise_exit`,
   `a_discarded_or_restarted_fault_is_not_continued`,

@@ -376,7 +376,7 @@ fn said(lines: &[(&str, &str)], tag: &str, p: &str) -> bool {
 }
 
 /// The Xbox Live menu was on `tag`'s screen: its tag was extended, or one
-/// of our rows drawn (`custom games: ...`, crates/apps/boot/src/layout_glue.rs).
+/// of our rows drawn (`custom games: ...`, crates/extensions/game/src/layout_glue.rs).
 fn opened_live_menu(lines: &[(&str, &str)], tag: &str) -> bool {
     said(lines, tag, "custom games: xbox live menu tag")
         || said(lines, tag, "custom games: row text")
