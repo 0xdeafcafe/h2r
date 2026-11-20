@@ -205,8 +205,8 @@ pub static PAD_MUTE: Def = Def {
     scope: Scope::Host,
     tier: Tier::User,
     menu: Some(Menu {
-        screen: "video",
-        order: 40,
+        screen: "voice",
+        order: 90,
     }),
 };
 
@@ -445,14 +445,14 @@ pub fn coop_join_in_progress(store: &Store) -> bool {
 }
 
 /// How strong the weapons' aim assist is (crate::aim_assist,
-/// docs/game/aim-assist.md). Read at each map load.
+/// docs/game/aim-assist.md). Campaign reads it at each map load.
 pub static AIM_ASSIST: Def = Def {
     key: "controls.aim_assist",
     label: "Aim Assist",
     help: "How strongly the crosshair is pulled to and held on targets. Auto is Strong \
            while the on-screen touch controls show and the game's own otherwise; Strong and \
-           Very strong widen the weapons' aim cone and pull. Applies at the next map \
-           load; multiplayer games always use the game's own (docs/game/aim-assist.md).",
+           Very strong widen the weapons' aim cone and pull. Campaign changes apply at the next map \
+           load. Local multiplayer touch input uses the setting during play (docs/game/aim-assist.md).",
     kind: Kind::Choice(&[
         Choice {
             value: crate::aim_assist::SETTING_AUTO,
@@ -486,13 +486,13 @@ pub static AIM_ASSIST: Def = Def {
         ),
     ],
     parse_env: None,
-    // The handle changes at once; the hook reads it at each map load.
+    // Campaign reads the handle at map load. Multiplayer touch reads it live.
     apply: Apply::Live,
     scope: Scope::Sim,
     tier: Tier::User,
     menu: Some(Menu {
-        screen: "video",
-        order: 50,
+        screen: "controls",
+        order: 60,
     }),
 };
 
@@ -1050,7 +1050,7 @@ mod tests {
             Apply::Live,
             "the hook reads it at each map load"
         );
-        assert_eq!(AIM_ASSIST.menu.expect("a row").screen, "video");
+        assert_eq!(AIM_ASSIST.menu.expect("a row").screen, "controls");
         // The file takes the names.
         std::fs::write(
             settings::path_in(&data),
@@ -1166,9 +1166,7 @@ mod tests {
         assert_eq!(lighting_of(LIGHTING_E3 as u32), d3d::Lighting::E3);
         let menu = LIGHTING.menu.expect("a row");
         assert_eq!(menu.screen, "video");
-        // Between Resolution and Mute Button.
         assert!(RENDER_SCALE.menu.unwrap().order < menu.order);
-        assert!(menu.order < PAD_MUTE.menu.unwrap().order);
         assert_eq!(LIGHTING.apply, Apply::Live, "no restart");
         // The file takes the names; the variable locks it.
         std::fs::write(settings::path_in(&data), "[graphics]\nlighting = \"e3\"\n").unwrap();

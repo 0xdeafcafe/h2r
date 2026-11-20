@@ -21,6 +21,7 @@ const USAGE: &str = "usage:
 
 A call is a method and JSON params (`session.wait '{\"until\":{\"phase\":\"gameplay\"}}'`)
 or a short form:
+  games                  the games listening in the agents directory (no call)
   status                 session.status
   methods                session.methods
   count [kind|team]      world.count, grouped
@@ -64,6 +65,9 @@ or a short form:
   hostmetrics            host.metrics: tick cost, CPU and RSS
   hostaudit              host.audit: coverage and attribution so far
   ui                     ui.screen: the menu screen player one's input goes to (H2_UI_WATCH=1)
+  ui-crawl [--depth N] [--budget-ms N] [--require-clanker] [--from-current]
+                         audit menu navigation and report findings as JSON; defaults to
+                         six levels and 120 seconds; exits 1 on findings or interruption
   frame [draws] [max N] [constants R[..S][,...]] [snap N[,M...]]
                          render.frame: record the next whole frame and
                          print it: passes (target, clears, draws by outcome,
@@ -118,9 +122,54 @@ does, only it may send them. Queued steps outlive the connection and play out.
 The socket is --socket (a path, or tcp://HOST:PORT), else --xbox HOST
 (tcp://HOST:4720, the Xbox app; HOST defaults to $H2_XBOX), else $H2_AGENT,
 else the cache directory's h2recomp/agent.sock, where `h2 serve` listens
-by default. Results print as
+by default; with nothing there, the one game in its agents/ directory, where
+`h2 play` listens unless H2_AGENT is set (`h2 agent games` lists them). Results print as
 JSON, one per line in scripts; an error prints to stderr and exits 1 (a
 script stops at its first error).";
+
+/// The one game running in the agents directory, when no socket is named
+/// (`$H2_AGENT` unset, nothing at the default socket) and there is exactly
+/// one: `h2 play` opens it by default ([`agent_proto::discover`]).
+fn only_game() -> Option<PathBuf> {
+    if std::env::var_os(agent_proto::ENV).is_some_and(|v| !v.is_empty())
+        || agent_proto::discover::is_socket(&agent_proto::default_socket())
+    {
+        return None;
+    }
+    let found = agent_proto::discover::scan(&agent_proto::discover::dir(), agent_proto::discover::PROBE_TIMEOUT);
+    match found.as_slice() {
+        [one] => {
+            eprintln!("agent: using the game at {}", one.path.display());
+            Some(one.path.clone())
+        }
+        _ => None,
+    }
+}
+
+/// `h2 agent games`: the games listening in the agents directory.
+fn games() -> Result<()> {
+    let dir = agent_proto::discover::dir();
+    let found = agent_proto::discover::scan(&dir, agent_proto::discover::PROBE_TIMEOUT);
+    if found.is_empty() {
+        println!("no game is listening in {}", dir.display());
+    }
+    for f in found {
+        let at = f.status.as_ref().map(|s| &s.at);
+        println!(
+            "{}\tpid {}\tmap {}\t{}",
+            f.path.display(),
+            f.pid.map_or("-".into(), |p| p.to_string()),
+            f.map().unwrap_or("-"),
+            match (at, &f.note) {
+                (Some(a), _) if a.paused => "paused".to_owned(),
+                (Some(a), _) => format!("{:?} tick {}", a.phase, a.tick.unwrap_or(a.ticks)).to_lowercase(),
+                (None, Some(n)) => format!("not answering: {n}"),
+                (None, None) => String::new(),
+            }
+        );
+    }
+    Ok(())
+}
 
 /// [`USAGE`] with the hot-iteration forms (`agent_hot_cmd`) in place.
 fn usage() -> String {
@@ -179,7 +228,14 @@ pub fn run(args: Vec<String>) -> Result<()> {
     if first == "frame" && rest.get(1).is_some_and(|w| w == "compare") {
         return frame_compare(&rest[2..]);
     }
-    let path = socket.unwrap_or_else(agent_proto::default_socket);
+    // Lists the games' sockets; no connection of ours is held.
+    if first == "games" {
+        return games();
+    }
+    let path = match socket {
+        Some(p) => p,
+        None => only_game().unwrap_or_else(agent_proto::default_socket),
+    };
     let mut c = Client::connect(&path).with_context(|| {
         format!(
             "connecting to {}: is `h2 serve` (or a game with H2_AGENT) running?",
@@ -189,6 +245,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     c.set_timeout(timeout)?;
     match first.as_str() {
         "-" => script(&mut c),
+        "ui-crawl" => crate::agent_ui_crawl::run(&mut c, &rest[1..], timeout),
         "watch" => watch(&mut c, &rest[1..]),
         "run" => run_script(&mut c, &rest[1..], false),
         "sim" if rest.get(1).is_some_and(|w| w == "run") => run_script(&mut c, &rest[2..], true),

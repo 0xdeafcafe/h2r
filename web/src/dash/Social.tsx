@@ -20,7 +20,7 @@ import { BigPod, Glyph, Plate, Prompts } from "./parts";
 import type { Action } from "./input";
 import { ListPanel } from "./Dashboard";
 import { ClanEmblem, friendPresence, presenceLine } from "../stats/clanBits";
-import { STATS_ROOT } from "../routes";
+import { dashboardPlayerHref, STATS_ROOT } from "../routes";
 
 interface Row { key: string; label: string; meta?: string }
 interface Act { label: string; run: () => void | Promise<unknown>; danger?: boolean }
@@ -220,7 +220,7 @@ function FriendsScreen(props: SocialProps) {
         if (!r || r.key === "+add") return [];
         if (r.key === "+teams") return [{ label: "open teams", run: () => props.go("/dash/teams", "deeper") }];
         const k = kindOf(r), x = xuidOf(r);
-        const profile: Act = { label: "profile", run: () => props.go(`/dash/players/${encodeURIComponent(r.label)}`, "deeper") };
+        const profile: Act = { label: "profile", run: () => props.go(dashboardPlayerHref(r.label), "deeper") };
         if (k === "in") return [
           { label: "accept", run: () => social.write(friendWrites.accept(me().xuid, x)) },
           { label: "decline", run: () => social.write(friendWrites.decline(me().xuid, x)), danger: true },
@@ -446,7 +446,7 @@ function TeamScreen(props: SocialProps & { id: string }) {
             }
             const p = friendPresence({ xuid: target, presence: null });
             if (p.game_id) out.push({ label: "watch game", run: () => props.go(`${STATS_ROOT}/games/${p.game_id}`, "deeper") });
-            out.push({ label: "profile", run: () => props.go(`/dash/players/${encodeURIComponent(m.identity.gamertag)}`, "deeper") });
+            out.push({ label: "profile", run: () => props.go(dashboardPlayerHref(m.identity.gamertag), "deeper") });
             if (x === target && role !== "recruit" && role !== "leader") out.push({ label: "leave team", danger: true, run: () => social.write(teamWrites.remove(tm.id, x)) });
             if (x && x !== target && target !== tm.creator && role !== "recruit" && can(tm, x, OFFICER)) {
               out.push({ label: role === "officer" ? "demote" : "promote", run: () => social.write(

@@ -12,6 +12,7 @@
 use std::collections::BTreeMap;
 
 mod client;
+pub mod discover;
 pub mod collision;
 mod endpoint;
 pub mod expect;
@@ -35,7 +36,8 @@ pub use pad::{AtTick, Now, PAD_BUTTONS, PadParams, PadStep};
 pub use render::{
     CaptureReply, CompareParams, CompareReply, DepthRecord, DrawRecord,
     FrameCaptureParams, FrameParams, FrameRecord, FrameReply, FrameTotals, OpRecord, ParityParams, ParityReply,
-    PassRecord, RenderStats, SceneEntries, SceneEntryRecord, SceneLateRecord, SceneParams, ScenePostRecord, SceneReply, SceneViewRecord,
+    PassRecord, RenderStats, SceneCarried, SceneEntries, SceneEntryRecord, SceneLateRecord, SceneOpCounts, SceneParams, ScenePostRecord, SceneReply,
+    SceneSideTarget, SceneViewRecord,
     SnapRecord,
 };
 
@@ -185,7 +187,17 @@ pub mod method {
     /// "mode", "dialog", "age_ms"}`; `dialog` is the first screen on windows
     /// 0 to 4 (`{"id", "name", "window", "slot"}`) or `null`.
     pub const UI_CAMPAIGN: &str = "ui.campaign";
+    /// The pregame session's player slots, peer indices, names and connection bars.
+    pub const UI_LOBBY_PLAYERS: &str = "ui.lobby.players";
     pub const UI_SCREEN: &str = "ui.screen";
+    /// The visible option lines in the active pregame custom lobby.
+    pub const UI_LOBBY_OPTIONS: &str = "ui.lobby_options";
+    /// Active widget panes, resolved text and audit findings at this boundary.
+    pub const UI_AUDIT: &str = "ui.audit";
+    /// Deliver one menu action guarded by the input owner and focus from `ui.audit`.
+    pub const UI_PRESS: &str = "ui.press";
+    /// Live screen channels and the generic Back target, read at a game boundary.
+    pub const UI_STACK: &str = "ui.stack";
     /// Record the next whole frame's passes, draws and targets, or read
     /// the last one recorded ([`crate::FrameParams`]).
     pub const RENDER_FRAME: &str = "render.frame";
@@ -206,6 +218,8 @@ pub mod method {
     pub const COOP_LOOK: &str = "render.coop_look";
     /// Active mixer voices, bin gains and distance-dependent path parameters.
     pub const AUDIO_VOICES: &str = "audio.voices";
+    /// Active guest listeners and their local-user mappings.
+    pub const AUDIO_LISTENERS: &str = "audio.listeners";
     /// Sim mode's match (`H2_SIM`, `boot::sim_glue`): the match file, the
     /// phase (`waiting`, `playing`, `over`), ticks, game and wall seconds,
     /// the speed-up so far, frames skipped, and the end once over.

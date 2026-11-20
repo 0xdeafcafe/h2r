@@ -85,6 +85,10 @@ pub mod method {
     pub const TAG_BLOCK_ADD: &str = "tag.block.add";
     pub const TAG_BLOCK_REMOVE: &str = "tag.block.remove";
     pub const TAG_BLOCK_DUPLICATE: &str = "tag.block.duplicate";
+    pub const TAG_BROWSE: &str = "tag.browse";
+    pub const TAG_RESOURCES: &str = "tag.resources";
+    pub const TAG_EXPORT: &str = "tag.export";
+    pub const TAG_IMPORT: &str = "tag.import";
 
     pub const SCENARIO_BLOCKS: &str = "scenario.blocks";
     pub const SCENARIO_LIST: &str = "scenario.list";
@@ -120,8 +124,15 @@ pub mod method {
     pub const UI_WIDGETS: &str = "ui.widgets";
     pub const UI_RENDER: &str = "ui.render";
 
+    pub const PAIR_LIST: &str = "pair.list";
+    pub const PAIR_STATUS: &str = "pair.status";
+    pub const PAIR_CONNECT: &str = "pair.connect";
+    pub const PAIR_DISCONNECT: &str = "pair.disconnect";
+    pub const PAIR_AUTO: &str = "pair.auto";
+
     pub const VIEW_CAMERA: &str = "view.camera";
     pub const VIEW_SNAPSHOT: &str = "view.snapshot";
+    pub const VIEW_STATS: &str = "view.stats";
 
     // Planned namespaces: listed by `session.methods` with status
     // "planned"; a call answers NOT_YET until its lane registers it.

@@ -207,6 +207,41 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "the Game Setup screen's per-frame update (picture and description), UI on the game thread",
     ),
     (
+        "ui-back",
+        "SCREEN_PUSH",
+        "records the replaced dialog in host navigation state on the game thread",
+    ),
+    (
+        "ui-back",
+        "SCREEN_BACK_EVENT",
+        "reopens the parent with guest calls from the game thread's menu input handler",
+    ),
+    (
+        "ui-back",
+        "UI_CHANNEL_FREE",
+        "removes the freed dialog from host navigation state on the game thread",
+    ),
+    (
+        "lobby-options",
+        "LOBBY_VARIANT_PANEL",
+        "updates lobby widgets through guest calls and uses a game-thread reentry guard",
+    ),
+    (
+        "bots",
+        "PARTY_LEAVE",
+        "retires the departing lobby's Clankers through guest session calls on the game thread",
+    ),
+    (
+        "bots",
+        "MATCHMAKING_CANCEL_CONFIRMED",
+        "retires the departing lobby's Clankers through guest session calls on the game thread",
+    ),
+    (
+        "connection-bars",
+        "SCOREBOARD_CONNECTION_BARS",
+        "fills the scoreboard badge after the body runs, a Rust continuation the fallback cannot resume",
+    ),
+    (
         "clankermatch",
         "*",
         "the OptiMatch playlist list's rows and press, and the Live menu's Quickmatch press: \
@@ -241,6 +276,9 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     // Phantom membership and input run on the game thread.
     ("bots", "RENDER_FRAME", AFTER),
     ("bots", "GAME_ACTIVATE", AFTER),
+    ("bots", "SOUND_UPDATE", AFTER),
+    ("bots", "SOUND_LISTENERS_UPDATE", AFTER),
+    ("bots", "SOUND_OWNER_USER", AFTER),
     (
         "bots",
         "SIMULATION_SLOT_ACTION",

@@ -406,6 +406,146 @@ pub fn block(doc: &TagDoc, tag: TagId, path: &str, op: BlockOp) -> Result<TagAct
     })
 }
 
+/// Data references and raw pointers [`resources`] lists at most.
+pub const RESOURCES: usize = 4096;
+
+/// A tag's data references and raw-resource pointers, each with its path
+/// from the root (as [`set_field`] takes it): `{data: [{path, size,
+/// address}], raw: [{path, file, offset, size}], truncated}`. A pointer's
+/// size is the element's `RawSize` field for it, when it has one; `file`
+/// is the map it selects (`local`, `mainmenu`, `shared`,
+/// `single_player_shared`). Empty and none pointers are left out.
+pub fn resources(doc: &TagDoc, tag: TagId) -> Result<Value, String> {
+    let t = doc.tag(tag).ok_or("no such tag")?;
+    if let Access::None(why) = &t.access {
+        return Err((*why).to_owned());
+    }
+    let layout = doc.layout(tag).ok_or("no layout for this group")?.clone();
+    let mut data = Vec::new();
+    let mut raw = Vec::new();
+    walk_resources(doc, t.address, &layout, "", &mut data, &mut raw, 0);
+    let truncated = data.len() + raw.len() >= RESOURCES;
+    Ok(json!({ "data": data, "raw": raw, "truncated": truncated }))
+}
+
+fn walk_resources(
+    doc: &TagDoc,
+    at: u32,
+    l: &Layout,
+    prefix: &str,
+    data: &mut Vec<Value>,
+    raw: &mut Vec<Value>,
+    depth: usize,
+) {
+    if depth > 16 {
+        return;
+    }
+    for f in &l.fields {
+        if data.len() + raw.len() >= RESOURCES {
+            return;
+        }
+        let path = if prefix.is_empty() {
+            f.name.clone()
+        } else {
+            format!("{prefix}.{}", f.name)
+        };
+        let a = at + f.offset;
+        match &f.kind {
+            Kind::Data => {
+                if let Some((n, start)) = doc.pair(a)
+                    && n > 0
+                {
+                    data.push(json!({
+                        "path": path,
+                        "size": n,
+                        "address": format!("{start:#010x}"),
+                    }));
+                }
+            }
+            Kind::Raw => {
+                let Some(b) = doc.read(a, 4) else { continue };
+                let v = le(&b) as u32;
+                let Some(p) = map::RawPointer::decode(v).filter(|_| v != 0) else {
+                    continue;
+                };
+                let size = l
+                    .fields
+                    .iter()
+                    .find(|g| matches!(g.kind, Kind::RawSize { of } if of == f.offset))
+                    .and_then(|g| doc.read(at + g.offset, 4))
+                    .map(|b| le(&b));
+                raw.push(json!({
+                    "path": path,
+                    "file": editor_core::tag_bundle::file_name(p.file),
+                    "offset": p.offset,
+                    "size": size,
+                }));
+            }
+            Kind::Block(child) => {
+                let Some((n, start)) = doc.block(a, child) else {
+                    continue;
+                };
+                for i in 0..n {
+                    let e = format!("{path}[{i}]");
+                    walk_resources(doc, start + i * child.size, child, &e, data, raw, depth + 1);
+                    if data.len() + raw.len() >= RESOURCES {
+                        return;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A tag of `doc` by any of the names the agent API takes: an ID (`0x...`
+/// or a number), `group:name`, a name, `name.group`, or a group the map
+/// has one tag of (`scnr`, `matg`).
+pub fn lookup(doc: &TagDoc, want: &Value) -> Result<TagId, String> {
+    let by_id = |id: u32| {
+        doc.tag(TagId(id))
+            .map(|t| t.id)
+            .ok_or_else(|| format!("no tag {id:#010x}"))
+    };
+    if let Some(n) = want.as_u64() {
+        return by_id(u32::try_from(n).map_err(|_| format!("no tag {n}"))?);
+    }
+    let s = want
+        .as_str()
+        .ok_or_else(|| format!("tag: an id or a name, not {want}"))?;
+    if let Some(hex) = s.strip_prefix("0x")
+        && let Ok(id) = u32::from_str_radix(hex, 16)
+    {
+        return by_id(id);
+    }
+    if let Some(id) = find_tag(doc, s) {
+        return Ok(id);
+    }
+    let text = |t: &super::tag_doc::TagEntry| tags::defs::fourcc_text(t.group);
+    let mut hits: Vec<TagId> = doc
+        .tags()
+        .iter()
+        .filter(|t| {
+            t.name.eq_ignore_ascii_case(s)
+                || format!("{}.{}", t.name, text(t)).eq_ignore_ascii_case(s)
+        })
+        .map(|t| t.id)
+        .collect();
+    if hits.is_empty() {
+        hits = doc
+            .tags()
+            .iter()
+            .filter(|t| text(t).eq_ignore_ascii_case(s))
+            .map(|t| t.id)
+            .collect();
+    }
+    match hits[..] {
+        [one] => Ok(one),
+        [] => Err(format!("no tag named {s:?} (tag.list finds them)")),
+        _ => Err(format!("{s:?} names {} tags; use group:name or an id", hits.len())),
+    }
+}
+
 /// A tag by `group:name`.
 pub fn find_tag(doc: &TagDoc, text: &str) -> Option<TagId> {
     doc.tags()

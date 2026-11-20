@@ -46,7 +46,8 @@ connection to hold `session.claim`.
 | `host.metrics`, `host.audit`, `host.perf` | read | [`host`](#host-the-process-and-its-lobby) |
 | `host.lobby.open`, `close`, `start` | act | [`host.lobby`](#hostlobby) |
 | `host.lobby.state` | read | [`host.lobby`](#hostlobby) |
-| `ui.screen`, `ui.campaign` | read | [`ui`](#ui-what-the-menus-show) |
+| `ui.screen`, `ui.campaign`, `ui.audit`, `ui.stack`, `ui.lobby.players` | read | [`ui`](#ui-what-the-menus-show) |
+| `ui.press` | act | [Menu inspection and navigation](#menu-inspection-and-navigation) |
 | `audio.voices` | read | [`audio`](#audio-voice-routing) |
 | `hs.threads`, `hs.globals`, `hs.player_actions` | read | [HaloScript state](#haloscript-state) |
 | `input.pad`, `release`, `record`, `replay`, `stop` | act | [`input`](#input-act-like-a-player) |
@@ -93,7 +94,21 @@ printf 'claim\npause\nstep 30\ncount\nresume\n' | h2 agent -
   over TCP instead (`agent_proto::Endpoint`), which is how the Xbox app is
   reached (`h2 agent --xbox HOST`, port 4720; [xbox.md](xbox.md), "Remote
   control"). TCP has no authentication; Unix sockets are Unix only.
-  `h2 serve` removes its socket on Ctrl-C or SIGTERM.
+  `h2 serve` removes its socket on Ctrl-C or SIGTERM. A Unix socket is
+  created with mode 0600.
+- **Finding a game.** `h2 play` with `H2_AGENT` unset opens its own socket,
+  `<cache>/h2recomp/agents/<pid>.sock` (`agent_proto::discover`; the
+  directory is mode 0700, so only the user can connect; set in `boot`'s
+  agent source from `Host::discoverable_agent`). A game started any other
+  way (`h2 serve`, `h2 run`, the Xbox app) opens a socket only where
+  `H2_AGENT` or `--socket` says. `H2_AGENT=off` keeps `h2 play` from
+  opening one ([switches.md](switches.md)). A client lists the directory
+  and asks each socket `session.status` (`discover::scan`); a file nothing
+  answers on, left by a game that was killed, is removed. `h2 agent games`
+  prints each game's socket, pid, map and phase, and `h2 agent <call>` with
+  no socket named, no `$H2_AGENT` and nothing at the default socket uses
+  the one game in the directory. The editor pairs with these games
+  ([editor-guide.md](../editor/editor-guide.md), "Play from the editor").
 - **Another Mac.** `h2 lab agent --host H <run id> <call>` runs `h2 agent
   <call>` against that run's socket; `h2 lab bench` does a wait, capture,
   `render` and `counters` in one command ([lab.md](lab.md#driving-a-run-the-agent-api)).
@@ -140,8 +155,8 @@ refused; batches are not supported. Method names are `domain.verb`.
   `cinematic_start` and `cinematic_stop`, observed by the agent feature;
   cleared when the map changes). A level's first tick comes before its
   scripts start the opening cutscene, so ask for
-  `{"phase":"gameplay","map_ticks":30}` to mean "playing". Fades to black
-  are not detected. During a load the mode reads as none.
+  `{"phase":"gameplay","map_ticks":30}` to mean "playing". A fade leaves the phase unchanged.
+  `ui.audit` reports menu transition state. During a load the mode reads as none.
 - **Boundary.** `tick`: read right after a tick returned, one consistent
   simulation state. `slice`: read between scheduler slices with no tick for
   500 ms, where guest memory may be mid-update. While the game ticks,
@@ -689,7 +704,7 @@ h2 agent render.parity '{"arm": true}'
 |---|---|---|---|
 | `render.compare` | read | `{a, b, diff?}`: two PNG paths, and where to write a difference image | `{size: [w, h], differing, max_channel, mean, first: [x, y] \| null, within_bar, diff?}` |
 | `render.capture` | read | `{tick?, pass?}` | `{path, tick, present, pass?, scene_hash}` |
-| `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, entries?, dump?}` |
+| `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, entries?, carried?, dump?}` |
 | `render.parity` | act | `{arm: true}` | `render.compare`'s fields plus `tick` |
 | `sim.hashes` | read | `{from_tick?, max?}` | `{rows: [{tick, gameplay, arena?}], dropped, resets, truncated?}` |
 
@@ -759,8 +774,10 @@ h2 agent render.parity '{"arm": true}'
   `{colour, late, view_kind, screen_effects, screen_effects_gated,
   colour_pass, effects}` (`render_screen_effects`' arguments and gates,
   whether the colour pass ran, the screen effects drawn under it); each
-  absent when its draw did not run in the view; and carried ops by slot
-  and by `CameraUse` (empty while no stage carries ops); `counters`
+  absent when its draw did not run in the view; `carried`, its ops by
+  slot from the scene sink's last frame (empty without
+  `frame-scene.sink`, and for a first-person view), and `camera_use`
+  (empty: the sink does not classify draws by `CameraUse`); `counters`
   (`scenes_sealed`, `scenes_unsealed`, `scene_views`, `scene_no_camera`,
   `scene_refused_writes`, `scene_layers`, `scene_layer_items`,
   `scene_layer_remainder`, `scene_layers_unread` (layer draws whose list
@@ -793,7 +810,23 @@ h2 agent render.parity '{"arm": true}'
   `layer_plan_items` and the plan's outcomes by layer,
   `layer_plan_<layer>_taken` and `layer_plan_<layer>_refused_<cause>`
   (`render_bridge::native_layers`; framescene.md, slice 4); later slices add
-  `scene_unresident`, `scene_readback`, `scene_held_draws`). With
+  `scene_unresident`, `scene_held_draws`). With `frame-scene.sink` in
+  `H2_FEATURES` (framescene.md, slice 6), the device's scene sink files
+  each guest D3D op by the frame's slot (`opaque`, `after_opaque`,
+  `after_lights`, `transparents`, `after_post`, `overlay`, `outside`)
+  while the D3D backend still draws it; `carried` is its last frame:
+  `slots`, each slot's `{draws, binds, clears, copies, uploads,
+  samples}` (slots with none left out), `side_targets`, each surface
+  other than the scene's presented colour and its depth that a game
+  view's ops name, `{aux, width, height, format, depth, ops}` (`ops` by
+  slot), and `readbacks` and `readbacks_outside`, the guest's reads of
+  what was drawn in and outside a game view by kind (`surface`,
+  `depth`, `mirror`, `pixel_count`); and the counters add
+  `scene_carried_frames`, `scene_carried_draws`, `scene_carried_ops`,
+  `scene_side_target_frames` (frames that named a side target in a
+  game view), `scene_readback` and `scene_readback_<kind>` (in a game
+  view, since the start). Without the option `carried` and those
+  counters are absent. With
   `frame-scene.census` in `H2_FEATURES`, `entries` is the entry census
   (`render_bridge::entry_census`; framescene.md, slice 4), totals since
   the start: `by_entry`, keyed by guest entry (`layer.<site>.<layer>`
@@ -949,21 +982,47 @@ mutations respect `session.claim`, and a concurrent mutation is `BUSY`.
 
 ## `ui`: what the menus show
 
-Both methods are read-only. `ui.screen` needs `H2_UI_WATCH=1`.
+`ui.screen` needs `H2_UI_WATCH=1`. The other UI methods read the current guest widgets directly. All of them are read-only except `ui.press`.
 
 - **`ui.screen`** (`h2 agent ui`): the menu screen player one's input goes
-  to, read each tick (`boot::ui_watch`): `{screen, window, slot,
-  live_menu_row, mode, dialog, age_ms}`, or `UNAVAILABLE` before the first
-  read. `dialog` is the dialog up (the first screen on windows 0 to 4, any
-  slot), or `null`: `{id, name, window, slot}`, with `name` the dialog's
-  tag name (`dialog_live_signin` for the account picker,
+  to, read each UI update, including during a campaign pause
+  (`game::ui_watch`): `{screen, window, slot, class?, live_menu_row, mode,
+  dialog, age_ms}`, or `UNAVAILABLE` before the first read. `class` names
+  a Rust list screen whose numeric ID identifies its retail skin.
+  The pause Settings lists report `pause-settings` or `mp-pause-settings`.
+  Video and Voice report `video` and `voice`. All four use screen 200 in
+  a game. Press B or Back with `h2 agent press` (`input.pad`) and check
+  that the previous class returns on the same window and slot. See the
+  [pause Settings walkthrough](../game/settings-menu.md#to-check-in-game).
+  `main_menu_theater` is present and true when Theater occupies the
+  row after Xbox Live. Lobby scripts use it to locate Split Screen and
+  System Link. `dialog` is the dialog up (the first screen on windows 0 to
+  4, any slot), or `null`: `{id, name, window, slot}`, with `name` the dialog's
+  recognized name (`dialog_live_signin` for the account picker,
   `confirmation_dialog`, `error_dialog_ok`, ...; `boot::ui_watch::dialog_name`)
-  or `null` for an id not named yet. For the Clanker player card
-  `dialog.name` is `clanker_player_options`, resolved from the active
-  screen's kit class; its numeric id belongs to the retail base class and
-  can identify other screens too. Dialogs read as `"screen": null`, so this
+  or `null` for an id not named yet. The party leader picker reports
+  `dialog.name = party_leader_picker` with id `0xb1`. The Clanker player
+  card reports `clanker_player_options`. The retail-style value picker
+  used by Theater reports `kit.picker` in the main menu and
+  `kit.picker.game` in game. These names identify the active kit class.
+  Their numeric ids identify the shared retail base class. Dialogs read as
+  `"screen": null`, so this
   is how a driver tells one from another. The `ui: screen none` log line
   names it the same way ([live-coop.md](../live/live-coop.md), 12.6).
+- **`ui.stack`** (`h2 agent ui.stack`, no parameters): a tick-boundary
+  read of the occupied channels, their active, pending and outgoing
+  screen instances, and the game-shell channel's saved screen IDs
+  (`history`, nearest parent first). Each screen has `id`, `instance`
+  (a guest address valid for that screen's lifetime), and `parent` where
+  a return is known. The two map picker stages share an ID and have
+  distinct `mode` values (`folders`, `maps`), with the open `folder`
+  named on the maps stage and the active picker row in `focused_row`
+  (zero-based). `input` identifies the screen taking player one's menu
+  input. `back` gives the instance that closes and its parent where
+  known, with action `close`, `reopen` (recreate a parent), or `wait`
+  (consume Back during a replacement). It is null when there is no menu
+  input target or when Back depends on a screen's custom handler.
+  `ui.stack` is available without UI watch.
 - **`ui.campaign`** (`h2 agent ui.campaign`, no parameters): a tick-boundary
   read of the campaign menu from the guest screen and focus, without UI
   watch (`crates/extensions/game/src/campaign_menu.rs`). With no installed Halo 1
@@ -971,23 +1030,146 @@ Both methods are read-only. `ui.screen` needs `H2_UI_WATCH=1`.
   (`picker`, `options`, `levels`, `difficulty`, `dialog` or `other`),
   `game` (the selected campaign key on the three game-specific pages),
   `rows`, `focused_row` (zero-based) and `focused`; unknown selection or
-  focus is null. On the picker the rows are installed campaign keys; on
-  Campaign Options the action keys are `resume`, `new_game`,
+  focus is null. On the picker the rows are installed campaign keys.
+  With a focused picker row, `card.description` is the UTF-8 text in
+  that row's guest string slot, or null before it is available.
+  `card.picture_datum` is the selected bitmap datum, or null when the
+  artwork area is empty. `card` is null on other pages or without a
+  focused row. On Campaign Options the action keys are `resume`, `new_game`,
   `select_level` and `co_op`; other pages report an empty row list. For
-  example `{"installed":true,"page":"options","game":"halo1","rows":["new_game","select_level","co_op"],"focused_row":0,"focused":"new_game"}`.
+  example, a fresh profile on Halo 2 has `"page":"options"`, `"game":"halo2"`
+  and three rows. With a saved Halo 2 checkpoint, Resume is the first of
+  four rows.
+  On the picker and Campaign Options, `pick` identifies the most recent
+  press during this visit. It is null before a game is picked. Its
+  `campaign` is the picked numeric id, and `request` is null until retail
+  receives the options screen request. The request gives the player
+  `mask`, `window`, `slot` and `loader` arguments. The active `page`
+  shows whether the options screen opened.
+  On those two pages `list` reports guest addresses for the `screen`,
+  its list `handler`, the `row_array` and the linked `children` in order.
+  `row_count` reads the number of active datums. On Halo 2 with a checkpoint
+  the four actions scroll through three linked item widgets. The handler's
+  `press_record` holds a `press_target` (the list) and a `press_function`
+  (the row-chosen callback). An unreadable field is null. On other pages
+  `pick` and `list` are null.
   From the main menu's Campaign row, `h2 agent press a` opens the picker for
   fresh and returning profiles. Main menu row zero requests the native
   campaign dialog from `0x230888`; the picker intercepts it before the
   later profile-dependent solo branch at `0x2b16ad`. With UI watch on,
   `lobby mode campaign` also recognizes the installed picker.
 
+- **`ui.lobby_options`** (`h2 agent ui.lobby_options`, no parameters):
+  `{"lines":[...]}` with the active custom game panel's visible Quick
+  Options lines in display order, up to six. This reads the lobby's text
+  widgets at a game boundary (`crates/extensions/game/src/lobby_options.rs`).
+  It returns `UNAVAILABLE` when the custom game pane is unavailable.
+  Open a pregame custom lobby to read its retail lines and any Clankers,
+  Halo 1 Options and Skulls summaries. After changing the settings,
+  close the dialog and read the panel again.
+
+- **`ui.lobby.players`** (`h2 agent ui.lobby.players`, no parameters):
+  reads the pregame player list on a game boundary without UI watch
+  (`crates/extensions/game/src/lobby_quality.rs`). Each entry has its
+  membership `slot`, console `peer`, `name`, `bars` (1 to 6) and `rtt_ms`
+  (milliseconds, or null when there is no network sample). Split-screen
+  players on a console share its peer and bar count. Local players and
+  phantoms have six bars and null RTT. Remote peers with no sample have
+  one bar. The list uses the squad's membership in custom games and the
+  target membership when the matchmaking lobby has one. Results are in
+  slot order, with an empty list outside pregame.
+  For example, `{"players":[{"slot":1,"peer":1,"name":"Clanker","bars":6,"rtt_ms":null}]}`.
+
 Screens already moved to Rust (the Video screen, the skulls page, the
 account, co-op and sign-in screens; [feature-engine.md](../engine/feature-engine.md))
 share one list-screen implementation (`crates/extensions/game/src/list_class.rs`).
-Menus are driven with `input.pad` and checked with `ui.screen`; there is no
-widget-level focus or activate method.
+
+### Menu inspection and navigation
+
+`ui.audit {}` inspects the instantiated widgets at one game boundary.
+`screen` is the underlying menu. `dialogs` contains the active dialog
+on each occupied dialog channel, including dialogs belonging to another
+controller. `active` is the surface that accepts player one's input.
+`target` is its opaque token, and `focused_row` is the zero-based focused
+item. A transition or ambiguous input receiver can leave these fields null. Each surface
+has a numeric `id`, `window`, controller `slot`, current `pane` and
+the kit class `name` when available. Kit dialogs can share a retail ID.
+
+Inspect `panes[].labels` and `panes[].lists[].rows` for the text at the
+widget. The audit reads the UTF-16 buffer *after* retail's localized
+string lookup. A row includes its datum index, text and individual labels.
+On the retail profile picker and action menu, `navigation` identifies a
+verified inspection action in the current list mode.
+A missing widget, an empty string and an unreadable text interface have
+distinct statuses. The list's `item_count` includes off-screen items.
+Rows describe the materialized viewport. Moving focus exposes the other
+rows of a scrolling list. The Y menu exposes its materialized tabs and
+marks the selected pane. Source and widget layout are in
+[`ui_audit.rs`](../../crates/extensions/game/src/ui_audit.rs) and
+[User-interface tags](../formats/ui.md).
+
+`issues` identifies affected surfaces, panes and rows. It includes
+missing or empty row text, empty labels, unreadable data, empty panes
+and undersized lists. `transition` includes the startup fade time
+remaining, scene fade mode and weight, and the active, pending and
+outgoing layers of the menu compositor. A modal can request a blurred
+backdrop for as long as it is open. `stuck_blur` means a layer requesting
+that backdrop still carries its input-blocking transition more than
+one second past its authored delay and duration. Other overdue animations
+produce `stuck_transition`. `stuck_fade` means audits sampled the same
+unfinished main-menu startup fade and clock reading at least 150 game ticks
+apart. Unknown backdrop accessors give `requests_backdrop: null`.
+These diagnostics describe compositor inputs. The final image still
+requires a rendering check. [Transition reader](../../crates/extensions/game/src/ui_transition.rs)
+
+`ui.press` accepts `{target, action, row?, phase?}`. Copy the token from
+the latest audit. Actions are `up`, `down`, `left`, `right`, `choose` (A),
+`back` (B), `friends` (Y), and `open_live_menu` (A on the Live players
+screen in mode 3). Move focus, audit again, then send `choose` with the
+observed row. A changed owner, row or requested phase invalidates the
+press. The XAPI tap checks the target again when the game reads the pad.
+A successful result contains `{delivered:true, target, action, row,
+player, at}` after the press and release. An unread gesture expires. Read
+`ui.audit` after the menu transition settles to check what the press opened.
+`session.methods` lists `ui.press` when the process has an XAPI input tap.
+
+### Crawling the menus
+
+On a running agent-enabled game, place a signed-in profile with a recent
+Clanker at the main menu. Set `H2_AGENT` to its socket path.
+
+```sh
+h2 agent --socket "$H2_AGENT" ui-crawl --depth 6 --budget-ms 120000 --require-clanker
+```
+
+Omit `--socket` to use the normal agent endpoint. The crawl claims one
+connection, explores known navigation actions, observes each destination
+and backs out before trying its siblings. It visits the Y menu and
+Recent Players, including entries for players who left the session.
+From Settings it can inspect an existing editable profile, open Controls
+and back out of the choice dialogs without selecting a value.
+It skips game starts, quit, unverified actions and changes to settings or
+accounts. `--from-current` starts at the open menu or dialog for a
+focused check. Depth zero audits only the current surface. The defaults
+are six menu transitions and a two-minute wall-clock budget.
+
+For a parity run, use `--require-clanker` so missing seed history or an
+unreached card fails the run. The JSON verdict lists visited paths,
+findings, skipped actions, Clanker cards and navigation errors. Findings
+or a failed traversal produce a nonzero exit. Save the report outside the
+repository because resolved text can contain profile names and disc strings.
+[CLI implementation](../../crates/apps/cli/src/agent_ui_crawl.rs)
 
 ## `audio`: voice routing
+
+`h2 agent audio.listeners` takes no parameters. At a game boundary it reads
+the guest's active world-sound listeners. Each row in `listeners` reports
+the local `user` index, its salted `player_datum` (null for an unmapped
+slot), whether the mapped player is a `phantom` (null without a resolved
+player), and the listener's world-space `position` as `[x, y, z]`.
+With one human and a roster of Clankers, only the human's slot
+appears. Splitscreen reports each active human slot. The method returns
+`UNAVAILABLE` if the game listener state is uninitialized or unreadable.
 
 `h2 agent audio.voices` takes no parameters and is registered with
 DirectSound (`crates/extensions/game/src/dsound_glue.rs`). The result has
@@ -1717,7 +1899,7 @@ superbounce patch and more, built from the user's own disc while the game
 runs and queued as the next game. Design, recipe format and the built-in
 rigs: [test-maps.md](../game/test-maps.md). Host methods registered by
 `crates/extensions/game/src/test_maps.rs` (the `test-maps` cargo feature of
-`boot`); wire types `agent_proto::test_maps`.
+`boot`, which supplies the recipes in `crates/apps/boot/src/test_maps_recipes.rs`); wire types `agent_proto::test_maps`.
 
 | Method | Access | Params and result |
 |---|---|---|
@@ -1797,6 +1979,8 @@ tests), `crates/extensions/agent/src/trace/tests.rs`, `crates/extensions/agent/s
 - Nothing here was checked by running the game unless a section says so:
   the tests above use fake readers, synthetic guest memory, synthetic pads,
   synthetic frames and a fake sampler.
+- `ui.audit`, `ui.press` and the menu crawl against a live game. Their regression
+  cases use synthetic memory, input and agent replies.
 - `state.*` against the real machine: the tests run over fakes.
 - `sim.give`, `sim.spawn` and teleport against a running game: the callees
   are played by the tests.
@@ -1812,8 +1996,7 @@ tests), `crates/extensions/agent/src/trace/tests.rs`, `crates/extensions/agent/s
   queued load ([test-maps.md](../game/test-maps.md#not-verified)).
 - Not provided: effect, projectile and particle counts; per-subsystem
   guest time; owner attribution of frame cost; kernel I/O seeks and cache
-  hits in the load timeline; fade detection; a widget-level UI stack and
-  HUD; setting a feature switch through the API; loading a named level
+  hits in the load timeline; a widget-level HUD; setting a feature switch through the API; loading a named level
   other than a test map (`maps.test.load`).
 
 ## Related

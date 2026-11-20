@@ -60,6 +60,15 @@ pub trait Backend: Send {
     fn map_changed(&mut self, _path: &str) -> bool {
         false
     }
+    /// Whether a first look at `path` (`stat`, `host_file`, an open)
+    /// would resolve a map package for it: a read of the whole base map
+    /// to check its hash, with the VFS held. False when it is resolved
+    /// already, no package serves it, or it is not a map. Background
+    /// readers (the bots' nav scan) leave such a map to the game's own
+    /// first open. Wrappers forward it.
+    fn resolves_on_use(&mut self, _path: &str) -> bool {
+        false
+    }
     fn create(&mut self, _path: &str, _directory: bool, _attributes: u32) -> Result<()> {
         Err(Error::MediaWriteProtected)
     }

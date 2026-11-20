@@ -241,8 +241,6 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
      *  friends, invite-only ones to their players; without it only public ones. */
     coopGames: async (q: { player?: string; limit?: number; cursor?: string } = {}, s?: AbortSignal, bearer?: string | null) =>
       page<unknown>(await getJson(u("/coop/games", q), s, bearer === undefined ? await who() : bearer)),
-    /** One session by id, open or not. */
-    session: (id: string, s?: AbortSignal) => getJson<{ session: unknown; position?: number }>(u("/sessions/" + encodeURIComponent(id)), s),
     /** A player's level and experience per ranked playlist (docs/live/live-api.md "Ranks"); the raw body. */
     ranks: async (player: string, s?: AbortSignal) => getJson<unknown>(u("/accounts/" + encodeURIComponent(player) + "/ranks"), s, await who()),
     /** How many players commended `player` (a gamertag or XUID), by kind

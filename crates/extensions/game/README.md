@@ -23,7 +23,7 @@ Our additions to the game: menus and settings screens, skulls, variants, the cam
 - `movie-playback`: Bink movie playback.
 - `local-io`: host audio and voice.
 - `perf`: the sampling profiler.
-- `test-maps`: test map recipes.
+- `test-maps`: `maps.test.*`; the recipes come from the caller (`test_maps::Recipes`, which `boot` implements over the scenario editor).
 
 ## Tests
 

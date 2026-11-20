@@ -173,6 +173,9 @@ struct Books {
     /// Machine ids of removed phantoms whose peers are still in the
     /// session, for the game thread to take out.
     gone: Vec<[u8; 6]>,
+    /// Sessions this console is leaving, keyed by address and incarnation.
+    /// A matchmaking cancellation can take several frames to clear its lobby.
+    retiring: Vec<(u32, u32)>,
     /// How pads are sampled (`crate::think`, docs/game/bots.md §5.5).
     thinker: Thinker,
     /// The batch sampled at a tick of a hosted game: each phantom's pad.
@@ -330,6 +333,42 @@ impl Phantoms {
         Ok(())
     }
 
+    /// Retires this solo host's phantom peers before retail leaves the session.
+    /// Configured bots can join a future session once this one is torn down.
+    pub fn retire_solo_session(&self, m: &mut dyn GuestMemory, s: u32) -> Result<(), MemFault> {
+        use session::at::*;
+        if !session::solo_host(m, s)? {
+            return Ok(());
+        }
+        let id = (s, m.u32(s + INCARNATION)?);
+        let local = m.u32(s + LOCAL_PEER)?;
+        let n = m.u32(s + PEER_COUNT)?;
+        let mut b = self.lock();
+        b.retiring.retain(|&(addr, _)| addr != s);
+        b.retiring.push(id);
+        for p in (0..n).rev().filter(|&p| p != local) {
+            let machine = session::peer_machine(m, s, p)?;
+            // Descending order preserves the original indices still to visit.
+            session::remove_peer(m, s, p)?;
+            b.gone.retain(|&mac| mac != machine);
+            if let Some(phantom) = b.list.iter_mut().find(|p| p.info.machine == machine) {
+                phantom.made = false;
+                phantom.info.player = None;
+                if phantom.info.state == State::Joined {
+                    phantom.info.state = State::Pending;
+                }
+                phantom.reset_input();
+                self.changed();
+            }
+        }
+        if crate::lobby::matchmaking_cycle(m)
+            && m.u32(crate::lobby::TARGET_SESSION).ok() == Some(s)
+        {
+            session::match_roster::sync(m, s, false)?;
+        }
+        Ok(())
+    }
+
     /// No phantoms on the books and none left to take out of a session.
     pub fn is_empty(&self) -> bool {
         let b = self.lock();
@@ -442,15 +481,25 @@ impl Phantoms {
             ));
         }
         let mut b = self.lock();
+        let live = session::live_session(&*m);
+        b.retiring.retain(|&(s, incarnation)| {
+            use session::at::*;
+            s.checked_add(INCARNATION).is_some_and(|at| {
+                m.u32(s + STATE).ok() == Some(session::STATE_LIVE)
+                    && m.u32(at).ok() == Some(incarnation)
+            })
+        });
+        let retiring = b.retiring.iter().any(|&(s, _)| live == Some(s));
         // A Clankermatch's phantoms stay out of the party (§8.4).
         let barred = b.match_only && !crate::lobby::matchmaking_cycle(&*m);
-        let game = if barred {
+        let game = if barred || retiring {
             Err(session::NotNow::Wait)
         } else {
             session::host_session(&*m)
         };
         let lobby = match &game {
             Ok(_) => Err(session::NotNow::Wait),
+            Err(_) if retiring => Err(session::NotNow::Wait),
             Err(_) if barred => Err(session::NotNow::NotHost(NOT_THE_MATCH.into())),
             Err(_) if b.game_only => Err(session::NotNow::Wait),
             Err(_) => session::host_lobby(&*m),
@@ -476,13 +525,12 @@ impl Phantoms {
             b.thinker.settle();
         }
         b.hosted_game = hosted_game;
-        let live = session::live_session(&*m);
 
         // Out: removed phantoms, and all of them once this console hosts
         // no session (with the lobby join off: once no game runs).
         let mut out: Vec<[u8; 6]> = std::mem::take(&mut b.gone);
-        let keep =
-            phase.is_some() || (!b.game_only && !barred && session::owned_session(&*m).is_some());
+        let keep = phase.is_some()
+            || (!b.game_only && !barred && !retiring && session::owned_session(&*m).is_some());
         if !keep {
             for p in &mut b.list {
                 if p.made {

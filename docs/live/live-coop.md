@@ -1164,9 +1164,10 @@ the host. The host advertises both (`coop_live::host_campaign_skulls`).
   signed-in account (a `read` token, and `?auth=1` on the stream), and
   reads again at once on a sign-in or sign-out. Presence follows the
   same rule: a reader who may not see the host's or guest's co-op game
-  sees them "In a game", with no game id and no "Co-op: <level>". Co-op sessions show as "Co-op
-  campaign" with level, difficulty, players and the host's ping in Find a game;
-  friends' activity shows in the friends lists.
+  sees them "In a game", with no game id and no "Co-op: <level>".
+  Visible co-op sessions show as "Co-op campaign" with level, difficulty,
+  player count and the host's ping in the stats home's Open Games table.
+  Friends' activity shows in the friends lists.
 
 - **Ping** (10.6): the host's `ping_ms` on the session (`Update { ping_ms }`,
   0 clears it; left out until measured), shown on the web's co-op rows.
@@ -1235,9 +1236,8 @@ Checklist (stderr lines in brackets):
    Friend, Status, Ping (`-` for now), Start. [`coop-live: hosting a co-op
    campaign`]. Step the
    level and difficulty [`coop-live: level ...`, `coop-live: difficulty
-   ...`]. On the web, Find a game shows a Co-op campaign session once the
-   game advertises its lobby; the friends list shows Alpha's activity
-   `Co-op: <level>`.
+   ...`]. The friends list on the web shows Alpha's activity
+   `Co-op: <level>` once the game advertises its lobby.
 4. Host: Invite a Friend, press Bravo [`coop-live: invited Bravo to session
    <id>`]. `could not invite ... is the lobby advertised yet?` means the
    game had not advertised a lobby at that moment: note where you were.
@@ -1802,9 +1802,11 @@ without a press. The three parts of 12.5:
 - The read now follows the dispatcher more closely: a window whose list
   has no screen for player one passes the input on to player one's own
   slot, not to the next window.
-- Campaign has focus when the main menu opens. Its rows (`0x230827`,
+- Campaign has focus when the main menu opens. The retail rows (`0x230827`,
   chosen row at `0x510a14`) are 0 Campaign, 1 Xbox Live, 2 Split Screen,
-  3 System Link and 4 Settings.
+  3 System Link and 4 Settings. With Theater installed, it occupies row 2.
+  The driver uses the players' screen mode and Theater marker to correct
+  the path back to Xbox Live.
 - A on Campaign gives `0xee` (window 1), then `0xd1` (window 5), then the
   level. The driver backs out of `0xee`.
 - Xbox Live (when signed in, `0x2308e0`) gives `0x1e` on window 5. That

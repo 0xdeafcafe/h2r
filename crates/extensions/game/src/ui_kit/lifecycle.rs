@@ -21,6 +21,8 @@ use engine::memory::MemFault;
 
 /// Retail's close of a window's top screen.
 pub const SCREEN_CLOSE: u32 = 0x0014_800c;
+/// The next screen down in the same window's list.
+pub const SCREEN_NEXT: u32 = 0x10;
 /// A screen's window and slot words.
 pub const SCREEN_WINDOW: u32 = 0x74;
 pub const SCREEN_SLOT: u32 = 0x78;
@@ -91,6 +93,30 @@ pub async fn close_screen(cx: &Cx, screen: u32) -> Result<(), EntryError> {
     )
     .await?;
     Ok(())
+}
+
+/// The row handle on the channel's focused widget path for `list`, as
+/// LIST_FOCUSED_ROW finds it via the focused item's membership in that path.
+pub(crate) fn focused_row_handle(
+    m: &dyn engine::GuestMemory,
+    channel: u32,
+    list: u32,
+) -> Option<u32> {
+    let mut child = m.u32(channel + 0x34).ok()?;
+    for _ in 0..32 {
+        if child == 0 {
+            return None;
+        }
+        let parent = m.u32(child.checked_add(0x10)?).ok()?;
+        if parent == list {
+            return m
+                .u32(child.checked_add(0x70)?)
+                .ok()
+                .filter(|&row| row != u32::MAX);
+        }
+        child = parent;
+    }
+    None
 }
 
 /// Work waiting for screens to be freed, by screen address: queued by

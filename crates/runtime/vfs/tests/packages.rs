@@ -632,6 +632,30 @@ fn a_maps_directory_created_after_mount_is_seen() {
     assert_eq!(ascension_id(&mut vfs), Some(m.map_id()));
 }
 
+/// `resolves_on_use` names a packaged map not resolved yet, whose first
+/// look reads its whole base with the VFS held: the bots' nav scan leaves
+/// it to the game's own first open.
+#[test]
+fn resolves_on_use_is_true_only_before_a_packaged_maps_first_look() {
+    let t = TempDir::new();
+    let iso = disc(&t);
+    package(
+        &t,
+        "a",
+        "ascension",
+        &ascension(),
+        &[("a.ips", &ips(&[(0x900, b"AAA")]))],
+    );
+    let (mut vfs, _) = with_packages(&t, &iso);
+    let name = format!("{CDROM_DEVICE}\\maps\\ascension.map");
+    assert!(vfs.resolves_on_use(&name));
+    // No package: nothing to resolve.
+    assert!(!vfs.resolves_on_use(&format!("{CDROM_DEVICE}\\maps\\mainmenu.map")));
+    assert!(!vfs.resolves_on_use(&format!("{CDROM_DEVICE}\\default.xbe")));
+    read_file(&mut vfs, ASCENSION);
+    assert!(!vfs.resolves_on_use(&name));
+}
+
 /// `map_changed` says when a map last opened from one package (or the
 /// disc) would now come from another: what the boot needs to drop the
 /// game's cached copy (docs/runtime/cache-slots.md, "Changed maps").

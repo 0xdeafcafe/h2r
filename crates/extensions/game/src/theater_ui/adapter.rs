@@ -139,6 +139,9 @@ impl FilmMeta {
             self.mode = Some(label.to_owned());
         }
         self.duration_ticks = Some(summary.duration_ticks);
+        if summary.players.is_empty() {
+            return;
+        }
         self.scoreboard = summary
             .players
             .into_iter()
@@ -174,11 +177,9 @@ impl FilmMeta {
 
     pub(super) fn watch_unavailable(&self) -> Option<&'static str> {
         match self.source {
-            Source::Archive => Some("No host recording"),
-            Source::Local if self.version == Some(1) => Some("Local recording has no engine track"),
-            Source::Local | Source::Host if !self.playable_here => {
-                Some("Recording needs a different build")
-            }
+            Source::Archive => Some("No host film was recorded."),
+            Source::Local if self.version == Some(1) => Some("No playback track was saved."),
+            Source::Local | Source::Host if !self.playable_here => Some("Needs a different build."),
             Source::Host | Source::Local => None,
         }
     }
@@ -223,25 +224,36 @@ impl TryFrom<live_hle::films::RecentFilm> for FilmMeta {
         } else {
             film.variant.as_deref().and_then(game_type)
         };
-        let scoreboard = film
-            .players
-            .into_iter()
-            .map(|player| {
-                let score = film
-                    .scoreboard
-                    .iter()
-                    .find(|score| score.index == player.index);
-                Player {
-                    seat: u8::try_from(player.index).ok(),
-                    medals: Default::default(),
-                    name: player.name,
-                    team: (player.team >= 0).then(|| team_name(player.team)),
-                    score: score.map(|s| s.score),
-                    kills: score.map(|s| s.kills),
-                    deaths: score.map(|s| s.deaths),
-                }
-            })
-            .collect();
+        // Some archives have an end-of-game score for a seat whose join
+        // record is missing. Keep its figures under a numbered name.
+        let mut scores: std::collections::BTreeMap<_, _> =
+            film.scoreboard.into_iter().map(|s| (s.index, s)).collect();
+        let mut scoreboard = Vec::new();
+        for player in film.players {
+            let score = scores.remove(&player.index);
+            let name = if player.name.trim().is_empty() {
+                format!("Player {}", u64::from(player.index) + 1)
+            } else {
+                player.name
+            };
+            scoreboard.push(Player {
+                seat: u8::try_from(player.index).ok(),
+                name,
+                team: (player.team >= 0).then(|| team_name(player.team)),
+                score: score.as_ref().map(|s| s.score),
+                kills: score.as_ref().map(|s| s.kills),
+                deaths: score.as_ref().map(|s| s.deaths),
+                ..Player::default()
+            });
+        }
+        scoreboard.extend(scores.into_values().map(|s| Player {
+            seat: u8::try_from(s.index).ok(),
+            name: format!("Player {}", u64::from(s.index) + 1),
+            score: Some(s.score),
+            kills: Some(s.kills),
+            deaths: Some(s.deaths),
+            ..Player::default()
+        }));
         let rate = film.ticks_per_second.filter(|hz| *hz != 0).unwrap_or(30);
         let mut row = Self {
             id: format!("live:{}", film.game_id),

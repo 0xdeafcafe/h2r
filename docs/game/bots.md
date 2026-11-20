@@ -71,7 +71,12 @@ that tag alone does not establish a loader for it.
   +16 the ASCII gamertag. Kind 3 has only a name. The hooks leave
   name-only rows and human accounts on the retail path. A remote
   phantom needs a matching, gear-marked session slot.
-- The card opens on the kit's large dialog and offers Back. Skin 6 of
+- Recent Players uses retail's history. `RECENT_PLAYERS_BUILD` copies
+  its records into the list, and `clanker_card` restores the display
+  prefix on a reserved Clanker XUID. Selecting the row opens the
+  read-only card with Gamertag, Difficulty, Style and Back. Its large
+  dialog borrows the Controls screen's localized string list so its
+  labels resolve even after the phantom leaves the session. Skin 6 of
   the current interface contains the Y menu's player table. Its nested
   skin's first shader bitmap uses the medium emblem material in the
   main menu, shared map and Zanzibar. The card copies that definition
@@ -98,6 +103,8 @@ remote client and with a human guest signed in on a second controller.
 Check the same name after restart and in a non-team System Link game
 against its Live card and web emblem. Use a legacy friends
 entry if available, since new friend requests to bots cannot create one.
+The menu parity check visits recent entries, verifies the Clanker card
+class and reports missing widget text. [Crawling the menus](../runtime/agent-api.md#crawling-the-menus)
 
 ## 1. Decision
 
@@ -216,8 +223,9 @@ layer before its bots could even stand still.
 
 ### 2.5 Menus (traced, Repo)
 
-**Main menu.** The row handler is `0x230827`; the chosen row is at
-`0x510a14`.
+**Main menu.** The row handler is `0x230827` and the chosen row is at
+`0x510a14`. This table shows the retail indices. With Theater installed,
+it occupies row 2 and shifts Split Screen, System Link and Settings down one row.
 
 | Row | Name | What it opens |
 |---|---|---|
@@ -324,11 +332,33 @@ the nav mesh, and shared read-only by every bot in the process.
   or without it. `Walls::hit` (a grenade's flight) does not use it.
 - **File.** `<data>/bots/<map>.<bsp>.vis` beside the `.bots` file: magic
   `H2VS`, `vis::VERSION`, the `.bots` file's stamp, a hash of its walls,
-  then the cells and the bits. The nav worker builds it with each nav
-  mesh (on half the machine's threads, at most 8) and writes it before the
-  `.bots` files. A map whose `.bots` is fresh but whose `.vis` is missing,
-  older, damaged or from another build gets only its grid built
-  (`bots: built the visibility grid for lockout (none yet): ...`).
+  then the cells and the bits. The nav worker writes a map's `.bots`
+  files first, then builds each BSP's grid from them
+  (`vis::rebuild_resumable`; the game's worker on `background::workers`
+  lowered threads, `h2 bots nav` on half the machine's threads, at most
+  8; the grid is the same either way,
+  `the_grid_is_the_same_on_any_threads_and_at_background_priority`) and
+  writes each `.vis` as it finishes, BSP 0 last. A map whose `.bots` is
+  fresh but whose `.vis` is missing, older, damaged or from another build
+  gets only its grid built
+  (`bots: built the visibility grid for lockout (none yet): ...`); a BSP
+  whose `.vis` is current (`vis::current`: this version, the `.bots`
+  stamp, its walls) is not built again.
+- **Progress.** A grid is built in about 64 chunks of rows of pairs
+  (`vis::fill`). After a chunk the build saves the grid so far and the
+  first row not done to `<map>.<bsp>.vis.part` (magic `H2VP`) at most
+  every `vis::SAVE_EVERY` (10 s), and the next build of that BSP carries
+  on from it when it was made for the same `.bots` stamp and the same
+  cells (`vis::read_part`); the part goes when the `.vis` is written.
+  The game's worker also stops between chunks when a map is asked for
+  (`Handle::want`) or it is stopped, saves, builds the map asked for, and
+  carries on with the grid once its queue is empty
+  (`bots: visibility grid for lockout: paused after 12.0 s, progress saved`).
+  The game never stops the worker at exit, so a quit loses at most
+  `SAVE_EVERY` of grid work. Tests:
+  `a_stopped_grid_build_keeps_its_progress_and_carries_on_to_the_same_grid`
+  (`vis/tests.rs`), `a_built_grid_is_saved_where_the_game_loads_it_and_used`
+  (`autonav/tests.rs`: written to `cache::dir`, where the glue loads).
   Bump `vis::VERSION` when the cells, the proof or the margins change.
 - **Loading.** The glue reads the `.vis` with the `.bots` and attaches it
   only when its stamp and walls hash match. Otherwise it logs why and
@@ -2056,6 +2086,13 @@ checks, in order (`bots::lobby`):
 | 8 | this console does not lead the party (`0x592f0`: session `+0x72d8` against `+0x50`) | "Waiting for ... to start the game" |
 | 9 | ready | "Waiting for you to start the game" |
 
+The custom lobby's status line passes a countdown string to `TEXT_SET`
+at `0x25012a`. While the host's countdown is active at zero, pending
+phantoms or seated phantoms in the load and simulation-start stages
+select **Setting up bots…** through the shared string table
+(`crates/extensions/game/src/lobby_status.rs`, `layout_glue.rs`). The
+asynchronous nav cache load can finish after play starts.
+
 So the earlier reading, that a bot with a profile but no Live sign-in
 keeps the state from 9, does not hold: no check reads a slot's `0x20` or
 `+0x470`. `0x59670` and `0x58d70` are about the session, and
@@ -2078,98 +2115,22 @@ Live guest 1, port 2 0x30 Live guest 2`.
 
 ### 4.3 Hiding the views (traced)
 
-These read the local-user map `[0x4e8c20]+0xc` or the count `+8`:
+The host's views and HUD follow the local-user map. Each Clanker is a
+remote peer (§5.1), so it has no local view. The local-user mapping used by
+the Phantom's input builder exists only in its private copy of guest RAM.
 
-| Reader | What for | Bot window |
-|---|---|---|
-| `render_game_views` `0x2234e0` (`0x223524`, `0x22359e`) | one view per user, layout from the count | **yes** |
-| HUD, per view (`0x1e6fe0`: user to player via the map, from the view's draw) | that view's HUD | covered by the render window |
-| sound frame service `0x125b40`, listener loop `0x125c93`..`0x125cd7` | one listener per mapped user (`0x221a70(user, listener)`) | **yes**, so only the human's ears count |
-| `SOUND_LISTENERS_UPDATE` `0x127400` (also from `0x18c060`, outside the sound frame) | one listener per mapped user, marked active | **yes**, and the bots' listeners are marked inactive |
-| `SOUND_OWNER_USER` `0x18d4f0` | a starting sound on a mapped user's unit plays unpositioned, in the ears | **yes**, so a bot's sounds are world sounds |
-| `0x1870a0` | actions | **no**: the bot must act |
-| `director_update` `0x1554b0` (`0x155939`, `0x155caf`) | one camera per user | no: harmless, small CPU |
-| about 70 others (game engine, UI, scoreboard; the full list is in the scratch trace) | | no |
+**Listeners.** `SOUND_LISTENERS_UPDATE` fills one record per mapped user
+from the user's camera and marks it active. For an unmapped user, the
+update clears the unit and cluster fields but leaves the active byte.
+The listener selector trusts that byte when it picks the closest listener
+for a world sound. A stale active record can use its last camera position.
 
-**The window:** at the entry of `0x2234e0` and of `0x125b40`, the driver
-does three things:
-
-1. It saves the count and the map.
-2. It sets each bot user's map entry to -1, and lowers the count.
-3. It puts the saved values back at exit.
-
-The order of the map entries for the human is kept. With the pipelined
-render, the render window runs against the render's own snapshot. Its write
-and its restore cancel out, so nothing reaches the game thread. The
-pipeline's hook plan has to list the window as a render-thread hook (its
-boot test checks that every hook is listed).
-
-**Listeners (traced, 2026-11-19).** The listener update `0x127400`
-(`SOUND_LISTENERS_UPDATE`, stdcall, one argument) walks the four local
-users: for each mapped one it sets the user's listener from its camera
-and marks it active (the byte at `[0x4e6380] + 0x8e + 0x48 * user`); for
-an unmapped one it writes the record's player fields to -1 and leaves the
-active byte alone (`0x127b13`). It has two callers: `SOUND_UPDATE`
-(`0x125c1e`, inside the window above) and the per-frame update `0x18c060`
-(`0x18c07f`, from `0x137ef8`), which runs it **outside** the window when
-the sound globals' bytes `+0x78`, `+0x79` and `+0x7a` are set. So each
-bot's user was a live listener after all, at the bot's own camera.
-`0x127d00`, which picks the listener a starting sound is for (the
-closest active one; a sound with no position goes to the first mapped
-user), then took a bot's own sounds (its reloads, jumps, landings,
-melee, pain) as heard by the bot, right at its ears. Those are the
-sounds the controller speaker routes (docs/audio/playstation-audio.md),
-and the user heard the bots' through the controller.
-
-- **Design:** the listener update gets the same window as the sound
-  frame (`bot_glue`, before and after `SOUND_LISTENERS_UPDATE`), and at
-  both points each hidden user's listener is marked inactive
-  (`guest::quiet_listeners`): the update never clears the byte for a
-  user it skips, so a listener made before its user was hidden would
-  stay active where the bot last stood. Called from inside
-  `SOUND_UPDATE`, the window finds no bot user mapped and does nothing.
-- That a bot's own sound played as a plain (not 3D) voice is traced
-  now: see "Whose sound" below. The listener was not the whole story.
-
-**Whose sound (traced, 2026-11-19).** The user's run after the
-listeners went quiet: "i can hear sound from every ai player, also,
-sound doesn't get quieter in distance or round corners". A sound that
-starts on an object asks `0x18d4f0` (`SOUND_OWNER_USER`, stdcall,
-`ret 12`: object, a pointer to the sound's kind, a pointer for the user
-or null) whose own sound it is. When the kind is 1 (positioned) it walks
-the local-user map `[0x4e8c20] + 0xc`; for the first mapped user in
-first person (`0x155760` gives 0 or 1) whose player's unit (`+0x2c`) is
-the object or carries it (`0xbafb0`, both ways) it sets the kind to 0
-and the user. Kind 0 has no position: `0x127d00` gives it to the first
-mapped user, `0x127e20` gives it distance 0, and it plays in the ears
-with no distance, no panning and no obstruction, as a player's own
-gun, footsteps and breathing do. Its callers (`0x1890e5`, `0x18935f`,
-`0x189441`, `0x18cf76` from the per-frame update `0x18c060`, and
-`0x18d4dc`) run from the game tick and the per-frame update, not inside
-`SOUND_UPDATE`'s window, so the bots were mapped: every bot's gun, footsteps, grenades, melee and voice
-started as kind 0 and, given to the first mapped user, the human, played
-at full level in the human's ears wherever the bot was. That is both
-halves of the report: every bot is heard, and those sounds never fall
-off with distance or walls (the human's own world sounds always did;
-they are the game's own mix-bin volumes, docs/audio/dsound.md).
-`0x189441`'s caller even checks the user's listener (`+0x8e`) and
-falls back to the world path when it is inactive; the other four do
-not, so quieting the listeners could not fix it.
-
-- **Design:** `SOUND_OWNER_USER` gets the hide window (before: the bots'
-  users out of the map, `guest::hide`; after: `guest::restore`), as the
-  views and listeners have. The walk then finds only the humans: a
-  bot's sound keeps kind 1 and starts as a world sound at the bot,
-  heard (or culled) by the human's listener as a remote player's would
-  be, with the game's distance, panning, cluster audibility
-  (`0x221da0`) and obstruction (`0x221a70`). The human's own sounds are
-  unchanged.
-- The DirectSound listener is not the game's ears: `0x127400` ends by
-  setting it (`0x220790`, `IDirectSound_SetPosition` at `0x2207ba`,
-  `DS3D_DEFERRED`) to the origin facing +x (`[0x468788]`,
-  `[0x4687a8]`), and the game places each 3D mix-in relative to the
-  listener its sound belongs to. So nothing in the DirectSound layer
-  knows which local user a sound is for; the choice is made here.
+**Whose sound.** An attached sound starts as kind 1 (positioned).
+`SOUND_OWNER_USER` walks the local-user map and tests each first-person
+user's unit against the source object and its attachment chain. A match
+makes the sound kind 0 (unpositioned), which plays at distance zero. The
+attached sound part of an effect and a weapon's animation sound event
+both pass through this check. See §5.1 for the Phantom audio hooks.
 
 **The controller speaker, haptics and rumble (Repo).** Nothing there
 goes by port:
@@ -2179,9 +2140,8 @@ goes by port:
   speaker, chosen by device name, gets every routed sound, and the Steam
   Controller's trackpads (`input::steam_pad`, "as haptics") play the
   routed tone on every connected controller. There is no port-to-pad
-  map for sound. So a bot's sounds reached the pad only by being started
-  as a local player's (above); with the bots' listeners gone they start
-  as anyone else's sounds in the world.
+  map for sound. A Clanker's attached sounds stay positioned in the
+  world and play on the main output.
 - **Rumble** goes by port: `XInputSetState` on a port goes to the pad on
   it (`input::device`, `HostBackend::set_rumble` of the backend that owns
   it). A bot's pad says it has no motors (`supports_rumble: false`), so
@@ -2553,6 +2513,20 @@ no run yet).
   had a unit, so none of it was seen. Input starts when the phantom has
   a spawned unit.
 
+**Phantom audio.** `crates/extensions/game/src/bot_glue/audio.rs` uses the
+Phantom machine ID on the player datum to exclude any Phantom entry from the local-user map
+while `SOUND_OWNER_USER`, `SOUND_LISTENERS_UPDATE` and `SOUND_UPDATE`
+run. It restores the map on return. Human slots keep their original user
+indices, including in splitscreen. The listener refresh runs both inside
+the sound frame and from the effect update. Both entry points clear the
+active flag for Phantom and unmapped slots.
+
+The sound owner check leaves a Clanker's attached weapon and unit sounds
+positioned. The retail mixer selects a human listener and handles
+distance, panning and obstruction. A human's first-person sound uses the
+retail owner check. The [agent's active listener list](../runtime/agent-api.md#audio-voice-routing)
+shows the slots and camera positions the game can select.
+
 **The user's Halo 1 run (2026-11-19: Live custom game on
 `h1_bloodgulch`, 3 local Clankers and 4 phantoms, a crash a while into
 the game).** Read from the log tail and the disassembly; no run yet.
@@ -2905,6 +2879,21 @@ state distributed by the host. Recomp clients recognise the gear mark
 in the player configuration's name (§8.2). The bots leave when the host
 ends the game.
 
+**Connection bars.** The Live match scoreboard draws the connection
+badge with `0x1634d0`. Retail's `0x68a90` takes the lowest score across
+RTT and three traffic metrics, so a zeroed rate field can give one red
+bar even at low latency. `crates/extensions/game/src/lobby_quality.rs`
+keeps the game's badge visibility and uses the player's session peer for
+its bar count. The local console and phantom machines get six bars.
+Remote peers use the last acknowledged round trip from the game's
+reliable packet queue (`0x96dc7`, timestamp at `+0x95c` and milliseconds
+at `+0x960`). One bar is the fallback while the viewer has no sample for
+that peer. The scale uses retail's latency calculation, interpolating
+from six bars at 60 ms to one at 800 ms with nearest-even rounding.
+The pregame lists show voice activity. The agent reads the same
+connection ratings for their members through
+[`ui.lobby.players`](../runtime/agent-api.md#ui-what-the-menus-show).
+
 **Scoreboard and stats.** Bots participate in the scoreboard, the
 carnage report and post-game stats. Telemetry identifies phantoms by
 machine id and records them by game slot with `bot: true`
@@ -2968,6 +2957,32 @@ game lobby opens with `clankers.enabled`, the driver adds phantoms as
 peers (§5.1). The count is capped by the available session slots. The
 host and clients see each bot's name and team colour in the roster.
 Changing the page in the lobby adds or removes phantoms.
+
+**Leaving the lobby.** When the party leader is the only human, Back in
+the custom-game lobby follows the solo leave path and skips the party
+leader picker. Leave Game keeps its solo confirmation. Accepting Back in
+the matchmaking lobby retires the Clankers from the target session and
+returns to the party. If another human remains, the retail leave flow
+handles the party and only human players qualify for leadership.
+
+`game::bot_glue::party_leave` scopes the squad peer count at `0x199f34`
+to the lobby Back and pause Leave Game checks. It uses the live squad and,
+in matchmaking, the target membership to identify the sole human. The
+leader picker and the automatic successor check both validate squad
+player slots at `0x19a951`. A slot owned by a phantom machine fails
+those checks.
+
+The confirmed leave paths at `0x199e3c` and `0x252150` remove phantom
+players and peers through `bots::phantom::Phantoms::retire_solo_session`.
+Retirement also drops their matchmaking roster entries and holds off new
+seating until the departing session closes. The Clankers page settings
+still apply in the next lobby.
+
+Use `h2 agent ui` to check for `dialog.name = party_leader_picker` while
+driving Back through the agent API. A custom lobby with a solo human
+leader and Clankers exits without that screen. A party with two humans
+on separate consoles and Clankers keeps the leader picker with the other
+human as its only choice.
 
 ## 8. Clankermatch
 
@@ -3341,6 +3356,12 @@ lobby never started.
   full says the start is held elsewhere.
 - **Live.** The match's bots went to the party's Live session too, and
   each was refused there (§9.5): now only the roster's session is told.
+
+The matchmaking progress screen's countdown (`0x0f00188e`, token U+E45B)
+reads the target session through `0x59590`. It shows **Setting up bots…**
+at zero under the same host setup conditions as the custom lobby.
+`lobby_status::MatchCountdown` replaces the temporary text used to
+measure and draw the widget at `0x22d2ee`.
 
 **Phantoms only.** In the 2026-11-19 run on `f5d3010c`, the retired
 controller-backed bots appeared in the player's party. The local-player
@@ -3863,19 +3884,40 @@ game checks.
      `cache::GENERATOR` and the source map's fingerprint), then the mesh
      and the walls and tactical places. The data comes from the disc, so it stays on this
      machine and out of git. When the loaded map's name (`0x547898`)
-     changes, the glue loads `<map>.0.bots` on a thread of its own. Until
+     changes, the glue loads `<map>.0.bots` on a background thread
+     (`bots-map-data`). Until
      the data is ready, the bots can walk toward known goals. Host visual
      contacts require a loaded BSP.
    - **Built for you** (`bots::autonav`, `boot::bots_nav_auto`). At boot a
-     worker thread (named `bots-nav`, at utility QoS on Apple systems)
-     looks at every map the game can load, as the VFS serves it: the
-     disc's `D:\maps\*.map` (so a package or `H2_MAP_DIR` map in a disc
-     map's place is what counts) and the content packages'
-     `T:\$c\<offer>\*.map` (the Map Pack, new maps, converted Halo 1
-     maps). A multiplayer map whose `<map>.0.bots` is missing, damaged, of
-     an older format, built by another generator version, or built from
-     another map file is **stale** and is built; the rest are left alone.
-     The boot never waits for it.
+     worker thread (named `bots-nav`) looks at every map the game can
+     load, as the VFS serves it: the disc's `D:\maps\*.map` (so a package
+     or `H2_MAP_DIR` map in a disc map's place is what counts) and the
+     content packages' `T:\$c\<offer>\*.map` (the Map Pack, new maps,
+     converted Halo 1 maps). A multiplayer map whose `<map>.0.bots` is
+     missing, damaged, of an older format, built by another generator
+     version, or built from another map file is **stale** and is built;
+     the rest are left alone. The boot never waits for it.
+     - **Background work.** The worker runs on `background::spawn` and
+       builds each visibility grid on `background::workers` threads, each
+       lowered itself (`vis::Threads::background`), so it takes a quarter
+       of the cores below the game's priority
+       ([background-work.md](../runtime/background-work.md)). `h2 bots nav`
+       keeps half the cores at the default priority (`vis::Threads::foreground`).
+     - **Maps no bot plays.** `autonav::map_use` gives `Never` for
+       `mainmenu`, `shared` and `single_player_shared` by name, and for a
+       header of those kinds (`+0x140` 2, 3, 4); `LoadOnly` for campaign;
+       `Build` for multiplayer. The scans never open a `Never` map,
+       `Handle::want` ignores it, and the worker skips it even with
+       `--force` and any kind. When one loads, the glue reads the loaded
+       cache type (`0x547840`) and starts nothing: no thread, no build, no
+       log line. A campaign map loads a hand-built file if there is one
+       and logs nothing if not.
+     - **Packaged maps.** A map a package serves resolves on its first
+       look, reading its whole base inside the VFS lock. The scans skip a
+       map not resolved yet (`Vfs::resolves_on_use`), so the worker never
+       holds the VFS for that; the game's own open resolves it, and the
+       glue's `want` at its load scans again and finds it
+       ([maps.md](maps.md) section 2).
      - **The fingerprint** is FNV-1a (64-bit) over the map's 2 KiB cache
        header, which holds its size, the tag index's offsets, its name and
        the XOR checksum of the rest (every map writer here recomputes it).
@@ -3904,7 +3946,8 @@ game checks.
        other BSPs first and `<map>.0.bots` (the one checked) last. A crash
        leaves the old file or the new one, never half of one.
      - **Log**: one line a map built (`bots: built the nav mesh for
-       lockout (none yet): 590 polygons, ... in 0.0 s`), and one summary
+       lockout (none yet): 590 polygons, ... in 0.0 s`), one when its
+       grid is (`bots: built the visibility grid for lockout ...`), and one summary
        after the pass (`bots: nav meshes: 12 built, 0 up to date (0.5 s)`).
      - **Off**: `H2_BOTS_NAV_AUTO=0` (or `off`). The worker also stays
        off when the bots feature is (`H2_FEATURES=-bots`).
@@ -3932,7 +3975,12 @@ game checks.
      a map installed after boot built when wanted; the worker's data
      winning over a late file read. `cargo test -p boot --lib
      bots_nav_auto`: the scan finding content maps through the VFS, a
-     map read through the VFS in chunks, nothing started when off.
+     map read through the VFS in chunks, nothing started when off, the
+     scans never opening the menu or shared maps
+     (`the_scans_never_open_the_menu_or_shared_maps`). `map_use` and the
+     worker leaving those maps alone:
+     `the_menu_and_shared_maps_are_never_used_and_multiplayer_is_built`,
+     `the_worker_never_wants_scans_or_builds_the_menu_and_shared_maps`.
      Against the disc (ignored, `--ignored`): `cargo test -p cli
      bots_nav -- --ignored` builds every multiplayer map into a scratch
      directory, then finds them all up to date.
@@ -5534,9 +5582,10 @@ h2 bots verdict <bots.log>   # the verdict of a log again
    profile's dialogs: each gets A once it has held 4 s. The main menu is
    the window 5 screen the game names with `coop-live: lobby mode
    4294967295`; its cursor row is the low 16 bits of the `list [mask/value]`
-   value on its `ui: screen none` line (rows: 0 Campaign, 1 Xbox Live, 2
-   Split Screen, 3 System Link, 4 Settings). From there: to row 1, A. Not
-   signed in, that opens the game's account picker (`dialog_live_signin`,
+   value on its `ui: screen none` line. Xbox Live is row 1. If Split Screen
+   or System Link opens, the driver uses the players' screen mode and
+   Theater marker to return to Xbox Live. If the profile needs to sign
+   in, Xbox Live opens the game's account picker (`dialog_live_signin`,
    dialog `0x14`, loader `0x24b4a9`), as a new profile's boot does. Its
    row 0 is the no-account row. The driver selects Tester and opens
    the Xbox Live menu. It moves to Custom Game on row 4 and checks

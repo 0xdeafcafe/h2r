@@ -7,39 +7,57 @@
 // table. The shaping is in ./chart.ts, the colours in ./palette.ts.
 
 import { For, Index, Show, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js";
-import { A, useNavigate } from "@solidjs/router";
+import { A, useLocation, useNavigate } from "@solidjs/router";
+import { inputMode, keyAction, watchGamepads, watchInput } from "../dash/input";
+import { PromptLabel } from "../dash/parts";
+import { DECK_ENTRY, deckBackTarget } from "./back";
 import {
   areaPath, columnPath, linePath, nearestIndex, niceTicks, peak, scale, shares, shortDay, sortRows, stack,
   type Day, type Delta, type RankRow, type Series, type SortDir,
 } from "./chart";
 import { ACCENT, BASELINE, GRID, QUIET, WELL, seriesColor } from "./palette";
+import "../styles/dash-pages.css";
 import "../styles/deck.css";
 
 // ---------- page and panels ----------
 
-/** A deck page: the crumb trail and title, the way back (b / Escape), one
- *  filter row scoping everything under it, then the panel grid. */
+/** A deck page: the crumb trail and title, history Back with a fallback for
+ *  direct visits, one filter row, then the panel grid. */
 export function DeckPage(props: { trail: [string, string?][]; title: string; back: string; filters?: JSX.Element; children: JSX.Element }) {
   const navigate = useNavigate();
+  const location = useLocation<typeof DECK_ENTRY>();
+  const back = () => {
+    const target = deckBackTarget(location.state, props.back);
+    if (target === -1) navigate(target);
+    else navigate(target, { replace: true });
+  };
   onMount(() => {
     const key = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey || e.repeat || keyAction(e.key) !== "back") return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
-      if (e.key === "Escape" || e.key === "Backspace" || e.key === "b") { e.preventDefault(); navigate(props.back); }
+      e.preventDefault();
+      back();
     };
+    const stopPad = watchGamepads((action) => { if (action === "back") back(); });
+    const stopInput = watchInput();
     addEventListener("keydown", key);
-    onCleanup(() => removeEventListener("keydown", key));
+    onCleanup(() => { stopPad(); stopInput(); removeEventListener("keydown", key); });
   });
   return (
-    <div class="dk">
+    <div class="dk" data-input={inputMode()}>
       <header class="dk-head">
         <nav class="dk-trail" aria-label="Where you are">
-          <For each={props.trail}>{([label, href]) => (href ? <A href={href}>{label}</A> : <span>{label}</span>)}</For>
+          <For each={props.trail}>{([label, href]) => (href ? <A href={href} state={DECK_ENTRY}>{label}</A> : <span>{label}</span>)}</For>
         </nav>
         <h1>{props.title}</h1>
-        <A class="dk-back" href={props.back} aria-label="Back"><i aria-hidden="true">b</i><span>back</span></A>
+        <A class="dk-back dx-prompt dx-prompt--b" href={props.back} aria-label="Back" aria-keyshortcuts="Escape Backspace B" onClick={(e) => {
+          if (e.defaultPrevented || e.button !== 0 || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+          e.preventDefault();
+          back();
+        }}><PromptLabel pad="b">back</PromptLabel></A>
       </header>
-      <Show when={props.filters}><div class="dk-filters" role="toolbar" aria-label="Filters">{props.filters}</div></Show>
+      <Show when={props.filters}><div class="dk-filters dk-toolbar" role="toolbar" aria-label="Filters">{props.filters}</div></Show>
       <main class="dk-grid">{props.children}</main>
     </div>
   );

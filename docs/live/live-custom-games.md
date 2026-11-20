@@ -21,6 +21,13 @@ Joining uses the browser's own join and the existing XNet path: direct UDP to
 the host, as described in [live-matchmaking.md](live-matchmaking.md) §3.6.
 Invitations keep working whatever the visibility.
 
+A custom game hosted with Clankers shows **Setting up bots…** at the
+end of the countdown while their seats are being prepared. The match
+scoreboard rates connections from measured packet RTT. The lobby roster
+and each player's rating are available through
+[`ui.lobby.players`](../runtime/agent-api.md#ui-what-the-menus-show).
+See [phantom peers and connection bars](../game/bots.md#5-way-in-2-phantom-peers).
+
 Labels follow [live-boundary.md](live-boundary.md): **confirmed** means read
 statically in the retail code, **likely** means consistent with that code but
 not proven. Addresses are guest VAs in the retail 5849 image.
@@ -345,7 +352,7 @@ label is not shortened.
 | HLE: advertisement and change-only update carry it; `Hle::set_session_visibility`; `Hle::set_visibility_probe` | `crates/live/live-hle/src/sessions.rs` | `crates/live/live-hle/tests/server.rs`: `browser_search_rows_follow_the_hosts_visibility_setting` (procedure 1, 50 rows, seven columns, as the browser asks; friend sees it, stranger not; live switch; FindFromID still works), `the_titles_privacy_probe_decides_a_new_advertisement` |
 | `live.visibility` setting, HLE binding | `crates/extensions/game/src/setting_defs.rs`, `live_glue::bind_visibility` | setting env and steps reach the HLE |
 | Live menu rows, fifth item widget, tag, Map Pack dialog, back from the Live browser, privacy hook and probe | `crates/extensions/game/src/custom_games.rs`, `layout_glue::install` | count grows only the Live list; row order, texts and panes; the fifth child item; the tag's fifth pane and moved blocks on a synthetic tag (and what is left alone); the dialog entry; row/mask argument reads; only a Live-mode browser is redirected, only a back request is rewritten, our press stores a row the cursor restore takes; privacy mapping and squad gates; install without a game |
-| Web "Find a game" shows "open to", hides invite-only | `web/src/lib/sessions.ts`, `web/src/dash/Sessions.tsx` | `web/test/sessions.test.ts` |
+| Web Open Games omits invite-only sessions | `web/src/lib/sessions.ts`, `web/src/stats/Home.tsx` | `web/test/sessions.test.ts` |
 
 With Live on, a further row, **Co-op Campaign**, sits directly above Custom
 Game (the rows read Quickmatch, OptiMatch, Clankermatch, Co-op Campaign,
@@ -413,8 +420,7 @@ friends. Then check:
 6. **Visibility.** On A, open the party privacy screen from squad settings
    (likely X) and pick Friends Only, then Invite Only.
    - stderr shows `live.visibility = ...`.
-   - The web's Find a game shows "open to: friends only", then the game
-     disappears.
+   - The session is absent from the web's Open Games table at Invite Only.
    - A third, non-friend account stops seeing it in the browser at Friends
      Only. B stops seeing it at Invite Only, but an invite from A still
      works.

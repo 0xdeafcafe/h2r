@@ -521,8 +521,13 @@ the sheet.
   flags, its backing bitmaps (up to 16, less `content_bitmaps`), its
   list moved to our skin, anchor and row count, and no other blocks.
   The screen-tag hook serves that copy (`served`) and doesn't ask for the
-  Controls tag. A base not in the interface logs `no dialog screen N in
-  this interface; not drawn as a dialog`, and the screen has no tag.
+  Controls tag for the frame. The large error dialog has a null localized string-list
+  reference because retail fills its text buffers directly. For a base
+  without a string list, the copy takes the Controls screen's reference
+  (Controller Settings in a game). This lets the widget's string lookup
+  reach the kit's locale source for every label. If the interface lacks
+  the base, its list, or both string lists, the loader leaves the host
+  screen's layout in place.
 - Opening: `list_class::open` and `push` open a dialog class with
   `open_over`: the request with window kind 1 (`DIALOG_WINDOW`) handed to
   the loader, as `0x19b527` does. The opener stays drawn under it.
@@ -606,6 +611,11 @@ the row itself still step. A row with one value, or more than
 The legend is `(A) SELECT (B) CANCEL`; the pages' own legends include
 `(A) SELECT`.
 
+Theater uses `picker::offer_list` for Sort, Map and Game type. Each opens
+over the library with A, including a filter whose only entry is All.
+Long lists reuse text slots as new rows scroll into view. The preview
+composites the dialog over the library with its tab, rows and focus intact.
+
 Not on the picker: the Video and Voice screens (`ui::Model` rows,
 `Model::press`), the skulls (toggles, not settings) and the variant
 editor's More Options page (`variant_page`, its own rows). They step
@@ -629,13 +639,9 @@ the pane set-up, row text for each item) on the runner, and reads each
 `TEXT_SET`'s string from the slot at the moment of the call, as the game
 does.
 
-**Not verified.** The list's first focus: the class can't
-set it yet (no focus setter is traced), so the game likely opens on the
-first value, not the held one; the preview draws the held one focused.
-The rest to check: the picker opening over the Clankers or Halo 1
-Options dialog (both on the dialogs' window), the title and description
-set, A saving and closing, B closing, and the page beneath showing the
-new value.
+After the pane builds its list, the picker focuses the held value with
+the retail list cursor setter (`list_class::LIST_SET_ROW`). Each opening
+applies this once, including when the row is reopened after a change.
 
 ### The value picker's game run
 
@@ -646,7 +652,7 @@ From a custom game lobby, Game Setup, Clanker Options:
    the large dialog's glow over the Clankers page, "DIFFICULTY" as its
    title, Easy, Normal, Heroic, Legendary, Mixed down the left, "How well
    the Clankers aim..." on the right, `(A) SELECT (B) CANCEL` in the footer.
-2. Note which value has the focus (first, or the held one).
+2. Check that the held value has the focus.
 3. Down to Heroic, A: stderr `kit.picker: clankers.difficulty -> Heroic`
    then `kit.picker: chosen; closing`; the Clankers page shows Heroic.
 4. A on Count (more than six values): the list scrolls, its arrows show.
@@ -773,6 +779,31 @@ Options (the same picture, our text under the list), then Clanker
 Options (the Spartan over the roster, our text), then back to Change
 Map (its map picture comes back). Note any frame where the text flickers
 between empty and ours.
+
+## The pregame lobby's Quick Options
+
+The custom game information panel on Xbox Live, System Link and Split
+Screen uses pane 0 of screen 14 (`pregame_lobby`). In the lobby update,
+`LOBBY_VARIANT_PANEL` (`0x2501c0`) calls the formatter at `0x25092c` for
+five retail option rows. Text widgets 6 through 10 use the pane's text
+blocks 4 through 8. Text block 9 gives the panel a sixth row with the
+same font, colour, animation and 19-unit spacing. The last row ends at
+y −190.
+
+`crates/extensions/game/src/lobby_options.rs` adds the enabled options in
+this order: Clankers with the configured count and difficulty on the
+hosting console, Halo 1 Options when either multiplayer choice uses
+Halo 1 on a converted map, and the multiplayer skull count. Hosted games
+use the signed-in profiles' skull choices. Xbox Live guests read the last
+cached host advertisement for skulls.
+
+The enabled lines follow the retail options that fit. With all five
+retail rows filled, one extra line uses the spare sixth row and each
+further line replaces a bottom retail option. The hook sets each extra
+text widget through `TEXT_SET` and the shared locale table
+(`layout_glue::StringsFeature`, IDs from `ui_kit::ids`). The read-only
+[`ui.lobby_options` agent method](../runtime/agent-api.md#ui-what-the-menus-show)
+reads those widgets in display order.
 
 ## Behaviour
 

@@ -6,7 +6,7 @@
 import { createEffect, createSignal, onCleanup, type Accessor } from "solid-js";
 import { ApiError } from "../api/http";
 import { parseCoopGames, type CoopGame } from "../lib/coop";
-import { parseSession, parseSessions, type Session } from "../lib/sessions";
+import { parseSessions, type Session } from "../lib/sessions";
 import { live } from "./live";
 import { identity } from "./identity";
 import { issueToken } from "../admin/token";
@@ -89,27 +89,4 @@ export function useCoopGames(player?: Accessor<string | undefined>, limit = 50, 
     }
   }, () => { player?.(); identity.me(); setItems([]); setStatus("loading"); }, everyMs);
   return { items, status };
-}
-
-export type SessionStatus = "loading" | "ok" | "missing" | "error";
-
-/** One session by id, refreshed the same way. A closed or expired session
- *  is still returned (its `state` says so); `missing` is an unknown id. */
-export function useSession(id: Accessor<string>, everyMs = SESSIONS_REFRESH_MS): { session: Accessor<Session | null>; status: Accessor<SessionStatus> } {
-  const [session, setSession] = createSignal<Session | null>(null);
-  const [status, setStatus] = createSignal<SessionStatus>("loading");
-  createEffect(() => { id(); setSession(null); setStatus("loading"); });
-  poll(async (signal) => {
-    const want = id();
-    try {
-      const s = parseSession((await live.api().session(want, signal)).session);
-      if (id() !== want) return;
-      setSession(s);
-      setStatus(s ? "ok" : "missing");
-    } catch (e) {
-      if (signal.aborted || id() !== want) return;
-      if (e instanceof ApiError && e.status === 404) { setSession(null); setStatus("missing"); } else setStatus("error");
-    }
-  }, () => { setSession(null); setStatus("loading"); }, everyMs);
-  return { session, status };
 }

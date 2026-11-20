@@ -169,7 +169,7 @@ fn the_list_says_why_it_is_empty() {
     assert_eq!(repo.list_line(0).as_deref(), Some("Try Again"));
     assert_eq!(
         repo.list_description(0).as_deref(),
-        Some("Sign in to Live first.\nA reads the list again.")
+        Some("Sign in to Live first. A reads the list again.")
     );
     assert_eq!(repo.list_description(1), None);
     assert_eq!(repo.menu_text(), "Mods");
@@ -189,10 +189,10 @@ fn the_list_says_why_it_is_empty() {
     let (_, empty) = listed(Vec::new(), None);
     assert_eq!(empty.list_row(0).unwrap().0, "No mods yet");
     assert_eq!(empty.list_line(0).as_deref(), Some("Refresh"));
-    assert!(empty
-        .list_description(0)
-        .unwrap()
-        .starts_with("No mods on your Live server yet."));
+    assert_eq!(
+        empty.list_description(0).as_deref(),
+        Some("No mods on your Live server yet. A reads the list again.")
+    );
     assert!(matches!(empty.press_list(0), Chosen::Stepped(_)));
 }
 
@@ -1074,7 +1074,10 @@ fn bulk_download_requires_focus_on_download_all_in_a_listed_pack() {
     repo.listed(Ok(Vec::new()));
     assert_eq!(repo.pack_count(), 1);
     assert_eq!(repo.pack_line(0).as_deref(), Some("Pack unavailable"));
-    assert!(repo.pack_description(0).unwrap().contains("Press B"));
+    assert_eq!(
+        repo.pack_description(0).as_deref(),
+        Some("This pack is no longer listed. Press B to return to Mods.")
+    );
     assert_eq!(repo.press_pack(0), Chosen::Nothing);
     repo.x_pack(Some(0));
     assert!(fake.installs.lock().unwrap().is_empty());

@@ -520,6 +520,10 @@ pub mod ui {
     pub const ITEMS: u32 = 0x88;
     /// The Controls list's item widgets.
     pub const CONTROLS_ITEMS: u32 = 6;
+    /// Campaign Options constructs three items at `0x2b1504`, followed
+    /// immediately by its press record at list + 0x208.
+    pub const CAMPAIGN_OPTIONS_ITEMS: u32 = 3;
+    pub const CAMPAIGN_OPTIONS_PRESS: u32 = ITEMS + CAMPAIGN_OPTIONS_ITEMS * Item::SIZE;
 
     /// Screen vtable slots.
     pub mod screen_slot {

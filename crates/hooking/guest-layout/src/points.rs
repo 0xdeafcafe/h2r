@@ -130,6 +130,17 @@ pub const TRANSPARENT_ORDER_READY: Point = Point::new(
     "TRANSPARENT_ORDER_READY", 0x0001_e3bc, Sig::Site, "docs/graphics/native-renderer.md",
 );
 
+/// Return addresses for the retail lobby leave and party leader queries.
+pub mod party_leave {
+    pub const LOBBY_BACK_COUNT: u32 = 0x0025_11c5;
+    pub const PAUSE_LEAVE_COUNT: u32 = 0x0023_29c8;
+    pub const LEADER_ROW_LABEL: u32 = 0x002b_8415;
+    pub const LEADER_ROW_BUILD: u32 = 0x002b_8459;
+    pub const LEADER_ROW_PRESS: u32 = 0x002b_84c0;
+    pub const LEADER_AUTO_SELECT: u32 = 0x0019_b4f2;
+    pub const LEADER_APPOINT: u32 = 0x0019_a1a0;
+}
+
 /// The object section loop's call to the shared record writer.
 pub const OBJECT_RECORD_APPEND: Point = Point::new(
     "OBJECT_RECORD_APPEND", 0x0013_41d0, Sig::Site, "docs/graphics/native-renderer.md",
@@ -777,6 +788,8 @@ points! { ALL;
     /// The campaign pause menu's row chosen: rows 0 to 3 have their own
     /// press, and every other row runs row 4's.
     PAUSE_ROW_CHOSEN @ 0x0023_1fe3: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/game/settings-menu.md";
+    /// The in-game Controller Settings loader (screen 200).
+    PAUSE_CONTROLS_LOADER @ 0x0023_1db5: [fn(request: stack 0) -> eax ret 4]; "docs/game/settings-menu.md";
     /// The multiplayer pause menu's list handler constructor (screen 195,
     /// `mp_menu`): ESI the handler, one stack argument. Makes the rows'
     /// datum array (room for six) and adds a datum per row it shows, the
@@ -871,6 +884,13 @@ points! { ALL;
     /// The Select Map list's row chosen (list handler in ECX, at its
     /// screen's `+0x614`): the map, then message 3 to its own screen.
     MAP_LIST_ROW_CHOSEN @ 0x002c_9b17: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/game/map-select.md";
+    /// Open the lobby's Select Map dialog from a screen request.
+    SELECT_MAP_LOAD @ 0x002b_b2db: [fn(request: stack 0) -> eax ret 4]; "docs/game/map-select.md";
+    /// Open the lobby's Game Setup dialog from a screen request.
+    GAME_SETUP_LOAD @ 0x002b_bacb: [fn(request: stack 0) -> eax ret 4]; "docs/game/ui-screens.md";
+    LOBBY_VARIANT_LIST_LOAD @ 0x002b_1b85: [fn(request: stack 0) -> eax ret 4]; "docs/game/ui-screens.md";
+    LOBBY_LEVEL_LIST_LOAD @ 0x002b_136d: [fn(request: stack 0) -> eax ret 4]; "docs/game/ui-screens.md";
+    LOBBY_DIFFICULTY_LOAD @ 0x002b_b432: [fn(request: stack 0) -> eax ret 4]; "docs/game/ui-screens.md";
     /// The Select Map screen's destructor (screen vtable `0x45c650` slot 0).
     MAP_SCREEN_FREE @ 0x002b_b384: [fn(screen: ecx, flags: stack 0) -> eax ret 4]; "docs/game/map-select.md";
     /// Whether the HUD draws (AL); 0 in a campaign with Blind on.
@@ -917,10 +937,16 @@ points! { ALL;
     /// The Controls screen constructor: the screen in EDI, the request's
     /// `+4`, `+8` and `+2` (word) on the stack; the screen in EAX.
     CONTROLS_SCREEN_CTOR @ 0x002b_7752: [fn(screen: edi, a: stack 0, b: stack 1, player: stack 2) -> eax ret 12]; "docs/formats/ui.md";
-    /// Push a constructed screen (EDI) opened by the request in EBX; it
-    /// calls screen slot 21. Who pops what is not read: entries restore
-    /// the stack themselves.
-    SCREEN_PUSH @ 0x0014_7f6d: [opaque]; "docs/formats/ui.md";
+    /// Queue a constructed screen on the channel named by the request.
+    SCREEN_PUSH @ 0x0014_7f6d: [fn(screen: edi, request: ebx) ret 0]; "docs/formats/ui.md";
+    /// The generic screen event handler; B and Back close by channel.
+    SCREEN_BACK_EVENT @ 0x0023_00ea: [fn(screen: ecx, event: stack 0) -> al ret 4]; "docs/game/ui-screens.md";
+    /// Game Setup handles X and delegates other events to SCREEN_BACK_EVENT.
+    GAME_SETUP_EVENT @ 0x002b_bed0: [fn(screen: ecx, event: stack 0) -> al ret 4]; "docs/game/ui-screens.md";
+    /// Unlink and free a screen on a UI channel.
+    UI_CHANNEL_FREE @ 0x0023_51ea: [fn(channel: ecx, screen: stack 0) ret 4]; "docs/game/ui-screens.md";
+    /// Play the UI sound by index (Back is 4).
+    UI_SOUND @ 0x0023_6299: [fn(sound: eax) ret 0]; "docs/game/ui-screens.md";
     /// Screen vtable slot 18 of the Controls class: set up the current pane
     /// (header, then the pane's widgets).
     SCREEN_SETUP_PANE @ 0x0023_047e: [fn(screen: ecx, arg: stack 0) ret 4]; "docs/formats/ui.md";
@@ -962,6 +988,9 @@ points! { ALL;
     /// started. Refuses a campaign session with more than one peer
     /// (`0x6eea5`).
     SESSION_GAME_START @ 0x0006_ec80: [fn(session: edx, flag: stack 0) -> al ret 4]; "docs/live/live-coop.md";
+    /// The scoreboard badge's visibility (AL) and connection bar count
+    /// (written to the out pointer).
+    SCOREBOARD_CONNECTION_BARS @ 0x0006_8a90: [fn(stats: ebx, bars: stack 0) -> al ret 4], Optional; "docs/game/bots.md";
     /// Whether a machine (its 6-byte id at EAX) is in the game, AL: 1 with
     /// no simulation or for this console's machine, else its simulation
     /// view's `+0x78` (0 with no view). The player update (`0x14d2a0`, its
@@ -1004,12 +1033,24 @@ points! { ALL;
     /// 8). Start state 8's text is "Waiting for ... to start the game"
     /// (docs/game/bots.md §4.2, "The start check").
     LOBBY_ALL_READY @ 0x0005_92f0: [fn() -> al ret 0]; "docs/live/live-coop.md";
+    /// Refresh the pregame lobby's game type picture and option lines
+    /// (EAX the screen, stack 0 the current game variant or null).
+    LOBBY_VARIANT_PANEL @ 0x0025_01c0: [fn(screen: eax, variant: stack 0) ret 4]; "docs/game/ui-builder.md";
     /// The pregame lobby's input handler (ECX the screen, the event on the
     /// stack, AL handled, `ret 4`): event `+0` the kind (5 a button), `+4`
     /// the controller, `+8` the button (0 A, `0xc` Start). A or Start from
     /// a controller with a profile reaches Start Game (`0x250c30`,
     /// `0x25106c`); from one without, the profile chooser (`0x250cc3`).
     PREGAME_LOBBY_INPUT @ 0x0025_0b1e: [fn(screen: ecx, event: stack 0) -> al ret 4]; "docs/game/bots.md";
+    /// The squad membership's peer count. Only leave callers treat a
+    /// leader with exclusively phantom opponents as alone.
+    PARTY_PEER_COUNT @ 0x0019_9f34: [fn() -> eax ret 0]; "docs/game/bots.md";
+    /// Whether the player slot in AX is occupied in the squad membership.
+    PARTY_PLAYER_VALID @ 0x0019_a951: [fn(player: eax) -> al ret 0]; "docs/game/bots.md";
+    /// The lobby Back or pause Leave Game has committed to leaving.
+    PARTY_LEAVE @ 0x0019_9e3c: [fn(controller: stack 0) ret 4]; "docs/game/bots.md";
+    /// The player accepted the matchmaking lobby's Back confirmation.
+    MATCHMAKING_CANCEL_CONFIRMED @ 0x0025_2150: [fn(controller: stack 0) -> al ret 4]; "docs/game/bots.md";
     /// The pregame lobby's list item handler (ECX the screen, `ret 8`),
     /// set for its rows at `0x24fb40`: stack 0 a record whose `+0` is the
     /// input event (`+4` the controller), stack 1 the row (a word: 0 Start
@@ -1093,6 +1134,9 @@ points! { ALL;
     /// 1.0 asks for campaign 1 only (`0x19c190`).
     CAMPAIGN_LEVEL_LIST @ 0x0019_c6d0: [fn(array: stack 0, campaign: stack 1) ret 8]; "docs/halo1/campaign-picker.md";
     CAMPAIGN_OPTIONS_LIST @ 0x002b_14dc: [fn(list: ebx, player: stack 0) -> eax ret 4]; "docs/halo1/campaign-picker.md";
+    /// Campaign Options list slot 19: the number of item widgets to link.
+    /// Retail returns the active row count from the list's datum array.
+    CAMPAIGN_OPTION_ITEM_COUNT @ 0x002b_160c: [fn(list: ecx) -> eax ret 0]; "docs/halo1/campaign-picker.md";
     CAMPAIGN_OPTION_TEXT @ 0x002b_1613: [fn(list: ecx, item: stack 0, arg: stack 1) ret 8]; "docs/halo1/campaign-picker.md";
     CAMPAIGN_OPTION_CHOSEN @ 0x002b_166d: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/halo1/campaign-picker.md";
     PROFILE_LAST_MAP @ 0x0019_10d9: [fn() -> eax ret 0]; "docs/halo1/campaign-picker.md";
@@ -1193,11 +1237,10 @@ points! { ALL;
     SOUND_UPDATE @ 0x0012_5b40: [fn() ret 0]; "docs/engine/engine-map.md";
     /// The sound listeners' update (stdcall, one argument, `ret 4`): for
     /// each local user mapped (`[0x4e8c20] + 0xc`) it sets the user's
-    /// listener (records `0x48` bytes apart in `[0x4e6380]`) from its
-    /// camera and marks it active (the byte at `[0x4e6380] + 0x8e + 0x48 *
-    /// user`); an unmapped user's is left as it was.
-    /// Called from `SOUND_UPDATE` (`0x125c1e`) and, outside it, from the
-    /// per-frame update `0x18c060` (`0x18c07f`, from `0x137ef8`).
+    /// listener from its camera and marks it active (the byte at
+    /// `[SOUND_GLOBALS] + 0x8e + 0x48 * user`). An unmapped user's active
+    /// byte is left alone.
+    /// Called from `SOUND_UPDATE` and from the per-frame effect update.
     SOUND_LISTENERS_UPDATE @ 0x0012_7400: [fn(arg: stack 0) ret 4]; "docs/game/bots.md";
     /// Whose own sound is this (stdcall, `ret 12`): when `*kind` is 1 (a
     /// positioned sound), walks the four local users (`[0x4e8c20] + 0xc`)
@@ -1207,7 +1250,7 @@ points! { ALL;
     /// `*user` (when not null) to the user. Called when a sound starts on
     /// an object: `0x1890e5`, `0x18935f`, `0x189441`, `0x18cf76`,
     /// `0x18d4dc`, on the game thread (the object and effect updates and the
-    /// per-frame update `0x18c060`), not inside `SOUND_UPDATE`'s window.
+    /// per-frame update `0x18c060`).
     SOUND_OWNER_USER @ 0x0018_d4f0: [fn(object: stack 0, kind: stack 1, user: stack 2) ret 12]; "docs/game/bots.md";
     /// Per-type file bound called by the cache header validator (0x1228b8).
     CACHE_TYPE_LIMIT @ 0x0021_4ed0: [fn(kind: ecx) -> eax ret 0]; "docs/halo1/sounds.md";
@@ -1355,6 +1398,37 @@ points! { ALL;
     /// clamped to the look limits, and body `+3cc..3d4` stepped toward the
     /// result.
     BIPED_LOOK_UPDATE @ 0x000d_e190: [fn(object: eax) ret 0], Hot; "docs/engine/object-update.md";
+    // Slice 7b of docs/engine/sim-rewrite-objects.md: the biped
+    // post-physics update.
+    /// Biped post-physics update: slot `+44` of `bipd`.
+    BIPED_POST_UPDATE @ 0x000d_d990: [fn(object: stack 0) ret 4], Hot; "docs/engine/object-update.md";
+    /// The step of the crouch fraction (body `+2c4`) this tick: the
+    /// definition's rate (an actor may scale it) times the tick length,
+    /// toward 1 or 0 by the control bit (body `+134` bit 23).
+    BIPED_CROUCH_STEP @ 0x000d_d7d0: [fn(object: eax) -> xmm0 ret 0], Hot; "docs/engine/object-update.md";
+    /// The height the crouch step moves the biped this tick into `out`,
+    /// `al` 1 when there is one (landing or forced to crouch, the step not
+    /// zero).
+    BIPED_CROUCH_HEIGHT @ 0x000d_d8e0: [fn(object: edi, out: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
+    /// `al` 1 in state 6 with body `+3f8` set and `+348` bit 13.
+    BIPED_CROUCH_FORCED @ 0x000e_0dc0: [fn(object: eax) -> al ret 0], Hot; "docs/engine/object-update.md";
+    /// A collision query below an airborne biped and the stuck counter at
+    /// body `+3ab`.
+    BIPED_GROUND_PROBE @ 0x000e_30c0: [fn(object: ebx) ret 0], Hot; "docs/engine/object-update.md";
+    /// `al` the flag bit of the surface the biped stands on (body `+354`),
+    /// 0 with a contact object.
+    BIPED_GROUND_FLAG @ 0x000d_df60: [fn(object: eax) -> al ret 0], Hot; "docs/engine/object-update.md";
+    /// The ground and jump counters at body `+39c` and `+39e`, and the
+    /// jump `0xe4770` when the control asks for it; `al` 1 when it jumped.
+    BIPED_JUMP_UPDATE @ 0x000e_4680: [fn(object: edi) -> al ret 0], Hot; "docs/engine/object-update.md";
+    /// Fills the physics step's input record (`0x1e68a0`) and, by the
+    /// state, its fields `+44`, `+48`, `+4c`.
+    BIPED_PHYSICS_INPUT @ 0x000d_d0d0: [fn(object: stack 0, record: stack 1, flag: stack 2) ret 12], Hot; "docs/engine/object-update.md";
+    /// The landing's kind and ticks at body `+34c..34f`, from a speed in
+    /// `xmm2` against the definition's bands.
+    BIPED_LANDING_UPDATE @ 0x000e_4330: [fn(object: eax) ret 0], Hot; "docs/engine/object-update.md";
+    /// The contact object at body `+394` and its counter `+398`.
+    BIPED_CONTACT_UPDATE @ 0x000e_2fa0: [fn(object: eax, contact: ebx, unused: stack 0) ret 4], Hot; "docs/engine/object-update.md";
 }
 
 /// The point at `base`, if the table names one.

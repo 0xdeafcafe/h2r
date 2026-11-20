@@ -18,6 +18,9 @@ tags = { path = "../../formats/tags" }
 # (bots::autonav).
 map = { path = "../../formats/map" }
 pathfind = { path = "../../formats/pathfind" }
+# The game's nav worker builds its visibility grids as background work
+# (vis::Threads::background).
+background.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

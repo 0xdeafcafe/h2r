@@ -32,6 +32,8 @@ rustc-hash = "2"
 bytemuck = "1"
 # Machine snapshots: the d3d section (src/device/snap.rs).
 snapshot = { path = "../../runtime/snapshot" }
+# The frame's carried part, by slot (src/scene_sink.rs, docs/graphics/framescene.md slice 6).
+frame-scene = { path = "../../rewrites/frame-scene" }
 
 pollster = { version = "1", optional = true }
 

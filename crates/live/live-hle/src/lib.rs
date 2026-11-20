@@ -698,6 +698,12 @@ impl Hle {
     ) -> Result<(), mods::ModsError> {
         self.lock().install_mod(id, progress, done)
     }
+    /// The joined host's skulls from the last cached advertisement.
+    /// Reads the Live cache without requesting a refresh.
+    pub fn cached_host_skulls(&self) -> Option<Vec<u8>> {
+        let keys = self.network.registered_keys();
+        self.lock().cached_host_skulls(&keys)
+    }
     /// What the host of the session this console joined advertised as its
     /// skulls: [`Hle::joined`]'s answer, for the skulls.
     pub fn host_skulls(&self, wait: std::time::Duration) -> HostSkulls {

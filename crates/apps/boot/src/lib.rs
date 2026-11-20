@@ -11,6 +11,8 @@
 pub use game::*;
 // maps.test.*: test maps from recipes (docs/game/test-maps.md).
 pub mod registration;
+#[cfg(feature = "test-maps")]
+pub mod test_maps_recipes;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -442,9 +444,7 @@ fn run_configured(
             .flat_map(|b| b.levels.iter().map(|l| (b.key.clone(), l.map.clone())))
             .collect();
         let mut cards = campaign_cards::read_cards(&opts.data_root, &levels);
-        if let Err(e) = campaign_cards::picker::prepare(&opts.data_root, &opts.disc, &mut cards) {
-            eprintln!("campaigns: game picker artwork unavailable: {e:#}");
-        }
+        campaign_cards::picker::prepare(&opts.data_root, &opts.disc, &mut cards);
         campaign_cards::CardRewrite::new(cards, s.cards.clone())
             .map(|r| r.with_cache(&opts.data_root))
     });
@@ -864,7 +864,11 @@ fn run_configured(
     let lockstep_on = lockstep_config.enabled();
     // H2_AGENT=<socket>: the agent API (agent_glue.rs, docs/runtime/agent-api.md);
     // the debug menu talks to a local one with no socket.
-    let agent_source = match agent_glue::socket_from_env() {
+    // With none set, a game that asks for it opens `<pid>.sock` in the agents
+    // directory for editors to find (`H2_AGENT=off` keeps it closed).
+    let agent_source = match agent_glue::socket_from_env()
+        .or_else(|| host.discoverable_agent.then(agent_glue::discoverable_socket).flatten())
+    {
         Some(path) => registration::AgentSource::Socket(path),
         None if film.is_some() => registration::AgentSource::Recording,
         None if host.debug_menu.is_some() || theater.is_some() => registration::AgentSource::Local,
@@ -927,6 +931,7 @@ fn run_configured(
             })
         };
         hot_glue::install(&a.agent, &loaded.runtime, maps(), watch_overrides);
+        ui_stack::install(&a.agent, core.ui_navigation);
         // profile.faults: the fault census (agent_glue.rs).
         agent_glue::add_runtime_methods(&a.agent, &loaded.runtime);
         // sim.give and sim.spawn find tags as edit.* does (agent_glue.rs).
@@ -942,6 +947,7 @@ fn run_configured(
     if let Some(a) = &agent {
         test_maps::install(
             &a.agent,
+            Arc::new(test_maps_recipes::ScenarioRecipes),
             a.sim.as_ref().and_then(|s| s.calls()),
             &opts.disc,
             &opts.data_root,

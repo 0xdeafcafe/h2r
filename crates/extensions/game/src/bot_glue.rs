@@ -46,7 +46,7 @@ impl Bots {
         Bots {
             film: None,
             phantoms,
-            dir: data_root.join("bots"),
+            dir: bots::cache::dir(data_root),
             map: Arc::default(),
             frame: Arc::default(),
             lobby_said: Arc::default(),
@@ -65,6 +65,8 @@ impl hooks::Feature for Bots {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        party_leave::install(b, &self.phantoms);
+
         // A phantom's machine has no simulation view, so the game's "is
         // this machine in the game" says no and its player never spawns
         // (docs/game/bots.md §5.1, "Phantoms in the game"): yes for a
@@ -224,6 +226,8 @@ impl hooks::Feature for Bots {
             },
         );
 
+        audio::install(b);
+
         // The same weapon-fire point used by Live telemetry, as a sound
         // cue. It can only draw a bot's gaze.
         let phantoms = self.phantoms.clone();
@@ -296,13 +300,19 @@ impl hooks::Feature for Bots {
 /// The loaded map's short name (the cache header's, `0x547898`).
 const MAP_NAME: u32 = 0x0054_7898;
 
-/// When the loaded map changes, loads its bot data on a thread of its own
-/// and asks the nav builder (`crate::bots_nav_auto`) to look at the map
-/// next. Until then, and without a file, the bots walk straight and see
-/// through walls; a mesh built while the map runs goes in when it lands
-/// ([`bots::autonav::offer`]).
+/// The loaded map's cache type (the cache header's `+0x140`, `0x547840`,
+/// an `i16`; docs/live/live-gamestate.md "Cache identity").
+const MAP_KIND: u32 = 0x0054_7840;
+
+/// When the loaded map changes, loads its bot data on a background thread
+/// and, for a multiplayer map, asks the nav builder
+/// (`crate::bots_nav_auto`) to look at it next. Until then, and without a
+/// file, the bots walk straight and see through walls; a mesh built while
+/// the map runs goes in when it lands ([`bots::autonav::offer`]). The main
+/// menu and the shared resource maps get nothing: no bot plays there
+/// ([`bots::autonav::map_use`]).
 fn load_map_data(seen: &Mutex<String>, dir: &std::path::Path, mem: &runtime::Guest) {
-    use bots::autonav;
+    use bots::autonav::{self, MapUse};
     use engine::memory::GuestMemory;
     let Ok(raw) = mem.cstr(MAP_NAME, 32) else {
         return;
@@ -314,16 +324,22 @@ fn load_map_data(seen: &Mutex<String>, dir: &std::path::Path, mem: &runtime::Gue
     }
     last.clone_from(&name);
     autonav::map_loaded(&name);
-    if name.is_empty() {
+    let kind = mem
+        .u16(MAP_KIND)
+        .ok()
+        .map(|k| map::CacheType::from(u32::from(k)));
+    let usage = autonav::map_use(&name, kind);
+    if usage == MapUse::Never {
         return;
     }
-    let auto = autonav::handle();
+    let auto = autonav::handle().filter(|_| usage == MapUse::Build);
     if let Some(h) = auto {
         h.want(&name);
     }
     let file = dir.join(bots::cache::file_name(&name, 0));
     let dir = dir.to_path_buf();
-    std::thread::spawn(move || {
+    let thread_name = name.clone();
+    let spawned = background::spawn("bots-map-data", move || {
         let read = std::fs::read(&file);
         let data = read
             .as_ref()
@@ -349,6 +365,8 @@ fn load_map_data(seen: &Mutex<String>, dir: &std::path::Path, mem: &runtime::Gue
             (None, true, true) => eprintln!(
                 "bots: {name}: the nav mesh file is from an older version; building it (bots walk straight until it lands)"
             ),
+            // Not a multiplayer map: a file only when built by hand.
+            (None, false, false) if usage == MapUse::LoadOnly => {}
             (None, false, false) => eprintln!(
                 "bots: no nav mesh for {name}; run `h2 bots nav {name}` (bots walk straight until then)"
             ),
@@ -358,6 +376,9 @@ fn load_map_data(seen: &Mutex<String>, dir: &std::path::Path, mem: &runtime::Gue
             ),
         }
     });
+    if let Err(e) = spawned {
+        eprintln!("bots: {thread_name}: bot data not loaded: {e}");
+    }
 }
 
 /// Adds the bots feature over the process-wide bots to `registry`.
@@ -384,6 +405,8 @@ pub fn install_film(
     Ok(added)
 }
 
+pub(crate) mod audio;
 mod retail_input;
 
 mod film_state;
+mod party_leave;

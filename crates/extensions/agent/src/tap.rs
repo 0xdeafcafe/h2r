@@ -20,7 +20,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use agent_proto::{
@@ -76,6 +76,9 @@ pub struct Input {
     mode: Mode,
     /// Each controller port's steps.
     pads: [Remote; PORTS as usize],
+    /// The first read of a guarded menu press can cancel the steps if
+    /// its row no longer owns input. Ordinary pad steps have no guard.
+    menu_press: Option<MenuPress>,
     /// Open handles and the port each was opened on.
     ports: BTreeMap<u32, u32>,
     delivered: BTreeMap<u32, Delivered>,
@@ -98,6 +101,83 @@ pub(crate) struct FlightReads {
     pub dropped: u32,
 }
 
+type CheckMenu = Box<dyn FnOnce(&dyn xapi::GuestMemory) -> bool + Send>;
+
+struct MenuPress {
+    conn: crate::ConnId,
+    deadline: Instant,
+    check: Option<CheckMenu>,
+    result: Arc<OnceLock<Result<(), RpcError>>>,
+}
+
+/// One outstanding RPC. Giving up its deferred answer releases its
+/// gesture, even if the input device has stopped polling.
+pub struct MenuReceipt {
+    input: Arc<Mutex<Input>>,
+    result: Arc<OnceLock<Result<(), RpcError>>>,
+}
+
+impl MenuReceipt {
+    pub fn result(&self) -> Option<Result<(), RpcError>> {
+        self.result.get().cloned()
+    }
+}
+
+impl Drop for MenuReceipt {
+    fn drop(&mut self) {
+        let mut input = lock(&self.input);
+        if input
+            .menu_press
+            .as_ref()
+            .is_some_and(|p| Arc::ptr_eq(&p.result, &self.result))
+        {
+            input.cancel_menu("menu request ended");
+        }
+    }
+}
+
+/// Queue one controller-zero menu gesture through the installed agent tap.
+pub struct MenuPad(Arc<Mutex<Input>>);
+
+impl MenuPad {
+    pub const TIMEOUT: Duration = Duration::from_secs(2);
+
+    pub fn queue(
+        &self,
+        conn: crate::ConnId,
+        steps: &[PadStep],
+        check: impl FnOnce(&dyn xapi::GuestMemory) -> bool + Send + 'static,
+    ) -> Result<MenuReceipt, RpcError> {
+        let steps = pad_steps(steps).map_err(|e| RpcError::new(code::INVALID_PARAMS, e))?;
+        let mut input = lock(&self.0);
+        input.expire_menu_press();
+        if !input.ports.values().any(|&port| port == 0) {
+            return Err(RpcError::new(
+                code::UNAVAILABLE,
+                "controller zero is not open",
+            ));
+        }
+        if input.pads[0].busy() {
+            return Err(RpcError::new(
+                code::BUSY,
+                "controller zero has pending input",
+            ));
+        }
+        let result = Arc::new(OnceLock::new());
+        input.pads[0].replace(steps);
+        input.menu_press = Some(MenuPress {
+            conn,
+            deadline: Instant::now() + Self::TIMEOUT,
+            check: Some(Box::new(check)),
+            result: Arc::clone(&result),
+        });
+        Ok(MenuReceipt {
+            input: Arc::clone(&self.0),
+            result,
+        })
+    }
+}
+
 impl Input {
     /// Where input logs (and captures) go.
     pub fn dir(&self) -> PathBuf {
@@ -106,13 +186,46 @@ impl Input {
 
     /// The game's tick moved (or a map loaded and it started again).
     pub fn set_clock(&mut self, tick: u64) {
+        self.expire_menu_press();
         self.clock = Some(tick);
         self.ticks.store(tick, Ordering::Relaxed);
     }
 
     /// Drops every port's steps (a map changed: tick timing starts again).
-    pub fn clear_pads(&self) {
+    pub fn clear_pads(&mut self) {
+        self.cancel_menu("map changed");
         self.pads.iter().for_each(Remote::clear);
+    }
+
+    fn expire_menu_press(&mut self) {
+        if self.menu_press.as_ref().is_some_and(|p| p.deadline <= Instant::now()) {
+            self.finish_menu(Err(RpcError::new(code::TIMEOUT, "menu input read timed out")));
+        }
+    }
+
+    fn finish_menu(&mut self, result: Result<(), RpcError>) {
+        if let Some(p) = self.menu_press.take() {
+            if result.is_err() {
+                self.pads[0].clear();
+            }
+            let _ = p.result.set(result);
+        }
+    }
+
+    fn cancel_menu(&mut self, why: &str) {
+        if self.menu_press.is_some() {
+            self.finish_menu(Err(RpcError::new(code::INTERRUPTED, why)));
+        }
+    }
+
+    pub(crate) fn menu_owner(&self) -> Option<crate::ConnId> {
+        self.menu_press.as_ref().map(|p| p.conn)
+    }
+
+    pub(crate) fn release_menu(&mut self, conn: crate::ConnId) {
+        if self.menu_owner() == Some(conn) {
+            self.cancel_menu("menu controller released");
+        }
     }
 
     /// The queue for `port` (0 to 3).
@@ -226,11 +339,34 @@ impl Input {
 
     /// One guest read of `handle`: a replay answers it, then the port's
     /// pad step merges over it, then a recording logs what the game gets.
-    fn read(&mut self, handle: u32, status: &mut u32, packet: &mut [u8; PACKET]) {
+    fn read(
+        &mut self,
+        handle: u32,
+        status: &mut u32,
+        packet: &mut [u8; PACKET],
+        memory: Option<&dyn xapi::GuestMemory>,
+    ) {
         if let Mode::Replaying { replayer, .. } = &mut self.mode {
             replayer.read(handle, status, packet);
         }
+        let menu_port = self.menu_press.is_some() && self.ports.get(&handle) == Some(&0);
+        if menu_port {
+            self.expire_menu_press();
+            if *status != 0 {
+                self.cancel_menu("controller zero disconnected");
+            } else if let Some(check) = self.menu_press.as_mut().and_then(|p| p.check.take())
+                && !memory.is_some_and(check)
+            {
+                self.finish_menu(Err(RpcError::new(
+                    code::GONE,
+                    "menu focus changed before pad read",
+                )));
+            }
+        }
         self.step(handle, packet);
+        if menu_port && !self.pads[0].busy() {
+            self.finish_menu(Ok(()));
+        }
         if let Mode::Recording { recorder, .. } = &mut self.mode {
             recorder.read(handle, status, packet);
         }
@@ -298,6 +434,10 @@ pub struct AgentTap {
 }
 
 impl AgentTap {
+    pub fn menu_pad(&self) -> MenuPad {
+        MenuPad(Arc::clone(&self.input))
+    }
+
     pub(crate) fn new(input: Arc<Mutex<Input>>, inner: Option<(Box<dyn InputTap>, Chain)>) -> Self {
         lock(&input).tap = true;
         AgentTap { input, inner }
@@ -324,12 +464,22 @@ impl InputTap for AgentTap {
     }
 
     fn read(&mut self, handle: u32, status: &mut u32, packet: &mut [u8; PACKET]) {
+        self.read_with_memory(handle, status, packet, None);
+    }
+
+    fn read_with_memory(
+        &mut self,
+        handle: u32,
+        status: &mut u32,
+        packet: &mut [u8; PACKET],
+        memory: Option<&dyn xapi::GuestMemory>,
+    ) {
         if let Some((t, Chain::Before)) = &mut self.inner {
-            t.read(handle, status, packet);
+            t.read_with_memory(handle, status, packet, memory);
         }
-        lock(&self.input).read(handle, status, packet);
+        lock(&self.input).read(handle, status, packet, memory);
         if let Some((t, Chain::After)) = &mut self.inner {
-            t.read(handle, status, packet);
+            t.read_with_memory(handle, status, packet, memory);
         }
     }
 
@@ -347,7 +497,9 @@ impl InputTap for AgentTap {
     fn closed(&mut self, handle: u32) {
         {
             let mut i = lock(&self.input);
-            i.ports.remove(&handle);
+            if i.ports.remove(&handle) == Some(0) {
+                i.cancel_menu("controller zero closed");
+            }
             i.delivered.remove(&handle);
         }
         if let Some((t, _)) = &mut self.inner {
@@ -543,7 +695,13 @@ pub(crate) fn add_input_methods(agent: &Agent, input: &Arc<Mutex<Input>>) {
             first.at_tick = Some(t);
         }
         let n = steps.len();
-        let i = lock(&i);
+        let mut i = lock(&i);
+        if port == 0 && i.menu_press.is_some() {
+            if p.append {
+                return Err(RpcError::new(code::BUSY, "menu press in progress"));
+            }
+            i.cancel_menu("pad queue replaced");
+        }
         let r = &i.pads[port];
         if p.append {
             r.append(steps);
@@ -560,7 +718,10 @@ pub(crate) fn add_input_methods(agent: &Agent, input: &Arc<Mutex<Input>>) {
     let i = Arc::clone(input);
     agent.add_method(method::INPUT_RELEASE, Access::Act, move |v| {
         let p: ReleaseParams = params(v)?;
-        let i = lock(&i);
+        let mut i = lock(&i);
+        if p.player.unwrap_or(0) == 0 {
+            i.cancel_menu("pad queue released");
+        }
         match p.player {
             Some(port) => i.pads[player(port)?].clear(),
             None => i.pads.iter().for_each(Remote::clear),
@@ -641,6 +802,66 @@ mod tests {
 
     fn steps(v: Value) -> Vec<Step> {
         pad_steps(&serde_json::from_value::<Vec<PadStep>>(v).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn menu_ack_waits_for_release_and_checks_focus_at_the_actual_read() {
+        let (_input, mut tap) = tap();
+        let menu = tap.menu_pad();
+        let mut guest = runtime::Guest::new();
+        let mem = xapi::register::RuntimeMemory::new(&mut guest);
+        let steps: Vec<PadStep> = serde_json::from_value(json!([
+            {"buttons": ["a"], "ms": 0, "reads": 1}, {"ms": 0, "reads": 1}
+        ]))
+        .unwrap();
+        let poll = |tap: &mut AgentTap| {
+            let mut packet = live(0, 0);
+            let mut status = 0;
+            tap.read_with_memory(H0, &mut status, &mut packet, Some(&mem));
+            Gamepad::from_bytes(packet[4..].try_into().unwrap()).analog[0]
+        };
+        let stale = menu.queue(1, &steps, |_| false).unwrap();
+        assert_eq!(poll(&mut tap), 0);
+        assert_eq!(stale.result().unwrap().unwrap_err().code, code::GONE);
+
+        let press = menu.queue(1, &steps, |_| true).unwrap();
+        assert_eq!(poll(&mut tap), 255);
+        assert!(press.result().is_none());
+        assert_eq!(poll(&mut tap), 0);
+        assert_eq!(poll(&mut tap), 0);
+        assert_eq!(press.result(), Some(Ok(())));
+    }
+
+    #[test]
+    fn expired_cancelled_and_abandoned_gestures_leave_no_button() {
+        let (input, mut tap) = tap();
+        let menu = tap.menu_pad();
+        let steps = vec![PadStep {
+            buttons: vec!["a".into()],
+            ..Default::default()
+        }];
+        let expired = menu.queue(1, &steps, |_| true).unwrap();
+        lock(&input).menu_press.as_mut().unwrap().deadline = Instant::now();
+        assert_eq!(read(&mut tap, H0, live(0, 0)).1.analog[0], 0);
+        assert_eq!(expired.result().unwrap().unwrap_err().code, code::TIMEOUT);
+
+        let cancelled = menu.queue(1, &steps, |_| true).unwrap();
+        assert_eq!(
+            menu.queue(2, &steps, |_| true).err().unwrap().code,
+            code::BUSY
+        );
+        lock(&input).release_menu(1);
+        assert_eq!(
+            cancelled.result().unwrap().unwrap_err().code,
+            code::INTERRUPTED
+        );
+        drop(menu.queue(2, &steps, |_| true).unwrap());
+        assert!(!lock(&input).pads[0].busy());
+        tap.closed(H0);
+        assert_eq!(
+            menu.queue(1, &steps, |_| true).err().unwrap().code,
+            code::UNAVAILABLE
+        );
     }
 
     #[test]

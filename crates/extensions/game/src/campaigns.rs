@@ -427,8 +427,8 @@ pub fn extend_with_cards<M: Gm>(
 
 /// Each campaign's first level's picture in the level select's list (the
 /// picture of its smallest map id), by campaign id, as `bitm` datums of
-/// the loaded map: what the picker shows for a campaign. Empty when the
-/// loaded map has no list.
+/// the loaded map. The picker can use these when it has no campaign
+/// artwork. Empty when the loaded map has no list.
 pub fn first_pictures<M: Gm>(m: &M) -> BTreeMap<u32, u32> {
     let mut out: BTreeMap<u32, (u32, u32)> = BTreeMap::new();
     let Some(matg) = m.u32(GLOBALS_TAG).filter(|&a| a != 0) else {
@@ -473,6 +473,22 @@ pub struct Selection {
     /// Seen as the picker opened: the signed-in profiles, and each
     /// campaign's first level's picture (`bitm` datum) in the loaded map.
     seen: Mutex<Seen>,
+    /// Most recent picker press on this visit and its observed screen request.
+    pub(super) pick: Mutex<Option<Pick>>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+pub(super) struct Pick {
+    pub campaign: u32,
+    pub request: Option<OptionsRequest>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+pub(super) struct OptionsRequest {
+    pub mask: u16,
+    pub window: u32,
+    pub slot: u32,
+    pub loader: u32,
 }
 
 /// [`Selection::seen`].
@@ -488,6 +504,7 @@ impl Default for Selection {
             campaign: AtomicU32::new(RETAIL_CAMPAIGN),
             building: AtomicBool::new(false),
             seen: Mutex::new(Seen::default()),
+            pick: Mutex::new(None),
         }
     }
 }
@@ -497,6 +514,7 @@ impl Selection {
         self.seen.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
     pub fn set_seen(&self, seen: Seen) {
+        *self.pick.lock().unwrap_or_else(|e| e.into_inner()) = None;
         *self.seen.lock().unwrap_or_else(|e| e.into_inner()) = seen;
     }
     pub fn campaign(&self) -> u32 {

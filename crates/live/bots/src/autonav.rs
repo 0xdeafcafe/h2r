@@ -11,15 +11,21 @@
 //! A [`Worker`] goes through the maps a `scan` finds ([`Source`]s: a host
 //! file, a region of the disc image, a file the VFS serves), builds each
 //! stale multiplayer map and writes it atomically ([`write_atomic`]): the
-//! other structure BSPs first, `<map>.0.bots` (the one checked) last. Each
-//! BSP's visibility grid (`crate::vis`) is built with it and written
-//! first; a map whose `.bots` is fresh but whose `.vis` is not gets only
-//! the grid built. A map
+//! other structure BSPs first, `<map>.0.bots` (the one checked) last. Then
+//! each BSP's visibility grid (`crate::vis`) is built and written as it
+//! finishes, saving its progress every [`crate::vis::SAVE_EVERY`] so a
+//! build cut short carries on next time; a map whose `.bots` is fresh but
+//! whose `.vis` is not gets only the grid built, and one whose `.vis` is
+//! current gets nothing. A map
 //! asked for with [`Handle::want`] (the map being loaded) goes to the front
 //! of the queue, scanned again so a map installed since boot is found.
 //! `h2 bots nav` runs the same worker once, in the foreground; the game
 //! runs it on a background thread (`boot::bots_nav_auto`), switched off by
-//! [`ENV`]` = 0`.
+//! [`ENV`]` = 0`, with [`Worker::background`]: the grids then split across
+//! [`background::workers`] threads below the game's priority.
+//!
+//! Maps no bot plays ([`map_use`]: the main menu and the shared resource
+//! maps) are never asked for, scanned or built.
 
 use std::collections::{HashSet, VecDeque};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -42,6 +48,44 @@ pub fn enabled(v: Option<&str>) -> bool {
         v.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
         Some("0" | "off" | "false" | "no")
     )
+}
+
+/// The maps no bot ever plays, by name: the main menu and the shared
+/// resource maps.
+pub const NOT_PLAYED: [&str; 3] = ["mainmenu", "shared", "single_player_shared"];
+
+/// What the bots do with a map.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MapUse {
+    /// Nothing: no bot plays there (the main menu, the shared resource
+    /// maps). No data is read, asked for or built.
+    Never,
+    /// A `.bots` file built by hand (`h2 bots nav <map>`) is read; the
+    /// automatic build leaves it alone (campaign and unknown kinds).
+    LoadOnly,
+    /// Multiplayer: built automatically when stale.
+    Build,
+}
+
+/// What the bots do with the map `name` of cache `kind` (the header's
+/// `+0x140`; `None` when only the name is known, as in [`Handle::want`]:
+/// the build looks at the header before it builds).
+pub fn map_use(name: &str, kind: Option<map::CacheType>) -> MapUse {
+    use map::CacheType as K;
+    let name = name.trim();
+    if name.is_empty() || NOT_PLAYED.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+        return MapUse::Never;
+    }
+    match kind {
+        Some(K::MainMenu | K::Shared | K::SinglePlayerShared) => MapUse::Never,
+        Some(K::Multiplayer) | None => MapUse::Build,
+        Some(K::Campaign | K::Unknown(_)) => MapUse::LoadOnly,
+    }
+}
+
+/// Whether the worker takes `s` at all: not a map no bot plays.
+fn played(s: &dyn Source) -> bool {
+    map_use(s.key(), None) != MapUse::Never
 }
 
 /// A map file's cache header: the bytes [`fingerprint`] reads.
@@ -67,6 +111,8 @@ pub struct MapHeader {
     /// The internal name (`+0x198`), what the game's loaded-map name
     /// (`0x547898`) holds and what the file is named by.
     pub name: String,
+    /// The cache type (`+0x140`).
+    pub kind: map::CacheType,
     /// A multiplayer map (`+0x140` is 1); the bots play nowhere else.
     pub multiplayer: bool,
     pub fingerprint: u64,
@@ -83,10 +129,11 @@ impl MapHeader {
         if name.is_empty() {
             return Err("the map has no name".into());
         }
-        let kind = u32::from_le_bytes(h[0x140..0x144].try_into().unwrap_or_default());
+        let kind = map::CacheType::from(u32::from_le_bytes(h[0x140..0x144].try_into().unwrap_or_default()));
         Ok(MapHeader {
             name,
-            multiplayer: map::CacheType::from(kind) == map::CacheType::Multiplayer,
+            kind,
+            multiplayer: kind == map::CacheType::Multiplayer,
             fingerprint: fingerprint(&h[..MAP_HEADER_LEN]),
         })
     }
@@ -374,8 +421,12 @@ pub struct Handle(Arc<Shared>);
 
 impl Handle {
     /// Look at `map` next (built if stale), scanning again for it: the map
-    /// being loaded, or one installed since.
+    /// being loaded, or one installed since. A map no bot plays
+    /// ([`MapUse::Never`]) is ignored.
     pub fn want(&self, map: &str) {
+        if map_use(map, None) == MapUse::Never {
+            return;
+        }
         let mut w = self.0.wants.lock().unwrap_or_else(|e| e.into_inner());
         if !w.names.iter().any(|n| n.eq_ignore_ascii_case(map)) {
             w.names.push_back(map.to_owned());
@@ -412,6 +463,10 @@ pub struct Worker {
     force: bool,
     all_kinds: bool,
     stay: bool,
+    threads: crate::vis::Threads,
+    /// Grids stopped for a map asked for, to carry on with when the queue
+    /// is empty; `true` when the map is not counted in the summary yet.
+    later: VecDeque<(String, bool)>,
     log: Box<dyn FnMut(&str) + Send>,
     on_built: Box<dyn FnMut(&str, &MapData) + Send>,
     shared: Arc<Shared>,
@@ -431,6 +486,8 @@ impl Worker {
                 force: false,
                 all_kinds: false,
                 stay: false,
+                threads: crate::vis::Threads::foreground(),
+                later: VecDeque::new(),
                 log: Box::new(|l| eprintln!("{l}")),
                 on_built: Box::new(|_, _| {}),
                 shared: Arc::clone(&shared),
@@ -466,6 +523,19 @@ impl Worker {
         self
     }
 
+    /// Builds the visibility grids as background work
+    /// ([`crate::vis::Threads::background`]): the game's worker. Off, they
+    /// take half the machine's threads at the default priority
+    /// (`h2 bots nav`, which the user waits for).
+    pub fn background(mut self, on: bool) -> Self {
+        self.threads = if on {
+            crate::vis::Threads::background()
+        } else {
+            crate::vis::Threads::foreground()
+        };
+        self
+    }
+
     /// After the pass, wait for [`Handle::want`] until [`Handle::stop`].
     pub fn stay(mut self, stay: bool) -> Self {
         self.stay = stay;
@@ -494,7 +564,7 @@ impl Worker {
     pub fn run(mut self) -> Summary {
         let mut q = Queue::default();
         let mut seen: HashSet<String> = HashSet::new();
-        for s in (self.scan)() {
+        for s in (self.scan)().into_iter().filter(|s| played(s.as_ref())) {
             seen.insert(s.key().to_ascii_lowercase());
             q.push(s);
         }
@@ -512,19 +582,28 @@ impl Worker {
             for w in wants.iter().rev() {
                 // Again from the scan: the map may be new, or changed
                 // since it was looked at.
-                for s in (self.scan)() {
+                for s in (self.scan)().into_iter().filter(|s| played(s.as_ref())) {
                     let key = s.key().to_ascii_lowercase();
                     if s.key().eq_ignore_ascii_case(w) || seen.insert(key) {
                         q.push(s);
                     }
                 }
-                if let Some(src) = self.lookup.as_mut().and_then(|lookup| lookup(w)) {
+                if let Some(src) = self.lookup.as_mut().and_then(|lookup| lookup(w))
+                    && played(src.as_ref())
+                {
                     q.push(src);
                 }
                 q.prioritise(w);
             }
             if let Some(src) = q.pop() {
                 self.one(src, &mut sum);
+                continue;
+            }
+            if let Some((map, count)) = self.later.pop_front() {
+                match crate::vis::status(&self.dir, &map) {
+                    crate::vis::Status::Fresh => {}
+                    why => self.grids(&map, why, &mut sum, count),
+                }
                 continue;
             }
             if !summarised {
@@ -556,23 +635,29 @@ impl Worker {
                 return;
             }
         };
-        if !header.multiplayer && !self.all_kinds {
-            sum.skipped += 1;
-            return;
+        match map_use(&header.name, Some(header.kind)) {
+            MapUse::Never => {
+                sum.skipped += 1;
+                return;
+            }
+            MapUse::LoadOnly if !self.all_kinds => {
+                sum.skipped += 1;
+                return;
+            }
+            _ => {}
         }
         let status = status(&self.dir, &header.name, header.fingerprint);
         if !status.stale() && !self.force {
             match crate::vis::status(&self.dir, &header.name) {
                 crate::vis::Status::Fresh => sum.fresh += 1,
-                vis => self.vis_only(&header.name, vis, sum),
+                vis => self.grids(&header.name, vis, sum, true),
             }
             return;
         }
         let t = Instant::now();
+        // The nav files first, on their own: the bots walk on the mesh
+        // while its grids build, and a grid cut short keeps its progress.
         let built = src.build().and_then(|bsps| {
-            for d in &bsps {
-                d.walls.set_vis(Arc::new(crate::vis::build(&d.nav, &d.walls)));
-            }
             write_map(&self.dir, &header.name, header.fingerprint, &bsps)
                 .map(|_| bsps)
                 .map_err(|e| format!("writing {}: {e}", self.dir.display()))
@@ -581,18 +666,18 @@ impl Worker {
             Ok(bsps) => {
                 let d = &bsps[0];
                 (self.log)(&format!(
-                    "bots: built the nav mesh for {} ({}): {} polygons, {} links, {} wall triangles{}, visibility grid: {} in {:.1} s",
+                    "bots: built the nav mesh for {} ({}): {} polygons, {} links, {} wall triangles{} in {:.1} s",
                     header.name,
                     status.why(),
                     d.nav.polys.len(),
                     d.nav.edges.len(),
                     d.walls.tris.len(),
                     if bsps.len() > 1 { format!(", {} BSPs", bsps.len()) } else { String::new() },
-                    d.walls.vis().map_or_else(|| "none".into(), |v| v.summary()),
                     t.elapsed().as_secs_f32()
                 ));
                 (self.on_built)(&header.name, d);
-                sum.built.push(header.name);
+                sum.built.push(header.name.clone());
+                self.grids(&header.name, crate::vis::Status::Missing, sum, false);
             }
             Err(e) => {
                 (self.log)(&format!("bots: nav mesh for {} not built: {e}", header.name));
@@ -603,12 +688,23 @@ impl Worker {
 }
 
 impl Worker {
-    /// A map whose nav files are up to date but whose visibility grid is
-    /// `why` stale: builds only the grid, from the `.bots` files.
-    fn vis_only(&mut self, map: &str, why: crate::vis::Status, sum: &mut Summary) {
+    /// Builds `map`'s visibility grids from its `.bots` files, whose grid
+    /// is `why` stale, carrying on from saved progress
+    /// ([`crate::vis::rebuild_resumable`]). A map asked for meanwhile
+    /// ([`Handle::want`]) or a stop cuts it short with its progress saved;
+    /// it goes on the worker's `later` list to carry on once the queue is
+    /// empty.
+    /// `count`: the map goes in the summary when its grid is done (not
+    /// when its nav mesh was just built and counted).
+    fn grids(&mut self, map: &str, why: crate::vis::Status, sum: &mut Summary, count: bool) {
         let t = Instant::now();
-        match crate::vis::rebuild(&self.dir, map) {
-            Ok(d) => {
+        let shared = Arc::clone(&self.shared);
+        let stop = move || {
+            let w = shared.wants.lock().unwrap_or_else(|e| e.into_inner());
+            !w.names.is_empty() || w.stop
+        };
+        match crate::vis::rebuild_resumable(&self.dir, map, self.threads, &stop) {
+            Ok(Some(d)) => {
                 (self.log)(&format!(
                     "bots: built the visibility grid for {map} ({}): {} in {:.1} s",
                     why.why(),
@@ -622,11 +718,24 @@ impl Worker {
                 {
                     (self.log)(&format!("bots: {map}: the new visibility grid is in use"));
                 }
-                sum.built.push(map.to_owned());
+                if count {
+                    sum.built.push(map.to_owned());
+                }
+            }
+            Ok(None) => {
+                (self.log)(&format!(
+                    "bots: visibility grid for {map}: paused after {:.1} s, progress saved",
+                    t.elapsed().as_secs_f32()
+                ));
+                if !self.later.iter().any(|(m, _)| m == map) {
+                    self.later.push_back((map.to_owned(), count));
+                }
             }
             Err(e) => {
                 (self.log)(&format!("bots: visibility grid for {map} not built: {e}"));
-                sum.failed.push(map.to_owned());
+                if count {
+                    sum.failed.push(map.to_owned());
+                }
             }
         }
     }

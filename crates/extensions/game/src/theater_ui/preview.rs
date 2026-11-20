@@ -1,7 +1,7 @@
 //! Offline samples exercise the guest list class, detail actions and the
 //! same transport model as the desktop plates.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use debug_menu::Tone;
 
@@ -9,7 +9,8 @@ use super::adapter::{Clip, FilmMeta, Library, Player, Source};
 use super::overlay::Track;
 use super::{Control, DETAIL, Entry, FILMS, Load, OVERLAY, Tab, Theater, pages};
 use crate::ui_kit::input::Input;
-use crate::ui_kit::page::{Focus, ListEffect, Live, Page};
+use crate::ui_kit::page::{Focus, ListEffect, ListPage, Live, Page, described};
+use crate::ui_kit::picker;
 use crate::ui_kit::spec::{PaneText, ScreenSpec};
 use pages::BROWSE_ROWS;
 
@@ -96,8 +97,18 @@ enum Kind {
 impl Kind {
     fn states(self) -> &'static [&'static str] {
         match self {
-            Self::Films => &["list", "empty", "loading", "unplayable", "saved", "clips"],
-            Self::Detail => &["list", "unplayable", "confirm-delete"],
+            Self::Films => &[
+                "list",
+                "saved",
+                "clips",
+                "empty",
+                "empty-saved",
+                "empty-clips",
+                "no-matches",
+                "loading",
+                "unplayable",
+            ],
+            Self::Detail => &["list", "unplayable", "summary", "players", "confirm-delete"],
             Self::Playback => &["playing", "paused"],
         }
     }
@@ -109,6 +120,8 @@ struct Preview {
     theater: Theater,
     focus: Focus,
     parent_focus: Focus,
+    /// The kit's modal, above the library whose focus stays on the option.
+    picker: Option<(ListPage, Focus)>,
     track: Option<Track>,
 }
 
@@ -120,6 +133,7 @@ impl Preview {
             theater: Theater::default(),
             focus: Focus::default(),
             parent_focus: Focus::default(),
+            picker: None,
             track: None,
         };
         view.go(kind.states()[0]);
@@ -168,6 +182,13 @@ impl Preview {
 
 impl Live for Preview {
     fn press(&mut self, input: Input) -> String {
+        if let Some((page, focus)) = &mut self.picker {
+            let effect = page.step(focus, input);
+            if matches!(effect, ListEffect::Close | ListEffect::Action) {
+                self.picker = None;
+            }
+            return format!("{effect:?}");
+        }
         let list = matches!(self.show, Kind::Films);
         if matches!(self.show, Kind::Playback) {
             let control = match input {
@@ -191,6 +212,13 @@ impl Live for Preview {
         }
         let effect = pages::preview_page(&self.theater, list).step(&mut self.focus, input);
         match effect {
+            ListEffect::Open(picker::NAME) => {
+                let picker = Arc::new(picker::Picker::new(false));
+                let page = ListPage::new(picker.class(), described(&picker));
+                let current = picker::current().map_or(0, |pick| pick.current);
+                self.picker = Some((page, Focus(current)));
+                return format!("{effect:?}");
+            }
             ListEffect::Open(DETAIL) => {
                 self.parent_focus = self.focus;
                 self.show = Kind::Detail;
@@ -200,14 +228,14 @@ impl Live for Preview {
                 self.show = Kind::Films;
                 self.focus = self.parent_focus;
             }
-            ListEffect::Action if !list && self.focus.0 == 0 => {
-                if let Some(entry) = self.theater.state().selected.as_ref() {
-                    self.track = Some(Track::from_entry(entry));
-                    self.show = Kind::Playback;
-                }
-            }
             ListEffect::Action if !list => {
-                if self.theater.step_detail(self.focus.0 as i16) {
+                let entry = self.theater.state().selected.clone();
+                if let Some(entry) = entry
+                    .filter(|e| pages::Action::at(e, self.focus.0) == Some(pages::Action::Watch))
+                {
+                    self.track = Some(Track::from_entry(&entry));
+                    self.show = Kind::Playback;
+                } else if self.theater.step_detail(self.focus.0 as i16) {
                     self.show = Kind::Films;
                     self.focus = self.parent_focus;
                 }
@@ -219,6 +247,13 @@ impl Live for Preview {
     }
 
     fn spec(&self) -> ScreenSpec {
+        if let Some((page, focus)) = &self.picker {
+            let mut dialog = page.spec(focus);
+            let mut library = pages::spec(&self.theater, true);
+            library.focus = self.focus.0;
+            dialog.underlay = Some(Box::new(library));
+            return dialog;
+        }
         match self.show {
             Kind::Films | Kind::Detail => ScreenSpec {
                 focus: self.focus.0,
@@ -259,19 +294,20 @@ impl Live for Preview {
         self.show = self.initial;
         self.focus = Focus(0);
         self.parent_focus = Focus(0);
+        self.picker = None;
         self.track = None;
         let first = fixture("game-1", "lockout", "Team Slayer", true);
         let second = fixture("game-2", "zanzibar", "CTF", false);
         let films = vec![first.clone(), second.clone()];
         let mut state = super::State::default();
         state.load = match name {
-            "empty" => Load::Ready(Vec::new()),
+            "empty" | "empty-saved" | "empty-clips" => Load::Ready(Vec::new()),
             "loading" => Load::Loading,
             _ => Load::Ready(films.clone()),
         };
         state.tab = match name {
-            "saved" => Tab::Saved,
-            "clips" => Tab::Clips,
+            "saved" | "empty-saved" => Tab::Saved,
+            "clips" | "empty-clips" => Tab::Clips,
             _ => Tab::Recent,
         };
         state.clips.push(Clip {
@@ -279,18 +315,40 @@ impl Live for Preview {
             from_tick: 600,
             to_tick: 1800,
         });
+        if name == "no-matches" {
+            state.selector.map = Some("Lockout".into());
+            state.selector.game_type = Some("CTF".into());
+        }
         if matches!(self.initial, Kind::Films) {
             self.focus.0 = match name {
-                "empty" | "loading" => 0,
-                "unplayable" => 2,
-                _ => 1,
+                "empty" | "empty-saved" | "empty-clips" | "loading" | "no-matches" => 0,
+                "unplayable" => BROWSE_ROWS + 1,
+                _ => BROWSE_ROWS,
             };
         }
-        let entry = Entry {
+        let mut entry = Entry {
             film: if name == "unplayable" { second } else { first },
             clip: None,
             archive_clip: None,
         };
+        match name {
+            "summary" => {
+                entry.film.id = "live:summary".into();
+                entry.film.source = Source::Archive;
+                entry.film.playable_here = false;
+                entry.film.saved = false;
+                entry.film.scoreboard.clear();
+            }
+            "players" => {
+                entry.film.scoreboard = (1..=10)
+                    .map(|i| Player {
+                        name: format!("Player {i}"),
+                        ..Player::default()
+                    })
+                    .collect();
+            }
+            _ => {}
+        }
         state.select(entry.clone());
         if name == "confirm-delete" {
             state.confirm_delete = true;
@@ -323,125 +381,4 @@ pub fn live(name: &str) -> Option<Box<dyn Live>> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_live_summary_without_a_recording_still_shows_match_details() {
-        let theater = Theater::default();
-        let film = serde_json::from_value::<live_hle::films::RecentFilm>(serde_json::json!({
-            "game_id": "played-game", "map": "lockout", "mode": "multiplayer",
-            "kind": "matchmaking", "playlist": "Team Slayer",
-            "variant": "Slayer", "started_at": "2026-11-20T02:26:06.627Z",
-            "duration_s": 69, "result": "win", "has_host_film": false,
-            "players": [{"index": 0, "name": "Chief", "team": 0}],
-            "scoreboard": [{"index": 0, "score": 25, "kills": 25, "deaths": 8, "assists": 3}]
-        }))
-        .unwrap();
-        let film = FilmMeta::try_from(film).unwrap();
-        let mut state = theater.state();
-        state.recent_archives.insert(film.id.clone());
-        state.load = Load::Ready(vec![film]);
-        drop(state);
-
-        let recent = pages::spec(&theater, true);
-        assert_eq!(recent.rows.len(), BROWSE_ROWS + 1);
-        let description = recent.rows[BROWSE_ROWS].description.as_deref().unwrap();
-        for text in ["Matchmaking", "1:09", "1 player", "Win", "Live summary"] {
-            assert!(description.contains(text), "{description}");
-        }
-
-        let entry = theater.state().entries().pop().unwrap();
-        theater.state().select(entry);
-        let detail = pages::spec(&theater, false);
-        assert_eq!(detail.rows[0].label, "Watch unavailable");
-        assert_eq!(
-            detail.rows[0].description.as_deref(),
-            Some("No host recording")
-        );
-        assert!(!theater.step_detail(0));
-        for text in ["Chief", "Red", "25", "25 / 8"] {
-            assert!(detail.texts.iter().any(|t| t.text == text));
-        }
-    }
-
-    #[test]
-    fn theater_tabs_only_show_matching_entries() {
-        let mut view = live(FILMS).unwrap();
-        assert!(view.go("saved"));
-        assert_eq!(view.spec().rows.len(), BROWSE_ROWS + 1);
-        assert!(view.spec().rows[BROWSE_ROWS].label.contains("Lockout"));
-        assert!(view.go("clips"));
-        assert!(
-            view.spec().rows[BROWSE_ROWS]
-                .description
-                .as_ref()
-                .unwrap()
-                .contains("0:40")
-        );
-    }
-
-    #[test]
-    fn theater_tab_walkthrough_restores_the_parent_focus() {
-        let mut view = live(FILMS).unwrap();
-        for _ in 0..BROWSE_ROWS {
-            view.press(Input::Up);
-        }
-        view.press(Input::Right);
-        assert_eq!(view.spec().rows.len(), BROWSE_ROWS + 1);
-        assert!(view.spec().texts[0].text.contains("[Saved]"));
-        for _ in 0..BROWSE_ROWS {
-            view.press(Input::Down);
-        }
-        view.press(Input::A);
-        assert_eq!(view.spec().name, DETAIL);
-        view.press(Input::B);
-        assert_eq!(view.spec().name, FILMS);
-        assert_eq!(view.spec().focus, BROWSE_ROWS);
-    }
-
-    #[test]
-    fn theater_unplayable_film_can_be_saved_but_cannot_watch() {
-        let mut view = live(DETAIL).unwrap();
-        assert!(view.go("unplayable"));
-        view.press(Input::A);
-        assert_eq!(view.spec().name, DETAIL);
-        view.press(Input::Down);
-        view.press(Input::A);
-        assert_eq!(view.spec().rows[1].label, "Unsave");
-    }
-
-    #[test]
-    fn theater_delete_is_confirmed_and_restores_the_library() {
-        let mut view = live(DETAIL).unwrap();
-        view.press(Input::Down);
-        view.press(Input::Down);
-        view.press(Input::A);
-        assert_eq!(view.spec().rows[2].label, "Confirm delete");
-        view.press(Input::A);
-        assert_eq!(view.spec().rows.len(), BROWSE_ROWS + 1);
-        assert_eq!(view.spec().name, FILMS);
-    }
-
-    #[test]
-    fn theater_overlay_hides_and_restores_while_paused() {
-        let mut view = live(OVERLAY).unwrap();
-        assert!(view.go("playing"));
-        view.press(Input::A);
-        assert!(
-            view.spec()
-                .texts
-                .iter()
-                .any(|t| t.text.starts_with("Paused"))
-        );
-        view.press(Input::Back);
-        assert!(view.spec().texts.is_empty());
-        view.press(Input::Back);
-        assert!(
-            view.spec()
-                .texts
-                .iter()
-                .any(|t| t.text.starts_with("Paused"))
-        );
-    }
-}
+mod tests;

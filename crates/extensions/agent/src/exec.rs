@@ -75,13 +75,15 @@ pub type GameMethod = Box<dyn FnMut(Value, &mut GameCtx<'_>) -> Result<Value, Rp
 
 /// What a [`GameMethod`] gets besides its params.
 pub struct GameCtx<'a> {
+    /// The connection owning this request and any input it queues.
+    pub conn: ConnId,
     /// The game at this boundary ([`Reader::with_guest`] for guest memory).
     pub reader: &'a mut dyn Reader,
     /// The stamp of this boundary.
     pub at: At,
     host: &'a mut BTreeMap<String, (Access, HostMethod)>,
     /// Set by [`GameCtx::defer`]: the answer comes at a later boundary.
-    later: Option<(Later, u64)>,
+    later: Option<(Later, u64, Duration)>,
 }
 
 /// A deferred answer ([`GameCtx::defer`]): polled at each boundary after
@@ -132,7 +134,12 @@ impl GameCtx<'_> {
     /// next tick (guest calls a method queued). What the method returns is
     /// dropped. A paused game holds the answer until it steps.
     pub fn defer(&mut self, ticks: u64, poll: Later) {
-        self.later = Some((poll, ticks.clamp(1, DEFER_TICKS_MAX)));
+        self.defer_for(ticks, DEFER_WALL, poll);
+    }
+
+    /// A deferred operation with its own, shorter wall-clock deadline.
+    pub fn defer_for(&mut self, ticks: u64, wall: Duration, poll: Later) {
+        self.later = Some((poll, ticks.clamp(1, DEFER_TICKS_MAX), wall.min(DEFER_WALL)));
     }
 }
 
@@ -315,6 +322,7 @@ impl Agent {
         if let Some(c) = s.conns.get_mut(&conn) {
             c.closing = true;
         }
+        input::lock(&s.input).release_menu(conn);
         if s.controller == Some(conn) {
             s.controller = None;
             s.resume("released");
@@ -914,6 +922,7 @@ impl State {
                 None
             } else {
                 let mut ctx = GameCtx {
+                    conn: d.conn,
                     reader: &mut *reader,
                     at: at.clone(),
                     host: &mut self.host,
@@ -1046,6 +1055,9 @@ impl State {
             return Some(self.recorders.handle(m, p, at, &dir, &self.input));
         }
         if self.game_methods.contains_key(m) {
+            if m == method::UI_PRESS && self.conns.get(&conn).is_none_or(|c| c.closing) {
+                return Some(Err(RpcError::new(code::INTERRUPTED, "menu connection closed")));
+            }
             let at = self.at();
             let stamp = to_value(&at);
             let (access, _) = self.game_methods.get(m)?;
@@ -1055,6 +1067,7 @@ impl State {
             let lobby = self.lobby_record(m, &p);
             let (_, f) = self.game_methods.get_mut(m)?;
             let mut ctx = GameCtx {
+                conn,
                 reader,
                 at,
                 host: &mut self.host,
@@ -1066,14 +1079,14 @@ impl State {
             {
                 t.record_lobby(b, m, &p)
             }
-            if let (Ok(_), Some((poll, ticks))) = (&out, ctx.later.take()) {
+            if let (Ok(_), Some((poll, ticks, wall))) = (&out, ctx.later.take()) {
                 self.deferred.push(Deferred {
                     conn,
                     id: req.id,
                     poll,
                     from_ticks: self.ticks,
                     tick_limit: ticks,
-                    deadline: Instant::now() + DEFER_WALL,
+                    deadline: Instant::now() + wall,
                 });
                 return None;
             }
@@ -1120,11 +1133,17 @@ impl State {
                     "another connection holds control",
                 )),
                 _ => {
+                    let mut input = input::lock(&self.input);
+                    if let Some(owner) = input.menu_owner().filter(|owner| *owner != conn) {
+                        input.release_menu(owner);
+                    }
+                    drop(input);
                     self.controller = Some(conn);
                     Ok(serde_json::json!({ "at": self.at(), "controller": true }))
                 }
             },
             method::RELEASE => {
+                input::lock(&self.input).release_menu(conn);
                 if self.controller == Some(conn) {
                     self.controller = None;
                     self.resume("released");

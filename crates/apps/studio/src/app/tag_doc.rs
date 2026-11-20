@@ -76,6 +76,10 @@ pub struct TagEntry {
     pub address: u32,
     pub size: u32,
     pub access: Access,
+    /// For a tag with no data here: the shared map that has a tag of the
+    /// same group and name with data (`shared`, `single_player_shared`,
+    /// `mainmenu`), when one was found ([`TagDoc::set_elsewhere`]).
+    pub elsewhere: Option<String>,
 }
 
 /// One write of a field's bytes (one undo step, or merged into the last by
@@ -203,6 +207,12 @@ pub struct TagDoc {
     pub error: Option<String>,
     /// Whether a full block may grow (the session's switch).
     pub allow_growth: bool,
+    /// Bumped whenever block counts or addresses may have changed (load,
+    /// block changes, undo, redo): what [`Self::homes_cache`] is keyed by.
+    shape_rev: u64,
+    /// Each tag's raw pointers by map, as counted for `shape_rev`
+    /// (`shared_refs::TagDoc::homes`).
+    pub(super) homes_cache: std::cell::RefCell<(u64, HashMap<TagId, Option<super::shared_refs::Homes>>)>,
 }
 
 impl Default for TagDoc {
@@ -228,6 +238,8 @@ impl TagDoc {
             for_rev: None,
             error: None,
             allow_growth: false,
+            shape_rev: 0,
+            homes_cache: Default::default(),
         }
     }
 
@@ -275,6 +287,7 @@ impl TagDoc {
                 address,
                 size,
                 access,
+                elsewhere: None,
             });
         }
         let by_id = tags.iter().enumerate().map(|(i, t)| (t.id, i)).collect();
@@ -313,6 +326,7 @@ impl TagDoc {
             allocs: BTreeMap::new(),
         });
         self.rev += 1;
+        self.shape_rev += 1;
         Ok(())
     }
 
@@ -325,6 +339,7 @@ impl TagDoc {
         self.sealed = true;
         self.error = None;
         self.rev += 1;
+        self.shape_rev += 1;
     }
 
     pub fn is_open(&self) -> bool {
@@ -332,6 +347,11 @@ impl TagDoc {
     }
     pub fn rev(&self) -> u64 {
         self.rev
+    }
+    /// Changes when block counts or addresses may have (not on field
+    /// writes).
+    pub fn shape_rev(&self) -> u64 {
+        self.shape_rev
     }
     pub fn tags(&self) -> &[TagEntry] {
         self.loaded.as_ref().map_or(&[], |l| &l.tags)
@@ -566,6 +586,7 @@ impl TagDoc {
         self.undo.push(step);
         self.redo.clear();
         self.sealed = true;
+        self.shape_rev += 1;
         Ok(())
     }
 
@@ -630,6 +651,7 @@ impl TagDoc {
         self.undo.push(step);
         self.redo.clear();
         self.sealed = true;
+        self.shape_rev += 1;
         Ok(())
     }
 
@@ -699,6 +721,7 @@ impl TagDoc {
         let label = step.label.clone();
         self.redo.push(step);
         self.sealed = true;
+        self.shape_rev += 1;
         Some(label)
     }
     pub fn redo(&mut self) -> Option<String> {
@@ -712,10 +735,71 @@ impl TagDoc {
         let label = step.label.clone();
         self.undo.push(step);
         self.sealed = true;
+        self.shape_rev += 1;
         Some(label)
     }
     pub fn seal(&mut self) {
         self.sealed = true;
+    }
+
+    /// Undo steps so far: a mark for [`Self::rollback`] and
+    /// [`Self::squash`].
+    pub fn undo_len(&self) -> usize {
+        self.undo.len()
+    }
+    /// Undo every step past `mark` and forget them (an import that failed
+    /// part way leaves the document as it was).
+    pub fn rollback(&mut self, mark: usize) {
+        let undone = self.undo.len() > mark;
+        while self.undo.len() > mark {
+            self.undo();
+        }
+        if undone {
+            self.redo.clear();
+        }
+    }
+    /// Make the steps past `mark` one undo step named `label` (an import
+    /// is one step). Undoing it reverts their writes newest first and
+    /// takes back the strings they added.
+    pub fn squash(&mut self, mark: usize, label: String) {
+        if self.undo.len() <= mark {
+            return;
+        }
+        let steps: Vec<Step> = self.undo.drain(mark..).collect();
+        let mut one = Step {
+            label,
+            ..Step::default()
+        };
+        for s in steps {
+            one.writes.extend(s.writes);
+            one.strings.extend(s.strings);
+        }
+        self.undo.push(one);
+        self.sealed = true;
+    }
+
+    /// Show every tag read-only, saying `why` (a map browsed in the Tags
+    /// tool that the scenario session does not hold, so nothing saves its
+    /// edits).
+    pub fn read_only(&mut self, why: &'static str) {
+        if let Some(l) = self.loaded.as_mut() {
+            for t in &mut l.tags {
+                if t.access == Access::Edit {
+                    t.access = Access::Read(why);
+                }
+            }
+        }
+        self.rev += 1;
+    }
+    /// Record that tag `id`, which has no data here, has data in shared
+    /// map `map`.
+    pub fn set_elsewhere(&mut self, id: TagId, map: &str) {
+        let Some(l) = self.loaded.as_mut() else {
+            return;
+        };
+        if let Some(&i) = l.by_id.get(&id) {
+            l.tags[i].elsewhere = Some(map.to_owned());
+        }
     }
 
     /// Every changed run in the source's metadata: `(address, bytes)`,

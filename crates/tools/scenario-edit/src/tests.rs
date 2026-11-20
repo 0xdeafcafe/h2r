@@ -828,7 +828,7 @@ fn disc_ascension_frames_its_structure_not_its_cloud_deck() {
             .world
             .batches
             .iter()
-            .any(|b| b.blend == crate::scene::Blend::Translucent)
+            .any(|b| b.blend.see_through())
     );
 }
 
@@ -885,7 +885,7 @@ fn disc_zanzibar_world_is_lightmapped() {
         .world
         .batches
         .iter()
-        .filter(|b| b.blend != crate::scene::Blend::Translucent)
+        .filter(|b| !b.blend.see_through())
         .fold((0, 0), |(l, a), b| {
             let n = b.indices.len() / 3;
             (l + if b.lightmap.is_some() { n } else { 0 }, a + n)
@@ -1989,6 +1989,19 @@ fn sky_box_at(half: f32, uv: [f32; 2]) -> crate::scene::Mesh {
 
 /// [`sky_box_at`] drawn with `look`.
 fn sky_box_look(half: f32, uv: [f32; 2], look: &crate::scene::Look) -> crate::scene::Mesh {
+    let mut mesh = crate::scene::Mesh::default();
+    push_sky_box(&mut mesh, half, uv, look, crate::scene::Blend::Opaque);
+    mesh
+}
+
+/// Adds a box around the eye to `mesh`, drawn with `look` and `blend`.
+fn push_sky_box(
+    mesh: &mut crate::scene::Mesh,
+    half: f32,
+    uv: [f32; 2],
+    look: &crate::scene::Look,
+    blend: crate::scene::Blend,
+) {
     let mut part = geometry::WorldPart::default();
     for z in [-half, half] {
         for y in [-half, half] {
@@ -2011,9 +2024,7 @@ fn sky_box_look(half: f32, uv: [f32; 2], look: &crate::scene::Look) -> crate::sc
         part.tris.push([a, b, c]);
         part.tris.push([a, c, d]);
     }
-    let mut mesh = crate::scene::Mesh::default();
-    mesh.push_look(look, None, crate::scene::Blend::Opaque, &part);
-    mesh
+    mesh.push_look(look, None, blend, &part);
 }
 
 /// A 64x64 viewport's centre pixel after [`crate::render::Viewport::render`].
@@ -2083,6 +2094,7 @@ fn a_clamped_sky_texture_is_not_repeated() {
         sky: Some(SceneSky {
             name: "test_sky".into(),
             mesh: sky_box_at(5.0, [0.5, 1.25]),
+            clear: [0.0; 3],
         }),
         ..Scene::default()
     };
@@ -2144,6 +2156,7 @@ fn a_detail_map_multiplies_the_base_map_at_its_scale() {
             sky: Some(SceneSky {
                 name: "test_sky".into(),
                 mesh: sky_box_look(5.0, [0.25, 0.5], &look),
+                clear: [0.0; 3],
             }),
             ..Scene::default()
         };
@@ -2192,6 +2205,7 @@ fn the_sky_model_is_drawn_behind_the_level_wherever_the_eye_is() {
         sky: Some(SceneSky {
             name: "test_sky".into(),
             mesh: sky_box(5.0),
+            clear: [0.0; 3],
         }),
         ..Scene::default()
     };
@@ -2243,6 +2257,78 @@ fn the_sky_model_is_drawn_behind_the_level_wherever_the_eye_is() {
     assert!(!vp.has_sky());
 }
 
+/// A sky's added layers add onto what is drawn before them, and black
+/// adds nothing (Halo 1's Derelict: an additive space dome, then an
+/// additive galaxy whose picture is black around it, then alpha-blended
+/// planets). Drawn alpha-blended, the galaxy's black covered the dome.
+/// Behind the model is its clear colour (black), not the gradient.
+#[test]
+fn added_sky_layers_add_over_the_dome_and_black_adds_nothing() {
+    use crate::scene::{Blend, Image, Look, Scene, SceneSky};
+    let instance = wgpu::Instance::default();
+    let Ok(adapter) =
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+    else {
+        eprintln!("no wgpu adapter; skipping");
+        return;
+    };
+    let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+    let size = [64u32, 64];
+    let one = |rgba: [u8; 4]| Image {
+        width: 1,
+        height: 1,
+        rgba: rgba.to_vec(),
+    };
+    let (blue, black, red) = (0, 1, 2);
+    let cam = Camera {
+        distance: 40.0,
+        ..Camera::default()
+    };
+    let mut vp = crate::render::Viewport::new(&device);
+    let mut draw = |layers: &[(usize, Blend)]| {
+        let mut mesh = crate::scene::Mesh::default();
+        for (k, &(texture, blend)) in layers.iter().enumerate() {
+            // Nearer boxes for later layers, as the planets are nearer
+            // than the dome: depth must not decide the order.
+            let half = 50.0 - 10.0 * k as f32;
+            push_sky_box(&mut mesh, half, [0.5, 0.5], &Look::plain(Some(texture)), blend);
+        }
+        let scene = Scene {
+            textures: vec![
+                one([10, 10, 200, 255]),
+                one([0, 0, 0, 255]),
+                one([200, 10, 10, 255]),
+            ],
+            lifts: vec![1.0; 3],
+            sky: Some(SceneSky {
+                name: "test_sky".into(),
+                mesh,
+                clear: [0.0; 3],
+            }),
+            ..Scene::default()
+        };
+        vp.set_scene(&device, &queue, &scene);
+        vp.render(&device, &queue, &cam, size);
+        center_pixel(&device, &queue, &vp, size)
+    };
+    // The dome alone, added onto black: its own colour, no gradient.
+    let dome = draw(&[(blue, Blend::Additive)]);
+    assert!(dome[2] > 180 && dome[0] < 60 && dome[1] < 60, "the dome: {dome:?}");
+    // The galaxy's black, added over it, leaves it.
+    let px = draw(&[(blue, Blend::Additive), (black, Blend::Additive)]);
+    assert!(px[2] > 180 && px[0] < 60, "black added: {px:?}");
+    // A red layer added over it: both.
+    let px = draw(&[(blue, Blend::Additive), (red, Blend::Additive)]);
+    assert!(px[2] > 180 && px[0] > 180, "red added: {px:?}");
+    // An alpha-blended (opaque) planet after the added layers covers them.
+    let px = draw(&[
+        (blue, Blend::Additive),
+        (red, Blend::Translucent),
+        (black, Blend::Additive),
+    ]);
+    assert!(px[0] > 180 && px[2] < 60, "the planet: {px:?}");
+}
+
 /// A map's shared caches come from beside it, or from `shared` when the
 /// source names one (a Map Pack map leans on the Halo 2 disc's).
 #[test]
@@ -2287,4 +2373,87 @@ fn a_package_in_memory_does_not_reuse_its_bases_scene() {
     assert_ne!(edit, scene_key(&with(b"another"), "invented", ""));
     assert_eq!(edit, scene_key(&with(b"one map"), "invented", ""));
     assert_eq!(disc, scene_key(&base.clone(), "invented", ""));
+}
+
+/// The lightmap group lighting a BSP is the lightmap's first, as the
+/// engine and the native renderer pick it, and only with the BSP's
+/// checksum and a bitmap; why not otherwise is said (mainmenu's one group
+/// is empty: checksum 0, no bitmap).
+#[test]
+fn the_first_lightmap_group_lights_a_bsp_with_its_checksum() {
+    use geometry::{BspLighting, select_group};
+    use tags::structure::{Lightmap, LightmapGroup};
+    let group = |checksum: u32, bitmap: Option<map::TagId>| LightmapGroup {
+        structure_checksum: checksum,
+        palettes: Vec::new(),
+        bitmap,
+        cluster_geometry: Vec::new(),
+        cluster_render_info: Vec::new(),
+        instance_geometry: Vec::new(),
+        buckets: Vec::new(),
+        instance_render_info: Vec::new(),
+        instance_bucket_refs: Vec::new(),
+        cluster_bucket_refs: Vec::new(),
+        unsupported_counts: [0; 3],
+        raw: vec![0; LightmapGroup::SIZE],
+    };
+    let lightmap = |groups: Vec<LightmapGroup>| {
+        Some(Ok(Lightmap {
+            tag: map::TagId(7),
+            groups,
+        }))
+    };
+    let bitmap = Some(map::TagId(9));
+    let (g, why) = select_group(lightmap(vec![group(0x1234, bitmap)]), 0x1234);
+    assert_eq!((g.map(|g| g.bitmap), why), (Some(bitmap), BspLighting::Lightmapped));
+    // mainmenu: one group, empty.
+    let (g, why) = select_group(lightmap(vec![group(0, None)]), 0x1c1e_050d);
+    assert!(g.is_none());
+    assert_eq!(why, BspLighting::EmptyGroup);
+    assert_eq!(select_group(lightmap(Vec::new()), 1).1, BspLighting::EmptyGroup);
+    // Only the first group counts, even when a later one matches.
+    let (g, why) = select_group(lightmap(vec![group(5, bitmap), group(6, bitmap)]), 6);
+    assert!(g.is_none());
+    assert_eq!(why, BspLighting::ChecksumMismatch { group: 5, bsp: 6 });
+    assert_eq!(select_group(None, 1).1, BspLighting::NoLightmap);
+    assert_eq!(
+        select_group(Some(Err("bad".into())), 1).1,
+        BspLighting::Unreadable("bad".into())
+    );
+    assert_eq!(BspLighting::EmptyGroup.name(), "empty lightmap group");
+}
+
+/// The map's sun and fog as the scene shader's words: the sun's
+/// direction flagged and its hue, the fog's colour in linear light with
+/// its density and range; none of either leaves the editor's sun and no
+/// fog. An object on a lightmapped floor takes the floor's light, kept in
+/// range.
+#[test]
+fn the_maps_sun_and_fog_reach_the_shader_and_objects_take_the_floors_light() {
+    use crate::render::{AtmosphereUniforms, object_light};
+    use crate::scene::{Atmosphere, Fog, Sun};
+    assert_eq!(AtmosphereUniforms::of(&Atmosphere::default()), AtmosphereUniforms::NONE);
+    let a = Atmosphere {
+        sky: Some("sky".into()),
+        sun: Some(Sun {
+            direction: [0.0, 0.6, 0.8],
+            color: [2.0, 1.0, 0.0],
+            power: 1.0,
+        }),
+        fog: Some(Fog {
+            color: [0.5, 1.0, 0.0],
+            density: 0.25,
+            start: 10.0,
+            opaque: 110.0,
+        }),
+        fallback_rgb: None,
+    };
+    let u = AtmosphereUniforms::of(&a);
+    assert_eq!(u.sun, [0.0, 0.6, 0.8, 1.0]);
+    assert_eq!(u.sun_color, [1.0, 0.5, 0.0, 0.0]);
+    assert!((u.fog_color[0] - 0.5f32.powf(2.2)).abs() < 1e-6);
+    assert_eq!((u.fog_color[1], u.fog_color[3]), (1.0, 0.25));
+    assert_eq!(u.fog_range, [10.0, 110.0, 1.0, 0.0]);
+    assert_eq!(object_light([0.0, 1.0, 9.0]), [0.05, 1.0, 3.0]);
+    assert_eq!(object_light([f32::NAN, 0.5, 0.5]), [1.0, 0.5, 0.5]);
 }

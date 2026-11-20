@@ -74,6 +74,10 @@ pub const ADD_CHILD: u32 = 0x0022_eb18;
 pub const ITEM_SIZE: u32 = 0x80;
 const VISIBLE: u32 = 6;
 
+/// Keep the existing Controls viewport height when the iOS options need
+/// another row. Extra datums scroll through the item widgets.
+pub const MAX_VISIBLE_EXTRA: u32 = 6;
+
 /// How many rows the Controls list gets past the retail six: one for the
 /// Controller Speaker row, one for the Field of View row.
 pub fn extra_rows(speaker: bool, fov: bool) -> u32 {
@@ -154,13 +158,8 @@ pub fn extra_slot(table: &mut Vec<(u32, u32)>, next: &mut u32, handler: u32, bas
 
 // ---- the smaller Controls screen (in-game, screen 200) ----
 //
-// `ui\screens\multiplayer\mp_menu\controller_settings`, the dialog the pause
-// menu opens: one text per row, five visible (it already scrolls). Its
-// handler (`0x2b48c2`) builds a datum array (`0x45b8b0`, count 6) and gives
-// each datum a value word at `+2`, 0 to 5; the row text (`0x2b49e6`) looks
-// the value up in a table of string ids, and the row chosen (`0x2b4a4d`)
-// switches on it. We add a seventh datum with value 6 after the
-// constructor, draw it with our own text and toggle on it.
+// The retail list has five visible items and six datums. It identifies a
+// row by the datum's value word at +2. Our extra datums follow those six.
 
 pub const SMALL_LIST_NAME: u32 = 0x0045_b8b0;
 pub const SMALL_CTOR: u32 = 0x002b_48c2;
@@ -169,14 +168,28 @@ pub const SMALL_ROW_CHOSEN: u32 = 0x002b_4a4d;
 /// Datum array: new datum (EDX = array, EAX = handle).
 pub const DATUM_NEW: u32 = 0x0016_b840;
 pub const SMALL_VALUE: u16 = 6;
+pub const SMALL_AIM_ASSIST: u16 = 7;
 pub const SMALL_ON_ID: u32 = crate::layout_glue::ID_BASE + 0x30;
 pub const SMALL_OFF_ID: u32 = crate::layout_glue::ID_BASE + 0x31;
 pub const SMALL_ON_TEXT: &str = "Controller Speaker: On";
 pub const SMALL_OFF_TEXT: &str = "Controller Speaker: Off";
+pub const SMALL_AIM_ASSIST_ID: u32 = crate::ui_kit::ids::family("pause settings").id(3);
+pub const SMALL_AIM_ASSIST_TEXT: &str = "Aim Assist: Change in Main Menu";
 
-/// The small list's item count: one more for its datum array.
-pub fn small_list_count(name: u32, count: u32) -> u32 {
-    if name == SMALL_LIST_NAME && count == VANILLA_ROWS { count + 1 } else { count }
+/// The optional rows the constructor adds, in order.
+pub fn small_values(speaker: bool, aim_assist: bool) -> Vec<u16> {
+    [(speaker, SMALL_VALUE), (aim_assist, SMALL_AIM_ASSIST)]
+        .into_iter()
+        .filter_map(|(enabled, value)| enabled.then_some(value))
+        .collect()
+}
+
+pub fn small_list_count(name: u32, count: u32, extra: u32) -> u32 {
+    if name == SMALL_LIST_NAME && count == VANILLA_ROWS {
+        count + extra
+    } else {
+        count
+    }
 }
 
 /// The value word of datum `handle` in `array` (`[array+0x44]` holds
@@ -196,22 +209,50 @@ pub fn set_datum_value<M: Gm>(m: &mut M, array: u32, handle: u32, v: u16) -> boo
     }
 }
 
-/// The small row text call (ECX = handler, item at `[esp+4]`): our text
-/// for our datum, `None` for the retail rows.
-pub fn small_row_text<M: Gm>(m: &M, handler: u32, esp: u32, on: bool) -> Option<(u32, u32)> {
+pub fn small_row_text<M: Gm>(
+    m: &M,
+    handler: u32,
+    esp: u32,
+    speaker: Option<bool>,
+    aim_assist: bool,
+) -> Option<(u32, u32)> {
     let item = m.u32(esp.wrapping_add(4))?;
     let value = datum_value(m, m.u32(handler.wrapping_add(0x70))?, m.u32(item.wrapping_add(ITEM_ROW))?)?;
-    (value == SMALL_VALUE).then_some((LABEL_TEXT_INDEX, if on { SMALL_ON_ID } else { SMALL_OFF_ID }))
+    let id = match value {
+        SMALL_VALUE => match speaker? {
+            true => SMALL_ON_ID,
+            false => SMALL_OFF_ID,
+        },
+        SMALL_AIM_ASSIST if aim_assist => SMALL_AIM_ASSIST_ID,
+        _ => return None,
+    };
+    Some((LABEL_TEXT_INDEX, id))
 }
 
-/// The small row-chosen call (ECX = handler, a pointer to the datum handle
-/// at `[esp+8]`): true for our datum.
-pub fn small_is_ours<M: Gm>(m: &M, handler: u32, esp: u32) -> bool {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SmallPress {
+    Speaker,
+    LockedAimAssist,
+    Retail,
+}
+
+/// The small list's press reads the datum handle through the second argument.
+pub fn small_press<M: Gm>(
+    m: &M,
+    handler: u32,
+    esp: u32,
+    speaker: bool,
+    aim_assist: bool,
+) -> SmallPress {
     let value = (|| {
         let p = m.u32(esp.wrapping_add(8))?;
         datum_value(m, m.u32(handler.wrapping_add(0x70))?, m.u32(p)?)
     })();
-    value == Some(SMALL_VALUE)
+    match value {
+        Some(SMALL_VALUE) if speaker => SmallPress::Speaker,
+        Some(SMALL_AIM_ASSIST) if aim_assist => SmallPress::LockedAimAssist,
+        _ => SmallPress::Retail,
+    }
 }
 
 #[cfg(test)]
@@ -387,7 +428,7 @@ mod tests {
     }
 
     /// The smaller screen: a datum array at `ARRAY` with data at `DATA`
-    /// holding values 0 to 6, its handler at `HANDLER`, and an item showing
+    /// holding values 0 to 7, its handler at `HANDLER`, and an item showing
     /// datum `row`.
     const HANDLER: u32 = 0x30_0000;
     const ARRAY: u32 = 0x31_0000;
@@ -396,7 +437,7 @@ mod tests {
         let mut f = Fake::default();
         f.set_u32(HANDLER + 0x70, ARRAY);
         f.set_u32(ARRAY + 0x44, DATA);
-        for i in 0..7u32 {
+        for i in 0..8u32 {
             f.set_u16(DATA + i * 4, 0x8000 | i as u16);
             assert!(set_datum_value(&mut f, ARRAY, 0x0001_0000 | i, i as u16));
         }
@@ -408,25 +449,48 @@ mod tests {
     }
 
     #[test]
-    fn the_small_list_grows_by_one() {
-        assert_eq!(small_list_count(SMALL_LIST_NAME, 6), 7);
-        assert_eq!(small_list_count(SMALL_LIST_NAME, 5), 5);
-        assert_eq!(small_list_count(LIST_NAME, 6), 7 - 1);
+    fn the_small_list_grows_by_the_number_of_enabled_rows() {
+        let cases: [(bool, bool, &[u16]); 4] = [
+            (false, false, &[]),
+            (true, false, &[SMALL_VALUE]),
+            (false, true, &[SMALL_AIM_ASSIST]),
+            (true, true, &[SMALL_VALUE, SMALL_AIM_ASSIST]),
+        ];
+        for (speaker, aim_assist, values) in cases {
+            assert_eq!(small_values(speaker, aim_assist), values);
+            let extra = values.len() as u32;
+            assert_eq!(small_list_count(SMALL_LIST_NAME, 6, extra), 6 + extra);
+            assert_eq!(small_list_count(SMALL_LIST_NAME, 5, extra), 5);
+            assert_eq!(small_list_count(LIST_NAME, 6, extra), 6);
+        }
+    }
+
+    #[test]
+    fn aim_assist_in_the_small_list_is_touch_only_and_read_only() {
+        let f = small(7);
+        assert_eq!(small_row_text(&f, HANDLER, ESP, None, false), None);
+        assert_eq!(small_press(&f, HANDLER, ESP, false, false), SmallPress::Retail);
+        assert_eq!(
+            small_row_text(&f, HANDLER, ESP, None, true),
+            Some((0, SMALL_AIM_ASSIST_ID))
+        );
+        assert_eq!(SMALL_AIM_ASSIST_TEXT, "Aim Assist: Change in Main Menu");
+        assert_eq!(small_press(&f, HANDLER, ESP, false, true), SmallPress::LockedAimAssist);
     }
 
     #[test]
     fn the_small_row_shows_and_toggles() {
         let f = small(6);
         assert_eq!(datum_value(&f, ARRAY, 0x0001_0006), Some(6));
-        assert_eq!(small_row_text(&f, HANDLER, ESP, true), Some((0, SMALL_ON_ID)));
-        assert_eq!(small_row_text(&f, HANDLER, ESP, false), Some((0, SMALL_OFF_ID)));
-        assert!(small_is_ours(&f, HANDLER, ESP));
+        assert_eq!(small_row_text(&f, HANDLER, ESP, Some(true), false), Some((0, SMALL_ON_ID)));
+        assert_eq!(small_row_text(&f, HANDLER, ESP, Some(false), false), Some((0, SMALL_OFF_ID)));
+        assert_eq!(small_press(&f, HANDLER, ESP, true, false), SmallPress::Speaker);
         let store = settings::Store::defaults(&[&crate::setting_defs::PAD_SPEAKER]);
         let on = store.handle::<bool>(crate::setting_defs::PAD_SPEAKER.key);
         for want in [false, true, false] {
-            assert!(small_is_ours(&f, HANDLER, ESP));
+            assert_eq!(small_press(&f, HANDLER, ESP, true, false), SmallPress::Speaker);
             store.step(crate::setting_defs::PAD_SPEAKER.key).unwrap();
-            assert_eq!(small_row_text(&f, HANDLER, ESP, on.get()).unwrap().1, if want { SMALL_ON_ID } else { SMALL_OFF_ID });
+            assert_eq!(small_row_text(&f, HANDLER, ESP, Some(on.get()), false).unwrap().1, if want { SMALL_ON_ID } else { SMALL_OFF_ID });
         }
         assert!(crate::layout_glue::is_ours(SMALL_ON_ID) && crate::layout_glue::is_ours(SMALL_OFF_ID));
     }
@@ -435,17 +499,17 @@ mod tests {
     fn retail_small_rows_go_to_the_original() {
         for row in 0..6 {
             let f = small(row);
-            assert_eq!(small_row_text(&f, HANDLER, ESP, true), None, "{row}");
-            assert!(!small_is_ours(&f, HANDLER, ESP), "{row}");
+            assert_eq!(small_row_text(&f, HANDLER, ESP, Some(true), false), None, "{row}");
+            assert_eq!(small_press(&f, HANDLER, ESP, true, true), SmallPress::Retail, "{row}");
         }
         // A free item (handle -1) and unreadable memory.
         let mut f = small(6);
         f.set_u32(ITEM + 0x70, u32::MAX);
         f.set_u32(ROW_PTR, u32::MAX);
-        assert_eq!(small_row_text(&f, HANDLER, ESP, true), None);
-        assert!(!small_is_ours(&f, HANDLER, ESP));
-        assert_eq!(small_row_text(&Fake::default(), HANDLER, ESP, true), None);
-        assert!(!small_is_ours(&Fake::default(), HANDLER, ESP));
+        assert_eq!(small_row_text(&f, HANDLER, ESP, Some(true), false), None);
+        assert_eq!(small_press(&f, HANDLER, ESP, true, false), SmallPress::Retail);
+        assert_eq!(small_row_text(&Fake::default(), HANDLER, ESP, Some(true), false), None);
+        assert_eq!(small_press(&Fake::default(), HANDLER, ESP, true, false), SmallPress::Retail);
         assert!(!set_datum_value(&mut Fake::default(), ARRAY, 0, 6));
     }
 }

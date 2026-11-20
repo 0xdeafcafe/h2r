@@ -934,6 +934,16 @@ impl State {
             .find(|k| !own.contains(k))
             .map(|k| live_proto::sign::hex(k))
     }
+    pub fn cached_host_skulls(&self, keys: &[[u8; 8]]) -> Option<Vec<u8>> {
+        let id = self.joined_session(keys)?;
+        let seen = self
+            .service
+            .as_ref()?
+            .seen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        seen.get(&id)?.advertisement.skulls.clone()
+    }
     /// The playlist and session (hex) of the game about to start: the
     /// registered dedicated match, this console's advertisement, or the
     /// joined session as last read, in that order.

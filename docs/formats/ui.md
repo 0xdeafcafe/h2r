@@ -80,13 +80,18 @@ A **widget** is a runtime object with a common header (`0x0022e27b`): type at
 |---:|---|---|---|
 | 0 | screen | `wgit` | `0x0022f5ca` |
 | 1 | list | pane list (`0x18`) | `0x0024bb00` |
-| 3 | list item / button | pane button (`0x3c`) | `0x00253c8b` |
-| 5 | (not traced) | — | `0x002b41bc` |
+| 2 | list item | row datum handle at `+0x70` | `0x0024abae` |
+| 3 | button | pane button (`0x3c`) | `0x00253c8b` |
+| 5 | page selector | selected child at `+0x70` | `0x002b41bc` |
 | 6 | text | text block (`0x2c`) | `0x00253746` |
 | 7 | model scene | model scene (`0x4c`) | `0x002b0b5e` |
 | 8 | bitmap | bitmap block (`0x38`) | `0x002b01eb` |
 | 9 | shader bitmap | shader bitmap (`0x24`) | `0x002b1111` |
 | 10 | table | table (`0x18`) | `0x002afd97` |
+
+A type-5 widget switches to the previous or next enabled page on navigation
+events 2 and 4 (`0x002b41ea`). The Live social screen embeds three such
+child screens. Each carries its pane index at `+0x5f0` (`0x0022f965`).
 
 Draw order: `0x002353a5` collects up to 256 widgets and sorts them with
 `0x002356d8` by depth (`+0x60`, the Z of the animated offset, copied by `0x0022e9aa`; values within 0.001 tie),
@@ -131,6 +136,13 @@ are resolved against the screen's own `unic` reference (`wgit +0x18`) by
 `0x00230134`, which calls the localized-string lookup `0x001a0180`. This model
 validates every string ID against the map's string-ID table (index and encoded
 length) but never touches localized text.
+
+The game copies the resolved text into the widget. A text widget embeds the
+text interface at `+0x74` (`0x0022f561`, `0x0022f583`), a pane button at
+`+0x70` (`0x00253c8b`). Both interfaces store UTF-16 at `+0x44`,
+with 32 or 256 units including the terminator (`0x0022f50d`, `0x0022f545`).
+[The UI audit](../runtime/agent-api.md#ui-what-the-menus-show) reads these
+buffers after row binding and localization.
 
 ## Layouts
 
@@ -221,7 +233,7 @@ Items are laid out from the anchor using the skin's bounding box
 
 | Offset | Field | Evidence |
 |---|---|---|
-| 00 | flags: bits 0/1 justification as for buttons; bit 2 font option; bit 3 forces font 1 and applies `wigl +0x4c`; bit 4 selects the larger widget allocation | E `0x0022f9bf`, `0x00253765` |
+| 00 | flags: bits 0/1 justification as for buttons; bit 2 font option; bit 3 forces font 1 and applies `wigl +0x4c`; bit 4 selects the short text allocation | E `0x0022f9bf`, `0x00253765` |
 | 04 | animation | E |
 | 06 | `i16` copied to the widget (`+0x70`) | E; effect not traced |
 | 0a | `i16` font index | E |
@@ -384,8 +396,9 @@ builds a 0x20-byte request and calls the loader (stdcall, the request,
    base screen constructor `0x230451` with screen id 39, stores the screen
    vtable `0x45be30`, then the list handler constructor `0x2c84b8` with
    ESI = `screen + 0x614`;
-3. sets byte `screen + 0x6c` to 1 and pushes the screen with `0x147f6d`
-   (EDI = the screen, EBX = the request), which calls screen slot 21.
+3. sets byte `screen + 0x6c` to 1 and pushes the screen with
+   `SCREEN_PUSH` (EDI = the screen, EBX = the request, plain `ret`).
+   The push calls screen slot 21.
 
 **Screen vtable** (`0x45be30`, 28 slots, the next table starts at
 `0x45bea0`). Two slots matter to a class of ours:
@@ -629,8 +642,6 @@ without an error.
 
 - Which UI events raise which transition kind (0–4), and the meaning of the
   ambient loop styles.
-- Widget type 5, and the second widget type that `wgit` flag bit 4 selects for
-  text blocks (`0xf8` versus `0x2b8` bytes).
 - The draw modes behind bitmap `+8`, justification values 0–2 and the font
   options in text and button flags. The font work owns the last two.
 - The raw fields listed in each table, the populated `wigl +0x88`, `+0x130`

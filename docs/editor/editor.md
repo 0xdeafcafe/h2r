@@ -478,30 +478,98 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   shrunk to 512 a side, given a mip chain and
   lifted when very dark (the game draws them under detail maps and
   lightmaps) where no lightmap lights them.
-- **Lightmaps.** Each cluster's and instance's lightmap page (its `ltmp`
-  group's render info: an image of the lightmap bitmap and a palette) is
-  decoded from `P8` through the group's palette, and its parts draw with
-  their `1f` lightmap coordinates: base map × lightmap × 2 in gamma space,
-  plus a faint fill light so no texel is pure black. Parts without a page,
-  and object models, keep one sun and the sky, with dark base maps lifted.
+- **Lightmaps.** A BSP is lit by its lightmap's **first** group when that
+  group carries the BSP's checksum and a bitmap, as the engine and the
+  native renderer pick it (`geometry::select_group`, after
+  `native_render::load::load_world`). Each cluster's and instance's
+  lightmap page (the group's render info: an image of the lightmap
+  bitmap and a palette) is decoded from `P8` through the group's
+  palette, and its parts draw with their `1f` lightmap coordinates: base
+  map × lightmap × 2 in gamma space, plus a faint fill light so no texel
+  is pure black. A placed instance's coordinates are its own, from its
+  run in the group's buckets (`native_render::load::{bucket_streams,
+  instance_run, bucket_slice}`), not its definition's, which every
+  placement shares; the definition's only when the instance has none.
+  Each BSP's lighting is reported (`geometry::BspLighting`: lightmapped,
+  no lightmap, an empty group, another BSP's group, or a lightmap that
+  does not decode), in the status line when a BSP is not lightmapped and
+  in `view.stats`.
+- **Unlit BSPs.** mainmenu's one BSP was never lightmapped: its
+  lightmap's one group is empty (checksum 0, no bitmap, no palettes), so
+  its log line reads `0 lightmap pages (mainmenu: empty lightmap group,
+  lit by its sky's sun)`. The game draws such a BSP with each shader's
+  implementation for a BSP without a lightmap group
+  (`native_render::look::UNLIT_BSP_IMPLEMENTATION`, lit from engine
+  vectors). The viewport lights it, and every part without a page, with
+  the map's sun: one sun and the sky, with dark base maps lifted.
+- **The map's sun and fog.** The first of the scenario's skies that
+  reads (`h1_assets::sky::h2::Sky`, `SceneBuilder::atmosphere`) gives
+  them. Its first light with parameters is the sun: its direction from
+  the light's yaw and pitch (`scene::sun_direction`, turned above the
+  horizon) and its hue (`scene::sun_tint`, the colour scaled so its
+  brightest channel is 1; the viewport keeps its own brightness). Its
+  first `fog_a` element is the fog, checked as the engine checks it
+  (`scene::fog_of`, after `0x001301c0`: no density is no fog; colour
+  clamped to 0..1, density to 1, the opaque distance at least a unit past
+  the start), and drawn over the level and its objects, not the sky:
+  none before its start, rising evenly to its density at its opaque
+  distance (`scene::fog_amount`; the shader that consumes the engine's
+  fog state is not traced, so the ramp is the viewport's). A map whose
+  sky has neither keeps the editor's sun and no fog.
+- **Objects.** A placed object is lit by the lightmap of the floor it
+  stands on: the highest lightmapped solid triangle under its origin (at
+  most half a unit above it, 64 below; `scene::LightFloor`, a grid of
+  the world's lightmapped triangles by column), sampled there as the
+  floor itself is (`Scene::light_at`, bilinear, in linear light) and
+  applied as the placement's tint (`render::object_light`). An object
+  with no lightmapped floor under it keeps the sun alone.
 - **Sky.** The scenario's sky (its skies block, `scnr +0x8`: the first
   `sky ` whose render model builds, `scene::scenario_skies` and
   `Scene::sky`) is drawn at infinity in its own pass before the level:
   the view's translation is dropped (`Camera::sky_view_proj`, an
   infinite far plane), so it turns with the camera and never comes
   nearer, and the level's pass clears depth over it. Its parts are
-  textured as object models are; see-through parts blend over the
-  opaque ones. Behind it, or alone when there is none, a gradient from
+  textured as object models are. Solid parts are drawn first; then
+  the see-through ones, in the order of their parts, each
+  alpha-blended or, for an `add` template ("Blends", below), added:
+  Halo 1's Derelict draws an added space dome, an added galaxy whose
+  picture is black around it, and two alpha-blended planets. Behind
+  the model is the sky's clear colour (`scene::sky_clear`: `sky +0xa0`
+  when bit 5 of `+0x10` is set, else black), not the gradient, since
+  an added layer adds onto it. With no sky model, the gradient from
   the zenith to a pale horizon. `tests::skies_are_read_from_the_scenario_root`,
-  `tests::the_sky_turns_with_the_camera_and_never_comes_nearer` and
+  `tests::the_sky_turns_with_the_camera_and_never_comes_nearer`,
+  `scene::tests::see_through_batches_keep_their_part_order`,
+  `scene::tests::the_sky_clears_to_its_colour_only_when_flagged`,
   `tests::the_sky_model_is_drawn_behind_the_level_wherever_the_eye_is`
+  and `tests::added_sky_layers_add_over_the_dome_and_black_adds_nothing`
   (GPU) hold it. Solid surfaces are
   one-sided, as in the game, so the camera sees into a level through the
   backs of the cliffs and walls around it.
 - **Blends.** Templates in a `transparent` or `water` folder, plain
   `overlay` decals and part kind 4 are drawn see-through after everything
   else and are neither framed nor picked; `alpha_test` templates are cut
-  out.
+  out. A see-through shader composites as its material's first blended
+  pass says (`scene::material_blend`: the pass's render states through
+  the native renderer's decoder, `native_render::pass_state::pass_state`,
+  read by `scene::blend_of_state`), else as its template's name says
+  (`scene::template_blend`: the word `add` or `additive` adds, `mult` multiplies,
+  `alpha` blends by the picture's alpha): **additive** (lights, light
+  shafts, glows; without a picture it adds nothing), **alpha** (clouds,
+  glass), **multiply**, **double** (twice the picture times what is
+  behind it, as the game's gamma-space modulation: mid-grey changes
+  nothing), or **translucent** at a fixed opacity (water, and templates
+  neither says). A see-through shader whose bitmaps have no diffuse name
+  draws its first own bitmap. mainmenu's light shafts
+  (`one_add_illum_detail`, about a third of its BSP's materials) add
+  light; drawn at a fixed opacity they would lay grey sheets over its
+  city. The fog fades an added surface to nothing, a multiplied one to
+  white. The sky pass adds an additive layer with its own pipeline
+  (blend one, one), and a mesh's see-through batches keep the order of
+  their parts (`Blend::draw_order`).
+- **Self-illumination.** The `opaque\illum` template's picture is its
+  own light (mainmenu's lit windows): drawn as it is, unshaded
+  (`scene::template_emits`, `Look::emissive`).
 - **Object models.** Every palette entry (and netgame equipment's item
   collection, by its first entry) resolves object → `hlmt` → `mode`
   through `tags::object`; each region's first permutation at its best LOD
@@ -540,12 +608,32 @@ compares the window's pixels with the viewport's own, and
 (ignored; needs the disc) checks that under 2 % of either map's
 viewport is black (a quarter of Coagulation's was).
 
-Not yet: the sky's node transforms, its tag's rotation and scale, and
-skies after the first; the bucket streams (types `2f` and `30`: per-vertex colour and
-light direction, not interpreted); detail and bump maps, animated or
-self-illuminated shaders, model variants and permutations other than the
-first, and node transforms of skinned models (models are drawn in their
-bind pose).
+Colour: base maps and lightmap pages are uploaded as sRGB textures and
+sampled in linear light, and the viewport renders into an sRGB target,
+so a picture's colours come through as stored. Lightmapped surfaces are
+not lifted; only surfaces the sun lights have dark base maps brightened.
+
+`view.stats` (docs/editor/agent-api.md) reports all of the above for the
+open map: lightmap pages and each BSP's lighting, the world's triangles
+by blend and how many solid ones a lightmap lights, every material with
+its template, blend (and whether its passes said it) and picture, and the
+sky's sun and fog. `view.snapshot` renders the same view to a PNG.
+`scene::tests` hold the pure parts (blends from names and states, the
+sun, the fog check, colour conversion and bilinear samples, the floor
+under a point), `tests::the_first_lightmap_group_lights_a_bsp_with_its_checksum`
+the group choice, and `api::view::tests` the stats.
+
+Not yet: the shaders' own passes (the native renderer translates each
+material's layer-3 pass and its unlit-BSP implementation; the viewport
+draws a base map, its detail maps and a lightmap, so bump, environment
+and specular layers, and the engine lighting vectors of an unlit BSP, are
+missing); the bucket streams (types `2f` and `30`: per-vertex colour and
+light direction, not interpreted); the lightmap's light probes and the
+sky's fallback object-lighting colour (reported, not drawn); fog B,
+patchy fog and the BSP's fog planes; the sky's node transforms, its tag's
+rotation and scale, and skies after the first; animated shaders, model
+variants and permutations other than the first, and node transforms of
+skinned models (models are drawn in their bind pose).
 
 ## Play and pair
 
@@ -589,12 +677,21 @@ H2_AGENT=<cache>/h2recomp/editor-<pid>-<n>.sock H2_MAP_DIR=$TMPDIR/h2-editor-pla
   panel shows the path); the editor waits up to 20 minutes for the
   socket, since `h2 play` may build its image first.
 
-**Pair** attaches to a running `h2 serve` or `h2 play` started with
-`H2_AGENT`: a path typed (or `tcp://HOST:PORT`), or one of the sockets
-**Find** lists (`$H2_AGENT`, the default socket, and every socket in the
-agent's cache directory, where Play puts its own). An empty path pairs
-with the default socket. The game is then taken to hold the map as the
-editor shows it at that moment.
+**Pair** attaches to a running game: one it found, or a path typed (or
+`tcp://HOST:PORT`). `play::pair::Finder` looks every two seconds on its
+own thread: the agents directory (`agent_proto::discover`, where `h2 play`
+opens `<pid>.sock` unless `H2_AGENT` is set; leftover sockets nothing
+answers on are removed) and the sockets **Find** lists (`$H2_AGENT`, the
+default socket, and every socket in the agent's cache directory, where
+Play puts its own). Each is asked `session.status`. `Play::notice` turns
+one running game into "Halo 2 is running (map)" for the Game panel and
+the status bar, with `MapMatch` saying whether its map is the open one
+(`same`, `different`, or `unknown` when either has none), and the **Pair**
+button pairs with it. With **Auto-pair** (`Bridge::auto_pair`, on by
+default, not kept between runs) the editor pairs by itself with the one
+game running, once per socket (`Play::auto_tried`), so Unpair sticks. An
+empty path pairs with the default socket. The game is then taken to hold
+the map as the editor shows it at that moment.
 
 While paired (`play::Play`, on a link thread that polls `session.status`
 and `world.query` four times a second):
@@ -794,7 +891,9 @@ publish by itself.
 Every field of any tag of the open map (a disc map, a package, a
 converted Halo 1 map), labelled, with a widget per type. Edits save with
 the map: **Save map as...** and **Save as package...** write them through
-the same lossless `MapEditor` path as the scenario's.
+the same lossless `MapEditor` path as the scenario's. Any other map of
+the source (the shared caches among them) can be browsed read-only, and
+tags go out to and come back from tag bundles (below).
 
 ### The field registry
 
@@ -852,7 +951,8 @@ the refusal's text):
 | Counts, addresses, raw pointers and sizes, BSP descriptors | Shown only: changing them by hand corrupts the map. Blocks change through add / remove / duplicate. |
 | The scenario tag | Read-only: its bytes belong to the Scenario tool (its placement edits would overlap). Shown as in the source. |
 | Tags in a structure BSP region (`sbsp`, `ltmp`) | Not shown yet: they have their own address space. |
-| Tags with no data in the map (shared-map tags) | Nothing to show. |
+| Tags with no data in the map (shared-map tags) | Nothing to show here; the tree names the shared cache that has their data (`[in shared]`), and **Show it in ...** browses it there. |
+| Tags of a browsed map | Read-only: only the open map saves. |
 | A group with no layout, a tag shorter than its layout | Read-only (hex only without a layout). |
 | String IDs | Any string the map's string table has, or new text: a string the map lacks is added after its own (below). |
 | Data references | Their bytes, in place (same length), up to 4 KiB shown and edited. |
@@ -893,11 +993,111 @@ so have not been loaded by the game yet. The string tables then follow
 the metadata, so a map saved with new strings cannot grow blocks until it
 is rebuilt.
 
+### Browsing other maps and where tags live
+
+A retail map holds the metadata of every tag it uses; a tag whose data
+is all in a shared cache has an index entry and no data. Its raw data
+(bitmap pixels, geometry, sound) is reached by raw pointers whose top two
+bits name the file: the map itself, `mainmenu`, `shared` or
+`single_player_shared` (`assets::ResourceFile`).
+
+The tool shows one document at a time: the open map's (the session's,
+editable) or a **browsed** map's (`app/tag_browse.rs`). Browsing opens
+another map of the source (`MapSource::open_map`) into a `TagDoc` of its
+own whose tags are all read-only (`TagDoc::read_only`), so the open map's
+edits and undo are untouched; picking the open map again drops it.
+`shared` and `single_player_shared` are not levels: picking one in
+**Maps** browses it in the Tags tool and leaves the open map as it is
+(`App::select_map`). A map that fails to open as a level is browsed
+instead. `App::shown_tags` is the document the tree, fields, inspector
+and agent methods read.
+
+Two marks say where a tag lives, both computed from the maps alone:
+
+- **elsewhere**: for a tag with no data in the shown map, the first
+  shared cache (`shared`, `single_player_shared`, `mainmenu`) that has
+  the same group and name with data (`TagEntry::elsewhere`, set once per
+  document by `App::mark_elsewhere`).
+- **homes**: the tag's raw pointers counted by file
+  (`shared_refs::Homes`, `TagDoc::homes`), cached until the document's
+  shape changes (`TagDoc::shape_rev`: load, block changes, undo, redo).
+
+`app/tag_tree.rs` arranges the tree with no UI: a search where each word
+must be in `group:name`, the matches by group (then name), or as a
+folder tree of their paths with counts per folder. `tag.list` uses the
+same search.
+
+The inspector lists a tag's **data and resources** (`tag_api::resources`):
+every data reference (path, size, address) and raw pointer (path, file,
+offset, size). A bitmap previews its first image, decoded from the map
+and the shared caches as stored in the source (`App::tag_picture`; field
+edits not reflected); `App::tag_media` lists a bitmap's images or a
+sound's pitch ranges, permutations and chunks.
+
+### Tag bundles
+
+A tag bundle (`.h2tag`, `editor_core::tag_bundle`) is one or more tags
+written as a self-describing JSON file:
+
+```
+{ "format": "h2recomp.tag-bundle", "version": 1,
+  "origin": { "map": "ascension", "build": "<map header build string>" },
+  "tags":  [ { "group": "weap", "name": "objects\\...", "layout": "<fingerprint>",
+               "root": { "bytes": "<base64>", "fixups": [ ... ] },
+               "fields": { ... } } ],
+  "blobs": [ { "file": "shared", "offset": 1234, "bytes": "<base64>" } ] }
+```
+
+- `root` is the tag's root element: its bytes and **fixups**, each at a
+  byte offset of the element: `tag` (a reference, by `group:name`, or
+  null), `string_id` (by its text), `block` (its elements, each an
+  element in turn), `data` (the bytes it points at) and `raw` (a raw
+  pointer: file, offset, size, and the index of its blob if copied).
+  Addresses, indices into the map and string table indices are never
+  carried.
+- `layout` is a hash of the group's registry layout (sizes and structural
+  fields, `tag_bundle::fingerprint`); an import into a build whose layout
+  differs is refused.
+- `fields` is the tag read by name (`tag_api::read_tag`), for reading
+  only; import ignores it.
+- `blobs` holds raw resources copied with **resources** on (up to 256
+  MiB a bundle).
+
+`app/tag_bundle.rs` writes and applies bundles over a `TagDoc`.
+**Export** walks the tag's layout into fixups; with **dependencies** it
+also writes every tag it references, and theirs (up to 256 tags; tags
+with no data or no layout are named in `left_out`). Bundles hold bytes
+from the disc, so they are user output: the editor refuses a path inside
+a Git checkout, and an agent export with no path goes to
+`<data>/tag-bundles/<group>-<name>.h2tag` (the name's separators as
+dots: `weap-objects.weapons.rifle.h2tag`).
+
+**Import** replaces tags of the open map, each with the bundle's tag of
+the same group and name (or, for a bundle of one tag, a chosen tag of
+the same group). `MapEditor` patches and appends metadata but does not
+add tags, so a tag the map lacks refuses the import (or is skipped, with
+`skip_missing`). Everything is checked before anything is written, and a
+failure part way rolls the document back; a whole import is one undo
+step (`TagDoc::squash`) and saves with the map like any edit.
+
+| Part | On import |
+| --- | --- |
+| Element bytes | Written over the tag, except the fields shown only (counts, addresses, raw pointers and sizes, BSP descriptors), which follow the rules below. |
+| Blocks | Resized to the bundle's count first (removed from the end, added blank), growing only while growing full blocks is allowed; then each element applied. |
+| Tag references, datums | Resolved by `group:name` in the map, and checked against the field's groups; a name the map lacks refuses the import. One with no name in the bundle (none, or an ID the bundle's map could not name) is copied into the same map and set to none in another (listed in `nulled`). |
+| String IDs | Resolved by text; text the map's table lacks is added as a new string ID. One with no text keeps the map's value in another map. |
+| Data | Written in place when the length matches; another length is refused. |
+| Raw pointers | Carried when they point into a shared cache and the build matches, or into the map itself and it is the same map; otherwise the map's own pointer and size stay (counted in `raw_kept`). Blobs are not written into maps. |
+| `snd!`, `ugh!` | Imported only into the map they came from: they index the map's sound gestalt. |
+
 ### The windows and the panel
 
-`ui/tags.rs` draws the tool: the **tag tree** (groups, then tags, with a
-search on group or name; `*` marks an edited tag), the **fields** of the
-selected tag, and the **bytes** of the element under the mouse with the
+`ui/tags.rs` draws the tool: the **map picker** (the open map, the
+shared caches, any other map of the source), the **tag tree** (by group
+or by path, with a word search; `*` marks an edited tag, a bracket where
+its data lives), the **fields** of the selected tag with Export and
+Import, and **Data and bytes**: the tag's data and resources (with a
+bitmap preview), then the bytes of the element under the mouse with the
 hovered field lit and edited bytes marked.
 
 `fields.rs` is the field panel, reusable by any tool:
@@ -926,11 +1126,20 @@ registry with its blocks inside the metadata),
 `scenario_edit::tests::other_tags_patches_save_with_the_scenario_s`,
 `scenario_edit::tests::another_tags_grown_block_is_appended_and_repointed`,
 `scenario_edit::tests::new_string_ids_save_with_the_patches_that_use_them`,
+`editor_core::tag_bundle::tests` (the JSON format, base64, refusals of
+another format or version, file names), `app::tag_tree::tests` (search,
+groups, the path tree),
 `map::tests::added_string_ids_follow_the_maps_own`,
 `app::tag_tests` (listing and refusals, a field edit saved byte-exactly
 then undone, drag merging, blocks within capacity, a full block grown
 and saved appended, a new string ID added, saved and undone; opt-in
-`disc_a_retail_tag_field_saves_byte_exactly`), and
+`disc_a_retail_tag_field_saves_byte_exactly`; tag bundles: a round
+trip through a file as one undo step, references by name, a missing
+reference rolled back, missing tags refused or skipped, a stale layout
+refused, growth only when allowed, exports kept out of Git; a shared
+cache browsed read-only and selected from Maps; resources and lookups),
+`api::tests::tags_browse_a_shared_cache_and_round_trip_through_a_bundle`,
+and
 `headless::tests::the_tags_tool_edits_a_field_through_its_widgets`,
 which clicks the tree and a flag through the test-engine hooks.
 
@@ -1000,8 +1209,9 @@ studio crate only draws them and turns input into actions.
   `open_map(name)`, `resources(name)`), the snapshot `UndoStack`
   (coalescing by `u64` keys), `Status`, `variant_sources` (the
   variant schema, XBE save names and save storage for a source),
-  `packages` (the packages under a data root, Halo 1 origins) and
-  `halo1` (Halo 1 sources and what is shown of a map).
+  `packages` (the packages under a data root, Halo 1 origins),
+  `halo1` (Halo 1 sources and what is shown of a map) and `tag_bundle`
+  (the tag bundle format, [Tag bundles](#tag-bundles)).
 - `crates/tools/scenario-edit`: `Session` holds the scenario editor's state and
   every command (open, select, add, remove, plane drags, gizmo gestures,
   undo, save, packages); `session/multi.rs` holds the multi-selection
@@ -1033,8 +1243,10 @@ studio crate only draws them and turns input into actions.
     `ui/playlists.rs`, `ui/ui_screens.rs` and `ui/tags.rs` draw the
     other tools.
   - `app/tag_doc.rs`, `app/tag_api.rs`, `fields.rs`: the Tags tool's
-    document, its plain-function API and the reusable field panel
-    ([Tags](#tags)).
+    document, its plain-function API and the reusable field panel;
+    `app/tag_browse.rs` (browsing other maps, previews),
+    `app/tag_tree.rs` (search and the tree), `app/tag_bundle.rs` (export
+    and import), `app/shared_refs.rs` (where tags live) ([Tags](#tags)).
   - `app/convert.rs`: Convert to Halo 2 (the background build of a new
     map and its plain-words errors). `app/editing.rs`: multi-selection
     delete and duplicate, placing at the cursor, framing the selection.
@@ -1066,6 +1278,7 @@ last. The flags that set the scene up:
 | --- | --- |
 | `--pick <map>` | open this map in the scenario tool |
 | `--tool tags --tag <group>:<path>` | show a tag of the open map in the Tags tool |
+| `--tags-map <map>` | browse another map of the source in the Tags tool (`shared`, `single_player_shared`); `--tag` then picks one of its tags |
 | `--halo1 <iso\|dir>` | open a Halo 1 source (else `$H1_ISO`, `$H1_MAP_DIR`, `disc/halo1.iso`) |
 | `--mappack <iso\|dir>` | open the Map Pack (else `$H2_MAPPACK_ISO`, `mappack.iso` beside the disc, `disc/mappack.iso`) |
 | `--halo1-map <map>` | show a map of it, read-only |

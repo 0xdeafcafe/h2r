@@ -15,7 +15,7 @@ rustc-hash = "2"
 # other crates pin it.
 libc = "0.2"
 # The flat RAM window's fault region (src/window.rs).
-hostfault = { path = "../hostfault" }
+hostfault = { path = "../../recompiler/hostfault" }
 
 [dev-dependencies]
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder"] }

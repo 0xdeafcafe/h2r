@@ -207,7 +207,7 @@ fn pad_speaker(
     // The output is opened whenever the variable allows it, so the row can
     // turn the speaker on during the run; the setting decides what reaches it.
     let config = config.filter(|c| c.enabled && audio);
-    // The mute button: `pad.mute_button` (H2_PAD_MUTE, the Video screen's
+    // The mute button: `pad.mute_button` (H2_PAD_MUTE, the Voice screen's
     // Mute Button row). A row press reaches the HID thread at once, so the
     // thread runs while the row can still turn it on (not when
     // H2_PAD_MUTE=0 locks it off and the speaker is off).
@@ -282,7 +282,7 @@ fn pad_speaker(
 }
 
 /// The Steam Controller thread, when pads are wanted, the platform has raw
-/// HID and `H2_STEAM_PAD` is not `0`. Its tuning follows the Video screen's
+/// HID and `H2_STEAM_PAD` is not `0`. Its tuning follows the Controls screen's
 /// Steam rows (`steam_pad.*`).
 fn steam_pads(
     config: &app::AppConfig,
@@ -383,6 +383,7 @@ fn hosted(
         debug_menu: None,
         theater: None,
         perf_overlay: None,
+        discoverable_agent: false,
         settings: Some(store),
         trace_limit: Some(TRACE_LIMIT),
         // `run` sets it from --level or H2_LEVEL, resolved before the window.
@@ -807,6 +808,9 @@ pub(crate) fn run_with_theater(
         }
         host.theater = theater;
         host.debug_menu = debug_menu;
+        // The agent socket where editors find it (docs/runtime/agent-api.md,
+        // "Finding a game"), unless H2_AGENT names one or is `off`.
+        host.discoverable_agent = true;
         host.perf_overlay = perf_overlay;
         let r = boot::run_hosted_with_live(&xbe, &lib, &opts, host, &live_config);
         // As `h2 run` does: the kernel's storage may outlive the run (or never

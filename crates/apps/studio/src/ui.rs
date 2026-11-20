@@ -155,7 +155,7 @@ impl Studio {
             ToolKind::Playlists => self.playlist_windows(ui, app, &mut actions),
             ToolKind::UiScreens => self.ui_screen_windows(ui, app, gpu, &mut actions),
             ToolKind::Hud => self.hud_windows(ui, app, gpu, &mut actions),
-            ToolKind::Tags => self.tag_windows(ui, app, &mut actions),
+            ToolKind::Tags => self.tag_windows(ui, app, gpu, &mut actions),
         }
         self.log_window(ui, app);
         self.status_bar(ui, app);
@@ -630,10 +630,12 @@ impl Studio {
     }
 
     /// The Tags tool: the tag tree, the fields, the raw bytes.
-    fn tag_windows(&mut self, ui: &Ui, app: &mut App, actions: &mut Vec<Action>) {
+    fn tag_windows(&mut self, ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, actions: &mut Vec<Action>) {
         app.sync_tags();
         let fonts = &self.fonts;
         let st = &mut self.tags;
+        let dialogs = self.dialogs;
+        let pictures = &mut self.map_list;
         ui.window(self.keys.outliner.label(format!("{} Tags", icon::TREE)))
             .build(|| tags::tree(ui, app, st, fonts, actions));
         ui.window(
@@ -641,9 +643,9 @@ impl Studio {
                 .viewport
                 .label(format!("{} Fields", icon::SLIDERS)),
         )
-        .build(|| tags::fields(ui, app, st, fonts, actions));
-        ui.window(self.keys.inspector.label(format!("{} Bytes", icon::INFO)))
-            .build(|| tags::hex(ui, app, st, fonts));
+        .build(|| tags::fields(ui, app, st, fonts, dialogs, actions));
+        ui.window(self.keys.inspector.label(format!("{} Data and bytes", icon::INFO)))
+            .build(|| tags::hex(ui, app, st, fonts, gpu, pictures, actions));
     }
 
     fn heading(&self, ui: &Ui, text: &str) {
@@ -963,7 +965,8 @@ impl Studio {
                 }
                 if app.tool == ToolKind::Scenario {
                     ui.same_line_with_spacing(0.0, 24.0);
-                    play::status_chip(ui, &self.play.chip());
+                    play::status_chip(ui, &self.play.chip(app));
+                    self.play.status_pair_button(ui, app);
                 }
                 let mut right = String::new();
                 if app.tool == ToolKind::Playlists {

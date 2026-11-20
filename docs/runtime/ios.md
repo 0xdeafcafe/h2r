@@ -150,7 +150,7 @@ on iOS): **Touch Look Speed** 1 to 10 (5), **Touch Crouch** Toggle or Hold,
 **Gyro Aim** 0 (off, the default) to 10: turning the device aims as well
 (CoreMotion, only running while it is on), **Look Acceleration** 0 to 10
 (5; `H2_TOUCH_LOOK_ACCEL`), **Touch Auto Fire** Off or On (Off;
-`H2_TOUCH_AUTO_FIRE`). **Aim Assist** (Video screen)
+`H2_TOUCH_AUTO_FIRE`) and **Aim Assist**, which
 is Auto by default, which is Strong while the touch controls show
 ([docs/game/aim-assist.md](../game/aim-assist.md)).
 

@@ -133,12 +133,13 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `session` | `status`, `methods`, `log` |
 | `source` | `open {path}`, `maps` |
 | `doc` | `list`, `open {map \| path \| package \| variant \| playlists}`, `save`, `save_as {path}`, `diff`, `undo`, `redo`, `close` |
-| `tag` | `list {group, name}`, `read {tag, depth, elements, hex}`, `refs {tag}`, `follow {tag, ref}`, `set {tag, path, value}`, `block.add`, `block.remove`, `block.duplicate` |
+| `tag` | `list {group, name, query, path, limit, homes}`, `browse {map}`, `resources {tag}`, `export {tag, out, dependencies, resources}`, `import {path, tag, skip_missing}`, `read {tag, depth, elements, hex}`, `refs {tag}`, `follow {tag, ref}`, `set {tag, path, value}`, `block.add`, `block.remove`, `block.duplicate` |
 | `scenario` | `blocks`, `list {block}`, `get`, `set {block, index, field, value}`, `add {block, like, position}`, `move {block, index, position, ypr}`, `delete`, `duplicate`, `select` |
 | `variant` | `list`, `get`, `set {setting, value}`, `rename`, `copy`, `export`, `import`, `delete` |
 | `playlist` | `list` (with `unused` per playlist and the `templates`), `get {playlist}`, `set {playlist, title, description, template, clear}` (`template`: make the slot a playlist of that kind, or give a playlist another kind; `clear: true`: make it unused; [live-matchmaking.md §6.10](../live/live-matchmaking.md)), `entry {playlist, op, entry, to, weight}`, `entry_variant` |
 | `ui` | `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}` |
-| `view` | `camera {yaw, pitch, distance, target, focus, all}`, `snapshot {out, size, camera}` |
+| `pair` | `list`, `status`, `connect {socket}`, `disconnect`, `auto {enabled}` |
+| `view` | `camera {yaw, pitch, distance, target, focus, all}`, `snapshot {out, size, camera}`, `stats` |
 | `hud` | `list {map \| package}`, `read {hud, state}`, `set {hud, widget, field, value, merge}`, `move {hud, widget, x, y, mode, merge}`, `render {hud, state, out}`, `check {hud, state}`, `save_as {path}` |
 | `model` (planned) | `list`, `read`, `render`, `colors`, `emblem` |
 | `custom` (planned) | `list`, `set` |
@@ -162,6 +163,23 @@ Notes on some:
   the schema's structural view instead. The scenario tag's edits stay with
   the Scenario tool: `tag.set` paths `netgame_flags[0].position` and
   `tag.block.*` on `netgame_flags` run as the matching `scenario.*` calls.
+- **Other maps and tag bundles.** `tag.browse {"map": "shared"}` shows
+  another map of the source in the Tags tool, read-only (`shared`,
+  `single_player_shared`, `mainmenu`, any level); `tag.browse {}` goes
+  back to the open map. `tag.list`, `tag.read`, `tag.set` (refused),
+  `tag.resources` and `tag.export` then work on the browsed map;
+  `tag.read {"raw": true}` and `tag.refs` still read the open map.
+  `tag.list` searches like the Tags tool (`query`: words each in
+  `group:name`; `path`: a folder) and marks each tag with `elsewhere`
+  (the shared cache that has the data of a tag with none here) and, with
+  `homes`, its raw pointers counted by file. `tag.resources` lists the
+  data references and raw pointers, and a bitmap's images or a sound's
+  permutations. `tag.export` writes a tag bundle (`.h2tag`,
+  [editor.md](editor.md#tag-bundles)) to `out`, else under
+  `<data>/tag-bundles/`, refused in a Git checkout; `tag.import`
+  replaces the open map's tags with a bundle's as one undo step of the
+  `tags` document. It does not add tags: one the map lacks refuses the
+  import unless `skip_missing`.
 - **Placements.** `scenario.set` takes a number, `[x, y, z]`, or for a tag
   reference `{"id": "0x..."}` (or `null` for none). The scenario checks it
   first: read-only fields, integer ranges, finite floats, palette indices,
@@ -170,9 +188,37 @@ Notes on some:
   `GROWTH_REFUSAL` the window shows; `data` has the count and capacity);
   `.delete` where something refers to entries by index. A new entry goes
   to `position`, else the camera focus, in one undo step.
+- **Pairing.** The editor pairs with a running game (the Game panel's
+  Pair; [editor-guide.md](editor-guide.md), "Play from the editor").
+  `pair.list` looks at the games now: the sockets in the agents directory
+  where `h2 play` listens by default (`agent_proto::discover`), plus the
+  default and `$H2_AGENT` sockets and Play's own. Each entry has its
+  `socket`, `pid`, `map`, `phase`, `paused`, `tick`, whether its map is the
+  open one (`matches`: `same`, `different`, `unknown`) and whether the
+  editor is `paired` with it; a socket nothing answers on is removed from
+  the agents directory. It works headless. `pair.status`, `pair.connect`
+  and `pair.disconnect` act on the window's pairing (`api/pair.rs`, through
+  `play::pair::Bridge` on the app), so they answer REFUSED with no window,
+  and `pair.connect` answers before the window has paired: poll
+  `pair.status` for `state: "connected"`. `pair.connect` with no `socket`
+  takes the one game running, and is refused with none or several.
+  `pair.auto {enabled}` reads or sets auto-pair, on by default.
 - **Renders.** `ui.render` draws on the CPU (no GPU needed); `view.snapshot`
   renders the open map offscreen through the viewport's own renderer
   (wgpu, no window) and answers `NO_GPU` on a machine without an adapter.
+- **Render stats.** `view.stats` (short form `render-stats`) says what the
+  viewport draws for the open map, with no GPU: `lightmap_pages`, each
+  BSP's `lighting` (`lightmapped`, `no lightmap`, `empty lightmap group`,
+  `lightmap of another BSP`, `lightmap does not decode`), the world's
+  `triangles` by blend with `solid_triangles` and `lightmapped_triangles`,
+  every material (`shader`, `template`, `blend`, `blend_from_passes`,
+  `emissive`, `base`, `details`), the `sky` drawn and the `atmosphere`
+  read from it (`sun` direction, colour and power; `fog` colour, density,
+  start and opaque distance; `fallback_rgb`). `{"scene": false}` while
+  the viewport shows the grey world (no art built). What each field means
+  is in [editor.md](editor.md), "What the viewport shows". To check a
+  map: `h2 studio open mainmenu`, `h2 studio render-stats`, then
+  `h2 studio snapshot` and look at the PNG.
 
 ### Errors
 
@@ -212,7 +258,10 @@ the window and the API stay one path.
   provider: `tag.read` through `tag_api::read_tag`, `tag.set` through
   `tag_api::set_field`, `tag.block.*` through `tag_api::block`, applied as
   `Action::Tag` with `App::perform`; it returns `None` for the scenario
-  tag's edits and for `tag.read {"raw": true}`.
+  tag's edits and for `tag.read {"raw": true}`. `api/tag_io.rs`
+  (`TagIo`, after it) answers `tag.list` (replacing the built-in one),
+  `tag.browse`, `tag.resources`, `tag.export` and `tag.import` through
+  `Action::BrowseTags`, `Action::TagExport` and `Action::TagImport`.
 - **HUDs (studio-hud, landed).** `api/hud.rs`: `hud.list` opens a map of
   the source (or a package) in the HUD tool and lists its `nhdt` tags
   and who names them; `hud.read` shows one and gives its widgets
@@ -326,8 +375,8 @@ identical profiles.
   example), `Api::call` (shape check, providers, built-ins),
   `Api::pump` (the window's between-frames answer).
 - `api/server.rs`: the socket. `api/{docs,scenario,tags,variants,playlists,ui_screens,view}.rs`:
-  the namespaces. `api/seams.rs`: providers; `api/tag_fields.rs` and
-  `api/hud.rs` the Tags and HUD tools'.
+  the namespaces. `api/seams.rs`: providers; `api/tag_fields.rs`,
+  `api/tag_io.rs` and `api/hud.rs` the Tags and HUD tools'.
 - `app/commands.rs`: the actions added for the API and the window
   (`SetField`, `EditSelection`, `MovePlacement`, `EditPlaylist`,
   `UndoIn`), `PlaylistEdit`, and `App::perform`. The viewport gizmo
@@ -356,11 +405,17 @@ system temp directory):
 - tags listed, read (raw and through the registry), referenced and
   followed; `tag.set` on a tag through the Tags tool, diffed, undone and
   redone as the `tags` document; a tag too short for its layout refused;
+- a shared cache browsed (its tags listed and read, `tag.set` refused),
+  back to the open map, a tag exported, edited and imported back over the
+  edit as one undo step;
 - the HUD tool through the API on `hud_edit`'s invented map: read, check,
   move (and in another mode), set, diff, undo and redo as the `hud`
   document, render (refused in a Git checkout), save as and re-open; and
   the window's actions and the API's make identical patches;
 - a registered provider answers a planned method;
+- `view.stats` of an invented scene reports its BSP's lighting, its
+  triangles by blend, its materials and its sky's sun and fog
+  (`api::view::tests`);
 - the window's loop answers a client between frames.
 
 `studio-proto`'s tests cover the short forms and the wire round trip.

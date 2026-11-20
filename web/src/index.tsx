@@ -12,7 +12,7 @@ import StatsLayout, { Title } from "./stats/Layout";
 import { live } from "./state/live";
 import { startGameArt } from "./state/gameart";
 import { ThemeColor } from "./themeColor";
-import { GAMES_ROOT, OLD_STATS_ROOT, STATS_ROOT, movedStatsPath, statsPath } from "./routes";
+import { GAMES_ROOT, LIVE_ADMIN, OLD_STATS_ROOT, STATS_ROOT, movedStatsPath, statsPath } from "./routes";
 
 // The dashboard (the front page) is in the main chunk; the stats pages,
 // admin and sign-in are chunks of their own that come in once the browser
@@ -32,6 +32,7 @@ const parts = {
   mods: () => import("./stats/Mods"),
   admin: () => import("./admin/Admin"),
   signin: () => import("./signin/SignIn"),
+  liveAdmin: () => import("./deck/AdminPage"),
   deckStyle: () => import("./deck/StylePage"),
   usage: () => import("./deck/UsagePage"),
   eventLog: () => import("./dash/EventLog"),
@@ -55,6 +56,7 @@ const Mods = lazy(parts.mods);
 const ModPage = lazy(() => parts.mods().then((m) => ({ default: m.ModPage })));
 const Admin = lazy(parts.admin);
 const SignIn = lazy(parts.signin);
+const LiveAdmin = lazy(parts.liveAdmin);
 const DeckStyle = lazy(parts.deckStyle);
 const Usage = lazy(parts.usage);
 const EventLog = lazy(parts.eventLog);
@@ -96,11 +98,11 @@ render(
     <Router root={(p) => <><ThemeColor /><Veil {...p} /></>}>
       <Route path="/dash/clans" component={() => <Navigate href="/dash/teams" />} />
       <Route path="/dash/clans/:tag" component={() => <Navigate href={`/dash/teams/${useParams().tag}`} />} />
-      <Route path="/dash/admin/style" component={DeckStyle} />
-      <Route path="/dash/admin/usage" component={Usage} />
-      <Route path="/dash/admin/hosts" component={lazy(() => import("./deck/HostsPage"))} />
-      <Route path="/dash/admin/events" component={EventLog} />
-      <Route path="/dash/admin" component={() => <Navigate href="/dash/admin/usage" />} />
+      <Route path={`${LIVE_ADMIN}/style`} component={DeckStyle} />
+      <Route path={`${LIVE_ADMIN}/usage`} component={Usage} />
+      <Route path={`${LIVE_ADMIN}/hosts`} component={lazy(() => import("./deck/HostsPage"))} />
+      <Route path={`${LIVE_ADMIN}/events`} component={EventLog} />
+      <Route path={LIVE_ADMIN} component={LiveAdmin} />
       <Route path={["/", "/dash/:section", "/dash/:section/:tag"]} component={Dashboard} />
       <Route path={STATS_ROOT} component={StatsLayout}>
         <Route path="/" component={Home} />

@@ -62,7 +62,7 @@ Evidence labels used throughout:
 - **[guess]**: my inference or speculation; needs a check before anyone
   builds on it.
 
-## 0. The plan (2026-11-19)
+## 0. Theater tiers
 
 Dedicated hosts change this design. A dedicated host is authoritative
 and has **no local players**. Its only inputs from outside are network
@@ -255,13 +255,27 @@ dedicated match.
 
 ### In-game Theater
 
-From the main menu, open **Xbox Live**, then **THEATER**. Use the top row
-and Left or Right to switch between **Recent**, **Saved** and **Clips**.
-The next three rows change the sort order (Newest, Map or Game type) and
-filter by map and game type. The film rows show the level and game type.
-Highlight a film to see its map preview, mode or playlist, variant, date,
-duration, player count, result and source. Press A for the film page and
-its scoreboard, and use Left or Right to page through the players.
+Select **THEATER** directly below **Xbox Live** on the main menu. The
+entry in `crates/extensions/game/src/layout_glue.rs` opens the film
+selector for the controller that selects it. Use the top row and Left or
+Right to switch between **Recent**, **Saved** and **Clips**.
+**Sort**, **Map** and **Game type** show their current values in the
+retail settings skin's second column. Press A to open a list over the
+library. A on an entry applies the choice and returns to the option.
+B closes just the list and keeps the current value. Choose **All** in a
+filter to clear it.
+
+Film rows show the map and game type, or the clip's title, with the date
+and running time when recorded. Highlight a row for its level picture
+and match information. Empty libraries explain how to record a film,
+save one or mark a clip. An empty filtered list keeps its options in reach.
+
+Press A on a film to open its lobby. The header shows its map, variant,
+mode, date, duration and result when known. The Players table shows the
+recorded names and available team, score and kill/death columns. A score
+without a join record uses the numbered player seat. Left
+and Right page through longer rosters. A summary without a recording
+shows one reason in the action area. **Watch** appears for playable films.
 
 Recent combines the local library and the signed-in Live account's
 archive. Saved includes local and account pins. Clips includes local
@@ -312,18 +326,22 @@ ranges appear in Clips and loop when watched. Screenshots are saved under
 playback window while the overlay is hidden. Paused camera changes apply
 to the next rendered frame.
 
-The selector uses the level-select layout and the film page uses the
-pregame lobby layout, both through the same UI kit as Mods and the
-editor's UI preview. See [UI builder](ui-builder.md) and
-[editor](../editor/editor.md). `boot::theater_ui::adapter` draws its
+The library uses the retail settings list beneath a tab strip and preview.
+The film page uses the pregame lobby's action skin, text and row spacing.
+Both resolve map art from the multiplayer and campaign UI level lists.
+The corners of the preview frame remain visible when the map has no
+picture. The guest and editor preview use the same Theater page model.
+See [UI builder](ui-builder.md) and [editor](../editor/editor.md). `game::theater_ui::adapter` draws its
 metadata from `film::Library` and the signed Live listing. Live's
 `GET /v1/games/{id}/film` streams the private recording to authenticated
 participants. The menu and playback window use
 [the Theater agent methods](../runtime/agent-api.md#theater-transport).
 
 Offline samples are `theater.films`, `theater.film` and
-`theater.playback` in `h2 ui preview`. The coordinator verifies these
-alongside live navigation and render parity with the code-only lane.
+`theater.playback` in `h2 ui preview`. The browser includes empty Recent,
+Saved, Clips and filtered states. Film details include a summary without
+a recording and a paged roster with names only. The main-menu selection
+dialog reports `kit.picker` through `ui.screen`.
 
 ### Web Theater
 

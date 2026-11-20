@@ -318,6 +318,9 @@ pub struct ScreenSpec {
     /// [`crate::ui_kit::dialog::dialog_view`] rather than as a list
     /// (docs/game/ui-builder.md "Screen kinds").
     pub dialog: Option<crate::ui_kit::dialog::DialogSpec>,
+    /// The live parent of a preview dialog opened from another kit screen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub underlay: Option<Box<ScreenSpec>>,
 }
 
 impl ScreenSpec {
@@ -340,6 +343,7 @@ impl ScreenSpec {
             panel: Vec::new(),
             texts: Vec::new(),
             dialog: None,
+            underlay: None,
         }
     }
     fn focused_prompts(&self) -> &[Prompt] {
@@ -353,7 +357,7 @@ impl ScreenSpec {
     /// ([`RowSpec::art`]), so a row's icon follows the focus.
     pub fn shown_art(&self) -> Vec<crate::ui_kit::view::PaneArt> {
         let mut v = self.art.clone();
-        v.extend(self.rows.get(self.focus).and_then(|r| r.art));
+        v.extend(self.rows.get(self.focus).and_then(|r| r.art.clone()));
         v
     }
 

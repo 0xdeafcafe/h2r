@@ -312,6 +312,9 @@ impl<B: Backend> Backend for MapOverrideBackend<B> {
     fn rescan(&mut self) {
         self.inner.rescan()
     }
+    fn resolves_on_use(&mut self, path: &str) -> bool {
+        self.inner.resolves_on_use(path)
+    }
     /// An `H2_MAP_DIR` file is chosen once per session: never changed.
     fn map_changed(&mut self, path: &str) -> bool {
         self.chosen(path).is_none() && self.inner.map_changed(path)

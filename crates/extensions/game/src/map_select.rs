@@ -9,9 +9,9 @@
 //! - In the game both steps are the retail Select Map dialog (screen
 //!   `0xce`), with its pictures and descriptions ([`MapSelect`]): first in
 //!   category mode (a row a category, standing on its first map, labelled
-//!   with the category), then a second Select Map pushed on the same stack
-//!   with the category's maps. Each lists an array of ours in place of the
-//!   retail one.
+//!   with the category), then a second Select Map with the category's
+//!   maps. The dialog's channel replaces its active screen, so from a
+//!   map list B or Back rebuilds the categories with the opened row focused.
 //! - Offline, [`page`] models the two steps as one [`StackPage`] over
 //!   [`CategoryRows`] and [`MapRows`], stepped by the table tests.
 //!
@@ -24,10 +24,12 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use engine::entry::{Cx, EntryError, GuestCall};
+use engine::entry::{Cx, EntryError, GuestCall, Ret};
+use engine::{GuestMemory, points};
 
 use crate::list_class::{ListClass, Rows};
 use crate::ui::Chosen;
+use crate::ui_back::{self, Navigation};
 use crate::ui_kit::ids::{self, Family};
 use crate::ui_kit::input::{Glyph, Input, Prompt, footer_legend};
 use crate::ui_kit::lifecycle;
@@ -539,7 +541,7 @@ fn screen_spec(name: &str, title: &str, footer: u32) -> ScreenSpec {
 /// Game Setup's Change Map (`0x2bb8ac`): its request for Select Map's
 /// loader `0x2bb2db` (`0x149f49`, window 3, slot 4), returning here.
 pub const CHANGE_MAP_REQUEST_RET: u32 = 0x002b_b8d7;
-pub const CHANGE_MAP_LOADER: u32 = 0x002b_b2db;
+pub const CHANGE_MAP_LOADER: u32 = points::SELECT_MAP_LOAD.base;
 /// Where the Select Map list's constructor asks for the level array
 /// (`0x2c9980`, list handler in ESI).
 pub const LIST_ARRAY_RET: u32 = 0x002c_9985;
@@ -646,19 +648,27 @@ pub fn read_flags(m: &dyn engine::memory::GuestMemory, array: u32) -> Vec<(u32, 
     out
 }
 
-/// The flow over Select Map screens: what the next one built lists, and
-/// what each built one is.
+/// A categories list can open fresh or restore a category on Back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct OpenList {
+    mode: Mode,
+    focus: Option<Category>,
+}
+
+#[derive(Clone, Copy)]
+struct OpenedList {
+    handler: u32,
+    mode: Mode,
+    focus_id: Option<u32>,
+}
+
+/// The flow over Select Map screens. Metadata follows each list's lifetime.
 #[derive(Default)]
-pub struct Flow {
-    /// The next Select Map built lists this (`None`: retail).
-    next: Mutex<Option<Mode>>,
-    /// Built screens of ours, by list handler.
-    screens: Mutex<Vec<(u32, Mode)>>,
-    /// The list handler whose rows are being drawn (`0x2c9ac4`).
+pub(crate) struct Flow {
+    next: Mutex<Option<OpenList>>,
+    screens: Mutex<Vec<OpenedList>>,
+    /// The list handler whose rows are being drawn.
     drawing: std::sync::atomic::AtomicU32,
-    /// Maps screens whose map was pressed (by list handler): the
-    /// categories' screen under it, closed once that screen is freed.
-    closing: Mutex<Vec<(u32, u32)>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -666,67 +676,73 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl Flow {
-    /// Change Map was pressed: the next Select Map lists the categories.
-    pub fn change_map(&self) {
-        *lock(&self.next) = Some(Mode::Categories);
+    fn categories(&self, focus: Option<Category>) {
+        *lock(&self.next) = Some(OpenList {
+            mode: Mode::Categories,
+            focus,
+        });
     }
-    /// A Select Map list (`handler`) is being built: what it lists, now
-    /// taken.
-    pub fn building(&self, handler: u32) -> Option<Mode> {
-        let mode = lock(&self.next).take()?;
-        let mut s = lock(&self.screens);
-        s.retain(|(h, _)| *h != handler);
-        s.push((handler, mode));
-        Some(mode)
+
+    fn pick(&self, category: Category) {
+        *lock(&self.next) = Some(OpenList {
+            mode: Mode::Maps(category),
+            focus: None,
+        });
     }
-    pub fn mode_of(&self, handler: u32) -> Option<Mode> {
+
+    fn opening(&self) -> Option<OpenList> {
+        lock(&self.next).take()
+    }
+
+    pub(crate) fn built(&self, handler: u32, mode: Mode, focus_id: Option<u32>) {
+        let mut screens = lock(&self.screens);
+        screens.retain(|list| list.handler != handler);
+        screens.push(OpenedList {
+            handler,
+            mode,
+            focus_id,
+        });
+    }
+
+    fn list(&self, handler: u32) -> Option<OpenedList> {
         lock(&self.screens)
             .iter()
-            .find(|(h, _)| *h == handler)
-            .map(|(_, m)| *m)
+            .find(|list| list.handler == handler)
+            .copied()
     }
-    /// A category was pressed: the Select Map pushed next lists its maps.
-    pub fn pick(&self, c: Category) {
-        *lock(&self.next) = Some(Mode::Maps(c));
+
+    pub(crate) fn mode_of(&self, handler: u32) -> Option<Mode> {
+        self.list(handler).map(|list| list.mode)
     }
-    /// A map was pressed on `handler`'s screen: the categories' screen
-    /// under it (the latest categories built) closes once it is freed.
-    /// Returns that screen; `None` without one.
-    pub fn picked(&self, handler: u32) -> Option<u32> {
-        let categories = lock(&self.screens)
-            .iter()
-            .rev()
-            .find(|(_, m)| *m == Mode::Categories)
-            .map(|(h, _)| h.wrapping_sub(SCREEN_LIST))?;
-        let mut c = lock(&self.closing);
-        c.retain(|(h, _)| *h != handler);
-        c.push((handler, categories));
-        Some(categories)
-    }
-    /// `screen` is being freed: forget it; the categories' screen to
-    /// close, if a map was pressed on it.
-    pub fn freed(&self, screen: u32) -> Option<u32> {
+
+    fn freed(&self, screen: u32) {
         let handler = screen.wrapping_add(SCREEN_LIST);
-        lock(&self.screens).retain(|(h, _)| *h != handler);
-        let mut c = lock(&self.closing);
-        let i = c.iter().position(|(h, _)| *h == handler)?;
-        Some(c.remove(i).1)
+        lock(&self.screens).retain(|list| list.handler != handler);
     }
-    /// Why a machine snapshot must wait: Change Map or a category was
-    /// pressed and its Select Map is not built yet, or a Select Map of ours
-    /// is up (the screens are known by host-side handler). `drawing` is
-    /// written before every row's text, so it is never carried.
-    pub fn snapshot_live(&self) -> Option<String> {
-        if let Some(mode) = *lock(&self.next) {
-            return Some(format!("a Select Map of {mode:?} is to be built"));
+
+    fn snapshot_live(&self) -> Option<String> {
+        if let Some(open) = *lock(&self.next) {
+            return Some(format!("a Select Map of {:?} is to be built", open.mode));
         }
         let screens = lock(&self.screens).len();
-        if screens != 0 {
-            return Some(format!("{screens} Select Map screens of ours are up"));
-        }
-        let closing = lock(&self.closing).len();
-        (closing != 0).then(|| format!("{closing} map presses wait to close the categories"))
+        (screens != 0).then(|| format!("{screens} Select Map screens of ours are up"))
     }
+}
+
+const LIST_ARRAY: u32 = 0x70;
+
+/// Find the new datum by map id, since the live list can omit locked rows
+/// and the rebuilt array uses fresh handles.
+fn focus_handle(mem: &dyn GuestMemory, array: u32, id: u32) -> Option<u32> {
+    let array = engine::datum::DatumArray::at(array);
+    let count = array.header_field(mem, engine::datum::layout::HIGH_WATER).ok()?;
+    (0..count.clamp(0, MAX_MAPS as i32)).find_map(|row| {
+        let element = array.get_absolute(mem, row).ok()??;
+        if mem.u32(element + 4).ok()? != id {
+            return None;
+        }
+        Some(array.handle_of(mem, row).ok()??.raw())
+    })
 }
 
 /// Space for each category label, including the overflow notice.
@@ -762,7 +778,7 @@ const REGION: u32 = 0x3000;
 /// The hooks (feature `map-select`).
 pub struct MapSelect {
     pub sel: Arc<Selection>,
-    pub flow: Arc<Flow>,
+    pub navigation: Arc<Navigation>,
     pub slots: Arc<Slots>,
     pub live: Option<Arc<live_hle::Hle>>,
 }
@@ -777,15 +793,14 @@ pub struct Slots {
 /// `region`; its address, `None` when it could not be written.
 fn write_ours(
     mem: &mut dyn engine::memory::GuestMemory,
-    sel: &Selection,
+    cat: &Catalogue,
     mode: Mode,
     region: u32,
 ) -> Option<u32> {
     let retail = mem.u32(LEVEL_ARRAY).unwrap_or(0);
     let flags = read_flags(&*mem, retail);
     let flag = |id: u32| flags.iter().find(|(i, _)| *i == id).map_or(0, |(_, f)| *f);
-    let cat = sel.catalogue();
-    let items = list_for(&cat, mode, &flag);
+    let items = list_for(cat, mode, &flag);
     let slots: Vec<u32> = crate::mod_slots::read_slots(&crate::layout_glue::ReadGm(&*mem))
         .iter()
         .map(crate::mod_slots::Slot::id)
@@ -794,7 +809,7 @@ fn write_ours(
     let lost = if slots.is_empty() {
         Vec::new()
     } else {
-        unshown(&cat, &items, &slots)
+        unshown(cat, &items, &slots)
     };
     if !lost.is_empty() {
         let lost: Vec<String> = lost.iter().map(|(m, why)| format!("{m}: {why}")).collect();
@@ -862,7 +877,7 @@ impl hooks::Feature for MapSelect {
 
         // Change Map: arm the next Select Map for the categories, when
         // there are two or more (else the retail list).
-        let (flow, sel) = (Arc::clone(&self.flow), Arc::clone(&self.sel));
+        let (nav, sel) = (Arc::clone(&self.navigation), Arc::clone(&self.sel));
         b.raw().observe_before(
             &SCREEN_REQUEST,
             "change map arms the categories",
@@ -873,7 +888,7 @@ impl hooks::Feature for MapSelect {
                     && word(4) == Some(CHANGE_MAP_LOADER)
                     && sel.active()
                 {
-                    flow.change_map();
+                    nav.maps.categories(None);
                 }
             },
         );
@@ -922,28 +937,27 @@ impl hooks::Feature for MapSelect {
             .after_feature(crate::skulls_custom::FEATURE);
 
         // The list's array for a Select Map of ours.
-        let (flow, sel) = (Arc::clone(&self.flow), Arc::clone(&self.sel));
-        let region_list = region;
+        let (nav, sel) = (Arc::clone(&self.navigation), Arc::clone(&self.sel));
         b.raw().before(
             &MP_LEVEL_ARRAY,
             "a Select Map of ours lists ours",
             move |c| {
                 let rt = Arc::clone(c.ctx.runtime());
-                {
-                    let mem = rt.memory();
-                    if mem.u32(c.cpu.esp).ok() != Some(LIST_ARRAY_RET)
-                        || mem.u32(LEVEL_ARRAY).unwrap_or(0) == 0
-                    {
-                        return Ok(F::Continue);
-                    }
+                let mut mem = rt.memory();
+                if mem.u32(c.cpu.esp).ok() != Some(LIST_ARRAY_RET) {
+                    return Ok(F::Continue);
                 }
-                let mode = flow.building(c.cpu.esi);
-                let Some(mode) = mode else {
+                let Some(open) = nav.maps.opening() else {
                     return Ok(F::Continue);
                 };
-                let mut mem = rt.memory();
-                match write_ours(&mut *mem, &sel, mode, region) {
+                if mem.u32(LEVEL_ARRAY).unwrap_or(0) == 0 {
+                    return Ok(F::Continue);
+                }
+                let catalogue = sel.catalogue();
+                match write_ours(&mut *mem, &catalogue, open.mode, region) {
                     Some(at) => {
+                        let focus_id = open.focus.and_then(|folder| catalogue.category_id(folder));
+                        nav.maps.built(c.cpu.esi, open.mode, focus_id);
                         drop(mem);
                         c.cpu.eax = at;
                         c.ret(0).map(F::Return)
@@ -954,23 +968,23 @@ impl hooks::Feature for MapSelect {
         );
 
         // Which list is drawing its rows.
-        let flow = Arc::clone(&self.flow);
+        let nav = Arc::clone(&self.navigation);
         b.raw()
             .observe_before(&MAP_LIST_ROW_TEXT, "note the list drawing", move |o| {
-                flow.drawing
+                nav.maps.drawing
                     .store(o.cpu.ecx, std::sync::atomic::Ordering::SeqCst);
             });
 
         // Category rows supply their own labels. Map rows use their slot.
-        let (flow, sel) = (Arc::clone(&self.flow), Arc::clone(&self.sel));
+        let (nav, sel) = (Arc::clone(&self.navigation), Arc::clone(&self.sel));
         b.raw().before(&MP_LEVEL_NAME, "category names", move |c| {
             let rt = Arc::clone(c.ctx.runtime());
             let mut mem = rt.memory();
             if mem.u32(c.cpu.esp).ok() != Some(ROW_NAME_RET) {
                 return Ok(F::Continue);
             }
-            let handler = flow.drawing.load(std::sync::atomic::Ordering::SeqCst);
-            let Some(mode) = flow.mode_of(handler) else {
+            let handler = nav.maps.drawing.load(std::sync::atomic::Ordering::SeqCst);
+            let Some(mode) = nav.maps.mode_of(handler) else {
                 return Ok(F::Continue);
             };
             let Some(id) = mem.u32(c.cpu.esp + 4).and_then(|slot| mem.u32(slot)).ok() else {
@@ -988,20 +1002,19 @@ impl hooks::Feature for MapSelect {
             c.ret(4).map(F::Return)
         });
 
-        // A press: a category pushes its maps; a map goes on as retail and
-        // the categories close once its screen is freed.
-        let (flow, sel) = (Arc::clone(&self.flow), Arc::clone(&self.sel));
+        // A press opens a category's maps or selects a map in retail.
+        let (nav, sel) = (Arc::clone(&self.navigation), Arc::clone(&self.sel));
         let request_at = region + NAME_AT + 0x100;
         b.raw().before(
             &MAP_LIST_ROW_CHOSEN,
             "categories open their maps",
             move |c| {
                 let handler = c.cpu.ecx;
-                let Some(mode) = flow.mode_of(handler) else {
+                let Some(mode) = nav.maps.mode_of(handler) else {
                     return Ok(F::Continue);
                 };
                 let screen = handler.wrapping_sub(SCREEN_LIST);
-                let (id, chain, stack) = {
+                let (id, chain, stack, ready) = {
                     let mem = c.ctx.runtime().memory();
                     let chain = mem.u32(c.cpu.esp + 4).ok();
                     let row = mem.u32(c.cpu.esp + 8).and_then(|p| mem.u32(p)).ok();
@@ -1009,13 +1022,20 @@ impl hooks::Feature for MapSelect {
                         let data = mem.u32(mem.u32(handler + 0x70).ok()? + 0x44).ok()?;
                         mem.u32(data + (r & 0xffff) * 8 + 4).ok()
                     });
-                    let stack = (
-                        mem.u32(screen + lifecycle::SCREEN_WINDOW).ok(),
-                        mem.u32(screen + lifecycle::SCREEN_SLOT).ok(),
-                    );
-                    (id, chain, stack)
+                    let stack = mem.u32(screen + lifecycle::SCREEN_WINDOW).ok()
+                        .zip(mem.u32(screen + lifecycle::SCREEN_SLOT).ok());
+                    let ready = stack
+                        .and_then(|(window, slot)| crate::ui_watch::channel(window, slot))
+                        .is_some_and(|ch| {
+                            mem.u32(ch + crate::ui_watch::ACTIVE).ok() == Some(screen)
+                                && mem.u32(ch + crate::ui_watch::PENDING).ok() == Some(0)
+                        });
+                    (id, chain, stack, ready)
                 };
-                let (Some(id), (Some(window), Some(slot))) = (id, stack) else {
+                if !ready {
+                    return c.ret(8).map(F::Return);
+                }
+                let (Some(id), Some((window, slot))) = (id, stack) else {
                     return Ok(F::Continue);
                 };
                 match mode {
@@ -1032,17 +1052,6 @@ impl hooks::Feature for MapSelect {
                         if let Some(map) = map {
                             crate::clankers::map_picked(&map);
                         }
-                        // The categories under this screen.
-                        match flow.picked(handler) {
-                            Some(_) => {
-                                eprintln!(
-                                    "map select: map {id:#x} pressed; the categories close after"
-                                )
-                            }
-                            None => {
-                                eprintln!("map select: map {id:#x} pressed; no categories under it")
-                            }
-                        }
                         Ok(F::Continue)
                     }
                     Mode::Categories => {
@@ -1054,7 +1063,6 @@ impl hooks::Feature for MapSelect {
                         else {
                             return c.ret(8).map(F::Return);
                         };
-                        flow.pick(cat);
                         let mask = {
                             let mem = c.ctx.runtime().memory();
                             chain.and_then(|ch| {
@@ -1074,12 +1082,17 @@ impl hooks::Feature for MapSelect {
                             slot,
                             CHANGE_MAP_LOADER,
                         );
-                        c.answer_async(move |cx| -> engine::entry::EntryFuture {
+                        let nav = Arc::clone(&nav);
+                        c.answer_async(move |cx| {
                             Box::pin(async move {
                                 cx.write(|m| m.write(request_at, &request))?;
-                                cx.call(GuestCall::new(CHANGE_MAP_LOADER).args([request_at]))
-                                    .await?;
-                                Ok(engine::entry::Ret::new(0, 8))
+                                nav.maps.pick(cat);
+                                let opened = cx
+                                    .call(GuestCall::new(CHANGE_MAP_LOADER).args([request_at]))
+                                    .await;
+                                let _ = nav.maps.opening();
+                                nav.inherit_setup(screen, opened?.eax);
+                                Ok(Ret::new(0, 8))
                             })
                         })
                     }
@@ -1087,45 +1100,74 @@ impl hooks::Feature for MapSelect {
             },
         );
 
-        // A maps screen freed after its press: close the categories.
-        let flow = Arc::clone(&self.flow);
-        b.raw().before(
-            &MAP_SCREEN_FREE,
-            "the categories close after a map",
-            move |c| {
-                let screen = c.cpu.ecx;
-                let Some(categories) = flow.freed(screen) else {
-                    return Ok(F::Continue);
-                };
-                let flags = {
-                    let mem = c.ctx.runtime().memory();
-                    mem.u32(c.cpu.esp + 4).unwrap_or(0)
-                };
-                c.answer_async(move |cx| -> engine::entry::EntryFuture {
-                    Box::pin(async move {
-                        // The destructor itself (this hook passes it now: the
-                        // screen is forgotten), then the close. Not by window
-                        // and slot: mid-free, the window's top word is 0 and
-                        // that close read 0x42 (lifecycle::close_screen).
-                        let r = cx
-                            .call(GuestCall::new(MAP_SCREEN_FREE_AT).ecx(screen).args([flags]))
-                            .await?;
-                        eprintln!("map select: the maps closed; closing the categories");
-                        lifecycle::close_screen(&cx, categories).await?;
-                        Ok(engine::entry::Ret::new(r.eax, 4))
-                    })
-                })
-            },
-        );
-        let flow = Arc::clone(&self.flow);
-        b.snapshot(hooks::SnapshotPolicy::forbid_while(move || {
-            flow.snapshot_live()
-        }));
+        // The window holds one active dialog. Back from maps schedules
+        // a replacement with the categories, keeping the folder's identity.
+        let nav = Arc::clone(&self.navigation);
+        b.raw().before(&points::SCREEN_BACK_EVENT, "return from maps to their folders", move |c| {
+            let screen = c.cpu.ecx;
+            let Some(mode) = nav.maps.mode_of(screen.wrapping_add(SCREEN_LIST)) else {
+                return Ok(F::Continue);
+            };
+            let (action, source) = {
+                let m = c.ctx.runtime().memory();
+                let mem = crate::layout_glue::ReadGm(&*m);
+                let input = m
+                    .u32(c.cpu.esp + 4)
+                    .ok()
+                    .and_then(|event| ui_back::request_input(&mem, event));
+                ui_back::back(&mem, screen, input)
+            };
+            match (action, source, mode) {
+                (ui_back::Back::Wait, _, _) => {
+                    c.cpu.eax = 1;
+                    c.ret(4).map(F::Return)
+                }
+                (ui_back::Back::Reopen, Some(source), Mode::Maps(category)) => {
+                    let nav = Arc::clone(&nav);
+                    c.answer_async(move |cx| Box::pin(async move {
+                        nav.maps.categories(Some(category));
+                        let opened = ui_back::reopen(&cx, request_at, source, CHANGE_MAP_LOADER).await;
+                        let _ = nav.maps.opening();
+                        nav.inherit_setup(screen, opened?);
+                        Ok(Ret::new(1, 4))
+                    }))
+                }
+                _ => Ok(F::Continue),
+            }
+        });
+
+        // At push the list has its actual rows. The retail activation
+        // path applies this handle once the incoming widgets exist.
+        let nav = Arc::clone(&self.navigation);
+        b.raw().before(&points::SCREEN_PUSH, "restore the opened folder's focus", move |c| {
+            let handler = c.cpu.edi.wrapping_add(SCREEN_LIST);
+            if let Some(OpenedList {
+                mode: Mode::Categories,
+                focus_id: Some(id),
+                ..
+            }) = nav.maps.list(handler)
+            {
+                let mut mem = c.ctx.runtime().memory();
+                let request = c.cpu.ebx;
+                if mem.u8(request).is_ok_and(|flags| flags & 1 != 0)
+                    && let Ok(array) = mem.u32(handler.wrapping_add(LIST_ARRAY))
+                    && let Some(handle) = focus_handle(&*mem, array, id)
+                {
+                    mem.set_u32(request.wrapping_add(ui_back::REQUEST_FOCUS), handle)?;
+                }
+            }
+            Ok(F::Continue)
+        });
+
+        let nav = Arc::clone(&self.navigation);
+        b.raw().observe_before(&MAP_SCREEN_FREE, "forget the freed map list", move |o| {
+            nav.maps.freed(o.cpu.ecx);
+        });
+        let nav = Arc::clone(&self.navigation);
+        b.snapshot(hooks::SnapshotPolicy::forbid_while(move || nav.maps.snapshot_live()));
         Ok(())
     }
 }
-
-const MAP_SCREEN_FREE_AT: u32 = 0x002b_b384;
 
 /// Adds the hooks when the boot [`prepare`]d a catalogue (it always does:
 /// with one category or none Change Map opens the retail list until a
@@ -1134,6 +1176,7 @@ const MAP_SCREEN_FREE_AT: u32 = 0x002b_b384;
 pub fn install(
     registry: &mut hooks::Registry,
     live: Option<Arc<live_hle::Hle>>,
+    navigation: Arc<Navigation>,
 ) -> anyhow::Result<bool> {
     let Some(sel) = PREPARED.get() else {
         return Ok(false);
@@ -1141,7 +1184,7 @@ pub fn install(
     let added = registry
         .add(&MapSelect {
             sel: Arc::clone(sel),
-            flow: Arc::default(),
+            navigation,
             slots: Arc::default(),
             live,
         })
@@ -1162,6 +1205,14 @@ pub fn selected_path(id: u32) -> Option<String> {
     let cat = PREPARED.get()?.catalogue();
     let map = cat.all().find(|map| map.id == id)?;
     crate::map_slots::slot_file(&format!("{}.map", map.path))
+}
+
+/// The category of the selected map, using the catalogue kept at boot
+/// and refreshed as content packages change.
+pub(crate) fn selected_category(id: u32) -> Option<Category> {
+    let cat = PREPARED.get()?.catalogue();
+    let map = cat.all().find(|map| map.id == id)?;
+    Some(map.category())
 }
 
 pub fn prepare(catalogue: Catalogue) -> Arc<Selection> {

@@ -55,10 +55,17 @@
 
 mod leaves;
 mod look;
+// Slice 7b: the biped post-physics update and its tree.
+mod post;
 mod state;
 
 pub(super) use leaves::{airborne_test, animation_kind, carrier, seconds_to_ticks};
 pub(super) use look::{LOOK_SITES, look_update};
+pub(super) use post::{
+    CONTACT_SITES, CROUCH_HEIGHT_SITES, CROUCH_STEP_SITES, INPUT_SITES, JUMP_SITES, POST_SITES, PROBE_SITES,
+    contact_update, crouch_forced, crouch_height, crouch_step, ground_flag, ground_probe, jump_update,
+    landing_update, physics_input, post_update,
+};
 pub(super) use state::{
     ACTION_SITES, FALL_SITES, STATE_SITES, TIMER_SITES, action, animation_state, fall_update, timer_update,
 };

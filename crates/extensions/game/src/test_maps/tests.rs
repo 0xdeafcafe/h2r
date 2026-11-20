@@ -26,6 +26,42 @@ impl Gm for Mem {
     }
 }
 
+/// Two built-in recipes, and any object with a `name`, on the base it names
+/// or the one given: the shape of the real recipes, no scenario editor.
+struct Fake;
+
+const FAKE_BUILT_IN: [&str; 2] = ["empty-room", "spawn-grid"];
+
+impl Recipes for Fake {
+    fn built_in(&self) -> Result<Vec<RecipeInfo>, String> {
+        Ok(FAKE_BUILT_IN
+            .iter()
+            .map(|n| RecipeInfo {
+                name: (*n).into(),
+                base: "lockout".into(),
+                ..RecipeInfo::default()
+            })
+            .collect())
+    }
+    fn resolve(&self, recipe: &Value, base: Option<&str>) -> Result<Resolved, String> {
+        let name = match recipe {
+            Value::String(n) if FAKE_BUILT_IN.contains(&n.as_str()) => n.clone(),
+            Value::Object(o) => o
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or("a recipe needs a name")?
+                .to_owned(),
+            _ => return Err("recipe: a built-in recipe's name, or a recipe object".into()),
+        };
+        let base = base.unwrap_or("lockout").to_owned();
+        let name = if base == "lockout" { name } else { format!("{name}-{base}") };
+        Ok(Resolved { package_dir: format!("{PREFIX}{name}"), name, base })
+    }
+    fn build(&self, _: &Value, _: Option<&str>, _: BaseMap, _: &Path) -> Result<Built, String> {
+        Err("the fake builds nothing".into())
+    }
+}
+
 fn listed() -> Listed {
     Listed {
         id: 0x0001_2345,
@@ -97,29 +133,6 @@ fn the_steps_are_the_level_boots_over_the_agents_options_block() {
     let mut long = listed();
     long.path = "x".repeat(level_boot::OPT_PATH_LEN as usize);
     assert!(game_steps(&request("x", &long)).is_none());
-}
-
-#[test]
-fn a_recipe_is_named_or_given_and_may_move_to_another_base() {
-    let p = |v: Value| serde_json::from_value::<CreateParams>(v).unwrap();
-    let r = recipe_of(&p(json!({"recipe": "spawn-grid"}))).unwrap();
-    assert_eq!(r.name, "spawn-grid");
-    let r = recipe_of(&p(json!({"recipe": "spawn-grid", "base": "lockout"}))).unwrap();
-    assert_eq!((r.name.as_str(), r.base.as_str()), ("spawn-grid-lockout", "lockout"));
-    let inline = json!({"recipe": {
-        "name": "mine", "title": "Mine", "purpose": "p", "base": "lockout", "fidelity": "full",
-        "place": [{"block": "starting_locations"}]
-    }});
-    assert_eq!(recipe_of(&p(inline)).unwrap().name, "mine");
-    for bad in [
-        json!({"recipe": "nope"}),
-        json!({"recipe": 3}),
-        json!({"recipe": {"name": "x"}}),
-        json!({"recipe": "superbounce", "base": "lockout"}),
-    ] {
-        let e = recipe_of(&p(bad.clone())).unwrap_err();
-        assert_eq!(e.code, code::INVALID_PARAMS, "{bad}");
-    }
 }
 
 #[test]
@@ -214,7 +227,7 @@ fn the_methods_list_build_and_remove_through_the_dispatcher() {
     let d = temp("methods");
     let agent = Agent::new();
     // No disc there: a build fails, and says why.
-    install(&agent, None, &d.join("no-disc.iso"), &d.join("data"), None);
+    install(&agent, Arc::new(Fake), None, &d.join("no-disc.iso"), &d.join("data"), None);
     let c = Client::connect(&agent);
     let methods = c.call(&agent, 1, method::METHODS, json!({}));
     for m in [
@@ -231,7 +244,7 @@ fn the_methods_list_build_and_remove_through_the_dispatcher() {
     let list = c.call(&agent, 2, method::MAPS_TEST_LIST, json!({}));
     assert_eq!(
         list["result"]["recipes"].as_array().unwrap().len(),
-        recipe::BUILT_IN.len()
+        FAKE_BUILT_IN.len()
     );
     assert_eq!(list["result"]["maps"], json!([]));
     let bad = c.call(&agent, 3, method::MAPS_TEST_CREATE, json!({"recipe": "nope"}));
@@ -250,6 +263,14 @@ fn the_methods_list_build_and_remove_through_the_dispatcher() {
     }
     assert_eq!(state["state"], "failed", "{state}");
     assert!(state["error"].as_str().unwrap().contains("disc"), "{state}");
+    // A map on another base is named for it.
+    let other = c.call(
+        &agent,
+        5,
+        method::MAPS_TEST_CREATE,
+        json!({"recipe": "spawn-grid", "base": "midship"}),
+    );
+    assert_eq!(other["result"]["name"], "spawn-grid-midship");
     // Loading a failed map says why; an unknown one is a bad name.
     let load = c.call(&agent, 600, method::MAPS_TEST_LOAD, json!({"name": "nope"}));
     assert!(load["error"].is_object(), "{load}");

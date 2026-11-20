@@ -86,6 +86,13 @@ pub struct MapData {
     pub places: crate::places::Places,
 }
 
+/// The directory of every map's bot data (`.bots`, `.vis`) under the data
+/// root: `<data>/bots`. The nav worker writes there and the game loads
+/// from there.
+pub fn dir(data_root: &std::path::Path) -> std::path::PathBuf {
+    data_root.join("bots")
+}
+
 /// The file name for `map` (the cache's map name) and structure BSP
 /// `bsp`.
 pub fn file_name(map: &str, bsp: usize) -> String {

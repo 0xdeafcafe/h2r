@@ -188,7 +188,7 @@ default; unknown keys are errors). `dsound::padroute::PadSpeakerConfig`:
 | `H2_PAD_SPEAKER` | `0` off, `1` on with defaults, otherwise a TOML file of the keys below (on unless it says `enabled = false`). Set, it locks the in-game row (below) | unset: the in-game row decides, on until turned off |
 | `H2_PAD_SPEAKER_DEVICE` | Output device name (substring, case-insensitive); `auto` tries DualSense, then a DS4, then a Steam Controller's trackpad haptics when one is connected; `haptics` (or `steam`) asks for those alone ([steam-controller.md](../input/steam-controller.md)) | `auto` |
 | `H2_PAD_SPEAKER_EXCLUSIVE` | `1` plays routed sounds only on the controller, `0` on both | `1` |
-| `H2_PAD_MUTE` | `1` the mute button toggles mute and its LED, `0` leaves the button alone. Set, it locks the Video screen's Mute Button row (`[pad] mute_button`; a row press reaches the HID thread at once through `PadHid::mute_switch`: on sets the LED for the current state, off unmutes and puts the LED out) | `1` (acts once a DualSense is found) |
+| `H2_PAD_MUTE` | `1` the mute button toggles mute and its LED, `0` leaves the button alone. Set, it locks the Voice screen's Mute Button row (`[pad] mute_button`; a row press reaches the HID thread at once through `PadHid::mute_switch`: on sets the LED for the current state, off unmutes and puts the LED out) | `1` (acts once a DualSense is found) |
 
 ```toml
 # H2_PAD_SPEAKER=~/pad-speaker.toml
@@ -208,12 +208,10 @@ gunfire stay on the main output. Shields are the HUD's warnings, under a
 weapon or material sound and stays on the main output. Routing goes by
 sound name, with one rule on top: a voice the game positions in 3D (a
 `DSBCAPS_CTRL3D` buffer, or a stream whose output buffer is one) is never
-routed, whatever it is called. Routing knows no player or port: on a
-console with local Clankers (docs/game/bots.md §4.3, "Listeners") a
-bot's own sounds reached the controller while its user counted as a
-listener; it is not routed. These are generic words,
-not tag paths from the disc: check them against your maps with `h2 tags
-<map>` (filter `snd!`) and narrow them. Globs ignore case and treat `/` as `\`.
+routed, whatever it is called. Clankers' attached sounds stay positioned
+and play on the main output. See [Hiding the views](../game/bots.md#43-hiding-the-views-traced).
+Use `h2 tags <map>` with the `snd!` group to check which tag names a glob
+matches. Globs ignore case and treat `/` as `\`.
 In the settings menu this belongs with the restart-only audio settings
 (device) and the live ones (routes, exclusive). On and off is already in the
 game's own Controls screen (below).

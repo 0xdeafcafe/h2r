@@ -490,6 +490,15 @@ impl Vfs {
         };
         self.mounts[mount].backend.map_changed(&path)
     }
+    /// Whether a first look at `name` would resolve a map package for it,
+    /// reading its whole base with this `Vfs` held (see
+    /// [`Backend::resolves_on_use`]).
+    pub fn resolves_on_use(&mut self, name: &str) -> bool {
+        let Ok((mount, path)) = self.resolve(name) else {
+            return false;
+        };
+        self.mounts[mount].backend.resolves_on_use(&path)
+    }
     /// NtCreateFile's initial allocation hint, applied only on create/overwrite.
     /// It reserves logical volume capacity without changing the initial EOF.
     pub fn open_allocated(

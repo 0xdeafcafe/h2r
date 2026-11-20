@@ -784,6 +784,9 @@ impl<B: Backend> Backend for SimStoreBackend<B> {
     fn map_id(&mut self, path: &str) -> Option<content::MapId> {
         self.inner.map_id(path)
     }
+    fn resolves_on_use(&mut self, path: &str) -> bool {
+        self.inner.resolves_on_use(path)
+    }
     /// A store is immutable, as a verified server map copy is.
     fn map_changed(&mut self, path: &str) -> bool {
         let stored = self

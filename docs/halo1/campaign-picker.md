@@ -265,6 +265,7 @@ on.
 | `PROGRESS_RAISE` `0x19043f` | before | a map id of ours: kept in our progress for that slot's profile, and the original skipped, so the profile keeps Halo 2's progress only |
 | `LAST_LEVEL_SET` `0x19040d` | before | For an imported map, bypass the Halo 2 profile write. Record map, basename and difficulty on launch (return to `0x18f0b7`). Backing out of difficulty retains the previous launch. |
 | `SCREEN_REQUEST` `0x149f49` | before | The main menu requests Campaign Options (return to `0x2308d1`, loader `0x230616`). Open the kit picker on the shared menu stack. |
+| `CAMPAIGN_OPTION_ITEM_COUNT` `0x2b160c` | after | Limit the number of item widgets Campaign Options links to the three its constructor builds. |
 
 ### The picker (`campaign_menu::PickerRows`, screen `campaigns`)
 
@@ -272,18 +273,33 @@ Our own list class ([feature-engine.md](../engine/feature-engine.md) "UI
 step b", as the Skulls screen is), titled "Campaign": the campaigns whose
 `order` is below 20 (`campaign_list::HALO2_ORDER`; Halo 1's is 10), then
 "Halo 2", then the rest, so Halo: Combat Evolved is first and Halo 2
-second. A press sets the game, refreshes its level array through
-`0x19c6d0`, then opens its Campaign Options with the kit's `Chosen::Retail`
-and `open_retail` on window 5, slot 4. B returns to the picker. The
-retail restricted-Campaign dialog at `0x230895` keeps its original path.
+second. A press sets the game. The kit's `open_retail` calls
+`0x19c6d0([0x4ee4e8], campaign_id)` to refresh the level array, then
+`0x149f1e(player_mask, 0x230616)` to open Campaign Options on window 5,
+slot 4. The mask comes from the local player in the press event. The
+loader allocates the screen and constructs its list at `screen+0x614`.
+B returns to the picker. The retail restricted-Campaign dialog at
+`0x230895` keeps its original path.
 
 ### Game-specific Campaign Options
 
-**Built.** Main menu row zero calls `0x230888`. Its normal branch opens
+Main menu activation calls `LOBBY_MODE_SET(-1)` at `0x230b45`, which the
+co-op hook logs as unsigned `4294967295`. Main menu row zero then calls
+`0x230888`. Its normal branch opens
 screen `0xda` before any profile-dependent solo choice. Its list
 constructor at `0x2b14dc` creates four-byte records with the action at
-+2. We retain its item widgets, scroll behavior, localized checkpoint and
-co-op labels, and expand the data array from three records to four.
++2. The expanded datum array holds up to four actions. The constructor
+also builds three 0x80-byte item widgets at `list+0x88`, followed by the
+press record at `list+0x208`. That record holds the list pointer at +0x10
+and its chosen callback (`0x2b166d`) at +0x14.
+
+During pane setup, the list's add-items method (`0x24bb60`) calls slot 19
+to count the widgets it should link. Retail's getter (`0x2b160c`) returns
+the active datum count. The Campaign Options hook caps that result at
+three. A fourth iteration would treat the callback as a widget's first
+child and send it to the recursive player-mask setter (`0x22ee92`).
+Retail scrolling (`0x24c515`) compares the full datum count with the
+linked child count, so the fourth action remains reachable.
 
 | Action | Behavior and XBE evidence |
 |---|---|
@@ -298,29 +314,26 @@ The picker is laid out as the level select is (its list, bracket, picture
 box and description text: `skulls_menu::LIST_LAYOUT`, `FRAME`,
 `DESCRIPTION_TEXT`, as Game Options is). For the focused campaign:
 
-- **Built — two-game artwork.** The detail pane shows a 220×207 collage
-  with Halo 1 on the left and Halo 2 on the right. The focused game's
-  image widens and the other dims. Halo 1 uses its own `ui.map` bitmap
-  `ui\shell\bitmaps\sp_levels`, cropped to the 139×113 picture during
-  import. For a full import the source is image 0 (The Pillar of Autumn).
-  A partial import uses its earliest available card in disc mission
-  order (`h1_contract::campaign::CAMPAIGN_ORDER`). The game reads no
-  Halo 1 disc: an import with no cards leaves the artwork missing until
-  `h2 import halo1` runs again. Halo 2 uses Cairo Station,
-  `ui\code_global_bitmaps\campaign2` in the Halo 2 disc's
-  `maps/mainmenu.map`, trimming 16 pixels on each edge before the cover
-  crop. Boot writes both focus states under
-  `<data>/campaigns/game-picker/{halo1,halo2}.png`, adds them as separate
-  framed bitmaps in the rewritten mainmenu, and assigns the focused
-  bitmap through the UI kit's `Rows::picture`. Missing artwork is
-  reported in the boot log. Game artwork is generated locally.
-- **the text** (`campaign_info::Info::text`): an original line about the
-  campaign, the release year and studio as plain facts (Halo 2: 2004,
-  Bungie; Halo 1: 2001, Bungie), the level count, the progress of the
-  signed-in profiles (levels the level select lists of the total, and
-  the hardest difficulty the last level was won on), and for Halo 1 the
-  Assets and HUD options. Halo 2's progress lives in the profile and isn't
-  shown.
+- Each campaign gets one picture in the 220×207 frame. Halo 1 uses the
+  earliest available card in mission order
+  (`h1_contract::campaign::CAMPAIGN_ORDER`). The import crops each
+  `ui\shell\bitmaps\sp_levels` image to its 139×113 picture. Halo 2
+  uses Cairo Station from `ui\code_global_bitmaps\campaign2` in
+  `maps/mainmenu.map`. The picker trims the baked frame and cut corner
+  before resizing. Each picture scales uniformly and crops to the
+  centre of the frame (`campaign_cards::cover`).
+- Boot writes the available pictures under
+  `<data>/campaigns/game-picker/{halo1,halo2}.png`. The mainmenu rewrite
+  adds their framed bitmaps. The picker selects the focused campaign's
+  bitmap through `Rows::picture`. If Cairo Station is unavailable,
+  Halo 2 uses its first level's picture. Other installed campaigns can
+  use their first level's picture. A row with no picture clears the
+  artwork area. Boot logs missing or unreadable sources. Game artwork
+  is generated locally.
+- The description (`campaign_info::Info::text`) joins the campaign
+  summary, release facts, level count, signed-in profiles' progress, and
+  Halo 1's Assets and HUD choices with spaces. The description widget
+  wraps the text. Halo 2's progress lives in the profile.
 
 The texts are our strings (family `campaign picker info`), installed as
 placeholders of `INFO_ROOM` bytes and rewritten in place while the picker
@@ -424,7 +437,7 @@ reads the multiplayer list, which campaign ids never reach.
   LOD to 128 (220x207 gives the retail `0x2d480`); a new bitmap takes the
   template's shape and its own pixels on a decomposed map, the template
   untouched; a bad template refused.
-- `boot` `campaign_cards::tests` (4, and 1 ignored): cover scaling; cards
+- `game` `campaign_cards::tests`: cover scaling; cards
   into a mainmenu-shaped map with every retail tag's bytes kept; the
   rewrite wants mainmenu only and fills the table; cards read per
   campaign folder. The ignored test, `the_disc_s_mainmenu_takes_ten_cards`,
@@ -432,7 +445,7 @@ reads the multiplayer list, which campaign ids never reach.
   each card is a 220x207 `0x2d480`-byte LOD holding the scaled pixels,
   the checksum is good, tag memory grows by at most two pages (it grows
   by one), and the map is under 64 MiB (61.6 MB). The rebuild takes 31 ms.
-  `H2_DISC=disc/halo2.iso cargo test -p boot --lib campaign_cards --
+  `H2_DISC=disc/halo2.iso cargo test -p game --lib the_disc_s_mainmenu_takes_ten_cards --
   --ignored`.
 - `vfs` `rewrite::tests::a_chain_rewrites_what_either_wants_one_after_the_other`.
 - `vfs` `campaign_maps::tests` (2): a map the disc lacks is served from
@@ -457,20 +470,22 @@ reads the multiplayer list, which campaign ids never reach.
 ## Coordinator verification
 
 The synthetic tests cover picker navigation, native row allocation,
-separate game/profile saves, old progress, tile focus
-and agent menu state. The ignored disc test reads the owner's Halo 2 disc
-with an invented Halo 1 card and checks the generated PNGs against the two
-in-memory bitmaps. Supply
-absolute disc paths when the test checkout lacks a local disc directory.
+separate game/profile saves, old progress, exact served descriptions,
+cover cropping, artwork selection and fallback, and agent menu state.
+The ignored disc test reads the owner's Halo 2 disc and checks the
+generated PNGs against the in-memory bitmaps. It also checks that Halo 2
+artwork loads with no Halo 1 picture. Supply an absolute disc path if
+the test checkout lacks a local disc directory.
 
 ```sh
-cargo test -p boot --lib campaign
+cargo xtask test -p game -p boot -p guest-layout -p agent-proto
 cargo test -p agent-proto --lib sim::menu
-H2_DISC="$PWD/disc/halo2.iso" cargo test -p boot --lib picker_collage_from_an_import_card_and_the_disc -- --ignored
+H2_DISC="$PWD/disc/halo2.iso" cargo test -p game --lib picker_tiles_match_the_pngs_and_halo2_works_without_halo1_art -- --ignored
 ```
 
 With both games installed, verify a fresh profile and one with an existing
-Halo 2 checkpoint. Use `ui.campaign` and pad presses to choose each game,
+Halo 2 checkpoint. Use `ui.campaign` to read `card.description` and
+`card.picture_datum` on each row. Use pad presses to choose each game,
 check its actions and missions, and back out. Start a Halo 1 mission,
 save a checkpoint, then reload and resume each game in turn. Verify the
 restored position as well as the displayed mission. Repeat the main-menu

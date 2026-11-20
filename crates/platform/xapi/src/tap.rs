@@ -31,6 +31,18 @@ pub trait InputTap: Send {
     /// is written to the guest's `XINPUT_STATE`.
     fn read(&mut self, handle: u32, status: &mut u32, packet: &mut [u8; PACKET]);
 
+    /// The live guest view at this read, for input contingent on current
+    /// menu focus. Recording and replay need only the packet.
+    fn read_with_memory(
+        &mut self,
+        handle: u32,
+        status: &mut u32,
+        packet: &mut [u8; PACKET],
+        _memory: Option<&dyn crate::GuestMemory>,
+    ) {
+        self.read(handle, status, packet);
+    }
+
     /// Pump the four controller ports. A film replays device arrivals and
     /// removals here, including a replacement on the same port between reads.
     fn sync(&mut self, input: &mut input::InputManager) {

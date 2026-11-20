@@ -517,6 +517,7 @@ pub fn seal() {
 pub fn forget() {
     with_step(|step| step.builder.cut(Cut::LOAD));
     crate::entry_census::forget();
+    crate::carried_slots::forget();
 }
 
 /// The scene sealed last.
@@ -637,6 +638,12 @@ impl Feature for FrameSceneStep {
         if b.switches().feature(crate::entry_census::ID, false) {
             crate::entry_census::install(b);
         }
+        // The slot of the frame the guest's D3D work is in, for the
+        // device's scene sink (slice 6): an option, its census of the
+        // carried part.
+        if b.switches().feature(crate::carried_slots::ID, false) {
+            crate::carried_slots::install(b);
+        }
         Ok(())
     }
 }
@@ -673,6 +680,32 @@ mod tests {
             "entry_census_screen_effect_end",
             "entry_census_animation_get",
             "entry_census_particle_update",
+        ] {
+            assert!(on.contains(label), "{label}\n{on}");
+        }
+    }
+
+    #[test]
+    fn the_carried_slots_are_placed_only_with_their_option() {
+        let text = |spec| {
+            let mut r = hooks::Registry::new(hooks::Switches::parse(spec).unwrap());
+            assert!(r.add(&FrameSceneStep).unwrap());
+            r.build(&hooks::plan::Base).unwrap().text()
+        };
+        let off = text("");
+        assert!(!off.contains("carried_slot"), "{off}");
+        let on = text("frame-scene.sink");
+        for label in [
+            "carried_slot_frame",
+            "carried_slot_frame_end",
+            "carried_slot_game_view",
+            "carried_slot_game_view_end",
+            "carried_slot_lights",
+            "carried_slot_lights_end",
+            "carried_slot_transparents",
+            "carried_slot_post_end",
+            "carried_slot_hud",
+            "carried_slot_views_end",
         ] {
             assert!(on.contains(label), "{label}\n{on}");
         }

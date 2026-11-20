@@ -12,7 +12,7 @@ use map::{Map, RawPointer, ResourceFile, TagId};
 use std::io::{Read, Seek};
 use std::path::Path;
 use tags::geometry::{RawSource, Section, TagView};
-use tags::structure::{Lightmap, LightmapRenderInfo, StructureRender};
+use tags::structure::{Lightmap, LightmapGroup, LightmapRenderInfo, StructureRender};
 
 pub type Vec3 = [f32; 3];
 pub type Mat4 = [[f32; 4]; 4];
@@ -261,58 +261,164 @@ pub fn world_parts<R: Read + Seek>(
     map: &mut Map<R>,
     raw: &mut dyn RawSource,
 ) -> crate::Result<(Vec<WorldPart>, usize)> {
-    let (parts, _, failed) = world_parts_lit(map, raw)?;
-    Ok((parts, failed))
+    let w = world_parts_lit(map, raw)?;
+    Ok((w.parts, w.failed))
 }
 
-/// [`world_parts`] with each part's lightmap page, and the lightmaps'
-/// pages. A lightmap that does not decode leaves its parts unlit.
+/// How one of the scenario's BSPs is lit, as the viewport reports it
+/// (`view.stats`, docs/editor/agent-api.md).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BspLighting {
+    /// By its lightmap group's pages.
+    Lightmapped,
+    /// The scenario names no lightmap for it.
+    NoLightmap,
+    /// The lightmap's first group has no bitmap: the BSP was never lit
+    /// (mainmenu's one group is empty, checksum 0). The game then draws
+    /// the shaders' implementation for a BSP without a lightmap group
+    /// (`native_render::look::UNLIT_BSP_IMPLEMENTATION`).
+    EmptyGroup,
+    /// The first group lights another BSP: its checksum is not this BSP's.
+    ChecksumMismatch { group: u32, bsp: u32 },
+    /// The lightmap tag does not decode.
+    Unreadable(String),
+    /// The BSP itself did not read (its parts are not drawn).
+    BspUnreadable,
+}
+
+impl BspLighting {
+    /// A short name for the API and the log.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Lightmapped => "lightmapped",
+            Self::NoLightmap => "no lightmap",
+            Self::EmptyGroup => "empty lightmap group",
+            Self::ChecksumMismatch { .. } => "lightmap of another BSP",
+            Self::Unreadable(_) => "lightmap does not decode",
+            Self::BspUnreadable => "BSP does not read",
+        }
+    }
+}
+
+/// One BSP of the scenario and how it is lit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BspLit {
+    pub bsp: TagId,
+    pub lighting: BspLighting,
+}
+
+/// The scenario's BSPs as the viewport draws them ([`world_parts_lit`]).
+#[derive(Clone, Debug, Default)]
+pub struct LitWorld {
+    pub parts: Vec<WorldPart>,
+    /// The lightmap groups the parts' [`LightmapRef::pages`] index.
+    pub lightmaps: Vec<LightmapPages>,
+    /// Sections that did not load.
+    pub failed: usize,
+    /// Each scenario BSP in order, with how it is lit.
+    pub bsps: Vec<BspLit>,
+}
+
+/// The lightmap group that lights a BSP whose checksum is `checksum`, as
+/// the engine and the native renderer pick it
+/// (`native_render::load::load_world`): the lightmap's **first** group,
+/// when it carries the BSP's checksum and a bitmap. A later group with the
+/// same checksum does not change what the record builder selects.
+pub fn select_group(
+    lightmap: Option<Result<Lightmap, String>>,
+    checksum: u32,
+) -> (Option<LightmapGroup>, BspLighting) {
+    let lightmap = match lightmap {
+        None => return (None, BspLighting::NoLightmap),
+        Some(Err(e)) => return (None, BspLighting::Unreadable(e)),
+        Some(Ok(l)) => l,
+    };
+    let Some(group) = lightmap.groups.into_iter().next() else {
+        return (None, BspLighting::EmptyGroup);
+    };
+    if group.bitmap.is_none() {
+        return (None, BspLighting::EmptyGroup);
+    }
+    if group.structure_checksum != checksum {
+        return (
+            None,
+            BspLighting::ChecksumMismatch {
+                group: group.structure_checksum,
+                bsp: checksum,
+            },
+        );
+    }
+    (Some(group), BspLighting::Lightmapped)
+}
+
+/// [`world_parts`] with each part's lightmap page, the lightmaps' pages
+/// and how each BSP is lit. A lightmap that does not decode leaves its
+/// parts unlit. Placed instanced geometry takes its own lightmap
+/// coordinates from the group's buckets, as the structure draw binds them
+/// (`native_render::load::{bucket_streams, instance_run, bucket_slice}`);
+/// the definition's, which every placement shares, only when it has none.
 pub fn world_parts_lit<R: Read + Seek>(
     map: &mut Map<R>,
     raw: &mut dyn RawSource,
-) -> crate::Result<(Vec<WorldPart>, Vec<LightmapPages>, usize)> {
-    let mut out = Vec::new();
-    let mut lightmaps = Vec::new();
-    let mut failed = 0;
+) -> crate::Result<LitWorld> {
+    let mut out = LitWorld::default();
     for (id, lightmap) in scenario_bsp_lightmaps(map)? {
         let shaders = bsp_shaders(map, id).unwrap_or_default();
         let bsp = match StructureRender::read(map, id) {
             Ok(bsp) => bsp,
             Err(_) => {
-                failed += 1;
+                out.failed += 1;
+                out.bsps.push(BspLit {
+                    bsp: id,
+                    lighting: BspLighting::BspUnreadable,
+                });
                 continue;
             }
         };
-        // The group lighting this BSP: the one with its checksum.
-        let group = lightmap
-            .and_then(|l| Lightmap::read(map, l).ok())
-            .and_then(|l| {
-                l.groups
-                    .into_iter()
-                    .find(|g| g.structure_checksum == bsp.checksum && g.bitmap.is_some())
-            });
+        let read = lightmap.map(|l| Lightmap::read(map, l).map_err(|e| e.to_string()));
+        let (group, lighting) = select_group(read, bsp.checksum);
+        out.bsps.push(BspLit { bsp: id, lighting });
         let pages = group.as_ref().map(|g| {
-            lightmaps.push(LightmapPages {
+            out.lightmaps.push(LightmapPages {
                 bitmap: g.bitmap.unwrap_or(TagId::NULL),
                 palettes: g.palettes.clone(),
             });
-            lightmaps.len() - 1
+            out.lightmaps.len() - 1
         });
+        let buckets = group
+            .as_ref()
+            .map(|g| native_render::load::bucket_streams(g, raw))
+            .unwrap_or_default();
         let lit = Lit {
             pages,
-            clusters: group.as_ref().map_or(&[], |g| &g.cluster_render_info),
-            instances: group.as_ref().map_or(&[], |g| &g.instance_render_info),
+            group: group.as_ref(),
+            buckets: &buckets,
         };
-        failed += bsp_parts(&bsp, &shaders, &lit, raw, &mut out);
+        out.failed += bsp_parts(&bsp, &shaders, &lit, raw, &mut out.parts);
     }
-    Ok((out, lightmaps, failed))
+    Ok(out)
 }
 
 /// A BSP's lightmap selections.
 struct Lit<'a> {
     pages: Option<usize>,
-    clusters: &'a [LightmapRenderInfo],
-    instances: &'a [LightmapRenderInfo],
+    group: Option<&'a LightmapGroup>,
+    buckets: &'a [native_render::load::BucketStreams],
+}
+
+impl Lit<'_> {
+    fn cluster(&self, index: usize) -> Option<LightmapRef> {
+        LightmapRef::of(self.pages, self.group?.cluster_render_info.get(index))
+    }
+    fn instance(&self, index: usize) -> Option<LightmapRef> {
+        LightmapRef::of(self.pages, self.group?.instance_render_info.get(index))
+    }
+    /// Instance `index`'s own lightmap coordinates for a definition of
+    /// `vertices` vertices, from its bucket run.
+    fn instance_uvs(&self, index: usize, vertices: usize) -> Option<&[[f32; 2]]> {
+        let (bucket, first) = native_render::load::instance_run(self.group?, self.buckets, index)?;
+        native_render::load::bucket_slice(&bucket.lightmap_uvs, first, vertices)
+    }
 }
 
 /// Every opaque triangle of the scenario's BSPs (what the camera frames and
@@ -363,6 +469,7 @@ pub fn section_parts(
     s: &Section,
     shaders: &[TagId],
     lightmap: Option<LightmapRef>,
+    own_uvs: Option<&[[f32; 2]]>,
     place: &dyn Fn(Vec3) -> Vec3,
     turn: &dyn Fn(Vec3) -> Vec3,
 ) -> Option<Vec<WorldPart>> {
@@ -370,7 +477,11 @@ pub fn section_parts(
     if v.positions.len() != s.vertex_count() {
         return None;
     }
-    let lightmap = lightmap.filter(|_| v.lightmap_texcoords.len() == v.positions.len());
+    // A placement's own coordinates (its bucket run), else the section's.
+    let lightmap_uvs: &[[f32; 2]] = own_uvs
+        .filter(|u| u.len() == v.positions.len())
+        .unwrap_or(v.lightmap_texcoords.as_slice());
+    let lightmap = lightmap.filter(|_| lightmap_uvs.len() == v.positions.len());
     Some(
         s.parts
             .iter()
@@ -403,7 +514,7 @@ pub fn section_parts(
                             out.uvs
                                 .push(v.texcoords.get(i).copied().unwrap_or([0.0; 2]));
                             if lightmap.is_some() {
-                                out.lightmap_uvs.push(v.lightmap_texcoords[i]);
+                                out.lightmap_uvs.push(lightmap_uvs[i]);
                             }
                             (out.positions.len() - 1) as u32
                         })
@@ -444,16 +555,17 @@ fn bsp_parts(
     let mut failed = 0;
     let mut push = |s: &Section,
                     lm: Option<LightmapRef>,
+                    own: Option<&[[f32; 2]]>,
                     place: &dyn Fn(Vec3) -> Vec3,
                     turn: &dyn Fn(Vec3) -> Vec3| {
-        section_parts(s, shaders, lm, place, turn)
+        section_parts(s, shaders, lm, own, place, turn)
             .map(|p| out.extend(p))
             .is_none()
     };
     for (ci, c) in bsp.clusters.iter().enumerate() {
-        let lm = LightmapRef::of(lit.pages, lit.clusters.get(ci));
+        let lm = lit.cluster(ci);
         match c.geometry.load(raw, materials) {
-            Ok(Some(s)) => failed += usize::from(push(&s, lm, &|p| p, &|n| n)),
+            Ok(Some(s)) => failed += usize::from(push(&s, lm, None, &|p| p, &|n| n)),
             Ok(None) => {}
             Err(_) => failed += 1,
         }
@@ -469,7 +581,7 @@ fn bsp_parts(
         })
         .collect();
     for (ii, inst) in bsp.instances.iter().enumerate() {
-        let lm = LightmapRef::of(lit.pages, lit.instances.get(ii));
+        let lm = lit.instance(ii);
         let Some(Some(s)) = usize::try_from(inst.definition)
             .ok()
             .and_then(|i| defs.get(i))
@@ -480,7 +592,8 @@ fn bsp_parts(
             failed += 1;
             continue;
         }
-        failed += usize::from(push(s, lm, &|p| inst.transform(p), &|n| inst.rotate(n)));
+        let own = lit.instance_uvs(ii, s.vertex_count());
+        failed += usize::from(push(s, lm, own, &|p| inst.transform(p), &|n| inst.rotate(n)));
     }
     failed
 }

@@ -27,12 +27,14 @@ use crate::App;
 
 mod docs;
 mod hud;
+mod pair;
 mod params;
 mod playlists;
 mod scenario;
 pub mod seams;
 pub mod server;
 mod tag_fields;
+mod tag_io;
 mod tags;
 mod ui_screens;
 mod variants;
@@ -448,6 +450,13 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"path":"string","width":"integer","height":"integer"}"#,
         r#"{"out":"$OUT/view.png","size":[64,48]}"#,
     ),
+    def(
+        m::VIEW_STATS,
+        "What the viewport draws for the open map: lightmap pages and each BSP's lighting, the world's triangles by blend, every material (template, blend, picture), the sky's sun and fog",
+        "{}",
+        r#"{"scene":"boolean","lightmap_pages":"integer","bsps":"[{bsp,lighting,detail}]","triangles":"{blend: integer}","solid_triangles":"integer","lightmapped_triangles":"integer","materials":"[{shader,template,blend,blend_from_passes,emissive,base,details}]","sky":"string|null","atmosphere":"{sky,sun,fog,fallback_rgb}"}"#,
+        "null",
+    ),
     // Planned namespaces: designed seams with no provider yet.
     planned(
         m::MODEL_LIST,
@@ -658,6 +667,7 @@ impl Api {
     fn view(&mut self, app: &mut App, method: &str, p: &P) -> Reply {
         match method {
             m::VIEW_CAMERA => view::camera(app, p),
+            m::VIEW_STATS => view::stats(app, p),
             m::VIEW_SNAPSHOT => {
                 let gpu = self
                     .gpu

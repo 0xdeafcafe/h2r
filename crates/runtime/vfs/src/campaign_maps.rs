@@ -179,6 +179,9 @@ impl<B: Backend> Backend for CampaignMapsBackend<B> {
     fn rescan(&mut self) {
         self.inner.rescan()
     }
+    fn resolves_on_use(&mut self, path: &str) -> bool {
+        self.inner.resolves_on_use(path)
+    }
     fn map_changed(&mut self, path: &str) -> bool {
         let Some(stem) = is_map_path(path).map(|n| n[..n.len() - 4].to_ascii_lowercase()) else {
             return self.inner.map_changed(path);

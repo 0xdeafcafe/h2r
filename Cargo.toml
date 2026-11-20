@@ -45,6 +45,7 @@ x87 = { path = "crates/recompiler/x87" }
 kernel = { path = "crates/runtime/kernel" }
 voice = { path = "crates/platform/voice" }
 vfs = { path = "crates/runtime/vfs" }
+background = { path = "crates/runtime/background" }
 boot = { path = "crates/apps/boot" }
 content = { path = "crates/formats/content" }
 live-proto = { path = "crates/live/live-proto" }

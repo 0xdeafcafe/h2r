@@ -114,7 +114,6 @@ let hoppers = Array.from({ length: 16 }, (_, index) => {
 });
 
 world.listeners.add({ onEvent: (ev) => { if (ev.type === "AccountCreated") social.welcome((ev.data as { xuid: string }).xuid); }, onFrame: () => {} });
-// Open sessions for the dashboard's "find a game" (mock/sessions.ts).
 // The stats summary (mock/stats.ts): a made-up month before the simulated
 // history, then the log, folded as it grows.
 const stats = new StatsFold();
@@ -128,6 +127,7 @@ function statsSummary(window: string) {
   return stats.summary(window, Date.now(), world.log.length);
 }
 
+// Open Games and finished co-op games on the stats site.
 const sessions = new Sessions(world, Math.max(0, Number(process.env.H2_MOCK_SESSIONS ?? 5) || 0), customMaps ? customFor : undefined);
 sessions.seed();
 setInterval(() => sessions.step(), 2500);

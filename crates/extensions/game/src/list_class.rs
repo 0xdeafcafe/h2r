@@ -32,8 +32,7 @@
 //! **In a game** the Controls tag (screen 39,
 //! `game_shell\settings_screen\player_profile\controller_settings`) is
 //! not loaded: it is in `mainmenu` only. A screen built on it there has no
-//! widgets, a blank screen (the pause menu's Video and Voice rows opened
-//! one). So while the UI's game kind ([`UI_GAME_KIND`]) is not the main
+//! widgets. While the UI's game kind ([`UI_GAME_KIND`]) is not the main
 //! menu, the loader runs the Controls constructor's own steps on screen
 //! 200's tag instead ([`construct_on`]): the in-game Controller Settings
 //! (`mp_menu\controller_settings`), in `shared`, `single_player_shared`
@@ -57,6 +56,9 @@ use crate::ui::{Chosen, List, Model};
 /// The Controls list's row chosen, which the press record holds until we
 /// adopt the screen.
 pub const CONTROLS_ROW_CHOSEN: u32 = 0x002c_8719;
+/// Select a list row by index. The list address goes in EAX and the index
+/// on the stack, as in the retail Live menu's cursor restore.
+pub(crate) const LIST_SET_ROW: u32 = 0x0024_c591;
 
 /// Screen vtable slot 10: the event handler (thiscall, the event, `ret 4`;
 /// the Controls one is the generic `0x2300ea`, which closes the screen on
@@ -166,7 +168,13 @@ pub trait Rows: Send + Sync {
     fn picture(&self, _row: i16) -> Option<u32> {
         None
     }
-    /// Restore the picture block's original bitmap when a row has no picture.
+    /// Prepare the picture catalogue for this pane using the current map's
+    /// tag memory. An override replaces the template's opening and fallback
+    /// datum. A null datum leaves the frame empty until a row has art.
+    fn prepare_picture(&self, _m: &dyn GuestMemory, _template: u32) -> Option<u32> {
+        None
+    }
+    /// Restore the pane's opening bitmap when a row has no picture.
     fn restore_missing_picture(&self) -> bool {
         false
     }
@@ -215,6 +223,11 @@ pub trait Rows: Send + Sync {
     /// [`Rows::texts`].
     fn line(&self, _row: i16) -> Option<String> {
         None
+    }
+    /// A pane whose optional text cells change with its data can hide empty
+    /// cells until they acquire a string (including the focused description).
+    fn hide_empty_pane_texts(&self) -> bool {
+        false
     }
     /// The string id of the class's panel text `i` ([`ListClass::panel`]):
     /// set when the screen opens and again whenever the description is;
@@ -927,7 +940,7 @@ pub struct Shown(Mutex<Vec<ShownEntry>>);
 struct ShownEntry {
     screen: u32,
     widget: u32,
-    picture: Option<(u32, u32)>, // widget and original bitmap datum
+    picture: Option<(u32, u32)>, // widget and opening bitmap datum
     row: Option<i16>,
     /// The panel texts' widgets, in [`ListClass::panel`]'s order (0 for
     /// one that could not be made).
@@ -1088,9 +1101,9 @@ impl Rows for ModelRows {
     }
 }
 
-/// The loaders of the classes built so far, by screen id, so an `Open` row
-/// (on a screen of ours or on a retail list) finds the screen it names.
-static LOADERS: Mutex<BTreeMap<&'static str, u32>> = Mutex::new(BTreeMap::new());
+/// Each class's (loader, screen vtable). An `Open` row finds the loader by
+/// name, and the agent identifies the instantiated class by its vtable.
+static LOADERS: Mutex<BTreeMap<&'static str, (u32, u32)>> = Mutex::new(BTreeMap::new());
 
 /// The loader of our screen `screen`, once its class is built.
 pub fn loader_of(screen: &str) -> Option<u32> {
@@ -1098,7 +1111,29 @@ pub fn loader_of(screen: &str) -> Option<u32> {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get(screen)
-        .copied()
+        .map(|&(loader, _)| loader)
+}
+
+/// The runtime class of a screen, even when its retail base id is shared.
+pub(crate) fn class_name(vtable: u32) -> Option<&'static str> {
+    if vtable == 0 {
+        return None;
+    }
+    LOADERS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find_map(|(&name, &(_, table))| (vtable == table).then_some(name))
+}
+
+/// The tag copy already built for a class with a custom layout.
+pub(crate) fn built_tag(m: &dyn GuestMemory, vtable: u32) -> Option<u32> {
+    if crate::ui_kit::dialog_tag::by_vtable(vtable).is_some() {
+        return crate::ui_kit::dialog_tag::served(m, vtable).ok().flatten();
+    }
+    (layout_screen(vtable).is_some() && m.u32(vtable.checked_add(TAG_SOURCE)?).ok()? != 0)
+        .then(|| vtable.checked_add(TAG_COPY))
+        .flatten()
 }
 
 /// The rows our loader is building a screen with (0: no loader of ours is
@@ -1206,7 +1241,7 @@ impl ListClass {
             panel: Panel::default(),
         }
     }
-    /// Opened in a game too (the pause menu's Video and Voice): there its
+    /// Opened in a game too (Video and Voice under pause Settings): there its
     /// rows draw as one line each ([`Rows::line`], module docs).
     pub fn lines(mut self) -> Self {
         self.lines = true;
@@ -1460,10 +1495,10 @@ pub async fn load(
     let capacity = rows.growing_capacity().unwrap_or(count).max(count);
     let rows = count;
     let request = cx.arg(0)?;
-    // A dialog's tag copy is made before its pane is, from its base found
-    // in this interface.
+    // Unreadable (no game kind byte): the main menu's.
+    let base = cx.read(|m| m.u8(UI_GAME_KIND).map_or(CONTROLS_SCREEN_ID, base_screen_id));
     if let Some(d) = crate::ui_kit::dialog_tag::by_vtable(e.screen_vtable) {
-        crate::ui_kit::dialog_tag::prepare(&cx, &d, name).await?;
+        crate::ui_kit::dialog_tag::prepare(&cx, &d, base, name).await?;
     }
     let screen = cx
         .call(GuestCall::new(points::UI_ALLOC.base).args([ui::CONTROLS_SCREEN_SIZE]))
@@ -1480,8 +1515,6 @@ pub async fn load(
             u32::from(m.u16(request + 2)?),
         ))
     })?;
-    // Unreadable (no game kind byte): the main menu's.
-    let base = cx.read(|m| m.u8(UI_GAME_KIND).map_or(CONTROLS_SCREEN_ID, base_screen_id));
     {
         let _building = Building::start(capacity);
         if base == CONTROLS_SCREEN_ID {
@@ -1589,24 +1622,39 @@ pub async fn push(cx: &Cx, chain: u32, over: u32, screen: &str) -> Result<(), En
         eprintln!("ui: {screen} is not a screen of ours (or its class is off); not opened");
         return Ok(());
     };
+    push_loader(cx, chain, over, loader).await
+}
+
+/// Opens a loader above `over` on the same window and slot. Used for
+/// native loaders as well as our own list classes.
+pub(crate) async fn push_loader(cx: &Cx, chain: u32, over: u32, loader: u32) -> Result<(), EntryError> {
     let Some(mask) = cx.read(|m| player_mask(m, chain))? else {
-        eprintln!("ui: no local player for the press; {screen} not opened");
+        eprintln!("ui: no local player for the press; loader {loader:#x} not opened");
         return Ok(());
     };
     if let Some(d) = crate::ui_kit::dialog_tag::by_loader(loader) {
-        eprintln!("ui: opening {screen} over the screen beneath (the dialogs' window)");
         return crate::ui_kit::dialog_tag::open_over(cx, &d, mask).await;
     }
-    let (window, slot) = crate::ui_kit::lifecycle::window_slot(cx, over)?;
-    let request = crate::skulls_mp::open_request(mask as u16, window, slot, loader);
-    let at = PUSH_REQUEST.load(Ordering::SeqCst);
-    if at == 0 {
-        eprintln!("ui: no request memory yet; {screen} not opened");
+    let request_at = PUSH_REQUEST.load(Ordering::SeqCst);
+    if request_at == 0 {
+        eprintln!("ui: no request memory yet; loader {loader:#x} not opened");
         return Ok(());
     }
-    eprintln!("ui: opening {screen} on window {window}, slot {slot}");
-    cx.write(|m| m.write(at, &request))?;
-    cx.call(GuestCall::new(loader).args([at])).await?;
+    push_to_stack(cx, over, mask as u16, loader, request_at).await
+}
+
+async fn push_to_stack(
+    cx: &Cx,
+    over: u32,
+    mask: u16,
+    loader: u32,
+    request_at: u32,
+) -> Result<(), EntryError> {
+    let (window, slot) = crate::ui_kit::lifecycle::window_slot(cx, over)?;
+    let request = crate::skulls_mp::open_request(mask, window, slot, loader);
+    eprintln!("ui: opening loader {loader:#x} on window {window}, slot {slot}");
+    cx.write(|m| m.write(request_at, &request))?;
+    cx.call(GuestCall::new(loader).args([request_at])).await?;
     Ok(())
 }
 
@@ -1649,7 +1697,12 @@ pub async fn row_text(
             let focused = cx.call(GuestCall::new(points::LIST_FOCUSED_ROW.base).eax(list)).await?.eax;
             if focused != u32::MAX && usize::from(DatumHandle(focused).index()) >= count {
                 // Clamp before removing the datum the list cursor refers to.
-                cx.call(GuestCall::new(0x0024_c591).eax(list).args([count.saturating_sub(1) as u32])).await?;
+                cx.call(
+                    GuestCall::new(LIST_SET_ROW)
+                        .eax(list)
+                        .args([count.saturating_sub(1) as u32]),
+                )
+                .await?;
             }
             cx.write(|m| {
                 let rows = screen.list().row_array(m)?;
@@ -1697,7 +1750,13 @@ pub async fn row_text(
             // set here is written before it is named.
             let description = focused.and_then(|r| rows.description(r));
             let footer = rows.focused_footer(focused);
-            cx.write(|m| rows.write_texts(m))?;
+            cx.write(|m| {
+                rows.write_texts(m)?;
+                if rows.hide_empty_pane_texts() {
+                    set_pane_text_visible(m, widget, description.is_some())?;
+                }
+                Ok::<_, MemFault>(())
+            })?;
             if let Some(id) = footer {
                 cx.call(
                     GuestCall::new(points::TEXT_SET.base)
@@ -2008,8 +2067,21 @@ pub async fn setup_pane_footer(
             eprintln!("{name}: no description text (no memory for the widget)");
         } else {
             d.shown.set_widget(screen, widget);
+            if d.rows
+                .as_ref()
+                .is_some_and(|rows| rows.hide_empty_pane_texts())
+            {
+                cx.write(|m| set_pane_text_visible(m, widget, false))?;
+            }
             if let Some(spec) = d.picture {
                 add_picture(&cx, screen, &spec, d.picture_at, Some(&d.shown), name).await?;
+                if let (Some((picture, template)), Some(rows)) =
+                    (d.shown.picture_block(screen), &d.rows)
+                    && let Some(initial) = cx.read(|m| rows.prepare_picture(m, template))
+                {
+                    cx.write(|m| set_picture(m, picture, initial))?;
+                    d.shown.set_picture(screen, picture, initial);
+                }
                 let image = d.rows.as_ref().and_then(|r| r.picture_image());
                 if let (Some(picture), Some(image)) = (d.shown.picture(screen), image) {
                     if !cx.write(|m| set_image(m, picture, image))? {
@@ -2071,24 +2143,48 @@ async fn add_panel(cx: &Cx, screen: u32, d: &Description, name: &str) -> Result<
     Ok(())
 }
 
-/// Sets each panel text widget of `screen` to its string.
+// The widget tree draw checks both enable bytes at 0x22e3b4. Set only
+// the first on our text widgets, leaving the other gate and parent alone.
+const WIDGET_DRAW_ENABLED: u32 = 0x6d;
+
+fn set_pane_text_visible(
+    m: &mut dyn GuestMemory,
+    widget: u32,
+    visible: bool,
+) -> Result<(), MemFault> {
+    m.set_u8(widget + WIDGET_DRAW_ENABLED, u8::from(visible))
+}
+
+/// Copies panel strings and updates the draw gate of optional cells so
+/// paging to a sparse roster clears cells drawn on the preceding page.
 async fn set_panel_texts(
     cx: &Cx,
     screen: u32,
     shown: &Shown,
     rows: &dyn Rows,
 ) -> Result<(), EntryError> {
-    let texts: Vec<(u32, u32)> = shown
+    let texts: Vec<_> = shown
         .panel(screen)
         .into_iter()
         .enumerate()
-        .filter_map(|(i, widget)| rows.panel_text(i).filter(|_| widget != 0).map(|id| (widget, id)))
+        .filter(|(_, widget)| *widget != 0)
+        .map(|(i, widget)| (widget, rows.panel_text(i)))
         .collect();
-    // Written before `TEXT_SET` copies them (see `row_text`).
-    if !texts.is_empty() {
-        cx.write(|m| rows.write_texts(m))?;
+    if texts.is_empty() {
+        return Ok(());
     }
+    // Written before `TEXT_SET` copies them (see `row_text`).
+    cx.write(|m| {
+        rows.write_texts(m)?;
+        if rows.hide_empty_pane_texts() {
+            for &(widget, id) in &texts {
+                set_pane_text_visible(m, widget, id.is_some())?;
+            }
+        }
+        Ok::<_, MemFault>(())
+    })?;
     for (widget, id) in texts {
+        let Some(id) = id else { continue };
         cx.call(
             GuestCall::new(points::TEXT_SET.base)
                 .edi(widget)
@@ -2326,7 +2422,7 @@ impl hooks::Feature for ListClass {
         LOADERS
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(self.screen, loader);
+            .insert(self.screen, (loader, tables));
         b.snapshot(hooks::SnapshotPolicy::forbid_while(building_live));
         Ok(())
     }
@@ -2416,13 +2512,45 @@ mod tests {
         LOADERS
             .lock()
             .unwrap()
-            .insert("test-open-target", 0xa0f0_5000);
+            .insert("test-open-target", (0xa0f0_5000, 0));
         assert_eq!(
             press_open("test-open-target", 2),
             [Gc::new(points::OPEN_SCREEN.base).args([1 << 2, 0xa0f0_5000])]
         );
         assert_eq!(press_open("test-open-missing", 0), [], "not ours");
         assert_eq!(press_open("test-open-target", 4), [], "no local player");
+    }
+
+    #[test]
+    fn a_child_loader_receives_the_parent_window_and_slot() {
+        use crate::ui_kit::lifecycle::{SCREEN_SLOT, SCREEN_WINDOW};
+
+        const REQUEST: u32 = 0x700000;
+        const LOADER: u32 = 0xa0f0_5000;
+        for (slot, mask) in [(4, 1), (2, 1 << 2)] {
+            let mut g = guest();
+            g.map(SCREEN, 0x100).map(REQUEST, 0x20);
+            g.put_u32(SCREEN + SCREEN_WINDOW, 5)
+                .put_u32(SCREEN + SCREEN_SLOT, slot);
+            let f = move |cx| -> EntryFuture {
+                Box::pin(async move {
+                    push_to_stack(&cx, SCREEN, mask, LOADER, REQUEST).await?;
+                    Ok(Ret::new(0, 8))
+                })
+            };
+            let run = testing::run(
+                &f,
+                g,
+                Regs { esp: STACK, ..Regs::default() },
+                |_, _| Regs::default(),
+            );
+            assert_eq!(run.result, Ok(Ret::new(0, 8)));
+            assert_eq!(run.calls, [Gc::new(LOADER).args([REQUEST])]);
+            assert_eq!(run.guest.u16(REQUEST + 2), Ok(mask));
+            assert_eq!(run.guest.u32(REQUEST + 4), Ok(5));
+            assert_eq!(run.guest.u32(REQUEST + 8), Ok(slot));
+            assert_eq!(run.guest.u32(REQUEST + 0x1c), Ok(LOADER));
+        }
     }
 
     #[test]
@@ -2659,17 +2787,15 @@ mod tests {
         assert_eq!(run.result, Ok(Ret::new(SCREEN, 4)));
         assert_eq!(Screen::at(SCREEN).vtable(&run.guest), Ok(TABLES));
         // While the constructor ran, the Controls rows' array was asked for
-        // our six rows (the Video screen's); any other array, and anything
+        // the screen's four rows; any other array, and anything
         // after, as asked.
-        assert_eq!(*during.lock().unwrap(), Some((6, 7)));
+        assert_eq!(*during.lock().unwrap(), Some((4, 7)));
         assert_eq!(array_count(crate::speaker_row::LIST_NAME, 7), 7);
     }
 
-    /// The pause menu's Video and Voice opened blank in a game: the
-    /// Controls tag (screen 39) is in mainmenu only. In a game the loader
-    /// runs the Controls constructor's steps on screen 200's tag, the
-    /// in-game Controller Settings; in the main menu, the Controls
-    /// constructor as before.
+    /// The Controls tag (screen 39) is available in the main menu. In a
+    /// game the loader uses the in-game Controller Settings tag (screen
+    /// 200), so pages such as Video and Voice get their widgets.
     #[test]
     fn in_a_game_the_loader_builds_on_the_in_game_controller_settings() {
         let _serial = LOADING.lock().unwrap_or_else(|e| e.into_inner());
@@ -2837,10 +2963,18 @@ mod tests {
         assert_eq!(live.len(), 4, "a row per value");
         let mut g = run.guest;
 
-        // The pane set-up: the title on the header, as `TEXT_SET` reads it.
+        // The pane set-up writes the header and focuses the held value.
         g.put_u32(STACK + 4, 0x55);
-        let f = move |cx| -> EntryFuture {
-            Box::pin(setup_pane_footer(cx, title, None, None, picker::NAME))
+        let ready = p.class().pane_ready.unwrap();
+        let f = move |cx: Cx| -> EntryFuture {
+            let ready = ready.clone();
+            Box::pin(async move {
+                let ret = setup_pane_footer(cx.clone(), title, None, None, picker::NAME).await?;
+                ready(cx.clone(), SCREEN).await?;
+                // Rebuilding the pane must not jump back after a cursor move.
+                ready(cx, SCREEN).await?;
+                Ok(ret)
+            })
         };
         let regs = Regs {
             esp: STACK,
@@ -2858,6 +2992,14 @@ mod tests {
         assert_eq!(
             *header.lock().unwrap(),
             [(Some(Screen::at(SCREEN).header()), "SCORE TO WIN ROUND".to_string())]
+        );
+        assert_eq!(
+            run.calls
+                .iter()
+                .filter(|c| c.target == LIST_SET_ROW)
+                .collect::<Vec<_>>(),
+            [&Gc::new(LIST_SET_ROW).eax(SCREEN + ui::LIST).args([1])],
+            "focus the offered value exactly once per opening"
         );
         let mut g = run.guest;
 
@@ -3256,6 +3398,12 @@ mod tests {
         fn tint(&self, row: i16) -> Option<[f32; 3]> {
             (row == 3).then_some([0.5, 0.25, 1.0])
         }
+        fn prepare_picture(&self, _m: &dyn GuestMemory, _template: u32) -> Option<u32> {
+            Some(u32::MAX)
+        }
+        fn restore_missing_picture(&self) -> bool {
+            true
+        }
         fn picture(&self, row: i16) -> Option<u32> {
             (row == 3).then_some(0xe6dd_04bb)
         }
@@ -3429,6 +3577,98 @@ mod tests {
         // Nothing focused: nothing set; focus back on row 3 sets it again.
         assert_eq!(draw(u32::MAX).calls, item_calls);
         assert_eq!(draw(DatumHandle::new(0x8001, 3).raw()).calls.len(), 4);
+    }
+
+    #[test]
+    fn optional_pane_texts_hide_and_reappear_when_content_changes_on_the_same_row() {
+        struct Sparse(AtomicBool);
+        impl Rows for Sparse {
+            fn title(&self) -> u32 {
+                1
+            }
+            fn count(&self) -> usize {
+                1
+            }
+            fn texts(&self, _: i16) -> Vec<(u32, u32)> {
+                Vec::new()
+            }
+            fn press(&self, _: i16) -> Chosen {
+                Chosen::Nothing
+            }
+            fn hide_empty_pane_texts(&self) -> bool {
+                true
+            }
+            fn description(&self, _: i16) -> Option<u32> {
+                self.0.load(Ordering::Relaxed).then_some(0x200)
+            }
+            fn panel_text(&self, i: usize) -> Option<u32> {
+                (i == 0 && self.0.load(Ordering::Relaxed)).then_some(0x300)
+            }
+            fn live_text(&self) -> LiveText {
+                LiveText {
+                    redraw: true,
+                    ..LiveText::default()
+                }
+            }
+        }
+        const ITEM: u32 = 0x0060_0000;
+        const DESCRIPTION: u32 = 0x9100;
+        const CELL: u32 = 0x9200;
+        let rows = Arc::new(Sparse(AtomicBool::new(false)));
+        let shown = Arc::new(Shown::default());
+        shown.set_widget(SCREEN, DESCRIPTION);
+        shown.set_panel(SCREEN, vec![CELL]);
+        let draw = {
+            let rows = rows.clone();
+            move |cx| -> EntryFuture {
+                Box::pin(row_text(cx, rows.clone(), Some(shown.clone()), None))
+            }
+        };
+        let mut g = guest();
+        g.put_u32(STACK + 4, ITEM).map(ITEM, Item::SIZE);
+        Item::at(ITEM)
+            .set_row(&mut g, Some(DatumHandle::new(0x8001, 0)))
+            .unwrap();
+        for widget in [DESCRIPTION, CELL] {
+            g.put_u8(widget + WIDGET_DRAW_ENABLED, 1);
+        }
+        for visible in [false, true, false] {
+            rows.0.store(visible, Ordering::Relaxed);
+            let run = testing::run(
+                &draw,
+                g,
+                Regs {
+                    esp: STACK,
+                    ecx: SCREEN + ui::LIST,
+                    ..Regs::default()
+                },
+                |c, _| Regs {
+                    eax: if c.target == points::LIST_FOCUSED_ROW.base {
+                        DatumHandle::new(0x8001, 0).raw()
+                    } else {
+                        0
+                    },
+                    ..Regs::default()
+                },
+            );
+            assert_eq!(run.result, Ok(Ret::new(0, 8)));
+            for (widget, id) in [(DESCRIPTION, 0x200), (CELL, 0x300)] {
+                assert_eq!(
+                    run.guest.u8(widget + WIDGET_DRAW_ENABLED),
+                    Ok(u8::from(visible))
+                );
+                assert_eq!(
+                    run.calls.contains(
+                        &Gc::new(points::TEXT_SET.base)
+                            .edi(widget)
+                            .esi(SCREEN)
+                            .args([id])
+                    ),
+                    visible
+                );
+            }
+            g = run.guest;
+        }
     }
 
     /// Text that changes while the screen is up: written before the row
@@ -3618,6 +3858,7 @@ mod tests {
     #[test]
     fn the_pane_set_up_adds_the_picture_after_the_description() {
         let mut g = screen_tag();
+        g.put_u32(0x9800 + WIDGET_BLOCK, TABLES + PICTURE_BLOCK);
         g.put_u32(STACK + 4, 0x55);
         let shown = Arc::new(Shown::default());
         let d = Description {
@@ -3635,7 +3876,7 @@ mod tests {
             frame_at: TABLES + FRAME_BLOCK,
             panel: Panel::default(),
             panel_at: 0,
-            rows: None,
+            rows: Some(Arc::new(Described)),
         };
         let f =
             move |cx| -> EntryFuture { Box::pin(setup_pane(cx, 0x77, Some(d.clone()), "test")) };
@@ -3662,8 +3903,10 @@ mod tests {
                     .args([TABLES + PICTURE_BLOCK]),
             ]
         );
-        let want = picture_block(&screen_tag(), 0x1234_0005, &spec()).unwrap();
+        let mut want = picture_block(&screen_tag(), 0x1234_0005, &spec()).unwrap();
+        want[BITMAP_HANDLE..BITMAP_HANDLE + 4].copy_from_slice(&u32::MAX.to_le_bytes());
         assert_eq!(run.guest.bytes(TABLES + PICTURE_BLOCK, 0x38).unwrap(), want);
+        assert_eq!(shown.picture_block(SCREEN), Some((0x9800, u32::MAX)));
         assert_eq!(shown.picture(SCREEN), Some(0x9800));
     }
 
@@ -3739,7 +3982,7 @@ mod tests {
         let list = SCREEN + ui::LIST;
         let shown = Arc::new(Shown::default());
         shown.set_widget(SCREEN, 0x9000);
-        shown.set_picture(SCREEN, PICTURE, 0xe58c_036c);
+        shown.set_picture(SCREEN, PICTURE, u32::MAX);
         let mut g = guest();
         g.put_u32(STACK + 4, ITEM).put_u32(STACK + 8, 0);
         const BLOCK: u32 = 0x0062_0000;
@@ -3775,6 +4018,20 @@ mod tests {
         assert_eq!(tint, [0.5, 0.25, 1.0]);
         // And points it at the row's bitmap, in our copy of its block.
         assert_eq!(run.guest.u32(BLOCK + BITMAP_HANDLE as u32).unwrap(), 0xe6dd_04bb);
+        // A row without map art restores the pane's blank opening bitmap.
+        let empty = testing::run(&f, run.guest, regs, |c, _| Regs {
+            eax: match c.target {
+                t if t == points::ITEM_TEXT.base => 0x7000,
+                t if t == points::LIST_FOCUSED_ROW.base => DatumHandle::new(0x8001, 0).raw(),
+                _ => 0,
+            },
+            ..Default::default()
+        });
+        assert_eq!(empty.result, Ok(Ret::new(0, 8)));
+        assert_eq!(
+            empty.guest.u32(BLOCK + BITMAP_HANDLE as u32).unwrap(),
+            u32::MAX
+        );
         let mut m = FakeGuest::new();
         m.map(PICTURE, 0x90);
         set_tint(&mut m, PICTURE, [1.0, 0.78, 0.3]).unwrap();

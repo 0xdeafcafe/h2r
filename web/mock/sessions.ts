@@ -1,7 +1,7 @@
 // Made-up session advertisements for the mock (docs/live/live-api.md
 // "Sessions"): a handful of open games that people drift in and out of,
-// that fill up, close and get replaced, so the dashboard's "find a game"
-// screen has something to show without the game. Read-only: `GET
+// that fill up, close and get replaced for the stats site's Open Games
+// table. Read-only: `GET
 // /v1/sessions` and `GET /v1/sessions/{id}`, in the server's shapes.
 // H2_MOCK_SESSIONS=<n> sets how many it keeps open (default 5; 0 for none,
 // to see the empty state). The mock writes no session events to the log.

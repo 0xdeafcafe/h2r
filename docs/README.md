@@ -38,6 +38,7 @@ are under [Reviews](#reviews).
 - [kernel-imports.md](runtime/kernel-imports.md): work list of every kernel import Halo 2 uses, with signatures
 - [xapi.md](runtime/xapi.md): which XAPI services are replaced (`crates/platform/xapi`) and which stay generated, native saves included
 - [storage.md](runtime/storage.md): the Xbox storage boundary (`crates/runtime/vfs`): volumes, FATX names, file semantics, map overrides
+- [background-work.md](runtime/background-work.md): work nothing on the frame waits for (nav meshes, film hashes, uploads) on threads below the game's priority, and the worker cap (`crates/runtime/background`, `H2_BACKGROUND_THREADS`)
 - [agent-api.md](runtime/agent-api.md): the agent API to the running game (`h2 serve`, `h2 agent`): UI and world views, profiling by owner, snapshots, input, overrides, sim matches and tick traces
 - [debug-menu.md](runtime/debug-menu.md): our in-game debug menu: an overlay over the game image, in the 8x8 font, over the same registries as `h2 agent` (built and unit tested, not yet seen in the game)
 - [contract-thin-transfers-flat-ram.md](runtime/contract-thin-transfers-flat-ram.md): spec for the first recompiler-contract change: calls and host calls that stay off the runner, and one-instruction guest memory with a fixup table and card marking; why the opt-in flat RAM is slower; slices, gates and measurements (design only)
@@ -176,6 +177,7 @@ are under [Reviews](#reviews).
 - [maps.md](game/maps.md): map packages, patches applied at load, separate mod slots, and Live downloads
 - [test-maps.md](game/test-maps.md): test maps from recipes (spawn grid, weapon range, superbounce patch...), built from the disc and loaded through the agent API's `maps.test.*`
 - [bots.md](game/bots.md): Clanker navigation, beliefs, personality, phantom seats, appearance, player options, and Clankermatch
+- [bot-training.md](game/bot-training.md): tuning the Clanker table from sim matches: what is searched, the fitness against people, throughput, the admin's Training views and promoting a table (design)
 - [map-pack.md](game/map-pack.md): the Multiplayer Map Pack disc, `h2 import-mappack` and how 1.0 lists its maps
 - [map-select.md](game/map-select.md): Change Map categories for Halo 2, Map Pack, Mods and Halo: CE, with separate retail and mod slots
 - [high-framerate.md](game/high-framerate.md): 60 and 120 fps with the 30 Hz tick exact (`H2_FPS`): the determinism harness, the interpolated replay and reprojection (built, not yet run in game)
@@ -195,6 +197,8 @@ Halo 1 (Xbox) running in the Halo 2 engine: its data read from your own `halo1.i
 - [health.md](halo1/health.md): Halo 1's health model on Halo 2's engine: no body regeneration, health packs, the meter in Halo 2's HUD; picked from the map at game start (`H2_HEALTH_MODEL` overrides)
 - [hud.md](halo1/hud.md): Halo 1's HUD on converted maps: the unit HUD is built and the default; weapon HUDs, grenades and the HUD globals are not converted yet
 - [script-builtins.md](halo1/script-builtins.md): Halo 1 unit, object and miscellaneous script builtins: retail equivalents and the hooks on converted campaign maps (`boot::h1_script_builtins`)
+- [shared-map.md](halo1/shared-map.md): design for a shared Halo 1 cache and the Halo 1 sandbox on every map: the sandbox built once and added to a map as a layer, its raw in an appendix to `shared.map`'s offset space (not built)
+- Notes: [shared-map.md](halo1/notes/shared-map.md) (what the converted maps repeat, and the room in the shared caches)
 
 Reading and converting Halo 1 data:
 
@@ -245,6 +249,8 @@ Reading and converting Halo 1 data:
 - [variants.md](editor/variants.md): the game variant record, its schema and saved files (`crates/formats/variants`)
 - [hud-editor.md](editor/hud-editor.md): the HUD tool (`nhdt` tags): placement, checks, the save, what is not modelled
 - [agent-api.md](editor/agent-api.md): the editor's socket API: JSON methods over maps, tags, placements, variants, playlists and UI screens
+- [modeling.md](editor/modeling.md): design for mesh, BSP and texture editing: the mesh kernel and its ops, the round trip for structure and model geometry, collision, lightmaps and `bitm`, the tools, the agent API methods and the slices
+- [modeling-targets.md](editor/modeling-targets.md): design for the Halo 2 round trip of each modeling target: read path, edit model, write classes, what is recomputed, limits and risks for `sbsp` render geometry and collision, portals, lightmaps, `mode`, `coll` and `phmo`
 
 ## Working on the repository (`dev/`)
 

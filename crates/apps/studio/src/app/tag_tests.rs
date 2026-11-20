@@ -496,3 +496,280 @@ fn disc_a_retail_tag_field_saves_byte_exactly() {
     assert!(!d.is_empty());
     eprintln!("{}: {} {} -> {}", weap.name, f.name, old, old + 1.0);
 }
+
+// Tag bundles, browsing and resources (app::tag_bundle, app::tag_browse).
+
+use super::tag_bundle::{self as bundles, ExportOptions, Fit, ImportOptions};
+
+/// Export the weapon of `app`'s open map as a bundle.
+fn export_weapon(app: &App, opts: &ExportOptions) -> (editor_core::tag_bundle::Bundle, bundles::ExportReport) {
+    bundles::export(
+        &app.tags,
+        &[weap_id()],
+        editor_core::tag_bundle::Origin {
+            map: "example".into(),
+            build: "02.09.27.09809".into(),
+        },
+        opts,
+        None,
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_tag_round_trips_through_a_bundle_file_as_one_undo_step() {
+    let t = Temp::new("bundle");
+    let (mut app, ..) = app(&t.0);
+    let before = fields(&app);
+    let out = t.0.join("bundles").join("blaster.h2tag");
+    app.dispatch(Action::TagExport {
+        tags: vec![weap_id()],
+        out: Some(out.clone()),
+        options: ExportOptions::default(),
+    });
+    let (path, report) = app.last_tag_export.clone().expect("exported");
+    assert_eq!(path, out);
+    assert_eq!(report.tags, ["weap:objects\\test\\blaster"]);
+    // Self-describing: the format, the origin, the reference by name.
+    let text = std::fs::read_to_string(&out).unwrap();
+    assert!(text.contains("h2recomp.tag-bundle"), "{text}");
+    assert!(text.contains("\"map\": \"example\""), "{text}");
+    assert!(text.contains("itmc:objects\\\\test\\\\kit"), "{text}");
+    let b = bundles::read(&out).unwrap();
+    assert_eq!(b.tags[0].fields["speed"], json!(2.5));
+
+    // Edit it three ways: a field, a reference, a block's count.
+    set(&mut app, "speed", json!(9.0));
+    set(&mut app, "parts[0].item", json!(null));
+    let a = tag_api::block(&app.tags, weap_id(), "parts", BlockOp::Remove(1)).unwrap();
+    tag(&mut app, a);
+    assert_ne!(fields(&app), before);
+    let steps = app.tags.undo_len();
+
+    app.dispatch(Action::TagImport {
+        path: out.clone(),
+        options: ImportOptions::default(),
+    });
+    let r = app.last_tag_import.clone().expect("imported");
+    assert_eq!(r.replaced, ["weap:objects\\test\\blaster"]);
+    assert_eq!(fields(&app), before, "the bundle's tag is back");
+    assert_eq!(app.tags.undo_len(), steps + 1, "one undo step");
+    app.dispatch(Action::Undo);
+    let f = fields(&app);
+    assert_eq!(f["speed"], json!(9.0));
+    assert_eq!(f["parts"].as_array().unwrap().len(), 1);
+    app.dispatch(Action::Redo);
+    assert_eq!(fields(&app), before);
+}
+
+#[test]
+fn an_import_resolves_references_by_name_and_refuses_what_the_map_lacks() {
+    let t = Temp::new("bundle-refs");
+    let (mut app, ..) = app(&t.0);
+    let (b, report) = export_weapon(
+        &app,
+        &ExportOptions {
+            dependencies: true,
+            resources: false,
+        },
+    );
+    // The kit it references has no layout here: left out, and said so.
+    assert_eq!(report.tags, ["weap:objects\\test\\blaster"]);
+    assert!(
+        report.left_out.iter().any(|l| l.starts_with("itmc:objects\\test\\kit")),
+        "{:?}",
+        report.left_out
+    );
+    // From another map (no local pointers or IDs carried): the reference
+    // is found by its name.
+    set(&mut app, "parts[0].item", json!(null));
+    let other = Fit::default();
+    bundles::import(&mut app.tags, &b, other, &ImportOptions::default()).unwrap();
+    assert_eq!(
+        fields(&app)["parts"][0]["item"],
+        json!("itmc:objects\\test\\kit")
+    );
+
+    // A reference the map lacks refuses the whole import, leaving the
+    // document as it was.
+    set(&mut app, "speed", json!(3.0));
+    let steps = app.tags.undo_len();
+    let mut lacking = b.clone();
+    for f in &mut lacking.tags[0].root.fixups {
+        if let editor_core::tag_bundle::Fixup::Block { elements, .. } = f {
+            elements[0].fixups = vec![editor_core::tag_bundle::Fixup::Tag {
+                at: 0,
+                target: Some("itmc:objects\\test\\nothing".into()),
+            }];
+        }
+    }
+    let e = bundles::import(&mut app.tags, &lacking, other, &ImportOptions::default())
+        .unwrap_err();
+    assert!(e.contains("this map has no itmc:objects\\test\\nothing"), "{e}");
+    assert_eq!(app.tags.undo_len(), steps);
+    assert_eq!(fields(&app)["speed"], json!(3.0));
+
+    // A tag the map lacks: refused, or skipped when asked.
+    let mut renamed = b.clone();
+    renamed.tags[0].name = "objects\\test\\elsewhere".into();
+    let e = bundles::import(&mut app.tags, &renamed, other, &ImportOptions::default())
+        .unwrap_err();
+    assert!(e.contains("does not add them"), "{e}");
+    renamed.tags.push(b.tags[0].clone());
+    let skip = ImportOptions {
+        skip_missing: true,
+        ..ImportOptions::default()
+    };
+    let r = bundles::import(&mut app.tags, &renamed, other, &skip).unwrap();
+    assert_eq!(r.skipped, ["weap:objects\\test\\elsewhere"]);
+    assert_eq!(r.replaced, ["weap:objects\\test\\blaster"]);
+    assert_eq!(fields(&app)["speed"], json!(2.5));
+
+    // Into another tag of the group, named.
+    let into = ImportOptions {
+        target: Some(weap_id()),
+        ..ImportOptions::default()
+    };
+    let mut one = b.clone();
+    one.tags[0].name = "objects\\test\\other".into();
+    bundles::import(&mut app.tags, &one, other, &into).unwrap();
+
+    // Read with another layout: refused.
+    let mut stale = b.clone();
+    stale.tags[0].layout = "0000000000000000".into();
+    let e = bundles::import(&mut app.tags, &stale, other, &ImportOptions::default())
+        .unwrap_err();
+    assert!(e.contains("another layout"), "{e}");
+}
+
+#[test]
+fn a_bundle_with_more_elements_grows_the_block_only_when_allowed() {
+    let t = Temp::new("bundle-grow");
+    let (mut app, ..) = app_on(&t.0, map_at_end());
+    app.dispatch(Action::SetAllowGrowth(true));
+    let a = tag_api::block(&app.tags, weap_id(), "parts", BlockOp::Duplicate(0)).unwrap();
+    tag(&mut app, a);
+    set(&mut app, "parts[1].value", json!(8));
+    let (b, _) = export_weapon(&app, &ExportOptions::default());
+    // Back to the source's two elements, and growth off.
+    while app.tags.can_undo() {
+        app.dispatch(Action::Undo);
+    }
+    app.dispatch(Action::SetAllowGrowth(false));
+    let fit = Fit {
+        same_map: true,
+        same_build: true,
+    };
+    let e = bundles::import(&mut app.tags, &b, fit, &ImportOptions::default()).unwrap_err();
+    assert!(e.contains("Allow growing"), "{e}");
+    assert!(app.tags.patches().is_empty());
+    app.dispatch(Action::SetAllowGrowth(true));
+    bundles::import(&mut app.tags, &b, fit, &ImportOptions::default()).unwrap();
+    let values: Vec<_> = fields(&app)["parts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["value"].clone())
+        .collect();
+    assert_eq!(values, [json!(7), json!(8), json!(9)]);
+}
+
+#[test]
+fn exports_stay_out_of_git_checkouts() {
+    let t = Temp::new("bundle-git");
+    let (mut app, ..) = app(&t.0);
+    let repo = t.0.join("repo");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    app.dispatch(Action::TagExport {
+        tags: vec![weap_id()],
+        out: Some(repo.join("blaster.h2tag")),
+        options: ExportOptions::default(),
+    });
+    assert!(app.last_tag_export.is_none());
+    assert!(!repo.join("blaster.h2tag").exists());
+    // With no path: under the data root.
+    app.dispatch(Action::TagExport {
+        tags: vec![weap_id()],
+        out: None,
+        options: ExportOptions::default(),
+    });
+    let (path, _) = app.last_tag_export.clone().expect("exported");
+    assert!(path.starts_with(t.0.join("data").join("tag-bundles")), "{}", path.display());
+    assert_eq!(
+        path.file_name().unwrap(),
+        "weap-objects.test.blaster.h2tag"
+    );
+}
+
+#[test]
+fn a_shared_cache_is_browsed_read_only_beside_the_open_map() {
+    let t = Temp::new("browse");
+    let (mut app, ..) = app(&t.0);
+    // A sibling of the loose map stands in for the disc's shared.map.
+    std::fs::write(t.0.join("shared.map"), map()).unwrap();
+    set(&mut app, "speed", json!(5.0));
+    app.dispatch(Action::BrowseTags(Some("shared".into())));
+    assert_eq!(app.browsing(), Some("shared"));
+    let doc = app.shown_tags();
+    assert_eq!(doc.tags().len(), 4);
+    assert_eq!(
+        doc.tag(weap_id()).unwrap().access,
+        Access::Read(super::tag_browse::BROWSING)
+    );
+    assert_eq!(read_tag(doc, weap_id()).unwrap()["fields"]["speed"], json!(2.5));
+    assert_eq!(app.title(), "shared - h2-editor");
+    // Selecting works; writing is refused, and the open map's edit stays.
+    tag(&mut app, TagAction::Select(weap_id()));
+    assert_eq!(app.shown_tags().selected, Some(weap_id()));
+    let a = set_field(app.shown_tags(), weap_id(), "speed", &json!(1.0)).unwrap();
+    tag(&mut app, a);
+    assert!(matches!(app.log().last().unwrap().status, editor_core::Status::Error(_)));
+    // Exports read the browsed map.
+    let out = t.0.join("shared-blaster.h2tag");
+    app.dispatch(Action::TagExport {
+        tags: vec![weap_id()],
+        out: Some(out.clone()),
+        options: ExportOptions::default(),
+    });
+    assert_eq!(bundles::read(&out).unwrap().origin.map, "shared");
+    // Imports go to the open map only.
+    app.dispatch(Action::TagImport {
+        path: out.clone(),
+        options: ImportOptions::default(),
+    });
+    assert!(app.last_tag_import.is_none());
+    // Back to the open map, its edit intact.
+    app.dispatch(Action::BrowseTags(None));
+    assert_eq!(app.browsing(), None);
+    assert_eq!(fields(&app)["speed"], json!(5.0));
+    // Picking the shared cache in the Maps list browses it in the Tags
+    // tool, with no unsaved-changes prompt.
+    app.dispatch(Action::SetTool(ToolKind::Scenario));
+    app.dispatch(Action::SelectMap("shared".into()));
+    assert!(app.pending().is_none());
+    assert_eq!(app.browsing(), Some("shared"));
+    assert_eq!(app.tool, ToolKind::Tags);
+    assert_eq!(app.loaded_map(), Some("example"));
+    assert_eq!(fields(&app)["speed"], json!(5.0), "the open map keeps its edits");
+}
+
+#[test]
+fn resources_and_lookups_read_the_shown_document() {
+    let t = Temp::new("resources");
+    let (app, ..) = app(&t.0);
+    let r = tag_api::resources(&app.tags, weap_id()).unwrap();
+    assert_eq!(r["data"], json!([]));
+    assert_eq!(r["raw"], json!([]));
+    assert!(tag_api::resources(&app.tags, fixture::id(0)).is_err(), "no layout");
+    let doc = &app.tags;
+    let id = |v: serde_json::Value| tag_api::lookup(doc, &v);
+    assert_eq!(id(json!("weap")), Ok(weap_id()));
+    assert_eq!(id(json!("weap:objects\\test\\blaster")), Ok(weap_id()));
+    assert_eq!(id(json!("objects\\test\\blaster")), Ok(weap_id()));
+    assert_eq!(id(json!("objects\\test\\blaster.weap")), Ok(weap_id()));
+    assert_eq!(id(json!(format!("{:#010x}", weap_id().0))), Ok(weap_id()));
+    assert_eq!(id(json!(weap_id().0)), Ok(weap_id()));
+    assert!(id(json!("nothing")).is_err());
+    // The tree marks nothing away: the fixture has no raw data.
+    assert_eq!(app.tags.homes(weap_id()).map(|h| h.away()), Some(0));
+}

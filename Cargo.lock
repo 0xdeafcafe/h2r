@@ -474,6 +474,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "background"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "backtrace"
 version = "0.3.77"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -662,6 +669,7 @@ dependencies = [
  "runtime",
  "runtime-test-probe",
  "rustc-hash 2.1.3",
+ "scenario-edit",
  "serde",
  "serde_json",
  "settings",
@@ -685,6 +693,7 @@ dependencies = [
 name = "bots"
 version = "0.1.0"
 dependencies = [
+ "background",
  "engine",
  "input",
  "live-proto",
@@ -1034,6 +1043,7 @@ dependencies = [
 name = "cloud-saves"
 version = "0.1.0"
 dependencies = [
+ "background",
  "live-proto",
  "live-server",
  "serde",
@@ -1571,6 +1581,7 @@ dependencies = [
  "anyhow",
  "app",
  "bytemuck",
+ "frame-scene",
  "gfx",
  "hot-render",
  "iced-x86",
@@ -1851,6 +1862,8 @@ dependencies = [
  "h1-assets",
  "h1map",
  "map",
+ "serde",
+ "serde_json",
  "tags",
  "toml",
  "variants",
@@ -2208,6 +2221,7 @@ dependencies = [
  "anyhow",
  "assets",
  "audio",
+ "background",
  "bink-hle",
  "bots",
  "chrono",
@@ -2246,7 +2260,6 @@ dependencies = [
  "runtime",
  "runtime-test-probe",
  "rustc-hash 2.1.3",
- "scenario-edit",
  "serde",
  "serde_json",
  "settings",
@@ -5699,7 +5712,9 @@ dependencies = [
  "assets",
  "bytemuck",
  "content",
+ "h1-assets",
  "map",
+ "native-render",
  "pollster",
  "serde",
  "serde_json",

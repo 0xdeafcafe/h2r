@@ -201,6 +201,16 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             );
             c(m::DOC_UNDO, json!({"doc": "map"}));
         }
+        // A sibling of the loose map stands in for the disc's shared.map.
+        m::TAG_BROWSE => std::fs::write(t.path("shared.map"), fixture::fixture()).unwrap(),
+        m::TAG_IMPORT => c(
+            m::TAG_EXPORT,
+            json!({"tag": "itmc", "out": t.path("out/kit.h2tag").display().to_string()}),
+        ),
+        // The window's pairing, as its first frame publishes it.
+        n if n.starts_with("pair.") => {
+            app.pairing.published = Some(json!({"state": "off"}));
+        }
         n if n.starts_with("hud.") => {
             // The HUD fixture's map as the source (it has no scenario).
             let map = t.path("hudtest.map");
@@ -688,6 +698,65 @@ fn tags_list_read_and_follow_references() {
         code_of(api.call(&mut app, m::TAG_READ, json!({"tag": "nope"}))),
         code::INVALID_PARAMS
     );
+}
+
+#[test]
+fn tags_browse_a_shared_cache_and_round_trip_through_a_bundle() {
+    let t = Temp::new("tag-io");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    std::fs::write(t.path("shared.map"), fixture::fixture()).unwrap();
+    // The open map's tags, by group and by folder, with where they live.
+    let all = call(&mut api, &mut app, m::TAG_LIST, json!({"homes": true}));
+    assert_eq!(all["map"], "example");
+    assert_eq!(all["browsing"], false);
+    assert_eq!(all["groups"]["weap"], 1);
+    assert!(all["tags"].as_array().unwrap().iter().any(|t| t["raw"]["local"].is_number()));
+    let objects = call(&mut api, &mut app, m::TAG_LIST, json!({"path": "objects\\test"}));
+    assert_eq!(objects["total"], 2, "{objects}");
+    let q = call(&mut api, &mut app, m::TAG_LIST, json!({"query": "itmc kit"}));
+    assert_eq!(q["total"], 1);
+
+    // A shared cache, read-only.
+    let b = call(&mut api, &mut app, m::TAG_BROWSE, json!({"map": "shared"}));
+    assert_eq!((b["map"].clone(), b["browsing"].clone(), b["total"].clone()), (json!("shared"), json!(true), json!(4)));
+    let kit = call(&mut api, &mut app, m::TAG_READ, json!({"tag": "itmc"}));
+    assert!(kit["access"]["read_only"].is_string(), "{kit}");
+    let e = api
+        .call(&mut app, m::TAG_SET, json!({"tag": "itmc", "path": "+0x8", "value": 7}))
+        .unwrap_err();
+    assert_eq!(e.code, code::REFUSED, "{}", e.message);
+    let res = call(&mut api, &mut app, m::TAG_RESOURCES, json!({"tag": "itmc"}));
+    assert_eq!(res["raw"], json!([]));
+    assert_eq!(res["media"], Value::Null);
+    assert_eq!(
+        code_of(api.call(&mut app, m::TAG_IMPORT, json!({"path": t.path("x.h2tag").display().to_string()}))),
+        code::REFUSED
+    );
+    let back = call(&mut api, &mut app, m::TAG_BROWSE, json!({}));
+    assert_eq!(back["map"], "example");
+    assert_eq!(back["browsing"], false);
+
+    // Export, edit, import: the edit is gone, as one undo step.
+    let out = t.path("out/kit.h2tag");
+    let x = call(&mut api, &mut app, m::TAG_EXPORT, json!({"tag": "itmc", "out": out.display().to_string()}));
+    assert_eq!(x["tags"], json!(["itmc:objects\\test\\kit"]));
+    let before = call(&mut api, &mut app, m::TAG_READ, json!({"tag": "itmc"}));
+    call(&mut api, &mut app, m::TAG_SET, json!({"tag": "itmc", "path": "+0x8", "value": 7}));
+    let r = call(&mut api, &mut app, m::TAG_IMPORT, json!({"path": out.display().to_string()}));
+    assert_eq!(r["replaced"], json!(["itmc:objects\\test\\kit"]));
+    let after = call(&mut api, &mut app, m::TAG_READ, json!({"tag": "itmc"}));
+    assert_eq!(after["fields"], before["fields"]);
+    call(&mut api, &mut app, m::DOC_UNDO, json!({"doc": "tags"}));
+    let undone = call(&mut api, &mut app, m::TAG_READ, json!({"tag": "itmc"}));
+    assert_ne!(undone["fields"], before["fields"], "undo takes the import back");
+    // Never into a Git checkout.
+    let repo = t.path("repo");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    let e = api
+        .call(&mut app, m::TAG_EXPORT, json!({"tag": "itmc", "out": repo.join("k.h2tag").display().to_string()}))
+        .unwrap_err();
+    assert_eq!(e.code, code::REFUSED);
 }
 
 struct Models;

@@ -2,6 +2,8 @@
 //! the stage hooks, admissions and D3D glue (docs/graphics/framescene.md).
 
 #[cfg(feature = "native-render")]
+pub mod carried_slots;
+#[cfg(feature = "native-render")]
 pub mod entry_census;
 #[cfg(feature = "native-render")]
 pub mod native_decals;
