@@ -123,8 +123,8 @@ the device's ordered state at the callback. The native path admits only a
 resolved disabled stencil state for now; enabled or unreadable stencil stays
 on D3D.
 
-The observers on `0x00044040` only scope the current mode and outer-list entry;
-they do not skip guest code. The actual replacement point is the ordered
+The observers scope the current mode and outer-list entry. With the walk
+disabled, the replacement point is the ordered
 `d3d::DrawAdmission` at each resolved `D3DDevice_DrawVertices`. That snapshot
 contains the exact declaration, streams, shader inputs, state, textures,
 viewport and scissors. The guest callback still binds textures, writes every
@@ -175,3 +175,15 @@ blend, live texture identity, mixed native/D3D order, and zero unexplained
 invariants or pixel differences. No cargo, game run or runtime comparison was
 performed by the implementation lane. The agent API was not needed for this
 static work and was not expanded.
+
+
+## Per-record scene walk
+
+`impl.render.native_decals_walk` is on by default with native decals.
+After duplicate marking and bitmap and default-register setup, the hook
+at `0x00044161` reads the record's live allocation and quad count. It
+resolves the same array and native material and reserves that record on
+all copies. Success resumes at `0x00044195`, immediately after the guest's
+array-draw entry. Refusal runs the original submission for that record.
+The callback owns the traversal and changes to the next texture in both
+cases. It clears its admission scope at `0x000441aa`.

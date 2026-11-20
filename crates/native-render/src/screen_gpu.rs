@@ -294,6 +294,8 @@ pub enum ScreenRefused {
     ColourNotCopyable,
     Attachment(u32),
     Source(u32),
+    /// The resolved clip is outside the destination.
+    Clip,
     /// No program for this pass (the load refused it).
     NoProgram,
     /// The strip has fewer than three vertices or the call no strips.
@@ -316,10 +318,6 @@ pub enum ScreenRefused {
     ConvolutionSize,
     /// Convolutions without the window, signs or combiner read.
     NoFrame,
-    /// A convolution after a pass that blends or masks colour (its quads
-    /// draw under the pass's states; the native quads neither blend nor
-    /// mask).
-    ConvolutionStates,
     /// The blur's combiner does not compile.
     Convolution(String),
 }
@@ -366,18 +364,15 @@ pub fn check_order<'a>(
 
 fn convolution_states<'a>(
     frame: Option<&QuadFrame>,
-    passes: impl IntoIterator<Item = (&'a ScreenProgram, &'a [ScreenConvolution])>,
+    passes: impl IntoIterator<Item = &'a [ScreenConvolution]>,
 ) -> Result<(), ScreenRefused> {
-    for (program, convolutions) in passes {
+    for convolutions in passes {
         let quads = convolutions.iter().flat_map(|c| &c.draws);
         if quads.clone().next().is_none() {
             continue;
         }
         frame.ok_or(ScreenRefused::NoFrame)?;
         quads.filter_map(|q| q.grid.as_ref()).try_for_each(ConvolutionGrid::check)?;
-        if program.state.blend.is_some() || program.state.color_writes != wgpu::ColorWrites::ALL {
-            return Err(ScreenRefused::ConvolutionStates);
-        }
     }
     Ok(())
 }
@@ -470,7 +465,7 @@ pub struct ScreenGpu {
     textures_layout: wgpu::BindGroupLayout,
     samplers: [wgpu::Sampler; 4],
     stage_views: [Option<wgpu::TextureView>; 4],
-    pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
+    pipelines: HashMap<RasterPipeline, wgpu::RenderPipeline>,
 }
 
 impl ScreenGpu {
@@ -562,9 +557,9 @@ impl ScreenGpu {
 
     /// The pipeline for colour format `color`: strips, the pass's blend
     /// and colour writes, no depth.
-    fn pipeline(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat) -> &wgpu::RenderPipeline {
-        let (module, layout, s) = (&self.module, &self.layout, self.program.state);
-        self.pipelines.entry(color).or_insert_with(|| {
+    fn pipeline(&mut self, device: &wgpu::Device, key: RasterPipeline) -> &wgpu::RenderPipeline {
+        let (module, layout) = (&self.module, &self.layout);
+        self.pipelines.entry(key).or_insert_with(|| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("native screen pass"),
                 layout: Some(layout),
@@ -580,7 +575,9 @@ impl ScreenGpu {
                 },
                 primitive: wgpu::PrimitiveState {
                     topology: wgpu::PrimitiveTopology::TriangleStrip,
-                    cull_mode: None,
+                    front_face: key.front_face,
+                    cull_mode: key.cull,
+                    unclipped_depth: key.depth_clamp,
                     ..Default::default()
                 },
                 depth_stencil: None,
@@ -590,9 +587,9 @@ impl ScreenGpu {
                     entry_point: Some("fs_main"),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: color,
-                        blend: s.blend,
-                        write_mask: s.color_writes,
+                        format: key.format,
+                        blend: key.blend,
+                        write_mask: key.writes,
                     })],
                 }),
                 multiview_mask: None,
@@ -639,12 +636,78 @@ impl ScreenGpu {
 /// pass and the implementation.
 pub type ScreenKey = (u32, usize, usize);
 
+/// Raster state of a layer-15 strip after the guest applies the template.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StripRaster {
+    pub blend: Option<wgpu::BlendState>,
+    pub blend_constant: wgpu::Color,
+    pub writes: wgpu::ColorWrites,
+    pub front_face: wgpu::FrontFace,
+    pub cull: Option<wgpu::Face>,
+    pub depth_clamp: bool,
+    /// X8 aliases read alpha as one, independently of stored alpha.
+    pub opaque_view: bool,
+    /// The effective scissor in guest target pixels.
+    pub clip: Option<[u32; 4]>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct RasterPipeline {
+    format: wgpu::TextureFormat,
+    blend: Option<wgpu::BlendState>,
+    writes: wgpu::ColorWrites,
+    front_face: wgpu::FrontFace,
+    cull: Option<wgpu::Face>,
+    depth_clamp: bool,
+}
+
+impl StripRaster {
+    fn pipeline(self, format: wgpu::TextureFormat, features: wgpu::Features) -> RasterPipeline {
+        RasterPipeline {
+            format,
+            blend: self.blend,
+            writes: self.writes,
+            front_face: self.front_face,
+            cull: self.cull,
+            depth_clamp: self.depth_clamp && features.contains(wgpu::Features::DEPTH_CLIP_CONTROL),
+        }
+    }
+
+    fn scissor(self, guest: (u32, u32), size: (u32, u32)) -> Result<[u32; 4], ScreenRefused> {
+        let [x, y, w, h] = self.clip.unwrap_or([0, 0, guest.0, guest.1]);
+        if guest.0 == 0 || guest.1 == 0 || w == 0 || h == 0
+            || x > guest.0 || w > guest.0 - x || y > guest.1 || h > guest.1 - y
+            || !size.0.is_multiple_of(guest.0) || !size.1.is_multiple_of(guest.1)
+        {
+            return Err(ScreenRefused::Clip);
+        }
+        let (sx, sy) = (size.0 / guest.0, size.1 / guest.1);
+        Ok([x * sx, y * sy, w * sx, h * sy])
+    }
+}
+
+impl From<crate::pass_state::PassState> for StripRaster {
+    fn from(s: crate::pass_state::PassState) -> Self {
+        Self {
+            blend: s.blend,
+            blend_constant: s.blend_constant,
+            writes: s.color_writes,
+            front_face: s.primitive.front_face,
+            cull: s.primitive.cull_mode,
+            depth_clamp: s.primitive.unclipped_depth,
+            opaque_view: false,
+            clip: None,
+        }
+    }
+}
+
 /// One pass of a call: its program, strips, destination and the
 /// convolutions after it, in draw order.
 pub struct ScreenDraw<'a> {
     pub key: ScreenKey,
     pub program: &'a ScreenProgram,
     pub strips: &'a [Vec<StripVertex>],
+    pub raster: StripRaster,
     pub dest: Dest,
     /// The call's four values (f32 bits).
     pub values: [u32; 4],
@@ -687,12 +750,68 @@ enum Shape {
     Grid(glow::GridFrame),
 }
 
+/// The same alpha-only clear the D3D framebuffer snapshot applies to X8.
+#[derive(Default)]
+struct AlphaClear {
+    pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
+}
+
+impl AlphaClear {
+    fn record(&mut self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
+        let format = view.texture().format();
+        let pipeline = self.pipelines.entry(format).or_insert_with(|| {
+            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("native screen X8 alpha"),
+                source: wgpu::ShaderSource::Wgsl(r#"
+                    @vertex fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+                        let x = f32((i << 1u) & 2u);
+                        let y = f32(i & 2u);
+                        return vec4f(2.0 * x - 1.0, 2.0 * y - 1.0, 0.0, 1.0);
+                    }
+                    @fragment fn fs_main() -> @location(0) vec4f {
+                        return vec4f(0.0, 0.0, 0.0, 1.0);
+                    }
+                "#.into()),
+            });
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("native screen X8 alpha"),
+                layout: None,
+                vertex: wgpu::VertexState {
+                    module: &module, entry_point: Some("vs_main"), buffers: &[], compilation_options: Default::default(),
+                },
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some("fs_main"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALPHA })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("native screen X8 alpha"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view, resolve_target: None, depth_slice: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+            })],
+            ..Default::default()
+        });
+        pass.set_pipeline(pipeline);
+        pass.draw(0..3, 0..1);
+    }
+}
+
 /// Compiled screen passes and the per-pass feedback copy.
 #[derive(Default)]
 pub struct ScreenSet {
     passes: HashMap<ScreenKey, Result<ScreenGpu, ScreenRefused>>,
     copy: Option<Kept>,
     quads: glow::QuadDrawer,
+    opaque: AlphaClear,
 }
 
 impl ScreenSet {
@@ -715,7 +834,7 @@ impl ScreenSet {
     ) -> Result<usize, ScreenRefused> {
         let ScreenTarget { device, queue, encoder, color, target1, convolutions, guest_size, size, z_scale } = t;
         check_order(draws.iter().map(|d| (d.program, d.dest, d.convolutions)))?;
-        convolution_states(frame, draws.iter().map(|d| (d.program, d.convolutions)))?;
+        convolution_states(frame, draws.iter().map(|d| d.convolutions))?;
         let view_of = |index| match index {
             0 => Some(color),
             1 => target1,
@@ -760,7 +879,7 @@ impl ScreenSet {
             }
             match self.passes.get_mut(&d.key) {
                 Some(Ok(g)) => {
-                    g.pipeline(device, dest.texture().format());
+                    g.pipeline(device, d.raster.pipeline(dest.texture().format(), device.features()));
                 }
                 Some(Err(r)) => return Err(r.clone()),
                 None => return Err(ScreenRefused::NoProgram),
@@ -810,9 +929,14 @@ impl ScreenSet {
             let Some(Ok(g)) = self.passes.get(&d.key) else { return Err(ScreenRefused::NoProgram) };
             let reads = drawn.reads(d.program, d.dest)?;
             let copy = if reads.contains(&Some(0)) {
-                let usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST;
+                let usage = wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT;
                 let (extent, _, copy, view) = keep(&mut self.copy, device, full, texture.format(), usage, "native screen view copy");
                 encoder.copy_texture_to_texture(texture.as_image_copy(), copy.as_image_copy(), *extent);
+                if d.raster.opaque_view {
+                    self.opaque.record(device, encoder, view);
+                }
                 Some(view.clone())
             } else {
                 None
@@ -847,7 +971,8 @@ impl ScreenSet {
                     wgpu::BindGroupEntry { binding: 1, resource: pb.as_entire_binding() },
                 ],
             });
-            let Some(pipeline) = g.pipelines.get(&color_format) else { return Err(ScreenRefused::NoProgram) };
+            let Some(pipeline) = g.pipelines.get(&d.raster.pipeline(color_format, device.features())) else { return Err(ScreenRefused::NoProgram) };
+            let [x, y, w, h] = d.raster.scissor(dest_guest, dest_size)?;
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("native screen effect"),
@@ -866,7 +991,8 @@ impl ScreenSet {
                 pass.set_pipeline(pipeline);
                 pass.set_bind_group(0, &uniforms, &[]);
                 pass.set_bind_group(1, &textures, &[]);
-                pass.set_blend_constant(g.program.state.blend_constant);
+                pass.set_blend_constant(d.raster.blend_constant);
+                pass.set_scissor_rect(x, y, w, h);
                 pass.set_vertex_buffer(0, vertices.slice(..));
                 for r in strip_ranges(d.strips) {
                     pass.draw(r, 0..1);
@@ -928,6 +1054,18 @@ mod tests {
     }
 
     const E: ScreenStage = ScreenStage::Empty;
+
+    #[test]
+    fn the_live_raster_keys_colour_masks_and_scales_the_scissor() {
+        let mut raster: StripRaster = program([ScreenStage::Empty; 4]).state.into();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let first = raster.pipeline(format, wgpu::Features::empty());
+        raster.writes = wgpu::ColorWrites::RED | wgpu::ColorWrites::BLUE;
+        raster.clip = Some([4, 6, 8, 10]);
+        assert_ne!(raster.pipeline(format, wgpu::Features::empty()), first);
+        assert_eq!(raster.scissor((32, 32), (64, 64)), Ok([8, 12, 16, 20]));
+        assert_eq!(raster.scissor((8, 8), (16, 16)), Err(ScreenRefused::Clip));
+    }
 
     #[test]
     fn a_strip_is_the_pushed_words_as_floats() {
@@ -1086,8 +1224,8 @@ mod tests {
         };
         let left = [strip(-1.0, -0.25)];
         let right = [strip(0.25, 1.0)];
-        let draw = |key, program, strips| ScreenDraw {
-            key, program, strips, dest: Dest::Target1 { guest: size }, values: [0; 4], convolutions: &[],
+        let draw = |key, program, strips, raster| ScreenDraw {
+            key, program, strips, raster, dest: Dest::Target1 { guest: size }, values: [0; 4], convolutions: &[],
         };
         let mut encoder = ctx.device.create_command_encoder(&Default::default());
         let color = main.create_view(&Default::default());
@@ -1103,7 +1241,7 @@ mod tests {
             size,
             z_scale: 1.0,
         };
-        let draws = [draw((0, 0, 0), &red, &left[..]), draw((0, 1, 0), &blue, &right[..])];
+        let draws = [draw((0, 0, 0), &red, &left[..], red.state.into()), draw((0, 0, 0), &blue, &right[..], blue.state.into())];
         assert_eq!(ScreenSet::new().encode(target, &draws, None, &mut |_| None), Ok(2));
         ctx.queue.submit([encoder.finish()]);
         let px = gfx::readback::read_texture(&ctx, &level, wgpu::TextureAspect::All, 4, size);

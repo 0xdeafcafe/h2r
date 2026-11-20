@@ -34,6 +34,7 @@ pub mod native_post;
 pub mod native_residual;
 pub mod native_shadows;
 pub mod native_transparents;
+
 pub mod native_water;
 pub mod native_world;
 pub mod native_world_layers;
@@ -62,6 +63,25 @@ pub use install::{InstallError, Installed};
 pub use plan::{Base, Conflict, ImageAddrs, Plan, Remap};
 pub use snapshot::{FeatureSnapshot, SnapshotPolicy};
 pub use switches::Switches;
+
+/// Retail instruction boundaries that the emitter must route through entry
+/// dispatch. Hook bodies keep working on images with only a subset present.
+pub fn scene_effect_instruction_entries() -> impl Iterator<Item = u32> {
+    [
+        native_decals::DECAL_ITEM_GEOMETRY.base,
+        native_decals::DECAL_RENDER_END.base,
+        native_transparents::GEOMETRY_RANGE_READY.base,
+        native_transparents::SCENE_TRANSPARENTS_END.base,
+        native_hud::HUD_QUAD_READY.base,
+        native_post::SCREEN_STRIP_READY.base,
+        native_particles::EMIT_READY.base,
+        native_particles::EMIT_PUBLISH.base,
+        native_particles::EMIT_END.base,
+        native_particles::DYNAMIC_QUAD_READY.base,
+        native_particles::DYNAMIC_PUBLISH.base,
+        native_particles::DYNAMIC_END.base,
+    ].into_iter().chain(native_effects::instruction_entries())
+}
 
 /// Whether `H2_NATIVE_VERBOSE=1`: the native renderer's per-definition
 /// and per-material load lines, and its comparison dumps, print. Without

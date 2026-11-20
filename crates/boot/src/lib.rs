@@ -10,6 +10,8 @@
 //! Nothing derived from the disc is written outside the caller's output
 //! directory, which should be under `$TMPDIR` or `target/`.
 
+pub use feature::scene_effect_instruction_entries;
+
 pub mod account_screen;
 pub mod agent_glue;
 pub mod aim_assist;

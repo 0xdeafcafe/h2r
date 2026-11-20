@@ -38,8 +38,6 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "off by default, and pipelining is off with it (it watches the render on the game thread)",
     ),
     #[cfg(feature = "gpu")]
-    ("native-transparents", "SCENE_TRANSPARENTS", AFTER),
-    #[cfg(feature = "gpu")]
     ("native-map-work", "GAME_ACTIVATE", AFTER),
     #[cfg(feature = "gpu")]
     ("native-map-work", "BSP_SWITCH", AFTER),
@@ -71,12 +69,6 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "RENDER_LIGHT_PASSES",
         "context-only, but shares the light passes with render-timing (off by default), \
          whose timer runs after the body",
-    ),
-    #[cfg(feature = "gpu")]
-    (
-        "native-decals",
-        "DECAL_RENDER",
-        "on by default; the decal scope opens at the callback and closes at its return",
     ),
     // render_frame_and_present itself: the game thread runs it, and the
     // pipeline's implementation is what hands the rest to the render thread.
@@ -335,6 +327,10 @@ mod tests {
         for p in [
             "LAYER_DRAW",
             "TRANSPARENT_GEOMETRY",
+            "SCENE_TRANSPARENTS",
+            "SCENE_TRANSPARENTS_END",
+            "DECAL_RENDER",
+            "DECAL_RENDER_END",
             "RENDER_LIGHT_PASSES",
             "LIGHT_GEOMETRY_DRAW",
             "RENDER_DYNAMIC_LIGHTS",

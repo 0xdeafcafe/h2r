@@ -38,7 +38,7 @@ use native_render::camera::GuestRead;
 use native_render::glow::{self, Blend, Draw, GlowTarget, GpuGlow, Plan, Surface};
 use native_render::screen_gpu::{
     self, ConvolutionDraw, ConvolutionGrid, Dest, QuadFrame, ScreenConvolution, ScreenDraw, ScreenKey, ScreenSet, ScreenTarget,
-    StripVertex,
+    StripRaster, StripVertex,
 };
 use native_render::screen_look::ScreenStage;
 
@@ -496,7 +496,7 @@ pub fn screen_swallow(call: &ScreenCall) -> Option<SwallowPlan> {
 }
 
 /// The direct D3DDevice_End at the end of a layer-15 strip.
-const SCREEN_STRIP_END: u32 = 0x0002_d8b2;
+const SCREEN_STRIP_END: u32 = post_feature::SCREEN_STRIP_TAIL;
 
 fn screen_end_returns(call: &ScreenCall) -> Vec<Option<u32>> {
     let mut returns = Vec::new();
@@ -544,6 +544,7 @@ struct ScreenPass {
     effects: Arc<ScreenEffects>,
     call: ScreenCall,
     screens: ScreenCache,
+    raster: OnceLock<Vec<StripRaster>>,
 }
 
 impl ScreenPass {
@@ -558,9 +559,10 @@ impl ScreenPass {
             screens.0 = Arc::downgrade(&self.effects);
         }
         let mut draws = Vec::new();
-        for (key, dest, strips, convolutions) in &self.call.passes {
+        let raster = self.raster.get().ok_or(screen_gpu::ScreenRefused::NoProgram)?;
+        for ((key, dest, strips, convolutions), &raster) in self.call.passes.iter().zip(raster) {
             let program = self.effect(*key).ok_or(screen_gpu::ScreenRefused::NoProgram)?;
-            draws.push(ScreenDraw { key: *key, program, strips, dest: *dest, values: self.call.values, convolutions });
+            draws.push(ScreenDraw { key: *key, program, strips, raster, dest: *dest, values: self.call.values, convolutions });
         }
         let images = &self.effects.images;
         let mut stage_image = |stage| match stage {
@@ -606,24 +608,39 @@ impl d3d::SwallowPass for ScreenPass {
     fn validate(&self, originals: &[d3d::SwallowOriginal<'_>], slots: &[Option<d3d::SwallowTarget>]) -> Result<(), String> {
         let mut originals = originals.iter();
         let mut drawn = screen_gpu::Drawn::default();
+        let mut raster = Vec::with_capacity(self.call.passes.len());
         for (key, dest, strips, convolutions) in &self.call.passes {
             let program = self.effect(*key).ok_or("missing screen program")?;
             let reads = drawn.reads(program, *dest).map_err(|e| format!("{e:?}"))?;
-            for _ in strips {
+            let mut pass_raster = None;
+            for strip in strips {
                 let original = originals.next().ok_or("missing screen strip")?;
-                let draw = original.draw;
-                let state = &draw.state.render;
-                if !matches_colour_state(draw, program.state.blend, program.state.color_writes, program.state.alpha_test)
-                    || (state.blend_enable && gfx::translate::blend_constant(state) != program.state.blend_constant)
-                {
-                    return Err(format!("screen effect {:#010x}: live strip colour state differs from its program", self.call.egor.0));
+                if !matches_strip(original.draw, strip) {
+                    return Err("the resolved screen strip differs from the planned vertices".into());
                 }
+                let mut live = strip_raster(original.draw, program.state.alpha_test)
+                    .map_err(|why| format!("screen effect {:#010x}: {why}", self.call.egor.0))?;
+                let mut view_opaque = None;
                 for (stage, source) in reads.iter().enumerate() {
                     if let Some(index) = source {
-                        check_source(original, stage, screen_slot(*index), slots)?;
+                        let is_view = *index == 0;
+                        check_bound_source(original, stage, screen_slot(*index), slots, is_view)?;
+                        if is_view {
+                            let opaque = original.draw.texture_info[stage].is_some_and(|info| {
+                                info.format == gfx::D3DFormat::LinX8R8G8B8
+                            });
+                            if view_opaque.replace(opaque).is_some_and(|first| first != opaque) {
+                                return Err("screen stages use different alpha interpretations of the framebuffer".into());
+                            }
+                        }
                     }
                 }
+                live.opaque_view = view_opaque.unwrap_or(false);
+                if pass_raster.replace(live).is_some_and(|first| first != live) {
+                    return Err("screen strip raster state changed within the pass".into());
+                }
             }
+            raster.push(pass_raster.ok_or("the screen pass has no strips")?);
             for q in convolutions.iter().flat_map(|c| &c.draws) {
                 for _ in 0..q.grid.as_ref().map_or(1, |g| g.strips.len()) {
                     let original = originals.next().ok_or("missing convolution draw")?;
@@ -639,7 +656,10 @@ impl d3d::SwallowPass for ScreenPass {
             }
             drawn.pass(program, *dest, convolutions).map_err(|e| format!("{e:?}"))?;
         }
-        Ok(())
+        if originals.next().is_some() {
+            return Err("unexpected post packet".into());
+        }
+        self.raster.set(raster).map_err(|_| "screen raster was already captured".to_owned())
     }
 }
 
@@ -686,25 +706,83 @@ fn check_bound_source(
     Err(format!("live source for stage {stage} differs from post slot {slot:?} ({info:?})"))
 }
 
+fn matches_strip(draw: &d3d::ResolvedDraw, strip: &[StripVertex]) -> bool {
+    use gfx::vertex::VertexDataType::Float4;
+    let ([layout], [stream]) = (draw.layout.streams.as_slice(), draw.streams.as_slice()) else {
+        return false;
+    };
+    if layout.stream != 0 || layout.stride != 256 || stream.stride != 256 || draw.layout.pretransformed
+        || draw.indices.is_some() || draw.vertex_count as usize != strip.len()
+        || stream.data.len() != strip.len() * 256 || draw.shader.provided_inputs != 0x1f
+        || layout.attributes.len() != 5
+    {
+        return false;
+    }
+    for register in 0..5u8 {
+        if !layout.attributes.iter().any(|a| {
+            a.register.0 == register && a.data_type == Float4 && a.offset == 16 * u32::from(register)
+        }) {
+            return false;
+        }
+    }
+    // Compare the issued attribute words, including signed zero and NaNs.
+    strip.iter().zip(stream.data.chunks_exact(256)).all(|(vertex, issued)| {
+        let mut expected = std::iter::once(vertex.position).chain(vertex.texcoords)
+            .flatten().flat_map(f32::to_le_bytes);
+        issued[..80].iter().copied().all(|byte| expected.next() == Some(byte))
+    })
+}
+
+/// The template supplies shader code. Colour state can be inherited from
+/// the previous draw or applied by the template wrapper outside that code.
+fn strip_raster(
+    draw: &d3d::ResolvedDraw,
+    alpha: Option<(wgpu::CompareFunction, u8)>,
+) -> Result<StripRaster, &'static str> {
+    use gfx::state::{CompareFunc, DepthBufferMode, FillMode, ShadeMode};
+    let state = &draw.state.render;
+    let live_alpha = (state.alpha_test_enable && state.alpha_func != CompareFunc::Always)
+        .then(|| (gfx::translate::compare_function(state.alpha_func), state.alpha_ref));
+    if live_alpha != alpha {
+        return Err("the live alpha test differs from the compiled screen program");
+    }
+    if state.depth_mode != DepthBufferMode::Disabled
+        || state.stencil.enable
+        || state.fog_enable
+        || state.fill_mode != FillMode::Solid
+        || state.back_fill_mode != FillMode::Solid
+        || state.shade_mode == ShadeMode::Flat
+        || draw.raw.render[141] != 0
+        || !draw.state.bad.is_empty()
+    {
+        return Err("the live screen raster state requires the D3D pipeline");
+    }
+    let clip = draw.clip.filter(|_| draw.clip_rects.is_empty()).ok_or("the screen clip is disjoint or empty")?;
+    let primitive = gfx::translate::primitive_state(
+        state,
+        wgpu::PrimitiveTopology::TriangleStrip,
+        gfx::translate::Capabilities::from_features(wgpu::Features::empty()),
+    );
+    Ok(StripRaster {
+        blend: gfx::translate::blend_state(state),
+        blend_constant: gfx::translate::blend_constant(state),
+        writes: gfx::translate::color_writes(state.color_write),
+        front_face: primitive.front_face,
+        cull: primitive.cull_mode,
+        depth_clamp: state.depth_clamp,
+        opaque_view: false,
+        clip: (!clip.is_whole(draw.target.width, draw.target.height))
+            .then_some([clip.x, clip.y, clip.width, clip.height]),
+    })
+}
+
 fn matches_colour_state(
     draw: &d3d::ResolvedDraw,
     blend: Option<wgpu::BlendState>,
     writes: wgpu::ColorWrites,
     alpha: Option<(wgpu::CompareFunction, u8)>,
 ) -> bool {
-    use gfx::state::{CompareFunc, CullMode, FillMode};
-    let state = &draw.state.render;
-    let live_alpha = (state.alpha_test_enable && state.alpha_func != CompareFunc::Always)
-        .then(|| (gfx::translate::compare_function(state.alpha_func), state.alpha_ref));
-    gfx::translate::blend_state(state) == blend
-        && gfx::translate::color_writes(state.color_write) == writes
-        && live_alpha == alpha
-        && state.cull_mode == CullMode::None
-        && state.fill_mode == FillMode::Solid
-        && state.back_fill_mode == FillMode::Solid
-        && !state.fog_enable
-        && draw.clip_rects.is_empty()
-        && draw.clip.is_some_and(|c| c.is_whole(draw.target.width, draw.target.height))
+    strip_raster(draw, alpha).is_ok_and(|r| r.blend == blend && r.writes == writes && r.cull.is_none() && r.clip.is_none())
 }
 
 fn log_rejection(detail: impl FnOnce() -> String) {
@@ -1142,7 +1220,74 @@ struct Glue<B: d3d::backend::Backend + Send + 'static> {
     screen_commits: AtomicU64,
 }
 
+/// Read the live pass and both rows after the template sets its state.
+fn live_strip(
+    mem: &dyn GuestMemory, esp: u32, mxcsr: u32,
+) -> Option<Vec<[[f32; 4]; 5]>> {
+    let word = |offset| mem.u32(esp.checked_add(offset)?).ok();
+    let columns = word(0xb0)?;
+    if !(2..=MAX_CORNERS / 2).contains(&columns) {
+        return None;
+    }
+    let row = word(0x18)?;
+    let row_bytes = word(0x34)?;
+    if row == 0 || row_bytes != columns * 16 {
+        return None;
+    }
+    let pass = word(0x20)?;
+    let bounds = [word(0x58)?, word(0x5c)?, word(0x60)?, word(0x64)?];
+    let corner = |a: u32| {
+        Some([mem.u32(a).ok()?, mem.u32(a.checked_add(4)?).ok()?, mem.u32(a.checked_add(8)?).ok()?, mem.u32(a.checked_add(12)?).ok()?])
+    };
+    let rows = (0..columns).map(|i| {
+        let a = row.checked_add(i * 16)?;
+        Some([corner(a)?, corner(a.checked_add(row_bytes)?)?])
+    }).collect::<Option<Vec<_>>>()?;
+    let depth = f32::from_bits(mem.u32(screen_effect::constant::DEPTH).ok()?);
+    let vertices = screen_effect::strip_vertices(mem, pass, bounds, &rows, mxcsr).ok()?;
+    Some(vertices.into_iter().map(|v| {
+        let [x, y] = v.position.map(f32::from_bits);
+        let [t0, t1, t2, t3] = v.texcoords.map(|t| t.map(f32::from_bits));
+        [[x, y, depth, depth], t0, t1, t2, t3]
+    }).collect())
+}
+
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
+    fn draw_strip(
+        &self, mem: &mut dyn GuestMemory, esp: u32, call_esp: u32, mxcsr: u32,
+    ) -> Result<bool, runtime::GuestFault> {
+        use timeline::native::{Metric, Stage};
+        let Ok(mut device) = self.device.lock() else { return Ok(false) };
+        let entry = call_entry(PostCall::Screen);
+        let end = post_feature::SCREEN_STRIP_TAIL;
+        Stage::Post.count(Metric::WalkExamined, 1);
+        if !device.owns_post_strip(&DeviceMemory(mem), entry, call_esp, end) {
+            Stage::Post.count(Metric::WalkRefusedReservation, 1);
+            return Ok(false);
+        }
+        let Some(vertices) = live_strip(mem, esp, mxcsr) else {
+            Stage::Post.count(Metric::WalkRefusedInputs, 1);
+            return Ok(false);
+        };
+        match device.try_post_strip(&mut DeviceMemory(mem), entry, call_esp, end, &vertices) {
+            Ok(drawn) => {
+                if !drawn {
+                    Stage::Post.count(Metric::WalkRefusedReservation, 1);
+                }
+                Ok(drawn)
+            }
+            Err(error) => {
+                eprintln!("native-post: issuing screen strip: {error}");
+                Err(runtime::GuestFault {
+                    addr: post_feature::SCREEN_STRIP_TAIL,
+                    len: 0,
+                    access: runtime::guest::Access::Execute,
+                    reason: runtime::guest::FaultReason::InvalidOperation,
+                })
+            }
+        }
+    }
+
     fn colour_pass(&self, mem: &mut dyn GuestMemory, site: CallSite, args: [u32; 7], fp: Fp, native: bool) -> bool {
         self.interrupt();
         self.trace_end();
@@ -1379,7 +1524,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         // Its first strip pins SLOT_BOUND after the guest binds it.
         let headers = [None, None, Some(1), Some(0x19), Some(0x1a), Some(0x1b)]
             .map(|index| index.and_then(|index| target_level_surface(mem, index))).to_vec();
-        let pass = Box::new(ScreenPass { effects, call, screens: Arc::clone(&self.screens) });
+        let pass = Box::new(ScreenPass { effects, call, screens: Arc::clone(&self.screens), raster: OnceLock::new() });
         self.arm(mem, d3d::Swallow {
             call: Some(swallow_call(site)), end_returns, headers, targets, primitive, vertices, shapes, drop: true, pass, capture: None,
         })
@@ -1500,6 +1645,36 @@ mod tests {
             spread: 0.0,
             blend: None,
         }
+    }
+
+    #[test]
+    fn a_live_strip_reads_paired_rows_and_refuses_an_inconsistent_stride() {
+        use engine::memory::FlatMemory;
+        let mut mem = FlatMemory::new(0x0040_0000, 0x0010_0000);
+        let (stack, pass, corners) = (0x0048_0000, 0x0049_0000, 0x004a_0000);
+        for (offset, word) in [(0xb0, 2), (0x18, corners), (0x34, 32), (0x20, pass)] {
+            mem.set_u32(stack + offset, word).unwrap();
+        }
+        mem.set_u32(screen_effect::constant::ONE, 1.0f32.to_bits()).unwrap();
+        mem.set_u32(screen_effect::constant::DEPTH, 0.5f32.to_bits()).unwrap();
+        for (i, corner) in [
+            [1.0f32, 2.0, 0.25, 0.5],
+            [3.0, 2.0, 0.75, 0.5],
+            [1.0, 4.0, 0.25, 1.0],
+            [3.0, 4.0, 0.75, 1.0],
+        ].into_iter().enumerate() {
+            for (n, value) in corner.into_iter().enumerate() {
+                mem.set_u32(corners + 16 * i as u32 + 4 * n as u32, value.to_bits()).unwrap();
+            }
+        }
+        let strip = live_strip(&mem, stack, 0x1f80).unwrap();
+        assert_eq!(strip.iter().map(|registers| registers[0][..2].to_vec()).collect::<Vec<_>>(), [
+            vec![1.0, 2.0], vec![1.0, 4.0], vec![3.0, 2.0], vec![3.0, 4.0],
+        ]);
+        assert_eq!(strip[1][0], [1.0, 4.0, 0.5, 0.5]);
+        assert_eq!(strip[1][4], [0.25, 1.0, 0.0, 1.0]);
+        mem.set_u32(stack + 0x34, 16).unwrap();
+        assert!(live_strip(&mem, stack, 0x1f80).is_none());
     }
 
     #[test]
@@ -2112,7 +2287,7 @@ mod tests {
         let effects = Arc::new(crate::native_post_load::ScreenEffects::default());
         let call = || ScreenCall { egor: EGOR, passes: Vec::new(), values: [0; 4], frame: None };
         let screens = Arc::new(Mutex::new((Weak::new(), ScreenSet::new())));
-        assert!(ScreenPass { effects, call: call(), screens }.colour_only(), "the screen passes bind no depth");
+        assert!(ScreenPass { effects, call: call(), screens, raster: OnceLock::new() }.colour_only(), "the screen passes bind no depth");
     }
 
     /// `H2_POST_TRACE`'s lines: each event the device kept, the call that

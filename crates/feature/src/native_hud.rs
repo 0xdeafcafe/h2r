@@ -33,6 +33,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use engine::memory::GuestMemory;
 use engine::points;
+use runtime::abi::TransferAbi;
+use timeline::native::{Metric, Stage};
 
 use crate::{BuildError, Builder, Feature, Flow, Manifest};
 
@@ -45,6 +47,56 @@ pub const SWITCH: &str = "impl.render.native_hud";
 /// the D3D path).
 pub fn on(switches: &crate::Switches) -> bool {
     crate::switches::native_stage_on(switches, SWITCH)
+}
+
+pub const WALK_SWITCH: &str = "impl.render.native_hud_walk";
+
+pub fn walk_on(switches: &crate::Switches) -> bool {
+    crate::switches::native_walk_on(switches, SWITCH, WALK_SWITCH)
+}
+
+pub(crate) const HUD_QUAD_READY: points::Point = points::Point::new(
+    "HUD_QUAD_READY", 0x0022_a7f6, points::Sig::Opaque, "docs/graphics/native-renderer.md",
+);
+const HUD_QUAD_TAIL: u32 = 0x0022_a854;
+const HUD_QUAD_LOCAL_BYTES: u32 = 0x70;
+const HUD_QUAD_VERTEX_BYTES: u32 = 0x1c;
+
+/// The four vertices after the guest resolves the engine bitmap and
+/// multiplies the texture coordinates by its live dimensions.
+pub type HudVertices = [[(u8, [f32; 4]); 3]; 4];
+
+fn vertices(mem: &dyn GuestMemory, frame: u32, colour: u32) -> Option<HudVertices> {
+    // The helper writes white to register 9 before the vertex loop.
+    if colour != u32::MAX {
+        return None;
+    }
+    let base = frame.checked_sub(HUD_QUAD_LOCAL_BYTES)?;
+    let mut vertices = [[(0, [0.0; 4]); 3]; 4];
+    for (i, vertex) in vertices.iter_mut().enumerate() {
+        let at = base.checked_add(i as u32 * HUD_QUAD_VERTEX_BYTES)?;
+        let read = |o| {
+            let v = f32::from_bits(mem.u32(at.checked_add(o)?).ok()?);
+            (v == 0.0 || v.is_normal()).then_some(v)
+        };
+        *vertex = [
+            (9, [1.0; 4]),
+            (3, [read(16)?, read(20)?, 0.0, 1.0]),
+            (0, [read(0)?, read(4)?, read(8)?, read(12)?]),
+        ];
+    }
+    Some(vertices)
+}
+
+fn walk_quad(mem: &mut dyn GuestMemory, frame: u32, colour: u32) -> bool {
+    Stage::Hud.count(Metric::WalkExamined, 1);
+    let Some(vertices) = vertices(mem, frame, colour) else {
+        Stage::Hud.count(Metric::WalkRefusedInputs, 1);
+        return false;
+    };
+    let drawn = host().is_some_and(|host| host.draw_quad(mem, &vertices));
+    Stage::Hud.count(if drawn { Metric::WalkSuppressed } else { Metric::WalkRefusedReservation }, 1);
+    drawn
 }
 
 /// One call of `0x0022a664`.
@@ -60,6 +112,10 @@ pub struct HudQuadCall {
 
 /// What the screen draws become: boot's glue over the GPU and the device.
 pub trait Host: Send + Sync {
+    fn draw_quad(&self, _mem: &mut dyn GuestMemory, _vertices: &HudVertices) -> bool {
+        false
+    }
+
     /// A batch begins with the record at `record`.
     fn begin(&self, mem: &mut dyn GuestMemory, record: u32);
     /// One quad of the open batch, its four corners at `corners`. `true`:
@@ -253,7 +309,48 @@ impl Feature for NativeHud {
                 Ok(Flow::Continue)
             })
             .context_only();
+        if walk_on(b.switches()) && compare_on(b.switches()).is_none() {
+            b.raw().before(&HUD_QUAD_READY, "native_hud_walk_quad", |c| {
+                let rt = Arc::clone(c.ctx.runtime());
+                if !rt.read_dispatch(|dispatch| dispatch.has_resume(HUD_QUAD_TAIL)) {
+                    return Ok(Flow::Continue);
+                }
+                let Some(esp) = c.cpu.esp.checked_add(4) else { return Ok(Flow::Continue) };
+                if !walk_quad(&mut *rt.memory(), c.cpu.ebp, c.cpu.ebx) {
+                    return Ok(Flow::Continue);
+                }
+                // The fan primitive word is already on the stack.
+                c.cpu.esp = esp;
+                Ok(Flow::Return(TransferAbi::resume(HUD_QUAD_TAIL)))
+            }).context_only().optional();
+        }
         b.snapshot(crate::SnapshotPolicy::Stateless);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod walk_tests {
+    use super::*;
+    use engine::memory::FlatMemory;
+
+    #[test]
+    fn the_hud_walk_uses_the_live_corner_order_and_separate_uv_register() {
+        let mut mem = FlatMemory::new(0x1000, 0x1000);
+        let frame = 0x1800;
+        for i in 0..4 {
+            let at = frame - HUD_QUAD_LOCAL_BYTES + i * HUD_QUAD_VERTEX_BYTES;
+            for (j, word) in [i as f32, -0.0, 0.5, 2.0, 10.0 + i as f32, 20.0].into_iter().enumerate() {
+                mem.set_u32(at + 4 * j as u32, word.to_bits()).unwrap();
+            }
+        }
+        let quad = vertices(&mem, frame, u32::MAX).unwrap();
+        assert_eq!(quad[2][0], (9, [1.0; 4]));
+        assert_eq!(quad[2][1], (3, [12.0, 20.0, 0.0, 1.0]));
+        assert_eq!(quad[2][2].0, 0);
+        assert_eq!(quad[2][2].1.map(f32::to_bits), [2.0, -0.0, 0.5, 2.0].map(f32::to_bits));
+        assert!(vertices(&mem, frame, 0).is_none());
+        mem.set_u32(frame - HUD_QUAD_LOCAL_BYTES, f32::NAN.to_bits()).unwrap();
+        assert!(vertices(&mem, frame, u32::MAX).is_none());
     }
 }

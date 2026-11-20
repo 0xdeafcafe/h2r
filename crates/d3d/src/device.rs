@@ -5353,7 +5353,7 @@ impl<B: Backend> Device<B> {
             self.trace_draw(e, p, v, 0, None, None);
         }
         let mut streams = std::mem::take(&mut parts.streams);
-        let result = self.submit_inner(mem, parts, &mut streams);
+        let result = self.submit_inner(mem, parts, &mut streams, None);
         self.recycle_streams(streams);
         result
     }
@@ -5363,10 +5363,15 @@ impl<B: Backend> Device<B> {
         mem: &mut dyn GuestMemory,
         parts: DrawParts,
         streams: &mut Vec<StreamBytes>,
+        mut native: Option<(&dyn crate::DrawAdmission, &mut bool)>,
     ) -> Result<(), D3dError> {
         let entry = parts.entry;
         // Consume the candidate even when it proves empty, clipped or unresolved.
-        let scoped = self.scoped_admission.take().filter(|(state, _)| !state.closed.load(AtomicOrdering::Acquire));
+        let scoped = if native.is_none() {
+            self.scoped_admission.take().filter(|(state, _)| !state.closed.load(AtomicOrdering::Acquire))
+        } else {
+            None
+        };
         if self.swallowing.as_ref().is_some_and(|s| !s.holding)
             && !matches!(entry, "inline Begin/End" | "D3DDevice_End")
         {
@@ -5424,8 +5429,10 @@ impl<B: Backend> Device<B> {
                     }
                     FrameTexture::Skip(reason) if sampled[stage] => {
                         self.swallow_abort(SwallowRefusal::Resource, || format!("post sample at stage {stage}: {reason}"))?;
-                        self.stats.draws += 1;
-                        self.events.push(Event::DrawSkipped { entry, reason });
+                        if native.is_none() {
+                            self.stats.draws += 1;
+                            self.events.push(Event::DrawSkipped { entry, reason });
+                        }
                         return Ok(());
                     }
                     // A stage the draw does not read: left unbound.
@@ -5510,7 +5517,7 @@ impl<B: Backend> Device<B> {
         } else {
             (draw, snapshots)
         };
-        let admission = if self.swallowing.is_some() || (scoped.is_none() && self.admissions.is_empty())
+        let admission = if self.swallowing.is_some() || (native.is_none() && scoped.is_none() && self.admissions.is_empty())
             || !draw.state.bad.is_empty() || self.hw.zpass_count_enable
         {
             None
@@ -5521,7 +5528,9 @@ impl<B: Backend> Device<B> {
                 palette_entries: std::array::from_fn(|i| self.stage_palette(mem, i)),
                 color_header: self.render_target, depth_header: self.depth_stencil,
             };
-            if let Some((_, stage)) = &scoped {
+            if let Some((stage, _)) = &native {
+                crate::backend::admit_draw(*stage, &snapshot)
+            } else if let Some((_, stage)) = &scoped {
                 crate::backend::admit_draw(stage.as_ref(), &snapshot)
             } else {
                 self.admissions.iter().find_map(|stage| crate::backend::admit_draw(stage.as_ref(), &snapshot))
@@ -5530,7 +5539,18 @@ impl<B: Backend> Device<B> {
         let replacement = admission.and_then(|(plan, mut pass)| {
             use timeline::native::Metric;
             match self.external_binding(mem, &plan, &mut *pass, None) {
-                Ok(binding) => Some((plan, pass, binding)),
+                Ok(binding) if native.is_none()
+                    || (binding.surfaces.color == color
+                        && binding.depth_write == writes_depth
+                        && (!writes_depth || depth == Some(binding.surfaces.depth))
+                        && binding.colors.iter().all(|&(h, s)| h == self.render_target && s == color)) =>
+                {
+                    Some((plan, pass, binding))
+                }
+                Ok(_) => {
+                    plan.stage.count(Metric::RefusedInputs, 1);
+                    None
+                }
                 Err(why) => {
                     self.refuse_external(why);
                     plan.stage.count(Metric::Examined, 1);
@@ -5550,7 +5570,7 @@ impl<B: Backend> Device<B> {
                 .or_else(|| depth_levels[i].and_then(|h| self.depth_level_tex.get(&h)))
                 .or_else(|| keys[i].and_then(|k| self.cache.get(&k)).map(|c| &c.host))
         });
-        self.stats.draws += 1;
+        self.stats.draws += u64::from(native.is_none());
         let replacement = replacement.filter(|(plan, pass, _)| {
             let missing = (0..4).any(|i| sampled[i] && draw.textures[i].is_some() && textures[i].is_none());
             if missing {
@@ -5564,7 +5584,7 @@ impl<B: Backend> Device<B> {
             // Layer-level mask edits and helper scopes need the answer immediately.
             // At a resolved draw the original packet is sufficient for worker fallback
             // when both routes make precisely the same guest-visible writes.
-            let fallback = if scoped.is_none()
+            let fallback = if native.is_none() && scoped.is_none()
                 && binding.same_draw_writes(self.render_target, color, depth, writes_depth)
                 && !(parts.indexed_esp.is_some() && compatible_geometry_target && (self.indexed_geometry_scope)())
             {
@@ -5594,11 +5614,16 @@ impl<B: Backend> Device<B> {
             if let Ok(Some(recordings)) = commands && complete_recordings(&plan, &recordings) {
                 for &(_, surface) in &binding.colors { self.before_target_write(surface)?; }
                 PreparedExternal { device: self, binding, recordings }.commit();
+                if let Some((_, committed)) = native.as_mut() { **committed = true; }
                 if let Some((scope, _)) = scoped { scope.committed.store(true, AtomicOrdering::Release); }
                 *streams = draw.streams;
                 return Ok(());
             }
             self.stats.external_passes_dropped += 1;
+        }
+        if native.is_some() {
+            *streams = draw.streams;
+            return Ok(());
         }
         // Only adapt geometry for a submission that will use the D3D draw.
         // A committed external replacement recycles the original streams.
@@ -5769,12 +5794,28 @@ impl<B: Backend> Device<B> {
         self.live(E)?;
         self.sync_push_buffer(mem)?;
         let primitive = Self::primitive(E, primitive)?;
+        let Some(parts) = self.indexed_parts(mem, primitive, count, indices, esp, true)? else {
+            return Ok(());
+        };
+        self.submit(mem, parts)
+    }
+
+    fn indexed_parts(
+        &mut self,
+        mem: &dyn GuestMemory,
+        primitive: PrimitiveType,
+        count: u32,
+        indices: u32,
+        esp: Option<u32>,
+        publish_state: bool,
+    ) -> Result<Option<DrawParts>, D3dError> {
+        const E: &str = "D3DDevice_DrawIndexedVertices";
         vertex_limit(E, count)?;
         let base = mem.read_u32(self.cfg.layout.device + field::BASE_VERTEX)?;
         let index_bytes = span(E, count, 2)?;
         if index_bytes < 2 {
             crate::guest::check_range(indices, index_bytes)?;
-            return Ok(());
+            return Ok(None);
         }
         let (lo16, hi16, list) = self.index_list(mem, indices, index_bytes)?;
         // Every index overflows alike or none does: the largest decides.
@@ -5795,27 +5836,29 @@ impl<B: Backend> Device<B> {
                 }
             }
         }
-        let words = match self.draw_state(mem) {
+        let words = if publish_state {
+            self.draw_state(mem)
+        } else {
+            self.state(mem).map(Arc::new)
+        };
+        let words = match words {
             Ok(words) => words,
             Err(e) => {
                 self.recycle_streams(streams);
                 return Err(e);
             }
         };
-        self.submit(
-            mem,
-            DrawParts {
-                entry: E,
-                indexed_esp: esp,
-                primitive,
-                vertex_count: window,
-                layout,
-                vertex,
-                streams,
-                indices: Some(list),
-                words,
-            },
-        )
+        Ok(Some(DrawParts {
+            entry: E,
+            indexed_esp: esp,
+            primitive,
+            vertex_count: window,
+            layout,
+            vertex,
+            streams,
+            indices: Some(list),
+            words,
+        }))
     }
 
     /// The 16-bit index list `[va, va + len)`: its smallest and largest

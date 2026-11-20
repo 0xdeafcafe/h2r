@@ -1184,10 +1184,11 @@ The first-person weapon and arms are drawn by the player chain after the
 transparents (`0x0002afa0`, `FIRST_PERSON_RENDER`) with their own
 projection, not by the base layers' layer-3 call, which the caller check
 pins. With `impl.render.native_first_person=on` (off by default),
-`feature::native_first_person` takes only the layer-3 call returning to
-`0x00040136`, in each of the two `0x0003fdf0` invocations. Each accepted
-call gets its own external pass in that order; its items are restored at
-the next layer draw. The `0x000404b0` light step and the transparent call
+`feature::native_first_person` plans the layer-3 call returning to
+`0x00040136` in each of the two `0x0003fdf0` invocations when it has one
+in-layer item. The native path reserves the draw before clearing its flag
+and restores the flag at the next layer draw. Mixed lists can issue native
+contiguous ranges after the guest sort, as described below. The `0x000404b0` light step and the transparent call
 after the second model draw stay on their original paths. The local
 player's third-person body draws natively like any biped when the game
 queues it.
@@ -1764,10 +1765,9 @@ not read yet; they keep their D3D draws in this stage.
 ### Admission and order
 
 Observers identify the sorted entry from the live guest stack and clear
-the scope when `SCENE_TRANSPARENTS` returns. The return observer uses
-the game-thread fallback under pipelined rendering. The original handler
-runs its builds, state writes, binds and
-restores. The D3D indexed draw drains pending push-buffer work, then
+the scope at the end of the sorted loop (`0x0001e406`). The dispatcher and
+its cleanup can run on the pipelined render thread. The standard handler
+runs its material builds, state writes, bindings and restores. The D3D indexed draw drains pending push-buffer work, then
 resolves its own state and bindings. Stage 3 may substitute one immutable
 GPU vertex binding at that draw. It uses the original indices, shader
 classification, constants, alpha test, W clip and attachments. The
@@ -3306,6 +3306,80 @@ render thread the bottleneck.
 
 All native switches stay off by default until a paired A/B shows
 native at least as fast as D3D with identical frames.
+
+## Native scene walks for effects and overlays
+
+The walks are on by default. Set an individual `impl.render.native_<stage>_walk=off`
+to compare it with the earlier stage path on the same generated image.
+`impl.render.native=off` disables every walk. Each walk also needs its owning
+native stage switch. The effects walk shares the particles renderer and its
+stage switch.
+
+| Stage | Switch suffix | Instruction boundary and guest work skipped |
+| --- | --- | --- |
+| Transparents | `native_transparents_walk` | At `0x00041020` the saved sorted-loop ordinal resolves through the live u16 order array. The data pointer must match the handler argument. At `0x0004dad0` the standard emitter has a contiguous range in EDI/ESI. Skip the indexed submission and resume at `0x0004dae0`. |
+| First person | `native_first_person_walk` | At the layer-3 call returning to `0x00040136` the model pass can suppress the sole in-layer item before its build. Mixed lists keep the guest sort. At `0x0004dad0`, the ordinary sorted draw stack and the first-person list can supply contiguous ranges in layers 1, 3, 7, 8 and 20. |
+| Decals | `native_decals_walk` | At `0x00044161` ESI names one record in the callback's linked list. Read its live allocation and quad count, then skip the array submission through `0x00044190`. The guest has already marked duplicates and selected the bitmap and attribute defaults. |
+| Particles | `native_particles_walk` | At `0x0023ed5c` the guest allocator has succeeded and the emitter inputs are still live. Replace the one quad and skip its attribute writes and geometry publication in the guest. Restore EBP and return with the original stack cleanup. |
+| Effects | `native_effects_walk` | The four-vertex copy callback's source is available at `0x0004b252`. Read it directly and skip the copy and publication. For contrails, read the completed callback output at `0x0004b28c` and skip publication. Both use the live inline declaration, then return `-1` with the original stack cleanup. |
+| HUD | `native_hud_walk` | At `0x0022a7f6` the bitmap shader is set and the four transformed corners and UVs are in the local vertex array. Skip the Begin and per-vertex calls, then resume at `0x0022a854`. Text retains the existing glyph-batch path. |
+| Post | `native_post_walk` | At `0x0002d565` the screen strip's Begin is published. Read the active pass and two corner rows and evaluate them with the call's MXCSR. Supply those vertices to the ordered post transaction and resume at `0x0002d8b2`. |
+
+A direct native draw drains preceding work and resolves the same streams,
+program, sampler inputs, depth and colour attachment as the guest issue
+path. Native recordings for every participating copy must be sealed
+before the hook skips guest instructions. A refused draw returns to the
+guest at the same place in the list. The inline paths retain the last
+effective register values on commit and restore their old values on
+refusal. Post retains the assembled original strips for exact D3D replay
+if its complete call fails validation or recording.
+
+Program selection, material evaluation and target changes still run for
+indexed geometry and HUD shader quads. Multi-range indexed branches,
+unknown effect builders, query draws and unsupported states still use
+their original paths. Particle system iteration, property evaluation and
+contrail ribbon construction stay in the guest. Glow and convolution
+quads still use their existing whole-call recording and replay. The
+single-item first-person mask avoids moving a native draw across the
+guest's sort when other layer items participate.
+
+### Post colour state and framebuffer aliases
+
+A load-time screen program does not capture the inherited raster state
+at issue. The screen strip validator used to reject the whole call when
+the live colour state differed, including a blend constant that could
+differ without participating in blending. The strip pipeline now uses the
+resolved blend, blend constant, colour writes, winding, cull and scissor.
+It still requires the compiled alpha test to match, and checks the actual
+strip attributes against the plan by bits. Each strip in one pass must
+have the same raster state. Other shaders, effects and raster states keep
+their original draws when the native pass cannot reproduce them.
+
+A linear X8 alias of the framebuffer samples alpha as one. The native
+feedback copy applies that alpha rule on its own scratch texture, as
+D3D's framebuffer snapshot does. Slot identity, sampled dimensions and
+the original replay path stay in the transaction. Mixed alpha
+interpretations of the same framebuffer in one pass are refused.
+
+### Diagnostics and A/B
+
+`H2_FRAME_STATS=1` and the agent's frame counters include
+`native_<stage>_walk_examined`, `walk_suppressed`,
+`walk_refused_inputs` and `walk_refused_reservation`. For post,
+`walk_suppressed` counts guest strip loops skipped. Post's ordinary
+`suppressed` and reference/display range counts measure committed GPU
+coverage. The effects and first-person ranges have their own stage
+columns.
+
+Regenerate the retail image with the updated emitter. The emitter routes
+the researched instruction starts through generated entry dispatch.
+Keep the same image across A/B runs and vary only the walk switches.
+Use the same replay or save and input, then capture matching presents
+with the agent API. Include Old Mombasa gameplay and explosions,
+first-person weapon changes, a menu with blurring and glyphs, and a
+two-view run at 1x and 2x. Compare pixels, native and replay counters,
+guest render CPU, D3D encode and render-worker waits. Also capture the
+master-off run as the D3D reference.
 
 ## Open
 
