@@ -75,6 +75,14 @@ describe("the Live admin hub", () => {
       expect(tool).toMatch(/href="\/dash\/admin"[^>]*>live admin<\/a>/);
     }
   });
+
+  test("all deck screens use the dashboard's Back prompt", () => {
+    for (const screen of [hub, html, usage, hosts, events]) {
+      expect(screen).toContain("dk-back dx-prompt dx-prompt--b");
+      expect(screen).toMatch(/class="dx-btn dx-btn--b dx-btn--keyboard"[^>]*><b>esc<\/b>/);
+      expect(screen).toContain('<span class="dx-prompt-label">back</span>');
+    }
+  });
 });
 
 describe("the dense dashboard style page", () => {
@@ -86,7 +94,7 @@ describe("the dense dashboard style page", () => {
     expect(html).toContain('class="dk-trail"');
     expect(html).toMatch(/<h1[^>]*>usage<\/h1>/);
     expect(html).toMatch(/href="\/dash\/server" class="dk-back[ "]/);
-    expect(html.match(/class="dk-filters"/g)).toHaveLength(1);
+    expect(html.match(/class="dk-filters dk-toolbar"/g)).toHaveLength(1);
     expect(html).toMatch(/role="radio"[^>]*aria-checked="true"[^>]*>30 days/);
   });
 

@@ -72,7 +72,7 @@ function HostsInventory(props: { context: HostsAdmin }) {
 
   return (
     <>
-      <div class="dk-span-12">
+      <div class="dk-span-12 dk-toolbar">
         <button type="button" class="dk-pill" onClick={() => void refetch()} disabled={busy()}>
           {hosts.loading ? "Reading hosts…" : "Refresh"}
         </button>

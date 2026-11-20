@@ -166,11 +166,11 @@ with big type and a handful of rows. That is right for a menu and wrong
 for an admin screen with thirty rows and four charts. The deck keeps the
 dashboard's materials and drops the stage:
 
-- **Same materials.** Orbitron for page titles (lower case, with the
-  plate titles' glow), Barlow Condensed for everything else, the greens
-  of the console screens, the select pill's yellow-green, the bevelled
-  rim (light, dark, light) round a flat translucent green face, cut on the
-  corners like the plates. The back control is the console's round "b".
+- **Same materials.** Barlow Condensed headings, the bevelled frames and
+  recessed faces from `web/src/styles/dash-pages.css`, and the console
+  list's row height, focus treatment and yellow-green selection. Back uses
+  the dashboard prompt from `web/src/dash/parts.tsx`: Esc keycap, green B
+  disc or left arrow, depending on the last input device.
 - **Real pixels, not the stage.** The page scrolls; panels sit on a
   12-column grid (6 at medium widths, 1 on a phone). Body 14px, labels
   12px small capitals, tile figures 30px.
@@ -189,7 +189,7 @@ All in `web/src/deck/`; the data shaping is pure and tested
 
 | Component | What it is |
 |---|---|
-| `DeckPage` | Trail, title, back (b, Escape, Backspace), the filter row, the grid. |
+| `DeckPage` | Trail, title, Back (gamepad B, keyboard B, Escape or Backspace), the filter row, the grid. |
 | `Panel` | The bevelled panel; with `table`, a toggle swaps its chart for its table. |
 | `Presets` | The filter row's preset pills (a radio group). |
 | `StatTile` | Label, value, change against the period before (arrow, sign and a word, coloured by whether up is good), sparkline. |

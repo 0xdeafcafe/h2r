@@ -113,35 +113,40 @@ function AdminEvents() {
   return (
     <Panel title="Server events" meta={page()?.until && !page.loading ? `positions ${from() + 1}–${page()!.until}` : undefined}>
       <div class="dk-event-log" ref={panel}>
-        <div class="dk-event-tools" role="group" aria-label="Event log controls">
-          <input data-log-control value={filter()} aria-label="Filter this page by event type or stream"
+        <div class="dk-toolbar" role="group" aria-label="Event log controls">
+          <input class="dx-page-field dk-field" data-log-control type="search" value={filter()} aria-label="Filter this page by event type or stream"
             placeholder="Filter this page by type or stream" onInput={(e) => setFilter(e.currentTarget.value)} />
           <button data-log-control type="button" class="dk-pill" aria-disabled={page.loading} onClick={latest}>Latest</button>
-          <button data-log-control type="button" class="dk-pill" aria-disabled={page.loading || (end() ?? head()) >= head()} onClick={newer}>Newer</button>
-          <button data-log-control type="button" class="dk-pill" aria-disabled={page.loading || !from()} onClick={older}>Older</button>
+          <button data-log-control type="button" class="dk-pill" aria-keyshortcuts="PageUp" aria-disabled={page.loading || (end() ?? head()) >= head()} onClick={newer}>Newer</button>
+          <button data-log-control type="button" class="dk-pill" aria-keyshortcuts="PageDown" aria-disabled={page.loading || !from()} onClick={older}>Older</button>
         </div>
-        <Show when={page.loading}><p class="dk-note" role="status">Reading events…</p></Show>
+        <Show when={page.loading}><p class="dk-state" role="status">Reading events…</p></Show>
         <Show when={!page.loading && page()?.error}>
-          {(error) => <p class="dk-note" role="alert">{error()} <button data-log-control type="button" class="dk-pill" onClick={() => void refetch()}>Retry</button></p>}
+          {(error) => <div class="dk-toolbar dk-state dk-state--bad">
+            <p class="dk-note" role="alert">Could not read events. {error()}</p>
+            <button data-log-control type="button" class="dk-pill" onClick={() => void refetch()}>Retry</button>
+          </div>}
         </Show>
         <Show when={!page.loading && !page()?.error}>
-          <div class="dk-event-table">
-            <div class="dk-event-columns" aria-hidden="true"><span>Position</span><span>Type</span><span>Stream</span><span>Summary</span><span>Time (UTC)</span></div>
-            <ul>
-              <For each={rows()} fallback={<li class="dk-note">No matching events in this range.</li>}>
-                {(e) => (
-                  <li>
-                    <button type="button" class="dk-event-row" data-log-control aria-expanded={open() === e.position}
-                      onClick={() => setOpen(open() === e.position ? null : e.position)}>
-                      <span>#{e.position}</span><b>{e.type}</b><span>{e.stream}</span>
-                      <span>{eventSummary(e)}</span><time dateTime={e.at}>{e.at?.slice(11, 19)}</time>
-                    </button>
-                    <Show when={open() === e.position}><pre>{JSON.stringify(e, null, 2)}</pre></Show>
-                  </li>
-                )}
-              </For>
-            </ul>
-          </div>
+          <Show when={rows().length} fallback={<p class="dx-page-empty dk-empty" role="status">No matching events in this range.</p>}>
+            <div class="dk-table-wrap dk-event-table">
+              <div class="dk-event-columns" aria-hidden="true"><span>Position</span><span>Type</span><span>Stream</span><span>Summary</span><span>Time (UTC)</span></div>
+              <ul>
+                <For each={rows()}>
+                  {(e) => (
+                    <li>
+                      <button type="button" class="dx-page-row dk-event-row" data-log-control aria-expanded={open() === e.position}
+                        onClick={() => setOpen(open() === e.position ? null : e.position)}>
+                        <span>#{e.position}</span><b>{e.type}</b><span>{e.stream}</span>
+                        <span>{eventSummary(e)}</span><time dateTime={e.at}>{e.at?.slice(11, 19)}</time>
+                      </button>
+                      <Show when={open() === e.position}><pre>{JSON.stringify(e, null, 2)}</pre></Show>
+                    </li>
+                  )}
+                </For>
+              </ul>
+            </div>
+          </Show>
         </Show>
       </div>
     </Panel>

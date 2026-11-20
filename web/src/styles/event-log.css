@@ -1,59 +1,35 @@
-.dk-event-log { min-width: 0; }
-.dk-event-tools {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: .5rem;
-  margin-bottom: .75rem;
-}
-.dk-event-tools input {
-  flex: 1 1 14rem;
-  padding: .35rem .6rem;
-  min-width: 0;
-  color: inherit;
-  font: inherit;
-  background: var(--well);
-  border: 1px solid #46703a;
-  border-radius: .2rem;
-}
-.dk-event-tools [aria-disabled="true"] { opacity: .55; cursor: default; }
-.dk-event-table {
-  overflow-x: auto;
-  background: var(--well);
-  border: 1px solid #46703a;
-}
+.dk-event-log { display: grid; gap: 8px; min-width: 0; }
 .dk-event-table ul { list-style: none; padding: 0; margin: 0; }
 .dk-event-columns, .dk-event-row {
   display: grid;
   grid-template-columns: 9ch minmax(12rem, 1fr) minmax(13rem, 1.15fr) minmax(8rem, 2fr) 10ch;
-  gap: .75rem;
-  align-items: baseline;
+  gap: 12px;
+  align-items: center;
   min-width: 43rem;
-  padding: .35rem .75rem;
+  padding: 6px 8px;
 }
-.dk-event-columns { color: var(--ink-2); background: #142a13; }
+.dk-event-columns {
+  background: #142a13;
+  color: var(--ink-2);
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
 .dk-event-row {
   width: 100%;
-  color: inherit;
   font: inherit;
   text-align: left;
-  background: transparent;
-  border: 0;
-  border-top: 1px solid #20391a;
   cursor: pointer;
   overflow-wrap: anywhere;
 }
-.dk-event-row:is(:hover, [aria-expanded="true"]) { background: #1b3718; }
-.dk-event-row:focus, .dk-event-tools :focus {
-  outline: 2px solid var(--sel-2);
-  outline-offset: -2px;
-}
-.dk-event-row time { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.dk .dk-event-log .dk-event-row:focus { outline-offset: -2px; }
+.dk-event-row :is(time, span:first-child) { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .dk-event-table pre {
   max-height: 22rem;
   margin: 0;
   overflow: auto;
-  padding: .75rem;
+  padding: 12px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   background: #102410;

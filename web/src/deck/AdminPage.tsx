@@ -29,8 +29,8 @@ export default function AdminPage() {
       }>
         <Panel title="Server tools" span={6}>
           <nav aria-label="Server tools">
-            <ul>
-              <For each={LINKS}>{({ label, href }) => <li><A href={href} state={DECK_ENTRY}>{label}</A></li>}</For>
+            <ul class="dk-link-list">
+              <For each={LINKS}>{({ label, href }) => <li><A class="dx-page-row" href={href} state={DECK_ENTRY}>{label}</A></li>}</For>
             </ul>
           </nav>
         </Panel>
