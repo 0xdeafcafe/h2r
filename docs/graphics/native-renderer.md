@@ -1,7 +1,7 @@
 # Native GPU renderer
 
 Status: Built. Every stage draws in the default configuration.
-Code: `crates/rewrites/native-render/src` (wgpu passes and loaders), `crates/hooking/hooks/src/native_*.rs` (the hooks that hand guest draws to them), `crates/platform/d3d/src/backend.rs` and `crates/platform/d3d/src/device.rs` (admission). Tests: `crates/hooking/hooks/tests/native_defaults.rs`, `crates/hooking/hooks/src/switches.rs`, and the per-module tests in `crates/rewrites/native-render`.
+Code: `crates/rewrites/native-render/src` (wgpu passes and loaders), `crates/hooking/hooks/src/native_*.rs` (the hooks that hand guest draws to them), `crates/platform/d3d/src/backend.rs` and `crates/platform/d3d/src/device.rs` (admission). Tests: `crates/rewrites/render-bridge/tests/native_defaults.rs`, `crates/hooking/hooks/src/switches.rs`, and the per-module tests in `crates/rewrites/native-render`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 The native renderer draws the frame from GPU-resident data: the static world, objects, transparents, lights, effects, fog, post and the HUD. It does not

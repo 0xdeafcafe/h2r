@@ -87,7 +87,7 @@ fn upload(t: &d3d::ExternalTarget<'_>, image: &Image) -> wgpu::TextureView {
 /// Seek directly to this tick's pair so both target copies and restored
 /// frames see the same phase without advancing the simulation's random seed.
 pub(super) fn video_offset(tick: u32) -> [f32; 2] {
-    use hooks::pipeline_render::{RANDOM_A, RANDOM_C};
+    use render_bridge::pipeline_render::{RANDOM_A, RANDOM_C};
     let (mut mult, mut add) = (RANDOM_A, RANDOM_C);
     let mut seed = 0u32;
     let mut steps = tick.wrapping_mul(2);

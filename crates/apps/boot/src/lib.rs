@@ -10,7 +10,7 @@
 //! Nothing derived from the disc is written outside the caller's output
 //! directory, which should be under `$TMPDIR` or `target/`.
 
-pub use hooks::scene_entries::scene_effect_instruction_entries;
+pub use render_bridge::scene_entries::scene_effect_instruction_entries;
 
 pub mod account_screen;
 mod agent_frames;

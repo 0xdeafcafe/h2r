@@ -9,7 +9,7 @@ use d3d::backend::{
     ExternalPassRequest, ExternalPlan, ExternalSlot, ExternalTarget, ExternalWrites, ResolvedDraw,
 };
 use engine::memory::GuestMemory as _;
-use hooks::native_world_layers::{Layer, current};
+use render_bridge::native_world_layers::{Layer, current};
 use native_render::camera::GuestRead;
 use native_render::world_layers::{
     DRAW_INDEXED_VERTICES, Geometry, Owner, SKY_INDEXED_RETURN, Site, Texaccum,
@@ -85,7 +85,7 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
     device: &d3d::abi::SharedDevice<B>,
 ) {
     let switches = hooks::Switches::from_env().unwrap_or_default();
-    if !hooks::native_world_layers::on(&switches) {
+    if !render_bridge::native_world_layers::on(&switches) {
         return;
     }
     if let Ok(mut device) = device.lock() {
@@ -127,15 +127,15 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
                             Owner::Placement(n) => Some(native_render::world::Owner::Instance(n)),
                             Owner::Object { .. } => None,
                         })
-                        && let Some(bsp) = mem.read_u32(hooks::native_world::ACTIVE_BSP)
+                        && let Some(bsp) = mem.read_u32(render_bridge::native_world::ACTIVE_BSP)
                     {
                         count_frontend(frame, layer.view, bsp, timeline::native::WorldOpaque::GuestIndexed, [owner]);
                     }
                     Some(DrawContext {
                         layer,
                         frame,
-                        bsp: mem.read_u32(hooks::native_world::ACTIVE_BSP),
-                        generation: hooks::native_map_work::bsp_generation(),
+                        bsp: mem.read_u32(render_bridge::native_world::ACTIVE_BSP),
+                        generation: render_bridge::native_map_work::bsp_generation(),
                         geometry,
                         index_count: cpu.esp.checked_add(8).and_then(|a| mem.read_u32(a)),
                     })
@@ -168,7 +168,7 @@ pub(crate) fn enter_opaque_range(
         layer, frame, geometry: Some(geometry), index_count: Some(count),
         // The sorted range has no guest memory to read the BSP from here;
         // without it the section cache is bypassed for this range.
-        bsp: None, generation: hooks::native_map_work::bsp_generation(),
+        bsp: None, generation: render_bridge::native_map_work::bsp_generation(),
     })))
 }
 
@@ -196,7 +196,7 @@ struct Admission {
 }
 
 pub(crate) fn owns_scene_world(switches: &hooks::Switches) -> bool {
-    hooks::native_world_layers::on(switches)
+    render_bridge::native_world_layers::on(switches)
 }
 
 /// Layer 3 can draw a material that never reads the accumulation level.

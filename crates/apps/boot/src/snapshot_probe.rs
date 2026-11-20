@@ -189,13 +189,13 @@ mod tests {
     fn switched_off_render_features_block_nothing() {
         let off = "impl.render.native=off";
         let mut r = hooks::Registry::new(hooks::Switches::parse(off).unwrap());
-        r.add(&hooks::occlusion::OcclusionCull).unwrap();
-        r.add(&hooks::native_world::NativeWorld).unwrap();
-        r.add(&hooks::native_objects::NativeObjects).unwrap();
-        r.add(&hooks::native_transparents::NativeTransparents)
+        r.add(&render_bridge::occlusion::OcclusionCull).unwrap();
+        r.add(&render_bridge::native_world::NativeWorld).unwrap();
+        r.add(&render_bridge::native_objects::NativeObjects).unwrap();
+        r.add(&render_bridge::native_transparents::NativeTransparents)
             .unwrap();
-        r.add(&hooks::native_lights::NativeLights).unwrap();
-        r.add(&hooks::native_post::NativePost).unwrap();
+        r.add(&render_bridge::native_lights::NativeLights).unwrap();
+        r.add(&render_bridge::native_post::NativePost).unwrap();
         let plan = r.build(&hooks::Base).unwrap();
         let policies: Vec<_> = plan
             .snapshot

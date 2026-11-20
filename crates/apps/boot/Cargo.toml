@@ -6,6 +6,7 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
+render-bridge = { path = "../../rewrites/render-bridge" }
 sim-bridge = { path = "../../rewrites/sim-bridge" }
 film = { path = "../../live/film" }
 rustc-hash = "2"
