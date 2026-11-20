@@ -247,18 +247,20 @@ fn the_clamp_turns_a_direction_past_its_yaw_limit_back_to_the_limit() {
     g.set_u32(LIMITS + 0x10, f(1.0)).unwrap();
     // Straight along +y: a yaw of pi/2.
     vec3(&mut g, DIRECTION, [0.0, 1.0, 0.0]);
+    // The unit's forward and up, which the frame `b9fc0` copies out.
+    vec3(&mut g, BODY + 0x70, [1.0, 0.0, 0.0]);
+    vec3(&mut g, BODY + 0x7c, [0.0, 0.0, 1.0]);
 
+    // The frame `b9fc0` is slice 4's `OBJECT_WORLD_BASIS` body, so the
+    // dispatcher fuses it, and the aim's clamp goes straight on to the
+    // matrix.
     let out = drive(&mut cpu, &mut g, &TABLE, points::UNIT_CLAMP_DIRECTION.base).unwrap();
-    assert_eq!(out, TransferAbi::call(callee::FRAME, 0xcbaad));
-    assert_eq!(cpu.eax, UNIT);
-    let e = cpu.esp + 4 + 0x10;
-    assert_eq!((cpu.edi, cpu.esi), (e + 4, e + 0x10));
-    let site = returned(&mut cpu, &g, 0);
-
-    // The aim's clamp goes straight to the matrix.
-    let out = drive(&mut cpu, &mut g, &TABLE, site).unwrap();
     assert_eq!(out, TransferAbi::call(callee::MATRIX, 0xcbb99));
+    let e = cpu.esp + 4 + 0x10;
     assert_eq!((cpu.eax, cpu.ecx, cpu.edx, cpu.esi), (e + 4, e + 0x10, e + 0x1c, ZERO_VECTOR));
+    let forward = [f32_at(&g, e + 0x10), f32_at(&g, e + 0x14), f32_at(&g, e + 0x18)];
+    let up = [f32_at(&g, e + 4), f32_at(&g, e + 8), f32_at(&g, e + 0xc)];
+    assert_eq!((forward, up), ([1.0, 0.0, 0.0], [0.0, 0.0, 1.0]), "the frame, from the body");
     // The identity: forward x, left y, up z.
     let m = cpu.edx;
     g.set_u32(m, f(1.0)).unwrap();
