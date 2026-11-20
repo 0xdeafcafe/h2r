@@ -23,6 +23,10 @@
 //! (`agent::sim::calls`), and find tags as `edit.*` does
 //! (`hot_glue::map_tags`, set once the runtime is up).
 //!
+//! `shadow.*` checks the native sim ports against the lifted original
+//! (crates/agent's `shadow`, over `feature::shadow`; the image comes from
+//! [`crate::fallback`]).
+//!
 //! `state.*` (machine snapshots) is the boot loop's: it installs the store
 //! on the agent and runs due saves and loads between slices
 //! ([`crate::snapshot_glue`]).
@@ -252,6 +256,8 @@ pub fn add_host_methods(agent: &agent::Agent) {
             .unwrap_or_default();
         Ok(stats.sites_json(top))
     });
+    // Shadow checks of the native ports (docs/engine/shadow-exec.md).
+    agent::shadow::add_methods(agent);
     agent.add_method(method::SAMPLE_STATUS, Access::Read, |_| {
         Ok(crate::sampling::status())
     });
