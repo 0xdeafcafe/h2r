@@ -26,7 +26,7 @@ import type { MapFrame } from "../components/MapCanvas";
 import type { RosterEntry } from "../map/render";
 import { gameToGl, yawToGl } from "../map/views";
 import { FLASH_MS, ShotQueue, flashAlpha } from "../map/shots";
-import { MODEL_SCALE, actorColour, bipedFile, modelUrl, seatNodeFor, seatState, vehicleBasis, vehicleBox, vehicleFile, weaponFile, weaponLabel, type PlayerModels } from "./models";
+import { CAPSULE_HEIGHT, MODEL_SCALE, actorColour, bipedFile, bipedSize, modelUrl, seatNodeFor, seatState, vehicleBasis, vehicleBox, vehicleFile, weaponFile, weaponLabel, type PlayerModels } from "./models";
 import type { SampledVehicle } from "../state/frames";
 import { Projectiles, lookFor, shotEnd, type Look } from "./projectiles";
 import { ModelLibrary, type BipedAnimator, type BipedInstance, type WeaponInstance } from "./players3d";
@@ -354,7 +354,8 @@ export class ViewerScene {
     this.controls.addEventListener("start", () => { this.tween = null; });
     this.flyOff = this.listenFly(renderer.domElement);
 
-    this.geoBody = new THREE.CapsuleGeometry(0.22, 0.42, 6, 16).translate(0, 0.43, 0);
+    const capsuleRadius = 0.22;
+    this.geoBody = new THREE.CapsuleGeometry(capsuleRadius, CAPSULE_HEIGHT - 2 * capsuleRadius, 6, 16).translate(0, CAPSULE_HEIGHT / 2, 0);
     this.geoArrow = arrowGeometry();
     this.geoRing = new THREE.RingGeometry(0.34, 0.44, 32).rotateX(-Math.PI / 2);
     this.geoMark = markGeometry();
@@ -936,7 +937,7 @@ export class ViewerScene {
       const player = this.shown.get(start.index);
       if (!player) return;
       const focus = new THREE.Vector3(...gameToGl(player.x, player.y, player.z + this.focusHeight(start.index)));
-      const distance = followDistance(offset.length(), this.scale, !!this.players.get(start.index)?.biped, this.controls.minDistance);
+      const distance = followDistance(offset.length(), this.controls.minDistance);
       this.moveCamera(target.clone().add(offset), target, true);
       this.setMode("follow", start.index);
       this.moveCamera(focus.clone().add(offset.setLength(distance)), focus, false, 1800, easeOutExpo);
@@ -972,7 +973,7 @@ export class ViewerScene {
         const dir = this.camera.position.clone().sub(this.controls.target);
         if (was === "top" || dir.y / dir.length() > 0.9) dir.set(0.6, 0.55, 0.6);
         // Close to the player, however big the level is.
-        const want = followDistance(dir.length(), this.scale, !!this.players.get(follow!)?.biped, this.controls.minDistance);
+        const want = followDistance(dir.length(), this.controls.minDistance);
         this.moveCamera(target.clone().addScaledVector(dir.normalize(), want), target, immediate);
       }
     } else if (top || was !== mode || immediate) {
@@ -990,7 +991,7 @@ export class ViewerScene {
    *  their model as it is drawn now, or of a capsule. */
   private focusHeight(index: number | null): number {
     const p = index !== null ? this.players.get(index) : undefined;
-    return p?.biped ? p.biped.height * p.turn.scale.x * 0.6 : this.scale * 0.5;
+    return bipedSize(p?.biped?.height, p?.actor ?? false).height * 0.6;
   }
 
   /** Back to the whole map, in the current mode. */
@@ -1325,7 +1326,11 @@ export class ViewerScene {
     plate.className = "v3-tag-plate";
     const pip = document.createElement("i");
     const gun = document.createElement("small");
-    plate.append(pip, document.createTextNode(name));
+    const nameText = document.createElement("span");
+    nameText.className = "v3-tag-name";
+    nameText.textContent = name;
+    nameText.title = name;
+    plate.append(pip, nameText);
     if (bot) {
       const badge = document.createElement("b");
       badge.className = "v3-bot";
@@ -1733,7 +1738,9 @@ export class ViewerScene {
   private tagWeapon(p: PlayerObj, weapon: string | null) {
     if (p.weaponName === weapon) return;
     p.weaponName = weapon;
-    p.gun.textContent = weaponLabel(weapon);
+    const label = weaponLabel(weapon);
+    p.gun.textContent = label;
+    p.gun.title = label;
     p.tagSize = null;
     this.dirty = true;
   }
@@ -1873,11 +1880,13 @@ export class ViewerScene {
       if (ride && s.alive) {
         this.dress(p, s);
         const g = p.group;
+        const visible = !this.isEyes(index);
+        if (g.visible !== visible) this.dirty = true;
+        g.visible = visible;
         const seated = this.sit(p, s, ride, s.vehicle !== hull, firstRider.get(hull!) === index, dt);
         if (seated) {
-          // In their seat, drawn; the label above the vehicle.
-          g.visible = !this.isEyes(index) && this.insideReveal(ride.group.position);
-          p.turn.visible = true;
+          // The rider reveals with the vehicle; the label is already above it.
+          p.turn.visible = ride.group.visible;
           p.ring.visible = p.ray.visible = false;
           p.label.visible = !this.opts.bare && (!p.actor || this.actorNames);
           p.label.position.y = ride.height * ride.group.scale.x + 0.25 * S - (g.position.y - ride.group.position.y);
@@ -1886,8 +1895,7 @@ export class ViewerScene {
           continue;
         }
         // In a vehicle with no seat to show them in: the vehicle stands for them, and carries their label.
-        if (p.turn.visible || !g.visible || !g.position.equals(ride.group.position)) this.dirty = true;
-        g.visible = !this.isEyes(index) && this.insideReveal(ride.group.position);
+        if (p.turn.visible || !g.position.equals(ride.group.position)) this.dirty = true;
         g.position.copy(ride.group.position);
         p.turn.visible = p.ring.visible = p.ray.visible = false;
         p.turn.rotation.set(0, yawToGl(s.yaw), 0);
@@ -1906,24 +1914,25 @@ export class ViewerScene {
       if (!p.actor) this.playerBody(index, p, s, now, seeking);
       this.dress(p, s);
       const show = s.alive || (p.actor && dead);
-      p.turn.visible = show;
-      p.ring.visible = !dead && !this.opts.bare;
-      p.ray.visible = !dead && !p.actor && !this.opts.bare;
       // On their feet, on the floor (ground.ts); in the air or dead, where the frames have them.
       const feet = this.floors ? this.floors.place(index, s) : s.z;
       const [x, y, z] = gameToGl(s.x, s.y, feet);
       const g = p.group, turn = p.turn;
       const big = highlight === index || this.followIndex === index;
-      // A capsule (and every ring) grows with the map so it can be found. A
-      // model is always the game's own size, beside the map's geometry.
-      const k = p.biped
-        ? MODEL_SCALE
-        : S * (big ? 1.25 : 1) * (p.actor ? 0.8 : 1);
+      // Both the stand-in and the live model use game units. Highlight the
+      // player through the ring and label without inflating either body.
+      const { height, scale: k } = bipedSize(p.biped?.height, p.actor);
       const yaw = yawToGl(s.yaw);
       const wasVisible = g.visible;
       if (g.position.x !== x || g.position.y !== y || g.position.z !== z || turn.scale.x !== k || turn.rotation.y !== yaw) this.dirty = true;
       g.position.set(x, y, z);
-      g.visible = (show || casualtyTag) && !this.isEyes(index) && this.insideReveal(g.position);
+      const revealed = this.insideReveal(g.position);
+      // Markers and labels can locate players as soon as the camera is
+      // framed, while opaque bodies and aim rays enter with the sweep.
+      g.visible = (show || casualtyTag) && !this.isEyes(index);
+      p.turn.visible = show && revealed;
+      p.ring.visible = !dead && !this.opts.bare;
+      p.ray.visible = !dead && !p.actor && !this.opts.bare && revealed;
       if (wasVisible !== g.visible) this.dirty = true;
       p.label.visible = (!dead || casualtyTag) && !this.opts.bare && (!p.actor || this.actorNames);
       this.revealLabel(p);
@@ -1931,8 +1940,8 @@ export class ViewerScene {
       turn.rotation.set(0, yaw, 0);
       turn.scale.setScalar(k);
       // The ring fits what it is under: a model's footprint, or the capsule's.
-      p.ring.scale.setScalar(p.biped ? k * p.biped.height * 1.25 * (big ? 1.25 : 1) : k);
-      p.label.position.y = p.biped ? p.biped.height * k * 1.08 + 0.12 * S : 1.15 * k;
+      p.ring.scale.setScalar(height * 1.25 * (big ? 1.25 : 1));
+      p.label.position.y = height * 1.08 + 0.12;
       p.el.classList.toggle("on", big);
       if (show) this.animate(p, s, now, dt);
       if (dead || p.actor) continue;

@@ -376,7 +376,9 @@ A tag is the plate the scene already makes per player (`.v3-label`), with
 an inner `.v3-tag` box that takes the declutter's offset (the
 `CSS2DRenderer` owns the outer element's transform). `declutter`
 (`web/src/viewer/declutter.ts`, pure) runs once per drawn frame, after the
-positions are known, over every visible tag:
+positions are known, over every visible tag. Each plate has a fixed
+maximum width in screen pixels. A tooltip shows the full text of a
+truncated name or weapon.
 
 ```ts
 interface TagIn { id: number; x: number; y: number; w: number; h: number; depth: number; rank: number }
@@ -421,11 +423,11 @@ and no geometry.
 
 | Step | What | When (ms from the first frame with the level) |
 |---|---|---|
-| 1 | The veil fades; the level (BSP shell and structure) fades in as grid lines | 0 to 300 |
+| 1 | The veil fades, the level appears as grid lines, and player rings and tags appear | 0 to 300 |
 | 2 | The solid sweep crosses the level | 200 to `200 + T` |
 | 3 | Machines and placed objects (scenery, crates, weapons, vehicles): the same sweep | 380 to `380 + T` |
 | 4 | Sky, fog and sun shadows come up | 25% to 85% of step 2 (sky, fog), 60% to 100% (shadows) |
-| 5 | Players, vehicles, bodies and projectiles, each as the sweep passes it | within step 2 |
+| 5 | Player models and their stand-ins, vehicles, bodies and projectiles, each as the sweep passes it | within step 2 |
 | 6 | Decals, effects layers, lift plasma, teleporter guides, weather | at the end of step 2 |
 | 7 | Surface pictures | whenever each arrives (`streamPictures`), before or after |
 
@@ -495,9 +497,10 @@ pure), which returns `{ holo, radius, objectsRadius, sky, shadows, done }`:
   40% of the shell sweep. `CutawayMaterials.attachShadow` applies the
   sweep to the existing shadow pass, which only uses solid geometry
   inside the band.
-- A player, vehicle, body or projectile is hidden until its distance from
-  the origin is under `radius - band`; its tag then fades in (`opacity 0
-  → 1`, 160 ms linear).
+- The players' rings and tags appear once the camera is framed, and the
+  tags fade in (`opacity 0 → 1`, 160 ms linear). Player models and their
+  life-size capsule stand-ins, vehicles, bodies and projectiles are
+  hidden until their distance from the origin is under `radius - band`.
 - The viewer's ambient occlusion reads the scene's rendered depth, so it
   follows the discard (`LevelAoPass`, `aopass.ts`).
 - At `done` the scene marks `h2-viewer:revealed`.

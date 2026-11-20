@@ -169,11 +169,10 @@ under its `weapon` node, in the roster's colour: the glb's `COLOR_0` gives
 each vertex a primary weight (R, the player's colour) and a secondary one
 (G, a darker shade), and a model without it is tinted all over. Each glb is
 fetched once and cloned per player; team mates share the coloured mesh
-(`viewer/players3d.ts`). It is life size up close and grows as the camera
-backs away, up to the size capsules are drawn at. Without models (the mock
-by default, an older extraction) players stay capsules. Either way a faint
-ray from the head shows the aim (level along the yaw when the frame has
-none), the label names the weapon, and each frame's shots draw a muzzle
+(`viewer/players3d.ts`). A small, life-size capsule stands in for the
+model while it loads or when there is no model. The follow camera uses the
+same distance in both cases. A faint ray from the head shows the aim
+(level along the yaw when the frame has none), the label names the weapon, and each frame's shots draw a muzzle
 flash and up to three tracers along the aim that fade in 150 ms
 (`map/shots.ts`), from the weapon's `muzzle` node or from chest height. The
 2D maps draw a short aim line from each dot and a fading line for each
