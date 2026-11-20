@@ -45,7 +45,7 @@ pub struct Switch {
 
 /// The most rows the table may hold. Raise it only with a reason in the
 /// commit; lower it when a switch goes.
-pub const BUDGET: usize = 90;
+pub const BUDGET: usize = 91;
 
 use Initial::{Follows, Group, Off, On};
 
@@ -140,6 +140,8 @@ pub const TABLE: &[Switch] = &[
         "animation sampling (sim-anim): on in the lane that lands it, then deleted"),
     sw("impl.sim.native.collision", Off, "sim", "2026-11-20",
         "collision queries (sim-collision): on in the lane that lands it, then deleted"),
+    sw("impl.sim.native.objects", Off, "sim", "2026-11-20",
+        "the object update (sim-objects): on in the lane that lands it, then deleted"),
     sw("impl.sim.arena-hash", Off, "sim", "2026-11-20", DIAGNOSTIC),
     sw("impl.sim.metrics-projection", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.observer-resources", On, "sim", "2026-11-20", EXACT),
