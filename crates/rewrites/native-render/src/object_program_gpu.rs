@@ -30,7 +30,7 @@ use crate::object_program::{LIGHTMAP_STREAM, texaccum_dimensions};
 use crate::object_streams::{Attribute, Element, SLOT, StreamData, StreamFormats, declaration, gather, registers};
 use crate::object_state::{self, DrawState, EntryStates};
 use crate::objects::{ItemKey, ObjectFrame};
-use frame_scene::{Defaults, FrameScene, Instance, Lighting, PartDraw};
+use frame_scene::{AuxDepth, Defaults, FrameScene, Instance, Lighting, PartDraw, Subparts};
 use crate::program::{ViewInputs, bias_signed, frame_pixel, frame_vertex, sampler_descriptor};
 
 /// One section's vertices through one declaration: per vertex, per
@@ -67,6 +67,45 @@ pub struct LitPart {
     pub shader: ShaderValues,
     pub indices: Range<u32>,
     pub implementations: [Option<(usize, usize)>; IMPLEMENTATIONS],
+    /// Its subparts' index ranges in the same buffers, when the part has
+    /// subparts a record can choose ([`LitSubparts`]).
+    pub subparts: Option<SubpartRanges>,
+}
+
+/// A lit part's subparts in its buffers: the section's index of the
+/// first, and each subpart's index range, in order. Each range holds the
+/// subpart's triangles decoded alone, as the emitter draws a chosen
+/// subpart (`frame_scene::Subparts`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SubpartRanges {
+    pub first: u16,
+    pub ranges: Vec<Range<u32>>,
+}
+
+impl SubpartRanges {
+    /// The index ranges `chosen` draws, ascending, adjacent ones joined
+    /// (one packet each), empty ones left out; an error when `chosen` is
+    /// not over these subparts.
+    pub fn drawn(&self, chosen: Subparts) -> Result<Vec<Range<u32>>, String> {
+        if chosen.first != self.first || usize::from(chosen.count) != self.ranges.len() {
+            return Err(format!(
+                "the record chooses subparts {}+{}, the part's are {}+{}",
+                chosen.first, chosen.count, self.first, self.ranges.len()
+            ));
+        }
+        let mut out: Vec<Range<u32>> = Vec::new();
+        for n in chosen.drawn() {
+            let r = self.ranges[usize::from(n)].clone();
+            if r.is_empty() {
+                continue;
+            }
+            match out.last_mut() {
+                Some(last) if last.end == r.start => last.end = r.end,
+                _ => out.push(r),
+            }
+        }
+        Ok(out)
+    }
 }
 
 /// A model's lit parts, ready to upload: programs and buffers indexed by
@@ -176,7 +215,15 @@ pub struct PlannedDraw {
     pub implementation: usize,
     pub program: usize,
     pub buffer: usize,
+    /// The part's whole index range.
     pub indices: Range<u32>,
+    /// What the draw issues: the whole part, or the subparts its record
+    /// chose ([`SubpartRanges::drawn`]; none when it chose none).
+    pub ranges: Vec<Range<u32>>,
+    /// A part whose record toggles the auxiliary state
+    /// (`frame_scene::PartFlags::AUX_DEPTH`): the view's rows and clip it
+    /// draws with in place of the device's ([`with_aux_depth`]).
+    pub aux_depth: Option<AuxDepth>,
     pub vertex: VertexUniforms,
     pub pixel: PixelUniforms,
     pub state: DrawState,
@@ -398,7 +445,7 @@ impl LitObjects {
     pub fn plan_part_of(
         &self, index: u32, scene: &FrameScene, instance: &Instance, part: &PartDraw, entry: &EntryStates,
     ) -> Result<PlannedDraw, String> {
-        let inputs = PartInputs { lighting: instance.lighting.as_ref(), defaults: instance.defaults };
+        let inputs = PartInputs { lighting: instance.lighting.as_ref(), defaults: instance.defaults, subparts: part.subparts };
         self.plan_inputs(index, inputs, &part.key, scene.rows_of(part), entry, true)
     }
 
@@ -433,6 +480,9 @@ impl LitObjects {
         let mut vertex = frame_vertex(&d.vertex, view);
         vertex.w_clamp = d.state.w_clamp;
         let mut pixel = frame_pixel(&d.pixel, view);
+        if let Some(aux) = &d.aux_depth {
+            with_aux_depth(&mut vertex, &mut pixel, aux);
+        }
         if let Some(t) = texaccum.filter(|_| d.texaccum) {
             texaccum_dimensions(&mut vertex, &pass.implementation, pass.texaccum, t.guest_size);
             texaccum_scale(&mut pixel, pass.texaccum, t.guest_size);
@@ -552,7 +602,7 @@ impl LitObjects {
             let (model, d) = (planned.0, &planned.1);
             let m = self.models.get_mut(&model).ok_or("object model unavailable")?;
             let b = &m.buffers[d.buffer];
-            if d.indices.is_empty() || u64::from(d.indices.end) > b.indices.size() / 4 || b.vertices.size() == 0 {
+            if d.ranges.iter().any(|r| r.is_empty() || u64::from(r.end) > b.indices.size() / 4) || b.vertices.size() == 0 {
                 return Err("object index range unavailable");
             }
             let p = &mut m.programs[d.program];
@@ -587,23 +637,40 @@ impl LitObjects {
                 BoundGroup { index: 0, group: uniforms.group.clone(), offsets: uniforms.offsets(i).to_vec() },
                 BoundGroup::new(1, textures),
             ];
-            // The stencil reference is zero (`object_state::resolve_scene`).
+            // The stencil reference is zero (`object_state::resolve_scene`)
+            // but for a marked part's mode 2 (`object_state::mark`); the
+            // packet sets it.
             let state = gfx::state::RenderState { stencil: d.state.stencil, ..Default::default() };
-            let count = d.indices.end - d.indices.start;
-            packets.push(RecordedDraw::prepared_indexed(
-                &described,
-                pipeline,
-                vec![(b.vertices.clone(), 0, b.vertices.size())],
-                (b.indices.clone(), u64::from(d.indices.start) * 4, u64::from(count) * 4),
-                count,
-                groups,
-                &state,
-                target_size,
-                scissor,
-            ));
+            // One packet per range: the whole part, or each run of the
+            // subparts its record chose (none when it chose none).
+            for r in &d.ranges {
+                let count = r.end - r.start;
+                packets.push(RecordedDraw::prepared_indexed(
+                    &described,
+                    pipeline.clone(),
+                    vec![(b.vertices.clone(), 0, b.vertices.size())],
+                    (b.indices.clone(), u64::from(r.start) * 4, u64::from(count) * 4),
+                    count,
+                    groups.clone(),
+                    &state,
+                    target_size,
+                    scissor,
+                ));
+            }
         }
-        Ok(ExternalDraws { ranges: packets.len(), packets, discards, writes: Vec::new() })
+        // `ranges` counts the planned draws (`d3d::ExternalPlan::ranges`),
+        // however many packets their subparts take.
+        Ok(ExternalDraws { ranges: issued.len(), packets, discards, writes: Vec::new() })
     }
+}
+
+/// `vertex` and `pixel` as the auxiliary state toggle leaves the device
+/// for a part's draw (`0x00012d50` on): the view-projection rows `c[0..3]`
+/// and the program clip range it sets, the clamp the device's.
+pub fn with_aux_depth(vertex: &mut VertexUniforms, pixel: &mut PixelUniforms, aux: &AuxDepth) {
+    vertex.constants[..4].copy_from_slice(&aux.rows);
+    vertex.w_clip = Some(aux.clip);
+    pixel.depth_range = [aux.clip[0], aux.clip[1], 0.0, 0.0];
 }
 
 /// The depth and stencil a lit part's pipeline draws with on a
@@ -649,11 +716,13 @@ pub fn plan_part<'a>(
 struct PartInputs<'a> {
     lighting: Option<&'a Lighting>,
     defaults: Option<Defaults>,
+    /// The subparts the item's record chose; `None`, the whole part.
+    subparts: Option<Subparts>,
 }
 
 impl<'a> PartInputs<'a> {
     fn of(frame: &'a ObjectFrame) -> Self {
-        Self { lighting: frame.lighting.as_ref(), defaults: frame.defaults }
+        Self { lighting: frame.lighting.as_ref(), defaults: frame.defaults, subparts: None }
     }
 }
 
@@ -682,6 +751,10 @@ fn plan_indexed_part<'a>(
         .flatten()
         .ok_or_else(|| format!("the part has no implementation {}", key.implementation))?;
     let (pass, inherited) = pass_of(program).ok_or("its program is missing")?;
+    let ranges = match frame.subparts {
+        None => vec![p.indices.clone()],
+        Some(chosen) => p.subparts.as_ref().ok_or("the record chooses subparts and the part has none natively")?.drawn(chosen)?,
+    };
     let defaults = frame.defaults.ok_or("the inputs' defaults do not read")?;
     let inputs = ObjectInputs { lighting: frame.lighting, defaults: &defaults, shader: p.shader };
     let vertex = object_vertex_uniforms(&pass.program.vertex, &pass.implementation, &inputs, rows, p.decompression)?;
@@ -703,6 +776,8 @@ fn plan_indexed_part<'a>(
         program,
         buffer,
         indices: p.indices.clone(),
+        ranges,
+        aux_depth: None,
         vertex,
         pixel,
         state,
@@ -784,6 +859,47 @@ pub struct LitSection<'a> {
     /// Its drawn opaque parts: index among the section's parts (a record
     /// key's bits 0..3), material and triangles.
     pub parts: Vec<(u8, u16, Vec<[u16; 3]>)>,
+    /// By part index, the subparts of the parts a record can draw a
+    /// choice of; a part not here draws whole only.
+    pub subparts: HashMap<u8, LitSubparts>,
+}
+
+/// A part's subparts as the emitter draws a chosen one
+/// (`0x0004daa0`): the section's index of its first subpart, and each
+/// subpart's triangles decoded alone (a strip part's subparts each their
+/// own strip; a list part's whole triangles, so that consecutive ones
+/// joined are the list the guest draws).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LitSubparts {
+    pub first: u16,
+    pub triangles: Vec<Vec<[u16; 3]>>,
+}
+
+/// The subparts of `part` (a section's part, over the section's `indices`
+/// and `subparts`) as [`LitSubparts`]: each decoded alone in the part's
+/// topology. `None` when it has none or more than [`Subparts::MAX`], when
+/// one does not lie in the indices, or when a list part's subpart is not
+/// whole triangles (the guest joins index-contiguous chosen subparts into
+/// one list, which would then cut its triangles differently).
+pub fn lit_subparts(
+    indices: &[u16], subparts: &[tags::geometry::Subpart], part: &tags::geometry::Part,
+) -> Option<LitSubparts> {
+    let count = usize::from(part.subpart_count);
+    if count == 0 || count > usize::from(Subparts::MAX) {
+        return None;
+    }
+    let first = usize::from(part.first_subpart);
+    let list = part.is_triangle_list();
+    let mut triangles = Vec::with_capacity(count);
+    for sub in subparts.get(first..first + count)? {
+        let start = usize::from(sub.first_index);
+        let run = indices.get(start..start + usize::from(sub.index_count))?;
+        if list && run.len() % 3 != 0 {
+            return None;
+        }
+        triangles.push(if list { tags::geometry::list_triangles(run) } else { tags::geometry::strip_triangles(run) });
+    }
+    Some(LitSubparts { first: part.first_subpart, triangles })
 }
 
 /// A material the lit build takes: resolved, and its shader values.
@@ -834,8 +950,10 @@ pub fn lit_model(
     // (section, declaration) -> buffer.
     let mut buffers: HashMap<(u16, Vec<Element>), usize> = HashMap::new();
     // Per section, its lit parts' triangles in one list: (material, part,
-    // range), one per part (a record draws one part).
-    let mut lists: HashMap<u16, (Vec<u32>, Vec<(u16, u8, Range<u32>)>)> = HashMap::new();
+    // range, subpart ranges), one per part (a record draws one part), each
+    // part's subparts after it.
+    type Listed = (u16, u8, Range<u32>, Option<SubpartRanges>);
+    let mut lists: HashMap<u16, (Vec<u32>, Vec<Listed>)> = HashMap::new();
     for s in sections {
         let mut list = Vec::new();
         let mut ranges = Vec::new();
@@ -845,7 +963,20 @@ pub fn lit_model(
             }
             let start = list.len() as u32;
             list.extend(triangles.iter().flatten().map(|&i| u32::from(i)));
-            ranges.push((*material, *part, start..list.len() as u32));
+            let whole = start..list.len() as u32;
+            let subparts = s.subparts.get(part).map(|sub| SubpartRanges {
+                first: sub.first,
+                ranges: sub
+                    .triangles
+                    .iter()
+                    .map(|t| {
+                        let start = list.len() as u32;
+                        list.extend(t.iter().flatten().map(|&i| u32::from(i)));
+                        start..list.len() as u32
+                    })
+                    .collect(),
+            });
+            ranges.push((*material, *part, whole, subparts));
         }
         lists.insert(s.index, (list, ranges));
     }
@@ -860,17 +991,19 @@ pub fn lit_model(
                 continue;
             }
         };
-        // The material's parts: (section, part, index range).
-        let parts: Vec<(&LitSection<'_>, u8, Range<u32>)> = sections
+        // The material's parts: (section, part, index range, subparts).
+        let parts: Vec<(&LitSection<'_>, u8, Range<u32>, Option<SubpartRanges>)> = sections
             .iter()
-            .flat_map(|s| lists[&s.index].1.iter().filter(move |r| r.0 == m).map(move |r| (s, r.1, r.2.clone())))
+            .flat_map(|s| {
+                lists[&s.index].1.iter().filter(move |r| r.0 == m).map(move |r| (s, r.1, r.2.clone(), r.3.clone()))
+            })
             .collect();
         if parts.is_empty() {
             continue;
         }
         // Compiled once per section: its parts share the programs.
         let mut secs: Vec<&LitSection<'_>> = Vec::new();
-        for (s, _, _) in &parts {
+        for (s, _, _, _) in &parts {
             if !secs.iter().any(|x| x.index == s.index) {
                 secs.push(s);
             }
@@ -973,7 +1106,7 @@ pub fn lit_model(
             }
             by_section.push(implementations);
         }
-        for (s, part, indices) in parts {
+        for (s, part, indices, subparts) in parts {
             let k = secs.iter().position(|x| x.index == s.index).expect("listed above");
             let implementations = by_section[k];
             out.input.parts.push(LitPart {
@@ -984,6 +1117,7 @@ pub fn lit_model(
                 shader: lit.shader,
                 indices,
                 implementations,
+                subparts,
             });
         }
         out.taken.push(m);
@@ -1043,6 +1177,7 @@ mod tests {
             streams: vec![Some((1, StreamData { bytes: &bytes, stride: 32 }))],
             vertex_count: 3,
             parts: vec![(0, 0, vec![[0, 1, 2]])],
+            subparts: HashMap::new(),
         };
         let mut imp = lit();
         imp.render_states = vec![state(RenderStateType::AlphaBlendEnable, 0), state(RenderStateType::ZWriteEnable, 1)];
@@ -1091,6 +1226,7 @@ mod tests {
             streams: vec![Some((1, StreamData { bytes: &bytes, stride: 32 }))],
             vertex_count: 3,
             parts: vec![(0, 0, vec![[0, 1, 2]])],
+            subparts: HashMap::new(),
         };
         let mut imp = lit();
         imp.render_states = vec![state(RenderStateType::AlphaBlendEnable, 0), state(RenderStateType::ZWriteEnable, 1)];
@@ -1165,6 +1301,8 @@ mod tests {
             streams: vec![Some((1, StreamData { bytes: &bytes, stride: 32 }))],
             vertex_count: 3,
             parts: vec![(0, 5, vec![[2, 1, 0]]), (1, 0, vec![[0, 1, 2]]), (2, 3, vec![[0, 2, 1]]), (3, 1, vec![[1, 2, 0]])],
+            // Part 2's subparts 7..10, the second empty.
+            subparts: HashMap::from([(2, LitSubparts { first: 7, triangles: vec![vec![[0, 2, 1]], Vec::new(), vec![[2, 1, 0]]] })]),
         };
         // An opaque pass: no blending, depth written (both must be set).
         let opaque = |index: usize| {
@@ -1205,14 +1343,16 @@ mod tests {
         assert_eq!(b.registers, vec![0, 1, 2]);
         assert_eq!(b.decoded(1, 0), [1.0, 0.0, 0.0, 1.0], "vertex 1's position");
         assert_eq!(b.decoded(1, 1), [0.5, 0.5, 0.0, 1.0]);
-        assert_eq!(b.indices, vec![0, 1, 2, 0, 2, 1, 1, 2, 0], "material 5 is not lit here");
+        assert_eq!(b.indices, vec![0, 1, 2, 0, 2, 1, 0, 2, 1, 2, 1, 0, 1, 2, 0], "material 5 is not lit here; part 2's subparts follow it");
         assert_eq!(input.parts.len(), 2);
         let p = &input.parts[0];
         assert_eq!((p.section, p.part, p.indices.clone()), (4, 1, 0..3));
         assert_eq!(p.implementations, [Some((0, 0)), Some((1, 0)), None, None, None]);
+        assert_eq!(p.subparts, None);
         let p = &input.parts[1];
         assert_eq!((p.part, p.indices.clone()), (2, 3..6));
         assert_eq!(p.implementations, [Some((2, 0)), None, None, None, None]);
+        assert_eq!(p.subparts, Some(SubpartRanges { first: 7, ranges: vec![6..9, 9..9, 9..12] }));
         assert!(input.programs.iter().all(|p| p.pass.program.inputs == 0b111));
         assert_eq!(asked[0], (map::TagId(0xe000_0002), 0, 0));
     }
@@ -1252,6 +1392,7 @@ mod tests {
             shader: ShaderValues::default(),
             indices: u32::from(part) * 3..u32::from(part) * 3 + 3,
             implementations,
+            subparts: None,
         }
     }
 
@@ -1338,6 +1479,91 @@ mod tests {
         assert!(refused(key(4, 2, 0)).contains("not a native part"));
         assert!(refused(key(5, 0, 0)).contains("not a native part"));
         assert!(refused(ItemKey { shader: 0xe000_0010, ..key(4, 0, 0) }).contains("shader"));
+    }
+
+    #[test]
+    fn a_parts_subparts_decode_alone_in_its_topology() {
+        use tags::geometry::{PART_FLAG_TRIANGLE_LIST, Part, Subpart};
+        let part = |flags, first_subpart, subpart_count| Part {
+            kind: 1, flags, material: 0, first_index: 0, index_count: 9, first_subpart, subpart_count, raw: Vec::new(),
+        };
+        let sub = |first_index, index_count| Subpart { first_index, index_count, unknown_4: 0xffff, part: 0 };
+        let indices = [0u16, 1, 2, 3, 4, 5, 6, 7, 8];
+        let subparts = [sub(0, 0), sub(0, 5), sub(5, 4)];
+        // A strip part: each subpart its own strip, winding restarting.
+        let strip = lit_subparts(&indices, &subparts, &part(0, 1, 2)).unwrap();
+        assert_eq!(strip.first, 1);
+        assert_eq!(strip.triangles, [vec![[0, 1, 2], [1, 3, 2], [2, 3, 4]], vec![[5, 6, 7], [6, 8, 7]]]);
+        // A list part's subparts must be whole triangles.
+        let whole = [sub(0, 3), sub(3, 6)];
+        let list = lit_subparts(&indices, &whole, &part(PART_FLAG_TRIANGLE_LIST, 0, 2)).unwrap();
+        assert_eq!(list.triangles, [vec![[0, 1, 2]], vec![[3, 4, 5], [6, 7, 8]]]);
+        assert!(lit_subparts(&indices, &subparts, &part(PART_FLAG_TRIANGLE_LIST, 1, 2)).is_none());
+        // None, too many, or outside the indices.
+        assert!(lit_subparts(&indices, &subparts, &part(0, 0, 0)).is_none());
+        assert!(lit_subparts(&indices, &subparts, &part(0, 0, 65)).is_none());
+        assert!(lit_subparts(&indices, &subparts, &part(0, 2, 2)).is_none());
+        assert!(lit_subparts(&indices, &[sub(7, 4)], &part(0, 0, 1)).is_none());
+    }
+
+    #[test]
+    fn an_auxiliary_depth_draw_takes_the_toggles_rows_and_clip_and_nothing_else() {
+        let base = VertexUniforms::default();
+        let view = ViewInputs {
+            constants: std::array::from_fn(|i| [i as f32; 4]),
+            guest_size: (640, 480),
+            size: (640, 480),
+            z_scale: 1000.0,
+            w_clip: Some(([2.0, 900.0], true)),
+        };
+        let mut vertex = frame_vertex(&base, &view);
+        let mut pixel = frame_pixel(&PixelUniforms::default(), &view);
+        let (before_v, before_p) = (vertex.clone(), pixel);
+        let aux = AuxDepth {
+            scale: 0.5,
+            rows: [[9.0; 4], [8.0; 4], [7.0; 4], [6.0; 4]],
+            clip: [1.0, 900.0],
+            rest_rows: [[0.0; 4], [1.0; 4], [2.0; 4], [3.0; 4]],
+            rest_clip: [2.0, 900.0],
+        };
+        with_aux_depth(&mut vertex, &mut pixel, &aux);
+        assert_eq!(vertex.constants[..4], aux.rows);
+        assert_eq!(vertex.constants[4..], before_v.constants[4..], "the view's other constants");
+        assert_eq!((vertex.w_clip, vertex.w_clamp), (Some([1.0, 900.0]), true));
+        assert_eq!(pixel.depth_range, [1.0, 900.0, 0.0, 0.0]);
+        assert_eq!(pixel.depth, before_p.depth, "the W-buffer's scale is the view's");
+    }
+
+    #[test]
+    fn chosen_subparts_draw_their_ranges_joined_where_adjacent() {
+        let sub = SubpartRanges { first: 4, ranges: vec![10..13, 13..19, 19..19, 19..22, 22..28] };
+        let chosen = |visible| Subparts { first: 4, count: 5, visible };
+        assert_eq!(sub.drawn(chosen(0b1_1111)).unwrap(), [10..28], "all, as one run");
+        assert_eq!(sub.drawn(chosen(0b1_1001)).unwrap(), [10..13, 19..28], "the empty one joins its neighbours");
+        assert_eq!(sub.drawn(chosen(0b0_0010)).unwrap(), [13..19]);
+        assert!(sub.drawn(chosen(0)).unwrap().is_empty(), "none chosen: nothing drawn");
+        assert!(sub.drawn(Subparts { first: 5, ..chosen(1) }).is_err(), "another part's subparts");
+        assert!(sub.drawn(Subparts { count: 4, ..chosen(1) }).is_err());
+    }
+
+    #[test]
+    fn an_item_choosing_subparts_draws_them_and_otherwise_the_whole_part() {
+        let passes = [equal_pass(0)];
+        let pass_of = |i: usize| passes.get(i).map(|p| (p, None::<&InheritedState>));
+        let mut with = part(4, 1, [Some((0, 0)), None, None, None, None]);
+        with.subparts = Some(SubpartRanges { first: 2, ranges: vec![6..9, 9..12] });
+        let without = part(4, 0, [Some((0, 0)), None, None, None, None]);
+        let parts = [without, with];
+        let f = frame();
+        let rows = [[1.0f32; 4]; 3];
+        let inputs = |subparts| PartInputs { lighting: f.lighting.as_ref(), defaults: f.defaults, subparts };
+        let plan = |part: usize, subparts: Option<Subparts>| plan_indexed_part(&parts, Some(part), &pass_of, inputs(subparts), &key(4, part as u8, 0), &rows, &entry(), true);
+        let whole = plan(1, None).unwrap();
+        assert_eq!((whole.indices.clone(), whole.ranges.clone()), (3..6, vec![3..6]));
+        let chosen = plan(1, Some(Subparts { first: 2, count: 2, visible: 0b10 })).unwrap();
+        assert_eq!((chosen.indices.clone(), chosen.ranges.clone()), (3..6, vec![9..12]));
+        let refused = plan(0, Some(Subparts { first: 0, count: 1, visible: 1 })).unwrap_err();
+        assert!(refused.contains("subparts"), "{refused}");
     }
 
     #[test]

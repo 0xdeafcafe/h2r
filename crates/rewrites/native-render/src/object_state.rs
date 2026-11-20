@@ -105,6 +105,32 @@ pub struct DrawState {
     pub alpha_test: Option<(wgpu::CompareFunction, u8)>,
 }
 
+/// The reference stencil mode 2 writes: a part whose record marks its
+/// pixels (`frame_scene::PartFlags::STENCIL_MARK`).
+pub const STENCIL_MARK_REFERENCE: u8 = 0xff;
+
+/// The structure draw's stencil mode with `reference` (`0x00015370`,
+/// modes 1 and 2): enabled, `ALWAYS`, masks `0xff`, `KEEP` on fail and
+/// depth fail, `REPLACE` on pass. Mode 1 (reference 0) is what layers 1
+/// and 3 leave after an item that switches the stencil; mode 2
+/// ([`STENCIL_MARK_REFERENCE`]) is what a marked part draws with.
+pub fn structure_stencil(reference: u8) -> StencilState {
+    StencilState {
+        enable: true,
+        func: CompareFunc::Always,
+        reference,
+        pass: gfx::state::StencilOp::Replace,
+        ..StencilState::default()
+    }
+}
+
+/// `state` as a marked part draws it: the same, but the stencil in mode 2,
+/// which the part's prologue sets after its implementation's states
+/// (`0x0004d640` runs after the pass setup `0x0004d9c0`).
+pub fn mark(state: &mut DrawState) {
+    state.stencil = structure_stencil(STENCIL_MARK_REFERENCE);
+}
+
 /// The state a draw of an implementation setting `own` takes over `entry`,
 /// or why it is refused. `compiled`: the alpha test its program was
 /// compiled with.
@@ -250,6 +276,21 @@ mod tests {
                 _ => 0,
             })
         })
+    }
+
+    #[test]
+    fn a_marked_part_draws_in_mode_2_whatever_its_implementation_left() {
+        use gfx::state::StencilOp;
+        let mode1 = structure_stencil(0);
+        assert!(mode1.enable && mode1.func == CompareFunc::Always && mode1.reference == 0);
+        assert_eq!((mode1.read_mask, mode1.write_mask), (0xff, 0xff));
+        assert_eq!((mode1.fail, mode1.depth_fail, mode1.pass), (StencilOp::Keep, StencilOp::Keep, StencilOp::Replace));
+        let mut s = resolve_scene(&[], &entry(), None).unwrap();
+        assert!(!s.stencil.enable, "the entry's stencil is off");
+        let before = s;
+        mark(&mut s);
+        assert_eq!(s.stencil, StencilState { reference: STENCIL_MARK_REFERENCE, ..mode1 });
+        assert_eq!(DrawState { stencil: before.stencil, ..s }, before, "only the stencil changes");
     }
 
     #[test]

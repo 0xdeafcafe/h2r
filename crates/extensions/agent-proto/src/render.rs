@@ -345,9 +345,47 @@ pub struct SceneReply {
     pub views: Vec<SceneViewRecord>,
     /// scene_dropped_*, scene_unresident, scene_readback, scene_held_draws, scenes_sealed, ...
     pub counters: BTreeMap<String, u64>,
+    /// The entry census (`frame-scene.census`; framescene.md, section 8.2):
+    /// per guest entry slices 4 and 5 replace (`layer.scene.3`,
+    /// `layer.light.12`, `light_passes`, `object_shadow`,
+    /// `screen_effects`, ...), what the guest still does under it since the
+    /// start. `None` when the census is off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entries: Option<SceneEntries>,
     /// The JSON file written when `dump` was asked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dump: Option<String>,
+}
+
+/// `render.scene`'s entry census.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SceneEntries {
+    /// By entry name.
+    pub by_entry: BTreeMap<String, SceneEntryRecord>,
+    /// Entries whose exit never ran (dropped unended) and exits with no
+    /// entry open.
+    pub unbalanced: u64,
+    /// Whether `d3d_draws` counts: a D3D draw counter is registered.
+    pub draws_counted: bool,
+}
+
+/// One guest entry's totals in the entry census.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneEntryRecord {
+    pub calls: u64,
+    /// Guest draws handed to the D3D backend under the entry: what its
+    /// replacement would have to draw (8.2 rule 1 needs zero).
+    pub d3d_draws: u64,
+    /// Steps of the shared random seeds `+0` and `+4` under the entry.
+    pub seed_steps: u64,
+    pub effects_seed_steps: u64,
+    /// Calls after which a seed was not a run of steps from its value at
+    /// the entry.
+    pub seed_unmatched: u64,
+    /// Calls of `animation_resource_get` and of the particle systems'
+    /// per-view update under the entry.
+    pub animation_gets: u64,
+    pub particle_updates: u64,
 }
 
 /// One view of a sealed scene.
@@ -361,14 +399,40 @@ pub struct SceneViewRecord {
     pub parts: u32,
     pub rows: u32,
     pub lights: u32,
+    /// Lights that cast their shadow: the view's shadow maps.
     pub shadows: u32,
+    /// Lights by each layer their passes draw (`"10"` to `"14"`); layers
+    /// no light draws are left out.
+    #[serde(default)]
+    pub light_layers: BTreeMap<String, u32>,
+    /// Items of each typed layer draw, by layer (`"1"`, `"5"`, ...);
+    /// a layer drawn twice sums.
+    #[serde(default)]
+    pub layer_items: BTreeMap<String, u32>,
+    /// Items of the typed layer draws the guest still draws (refused by
+    /// extraction).
+    #[serde(default)]
+    pub layer_remainder: u32,
     /// Instances the guest still draws (refused by extraction).
     pub remainder: u32,
+    /// Parts by how they draw beyond their material (`stencil_mark`,
+    /// `strip`); flags no part has are left out.
+    #[serde(default)]
+    pub part_flags: BTreeMap<String, u32>,
     /// Carried ops by slot name, then by CameraUse; empty until slice 6.
     #[serde(default)]
     pub carried: BTreeMap<String, u32>,
     #[serde(default)]
     pub camera_use: BTreeMap<String, u32>,
+    /// Model decorator draws (one per placement) of the view's layer 3,
+    /// their instances, and the draws the guest still draws (refused by
+    /// extraction; docs/graphics/native-decorators.md).
+    #[serde(default)]
+    pub decorators: u32,
+    #[serde(default)]
+    pub decorator_instances: u32,
+    #[serde(default)]
+    pub decorator_remainder: u32,
 }
 
 /// `render.parity`: arm the in-process two-path comparison for one frame

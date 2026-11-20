@@ -20,9 +20,11 @@
 //! |---|---|---|
 //! | (none yet) | | |
 
+pub mod decorators;
 pub mod extract;
 mod guest;
 pub mod layout;
+pub mod light_groups;
 pub mod testing;
 
 pub use guest::{GuestRead, GuestWrite};

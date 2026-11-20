@@ -83,7 +83,15 @@ columns count objects per view. Fallback reason columns have the same
 prefix and end in `unsupported`, `order`, `model`, `inputs`, `state`
 or `reservation`. `walk_unreadable` counts views whose sorted list or
 ownership could not be established. These views may have an unknown
-object count.
+object count. `walk_part_aux_state`, `walk_part_subparts` and
+`walk_part_topology` count the parts (not objects) behind
+`walk_unsupported` by their record's cause
+(`scene_extract::layout::object_walk::Refusal`,
+[framescene.md](framescene.md), "Slice 3"): `aux_state` a bit-11 part
+whose toggle's inputs (`scene_extract::layout::aux_depth`) do not read,
+`subparts` a bit-6 part whose visible-subpart mask does not read or
+names more than 64 subparts or a negative first, `topology` a part
+without bit 9 whose part is not a triangle list.
 
 The method for comparing the walk with `impl.render.native=off` is in
 [notes/native-ab.md](notes/native-ab.md).
@@ -634,7 +642,8 @@ gives the BSP's decorator placements (`[[0x004e0348] + 0x238]`, entries
 of `0x18` bytes whose first byte indexes the scenario's decorator palette
 at `+0x37c`, 8 bytes each with the set's datum at `+4`). They have no
 render record, are not objects, and neither skip touches them (both take
-only build `0x0004cbf0`): they stay on D3D, a later world stage.
+only build `0x0004cbf0`): they stay on D3D. Their own stage is
+[native-decorators.md](native-decorators.md).
 
 ## Not verified
 

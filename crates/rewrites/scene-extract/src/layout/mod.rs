@@ -4,7 +4,11 @@
 //! outside `scene_extract` should name a module here once the stages that
 //! still read guest memory have moved (slices 3 to 6).
 
+pub mod aux_depth;
 pub mod camera;
+pub mod decorators;
+pub mod layer_inputs;
+pub mod light_passes;
 pub mod object_lighting;
 pub mod object_nodes;
 pub mod object_walk;

@@ -4,7 +4,7 @@
 //! shader-classification check. A different callback owns its whole list.
 
 use engine::{light_passes as lp, memory::GuestMemory, tags::TAG_ENTRIES_GLOBAL};
-use native_render::{shadows, skip};
+use native_render::{light_passes, shadows, skip};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Refusal {
@@ -227,6 +227,13 @@ pub(super) struct Built {
 impl Built {
     pub(super) fn count(&self) -> usize { self.count }
 
+    /// The sorted entries the handlers would run, as the scene reads them.
+    fn sorted(&self) -> Vec<scene_extract::light_groups::Sorted> {
+        self.slots[..self.count].iter().map(|s| scene_extract::light_groups::Sorted {
+            index: half(s, 0), implementation: s[4], vertex_class: half(s, 8),
+        }).collect()
+    }
+
     pub(super) fn store(&self, mem: &mut dyn GuestMemory, buffer: u32) -> bool {
         self.slots.is_empty() || mem.write(buffer, self.slots.as_flattened()).is_ok()
     }
@@ -364,7 +371,6 @@ const EMITTER_FRAME: u32 = 0x28;
 const HANDLER_FRAME: u32 = 0x78;
 const LIGHT_TAIL_RETURN: u32 = 0x0003_1508;
 const BUILDER_TO_LAYER_CALLER: u32 = 0xf02c;
-const ADDITIONAL_COUNT: u32 = 0x004b_a134;
 
 /// Whether the gathered walk is on: with the native renderer, which also
 /// turns on the lights and shadows it serves.
@@ -416,49 +422,21 @@ fn end_layer() {
     PENDING.take();
 }
 
-// The layer mask is for the whole list. An earlier prefix or a suffix
-// used by an object shadow may leave a bit set with no active candidates.
-fn has_candidates(m: &Reader<'_>, list: u32, bits: u32) -> Result<bool> {
-    if bits == 0 || m.word(list, 8)? & bits == 0 { return Ok(false); }
-    let first = m.word(list, 12)?;
-    let end = m.word(list, 4)?;
-    if first > end || end > m.word(list, 0)? || end - first > 2560 {
-        return Err(Refusal::Geometry);
-    }
-    if end == first { return Ok(false); }
-    let items = m.ptr(list, 20)?;
-    for n in first..end {
-        if m.word(index(items, n, skip::ITEM_SIZE)?, 16)? & bits != 0 {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-// Keep target clears and other pass setup even for empty geometry
-// intervals. Any other candidate can require a separate GPU reservation.
-fn only_light_layer(mem: &dyn GuestMemory, layer: u32) -> Option<bool> {
+// Whether the light's steps draw `layer` (`light_passes`, with the flags
+// the pass set and its definition's): each layer is its own reservation,
+// so a light's other layers neither keep nor take this one's handlers.
+// Target clears and the other pass setup run either way. With the
+// additional casters' pair, which draws on a suffix of the same lists
+// between layers 11 and 14, every layer keeps its handlers.
+fn light_layer_draws(mem: &dyn GuestMemory, layer: u32) -> Option<bool> {
     let m = Reader(mem);
     let flags = m.word(lp::global::PASS_FLAGS, 0).ok()?;
-    let mask = m.word(shadows::RECEIVERS, 8).ok()?;
-    let mut receivers = mask & (1 << 12 | 1 << 14);
-    if flags & 3 == 3 { receivers |= mask & (1 << 13); }
-    if mask & (1 << 11) != 0 && (flags & 6 != 0 ||
-        m.word(m.ptr(lp::global::DEFINITION, 0).ok()?, 0).ok()? & 32 != 0) {
-        receivers |= 1 << 11;
+    let definition_flags = m.word(m.ptr(lp::global::DEFINITION, 0).ok()?, 0).ok()?;
+    let inputs = light_passes::read(&super::Ro(mem), flags, definition_flags)?;
+    if inputs.additional_casters {
+        return Some(false);
     }
-    if flags & lp::flag::SHADOW != 0 {
-        let over = m.word(lp::global::OVERRIDE, 0).ok()?;
-        if over != 0 && m.byte(over, 5).ok()? != 0 && (m.word(ADDITIONAL_COUNT, 0).ok()? as i32) > 0 {
-            return Some(false);
-        }
-        if layer != 10 && has_candidates(&m, shadows::CASTERS, 1 << 10).ok()? {
-            return Some(false);
-        }
-    }
-    let current = 1 << layer;
-    let reachable = if layer == 10 { flags & lp::flag::SHADOW != 0 } else { receivers & current != 0 };
-    Some(reachable && !has_candidates(&m, shadows::RECEIVERS, receivers & !current).ok()?)
+    Some(light_passes::steps(&inputs).drawn() & 1 << layer != 0)
 }
 
 pub(super) fn install(b: &mut Builder) {
@@ -520,7 +498,7 @@ pub(super) fn install(b: &mut Builder) {
             Some(shadows::Site::Object) => true,
             Some(shadows::Site::AdditionalCaster) => false,
             _ => matches!(LIGHT.get(), Some(Counter::LightWalkEmpty | Counter::LightWalkNative))
-                && only_light_layer(mem, layer) == Some(true),
+                && light_layer_draws(mem, layer) == Some(true),
         };
         let built = match build(mem, list, layer, buffer) {
             Ok(built) => built,
@@ -534,8 +512,29 @@ pub(super) fn install(b: &mut Builder) {
                 return Ok(Flow::Continue);
             }
         };
-        // Multi-layer lights keep all of their handlers. Building an
-        // equivalent private array is independent of owning any draw.
+        // The group into the scene, with what the first handler supplies
+        // (framescene.md, slice 4).
+        let group_site = match site {
+            None | Some(shadows::Site::Light) => frame_scene::GroupSite::Light,
+            Some(shadows::Site::AdditionalCaster) => frame_scene::GroupSite::AdditionalCasters,
+            Some(shadows::Site::Object) => frame_scene::GroupSite::ObjectShadow,
+        };
+        let group = crate::scene_step::light_group(mem, list, layer, group_site, &built.sorted());
+        // A light's layer 12 or 13 the scene holds whole is drawn from it
+        // alone: the entry loop gets no entries, so no handler runs. The
+        // shadow layers and 14 have no recorder from the scene yet.
+        if whole && site.is_none() && built.count() != 0
+            && let Some(group) = &group
+            && super::draw_alone(mem, layer, group)
+        {
+            phase::count(Counter::LightWalkBuilds, 1);
+            phase::count(Counter::LightWalkHandlersSkipped, built.count() as u64);
+            if LIGHT.get() == Some(Counter::LightWalkEmpty) { LIGHT.set(Some(Counter::LightWalkNative)); }
+            c.cpu.eax = 0;
+            return Ok(Flow::Return(guest.ret(c.cpu, 16)?));
+        }
+        // Building an equivalent private array is independent of owning
+        // any draw: a layer that does not batch keeps its handlers.
         if built.count() != 0 && !whole { refused(Counter::LightWalkGraph); }
         let batch = whole.then(|| built.batch(mem, list, layer, buffer)).flatten();
         if whole && built.count() != 0 && batch.is_none() {
@@ -733,23 +732,31 @@ mod tests {
     }
 
     #[test]
-    fn a_later_pass_or_additional_caster_prevents_whole_light_consumption() {
+    fn each_layer_a_light_draws_batches_alone_unless_additional_casters_run() {
         let mut m = fixture(12);
-        assert_eq!(only_light_layer(&m, 12), Some(true));
+        assert_eq!(light_layer_draws(&m, 12), Some(true));
+        // Diffuse and specular, both: each layer is the light's to batch.
         m.set_u32(lp::global::PASS_FLAGS, 3).unwrap();
         m.set_u32(shadows::RECEIVERS + 8, 3 << 12).unwrap();
-        // A bit left over from the prefix cannot produce a later draw.
-        m.set_u32(ITEMS + 16, 1 << 13).unwrap();
-        assert_eq!(only_light_layer(&m, 12), Some(true));
         m.set_u32(ITEMS + 24 + 16, 3 << 12).unwrap();
-        assert_eq!(only_light_layer(&m, 12), Some(false));
-        m.set_u32(lp::global::PASS_FLAGS, 4).unwrap();
-        m.set_u32(shadows::RECEIVERS + 8, 0).unwrap();
-        assert_eq!(only_light_layer(&m, 10), Some(true));
-        m.set_u32(lp::global::OVERRIDE, 0x8280).unwrap();
+        assert_eq!(light_layer_draws(&m, 12), Some(true));
+        assert_eq!(light_layer_draws(&m, 13), Some(true));
+        // Specular without context zero: layer 13 is not reached.
+        m.set_u32(lp::global::PASS_FLAGS, 2).unwrap();
+        assert_eq!(light_layer_draws(&m, 13), Some(false));
+        // Shadow, stencil and layer 14 work leave layer 12 its own.
+        m.set_u32(lp::global::PASS_FLAGS, 4 | 3).unwrap();
+        m.set_u32(shadows::RECEIVERS + 8, 0xf << 11).unwrap();
+        m.set_u32(shadows::CASTERS + 8, 1 << 10).unwrap();
+        for layer in [10, 11, 12, 13, 14] {
+            assert_eq!(light_layer_draws(&m, layer), Some(true), "layer {layer}");
+        }
+        m.set_u32(light_passes::OVERRIDE, 0x8280).unwrap();
         m.set_u8(0x8285, 1).unwrap();
-        m.set_u32(0x004b_a134, 2).unwrap();
-        assert_eq!(only_light_layer(&m, 10), Some(false));
+        m.set_u32(light_passes::ADDITIONAL_COUNT, 2).unwrap();
+        for layer in [10, 11, 12, 13, 14] {
+            assert_eq!(light_layer_draws(&m, layer), Some(false), "layer {layer}");
+        }
     }
 
     #[test]

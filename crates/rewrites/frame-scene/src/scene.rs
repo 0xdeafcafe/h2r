@@ -3,8 +3,10 @@
 //! ([`crate::FreeList`]) and can be walked without chasing pointers.
 //!
 //! Slice 1 fills the views, their cameras, clusters, object instances,
-//! parts and palette rows. Lights, shadow maps, the carried part and
-//! texture uploads join in the slices that type or carry them (3 and 6).
+//! parts and palette rows; slice 3 the lights and their passes' steps,
+//! the world layers' and the first person's items.
+//! Shadow maps, the carried part and texture uploads join in the slices
+//! that type or carry them (3 and 6).
 
 use std::fmt;
 use std::ops::Range;
@@ -13,6 +15,10 @@ use std::time::Instant;
 use serde::Serialize;
 
 use crate::camera::Camera;
+use crate::decorator::{DecoratorDraw, DecoratorInstance};
+use crate::layer::{LayerItem, LayerPass};
+use crate::light::{LightStep, SceneLight};
+use crate::light_group::{LightEntry, LightGroup, ObjectShadow};
 use crate::node::NodeMatrix;
 use crate::object::{Defaults, ItemKey, Lighting};
 
@@ -88,6 +94,9 @@ pub enum ViewKind {
     Game,
     Cinematic,
     Alternate,
+    /// The first-person draw `0x0003fdf0` of a game view: its own
+    /// projection and lists.
+    FirstPerson,
 }
 
 /// A view's identity across scenes.
@@ -106,6 +115,7 @@ impl fmt::Display for ViewKey {
             ViewKind::Game => "game",
             ViewKind::Cinematic => "cinematic",
             ViewKind::Alternate => "alternate",
+            ViewKind::FirstPerson => "first_person",
         };
         write!(f, "{kind}:{}:{}", self.player, self.view)
     }
@@ -117,6 +127,21 @@ pub struct WorldState {
     /// Whether the texture accumulation target was there to bind when the
     /// view was extracted (`scene_extract::layout::object_nodes::texaccum_bound`).
     pub texaccum: bool,
+}
+
+/// What the auxiliary state toggle `0x00012d50` sets for the view
+/// (docs/graphics/framescene.md, slice 3): the view-projection rows it
+/// uploads to `c[0..3]` and the program clip range (W-buffer units) it
+/// stores, on, as a part with [`PartFlags::AUX_DEPTH`] draws, and off, as
+/// the part's epilogue leaves the device. On is off times [`Self::scale`],
+/// the rows whole and the clip's near end.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct AuxDepth {
+    pub scale: f32,
+    pub rows: [Row; 4],
+    pub clip: [f32; 2],
+    pub rest_rows: [Row; 4],
+    pub rest_clip: [f32; 2],
 }
 
 /// One game view.
@@ -138,6 +163,17 @@ pub struct View {
     pub world: WorldState,
     /// Object items extraction refused: the guest still draws them.
     pub remainder: u32,
+    /// What its [`PartFlags::AUX_DEPTH`] parts draw with; read when the
+    /// view has one.
+    pub aux_depth: Option<AuxDepth>,
+    /// Into [`FrameScene::lights`], in the guest's light order.
+    pub lights: Range<u32>,
+    /// Into [`FrameScene::layer_passes`], in the guest's draw order.
+    pub layers: Range<u32>,
+    /// Into [`FrameScene::decorators`], in the list's order.
+    pub decorators: Range<u32>,
+    /// Decorator draws extraction refused: the guest still draws them.
+    pub decorator_remainder: u32,
 }
 
 /// An object's identity across scenes: its datum handle with its salt.
@@ -166,11 +202,90 @@ pub struct Instance {
     pub teleported: bool,
 }
 
-/// How a part draws beyond its material (slice 3: stencil marking,
-/// conditional stream ranges, the auxiliary state toggle). Empty today:
-/// a part with any of them stays the guest's.
+/// How a part draws beyond its material: what its render record's `+0`
+/// flags make the guest's geometry draw (`0x0004d0b0`) do around and in
+/// its draw call (docs/graphics/framescene.md, slice 3). A bitset.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize)]
 pub struct PartFlags(pub u8);
+
+impl PartFlags {
+    pub const NONE: PartFlags = PartFlags(0);
+    /// Record bit 14 in layers 1 and 3: the draw's prologue (`0x0004d640`)
+    /// sets stencil mode 2 (the structure mode with reference `0xff`) and
+    /// its epilogue (`0x0004d720`) leaves mode 1, unless the layer draws
+    /// with the stencil off.
+    pub const STENCIL_MARK: PartFlags = PartFlags(1);
+    /// Record bit 9 on a part that is not a triangle list: the emitter
+    /// (`0x0004daa0`) draws its indices as a strip. Without the bit it
+    /// draws every part as a list.
+    pub const STRIP: PartFlags = PartFlags(1 << 1);
+    /// Record bit 6 with a visible-subpart mask, in a section with
+    /// subparts: the emitter draws only the visible subparts
+    /// ([`PartDraw::subparts`]), each its own strip with strip topology,
+    /// consecutive ones as one list otherwise.
+    pub const SUBPARTS: PartFlags = PartFlags(1 << 2);
+    /// Record bit 11: the draw's prologue and epilogue call the auxiliary
+    /// state toggle `0x00012d50`, and the part draws with its view's
+    /// [`AuxDepth`] (its view-projection rows and clip range scaled).
+    pub const AUX_DEPTH: PartFlags = PartFlags(1 << 3);
+    const NAMES: [(PartFlags, &'static str); 4] = [
+        (PartFlags::STENCIL_MARK, "stencil_mark"),
+        (PartFlags::STRIP, "strip"),
+        (PartFlags::SUBPARTS, "subparts"),
+        (PartFlags::AUX_DEPTH, "aux_depth"),
+    ];
+
+    pub fn contains(self, other: PartFlags) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// The flags set, by name (`render.scene`'s `part_flags`).
+    pub fn names(self) -> Vec<&'static str> {
+        Self::NAMES.iter().filter(|(f, _)| self.contains(*f)).map(|(_, n)| *n).collect()
+    }
+}
+
+impl std::ops::BitOr for PartFlags {
+    type Output = PartFlags;
+    fn bitor(self, rhs: PartFlags) -> PartFlags {
+        PartFlags(self.0 | rhs.0)
+    }
+}
+
+impl std::ops::BitOrAssign for PartFlags {
+    fn bitor_assign(&mut self, rhs: PartFlags) {
+        self.0 |= rhs.0;
+    }
+}
+
+/// Which of a part's subparts the guest's emitter (`0x0004daa0`) draws:
+/// the record's visible-subpart mask (record `+0x14`, a bit per subpart of
+/// the section) read over the part's own subparts. Bit `n` of `visible` is
+/// the section's subpart `first + n`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize)]
+pub struct Subparts {
+    /// The part's first subpart (part `+0xa`).
+    pub first: u16,
+    /// Its subparts (part `+0xc`); at most [`Subparts::MAX`].
+    pub count: u8,
+    pub visible: u64,
+}
+
+impl Subparts {
+    /// The most subparts a part can have here; a part with more keeps its
+    /// D3D draw.
+    pub const MAX: u8 = 64;
+
+    /// The part's subparts that draw, by index among its own (0 the
+    /// part's first), ascending.
+    pub fn drawn(self) -> impl Iterator<Item = u8> {
+        (0..self.count.min(Self::MAX)).filter(move |&n| self.visible >> n & 1 != 0)
+    }
+}
 
 /// What one instance draws for one layer item.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -187,6 +302,9 @@ pub struct PartDraw {
     /// already remapped for its section.
     pub rows: Range<u32>,
     pub flags: PartFlags,
+    /// With [`PartFlags::SUBPARTS`]: the subparts it draws; `None`, the
+    /// whole part.
+    pub subparts: Option<Subparts>,
 }
 
 /// One rendered frame, typed. Built on the sim thread by
@@ -206,6 +324,25 @@ pub struct FrameScene {
     /// Part indices, each view's in its guest list order.
     pub order: Vec<u32>,
     pub rows: Vec<Row>,
+    pub lights: Vec<SceneLight>,
+    /// Each light's steps; lights index ranges of it.
+    pub light_steps: Vec<LightStep>,
+    pub layer_passes: Vec<LayerPass>,
+    /// Each layer pass's items; passes index ranges of it.
+    pub layer_items: Vec<LayerItem>,
+    /// The views' decorator draws; views index ranges of it.
+    pub decorators: Vec<DecoratorDraw>,
+    /// Each decorator draw's instances; draws index ranges of it.
+    pub decorator_instances: Vec<DecoratorInstance>,
+    /// Each light's gathered groups, in light order then the passes'
+    /// order ([`crate::light_group`]).
+    pub light_groups: Vec<LightGroup>,
+    /// Each group's sorted entries; groups index ranges of it.
+    pub light_entries: Vec<LightEntry>,
+    /// The object shadows, in view order then the guest's.
+    pub object_shadows: Vec<ObjectShadow>,
+    /// Each object shadow's groups; shadows index ranges of it.
+    pub shadow_groups: Vec<LightGroup>,
 }
 
 fn slice<'a, T>(v: &'a [T], r: &Range<u32>) -> &'a [T] {
@@ -225,6 +362,16 @@ impl FrameScene {
         self.parts.clear();
         self.order.clear();
         self.rows.clear();
+        self.lights.clear();
+        self.light_steps.clear();
+        self.layer_passes.clear();
+        self.layer_items.clear();
+        self.decorators.clear();
+        self.decorator_instances.clear();
+        self.light_groups.clear();
+        self.light_entries.clear();
+        self.object_shadows.clear();
+        self.shadow_groups.clear();
     }
 
     pub fn view(&self, key: ViewKey) -> Option<&View> {
@@ -251,6 +398,22 @@ impl FrameScene {
         slice(&self.rows, &part.rows)
     }
 
+    pub fn lights_of(&self, view: &View) -> &[SceneLight] {
+        slice(&self.lights, &view.lights)
+    }
+
+    pub fn steps_of(&self, light: &SceneLight) -> &[LightStep] {
+        slice(&self.light_steps, &light.steps)
+    }
+
+    pub fn layers_of(&self, view: &View) -> &[LayerPass] {
+        slice(&self.layer_passes, &view.layers)
+    }
+
+    pub fn items_of(&self, pass: &LayerPass) -> &[LayerItem] {
+        slice(&self.layer_items, &pass.items)
+    }
+
     /// The part of `view` at `slot` of the guest's list, with its
     /// instance.
     pub fn part_at(&self, view: &View, slot: u32) -> Option<(&Instance, &PartDraw)> {
@@ -274,12 +437,30 @@ impl FrameScene {
             .flat_map(|i| self.parts_of(i))
             .map(|p| p.rows.len() as u32)
             .sum();
+        let mut flagged = Vec::<(&'static str, u32)>::new();
+        for p in instances.iter().flat_map(|i| self.parts_of(i)) {
+            for name in p.flags.names() {
+                match flagged.iter_mut().find(|(n, _)| *n == name) {
+                    Some((_, c)) => *c += 1,
+                    None => flagged.push((name, 1)),
+                }
+            }
+        }
+        let lights = self.lights_of(view);
         ViewCounts {
             clusters: view.clusters.len() as u32,
             instances: instances.len() as u32,
             parts,
             rows,
             remainder: view.remainder,
+            flagged,
+            lights: lights.len() as u32,
+            shadows: lights.iter().filter(|l| l.shadowed()).count() as u32,
+            layers: self
+                .layers_of(view)
+                .iter()
+                .map(|p| (p.layer, p.items.len() as u32, p.remainder))
+                .collect(),
         }
     }
 
@@ -294,12 +475,15 @@ impl FrameScene {
             }
             Ok(())
         }
-        let mut last = [0u32; 3];
+        let mut last = [0u32; 5];
         for (n, v) in self.views.iter().enumerate() {
             within(&v.clusters, self.clusters.len(), &format!("view {n} clusters"))?;
             within(&v.instances, self.instances.len(), &format!("view {n} instances"))?;
             within(&v.order, self.order.len(), &format!("view {n} order"))?;
-            for (k, (r, l)) in [&v.clusters, &v.instances, &v.order].into_iter().zip(&mut last).enumerate() {
+            within(&v.lights, self.lights.len(), &format!("view {n} lights"))?;
+            within(&v.layers, self.layer_passes.len(), &format!("view {n} layers"))?;
+            let ranges = [&v.clusters, &v.instances, &v.order, &v.lights, &v.layers];
+            for (k, (r, l)) in ranges.into_iter().zip(&mut last).enumerate() {
                 if r.start < *l {
                     return Err(format!("view {n} range {k} {r:?} overlaps the view before"));
                 }
@@ -331,16 +515,35 @@ impl FrameScene {
                 within(&p.rows, self.rows.len(), &format!("instance {n} part {k} rows"))?;
             }
         }
+        for (n, l) in self.lights.iter().enumerate() {
+            within(&l.steps, self.light_steps.len(), &format!("light {n} steps"))?;
+        }
+        self.check_light_groups()?;
+        for (n, p) in self.layer_passes.iter().enumerate() {
+            within(&p.items, self.layer_items.len(), &format!("layer pass {n} items"))?;
+            for (k, i) in self.items_of(p).iter().enumerate() {
+                within(&i.rows, self.rows.len(), &format!("layer pass {n} item {k} rows"))?;
+            }
+        }
+        crate::decorator::check(self)?;
         Ok(())
     }
 }
 
 /// One view's sizes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ViewCounts {
     pub clusters: u32,
     pub instances: u32,
     pub parts: u32,
     pub rows: u32,
     pub remainder: u32,
+    /// Parts with each [`PartFlags`] flag, by name; flags no part has are
+    /// left out.
+    pub flagged: Vec<(&'static str, u32)>,
+    pub lights: u32,
+    /// Lights that cast their shadow: the shadow maps the view draws.
+    pub shadows: u32,
+    /// Each layer pass: its layer, items and remainder.
+    pub layers: Vec<(u8, u32, u32)>,
 }

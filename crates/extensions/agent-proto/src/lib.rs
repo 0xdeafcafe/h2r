@@ -34,7 +34,7 @@ pub use pad::{AtTick, Now, PAD_BUTTONS, PadParams, PadStep};
 pub use render::{
     CaptureReply, CompareParams, CompareReply, DepthRecord, DrawRecord,
     FrameCaptureParams, FrameParams, FrameRecord, FrameReply, FrameTotals, OpRecord, ParityParams, ParityReply,
-    PassRecord, RenderStats, SceneParams, SceneReply, SceneViewRecord, SnapRecord,
+    PassRecord, RenderStats, SceneEntries, SceneEntryRecord, SceneParams, SceneReply, SceneViewRecord, SnapRecord,
 };
 
 use serde::{Deserialize, Serialize};

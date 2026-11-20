@@ -1,17 +1,27 @@
 //! Guest memory to a view (docs/graphics/framescene.md, section 4.3):
 //! slice 1 extracts the camera, the visible clusters and the world state
 //! at a view's base layer 3, and the objects at the object walk, from the
-//! same reads the stages made there before. What extraction cannot read
-//! is a remainder: the guest still draws it, and it is not in the scene.
+//! same reads the stages made there before; slice 3 the items of the
+//! world layers' and the first person's layer draws when each runs
+//! ([`layer`]). What extraction cannot read is a remainder: the guest
+//! still draws it, and it is not in the scene.
 
-use frame_scene::{BuildError, Camera, InstanceInput, InstanceKey, Owner, SceneBuilder, WorldState};
+use frame_scene::{
+    BuildError, Camera, InstanceInput, InstanceKey, LayerItem, LayerOwner, LayerPass, Owner, PartFlags, Row, SceneBuilder,
+    WorldState,
+};
 
 use crate::GuestRead;
+use crate::layout::aux_depth;
 use crate::layout::camera::{self, RENDER_CAMERA};
-use crate::layout::object_nodes::texaccum_bound;
+use crate::layout::layer_inputs;
+use crate::layout::object_nodes::{RECORD_KEY, texaccum_bound};
 use crate::layout::object_walk::Entry;
-use crate::layout::objects::read_object;
-use crate::layout::skip::{CURRENT_LIST, ITEM_SIZE, MAX_ITEMS, is_structure_item, structure_part};
+use crate::layout::objects::{RECORD_MODEL, RecordOwner, item_key, read_object, record_owner, record_rows};
+use crate::layout::skip::{
+    CURRENT_LIST, ITEM_SIZE, MAX_ITEMS, RENDER_RECORD_SIZE, RENDER_RECORDS, STENCIL_OFF_FLAGS, is_structure_item,
+    structure_part,
+};
 
 /// The view's camera: the render camera record, as the world and object
 /// stages read it at layer 3.
@@ -29,16 +39,13 @@ pub fn world(mem: &dyn GuestRead) -> WorldState {
 /// Instanced-geometry placements are not clusters and are left out.
 /// `None` when the list does not read.
 pub fn layer_clusters(mem: &dyn GuestRead, layer: u32) -> Option<Vec<u16>> {
-    let list = mem.read_u32(CURRENT_LIST)?;
-    if list == 0 || layer >= 32 {
+    let (items, first, end) = current_list(mem)?;
+    if layer >= 32 {
         return None;
     }
-    let count = mem.read_u32(list.checked_add(4)?)?;
-    let first = mem.read_u32(list.checked_add(0xc)?)?;
-    let items = mem.read_u32(list.checked_add(0x14)?)?;
     let bit = 1u32 << layer;
     let mut out: Vec<u16> = Vec::new();
-    for i in first..count.min(first.saturating_add(MAX_ITEMS)) {
+    for i in first..end {
         let item = items.checked_add(ITEM_SIZE.checked_mul(i)?)?;
         if mem.read_u32(item.checked_add(0x10)?)? & bit == 0 {
             continue;
@@ -54,6 +61,100 @@ pub fn layer_clusters(mem: &dyn GuestRead, layer: u32) -> Option<Vec<u16>> {
     Some(out)
 }
 
+/// The current list's items: its items' base, the first and the end.
+fn current_list(mem: &dyn GuestRead) -> Option<(u32, u32, u32)> {
+    let list = mem.read_u32(CURRENT_LIST)?;
+    if list == 0 {
+        return None;
+    }
+    let count = mem.read_u32(list.checked_add(4)?)?;
+    let first = mem.read_u32(list.checked_add(0xc)?)?;
+    let items = mem.read_u32(list.checked_add(0x14)?)?;
+    Some((items, first, count.min(first.saturating_add(MAX_ITEMS))))
+}
+
+/// What [`layer`] put in the view.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Layer {
+    pub items: u32,
+    /// Items left to the guest: another build callback, or a record, an
+    /// owner or rows that do not read.
+    pub remainder: u32,
+}
+
+/// The current list's `layer` items into a new layer draw of the open
+/// view, in the list's order: each geometry item with its key, owner and
+/// model; an object's with its palette rows ([`record_rows`]) and, with
+/// `lighting`, its owner's lighting. The draw takes the material inputs
+/// that hold at its begin ([`layer_inputs::read`]). `Ok(None)`, nothing
+/// written, when the list does not read.
+pub fn layer(mem: &dyn GuestRead, layer: u8, lighting: bool, builder: &mut SceneBuilder) -> Result<Option<Layer>, BuildError> {
+    let Some((items, first, end)) = current_list(mem) else {
+        return Ok(None);
+    };
+    if layer >= 32 {
+        return Ok(None);
+    }
+    builder.push_layer(LayerPass {
+        layer,
+        stencil_off: mem.read_u32(STENCIL_OFF_FLAGS).is_some_and(|f| f & 0x00ff_ff00 != 0),
+        texaccum: texaccum_bound(mem),
+        items: 0..0,
+        remainder: 0,
+        inputs: layer_inputs::read(mem),
+    })?;
+    let bit = 1u32 << layer;
+    let mut out = Layer::default();
+    for slot in first..end {
+        let Some(item) = ITEM_SIZE.checked_mul(slot).and_then(|o| items.checked_add(o)) else {
+            break;
+        };
+        match mem.read_u32(item.saturating_add(0x10)) {
+            Some(mask) if mask & bit == 0 => continue,
+            Some(_) => {}
+            None => {
+                out.remainder += 1;
+                continue;
+            }
+        }
+        match layer_item(mem, item, slot, lighting) {
+            Some((entry, rows)) => {
+                builder.push_layer_item(entry, &rows)?;
+                out.items += 1;
+            }
+            None => out.remainder += 1,
+        }
+    }
+    builder.add_layer_remainder(out.remainder)?;
+    Ok(Some(out))
+}
+
+/// One geometry item of a layer list; `None` for another build callback
+/// or what does not read.
+fn layer_item(mem: &dyn GuestRead, item: u32, slot: u32, lighting: bool) -> Option<(LayerItem, Vec<Row>)> {
+    let key = item_key(mem, item)?;
+    let at = RENDER_RECORDS + RENDER_RECORD_SIZE * u32::from(key.record);
+    let model = mem.read_u32(at + RECORD_MODEL)?;
+    let (owner, rows, lit) = match record_owner(mem, key.record)? {
+        RecordOwner::World => {
+            let packed = mem.read_u32(at + RECORD_KEY)?;
+            let owner = if mem.read_u32(at)? & (1 << 12) == 0 {
+                LayerOwner::Cluster(((packed >> 9) & 0x1ff) as u16)
+            } else {
+                LayerOwner::Placement(((packed >> 18) & 0x7ff) as u16)
+            };
+            (owner, Vec::new(), None)
+        }
+        RecordOwner::Object(handle) => {
+            let rows = record_rows(mem, key.record).ok()?;
+            let lit = if lighting { read_object(mem, handle)?.lighting } else { None };
+            (LayerOwner::Object(InstanceKey(handle)), rows, lit)
+        }
+        RecordOwner::Unresolved => return None,
+    };
+    Some((LayerItem { slot, key, owner, model, rows: 0..0, lighting: lit }, rows))
+}
+
 /// What [`objects`] put in the view.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Objects {
@@ -67,7 +168,10 @@ pub struct Objects {
 /// The objects of a sorted layer-3 walk (`entries`, indexed by slot) into
 /// the builder's open view: one instance per object that reads, in the
 /// order its first item comes, with its parts in slot order and each
-/// part's palette rows. The model is the first part's render model.
+/// part's palette rows. The model is the first part's render model. At
+/// the first part with [`PartFlags::AUX_DEPTH`] the view takes what the
+/// auxiliary state toggle sets ([`aux_depth::read`]); when that does not
+/// read, such parts are a remainder.
 pub fn objects(mem: &dyn GuestRead, entries: &[Entry], builder: &mut SceneBuilder) -> Result<Objects, BuildError> {
     // Objects in first-item order, each with its items' slots.
     let mut order: Vec<(u32, Vec<usize>)> = Vec::new();
@@ -80,6 +184,8 @@ pub fn objects(mem: &dyn GuestRead, entries: &[Entry], builder: &mut SceneBuilde
         }
     }
     let mut out = Objects::default();
+    // Whether the view's auxiliary depth is set, once asked.
+    let mut aux = None;
     for (handle, slots) in order {
         let Some(frame) = read_object(mem, handle) else {
             out.remainder += slots.len() as u32;
@@ -111,7 +217,20 @@ pub fn objects(mem: &dyn GuestRead, entries: &[Entry], builder: &mut SceneBuilde
                 out.remainder += 1;
                 continue;
             };
-            builder.push_part(instance, slot as u32, part.key, 3, &rows)?;
+            if part.flags.contains(PartFlags::AUX_DEPTH) {
+                if aux.is_none() {
+                    let read = aux_depth::read(mem);
+                    if let Some(a) = read {
+                        builder.set_aux_depth(a)?;
+                    }
+                    aux = Some(read.is_some());
+                }
+                if aux == Some(false) {
+                    out.remainder += 1;
+                    continue;
+                }
+            }
+            builder.push_part_flagged(instance, slot as u32, part.key, 3, part.flags, part.subparts, &rows)?;
             out.parts += 1;
         }
     }
@@ -121,7 +240,7 @@ pub fn objects(mem: &dyn GuestRead, entries: &[Entry], builder: &mut SceneBuilde
 
 #[cfg(test)]
 mod tests {
-    use frame_scene::{ItemKey, NODE_MATRIX_SIZE, SceneId, Stamp, ViewKey, ViewKind};
+    use frame_scene::{ItemKey, NODE_MATRIX_SIZE, PartFlags, SceneId, Stamp, Subparts, ViewKey, ViewKind};
 
     use super::*;
     use crate::layout::object_nodes::{RECORD_MATRIX, RECORD_NODES};
@@ -148,6 +267,8 @@ mod tests {
             triangle_list: true,
             first_index: 0,
             index_count: 3,
+            flags: PartFlags::NONE,
+            subparts: None,
         }
     }
 
@@ -217,6 +338,84 @@ mod tests {
     }
 
     #[test]
+    fn a_marked_or_strip_part_is_in_the_scene_with_its_flags() {
+        let mut m = Mem::default();
+        camera_record(&mut m, RENDER_CAMERA);
+        let a = object(&mut m, 1, 0xe000_0100, 1);
+        object_record(&mut m, 4, Some(lighting(8)), 10.0);
+        object_record(&mut m, 5, Some(lighting(8)), 20.0);
+        let marked = Part { flags: PartFlags::STENCIL_MARK, ..part(4, 0) };
+        let strip = Part { flags: PartFlags::STRIP, triangle_list: false, ..part(5, 1) };
+        let entries = [
+            Entry::Object { handle: a, part: Some(marked) },
+            Entry::Object { handle: a, part: Some(strip) },
+        ];
+        let mut b = SceneBuilder::default();
+        view(&mut b, &m);
+        let got = objects(&m, &entries, &mut b).unwrap();
+        assert_eq!(got, Objects { instances: 1, parts: 2, remainder: 0 });
+        let s = b.seal(Stamp::default()).unwrap();
+        let v = &s.views[0];
+        assert_eq!(s.part_at(v, 0).unwrap().1.flags, PartFlags::STENCIL_MARK);
+        assert_eq!(s.part_at(v, 1).unwrap().1.flags, PartFlags::STRIP);
+        assert_eq!(v.remainder, 0, "neither is left to the guest");
+    }
+
+    #[test]
+    fn an_auxiliary_depth_part_is_in_the_scene_and_its_view_has_what_the_toggle_sets() {
+        use crate::layout::aux_depth::{AUX_SCALE, CLIP_FAR, CLIP_NEAR, ONE, SCALE_DENOMINATOR, SCALE_NUMERATOR, VIEW};
+        let mut m = Mem::default();
+        camera_record(&mut m, RENDER_CAMERA);
+        let a = object(&mut m, 1, 0xe000_0100, 1);
+        object_record(&mut m, 4, Some(lighting(8)), 10.0);
+        object_record(&mut m, 5, Some(lighting(8)), 20.0);
+        let aux = Part { flags: PartFlags::AUX_DEPTH, ..part(4, 0) };
+        let plain = part(5, 1);
+        let entries = [Entry::Object { handle: a, part: Some(aux) }, Entry::Object { handle: a, part: Some(plain) }];
+        // What the toggle reads does not read: the part is left to the guest.
+        let mut b = SceneBuilder::default();
+        view(&mut b, &m);
+        assert_eq!(objects(&m, &entries, &mut b).unwrap(), Objects { instances: 1, parts: 1, remainder: 1 });
+        assert_eq!(b.seal(Stamp::default()).unwrap().views[0].aux_depth, None);
+        for (at, x) in [(AUX_SCALE, 0.5), (ONE, 1.0), (CLIP_NEAR, 2.0), (CLIP_FAR, 900.0), (SCALE_NUMERATOR, 1.0), (SCALE_DENOMINATOR, 1.0)] {
+            m.f(at, x);
+        }
+        for k in 0..12 {
+            m.f(VIEW + 4 + 4 * k, 1.0);
+        }
+        for k in 0..16 {
+            m.f(VIEW + 0x78 + 4 * k, 1.0);
+        }
+        let mut b = SceneBuilder::default();
+        view(&mut b, &m);
+        assert_eq!(objects(&m, &entries, &mut b).unwrap(), Objects { instances: 1, parts: 2, remainder: 0 });
+        let s = b.seal(Stamp::default()).unwrap();
+        let v = &s.views[0];
+        assert_eq!(s.part_at(v, 0).unwrap().1.flags, PartFlags::AUX_DEPTH);
+        let got = v.aux_depth.unwrap();
+        assert_eq!((got.scale, got.clip, got.rest_clip), (0.5, [1.0, 900.0], [2.0, 900.0]));
+        assert_eq!(got.rows, got.rest_rows.map(|r| r.map(|x| x * 0.5)));
+    }
+
+    #[test]
+    fn a_part_drawing_chosen_subparts_is_in_the_scene_with_its_mask() {
+        let mut m = Mem::default();
+        camera_record(&mut m, RENDER_CAMERA);
+        let a = object(&mut m, 1, 0xe000_0100, 1);
+        object_record(&mut m, 4, Some(lighting(8)), 10.0);
+        let visible = Subparts { first: 2, count: 3, visible: 0b101 };
+        let chosen = Part { flags: PartFlags::SUBPARTS, subparts: Some(visible), ..part(4, 0) };
+        let entries = [Entry::Object { handle: a, part: Some(chosen) }];
+        let mut b = SceneBuilder::default();
+        view(&mut b, &m);
+        let got = objects(&m, &entries, &mut b).unwrap();
+        assert_eq!(got, Objects { instances: 1, parts: 1, remainder: 0 });
+        let s = b.seal(Stamp::default()).unwrap();
+        let (_, p) = s.part_at(&s.views[0], 0).unwrap();
+        assert_eq!((p.flags, p.subparts), (PartFlags::SUBPARTS, Some(visible)));
+    }
+
+    #[test]
     fn what_extraction_cannot_read_is_a_remainder_not_a_part() {
         let mut m = Mem::default();
         camera_record(&mut m, RENDER_CAMERA);
@@ -280,5 +479,73 @@ mod tests {
         assert_eq!(layer_clusters(&m, 1), Some(vec![2]));
         m.w(CURRENT_LIST, 0);
         assert_eq!(layer_clusters(&m, 3), None);
+    }
+
+    #[test]
+    fn a_layers_items_are_in_the_scene_with_their_owners_and_the_rest_a_remainder() {
+        let mut m = Mem::default();
+        camera_record(&mut m, RENDER_CAMERA);
+        let a = object(&mut m, 1, 0xe000_0100, 1);
+        // Record 1 a cluster's section 5, record 2 placement 9, record 4
+        // the object's.
+        record(&mut m, 1, None);
+        m.w(RENDER_RECORDS + RENDER_RECORD_SIZE + RECORD_KEY, 5 << 9);
+        record(&mut m, 2, None);
+        m.w(RENDER_RECORDS + 2 * RENDER_RECORD_SIZE, 1 << 12);
+        m.w(RENDER_RECORDS + 2 * RENDER_RECORD_SIZE + RECORD_KEY, 9 << 18);
+        object_record(&mut m, 4, Some(lighting(8)), 10.0);
+        m.w(CURRENT_LIST, LIST);
+        m.w(LIST + 4, 6);
+        m.w(LIST + 0xc, 1);
+        m.w(LIST + 0x14, ITEMS);
+        let seven = 1u32 << 7;
+        // Slot 0 is before the list's first; slot 4 is another callback;
+        // slot 5 is not in layer 7.
+        for (slot, build, record, mask) in [
+            (0, GEOMETRY_BUILD, 1, seven),
+            (1, GEOMETRY_BUILD, 1, seven),
+            (2, GEOMETRY_BUILD, 4, seven | 1 << 3),
+            (3, GEOMETRY_BUILD, 2, seven),
+            (4, 0x0001_2340, 1, seven),
+            (5, GEOMETRY_BUILD, 2, 1 << 5),
+        ] {
+            let at = ITEMS + ITEM_SIZE * slot;
+            m.w(at, build);
+            m.w(at + 8, 0xe000_0010);
+            m.w(at + 0xc, record << 8);
+            m.w(at + 0x10, mask);
+        }
+        let mut b = SceneBuilder::default();
+        view(&mut b, &m);
+        let got = layer(&m, 7, false, &mut b).unwrap().unwrap();
+        assert_eq!(got, Layer { items: 3, remainder: 1 });
+        // The first person's items carry their owner's lighting.
+        let first_person = layer(&m, 7, true, &mut b).unwrap().unwrap();
+        assert_eq!(first_person, got);
+        let s = b.seal(Stamp::default()).unwrap();
+        s.check().unwrap();
+        let v = &s.views[0];
+        let passes = s.layers_of(v);
+        assert_eq!(passes.len(), 2);
+        assert_eq!((passes[0].layer, passes[0].remainder), (7, 1));
+        assert_eq!(passes[0].inputs, crate::layout::layer_inputs::read(&m), "the draw's material inputs");
+        let items = s.items_of(&passes[0]);
+        assert_eq!(items.iter().map(|i| i.slot).collect::<Vec<_>>(), [1, 2, 3]);
+        assert_eq!(items[0].owner, LayerOwner::Cluster(5));
+        assert_eq!(items[0].model, u32::MAX);
+        assert!(items[0].rows.is_empty() && items[0].lighting.is_none());
+        assert_eq!(items[1].owner, LayerOwner::Object(InstanceKey(a)));
+        assert_eq!((items[1].key.record, items[1].model), (4, 0xe100_0004));
+        assert_eq!(s.rows.get(items[1].rows.start as usize..items[1].rows.end as usize).unwrap().len(), 3);
+        assert!(items[1].lighting.is_none(), "not asked for");
+        assert_eq!(items[2].owner, LayerOwner::Placement(9));
+        let lit = &s.items_of(&passes[1])[1];
+        assert_eq!(lit.lighting, read_object(&m, a).unwrap().lighting);
+        assert_eq!(s.counts(v).layers, [(7, 3, 1), (7, 3, 1)]);
+        m.w(CURRENT_LIST, 0);
+        let mut b = SceneBuilder::default();
+        view(&mut b, &m);
+        assert_eq!(layer(&m, 7, false, &mut b), Ok(None), "an unreadable list writes nothing");
+        assert!(b.view().unwrap().layers.is_empty());
     }
 }

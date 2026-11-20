@@ -12,14 +12,16 @@ use engine::memory::GuestMemory;
 use render_bridge::native_map_work;
 use render_bridge::native_objects::{Host, NativeSet, SetPart};
 use map::TagId;
-use frame_scene::{FrameScene, InstanceKey, View};
+use frame_scene::{FrameScene, InstanceKey, PartFlags, View};
 use native_render::gpu::Image;
 use native_render::light_gpu::StaticLightTexture;
 use native_render::load;
 use native_render::look;
 use native_render::object_lighting::ShaderValues;
 use native_render::object_nodes::{Compression, decompression_rows};
-use native_render::object_program_gpu::{EngineStages, LitBuild, LitMaterial, LitModelInput, LitObjects, LitSection, PlannedDraw, Texaccum, lit_model, uniform};
+use native_render::object_program_gpu::{
+    EngineStages, LitBuild, LitMaterial, LitModelInput, LitObjects, LitSection, PlannedDraw, Texaccum, lit_model, lit_subparts, uniform,
+};
 use native_render::object_state::EntryStates;
 use native_render::object_streams::{self, StreamData, StreamFormats};
 use native_render::object_walk::{Entry, Part as WalkPart};
@@ -44,6 +46,10 @@ struct PartRange {
     first: u16,
     count: u16,
     triangle_list: bool,
+    /// The part's first subpart and subpart count, which a record choosing
+    /// subparts names (`frame_scene::Subparts`).
+    first_subpart: u16,
+    subpart_count: u16,
 }
 
 impl PartRange {
@@ -53,6 +59,7 @@ impl PartRange {
             && self.first == part.first_index
             && self.count == part.index_count
             && self.triangle_list == part.triangle_list
+            && part.subparts.is_none_or(|s| s.first == self.first_subpart && u16::from(s.count) == self.subpart_count)
     }
 }
 
@@ -350,14 +357,39 @@ fn plan_walk<B: d3d::backend::Backend>(
     let read = crate::native_world_glue::ReadMemory(mem);
     let flags = mem.u32(native_render::skip::STENCIL_OFF_FLAGS).map_err(|_| ObjectWalk::Inputs)?;
     let stencil_during_draw = flags & 0x00ff_ff00 == 0;
+    let in_mode_1 = || mem.u16(SCENE_STENCIL_MODE) == Ok(1) && device.stencil_state(&read) == Some(scene_stencil());
     if !stencil_during_draw {
         // The handler temporarily applies stencil mode 0 and leaves
         // mode 1. Skipping it is state-neutral only if it already holds 1.
-        if mem.u16(SCENE_STENCIL_MODE) != Ok(1) || device.stencil_state(&read) != Some(scene_stencil()) {
+        if !in_mode_1() {
             return Err(ObjectWalk::State);
         }
         entry.states.0.retain(|(r, _)| *r != R::StencilEnable);
         entry.states.0.push((R::StencilEnable, 0));
+    }
+    // A marked part's handler draws in stencil mode 2 and leaves mode 1
+    // (`frame_scene::PartFlags::STENCIL_MARK`). Skipping it is
+    // state-neutral, and the parts around it draw over the same stencil,
+    // only if the device already holds mode 1. With the stencil off the
+    // mark changes nothing.
+    let marks = stencil_during_draw
+        && run.iter().enumerate().any(|(n, e)| {
+            matches!(e, Entry::Object { .. })
+                && scene.part_at(view, (first + n) as u32).is_some_and(|(_, p)| p.flags.contains(PartFlags::STENCIL_MARK))
+        });
+    if marks && !in_mode_1() {
+        return Err(ObjectWalk::State);
+    }
+    // A part toggling the auxiliary state draws with the view's rows and
+    // clip on (`frame_scene::AuxDepth`); its epilogue leaves them off.
+    // Skipping its handler is state-neutral only if the device already
+    // holds them off.
+    let aux = run.iter().enumerate().any(|(n, e)| {
+        matches!(e, Entry::Object { .. })
+            && scene.part_at(view, (first + n) as u32).is_some_and(|(_, p)| p.flags.contains(PartFlags::AUX_DEPTH))
+    });
+    if aux && !view.aux_depth.is_some_and(|a| aux_depth_at_rest(device, mem, &a)) {
+        return Err(ObjectWalk::State);
     }
     let fog_words = crate::native_fog_glue::device_fog_words(device, mem);
     let table = &*STATE_TABLE;
@@ -407,6 +439,12 @@ fn plan_walk<B: d3d::backend::Backend>(
             count_refusal(&why);
             ObjectWalk::Inputs
         })?;
+        if stencil_during_draw && scene_part.flags.contains(PartFlags::STENCIL_MARK) {
+            native_render::object_state::mark(&mut draw.state);
+        }
+        if scene_part.flags.contains(PartFlags::AUX_DEPTH) {
+            draw.aux_depth = Some(view.aux_depth.ok_or(ObjectWalk::Inputs)?);
+        }
         let pass = lit.planned_pass(model, &draw).ok_or(ObjectWalk::Model)?;
         if pass.implementation.vertex_shader != Some(TagId(part.vertex_shader))
             || !stable_render_states(&pass.implementation.render_states, device_state)
@@ -434,11 +472,33 @@ fn plan_walk<B: d3d::backend::Backend>(
     Ok(draws)
 }
 
+/// Whether the device holds what the auxiliary state toggle leaves off
+/// (`0x00012d50` with BL 0, `aux.rest_*`): the cached byte 0, `c[0..3]`
+/// the rows off, and the program clip range off, owned by the game and
+/// pushed. Every comparison is of the bits.
+fn aux_depth_at_rest<B: d3d::backend::Backend>(
+    device: &d3d::Device<B>, mem: &dyn GuestMemory, aux: &frame_scene::AuxDepth,
+) -> bool {
+    use d3d::layout::device_field::{CLIP_FLAGS, CLIP_PROGRAM};
+    let bits = |r: &[f32]| r.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    let layout = d3d::layout::GuestLayout::HALO2;
+    let stored = mem.u32(layout.p_device).ok().and_then(|d| {
+        Some((
+            [mem.u32(d.checked_add(CLIP_PROGRAM)?).ok()?, mem.u32(d.checked_add(CLIP_PROGRAM + 4)?).ok()?],
+            mem.u32(d.checked_add(CLIP_FLAGS)?).ok()?,
+        ))
+    });
+    let read = crate::native_world_glue::ReadMemory(mem);
+    let pushed = device.depth_clip(&read, aux.rest_clip[1]).range;
+    mem.u8(native_render::aux_depth::CACHED) == Ok(0)
+        && (0..4).all(|r| bits(&device.constant(r)) == bits(&aux.rest_rows[r]))
+        && stored.is_some_and(|(clip, flags)| clip == [aux.rest_clip[0].to_bits(), aux.rest_clip[1].to_bits()] && flags & 2 != 0)
+        && bits(&pushed) == bits(&aux.rest_clip)
+}
+
+/// Stencil mode 1, which layer 3's stencil switches leave.
 fn scene_stencil() -> gfx::state::StencilState {
-    use gfx::state::{CompareFunc, StencilOp, StencilState};
-    StencilState {
-        enable: true, func: CompareFunc::Always, pass: StencilOp::Replace, ..Default::default()
-    }
+    native_render::object_state::structure_stencil(0)
 }
 
 fn stable_cached_restore(
@@ -683,6 +743,8 @@ fn load_model(o: &mut Opened, mode: TagId) -> Result<(CpuModel, ModelCoverage), 
             first: p.first_index,
             count: p.index_count,
             triangle_list: p.is_triangle_list(),
+            first_subpart: p.first_subpart,
+            subpart_count: p.subpart_count,
         }))
     }).collect();
     let cover = ModelCoverage { nodes: geo.nodes.len(), parts, ranges };
@@ -746,6 +808,15 @@ fn lit_parts(o: &mut Opened, geo: &RenderModelGeometry, materials: &HashMap<u16,
                 .enumerate()
                 .filter(|(i, p)| *i < 16 && p.is_drawn() && p.kind != load::PART_TRANSPARENT)
                 .map(|(k, p)| (k as u8, p.material, g.part_triangles(p)))
+                .collect(),
+            // A record with bit 6 may draw a choice of them
+            // (`frame_scene::Subparts`).
+            subparts: g
+                .parts
+                .iter()
+                .enumerate()
+                .filter(|(i, p)| *i < 16 && p.is_drawn() && p.kind != load::PART_TRANSPARENT)
+                .filter_map(|(k, p)| Some((k as u8, lit_subparts(&g.indices, &g.subparts, p)?)))
                 .collect(),
         });
     }
@@ -1072,6 +1143,7 @@ mod tests {
             shader: Default::default(),
             indices: 0..3,
             implementations,
+            subparts: None,
         };
         let lit = LitModelInput {
             parts: vec![part(2, 0, [Some((0, 0)), None, Some((1, 0)), None, None]), part(2, 3, [None, Some((2, 0)), None, None, None])],

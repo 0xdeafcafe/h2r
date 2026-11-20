@@ -9,7 +9,8 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::Ordering;
 
 use engine::memory::{GuestMemory, MemFault};
-use render_bridge::native_lights::{Dispatch, Host};
+use frame_scene::{LayerOwner, LightEntry};
+use render_bridge::native_lights::{Alone, Dispatch, Host};
 use map::{Map, TagId};
 use native_render::gpu::Image;
 use native_render::light_gpu::{LayeredImage, LightDraw, LightSet, LightTarget, StaticLightTexture, TextureDim, light_gpu_key};
@@ -63,8 +64,6 @@ pub enum Keep {
     NoWorld,
     /// The hook did not compute the light's constants.
     NoConstants,
-    /// A shadowed light: the shadow maps are not drawn natively.
-    Shadowed,
     /// A part it meets has no material (its shader does not read).
     NoMaterial,
     /// A pass it needs is refused (`light_look`, `compile_light`, the
@@ -80,7 +79,6 @@ impl std::fmt::Display for Keep {
         match self {
             Keep::NoWorld => f.write_str("the world's lights are not loaded"),
             Keep::NoConstants => f.write_str("no constants from the hook"),
-            Keep::Shadowed => f.write_str("shadowed"),
             Keep::NoMaterial => f.write_str("meets a part without a material"),
             Keep::Refused(why) => write!(f, "pass refused: {why}"),
             Keep::Unloaded(what) => write!(f, "samples an unloaded {what}"),
@@ -154,8 +152,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         if !uses_gel_target(mem, definition, shader, c.flags, c.definition_flags) {
             return Err(Keep::Unsupported("engine texture 10 does not select this gel invocation"));
         }
-        let (_, before) = self.checkpoint.lock().unwrap_or_else(|e| e.into_inner())
-            .take_if(|(id, _)| *id == serial).ok_or(Keep::Unsupported("missing gel entry checkpoint"))?;
+        // The light's entry checkpoint serves each of its layers.
+        let held = *self.checkpoint.lock().unwrap_or_else(|e| e.into_inner());
+        let before = held.filter(|(id, _)| *id == serial).map(|(_, c)| c)
+            .ok_or(Keep::Unsupported("missing gel entry checkpoint"))?;
         let target = gels::Target::read(&ReadMemory(mem)).ok_or(Keep::Unsupported("unavailable gel target 13"))?;
         self.gels.binding_after(before, definition, shader, target.surface)
             .filter(|b| b.guest_size == target.size)
@@ -165,14 +165,25 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
     fn prepare_light(&self, d: &d3d::Device<B>, mem: &dyn GuestMemory, light: &Light, sorted: &SortedLayer, binding: Option<Binding>)
         -> Result<(PreparedLight, usize), Keep>
     {
-        let constants = constants(light)?;
-        let ready = {
-            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            Arc::clone(current_ready(&state, mem).ok_or(Keep::NoWorld)?)
-        };
+        let ready = self.ready(mem)?;
         let world = ready.lights.as_ref().ok_or(Keep::NoWorld)?;
         let parts = select_parts(&world.clusters, &sorted.entries)?;
         let consumed = parts.len();
+        Ok((self.prepare_parts(d, mem, ready, light, parts, binding)?, consumed))
+    }
+
+    fn ready(&self, mem: &dyn GuestMemory) -> Result<Arc<Ready>, Keep> {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(Arc::clone(current_ready(&state, mem).ok_or(Keep::NoWorld)?))
+    }
+
+    /// The light's draws of `parts` (layer, implementation, world part,
+    /// in draw order) with the device state they take at this point.
+    fn prepare_parts(&self, d: &d3d::Device<B>, mem: &dyn GuestMemory, ready: Arc<Ready>, light: &Light,
+        parts: Vec<(usize, usize, WorldDraw)>, binding: Option<Binding>) -> Result<PreparedLight, Keep>
+    {
+        let constants = constants(light)?;
+        let world = ready.lights.as_ref().ok_or(Keep::NoWorld)?;
         let draws = world.resolve_parts(&constants, parts, binding.is_some())?;
         if draws.is_empty() {
             return Err(Keep::Unsupported("no supported light draws in the active list"));
@@ -207,13 +218,91 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             return Err(Keep::Unsupported("unreadable inherited CULLMODE or FRONTFACE"));
         }
         let cull = InheritedCull { device: cull, clusters: true, placements: false };
-        Ok((PreparedLight { ready, constants, draws, cull, scissor, binding }, consumed))
+        Ok(PreparedLight { ready, constants, draws, cull, scissor, binding })
+    }
+
+    /// A light layer drawn from its scene group alone
+    /// ([`render_bridge::native_lights::draw_alone`]): the group's
+    /// structure parts resolved as [`Self::reserve`] resolves the sorted
+    /// list's, issued now as one external pass, with no guest handler and
+    /// so no resolved fallback. A model entry (no light stream here), a
+    /// shader gel (its target-13 slot is pinned through a draw's plan) or
+    /// a state the device cannot give refuses, issuing nothing.
+    fn alone(&self, mem: &mut dyn GuestMemory, a: Alone<'_>) -> Result<(), Keep> {
+        use native_render::light_scene::{Refusal, plan_entries};
+        if a.shader_gel.is_some() {
+            return Err(Keep::Unsupported("a shader gel draws through its handler"));
+        }
+        let mut d = self.device.lock().map_err(|_| Keep::Unsupported("device unavailable"))?;
+        if !d.begin_external_boundary(&mut DeviceMemory(mem)).map_err(|_| Keep::Unsupported("could not drain light state"))? {
+            return Err(Keep::Unsupported("light has an outstanding push callback"));
+        }
+        if d.bound_target() != a.view_target {
+            return Err(Keep::Unsupported("light view target changed"));
+        }
+        let c = constants(&a.light)?;
+        let ready = self.ready(mem)?;
+        let world = ready.lights.as_ref().ok_or(Keep::NoWorld)?;
+        let group = a.group;
+        plan_entries(&group.entries, &|e| group.rows_of(e), &Structure(&world.clusters)).map_err(|r| match r {
+            Refusal::Remainder(_) => Keep::Unsupported("scene group has a remainder"),
+            Refusal::Stream => Keep::Unsupported("scene group entry has no native light stream"),
+            Refusal::Pose => Keep::Unsupported("scene group entry has no pose"),
+        })?;
+        let layer = a.layer as usize;
+        let parts = group.entries.iter().map(|e| -> Result<_, Keep> {
+            let (_, draw) = structure_key(e).and_then(|k| world.clusters.get(&k))
+                .ok_or(Keep::Unsupported("scene group entry has no native light stream"))?;
+            Ok((layer, usize::from(e.binding.implementation), *draw))
+        }).collect::<Result<Vec<_>, Keep>>()?;
+        let prepared = self.prepare_parts(&d, mem, Arc::clone(&ready), &a.light, parts, None)?;
+        use native_render::light_passes;
+        let drawn = light_passes::read(&ReadMemory(&*mem), c.flags, c.definition_flags)
+            .map_or(0, |i| light_passes::steps(&i).drawn());
+        if drawn & 1 << a.layer == 0 || prepared.draws.iter().any(|p| p.layer != layer) {
+            return Err(Keep::Unsupported("active light layers changed during setup"));
+        }
+        if mem.u32(engine::light_passes::global::PASS_FLAGS).ok() != Some(c.flags) ||
+            c.frame.iter().enumerate().any(|(i, word)|
+                mem.u32(engine::light_constants::global::FRAME + 4 * i as u32).ok() != Some(*word)) {
+            return Err(Keep::Unsupported("light globals differ from the prepared frame or flags"));
+        }
+        let pass = RunPass { light: prepared, view: None, clip: None, gel_slot: None, fallback: None };
+        match d.external_pass_now(&mut DeviceMemory(mem), Box::new(pass)) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(Keep::Unsupported("the device did not issue the scene light pass")),
+            Err(_) => Err(Keep::Unsupported("device error issuing the scene light pass")),
+        }
+    }
+}
+
+/// The world's structure parts as the light passes hold them, for
+/// [`native_render::light_scene`]: one stream (the world's buffers), each
+/// part's range there, for its own shader only.
+struct Structure<'a>(&'a ClusterParts);
+
+impl native_render::light_scene::Resident for Structure<'_> {
+    fn part(&self, e: &LightEntry) -> Option<native_render::light_scene::ResidentPart> {
+        let (shader, d) = self.0.get(&structure_key(e)?)?;
+        if shader.0 != e.binding.shader {
+            return None;
+        }
+        Some(native_render::light_scene::ResidentPart { stream: 0, indices: d.first_index..d.first_index.checked_add(d.index_count)? })
+    }
+}
+
+/// A structure entry's key in [`ClusterParts`]; `None` for an object's.
+fn structure_key(e: &LightEntry) -> Option<(Owner, u8)> {
+    match e.owner {
+        LayerOwner::Cluster(c) => Some((Owner::Cluster(u32::from(c)), e.stream.part)),
+        LayerOwner::Placement(p) => Some((Owner::Instance(u32::from(p)), e.stream.part)),
+        LayerOwner::Object(_) => None,
     }
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
     fn reserve(&self, mem: &mut dyn GuestMemory, dispatch: Dispatch<'_>) -> Result<(), Keep> {
-        let Dispatch { light, serial, shader_gel, view_target, sorted } = dispatch;
+        let Dispatch { light, serial, layer, shader_gel, view_target, sorted } = dispatch;
         let mut d = self.device.lock().map_err(|_| Keep::Unsupported("device unavailable"))?;
         if !d.begin_external_boundary(&mut DeviceMemory(mem)).map_err(|_| Keep::Unsupported("could not drain light state"))? {
             return Err(Keep::Unsupported("light has an outstanding push callback"));
@@ -224,9 +313,12 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let binding = self.gel_binding(mem, serial, shader_gel, &constants(&light)?)?;
         let (plan, count) = self.prepare_light(&d, mem, &light, sorted, binding)?;
         let c = &plan.constants;
-        let layers = mem.u32(render_bridge::native_lights::LIGHT_LIST + 8).ok()
-            .and_then(|mask| native_render::light_list::single_layer(mask, c.flags, c.definition_flags).ok());
-        if layers != plan.draws.first().map(|p| p.layer as u32) {
+        // The layer is one the light's steps draw, and every planned draw
+        // is the layer's.
+        use native_render::light_passes;
+        let drawn = light_passes::read(&ReadMemory(&*mem), c.flags, c.definition_flags)
+            .map_or(0, |i| light_passes::steps(&i).drawn());
+        if drawn & 1 << layer == 0 || plan.draws.iter().any(|p| p.layer as u32 != layer) {
             return Err(Keep::Unsupported("active light layers changed during setup"));
         }
         if mem.u32(engine::light_passes::global::PASS_FLAGS).ok() != Some(c.flags) ||
@@ -278,6 +370,14 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
 
     fn target(&self) -> Option<[u32; 8]> {
         self.device.lock().ok().map(|d| d.bound_target())
+    }
+
+    fn draw_alone(&self, mem: &mut dyn GuestMemory, alone: Alone<'_>) -> bool {
+        let result = self.alone(mem, alone);
+        let ok = result.is_ok();
+        let mut t = self.tally.lock().unwrap_or_else(|e| e.into_inner());
+        for msg in t.count(result) { eprintln!("{msg}"); }
+        ok
     }
 }
 
@@ -346,7 +446,7 @@ impl d3d::DrawAdmission for LightAdmission {
         let gel_slot = light.binding.map(|binding| binding.append(&mut plan));
         let pass = RunPass {
             light, view: None, clip: None, gel_slot,
-            fallback: Arc::new(draw.clone()),
+            fallback: Some(Arc::new(draw.clone())),
         };
         Some((plan, Box::new(pass)))
     }
@@ -375,12 +475,12 @@ fn uses_gel_target(mem: &dyn GuestMemory, definition: u32, shader: u32, flags: u
             .and_then(|a| mem.u32(a).ok()) == Some(shader)
 }
 
+/// The light's constants. A shadowed light's layers 12 and 13 are drawn
+/// like any other's: no stencil links them to its layers 10, 11 and 14
+/// (`light_passes`), and a pass sampling the shadow maps is refused by
+/// `light_look` by name.
 fn constants(light: &Light) -> Result<LightConstants, Keep> {
-    let c = light.constants.ok_or(Keep::NoConstants)?;
-    if c.shadowed() {
-        return Err(Keep::Shadowed);
-    }
-    Ok(c)
+    light.constants.ok_or(Keep::NoConstants)
 }
 
 type ClusterParts = HashMap<(Owner, u8), (TagId, WorldDraw)>;
@@ -1006,7 +1106,9 @@ struct RunPass {
     view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
     clip: Option<d3d::DepthClip>,
     gel_slot: Option<usize>,
-    fallback: Arc<d3d::ResolvedDraw>,
+    /// The handler's resolved draw it replaces; none for a layer drawn
+    /// from the scene alone.
+    fallback: Option<Arc<d3d::ResolvedDraw>>,
 }
 
 impl d3d::ExternalPass for RunPass {
@@ -1020,7 +1122,7 @@ impl d3d::ExternalPass for RunPass {
     }
 
     fn resolved_fallback(&self) -> Option<Arc<d3d::ResolvedDraw>> {
-        Some(Arc::clone(&self.fallback))
+        self.fallback.clone()
     }
 
     fn record_draws(
@@ -1386,7 +1488,7 @@ mod tests {
     }
 
     #[test]
-    fn only_unshadowed_lights_with_constants_are_drawable() {
+    fn lights_with_constants_are_drawable_shadowed_or_not() {
         use native_render::lights::LightConstants;
         let c = LightConstants {
             frame: [0; 36],
@@ -1416,7 +1518,7 @@ mod tests {
             constants,
         };
         assert!(constants(&light(Some(c))).is_ok());
-        assert!(matches!(constants(&light(Some(LightConstants { flags: 4 | 0x20, ..c }))), Err(Keep::Shadowed)));
+        assert!(constants(&light(Some(LightConstants { flags: 4 | 0x20, ..c }))).is_ok(), "shadowed");
         assert!(constants(&light(Some(LightConstants { animated_gel: true, ..c }))).unwrap().animated_gel);
         assert!(matches!(constants(&light(None)), Err(Keep::NoConstants)));
     }
