@@ -312,7 +312,7 @@ pub struct LateInputs<'a> {
     pub allow_bot_add: bool,
     pub xa: Option<&'a xapi_glue::Shared>,
     /// From [`pipeline_for`].
-    pub pipeline: hooks::pipeline_render::PipelineRender,
+    pub pipeline: render_bridge::pipeline_render::PipelineRender,
     pub coop_probe: Option<coop_probe::Config>,
     pub live: Option<Arc<live_hle::Hle>>,
     pub settings: Option<Arc<settings::Store>>,
@@ -325,10 +325,10 @@ pub struct LateInputs<'a> {
 /// Light hosts replace the frame entry with the skip implementation.
 /// Full headless simulations keep the entry and can opt in for hash comparisons.
 pub fn pipeline_for(
-    pipeline: hooks::pipeline_render::PipelineRender,
+    pipeline: render_bridge::pipeline_render::PipelineRender,
     lockstep_on: bool,
     host_light: bool,
-) -> hooks::pipeline_render::PipelineRender {
+) -> render_bridge::pipeline_render::PipelineRender {
     if lockstep_on {
         pipeline.disabled("lockstep (H2_LOCKSTEP/H2_INPUT_RECORD/H2_INPUT_REPLAY) compares serial runs")
     } else if host_light {
@@ -422,12 +422,12 @@ pub(crate) fn register_late_for_profile(
     // Render front-end time in the frame stats, when H2_FEATURES has
     // render-timing (off by default).
     features
-        .add(&hooks::render_timing::RenderTiming::new())
+        .add(&render_bridge::render_timing::RenderTiming::new())
         .map_err(|e| anyhow::anyhow!("render timing: {e}"))?;
     // Which pages the render front-end writes and the sim reads, when
     // H2_FEATURES has render-census (off by default;
     // docs/graphics/pipelined-render.md).
-    let census = hooks::render_census::RenderCensus::new()
+    let census = render_bridge::render_census::RenderCensus::new()
         .with_region(crate::d3d_glue::PUSH_BASE, crate::d3d_glue::PUSH_BASE + crate::d3d_glue::PUSH_LEN, "push_buffer")
         .with_region(crate::d3d_glue::SCRATCH_BASE, crate::d3d_glue::SCRATCH_BASE + 0x1000, "d3d_scratch");
     features.add(&census).map_err(|e| anyhow::anyhow!("render census: {e}"))?;
@@ -438,12 +438,12 @@ pub(crate) fn register_late_for_profile(
     #[cfg(feature = "gpu")]
     if render_hooks == film::RenderHooks::Gpu {
         features
-            .add(&hooks::native_map_work::NativeMapWork)
+            .add(&render_bridge::native_map_work::NativeMapWork)
             .map_err(|e| anyhow::anyhow!("native map lifecycle: {e}"))?;
         // The frame step's FrameScene: camera, world and objects extracted
         // for the native stages (docs/graphics/framescene.md).
         features
-            .add(&hooks::scene_step::FrameSceneStep)
+            .add(&render_bridge::scene_step::FrameSceneStep)
             .map_err(|e| anyhow::anyhow!("frame scene: {e}"))?;
         // The static world on the native GPU renderer
         // (on by default, H2_FEATURES=impl.render.native=off turns it
@@ -452,7 +452,7 @@ pub(crate) fn register_late_for_profile(
         // runs after render-timing's. The world reads its map and resources
         // through the VFS (native_map).
         features
-            .add(&hooks::native_world::NativeWorld)
+            .add(&render_bridge::native_world::NativeWorld)
             .map_err(|e| anyhow::anyhow!("native world: {e}"))?;
         // Planar fog, layer 16, on the native GPU renderer
         // (on by default since 2026-11-20; H2_FEATURES=impl.render.native=off
@@ -462,12 +462,12 @@ pub(crate) fn register_late_for_profile(
         // materials load with the world (native_world_glue's worker,
         // native_fog_glue's load).
         features
-            .add(&hooks::native_fog::NativeFog)
+            .add(&render_bridge::native_fog::NativeFog)
             .map_err(|e| anyhow::anyhow!("native fog: {e}"))?;
         // Water edge blend (layer 6) and the water, camouflage and hologram
         // census. The layer observer follows impl.render.native.
         features
-            .add(&hooks::native_water::NativeWater)
+            .add(&render_bridge::native_water::NativeWater)
             .map_err(|e| anyhow::anyhow!("native water: {e}"))?;
         // Objects' render models on the native GPU renderer, skinned on the
         // GPU (on by default since 2026-11-20;
@@ -477,7 +477,7 @@ pub(crate) fn register_late_for_profile(
         // layer draw sit inside render-timing's and the world's; the models
         // load per map through native_objects_glue.
         features
-            .add(&hooks::native_objects::NativeObjects)
+            .add(&render_bridge::native_objects::NativeObjects)
             .map_err(|e| anyhow::anyhow!("native objects: {e}"))?;
         // The first-person arms and weapon on the native GPU renderer
         // (on by default since 2026-11-20;
@@ -486,18 +486,18 @@ pub(crate) fn register_late_for_profile(
         // draws, with the light and transparent calls
         // between and after them left in guest order.
         features
-            .add(&hooks::native_first_person::NativeFirstPerson)
+            .add(&render_bridge::native_first_person::NativeFirstPerson)
             .map_err(|e| anyhow::anyhow!("native first person: {e}"))?;
         features
-            .add(&hooks::native_world_layers::NativeWorldLayers)
+            .add(&render_bridge::native_world_layers::NativeWorldLayers)
             .map_err(|e| anyhow::anyhow!("native world layers: {e}"))?;
         features
-            .add(&hooks::native_scene_lists::NativeSceneLists)
+            .add(&render_bridge::native_scene_lists::NativeSceneLists)
             .map_err(|e| anyhow::anyhow!("native scene lists: {e}"))?;
         // Mark the sorted geometry entries so their resolved indexed draws
         // can use a cached vertex binding in the game's order (off by default).
         features
-            .add(&hooks::native_transparents::NativeTransparents)
+            .add(&render_bridge::native_transparents::NativeTransparents)
             .map_err(|e| anyhow::anyhow!("native transparents: {e}"))?;
         // Dynamic decals in their seven observed pass positions
         // (on by default since 2026-11-20; H2_FEATURES=impl.render.native=off
@@ -505,10 +505,10 @@ pub(crate) fn register_late_for_profile(
         // docs/graphics/native-decals-research.md). Only a fully resolved callback
         // is replaced; all others keep their D3D draws.
         features
-            .add(&hooks::native_decals::NativeDecals)
+            .add(&render_bridge::native_decals::NativeDecals)
             .map_err(|e| anyhow::anyhow!("native decals: {e}"))?;
         features
-            .add(&hooks::native_particles::NativeParticles)
+            .add(&render_bridge::native_particles::NativeParticles)
             .map_err(|e| anyhow::anyhow!("native particles: {e}"))?;
         // The dynamic lights on the native GPU renderer
         // (on by default since 2026-11-20; H2_FEATURES=impl.render.native=off
@@ -519,17 +519,17 @@ pub(crate) fn register_late_for_profile(
         // and reports the bound target, but takes no light yet, so every light
         // keeps its D3D passes.
         features
-            .add(&hooks::native_lights::NativeLights)
+            .add(&render_bridge::native_lights::NativeLights)
             .map_err(|e| anyhow::anyhow!("native lights: {e}"))?;
         features
-            .add(&hooks::native_lights::walk::NativeLightWalk)
+            .add(&render_bridge::native_lights::walk::NativeLightWalk)
             .map_err(|e| anyhow::anyhow!("native light walk: {e}"))?;
         // Shader-driven gels: observe target-13 production before light consumption.
         features
-            .add(&hooks::native_gels::NativeGels)
+            .add(&render_bridge::native_gels::NativeGels)
             .map_err(|e| anyhow::anyhow!("native gels: {e}"))?;
         features
-            .add(&hooks::native_shadows::NativeShadows)
+            .add(&render_bridge::native_shadows::NativeShadows)
             .map_err(|e| anyhow::anyhow!("native shadows: {e}"))?;
     }
     features
@@ -549,12 +549,12 @@ pub(crate) fn register_late_for_profile(
         // and draws the glow natively in place of the last; the game's code
         // runs and leaves every state.
         features
-            .add(&hooks::native_post::NativePost)
+            .add(&render_bridge::native_post::NativePost)
             .map_err(|e| anyhow::anyhow!("native post: {e}"))?;
         // Native UI producers and the ordered menu, HUD and loading callbacks.
         // impl.render.native=off returns these draws to the ordinary device path.
         features
-            .add(&hooks::native_hud::NativeHud)
+            .add(&render_bridge::native_hud::NativeHud)
             .map_err(|e| anyhow::anyhow!("native hud: {e}"))?;
     }
     // H2_UI_WATCH=1: the screen player one's input goes to, a line on each

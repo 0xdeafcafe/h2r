@@ -697,7 +697,7 @@ pub fn interpolation(
         switches.feature("impl.render.reproject", false),
         switches.feature("impl.render.reproject_ahead", false),
     )?;
-    let pipeline = hooks::pipeline_render::PipelineRender::requested(&switches);
+    let pipeline = render_bridge::pipeline_render::PipelineRender::requested(&switches);
     if !interpolation_from(true, render_thread, pipeline) {
         return None;
     }
@@ -1627,7 +1627,7 @@ pub const WATCH_OWNER: &str = "boot:d3d";
 /// the render first), and every D3D override the render thread may run
 /// (the entries with their write barrier, CreateDevice's shadow, the port
 /// I/O stubs). Enabled by `impl.render.pipelined_frame`.
-pub fn pipeline_render(i: Option<&Installed>) -> hooks::pipeline_render::PipelineRender {
+pub fn pipeline_render(i: Option<&Installed>) -> render_bridge::pipeline_render::PipelineRender {
     let entries: Vec<u32> = match i {
         Some(i) => i.barrier.clone(),
         None => Vec::new(),
@@ -1635,7 +1635,7 @@ pub fn pipeline_render(i: Option<&Installed>) -> hooks::pipeline_render::Pipelin
     let allow = pipeline_allow(&entries);
     // The push buffer and the device's surface scratch: the render's
     // between its launch and its join, as the device is.
-    hooks::pipeline_render::PipelineRender::new()
+    render_bridge::pipeline_render::PipelineRender::new()
         .with_d3d(entries, allow, &[WATCH_OWNER])
         .render_owned(&[(PUSH_BASE, SCRATCH_BASE + 0x1000)])
 }

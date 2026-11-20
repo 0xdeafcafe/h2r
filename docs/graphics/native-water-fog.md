@@ -1,7 +1,7 @@
 # Native renderer stage 4b: water, fog and camouflage
 
 Status: Partly built. Planar fog (layer 16) and the water edge blend (layer 6) are drawn natively; camouflage (layers 18 and 19) and the hologram (layer 21) are not, and parity with D3D is not verified.
-Code: `crates/hooking/hooks/src/native_fog.rs`, `native_water.rs`, `crates/apps/boot/src/native_fog_glue.rs`, `native_water_glue.rs`, `crates/rewrites/native-render/src/fog.rs`, `fog_gpu.rs`, `water_gpu.rs`. Tests: `crates/hooking/hooks/tests/native_fog.rs`.
+Code: `crates/rewrites/render-bridge/src/native_fog.rs`, `native_water.rs`, `crates/apps/boot/src/native_fog_glue.rs`, `native_water_glue.rs`, `crates/rewrites/native-render/src/fog.rs`, `fog_gpu.rs`, `water_gpu.rs`. Tests: `crates/rewrites/render-bridge/tests/native_fog.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 Part of [native-renderer.md](native-renderer.md).

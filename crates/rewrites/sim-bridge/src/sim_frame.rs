@@ -4,7 +4,7 @@
 //! At `render_frame_and_present` (`0x00223240`) on the game thread:
 //!
 //! 1. **Decide** as the pipelined render does
-//!    ([`pipeline_render`](hooks::pipeline_render), `serial_reason`): a
+//!    ([`pipeline_render`](render_bridge::pipeline_render), `serial_reason`): a
 //!    world frame is the world path taken (engine globals active, not the
 //!    UI's world skip) with both resource-cache countdowns at or below 0.
 //!    Menus, loading screens and Bink run the original, so loading drives
@@ -34,7 +34,7 @@ pub const ID: &str = "sim-frame";
 
 /// The guest addresses the skip reads and writes; [`Addrs::HALO2`] for the
 /// game, anything for a synthetic test. The same words as
-/// [`pipeline_render::Addrs`](hooks::pipeline_render::Addrs).
+/// [`pipeline_render::Addrs`](render_bridge::pipeline_render::Addrs).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Addrs {
     /// The engine frame wait, run on the game thread at a skipped frame.

@@ -24,4 +24,5 @@ frame-scene = { path = "../../rewrites/frame-scene", optional = true }
 scene-extract = { path = "../../rewrites/scene-extract", optional = true }
 
 [dev-dependencies]
+render-bridge = { path = "../../rewrites/render-bridge" }
 runtime-test-probe = { path = "../../runtime/runtime/test-probe" }

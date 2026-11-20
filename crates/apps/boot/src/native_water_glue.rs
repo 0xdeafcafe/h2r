@@ -2,7 +2,7 @@
 //! water and the rest"): over the native world's loaded BSP, it compiles
 //! the transparent parts' layer-6 passes at the load ([`load`]), and at
 //! the layer-6 call asks the D3D device for one external pass per view
-//! (`hooks::native_water`).
+//! (`render_bridge::native_water`).
 //!
 //! Sampled render targets use the texture header embedded at `+4` in the
 //! target descriptor (`0x004b4b58`, stride `0x98`). The resolver at
@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use engine::memory::GuestMemory;
 use engine::screen_effect::{TARGET_STRIDE, TARGETS};
-use hooks::native_water::Host;
+use render_bridge::native_water::Host;
 use map::{Map, TagId};
 use native_render::fog_gpu::{FogProgram, FogWords};
 use native_render::look::{self, Stage};
@@ -298,7 +298,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         if !current_ready(&state, mem).is_some_and(|current| Arc::ptr_eq(current, &ready)) {
             return None;
         }
-        if !masks.apply(&mut hooks::native_fog::Mem(mem)) {
+        if !masks.apply(&mut render_bridge::native_fog::Mem(mem)) {
             Stage::Water.count(Metric::RefusedMasks, ranges as u64);
             return None;
         }
@@ -311,7 +311,7 @@ static TARGET_UNREADABLE: AtomicBool = AtomicBool::new(false);
 
 /// Installs the host over the world's state (`native_world_glue::install`).
 pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>, state: State) {
-    hooks::native_water::set_host(Arc::new(Glue {
+    render_bridge::native_water::set_host(Arc::new(Glue {
         device: Arc::clone(device),
         state,
     }));
