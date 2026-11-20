@@ -37,6 +37,25 @@ mod status {
         write(old & !0x3f);
         Some(old)
     }
+
+    #[test]
+    fn unsupported_mxcsr_controls_decline_before_arithmetic() {
+        struct Restore(Word);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                write(self.0);
+            }
+        }
+        let saved = Restore(read());
+        // Preserve the status bits and set masked exceptions and nearest
+        // rounding. Flip one supported control bit in each case.
+        let baseline = (saved.0 & !0xffc0) | 0x1f80;
+        for bit in [1 << 15, 1 << 13] {
+            write(baseline | bit);
+            assert_eq!(crate::det::checked::<()>(|_| panic!("kernel ran")), None);
+            assert_eq!(fast_env(), bit == 1 << 15);
+        }
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -80,6 +99,27 @@ mod status {
         let old = read();
         write(old & !0x9f);
         Some(old)
+    }
+
+    #[test]
+    fn unsupported_fpcr_controls_decline_before_arithmetic() {
+        fn set_control(value: u64) {
+            // SAFETY: changes only this test thread's userspace FPCR.
+            unsafe { asm!("msr fpcr, {}", in(reg) value, options(nostack)) };
+        }
+        struct Restore(u64);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                set_control(self.0);
+            }
+        }
+        let saved = Restore(control());
+        let baseline = saved.0 & !(FAST_CONTROL | (1 << 24) | 1);
+        for bit in [1 << 24, 1 << 22] {
+            set_control(baseline | bit);
+            assert_eq!(crate::det::checked::<()>(|_| panic!("kernel ran")), None);
+            assert_eq!(fast_env(), bit == 1 << 24);
+        }
     }
 }
 
