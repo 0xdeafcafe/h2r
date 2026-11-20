@@ -229,3 +229,7 @@ Reading and converting Halo 1 data:
 - [variants.md](editor/variants.md): the game variant record, its schema and saved files (`crates/variants`)
 - [hud-editor.md](editor/hud-editor.md): the HUD tool (`nhdt` tags): placement, checks, the save, what is not modelled
 - [agent-api.md](editor/agent-api.md): the editor's socket API: JSON methods over maps, tags, placements, variants, playlists and UI screens
+
+## Working on the repository (`dev/`)
+
+- [crate-structure.md](dev/crate-structure.md): the crate graph as measured, the target crate map by layer, the ordered freeze-window moves to reach it, local registration, the gate proposal (design; nothing has moved)
