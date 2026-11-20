@@ -642,7 +642,8 @@ gives the BSP's decorator placements (`[[0x004e0348] + 0x238]`, entries
 of `0x18` bytes whose first byte indexes the scenario's decorator palette
 at `+0x37c`, 8 bytes each with the set's datum at `+4`). They have no
 render record, are not objects, and neither skip touches them (both take
-only build `0x0004cbf0`): they stay on D3D, a later world stage.
+only build `0x0004cbf0`): they stay on D3D. Their own stage is
+[native-decorators.md](native-decorators.md).
 
 ## Not verified
 

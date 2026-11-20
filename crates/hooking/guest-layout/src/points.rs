@@ -473,6 +473,13 @@ points! { ALL;
     SCRIPT_UPDATE @ 0x0020_9310: [opaque], Optional; "docs/engine/engine-map.md";
     EFFECT_PART_CREATE @ 0x0017_a8a0: [opaque], Optional; "docs/engine/engine-map.md";
     PARTICLE_SYSTEM_UPDATE @ 0x0024_7140: [opaque], Optional; "docs/engine/engine-map.md";
+    /// `animation_resource_get`: EAX a graph's resource record; loads it
+    /// through the animation cache when needed and stamps the cache entry's
+    /// use (`+0x14`). The tick requests (`0x001236f0`), the render gets.
+    ANIMATION_RESOURCE_GET @ 0x0012_37e0: [opaque], Optional, Hot; "docs/engine/engine-map.md";
+    /// The particle systems' per-view update the render reaches from the
+    /// object and effect draw paths: their visibility and location stamps.
+    PARTICLE_VIEW_UPDATE @ 0x0017_4420: [opaque], Optional; "docs/graphics/native-particles.md";
     CAMERA_DIRECTOR @ 0x0015_54b0: [opaque], Optional; "docs/engine/engine-map.md";
     CAMERA_OBSERVER @ 0x0016_f280: [opaque], Optional; "docs/engine/engine-map.md";
     CAMERA_FIRST_PERSON @ 0x0023_c110: [opaque], Optional; "docs/engine/engine-map.md";

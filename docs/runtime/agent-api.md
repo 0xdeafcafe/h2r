@@ -671,7 +671,7 @@ h2 agent render.parity '{"arm": true}'
 |---|---|---|---|
 | `render.compare` | read | `{a, b, diff?}`: two PNG paths, and where to write a difference image | `{size: [w, h], differing, max_channel, mean, first: [x, y] \| null, within_bar, diff?}` |
 | `render.capture` | read | `{tick?, pass?}` | `{path, tick, present, pass?, scene_hash}` |
-| `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, dump?}` |
+| `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, entries?, dump?}` |
 | `render.parity` | act | `{arm: true}` | `render.compare`'s fields plus `tick` |
 | `sim.hashes` | read | `{from_tick?, max?}` | `{rows: [{tick, gameplay, arena?}], dropped, resets, truncated?}` |
 
@@ -729,17 +729,43 @@ h2 agent render.parity '{"arm": true}'
   instances the guest still draws (`remainder`), its parts by how they
   draw beyond their material (`part_flags`: `stencil_mark`, `strip`,
   `subparts`, `aux_depth`;
-  framescene.md, slice 3), and carried ops by slot
+  framescene.md, slice 3), its model decorator draws (one per
+  placement), their instances and the draws the guest still draws
+  (`decorators`, `decorator_instances`, `decorator_remainder`;
+  native-decorators.md), and carried ops by slot
   and by `CameraUse` (empty while no stage carries ops); `counters`
   (`scenes_sealed`, `scenes_unsealed`, `scene_views`, `scene_no_camera`,
   `scene_refused_writes`, `scene_layers`, `scene_layer_items`,
   `scene_layer_remainder`, `scene_layers_unread` (layer draws whose list
-  did not read), and from `d3d::scene_stage`
+  did not read), `scene_decorator_draws`, `scene_decorator_instances`,
+  `scene_decorator_remainder`, `scene_light_groups`, `scene_light_groups_whole` (the
+  gathered light and shadow layers in the scene, and those with every
+  sorted entry in it), `scene_light_layers_alone` (light layers drawn
+  from the scene with no handler run), `scene_light_entries` and
+  `scene_light_entry_remainder_<cause>` (sorted entries left to the
+  guest's handlers, by `scene_extract::light_groups::Cause`: `memory`,
+  `callback`, `owner`, `section`, `range`, `state`, `subparts`,
+  `material`, `pose`; framescene.md, slice 4), and from `d3d::scene_stage`
   `scene_stages_world`, `scene_stages_objects`, the scene stages queued
   to the render thread, and `scene_dropped_world`,
   `scene_dropped_objects`, those it could not record after the guest
   skipped their items; framescene.md, slice 2; later slices add
-  `scene_unresident`, `scene_readback`, `scene_held_draws`). With `dump`, the whole scene is written as JSON
+  `scene_unresident`, `scene_readback`, `scene_held_draws`). With
+  `frame-scene.census` in `H2_FEATURES`, `entries` is the entry census
+  (`render_bridge::entry_census`; framescene.md, slice 4), totals since
+  the start: `by_entry`, keyed by guest entry (`layer.<site>.<layer>`
+  with site `scene`, `alternate`, `first_person`, `light`,
+  `object_shadow` or `other`; `light_passes`, `object_shadow`,
+  `screen_effects`), each `{calls, d3d_draws, seed_steps,
+  effects_seed_steps, seed_unmatched, animation_gets,
+  particle_updates}`: the guest draws handed to the D3D backend under
+  the entry, the steps of the shared random seeds `+0` and `+4`, calls
+  whose seed was not a run of steps, and calls of
+  `animation_resource_get` and of the particle systems' per-view update
+  under it. Entries nest and each counts what is under it.
+  `unbalanced` counts entries whose exit never ran and exits with
+  nothing open; `draws_counted` is false when no D3D draw counter is
+  registered. Without the option `entries` is absent. With `dump`, the whole scene is written as JSON
   under the cache directory (`scenes/scene-<frame>-<tick>.json`) and
   `dump` names the file. With no source
   registered: `UNAVAILABLE`, "no scene has been built".

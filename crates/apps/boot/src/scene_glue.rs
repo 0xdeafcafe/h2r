@@ -2,17 +2,44 @@
 //! last sealed `FrameScene` (`render_bridge::scene_step`, docs/graphics/framescene.md),
 //! summarised per view, and written whole as JSON on `dump`; with the
 //! scene stages each typed stage queued to the render thread and dropped
-//! there (`d3d::scene_stage`).
+//! there (`d3d::scene_stage`); and with `frame-scene.census`, the entry
+//! census (`render_bridge::entry_census`) over the device's count of draws
+//! handed to the D3D backend.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use agent_proto::{SceneReply, SceneViewRecord};
+use agent_proto::{SceneEntries, SceneEntryRecord, SceneReply, SceneViewRecord};
 use frame_scene::FrameScene;
 
-/// Registers the source with the agent.
+/// Registers the source with the agent, and the D3D draw counter with the
+/// entry census.
 pub fn install() {
     agent::render::set_scene_source(source);
+    render_bridge::entry_census::set_draw_counter(d3d::device::backend_draws);
+}
+
+/// The entry census, when it is on.
+fn entries() -> Option<SceneEntries> {
+    let (counts, unbalanced) = render_bridge::entry_census::snapshot()?;
+    Some(SceneEntries {
+        by_entry: counts
+            .into_iter()
+            .map(|(name, c)| {
+                (name, SceneEntryRecord {
+                    calls: c.calls,
+                    d3d_draws: c.d3d_draws,
+                    seed_steps: c.seed_steps,
+                    effects_seed_steps: c.effects_seed_steps,
+                    seed_unmatched: c.seed_unmatched,
+                    animation_gets: c.animation_gets,
+                    particle_updates: c.particle_updates,
+                })
+            })
+            .collect(),
+        unbalanced,
+        draws_counted: render_bridge::entry_census::draws_counted(),
+    })
 }
 
 fn source(dump: bool) -> Result<SceneReply, String> {
@@ -22,9 +49,10 @@ fn source(dump: bool) -> Result<SceneReply, String> {
         .chain(d3d::scene_stage::counters())
         .collect();
     let Some(scene) = render_bridge::scene_step::last() else {
-        return Ok(SceneReply { counters, ..SceneReply::default() });
+        return Ok(SceneReply { counters, entries: entries(), ..SceneReply::default() });
     };
     let mut reply = reply(&scene, counters);
+    reply.entries = entries();
     if dump {
         reply.dump = Some(write_dump(&scene)?);
     }
@@ -45,6 +73,7 @@ fn reply(scene: &FrameScene, counters: BTreeMap<String, u64>) -> SceneReply {
             .iter()
             .map(|v| {
                 let c = scene.counts(v);
+                let d = scene.decorator_counts(v);
                 SceneViewRecord {
                     key: v.key.to_string(),
                     cut: v.cut,
@@ -64,10 +93,14 @@ fn reply(scene: &FrameScene, counters: BTreeMap<String, u64>) -> SceneReply {
                     part_flags: c.flagged.iter().map(|&(name, n)| (name.to_owned(), n)).collect(),
                     carried: BTreeMap::new(),
                     camera_use: BTreeMap::new(),
+                    decorators: d.draws,
+                    decorator_instances: d.instances,
+                    decorator_remainder: d.remainder,
                 }
             })
             .collect(),
         counters,
+        entries: None,
         dump: None,
     }
 }
@@ -150,11 +183,17 @@ mod tests {
         };
         b.push_light(light(1, 4), &[step(11), step(12)]).unwrap();
         b.push_light(light(2, 0), &[step(12)]).unwrap();
-        b.push_layer(LayerPass { layer: 5, stencil_off: false, texaccum: false, items: 0..0, remainder: 0 }).unwrap();
+        b.push_layer(LayerPass { layer: 5, stencil_off: false, texaccum: false, items: 0..0, remainder: 0, inputs: Default::default() }).unwrap();
         let world = LayerItem { slot: 0, key, owner: LayerOwner::Cluster(3), model: u32::MAX, rows: 0..0, lighting: None };
         b.push_layer_item(world.clone(), &[]).unwrap();
         b.push_layer_item(LayerItem { slot: 1, ..world }, &[]).unwrap();
         b.add_layer_remainder(1).unwrap();
+        let decorator = frame_scene::DecoratorDraw {
+            slot: 6, layer: 3, set: 1, shader: 2, variant: 0, pass: 0, argument: 0, lod_constant: [0.0; 4], instances: 0..0,
+        };
+        let instance = frame_scene::DecoratorInstance { index: 0, model: 0, first_index: 0, index_count: 3, registers: [[0.0; 4]; 5] };
+        b.push_decorator(decorator, &[instance, instance]).unwrap();
+        b.add_decorator_remainder(1).unwrap();
         let scene = b.seal(Stamp::default()).unwrap();
         let r = reply(&scene, BTreeMap::new());
         assert!(r.sealed);
@@ -167,6 +206,7 @@ mod tests {
         assert_eq!(v.light_layers, BTreeMap::from([("11".to_owned(), 1), ("12".to_owned(), 2)]));
         assert_eq!((v.layer_items.clone(), v.layer_remainder), (BTreeMap::from([("5".to_owned(), 2)]), 1));
         assert_eq!(v.part_flags, BTreeMap::from([("stencil_mark".to_owned(), 1)]));
+        assert_eq!((v.decorators, v.decorator_instances, v.decorator_remainder), (1, 2, 1));
         assert!(serde_json::to_string(&*scene).unwrap().contains("\"slot\":4"));
     }
 }

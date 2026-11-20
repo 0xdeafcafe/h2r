@@ -5,8 +5,9 @@ Change 7 of the [architecture review](../reviews/2026-11-20-architecture.md)
 [sim review](../reviews/2026-11-20-sim.md) (the presentation snapshot). This
 page is the spec: types, threads, the order of work, the tests and gates
 for each slice, the order of deletion and the commands that measure it.
-Slices 0 to 3 are built; their sections say how. The rest is the
-plan. Lanes write code and tests; the coordinator builds, runs and
+Slices 0 to 3 are built; their sections say how. Of slice 4 the entry
+census is built, and its section says what the replacements wait on. The
+rest is the plan. Lanes write code and tests; the coordinator builds, runs and
 measures.
 
 Evidence labels as in [feature-engine.md](../engine/feature-engine.md):
@@ -154,7 +155,7 @@ pub struct View {
     pub clusters: Range<u32>,
     pub instances: Range<u32>,  // into FrameScene::instances, in the guest's order
     pub lights: Range<u32>,
-    pub world: WorldState,      // lightmap cycle coefficients, material animation time, texaccum use
+    pub world: WorldState,      // texaccum use (a layer draw's material inputs are its LayerPass's)
     pub fog: FogState,          // planar and atmospheric fog words, resolved
     pub water: WaterState,
     pub post: PostParams,       // colour pass, screen effects, glow, fades: values, not draws
@@ -201,7 +202,8 @@ hundred kilobytes at most (**Estimate**).
 | Visible clusters, placements | the Rust scene lists (`feature::native_scene_lists`: camera visibility) | typed | 1 |
 | Object instances, parts, palette rows, lighting | the Rust object setup and render records (`native_scene_lists::setup`, `objects::record_rows`, `object_lighting`) | typed | 1 |
 | First person | the layer-3 caller in `0x0003fdf0` (return `0x00040136`): its items, each record's mode at `+4`, the owner's lighting | typed | 3 |
-| World layers 1, 3, 5, 7, 8, 20 state | lightmap coefficients, material animation inputs | typed | 1 (layer 3), 3 (rest) |
+| World layers 1, 3, 5, 7, 8, 20 state | each layer draw's material inputs at its begin (`scene_extract::layout::layer_inputs`: the render time, the view-wide engine inputs, the defaults) and each object item's lighting, which carries the lightmap cycle | typed | 1 (layer 3), 3 and 4 (rest) |
+| Model decorators | the layer-3 list's items of build `0x0004de20`, each instance's `v11..v15` as the draw `0x0004e260` sets them ([native-decorators.md](native-decorators.md)) | typed | 4 |
 | Lights and their geometry | the Rust light order and gathered light geometry (`native_scene_lists::lights`, `native_lights::walk`) | typed | 3 |
 | Shadow maps | the shadow layers' casters and projections (`native_shadows`) | typed | 3 |
 | Fog (layer 16), water (layer 6) | the device-resolved fog words; the water gate and items | typed | 5 |
@@ -808,7 +810,7 @@ commits. The three parts are built.
   `LayerItem`; `View::layers`): each geometry item's key, its owner (a
   cluster's section, a placement, or an object by handle), its record's
   model (the first-person mode for a first-person item), an object
-  item's palette rows, and for a first-person item its owner's lighting;
+  item's palette rows and its owner's lighting;
   the pass keeps the stencil-off flags and whether the texture
   accumulation target binds. Another build callback, or a record, owner
   or rows that do not read, is the pass's remainder. The first person
@@ -816,10 +818,9 @@ commits. The three parts are built.
   The scene's view can open at its layer 1, before layer 3; its
   clusters and world state are read at layer 3 either way
   (`scene_step::open_kind`). The stages still draw these layers from
-  their packets, with the constants the device holds; so the lightmap
-  cycle coefficients and material animation inputs of section 4.3 are
-  not read into the pass yet, and the stage that draws these layers
-  from the scene (slice 4) reads them.
+  their packets, with the constants the device holds; the material
+  inputs of section 4.3 are read into the pass in slice 4
+  (`frame_scene::LayerInputs`, below).
 - **Tests.** One synthetic case per former refusal reason, asserting
   the part or light is in the scene: for objects,
   `each_former_special_record_flag_is_a_part_or_a_named_cause` and
@@ -858,7 +859,141 @@ commits. The three parts are built.
 
 ### Slice 4: whole-call replacement for the opaque block
 
-- **Code.** `feature::frame_step`: implementations of `LAYER_DRAW` for
+Its entry census is built; its replacements are not, because rule 1 of
+8.2 (no remainder) holds for none of its entries. What each still leaves
+to the guest's draws (**Code**):
+
+- **Layers 1, 5, 7, 8 and 20, the scene's and the first person's.** Their
+  items are in the scene (slice 3), but the native stage draws them from
+  the draws the guest resolves under the layer draw
+  (`native_render::world_layers_gpu`, the indexed-draw admission in
+  `boot::native_world_layers_glue`; the first person's per item at
+  issue). With the entry replaced nothing is resolved. What a stage
+  needs to draw a layer pass from the scene alone is extracted and
+  planned; the GPU recording of the plan is not built.
+  - **Material inputs** (`frame_scene::LayerInputs`, read at the layer
+    draw's begin by `scene_extract::layout::layer_inputs`, research
+    points in its module notes). The render time `0x004858a0`, which
+    game-time animated properties divide by their period
+    (`0x0001b230`). The engine inputs that do not read the item,
+    evaluated as the selectors `0x000336f0`, `0x00033980` and
+    `0x00034060` do, from the render context `0x00485600` (copied per
+    view by `0x000132d0`), the view vectors, the fog and the light
+    block, each with a mask of the ones that read. The defaults the
+    lighting inputs fall back on. Every object item of a layer draw
+    carries its owner's lighting (`LayerItem::lighting`), the scene's as
+    the first person's.
+  - **The lightmap cycle.** `0x00022850`, at each view's begin
+    (`0x00012a50`), steps the probe coefficients `0x004b8940` and the
+    phase `0x005093f0`; their one reader, `0x00022cf0`, is the object
+    lighting `0x00023690` under the object setup (`0x0004b5d0`). So the
+    cycle reaches a layer's draws only through the object items'
+    lighting, read after it; the world's items draw without one.
+  - **The plan** (`native_render::layer_pass`). Per item: the passes
+    the layer draws for its shader at the first level of detail
+    (`0x00016610` draws each implementation with a vertex shader), the
+    implementation (the only one, or the item's), the engine inputs
+    (the view's, the lighting's from the item's owner, none for the
+    structure's, and the shader's own) with the material resolved again
+    with them when an implementation reads any, and the values of its
+    pixel- and vertex-constant animations at the render time
+    (`0x00017550`: time over period, wrapped unless periodic, the
+    function `0x0013b390`, mapped onto its range). An item that cannot
+    be planned has a named cause (`LayerRefusal::name`): an input the
+    scene does not give, an animation driven by an object function or of
+    a bitmap or state, a material or pass that does not resolve.
+  - **Not built.** Recording the plan: the clusters' and placements'
+    passes over the world's buffers (as the fog stage records its
+    layer-16 passes, `fog_gpu::FogSet`), the objects' over the model
+    buffers (`object_program_gpu`), with the planned constants and
+    animation values; the glue that takes the layer entries with it in
+    place of the indexed-draw admission; and the plan's refusals in
+    `render.scene`.
+  - **Tests** (synthetic). `every_view_input_reads_as_its_selector_computes_it`,
+    `without_fog_or_a_view_the_selectors_fall_back` and
+    `an_input_whose_words_do_not_read_is_not_given`
+    (`scene_extract::layout::layer_inputs`); the pass's inputs in
+    `a_layers_items_are_in_the_scene_with_their_owners_and_the_rest_a_remainder`
+    (`scene_extract::extract`);
+    `a_layer_draws_material_inputs_count_in_the_hash`
+    (`frame_scene::summary`); for the plan
+    (`native_render::layer_pass`),
+    `a_static_material_plans_each_pass_with_its_own_inputs`,
+    `the_items_implementation_picks_among_several_and_one_without_a_vertex_shader_draws_nothing`,
+    `view_and_lighting_inputs_are_given_and_the_material_is_resolved_with_them`,
+    `a_structure_item_draws_with_no_lighting_and_an_input_nothing_gives_is_named`,
+    `a_game_time_property_wraps_its_time_over_its_period_and_maps_onto_its_range`,
+    `constant_animations_take_their_values_and_other_kinds_are_named`
+    and `a_scene_layer_plans_its_items_in_order_and_names_the_rest`.
+- **Layer 3.** The decorators (build `0x0004de20`) are in the scene
+  (`View::decorators`, each placement's draw with its instances'
+  `v11..v15`) and their stage's plan and instanced recording are built,
+  but no loader gives the stage the sets' geometry and programs, so the
+  guest still draws them ([native-decorators.md](native-decorators.md)).
+  The world keeps the draws of materials it does not translate and of
+  parts that lack an input of their program ([native-world.md](native-world.md)),
+  and the object walk the parts it refuses (`walk_unsupported`).
+- **The light passes and the shadow layers.** Models and rigid
+  placements keep their D3D handlers ([native-lights.md](native-lights.md),
+  "What a native light draws"), every layer keeps its handlers with the
+  additional casters' pair, and the gathered walk's GPU path takes a
+  group's live streams, pose, constants and bindings from the first
+  geometry handler, which the guest runs. The scene carries what that
+  handler supplies (built): at each layer build, the sorted entries the
+  walk builds (`render_bridge::native_lights::walk`) go into a group of
+  the light (`scene_extract::light_groups::push`,
+  `frame_scene::LightGroup`, `LightEntry`; `FrameScene::groups_of`),
+  each entry with its stream (section, part, vertex class, index range,
+  topology), its pose (world, a placement by index, or an object's node
+  rows) and its bindings (shader, pass selector, variant,
+  implementation), and layers 10 and 11 with the shadow projection
+  block. The additional casters' layers 10 and 11 are groups of their
+  own site (`GroupSite::AdditionalCasters`), and each object shadow's
+  layers 10 and 11 groups of its `ObjectShadow` in the view
+  (`GroupSite::ObjectShadow`). The summary hash
+  (`frame_scene::summary_hash`) covers the groups, their entries and the
+  object shadows. What the handler does
+  beyond binding and drawing (the auxiliary state toggle, state around
+  one part, visible subparts, a shader flag, a material animation, a
+  template callback) leaves the entry to the guest by named cause.
+  `native_render::light_scene::plan` turns a whole group into native
+  draws from the scene alone, sorted order and duplicates kept,
+  adjacent list ranges joined. A light's layer 12 or 13 whose group is
+  whole and of structure geometry is drawn from the scene with no
+  handler run ([native-lights.md](native-lights.md), "Gathered groups
+  in the scene"). Not built: a light-pass recorder over model streams
+  (the light passes hold none, so a model entry refuses the layer), and
+  a recorder for the shadow layers 10, 11 and 14 from the scene (the
+  shadow stage records from resolved draws), so those layers still run
+  their handlers.
+
+The entry census (`render_bridge::entry_census`, built) measures both
+halves of 8.2's first two rules per entry, so the coordinator can tell
+from the census corpus which entry is ready. With `frame-scene.census` in
+`H2_FEATURES` (and the native renderer on), observers before and after
+every `LAYER_DRAW`, `RENDER_LIGHT_PASSES`, `OBJECT_SHADOW` and
+`RENDER_SCREEN_EFFECTS` count, per entry: the guest draws handed to the
+D3D backend under it (`d3d::device::backend_draws`: the remainder), the
+steps of both shared random seeds, and the calls of
+`ANIMATION_RESOURCE_GET` (`0x001237e0`) and `PARTICLE_VIEW_UPDATE`
+(`0x00174420`) under it (5.2's seed, effects word, animation stamp and
+particle stamp rows). A layer draw is named by its site and layer
+(`layer.scene.3`, `layer.first_person.1`), or, where the layer table
+does not place it, by the entry around it (`layer.light.12`,
+`layer.object_shadow.10`). Entries nest, and each counts what happens
+under it. `render.scene` reports the totals under `entries`. It is an
+option rather than always on because its exit observers give those
+entries an after part. Tests: the unit tests of
+`render_bridge::entry_census` (draws and seed steps between entry and
+exit, unmatched seeds, nesting, missed exits).
+
+An entry whose census is all zero over the corpus is replaced by
+"return"; a non-zero write becomes a row of the slice's table, kept by
+calling the guest function that makes it or reproduced. Texture,
+geometry and animation residency requests (5.2's residency row) are not
+counted by the census.
+
+- **Code.** `render_bridge::frame_step`: implementations of `LAYER_DRAW` for
   layers 1, 3, 5, 7, 8 and 20, of the light pass and of the shadow
   layers, each doing the writes of 5.2 and returning. The table of
   writes with their tests. `skip.rs`, the mask plans, `clear_objects`,
@@ -1041,6 +1176,11 @@ $H agent render.stats --socket $S > render-stats.json
 $H agent profile.counters --socket $S > counters.json
 $H agent render.scene --socket $S > scene.json          # from slice 1
 ```
+
+For the entry census (slice 4) add `frame-scene.census` to
+`H2_FEATURES` and read `.entries` of `render.scene`: per entry, its
+`d3d_draws` (8.2 rule 1) and its seed steps, animation gets and
+particle updates (rule 2), with `unbalanced` zero.
 
 Read per frame: `passes`, `command_buffers`, `draws`,
 `native_<stage>_{examined,suppressed,refused_*,prepare_ns,encode_ns,worker_round_trips,command_buffers}`,

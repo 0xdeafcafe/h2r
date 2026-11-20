@@ -6,6 +6,8 @@
 
 pub mod aux_depth;
 pub mod camera;
+pub mod decorators;
+pub mod layer_inputs;
 pub mod light_passes;
 pub mod object_lighting;
 pub mod object_nodes;

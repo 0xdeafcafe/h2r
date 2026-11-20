@@ -227,6 +227,13 @@ pub(super) struct Built {
 impl Built {
     pub(super) fn count(&self) -> usize { self.count }
 
+    /// The sorted entries the handlers would run, as the scene reads them.
+    fn sorted(&self) -> Vec<scene_extract::light_groups::Sorted> {
+        self.slots[..self.count].iter().map(|s| scene_extract::light_groups::Sorted {
+            index: half(s, 0), implementation: s[4], vertex_class: half(s, 8),
+        }).collect()
+    }
+
     pub(super) fn store(&self, mem: &mut dyn GuestMemory, buffer: u32) -> bool {
         self.slots.is_empty() || mem.write(buffer, self.slots.as_flattened()).is_ok()
     }
@@ -505,6 +512,27 @@ pub(super) fn install(b: &mut Builder) {
                 return Ok(Flow::Continue);
             }
         };
+        // The group into the scene, with what the first handler supplies
+        // (framescene.md, slice 4).
+        let group_site = match site {
+            None | Some(shadows::Site::Light) => frame_scene::GroupSite::Light,
+            Some(shadows::Site::AdditionalCaster) => frame_scene::GroupSite::AdditionalCasters,
+            Some(shadows::Site::Object) => frame_scene::GroupSite::ObjectShadow,
+        };
+        let group = crate::scene_step::light_group(mem, list, layer, group_site, &built.sorted());
+        // A light's layer 12 or 13 the scene holds whole is drawn from it
+        // alone: the entry loop gets no entries, so no handler runs. The
+        // shadow layers and 14 have no recorder from the scene yet.
+        if whole && site.is_none() && built.count() != 0
+            && let Some(group) = &group
+            && super::draw_alone(mem, layer, group)
+        {
+            phase::count(Counter::LightWalkBuilds, 1);
+            phase::count(Counter::LightWalkHandlersSkipped, built.count() as u64);
+            if LIGHT.get() == Some(Counter::LightWalkEmpty) { LIGHT.set(Some(Counter::LightWalkNative)); }
+            c.cpu.eax = 0;
+            return Ok(Flow::Return(guest.ret(c.cpu, 16)?));
+        }
         // Building an equivalent private array is independent of owning
         // any draw: a layer that does not batch keeps its handlers.
         if built.count() != 0 && !whole { refused(Counter::LightWalkGraph); }

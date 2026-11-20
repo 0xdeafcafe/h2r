@@ -176,7 +176,9 @@ impl Feature for NativeShadows {
             let matched = index.is_some() && m.u32(esp).ok() == Some(0x0003_364c)
                 && m.u8(0x0050_9413).ok() == Some(1) && m.u8(0x0048_5a46).ok() == Some(1)
                 && args.iter().all(Option::is_some) && args == [m.u32(address).ok(), m.u32(address.wrapping_add(4)).ok()];
-            if let Some(h) = host() { h.parent(matched.then_some(Site::Object), args[0].zip(args[1]).map(|(a,b)| [a,b])); }
+            let identity = args[0].zip(args[1]).map(|(a, b)| [a, b]);
+            crate::scene_step::object_shadow(&*m, identity.filter(|_| matched));
+            if let Some(h) = host() { h.parent(matched.then_some(Site::Object), identity); }
         }).context_only();
         b.raw()
             .observe_before(

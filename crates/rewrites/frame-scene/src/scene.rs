@@ -15,8 +15,10 @@ use std::time::Instant;
 use serde::Serialize;
 
 use crate::camera::Camera;
+use crate::decorator::{DecoratorDraw, DecoratorInstance};
 use crate::layer::{LayerItem, LayerPass};
 use crate::light::{LightStep, SceneLight};
+use crate::light_group::{LightEntry, LightGroup, ObjectShadow};
 use crate::node::NodeMatrix;
 use crate::object::{Defaults, ItemKey, Lighting};
 
@@ -168,6 +170,10 @@ pub struct View {
     pub lights: Range<u32>,
     /// Into [`FrameScene::layer_passes`], in the guest's draw order.
     pub layers: Range<u32>,
+    /// Into [`FrameScene::decorators`], in the list's order.
+    pub decorators: Range<u32>,
+    /// Decorator draws extraction refused: the guest still draws them.
+    pub decorator_remainder: u32,
 }
 
 /// An object's identity across scenes: its datum handle with its salt.
@@ -324,6 +330,19 @@ pub struct FrameScene {
     pub layer_passes: Vec<LayerPass>,
     /// Each layer pass's items; passes index ranges of it.
     pub layer_items: Vec<LayerItem>,
+    /// The views' decorator draws; views index ranges of it.
+    pub decorators: Vec<DecoratorDraw>,
+    /// Each decorator draw's instances; draws index ranges of it.
+    pub decorator_instances: Vec<DecoratorInstance>,
+    /// Each light's gathered groups, in light order then the passes'
+    /// order ([`crate::light_group`]).
+    pub light_groups: Vec<LightGroup>,
+    /// Each group's sorted entries; groups index ranges of it.
+    pub light_entries: Vec<LightEntry>,
+    /// The object shadows, in view order then the guest's.
+    pub object_shadows: Vec<ObjectShadow>,
+    /// Each object shadow's groups; shadows index ranges of it.
+    pub shadow_groups: Vec<LightGroup>,
 }
 
 fn slice<'a, T>(v: &'a [T], r: &Range<u32>) -> &'a [T] {
@@ -347,6 +366,12 @@ impl FrameScene {
         self.light_steps.clear();
         self.layer_passes.clear();
         self.layer_items.clear();
+        self.decorators.clear();
+        self.decorator_instances.clear();
+        self.light_groups.clear();
+        self.light_entries.clear();
+        self.object_shadows.clear();
+        self.shadow_groups.clear();
     }
 
     pub fn view(&self, key: ViewKey) -> Option<&View> {
@@ -493,12 +518,14 @@ impl FrameScene {
         for (n, l) in self.lights.iter().enumerate() {
             within(&l.steps, self.light_steps.len(), &format!("light {n} steps"))?;
         }
+        self.check_light_groups()?;
         for (n, p) in self.layer_passes.iter().enumerate() {
             within(&p.items, self.layer_items.len(), &format!("layer pass {n} items"))?;
             for (k, i) in self.items_of(p).iter().enumerate() {
                 within(&i.rows, self.rows.len(), &format!("layer pass {n} item {k} rows"))?;
             }
         }
+        crate::decorator::check(self)?;
         Ok(())
     }
 }

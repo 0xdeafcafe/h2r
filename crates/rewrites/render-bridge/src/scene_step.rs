@@ -3,8 +3,9 @@
 //! layer 3 with its camera, visible clusters and world state, its objects
 //! extracted at the object walk, its lights at each light passes' entry
 //! (`native_lights`), the items of its world layers 1, 5, 7, 8 and 20 at
-//! each one's draw, and a first-person view with the items of its layers
-//! at the first-person draw `0x0003fdf0`, sealed and published after
+//! each one's draw, its model decorators at its layer 3
+//! (`scene_extract::decorators`), and a first-person view with the items
+//! of its layers at the first-person draw `0x0003fdf0`, sealed and published after
 //! `render_frame_and_present`.
 //!
 //! Still game-thread, still packets, still masks: the world and object
@@ -19,12 +20,13 @@ use std::time::Instant;
 use engine::memory::GuestMemory;
 use engine::points;
 use engine::render_loop::occlusion::guest::{FRAME, VIEW_INDEX};
-use frame_scene::{Camera, Cut, FrameScene, LightStep, SceneBuilder, SceneId, SceneLight, Stamp, View, ViewKey, ViewKind};
+use frame_scene::{Camera, Cut, FrameScene, GroupSite, LightStep, SceneBuilder, SceneId, SceneLight, Stamp, View, ViewKey, ViewKind};
 use native_render::object_walk::Entry;
 use native_render::skip::{CURRENT_LAYER, LIGHTMAP_LAYER};
 use native_render::world_layers::{Site, layer_site};
 use scene_extract::GuestRead;
 use scene_extract::extract;
+use scene_extract::light_groups::{self, Cause, Sorted};
 
 use hooks::{BuildError, Builder, Feature, Manifest};
 
@@ -50,6 +52,12 @@ struct Step {
     /// The open view's clusters and world state are read: at its base
     /// layer 3, which its layer 1 can precede.
     based: bool,
+    /// The light whose passes run is the open view's last: its groups
+    /// may follow ([`light_group`]).
+    light_open: bool,
+    /// The object shadow drawing is the open view's last: its groups may
+    /// follow.
+    shadow_open: bool,
 }
 
 static STEP: Mutex<Option<Step>> = Mutex::new(None);
@@ -63,6 +71,25 @@ static LAYERS: AtomicU64 = AtomicU64::new(0);
 static LAYER_ITEMS: AtomicU64 = AtomicU64::new(0);
 static LAYER_REMAINDER: AtomicU64 = AtomicU64::new(0);
 static LAYER_UNREAD: AtomicU64 = AtomicU64::new(0);
+static DECORATOR_DRAWS: AtomicU64 = AtomicU64::new(0);
+static DECORATOR_INSTANCES: AtomicU64 = AtomicU64::new(0);
+static DECORATOR_REMAINDER: AtomicU64 = AtomicU64::new(0);
+static LIGHT_GROUPS: AtomicU64 = AtomicU64::new(0);
+static LIGHT_GROUPS_WHOLE: AtomicU64 = AtomicU64::new(0);
+static LIGHT_ENTRIES: AtomicU64 = AtomicU64::new(0);
+static LIGHT_ENTRY_REMAINDER: [AtomicU64; Cause::ALL.len()] = [const { AtomicU64::new(0) }; Cause::ALL.len()];
+/// `render.scene`'s counter of each [`Cause`], in [`Cause::ALL`]'s order.
+const LIGHT_ENTRY_REMAINDER_NAMES: [&str; Cause::ALL.len()] = [
+    "scene_light_entry_remainder_memory",
+    "scene_light_entry_remainder_callback",
+    "scene_light_entry_remainder_owner",
+    "scene_light_entry_remainder_section",
+    "scene_light_entry_remainder_range",
+    "scene_light_entry_remainder_state",
+    "scene_light_entry_remainder_subparts",
+    "scene_light_entry_remainder_material",
+    "scene_light_entry_remainder_pose",
+];
 
 fn with_step<R>(f: impl FnOnce(&mut Step) -> R) -> R {
     let mut step = STEP.lock().unwrap_or_else(|e| e.into_inner());
@@ -88,6 +115,8 @@ fn begin_step(step: &mut Step, m: &Ro<'_>) {
         UNSEALED.fetch_add(1, Ordering::Relaxed);
     }
     step.builder.begin(id(m));
+    step.light_open = false;
+    step.shadow_open = false;
 }
 
 /// `render_views`' entry: a new scene.
@@ -135,6 +164,8 @@ fn open_kind(mem: &dyn GuestMemory, kind: ViewKind) -> Option<View> {
             }
             VIEWS.fetch_add(1, Ordering::Relaxed);
             step.based = false;
+            step.light_open = false;
+            step.shadow_open = false;
         }
         if base && !step.based {
             step.based = true;
@@ -156,7 +187,10 @@ fn layer_items(mem: &dyn GuestMemory, kind: ViewKind, layer: u32) {
     }
     let m = Ro(mem);
     let Ok(layer) = u8::try_from(layer) else { return };
-    with_step(|step| match extract::layer(&m, layer, kind == ViewKind::FirstPerson, &mut step.builder) {
+    // Every object item takes its owner's lighting: the layer stage's
+    // lighting inputs read it, and the lightmap cycle reaches the draw
+    // only through it (`frame_scene::LayerInputs`).
+    with_step(|step| match extract::layer(&m, layer, true, &mut step.builder) {
         Ok(Some(got)) => {
             LAYERS.fetch_add(1, Ordering::Relaxed);
             LAYER_ITEMS.fetch_add(u64::from(got.items), Ordering::Relaxed);
@@ -185,6 +219,23 @@ pub fn objects(mem: &dyn GuestMemory, entries: &[Entry]) {
     });
 }
 
+/// The model decorators of the base layer 3 into the open view
+/// (docs/graphics/native-decorators.md).
+fn decorators(mem: &dyn GuestMemory) {
+    let m = Ro(mem);
+    with_step(|step| match scene_extract::decorators::extract(&m, LIGHTMAP_LAYER as u8, &mut step.builder) {
+        Ok(Some(got)) => {
+            DECORATOR_DRAWS.fetch_add(u64::from(got.draws), Ordering::Relaxed);
+            DECORATOR_INSTANCES.fetch_add(u64::from(got.instances), Ordering::Relaxed);
+            DECORATOR_REMAINDER.fetch_add(u64::from(got.remainder), Ordering::Relaxed);
+        }
+        Ok(None) => {}
+        Err(_) => {
+            REFUSED.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+}
+
 /// A light of the open view at its passes' entry, with its steps.
 /// Opens the view first when none is.
 pub fn light(mem: &dyn GuestMemory, light: SceneLight, steps: &[LightStep]) {
@@ -192,10 +243,88 @@ pub fn light(mem: &dyn GuestMemory, light: SceneLight, steps: &[LightStep]) {
         return;
     }
     with_step(|step| {
-        if step.builder.push_light(light, steps).is_err() {
+        step.light_open = step.builder.push_light(light, steps).is_ok();
+        if !step.light_open {
             REFUSED.fetch_add(1, Ordering::Relaxed);
         }
     });
+}
+
+/// A light's passes begin: until [`light`] puts it in the view, its
+/// groups have no light to join.
+pub fn light_entry() {
+    with_step(|step| {
+        step.light_open = false;
+        step.shadow_open = false;
+    });
+}
+
+/// An object shadow `0x00032350` of the open view begins, with its call's
+/// two arguments (`identity`) when the caller matched its caster entry;
+/// `None` ends the one before without a new one. Opens the view first
+/// when none is.
+pub fn object_shadow(mem: &dyn GuestMemory, identity: Option<[u32; 2]>) {
+    with_step(|step| step.shadow_open = false);
+    let Some(identity) = identity else { return };
+    if view(mem).is_none() {
+        return;
+    }
+    with_step(|step| {
+        step.light_open = false;
+        step.shadow_open = step.builder.push_object_shadow(identity).is_ok();
+        if !step.shadow_open {
+            REFUSED.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+}
+
+/// A light layer's sorted entries (`sorted`, as the layer build leaves
+/// them on `list`) into a group of the open view's last light, or of its
+/// last object shadow for [`GroupSite::ObjectShadow`], with what the first
+/// geometry handler would supply (`scene_extract::light_groups`). The
+/// light is in the view from its passes' entry, the object shadow from
+/// its call; without one, nothing is written. The group written, copied
+/// out, when every sorted entry is in it.
+pub fn light_group(
+    mem: &dyn GuestMemory,
+    list: u32,
+    layer: u32,
+    site: GroupSite,
+    sorted: &[Sorted],
+) -> Option<crate::native_lights::SceneGroup> {
+    let layer = u8::try_from(layer).ok()?;
+    let m = Ro(mem);
+    with_step(|step| {
+        let open = if site == GroupSite::ObjectShadow { step.shadow_open } else { step.light_open };
+        if !open || step.builder.view().is_none() {
+            return None;
+        }
+        match light_groups::push(&m, list, layer, site, sorted, &mut step.builder) {
+            Ok(got) => {
+                LIGHT_GROUPS.fetch_add(1, Ordering::Relaxed);
+                LIGHT_ENTRIES.fetch_add(u64::from(got.entries), Ordering::Relaxed);
+                if got.remainder() == 0 {
+                    LIGHT_GROUPS_WHOLE.fetch_add(1, Ordering::Relaxed);
+                }
+                for (counter, n) in LIGHT_ENTRY_REMAINDER.iter().zip(got.remainder) {
+                    counter.fetch_add(u64::from(n), Ordering::Relaxed);
+                }
+                let scene = step.builder.scene()?;
+                let groups = if site == GroupSite::ObjectShadow { &scene.shadow_groups } else { &scene.light_groups };
+                let group = groups.last()?.clone();
+                if !group.whole() {
+                    return None;
+                }
+                let entries = scene.entries_of(&group).to_vec();
+                let rows = entries.iter().map(|e| scene.pose_rows(e).to_vec()).collect();
+                Some(crate::native_lights::SceneGroup { group, entries, rows })
+            }
+            Err(_) => {
+                REFUSED.fetch_add(1, Ordering::Relaxed);
+                None
+            }
+        }
+    })
 }
 
 /// Runs `f` with the scene being written and its open view (`None`
@@ -226,6 +355,7 @@ pub fn seal() {
 /// dropped at the next begin.
 pub fn forget() {
     with_step(|step| step.builder.cut(Cut::LOAD));
+    crate::entry_census::forget();
 }
 
 /// The scene sealed last.
@@ -245,7 +375,17 @@ pub fn counters() -> Vec<(&'static str, u64)> {
         ("scene_layer_items", LAYER_ITEMS.load(Ordering::Relaxed)),
         ("scene_layer_remainder", LAYER_REMAINDER.load(Ordering::Relaxed)),
         ("scene_layers_unread", LAYER_UNREAD.load(Ordering::Relaxed)),
+        ("scene_decorator_draws", DECORATOR_DRAWS.load(Ordering::Relaxed)),
+        ("scene_decorator_instances", DECORATOR_INSTANCES.load(Ordering::Relaxed)),
+        ("scene_decorator_remainder", DECORATOR_REMAINDER.load(Ordering::Relaxed)),
+        ("scene_light_groups", LIGHT_GROUPS.load(Ordering::Relaxed)),
+        ("scene_light_groups_whole", LIGHT_GROUPS_WHOLE.load(Ordering::Relaxed)),
+        ("scene_light_entries", LIGHT_ENTRIES.load(Ordering::Relaxed)),
+        ("scene_light_layers_alone", crate::native_lights::drawn_alone()),
     ]
+    .into_iter()
+    .chain(LIGHT_ENTRY_REMAINDER_NAMES.into_iter().zip(LIGHT_ENTRY_REMAINDER.iter().map(|c| c.load(Ordering::Relaxed))))
+    .collect()
 }
 
 /// The observer before a layer draw: the scene's layer 3 opens its view;
@@ -255,7 +395,9 @@ fn at_layer(mem: &dyn GuestMemory, ret: u32) {
     let Ok(layer) = mem.u32(CURRENT_LAYER) else { return };
     match (layer_site(layer, ret), layer) {
         (Site::Scene, LIGHTMAP_LAYER) => {
-            view(mem);
+            if view(mem).is_some() {
+                decorators(mem);
+            }
         }
         (Site::Scene, 1 | 5 | 7 | 8 | 20) => layer_items(mem, ViewKind::Game, layer),
         (Site::FirstPerson, _) => layer_items(mem, ViewKind::FirstPerson, layer),
@@ -303,6 +445,11 @@ impl Feature for FrameSceneStep {
             .after_feature(crate::render_timing::ID)
             .context_only();
         b.raw().observe_after(&points::RENDER_FRAME, "frame_scene_seal", |_| seal());
+        // The census of the entries slices 4 and 5 replace: an option,
+        // since its exit observers give those entries an after part.
+        if b.switches().feature(crate::entry_census::ID, false) {
+            crate::entry_census::install(b);
+        }
         Ok(())
     }
 }
@@ -316,5 +463,35 @@ mod tests {
         let on = |spec| hooks::switches::native_render_on(&hooks::Switches::parse(spec).unwrap());
         assert!(on(""));
         assert!(!on("impl.render.native=off"));
+    }
+
+    #[test]
+    fn the_entry_census_is_placed_only_with_its_option() {
+        let text = |spec| {
+            let mut r = hooks::Registry::new(hooks::Switches::parse(spec).unwrap());
+            assert!(r.add(&FrameSceneStep).unwrap());
+            r.build(&hooks::plan::Base).unwrap().text()
+        };
+        let off = text("");
+        assert!(!off.contains("entry_census"), "{off}");
+        let on = text("frame-scene.census");
+        for label in [
+            "entry_census_layer",
+            "entry_census_layer_end",
+            "entry_census_light_passes_end",
+            "entry_census_object_shadow",
+            "entry_census_screen_effects_end",
+            "entry_census_animation_get",
+            "entry_census_particle_update",
+        ] {
+            assert!(on.contains(label), "{label}\n{on}");
+        }
+    }
+
+    #[test]
+    fn each_light_entry_cause_has_its_counter() {
+        for (name, cause) in LIGHT_ENTRY_REMAINDER_NAMES.iter().zip(Cause::ALL) {
+            assert_eq!(name.strip_prefix("scene_light_entry_remainder_"), Some(cause.name()));
+        }
     }
 }

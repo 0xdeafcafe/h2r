@@ -69,7 +69,7 @@ pub(crate) const SILY_OPTIONS: u32 = 0x1c;
 pub(crate) const OPTION_SIZE: u32 = 0xc;
 
 /// Our guest page: settings pairs, then the merged entry block.
-const DATA_BASE: u32 = 0xa0fd_0000;
+pub(crate) const DATA_BASE: u32 = 0xa0fd_0000;
 const DATA_SIZE: u32 = 0x4000;
 const ENTRIES_AT: u32 = DATA_BASE + 0x2000;
 const MAX_ENTRIES: u32 = (DATA_SIZE - 0x2000) / ENTRY_SIZE;

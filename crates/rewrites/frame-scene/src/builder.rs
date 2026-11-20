@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use crate::camera::Camera;
 use crate::layer::{LayerItem, LayerPass};
 use crate::light::{LightStep, SceneLight};
+use crate::light_group::{LightEntry, LightGroup, LightPose, ObjectShadow};
 use crate::node::NodeMatrix;
 use crate::object::{Defaults, ItemKey, Lighting};
 use crate::scene::{
@@ -82,6 +83,10 @@ pub enum BuildError {
     SlotOrder,
     /// A layer item with no layer pass open in the view.
     NoLayer,
+    /// A light group with no light in the open view.
+    NoLight,
+    /// An object-shadow group with no object shadow in the open view.
+    NoShadow,
 }
 
 /// What the builder remembers of the scene before, for cuts.
@@ -164,6 +169,7 @@ impl SceneBuilder {
         let (c, i, o) = (scene.clusters.len() as u32, scene.instances.len() as u32, scene.order.len() as u32);
         let l = scene.lights.len() as u32;
         let p = scene.layer_passes.len() as u32;
+        let d = scene.decorators.len() as u32;
         scene.views.push(View {
             key,
             cut,
@@ -176,12 +182,14 @@ impl SceneBuilder {
             aux_depth: None,
             lights: l..l,
             layers: p..p,
+            decorators: d..d,
+            decorator_remainder: 0,
         });
         self.open = Some(scene.views.len() - 1);
         Ok(scene.views.last().expect("just pushed"))
     }
 
-    fn open_mut(&mut self) -> Result<(&mut FrameScene, usize), BuildError> {
+    pub(crate) fn open_mut(&mut self) -> Result<(&mut FrameScene, usize), BuildError> {
         let scene = self.scene.as_mut().ok_or(BuildError::NoScene)?;
         let open = self.open.ok_or(BuildError::NoView)?;
         Ok((scene, open))
@@ -327,6 +335,49 @@ impl SceneBuilder {
         Ok(())
     }
 
+    /// Adds a gathered group to the open view's last light, after its
+    /// groups so far, with its entries in the sorted order; its index in
+    /// the scene. Each entry comes with the node rows of a
+    /// [`LightPose::Rows`] pose (the builder sets the range; other poses
+    /// take none). The builder sets `group.light` and `group.entries`.
+    pub fn push_light_group(&mut self, group: LightGroup, entries: &[(LightEntry, Vec<Row>)]) -> Result<u32, BuildError> {
+        let (scene, open) = self.open_mut()?;
+        let lights = &scene.views[open].lights;
+        if lights.is_empty() {
+            return Err(BuildError::NoLight);
+        }
+        let light = lights.end - 1;
+        let entries = push_entries(scene, entries);
+        let index = scene.light_groups.len() as u32;
+        scene.light_groups.push(LightGroup { light, entries, ..group });
+        Ok(index)
+    }
+
+    /// Adds an object shadow to the open view, after its others; its
+    /// index in the scene. Its groups follow ([`Self::push_shadow_group`]).
+    pub fn push_object_shadow(&mut self, identity: [u32; 2]) -> Result<u32, BuildError> {
+        let (scene, open) = self.open_mut()?;
+        let g = scene.shadow_groups.len() as u32;
+        let index = scene.object_shadows.len() as u32;
+        scene.object_shadows.push(ObjectShadow { view: open as u32, identity, groups: g..g });
+        Ok(index)
+    }
+
+    /// Adds a gathered group to the open view's last object shadow, as
+    /// [`Self::push_light_group`] to a light.
+    pub fn push_shadow_group(&mut self, group: LightGroup, entries: &[(LightEntry, Vec<Row>)]) -> Result<u32, BuildError> {
+        let (scene, open) = self.open_mut()?;
+        let shadow = match scene.object_shadows.last() {
+            Some(o) if o.view as usize == open => scene.object_shadows.len() as u32 - 1,
+            _ => return Err(BuildError::NoShadow),
+        };
+        let entries = push_entries(scene, entries);
+        let index = scene.shadow_groups.len() as u32;
+        scene.shadow_groups.push(LightGroup { light: shadow, entries, ..group });
+        scene.object_shadows[shadow as usize].groups.end = index + 1;
+        Ok(index)
+    }
+
     /// Seals the open view: its parts ordered by the guest's list.
     pub fn seal_view(&mut self) {
         let (Some(scene), Some(open)) = (self.scene.as_mut(), self.open.take()) else {
@@ -364,6 +415,24 @@ impl SceneBuilder {
         self.previous = Previous { map_epoch: Some(scene.id.map_epoch), views: keys };
         Some(Arc::new(scene))
     }
+}
+
+/// A group's entries into the scene, each [`LightPose::Rows`] pose's rows
+/// with it; their range.
+fn push_entries(scene: &mut FrameScene, entries: &[(LightEntry, Vec<Row>)]) -> std::ops::Range<u32> {
+    let e = scene.light_entries.len() as u32;
+    for (entry, rows) in entries {
+        let pose = match entry.pose {
+            LightPose::Rows(_) => {
+                let r = scene.rows.len() as u32;
+                scene.rows.extend_from_slice(rows);
+                LightPose::Rows(r..scene.rows.len() as u32)
+            }
+            ref other => other.clone(),
+        };
+        scene.light_entries.push(LightEntry { pose, ..entry.clone() });
+    }
+    e..scene.light_entries.len() as u32
 }
 
 #[cfg(test)]
@@ -524,7 +593,14 @@ mod tests {
     #[test]
     fn a_views_layer_draws_keep_their_items_and_rows_and_a_first_person_view_is_its_own() {
         use crate::layer::{LayerItem, LayerOwner, LayerPass};
-        let pass = |layer| LayerPass { layer, stencil_off: false, texaccum: layer == 1, items: 0..0, remainder: 0 };
+        let pass = |layer| LayerPass {
+            layer,
+            stencil_off: false,
+            texaccum: layer == 1,
+            items: 0..0,
+            remainder: 0,
+            inputs: Default::default(),
+        };
         let entry = |slot, owner| LayerItem { slot, key: item(1), owner, model: u32::MAX, rows: 0..0, lighting: None };
         let mut b = SceneBuilder::default();
         b.begin(SceneId::default());

@@ -8,11 +8,13 @@
 //! that reservation upward from its start for unmapped pages, so a range
 //! mapped at boot near its top is skipped by them.
 
-/// Start of the feature arena.
-pub const ARENA_START: u32 = 0xa0f0_0000;
-/// End (exclusive): 832 KiB, up to the community variants' fixed page at
-/// `0xa0fd_0000`. 512 KiB filled once map packs, Halo 1 and mods all
-/// placed their pages.
+/// Start of the feature arena: the page after the D3D scratch page
+/// (`boot::d3d_glue::SCRATCH_BASE`, `0xa0e8_0000`), which ends the push
+/// buffer's range.
+pub const ARENA_START: u32 = 0xa0e8_1000;
+/// End (exclusive): 1340 KiB, up to the community variants' fixed page at
+/// `0xa0fd_0000`. 832 KiB filled once map packs, Halo 1, Halo 1 AI and
+/// mods all placed their pages.
 pub const ARENA_END: u32 = 0xa0fd_0000;
 const PAGE: u32 = 0x1000;
 
