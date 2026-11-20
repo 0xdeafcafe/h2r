@@ -218,7 +218,7 @@ regular phantom uplink and remote gather.
 
 ### The playerless start
 
-**Code**: , `sim_glue/hosted.rs` and
+**Code**: `sim_glue/hosted.rs` and
 `host_lobby/retail.rs`. One step per game tick at the start of the tick:
 
 1. **Open.** `PROFILE_SIGN_IN` (`0x18fb34`) is refused for the run, so no
