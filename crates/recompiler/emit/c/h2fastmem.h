@@ -335,19 +335,21 @@ extern const char __stop_h2_fix[] __attribute__((weak, visibility("hidden")));
 #define h2_fix_end_ __stop_h2_fix
 #endif
 #define H2_FIX_BOUNDS (const void *)h2_fix_start_, (const void *)h2_fix_end_, 0u
+/* Operand names are never a macro parameter's name (`a`, `v`): the
+ * preprocessor would rename the operand but not its uses in the string. */
 typedef uint8_t h2_flat_v16 __attribute__((vector_size(16)));
 
 #if defined(__aarch64__)
 #define H2_FLAT_LDW_(insn, dst, base, a)                                        \
     do {                                                                        \
         uint32_t v_;                                                            \
-        __asm__ goto("1: " insn " %w[v], [%[b], %w[a], uxtw]\n" H2_FIX_ROW("1b") \
-                     : [v] "=r"(v_) : [b] "r"(base), [a] "r"(a) : "memory" : slow_); \
+        __asm__ goto("1: " insn " %w[gv], [%[b], %w[ga], uxtw]\n" H2_FIX_ROW("1b") \
+                     : [gv] "=r"(v_) : [b] "r"(base), [ga] "r"(a) : "memory" : slow_); \
         (dst) = v_;                                                             \
     } while (0)
 #define H2_FLAT_STW_(insn, v, base, a)                                          \
-    __asm__ goto("1: " insn " %w[v], [%[b], %w[a], uxtw]\n" H2_FIX_ROW("1b")    \
-                 : : [v] "r"((uint32_t)(v)), [b] "r"(base), [a] "r"(a) : "memory" : slow_)
+    __asm__ goto("1: " insn " %w[gv], [%[b], %w[ga], uxtw]\n" H2_FIX_ROW("1b")    \
+                 : : [gv] "r"((uint32_t)(v)), [b] "r"(base), [ga] "r"(a) : "memory" : slow_)
 #define H2_FLAT_LD_1(dst, base, a) H2_FLAT_LDW_("ldrb", dst, base, a)
 #define H2_FLAT_LD_2(dst, base, a) H2_FLAT_LDW_("ldrh", dst, base, a)
 #define H2_FLAT_LD_4(dst, base, a) H2_FLAT_LDW_("ldr", dst, base, a)
@@ -357,37 +359,37 @@ typedef uint8_t h2_flat_v16 __attribute__((vector_size(16)));
 #define H2_FLAT_LD_8(dst, base, a)                                              \
     do {                                                                        \
         uint64_t v_;                                                            \
-        __asm__ goto("1: ldr %x[v], [%[b], %w[a], uxtw]\n" H2_FIX_ROW("1b")     \
-                     : [v] "=r"(v_) : [b] "r"(base), [a] "r"(a) : "memory" : slow_); \
+        __asm__ goto("1: ldr %x[gv], [%[b], %w[ga], uxtw]\n" H2_FIX_ROW("1b")     \
+                     : [gv] "=r"(v_) : [b] "r"(base), [ga] "r"(a) : "memory" : slow_); \
         (dst) = v_;                                                             \
     } while (0)
 #define H2_FLAT_ST_8(v, base, a)                                                \
-    __asm__ goto("1: str %x[v], [%[b], %w[a], uxtw]\n" H2_FIX_ROW("1b")         \
-                 : : [v] "r"((uint64_t)(v)), [b] "r"(base), [a] "r"(a) : "memory" : slow_)
+    __asm__ goto("1: str %x[gv], [%[b], %w[ga], uxtw]\n" H2_FIX_ROW("1b")         \
+                 : : [gv] "r"((uint64_t)(v)), [b] "r"(base), [ga] "r"(a) : "memory" : slow_)
 #define H2_FLAT_LD_16(dst, base, a)                                             \
     do {                                                                        \
         h2_flat_v16 v_;                                                         \
-        __asm__ goto("1: ldr %q[v], [%[b], %w[a], uxtw]\n" H2_FIX_ROW("1b")     \
-                     : [v] "=w"(v_) : [b] "r"(base), [a] "r"(a) : "memory" : slow_); \
+        __asm__ goto("1: ldr %q[gv], [%[b], %w[ga], uxtw]\n" H2_FIX_ROW("1b")     \
+                     : [gv] "=w"(v_) : [b] "r"(base), [ga] "r"(a) : "memory" : slow_); \
         memcpy(&(dst), &v_, 16);                                                \
     } while (0)
 #define H2_FLAT_ST_16(v, base, a)                                               \
     do {                                                                        \
         h2_flat_v16 x_;                                                         \
         memcpy(&x_, &(v), 16);                                                  \
-        __asm__ goto("1: str %q[v], [%[b], %w[a], uxtw]\n" H2_FIX_ROW("1b")     \
-                     : : [v] "w"(x_), [b] "r"(base), [a] "r"(a) : "memory" : slow_); \
+        __asm__ goto("1: str %q[gv], [%[b], %w[ga], uxtw]\n" H2_FIX_ROW("1b")     \
+                     : : [gv] "w"(x_), [b] "r"(base), [ga] "r"(a) : "memory" : slow_); \
     } while (0)
 #define H2_FLAT_LD_10(dst, base, a)                                             \
     do {                                                                        \
         uint64_t lo_;                                                           \
         uint32_t hi_;                                                           \
         const uint8_t *t_;                                                      \
-        __asm__ goto("add %[t], %[b], %w[a], uxtw\n"                            \
+        __asm__ goto("add %[t], %[b], %w[ga], uxtw\n"                            \
                      "1: ldr %x[lo], [%[t]]\n" H2_FIX_ROW("1b")                 \
                      "2: ldrh %w[hi], [%[t], #8]\n" H2_FIX_ROW("2b")            \
                      : [lo] "=&r"(lo_), [hi] "=&r"(hi_), [t] "=&r"(t_)          \
-                     : [b] "r"(base), [a] "r"(a) : "memory" : slow_);           \
+                     : [b] "r"(base), [ga] "r"(a) : "memory" : slow_);           \
         (dst) = (unsigned __int128)lo_ | (unsigned __int128)hi_ << 64;                              \
     } while (0)
 #define H2_FLAT_ST_10(v, base, a)                                               \
@@ -395,11 +397,11 @@ typedef uint8_t h2_flat_v16 __attribute__((vector_size(16)));
         uint64_t lo_ = (uint64_t)(v);                                           \
         uint32_t hi_ = (uint32_t)((v) >> 64);                                   \
         uint8_t *t_;                                                            \
-        __asm__ goto("add %[t], %[b], %w[a], uxtw\n"                            \
+        __asm__ goto("add %[t], %[b], %w[ga], uxtw\n"                            \
                      "1: str %x[lo], [%[t]]\n" H2_FIX_ROW("1b")                 \
                      "2: strh %w[hi], [%[t], #8]\n" H2_FIX_ROW("2b")            \
                      : [t] "=&r"(t_)                                            \
-                     : [lo] "r"(lo_), [hi] "r"(hi_), [b] "r"(base), [a] "r"(a)  \
+                     : [lo] "r"(lo_), [hi] "r"(hi_), [b] "r"(base), [ga] "r"(a)  \
                      : "memory" : slow_);                                       \
     } while (0)
 /* A bulk copy's probe of one byte: a load, or a load and a store of the
@@ -407,16 +409,16 @@ typedef uint8_t h2_flat_v16 __attribute__((vector_size(16)));
 #define H2_FLAT_PROBE_R_(base, a)                                               \
     do {                                                                        \
         uint32_t v_;                                                            \
-        __asm__ goto("1: ldrb %w[v], [%[b], %w[a], uxtw]\n" H2_FIX_ROW("1b")    \
-                     : [v] "=r"(v_) : [b] "r"(base), [a] "r"(a) : "memory" : slow_); \
+        __asm__ goto("1: ldrb %w[gv], [%[b], %w[ga], uxtw]\n" H2_FIX_ROW("1b")    \
+                     : [gv] "=r"(v_) : [b] "r"(base), [ga] "r"(a) : "memory" : slow_); \
         (void)v_;                                                               \
     } while (0)
 #define H2_FLAT_PROBE_RW_(base, a)                                              \
     do {                                                                        \
         uint32_t v_;                                                            \
-        __asm__ goto("1: ldrb %w[v], [%[b], %w[a], uxtw]\n" H2_FIX_ROW("1b")    \
-                     "2: strb %w[v], [%[b], %w[a], uxtw]\n" H2_FIX_ROW("2b")    \
-                     : [v] "=&r"(v_) : [b] "r"(base), [a] "r"(a) : "memory" : slow_); \
+        __asm__ goto("1: ldrb %w[gv], [%[b], %w[ga], uxtw]\n" H2_FIX_ROW("1b")    \
+                     "2: strb %w[gv], [%[b], %w[ga], uxtw]\n" H2_FIX_ROW("2b")    \
+                     : [gv] "=&r"(v_) : [b] "r"(base), [ga] "r"(a) : "memory" : slow_); \
         (void)v_;                                                               \
     } while (0)
 #elif defined(__x86_64__)
@@ -425,13 +427,13 @@ typedef long long h2_flat_x16 __attribute__((vector_size(16)));
 #define H2_FLAT_LDX_(insn, reg, dst, base, a)                                   \
     do {                                                                        \
         uint64_t v_;                                                            \
-        __asm__ goto("1: " insn " (%[b],%[a]), %" reg "[v]\n" H2_FIX_ROW("1b")  \
-                     : [v] "=r"(v_) : [b] "r"(base), [a] "r"((uint64_t)(a)) : "memory" : slow_); \
+        __asm__ goto("1: " insn " (%[b],%[ga]), %" reg "[gv]\n" H2_FIX_ROW("1b")  \
+                     : [gv] "=r"(v_) : [b] "r"(base), [ga] "r"((uint64_t)(a)) : "memory" : slow_); \
         (dst) = v_;                                                             \
     } while (0)
 #define H2_FLAT_STX_(insn, reg, v, base, a)                                     \
-    __asm__ goto("1: " insn " %" reg "[v], (%[b],%[a])\n" H2_FIX_ROW("1b")      \
-                 : : [v] "r"((uint64_t)(v)), [b] "r"(base), [a] "r"((uint64_t)(a)) : "memory" : slow_)
+    __asm__ goto("1: " insn " %" reg "[gv], (%[b],%[ga])\n" H2_FIX_ROW("1b")      \
+                 : : [gv] "r"((uint64_t)(v)), [b] "r"(base), [ga] "r"((uint64_t)(a)) : "memory" : slow_)
 /* A 32-bit destination zero-extends into the whole register. */
 #define H2_FLAT_LD_1(dst, base, a) H2_FLAT_LDX_("movzbl", "k", dst, base, a)
 #define H2_FLAT_LD_2(dst, base, a) H2_FLAT_LDX_("movzwl", "k", dst, base, a)
@@ -444,47 +446,47 @@ typedef long long h2_flat_x16 __attribute__((vector_size(16)));
 #define H2_FLAT_LD_16(dst, base, a)                                             \
     do {                                                                        \
         h2_flat_x16 v_;                                                         \
-        __asm__ goto("1: movdqu (%[b],%[a]), %[v]\n" H2_FIX_ROW("1b")           \
-                     : [v] "=x"(v_) : [b] "r"(base), [a] "r"((uint64_t)(a)) : "memory" : slow_); \
+        __asm__ goto("1: movdqu (%[b],%[ga]), %[gv]\n" H2_FIX_ROW("1b")           \
+                     : [gv] "=x"(v_) : [b] "r"(base), [ga] "r"((uint64_t)(a)) : "memory" : slow_); \
         memcpy(&(dst), &v_, 16);                                                \
     } while (0)
 #define H2_FLAT_ST_16(v, base, a)                                               \
     do {                                                                        \
         h2_flat_x16 x_;                                                         \
         memcpy(&x_, &(v), 16);                                                  \
-        __asm__ goto("1: movdqu %[v], (%[b],%[a])\n" H2_FIX_ROW("1b")           \
-                     : : [v] "x"(x_), [b] "r"(base), [a] "r"((uint64_t)(a)) : "memory" : slow_); \
+        __asm__ goto("1: movdqu %[gv], (%[b],%[ga])\n" H2_FIX_ROW("1b")           \
+                     : : [gv] "x"(x_), [b] "r"(base), [ga] "r"((uint64_t)(a)) : "memory" : slow_); \
     } while (0)
 #define H2_FLAT_LD_10(dst, base, a)                                             \
     do {                                                                        \
         uint64_t lo_, hi_;                                                      \
-        __asm__ goto("1: movq (%[b],%[a]), %q[lo]\n" H2_FIX_ROW("1b")           \
-                     "2: movzwl 8(%[b],%[a]), %k[hi]\n" H2_FIX_ROW("2b")        \
+        __asm__ goto("1: movq (%[b],%[ga]), %q[lo]\n" H2_FIX_ROW("1b")           \
+                     "2: movzwl 8(%[b],%[ga]), %k[hi]\n" H2_FIX_ROW("2b")        \
                      : [lo] "=&r"(lo_), [hi] "=&r"(hi_)                         \
-                     : [b] "r"(base), [a] "r"((uint64_t)(a)) : "memory" : slow_); \
+                     : [b] "r"(base), [ga] "r"((uint64_t)(a)) : "memory" : slow_); \
         (dst) = (unsigned __int128)lo_ | (unsigned __int128)hi_ << 64;                              \
     } while (0)
 #define H2_FLAT_ST_10(v, base, a)                                               \
     do {                                                                        \
         uint64_t lo_ = (uint64_t)(v), hi_ = (uint64_t)((v) >> 64);              \
-        __asm__ goto("1: movq %q[lo], (%[b],%[a])\n" H2_FIX_ROW("1b")           \
-                     "2: movw %w[hi], 8(%[b],%[a])\n" H2_FIX_ROW("2b")          \
-                     : : [lo] "r"(lo_), [hi] "r"(hi_), [b] "r"(base), [a] "r"((uint64_t)(a)) \
+        __asm__ goto("1: movq %q[lo], (%[b],%[ga])\n" H2_FIX_ROW("1b")           \
+                     "2: movw %w[hi], 8(%[b],%[ga])\n" H2_FIX_ROW("2b")          \
+                     : : [lo] "r"(lo_), [hi] "r"(hi_), [b] "r"(base), [ga] "r"((uint64_t)(a)) \
                      : "memory" : slow_);                                       \
     } while (0)
 #define H2_FLAT_PROBE_R_(base, a)                                               \
     do {                                                                        \
         uint64_t v_;                                                            \
-        __asm__ goto("1: movzbl (%[b],%[a]), %k[v]\n" H2_FIX_ROW("1b")          \
-                     : [v] "=r"(v_) : [b] "r"(base), [a] "r"((uint64_t)(a)) : "memory" : slow_); \
+        __asm__ goto("1: movzbl (%[b],%[ga]), %k[gv]\n" H2_FIX_ROW("1b")          \
+                     : [gv] "=r"(v_) : [b] "r"(base), [ga] "r"((uint64_t)(a)) : "memory" : slow_); \
         (void)v_;                                                               \
     } while (0)
 #define H2_FLAT_PROBE_RW_(base, a)                                              \
     do {                                                                        \
         uint64_t v_;                                                            \
-        __asm__ goto("1: movzbl (%[b],%[a]), %k[v]\n" H2_FIX_ROW("1b")          \
-                     "2: movb %b[v], (%[b],%[a])\n" H2_FIX_ROW("2b")            \
-                     : [v] "=&r"(v_) : [b] "r"(base), [a] "r"((uint64_t)(a)) : "memory" : slow_); \
+        __asm__ goto("1: movzbl (%[b],%[ga]), %k[gv]\n" H2_FIX_ROW("1b")          \
+                     "2: movb %b[gv], (%[b],%[ga])\n" H2_FIX_ROW("2b")            \
+                     : [gv] "=&r"(v_) : [b] "r"(base), [ga] "r"((uint64_t)(a)) : "memory" : slow_); \
         (void)v_;                                                               \
     } while (0)
 #endif
