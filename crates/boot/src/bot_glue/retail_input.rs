@@ -90,6 +90,11 @@ impl Builder {
             for list in [0x54d884, 0x54d76c, 0x54d62c, 0x54d99c, 0x54dba8, 0x54d9e0] {
                 m.write(list + 8, [0; 8])?;
             }
+            // On a playerless host slot zero has no profile or local-user index.
+            // Supply the same profile binding as a signed-in bot in the private view.
+            let slot = bots::guest::slot(0);
+            m.set_u32(slot, bots::guest::SLOT_PROFILE)?;
+            m.set_u32(slot + bots::guest::SLOT_LOCAL_USER, 0)?;
             m.write(0x54e9f4, [0, 0, 0, 0, 0, 0, bots::guest::BOT_SENSITIVITY])?;
             if let Some(h) = self.history.get(&idx).filter(|_| !s.reset) {
                 m.write(RAW, h.raw)?;
@@ -100,6 +105,12 @@ impl Builder {
                 m.write(RAW, [0; 0x48])?;
                 m.write(0x51ea88, [0; 0x50])?;
                 m.set_u8(0x51ebcc, 0)?;
+                // Discard user zero's previous shot-assist block
+                // before retail initializes control for the newly bound unit.
+                let assist = ctrl + crate::touch_glue::PC_TARGET;
+                let mut empty = [0; 0x24];
+                empty[..12].fill(0xff); // object, marker and controlling player
+                m.write(assist, empty)?;
                 m.set_u32(ctrl, u32::MAX)?;
             }
         }
@@ -181,6 +192,15 @@ mod tests {
         g.set_u32(0x4ed284, CONTROLS).unwrap();
         g.set_u32(USERS + 12, 0x1234).unwrap();
         g.set_u32(PLAYER + 0x24, u32::MAX).unwrap();
+        g.set_u32(
+            bots::guest::slot(0) + bots::guest::SLOT_LOCAL_USER,
+            u32::MAX,
+        )
+        .unwrap();
+        let target = CONTROLS + 0x14 + crate::touch_glue::PC_TARGET;
+        let strength = CONTROLS + 0x14 + crate::touch_glue::PC_CONE;
+        g.set_u32(target, 0xdead0002).unwrap();
+        g.set_u32(strength, 0.875f32.to_bits()).unwrap();
         let player = DatumHandle::new(21, 5);
         let unit = DatumHandle::new(50, 9);
         let mut d = Dispatch::default();
@@ -190,6 +210,10 @@ mod tests {
                 match address {
                     0x1872d0 => {
                         assert_eq!((cpu.eax, cpu.ecx), (0, unit.raw()));
+                        if m.u32(CONTROLS + 0x14)? == u32::MAX {
+                            assert_eq!(m.u32(target)?, u32::MAX);
+                            assert_eq!(m.u32(strength)?, 0);
+                        }
                         m.set_u32(CONTROLS + 0x14, cpu.ecx)?;
                     }
                     0x1557c0 => {
@@ -207,11 +231,24 @@ mod tests {
                         assert_eq!(m.u32(USERS + 12)?, player.raw());
                         assert_eq!(m.u32(USERS + 0x1c)?, player.raw());
                         assert_eq!(m.u32(PLAYER + 0x24)?, 0);
+                        assert_eq!(m.u32(bots::guest::slot(0))?, bots::guest::SLOT_PROFILE);
+                        assert_eq!(
+                            m.u32(bots::guest::slot(0) + bots::guest::SLOT_LOCAL_USER)?,
+                            0
+                        );
                         assert_eq!(m.u32(CONTROLS + 0x14)?, unit.raw());
                         assert_eq!(m.u32(DIRECTOR + 12)?, 0x23cbb0);
                         assert_eq!(m.u32(OBSERVER)?, 0x11223344);
                         let out = m.u32(cpu.esp + 16)?;
                         let history = m.u8(RAW)?;
+                        // This seat acquired a target on the previous sample.
+                        // Its retained assist is independent of the host's.
+                        if history > 1 {
+                            assert_eq!(m.u32(target)?, 0xe0010004);
+                            assert_eq!(m.u32(strength)?, 0.5f32.to_bits());
+                        }
+                        m.set_u32(target, 0xe0010004)?;
+                        m.set_u32(strength, 0.5f32.to_bits())?;
                         m.write(out, [history; ACTION_SIZE])?;
                     }
                     _ => (),
@@ -250,6 +287,14 @@ mod tests {
         assert_eq!(m.u32(PLAYER + 0x24).unwrap(), u32::MAX);
         assert_eq!(m.u32(USERS + 12).unwrap(), 0x1234);
         assert_eq!(m.u8(RAW).unwrap(), 0);
+        assert_eq!(m.u32(target).unwrap(), 0xdead0002);
+        assert_eq!(m.u32(strength).unwrap(), 0.875f32.to_bits());
+        assert_eq!(m.u32(bots::guest::slot(0)).unwrap(), 0);
+        assert_eq!(
+            m.u32(bots::guest::slot(0) + bots::guest::SLOT_LOCAL_USER)
+                .unwrap(),
+            u32::MAX
+        );
     }
 }
 
@@ -329,6 +374,9 @@ fn retail_pad_sequence_matches_local_angles_target_and_fire() -> Result<()> {
         let mut m = main.memory();
         m.set_u32(player_addr + 0x24, u32::MAX)?;
         m.set_u16(player_addr + 0x28, u16::MAX)?;
+        let slot = bots::guest::slot(0);
+        m.set_u32(slot, 0)?;
+        m.set_u32(slot + bots::guest::SLOT_LOCAL_USER, u32::MAX)?;
         let users = m.u32(0x4e8c20)?;
         m.set_u32(users + 12, u32::MAX)?;
         m.set_u32(users + 0x1c, u32::MAX)?;
@@ -385,7 +433,10 @@ fn retail_pad_sequence_matches_local_angles_target_and_fire() -> Result<()> {
             },
         )?;
         assert_eq!(action, expected, "retail action at sample {tick}");
-        acquired |= action[0x3c..0x40] != u32::MAX.to_le_bytes();
+        let word = |off: usize| u32::from_le_bytes(action[off..off + 4].try_into().unwrap());
+        acquired |= word(0x34) != u32::MAX
+            && word(0x3c) != u32::MAX
+            && (f32::from_bits(word(0x50)) > 0. || f32::from_bits(word(0x54)) > 0.);
         fired |= action[0] & 0x40 != 0;
         angles.push(action[4..12].to_vec());
     }

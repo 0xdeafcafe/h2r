@@ -106,7 +106,15 @@ fn fixture_record(pad: input::Gamepad) -> [u8; ACTION_SIZE] {
     record[4..8].copy_from_slice(&(f32::from(pad.thumb_rx) / 32767.).to_le_bytes());
     record[8..12].copy_from_slice(&(f32::from(pad.thumb_ry) / 32767.).to_le_bytes());
     record[0x14..0x18].copy_from_slice(&(f32::from(rt) / 255.).to_le_bytes());
-    record[0x3c..0x40].copy_from_slice(&0xe0020002u32.to_le_bytes());
+    let (object, player, strengths) = if rt > 0 {
+        (0xb0030003u32, 0xe0020002u32, [0.75f32, 0.125])
+    } else {
+        (u32::MAX, u32::MAX, [0., 0.])
+    };
+    record[0x34..0x38].copy_from_slice(&object.to_le_bytes());
+    record[0x3c..0x40].copy_from_slice(&player.to_le_bytes());
+    record[0x50..0x54].copy_from_slice(&strengths[0].to_le_bytes());
+    record[0x54..0x58].copy_from_slice(&strengths[1].to_le_bytes());
     record
 }
 fn guest_query(q: &GuestCall, _: &mut dyn GuestMemory) -> Regs {
@@ -173,6 +181,37 @@ fn arrived_pad_publishes_the_whole_local_action_once_per_tick() {
 }
 
 #[test]
+fn assist_tracks_the_validated_action_across_repeated_gather_and_target_loss() {
+    let (ph, mut g, slot) = game(|f| HostPadState {
+        right_trigger: if f.tick == Some(100) { 1. } else { 0. },
+        ..Default::default()
+    });
+    let handle = ph.list()[0].handle;
+    let run = call(&ph, g, slot, |q, m| {
+        let accepted = guest_query(q, m);
+        // Only the validated output may cross into the stored action.
+        m.set_f32(OUT + 0x50, 0.625).unwrap();
+        accepted
+    });
+    assert_eq!(run.result, Ok(Ret::new(1, 8)));
+    g = run.guest;
+    g.put_u32(OUT + 0x34, 0);
+    let repeat = call(&ph, g, slot, |_, _| panic!("validated twice"));
+    assert_eq!(repeat.result, Ok(Ret::new(1, 8)));
+    g = repeat.guest;
+    assert_eq!(g.u32(OUT + 0x34).unwrap(), 0xb0030003);
+    let aim = ph.aim_view(&g, handle).unwrap();
+    assert_eq!(aim.assist_player, Some(2));
+    assert_eq!(aim.assist_strength, [0.625, 0.125]);
+    at_tick(&mut g, 101);
+    g = gather(&ph, g, slot);
+    let aim = ph.aim_view(&g, handle).unwrap();
+    assert_eq!(g.u32(OUT + 0x34).unwrap(), u32::MAX);
+    assert_eq!(aim.assist_player, None);
+    assert_eq!(aim.assist_strength, [0., 0.]);
+}
+
+#[test]
 fn only_valid_phantom_records_are_published() {
     let (ph, mut g, slot) = game(|_| pad(HostButton::South));
     assert!(!ph.owns_action_slot(&g, SIM + SIM_SLOTS));
@@ -217,6 +256,10 @@ fn aim_view_separates_intended_arrived_and_observed_aim() {
     assert_eq!((first.stick, first.trigger), ([1., 0.], 1.));
     assert_eq!((first.arrived_stick, first.arrived_trigger), ([0., 0.], 0.));
     assert_eq!(first.action_deg, Some([0., 0.]));
+    assert_eq!(
+        (first.assist_player, first.assist_strength),
+        (None, [0., 0.])
+    );
     at_tick(&mut g, 101);
     g = gather(&ph, g, slot);
     // Unit state may still lag the newly accepted angle.
@@ -225,6 +268,10 @@ fn aim_view_separates_intended_arrived_and_observed_aim() {
     assert_eq!((next.arrived_stick, next.arrived_trigger), ([1., 0.], 1.));
     assert!((next.action_deg.unwrap()[0] - 1.0f32.to_degrees()).abs() < 0.001);
     assert_eq!(next.unit_forward, [1., 0., 0.]);
+    assert_eq!(
+        (next.assist_player, next.assist_strength),
+        (Some(2), [0.75, 0.125])
+    );
     // Rejected input has no action, even with a prior stamped record.
     at_tick(&mut g, 102);
     let run = call(&ph, g, slot, |q, m| {

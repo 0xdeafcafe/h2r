@@ -115,9 +115,11 @@ The brain's output reaches the game in one of two ways:
    each tick, as if they had arrived over the network. That gives up to 16
    players in total.
 
-Both ways run on the host. Local slots come first: they need no network work
-and can be tested on one machine. Phantom peers come after; Clankermatch
-needs them.
+Both ways run on the host. Custom games currently fill free local ports
+first. Set `H2_BOTS_ALL_PHANTOM=1` before launch to keep every local port
+available for humans in a hosted System Link or Live game. Clankermatch
+already seats its whole roster as phantoms. The default stays at 0 until
+a paired sim batch shows that phantom hit rates match local hit rates (§3.4).
 
 **Option (c) is rejected:** AI actors on MP maps are not players. An `actr`
 (the game's AI actor) with a biped is not in the players array. It has no
@@ -827,17 +829,32 @@ They dealt positive damage to opponents on 14 bullet hits and 9 melee
 hits. Three local Clankers fired 1,372 shots and landed 236 bullet hits.
 The hits show that phantom actions reached the host.
 
-The integrated phantom adapter turns a half-stick input at about 54°/s.
-The local Midship response is about 9°/s yaw or 5°/s pitch at the same
-deflection before assist. The phantom's aim-assist record was also
-empty. Treat the turn response and assist as separate findings. Match
-the two paths before using their hit rates to tune the brain.
+The old adapter turned a half-stick input at about 54°/s. A local bot at
+the same deflection turned about 9°/s in yaw or 5°/s in pitch before assist.
+The old adapter also sent an empty shot-assist block. The contribution
+of each difference to the observed miss rate is still unknown.
 
-The shared pad-to-action path for local and phantom seats is in progress.
-Clanker Training needs phantom seats before aim tuning so the comparison
-includes the remote action path. Compare the hand-written aim with a
-hand-built aim net in simulation using matched maps, lineups and seeds.
-Record results per seat. [Simulation coverage](../runtime/sim.md#more-than-four)
+Retail builds local actions at `0x186ab0`. The control update at
+`0x185be0` calls `0x1a4900`, which gets the held weapon’s cone from
+`0x1a50a0` and searches for a target at `0x1a5370`. The local builder
+copies nine dwords from the per-user control record into action
+`+0x34..+0x57` at `0x187074..0x187083`. The remote gather at `0x84990`
+expects that search to have run on the sender. An empty record has no
+target and zero strengths for the barrel's magnetism check.
+
+The host now runs the retail local builder on each arrived phantom pad.
+Its private copy of user zero has the phantom's unit, camera origin,
+profile binding and control history, including on a host with no local
+profile. The host validates the full action at `0x14d0a0` (§5.1).
+**Same-view assist parity is inferred, needs a run.** Hit-rate parity
+remains unmeasured. Compare matched Midship
+seats with `H2_BOTS_ALL_PHANTOM=0` using the ten-seed
+[seat-swap batch](../runtime/sim.md#local-and-phantom-seat-swaps).
+Check `sim.player.list` for `aim.assist_player` and `aim.assist_strength`
+as a target enters and leaves the reticle. Compare opposing hits per shot
+and damage across the two legs before changing the default. Then compare
+the hand-written aim and the hand-built aim net on matched maps, lineups
+and seeds (§3.4.1).
 
 #### 3.4.1 The aim net (built, not compared in a game yet)
 
@@ -2140,7 +2157,8 @@ JOIN" (`0x0f00028a`); with none, "CONNECT CONTROLLER" (`0x1100028b`).
   item: whether the game's matchmaking allows guests at all, and how many.
   Retail OptiMatch allowed split-screen in some playlists. Custom games
   allow guests.
-- No more than 3 bots per machine.
+- With a human on port zero, at most three bots can use local ports.
+  All-phantom mode also reserves those three ports for humans.
 - With a roster (§9.5) a local bot is its own bot account, not a guest,
   so it takes no guest number and has a page of its own on the web. Still
   only 3 per machine: the controller ports are the cap. More bots than
@@ -2590,10 +2608,12 @@ uses a copy-on-write snapshot of the host world. In that view local user
 and controller zero, the two player maps at `[0x4e8c20]+0xc/+0x1c`,
 and the player's +0x24/+0x28 all refer to the phantom. Its virtual XInput
 handle supplies the arrived pad to `0x409b6c`. The seat brings its own
-raw input, button and control history between ticks. Retail binds the unit
-at `0x1872d0`; `0x1557c0` supplies the unit or vehicle camera origin for
-the observer at `0x4e9c8c`. Only the validated action crosses back to the
-host. A repeated gather in one tick reuses that action. Local bots keep
+raw input, button and control history between ticks. A fresh binding
+clears the previous user's target and strengths before retail binds the
+unit at `0x1872d0`. The private profile slot has the profile bit and
+local-user index zero even if the host has nobody signed in. `0x1557c0`
+supplies the unit or vehicle camera origin for the observer at `0x4e9c8c`.
+Only the validated action crosses back to the host. A repeated gather in one tick reuses that action. Local bots keep
 their normal retail controller polling. A phantom samples once per game
 tick and advances the button clock by elapsed simulation milliseconds.
 
@@ -2602,7 +2622,8 @@ uses `H2_DISC`, its matching `H2_RETAIL_MODULE`, and a multiplayer checkpoint
 in `H2_PAD_CHECKPOINT`. Capture the checkpoint with the agent API's
 `state.save` while port zero is on foot, the menu is closed and an opponent
 is inside the weapon’s assist cone. The test compares the full actions and
-requires movement of the aim angles, a selected target and a fire bit.
+requires movement of the aim angles, an object with a controlling player, a
+positive assist strength and a fire bit.
 
 **Open, for a run**:
 
@@ -2661,7 +2682,10 @@ opposing hits and damage dealt and taken per seat.
 - More than 3 bots, and up to the playlist's size (16).
 - Bots that are separate accounts with their own name, emblem and rank
   (Clankermatch, persistent bots).
-- A host whose own humans fill all 4 local ports.
+- A host whose own humans fill all 4 local ports. With all-phantom
+  seating the first bot joins through the same remote gather as the last.
+  A playerless sim host still takes one of the 16 machine slots, leaving
+  room for 15 single-player phantom machines.
 
 ### 5.3 CPU per bot
 
@@ -2771,9 +2795,10 @@ and Difficulty; that is the one kit ask expected.
 `clankers.enabled`, the bot driver adds the bots one by one: as local slots
 up to 3 (stages 1 to 4), and the rest as phantoms, which join the lobby
 this console hosts as peers (§5.1, "Phantoms in the pregame lobby"), up to
-Count 15 (the session's most players permitting). The host, and every
-client, sees them in the lobby's player list with their names and team
-colours, teams kept even. Changing the page in the lobby adds or removes
+Count 15 (the session's most players permitting). With
+`H2_BOTS_ALL_PHANTOM=1` the driver starts with the first phantom and
+claims no ports. The host and clients see each bot's name and team colour
+in the lobby roster. Changing the page in the lobby adds or removes
 bots.
 
 ## 8. Clankermatch
