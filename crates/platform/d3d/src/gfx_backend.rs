@@ -70,6 +70,7 @@ mod native_runs;
 use std::collections::HashMap;
 
 use gfx::occlusion::{PixelCounter, PixelReport};
+use gfx::raster::RenderScale;
 use gfx::renderer::{SHADER_XYZRHW_DIFFUSE, d3dz_max};
 use gfx::surface::{SurfaceDesc, SurfaceId, SurfaceKind, SurfaceStore};
 use gfx::texture::DecodedTexture;
@@ -190,7 +191,7 @@ pub struct GfxBackend {
     merge_check_frame: Option<u64>,
     /// Host pixels per guest pixel of surfaces made at a multiple of their
     /// guest size (a view backend, `crate::scaled`); absent is 1.
-    pub(crate) scales: HashMap<SurfaceId, u32>,
+    pub(crate) scales: HashMap<SurfaceId, RenderScale>,
     /// Whether counted draws count (off on a view backend: the reference
     /// answers every count).
     pub(crate) count_samples: bool,
@@ -726,7 +727,7 @@ impl GfxBackend {
                 .any(RecordedDraw::counts_samples)
                 .then(|| {
                     let counter = self.counter.get_or_insert_with(|| PixelCounter::new(ctx));
-                    counter.set_sample_stride(self.scales.get(&p.color).copied().unwrap_or(1));
+                    counter.set_sample_scale(self.scales.get(&p.color).copied().unwrap_or(RenderScale::ONE));
                     counter
                 });
             let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "render encode");
@@ -1167,18 +1168,10 @@ impl GfxBackend {
     }
 }
 
-/// `r` in the pixels of a surface `scale` times its guest size (exact for
-/// an integer scale: pieces that tile the guest target tile the host one).
-fn scale_rect(r: ScissorRect, scale: u32) -> ScissorRect {
-    if scale == 1 {
-        return r;
-    }
-    ScissorRect {
-        x: r.x.saturating_mul(scale),
-        y: r.y.saturating_mul(scale),
-        width: r.width.saturating_mul(scale),
-        height: r.height.saturating_mul(scale),
-    }
+/// Convert shared edges of the viewport, clip pieces and clears identically.
+fn scale_rect(r: ScissorRect, scale: RenderScale) -> ScissorRect {
+    let [x, y, width, height] = scale.rect(r.x, r.y, r.width, r.height);
+    ScissorRect { x, y, width, height }
 }
 
 /// A level at mirror byte `offset` as the guest-word passes address it.
@@ -1293,8 +1286,8 @@ impl Backend for GfxBackend {
         }
         // A surface made at a multiple of its guest size (a view backend)
         // takes guest-pixel rectangles: scissors scale, geometry does not.
-        let scale = self.scales.get(&color).copied().unwrap_or(1);
-        if depth.is_some_and(|z| self.scales.get(&z).copied().unwrap_or(1) != scale) {
+        let scale = self.scales.get(&color).copied().unwrap_or(RenderScale::ONE);
+        if depth.is_some_and(|z| self.scales.get(&z).copied().unwrap_or(RenderScale::ONE) != scale) {
             return Ok(DrawOutcome::Skipped(
                 "colour and depth surfaces at different scales".into(),
             ));
@@ -1346,7 +1339,7 @@ impl Backend for GfxBackend {
             scale,
         ));
         // Pre-transformed positions stay in the guest's window.
-        let window = (scale > 1).then_some((d.target.width, d.target.height));
+        let window = (scale != RenderScale::ONE).then_some((d.target.width, d.target.height));
         let count_samples = d.hw.zpass_count_enable && self.count_samples;
         let indices = d.indices.as_deref();
         let index_id = d.indices.as_ref().and_then(|i| i.cache_id());
@@ -1450,7 +1443,7 @@ impl Backend for GfxBackend {
             depth: c.depth,
             stencil: c.stencil,
         };
-        let scale = self.scales.get(&color).copied().unwrap_or(1);
+        let scale = self.scales.get(&color).copied().unwrap_or(RenderScale::ONE);
         let rects: Vec<ScissorRect> = c
             .rects
             .iter()
@@ -1787,13 +1780,13 @@ impl Backend for GfxBackend {
         };
         // The pass reads `D24S8` words in rows of the surface's width.
         let scale = if (width, height) == (d.width, d.height) {
-            1
+            RenderScale::ONE
         } else {
-            self.scales.get(&depth).copied().unwrap_or(1)
+            self.scales.get(&depth).copied().unwrap_or(RenderScale::ONE)
         };
         let gpu = format == D3DFormat::LinD24S8
             && pitch == width * 4
-            && (d.width, d.height) == (width.saturating_mul(scale), height.saturating_mul(scale))
+            && (d.width, d.height) == scale.size(width, height)
             && d.samples == 1
             && texture.format() == wgpu::TextureFormat::Depth32FloatStencil8
             && offset.is_multiple_of(4)
@@ -1807,7 +1800,7 @@ impl Backend for GfxBackend {
             let words = self.guest_words.get_or_insert_with(|| gfx::guest_words::GuestWords::new(ctx));
             let layout = gfx::guest_words::WordLayout { base: (offset / 4) as u32, pitch_words };
             let flip = gfx::guest_words::sign_flip(options.signed);
-            let made = words.depth_alias_scaled(ctx, &mut enc, &texture, desc.format, (desc.width, desc.height), layout, flip, scale);
+            let made = words.depth_alias_at_extent(ctx, &mut enc, &texture, desc.format, (desc.width, desc.height), layout, flip, (width, height));
             // A failed pass records nothing; the passes before it stay.
             self.side_done(enc, passes);
             // Out of bounds or an odd swizzle: the CPU path says why.
@@ -1891,10 +1884,9 @@ impl Backend for GfxBackend {
         let (mut enc, passes) = self.side_encoder()?;
         let ctx = &self.ctx;
         let words = self.guest_words.get_or_insert_with(|| gfx::guest_words::GuestWords::new(ctx));
-        let scale = self.scales.get(&surface).copied().unwrap_or(1);
         let stored = match kind {
-            SurfaceKind::Color => words.store_color_scaled(ctx, &mut enc, &texture, format, (width, height), &m, layout, scale),
-            SurfaceKind::DepthStencil => words.store_depth_scaled(ctx, &mut enc, &texture, (width, height), &m, layout, scale),
+            SurfaceKind::Color => words.store_color(ctx, &mut enc, &texture, format, (width, height), &m, layout),
+            SurfaceKind::DepthStencil => words.store_depth(ctx, &mut enc, &texture, (width, height), &m, layout),
         };
         self.side_done(enc, passes);
         stored.map_err(|e| format!("mirror_store: {e}"))

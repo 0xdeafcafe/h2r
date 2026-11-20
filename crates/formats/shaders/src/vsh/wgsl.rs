@@ -137,7 +137,7 @@ pub struct VertexUniforms {
     /// "Half-pixel and texel offsets"). Above 0 it also turns the 1/16
     /// truncation off, so seams between draws stay closed at scale
     /// ("Subpixel snapping and cracks").
-    pub shift: f32,
+    pub shift: [f32; 2],
 }
 
 impl Default for VertexUniforms {
@@ -149,7 +149,7 @@ impl Default for VertexUniforms {
             z_max: 16_777_215.0,
             w_clip: None,
             w_clamp: false,
-            shift: 0.0,
+            shift: [0.0; 2],
         }
     }
 }
@@ -169,10 +169,10 @@ impl VertexUniforms {
     /// bytes, preserving every float's bits (including NaNs and signed zero).
     pub fn write_bytes(&self, out: &mut [u8]) {
         assert_eq!(out.len(), Self::SIZE);
-        let viewport = [self.surface[0], self.surface[1], self.z_max, self.shift];
+        let viewport = [self.surface[0], self.surface[1], self.z_max, self.shift[0]];
         let clip = match self.w_clip {
-            Some([lo, hi]) => [lo, hi, 1.0, if self.w_clamp { 1.0 } else { 0.0 }],
-            None => [0.0; 4],
+            Some([lo, hi]) => [lo, hi, if self.w_clamp { 2.0 } else { 1.0 }, self.shift[1]],
+            None => [0.0, 0.0, 0.0, self.shift[1]],
         };
         let out = common::uniform_vectors(out, &self.constants);
         let out = common::uniform_vectors(out, &self.defaults);
@@ -188,10 +188,10 @@ struct XvsUniforms {
     defaults: array<vec4f, 16>,
     // x, y: guest render-target size in the units the program's viewport
     // constants use; z: depth full scale (65535 for D16, 16777215 for D24);
-    // w: guest pixels taken off x and y (0 unless the target is scaled).
+    // w: guest pixels taken off x (0 unless the target is scaled).
     viewport: vec4f,
-    // W-buffering when z is 1: x, y the depth clip range for w; w is 1
-    // when out-of-range depth is clamped (by the fragment stage), not culled.
+    // x, y: depth clip range. z: 0 off, 1 cull, 2 clamp.
+    // w: guest pixels taken off y.
     clip: vec4f,
 }
 @group(0) @binding(0) var<uniform> xvs: XvsUniforms;
@@ -300,10 +300,11 @@ fn xvs_lit(s: vec4f) -> vec4f {
 // pixel wide and shows as a see-through line along the seam
 // (docs/graphics/high-resolution.md, "Subpixel snapping and cracks").
 fn xvs_fixup(p: vec4f) -> vec4f {
-    let t = select(trunc(p.xy * 16.0) / 16.0, p.xy, xvs.viewport.w > 0.0);
+    let shift = vec2f(xvs.viewport.w, xvs.clip.w);
+    let t = select(trunc(p.xy * 16.0) / 16.0, p.xy, shift > vec2f(0.0));
     let size = xvs.viewport.xy;
-    let far = vec2<bool>(xvs.viewport.w > 0.0) & (t > size - 0.5);
-    let xy = select(t - xvs.viewport.w, max(t - xvs.viewport.w, size), far);
+    let far = (shift > vec2f(0.0)) & (t > size - 0.5);
+    let xy = select(t - shift, max(t - shift, size), far);
     let w = xvs_clamp_away(p.w);
     let zn = p.z / xvs.viewport.z;
     let over = bitcast<i32>(p.z) > bitcast<i32>(xvs.viewport.z);
@@ -323,7 +324,7 @@ fn xvs_fixup(p: vec4f) -> vec4f {
         // nothing there.
         let lo = xvs.clip.x;
         let hi = xvs.clip.y;
-        let z = select(hi / (hi - lo) * (w - lo), 0.5 * w, xvs.clip.w != 0.0);
+        let z = select(hi / (hi - lo) * (w - lo), 0.5 * w, xvs.clip.z == 2.0);
         return vec4f(n.xy * w, z, w);
     }
     return vec4f(n * w, w);

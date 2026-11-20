@@ -873,13 +873,11 @@ pub struct ExternalPassRequest {
 
 /// The viewport of `request` in a `texels`-sized target: `[x, y, w, h]`.
 pub fn external_viewport(request: &ExternalPassRequest, texels: (u32, u32)) -> [f32; 4] {
-    let (gw, gh) = request.surface_size;
-    let (sx, sy) = (
-        texels.0 as f32 / gw.max(1) as f32,
-        texels.1 as f32 / gh.max(1) as f32,
-    );
+    let Some(scale) = gfx::raster::RenderScale::between(request.surface_size, texels) else {
+        return [0.0; 4];
+    };
     let (x, y, w, h) = request.rect;
-    [x as f32 * sx, y as f32 * sy, w as f32 * sx, h as f32 * sy]
+    scale.rect(x, y, w, h).map(|n| n as f32)
 }
 
 /// `D3DVIEWPORT8`.

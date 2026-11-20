@@ -4,7 +4,7 @@ use super::*;
 
 impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
     pub(super) fn single(&self) -> bool {
-        self.single_copy && self.scale > 1
+        self.single_copy && self.scale != RenderScale::ONE
     }
 
     pub(super) fn guest(&self, s: Surf<R, V>) -> V::Surface {

@@ -509,7 +509,7 @@ impl Producer {
     fn uniforms(frame: &Frame, guest_size: (u32, u32), size: (u32, u32)) -> (Vec<u8>, Vec<u8>) {
         let mut vu = frame.vertex.clone();
         vu.surface = [guest_size.0 as f32, guest_size.1 as f32];
-        vu.shift = gfx::renderer::window_shift(guest_size.0, size.0);
+        vu.shift = crate::program::target_shift(guest_size, size);
         let mut vb = vec![0; VertexUniforms::SIZE];
         vu.write_bytes(&mut vb);
         let mut pb = vec![0; PixelUniforms::SIZE];

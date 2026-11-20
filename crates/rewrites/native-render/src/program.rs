@@ -719,10 +719,28 @@ pub fn frame_vertex(base: &VertexUniforms, view: &ViewInputs) -> VertexUniforms 
     let (range, clamp) = view.w_clip.unwrap_or(([0.0, view.z_scale], false));
     u.w_clip = Some(range);
     u.w_clamp = clamp;
-    let s = view.size.0 as f32 / view.guest_size.0.max(1) as f32;
-    // As the D3D path shifts a scaled target (gfx::renderer::window_shift).
-    u.shift = if s > 1.0 { (2.0 * s - 1.0) / (4.0 * s) } else { 0.0 };
+    u.shift = target_shift(view.guest_size, view.size);
     u
+}
+
+/// Sample offset in guest pixels for each axis of this attachment copy.
+pub(crate) fn target_shift(guest: (u32, u32), host: (u32, u32)) -> [f32; 2] {
+    [
+        gfx::renderer::window_shift(guest.0, host.0),
+        gfx::renderer::window_shift(guest.1, host.1),
+    ]
+}
+
+/// Clip a resolved draw's guest rectangle to this target copy in host pixels.
+pub(crate) fn scaled_scissor(
+    clip: &d3d::backend::PixelRect,
+    scale: d3d::scaled::RenderScale,
+    extent: (u32, u32),
+) -> Option<gfx::ScissorRect> {
+    let [x, y, width, height] = scale.rect(clip.x, clip.y, clip.width, clip.height);
+    let rect = gfx::ScissorRect { x, y, width, height }
+        .intersect(gfx::ScissorRect::full(extent.0, extent.1));
+    (!rect.is_empty()).then_some(rect)
 }
 
 /// `base` with the frame's depth scale.
@@ -740,7 +758,9 @@ pub fn frame_pixel(base: &PixelUniforms, view: &ViewInputs) -> PixelUniforms {
 // Byte ranges in the shader uniform ABI. The rest of each block is constant
 // for the material (or, for rigid vertices, the material and placement).
 const VIEW_PREFIX: usize = VIEW_CONSTANTS * 16;
-const VERTEX_TAIL: usize = VertexUniforms::SIZE - 32;
+// The viewport and W-clip vectors follow the two register banks. A
+// per-draw UI transform follows them and is independent of the world view.
+const VERTEX_VIEW: usize = (vsh::CONSTANT_COUNT + vsh::INPUT_COUNT) * 16;
 const PIXEL_TAIL: usize = PixelUniforms::SIZE - 32;
 
 fn view_bytes(view: &ViewInputs) -> [u8; VIEW_PREFIX + 64] {
@@ -750,7 +770,7 @@ fn view_bytes(view: &ViewInputs) -> [u8; VIEW_PREFIX + 64] {
     let mut pixel = [0; PixelUniforms::SIZE];
     frame_pixel(&PixelUniforms::default(), view).write_bytes(&mut pixel);
     bytes[..VIEW_PREFIX].copy_from_slice(&vertex[..VIEW_PREFIX]);
-    bytes[VIEW_PREFIX..VIEW_PREFIX + 32].copy_from_slice(&vertex[VERTEX_TAIL..]);
+    bytes[VIEW_PREFIX..VIEW_PREFIX + 32].copy_from_slice(&vertex[VERTEX_VIEW..VERTEX_VIEW + 32]);
     bytes[VIEW_PREFIX + 32..].copy_from_slice(&pixel[PIXEL_TAIL..]);
     bytes
 }
@@ -1284,9 +1304,8 @@ impl Rigid {
         let v = frame_vertex(&self.program.vertex, view).to_bytes();
         // Only c[0..18] and the viewport/clip tail depend on the view.
         // Every placement keeps its own original c[50..53] in the GPU block.
-        let tail = VertexUniforms::SIZE - 32;
         uploads.repeat(&self.buffer, 0, self.stride, self.slots.len(), &v[..VIEW_CONSTANTS * 16]);
-        uploads.repeat(&self.buffer, tail as u64, self.stride, self.slots.len(), &v[tail..]);
+        uploads.repeat(&self.buffer, VERTEX_VIEW as u64, self.stride, self.slots.len(), &v[VERTEX_VIEW..VERTEX_VIEW + 32]);
     }
 
     /// [`Rigid::prepare`]'s view rows for the slots of `instances` only, as
@@ -1295,13 +1314,12 @@ impl Rigid {
         &self, view: &ViewInputs, instances: impl IntoIterator<Item = u32>,
     ) -> Vec<(wgpu::Buffer, u64, Vec<u8>)> {
         let v = frame_vertex(&self.program.vertex, view).to_bytes();
-        let tail = VertexUniforms::SIZE - 32;
         let mut writes = Vec::new();
         for instance in instances {
             let Some(offset) = self.offset(instance) else { continue };
             let offset = u64::from(offset);
             writes.push((self.buffer.clone(), offset, v[..VIEW_CONSTANTS * 16].to_vec()));
-            writes.push((self.buffer.clone(), offset + tail as u64, v[tail..].to_vec()));
+            writes.push((self.buffer.clone(), offset + VERTEX_VIEW as u64, v[VERTEX_VIEW..VERTEX_VIEW + 32].to_vec()));
         }
         writes
     }
@@ -1509,7 +1527,7 @@ impl ProgramSet {
                 (&self.materials[&material].vertex_buffer, 0)
             };
             uploads.copy(&source, start, buffer, offset, VIEW_PREFIX as u64);
-            uploads.copy(&source, viewport, buffer, offset + VERTEX_TAIL as u64, 32);
+            uploads.copy(&source, viewport, buffer, offset + VERTEX_VIEW as u64, 32);
         }
     }
 
@@ -1533,7 +1551,7 @@ impl ProgramSet {
                 (&self.materials[&material].vertex_buffer, 0)
             };
             writes.push((buffer.clone(), offset, prefix.to_vec()));
-            writes.push((buffer.clone(), offset + VERTEX_TAIL as u64, viewport.to_vec()));
+            writes.push((buffer.clone(), offset + VERTEX_VIEW as u64, viewport.to_vec()));
         }
         writes
     }
@@ -1642,8 +1660,10 @@ mod tests {
         assert_eq!(u.constants[18], [10.0, 10.0, 0.0, 0.0], "instance constants kept");
         assert_eq!(u.surface, [640.0, 480.0]);
         assert_eq!(u.w_clip, Some([0.0, 16_777_215.0]));
-        assert_eq!(u.shift, 3.0 / 8.0, "(2s - 1) / 4s at 2x");
-        assert_eq!(frame_vertex(&base, &ViewInputs { size: (640, 480), ..view }).shift, 0.0);
+        assert_eq!(u.shift, [3.0 / 8.0; 2], "(2s - 1) / 4s at 2x");
+        assert_eq!(frame_vertex(&base, &ViewInputs { size: (640, 480), ..view }).shift, [0.0; 2]);
+        let wide = ViewInputs { size: (1600, 480), ..view };
+        assert_eq!(frame_vertex(&base, &wide).shift, [0.4, 0.0]);
         let p = frame_pixel(&PixelUniforms::default(), &ViewInputs { z_scale: 65_535.0, ..view });
         assert_eq!((p.depth[0], p.depth_range[1]), (65_535.0, 65_535.0));
         // The device's clip range and clamp, as the D3D path takes them
@@ -1665,11 +1685,11 @@ mod tests {
         let pixel = PixelUniforms { lod_bias: [0.25; 4], stipple: [17; 32], ..Default::default() };
         let mut vb = vertex.to_bytes();
         let mut pb = pixel.to_bytes();
-        for (size, w_clip) in [((8, 4), None), ((16, 8), Some(([2.0, 7.0], true)))] {
+        for (size, w_clip) in [((8, 4), None), ((20, 9), Some(([2.0, 7.0], true)))] {
             let view = ViewInputs { constants: [[1.0, -0.0, 3.0, 4.0]; VIEW_CONSTANTS], size, guest_size: (8, 4), z_scale: 10.0, w_clip };
             let bytes = view_bytes(&view);
             vb[..VIEW_PREFIX].copy_from_slice(&bytes[..VIEW_PREFIX]);
-            vb[VERTEX_TAIL..].copy_from_slice(&bytes[VIEW_PREFIX..VIEW_PREFIX + 32]);
+            vb[VERTEX_VIEW..VERTEX_VIEW + 32].copy_from_slice(&bytes[VIEW_PREFIX..VIEW_PREFIX + 32]);
             pb[PIXEL_TAIL..].copy_from_slice(&bytes[VIEW_PREFIX + 32..]);
             assert_eq!(vb, frame_vertex(&vertex, &view).to_bytes());
             assert_eq!(pb, frame_pixel(&pixel, &view).to_bytes());

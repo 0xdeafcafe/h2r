@@ -84,10 +84,8 @@ impl AliasDecoder {
             || offset.checked_add(layout.total_size).is_none_or(|end| end > pitch.max(size.0 * bpp) as usize * size.1 as usize) {
             return Err("invalid alias source or byte range".into());
         }
-        let scale = source.width() / size.0;
-        if scale == 0 || source.width() != size.0 * scale || source.height() != size.1 * scale {
-            return Err("invalid alias source scale".into());
-        }
+        let scale = crate::raster::RenderScale::between(size, (source.width(), source.height()))
+            .ok_or("empty alias source")?;
         let key = (format, desc.format);
         if let std::collections::hash_map::Entry::Vacant(entry) = self.pipelines.entry(key) {
             let shader = include_str!("surface_alias.wgsl")
@@ -105,10 +103,19 @@ impl AliasDecoder {
         let limits = device.limits();
         let volume = desc.kind == TextureKind::Volume;
         let limit = if volume { limits.max_texture_dimension_3d } else { limits.max_texture_dimension_2d };
-        let out_scale = scale.min(limit / desc.width.max(desc.height).max(1));
-        if out_scale == 0 || (volume && desc.depth > limit) { return Err("alias exceeds GPU texture limits".into()); }
-        let width = desc.width * out_scale;
-        let height = desc.height * out_scale;
+        // Reinterpreted cube faces must remain square and volume mip slices
+        // share an isotropic grid. Use the guest layout for those classes
+        // when the display's scale is not an integer in both directions.
+        let out_grid = if desc.kind != TextureKind::D2 {
+            scale.uniform_integer().unwrap_or(1).into()
+        } else { scale };
+        let (w, h) = out_grid.size(desc.width, desc.height);
+        // A header can describe a full mip chain. Keep every guest mip legal
+        // even when the window is smaller than the guest.
+        let (width, height) = if desc.levels > 1 {
+            (w.max(desc.width).min(limit), h.max(desc.height).min(limit))
+        } else { (w.min(limit), h.min(limit)) };
+        if volume && desc.depth > limit { return Err("alias exceeds GPU texture limits".into()); }
         let out = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("guest surface alias"), size: wgpu::Extent3d {
                 width, height, depth_or_array_layers: if volume { desc.depth } else { layout.faces },
@@ -140,8 +147,8 @@ impl AliasDecoder {
                 for slice in 0..level.depth {
                     for first in (0..h).step_by(rows as usize) {
                         let count = (h - first).min(rows);
-                        let params = [size.0, pitch, bpp, scale, base, desc.pitch, desc.format.bytes_per_texel().unwrap_or(0),
-                            crate::guest_words::sign_flip(signed), level.width, level.height, level.depth, slice, w, h, first, row / 4, size.1, 0, 0, 0];
+                        let params = [size.0, pitch, bpp, source.width(), base, desc.pitch, desc.format.bytes_per_texel().unwrap_or(0),
+                            crate::guest_words::sign_flip(signed), level.width, level.height, level.depth, slice, w, h, first, row / 4, size.1, source.height(), 0, 0];
                         let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                             label: Some("alias level"), usage: wgpu::BufferUsages::UNIFORM, contents: bytemuck::cast_slice(&params),
                         });

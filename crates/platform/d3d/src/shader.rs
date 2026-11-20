@@ -245,7 +245,7 @@ pub trait ShaderProvider: Send {
     /// Window coordinates stay the guest's; the provider shifts positions
     /// by [`gfx::renderer::window_shift`] so edges cover what they cover
     /// at 1x.
-    fn set_render_scale(&mut self, _scale: u32) {}
+    fn set_render_scale(&mut self, _scale: crate::scaled::RenderScale) {}
 
     /// E3 lighting's hard shadows (docs/graphics/e3-lighting-setting.md):
     /// from now on every shadow-map comparison is one tap

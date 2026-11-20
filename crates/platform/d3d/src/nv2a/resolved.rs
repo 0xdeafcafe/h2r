@@ -17,7 +17,7 @@ pub fn resolve(
     draw: &ResolvedDraw,
     present: [bool; 4],
     caps: gfx::translate::Capabilities,
-    scale: u32,
+    scale: impl Into<crate::scaled::RenderScale>,
 ) -> Result<ResolvedProgram, String> {
     let table = RenderStateTable::default();
     let KeyParts {
@@ -37,7 +37,7 @@ pub fn resolve(
         surface: [draw.target.width as f32, draw.target.height as f32],
         // Same full scale as gfx's built-in shader.
         z_max: gfx::renderer::d3dz_max(draw.target.depth_format),
-        shift: gfx::renderer::window_shift(1, scale),
+        shift: scale.into().shift(),
         ..VertexUniforms::default()
     };
     match key.vertex {

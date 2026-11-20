@@ -515,18 +515,10 @@ impl Pass {
         device_id: u64,
     ) -> Result<ImmediateDrawSnapshot, Refused> {
         let d = &self.draw;
-        if t.guest_size != (d.target.width, d.target.height)
-            || t.guest_size.0 == 0
-            || t.guest_size.1 == 0
-            || !t.size.0.is_multiple_of(t.guest_size.0)
-            || !t.size.1.is_multiple_of(t.guest_size.1)
-        {
+        if t.guest_size != (d.target.width, d.target.height) {
             return Err(Refused::Target);
         }
-        let scale = t.size.0 / t.guest_size.0;
-        if scale == 0 || scale != t.size.1 / t.guest_size.1 {
-            return Err(Refused::Target);
-        }
+        let scale = d3d::scaled::RenderScale::between(t.guest_size, t.size).ok_or(Refused::Target)?;
         let caps = gfx::translate::Capabilities::from_features(t.device.features());
         let program = d3d::nv2a::resolved::resolve(d, t.stages.map(|v| v.is_some()), caps, scale)
             .map_err(Refused::Shader)?;
@@ -548,8 +540,7 @@ impl Pass {
             == wgpu::PrimitiveTopology::TriangleStrip)
             .then_some(wgpu::IndexFormat::Uint32);
         let clip = d.clip.ok_or(Refused::Scissor)?;
-        let scissor = [clip.x, clip.y, clip.width, clip.height]
-            .map(|v| v.checked_mul(scale).ok_or(Refused::Scissor));
+        let scissor = scale.rect(clip.x, clip.y, clip.width, clip.height);
         let mut textures = [None, None, None, None];
         for (n, slot) in textures.iter_mut().enumerate() {
             if let (Some(view), Some(dim), Some(header)) = (
@@ -605,12 +596,7 @@ impl Pass {
             color_writes: gfx::translate::color_writes(render.color_write),
             blend_constant: gfx::translate::blend_constant(&render),
             stencil_reference: render.stencil.reference as u32,
-            scissor: [
-                scissor[0].clone()?,
-                scissor[1].clone()?,
-                scissor[2].clone()?,
-                scissor[3].clone()?,
-            ],
+            scissor,
         })
     }
 }
@@ -954,6 +940,6 @@ mod tests {
         assert!(p.pixel.explicit_final);
         assert!(p.vertex_uniforms.w_clip.is_some());
         assert!(!p.pixel_options.w_buffer);
-        assert_eq!(p.vertex_uniforms.shift, gfx::renderer::window_shift(1, 2));
+        assert_eq!(p.vertex_uniforms.shift, [gfx::renderer::window_shift(1, 2); 2]);
     }
 }

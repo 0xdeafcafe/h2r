@@ -28,6 +28,7 @@ fn vertex_uniform_bytes_match_the_gpu_layout_on_reuse() {
     }
     u.surface = [-0.0, 1024.0];
     u.z_max = 65535.0;
+    u.shift = [0.375, 0.4375];
     let mut out = [0xa5; VertexUniforms::SIZE];
     for clip in [None, Some([-0.0, 100.0]), None] {
         for clamp in [false, true] {
@@ -36,10 +37,10 @@ fn vertex_uniform_bytes_match_the_gpu_layout_on_reuse() {
             let mut expected = Vec::new();
             expected.extend_from_slice(&u.constants);
             expected.extend_from_slice(&u.defaults);
-            expected.push([u.surface[0], u.surface[1], u.z_max, 0.0]);
+            expected.push([u.surface[0], u.surface[1], u.z_max, u.shift[0]]);
             expected.push(match clip {
-                Some([lo, hi]) => [lo, hi, 1.0, if clamp { 1.0 } else { 0.0 }],
-                None => [0.0; 4],
+                Some([lo, hi]) => [lo, hi, if clamp { 2.0 } else { 1.0 }, u.shift[1]],
+                None => [0.0, 0.0, 0.0, u.shift[1]],
             });
             u.write_bytes(&mut out);
             assert_eq!(out.as_slice(), bytes(&expected));

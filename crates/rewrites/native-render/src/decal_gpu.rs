@@ -41,6 +41,13 @@ pub struct ClipRect {
     pub height: u32,
 }
 
+impl ClipRect {
+    fn scaled(self, scale: d3d::scaled::RenderScale) -> ScissorRect {
+        let [x, y, width, height] = scale.rect(self.x, self.y, self.width, self.height);
+        ScissorRect { x, y, width, height }
+    }
+}
+
 /// The non-geometry half of an immutable resolved-draw snapshot.
 #[derive(Clone, Debug)]
 pub struct ShaderSnapshot {
@@ -456,12 +463,7 @@ fn draw_uniforms(
     let mut vu = vertex.clone();
     vu.surface = [guest_size.0 as f32, guest_size.1 as f32];
     vu.z_max = z_scale;
-    let scale = size.0 as f32 / guest_size.0 as f32;
-    vu.shift = if scale > 1.0 {
-        (2.0 * scale - 1.0) / (4.0 * scale)
-    } else {
-        0.0
-    };
+    vu.shift = crate::program::target_shift(guest_size, size);
     vu.w_clip = mode.w_buffered().then_some(clip.range);
     vu.w_clamp = mode.w_buffered() && clip.clamp;
     let mut pu = pixel;
@@ -588,20 +590,10 @@ impl DecalGpu {
         {
             return false;
         }
-        let (sx, sy) = (t.size.0 / t.guest_size.0, t.size.1 / t.guest_size.1);
-        if sx == 0 || sy == 0 || t.size != (t.guest_size.0 * sx, t.guest_size.1 * sy) {
+        let Some(scale) = d3d::scaled::RenderScale::between(t.guest_size, t.size) else {
             return false;
-        }
-        let clips: Vec<ClipRect> = self
-            .clips
-            .iter()
-            .map(|c| ClipRect {
-                x: c.x.saturating_mul(sx),
-                y: c.y.saturating_mul(sy),
-                width: c.width.saturating_mul(sx),
-                height: c.height.saturating_mul(sy),
-            })
-            .collect();
+        };
+        let clips: Vec<_> = self.clips.iter().map(|c| c.scaled(scale)).collect();
         if clips.is_empty() {
             return true;
         }
@@ -825,10 +817,7 @@ impl DecalCache {
             return Err("issue snapshot");
         }
         let caps = gfx::translate::Capabilities::from_features(device.features());
-        let (sx, sy) = (t.size.0 / t.guest_size.0, t.size.1 / t.guest_size.1);
-        if sx == 0 || sy == 0 || t.size != (t.guest_size.0 * sx, t.guest_size.1 * sy) {
-            return Err("target scale");
-        }
+        let scale = d3d::scaled::RenderScale::between(t.guest_size, t.size).ok_or("target scale")?;
         if prepared.clips.is_empty() {
             return Ok(None);
         }
@@ -978,12 +967,7 @@ impl DecalCache {
                     ],
                     &render,
                     t.size,
-                    ScissorRect {
-                        x: c.x.saturating_mul(sx),
-                        y: c.y.saturating_mul(sy),
-                        width: c.width.saturating_mul(sx),
-                        height: c.height.saturating_mul(sy),
-                    },
+                    c.scaled(scale),
                 )
                 .with_blend_constant(blend_constant)
             })

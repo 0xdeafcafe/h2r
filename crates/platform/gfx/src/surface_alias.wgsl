@@ -1,11 +1,11 @@
 // A texel in the alias addresses bytes in the guest's surface layout. Pick
 // the same subpixel in each contributing source word at display resolution.
 struct Params {
-    src_width: u32, src_pitch: u32, src_bpp: u32, scale: u32,
+    src_width: u32, src_pitch: u32, src_bpp: u32, host_width: u32,
     base: u32, pitch: u32, bpp: u32, signed_flip: u32,
     width: u32, height: u32, depth: u32, slice: u32,
     out_width: u32, out_height: u32, first_y: u32, row_words: u32,
-    src_height: u32, pad0: u32, pad1: u32, pad2: u32,
+    src_height: u32, host_height: u32, pad1: u32, pad2: u32,
 }
 @group(0) @binding(0) var<uniform> p: Params;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
@@ -34,7 +34,11 @@ fn read_byte(address: u32, subpixel: vec2u) -> u32 {
         }
     }
     if texel.x >= p.src_width { return 0u; }
-    let word = source_word(texel * p.scale + subpixel);
+    let guest = vec2u(p.src_width, p.src_height);
+    let host = vec2u(p.host_width, p.host_height);
+    let lo = (texel * host + guest / 2u) / guest;
+    let hi = ((texel + 1u) * host + guest / 2u) / guest;
+    let word = source_word(min(lo + (subpixel * (hi - lo) >> vec2u(16u)), host - 1u));
     return (word >> (8u * (col % p.src_bpp))) & 255u;
 }
 
@@ -128,12 +132,13 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     let xy = vec2u(id.x, p.first_y + id.y);
     if xy.x >= p.out_width || xy.y >= p.out_height || id.y >= arrayLength(&output) / p.row_words { return; }
     let dims = vec2u(p.out_width, p.out_height);
-    let scaled = xy * vec2u(p.width, p.height);
-    let pos = vec3u(scaled / dims, p.slice);
-    let c = decode(pos, subpixel_of(scaled, dims));
+    let guest = vec2u(p.width, p.height);
+    let cell = ((2u * xy + 1u) * guest - 1u) / (2u * dims);
+    let lo = (cell * dims + guest / 2u) / guest;
+    let hi = ((cell + 1u) * dims + guest / 2u) / guest;
+    // The centre within this guest cell in 16.16 fixed point. Each byte
+    // contributing to an alias texel can address a different source cell.
+    let sub = ((xy - lo) * 65536u + 32768u) / max(hi - lo, vec2u(1u));
+    let c = decode(vec3u(cell, p.slice), sub);
     output[id.y * p.row_words + id.x] = (c.r | (c.g << 8u) | (c.b << 16u) | (c.a << 24u)) ^ p.signed_flip;
-}
-
-fn subpixel_of(scaled: vec2u, dims: vec2u) -> vec2u {
-    return ((scaled % dims) * p.scale) / dims;
 }

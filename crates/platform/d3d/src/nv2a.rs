@@ -193,7 +193,7 @@ pub struct Nv2aShaders {
     persist: Option<Persist>,
     warm: Option<Warm>,
     /// [`ShaderProvider::set_render_scale`].
-    render_scale: u32,
+    render_scale: crate::scaled::RenderScale,
     /// [`ShaderProvider::set_hard_shadows`].
     hard_shadows: bool,
     /// WGSL overrides and dumps (`nv2a_hot.rs`).
@@ -239,7 +239,7 @@ impl Nv2aShaders {
             cache_path: None,
             persist: None,
             warm: None,
-            render_scale: 1,
+            render_scale: crate::scaled::RenderScale::ONE,
             hard_shadows: false,
             hot: hot::HotState::new(hot_render::global()),
         }
@@ -850,8 +850,8 @@ pub fn fixed_function_def(ff: &FixedFunction<'_>) -> Result<PixelShaderDef, Stri
 }
 
 impl ShaderProvider for Nv2aShaders {
-    fn set_render_scale(&mut self, scale: u32) {
-        self.render_scale = scale.max(1);
+    fn set_render_scale(&mut self, scale: crate::scaled::RenderScale) {
+        self.render_scale = scale;
     }
 
     fn set_hard_shadows(&mut self, on: bool) {
@@ -876,7 +876,7 @@ impl ShaderProvider for Nv2aShaders {
         // Text from the glyph cache, magnified: the glyph filter
         // (`crate::glyph`). Never at 1x, so the reference is untouched.
         let mut key = key;
-        if self.render_scale > 1 {
+        if self.render_scale.magnified() {
             key.pixel_options.glyph = draw.glyph_cache & 0xF;
         }
         // E3 lighting's one-tap shadow lookup (view only, like the glyph

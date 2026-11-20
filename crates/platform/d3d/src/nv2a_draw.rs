@@ -27,7 +27,7 @@ pub struct NativeDrawProgram {
 
 impl NativeDrawProgram {
     pub fn resolve(draw: &ResolvedDraw, present: [bool; 4], caps: Capabilities,
-        fetch: FetchMode, scale: u32) -> Result<Self, String> {
+        fetch: FetchMode, scale: impl Into<crate::scaled::RenderScale>) -> Result<Self, String> {
         let material = NativeDrawMaterial::resolve(draw, present, caps, fetch)?;
         let (vertex, pixel) = material.uniforms(draw, scale);
         Ok(Self { key: material.key, vertex, pixel, samplers: material.samplers, writes_depth: material.writes_depth })
@@ -94,7 +94,7 @@ impl NativeDrawMaterial {
         })
     }
 
-    pub fn uniforms(&self, draw: &ResolvedDraw, scale: u32) -> (VertexUniforms, PixelUniforms) {
+    pub fn uniforms(&self, draw: &ResolvedDraw, scale: impl Into<crate::scaled::RenderScale>) -> (VertexUniforms, PixelUniforms) {
         uniforms(&TABLE, draw, &self.key.0, &self.def, self.signs, scale)
     }
 }
@@ -107,7 +107,7 @@ impl NativeDrawProgram {
         present: [bool; 4],
         caps: Capabilities,
         fetch: FetchMode,
-        scale: u32,
+        scale: impl Into<crate::scaled::RenderScale>,
     ) -> Result<Self, UiProgramError> {
         static TABLE: std::sync::LazyLock<RenderStateTable> =
             std::sync::LazyLock::new(RenderStateTable::default);
@@ -132,7 +132,8 @@ impl NativeDrawProgram {
         if key.pixel_options.shadow.iter().any(Option::is_some) {
             return Err(UiProgramError::Texture);
         }
-        if scale > 1 {
+        let scale = scale.into();
+        if scale.magnified() {
             key.pixel_options.glyph = draw.glyph_cache & 0xF;
         }
         let (vertex, pixel) = uniforms(&TABLE, draw, &key, &def, signs, scale);
@@ -152,7 +153,7 @@ pub(super) fn uniforms(
     key: &ProgramKey,
     def: &PixelShaderDef,
     signs: [u8; 4],
-    scale: u32,
+    scale: impl Into<crate::scaled::RenderScale>,
 ) -> (VertexUniforms, PixelUniforms) {
     let (c0, c1) = def.embedded_constants();
     let render = &draw.state.render;
@@ -160,7 +161,7 @@ pub(super) fn uniforms(
         surface: [draw.target.width as f32, draw.target.height as f32],
         // Same full scale as gfx's built-in shader.
         z_max: gfx::renderer::d3dz_max(draw.target.depth_format),
-        shift: gfx::renderer::window_shift(1, scale),
+        shift: scale.into().shift(),
         ..VertexUniforms::default()
     };
     match key.vertex {

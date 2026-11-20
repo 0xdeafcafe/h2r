@@ -379,13 +379,6 @@ fn convolution_states<'a>(
     Ok(())
 }
 
-/// `guest` guest pixels in a copy `size` texels for `of` guest pixels:
-/// the stand-in's texels, at least 1x1.
-pub fn host_size(guest: (u32, u32), of: (u32, u32), size: (u32, u32)) -> (u32, u32) {
-    let scale = |n: u32, s: u32, g: u32| ((u64::from(n) * u64::from(s)).div_ceil(u64::from(g.max(1))) as u32).max(1);
-    (scale(guest.0, size.0, of.0), scale(guest.1, size.1, of.1))
-}
-
 /// The vertex uniforms for a destination `guest_size` guest pixels
 /// (`size` texels) with depth scale `z_scale`: the positions are in its
 /// pixels, no W-buffer (the screen passes turn depth off).
@@ -395,9 +388,7 @@ pub fn screen_vertex(base: &VertexUniforms, guest_size: (u32, u32), size: (u32, 
     u.z_max = z_scale;
     u.w_clip = None;
     u.w_clamp = false;
-    let s = size.0 as f32 / guest_size.0.max(1) as f32;
-    // As the D3D path shifts a scaled target (gfx::renderer::window_shift).
-    u.shift = if s > 1.0 { (2.0 * s - 1.0) / (4.0 * s) } else { 0.0 };
+    u.shift = crate::program::target_shift(guest_size, size);
     u
 }
 
@@ -449,12 +440,9 @@ pub struct ScreenTarget<'a> {
     pub device: &'a wgpu::Device,
     pub queue: &'a wgpu::Queue,
     pub uploads: &'a gfx::ring::SubmissionUploads,
-    pub color: &'a wgpu::TextureView,
-    pub target1: Option<&'a wgpu::TextureView>,
-    pub convolutions: [Option<&'a wgpu::TextureView>; 3],
-    /// The colour's size in guest pixels and in this copy's texels.
-    pub guest_size: (u32, u32),
-    pub size: (u32, u32),
+    pub color: glow::PostSurface<'a>,
+    pub target1: Option<glow::PostSurface<'a>>,
+    pub convolutions: [Option<glow::PostSurface<'a>>; 3],
     /// The device's depth scale (`+0x948`).
     pub z_scale: f32,
 }
@@ -679,14 +667,13 @@ impl StripRaster {
 
     fn scissor(self, guest: (u32, u32), size: (u32, u32)) -> Result<[u32; 4], ScreenRefused> {
         let [x, y, w, h] = self.clip.unwrap_or([0, 0, guest.0, guest.1]);
-        if guest.0 == 0 || guest.1 == 0 || w == 0 || h == 0
+        let scale = d3d::scaled::RenderScale::between(guest, size).ok_or(ScreenRefused::Clip)?;
+        if w == 0 || h == 0
             || x > guest.0 || w > guest.0 - x || y > guest.1 || h > guest.1 - y
-            || !size.0.is_multiple_of(guest.0) || !size.1.is_multiple_of(guest.1)
         {
             return Err(ScreenRefused::Clip);
         }
-        let (sx, sy) = (size.0 / guest.0, size.1 / guest.1);
-        Ok([x * sx, y * sy, w * sx, h * sy])
+        Ok(scale.rect(x, y, w, h))
     }
 }
 
@@ -829,20 +816,22 @@ impl ScreenSet {
         frame: Option<&QuadFrame>,
         stage_image: &mut dyn FnMut(ScreenStage) -> Option<Image>,
     ) -> Result<ScreenCommands, ScreenRefused> {
-        let ScreenTarget { device, queue, uploads, color, target1, convolutions, guest_size, size, z_scale } = t;
+        let ScreenTarget { device, queue, uploads, color, target1, convolutions, z_scale } = t;
+        let guest_size = color.guest_size;
         check_order(draws.iter().map(|d| (d.program, d.dest, d.convolutions)))?;
         convolution_states(frame, draws.iter().map(|d| d.convolutions))?;
-        let view_of = |index| match index {
+        let slot = |index| match index {
             0 => Some(color),
             1 => target1,
             _ => stand_in(index).and_then(|i| convolutions[i]),
         };
+        let view_of = |index| slot(index).map(|slot| slot.view);
         let attachment = |index, guest| {
-            let view = view_of(index).ok_or(ScreenRefused::Attachment(index))?;
-            if !glow::live_colour(view, host_size(guest, guest_size, size)) {
+            let slot = slot(index).ok_or(ScreenRefused::Attachment(index))?;
+            if slot.guest_size != guest || !glow::live_colour(slot.view) {
                 return Err(ScreenRefused::Attachment(index));
             }
-            Ok(view)
+            Ok(slot.view)
         };
         let sample = |index| {
             let view = view_of(index).ok_or(ScreenRefused::Source(index))?;
@@ -857,7 +846,7 @@ impl ScreenSet {
         };
         let mut drawn = Drawn::default();
         for d in draws {
-            check(color, d.program)?;
+            check(color.view, d.program)?;
             if d.strips.is_empty() || d.strips.iter().any(|s| s.len() < 3) {
                 return Err(ScreenRefused::NoStrips);
             }
@@ -917,7 +906,7 @@ impl ScreenSet {
                 drawn.result(n, c);
             }
         }
-        let texture = color.texture();
+        let texture = color.view.texture();
         let full = wgpu::Extent3d { width: texture.width(), height: texture.height(), depth_or_array_layers: 1 };
         let mut commands = ScreenCommands { steps: Vec::new(), ranges: 0 };
         let mut quads = quads.into_iter();
@@ -1161,6 +1150,7 @@ mod tests {
         raster.clip = Some([4, 6, 8, 10]);
         assert_ne!(raster.pipeline(format, wgpu::Features::empty()), first);
         assert_eq!(raster.scissor((32, 32), (64, 64)), Ok([8, 12, 16, 20]));
+        assert_eq!(raster.scissor((32, 32), (80, 40)), Ok([10, 8, 20, 12]));
         assert_eq!(raster.scissor((8, 8), (16, 16)), Err(ScreenRefused::Clip));
     }
 
@@ -1266,14 +1256,6 @@ mod tests {
     }
 
     #[test]
-    fn a_stand_in_is_its_guest_size_at_the_copys_scale() {
-        assert_eq!(host_size((320, 240), (640, 480), (1280, 960)), (640, 480), "a half at 2x");
-        assert_eq!(host_size((160, 120), (640, 480), (640, 480)), (160, 120));
-        assert_eq!(host_size((161, 1), (640, 480), (1000, 750)), (252, 2), "rounded up");
-        assert_eq!(host_size((0, 0), (640, 480), (640, 480)), (1, 1));
-    }
-
-    #[test]
     fn target_one_keeps_its_live_format_and_pixels_across_partial_passes() {
         let Ok(ctx) = gfx::GfxContext::headless() else { return };
         let size = (8, 8);
@@ -1332,11 +1314,9 @@ mod tests {
             device: &ctx.device,
             queue: &ctx.queue,
             uploads: &arena,
-            color: &color,
-            target1: Some(&target1),
+            color: glow::PostSurface { view: &color, guest_size: size },
+            target1: Some(glow::PostSurface { view: &target1, guest_size: size }),
             convolutions: [None; 3],
-            guest_size: size,
-            size,
             z_scale: 1.0,
         };
         let draws = [draw((0, 0, 0), &red, &left[..], red.state.into()), draw((0, 0, 0), &blue, &right[..], blue.state.into())];
@@ -1439,11 +1419,9 @@ mod tests {
                 device: &ctx.device,
                 queue: &ctx.queue,
                 uploads: &arena,
-                color: &views[0],
-                target1: Some(&views[1]),
-                convolutions: [Some(&views[2]), None, None],
-                guest_size: size,
-                size,
+                color: glow::PostSurface { view: &views[0], guest_size: size },
+                target1: Some(glow::PostSurface { view: &views[1], guest_size: size }),
+                convolutions: [Some(glow::PostSurface { view: &views[2], guest_size: (4, 4) }), None, None],
                 z_scale: 1.0,
             };
             let mut set = ScreenSet::new();
@@ -1474,8 +1452,8 @@ mod tests {
         let p = program([ScreenStage::Engine(5), ScreenStage::Bitmap { bitmap: map::TagId(1), image: 0 }, ScreenStage::Engine(3), E]);
         let v = screen_vertex(&p.vertex, (640, 480), (1280, 960), 16_777_215.0);
         assert_eq!((v.surface, v.z_max, v.w_clip), ([640.0, 480.0], 16_777_215.0, None));
-        assert_eq!(v.shift, 3.0 / 8.0, "2x: (2 s - 1) / 4 s");
-        assert_eq!(screen_vertex(&p.vertex, (640, 480), (640, 480), 1.0).shift, 0.0);
+        assert_eq!(v.shift, [3.0 / 8.0; 2], "2x: (2 s - 1) / 4 s");
+        assert_eq!(screen_vertex(&p.vertex, (640, 480), (640, 480), 1.0).shift, [0.0; 2]);
         let drawn = Drawn { target1: Some((320, 240)), ..Default::default() };
         let px = screen_pixel(&p, (640, 480), &drawn);
         assert_eq!(px.tex_scale[0], [1.0 / 640.0, 1.0 / 480.0, 1.0, 1.0], "the view in texels");

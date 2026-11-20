@@ -1070,6 +1070,63 @@ fn edge_scene<B: Backend>(backend: B, pass: EdgePass) -> Device<B> {
 }
 
 #[test]
+fn fractional_per_axis_surfaces_keep_fullscreen_edges_and_guest_answers() {
+    let Some(ctx) = context() else { return };
+    let output = (149, 101);
+    let grid = d3d::scaled::RenderScale::between((W, H), output).unwrap();
+    let backend = |single| ScaledBackend::with_resolution(
+        GfxBackend::new(share(&ctx)), GfxBackend::new(share(&ctx)), grid, single,
+    ).unwrap();
+    let (_, _, retail) = frame(GfxBackend::new(share(&ctx)));
+    let (device, _, answers) = frame(backend(false));
+    assert_eq!(answers, retail, "reads and visibility counts come from the reference");
+    assert_eq!(device.backend.stats().view_errors, 0);
+
+    let request = d3d::ExternalPassRequest { rect: (1, 3, 11, 9), surface_size: (W, H), z_scale: 1.0 };
+    assert_eq!(d3d::external_viewport(&request, output), [2.0, 5.0, 26.0, 14.0]);
+    for single in [false, true] {
+        for pass in [EdgePass::Flat, EdgePass::SmallBlur, EdgePass::FrameChain] {
+            let mut device = edge_scene(backend(single), pass);
+            let buffer = device.back_buffer().unwrap();
+            let (shown, size) = pixels(device.backend.view_mut(), buffer.view.unwrap());
+            let pass_pixel = PASS.to_le_bytes(); // BGRA color attachment
+            assert_eq!(size, output);
+            assert!(shown.chunks_exact(4).all(|p| p == pass_pixel), "{pass:?}, single={single}");
+        }
+    }
+}
+
+#[test]
+fn fractional_clears_and_scissors_tile_the_same_texels() {
+    let Some(ctx) = context() else { return };
+    let grid = d3d::scaled::RenderScale::between((W, H), (149, 101)).unwrap();
+    let backend = ScaledBackend::with_resolution(
+        GfxBackend::new(share(&ctx)), GfxBackend::new(share(&ctx)), grid, true,
+    ).unwrap();
+    let (mut d, mut m) = create(backend, UploadPolicy::Tracked);
+    d.clear(&mut m, 0, 0, 0xF0, 0xff00_0000, 1.0, 0).unwrap();
+    rects(&mut m, &[[1, 3, 12, 12]]);
+    d.clear(&mut m, 1, RECTS, 0xF0, 0xffff_0000, 1.0, 0).unwrap();
+    set_states(&mut d, &mut m);
+    rects(&mut m, &[[12, 3, 31, 12]]);
+    d.set_scissors(&mut m, 1, 0, RECTS).unwrap();
+    flat_quad(&mut d, &mut m, FULL, 0xff00_ff00);
+    let buffer = d.back_buffer().unwrap();
+    let (shown, (w, h)) = pixels(d.backend.view_mut(), buffer.view.unwrap());
+    for y in 0..h {
+        for x in 0..w {
+            let expected: u32 = match (x, y) {
+                (2..28, 5..19) => 0xffff_0000,
+                (28..72, 5..19) => 0xff00_ff00,
+                _ => 0xff00_0000,
+            };
+            let start = ((y * w + x) * 4) as usize;
+            assert_eq!(&shown[start..start + 4], &expected.to_le_bytes(), "({x},{y})");
+        }
+    }
+}
+
+#[test]
 fn a_full_screen_pass_reaches_the_far_edges_at_every_scale() {
     let Some(ctx) = context() else { return };
     for pass in [EdgePass::Flat, EdgePass::SmallBlur, EdgePass::FrameChain] {
