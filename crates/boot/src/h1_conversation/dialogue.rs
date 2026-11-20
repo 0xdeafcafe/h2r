@@ -51,6 +51,18 @@ pub(super) fn source_offset_row(
     source_row(m, unit, (offset / 0x10 - 1) as u16).map(|row| row.map(|(index, _)| index))
 }
 
+pub(super) fn converted_bank(m: &dyn GuestMemory, sound_bank: u32) -> Result<bool, MemFault> {
+    let Some(root) = tag_address(m, sound_bank, UDLG)? else {
+        return Ok(false);
+    };
+    let count = m.u32(root + 0xc)?;
+    if count == 0 {
+        return Ok(false);
+    }
+    let rows = m.u32(root + 0x10)?;
+    Ok(m.u32(rows + (count - 1) * 0x10)? & 0xffff_0000 == H1_DIALOGUE_SLOT)
+}
+
 pub(super) fn offset_at_row(
     m: &dyn GuestMemory,
     dialogue: u32,

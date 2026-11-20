@@ -858,6 +858,20 @@ fn automatic_damage_dialogue_has_retail_trigger_evidence() {
     let leap = h1.bytes_at(0x001e_f9d0, 0x28).unwrap();
     assert_eq!(u16_at(leap, 0), 47);
     assert_eq!(u16_at(leap, 4), slot(0xb70));
+    let tactics = h1.bytes_at(0x001e_f2a0, 32 * 0x28).unwrap();
+    for (offset, event) in [
+        (0x6e0, 4),
+        (0x7e0, 15),
+        (0x800, 13),
+        (0x8a0, 21),
+        (0x900, 24),
+        (0xa20, 13),
+        (0xa30, 35),
+    ] {
+        assert!(tactics.chunks_exact(0x28).any(|row| {
+            u16_at(row, 0) == event && u16_at(row, 4) == slot(offset)
+        }));
+    }
     let responses = h1.bytes_at(0x001e_fbd8, 45 * 0x24).unwrap();
     for (primary, response) in [
         (0x180, 0x190),
@@ -892,6 +906,7 @@ fn automatic_damage_dialogue_has_retail_trigger_evidence() {
     let h2_bytes = default_xbe("H2_DISC", "halo2.iso");
     let h2 = xbe::Xbe::parse(&h2_bytes).unwrap();
     for (call, target) in [
+        (0x0025_b38c, 0x001f_b7e0),
         (0x000e_ac66, 0x001b_ba20),
         (0x0025_accf, 0x001f_b7e0),
         (0x001c_9958, 0x0020_ba60),

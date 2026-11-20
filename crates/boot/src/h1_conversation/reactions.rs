@@ -56,7 +56,7 @@ impl Queue {
         self.push_with_other(m, unit, offset, priority, due, NONE)
     }
 
-    fn push_with_other(
+    pub(super) fn push_with_other(
         self,
         m: &mut dyn GuestMemory,
         unit: u32,

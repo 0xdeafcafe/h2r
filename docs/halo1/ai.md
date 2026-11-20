@@ -552,6 +552,31 @@ pursuit failure events distinguish no claimant, no position and no
 usable points. They use the original abandonment remark in the
 actor's current voice.
 
+**Built.** A newly sighted enemy can use the recent-combat remark.
+The source condition at `0x1463f1` keeps a 180-tick combat interval.
+The native sighting call at `0x25b38c` consults the acting unit's
+earlier combat state. Nearby ally alerts follow the source awareness
+rules at `0x157365` and `0x1573c0`. An eligible ally who has not
+acquired the reported target can answer in its own voice, identified
+by the exact salted unit in the alert.
+
+**Built.** Halo 1 dispatches loss of contact at `0x166869` and
+`0x16a419`, group uncover at `0x169b7c`, cover at `0x167356`
+and completion of hiding at `0x16d748`. The Halo 2 control update
+follows the native actor's contact and behavior transitions.
+It uses its guard/search states for loss of contact, entry to uncover
+while tracking the enemy, entry to cover, and exit from hiding with
+a relevant contact. The focused-prop awareness levels come from
+the Halo 1 AI compatibility code.
+
+**Built.** The group responses at `0x1eff5c` onward distinguish
+allies within five units from other audible nearby actors.
+The lost-contact reply requires an alert guard, the uncover
+reply requires the same target, and retreat requires the same
+squad. The flee reply is limited to allies at the source's full
+combat awareness level who are still able to act. These checks
+run after the triggering row has finished in Halo 2's speech cache.
+
 Automatic stimuli without a verified route remain conversion errors
 (see [role-audit.md](role-audit.md#retail-gaps-that-stop-conversion)).
 

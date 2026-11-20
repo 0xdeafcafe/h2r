@@ -182,6 +182,15 @@ pub const fn h1_kill_witness_line(offset: usize) -> bool {
 pub const H1_KILLING_SPREE_LINE: usize = 0x4d0;
 pub const H1_KILLING_SPREE_REPLY_LINE: usize = 0x5d0;
 
+/// Exchanges based on perception, cover and group movement.
+pub const fn h1_tactical_dialogue_line(offset: usize) -> bool {
+    matches!(
+        offset,
+        0x6e0 | 0x7c0 | 0x7d0 | 0x7e0 | 0x7f0 | 0x800 | 0x810
+            | 0x8a0 | 0x8b0 | 0x8f0 | 0x900 | 0x9e0 | 0xa20 | 0xa30
+    )
+}
+
 /// Notices that lack an authored Halo 2 vocalization or have a separate
 /// source remark at the same native event.
 pub const fn h1_actor_notice_line(offset: usize) -> bool {

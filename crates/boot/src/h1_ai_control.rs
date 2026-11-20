@@ -157,6 +157,18 @@ fn is_converted_campaign(call: &feature::Call<'_>) -> bool {
         .is_ok_and(|name| crate::health::HALO1_LEVELS.contains(&name.as_str()))
 }
 
+/// Conversational checks share the original focused-prop awareness thresholds.
+pub(crate) fn dialogue_awareness(
+    m: &dyn GuestMemory,
+    actor: u32,
+    rate: u32,
+) -> Result<u16, MemFault> {
+    match actors::by_handle(m, engine::DatumHandle(actor))? {
+        Some(actor) => Ok(contact::focused(m, actor, rate)?.level),
+        None => Ok(0),
+    }
+}
+
 /// Halo 2 encodes squads as bare indices and encounter groups with the
 /// top two bits equal to 01. Walk parent links for nested groups.
 fn squads(m: &dyn GuestMemory, ai: u32) -> Result<Vec<u32>, MemFault> {

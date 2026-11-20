@@ -950,6 +950,7 @@ impl<'a> Converter<'a> {
                     && !map::h1_kill_witness_line(*slot)
                     && !map::h1_actor_notice_line(*slot)
                     && !map::h1_firing_line(*slot)
+                    && !map::h1_tactical_dialogue_line(*slot)
                     && !map::h1_allied_reply_line(*slot)
                     && !matches!(
                         *slot,

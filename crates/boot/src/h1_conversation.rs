@@ -16,6 +16,7 @@ pub(crate) mod dialogue;
 mod leaders;
 mod reactions;
 mod replies;
+mod tactics;
 mod search;
 mod visibility;
 mod voices;
@@ -51,6 +52,7 @@ impl feature::Feature for Conversations {
         let reactions = reactions::install(b)?;
         automatic::install(b, reactions);
         combat::install(b, reactions)?;
+        tactics::install(b, reactions)?;
         search::install(b, reactions)?;
         let opcode = u32::from(BUILTINS[0].1);
         b.raw().before(

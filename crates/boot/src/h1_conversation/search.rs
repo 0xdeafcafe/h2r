@@ -20,13 +20,13 @@ const AI_GLOBALS: u32 = 0x004f_55d0;
 const BEHAVIOR_DEPTH: u32 = 0x190;
 const BEHAVIOR_FRAMES: u32 = 0x90;
 const BEHAVIOR_STRIDE: u32 = 0x40;
-const PRESEARCH: u16 = 27;
-const SEARCH: u16 = 34;
-const UNCOVER: u16 = 35;
-const INVESTIGATE: u16 = 36;
-const POSTSEARCH: u16 = 39;
+pub(super) const PRESEARCH: u16 = 27;
+pub(super) const SEARCH: u16 = 34;
+pub(super) const UNCOVER: u16 = 35;
+pub(super) const INVESTIGATE: u16 = 36;
+pub(super) const POSTSEARCH: u16 = 39;
 const FOCUS: u32 = 0x338;
-const SQUAD_INDEX: u32 = 0x30;
+pub(super) const SQUAD_INDEX: u32 = 0x30;
 const SQUAD_COUNT: u32 = 0x160;
 const SQUAD_ROWS: u32 = 0x164;
 const SQUAD_STRIDE: u32 = 0x74;
@@ -34,7 +34,7 @@ const SQUAD_GROUP: u32 = 0x26;
 const RESPONSE_RANGE: f32 = 9.0;
 const PRIORITY: u32 = 3;
 
-fn behavior(m: &dyn GuestMemory, actor: u32) -> Result<u16, MemFault> {
+pub(super) fn behavior(m: &dyn GuestMemory, actor: u32) -> Result<u16, MemFault> {
     let depth = u32::from(m.u16(actor + BEHAVIOR_DEPTH)?);
     if depth >= 4 {
         return Ok(u16::MAX);

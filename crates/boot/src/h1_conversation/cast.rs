@@ -169,6 +169,13 @@ pub(super) fn actor_handle(m: &dyn GuestMemory, unit: u32) -> Result<Option<u32>
     Ok((m.u32(actor + ACTOR_UNIT)? == unit).then_some(handle))
 }
 
+pub(super) fn focus_object(m: &dyn GuestMemory, actor: u32) -> Result<u32, MemFault> {
+    let Some(prop) = datum(m, PROP_REFERENCES, m.u32(actor + ACTOR_FOCUS)?)? else {
+        return Ok(NONE);
+    };
+    m.u32(prop + 0x20)
+}
+
 pub(super) fn focusing_on_traitor(m: &dyn GuestMemory, actor: u32) -> Result<bool, MemFault> {
     let Some(reference) = datum(m, PROP_REFERENCES, m.u32(actor + ACTOR_FOCUS)?)? else {
         return Ok(false);

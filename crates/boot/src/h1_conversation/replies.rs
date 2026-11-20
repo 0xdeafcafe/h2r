@@ -3,7 +3,7 @@
 use super::{
     cast, dialogue,
     reactions::{self, Queue},
-    search, visibility, *,
+    search, tactics, visibility, *,
 };
 
 const RESPONSE_RANGE: f32 = 9.0;
@@ -29,18 +29,56 @@ impl Reply {
             0x3c0 => (0x3d0, 80, 3),
             0x3e0 => (0x3f0, 80, 3),
             0x400 => (0x410, 80, 3),
+            0x6d0 | 0x6e0 | 0x6f0 => (0x7c0, 80, 3),
+            0x800 => (0x810, 70, 3),
+            0x8a0 => (0x8b0, 100, 3),
+            0x8e0 => (0x8f0, 70, 4),
+            0x9d0 => (0x9e0, 50, 3),
             _ => return None,
         };
         Some(Self {
             offset,
             chance,
             priority,
-            range: if offset == 0x190 {
+            range: if matches!(offset, 0x190 | 0x810) {
                 RESPONSE_RANGE
             } else {
                 RECOGNITION_RANGE
             },
         })
+    }
+}
+
+fn eligible(
+    m: &dyn GuestMemory,
+    source_actor: Option<u32>,
+    actor: u32,
+    distance: f32,
+    offset: usize,
+) -> Result<bool, MemFault> {
+    match offset {
+        0x7d0 => Ok(distance > RECOGNITION_RANGE),
+        0x810 => {
+            Ok(search::behavior(m, actor)? == tactics::GUARD && tactics::awareness(m, actor)? < 4)
+        }
+        0x8b0 => {
+            let Some(source_actor) = source_actor else {
+                return Ok(false);
+            };
+            let target = cast::focus_object(m, source_actor)?;
+            Ok(target != NONE && cast::focus_object(m, actor)? == target)
+        }
+        0x8f0 => {
+            let Some(source_actor) = source_actor else {
+                return Ok(false);
+            };
+            let squad = m.u32(source_actor + search::SQUAD_INDEX)?;
+            Ok(squad != NONE && m.u32(actor + search::SQUAD_INDEX)? == squad)
+        }
+        0x9e0 => {
+            Ok(tactics::awareness(m, actor)? >= 7 && search::behavior(m, actor)? != tactics::FLEE)
+        }
+        _ => Ok(true),
     }
 }
 
@@ -50,7 +88,14 @@ fn responder(
     source: cast::Unit,
     reply: Reply,
 ) -> Result<Option<u32>, MemFault> {
-    let source_encounter = search::unit_encounter(m, unit)?;
+    let source_actor = match cast::actor_handle(m, unit)? {
+        Some(handle) => datum(m, cast::ACTORS, handle)?,
+        None => None,
+    };
+    let source_encounter = match source_actor {
+        Some(actor) => search::encounter(m, actor)?,
+        None => None,
+    };
     let mut nearest = reply.range;
     let pool = DatumArray::at(m.u32(cast::ACTORS)?);
     let mut next = 0;
@@ -73,6 +118,7 @@ fn responder(
         if distance < nearest
             && cast::allied(m, source.team, candidate.team)?
             && visibility::in_pvs(m, source.cluster, candidate.cluster)?
+            && eligible(m, source_actor, actor, distance, reply.offset)?
             && dialogue::source_offset_row(m, speaker, reply.offset)?.is_some()
         {
             best = Some(speaker);
@@ -167,19 +213,24 @@ pub(super) fn on_speech_tick(
     if !reactions::ai_vocalizes(m)? {
         return Ok(());
     }
-    if offset == 0x1e0 {
-        let attacker = queue.reply_to(m, unit, index)?;
-        if cast::Unit::read(m, attacker)?.is_some()
-            && !cast::is_player(m, attacker)?
-            && dialogue::source_offset_row(m, attacker, 0x1f0)?.is_some()
+    let directed_reply = match offset {
+        0x1e0 => Some((0x1f0, 70)),
+        0x7e0 => Some((0x7f0, 70)),
+        _ => None,
+    };
+    if let Some((offset, chance)) = directed_reply {
+        let other = queue.reply_to(m, unit, index)?;
+        if cast::Unit::read(m, other)?.is_some()
+            && !cast::is_player(m, other)?
+            && dialogue::source_offset_row(m, other, offset)?.is_some()
         {
             let reply = Reply {
-                offset: 0x1f0,
-                chance: 70,
+                offset,
+                chance,
                 priority: 3,
                 range: 0.0,
             };
-            queue_reply(m, queue, attacker, reply)?;
+            queue_reply(m, queue, other, reply)?;
         }
         return Ok(());
     }
@@ -201,8 +252,20 @@ pub(super) fn on_speech_tick(
             return Ok(());
         }
     }
-    if let Some(speaker) = responder(m, unit, source, reply)? {
-        queue_reply(m, queue, speaker, reply)?;
+    if let Some(speaker) = responder(m, unit, source, reply)?
+        && queue_reply(m, queue, speaker, reply)?
+    {
+        return Ok(());
+    }
+    if reply.offset == 0x7c0 {
+        let distant = Reply {
+            offset: 0x7d0,
+            range: RESPONSE_RANGE,
+            ..reply
+        };
+        if let Some(speaker) = responder(m, unit, source, distant)? {
+            queue_reply(m, queue, speaker, distant)?;
+        }
     }
     Ok(())
 }
