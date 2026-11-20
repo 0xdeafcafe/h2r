@@ -213,6 +213,27 @@ fn dissolve_edges_verts_and_faces() {
 }
 
 #[test]
+fn dissolve_a_run_of_two_edge_verts() {
+    // A wire chain of four verts, the middle two selected. Joining at vert
+    // 1 makes the edge 0-2, which the join at vert 2 then replaces with
+    // 0-3: the op must not select the dead edge (a "dead edge" panic from
+    // `select_result`).
+    let mut m = Mesh::new();
+    let mut prev = m.add_vert([0.0, 0.0, 0.0], None);
+    for i in 1..4 {
+        let next = m.add_vert([i as f32, 0.0, 0.0], None);
+        m.add_edge(prev, next).unwrap();
+        prev = next;
+    }
+    select(&mut m, SelectMode::Vert, &[1, 2]);
+    ok(&mut m, MeshOp::Dissolve);
+    assert_eq!(m.counts(), (2, 1, 0));
+    assert!(m.find_edge(VertId(0), VertId(3)).is_some());
+    assert!(m.selection().has_vert(VertId(0)));
+    assert!(m.selection().has_vert(VertId(3)));
+}
+
+#[test]
 fn merge_at_centre_first_last_and_cursor() {
     for (at, survivor, pos) in [
         (MergeAt::Center, 0, [0.5, 0.0, 0.0]),

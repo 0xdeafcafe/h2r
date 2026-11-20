@@ -81,6 +81,10 @@ impl Mesh {
                         }
                     }
                 }
+                // Joining at a vert kills its two edges, so with two
+                // two-edge verts in a row the later join kills the edge
+                // the earlier one made: only live edges select.
+                let joined: Vec<EdgeId> = joined.into_iter().filter(|&e| self.is_edge(e)).collect();
                 self.select_result(&[], &joined, &[]);
             }
             SelectMode::Edge | SelectMode::Face => {
