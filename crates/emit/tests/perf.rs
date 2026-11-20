@@ -2101,17 +2101,17 @@ fn flat_span_matches_checked_stores_aliases_and_fault_order() {
         let mut samples = Vec::new();
         let mut sum = 0;
         for tick in 1..=6 {
-            let (esi, edi) = if tick % 2 == 0 { (ALIAS, DATA) } else { (DATA, ALIAS) };
+            let (src, dst) = if tick % 2 == 0 { (ALIAS, DATA) } else { (DATA, ALIAS) };
             // The two stores share the last eight bytes of a page. The
             // RMW is the first write to the next protected physical page.
-            let (esi, edi) = (esi + 4088, edi + 4088);
+            let (src, dst) = (src + 4088, dst + 4088);
             ctx.arm_preemption(1000);
-            let mut cpu = CpuAbi { eax: 13, ecx: tick, esi, edi, esp: SP, ..CpuAbi::default() };
+            let mut cpu = CpuAbi { eax: 13, ecx: tick, esi: src, edi: dst, esp: SP, ..CpuAbi::default() };
             assert_eq!(Runner::default().run(&mut cpu, &mut ctx, A).kind, abi::STOP);
             let mut g = rt.memory();
             sum += tick;
-            assert_eq!(g.u32(esi + 8).unwrap(), sum);
-            assert_eq!(g.u32(edi + 4).unwrap(), tick);
+            assert_eq!(g.u32(src + 8).unwrap(), sum);
+            assert_eq!(g.u32(dst + 4).unwrap(), tick);
             let first = g.take_dirty(frequent).unwrap();
             assert_eq!(first, [runtime::DirtyRange { addr: CONTIGUOUS_BASE + 4096, len: 8192 }]);
             if tick % 3 == 0 { assert_eq!(g.take_dirty(sparse).unwrap(), first); }
