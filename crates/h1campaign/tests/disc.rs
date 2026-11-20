@@ -2874,16 +2874,29 @@ fn campaign_hud_text_and_builtins_round_trip() {
 
         let scripts = hs::Scenario::read(&mut map).unwrap();
         let message_type = script.target.type_index("hud_message").unwrap();
+        // Message atoms; a reference to a global of that type holds the
+        // global's index, not a message's.
         let atoms: Vec<_> = scripts
             .nodes()
             .iter()
-            .filter(|n| n.live() && n.atom() && n.opcode() == message_type)
+            .filter(|n| n.live() && n.atom() && !n.global() && n.opcode() == message_type)
             .collect();
         assert!(!atoms.is_empty());
         for atom in atoms {
             let index = atom.data() as u16 as usize;
             let name = scripts.string(atom.string_offset()).unwrap();
-            assert!(source.messages[index].name.eq_ignore_ascii_case(name));
+            let expected = source.messages.get(index).map(|m| m.name.as_str());
+            assert!(
+                expected.is_some_and(|e| e.eq_ignore_ascii_case(name)),
+                "{level}: message atom {name:?} holds index {index} (data {:#x}), \
+                 which is {expected:?} of {} messages; the atom's own name is at {:?}",
+                atom.data(),
+                source.messages.len(),
+                source
+                    .messages
+                    .iter()
+                    .position(|m| m.name.eq_ignore_ascii_case(name)),
+            );
         }
         if level == "d40" {
             for slot in 667..=672 {
