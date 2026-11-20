@@ -310,6 +310,12 @@ points! { ALL;
     RENDER_FRAME_TAIL @ 0x0001_3b90: [opaque]; "docs/graphics/native-renderer.md";
     /// `render_scene_passes`: the scene pass sequence of one view.
     RENDER_SCENE_PASSES @ 0x0002_bcd0: [opaque]; "docs/graphics/e3-lighting.md";
+    /// Main view's visible structure cluster and placement record walks.
+    WORLD_CLUSTER_RECORDS @ 0x0013_3390: [fn(visibility: ebx) ret 0]; "docs/graphics/native-renderer.md";
+    /// One visible row entering the gather. A cold neighbour can require
+    /// the surrounding walk to stay in the guest.
+    WORLD_VISIBILITY_FLAGS @ 0x0013_32f0: [fn(visibility: stack 0) -> eax ret 4]; "docs/graphics/native-renderer.md";
+    WORLD_PLACEMENT_RECORDS @ 0x0013_3520: [fn(visibility: stack 0) ret 4]; "docs/graphics/native-renderer.md";
     /// Sets the render stencil mode, including after the scene passes return.
     RENDER_STENCIL_MODE @ 0x0001_5370: [opaque]; "docs/graphics/native-renderer.md";
     /// The additional shadow-caster pass (layer 10/11 pair after the main lights).
@@ -383,6 +389,13 @@ points! { ALL;
     /// is followed by one; it ends the layer's state and sets the current
     /// layer (`[0x00467130]`) to 0.
     LAYER_END @ 0x0004_45d0: [opaque]; "docs/graphics/native-renderer.md";
+    /// Resolve one material for the record-to-scene-item walk. The main
+    /// caller tests AL before advancing its part cursor in EDI.
+    WORLD_PART_MATERIAL @ 0x0004_5ce0: [fn(record: ecx, scratch: eax, part: stack 0, region: stack 1) -> al ret 8], Hot; "docs/graphics/native-renderer.md";
+    /// The standard geometry item's build callback. AL admits its sort slot.
+    WORLD_GEOMETRY_BUILD @ 0x0004_cbf0: [fn(shader: stack 0, arg: stack 1, lod: stack 2, layer: stack 3, selector: stack 4, part: stack 5, entry: stack 6) -> al ret 28], Hot; "docs/graphics/layer-draw.md";
+    /// BSP geometry emitter. AL selects masked subparts, CL selects strips.
+    WORLD_PART_EMIT @ 0x0004_daa0: [fn(section: stack 0, part: stack 1, bitmap: stack 2) ret 12], Hot; "docs/graphics/native-renderer.md";
     /// LAYER_ENTRIES calls the item's geometry handler with seven stack words.
     /// Its continuation reloads EAX from the loop counter before using it.
     LIGHT_GEOMETRY_DRAW @ 0x0004_d0b0: [fn(shader: stack 0, arg: stack 1, variant: stack 2, layer: stack 3, selector: stack 4, part: stack 5, entry: stack 6) ret 28], Hot; "docs/graphics/layer-draw.md";
@@ -407,7 +420,7 @@ points! { ALL;
     /// the list word's address (`count << 9 | first`), `ret 4`. Applies
     /// each entry through `SetRenderState_Simple`, the D3D shadow and
     /// dirty bits, or a per-state setter.
-    RENDER_STATES @ 0x0001_a170: [opaque]; "docs/graphics/render-loop.md";
+    RENDER_STATES @ 0x0001_a170: [fn(context: ebx, list: stack 0) ret 4]; "docs/graphics/render-loop.md";
     /// The object render records for a visibility struct: EAX the struct
     /// (`0x00547f88` the main view's), stack 0 an argument passed on,
     /// `ret 4`. Reorders the struct's object list (`0x00134240`), then

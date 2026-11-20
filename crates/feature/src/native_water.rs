@@ -255,6 +255,11 @@ pub fn counts() -> (u64, u64, u64, u64, u64) {
     )
 }
 
+pub(crate) fn has_claim() -> bool {
+    CLEARED.lock().unwrap_or_else(|e| e.into_inner())
+        .as_ref().is_some_and(|claim| !claim.cleared.items.is_empty())
+}
+
 /// Sets back the bits the last layer 6 cleared, on the items that still
 /// hold the mask it left.
 pub fn restore_pending(mem: &mut dyn GuestMemory) {

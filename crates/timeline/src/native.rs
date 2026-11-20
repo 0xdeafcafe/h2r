@@ -12,11 +12,11 @@ const STAGES: [&str; 12] = ["world", "objects", "transparents", "lights", "post"
 pub enum Metric {
     Examined, Suppressed, RefusedOwnership, RefusedResources, RefusedRanges, RefusedMasks, RefusedInputs, RefusedValidation, RefusedReplay,
     PrepareNs, EncodeNs, Buffers, BindGroups, UploadBytes, PipelineMisses,
-    WorkerRoundTrips, ReferencePasses, DisplayPasses,
+    WorkerRoundTrips, ReferencePasses, DisplayPasses, BuildsSkipped, WalkSections, EntryPassesSkipped, SectionsPrepared, StateCallsSkipped,
 }
-const METRICS: [&str; 18] = ["examined", "suppressed", "refused_ownership", "refused_resources", "refused_ranges",
+const METRICS: [&str; 23] = ["examined", "suppressed", "refused_ownership", "refused_resources", "refused_ranges",
     "refused_masks", "refused_inputs", "refused_validation", "refused_replay", "prepare_ns", "encode_ns", "buffers", "bind_groups", "upload_bytes", "pipeline_misses",
-    "worker_round_trips", "reference_passes", "display_passes"];
+    "worker_round_trips", "reference_passes", "display_passes", "builds_skipped", "walk_sections", "entry_passes_skipped", "sections_prepared", "state_calls_skipped"];
 
 // Four Xbox player views and a bucket for non-player views.
 const VIEWS: usize = 5;

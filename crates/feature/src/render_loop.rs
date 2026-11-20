@@ -175,6 +175,22 @@ fn fault(f: engine::memory::MemFault) -> GuestFault {
     }
 }
 
+/// The BSP shader's state list up to its first necessary guest call. Hand
+/// the real return site to that callee so a render-thread fallback can
+/// continue in the original list without a host continuation.
+pub(crate) fn world_states(cpu: &mut CpuAbi, mem: &mut Guest) -> Result<TransferAbi, GuestFault> {
+    let mut r = regs(cpu);
+    let (states, step) = RenderStates::start(&mut r, mem, cpu.x87.control, Mode::SkipRedundant)
+        .map_err(fault)?;
+    timeline::native::Stage::World.count(timeline::native::Metric::StateCallsSkipped,
+        u64::from(states.counts.skipped));
+    store(cpu, &r);
+    match step {
+        Step::Return { to } => Ok(TransferAbi::ret(to)),
+        Step::Call { target, site, .. } => mem.call(cpu, target, site),
+    }
+}
+
 /// A port the driver can resume after each guest call.
 trait Port: Copy + Send + 'static {
     fn resume(&mut self, r: &mut Regs, m: &mut dyn GuestMemory) -> Result<Step, MemFault>;

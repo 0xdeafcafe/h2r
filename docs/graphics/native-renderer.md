@@ -1019,6 +1019,48 @@ setup and D3D resource resolution. Geometry snapshots can reuse native
 GPU buffers, while native shader, pipeline and texture bindings are
 cached per device. Measure before treating this as a performance gain.
 
+### Native BSP scene walk
+
+`impl.render.native_world_skip_build` is on by default. It needs both
+`impl.render.native` and `impl.render.native_world`. Switch it off to
+compare the two front ends with the same GPU renderer.
+
+| Guest boundary | Work done in Rust | State handed to the next stage |
+|---|---|---|
+| `WORLD_CLUSTER_RECORDS` and `WORLD_PLACEMENT_RECORDS`, from the main camera gather | Walk the current visibility lists in their original order. Read projection depth, pixel scale, cluster bounds and placement spheres. Compute the screen-size byte, placement fade and fog flags. | Publish the same record indices, lightmap implementation, placement matrix pointer, subpart bitmap allocations and resident resource stamps. A cold resource can enqueue I/O. A mixed walk falls back before publication and retries each resident row at `WORLD_VISIBILITY_FLAGS`. The guest handles each cold row in place. The following object gather sees both record counters. |
+| `WORLD_PART_MATERIAL`, first part at the main scene loop in `0x44ac0` | Examine **every visible part in one BSP record**. Compute its material visibility, subpart visibility, shader LOD and layer mask. An eligible record appends its items in guest order, bypassing the remaining material queries, `GEOMETRY_SUBMIT`, its LOD queries and item appends. | The ordinary shader, argument, callbacks, selector, LOD, mask and aggregate list mask remain available to every later layer. The per-part centre and clipping plane live in caller scratch. Only the transparent producer exports them. A visible transparent producer, shader override or unknown material keeps the complete section on the guest path. |
+| `LAYER_BUILD` and `WORLD_GEOMETRY_BUILD` | Emit the standard BSP sort slots for opaque, water and fog entries. An unsupported callback runs with the original caller frame and can mutate the list. | Rejected slots retain their writes, including undefined words inherited by later candidates. The original sort still orders ties and layer-5 entries. Objects and custom handlers keep their place. |
+| `LAYER_ENTRIES`, after layer setup | When the world, water or fog renderer has committed its reservation and every active item has its layer bit clear, return the empty dispatch result immediately. | The GPU reservation already covers the claimed ranges. One remaining bit keeps the dispatcher. Layer setup and end still establish the shared device state. No handler, shader, stencil switch or indexed draw would run in the empty dispatcher. |
+| `RENDER_STATES` and `WORLD_PART_EMIT`, inside an opaque BSP draw | Use the render-state port through the first necessary guest call. Elide repeated simple states when the shadow matches and the push header is unique. Use the one-range emitter when visible subparts tile the part's indices. | Changed states and shared push headers still reach the device. The emitter flushes textures and emits the same indices and topology. A masked strip needs exactly one subpart. The placement constants, shader cache, lightmap binding and stencil tail still execute. |
+
+The default ordered opaque renderer accepts individual draws after resolving
+their live programs, textures, streams and attachments. A visible BSP ID,
+or even complete geometric coverage of a section, cannot authorize an early
+GPU reservation for those draws. In particular, a placement can write the
+lightmap stream offsets and bind a palette in the geometry handler. Omitting
+that handler can change a later draw even when the native world covers
+every triangle. Whole-dispatch skipping currently applies to **pre-reserved**
+world, fog and water layers. The general opaque GPU pass still goes through
+the indexed admission path.
+
+For the A/B, capture the same Old Mombasa replay and present numbers with
+`H2_FRAME_STATS=1` and `H2_FEATURES=render-timing`, changing only
+`impl.render.native_world_skip_build=off` to `on`. Use ordinary
+render timing. Deep timing brackets the guest build and dispatch, so its
+run keeps those bodies for attribution. Compare warmed per-frame `render`,
+`scene_passes`, `d3d` and `cpu`, and count differing pixels on both target
+copies at matching presents. Include views with placements, partial
+visibility, fog, water and lights. Expected savings are in gathering,
+material preparation, sort-slot construction and redundant D3D state
+calls. The total number of late native draw admissions is not a count of
+eliminated shader builds.
+
+The frame columns `native_world_walk_sections`, `native_world_sections_prepared`,
+`native_world_builds_skipped`, `native_world_entry_passes_skipped` and
+`native_world_state_calls_skipped` count published render records, sections
+appended in Rust, guest build callbacks replaced in Rust, whole entry
+dispatches bypassed and redundant Simple state calls respectively.
+
 ### Opaque-layer comparison
 
 `H2_NATIVE_WORLD_LAYERS_COMPARE=2000,3000` prints the indexed D3D
