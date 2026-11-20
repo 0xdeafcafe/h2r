@@ -10,11 +10,11 @@ census and the structure's layer draws from the plan are built, and its
 section says what the replacements wait on. Of slice 5 the extraction of
 the fog, the water and the post passes and the fog's and water's
 recording on the render thread are built; its section says what the
-replacements wait on. Of slice 6 the census half is built: the scene
-sink files the guest's D3D work by slot and counts side targets and
-readbacks (`frame-scene.sink`); its section says what is not. The rest
-is the plan. Lanes write code and tests; the coordinator builds, runs and
-measures.
+replacements wait on. Slice 6 provides the carried census, private draws
+of sealed scenes and an opt-in display owner for eligible game views.
+Default ownership still depends on the corpus, parity and timing gates
+in [slice 6](#slice-6-the-renderer-owns-game-view-frames). Slices 7 to 10
+are planned.
 
 Evidence labels as in [feature-engine.md](../engine/feature-engine.md):
 **Code** (read in this repository or in the disassembly), **S**
@@ -25,7 +25,7 @@ game data.
 
 - `impl.render.native` is the one render switch and is on by default.
   `=off` is the D3D path, kept as the reference.
-- Every native stage is a tenant of the D3D frame. The guest runs its
+- On the default path, native stages contribute to the D3D frame. The guest runs its
   render front end on the game thread. At a hook, a stage reads guest
   memory, prepares draws on the game thread and hands the D3D device
   packets that join its open pass (`gfx::RecordedDraw`, after the
@@ -1134,9 +1134,10 @@ corpus and reports every guest readback and every side target still
 bound in a game view. The slice starts when section 8.3's table covers
 the list.
 
-**Built: the carried census** (`frame-scene.sink`, an option with the
-native renderer on; **Code**). The D3D backend still draws every frame;
-the sink records what the renderer will own.
+The original-renderer census and the owned-renderer arm use the existing
+[diagnostic options](../runtime/switches.md). The original arm records
+the guest's reads and target uses while D3D renders. The owner arm
+records which game frames the native graph actually presents.
 
 - **The types** (`frame_scene::carried`). `Slot` and `SlotAt` (the slot
   and the guest view index); `SlotTracker` moves the slot on the frame
@@ -1173,8 +1174,10 @@ the sink records what the renderer will own.
   into a presented surface); its depth is the depth bound with that
   colour; anything else is a side target, numbered per frame. A present
   ends the frame: its summary is published (`d3d::scene_sink::last`)
-  and its totals counted (`d3d::scene_sink::counters`). Typed stages'
-  packets and passes are not carried.
+  and its totals counted (`d3d::scene_sink::counters`). When retaining
+  draws, the sink also records repeatable typed stages at the point where
+  they acquired their attachments. One-shot replacements decline admission
+  before guest draws are released.
 - **Coverage.** `render.scene` reports, with the option, `carried`
   (the last frame's ops by slot, its side targets with the ops that
   named them by slot, and its readbacks in and outside a game view),
@@ -1197,33 +1200,55 @@ the sink records what the renderer will own.
   `boot::scene_glue`:
   `the_sinks_frame_is_reported_by_slot_and_per_game_view`; `agent_proto`'s
   `a_scenes_carried_part_prints_only_when_the_sink_recorded`.
-- **Not built.** Everything below that draws: the sink in place of the
-  backend stack in a game view, the carried ops held in the scene
-  (`FrameScene::carried`, which waits on `ResolvedDraw` moving to
-  `gfx`), `CameraUse` and its classification, `native-render`'s pass
-  graph and `GuestDrawPass`, the native flare query, the mailbox, Swap
-  without the GPU wait, and `render.frame` over the pass graph. The
-  census corpus run that this half exists for is the coordinator's.
-
-- **Code.** `d3d::SceneSink`, one `Backend` implementation that fills
-  `Carried` (draw, clear, bind, copy, upload) and classifies
-  `CameraUse`. In a game view the device runs over it in place of
-  `ThreadedBackend<InterpBackend<ScaledBackend<GfxBackend>>>`. The
-  frame step sets the current slot. `native-render` gets the pass
-  graph: its own colour and depth at the display scale, the stages in
-  order, the carried slots between them, the present to the window's
-  sink. Carried draws are recorded by a `GuestDrawPass` that `d3d`
-  registers with the renderer (the draw-recording core of
-  `gfx_backend.rs` and the view mapping of `scaled.rs`, kept; their
-  surface management, not). The native flare query. The mailbox, both
-  modes. Swap no longer waits on the GPU. `render.frame` reports the
-  pass graph.
-- **Tests.** `SceneSink` against the recording backend on the existing
-  D3D draw rigs: the same draws in the same order, by slot. Pass
-  graph: the stages and slots in the declared order with one pass
-  where attachments do not change. Mailbox: paced drops and counts,
-  locked blocks at two. A scene with a carried copy from `SceneColour`
-  samples what was drawn before it.
+- **Frame identity and inputs.** `game::frame_owner` pairs the
+  immutable `FrameScene` with `d3d::scene_sink::ReplayFrame` at the
+  same frame-step sequence and Swap. The replay owns the ordered draw
+  inputs, attachment descriptors, sampled versions and uploads.
+  `CameraUse::View` requires the program's actual position rows to
+  match the sealed view's camera bit for bit. Rewinds and map changes
+  invalidate retained capture inputs.
+- **Private draw.** `native_render::frame_graph` records the ordered
+  typed stages and carried draws through `d3d::gfx_backend::GuestDrawPass`.
+  The worker shares the display device and uses separate render targets.
+  An intervening copy or sample sees the pixels already drawn. Consecutive
+  slots with the same attachments can share a pass. A private draw reports
+  an error if it cannot reproduce the requested pixels.
+- **Display ownership.** At Swap, `game::frame_cutover` supplies the
+  scene to `d3d::threaded::owner`. The worker checks the original
+  commands, resource bindings and device-local target eligibility before
+  choosing a renderer. The graph draws once into the live surfaces,
+  exports sampled textures under their original handles, and installs
+  flare query results under the tickets already held by the guest. An
+  early guest access that needs buffered work runs those commands in
+  order. Menus and declined game frames continue on the same device.
+- **Scheduling and probes.** `frame_scene::mailbox` keeps the newest
+  pending scene in paced mode and blocks at two waiting scenes in
+  locked mode. Capture requests can pin a scene across two draws and
+  wake the renderer during pause. `render.frame` identifies the path
+  that presented and supports pass snapshots on private draws.
+  `render.stats` reports completed graph work. `render.parity` compares
+  the guest present with a separate private draw of its inputs.
+- **Gate coverage.** `render.scene` includes the cumulative original
+  target/read census and an activation baseline. On the owner arm,
+  `scene_owned_presented`, `scene_owned_declined` and
+  `scene_owned_flare_queries` identify what actually ran. Worker
+  residency counters distinguish observed missing instances from frames
+  whose residency is unknown. A successful carried draw can supply a
+  model regardless of its native cache residency.
+- **Tests** (synthetic). The scene sink and camera rigs exercise D3D
+  draw ordering, resource lifetimes and view classification.
+  `native-render/tests/world_layers_gpu/frame_graph.rs` checks typed and
+  carried draws on shared attachments, a copy followed by a later sample,
+  and same-tick private retail/E3 equality. The mailbox tests cover
+  replacement and two-scene backpressure. The threaded worker tests cover
+  original-command fallback, visibility tickets, retained snapshots and
+  a following menu frame. The parity RPC test changes a private clear
+  to exercise the differing-pixel result.
+- **Cutover status.** Display adoption is opt-in. Eligibility, post-load
+  residency, pixel and hash parity and the delay through Swap require
+  measurement on the corpus. An unsupported frame runs the original path
+  and appears in the decline count. The default path and the guest
+  resource lifetime machinery are retained through this gate.
 - **Gate.** Pixels on the gate corpus against `native=off` (which
   still selects the old stack) and by `render.parity`. Hashes.
   `scene_readback`, `scene_dropped_*` and `scene_unresident` zero over
