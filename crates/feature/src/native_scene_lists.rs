@@ -9,6 +9,7 @@ mod records;
 mod setup;
 mod transparents;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use engine::memory::{GuestMemory, MemFault};
