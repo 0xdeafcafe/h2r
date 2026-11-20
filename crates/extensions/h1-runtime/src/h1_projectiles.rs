@@ -1,7 +1,7 @@
 //! Halo 1 integrates projectile acceleration in time and scales direct
 //! damage by impact speed. Both operate on the current collision substep.
 
-use crate::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
+use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
 use engine::points::{DAMAGE_DATA_INIT, VECTOR_LENGTH_3D};
 use runtime::{Guest, GuestFault};
 use tags::H1_PROJECTILE_VELOCITY_CURVE;

@@ -8,7 +8,7 @@ use engine::tags::{entry_layout, tag_entry_checked};
 use runtime::guest::Permissions;
 use tags::scope_zoom::{MAGIC, Profile, WORDS};
 
-use crate::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy, points};
+use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy, points};
 
 const HUD_SCREEN_RETURN: u32 = 0x0022_bbc0;
 const CONVOLUTION_RETURN: u32 = 0x0002_da9b;
