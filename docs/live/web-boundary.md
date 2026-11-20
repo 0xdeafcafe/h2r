@@ -114,7 +114,7 @@ Every route and every page-level component, checked against §1.
 | Live now | `/dash/live` | stays | Live state; rows link to `/games/halo2/games/:id`. |
 | Friends | `/dash/friends` | stays | Your account, with actions. |
 | Teams | `/dash/teams` | stays | The Xbox Live Teams feature: create, recruit, answer, roles (§1.2). A clan's record is the stats site's. |
-| Players | `/dash/players`, `/dash/players/:tag` | stays | Presence ("who's online"). The player pod links to the service record. |
+| Players | `/dash/players`, `/dash/players/:tag` | stays | Live player directory and account profiles. The player pod links to the Halo service record. |
 | Game history | `/dash/history` | removed | The Games tab (`/dash/games`) shows recent games; the full history is the stats site's (`/games/halo2/games`, a player's `/history`). |
 | Settings, profile, create account | `/dash/settings`, `/dash/signup` | stays | Your account. |
 | Account and recovery, recover, sign in | `/dash/account`, `/dash/recover`, `/dash/signin` | stays | Your account. |
@@ -299,10 +299,9 @@ the two endpoints it reads are in
 [live-api.md](live-api.md) "Usage"; this section is what the screen
 shows and where its numbers stop.
 
-**On the dashboard, not the stats site.** Usage is about running the
-service and the accounts on it (§1), and it is for admins only. The stats
-site keeps what is about Halo: games, records, ranks. A player's row
-links to their service record there, and nothing more crosses.
+Usage is for server admins. The Top Accounts table links each gamertag
+to its Live profile at `/dash/players/:tag`. Halo service records, games
+and ranks are on Uplink.
 
 **The screen** is the deck (§3), with a range (7, 30 or 90 days) and a
 sort for the accounts table:

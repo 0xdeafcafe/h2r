@@ -14,7 +14,7 @@ import { For, Match, Show, Switch, createEffect, createMemo, createSignal, on, o
 import { useNavigate, useParams } from "@solidjs/router";
 import { live } from "../state/live";
 import { identity, download } from "../state/identity";
-import { liveGames, standings, teamStandings, type GameState, type AccountState } from "../state/reducer";
+import { accountByGamertag, liveGames, standings, teamStandings, type GameState, type AccountState } from "../state/reducer";
 import { OUTCOME_WORDS, campaignOutcome, campaignRecord, playedWith, serviceRecord } from "../state/derive";
 import { campaignLabel, difficultyName, gameTypeLabel, gameTypeLine } from "../state/gametype";
 
@@ -62,7 +62,7 @@ import "../styles/social.css";
 import { DASH_NAME } from "../brand";
 import Legal from "../components/Legal";
 import { lockedHint, menuFor, settingsRows, type SectionId } from "./menu";
-import { LIVE_ADMIN, STATS_ROOT, statsPath } from "../routes";
+import { dashboardPlayerHref, LIVE_ADMIN, STATS_ROOT, statsPath } from "../routes";
 
 type ScreenId = "menu" | "games" | "list" | "player" | "signup" | "recovery" | "recover" | "server" | "social" | "signins";
 
@@ -136,12 +136,21 @@ export default function Dashboard() {
   const navigate = useNavigate();
 
   const section = createMemo((): SectionId | null => SECTION_IDS.find((s) => s === params.section) ?? null);
+  const playerTag = () => section() === "players" && params.tag ? safeDecode(params.tag) : null;
   const viewed = createMemo((): AccountState | null => {
-    const s = section();
-    if (s === "signup") { const me = identity.me(); return me ? live.state.accounts[me.xuid] ?? { xuid: me.xuid, gamertag: me.gamertag, created_at: "", online: false, presence: null, last_seen: null, bot: false } : null; }
-    if ((s === "players" || s === "friends") && params.tag) { const tag = safeDecode(params.tag); return Object.values(live.state.accounts).find((a) => a.gamertag === tag) ?? null; }
-    return null;
+    if (section() === "signup") { const me = identity.me(); return me ? live.state.accounts[me.xuid] ?? { xuid: me.xuid, gamertag: me.gamertag, created_at: "", online: false, presence: null, last_seen: null, bot: false } : null; }
+    const tag = playerTag();
+    return tag ? accountByGamertag(live.state, tag) ?? null : null;
   });
+  // A link can name an account outside the local account snapshot.
+  createEffect(on(() => [playerTag(), viewed()?.xuid, live.loadMode(), live.server()] as const, ([tag, xuid, mode]) => {
+    if (!tag || xuid || mode === "snapshot") return;
+    const abort = new AbortController();
+    onCleanup(() => abort.abort());
+    void live.api().account(tag, abort.signal).then((account) => {
+      if (!abort.signal.aborted && !accountByGamertag(live.state, tag)) live.addAccounts([account]);
+    }, () => {});
+  }));
   const screen = createMemo((): ScreenId => {
     const s = section();
     if (!s) return "menu";
@@ -248,6 +257,7 @@ export default function Dashboard() {
     }
     if (s === "settings") go(r.key, "deeper");
     else if (s === "live") go(`${STATS_ROOT}/games/${r.key}`, "deeper");
+    else if (s === "players") go(dashboardPlayerHref(r.label), "deeper");
     else go(`/dash/${s}/${encodeURIComponent(r.label)}`, "deeper");
   }
 

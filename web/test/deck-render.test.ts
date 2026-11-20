@@ -125,6 +125,13 @@ describe("the dense dashboard style page", () => {
     expect(rows).toHaveLength(12);
   });
 
+  test("the top accounts link to dashboard players", () => {
+    const players = [...html.matchAll(/<a\b[^>]*\bhref="\/dash\/players\/([^"]+)"[^>]*>([^<]+)<\/a>/g)];
+    expect(players).toHaveLength(12);
+    for (const [, tag, label] of players) expect(decodeURIComponent(tag!)).toBe(label!);
+    expect(html).not.toContain('href="/games/halo2/players/');
+  });
+
   test("the sample data says it is a sample", () => {
     expect(html).toContain("fixed sample data");
   });

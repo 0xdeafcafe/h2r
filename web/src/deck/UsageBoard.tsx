@@ -4,14 +4,13 @@
 // players per day, events by type, and the accounts using the most.
 
 import { Show } from "solid-js";
+import { A } from "@solidjs/router";
 import { DenseTable, Legend, Panel, RankBars, SegBar, SeriesTable, StatTile, TimeChart } from "./Deck";
 import { bytes, compact, shortDay } from "./chart";
 import { seriesColor } from "./palette";
 import { sortCol, tileValue, type UsageView } from "./usageView";
 import { UPLOAD_KINDS, type AccountUsage } from "../admin/usage";
-import { STATS_ROOT } from "../routes";
-
-export const playerHref = (tag: string) => `${STATS_ROOT}/players/${encodeURIComponent(tag)}`;
+import { dashboardPlayerHref } from "../routes";
 
 export default function UsageBoard(props: { view: UsageView; range: number; accounts: readonly AccountUsage[]; accountsNote: string; sort: string }) {
   const v = () => props.view;
@@ -58,7 +57,7 @@ export default function UsageBoard(props: { view: UsageView; range: number; acco
           <DenseTable<AccountUsage>
             label="Accounts using the most" rows={props.accounts} rowKey={(a) => a.xuid} initialSort={{ col: sortCol(props.sort), dir: "desc" }}
             cols={[
-              { key: "tag", label: "gamertag", value: name, render: (a) => (a.gamertag ? <a href={playerHref(a.gamertag)}>{a.gamertag}</a> : <span class="dk-dim">{a.xuid}</span>) },
+              { key: "tag", label: "gamertag", value: name, render: (a) => (a.gamertag ? <A href={dashboardPlayerHref(a.gamertag)}>{a.gamertag}</A> : <span class="dk-dim">{a.xuid}</span>) },
               { key: "up", label: "uploaded", num: true, bar: true, value: (a) => a.uploaded, render: (a) => bytes(a.uploaded) },
               {
                 key: "mix", label: "by kind", value: (a) => a.up.frames / Math.max(1, a.uploaded), class: "dk-col-seg",

@@ -15,7 +15,7 @@ import { ApiError } from "../api/http";
 import type { LocalAccount } from "../state/account";
 import { eventBody, signEvent } from "../state/sign";
 import { issueToken, randomId } from "./token";
-import { LIVE_ADMIN, STATS_ROOT, statsPath } from "../routes";
+import { DASH_PLAYERS, LIVE_ADMIN, STATS_ROOT, statsPath } from "../routes";
 
 export const ADMIN_READ = "admin.read";
 export const INVITES_WRITE = "invites.write";
@@ -293,7 +293,7 @@ export function serverPods(view: ServerView, admin: boolean | null): ServerPod[]
         return [
           { label: "another server", glyph: "server", to: "/dash/server/connect" },
           { label: "event log", glyph: "history", to: statsPath("/events") },
-          { label: "players", glyph: "career", to: "/dash/players" },
+          { label: "players", glyph: "career", to: DASH_PLAYERS },
           { label: "stats site", glyph: "record", to: STATS_ROOT },
         ];
       case "import":
@@ -319,14 +319,14 @@ export function serverPods(view: ServerView, admin: boolean | null): ServerPod[]
       return [
         { label: "accounts", glyph: "career", to: "/dash/server/accounts", back: true },
         { label: "bans", glyph: "sign", to: "/dash/server/bans" },
-        { label: "players", glyph: "record", to: "/dash/players" },
+        { label: "players", glyph: "record", to: DASH_PLAYERS },
         { label: "your server", glyph: "globe", to: "/dash/server", back: true },
       ];
     case "bans":
       return [
         { label: "accounts", glyph: "career", to: "/dash/server/accounts", back: true },
         { label: "reports", glyph: "history", to: "/dash/server/reports", back: true },
-        { label: "players", glyph: "record", to: "/dash/players" },
+        { label: "players", glyph: "record", to: DASH_PLAYERS },
         { label: "your server", glyph: "globe", to: "/dash/server", back: true },
       ];
     case "accounts":
