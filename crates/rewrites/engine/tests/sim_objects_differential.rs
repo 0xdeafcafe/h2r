@@ -245,6 +245,8 @@ fn object_on_stack(root: u32) -> bool {
         &points::CREATURE_POST_UPDATE,
         // Slice 11, the projectile step.
         &points::PROJECTILE_STEP,
+        // Slice 9.
+        &points::WEAPON_UPDATE,
     ]
     .iter()
     .any(|p| p.base == root)
@@ -322,6 +324,7 @@ fn cleanup(target: u32) -> u32 {
         t if let Some(&(_, pop)) = SLICE_4_CALLEES.iter().find(|c| c.0 == t) => pop,
         t if let Some(&(_, pop)) = SLICE_5_CALLEES.iter().find(|c| c.0 == t) => pop,
         t if let Some(&(_, pop)) = SLICE_6A_CALLEES.iter().find(|c| c.0 == t) => pop,
+        t if let Some(&(_, pop)) = SLICE_9_CALLEES.iter().find(|c| c.0 == t) => pop,
         _ => panic!("no stub for callee {target:#x}: add its cleanup"),
     }
 }
@@ -380,6 +383,9 @@ fn answer(cpu: &mut Cpu, g: &mut Guest, target: u32, n: usize, case: u32) {
         0xd5b60 => if (n + case as usize) % 4 == 3 { 0 } else { DAMAGE_INFO },
         0xd9f70 | 0x138880 | 0xd8b50 => (seed >> 3) % 2,
         0x14de90 => if n % 2 == 0 { u32::MAX } else { handle(3) },
+        // Slice 9: the weapon's owner lookup answers none or a live
+        // object (its `+13c` is read).
+        0x101fb0 => if (n + case as usize) % 3 == 0 { u32::MAX } else { handle(3) },
         // The projectile step's: the attachment handle (none for some),
         // and the collision, flyby and refresh answers in `al`.
         0xfd410 => if (n + case as usize) % 3 == 0 { u32::MAX } else { handle(3) },
@@ -1597,6 +1603,11 @@ fn dress_step(g: &mut Guest, case: u32) {
 
 /// [`dressed`] with [`dress_step`] on top.
 fn dressed_step(point: &points::Point, cases: u32) {
+    dressed_with(point, cases, dress_step);
+}
+
+/// [`dressed`] with `extra` dressing the pool further.
+fn dressed_with(point: &points::Point, cases: u32, extra: fn(&mut Guest, u32)) {
     let Some((image, ram)) = image() else { return };
     let table: &Table = &*sim_objects::TABLE;
     let mut code = image.original();
@@ -1612,7 +1623,7 @@ fn dressed_step(point: &points::Point, cases: u32) {
         let fresh = || {
             let (cpu, mut g) = start(ram, point.base, case);
             dress(&mut g, case);
-            dress_step(&mut g, case);
+            extra(&mut g, case);
             (cpu, g)
         };
         let (cpu, g) = fresh();
@@ -2447,3 +2458,159 @@ fn unit_clamp_direction() {
 fn unit_idle_test() {
     unit_transcripts(&points::UNIT_IDLE_TEST, 6);
 }
+
+
+// Slice 9: the weapon update `fdfb0`. Its root runs over the slice 11
+// dressing plus a weapon definition with up to two triggers and two
+// barrels, their body states in every state the jump tables reach, and an
+// animation block for some cases; it runs through [`dressed_with`] like
+// every root, comparing the float state at every callout.
+
+/// Every guest function `fdfb0` calls, with the bytes its `ret` pops
+/// (docs/engine/object-update.md, "Slice 9 body"). `1cb710`, `1daea0`
+/// and `badc0` are slice 11's.
+const SLICE_9_CALLEES: &[(u32, u32)] = &[
+    (0x101690, 4),
+    (0xd1490, 0),
+    (0x101fb0, 0),
+    (0x105e80, 4),
+    (0x105740, 0),
+    (0x105800, 0),
+    (0x10d4e0, 0),
+    (0x105840, 0),
+    (0x1039a0, 12),
+    (0x101f20, 0),
+    (0xc86e0, 4),
+    (0x105fa0, 4),
+    (0x1685a6, 8),
+    (0x103a60, 0),
+    (0x177610, 0),
+    (0x177260, 4),
+    (0xfdd50, 8),
+    (0x102540, 12),
+    (0x102f70, 0),
+    (0x106280, 8),
+    (0x103c40, 4),
+    (0x103a90, 4),
+    (0x103ce0, 4),
+    (0x1027b0, 12),
+    (0x103b10, 4),
+    (0x103bd0, 4),
+    (0x102d60, 0),
+    (0x102e10, 0),
+    (0x102f10, 0),
+    (0x1061c0, 8),
+    (0x103b70, 4),
+    (0x1023d0, 4),
+    (0x103e60, 4),
+    (0x102100, 12),
+    (0x102fb0, 8),
+    (0x103f60, 8),
+    (0x103dd0, 4),
+    (0xba7f0, 16),
+    // `_ftol2` (`FTOL2`) is in `SLICE_6A_CALLEES`.
+];
+
+/// The weapon definition's trigger records (`40` bytes each) and barrel
+/// records (`ec` bytes each).
+const WEAPON_TRIGGERS: u32 = 0x0066_0000;
+const WEAPON_BARRELS: u32 = 0x0066_1000;
+
+/// The weapon fields `fdfb0` branches on, varied by `case`, over
+/// [`dress`].
+fn dress_weapon(g: &mut Guest, case: u32) {
+    let k = case as usize;
+    let f = |v: f32| v.to_bits();
+    // The definition.
+    word(g, DEFINITION + 0x12c, [0, 1 << 27, 1 << 10, 1 << 27 | 1 << 10][k % 4]);
+    word(g, DEFINITION + 0x150, f(0.25));
+    word(g, DEFINITION + 0x154, f(0.5));
+    word(g, DEFINITION + 0x160, f(0.5));
+    word(g, DEFINITION + 0x168, f([0.0, 2.0][k % 2]));
+    word(g, DEFINITION + 0x170, if k % 3 == 0 { u32::MAX } else { 0x00e6_0001 });
+    word(g, DEFINITION + 0x248, if k % 2 == 0 { 0x00e6_0002 } else { u32::MAX });
+    word(g, DEFINITION + 0x250, if k % 2 == 1 { 0x00e6_0003 } else { u32::MAX });
+    word(g, DEFINITION + 0x254, f([0.0, 0.5][k % 2]));
+    g.set_u16(DEFINITION + 0x292, [3, 0][k % 2]).unwrap();
+    word(g, DEFINITION + 0x2c0, [0, 1, 2][k % 3]);
+    word(g, DEFINITION + 0x2c8, if case == 0 { 0 } else { 2 });
+    word(g, DEFINITION + 0x2cc, WEAPON_TRIGGERS);
+    word(g, DEFINITION + 0x2d0, if case == 0 { 1 } else { 2 });
+    word(g, DEFINITION + 0x2d4, WEAPON_BARRELS);
+    word(g, DEFINITION + 0x2d8, f(1.0));
+    word(g, DEFINITION + 0x2dc, f(0.5));
+    for t in 0..2usize {
+        let r = WEAPON_TRIGGERS + 0x40 * t as u32;
+        g.set_u16(r + 4, ((k + t) % 4) as u16).unwrap();
+        g.set_u16(r + 6, ((k + 2 * t) % 6) as u16).unwrap();
+        g.set_u16(r + 8, if (k + t) % 5 == 4 { u16::MAX } else { ((k + t) % 2) as u16 }).unwrap();
+        g.set_u16(r + 0xa, if (k + t) % 7 == 3 { u16::MAX } else { (1 - (k + t) % 2) as u16 }).unwrap();
+        g.set_u16(r + 0x18, ((k + t) % 4) as u16).unwrap();
+        g.set_u16(r + 0x1a, ((k + 2 * t + 1) % 4) as u16).unwrap();
+    }
+    for b in 0..2usize {
+        let r = WEAPON_BARRELS + 0xec * b as u32;
+        word(g, r, [0, 1 << 9, 1 << 10, 1 << 9 | 1 << 10][(k + b) % 4]);
+        word(g, r + 0x14, f([0.0, 1.5][(k + b) % 2]));
+        word(g, r + 0x18, f([0.0, 0.5, 0.9][(k + b) % 3]));
+        word(g, r + 0x50, f(0.5));
+        word(g, r + 0x54, f(0.75));
+        for (i, off) in [0xc4u32, 0xc8, 0xcc, 0xd0, 0xd4, 0xd8, 0xdc, 0xe0].into_iter().enumerate() {
+            word(g, r + off, f(0.25 + 0.5 * i as f32));
+        }
+    }
+
+    // The body.
+    let body = g.u32(DATA + 12 * (object(case) & 0xffff) + 8).unwrap();
+    word(g, body + 0x154, if k % 2 == 0 { handle(3) } else { u32::MAX });
+    byte(g, body + 0x16c, [0, 2, 4, 0x10, 0x20, 0x22, 6, 0x12][k % 8]);
+    g.set_u16(body + 0x16e, [0, 1, 0x80, 0x40, 0x20, 0x108, 0x41, 0x1e][k % 8]).unwrap();
+    byte(g, body + 0x170, [0, 1][k % 2]);
+    byte(g, body + 0x171, [0, 0, 1][k % 3]);
+    byte(g, body + 0x175, 10);
+    g.set_u16(body + 0x17c, [0, 3][k % 2]).unwrap();
+    word(g, body + 0x180, f([0.0, 0.75, 0.3][k % 3]));
+    word(g, body + 0x184, f(0.5));
+    word(g, body + 0x188, f([0.0, 0.0, 1.0][k % 3]));
+    word(g, body + 0x18c, f(0.2));
+    word(g, body + 0x190, f([0.0, 1.0][k % 2]));
+    word(g, body + 0x194, if k % 2 == 1 { handle(3) } else { u32::MAX });
+    g.set_u16(body + 0x19e, [1, 5][k % 2]).unwrap();
+    word(g, body + 0x244, if k % 3 == 1 { 0x00e8_0001 } else { u32::MAX });
+    // An animation block at `+100` in odd cases: tag index 0, a graph
+    // word at `+6` (none in case 5), the flag bytes `+11`, `+12`, `+14`.
+    g.set_u16(body + 0x12a, if k % 2 == 1 { 0x100 } else { u16::MAX }).unwrap();
+    word(g, body + 0x100, 0);
+    word(g, body + 0x104, if case == 5 { 0xffff_0005 } else { 0x0001_0005 });
+    byte(g, body + 0x111, [0, 2, 9][k % 3]);
+    byte(g, body + 0x112, [1, 0][k % 2]);
+    byte(g, body + 0x114, [0, 1, 0][k % 3]);
+    // Barrel states at `+1a4`, `34` bytes each.
+    for b in 0..2usize {
+        let r = body + 0x1a4 + 0x34 * b as u32;
+        byte(g, r, [0, 0x7f, 5][(k + b) % 3]);
+        byte(g, r + 1, ((k + b) % 5) as u8);
+        g.set_u16(r + 2, [0, 1, 3][(k + 2 * b) % 3]).unwrap();
+        byte(g, r + 4, [0, 1, 8, 9][(k + b) % 4]);
+        word(g, r + 0x10, f([0.0, 0.5, 0.95][(k + b) % 3]));
+        word(g, r + 0x14, f(0.25));
+        word(g, r + 0x18, f(0.0));
+        word(g, r + 0x1c, f([0.0, 0.5][(k + b) % 2]));
+        word(g, r + 0x20, f([0.0, 2.0][(k + b) % 2]));
+    }
+    // Trigger states at `+20c`, `c` bytes each: every state over the
+    // cases, the countdown, the flag bits and the effect.
+    for t in 0..2usize {
+        let r = body + 0x20c + 0xc * t as u32;
+        byte(g, r, ((k + 3 * t) % 8) as u8);
+        g.set_u16(r + 2, [0, 2][(k + t) % 2]).unwrap();
+        word(g, r + 4, [0, 1, 0x40, 0x41, 0x80][(k + t) % 5]);
+        word(g, r + 8, if (k + t) % 2 == 1 { 0x00e7_0001 } else { u32::MAX });
+    }
+}
+
+#[test]
+fn weapon_update() {
+    dressed_with(&points::WEAPON_UPDATE, 16, dress_weapon);
+}
+

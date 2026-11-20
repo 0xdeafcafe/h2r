@@ -47,6 +47,8 @@ mod xform;
 mod lights;
 // Slice 6a: the unit update's shell and movement.
 mod unit;
+// Slice 9: the weapon update.
+mod weapon;
 
 use crate::points::{self, Point};
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
@@ -167,6 +169,8 @@ pub const BODIES: &[Body] = &[
     Body { point: &points::UNIT_CLAMP_DIRECTION, sites: &unit::CLAMP_SITES, run: unit::clamp },
     Body { point: &points::UNIT_IDLE_TEST, sites: &unit::IDLE_SITES, run: unit::idle },
     Body { point: &points::UNIT_AIM_UPDATE, sites: unit::AIM_SITES, run: unit::aim },
+    // Slice 9: the weapon update (the `weap` descriptor's slot `+40`).
+    Body { point: &points::WEAPON_UPDATE, sites: &weapon::WEAPON_SITES, run: weapon::weapon_update },
 ];
 
 /// The bodies [`drive`] runs and fuses, indexed by entry and site.

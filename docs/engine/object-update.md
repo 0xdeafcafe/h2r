@@ -1,7 +1,7 @@
 # Object update: entries, conventions and liveness
 
-Status: Partly built. Slice 1's, slice 3's, slice 4's, slice 5's, slice 6a's, slice 8's and slice 11's bodies are in the body table behind the switch: the three walks, the per-object pre- and post-update, the four type dispatchers, the wake leaves and the early-mover wake; function values, the export evaluator, the import dispatcher, every type level's import handler and change colours; the light walk, the light record update and its phase step, and the light-list link, unlink and expire; the damage update `d5de0`, with the tick's `Damage` and `Kill` events; the item, scenery, device, machine, crate, creature and projectile updates, and the projectile step `f8eb0`; the post-update shell (component transform, node matrices, bounds, attachment refresh, node-matrix notify) and the transform setters and getters; the unit update's shell `c6b30`, the movement `c60c0`, the direction clamp `cba50`, the idle test `c85c0` and the aim update `c7840`. The other slices of [sim-rewrite-objects.md](sim-rewrite-objects.md) add the rest.
-Code: `crates/rewrites/sim-objects` (kernels and typed views, no `runtime` dependency: `src/wake.rs` the wake leaves, `src/events.rs` the tick's events, `src/damage.rs` the damage and kill event reads, `src/bounds.rs` the bounds kernel), `crates/rewrites/engine/src/sim_objects` (the guest boundary: `BODIES`, `drive`, `supported`, retail frame helpers; `walks.rs`, `object.rs`, `wake.rs` the slice 1 bodies; `functions/` the slice 3 bodies; `lights/` the slice 5 bodies; `damage.rs` the slice 8 body and the event recorders; `item.rs`, `scenery.rs`, `device.rs`, `machine.rs`, `bloc.rs`, `creature.rs`, `projectile.rs`, `projectile_step.rs` the slice 11 bodies over `sse.rs` (scalar SSE on the guest registers) and `alu.rs` (shift and 16-bit flag idioms); `post.rs`, `pose.rs`, `bounds.rs`, `transform.rs` the slice 4 bodies over `xform.rs` (the node-matrix rows); `unit.rs` the slice 6a bodies, with `sim_physics::unit_aim::step` for `c7840`), `crates/rewrites/sim-bridge/src/sim_objects.rs` (installer). Tests: `crates/rewrites/engine/src/sim_objects/tests.rs` (the dispatcher, guarding, finalize and a leaf on a synthetic pool), `crates/rewrites/engine/src/sim_objects/functions/tests.rs` (the slice 3 helpers and the import dispatcher on synthetic memory), `crates/rewrites/engine/src/sim_objects/damage/tests.rs` (the damage update's frame and the recorders), `crates/rewrites/engine/src/sim_objects/unit/tests.rs` (the slice 6a frames, callouts and stores), `crates/rewrites/engine/src/sim_objects/lights/tests.rs` (the slice 5 bodies' frames, sites and stores on a synthetic light array), `crates/rewrites/sim-bridge/src/sim_objects.rs` (the installer, the guard, the event observers, and resumes at a body's sites on the unit shell), `crates/rewrites/engine/tests/sim_objects_differential.rs` (fused transcripts and mixed frames against the lifted original for every slice 1, slice 3, slice 4, slice 5, slice 6a, slice 8 and slice 11 root, comparing the integer registers, flags, memory, XMM registers and x87 state at every callout and return (`FLOAT_OPT_OUT` lists the roots that do not, each with its reason), feature `differential`), `crates/rewrites/sim-objects/src/wake/tests.rs` (the wake kernels), `crates/rewrites/sim-objects/src/damage/tests.rs` (the event reads), `crates/rewrites/sim-objects/src/bounds/tests.rs` (the bounds kernel), `crates/rewrites/engine/src/sim_objects/bounds/tests.rs` (`bdef0` against that kernel), and the views in `crates/rewrites/sim-objects` and `crates/rewrites/sim-state`.
+Status: Partly built. Slice 1's, slice 3's, slice 4's, slice 5's, slice 6a's, slice 8's, slice 9's and slice 11's bodies are in the body table behind the switch: the three walks, the per-object pre- and post-update, the four type dispatchers, the wake leaves and the early-mover wake; function values, the export evaluator, the import dispatcher, every type level's import handler and change colours; the light walk, the light record update and its phase step, and the light-list link, unlink and expire; the damage update `d5de0`, with the tick's `Damage` and `Kill` events; the item, scenery, device, machine, crate, creature and projectile updates, and the projectile step `f8eb0`; the post-update shell (component transform, node matrices, bounds, attachment refresh, node-matrix notify) and the transform setters and getters; the unit update's shell `c6b30`, the movement `c60c0`, the direction clamp `cba50`, the idle test `c85c0` and the aim update `c7840`; the weapon update `fdfb0`. The other slices of [sim-rewrite-objects.md](sim-rewrite-objects.md) add the rest.
+Code: `crates/rewrites/sim-objects` (kernels and typed views, no `runtime` dependency: `src/wake.rs` the wake leaves, `src/events.rs` the tick's events, `src/damage.rs` the damage and kill event reads, `src/bounds.rs` the bounds kernel), `crates/rewrites/engine/src/sim_objects` (the guest boundary: `BODIES`, `drive`, `supported`, retail frame helpers; `walks.rs`, `object.rs`, `wake.rs` the slice 1 bodies; `functions/` the slice 3 bodies; `lights/` the slice 5 bodies; `damage.rs` the slice 8 body and the event recorders; `item.rs`, `scenery.rs`, `device.rs`, `machine.rs`, `bloc.rs`, `creature.rs`, `projectile.rs`, `projectile_step.rs` the slice 11 bodies over `sse.rs` (scalar SSE on the guest registers) and `alu.rs` (shift and 16-bit flag idioms); `weapon/` the slice 9 body, one file per state group; `post.rs`, `pose.rs`, `bounds.rs`, `transform.rs` the slice 4 bodies over `xform.rs` (the node-matrix rows); `unit.rs` the slice 6a bodies, with `sim_physics::unit_aim::step` for `c7840`), `crates/rewrites/sim-bridge/src/sim_objects.rs` (installer). Tests: `crates/rewrites/engine/src/sim_objects/tests.rs` (the dispatcher, guarding, finalize and a leaf on a synthetic pool), `crates/rewrites/engine/src/sim_objects/functions/tests.rs` (the slice 3 helpers and the import dispatcher on synthetic memory), `crates/rewrites/engine/src/sim_objects/damage/tests.rs` (the damage update's frame and the recorders), `crates/rewrites/engine/src/sim_objects/unit/tests.rs` (the slice 6a frames, callouts and stores), `crates/rewrites/engine/src/sim_objects/lights/tests.rs` (the slice 5 bodies' frames, sites and stores on a synthetic light array), `crates/rewrites/sim-bridge/src/sim_objects.rs` (the installer, the guard, the event observers, and resumes at a body's sites on the unit shell), `crates/rewrites/engine/tests/sim_objects_differential.rs` (fused transcripts and mixed frames against the lifted original for every slice 1, slice 3, slice 4, slice 5, slice 6a, slice 8, slice 9 and slice 11 root, comparing the integer registers, flags, memory, XMM registers and x87 state at every callout and return (`FLOAT_OPT_OUT` lists the roots that do not, each with its reason), feature `differential`), `crates/rewrites/sim-objects/src/wake/tests.rs` (the wake kernels), `crates/rewrites/sim-objects/src/damage/tests.rs` (the event reads), `crates/rewrites/sim-objects/src/bounds/tests.rs` (the bounds kernel), `crates/rewrites/engine/src/sim_objects/bounds/tests.rs` (`bdef0` against that kernel), and the views in `crates/rewrites/sim-objects` and `crates/rewrites/sim-state`.
 Switch: `impl.sim.native.objects` (default off), listed in [switches.md](../runtime/switches.md).
 
 The contract page for phase 3 of the simulation rewrite: the object walks,
@@ -163,8 +163,16 @@ How the body keeps the contract is in "Slice 8 body" below.
 | `c85c0` | `UNIT_IDLE_TEST` | `(unit: eax) -> al`; `ret`. Called from `c58f0` (slice 6b) | segment |
 | `c7840` | `UNIT_AIM_UPDATE` | `eax`, `esi`, `edi` and five stack arguments; `ret 14` | segment |
 
-Slices 6b, 6c, 7, 9 and 10 (unit, biped, weapon, vehicle) add one block
-each here, in the same shape.
+### Slice 9: weapon
+
+| Entry | Point | ABI | Kind |
+|---|---|---|---|
+| `fdfb0` | `WEAPON_UPDATE` | `(object: stack 0) -> al`; `ret 4`. Slot `+40` of `weap`; the item update runs before it | segment |
+
+How the body keeps the contract is in "Slice 9 body" below.
+
+Slices 6b, 6c, 7 and 10 (unit, biped, vehicle) add one block each here,
+in the same shape.
 
 ### Callouts that stay guest in this phase
 
@@ -931,6 +939,79 @@ apply to the body: the transcendentals it uses (`fsin`, `fcos`,
   are checked only against stub answers.
 - That the x87 crate's transcendentals do not depend on the rounding
   mode is read from its source, not checked in a test.
+
+## Slice 9 body
+
+**C** for its control flow and accesses: read at `fdfb0` with
+`h2 disasm` (`fdfb0..ff576`, 77 calls, five jump tables), and compared with the lifted original by
+`tests/sim_objects_differential.rs` (root `WEAPON_UPDATE` over the
+slice 11 dressing plus a weapon definition, two triggers and two
+barrels in every state the tables reach; and inside the type
+dispatcher and the walks), which for this root also compares the XMM
+registers at every callout. Field names are ours and **L**.
+
+**One body, three files** (`engine::sim_objects::weapon`). A body is
+one row in `BODIES`; its arms are split by state group and the
+dispatcher in `weapon/mod.rs` picks the file by retail address:
+`state.rs` (`fdfb0..fe5ff`: the frame, the owner, the animation block,
+the timers, the charge toward body `+190`, the heat at `+180..+188`,
+the effect at `+244`, the definition's `+2c0` entries), `triggers.rs`
+(`fe5ff..fefee`: the trigger loop, states 0 to 7 through `ff57c`,
+`ff59c`, `ff5b4`, `ff5c4`) and `barrels.rs` (`fefee..ff576`: the barrel
+loop through `ff5d4`, heat, spin and the return). Each file's header
+records its fields; `weapon/mod.rs` records the frame and the registers
+kept across calls. The jump tables are read as retail-address arrays
+(their targets, not their bytes).
+
+**Frame.** `sub esp, 38`, then `ebx`, `ebp`, `esi`, `edi`. With `S` the
+`esp` after the pushes: `[S+13]` the result, `[S+24]` the header offset,
+`[S+28]` the trigger or barrel index, `[S+2c]` the definition, `[S+30]`
+the owner's handle, `[S+34]` the body pointer as read at entry,
+`[S+38]` `d1490`'s answer, the object at `[S+4c]`. The barrel loop
+indexes the body through `[S+34]` even after a callee moved the body,
+as retail does; the state group and the trigger loop re-read it through
+the header (`[S+24]`) where retail does.
+
+**Floating point.** Scalar SSE through `sim_objects::sse`; no XMM value
+is live across a call. Two x87 sequences run on the guest's x87 state
+through `x87::abi`: the heat value `fld; fadd; fmul` left in `st(0)`
+for `_ftol2` `322b0c` (FIP `ff404`), and the spin clamps `fld qword;
+fld dword; fcomip; fstp st(0); fld; fstp dword` (the stores at
+`ff46b` and `ff508`, into `[esi+20]`). `fcomip` sets ZF,
+PF and CF and clears OF, SF and AF, as the `jbe` after it reads.
+
+**Callees**, every one a callout, with the bytes `ret` pops and the
+register arguments retail passes: `101690` (4), `d1490` (0; `eax`,
+`esi`, answers in `xmm0`), `101fb0` (0; `eax`), `badc0` (4; `eax`),
+`105e80` (4), `1daea0` (4; `edx`), `1cb710` (`14`), `105740` (0; `eax`),
+`105800` (0; `ecx`), `10d4e0` (0; `edx`), `105840` (0; `ecx`), `1039a0`
+(`c`; `ecx`), `101f20` (0; `eax`), `c86e0` (4), `105fa0` (4), `1685a6`
+(8; `ecx`), `103a60` (0; `eax`), `177610` (0; `eax`), `177260` (4;
+`edi`), `fdd50` (8); in the trigger loop `102540` (`c`), `102f70` (0;
+`eax`, `cx`), `106280` (8; `eax`), `103c40` (4; `eax`), `103a90` (4;
+`eax`), `103ce0` (4; `ecx`), `1027b0` (`c`; `ecx`), `103b10`, `103bd0`
+and `103b70` (4; `eax`), `102d60` (0; `eax`, `ecx`), `102e10` and
+`102f10` (0; `eax`, `edx`), `1061c0` (8; `eax`); in the barrel loop
+`1023d0` (4), `103e60` (4; `eax`), `102100` (`c`; `eax`), `102fb0` (8),
+`103f60` (8), `103dd0` (4; `eax`), `ba7f0` (`10`) and `322b0c` (0;
+`st(0)`, answers in `edx:eax`). None is a body yet.
+
+### Not verified for slice 9
+
+- Captures (the slice's testable result): registers and RAM at the n-th
+  call of `WEAPON_UPDATE` from a Waterworks match (charging and
+  overheating weapons, dual wielding, a vehicle turret) and from a
+  campaign level, compared with `impl.sim.native.objects` off. The
+  harness covers synthetic pools only.
+- The x87 state at callouts: the harness compares integer registers,
+  flags, XMM and memory, not `st(0)`. `_ftol2` takes its argument
+  there, so a wrong heat value shows only in what `322b0c` answers into
+  body `+175` in a real run.
+- Callee `ret` sizes are read from the pushes at each call site and the
+  callee's first `ret`.
+- The register-liveness tables below do not cover this body's sites
+  (`scripts/sim-liveness.py` lists slices 1 to 5); the body keeps all
+  eight registers exact, so it does not rely on them.
 
 ## Register liveness
 

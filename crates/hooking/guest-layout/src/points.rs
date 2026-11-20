@@ -1273,6 +1273,9 @@ points! { ALL;
     UNIT_CLAMP_DIRECTION @ 0x000c_ba50: [fn(unit: eax, direction: stack 0, look: stack 1) -> al ret 8], Hot; "docs/engine/object-update.md";
     /// Whether the unit is free of seven states and of its held weapons' test (`0x100880`).
     UNIT_IDLE_TEST @ 0x000c_85c0: [fn(unit: eax) -> al ret 0], Hot; "docs/engine/object-update.md";
+    // Slice 9 of docs/engine/sim-rewrite-objects.md: the weapon update.
+    /// Weapon update: slot `+40` of `weap`, after the item update.
+    WEAPON_UPDATE @ 0x000f_dfb0: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
 }
 
 /// The point at `base`, if the table names one.
