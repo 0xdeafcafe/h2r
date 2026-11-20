@@ -9,6 +9,8 @@ use tags::shader::{IndexRange, TemplatePostprocess};
 use super::{Layout, Root, build_record, set};
 use crate::{Error, Result};
 
+pub mod glass;
+pub mod particle_vertex;
 pub mod scope_filters;
 
 const SPAS: FourCC = FourCC(*b"spas");

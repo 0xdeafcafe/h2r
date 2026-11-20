@@ -908,3 +908,148 @@ fn leaf_alpha_cuts_the_bump(h1: &H1Map, tree: &h1objects::convert::Tree, leaf: &
         "{leaf}: a cut-out, not all or nothing"
     );
 }
+
+#[test]
+#[ignore = "reads the Halo 1 and Halo 2 discs"]
+fn textureless_bsp_draws_use_lightmapped_white_and_destination_tint() {
+    use h1convert::{shad, structure, textures};
+    use map::build::{TagPayload, TagSet};
+    use tags::defs::{self, Defs, Target, Val};
+    let mut base = h2_map("05a_deltaapproach");
+    for (level, name, glass) in [
+        ("d40", r"levels\a10\shaders\burnt flourescent off", false),
+        ("a50", r"levels\a50\shaders\covenant glass floor", true),
+        ("d20", r"levels\a50\shaders\covenant glass floor", true),
+    ] {
+        let source = h1_map(level);
+        let materials = [(0, name.to_owned())];
+        let recipe = textures::plan_bsp(&source, &mut base, &materials, &[]).unwrap();
+        let mut set = TagSet::new(map::CacheType::Campaign, level, level);
+        let (templates, indices) = recipe
+            .install(&mut set, &structure::Templates::default(), &materials)
+            .unwrap();
+        let read = |id| {
+            let tag = set.tag(id).unwrap();
+            let TagPayload::Built(root) = &tag.payload else {
+                panic!("expected rebuilt tag")
+            };
+            defs::from_built(Defs::builtin().group(tag.group).unwrap(), root).unwrap()
+        };
+        let r = read(templates.shader(indices[0]));
+        if glass {
+            assert_eq!(
+                templates.part_kinds[indices[0]],
+                structure::PART_KIND_TRANSPARENT
+            );
+            let Some(Val::Ref {
+                target: Target::Id(stem),
+                ..
+            }) = r.at("template")
+            else {
+                panic!()
+            };
+            let t = read(*stem);
+            let Some(Val::Ref {
+                target: Target::Id(pass),
+                ..
+            }) = t.at("postprocess[0].passes[0].pass")
+            else {
+                panic!()
+            };
+            let pass = read(*pass);
+            let Some(Val::Block(states)) = pass.at("postprocess[0].render_states") else {
+                panic!()
+            };
+            for (state, value) in [(59, 1), (62, 0), (63, 0x300), (74, 0x8006), (64, 0)] {
+                assert!(
+                    states
+                        .iter()
+                        .any(|s| s.at("state") == Some(&Val::Int(state))
+                            && s.at("value") == Some(&Val::Int(value)))
+                );
+            }
+        } else {
+            assert_eq!(templates.part_kinds[indices[0]], structure::PART_KIND);
+            for (slot, default) in [
+                (0, shad::Fixed::DefaultVector),
+                (2, shad::Fixed::ColorWhite),
+                (3, shad::Fixed::DefaultDetail),
+            ] {
+                let Some(Val::Datum(Target::Id(b))) =
+                    r.at(&format!("postprocess[0].bitmaps[{slot}].bitmap"))
+                else {
+                    panic!()
+                };
+                assert_eq!(base.tag(*b).unwrap().name.as_deref(), Some(default.path()));
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "reads the Halo 1 and Halo 2 discs"]
+fn b30_fixtures_select_their_own_base_and_reflection_mask() {
+    use h1map::bitmap::Bitmap;
+    let h1 = h1_map("b30");
+    let base = Base::read(&mut h2_map("05a_deltaapproach")).unwrap();
+    let mut c = Converter::new(&h1, &base);
+    let shader = h1
+        .tags()
+        .iter()
+        .find(|t| t.name == r"levels\b30\devices\light fixtures\shaders\light frame")
+        .unwrap();
+    let maps = h1convert::textures::h1_maps_of(&h1, shader).unwrap();
+    let bitmap = |id| Bitmap::read(&h1, h1.tag(id).unwrap()).unwrap();
+    let base_bitmap = bitmap(maps.base.unwrap());
+    let mask = bitmap(h1convert::shad::soso_multipurpose(&h1, shader).unwrap());
+    let mut selected = Vec::new();
+    for (fixture, k) in [("floor1", 1usize), ("ceiling1", 0), ("floor2", 1)] {
+        let name = format!(
+            r"levels\b30\devices\light fixtures\light fixture {fixture}\light fixture {fixture}"
+        );
+        let fixture = h1
+            .tags()
+            .iter()
+            .find(|t| t.group == Group::new(b"lifi") && t.name == name)
+            .unwrap();
+        c.object(fixture).unwrap();
+        let index = c
+            .tree
+            .tags
+            .iter()
+            .position(|(n, t)| *n == name && t.group.0 == *b"mode")
+            .unwrap();
+        let id = local(index);
+        let mut shaders = Vec::new();
+        tag_refs(&c.tree.tags[id.index()].1.root, &mut shaders);
+        let name = format!("{}_permutation_{k}", shader.name);
+        let index = c
+            .tree
+            .tags
+            .iter()
+            .position(|(n, t)| n == &name && t.group.0 == *b"shad")
+            .unwrap();
+        assert!(shaders.contains(&local(index)));
+        let mut bindings = Vec::new();
+        tag_refs(&c.tree.tags[index].1.root, &mut bindings);
+        let (i, (_, bm)) = c
+            .tree
+            .tags
+            .iter()
+            .enumerate()
+            .find(|(_, (n, t))| n == &format!("{name}_Base") && t.group.0 == *b"bitm")
+            .unwrap();
+        assert!(bindings.contains(&local(i)));
+        let (_, bytes) = h1bitmaps::mask::red_into_alpha(
+            &base_bitmap.images[k],
+            base_bitmap.pixels(&h1, k).unwrap(),
+            &mask.images[k],
+            mask.pixels(&h1, k).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(&bm.raw[0].0[..bytes.len()], bytes.as_slice());
+        selected.push(local(i));
+    }
+    assert_ne!(selected[0], selected[1]);
+    assert_eq!(selected[0], selected[2]);
+}

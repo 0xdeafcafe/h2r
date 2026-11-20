@@ -498,6 +498,7 @@ fn hlmt_regions_select_collision_regions_by_name_then_index() {
 fn rebuilt_scenery_has_only_definition_bytes() {
     use tags::defs::{self, Defs, Target, Val};
     let obj = crate::h1::Object {
+        texture_override: 0,
         object_type: 6,
         acceleration_scale: 1.75,
         flags: 4,
@@ -643,6 +644,7 @@ fn rebuilt_scenery_carries_its_change_colours() {
         ],
     };
     let obj = crate::h1::Object {
+        texture_override: 0,
         object_type: 6,
         acceleration_scale: 0.0,
         flags: 0,
@@ -703,6 +705,7 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
     };
     use tags::defs::{self, Defs, Str, Target, Val};
     let obj = crate::h1::Object {
+        texture_override: 0,
         object_type: 1,
         acceleration_scale: 0.0,
         flags: 0,
@@ -854,6 +857,7 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
     use crate::rebuild::{VehicleRole, VehicleSpec};
     use tags::defs::{self, Defs, Target, Val};
     let obj = crate::h1::Object {
+        texture_override: 0,
         object_type: 1,
         acceleration_scale: 0.0,
         flags: 0,
@@ -1097,6 +1101,7 @@ fn h1_device(group: &[u8; 4]) -> crate::h1::Device {
     crate::h1::Device {
         group: h1map::Group::new(group),
         object: crate::h1::Object {
+            texture_override: 0,
             object_type: 7,
             acceleration_scale: 0.0,
             flags: 0,
@@ -1470,6 +1475,7 @@ fn biped_carries_each_source_word_and_leaves_unmapped_fields_at_default() {
     use crate::rebuild::{BIPED_TYPE, BIPED_WORDS};
     use tags::defs::{self, Defs, Target, Val};
     let obj = crate::h1::Object {
+        texture_override: 0,
         object_type: 0,
         acceleration_scale: 0.0,
         flags: 0,
@@ -1555,6 +1561,7 @@ fn rebuilt_biped_uses_source_shapes_tracks_weapons_and_hud() {
         hud_interfaces: Vec::new(),
         group: h1map::Group::new(b"bipd"),
         object: crate::h1::Object {
+            texture_override: 0,
             object_type: 0,
             acceleration_scale: 0.0,
             flags: 0,
@@ -2454,6 +2461,7 @@ fn hover_points_take_their_paired_points_words() {
     use crate::rebuild::{VEHI_HOVER, VehicleRole, VehicleSpec};
     use tags::defs::{self, Defs, Val};
     let obj = crate::h1::Object {
+        texture_override: 0,
         object_type: 1,
         acceleration_scale: 0.0,
         flags: 0,

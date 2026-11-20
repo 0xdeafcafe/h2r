@@ -22,6 +22,10 @@ use tags::effects::h1_attachment::{
 use crate::h1::{reference, tag_bytes};
 use crate::{Error, Result};
 
+#[path = "particle_mask.rs"]
+mod particle_mask;
+pub(crate) use particle_mask::{Mask, maximum_sequences};
+
 /// Halo 1 `cont` root size (V: every one is `0x144` plus `0x68` per point,
 /// its point block at `+0x138`).
 pub const H1_CONT_SIZE: usize = 0x144;
@@ -380,11 +384,12 @@ impl H1Particle {
 }
 
 /// The Halo 2 stem for a Halo 1 blend function, and whether the pairing
-/// is proven (V for 0, 3, 7; 6 is drawn additive, unproven).
+/// is proven. For 6 the secondary map selects a compiled program variant.
 pub fn particle_stem(blend: u16) -> (&'static str, bool) {
     match blend {
         0 => ("shaders\\shader_templates\\transparent\\particle_alpha_blend", true),
         3 => ("shaders\\shader_templates\\transparent\\particle_additive", true),
+        6 => (h1convert::shad::program::glass::PARTICLE_MAX, true),
         7 => ("shaders\\shader_templates\\transparent\\particle_alpha_multiply_add", true),
         _ => ("shaders\\shader_templates\\transparent\\particle_additive", false),
     }
@@ -428,10 +433,30 @@ pub fn particle(
     collision_effect: Option<(FourCC, TagId)>,
     death_effect: Option<(FourCC, TagId)>,
 ) -> Result<Block> {
+    particle_with_mask(p, shader, bitmap, None, 0, collision_effect, death_effect)
+}
+
+pub(crate) fn particle_with_mask(
+    p: &H1Particle,
+    shader: &ParticleShader,
+    bitmap: Option<(TagId, u16, u16)>,
+    mask: Option<Mask<(TagId, u16, u16)>>,
+    orientation: u16,
+    collision_effect: Option<(FourCC, TagId)>,
+    death_effect: Option<(FourCC, TagId)>,
+) -> Result<Block> {
     let d = def(b"prt3")?;
     let mut r = defs::default_record(d);
     let (first, count) = p.sequence_range();
-    set(&mut r, "flags", Val::Int(0x10))?;
+    set(&mut r, "vertex_shader", Val::Int(orientation.into()))?;
+    // H1 0x10e9f9/0x10ea10 randomize each allowed mirror axis. H2
+    // performs the corresponding per-particle U/V mirroring at draw time.
+    let flags = if p.blend == 6 {
+        0x30 | ((p.flags >> 9) & 6)
+    } else {
+        0x10
+    };
+    set(&mut r, "flags", Val::Int(flags.into()))?;
     set(&mut r, "flags_2", Val::Int(0))?;
     set(&mut r, "first_sequence", Val::Int(first.into()))?;
     set(&mut r, "sequence_count", Val::Int(count.into()))?;
@@ -440,7 +465,18 @@ pub fn particle(
     let mut x = defs::default_record(pd);
     set(&mut x, "name", Val::text("alpha_map_texture"))?;
     set(&mut x, "bitmap", Val::tag(FourCC(*b"bitm"), bitmap.map_or(TagId::NULL, |b| b.0)))?;
-    set(&mut r, "parameters", Val::Block(vec![x]))?;
+    let mut parameters = vec![x];
+    if let Some(m) = mask {
+        let mut secondary = defs::default_record(pd);
+        set(&mut secondary, "name", Val::text("secondary_map"))?;
+        set(
+            &mut secondary,
+            "bitmap",
+            Val::tag(FourCC(*b"bitm"), m.bitmap.0),
+        )?;
+        parameters.push(secondary);
+    }
+    set(&mut r, "parameters", Val::Block(parameters))?;
     // 0x2245ad..0x224caf multiplies these three particle properties by
     // emitter tint, alpha and size. Their neutral values preserve the H1 emitter.
     for (field, scalar, colour) in [
@@ -460,7 +496,11 @@ pub fn particle(
         };
         set(&mut r, f, v)?;
     }
-    set(&mut r, "postprocess", Val::Block(vec![particle_postprocess(shader, bitmap)?]))?;
+    let mut pp = particle_postprocess(shader, bitmap)?;
+    if let Some(m) = mask {
+        m.bind_postprocess(&mut pp)?;
+    }
+    set(&mut r, "postprocess", Val::Block(vec![pp]))?;
     defs::to_built(d, &r, &mut |_| None).map_err(|e| Error::Invalid(e.to_string()))
 }
 

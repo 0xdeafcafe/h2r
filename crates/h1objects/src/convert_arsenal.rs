@@ -92,12 +92,12 @@ impl Converter<'_> {
         rounds: Option<i16>,
     ) -> Result<TagId> {
         let t = self.h1_tag(id)?;
-        let key = (id, rounds);
+        let key = (id, rounds, 0);
         if let Some(&mode) = self.render_models.get(&key) {
             return Ok(mode);
         }
         let (h1_model, _) = h1models::model_from_map(self.h1, t, &ModelOptions::default())?;
-        let shaders = self.model_shaders(rep, &h1_model, rounds)?;
+        let shaders = self.model_shaders(rep, &h1_model, rounds, 0)?;
         let mut padded = shaders.clone();
         padded.resize(h1_model.shaders.len(), TagId::NULL);
         let mut mode = h1models::mode::convert_model(

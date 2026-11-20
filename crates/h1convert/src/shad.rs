@@ -1084,6 +1084,7 @@ pub struct Library {
     stems: HashMap<&'static str, TagId>,
     fixed: HashMap<Fixed, Bound>,
     detail: Option<detail::Program>,
+    glass_vertex: Option<TagId>,
 }
 
 impl Library {
@@ -1100,6 +1101,7 @@ impl Library {
                 })
                 .map(|t| t.id)
         };
+        out.glass_vertex = find(base, b"vrtx", program::glass::GLASS_VERTEX);
         for l in LAYOUTS {
             if let Some(id) = find(base, b"stem", l.stem) {
                 out.stems.insert(l.stem, id);
@@ -1134,6 +1136,7 @@ impl Library {
             stems: stems.iter().copied().collect(),
             fixed: fixed.iter().copied().collect(),
             detail: None,
+            glass_vertex: None,
         }
     }
 
@@ -1145,6 +1148,9 @@ impl Library {
     /// Whether the base has `layout`'s stem and every default bitmap it
     /// needs.
     pub fn has(&self, layout: &Layout) -> bool {
+        if layout.stem == program::glass::CLEAR.stem {
+            return self.glass_vertex.is_some();
+        }
         self.stem(layout).is_some()
             && layout.bitmaps.iter().all(|b| match b {
                 Bm::Role(_, f) | Bm::Fixed(f) => self.fixed.contains_key(f),
@@ -1318,6 +1324,34 @@ impl Library {
         maps: &HashMap<Role, Bound>,
         extras: &Extras,
     ) -> Result<Block> {
+        if layout.stem == program::glass::CLEAR.stem {
+            use map::build::TagPayload;
+            use program::glass;
+            let group = FourCC(*b"stem");
+            let id = if let Some(id) = set.converted(group, layout.stem) {
+                id
+            } else {
+                let vertex = self
+                    .glass_vertex
+                    .ok_or(Error::Invalid("missing glass vertex shader"))?;
+                let pass_group = FourCC(*b"spas");
+                set.add_group(pass_group, None, None);
+                let pass = set.add_tag(
+                    pass_group,
+                    layout.stem,
+                    TagPayload::Built(glass::clear_pass(vertex)?),
+                )?;
+                set.add_group(group, None, None);
+                let id = set.add_tag(
+                    group,
+                    layout.stem,
+                    TagPayload::Built(glass::clear_template(pass)?),
+                )?;
+                set.record_conversion(group, layout.stem, id);
+                id
+            };
+            return glass::clear_instance(id);
+        }
         if !uses_detail_program(layout, extras) {
             return self.build_with(layout, maps, extras);
         }
@@ -1796,9 +1830,56 @@ pub const SPLA_MAP: usize = 0xd4;
 ///   fade by the view angle as Halo 1's fade mode says ([`Tint::faded`]);
 ///   Other `sotr` stages (combiners) aren't read.
 pub fn read_h1(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
+    if let Some(layout) = textureless_layout(tag.group, h1.tag_data(tag).ok()?) {
+        return Some(H1Shader {
+            name: tag.name.clone(),
+            group: tag.group.to_string(),
+            layout,
+            maps: vec![],
+            extras: Extras::default(),
+            fallback: None,
+        });
+    }
     let mut s = read_h1_maps(h1, tag)?;
     s.fit_kinds(h1);
     if s.maps.is_empty() { None } else { Some(s) }
+}
+
+/// Match the source draw, including its absent layers. Bad references or
+/// additional sampled maps must still go through the full material reader.
+pub fn textureless_layout(group: h1map::Group, bytes: &[u8]) -> Option<&'static Layout> {
+    let null_maps = |offsets: &[usize]| {
+        offsets.iter().all(|&offset| {
+            h1map::TagRef::read(bytes, offset)
+                .is_some_and(|r| r.group == h1map::Group::new(b"bitm") && r.id.is_none())
+        })
+    };
+    let zero = |at: usize, len: usize| {
+        bytes
+            .get(at..at + len)
+            .is_some_and(|b| b.iter().all(|v| *v == 0))
+    };
+    if group == h1map::Group::new(b"senv")
+        && zero(0x28, 4)
+        && null_maps(&[0x88, 0xb8, 0xcc, 0xfc, 0x128, 0x254, 0x324])
+        && zero(0x290, 4)
+    {
+        // 0x774a2 / 0x77500 bind white and neutral detail respectively.
+        return Some(&TEX_BUMP);
+    }
+    if group == h1map::Group::new(b"sgla")
+        && zero(0x28, 2)
+        && null_maps(&[0x64, 0xac, 0xc0, 0x158, 0x16c, 0x1a0, 0x1b4])
+        && zero(0x8a, 2)
+        && zero(0x8c, 4)
+        && zero(0x9c, 4)
+        && [0x54, 0x58, 0x5c]
+            .iter()
+            .all(|&at| bytes.get(at..at + 4) == Some(&1f32.to_le_bytes()[..]))
+    {
+        return Some(&program::glass::CLEAR);
+    }
+    None
 }
 
 /// The texture kind of the Halo 1 bitmap `id` (its first image); Halo 1's
@@ -3021,6 +3102,40 @@ pub fn h1_lod_offset(h1: &h1map::H1Map, id: h1map::TagId) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn textureless_layout_requires_absent_layers_and_white_glass_tint() {
+        for (group, slots, layout) in [
+            (
+                b"senv",
+                &[0x88, 0xb8, 0xcc, 0xfc, 0x128, 0x254, 0x324][..],
+                &TEX_BUMP,
+            ),
+            (
+                b"sgla",
+                &[0x64, 0xac, 0xc0, 0x158, 0x16c, 0x1a0, 0x1b4][..],
+                &program::glass::CLEAR,
+            ),
+        ] {
+            let mut b = vec![0; 0x340];
+            for &i in slots {
+                b[i..i + 4].copy_from_slice(&h1map::Group::new(b"bitm").0.to_le_bytes());
+                b[i + 12..i + 16].fill(0xff);
+            }
+            for i in [0x54, 0x58, 0x5c] {
+                b[i..i + 4].copy_from_slice(&1f32.to_le_bytes());
+            }
+            let group = h1map::Group::new(group);
+            assert_eq!(textureless_layout(group, &b), Some(layout));
+            b[slots[0] + 12] = 1;
+            assert!(textureless_layout(group, &b).is_none());
+            b[slots[0] + 12] = 0xff;
+            if group == h1map::Group::new(b"sgla") {
+                b[0x54..0x58].fill(0);
+                assert!(textureless_layout(group, &b).is_none());
+            }
+        }
+    }
 
     /// A `soso` is alpha-tested on a base with an alpha unless its flags
     /// say not (bit 2); the other bits (two-sided, decal) don't change

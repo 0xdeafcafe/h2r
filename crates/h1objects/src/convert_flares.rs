@@ -151,6 +151,7 @@ mod tests {
 
     fn object() -> h1::Object {
         h1::Object {
+            texture_override: 0,
             object_type: 4,
             acceleration_scale: 0.0,
             flags: 0,
