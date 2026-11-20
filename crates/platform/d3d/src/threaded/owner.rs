@@ -268,7 +268,7 @@ fn target_map<B: Backend>(
             (ReplayOp::EndFlareQuery(expected), Cmd::Render(RenderOp::EndQuery { proxy })) if expected == proxy => {}
             (ReplayOp::Draw { draw, textures, .. }, Cmd::Draw(slot)) => {
                 let packet = slot.as_ref().as_ref()?;
-                if packet.expect != DrawOutcome::Drawn || &packet.draw != draw.as_ref() {
+                if packet.expect != DrawOutcome::Drawn || !std::ptr::eq(&*packet.draw, draw.as_ref()) {
                     return None;
                 }
                 if !textures.iter().zip(&packet.textures).all(|(binding, &proxy)| match (binding, proxy) {

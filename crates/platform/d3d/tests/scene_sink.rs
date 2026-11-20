@@ -233,3 +233,56 @@ fn a_later_clear_defines_the_final_image_but_not_an_earlier_pass_snapshot() {
     assert!(frame.private_read_refusal(2, main).is_some(), "a small copy leaves old pixels around it");
     assert_eq!(frame.private_target_refusal(), None);
 }
+
+#[test]
+fn the_worker_adopts_only_the_actual_immutable_draw_packet_including_unused_nan_bits() {
+    use d3d::{Backend, ThreadedBackend};
+    use d3d::scene_sink::{ReplayFrame, ReplayOp};
+    use d3d::threaded::owner::{Candidate, FrameOwner, Outputs};
+    use std::sync::{Arc, Mutex};
+
+    let (mut device, mut memory) = create(RecordingBackend::new(), UploadPolicy::Always);
+    set_states(&mut device, &mut memory);
+    quad(&mut device, &mut memory, 0xFF00_8080);
+    let mut packet = device.backend.draws().pop().unwrap().clone();
+    Arc::make_mut(&mut packet.shader.constants)[0][0] = f32::NAN;
+    let packet = Arc::new(packet);
+
+    let pending = Arc::new(Mutex::new(None::<ReplayFrame>));
+    let input = Arc::clone(&pending);
+    let owner = FrameOwner {
+        select: Box::new(move |present| {
+            let mut replay = input.lock().unwrap().take()?;
+            if present == 2 {
+                for (_, op) in &mut replay.ops {
+                    if let ReplayOp::Draw { draw, .. } = op {
+                        // A separately allocated packet is not the one queued by the device.
+                        *draw = Arc::new(draw.as_ref().clone());
+                    }
+                }
+            }
+            let target = replay.presented;
+            Some(Candidate {
+                frame: Arc::new(replay),
+                eligible: Box::new(|_, _| true),
+                draw: Box::new(move |gpu: &mut RecordingBackend, targets| {
+                    gpu.present(targets[&target], 0)?;
+                    Ok(Outputs::default())
+                }),
+            })
+        }),
+        declined: |_| {},
+        failed: |_| {},
+        stopped: || {},
+    };
+    let device = ThreadedBackend::new(RecordingBackend::new()).unwrap().with_frame_owner(owner);
+    let mut sink = SceneSink::new(device, || Some(SlotAt { slot: Slot::Opaque, view: 0 }))
+        .with_replay(move |frame| *pending.lock().unwrap() = Some(frame));
+    let surface = sink.create_surface(gfx::D3DFormat::LinA8R8G8B8, 32, 32, false).unwrap();
+    for native in [true, false] {
+        sink.draw_shared(surface, None, Arc::clone(&packet), [None; 4]).0.unwrap();
+        sink.present(surface, 0).unwrap();
+        let legacy_draws = sink.inner_mut().with_inner(|gpu| gpu.draws().len()).unwrap();
+        assert_eq!(legacy_draws, usize::from(!native));
+    }
+}

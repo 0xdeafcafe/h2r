@@ -139,7 +139,32 @@ struct DrawCmd {
     textures: [Option<u64>; 4],
     /// The outcome already answered.
     expect: DrawOutcome,
-    draw: ResolvedDraw,
+    draw: QueuedDraw,
+}
+
+enum QueuedDraw {
+    Owned(ResolvedDraw),
+    Shared(Arc<ResolvedDraw>),
+}
+
+impl QueuedDraw {
+    fn into_owned(self) -> Option<ResolvedDraw> {
+        match self {
+            Self::Owned(draw) => Some(draw),
+            Self::Shared(draw) => Arc::into_inner(draw),
+        }
+    }
+}
+
+impl std::ops::Deref for QueuedDraw {
+    type Target = ResolvedDraw;
+
+    fn deref(&self) -> &ResolvedDraw {
+        match self {
+            Self::Owned(draw) => draw,
+            Self::Shared(draw) => draw.as_ref(),
+        }
+    }
 }
 
 /// The pending batch, shared with the texture proxies so that their drops
@@ -414,6 +439,7 @@ impl<B: Backend> Worker<B> {
     fn recycle_draw(&mut self, mut slot: DrawBox) {
         let DrawCmd { draw, .. } = slot.take().expect("a queued draw");
         self.spent_boxes.push(slot);
+        let Some(draw) = draw.into_owned() else { return };
         let mut streams = draw.streams;
         // Vertex cache snapshots are released here; only copies go back
         // to be refilled on the next frame.
@@ -778,6 +804,31 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
     }
 
     /// `cmd` in a draw box the render thread has emptied, or a new one.
+    fn queue_draw(
+        &mut self,
+        color: u32,
+        depth: Option<u32>,
+        draw: QueuedDraw,
+        textures: [Option<&ProxyTexture<B>>; 4],
+    ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
+        if let Err(e) = self.check() {
+            return (Err(e), draw.into_owned().map(|d| d.streams).unwrap_or_default());
+        }
+        // A skipped draw still goes to the render thread: the inner
+        // backend submits a pass for another target before it skips.
+        let judged = self.judge_draw(&draw, textures);
+        let ids = textures.map(|t| t.map(|t| t.id));
+        let slot = self.draw_box(DrawCmd {
+            color,
+            depth,
+            textures: ids,
+            expect: judged.clone(),
+            draw,
+        });
+        self.push(Cmd::Draw(slot));
+        (Ok(judged), self.spare_streams())
+    }
+
     fn draw_box(&mut self, cmd: DrawCmd) -> DrawBox {
         if self.spare_boxes.is_empty() {
             std::mem::swap(
@@ -1039,22 +1090,17 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         draw: ResolvedDraw,
         textures: [Option<&ProxyTexture<B>>; 4],
     ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
-        if let Err(e) = self.check() {
-            return (Err(e), draw.streams);
-        }
-        // A skipped draw still goes to the render thread: the inner
-        // backend submits a pass for another target before it skips.
-        let judged = self.judge_draw(&draw, textures);
-        let ids = textures.map(|t| t.map(|t| t.id));
-        let slot = self.draw_box(DrawCmd {
-            color,
-            depth,
-            textures: ids,
-            expect: judged.clone(),
-            draw,
-        });
-        self.push(Cmd::Draw(slot));
-        (Ok(judged), self.spare_streams())
+        self.queue_draw(color, depth, QueuedDraw::Owned(draw), textures)
+    }
+
+    fn draw_shared(
+        &mut self,
+        color: u32,
+        depth: Option<u32>,
+        draw: Arc<ResolvedDraw>,
+        textures: [Option<&ProxyTexture<B>>; 4],
+    ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
+        self.queue_draw(color, depth, QueuedDraw::Shared(draw), textures)
     }
 
     fn frame_stats(&mut self) {

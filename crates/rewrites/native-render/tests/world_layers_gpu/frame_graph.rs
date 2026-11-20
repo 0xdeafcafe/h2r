@@ -74,7 +74,7 @@ fn guest_triangle(x: f32, colour: [f32; 4], texture: Option<u32>) -> ReplayOp {
         draw.state.render.depth_func = gfx::state::CompareFunc::Always;
     }
     ReplayOp::Draw {
-        draw: Box::new(draw),
+        draw: draw.into(),
         textures: [texture.map(ReplayTexture::Sample), None, None, None],
         camera: CameraUse::Unknown,
     }

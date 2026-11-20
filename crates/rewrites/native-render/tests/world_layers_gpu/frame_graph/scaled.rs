@@ -43,7 +43,7 @@ fn four_x_present_hands_the_menu_its_pixels_snapshot_and_guest_count() {
     let ReplayOp::Draw { draw, .. } = &mut counted else {
         unreachable!()
     };
-    draw.hw.zpass_count_enable = true;
+    Arc::make_mut(draw).hw.zpass_count_enable = true;
     op(&mut frame, Slot::Opaque, counted);
     op(&mut frame, Slot::Opaque, ReplayOp::EndFlareQuery(123));
     op(

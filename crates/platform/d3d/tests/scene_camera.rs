@@ -92,7 +92,7 @@ fn push(frame: &mut ReplayFrame, slot: Slot, view: u8, draw: ResolvedDraw) {
     frame.ops.push((
         SlotAt { slot, view },
         ReplayOp::Draw {
-            draw: Box::new(draw),
+            draw: draw.into(),
             textures: Default::default(),
             camera: CameraUse::Unknown,
         },

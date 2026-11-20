@@ -1147,6 +1147,19 @@ pub trait Backend: Send {
         let r = self.draw(color, depth, &draw, textures);
         (r, draw.streams)
     }
+    /// Submit a packet whose immutable contents also belong to a sealed
+    /// frame. Queued renderers may share it with the replay until Swap.
+    fn draw_shared(
+        &mut self,
+        color: Self::Surface,
+        depth: Option<Self::Surface>,
+        draw: std::sync::Arc<ResolvedDraw>,
+        textures: [Option<&Self::Texture>; 4],
+    ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
+        let result = self.draw(color, depth, &draw, textures);
+        let streams = std::sync::Arc::into_inner(draw).map(|d| d.streams).unwrap_or_default();
+        (result, streams)
+    }
     /// Marks this thread's frame-stat boundary. Asynchronous backends
     /// forward queued statistics without waiting for the render thread.
     fn frame_stats(&mut self) {}

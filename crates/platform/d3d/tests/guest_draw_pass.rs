@@ -62,7 +62,7 @@ fn a_carried_copy_samples_scene_colour_as_it_was_before_the_copy() {
             depth: TargetRef::None,
         },
         ReplayOp::Draw {
-            draw: Box::new(draw),
+            draw: draw.into(),
             textures: [Some(ReplayTexture::Sample(0)), None, None, None],
             camera: CameraUse::Screen,
         },

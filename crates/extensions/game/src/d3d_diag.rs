@@ -564,6 +564,172 @@ fn outcome_name(r: &Result<DrawOutcome, String>) -> String {
 }
 
 impl<B: Backend> DiagBackend<B> {
+    fn inspects_draw(&mut self) -> bool {
+        self.capturing().is_some() || self.logging() || self.sweep.is_some() || self.probe.armed()
+    }
+
+    fn diagnosed_draw(
+        &mut self,
+        color: B::Surface,
+        depth: Option<B::Surface>,
+        draw: &ResolvedDraw,
+        shared: Option<&Arc<ResolvedDraw>>,
+        textures: [Option<&Tracked<B::Texture>>; 4],
+    ) -> Result<DrawOutcome, String> {
+        let ids: Vec<Option<u64>> = textures.iter().map(|t| t.map(|t| t.id)).collect();
+        let mut snap = None;
+        if let Some(c) = self.capturing() {
+            let k = c.draws;
+            if c.skips.contains(&k) {
+                c.draws += 1;
+                c.append(
+                    "frame.txt",
+                    &format!("draw {k} skipped (H2_BOOT_CAPTURE_SKIP)"),
+                );
+                return Ok(DrawOutcome::Drawn);
+            }
+            if c.snaps.contains(&k) {
+                snap = Some((k, c.dir.join(format!("snap-{k}.bin"))));
+            }
+            c.draws += 1;
+            let mut d = draw.clone();
+            for (i, st) in d.streams.iter_mut().enumerate() {
+                c.blob(&format!("draw-{k}-s{i}.bin"), &std::mem::take(&mut st.data));
+            }
+            if let Some(idx) = d.indices.take() {
+                let bytes: Vec<u8> = idx.iter().flat_map(|i| i.to_le_bytes()).collect();
+                c.blob(&format!("draw-{k}-idx.bin"), &bytes);
+            }
+            c.append(
+                "frame.txt",
+                &format!("draw {k} color={color:?} depth={depth:?} textures={ids:?}\n{d:#?}"),
+            );
+        }
+        let sweep_logging = self
+            .sweep
+            .as_ref()
+            .is_some_and(|s| s.dumping(self.in_frame));
+        if sweep_logging && self.sweep.as_ref().is_some_and(|s| s.logged_draws() == 0) {
+            self.sweep_samples(
+                color,
+                draw.target.width,
+                draw.target.height,
+                "target before the frame's first draw",
+            );
+        }
+        let probing = self.probe.armed();
+        if probing {
+            self.probe_enter(color, depth, Some((draw.target.width, draw.target.height)));
+        }
+        let inner: [Option<&B::Texture>; 4] =
+            std::array::from_fn(|i| textures[i].map(|t| &t.inner));
+        let r = match shared {
+            Some(packet) => self.inner.draw_shared(color, depth, Arc::clone(packet), inner).0,
+            None => self.inner.draw(color, depth, draw, inner),
+        };
+        if probing {
+            self.probe.draw(probe_draw(color, depth, draw, &r));
+        }
+        if let Some(s) = &mut self.sweep {
+            if s.dumping(self.in_frame) {
+                s.draw(draw, &format!("{color:?}"), &outcome_name(&r));
+                let src: Vec<String> = ids
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, id)| {
+                        id.map(|id| {
+                            let o = self
+                                .origins
+                                .get(&id)
+                                .map_or("made before the log", String::as_str);
+                            format!("t{i}=tex {id}: {o}")
+                        })
+                    })
+                    .collect();
+                s.line(&format!("  src [{}]", src.join("; ")));
+            }
+            s.saw_draw(self.in_frame, draw);
+        }
+        if sweep_logging {
+            self.sweep_samples(color, draw.target.width, draw.target.height, "target after");
+        }
+        if let Some((k, path)) = snap {
+            let t = &draw.target;
+            let layout = GuestLayoutKind::Linear { pitch: t.width * 4 };
+            match self
+                .inner
+                .read_surface(color, D3DFormat::LinA8R8G8B8, t.width, t.height, layout)
+            {
+                Ok(bytes) => {
+                    let _ = std::fs::write(&path, bytes);
+                }
+                Err(e) => eprintln!("boot: snap after draw {k}: {e}"),
+            }
+        }
+        let (out, target) = self.count(&r, &draw.target, &draw.texture_info);
+        if self.logging() {
+            let tex: Vec<String> = draw
+                .texture_info
+                .iter()
+                .enumerate()
+                .filter_map(|(i, t)| {
+                    t.map(|t| {
+                        format!(
+                            "t{i}={:?} {}x{} @{:#x}",
+                            t.format, t.width, t.height, t.header
+                        )
+                    })
+                })
+                .collect();
+            let st = &draw.state;
+            self.line(format!(
+                "draw {} {:?} n={} idx={} -> {color:?} ({target}) clip={:?} ps={} vs={:?} tex=[{}] blend={}:{:?}/{:?} atest={}:{:?}/{} z={:?}/{} cw={:?} cull={:?} {}",
+                draw.entry,
+                draw.primitive,
+                draw.vertex_count,
+                draw.indices.as_ref().map_or(0, |i| i.len()),
+                draw.clip,
+                if draw.shader.pixel_shader.is_some() { "program" } else { "fixed" },
+                std::mem::discriminant(&draw.shader.vertex),
+                tex.join(" "),
+                st.render.blend_enable,
+                st.render.src_blend,
+                st.render.dst_blend,
+                st.render.alpha_test_enable,
+                st.render.alpha_func,
+                st.render.alpha_ref,
+                st.render.depth_func,
+                st.render.depth_write,
+                st.render.color_write,
+                st.render.cull_mode,
+                out
+            ));
+        }
+        if self.logging() && std::env::var_os("H2_BOOT_DRAWLOG_VERTS").is_some() {
+            self.line(format!("  layout {:?}", draw.layout));
+            for (i, st) in draw.streams.iter().enumerate() {
+                let stride = st.stride.max(4) as usize;
+                for v in st.data.chunks(stride).take(8) {
+                    let words: Vec<String> = v
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|w| {
+                            let f = f32::from_le_bytes(*w);
+                            if f.is_finite() && (f == 0.0 || (1e-4..1e5).contains(&f.abs())) {
+                                format!("{f}")
+                            } else {
+                                format!("#{:08x}", u32::from_le_bytes(*w))
+                            }
+                        })
+                        .collect();
+                    self.line(format!("  s{i} {}", words.join(" ")));
+                }
+            }
+        }
+        r
+    }
+
     /// Adds a draw's outcome to the stats; returns the outcome's and the
     /// target's names.
     fn count(
@@ -969,155 +1135,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
         draw: &ResolvedDraw,
         textures: [Option<&Self::Texture>; 4],
     ) -> Result<DrawOutcome, String> {
-        let ids: Vec<Option<u64>> = textures.iter().map(|t| t.map(|t| t.id)).collect();
-        let mut snap = None;
-        if let Some(c) = self.capturing() {
-            let k = c.draws;
-            if c.skips.contains(&k) {
-                c.draws += 1;
-                c.append(
-                    "frame.txt",
-                    &format!("draw {k} skipped (H2_BOOT_CAPTURE_SKIP)"),
-                );
-                return Ok(DrawOutcome::Drawn);
-            }
-            if c.snaps.contains(&k) {
-                snap = Some((k, c.dir.join(format!("snap-{k}.bin"))));
-            }
-            c.draws += 1;
-            let mut d = draw.clone();
-            for (i, st) in d.streams.iter_mut().enumerate() {
-                c.blob(&format!("draw-{k}-s{i}.bin"), &std::mem::take(&mut st.data));
-            }
-            if let Some(idx) = d.indices.take() {
-                let bytes: Vec<u8> = idx.iter().flat_map(|i| i.to_le_bytes()).collect();
-                c.blob(&format!("draw-{k}-idx.bin"), &bytes);
-            }
-            c.append(
-                "frame.txt",
-                &format!("draw {k} color={color:?} depth={depth:?} textures={ids:?}\n{d:#?}"),
-            );
-        }
-        let sweep_logging = self
-            .sweep
-            .as_ref()
-            .is_some_and(|s| s.dumping(self.in_frame));
-        if sweep_logging && self.sweep.as_ref().is_some_and(|s| s.logged_draws() == 0) {
-            self.sweep_samples(
-                color,
-                draw.target.width,
-                draw.target.height,
-                "target before the frame's first draw",
-            );
-        }
-        let probing = self.probe.armed();
-        if probing {
-            self.probe_enter(color, depth, Some((draw.target.width, draw.target.height)));
-        }
-        let inner: [Option<&B::Texture>; 4] =
-            std::array::from_fn(|i| textures[i].map(|t| &t.inner));
-        let r = self.inner.draw(color, depth, draw, inner);
-        if probing {
-            self.probe.draw(probe_draw(color, depth, draw, &r));
-        }
-        if let Some(s) = &mut self.sweep {
-            if s.dumping(self.in_frame) {
-                s.draw(draw, &format!("{color:?}"), &outcome_name(&r));
-                let src: Vec<String> = ids
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, id)| {
-                        id.map(|id| {
-                            let o = self
-                                .origins
-                                .get(&id)
-                                .map_or("made before the log", String::as_str);
-                            format!("t{i}=tex {id}: {o}")
-                        })
-                    })
-                    .collect();
-                s.line(&format!("  src [{}]", src.join("; ")));
-            }
-            s.saw_draw(self.in_frame, draw);
-        }
-        if sweep_logging {
-            self.sweep_samples(color, draw.target.width, draw.target.height, "target after");
-        }
-        if let Some((k, path)) = snap {
-            let t = &draw.target;
-            let layout = GuestLayoutKind::Linear { pitch: t.width * 4 };
-            match self
-                .inner
-                .read_surface(color, D3DFormat::LinA8R8G8B8, t.width, t.height, layout)
-            {
-                Ok(bytes) => {
-                    let _ = std::fs::write(&path, bytes);
-                }
-                Err(e) => eprintln!("boot: snap after draw {k}: {e}"),
-            }
-        }
-        let (out, target) = self.count(&r, &draw.target, &draw.texture_info);
-        if self.logging() {
-            let tex: Vec<String> = draw
-                .texture_info
-                .iter()
-                .enumerate()
-                .filter_map(|(i, t)| {
-                    t.map(|t| {
-                        format!(
-                            "t{i}={:?} {}x{} @{:#x}",
-                            t.format, t.width, t.height, t.header
-                        )
-                    })
-                })
-                .collect();
-            let st = &draw.state;
-            self.line(format!(
-                "draw {} {:?} n={} idx={} -> {color:?} ({target}) clip={:?} ps={} vs={:?} tex=[{}] blend={}:{:?}/{:?} atest={}:{:?}/{} z={:?}/{} cw={:?} cull={:?} {}",
-                draw.entry,
-                draw.primitive,
-                draw.vertex_count,
-                draw.indices.as_ref().map_or(0, |i| i.len()),
-                draw.clip,
-                if draw.shader.pixel_shader.is_some() { "program" } else { "fixed" },
-                std::mem::discriminant(&draw.shader.vertex),
-                tex.join(" "),
-                st.render.blend_enable,
-                st.render.src_blend,
-                st.render.dst_blend,
-                st.render.alpha_test_enable,
-                st.render.alpha_func,
-                st.render.alpha_ref,
-                st.render.depth_func,
-                st.render.depth_write,
-                st.render.color_write,
-                st.render.cull_mode,
-                out
-            ));
-        }
-        if self.logging() && std::env::var_os("H2_BOOT_DRAWLOG_VERTS").is_some() {
-            self.line(format!("  layout {:?}", draw.layout));
-            for (i, st) in draw.streams.iter().enumerate() {
-                let stride = st.stride.max(4) as usize;
-                for v in st.data.chunks(stride).take(8) {
-                    let words: Vec<String> = v
-                        .as_chunks::<4>()
-                        .0
-                        .iter()
-                        .map(|w| {
-                            let f = f32::from_le_bytes(*w);
-                            if f.is_finite() && (f == 0.0 || (1e-4..1e5).contains(&f.abs())) {
-                                format!("{f}")
-                            } else {
-                                format!("#{:08x}", u32::from_le_bytes(*w))
-                            }
-                        })
-                        .collect();
-                    self.line(format!("  s{i} {}", words.join(" ")));
-                }
-            }
-        }
-        r
+        self.diagnosed_draw(color, depth, draw, None, textures)
     }
     fn draw_owned(
         &mut self,
@@ -1128,11 +1146,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
     ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
         // Capturing, logging and the sweep diagnostic read the draw after
         // the inner backend has drawn it.
-        if self.capturing().is_some()
-            || self.logging()
-            || self.sweep.is_some()
-            || self.probe.armed()
-        {
+        if self.inspects_draw() {
             let r = self.draw(color, depth, &draw, textures);
             return (r, draw.streams);
         }
@@ -1142,6 +1156,22 @@ impl<B: Backend> Backend for DiagBackend<B> {
         let (r, spare) = self.inner.draw_owned(color, depth, draw, inner);
         self.tally(&r, &target, &info);
         (r, spare)
+    }
+    fn draw_shared(
+        &mut self,
+        color: Self::Surface,
+        depth: Option<Self::Surface>,
+        draw: Arc<ResolvedDraw>,
+        textures: [Option<&Self::Texture>; 4],
+    ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
+        if self.inspects_draw() {
+            let result = self.diagnosed_draw(color, depth, &draw, Some(&draw), textures);
+            return (result, Vec::new());
+        }
+        let (target, info) = (draw.target, draw.texture_info);
+        let (result, spare) = self.inner.draw_shared(color, depth, draw, textures.map(|t| t.map(|t| &t.inner)));
+        self.tally(&result, &target, &info);
+        (result, spare)
     }
     fn frame_stats(&mut self) {
         self.inner.frame_stats()
