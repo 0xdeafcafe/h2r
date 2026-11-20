@@ -139,6 +139,18 @@ impl LeaseUsage {
         }
     }
 
+    /// Both live reports and replayed events must fit the interval measured by Live.
+    pub(crate) fn accepts_pack_usage(&self, usage: &PackUsage, ended_ms: i64) -> bool {
+        let elapsed_ms = ended_ms.saturating_sub(self.requested_ms).max(0) as u64;
+        // The supervisor reports whole microseconds. Round the lower bound down.
+        let minimum_share = usage.slot_us / live_proto::host_pack::MAX_PACK_MATCHES as u64;
+        let maximum_cpu = usage.slot_us.saturating_mul(u64::from(self.class.vcpu()));
+        usage.slot_us > 0
+            && usage.slot_us <= elapsed_ms.saturating_mul(1000)
+            && (minimum_share..=usage.slot_us).contains(&usage.container_share_us)
+            && usage.cpu_us.is_none_or(|cpu| cpu <= maximum_cpu)
+    }
+
     fn cloudflare_resources(&self, start_ms: i64, from: u64, to: u64, reserving: bool) -> Resources {
         let seconds = tick_seconds(from, to);
         let vcpus = f64::from(self.class.vcpu());
@@ -148,7 +160,7 @@ impl LeaseUsage {
         let (Some(usage), Some(reported_at)) = (self.pack_usage, self.end_ms) else {
             return full;
         };
-        if !self.managed || reserving || usage.slot_us == 0 || usage.container_share_us > usage.slot_us {
+        if !self.managed || reserving {
             return full;
         }
 
@@ -310,7 +322,7 @@ impl HostCosts {
                     }
                     lease.end_ms = Some(at_ms);
                     lease.ran_ms = Some(data.ran_ms);
-                    lease.pack_usage = data.pack_usage;
+                    lease.pack_usage = data.pack_usage.filter(|usage| lease.accepts_pack_usage(usage, at_ms));
                     lease.players_peak = lease.players_peak.max(data.players_peak);
                 }
             }
@@ -813,6 +825,66 @@ mod tests {
         }
         close(costs.month_to_date(at), full.month_to_date(at));
         assert_eq!(costs.lease("slot-2").unwrap().pack_usage.unwrap().peak_pss_bytes, Some(123_000));
+    }
+
+    #[test]
+    fn replay_prices_the_full_class_when_a_pack_report_is_out_of_bounds() {
+        let at = FEB + 1_000;
+        let requested = managed_request("match", FEB, 60);
+        let stopped = event(hosts::HOST_STOPPED, json!({ "lease_id": "match" }), at);
+        let replay = |usage: Option<PackUsage>| {
+            let costs = HostCosts::default();
+            let mut ended = end("match", 1_000, 0, at);
+            if let Some(usage) = usage {
+                ended.data["pack_usage"] = json!(usage);
+            }
+            costs.fold(&requested);
+            costs.fold(&ended);
+            costs.fold(&stopped);
+            assert_eq!(costs.lease("match").unwrap().end_ms, Some(at));
+            (costs.lease("match").unwrap().pack_usage, costs.month_to_date(at))
+        };
+        let (missing, full_cost) = replay(None);
+        assert!(missing.is_none());
+        assert!(full_cost > 0.0);
+        let valid = PackUsage {
+            slot_us: 1_000_000,
+            container_share_us: 100_000,
+            charge_start: false,
+            cpu_us: Some(1_000_000),
+            peak_pss_bytes: None,
+        };
+        let (kept, discounted_cost) = replay(Some(valid));
+        assert_eq!(kept, Some(valid));
+        assert!(discounted_cost < full_cost);
+        for usage in [
+            PackUsage { slot_us: 0, container_share_us: 0, cpu_us: None, ..valid },
+            PackUsage { slot_us: 1_000_001, ..valid },
+            PackUsage { container_share_us: 99_999, ..valid },
+            PackUsage { container_share_us: 1_000_001, ..valid },
+            PackUsage { cpu_us: Some(1_000_001), ..valid },
+        ] {
+            let (kept, charge) = replay(Some(usage));
+            assert_eq!(kept, None, "{usage:?}");
+            close(charge, full_cost);
+        }
+    }
+
+    #[test]
+    fn pack_report_bounds_allow_whole_microsecond_rounding_and_both_cores() {
+        let mut large = candidate(FEB, 60);
+        large.class = HostClass::Large;
+        let lease = LeaseUsage::requested(&large, FEB, true);
+        let usage = PackUsage {
+            slot_us: 999_999,
+            container_share_us: 99_999,
+            charge_start: true,
+            cpu_us: Some(1_999_998),
+            peak_pss_bytes: None,
+        };
+        assert!(lease.accepts_pack_usage(&usage, FEB + 1_000));
+        assert!(!lease.accepts_pack_usage(&PackUsage { cpu_us: Some(1_999_999), ..usage }, FEB + 1_000));
+        assert!(!lease.accepts_pack_usage(&PackUsage { slot_us: u64::MAX, ..usage }, FEB));
     }
 
     #[test]

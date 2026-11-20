@@ -417,10 +417,8 @@ impl Live {
         if players > row.lease.max_players {
             return Err(invalid("player count exceeds the lease capacity"));
         }
-        if let Some(usage) = pack_usage
-            && (state != HostState::Ended || usage.container_share_us > usage.slot_us)
-        {
-            return Err(invalid("invalid packed match usage"));
+        if pack_usage.is_some() && state != HostState::Ended {
+            return Err(invalid("only an ended report has packed match usage"));
         }
         match state {
             HostState::Playing => {
@@ -454,8 +452,12 @@ impl Live {
                 }
                 // The supervisor still has to receive this response and tear
                 // down the game. A replayable sweep cleans up a lingering process.
-                self.record_host_end(version, &row, reason, players, now_ms(), pack_usage)
-                    .await?;
+                let at = now_ms();
+                let pack_usage = pack_usage.filter(|usage| {
+                    self.hosts.costs.lease(lease_id)
+                        .is_some_and(|lease| lease.accepts_pack_usage(usage, at))
+                });
+                self.record_host_end(version, &row, reason, players, at, pack_usage).await?;
             }
             _ => return Err(invalid("host may report only playing or ended")),
         }
