@@ -10,6 +10,11 @@ pub(crate) const RENAMES: &[(&str, &str)] = &[
     ("ai_dialogue_triggers", "ai_dialogue_enable"),
 ];
 
+/// Halo 2's unnamed global AI switch, bound as Halo 1's `ai`.
+pub const AI_ENABLE: u16 = 278;
+/// Halo 2's evaluator for [`AI_ENABLE`].
+pub const AI_ENABLE_EVALUATOR: u32 = 0x002a_4d00;
+
 /// An evaluator whose name cannot be learned from retail script nodes.
 /// We require the evaluator and signature as well as its index. Several
 /// nearby descriptors have the same signature and are retail no-ops.
@@ -22,6 +27,20 @@ pub struct Binding {
 }
 
 pub const BINDINGS: &[Binding] = &[
+    Binding {
+        // Halo 1's `(ai <boolean>)`, "turns all AI on or off" (builtin 283,
+        // evaluator 0x000f08c0), stores the boolean at AI globals
+        // ([0x002fa248]) +0. Halo 2's 278 (0x002a4d00) stores it at its AI
+        // globals ([0x004f55d0]) +0, and the unnamed getter 279 reads it
+        // back. Both ai_update loops (Halo 1 0x0014a162, Halo 2 0x001c83c0)
+        // gate actor work on +0 after +1, then run teardown once when it
+        // drops.
+        name: "ai",
+        index: AI_ENABLE,
+        evaluator: AI_ENABLE_EVALUATOR,
+        returns: "void",
+        arguments: &["boolean"],
+    },
     Binding {
         name: "ai_going_to_vehicle",
         index: hs::h1_ai_slots::VEHICLE_COUNT,
