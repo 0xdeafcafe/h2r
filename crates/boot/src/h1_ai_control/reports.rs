@@ -245,7 +245,7 @@ mod tests {
 
         // The perception table: no character rows, one weapon row holding
         // the shot weapon's authored loudness (6 world units).
-        let table = format!("00000000{:08x}{:08x}", 0x8000_0000u32, 6.0f32.to_bits());
+        let table = format!("00000000{:08x}{:08x}", 0x8000_0001u32, 6.0f32.to_bits());
         let squad_storage = 0x10000;
         let group = squad_storage + campaign_squad_pool::SQUAD_BYTES;
         let mut guest = FakeGuest::new();
@@ -258,10 +258,10 @@ mod tests {
             .map(group, campaign_squad_pool::GROUP_ALLOCATION_BYTES)
             .put_u32(actors::ACTORS, ACTOR_ARRAY)
             .put_u32(ACTOR_ARRAY + layout::ELEMENT_SIZE, 0x100)
-            .put_u32(ACTOR_ARRAY + layout::HIGH_WATER, 2)
+            .put_u32(ACTOR_ARRAY + layout::HIGH_WATER, 3)
             .put_u32(ACTOR_ARRAY + layout::DATA, ACTOR_ROWS)
             .put_u32(ACTOR_ARRAY + layout::BITMAP, ACTOR_BITS)
-            .put_u32(ACTOR_BITS, 0b11)
+            .put_u32(ACTOR_BITS, 0b111)
             .put_u32(points::OBJECTS.base, OBJECT_ARRAY)
             .put_u32(OBJECT_ARRAY + layout::ELEMENT_SIZE, 0xc)
             .put_u32(OBJECT_ARRAY + layout::HIGH_WATER, 4)
