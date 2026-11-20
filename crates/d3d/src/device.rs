@@ -5625,10 +5625,10 @@ impl<B: Backend> Device<B> {
                 binding.surfaces.clone(), binding.request, textures, &plan, crate::TargetCopy::Reference, pass,
             );
             if let Ok(Some(recordings)) = commands && complete_recordings(&plan, &recordings) {
-                for &(_, surface) in &binding.colors { self.before_target_write(surface)?; }
                 // The original first draw is still intact. On a stale
                 // cursor or a stack fault, drop every unpublished copy.
                 if tail.is_none_or(|t| t.consume(mem, parts.indexed_esp)) {
+                    for &(_, surface) in &binding.colors { self.before_target_write(surface)?; }
                     PreparedExternal { device: self, binding, recordings }.commit();
                     if let Some((_, committed)) = native.as_mut() { **committed = true; }
                     if let Some((scope, _)) = scoped { scope.committed.store(true, AtomicOrdering::Release); }
