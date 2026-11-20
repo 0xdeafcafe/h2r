@@ -156,6 +156,7 @@ the moves that put every crate in its domain's directory are in
 | `h1objects` | tools | *(no description)* † |  |  |
 | `hopper-edit` | tools | The playlist (multiplayer_hopper.dat) editor's UI-free logic: the working copy, validation, presets, the variant picker's sources, undo and file handling | [editor.md](editor/editor.md) | in progress |
 | `hud-edit` | tools | The HUD editor's UI-free logic: a map's nhdt HUDs and their widgets, the engine's placement, a preview canvas, layout checks, edits with undo and the patched-map save (docs/editor/hud-editor.md) | [hud-editor.md](editor/hud-editor.md) |  |
+| `mesh-edit` | tools | The modeling kernel of h2-editor: a radial-edge mesh in index arenas, selection, MeshOp operations as values, import and stable export (docs/editor/modeling.md) | [modeling.md](editor/modeling.md) | in progress |
 | `perf` | tools | Performance tooling: guest-aware sampling profiler, timeline capture, benchmark harness | [profiling.md](perf/profiling.md) | done |
 | `scenario-edit` | tools | Sapien-style scenario placement editor: typed scnr placement blocks, undoable edits written as patched .map files, a UI-free session and an offscreen wgpu viewport | [scenario-editor.md](editor/scenario-editor.md) | in progress |
 | `viewer` (bin `viewer`, bin `bsp`, bin `bsp_cracks`, bin `shadowlab`) | tools | Render-model (mode) viewer: decodes model geometry from a disc map and draws it with gfx | [structure-bsp.md](formats/structure-bsp.md) | done |
