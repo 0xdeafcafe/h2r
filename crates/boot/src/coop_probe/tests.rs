@@ -416,6 +416,36 @@ fn the_peer_limit_goes_back_to_two_for_a_campaign() {
     );
 }
 
+/// The playerless sim lobby (docs/runtime/sim.md, "More than four"): a
+/// System Link custom game the host leads with no player of its own, one
+/// peer per phantom. Neither the start's peer-count window nor the game
+/// limits' campaign fix may touch it, however the co-op arm is set: they
+/// would cap a 16-peer custom game at co-op's two.
+#[test]
+fn co_op_session_hooks_leave_a_playerless_multiplayer_lobby_alone() {
+    for (peers, players) in [(5, 4), (16, 15), (2, 1)] {
+        let s = Session {
+            state: 5,
+            max_players: players,
+            ..lobby(peers, players)
+        };
+        for limit in [MAX_PLAYERS, 4, CEILING] {
+            assert!(
+                matches!(peer_bypass(&s, limit), Bypass::Retail(_)),
+                "{peers} peers, limit {limit}"
+            );
+            assert_eq!(limits_fix(&s, limit), LimitsFix::default());
+            // Lowered limits (what 0x6e720 leaves a campaign) stay as retail set them too.
+            let low = Session {
+                max_peers: 1,
+                max_players: 1,
+                ..s
+            };
+            assert_eq!(limits_fix(&low, limit), LimitsFix::default());
+        }
+    }
+}
+
 #[test]
 fn a_larger_co_op_lifts_both_limits_to_it() {
     let one = Session {

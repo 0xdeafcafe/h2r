@@ -20,6 +20,12 @@ const CREATE_SQUAD: u32 = 0x0005_9890;
 const LEAVE_SESSIONS: u32 = 0x0005_93e0;
 const SET_VARIANT: u32 = 0x0019_a728;
 const CONTROLLER_COUNTDOWN: u32 = 0x0019_a78e;
+/// The pregame stage change the countdown finisher (`0x6e410`) makes once
+/// every peer has loaded the map: `0x6e4d7` calls it with the session in
+/// ESI and the new stage in EDI, and it returns with a plain `ret`.
+const MACHINE_LOAD_REQUEST: u32 = 0x0005_a220;
+/// Session `+0x4980` after the load request: the machines load the map.
+const STAGE_LOAD: u32 = 2;
 const SESSION_NETWORK_CLASS: u32 = 0x18;
 
 pub(super) enum Progress {
@@ -192,16 +198,126 @@ impl Squad {
         Ok(players)
     }
 
-    fn maps_loaded(&self, m: &dyn GuestMemory) -> Result<bool, RpcError> {
-        for peer in 0..self.peer_count {
-            let p = self.addr + PEERS + peer * PEER_SIZE;
-            let status = m.u32(p + PEER_MAP_STATUS).map_err(read_fault)?;
-            if !matches!(status, 3 | 4) {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+    /// Each peer's map status (`+0x88`), the local peer included.
+    fn peer_maps(&self, m: &dyn GuestMemory) -> Result<Vec<u32>, RpcError> {
+        (0..self.peer_count)
+            .map(|peer| {
+                m.u32(self.addr + PEERS + peer * PEER_SIZE + PEER_MAP_STATUS)
+                    .map_err(read_fault)
+            })
+            .collect()
     }
+}
+
+/// The countdown finisher's map test (`0x6e4b8`): a signed status above 2
+/// (3 and 4, loaded) on every peer. Retail's start check (`0x652a0`) lets
+/// an unset status 0 through, the finisher does not, and the playerless
+/// start takes the finisher's place.
+fn map_loaded(status: u32) -> bool {
+    status as i32 > 2
+}
+
+/// What a playerless lobby checks of its own before it asks retail's start
+/// check (`0x19a2ce`). Read by [`Machine::observe`]; decided by
+/// [`Eligibility::blocker`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Eligibility {
+    pub phase: Phase,
+    /// The lobby finished `open` and is not closing.
+    pub open: bool,
+    /// Session `+0x50` (party leader) and `+0x72d8` (this machine).
+    pub leader: u32,
+    pub local: u32,
+    pub map: u32,
+    pub want_map: u32,
+    pub protocol: u32,
+    pub max: u32,
+    pub want_max: u32,
+    /// Session players, every one remote.
+    pub players: usize,
+    /// Each peer's map status, this machine's first when it is peer 0.
+    pub peer_maps: Vec<u32>,
+    /// The squad's `0x130`-byte rules still equal what open applied.
+    pub variant: bool,
+}
+
+impl Eligibility {
+    /// The first reason retail's start check is not worth asking yet, or
+    /// `None` when the lobby is eligible.
+    pub fn blocker(&self) -> Option<String> {
+        if self.phase != Phase::Lobby {
+            return Some(format!("the lobby is in phase {:?}", self.phase));
+        }
+        if !self.open {
+            return Some("the lobby is not open (or is closing)".into());
+        }
+        if self.leader != self.local {
+            return Some(format!(
+                "this machine (peer {}) does not lead the party (leader {})",
+                self.local as i32, self.leader as i32
+            ));
+        }
+        if self.map != self.want_map {
+            return Some(format!(
+                "the squad's map is {} (want {})",
+                self.map as i32, self.want_map
+            ));
+        }
+        if self.protocol != 2 {
+            return Some(format!(
+                "the squad's protocol is {} (want 2, distributed)",
+                self.protocol as i32
+            ));
+        }
+        if self.max != self.want_max {
+            return Some(format!(
+                "the squad's player limit is {} (want {})",
+                self.max as i32, self.want_max
+            ));
+        }
+        if self.players == 0 {
+            return Some("no remote player has joined".into());
+        }
+        if self.players > self.want_max as usize {
+            return Some(format!(
+                "{} players exceed the limit {}",
+                self.players, self.want_max
+            ));
+        }
+        if let Some((peer, status)) = self
+            .peer_maps
+            .iter()
+            .enumerate()
+            .find(|(_, s)| !map_loaded(**s))
+        {
+            return Some(format!(
+                "peer {peer} has map status {} (every peer needs 3 or 4; all: {:?})",
+                *status as i32, self.peer_maps
+            ));
+        }
+        if !self.variant {
+            return Some("the squad's variant no longer matches the one applied".into());
+        }
+        None
+    }
+}
+
+/// A playerless sim's start decision before retail's start check: the
+/// lobby's own [`Eligibility::blocker`], then one remote player per seat.
+pub(crate) fn sim_blocker(lobby: Option<String>, players: usize, seats: usize) -> Option<String> {
+    if let Some(why) = lobby {
+        return Some(why);
+    }
+    (players != seats).then(|| format!("{players} of {seats} seats have a player"))
+}
+
+/// What one playerless sim start attempt did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SimStart {
+    /// The machines were asked to load the map.
+    Started,
+    /// Not yet, and why.
+    Wait(String),
 }
 
 fn phase(
@@ -273,28 +389,31 @@ impl Machine {
     /// Read membership and lifecycle at an agent boundary, including a slice
     /// during a map load. Only an otherwise eligible lobby needs a guest call
     /// to distinguish retail's team/readiness checks from ready-to-start.
-    pub(super) fn observe(&self, m: &dyn GuestMemory) -> Result<(StateResult, bool), RpcError> {
+    pub(super) fn observe(
+        &self,
+        m: &dyn GuestMemory,
+    ) -> Result<(StateResult, Option<String>), RpcError> {
         let mode = level_boot::active_mode(&ReadGm(m));
         let idle = if mode == Some(level_boot::MODE_MAINMENU) {
             Phase::Menu
         } else {
             Phase::Loading
         };
-        let empty = |phase| {
+        let empty = |phase, why: &str| {
             (
                 StateResult {
                     phase,
                     ..Default::default()
                 },
-                false,
+                Some(why.to_owned()),
             )
         };
         let Some(owner) = &self.owned else {
-            return Ok(empty(idle));
+            return Ok(empty(idle, "no dedicated lobby is open"));
         };
         if no_network_squad(m)? {
             if owner.closing || idle == Phase::Menu {
-                return Ok(empty(idle));
+                return Ok(empty(idle, "no network squad"));
             }
             return Err(unavailable("the dedicated squad disappeared"));
         }
@@ -302,7 +421,7 @@ impl Machine {
             && squad(m)? == Some(owner.addr)
             && m.u32(owner.addr + STATE).map_err(read_fault)? != session::STATE_LIVE
         {
-            return Ok(empty(Phase::Loading));
+            return Ok(empty(Phase::Loading, "the squad is not in host state 5 yet"));
         }
         profiles(m)?;
         let s = Squad::read(m, owner)?;
@@ -325,33 +444,35 @@ impl Machine {
                 phase = Phase::Loading;
             }
         }
-        let eligible = phase == Phase::Lobby
-            && owner.setup == Setup::Open
-            && !owner.closing
-            && s.leader == s.local
-            && s.map == owner.config.map
-            && s.protocol == 2
-            && s.max == u32::from(owner.config.max_players)
-            && !players.is_empty()
-            && players.len() <= usize::from(owner.config.max_players)
-            && s.maps_loaded(m)?
-            && replicated_variant(m, s.addr, owner)?;
+        let blocker = Eligibility {
+            phase,
+            open: owner.setup == Setup::Open && !owner.closing,
+            leader: s.leader,
+            local: s.local,
+            map: s.map,
+            want_map: owner.config.map,
+            protocol: s.protocol,
+            max: s.max,
+            want_max: u32::from(owner.config.max_players),
+            players: players.len(),
+            peer_maps: s.peer_maps(m)?,
+            variant: replicated_variant(m, s.addr, owner)?,
+        }
+        .blocker();
         Ok((
             StateResult {
                 phase,
                 players,
                 ready: false,
             },
-            eligible,
+            blocker,
         ))
     }
 
     pub(super) async fn state(&self, cx: &Cx) -> Result<StateResult, RpcError> {
-        let (mut state, eligible) = cx.read(|m| self.observe(m))?;
-        if eligible {
-            state.ready = call(cx, GuestCall::new(points::LOBBY_START_STATE.base).args([0]))
-                .await?
-                == lobby::READY;
+        let (mut state, blocker) = cx.read(|m| self.observe(m))?;
+        if blocker.is_none() {
+            state.ready = start_state(cx).await? == lobby::READY;
         }
         Ok(state)
     }
@@ -392,13 +513,26 @@ impl Machine {
         ))
     }
 
-    pub(crate) async fn start_sim(&mut self, cx: &Cx, seats: usize) -> Result<bool, RpcError> {
-        let state = self.state(cx).await?;
-        if !state.ready || state.players.len() != seats {
-            return Ok(false);
+    /// One start attempt for a playerless sim with `seats` phantoms: the
+    /// lobby's own checks, then retail's start check, then the machine load
+    /// request. A wait names what holds it back, for the run's log.
+    pub(crate) async fn start_sim(&mut self, cx: &Cx, seats: usize) -> Result<SimStart, RpcError> {
+        let (state, blocker) = cx.read(|m| self.observe(m))?;
+        if let Some(why) = sim_blocker(blocker, state.players.len(), seats) {
+            return Ok(SimStart::Wait(why));
+        }
+        let start = start_state(cx).await?;
+        if start != lobby::READY {
+            let why = cx.read(|m| match lobby::facts(m) {
+                Ok(f) => lobby::blocked_by(start, &f),
+                Err(e) => format!("the session read faulted at {:#x}", e.addr),
+            });
+            return Ok(SimStart::Wait(format!(
+                "retail start state {start}, blocked by {why}"
+            )));
         }
         self.start_ready(cx, true).await?;
-        Ok(true)
+        Ok(SimStart::Started)
     }
 
     async fn open(
@@ -632,7 +766,14 @@ impl Machine {
         let owner = self.owned.as_ref().expect("ready dedicated lobby");
         // The transition the pregame lifecycle itself requests when every
         // peer has loaded its map (0x6e410). Keep retail's view handshakes.
-        call(cx, GuestCall::new(0x0005_a220).args([2])).await?;
+        // Registers, not the stack: ESI the session, EDI the stage.
+        call(
+            cx,
+            GuestCall::new(MACHINE_LOAD_REQUEST)
+                .esi(owner.addr)
+                .edi(STAGE_LOAD),
+        )
+        .await?;
         let stage = cx.read(|m| m.u32(owner.addr + CLASS)).map_err(read_fault)?;
         if !matches!(stage, 2..=4) {
             return Err(unavailable("retail refused the machine's load request"));
@@ -699,6 +840,11 @@ impl Machine {
             "waiting for the network squad to close and the menu to return",
         ))
     }
+}
+
+/// Retail's start check (`0x19a2ce`, no progress out).
+async fn start_state(cx: &Cx) -> Result<u32, RpcError> {
+    call(cx, GuestCall::new(points::LOBBY_START_STATE.base).args([0])).await
 }
 
 fn set_capacity(m: &mut dyn GuestMemory, addr: u32, max: u32) -> Result<(), RpcError> {
