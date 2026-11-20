@@ -490,7 +490,7 @@ assumption that the saved clip endpoints refer directly to film ticks.
 
 ## Choosing a player's view
 
-In local playback the guest renders its original camera, first-person weapon
+In a local GPU recording the guest renders its original camera, first-person weapon
 and HUD. Its exact 640x480 reference provides guest readbacks, while
 the viewer chooses the window resolution. A v3 local film can display
 one split-screen viewport. Its guest-pixel edges map onto the displayed
@@ -499,7 +499,8 @@ seat in the film roster.
 
 For a local GPU recording, `--render-every 0` runs the reference offscreen
 in the desktop player. CPU recordings and playerless hosts retain their
-headless backend. When an older film lacks the backend field, Theater uses
+headless backend. Windowed playback of a local CPU recording uses the independent
+observer described below to show the match. When an older film lacks the backend field, Theater uses
 the recorded render hooks, window settings and render-thread flag. A legacy
 offscreen GPU recording with none of the window or thread evidence is
 indistinguishable from a CPU recording.

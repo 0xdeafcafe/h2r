@@ -258,31 +258,33 @@ fn child(opts: Options, work: &Path) -> Result<()> {
         r.map(|_| ())
     };
     let host_bots = film.header.host_bots;
+    let local_gpu = if film.header.meta.source == film::Source::Local {
+        let hooks = film.header.render_hooks;
+        let startup = boot::theater::Startup::read(&mut film)?.context("missing startup for local film")?;
+        Some(startup.local_gpu_draws(hooks))
+    } else {
+        None
+    };
     if opts.every == 0 {
         let host = boot::Host { host_light: true, host_bots, ..Default::default() };
-        if film.header.meta.source == film::Source::Local {
-            let hooks = film.header.render_hooks;
-            let startup = boot::theater::Startup::read(&mut film)?.context("missing startup for local film")?;
-            if startup.local_gpu_draws(hooks) {
-                #[cfg(not(feature = "desktop"))]
-                bail!("this local film requires an exact offscreen GPU reference; use a desktop build");
-                #[cfg(feature = "desktop")]
-                {
-                    let retail: boot::run_opts::NativeSize = std::sync::Arc::new(|| boot::setting_defs::GUEST_FRAME);
-                    // Install the same render hook plan as a drawing run. The
-                    // sole target and the projection are fixed to retail.
-                    let host = boot::Host {
-                        gfx: Some(boot::d3d_glue::offscreen_film_reference()?),
-                        gfx_view: Some(boot::run_opts::DisplayView {
-                            backend: None,
-                            native_size: retail.clone(),
-                            viewer_output: Some(retail),
-                            display_size: std::sync::Arc::new(|size| size),
-                        }),
-                        ..host
-                    };
-                    return run(host, None);
-                }
+        if local_gpu == Some(true) {
+            #[cfg(not(feature = "desktop"))]
+            bail!("this local film requires an exact offscreen GPU reference; use a desktop build");
+            #[cfg(feature = "desktop")]
+            {
+                let retail: boot::run_opts::NativeSize = std::sync::Arc::new(|| boot::setting_defs::GUEST_FRAME);
+                // Keep the drawing hook plan, with the sole target and the lens fixed to retail.
+                let host = boot::Host {
+                    gfx: Some(boot::d3d_glue::offscreen_film_reference()?),
+                    gfx_view: Some(boot::run_opts::DisplayView {
+                        backend: None,
+                        native_size: retail.clone(),
+                        viewer_output: Some(retail),
+                        display_size: std::sync::Arc::new(|size| size),
+                    }),
+                    ..host
+                };
+                return run(host, None);
             }
         }
         return run(host, None);
@@ -302,7 +304,9 @@ fn child(opts: Options, work: &Path) -> Result<()> {
         } else {
             opts.every
         };
-        let host_view = film.header.version >= 2 && film.header.meta.source == film::Source::Host;
+        // When the recorded guest used a headless device, the independent
+        // observer can present the match without changing that device's answers.
+        let observer = film.header.version >= 2 && local_gpu != Some(true);
         let mut meta = film_entry(film::LibraryEntry::read(&opts.film)?, &_stamp);
         let title = meta.map.clone();
         if let Ok(id) = std::env::var("H2_THEATER_FILM_ID") {
@@ -338,8 +342,7 @@ fn child(opts: Options, work: &Path) -> Result<()> {
             }
             let native: boot::run_opts::NativeSize = std::sync::Arc::new(window.native_size());
             let raster = boot::d3d_glue::output_size(Some(&store), native.clone())?;
-            let (gfx, gfx_view, film_view) = if host_view {
-                // The authoritative guest keeps the light host's D3D profile.
+            let (gfx, gfx_view, film_view) = if observer {
                 let mut sink = window.frame_sink();
                 (
                     None,
