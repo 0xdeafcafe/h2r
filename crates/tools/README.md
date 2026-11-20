@@ -13,5 +13,6 @@ The tools domain is offline work on game data: the Halo 1 readers and converters
 | [scenario-edit](scenario-edit/README.md) | The scenario placement editor: typed blocks, undo, patched `.map` output. |
 | [hopper-edit](hopper-edit/README.md) | The playlist editor's UI-free logic. |
 | [hud-edit](hud-edit/README.md) | The HUD editor's UI-free logic. |
+| [mesh-edit](mesh-edit/README.md) | The modeling kernel: an editable radial-edge mesh, its operations and stable export. |
 | [perf](perf/README.md) | Sampling profiler, timeline capture and the benchmark harness. |
 | [viewer](viewer/README.md) | Render-model viewer and the offline BSP tools. |
