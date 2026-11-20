@@ -1,5 +1,9 @@
 # D3D: the guest-facing Direct3D 8 replacement
 
+Status: Built. Reference for `crates/d3d`.
+Code: `crates/d3d/src/`. Tests: `crates/d3d/tests/`.
+Switch: `H2_RENDER_THREAD=0` and the diagnostics in [switches.md](../runtime/switches.md).
+
 `crates/d3d` replaces the Direct3D 8 that Halo 2 links statically (XDK 5849,
 `D3D8LTCG`, the `D3D` section) at the API level, on top of `crates/gfx`. It
 does not emulate the NV2A. This page covers what the game reaches, which
@@ -803,16 +807,11 @@ and allocations are bounded before anything is read:
     other than PROJECT2D/PROJECT3D, or a `SHADOWFUNC` that is not a
     `D3DCMP_*` value, skips the draw with `Event::DrawSkipped` naming the
     stage, format and value; the texture is uploaded all the same.
-  - In the boot (boot plus this device, `maps\00a_introduction.map`
-    through the scripted click-through) the first level no longer stops
-    at about present 4210: it ran to 8164 presents with no stop, drawing
-    into 512x512 and 128x128 targets as well as the back buffer. Its one
-    shadow map is a `LIN_D24S8` texture (`0x004b50b4`) sampled on stage 0
-    with `D3DRS_SHADOWFUNC` `0x204` (`GREATER`); those draws (136,667 over the
-    run) were the only skips left. They are translated as
-    comparisons (`stored > reference`) now, and levels have run with them
-    since (shadow passes sampled in Old Mombasa and The Heretic,
-    [e3-lighting.md](e3-lighting.md) "Phase 1 as built").
+  - The first level draws into 512x512 and 128x128 targets as well as the
+    back buffer. Its one shadow map is a `LIN_D24S8` texture (`0x004b50b4`)
+    sampled on stage 0 with `D3DRS_SHADOWFUNC` `0x204` (`GREATER`); the draws
+    are translated as comparisons (`stored > reference`), and shadow passes
+    are sampled in Old Mombasa and The Heretic (Run).
 - **Swap** (`Device::swap`, `0x3f9d00`). CreateDevice sets device flag
   `0x4000` (`device::COPY_SWAP_FLAG`) for a multisampled device (type bits
   `0x3000`) or `D3DSWAPEFFECT_COPY` (`0x3fc9a2..0x3fc9c0`), and stores the
@@ -983,8 +982,8 @@ bound.
 ### Vertex cache
 
 Most of a level's vertices (BSP, object models) never change, but every
-draw used to copy its whole vertex window out of guest memory, and the
-render thread then staged the same bytes in its upload ring. The vertex
+draw would copy its whole vertex window out of guest memory, and the
+render thread would stage the same bytes in its upload ring. The vertex
 cache (`crates/d3d/src/vertex_cache.rs`) keeps them instead, under the
 same write-tracker contract as textures.
 
@@ -1559,11 +1558,11 @@ listed under "Stops on the way to the menu" below.
 
 ### Stops on the way to the menu
 
-This list is from static analysis; the boot (docs/runtime/BOOT.md) now runs past
+This list is from static analysis; the boot ([BOOT.md](../runtime/BOOT.md)) runs past
 all of it to the menu and into the first level. Conditional stops that normal
 view rendering (`0x223240 -> 0x2232a0 -> 0x2c8a0 -> 0x132d0`) can reach:
 
-Of the 18 entries that stopped before, 1 remains (`abi::UNIMPLEMENTED`).
+Of the 18 entries that stopped in the static analysis, 1 remains (`abi::UNIMPLEMENTED`).
 The fragments, the display entries, `SetStipple` (`0x3f8cc0`), the busy
 check (`0x3fb710`), `SetVertexShaderConstantNotInline` (`0x3f7410`) and
 Get2DSurfaceDesc are done (see the inventory), and so are the cases
@@ -1571,7 +1570,7 @@ below:
 
 - **Viewport.** `0x14bc0` selects a render target by index and calls
   SetViewport with its extents. A smaller viewport (split screen,
-  letterboxing, the offscreen targets) now gives each draw and each
+  letterboxing, the offscreen targets) gives each draw and each
   Count=0 clear a clip rectangle, which `GfxBackend` applies as a
   scissor. Partial clears render through `clear_rects`.
 - **Offscreen targets.** The `0x14850` targets are texture levels
@@ -1823,135 +1822,116 @@ frame handoff, which applies it per RGB channel when copying the presented
 surface. The unmodified surface remains available for guest reads. The
 ignored `gamma_ramp_conventions_in_the_image` checks the convention.
 
-## gfx changes this wants
+## Overlapping levels on the GPU
 
-Done since the last revision: depth/stencil surfaces filled from guest
-texels (`SurfaceStore::write_depth`) and read back in any `D16`/`D24S8`
-layout (`SurfaceStore::read_depth_as`), depth formats decoded as their raw
-bits, `SurfaceStore::snapshot` (a sampleable
-copy of a colour surface, for the back buffer read as a texture),
-`Draw: Clone` (one draw repeated per scissor piece), per-draw scissor and viewport
-(`gfx::Draw::scissor`/`viewport`), rectangle and channel-masked clears
-(`Renderer::clear_rects`), render-to-texture surfaces
-(`SurfaceStore::create_texture_target`), the surface upload
-`SurfaceStore::write_color(ctx, id, &TextureDesc, bytes)`, alpha test in
-the built-in shader, indexed draws (`gfx::Draw::indices`), and sample
-counts for visibility tests (`gfx::occlusion`, `Draw::count_samples`,
-`Renderer::render_counted`), the alias mirror and the GPU depth alias (both
-below). Still wanted:
+Two level headers over one allocation (Halo's render-target pool in a
+level: two 160x120 and a 320x240 `LIN_A8R8G8B8` level over the 512x512
+`LIN_D24S8` shadow map) share guest memory, and the guest's CPU never
+reads those bytes in between. Moving pixels through guest memory would
+write every other dirty level back (`WritebackCause::Overlap`, a read-back
+each) before binding or sampling one. The device avoids that with an
+*alias mirror*: `Backend::mirror_*` (`GfxBackend` implements it as a
+storage buffer, `gfx::guest_words`) stands for the pool's memory, and the
+device (`crates/d3d/src/device/mirror.rs`) moves the overlapping dirty
+level into it (`mirror_store`: its guest texels, pitch padding as zeros,
+exactly what the write-back would store) instead of writing it back, and
+fills the bound level from it (`mirror_load`: what an upload of those
+bytes would fill). No read-back. The device tracks, per byte, whether the
+mirror holds it newer than guest memory, and memory's byte when the mirror
+took it:
+
+- a guest store into such a byte wins, as for lazy levels: an exact
+  `note_write` range whatever its value, or a byte that differs from the
+  one taken (a page report). A store into part of a word flushes that
+  range first, so the mirror's newer bytes stay whole words;
+- a draw into a level makes the level newer over its whole range (it was
+  filled from the mirror first), so the mirror gives those bytes up;
+- where dirty levels are written back lazily (a wait or busy check on an
+  overlapping resource, `BlockOnTime`, push-buffer callbacks, a sample
+  through guest memory, a destroy, `PersistDisplay`, teardown), the newer
+  bytes over the same span are read back (`mirror_read`) and stored into
+  guest memory, guest stores excepted;
+- a `D24S8` depth level is filled from the mirror on the GPU as well
+  (`GuestWords::load_depth`: depth `z / 16777215` drawn as `frag_depth`
+  with the CPU division's rounding, computed without a division; stencil
+  packed by a compute pass and copied into the stencil aspect).
+  `Device::set_alias_mirror_depth(false)` fills it from memory instead
+  (tests); a level the mirror cannot fill on the GPU is filled that way
+  too.
+
+A sampled level is picked by matching format, size and layout first, then
+by being drawn into, then by header. Formats other than the 32-bit word
+formats and `D24S8`, unaligned levels, a bound level that is itself dirty,
+overlapping dirty levels and guest stores waiting to be merged into the
+moved level take the write-back. `Stats::mirror_stores`, `mirror_loads` and
+`mirror_flushes` count the mirror; `Device::set_alias_mirror(false)` turns
+it off (tests). The per-byte state is bytes, scanned eight at a time, and
+guest memory is compared with what the mirror took only on pages written
+since.
+
+Tests: `crates/d3d/tests/alias_mirror.rs` runs a five-level pool (two
+pitches, a partial overlap, a swizzled alias, `X8` with padding, a depth
+level) through draws, in-place and through-memory samples, guest stores
+before and after the mirror took the bytes (whole words and part of one), a
+`BlockOnResource` and a final flush, on the device's thread and through the
+render thread, and compares the back buffer and guest memory with the
+write-back path byte for byte.
+`a_depth_level_fills_from_the_mirror_as_from_memory` does the same for a
+shadow-map pool and checks that the mirror path reads nothing back;
+`crates/gfx/tests/guest_words.rs` checks `load_depth` against `write_depth`
+bit for bit. `bench_shadow_map_binding` (same file as the pool test,
+`#[ignore]`) times a shadow-map binding.
+
+## Depth aliases on the GPU
+
+A texture over the depth buffer's memory (`0x509368` `LIN_A8R8G8B8`,
+`0x50936C` `LIN_A8B8G8R8`: the menu's fog pass, one a frame) would
+otherwise be a `read_depth` of the whole buffer, a CPU decode and an
+upload, and the guest (or, with the render thread, the render thread)
+would wait for the whole queue once a frame. `GfxBackend` answers
+`Backend::defers_depth_aliases` and makes the texture in a compute pass
+(`gfx::guest_words::GuestWords::depth_alias`): each texel's byte address
+(offset, then the texture's pitch or swizzle) picks a word of the
+`LIN_D24S8` buffer, the word is computed from the depth and stencil aspects
+with `encode_depth`'s rounding, and its bytes become the texel's channels as
+`decode_texture` orders them for the format, with `COLORSIGN` channels
+biased. Covered: `A8R8G8B8`, `X8R8G8B8`, `A8B8G8R8`, `B8G8R8A8`,
+`R8G8B8A8`, linear (pitch a multiple of 4) or swizzled, at a 4-byte-aligned
+offset, over a single-sample `Depth32FloatStencil8` buffer. Anything else is
+read back once per depth generation and decoded on the CPU inside the
+backend. `GfxBackend::set_gpu_depth_aliases(false)` takes the read-back
+path (tests).
+
+Tests: `crates/gfx/tests/guest_words.rs` checks the pass against
+`read_depth_as` plus `decode_texture` byte for byte, and
+`crates/d3d/tests/gpu_depth_alias.rs` draws seven alias layouts with three
+sign masks over three depth contents with the pass on and off, on the
+device's thread and through the render thread, and compares the back
+buffers byte for byte.
+
+## Rules and limits
+
+What the device and `gfx` do not do:
 
 - **Counting through the draw's own fragment program.** The count pass
-  writes 1 for every sample that passes depth/stencil, so alpha test and
-  `discard` are not applied to the count.
-
+  writes 1 for every sample that passes depth/stencil, so alpha test,
+  `discard` and the polygon stipple discard are not applied to the count.
 - **Sampling more render targets directly.** Only whole single-level
   `A8R8G8B8`/`LIN_A8R8G8B8` textures read a level in place. Other formats
-  (`X8R8G8B8` reads alpha as one; 16-bit formats quantise on the way
-  back), mipmapped textures with a level drawn into, and `COLORSIGN`
-  stages still go through guest memory; each needs a view or a shader
-  path that reads the surface as the upload would.
+  (`X8R8G8B8` reads alpha as one; 16-bit formats quantise on the way back),
+  mipmapped textures with a level drawn into, and `COLORSIGN` stages go
+  through guest memory; each would need a view or a shader path that reads
+  the surface as the upload would.
 - **No guest read trap.** Lazy write-back trusts the guest to wait on a
-  level (`BlockOnResource`, the busy check, a fence, a callback) before
-  its CPU reads the texels, as the Xbox GPU's own asynchronous writes
-  require. A read that skips every wait sees the level as of its last
-  write-back. A store that skips every wait is merged by page reports'
-  byte differences only (above); exact store ranges from the runtime, or a
-  trap on the first store to a watched page, would make it exact.
-- **Depth as a texture on the GPU.** `D24S8` depth levels are now
-  converted on the GPU (`gfx::depth_bits`, above), and so are 32-bit
-  colour textures over the depth buffer ("Depth aliases on the GPU",
-  below). `D16` levels, and aliases in other formats or over a `D16`
-  depth buffer, still go through a CPU round trip: a readback, then a
-  decode and an upload. The shadow-map comparison itself is in
-  `crates/shaders` (shaders.md, "Shadow maps").
-- **Overlapping levels on the GPU (done).** Two level headers over one
-  allocation (Halo's render-target pool in a level: two 160x120 and a
-  320x240 `LIN_A8R8G8B8` level over the 512x512 `LIN_D24S8` shadow map)
-  used to move pixels through guest memory: binding or sampling one wrote
-  every other dirty level over its bytes back first
-  (`WritebackCause::Overlap`, a read-back each, about 3 a frame in the
-  user's 327 s level run), then refilled it from memory. The guest's CPU
-  never reads those bytes in between. Now the backend keeps an *alias
-  mirror* (`Backend::mirror_*`; `GfxBackend` a storage buffer,
-  `gfx::guest_words`) standing for the pool's memory, and the device
-  (`src/device/mirror.rs`) moves the overlapping dirty level into it
-  (`mirror_store`: its guest texels, pitch padding as zeros, exactly what
-  the write-back would store) instead of writing it back, and fills the
-  bound level from it (`mirror_load`: what an upload of those bytes would
-  fill). No read-back. The device tracks, per byte, whether the mirror
-  holds it newer than guest memory, and memory's byte when the mirror took
-  it:
-  - a guest store into such a byte wins, as for lazy levels: an exact
-    `note_write` range whatever its value, or a byte that differs from the
-    one taken (a page report). A store into part of a word flushes that
-    range first, so the mirror's newer bytes stay whole words;
-  - a draw into a level makes the level newer over its whole range (it
-    was filled from the mirror first), so the mirror gives those bytes up;
-  - where dirty levels are written back lazily (a wait or busy check on an
-    overlapping resource, `BlockOnTime`, push-buffer callbacks, a sample
-    through guest memory, a destroy, `PersistDisplay`, teardown), the
-    newer bytes over the same span are read back (`mirror_read`) and
-    stored into guest memory, guest stores excepted;
-  - a `D24S8` depth level is filled from the mirror on the GPU as well
-    (`GuestWords::load_depth`: depth `z / 16777215` drawn as `frag_depth`
-    with the CPU division's rounding, computed without a division;
-    stencil packed by a compute pass and copied into the stencil aspect).
-    Until 2026-11-16 it flushed the overlap and was filled from memory:
-    in The Heretic that was a read-back, a 1 MiB guest copy and an upload
-    every time the shadow map was bound, with the game thread waiting on
-    the render thread (about 22% of it in a headless profile of e9be08f).
-    `Device::set_alias_mirror_depth(false)` goes back to that (tests); a level the mirror cannot fill on the GPU still does.
-  Formats other than the 32-bit word formats and `D24S8`, unaligned
-  levels, a bound level that is itself dirty, overlapping dirty levels and
-  guest stores waiting to be merged into the moved level take the
-  write-back as before. `Stats::mirror_stores`, `mirror_loads` and
-  `mirror_flushes` count it. `Device::set_alias_mirror(false)` turns it
-  off (tests).
-  `crates/d3d/tests/alias_mirror.rs` runs a five-level pool (two pitches,
-  a partial overlap, a swizzled alias, `X8` with padding, a depth level)
-  through draws, in-place and through-memory samples, guest stores before
-  and after the mirror took the bytes (whole words and part of one), a
-  `BlockOnResource` and a final flush, with tracked and verified uploads,
-  on the device's thread and through the render thread, and compares the
-  back buffer and guest memory with the write-back path byte for byte.
-  `a_depth_level_fills_from_the_mirror_as_from_memory` does the same for
-  a shadow-map pool (a depth level under three colour levels, a
-  depth-tested pass that reads what the colour levels left, a guest store
-  between frames) with the depth level filled through memory and from the
-  mirror, and checks that the second reads nothing back;
-  `crates/gfx/tests/guest_words.rs` checks `load_depth` against
-  `write_depth` bit for bit. The per-byte state is bytes, scanned eight at
-  a time, and guest memory is compared with what the mirror took only on
-  pages written since. `bench_shadow_map_binding` (same file, ignored)
-  binds a 512x512 shadow map under the Heretic's 320x240 and 160x120
-  levels: through the render thread, 4.9 ms per binding with the depth
-  level through memory and the old per-byte scans, 0.37 ms now. A
-  sampled level is now picked by matching format, size and layout first,
-  then by being drawn into, then by header (it was the map's order: two
-  headers over the same bytes could pick the wrong one and go through
-  guest memory).
-- **Depth aliases on the GPU (done).** A texture over the depth buffer's memory
-  (`0x509368` `LIN_A8R8G8B8`, `0x50936C` `LIN_A8B8G8R8`: the menu's fog
-  pass, one a frame) was a `read_depth` of the whole buffer, a CPU decode
-  and an upload: the guest (or, with the render thread, the render
-  thread) waited for the whole queue once a frame. `GfxBackend` now
-  answers `Backend::defers_depth_aliases` and makes the texture in a
-  compute pass (`gfx::guest_words::GuestWords::depth_alias`): each texel's
-  byte address (offset, then the texture's pitch or swizzle) picks a word
-  of the `LIN_D24S8` buffer, the word is computed from the depth and
-  stencil aspects with `encode_depth`'s rounding, and its bytes become the
-  texel's channels as `decode_texture` orders them for the format, with
-  `COLORSIGN` channels biased. Covered: `A8R8G8B8`, `X8R8G8B8`,
-  `A8B8G8R8`, `B8G8R8A8`, `R8G8B8A8`, linear (pitch a multiple of 4) or
-  swizzled, at a 4-byte-aligned offset, over a single-sample
-  `Depth32FloatStencil8` buffer. Anything else is read back once per
-  depth generation and decoded on the CPU inside the backend, as the
-  device did. `crates/gfx/tests/guest_words.rs` checks the pass against
-  `read_depth_as` plus `decode_texture` byte for byte, and
-  `crates/d3d/tests/gpu_depth_alias.rs` draws seven alias layouts with
-  three sign masks over three depth contents with the pass on and off,
-  on the device's thread and through the render thread, and compares
-  the back buffers byte for byte. `GfxBackend::set_gpu_depth_aliases(false)`
-  goes back to the device's read-back (tests).
-- **Public `HostPixelOrder` from `gfx::surface`.** It is only reachable as
-  `gfx::encode::HostPixelOrder`.
+  level (`BlockOnResource`, the busy check, a fence, a callback) before its
+  CPU reads the texels, as the Xbox GPU's own asynchronous writes require.
+  A read that skips every wait sees the level as of its last write-back. A
+  store that skips every wait is merged by page reports' byte differences
+  only; exact store ranges from the runtime, or a trap on the first store to
+  a watched page, would make it exact.
+- **Depth as a texture on the GPU.** `D24S8` depth levels are converted on
+  the GPU (`gfx::depth_bits`), and so are 32-bit colour textures over the
+  depth buffer ("Depth aliases on the GPU"). `D16` levels, and aliases in
+  other formats or over a `D16` depth buffer, go through a CPU round trip: a
+  readback, then a decode and an upload. The shadow-map comparison itself is
+  in `crates/shaders` ([shaders.md](shaders.md), "Shadow maps").

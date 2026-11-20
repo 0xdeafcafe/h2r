@@ -1,13 +1,10 @@
 # Hot iteration: live tag edits and a hot host renderer
 
-Status: built and tested without the game (synthetic guest memory, a
-real GPU in `crates/d3d/tests/hot_overrides.rs`): WGSL overrides of
-translated programs with a watched directory, override parameters,
-toggles, program listing and dumps (`render.*`); field reads, writes,
-journal and revert of loaded tags (`edit.*`). Not built: live object
-placement, runtime `impl.render.*` switches, a reloadable renderer dylib
-([What is left](#what-is-left)). Nothing here was established by running
-the game.
+Status: Partly built. Built and tested without the game: WGSL overrides of translated programs with a watched directory, override parameters, toggles, program listing and dumps (`render.*`); field reads, writes, journal and revert of loaded tags (`edit.*`). Not built: live object placement, runtime `impl.render.*` switches, a reloadable renderer dylib ([What is left](#what-is-left)).
+Code: `crates/agent/src/hot.rs`, `crates/agent-proto/src/hot.rs`. Tests: `crates/d3d/tests/hot_overrides.rs` (synthetic guest memory, a real GPU), `crates/agent/src/hot/tests.rs`.
+Switch: none.
+
+Nothing here was established by running the game.
 
 ## Why
 
