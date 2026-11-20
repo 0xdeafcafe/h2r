@@ -151,6 +151,53 @@ def scope_up(text, leaving, src_ident, mixed, path):
     return single.sub(fix, text), edits
 
 
+def split_use_groups(text, src_ident, dst_ident, leaving):
+    """`use <src>::{a, moved::X, b};` -> `use <src>::{a, b};` and
+    `use <dst>::{moved::X};`; a group of moved modules only is renamed.
+    Returns (text, edits, [line numbers left alone])."""
+    edits, unresolved, out, i = 0, [], [], 0
+    group = re.compile(r"(?<![\w:.$])" + re.escape(src_ident) + r"::\{")
+    for m in group.finditer(text):
+        if m.start() < i:
+            continue
+        depth, j = 1, m.end()
+        while j < len(text) and depth:
+            depth += {"{": 1, "}": -1}.get(text[j], 0)
+            j += 1
+        body = text[m.end():j - 1]
+        items, d, cur = [], 0, ""
+        for ch in body:
+            d += {"{": 1, "}": -1}.get(ch, 0)
+            if ch == "," and d == 0:
+                items.append(cur.strip())
+                cur = ""
+            else:
+                cur += ch
+        items = [x for x in items + [cur.strip()] if x]
+        moved = [x for x in items if re.match(r"\w+", x).group(0) in leaving]
+        if not moved:
+            continue
+        kept = [x for x in items if x not in moved]
+        out.append(text[i:m.start()])
+        if not kept:
+            out.append(f"{dst_ident}::{{{body}}}")
+        else:
+            line_start = text.rfind("\n", 0, m.start()) + 1
+            prefix = text[line_start:m.start()]
+            if re.fullmatch(r"\s*(pub(\([\w: ]+\))?\s+)?use\s+", prefix) and text[j:j + 1] == ";":
+                out.append(f"{src_ident}::{{" + ", ".join(kept) + "};\n" + prefix
+                           + f"{dst_ident}::{{" + ", ".join(moved) + "}")
+            else:
+                out.append(text[m.start():j])
+                unresolved.append(text.count("\n", 0, m.start()) + 1)
+                i = j
+                continue
+        edits += 1
+        i = j
+    out.append(text[i:])
+    return "".join(out), edits, unresolved
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     if len(args) != 1:
@@ -310,7 +357,10 @@ def main():
         text = read(path)
         if text is None or src_ident not in text:
             continue
-        n = code = 0
+        text, n, unresolved = split_use_groups(text, src_ident, dst_ident, set(leaving))
+        code = n
+        for line in unresolved:
+            w.report.append(f"left for a person: {path}:{line} names a moved module inside a `{src_ident}::{{...}}` that is not a `use`")
         lines = text.split("\n")
         for i, line in enumerate(lines):
             lines[i], k = pattern.subn(lambda m: f"{dst_ident}::{m.group(1)}", line)
