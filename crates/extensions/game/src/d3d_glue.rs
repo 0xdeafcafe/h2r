@@ -175,6 +175,46 @@ pub fn install_headless(
 }
 
 #[cfg(feature = "gpu")]
+/// Keep the single-backend path available to captures locked to retail
+/// dimensions and lighting. Even there, the window can present anamorphically.
+pub fn window_targets(
+    store: &settings::Store,
+    native_size: crate::run_opts::NativeSize,
+    display_size: impl Fn((u32, u32)) -> (u32, u32) + Send + Sync + 'static,
+    reference: impl FnOnce() -> d3d::GfxBackend,
+    display: impl FnOnce() -> d3d::GfxBackend,
+) -> (d3d::GfxBackend, crate::run_opts::DisplayView) {
+    use crate::setting_defs::{GUEST_FRAME, LIGHTING, RESOLUTION, lighting_of};
+    let fixed = settings::Resolution::Fixed(GUEST_FRAME.0, GUEST_FRAME.1);
+    let locked = |key| store.state(key).is_some_and(|state| state.locked);
+    let retail = store.handle::<settings::Resolution>(RESOLUTION.key).get() == fixed
+        && locked(RESOLUTION.key)
+        && lighting_of(store.handle::<u32>(LIGHTING.key).get()) == d3d::Lighting::Retail
+        && locked(LIGHTING.key);
+    let (main, backend) = if retail {
+        (display(), None)
+    } else {
+        (reference(), Some(display()))
+    };
+    (main, crate::run_opts::DisplayView { backend, native_size, display_size: Arc::new(display_size) })
+}
+
+/// The same per-run dimensions feed the raster grid and the render projection.
+#[cfg(feature = "gpu")]
+pub fn output_size(
+    store: Option<&settings::Store>,
+    native: crate::run_opts::NativeSize,
+) -> anyhow::Result<crate::run_opts::NativeSize> {
+    if let Some(store) = store {
+        let choice = store.handle::<settings::Resolution>(crate::setting_defs::RESOLUTION.key);
+        Ok(Arc::new(move || choice.get().size(native())))
+    } else {
+        let choice = crate::setting_defs::resolution_from_env().map_err(anyhow::Error::msg)?;
+        Ok(Arc::new(move || choice.size(native())))
+    }
+}
+
+#[cfg(feature = "gpu")]
 pub fn single_copy(store: Option<&settings::Store>) -> anyhow::Result<bool> {
     let def = &crate::setting_defs::SINGLE_COPY;
     let value = match store {
@@ -207,7 +247,8 @@ pub fn install_headless_for_profile(
                     .filter(|&n| n > 0)
                     .unwrap_or(30),
             };
-            let scale = d3d::render_scale().map_err(anyhow::Error::msg)?;
+            let (width, height) = output_size(settings, Arc::new(|| crate::setting_defs::GUEST_FRAME))?();
+            let scale = d3d::scaled::RenderScale::for_output(width, height).map_err(anyhow::Error::msg)?;
             let lighting = d3d::scaled::lighting().map_err(anyhow::Error::msg)?;
             let ctx = gfx::GfxContext::headless()
                 .map_err(|e| anyhow::anyhow!("gfx headless context: {e}"))?;
@@ -292,7 +333,12 @@ pub fn install_headless_for_profile(
                 // guest; a retail view and an E3 view draw the same calls at
                 // `scale` (`d3d::LightingAb`). `frame-N-retail.png` and
                 // `frame-N-e3.png` are a pair from the same frame.
-                let scale = scale.max(2);
+                let (width, height) = if (width, height) == crate::setting_defs::GUEST_FRAME {
+                    (1280, 960)
+                } else {
+                    (width, height)
+                };
+                let scale = d3d::scaled::RenderScale::for_output(width, height).map_err(anyhow::Error::msg)?;
                 let reference = configure_gfx(
                     d3d::GfxBackend::new(share_context(&ctx)).on_present(shots("-1x", 0, None)),
                 );
@@ -367,9 +413,9 @@ pub fn install_headless_for_profile(
                     );
                 }
                 let mut b =
-                    d3d::lighting_ab(reference, retail, e3, scale).map_err(anyhow::Error::msg)?;
+                    d3d::scaled::lighting_ab_at_resolution(reference, retail, e3, scale).map_err(anyhow::Error::msg)?;
                 eprintln!(
-                    "d3d: lighting A/B at {scale}x (H2_BOOT_GFX_LIGHTING_AB): a retail and an E3 view of one run; the guest sees a 1x reference"
+                    "d3d: lighting A/B at {width}x{height} (H2_BOOT_GFX_LIGHTING_AB): a retail and an E3 view of one run; the guest sees a 1x reference"
                 );
                 let (retail_report, e3_report) =
                     (scale_report(b.reference_mut()), scale_report(&mut b));
@@ -387,7 +433,7 @@ pub fn install_headless_for_profile(
                     install_for_profile(rt, b, Some(report), profile)
                 };
             }
-            if scale > 1 || lighting != d3d::Lighting::Retail {
+            if (width, height) != crate::setting_defs::GUEST_FRAME || lighting != d3d::Lighting::Retail {
                 // The display presents scaled frames. Exact reference captures
                 // use their own hook and swap count on the shared device.
                 let reference = configure_gfx(
@@ -402,10 +448,10 @@ pub fn install_headless_for_profile(
                 );
                 let single = single_copy(settings)?;
                 let mut b =
-                    d3d::ScaledBackend::with_single_copy(reference, view, scale, single).map_err(anyhow::Error::msg)?;
+                    d3d::ScaledBackend::with_resolution(reference, view, scale, single).map_err(anyhow::Error::msg)?;
                 b.set_lighting(lighting);
                 eprintln!(
-                    "d3d: rendering at {scale}x (H2_RENDER_SCALE), {lighting:?} lighting (H2_LIGHTING); single copy {single}"
+                    "d3d: rendering at {width}x{height}, {lighting:?} lighting (H2_LIGHTING); single copy {single}"
                 );
                 let report = scale_report(&mut b);
                 return if render_thread_requested() {
@@ -640,7 +686,7 @@ where
     let stats = b.shared_stats();
     Box::new(move || {
         let s = *stats.lock().unwrap_or_else(|e| e.into_inner());
-        format!("render scale {}: {s}", s.scale)
+        format!("render resolution {}x{}: {s}", s.output.0, s.output.1)
     })
 }
 

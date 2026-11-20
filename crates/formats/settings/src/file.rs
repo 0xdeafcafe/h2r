@@ -32,7 +32,24 @@ pub(crate) fn lookup(table: &toml::Table, def: &Def) -> Result<Option<Value>, St
     match table.get(t) {
         None => Ok(None),
         Some(toml::Value::Table(t)) => match t.get(k) {
-            None => Ok(None),
+            None => {
+                let Some(scale) = def.legacy_scale() else {
+                    return Ok(None);
+                };
+                let Some((legacy_table, key)) = scale.key.split_once('.') else {
+                    return Ok(None);
+                };
+                let Some(v) = table.get(legacy_table).and_then(|t| t.get(key)) else {
+                    return Ok(None);
+                };
+                let n = v
+                    .as_integer()
+                    .ok_or_else(|| format!("{} must be a whole number", scale.key))?;
+                scale
+                    .parse(&n.to_string())
+                    .map(|r| Some(r.value()))
+                    .map_err(|e| format!("{}: {e}", scale.key))
+            }
             Some(v) => def
                 .from_toml(v)
                 .map(Some)

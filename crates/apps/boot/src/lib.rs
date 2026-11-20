@@ -359,6 +359,20 @@ fn run_configured(
         "host audit and render-census both use the guest access trap"
     );
     let mut features = hooks::Registry::new(switches);
+    #[cfg(feature = "gpu")]
+    let native_size: run_opts::NativeSize = host.gfx_view.as_ref().map(|view| view.native_size.clone())
+        .unwrap_or_else(|| Arc::new(|| setting_defs::GUEST_FRAME));
+    #[cfg(not(feature = "gpu"))]
+    let native_size: run_opts::NativeSize = Arc::new(|| setting_defs::GUEST_FRAME);
+    #[cfg(feature = "gpu")]
+    let output_size = if opts.d3d && !host_light && sim_mode.is_none()
+        && (host.gfx_view.is_some() || (host.gfx.is_none() && std::env::var_os("H2_BOOT_GFX").is_some()))
+    {
+        let output = d3d_glue::output_size(host.settings.as_deref(), native_size.clone())?;
+        Some(output)
+    } else {
+        None
+    };
     // Our text on the cannot-connect dialog when Live is off or its server
     // is unreachable (docs/live/live.md, "Client HLE: Live not set up").
     live_notice::install(&loaded.runtime, live).context("installing the Live notice")?;
@@ -524,7 +538,7 @@ fn run_configured(
     // (docs/game/settings-menu.md).
     let model = match host.settings.clone() {
         Some(store) => Some(Arc::new(
-            video_screen::model(store, video_screen::Switches::PLATFORM)
+            video_screen::model_with_native_size(store, video_screen::Switches::PLATFORM, native_size)
                 .map_err(anyhow::Error::msg)?,
         )),
         None => None,
@@ -710,7 +724,7 @@ fn run_configured(
     #[cfg(not(feature = "gpu"))]
     let headless = true;
     #[cfg(feature = "gpu")]
-    if opts.d3d && host.gfx_view.is_none() && interp.is_none() && let Some(b) = &mut host.gfx {
+    if opts.d3d && host.gfx_view.as_ref().is_none_or(|view| view.backend.is_none()) && interp.is_none() && let Some(b) = &mut host.gfx {
         native_shadows_glue::configure_single(b);
     }
     let render_hooks = film.as_ref()
@@ -718,18 +732,24 @@ fn run_configured(
     #[cfg(feature = "gpu")]
     let mut d3d_calls = match (opts.d3d, host.gfx.take()) {
         (false, _) => None,
-        (true, Some(b)) => Some(match host.gfx_view.take() {
-            Some((view, scale)) => {
+        (true, Some(b)) => Some(match host.gfx_view.take().and_then(|view| view.backend) {
+            Some(view) => {
+                let output = output_size.expect("display view has an output size");
+                let (width, height) = output();
+                let scale = d3d::scaled::RenderScale::for_output(width, height).map_err(anyhow::Error::msg)?;
                 let single = d3d_glue::single_copy(host.settings.as_deref())?;
-                let mut b = d3d::ScaledBackend::with_single_copy(b, view, scale, single).map_err(anyhow::Error::msg)?;
-                eprintln!("d3d: rendering at {scale}x; single copy {single}");
+                let mut b = d3d::ScaledBackend::with_resolution(b, view, scale, single).map_err(anyhow::Error::msg)?;
+                eprintln!("d3d: rendering at {width}x{height}; single copy {single}");
                 // The Video screen's Resolution row changes the scale at the
                 // next frame boundary (docs/graphics/high-resolution.md).
                 // The Lighting row (docs/graphics/e3-lighting-setting.md)
                 // changes the view's shadows there too.
+                b.follow_resolution(move || {
+                    let (width, height) = output();
+                    d3d::scaled::RenderScale::for_output(width, height)
+                        .expect("the resolution picker and drawable publish validated sizes")
+                });
                 if let Some(store) = &host.settings {
-                    let wanted = store.handle::<u32>(setting_defs::RENDER_SCALE.key);
-                    b.follow_scale(move || wanted.get());
                     let lighting = store.handle::<u32>(setting_defs::LIGHTING.key);
                     b.set_lighting(setting_defs::lighting_of(lighting.get()));
                     b.follow_lighting(move || setting_defs::lighting_of(lighting.get()));

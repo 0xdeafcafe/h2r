@@ -91,6 +91,7 @@ impl ChoiceRow {
                     .map(|v| (Value::Int(v), v.to_string()))
                     .collect()
             }
+            Kind::Resolution(_) => vec![(self.def.default, self.def.label(self.def.default))],
             Kind::Choice(cs) => cs
                 .iter()
                 .map(|c| (Value::Int(c.value), c.label.to_string()))

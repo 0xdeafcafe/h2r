@@ -16,7 +16,7 @@ use input::bindings::{Bindings, Control, Input};
 
 const USAGE: &str = "usage:
   h2 play <disc.iso> [--out DIR] [--tier auto|fast|clang] [--data DIR] [--transfers N] [--slices N]
-          [--aspect 4:3|16:9] [--scaling fit|integer|stretch] [--nearest] [--fullscreen]
+          [--aspect source|4:3|16:9] [--scaling fit|integer|stretch] [--nearest] [--fullscreen]
           [--title TEXT] [--tile I/N]
           [--no-audio] [--no-gamepads] [--no-vsync] [--unpaced] [--bindings FILE] [--status]
           [--fps 30|60|120|uncapped] [--input-timeline FILE] [--frame-stats] [--no-watermark] [--no-mappack] [--no-halo1]
@@ -64,9 +64,9 @@ DIR is given), the game skips them. The log says which (`movies: playback
 game's own rate and today's behaviour; 60, 120 and uncapped only redraw the
 newest game frame more often for now, with no smoothing (the game itself
 always runs at 30; docs/game/high-framerate.md).
-With neither set, the rate and H2_RENDER_SCALE's scale come from the Video
-screen (Settings, Video), saved as [graphics] fps and render_scale
-in <data>/settings.toml; a change there applies at once.
+The Video screen saves frame rate and resolution in <data>/settings.toml.
+Native resolution follows the window in physical pixels. H2_RESOLUTION
+accepts native or WIDTHxHEIGHT; H2_RENDER_SCALE accepts a legacy multiplier.
 --set KEY=VALUE sets any of our settings for this run only, as its environment
 variable would: it wins over the variable and the file and locks its row
 (`h2 settings list` shows them; docs/game/settings-menu.md).
@@ -330,36 +330,13 @@ fn hosted(
             None => gfx,
         }
     };
-    // A view backend renders the frame at the scale times 640x480 and
-    // presents; the backend the guest talks to stays at 1x
-    // (docs/graphics/high-resolution.md). The scale is H2_RENDER_SCALE, else the
-    // Video screen's Resolution (`[graphics] render_scale`), else 1, and
-    // follows the row during the run (at 1 the view sleeps). Locked at 1
-    // (H2_RENDER_SCALE=1, --set): one backend, as before the row.
-    let key = boot::setting_defs::RENDER_SCALE.key;
-    let scale = store
-        .handle::<u32>(key)
-        .get()
-        .clamp(1, d3d::scaled::MAX_SCALE);
-    let locked = store.state(key).is_some_and(|s| s.locked);
-    // E3 lighting (the Lighting row, H2_LIGHTING) draws in the view too,
-    // at 1x as well: a view unless both are locked off.
-    let light = boot::setting_defs::LIGHTING.key;
-    let e3 = boot::setting_defs::lighting_of(store.handle::<u32>(light).get())
-        != d3d::Lighting::Retail;
-    let light_locked = store.state(light).is_some_and(|s| s.locked);
-    let view = (scale > 1 || !locked || e3 || !light_locked).then(|| {
-        (
-            configure(d3d::GfxBackend::new(host.gfx_context()).on_present(host.present_hook())),
-            scale,
-        )
-    });
-    let gfx = d3d::GfxBackend::new(host.gfx_context());
-    let gfx = configure(if view.is_some() {
-        gfx
-    } else {
-        gfx.on_present(host.present_hook())
-    });
+    let native_size: boot::run_opts::NativeSize = Arc::new(host.native_size());
+    let (gfx, view) = boot::d3d_glue::window_targets(
+        &store,
+        native_size, host.display_size(),
+        || configure(d3d::GfxBackend::new(host.gfx_context())),
+        || configure(d3d::GfxBackend::new(host.gfx_context()).on_present(host.present_hook())),
+    );
     let input = host.take_input();
     let keyboard = host.keyboard().cloned();
     let (pad_speaker, pad_hid, _speaker_setting) = pad_speaker(audio, &store, steam.as_ref());
@@ -373,7 +350,7 @@ fn hosted(
         host_light: false,
         host_bots: false,
         gfx: Some(gfx),
-        gfx_view: view,
+        gfx_view: Some(view),
         // The backend's work on a render thread unless H2_RENDER_THREAD=0, as
         // for `h2 run` (docs/graphics/render-thread.md).
         render_thread: render_thread(std::env::var("H2_RENDER_THREAD").ok().as_deref()),
@@ -544,6 +521,7 @@ pub(crate) fn run_with_theater(
         // consumes the unused `GuestHost::mixer`).
         audio: false,
         title: "Halo 2".into(),
+        aspect: app::DisplayAspect::Source,
         bindings: play_bindings(),
         // The run prints its report before the guest thread returns.
         shutdown_timeout: Duration::from_secs(10),

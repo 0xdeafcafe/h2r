@@ -1,5 +1,6 @@
 //! What a setting is: [`Def`] and the values it may hold.
 
+use crate::{LegacyScale, Resolution};
 use std::fmt;
 use std::ops::RangeInclusive;
 
@@ -83,6 +84,9 @@ pub enum Kind {
     /// to the file as a TOML integer when its name is that number, else as
     /// its name.
     Choice(&'static [Choice]),
+    /// Native drawable size or an explicit width and height. The screen
+    /// supplies choices for its current drawable.
+    Resolution(LegacyScale),
 }
 
 /// When a change takes effect.
@@ -156,6 +160,29 @@ pub struct Def {
 }
 
 impl Def {
+    /// The scalar key and variable a resolution setting can read.
+    pub(crate) fn legacy_scale(&self) -> Option<LegacyScale> {
+        match self.kind {
+            Kind::Resolution(scale) => Some(scale),
+            _ => None,
+        }
+    }
+
+    /// A setting may also accept an old file/CLI key with its old syntax.
+    pub fn accepts_key(&self, key: &str) -> bool {
+        self.key == key || self.legacy_scale().is_some_and(|s| s.key == key)
+    }
+
+    pub fn parse_key(&self, key: &str, text: &str) -> Result<Value, String> {
+        if self.key == key {
+            return self.parse(text);
+        }
+        if let Some(scale) = self.legacy_scale().filter(|s| s.key == key) {
+            return scale.parse(text).map(Resolution::value);
+        }
+        Err(format!("unknown setting {key:?}"))
+    }
+
     /// The TOML table and the key in it.
     pub fn table_key(&self) -> (&'static str, &'static str) {
         self.key.split_once('.').unwrap_or(("", self.key))
@@ -165,6 +192,7 @@ impl Def {
     pub fn check(&self, v: Value) -> Result<Value, String> {
         let ok = match (&self.kind, v) {
             (Kind::Bool, Value::Bool(_)) => true,
+            (Kind::Resolution(_), v) => Resolution::from_value(v).is_some(),
             (Kind::Int { valid, .. }, Value::Int(i)) => valid.contains(&i),
             (Kind::Choice(c), Value::Int(i)) => c.iter().any(|c| c.value == i),
             _ => false,
@@ -180,6 +208,10 @@ impl Def {
     pub fn expected(&self) -> String {
         match &self.kind {
             Kind::Bool => "0 or 1".into(),
+            Kind::Resolution(_) => format!(
+                "native or WIDTHxHEIGHT (each 1 to {})",
+                Resolution::MAX_DIMENSION
+            ),
             Kind::Int { valid, .. } => {
                 format!("a whole number from {} to {}", valid.start(), valid.end())
             }
@@ -202,6 +234,7 @@ impl Def {
             return Ok(*v);
         }
         let v = match &self.kind {
+            Kind::Resolution(_) => Resolution::parse(t).map(Resolution::value),
             Kind::Bool => match t.to_ascii_lowercase().as_str() {
                 "1" | "true" | "on" | "yes" => Some(Value::Bool(true)),
                 "0" | "false" | "off" | "no" => Some(Value::Bool(false)),
@@ -236,9 +269,11 @@ impl Def {
             (Kind::Bool, toml::Value::Boolean(b)) => return Ok(Value::Bool(*b)),
             (Kind::Bool, _) => return Err("must be true or false".into()),
             (Kind::Int { .. } | Kind::Choice(_), toml::Value::Integer(i)) => i.to_string(),
-            (Kind::Choice(_), toml::Value::String(s)) => s.clone(),
+            (Kind::Choice(_) | Kind::Resolution(_), toml::Value::String(s)) => s.clone(),
             (Kind::Int { .. }, _) => return Err("must be a whole number".into()),
-            (Kind::Choice(_), _) => return Err(format!("must be {}", self.expected())),
+            (Kind::Choice(_) | Kind::Resolution(_), _) => {
+                return Err(format!("must be {}", self.expected()));
+            }
         };
         self.parse(&text)
             .map_err(|_| format!("must be {}", self.expected()))
@@ -248,6 +283,7 @@ impl Def {
     pub fn to_toml(&self, v: Value) -> toml::Value {
         match (&self.kind, v) {
             (_, Value::Bool(b)) => toml::Value::Boolean(b),
+            (Kind::Resolution(_), _) => toml::Value::String(self.name(v)),
             (Kind::Choice(c), Value::Int(i)) => match c.iter().find(|c| c.value == i) {
                 Some(c) if c.name.parse::<i64>().ok() != Some(i) => {
                     toml::Value::String(c.name.into())
@@ -262,6 +298,9 @@ impl Def {
     /// `90`, `true`.
     pub fn name(&self, v: Value) -> String {
         match (&self.kind, v) {
+            (Kind::Resolution(_), _) => {
+                Resolution::from_value(v).map_or_else(|| v.to_string(), |r| r.to_string())
+            }
             (Kind::Choice(c), Value::Int(i)) => c
                 .iter()
                 .find(|c| c.value == i)
@@ -273,6 +312,8 @@ impl Def {
     /// `v` as a row shows it: `Uncapped`, `2x`, `1280x960`, `90`, `On`.
     pub fn label(&self, v: Value) -> String {
         match (&self.kind, v) {
+            (Kind::Resolution(_), Value::Int(0)) => "Native".into(),
+            (Kind::Resolution(_), _) => self.name(v),
             (_, Value::Bool(b)) => if b { "On" } else { "Off" }.into(),
             (Kind::Choice(c), Value::Int(i)) => c
                 .iter()
@@ -306,6 +347,7 @@ impl Def {
                 let at = c.iter().position(|c| c.value == i);
                 Value::Int(at.map_or(c[0].value, |p| c[(p + 1) % c.len()].value))
             }
+            (Kind::Resolution(_), _) => shown,
             (Kind::Bool, Value::Int(_)) => self.default,
         }
     }
@@ -314,6 +356,7 @@ impl Def {
     /// string for.
     pub fn values(&self) -> Vec<Value> {
         match &self.kind {
+            Kind::Resolution(_) => vec![self.default],
             Kind::Bool => vec![Value::Bool(true), Value::Bool(false)],
             Kind::Int { valid, .. } => valid.clone().map(Value::Int).collect(),
             Kind::Choice(c) => c.iter().map(|c| Value::Int(c.value)).collect(),

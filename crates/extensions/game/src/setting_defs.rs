@@ -80,22 +80,20 @@ pub static FPS: Def = Def {
 /// "Terms" and "Prior art"), so no video mode changes it.
 pub const GUEST_FRAME: (u32, u32) = (640, 480);
 
-pub static RENDER_SCALE: Def = Def {
+const LEGACY_SCALE: settings::LegacyScale = settings::LegacyScale {
     key: "graphics.render_scale",
+    env: "H2_RENDER_SCALE",
+    frame: GUEST_FRAME,
+    max: d3d::MAX_SCALE,
+};
+
+pub static RESOLUTION: Def = Def {
+    key: "graphics.resolution",
     label: "Resolution",
-    help: "Internal resolution as a multiple of the game's 640x480; the row shows the \
-           size it renders at (1280x960 for 2). The row steps 1 to 4; the file and \
-           H2_RENDER_SCALE take up to 6. A change applies at the next frame.",
-    kind: Kind::Int {
-        valid: 1..=d3d::MAX_SCALE as i64,
-        steps: &[1, 2, 3, 4],
-        unit: Unit::Pixels {
-            width: GUEST_FRAME.0,
-            height: GUEST_FRAME.1,
-        },
-    },
-    default: Value::Int(1),
-    env: Some("H2_RENDER_SCALE"),
+    help: "Native follows the window in physical pixels. Choose a smaller size to render fewer pixels.",
+    kind: Kind::Resolution(LEGACY_SCALE),
+    default: Value::Int(0),
+    env: Some("H2_RESOLUTION"),
     flag: None,
     aliases: &[],
     parse_env: None,
@@ -105,6 +103,58 @@ pub static RENDER_SCALE: Def = Def {
     menu: Some(Menu {
         screen: "video",
         order: 30,
+    }),
+};
+
+/// Resolution for headless graphics paths that have no settings store.
+pub fn resolution_from_env() -> Result<settings::Resolution, String> {
+    let vars = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+    if let Some(v) = vars("H2_RESOLUTION") {
+        return settings::Resolution::parse(&v)
+            .ok_or_else(|| format!("H2_RESOLUTION={v:?}: expected {}", RESOLUTION.expected()));
+    }
+    match vars(LEGACY_SCALE.env) {
+        Some(v) => LEGACY_SCALE
+            .parse(&v)
+            .map_err(|e| format!("{}={v:?}: {e}", LEGACY_SCALE.env)),
+        None => Ok(settings::Resolution::Native),
+    }
+}
+
+/// Vertical pixel density relative to the guest, including fractional sizes.
+pub fn effective_vertical_scale(output_height: u32) -> f32 {
+    output_height as f32 / GUEST_FRAME.1 as f32
+}
+
+pub const HUD_PINNED: u32 = 1;
+
+pub static HUD_POSITION: Def = Def {
+    key: "graphics.hud_position",
+    label: "HUD Position",
+    help: "Centered keeps the HUD in the middle safe area. Pinned keeps edge and corner indicators near the edges of the screen.",
+    kind: Kind::Choice(&[
+        Choice {
+            value: 0,
+            name: "centered",
+            label: "Centered",
+        },
+        Choice {
+            value: HUD_PINNED as i64,
+            name: "pinned",
+            label: "Pinned",
+        },
+    ]),
+    default: Value::Int(HUD_PINNED as i64),
+    env: Some("H2_HUD_POSITION"),
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::View,
+    tier: Tier::User,
+    menu: Some(Menu {
+        screen: "video",
+        order: 40,
     }),
 };
 
@@ -745,7 +795,8 @@ pub fn halo1_sandbox(store: &Store) -> &'static str {
 pub static ALL: &[&Def] = &[
     &FOV,
     &FPS,
-    &RENDER_SCALE,
+    &RESOLUTION,
+    &HUD_POSITION,
     &SINGLE_COPY,
     &LIGHTING,
     &PAD_SPEAKER,
@@ -902,13 +953,70 @@ mod tests {
         assert!(p.is_empty(), "{p:?}");
         assert_eq!(s.get(FOV.key), Some(Value::Int(95)));
         assert_eq!(s.get(FPS.key), Some(Value::Int(0)));
-        assert_eq!(s.get(RENDER_SCALE.key), Some(Value::Int(2)));
+        assert_eq!(
+            s.get(RESOLUTION.key),
+            Some(settings::Resolution::Fixed(1280, 960).value())
+        );
         assert_eq!(s.get(SINGLE_COPY.key), Some(Value::Bool(true)));
         assert_eq!(s.get(PAD_SPEAKER.key), Some(Value::Bool(false)));
         assert_eq!(s.get(PAD_MUTE.key), Some(Value::Bool(true)));
         // `fov = 0` was retail.
         std::fs::write(settings::path_in(&data), "[graphics]\nfov = 0\n").unwrap();
         assert_eq!(with_env(&data, &[]).0.get(FOV.key), Some(Value::Int(70)));
+    }
+
+    #[test]
+    fn explicit_resolution_wins_at_its_own_precedence() {
+        use settings::Resolution::{Fixed, Native};
+
+        let data = tmp("resolution");
+        let path = settings::path_in(&data);
+        std::fs::write(
+            &path,
+            "[graphics]\nrender_scale = 3\nresolution = \"native\"\n",
+        )
+        .unwrap();
+        let load = |s: &Store| s.handle::<settings::Resolution>(RESOLUTION.key).get();
+        let (file, p) = with_env(&data, &[]);
+        assert!(p.is_empty());
+        assert_eq!(load(&file), Native);
+        let (legacy, p) = with_env(&data, &[("H2_RENDER_SCALE", "2")]);
+        assert!(p.is_empty());
+        assert_eq!(load(&legacy), Fixed(1280, 960));
+        assert_eq!(
+            legacy.state(RESOLUTION.key).unwrap().source,
+            settings::Source::Env("H2_RENDER_SCALE")
+        );
+
+        let (env, p) = with_env(
+            &data,
+            &[("H2_RESOLUTION", "3440X1440"), ("H2_RENDER_SCALE", "2")],
+        );
+        assert!(p.is_empty());
+        assert_eq!(load(&env), Fixed(3440, 1440));
+        assert!(env.state(RESOLUTION.key).unwrap().locked);
+        assert_eq!(effective_vertical_scale(1050), 2.1875);
+        assert_eq!(effective_vertical_scale(2880), 6.0);
+        for bad in [
+            "2",
+            "2x",
+            "0x1080",
+            "5120x0",
+            "8193x480",
+            "300x-1",
+            "800x600x1",
+        ] {
+            assert!(RESOLUTION.parse(bad).is_err(), "{bad}");
+        }
+        let flags = [Flag::parse_set("graphics.resolution=native").unwrap()];
+        let (flag, p) = Store::load(
+            ALL,
+            Some(&path),
+            &|k| (k == "H2_RENDER_SCALE").then(|| "2".into()),
+            &flags,
+        );
+        assert!(p.is_empty());
+        assert_eq!(load(&flag), Native);
     }
 
     #[test]
@@ -920,6 +1028,7 @@ mod tests {
                 ("H2_FOV", "0"),
                 ("H2_FPS", "Uncapped"),
                 ("H2_RENDER_SCALE", "6"),
+                ("H2_HUD_POSITION", "centered"),
                 ("H2_SINGLE_COPY", "0"),
                 ("H2_PAD_SPEAKER", "0"),
                 ("H2_PAD_MUTE", "0"),
@@ -981,7 +1090,10 @@ mod tests {
         );
         assert_eq!(s.get(FOV.key), Some(Value::Int(70)));
         assert_eq!(s.get(FPS.key), Some(Value::Int(0)));
-        assert_eq!(s.get(RENDER_SCALE.key), Some(Value::Int(6)));
+        assert_eq!(
+            s.get(RESOLUTION.key),
+            Some(settings::Resolution::Fixed(3840, 2880).value())
+        );
         assert_eq!(s.get(SINGLE_COPY.key), Some(Value::Bool(false)));
         assert_eq!(s.get(PAD_SPEAKER.key), Some(Value::Bool(false)));
         assert_eq!(s.get(PAD_MUTE.key), Some(Value::Bool(false)));
@@ -1166,7 +1278,7 @@ mod tests {
         assert_eq!(lighting_of(LIGHTING_E3 as u32), d3d::Lighting::E3);
         let menu = LIGHTING.menu.expect("a row");
         assert_eq!(menu.screen, "video");
-        assert!(RENDER_SCALE.menu.unwrap().order < menu.order);
+        assert!(RESOLUTION.menu.unwrap().order < menu.order);
         assert_eq!(LIGHTING.apply, Apply::Live, "no restart");
         // The file takes the names; the variable locks it.
         std::fs::write(settings::path_in(&data), "[graphics]\nlighting = \"e3\"\n").unwrap();
