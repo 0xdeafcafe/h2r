@@ -32,6 +32,14 @@ impl Countdown {
         if name != "d40" {
             return;
         }
+        // The map reader lives with the GPU loaders; a host build without
+        // them keeps the ids unresolved (the countdown is only drawn).
+        #[cfg(feature = "gpu")]
+        self.resolve_ids(name);
+    }
+
+    #[cfg(feature = "gpu")]
+    fn resolve_ids(&mut self, name: &str) {
         let Ok((cache, _)) = crate::native_map::open(name) else {
             return;
         };

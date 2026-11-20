@@ -679,7 +679,7 @@ fn index_parts(parts: &[LitPart]) -> HashMap<(u16, u8), usize> {
 
 fn plan_indexed_part<'a>(
     parts: &[LitPart], part: Option<usize>, pass_of: &dyn Fn(usize) -> Option<&'a ObjectPass>,
-    frame: &ObjectFrame, key: &ItemKey, rows: &[Row], entry: &EntryStates,
+    frame: &ObjectFrame, key: &ItemKey, rows: &[Row], entry: &EntryStates, scene: bool,
 ) -> Result<PlannedDraw, String> {
     let part = part.ok_or_else(|| format!("section {} part {} is not a native part", key.section, key.part))?;
     let p = &parts[part];

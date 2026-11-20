@@ -8,6 +8,7 @@ use engine::{
 use h1scripts::cinematics::{Field, MARKER};
 use std::sync::{Arc, Mutex};
 
+#[cfg(feature = "gpu")]
 mod gpu;
 #[cfg(test)]
 mod tests;
@@ -221,6 +222,7 @@ impl Frame {
 type Draw = dyn Fn(&mut dyn GuestMemory, Frame) + Send + Sync;
 static DRAW: Mutex<Option<Arc<Draw>>> = Mutex::new(None);
 
+#[cfg(feature = "gpu")]
 pub fn install_device<B: d3d::backend::Backend + Send + 'static>(
     device: &d3d::abi::SharedDevice<B>,
 ) {

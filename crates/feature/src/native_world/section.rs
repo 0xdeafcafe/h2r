@@ -51,7 +51,7 @@ fn lod(m: &dyn GuestMemory, shader: u32, pixels: f32) -> Option<(u8, u32, u32)> 
     let template = m.u32(table.checked_add((template_id & 0xffff)*16 + 8)?).ok()?;
     let header = m.u32(template.checked_add(0x5c)?).ok()?;
     let count = m.u32(header).ok()?;
-    if geometry == 0 || !(1..=256).contains(&count) { return None; }
+    if header == 0 || !(1..=256).contains(&count) { return None; }
     let levels = m.u32(header.checked_add(4)?).ok()?;
     let mut level = 0;
     if classification != 5 {

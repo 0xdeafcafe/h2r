@@ -272,7 +272,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let pass = Box::new(ObjectsPass {
             models: Arc::clone(&models), camera, objects: Vec::new(), draws,
             owners: Vec::new(), refused: Vec::new(), compare: None, view: None,
-            w_clip: None, fallback: None, walk: true, run: device.swap_count().wrapping_add(1),
+            w_clip: None, fallback: None, walk: true, run: u64::from(device.swap_count()).wrapping_add(1),
         });
         drop(planning);
         let ready = device.prepare_external_bound(
