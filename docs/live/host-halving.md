@@ -1,8 +1,8 @@
 # Halving the dedicated host, and scaling it
 
-Status: Design. Nothing here is built; every projected number is an estimate (**S**) until the gate beside it is measured.
+Status: Implementation and qualification. Projected figures (**S**) await measurements from all-phantom matches.
 Code: `crates/apps/cli/src/host_cmd/pack.rs` (the pack supervisor), `crates/live/live-worker/src/hostroom.rs` and `crates/live/live-server/src/hosts/local_pack.rs` (the pool), `crates/live/live-server/src/hosts/lifecycle.rs` (leases and caps). Tests: `crates/apps/cli/src/host_cmd/pack_tests.rs`, `crates/live/live-worker/tests/hostroom.rs`, `crates/live/live-server/src/hosts/local_pack_tests.rs`.
-Switch: none yet. Each slice below names the switch or setting it adds, and lists it in [switches.md](../runtime/switches.md) when it is built.
+Controls and experimental profile settings are listed in [switches.md](../runtime/switches.md).
 
 A light match costs 6–10 ms of CPU per 33 ms tick and about 340 MB of
 resident memory, and a pack runs three of them in a 1 vCPU / 3 GiB container
@@ -23,9 +23,7 @@ Targets, per match in a full pack:
 | Allocation to joinable, pack running | about 20 s | < 2 s | 1–2 s |
 | Cloudflare cost per match-hour, full pack | $0.027 | ≤ $0.014 | $0.012–0.015 |
 
-**Blocked.** An all-phantom match does not start (the host reports no squad
-session). Every gate below needs one, so the measurements wait for that
-fix. The slices that are pure code and unit tests do not.
+The all-phantom baseline and acceptance results are pending. Collect them on the quiet laptop after the host can form a squad session.
 
 ## Where the cost is today
 
@@ -132,9 +130,7 @@ host tick after the rows above.
 
 ## Halving the memory
 
-Measured on Linux in the container, since that is what is billed: the
-supervisor's `Pss` per process group (`GET /v1/pack`), `Private_Dirty` and
-`Shared_Clean` from `/proc/<pid>/smaps_rollup`, and the cgroup's
+On Linux the pack supervisor reports process-group Pss, private dirty and shared clean bytes in each match’s `load` at `GET /v1/pack`. It also reports the cgroup's
 `memory.current` less inactive file pages. The sim report's
 `wall.peak_rss_mib`, `wall.footprint_mib` and
 `wall.guest_written_pages` over `wall.guest_pages` give the same split per
@@ -338,9 +334,9 @@ A managed fleet at any step still needs the rights determination in
 
 | Interface | Change |
 |---|---|
-| `GET /v1/pack` (`pack.rs`) | adds `template`, each match's private and shared bytes, CPU seconds so far and late-tick p99; the pool reads these |
+| `GET /v1/pack` (`pack.rs`) | reports each match’s private and shared bytes, sampled peak Pss, CPU seconds and gameplay tick p99; the template field is reserved for the template work |
 | `POST /v1/pack/matches` | unchanged on the wire; served by a fork when a template exists |
-| `host.metrics` (`crates/extensions/game/src/host_metrics.rs`, [agent API](../runtime/agent-api.md#hostmetrics)) | adds `private_bytes`, `pss_bytes` (Linux), `late_ticks` and `wall_ms_per_tick_p99`, so a gate reads one method instead of `/proc` |
+| `host.metrics` (`crates/extensions/game/src/host_metrics.rs`, [agent API](../runtime/agent-api.md#hostmetrics)) | reports the Linux resident split, CPU seconds, and a rolling 30-second gameplay tick p99 and count above 36 ms |
 | Sim report `wall` block (`crates/live/sim-bench/src/metrics.rs`) | adds `mapped_read_bytes` and `copied_read_bytes` |
 | Pool `place` (`hostroom.rs`, `local_pack.rs`) | takes the demand figure; returns whether the slot was warm |
 | `HostEnded` (`live-proto`) | carries the match's CPU seconds and peak Pss, so the cost row is the match's share and not a whole container |
@@ -419,12 +415,11 @@ when they are full, and Fly has no tunnel leg.
 
 ## Build order
 
-Slices 1, 2, 4, 5, 8 and 9 are independent. Results go in a dated entry in
+The table lists outstanding implementation work. Measurement results go in a dated entry in
 `docs/live/notes/host-halving.md` with the commit and the command.
 
 | # | Slice | Files it owns | Tests | Measurement gate |
 |---|---|---|---|---|
-| 1 | Baseline and fields | `host_metrics.rs`, `host_mem.rs`, `host_cmd/pack_measure.rs`, `sim-bench/src/metrics.rs`, `docs/runtime/agent-api.md` | field unit tests; `pack_tests.rs` for the new pack view | The table at the top filled with measured "today" figures for Lockout and Waterworks, 2 and 8 phantoms, 1, 2 and 4 matches |
 | 2 | Native subsystems on for the light profile | `crates/apps/boot/src/registration.rs`, the light profile's switch set | the existing ladders; `crates/rewrites/engine/tests/` | Hashes equal; ≥ 1.5 ms off the Waterworks median |
 | 3 | One wake per tick and pack phase stagger | `crates/runtime/kernel/src/pacer.rs`, `host_cmd/pack.rs` (the offset) | pacer unit tests: deadlines coalesce, a socket wake does not wait | Hashes equal; `process_cpu_ms_per_tick` down; late-tick p99 of four matches on one vCPU under 36 ms |
 | 4 | Mapped reads | `crates/runtime/vfs/src/sim_store.rs`, `disc.rs`, `map_override.rs`, `crates/runtime/runtime/src/guest.rs`, `cli/src/sim_store_cmd.rs` (padding) | synthetic file: same bytes, a write stays private, a non-congruent read copies, both page sizes | `Private_Dirty` down ≥ 40 MiB per match on one map; hashes equal |

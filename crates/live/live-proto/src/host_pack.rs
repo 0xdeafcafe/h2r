@@ -14,12 +14,16 @@
 //! - The supervisor's control wire ([`AddMatch`], [`Added`], [`PackStatus`])
 //!   and its minimal HTTP/1.1 framing ([`http`]).
 
+pub mod memory;
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
 /// One game tick at 30 Hz, in milliseconds.
 pub const TICK_MS: f64 = 1000.0 / 30.0;
+/// The dedicated host's late-tick threshold.
+pub const LATE_TICK_MS: u64 = 36;
 /// Matches per container unless configured.
 pub const DEFAULT_MAX_MATCHES: usize = 3;
 /// Share of each vCPU's tick the summed matches may use.
@@ -92,6 +96,19 @@ pub struct MatchLoad {
     pub ms_per_tick: Option<f64>,
     /// Proportional resident memory of the match's processes.
     pub rss_mib: Option<u64>,
+    /// Whole match process group on Linux, game process on other platforms.
+    pub cpu_seconds: Option<f64>,
+    /// Linux process-group smaps counters, in bytes. Shared counts include
+    /// each process's mappings. Pss apportions the shared pages.
+    pub pss_bytes: Option<u64>,
+    pub peak_pss_bytes: Option<u64>,
+    pub private_bytes: Option<u64>,
+    pub shared_bytes: Option<u64>,
+    pub private_dirty_bytes: Option<u64>,
+    pub shared_clean_bytes: Option<u64>,
+    /// Game tick intervals over the last 30 s of multiplayer gameplay.
+    pub wall_ms_per_tick_p99: Option<f64>,
+    pub late_ticks: Option<u64>,
 }
 
 /// Why a pack refused a match. The router tries another pack.

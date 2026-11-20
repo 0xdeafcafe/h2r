@@ -1,5 +1,5 @@
 use super::measure::{
-    Usage, parse_cpu_max, parse_memory_max, parse_pss_kib, parse_stat, used_mib,
+    Usage, parse_cpu_max, parse_memory_max, parse_stat, used_mib,
 };
 use super::*;
 
@@ -45,7 +45,13 @@ fn roomy() -> Limits {
 fn usage(cpu_ms: f64) -> Usage {
     Usage {
         cpu_ms,
-        pss_mib: 300,
+        memory: Some(live_proto::host_pack::memory::ResidentMemory {
+            pss: 300 << 20,
+            private: 100 << 20,
+            shared: 500 << 20,
+            private_dirty: 95 << 20,
+            shared_clean: 450 << 20,
+        }),
     }
 }
 
@@ -109,10 +115,6 @@ fn parses_proc_and_cgroup_files() {
     let stat = "4242 (h2 (host) run) S 1 4242 4242 0 -1 4194560 100 0 0 0 250 50 0 0 20 0 9 0";
     assert_eq!(parse_stat(stat), Some((4242, 300)));
     assert_eq!(parse_stat("garbage"), None);
-    assert_eq!(
-        parse_pss_kib("Rss:  9000 kB\nPss:   4096 kB\nPss_Anon: 1 kB\n"),
-        Some(4096)
-    );
     assert_eq!(parse_cpu_max("200000 100000\n"), Some(2.0));
     assert_eq!(parse_cpu_max("max 100000\n"), None);
     assert_eq!(parse_memory_max("3221225472\n"), Some(3072));
@@ -327,6 +329,22 @@ fn control_routes_add_status_and_remove() {
     assert_eq!(status, 200);
     let all: PackStatus = serde_json::from_slice(&all).unwrap();
     assert_eq!(all.matches.len(), 1);
+    assert_eq!(all.matches[0].load.cpu_seconds, None);
+    let slot = pack.slots[0].as_mut().unwrap();
+    slot.meter.observe_agent(now, Some(serde_json::from_value(json!({
+        "wall_ms_per_tick_p99": 37.0, "late_ticks": 12
+    })).unwrap()));
+    pack.tick(now, &|_| Some(usage(1250.0)), None);
+    let (_, body) = handle(&mut pack, &req("GET", host_pack::STATUS_PATH, b""), now);
+    let current: PackStatus = serde_json::from_slice(&body).unwrap();
+    let load = current.matches[0].load;
+    assert_eq!(load.wall_ms_per_tick_p99, Some(37.0));
+    assert_eq!(load.late_ticks, Some(12));
+    assert_eq!(load.cpu_seconds, Some(1.25));
+    assert_eq!(load.pss_bytes, Some(300 << 20));
+    assert_eq!(load.peak_pss_bytes, load.pss_bytes);
+    assert_eq!(load.private_bytes, Some(100 << 20));
+    assert_eq!(load.shared_bytes, Some(500 << 20));
     assert_eq!(all.limits.max_matches, 1);
 
     assert_eq!(handle(&mut pack, &req("DELETE", "/v1/pack/matches/hl-a", b""), now).0, 204);

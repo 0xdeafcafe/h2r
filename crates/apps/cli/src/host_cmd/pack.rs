@@ -596,8 +596,20 @@ pub(super) fn run(args: impl Iterator<Item = String>) -> Result<()> {
     }
     loop {
         thread::sleep(SAMPLE);
+        // The control thread may add or stop a lease while the agent replies.
+        // Never hold its lock across an RPC, or apply a sample to a reused slot.
+        let slots: Vec<_> = pack.lock().unwrap().slots.iter().flatten()
+            .map(|s| (s.child.id(), s.ports.agent_port)).collect();
+        let readings: Vec<_> = slots.into_iter().map(|(pid, port)| {
+            (pid, measure::agent_reading(port))
+        }).collect();
         let now = Instant::now();
         let mut pack = pack.lock().unwrap();
+        for (pid, reading) in readings {
+            if let Some(slot) = pack.slots.iter_mut().flatten().find(|s| s.child.id() == pid) {
+                slot.meter.observe_agent(now, reading);
+            }
+        }
         pack.tick(now, &measure::group_usage, measure::cgroup_used_mib());
         if stopping() || pack.should_exit(now) {
             eprintln!("h2 host pack: stopping");

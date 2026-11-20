@@ -5,6 +5,7 @@ fn measured(ms: f64, mib: u64) -> MatchLoad {
     MatchLoad {
         ms_per_tick: Some(ms),
         rss_mib: Some(mib),
+        ..MatchLoad::default()
     }
 }
 

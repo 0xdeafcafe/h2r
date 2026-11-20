@@ -496,7 +496,9 @@ done | tee "$trial/$label-metrics.txt"
 ```
 
 Compare `game_cpu_ms_per_tick`, `process_cpu_ms_per_tick`, `cpu_percent`
-and `rss_bytes`. Check `wall_ms_per_tick` against 33.3 ms. The match
+and `rss_bytes`. The game agent reports the gameplay tick p99 over 30 seconds
+and counts intervals over 36 ms. On Linux it also reports proportional,
+private dirty and shared clean bytes. The pack reports group memory for each slot. Check `wall_ms_per_tick` against 33.3 ms. The match
 check is remote movement, hits, death and respawn, results, and a second
 round on the same host. The render consumes shared RNG at
 `0x001032a0`, so the rendered control and the light host can diverge in

@@ -926,9 +926,15 @@ answers `UNAVAILABLE` ([`crates/extensions/game/src/host_metrics.rs`](../../crat
 | `game_cpu_ms_per_tick` | CPU time on the game thread per tick interval, including work between ticks |
 | `process_cpu_ms_per_tick` | CPU time on all process threads per tick interval |
 | `wall_ms_per_tick` | Elapsed wall time per tick interval, including pacing sleeps and any pause or load crossed by the window |
+| `wall_ms_per_tick_p99` | Nearest-rank p99 of individual multiplayer tick intervals ending in the last 30 s. The first tick on entering gameplay starts the clock. An empty window gives `null`. |
+| `late_ticks` | Number of intervals in that same window longer than 36 ms |
 | `cpu_percent` | Whole-process CPU over the wall interval; 100 is one fully used core |
+| `cpu_seconds` | User and system CPU seconds consumed by this game process through the request |
 | `rss_bytes` | Resident bytes at the end of the interval on macOS and Linux, including resident shared pages |
-| `age_ms` | Time since the sample ended |
+| `pss_bytes`, `peak_pss_bytes` | Current and highest sampled Linux proportional resident bytes. Each `host.metrics` request samples the process. |
+| `private_bytes`, `shared_bytes` | Private and shared resident mappings in Linux smaps, each including clean and dirty pages |
+| `private_dirty_bytes`, `shared_clean_bytes` | Linux smaps Private_Dirty and Shared_Clean in bytes, for comparing copy-on-write and file sharing |
+| `age_ms` | Time since the 30-tick CPU sample ended |
 | `host_light` | Whether the process uses the light host profile |
 
 A platform counter that is unavailable is `null`. Compare active
