@@ -33,22 +33,38 @@ fn enabled(switches: &Switches) -> bool {
     hooks::switches::native_render_on(switches)
 }
 
-type Scale = Arc<dyn Fn() -> f32 + Send + Sync>;
+/// Guest word holding the multiplier sampled when this view starts building records.
+#[derive(Clone, Copy)]
+pub struct ViewLodScale(u32);
+
+impl ViewLodScale {
+    pub const fn new(guest_word: u32) -> Self {
+        Self(guest_word)
+    }
+
+    /// Older snapshots and views before their first record reset use retail pixels.
+    pub fn read(self, m: &dyn GuestMemory) -> f32 {
+        match m.f32(self.0) {
+            Ok(value) if value.is_finite() && value > 0.0 => value,
+            _ => 1.0,
+        }
+    }
+}
 
 impl NativeSceneLists {
     /// Install LOD adjustment at the guest functions invoked by the fallback
     /// paths. These hooks also apply when native scene lists are disabled.
-    pub fn install_guest_lod(b: &mut Builder, scale: Arc<dyn Fn() -> f32 + Send + Sync>) {
-        object_lod::install(b, &scale);
+    pub fn install_guest_lod(b: &mut Builder, scale: ViewLodScale) {
+        object_lod::install(b, scale);
     }
 
     /// Configure the replacement object setup and record writer for this view.
-    pub fn with_lod_scale(scale: Arc<dyn Fn() -> f32 + Send + Sync>) -> impl Feature {
+    pub fn with_lod_scale(scale: ViewLodScale) -> impl Feature {
         ScaledSceneLists(Some(scale))
     }
 }
 
-struct ScaledSceneLists(Option<Scale>);
+struct ScaledSceneLists(Option<ViewLodScale>);
 
 impl Feature for NativeSceneLists {
     fn manifest(&self) -> Manifest {
@@ -85,12 +101,11 @@ impl Feature for ScaledSceneLists {
             Seam::Function(&points::SCENE_GEOMETRY_GATHER, 4),
             geometry::gather,
         );
-        let setup_scale = self.0.clone();
-        let record_scale = self.0.clone();
+        let scale = self.0;
         install(
             b,
             Seam::Function(&points::OBJECT_RENDER_SETUP, 20),
-            move |m, cpu| setup::build(m, cpu, setup_scale.as_ref().map_or(1.0, |f| f())),
+            move |m, cpu| setup::build(m, cpu, scale.map_or(1.0, |scale| scale.read(m))),
         );
         install(
             b,
@@ -100,7 +115,7 @@ impl Feature for ScaledSceneLists {
                 &points::SCENE_RECORD_WRITER,
                 SceneList::ObjectRecord,
             ),
-            move |m, cpu| records::build(m, cpu, record_scale.as_ref().map_or(1.0, |f| f())),
+            move |m, cpu| records::build(m, cpu, scale.map_or(1.0, |scale| scale.read(m))),
         );
         install(
             b,
@@ -417,6 +432,26 @@ fn install(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lod_scale_comes_from_the_supplied_view() {
+        use engine::memory::FlatMemory;
+        let address = 0x10000;
+        let scale = ViewLodScale::new(address);
+        let mut live = FlatMemory::new(address, 4);
+        assert_eq!(scale.read(&live), 1.0);
+        live.set_f32(address, 6.0).unwrap();
+        let render_snapshot = live.clone();
+        live.set_f32(address, 0.5).unwrap();
+        assert_eq!(scale.read(&live), 0.5);
+        assert_eq!(scale.read(&render_snapshot), 6.0);
+
+        for invalid in [-1.0, f32::NAN, f32::INFINITY] {
+            live.set_f32(address, invalid).unwrap();
+            assert_eq!(scale.read(&live), 1.0);
+        }
+        assert_eq!(scale.read(&FlatMemory::new(address + 4, 4)), 1.0);
+    }
 
     #[test]
     fn native_scene_lists_follow_the_master_switch() {
