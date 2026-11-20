@@ -103,7 +103,7 @@ live_owned = ["cmd-drive", "cmd-live"]
 [[exception]]
 from = "hooks"
 to = "engine"
-until = "S2: the points, views and entry glue move to guest-layout and hooks"
+until = "engine::entry, abi, runtime_glue and point_shapes leave engine for hooking (S2 moved the points and views)"
 
 [[exception]]
 from = "hooks"
