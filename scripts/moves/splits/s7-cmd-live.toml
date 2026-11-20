@@ -1,0 +1,6 @@
+# The Live owner's. Review the module list before the window.
+from = "cli"
+to = "cmd-live"
+direction = "down"
+description = "The Live client and admin commands"
+modules = ["live_accounts", "live_admin", "live_cmd", "live_hosts", "live_query", "live_recovery", "play_cloud", "play_live", "tunnel"]

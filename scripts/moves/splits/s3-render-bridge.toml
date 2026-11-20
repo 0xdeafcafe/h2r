@@ -1,0 +1,16 @@
+from = "hooks"
+to = "render-bridge"
+direction = "up"
+description = "The guest side of the native renderer until FrameScene replaces it: the stage hooks, admissions and D3D glue (docs/graphics/framescene.md)"
+modules = [
+    "native_decals", "native_effects", "native_first_person", "native_fog", "native_gels", "native_hud",
+    "native_lights", "native_map_work", "native_objects", "native_particles", "native_post",
+    "native_scene_lists", "native_shadows", "native_transparents", "native_water", "native_world",
+    "native_world_layers", "occlusion", "pipeline_render", "pipeline_scene", "pipeline_snapshot",
+    "render_census", "render_loop", "render_timing",
+]
+tests = [
+    "native_defaults", "native_first_person", "native_fog", "native_gels", "native_hud", "native_lights",
+    "native_lights_split", "native_objects", "native_particles", "native_post", "native_shadows",
+    "native_transparents", "native_world", "occlusion", "pipeline_render", "render_census",
+]

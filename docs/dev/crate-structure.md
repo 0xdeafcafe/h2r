@@ -1,339 +1,626 @@
-# Crate structure: the target map and the moves to it
+# Crate structure: domains, and the windows that move to them
 
-Status: Design. No crate has moved. Built: `scripts/crate-table.py` (the
-crate table in [ARCHITECTURE.md](../ARCHITECTURE.md)) and
-`scripts/crate-graph.py` (every number on this page).
-Measured at: `21ca66709` (master `100f13cef` plus docs), 2026-11-20, with
-`scripts/crate-graph.py`. Nothing was compiled or run.
+Status: Design. No crate has moved. Built: the domain rules
+(`scripts/crate-domains.toml`), their check (`scripts/crate-graph.py layers
+--check`), the crate table generator (`scripts/crate-table.py`) and the
+move scripts under `scripts/moves/`. Each script was run on a scratch copy
+of the tree; none of the results was compiled.
+Measured at: `crate-map` on master `100f13cef`, 2026-11-20, with
+`scripts/crate-graph.py`. Nothing here runs cargo.
 
 This page carries out section 2 and item 8 of
 [2026-11-20-architecture.md](../reviews/2026-11-20-architecture.md): where
-every crate ends up, why, and the order of moves that gets there while
-about eight lanes keep merging. It has three rules. A move is mechanical
-(`git mv`, path fixes, no logic). A move is a script, so a lane replays it
-on its own branch instead of resolving conflicts. Lists that every lane
-appends to become lists that each crate keeps for itself.
+every crate lives, what each may depend on, and the order of moves that
+gets there while lanes keep merging. Four rules hold throughout.
 
-Build and test speed (profiles, one test binary per crate, nextest) is
-`build-1120`'s work in `docs/dev/build-speed.md` on that branch. This page
-takes its follow-ups 3 to 6 (split `boot`, thin `cli`, the commit hash in
-`app`, `Cargo.lock` in `boot`'s build script) and gives them an order.
+1. **A domain is a directory.** `crates/<domain>/<crate>`. A crate's
+   domain is where it sits, and nothing else declares it.
+2. **Dependencies between domains go one way,** by a table that a script
+   checks.
+3. **A move is a script.** It is mechanical (`git mv`, path rewrites by
+   rule), it can run twice, and a lane replays it on its own branch
+   instead of resolving conflicts.
+4. **A list that every lane appends to becomes a list each crate keeps**
+   (see "Local registration").
 
-## The current graph
+Paths on this page are written without `crates/` when they name a file
+that a window moves (`boot/src/lib.rs`), and in full when they name where
+something ends up.
 
-87 packages, 1,151,360 lines of Rust (952,617 under `src/`), 390
-integration test binaries. `scripts/crate-graph.py sizes` prints the row
-for every crate.
+## The domains
 
-| Family | Crates | Lines | Members (thousand lines) |
-|---|---:|---:|---|
-| Disc and formats | 18 | 99,063 | `tags` 43.1, `shaders` 11.0, `hs` 7.0, `content` 7.0, `map` 5.3, `variants` 4.3, `font` 4.0, `timeline` 3.7, `mopp` 2.8, `wma` 2.4, `movies` 1.9, `settings` 1.6, `pathfind` 1.4, `asf` 1.2, `assets` 1.1, `xiso` 0.5, `xbe` 0.5, `app-icon` 0.1 |
-| Recompiler core | 12 | 58,232 | `emit` 15.4, `x87` 8.7, `analyze` 8.5, `lift` 7.9, `ir` 3.7, `fastmem-proto` 2.6, `oracle` 2.5, `simd` 2.2, `clif` 2.1, `sse-oracle` 2.1, `opt` 1.4, `symbols` 1.3 |
-| Runtime | 7 | 63,761 | `kernel` 21.3, `runtime` 18.1, `vfs` 14.4, `perf` 6.1, `lockstep` 1.9, `snapshot` 1.8, `runtime-test-probe` 0.1 |
-| Hooks and ports | 3 | 75,101 | `engine` 36.9, `feature` 36.1, `hot-tags` 2.1 |
-| Guest-facing HLE | 8 | 140,448 | `d3d` 68.5, `gfx` 18.2, `dsound` 14.4, `input` 14.0, `audio` 10.5, `xapi` 9.7, `bink-hle` 3.0, `voice` 2.3 |
-| Native render | 3 | 37,199 | `native-render` 28.5, `viewer` 7.3, `hot-render` 1.4 |
-| Agent API | 3 | 23,085 | `agent` 15.0, `agent-proto` 5.2, `debug-menu` 2.9 |
-| Game product | 3 | 171,986 | `boot` 158.2, `app` 8.9, `sim` 4.9 |
-| Bots, co-op, Live (other session) | 10 | 218,075 | `live-server` 71.9, `bots` 44.0, `live-hle` 33.1, `live-proto` 29.3, `live-telemetry` 17.1, `live-worker` 6.7, `film` 6.4, `coop` 3.9, `cloud-saves` 3.4, `host-data` 2.3 |
-| Halo 1 conversion | 11 | 136,619 | `h1objects` 45.0, `h1convert` 31.8, `h1campaign` 14.8, `h1scripts` 12.9, `h1models` 9.2, `h1sounds` 6.0, `h1ai` 5.6, `h1map` 4.0, `h1text` 2.6, `h1bitmaps` 2.5, `h1sky` 2.1 |
-| Editor | 6 | 45,456 | `studio` 25.0, `scenario-edit` 11.1, `hud-edit` 3.0, `hopper-edit` 3.0, `editor-core` 2.6, `studio-proto` 0.7 |
-| Binaries and hosts | 3 | 82,335 | `cli` 78.9, `apple-host` 2.3, `uwp-host` 1.1 |
-
-### Shape
-
-The bottom is clean and the top is one knot.
-
-- **Recompiler core is a chain.** `xbe` → `analyze` → `lift` → `ir`
-  (with `x87`, `simd`), then `opt`, `emit`, `clif`. `runtime` depends only
-  on `timeline`, `x87` and `xbe`. Nothing here needs to move.
-- **The hook registry sits above the renderer.** `feature` depends on
-  `engine` and, by default, on `native-render`, which depends on `d3d`.
-  Of `feature`'s 29,212 source lines, 2,980 are the hook engine (`lib.rs`,
-  `plan.rs`, `install.rs`, `entry.rs`, `arena.rs`, `bridge.rs`,
-  `snapshot.rs`, `switches.rs`, `locale.rs`, `leaves.rs`); 24,325 are the
-  native renderer's guest half, 1,349 the sim hooks and 558 Halo 1 hooks.
-- **`engine` is four things.** Of 27,964 source lines: named points 1,261;
-  typed views of guest memory 2,238 (`memory`, `handle`, `datum`, `view`,
-  `tags`, `testing`); render ports 12,266 (`render_loop/` is 5,933 of
-  them); register-level sim ports 8,981 (`sim_native/`, `sim_physics/`);
-  leaf ports and their adapters 3,218.
-- **`boot` is the knot.** 158,162 lines, 318 files, 153 `mod` lines, 52
-  workspace dependencies. `run_configured`
-  (`crates/boot/src/lib.rs:1086`) is one function of 1,524 lines. By
-  content, from `scripts/crate-graph.py modules crates/boot/src`:
-
-  | Group | Lines | Modules | What |
-  |---|---:|---:|---|
-  | game | 51,918 | 78 | menus and screens (mods, map select, skulls, variants, settings pages, campaigns), gameplay hooks (aim assist, cheats, Halo 1 health, HUD swap, touch), HLE glue (`dsound_glue`, `xapi_glue`, `agent_glue`, ...) |
-  | render glue | 22,997 | 33 | `native_*_glue`, `d3d_glue`, `d3d_diag`, `render_thread`, `opaque_streams` |
-  | Halo 1 runtime | 20,507 | 14 | `h1_ai_control`, `h1_conversation`, `h1_hud_text`, `h1_command_atoms`, `h1_script_builtins`, `h1_cinematics`, ... |
-  | UI toolkit | 17,171 | 5 | `ui_kit/`, `list_class`, `ui`, `icons`, `keyboard_glue` |
-  | Live, co-op, hosts | 16,655 | 13 | `coop_*`, `host_lobby`, `live_glue`, `live_notice`, sign-in and account screens, `community_variants` |
-  | theater | 10,863 | 2 | `theater/`, `theater_ui/` |
-  | bots and sim mode | 8,776 | 8 | `bot_glue`, `clankers*`, `clankermatch`, `bots_nav_auto`, `bot_mark`, `sim_bots`, `sim_glue` |
-  | composition root | 3,948 | 2 | `lib.rs`, `registration.rs` |
-  | build and load | 2,613 | 7 | `fallback`, `shim`, `sse`, `x87`, `tier`, `host_coverage`, plus about 600 lines of `lib.rs` |
-
-- **`cli` is nine programs in one binary crate.** 78,905 lines: the Live
-  art pipeline 27,679, test drivers and verdicts for bots and co-op
-  10,985, host commands (serve, sim, host, theater, agent) 7,488, play,
-  settings and movies 3,710, tag and asset inspection 8,841, Live client
-  and admin commands 7,518, dev tooling (`lab`, `follow`, `web_build`)
-  5,465, Halo 1 and map-pack import 4,508, `main.rs` and the recompiler
-  commands 1,909.
-- **The game links its offline converters.** `boot` depends on
-  `h1convert`, `h1scripts`, `h1text` and `h1map` for about twenty names
-  (`h1convert::shad::COUNTDOWN_DIGITS`, `h1scripts::cinematics::ACTIVE_NAME`,
-  `h1text::hud::SCENARIO_HELP`, ...).
-
-### What an edit recompiles
-
-kache is the rustc wrapper and turns incremental compilation off, so a
-changed crate is compiled whole, and so is every crate above it
-(build-speed.md). The rebuild cone of a crate is itself plus its
-dependents, as a share of the workspace's 952,617 source lines:
-
-| Edit in | Cone | Why |
-|---|---:|---|
-| `map` | 83% | 30 crates depend on it directly |
-| `xbe`, `timeline` | 73%, 71% | leaf utilities under `runtime` |
-| `runtime`, `tags`, `content` | 65%, 64%, 62% | |
-| `live-proto` | 48% | 12 direct dependents, among them `boot`, `bots` and `film` |
-| `engine` | 42% | a new point in `points.rs` recompiles `feature`, `bots`, `agent`, `boot`, `cli` |
-| `d3d`, `native-render`, `feature` | 41%, 37%, 34% | |
-| anything `boot` depends on | at least 27% | the floor: `boot` 155,448, `cli` 77,636, `studio`, the hosts |
-
-Of 803 non-merge commits that touched `crates/boot/src`, 307 touched the
-render glue (197 of them nothing else in `boot`), 281 the game group, 277
-the composition root (239 of those alongside another group, which is what
-a central registry looks like), 96 the bot glue, 91 the UI toolkit and 85
-the Halo 1 runtime. Each of them recompiled all of `boot` and all of
-`cli`: 233,000 lines.
-
-### The host-only build
-
-`scripts/crate-graph.py closure cli --features host`: 62 of 87 crates and
-813,415 of 952,617 source lines (85%). The desktop build is 71 crates and
-861,157 lines, so the host feature saves 5%. Three edges account for most
-of what should not be there:
-
-- `crates/cli/src/live_accounts.rs:20` uses one function,
-  `live_server::identity::write_private`. It is the only use of
-  `live-server` outside `#[cfg(feature = "desktop")]`, and it puts
-  51,962 lines plus axum, sqlx, reqwest and object_store in the host
-  build.
-- `crates/h1bitmaps/Cargo.toml` takes `gfx` with default features, so
-  `boot` → `h1convert` → `h1bitmaps` turns on `gfx/gpu` and compiles wgpu
-  for a dedicated host.
-- `boot` → `h1convert` brings `h1bitmaps`, `h1models`, `h1sky`,
-  `h1sounds`, `h1text`, `scenario-edit`, `shaders` and `mopp` (about
-  60,000 lines) for the twenty names above.
-
-### Merge hot spots
-
-3,958 commits, 1,213 of them merges. Non-merge commits per file:
-
-| File | Commits | Kind |
-|---|---:|---|
-| `Cargo.lock` | 274 | generated |
-| `crates/boot/src/lib.rs` | 249 | composition: every install line |
-| `crates/cli/src/h1_import.rs` | 147 | real work |
-| `crates/engine/src/points.rs` | 143 | list: 374 points in one `points!` table |
-| `crates/d3d/src/device.rs` | 122 | real work (6,688 lines) |
-| `crates/cli/src/main.rs` | 112 | list: 85 `mod` lines, the usage text, the dispatch chain |
-| `crates/boot/src/registration.rs` | 74 | list: every `features.add` |
-| `crates/boot/src/layout_glue.rs` | 56 | names 23 other modules |
-| `crates/boot/src/setting_defs.rs` | 34 | list: every setting `Def`; 36 modules read it |
-| `crates/boot/src/ui_kit/screens.rs` | 24 | list: every screen's description |
-
-`setting_defs.rs`, `layout_glue.rs`, `ui_kit/screens.rs` and
-`string_ids.rs` are central registries the review did not name. They are
-also the reason the UI toolkit cannot leave `boot` yet: it names 17
-screens through them.
-
-### Against the review
-
-Section 2 of the review was written at `bc48d2053`. What differs here:
-
-| Review | This tree |
-|---|---|
-| 88 crates, 1.1 M lines | 87 packages, 1,151,360 lines |
-| `boot` 144,722 lines, 278 files, 149 `mod` lines, fan-out 51 | 158,162, 318, 153, 52 |
-| `run_configured` about 1,460 lines at `lib.rs:1067` | 1,524 lines at `lib.rs:1086` |
-| `cli` 78,215 lines, 117 files | 78,905, 120 |
-| `feature` 35,843 lines, hook machinery about 2,500 | 36,138; 2,980 |
-| `boot/src/lib.rs` 242 commits, `points.rs` 123, `main.rs` 111 | 249, 143, 112 |
-| 466 `"H2_*"` literals, 40 `impl.*` names | 475; 40 (35 `impl.render.*`) |
-| 9,797 `#[test]`, 504 `#[ignore]` | 9,741; 530 |
-| ARCHITECTURE.md's table lacks 24 crates | generated now; 30 manifests have no `description` |
-| `boot` by content: UI 40,000, renderer 17,000, net 10,000, bots 6,000 | the table above; the Halo 1 runtime (20,507) was not counted |
-| the art pipeline in `cli` about 20,000 | 27,679 |
-
-`integ-1120` (flag cleanup, native cost) is 89 commits ahead and removes
-5,136 lines from `boot`, 3,355 from `feature` and 817 from `d3d`. The
-moves below wait for it.
-
-## The target map
-
-### Rules
-
-1. **Flat `crates/<name>`, layer in the manifest.** Each crate declares
-   `[package.metadata.h2] layer`. `scripts/crate-graph.py layers --check`
-   refuses a dependency from a lower layer to a higher one. Nesting
-   directories by layer would rename every path in every worktree and
-   break `include!("../../../scripts/it_guard.rs")`, `boot`'s
-   `include_str!("../../emit/c/bridge_x87.c")` and its `build.rs`, which
-   hashes `../analyze` and friends.
-2. **A crate is a rebuild unit.** Split where edits are frequent and the
-   cone is large. Do not merge crates into a unit over about 30,000 lines.
-3. **Guest offsets live in two places:** `guest-layout`, and the bridge
-   crate of the subsystem that owns the structure. Nothing else reads a
-   raw offset.
-4. **Subsystem crates are guest-free.** `sim-*`, `frame-scene` and
-   `native-render` take typed values. A bridge crate (`sim-bridge`,
-   `render-bridge`) does the reading and the hook installation.
-5. **A list lives in the crate that owns its entries** (see "Local
-   registration").
-6. **The host-only build is a budget.** The gate records the crate count
-   of `closure cli --features host` and refuses a rise.
-
-### Diagram
-
-Higher depends on lower. `[x]` belongs to the Live, bots, theater and
-film owner. `+` is a new crate; `~` is renamed or reshaped.
+Ten directories. `+` is a crate that is not on master yet (a lane's, or
+made by a later window); `~` is renamed or merged; `[x]` belongs to the
+session that owns Live, bots, theater and film.
 
 ```
- BINARIES    cli (h2: main, command registry)        studio (h2-editor)     uwp-host (h2uwp)
-             +cmd-host +cmd-play +cmd-tags +cmd-recomp +cmd-h1 +cmd-dev     ~h2host (tvOS, iOS, UWP)
-             [+cmd-live] [+cmd-drive]                                       [live-server] [live-worker]
- ───────────────────────────────────────────────────────────────────────────────────────────────────
- PRODUCT     ~boot  composition root: stages, the crate list           app  window, surface, pacing
-             +h1-runtime    [+bot-glue]    [+net-glue]    [+theater]   agent  the agent API server
-             +game  menus, settings pages, skulls, variants, gameplay hooks, HLE glue
-             +ui-kit  the guest UI toolkit: list screens, dialogs, pickers, icons
- ───────────────────────────────────────────────────────────────────────────────────────────────────
- RENDER      +render-bridge  guest -> FrameScene; the hooks and D3D admission until then
-             native-render   FrameScene -> wgpu            +frame-scene  the typed scene, plain data
-             d3d  guest Direct3D 8; UI, HUD, Bink layer    gfx   assets   hot-render
- ───────────────────────────────────────────────────────────────────────────────────────────────────
- SUBSYSTEMS  +sim-bridge  sim adapters, installs, tick driver
-             +sim-anim  +sim-collision  +sim-state  +sim-core      engine  leaf ports, exact maths
-             dsound audio   xapi input   bink-hle   voice   hot-tags   lockstep   debug-menu
-             [bots] [coop] [live-hle] [live-telemetry] [cloud-saves]
- ───────────────────────────────────────────────────────────────────────────────────────────────────
- HOOKS       ~hooks (feature)  points -> plan -> install; entries; guest arena; shadow execution
-             +guest-layout     records, globals, shared points: one definition per guest structure
- ───────────────────────────────────────────────────────────────────────────────────────────────────
- RUNTIME     +recomp  XBE -> module: stamps, analysis cache, build, load, fallback, fast tier
-             +lifted  dev: the lifted original as a test oracle
-             kernel   vfs   snapshot
-             runtime  guest memory, CPU, dispatch, runner, h2abi.h      runtime-test-probe
- ───────────────────────────────────────────────────────────────────────────────────────────────────
- RECOMPILER  emit (IR -> C)   clif (IR -> Cranelift)   +sim-tier (tick closure, relaxed contract)
- CORE        opt   lift   ir   analyze   symbols   x87   simd   oracle   sse-oracle
- ───────────────────────────────────────────────────────────────────────────────────────────────────
- FORMATS     xiso xbe map tags hs mopp pathfind font shaders content variants asf wma movies
-             settings timeline +switches +cmd ~sim-bench +h1-contract agent-proto studio-proto
-             app-icon [live-proto] [film]
-
- TOOLS (side stack: uses up to RENDER; only BINARIES use it)
-             h1map  +h1-assets  h1convert  h1objects  ~h1campaign      perf
-             editor-core  scenario-edit  hopper-edit  hud-edit
- LIVE (side stack, the service)     [live-server] [live-worker] [host-data] [+live-art]
+crates/
+  formats/     asf content font hs map mopp movies pathfind settings shaders tags variants
+               xbe xiso  +h1-contract
+  recompiler/  analyze symbols lift ir opt emit clif x87 simd oracle sse-oracle fastmem-proto
+               +sim-tier
+  runtime/     runtime (and its test-probe) kernel vfs snapshot timeline
+               +hostfault +lifted +recomp
+  platform/    d3d gfx assets hot-render  dsound audio wma  xapi input  bink-hle voice
+  hooking/     ~hooks (feature)  +guest-layout  +switches
+  rewrites/    engine native-render
+               +sim-core +sim-anim +sim-collision +sim-state +sim-bridge
+               +frame-scene +scene-extract +render-bridge
+  live/        [live-proto live-hle live-telemetry live-server live-worker coop bots film
+                cloud-saves host-data sim]
+  extensions/  agent agent-proto debug-menu hot-tags lockstep
+               +game +ui-kit +h1-runtime  [+net-glue +bot-glue +theater]
+  tools/       h1map ~h1-assets h1convert h1objects ~h1campaign
+               editor-core scenario-edit hopper-edit hud-edit  perf viewer  [+live-art]
+  apps/        boot cli app app-icon studio studio-proto apple-host uwp-host
+               +cmd +cmd-host +cmd-play +cmd-tags +cmd-recomp +cmd-h1 +cmd-dev
+               [+cmd-live +cmd-drive]
 ```
 
-### Crates
+| Domain | What belongs in it | Crates today | Lines |
+|---|---|---:|---:|
+| `formats` | Disc, tag and file formats, ours and the game's: plain data, no guest, no host | 14 | 91,702 |
+| `recompiler` | XBE to host code: analysis, lifting, IR, the C and Cranelift back ends, their oracles | 12 | 57,809 |
+| `runtime` | The machine the lifted code runs on: memory, CPU state, kernel, filesystem, snapshots, the build-and-load driver | 6 | 59,304 |
+| `platform` | Platform HLE: the Xbox's devices and libraries on the host (Direct3D 8, DirectSound, XAPI, pads, Bink, voice) and the host graphics and audio under them | 11 | 144,685 |
+| `hooking` | How our code meets guest code: the hook engine, named points, typed guest layouts, switches | 1 | 32,783 |
+| `rewrites` | Rust that replaces a guest subsystem: the native simulation, FrameScene, the native renderer, ported engine functions, and the bridge that installs each one | 2 | 67,225 |
+| `live` | Live, the co-op transport, bots, films, cloud saves, the dedicated host's data, the service | 11 | 222,959 |
+| `extensions` | Features we add to the game: menus and settings screens, skulls, the campaign picker, Halo 1 in game, Live and bots in game, theater, the agent API, the debug menu | 5 | 27,033 |
+| `tools` | Offline work on game data: the Halo 1 converters, the editor cores, the profiler, the Live art pipeline | 17 | 169,758 |
+| `apps` | What links a binary: the composition root, the desktop shell, the command line and its command crates, the editor, the embedded hosts | 8 | 270,879 |
 
-One line each for what is new or changes. Crates not listed keep their
-purpose and place; ARCHITECTURE.md has their rows.
+`hooking` and `extensions` are small today because their code is inside
+`feature`, `engine`, `boot` and `cli`. The splits below fill them.
 
-| Crate | Layer | Purpose | Comes from |
-|---|---|---|---|
-| `switches` | formats | The typed switch table: name, default, owner, removal condition; a name not in it does not parse | `feature/src/switches.rs`; the `guest-layout` lane |
-| `cmd` | formats | `Command { name, about, run }`, the registry, the usage text built from it, the disc and output helpers every command shares | `cli/src/main.rs`, `safe_out.rs` |
-| `sim-bench` | formats | Sim mode's pure parts: match and batch files, pacing, metrics, the A/B comparison | `sim`, renamed |
-| `h1-contract` | formats | The names and ids the Halo 1 converters write and the game's Halo 1 hooks read | about twenty items in `h1convert`, `h1scripts`, `h1text`, `h1objects` |
-| `sim-tier` | recompiler | The tick's call closure compiled under the relaxed contract ([2026-11-20-sim.md](../reviews/2026-11-20-sim.md) 4.2): signature recovery, the tier emitter, the bisect manifest | the `sim-tier` lane |
-| `recomp` | runtime | An XBE to a loaded module: build stamps, the analysis cache, lift, emit, compile, `Module`, the fallback interpreter, the Cranelift tier, the bridge C | `boot/src/lib.rs` lines 196 to 822, `fallback`, `shim`, `sse`, `x87`, `tier`, `host_coverage`, `boot/c`, `boot/build.rs` |
-| `lifted` | runtime (dev) | The lifted original of a guest function as a test oracle, and the shadow-execution comparison | the `shadow-exec` lane (`crates/lifted`) |
-| `guest-layout` | hooks | One definition per guest structure, generic over the memory type; globals; the points several crates share; per-point verification | the `guest-layout` lane; `engine/src/{points, memory, handle, datum, view, tags, testing}.rs` |
-| `hooks` | hooks | The hook engine and nothing else: `Feature`, `Registry`, `Plan`, install, entries, the guest arena, snapshot policy, `Host` and `modules!` | `feature` minus its render, sim and Halo 1 modules; `engine/src/entry.rs` |
-| `engine` | subsystems | Exact shared arithmetic (`light_constants`, `function_eval`), the leaf ports (locale, datum pools, HaloScript pools, squads) and, until each is superseded, the register-level sim ports as oracles | what is left of `engine`: about 13,000 lines, 4,000 once the oracles go |
-| `sim-core` | subsystems | Shared maths, exact SSE-order lanes, the float rules, `Jobs` | the `sim-anim` lane |
-| `sim-anim` | subsystems | Decoded clips and the node-record sampler | the `sim-anim` lane |
-| `sim-collision` | subsystems | Decoded BSP and MOPP trees, closed query kernels | the `sim-collision` lane |
-| `sim-state` | subsystems | The read-only API for theater, film, stats and Live: `SimRead`, events, keyframes, over `guest-layout` | [sim-rewrite.md](../engine/sim-rewrite.md) section 7 |
-| `sim-bridge` | subsystems | The guest side of the sim: adapters from entries to `sim-*`, the installs under `impl.sim.native.<subsystem>`, the light-host skips, the tick driver | `feature/src/sim_*.rs`, `engine/src/sim_anim.rs` |
-| `frame-scene` | render | `FrameScene`: camera, clusters, instances and palettes, lights, transparents, effect quads, post parameters. Plain data, no wgpu, no guest | the `framescene-design` lane |
-| `render-bridge` | render | The only render code that knows guest offsets. Today the stage hooks, admissions and D3D glue; then extraction to `FrameScene` | `feature/src/{native_*, pipeline_*, render_*, occlusion}`, `engine`'s render ports, `boot/src/{native_*_glue, d3d_glue, d3d_diag, render_thread, ...}` |
-| `native-render` | render | `FrameScene` to wgpu: owns its targets and pass graph, no `d3d`, no guest reads | as is, reshaped by the FrameScene work |
-| `ui-kit` | product | The guest UI toolkit: list-screen class, dialogs, pickers, pages, icons, the host keyboard | `boot/src/{ui_kit/, list_class, ui, icons, keyboard_glue}` |
-| `game` | product | Menus and screens, settings pages, skulls, variants, campaigns, gameplay hooks, HLE glue | `boot`, minus everything else on this table |
-| `h1-runtime` | product | The Halo 1 campaign's in-game half: AI control, conversations, HUD text, script builtins, cinematics | `boot/src/h1_*` (14 modules), `feature/src/h1_*.rs` |
-| `bot-glue` | product | Bots in the game process: phantom input, nav builds, the Clankers pages, sim mode | `boot/src/{bot_glue, bots_nav_auto, bot_mark, clankers*, clankermatch, sim_bots, sim_glue}` |
-| `net-glue` | product | Live and co-op in the game process: the co-op session, JIP, look, lobby, sign-in and account screens | `boot/src/{coop_*, host_lobby, live_glue, live_notice, signin_*, account_screen, community_variants}` |
-| `theater` | product | Films and theater: recording, replay, the theater UI | `boot/src/{theater/, theater_ui/}` |
-| `boot` | product | The composition root: the boot stages, the list of crates to register, the run loop | `boot/src/lib.rs` from `RunOpts` down, `registration.rs` |
-| `cmd-host` | binaries | `h2 serve`, `sim`, `host`, `theater`, `agent`: all the host-only build needs | `cli/src/{boot_cmd, sim_cmd, sim_store_cmd, host_cmd, theater_cmd, agent_*}` |
-| `cmd-play` | binaries | `h2 play`, `settings`, `movies` | `cli/src/{play_cmd, settings_cmd, movies_cmd}` |
-| `cmd-tags` | binaries | The tag, map and asset inspection commands | 19 modules of `cli/src` (`anim`, `bitmap`, `collision`, ..., `ui`) |
-| `cmd-recomp` | binaries | `h2 build`, `info`, `ls`, `extract`, `disasm`, `symbols`, `analyze`, `lift`, `emit` | `cli/src/main.rs` lines 599 to 1297, `emit_cache`, `emit_output` |
-| `cmd-h1` | binaries | `h2 h1`, `import halo1`, `import-mappack` | `cli/src/{h1_cmd, h1_import, mappack_cmd}` |
-| `cmd-dev` | binaries | `h2 lab`, `play --follow`, the web build | `cli/src/{lab, follow, web_build}` |
-| `cmd-live`, `cmd-drive`, `live-art` | binaries, live | Live client and admin commands; bot and co-op test drivers with their verdicts; the Live web art pipeline as a library | `cli/src/live_*`, `play_live`, `tunnel`; `bots_*`, `coop_*`, `lockstep_cmd` |
-| `h2host` | binaries | The embedded host: the static library a native app shell (UIKit, UWP) calls to boot the game | `apple-host`, renamed to its library's name |
-| `h1-assets` | tools | Halo 1 bitmaps, models, sounds, skies and text as Halo 2 tags | `h1bitmaps`, `h1models`, `h1sounds`, `h1sky`, `h1text` (22,494 lines) |
-| `h1campaign` | tools | Halo 1 campaign levels as Halo 2 maps, with their AI and scripts | `h1campaign`, `h1ai`, `h1scripts` (33,318 lines) |
+### What each domain may use
 
-Gone: `fastmem-proto`, `viewer`, `sim` and `apple-host` (renamed), nine
-`h1*` crates into two, and `feature`'s name if decision 3 says so. About
-87 packages become about 100. The count goes up; the size of what an edit
-recompiles goes down.
+`scripts/crate-domains.toml` holds this table as `uses` lists. A crate may
+depend on its own domain and on the ones its row names.
 
-### Where each running lane lands
-
-| Lane | Home | Notes |
+| Domain | May use | Used by |
 |---|---|---|
-| `guest-layout` | `crates/guest-layout`, `crates/switches` | Lands as new crates. Step C3 then moves `engine`'s views and the shared points in, behind re-exports. `sim-state` builds on it and holds no second copy of a layout (decision 7). |
-| `shadow-exec` | `crates/lifted` | Lands as a new crate. Afterwards `engine`'s `differential` feature and `native-render`'s optional `analyze`, `ir`, `lift`, `xbe` become a dev-dependency on it. The agent API method for a shadow run goes in `agent`; the fork-and-compare hook is `hooks`. |
-| `sim-anim` | `crates/sim-core`, `crates/sim-anim`; adapter in `sim-bridge` | Its branch puts the adapter in `engine/src/sim_anim.rs` and the install in `feature/src/sim_native.rs`. Step C2 moves both to `sim-bridge`, one file per subsystem. |
-| `sim-collision` | `crates/sim-collision`; adapter in `sim-bridge` | Same. It and `sim-anim` both edit `feature/src/sim_native.rs` today; after C2 each has its own file. |
-| `sim-tier` | `crates/sim-tier`; thunks in `runtime`; the tick driver in `sim-bridge` | The tier is a second lowering of `ir`, so it sits beside `emit` and `clif`. |
-| `contract-design` | `emit`, `runtime`, `clif`; build flags and stamps in `recomp` | Step B1 moves the build pipeline out of `boot` before its implementers start, so thin transfers and flat RAM never touch `boot/src/lib.rs`. |
-| `framescene-design` | `crates/frame-scene`, `crates/render-bridge`, `crates/native-render` | Step C4 gathers the guest half in one crate before implementation, D2 adds `boot`'s render glue. |
-| `build-1120` | root `Cargo.toml` profiles, `tests/it.rs`, `.config/nextest.toml`, `docs/dev/build-speed.md` | Moves keep `autotests = false`, `tests/it.rs` and `scripts/it_guard.rs` as they are. A new crate with more than three test files starts with `tests/it.rs`. |
-| Live, bots, theater, film | `[x]` crates above | Proposals, in their own section. |
+| `formats` | nothing | every domain |
+| `recompiler` | `formats` | `runtime`, `rewrites`, `tools`, `apps` |
+| `runtime` | `formats`, `recompiler` | everything above it |
+| `platform` | `formats`, `runtime` | `rewrites`, `live`, `extensions`, `tools`, `apps` |
+| `hooking` | `formats`, `runtime` | `rewrites`, `live`, `extensions`, `apps` |
+| `rewrites` | `formats`, `recompiler`, `runtime`, `platform`, `hooking` | `live`, `extensions`, `tools`, `apps` |
+| `live` | `formats`, `runtime`, `platform`, `hooking`, `rewrites` | `extensions`, `tools`, `apps` |
+| `extensions` | `formats`, `runtime`, `platform`, `hooking`, `rewrites`, `live` | `apps` |
+| `tools` | `formats`, `recompiler`, `runtime`, `platform`, `rewrites`, `live` | `apps` |
+| `apps` | every domain | nothing |
 
-### What it buys
+```
+ apps ──────────────────────────────────────────────┐
+   │                                                │
+ extensions        tools (offline; never hooks a    │
+   │                │      running guest)           │
+ live ◄─────────────┤                               │
+   │                │                               │
+ rewrites ◄─────────┤                               │
+   │        │       │                               │
+ hooking  platform ◄┘                               │
+   │        │                                       │
+ runtime ◄──┘                                       │
+   │                                                │
+ recompiler                                         │
+   │                                                │
+ formats ◄──────────────────────────────────────────┘
+```
 
-Lines of Rust recompiled by `cargo check -p cli` after an edit (**S**:
-computed from the measured sizes and the target graph, not timed):
+More rules in the same file:
 
-| Edit in | Today | After D1 to D6 and E1 | After the game group is thinned |
-|---|---:|---:|---:|
-| the render glue | 233,000 | 41,000 | 41,000 |
-| the Halo 1 runtime | 233,000 | 39,000 | 39,000 |
-| bot glue, theater, Live glue | 233,000 | 27,000 to 35,000 | same |
-| the composition root | 233,000 | 18,000 | 18,000 |
-| a menu or a gameplay hook | 233,000 | 150,000 | about 60,000 |
-| `engine/src/points.rs` (a new point) | 405,000 | the owning crate's cone | same |
-| the art pipeline | 78,000 | 28,000 | 28,000 |
+- **Guest-free crates.** `sim-core`, `sim-anim`, `sim-collision`,
+  `frame-scene`, `scene-extract` and `native-render` take typed values.
+  They may use `formats`, `platform` and each other: no guest memory, no
+  hook, no lifted code. The bridge crates (`sim-bridge`, `render-bridge`)
+  are the `rewrites` crates that use `hooking`.
+- **Dev-dependencies are free.** A test may reach up (`snapshot`'s tests
+  use `lockstep`). The check reads normal and build dependencies.
+- **Exceptions are listed, with the step that removes each.** The check
+  fails on a refused dependency that is not listed, and on a listed one
+  that is gone.
 
-"Thinned" means D7 and D8: `ui-kit` below `game`, and the registries
-local, so the crates above `game` depend on `ui-kit` and `guest-layout`
-instead of all of `game`.
+| Refused dependency the tree has today | Removed by |
+|---|---|
+| `feature` → `engine` (`hooking` → `rewrites`) | S2: the points, views and entry glue move to `guest-layout` and `hooks` |
+| `feature` → `native-render` (`hooking` → `rewrites`) | S3: the renderer's guest half leaves for `render-bridge` |
+| `oracle` → `wma` (`recompiler` → `platform`) | S1: the WMA oracle moves into `wma` |
+| `native-render` → `analyze`, `ir`, `lift` (guest-free) | the `lifted` crate lands and the differential tests take it as a dev-dependency |
 
-The host-only build loses `live-server` and its third-party tree (step
-A3), wgpu (A3), the converters (F1), and `render-bridge`, `native-render`
-and the desktop command crates by construction.
+Every other dependency in the tree already obeys the table.
+
+### Placements that need a reason
+
+| Crate | Domain | Why there |
+|---|---|---|
+| `settings`, `content`, `variants` | `formats` | Our own file formats (`settings.toml`, map packages, variants). `vfs` and `cloud-saves` read them, so they sit under `runtime` and `live` |
+| `timeline` | `runtime` | A trace-event utility, not a format. `runtime` is its lowest user |
+| `x87`, `simd` | `recompiler` | `ir` is built on them; `runtime` uses `x87` from above |
+| `lifted`, `recomp` | `runtime` | Both run lifted code on `runtime`, which `recompiler` may not use |
+| `assets`, `hot-render`, `wma` | `platform` | Host-side support that `d3d` and `dsound` depend on (`assets` uses `gfx`; `wma` keeps snapshot state) |
+| `engine` | `rewrites` | Ported engine functions. Its points and typed views are `hooking`'s and leave in S2 |
+| `lockstep`, `hot-tags` | `extensions` | A determinism harness and live tag edits: features we add, built on hooks |
+| `agent-proto`, `studio-proto` | `extensions`, `apps` | A wire protocol lives with the thing that serves it |
+| `sim` | `live` | Sim mode's match and report files; only the bot glue and `h2 sim` read them. `[x]` |
+| `net-glue`, `bot-glue`, `theater` | `extensions` | Live and bots inside the game process. They use `game`'s menus and `ui-kit`, which `live` may not, so they are extensions that the Live owner owns (`live_owned` in the rules file) |
+| `live-art` | `tools` | The art pipeline works offline on the disc and uses the Halo 1 converters and `scenario-edit`, which `live` may not |
+| `cmd-live`, `cmd-drive` | `apps` | Commands depend on `cmd`, and nothing below `apps` may |
+| Halo 1 | three domains | `h1-contract` (`formats`): the names both halves share. The converters (`tools`). `h1-runtime` (`extensions`): the in-game half, which then needs no converter |
+| `boot` | `apps` | The composition root names every domain. What it holds today leaves by S4 to S6 |
+| `runtime-test-probe` | `runtime` | Stays nested in the `runtime` crate's directory, whose `tests/` and `include/` its build script reads |
+
+### The check
+
+```sh
+python3 scripts/crate-graph.py layers           # each domain's crates, the excused dependencies
+python3 scripts/crate-graph.py layers --check   # exit 1 on any of the below
+```
+
+`--check` fails on: a dependency the table refuses and no exception
+lists; an exception whose dependency is gone; a crate no domain claims; a
+crate in a domain other than the one the rules file lists for its name;
+and, once any crate sits in a domain directory, a crate that does not
+(a lane's new `crates/<name>`, which no workspace `members` glob
+reaches). Before window 1 it checks the planned domains of the flat tree,
+and passes today.
+
+`scripts/cratemeta.py` reads the manifests with `tomllib` for all three
+scripts, so they run in the middle of a move and never start cargo.
+`[workspace] members` lists one glob per domain (`crates/formats/*`, ...)
+and not `crates/*/*`: a leftover untracked directory under `crates/`
+cannot become a member.
+
+## Where each running lane's crate lands
+
+| Crate | Lane | Directory | Note |
+|---|---|---|---|
+| `guest-layout` | `guest-layout` | `crates/hooking/guest-layout` | No dependencies. S2 moves `engine`'s points and views into it |
+| `switches` | `guest-layout` | `crates/hooking/switches` | Planned by that lane; `feature/src/switches.rs` until then |
+| `lifted` | `shadow-exec` | `crates/runtime/lifted` | Uses `analyze`, `ir`, `lift`, `runtime`, `xbe`. Its landing clears three exceptions |
+| `sim-core`, `sim-anim` | `sim-anim` | `crates/rewrites/` | Guest-free. The adapter the branch puts in `engine/src/sim_anim.rs` and the install in `feature/src/sim_native.rs` go to `sim-bridge` (S3) |
+| `sim-collision` | `sim-collision` | `crates/rewrites/sim-collision` | Guest-free; depends on `sim-core` |
+| `frame-scene`, `scene-extract` | `framescene` | `crates/rewrites/` | Guest-free: `scene-extract` reads memory through its own trait and depends only on `frame-scene` |
+| `hostfault` | `contract` | `crates/runtime/hostfault` | The process-wide fault handler; `libc` only |
+| `sim-tier` | `sim-tier` | `crates/recompiler/sim-tier` | A second lowering of `ir`, beside `emit` and `clif`. Not committed on its branch yet |
+| `recomp` | (contract work) | `crates/runtime/recomp` | XBE to a loaded module, out of `boot/src/lib.rs`. Not on a branch yet; it is S4 |
+
+A lane whose crate lands **before** window 1 adds it as `crates/<name>`
+as it does now; the window moves it, because every name above is already
+in `scripts/crate-domains.toml`. A lane that lands **after** window 1
+either replays the window (the script moves the lane's new crate too) or
+creates the crate in its domain directory. A crate under a new name needs
+one line in a `crates` list first; the window script stops and says so.
+
+## The splits, by domain
+
+Sizes are from the scratch run (see "Scratch run"), in lines of Rust.
+
+**`feature`** (32,783 lines) becomes `hooks` and gives away what is not
+the hook engine:
+
+| Part | Lines | Goes to | Window |
+|---|---:|---|---|
+| The hook engine: `lib`, `plan`, `install`, `entry`, `arena`, `bridge`, `snapshot`, `locale`, `leaves` | 3,973 | `crates/hooking/hooks` | W2 (rename) |
+| `switches` | in the above | `crates/hooking/switches` | S2, the `guest-layout` lane |
+| The native renderer's guest half: 24 modules (`native_*`, `pipeline_*`, `render_*`, `occlusion`) and 16 test files | 22,272 | `crates/rewrites/render-bridge` | S3 |
+| The sim hooks: `sim_frame`, `sim_native`, `sim_observer`, `sim_physics`, `sim_static_light`, `sim_submix` | 1,390 | `crates/rewrites/sim-bridge` | S3 |
+| Halo 1 hooks: `h1_projectiles`, `h1_scope_zoom` | 560 | `crates/extensions/h1-runtime` | S3 |
+
+**`engine`** (36,378 lines) keeps the ports and gives away the hooking
+parts: `points`, `memory`, `handle`, `datum`, `view`, `tags`, `testing`
+to `crates/hooking/guest-layout`, and `entry` to `hooks` (S2, the
+`guest-layout` lane). Its render ports follow the render glue into
+`render-bridge` when FrameScene replaces them; the register-level sim
+ports stay as oracles until each `impl.sim.native.<subsystem>` lands.
+
+**`boot`** (153,027 lines, 312 files) keeps the composition root:
+
+| Part | Lines | Goes to | Window |
+|---|---:|---|---|
+| Composition root: `lib.rs`, `registration`, the tests | 6,325 | `crates/apps/boot` | stays |
+| Build and load: `fallback`, `shim`, `sse`, `x87`, `tier`, `host_coverage`, `build.rs`, `c/`, and the pipeline in `lib.rs` | about 3,200 | `crates/runtime/recomp` | S4 |
+| Everything else, as one crate first | 146,827 | `crates/extensions/game` | S5 |
+| Render glue: 29 modules (`native_*_glue`, `d3d_glue`, `d3d_diag`, `render_thread`, `opaque_streams`, ...) | 18,694 | `crates/rewrites/render-bridge`, below `game` | S6 |
+| Halo 1 runtime: 14 `h1_*` modules | 20,572 | `crates/extensions/h1-runtime` | S6 |
+| UI toolkit: `ui_kit`, `list_class`, `ui`, `icons`, `keyboard_glue` | 17,136 | `crates/extensions/ui-kit`, below `game` | S6 |
+| Live and co-op glue: 13 modules `[x]` | 16,607 | `crates/extensions/net-glue` | S6 |
+| Theater: `theater`, `theater_ui` `[x]` | 10,894 | `crates/extensions/theater` | S6 |
+| Bots and sim mode: 8 modules `[x]` | 8,792 | `crates/extensions/bot-glue` | S6 |
+| Menus, settings pages, skulls, variants, campaigns, gameplay hooks, HLE glue | 54,115 | stays in `crates/extensions/game` | |
+
+The render glue goes **down**: `rewrites` may not use `extensions`, so
+`render-bridge` cannot name a module of `game`. The 33 references it has
+today (to `h1_cinematics`, the settings table and others) are cut first.
+
+**`cli`** (79,681 lines) keeps `main.rs` and depends on its command
+crates:
+
+| Part | Lines | Goes to |
+|---|---:|---|
+| `main.rs` and the dispatch | 2,913 | `crates/apps/cli` |
+| `safe_out`, then the `Command` registry and the disc helpers | 651 | `crates/apps/cmd` |
+| Host commands: `boot_cmd`, `sim_cmd`, `sim_store_cmd`, `host_cmd`, `theater_cmd`, `agent_*` | 7,509 | `crates/apps/cmd-host` |
+| `play_cmd`, `settings_cmd`, `movies_cmd` | 2,592 | `crates/apps/cmd-play` |
+| 19 tag, map and asset commands | 8,860 | `crates/apps/cmd-tags` |
+| `emit_cache`, `emit_output`, then the recompiler commands in `main.rs` | 467 | `crates/apps/cmd-recomp` |
+| `h1_cmd`, `h1_import`, `mappack_cmd` | 4,512 | `crates/apps/cmd-h1` |
+| `lab`, `follow`, `web_build` | 6,052 | `crates/apps/cmd-dev` |
+| The Live art pipeline: 29 `live_*` modules `[x]` | 27,708 | `crates/tools/live-art` |
+| Live client and admin commands `[x]` | 7,527 | `crates/apps/cmd-live` |
+| Bot and co-op test drivers `[x]` | 11,005 | `crates/apps/cmd-drive` |
+
+After every window: 99 packages; `boot` 6,325 lines, `cli` 2,913, `hooks`
+3,973, `game` 54,115.
+
+## How a window runs
+
+A window is one commit that a script made and nothing else touched.
+
+```sh
+scripts/moves/window.sh list <id>     # the git mv lines; changes nothing
+scripts/moves/window.sh run <id>      # the coordinator, on a clean master
+```
+
+`run` tags the tip `move-<id>-pre`, runs the window's script, commits
+exactly its output and tags that `move-<id>`. Tags are shared by every
+worktree. Then the coordinator checks the window:
+
+```sh
+git diff -M50% --diff-filter=AD --name-only move-<id>-pre move-<id>   # only files the window says are new or gone
+python3 scripts/crate-graph.py layers --check
+python3 scripts/crate-table.py && python3 scripts/docs-check.py docs
+cargo check --workspace --all-targets
+cargo check -p cli --no-default-features --features host
+cargo test --workspace --no-run
+```
+
+`Cargo.lock` holds no paths, so window 1 leaves it alone. A window that
+renames or adds a package (every other one) leaves the lock file naming
+the old packages; the first cargo command rewrites it, offline, and that
+goes in the commit after the move. Compile slips are fixed in following
+commits too, never by amending the move: lanes replay the script, and the
+script's output must be what `move-<id>` holds.
+
+Every script:
+
+- refuses a dirty tree, and stops if a path it rewrote does not resolve;
+- can run twice (a path that already resolves is left alone);
+- prints what it left for a person: the `crates/...` strings in Rust code
+  that are data and not paths, and anything it could not resolve;
+- ends by checking that every manifest parses, every path dependency
+  finds a `Cargo.toml`, and no tracked file is left behind.
+
+What a script rewrites, besides the `git mv`:
+
+| What | Rule |
+|---|---|
+| `path = "..."` in every `Cargo.toml`, `[workspace.dependencies]` | resolved against where the manifest used to be, then written for where both ends are now |
+| `[workspace] members` | one glob per domain |
+| Relative paths in the moved files: `include_str!("../../emit/c/x.c")`, `#[path]`, `CARGO_MANIFEST_DIR` joins (`"../../disc/halo2.iso"`), markdown links, the worktree's climb to the main checkout's `disc/` | the same: old base, new base. A string that is not a path into the repository (`"../evil"`) is left alone |
+| `crates/<old>` written from the repository root, in docs, scripts, `platform/`, `deploy/`, `web/`, and Rust and manifest comments | the longest moved prefix |
+| A fixed list per window for what no rule sees: `"$here/../.."` in two shell scripts, the `crates/*/README.md` glob in `docs-check.py`, two real paths inside Rust strings | exact text, counted |
+
+Rust strings that name a crate path are not rewritten by rule. The
+generated-C banners (`"Generated by crates/emit ..."`) would change every
+emitted file and its cache key, and `cli/src/follow.rs`'s tests build a
+stand-in tree. The script lists them: 13 after window 1.
+
+## Rebasing a branch over a window
+
+**Replay** is exact and is the default for a branch that touches moved
+paths:
+
+```sh
+scripts/moves/window.sh replay <id>   # on the lane's branch, clean tree
+git merge master
+```
+
+It merges `move-<id>-pre` (an ordinary merge; any conflict here is one the
+lane had with master anyway), runs the same script on the lane's tree,
+commits, and records `move-<id>` as merged with `git merge -s ours`. That
+is exact because `move-<id>` is the script applied to `move-<id>-pre`,
+and the lane has just applied the same script to a tree that contains
+`move-<id>-pre`. The script walks directories and rewrites by rule, so
+the lane's new files, new crates and new `use` lines are carried too. A
+branch that is several windows behind replays them in order.
+
+A lane that keeps a linear branch squashes instead:
+
+```sh
+git rebase move-<id>-pre
+python3 scripts/moves/<script> && git commit -qm "Apply move <id>"
+git reset --soft move-<id> && git commit -m "<lane>: work so far, over move <id>"
+git rebase master
+```
+
+**A plain merge** is enough where rename detection carries the lane's
+edits:
+
+```sh
+git -c merge.renameLimit=30000 -c merge.directoryRenames=true merge -X rename-threshold=30 master
+```
+
+| Window | Plain merge | Why |
+|---|---|---|
+| W1 | works | Pure renames: git matches all 2,668 files at the default 50% (the lowest are `lockstep/Cargo.toml` at 56% and `boot/Cargo.toml` at 60%, hence the lower threshold). `directoryRenames` puts a lane's new files in the new directories. A lane's new `path = "../x"` or new crate still needs the script: run `python3 scripts/moves/w1-domains.py` after the merge |
+| W2 | works unless the lane edited a line that says `feature::` | 1,047 one-word edits in 193 files; conflicts are those lines. New lane code that says `feature::` needs the script |
+| W3 | replay | `crate::` becomes `crate::<module>::` on 366 lines of the merged sources, so a lane's edits beside them conflict (3 files of `h1-bg-prompts`' 7) |
+| S3 to S7 | replay | Files change crate; `crate::` and `pub(crate)` lines change with them |
+
+## The windows, in order
+
+| # | Window | Script | Moves | Ready |
+|---|---|---|---|---|
+| W1 | Every crate into its domain directory | `w1-domains.py` | 86 `git mv`, 2,668 files renamed, 513 edited | now |
+| W2 | `feature` becomes `hooks` | `w2-hooks.py` | 91 files renamed, 193 edited | after W1 |
+| W3 | Eleven Halo 1 crates become five | `w3-h1-merge.py` | 99 files renamed, 7 manifests removed, 121 edited | after W1; `h1-contract` first (below) |
+| S1 | Small renames and deletions | `rename-crate.py` | 2 crates renamed, 1 deleted | needs decisions 2 and 3 |
+| S2 | `guest-layout` and `hooks` take `engine`'s hooking parts | the `guest-layout` lane | 8 files, about 4,000 lines | when that lane lands |
+| S3 | `hooks` gives away the sim, render and Halo 1 hooks | `split.py s3-sim-bridge`, `s3-render-bridge`, `s3-h1-hooks` | 6 + 24 + 2 modules, 24,222 lines | sim and Halo 1: after W2. Render: 7 references to cut |
+| S4 | `recomp` out of `boot` | the contract lane | 7 files and 630 lines of `lib.rs` | before the contract work starts |
+| S5 | `boot` keeps the root, `game` takes the rest | `s5-boot-root.py` | 151 modules, 291 files, 146,827 lines | 96 references to cut, about 30 of them S4's |
+| S6 | `game` gives away the render glue, the Halo 1 runtime, the UI toolkit and the Live glue | `split.py s6-*` (six specs) | 71 modules, 92,695 lines | 3 to 82 references each |
+| S7 | `cli` becomes `main.rs` and ten command crates | `split.py s7-*` (ten specs) | 91 modules, 76,883 lines | four specs now, the rest 1 to 29 references each |
+
+"Ready" counts are from `--check` on the scratch tree with every earlier
+window applied. They are what stands between today and a mechanical move.
+
+### W1. Domain directories
+
+`scripts/moves/w1-domains.py`. `crates/<crate>` becomes
+`crates/<domain>/<crate>` for all 86 crate directories, by the `crates`
+lists in `scripts/crate-domains.toml`; `--list` prints the 86 lines. No
+crate is renamed, split or merged, and no Rust code changes except path
+strings: 189 `path` values in 52 manifests, 199 relative paths in the
+moved files, 1,805 `crates/<crate>` mentions in 370 docs, scripts and
+comment lines, 8 fixed edits.
+
+- `crates/runtime` moves into itself (`crates/runtime/runtime`); the
+  script parks it under another name first, before `kernel`, `vfs`,
+  `snapshot` and `timeline` arrive beside it.
+- `docs-check.py` reports the same 46 link findings before and after.
+- Lanes: every branch with work under `crates/` (52 of the 61 branches
+  ahead of master). Plain merge or replay; see the table above.
+- Do it first and alone. Every later window's paths are written against
+  this layout.
+
+### W2. `feature` to `hooks`
+
+`scripts/moves/w2-hooks.py`. `crates/hooking/feature` becomes
+`crates/hooking/hooks`; the package name; the dependency key in `boot`,
+`agent`, `lockstep` and `live-telemetry`; `"feature/native-render"` in
+`boot`'s features; 1,047 `feature::` paths in Rust (`boot` has about 750);
+7 `-p feature` in docs; the symbol prefix in
+`scripts/sim-attribution/attribute.py`; the two exceptions in the rules
+file.
+
+- `live-telemetry` has its own `mod hooks`, so the script writes
+  `::hooks::` there. `[x]`: 14 lines in that owner's crate.
+- Not touched: cargo features, `#[cfg(feature = "...")]`, the word in
+  prose (36 backticked mentions in 6 docs, the docs lane's), and
+  `docs/engine/feature-engine.md`'s name.
+- `rename_crate` in `movelib.py` is the whole of it;
+  `scripts/moves/rename-crate.py <old> <new>` renames any other crate the
+  same way. It rewrites Rust only in the renamed crate and the crates
+  that depend on it, and leaves, and names, a file where the old name is
+  a module or an import of something else.
+
+### W3. The Halo 1 merge
+
+`scripts/moves/w3-h1-merge.py`.
+
+| Before | After |
+|---|---|
+| `h1map` | `h1map` |
+| `h1bitmaps`, `h1models`, `h1sky`, `h1sounds`, `h1text` (22,400 lines) | `h1-assets`, modules `bitmaps`, `models`, `sky`, `sounds`, `text` |
+| `h1convert` | `h1convert` |
+| `h1objects` | `h1objects` |
+| `h1campaign`, `h1ai`, `h1scripts` (33,300 lines) | `h1campaign`, with modules `ai`, `scripts` |
+
+For a crate S that becomes module M of crate T: `S/src/lib.rs` moves to
+`T/src/M/mod.rs` and the rest of `S/src` to `T/src/M/`; `S/tests` to
+`T/tests/M/`, each file with its own `[[test]]` named `M_<file>`, so
+every test binary keeps its root and its `mod common;`; `S/examples`
+likewise. In Rust, `crate::` becomes `crate::M::` in the moved sources
+(366 places); `S::` becomes `crate::M::` inside T and `T::M::` everywhere
+else (726 places). T's manifest takes the union of the dependencies; the
+other manifests' several `h1bitmaps = ...`, `h1models = ...` lines fold
+into one `h1-assets = ...`, in `[features]` too.
+
+- **`h1-contract` goes first** (prep, lane work, not a script). `boot`
+  names about 30 items of the converters in 17 files:
+  `h1text::hud::{SCENARIO_HELP, SILHOUETTE_BASE, HELP_FLASH, ...}`,
+  `h1scripts::cinematics::{ACTIVE_NAME, VIDEO_BITMAPS, Field, MARKER}`,
+  `h1scripts::unit_builtins`, `h1scripts::compile::field::STRINGS`,
+  `h1convert::shad::{COUNTDOWN_DIGITS, MODEL_REFLECTION_SIGNATURE}`,
+  `h1convert::ui::{CAMPAIGN_ORDER, campaign_card}`,
+  `h1convert::apply::precision_swaps`, and the `h1map` reader in the
+  campaign picker. They move to `crates/formats/h1-contract` and `boot`
+  drops the converter crates. Without it the merge still builds, but
+  `boot`'s `h1scripts` becomes all of `h1campaign`, which brings
+  `h1objects`: the host-only build grows from 806,060 to 837,778 source
+  lines.
+- A branch on `build-1120`'s one-test-binary layout is handled: a crate
+  with `autotests = false` carries its declared `[[test]]` and nothing
+  else.
+- Not rewritten: the old crate names in prose (241 mentions in 26 docs).
+
+### S1. Small renames and deletions
+
+`scripts/moves/rename-crate.py sim sim-bench` and
+`scripts/moves/rename-crate.py apple-host h2host` (the package takes its
+library's name; `platform/apple/build.sh` and `platform/xbox/build.sh`
+name the package and are edited by hand). On the scratch tree the first
+renames 84 `sim::` paths in `boot` and `cli` and leaves
+`cli/src/agent_sim.rs`, where `sim` is `agent_proto::sim`; the second
+changes no Rust. `git rm -r` of `fastmem-proto`.
+`oracle`'s WMA oracle (`src/wma.rs`, a test, an example) moves into `wma`
+behind an `oracle` feature, which clears the `oracle` → `wma` exception.
+`viewer`: decision 3.
+
+### S2. `guest-layout` and `hooks` take `engine`'s hooking parts
+
+The `guest-layout` lane's. `engine/src/{points, memory, handle, datum,
+view, tags, testing}.rs` move to `guest-layout`, and `engine/src/entry.rs`
+to `hooks`. `engine` re-exports them, so the 605 `engine::` paths in
+`boot` and 88 in `bots` are untouched. `hooks` then depends on
+`guest-layout` and not on `engine`: the first exception goes. `points.rs`
+is one table of 374 entries and the second hottest file in the tree; it
+splits by owner when the registration work lets each crate keep its own
+(see "Local registration").
+
+### S3. `hooks` gives away what is not the hook engine
+
+`scripts/moves/split.py <spec>`, three specs in `scripts/moves/splits/`.
+Each new crate depends on `hooks`; `boot`, `agent` and the others that
+named `hooks::<module>` name the new crate and gain the dependency.
+
+| Spec | To | Modules | Lines | Stops it today |
+|---|---|---:|---:|---|
+| `s3-sim-bridge` | `crates/rewrites/sim-bridge` | 6 | 1,390 | nothing. `sim_frame` names `pipeline_render`, so `sim-bridge` depends on `render-bridge` until that edge is cut |
+| `s3-render-bridge` | `crates/rewrites/render-bridge` | 24, and 16 tests | 22,272 | `switches.rs` lines 120 to 126 name seven `native_*` modules |
+| `s3-h1-hooks` | `crates/extensions/h1-runtime` | 2 | 560 | nothing |
+
+After `s3-render-bridge`, `hooks`' `native-render` feature and dependency
+are deleted by hand and the second exception goes with them. Do
+`s3-sim-bridge` right after the `sim-anim` lane merges: that lane and
+`sim-collision` both edit `sim_native.rs`.
+
+### S4. `recomp` out of `boot`
+
+Lane work, before the contract implementers start, so thin transfers and
+flat RAM never touch `boot/src/lib.rs`. `fallback`, `shim`, `sse`, `x87`,
+`tier`, `host_coverage`, `c/`, `build.rs`, `tests/fast_tier.rs` and the
+pipeline in `lib.rs` (`BRIDGE` to `Module`: stamps, the analysis cache,
+`build*`) go to `crates/runtime/recomp`; `boot` re-exports the names
+`cli` uses (`boot::tier`, `boot::build`, ...). `boot` loses its build
+script, so a `Cargo.lock` change stops recompiling it. This also removes
+about 30 of S5's 96 references (`stamp_path`, `analysis_cache`,
+`build_stamp`, `DYLIB`, `dylib_current`, ...).
+
+### S5. `boot` keeps the root
+
+`scripts/moves/s5-boot-root.py`. Every top-level module of `boot/src`
+except `lib.rs` and `registration` moves, unchanged, to
+`crates/extensions/game/src`. `boot` depends on `game`, forwards its
+features, and starts with `pub use game::*;`, so `crate::skulls` in the
+root and `boot::tier` in `cli`, `studio` and the hosts still resolve, and
+no other crate changes. `game`'s manifest is a copy of `boot`'s without
+the dependencies `extensions` may not have (`analyze`, `lift`, `emit`,
+`clif`, `ir`, `x87`, the Halo 1 converters, `perf`): what still needs one
+of those is a layering error that `cargo check` then names.
+
+- Stops it today, 96 references from modules to the root:
+  `crate::telemetry` 32, `crate::log` 14, `crate::registration` 10
+  (`d3d_glue` reads `compiled_render_hooks`), `RunOpts` 5, `Host` 2,
+  `LiveConfig` 1, and S4's. Each moves into a module first.
+- `pub(crate)` becomes `pub` in the moved files: the root is another
+  crate.
+- Lanes: every branch with work under `boot/src`. Replay.
+- By itself this saves nothing. It makes each S6 window a move out of
+  `game` that does not touch the root.
+
+### S6. `game` gives away its groups
+
+`scripts/moves/split.py <spec>`. "Up" means the new crate depends on
+`game` and no module left in `game` may name one that leaves; `boot`'s
+root gains `pub use <crate>::*;`. "Down" means `game` depends on the new
+crate and re-exports its modules, and no module that leaves may name one
+that stays.
+
+| Spec | To | Direction | Modules | Lines | References to cut |
+|---|---|---|---:|---:|---:|
+| `s6-h1-runtime` | `crates/extensions/h1-runtime` | up | 14 | 20,572 | 3 |
+| `s6-theater` `[x]` | `crates/extensions/theater` | up | 2 | 10,894 | 14 |
+| `s6-bot-glue` `[x]` | `crates/extensions/bot-glue` | up | 8 | 8,792 | 29 |
+| `s6-net-glue` `[x]` | `crates/extensions/net-glue` | up | 13 | 16,607 | 56 |
+| `s6-render-glue` | `crates/rewrites/render-bridge` | down | 29 | 18,694 | 33 |
+| `s6-ui-kit` | `crates/extensions/ui-kit` | down | 5 | 17,136 | 82 |
+
+`scripts/moves/split.py <spec> --check` lists each reference with its
+file and line. About half of them go through four central lists
+(`setting_defs`, `string_ids`, `layout_glue`, `ui_kit/screens.rs`), which
+is the registration work below. `theater` names `bot_glue`, `sim_glue`,
+`coop_live` and `coop_look`, so it goes after `bot-glue` and `net-glue`
+or those are cut.
+
+### S7. `cli` becomes `main.rs` and command crates
+
+`scripts/moves/split.py <spec>`, all down: `cli` depends on each crate
+and its `mod x;` becomes `pub use <crate>::x;`. `s7-cmd` goes first; a
+later crate's `crate::safe_out` then becomes `cmd::safe_out`.
+
+| Spec | To | Modules | Lines | References to cut |
+|---|---|---:|---:|---:|
+| `s7-cmd` | `crates/apps/cmd` | 1 | 651 | 0 |
+| `s7-cmd-tags` | `crates/apps/cmd-tags` | 19 | 8,860 | 0 |
+| `s7-cmd-recomp` | `crates/apps/cmd-recomp` | 2 | 467 | 0 |
+| `s7-cmd-drive` `[x]` | `crates/apps/cmd-drive` | 10 | 11,005 | 0 |
+| `s7-cmd-live` `[x]` | `crates/apps/cmd-live` | 9 | 7,527 | 1 |
+| `s7-cmd-dev` | `crates/apps/cmd-dev` | 3 | 6,052 | 2 |
+| `s7-cmd-host` | `crates/apps/cmd-host` | 11 | 7,509 | 8 |
+| `s7-cmd-h1` | `crates/apps/cmd-h1` | 4 | 4,512 | 9 |
+| `s7-live-art` `[x]` | `crates/tools/live-art` | 29 | 27,708 | 20 |
+| `s7-cmd-play` | `crates/apps/cmd-play` | 3 | 2,592 | 29 |
+
+A zero means no `crate::` path leaves the set. Helpers that `main.rs`
+defines and a command reaches through `super::` or a `use` are not
+counted; `default_disc`, `open_iso`, `load_xbe` and `repo_root` move to
+`cmd` by hand before the rest. `live-art` lands in `tools` without `cli`'s
+dependencies on `apps` and `extensions` crates, so the art pipeline stops
+recompiling when `boot` changes.
+
+## Halo 1 branches
+
+Of 41 `h1*` branches, 37 have no commit that master lacks (`h1-integ`,
+`h1-integ2`, `h1-integ3`, `h1-integ-fix2` and every `h1-full-*`,
+`h1-next-*`, `h1-push-*` among them): their worktrees hold nothing to
+rebase, and none has uncommitted changes. Four are ahead
+(`git log master..<branch>`):
+
+| Branch | Commits | Touches | Over W1 and W2 | Over W3 |
+|---|---:|---|---|---|
+| `h1-bg-prompts` | 1 | `h1text` 7 files, `h1objects` 2, `h1convert` 2, docs 2 | plain merge is clean; replay is exact | replay: its 13 files and 649 added lines arrive as `h1-assets/src/text/...`, the new `multiplayer.rs` included. A plain merge conflicts in 3 files |
+| `h1-fall-ragdoll` | 4 | `h1convert` 1 file | clean either way | clean either way: `h1convert` stays a crate |
+| `h1-parity-suite` | 1 | `agent` 7, `h1objects` 4, `cli` 4, `hot-tags` 2, docs 3 | conflicts with master today in `engine/src/points.rs` and `docs/runtime/agent-api.md`, before any move. Resolve that merge at `move-w1-pre`, then replay | no merged crate touched |
+| `h1-bg-bots` | 1 | `bots` 16 files, docs 2 | conflicts with master today in three `bots/src` files; they are the Live owner's. Same: resolve at `move-w1-pre`, then replay | not touched |
+
+So the merge is safe to run as soon as `h1-bg-prompts` is merged or
+replayed; nothing else in flight edits a crate that W3 dissolves.
+
+## Scratch run
+
+A worktree under `$TMPDIR` at this branch's tip, each script run in
+order with a commit between, `layers --check` after each, the worktree
+removed afterwards. Splits were forced past their `--check`.
+
+| Step | Script exit | `layers --check` | Result |
+|---|---|---|---|
+| W1 | 0 | 0 | 2,668 renames and 201 other files, no add or delete at `-M50%`; second run changes nothing |
+| W2 | 0 | 0 | 91 renames, 193 edited; no `feature::` path left in a crate that depends on it |
+| W3 | 0 | 0 | 99 renames, 2 added, 7 removed; every `mod x;` of the merged crates finds its file; second run changes nothing |
+| S1 renames (2) | 0 | 0 | `sim`: 9 renames, 19 edited. `apple-host`: 8 renames, 11 edited |
+| `s3-*` (3) | 0 | 0 | |
+| S5 | 0 | 0 | `boot/src` is `lib.rs` and `registration` |
+| `s6-*` (6), `s7-*` (10) | 0 | 0 | 99 packages at the end |
+
+`h1-bg-prompts` and `h1-fall-ragdoll` were replayed over W1, W2 and W3;
+each ends with exactly its own diff against the moved tree (13 files,
++649 −58; 1 file, +588).
+
+Two things the check caught on the way, both fixed in the plan: moving
+the render glue up made `render-bridge` depend on `game` (it goes down
+instead), and `live-art` in `live` needed the Halo 1 converters (it is a
+tool).
 
 ## Local registration
 
 One signature, one list per crate, sorted, one word per line.
 
 ```rust
-// crates/hooks/src/host.rs
+// crates/hooking/hooks/src/host.rs
 /// What a registering module may ask the host for. Services are looked up
 /// by type, so `hooks` names no crate above it.
 pub struct Host<'a> {
@@ -370,7 +657,7 @@ A module owns everything it used to add to a central file: its points,
 its settings, its string ids, its layouts, its hooks.
 
 ```rust
-// crates/game/src/skulls_mp.rs
+// crates/extensions/game/src/skulls_mp.rs
 hooks::points! { POINTS;
     /// The host's skull set, applied at game start.
     SKULLS_MP_APPLY @ 0x0000_0000: [fn(mask: eax) ret 0]; "docs/game/skulls.md";
@@ -390,7 +677,7 @@ pub fn register(reg: &mut Registry, host: &Host<'_>) -> anyhow::Result<()> {
 ```
 
 ```rust
-// crates/game/src/lib.rs: the one line a lane adds, in its own crate.
+// crates/extensions/game/src/lib.rs: the one line a lane adds, in its own crate.
 hooks::modules! {
     aim_assist,
     campaign_menu,
@@ -402,7 +689,7 @@ hooks::modules! {
 ```
 
 ```rust
-// crates/boot/src/stages/register.rs: the only list that names crates.
+// crates/apps/boot/src/stages/register.rs: the only list that names crates.
 const CRATES: &[(&str, hooks::Register)] = &[
     ("ui-kit", ui_kit::register),
     ("game", game::register),
@@ -422,7 +709,7 @@ What each hot spot becomes:
 |---|---|
 | `boot/src/registration.rs`: `register_core`, `register_late`, a `use crate::{...}` of 33 modules | `CRATES` above. `CoreInputs` and `LateInputs` become services put into `Host` by the stage that makes them. The plan tests in `registration/tests.rs` call the same `register` |
 | `engine/src/points.rs`: one `points! { ALL; ... }` of 374 | `points! { POINTS; ... }` beside the code that hooks it; `reg.points(POINTS)`. Points that two crates hook live in `guest-layout`. The anchor list that [title-updates.md](../runtime/title-updates.md) 3.3 asks for is printed from the registry |
-| `boot/src/lib.rs`: `run_configured`, 1,524 lines | `const STAGES: &[(&str, fn(&mut Boot) -> Result<()>)]` and `crates/boot/src/stages/{profile, module, live, content, kernel, register, video, audio, input, agent, plan, movies}.rs`, then `main_loop.rs`. `Boot` holds what the stages pass along; a stage puts its services in `Host` |
+| `boot/src/lib.rs`: `run_configured`, 1,524 lines | `const STAGES: &[(&str, fn(&mut Boot) -> Result<()>)]` and `boot/src/stages/{profile, module, live, content, kernel, register, video, audio, input, agent, plan, movies}.rs`, then `main_loop.rs`. `Boot` holds what the stages pass along; a stage puts its services in `Host` |
 | `boot/src/setting_defs.rs`, `string_ids.rs`, `layout_glue.rs`'s rows, `ui_kit/screens.rs` | `reg.settings(DEFS)`, `reg.string_ids(FAMILY)`, `reg.layout_rows(ROWS)`, `reg.screen(DESCRIBE)` from the owning module. `string_ids.rs`'s collision check runs over the registry |
 | `cli/src/main.rs`: 85 `mod` lines, `USAGE`, a chain of `if cmd ==` | `cmd::commands! { anim, bitmap, ... }` in each command crate, each module with `pub const COMMAND: cmd::Command`. `main.rs` calls each crate's `register(&mut Commands)` under its `cfg` and `Commands::run`. `USAGE` is printed from the table |
 | `feature/src/sim_native.rs`: one install list for every sim port | `sim-bridge/src/{anim, collision, ...}.rs`, one per subsystem, in `hooks::modules!` |
@@ -433,7 +720,7 @@ Rules:
   the lines are adjacent, and then the resolution is "keep both".
 - **Order comes from the plan, not the list.** A module that must run
   around another says so with `HookRef::after_feature`, `first` or
-  `last`, which exist (`crates/feature/src/lib.rs`). A test registers
+  `last`, which exist (`feature/src/lib.rs`). A test registers
   every crate's list forwards and reversed and compares `Plan::text`.
   Installs that are not features (`layout_glue::install` writes guest
   memory) are the cases that test finds; they get an explicit stage.
@@ -444,360 +731,6 @@ Rules:
   at all, but an rlib member that nothing references is dropped by the
   linker, the order is the link order, and the plan must be the same on
   every platform.
-
-## How a freeze window works
-
-A freeze step is one commit that a script made and nothing else touched.
-
-1. The step's script is committed first, as `scripts/moves/<id>-<name>.sh`,
-   in an ordinary reviewed commit. It uses `git mv`, edits tracked files
-   with fixed `perl -pi` rules, stages everything it creates, and can be
-   run twice.
-2. The coordinator stops merging lanes, tags the tip `move-<id>-pre`,
-   runs the script, commits exactly its output and tags it `move-<id>`.
-   Tags are shared by every worktree.
-3. The coordinator runs the step's check. Compile slips are fixed in
-   following commits, never by amending the move.
-4. Merging resumes. The frozen time is the check's run time.
-
-A lane with work on the moved paths replays the move on its own tree:
-
-```sh
-git merge move-<id>-pre                  # ordinary merge, up to the commit before the move
-scripts/moves/<id>-<name>.sh             # the same transform, on the lane's files too
-git commit -qam "Apply move <id>"
-git merge -s ours --no-edit move-<id>    # the move is merged; the tree stays the lane's
-git merge master                         # then on to the tip as usual
-```
-
-`-s ours` is exact because `move-<id>` is the script applied to
-`move-<id>-pre`, and the lane has just applied the same script to a tree
-that contains `move-<id>-pre`. That is why the move commit holds only the
-script's output. The script moves whole directories and rewrites paths
-by rule, so a lane's new files and new `use` lines are carried too.
-
-A lane that keeps a linear branch squashes instead:
-
-```sh
-git rebase move-<id>-pre
-scripts/moves/<id>-<name>.sh && git commit -qam "Apply move <id>"
-git reset --soft move-<id> && git commit -m "<lane>: work so far, over move <id>"
-git rebase master
-```
-
-A lane that did not touch the moved paths needs nothing special. Renames
-are followed with:
-
-```sh
-git -c merge.renameLimit=30000 -c merge.directoryRenames=true merge master
-```
-
-The standard check, run through the shared ledger:
-
-```sh
-git diff -M50% --diff-filter=AD --name-only move-<id>-pre move-<id>   # only the files the step says are new or deleted
-tested check --workspace --all-targets
-tested check -p cli --no-default-features --features host
-tested test --workspace --no-run
-scripts/crate-table.py --check && scripts/crate-graph.py layers --check
-```
-
-plus the tests each step names. `git diff -M` listing a moved file as
-added or deleted means the script changed it too much to be a move.
-
-Two kinds of step:
-
-- **Freeze**: a move as above.
-- **Prep**: an ordinary lane change, merged like any other, that removes
-  references so a later move is mechanical. Its done-check is
-  `scripts/crate-graph.py modules <crate>/src --closed <modules>` exiting
-  0: no `crate::` path leaves the set that is about to move.
-
-## The moves
-
-In order. Sizes are files and lines moved. "Lanes hit" are those with
-uncommitted or unmerged work on the paths, as of this page's commit.
-Every freeze step's lane procedure is the one above unless it says
-otherwise.
-
-### A. Nothing moves in code
-
-**A1. Manifests** (freeze; 87 manifests, about 250 lines).
-
-- Every crate gets a `description` (30 have none; proposed text for the
-  seven with no row anywhere is under "The crate table") and
-  `[package.metadata.h2] layer`. `status` and `doc` replace the
-  hand-written cells of the old table.
-- `git mv crates/runtime/test-probe crates/runtime-test-probe`; drop the
-  redundant `"crates/host-data"` member line.
-- Existing `path = "../x"` dependencies stay (243 in 51 manifests). New
-  crates use `[workspace.dependencies]`. Converting the rest is not worth
-  its risk: under edition 2024 a member cannot turn off default features
-  that the workspace entry leaves on, and nine crates are taken both ways.
-- Lanes hit: any lane that adds a crate or a dependency (`sim-anim`,
-  `sim-collision`, `shadow-exec`, `guest-layout`, `build-1120`).
-  Different hunks of the same files; ordinary merges.
-- Check: the standard one, with `scripts/crate-table.py --strict`, and
-  `cargo metadata --offline --format-version 1` giving the same
-  `resolve` as before.
-- A changed `description` changes the crate's fingerprint, so this is one
-  full rebuild. Land it in the same integration as `build-1120`'s dev
-  profile commit, which is also one.
-
-**A2. Dead and misnamed crates** (freeze; about 60 files).
-
-- `git rm -r crates/fastmem-proto`.
-- `git mv crates/sim crates/sim-bench`, package `sim-bench`. In
-  `crates/boot` and `crates/cli` only:
-  `perl -pi -e 's/(?<![:\w])sim::/sim_bench::/g'` (22 files; `agent` and
-  `agent-proto` have their own `sim` modules and are not touched).
-- `git mv crates/apple-host crates/h2host`, package `h2host`. Its library
-  is already `h2host`, so no Rust changes: `crates/uwp-host/Cargo.toml`,
-  `platform/apple/build.sh`, `platform/xbox/build.sh` and six docs.
-- `oracle`'s WMA oracle (`src/wma.rs`, `tests/wma_disc.rs`,
-  `examples/wma_oracle.rs`, 390 lines) moves to `crates/wma` behind an
-  `oracle` feature; `oracle` loses its `asf` and `wma` dependencies.
-- Lanes hit: the Live and bots owner (`boot/src/sim_glue.rs`,
-  `host_lobby.rs`, `cli/src/sim_cmd.rs` name `sim::`).
-- Check: standard, and `tested test -p sim-bench -p wma -p oracle`.
-
-**A3. Host-build leaks** (ordinary commits, no freeze).
-
-- `crates/h1bitmaps/Cargo.toml`: `gfx` with `default-features = false`.
-- `cli`: `live-server` optional under `desktop`, once
-  `live_server::identity::write_private` lives somewhere smaller
-  (proposal 6).
-- The gate records the host closure's crate count (62) as a ceiling and
-  lowers it as these land.
-
-### B. Recompiler and runtime
-
-**B1. `recomp` out of `boot`** (freeze; 7 files and 630 lines cut from
-`lib.rs`; 3,200 lines).
-
-- Moves `crates/boot/src/{fallback, shim, sse, x87, tier, host_coverage}.rs`
-  with their submodules, `crates/boot/c/`, `crates/boot/build.rs`
-  and `crates/boot/tests/fast_tier.rs` to `crates/recomp`. Cuts `BRIDGE`
-  to `Module` (`lib.rs` lines 196 to 822: stamps, the analysis cache,
-  `build*`, `Module`) into `crates/recomp/src/lib.rs`.
-- `boot` re-exports: `pub use recomp::{self, fallback, shim, tier, host_coverage, build, build_for, build_slim, build_stamp, read_xbe, dylib_current, dylib_current_for, slim_current_for, current_slim_stamp, analysis_cache, Module, DYLIB};`
-  so `crate::tier` and `boot::tier` (28 uses in `cli`) still resolve.
-- `boot` loses its build script, so a `Cargo.lock` change no longer
-  recompiles it (build-speed.md follow-up 6).
-- Prep: `tier` → `host_audit`, two references (`tier.rs:105`, `:213`).
-- Lanes hit: `contract-design`'s implementers, `sim-tier`,
-  `codegen-mem`, `codegen-speed` if they touch stamps. Do it before the
-  contract work starts. The cut region is a new file to git, so a lane's
-  pending edit inside those 630 lines is re-applied by hand.
-- Check: standard, and `tested test -p recomp -p boot -p emit -p clif`.
-
-**B2. `lifted` adopted** (lane work, no freeze). After `shadow-exec`
-lands: `engine`'s `differential` feature and `native-render`'s optional
-`analyze`, `ir`, `lift`, `xbe` become `[dev-dependencies] lifted`;
-`crates/engine/tests/common` goes.
-
-### C. The hooks layer
-
-**C1. `points.rs` split in place** (freeze; 1 file into 9, 1,261 lines).
-
-- `git mv crates/engine/src/points.rs crates/engine/src/points/mod.rs`
-  (types, macros, lookup, tests stay). The script sends each table entry
-  to a file by its doc path: `docs/halo1/` → `h1.rs` (126 points),
-  `docs/graphics/` → `render.rs` (65), `docs/game/bots.md` → `bots.rs`
-  (31), `docs/live/` → `coop.rs` (34), `docs/perf/` → `sim.rs` (30),
-  `docs/formats/ui.md` and the rest of `docs/game/` → `ui.rs` (47), the
-  rest → `core.rs`. Each file is one `points! { POINTS; ... }`;
-  `mod.rs` globs them, so `points::NAME` is unchanged, and `ALL` becomes
-  the list of tables.
-- Lanes hit: `sim-anim` (13 new points), `sim-collision`,
-  `guest-layout`, any lane adding a point. The script classifies a
-  lane's new entries too, so the standard procedure works.
-- Check: standard, and
-  `tested test -p engine -p feature --test plan --test install`.
-- This is step one of two. C3, D2 to D6 and the registration work then
-  carry each file to the crate that hooks it.
-
-**C2. `sim-bridge`** (freeze; 8 files, about 1,800 lines).
-
-- New crate from `crates/feature/src/{sim_frame, sim_native, sim_physics, sim_observer, sim_static_light, sim_submix}.rs`,
-  `crates/feature/tests/sim_physics.rs` and `crates/engine/src/sim_anim.rs`
-  (on the `sim-anim` branch). File names stay.
-- `perl -pi -e 's/\bfeature::sim_/sim_bridge::sim_/g; s/\bengine::sim_anim\b/sim_bridge::sim_anim/g'`
-  over `crates/`.
-- Prep: `sim_frame` → `pipeline_render`, one edge.
-- Lanes hit: `sim-anim`, `sim-collision`, `sim-pose`, `sim-tier`. They
-  are its owners afterwards. Do it right after `sim-anim` merges.
-- Check: standard, and `tested test -p sim-bridge -p engine -p feature`.
-
-**C3. `guest-layout` and `hooks` take their parts of `engine`** (freeze;
-8 files, about 4,000 lines). Owned by the `guest-layout` lane; this page
-fixes the destination.
-
-- `crates/engine/src/{points/, memory, handle, datum, view, tags, testing}.rs`
-  → `crates/guest-layout/src/`. `crates/engine/src/entry.rs` →
-  `crates/feature/src/guest_entry.rs`.
-- `engine` re-exports `pub use guest_layout::{points, memory, handle, datum, view, tags, testing};`
-  so 605 `engine::` paths in `boot` and 88 in `bots` are untouched.
-  `engine::entry::` (about 30 uses) is rewritten to `feature::guest_entry::`.
-- Lanes hit: everyone, with no edits to make.
-- Check: standard, and `tested test -p guest-layout -p engine -p feature -p bots`.
-
-**C4. `render-bridge`, the guest half** (freeze; about 73 files, 43,000
-lines). After `integ-1120` lands, before FrameScene implementation.
-
-- From `feature`: 30 modules (`native_*`, `pipeline_*`, `render_census`,
-  `render_timing`, `render_loop`, `occlusion`) and their 16 test files.
-  From `engine`: `render_loop/`, `render.rs`, `glow`, `screen_effect`,
-  `screen_effects`, `screen_grid`, `colour_pass`, `light_passes`,
-  `shadow_constants`, `gel`, `scene_list_math`, `ui_model`, `ui_sprite`,
-  `ui_backdrop` and their differential tests. `light_constants` and
-  `function_eval` stay in `engine`: the sim ports use them too.
-- Rewrites `feature::<moved>` and `engine::<moved>` to
-  `render_bridge::<same name>` by a fixed list of module names.
-- `feature` loses its `native-render` cargo feature and dependency;
-  `boot`'s `desktop-runtime` turns on `dep:render-bridge` instead.
-- Prep (three small edits): `scene_effect_instruction_entries` and
-  `native_verbose` out of `feature/src/lib.rs`; the three `native_*`
-  helpers out of `switches.rs`; `sim_frame` → `pipeline_render` if C2 has
-  not cut it.
-- Lanes hit: `flag-cleanup` and `native-cost` (in `integ-1120`; land
-  first), the FrameScene implementers (start after).
-- Check: standard, and
-  `tested test -p render-bridge -p feature -p engine -p native-render -p boot`.
-
-**C5. `feature` becomes `hooks`** (freeze; a rename, about 1,010 path
-edits, 793 of them in `boot`). Optional: decision 3.
-
-### D. `boot`
-
-`boot`'s groups reference each other 73 times at module level
-(`scripts/crate-graph.py modules`; an upper bound, since it counts paths
-in comments). Nothing here extracts a crate by cutting all of its edges.
-The composition root goes up first, groups with few inbound references
-follow it up, and the UI toolkit goes down last.
-
-**D1. The composition root goes up** (freeze; 316 files renamed, 3
-edited).
-
-- `git mv crates/boot crates/game`, package `game`. Then
-  `crates/game/src/lib.rs` and `crates/game/src/registration*` move back
-  to `crates/boot/src/`, and a new `crates/game/src/lib.rs` takes the
-  `mod` lines and the items other modules name (`RunOpts`, `Host`,
-  `LiveConfig`, the `log` macro). So the two hot files keep their paths
-  and their history, and every other file is a pure rename.
-- `crates/boot/src/lib.rs` starts with `pub use game::*;`. Every
-  `crate::x` in it, every `boot::x` in `cli`, `studio`, `h2host` and
-  `boot/tests` still resolves.
-- `boot`'s cargo features forward: `gpu = ["game/gpu"]`.
-- The 283 `pub(crate)` items in the moved files become `pub`.
-- Prep: `registration::compiled_render_hooks` moves to `d3d_glue` (7
-  uses from the mesh); two test-only references
-  (`render_thread.rs:276`, `theater/tests.rs:160`).
-- Lanes hit: every lane with work under `crates/boot/src`, including the
-  Live and bots owner. Pure renames, so a lane without the script needs
-  only the `merge.directoryRenames=true` merge.
-- Check: standard, and `tested test -p game -p boot -p cli`.
-- By itself this saves nothing. It makes each later step a move out of
-  `game` that does not touch the root.
-
-**D2. Render glue up, into `render-bridge`** (freeze; 33 modules, 22,997
-lines).
-
-- Prep, nine inbound module edges: `agent_glue` → `d3d_diag`,
-  `native_shadows_probe`, `render_probe`; `snapshot_glue` → `d3d_glue`;
-  `xapi_glue`, `host_perf`, `level_boot` → `d3d_diag` (all for
-  `d3d_diag::presents`, a frame counter that belongs in `d3d`);
-  `campaign_cards_tests` → `native_map`, `native_world_glue`.
-- `game` re-exports nothing here: it cannot name a crate above it. The
-  script rewrites `crate::<moved module>` in `boot` to
-  `render_bridge::<module>`.
-- Lanes hit: the FrameScene implementers; the group with the most
-  commits (307).
-- Check: standard, and `tested test -p render-bridge -p game -p boot`.
-
-**D3. `h1-runtime` up** (freeze; 14 modules and two files from
-`feature`, 21,065 lines).
-
-- Prep, six inbound module edges: `cheats`, `touch_glue`,
-  `skulls_custom` → `h1_hud_text`; `native_first_person_glue`,
-  `native_objects_glue`, `native_post_glue` → `h1_cinematics`.
-- Lanes hit: the Halo 1 lanes (`h1-bg-prompts`, `h1-parity-suite` are
-  unmerged).
-- Check: standard, and `tested test -p h1-runtime -p boot`.
-
-**D4, D5, D6. `bot-glue`, `net-glue`, `theater` up** (freeze; 8,776,
-16,655 and 10,863 lines). The other owner's; see proposals 1 to 3.
-
-**D7. `ui-kit` down** (prep, then freeze; 5 modules, 17,171 lines).
-
-- Prep: 29 module edges, 80 references
-  (`scripts/crate-graph.py modules crates/boot/src --closed ui_kit,list_class,ui,icons,keyboard_glue`
-  lists each). `ui_kit/screens.rs` (the screen catalogue) moves up to
-  `game` first; `list_class` → `speaker_row` is 8 of the rest.
-- `studio` then depends on `ui-kit` instead of `boot`, for the one type
-  it wanted (`ui_kit::input::Input`).
-- Check: standard, and `tested test -p ui-kit -p game -p boot -p studio`.
-
-**D8. Stages and local registries** (prep; lane work on `boot` and
-`game`). `run_configured` into `stages/`; `setting_defs`, `string_ids`,
-the layout rows and the screen catalogue registered by their modules.
-After it, `game` can split into `game-ui` and `gameplay` (22 module
-edges between them today) and the crates above stop depending on all of
-`game`.
-
-### E. `cli`
-
-**E1. Command crates** (prep, then freeze; 59 files, 41,000 lines
-without the Live and bots parts).
-
-- Prep: `cmd` crate with `Command`, `Commands`, `commands!`, and
-  `safe_out`, `default_disc`, `open_iso`, `load_xbe`, `repo_root` (22
-  references from other modules). Three edges to cut: `boot_cmd` →
-  `h1_import`, `boot_cmd` → `mappack_cmd`, `sim_cmd` → `live_accounts`.
-- Freeze: the modules move to `cmd-host`, `cmd-play`, `cmd-tags`,
-  `cmd-recomp`, `cmd-h1`, `cmd-dev` as listed in the crate table.
-  `cli` keeps `main.rs`.
-- `app::BuildInfo` moves to a crate that only `cli`'s `main.rs` reads, so
-  a commit stops recompiling `app` (build-speed.md follow-up 5).
-- Lanes hit: `lab-agent` (unmerged, `cli/src/lab`), the Halo 1 lanes
-  (`h1_import.rs`, 147 commits).
-- Check: standard, and `tested test -p cli -p cmd-host -p cmd-tags -p cmd-recomp -p cmd-h1 -p cmd-dev -p cmd-play`.
-
-**E2. `live-art`, `cmd-live`, `cmd-drive`** (the other owner's;
-proposal 4).
-
-### F. Halo 1
-
-**F1. `h1-contract`** (prep). The names `boot` takes from `h1convert`,
-`h1scripts`, `h1text`, `h1objects` and `h1sounds` move to a crate with no
-dependencies; `boot` (then `h1-runtime` and `game`) drops the converter
-crates. This is what takes them out of the host-only build.
-
-**F2. `h1-assets`** (freeze; 53 files, 22,494 lines). `h1bitmaps`,
-`h1models`, `h1sounds`, `h1sky` and `h1text` become modules `bitmaps`,
-`models`, `sounds`, `sky`, `text` of one crate; `h1models::` becomes
-`h1_assets::models::` by rule.
-
-**F3. `h1campaign` absorbs `h1ai` and `h1scripts`** (freeze; 46 files,
-18,541 lines), after F1.
-
-Both wait for a quiet moment in the Halo 1 lanes.
-
-## Delete, merge, rename
-
-| What | Action | When | Note |
-|---|---|---|---|
-| `fastmem-proto` (2,563 lines) | Delete | A2 | No dependents. `docs/perf/fastmem-proto.md` and `fastmem-4k.md` are the docs lane's to file |
-| `viewer` (7,258 lines) | Delete | after decision 4 | Fan-in zero, but three of its four binaries are cited as commands: `bsp --all` (`docs/formats/structure-bsp.md`), `bsp_cracks` (`docs/graphics/high-resolution.md`), `shadowlab` (`docs/graphics/e3-lighting.md`). `bsp` and `bsp_cracks` (1,249 lines) become `cmd-tags` commands; `shadowlab` (3,730) has made its decision and goes; the model window is `studio`'s |
-| eleven `h1*` crates | Merge to five, plus `h1-contract` | F1 to F3 | `h1map`, `h1-assets`, `h1convert`, `h1objects`, `h1campaign`. Not three: `h1convert` + `h1objects` would be one unit of 77,000 lines, against rule 2 |
-| `sim` | Rename `sim-bench` | A2 | Frees the name before `sim-*` multiply |
-| `apple-host` | Rename `h2host` | A2 | The package takes its library's and its header's name (`platform/apple/h2host.h`); `uwp-host` depends on it |
-| `oracle`'s WMA oracle | Move to `wma` | A2 | |
-| `boot/native_*_glue` with `feature/native_*` | Merge in `render-bridge` | C4, D2 | |
-| `feature` | Rename `hooks` | C5 | decision 3 |
-| `engine/src/render_loop/` (5,933 lines), `d3d/src/interp` | Delete | their own lanes | The review's stage 7a and interpolation items. `integ-1120` already removes `render_loop/scene.rs`. If `render_loop/` goes before C4, C4 is that much smaller |
-| `engine/src/{sim_native, sim_physics}/` (8,981 lines) | Delete per subsystem | as each `impl.sim.native.<subsystem>` lands | They stay in `engine` as oracles until then ([sim-rewrite.md](../engine/sim-rewrite.md) decision 4) |
-| `crates/runtime/test-probe` | Move to `crates/runtime-test-probe` | A1 | The only nested crate |
 
 ## Gates
 
@@ -812,17 +745,17 @@ scripts/gate.sh lint        # seconds, no compile
 scripts/gate.sh check       # desktop and host-only cargo check
 scripts/gate.sh test        # everything that needs no disc
 scripts/gate.sh disc        # everything that needs one
-scripts/gate.sh move <id>   # a freeze step's check
+scripts/gate.sh move <id>   # a window's check
 scripts/gate.sh all         # lint, check, test, disc
 ```
 
 | Tier | Runs |
 |---|---|
-| `lint` | `scripts/crate-table.py --check`; `scripts/crate-graph.py layers --check`; the host budget (`closure cli --features host` crate count at most the number in the script); the docs check from the docs lane; `rustfmt --check` on files changed against `master` that were clean there |
+| `lint` | `scripts/crate-table.py --check`; `scripts/crate-graph.py layers --check` (the domain rules); the host budget (`closure cli --features host` crate count at most the number in the script); the docs check from the docs lane; `rustfmt --check` on files changed against `master` that were clean there |
 | `check` | `cargo check --workspace --all-targets`; `cargo check -p cli --no-default-features --features host`; `cargo clippy --workspace --all-targets -- -D warnings` |
 | `test` | `cargo nextest run --workspace` with `.config/nextest.toml`; `cargo test --workspace --doc` |
 | `disc` | With `H2_DISC`, `H1_ISO`, `H2_XBE` and `H2_ORACLE_FIXTURES` set from `disc/` when unset: `cargo nextest run --workspace --run-ignored ignored-only -E 'not test(/bench|slow/)'`; `cargo test -p lift --features oracle-fixtures --test oracle`; `cargo test -p engine --features differential`. Prints the count of tests that ran and refuses zero |
-| `move <id>` | the rename-only diff between the two tags, then `lint`, `check`, `cargo test --workspace --no-run` |
+| `move <id>` | the rename-only diff between `move-<id>-pre` and `move-<id>`, then `lint`, `check`, `cargo test --workspace --no-run` |
 
 - Every cargo call goes through the shared test ledger, which moves into
   the repository as `scripts/tested` with the cargo-slot path read from
@@ -832,7 +765,7 @@ scripts/gate.sh all         # lint, check, test, disc
   in its module or test name, as `h1objects/tests/*_disc.rs` and
   `.config/nextest.toml` already assume, and a benchmark has `bench`.
   Today's 530 `#[ignore]`s carry 25 different reasons and 59 carry none.
-- The coordinator runs `all` before a push and `move <id>` in a freeze.
+- The coordinator runs `all` before a push and `move <id>` in a window.
 
 ### CI: `.github/workflows/ci.yml`
 
@@ -841,7 +774,7 @@ not.
 
 | Job | Runner | Runs | Catches |
 |---|---|---|---|
-| `lint` | ubuntu | `scripts/gate.sh lint` | a crate with no description or layer, an upward dependency, a stale table, the host budget |
+| `lint` | ubuntu | `scripts/gate.sh lint` | a crate with no description or outside its domain, a refused dependency, a stale table, the host budget |
 | `host` | ubuntu | `cargo check -p cli --no-default-features --features host` | desktop code leaking into the dedicated host; a Linux break |
 | `test` | macos | `scripts/gate.sh check`, then `scripts/gate.sh test` | what CI catches now, through nextest |
 
@@ -855,110 +788,125 @@ proof of a port.
 
 `scripts/crate-table.py` writes the table in
 [ARCHITECTURE.md](../ARCHITECTURE.md) between two marker comments: one row
-per package, from `cargo metadata --offline --no-deps`.
+per package, read from the manifests by `scripts/cratemeta.py`.
 
 | Column | Source |
 |---|---|
 | crate | the package name and what it links besides an rlib (`bin h2`, `staticlib h2host`) |
-| layer | `[package.metadata.h2] layer`; the column appears once any crate has one, and the rows then sort by layer |
+| domain | the crate's directory, `crates/<domain>/<crate>`; for a crate still flat in `crates/`, where `scripts/crate-domains.toml` places it. Rows sort by domain, lowest first |
 | purpose | `description` |
 | docs | `[package.metadata.h2] doc`, else the `docs/...md` paths in the description |
 | status | `[package.metadata.h2] status` |
 
-Until step A1, a cell with no source keeps the text the old table had; a
-purpose kept that way carries a dagger. `--check` fails when the file is
-stale; `--strict` also fails on a missing description or layer. The
-table holds no line counts, because they would make it stale on every
-commit; `scripts/crate-graph.py sizes` prints them.
+A cell with no source keeps the text the old table had; a purpose kept
+that way carries a dagger. `--check` fails when the file is stale;
+`--strict` also fails on a missing description or domain. The table holds
+no line counts, because they would make it stale on every commit;
+`scripts/crate-graph.py sizes` prints them. Run it after every window.
 
-Seven crates have no description and had no row. Proposed for A1:
+Thirty manifests have no `description`. Seven of them had no row either;
+proposed text:
 
 | Crate | `description` |
 |---|---|
 | `clif` | The Cranelift fast tier: planned IR straight to host objects, linked into the same kind of module clang's build makes (docs/lifter/cranelift-tier.md) |
-| `h1campaign` | Halo 1 campaign levels converted onto pinned retail Halo 2 campaign maps (docs/halo1/campaign.md) |
+| `h1campaign` | Halo 1 campaign levels converted onto pinned retail Halo 2 campaign maps, with their AI and scripts (docs/halo1/campaign.md) |
 | `h1objects` | Halo 1 sandbox objects (weapons, projectiles, equipment, bipeds, vehicles) as Halo 2 tags (docs/halo1/objects.md) |
-| `h1scripts` | Halo 1 campaign scripts decoded from the scenario tag and carried over to Halo 2 (docs/halo1/scripts.md) |
-| `h1sky` | Halo 1 skies read from Xbox cache files and converted to Halo 2 sky tags (docs/halo1/sky.md) |
-| `h1text` | Halo 1 string lists and HUD message text as Halo 2 localized text (docs/halo1/text.md) |
 | `runtime-test-probe` | Native declarations of the fixture generated module, for tests that run hooks through the real runner |
 
-The other 23 take the purpose their old row had, which the table still
-shows.
+(`h1scripts`, `h1sky` and `h1text` stop being packages in W3; `h1-assets`
+gets its description from the script.)
 
-## Proposals for the Live, bots, theater and film owner
+## For the Live, bots, theater and film owner
 
-Nothing here is scheduled. Each is a move in that owner's files.
+Everything marked `[x]`. The scripts run on these files; nothing here was
+edited by hand, and each item is that owner's to confirm or change.
 
-1. **`net-glue`** (D5): `boot/src/{coop_jip, coop_latency, coop_live, coop_look, coop_players, coop_probe, host_lobby, live_glue, live_notice, account_screen, signin_screen, signin_keyboard, community_variants}`,
-   16,655 lines. Fifteen modules of `game` name it, mostly through
-   `coop_probe::read_session` and its constants (which are guest layout
-   and belong in `guest-layout`) and through the three registries.
-2. **`theater`** (D6): `boot/src/{theater/, theater_ui/}`, 10,863 lines.
-   `game` names it three times (`layout_glue`, `snapshot_glue`,
-   `variant_ext`); `theater` names `bot_glue`, `sim_glue`, `coop_live`
-   and `coop_look`, which fixes the order: `theater` below `net-glue`
-   and `bot-glue`, or those four references cut.
-3. **`bot-glue`** (D4): `boot/src/{bot_glue, bots_nav_auto, bot_mark, clankers, clanker_card, clankermatch, sim_bots, sim_glue}`,
-   8,776 lines. Six inbound module edges from `game`.
-4. **`cli`** (E2): `live-art` as a library (27,679 lines, no dependency on
-   `boot`: today every `boot` edit recompiles it), `cmd-live` (7,518),
-   `cmd-drive` (10,985: the bot and co-op drivers and verdicts).
-   `live-art` and `cmd-live` name each other 17 times
-   (`live_frames` → `live_cmd`, `live_cmd` → `live_art`, ...).
-5. **`live-server/tests/it.rs`**: 40 test binaries of 63 MiB each
-   (build-speed.md follow-up 1).
-6. **`live_server::identity::write_private`** into `live-proto` or
-   `host-data`, so `cli` can make `live-server` optional and the
-   dedicated host stops compiling the service.
-7. **`live-proto`'s cone is 48%.** `bots` uses two of its modules
-   (`bots`, `game`), `film` four. A small `live-types` under them would
-   keep an API change in `session` or `matchmaking` from recompiling
-   `bots`, `boot` and `cli`.
-8. **Points**: C1 puts the 31 bot points and 34 co-op and Live points in
-   `points/bots.rs` and `points/coop.rs`; they then belong in `bots` and
-   `net-glue`.
-9. **`sim` → `sim-bench`** (A2) and **D1** rename paths in these files
-   without changing them. Both need a time that suits.
+1. **W1 moves eleven crates into `crates/live/`**: `live-proto`,
+   `live-hle`, `live-telemetry`, `live-server`, `live-worker`, `coop`,
+   `bots`, `film`, `cloud-saves`, `host-data`, `sim`. No file changes
+   except paths: `live-worker`'s `deploy.sh`, `smoke/run.sh`,
+   `smoke/smoke.ts` and `wrangler.toml` each climb one directory more to
+   reach `web/` and `deploy/`, and `web/test/*.ts` name
+   `crates/live/live-proto/...`. A deploy from a tree after W1 uses the
+   new `wrangler.toml` paths; check one.
+2. **`live` may use `hooking` and `rewrites` and not `extensions`.** Every
+   crate above already complies.
+3. **W2** writes `::hooks::` on 14 lines of `live-telemetry`, which has
+   its own `mod hooks`.
+4. **The in-game glue is three `extensions` crates** (S6): `net-glue` (13
+   modules, 16,607 lines), `bot-glue` (8, 8,792) and `theater` (2,
+   10,894), each above `game`. The module lists are in
+   `scripts/moves/splits/s6-{net-glue, bot-glue, theater}.toml`. `game`
+   names them 56, 29 and 14 times today, mostly through
+   `coop_probe::read_session` and its constants (guest layout, which
+   belongs in `guest-layout`) and the central lists.
+5. **`cli`** (S7): `live-art` in `tools` (29 modules, 27,708 lines),
+   `cmd-live` (9, 7,527) and `cmd-drive` (10, 11,005) in `apps`.
+   `live_query` and `live_recovery` are placed in `cmd-live` by their
+   names; say if they are the art pipeline's.
+6. **`sim` becomes `sim-bench`** (S1), which frees the name before
+   `sim-*` multiply. It renames 84 `sim::` paths in `boot` (`sim_glue`,
+   `host_lobby`, `host_mem`, `theater`) and `cli` (`sim_cmd`).
+7. **`live_server::identity::write_private`** is `cli`'s only use of
+   `live-server` outside the desktop feature, and puts 51,962 lines and
+   axum, sqlx, reqwest and object_store in the dedicated host's build. In
+   `live-proto` or `host-data` it would not.
+8. **`live-proto`'s rebuild cone is 48%.** `bots` uses two of its modules
+   and `film` four; a small types crate under them would keep an API
+   change in `session` or `matchmaking` from recompiling `bots`, `boot`
+   and `cli`.
+9. **`h1-bg-bots`** is one commit of 16 `bots` files that conflicts with
+   master today.
 
 ## Decisions needed
 
-1. **Flat `crates/` with the layer in the manifest** (recommended), or
-   directories per layer.
-2. **`boot` splits into `boot` (root) and `game` (the rest)** at D1, and
-   `game` is the name that stays for menus and gameplay.
-3. **Rename `feature` to `hooks`?** About 1,010 path edits for a name
-   that stops colliding with cargo features. Recommended, last in C.
-4. **`viewer`:** delete `shadowlab` outright and keep `bsp` and
-   `bsp_cracks` as `h2` commands (recommended), or keep the crate.
-5. **Halo 1: eleven crates to five plus `h1-contract`,** not the review's
-   three or four.
-6. **`apple-host` becomes `h2host`.**
-7. **`guest-layout` holds the only copy of each layout;** `sim-state` is
-   the read API over it. The sim review's "one schema crate" and the
-   architecture review's "typed guest layout crate" are then one crate
-   and one API crate.
-8. **Who cuts the 73 references in `boot`.** One lane, working down the
-   prep lists of D2, D3, D7 and D8, with the coordinator landing a
-   freeze after each.
-9. **The first freeze.** A1 and A2 together, in the integration that
-   lands `integ-1120` and `build-1120`'s profile commit: one full
-   rebuild instead of three.
+Decided: domain directories; `feature` becomes `hooks`; the Halo 1 merge
+to five crates and `h1-contract`.
+
+1. **The Live glue in `extensions`** (and `live-art` in `tools`,
+   `cmd-live` and `cmd-drive` in `apps`), marked as the Live owner's, so
+   that the rules stay one table by directory. The other choice is to
+   keep all of that owner's crates under `crates/live/` and give `live`
+   two tiers in the rules: the service and libraries below `extensions`,
+   three glue crates above it.
+2. **`apple-host` becomes `h2host`, `sim` becomes `sim-bench`** (S1).
+3. **`viewer`:** delete `shadowlab` (3,730 lines) and keep `bsp` and
+   `bsp_cracks` as `h2` commands in `cmd-tags`, or keep the crate in
+   `tools`.
+4. **`h1_options`, `h1_options_row` and `h1_variants` stay in `game`.**
+   The Clankers and theater pages use them as menu rows; the other 14
+   `h1_*` modules are `h1-runtime`.
+5. **Who cuts the references.** One lane working down the `--check` lists
+   of S5 and S6, with the coordinator landing a window after each.
+6. **When W1 runs.** It touches every branch. The cheapest moment is
+   right after an integration that leaves few lanes open; `integ-1120`
+   and `build-1120` landing first means two fewer large replays.
 
 ## Not verified
 
-- Nothing was compiled. Each move's script has to be written and run by
-  the coordinator; the `perl` rules here are the intent, not tested text.
-- Module edges come from `crate::` paths found by a regular expression.
-  Paths in comments are counted (an overcount); `super::` paths between
-  top-level files and paths built by macros are not (an undercount).
-  `--closed` exiting 0 is necessary for a move, and `cargo check` decides.
-- The "after" column of "What it buys" is arithmetic on line counts. It
-  ignores third-party crates, link time and kache hits.
+- Nothing was compiled. Each script's output passed the structural
+  checks above; `cargo check` has not seen any of it.
+- W2: a module or import named `hooks` in a crate that depends on the
+  renamed crate would shadow it. Only `live-telemetry` has one at its
+  root, and the script handles that; nested ones were searched for and
+  not found.
+- W3: an item that was `pub(crate)` in a small crate is now visible
+  across the merged one, and two merged modules may glob-import the same
+  name. Both are compile errors if they bite, not silent changes.
+- The splits copy a manifest and trim it by the domain rules only, do not
+  make an item `pub` when the other crate needs it (S5 widens
+  `pub(crate)` in bulk; the others do not), and cannot see an `impl` the
+  orphan rule refuses, a `super::` path that crosses the cut, or a path a
+  macro builds. `--check` passing is necessary for a split, and `cargo
+  check` decides.
+- A `CARGO_MANIFEST_DIR` join to a file inside the crate (no `../`) is
+  not rewritten when a split moves the code to another crate.
+- The reference counts for S5 to S7 were taken with the earlier splits
+  forced, so a count can include an edge an earlier prep would have cut.
 - Whether a sorted registration order gives the same plan as today's
   order. The forwards-and-reversed test is how to find out.
-- Whether `h1bitmaps` builds without `gfx/gpu`. Its uses read as CPU
-  texture decoding.
-- The other lanes' crates (`guest-layout`, `lifted`, `sim-collision`,
-  `sim-tier`) were read as uncommitted or unmerged work on their
-  branches and may land under other names.
+- `live-worker`'s deploy and smoke scripts after W1: the paths were
+  rewritten by rule and not run.
+- The scratch tree was this branch, which is master plus the docs
+  merges; on master alone the counts of rewritten doc mentions differ.

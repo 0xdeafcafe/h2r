@@ -1,0 +1,5 @@
+from = "cli"
+to = "cmd-recomp"
+direction = "down"
+description = "h2 build, info, ls, extract, disasm, symbols, analyze, lift and emit"
+modules = ["emit_cache", "emit_output"]

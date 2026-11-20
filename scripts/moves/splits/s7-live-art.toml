@@ -1,0 +1,13 @@
+# The Live owner's. Review the module list before the window.
+from = "cli"
+to = "live-art"
+direction = "down"
+description = "The Live web art pipeline as a library: maps, models, emblems and frames extracted from the disc for the web front end (docs/live/live-art.md)"
+modules = [
+    "live_art", "live_basemap", "live_catalog", "live_features", "live_frames", "live_geometry",
+    "live_geometry_tests", "live_halo1", "live_layers", "live_looks", "live_mappack", "live_maps",
+    "live_maps_details", "live_maps_details_tests", "live_mod_contents", "live_mod_contents_tests",
+    "live_mod_features", "live_mod_import", "live_mod_import_tests", "live_models", "live_models_tests",
+    "live_mods", "live_plasma", "live_render", "live_scenario", "live_scripted", "live_sky",
+    "live_weapons", "live_weather",
+]

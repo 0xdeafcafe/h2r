@@ -228,7 +228,7 @@ Reading and converting Halo 1 data:
 
 ## Working on the repository (`dev/`)
 
-- [crate-structure.md](dev/crate-structure.md) (**start here**): the crate graph as measured, the target crate map by layer, the ordered freeze-window moves to reach it, local registration, the gate proposal (design; nothing has moved)
+- [crate-structure.md](dev/crate-structure.md): the crate domains (`crates/<domain>/<crate>`) and what each may depend on, the ordered windows that move the tree there with their scripts (`scripts/moves/`) and rebase recipes, local registration, the gate proposal (design; nothing has moved)
 
 ## Reviews
 

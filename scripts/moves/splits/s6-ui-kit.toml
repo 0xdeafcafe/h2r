@@ -1,0 +1,5 @@
+from = "game"
+to = "ui-kit"
+direction = "down"
+description = "The guest UI toolkit: the list-screen class, dialogs, pickers, pages, icons, the host keyboard (docs/game/ui-kit.md)"
+modules = ["icons", "keyboard_glue", "list_class", "ui", "ui_kit"]
