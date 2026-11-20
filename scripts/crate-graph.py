@@ -13,35 +13,33 @@
         list every reference that leaves the given set and exit 1 if there
         is one: the readiness check before that set moves to its own crate.
     scripts/crate-graph.py layers [--check]
-        Each crate's `package.metadata.h2.layer`, and every dependency that
-        points from a lower layer to a higher one. --check exits 1 on any.
+        Each domain's crates, and every dependency the domain rules in
+        scripts/crate-domains.toml refuse. A crate's domain is its
+        directory, crates/<domain>/<crate>; while a crate still sits flat
+        in crates/ it is the planned one. --check exits 1 on a refused
+        dependency, a crate outside its domain directory once any crate
+        has moved, a crate no domain claims, or a stale exception.
 
 The rebuild cone of a crate is the crate plus everything that depends on
-it, in lines: what an edit to it recompiles. Reads `cargo metadata
---offline --no-deps` and the source files; nothing is built.
+it, in lines: what an edit to it recompiles. Reads the manifests with
+scripts/cratemeta.py and the source files; cargo is not run and nothing
+is built.
 """
 import collections
-import json
+import glob
 import os
 import re
-import subprocess
 import sys
 
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import cratemeta  # noqa: E402
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# Lowest first; the same list as scripts/crate-table.py. `tools` (offline
-# converters, editor cores, the profiler) and `live` (the service) are side
-# stacks: they may use anything up to `render`, and only `binaries` and
-# their own stack may use them.
-LAYERS = ["formats", "recompiler", "runtime", "hooks", "subsystems", "render", "product", "binaries", "tools", "live"]
-SIDE = {"tools", "live"}
 
 
 def metadata():
-    out = subprocess.run(
-        ["cargo", "metadata", "--offline", "--no-deps", "--format-version", "1"],
-        cwd=ROOT, check=True, capture_output=True, text=True,
-    ).stdout
-    return {p["name"]: p for p in json.loads(out)["packages"]}
+    return cratemeta.packages(ROOT)
 
 
 def count(path):
@@ -216,39 +214,64 @@ def modules(args):
     return 0
 
 
-def allowed(user, dep, rank):
-    """Whether a crate in layer `user` may depend on one in layer `dep`."""
-    if dep in SIDE:
-        return user == "binaries" or user == dep
-    if user in SIDE:
-        return rank[dep] <= rank["render"]
-    return rank[dep] <= rank[user]
-
-
 def layers(args):
     pkgs = metadata()
-    deps = internal_deps(pkgs)
-    layer = {n: (((p.get("metadata") or {}).get("h2")) or {}).get("layer") for n, p in pkgs.items()}
-    rank = {l: i for i, l in enumerate(LAYERS)}
-    missing = sorted(n for n, l in layer.items() if l not in rank)
-    if len(missing) == len(pkgs):
-        print("no crate declares `package.metadata.h2.layer` yet (docs/dev/crate-structure.md, step A1)")
-        return 0
-    bad = []
-    for n, ds in sorted(deps.items()):
-        for d in sorted(ds):
-            a, b = layer.get(n), layer.get(d)
-            if a in rank and b in rank and a != b and not allowed(a, b, rank):
-                bad.append(f"{n} ({a}) depends on {d} ({b})")
-    for l in LAYERS:
-        members = sorted(n for n in pkgs if layer[n] == l)
+    deps = collections.defaultdict(set)
+    for n, p in pkgs.items():
+        for d in p["dependencies"]:
+            if d["name"] in pkgs and d["path"] and d["kind"] in (None, "build"):
+                deps[n].add(d["name"])
+    rule_set = cratemeta.rules(ROOT)
+    domains = rule_set["domains"]
+    planned = cratemeta.planned_domains(rule_set)
+    where = {n: cratemeta.domain_of(p, rule_set, ROOT) for n, p in pkgs.items()}
+    domain = {n: w[0] for n, w in where.items()}
+    moved = any(placed for _, placed in where.values())
+    problems = []
+    for n in sorted(pkgs):
+        d, placed = where[n]
+        if d is None:
+            problems.append(f"{n}: no domain; add it to a `crates` list in {cratemeta.RULES}")
+        elif moved and not placed:
+            problems.append(f"{n}: at {pkgs[n]['dir']}, belongs in crates/{d}/")
+        elif placed and planned.get(n, d) != d:
+            problems.append(f"{n}: in crates/{d}/, but {cratemeta.RULES} places it in {planned[n]}")
+    # A crate directory no workspace glob matches is invisible above.
+    member_dirs = {p["dir"] for p in pkgs.values()}
+    for manifest in sorted(glob.glob(os.path.join(ROOT, "crates", "*", "Cargo.toml"))):
+        rel = os.path.relpath(os.path.dirname(manifest), ROOT)
+        if moved and rel not in member_dirs:
+            name = os.path.basename(rel)
+            problems.append(f"{name}: at {rel}, outside the workspace; belongs in crates/{planned.get(name, '<domain>')}/")
+    guest_free = {c: name for name, d in domains.items() for c in d.get("guest_free", [])}
+    excused = {(e["from"], e["to"]): e for e in rule_set["exceptions"]}
+    refused = {}
+    for n in sorted(pkgs):
+        for d in sorted(deps[n]):
+            a, b = domain[n], domain[d]
+            if a is None or b is None:
+                continue
+            if a != b and b not in domains[a].get("uses", []):
+                refused[(n, d)] = f"{n} ({a}) depends on {d} ({b}); {a} may use: {', '.join(domains[a].get('uses', [])) or 'nothing'}"
+            elif n in guest_free and d not in guest_free and b not in ("formats", "platform"):
+                refused[(n, d)] = f"{n} is guest-free and depends on {d} ({b})"
+    for name, table in domains.items():
+        members = sorted(n for n in pkgs if domain[n] == name)
         if members:
-            print(f"{l:11} {' '.join(members)}")
-    for n in missing:
-        print(f"crate-graph: {n}: no layer", file=sys.stderr)
-    for b in bad:
-        print(f"crate-graph: upward dependency: {b}", file=sys.stderr)
-    return 1 if "--check" in args and (bad or missing) else 0
+            print(f"{name:11} {' '.join(members)}")
+    if not moved:
+        print("(no crate sits in a domain directory yet: these are the planned domains)")
+    for key, text in sorted(refused.items()):
+        if key in excused:
+            print(f"excused: {text}; until {excused[key]['until']}")
+        else:
+            problems.append(f"refused dependency: {text}")
+    for (a, b), e in sorted(excused.items()):
+        if a in pkgs and b in pkgs and (a, b) not in refused:
+            problems.append(f"stale exception: {a} -> {b} is no longer refused; delete it from {cratemeta.RULES}")
+    for p in problems:
+        print(f"crate-graph: {p}", file=sys.stderr)
+    return 1 if "--check" in args and problems else 0
 
 
 def main(argv):

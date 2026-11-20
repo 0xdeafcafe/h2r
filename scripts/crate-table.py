@@ -4,30 +4,34 @@
     scripts/crate-table.py            rewrite the table in place
     scripts/crate-table.py --check    exit 1 if the table is out of date
     scripts/crate-table.py --strict   as --check, and every crate must have a
-                                      description and (once any has one) a layer
+                                      description and a domain
     scripts/crate-table.py --stdout   print the table and leave the file alone
 
-A row comes from the crate's own Cargo.toml, so a lane that adds a crate
-adds its row with it (docs/dev/crate-structure.md, "The crate table"):
+A row comes from the crate's own Cargo.toml and its place in the tree, so
+a lane that adds a crate adds its row with it (docs/dev/crate-structure.md,
+"The crate table"):
 
+    crates/<domain>/<crate>/Cargo.toml   # the domain column is the directory
     [package]
     description = "One line: what the crate is for"
 
     [package.metadata.h2]
-    layer = "runtime"                    # optional until step A1 lands
     status = "done"                      # optional
     doc = ["runtime/storage.md"]         # optional, paths under docs/
 
-Until every manifest carries these, a cell with no source keeps the text
-the table already has: a purpose kept that way is marked with a dagger, and
-`--strict` refuses it. Reads the workspace with `cargo metadata --offline
---no-deps`; nothing is built.
+While a crate still sits flat in crates/, its domain is the one
+scripts/crate-domains.toml plans for it. Until every manifest carries a
+description, a cell with no source keeps the text the table already has:
+a purpose kept that way is marked with a dagger, and `--strict` refuses
+it. Reads the manifests with scripts/cratemeta.py; cargo is not run.
 """
-import json
 import os
 import re
-import subprocess
 import sys
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import cratemeta  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOC = os.path.join(ROOT, "docs", "ARCHITECTURE.md")
@@ -38,20 +42,17 @@ NOTE = (
     "† Written here by hand. The text belongs in the crate's `Cargo.toml` "
     "`description`; `scripts/crate-table.py --strict` fails until it is there."
 )
-# Lowest first. A crate may depend on its own layer and the ones before it;
-# `tools` and `live` are side stacks (scripts/crate-graph.py layers --check
-# has the rule and enforces it).
-LAYERS = ["formats", "recompiler", "runtime", "hooks", "subsystems", "render", "product", "binaries", "tools", "live"]
 LINK = re.compile(r"\[[^\]]+\]\([^)]+\)")
 DOC_PATH = re.compile(r"\bdocs/([A-Za-z0-9_./-]+\.md)")
 
 
 def packages():
-    out = subprocess.run(
-        ["cargo", "metadata", "--offline", "--no-deps", "--format-version", "1"],
-        cwd=ROOT, check=True, capture_output=True, text=True,
-    ).stdout
-    return sorted(json.loads(out)["packages"], key=lambda p: p["name"])
+    """Every package, with its domain under ["domain"]."""
+    rule_set = cratemeta.rules(ROOT)
+    pkgs = cratemeta.packages(ROOT)
+    for p in pkgs.values():
+        p["domain"] = cratemeta.domain_of(p, rule_set, ROOT)[0] or ""
+    return sorted(pkgs.values(), key=lambda p: p["name"]), list(rule_set["domains"])
 
 
 def cells(line):
@@ -122,18 +123,16 @@ def row(p, old, with_layer):
         crate += f" ({b})"
     out = [crate]
     if with_layer:
-        out.append(meta.get("layer", ""))
+        out.append(p["domain"])
     out += [purpose.replace("|", "\\|"), links, status]
-    return "| " + " | ".join(out) + " |", described, meta.get("layer")
+    return "| " + " | ".join(out) + " |", described, p["domain"]
 
 
-def table(pkgs, old):
-    with_layer = any((((p.get("metadata") or {}).get("h2")) or {}).get("layer") for p in pkgs)
-    if with_layer:
-        order = {l: i for i, l in enumerate(LAYERS)}
-        layer_of = lambda p: (((p.get("metadata") or {}).get("h2")) or {}).get("layer", "")
-        pkgs = sorted(pkgs, key=lambda p: (order.get(layer_of(p), len(order)), p["name"]))
-    head = ["crate"] + (["layer"] if with_layer else []) + ["purpose", "docs", "status"]
+def table(pkgs, old, domains):
+    with_layer = True
+    order = {d: i for i, d in enumerate(domains)}
+    pkgs = sorted(pkgs, key=lambda p: (order.get(p["domain"], len(order)), p["name"]))
+    head = ["crate", "domain", "purpose", "docs", "status"]
     lines = ["| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
     problems, dagger = [], False
     for p in pkgs:
@@ -142,8 +141,8 @@ def table(pkgs, old):
         if not described:
             dagger = True
             problems.append(f"{p['name']}: no `description` in its Cargo.toml")
-        if with_layer and layer not in LAYERS:
-            problems.append(f"{p['name']}: `package.metadata.h2.layer` is {layer!r}, want one of {LAYERS}")
+        if layer not in order:
+            problems.append(f"{p['name']}: no domain; add it to a `crates` list in {cratemeta.RULES}")
     if dagger:
         lines += ["", NOTE]
     return lines, problems
@@ -164,7 +163,8 @@ def main(argv):
             end += 1
         text[start:end] = [BEGIN] + text[start:end] + [END]
         a, b = start, end + 1
-    new, problems = table(packages(), existing(text[a + 1 : b]))
+    pkgs, domains = packages()
+    new, problems = table(pkgs, existing(text[a + 1 : b]), domains)
     result = text[:a] + [BEGIN] + new + [END] + text[b + 1 :]
     if mode == "--stdout":
         print("\n".join(new))

@@ -1,0 +1,131 @@
+# The crate domains (docs/dev/crate-structure.md).
+#
+# A domain is a directory: crates/<domain>/<crate>. `uses` is the full list
+# of other domains its crates may depend on; a domain always may use itself.
+# `scripts/crate-graph.py layers --check` enforces it on normal and build
+# dependencies (dev-dependencies are free).
+#
+# `crates` places every crate, including ones that have not landed yet.
+# Once a crate sits in a domain directory the directory is the truth, and
+# this list is checked against it. `scripts/moves/w1-domains.py` reads the
+# lists to move the flat `crates/<crate>` tree.
+
+[formats]
+about = "Disc, tag and file formats, ours and the game's: plain data, no guest, no host"
+uses = []
+crates = [
+    "asf", "content", "font", "h1-contract", "hs", "map", "mopp", "movies",
+    "pathfind", "settings", "shaders", "tags", "variants", "xbe", "xiso",
+]
+
+[recompiler]
+about = "XBE to host code: analysis, lifting, IR, the C and Cranelift back ends, their oracles"
+uses = ["formats"]
+crates = [
+    "analyze", "clif", "emit", "fastmem-proto", "ir", "lift", "opt", "oracle",
+    "sim-tier", "simd", "sse-oracle", "symbols", "x87",
+]
+
+[runtime]
+about = "The machine the lifted code runs on: memory, CPU state, kernel, filesystem, snapshots, the build-and-load driver"
+uses = ["formats", "recompiler"]
+crates = [
+    "hostfault", "kernel", "lifted", "recomp", "runtime", "runtime-test-probe",
+    "snapshot", "timeline", "vfs",
+]
+
+[platform]
+about = "Platform HLE: the Xbox's devices and libraries on the host (Direct3D 8, DirectSound, XAPI, pads, Bink, voice) and the host graphics and audio under them"
+uses = ["formats", "runtime"]
+crates = [
+    "assets", "audio", "bink-hle", "d3d", "dsound", "gfx", "hot-render",
+    "input", "voice", "wma", "xapi",
+]
+
+[hooking]
+about = "How our code meets guest code: the hook engine, named points, typed guest layouts, switches"
+uses = ["formats", "runtime"]
+crates = ["feature", "guest-layout", "hooks", "switches"]
+
+[rewrites]
+about = "Rust that replaces a guest subsystem: the native simulation, FrameScene, the native renderer, ported engine functions, and the bridge that installs each one"
+uses = ["formats", "recompiler", "runtime", "platform", "hooking"]
+crates = [
+    "engine", "frame-scene", "native-render", "render-bridge", "scene-extract",
+    "sim-anim", "sim-bridge", "sim-collision", "sim-core", "sim-state",
+]
+# Guest-free: these take typed values and may use only `formats`,
+# `platform` and each other. No guest memory, no hook, no lifted code.
+guest_free = ["frame-scene", "native-render", "scene-extract", "sim-anim", "sim-collision", "sim-core"]
+
+[live]
+about = "Live, co-op transport, bots, films, cloud saves, the dedicated host's data, the service itself (another session owns this domain)"
+uses = ["formats", "runtime", "platform", "hooking", "rewrites"]
+crates = [
+    "bots", "cloud-saves", "coop", "film", "host-data", "live-hle", "live-proto",
+    "live-server", "live-telemetry", "live-worker", "sim", "sim-bench",
+]
+
+[extensions]
+about = "Features we add to the game: menus and settings screens, skulls, the campaign picker, Halo 1 in game, Live and bots in game, theater, the agent API, the debug menu"
+uses = ["formats", "runtime", "platform", "hooking", "rewrites", "live"]
+crates = [
+    "agent", "agent-proto", "bot-glue", "debug-menu", "game", "h1-runtime",
+    "hot-tags", "lockstep", "net-glue", "theater", "ui-kit",
+]
+# Crates here that the Live owner's session owns.
+live_owned = ["bot-glue", "net-glue", "theater"]
+
+[tools]
+about = "Offline work on game data: the Halo 1 converters, the editor cores, the profiler"
+uses = ["formats", "recompiler", "runtime", "platform", "rewrites", "live"]
+crates = [
+    "editor-core", "h1-assets", "h1ai", "h1bitmaps", "h1campaign", "h1convert",
+    "h1map", "h1models", "h1objects", "h1scripts", "h1sky", "h1sounds", "h1text",
+    "hopper-edit", "hud-edit", "live-art", "perf", "scenario-edit", "viewer",
+]
+live_owned = ["live-art"]
+
+[apps]
+about = "What links a binary: the composition root, the desktop shell, the command line and its command crates, the editor, the embedded hosts"
+uses = ["formats", "recompiler", "runtime", "platform", "hooking", "rewrites", "live", "extensions", "tools"]
+crates = [
+    "app", "app-icon", "apple-host", "boot", "cli", "cmd", "cmd-dev",
+    "cmd-drive", "cmd-h1", "cmd-host", "cmd-live", "cmd-play", "cmd-recomp",
+    "cmd-tags", "h2host", "studio", "studio-proto", "uwp-host",
+]
+live_owned = ["cmd-drive", "cmd-live"]
+
+# A dependency the rules refuse and the tree still has. Each names the step
+# that removes it; `layers --check` fails on a refused dependency that is
+# not listed, and on an entry whose dependency is gone.
+
+[[exception]]
+from = "feature"
+to = "engine"
+until = "S2: the points, views and entry glue move to guest-layout and hooks"
+
+[[exception]]
+from = "feature"
+to = "native-render"
+until = "S3: the renderer's guest half leaves for render-bridge"
+
+[[exception]]
+from = "oracle"
+to = "wma"
+until = "S1: the WMA oracle moves into wma"
+
+[[exception]]
+from = "native-render"
+to = "analyze"
+until = "the `lifted` crate lands; the differential tests take it as a dev-dependency"
+
+[[exception]]
+from = "native-render"
+to = "ir"
+until = "the `lifted` crate lands"
+
+[[exception]]
+from = "native-render"
+to = "lift"
+until = "the `lifted` crate lands"
