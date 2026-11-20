@@ -320,7 +320,7 @@ fn cut(s: &str, n: usize) -> String {
 /// Whether `id` names a tag of the tree or stands for one of its sounds.
 fn built_here(id: TagId) -> bool {
     id == TagId::NULL
-        || id == h1models::SELF_ID
+        || id == h1_assets::models::SELF_ID
         || local_index(id).is_some()
         || id.0 & 0xffff_0000 == sound(0).0
         || id.0 & 0xffff_0000 == looping(0).0

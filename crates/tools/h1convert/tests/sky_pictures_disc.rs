@@ -19,8 +19,8 @@ fn top(h1: &H1Map, id: h1map::TagId, raw: &[u8]) -> (Vec<u8>, Vec<u8>, PixelForm
     let t = h1.tag(id).unwrap();
     let bm = Bitmap::read(h1, t).unwrap();
     let img = &bm.images[0];
-    let stored = h1bitmaps::decode_image(img, bm.pixels(h1, 0).unwrap()).unwrap();
-    let copy = h1bitmaps::decode_image(img, raw).unwrap();
+    let stored = h1_assets::bitmaps::decode_image(img, bm.pixels(h1, 0).unwrap()).unwrap();
+    let copy = h1_assets::bitmaps::decode_image(img, raw).unwrap();
     (stored[0].rgba.clone(), copy[0].rgba.clone(), img.format)
 }
 

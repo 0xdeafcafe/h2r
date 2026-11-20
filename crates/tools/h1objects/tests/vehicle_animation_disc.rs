@@ -274,7 +274,7 @@ fn marker_names(mode: &Record) -> Vec<String> {
 /// point (those have a marker on the converted model).
 fn powered_suspension(h1: &H1Map, name: &str) -> usize {
     let u = h1::Unit::read(h1, h1_tag(h1, b"vehi", name)).unwrap();
-    let graph = h1models::graph_from_map(
+    let graph = h1_assets::models::graph_from_map(
         h1,
         h1.tag(u.object.animation.unwrap()).unwrap(),
         u.object.model.map(|m| h1.tag(m).unwrap()),

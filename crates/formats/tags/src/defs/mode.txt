@@ -2,7 +2,7 @@
 # V = disc checks (`viewer --all`, docs/formats/map-format.md). Names whose only
 # support was another project's naming are left typed-only (`_<offset>`).
 # "Render-model geometry"), docs/formats/structure-bsp.md (geometry block info, E) and the
-# Halo 1 converter crates/tools/h1models/src/mode.rs (docs/halo1/models.md "Halo 2 output", V2).
+# Halo 1 converter crates/tools/h1-assets/src/models/mode.rs (docs/halo1/models.md "Halo 2 output", V2).
 # No community tag definition was used.
 
 # The shared 0x24-byte geometry block info (docs/formats/structure-bsp.md "Geometry block info"),

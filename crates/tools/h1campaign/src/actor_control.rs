@@ -3,12 +3,12 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use h1ai::{
+use crate::ai::{
     convert::character_for,
     h1::{self, ActorType},
 };
 use h1map::{Group, H1Map};
-use h1scripts::{Catalog, Tables, compile::Hook};
+use crate::scripts::{Catalog, Tables, compile::Hook};
 use map::{
     FourCC, TagId,
     build::{Block, TagPayload, TagSet},
@@ -23,7 +23,7 @@ fn variant<'a>(
     map: &'a H1Map,
     name: &str,
 ) -> Result<(&'a h1map::Tag, h1::ActorVariant, ActorType)> {
-    let err = |e: h1ai::Error| invalid(format!("attach-free actor variant {name}: {e}"));
+    let err = |e: crate::ai::Error| invalid(format!("attach-free actor variant {name}: {e}"));
     let tag = map
         .find(Group::new(b"actv"), name)
         .ok_or_else(|| invalid(format!("attach-free actor variant {name} is absent")))?;

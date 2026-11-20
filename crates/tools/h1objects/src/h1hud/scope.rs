@@ -119,7 +119,7 @@ impl ScopeMask {
             raw.push(pixels);
         }
         let bitmap = bitmap.ok_or_else(|| Error::Invalid("scope mask has no images".into()))?;
-        let (converted, _) = h1bitmaps::convert::convert_with(&bitmap, |i| Ok(raw[i].to_vec()))
+        let (converted, _) = h1_assets::bitmaps::convert::convert_with(&bitmap, |i| Ok(raw[i].to_vec()))
             .map_err(|e| Error::Invalid(format!("scope bitmap: {e}")))?;
         Ok((converted, [sequences[0], sequences[1], sequences[1]]))
     }

@@ -734,8 +734,8 @@ fn sensor_alpha(
         Some(p) => (p.image as usize, p.bounds),
         None => (s.first_image as usize, [0.0, 1.0, 0.0, 1.0]),
     };
-    let src = h1bitmaps::decode::stack(
-        &h1bitmaps::decode_image(&bm.images[image], bm.pixels(h1, image).unwrap()).unwrap(),
+    let src = h1_assets::bitmaps::decode::stack(
+        &h1_assets::bitmaps::decode_image(&bm.images[image], bm.pixels(h1, image).unwrap()).unwrap(),
         0,
     )
     .unwrap();
@@ -1498,12 +1498,12 @@ fn every_halo1_weapon_is_held_by_the_halo1_player_graph() {
         // idle, even when the type has no named weapon animation.
         let h1 = h1_map(name).unwrap();
         let cyborg = h1.find(h1map::Group::new(b"antr"), r"characters\cyborg\cyborg").unwrap();
-        let src = h1models::h1::Graph::read(&h1, cyborg.data_address).unwrap();
+        let src = h1_assets::models::h1::Graph::read(&h1, cyborg.data_address).unwrap();
         let stand = src.units.iter().find(|u| u.label == "stand").unwrap();
         let mut held = BTreeSet::new();
         for t in h1.tags().iter().filter(|t| t.group.to_string() == "antr") {
-            for n in h1models::graph_names(&h1, t).unwrap() {
-                let n = h1models::names::map_name(&n);
+            for n in h1_assets::models::graph_names(&h1, t).unwrap() {
+                let n = h1_assets::models::names::map_name(&n);
                 if n.class != "any" && n.kind != "any" {
                     held.insert(n.kind);
                 }
@@ -1745,7 +1745,7 @@ fn every_starting_weapon_is_held_by_the_halo1_player_graph() {
 /// object's render model (`mode +0x58`, searched by `0x001d8f00`; a name
 /// it cannot find fails the lookup, an empty name is the origin):
 ///
-/// - the names written in its code ([`h1models::mode::ENGINE_MARKERS`]:
+/// - the names written in its code ([`h1_assets::models::mode::ENGINE_MARKERS`]:
 ///   `left_hand`, where a thrown grenade leaves the hand, `0x000e7730`;
 ///   `primary_trigger`, `ground_point`, ...) on every model with the Halo 1
 ///   marker each stands for, and `head`, `body` and `left_hand` on the
@@ -1804,8 +1804,8 @@ fn every_engine_marker_resolves_on_the_converted_objects() {
             let what = format!("{name}: {n}");
             println!("{what}: {markers:?}");
             for h1 in &markers {
-                let h2 = h1models::mode::h2_marker_name(h1);
-                if h1models::mode::ENGINE_MARKERS.contains(&h2.as_str()) && !has(&h2) {
+                let h2 = h1_assets::models::mode::h2_marker_name(h1);
+                if h1_assets::models::mode::ENGINE_MARKERS.contains(&h2.as_str()) && !has(&h2) {
                     bad.push(format!("{what}: has {h1:?} but no {h2:?} in {markers:?}"));
                 }
             }

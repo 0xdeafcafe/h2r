@@ -282,7 +282,7 @@ pub fn read_h1(h1: &H1Map, id: h1map::TagId) -> Option<H1SkyShader> {
 
 impl H1SkyShader {
     /// The map drawn as the picture with its alpha made opaque
-    /// (`h1bitmaps::convert::convert_bitmap_opaque`): an alpha-blended
+    /// (`h1_assets::bitmaps::convert::convert_bitmap_opaque`): an alpha-blended
     /// shader's [`Recipe::Picture`] whose own alpha doesn't reach the
     /// shader's ([`alpha_reach`]). `sky_one_alpha_env` draws `t3.rgb ×
     /// t3.a` with alpha `t3.a`; with the picture's star mask as that alpha

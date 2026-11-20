@@ -280,7 +280,7 @@ fn converted_seats_carry_halo_1s_tracks() {
             assert_eq!(defs::from_built(def(b"trak"), &again).unwrap(), rec);
             let mut src = h1::CameraTrack::read(&h1, h1.tag(first).unwrap()).unwrap();
             for p in &mut src.points {
-                p.1 = h1models::h1::h2_rotation(p.1);
+                p.1 = h1_assets::models::h1::h2_rotation(p.1);
             }
             let got = points(&rec);
             assert!(same_points(&got, &src), "{} {}", t.name, h.label);

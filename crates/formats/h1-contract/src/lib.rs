@@ -6,7 +6,7 @@
 //! here, so the in-game half needs no converter crate
 //! (docs/dev/crate-structure.md, "W3. The Halo 1 merge"). The converters
 //! re-export each item from the module it was written beside, so
-//! `h1text::hud::SCENARIO_HELP` and `h1_contract::hud::SCENARIO_HELP` are
+//! `h1_assets::text::hud::SCENARIO_HELP` and `h1_contract::hud::SCENARIO_HELP` are
 //! the same constant.
 //!
 //! - [`hud`]: the converted `hmt ` tag's runtime fields and the controller

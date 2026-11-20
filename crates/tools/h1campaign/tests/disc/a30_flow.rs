@@ -37,7 +37,7 @@ fn atom<'a>(s: &'a Scenario, d: Datum) -> (&'a str, u32) {
     (s.string(n.string_offset()).unwrap(), n.data())
 }
 
-pub(super) fn mission(s: &Scenario, ai: &h1ai::h2::ScenarioAi, source: &h1map::H1Map) {
+pub(super) fn mission(s: &Scenario, ai: &h1campaign::ai::h2::ScenarioAi, source: &h1map::H1Map) {
     let (threads, cells) = engine::hs_pool::capacities(s.globals().len() as u32).unwrap();
     assert!(cells > 3072, "a30 must include the generated families' state");
     assert!(s.scripts().iter().filter(|sc| sc.kind() <= 2).count() < threads as usize);
@@ -55,7 +55,7 @@ pub(super) fn mission(s: &Scenario, ai: &h1ai::h2::ScenarioAi, source: &h1map::H
     let intro = calls(s, "cutscene_intro");
     // The original lifepod instruction, in the intro itself, makes one
     // convolution request (1, 1, 3.0, 0.0, 7.0) and timestamps its ramp.
-    use h1scripts::cinematics::Field::*;
+    use h1campaign::scripts::cinematics::Field::*;
     let required = [(Passes, 1), (Kernel, 1), (RadiusFrom, 3f32.to_bits()),
         (RadiusTo, 0), (BlurSeconds, 7f32.to_bits())];
     assert!(intro.iter().filter(|c| c.name == "begin").any(|body| {
@@ -84,8 +84,8 @@ pub(super) fn mission(s: &Scenario, ai: &h1ai::h2::ScenarioAi, source: &h1map::H
         "game_save_immediate" | "game_saving" | "game_reverted")).map(|c| c.name).collect();
     assert_eq!(guards, ["cinematic_skip_start_internal", "game_save_immediate", "game_saving", "game_reverted"]);
 
-    let refs = h1text::h1::scenario_text(source).unwrap();
-    let messages = h1text::h1::Hmt::read(source, source.tag(refs.hud_messages.unwrap().id).unwrap()).unwrap();
+    let refs = h1_assets::text::h1::scenario_text(source).unwrap();
+    let messages = h1_assets::text::h1::Hmt::read(source, source.tag(refs.hud_messages.unwrap().id).unwrap()).unwrap();
     let objectives = calls(s, "objectives_a30");
     for (setter, expected) in [
         ("hud_set_objective_text", ["dia_evade", "dia_protect", "dia_search1", "dia_search2", "dia_search3"]),
@@ -146,9 +146,9 @@ pub(super) fn mission(s: &Scenario, ai: &h1ai::h2::ScenarioAi, source: &h1map::H
 }
 
 pub(super) fn titles(m: &mut map::Map<std::io::Cursor<Vec<u8>>>, bytes: &[u8], addr: u32, source: &h1map::H1Map) {
-    let level = h1scripts::level::Level::read(source).unwrap();
-    let reference = h1text::h1::scenario_text(source).unwrap().help_text.unwrap();
-    let list = h1text::h1::Ustr::read(source, source.tag(reference.id).unwrap()).unwrap();
+    let level = h1campaign::scripts::level::Level::read(source).unwrap();
+    let reference = h1_assets::text::h1::scenario_text(source).unwrap().help_text.unwrap();
+    let list = h1_assets::text::h1::Ustr::read(source, source.tag(reference.id).unwrap()).unwrap();
     let id = map::TagId(u32::from_le_bytes(bytes[0x204..0x208].try_into().unwrap()));
     let locale = tags::Localization::read(m).unwrap();
     let text = locale.unic(m, id).unwrap();

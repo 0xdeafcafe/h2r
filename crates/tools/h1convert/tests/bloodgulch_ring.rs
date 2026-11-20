@@ -162,14 +162,14 @@ fn blood_gulchs_ring_draws_as_halo_1_draws_it() {
 
     // The sky's model: every part a strip, as the sky draw draws it, and
     // each strip is Halo 1's triangles, corner for corner, wound alike.
-    let mut h1_model = h1models::model_from_map(
+    let mut h1_model = h1_assets::models::model_from_map(
         &h1,
         h1.tag(sky.sky.model.id).unwrap(),
-        &h1models::mode::ModelOptions::default(),
+        &h1_assets::models::mode::ModelOptions::default(),
     )
     .unwrap()
     .0;
-    h1sky::convert::drop_edge_on(&mut h1_model);
+    h1_assets::sky::convert::drop_edge_on(&mut h1_model);
     let g = RenderModelGeometry::read(&mut map, model, &mut Mem(done.bytes.clone())).unwrap();
     assert_eq!(g.sections.len(), h1_model.geometries.len());
     let mut triangles = 0;
@@ -181,7 +181,7 @@ fn blood_gulchs_ring_draws_as_halo_1_draws_it() {
                 "section {si} part {pi}: a list, which the sky draw draws as a strip"
             );
             let got = s.geometry.part_triangles(p);
-            let want = h1models::h1::strip_triangles(&hp.strip);
+            let want = h1_assets::models::h1::strip_triangles(&hp.strip);
             assert_eq!(got.len(), want.len(), "section {si} part {pi}: triangles");
             for (a, b) in got.iter().zip(&want) {
                 // Section-local vertices (the converter offsets each part's)

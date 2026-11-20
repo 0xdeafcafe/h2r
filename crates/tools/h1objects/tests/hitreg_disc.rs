@@ -7,7 +7,7 @@ use h1convert::convert::halo1::prepare_halo1;
 use h1convert::convert::structure_mopp;
 use h1convert::surface_query::{Outcome, vector};
 use h1map::{Group, H1Map};
-use h1models::mode::{ModelOptions, world_transforms};
+use h1_assets::models::mode::{ModelOptions, world_transforms};
 use h1objects::arsenal;
 use h1objects::base::Base;
 use h1objects::h1;
@@ -81,7 +81,7 @@ fn check_player(h1: &H1Map, out: &mut Map<Cursor<Vec<u8>>>, built: &Base, retail
     let source_coll = h1.tag(unit.object.collision.unwrap()).unwrap();
     let coll = h1::Collision::read(h1, source_coll).unwrap();
     let mats = h1::elements(h1, h1.tag_data(source_coll).unwrap(), 0x234, 0x48).unwrap();
-    let mode = h1models::model_from_map(
+    let mode = h1_assets::models::model_from_map(
         h1,
         h1.tag(unit.object.model.unwrap()).unwrap(),
         &ModelOptions::default(),

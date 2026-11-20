@@ -80,9 +80,8 @@ live_owned = ["bot-glue", "net-glue", "theater"]
 about = "Offline work on game data: the Halo 1 converters, the editor cores, the profiler"
 uses = ["formats", "recompiler", "runtime", "platform", "rewrites", "live"]
 crates = [
-    "editor-core", "h1-assets", "h1ai", "h1bitmaps", "h1campaign", "h1convert",
-    "h1map", "h1models", "h1objects", "h1scripts", "h1sky", "h1sounds", "h1text",
-    "hopper-edit", "hud-edit", "live-art", "perf", "scenario-edit", "viewer",
+    "editor-core", "h1-assets", "h1campaign", "h1convert",
+    "h1map", "h1objects", "hopper-edit", "hud-edit", "live-art", "perf", "scenario-edit", "viewer",
 ]
 live_owned = ["live-art"]
 

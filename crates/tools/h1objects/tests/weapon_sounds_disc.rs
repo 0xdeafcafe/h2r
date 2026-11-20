@@ -395,7 +395,7 @@ fn every_weapon_fires_its_halo1_sounds() {
             // same animation and frame, naming Halo 1's sound.
             if let Some(antr) = w.first_person_animations {
                 let antr = h1.tag(antr).unwrap();
-                let sounds = h1models::sounds::read(&h1, antr).unwrap();
+                let sounds = h1_assets::models::sounds::read(&h1, antr).unwrap();
                 let fp = block(&r, "first_person");
                 let (_, graph) = path(&fp[0], "animations")
                     .unwrap_or_else(|| panic!("{}: no first-person graph", t.name));
@@ -435,14 +435,14 @@ fn every_weapon_fires_its_halo1_sounds() {
     assert!(weapons > 0);
 }
 
-/// Halo 1's animation sounds (`h1models::sounds`) on every map: each
+/// Halo 1's animation sounds (`h1_assets::models::sounds`) on every map: each
 /// sound reference element (`H1_SOUND_REF_LEN`) holds a `snd!` reference
 /// at `+0` and nothing else, and every animation's sound index is -1 or a
 /// reference with its frame inside the animation.
 #[test]
 #[ignore = "reads the Halo 1 disc ($H1_ISO)"]
 fn halo1_animation_sounds() {
-    use h1models::sounds::{H1_ANIMATION_SOUND, H1_SOUND_REF_LEN, H1_SOUND_REFS};
+    use h1_assets::models::sounds::{H1_ANIMATION_SOUND, H1_SOUND_REF_LEN, H1_SOUND_REFS};
     let (mut graphs, mut refs, mut events, mut out_of_range) = (0, 0, 0, 0);
     let snd = Group::new(b"snd!");
     for (name, h1) in h1_maps() {
@@ -477,7 +477,7 @@ fn halo1_animation_sounds() {
                     out_of_range += 1;
                 }
             }
-            let got = h1models::sounds::read(&h1, t).unwrap();
+            let got = h1_assets::models::sounds::read(&h1, t).unwrap();
             assert_eq!(got.refs.len(), n);
             graphs += 1;
             refs += n;
@@ -491,7 +491,7 @@ fn halo1_animation_sounds() {
 
 /// Retail Halo 2 graphs on Coagulation: how many animations carry sound
 /// events, and what the word after the frame holds (the evidence for
-/// writing 0 there, `h1models::sounds`); every sound reference names a
+/// writing 0 there, `h1_assets::models::sounds`); every sound reference names a
 /// `snd!`.
 #[test]
 #[ignore = "reads the Halo 2 disc ($H2_DISC)"]
@@ -591,7 +591,7 @@ fn weapon_effects_metadata() {
                 ids.push(h1::reference(&h1, &bytes, *at));
             }
             if let Some(a) = w.first_person_animations {
-                let s = h1models::sounds::read(&h1, h1.tag(a).unwrap()).unwrap();
+                let s = h1_assets::models::sounds::read(&h1, h1.tag(a).unwrap()).unwrap();
                 ids.extend(s.refs);
             }
             for id in ids.into_iter().flatten() {

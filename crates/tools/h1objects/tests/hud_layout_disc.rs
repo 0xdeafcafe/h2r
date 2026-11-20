@@ -90,7 +90,7 @@ fn texels(m: &H1Map, bitmap: h1map::TagId, seq: i16, meter: bool) -> ((i32, i32)
         h1hud::clear_meter_colour(argb.format, &mut out).unwrap();
         (img, px) = (argb, out);
     }
-    let top = h1bitmaps::decode_image(&img, &px)
+    let top = h1_assets::bitmaps::decode_image(&img, &px)
         .unwrap()
         .into_iter()
         .find(|l| l.face == 0 && l.level == 0)

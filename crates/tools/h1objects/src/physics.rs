@@ -96,7 +96,7 @@ impl Hull {
 }
 
 /// A rigid transform `p' = r p + t` (`r` row-major, acting on column
-/// vectors, as [`h1models::mode::world_transforms`] gives a node's).
+/// vectors, as [`h1_assets::models::mode::world_transforms`] gives a node's).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Transform {
     pub r: [[f32; 3]; 3],

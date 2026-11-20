@@ -103,13 +103,13 @@ pub(crate) fn mass_properties(h1: &H1Map, tag: &Tag) -> Result<(Physics, MassPro
 /// native Havok spheres on the fuselage and wings, in the model's rest
 /// pose. The compound body has the source's total mass and inertia.
 pub(crate) fn mass_point_physics(
-    model: &h1models::h1::Model,
+    model: &h1_assets::models::h1::Model,
     physics: &Physics,
     mass: &MassProperties,
 ) -> Result<Block> {
     use crate::physics::Transform;
 
-    let world = h1models::mode::world_transforms(
+    let world = h1_assets::models::mode::world_transforms(
         &model
             .nodes
             .iter()

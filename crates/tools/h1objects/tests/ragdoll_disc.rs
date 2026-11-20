@@ -260,7 +260,7 @@ fn retail(
                 other => panic!("{other:?}"),
             };
             Transform {
-                r: h1models::mode::quat_matrix(q),
+                r: h1_assets::models::mode::quat_matrix(q),
                 t: floats(n, "translation"),
             }
         })

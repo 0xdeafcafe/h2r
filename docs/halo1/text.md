@@ -1,7 +1,7 @@
 # Halo 1 text: `ustr`, `hmt `, and their conversion to Halo 2
 
 Halo 1 keeps its user-facing text in two tag groups, read here by
-`crates/tools/h1text` through the [`h1map`](map-format.md) reader, and
+`crates/tools/h1-assets` through the [`h1map`](map-format.md) reader, and
 converted into Halo 2 localized text ([localization.md](../formats/localization.md)):
 string IDs, locale rows in the `matg` globals, and one `unic` tag per
 Halo 1 list. This page covers both sides.

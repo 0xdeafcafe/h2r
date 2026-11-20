@@ -27,9 +27,7 @@ h1convert = { path = "../../tools/h1convert", optional = true }
 scenario-edit = { path = "../../tools/scenario-edit", optional = true }
 # Halo 1 campaign levels converted (`h2 h1 convert <iso> a30`).
 h1campaign = { path = "../../tools/h1campaign", optional = true }
-h1bitmaps = { path = "../../tools/h1bitmaps", optional = true }
-h1sounds = { path = "../../tools/h1sounds", optional = true }
-h1models = { path = "../../tools/h1models", optional = true }
+h1-assets = { path = "../../tools/h1-assets", optional = true }
 # Halo 1 objects for the Halo 1 sandbox (`h2 h1 convert --sandbox h1`).
 h1objects = { path = "../../tools/h1objects", optional = true }
 movies = { workspace = true, optional = true }
@@ -126,9 +124,7 @@ desktop = [
     "dep:h1convert",
     "dep:scenario-edit",
     "dep:h1campaign",
-    "dep:h1bitmaps",
-    "dep:h1sounds",
-    "dep:h1models",
+    "dep:h1-assets",
     "dep:h1objects",
     "dep:movies",
     "dep:xbe",

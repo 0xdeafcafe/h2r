@@ -1,5 +1,5 @@
 //! The Halo 2 scenario fields a converted level's script tables go in
-//! (docs/formats/haloscript.md). `h1scripts::compile` fills them;
+//! (docs/formats/haloscript.md). `h1campaign::scripts::compile` fills them;
 //! `boot::h1_script_builtins` reads the string data back.
 
 /// Script string data (byte count, address).

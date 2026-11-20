@@ -1,6 +1,6 @@
 # Halo 1 skies and their conversion to Halo 2
 
-`crates/tools/h1sky` reads Halo 1 `sky ` tags out of Xbox cache files
+`crates/tools/h1-assets` reads Halo 1 `sky ` tags out of Xbox cache files
 ([map-format.md](map-format.md)), decodes Halo 2 `sky ` tags
 retail-side, and converts one into the other as a `map::build` block tree
 (the `Converted { group, root, raw }` pattern of [models.md](models.md),

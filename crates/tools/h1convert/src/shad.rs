@@ -1030,7 +1030,7 @@ pub struct Extras {
     pub tint: Option<Tint>,
     /// The [`Role::Mask`] map is to be bound as a derived bitmap: the
     /// Halo 1 picture with this gain times its brightest channel as alpha
-    /// (`h1bitmaps::mask::convert_brightest`, [`plasma_shader`]); the
+    /// (`h1_assets::bitmaps::mask::convert_brightest`, [`plasma_shader`]); the
     /// caller converting the maps makes it. `None`: the map as it is.
     pub brightest_mask: Option<f32>,
     /// The weapon function picking the layout's animated map's frame, one
@@ -1944,7 +1944,7 @@ pub const SOSO_NOT_ALPHA_TESTED: u16 = 1 << 2;
 /// alone left the cards whole: its depth and shadow passes kill by its
 /// bump map's alpha (slot 0), not the base's, so the object converter
 /// binds a flat bump cut out where the base is
-/// (`h1bitmaps::mask::cutout_bump`, converter version 92; shown live on
+/// (`h1_assets::bitmaps::mask::cutout_bump`, converter version 92; shown live on
 /// Blood Gulch's whitebark tree, docs/halo1/objects.md "Cut-out model
 /// shaders").
 pub fn soso_alpha_tested(flags: u16, base_has_alpha: bool) -> bool {
@@ -2221,7 +2221,7 @@ fn read_h1_maps(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
             // reflection when there is one (else the black cube); the
             // multipurpose map stands for the change-colour map, which
             // the object converter makes from its blue
-            // (`h1bitmaps::mask::channel_into`). A cut-out `soso` keeps
+            // (`h1_assets::bitmaps::mask::channel_into`). A cut-out `soso` keeps
             // its cut-out: no stem here alpha-tests with change colours.
             if !alpha_tested && let Some((_, multipurpose)) = soso_change_colour(h1, tag) {
                 let mut cc = maps.clone();
@@ -2664,7 +2664,7 @@ fn chicago_maps(h1: &h1map::H1Map, d: &[u8], chicago: bool) -> Option<Vec<ChainM
 /// The mean colour (0 to 1) of the Halo 1 bitmap `id`'s first image at
 /// its largest level.
 pub fn h1_mean_color(h1: &h1map::H1Map, id: h1map::TagId) -> Option<[f32; 3]> {
-    use h1bitmaps::BitmapExt;
+    use h1_assets::bitmaps::BitmapExt;
     let t = h1.tag(id).ok()?;
     let b = h1map::bitmap::Bitmap::read(h1, t).ok()?;
     let img = b.decode(h1, 0, 0).ok()?;
@@ -2767,7 +2767,7 @@ pub fn brightness_mask_name(name: &str, gain: f32) -> String {
 
 /// The name of the bump map cut out by the base map `name`'s alpha that
 /// an alpha-tested model shader binds in its bump slot
-/// (`h1bitmaps::mask::cutout_bump`): `<name>_alpha_test_bump`.
+/// (`h1_assets::bitmaps::mask::cutout_bump`): `<name>_alpha_test_bump`.
 pub fn cutout_bump_name(name: &str) -> String {
     format!("{name}_alpha_test_bump")
 }
@@ -2831,7 +2831,7 @@ pub fn plasma_glow(h1: &h1map::H1Map, d: &[u8]) -> Option<[f32; 3]> {
 /// The hue of a Halo 1 bitmap's first image ([`hue`]); `None` when it
 /// doesn't decode or is black.
 pub fn h1_hue(h1: &h1map::H1Map, id: h1map::TagId) -> Option<[f32; 3]> {
-    use h1bitmaps::BitmapExt;
+    use h1_assets::bitmaps::BitmapExt;
     let b = h1map::bitmap::Bitmap::read(h1, h1.tag(id).ok()?).ok()?;
     hue(&b.decode(h1, 0, 0).ok()?.rgba)
 }
@@ -3127,7 +3127,7 @@ pub const SOSO_CUBE: usize = 0x164;
 /// metal). [`TEX_BUMP_ENV`] masks the reflection with the colour pass's
 /// alpha (the base map's times the detail's), so a converted `soso` on it
 /// takes a base whose alpha is this map's red
-/// (`h1bitmaps::mask::red_into_alpha`).
+/// (`h1_assets::bitmaps::mask::red_into_alpha`).
 pub const SOSO_MULTIPURPOSE: usize = 0xbc;
 
 /// The `soso` `tag`'s multipurpose map ([`SOSO_MULTIPURPOSE`]), if it names

@@ -12,7 +12,7 @@
 //!   registration point (the centre), format 11, depth 1, no mips, the
 //!   pixel offset 0, LOD 0 a new raw resource and its size, LODs 1 and 2
 //!   and the three texture cache handles `0xffffffff` (a handle other than
-//!   -1 reads as already resident: `h1bitmaps::convert::IMAGE_NONE_WORDS`),
+//!   -1 reads as already resident: `h1_assets::bitmaps::convert::IMAGE_NONE_WORDS`),
 //!   the runtime ID the tag's own datum, no low-detail image.
 //! - **Header** (`0x4c`, schema `BitmapHeader`): no sequences (`+0x3c`),
 //!   one image (`+0x44`).

@@ -7,8 +7,8 @@ use std::collections::HashMap;
 
 use h1convert::shad::program::model_defaults::ModelDefaults;
 use h1map::{H1Map, Tag};
-use h1models::Converted;
-use h1models::mode::ModelOptions;
+use h1_assets::models::Converted;
+use h1_assets::models::mode::ModelOptions;
 use map::build::{Block, FixupKind, RawId, RawRef, TagEntry, TagPayload, TagSet};
 use map::{FourCC, TagId};
 
@@ -330,10 +330,10 @@ pub struct Tree {
     /// Halo 1 sounds the tags play (effect parts), converted, by path;
     /// the tags name them by [`sound`] placeholders. They need the map's
     /// sound gestalt, so [`Tree::install`] adds them first.
-    pub sounds: Vec<(String, h1sounds::ConvertedSound)>,
+    pub sounds: Vec<(String, h1_assets::sounds::ConvertedSound)>,
     /// Halo 1 looping sounds the tags attach, read and converted; named
     /// by [`looping`] placeholders.
-    pub loops: Vec<h1sounds::looping::Looping>,
+    pub loops: Vec<h1_assets::sounds::looping::Looping>,
     /// What installing the sounds left out, and why.
     pub audio_notes: Vec<String>,
     /// The HUD each owner (the player biped) can switch between at game
@@ -402,7 +402,7 @@ pub enum PhysicsKind {
 /// Halo 1's model nodes ([`crate::ragdoll`]), the frames from the nodes'
 /// rest transforms. Empty when the skeleton does not map.
 pub fn biped_ragdoll(
-    nodes: &[h1models::h1::Node],
+    nodes: &[h1_assets::models::h1::Node],
     bodies: &[crate::rebuild::Body],
 ) -> Vec<crate::ragdoll::Constraint> {
     let named: Vec<(&str, i16)> = nodes.iter().map(|n| (n.name.as_str(), n.parent)).collect();
@@ -414,7 +414,7 @@ pub fn biped_ragdoll(
     let rest: Vec<crate::physics::Transform> = nodes
         .iter()
         .map(|n| crate::physics::Transform {
-            r: h1models::mode::quat_matrix(n.rotation),
+            r: h1_assets::models::mode::quat_matrix(n.rotation),
             t: n.translation,
         })
         .collect();
@@ -477,21 +477,21 @@ impl Tree {
 
     fn add_audio(&self, set: &mut TagSet) -> std::result::Result<(Vec<TagId>, Vec<TagId>), String> {
         let snd = FourCC(*b"snd!");
-        let new: Vec<(String, h1sounds::ConvertedSound)> = self
+        let new: Vec<(String, h1_assets::sounds::ConvertedSound)> = self
             .sounds
             .iter()
             .filter(|(n, _)| set.converted(snd, n).is_none())
             .cloned()
             .collect();
         if !new.is_empty() {
-            h1sounds::install_sounds(set, new).map_err(|e| e.to_string())?;
+            h1_assets::sounds::install_sounds(set, new).map_err(|e| e.to_string())?;
         }
         let sounds = self
             .sounds
             .iter()
             .map(|(n, _)| set.converted(snd, n).ok_or(format!("{n}: not installed")))
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        let loops = h1sounds::looping::install_looping(set, &self.loops).map_err(|e| e.to_string())?;
+        let loops = h1_assets::sounds::looping::install_looping(set, &self.loops).map_err(|e| e.to_string())?;
         Ok((sounds, loops))
     }
 }
@@ -683,7 +683,7 @@ fn finish(b: &mut Block, raw: &[RawId], id: TagId) {
                 finish(child, raw, id)
             }
             FixupKind::Raw(RawRef::Local(r)) => *r = raw[r.0],
-            FixupKind::TagId(t) | FixupKind::TagRef(t) if *t == h1models::SELF_ID => *t = id,
+            FixupKind::TagId(t) | FixupKind::TagRef(t) if *t == h1_assets::models::SELF_ID => *t = id,
             _ => {}
         }
     }
@@ -701,16 +701,16 @@ struct PoweredPoint {
 /// named as the point, on its node, one instance per permutation of the
 /// first region (D: so whichever permutation the object shows carries
 /// it), no rotation.
-fn add_point_markers(model: &mut h1models::h1::Model, points: &[PoweredPoint]) {
+fn add_point_markers(model: &mut h1_assets::models::h1::Model, points: &[PoweredPoint]) {
     let perms = model.regions.first().map_or(1, |r| r.permutations.len().max(1));
     for p in points {
         if model.markers.iter().any(|m| m.name == p.point.marker) {
             continue;
         }
-        model.markers.push(h1models::h1::Marker {
+        model.markers.push(h1_assets::models::h1::Marker {
             name: p.point.marker.clone(),
             instances: (0..perms)
-                .map(|k| h1models::h1::MarkerInstance {
+                .map(|k| h1_assets::models::h1::MarkerInstance {
                     region: 0,
                     permutation: k as i8,
                     node: p.node as i8,
@@ -1059,8 +1059,8 @@ impl<'a> Converter<'a> {
         if let Some(&k) = self.sound_index.get(&tag.id.0) {
             return Ok(Some(sound(k)));
         }
-        let c = h1sounds::Sound::read(self.h1, tag)
-            .and_then(|s| h1sounds::convert_sound(&s, self.h1.bytes()))
+        let c = h1_assets::sounds::Sound::read(self.h1, tag)
+            .and_then(|s| h1_assets::sounds::convert_sound(&s, self.h1.bytes()))
             .map_err(|e| h1convert::Error::no_rebuild(&self.h1.header().name, &tag.name, e))?;
         let size: u64 = c
             .ranges
@@ -1134,16 +1134,16 @@ impl<'a> Converter<'a> {
         if let Some(&k) = self.sound_index.get(&tag.id.0) {
             return Ok(sound(k));
         }
-        let converted = h1sounds::Sound::read(self.h1, tag)
-            .and_then(|s| h1sounds::convert_sound(&s, self.h1.bytes()))
+        let converted = h1_assets::sounds::Sound::read(self.h1, tag)
+            .and_then(|s| h1_assets::sounds::convert_sound(&s, self.h1.bytes()))
             .map_err(|e| h1convert::Error::no_rebuild(&self.h1.header().name, &tag.name, e))?;
         self.queue_sound(tag, converted)
     }
 
-    fn queue_sound(&mut self, tag: &Tag, converted: h1sounds::ConvertedSound) -> Result<TagId> {
+    fn queue_sound(&mut self, tag: &Tag, converted: h1_assets::sounds::ConvertedSound) -> Result<TagId> {
         let target = converted.promotion.as_ref().and_then(|p| p.target.clone());
-        let dependencies = h1sounds::convert::read_source_sounds(self.h1, target, |name| {
-            self.h1.find(h1sounds::h1::SND, name).is_some_and(|source| {
+        let dependencies = h1_assets::sounds::convert::read_source_sounds(self.h1, target, |name| {
+            self.h1.find(h1_assets::sounds::h1::SND, name).is_some_and(|source| {
                 source.id == tag.id || self.sound_index.contains_key(&source.id.0)
             })
         })
@@ -1154,7 +1154,7 @@ impl<'a> Converter<'a> {
         for (name, sound) in dependencies {
             let source = self
                 .h1
-                .find(h1sounds::h1::SND, &name)
+                .find(h1_assets::sounds::h1::SND, &name)
                 .expect("read source sound");
             self.sound_index.insert(source.id.0, self.tree.sounds.len());
             self.tree.sounds.push((name, sound));
@@ -1166,7 +1166,7 @@ impl<'a> Converter<'a> {
         if let Some(&k) = self.loop_index.get(&tag.id.0) {
             return Ok(looping(k));
         }
-        let converted = h1sounds::looping::read_looping(self.h1, tag)
+        let converted = h1_assets::sounds::looping::read_looping(self.h1, tag)
             .map_err(|e| h1convert::Error::no_rebuild(&self.h1.header().name, &tag.name, e))?;
         let k = self.tree.loops.len();
         self.tree.loops.push(converted);
@@ -1369,7 +1369,7 @@ impl<'a> Converter<'a> {
         let scenery = h1::OBJECT_TYPES.get(obj.object_type as usize) == Some(&b"scen");
         let mode_tag = self.h1_tag(mode_id)?;
         let (mut h1_model, _) =
-            h1models::model_from_map(self.h1, mode_tag, &ModelOptions::default())?;
+            h1_assets::models::model_from_map(self.h1, mode_tag, &ModelOptions::default())?;
         let key = (mode_id, rounds, obj.texture_override);
         let mode = match self.render_models.get(&key) {
             Some(&mode) => mode,
@@ -1383,7 +1383,7 @@ impl<'a> Converter<'a> {
                 let mut shaders =
                     self.model_shaders(rep, &h1_model, rounds, obj.texture_override)?;
                 // A player biped's body carries the player's emblem, as the
-                // Chief's does (h1models::emblem); after model_shaders, so
+                // Chief's does (h1_assets::models::emblem); after model_shaders, so
                 // its shader entry (no Halo 1 tag) is not looked up there.
                 let player = h1::OBJECT_TYPES.get(obj.object_type as usize) == Some(&b"bipd")
                     && health_hud::is_player_biped(name);
@@ -1395,9 +1395,9 @@ impl<'a> Converter<'a> {
                     shaders,
                     ..ModelOptions::default()
                 };
-                let mut mode = h1models::mode::convert_model(
+                let mut mode = h1_assets::models::mode::convert_model(
                     &h1_model,
-                    h1models::short_name(&mode_tag.name),
+                    h1_assets::models::short_name(&mode_tag.name),
                     &opts,
                 )?;
                 crate::rebuild::mode_materials(&mut mode.root, &opts.shaders)?;
@@ -1433,7 +1433,7 @@ impl<'a> Converter<'a> {
                     None => {
                         let vehicle =
                             h1::OBJECT_TYPES.get(obj.object_type as usize) == Some(&b"vehi");
-                        let opts = h1models::jmad::GraphOptions {
+                        let opts = h1_assets::models::jmad::GraphOptions {
                             mass_point_markers: if vehicle {
                                 self.mass_point_markers(obj)?
                             } else {
@@ -1441,7 +1441,7 @@ impl<'a> Converter<'a> {
                             },
                         };
                         let (_, report, mut conv) =
-                            h1models::graph_from_map_with(self.h1, t, Some(mode_tag), &opts)?;
+                            h1_assets::models::graph_from_map_with(self.h1, t, Some(mode_tag), &opts)?;
                         // Halo 2's suspension names a marker; one whose
                         // Halo 1 mass point has none (not powered, or out
                         // of range) has no rebuild yet.
@@ -1472,13 +1472,13 @@ impl<'a> Converter<'a> {
         &mut self,
         rep: &mut ObjectReport,
         obj: &h1::Object,
-        h1_model: &h1models::h1::Model,
+        h1_model: &h1_assets::models::h1::Model,
         mode: TagId,
         coll: Option<(TagId, (u32, bool))>,
         jmad: Option<TagId>,
         name: &str,
     ) -> Result<Option<TagId>> {
-        let (count, nodes) = h1models::mode::hlmt_nodes(h1_model);
+        let (count, nodes) = h1_assets::models::mode::hlmt_nodes(h1_model);
         let render: Vec<(String, Vec<String>)> = h1_model
             .regions
             .iter()
@@ -1578,8 +1578,8 @@ impl<'a> Converter<'a> {
             let mut votes: HashMap<(String, String), usize> = HashMap::new();
             let antr = h1map::Group::new(b"antr");
             for t in self.h1.tags().iter().filter(|t| t.group == antr) {
-                for name in h1models::graph_names(self.h1, t)? {
-                    let n = h1models::names::map_name(&name);
+                for name in h1_assets::models::graph_names(self.h1, t)? {
+                    let n = h1_assets::models::names::map_name(&name);
                     if n.class != "any" && n.kind != "any" {
                         *votes.entry((n.kind, n.class)).or_default() += 1;
                     }
@@ -1588,13 +1588,13 @@ impl<'a> Converter<'a> {
             let mut classes = weapon_classes(votes);
             // Vehicle-mounted weapons may have no clip named for the gun.
             for t in self.h1.tags().iter().filter(|t| t.group == antr) {
-                for (kind, class) in h1models::graph_weapon_types(self.h1, t)? {
-                    if h1models::names::CLASSES.contains(&class.as_str()) {
+                for (kind, class) in h1_assets::models::graph_weapon_types(self.h1, t)? {
+                    if h1_assets::models::names::CLASSES.contains(&class.as_str()) {
                         classes.entry(kind).or_insert(class);
                     }
                 }
             }
-            classes.extend(h1models::player_weapon_types(self.h1)?);
+            classes.extend(h1_assets::models::player_weapon_types(self.h1)?);
             self.weapon_classes = Some(classes);
         }
         Ok(self
@@ -1652,13 +1652,13 @@ impl<'a> Converter<'a> {
     fn emblem(
         &mut self,
         source: &str,
-        model: &mut h1models::h1::Model,
+        model: &mut h1_assets::models::h1::Model,
         shaders: &mut Vec<TagId>,
     ) -> Result<()> {
         use h1convert::shad::{EMBLEM_BITMAP, EMBLEM_STEM, emblem};
         let error = |why: String| h1convert::Error::no_rebuild(&self.h1.header().name, source, why);
-        let at = &h1models::emblem::LEFT_SHOULDER;
-        let index = h1models::emblem::add_emblem(model, at)
+        let at = &h1_assets::models::emblem::LEFT_SHOULDER;
+        let index = h1_assets::models::emblem::add_emblem(model, at)
             .ok_or_else(|| error(format!("emblem: no surface bound to {}", at.node)))?;
         let shader = if let Some(id) = self.emblem_shader {
             id
@@ -1702,7 +1702,7 @@ impl<'a> Converter<'a> {
     fn model_shaders(
         &mut self,
         rep: &mut ObjectReport,
-        model: &h1models::h1::Model,
+        model: &h1_assets::models::h1::Model,
         rounds: Option<i16>,
         texture_override: i16,
     ) -> Result<Vec<TagId>> {
@@ -1710,7 +1710,7 @@ impl<'a> Converter<'a> {
         for (slot, entry) in model.shaders.iter().enumerate() {
             // The object's texture override selects the image of every
             // multi-image material (shader_images::material_permutation).
-            let entry = &h1models::h1::ShaderRef {
+            let entry = &h1_assets::models::h1::ShaderRef {
                 permutation: shader_images::material_permutation(
                     texture_override,
                     entry.permutation,
@@ -1739,7 +1739,7 @@ impl<'a> Converter<'a> {
     fn model_shader(
         &mut self,
         tag: &Tag,
-        entry: &h1models::h1::ShaderRef,
+        entry: &h1_assets::models::h1::ShaderRef,
         rounds: Option<i16>,
     ) -> Result<TagId> {
         if !h1convert::shad::H1_GROUPS.contains(&tag.group.to_string().as_str()) {
@@ -1917,7 +1917,7 @@ impl<'a> Converter<'a> {
             return Ok(None);
         }
         // The cut-out stem's depth and shadow passes kill by its bump
-        // map's alpha, not the base's (`h1bitmaps::mask::cutout_bump`):
+        // map's alpha, not the base's (`h1_assets::bitmaps::mask::cutout_bump`):
         // a `soso` has no bump map, so it takes a flat one cut out where
         // its base is (converter version 92; the stem's default bump is
         // opaque, and the leaves drew as whole dark cards).
@@ -2017,13 +2017,13 @@ impl<'a> Converter<'a> {
         if let Some(t) = self.done.get(&tag.id.0) {
             return Some(*t);
         }
-        let (_, conv, _) = h1bitmaps::convert_bitmap(self.h1, tag).ok()?;
+        let (_, conv, _) = h1_assets::bitmaps::convert_bitmap(self.h1, tag).ok()?;
         self.cached(tag, conv).ok()
     }
 
     /// The Halo 1 base map `base` with the red channel of `mask` (a
     /// `soso`'s multipurpose map) as its alpha, DXT5, on every image
-    /// (`h1bitmaps::mask::convert_reflection_mask`), `<base
+    /// (`h1_assets::bitmaps::mask::convert_reflection_mask`), `<base
     /// name>_reflection_<mask leaf>`, built once per pair. `None` when
     /// either does not read or decode, or their images do not pair.
     fn masked_bitmap(&mut self, base: h1map::TagId, mask: h1map::TagId) -> Option<TagId> {
@@ -2037,7 +2037,7 @@ impl<'a> Converter<'a> {
     }
 
     /// The Halo 1 bitmap `id` with `gain` times its brightest channel as
-    /// alpha, DXT5 (`h1bitmaps::mask::convert_brightest`),
+    /// alpha, DXT5 (`h1_assets::bitmaps::mask::convert_brightest`),
     /// `<name>_brightness_<gain × 1000>`, built once per pair. `None` when
     /// it does not read or decode.
     fn brightest_bitmap(&mut self, id: h1map::TagId, gain: f32) -> Option<TagId> {
@@ -2046,7 +2046,7 @@ impl<'a> Converter<'a> {
             return *t;
         }
         let tag = self.h1.tag(id).ok()?.clone();
-        let out = h1bitmaps::mask::convert_brightest(self.h1, &tag, gain)
+        let out = h1_assets::bitmaps::mask::convert_brightest(self.h1, &tag, gain)
             .ok()
             .map(|conv| {
                 let name = h1convert::shad::brightness_mask_name(&tag.name, gain);
@@ -2057,7 +2057,7 @@ impl<'a> Converter<'a> {
     }
 
     /// The flat bump map cut out by the Halo 1 base map `base`'s alpha
-    /// (`h1bitmaps::mask::convert_cutout_bump`), `<base
+    /// (`h1_assets::bitmaps::mask::convert_cutout_bump`), `<base
     /// name>_alpha_test_bump`, built once per base. `None` when the base
     /// does not read or decode.
     fn cutout_bump(&mut self, base: h1map::TagId) -> Option<TagId> {
@@ -2065,7 +2065,7 @@ impl<'a> Converter<'a> {
             return *t;
         }
         let tag = self.h1.tag(base).ok()?.clone();
-        let out = h1bitmaps::mask::convert_cutout_bump(self.h1, &tag)
+        let out = h1_assets::bitmaps::mask::convert_cutout_bump(self.h1, &tag)
             .ok()
             .map(|conv| {
                 let name = h1convert::shad::cutout_bump_name(&tag.name);
@@ -2078,7 +2078,7 @@ impl<'a> Converter<'a> {
     fn bake_mask(&mut self, base: h1map::TagId, mask: h1map::TagId) -> Option<TagId> {
         let tag = self.h1.tag(base).ok()?.clone();
         let mtag = self.h1.tag(mask).ok()?.clone();
-        let conv = h1bitmaps::mask::convert_reflection_mask(self.h1, &tag, &mtag).ok()?;
+        let conv = h1_assets::bitmaps::mask::convert_reflection_mask(self.h1, &tag, &mtag).ok()?;
         let leaf = mtag.name.rsplit('\\').next().unwrap_or(&mtag.name);
         Some(self.tree.push(&format!("{}_reflection_{leaf}", tag.name), conv))
     }
@@ -2124,7 +2124,7 @@ impl<'a> Converter<'a> {
     /// slot `slot` (`h1convert::shad::halo2_change_colour_slot`): its
     /// multipurpose map `mask`'s blue (`SOSO_CHANGE_COLOUR_CHANNEL`) in
     /// channel `slot`, every other channel 0
-    /// on every image (`h1bitmaps::mask::convert_change_colour`), `<mask
+    /// on every image (`h1_assets::bitmaps::mask::convert_change_colour`), `<mask
     /// name>_change_color_<slot>`, built once per pair. `None` when the
     /// mask does not read or decode.
     fn change_colour_bitmap(&mut self, mask: h1map::TagId, slot: usize) -> Option<TagId> {
@@ -2139,7 +2139,7 @@ impl<'a> Converter<'a> {
 
     fn bake_change_colour(&mut self, mask: h1map::TagId, slot: usize) -> Option<TagId> {
         let mtag = self.h1.tag(mask).ok()?.clone();
-        let conv = h1bitmaps::mask::convert_change_colour(
+        let conv = h1_assets::bitmaps::mask::convert_change_colour(
             self.h1,
             &mtag,
             h1convert::shad::SOSO_CHANGE_COLOUR_CHANNEL,
@@ -2180,7 +2180,7 @@ impl<'a> Converter<'a> {
             pixels.push(px);
         }
         let (conv, _) =
-            h1bitmaps::convert::convert_with(&scaled, |i| Ok(std::mem::take(&mut pixels[i]))).ok()?;
+            h1_assets::bitmaps::convert::convert_with(&scaled, |i| Ok(std::mem::take(&mut pixels[i]))).ok()?;
         let out = self.tree.push(&format!("{}_alpha_{alpha:02x}", tag.name), conv);
         self.hud_bitmaps.insert(key, out);
         Some(out)
@@ -2211,7 +2211,7 @@ impl<'a> Converter<'a> {
             pixels.push(px);
         }
         let (conv, _) =
-            h1bitmaps::convert::convert_with(&cleared, |i| Ok(std::mem::take(&mut pixels[i]))).ok()?;
+            h1_assets::bitmaps::convert::convert_with(&cleared, |i| Ok(std::mem::take(&mut pixels[i]))).ok()?;
         let out = self.tree.push(&format!("{}_meter", tag.name), conv);
         self.meter_bitmaps.insert(id.0, out);
         Some(out)
@@ -2251,7 +2251,7 @@ impl<'a> Converter<'a> {
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|e| fail(e.to_string()))?;
         let (conv, _) =
-            h1bitmaps::convert::convert_with(&shifted, |i| Ok(std::mem::take(&mut pixels[i])))
+            h1_assets::bitmaps::convert::convert_with(&shifted, |i| Ok(std::mem::take(&mut pixels[i])))
                 .map_err(|e| fail(e.to_string()))?;
         let out = self.tree.push(&format!("{}_seq{seq}_sprite{first}", tag.name), conv);
         self.sprite_bitmaps.insert(key, out);
@@ -2508,7 +2508,7 @@ impl<'a> Converter<'a> {
         let powered = match u.object.model {
             Some(m) => {
                 let (model, _) =
-                    h1models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?;
+                    h1_assets::models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?;
                 self.powered_points(&u.object, &model)?
             }
             None => Vec::new(),
@@ -2570,7 +2570,7 @@ impl<'a> Converter<'a> {
         let (markers, bounds) = match u.object.model {
             Some(m) => {
                 let model =
-                    h1models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?.0;
+                    h1_assets::models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?.0;
                 let bounds = crate::rebuild::model_sphere(&model);
                 (model.markers.into_iter().map(|m| m.name).collect(), bounds)
             }
@@ -2734,7 +2734,7 @@ impl<'a> Converter<'a> {
     fn powered_points(
         &self,
         obj: &h1::Object,
-        model: &h1models::h1::Model,
+        model: &h1_assets::models::h1::Model,
     ) -> Result<Vec<PoweredPoint>> {
         let Some(p) = obj.physics else {
             return Ok(Vec::new());
@@ -2744,7 +2744,7 @@ impl<'a> Converter<'a> {
             Some(c) => Some(h1::Collision::read(self.h1, self.h1_tag(c)?)?),
             None => None,
         };
-        let world = h1models::mode::world_transforms(
+        let world = h1_assets::models::mode::world_transforms(
             &model
                 .nodes
                 .iter()
@@ -2924,7 +2924,7 @@ impl<'a> Converter<'a> {
         self.object_physics(&mut rep, hlmt, &u.object, &tag.name, PhysicsKind::Biped)?;
         let markers = match u.object.model {
             Some(m) => {
-                h1models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?
+                h1_assets::models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?
                     .0
                     .markers
                     .into_iter()
@@ -2954,7 +2954,7 @@ impl<'a> Converter<'a> {
                     &self.h1.header().name, &shader.name, "shield has no destination damage record",
                 ).into());
             }
-            let entry = h1models::h1::ShaderRef { group: shader.group, tag: shader.id, permutation: 0 };
+            let entry = h1_assets::models::h1::ShaderRef { group: shader.group, tag: shader.id, permutation: 0 };
             self.model_shader(shader, &entry, None)
         }).transpose()?;
         let mut blood = None;
@@ -3257,7 +3257,7 @@ impl<'a> Converter<'a> {
             None
         };
         let (model, _) =
-            h1models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?;
+            h1_assets::models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?;
         let from_points = || -> Result<Option<(Block, String)>> {
             if !matches!(
                 kind,
@@ -3277,7 +3277,7 @@ impl<'a> Converter<'a> {
             return from_points();
         };
         let coll = h1::Collision::read(self.h1, self.h1_tag(c)?)?;
-        let world = h1models::mode::world_transforms(
+        let world = h1_assets::models::mode::world_transforms(
             &model
                 .nodes
                 .iter()
@@ -3817,7 +3817,7 @@ impl Converter<'_> {
         let pixels = (0..bm.images.len())
             .map(|i| bm.pixels(self.h1, i))
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        let (converted, _) = h1bitmaps::convert::convert_with(&bm, |i| Ok(pixels[i].to_vec()))
+        let (converted, _) = h1_assets::bitmaps::convert::convert_with(&bm, |i| Ok(pixels[i].to_vec()))
             .map_err(|e| Error::Invalid(format!("{}: {e}", tag.name)))?;
         let id = self.tree.push(&format!("{}_direct", tag.name), converted);
         self.direct_hud_bitmaps.insert(tag.id.0, id);
@@ -3920,7 +3920,7 @@ pub fn weapon_classes(votes: HashMap<(String, String), usize>) -> HashMap<String
 /// that, [`held_wheels`], by the role). Built whole into the body, the converted
 /// warthog's tires spawned up to 0.14 into Blood Gulch's ground (a game
 /// run, `havok.contacts`), and Havok threw it over.
-pub fn wheel_nodes(phys: &h1::Physics, nodes: &[h1models::h1::Node]) -> Vec<i16> {
+pub fn wheel_nodes(phys: &h1::Physics, nodes: &[h1_assets::models::h1::Node]) -> Vec<i16> {
     let grips: Vec<i16> = phys
         .mass_points
         .iter()

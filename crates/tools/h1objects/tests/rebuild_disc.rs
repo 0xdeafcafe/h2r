@@ -174,7 +174,7 @@ fn read_back(tree: &Tree, c: &Converted, name: &str) -> Record {
     targets(&r, &c.group.to_string(), &mut named);
     for (p, id) in named {
         // The tag's own datum, filled in at install.
-        if id == h1models::SELF_ID { continue; }
+        if id == h1_assets::models::SELF_ID { continue; }
         if id.0 & 0xffff_0000 == h1objects::convert::sound(0).0 {
             assert!(tree.sounds.get(id.0 as usize & 0xffff).is_some());
             continue;
