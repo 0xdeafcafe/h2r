@@ -17,12 +17,24 @@ images, extracted files, XBE or map files, Ghidra projects and exports, and
 any output produced from them, even small snippets. If you are unsure whether
 something is derived from the disc, leave it out.
 
-The one exception is documentation screenshots, such as the editor guide's.
-They are rendered by a script in `scripts/` (for example
-`scripts/editor-screenshots.sh`), live under `docs/images/`, and are stored in
-Git LFS (`.gitattributes` covers `docs/images/**`; run `git lfs install` once).
-Don't commit one-off screenshots, debug frames or captures from test or agent
-runs, anywhere in the repo.
+Scripted documentation screenshots and gameplay footage are the exception.
+Render them from your own disc with a script in `scripts/` and commit the
+finished media under `docs/images/` in Git LFS. Run `git lfs install` once.
+Keep raw frame sequences, one-off screenshots, debug frames and test captures
+out of Git.
+
+### README media
+
+`scripts/readme-video.sh` captures a six-second clip per level at 30 fps from
+an existing `H2_OPT=2` game image. It uses `h2 serve` and `jq` to wait for
+gameplay, hide the HUD and move the camera through the agent API. Pass your
+image with `--out-image` and, if needed, your ISO with `--disc`.
+
+`scripts/readme-art.sh` takes the captured frame folders via `--frames`.
+It writes `header.webp`, `header@2x.webp` and `gameplay.webp` under
+`docs/images/readme/`. If a level has no clip, the script uses its JPEG from
+`scripts/readme-screenshots.sh`. Install `jq` and `webp` with Homebrew and use
+a Python 3 environment with Pillow and NumPy for encoding.
 
 ## Checks
 
