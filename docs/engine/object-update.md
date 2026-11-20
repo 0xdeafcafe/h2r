@@ -272,7 +272,7 @@ guest accesses. The slice is counted in guest memory accessor calls
 (`ExecCtx::memory`, `runtime::Guest`), which does not spend; only a few hooks
 charge explicitly with `ExecCtx::charge_accesses`
 (`crates/rewrites/render-bridge/src/pipeline_render.rs`,
-`crates/rewrites/render-bridge/src/pipeline_scene.rs`, `crates/apps/boot/src/fallback.rs`).
+`crates/rewrites/render-bridge/src/pipeline_scene.rs`, `crates/runtime/recomp/src/fallback.rs`).
 So a long Rust segment runs without expiring its slice, and the only
 preemption points inside a walk are the true callouts. That is
 deterministic. Whether to charge bodies is a decision, not a reading; a run
