@@ -805,7 +805,8 @@ only a whole retail map is caught.
   A opens details. X downloads an available map or retries a failure. An
   installed row offers Details and Back. During a transfer the arrow and
   percentage update in place. An empty list offers Refresh. A failed read
-  offers Try Again and explains why. An explicit retry shows Loading and
+  offers Try Again. The description gives the reason and says that A
+  reads the list again. An explicit retry shows Loading and
   can run at the reader's next turn. The populated list keeps its order
   until the player leaves it, including while a pack or page is open.
 - **Map packs.** Maps the server lists with the same pack (an entry's
@@ -820,7 +821,7 @@ only a whole retail map is caught.
   including failed maps eligible for retry. Installed and in-flight maps
   are excluded from the action count. A partially installed pack counts completed maps toward the pack
   percentage. B returns to the parent row. If a restored pack is gone,
-  the page says so and shows B Back.
+  its description asks the player to press B to return to Mods.
 - **Installing.** Download runs `MapGate::install` on a thread of its own
   (`h2-live-mod`): the join's own checks and path (the manifest from
   `/v1/maps/{id}`, the base checked against the disc, each layer from

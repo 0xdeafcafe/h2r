@@ -9,6 +9,7 @@
 use content::campaign_list::Built;
 
 use crate::campaigns::{CampaignProgress, Progress, RETAIL_CAMPAIGN};
+use crate::ui_kit::text::join_sentences;
 
 /// Halo 2's own line for the pane (it has no manifest).
 pub const HALO2_DESCRIPTION: &str = "The war comes home to Earth, and a second ring waits.";
@@ -108,40 +109,31 @@ impl Info {
         }
     }
 
-    /// The pane's text: the line, then the facts, the progress and the
-    /// options, a line each (the pane holds about six of its lines).
+    /// The pane's text, wrapped by the guest widget.
     pub fn text(&self) -> String {
-        let mut lines = Vec::new();
-        if !self.description.is_empty() {
-            lines.push(self.description.clone());
-        }
-        let mut facts = Vec::new();
+        let mut sentences = vec![self.description.clone()];
         if let Some((year, studio)) = self.facts {
-            facts.push(format!("{year}, {studio}."));
+            sentences.push(format!("{year}, {studio}"));
         }
         if let Some(n) = self.levels {
-            facts.push(format!("{n} levels."));
-        }
-        if !facts.is_empty() {
-            lines.push(facts.join(" "));
+            let unit = if n == 1 { "level" } else { "levels" };
+            sentences.push(format!("{n} {unit}"));
         }
         if let Some(p) = self.progress {
-            let mut s = format!("Reached {} of {}", p.reached, p.total);
-            match p.beaten {
-                Some(d) => s.push_str(&format!(", beaten on {}.", DIFFICULTIES[d])),
-                None => s.push('.'),
-            }
-            lines.push(s);
+            sentences.push(match p.beaten {
+                Some(d) => format!(
+                    "Reached {} of {}, beaten on {}",
+                    p.reached, p.total, DIFFICULTIES[d]
+                ),
+                None => format!("Reached {} of {}", p.reached, p.total),
+            });
         }
-        if !self.options.is_empty() {
-            let o: Vec<String> = self
-                .options
+        sentences.extend(
+            self.options
                 .iter()
-                .map(|(label, h1)| format!("{label} {}", if *h1 { "Halo 1" } else { "Halo 2" }))
-                .collect();
-            lines.push(format!("{}.", o.join(", ")));
-        }
-        lines.join("\n")
+                .map(|(label, h1)| format!("{label}: {}", if *h1 { "Halo 1" } else { "Halo 2" })),
+        );
+        join_sentences(sentences)
     }
 }
 
@@ -218,10 +210,8 @@ mod tests {
         let fresh = Info::ours(&b[0], &[], vec![("Assets", true), ("HUD", false)]);
         assert_eq!(
             fresh.text(),
-            format!(
-                "{}\n2001, Bungie. 10 levels.\nReached 1 of 10.\nAssets Halo 1, HUD Halo 2.",
-                b[0].descriptions[0]
-            )
+            "An ancient ring, and the secret it was built to keep. 2001, Bungie. \
+             10 levels. Reached 1 of 10. Assets: Halo 1. HUD: Halo 2."
         );
         // Two players: the best of each difficulty.
         let a = CampaignProgress {
@@ -236,16 +226,32 @@ mod tests {
         };
         let both = Info::ours(&b[0], &[a, c], Vec::new());
         assert_eq!(both.progress.unwrap().reached, 10);
-        assert!(both.text().contains("Reached 10 of 10, beaten on Heroic."));
+        assert_eq!(
+            both.text(),
+            "An ancient ring, and the secret it was built to keep. 2001, Bungie. \
+             10 levels. Reached 10 of 10, beaten on Heroic."
+        );
         // The test campaign: no facts, no options even when given.
         let t = Info::ours(&b[1], &[], vec![("Assets", true)]);
         assert_eq!(t.facts, None);
         assert!(t.options.is_empty());
-        assert!(t.text().ends_with("3 levels.\nReached 1 of 3."), "{}", t.text());
+        assert_eq!(
+            t.text(),
+            "Retail Halo 2 levels, listed as a second campaign. 3 levels. Reached 1 of 3."
+        );
+        let single = Info {
+            levels: Some(1),
+            progress: None,
+            ..t
+        };
+        assert_eq!(
+            single.text(),
+            "Retail Halo 2 levels, listed as a second campaign. 1 level."
+        );
         // Halo 2: its line and facts; its progress is the profile's.
         assert_eq!(
             Info::halo2().text(),
-            format!("{HALO2_DESCRIPTION}\n2004, Bungie.")
+            "The war comes home to Earth, and a second ring waits. 2004, Bungie."
         );
     }
 

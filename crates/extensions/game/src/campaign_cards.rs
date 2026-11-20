@@ -6,7 +6,8 @@
 //! reference). Retail's are mainmenu's `ui\code_global_bitmaps\campaign0`
 //! to `campaign19`, one per list slot (15 used, the last 5 the free slots'
 //! own). A converted level's card is Halo 1's own picture (written at import
-//! as `<data>/campaigns/<key>/cards/<map>.png`, `h1convert::ui`).
+//! as `<data>/campaigns/<key>/cards/<map>.png`, `h1convert::ui`). The
+//! campaign picker supplies one additional card per game with art ([`picker`]).
 //!
 //! The VFS serves mainmenu with the cards as new tags
 //! ([`CardRewrite`], a `vfs::Rewrite` like the button icons' font rewrite):

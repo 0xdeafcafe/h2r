@@ -68,6 +68,7 @@ use crate::list_class::{Action, ListClass, LiveText, Rows};
 use crate::ui::Chosen;
 use crate::ui_kit::ids::Family;
 use crate::ui_kit::input::{Glyph, Prompt, footer_legend};
+use crate::ui_kit::text::join_sentences;
 
 /// The screens' ids (`list_class::loader_of`).
 pub const SCREEN: &str = "mods";
@@ -831,10 +832,13 @@ impl Repo {
         let Some(top) = Self::top_at(&g, row) else {
             return (row == 0).then(|| match &g.list {
                 List::Loading => "Reading the mods on your Live server.".into(),
-                List::Failed(e) => format!("{}.\nA reads the list again.", failed_text(e)),
-                List::Loaded(_) => {
-                    "No mods on your Live server yet.\nA reads the list again.".into()
+                List::Failed(e) => {
+                    join_sentences([failed_text(e).as_str(), "A reads the list again."])
                 }
+                List::Loaded(_) => join_sentences([
+                    "No mods on your Live server yet.",
+                    "A reads the list again.",
+                ]),
             });
         };
         Some(match top {
@@ -1105,7 +1109,10 @@ impl Repo {
     pub fn pack_description(&self, row: i16) -> Option<String> {
         if row == 0 {
             let Some((_, maps)) = self.pack() else {
-                return Some("This pack is no longer listed.\nPress B to return to Mods.".into());
+                return Some(join_sentences([
+                    "This pack is no longer listed.",
+                    "Press B to return to Mods.",
+                ]));
             };
             let g = self.lock();
             let left = maps.iter().filter(|e| !Self::is_here(&g, &e.id)).count();

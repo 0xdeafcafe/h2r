@@ -27,6 +27,7 @@ use engine::points::{
 use hooks::{BuildError, Builder, Call, Flow, Manifest};
 use runtime::guest::Permissions;
 
+use crate::campaign_cards::picker as picker_art;
 use crate::campaigns::{
     self, LEVEL_ARRAY, Picker, RETAIL_CAMPAIGN, Region, SELECTED_CAMPAIGN, State,
 };
@@ -60,7 +61,7 @@ pub const INFO_ROOM: usize = 384;
 
 /// The picker's layout: the level select's (`skulls_menu::LIST_LAYOUT`,
 /// its list on the left), its bracket, its picture box with the focused
-/// game's focus tile, and its description text under it
+/// game's artwork, and its description text under it
 /// with the campaign's detail. The level select's own picture bitmap
 /// (screen 11, pane 0, bitmap 0, `[177 39 -30 259]`, 220 by 207, its
 /// animation 13), copied and pointed at the campaign's picture
@@ -78,7 +79,7 @@ pub const PICTURE: crate::list_class::PictureSpec = crate::list_class::PictureSp
     animation: crate::skulls_menu::PICTURE_ANIMATION,
 };
 /// [`PICTURE`]'s size (the level pictures').
-pub const PICTURE_SIZE: [u16; 2] = [220, 207];
+pub const PICTURE_SIZE: [u16; 2] = picker_art::SIZE;
 
 static PREPARED: OnceLock<Arc<State>> = OnceLock::new();
 static STORE: OnceLock<Arc<settings::Store>> = OnceLock::new();
@@ -183,6 +184,30 @@ impl PickerRows {
     }
 }
 
+/// The bitmap datum selected for this campaign's row.
+fn card_picture(state: &State, id: u32) -> Option<u32> {
+    let halo1 = state.key_of_campaign(id) == Some(campaigns::HALO1_KEY);
+    let tile = if halo1 {
+        Some(picker_art::CE)
+    } else if id == RETAIL_CAMPAIGN {
+        Some(picker_art::TWO)
+    } else {
+        None
+    };
+    if let Some(tile) = tile {
+        let cards = state.cards.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(&datum) = cards.get(tile) {
+            return Some(datum);
+        }
+    }
+    // Halo 1's level list may carry a generic retail level for an
+    // unillustrated mission. The picker keeps its artwork area empty.
+    if halo1 {
+        return None;
+    }
+    state.selection.seen().pictures.get(&id).copied()
+}
+
 /// `text` as the string table serves it (NUL-terminated UTF-8), cut at a
 /// character boundary to [`INFO_ROOM`].
 pub fn served(text: &str) -> Vec<u8> {
@@ -214,18 +239,8 @@ impl Rows for PickerRows {
     }
     fn picture(&self, row: i16) -> Option<u32> {
         let id = self.picker.campaign(row)?;
-        let tile = if id == RETAIL_CAMPAIGN {
-            Some(crate::campaign_cards::picker::TWO)
-        } else if self.state.key_of_campaign(id) == Some(campaigns::HALO1_KEY) {
-            Some(crate::campaign_cards::picker::CE)
-        } else {
-            None
-        };
-        match tile {
-            Some(key) => Some(self.state.cards.lock().unwrap_or_else(|e| e.into_inner())
-                .get(key).copied().unwrap_or(u32::MAX)),
-            None => self.state.selection.seen().pictures.get(&id).copied(),
-        }
+        // A valid row with no art clears the previous row's picture.
+        Some(card_picture(&self.state, id).unwrap_or(u32::MAX))
     }
     fn live_text(&self) -> LiveText {
         let texts: Vec<String> = self.infos().iter().map(|i| i.text()).collect();
@@ -620,7 +635,6 @@ pub mod tests {
         assert_eq!(rows.press(9), Chosen::Nothing);
     }
 
-    /// The two games display their own framed focus tiles and descriptions.
     #[test]
     fn each_row_describes_its_campaign_and_shows_its_picture() {
         let st = Arc::new(state());
@@ -629,18 +643,27 @@ pub mod tests {
         assert_eq!(rows.description(0), Some(INFO_IDS.id(0)));
         assert_eq!(rows.description(2), Some(INFO_IDS.id(2)));
         assert_eq!(rows.description(3), None);
-        assert_eq!(rows.picture(0), Some(u32::MAX), "no disc artwork loaded");
-        st.cards.lock().unwrap().extend([
-            (crate::campaign_cards::picker::CE.into(), 0xe7ab_0020),
-            (crate::campaign_cards::picker::TWO.into(), 0xe7ab_0021),
-        ]);
+        assert_eq!(rows.picture(0), Some(u32::MAX), "no Halo 1 artwork");
+        assert_eq!(rows.picture(1), Some(u32::MAX), "no Halo 2 artwork");
         st.selection.set_seen(campaigns::Seen {
             profiles: vec!["Chief".into()],
             pictures: [(1, 0xe6dd_04bb), (2, 0xe7a0_0010)].into(),
         });
-        assert_eq!(rows.picture(0), Some(0xe7ab_0020), "Halo 1 focus");
-        assert_eq!(rows.picture(1), Some(0xe7ab_0021), "Halo 2 focus");
-        assert_eq!(rows.picture(2), None, "the test campaign's unseen");
+        assert_eq!(rows.picture(0), Some(u32::MAX), "skip generic level art");
+        assert_eq!(rows.picture(1), Some(0xe6dd_04bb), "retail level fallback");
+        st.cards.lock().unwrap().extend([
+            (picker_art::CE.into(), 0xe7ab_0020),
+            (picker_art::TWO.into(), 0xe7ab_0021),
+        ]);
+        assert_eq!(rows.picture(0), Some(0xe7ab_0020), "Halo 1 artwork");
+        assert_eq!(rows.picture(1), Some(0xe7ab_0021), "Halo 2 artwork");
+        assert_eq!(rows.picture(2), Some(u32::MAX), "clear Halo 2's artwork");
+        let custom = st.built[1].campaign_id;
+        let mut seen = st.selection.seen();
+        seen.pictures.insert(custom, 0xe7ab_0022);
+        st.selection.set_seen(seen);
+        assert_eq!(rows.picture(2), Some(0xe7ab_0022), "custom level artwork");
+        assert_eq!(rows.picture(3), None, "outside the list");
         let infos = rows.infos();
         assert_eq!(infos[0].progress.unwrap().reached, 4, "Chief finished a50");
         assert!(infos[1].text().starts_with(crate::campaign_info::HALO2_DESCRIPTION));
@@ -651,6 +674,34 @@ pub mod tests {
         let b = served(&long);
         assert!(b.len() <= INFO_ROOM && b.ends_with(&[0]));
         assert!(std::str::from_utf8(&b[..b.len() - 1]).is_ok());
+    }
+
+    #[test]
+    fn served_campaign_cards_have_spaces_between_sentences() {
+        let st = state();
+        let halo1 = crate::campaign_info::Info::ours(
+            &st.built[0],
+            &[],
+            vec![("Assets", true), ("HUD", true)],
+        );
+        assert_eq!(
+            served(&halo1.text()).as_slice(),
+            b"An ancient ring, and the secret it was built to keep. 2001, Bungie. \
+              10 levels. Reached 1 of 10. Assets: Halo 1. HUD: Halo 1.\0"
+        );
+        let rows = PickerRows::new(Arc::new(st), None);
+        for info in rows.infos() {
+            let bytes = served(&info.text());
+            let text = std::str::from_utf8(bytes.strip_suffix(&[0]).unwrap()).unwrap();
+            assert!(!text.contains(['\r', '\n']), "{text:?}");
+            assert!(
+                !text
+                    .chars()
+                    .zip(text.chars().skip(1))
+                    .any(|(a, b)| a == '.' && b.is_alphabetic()),
+                "{text}"
+            );
+        }
     }
 
     /// The picker's spec: the level select's layout and art, each row's

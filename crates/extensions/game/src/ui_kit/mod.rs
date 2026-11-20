@@ -32,4 +32,5 @@ pub mod preview;
 pub mod screen;
 pub mod screens;
 pub mod spec;
+pub(crate) mod text;
 pub mod view;

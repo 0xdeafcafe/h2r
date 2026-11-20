@@ -1020,8 +1020,12 @@ mutations respect `session.claim`, and a concurrent mutation is `BUSY`.
   (`picker`, `options`, `levels`, `difficulty`, `dialog` or `other`),
   `game` (the selected campaign key on the three game-specific pages),
   `rows`, `focused_row` (zero-based) and `focused`; unknown selection or
-  focus is null. On the picker the rows are installed campaign keys; on
-  Campaign Options the action keys are `resume`, `new_game`,
+  focus is null. On the picker the rows are installed campaign keys.
+  With a focused picker row, `card.description` is the UTF-8 text in
+  that row's guest string slot, or null before it is available.
+  `card.picture_datum` is the selected bitmap datum, or null when the
+  artwork area is empty. `card` is null on other pages or without a
+  focused row. On Campaign Options the action keys are `resume`, `new_game`,
   `select_level` and `co_op`; other pages report an empty row list. For
   example, a fresh profile on Halo 2 has `"page":"options"`, `"game":"halo2"`
   and three rows. With a saved Halo 2 checkpoint, Resume is the first of
