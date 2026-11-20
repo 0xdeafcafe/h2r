@@ -37,7 +37,6 @@ copies. Nothing is ever written next to it.
 | Environment | Effect |
 | --- | --- |
 | `H2_FASTMEM=0` | **On by default.** Generated code does inline RAM checks/copies; unsupported accesses use Rust. `0` compiles without them; set it for both `h2 build` and `h2 run`/`play`, since changing compiler flags invalidates the dylib stamp. Requires the current boot bridge. This is the gated inline path, not fault-driven fastmem. |
-| `H2_BOOT_FASTMEM=0` | run a fast-memory image through checked Rust accessors, without rebuilding; use for A/B comparisons. Leave `H2_FASTMEM` unset (or `1`) to match that image's stamp. |
 | `H2_PERF=1` | compile generated loop/x87 counters; forwarded by boot's versioned bridge to contexts with profiling enabled. Part of the dylib stamp. |
 | `H2_X87_NATIVE=0` | **On by default.** Generated code runs range-guarded x87 arithmetic in native binary64 (see [x87-native.md](../lifter/x87-native.md)). `0` keeps every operation on the `h2x87_v1_*` helpers. A compiler flag: part of the dylib stamp and object cache keys, so set it for both build and run. |
 | `H2_SSE_NATIVE=0` | **On by default.** Generated code runs guarded SSE add, subtract, multiply, divide and square root in native SIMD ([sse-native.md](../lifter/sse-native.md)). `0` uses the integer `h2s_*` helpers for every operation. A compiler flag, like `H2_X87_NATIVE`: set it for both build and run. |
@@ -328,17 +327,14 @@ use `--fresh-data` (or a new `--data`), and never share one between two
 runs at once. On master a run that shared the data directory with another
 stopped with a divide error at `0x223cff` (a zero stride in loaded data).
 
-### Accessor A/B with process CPU
+### Process CPU
 
-Build one image with the defaults (`H2_FASTMEM` on) in a private output
-directory. Run the same image twice, one run after the other, setting
-`H2_BOOT_FASTMEM=0` for checked access and `1` for inline access. Both use
-the default merged passes, `H2_BOOT_GFX_EVERY=never`, and input
-`START@f310,DOWN@f408,A@f419`. Leave `H2_FASTMEM` unset during both runs so
-the module stamp matches. Use a new data directory for each run. To compare
-against an image without the default speedups, build a second one with
-`H2_FASTMEM=0 H2_X87_NATIVE=0 H2_ACCESS_COUNT=0` and keep those set for its
-run.
+Inline fast memory won its A/B against the checked accessors; the run-time
+switch for that comparison (`H2_BOOT_FASTMEM`) was removed in the
+2026-11-20 flag cleanup, and `tests/bridge.rs` still checks both bridges
+on one image. Measure with the default merged passes,
+`H2_BOOT_GFX_EVERY=never`, input `START@f310,DOWN@f408,A@f419`, and a new
+data directory for each run.
 
 `cargo build --release -p boot --example menu_cpu` builds a bounded driver:
 `menu_cpu DISC OUT FRESH_DATA_DIR`. It runs boot's normal headless backend,
