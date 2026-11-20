@@ -175,7 +175,7 @@ fn script_tags(m: &mut M, catalog: &hs::Catalog) -> (usize, usize, Vec<String>) 
         };
         let groups: Vec<FourCC> = match ty {
             "object_definition" => OBJECT_GROUPS.iter().map(|g| FourCC(**g)).collect(),
-            t => match h1scripts::level::tag_group(t) {
+            t => match h1campaign::scripts::level::tag_group(t) {
                 Some(g) => vec![g],
                 None => continue,
             },

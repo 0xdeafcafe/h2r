@@ -3,7 +3,7 @@
 use super::{Card, cover};
 use anyhow::{Context, Result};
 use std::fs::File;
-use std::io::{BufReader, Cursor};
+use std::io::BufReader;
 use std::path::Path;
 use tags::rgba_bitmap::Template;
 
@@ -82,42 +82,19 @@ fn compose(ce: &Card, two: (u32, u32, &[u8])) -> [Card; 2] {
     })
 }
 
+/// The two tiles from the Halo 1 import's first card in play order and
+/// Cairo Station on the Halo 2 disc. The Halo 1 picture comes only from
+/// the import (`h2 import halo1` writes the cards): the game reads no
+/// Halo 1 disc.
 pub fn prepare(data: &Path, disc: &Path, cards: &mut Vec<Card>) -> Result<()> {
-    let h1_disc = std::env::var_os("H1_ISO")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| disc.with_file_name("halo1.iso"));
-    prepare_from_discs(data, &h1_disc, disc, cards)
-}
-
-fn opening_card(disc: &Path) -> Result<Card> {
-    let mut iso = xiso::Xiso::open(BufReader::new(
-        File::open(disc).with_context(|| format!("open Halo 1 disc {}", disc.display()))?,
-    ))?;
-    let index = h1map::disc::Disc::open(&mut iso)?;
-    let entry = index.map("ui").context("Halo 1 disc has no ui.map")?;
-    let ui = h1map::H1Map::from_reader(Cursor::new(iso.read(entry)?))?;
-    let art = h1convert::ui::campaign_card(&ui, "a10")?.context("no a10 campaign card")?;
-    Ok(Card {
-        map: "a10".into(),
-        name: super::tag_name("halo1", "a10"),
-        width: art.width,
-        height: art.height,
-        rgba: art.rgba,
-    })
-}
-
-fn prepare_from_discs(data: &Path, halo1: &Path, disc: &Path, cards: &mut Vec<Card>) -> Result<()> {
-    // An import can contain only later missions, or predate the card exporter.
-    let extracted;
-    let ce = if let Some(card) = h1convert::ui::CAMPAIGN_ORDER.iter().find_map(|level| {
-        let name = super::tag_name("halo1", level);
-        cards.iter().find(|c| c.name == name)
-    }) {
-        card
-    } else {
-        extracted = opening_card(halo1)?;
-        &extracted
-    };
+    // An import can contain only later missions.
+    let ce = h1_contract::campaign::CAMPAIGN_ORDER
+        .iter()
+        .find_map(|level| {
+            let name = super::tag_name("halo1", level);
+            cards.iter().find(|c| c.name == name)
+        })
+        .context("the Halo 1 import has no level cards (run `h2 import halo1` again)")?;
     let pair = tiles(ce, disc)?;
     for (key, tile) in ["halo1", "halo2"].into_iter().zip(&pair) {
         let path = data
@@ -158,40 +135,58 @@ mod tests {
         assert_eq!(pixel(&b, 110), [0, 0, 240, 255]);
     }
     #[test]
-    #[ignore = "reads the owner's Halo 1 and Halo 2 discs"]
-    fn picker_collage_from_both_discs() {
-        let disc = |env: &str, file: &str| {
-            std::env::var_os(env)
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| {
-                    Path::new(env!("CARGO_MANIFEST_DIR"))
-                        .join("../../../disc")
-                        .join(file)
-                })
+    fn without_an_import_card_the_picker_names_the_import_and_reads_no_disc() {
+        let missing = Path::new("/nonexistent/h2-picker/halo2.iso");
+        let other = Card {
+            map: "x10".into(),
+            name: super::super::tag_name("mine", "x10"),
+            width: 1,
+            height: 1,
+            rgba: vec![0; 4],
         };
+        let mut cards = vec![other];
+        let e = prepare(Path::new("/nonexistent/h2-picker"), missing, &mut cards).unwrap_err();
+        assert!(format!("{e:#}").contains("h2 import halo1"), "{e:#}");
+        assert_eq!(cards.len(), 1);
+    }
+    #[test]
+    #[ignore = "reads the owner's Halo 2 disc"]
+    fn picker_collage_from_an_import_card_and_the_disc() {
+        let disc = std::env::var_os("H2_DISC")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../disc/halo2.iso")
+            });
+        // An invented Halo 1 card, as the import writes one: a gradient
+        // the size of Halo 1's level picture.
+        let (w, h) = (139u32, 113u32);
+        let rgba = (0..w * h)
+            .flat_map(|i| [(i % w * 255 / w) as u8, (i / w * 255 / h) as u8, 96, 255])
+            .collect();
+        let mut cards = vec![Card {
+            map: "a30".into(),
+            name: super::super::tag_name("halo1", "a30"),
+            width: w,
+            height: h,
+            rgba,
+        }];
         let serial = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let data = std::env::temp_dir().join(format!("h2-picker-{}-{serial}", std::process::id()));
-        let mut cards = Vec::new();
-        prepare_from_discs(
-            &data,
-            &disc("H1_ISO", "halo1.iso"),
-            &disc("H2_DISC", "halo2.iso"),
-            &mut cards,
-        )
-        .unwrap();
-        assert_eq!(cards.len(), 2);
+        prepare(&data, &disc, &mut cards).unwrap();
+        assert_eq!(cards.len(), 3);
+        let pair = &cards[1..];
         for (i, name) in ["halo1", "halo2"].iter().enumerate() {
             let (w, h, rgba) =
                 super::super::read_png(&data.join(format!("campaigns/game-picker/{name}.png")))
                     .unwrap();
             assert_eq!((w, h), (220, 207));
-            assert_eq!(rgba, cards[i].rgba);
+            assert_eq!(rgba, pair[i].rgba);
         }
-        assert_eq!((cards[0].map.as_str(), cards[1].map.as_str()), (CE, TWO));
-        assert_ne!(cards[0].rgba, cards[1].rgba);
+        assert_eq!((pair[0].map.as_str(), pair[1].map.as_str()), (CE, TWO));
+        assert_ne!(pair[0].rgba, pair[1].rgba);
         std::fs::remove_dir_all(data).unwrap();
     }
 }

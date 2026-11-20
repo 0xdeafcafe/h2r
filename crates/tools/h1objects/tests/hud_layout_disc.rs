@@ -8,7 +8,7 @@
 //! and counts only.
 //!
 //! ```sh
-//! H1_ISO=... H2_DISC=... cargo test -p h1objects --test hud_layout_disc -- --ignored --nocapture
+//! H1_ISO=... H2_DISC=... cargo test -p h1objects --test it hud_layout_disc:: -- --ignored --nocapture
 //! ```
 
 use std::fs::File;
@@ -90,7 +90,7 @@ fn texels(m: &H1Map, bitmap: h1map::TagId, seq: i16, meter: bool) -> ((i32, i32)
         h1hud::clear_meter_colour(argb.format, &mut out).unwrap();
         (img, px) = (argb, out);
     }
-    let top = h1bitmaps::decode_image(&img, &px)
+    let top = h1_assets::bitmaps::decode_image(&img, &px)
         .unwrap()
         .into_iter()
         .find(|l| l.face == 0 && l.level == 0)

@@ -11,7 +11,7 @@
 //! 1172 (physics.support, agent API), at x 43.56 on the ramp.
 //!
 //! ```sh
-//! cargo test --release -p h1convert --test ramp_contacts -- --ignored --nocapture
+//! cargo test --release -p h1convert --test it ramp_contacts:: -- --ignored --nocapture
 //! ```
 
 use std::fs::File;

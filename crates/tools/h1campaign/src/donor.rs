@@ -1,9 +1,9 @@
 //! Retail Halo 2 tags the base lacks, copied whole from other retail maps
-//! (`h1sounds::transplant`: the tag tree, its raw, and its sounds' gestalt
+//! (`h1_assets::sounds::transplant`: the tag tree, its raw, and its sounds' gestalt
 //! entries).
 //!
 //! The base (05a) has no hunter, flood or monitor. Halo 1's levels use
-//! them, so the characters `h1ai::convert::character_for` names come from
+//! them, so the characters `crate::ai::convert::character_for` names come from
 //! the first donor map that has them and whose tree `tags::schema` copies
 //! (`donor_survey` in the survey tests lists who has what):
 //!
@@ -39,7 +39,7 @@ pub struct Donors {
 
 /// A donor read once: its gestalt and its transplant source.
 struct ReadDonor {
-    gestalt: h1sounds::gestalt::SoundGestalt,
+    gestalt: h1_assets::sounds::gestalt::SoundGestalt,
     source: tags::schema::transplant::Source<'static>,
 }
 
@@ -114,10 +114,10 @@ impl std::fmt::Display for Brought {
 /// What a level wants that the base may lack: its characters (by
 /// `h1ai`'s table).
 pub fn wanted(h1: &H1Map) -> Result<Vec<(FourCC, String)>> {
-    let ai = h1ai::h1::H1Ai::read(h1).map_err(|e| invalid(format!("ai: {e}")))?;
-    let plan = h1ai::convert::convert(
+    let ai = crate::ai::h1::H1Ai::read(h1).map_err(|e| invalid(format!("ai: {e}")))?;
+    let plan = crate::ai::convert::convert(
         &ai,
-        &h1ai::convert::Options {
+        &crate::ai::convert::Options {
             halo2_assets: true,
             ..Default::default()
         },
@@ -174,17 +174,17 @@ pub fn bring(
             };
             if gestalt.is_none() {
                 gestalt = Some(
-                    h1sounds::gestalt::SoundGestalt::from_set(set)
+                    h1_assets::sounds::gestalt::SoundGestalt::from_set(set)
                         .map_err(|e| invalid(format!("gestalt: {e}")))?,
                 );
             }
             let g = gestalt.as_mut().expect("set above");
             let moved = match &read {
                 Some(r) => {
-                    h1sounds::transplant_from(&r.source, &mut src, src_gestalt, root, set, g)
+                    h1_assets::sounds::transplant_from(&r.source, &mut src, src_gestalt, root, set, g)
                 }
                 // Reading it failed: the uncached path says why.
-                None => h1sounds::transplant(schema, &mut src, src_gestalt, root, set, g),
+                None => h1_assets::sounds::transplant(schema, &mut src, src_gestalt, root, set, g),
             };
             match moved.map_err(|e| invalid(format!("{group} {name} from {donor}: {e}")))? {
                 Ok(m) => {
@@ -220,18 +220,18 @@ pub fn bring(
         }
     }
     if let Some(g) = gestalt {
-        g.install(set, h1sounds::gestalt::DEFAULT_NAME)
+        g.install(set, h1_assets::sounds::gestalt::DEFAULT_NAME)
             .map_err(|e| invalid(format!("gestalt: {e}")))?;
     }
     Ok(())
 }
 
 /// The donor's own gestalt.
-fn donor_gestalt(src: &mut Map<Cursor<&[u8]>>) -> Result<h1sounds::gestalt::SoundGestalt> {
+fn donor_gestalt(src: &mut Map<Cursor<&[u8]>>) -> Result<h1_assets::sounds::gestalt::SoundGestalt> {
     let t = src
         .tags()
         .iter()
-        .find(|t| t.group == h1sounds::gestalt::UGH)
+        .find(|t| t.group == h1_assets::sounds::gestalt::UGH)
         .cloned()
         .ok_or_else(|| invalid("the donor has no ugh!"))?;
     let at = t
@@ -239,6 +239,6 @@ fn donor_gestalt(src: &mut Map<Cursor<&[u8]>>) -> Result<h1sounds::gestalt::Soun
         .ok_or_else(|| invalid("the donor's ugh! has no data"))?
         .address;
     let bytes = src.read_tag_bytes(t.id)?;
-    h1sounds::gestalt::SoundGestalt::decode(&bytes, at)
+    h1_assets::sounds::gestalt::SoundGestalt::decode(&bytes, at)
         .map_err(|e| invalid(format!("gestalt: {e}")))
 }

@@ -3,7 +3,7 @@
 //! and `$H2_DISC`; nothing is written. Prints counts, names and paths only.
 //!
 //! ```sh
-//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test weapon_rebuild_disc -- --ignored --nocapture
+//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test it weapon_rebuild_disc:: -- --ignored --nocapture
 //! ```
 //!
 //! - `halo_1_and_halo_2_pairs_agree_on_the_named_fields`: the evidence for
@@ -989,18 +989,18 @@ fn first_person_graphs_take_retail_modes() {
             .unwrap()
             .first_person_animations
             .unwrap();
-        let g = h1models::h1::Graph::read(&h1, h1.tag(src).unwrap().data_address).unwrap();
+        let g = h1_assets::models::h1::Graph::read(&h1, h1.tag(src).unwrap().data_address).unwrap();
         assert!(!g.first_person_slots.is_empty(), "{}: slot table", t.name);
         for (k, s) in g.first_person_slots.iter().enumerate() {
             if *s < 0 {
                 continue;
             }
-            let word = h1models::h1::FIRST_PERSON_SLOTS[k];
-            let action = h1models::names::map_name(&format!("first-person {word}")).action;
+            let word = h1_assets::models::h1::FIRST_PERSON_SLOTS[k];
+            let action = h1_assets::models::names::map_name(&format!("first-person {word}")).action;
             // An overlay animation's slot is an overlay; any other an
             // action.
             let (here, other) = match g.animations[*s as usize].kind {
-                h1models::h1::AnimType::Overlay => (&overlays, &actions),
+                h1_assets::models::h1::AnimType::Overlay => (&overlays, &actions),
                 _ => (&actions, &overlays),
             };
             assert!(

@@ -212,7 +212,7 @@ pub struct ShaderCopy {
 #[derive(Debug, Clone, Default)]
 pub struct Retexture {
     /// (Halo 1 bitmap name, its conversion).
-    pub bitmaps: Vec<(String, h1models::Converted)>,
+    pub bitmaps: Vec<(String, h1_assets::models::Converted)>,
     pub copies: Vec<ShaderCopy>,
     /// Source shader name and translated globals index per collision material.
     pub collision: Vec<(Option<String>, u16)>,
@@ -290,11 +290,11 @@ pub fn plan<R: Read + Seek>(
                         crate::Error::no_rebuild(&h1.header().name, &bitmap.name, why)
                     };
                     let (name, image) = if let Some(gain) = gain {
-                        let image = h1bitmaps::mask::convert_brightest(h1, bitmap, gain)
+                        let image = h1_assets::bitmaps::mask::convert_brightest(h1, bitmap, gain)
                             .map_err(|e| fail(e.to_string()))?;
                         (shad::brightness_mask_name(&bitmap.name, gain), image)
                     } else {
-                        let (_, image, _) = h1bitmaps::convert_bitmap(h1, bitmap)
+                        let (_, image, _) = h1_assets::bitmaps::convert_bitmap(h1, bitmap)
                             .map_err(|e| fail(e.to_string()))?;
                         (bitmap.name.clone(), image)
                     };

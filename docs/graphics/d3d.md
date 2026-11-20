@@ -184,7 +184,7 @@ Notes on the table:
   that is not a one-word header for a 4-aligned method below `0x2000`,
   `0x030C` in the table, or every entry the same). Unit tests use a small
   hand-built table; the ignored `tests/xbe_tables.rs`
-  (`H2_XBE=/abs/path/default.xbe cargo test -p d3d --test xbe_tables --
+  (`H2_XBE=/abs/path/default.xbe cargo test -p d3d --test it xbe_tables:: --
   --ignored`) checks the real one against what the crate assumes.
 - **Not reached from game code, but implemented on the device** for the API
   surface: `SetVertexShader`, `SetStreamSource`, `DrawVerticesUP`,
@@ -782,7 +782,7 @@ and allocations are bounded before anything is read:
     pixels and guest bytes at the wait against the eager device.
     With E3 lighting a render-scale view keeps its own scaled copy of each
     such level and answers this call for itself from the copy
-    (`d3d::scaled`, [e3-lighting.md](e3-lighting.md) "The Lighting setting");
+    (`d3d::scaled`, [e3-lighting-setting.md](e3-lighting-setting.md));
     the device and the guest only ever see the reference's.
     Float depth levels (`F24S8`, `F16`) stop: the host surface does not
     hold their bits. A level bound as colour after depth (or the other

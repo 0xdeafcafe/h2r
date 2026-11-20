@@ -4,7 +4,7 @@
 //! prints counts and sizes only. Nothing is written.
 //!
 //! ```sh
-//! H1_ISO=... H2_DISC=... cargo test -p h1objects --test collision_disc -- --ignored --nocapture
+//! H1_ISO=... H2_DISC=... cargo test -p h1objects --test it -- collision_disc:: --skip _collision_disc:: --ignored --nocapture
 //! ```
 
 use std::collections::BTreeMap;

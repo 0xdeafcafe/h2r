@@ -4,8 +4,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use h1ai::h1::H1Ai;
-use h1scripts::aicontrol::RetainedSubjects;
+use crate::ai::h1::H1Ai;
+use crate::scripts::aicontrol::RetainedSubjects;
 
 use crate::{Result, invalid};
 
@@ -20,11 +20,11 @@ pub(crate) fn prepare(
     roster: &mut H1Ai,
     roster_indices: &crate::squad_roster::Selection,
     subjects: &RetainedSubjects,
-    requests: &[h1ai::control::Request],
+    requests: &[crate::ai::control::Request],
     group_count: usize,
 ) -> Result<Retained> {
     let fits = |count| engine::campaign_squad_pool::holds(count, group_count);
-    let maneuvers = h1ai::control::maneuver_targets(source, requests);
+    let maneuvers = crate::ai::control::maneuver_targets(source, requests);
     let mut selected = BTreeMap::new();
     for (ei, (e, indices)) in roster
         .encounters

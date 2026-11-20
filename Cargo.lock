@@ -653,10 +653,7 @@ dependencies = [
  "font",
  "frame-scene",
  "gfx",
- "h1convert",
- "h1map",
- "h1scripts",
- "h1text",
+ "h1-contract",
  "hooks",
  "hot-render",
  "hot-tags",
@@ -987,13 +984,11 @@ dependencies = [
  "flate2",
  "font",
  "gltf",
- "h1bitmaps",
+ "h1-assets",
  "h1campaign",
  "h1convert",
  "h1map",
- "h1models",
  "h1objects",
- "h1sounds",
  "host-data",
  "hs",
  "iced-x86",
@@ -1869,7 +1864,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "content",
- "h1bitmaps",
+ "h1-assets",
  "h1map",
  "map",
  "tags",
@@ -2461,30 +2456,25 @@ name = "guest-layout"
 version = "0.1.0"
 
 [[package]]
-name = "h1ai"
+name = "h1-assets"
 version = "0.1.0"
 dependencies = [
- "h1convert",
+ "assets",
+ "audio",
+ "gfx",
+ "h1-contract",
  "h1map",
  "map",
- "pathfind",
  "tags",
  "thiserror 2.0.21",
  "xiso",
 ]
 
 [[package]]
-name = "h1bitmaps"
+name = "h1-contract"
 version = "0.1.0"
 dependencies = [
- "assets",
- "gfx",
- "h1map",
- "h1models",
  "map",
- "tags",
- "thiserror 2.0.21",
- "xiso",
 ]
 
 [[package]]
@@ -2493,16 +2483,11 @@ version = "0.1.0"
 dependencies = [
  "content",
  "engine",
- "h1ai",
- "h1bitmaps",
+ "h1-assets",
+ "h1-contract",
  "h1convert",
  "h1map",
- "h1models",
  "h1objects",
- "h1scripts",
- "h1sky",
- "h1sounds",
- "h1text",
  "hs",
  "map",
  "mopp",
@@ -2520,12 +2505,9 @@ version = "0.1.0"
 dependencies = [
  "assets",
  "content",
- "h1bitmaps",
+ "h1-assets",
+ "h1-contract",
  "h1map",
- "h1models",
- "h1sky",
- "h1sounds",
- "h1text",
  "iced-x86",
  "map",
  "mopp",
@@ -2550,28 +2532,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "h1models"
-version = "0.1.0"
-dependencies = [
- "h1map",
- "map",
- "tags",
- "thiserror 2.0.21",
- "xiso",
-]
-
-[[package]]
 name = "h1objects"
 version = "0.1.0"
 dependencies = [
  "assets",
  "content",
  "font",
- "h1bitmaps",
+ "h1-assets",
  "h1convert",
  "h1map",
- "h1models",
- "h1sounds",
  "map",
  "mopp",
  "scenario-edit",
@@ -2579,58 +2548,6 @@ dependencies = [
  "thiserror 2.0.21",
  "variants",
  "xbe",
- "xiso",
-]
-
-[[package]]
-name = "h1scripts"
-version = "0.1.0"
-dependencies = [
- "h1ai",
- "h1map",
- "h1models",
- "hs",
- "map",
- "thiserror 2.0.21",
- "xbe",
- "xiso",
-]
-
-[[package]]
-name = "h1sky"
-version = "0.1.0"
-dependencies = [
- "h1map",
- "h1models",
- "map",
- "tags",
- "thiserror 2.0.21",
- "xiso",
-]
-
-[[package]]
-name = "h1sounds"
-version = "0.1.0"
-dependencies = [
- "audio",
- "h1map",
- "h1models",
- "map",
- "tags",
- "thiserror 2.0.21",
- "xiso",
-]
-
-[[package]]
-name = "h1text"
-version = "0.1.0"
-dependencies = [
- "h1bitmaps",
- "h1map",
- "h1models",
- "map",
- "tags",
- "thiserror 2.0.21",
  "xiso",
 ]
 
@@ -2911,9 +2828,8 @@ dependencies = [
  "anyhow",
  "assets",
  "font",
- "h1bitmaps",
+ "h1-assets",
  "h1map",
- "h1models",
  "hud-edit",
  "map",
  "png",

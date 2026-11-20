@@ -84,7 +84,7 @@ pub enum Error {
     #[error(transparent)]
     Convert(#[from] h1convert::Error),
     #[error(transparent)]
-    Models(#[from] h1models::Error),
+    Models(#[from] h1_assets::models::Error),
     #[error("{0}")]
     Invalid(String),
     /// The converted map needs more tag memory than the engine has.
@@ -119,11 +119,11 @@ pub(crate) fn invalid(s: impl Into<String>) -> Error {
 /// (from its XBE) and the translation to Halo 2's.
 pub struct Scripting {
     /// Halo 1's builtins and types.
-    pub catalog: h1scripts::Catalog,
+    pub catalog: crate::scripts::Catalog,
     /// Halo 2's.
-    pub target: h1scripts::translate::Target,
+    pub target: crate::scripts::translate::Target,
     /// The mapping between them.
-    pub table: h1scripts::translate::Table,
+    pub table: crate::scripts::translate::Table,
 }
 
 impl Scripting {
@@ -131,7 +131,7 @@ impl Scripting {
     /// builtin names and external globals Halo 2's table leaves unnamed).
     pub fn new(h1_xbe: &[u8], h2_xbe: &[u8], h2_scenarios: &[hs::Scenario]) -> Result<Self> {
         let parse = |b| xbe::Xbe::parse(b).map_err(|e| invalid(format!("xbe: {e}")));
-        let catalog = h1scripts::Catalog::from_xbe(&parse(h1_xbe)?)
+        let catalog = crate::scripts::Catalog::from_xbe(&parse(h1_xbe)?)
             .map_err(|e| invalid(format!("Halo 1 builtins: {e}")))?;
         let mut c = hs::Catalog::from_xbe(&parse(h2_xbe)?)
             .map_err(|e| invalid(format!("Halo 2 builtins: {e}")))?;
@@ -139,11 +139,11 @@ impl Scripting {
             c.observe(s)
                 .map_err(|e| invalid(format!("Halo 2 scripts: {e}")))?;
         }
-        let mut target = h1scripts::translate::Target::from_catalog(&c);
+        let mut target = crate::scripts::translate::Target::from_catalog(&c);
         for s in h2_scenarios {
             target.observe_externals(s);
         }
-        let table = h1scripts::translate::Table::build(&catalog, &target);
+        let table = crate::scripts::translate::Table::build(&catalog, &target);
         Ok(Self {
             catalog,
             target,
@@ -167,7 +167,7 @@ pub struct Options<'a> {
     /// Halo 1's cinematics and the a10 tutorial: played or skipped. `None`
     /// (the default) plays all ten levels as authored
     /// ([`cutscenes::default_for`]; docs/halo1/campaign.md, Cutscenes).
-    pub cutscenes: Option<h1scripts::compile::Cutscenes>,
+    pub cutscenes: Option<crate::scripts::compile::Cutscenes>,
     /// The animation graphs and recorded animations the scripts name
     /// ([`cutscenes`]); off measures what they cost.
     pub cutscene_data: bool,
@@ -325,7 +325,7 @@ pub enum Lean {
     CutsceneData,
     /// The level data the scripts name (cutscene flags, camera points,
     /// titles, device groups): the calls naming it are stubbed
-    /// (`h1scripts::compile::INDEXED`), their other hooks stay `none`.
+    /// (`crate::scripts::compile::INDEXED`), their other hooks stay `none`.
     LevelData,
 }
 
@@ -445,7 +445,7 @@ pub fn convert<R: Read + Seek>(h1: &H1Map, base: &mut Map<R>, opts: &Options) ->
         && opts.scripts.is_some()
         && opts.cutscene_data
         && opts.cutscene_graphs
-        && opts.cutscenes.unwrap_or_default() == h1scripts::compile::Cutscenes::Play;
+        && opts.cutscenes.unwrap_or_default() == crate::scripts::compile::Cutscenes::Play;
     let mut opts = Options { ..*opts };
     // Each retry and why, for the report.
     let mut retries = Vec::new();
@@ -526,7 +526,7 @@ fn convert_with<R: Read + Seek>(
     // The level's background sounds and sound environments, which the
     // clusters and the scenario's palettes name.
     let raw_start = set.raw.len();
-    let loops = phase::time("looping sounds", || h1sounds::looping::install_level_loops(h1, &mut set))
+    let loops = phase::time("looping sounds", || h1_assets::sounds::looping::install_level_loops(h1, &mut set))
         .map_err(|e| invalid(format!("{}: looping sounds: {e}", level)))?;
     report.looping_sounds = loops.len();
     report.looping_bytes = set.raw[raw_start..].iter().map(|r| r.bytes.len() as u64).sum();
@@ -570,7 +570,7 @@ fn convert_with<R: Read + Seek>(
             donor::wanted(h1)?
         } else {
             // The native Sentinel behaviour style has no Halo 1 tag equivalent.
-            let ai = h1ai::h1::H1Ai::read(h1).map_err(|e| invalid(format!("ai: {e}")))?;
+            let ai = crate::ai::h1::H1Ai::read(h1).map_err(|e| invalid(format!("ai: {e}")))?;
             let sentinel = ai.actors.iter().any(|(_, actor)| actor.kind.0 == 13);
             sentinel
                 .then(|| (map::FourCC(*b"styl"), roster::SENTINEL_STYLE.to_owned()))
@@ -589,10 +589,10 @@ fn convert_with<R: Read + Seek>(
         }
         phase::time("donors", || donor::bring(d, &mut set, &wanted, &mut report))?;
     }
-    let mut locales = h1text::convert::Locales::from_map(base)
+    let mut locales = h1_assets::text::convert::Locales::from_map(base)
         .map_err(|e| invalid(format!("base text: {e}")))?;
     let base_rows = locales.len();
-    let level_text = h1text::scenario::LevelText::install(h1, &mut set, &mut locales)
+    let level_text = h1_assets::text::scenario::LevelText::install(h1, &mut set, &mut locales)
         .map_err(|e| invalid(format!("level text: {e}")))?;
     phase::time("scenario", || {
         scenario::write(
@@ -799,3 +799,6 @@ pub fn on_sector(
 
 #[cfg(test)]
 mod tests;
+
+pub mod ai;
+pub mod scripts;

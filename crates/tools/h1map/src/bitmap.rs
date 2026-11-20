@@ -6,7 +6,7 @@
 //! offset is a file offset in the decompressed map, outside the tag data (see
 //! `docs/halo1/bitmaps.md`, with evidence). This module only finds and
 //! describes the bytes; decoding them to RGBA (Xbox swizzle, DXT, cube
-//! faces) is `crates/tools/h1bitmaps`, which reuses Halo 2's texture decoder.
+//! faces) is `crates/tools/h1-assets`, which reuses Halo 2's texture decoder.
 
 use std::ops::Range;
 

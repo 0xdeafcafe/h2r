@@ -3,8 +3,8 @@
 //! A child of `convert`, for the converter's caches.
 
 use h1map::Tag;
-use h1models::Converted;
-use h1models::mode::ModelOptions;
+use h1_assets::models::Converted;
+use h1_assets::models::mode::ModelOptions;
 use map::{FourCC, TagId};
 use tags::defs::Defs;
 
@@ -96,12 +96,12 @@ impl Converter<'_> {
         if let Some(&mode) = self.render_models.get(&key) {
             return Ok(mode);
         }
-        let (h1_model, _) = h1models::model_from_map(self.h1, t, &ModelOptions::default())?;
+        let (h1_model, _) = h1_assets::models::model_from_map(self.h1, t, &ModelOptions::default())?;
         let shaders = self.model_shaders(rep, &h1_model, rounds, 0)?;
         let opts = ModelOptions { shaders, ..ModelOptions::default() };
-        let mut mode = h1models::mode::convert_model(
+        let mut mode = h1_assets::models::mode::convert_model(
             &h1_model,
-            h1models::short_name(&t.name),
+            h1_assets::models::short_name(&t.name),
             &opts,
         )?;
         crate::rebuild::mode_materials(&mut mode.root, &opts.shaders)?;
@@ -117,15 +117,15 @@ impl Converter<'_> {
             return Ok(*d);
         }
         let m = model.map(|m| self.h1_tag(m)).transpose()?;
-        let (_, _, mut conv) = h1models::graph_from_map(self.h1, t, m)?;
+        let (_, _, mut conv) = h1_assets::models::graph_from_map(self.h1, t, m)?;
         self.graph_sounds(t, &mut conv)?;
         self.cached(t, conv)
     }
 
     pub(super) fn graph_sounds(&mut self, t: &Tag, conv: &mut Converted) -> Result<()> {
         // The sounds its animations play (the reloads, the ready), as Halo
-        // 2 sound events (`h1models::sounds`).
-        let sounds = h1models::sounds::read(self.h1, t)?;
+        // 2 sound events (`h1_assets::models::sounds`).
+        let sounds = h1_assets::models::sounds::read(self.h1, t)?;
         if !sounds.events.is_empty() {
             let mut rep = Self::report(t, "none: the graph's sounds");
             let mut targets = Vec::new();
@@ -136,7 +136,7 @@ impl Converter<'_> {
                 };
                 targets.push(got);
             }
-            h1models::sounds::add_sound_events(&mut conv.root, &sounds, &targets)?;
+            h1_assets::models::sounds::add_sound_events(&mut conv.root, &sounds, &targets)?;
             rep.no_home.push(format!(
                 "{} animation sound events, {} of {} sounds converted",
                 sounds.events.len(),

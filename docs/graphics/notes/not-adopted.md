@@ -29,3 +29,12 @@ numbers.
 | `2d562b08` | the lazy 1x reference at render scale (`H2_LAZY_REFERENCE`, `ScaledBackend::set_lazy_reference`), `scale_bench` | 1-10% saved on unread frames, 15-25% lost on frames with a back-buffer snapshot, which Halo's frames take (09590f5c); off since |
 | `7e4529f0` | `GfxBackend::without_shaders` | no caller |
 | `ff6f7d6b` | `impl.render.layer_sort` and `impl.render.transparent_sort`: `engine::render_loop::sort` and `sort_indexed`, their differential tests, the `render-loop` feature's two placements and path counters | the profile puts both sorts at about 0.01 ms a frame (30 samples over 142 s, Old Mombasa 2026-11-17), and each port cost a hooked call per sort; off since built. The points `LAYER_SORT` and `TRANSPARENT_SORT` stay in `engine::points` as research notes |
+
+## Lost before they reached the renderer
+
+Prototypes and designs that were measured or reviewed and not built.
+
+| Commit | What | Why |
+|---|---|---|
+| `25c47e967` (the prototype; `shadowlab` stays as a tool) | stencil shadow volumes for E3 lighting, including "volumes for closed object casters" as a fallback | at or above a one-tap shadow map at every scale measured, 37% of caster triangles in closed pieces, 0.03% to 0.28% of lit pixels different ([notes/e3-lighting.md](e3-lighting.md), 2026-11-16); on the native renderer also a silhouette per display frame, a second depth-stencil, and no gain over the baked sun ([e3-lighting.md](../e3-lighting.md), "What this means for the technique") |
+| `00dd7430f` (the design's last revision; never built) | per-pixel dynamic lights from a host-side position and normal buffer, with a table of each material's normal map, substituted for the guest's light draws by pass tag; and observers that attach a scene description to the draw stream | retail materials carry their own per-pixel, bump-mapped light passes, which the native lights stage draws; `FrameScene` is the scene description ([2026-11-20-e3-lighting.md](../../reviews/2026-11-20-e3-lighting.md)) |

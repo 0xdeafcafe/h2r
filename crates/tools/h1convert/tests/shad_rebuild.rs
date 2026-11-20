@@ -3,7 +3,7 @@
 //!
 //! ```sh
 //! H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso \
-//!   cargo test --release -p h1convert --test shad_rebuild -- --ignored --nocapture
+//!   cargo test --release -p h1convert --test it shad_rebuild:: -- --ignored --nocapture
 //! ```
 //!
 //! - **Halo 2 side** (`every_layout_matches_its_stems_retail_instances`):
@@ -389,7 +389,7 @@ fn every_halo1_shader_and_sky_shader_rebuilds() {
         let refs = h1.multiplayer().map(|m| m.skies).unwrap_or_default();
         for r in refs {
             let Ok(t) = h1.tag(r.id) else { continue };
-            let Ok(f) = h1sky::convert::sky_from_map(&h1, t) else {
+            let Ok(f) = h1_assets::sky::convert::sky_from_map(&h1, t) else {
                 failures.push(format!("{name}: sky {} doesn't read", t.name));
                 continue;
             };
@@ -1366,7 +1366,7 @@ fn plasma_sotrs_draw_on_plasma_alpha_and_no_other_sotr_does() {
 
 /// A Halo 1 bitmap's first image as RGBA8 texels, 0 to 1.
 fn h1_texels(h1: &H1Map, id: h1map::TagId) -> Vec<[f32; 4]> {
-    use h1bitmaps::BitmapExt;
+    use h1_assets::bitmaps::BitmapExt;
     let b = h1map::bitmap::Bitmap::read(h1, h1.tag(id).unwrap()).unwrap();
     let img = b.decode(h1, 0, 0).unwrap();
     img.rgba
@@ -1508,10 +1508,10 @@ fn teleporter_receiver_brightness_against_halo1() {
     let picture = h1_texels(&h1, picture_id);
     // The derived mask as the converter writes it (DXT5), decoded.
     let alpha: Vec<f32> = {
-        use h1bitmaps::decode_image;
+        use h1_assets::bitmaps::decode_image;
         let b = h1map::bitmap::Bitmap::read(&h1, h1.tag(picture_id).unwrap()).unwrap();
         let (img, px) =
-            h1bitmaps::mask::brightest_into_alpha(&b.images[0], b.pixels(&h1, 0).unwrap(), gain)
+            h1_assets::bitmaps::mask::brightest_into_alpha(&b.images[0], b.pixels(&h1, 0).unwrap(), gain)
                 .unwrap();
         let levels = decode_image(&img, &px).unwrap();
         let l0 = levels.iter().find(|l| l.face == 0 && l.level == 0).unwrap();

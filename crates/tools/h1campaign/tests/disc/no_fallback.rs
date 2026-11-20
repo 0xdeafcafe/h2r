@@ -53,7 +53,7 @@ fn check_campaign_objects(name: &str, bytes: Vec<u8>, expected: usize) {
     let root = map.scenario().unwrap().location.unwrap().address;
     let mem = map_memory(&mut map);
     if name == "a50" {
-        let (field, stride) = h1ai::h2::layout::SQUADS;
+        let (field, stride) = h1campaign::ai::h2::layout::SQUADS;
         let count = count_at(&mem, root + field as u32);
         assert_eq!(count, 386, "a50 needs all 386 native slots");
         let address = count_at(&mem, root + field as u32 + 4);
@@ -225,7 +225,7 @@ fn both_sandboxes_rebuild_every_retail_map() {
 }
 
 fn authored_script_sounds(h1: &H1Map, scripts: &h1campaign::Scripting) -> BTreeSet<String> {
-    let tables = h1scripts::Tables::read(h1).unwrap();
+    let tables = h1campaign::scripts::Tables::read(h1).unwrap();
     let sound_type = scripts
         .catalog
         .types()
@@ -236,7 +236,7 @@ fn authored_script_sounds(h1: &H1Map, scripts: &h1campaign::Scripting) -> BTreeS
     let refs: BTreeSet<_> = tables
         .references
         .iter()
-        .filter(|r| r.group == h1sounds::h1::SND && !r.id.is_none())
+        .filter(|r| r.group == h1_assets::sounds::h1::SND && !r.id.is_none())
         .map(|r| h1.tag(r.id).unwrap().name.to_ascii_lowercase())
         .collect();
     for name in atoms {
@@ -414,7 +414,7 @@ fn assert_installed_promotions(h1: &H1Map, out: &mut Map<Cursor<Vec<u8>>>) -> us
             if tag.group != FourCC(*b"snd!") {
                 return None;
             }
-            let source = h1.find(h1sounds::h1::SND, tag.name.as_deref()?)?;
+            let source = h1.find(h1_assets::sounds::h1::SND, tag.name.as_deref()?)?;
             Some((source, tag.id))
         })
         .collect();

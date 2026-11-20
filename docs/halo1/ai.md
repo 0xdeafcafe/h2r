@@ -1,6 +1,6 @@
 # Halo 1 AI data, and Halo 2's
 
-`crates/tools/h1ai` is step 5 of the campaigns work ([campaign.md](campaign.md)):
+`crates/tools/h1campaign` is step 5 of the campaigns work ([campaign.md](campaign.md)):
 it reads Halo 1's AI data out of an Xbox cache file (through `h1map`),
 decodes Halo 2's scenario AI blocks and `char` tags out of a v8 map, and
 converts the first into the second as `map::build` blocks. Halo 2's AI then
@@ -13,7 +13,7 @@ scenario. Soldier movement and combat still need a live a30 observation.
 Evidence labels, as in [map-format.md](map-format.md):
 
 - **V (verified on disc):** checked by the `#[ignore]` tests in
-  `crates/tools/h1ai/tests/disc.rs` on the owner's discs. Strides were read off
+  `crates/tools/h1campaign/tests/ai/disc.rs` on the owner's discs. Strides were read off
   the spacing of consecutive blocks (count × stride = gap to the next block)
   and then checked by decoding every element with range checks.
 - **S (unverified):** a field name or enum order that our disc checks and
@@ -126,7 +126,7 @@ cargo test -p h1ai -p h1models -p h1convert -p h1campaign -p h1scripts -p engine
 cargo test -p h1ai --test convert
 cargo test --release -p h1models --lib retail_overlay_defaults_round_trip_on_all_23_maps -- --ignored
 cargo test --release -p h1ai --test disc retail_spawn_bindings_keep_every_actor_weapon_and_command -- --ignored
-cargo test --release -p h1objects --test sandbox_disc halo2_sandbox_places_a_vehicle_without_a_counterpart -- --ignored
+cargo test --release -p h1objects --test it sandbox_disc::halo2_sandbox_places_a_vehicle_without_a_counterpart -- --ignored
 cargo test --release -p h1scripts --test disc encounter_controls_emit_live_evaluators_and_native_orders -- --ignored
 cargo test --release -p h1scripts --test conversations_disc every_campaign_conversation_compiles_with_its_source_sounds -- --ignored
 cargo test --release -p h1campaign --test disc both_sandboxes_rebuild_every_retail_map -- --ignored

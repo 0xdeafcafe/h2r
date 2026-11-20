@@ -18,11 +18,10 @@ scenario-edit = { path = "../scenario-edit" }
 # The invented test map (feature `fixture`): its bitmap goes through the
 # Halo 1 bitmap converter, the one tool that writes a whole Halo 2 `bitm`.
 h1map = { path = "../h1map", optional = true }
-h1bitmaps = { path = "../h1bitmaps", optional = true }
-h1models = { path = "../h1models", optional = true }
+h1-assets = { path = "../h1-assets", optional = true }
 
 [features]
-fixture = ["dep:h1map", "dep:h1bitmaps", "dep:h1models"]
+fixture = ["dep:h1map", "dep:h1-assets"]
 
 [dev-dependencies]
 hud-edit = { path = ".", features = ["fixture"] }

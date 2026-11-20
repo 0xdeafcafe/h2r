@@ -206,7 +206,7 @@ pub fn add_cards(mainmenu: &[u8], cards: &[Card]) -> Result<Added> {
         .ok()
         .filter(|px| px.len() == usize::from(w) * usize::from(h) * 4 && has_frame(px));
     let mut set = TagSet::from_map(&mut map)?;
-    // The index takes more tags (h1sounds::convert::make_index_room).
+    // The index takes more tags (h1_assets::sounds::convert::make_index_room).
     let pinned = set
         .pinned
         .as_mut()

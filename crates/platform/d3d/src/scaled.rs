@@ -59,8 +59,8 @@
 //! reference's ([`ScaleStats::reference_frames`]), so a run can start at
 //! 1x and go up without a second backend's work until it does.
 //!
-//! **E3 lighting, phase 1** ([`Lighting`], [`ScaledBackend::follow_lighting`],
-//! docs/graphics/e3-lighting.md): harder retail shadows, in the view only.
+//! **The Lighting row** ([`Lighting`], [`ScaledBackend::follow_lighting`],
+//! docs/graphics/e3-lighting-setting.md): harder retail shadows, in the view only.
 //! Every `D24S8` depth level not of the frame's size (a shadow map) gets a
 //! view copy at [`shadow_scale`] times its size, made at its first use,
 //! with a colour surface of that size to draw it through. Draws that write

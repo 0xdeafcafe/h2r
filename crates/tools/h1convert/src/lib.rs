@@ -96,7 +96,7 @@ pub enum Error {
     Apply(#[from] apply::ApplyError),
     /// The lightmap bitmap couldn't be converted.
     #[error("lightmap bitmap: {0}")]
-    Bitmap(#[from] h1bitmaps::Error),
+    Bitmap(#[from] h1_assets::bitmaps::Error),
     /// The Halo 1 sandbox's objects couldn't be added.
     #[error("Halo 1 objects: {0}")]
     Objects(String),
@@ -113,7 +113,7 @@ pub enum Error {
     Ui(String),
     /// A converted tag couldn't be installed.
     #[error("installing a converted tag: {0}")]
-    Install(#[from] h1models::Error),
+    Install(#[from] h1_assets::models::Error),
 }
 
 impl Error {

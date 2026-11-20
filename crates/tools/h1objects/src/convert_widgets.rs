@@ -1,7 +1,7 @@
 //! Object widgets. H2 dispatches ant!, clwd and tdtl through its widget
 //! table. MGS2 volumes go through the render-time attachment dispatcher.
 use h1map::{Tag, TagRef};
-use h1models::Converted;
+use h1_assets::models::Converted;
 use map::build::{Block, Fixup};
 use map::{FourCC, TagId};
 use tags::defs::{self, Defs, Record, StructDef, Val};
@@ -852,7 +852,7 @@ impl Converter<'_> {
         };
         let mut shader = |at| {
             let src = self.h1_tag(reference(b, at)?)?;
-            let entry = h1models::h1::ShaderRef {
+            let entry = h1_assets::models::h1::ShaderRef {
                 group: src.group,
                 tag: src.id,
                 permutation: 0,

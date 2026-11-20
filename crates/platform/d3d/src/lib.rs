@@ -96,7 +96,7 @@ pub use vblank::{FrameWait, register_frame_wait};
 /// The largest render scale: 6x of 640x480 is 3840x2880.
 pub const MAX_SCALE: u32 = 6;
 
-/// The view's lighting (docs/graphics/e3-lighting.md): the Video screen's
+/// The view's lighting (docs/graphics/e3-lighting-setting.md): the Video screen's
 /// Lighting row, `[graphics] lighting`, `H2_LIGHTING`. Nothing of it
 /// reaches the guest: the reference draws retail whatever this is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -105,7 +105,7 @@ pub enum Lighting {
     /// NV2A does (2x2 percentage-closer filtering when the stage filters).
     #[default]
     Retail,
-    /// Phase 1 of E3 lighting: shadow maps at `shadow_scale` times their
+    /// The Lighting row on E3: shadow maps at `shadow_scale` times their
     /// size in the view, compared with one tap.
     E3,
 }

@@ -399,7 +399,7 @@ fn a_multiplayer_map_converts_fresh_with_nothing_pinned() {
         // The sound gestalt, cut to the kept sounds (compact::gestalt): every
         // kept sound names the same entries, names and chunk data as in the
         // pinned map.
-        use h1sounds::gestalt::SoundGestalt;
+        use h1_assets::sounds::gestalt::SoundGestalt;
         let gestalt = |map: &mut M| {
             let t = map
                 .tags()
@@ -415,7 +415,7 @@ fn a_multiplayer_map_converts_fresh_with_nothing_pinned() {
         };
         let gb = gestalt(&mut f);
         let owner = f.tags().iter().find(|t| t.group == FourCC(*b"ugh!")).unwrap().id;
-        for info in &gb.nested[h1sounds::gestalt::blocks::EXTRA_INFOS] {
+        for info in &gb.nested[h1_assets::sounds::gestalt::blocks::EXTRA_INFOS] {
             let stored = u32::from_le_bytes(info.bytes[0x20..0x24].try_into().unwrap());
             assert_eq!(stored, owner.0, "compacted extra-info resource owner");
         }
@@ -524,7 +524,7 @@ fn a_multiplayer_map_converts_fresh_with_nothing_pinned() {
 
 /// Every sound of a fresh multiplayer conversion (`H1_MAPS`, default
 /// bloodgulch; the Halo 2 sandbox, as `h2 play` imports it) read back
-/// through the gestalt as the engine plays it (`h1sounds::audit`): Halo
+/// through the gestalt as the engine plays it (`h1_assets::sounds::audit`): Halo
 /// 1's background sounds hold exactly their Halo 1 samples, and every
 /// other sound is byte for byte the base's of the same name.
 #[test]
@@ -561,7 +561,7 @@ fn every_multiplayer_sound_plays_what_it_was_made_from() {
         let mopp = structure_mopp(&p.collision).unwrap();
         let fresh = p.build_fresh(&mut base, &mopp).unwrap();
         let a =
-            h1sounds::audit::audit(&fresh.bytes, Some(&h1), &[(base_name, &base_bytes)]).unwrap();
+            h1_assets::sounds::audit::audit(&fresh.bytes, Some(&h1), &[(base_name, &base_bytes)]).unwrap();
         println!(
             "{name} on {base_name}: {} sounds, {} from Halo 1 ({:.1} s), {} retail, {} permutations; \
              {} unmatched {:?}",

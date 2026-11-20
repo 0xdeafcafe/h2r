@@ -33,10 +33,9 @@ pub const MP_ORDER: [&str; 13] = [
     "longest",
 ];
 
-/// The campaign's play order: level file names.
-pub const CAMPAIGN_ORDER: [&str; 10] = [
-    "a10", "a30", "a50", "b30", "b40", "c10", "c20", "c40", "d20", "d40",
-];
+/// The campaign's play order, kept in `h1-contract` (the game picker
+/// reads it).
+pub use h1_contract::campaign::CAMPAIGN_ORDER;
 
 /// The picture's part of each list image: width, height.
 pub const PICTURE: (u32, u32) = (139, 113);
@@ -84,7 +83,7 @@ fn card(ui: &H1Map, i: usize, pictures: &str, names: &str, text: &str) -> Result
     };
     let strings = |name: &str| -> Result<Vec<String>> {
         let t = find(name, b"ustr")?;
-        Ok(h1text::h1::Ustr::read(ui, t)
+        Ok(h1_assets::text::h1::Ustr::read(ui, t)
             .map_err(|e| Error::Ui(format!("{name}: {e}")))?
             .strings)
     };
@@ -103,7 +102,7 @@ fn card(ui: &H1Map, i: usize, pictures: &str, names: &str, text: &str) -> Result
     let px = bm
         .pixels(ui, i)
         .map_err(|e| Error::Ui(format!("{pictures} [{i}]: {e}")))?;
-    let levels = h1bitmaps::decode::decode_image(image, px)
+    let levels = h1_assets::bitmaps::decode::decode_image(image, px)
         .map_err(|e| Error::Ui(format!("{pictures} [{i}]: {e}")))?;
     let top = levels.first().ok_or(Error::Ui("no level".into()))?;
     let (w, h) = (PICTURE.0.min(top.width), PICTURE.1.min(top.height));

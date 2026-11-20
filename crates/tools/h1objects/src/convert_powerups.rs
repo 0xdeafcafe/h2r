@@ -3,7 +3,7 @@
 //! The pickup's source equipment and model chain supply the tag data.
 
 use h1map::Tag;
-use h1models::Converted;
+use h1_assets::models::Converted;
 use map::build::Block;
 use map::{FourCC, TagId};
 use tags::defs::{self, DefError, Defs, Val};

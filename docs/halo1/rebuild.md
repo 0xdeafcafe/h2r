@@ -98,7 +98,7 @@ what was left.
 
 ```sh
 H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso \
-  cargo test --release -p h1objects --test rebuild_disc -- --ignored --nocapture
+  cargo test --release -p h1objects --test it -- rebuild_disc:: --skip unit_rebuild_disc:: --ignored --nocapture
 ```
 
 - `every_scenery_rebuilds_from_its_definition`: 237 scenery objects (the
@@ -210,7 +210,7 @@ retail vehicles byte-identical with no pinned values):
 Proof (`H1_ISO=... H2_DISC=...`):
 
 ```sh
-cargo test --release -p h1objects --test unit_rebuild_disc -- --ignored --nocapture
+cargo test --release -p h1objects --test it unit_rebuild_disc:: -- --ignored --nocapture
 cargo test --release -p h1campaign --test disc a10_cryotubes -- --ignored --nocapture
 ```
 

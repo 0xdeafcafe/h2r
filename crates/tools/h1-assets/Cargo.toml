@@ -1,0 +1,39 @@
+[package]
+name = "h1-assets"
+description = "Halo 1 assets as Halo 2 tags: bitmaps, models, sounds, skies and text, read from Xbox cache files (docs/halo1/README.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+h1map = { path = "../h1map" }
+assets.workspace = true
+gfx = { path = "../../platform/gfx" }
+tags.workspace = true
+map.workspace = true
+thiserror.workspace = true
+audio = { path = "../../platform/audio", default-features = false }
+h1-contract.workspace = true
+
+[dev-dependencies]
+xiso.workspace = true
+
+[[test]]
+name = "bitmaps_real_disc"
+path = "tests/bitmaps/real_disc.rs"
+
+[[test]]
+name = "sounds_fields_disc"
+path = "tests/sounds/fields_disc.rs"
+
+[[test]]
+name = "sounds_looping_disc"
+path = "tests/sounds/looping_disc.rs"
+
+[[test]]
+name = "sounds_real_disc"
+path = "tests/sounds/real_disc.rs"
+
+[[example]]
+name = "text_dump"
+path = "examples/text/dump.rs"

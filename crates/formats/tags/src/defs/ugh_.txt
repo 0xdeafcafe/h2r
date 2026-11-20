@@ -1,5 +1,5 @@
 # ugh!: the map's sound gestalt; every snd! indexes its pitch ranges, permutations and chunks.
-# Evidence: crates/formats/tags/src/sound.rs (Gestalt), docs/formats/sound.md, crates/tools/h1sounds/src/gestalt.rs
+# Evidence: crates/formats/tags/src/sound.rs (Gestalt), docs/formats/sound.md, crates/tools/h1-assets/src/sounds/gestalt.rs
 # and docs/halo1/sounds.md ("The Halo 2 gestalt"). Fields whose only source is a public
 # description (marked S there: playback/scale/pitch-range-parameter fields, promotions,
 # custom playbacks, extra infos) stay unnamed.

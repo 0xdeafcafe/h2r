@@ -6,7 +6,7 @@
 //! default (the image is not in the repository, and nothing is copied
 //! from it). Run with the path to a `default.xbe`, read-only:
 //!
-//! `H2_XBE=/abs/path/default.xbe cargo test -p d3d --test fog_xbe -- --ignored`
+//! `H2_XBE=/abs/path/default.xbe cargo test -p d3d --test it fog_xbe:: -- --ignored`
 
 use d3d::GuestLayout;
 use d3d::GuestMemory;

@@ -3,7 +3,7 @@
 //! counts only; no bytes are kept.
 //!
 //! ```sh
-//! H2_XBE=... H2_DISC=... cargo test -p h1convert --test h2_globals -- --ignored --nocapture
+//! H2_XBE=... H2_DISC=... cargo test -p h1convert --test it h2_globals:: -- --ignored --nocapture
 //! ```
 
 use std::fs::File;

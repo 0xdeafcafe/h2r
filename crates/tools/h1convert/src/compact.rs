@@ -4,7 +4,7 @@
 //! built from scratch keeps only the `snd!` tags something reaches, so the
 //! rest of the gestalt (and the raw its chunks name) is dead weight.
 //! [`gestalt`] builds a new gestalt from nothing: each kept `snd!`, in index
-//! order, takes its entries across ([`h1sounds::merge::merge_sound`]) and
+//! order, takes its entries across ([`h1_assets::sounds::merge::merge_sound`]) and
 //! gets its indices rewritten. Chunk and extra-info raw stay the resources
 //! they were and import names the strings they were (their fixups carried
 //! across as tokens), and the raw nothing names any more is emptied
@@ -19,9 +19,9 @@
 
 use std::collections::HashMap;
 
-use h1sounds::convert::snd;
-use h1sounds::gestalt::{ChunkPointer, SoundGestalt, blocks};
-use h1sounds::merge::{MergeMap, merge_sound};
+use h1_assets::sounds::convert::snd;
+use h1_assets::sounds::gestalt::{ChunkPointer, SoundGestalt, blocks};
+use h1_assets::sounds::merge::{MergeMap, merge_sound};
 use map::FourCC;
 use map::build::{Block, FixupKind, RawRef, TagPayload, TagSet};
 
@@ -208,10 +208,10 @@ fn restore(root: &mut Block, t: &Tokens) -> Result<()> {
 struct Same;
 
 impl MergeMap for Same {
-    fn name(&mut self, id: u32) -> h1sounds::Result<u32> {
+    fn name(&mut self, id: u32) -> h1_assets::sounds::Result<u32> {
         Ok(id)
     }
-    fn raw(&mut self, pointer: ChunkPointer, _size: u32) -> h1sounds::Result<ChunkPointer> {
+    fn raw(&mut self, pointer: ChunkPointer, _size: u32) -> h1_assets::sounds::Result<ChunkPointer> {
         Ok(pointer)
     }
 }
@@ -286,7 +286,7 @@ pub fn entries(
     g: &SoundGestalt,
     header: &[u8],
     name: &dyn Fn(u32) -> String,
-    chunk: &dyn Fn(&h1sounds::gestalt::Chunk) -> String,
+    chunk: &dyn Fn(&h1_assets::sounds::gestalt::Chunk) -> String,
 ) -> Vec<String> {
     let at = |i: usize, n: usize| {
         if n < g.count(i) {
@@ -386,7 +386,7 @@ pub fn entries(
         match g.nested[blocks::EXTRA_INFOS].get(extra as usize) {
             Some(e) => {
                 let mut e = e.clone();
-                let raw = h1sounds::gestalt::Chunk {
+                let raw = h1_assets::sounds::gestalt::Chunk {
                     pointer: ChunkPointer::Stored(u32::from_le_bytes(
                         e.bytes[8..12].try_into().expect("4"),
                     )),
@@ -425,7 +425,7 @@ pub fn map_entries<R: std::io::Read + std::io::Seek>(
         .map_err(|e| fail(e.to_string()))?;
     let strings = m.strings().to_vec();
     let name = |id: u32| format!("{:?}", strings.get((id & 0xff_ffff) as usize));
-    let chunk = |c: &h1sounds::gestalt::Chunk| {
+    let chunk = |c: &h1_assets::sounds::gestalt::Chunk| {
         let p = match c.pointer {
             ChunkPointer::Stored(p) => p,
             ChunkPointer::Local(r) => return format!("local {}", r.0),
