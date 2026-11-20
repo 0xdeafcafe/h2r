@@ -130,10 +130,10 @@ impl EntryTable {
             .enumerate()
             .map(|(i, (a, _))| (*a, i as u32 + 1))
             .collect();
-        let (addrs, functions) = rows.into_iter().unzip();
+        let (addrs, functions): (Vec<_>, Vec<_>) = rows.into_iter().unzip();
         Self {
-            addrs,
-            functions,
+            addrs: addrs.into_boxed_slice(),
+            functions: functions.into_boxed_slice(),
             index,
             pcmap,
             text,
