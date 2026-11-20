@@ -399,6 +399,8 @@ points! { ALL;
     OBJECT_CHANGE_COLORS @ 0x000b_e8e0: [fn(object: stack 0) -> al ret 4], Hot; "docs/perf/sim-budget.md";
     OBJECT_PRE_UPDATE @ 0x000b_c470: [fn(object: stack 0) -> al ret 4], Hot; "docs/perf/sim-budget.md";
     OBJECT_POST_UPDATE @ 0x000b_c820: [fn(object: stack 0) ret 4], Hot; "docs/perf/sim-budget.md";
+    /// Per-object node matrices: orientation block, root transform, skeleton walk.
+    OBJECT_NODE_MATRICES @ 0x000b_d090: [fn(object: stack 0) ret 4], Hot; "docs/perf/sim-budget.md";
     UNIT_AIM_UPDATE @ 0x000c_7840: [opaque], Hot; "docs/perf/sim-budget.md";
     UNIT_UPDATE @ 0x000c_6b30: [fn(unit: stack 0) -> al ret 4], Hot; "docs/perf/sim-budget.md";
     OBJECTS_FINALIZE @ 0x000b_7150: [opaque], Optional; "docs/engine/engine-map.md";

@@ -468,6 +468,71 @@ fn portal_fixture(m: &mut FlatMemory, c: &mut Cpu, case: u32) {
     c.mxcsr |= (case % 4) << 13;
 }
 
+/// One object with a short skeleton. Orientations are unit-ish quaternions
+/// with offsets and scales, so the inlined pose and composition leaves do
+/// real arithmetic. Case 3 has no node block and no nodes, case 4 no model,
+/// case 5 is a biped the guest leaves alone.
+fn node_fixture(m: &mut FlatMemory, _: &mut Cpu, case: u32) {
+    let tags = RECORDS;
+    let object = RECORDS + 0x1000;
+    let parent = RECORDS + 0x1800;
+    let definition = RECORDS + 0x2000;
+    let model = RECORDS + 0x2100;
+    let skeleton = RECORDS + 0x2200;
+    let nodes = RECORDS + 0x2400;
+    let block = 0x200;
+    let nodes_count = [5u32, 7, 6, 0, 4, 3][case as usize];
+    let matrices = 0x400u32;
+    word(m, points::OBJECTS.base, HEADER);
+    word(m, HEADER + 0x44, DATA);
+    word(m, points::TAG_ENTRIES.base, tags);
+    word(m, STACK + 4, 0x8200_0002);
+    word(m, DATA + 2*12 + 8, object);
+    word(m, DATA + 5*12 + 8, parent);
+    for (i, data) in [(1u32, definition), (2, model), (3, skeleton)] {
+        word(m, tags + i*16 + 8, data);
+    }
+    word(m, object, 1);
+    word(m, object + 4, [0, 0x4000_0400, 0x4000_0000, 0x2000_0400, 0, 0][case as usize]);
+    word(m, object + 0x14, if matches!(case, 1 | 4) { 5 } else { u32::MAX });
+    m.bytes[(object + 0x18) as usize] = 1;
+    for i in 0..9 {
+        word(m, object + 0x64 + 4*i, ((i as f32 - 3.5) / 4.0).to_bits());
+    }
+    word(m, object + 0xa0, 0.875f32.to_bits());
+    word(m, object + 0xb4, if matches!(case, 1 | 2) { 3 } else { u32::MAX });
+    m.bytes[(object + 0xc0) as usize] = 0x40;
+    word(m, object + 0xd4, if case == 1 { 9 } else { u32::MAX });
+    m.bytes[(object + 0xd8) as usize] = 1;
+    let orientations: u16 = if case == 3 { 0xffff } else { block as u16 };
+    assert!(m.load(object + 0x112, &orientations.to_le_bytes()));
+    assert!(m.load(object + 0x114, &((nodes_count.max(1) * 52) as u16).to_le_bytes()));
+    assert!(m.load(object + 0x116, &(matrices as u16).to_le_bytes()));
+    assert!(m.load(object + 0x12a, &0x100u16.to_le_bytes()));
+    word(m, object + 0x100 + 0x68, if case == 2 { 4 } else { u32::MAX });
+    m.bytes[(object + 0x34b) as usize] = if case == 5 { 2 } else { 0 };
+    for n in 0..8u32 {
+        let q = [0.125 * (n as f32 + 1.0), -0.25, 0.5 - 0.0625 * n as f32, 0.75];
+        let rest = [n as f32 * 0.5, -1.5, 2.25, 1.0 + n as f32 / 16.0];
+        for (i, v) in q.into_iter().chain(rest).enumerate() {
+            word(m, object + block + 32*n + 4*i as u32, v.to_bits());
+        }
+        let parent_node: u16 = if n == 0 { 0xffff } else { [0, n as u16 - 1][(n % 2) as usize] };
+        assert!(m.load(nodes + 0x60*n + 4, &parent_node.to_le_bytes()));
+    }
+    word(m, parent + 4, 0x400);
+    assert!(m.load(parent + 0x116, &0x400u16.to_le_bytes()));
+    m.bytes[definition as usize] = if case >= 2 && case != 3 && case != 4 { 0 } else { 1 };
+    word(m, definition + 0x38, if case == 4 { u32::MAX } else { 2 });
+    word(m, model + 4, 3);
+    word(m, skeleton + 0x48, nodes_count);
+    word(m, skeleton + 0x4c, nodes);
+    // Root transform the faked callee would have produced.
+    for i in 0..13 {
+        word(m, STACK - 0xf8 + 0xc4 + 4*i, [1.0f32, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.5, 0.25, -2.0][i as usize].to_bits());
+    }
+}
+
 fn abi_cpu(c: &Cpu) -> CpuAbi {
     let [eax, ecx, edx, ebx, esp, ebp, esi, edi] = c.gpr;
     let x = &c.x87;
@@ -485,13 +550,24 @@ fn abi_cpu(c: &Cpu) -> CpuAbi {
     }
 }
 
-fn segment(insns: &BTreeMap<u32, ir::IrInsn>, cpu: &mut Cpu, mem: &mut FlatMemory) -> TransferAbi {
+/// Guest leaves a port runs in Rust. The guest side steps through them, so
+/// the next boundary is the port's own next call or return.
+const INLINED: &[(u32, &[u32])] = &[(0xbd090, &[0x1421f0, 0x142a60])];
+
+fn inlined(point: u32) -> &'static [u32] {
+    INLINED.iter().find(|(p, _)| *p == point).map_or(&[], |(_, leaves)| leaves)
+}
+
+fn segment(insns: &BTreeMap<u32, ir::IrInsn>, inline: &[u32], cpu: &mut Cpu, mem: &mut FlatMemory) -> TransferAbi {
+    let mut depth = 0u32;
     for _ in 0..500_000 {
         let pc = cpu.eip;
         let i = insns.get(&pc).unwrap_or_else(|| panic!("missing instruction at {pc:#x}"));
         let flow = interp::step(cpu, mem, i).unwrap_or_else(|e| panic!("{pc:#x}: {e:?}"));
         cpu.eip = flow.target();
         match flow {
+            Flow::Return { .. } if depth > 0 => depth -= 1,
+            Flow::Call { target, .. } if inline.contains(&target) => depth += 1,
             Flow::Return { target } => return TransferAbi::ret(target),
             Flow::Call { target, continuation } => return TransferAbi::call(target, continuation),
             _ => {}
@@ -511,7 +587,7 @@ fn compare(port: &Port, insns: &BTreeMap<u32, ir::IrInsn>, mut mem: FlatMemory, 
         assert!(engine::sim_physics::supported(port, &regs, &native), "fixture takes fallback at {at:#x}");
         let actual = port.invoke(&mut regs, &mut native, at).unwrap();
         assert_ne!(actual.route,abi::RESUME,"{} case {case} escaped to generated code",port.switch);
-        let expected = segment(insns, &mut cpu, &mut mem);
+        let expected = segment(insns, inlined(port.point.base), &mut cpu, &mut mem);
         let why = || format!("{} case {case} boundary {n} from {at:#x}", port.switch);
         assert_eq!(actual, expected, "{}", why());
         regs.eip = actual.target_pc;
@@ -530,7 +606,9 @@ fn compare(port: &Port, insns: &BTreeMap<u32, ir::IrInsn>, mut mem: FlatMemory, 
         let cleanup = match target {
             0xbc470 | 0xbc820 | 0x109580 | 0xc49b0 | 0xc58f0 | 0xc60c0 => 4,
             0x23a160 | 0x108c60 | 0xd5de0 | 0xbe8e0 | 0xbc5e0 | 0xbd090 | 0xbdef0 => 4,
-            0x1d3920 | 0xbab40 => 12,
+            0x1d3920 | 0xbab40 | 0xbdb60 => 12,
+            0xe1670 | 0xbf5a0 | 0xbfc90 | 0xbff10 | 0xbfe80 | 0xbfed0 | 0xbfe20 | 0xa98b0 | 0xa9940 => 0,
+            0xb8bd0 | 0x1090d0 => 4, 0x16d940 => 8, 0xbdc40 => 20,
             SOLVER_CHILD | 0x131c20 | 0x31c7d0 => 0,
             0x31c520 | 0x31c530 => 4,
             0xbff60 | 0x168311 | 0x1cc260 | 0x166c39 | 0x1469f0 => 4,
@@ -597,6 +675,14 @@ fn compare(port: &Port, insns: &BTreeMap<u32, ir::IrInsn>, mut mem: FlatMemory, 
             let a=mem.read_u32(sp+4).unwrap();
             mem.bytes[a as usize]=1;native.set_u8(a,1).unwrap();
         }
+        if target == 0x1d3920 && port.point.base == points::OBJECT_NODE_MATRICES.base {
+            // Mark nodes whose matrices the component supplies.
+            let mask = mem.read_u32(sp + 8).unwrap();
+            let bits = [0, 0b0110, 0b1, 0b1010, 0, 0][case as usize % 6];
+            word(&mut mem, mask, bits);
+            native.set_u32(mask, bits).unwrap();
+        }
+        if target == 0xe1670 {cpu.xmm[0]=u128::from(1.25f32.to_bits());}
         if target == 0x14a5b0 {
             let out = mem.read_u32(sp+20).unwrap();
             word(&mut mem, out, (5 << 16) | 2);
@@ -640,7 +726,7 @@ fn compare(port: &Port, insns: &BTreeMap<u32, ir::IrInsn>, mut mem: FlatMemory, 
         // object walks also get arbitrary caller-saved register clobbers.
         if [points::UNIT_UPDATE.base,points::OBJECTS_PRE_PHYSICS.base,
             points::OBJECTS_POST_PHYSICS.base,points::OBJECT_PRE_UPDATE.base,
-            points::OBJECT_POST_UPDATE.base].contains(&port.point.base) {
+            points::OBJECT_POST_UPDATE.base,points::OBJECT_NODE_MATRICES.base].contains(&port.point.base) {
             cpu.gpr[1] = answer.rotate_left(9);
             cpu.gpr[2] = !answer;
         }
@@ -681,6 +767,12 @@ fn oracle() -> Option<&'static Oracle> {
                 const CONTACT_TAIL: u32 = 0x002f_a64e;
                 let tail = lifter.lift(CONTACT_TAIL).expect("contact tail");
                 for i in tail.blocks.into_values().flat_map(|b| b.insns) {
+                    insns.entry(i.pc).or_insert(i);
+                }
+            }
+            for &leaf in inlined(port.point.base) {
+                let leaf = lifter.lift(leaf).expect("inlined leaf");
+                for i in leaf.blocks.into_values().flat_map(|b| b.insns) {
                     insns.entry(i.pc).or_insert(i);
                 }
             }
@@ -732,6 +824,7 @@ differential!(objects_pre_physics, OBJECTS_PRE_PHYSICS, true, 6, |_,_,_| {});
 differential!(objects_post_physics, OBJECTS_POST_PHYSICS, true, 6, |_,_,_| {});
 differential!(object_pre_update, OBJECT_PRE_UPDATE, true, 6, |m,_,n| object_fixture(m,n));
 differential!(object_post_update, OBJECT_POST_UPDATE, true, 6, |m,_,n| object_fixture(m,n));
+differential!(object_node_matrices, OBJECT_NODE_MATRICES, false, 6, node_fixture);
 differential!(object_change_colors, OBJECT_CHANGE_COLORS, true, 6, |m,_,n| color_fixture(m,n));
 differential!(object_spatial_visit, OBJECT_SPATIAL_VISIT, false, 6, |m,_,n| visit_fixture(m,n));
 differential!(object_spatial_portal, OBJECT_SPATIAL_PORTAL, false, 6, portal_fixture);
