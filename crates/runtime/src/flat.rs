@@ -15,6 +15,16 @@ pub(crate) fn enabled() -> bool {
 
 /// Bit in the existing C page table. Low bits remain guest permissions.
 pub(crate) const FLAT: u32 = 8;
+const WINDOW_BITS: u32 = FLAT | 0x30;
+
+// Old images know only FLAT, which must always mean base + guest_va.
+fn window_flag(index: usize) -> u32 {
+    if index == 0 {
+        FLAT
+    } else {
+        (index as u32) << 4
+    }
+}
 
 /// Host-only, valid under the generated memory gate.
 #[repr(C)]
@@ -66,6 +76,7 @@ pub(crate) struct Arena {
     // Reservation ownership includes one unmapped host page at either end.
     guest: Reservation,
     page_size: usize,
+    windows: usize,
     watch: Option<protection::Mirror>,
     watch_attempted: bool,
 }
@@ -76,17 +87,29 @@ impl Arena {
         if !matches!(host, 4096 | 16384) || !(ram.as_ptr() as usize).is_multiple_of(host) {
             return None;
         }
-        let guest = Reservation::new(VA_SIZE + 2 * host)?;
+        // On 16 KiB hosts, VA and PA may differ by any of four 4 KiB
+        // offsets. Reserve address space only; all windows share the RAM.
+        let windows = host / PAGE;
+        let stride = VA_SIZE + 3 * host;
+        let (guest, windows) = if windows > 1 {
+            Reservation::new(windows * stride).map(|r| (r, windows))
+        } else {
+            None
+        }
+        .or_else(|| Reservation::new(VA_SIZE + 2 * host).map(|r| (r, 1)))?;
         let arena = Self {
             guest,
             page_size: host,
+            windows,
             watch: None,
             watch_attempted: std::env::var_os("H2_FLAT_WRITE_WATCH").is_some_and(|v| v == "0"),
         };
         for page in pages.iter_mut() {
-            page.permissions &= !FLAT;
+            page.permissions &= !WINDOW_BITS;
         }
-        arena.map_ranges(ram, pages, 0, VA_SIZE);
+        for index in 0..windows {
+            arena.map_ranges(ram, pages, index, 0, VA_SIZE);
+        }
         Some(arena)
     }
 
@@ -98,67 +121,103 @@ impl Arena {
         start: u64,
         end: u64,
     ) -> bool {
-        let lo = start as usize & !(self.page_size - 1);
-        let hi = (end as usize).next_multiple_of(self.page_size);
-        let at = self.guest.ptr.as_ptr().wrapping_add(self.page_size + lo);
-        // Restore the original guard reservation (including stale aliases).
-        // On failure the caller drops the entire arena before republishing.
-        if unsafe {
-            libc::mmap(
-                at.cast(),
-                hi - lo,
-                libc::PROT_NONE,
-                libc::MAP_PRIVATE | libc::MAP_FIXED | libc::MAP_ANONYMOUS,
-                -1,
-                0,
-            )
-        } == libc::MAP_FAILED
-        {
-            return false;
+        for index in 0..self.windows {
+            let (lo, hi) = self.host_range(index, start as usize, end as usize);
+            let at = self.window_address(index, lo);
+            // Replace every old alias in the affected host pages with guards.
+            // This also covers siblings outside the changed guest range.
+            if unsafe {
+                libc::mmap(
+                    at.cast(),
+                    hi - lo,
+                    libc::PROT_NONE,
+                    libc::MAP_PRIVATE | libc::MAP_FIXED | libc::MAP_ANONYMOUS,
+                    -1,
+                    0,
+                )
+            } == libc::MAP_FAILED
+            {
+                return false;
+            }
+            let range = self.guest_pages(index, lo, hi);
+            for page in &mut pages[range] {
+                if page.permissions & WINDOW_BITS == window_flag(index) {
+                    page.permissions &= !WINDOW_BITS;
+                }
+            }
+            self.map_ranges(ram, pages, index, start as usize, end as usize);
         }
-        for page in &mut pages[lo / PAGE..hi / PAGE] {
-            page.permissions &= !FLAT;
-        }
-        self.map_ranges(ram, pages, lo, hi);
         true
     }
 
-    fn map_ranges(&self, ram: &Ram, pages: &mut [FastPage], start: usize, end: usize) {
+    // Window i holds the same guest addresses shifted by i guest pages.
+    // Each stride leaves room for the leading guard, shifted last page,
+    // and a trailing guard. Keep in sync with h2_flat_span in h2fastmem.h.
+    fn window_address(&self, index: usize, offset: usize) -> *mut u8 {
+        let stride = VA_SIZE + 3 * self.page_size;
+        self.guest
+            .ptr
+            .as_ptr()
+            .wrapping_add(self.page_size + index * stride + offset)
+    }
+
+    fn host_range(&self, index: usize, start: usize, end: usize) -> (usize, usize) {
+        let shift = index * PAGE;
+        (
+            (start + shift) & !(self.page_size - 1),
+            (end + shift).next_multiple_of(self.page_size),
+        )
+    }
+
+    fn guest_pages(&self, index: usize, lo: usize, hi: usize) -> std::ops::Range<usize> {
+        let shift = index * PAGE;
+        lo.saturating_sub(shift) / PAGE..hi.saturating_sub(shift).min(VA_SIZE) / PAGE
+    }
+
+    fn map_ranges(
+        &self,
+        ram: &Ram,
+        pages: &mut [FastPage],
+        index: usize,
+        start: usize,
+        end: usize,
+    ) {
         let host = self.page_size;
-        // The permissions in the 4 KiB table still guard every access. A
-        // 16 KiB VA group can therefore use a shared mapping even if only
-        // some of its subpages agree with that mapping. Coalesce consecutive
-        // physical host pages into one VM operation, including across Guest
-        // Mapping boundaries.
-        let backing = |pages: &[FastPage], va: usize| {
-            pages[va / PAGE..(va + host) / PAGE]
-                .iter()
-                .enumerate()
-                .find_map(|(i, p)| {
-                    let pa = p.physical as usize;
-                    (p.permissions & 3 != 0 && pa % host == i * PAGE).then_some(pa & !(host - 1))
-                })
+        let shift = index * PAGE;
+        let (mut pos, end) = self.host_range(index, start, end);
+        let backing = |pages: &[FastPage], pos: usize| {
+            self.guest_pages(index, pos, pos + host).find_map(|vpn| {
+                let p = pages[vpn];
+                let pa = p.physical as usize;
+                let slot = (vpn * PAGE + shift) & (host - 1);
+                (p.permissions & 3 != 0 && pa & (host - 1) == slot).then_some(pa & !(host - 1))
+            })
         };
-        let mut va = start;
-        while va < end {
-            let Some(physical) = backing(pages, va) else {
-                va += host;
+        // Each virtual page is congruent in just one window. Coalesce
+        // consecutive physical host pages into one shared mapping. A split
+        // group can have candidates in different physical host pages; only
+        // certify bytes actually represented by the chosen mapping.
+        while pos < end {
+            let Some(physical) = backing(pages, pos) else {
+                pos += host;
                 continue;
             };
-            let lo = va;
-            va += host;
-            while va < end && backing(pages, va) == Some(physical + (va - lo)) {
-                va += host;
+            let lo = pos;
+            pos += host;
+            while pos < end && backing(pages, pos) == Some(physical + (pos - lo)) {
+                pos += host;
             }
-            let hi = va;
-            let address = self.guest.ptr.as_ptr().wrapping_add(host + lo);
-            // SAFETY: aliases whole host pages inside our own reservation.
-            if !unsafe { ram.alias(address, physical, hi - lo) } {
+            let at = self.window_address(index, lo);
+            // SAFETY: this host-page-aligned range is inside our reservation.
+            if !unsafe { ram.alias(at, physical, pos - lo) } {
                 continue;
             }
-            for (i, page) in pages[lo / PAGE..hi / PAGE].iter_mut().enumerate() {
-                if page.permissions & 3 != 0 && page.physical as usize == physical + i * PAGE {
-                    page.permissions |= FLAT;
+            for vpn in self.guest_pages(index, lo, pos) {
+                let page = &mut pages[vpn];
+                if page.permissions & 3 != 0
+                    && page.physical as usize == physical + (vpn * PAGE + shift - lo)
+                {
+                    page.permissions = (page.permissions & !WINDOW_BITS) | window_flag(index);
                 }
             }
         }
