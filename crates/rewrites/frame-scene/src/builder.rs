@@ -10,7 +10,9 @@ use std::sync::{Arc, Mutex};
 use crate::camera::Camera;
 use crate::node::NodeMatrix;
 use crate::object::{Defaults, ItemKey, Lighting};
-use crate::scene::{Cut, FrameScene, Instance, InstanceKey, PartDraw, PartFlags, Row, SceneId, Stamp, View, ViewKey, WorldState};
+use crate::scene::{
+    Cut, FrameScene, Instance, InstanceKey, PartDraw, PartFlags, Row, SceneId, Stamp, Subparts, View, ViewKey, WorldState,
+};
 
 /// Scenes whose readers are done, emptied, for the builder to fill again.
 /// Clones share the list.
@@ -224,12 +226,15 @@ impl SceneBuilder {
     /// Adds a part to `instance`, which must be the open view's last;
     /// parts of one instance in increasing `slot`.
     pub fn push_part(&mut self, instance: u32, slot: u32, key: ItemKey, layer: u8, rows: &[Row]) -> Result<u32, BuildError> {
-        self.push_part_flagged(instance, slot, key, layer, PartFlags::NONE, rows)
+        self.push_part_flagged(instance, slot, key, layer, PartFlags::NONE, None, rows)
     }
 
-    /// [`Self::push_part`] with how the part draws beyond its material.
+    /// [`Self::push_part`] with how the part draws beyond its material:
+    /// its flags and, with [`PartFlags::SUBPARTS`], the subparts it draws.
+    #[allow(clippy::too_many_arguments)]
     pub fn push_part_flagged(
-        &mut self, instance: u32, slot: u32, key: ItemKey, layer: u8, flags: PartFlags, rows: &[Row],
+        &mut self, instance: u32, slot: u32, key: ItemKey, layer: u8, flags: PartFlags, subparts: Option<Subparts>,
+        rows: &[Row],
     ) -> Result<u32, BuildError> {
         let (scene, open) = self.open_mut()?;
         let view = &scene.views[open];
@@ -250,6 +255,7 @@ impl SceneBuilder {
             instance,
             rows: r..scene.rows.len() as u32,
             flags,
+            subparts,
         });
         scene.instances[instance as usize].parts.end = index + 1;
         Ok(index)
@@ -375,8 +381,8 @@ mod tests {
         b.open_view(key(0), camera()).unwrap();
         let a = b.push_instance(object(1, &[NodeMatrix::IDENTITY])).unwrap();
         b.push_part(a, 1, item(1), 3, &rows(3, 1.0)).unwrap();
-        b.push_part_flagged(a, 2, item(2), 3, PartFlags::STENCIL_MARK, &rows(3, 1.0)).unwrap();
-        b.push_part_flagged(a, 3, item(3), 3, PartFlags::STENCIL_MARK | PartFlags::STRIP, &rows(3, 1.0)).unwrap();
+        b.push_part_flagged(a, 2, item(2), 3, PartFlags::STENCIL_MARK, None, &rows(3, 1.0)).unwrap();
+        b.push_part_flagged(a, 3, item(3), 3, PartFlags::STENCIL_MARK | PartFlags::STRIP, None, &rows(3, 1.0)).unwrap();
         let s = b.seal(Stamp::default()).unwrap();
         s.check().unwrap();
         let v = &s.views[0];
@@ -385,6 +391,28 @@ mod tests {
         assert_eq!(s.counts(v).flagged, [("stencil_mark", 2), ("strip", 1)]);
         assert_eq!(PartFlags(3).names(), ["stencil_mark", "strip"]);
         assert!(PartFlags::NONE.names().is_empty());
+    }
+
+    #[test]
+    fn a_subpart_part_keeps_its_visible_subparts() {
+        let mut b = SceneBuilder::default();
+        b.begin(SceneId::default());
+        b.open_view(key(0), camera()).unwrap();
+        let a = b.push_instance(object(1, &[NodeMatrix::IDENTITY])).unwrap();
+        let visible = Subparts { first: 6, count: 5, visible: 0b1_0110 };
+        b.push_part_flagged(a, 1, item(1), 3, PartFlags::SUBPARTS, Some(visible), &rows(3, 1.0)).unwrap();
+        b.push_part(a, 2, item(2), 3, &rows(3, 1.0)).unwrap();
+        let s = b.seal(Stamp::default()).unwrap();
+        s.check().unwrap();
+        let v = &s.views[0];
+        let (_, p) = s.part_at(v, 1).unwrap();
+        assert_eq!(p.subparts, Some(visible));
+        assert_eq!(p.subparts.unwrap().drawn().collect::<Vec<_>>(), [1, 2, 4]);
+        assert_eq!(s.part_at(v, 2).unwrap().1.subparts, None, "the whole part");
+        assert_eq!(s.counts(v).flagged, [("subparts", 1)]);
+        // Bits past the part's own subparts draw nothing.
+        assert_eq!(Subparts { first: 0, count: 2, visible: u64::MAX }.drawn().count(), 2);
+        assert_eq!(Subparts { first: 0, count: 0, visible: u64::MAX }.drawn().count(), 0);
     }
 
     #[test]

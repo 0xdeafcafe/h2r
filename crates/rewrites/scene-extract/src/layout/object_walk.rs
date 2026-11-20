@@ -22,15 +22,19 @@
 //!   Without bit 9 it draws a list whatever the part's flag says; the
 //!   native models decode a part without the flag as a strip, so that case
 //!   refuses ([`Refusal::Topology`]).
-//! - **Bit 6, conditional stream ranges.** With the record's `+0x14` (a
-//!   bitmask of visible subparts) and the section geometry's `+8` (its
+//! - **Bit 6, conditional stream ranges** ([`PartFlags::SUBPARTS`]). With
+//!   the record's `+0x14` (a pointer to a bitmask of visible subparts,
+//!   bit `s` in word `s >> 5`) and the section geometry's `+8` (its
 //!   subpart count) both nonzero, the emitter draws only the visible
-//!   subparts of the part (part `+0xa` first subpart, `+0xc` count;
-//!   geometry `+0xc` the subparts, 8 bytes each): each as its own strip
-//!   with strip topology, consecutive ones merged into lists otherwise.
-//!   Otherwise it draws the whole part, as without the bit. The native
-//!   models hold whole parts, so the conditional case refuses
-//!   ([`Refusal::Subparts`]).
+//!   subparts of the part (part `+0xa` first subpart, `+0xc` count, both
+//!   signed; geometry `+0xc` the subparts, 8 bytes each: first index,
+//!   index count): each as its own strip with strip topology
+//!   (`0x0004daec`), runs of index-contiguous ones as one list otherwise
+//!   (`0x0004db68`). Otherwise it draws the whole part, as without the
+//!   bit. The part is in the scene with the mask read over its own
+//!   subparts ([`Subparts`]); a part with more than [`Subparts::MAX`]
+//!   subparts, a negative first subpart or a mask that does not read
+//!   refuses ([`Refusal::Subparts`]).
 //! - **Bit 11, the auxiliary state toggle.** The prologue calls
 //!   `0x00012d50` with BL 1 and the epilogue with BL 0: it rewrites the
 //!   device's depth scale (device `+0x1c10`, from the scale at
@@ -43,7 +47,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use frame_scene::PartFlags;
+use frame_scene::{PartFlags, Subparts};
 
 use crate::GuestRead;
 use crate::layout::object_nodes::{MODEL_RECORD, MODEL_SECTIONS, Row, SECTION_STRIDE, TAG_INSTANCES};
@@ -78,6 +82,8 @@ const NO_STRUCTURE_LIGHTMAP: u32 = 0x7ff;
 const PART_SIZE: u32 = 0x48;
 const PART_FLAGS: u32 = 2;
 const PART_FIRST_INDEX: u32 = 6;
+const PART_FIRST_SUBPART: u32 = 0xa;
+const PART_SUBPART_COUNT: u32 = 0xc;
 const PART_INDEX_COUNT: u32 = 8;
 /// Record `+0` bits the geometry draw reads in layer 3 (the module notes).
 pub const RECORD_SUBPARTS: u32 = 1 << 6;
@@ -99,7 +105,9 @@ const PART_TRIANGLE_LIST: u16 = 8;
 pub enum Refusal {
     /// Bit 11: the depth-scale toggle around the draw.
     AuxState,
-    /// Bit 6 with a subpart mask and subparts: only visible subparts drawn.
+    /// Bit 6 with a subpart mask and subparts, whose visible subparts
+    /// cannot be read: more than [`Subparts::MAX`], a negative first one,
+    /// or a mask that does not read.
     Subparts,
     /// No bit 9 on a part that is not a triangle list.
     Topology,
@@ -128,16 +136,15 @@ impl Causes {
 /// The [`PartFlags`] of a part whose record has `flags` at `+0`, or the
 /// cause that refuses it: `triangle_list` the part's flag, `subparts`
 /// whether the record's subpart mask and the section's subpart count are
-/// both nonzero. Bit 11 refuses first, then the subparts, then the
-/// topology.
+/// both nonzero. Bit 11 refuses first, then the topology.
 pub fn record_flags(flags: u32, triangle_list: bool, subparts: bool) -> Result<PartFlags, Refusal> {
     if flags & RECORD_AUX_STATE != 0 {
         return Err(Refusal::AuxState);
     }
-    if flags & RECORD_SUBPARTS != 0 && subparts {
-        return Err(Refusal::Subparts);
-    }
     let mut out = PartFlags::NONE;
+    if flags & RECORD_SUBPARTS != 0 && subparts {
+        out |= PartFlags::SUBPARTS;
+    }
     if !triangle_list {
         if flags & RECORD_STRIP == 0 {
             return Err(Refusal::Topology);
@@ -148,6 +155,25 @@ pub fn record_flags(flags: u32, triangle_list: bool, subparts: bool) -> Result<P
         out |= PartFlags::STENCIL_MARK;
     }
     Ok(out)
+}
+
+/// The subparts of a part (its first subpart `first` and count `count`,
+/// the part's signed `+0xa` and `+0xc`) that a visible-subpart mask at
+/// `mask` lets the emitter draw: bit `s & 31` of word `s >> 5` for the
+/// section's subpart `s` (`0x0004db08`..`0x0004db17`). A count of zero or
+/// less draws none.
+pub fn visible_subparts(mem: &dyn GuestRead, mask: u32, first: i16, count: i16) -> Result<Subparts, Refusal> {
+    if first < 0 || count > i16::from(Subparts::MAX) {
+        return Err(Refusal::Subparts);
+    }
+    let count = count.max(0) as u8;
+    let mut visible = 0u64;
+    for n in 0..count {
+        let s = first as u32 + u32::from(n);
+        let w = word(mem, mask, 4 * (s >> 5)).ok_or(Refusal::Subparts)?;
+        visible |= u64::from(w >> (s & 31) & 1) << n;
+    }
+    Ok(Subparts { first: first as u16, count, visible })
 }
 
 /// The `vrtx` classification `0x0001cb20` picks for a section of geometry
@@ -181,6 +207,8 @@ pub struct Part {
     pub index_count: u16,
     /// What its record makes the draw do beyond its material.
     pub flags: PartFlags,
+    /// With [`PartFlags::SUBPARTS`], the subparts the emitter draws.
+    pub subparts: Option<Subparts>,
 }
 
 impl Part {
@@ -295,14 +323,28 @@ fn read_part(
     program: u32,
     packed: u32,
 ) -> Result<Part, Refusal> {
-    let (part, flags, subparts) = read_part_layout(mem, slot, item, record, program, packed).ok_or(Refusal::Other)?;
-    Ok(Part { flags: record_flags(flags, part.triangle_list, subparts)?, ..part })
+    let (part, flags, conditional) = read_part_layout(mem, slot, item, record, program, packed).ok_or(Refusal::Other)?;
+    let flags = record_flags(flags, part.triangle_list, conditional.is_some())?;
+    let subparts = match conditional {
+        Some(c) if flags.contains(PartFlags::SUBPARTS) => Some(visible_subparts(mem, c.mask, c.first, c.count)?),
+        _ => None,
+    };
+    Ok(Part { flags, subparts, ..part })
+}
+
+/// A part whose record draws only its visible subparts: the mask's
+/// address and the part's first subpart and count.
+#[derive(Clone, Copy)]
+struct Conditional {
+    mask: u32,
+    first: i16,
+    count: i16,
 }
 
 /// The part an item draws (without its flags), its record's `+0` flags
-/// and whether the record's subpart mask and its section's subpart count
-/// are both nonzero; `None` when the item's layout or a check against the
-/// guest's choice fails.
+/// and, when the record's bit 6, subpart mask and its section's subpart
+/// count are all set, where its visible subparts are read from; `None`
+/// when the item's layout or a check against the guest's choice fails.
 fn read_part_layout(
     mem: &dyn GuestRead,
     slot: u32,
@@ -310,7 +352,7 @@ fn read_part_layout(
     record: u32,
     program: u32,
     packed: u32,
-) -> Option<(Part, u32, bool)> {
+) -> Option<(Part, u32, Option<Conditional>)> {
     let key = objects::item_key(mem, item)?;
     let record_key = word(mem, record, 0xc)?;
     let flags = word(mem, record, 0)?;
@@ -355,9 +397,17 @@ fn read_part_layout(
         return None;
     }
     // Read only under bit 6, as the guest does (`0x0004d5ff`).
-    let subparts = flags & RECORD_SUBPARTS != 0
-        && word(mem, record, RECORD_SUBPART_MASK)? != 0
-        && word(mem, geometry, GEOMETRY_SUBPART_COUNT)? != 0;
+    let mut conditional = None;
+    if flags & RECORD_SUBPARTS != 0 {
+        let mask = word(mem, record, RECORD_SUBPART_MASK)?;
+        if mask != 0 && word(mem, geometry, GEOMETRY_SUBPART_COUNT)? != 0 {
+            conditional = Some(Conditional {
+                mask,
+                first: half(mem, part, PART_FIRST_SUBPART)? as i16,
+                count: half(mem, part, PART_SUBPART_COUNT)? as i16,
+            });
+        }
+    }
     let read = Part {
         key,
         mode,
@@ -369,8 +419,9 @@ fn read_part_layout(
         first_index: half(mem, part, PART_FIRST_INDEX)?,
         index_count,
         flags: PartFlags::NONE,
+        subparts: None,
     };
-    Some((read, flags, subparts))
+    Some((read, flags, conditional))
 }
 
 /// A balanced span of sorted dispatches. Every object touched by the
@@ -464,6 +515,7 @@ mod tests {
             first_index: 60,
             index_count: 18,
             flags: PartFlags::NONE,
+            subparts: None,
         }
     }
 
@@ -603,12 +655,29 @@ mod tests {
         );
         // Without bit 9 the guest draws a strip part's indices as a list.
         assert_eq!(record_flags(0, false, false), Err(Refusal::Topology));
-        // Bit 6 refuses only when there is a mask and subparts to choose.
+        // Bit 6 chooses subparts only when there is a mask and subparts to
+        // choose.
         assert_eq!(record_flags(RECORD_SUBPARTS, true, false), Ok(PartFlags::NONE));
-        assert_eq!(record_flags(RECORD_SUBPARTS, true, true), Err(Refusal::Subparts));
-        assert_eq!(record_flags(RECORD_SUBPARTS | RECORD_STRIP, false, true), Err(Refusal::Subparts));
+        assert_eq!(record_flags(RECORD_SUBPARTS, true, true), Ok(PartFlags::SUBPARTS));
+        assert_eq!(record_flags(RECORD_SUBPARTS | RECORD_STRIP, false, true), Ok(PartFlags::SUBPARTS | PartFlags::STRIP));
+        assert_eq!(record_flags(RECORD_SUBPARTS, false, true), Err(Refusal::Topology));
         // Bit 11 first.
         assert_eq!(record_flags(RECORD_AUX_STATE | RECORD_SUBPARTS, false, true), Err(Refusal::AuxState));
+    }
+
+    #[test]
+    fn a_mask_is_read_over_the_parts_own_subparts() {
+        let mut mem = Mem::default();
+        mem.w(0x100, 0b1010_0000);
+        mem.w(0x104, 1);
+        let got = visible_subparts(&mem, 0x100, 5, 4).unwrap();
+        assert_eq!(got, Subparts { first: 5, count: 4, visible: 0b0101 });
+        // Subpart 32 is bit 0 of the second word.
+        assert_eq!(visible_subparts(&mem, 0x100, 31, 2).unwrap().visible, 0b10);
+        assert_eq!(visible_subparts(&mem, 0x100, 0, -1).unwrap().count, 0, "a count below one draws none");
+        assert_eq!(visible_subparts(&mem, 0x100, -1, 2), Err(Refusal::Subparts));
+        assert_eq!(visible_subparts(&mem, 0x100, 0, 65), Err(Refusal::Subparts));
+        assert_eq!(visible_subparts(&mem, 0x100, 60, 8), Err(Refusal::Subparts), "the third word does not read");
     }
 
     /// The record's `+0` in [`sorted_part`]'s memory, with `bits` added.
@@ -643,17 +712,43 @@ mod tests {
         assert_eq!(sorted.causes, Causes { topology: 1, ..Causes::default() });
         mem.w(list, 8 << 16);
 
-        // Conditional ranges: the whole part without a mask, refused with one.
+        // Conditional ranges: the whole part without a mask, the visible
+        // subparts with one.
         with_record_bits(&mut mem, RECORD_SUBPARTS);
         mem.w(RENDER_RECORDS + RENDER_RECORD_SIZE + RECORD_SUBPART_MASK, 0);
-        mem.w(0x8000 + GEOMETRY_SUBPART_COUNT, 4);
+        mem.w(0x8000 + GEOMETRY_SUBPART_COUNT, 40);
         assert_eq!(walk(&mem).entries, [Entry::Object { handle, part: Some(part()) }]);
+        let at_part = 0x9000 + 2 * PART_SIZE;
+        // Subparts 30..35 of the section (first 30, count 5), across the
+        // mask's first two words: 30 and 33 visible.
+        mem.w(at_part + 8, 30 << 16 | 18);
+        mem.w(at_part + PART_SUBPART_COUNT, 5);
         mem.w(RENDER_RECORDS + RENDER_RECORD_SIZE + RECORD_SUBPART_MASK, 0xd000);
+        mem.w(0xd000, 1 << 30 | 1 << 29 | 1 << 2);
+        mem.w(0xd004, 1 << 1 | 1 << 5);
         let sorted = walk(&mem);
-        assert_eq!(sorted.entries, [Entry::Object { handle, part: None }]);
-        assert_eq!(sorted.causes, Causes { subparts: 1, ..Causes::default() });
+        let chosen = Part {
+            flags: PartFlags::SUBPARTS,
+            subparts: Some(Subparts { first: 30, count: 5, visible: 0b0_1001 }),
+            ..part()
+        };
+        assert_eq!(sorted.entries, [Entry::Object { handle, part: Some(chosen) }]);
+        assert_eq!(sorted.causes, Causes::default());
+        assert_eq!(chosen.subparts.unwrap().drawn().collect::<Vec<_>>(), [0, 3]);
+        // A mask word that does not read, or more subparts than a mask
+        // holds: refused by name.
+        mem.0.remove(&0xd004);
+        assert_eq!(walk(&mem).causes, Causes { subparts: 1, ..Causes::default() });
+        mem.w(0xd004, 0);
+        mem.w(at_part + PART_SUBPART_COUNT, 65);
+        assert_eq!(walk(&mem).causes, Causes { subparts: 1, ..Causes::default() });
+        // No subparts: drawn, as the guest draws it, with none.
+        mem.w(at_part + PART_SUBPART_COUNT, 0);
+        let none = Part { subparts: Some(Subparts { first: 30, count: 0, visible: 0 }), ..chosen };
+        assert_eq!(walk(&mem).entries, [Entry::Object { handle, part: Some(none) }]);
         mem.w(0x8000 + GEOMETRY_SUBPART_COUNT, 0);
         assert_eq!(walk(&mem).entries, [Entry::Object { handle, part: Some(part()) }], "no subparts to choose");
+        mem.w(at_part + 8, 18);
 
         // The auxiliary state toggle: refused by name.
         with_record_bits(&mut mem, RECORD_AUX_STATE);

@@ -19,7 +19,9 @@ use native_render::load;
 use native_render::look;
 use native_render::object_lighting::ShaderValues;
 use native_render::object_nodes::{Compression, decompression_rows};
-use native_render::object_program_gpu::{EngineStages, LitBuild, LitMaterial, LitModelInput, LitObjects, LitSection, PlannedDraw, Texaccum, lit_model, uniform};
+use native_render::object_program_gpu::{
+    EngineStages, LitBuild, LitMaterial, LitModelInput, LitObjects, LitSection, PlannedDraw, Texaccum, lit_model, lit_subparts, uniform,
+};
 use native_render::object_state::EntryStates;
 use native_render::object_streams::{self, StreamData, StreamFormats};
 use native_render::object_walk::{Entry, Part as WalkPart};
@@ -44,6 +46,10 @@ struct PartRange {
     first: u16,
     count: u16,
     triangle_list: bool,
+    /// The part's first subpart and subpart count, which a record choosing
+    /// subparts names (`frame_scene::Subparts`).
+    first_subpart: u16,
+    subpart_count: u16,
 }
 
 impl PartRange {
@@ -53,6 +59,7 @@ impl PartRange {
             && self.first == part.first_index
             && self.count == part.index_count
             && self.triangle_list == part.triangle_list
+            && part.subparts.is_none_or(|s| s.first == self.first_subpart && u16::from(s.count) == self.subpart_count)
     }
 }
 
@@ -698,6 +705,8 @@ fn load_model(o: &mut Opened, mode: TagId) -> Result<(CpuModel, ModelCoverage), 
             first: p.first_index,
             count: p.index_count,
             triangle_list: p.is_triangle_list(),
+            first_subpart: p.first_subpart,
+            subpart_count: p.subpart_count,
         }))
     }).collect();
     let cover = ModelCoverage { nodes: geo.nodes.len(), parts, ranges };
@@ -761,6 +770,15 @@ fn lit_parts(o: &mut Opened, geo: &RenderModelGeometry, materials: &HashMap<u16,
                 .enumerate()
                 .filter(|(i, p)| *i < 16 && p.is_drawn() && p.kind != load::PART_TRANSPARENT)
                 .map(|(k, p)| (k as u8, p.material, g.part_triangles(p)))
+                .collect(),
+            // A record with bit 6 may draw a choice of them
+            // (`frame_scene::Subparts`).
+            subparts: g
+                .parts
+                .iter()
+                .enumerate()
+                .filter(|(i, p)| *i < 16 && p.is_drawn() && p.kind != load::PART_TRANSPARENT)
+                .filter_map(|(k, p)| Some((k as u8, lit_subparts(&g.indices, &g.subparts, p)?)))
                 .collect(),
         });
     }
@@ -1087,6 +1105,7 @@ mod tests {
             shader: Default::default(),
             indices: 0..3,
             implementations,
+            subparts: None,
         };
         let lit = LitModelInput {
             parts: vec![part(2, 0, [Some((0, 0)), None, Some((1, 0)), None, None]), part(2, 3, [None, Some((2, 0)), None, None, None])],

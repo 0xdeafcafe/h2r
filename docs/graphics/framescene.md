@@ -731,13 +731,21 @@ and world-layer parts are not.
     the part's triangle-list flag is clear, as a list otherwise. The
     native models decode a part without the list flag as a strip, so
     that part without bit 9 refuses (`Refusal::Topology`).
-  - **Bit 6, conditional stream ranges.** With a visible-subpart mask
-    (record `+0x14`) and subparts in the section, the emitter draws only
-    the visible subparts (each its own strip, or consecutive ones merged
-    into lists). That case refuses (`Refusal::Subparts`); without a mask
-    or subparts it draws the whole part and the part is in the scene.
-    Drawing it needs the models to keep each subpart's native index
-    range and the scene to carry the mask.
+  - **Bit 6, conditional stream ranges** (`PartFlags::SUBPARTS`). With a
+    visible-subpart mask (record `+0x14`, bit `s` of word `s >> 5` for
+    the section's subpart `s`) and subparts in the section, the emitter
+    draws only the visible subparts of the part: each its own strip with
+    strip topology, runs of index-contiguous ones as one list otherwise.
+    The scene carries the mask read over the part's own subparts
+    (`PartDraw::subparts`, `frame_scene::Subparts`, at most 64). The
+    lit models keep, after each part's triangles, each subpart's
+    triangles decoded alone in the part's topology
+    (`object_program_gpu::lit_subparts`, `LitPart::subparts`), and a
+    planned draw issues the chosen ones, adjacent ranges joined, one
+    packet per run (`SubpartRanges::drawn`). A list part whose subparts
+    are not whole triangles has no native subparts and its chosen draws
+    refuse at planning. More than 64 subparts, a negative first subpart
+    or a mask that does not read refuse (`Refusal::Subparts`).
   - **Bit 11, the auxiliary state toggle.** The prologue and epilogue
     call `0x00012d50`, which rewrites the device's depth scale and the
     transform it builds from the view. The object programs take neither,

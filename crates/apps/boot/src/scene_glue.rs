@@ -124,7 +124,7 @@ mod tests {
             .unwrap();
         let key = ItemKey { record: 1, shader: 2, section: 0, part: 0, implementation: 0 };
         b.push_part(i, 4, key, 3, &[[0.0; 4]; 3]).unwrap();
-        b.push_part_flagged(i, 5, key, 3, PartFlags::STENCIL_MARK, &[[0.0; 4]; 3]).unwrap();
+        b.push_part_flagged(i, 5, key, 3, PartFlags::STENCIL_MARK, None, &[[0.0; 4]; 3]).unwrap();
         b.add_remainder(1).unwrap();
         let scene = b.seal(Stamp::default()).unwrap();
         let r = reply(&scene, BTreeMap::new());

@@ -183,7 +183,13 @@ impl PartFlags {
     /// (`0x0004daa0`) draws its indices as a strip. Without the bit it
     /// draws every part as a list.
     pub const STRIP: PartFlags = PartFlags(1 << 1);
-    const NAMES: [(PartFlags, &'static str); 2] = [(PartFlags::STENCIL_MARK, "stencil_mark"), (PartFlags::STRIP, "strip")];
+    /// Record bit 6 with a visible-subpart mask, in a section with
+    /// subparts: the emitter draws only the visible subparts
+    /// ([`PartDraw::subparts`]), each its own strip with strip topology,
+    /// consecutive ones as one list otherwise.
+    pub const SUBPARTS: PartFlags = PartFlags(1 << 2);
+    const NAMES: [(PartFlags, &'static str); 3] =
+        [(PartFlags::STENCIL_MARK, "stencil_mark"), (PartFlags::STRIP, "strip"), (PartFlags::SUBPARTS, "subparts")];
 
     pub fn contains(self, other: PartFlags) -> bool {
         self.0 & other.0 == other.0
@@ -212,6 +218,31 @@ impl std::ops::BitOrAssign for PartFlags {
     }
 }
 
+/// Which of a part's subparts the guest's emitter (`0x0004daa0`) draws:
+/// the record's visible-subpart mask (record `+0x14`, a bit per subpart of
+/// the section) read over the part's own subparts. Bit `n` of `visible` is
+/// the section's subpart `first + n`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize)]
+pub struct Subparts {
+    /// The part's first subpart (part `+0xa`).
+    pub first: u16,
+    /// Its subparts (part `+0xc`); at most [`Subparts::MAX`].
+    pub count: u8,
+    pub visible: u64,
+}
+
+impl Subparts {
+    /// The most subparts a part can have here; a part with more keeps its
+    /// D3D draw.
+    pub const MAX: u8 = 64;
+
+    /// The part's subparts that draw, by index among its own (0 the
+    /// part's first), ascending.
+    pub fn drawn(self) -> impl Iterator<Item = u8> {
+        (0..self.count.min(Self::MAX)).filter(move |&n| self.visible >> n & 1 != 0)
+    }
+}
+
 /// What one instance draws for one layer item.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct PartDraw {
@@ -227,6 +258,9 @@ pub struct PartDraw {
     /// already remapped for its section.
     pub rows: Range<u32>,
     pub flags: PartFlags,
+    /// With [`PartFlags::SUBPARTS`]: the subparts it draws; `None`, the
+    /// whole part.
+    pub subparts: Option<Subparts>,
 }
 
 /// One rendered frame, typed. Built on the sim thread by

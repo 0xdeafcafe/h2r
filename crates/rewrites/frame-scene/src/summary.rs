@@ -3,7 +3,7 @@
 //! FNV-1a over the content, in order: the tick, the cut, and every view's
 //! key, camera, clusters, world state, remainder, instances (key,
 //! definition, model, nodes, sphere, lighting, defaults) and parts (slot,
-//! key, layer, rows). Floats by their bits. Not the map epoch, the present
+//! key, layer, flags, subparts, rows). Floats by their bits. Not the map epoch, the present
 //! number or the stamp: they count this process, not the frame.
 
 use crate::object::{Defaults, Lighting};
@@ -81,6 +81,16 @@ pub fn summary_hash(scene: &FrameScene) -> u64 {
                 h.word(p.key.implementation as u32);
                 h.word(u32::from(p.layer));
                 h.word(u32::from(p.flags.0));
+                match p.subparts {
+                    Some(sp) => {
+                        h.word(1);
+                        h.word(u32::from(sp.first));
+                        h.word(u32::from(sp.count));
+                        h.word(sp.visible as u32);
+                        h.word((sp.visible >> 32) as u32);
+                    }
+                    None => h.word(0),
+                }
                 let rows = scene.rows_of(p);
                 h.word(rows.len() as u32);
                 for r in rows {
