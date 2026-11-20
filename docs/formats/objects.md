@@ -287,6 +287,11 @@ name, and 28 use a name the region lacks.
 
 ## Open items
 
+- **Weapon report loudness.** `weap +0x270` (f32): Halo 1 multiplies it
+  by three and adds the hearing unit's radius (`0x0014e379`) for the
+  reach of a shot's alert report to the AI. The converter carries it in
+  the perception table's weapon rows (docs/halo1/ai-control.md, "alert
+  reports and forced combat levels").
 - **Gameplay fields.** Most unit, biped, vehicle, weapon, projectile and device
   scalars are opaque (the weapon's aim-assist floats are the exception). Several blocks are kept opaque because their stride is only
   an upper bound (one element per tag) or their contents are unreviewed:

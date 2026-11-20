@@ -1099,7 +1099,7 @@ fn retail_uncover_and_combat_timer_contact_rules() {
 fn check_authored_uncover_rules<R: std::io::Read + std::io::Seek>(
     level: &str,
     source: &h1map::H1Map,
-    map: &Map<R>,
+    map: &mut Map<R>,
     scenario: &hs::Scenario,
     characters: &[(String, String)],
 ) {
@@ -1108,10 +1108,51 @@ fn check_authored_uncover_rules<R: std::io::Read + std::io::Seek>(
     let offset = scenario.node(global.root()).unwrap().data();
     let encoded = scenario.string(offset).unwrap();
     let word = |s| u32::from_str_radix(s, 16).unwrap();
+    // The two-section header: character rows, then weapon loudness rows,
+    // with the weapon word's marker bit set.
     let count = word(&encoded[..8]);
-    assert_eq!(encoded.len(), 8 + count as usize * 16);
+    let marked = word(&encoded[8..16]);
+    assert_ne!(marked & 0x8000_0000, 0, "{level}: one-word perception header");
+    let weapons = marked & 0x7fff_ffff;
+    assert_eq!(
+        encoded.len(),
+        16 + count as usize * 16 + weapons as usize * 8,
+        "{level}: perception table shape"
+    );
     let references = scenario.references();
-    let rules: std::collections::HashMap<_, _> = encoded.as_bytes()[8..].chunks_exact(16)
+    assert!(references.len() >= count as usize + weapons as usize);
+    let weapon_rules: std::collections::HashMap<_, f32> = encoded.as_bytes()
+        [16 + count as usize * 16..]
+        .chunks_exact(8)
+        .zip(&references[references.len() - count as usize - weapons as usize
+            ..references.len() - count as usize])
+        .map(|(row, weapon)| {
+            assert_eq!(weapon.group(), FourCC(*b"weap"), "{level}: weapon row reference");
+            let row = std::str::from_utf8(row).unwrap();
+            (weapon.id(), f32::from_bits(word(row)))
+        })
+        .collect();
+    assert_eq!(weapon_rules.len(), weapons as usize);
+    // Every converted weapon the campaign names keeps its authored
+    // Halo 1 loudness (weap +0x270) in the table.
+    for tag in map.tags() {
+        if tag.group != FourCC(*b"weap") {
+            continue;
+        }
+        let Some(id) = source.find(h1map::Group::new(b"weap"), tag.name.as_deref().unwrap_or(""))
+        else {
+            continue;
+        };
+        let loud = h1ai::h1::weapon_loudness(source, id).unwrap();
+        assert_eq!(
+            weapon_rules.get(&tag.id),
+            Some(&loud),
+            "{level}: {} keeps its authored report loudness",
+            tag.name.as_deref().unwrap_or("unnamed")
+        );
+    }
+    let rules: std::collections::HashMap<_, _> = encoded.as_bytes()[16..16 + count as usize * 16]
+        .chunks_exact(16)
         .zip(&references[references.len() - count as usize..])
         .map(|(row, character)| {
             assert_eq!(character.group(), FourCC(*b"char"));
@@ -1139,6 +1180,33 @@ fn check_authored_uncover_rules<R: std::io::Read + std::io::Seek>(
                     && original.index_size != 0
                     && original.index_address == tag.index_address
             }), "{level}: {character} keeps its native character payload");
+        }
+        // A promotion through the character's major tag must not lose the
+        // authored thresholds: the major carries a rule, with its own
+        // requirements when a source variant names it and the upgrading
+        // variant's otherwise.
+        let payload = map.read_tag_bytes(tag.id).unwrap();
+        let address = tag.location.unwrap().address;
+        let decoded =
+            h1ai::h2::Character::read(&tags::geometry::TagView::new(&payload, address)).unwrap();
+        if decoded.major != TagId::NULL {
+            let major = map.tag(decoded.major).unwrap();
+            let major_name = major.name.clone().unwrap();
+            let major_expected = source
+                .find(h1map::Group::new(b"actv"), &major_name)
+                .map(|variant| {
+                    let variant = h1ai::h1::actor_variant(source, variant).unwrap();
+                    let actor = source.tag(variant.actor.id).unwrap();
+                    let bytes = source.tag_data(actor).unwrap();
+                    [0x2d8, 0x324]
+                        .map(|at| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()))
+                })
+                .unwrap_or(expected);
+            assert_eq!(
+                rules.get(&major.id),
+                Some(&major_expected),
+                "{level}: {character} upgrades to {major_name} without its source thresholds"
+            );
         }
     }
 }
@@ -1291,7 +1359,7 @@ fn every_level_s_scripts_run_on_the_retail_interpreter() {
         let mut m = Map::from_reader(Cursor::new(done.bytes)).unwrap();
         let sc = hs::Scenario::read(&mut m).unwrap();
         check_authored_uncover_rules(
-            level, &h1, &m, &sc, &done.report.scenario.ai.as_ref().unwrap().characters,
+            level, &h1, &mut m, &sc, &done.report.scenario.ai.as_ref().unwrap().characters,
         );
         let found = sc.unrunnable(&catalog).unwrap();
         // Every `switch_bsp` in Halo 1's scripts (whose literal the
