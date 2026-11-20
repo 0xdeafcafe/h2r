@@ -316,10 +316,10 @@ impl Pack {
             }
         }
         self.container_mib = container_mib;
-        if self.slots.iter().all(Option::is_none) {
-            self.idle_since.get_or_insert(now);
-        } else {
+        if self.slots.iter().any(Option::is_some) {
             self.idle_since = None;
+        } else if self.idle_since.is_none() {
+            self.idle_since = Some(now);
         }
     }
 
