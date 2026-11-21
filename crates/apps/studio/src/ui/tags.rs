@@ -32,6 +32,9 @@ pub struct TagsUi {
     pub panel: PanelState,
     /// The navigation's field last focused in the panel.
     focus: Option<(TagId, String)>,
+    /// The header's lines drawn last frame, without icons (`tag.view`'s
+    /// `header`, for tests).
+    pub header: Vec<String>,
     /// By group or by path.
     pub arrange: Arrange,
     /// Export the tags the selected one references too.
@@ -533,7 +536,9 @@ pub fn fields(
         return;
     };
     let Some(t) = doc.tag(id) else { return };
-    for line in header_top(app, t) {
+    let lines = header_top(app, t);
+    st.header = lines.iter().map(|l| l.text.clone()).collect();
+    for line in lines {
         let text = match line.icon {
             Some(glyph) => format!("{glyph} {}", line.text),
             None => line.text,
@@ -558,7 +563,22 @@ pub fn fields(
     }
     io_bar(ui, app, st, t, dialogs, actions);
     st.panel.follow(app);
-    if let Some(line) = coverage(doc, id) {
+    // The datum, the address and the layout's coverage are developer
+    // facts: folded, never on screen until asked for.
+    if let Some(_dev) = ui
+        .tree_node_config("tag-dev")
+        .label("Developer details")
+        .push()
+    {
+        ui.text_disabled(format!(
+            "Datum {:#010x}, at {:#010x}, {} bytes",
+            t.id.0, t.address, t.size
+        ));
+        if let Some(line) = coverage(doc, id) {
+            ui.text_disabled(line);
+        }
+    }
+    if coverage(doc, id).is_some() {
         let mut settings = st.panel.settings.clone();
         if ui.checkbox("Show unnamed fields", &mut settings.unnamed) {
             st.panel.set_settings(settings);
@@ -566,8 +586,6 @@ pub fn fields(
         if ui.is_item_hovered() {
             ui.set_item_tooltip("Open every element's Unnamed fields group");
         }
-        ui.same_line();
-        ui.text_disabled(line);
     } else {
         // No layout: the bytes only.
         if t.bsp.is_some() {
@@ -598,14 +616,25 @@ pub fn fields(
         inspector::issues(app)
     };
     let mut resolution = None;
-    // A field the navigation names (nav.go, tag.view) is focused once.
-    let want = match app.browsing() {
+    // A field the navigation names (nav.go, tag.view) is focused once;
+    // an element it names (Open alone) is the whole panel.
+    let (want, element) = match app.browsing() {
         None => {
             let location = app.nav_location();
-            location.tag().filter(|&tag| tag == id).zip(location.path)
+            let here = location.tag().filter(|&tag| tag == id);
+            (here.zip(location.path), location.element.filter(|_| here.is_some()))
         }
-        Some(_) => None,
+        Some(_) => (None, None),
     };
+    let steps = element
+        .as_deref()
+        .and_then(|e| tag_api::element_steps(doc, id, e).ok())
+        .unwrap_or_default();
+    if !steps.is_empty() {
+        crumbs(ui, doc, id, &steps, actions);
+    }
+    let path: Vec<(u32, u32)> = steps.iter().map(|s| (s.field.offset, s.index)).collect();
+    st.panel.open_alone = app.browsing().is_none();
     if st.focus != want {
         st.panel.clear_field_focus();
         if let Some((tag, path)) = &want
@@ -621,7 +650,7 @@ pub fn fields(
         ui,
         doc,
         id,
-        &[],
+        &path,
         &mut st.panel,
         actions,
         fields::PanelRoot::Tags(scene),
@@ -631,6 +660,35 @@ pub fn fields(
         app.pairing.requests.push(Request::Apply(action));
     }
     st.panel.store(app);
+}
+
+/// The breadcrumbs over an element shown alone: the tag, then each list
+/// step; a click returns there.
+fn crumbs(
+    ui: &Ui,
+    doc: &TagDoc,
+    id: TagId,
+    steps: &[tag_api::ElementStep],
+    actions: &mut Vec<Action>,
+) {
+    let all = fields::row::breadcrumbs(doc, id, steps);
+    let last = all.len() - 1;
+    for (k, (text, element)) in all.into_iter().enumerate() {
+        if k > 0 {
+            ui.same_line();
+            ui.text_disabled(">");
+            ui.same_line();
+        }
+        if k == last {
+            ui.text(text);
+        } else if ui.small_button(format!("{text}##crumb{k}")) {
+            actions.push(Action::Navigate(NavAction::Go {
+                tag: id,
+                path: None,
+                element,
+            }));
+        }
+    }
 }
 
 /// How a header line is drawn.
@@ -648,8 +706,10 @@ pub(crate) struct HeaderLine {
 }
 
 /// The header's lines over the selected tag's fields, before the export
-/// bar: its kind and name, its datum, address and size, where it is
-/// browsed, its BSP, its shared-map note and why it is read-only.
+/// bar: its kind and name, its path with the unsaved count, where it is
+/// browsed, its BSP, its shared-map note, how changes reach a game (for a
+/// tag edited here) and why it is read-only. No datum or address: those
+/// are under Developer details.
 pub(crate) fn header_top(app: &App, t: &TagEntry) -> Vec<HeaderLine> {
     let doc = app.shown_tags();
     let line = |tone, glyph, text| HeaderLine {
@@ -657,23 +717,13 @@ pub(crate) fn header_top(app: &App, t: &TagEntry) -> Vec<HeaderLine> {
         icon: glyph,
         text,
     };
+    let path = match fields::row::unsaved_words(fields::row::unsaved(doc, t.id)) {
+        Some(n) => format!("{} · {n}", t.name),
+        None => t.name.clone(),
+    };
     let mut out = vec![
-        line(
-            Tone::Title,
-            None,
-            format!("{}  {}", group_text(t.group), t.name),
-        ),
-        line(
-            Tone::Note,
-            None,
-            format!(
-                "{:#010x}  at {:#010x}, {} bytes{}",
-                t.id.0,
-                t.address,
-                t.size,
-                if doc.is_changed(t.id) { "  *edited" } else { "" }
-            ),
-        ),
+        line(Tone::Title, None, fields::row::reference_text(doc, t.id.0)),
+        line(Tone::Note, None, path),
     ];
     if let Some(m) = app.browsing() {
         out.push(line(
@@ -688,6 +738,11 @@ pub(crate) fn header_top(app: &App, t: &TagEntry) -> Vec<HeaderLine> {
     if let Some(note) = app.tag_shared_note(t.id) {
         out.push(line(Tone::Note, Some(icon::LAYERS), note));
     }
+    if app.browsing().is_none() && t.access == Access::Edit {
+        for text in link_lines(fields::Link::of(app)) {
+            out.push(line(Tone::Note, None, text.to_owned()));
+        }
+    }
     match &t.access {
         Access::Edit => {}
         Access::Read(why) => out.push(line(
@@ -700,8 +755,25 @@ pub(crate) fn header_top(app: &App, t: &TagEntry) -> Vec<HeaderLine> {
     out
 }
 
-/// The layout's line beside **Show unnamed fields**: how many of its
-/// fields have names. None without a layout.
+/// How a change reaches the game, by the game link: saved with the map,
+/// waiting in Pending, or sent as it is made (with what an unmarked field
+/// means).
+pub(crate) fn link_lines(link: fields::Link) -> &'static [&'static str] {
+    match link {
+        fields::Link::Off => &["Changes are saved with the map."],
+        fields::Link::Viewing => {
+            &["Game connected, viewing. Changes wait in Pending until you turn Edit on."]
+        }
+        fields::Link::Editing => &[
+            "Game connected. Changes are sent as you make them.",
+            "Fields with no mark are sent at once; when the game reads them is not known. \
+             Reload the map to be sure.",
+        ],
+    }
+}
+
+/// The layout's coverage, under the header's Developer details: how many
+/// of its fields have names. None without a layout.
 pub(crate) fn coverage(doc: &TagDoc, id: TagId) -> Option<String> {
     let layout = doc.layout(id)?;
     let c = layout.coverage();
@@ -717,13 +789,7 @@ pub(crate) fn header(app: &App, id: TagId) -> Vec<String> {
     let Some(t) = doc.tag(id) else {
         return Vec::new();
     };
-    let mut out: Vec<String> = header_top(app, t).into_iter().map(|l| l.text).collect();
-    if !matches!(t.access, Access::None(_))
-        && let Some(line) = coverage(doc, id)
-    {
-        out.push(line);
-    }
-    out
+    header_top(app, t).into_iter().map(|l| l.text).collect()
 }
 
 /// Export the tag (with what it references, with its resources) and
@@ -894,8 +960,10 @@ fn data(
     ui.separator();
 }
 
-/// The inspector: the tag's data and resources, then the raw bytes of the
-/// element under the mouse, the hovered field lit.
+/// The Data and bytes window: the selected row's details, then the bytes
+/// of its element (or of one **Show bytes** named) with the field lit,
+/// then the tag's data and resources, each a folding header. It follows
+/// the selected row; the mouse moving changes nothing here.
 pub fn hex(
     ui: &Ui,
     app: &App,
@@ -918,47 +986,126 @@ pub fn hex(
         bsp_hex(ui, bytes);
         return;
     }
-    data(ui, app, id, gpu, pictures, actions);
     let p = &st.panel;
-    let (at, size, name) = match &p.focus {
-        Some((tag, at, l)) if *tag == id => (*at, l.size, l.name.clone()),
+    let picked = p.selected_row(doc, id);
+    if let Some(r) = &picked {
+        field_details(ui, doc, id, r, fonts, actions);
+    }
+    let lit = picked
+        .as_ref()
+        .map(|r| (r.address, r.address + r.field.kind.width()));
+    element_bytes(ui, doc, id, p, lit);
+    data(ui, app, id, gpu, pictures, actions);
+}
+
+/// Field details: the label, description, type and unit, the file's
+/// value with **Reset to file value** when it differs, when a change takes
+/// effect and why it is read-only; then, folded, the developer facts.
+fn field_details(
+    ui: &Ui,
+    doc: &TagDoc,
+    id: TagId,
+    r: &fields::Row,
+    fonts: &Fonts,
+    actions: &mut Vec<Action>,
+) {
+    if !ui.collapsing_header(
+        "Field details##tag-field",
+        dear_imgui_rs::TreeNodeFlags::DEFAULT_OPEN,
+    ) {
+        return;
+    }
+    let f = r.field;
+    let width = f.kind.width();
+    let bold = ui.push_font(fonts.bold);
+    ui.text(&r.label);
+    bold.pop();
+    if let Some(text) = f.doc.as_deref().filter(|s| !s.is_empty()) {
+        ui.text_wrapped(text);
+    }
+    ui.text_disabled(match r.unit {
+        Some(unit) => format!("{}, in {unit}", r.type_words),
+        None => r.type_words.to_owned(),
+    });
+    if r.edited
+        && let Some(file) = file_value(doc, id, r)
+    {
+        ui.text(format!("In the file: {file}"));
+        if r.read_only.is_none() {
+            ui.same_line();
+            if ui.small_button("Reset to file value##reset")
+                && let Ok(Some(write)) = tag_api::reset(doc, id, &r.path)
+            {
+                actions.push(Action::Tag(write));
+                actions.push(Action::Tag(TagAction::Seal));
+            }
+        }
+    }
+    ui.text_wrapped(format!("{} {}", r.effect.sentence(), r.why));
+    if let Some(why) = r.read_only {
+        ui.text_colored(theme::WARN, why);
+    }
+    let Some(_dev) = ui
+        .tree_node_config("tag-field-dev")
+        .label("Developer details")
+        .push()
+    else {
+        return;
+    };
+    ui.text_disabled(format!("Path for tag.set: {}", r.path));
+    ui.text_disabled(format!(
+        "Offset +{:#x}, {width} bytes, {}",
+        f.offset,
+        f.kind.label()
+    ));
+    ui.text_disabled(format!("Address {:#010x}", r.address));
+    if let Some(b) = doc.read(id, r.address, width.min(64)) {
+        ui.text_disabled(format!("Bytes {}", fields::hex(&b)));
+    }
+    if !f.meaning.is_empty() {
+        ui.text_wrapped(format!("Evidence: {}", f.meaning));
+    }
+}
+
+/// A changed field's value in the loaded file, as tag.read writes it.
+fn file_value(doc: &TagDoc, id: TagId, r: &fields::Row) -> Option<String> {
+    let f = r.field;
+    if matches!(f.kind, tags::registry::Kind::Block(_) | tags::registry::Kind::Data) {
+        return None;
+    }
+    let file = doc.read_source(id, r.address, f.kind.width())?;
+    let at = r.address - f.offset;
+    Some(match tag_api::value_of(doc, id, at, f, file) {
+        serde_json::Value::String(text) => text,
+        other => other.to_string(),
+    })
+}
+
+/// Bytes, folded until **Show bytes** opens it: the element's bytes, the
+/// selected field's lit, changed bytes marked.
+fn element_bytes(ui: &Ui, doc: &TagDoc, id: TagId, p: &PanelState, lit: Option<(u32, u32)>) {
+    let (at, size, name) = match &p.bytes {
+        Some(e) if e.tag == id => (e.at, e.layout.size, e.layout.name.clone()),
         _ => match (doc.tag(id), doc.layout(id)) {
             (Some(t), Some(l)) => (t.address, l.size, l.name.clone()),
             _ => return,
         },
     };
-    if let Some(h) = &p.hovered {
-        let f = ui.push_font(fonts.bold);
-        ui.text(&h.name);
-        f.pop();
-        if let Some(doc) = h.description.as_deref().filter(|s| !s.is_empty()) {
-            ui.text_wrapped(doc);
-        }
-        ui.text_disabled(format!(
-            "{} at +{:#x} ({:#010x}){}",
-            h.kind,
-            h.offset,
-            h.address,
-            if h.named { "" } else { ", unnamed" }
-        ));
-        if !h.meaning.is_empty() {
-            ui.text_wrapped(&h.meaning);
-        }
-        ui.separator();
+    if p.open_bytes.take() {
+        ui.set_next_item_open(true);
     }
-    ui.text_disabled(format!("{name}: {size:#x} bytes at {at:#010x}"));
+    if !ui.collapsing_header("Bytes##tag-bytes", dear_imgui_rs::TreeNodeFlags::NONE) {
+        return;
+    }
+    ui.text_disabled(format!("{name}: {size} bytes"));
     let shown = size.min(4096);
     let Some(bytes) = doc.read(id, at, shown) else {
         return;
     };
     let source = doc.read_source(id, at, shown);
-    let lit = p
-        .hovered
-        .as_ref()
-        .map(|h| (h.address, h.address + h.len))
-        .filter(|(lo, hi)| *lo >= at && *hi <= at + shown);
-    for (row, chunk) in bytes.chunks(16).enumerate() {
-        let base = row as u32 * 16;
+    let lit = lit.filter(|(lo, hi)| *lo >= at && *hi <= at + shown);
+    for (line, chunk) in bytes.chunks(16).enumerate() {
+        let base = line as u32 * 16;
         ui.text_disabled(format!("{base:04x}"));
         for (k, b) in chunk.iter().enumerate() {
             let a = at + base + k as u32;

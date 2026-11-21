@@ -1072,7 +1072,8 @@ mod tests {
     /// The Tags tool through its widgets: open the weapon group in the
     /// tree, pick the weapon, tick a flag and pick an enum value in the
     /// field panel. The edits land in the document, as undo steps, and
-    /// the hex pane shows the element. Skipped without a wgpu adapter.
+    /// a click on a row selects it for Data and bytes, which keeps it while
+    /// the mouse moves. Skipped without a wgpu adapter.
     #[test]
     fn the_tags_tool_edits_a_field_through_its_widgets() {
         use crate::app::tag_tests;
@@ -1100,24 +1101,31 @@ mod tests {
         assert_eq!(flags, [3, 0], "both flags set");
         assert!(app.tags.is_changed(tag_tests::weap_id()));
         // One line per row: labels in words, the changed row dotted, the
-        // list's size beside its name. The hex pane follows the mouse.
+        // list's size beside its name.
         assert!(h.scene.items.iter().any(|i| i.label == "Parts"));
         let drawn = &h.studio.tags.panel.drawn;
         let flags = drawn.iter().find(|d| d.path == "flags").unwrap();
         assert_eq!((flags.label.as_str(), flags.edited), ("Flags", true));
         let parts = drawn.iter().find(|d| d.path == "parts").unwrap();
         assert_eq!(parts.summary.as_deref(), Some("2 items"));
-        h.step(&mut app, &Step::Hover("Loud##b0".into())).unwrap();
-        h.frames(&mut app, 2).unwrap();
-        assert_eq!(
+        // A click on a label selects the row; Data and bytes follows the
+        // selection, not the mouse.
+        h.step(&mut app, &click("Speed##label")).unwrap();
+        let selected = |h: &Headless, app: &App| {
             h.studio
                 .tags
                 .panel
-                .hovered
-                .as_ref()
-                .map(|h| h.name.as_str()),
-            Some("flags")
-        );
+                .selected_row(&app.tags, tag_tests::weap_id())
+                .map(|r| r.path)
+        };
+        assert_eq!(selected(&h, &app).as_deref(), Some("speed"));
+        h.step(&mut app, &Step::Hover("Loud##b0".into())).unwrap();
+        h.step(&mut app, &Step::Move("Parts".into())).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        assert_eq!(selected(&h, &app).as_deref(), Some("speed"), "the mouse moving keeps it");
+        h.step(&mut app, &click("Loud##b0")).unwrap();
+        assert_eq!(selected(&h, &app).as_deref(), Some("flags"));
+        app.dispatch(Action::Undo);
         app.dispatch(Action::Undo);
         assert_eq!(
             app.tags
@@ -1196,6 +1204,7 @@ mod tests {
         // A reference in the list's first element: No tag, then the kit
         // again.
         h.step(&mut app, &click("Parts")).unwrap();
+        h.step(&mut app, &click("0  kit")).unwrap();
         h.step(&mut app, &click("Change...##change")).unwrap();
         let item = api
             .call(&mut app, m::TAG_CHOICES, serde_json::json!({"tag": id, "path": "parts[0].item"}))
@@ -1286,6 +1295,161 @@ mod tests {
         let speed = viewing.iter().find(|r| r["path"] == "speed").unwrap();
         assert!(speed["chip"].is_null(), "an unchanged not_known field has no chip");
         assert_eq!(speed["effect"]["id"], "not_known");
+    }
+
+    /// A list's rows are `index  title`, one element open at a time; Open
+    /// alone shows an element as the whole panel under breadcrumbs, a
+    /// crumb returns to the root, and Back restores the element. Skipped
+    /// without a wgpu adapter.
+    #[test]
+    fn a_list_opens_one_element_and_shows_it_alone() {
+        use crate::app::{NavAction, tag_tests};
+        use crate::script::{Button, Step};
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("h2-editor-lists-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut app, ..) = tag_tests::app(&dir);
+        h.frames(&mut app, 4).unwrap();
+        let click = |t: &str| Step::Click(t.into(), Button::Left);
+        h.step(&mut app, &click("weap  (1)")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        h.step(&mut app, &click("objects\\test\\blaster")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        let drawn = |h: &Headless| -> Vec<String> {
+            h.studio.tags.panel.drawn.iter().map(|d| d.path.clone()).collect()
+        };
+        h.step(&mut app, &click("Parts")).unwrap();
+        assert!(h.scene.items.iter().any(|i| i.label == "0  kit"), "titled by its item");
+        assert!(!h.scene.items.iter().any(|i| i.label.starts_with("element")), "no number box");
+        assert!(!drawn(&h).iter().any(|p| p.starts_with("parts[")), "none open at first");
+
+        h.step(&mut app, &click("1")).unwrap();
+        let open = drawn(&h);
+        assert!(open.contains(&"parts[1].item".to_owned()), "{open:?}");
+        h.step(&mut app, &click("0  kit")).unwrap();
+        let open = drawn(&h);
+        assert!(open.contains(&"parts[0].item".to_owned()), "{open:?}");
+        assert!(!open.iter().any(|p| p.starts_with("parts[1]")), "one open at a time");
+
+        h.step(&mut app, &click("Open alone##alone1")).unwrap();
+        assert_eq!(app.nav_location().element.as_deref(), Some("parts[1]"));
+        assert_eq!(drawn(&h), ["parts[1].item", "parts[1].value"]);
+        h.step(&mut app, &click("weap: objects\\test\\blaster##crumb0")).unwrap();
+        assert_eq!(app.nav_location().element, None);
+        assert!(drawn(&h).contains(&"parts".to_owned()), "back at the root");
+
+        app.dispatch(Action::Navigate(NavAction::Back));
+        h.frames(&mut app, 3).unwrap();
+        assert_eq!(drawn(&h), ["parts[1].item", "parts[1].value"], "Back restores the element");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The Tags header says how a change reaches the game in each link
+    /// state, counts unsaved changes and shows no datum or address; a
+    /// changed field reads `Waiting` while viewing and `Sent · Not known`
+    /// with Edit on. `tag.view`'s `header` is the drawn lines.
+    #[cfg(unix)]
+    #[test]
+    fn the_tags_header_says_how_changes_reach_the_game() {
+        use crate::app::tag_tests;
+        use crate::fields::Link;
+        use crate::play::Play;
+        use crate::play::testing::{Temp, fake};
+        use crate::script::{Button, Step};
+        use agent_proto::sim::SessionKind;
+        use studio_proto::method as m;
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let t = Temp::new("tag-header-link");
+        let (mut app, ..) = tag_tests::app(&t.0);
+        h.studio.play.play = Play::new();
+        h.frames(&mut app, 4).unwrap();
+        let click = |t: &str| Step::Click(t.into(), Button::Left);
+        h.step(&mut app, &click("weap  (1)")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        h.step(&mut app, &click("objects\\test\\blaster")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        let mut api = crate::api::Api::new();
+        let weap = format!("{:#010x}", tag_tests::weap_id().0);
+        let header = |api: &mut crate::api::Api, h: &Headless, app: &mut App| {
+            let view = api.call(app, m::TAG_VIEW, serde_json::json!({})).unwrap();
+            let drawn = h.studio.tags.header.clone();
+            assert_eq!(
+                view["header"],
+                serde_json::json!(drawn),
+                "tag.view's header is the drawn lines"
+            );
+            assert!(
+                drawn.iter().all(|l| !l.contains("0x")),
+                "no datum or address in the header: {drawn:?}"
+            );
+            drawn
+        };
+        let chip = |h: &Headless, path: &str| {
+            h.studio.tags.panel.drawn.iter().find(|d| d.path == path).and_then(|d| d.chip)
+        };
+
+        let set_speed = |app: &mut App, v: f32| {
+            app.dispatch(Action::Tag(crate::app::TagAction::Write(crate::app::TagWrite {
+                tag: tag_tests::weap_id(),
+                address: tag_tests::WEAP,
+                bytes: v.to_le_bytes().to_vec(),
+                label: "speed".into(),
+                merge: None,
+            })));
+            app.dispatch(Action::Tag(crate::app::TagAction::Seal));
+        };
+
+        let off = header(&mut api, &h, &mut app);
+        assert_eq!(off[..2], ["weap  blaster", "objects\\test\\blaster"]);
+        assert_eq!(off[2..], ["Changes are saved with the map."]);
+        set_speed(&mut app, 3.0);
+        h.frames(&mut app, 2).unwrap();
+        assert_eq!(
+            header(&mut api, &h, &mut app)[1],
+            "objects\\test\\blaster · 1 unsaved change"
+        );
+        assert_eq!(chip(&h, "speed"), None, "no chip with no game");
+        app.dispatch(Action::Undo);
+        h.frames(&mut app, 2).unwrap();
+        assert_eq!(header(&mut api, &h, &mut app)[1], "objects\\test\\blaster");
+
+        let game = fake::Game::start("tag-header-link", "example", SessionKind::Local);
+        fake::pair_for_view(&mut h.studio.play.play, &mut app, &game);
+        h.frames(&mut app, 3).unwrap();
+        assert_eq!(h.studio.tags.panel.link, Link::Viewing);
+        let viewing = header(&mut api, &h, &mut app);
+        assert_eq!(
+            viewing[2..],
+            ["Game connected, viewing. Changes wait in Pending until you turn Edit on."]
+        );
+        assert_eq!(chip(&h, "speed"), None, "an unchanged not_known field has no chip");
+        set_speed(&mut app, 3.0);
+        h.frames(&mut app, 3).unwrap();
+        assert_eq!(chip(&h, "speed"), Some("Waiting"));
+
+        api.call(&mut app, m::PAIR_EDIT, serde_json::json!({"enabled": true}))
+            .unwrap();
+        fake::until(&mut h.studio.play.play, &mut app, "Edit on", |_, a| {
+            Link::of(a) == Link::Editing
+        });
+        h.frames(&mut app, 3).unwrap();
+        // A change made with Edit on is sent as it is made.
+        set_speed(&mut app, 4.0);
+        h.frames(&mut app, 3).unwrap();
+        let editing = header(&mut api, &h, &mut app);
+        assert_eq!(
+            editing[2..],
+            [
+                "Game connected. Changes are sent as you make them.",
+                "Fields with no mark are sent at once; when the game reads them is not known. \
+                 Reload the map to be sure.",
+            ]
+        );
+        assert_eq!(chip(&h, "speed"), Some("Sent · Not known"));
     }
 
     /// Unnamed fields sit in a folded group under the named ones; focusing

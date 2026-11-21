@@ -217,9 +217,23 @@ fn a_changed_row_has_its_file_value_and_chips_need_a_game() {
         &context(Link::Viewing),
     );
     let chips: Vec<_> = viewing.iter().map(|r| r.chip).collect();
-    // A changed field of unknown effect says so; an unchanged one has no
-    // chip; a list applies after reload.
-    assert_eq!(chips, [Some("Not known"), None, None, Some("After reload")]);
+    // Viewing, a changed field waits in Pending; an unchanged one of
+    // unknown effect has no chip; a list applies after reload.
+    assert_eq!(chips, [Some("Waiting"), None, None, Some("After reload")]);
+    assert_eq!(viewing[0].sending, Some(Sending::Waiting));
+    let editing = rows(
+        &app.tags,
+        weap,
+        tag_tests::WEAP,
+        &layout,
+        &context(Link::Editing),
+    );
+    assert_eq!(editing[0].chip, Some("Sent · Not known"));
+    assert_eq!(
+        editing[0].json(&app.tags, weap, tag_tests::WEAP)["sending"],
+        "sent"
+    );
+    assert_eq!(editing[1].sending, None, "unchanged");
     assert_eq!(
         chip(Link::Editing, Effect::Now, false, true),
         None,
@@ -410,4 +424,60 @@ fn choice_switch_and_reference_rows_summarise_their_value() {
         reference_text(&app.tags, 0x7777_0000),
         "Missing tag 0x77770000"
     );
+}
+
+/// A changed field's state: none with no game, unchanged or read-only;
+/// not sent when the game refused it; waiting while viewing, or for a
+/// reload; else sent, with when the game reads it.
+#[test]
+fn a_changed_field_says_whether_it_was_sent() {
+    use Sending as S;
+    let editing = |refused, reloading, effect| {
+        sending(Link::Editing, true, false, effect, refused, reloading)
+    };
+    assert_eq!(
+        sending(Link::Off, true, false, Effect::Now, false, false),
+        None
+    );
+    assert_eq!(
+        sending(Link::Editing, false, false, Effect::Now, false, false),
+        None
+    );
+    assert_eq!(
+        sending(Link::Editing, true, true, Effect::Now, false, false),
+        None
+    );
+    assert_eq!(
+        sending(Link::Viewing, true, false, Effect::Now, false, false),
+        Some(S::Waiting)
+    );
+    assert_eq!(editing(true, false, Effect::Now), Some(S::NotSent));
+    assert_eq!(
+        editing(false, true, Effect::Reload),
+        Some(S::WaitingForReload)
+    );
+    assert_eq!(editing(false, true, Effect::Now), Some(S::Sent));
+    assert_eq!(S::Sent.chip(Effect::NextUse), "Sent · Next use");
+    assert_eq!(S::Sent.chip(Effect::NotKnown), "Sent · Not known");
+    assert_eq!(S::NotSent.chip(Effect::Now), "Not sent");
+    assert_eq!(S::WaitingForReload.id(), "waiting_for_reload");
+}
+
+/// A section rule reads the struct's title, else its last step in words.
+#[test]
+fn section_rules_use_the_definitions_titles() {
+    let mut layout = Layout {
+        name: "weap".into(),
+        size: 0,
+        align: 4,
+        fields: Vec::new(),
+        title: None,
+        section_titles: Default::default(),
+    };
+    layout
+        .section_titles
+        .insert("unit.obje".into(), "Object".into());
+    assert_eq!(section_title(&layout, "unit.obje"), "Object");
+    assert_eq!(section_title(&layout, "unit"), "Unit");
+    assert_eq!(section_title(&layout, "unit.weapon_hud"), "Weapon hud");
 }

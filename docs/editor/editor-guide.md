@@ -1153,13 +1153,19 @@ packages, or a converted Halo 1 map), then select the **Tags** tab beside **Scen
 - **Structure BSPs and lightmaps** open in the field inspector. Their
   rows identify the BSP. Field and block edits save to that BSP's
   region, and blocks use their original capacity.
-- **Data and bytes** (beside Log): the tag's data and resources first: each
-  block of raw data inside the tag with its size, and each resource
-  (pixels, model geometry, sound) with the map it is in (`local` for this
-  one, or `shared`, `single_player_shared`, `mainmenu`), where and how
-  big. A bitmap has **Preview**, which draws its first image. Then the
-  raw bytes of the part of the tag under the mouse, the hovered field
-  lit in blue and bytes you changed in orange.
+- **Data and bytes** (beside Log) shows the field you last clicked in the
+  fields list; moving the mouse does not change it. **Field details**
+  explains the field: what it is, its unit, its value in the map file
+  when you changed it, with **Reset to file value**, and when the game
+  sees a change. **Developer details** inside it has the path for
+  scripts, the offset, the address and the bytes. **Bytes** (folded; **Show
+  bytes** on a list element opens it) shows the raw bytes of the field's
+  part of the tag, the field lit in blue and bytes you changed in orange.
+  **Data and resources** lists each block of raw data inside the tag
+  with its size, and each resource (pixels, model geometry, sound) with
+  the map it is in (`local` for this one, or `shared`,
+  `single_player_shared`, `mainmenu`), where and how big. A bitmap has
+  **Preview**, which draws its first image.
 
 ### Field names
 
@@ -1176,21 +1182,27 @@ How to change things:
 
 - **Numbers**: drag left or right, or double-click and type. Angles show
   in degrees.
-- **Choices**: pick a named value from the list. An enumeration whose choices
-  have no established labels edits as a number.
-- **Flags**: tick or untick a named bit. A field with no bit labels edits as
-  a numeric mask. In a partly named mask, unlabelled bits appear when set.
+- **Choices**: click the value to open the picker, type to narrow it and
+  pick a named value. **Enter a number...** sets a value no name covers;
+  such a value reads `Value 7 (not named)`.
+- **Switches (flags)**: the row says how many are on (`2 of 9 on: Loud,
+  Quiet`). Open it to tick named switches; the rest are under **Unnamed
+  bits**, each `Bit 7`.
 - **Colours**: click the swatch.
 - **Names (string IDs)**: type a name and press Enter. A name the map
   doesn't have yet is added to it when you save (under 128 characters).
   Undo takes it back. Maps with new names have not been tried in the game
   yet.
-- **References to other tags**: open the list, type to narrow it, pick
-  one (or `none`). Only tags of the right kind are listed. The button
-  next to it jumps to that tag.
-- **Lists inside a tag (blocks)**: open the list, pick an element number,
-  then edit its fields. **Add**, **Duplicate** and **Remove** change the
-  list. **Edit > Allow growing full blocks** lets lists in ordinary
+- **References to other tags**: the row shows the kind and the tag's
+  name (hover for its full path). **Change...** opens the picker: type to
+  narrow it and pick a tag, or **No tag**. Only tags of the right kind are
+  listed, all of them; when several kinds fit, **Kind** narrows to one.
+  **Open** jumps to that tag.
+- **Lists inside a tag (blocks)**: open the list to see a row per entry,
+  `1  scope`, named by its title or name field; open one entry to edit its
+  fields (one at a time). A long list has a filter box. **Open alone**
+  shows one entry as the whole panel, with breadcrumbs back to the tag.
+  **Add**, **Duplicate** and **Remove** change the list. **Edit > Allow growing full blocks** lets lists in ordinary
   tag data grow beyond their original size. Save writes the longer list
   at the end of the map's tag data. Hover a greyed-out button for the
   reason. Other things in the map that point at

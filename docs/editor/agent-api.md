@@ -79,6 +79,7 @@ What goes through actions, from both sides:
 | Inspect tag fields | read the registry layout | Tags panel and inspector | `tag.fields {tag, path?, unnamed?}` |
 | Show unnamed fields, Show as, focus a field | `App::tag_fields` (`fields::Settings`), `Navigate(Go)` | the Tags tool's **Show unnamed fields** and **Show as** | `tag.view` |
 | What a field's pick dialog lists | `fields::picker::{values, bits, kinds, tags, views}` | the field panel's pick dialog | `tag.choices {tag, path, query?, kind?, limit?}` |
+| An element's or field's bytes; put a field back to the file's value | `tag_api::{bytes_of, reset}` | Data and bytes: **Bytes**, **Reset to file value** | `tag.bytes {tag, path?}`, `tag.reset {tag, path}` |
 | Move and turn a placement | `MovePlacement` (one step); `GestureSet {position, ypr}`, `GestureScale`, `EndGesture` (a drag: one step, a multi-selection riding along) | the viewport gizmo dispatches the gesture actions every frame of a drag | `scenario.move` |
 | Add, duplicate, delete | `Add`, `DuplicateEntry`, `DeleteEntry` | outliner, toolbar, keys | `scenario.add`, `.duplicate`, `.delete`, `tag.block.*` |
 | Select, frame | `Select`, `FocusSelected`, `FrameAll` | Scene, viewport, keys | `scenario.select`, `view.camera` |
@@ -250,9 +251,13 @@ Notes on some:
     (the file's value when edited, else null);
   - `effect: {id, text, why}` (an id of the effect table in
     [live-mirror.md](live-mirror.md), "How an edit applies"), always
-    given; `chip`, the effect
-    the row shows, null with no game connected; `live: {kind, text}`, a
-    changed field's `mismatch` or `refused` mark with a game connected;
+    given; `chip`, what the row shows at its right edge, null with no
+    game connected (when a change takes effect, or for a changed field
+    its state: `Waiting`, `Not sent`, `Waiting for reload`, `Sent · Not
+    known`); `sending`, a changed field's state with a game connected
+    (`sent`, `waiting`, `waiting_for_reload`, `not_sent`, else null);
+    `live: {kind, text}`, a changed field's `mismatch` or `refused` mark
+    with a game connected;
   - `path`, the `tag.set` path from the root by field names
     (`parts[1].value`, also for an offset path); `summary`, what the row
     shows on its line: `2 items` or `16 bytes` for a list or data, the
@@ -269,22 +274,40 @@ Notes on some:
   A block's value is its element count. Scalar values follow
   `tag.read`. The rows use the open or browsed tag document and include
   its pending edits (`api/tag_fields.rs`).
-- **The field panel.** `tag.view {tag?, field?, unnamed?, show_as?}`
-  drives the Tags tool's panel and returns what it shows. `tag` selects
-  the tag in the Tags tool. `field`, a `tag.set` path, focuses that field
-  through the navigation (as `nav.go`), which opens its lists and its
-  Unnamed fields group. `unnamed` sets **Show unnamed fields**.
+- **The field panel.** `tag.view {tag?, path?, field?, unnamed?,
+  show_as?}` drives the Tags tool's panel and returns what it shows.
+  `tag` selects the tag in the Tags tool. `path`, a list element
+  (`parts[1]`, or by offset `+0x8[1]`), shows that element as the whole
+  panel, as its **Open alone** does; empty shows the root. `field`, a
+  `tag.set` path, focuses that field through the navigation (as
+  `nav.go`), which opens its lists and its Unnamed fields group; on its
+  own it is shown from the root. `unnamed` sets **Show unnamed fields**.
   `show_as: {path, as}` sets how an unnamed value is shown (`decimal`,
   `whole_number`, `hex`, or null for the guess from its bits), kept for
   that field of every tag of the group and saved with the layout. With no
   params it only reads. The result is `{tag, path, breadcrumbs, field,
-  search, changed, unnamed, rows, unnamed_hidden, header}`: `rows` are
-  the root's `tag.fields` rows the panel shows, `unnamed_hidden` the
+  search, changed, unnamed, rows, unnamed_hidden, header}`: `path` is
+  the element shown (by field names, empty for the root), `breadcrumbs`
+  its crumbs as drawn (`weap: objects\test\blaster`, then `Parts 1
+  scope` per list step), `rows` the element's `tag.fields` rows the
+  panel shows, `unnamed_hidden` the
   unnamed rows in a folded group (`unnamed: true` adds them to `rows`),
   `field` the focused path, and `header` the header's lines as drawn,
-  without icons. The panel shows a tag's root and has no search yet, so
-  `path` is always empty, `search` null and `changed` false, and those
-  params are refused.
+  without icons: the kind and name, the path with the unsaved count, any
+  browsed, BSP, shared-map and read-only notes, and how a change reaches
+  the game (`Changes are saved with the map.` with no game). The datum
+  and address are not in it. The panel has no search yet, so `search` is
+  null and `changed` false, and those params are refused.
+- **List elements.** `tag.elements {tag, path, filter?, offset?, limit?}`
+  returns a list's elements as the panel's rows show them (`1  scope`):
+  `{count, capacity, elements: [{index, title, path}], truncated}`. The
+  title is the value of the block's `title=` field, else of its first
+  named name or tag reference, else null (the row shows the index
+  alone; `fields::row::element_title`). `filter` keeps the elements whose
+  row words have every word of it, as the list's filter box does (a list
+  of more than 12 elements has one); `offset` and `limit` page the hits
+  and `truncated` says more follow. `path` that is not a list is refused
+  with `INVALID_PARAMS`.
 - **Pick lists.** `tag.choices {tag, path, query?, kind?, limit?}`
   returns what the field panel's pick dialog lists for the field at
   `path` (`fields::picker`). A choice gives `{values: [{value, name}]}`,
@@ -298,6 +321,17 @@ Notes on some:
   one in use. `query` narrows values and tags as the dialog's search box
   does: every word in the name, or in `group:name` for a tag. Any other
   field is refused with `INVALID_PARAMS`.
+- **Bytes and reset.** `tag.bytes {tag, path?}` returns the bytes of an
+  element (the root by default, or a block element such as `parts[1]`)
+  or of one field: `{address, size, hex, file_hex, spans: [{offset, size,
+  name, named}]}`. `hex` is the bytes now and `file_hex` the loaded
+  file's, null when the file has none. The spans are the element's
+  fields at offsets from `address` and tile it, or the one field.
+  `tag.reset {tag, path}` puts a field back to its value in the loaded
+  file, as **Reset to file value** does: one undo step, and none when it
+  already has that value. It returns `{value}`. Lists and data are
+  refused with `INVALID_PARAMS`, and the scenario's fields and a browsed
+  map's are refused with `REFUSED`.
 - **Scenario tree.** `tag.tree {"root":"scenario","depth":2}` reads the
   open scenario and returns `{root, unreachable, incomplete, truncated}`.
   The root's children are Structure (BSPs with their lightmaps), Skies,
@@ -340,10 +374,14 @@ Notes on some:
   `nav.go {"tag":"hlmt","path":"render_model"}` focuses a tag and,
   optionally, one field by its registry path. It keeps the viewport
   selection. `nav.go {"block":"weapons","index":0}` selects a placement.
-  `nav.go {"panel":"pending"}` opens the Pending tab. These are also the
+  `nav.go {"panel":"pending"}` opens the Pending tab. `nav.go {"tag":
+  "weap", "element": "parts[1]"}` shows a list element alone in the Tags
+  tool, as its **Open alone** does, and Back returns to it. These are also the
   target forms returned for placement and panel issues. `nav.status`,
   `nav.back` and `nav.forward` take no params. All `nav.*` methods
-  return `{selected, volume, tag, path, breadcrumbs, can_back, can_forward}`.
+  return `{selected, volume, tag, path, element, breadcrumbs, can_back,
+  can_forward}`; `element` is the list element shown alone, by field
+  names, or null.
   `volume` is the selected trigger volume's index, or null.
   `selected` is a placement `{block,index}`, a tag `{tag}` or null.
   `tag` and `path` identify the focused tag and field, or are null.
