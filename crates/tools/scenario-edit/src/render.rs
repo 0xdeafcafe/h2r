@@ -1279,6 +1279,24 @@ impl Viewport {
         }
     }
 
+    /// Move the vertices of one section of BSP `bsp`'s native world, in
+    /// the section's own space (the Modeling tool's live preview of an
+    /// in-place edit; docs/editor/modeling.md). Returns whether a world
+    /// drew that section.
+    pub fn set_native_section(
+        &mut self,
+        queue: &wgpu::Queue,
+        bsp: map::TagId,
+        owner: native_render::world::Owner,
+        positions: &[[f32; 3]],
+        normals: Option<&[[f32; 3]]>,
+    ) -> bool {
+        self.native
+            .iter_mut()
+            .filter(|w| w.bsp() == bsp)
+            .fold(false, |done, w| w.set_section_vertices(queue, owner, positions, normals) || done)
+    }
+
     /// Whether the level draws through the native renderer.
     pub fn has_native(&self) -> bool {
         !self.native.is_empty()
