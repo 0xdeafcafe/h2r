@@ -22,7 +22,7 @@ use crate::audio_out::{AudioOut, FALLBACK_RATE};
 use crate::frame::{self, Compositor, FrameSource};
 use crate::lifecycle::Lifecycle;
 use crate::pacing::{PaceStats, Pacer};
-use crate::surface::WindowSurface;
+use crate::surface::{SurfaceKind, WindowSurface};
 use crate::worker::{GuestFn, GuestWorker};
 use crate::{AppConfig, ExitReport, GuestExit, GuestHost};
 
@@ -47,6 +47,14 @@ pub mod host_surface {
     /// ([`gfx::GpuHost`]): the UWP app, DX12 alone.
     #[cfg(windows)]
     pub const GPU: gfx::GpuHost = gfx::GpuHost::WindowsApp;
+
+    /// What the host's layer presents as: a `CAMetalLayer` is a window.
+    #[cfg(target_vendor = "apple")]
+    pub(crate) const SURFACE: super::SurfaceKind = super::SurfaceKind::Window;
+    /// What the host's layer presents as: a `SwapChainPanel` is a DXGI
+    /// composition swap chain.
+    #[cfg(windows)]
+    pub(crate) const SURFACE: super::SurfaceKind = super::SurfaceKind::Composition;
 
     /// The wgpu target for the host's `layer`.
     #[cfg(target_vendor = "apple")]
@@ -97,7 +105,7 @@ impl Embedded {
         // SAFETY: the caller guarantees the layer and its lifetime.
         let surface = unsafe { instance.create_surface_unsafe(host_surface::target(layer)) }?;
         let ctx = pollster::block_on(GfxContext::new(instance, Some(&surface)))?;
-        let surface = WindowSurface::new(&ctx, surface, size, &config)?;
+        let surface = WindowSurface::new(&ctx, surface, size, &config, host_surface::SURFACE)?;
         let info = ctx.adapter.get_info();
         eprintln!(
             "app: {} ({:?}), surface {:?} {}x{}, features {:?}",
@@ -287,6 +295,8 @@ mod tests {
         // The backends per host are gfx's table (gfx::context's tests).
         let want = if cfg!(windows) { gfx::GpuHost::WindowsApp } else { gfx::GpuHost::Apple };
         assert_eq!(host_surface::GPU, want);
+        let want = if cfg!(windows) { SurfaceKind::Composition } else { SurfaceKind::Window };
+        assert_eq!(host_surface::SURFACE, want);
     }
 
     #[test]
