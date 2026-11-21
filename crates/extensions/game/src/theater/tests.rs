@@ -94,6 +94,7 @@ fn theater_replays_checkpoints_reports_first_divergence_and_registers_controls()
                 .contains(&json!(method))
         );
     }
+    assert_eq!(call(api::STATE, json!({}))["result"]["compatibility"], "playable");
     assert_eq!(call(api::PAUSE, json!({}))["result"]["paused"], true);
     assert_eq!(call(api::PLAY, json!({}))["result"]["paused"], false);
     assert_eq!(

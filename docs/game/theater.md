@@ -281,8 +281,12 @@ Press A on a film to open its lobby. The header shows its map, variant,
 mode, date, duration and result when known. The Players table shows the
 recorded names and available team, score and kill/death columns. A score
 without a join record uses the numbered player seat. Left
-and Right page through longer rosters. A summary without a recording
-shows one reason in the action area. **Watch** appears for playable films.
+and Right page through longer rosters. The state line shows **Playable**
+or **Unavailable** for a checked film. An unavailable film shows the
+reason in the action area, including when a film predates a breaking
+simulation change. A summary without a recording also shows its reason
+there. **Watch** appears for playable films and host films awaiting their
+first download.
 
 Recent combines the local library and the signed-in Live account's
 archive. Saved includes local and account pins. Clips includes local
@@ -293,8 +297,9 @@ and the Live listing. Older recordings and archives can leave some fields
 blank.
 
 **Watch** starts an isolated instance of the recompiled game that
-replays the recording. For an account film, the exact host recording
-downloads first. It needs a compatible installed game image and the
+replays the recording. The library checks the cached header for an account
+film and checks the exact recording after the first download. Playback
+needs a compatible installed game image and the
 same initial files where the film references them by digest. An archive
 with only telemetry still has a film page and scoreboard. The selector
 reads the version 3 summary for local and host recordings and opens the

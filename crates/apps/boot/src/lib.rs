@@ -608,13 +608,17 @@ fn run_configured(
         let parent = dylib.parent().unwrap_or(Path::new("."));
         if tier == tier::Tier::Fast { parent.parent().unwrap_or(parent) } else { parent }
     };
-    let film_stamps = || theater::playback_images(xbe_bytes, film_out)
-        .into_iter().map(|(_, stamp)| stamp).collect::<Vec<_>>();
+    let film_installation = || theater::Installation::new(
+        xbe_bytes,
+        theater::playback_images(xbe_bytes, film_out)
+            .into_iter().map(|(_, stamp)| stamp).collect(),
+        opts.data_root.clone(),
+    );
     let theater = if let Some((theater, open)) = host.theater.take() {
         theater.install(
             &mut features,
             &film_dir(),
-            film_stamps(),
+            film_installation(),
             live,
             _live.clone(),
             open,
@@ -1167,7 +1171,7 @@ fn run_configured(
             opts.disc.clone(),
             film_out.to_owned(),
             opts.data_root.clone(),
-            film_stamps(),
+            film_installation(),
         );
     }
     let bink = if opts.bink {

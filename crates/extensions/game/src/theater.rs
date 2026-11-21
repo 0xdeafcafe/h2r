@@ -24,8 +24,9 @@ mod local_pads;
 mod video_menu;
 use anyhow::{Context, Result, bail, ensure};
 use legacy_camera::ReplayCamera;
-pub use controls::library_methods;
-pub use controls::{playable_entry, playback_images};
+pub use agent_proto::theater::CompatibilityState;
+pub use compatibility::{Installation, image_match};
+pub use controls::{library_methods, playback_images};
 use film::{
     FilmMeta, Header, Reader, Source, Writer,
     tape::{Batch, Call, Check, Mark, Playback, Tap},
@@ -111,25 +112,6 @@ struct State {
     failure: Option<String>,
     complete: bool,
 }
-/// Check an installed, current module against the recording. The launcher also
-/// uses this result to choose the disk state matching the replay's starting RAM.
-pub fn image_match(
-    version: u32,
-    original: &str,
-    runtime: &str,
-    guest: Option<&film::image::GuestImage>,
-    candidate: &str,
-    xbe_sha256: &str,
-) -> Result<film::image::ImageMatch> {
-    ensure!(version == 1 || runtime == compatibility::SIMULATION_ABI, "film simulation ABI differs (recorded {runtime}, installed {})", compatibility::SIMULATION_ABI);
-    if version >= 3 && let Some(guest) = guest {
-        return guest.compare(original, candidate, recomp::host_triple(), xbe_sha256)
-            .map_err(|reason| anyhow::anyhow!("film image stamp differs: {reason}"));
-    }
-    ensure!(!candidate.is_empty() && original == candidate, "film requires its exact native image stamp");
-    Ok(film::image::ImageMatch::Native)
-}
-
 pub struct Facts {
     pub stamp: String,
     pub title_id: u32,

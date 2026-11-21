@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
+use agent_proto::theater::{Compatibility, CompatibilityState};
 use agent_proto::{CallError, Client};
 use debug_menu::{Call, Rpc};
 use serde::{Deserialize, Serialize};
@@ -52,7 +53,8 @@ pub struct FilmMeta {
     pub scoreboard: Vec<Player>,
     pub source: Source,
     pub image_stamp: String,
-    pub playable_here: bool,
+    pub compatibility: CompatibilityState,
+    pub compatibility_reason: Option<String>,
     pub saved: bool,
     pub result: Option<String>,
     pub host: Option<String>,
@@ -175,11 +177,35 @@ impl FilmMeta {
         }
     }
 
-    pub(super) fn watch_unavailable(&self) -> Option<&'static str> {
+    pub fn apply_compatibility(&mut self, report: Compatibility) {
+        self.compatibility = report.state;
+        self.compatibility_reason = report.reasons.into_iter().next();
+    }
+
+    pub(super) fn check_cached(&mut self, dir: &Path, installation: &crate::theater::Installation) {
+        if self.source == Source::Host
+            && let Some(game) = self.archive_id()
+            && let Ok(path) = archive_path(dir, game)
+            && let Ok(entry) = archive_entry(&path, game)
+        {
+            self.version = Some(entry.version);
+            self.apply_compatibility(installation.compatibility(&entry));
+        }
+    }
+
+    pub(super) fn watch_unavailable(&self) -> Option<&str> {
         match self.source {
             Source::Archive => Some("No host film was recorded."),
             Source::Local if self.version == Some(1) => Some("No playback track was saved."),
-            Source::Local | Source::Host if !self.playable_here => Some("Needs a different build."),
+            Source::Local | Source::Host
+                if self.compatibility == CompatibilityState::Unavailable =>
+            {
+                Some(
+                    self.compatibility_reason
+                        .as_deref()
+                        .unwrap_or("Needs a compatible game build."),
+                )
+            }
             Source::Host | Source::Local => None,
         }
     }
@@ -270,7 +296,11 @@ impl TryFrom<live_hle::films::RecentFilm> for FilmMeta {
             } else {
                 Source::Archive
             },
-            playable_here: film.has_host_film,
+            compatibility: if film.has_host_film {
+                CompatibilityState::Playable
+            } else {
+                CompatibilityState::Unavailable
+            },
             result: film.result.map(|result| title_words(&result)),
             live_game_id: Some(film.game_id),
             live_start_tick: film.start_tick,
@@ -410,7 +440,7 @@ pub(super) fn download_film(
 }
 
 pub trait Library: Send + Sync {
-    fn list(&self, stamps: &[String]) -> Result<Vec<FilmMeta>, String>;
+    fn list(&self, installation: &crate::theater::Installation) -> Result<Vec<FilmMeta>, String>;
     fn save(&self, id: &str) -> Result<(), String>;
     fn unsave(&self, id: &str) -> Result<(), String>;
     fn delete(&self, id: &str) -> Result<(), String>;

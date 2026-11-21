@@ -17,7 +17,7 @@ use pages::BROWSE_ROWS;
 struct SampleLibrary(Mutex<Vec<FilmMeta>>);
 
 impl Library for SampleLibrary {
-    fn list(&self, _: &[String]) -> Result<Vec<FilmMeta>, String> {
+    fn list(&self, _: &crate::theater::Installation) -> Result<Vec<FilmMeta>, String> {
         Ok(self.0.lock().unwrap().clone())
     }
 
@@ -79,7 +79,12 @@ fn fixture(id: &str, map: &str, variant: &str, playable: bool) -> FilmMeta {
             "retail 5849 · fast"
         }
         .replace('·', "/"),
-        playable_here: playable,
+        compatibility: if playable {
+            crate::theater::CompatibilityState::Playable
+        } else {
+            crate::theater::CompatibilityState::Unavailable
+        },
+        compatibility_reason: (!playable).then(|| "Film predates a breaking simulation change.".into()),
         saved: id == "game-1",
         result: Some(if playable { "Won" } else { "Lost" }.into()),
         host: Some("Live Europe".into()),
@@ -347,7 +352,7 @@ impl Live for Preview {
             "summary" => {
                 entry.film.id = "live:summary".into();
                 entry.film.source = Source::Archive;
-                entry.film.playable_here = false;
+                entry.film.compatibility = crate::theater::CompatibilityState::Unavailable;
                 entry.film.saved = false;
                 entry.film.scoreboard.clear();
             }

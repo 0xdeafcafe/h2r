@@ -74,7 +74,7 @@ fn sparse_summary_keeps_the_known_roster_and_unmatched_scores() {
     let roster: Vec<_> = details
         .texts
         .iter()
-        .skip(5)
+        .skip(6)
         .filter(|t| !t.text.is_empty())
         .map(|t| t.text.as_str())
         .collect();
@@ -195,14 +195,24 @@ fn theater_tab_walkthrough_restores_the_parent_focus() {
 fn theater_unplayable_film_can_be_saved_but_cannot_watch() {
     let mut view = live(DETAIL).unwrap();
     assert!(view.go("unplayable"));
+    let spec = view.spec();
+    assert!(spec.texts.iter().any(|text| text.text == "Unavailable"));
     assert_eq!(
-        view.spec().help.as_deref(),
-        Some("Needs a different build.")
+        spec.help.unwrap().split_whitespace().collect::<Vec<_>>().join(" "),
+        "Film predates a breaking simulation change."
     );
     assert_eq!(view.spec().rows[0].label, "Save");
     view.press(Input::A);
     assert_eq!(view.spec().name, DETAIL);
     assert_eq!(view.spec().rows[0].label, "Unsave");
+}
+
+#[test]
+fn theater_playable_film_shows_its_state_and_watch_action() {
+    let view = live(DETAIL).unwrap();
+    let spec = view.spec();
+    assert!(spec.texts.iter().any(|text| text.text == "Playable"));
+    assert_eq!(spec.rows[0].label, "Watch");
 }
 
 #[test]
@@ -215,7 +225,7 @@ fn summary_without_players_has_one_roster_message_and_one_action() {
     let roster: Vec<_> = spec
         .texts
         .iter()
-        .skip(5)
+        .skip(6)
         .filter(|t| !t.text.is_empty())
         .map(|t| t.text.as_str())
         .collect();
@@ -279,7 +289,7 @@ fn names_only_roster_pages_without_empty_stat_columns() {
     let roster = |spec: ScreenSpec| {
         spec.texts
             .into_iter()
-            .skip(5)
+            .skip(6)
             .map(|t| t.text)
             .filter(|s| !s.is_empty())
             .collect::<Vec<_>>()
