@@ -1156,13 +1156,7 @@ fn run_configured(
     let mut harness = late.harness;
     let mut agent = late.agent;
     if local_forge {
-        // Also finds the guest-call queue the main menu's lobbies start
-        // games through.
         forge_glue::install(&mut features, agent.as_ref(), k.vfs(), &opts.data_root)?;
-    } else if game::firefight::feature::enabled(features.switches()) {
-        // The FIREFIGHT lobby's Start queues its game the same way.
-        game::lobby_start::install_queue(&mut features, agent.as_ref())
-            .context("installing the Firefight lobby's game start")?;
     }
     if let Some(a) = &mut agent {
         a.configure_takeover(

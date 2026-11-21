@@ -437,10 +437,10 @@ at, hold Y deletes, B cancels, RT held turns and pushes a held object,
 RB and LB rise and fall, LT thrusts. The whole table, with the keyboard,
 is in forge-editing.md, "Controls".
 
-Until slices U2 to U7 land, the built UI differs: **FORGE** is a main
-menu row that opens a kit lobby (`forge_lobby.rs`, `lobby_start.rs`)
-with rows Map, Forge map and Start; the HUD strip and the dialogs are
-painted by the play window's compositor
+Forge is a mode of the custom game lobby, picked on Game Setup's Mode
+row ([forge-firefight-ui.md](forge-firefight-ui.md), "The lobbies").
+Until slices U3 to U7 land, the rest of the built UI differs: the HUD
+strip and the dialogs are painted by the play window's compositor
 (`crates/extensions/game/src/ui_kit/forge.rs`,
 `crates/apps/cli/src/play_cmd/forge.rs`); and the pad gate has the
 palette on X, Properties on Y and delete on a held B

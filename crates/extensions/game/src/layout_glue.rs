@@ -808,6 +808,11 @@ pub fn install(
                     // Slot 19 reports a third item widget for our row.
                     ctx.runtime().memory().set_u8(cpu.esi + video_screen::SETTINGS_THIRD_ITEM, 1)?;
                 }
+                // The main menu or the Xbox Live menu built: the player has
+                // left any lobby, whose mode ends with it.
+                if name == theater_menu::LIST_NAME || name == custom_games::LIST_NAME {
+                    crate::lobby_start::clear();
+                }
                 let n = live_menu().count(name, n);
                 let n = menu_rows.count(name, n);
                 // Edit Profile's Voice Chat row, while its hooks are on.

@@ -28,13 +28,13 @@ type MapResult = Result<Opened, String>;
 
 static CURRENT: Mutex<Weak<Mutex<Driver>>> = Mutex::new(Weak::new());
 static GENERATION: AtomicU64 = AtomicU64::new(0);
-/// The saved map the next session loads as it opens: what the Forge
-/// lobby's Forge map row chose (`None`: a new map). A game's start does not
-/// clear it; the session that opens takes it.
+/// The saved map the next session loads as it opens, asked for by an agent
+/// (`None`: none asked). A game's start does not clear it; the session that
+/// opens takes it, else the lobby's Forge Map row's choice
+/// ([`crate::lobby_start::forge_map`]).
 static DRAFT: Mutex<Option<String>> = Mutex::new(None);
 
-/// Asks the next session to load the saved map `name` as it opens, or none
-/// (a new map): the Forge lobby's Start ([`crate::forge_lobby`]).
+/// Asks the next session to load the saved map `name` as it opens, or none.
 pub fn request_draft(name: Option<String>) {
     *DRAFT.lock().unwrap_or_else(|e| e.into_inner()) = name;
 }
@@ -132,6 +132,12 @@ impl Driver {
             if !forge_map::admitted(m) {
                 return;
             }
+            // The monitor is a Forge lobby's (or the level boot's) only
+            // (docs/game/forge-firefight-ui.md, "The lobbies").
+            if !crate::lobby_start::forge_session() {
+                self.reason = "The lobby's mode is not Forge.".into();
+                return;
+            }
             let loaded = match Loaded::read(m, false) {
                 Ok(loaded) => loaded,
                 Err(reason) => {
@@ -155,7 +161,7 @@ impl Driver {
             self.opening = None;
             match result {
                 Ok(opened) => {
-                    self.draft = take_draft();
+                    self.draft = take_draft().or_else(crate::lobby_start::forge_map);
                     self.editor = Some(Editor::new(
                         opened,
                         &self.data,
@@ -202,7 +208,7 @@ fn manifest() -> Manifest {
 }
 
 /// Whether the `forge` feature is on under `switches`, by its manifest's
-/// default: the main menu's FORGE row shows with it.
+/// default: the lobby offers the Forge mode with it.
 pub fn enabled(switches: &hooks::Switches) -> bool {
     let m = manifest();
     switches.feature(m.id, m.default_on)
@@ -274,7 +280,6 @@ pub fn install(
         .map_err(anyhow::Error::msg)?
     {
         controls::publish(false, false, false, None);
-        crate::forge_lobby::install(registry, data)?;
         *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = Arc::downgrade(&driver);
         if let Some(a) = agent {
             local::install(&a.agent, Backend(driver));

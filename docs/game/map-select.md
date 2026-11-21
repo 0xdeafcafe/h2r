@@ -20,6 +20,21 @@ focused. From the categories, **B** or **Back** closes the picker.
 With a single category, Change Map opens the regular map list. A full
 Mods category can show an overflow notice even when no mod fits.
 
+**By lobby mode** (`map_select::mode_category`, the mode is
+`lobby_start::Mode`, [forge-firefight-ui.md](forge-firefight-ui.md#the-lobbies)):
+
+| Mode | Change Map opens |
+|---|---|
+| Multiplayer | the categories above |
+| Forge | the **Halo 2** maps |
+| Firefight | the **Firefight** category: installed packages that carry the Firefight kit (`Firefight – <map>`, `lobby_start::is_kit_map`) |
+
+In Forge and Firefight the list opens on that category's maps, with no
+category dialog, and **B** or **Back** returns to Game Setup. Kit
+packages are listed only in the Firefight category. When the mode's
+category is empty, Change Map opens the regular map list and the log
+names the category.
+
 ## Separate slots for mods
 
 The category follows the slot's load path. The DVD's
