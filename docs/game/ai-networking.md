@@ -383,10 +383,10 @@ Rules that keep the host replayable:
   by writing actor records.
 - Actor channel capture reads and never writes. A host with the channel
   off produces the same arena hashes (a test in AN3).
-- State of ours that decides anything lives in the `SimExt` blob once it
-  exists (sim-rewrite.md section 2). Until then it is rebuilt by
-  replaying the log from the start, and seeking relies on the recorded
-  entries.
+- State of ours that decides anything belongs in a record of the `SimExt`
+  blob (sim-rewrite.md, "The `SimExt` blob"). Actor networking registers
+  no record yet, so its state is rebuilt by replaying the log from the
+  start, and seeking relies on the recorded entries.
 
 ## Sharing with Forge
 

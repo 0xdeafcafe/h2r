@@ -3900,6 +3900,7 @@ dependencies = [
  "hooks",
  "input",
  "runtime",
+ "sim-ext",
  "xapi",
 ]
 
@@ -6255,6 +6256,7 @@ dependencies = [
  "hooks",
  "lifted",
  "runtime",
+ "sim-ext",
 ]
 
 [[package]]
@@ -6271,6 +6273,10 @@ dependencies = [
  "simd",
  "x87",
 ]
+
+[[package]]
+name = "sim-ext"
+version = "0.1.0"
 
 [[package]]
 name = "sim-objects"

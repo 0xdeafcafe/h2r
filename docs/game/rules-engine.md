@@ -236,7 +236,10 @@ replay, where it re-runs from the recorded inputs. Its variables, timers
 and generator state live in a `RulesExt` record in the `SimExt` blob
 ([sim-rewrite.md](../engine/sim-rewrite.md#2-who-owns-state)), so
 checkpoints, snapshots, film keyframes and the sim hash carry them.
-`SimExt` is not built; it is the first prerequisite ("Roadmap").
+`SimExt` is the first prerequisite ("Roadmap"). Its container, hooks and
+hash fold are built and tested on synthetic memory (`crates/rewrites/sim-ext`,
+`crates/rewrites/sim-bridge/src/sim_ext.rs`; sim-rewrite.md, "The `SimExt`
+blob"); `RULES` is registered and holds no VM state yet.
 
 ## The language
 
