@@ -614,6 +614,10 @@ pub mod capability {
     /// Applies a Live host's variant options: the extension block in the
     /// record's spare bytes, taken from the host's session (slice 4).
     pub const VARIANT_EXT: &str = "variant-ext/1";
+    /// Runs a host's rules script: fetches the rules IR blob named by the
+    /// host's session `rules` hash and plays it (docs/game/rules-engine.md,
+    /// "Carrying a script"). Not advertised by any build yet.
+    pub const RULES: &str = "rules/1";
 }
 
 /// The most capabilities one presence carries.
@@ -1199,7 +1203,8 @@ mod wire_tests {
         ] {
             assert!(!valid_build(bad), "{bad}");
         }
-        for ok in [capability::VARIANT_EXT, "a/0", "x-2/10"] {
+        assert_eq!(capability::RULES, "rules/1");
+        for ok in [capability::VARIANT_EXT, capability::RULES, "a/0", "x-2/10"] {
             assert!(valid_capability(ok), "{ok}");
         }
         let long = format!("{}/1", "a".repeat(CAPABILITY_MAX - 1));

@@ -153,8 +153,13 @@ type area) stay where they are and a script reads them by name.
 bytes (`0x7cc50`/`0x7d520`, **E**, game-options.md "How a variant reaches
 other machines"), so the block already travels as
 `NewSession.variant_ext` (**Code**,
-`crates/live/live-proto/src/session.rs`). The session gains one field
-beside it, `rules`, holding the full 64-digit hash.
+`crates/live/live-proto/src/session.rs`). The session has one field
+beside it, `rules`, holding the full 64-digit hash: lowercase hex, checked
+by `NewSession::validate` (`valid_rules_hash`), kept by an update and
+listed wherever `variant_ext` is. The host publishes it with
+`Hle::set_session_rules` and a guest reads it with `Hle::host_rules`
+(**Code**, `crates/live/live-proto/src/session.rs`,
+`crates/live/live-hle/src/sessions.rs`).
 
 **The blob: by hash.** Built-in scripts are compiled into the binary and
 found by hash with no network. Any other blob is stored once on Live
@@ -491,7 +496,9 @@ zero gives 0 and a trace warning.
 
 **Versioning.** A build that can host or join script games advertises
 `rules/1` in its presence capabilities, beside `variant-ext/1`
-(**Code**, `live_proto` capabilities in `crates/live/live-proto/src/lib.rs`).
+(**Code**, `live_proto::capability::RULES` in
+`crates/live/live-proto/src/lib.rs`; no build advertises it until the
+`rules` feature exists).
 An older build cannot host a script game. As a guest it is **warned
 about, not refused**. No guest on any build runs the script, so an older
 guest predicts exactly as a newer one does, from the same replicated
@@ -929,10 +936,9 @@ the ReachVariantTool importer follows phase 10.
 - **A join gate and the allow-list.** Neither is designed: the session
   and matchmaking path only lets a host log who lacks a capability, and
   where Live keeps the allow-list and which routes consult it is open.
-- **The session's `rules` field** needs the shape checks the server runs
-  on `variant_ext` (`NewSession::validate`,
-  `crates/live/live-proto/src/session.rs`) in both homes: `live-server`
-  and the Cloudflare worker (`crates/live/live-worker`).
+- **The session's `rules` field** is checked in `NewSession::validate`
+  and `Session::apply`, which both homes run (`live-server` and the
+  Cloudflare worker); the worker's own run of the test is not seen.
 - **Round end and the winner.** Only the game-end latch is known.
 - **`set_team`, per-player traits, movement speed, the body a player
   spawns in.** No entry is known.

@@ -1016,7 +1016,9 @@ presence event without it clears the previous one.
 its git short hash (7 to 12 lowercase hex digits, `live_proto::valid_build`)
 and up to 16 `name/version` strings of at most 32 characters
 (`live_proto::valid_capabilities`; `variant-ext/1` applies a host's variant
-options, docs/game/game-options.md section 3). A bad one refuses the event
+options, docs/game/game-options.md section 3; `rules/1` runs a host's rules
+script, docs/game/rules-engine.md "Versioning", and no build advertises it
+yet). A bad one refuses the event
 with 400. They ride `SignedIn` and `PresenceChanged`, are served in `GET
 /v1/presence` and in a friend's `presence` to every reader (they name
 software, not where the player is), and are absent when unset.
@@ -1128,7 +1130,10 @@ exactly which map: see "Custom maps" below; omitted when none) and `skulls`
 when none; docs/game/skulls.md "In multiplayer") and `variant_ext`
 (`{block, key}`: the game variant's extension block for the host's next
 game, 72 lowercase hex digits, and the variant's key, 16; omitted when the
-host sends none; docs/game/game-options.md section 3). The ID's datatype bits must agree. Limits are 16 total slots,
+host sends none; docs/game/game-options.md section 3) and `rules` (the
+SHA-256 of the rules IR blob the host's next game runs, 64 lowercase hex
+digits; omitted when none; docs/game/rules-engine.md "Carrying a script").
+The ID's datatype bits must agree. Limits are 16 total slots,
 64 attributes, 400 UTF-16 units per string, 800 bytes per blob, 256 bytes per
 metadata string and 32 open advertisements per host. Unknown input fields are
 rejected. Addresses must be unicast IPv4 and ports 1..65529.
@@ -1152,12 +1157,12 @@ fields.
 Only the authenticated host may append events, signed with its registered key:
 
 - `SessionUpdated`: optional slots, attributes (full replacement), name, map,
-  visibility, `map_id`, `skulls` or `variant_ext` (absent keeps the current
-  one). Use `clear_map_id: true` when a host returns to retail.
+  visibility, `map_id`, `skulls`, `variant_ext` or `rules` (absent keeps
+  the current one). Use `clear_map_id: true` when a host returns to retail.
   `skulls: []` turns them all off. A `variant_ext` replaces the last.
   A server from before `skulls` refuses an update that has it, so the HLE
   sends it only when the host's set changed. The same applies to
-  `variant_ext`. An update with `browser` replaces the discovery metadata
+  `variant_ext` and `rules`. An update with `browser` replaces the discovery metadata
   as a whole. `browser: {}` clears it.
 - `PlayerJoined`: `{xuid, slot?}`; the account must exist and not be in the
   roster, which is bounded to 16. Slot is an optional display string.
