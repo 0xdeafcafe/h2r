@@ -1557,6 +1557,46 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         }
     }
 
+    fn render_extents(
+        &mut self,
+        color: Self::Surface,
+        depth: Option<Self::Surface>,
+        textures: [Option<&Self::Texture>; 4],
+    ) -> crate::backend::RenderExtents {
+        let display_textures = textures.map(|texture| texture.and_then(|t| t.view.as_ref()));
+        if self.single() {
+            return self.view.render_extents(
+                self.image(color), depth.map(|surface| self.image(surface)), display_textures,
+            );
+        }
+        let display_depth = depth.and_then(|surface| self.live(surface.view));
+        if let Some(display_color) = self.live(color.view)
+            && !self.frame_failed
+            && (depth.is_none() || display_depth.is_some())
+            && textures.iter().zip(display_textures).all(|(source, view)| source.is_none() || view.is_some())
+        {
+            return self.view.render_extents(display_color, display_depth, display_textures);
+        }
+        self.reference.render_extents(
+            color.reference,
+            depth.map(|surface| surface.reference),
+            textures.map(|texture| texture.map(|t| &t.reference)),
+        )
+    }
+
+    fn read_display_surface(
+        &mut self,
+        surface: Self::Surface,
+    ) -> Result<Option<crate::backend::DisplaySurfacePixels>, String> {
+        if self.single() {
+            return self.view.read_display_surface(self.image(surface));
+        }
+        match self.live(surface.view) {
+            Some(view) if !self.frame_failed => self.view.read_display_surface(view),
+            _ => self.reference.read_display_surface(surface.reference),
+        }
+    }
+
     fn gpu_fence(&mut self) -> Option<Box<dyn Fn() -> bool + Send>> {
         if self.single() { return self.view.gpu_fence(); }
         // Both are on one queue (`ScaleView`): the later fence covers the

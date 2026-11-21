@@ -192,6 +192,10 @@ impl ExternalPass for UiPass {
         self.retain_packet.then(|| self.draw.clone())
     }
 
+    fn diagnostic_draw(&self) -> Option<Arc<d3d::ResolvedDraw>> {
+        Some(self.draw.clone())
+    }
+
     fn writes(&self) -> ExternalWrites {
         ExternalWrites {
             color: !gfx::translate::color_writes(self.draw.state.render.color_write).is_empty(),

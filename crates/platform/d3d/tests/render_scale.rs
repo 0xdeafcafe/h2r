@@ -1164,6 +1164,48 @@ fn fractional_per_axis_surfaces_keep_fullscreen_edges_and_guest_answers() {
 }
 
 #[test]
+fn render_diagnostics_read_display_allocations_on_the_worker() {
+    use d3d::backend::RenderExtents;
+
+    let Some(ctx) = context() else { return };
+    let guest = (16, 12);
+    let display = (39, 25);
+    let small = (8, 6);
+    let scale = d3d::scaled::RenderScale::between(guest, display).unwrap();
+    let color_format = gfx::D3DFormat::LinA8R8G8B8;
+    for single in [false, true] {
+        let scaled = ScaledBackend::with_resolution(
+            GfxBackend::new(share(&ctx)),
+            GfxBackend::new(share(&ctx)),
+            scale,
+            single,
+        ).unwrap();
+        let mut backend = ThreadedBackend::new(scaled).unwrap();
+        let color = backend.create_surface(color_format, guest.0, guest.1, false).unwrap();
+        let depth = backend.create_surface(gfx::D3DFormat::LinD24S8, guest.0, guest.1, true).unwrap();
+        let blur = backend.create_texture_target(color_format, small.0, small.1).unwrap();
+        backend.clear(color, None, gfx::Clear::all([1.0, 0.0, 0.0, 1.0])).unwrap();
+        let frame_sample = backend.snapshot_surface(color, false).unwrap().unwrap();
+        let blur_sample = backend.surface_texture(blur).unwrap().unwrap();
+
+        assert_eq!(
+            backend.render_extents(color, Some(depth), [Some(&frame_sample), None, Some(&blur_sample), None]),
+            RenderExtents {
+                color: Some(display),
+                depth: Some(display),
+                textures: [Some(display), None, Some(small), None],
+            },
+        );
+        assert_eq!(backend.render_extents(blur, None, [None; 4]).color, Some(small));
+
+        let (size, pixels) = backend.read_display_surface(color).unwrap().unwrap();
+        assert_eq!(size, display);
+        assert_eq!(pixels.len(), (display.0 * display.1 * 4) as usize);
+        assert!(pixels.chunks_exact(4).all(|pixel| pixel == [0, 0, 255, 255]));
+    }
+}
+
+#[test]
 fn fractional_feedback_preserves_patterned_guest_cells_and_snapshot_lifetime() {
     let Some(ctx) = context() else { return };
     let output = (149, 101);

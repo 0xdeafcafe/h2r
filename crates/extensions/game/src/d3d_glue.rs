@@ -1305,6 +1305,20 @@ impl d3d::backend::Backend for Headless {
     fn surface_extent(&self, surface: u32) -> Option<(u32, u32)> {
         self.0.surface_extent(surface)
     }
+    fn render_extents(
+        &mut self,
+        color: u32,
+        depth: Option<u32>,
+        textures: [Option<&u32>; 4],
+    ) -> d3d::backend::RenderExtents {
+        self.0.render_extents(color, depth, textures)
+    }
+    fn read_display_surface(
+        &mut self,
+        surface: u32,
+    ) -> Result<Option<d3d::backend::DisplaySurfacePixels>, String> {
+        self.0.read_display_surface(surface)
+    }
     fn gpu_fence(&mut self) -> Option<Box<dyn Fn() -> bool + Send>> {
         self.0.gpu_fence()
     }

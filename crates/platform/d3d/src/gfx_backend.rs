@@ -80,7 +80,10 @@ use gfx::{
     VertexStream,
 };
 
-use crate::backend::{Backend, DrawOutcome, GuestLayoutKind, RectClear, ResolvedDraw};
+use crate::backend::{
+    Backend, DisplaySurfacePixels, DrawOutcome, GuestLayoutKind, RectClear, RenderExtents,
+    ResolvedDraw,
+};
 use crate::nv2a::{Nv2aShaders, builtin_equivalent};
 use crate::shader::{ShaderProvider, VertexProcessing};
 
@@ -2077,6 +2080,38 @@ impl Backend for GfxBackend {
     fn surface_extent(&self, surface: SurfaceId) -> Option<(u32, u32)> {
         let d = *self.store.get(surface).ok()?.desc();
         Some((d.width, d.height))
+    }
+
+    fn render_extents(
+        &mut self,
+        color: SurfaceId,
+        depth: Option<SurfaceId>,
+        textures: [Option<&HostTexture>; 4],
+    ) -> RenderExtents {
+        RenderExtents {
+            color: self.surface_extent(color),
+            depth: depth.and_then(|surface| self.surface_extent(surface)),
+            textures: textures.map(|texture| {
+                texture.and_then(|texture| texture.view.as_ref()).map(|view| {
+                    let texture = view.texture();
+                    (texture.width(), texture.height())
+                })
+            }),
+        }
+    }
+
+    fn read_display_surface(
+        &mut self,
+        surface: SurfaceId,
+    ) -> Result<Option<DisplaySurfacePixels>, String> {
+        let size = self.surface_extent(surface).ok_or("display surface is not live")?;
+        let (mut pixels, order) = self.read_color(surface)?;
+        if order == gfx::surface::HostPixelOrder::Rgba8 {
+            for pixel in pixels.chunks_exact_mut(4) {
+                pixel.swap(0, 2);
+            }
+        }
+        Ok(Some((size, pixels)))
     }
 
     fn gpu_fence(&mut self) -> Option<Box<dyn Fn() -> bool + Send>> {

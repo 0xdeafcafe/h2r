@@ -1,4 +1,4 @@
-//! `render.frame` and `render.stats` through the socket, with the backend
+//! Frame captures and `render.stats` through the socket, with the backend
 //! wrapper's side played by the test.
 #![cfg(unix)]
 
@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use agent::render::{DrawInfo, FrameProbe, RenderSources};
 use agent::{Agent, GameStatus, Reader, Server};
-use agent_proto::{Client, Object, code, method};
+use agent_proto::{Client, DrawLayout, Object, code, method};
 use serde_json::{Value, json};
 
 struct Menu;
@@ -81,7 +81,36 @@ fn render_frame_and_stats_through_the_socket() {
         other => panic!("{other:?}"),
     }
     let methods = c.call(method::METHODS, Value::Null).unwrap();
-    assert!(methods.to_string().contains("render.frame"), "{methods}");
+    assert!(
+        methods.to_string().contains(method::RENDER_FRAME_LAYOUT),
+        "{methods}"
+    );
+    let r = c
+        .call(method::RENDER_FRAME_LAYOUT, json!({"arm": true}))
+        .unwrap();
+    assert_eq!(r["seq"], 2);
+    PROBE.present(3);
+    assert!(PROBE.layout_requested());
+    PROBE.draw(DrawInfo {
+        color: "Surface(3)".into(),
+        target: "640x480 X8R8G8B8".into(),
+        outcome: "drawn".into(),
+        vertices: 4,
+        layout: Some(DrawLayout {
+            guest_size: [640, 480],
+            display_size: Some([2800, 1700]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    PROBE.present(4);
+    let layout = c.call(method::RENDER_FRAME_LAYOUT, Value::Null).unwrap();
+    assert_eq!(
+        layout["frame"]["draws"][0]["layout"]["display_size"],
+        json!([2800, 1700])
+    );
+    assert_eq!(c.call(method::RENDER_FRAME, Value::Null).unwrap(), layout);
+    assert!(!PROBE.layout_requested());
 
     drop(c);
     stop.store(true, Ordering::Relaxed);

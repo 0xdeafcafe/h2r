@@ -1,4 +1,4 @@
-//! `render.frame` and `render.stats` (docs/runtime/agent-api.md, phase 5).
+//! `render.frame`, `render.frame_layout` and `render.stats` (docs/runtime/agent-api.md, phase 5).
 //!
 //! [`FrameProbe`] records one whole guest frame when armed: the backend
 //! wrapper in front of the D3D backend (boot's `d3d_diag`) tells it each
@@ -32,9 +32,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use agent_proto::{
-    FrameCaptureParams, CaptureReply, CompareParams, CompareReply, DepthRecord, DrawRecord,
-    FrameParams, FrameRecord, FrameReply, OpRecord, ParityParams, ParityReply, PassRecord,
-    RenderStats, RpcError, SceneParams, SceneReply, SnapRecord, code, method,
+    CaptureReply, CompareParams, CompareReply, DepthRecord, DrawLayout, DrawRecord,
+    FrameCaptureParams, FrameParams, FrameRecord, FrameReply, OpRecord, ParityParams, ParityReply,
+    PassRecord, RenderStats, RpcError, SceneParams, SceneReply, SnapRecord, code, method,
 };
 use serde_json::{Map, Value, json};
 
@@ -68,6 +68,8 @@ pub struct DrawInfo {
     /// The draw's constant registers, hardware order (D3D register + 96),
     /// shared with the backend: the probe copies out the ones asked for.
     pub constants: Option<Arc<[[f32; 4]]>>,
+    /// Geometry supplied by the host for a layout frame.
+    pub layout: Option<DrawLayout>,
 }
 
 /// What the wrapper should do after telling the probe about a draw or a
@@ -77,6 +79,8 @@ pub struct SnapAsk {
     /// The arming's number, for the file name.
     pub seq: u64,
     pub pass: usize,
+    /// Read the display raster for a layout capture.
+    pub display: bool,
 }
 
 /// The recorder. One per process ([`PROBE`]); tests make their own.
@@ -103,6 +107,7 @@ struct Arming {
     seq: u64,
     at_present: u64,
     draws: bool,
+    layout: bool,
     max_draws: usize,
     snap: BTreeSet<usize>,
     constants: Vec<i32>,
@@ -151,6 +156,16 @@ impl FrameProbe {
 
     /// Arms for the next whole frame; forgets the last one.
     pub fn arm(&self, p: &FrameParams) -> Result<FrameReply, String> {
+        self.arm_frame(p, false)
+    }
+
+    /// Arms for display layout, including draws and display snapshots.
+    pub fn arm_layout(&self, p: &FrameParams) -> Result<FrameReply, String> {
+        self.arm_frame(p, true)
+    }
+
+    fn arm_frame(&self, p: &FrameParams, layout: bool) -> Result<FrameReply, String> {
+        let draws = p.draws || layout;
         let max_draws = p.max_draws.unwrap_or(FrameParams::DEFAULT_DRAWS);
         if max_draws > FrameParams::MAX_DRAWS {
             return Err(format!("max_draws is at most {}", FrameParams::MAX_DRAWS));
@@ -171,7 +186,7 @@ impl FrameProbe {
         {
             return Err(format!("constants: c{r} is not a register (-96..=95)"));
         }
-        if !p.constants.is_empty() && !p.draws {
+        if !p.constants.is_empty() && !draws {
             return Err("constants go with draws".into());
         }
         let mut s = self.lock();
@@ -181,7 +196,8 @@ impl FrameProbe {
         s.stage = Stage::Waiting(Arming {
             seq,
             at_present,
-            draws: p.draws,
+            draws,
+            layout,
             max_draws,
             snap: p.snap.iter().copied().collect(),
             constants: p.constants.clone(),
@@ -204,6 +220,11 @@ impl FrameProbe {
             Stage::Recording(r) => Some(f(r)),
             _ => None,
         }
+    }
+
+    /// Whether the frame currently being recorded requests display layout.
+    pub fn layout_requested(&self) -> bool {
+        self.recording(|r| r.arming.layout).unwrap_or(false)
     }
 
     /// Work is about to go to `color` (and `depth`): when that ends a pass
@@ -268,6 +289,7 @@ impl FrameProbe {
                         vs: d.vs,
                         depth: d.depth_state,
                         constants,
+                        layout: if r.arming.layout { d.layout } else { None },
                     });
                 } else {
                     r.rec.truncated = true;
@@ -401,7 +423,11 @@ impl Recording {
         self.arming
             .snap
             .contains(&pass)
-            .then_some(SnapAsk { seq, pass })
+            .then_some(SnapAsk {
+                seq,
+                pass,
+                display: self.arming.layout,
+            })
     }
 }
 
@@ -504,30 +530,35 @@ pub struct RenderSources {
     pub counters: Box<dyn Fn() -> Option<Value> + Send>,
 }
 
-/// Adds `render.frame` (over `probe`) and `render.stats` (over `sources`).
+/// Adds the frame recorders (over `probe`) and `render.stats` (over `sources`).
 pub fn add_methods(agent: &Agent, probe: &'static FrameProbe, sources: RenderSources) {
-    agent.add_method(method::RENDER_FRAME, Access::Read, move |v| {
-        let p: FrameParams = if v.is_null() {
-            FrameParams::default()
-        } else {
-            serde_json::from_value(v)
-                .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?
-        };
-        let r = if p.arm {
-            probe
-                .arm(&p)
-                .map_err(|e| RpcError::new(code::INVALID_PARAMS, e))?
-        } else {
-            if p.draws || p.max_draws.is_some() || !p.snap.is_empty() || !p.constants.is_empty() {
-                return Err(RpcError::new(
-                    code::INVALID_PARAMS,
-                    "draws, max_draws, snap and constants go with arm",
-                ));
-            }
-            probe.reply()
-        };
-        serde_json::to_value(r).map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))
-    });
+    for (name, layout) in [
+        (method::RENDER_FRAME, false),
+        (method::RENDER_FRAME_LAYOUT, true),
+    ] {
+        agent.add_method(name, Access::Read, move |v| {
+            let p: FrameParams = if v.is_null() {
+                FrameParams::default()
+            } else {
+                serde_json::from_value(v)
+                    .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?
+            };
+            let r = if p.arm {
+                probe
+                    .arm_frame(&p, layout)
+                    .map_err(|e| RpcError::new(code::INVALID_PARAMS, e))?
+            } else {
+                if p.draws || p.max_draws.is_some() || !p.snap.is_empty() || !p.constants.is_empty() {
+                    return Err(RpcError::new(
+                        code::INVALID_PARAMS,
+                        "draws, max_draws, snap and constants go with arm",
+                    ));
+                }
+                probe.reply()
+            };
+            serde_json::to_value(r).map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))
+        });
+    }
     agent.add_method(method::RENDER_STATS, Access::Read, move |v| {
         if !(v.is_null() || v.as_object().is_some_and(Map::is_empty)) {
             return Err(RpcError::new(
@@ -1194,12 +1225,23 @@ mod tests {
         assert_eq!(p.draw(draw("a", "drawn", 3)), None);
         assert_eq!(
             p.draw(draw("b", "drawn", 3)),
-            Some(SnapAsk { seq: 1, pass: 0 })
+            Some(SnapAsk {
+                seq: 1,
+                pass: 0,
+                display: false,
+            })
         );
         p.snapped(0, Ok("/tmp/p0.png".into()));
         // The last pass ends at the present: the frame is done, the probe
         // stays armed until the snapshot is in.
-        assert_eq!(p.present(2), Some(SnapAsk { seq: 1, pass: 1 }));
+        assert_eq!(
+            p.present(2),
+            Some(SnapAsk {
+                seq: 1,
+                pass: 1,
+                display: false,
+            })
+        );
         assert!(p.armed());
         p.snapped(1, Err("readback failed".into()));
         assert!(!p.armed());
@@ -1209,6 +1251,70 @@ mod tests {
         assert_eq!(f.snaps[1].error.as_deref(), Some("readback failed"));
         // Nothing more is recorded while the snapshot was pending.
         assert_eq!(p.reply().frame.unwrap().totals.draws, 3);
+    }
+
+    #[test]
+    fn layout_records_one_frame_and_requests_display_snapshots() {
+        let p = FrameProbe::new();
+        let params = FrameParams {
+            arm: true,
+            snap: vec![0, 1],
+            constants: vec![0],
+            ..Default::default()
+        };
+        assert!(p.arm(&params).is_err(), "the regular recorder needs draws");
+        p.arm_layout(&params).unwrap();
+        assert!(!p.layout_requested(), "the current frame is still drawing");
+        p.present(1);
+        assert!(p.layout_requested());
+        let layout = DrawLayout {
+            guest_size: [640, 480],
+            display_size: Some([1920, 1080]),
+            viewport: [0, 0, 640, 480],
+            projection_factor: Some(0.75),
+            ..Default::default()
+        };
+        p.draw(DrawInfo {
+            layout: Some(layout.clone()),
+            ..draw("scene", "drawn", 6)
+        });
+        assert_eq!(
+            p.enter("output", None),
+            Some(SnapAsk {
+                seq: 1,
+                pass: 0,
+                display: true,
+            })
+        );
+        p.snapped(0, Ok("scene.png".into()));
+        assert_eq!(
+            p.present(2),
+            Some(SnapAsk {
+                seq: 1,
+                pass: 1,
+                display: true,
+            })
+        );
+        assert!(!p.layout_requested());
+        p.snapped(1, Ok("output.png".into()));
+        let frame = p.reply().frame.unwrap();
+        assert_eq!(frame.draws[0].layout.as_ref(), Some(&layout));
+        assert_eq!(frame.snaps.len(), 2);
+
+        p.arm(&FrameParams {
+            arm: true,
+            draws: true,
+            ..Default::default()
+        })
+        .unwrap();
+        p.present(3);
+        assert!(!p.layout_requested());
+        p.draw(DrawInfo {
+            layout: Some(layout),
+            ..draw("output", "drawn", 4)
+        });
+        p.present(4);
+        assert!(p.reply().frame.unwrap().draws[0].layout.is_none());
     }
 
     #[test]

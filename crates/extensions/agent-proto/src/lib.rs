@@ -35,11 +35,11 @@ pub use endpoint::Endpoint;
 pub use load::{LoadParams, LoadRecord, LoadSegment, Loads};
 pub use pad::{AtTick, Now, PAD_BUTTONS, PadParams, PadStep};
 pub use render::{
-    CaptureReply, CompareParams, CompareReply, DepthRecord, DrawRecord,
-    FrameCaptureParams, FrameParams, FrameRecord, FrameReply, FrameTotals, OpRecord, ParityParams, ParityReply,
-    PassRecord, RenderStats, SceneCarried, SceneEntries, SceneEntryRecord, SceneLateRecord, SceneOpCounts, SceneParams, ScenePostRecord, SceneReply,
-    SceneSideTarget, SceneViewRecord,
-    SnapRecord, SpawnViewParams,
+    CaptureReply, CompareParams, CompareReply, DepthRecord, DrawLayout, DrawRecord,
+    FrameCaptureParams, FrameParams, FrameRecord, FrameReply, FrameTotals, LayoutTexture, OpRecord,
+    ParityParams, ParityReply, PassRecord, RenderStats, SceneCarried, SceneEntries, SceneEntryRecord,
+    SceneLateRecord, SceneOpCounts, SceneParams, ScenePostRecord, SceneReply, SceneSideTarget,
+    SceneViewRecord, SnapRecord, SpawnViewParams,
 };
 
 use serde::{Deserialize, Serialize};
@@ -215,6 +215,9 @@ pub mod method {
     /// Record the next whole frame's passes, draws and targets, or read
     /// the last one recorded ([`crate::FrameParams`]).
     pub const RENDER_FRAME: &str = "render.frame";
+    /// Record the next frame's display layout and sampled surfaces, or read
+    /// the same last frame as `render.frame` ([`crate::FrameParams`]).
+    pub const RENDER_FRAME_LAYOUT: &str = "render.frame_layout";
     /// The render pipeline's counters: in-between frames and their hold
     /// reasons, the pipelined render, the frame-stats counters
     /// ([`crate::RenderStats`]).

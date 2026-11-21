@@ -1,4 +1,4 @@
-//! `render.*`: one frame's passes, draws and targets as data, and the
+//! `render.*`: frame passes, draws, target layouts, and the
 //! render pipeline's counters (docs/runtime/agent-api.md, phase 5).
 
 use std::collections::BTreeMap;
@@ -15,8 +15,8 @@ pub struct SpawnViewParams {
     pub reset: bool,
 }
 
-/// `render.frame`: record the next whole frame (`arm`), or read the last
-/// one recorded.
+/// `render.frame` and `render.frame_layout`: record the next whole frame
+/// (`arm`), or read the last one recorded.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrameParams {
@@ -24,7 +24,7 @@ pub struct FrameParams {
     /// Replaces an arming not yet done, and forgets the last frame.
     #[serde(default)]
     pub arm: bool,
-    /// List every draw, not only each pass's totals.
+    /// List each draw. `render.frame_layout` always lists draws.
     #[serde(default)]
     pub draws: bool,
     /// List at most this many draws (default 2000, at most 20000).
@@ -32,6 +32,7 @@ pub struct FrameParams {
     pub max_draws: Option<usize>,
     /// Passes (by index in the frame) whose colour target is read back as
     /// a PNG when the pass ends: at most [`FrameParams::MAX_SNAPS`].
+    /// `render.frame_layout` requests the display copy.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub snap: Vec<usize>,
     /// Vertex shader constant registers (D3D numbering, -96..=95) to
@@ -169,6 +170,57 @@ pub struct DrawRecord {
     /// D3D register number, as the draw saw them.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub constants: BTreeMap<i32, [f32; 4]>,
+    /// Display geometry requested with `render.frame_layout`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<DrawLayout>,
+}
+
+/// The guest and display geometry of a draw.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DrawLayout {
+    pub guest_size: [u32; 2],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_size: Option<[u32; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_depth_size: Option<[u32; 2]>,
+    /// Guest viewport and writable rectangles as x, y, width, height.
+    pub viewport: [u32; 4],
+    pub clip: Vec<[u32; 4]>,
+    /// Writable display rectangles, in display raster pixels when known.
+    pub display_clip: Vec<[u32; 4]>,
+    /// Horizontal clip correction applied to the draw, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection_factor: Option<f32>,
+    /// Display-space UI scale and translation in guest window units.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_fit: Option<[f32; 4]>,
+    pub vertex_position: String,
+    pub sampled: Vec<LayoutTexture>,
+    /// The native stage that submits the draw, when observed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_stage: Option<String>,
+    /// Minimum and maximum guest-window X/Y, when the bounds are available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_xy: Option<[[f32; 2]; 2]>,
+}
+
+/// One sampled stage and the image it reads.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LayoutTexture {
+    pub stage: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    pub header: u32,
+    pub guest_size: [u32; 2],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_size: Option<[u32; 2]>,
+    /// U and V address modes.
+    pub address: [String; 2],
+    /// Minimum and maximum normalized U/V, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uv: Option<[[f32; 2]; 2]>,
 }
 
 /// A draw's depth state: the render states, the viewport's depth range
@@ -575,12 +627,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_draw_without_depth_or_constants_prints_neither() {
+    fn a_draw_omits_layout_depth_and_constants_when_absent() {
         let d = DrawRecord::default();
         let v = serde_json::to_value(&d).unwrap();
         assert!(v.get("depth").is_none());
         assert!(v.get("constants").is_none());
         assert!(v.get("vs").is_none());
+        assert!(v.get("layout").is_none());
+        assert_eq!(serde_json::from_value::<DrawRecord>(v).unwrap(), d);
     }
 
     #[test]
@@ -613,6 +667,37 @@ mod tests {
         assert!(v["depth"].get("clamp").is_none(), "clamp only when on");
         let back: DrawRecord = serde_json::from_value(v).unwrap();
         assert_eq!(back, d);
+    }
+
+    #[test]
+    fn draw_layout_round_trips_extents_and_a_sampled_stage() {
+        let d = DrawRecord {
+            layout: Some(DrawLayout {
+                guest_size: [640, 480],
+                display_size: Some([2560, 1920]),
+                clip: vec![[0, 0, 640, 480]],
+                display_clip: vec![[0, 0, 2560, 1920]],
+                window_xy: Some([[0.0, 0.0], [640.0, 480.0]]),
+                sampled: vec![LayoutTexture {
+                    stage: 1,
+                    id: Some(5),
+                    source: Some("render target".into()),
+                    guest_size: [160, 120],
+                    display_size: Some([160, 120]),
+                    address: ["Clamp".into(), "Clamp".into()],
+                    uv: Some([[-0.0625, 0.0], [1.0625, 1.0]]),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let v = serde_json::to_value(&d).unwrap();
+        let layout = &v["layout"];
+        assert_eq!(layout["display_size"], serde_json::json!([2560, 1920]));
+        assert_eq!(layout["sampled"][0]["stage"], 1);
+        assert!(layout.get("projection_factor").is_none());
+        assert_eq!(serde_json::from_value::<DrawRecord>(v).unwrap(), d);
     }
 
     #[test]

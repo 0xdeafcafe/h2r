@@ -35,6 +35,7 @@ connection to hold `session.claim`.
 | `profile.sample.start`, `profile.sample.stop` | act | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.status` | read | [`profile`](#profile-where-a-frame-goes) |
 | `render.frame`, `render.stats` | read | [`render`](#render-the-frame-and-the-pipeline) |
+| `render.frame_layout` | read | [Display raster and texture coordinates](#renderframe_layout) |
 | `render.capture_clip`, `render.capture_clip.status` | act, read | [Headless display clips](#rendercapture_clip) |
 | `render.coop_look` | read | [`render`](#render-the-frame-and-the-pipeline) |
 | `render.compare`, `render.capture`, `render.scene`, `sim.hashes` | read | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
@@ -683,6 +684,56 @@ the guest's as the D3D layer handed it over.
   cache directory's `frames/` (`frame-<seq>-pass-<n>.png`); `snaps` gives
   each file or error. A pass with no draw has no known size and says so.
   This is a GPU round trip, only when asked.
+
+### `render.frame_layout`
+
+`render.frame_layout {"arm":true,"max_draws":2000,"snap":[0,3]}`
+arms the same one-frame recorder as `render.frame` and includes draw rows
+automatically. `max_draws`, `constants` and `snap` are optional and have the
+same limits as `render.frame`. Call `render.frame_layout {}` for the recorder
+state and the last frame. Both methods share the sequence and the result.
+
+`frame.draws[].layout` gives the guest target size and the selected host
+colour and depth allocation sizes. The viewport and `clip` use guest
+pixels. `display_clip` applies the draw's aspect and scissor transform
+and rounds the result to the host allocation's pixel grid. The row gives
+the draw's UI transform, vertex-position classification and horizontal
+projection correction when present. `window_xy` is the min and max vertex
+position before the display fit and subpixel adjustment for supported
+small, unindexed draws.
+
+Each `sampled` entry gives the stage, texture header and texture ID,
+source surface when known, guest and host sizes, and U and V address
+modes. The sampled surface names match the handles in `frame.passes` and
+`frame.ops`. For small draws with supported vertex inputs, `uv` gives
+the min and max normalized coordinates at the vertices for direct 2D
+projective lookups. It includes division by the projective coordinate and
+the guest texel-size conversion for linear textures. Dependent lookups,
+such as fog distortion, expose their bindings and address modes. Their
+coordinates also depend on earlier fragment samples.
+
+Pass snapshots read the selected host colour allocation at its actual
+size. The capture records D3D draws and accepted native reservations
+that expose a resolved draw packet, including the native menu fans.
+Higher-level native stages can appear only in the images. Attachment
+sizes describe backing allocations. A draw can use a temporary
+attachment, such as the guest-size pair used for mixed-grid draws.
+Capturing can synchronize the render worker and flush the GPU for the
+requested snapshots.
+
+For backdrop or modal-blur issues, arm a layout frame on each affected
+screen, then look up the passes that write the sampled targets. Use
+`snap` on those pass indices in a second capture to find the first image
+with the artifact. Compare a wide main-menu frame and a 4:3 Choose Profile
+frame. The source and destination sizes, vertex positions, normalized UVs
+and address modes show where a copy magnifies a smaller raster or samples
+beyond the image. The snapshot before that copy shows whether the edge
+artifact arrives in its input.
+
+The host records the layout in `crates/extensions/game/src/d3d_diag.rs` and
+`crates/extensions/game/src/d3d_diag/layout.rs`. The display allocations and
+readbacks come from `crates/platform/d3d/src/scaled.rs` and
+`crates/platform/d3d/src/gfx_backend.rs`.
 
 ### `render.stats`
 
