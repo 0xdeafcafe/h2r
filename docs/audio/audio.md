@@ -18,7 +18,7 @@ write on a Rust struct, and a software mixer renders the result.
 | `dsound` | `SoundBuffer` (Lock/Unlock, Play/Stop, loop region, position), `Stream` (packets), `MixIn` (an FX-send bus), `Listener`/`Source3d`/`Spatial`. |
 | `route` | Xbox mix bins folded to stereo (`dest`, `channel_of`); the table is below. |
 | `mixer` | `Mixer::render(&mut [f32])`: stereo f32 at the host rate. No device knowledge. |
-| `hrtf` | Opt-in binaural filtering for positioned mix-ins. |
+| `hrtf` | Binaural filtering for positioned mix-ins (on by default). |
 | `sink` | Device-independent output plumbing: lock-free SPSC `ring`, `AudioSink` trait, headless `NullSink`, `Pump`. |
 | `devices` | Picks an output device by name (the DualSense speaker); no device access. |
 | `fx`, `reverb` | Per-voice effects and the mixer's I3DL2 reverb; see "Voice effects". |
@@ -161,12 +161,19 @@ voices nobody routed). `route` folds the 32 MCPX bins to stereo:
 | 10 (I3DL2 send) | the mixer's reverb once an environment is set (`Mixer::set_reverb`); else dropped |
 | 6, 8 / 7, 9 (crosstalk front/back) | left / right; a 3D voice is panned here, front pairs weighted by `Spatial::front`, back by `1 - front` |
 | 11..=30 (FX sends) | every playing `MixIn` whose input bin it is; else dropped |
+| 31 (`route::SUBMIX`) | dropped: the guest's "my output buffer" bin, which the shim replaces with the submix's host bin |
+| `0x100` and up (host) | the one submix (`Mixer::add_submix`) that owns the bin |
 
 A `MixIn` (`Mixer::add_mix_in`) is a bus: it sums what is sent to its input
 bin and then, like a voice, applies its own `VoiceParams` (volume, mix bins,
-3D source). That is how Halo 2 positions sound: its sound core makes a 3D
-mix-in buffer per emitter, streams send into its bin, and `SetPosition` moves
-the mix-in (`docs/audio/dsound.md`, "Positioned sound"). `render` mixes buses in
+3D source). That is how Halo 2 positions sound: its sound core makes 3D
+submix buffers, each channel's stream is routed into one, and `SetPosition`
+moves the submix (`docs/audio/dsound.md`, "Positioned sound"). An FX-send
+mix-in is shared: every voice sending to its bin reaches it. A submix
+(`Mixer::add_submix`, for a `DSBCAPS_MIXIN` buffer) gets a host bin of its
+own, so only the voices given that bin reach it. On the Xbox every submix
+had the same bin 31 in its voices' lists, meaning each voice's own output
+buffer. `render` mixes buses in
 dependency order; a mix-in sending to one already mixed this period (a cycle)
 is dropped, in id order, rather than delayed.
 
@@ -175,7 +182,13 @@ puts left on even pairs and right on odd ones (`{0, 1}`, `{0, 1, 4, 5}`).
 
 ### Positional model (`Listener::spatial`)
 
-The default stereo mix uses a simple DirectSound panner.
+The mixer applies the DirectSound 3D model per voice, against the one
+listener, in every render (`crate::dsound`, `Listener::spatial`; the terms
+one by one in `Listener::attenuation`). A voice with no 3D source (or in
+`Mode3d::Disabled`) is 2D: none of the terms below touch it, wherever the
+listener is. The model is a pure function of the source, the listener and
+the voice's own clock, so a render is deterministic. The default stereo mix
+uses a simple DirectSound panner.
 
 - **Pan**: `p` is the source direction's dot with the listener's right axis
   (`top × front`), in -1..1. Equal-power, narrowed by `PAN_WIDTH = 0.8` so a
@@ -188,8 +201,10 @@ The default stereo mix uses a simple DirectSound panner.
 - **Distance**: DirectSound3D inverse distance in world units,
   `min / (min + rolloff·(d − min))` for `d > min`, `d` capped at the max
   distance (beyond it the level holds), `rolloff = listener × source` rolloff
-  factors. Halo 2 sets min and max to `FLT_MAX` and rolloff 0, and attenuates
-  through voice and mix-bin volumes, so its mix-ins come out at unity.
+  factors. Halo 2 sets min and max to `FLT_MAX` and rolloff 0 on its
+  submixes and the listener, and attenuates through voice and mix-bin
+  volumes, so its submixes come out at unity
+  ([dsound.md](dsound.md#distance-attenuation)).
 - **Cone**: unity inside half the inner angle, the outside volume (mB)
   beyond half the outer angle, linear in mB between (the DS3D model). Only
   a 360° inner angle (the default) or a zero orientation disables it; a
@@ -205,12 +220,23 @@ The default stereo mix uses a simple DirectSound panner.
   resample, so a positioned mix-in does not shift its inputs). Speeds are
   capped at `0.9 c / k`.
 
+`crates/platform/audio/tests/distance.rs` checks the model on synthetic
+voices: the gain at, inside, twice and past the min and max distances for
+rolloff 0, 0.5, 1 and 2, the listener's rolloff, Halo's unity parameters,
+the cone inside, between and outside, the Doppler sign for a moving source
+and a moving listener, the pan, the distance applied in a render with and
+without HRTF, a submix hearing only its own voices, and a 2D voice
+rendering the same samples whatever the listener does.
+
 ### Headphones (3D)
 
-Launch with `H2_FEATURES=audio.hrtf=on` to enable binaural rendering for
-headphones. The switch defaults to off and is set at launch. Halo 2 never
-enabled the MCPX HRTF. With the switch off, the original panner produces
-bit-identical output.
+Binaural rendering for headphones is on by default. Launch with
+`H2_FEATURES=audio.hrtf=off` to turn it off; the switch is read at launch.
+Halo 2 never enabled the MCPX HRTF. With the switch off, the original
+panner produces bit-identical output.
+
+HRTF and the optional distance reverb are layers on top of the positional
+model: they never replace its distance, cone or Doppler terms.
 
 Each playing, positioned mix-in sums its stream sends to mono, then filters
 its dry stereo output using the source direction in the listener's frame.
@@ -235,17 +261,17 @@ HRIR files or game data.
 
 [brown-duda]: https://escholarship.org/uc/item/0cr9d23p
 
-### Optional distance reverb
+### Distance reverb
 
-`H2_FEATURES=audio.distance_reverb=on` enables extra depth for positioned
-voices. It uses the length of the listener-relative position in metres,
+Extra depth for positioned voices is on by default;
+`H2_FEATURES=audio.distance_reverb=off` turns it off. It uses the length of the listener-relative position in metres,
 before the DS3D min/max clamp. For distance `d`, the mixer adds
 `6 × d/(10+d)` dB to an existing room send and subtracts
 `12 × d/(10+d)` dB from the direct HF level. At ten metres this gives
 +3 dB wet and −6 dB at the HF reference. These are host tuning choices.
-The switch defaults off. Unpositioned streams keep their game mix. When
+Unpositioned streams keep their game mix. When
 a stream feeds a positioned mix-in, the cue applies there. Both switches can
-be enabled with `H2_FEATURES=audio.hrtf=on,audio.distance_reverb=on`.
+be turned off with `H2_FEATURES=audio.hrtf=off,audio.distance_reverb=off`.
 The direct HF filter runs before binaural rendering. Bin 10 feeds the room
 reverb through its own filter.
 

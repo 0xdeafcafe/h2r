@@ -477,8 +477,12 @@ pub fn screen_json(
     let mut v = top.map_or_else(|| serde_json::json!({ "screen": null }), |t| t.json());
     v["dialog"] = dialog.map_or(serde_json::Value::Null, |d| d.json());
     v["age_ms"] = serde_json::json!(age.as_millis() as u64);
-    if crate::theater_ui::menu::installed() {
+    let rows = crate::theater_ui::menu::rows();
+    if rows.theater {
         v["main_menu_theater"] = serde_json::Value::Bool(true);
+    }
+    if rows.any() {
+        v["main_menu_rows"] = serde_json::json!(rows.len());
     }
     v
 }
@@ -495,11 +499,13 @@ fn note(r: Read, findings: ObservedFindings, fonts: Option<Arc<Fonts>>) -> Optio
         fonts,
     });
     let mut line = r.line();
+    let rows = crate::theater_ui::menu::rows();
     if r.top.is_some_and(|top| top.id == JOIN_SCREEN)
-        && crate::theater_ui::menu::installed()
+        && rows.any()
         && let Some(at) = line.rfind(", mode ")
     {
-        line.insert_str(at, agent_proto::sim::menu::MAIN_MENU_THEATER_MARKER);
+        let marker = agent_proto::sim::menu::main_menu_marker(rows.theater, rows.len() as u32);
+        line.insert_str(at, &marker);
     }
     let mut said = SAID.lock().unwrap_or_else(|e| e.into_inner());
     if *said == line {

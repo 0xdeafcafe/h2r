@@ -74,6 +74,11 @@ enum Kind {
         set: Arc<dyn Fn(usize) -> String + Send + Sync>,
     },
     Info(Get<(String, bool)>),
+    /// A opens the picker over a list made as A is pressed.
+    Pick {
+        shown: Get<String>,
+        offer: Get<Result<crate::ui_kit::picker::Pick, String>>,
+    },
     Text {
         get: Get<String>,
         max_chars: u16,
@@ -128,6 +133,23 @@ impl Row {
         value: impl Fn() -> (String, bool) + Send + Sync + 'static,
     ) -> Self {
         Self::of(label, Kind::Info(Arc::new(value)))
+    }
+    /// A opens the value picker on a list made when A is pressed (the
+    /// maps installed now, the drafts saved now): `shown` is the value
+    /// beside the label, and `offer` the pick, or why there is none (the
+    /// reason is the press's log line). Left and right do nothing.
+    pub fn pick(
+        label: &str,
+        shown: impl Fn() -> String + Send + Sync + 'static,
+        offer: impl Fn() -> Result<crate::ui_kit::picker::Pick, String> + Send + Sync + 'static,
+    ) -> Self {
+        Self::of(
+            label,
+            Kind::Pick {
+                shown: Arc::new(shown),
+                offer: Arc::new(offer),
+            },
+        )
     }
     /// A opens the game's keyboard; `typed` gets the text (`None`: backed
     /// out) and says what to log.
@@ -190,6 +212,14 @@ impl Row {
             Kind::Info(value) => {
                 let (text, loaded) = value();
                 (RowSpec::info(&self.label, &text), loaded)
+            }
+            Kind::Pick { shown, .. } => {
+                let text = shown();
+                (
+                    RowSpec::value(&self.label, &[text.as_str()], 0)
+                        .press(spec::Press::Open(crate::ui_kit::picker::NAME.into())),
+                    true,
+                )
             }
             Kind::Text { get, max_chars, .. } => {
                 (RowSpec::text(&self.label, &get(), *max_chars), true)
@@ -705,6 +735,16 @@ impl Rows for KitScreen {
                 crate::ui_kit::picker::offer_list(pick).map_or(Chosen::Nothing, Chosen::Open)
             }
             Kind::Info(_) => Chosen::Nothing,
+            Kind::Pick { offer, .. } => match offer() {
+                Ok(pick) => crate::ui_kit::picker::offer_list(
+                    pick.over(self.dialog.map_or(Opener::MAIN_MENU, |(_, o)| o)),
+                )
+                .map_or_else(
+                    || Chosen::Stepped(format!("{}: nothing to pick from", r.label)),
+                    Chosen::Open,
+                ),
+                Err(why) => Chosen::Stepped(why),
+            },
             Kind::Text { .. } => pend(Pending::Keyboard(row as usize)),
         }
     }

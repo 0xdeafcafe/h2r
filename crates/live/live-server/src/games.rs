@@ -779,6 +779,11 @@ impl Live {
                         "event {i}: only the host reports actor kills"
                     )));
                 }
+                game::FIREFIGHT_SCORE | game::FIREFIGHT_ENDED if !by_host => {
+                    return Err(forbidden(format!(
+                        "event {i}: only the host reports Firefight scores and results"
+                    )));
+                }
                 game::GAME_ENDED if !by_host => {
                     return Err(forbidden(format!(
                         "event {i}: only the host ends the game; a player leaves with PlayerLeft"

@@ -93,6 +93,9 @@ pub struct Game {
     // dh-identity: preserve evidence even after an unidentified seat leaves.
     pub(crate) all_players_identified: bool,
     pub(crate) ended_by_host: bool,
+    /// The host reported Firefight scores or a result: a co-op match against
+    /// the director, which no rank counts (`crate::ranks::rank_game`).
+    pub(crate) firefight: bool,
     /// The last team of each account that left, for its film result.
     pub(crate) departed_teams: HashMap<Xuid, i32>,
     pub scoreboard: Vec<PlayerScore>,
@@ -466,6 +469,7 @@ impl Model {
             let mut game = Game {
                 all_players_identified: players.iter().all(|p| p.xuid.is_some()),
                 ended_by_host: false,
+                firefight: false,
                 xuids,
                 departed_teams: HashMap::new(),
                 coop,
@@ -517,6 +521,7 @@ impl Model {
                 g.all_players_identified &= d.player.xuid.is_some();
                 g.players.push(d.player);
             }
+            game::FIREFIGHT_SCORE | game::FIREFIGHT_ENDED => g.firefight = true,
             game::PLAYER_LEFT => {
                 let Some(d) = data::<game::PlayerLeft>(e) else {
                     return;

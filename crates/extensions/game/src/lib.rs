@@ -18,6 +18,7 @@ mod spectator_view;
 pub mod agent_glue;
 pub mod forge_controls;
 pub mod forge_glue;
+pub mod forge_lobby;
 mod forge_map;
 mod agent_route;
 pub mod aim_assist;
@@ -85,6 +86,7 @@ pub mod keyboard_glue;
 pub mod lab_takeover;
 pub mod layout_glue;
 pub mod level_boot;
+pub mod lobby_start;
 pub mod list_class;
 #[cfg(feature = "gpu")]
 pub mod lod_distance;

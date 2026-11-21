@@ -76,6 +76,8 @@ pub use decode::*;
 // Provenance: docs/formats/map-format.md ("Render-model geometry") and
 // docs/formats/structure-bsp.md.
 pub mod geometry;
+/// The section encoder, the decoder's inverse (docs/editor/modeling-targets.md).
+pub mod geometry_write;
 pub mod model;
 pub mod structure;
 #[cfg(test)]

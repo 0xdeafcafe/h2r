@@ -44,6 +44,28 @@ pub enum Stage {
     /// water edge blend's scene copy and reflections,
     /// `crate::water_gpu`) build their own look with them.
     Engine(u8),
+    /// An image a host with no game keys itself ([`HostStage`]): never a
+    /// tag, so it cannot stand for one. Bound as a bitmap stage is, from
+    /// the host's stage-image lookup.
+    Host(HostStage),
+}
+
+impl Stage {
+    /// Whether the stage binds an image from the host's stage-image
+    /// lookup: an instance bitmap's, or a [`Stage::Host`] one.
+    pub fn takes_image(self) -> bool {
+        matches!(self, Stage::Bitmap { .. } | Stage::Host(_))
+    }
+}
+
+/// The images the editor's base look samples (`crate::base_look`), which
+/// no tag names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum HostStage {
+    /// A material's base map, as the host's lighting mode draws it.
+    BaseMap(u16),
+    /// White: an unlit part's lightmap stage.
+    White,
 }
 
 /// One material's layer-3 pass.

@@ -142,6 +142,66 @@ impl<R: Read + Seek> MapEditor<'_, R> {
         self.queue(at, bytes)
     }
 
+    /// Queue a fixed-length replacement inside a raw data block of this
+    /// file (section geometry, bitmap pixels): `bytes` at `offset` into the
+    /// `block_size` bytes `block` points at. The patch must lie inside the
+    /// block and the file, and never touch the header, the ordinary
+    /// metadata, a BSP region, the index or the string and name tables.
+    /// A block in another file (`mainmenu.map`, the shared caches) is
+    /// refused: the editor never writes those (docs/editor/modeling.md,
+    /// "Rules and limits").
+    pub fn patch_raw(
+        &mut self,
+        block: crate::RawPointer,
+        block_size: u32,
+        offset: u32,
+        bytes: &[u8],
+    ) -> Result<()> {
+        if block.file != crate::ResourceFile::Local {
+            return Err(Error::Invalid("raw block is in another cache file"));
+        }
+        if bytes.len() > MAX_TABLE {
+            return Err(Error::Limit);
+        }
+        let size = u32::try_from(bytes.len()).map_err(|_| Error::Limit)?;
+        if offset > block_size || size > block_size - offset {
+            return Err(Error::Bounds {
+                what: "raw edit",
+                offset: offset.into(),
+                size: size.into(),
+                limit: block_size.into(),
+            });
+        }
+        let start = u64::from(block.offset);
+        let end = start + u64::from(block_size);
+        if end > self.map.storage_length() {
+            return Err(Error::Bounds {
+                what: "raw block",
+                offset: start,
+                size: block_size.into(),
+                limit: self.map.storage_length(),
+            });
+        }
+        if start < 0x800 {
+            return Err(Error::Invalid("raw block overlaps the header"));
+        }
+        // The block itself may not be tag data: no tag region overlaps it.
+        let regions = self
+            .map
+            .tags()
+            .iter()
+            .filter_map(|t| t.location.map(|l| l.space))
+            .chain(self.map.metadata_space());
+        for s in regions {
+            let lo = s.file_offset;
+            let hi = lo + u64::from(s.size);
+            if start < hi && lo < end {
+                return Err(Error::Invalid("raw block overlaps a tag region"));
+            }
+        }
+        self.queue(start + u64::from(offset), bytes)
+    }
+
     fn queue(&mut self, at: u64, bytes: &[u8]) -> Result<()> {
         if bytes.is_empty() {
             return Ok(());

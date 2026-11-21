@@ -107,7 +107,8 @@ Scene, viewport, inspector, Log and status bar.*
 - **Go to anything** (Cmd/Ctrl+P, `ui/palette.rs`) searches the Maps list,
   the open map's tags and placements, and available menu actions. Each
   word must match. Use Up or Down to move, Enter to open or run the
-  selection, and Esc to close.
+  selection, and Esc to close. The result list is as tall as its rows, up
+  to seven.
 - **The bar** (under the menu, `ui/bar.rs`), visible in every tool. Left:
   the tools as tabs, Map, Variants, Playlists, UI and HUD. Middle: the
   document name; a `*` marks unsaved edits. Right: the game link. Its
@@ -131,7 +132,24 @@ Scene, viewport, inspector, Log and status bar.*
   the mouse" (the next click in the viewport puts it where the cursor
   meets the level). A button is disabled, with the reason as its
   tooltip, when the editor refuses (scenario-editor.md §6). Double-click
-  an entry to frame the camera on it.
+  an entry to frame the camera on it. The filter and the Duplicate and
+  Delete row stay pinned at the top; **Layers** (a folding header) and the
+  tree scroll together in one body (`theme::panel_body`).
+- **Panels on short windows.** A panel scrolls as a whole: its lists
+  and trees draw into the one body, and two lists in a panel are two
+  folding headers. Only a panel with rows pinned above its list (the
+  filter and command row of the Scene, Variants and Playlists lists, the
+  Halo 1 outliner's banner) puts the list in a child, and
+  `theme::panel_body` gives it the height left under them, never less
+  than four lines. A list inside a dialog or popup, the command palette's
+  results, has a height from its rows, at most seven, and never over half
+  the viewport (`theme::bounded_list`). The helpers are the only callers
+  of `child_window` in `ui.rs` and `ui/`, apart from `ui/tags.rs` and
+  `fields.rs` (the check is `child_windows_come_from_the_panel_helpers` in
+  `headless.rs`); `every_panel_scrolls_as_a_whole_on_a_short_window` draws
+  each tool at 1000 by 420 and lists the child windows it finds. The
+  design is in [tag-editing.md](tag-editing.md), "Panels on short
+  windows".
 - **Viewport** (centre): the map's art, its sky and a marker per
   placement, drawn by `scenario_edit::render::Viewport` into an offscreen
   texture that ImGui shows as an image. Left click picks, Cmd/Ctrl+click
@@ -621,7 +639,13 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   (`scenario_edit::native_view`), one world per BSP; the toolbar's
   **Lighting** menu picks Game (base map times lightmap), Flat (no
   lightmap), Lightmap only (the lightmap on white) or Collision (Flat at a
-  third, for the collision layers). The placed objects draw through the
+  third, for the collision layers). The level's base look is a
+  translated pass (`native_render::base_look`), so its depth is the one a
+  material's pass computes for the same vertex. When it cannot be (a
+  program that does not encode or compile, or a part that does not
+  bind) the BSP draws with the renderer's `world.wgsl`, its world layers
+  are off, and `view.stats` names the cause (`base_look`,
+  `NativeLoad::base_fallback`). The placed objects draw through the
   native renderer too (`native_view::NativeObjects`, `GpuModels`), each
   in its rest pose with its base maps in the same mode, and a selected
   one mixed towards the selection orange as the scene's models are
@@ -632,8 +656,22 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   model the native loader refuses (`native_render::model_load`) draws
   the scene's model, and `view.stats` names it. Live objects, markers and
   overlays draw over the level with its depth (view depth over the far
-  plane). A map whose BSPs the native loader does not read (a Halo 1
+  plane, floored to D24's step as the game's W-buffer stores it;
+  `native_view::DEPTH_RULE`), so a mark on a surface passes the depth
+  test against it. A map whose BSPs the native loader does not read (a Halo 1
   reference) draws its textured scene instead.
+- **Layer 3.** In the Game mode each BSP draws its materials' own
+  translated layer-3 passes in place of the base look
+  (`layers_load::load_layer3`, compiled as the game's world glue
+  compiles them, with the camera's view constants; drawn in the base
+  look's set, `native_view::base_parts`). A material whose layer 3 is
+  refused, and a part its pass does not take, draw the base look, and
+  `view.stats` counts each by cause (`by_layer`, layer 3: `refused`,
+  `parts_refused`). A part only layer 3 draws (no base map) counts in
+  the BSP's `draws` and is picked. A pass that leaves `CULLMODE` unset
+  culls as the D3D device's default (CCW;
+  `layers_load::device_default_cull`). Flat, Lightmap only and Collision
+  draw the base look alone.
 - **World layers.** In the Game mode each BSP also draws the world
   layers 1, 5, 7, 8 and 20 with the materials' own translated passes
   (`native_view::NativeLayers`), in the game's order: layer 1 before the
@@ -1353,6 +1391,17 @@ and its `Hud*` actions. `ui/hud.rs` draws it and uses the shared map
 sections for the source and package picker. The logic lives in
 `crates/tools/hud-edit`.
 
+## Modeling
+
+The developer's page is [modeling.md](modeling.md), with the targets and
+the save in [modeling-targets.md](modeling-targets.md). `app/modeling.rs`
+(`Modeling`, `ModelAction`) holds the geometry session over the open map
+and hands its writes to the map's save; `ui/modeling.rs` draws the map
+inspector's Modeling section; `api/geometry.rs` is `geometry.*` and
+`mesh.*`. The viewport redraws open structure targets through
+`Viewport::set_native_section`. The logic lives in
+`crates/tools/geometry-edit` over `crates/tools/mesh-edit`.
+
 ## Code
 
 The tools' logic lives in UI-free crates with their own tests; the
@@ -1366,6 +1415,9 @@ studio crate only draws them and turns input into actions.
   `packages` (the packages under a data root, Halo 1 origins),
   `halo1` (Halo 1 sources and what is shown of a map) and `tag_bundle`
   (the tag bundle format, [Tag bundles](#tag-bundles)).
+- `crates/tools/geometry-edit`: the Modeling tool's targets
+  (`Target`, `list`), `GeometrySession` (meshes, undo, op log, write
+  classes, `changes`, `previews`) and the in-place section rewrite.
 - `crates/tools/scenario-edit`: `Session` holds the scenario editor's state and
   every command (open, select, add, remove, plane drags, gizmo gestures,
   undo, save, packages); `session/multi.rs` holds the multi-selection

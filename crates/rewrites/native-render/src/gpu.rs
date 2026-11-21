@@ -402,12 +402,15 @@ impl GpuWorld {
         let slots = indirect_slots(&world);
         let empty_slot = [IndirectSlot::default()];
         let slot_bytes = if slots.is_empty() { &empty_slot[..] } else { &slots[..] };
-        let vertices = init("native world vertices", bytemuck::cast_slice(verts), wgpu::BufferUsages::VERTEX);
+        // COPY_DST: an editor moves a section's vertices in place
+        // ([`GpuWorld::set_section_vertices`]).
+        let vertex_usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
+        let vertices = init("native world vertices", bytemuck::cast_slice(verts), vertex_usage);
         let program_vertices = if world.program_vertices.len() == world.vertices.len() && !world.program_vertices.is_empty() {
             init(
                 "native world program vertices",
                 bytemuck::cast_slice(&world.program_vertices),
-                wgpu::BufferUsages::VERTEX,
+                vertex_usage,
             )
         } else {
             vertices.clone()
@@ -573,6 +576,36 @@ impl GpuWorld {
 
     pub fn world(&self) -> &World {
         &self.world
+    }
+
+    /// Move `owner`'s section to `positions` (and `normals`), in its own
+    /// space, and write its run of both vertex buffers: the editor's
+    /// live preview of a geometry edit (docs/editor/modeling.md, "The
+    /// tools in the window"). False when the world has no such section
+    /// or the counts differ. Culling bounds stay as uploaded.
+    pub fn set_section_vertices(
+        &mut self,
+        queue: &wgpu::Queue,
+        owner: Owner,
+        positions: &[[f32; 3]],
+        normals: Option<&[[f32; 3]]>,
+    ) -> bool {
+        let Some(run) = self.world.set_section_vertices(owner, positions, normals) else {
+            return false;
+        };
+        let range = run.first_vertex as usize..(run.first_vertex + run.vertex_count) as usize;
+        let offset = (run.first_vertex as usize * std::mem::size_of::<WorldVertex>()) as u64;
+        queue.write_buffer(&self.vertices, offset, bytemuck::cast_slice(&self.world.vertices[range.clone()]));
+        let separate = self.world.program_vertices.len() == self.world.vertices.len()
+            && !self.world.program_vertices.is_empty();
+        if separate {
+            queue.write_buffer(
+                &self.program_vertices,
+                offset,
+                bytemuck::cast_slice(&self.world.program_vertices[range]),
+            );
+        }
+        true
     }
 
     /// Draws the world's layer-16 passes of `set`'s materials from now on.

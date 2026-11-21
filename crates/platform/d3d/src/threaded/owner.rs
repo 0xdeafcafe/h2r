@@ -278,6 +278,10 @@ fn target_map<B: Backend>(
             bound = Some((*colour, *depth));
             continue;
         }
+        // A marker has no command of its own.
+        if op.is_marker() {
+            continue;
+        }
         let command = loop {
             match original.next()? {
                 Cmd::ReleaseTexture(proxy) => { released.insert(*proxy); }

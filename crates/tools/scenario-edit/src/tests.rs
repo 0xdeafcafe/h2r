@@ -2590,3 +2590,52 @@ fn an_exact_pose_sets_the_eye_basis_roll_and_clip_planes() {
     assert_eq!(ray.origin, exact.eye);
     assert!(dot(ray.dir, f) > 0.9999);
 }
+
+#[test]
+fn geometry_raw_patches_save_with_the_map_and_a_refusal_refuses_the_save() {
+    use crate::scenario::{GeometryChanges, RawPatch};
+    let src = fixture_with_textured_bsp();
+    let mut s = read(src.clone());
+    let block = map::RawPointer {
+        file: map::ResourceFile::Local,
+        offset: TEX_BLOCK_FILE as u32,
+    };
+    let edit = GeometryChanges {
+        raw_patches: vec![RawPatch {
+            block,
+            block_size: 0x40,
+            offset: 0x30,
+            bytes: vec![0xab, 0xcd],
+        }],
+        ..GeometryChanges::default()
+    };
+    let before = s.changes();
+    s.set_geometry_changes(edit).unwrap();
+    assert_ne!(s.changes(), before);
+    assert!(!s.changes().is_empty());
+    let out = write(&src, &s);
+    let at = TEX_BLOCK_FILE + 0x30;
+    assert_eq!(
+        diff(&src, &out)
+            .into_iter()
+            .filter(|&(a, _)| !(0x2d0..0x2d4).contains(&a))
+            .collect::<Vec<_>>(),
+        [(at, at + 2)]
+    );
+    // A patch over the scenario's payload is the Scenario tool's.
+    let over = GeometryChanges {
+        patches: vec![(META + SCNR as u32, vec![1])],
+        ..GeometryChanges::default()
+    };
+    assert!(s.set_geometry_changes(over).is_err());
+    // A named refusal stops the save before anything is written.
+    s.set_geometry_changes(GeometryChanges {
+        refusal: Some("cluster:e1000004:0: a grown write".into()),
+        ..GeometryChanges::default()
+    })
+    .unwrap();
+    let mut out = Cursor::new(Vec::new());
+    let e = save::write_patched(&mut open(src.clone()), &s, &mut out).unwrap_err();
+    assert!(e.to_string().contains("a grown write"), "{e}");
+    assert!(out.into_inner().is_empty());
+}

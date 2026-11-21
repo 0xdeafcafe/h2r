@@ -480,3 +480,90 @@ fn inherited_in_place_bindings_name_the_live_surface_and_read_it_at_the_draw() {
     sink.present(main, 0).unwrap();
     assert_eq!(take().refusals, ["released_in_place_source"]);
 }
+
+/// Each object shadow's ops follow an `ObjectShadow` mark and a `None`
+/// mark ends them. Without the marks the replay is the same op for op as
+/// one recorded with no shadow source, and a source that declares no
+/// shadow writes none.
+#[test]
+fn object_shadow_marks_wrap_each_shadows_ops_and_change_nothing_else() {
+    use d3d::Backend;
+    use d3d::scene_sink::{ReplayFrame, ReplayOp, ShadowSource};
+    use gfx::{Clear, D3DFormat};
+    use std::sync::atomic::AtomicU32;
+    use std::sync::{Arc, Mutex};
+
+    static SHADOW: AtomicU32 = AtomicU32::new(u32::MAX);
+    fn slot() -> Option<SlotAt> { Some(SlotAt { slot: Slot::Opaque, view: 0 }) }
+    fn shadow() -> Option<u32> {
+        let v = SHADOW.load(Ordering::Relaxed);
+        (v != u32::MAX).then_some(v)
+    }
+    fn never() -> Option<u32> { None }
+    let (mut device, mut memory) = create(RecordingBackend::new(), UploadPolicy::Always);
+    set_states(&mut device, &mut memory);
+    quad(&mut device, &mut memory, 0xFF19_3264);
+    let draw = device.backend.draws().pop().unwrap().clone();
+
+    let record = |marking: Option<ShadowSource>| -> ReplayFrame {
+        let frames = Arc::new(Mutex::new(Vec::new()));
+        let output = frames.clone();
+        let mut sink = SceneSink::new(RecordingBackend::new(), slot);
+        if let Some(shadow_at) = marking {
+            sink = sink.with_object_shadows(shadow_at);
+        }
+        let mut sink = sink.with_replay(move |frame| output.lock().unwrap().push(frame));
+        let fmt = D3DFormat::LinA8R8G8B8;
+        let colour = sink.create_texture_target(fmt, 32, 32).unwrap();
+        let depth = sink.create_surface(D3DFormat::LinD24S8, 32, 32, true).unwrap();
+        let map = sink.create_surface(D3DFormat::LinD24S8, 16, 16, true).unwrap();
+        let map_colour = sink.create_texture_target(fmt, 16, 16).unwrap();
+        SHADOW.store(u32::MAX, Ordering::Relaxed);
+        sink.clear(colour, Some(depth), Clear::all([0.0, 0.0, 0.0, 1.0])).unwrap();
+        sink.draw(colour, Some(depth), &draw, [None; 4]).unwrap();
+        for n in 0..2 {
+            SHADOW.store(n, Ordering::Relaxed);
+            sink.clear(map_colour, Some(map), Clear::all([1.0; 4])).unwrap();
+            sink.draw(map_colour, Some(map), &draw, [None; 4]).unwrap();
+            sink.draw(colour, Some(depth), &draw, [None; 4]).unwrap();
+        }
+        SHADOW.store(u32::MAX, Ordering::Relaxed);
+        sink.draw(colour, Some(depth), &draw, [None; 4]).unwrap();
+        sink.present(colour, 0).unwrap();
+        frames.lock().unwrap().pop().unwrap()
+    };
+    let unmarked = record(None);
+    let marked = record(Some(shadow as ShadowSource));
+    let marks: Vec<Option<u32>> = marked
+        .ops
+        .iter()
+        .filter_map(|(_, op)| match op {
+            ReplayOp::ObjectShadow(s) => Some(*s),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(marks, [Some(0), Some(1), None]);
+    // Every op between a shadow's mark and the next is that shadow's.
+    let mut current = None;
+    let mut drawn = [0; 2];
+    for (_, op) in &marked.ops {
+        match op {
+            ReplayOp::ObjectShadow(s) => current = *s,
+            ReplayOp::Draw { .. } => {
+                if let Some(n) = current {
+                    drawn[n as usize] += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(drawn, [2, 2]);
+    let ops = |frame: &ReplayFrame| -> Vec<String> {
+        frame.ops.iter().filter(|(_, op)| !op.is_marker()).map(|(at, op)| format!("{at:?} {op:?}")).collect()
+    };
+    assert_eq!(ops(&marked), ops(&unmarked), "the marks are the only difference");
+    assert_eq!(marked.refusals, unmarked.refusals);
+    let quiet = record(Some(never as ShadowSource));
+    assert!(!quiet.ops.iter().any(|(_, op)| op.is_marker()));
+    assert_eq!(ops(&quiet), ops(&unmarked));
+}

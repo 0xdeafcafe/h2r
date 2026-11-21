@@ -13,6 +13,10 @@ pub const PLAYER_JOINED: &str = "PlayerJoined";
 pub const PLAYER_LEFT: &str = "PlayerLeft";
 pub const PLAYER_KILLED: &str = "PlayerKilled";
 pub const ACTOR_KILLED: &str = "ActorKilled";
+/// A Firefight `Score` command as credited ([`crate::firefight`]).
+pub const FIREFIGHT_SCORE: &str = "FirefightScore";
+/// A Firefight match's end ([`crate::firefight`]).
+pub const FIREFIGHT_ENDED: &str = "FirefightEnded";
 pub const SCORE_CHANGED: &str = "ScoreChanged";
 pub const GAME_FRAME: &str = "GameFrame";
 pub const GAME_ENDED: &str = "GameEnded";
@@ -21,11 +25,13 @@ pub const MAP_OUTLINE_STORED: &str = "MapOutlineStored";
 
 /// The game event types a player's console may append in a batch; the
 /// server writes `GameStarted` (from `POST /v1/games`) and `GameFrame`.
-pub const CLIENT_GAME_EVENTS: [&str; 6] = [
+pub const CLIENT_GAME_EVENTS: [&str; 8] = [
     PLAYER_JOINED,
     PLAYER_LEFT,
     PLAYER_KILLED,
     ACTOR_KILLED,
+    FIREFIGHT_SCORE,
+    FIREFIGHT_ENDED,
     SCORE_CHANGED,
     GAME_ENDED,
 ];
@@ -1164,6 +1170,17 @@ pub fn validate(kind: &str, data: &Value, players: &[Player]) -> Result<(), Stri
             if d.weapon.as_deref().is_some_and(|w| !valid_id(w)) {
                 return Err("weapon must be a damage-source key".into());
             }
+        }
+        FIREFIGHT_SCORE => {
+            let d: crate::firefight::FirefightScore = parse(data)?;
+            d.validate()?;
+            if !known(d.player) {
+                return Err("player must be a player of the game".into());
+            }
+        }
+        FIREFIGHT_ENDED => {
+            let d: crate::firefight::FirefightEnded = parse(data)?;
+            d.validate()?;
         }
         SCORE_CHANGED => {
             let d: ScoreChanged = parse(data)?;

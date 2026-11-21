@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use agent::sim::calls::{self, Arg, Call, GameStep};
+use agent::sim::calls::{self, Call, GameStep};
 use agent::{Access, Agent, GameCtx};
 use agent_proto::test_maps::{
     CreateParams, CreateResult, ListParams, ListResult, Listed, LoadResult, NameParams,
@@ -32,7 +32,7 @@ use agent_proto::{RpcError, code, method};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
-use crate::level_boot::{self, Kind, Request, Step};
+use crate::level_boot::{self, Kind, Request};
 use crate::new_maps::Disc as _;
 
 /// Ticks `maps.test.load` waits for the guest calls (one tick does them).
@@ -265,72 +265,10 @@ fn publish(paths: &Paths, vfs: Option<&Arc<Mutex<vfs::Vfs>>>) {
     }
 }
 
-/// Records the level boot's writes instead of making them.
-#[derive(Default)]
-struct Writes(Vec<(u32, Vec<u8>)>);
-
-impl crate::layout_glue::Gm for Writes {
-    fn rd(&self, _: u32, _: &mut [u8]) -> bool {
-        false
-    }
-    fn wr(&mut self, addr: u32, data: &[u8]) -> bool {
-        self.0.push((addr, data.to_vec()));
-        true
-    }
-}
-
-/// The level boot's steps for `req` as guest-call steps over an options
-/// block at offset 0 (`level_boot::call_of` with the block's address
-/// given at the call). `None` when the options can't hold the request.
+/// The level boot's steps for `req` as guest-call steps: `maps.test.load`
+/// queues them ([`level_boot::game_steps`]).
 pub fn game_steps(req: &Request) -> Option<Vec<GameStep>> {
-    let call = |target: u32, args: Vec<Arg>, eax: Option<Arg>, esi: Option<Arg>, report| {
-        GameStep::Call {
-            target,
-            args,
-            eax,
-            esi,
-            report,
-        }
-    };
-    let opts = Arg::Options(0);
-    let mut out = Vec::new();
-    for step in level_boot::steps(req.kind) {
-        let s = match step {
-            Step::New => call(level_boot::OPTIONS_NEW, vec![], None, Some(opts), None),
-            Step::Fill => {
-                let mut w = Writes::default();
-                if !level_boot::fill_options(&mut w, 0, req) {
-                    return None;
-                }
-                out.extend(
-                    w.0.into_iter()
-                        .map(|(offset, bytes)| GameStep::Write { offset, bytes }),
-                );
-                continue;
-            }
-            Step::Variant => call(
-                level_boot::VARIANT_DEFAULTS,
-                vec![
-                    Arg::Options(level_boot::OPT_VARIANT),
-                    Arg::Value(level_boot::GAME_TYPE_SLAYER),
-                ],
-                None,
-                None,
-                None,
-            ),
-            Step::Players => call(
-                level_boot::OPTIONS_PLAYERS,
-                vec![Arg::Value(1), opts],
-                None,
-                None,
-                None,
-            ),
-            Step::Check => call(level_boot::OPTIONS_CHECK, vec![opts], None, None, Some("check")),
-            Step::Queue => call(level_boot::OPTIONS_QUEUE, vec![], Some(opts), None, None),
-        };
-        out.push(s);
-    }
-    Some(out)
+    level_boot::game_steps(req)
 }
 
 /// The multiplayer request for a listed test map: a local game, default

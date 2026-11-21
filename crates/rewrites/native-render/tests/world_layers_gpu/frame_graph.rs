@@ -338,6 +338,227 @@ fn retail_and_e3_private_draws_of_one_sealed_tick_are_identical() {
     assert_eq!(backend.read_color(presented).unwrap().0, shown);
 }
 
+/// An object shadow's marks (`ReplayOp::ObjectShadow`) wrap its ops for
+/// E3's sun tiles. With E3 off they draw nothing: the same pixels, the
+/// same report and the same pass rows as the frame without them.
+#[test]
+fn object_shadow_marks_leave_the_retail_draw_and_its_passes_unchanged() {
+    let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(ctx) = test_gpu() else {
+        return;
+    };
+    let mut backend = GfxBackend::new(ctx);
+    let scene = sealed();
+    // The same ops, with or without the marks of shadows 0 and 1.
+    let build = |backend: &mut GfxBackend, marks: bool| {
+        let mut frame = replay();
+        let mark = |frame: &mut ReplayFrame, shadow| {
+            if marks {
+                op(frame, Slot::Opaque, ReplayOp::ObjectShadow(shadow));
+            }
+        };
+        op(&mut frame, Slot::Opaque, bind());
+        op(&mut frame, Slot::Opaque, clear());
+        mark(&mut frame, Some(0));
+        op(&mut frame, Slot::Opaque, guest_triangle(0.5, [0.0, 0.0, 1.0, 1.0], None));
+        op(&mut frame, Slot::Opaque, typed_triangle(backend, 2.0, [1.0, 0.0, 0.0, 1.0]));
+        mark(&mut frame, Some(1));
+        op(&mut frame, Slot::Opaque, guest_triangle(-0.5, [0.0, 1.0, 0.0, 1.0], None));
+        mark(&mut frame, None);
+        op(&mut frame, Slot::Opaque, guest_triangle(1.5, [1.0, 1.0, 0.0, 1.0], None));
+        frame
+    };
+    let plain = build(&mut backend, false);
+    let marked = build(&mut backend, true);
+    assert_eq!(marked.ops.len(), plain.ops.len() + 3);
+
+    let mut plain_rows = Observe::default();
+    let without =
+        draw_private_with_observer(&mut backend, &scene, &plain, 1, Lighting::Retail, Some(&mut plain_rows)).unwrap();
+    let mut marked_rows = Observe::default();
+    let with =
+        draw_private_with_observer(&mut backend, &scene, &marked, 1, Lighting::Retail, Some(&mut marked_rows)).unwrap();
+    assert!(without.report.draws > 0, "the frame drew");
+    assert_eq!(with.report, without.report);
+    assert_eq!((with.id, with.scene_hash, with.size), (without.id, without.scene_hash, without.size));
+    assert_eq!(with.rgba, without.rgba);
+    let attachments = |o: &Observe| o.rows.iter().map(|r| (r.colour, r.depth)).collect::<Vec<_>>();
+    assert_eq!(attachments(&marked_rows), attachments(&plain_rows));
+    let draws = |o: &Observe, f: &ReplayFrame| {
+        o.rows.iter().map(|r| f.ops[r.ops.clone()].iter().filter(|(_, op)| !op.is_marker()).count()).collect::<Vec<_>>()
+    };
+    assert_eq!(draws(&marked_rows, &marked), draws(&plain_rows, &plain));
+}
+
+/// A scene of its own map epoch: one object at x = 10 in front of the
+/// camera, casting one object shadow whose layer 11 draws on itself.
+fn sun_scene(epoch: u64, definition: u32) -> Arc<FrameScene> {
+    use frame_scene::{
+        GroupSite, InstanceInput, InstanceKey, LayerOwner, LightBinding, LightEntry, LightGroup,
+        LightPose, LightStream, NodeMatrix, PROJECTION_ROWS, RenderCamera, Topology, ViewKey,
+        ViewKind,
+    };
+    let mut builder = SceneBuilder::new(FreeList::new());
+    builder.begin(SceneId {
+        map_epoch: epoch,
+        tick: 17,
+        frame: 12,
+    });
+    let camera = RenderCamera {
+        position: [0.0, 0.0, 0.0],
+        forward: [1.0, 0.0, 0.0],
+        up: [0.0, 0.0, 1.0],
+        fov: std::f32::consts::FRAC_PI_2,
+        projection_xy: None,
+        viewport: [0, 0, SIZE as i16, SIZE as i16],
+        near: 0.1,
+        far: 100.0,
+    };
+    let key = ViewKey {
+        kind: ViewKind::Game,
+        player: 0,
+        view: 0,
+    };
+    builder.open_view(key, camera).unwrap();
+    let nodes = [NodeMatrix {
+        position: [10.0, 0.0, 0.0],
+        ..NodeMatrix::IDENTITY
+    }];
+    builder
+        .push_instance(InstanceInput {
+            key: InstanceKey(1),
+            definition,
+            model: 0xe600_0002,
+            nodes: &nodes,
+            sphere: ([10.0, 0.5, 0.5], 1.0),
+            lighting: None,
+            defaults: None,
+        })
+        .unwrap();
+    builder.push_object_shadow([1, 0x3f80_0000], false).unwrap();
+    let mut projection = [[0u32; 4]; PROJECTION_ROWS];
+    projection[1] = [0.0f32.to_bits(), 0.0f32.to_bits(), 1.0f32.to_bits(), 0];
+    let receiver = LightEntry {
+        slot: 0,
+        record: 0,
+        owner: LayerOwner::Object(InstanceKey(1)),
+        model: 0,
+        stream: LightStream {
+            section: 0,
+            part: 0,
+            vertex_class: 0,
+            first_index: 0,
+            index_count: 3,
+            topology: Topology::List,
+        },
+        pose: LightPose::World,
+        binding: LightBinding {
+            shader: 0,
+            selector: 0,
+            variant: 0,
+            implementation: 3,
+        },
+    };
+    let group = LightGroup {
+        light: 0,
+        layer: 11,
+        site: GroupSite::ObjectShadow,
+        projection: Some(projection),
+        entries: 0..0,
+        remainder: 0,
+    };
+    builder.push_shadow_group(group, &[(receiver, Vec::new())]).unwrap();
+    builder.set_shadow_weight(0.75).unwrap();
+    builder.seal(Stamp::default()).unwrap()
+}
+
+/// One triangle across node 0's rest frame.
+struct SunModels(native_render::model::Model);
+
+impl native_render::sun_casters::CasterModels for SunModels {
+    fn model(&self, _definition: u32) -> Option<&native_render::model::Model> {
+        Some(&self.0)
+    }
+}
+
+fn sun_model() -> native_render::model::Model {
+    use native_render::model::{Model, ModelDraw, ModelVertex, NodeMatrix};
+    let v = |p: [f32; 3]| ModelVertex {
+        position: p,
+        normal: [0.0, 0.0, 1.0],
+        nodes: [0; 4],
+        weights: [1.0, 0.0, 0.0, 0.0],
+        ..Default::default()
+    };
+    Model {
+        vertices: vec![v([0.0, -1.0, 0.0]), v([0.0, 1.0, 0.0]), v([0.0, 0.0, 1.0])],
+        indices: vec![0, 1, 2],
+        draws: vec![ModelDraw {
+            material: 0,
+            first_index: 0,
+            index_count: 3,
+        }],
+        inverse_binds: vec![NodeMatrix::IDENTITY],
+        ..Default::default()
+    }
+}
+
+/// Under E3 an admitted object shadow's marked ops are not drawn: its sun
+/// tile and receivers stand in, and the tile is kept for the next draw.
+/// With E3 off the same frame, marks, scene and loaded models replay
+/// exactly as the frame without marks.
+#[test]
+fn e3_skips_an_admitted_shadows_mask_and_retail_replays_it_unchanged() {
+    use native_render::sun_casters::set_models;
+    let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(ctx) = test_gpu() else {
+        return;
+    };
+    const EPOCH: u64 = 0x5e3_0001;
+    let mut backend = GfxBackend::new(ctx);
+    let scene = sun_scene(EPOCH, 0xe500_0001);
+    set_models(EPOCH, Some(Arc::new(SunModels(sun_model()))));
+    // The mask's draw, magenta at (19, 5), inside shadow 0's marks.
+    let build = |marks: bool| {
+        let mut frame = replay();
+        op(&mut frame, Slot::Opaque, bind());
+        op(&mut frame, Slot::Opaque, clear());
+        op(&mut frame, Slot::Opaque, guest_triangle(0.0, [0.0, 0.0, 1.0, 1.0], None));
+        if marks {
+            op(&mut frame, Slot::Opaque, ReplayOp::ObjectShadow(Some(0)));
+        }
+        op(&mut frame, Slot::Opaque, guest_triangle(16.0, [1.0, 0.0, 1.0, 1.0], None));
+        if marks {
+            op(&mut frame, Slot::Opaque, ReplayOp::ObjectShadow(None));
+        }
+        frame
+    };
+    let (plain, marked) = (build(false), build(true));
+
+    let without = draw_private(&mut backend, &scene, &plain, 1, Lighting::Retail).unwrap();
+    let with = draw_private(&mut backend, &scene, &marked, 1, Lighting::Retail).unwrap();
+    assert_eq!(rgba(&with, 19, 5), [255, 0, 255, 255], "retail draws the mask");
+    assert_eq!(with.rgba, without.rgba);
+    assert_eq!(with.report, without.report);
+
+    let e3 = draw_private(&mut backend, &scene, &marked, 1, Lighting::E3).unwrap();
+    let report = e3.report.e3.unwrap();
+    assert_eq!(report.sun_tiles, 1);
+    assert_eq!(report.sun_tile_draws.draws, 1, "a fresh atlas draws the tile");
+    assert!(report.sun.draws >= 1, "the caster receives its own tile");
+    assert_eq!(rgba(&e3, 19, 5), [0, 0, 0, 255], "the mask is not drawn");
+    assert_eq!(rgba(&e3, 3, 5), [0, 0, 255, 255], "work outside the marks is");
+    let again = draw_private(&mut backend, &scene, &marked, 1, Lighting::E3).unwrap();
+    let report = again.report.e3.unwrap();
+    assert_eq!((report.sun_tiles, report.sun_tile_draws.draws), (1, 0), "the tile is kept");
+
+    // No models for the map: every shadow keeps its mask under E3 too.
+    set_models(EPOCH, None);
+    let kept = draw_private(&mut backend, &scene, &marked, 1, Lighting::E3).unwrap();
+    assert_eq!(rgba(&kept, 19, 5), [255, 0, 255, 255]);
+    assert_eq!(kept.report.e3.unwrap().sun_tiles, 0);
+}
+
 #[test]
 fn private_draws_restore_inherited_colour_depth_and_stencil_before_blending() {
     use d3d::{Backend, DrawOutcome};

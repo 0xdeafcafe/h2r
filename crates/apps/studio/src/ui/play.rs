@@ -495,15 +495,36 @@ impl PlayUi {
                 }
             }
             let move_refusal = p.refused_move_at(std::time::Instant::now());
+            // The commands come before the rows they act on.
+            if !app.pairing.pending.is_empty() {
+                let has_reload = app
+                    .pairing
+                    .pending
+                    .sorted()
+                    .any(|r| r["class"].as_str() == Some(crate::play::tag_sync::RELOAD));
+                if let Some(why) = p.edits_blocked(app) {
+                    ui.text_wrapped(why);
+                }
+                if ui.button("Send") {
+                    action = Some(Apply::Send);
+                }
+                if has_reload {
+                    ui.same_line();
+                    if ui.button("Reload map") {
+                        action = Some(Apply::Reload);
+                    }
+                }
+            }
+            if p.can_respawn() && ui.button("Respawn now") {
+                action = Some(Apply::Respawn);
+            }
             if let Some(why) = move_refusal {
                 ui.separator_with_text("Player move refused");
                 ui.text_wrapped(why);
             }
             let mut class = "";
-            let mut has_reload = false;
             for r in app.pairing.pending.sorted() {
                 let next = r["class"].as_str().unwrap_or("Pending");
-                has_reload |= next == crate::play::tag_sync::RELOAD;
                 if class != next {
                     ui.separator_with_text(next);
                     class = next;
@@ -527,26 +548,8 @@ impl PlayUi {
                     }
                 }
             }
-            if app.pairing.pending.is_empty() {
-                if move_refusal.is_none() {
-                    ui.text_disabled("No pending edits");
-                }
-            } else {
-                if let Some(why) = p.edits_blocked(app) {
-                    ui.text_wrapped(why);
-                }
-                if ui.button("Send") {
-                    action = Some(Apply::Send);
-                }
-                if has_reload {
-                    ui.same_line();
-                    if ui.button("Reload map") {
-                        action = Some(Apply::Reload);
-                    }
-                }
-            }
-            if p.can_respawn() && ui.button("Respawn now") {
-                action = Some(Apply::Respawn);
+            if app.pairing.pending.is_empty() && move_refusal.is_none() {
+                ui.text_disabled("No pending edits");
             }
         });
         const LEAVE: &str = "Unpair from the game?";

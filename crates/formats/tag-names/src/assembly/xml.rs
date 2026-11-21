@@ -11,6 +11,27 @@ use quick_xml::{Reader, XmlVersion};
 use super::GAME;
 use crate::{Field, Kind, Plugin};
 
+/// Widths of the pointer fields, which differ between engine generations.
+#[derive(Clone, Copy)]
+struct Widths {
+    reference: u32,
+    block: u32,
+    data: u32,
+}
+
+impl Widths {
+    /// Halo 2 (Xbox, Vista and its MCC edition) uses 8-byte references,
+    /// blocks and data references. The later engines' plugins use 16, 12
+    /// and 20 bytes.
+    fn of(game: &str) -> Self {
+        if matches!(game, "Halo2Xbox" | "Halo2" | "Halo2MCC") {
+            Self { reference: 8, block: 8, data: 8 }
+        } else {
+            Self { reference: 16, block: 12, data: 20 }
+        }
+    }
+}
+
 fn message(e: impl Display) -> String {
     e.to_string()
 }
@@ -99,17 +120,17 @@ impl Node {
             .join("\n")
     }
 
-    fn fields(self) -> Result<Vec<Field>, String> {
+    fn fields(self, widths: Widths) -> Result<Vec<Field>, String> {
         self.children
             .into_iter()
             .filter(|n| n.attr("offset").is_some())
-            .map(Self::field)
+            .map(|n| n.field(widths))
             .collect()
     }
 
-    fn field(self) -> Result<Field, String> {
+    fn field(self, widths: Widths) -> Result<Field, String> {
         let offset = self.number("offset")?.ok_or("field requires offset")?;
-        let (kind, size) = self.ty()?;
+        let (kind, size) = self.ty(widths)?;
         let mut field = Field {
             name: self.attr("name").unwrap_or_default().to_owned(),
             offset,
@@ -125,7 +146,7 @@ impl Node {
         match field.kind {
             Kind::Block => {
                 field.element_size = self.number("elementsize")?;
-                field.children = self.fields()?;
+                field.children = self.fields(widths)?;
             }
             Kind::Enum => {
                 for option in self
@@ -150,7 +171,7 @@ impl Node {
         Ok(field)
     }
 
-    fn ty(&self) -> Result<(Kind, Option<u32>), String> {
+    fn ty(&self, widths: Widths) -> Result<(Kind, Option<u32>), String> {
         let (kind, size) = match self.tag.to_ascii_lowercase().as_str() {
             "int8" => (Kind::Int { signed: true }, 1),
             "int16" => (Kind::Int { signed: true }, 2),
@@ -180,9 +201,9 @@ impl Node {
             "stringid" => (Kind::StringId, 4),
             "datum" => (Kind::Datum, 4),
             "tagref" if self.flag("withgroup") == Some(false) => (Kind::Datum, 4),
-            "tagref" => (Kind::TagRef, 8),
-            "dataref" => (Kind::DataRef, 8),
-            "tagblock" => (Kind::Block, 8),
+            "tagref" => (Kind::TagRef, widths.reference),
+            "dataref" => (Kind::DataRef, widths.data),
+            "tagblock" => (Kind::Block, widths.block),
             "point2" | "point2d" | "vector2" | "vector2d" => (Kind::Vector, 8),
             "point3" | "point3d" | "vector3" | "vector3d" => (Kind::Vector, 12),
             "point4" | "point4d" | "vector4" | "vector4d" => (Kind::Vector, 16),
@@ -215,8 +236,8 @@ fn number(s: &str) -> Result<i64, String> {
     }
 }
 
-/// Checks the retail game's exact spelling before reading a field.
-pub(super) fn header<R: BufRead>(reader: &mut Reader<R>) -> Result<u32, String> {
+/// Checks the game's exact spelling before reading a field.
+pub(super) fn header<R: BufRead>(reader: &mut Reader<R>, expected: &str) -> Result<u32, String> {
     let mut buf = Vec::new();
     reader.config_mut().expand_empty_elements = true;
     loop {
@@ -224,8 +245,8 @@ pub(super) fn header<R: BufRead>(reader: &mut Reader<R>) -> Result<u32, String> 
             Event::Start(e) if e.name().as_ref() == b"plugin" => {
                 let root = Node::start(&e)?;
                 let game = root.required("game")?;
-                if game != GAME {
-                    return Err(format!("game {game:?} is unsupported; expected retail {GAME}"));
+                if game != expected {
+                    return Err(format!("game {game:?} is unsupported; expected {expected}"));
                 }
                 return root
                     .number("basesize")?
@@ -233,20 +254,28 @@ pub(super) fn header<R: BufRead>(reader: &mut Reader<R>) -> Result<u32, String> 
             }
             Event::Text(text) if text.iter().all(u8::is_ascii_whitespace) => {}
             Event::Decl(_) | Event::Comment(_) | Event::PI(_) => {}
-            _ => return Err(format!("expected a retail {GAME} plugin root")),
+            _ => return Err(format!("expected a {expected} plugin root")),
         }
         buf.clear();
     }
 }
 
-/// Parses one in-memory group plugin using the same checks as the folder reader.
+/// Parses one in-memory retail Xbox group plugin using the same checks as
+/// the folder reader.
 pub fn parse(group: &str, xml: &str) -> Result<Plugin, String> {
-    read(group, xml.as_bytes())
+    read(group, GAME, xml.as_bytes())
 }
 
-pub(super) fn read<R: BufRead>(group: &str, input: R) -> Result<Plugin, String> {
+/// Parses one in-memory plugin whose root must name `game`, with that
+/// game's pointer widths.
+pub fn parse_game(group: &str, game: &str, xml: &str) -> Result<Plugin, String> {
+    read(group, game, xml.as_bytes())
+}
+
+pub(super) fn read<R: BufRead>(group: &str, game: &str, input: R) -> Result<Plugin, String> {
+    let widths = Widths::of(game);
     let mut reader = Reader::from_reader(input);
-    let base_size = header(&mut reader)?;
+    let base_size = header(&mut reader, game)?;
     let mut fields = Vec::new();
     let mut stack: Vec<Node> = Vec::new();
     let mut buf = Vec::new();
@@ -262,7 +291,7 @@ pub(super) fn read<R: BufRead>(group: &str, input: R) -> Result<Plugin, String> 
             Event::End(_) if !ended => match stack.pop() {
                 Some(node) => match stack.last_mut() {
                     Some(parent) => parent.children.push(node),
-                    None if node.attr("offset").is_some() => fields.push(node.field()?),
+                    None if node.attr("offset").is_some() => fields.push(node.field(widths)?),
                     None => {}
                 },
                 None => ended = true,
@@ -298,7 +327,7 @@ pub(super) fn read<R: BufRead>(group: &str, input: R) -> Result<Plugin, String> 
     }
     Ok(Plugin {
         group: group.to_owned(),
-        game: GAME.to_owned(),
+        game: game.to_owned(),
         base_size,
         fields,
     })

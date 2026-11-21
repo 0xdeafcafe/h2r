@@ -259,28 +259,184 @@ fn gaps_and_overlaps_are_refused() {
     assert!(e.why.contains("fields end"), "{e}");
 }
 
+/// The file text of every struct and then group `d` holds.
+fn text_of(d: &Defs, group: FourCC) -> String {
+    let mut text = String::new();
+    for (name, st) in &d.structs {
+        text.push_str(&format!(
+            "struct {name} {:#x} align {}{}\n",
+            st.size,
+            st.align,
+            st.header_attrs()
+        ));
+        st.fields_text(2, &mut text);
+    }
+    let s = &d.groups[&group];
+    text.push_str(&format!(
+        "group {} {:#x} align {}{}\n",
+        fourcc_text(group),
+        s.size,
+        s.align,
+        s.header_attrs()
+    ));
+    s.fields_text(2, &mut text);
+    text
+}
+
 #[test]
 fn the_text_form_round_trips() {
     let d = defs();
     for (g, s) in &d.groups {
-        let mut text = String::new();
-        for (name, st) in &d.structs {
-            text.push_str(&format!(
-                "struct {name} {:#x} align {}\n",
-                st.size, st.align
-            ));
-            st.fields_text(2, &mut text);
-        }
-        text.push_str(&format!(
-            "group {} {:#x} align {}\n",
-            fourcc_text(*g),
-            s.size,
-            s.align
-        ));
-        s.fields_text(2, &mut text);
+        let text = text_of(&d, *g);
         let mut again = Defs::default();
         again.parse_into("again", &text).unwrap();
         assert_eq!(again.group(*g), Some(s));
+    }
+}
+
+/// An invented group using every editor attribute.
+const ATTRS: &str = r#"struct shared 0x8 title="Shared kind" applies=use
+  0x0 f32 rate unit=world_units_per_second label="Rate (fast)"
+  0x4 f32 flat applies=creation
+group test 0x44 title="Test thing" applies=frame
+  0x0 struct inner shared
+  0x8 f32 delay unit=seconds label="Wait \"time\""
+  0xc f32[3] offset axes=x|y|z unit=world_units
+  0x18 i16 level unit=index
+  0x1a i16 spare
+  0x1c u32 percent_full unit=percent
+  0x20 f32[2] span axes=lo|hi
+  0x28 f32 turn unit=degrees_per_second
+  0x2c block parts 0x8 align 4 title=name applies=use
+    0x0 string name
+    0x4 f32 weight
+  0x34 block bare 0x4 align 4
+    0x0 f32 loose
+  0x3c struct late shared applies=creation
+"#;
+
+fn attr_defs() -> Defs {
+    let mut d = Defs::default();
+    d.parse_into("attrs", ATTRS).unwrap();
+    d
+}
+
+#[test]
+fn editor_attributes_parse_into_the_model() {
+    let d = attr_defs();
+    let shared = &d.structs["shared"];
+    assert_eq!(shared.title, Some(Title::Text("Shared kind".into())));
+    assert_eq!(shared.applies, Some("use"));
+    let rate = shared.field("rate").unwrap();
+    assert_eq!(rate.unit, Some(Unit::WorldUnitsPerSecond));
+    assert_eq!(rate.label.as_deref(), Some("Rate (fast)"));
+    assert_eq!(rate.applies, None);
+    let g = d.group(FourCC(*b"test")).unwrap();
+    assert_eq!(g.title, Some(Title::Text("Test thing".into())));
+    assert_eq!(g.applies, Some("frame"));
+    let delay = g.field("delay").unwrap();
+    assert_eq!(delay.unit, Some(Unit::Seconds));
+    assert_eq!(delay.label.as_deref(), Some("Wait \"time\""));
+    let offset = g.field("offset").unwrap();
+    assert_eq!(offset.axes, ["x", "y", "z"]);
+    assert_eq!(offset.unit, Some(Unit::WorldUnits));
+    assert_eq!(g.field("span").unwrap().axes, ["lo", "hi"]);
+    assert_eq!(g.field("spare").unwrap().unit, None);
+    assert!(g.field("spare").unwrap().axes.is_empty());
+    let Kind::Block(parts) = &g.field("parts").unwrap().kind else {
+        panic!("parts is a block")
+    };
+    assert_eq!(parts.title, Some(Title::Field("name".into())));
+    assert_eq!(g.field("parts").unwrap().applies, Some("use"));
+    let Kind::Block(bare) = &g.field("bare").unwrap().kind else {
+        panic!("bare is a block")
+    };
+    assert_eq!(bare.title, None);
+    assert_eq!(g.field("late").unwrap().applies, Some("creation"));
+}
+
+#[test]
+fn every_unit_word_parses_and_prints_back() {
+    for unit in Unit::ALL {
+        let text = format!("group test 0x4\n  0x0 f32 rate unit={}\n", unit.word());
+        let mut d = Defs::default();
+        d.parse_into("unit", &text).unwrap();
+        let rate = d.group(FourCC(*b"test")).unwrap().field("rate").unwrap();
+        assert_eq!(rate.unit, Some(unit));
+        assert_eq!(Unit::from_word(unit.word()), Some(unit));
+    }
+    assert_eq!(Unit::ALL.len(), 11);
+    assert_eq!(Unit::from_word("furlongs"), None);
+    assert!(Unit::Degrees.is_angle() && Unit::DegreesPerSecond.is_angle());
+    assert!(!Unit::Seconds.is_angle());
+}
+
+#[test]
+fn editor_attributes_round_trip_through_the_text_form() {
+    let d = attr_defs();
+    let g = FourCC(*b"test");
+    let text = text_of(&d, g);
+    let mut again = Defs::default();
+    again.parse_into("again", &text).unwrap();
+    assert_eq!(again, d);
+    // Printing what was parsed is stable, byte for byte.
+    assert_eq!(text_of(&again, g), text);
+    assert!(text.contains("unit=world_units_per_second"));
+    assert!(text.contains("axes=x|y|z"));
+    assert!(text.contains("title=name"));
+    assert!(text.contains("label=\"Wait \\\"time\\\"\""));
+}
+
+#[test]
+fn wrong_editor_attributes_are_refused_with_the_line() {
+    let cases: &[(&str, &str)] = &[
+        ("0x0 f32 a unit=furlongs", "unknown unit"),
+        ("0x0 enum8 a values=x|y unit=seconds", "numeric"),
+        ("0x0 f32 a axes=x|y", "array"),
+        ("0x0 f32[3] a axes=x|y", "2 names for 3"),
+        ("0x0 f32[2] a axes=x|", "each axis is a word"),
+        ("0x0 f32[2] a axes=x|1y", "each axis is a word"),
+        ("0x0 f32 a label=plain", "expected label=\""),
+        ("0x0 f32 a label=\"\"", "label is empty"),
+        ("0x0 f32 a label=\" x\"", "label has a space"),
+        ("0x0 f32 a label=\"x  y\"", "label has a double space"),
+        ("0x0 f32 a label=\"x\" label=\"y\"", "duplicate"),
+        ("0x0 f32 a title=\"Thing\"", "title is for"),
+        ("0x0 f32 a title=other", "title is for"),
+        ("0x0 unknown 0x4 label=\"x\"", "takes no label"),
+        ("0x0 f32 a applies=soon", "unknown applies"),
+        (
+            "0x0 block a 0x4 align 4 title=nothing\n    0x0 f32 b",
+            "no such field",
+        ),
+        (
+            "0x0 block a 0x4 align 4 title=\"Words\"\n    0x0 f32 b",
+            "field name",
+        ),
+        (
+            "0x0 block a 0x4 align 4 title=pad_0\n    0x0 pad 0x4",
+            "needs a field with a value",
+        ),
+    ];
+    for (line, why) in cases {
+        let text = format!("group test 0x8\n  {line}\n  0x4 u32 tail");
+        let error = Defs::default()
+            .parse_into("invented", &text)
+            .expect_err(line);
+        assert!(error.why.contains(why), "{line}: {error}");
+        assert_eq!(error.line, 2, "{line}");
+    }
+    for header in [
+        "group test 0x4 title=Bare",
+        "group test 0x4 title=\"\"",
+        "group test 0x4 applies=soon",
+        "group test 0x4 colour=red",
+        "group test 0x4 title=\"A\" title=\"B\"",
+        "group test 0x4 label=\"A\"",
+    ] {
+        let text = format!("{header}\n  0x0 u32 a");
+        let error = Defs::default().parse_into("invented", &text).unwrap_err();
+        assert_eq!(error.line, 1, "{header}");
     }
 }
 

@@ -1148,6 +1148,7 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
                         Stage::Lightmap => Some(TextureDim::D2),
                         Stage::Empty => None,
                         Stage::Engine(id) => return Err(format!("unbound engine texture {id}")),
+                        Stage::Host(h) => return Err(format!("a host stage in a tag's pass ({h:?})")),
                     };
                 }
                 let mut p = program::compile_section(&pass, &code, dims)?;

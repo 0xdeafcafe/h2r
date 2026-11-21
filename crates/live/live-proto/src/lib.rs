@@ -12,6 +12,7 @@ pub mod bans;
 pub mod bots;
 pub mod chunk;
 pub mod film;
+pub mod firefight;
 pub mod game;
 pub mod hopper;
 pub mod host_pack;

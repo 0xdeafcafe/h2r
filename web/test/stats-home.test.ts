@@ -240,3 +240,31 @@ describe("the mock's summary", () => {
     expect(leaderboards(parseSummary(s).players).every((bd) => bd.id === "legendary" || bd.rows.length > 0)).toBe(true);
   });
 });
+
+describe("the Firefight summary", () => {
+  // The Rust projection's golden answer (live-server's tests/fixtures), the
+  // same file both Live homes' tests compare against.
+  const golden = JSON.parse(
+    readFileSync(`${import.meta.dir}/../../crates/live/live-server/tests/fixtures/firefight-summary.json`, "utf8")
+      .replace("$HOST", "0009000000000001"),
+  );
+
+  test("reads the server's golden summary as it is", () => {
+    expect(parseSummary({ firefight: golden }).firefight).toEqual(golden);
+  });
+
+  test("a server without Firefight stats reads as none", () => {
+    for (const raw of [{}, { firefight: null }, { firefight: "x" }, null]) {
+      expect(parseSummary(raw).firefight).toEqual({
+        games: 0, won: 0, rounds_cleared: 0, lives_used: 0, score: 0, sets: [], kills_by_class: [], players: [],
+      });
+    }
+  });
+
+  test("malformed rows and numbers are left out or zero", () => {
+    const f = parseSummary({ firefight: { games: -1, won: "x", sets: [{ games: 2 }, { set: "Holdout", games: 2 }], players: [{ name: "a" }] } }).firefight;
+    expect([f.games, f.won]).toEqual([0, 0]);
+    expect(f.sets).toEqual([{ set: "Holdout", games: 2, won: 0, rounds_cleared: 0 }]);
+    expect(f.players).toEqual([]);
+  });
+});

@@ -865,12 +865,13 @@ pub struct Interpolation {
 
 #[cfg(feature = "gpu")]
 /// In-between frames (`d3d::InterpBackend`, docs/game/high-framerate.md
-/// "Phase 2" and "E1"), when asked for in `H2_FEATURES` by exact switch
-/// (`impl.render=on` does not include them): `impl.render.interpolate`
-/// replays the frame with blended matrices (Design D);
+/// "Phase 2" and "E1"): `impl.render.interpolate`, on by default (exact
+/// switch; `-impl.render.interpolate` turns it off), replays the frame with
+/// blended matrices (Design D);
 /// `impl.render.reproject` warps frame N's world image by the camera's
 /// turn instead (E1, blended one frame behind), and
-/// `impl.render.reproject_ahead` the same with the turn carried on past N.
+/// `impl.render.reproject_ahead` the same with the turn carried on past N;
+/// either, when set, takes the place of the replay.
 /// They need the render thread and are off with `impl.render.pipelined_frame` (the
 /// lockstep harness cannot certify that combination). The rate follows the
 /// Frame Rate row (`graphics.fps`, `H2_FPS`, `--fps`): 30 makes nothing.
@@ -880,7 +881,7 @@ pub fn interpolation(
 ) -> Option<Interpolation> {
     let switches = hooks::Switches::from_env().ok()?;
     let mode = interp_mode(
-        switches.feature("impl.render.interpolate", false),
+        switches.feature("impl.render.interpolate", true),
         switches.feature("impl.render.reproject", false),
         switches.feature("impl.render.reproject_ahead", false),
     )?;
@@ -1837,9 +1838,12 @@ fn install_device<B: d3d::backend::Backend + Send + 'static>(
     let backend = backend.with_owner_probe(matches!(&worker, Some(SceneWorker::Display(_))));
     // The frame's carried part by slot (frame-scene.sink; docs/graphics/
     // framescene.md, slice 6): records only while the frame step declares
-    // a slot, and passes every call on.
+    // a slot, and passes every call on. Each object shadow's ops are
+    // marked with its scene index for E3's sun tiles; the marks draw
+    // nothing (docs/graphics/e3-lighting.md, L5).
     #[cfg(feature = "desktop-runtime")]
-    let backend = d3d::SceneSink::new(backend, render_bridge::carried_slots::slot);
+    let backend = d3d::SceneSink::new(backend, render_bridge::carried_slots::slot)
+        .with_object_shadows(render_bridge::scene_step::object_shadow_at);
     #[cfg(feature = "gpu")]
     let backend = {
         crate::scene_glue::set_present_window(window.as_ref());
@@ -2479,7 +2483,7 @@ mod tests {
     #[cfg(feature = "gpu")]
     #[test]
     fn interpolation_needs_its_switch_and_the_render_thread() {
-        assert!(!interpolation_from(false, true, false), "off by default");
+        assert!(!interpolation_from(false, true, false), "switched off");
         assert!(interpolation_from(true, true, false));
         assert!(!interpolation_from(true, false, false), "no render thread");
         assert!(!interpolation_from(true, true, true), "pipelined render");
@@ -2604,7 +2608,7 @@ mod tests {
     #[test]
     fn interpolation_modes_from_their_switches() {
         use d3d::interp::Mode;
-        assert_eq!(interp_mode(false, false, false), None, "off by default");
+        assert_eq!(interp_mode(false, false, false), None, "all three off");
         assert_eq!(interp_mode(true, false, false), Some(Mode::Replay));
         assert_eq!(
             interp_mode(false, true, false),

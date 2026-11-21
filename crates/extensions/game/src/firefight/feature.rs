@@ -90,14 +90,24 @@ static SHARED: OnceLock<Arc<Shared>> = OnceLock::new();
 /// The feature.
 pub struct Firefight(pub Arc<Shared>);
 
+fn manifest() -> hooks::Manifest {
+    hooks::Manifest::new(
+        FEATURE,
+        "Firefight: the director and its host log on a kit map",
+    )
+    .doc("docs/game/firefight.md")
+}
+
+/// Whether the `firefight` feature is on under `switches`, by its
+/// manifest's default: the main menu's FIREFIGHT row shows with it.
+pub fn enabled(switches: &hooks::Switches) -> bool {
+    let m = manifest();
+    switches.feature(m.id, m.default_on)
+}
+
 impl hooks::Feature for Firefight {
     fn manifest(&self) -> hooks::Manifest {
-        hooks::Manifest::new(
-            FEATURE,
-            "Firefight: the director and its host log on a kit map",
-        )
-        .off_by_default()
-        .doc("docs/game/firefight.md")
+        manifest()
     }
 
     fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
@@ -159,9 +169,28 @@ impl hooks::Feature for Firefight {
 }
 
 /// Adds the feature. Says why when it is left out. `film`: this run plays
-/// a film back.
+/// a film back. The match is the settings' defaults; [`install_with`] reads
+/// Game Setup's choices.
 pub fn install(registry: &mut hooks::Registry, film: bool) -> anyhow::Result<bool> {
+    install_with(registry, film, None, None)
+}
+
+/// [`install`] with the source of Game Setup's choices
+/// ([`super::options::source`]), read when each game starts, and where the
+/// host's scores and result go ([`runtime::Report`]).
+pub fn install_with(
+    registry: &mut hooks::Registry,
+    film: bool,
+    options: Option<Box<super::options::Source>>,
+    reports: Option<Box<runtime::ReportSink>>,
+) -> anyhow::Result<bool> {
     let shared = Arc::new(Shared::new(film, Box::new(write_skulls)));
+    if let Some(options) = options {
+        shared.lock().set_options(options);
+    }
+    if let Some(reports) = reports {
+        shared.lock().set_reports(reports);
+    }
     let added = registry
         .add(&Firefight(Arc::clone(&shared)))
         .map_err(|e| anyhow::anyhow!("{FEATURE}: {e}"))?;

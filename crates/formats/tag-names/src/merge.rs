@@ -324,6 +324,8 @@ impl Walk<'_> {
             size: layout.size,
             align: layout.align,
             fields: out,
+            title: layout.title.clone(),
+            section_titles: layout.section_titles.clone(),
         }
     }
 
@@ -435,6 +437,8 @@ impl Walk<'_> {
             size,
             align: 4,
             fields: out,
+            title: None,
+            section_titles: Default::default(),
         }
     }
 
@@ -561,6 +565,126 @@ impl Walk<'_> {
     }
 }
 
+/// A name another retail game's plugin suggests for one of our unnamed
+/// fields. It is shown as a hint with its game, never as our name or as
+/// the retail reference's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LayoutHint {
+    /// Enclosing block offsets followed by the field offset, as in
+    /// [`Merged::rows`].
+    pub path: Vec<u32>,
+    pub name: String,
+    pub game: String,
+    pub comment: String,
+}
+
+/// Hints from `plugin` for the unnamed fields of `ours`, usually the
+/// layout [`compare`] returns. A field takes a hint only where the
+/// structure around it matches:
+///
+/// - the plugin's field starts at our field's offset with our width: a
+///   scalar over an unknown word, or a compatible type over a typed field;
+/// - and either the element has the plugin element's size and every
+///   named field of ours lines up with a compatible plugin field, or the
+///   nearest named field on each side lines up.
+///
+/// A block is entered where the plugin has a block at the same offset and
+/// the block itself is named and lines up, or passes the rule above.
+pub fn hints(ours: &Layout, plugin: &Plugin) -> Vec<LayoutHint> {
+    let mut out = Vec::new();
+    hint_element(
+        ours,
+        &plugin.fields,
+        plugin.base_size,
+        &plugin.game,
+        &mut Vec::new(),
+        &mut out,
+    );
+    out
+}
+
+fn hint_element(
+    layout: &Layout,
+    fields: &[Field],
+    size: u32,
+    game: &str,
+    path: &mut Vec<u32>,
+    out: &mut Vec<LayoutHint>,
+) {
+    let spans = spans(fields, size);
+    let at = |offset: u32| field_at(&spans, offset);
+    let lines_up = |row: &Row| at(row.offset).is_some_and(|f| compatible(&row.kind, f));
+    let anchors: Vec<(u32, bool)> = layout
+        .fields
+        .iter()
+        .filter(|row| row.named)
+        .map(|row| (row.offset, lines_up(row)))
+        .collect();
+    let whole = size == layout.size && anchors.iter().all(|&(_, ok)| ok);
+    for row in &layout.fields {
+        let Some(f) = at(row.offset) else {
+            continue;
+        };
+        let placed = whole || between_anchors(&anchors, row.offset);
+        path.push(row.offset);
+        if let (Type::Block(child), Kind::Block, Some(stride)) = (&row.kind, &f.kind, f.element_size)
+            && (placed || (row.named && lines_up(row)))
+        {
+            hint_element(child, &f.children, stride, game, path, out);
+        }
+        if placed && !row.named && f.visible && !f.name.trim().is_empty() && fits(row, f) {
+            out.push(LayoutHint {
+                path: path.clone(),
+                name: f.name.clone(),
+                game: game.to_owned(),
+                comment: f.comment.clone(),
+            });
+        }
+        path.pop();
+    }
+}
+
+/// The plugin field starting at `offset`, unless it overlaps another or
+/// has no usable width.
+fn field_at<'a>(spans: &[Span<'a>], offset: u32) -> Option<&'a Field> {
+    let i = spans.partition_point(|s| s.field.offset < offset);
+    spans
+        .get(i)
+        .filter(|s| s.field.offset == offset && s.error.is_none())
+        .map(|s| s.field)
+}
+
+/// The nearest named field before and after `offset` both line up.
+fn between_anchors(anchors: &[(u32, bool)], offset: u32) -> bool {
+    let before = anchors.iter().rev().find(|&&(at, _)| at < offset);
+    let after = anchors.iter().find(|&&(at, _)| at > offset);
+    matches!((before, after), (Some((_, true)), Some((_, true))))
+}
+
+/// A plugin field occupies exactly our field: a scalar over an unknown
+/// span, or a compatible type over a typed field.
+fn fits(row: &Row, f: &Field) -> bool {
+    if f.size != Some(row.kind.width()) {
+        return false;
+    }
+    match row.kind {
+        Type::Unknown { .. } => matches!(
+            f.kind,
+            Kind::Int { .. }
+                | Kind::Int16Array
+                | Kind::Float
+                | Kind::Bounds
+                | Kind::Degree
+                | Kind::Vector
+                | Kind::Colour
+                | Kind::PackedColour
+                | Kind::Enum
+                | Kind::Bits
+        ),
+        _ => compatible(&row.kind, f),
+    }
+}
+
 fn compatible(ours: &Type, f: &Field) -> bool {
     if f.size != Some(ours.width()) {
         return false;
@@ -596,6 +720,9 @@ fn gap(start: u32, end: u32) -> Row {
         meaning: String::new(),
         applies: None,
         doc: None,
+        label: None,
+        unit: None,
+        axes: Vec::new(),
     }
 }
 

@@ -968,9 +968,15 @@ pub fn theater_ring_mib(data: Option<&Path>) -> usize {
     store.handle::<i64>(THEATER_RING_MIB.key).get() as usize
 }
 
+/// `H2_THEATER_RING`: the ring is on unless the variable is `0`, `off`,
+/// `false` or `no`.
+pub fn theater_ring_on(value: Option<&str>) -> bool {
+    !matches!(value, Some("0" | "off" | "false" | "no"))
+}
+
 /// The launcher passes the resolved MiB value in the child's environment.
 pub fn theater_ring_cap(data: Option<&Path>) -> Option<usize> {
-    (std::env::var("H2_THEATER_RING").as_deref() == Ok("1"))
+    theater_ring_on(std::env::var("H2_THEATER_RING").ok().as_deref())
         .then(|| theater_ring_mib(data) << 20)
         .filter(|bytes| *bytes != 0)
 }
@@ -1053,6 +1059,13 @@ pub static ALL: &[&Def] = &[
     &crate::clankers::AIM_STYLE,
     &crate::clankers::TAUNTS,
     &crate::clankers::GLITCHES,
+    // The Firefight page of a custom game's Game Setup
+    // (crate::firefight::options, docs/game/firefight.md).
+    &crate::firefight::options::ENABLED,
+    &crate::firefight::options::WAVE_SET,
+    &crate::firefight::options::DIFFICULTY,
+    &crate::firefight::options::LIVES,
+    &crate::firefight::options::SKULLS,
 ];
 
 /// Every setting of this run: [`ALL`], with the voice device settings
@@ -1092,6 +1105,14 @@ pub fn load(data: &Path, flags: &[Flag]) -> (Store, Vec<Problem>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_theater_ring_is_on_unless_the_variable_says_off() {
+        assert!(super::theater_ring_on(None));
+        assert!(super::theater_ring_on(Some("1")));
+        assert!(!super::theater_ring_on(Some("0")));
+        assert!(!super::theater_ring_on(Some("off")));
+    }
+
     use super::*;
 
     fn tmp(name: &str) -> std::path::PathBuf {

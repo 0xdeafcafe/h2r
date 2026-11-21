@@ -210,7 +210,7 @@ the host's authoritative damage, position and death state.
 
 ### Creature entity
 
-The opt-in [creature probe](#creature-slot-probe) registers slot 17
+The [creature probe](#creature-slot-probe), on by default, registers slot 17
 at simulation initialisation and sets the entity count to 18. Both peers
 use the existing five-bit type field. The host enrolls eligible
 creatures, including those created by `sim.spawn`. Creation and update
@@ -456,7 +456,7 @@ a score of 1.0 and movement a score of 0.5, with a 200 ms minimum period
 per peer for movement.
 
 Use two fresh pairs of h2recomp processes. Run both control peers with
-the probe disabled and both candidate peers with it enabled
+the probe disabled (`-creature-probe`) and both candidate peers with the default
 ([switches](../runtime/switches.md)).
 Start the same two-player System Link Slayer game for each pair, with a
 local player on the host. Use the

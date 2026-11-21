@@ -1042,7 +1042,11 @@ to the guest's draws (**Code**):
   block. The additional casters' layers 10 and 11 are groups of their
   own site (`GroupSite::AdditionalCasters`), and each object shadow's
   layers 10 and 11 groups of its `ObjectShadow` in the view
-  (`GroupSite::ObjectShadow`). The summary hash
+  (`GroupSite::ObjectShadow`). An `ObjectShadow` also marks a creature
+  caster, which takes the ground-shadow branch `0x00032ce0`, and keeps
+  the light weight read at its layer 11, for E3's sun tiles
+  ([e3-lighting.md](e3-lighting.md), "Sun shadows from objects"). The
+  summary hash
   (`frame_scene::summary_hash`) covers the groups, their entries and the
   object shadows. What the handler does
   beyond binding and drawing (the auxiliary state toggle, state around

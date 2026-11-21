@@ -164,7 +164,7 @@ pub enum ResourceKind {
 }
 
 /// One 16-byte block resource entry (E `0x00223c70`, see structure-bsp.md).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockResource {
     /// Byte 0 (E `0x00223cc4`..`0x00223ccd`: only 0, 1 and 2 are handled).
     pub kind: ResourceKind,
@@ -205,8 +205,24 @@ impl BlockResource {
             offset: (offset != u32::MAX).then_some(offset),
         })
     }
+    /// The 16-byte record (the inverse of decoding it).
+    pub fn encode(&self) -> [u8; Self::SIZE] {
+        let mut b = [0u8; Self::SIZE];
+        b[0] = match self.kind {
+            ResourceKind::Block => 0,
+            ResourceKind::Data => 1,
+            ResourceKind::VertexBuffer => 2,
+        };
+        b[1] = self.unknown_1;
+        b[2..4].copy_from_slice(&self.unknown_2.to_le_bytes());
+        b[4..6].copy_from_slice(&self.field_offset.to_le_bytes());
+        b[6..8].copy_from_slice(&self.secondary.to_le_bytes());
+        b[8..12].copy_from_slice(&self.size.to_le_bytes());
+        b[12..16].copy_from_slice(&self.offset.unwrap_or(u32::MAX).to_le_bytes());
+        b
+    }
     /// Lookup key: blocks and data by field, vertex data by (field, index).
-    fn key(&self) -> (ResourceKind, u16, u16) {
+    pub(crate) fn key(&self) -> (ResourceKind, u16, u16) {
         let index = match self.kind {
             ResourceKind::VertexBuffer => self.secondary,
             _ => 0,
@@ -307,9 +323,9 @@ pub trait RawSource {
 /// Largest raw block accepted, checked before reading.
 pub const MAX_BLOCK_SIZE: u32 = 16 << 20;
 
-const BLKH: FourCC = FourCC(*b"blkh");
-const RSRC: FourCC = FourCC(*b"rsrc");
-const BLKF: FourCC = FourCC(*b"blkf");
+pub(crate) const BLKH: FourCC = FourCC(*b"blkh");
+pub(crate) const RSRC: FourCC = FourCC(*b"rsrc");
+pub(crate) const BLKF: FourCC = FourCC(*b"blkf");
 
 /// A loaded raw block with its validated resource table. Built only from the
 /// block info it was read for, so the pair cannot be mismatched later.
@@ -401,6 +417,22 @@ impl LoadedBlock {
             resources: info.resources.clone(),
             ranges,
         })
+    }
+    /// The whole block as read: `blkh` header, section struct, resource
+    /// area and `blkf` footer.
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+    /// The bytes of the present resource with this key (blocks and data
+    /// by field, vertex data by field and descriptor index), as the
+    /// section encoder reads them back ([`crate::geometry_write`]).
+    pub fn resource_by_key(&self, kind: ResourceKind, field: u16, index: u16) -> Option<&[u8]> {
+        let index = if kind == ResourceKind::VertexBuffer {
+            index
+        } else {
+            0
+        };
+        self.range(kind, field, index).map(|r| &self.bytes[r])
     }
     /// The section struct (counts filled, pointers zero on disc).
     pub fn section(&self) -> &[u8] {
@@ -921,6 +953,10 @@ impl Section {
     /// The section struct of the loaded block.
     pub fn section_struct(&self) -> &[u8] {
         self.block.section()
+    }
+    /// The loaded raw block this section was decoded from.
+    pub fn block(&self) -> &LoadedBlock {
+        &self.block
     }
     /// Elements of a block field the layout does not interpret (for example
     /// a model's node map), checked like the interpreted ones: the resource's

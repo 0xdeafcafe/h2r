@@ -26,6 +26,8 @@ native-render = { path = "../../rewrites/native-render" }
 gfx = { path = "../../platform/gfx", default-features = false, features = ["gpu"] }
 # The Halo 2 `sky ` reader: the sky's lights and fog for the viewport.
 h1-assets = { path = "../h1-assets" }
+# The layered test map's invented pixel and vertex shaders (fixture.rs).
+shaders = { path = "../../formats/shaders" }
 
 [dev-dependencies]
 pollster = "1"

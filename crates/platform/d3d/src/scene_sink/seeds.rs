@@ -70,7 +70,7 @@ pub(super) fn final_contents(frame: &ReplayFrame) -> Vec<Option<TargetSeed>> {
                     if let Some(i) = index(target) { seeds[i] = None; }
                 }
             }
-            ReplayOp::Sample { .. } | ReplayOp::BeginFlareQuery | ReplayOp::EndFlareQuery(_) => {}
+            ReplayOp::Sample { .. } | ReplayOp::BeginFlareQuery | ReplayOp::EndFlareQuery(_) | ReplayOp::ObjectShadow(_) => {}
         }
     }
     seeds

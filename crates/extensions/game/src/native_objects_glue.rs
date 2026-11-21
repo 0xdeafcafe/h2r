@@ -619,6 +619,7 @@ fn load_objects(
     let mut coverage = HashMap::<TagId, Result<ModelCoverage, String>>::new();
     let mut lit = None;
     let mut refused = 0;
+    let mut casters = CasterSet::default();
     for definition in definitions {
         if !state.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(owns) {
             return;
@@ -632,8 +633,11 @@ fn load_objects(
                 return Ok(None);
             }
             let mode = model.render_model.as_ref().ok_or("the model has no valid render model")?.id;
+            // The geometry read for the first definition of a render model.
+            let mut fresh = None;
             let cover = coverage.entry(mode).or_insert_with(|| {
-                let (cpu, cover) = load_model(&mut opened, mode).map_err(|e| e.to_string())?;
+                let (cpu, cover, geo) = load_model(&mut opened, mode).map_err(|e| e.to_string())?;
+                fresh = Some(geo);
                 let lit = lit.get_or_insert_with(|| LitObjects::new(&device));
                 if let Some(texture) = &cpu.normalization {
                     lit.set_normalization(&device, &queue, texture);
@@ -648,6 +652,7 @@ fn load_objects(
             if model.node_count as usize != cover.nodes {
                 return Err("model and render model disagree on the node count".into());
             }
+            casters.add(definition, mode, &model, fresh.take(), &mut opened);
             Ok(Some((mode, Arc::clone(&cover.assets), cover.all_parts)))
         })();
         match result {
@@ -684,12 +689,68 @@ fn load_objects(
         let Some(s) = state.as_mut().filter(|s| owns(s)) else { return };
         s.published = Some((timeline::frames(), Arc::clone(&models)));
     }
+    // E3's sun tiles read these on the render thread; retail never does.
+    native_render::sun_casters::set_models(generation, Some(Arc::new(casters.finish())));
     // The palette counts a model resident once the walk can draw it.
     for cover in models.coverage.values() {
         cover.assets.finish(true);
     }
     palette.refresh();
     eprintln!("native-objects: {name}: {loaded} definitions ready, {refused} left to D3D");
+}
+
+/// Each definition's model for E3's sun tiles
+/// (docs/graphics/e3-lighting.md, "Sun shadows from objects"): its render
+/// model with its default variant (`model_load::default_model`), the CPU
+/// mesh the sun's casters are skinned from. Definitions of one render
+/// model that choose the same regions share one model. A definition whose
+/// model is refused has none, and its shadow keeps retail's mask
+/// (`CasterRefusal::NoModel`).
+#[derive(Default)]
+struct CasterSet {
+    by_definition: HashMap<u32, Arc<native_render::model::Model>>,
+    /// Per render model, each variant's regions seen and its model.
+    built: HashMap<TagId, Vec<(Vec<tags::object::RegionChoice>, Option<Arc<native_render::model::Model>>)>>,
+}
+
+impl CasterSet {
+    /// `definition`'s model, from `geo` when the caller has just read
+    /// `mode`'s geometry, else read again for a variant not seen yet.
+    fn add(
+        &mut self, definition: TagId, mode: TagId, resolved: &tags::object::ResolvedModel,
+        geo: Option<RenderModelGeometry>, o: &mut Opened,
+    ) {
+        let seen = self.built.entry(mode).or_default();
+        let shared = match seen.iter().find(|(regions, _)| *regions == resolved.regions) {
+            Some((_, shared)) => shared.clone(),
+            None => {
+                let geo = match geo {
+                    Some(g) => Ok(g),
+                    None => RenderModelGeometry::read_in(&mut o.map, mode, &mut o.raw, Some(&o.ctx.meta)),
+                };
+                let built = geo.ok().and_then(|g| native_render::model_load::default_model(&g, resolved).ok());
+                let shared = built.map(|d| Arc::new(d.model));
+                seen.push((resolved.regions.clone(), shared.clone()));
+                shared
+            }
+        };
+        if let Some(m) = shared {
+            self.by_definition.insert(definition.0, m);
+        }
+    }
+
+    fn finish(self) -> SunModels {
+        SunModels(self.by_definition)
+    }
+}
+
+/// The models [`CasterSet`] built, by object definition datum.
+struct SunModels(HashMap<u32, Arc<native_render::model::Model>>);
+
+impl native_render::sun_casters::CasterModels for SunModels {
+    fn model(&self, definition: u32) -> Option<&native_render::model::Model> {
+        self.0.get(&definition).map(|m| &**m)
+    }
 }
 
 /// The map open for model loads.
@@ -754,7 +815,7 @@ fn program_refusal(o: &mut Opened, shader: TagId) -> Option<String> {
 
 /// Compile all sections, including runtime-selected damage variants,
 /// permutations and LODs. The live render record selects the section.
-fn load_model(o: &mut Opened, mode: TagId) -> Result<(CpuModel, ModelCoverage), load::Error> {
+fn load_model(o: &mut Opened, mode: TagId) -> Result<(CpuModel, ModelCoverage, RenderModelGeometry), load::Error> {
     let geo = RenderModelGeometry::read_in(&mut o.map, mode, &mut o.raw, Some(&o.ctx.meta))?;
     let mut materials = HashMap::new();
     for (index, m) in geo.materials.iter().enumerate() {
@@ -807,7 +868,7 @@ fn load_model(o: &mut Opened, mode: TagId) -> Result<(CpuModel, ModelCoverage), 
     let assets = Arc::new(palette::GpuAssets::default());
     let cover = ModelCoverage { nodes: geo.nodes.len(), assets, all_parts, ranges };
     let cpu = CpuModel { lit, normalization: o.normalization.clone().flatten() };
-    Ok((cpu, cover))
+    Ok((cpu, cover, geo))
 }
 
 /// Each part with index data and the native implementations it carries.

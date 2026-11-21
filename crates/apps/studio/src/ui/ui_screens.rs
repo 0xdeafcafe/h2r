@@ -14,7 +14,6 @@ use crate::app::{Action, App, Pick, UiScreens};
 use crate::theme::{self, Fonts, icon};
 use crate::viewport::Gpu;
 
-
 /// The pad as the inspector lays it out: rows of (input, label).
 const PAD: [&[(Input, &str)]; 3] = [
     &[(Input::Up, "Up"), (Input::Y, "Y"), (Input::Back, "Back")],
@@ -52,7 +51,10 @@ pub struct UiScreensUi {
     filter: String,
 }
 
-/// The outliner: our screens and their states, then the retail screens.
+/// The outliner: one filter over both lists, then our screens and their
+/// states and the retail screens, each under a header that folds. The lists
+/// sit in the outliner itself, so a short window scrolls the outliner
+/// rather than squeezing the retail list into what is left below ours.
 pub fn tree(
     ui: &Ui,
     app: &mut App,
@@ -60,38 +62,66 @@ pub fn tree(
     fonts: &Fonts,
     actions: &mut Vec<Action>,
 ) {
-    let f = ui.push_font(fonts.bold);
-    ui.text("Our screens");
-    f.pop();
+    ui.set_next_item_width(-1.0);
+    ui.input_text("##ui-filter", &mut st.filter)
+        .hint(format!("{} Filter screens", icon::SEARCH))
+        .build();
+    let filter = st.filter.to_ascii_lowercase();
+    let shown = |name: &str| filter.is_empty() || name.to_ascii_lowercase().contains(&filter);
     let pick = app.ui_screens.pick.clone();
-    for (screen, states) in UiScreens::tree() {
-        let node = ui
-            .tree_node_config(format!("ui-{screen}"))
-            .label(format!("{}  {screen}", icon::LAYERS))
-            .default_open(matches!(&pick, Some(Pick::Native { screen: s, .. }) if s == screen))
-            .span_avail_width(true)
-            .push();
-        let Some(_node) = node else { continue };
-        for state in states {
-            let this = Pick::Native {
-                screen: screen.to_string(),
-                state: state.clone(),
-            };
-            let on = pick.as_ref() == Some(&this);
-            if ui
-                .selectable_config(format!("{state}##ui-{screen}-{state}"))
-                .selected(on)
-                .build()
-            {
-                actions.push(Action::UiPick(this));
+
+    let f = ui.push_font(fonts.bold);
+    let ours_open = ui.collapsing_header(
+        "Our screens##ui-ours",
+        dear_imgui_rs::TreeNodeFlags::DEFAULT_OPEN,
+    );
+    f.pop();
+    if ours_open {
+        let mut any = false;
+        for (screen, states) in UiScreens::tree() {
+            if !shown(screen) && !states.iter().any(|s| shown(s)) {
+                continue;
+            }
+            any = true;
+            let node = ui
+                .tree_node_config(format!("ui-{screen}"))
+                .label(format!("{}  {screen}", icon::LAYERS))
+                .default_open(
+                    !filter.is_empty()
+                        || matches!(&pick, Some(Pick::Native { screen: s, .. }) if s == screen),
+                )
+                .span_avail_width(true)
+                .push();
+            let Some(_node) = node else { continue };
+            for state in states {
+                let this = Pick::Native {
+                    screen: screen.to_string(),
+                    state: state.clone(),
+                };
+                let on = pick.as_ref() == Some(&this);
+                if ui
+                    .selectable_config(format!("{state}##ui-{screen}-{state}"))
+                    .selected(on)
+                    .build()
+                {
+                    actions.push(Action::UiPick(this));
+                }
             }
         }
+        if !any {
+            ui.text_disabled("No screen of ours matches the filter.");
+        }
     }
-    ui.spacing();
-    ui.separator();
+
     let f = ui.push_font(fonts.bold);
-    ui.text("Retail screens");
+    let retail_open = ui.collapsing_header(
+        "Retail screens##ui-retail-header",
+        dear_imgui_rs::TreeNodeFlags::DEFAULT_OPEN,
+    );
     f.pop();
+    if !retail_open {
+        return;
+    }
     let retail = app.ui_screens.retail();
     if retail.is_empty() {
         ui.text_wrapped(match app.ui_screens.disc_error() {
@@ -100,28 +130,27 @@ pub fn tree(
         });
         return;
     }
-    ui.input_text("##ui-filter", &mut st.filter)
-        .hint(format!("{} filter", icon::SEARCH))
-        .build();
-    let filter = st.filter.to_ascii_lowercase();
-    ui.child_window("##ui-retail").build(ui, || {
-        for tag in retail {
-            if !filter.is_empty() && !tag.to_ascii_lowercase().contains(&filter) {
-                continue;
-            }
-            let short = tag.rsplit('\\').next().unwrap_or(&tag).to_owned();
-            let this = Pick::Retail(tag.clone());
-            let on = pick.as_ref() == Some(&this);
-            if ui
-                .selectable_config(format!("{short}##ui-retail-{tag}"))
-                .selected(on)
-                .build()
-            {
-                actions.push(Action::UiPick(this));
-            }
-            ui.set_item_tooltip(&tag);
+    let mut any = false;
+    for tag in retail {
+        if !shown(&tag) {
+            continue;
         }
-    });
+        any = true;
+        let short = tag.rsplit('\\').next().unwrap_or(&tag).to_owned();
+        let this = Pick::Retail(tag.clone());
+        let on = pick.as_ref() == Some(&this);
+        if ui
+            .selectable_config(format!("{short}##ui-retail-{tag}"))
+            .selected(on)
+            .build()
+        {
+            actions.push(Action::UiPick(this));
+        }
+        ui.set_item_tooltip(&tag);
+    }
+    if !any {
+        ui.text_disabled("No retail screen matches the filter.");
+    }
 }
 
 /// The picture: zoom, the overlays' switches, then the screen at 640 by
@@ -185,11 +214,19 @@ pub fn preview(ui: &Ui, app: &mut App, st: &mut UiScreensUi, gpu: &mut Gpu<'_>) 
     };
     if safe {
         let r = shot.rules.safe;
-        boxed(ui_rect(r.top, r.left, r.bottom, r.right), theme::SAFE_FRAME, 1.0);
+        boxed(
+            ui_rect(r.top, r.left, r.bottom, r.right),
+            theme::SAFE_FRAME,
+            1.0,
+        );
     }
     if reserved {
         for (_, r) in &shot.rules.reserved {
-            boxed(ui_rect(r.top, r.left, r.bottom, r.right), theme::RESERVED_AREA, 1.5);
+            boxed(
+                ui_rect(r.top, r.left, r.bottom, r.right),
+                theme::RESERVED_AREA,
+                1.5,
+            );
         }
     }
     let bad: Vec<&str> = shot

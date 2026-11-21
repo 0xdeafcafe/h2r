@@ -2420,6 +2420,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "geometry-edit"
+version = "0.1.0"
+dependencies = [
+ "editor-core",
+ "map",
+ "mesh-edit",
+ "scenario-edit",
+ "tags",
+]
+
+[[package]]
 name = "gethostname"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5968,6 +5979,7 @@ dependencies = [
  "pollster",
  "serde",
  "serde_json",
+ "shaders",
  "tags",
  "thiserror 2.0.21",
  "toml",
@@ -6750,6 +6762,7 @@ dependencies = [
  "dear-imgui-winit",
  "dear-imguizmo",
  "editor-core",
+ "geometry-edit",
  "gfx",
  "guest-layout",
  "h1convert",

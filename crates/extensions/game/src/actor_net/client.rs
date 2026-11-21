@@ -114,6 +114,12 @@ impl Client {
         Ok(true)
     }
 
+    /// The host's mode state as last received: the Firefight HUD's blob
+    /// (`crate::firefight::hud`), empty when none was sent.
+    pub fn mode_state(&self) -> &[u8] {
+        self.replica.set().state()
+    }
+
     /// Live local bodies and the host metadata used to label them.
     pub fn puppets(&self) -> impl Iterator<Item = Puppet> + '_ {
         self.replica.set().actors().iter().filter_map(|actor| {
@@ -183,6 +189,7 @@ pub fn install(
     b.game()
         .on_start("clear actor puppets for the new match", move |_| {
             *new_match.lock().unwrap() = Client::default();
+            crate::firefight::hud::received().set(None);
         });
 
     let client = Arc::clone(&state);
@@ -207,9 +214,16 @@ pub fn install(
                     let mut current = client.lock().unwrap();
                     let Some(tick) = tick else {
                         *current = Client::default();
+                        crate::firefight::hud::received().set(None);
                         return Ok(Flow::Continue);
                     };
                     receive(&mut current, tick);
+                    // The HUD reads the mode state from here, not from the
+                    // client, which is taken out of its lock while its
+                    // presentation runs.
+                    let mode = current.mode_state();
+                    crate::firefight::hud::received()
+                        .set((!mode.is_empty()).then(|| mode.to_vec()));
                     if current.presentation.is_empty() {
                         return Ok(Flow::Continue);
                     }

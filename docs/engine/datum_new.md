@@ -4,7 +4,7 @@ Status: Built. Every leaf of the family has a Rust port with an adapter; `data_n
 `data_dispose` stay generated because they call guest allocators.
 Code: `crates/hooking/guest-layout/src/datum.rs`, adapters in `crates/rewrites/engine/src/abi.rs`.
 Tests: `crates/rewrites/engine/tests/differential.rs`. Switch: `impl.engine.datums`
-(off by default; [switches.md](../runtime/switches.md)).
+(on by default; [switches.md](../runtime/switches.md)).
 
 Recovered from `h2 disasm` of the retail XBE (`03215919…935d`),
 window `0x16b570–0x16bd10`. Names are assigned (engine-map names where it

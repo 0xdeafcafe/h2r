@@ -1076,7 +1076,7 @@ summary hash.
 A completed native E3 draw includes an `e3` object in its
 `display_frame` or `private_frame`. The armed `render.frame` record
 includes it for the corresponding draw. Its `passes` array contains
-`e3.tiles`, `e3.sun`, `e3.marks` and `e3.lights`. Each row has
+`e3.tiles`, `e3.sun_tiles`, `e3.sun`, `e3.marks` and `e3.lights`. Each row has
 `name`, submitted `draws` and `gpu_ns` (null for an empty or unmeasured
 stage). Snapshot indices refer to the attachment runs in the frame
 record. The seven per-frame counters are `lights_lit`, `lights_shadowed`,
@@ -1089,7 +1089,8 @@ receivers compared with the Sharp edge, `lights_shadowed` the tiles (one
 per shadowed light of the guest's) and `tiles_refused` the shadow maps
 left at the guest's size. The display on the guest's live attachments
 draws no tiles. The other stages and counters are zero: the lights lit
-are still the guest's. The guest's light selections are in
+are still the guest's, and no game frame hands the renderer sun casters
+yet (`e3.sun_tiles`, `e3.sun`, `sun_tiles`, `sun_tiles_redrawn`, `atlas_halved`). The guest's light selections are in
 `render.scene.views`.
 Retail graph draws omit `e3`.
 
@@ -1860,8 +1861,10 @@ or the game's UI state without UI watch. All are read-only except
   check that the previous screen returns on the same window and slot. See the
   [pause Settings walkthrough](../game/settings-menu.md#to-check-in-game).
   `main_menu_theater` is present and true when Theater occupies the
-  row after Xbox Live. Lobby scripts use it to locate Split Screen and
-  System Link. `dialog` is the dialog up (the first screen on windows 0 to
+  row after Xbox Live, and `main_menu_rows` is the number of rows of ours
+  after it (Theater, Forge and Firefight, as their features are on). Lobby
+  scripts use them to locate Split Screen and System Link; the UI watch
+  line says the same with `, main menu rows N`. `dialog` is the dialog up (the first screen on windows 0 to
   4, any slot), or `null`: `{id, name, window, slot}`, with `name` the dialog's
   recognized name (`dialog_live_signin` for the account picker,
   `confirmation_dialog`, `error_dialog_ok`, ...; `boot::ui_watch::dialog_name`)
@@ -2088,8 +2091,24 @@ DirectSound (`crates/extensions/game/src/dsound_glue.rs`). The result has
 environment configured), and `voices`. Each playing buffer, queued
 unpaused stream and playing mix-in has a mixer `id`, `kind`, `volume_mb`
 and `distance_units` (listener-relative world units, null for an
-unpositioned voice). Match a stream's output `bin` to a mix-in's
-`input_bin` to find the positioned emitter.
+unpositioned voice). `sends_to` lists the ids of the playing mix-ins the
+voice's bins reach: a Halo stream in a submix names its emitter there. A
+submix's `input_bin` is a host bin (`0x100` and up), which only its own
+streams carry. The guest sees bin `0x1f` in their place
+([dsound.md](../audio/dsound.md#positioned-sound)).
+
+`spatial` is null for a 2D voice. For a positioned one it gives the
+DirectSound 3D terms the mixer applies against the listener:
+`position` as the game set it, `relative` to the listener, `min_distance`
+and `max_distance` (null when not finite), `rolloff` (listener times
+source), `distance_gain` and `cone_gain` (linear), their product `gain`,
+`pan` (left and right gains), `front` (the front crosstalk share) and
+`pitch` (the Doppler ratio). `applied_gain` is `direct_gain` times that
+`gain`: the level the voice's direct path leaves with, before bin volumes
+and pan. Halo's submixes have `FLT_MAX` distances and rolloff 0, so their
+`distance_gain` is 1. The game's distance attenuation is the gain on the
+stream's bin into the submix, so one emitter's level at a distance is that
+bin `gain` times the submix's `applied_gain`.
 
 `direct_gain` and `room_gain` are linear low-frequency gains including
 voice volume and headroom. `direct_hf_db` and `room_hf_db` give the

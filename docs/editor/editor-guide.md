@@ -135,9 +135,19 @@ The window is made of panels that dock together:
 
 The **File** menu holds **Save**, **Save as...**, open, packages and quit.
 **Edit** holds **Go to anything...**, **Undo**, **Redo**, **Duplicate**,
-**Delete** and **Allow growing full blocks**. **View** holds **Frame map**,
-**Focus selection**, the gizmo mode and **Reset layout**. **Game** holds
-play, pair and game controls.
+**Delete**, **Allow growing full blocks** and **Allow unverified geometry
+writes**. **View** holds **Frame map**, **Focus selection**, the gizmo mode
+and **Reset layout**. **Game** holds play, pair and game controls.
+
+The map inspector's **Modeling** section edits level geometry: pick a
+cluster or instanced definition under **Target**, press **Edit mode**,
+**Select all** (or select through the agent API), type a **Move x**,
+**Move y** and **Move z** and press **Move selection**. The viewport
+redraws the moved vertices; **Undo** and **Cmd+Z** step back while the
+target is in edit mode. The edits save with the map, but only with
+**Edit > Allow unverified geometry writes** on: until a game run has
+loaded a written section, the save is refused and says why
+([modeling.md](modeling.md)).
 
 ![The File menu open: Open disc or map..., Open maps folder..., Save map as..., Save as package... (highlighted), Open package... and Quit, with their shortcuts](../images/editor/menu-file.png)
 
@@ -541,7 +551,8 @@ an agent socket of its own (in the `agents` folder of the h2recomp cache;
 Pairing with an already-running game starts in View. Turn **Edit** on
 when you're ready to send tag and placement edits. Open **Pending** to see
 when each edit takes effect, resolve a conflict, or reload the play copy
-for structural edits. A red mark on a field or tree row shows why a write
+for structural edits. **Send**, **Reload map** and **Respawn now** are at
+the top of Pending, above the rows they act on. A red mark on a field or tree row shows why a write
 was refused. An amber conflict offers **Take the game's value** and
 **Overwrite**. Click the count on the game link to open Pending. Failed
 game actions also appear in the viewport for four seconds. If a co-op session or
@@ -985,11 +996,13 @@ skulls, the co-op screens, the Xbox Live sign-in and account screens)
 the way the game draws them, without starting the game. Use it to see a
 screen in each of its states, try its buttons, and check its layout.
 
-- **Screens** (left): **Our screens**, each with its named states (a
-  list's first, middle and last row focused; the sign-in prompt's pages,
-  such as `code-wrong` or `checking`). Click a state to show it. Under
-  them, **Retail screens** lists the game's own screens from your disc
-  (type in the filter to find one). Those are drawn for comparison only.
+- **Screens** (left): one filter at the top narrows both lists. **Our
+  screens** lists each of our screens with its named states (a list's
+  first, middle and last row focused; the sign-in prompt's pages, such
+  as `code-wrong` or `checking`). Click a state to show it. **Retail
+  screens** lists the game's own screens from your disc. Those are drawn
+  for comparison only. Both lists fold, and the panel scrolls as a whole,
+  so neither list is squeezed on a short window.
 - **Preview** (centre): the screen at the game's 640 by 480. **Zoom**
   makes it bigger. **Rects** outlines every widget, **Title safe** the
   area a TV always shows (green), and **Reserved** the areas a screen
@@ -1034,12 +1047,15 @@ count spilling out of its box.
     campaign levels, your packages and **Halo 1 sandbox variants**,
     then **Shared and menu**. Pick a map to open it in the HUD tool.
     The filter matches source maps by display name and file name.
-  - **HUDs**: every HUD of that map, grouped by who uses it: players and
+  - **Filter**: one filter under the menu narrows the HUDs and the widgets.
+  - **HUDs** (a folding header): every HUD of that map, grouped by who uses it: players and
     bipeds, weapons, vehicles, the globals, and the converted Halo 1
     HUDs. Hover one to see who names it. Click one to show it. A `*`
     marks a HUD with unsaved edits.
-  - **Widgets**: the HUD's pieces in the order the game draws them, art
-    (a box) then text (a page). Click one to select it.
+  - **Widgets** (a folding header): the HUD's pieces in the order the game
+    draws them, art (a box) then text (a page). Click one to select it.
+    The two lists share the panel's one scroll, so a short window scrolls
+    the panel instead of squeezing a list.
 - **HUD** (centre): the HUD on a 640 by 480 screen.
   - The menu at the top picks **fullscreen**, **half screen** or
     **quarter screen** (split screen; each widget has its own placement

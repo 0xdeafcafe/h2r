@@ -313,6 +313,10 @@ pub struct StaticLayer {
     /// as `program`, the plan's by [`refusal_name`], `animated` and
     /// `fog`.
     pub refused: BTreeMap<String, usize>,
+    /// Layer 3's parts of a drawn material that do not take its pass
+    /// ([`plan_layer3`]), by cause, with how many parts: the host draws
+    /// them with its base look.
+    pub parts_refused: BTreeMap<String, usize>,
 }
 
 /// Plans `layer` of `view` with no game: each material whose passes
@@ -399,6 +403,250 @@ pub fn plan_without_game(
         .copied()
         .collect();
     out
+}
+
+/// The world layer a host's base look stands for: the game's layer 3
+/// (base map, detail and lightmap).
+pub const LAYER_3: u8 = 3;
+
+/// One world's layer 3 for a host with no game ([`load_layer3`]).
+#[derive(Default)]
+pub struct Layer3 {
+    /// What compiled, the parts that take it and why the rest do not.
+    pub data: LayerData,
+    /// The parts of compiled materials that do not take the pass, by
+    /// cause (`program::part_fit`), with how many.
+    pub parts_refused: BTreeMap<String, usize>,
+}
+
+/// Every world material's layer-3 pass, compiled for a host with no game
+/// as the game's world glue compiles it: `look::layer3_pass`, or
+/// `look::unlit_bsp_pass` for a BSP with no lightmap group (`unlit_bsp`;
+/// no normalization map is given), the world's pixel parity
+/// (`program::world_parity`) and constants, and the rigid classification
+/// for its placements. It draws through a `fog_gpu::FogSet` with fog off
+/// (`FogProgram`, fog words unset: layer 3 has none). With `given`, a
+/// pass reading a view constant outside it is refused, named with the
+/// register; a stage bitmap that is not 2D (the set binds 2D images
+/// only), is linear (addressed in texels on the D3D path) or palettized
+/// (no stage palettes) is refused, named. A part draws when it supplies
+/// what the pass reads (`program::part_fit`) and its page decoded.
+#[allow(clippy::too_many_arguments)]
+pub fn load_layer3<R: std::io::Read + std::io::Seek>(
+    map: &mut Map<R>,
+    files: &mut assets::ResourceFiles,
+    shaders: &[TagId],
+    world: &World,
+    lightmaps: &HashMap<LightmapKey, Image>,
+    images: &mut StageImages,
+    decoder: &mut StageDecoder,
+    unlit_bsp: bool,
+    given: Option<&[u8; program::VIEW_CONSTANTS]>,
+) -> Layer3 {
+    let mut out = Layer3::default();
+    let materials: BTreeSet<u16> = world.draws.iter().map(|d| d.material).collect();
+    if materials.is_empty() {
+        return out;
+    }
+    let mut lib = match tags::material::ShaderLibrary::read(map) {
+        Ok(lib) => lib,
+        Err(e) => {
+            out.data.refused.insert(
+                format!("the shader tags do not read ({e})"),
+                materials.len(),
+            );
+            return out;
+        }
+    };
+    for &m in &materials {
+        let compiled = match shaders.get(usize::from(m)) {
+            None => Err("no shader".to_owned()),
+            Some(&shader) => compile_layer3(
+                map, files, &mut lib, images, decoder, shader, unlit_bsp, given,
+            ),
+        };
+        match compiled {
+            Ok(p) => {
+                out.data.writes_depth |= p.state.depth_write;
+                out.data.words.insert(m, p.words);
+                out.data.programs.insert(m, vec![p]);
+            }
+            Err(why) => *out.data.refused.entry(why).or_default() += 1,
+        }
+    }
+    let page = |k: LightmapKey| {
+        if lightmaps.contains_key(&k) {
+            Ok(())
+        } else {
+            Err("a part's lightmap page does not decode".to_owned())
+        }
+    };
+    for d in &world.draws {
+        let Some([p]) = out.data.programs.get(&d.material).map(Vec::as_slice) else {
+            continue;
+        };
+        let inputs = match d.owner {
+            Owner::Cluster(_) => Ok(p.program.inputs),
+            Owner::Instance(i) if world.rows(i).is_none() => {
+                Err("placement rows unavailable".to_owned())
+            }
+            Owner::Instance(_) => p
+                .rigid
+                .as_ref()
+                .map(|r| r.inputs)
+                .ok_or_else(|| "rigid vertex program unavailable".to_owned()),
+        };
+        match inputs.and_then(|inputs| program::part_fit(d, inputs, &p.program, &page)) {
+            Ok(()) => out.data.parts.push((
+                (d.owner, d.part),
+                (d.first_index, d.index_count, d.lightmap, d.material),
+            )),
+            Err(why) => *out.parts_refused.entry(why).or_default() += 1,
+        }
+    }
+    out.data.part_set = out
+        .data
+        .parts
+        .iter()
+        .filter_map(|&(k, (_, _, _, m))| Some((k, shaders.get(usize::from(m))?.0)))
+        .collect();
+    out
+}
+
+/// One material's layer-3 pass compiled for [`load_layer3`], its stage
+/// images decoded, or why it is not drawn.
+#[allow(clippy::too_many_arguments)]
+fn compile_layer3<R: std::io::Read + std::io::Seek>(
+    map: &mut Map<R>,
+    files: &mut assets::ResourceFiles,
+    lib: &mut tags::material::ShaderLibrary,
+    images: &mut StageImages,
+    decoder: &mut StageDecoder,
+    shader: TagId,
+    unlit_bsp: bool,
+    given: Option<&[u8; program::VIEW_CONSTANTS]>,
+) -> Result<FogProgram, String> {
+    let pass = if unlit_bsp {
+        let selection = tags::material::PassSelection {
+            lod: 0,
+            layer: look::LIGHTMAP_LAYER,
+            pass: 0,
+            implementation: look::UNLIT_BSP_IMPLEMENTATION,
+        };
+        let selected = lib
+            .selected_implementation(shader, selection, None, None)
+            .map_err(|e| format!("material: {e}"))?;
+        look::unlit_bsp_pass(&selected, None).map_err(|r| format!("layer 3: {r:?}"))?
+    } else {
+        let material = lib
+            .material(shader, None)
+            .map_err(|e| format!("material: {e}"))?;
+        look::layer3_pass(&material).map_err(|r| format!("layer 3: {r:?}"))?
+    };
+    let code = look::world_program(map, lib.metadata(), pass.look.vertex_shader)
+        .ok_or("no world-space vertex program")?;
+    if let Some(why) = given.and_then(|g| program::ungiven_view_read(&code, g)) {
+        return Err(why);
+    }
+    program::world_parity(&pass.look)?;
+    for (n, stage) in pass.look.textures.iter().enumerate() {
+        match *stage {
+            Stage::Bitmap { bitmap, image } => two_d(map, bitmap, image, n)?,
+            Stage::Empty | Stage::Lightmap => {}
+            Stage::Engine(id) => return Err(format!("stage {n} is engine texture {id}")),
+            Stage::Host(h) => return Err(format!("stage {n} is a host stage ({h:?})")),
+        }
+    }
+    let mut state = pass.state;
+    if pass.inherits_cull {
+        let (cull_mode, front_face) = device_default_cull();
+        state.primitive.cull_mode = cull_mode;
+        state.primitive.front_face = front_face;
+    }
+    let fog_pass = fog_gpu::FogPass {
+        look: pass.look,
+        state,
+        fog: FogWords::default(),
+    };
+    let mut p = FogProgram::compile(&fog_pass, &code)?;
+    if let Some(rigid) = look::rigid_program(map, lib.metadata(), fog_pass.look.vertex_shader)
+        && given.is_none_or(|g| program::ungiven_view_read(&rigid, g).is_none())
+        && let Ok(r) =
+            program::compile_pass_rigid(&fog_pass.look, fog_pass.state.alpha_test, &rigid)
+    {
+        p.rigid = Some(r);
+    }
+    for (n, s) in p.program.stages.iter().enumerate() {
+        if let Stage::Bitmap { bitmap, image } = *s
+            && p.program.dims[n].is_some()
+        {
+            decoder.decode(map, files, images, bitmap, image, n, true)?;
+        }
+    }
+    Ok(p)
+}
+
+/// The cull a layer-3 pass that leaves `CULLMODE` unset draws with when
+/// no game holds the device's (`look::WorldPass::inherits_cull`): the D3D
+/// device's default, `CULLMODE` CCW with `FRONTFACE` CW. The source is
+/// `d3d::state::StateWords::defaults`, which translates to
+/// `gfx::state::RenderState::default()` (its test
+/// `defaults_translate_cleanly_to_gfx_defaults`), and the world draws
+/// keep it unless a pass sets its own.
+pub fn device_default_cull() -> (Option<wgpu::Face>, wgpu::FrontFace) {
+    let p = gfx::translate::primitive_state(
+        &gfx::state::RenderState::default(),
+        wgpu::PrimitiveTopology::TriangleList,
+        gfx::translate::Capabilities::from_features(wgpu::Features::empty()),
+    );
+    (p.cull_mode, p.front_face)
+}
+
+/// Whether image `image` of `bitmap` (bound at stage `stage`) is 2D: a
+/// cube or a volume would need its own binding.
+fn two_d<R: std::io::Read + std::io::Seek>(
+    map: &mut Map<R>,
+    bitmap: TagId,
+    image: u32,
+    stage: usize,
+) -> Result<(), String> {
+    let tags::TagData::Bitmap(tag) = tags::DecodedTag::read(map, bitmap)
+        .map_err(|e| format!("stage {stage} bitmap does not read ({e})"))?
+        .data
+    else {
+        return Err(format!("stage {stage} datum is not a bitmap"));
+    };
+    let kind = tag
+        .images
+        .get(image as usize)
+        .ok_or_else(|| format!("stage {stage} bitmap has no image {image}"))?
+        .kind;
+    match kind {
+        tags::TextureKind::D2 => Ok(()),
+        tags::TextureKind::D3 | tags::TextureKind::Cube | tags::TextureKind::Unknown(_) => {
+            Err(format!("stage {stage} bitmap is {kind:?}, not 2D"))
+        }
+    }
+}
+
+/// [`load_layer3`] as a host with no game draws it: every compiled
+/// material, its parts that take the pass, the load's refusals as
+/// `program: cause`, and the parts left to the base look by cause. Layer
+/// 3's passes are compiled with the instance's constants and nothing per
+/// draw, as the game's are, so nothing further is planned.
+pub fn plan_layer3(layer: &Layer3) -> StaticLayer {
+    let data = &layer.data;
+    StaticLayer {
+        compiled: data.programs.len(),
+        drawn: data.programs.keys().copied().collect(),
+        parts: data.parts.clone(),
+        refused: data
+            .refused
+            .iter()
+            .map(|(why, &n)| (format!("program: {why}"), n))
+            .collect(),
+        parts_refused: layer.parts_refused.clone(),
+    }
 }
 
 /// Each material's fog unit and colour, as a layer set's uniforms take
@@ -562,6 +810,41 @@ mod tests {
         assert_eq!(
             plan_without_game(&view, &[], 8, 0.0),
             StaticLayer::default()
+        );
+    }
+
+    /// The device's default cull culls one face: a pass inheriting it no
+    /// longer draws both.
+    #[test]
+    fn a_pass_inheriting_cull_takes_the_devices_default() {
+        let (cull, _) = device_default_cull();
+        assert!(cull.is_some());
+    }
+
+    /// Layer 3's plan draws every compiled material with the parts that
+    /// take its pass, and names the load's refusals and the parts left
+    /// to the base look.
+    #[test]
+    fn layer_3s_plan_names_what_does_not_draw() {
+        let mut layer = Layer3::default();
+        layer.data.refused.insert("layer 3: Blended".to_owned(), 2);
+        layer
+            .parts_refused
+            .insert("a part has no lightmap page".to_owned(), 3);
+        let part = ((Owner::Cluster(0), 0), (0, 6, None, 4));
+        layer.data.parts.push(part);
+        layer.data.programs.insert(4, Vec::new());
+        let plan = plan_layer3(&layer);
+        assert_eq!(plan.compiled, 1);
+        assert_eq!(plan.drawn, BTreeSet::from([4]));
+        assert_eq!(plan.parts, [part]);
+        assert_eq!(
+            plan.refused,
+            BTreeMap::from([("program: layer 3: Blended".to_owned(), 2)])
+        );
+        assert_eq!(
+            plan.parts_refused,
+            BTreeMap::from([("a part has no lightmap page".to_owned(), 3)])
         );
     }
 }

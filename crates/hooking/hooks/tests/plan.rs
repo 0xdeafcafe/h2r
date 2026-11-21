@@ -68,20 +68,21 @@ fn leaves(switches: &str) -> Vec<&'static str> {
 }
 
 #[test]
-fn only_the_locale_leaves_are_on_by_default() {
+fn every_leaf_is_on_by_default() {
+    assert_eq!(leaves("").len(), engine::abi::OVERRIDES.len());
     assert_eq!(
-        leaves(""),
+        leaves("impl.engine.tags=off,impl.engine.datums=off"),
         ["locale_string_id_find", "locale_string_id_exists"]
     );
     assert!(leaves("impl.engine.locale=off").is_empty());
     assert!(leaves("impl.engine=off").is_empty());
     assert_eq!(leaves("impl.engine=on").len(), engine::abi::OVERRIDES.len());
-    let one = leaves("impl.engine.locale=off,impl.engine.tags.tag_get_checked=on");
+    let one = leaves("impl.engine=off,impl.engine.tags.tag_get_checked=on");
     assert_eq!(one, ["tag_get_checked"]);
     assert_eq!(
-        leaves("impl.engine.datums=on").len(),
-        18 + 2,
-        "datums and the default locale"
+        leaves("impl.engine.tags=off,impl.engine.locale=off").len(),
+        engine::abi::OVERRIDES.len() - 4,
+        "only the datums"
     );
 }
 

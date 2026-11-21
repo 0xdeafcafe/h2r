@@ -40,6 +40,32 @@ pub const MAIN_SPLIT_ROW: u32 = 2;
 pub const MAIN_SYSTEM_LINK_ROW: u32 = 3;
 /// The UI watch log marker for the players' screen when the main menu has Theater.
 pub const MAIN_MENU_THEATER_MARKER: &str = ", main menu theater";
+/// The UI watch log marker for how many rows of ours the main menu has
+/// after Xbox Live (Theater, Forge, Firefight), followed by the count.
+pub const MAIN_MENU_ROWS_MARKER: &str = ", main menu rows ";
+
+/// The markers a log line carries for a main menu with `rows` rows of
+/// ours after Xbox Live, `theater` of them Theater's.
+pub fn main_menu_marker(theater: bool, rows: u32) -> String {
+    let theater = if theater { MAIN_MENU_THEATER_MARKER } else { "" };
+    format!("{theater}{MAIN_MENU_ROWS_MARKER}{rows}")
+}
+
+/// How many rows of ours a log line says the main menu has after Xbox
+/// Live: the count after [`MAIN_MENU_ROWS_MARKER`], else one for a line
+/// with only [`MAIN_MENU_THEATER_MARKER`], else none.
+pub fn inserted_rows(text: &str) -> u32 {
+    if let Some(at) = text.find(MAIN_MENU_ROWS_MARKER) {
+        let digits: String = text[at + MAIN_MENU_ROWS_MARKER.len()..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        if let Ok(n) = digits.parse() {
+            return n;
+        }
+    }
+    u32::from(text.contains(MAIN_MENU_THEATER_MARKER))
+}
 
 /// One press: held 150 ms and two reads, so a slow frame still sees it.
 pub const PRESS_MS: u64 = 150;
@@ -70,6 +96,25 @@ pub struct Screen {
     /// The main menu has Theater immediately after Xbox Live.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub main_menu_theater: bool,
+    /// How many rows of ours the main menu has after Xbox Live (0 from a
+    /// game that only says [`Screen::main_menu_theater`]).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub main_menu_rows: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+impl Screen {
+    /// The rows of ours between Xbox Live and Split Screen.
+    pub fn inserted_rows(&self) -> u32 {
+        if self.main_menu_rows > 0 {
+            self.main_menu_rows
+        } else {
+            u32::from(self.main_menu_theater)
+        }
+    }
 }
 
 /// What a press should lead to. Every field given must hold.
@@ -110,15 +155,16 @@ pub enum Mode {
 }
 
 impl Mode {
-    /// This mode's display row, with Theater between Xbox Live and Split Screen.
-    pub fn row(self, main_menu_theater: bool) -> u32 {
+    /// This mode's display row, with `inserted` rows of ours (Theater,
+    /// Forge, Firefight) between Xbox Live and Split Screen.
+    pub fn row(self, inserted: u32) -> u32 {
         let retail = match self {
             Mode::Campaign => 0,
             Mode::XboxLive => MAIN_LIVE_ROW,
             Mode::SplitScreen => MAIN_SPLIT_ROW,
             Mode::SystemLink => MAIN_SYSTEM_LINK_ROW,
         };
-        retail + u32::from(main_menu_theater && retail > MAIN_LIVE_ROW)
+        retail + if retail > MAIN_LIVE_ROW { inserted } else { 0 }
     }
 
     /// Where A on its row goes.
@@ -290,7 +336,7 @@ pub fn run(rpc: &mut dyn Rpc, step: &Lobby) -> Result<Value, RpcError> {
                 ..Default::default()
             };
             let s = until(rpc, &main, STEP_MS, "mode: on the main menu")?;
-            let mut b = downs(mode.row(s.main_menu_theater));
+            let mut b = downs(mode.row(s.inserted_rows()));
             b.push("a");
             press(rpc, &b)?;
             let mut want = mode.opens();
@@ -418,10 +464,13 @@ mod tests {
 
     #[test]
     fn mode_presses_down_to_system_link_with_or_without_theater() {
-        for (main_menu_theater, downs) in [(false, 3), (true, 4)] {
+        for (main_menu_theater, main_menu_rows, downs) in
+            [(false, 0, 3), (true, 0, 4), (true, 1, 4), (true, 3, 6)]
+        {
             let mut m = Menu {
                 now: Screen {
                     main_menu_theater,
+                    main_menu_rows,
                     ..Default::default()
                 },
                 after: [at(Some(JOIN_SCREEN), Some(MODE_SYSTEM_LINK), None)].into(),

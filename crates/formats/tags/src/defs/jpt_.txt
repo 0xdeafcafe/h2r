@@ -17,15 +17,15 @@ group jpt! 0xc8
   0x38 f32 h1_death_impulse -- source Halo 1 damage impulse for the deathflying line
   0x3c unknown 0x4 seen=zero
   0x40 unknown 0x4 seen=25 -- floats
-  0x44 unknown 0x4 seen=8 -- floats
+  0x44 f32 rider_direct_damage_scale -- A Halo2 jpt!.xml
   0x48 unknown 0x4 seen=10 -- floats
   0x4c unknown 0x4 seen=10 -- floats
   0x50 string string_50
-  0x54 string string_54
+  0x54 string specific_damage -- A Halo2 jpt!.xml
   0x58 unknown 0x4 seen=6 -- floats
   0x5c unknown 0x4 seen=4 -- floats
   0x60 unknown 0x4 seen=6 -- floats
-  0x64 unknown 0x4 seen=13 -- floats
+  0x64 f32 shake_radius -- A Halo2 jpt!.xml
   0x68 unknown 0x4 seen=3 -- floats
   0x6c block block_6c 0x4c align 4
     0x0 unknown 0x4 seen=3 -- small integers
@@ -42,7 +42,7 @@ group jpt! 0xc8
     0x30 unknown 0x4 seen=20 -- floats
     0x34 data data_34 align 4
     0x3c unknown 0x8 seen=zero
-    0x44 data data_44 align 4
+    0x44 data effect_scale_function align 4 -- A Halo2 jpt!.xml
   0x74 unknown 0x4 seen=9 -- floats
   0x78 unknown 0x4 seen=5 -- small integers
   0x7c unknown 0x4 seen=16 -- floats
@@ -57,9 +57,9 @@ group jpt! 0xc8
   0xa0 unknown 0x4 seen=2 -- floats
   0xa4 unknown 0x4 seen=3 -- floats
   0xa8 tagref ref_a8
-  0xb0 unknown 0x4 seen=6 -- floats
-  0xb4 unknown 0x4 seen=8 -- floats
-  0xb8 unknown 0x4 seen=8 -- floats
+  0xb0 f32 forward_velocity -- A Halo2 jpt!.xml
+  0xb4 f32 forward_radius -- A Halo2 jpt!.xml
+  0xb8 f32 forward_exponent -- A Halo2 jpt!.xml
   0xbc unknown 0x4 seen=6 -- floats
   0xc0 unknown 0x4 seen=6 -- floats
   0xc4 unknown 0x4 seen=4 -- floats

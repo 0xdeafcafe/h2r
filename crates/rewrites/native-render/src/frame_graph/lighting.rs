@@ -3,6 +3,8 @@
 
 use d3d::gfx_backend::TileWork;
 
+use crate::sun_tiles::SunWork;
+
 /// Submitted work for one E3 stage. An empty stage has no GPU interval.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PassWork {
@@ -15,7 +17,11 @@ pub struct PassWork {
 /// guest's selections retained in the sealed scene.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct E3Report {
+    /// Caster draws into the local lights' tiles.
     pub tiles: PassWork,
+    /// Caster draws into the sun's tiles.
+    pub sun_tile_draws: PassWork,
+    /// Receivers of the sun's tiles.
     pub sun: PassWork,
     pub marks: PassWork,
     pub lights: PassWork,
@@ -37,6 +43,18 @@ impl E3Report {
         self.tiles.draws += work.tile_draws;
         self.marks.draws += work.marks;
         self.lights_shadowed += work.tiles;
+        self.tiles_refused += work.refused;
+    }
+
+    /// Sun tiles from objects: their caster draws are `e3.sun_tiles`,
+    /// their receivers `e3.sun`, and a caster left without a tile keeps
+    /// retail's object shadow and joins `tiles_refused`.
+    pub fn add_sun(&mut self, work: SunWork) {
+        self.sun_tile_draws.draws += work.tile_draws;
+        self.sun.draws += work.receiver_draws;
+        self.sun_tiles += work.sun_tiles;
+        self.sun_tiles_redrawn += work.sun_tiles_redrawn;
+        self.atlas_halved += work.atlas_halved;
         self.tiles_refused += work.refused;
     }
 }
@@ -72,5 +90,33 @@ mod tests {
                 ..E3Report::default()
             }
         );
+    }
+
+    /// Sun casters are `e3.sun_tiles`, apart from the local lights'
+    /// `e3.tiles`; their receivers are `e3.sun`.
+    #[test]
+    fn sun_work_fills_the_sun_row_and_its_counters() {
+        let mut report = E3Report::default();
+        report.add_sun(SunWork {
+            sun_tiles: 3,
+            sun_tiles_redrawn: 1,
+            atlas_halved: 2,
+            refused: 1,
+            tile_draws: 1,
+            receiver_draws: 7,
+        });
+        assert_eq!(report.sun_tile_draws.draws, 1);
+        assert_eq!(report.tiles, PassWork::default());
+        assert_eq!(report.sun.draws, 7);
+        assert_eq!(
+            (
+                report.sun_tiles,
+                report.sun_tiles_redrawn,
+                report.atlas_halved
+            ),
+            (3, 1, 2)
+        );
+        assert_eq!(report.tiles_refused, 1);
+        assert_eq!(report.marks, PassWork::default());
     }
 }

@@ -1,0 +1,7 @@
+[
+  {"kind": "FirefightScore", "data": {"tick": 30, "player": 0, "points": 100, "reason": "kill", "class": "grunt"}},
+  {"kind": "FirefightScore", "data": {"tick": 60, "player": 0, "points": 300, "reason": "kill", "class": "elite"}},
+  {"kind": "FirefightScore", "data": {"tick": 90, "player": 1, "points": 100, "reason": "kill", "class": "grunt"}},
+  {"kind": "FirefightScore", "data": {"tick": 90, "player": 0, "points": 25, "reason": "assist"}},
+  {"kind": "FirefightEnded", "data": {"tick": 800, "set": "Holdout", "outcome": "won", "rounds_cleared": 3, "lives_used": 4}}
+]

@@ -150,6 +150,9 @@ pub fn summary_hash(scene: &FrameScene) -> u64 {
         for o in shadows {
             h.word(o.identity[0]);
             h.word(o.identity[1]);
+            h.word(u32::from(o.creature));
+            h.word(o.weight_bits.unwrap_or(0));
+            h.word(u32::from(o.weight_bits.is_some()));
             light_groups(&mut h, scene, scene.shadow_groups_of(o));
         }
         let passes = scene.layers_of(v);
@@ -491,12 +494,18 @@ mod tests {
         lit.light_groups[0].projection = Some([[1; 4]; crate::light_group::PROJECTION_ROWS]);
         assert_ne!(summary_hash(&lit), lit_hash, "its projection");
         let mut shadowed = base();
-        shadowed.object_shadows.push(crate::light_group::ObjectShadow { view: 0, identity: [1, 2], groups: 0..1 });
+        shadowed.object_shadows.push(crate::light_group::ObjectShadow { view: 0, identity: [1, 2], groups: 0..1, creature: false, weight_bits: None });
         shadowed.shadow_groups.push(group(0, GroupSite::ObjectShadow));
         let shadow_hash = summary_hash(&shadowed);
         assert_ne!(shadow_hash, plain, "an object shadow");
         assert_ne!(shadow_hash, lit_hash, "not the light's group");
         shadowed.object_shadows[0].identity = [1, 3];
         assert_ne!(summary_hash(&shadowed), shadow_hash, "its identity");
+        shadowed.object_shadows[0].identity = [1, 2];
+        shadowed.object_shadows[0].creature = true;
+        assert_ne!(summary_hash(&shadowed), shadow_hash, "the creature branch");
+        shadowed.object_shadows[0].creature = false;
+        shadowed.object_shadows[0].weight_bits = Some(0);
+        assert_ne!(summary_hash(&shadowed), shadow_hash, "a weight of zero is not no weight");
     }
 }

@@ -9,7 +9,7 @@ The rule: **the guest tick stays 30 Hz at every display rate.** Super bounces ar
 In short:
 
 - **The guest is untouched.** Same 60 Hz logical vblanks, same two-vblank frame interval, same one tick per frame, same input polls. No guest code, guest global or guest timing changes.
-- **The in-between frames are made on the host.** Every guest frame is a list of resolved draws that hold no guest pointers ([d3d.md](../graphics/d3d.md), "Draws"). With interpolated replay enabled, the host keeps the last two guest frames and blends camera and object matrices between the two ticks. By default the window repeats the newest frame. The guest never sees these frames.
+- **The in-between frames are made on the host.** Every guest frame is a list of resolved draws that hold no guest pointers ([d3d.md](../graphics/d3d.md), "Draws"). With interpolated replay (on by default), the host keeps the last two guest frames and blends camera and object matrices between the two ticks. By default the window repeats the newest frame. The guest never sees these frames.
 - **The proof is the guest's own state.** The same input recording gives the same guest-memory hash at every present and every tick with the mode off, at 60 and at 120 (section 6).
 
 The mode only helps once a level holds a steady 30 fps ([gameplay-budget.md](../perf/notes/gameplay-budget.md)); below that the pacer rebases and the game plays in slow motion.
@@ -326,8 +326,10 @@ Two answers, in order:
 - **Settings.** The toggle is the Video screen's Frame Rate row
   (`graphics.fps`, [settings-menu.md](settings-menu.md) "Video screen"), also
   `H2_FPS` / `h2 play --fps` (section 6). 30 means off: no replay.
-  The replay itself is behind `impl.render.interpolate` or
-  `impl.render.reproject`, off by default (sections 7 and 8).
+  The replay itself is `impl.render.interpolate`, on by default
+  (`-impl.render.interpolate` turns it off); `impl.render.reproject` and
+  `impl.render.reproject_ahead` are off by default and, when set, take its
+  place (sections 7 and 8).
 - **Pass tags.** A pass tag is what this design wants: which draws are the
   world, which the first-person weapon, which the HUD, and where E1
   captures the world colour. None is wired to the device; the first slice
@@ -525,7 +527,7 @@ Listed in [switches.md](../runtime/switches.md). This section's behaviour:
 
 | switch | effect |
 |---|---|
-| `impl.render.interpolate` (in `H2_FEATURES`) | wraps the window's backend in `d3d::InterpBackend`, inside the render thread. Only this exact switch: `impl.render=on` does not turn it on |
+| `impl.render.interpolate` (in `H2_FEATURES`) | on by default; wraps the window's backend in `d3d::InterpBackend`, inside the render thread. `-impl.render.interpolate` turns it off. Only this exact switch counts: `impl.render=on` does not set it |
 | Frame Rate row / `H2_FPS` / `h2 play --fps` | 30: the replay records nothing and forwards every call. 60, 120 and uncapped: in-between frames at 60 (`interp::pacing::MAX_REPLAY_HZ`; 120 waits on measured headroom) |
 | `H2_RENDER_THREAD=0` | the replay stays off (it runs only on the render thread) |
 | `impl.render.pipelined_frame=on` | the replay stays off: the lockstep harness cannot certify the combination |
@@ -533,7 +535,7 @@ Listed in [switches.md](../runtime/switches.md). This section's behaviour:
 It is Rust in `d3d` and `boot`; no image rebuild.
 
 ```sh
-H2_FEATURES=impl.render.interpolate h2 play --fps 60 ...
+h2 play --fps 60 ...   # D is on by default
 ```
 
 At exit (and every 5 s while running) the replay prints one line: `d3d: interpolation: frames F blended B held H replays R substituted draws D snapped S deferred P size_mismatch Z (extent Ze mapping Zm screen Zs overlay Zo) unsure U (camera Uc unpinned Up) unpaired Q (gap Qg camera Qc views Qv counting Qn) dropped X; replay mode: N frames, A ms avg, M ms max`.
@@ -588,7 +590,7 @@ At exit (and every 5 s while running) the replay prints one line: `d3d: interpol
 - through `ThreadedBackend`, the render thread's idle step draws in-between frames;
 - menu frames (a screen-space perspective shared by the panels, orthographic text, a pre-transformed background) are shown as drawn in D and both E1 variants; a made frame of another host size is not shown; slots are dropped while the GPU is busy; a sampled render target replays from its snapshot, and a copied-in surface holds.
 
-`cargo test -p d3d --test it interp_gpu::` runs D and E1 on the GPU through `ScaledBackend` at 2x and 3x: every presented frame is the guest's size at that scale, D's made frames have the guest's pixels exactly and E1's (a still camera) agree within filtering on over 98% of pixels. `cargo test -p boot --lib interpolation` checks the switch's decision (off by default, needs the render thread, off with `impl.render.pipelined_frame`) and `H2_FPS` parsing.
+`cargo test -p d3d --test it interp_gpu::` runs D and E1 on the GPU through `ScaledBackend` at 2x and 3x: every presented frame is the guest's size at that scale, D's made frames have the guest's pixels exactly and E1's (a still camera) agree within filtering on over 98% of pixels. `cargo test -p boot --lib interpolation` checks the switch's decision (on by default, needs the render thread, off with `impl.render.pipelined_frame`) and `H2_FPS` parsing.
 
 ### Not verified
 
@@ -611,14 +613,14 @@ Listed in [switches.md](../runtime/switches.md).
 |---|---|
 | `impl.render.reproject` | E1, the display camera's rotation blended between frames N-1 and N (one frame behind, like D) |
 | `impl.render.reproject_ahead` | E1 with the rotation carried on past N by alpha of the last turn (F, extrapolation, for aim only): no added latency for turning, overshoots when a turn stops |
-| `impl.render.interpolate` | D (section 7). With a reproject switch also on, E1 wins |
+| `impl.render.interpolate` | D (section 7), on by default. With a reproject switch also on, E1 wins |
 
-Off by default; exact switches only (`impl.render=on` turns none of them on). Same rules as D: render thread only, off with `impl.render.pipelined_frame`, the Frame Rate row above 30 (in-between frames at 60). Rust in `d3d`, `gfx` and `boot`; no image rebuild.
+The reproject switches are off by default, since D is the main path; exact switches only (`impl.render=on` turns none of them on). Same rules as D: render thread only, off with `impl.render.pipelined_frame`, the Frame Rate row above 30 (in-between frames at 60). Rust in `d3d`, `gfx` and `boot`; no image rebuild.
 
 ```sh
 H2_FEATURES=impl.render.reproject h2 play --fps 60 ...
 H2_FEATURES=impl.render.reproject_ahead h2 play --fps 60 ...
-H2_FEATURES=impl.render.interpolate h2 play --fps 60 ...   # D, to compare
+h2 play --fps 60 ...   # D, to compare
 ```
 
 At exit, after the common counters: `; reproject mode: C world images A ms avg M ms max, W warped frames A ms avg M ms max`. A world image is the per-guest-frame draw described below; a warped frame is one shown frame (the warp, the overlay draws, and for in-between frames their present), at the guest's present and in between. Times are render-thread wall time measured the same way as D's `replay mode` part, so the two compare directly: D's per-frame cost against E1's world image per guest frame plus its warped frames.
@@ -721,7 +723,7 @@ No pass tag is wired. The pass in progress is the return address of the call the
 - `the_hold_log_names_every_draw_that_held_a_frame` and `the_hold_log_says_off_centre_and_after_the_overlay`: the log has each kind with the guest draw and pass numbers, program id and disassembly, and a window covering the target; a frame with no camera is not logged;
 - `screen_space_sprites_and_layers_in_the_world_turn_with_it`, `screen_space_world_draws_e1_cannot_move_still_hold` and `screen_space_draws_turn_with_the_world_through_the_interpreter`: sprites and layers are shrunk or extended with texture coordinates and depth kept, the counters say 2 shrunk and 1 extended, a scissored sprite, a layer that looks a texture up from its own position and an orthographic quad hold, and a moved sprite lands where the level's program puts its world point.
 
-`cargo test -p d3d --test it interp_gpu::` draws E1 through the XDK's own epilogue and on one plain `GfxBackend` as a headless run has it: the in-between frame goes to the replay hook (flags 0), never the present hook, and is the guest's picture within filtering with the camera still; a 100 ms gap is counted as `unpaired_gap` and makes nothing after it. `cargo test -p boot --test headless_interp` (GPU; skips without an adapter) checks that with `H2_BOOT_GFX`, `impl.render.reproject` and `H2_FPS=60`, `install_headless` builds the interp and the agent's `render.stats` reads it, every hold reason and `interp.holds` present. `cargo test -p gfx --lib warp` validates the warp shader with naga. `cargo test -p boot --lib interpolation` checks the switches (off by default; reproject wins over interpolate, `_ahead` over plain) and which host has a GPU backend for them; `d3d_glue::tests::in_between_captures_stop_at_their_limit` and `in_between_captures_write_only_their_neighbours` check the `H2_BOOT_GFX_BETWEEN` names and that N slots write at most N in-between and 2N guest frames.
+`cargo test -p d3d --test it interp_gpu::` draws E1 through the XDK's own epilogue and on one plain `GfxBackend` as a headless run has it: the in-between frame goes to the replay hook (flags 0), never the present hook, and is the guest's picture within filtering with the camera still; a 100 ms gap is counted as `unpaired_gap` and makes nothing after it. `cargo test -p boot --test headless_interp` (GPU; skips without an adapter) checks that with `H2_BOOT_GFX`, `impl.render.reproject` and `H2_FPS=60`, `install_headless` builds the interp and the agent's `render.stats` reads it, every hold reason and `interp.holds` present. `cargo test -p gfx --lib warp` validates the warp shader with naga. `cargo test -p boot --lib interpolation` checks the switches (reproject wins over interpolate, `_ahead` over plain) and which host has a GPU backend for them; `d3d_glue::tests::in_between_captures_stop_at_their_limit` and `in_between_captures_write_only_their_neighbours` check the `H2_BOOT_GFX_BETWEEN` names and that N slots write at most N in-between and 2N guest frames.
 
 ### Not verified
 

@@ -20,6 +20,15 @@
 //! | 7, 9 | crosstalk front/back right | right; likewise |
 //! | 10 | I3DL2 reverb send | the mixer's [`Reverb`](crate::reverb::Reverb) when an environment has been set; otherwise dropped |
 //! | 11..=30 | FX sends 0..19 | every playing [`MixIn`](crate::dsound::MixIn) whose input bin it is; otherwise dropped (DSP effects) |
+//! | 31 | [`SUBMIX`] | dropped: a voice's own submix reaches the mixer as a host bin |
+//! | `0x100` up | host submix bins | the one submix ([`crate::Mixer::add_submix`]) that owns the bin |
+//!
+//! A `DSBCAPS_MIXIN` buffer is a submix. The library gives every one of
+//! them the same input bin, [`SUBMIX`] (`0x37cf36`), and a voice whose
+//! output buffer is a submix lists that bin (`SetOutputBuffer`, `0x37bd54`):
+//! it means "my output buffer", not a shared bus. So the guest shim hands the
+//! mixer each submix's own host bin in its place, and only the voices routed
+//! to that submix reach it.
 //!
 //! Channels: the pairs of a mono voice all carry its one channel. For a
 //! multichannel voice, pair `i` carries channel `i % channels` (stereo: even
@@ -43,6 +52,13 @@ pub const I3DL2: u32 = 10;
 /// `DSMIXBIN_FXSEND_0`; the sends run to `FXSEND_LAST`.
 pub const FXSEND_FIRST: u32 = 11;
 pub const FXSEND_LAST: u32 = 30;
+/// `DSMIXBIN_SUBMIX`: the input bin the library gives every `DSBCAPS_MIXIN`
+/// buffer (`0x37cf1b`..`0x37cf36`; Halo 2 records the same `0x1f` for its
+/// submixes at `0x220b33`). Meaningful only with the voice's output buffer.
+pub const SUBMIX: u32 = 31;
+/// The first host submix bin ([`crate::Mixer::add_submix`]). The MCPX has 32
+/// bins, so no guest bin is this large.
+pub const HOST_SUBMIX_FIRST: u32 = 0x100;
 
 /// Centre bin level in each output channel (-3 dB).
 pub const CENTER_GAIN: f32 = std::f32::consts::FRAC_1_SQRT_2;
@@ -74,6 +90,7 @@ pub fn dest(bin: u32) -> Dest {
         XTLK_BACK_RIGHT => Dest::Crosstalk { left: false, front: false },
         I3DL2 => Dest::Reverb,
         FXSEND_FIRST..=FXSEND_LAST => Dest::Send(bin),
+        HOST_SUBMIX_FIRST.. => Dest::Send(bin),
         _ => Dest::Dropped,
     }
 }
@@ -97,7 +114,8 @@ mod tests {
         assert_eq!(dest(8), Dest::Crosstalk { left: true, front: false });
         assert_eq!(dest(10), Dest::Reverb);
         assert_eq!(dest(0x17), Dest::Send(0x17));
-        assert_eq!(dest(31), Dest::Dropped);
+        assert_eq!(dest(SUBMIX), Dest::Dropped);
+        assert_eq!(dest(HOST_SUBMIX_FIRST + 3), Dest::Send(HOST_SUBMIX_FIRST + 3));
         assert_eq!((channel_of(3, 1), channel_of(3, 2), channel_of(5, 6)), (0, 1, 1));
     }
 }

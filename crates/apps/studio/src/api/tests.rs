@@ -178,6 +178,28 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             std::fs::write(&map, bytes).unwrap();
             c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
         }
+        m::GEOMETRY_LIST
+        | m::GEOMETRY_OPEN
+        | m::GEOMETRY_CLOSE
+        | m::GEOMETRY_READ
+        | m::GEOMETRY_CHECK
+        | m::MESH_MODE
+        | m::MESH_SELECT
+        | m::MESH_TRANSFORM
+        | m::MESH_OPS
+        | m::MESH_APPLY => {
+            // The invented textured map: one BSP (e1000004) whose one
+            // cluster is a 4 by 4 floor quad in a local raw block.
+            let map = t.path("textured.map");
+            std::fs::write(&map, fixture::fixture_with_textured_bsp()).unwrap();
+            c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
+            if !matches!(name, m::GEOMETRY_LIST | m::GEOMETRY_OPEN) {
+                c(m::GEOMETRY_OPEN, json!({"target": "cluster:e1000004:0"}));
+            }
+            if name == m::MESH_TRANSFORM {
+                c(m::MESH_SELECT, json!({"all": true}));
+            }
+        }
         m::DOC_CLOSE | m::PLAYLIST_LIST | m::PLAYLIST_GET | m::PLAYLIST_SET | m::PLAYLIST_ENTRY => {
             c(
                 m::DOC_OPEN,
@@ -772,6 +794,14 @@ fn view_lighting_sets_the_mode_and_stats_report_it() {
     assert_eq!(stats["native"]["lighting"], "lightmap");
     assert!(stats["native"]["bsps"].as_array().is_some());
     assert!(stats["native"]["errors"].as_array().is_some());
+    // Each BSP's base look: translated, or the named fallback with its
+    // layers off.
+    for b in stats["native"]["bsps"].as_array().unwrap() {
+        let look = &b["base_look"];
+        let translated = look["translated"].as_bool().expect("base_look.translated");
+        assert_eq!(look["layers_off"], json!(!translated), "{look}");
+        assert_eq!(look["fallback"].is_string(), !translated, "{look}");
+    }
     // The placed objects: null with no art built, else the counts.
     let objects = &stats["native"]["objects"];
     assert!(stats["native"].get("objects").is_some());
@@ -3212,4 +3242,132 @@ mod windowless_serve {
         let control = served.call(m::MIRROR_CONTROL, json!({"op":"pause"}));
         assert_eq!(control["requested"], true);
     }
+}
+
+/// Open the invented textured map's floor cluster through the API.
+fn textured(t: &Temp) -> (Api, App, PathBuf) {
+    let mut app = app(t);
+    let mut api = Api::new();
+    let map = t.path("textured.map");
+    std::fs::write(&map, fixture::fixture_with_textured_bsp()).unwrap();
+    call(&mut api, &mut app, m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
+    let open = call(&mut api, &mut app, m::GEOMETRY_OPEN, json!({"target": "cluster:e1000004:0"}));
+    assert_eq!((open["verts"].clone(), open["faces"].clone()), (json!(4), json!(2)));
+    (api, app, map)
+}
+
+/// Select the floor's `(4, 4, 0)` corner and lift it by 1.
+fn lift_corner(api: &mut Api, app: &mut App) -> Value {
+    let read = call(api, app, m::GEOMETRY_READ, Value::Null);
+    let id = read["verts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["position"] == json!([4.0, 4.0, 0.0]))
+        .unwrap()["id"]
+        .clone();
+    call(api, app, m::MESH_SELECT, json!({"ids": [id]}));
+    call(api, app, m::MESH_TRANSFORM, json!({"translate": [0.0, 0.0, 1.0]}))
+}
+
+#[test]
+fn geometry_lists_the_floor_cluster_and_an_unedited_target_saves_nothing() {
+    let t = Temp::new("geometry-list");
+    let (mut api, mut app, _) = textured(&t);
+    let list = call(&mut api, &mut app, m::GEOMETRY_LIST, Value::Null);
+    let c = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["target"] == "cluster:e1000004:0")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (c["kind"].clone(), c["vertices"].clone(), c["triangles"].clone(), c["open"].clone()),
+        (json!("cluster"), json!(4), json!(2), json!(true))
+    );
+    call(&mut api, &mut app, m::MESH_SELECT, json!({"all": true}));
+    let check = call(&mut api, &mut app, m::GEOMETRY_CHECK, Value::Null);
+    assert_eq!(check["targets"][0]["class"], "unchanged");
+    assert_eq!(check["save_refusal"], Value::Null);
+    assert!(!app.session.is_dirty());
+}
+
+#[test]
+fn a_geometry_edit_saves_only_with_the_unverified_switch_on() {
+    let t = Temp::new("geometry-save");
+    let (mut api, mut app, map) = textured(&t);
+    let moved = lift_corner(&mut api, &mut app);
+    assert_eq!((moved["class"].clone(), moved["moved"].clone()), (json!("in_place"), json!(1)));
+    assert!(app.session.is_dirty());
+    let check = call(&mut api, &mut app, m::GEOMETRY_CHECK, Value::Null);
+    assert_eq!(check["allow_unverified"], false);
+    assert_eq!(check["save_refusal"], crate::app::modeling::UNVERIFIED_REFUSAL);
+    // Off: the save is refused and names why, and writes nothing.
+    let out = t.path("edited.map");
+    let r = api.call(
+        &mut app,
+        m::DOC_SAVE_AS,
+        json!({"doc": "map", "path": out.display().to_string()}),
+    );
+    let e = r.unwrap_err();
+    assert!(e.message.contains("unverified"), "{e}");
+    assert!(!out.exists());
+    // On: it saves, the same size, and differs from the source.
+    app.dispatch(Action::SetAllowUnverifiedGeometry(true));
+    let check = call(&mut api, &mut app, m::GEOMETRY_CHECK, Value::Null);
+    assert_eq!(check["save_refusal"], Value::Null);
+    call(
+        &mut api,
+        &mut app,
+        m::DOC_SAVE_AS,
+        json!({"doc": "map", "path": out.display().to_string()}),
+    );
+    let (source, saved) = (std::fs::read(&map).unwrap(), std::fs::read(&out).unwrap());
+    assert_eq!(saved.len(), source.len());
+    assert_ne!(saved, source);
+}
+
+#[test]
+fn doc_undo_on_the_map_undoes_the_geometry_edit_and_the_op_log_replays_it() {
+    let t = Temp::new("geometry-undo");
+    let (mut api, mut app, _) = textured(&t);
+    lift_corner(&mut api, &mut app);
+    let ops = call(&mut api, &mut app, m::MESH_OPS, Value::Null)["ops"].clone();
+    assert_eq!(ops.as_array().unwrap().len(), 2);
+    let edited = call(&mut api, &mut app, m::GEOMETRY_READ, Value::Null)["verts"].clone();
+    // Undo the move, then the selection.
+    for _ in 0..2 {
+        let u = call(&mut api, &mut app, m::DOC_UNDO, json!({"doc": "map"}));
+        assert_eq!(u["done"], true);
+    }
+    assert_eq!(call(&mut api, &mut app, m::GEOMETRY_CHECK, Value::Null)["targets"][0]["class"], "unchanged");
+    assert!(!app.session.is_dirty());
+    // The log replays as one step to the same mesh.
+    call(&mut api, &mut app, m::MESH_APPLY, json!({"ops": ops}));
+    assert_eq!(call(&mut api, &mut app, m::GEOMETRY_READ, Value::Null)["verts"], edited);
+    let u = call(&mut api, &mut app, m::DOC_UNDO, json!({"doc": "map"}));
+    assert_eq!(u["done"], true);
+    assert_eq!(call(&mut api, &mut app, m::GEOMETRY_CHECK, Value::Null)["targets"][0]["class"], "unchanged");
+}
+
+#[test]
+fn a_grown_geometry_edit_refuses_the_save_and_names_the_target() {
+    let t = Temp::new("geometry-grown");
+    let (mut api, mut app, _) = textured(&t);
+    app.dispatch(Action::SetAllowUnverifiedGeometry(true));
+    call(
+        &mut api,
+        &mut app,
+        m::MESH_APPLY,
+        json!({"ops": [
+            {"op": "mode", "mode": "face"},
+            {"op": "select_all"},
+            {"op": "extrude_faces", "offset": [0.0, 0.0, 1.0]}
+        ]}),
+    );
+    let check = call(&mut api, &mut app, m::GEOMETRY_CHECK, Value::Null);
+    assert_eq!(check["targets"][0]["class"], "grown_raw");
+    let why = check["save_refusal"].as_str().unwrap();
+    assert!(why.contains("cluster:e1000004:0") && why.contains("grown"), "{why}");
 }

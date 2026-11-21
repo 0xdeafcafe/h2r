@@ -1,0 +1,10 @@
+{
+  "games": 1,
+  "won": 1,
+  "rounds_cleared": 3,
+  "lives_used": 4,
+  "score": 525,
+  "sets": [{"set": "Holdout", "games": 1, "won": 1, "rounds_cleared": 3}],
+  "kills_by_class": [{"class": "grunt", "kills": 2}, {"class": "elite", "kills": 1}],
+  "players": [{"xuid": "$HOST", "name": "Host", "score": 425, "kills": 2, "assists": 1, "games": 1}]
+}

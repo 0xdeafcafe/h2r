@@ -325,7 +325,6 @@ pub struct CreatureProbe;
 impl hooks::Feature for CreatureProbe {
     fn manifest(&self) -> Manifest {
         Manifest::new(FEATURE, "Slot-17 creature replication probe")
-            .off_by_default()
             .doc("docs/game/ai-networking.md")
     }
 

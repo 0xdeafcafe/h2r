@@ -64,6 +64,8 @@ pub struct HudUi {
     /// The finding under the mouse: its widgets light up.
     hot: Option<usize>,
     filter: String,
+    /// The filter over the HUD and widget lists.
+    list_filter: String,
 }
 
 fn heading(ui: &Ui, fonts: &Fonts, t: &str) {
@@ -137,14 +139,20 @@ pub fn tree(ui: &Ui, app: &mut App, st: &mut HudUi, fonts: &Fonts, actions: &mut
         ui.text_disabled("Pick a map to list its HUDs.");
         return;
     };
-    heading(ui, fonts, "HUDs");
+    ui.set_next_item_width(-1.0);
+    ui.input_text("##hud-list-filter", &mut st.list_filter)
+        .hint(format!("{} Filter HUDs and widgets", icon::SEARCH))
+        .build();
+    let needle = st.list_filter.to_lowercase();
+    let keep = |name: &str| needle.is_empty() || name.to_lowercase().contains(&needle);
     let current = s.current;
     let edited = s.edited();
-    let mut last = "";
-    // A third of what is left, the rest for the widgets.
-    let list = (ui.content_region_avail()[1] / 3.0).clamp(48.0, 220.0);
-    ui.child_window("##hud-list").size([0.0, list]).build(ui, || {
-        for e in &s.huds {
+    let bold = ui.push_font(fonts.bold);
+    let huds_open = ui.collapsing_header("HUDs##hud-huds-header", TreeNodeFlags::DEFAULT_OPEN);
+    bold.pop();
+    if huds_open {
+        let mut last = "";
+        for e in s.huds.iter().filter(|e| keep(&e.name)) {
             if e.category() != last {
                 last = e.category();
                 ui.text_disabled(last);
@@ -170,25 +178,28 @@ pub fn tree(ui: &Ui, app: &mut App, st: &mut HudUi, fonts: &Fonts, actions: &mut
                 }
             ));
         }
-    });
-    ui.separator();
-    heading(ui, fonts, "Widgets");
+    }
     let Some(hud) = s.hud() else { return };
     let selected = app.hud.selected;
-    ui.child_window("##hud-widgets").build(ui, || for w in &hud.widgets {
-        let kind = match w.key.kind {
-            WidgetKind::Bitmap => icon::BOX,
-            WidgetKind::Text => icon::FILE,
-        };
-        let mark = if w.is_dirty() { "  *" } else { "" };
-        if ui
-            .selectable_config(format!("{kind}  {}{mark}##hud-w-{:?}-{}", w.name, w.key.kind, w.key.index))
-            .selected(selected == Some(w.key))
-            .build()
-        {
-            actions.push(Action::HudSelect(Some(w.key)));
+    let bold = ui.push_font(fonts.bold);
+    let widgets_open = ui.collapsing_header("Widgets##hud-widgets-header", TreeNodeFlags::DEFAULT_OPEN);
+    bold.pop();
+    if widgets_open {
+        for w in hud.widgets.iter().filter(|w| keep(&w.name)) {
+            let kind = match w.key.kind {
+                WidgetKind::Bitmap => icon::BOX,
+                WidgetKind::Text => icon::FILE,
+            };
+            let mark = if w.is_dirty() { "  *" } else { "" };
+            if ui
+                .selectable_config(format!("{kind}  {}{mark}##hud-w-{:?}-{}", w.name, w.key.kind, w.key.index))
+                .selected(selected == Some(w.key))
+                .build()
+            {
+                actions.push(Action::HudSelect(Some(w.key)));
+            }
         }
-    });
+    }
 }
 
 /// The picture with its overlays, the toolbar above it and the state below.

@@ -283,6 +283,87 @@ fn unequal_root_sizes_are_conflicts_even_when_all_plugin_fields_fit() {
     }
 }
 
+fn hint_plugin(game: &str, size: u32, fields: &str) -> Plugin {
+    let xml = format!(r#"<plugin game="{game}" baseSize="{size}">{fields}</plugin>"#);
+    assembly::parse_game("zzzz", game, &xml).unwrap()
+}
+
+fn hint_names(def: &StructDef, plugin: &Plugin) -> Vec<(Vec<u32>, String)> {
+    hints(&Layout::from_definition(def), plugin)
+        .into_iter()
+        .map(|h| {
+            assert_eq!(h.game, plugin.game);
+            (h.path, h.name)
+        })
+        .collect()
+}
+
+#[test]
+fn hints_need_an_element_of_the_same_size_whose_named_fields_line_up() {
+    let def = definition(0xc, "  0 f32 invented_rate\n  4 unknown 8");
+    let fields = r#"<float32 offset="0" name="Invented other rate"/>
+        <int32 offset="4" name="Invented count"/>
+        <float32 offset="8" name="Invented scale" comment="Invented note."/>"#;
+    let same = hint_plugin("Halo3", 0xc, fields);
+    assert_eq!(
+        hint_names(&def, &same),
+        [(vec![4], "Invented count".into()), (vec![8], "Invented scale".into())]
+    );
+    assert_eq!(hints(&Layout::from_definition(&def), &same)[1].comment, "Invented note.");
+    // Our named field no longer lines up: no hint, whatever the offsets.
+    let moved = hint_plugin("Halo3", 0xc, r#"<int32 offset="0" name="Invented flags"/>
+        <int32 offset="4" name="Invented count"/>"#);
+    assert!(hint_names(&def, &moved).is_empty());
+    // A larger element with no named field after the hint.
+    let larger = hint_plugin("Halo3", 0x10, fields);
+    assert!(hint_names(&def, &larger).is_empty());
+}
+
+#[test]
+fn hints_in_a_different_size_element_need_both_neighbours() {
+    let def = definition(
+        0x10,
+        "  0 f32 invented_first\n  4 unknown 4\n  8 f32 invented_last\n  0xc unknown 4",
+    );
+    let lined = hint_plugin("Reach", 0x40, r#"<float32 offset="0" name="Invented a"/>
+        <enum16 offset="4" name="Invented half"/><int16 offset="6" name="Invented other half"/>
+        <float32 offset="8" name="Invented b"/><float32 offset="0xc" name="Invented tail"/>"#);
+    // +4 holds two plugin fields, which do not fill our word: no hint.
+    // +0xc has no named field after it.
+    assert!(hint_names(&def, &lined).is_empty());
+    let word = hint_plugin("Reach", 0x40, r#"<float32 offset="0" name="Invented a"/>
+        <bitfield32 offset="4" name="Invented mask"/>
+        <float32 offset="8" name="Invented b"/>"#);
+    assert_eq!(hint_names(&def, &word), [(vec![4], "Invented mask".into())]);
+    let shifted = hint_plugin("Reach", 0x40, r#"<float32 offset="0" name="Invented a"/>
+        <bitfield32 offset="4" name="Invented mask"/>
+        <stringId offset="8" name="Invented b"/>"#);
+    assert!(hint_names(&def, &shifted).is_empty());
+}
+
+#[test]
+fn hints_enter_blocks_that_line_up_and_skip_wider_pointers() {
+    let def = definition(
+        0x10,
+        "  0 block parts 0x8 align 4\n    0 f32 invented_weight\n    4 unknown 4\n  8 tagref tagref_8",
+    );
+    let narrow = hint_plugin("Halo2MCC", 0x10, r#"<tagblock offset="0" name="Invented parts" elementSize="8">
+          <float32 offset="0" name="Invented mass"/><float32 offset="4" name="Invented spin"/>
+        </tagblock>
+        <tagRef offset="8" name="Invented link"/>"#);
+    assert_eq!(
+        hint_names(&def, &narrow),
+        [(vec![0, 4], "Invented spin".into()), (vec![8], "Invented link".into())]
+    );
+    let wide = hint_plugin("Halo3", 0x14, r#"<tagblock offset="0" name="Invented parts" elementSize="8">
+          <float32 offset="0" name="Invented mass"/><float32 offset="4" name="Invented spin"/>
+        </tagblock>
+        <tagRef offset="8" name="Invented link"/>"#);
+    // The 12-byte block no longer fits our 8-byte one, and the 16-byte
+    // reference no longer fits ours.
+    assert!(hint_names(&def, &wide).is_empty());
+}
+
 #[test]
 #[ignore = "uses the developer's local field definitions"]
 fn every_plugin_merges_against_our_definitions() {
@@ -290,6 +371,7 @@ fn every_plugin_merges_against_our_definitions() {
         return;
     };
     let folder = assembly::Folder::open(Path::new(&dir)).unwrap();
+    let others = assembly::Hints::open(Path::new(&dir)).unwrap();
     let registry = Registry::builtin();
     let groups = folder.groups();
     let mut total = tags::registry::Coverage::default();
@@ -303,12 +385,19 @@ fn every_plugin_merges_against_our_definitions() {
         let result = compare(ours.map(Arc::as_ref), Defs::builtin().group(code), &plugin, size);
         let coverage = result.layout.coverage();
         println!(
-            "{group}: {} of {} fields named ({} external), {} conflicts",
+            "{group} ({}): {} of {} fields named ({} external), {} conflicts",
+            plugin.game,
             coverage.named_fields,
             coverage.named_fields + coverage.unnamed_fields,
             result.named,
             result.conflicts.len()
         );
+        for other in others.load(group).unwrap() {
+            let found = hints(&result.layout, &other);
+            if !found.is_empty() {
+                println!("  {} hints from {}", found.len(), other.game);
+            }
+        }
         for conflict in &result.conflicts {
             println!(
                 "  {} {}: ours [{}], theirs [{}]",

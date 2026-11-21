@@ -288,7 +288,28 @@ pub(crate) fn register_core_film(
     // Firefight on a kit map (docs/game/firefight.md, "The host runtime"):
     // off unless H2_FEATURES names `firefight`. A film replays the host's
     // entries.
-    crate::firefight::feature::install(features, film.is_some()).context("installing Firefight")?;
+    // Its Game Setup row and options page come with it, where there is a
+    // settings store to keep the choices.
+    let firefight_options = i.settings.as_ref().map(crate::firefight::options::source);
+    // The host's scores and result go to Live and the film through telemetry.
+    let firefight_reports = telemetry.clone().map(|t| {
+        Box::new(move |report: crate::firefight::runtime::Report| match report {
+            crate::firefight::runtime::Report::Score(score) => t.firefight_score(score),
+            crate::firefight::runtime::Report::Ended(ended) => t.firefight_ended(ended),
+        }) as Box<crate::firefight::runtime::ReportSink>
+    });
+    if crate::firefight::feature::install_with(
+        features,
+        film.is_some(),
+        firefight_options,
+        firefight_reports,
+    )
+        .context("installing Firefight")?
+        && let Some(store) = i.settings.as_ref()
+    {
+        crate::firefight::options::install(features, store)
+            .context("installing the Firefight options page")?;
+    }
     for effect in [
         &crate::h1_particle_physics::H1ParticlePhysics as &dyn hooks::Feature,
         &crate::h1_flag::H1Flag,
@@ -521,8 +542,8 @@ pub(crate) fn register_late_for_profile(
         a.install_matchmaking_trace(features)?;
         cheats::install(features, &a.agent, i.rt, lockstep_on, i.live.clone())?;
     }
-    // The Rust datum, tag and locale functions, when H2_FEATURES has
-    // impl.engine=on (off by default).
+    // The Rust datum, tag and locale functions (on unless H2_FEATURES has
+    // impl.engine=off).
     features
         .add(&hooks::leaves::EngineLeaves)
         .map_err(|e| anyhow::anyhow!("engine leaves: {e}"))?;

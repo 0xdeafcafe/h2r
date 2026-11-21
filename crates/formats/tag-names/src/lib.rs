@@ -1,4 +1,5 @@
-//! Developer comparison of retail Xbox plugin layouts and the checked-in tag definitions.
+//! Developer comparison of retail plugin layouts (the Xbox reference, its
+//! fallback and other retail games as hints) and the checked-in tag definitions.
 #![forbid(unsafe_code)]
 
 pub mod assembly;

@@ -75,9 +75,9 @@ impl Switches {
         self
     }
 
-    /// Headphone binaural filtering for positioned audio, off unless requested.
+    /// Headphone binaural filtering for positioned audio, on unless `audio.hrtf=off`.
     pub fn audio_hrtf(&self) -> bool {
-        self.feature("audio.hrtf", false)
+        self.feature("audio.hrtf", true)
     }
 
     /// `features.<id>`.
@@ -85,9 +85,10 @@ impl Switches {
         self.set.get(id).copied().unwrap_or(default)
     }
 
-    /// Optional extra wet level and direct HF loss for positioned voices.
+    /// Extra wet level and direct HF loss for positioned voices, on unless
+    /// `audio.distance_reverb=off`.
     pub fn distance_reverb(&self) -> bool {
-        self.feature("audio.distance_reverb", false)
+        self.feature("audio.distance_reverb", true)
     }
 
     /// `impl.<name>`, falling back to its parent (`impl.ui.row_text` then
@@ -147,27 +148,27 @@ mod tests {
     }
 
     #[test]
-    fn distance_reverb_is_an_exact_opt_in() {
-        assert!(!Switches::defaults().distance_reverb());
-        assert!(!Switches::parse("audio=on").unwrap().distance_reverb());
+    fn distance_reverb_is_on_and_switches_off_exactly() {
+        assert!(Switches::defaults().distance_reverb());
+        assert!(Switches::parse("audio=on").unwrap().distance_reverb());
         assert!(
-            Switches::parse("audio.distance_reverb=on")
+            !Switches::parse("audio.distance_reverb=off")
                 .unwrap()
                 .distance_reverb()
         );
         assert!(
-            !Switches::parse("audio.distance_reverb=off")
+            Switches::parse("audio.distance_reverb=on")
                 .unwrap()
                 .distance_reverb()
         );
     }
 
     #[test]
-    fn audio_hrtf_requires_opt_in() {
-        assert!(!Switches::defaults().audio_hrtf());
-        assert!(!Switches::parse("audio=on").unwrap().audio_hrtf());
-        assert!(Switches::parse("audio.hrtf=on").unwrap().audio_hrtf());
+    fn audio_hrtf_is_on_and_switches_off_exactly() {
+        assert!(Switches::defaults().audio_hrtf());
+        assert!(Switches::parse("audio=on").unwrap().audio_hrtf());
         assert!(!Switches::parse("audio.hrtf=off").unwrap().audio_hrtf());
+        assert!(Switches::parse("audio.hrtf=on").unwrap().audio_hrtf());
     }
 
     #[test]

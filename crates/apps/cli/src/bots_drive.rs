@@ -68,7 +68,7 @@
 
 use std::collections::BTreeSet;
 
-use agent_proto::sim::menu::MAIN_MENU_THEATER_MARKER;
+use agent_proto::sim::menu::inserted_rows;
 
 use crate::bots_verdict::{phantom_joined_lobby, phantom_off};
 use crate::coop_drive::{
@@ -767,7 +767,7 @@ impl Driver {
                     "the players' screen for Xbox Live: on to the Live menu",
                 )]
             }
-            (false, Some(mode)) => back_to_live(mode, self.ui.contains(MAIN_MENU_THEATER_MARKER)),
+            (false, Some(mode)) => back_to_live(mode, inserted_rows(&self.ui)),
         };
         true
     }

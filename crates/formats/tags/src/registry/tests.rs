@@ -81,9 +81,12 @@ fn the_definitions_merge_without_conflicts() {
 #[test]
 fn named_definition_fields_sit_at_their_offsets() {
     fn walk(path: &str, d: &StructDef, l: &Layout, bad: &mut Vec<String>) {
-        let mut leaves = Vec::new();
-        flatten(d, 0, "", None, "", &mut leaves);
-        for leaf in leaves {
+        let mut flat = Flat {
+            leaves: Vec::new(),
+            titles: BTreeMap::new(),
+        };
+        flatten(d, 0, "", None, "", None, &mut flat);
+        for leaf in flat.leaves {
             let f = leaf.def;
             if f.kind.is_unknown() || f.typed_only() || f.name.starts_with("unknown") {
                 continue;
@@ -307,4 +310,123 @@ fn a_schema_only_group_is_all_typed_or_unknown() {
         ]
     );
     assert!(l.fields.iter().all(|f| !f.named));
+}
+
+/// An invented group using every editor attribute.
+const ATTRS: &str = r#"struct shared 0x8 title="Shared kind" applies=use
+  0x0 f32 rate unit=world_units_per_second label="Rate (fast)"
+  0x4 f32 flat applies=creation
+group test 0x4c title="Test thing" applies=frame
+  0x0 struct inner shared
+  0x8 f32 delay unit=seconds
+  0xc f32[3] offset axes=x|y|z unit=world_units
+  0x18 f32 turn_angle unit=seconds
+  0x1c f32 spin unit=degrees_per_second
+  0x20 f32 swing_angle
+  0x24 f32[2] aim_range unit=fraction
+  0x2c block parts 0x8 align 4 title=name applies=use
+    0x0 string name
+    0x4 f32 weight applies=creation
+  0x34 block bare 0x4 align 4
+    0x0 f32 loose
+  0x3c struct late shared applies=creation
+  0x44 u32 own applies=use
+  0x48 u32 plain
+"#;
+
+fn attr_layout() -> Arc<Layout> {
+    let mut defs = Defs::default();
+    defs.parse_into("attrs", ATTRS).unwrap();
+    let r = Registry::build(&Schema::default(), &defs);
+    assert!(r.conflicts.is_empty(), "{:?}", r.conflicts);
+    r.group(FourCC(*b"test")).unwrap().clone()
+}
+
+#[test]
+fn definition_attributes_reach_the_fields() {
+    let l = attr_layout();
+    assert_eq!(l.title, Some(Title::Text("Test thing".into())));
+    assert_eq!(l.section_titles["inner"], "Shared kind");
+    assert_eq!(l.section_titles["late"], "Shared kind");
+    assert_eq!(l.section_titles.len(), 2);
+    let rate = l.field_at(0).unwrap();
+    assert_eq!(rate.section, "inner");
+    assert_eq!(rate.label.as_deref(), Some("Rate (fast)"));
+    assert_eq!(rate.unit, Some(Unit::WorldUnitsPerSecond));
+    assert_eq!(l.field_at(0xc).unwrap().axes, ["x", "y", "z"]);
+    assert_eq!(l.field_at(0xc).unwrap().unit, Some(Unit::WorldUnits));
+    assert_eq!(l.field_at(0x8).unwrap().unit, Some(Unit::Seconds));
+    let plain = l.field_at(0x48).unwrap();
+    assert_eq!(
+        (plain.label.clone(), plain.unit, plain.axes.len()),
+        (None, None, 0)
+    );
+    let Kind::Block(parts) = &l.field_at(0x2c).unwrap().kind else {
+        panic!("parts is a block")
+    };
+    assert_eq!(parts.title, Some(Title::Field("name".into())));
+    let Kind::Block(bare) = &l.field_at(0x34).unwrap().kind else {
+        panic!("bare is a block")
+    };
+    assert_eq!(bare.title, None);
+    assert!(bare.section_titles.is_empty());
+}
+
+#[test]
+fn applies_is_inherited_and_a_fields_own_value_wins() {
+    let l = attr_layout();
+    let at = |o: u32| l.field_at(o).unwrap().applies;
+    // The group line gives its timing to fields with none of their own.
+    assert_eq!(at(0x8), Some("frame"));
+    assert_eq!(at(0x48), Some("frame"));
+    // A field's own value beats every line above it.
+    assert_eq!(at(0x44), Some("use"));
+    // The struct's header is nearer its fields than the group line: `rate`
+    // takes `use`; `flat` has its own.
+    assert_eq!(at(0x0), Some("use"));
+    assert_eq!(at(0x4), Some("creation"));
+    // The header also beats the line that embeds the struct.
+    assert_eq!(at(0x3c), Some("use"));
+    assert_eq!(at(0x40), Some("creation"));
+    // A block line gives its timing to the element's fields, and a field
+    // there keeps its own.
+    let Kind::Block(parts) = &l.field_at(0x2c).unwrap().kind else {
+        panic!("parts is a block")
+    };
+    assert_eq!(at(0x2c), Some("use"));
+    assert_eq!(parts.field_at(0).unwrap().applies, Some("use"));
+    assert_eq!(parts.field_at(4).unwrap().applies, Some("creation"));
+    // A block with no timing of its own inherits the group's.
+    let Kind::Block(bare) = &l.field_at(0x34).unwrap().kind else {
+        panic!("bare is a block")
+    };
+    assert_eq!(at(0x34), Some("frame"));
+    assert_eq!(bare.field_at(0).unwrap().applies, Some("frame"));
+}
+
+#[test]
+fn a_definition_with_no_applies_anywhere_is_not_known() {
+    let mut defs = Defs::default();
+    defs.parse_into("t", "group test 0x8\n  0x0 f32 a\n  0x4 u32 b\n")
+        .unwrap();
+    let r = Registry::build(&Schema::default(), &defs);
+    let l = r.group(FourCC(*b"test")).unwrap();
+    assert!(l.fields.iter().all(|f| f.applies.is_none()));
+}
+
+#[test]
+fn a_unit_decides_whether_a_float_shows_as_an_angle() {
+    let l = attr_layout();
+    let hint = |o: u32| match l.field_at(o).unwrap().kind {
+        Kind::Float { hint, .. } => hint,
+        _ => panic!("a float"),
+    };
+    // `degrees_per_second` makes an angle whatever the name.
+    assert_eq!(hint(0x1c), Hint::Angle);
+    // Another unit overrides the name match.
+    assert_eq!(hint(0x18), Hint::Plain);
+    // No unit: the name still decides.
+    assert_eq!(hint(0x20), Hint::Angle);
+    // A unit does not take a bounds name away.
+    assert_eq!(hint(0x24), Hint::Bounds);
 }
