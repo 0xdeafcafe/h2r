@@ -1,0 +1,46 @@
+name: Live deploy
+
+# Deploys the Live Worker and web to production on each push to master
+# (docs/live/live-worker.md, "Deploy from CI"). The dedicated host image is
+# never built here: it holds the owner's disc-compiled module, so deploy.sh
+# runs the registry image named by deploy/host/image-tag. Skips until the
+# CLOUDFLARE_API_TOKEN secret is set.
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      H2_WORKER_HOME: ${{ github.workspace }}/.worker-home
+    steps:
+      - name: Skip without a Cloudflare token
+        if: env.CLOUDFLARE_API_TOKEN == ''
+        run: echo "CLOUDFLARE_API_TOKEN is not set; nothing deployed"
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        if: env.CLOUDFLARE_API_TOKEN != ''
+        with:
+          lfs: true # web/public/art
+      - uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2.0.2
+        if: env.CLOUDFLARE_API_TOKEN != ''
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        if: env.CLOUDFLARE_API_TOKEN != ''
+        with:
+          path: .worker-home
+          key: worker-home-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: worker-home-
+      - name: Deploy production
+        if: env.CLOUDFLARE_API_TOKEN != ''
+        run: crates/live/live-worker/deploy.sh production --yes-production
