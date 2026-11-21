@@ -82,10 +82,10 @@ pub const PROMPT_KEEP_MOVING: &str = "Keep moving or lose the charge";
 /// ([`Note::ChargeLost`]).
 pub const PROMPT_CHARGE_AGAIN: &str = "Find a crouch spot to charge again";
 /// Looking at a bounce spot that has a ghost run, and while one plays
-/// (`game::superbounce_ghost`): the button is d-pad up (U+E108), which no
-/// Halo 2 layout uses in a game.
-pub const PROMPT_SHOW_GHOST: &str = "Press \u{e108} to show ghost";
-pub const PROMPT_STOP_GHOST: &str = "Press \u{e108} to stop ghost";
+/// (`game::superbounce_ghost`): the button is X (U+E102), pressed on the
+/// ground (the fall assist reads X in the air).
+pub const PROMPT_SHOW_GHOST: &str = "Press \u{e102} to show ghost";
+pub const PROMPT_STOP_GHOST: &str = "Press \u{e102} to stop ghost";
 /// The prompt line's widest verb: the most characters.
 pub const PROMPT_LONGEST: &str = PROMPT_CHARGE_AGAIN;
 

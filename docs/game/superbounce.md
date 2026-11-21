@@ -1367,17 +1367,17 @@ is at most 1800 frames.
 **Showing one.** The player looks at a spot that has a run: its `stand`
 within 15 units of the eye (0.62 over the origin), and within 6 degrees
 of the aim, or the angle a 0.4-unit mark spans when that is wider. The
-prompt line says "Press (d-pad up) to show ghost". The prompt line's
+prompt line says "Press (X) to show ghost". The prompt line's
 recipe steps come first; the ghost's prompt replaces only "Hold (crouch)
 and walk under". A press plays the run once; a press while it plays
-stops it ("Press (d-pad up) to stop ghost"); a press after it ends plays
+stops it ("Press (X) to stop ghost"); a press after it ends plays
 it again. Leaving the map or the mode stops it.
 
-The button is d-pad up (`superbounce_ghost::BUTTON`, read by the fall
-assist's input tap): no Halo 2 layout gives the d-pad a game action, the
-fall assist is X, crouch the left stick, jump A, and the flashlight is
-kept free. Push-to-talk defaults to d-pad down. On the keyboard it is
-the up arrow.
+The button is X (`superbounce_ghost::BUTTON`, read by the fall assist's
+input tap). The fall assist reads X only in the air, so a press counts
+only while the player is on the ground (`press_counts`); a press in the
+air is spent, not kept for the landing, and the two never clash. The
+flashlight is taken by the bounce view. On the keyboard it is X's key.
 
 **Playback runs on the clock.** The frames are 1/30 s apart (the guest
 tick is 30 Hz at every display rate, [high-framerate.md](high-framerate.md)).

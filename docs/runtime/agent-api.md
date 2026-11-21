@@ -821,7 +821,7 @@ each spot, kept in `<map>.ghosts` in the bots directory
 | `error` | why the file could not be read (another version, a bad line); it is not written over then |
 | `ghosts` | each run: `index` (what `superbounce.ghost_show` takes), `at` (the spot's stand point), `landing` (the touchdown origin), `source` (`bot`, `verify` or `player`), `ticks` (30 a second), `launch` (units/s up out of the bounce), `crouch_primed` (it primed itself with a crouch), `presses` (`frame` and `button`, `crouch` or `jump`) |
 | `looked_at` | the run whose spot the first local player looks at |
-| `prompt` | the prompt line's ghost verb, as the HUD writes it (d-pad up's glyph, U+E108) |
+| `prompt` | the prompt line's ghost verb, as the HUD writes it (X's glyph, U+E102) |
 | `playing` | the playback: `index`, `seconds` since it started by the clock, the run's `tick` then (with the fraction to the next), the figure's `at`, and `done` once it holds on its last frame; absent when none plays |
 | `recorded` | runs kept (a new best for their spot) since the game started |
 

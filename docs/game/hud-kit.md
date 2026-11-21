@@ -828,8 +828,8 @@ its notification list:
 | `Prompt` | Walk out to stand up | held |
 | `Prompt` | Keep moving or lose the charge | primed and still for 19 ticks or more, the fill at half or under |
 | `Prompt` | Find a crouch spot to charge again | for 150 ticks after a loss, until a crouch step begins; the reason is the loss's notification |
-| `Prompt` | Press (d-pad up) to show ghost | looking at a spot with a ghost run, when no recipe step is on the line (it replaces "Hold (crouch) and walk under"; [superbounce.md](superbounce.md#ghost-runs)) |
-| `Prompt` | Press (d-pad up) to stop ghost | while a ghost run plays, as above |
+| `Prompt` | Press (X) to show ghost | looking at a spot with a ghost run, when no recipe step is on the line (it replaces "Hold (crouch) and walk under"; [superbounce.md](superbounce.md#ghost-runs)) |
+| `Prompt` | Press (X) to stop ghost | while a ghost run plays, as above |
 | `Message` | Primed | the word becomes −3 |
 | `Message` | Charge lost: you stood still / Charge lost: you crouched / Charge lost | lost, by its reason ([superbounce.md](superbounce.md), "Charge"): the body slept, a crouch, another reason |
 | `Message` (`sb.medal`) | a medal line (below, "The medals") | a bounce, or a Bounced |

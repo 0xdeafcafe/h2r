@@ -1215,7 +1215,7 @@ mod tests {
                 }],
             }],
             looked_at: Some(0),
-            prompt: Some("Press \u{e108} to show ghost".into()),
+            prompt: Some("Press \u{e102} to show ghost".into()),
             ..Ghosts::default()
         };
         let v = serde_json::to_value(&g).unwrap();

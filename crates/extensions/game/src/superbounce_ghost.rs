@@ -47,15 +47,15 @@ use crate::superbounce_font::Look;
 // ---- the control ----
 
 /// The button that shows a ghost, as the action table numbers physical
-/// buttons (`superbounce_assist::button_down`): 8 is d-pad up. No Halo 2
-/// layout gives the d-pad a game action, the fall assist is X, crouch the
-/// left stick, jump A, and the flashlight is kept for other uses. Voice
-/// chat's push-to-talk defaults to d-pad down. On the keyboard it is the
-/// up arrow (`crates/platform/input/src/bindings.rs`).
-pub const BUTTON: u8 = 8;
+/// buttons (`superbounce_assist::button_down`): 2 is X. The fall assist
+/// reads X only in the air, so a press counts only on the ground
+/// ([`press_counts`]) and the two never clash. The flashlight is taken by
+/// the bounce view. On the keyboard it is X's key
+/// (`crates/platform/input/src/bindings.rs`).
+pub const BUTTON: u8 = 2;
 /// [`BUTTON`]'s glyph in the HUD font (docs/input/button-icons.md); the
 /// prompts in `hud_kit_core::huds::superbounce` write the same one.
-pub const BUTTON_GLYPH: char = '\u{e108}';
+pub const BUTTON_GLYPH: char = '\u{e102}';
 /// The glyphs drawn where the run pressed a button: A for the jump, the
 /// left stick's click for crouch (the Default layout's).
 pub const JUMP_GLYPH: char = '\u{e100}';
@@ -832,6 +832,13 @@ fn take_press() -> bool {
     PRESSED.swap(false, Ordering::Relaxed)
 }
 
+/// Whether a press taken this tick counts: only while the player is on the
+/// ground, where the fall assist does not read X. An unknown player (none
+/// local) counts as on the ground.
+fn press_counts(pressed: bool, airborne: Option<bool>) -> bool {
+    pressed && airborne != Some(true)
+}
+
 /// The prompt of the last tick.
 pub fn current_prompt() -> Option<GhostPrompt> {
     match PROMPT.load(Ordering::Relaxed) {
@@ -944,7 +951,7 @@ fn yaw_of(aim: Vec3) -> Option<f32> {
 
 /// One game tick of the mode (`superbounce_mode`): records the bots' and
 /// the verifier's runs from `players` and the chain's `awards`, finds the
-/// spot the first local player looks at, and takes a press of [`BUTTON`].
+/// spot the first local player looks at, and takes a press of [`BUTTON`] on the ground.
 pub fn tick(
     m: &dyn GuestMemory,
     tick: u32,
@@ -1043,7 +1050,9 @@ pub fn tick(
     if rt.playback.as_ref().is_some_and(|p| p.over(now)) {
         rt.set_playback(None);
     }
-    if take_press() {
+    // Taken every tick, so a press in the air is spent, not kept for the
+    // landing.
+    if press_counts(take_press(), local.map(|t| t.airborne)) {
         if rt.playback.is_some() {
             rt.set_playback(None);
         } else if let Some(i) = rt.looked

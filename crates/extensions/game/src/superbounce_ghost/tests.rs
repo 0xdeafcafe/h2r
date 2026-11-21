@@ -365,9 +365,20 @@ fn the_prompt_offers_the_ghost_and_then_to_stop_it() {
         "{text}"
     );
     assert!(Verb::StopGhost.text().contains(BUTTON_GLYPH));
-    // The button's glyph is the action table's d-pad up.
-    assert_eq!(BUTTON, 8);
+    // The button's glyph is the action table's X.
+    assert_eq!(BUTTON, 2);
     assert_eq!(BUTTON_GLYPH as u32 - 0xe100, u32::from(BUTTON));
+}
+
+#[test]
+fn a_press_counts_on_the_ground_and_not_in_the_air() {
+    assert!(press_counts(true, Some(false)));
+    assert!(press_counts(true, None));
+    assert!(
+        !press_counts(true, Some(true)),
+        "X in the air is the assist's"
+    );
+    assert!(!press_counts(false, Some(false)));
 }
 
 #[test]
