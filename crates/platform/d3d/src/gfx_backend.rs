@@ -72,6 +72,7 @@ pub(crate) mod guest_draw_pass;
 mod native_runs;
 
 pub use guest_draw_pass::GuestDrawPass;
+pub use guest_draw_pass::tiles::{ShadowTiles, TileWork};
 
 use std::collections::HashMap;
 
@@ -326,6 +327,15 @@ impl GfxBackend {
     pub fn set_hard_shadows(&mut self, on: bool) {
         self.lighting = if on { crate::Lighting::E3 } else { crate::Lighting::Retail };
         self.set_scene_receiver(on);
+    }
+
+    /// The Sharp edge for the draws prepared from now on
+    /// (`ShaderProvider::set_sharp_shadows`). The native graph sets it
+    /// around each receiver of a shadow tile and clears it after.
+    pub(crate) fn set_sharp_receiver(&mut self, on: bool) {
+        if let Some(s) = self.shaders.as_mut() {
+            s.set_sharp_shadows(on);
+        }
     }
 
     pub(crate) fn scene_lighting(&self) -> crate::Lighting {

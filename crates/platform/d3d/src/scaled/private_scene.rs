@@ -11,6 +11,7 @@ use super::{ScaledBackend, ScaledSurface};
 use crate::backend::Backend;
 use crate::gfx_backend::GfxBackend;
 use crate::gfx_backend::guest_draw_pass::commands::{Commands, SceneDevice};
+use crate::gfx_backend::guest_draw_pass::tiles::{ShadowTiles, TileWork};
 use crate::scene_sink::{ReplayFrame, ReplayOp, TargetSeed};
 
 type Scaled = ScaledBackend<GfxBackend, GfxBackend>;
@@ -39,6 +40,10 @@ pub struct MixedPrivatePass<'a> {
     count_samples: bool,
     gpu_aliases: bool,
     lighting: crate::Lighting,
+    /// E3 lighting's shadow tiles: each tiled level's draws and clears are
+    /// repeated into a copy at the E3 factor, which its receivers sample
+    /// with the Sharp edge (`ScaledBackend::scene_tile`).
+    tiles: Option<ShadowTiles>,
 }
 
 impl<'a> MixedPrivatePass<'a> {
@@ -87,6 +92,7 @@ impl<'a> MixedPrivatePass<'a> {
             count_samples,
             gpu_aliases,
             lighting,
+            tiles: None,
         };
         // ScaledBackend learns the main frame size from its first colour.
         // Every subsequent attachment is allocated at its original logical size.
@@ -121,6 +127,32 @@ impl<'a> MixedPrivatePass<'a> {
             }
         }
         Ok(pass)
+    }
+
+    /// A private draw in `lighting`. E3 keeps a tile of each shadow map
+    /// the plan admits (`gfx_backend::guest_draw_pass::tiles`).
+    pub fn new_lit(
+        source: &'a mut GfxBackend,
+        frame: &ReplayFrame,
+        scale: u32,
+        lighting: crate::Lighting,
+    ) -> Result<Self, String> {
+        let mut pass = Self::new(source, frame, scale)?;
+        if lighting == crate::Lighting::E3 {
+            let factor = super::shadow_scale(scale, crate::Lighting::E3);
+            let plan = ShadowTiles::plan(frame, factor);
+            pass.backend.scene_tiles = plan
+                .tile_levels()
+                .filter_map(|t| pass.targets.get(&t).map(|s| s.reference))
+                .collect();
+            pass.tiles = Some(plan);
+        }
+        Ok(pass)
+    }
+
+    /// The E3 shadow tiles' work so far; `None` without tiles.
+    pub fn tile_work(&self) -> Option<TileWork> {
+        self.tiles.as_ref().map(ShadowTiles::work)
     }
 
     fn allocate(&mut self, key: TargetRef, desc: AuxTarget) -> Result<(), String> {
@@ -159,8 +191,30 @@ impl<'a> MixedPrivatePass<'a> {
     }
 
     pub fn apply(&mut self, op: &ReplayOp) -> Result<(), String> {
-        self.commands
-            .apply(&mut self.backend, &self.targets, false, 1, op)
+        let Some(tiles) = self.tiles.as_mut() else {
+            return self
+                .commands
+                .apply(&mut self.backend, &self.targets, false, 1, op);
+        };
+        let sharp = tiles.note(op);
+        let tiled = self.backend.stats.shadow_textures;
+        if sharp {
+            self.backend.view.set_sharp_receiver(true);
+        }
+        let result = self
+            .commands
+            .apply(&mut self.backend, &self.targets, false, 1, op);
+        if sharp {
+            self.backend.view.set_sharp_receiver(false);
+        }
+        // A stale or missing tile is sampled from the guest-size level.
+        if let ReplayOp::Sample { of, id, .. } = op
+            && tiles.is_tile(*of)
+            && self.backend.stats.shadow_textures == tiled
+        {
+            tiles.fell_back(*id);
+        }
+        result
     }
 
     pub fn read_target(&mut self, key: TargetRef) -> Result<([u32; 2], Vec<u8>), String> {
@@ -174,6 +228,7 @@ impl Drop for MixedPrivatePass<'_> {
         // A refusal can leave a partially recorded pass. Retire its uses
         // before returning the borrowed GPU with its original query policy.
         let _ = self.backend.view.flush();
+        self.backend.view.set_sharp_receiver(false);
         for (_, surface) in self.targets.drain() {
             let _ = self.backend.destroy_surface(surface);
         }

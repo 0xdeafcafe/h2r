@@ -4,6 +4,7 @@
 
 pub(crate) mod commands;
 pub(crate) mod live;
+pub mod tiles;
 mod typed;
 use commands::{Commands, SceneDevice};
 
@@ -38,6 +39,8 @@ pub struct GuestDrawPass<'a> {
     old_count_samples: bool,
     old_gpu_only_aliases: bool,
     owns_targets: bool,
+    /// E3 lighting's shadow tiles ([`tiles`]), on fresh targets only.
+    tiles: Option<tiles::ShadowTiles>,
 }
 
 impl GfxBackend {
@@ -165,7 +168,18 @@ impl GfxBackend {
 impl<'a> GuestDrawPass<'a> {
     /// A private target draw. It submits no guest visibility feedback.
     pub fn new(gpu: &'a mut GfxBackend, frame: &ReplayFrame, scale: u32) -> Result<Self, String> {
-        Self::start(gpu, frame, scale, false, None)
+        Self::start(gpu, frame, scale, false, None, false)
+    }
+
+    /// A private target draw in `lighting`. E3 draws the guest's shadow
+    /// maps as tiles with the Sharp edge ([`tiles`]); retail is [`Self::new`].
+    pub fn new_lit(
+        gpu: &'a mut GfxBackend,
+        frame: &ReplayFrame,
+        scale: u32,
+        lighting: crate::Lighting,
+    ) -> Result<Self, String> {
+        Self::start(gpu, frame, scale, false, None, lighting == crate::Lighting::E3)
     }
 
     /// The window draw. Visibility reports belong only to this playback.
@@ -174,7 +188,19 @@ impl<'a> GuestDrawPass<'a> {
         frame: &ReplayFrame,
         scale: u32,
     ) -> Result<Self, String> {
-        Self::start(gpu, frame, scale, true, None)
+        Self::start(gpu, frame, scale, true, None, false)
+    }
+
+    /// The window draw in `lighting`, on fresh targets as [`Self::new_lit`].
+    pub fn new_display_lit(
+        gpu: &'a mut GfxBackend,
+        frame: &ReplayFrame,
+        scale: u32,
+        lighting: crate::Lighting,
+    ) -> Result<Self, String> {
+        let mut pass = Self::start(gpu, frame, scale, true, None, lighting == crate::Lighting::E3)?;
+        pass.lighting = lighting;
+        Ok(pass)
     }
 
     /// Draw on the renderer's existing targets at their common scale.
@@ -191,7 +217,7 @@ impl<'a> GuestDrawPass<'a> {
             .get(&frame.presented)
             .ok_or("missing existing present target")?;
         let scale = gpu.integral_scale(*presented).ok_or("existing present target is not an integer scale")?;
-        Self::start(gpu, frame, scale, true, Some(targets))
+        Self::start(gpu, frame, scale, true, Some(targets), false)
     }
 
     fn start(
@@ -200,6 +226,7 @@ impl<'a> GuestDrawPass<'a> {
         scale: u32,
         display: bool,
         existing: Option<&HashMap<TargetRef, SurfaceId>>,
+        tiles: bool,
     ) -> Result<Self, String> {
         if !(1..=crate::MAX_SCALE).contains(&scale) {
             return Err(format!(
@@ -248,6 +275,12 @@ impl<'a> GuestDrawPass<'a> {
             old_count_samples,
             old_gpu_only_aliases,
             owns_targets: existing.is_none(),
+            // The live attachments belong to the guest's device: their
+            // shadow maps keep its size.
+            tiles: (tiles && existing.is_none()).then(|| {
+                let factor = crate::scaled::shadow_scale(scale, crate::Lighting::E3);
+                tiles::ShadowTiles::plan(frame, factor)
+            }),
         };
         if let Some(colour) = frame.colour {
             pass.resolve_target(TargetRef::SceneColour, colour, existing)?;
@@ -293,11 +326,16 @@ impl<'a> GuestDrawPass<'a> {
         desc: AuxTarget,
         existing: Option<&HashMap<TargetRef, SurfaceId>>,
     ) -> Result<(), String> {
-        let limit = self.gpu.ctx.device.limits().max_texture_dimension_2d / self.scale;
+        let scale = self
+            .tiles
+            .as_ref()
+            .and_then(|t| t.factor_of(target))
+            .unwrap_or(self.scale);
+        let limit = self.gpu.ctx.device.limits().max_texture_dimension_2d / scale;
         if desc.width == 0 || desc.height == 0 || desc.width > limit || desc.height > limit {
             return Err(format!(
-                "scene target {target:?} has invalid extent {}x{} at {}x",
-                desc.width, desc.height, self.scale
+                "scene target {target:?} has invalid extent {}x{} at {scale}x",
+                desc.width, desc.height
             ));
         }
         let format = D3DFormat::from_raw(desc.format)
@@ -319,7 +357,7 @@ impl<'a> GuestDrawPass<'a> {
                 desc.width,
                 desc.height,
                 desc.depth,
-                RenderScale::from(self.scale),
+                RenderScale::from(scale),
             )?
         };
         self.targets.insert(target, surface);
@@ -343,8 +381,22 @@ impl<'a> GuestDrawPass<'a> {
     /// the pending pass; writes, copies and samples order themselves via
     /// the recording backend.
     pub fn apply(&mut self, op: &ReplayOp) -> Result<(), String> {
-        self.commands
-            .apply(self.gpu, &self.targets, self.display, self.scale, op)
+        let sharp = self.tiles.as_mut().is_some_and(|t| t.note(op));
+        if sharp {
+            self.gpu.set_sharp_receiver(true);
+        }
+        let result = self
+            .commands
+            .apply(self.gpu, &self.targets, self.display, self.scale, op);
+        if sharp {
+            self.gpu.set_sharp_receiver(false);
+        }
+        result
+    }
+
+    /// The E3 shadow tiles' work so far; `None` without tiles.
+    pub fn tile_work(&self) -> Option<tiles::TileWork> {
+        self.tiles.as_ref().map(tiles::ShadowTiles::work)
     }
 
     /// Completes outstanding packets without waiting for the device.
@@ -430,6 +482,7 @@ impl Drop for GuestDrawPass<'_> {
         }
         self.gpu
             .set_scene_receiver(self.gpu.scene_lighting() == crate::Lighting::E3);
+        self.gpu.set_sharp_receiver(false);
         self.gpu.count_samples = self.old_count_samples;
         self.gpu.single_copy_aliases = self.old_gpu_only_aliases;
     }

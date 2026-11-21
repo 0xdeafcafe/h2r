@@ -390,6 +390,9 @@ pub struct ScaledBackend<R: Backend, V: ScaleView<R>> {
     single_copy: bool,
     /// The sealed game frame currently owns the shared images, including at 1x.
     scene_active: bool,
+    /// Shadow levels a native E3 private draw repeats into tiles at the E3
+    /// factor while the scene is active (`private_scene`). Empty otherwise.
+    scene_tiles: Vec<R::Surface>,
     /// At 1x E3 these original handles last left a native frame with
     /// coherent reference, view and exported attachment contents.
     scene_coherent: Vec<R::Surface>,
@@ -520,6 +523,7 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
         Ok(Self {
             single_copy,
             scene_active: false,
+            scene_tiles: Vec::new(),
             scene_coherent: Vec::new(),
             reference,
             view,
@@ -622,7 +626,13 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
 
     /// The factor the view's shadow maps are at now ([`shadow_scale`]).
     fn shadow_factor(&self) -> u32 {
-        shadow_scale(self.scale.vertical_rounded(), self.lighting)
+        // A native E3 draw's tiles use the E3 factor whatever the setting.
+        let lighting = if self.scene_active && !self.scene_tiles.is_empty() {
+            Lighting::E3
+        } else {
+            self.lighting
+        };
+        shadow_scale(self.scale.vertical_rounded(), lighting)
     }
 
     /// Whether frame-size display surfaces carry a distinct raster, E3
@@ -1370,7 +1380,10 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         clear: Clear,
     ) -> Result<(), String> {
         if self.single() {
-            return self.clear_single(color, depth, clear, None).map(|_| ());
+            if self.clear_single(color, depth, clear, None)? == DrawOutcome::Drawn {
+                self.scene_tile_clear(depth, clear, None);
+            }
+            return Ok(());
         }
         self.before_shared_write(&color);
         let (rc, rd) = (color.reference, depth.map(|d| d.reference));
@@ -1689,7 +1702,11 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
     ) -> Result<DrawOutcome, String> {
         if self.single() {
             let aspects = Clear { color: clear.color.map(|(rgba, _)| rgba), depth: clear.depth, stencil: clear.stencil };
-            return self.clear_single(color, depth, aspects, Some(clear));
+            let out = self.clear_single(color, depth, aspects, Some(clear))?;
+            if out == DrawOutcome::Drawn {
+                self.scene_tile_clear(depth, aspects, Some(clear));
+            }
+            return Ok(out);
         }
         self.before_shared_write(&color);
         let out = self
@@ -2115,6 +2132,11 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         surface: Self::Surface,
     ) -> Result<Option<Self::Texture>, String> {
         if self.single() {
+            if self.scene_tile(Some(surface)).is_some()
+                && let Some(tile) = self.shadow_texture(&surface.reference)
+            {
+                return self.sampled(Some(tile));
+            }
             let texture = self.view.depth_level_texture(self.image(surface))?;
             return self.sampled(texture);
         }

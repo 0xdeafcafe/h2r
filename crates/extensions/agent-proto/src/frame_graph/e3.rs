@@ -33,4 +33,7 @@ pub struct E3Report {
     pub sun_tiles: u32,
     pub sun_tiles_redrawn: u32,
     pub atlas_halved: u32,
+    /// Shadow maps left at the guest's size with retail's comparison.
+    #[serde(default)]
+    pub tiles_refused: u32,
 }

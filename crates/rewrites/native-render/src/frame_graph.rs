@@ -13,6 +13,7 @@ pub use lighting::{E3Report, PassWork};
 
 use std::ops::Range;
 
+use d3d::gfx_backend::TileWork;
 use d3d::gfx_backend::{BatchStats, GuestDrawPass};
 use d3d::scaled::{ScaledBackend, ScaledScenePass, ScaledSurface, ScaledTexture};
 use d3d::scene_sink::{ReplayFrame, ReplayOp};
@@ -133,6 +134,10 @@ fn pass_rows(frame: &ReplayFrame) -> Vec<PassRow> {
 trait FramePass {
     fn apply(&mut self, op: &ReplayOp) -> Result<(), String>;
     fn read_target(&mut self, target: TargetRef) -> ReadColour;
+    /// E3's shadow tiles, on a pass that draws them.
+    fn tile_work(&self) -> Option<TileWork> {
+        None
+    }
 }
 
 impl FramePass for GuestDrawPass<'_> {
@@ -141,6 +146,9 @@ impl FramePass for GuestDrawPass<'_> {
     }
     fn read_target(&mut self, target: TargetRef) -> ReadColour {
         GuestDrawPass::read_target(self, target)
+    }
+    fn tile_work(&self) -> Option<TileWork> {
+        GuestDrawPass::tile_work(self)
     }
 }
 
@@ -162,7 +170,7 @@ fn record(
 ) -> Result<Option<E3Report>, String> {
     // The graph replays the guest's layers in both modes. Only work
     // submitted by the E3 stages belongs to these four pass rows.
-    let e3 = (lighting == Lighting::E3).then(E3Report::default);
+    let mut e3 = (lighting == Lighting::E3).then(E3Report::default);
     let rows = observer
         .as_ref()
         .map(|_| pass_rows(frame))
@@ -185,12 +193,17 @@ fn record(
             });
         }
     }
+    if let (Some(report), Some(tiles)) = (e3.as_mut(), pass.tile_work()) {
+        report.add_tiles(tiles);
+    }
     Ok(e3)
 }
 
 /// Re-render this scene to an isolated target. No present hook or
-/// display settings are touched. At L3 both lighting modes run the same
-/// pass sequence.
+/// display settings are touched. E3 draws the guest's shadow maps as
+/// tiles and compares their receivers with the Sharp edge
+/// (`d3d::gfx_backend::guest_draw_pass::tiles`); retail replays the
+/// guest's passes as they are.
 pub fn draw_private(
     backend: &mut GfxBackend,
     scene: &FrameScene,
@@ -213,7 +226,7 @@ pub fn draw_private_with_observer(
         return private::draw_mixed(backend, scene, replay, scale, lighting, observer);
     }
     let before = backend.batch_stats();
-    let mut pass = GuestDrawPass::new(backend, replay, scale)?;
+    let mut pass = GuestDrawPass::new_lit(backend, replay, scale, lighting)?;
     let e3 = record(&mut pass, replay, true, lighting, observer)?;
     let (size, rgba) = pass.read_rgba()?;
     Ok(CapturedFrame {
@@ -239,8 +252,7 @@ pub fn draw_display(
     observer: Option<&mut dyn PassObserver>,
 ) -> Result<FrameReport, String> {
     let before = backend.batch_stats();
-    let mut pass = GuestDrawPass::new_display(backend, replay, scale)?;
-    pass.set_lighting(lighting);
+    let mut pass = GuestDrawPass::new_display_lit(backend, replay, scale, lighting)?;
     let e3 = record(&mut pass, replay, true, lighting, observer)?;
     pass.present(flags, gamma)?;
     Ok(FrameReport::new(
@@ -254,7 +266,8 @@ pub fn draw_display(
 
 /// The 1x display path can use the renderer's live attachments, including
 /// their contents from the preceding frame. They belong to the caller;
-/// private draws always allocate their own.
+/// private draws always allocate their own. Its shadow maps keep the
+/// guest's size, so it draws no E3 tiles.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_display_on(
     backend: &mut GfxBackend,
