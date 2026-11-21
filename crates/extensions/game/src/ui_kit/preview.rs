@@ -141,7 +141,7 @@ pub struct Disc {
 }
 
 /// A view and its picture, shared.
-type Drawn = std::rc::Rc<(View, Canvas)>;
+type Drawn = std::sync::Arc<(View, Canvas)>;
 
 impl Disc {
     pub fn open(iso: &Path) -> Result<Disc> {
@@ -503,6 +503,7 @@ impl Disc {
     /// The image `a` names.
     pub fn art(&self, a: &Art) -> Option<Image> {
         match *a {
+            Art::Solid { .. } => None,
             Art::Level { ref stem } => {
                 let pictures = self.level_pictures.get_or_init(|| {
                     let template = crate::mods_screen::page_layout::PICTURE;
@@ -738,7 +739,7 @@ impl Disc {
         }
         let d = self.opener_view(o).ok().map(|v| {
             let c = render_view_where(&v, self, &|_| true, false);
-            std::rc::Rc::new((v, c))
+            std::sync::Arc::new((v, c))
         });
         self.openers.borrow_mut().insert(*o, d.clone());
         d
@@ -1230,12 +1231,27 @@ pub fn render_view_where(
     keep: &dyn Fn(&crate::ui_kit::view::Widget) -> bool,
     marks: bool,
 ) -> Canvas {
+    render_composite(v, src, keep, marks, [0, 0, 0, 255])
+}
+
+/// Draw a live kit page into a straight-alpha surface for the shell.
+pub fn render_overlay(v: &View, src: &dyn Source) -> Canvas {
+    render_composite(v, src, &|_| true, false, [0; 4])
+}
+
+fn render_composite(
+    v: &View,
+    src: &dyn Source,
+    keep: &dyn Fn(&crate::ui_kit::view::Widget) -> bool,
+    marks: bool,
+    clear: [u8; 4],
+) -> Canvas {
     let mut c = if let Some(parent) = &v.underlay {
         // Widget filters apply to this screen. The parent stays painted
         // when an audit samples the pixels underneath the dialog's text.
-        render_view_where(parent, src, &|_| true, false)
+        render_composite(parent, src, &|_| true, false, clear)
     } else {
-        let mut c = Canvas::new(640, 480, [0, 0, 0, 255]);
+        let mut c = Canvas::new(640, 480, clear);
         src.backing(&mut c, v.backing);
         c
     };
@@ -1244,6 +1260,10 @@ pub fn render_view_where(
     for w in order.into_iter().filter(|w| w.alpha > 0 && keep(w)) {
         let r = w.rect();
         match &w.kind {
+            Kind::Art { art: Art::Solid { rgba }, .. } => {
+                let [red, green, blue, alpha] = *rgba;
+                c.fill(r, [red, green, blue, (u16::from(alpha) * u16::from(w.alpha) / 255) as u8]);
+            }
             Kind::Art { art, .. } => match src.art(art) {
                 Some(img) => c.image(&img, i32::from(r.left), i32::from(r.top), w.alpha),
                 None => {
@@ -1317,10 +1337,15 @@ impl Canvas {
         }
         let i = ((y as u32 * self.width + x as u32) * 4) as usize;
         let a = u32::from(c[3]);
-        for (d, s) in self.rgba[i..i + 3].iter_mut().zip(c) {
-            *d = ((u32::from(s) * a + u32::from(*d) * (255 - a)) / 255) as u8;
+        let retained = u32::from(self.rgba[i + 3]) * (255 - a);
+        let alpha = a * 255 + retained;
+        if alpha == 0 {
+            return;
         }
-        self.rgba[i + 3] = 255;
+        for (d, s) in self.rgba[i..i + 3].iter_mut().zip(c) {
+            *d = ((u32::from(s) * a * 255 + u32::from(*d) * retained) / alpha) as u8;
+        }
+        self.rgba[i + 3] = ((alpha + 127) / 255) as u8;
     }
     /// `img` with its top-left at UI point `(x, y)`, its alpha scaled by
     /// `alpha`.

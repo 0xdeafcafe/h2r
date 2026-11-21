@@ -8,6 +8,7 @@ pub const PAUSE: &str = "theater.pause";
 pub const SPEED: &str = "theater.speed";
 pub const SEEK: &str = "theater.seek";
 pub const CAMERA: &str = "theater.camera";
+pub const COMPAT: &str = "theater.compat";
 pub const SCREENSHOT: &str = "theater.screenshot";
 pub const CLIP_MARK: &str = "theater.clip.mark";
 pub const CLIP_EXPORT: &str = "theater.clip.export";
@@ -67,6 +68,42 @@ pub struct PageWindow {
     pub from_tick: u64,
     pub to_tick: u64,
     pub pages: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompatibilityState {
+    Playable,
+    #[default]
+    Unavailable,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Compat {
+    pub id: String,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Compatibility {
+    pub state: CompatibilityState,
+    pub reasons: Vec<String>,
+    pub film: FilmContract,
+    pub installed: Vec<InstalledImage>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilmContract {
+    pub xbe: String,
+    pub contract: Option<String>,
+    pub hooks: Option<String>,
+    pub abi: String,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstalledImage {
+    pub stamp: String,
+    pub state: CompatibilityState,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -244,6 +281,8 @@ pub struct State {
     #[serde(default)]
     pub speed_reached: Option<f64>,
     pub seeking: bool,
+    #[serde(default = "loaded_compatibility")]
+    pub compatibility: CompatibilityState,
     /// The mode actually used. A first-person request may fall back to follow.
     pub camera: CameraMode,
     #[serde(default)]
@@ -340,7 +379,7 @@ mod tests {
     fn theater_state_round_trips_with_progress_and_reached_speed() {
         let mut wire = json!({
             "id":"fixture", "tick":30, "length_ticks":200, "paused":false,
-            "speed":4.0, "seeking":false, "camera":"default", "kills":[], "hud":true, "bar":true, "camera_pose":null
+            "speed":4.0, "seeking":false, "camera":"default", "kills":[], "hud":true, "bar":true, "camera_pose":null, "compatibility":"playable"
         });
         let old: State = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(old.seek, None);
@@ -506,4 +545,28 @@ pub struct ClipStatus {
     pub error: Option<String>,
     /// True once the output has been published or the job has failed.
     pub finished: bool,
+}
+
+fn loaded_compatibility() -> CompatibilityState {
+    CompatibilityState::Playable
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn compatibility_round_trips_both_wire_states() {
+        for state in ["playable", "unavailable"] {
+            let wire = json!({
+                "state": state,
+                "reasons": [],
+                "film": {"xbe": "synthetic", "contract": null, "hooks": null, "abi": "h2-sim/1"},
+                "installed": [{"stamp": "synthetic build", "state": state}],
+            });
+            let result: Compatibility = serde_json::from_value(wire.clone()).unwrap();
+            assert_eq!(serde_json::to_value(result).unwrap(), wire);
+        }
+    }
 }

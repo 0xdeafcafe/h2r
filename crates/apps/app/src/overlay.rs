@@ -357,16 +357,33 @@ impl Sprite {
         dst_size: (u32, u32),
         at: (u32, u32),
     ) {
-        let pipeline = self.pipeline(device, dst_format);
-        let Some((_, bind, (w, h))) = &self.image else {
-            return;
-        };
-        // The viewport may not leave the target: an image that does not
-        // fit is squashed into what is left (callers size theirs to fit).
+        let Some((width, height)) = self.size() else { return };
+        // Preserve the existing unscaled draw, clamped to the target.
         if at.0 >= dst_size.0 || at.1 >= dst_size.1 {
             return;
         }
-        let vis = ((*w).min(dst_size.0 - at.0), (*h).min(dst_size.1 - at.1));
+        self.draw_in(device, encoder, dst, dst_format, crate::scale::Viewport {
+            x: at.0,
+            y: at.1,
+            width: width.min(dst_size.0 - at.0),
+            height: height.min(dst_size.1 - at.1),
+        });
+    }
+
+    /// Draw into an already fitted viewport.
+    pub(crate) fn draw_in(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        dst: &wgpu::TextureView,
+        dst_format: wgpu::TextureFormat,
+        rect: crate::scale::Viewport,
+    ) {
+        if rect.is_empty() {
+            return;
+        }
+        let pipeline = self.pipeline(device, dst_format);
+        let Some((_, bind, _)) = &self.image else { return };
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("app overlay"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -384,10 +401,10 @@ impl Sprite {
             multiview_mask: None,
         });
         pass.set_viewport(
-            at.0 as f32,
-            at.1 as f32,
-            vis.0 as f32,
-            vis.1 as f32,
+            rect.x as f32,
+            rect.y as f32,
+            rect.width as f32,
+            rect.height as f32,
             0.0,
             1.0,
         );

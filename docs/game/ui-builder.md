@@ -621,6 +621,13 @@ over the library with A, including a filter whose only entry is All.
 Long lists reuse text slots as new rows scroll into view. The preview
 composites the dialog over the library with its tab, rows and focus intact.
 
+Theater's playback window draws the bar, pause menu and its choice dialogs
+from the same specs used by `h2 ui preview theater.playback` and
+`theater.pause-menu`. The compositor renders the kit's view using the
+owned disc's fonts and row art, then blends it over the published film
+picture. The pause menu's pickers keep their parent focused behind them.
+`ui.screen` and `ui.input` use that same playback model.
+
 Not on the picker: the Video and Voice screens (`ui::Model` rows,
 `Model::press`), the skulls (toggles, not settings) and the variant
 editor's More Options page (`variant_page`, its own rows). They step

@@ -185,8 +185,9 @@ impl Session {
                         length_ticks: s.length(),
                         paused: s.visible_pause(),
                         speed: s.speed,
-                        speed_reached: if s.visible_pause() { Some(0.0) } else { s.speed_reached() },
+                        speed_reached: if s.camera_redraw.is_some() && s.visible_pause() { Some(0.0) } else { s.speed_reached() },
                         seeking: s.camera_redraw.is_none() && s.jump_in_progress(),
+                        compatibility: api::CompatibilityState::Playable,
                         camera_seat: camera.seat,
                         camera: camera.mode,
                         camera_player: camera.player,
@@ -222,17 +223,18 @@ pub fn playback_images(xbe: &[u8], out: &std::path::Path) -> Vec<(PathBuf, Strin
         .collect()
 }
 
-pub fn playable_entry(entry: &film::LibraryEntry, stamp: &str) -> bool {
-    (entry.version >= 2 || entry.meta.source == Source::Host)
-        && image_match(
-            entry.version,
-            &entry.meta.image_stamp,
-            &entry.runtime_stamp,
-            entry.guest_image.as_ref(),
-            stamp,
-            &entry.xbe_sha256,
-        )
-        .is_ok()
+fn library_entry(dir: &std::path::Path, id: &str) -> Result<film::LibraryEntry, RpcError> {
+    let unavailable = |e: String| RpcError::new(code::UNAVAILABLE, e);
+    if let Some(game) = id.strip_prefix("live:") {
+        let path = crate::theater_ui::adapter::archive_path(dir, game).map_err(unavailable)?;
+        crate::theater_ui::adapter::archive_entry(&path, game)
+    } else {
+        if !dir.is_dir() {
+            return Err(unavailable("unknown film ID".into()));
+        }
+        film::Library::open(dir).and_then(|lib| lib.get(id))
+    }
+    .map_err(|e| unavailable(e.to_string()))
 }
 
 pub(super) struct LibraryLaunch {
@@ -240,28 +242,16 @@ pub(super) struct LibraryLaunch {
     disc: PathBuf,
     out: PathBuf,
     data: PathBuf,
-    image_stamps: Vec<String>,
+    installation: Installation,
 }
 
 impl LibraryLaunch {
     pub(super) fn entry(&self, id: &str) -> Result<film::LibraryEntry, RpcError> {
         let unavailable = |e: String| RpcError::new(code::UNAVAILABLE, e);
-        let entry = if let Some(game) = id.strip_prefix("live:") {
-            let path = crate::theater_ui::adapter::archive_path(&self.dir, game)
-                .map_err(unavailable)?;
-            crate::theater_ui::adapter::archive_entry(&path, game)
-        } else {
-            film::Library::open(&self.dir).and_then(|lib| lib.get(id))
-        }
-        .map_err(|e| unavailable(e.to_string()))?;
-        if !self
-            .image_stamps
-            .iter()
-            .any(|stamp| playable_entry(&entry, stamp))
-        {
-            return Err(unavailable(
-                "Recording needs a compatible game build and an engine film".into(),
-            ));
+        let entry = library_entry(&self.dir, id)?;
+        let compatibility = self.installation.compatibility(&entry);
+        if compatibility.state == api::CompatibilityState::Unavailable {
+            return Err(unavailable(compatibility.reasons.join(" ")));
         }
         Ok(entry)
     }
@@ -321,7 +311,7 @@ pub fn library_methods(
     disc: PathBuf,
     out: PathBuf,
     data: PathBuf,
-    image_stamps: Vec<String>,
+    installation: Installation,
 ) {
     struct PlayerProcess {
         child: std::process::Child,
@@ -334,7 +324,13 @@ pub fn library_methods(
         disc,
         out,
         data,
-        image_stamps,
+        installation,
+    });
+    let compat = launch.clone();
+    a.add_method(api::COMPAT, Access::Read, move |p| {
+        let request = params::<api::Compat>(p)?;
+        let entry = library_entry(&compat.dir, &request.id)?;
+        Ok(serde_json::json!(compat.installation.compatibility(&entry)))
     });
     let jobs = super::prepare::Jobs::default();
     a.add_method(api::PREPARE, Access::Act, {

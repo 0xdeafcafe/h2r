@@ -2102,6 +2102,7 @@ directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
 | `theater.state` | `{}` | transport state, or `{id:null,active:false}` with no player |
 | `theater.state` | `{"id":"film-id"}` on the library agent | Prepare progress for that ID |
 | `theater.pause` | `{}` | holds playback and reports state. During a seek it arranges a hold at the destination |
+| `theater.compat` | `{"id":"film-id"}` | `{state, reasons, film: {xbe, contract, hooks, abi}, installed: [{stamp, state}]}` |
 | `theater.speed` | `{"speed":0.5}` | sets host pacing from 0.25 to 4 times realtime |
 | `theater.seek` | `{"tick":900}`, optionally `"clip_marks":[300,null]`, `"source":"boot"` or `"source":"keyframe"` | restores a frame or starts a fresh child, then fast-forwards to the target, carrying camera and timeline state. Forcing a keyframe requires a compatible frame at or before the target |
 | `theater.seek` | `{"cancel":true}` | returns to the tick the active seek left and holds there. An optional `tick` is ignored. If no seek is active, returns the current state |
@@ -2160,6 +2161,13 @@ export remains available. Use a fresh destination path for either format.
 `error` is null for a successful job. The job ID remains valid across seeks.
 These files stay on the user's machine.
 
+`theater.compat` is a read method on the library agent. It accepts a local
+film ID or `live:<game-id>` for a cached host film. States are `playable` and
+`unavailable`. Reasons are strings, and `contract` and `hooks` are null
+when the recording supplies no digest. The preflight checks the XBE,
+simulation ABI, guest image contract, and required external start files.
+The replay verifies installed hooks before entering the guest.
+
 The rendered player starts at the clip's first tick and loops at its end.
 Its overlay uses the player's agent socket for transport, camera and HUD
 controls. HUD and camera changes apply to the next rendered frame.
@@ -2181,7 +2189,7 @@ lens. Headless playback (`--render-every 0`) accepts only `default`.
 Playerless playback has no game HUD.
 
 Transport state carries `id`, `tick`, `length_ticks`, `paused`, `speed`, `speed_reached`,
-`seeking`, effective `camera`, optional `camera_player` and `camera_seat`,
+`seeking`, `compatibility`, effective `camera`, optional `camera_player` and `camera_seat`,
 `hud`, `bar` and `camera_pose`. The pose has `position`, `yaw`, `pitch`,
 `fov` and `radius` once there is a view. State also carries discovered kill
 marker ticks in `kills` and the usual `at` stamp.
@@ -2192,6 +2200,14 @@ or during a seek or step, and zero while held. A paused seek holds at
 its target until play. The HLE
 compares the recorded call index and game-thread hash samples during
 fast-forward ([theater.md](../game/theater.md)).
+
+The desktop playback socket also exposes these host page methods. They
+work while the guest is paused.
+
+| Method | Parameters | Result |
+|---|---|---|
+| `ui.screen` | `{}` | `screen` names `theater.playback` or `theater.pause-menu`, with its `focus` and the UI-builder `page`. `dialog` names the open picker and its focus, or is null. `native` is false for these host-drawn pages |
+| `ui.input` | `{"input":"start"}` | Applies one named page input and returns the updated screen. Inputs are `a`, `b`, `x`, `y`, `start`, `back`, `up`, `down`, `left` and `right` |
 
 The `seek` object records `target`, `from_tick`, `source`, `warm`,
 `remaining_ticks` and `restore_ms`. `seeking` is true while a restart

@@ -246,7 +246,7 @@ fn child_with_start(
             Err(e) => diagnostics.push(format!("{}: {e}", path.display())),
         }
     }
-    let (image, _stamp, compatibility) = images
+    let (image, _, compatibility) = images
         .into_iter()
         .min_by_key(|(_, _, mode)| *mode != film::image::ImageMatch::Native)
         .with_context(|| {
@@ -314,6 +314,8 @@ fn child_with_start(
     };
     #[cfg(feature = "desktop")]
     let film_parent = opts.film.parent().unwrap_or(Path::new(".")).to_owned();
+    #[cfg(feature = "desktop")]
+    let theater_disc = boot.disc.clone();
     let camera = boot::theater::FilmCamera::default();
     #[cfg(feature = "desktop")]
     let clip_marks = launch.presentation.clip_marks;
@@ -412,7 +414,10 @@ fn child_with_start(
         // When the recorded guest used a headless device, the independent
         // observer can present the match without changing that device's answers.
         let observer = film.header.version >= 2 && local_gpu != Some(true);
-        let mut meta = film_entry(film::LibraryEntry::read(&opts.film)?, &_stamp);
+        let mut meta = film_entry(film::LibraryEntry::read(&opts.film)?);
+        if let Err(error) = boot::theater_ui::stats::read_playback(&opts.film, &mut meta) {
+            eprintln!("theater: reading stats for {}: {error:#}", meta.id);
+        }
         let title = meta.map.clone();
         if let Ok(id) = std::env::var("H2_THEATER_FILM_ID") {
             meta.id = id;
@@ -424,8 +429,9 @@ fn child_with_start(
             starting_seek,
             opts.socket,
             dir.clone(),
+            opts.film,
         )?;
-        let (overlay, controller) = overlay(theater, dir.join("screenshots"));
+        let (overlay, controller) = overlay(theater.clone(), dir.join("screenshots"), Some(&theater_disc));
         let config = app::AppConfig {
             title: format!("Theater — {}", title),
             audio: false,
@@ -502,6 +508,7 @@ fn child_with_start(
                     gfx_view,
                     film_view,
                     film_media: Some(film_media),
+                    theater_playback: Some(theater),
                     between_slices: Some(Box::new(move |_| !window.should_stop())),
                     host_light: true,
                     host_bots,

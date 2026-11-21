@@ -71,7 +71,7 @@ const LIST_STATUS: TextBlock = TextBlock {
     ..lobby::BODY
 };
 const FILM_STATUS: TextBlock = TextBlock {
-    rect: [-133, TABLE_LEFT, -180, lobby::TABLE_RIGHT],
+    rect: [-148, -258, -187, -36],
     ..lobby::STATUS
 };
 
@@ -81,6 +81,7 @@ pub(super) enum Action {
     Prepare,
     Save,
     Delete,
+    Prepare,
 }
 
 impl Action {
@@ -407,7 +408,7 @@ fn detail_cell(row: usize, left: i16, right: i16, numeric: bool, data: bool) -> 
 }
 
 fn film_panel() -> Panel {
-    let mut texts = (0..HEADER_LINES)
+    let mut texts = (0..=HEADER_LINES)
         .map(|row| detail_cell(row, TABLE_LEFT, lobby::TABLE_RIGHT, false, row != 0))
         .collect::<Vec<_>>();
     for row in 0..=ROSTER {
@@ -471,6 +472,10 @@ fn header_values(entry: &Entry, player: Option<&str>) -> Vec<String> {
         values.push(format!("Result: {result}"));
     }
     values.resize(HEADER_LINES, String::new());
+    values.push(match film.compatibility {
+        agent_proto::theater::CompatibilityState::Playable => "Playable",
+        agent_proto::theater::CompatibilityState::Unavailable => "Unavailable",
+    }.into());
 
     values
 }

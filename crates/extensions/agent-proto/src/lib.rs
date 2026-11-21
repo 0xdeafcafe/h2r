@@ -204,6 +204,7 @@ pub mod method {
     pub const UI_SCREEN: &str = "ui.screen";
     /// Active filters of the Live Custom Game Browser.
     pub const UI_BROWSER_FILTERS: &str = "ui.browser.filters";
+    pub const UI_INPUT: &str = "ui.input";
     /// Main-menu attract movie, idle timer and last attempt.
     pub const UI_ATTRACT: &str = "ui.attract";
     /// The visible option lines in the active pregame custom lobby.

@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
+use agent_proto::theater::{Compatibility, CompatibilityState};
 use agent_proto::{CallError, Client};
 use debug_menu::{Call, Rpc};
 use serde::{Deserialize, Serialize};
@@ -25,6 +26,8 @@ pub struct Player {
     #[serde(default)]
     pub medals: std::collections::BTreeMap<String, u32>,
     pub name: String,
+    #[serde(default)]
+    pub emblem_colour: Option<[u8; 3]>,
     #[serde(default)]
     pub team: Option<String>,
     #[serde(default)]
@@ -50,9 +53,12 @@ pub struct FilmMeta {
     pub ticks_per_second: Option<u16>,
     pub version: Option<u32>,
     pub scoreboard: Vec<Player>,
+    /// The film can identify camera subjects even when its stats are absent.
+    pub roster: Vec<Player>,
     pub source: Source,
     pub image_stamp: String,
-    pub playable_here: bool,
+    pub compatibility: CompatibilityState,
+    pub compatibility_reason: Option<String>,
     pub saved: bool,
     pub result: Option<String>,
     pub host: Option<String>,
@@ -99,6 +105,10 @@ impl FilmSummary for FilmMeta {
 }
 
 impl FilmMeta {
+    pub(super) fn camera_roster(&self) -> &[Player] {
+        if self.roster.is_empty() { &self.scoreboard } else { &self.roster }
+    }
+
     pub(super) fn tick_rate(&self) -> u64 {
         u64::from(
             self.ticks_per_second
@@ -158,6 +168,7 @@ impl FilmMeta {
                     kills: ledger.and_then(|p| p.kills),
                     deaths: ledger.and_then(|p| p.deaths),
                     medals: player.medals,
+                    emblem_colour: ledger.and_then(|p| p.emblem_colour),
                 }
             })
             .collect();
@@ -175,11 +186,35 @@ impl FilmMeta {
         }
     }
 
-    pub(super) fn watch_unavailable(&self) -> Option<&'static str> {
+    pub fn apply_compatibility(&mut self, report: Compatibility) {
+        self.compatibility = report.state;
+        self.compatibility_reason = report.reasons.into_iter().next();
+    }
+
+    pub(super) fn check_cached(&mut self, dir: &Path, installation: &crate::theater::Installation) {
+        if self.source == Source::Host
+            && let Some(game) = self.archive_id()
+            && let Ok(path) = archive_path(dir, game)
+            && let Ok(entry) = archive_entry(&path, game)
+        {
+            self.version = Some(entry.version);
+            self.apply_compatibility(installation.compatibility(&entry));
+        }
+    }
+
+    pub(super) fn watch_unavailable(&self) -> Option<&str> {
         match self.source {
             Source::Archive => Some("No host film was recorded."),
             Source::Local if self.version == Some(1) => Some("No playback track was saved."),
-            Source::Local | Source::Host if !self.playable_here => Some("Needs a different build."),
+            Source::Local | Source::Host
+                if self.compatibility == CompatibilityState::Unavailable =>
+            {
+                Some(
+                    self.compatibility_reason
+                        .as_deref()
+                        .unwrap_or("Needs a compatible game build."),
+                )
+            }
             Source::Host | Source::Local => None,
         }
     }
@@ -270,7 +305,11 @@ impl TryFrom<live_hle::films::RecentFilm> for FilmMeta {
             } else {
                 Source::Archive
             },
-            playable_here: film.has_host_film,
+            compatibility: if film.has_host_film {
+                CompatibilityState::Playable
+            } else {
+                CompatibilityState::Unavailable
+            },
             result: film.result.map(|result| title_words(&result)),
             live_game_id: Some(film.game_id),
             live_start_tick: film.start_tick,
@@ -281,6 +320,20 @@ impl TryFrom<live_hle::films::RecentFilm> for FilmMeta {
         }
         Ok(row)
     }
+}
+
+pub(super) fn team_colour(team: &str) -> Option<[u8; 3]> {
+    Some(match team {
+        "Red" => [219, 98, 96],
+        "Blue" => [100, 154, 247],
+        "Green" => [103, 192, 134],
+        "Orange" => [238, 153, 83],
+        "Purple" => [180, 131, 229],
+        "Gold" => [229, 194, 101],
+        "Brown" => [186, 146, 116],
+        "Pink" => [237, 137, 184],
+        _ => return None,
+    })
 }
 
 fn team_name(team: i32) -> String {
@@ -410,7 +463,7 @@ pub(super) fn download_film(
 }
 
 pub trait Library: Send + Sync {
-    fn list(&self, stamps: &[String]) -> Result<Vec<FilmMeta>, String>;
+    fn list(&self, installation: &crate::theater::Installation) -> Result<Vec<FilmMeta>, String>;
     fn save(&self, id: &str) -> Result<(), String>;
     fn unsave(&self, id: &str) -> Result<(), String>;
     fn delete(&self, id: &str) -> Result<(), String>;
@@ -544,4 +597,27 @@ impl Rpc for SocketRpc {
     fn recv(&mut self) -> Vec<(u64, Result<Value, String>)> {
         self.answers.try_iter().collect()
     }
+}
+
+/// Pin an exact recording in Saved. A cached Live recording can share its
+/// local data with the library through a hard link.
+pub(super) fn save_playback(recording: &Path, dir: &Path) -> anyhow::Result<()> {
+    use std::fs;
+    let entry = film::LibraryEntry::read(recording)?;
+    let library = film::Library::open(dir)?;
+    if recording.canonicalize()?.parent() != Some(dir.canonicalize()?.as_path()) {
+        if library.get(&entry.meta.id).is_ok() {
+            return library.save(&entry.meta.id);
+        }
+        let target = dir.join(format!("saved-{}.h2film", live_proto::sign::random_id()));
+        fs::hard_link(recording, &target)?;
+        let stats = recording.with_extension("h2stats");
+        if let Err(error) = fs::hard_link(&stats, target.with_extension("h2stats"))
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            let _ = fs::remove_file(&target);
+            return Err(error.into());
+        }
+    }
+    library.save(&entry.meta.id)
 }
