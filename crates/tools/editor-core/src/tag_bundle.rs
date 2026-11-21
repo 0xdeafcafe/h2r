@@ -418,6 +418,7 @@ mod tests {
             named: false,
             kind,
             meaning: String::new(),
+            doc: None,
             applies: None,
         }
     }

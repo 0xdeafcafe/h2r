@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use studio_proto::{code, method as m};
 
 use super::scenario::refused;
-use super::{METHODS, MethodDef, P, Provider, Reply, err};
+use super::{METHODS, MethodDef, P, Provider, Reply, def, err};
 use crate::App;
 use crate::app::tag_api;
 use crate::app::{Action, BlockOp};
@@ -38,6 +38,41 @@ const SET: MethodDef = MethodDef {
     example: r#"{"tag":"itmc","path":"+0x8","value":7}"#,
     planned: None,
 };
+
+const FIELDS: MethodDef = def(
+    m::TAG_FIELDS,
+    "The inspector's field rows for a tag or one block element",
+    r#"{"tag":"string|integer","path?":"string (block element, e.g. parts[0])"}"#,
+    r#"{"fields":"[{offset,name,kind,size,value,description}]"}"#,
+    r#"{"tag":"itmc"}"#,
+);
+
+fn fields(app: &mut App, p: &P) -> Reply {
+    let tag = resolve(app, p)?;
+    let doc = app.shown_tags();
+    let path = p.opt_str("path")?.unwrap_or_default();
+    let (at, layout) = tag_api::field_element(doc, tag, path)
+        .map_err(|reason| err(code::REFUSED, reason))?;
+    let rows: Vec<_> = layout
+        .fields
+        .iter()
+        .map(|f| {
+            // Ask for a block element by path. Listing the parent only reads
+            // its pair, even for a block with many elements.
+            let value = match &f.kind {
+                tags::registry::Kind::Block(child) => {
+                    json!(doc.block(at + f.offset, child).map(|(count, _)| count))
+                }
+                _ => tag_api::value(doc, at, f),
+            };
+            json!({
+                "name": f.name, "offset": f.offset, "kind": f.kind.label(),
+                "size": f.kind.width(), "value": value, "description": f.doc,
+            })
+        })
+        .collect();
+    Ok(json!({"fields": rows}))
+}
 
 const CHAIN: MethodDef = MethodDef {
     name: m::TAG_CHAIN,
@@ -100,6 +135,7 @@ impl Provider for TagFields {
             READ,
             SET,
             CHAIN,
+            FIELDS,
             block_def(
                 m::TAG_BLOCK_ADD,
                 "Add an element to a tag block (path from the root, `parts` or `parts[0].bones`), where the block has room in its source; refused with the reason otherwise",
@@ -119,8 +155,11 @@ impl Provider for TagFields {
     }
 
     fn call(&mut self, app: &mut App, method: &str, params: &serde_json::Value) -> Option<Reply> {
-        if method == m::TAG_CHAIN {
-            return Some(chain(app, &P(params)));
+        let p = P(params);
+        match method {
+            m::TAG_FIELDS => return Some(fields(app, &p)),
+            m::TAG_CHAIN => return Some(chain(app, &p)),
+            _ => {}
         }
         if ![
             m::TAG_READ,
@@ -133,7 +172,6 @@ impl Provider for TagFields {
         {
             return None;
         }
-        let p = P(params);
         if method == m::TAG_READ && p.bool("raw").unwrap_or(false) {
             return None;
         }

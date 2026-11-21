@@ -475,6 +475,19 @@ fn a_field_edit_saves_byte_exactly_and_undoes() {
 }
 
 #[test]
+fn enum_offset_writes_must_fit_the_field_width() {
+    let t = Temp::new("enum-width");
+    let (mut app, ..) = app(&t.0);
+    let max = u64::from(u16::MAX);
+    assert!(set_field(&app.tags, weap_id(), "+0x6", &json!(max + 1)).is_err());
+    assert!(!app.tags.can_undo());
+    set(&mut app, "+0x6", json!(max));
+    assert_eq!(fields(&app)["mode"], max);
+    app.dispatch(Action::Undo);
+    assert_eq!(fields(&app)["mode"], "auto");
+}
+
+#[test]
 fn a_drag_is_one_undo_step() {
     let t = Temp::new("drag");
     let (mut app, ..) = app(&t.0);

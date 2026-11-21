@@ -1,11 +1,10 @@
 # Typed tag definitions (`tags::defs`)
 
-Status: Built for 18 groups, each proven against every retail tag of the
-group on the disc ("Proof"). Not run in the game.
+Status: Built. The disc checks under “Proof” cover the groups in the results table.
 Code: `crates/formats/tags/src/defs.rs` and `crates/formats/tags/src/defs/*.txt`.
 Evidence labels are those of [map-format.md](map-format.md): **E** engine
 code, **V** checked on the owner's disc, **D** a naming or interpretation
-choice made here.
+choice made here. **A Halo2Xbox** identifies a retail Assembly reference.
 
 The Halo 1 converter writes scenery, vehicles, bipeds, devices, physics
 models, effects, weapons and particles from these definitions. That
@@ -28,11 +27,10 @@ written from a definition has a defined value in every byte.
 
 ## Rules
 
-- **Our own names and evidence only.** No outside tag definition is used
-  for names or layouts. Unverified names elsewhere in the repo (the `S`
-  rows of [objects.md](../halo1/objects.md)) were not taken over: those
-  fields stay unknown or typed-only unless a disc check (V) or engine code
-  (E) supports the meaning, and then the name is ours.
+- Names and descriptions are written here. A field named with reference
+  to Assembly carries `-- A Halo2Xbox <filename>`. Its type and extent
+  must agree with the local layout. The reference, permission and
+  retained disagreements are in [the field-name note](../editor/notes/tag-field-names.md).
 - **A name needs evidence.** A field whose type is known but not its role
   (a reference, a string ID, a block found by the schema) gets a name
   ending in `_<offset in hex>`: `string_1c`, `foot_ref_54`, `block_5c`.
@@ -75,6 +73,8 @@ group scen 0xc4                       # a group's root
 A field line is `<offset> <type> <name> [key=value ...] [-- meaning]`.
 Fields must tile the element exactly, with no gap and no overlap. The
 parser refuses a gap ("every byte needs a field or an unknown span").
+An optional `doc="..."` before the evidence gives the editor a single-line
+description. Use `\"` for a quotation mark and `\\` for a backslash.
 
 | Type | Bytes | Value |
 |---|---|---|

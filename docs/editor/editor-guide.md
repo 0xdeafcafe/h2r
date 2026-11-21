@@ -1128,13 +1128,22 @@ packages, or a converted Halo 1 map), then select the **Tags** tab beside **Scen
   raw bytes of the part of the tag under the mouse, the hovered field
   lit in blue and bytes you changed in orange.
 
+### Field names
+
+Hover a tag field to read its description in the tooltip and the detail
+row. The editor includes these labels. An offset such as `+0x14` means
+the field has no established name. The evidence line identifies a retail
+reference with `A Halo2Xbox`, an engine reader with `E`, or a disc check
+with `V`. See [Field names](editor.md#field-names).
+
 How to change things:
 
 - **Numbers**: drag left or right, or double-click and type. Angles show
   in degrees.
-- **Choices** (a list of named values): pick from the list.
-- **Flags**: tick or untick. A bit with no name shows only when it is
-  set.
+- **Choices**: pick a named value from the list. An enumeration whose choices
+  have no established labels edits as a number.
+- **Flags**: tick or untick a named bit. A field with no bit labels edits as
+  a numeric mask. In a partly named mask, unlabelled bits appear when set.
 - **Colours**: click the swatch.
 - **Names (string IDs)**: type a name and press Enter. A name the map
   doesn't have yet is added to it when you save (under 128 characters).

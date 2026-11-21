@@ -43,6 +43,7 @@ pub struct Hovered {
     pub name: String,
     pub kind: String,
     pub named: bool,
+    pub description: Option<String>,
     pub meaning: String,
 }
 
@@ -327,21 +328,18 @@ impl Cx<'_> {
         if !ui.is_item_hovered() {
             return;
         }
-        let tip = format!(
-            "{} at +{:#x}{}{}",
-            f.kind.label(),
-            f.offset,
-            if f.named {
-                ""
-            } else {
-                "\nunnamed: labelled by its offset"
-            },
-            if f.meaning.is_empty() {
-                String::new()
-            } else {
-                format!("\n{}", f.meaning)
-            }
-        );
+        let mut tip = format!("{} at +{:#x}", f.kind.label(), f.offset);
+        if !f.named {
+            tip.push_str("\nunnamed: labelled by its offset");
+        }
+        if let Some(doc) = f.doc.as_deref().filter(|s| !s.is_empty()) {
+            tip.push('\n');
+            tip.push_str(doc);
+        }
+        if !f.meaning.is_empty() {
+            tip.push('\n');
+            tip.push_str(&f.meaning);
+        }
         ui.set_item_tooltip(tip);
         self.st.hovered = Some(Hovered {
             address: at + f.offset,
@@ -350,6 +348,7 @@ impl Cx<'_> {
             name: f.name.clone(),
             kind: f.kind.label(),
             named: f.named,
+            description: f.doc.clone(),
             meaning: f.meaning.clone(),
         });
         self.st.focus = Some((self.tag, at, layout.clone()));
@@ -407,16 +406,37 @@ impl Cx<'_> {
                 self.after();
             }
             Kind::Float { count, hint } => self.float(a, f, &b, *count, *hint),
+            Kind::Enum { bytes, values } | Kind::Flags { bytes, bits: values }
+                if values.iter().all(|s| s.is_empty() || s == "_") =>
+            {
+                let n = usize::from(*bytes);
+                let max = (1i64 << (8 * n)) - 1;
+                let mut value = le(&b, 0, n) as i64;
+                if Drag::<i64, _>::new("##v")
+                    .range(0, max)
+                    .build(ui, &mut value)
+                {
+                    let encoded = value.clamp(0, max).to_le_bytes();
+                    self.write(a, encoded[..n].to_vec(), &f.name);
+                }
+                self.after();
+            }
             Kind::Enum { bytes, values } => {
-                let n = *bytes as usize;
-                let v = le(&b, 0, n);
-                let name = |i: u64| match values.get(i as usize) {
-                    Some(s) => format!("{i}: {s}"),
-                    None => format!("{i}"),
-                };
-                if let Some(_c) = ui.begin_combo("##v", name(v)) {
-                    for i in 0..values.len().max(v as usize + 1) as u64 {
-                        if ui.selectable_config(name(i)).selected(i == v).build() && i != v {
+                let n = usize::from(*bytes);
+                let v = le(&b, 0, n) as u32;
+                let label = values
+                    .get(v as usize)
+                    .filter(|s| !s.is_empty() && s.as_str() != "_")
+                    .map_or_else(|| v.to_string(), |s| format!("{v}: {s}"));
+                if let Some(_c) = ui.begin_combo("##v", label) {
+                    for (i, name) in values.iter().enumerate() {
+                        if name.is_empty() || name == "_" {
+                            continue;
+                        }
+                        let i = i as u32;
+                        if ui.selectable_config(format!("{i}: {name}")).selected(i == v).build()
+                            && i != v
+                        {
                             self.write(a, i.to_le_bytes()[..n].to_vec(), &f.name);
                         }
                     }

@@ -375,6 +375,12 @@ fn tag_node(
             ui.text_colored(theme::ERROR, problem);
         }
         fields::inspector_panel(ui, doc, id, trail, panel, actions);
+        if let Some(h) = &panel.hovered
+            && let Some(doc) = h.description.as_deref().filter(|s| !s.is_empty())
+        {
+            ui.text(&h.name);
+            ui.text_wrapped(doc);
+        }
     }
     for child in node.children.iter().filter(|child| child.shortcut.is_some()) {
         tag_node(ui, doc, child, trail, panel, actions);

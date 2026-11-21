@@ -181,6 +181,48 @@ fn find<'a>(l: &'a Layout, name: &str) -> Option<&'a Field> {
     l.fields.iter().find(|f| f.name == name)
 }
 
+/// The root or a block element selected for the inspector's field rows.
+pub(crate) fn field_element(
+    doc: &TagDoc,
+    tag: TagId,
+    path: &str,
+) -> Result<(u32, Arc<Layout>), String> {
+    let t = doc.tag(tag).ok_or("no such tag")?;
+    if let Access::None(reason) = &t.access {
+        return Err((*reason).into());
+    }
+    let root = doc.layout(tag).ok_or("no layout for this group")?;
+    if root.size > t.size {
+        return Err(super::tag_doc::TOO_SHORT.into());
+    }
+    if path.is_empty() {
+        return Ok((t.address, root.clone()));
+    }
+    let (field_path, index) = path
+        .strip_suffix(']')
+        .and_then(|s| s.rsplit_once('['))
+        .ok_or_else(|| format!("{path}: expected a block element index"))?;
+    let index: u32 = index
+        .parse()
+        .map_err(|_| format!("bad index in {path:?}"))?;
+    let (at, _, field) = resolve(doc, tag, field_path)?;
+    let Kind::Block(child) = field.kind else {
+        return Err(format!("{field_path} is not a block"));
+    };
+    let (count, start) = doc
+        .block(at + field.offset, &child)
+        .ok_or("unreadable block")?;
+    if index >= count {
+        return Err(format!(
+            "{field_path}: index {index} outside {count} elements"
+        ));
+    }
+    let at = start
+        .checked_add(index * child.size)
+        .ok_or("invalid element address")?;
+    Ok((at, child))
+}
+
 /// The field at `path`: the address of its element, the element's layout
 /// and the field.
 pub fn resolve(doc: &TagDoc, tag: TagId, path: &str) -> Result<(u32, Arc<Layout>, Field), String> {
@@ -313,6 +355,9 @@ pub fn set_field(doc: &TagDoc, tag: TagId, path: &str, v: &Value) -> Result<TagA
                     .as_u64()
                     .ok_or_else(|| format!("{}: a name or a number", f.name))?,
             };
+            if i >> (u32::from(*bytes) * 8) != 0 {
+                return Err(format!("{}: {i} does not fit {bytes} bytes", f.name));
+            }
             i.to_le_bytes()[..*bytes as usize].to_vec()
         }
         Kind::Flags { bytes, bits } => {

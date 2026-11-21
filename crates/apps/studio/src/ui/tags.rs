@@ -803,6 +803,9 @@ pub fn hex(
         let f = ui.push_font(fonts.bold);
         ui.text(&h.name);
         f.pop();
+        if let Some(doc) = h.description.as_deref().filter(|s| !s.is_empty()) {
+            ui.text_wrapped(doc);
+        }
         ui.text_disabled(format!(
             "{} at +{:#x} ({:#010x}){}",
             h.kind,

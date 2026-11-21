@@ -78,6 +78,7 @@ pub mod method {
     pub const DOC_CLOSE: &str = "doc.close";
 
     pub const TAG_LIST: &str = "tag.list";
+    pub const TAG_FIELDS: &str = "tag.fields";
     pub const TAG_READ: &str = "tag.read";
     pub const TAG_TREE: &str = "tag.tree";
     pub const TAG_REFS: &str = "tag.refs";
