@@ -68,6 +68,21 @@ fn placement_box(app: &App, marker: &Marker) -> MarkBox {
     }
 }
 
+/// The selected trigger volume's box in world space, in the frame the
+/// game's marks take (a corner, forward, up and full size along forward,
+/// left and up).
+fn volume_box(app: &App) -> Option<MarkBox> {
+    let index = app.session.selected_volume()?;
+    let volume = app.session.volumes()?.triggers.get(index)?;
+    let frame = volume.frame;
+    (volume.in_world() && frame.axes().is_some()).then_some(MarkBox {
+        origin: frame.origin,
+        forward: frame.forward,
+        up: frame.up,
+        size: frame.size,
+    })
+}
+
 /// Keep handles numeric until a replacement actually goes over the socket.
 fn targets(
     app: &App,
@@ -80,6 +95,8 @@ fn targets(
     out.clear();
     if let Some(id) = live {
         out.push(Target::Object(id, MarkStyle::Selected));
+    } else if let Some(frame) = volume_box(app) {
+        out.push(Target::Box(frame));
     } else {
         match selection {
             Some(Selection::Placement(..)) => {
@@ -264,7 +281,7 @@ impl Play {
         // A host can offer marks without the binary stream. A matched edit.map
         // then locates authored boxes, even in a read-only session.
         let static_only = sample.is_none()
-            && self.presence.selection.is_some()
+            && (self.presence.selection.is_some() || app.session.selected_volume().is_some())
             && self.map_refusal(app).is_none();
         if matching || static_only {
             targets(
@@ -597,6 +614,46 @@ mod tests {
             frame.origin,
             scenario_edit::scene::model_to_world(&marker, [-radius; 3])
         );
+    }
+
+    /// A selected trigger volume is marked in the game as its own box, in
+    /// place of the placements and tags; a placement replaces it.
+    #[test]
+    fn a_selected_volume_is_marked_as_its_box() {
+        use crate::app::Action;
+        use crate::play::testing::Temp;
+        use scenario_edit::fixture;
+
+        let temp = Temp::new("presence-volume");
+        let map = temp.0.join("volumes.map");
+        std::fs::write(&map, fixture::fixture_with_volumes()).unwrap();
+        let mut app = App::new();
+        app.set_data_root(temp.0.join("data"));
+        app.dispatch(Action::OpenSource(map));
+        let before = app.selection_revision();
+        app.dispatch(Action::SelectVolume(Some(1)));
+        assert_ne!(app.selection_revision(), before, "the marks are resent");
+        let mut marks = Vec::new();
+        targets(&app, app.selection(), &[], None, Some(7), &mut marks);
+        let (origin, forward, size) = fixture::VOLUMES[1];
+        assert_eq!(
+            marks,
+            [
+                Target::Box(MarkBox {
+                    origin,
+                    forward,
+                    up: [0., 0., 1.],
+                    size,
+                }),
+                Target::Object(7, MarkStyle::Candidate),
+            ]
+        );
+        app.dispatch(Action::Select(Some((BlockKind::Weapons, 0))));
+        targets(&app, app.selection(), &[], None, None, &mut marks);
+        let [Target::Box(placement)] = marks.as_slice() else {
+            panic!("expected the placement's box");
+        };
+        assert_ne!(placement.origin, origin);
     }
 
     #[test]

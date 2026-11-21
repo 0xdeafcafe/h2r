@@ -159,6 +159,50 @@ pub fn fixture() -> Vec<u8> {
     b
 }
 
+pub const VOLUMES_AT: usize = 0x900;
+pub const KILLS_AT: usize = 0x990;
+pub const SWITCHES_AT: usize = 0x9a0;
+
+/// The trigger volumes [`fixture_with_volumes`] adds: (origin corner,
+/// forward, full size). Volume 0 is axis-aligned; volume 1 is turned a
+/// quarter (forward +y) and is the one the kill trigger names; the BSP
+/// switch names volume 0, from BSP 0 to 1. Both are far from the
+/// placements, so a ray at one meets no glyph.
+pub const VOLUMES: [([f32; 3], [f32; 3], [f32; 3]); 2] = [
+    ([100.0, 100.0, 0.0], [1.0, 0.0, 0.0], [4.0, 4.0, 4.0]),
+    ([-40.0, -40.0, -10.0], [0.0, 1.0, 0.0], [6.0, 2.0, 3.0]),
+];
+
+/// [`fixture`] with two trigger volumes, a kill trigger and a BSP switch.
+pub fn fixture_with_volumes() -> Vec<u8> {
+    let mut b = fixture();
+    block(&mut b, 0x108, VOLUMES.len() as u32, VOLUMES_AT);
+    for (i, (origin, forward, size)) in VOLUMES.into_iter().enumerate() {
+        let e = sfile(VOLUMES_AT + i * 0x44);
+        // No name, no parent object.
+        b[e + 4..e + 6].copy_from_slice(&(-1i16).to_le_bytes());
+        for (at, v) in [
+            (0xc, forward),
+            (0x18, [0.0, 0.0, 1.0]),
+            (0x24, origin),
+            (0x30, size),
+        ] {
+            for (k, x) in v.into_iter().enumerate() {
+                putf(&mut b, e + at + 4 * k, x);
+            }
+        }
+    }
+    block(&mut b, 0x230, 1, KILLS_AT);
+    let e = sfile(KILLS_AT);
+    b[e..e + 2].copy_from_slice(&1i16.to_le_bytes());
+    block(&mut b, 0x130, 1, SWITCHES_AT);
+    let e = sfile(SWITCHES_AT);
+    for (k, v) in [0i16, 0, 1].into_iter().enumerate() {
+        b[e + 2 * k..e + 2 * k + 2].copy_from_slice(&v.to_le_bytes());
+    }
+    b
+}
+
 /// The fixture with its metadata region ending the file, as in retail maps,
 /// so a block can grow.
 pub fn fixture_at_end() -> Vec<u8> {

@@ -158,6 +158,11 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
                 json!({"block": "starting_locations", "index": 1}),
             );
         }
+        m::VOLUME_LIST | m::VOLUME_SELECT => {
+            let map = t.path("volumes.map");
+            std::fs::write(&map, fixture::fixture_with_volumes()).unwrap();
+            c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
+        }
         m::DOC_CLOSE | m::PLAYLIST_LIST | m::PLAYLIST_GET | m::PLAYLIST_SET | m::PLAYLIST_ENTRY => {
             c(
                 m::DOC_OPEN,
@@ -768,6 +773,164 @@ fn view_layers_applies_overrides_atomically_and_shares_the_halo1_menu_switch() {
     assert_eq!(halo["on"], false);
     call(&mut api, &mut app, m::VIEW_LAYERS, json!({"set": {"halo1": true}}));
     assert!(app.overlay_shown());
+}
+
+/// P8: the invented map's two volumes, kill trigger and BSP switch
+/// through `volume.list`; `volume.select` replaces the placements, frames
+/// the box and shows in `nav.status`; the layers count and draw them.
+#[test]
+fn volume_list_and_select_read_the_invented_volumes() {
+    let t = Temp::new("volumes");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    // The plain invented map has none.
+    let none = call(&mut api, &mut app, m::VOLUME_LIST, Value::Null);
+    assert_eq!(none["volumes"], json!([]));
+    assert_eq!(none["error"], Value::Null);
+    let map = t.path("volumes.map");
+    std::fs::write(&map, fixture::fixture_with_volumes()).unwrap();
+    call(
+        &mut api,
+        &mut app,
+        m::SOURCE_OPEN,
+        json!({"path": map.display().to_string()}),
+    );
+
+    let all = call(&mut api, &mut app, m::VOLUME_LIST, Value::Null);
+    let rows = all["volumes"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        (all["kill_triggers"].clone(), all["bsp_switches"].clone()),
+        (json!(1), json!(1))
+    );
+    for (row, (origin, forward, size)) in rows.iter().zip(fixture::VOLUMES) {
+        assert_eq!(row["origin"], json!(origin));
+        assert_eq!(row["forward"], json!(forward));
+        assert_eq!(row["up"], json!([0.0, 0.0, 1.0]));
+        assert_eq!(row["size"], json!(size));
+        assert_eq!(row["world"], true);
+    }
+    assert_eq!(rows[0]["kinds"], json!(["bsp_switch", "trigger"]));
+    assert_eq!(
+        rows[0]["named_by"],
+        json!([{"kind": "bsp_switch", "index": 0, "from": 0, "to": 1}])
+    );
+    assert_eq!(rows[1]["kinds"], json!(["kill", "trigger"]));
+    assert_eq!(rows[1]["label"], "trigger volume 1");
+    // The turned box: forward +y, so it runs 6 along y and 2 along -x.
+    assert_eq!(rows[1]["center"], json!([-41.0, -37.0, -8.5]));
+    let kills = call(&mut api, &mut app, m::VOLUME_LIST, json!({"kind": "kill"}));
+    let kill_rows = kills["volumes"].as_array().unwrap();
+    assert_eq!(kill_rows.len(), 1);
+    assert_eq!(kill_rows[0]["index"], 1);
+    assert_eq!(
+        code_of(api.call(&mut app, m::VOLUME_LIST, json!({"kind": "soft"}))),
+        code::INVALID_PARAMS
+    );
+
+    let layers = call(&mut api, &mut app, m::VIEW_LAYERS, Value::Null);
+    let row = |name: &str| {
+        layers["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["name"] == name)
+            .unwrap()
+            .clone()
+    };
+    for (name, count) in [
+        ("trigger_volumes", 2),
+        ("kill_volumes", 1),
+        ("bsp_switches", 1),
+    ] {
+        assert_eq!(row(name)["group"], "Volumes", "{name}");
+        assert_eq!(row(name)["count"], count, "{name}");
+    }
+
+    call(
+        &mut api,
+        &mut app,
+        m::SCENARIO_SELECT,
+        json!({"block": "weapons", "index": 0}),
+    );
+    let selected = call(
+        &mut api,
+        &mut app,
+        m::VOLUME_SELECT,
+        json!({"index": 1, "focus": true}),
+    );
+    assert_eq!(selected, json!({"selected": 1}));
+    assert_eq!(app.session.selected(), None);
+    let nav = call(&mut api, &mut app, m::NAV_STATUS, Value::Null);
+    assert_eq!(
+        (nav["volume"].clone(), nav["selected"].clone()),
+        (json!(1), Value::Null)
+    );
+    assert_eq!(app.session.camera().target, [-41.0, -37.0, -8.5]);
+    assert_eq!(
+        call(&mut api, &mut app, m::VOLUME_LIST, Value::Null)["selected"],
+        1
+    );
+    assert_eq!(
+        code_of(api.call(&mut app, m::VOLUME_SELECT, json!({"index": 2}))),
+        code::INVALID_PARAMS
+    );
+    assert_eq!(app.session.selected_volume(), Some(1));
+    call(
+        &mut api,
+        &mut app,
+        m::SCENARIO_SELECT,
+        json!({"block": "weapons", "index": 0}),
+    );
+    assert_eq!(app.session.selected_volume(), None);
+    call(&mut api, &mut app, m::VOLUME_SELECT, json!({"index": 0}));
+    assert_eq!(
+        call(&mut api, &mut app, m::VOLUME_SELECT, Value::Null),
+        json!({"selected": null})
+    );
+    assert_eq!(app.session.selected_volume(), None);
+
+    // Each volume layer draws its boxes in the snapshot.
+    let out = t.path("volumes.png");
+    let params = json!({
+        "out": out, "size": [128, 96],
+        "camera": {"target": [-41, -37, -8.5], "distance": 20, "yaw": 30, "pitch": 30}
+    });
+    call(
+        &mut api,
+        &mut app,
+        m::VIEW_LAYERS,
+        json!({"preset": "everything"}),
+    );
+    match api.call(&mut app, m::VIEW_SNAPSHOT, params.clone()) {
+        Err(e) if e.code == code::NO_GPU => return,
+        Ok(_) => {}
+        Err(e) => panic!("view.snapshot: {e}"),
+    }
+    let shown = png_pixels(&out);
+    call(
+        &mut api,
+        &mut app,
+        m::VIEW_LAYERS,
+        json!({"set": {"trigger_volumes": false, "kill_volumes": false}}),
+    );
+    call(&mut api, &mut app, m::VIEW_SNAPSHOT, params.clone());
+    let hidden = png_pixels(&out);
+    assert!(
+        hidden != shown,
+        "hiding the volume layers must remove the box"
+    );
+    call(
+        &mut api,
+        &mut app,
+        m::VIEW_LAYERS,
+        json!({"set": {"kill_volumes": true}}),
+    );
+    call(&mut api, &mut app, m::VIEW_SNAPSHOT, params);
+    assert!(
+        png_pixels(&out) != hidden,
+        "the Kill layer alone draws the kill box"
+    );
 }
 
 fn png_pixels(path: &Path) -> Vec<u8> {

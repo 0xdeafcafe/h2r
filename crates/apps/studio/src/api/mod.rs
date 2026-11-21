@@ -349,6 +349,20 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"block":"netgame_flags","index":0}"#,
     ),
     def(
+        m::VOLUME_LIST,
+        "The open map's trigger volumes as oriented boxes (corner, forward, up, full size), what each is drawn as, and the kill triggers and BSP switches that name it",
+        r#"{"kind?":"trigger|kill|bsp_switch"}"#,
+        r#"{"volumes":"[{index,name,label,kinds,origin,forward,up,size,center,parent,world,named_by:[{kind,index,from?,to?}]}]","kill_triggers":"integer","bsp_switches":"integer","selected":"integer|null","error":"string|null"}"#,
+        r#"{"kind":"kill"}"#,
+    ),
+    def(
+        m::VOLUME_SELECT,
+        "Select a trigger volume by index (clearing the placements) and frame it with focus, or clear the selection",
+        r#"{"index?":"integer","focus?":"boolean"}"#,
+        r#"{"selected":"integer|null"}"#,
+        r#"{"index":0,"focus":true}"#,
+    ),
+    def(
         m::VARIANT_LIST,
         "The built-in and saved game variants, and the one open",
         "{}",
@@ -682,6 +696,7 @@ impl Api {
             "source" | "doc" => docs::call(app, method, &p),
             "tag" => tags::call(app, method, &p),
             "scenario" => scenario::call(app, method, &p),
+            "volume" => scenario::volume(app, method, &p),
             "variant" => variants::call(app, method, &p),
             "playlist" => playlists::call(app, method, &p),
             "ui" => ui_screens::call(app, method, &p),

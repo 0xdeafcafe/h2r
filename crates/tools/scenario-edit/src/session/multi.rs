@@ -387,8 +387,14 @@ impl Session {
     }
 
     /// A sphere round everything selected: the placements' models (their
-    /// bounds placed and scaled) or, without one, their glyphs.
+    /// bounds placed and scaled) or, without one, their glyphs; or round
+    /// the selected trigger volume's box.
     pub fn selection_sphere(&self) -> Option<(Vec3, f32)> {
+        if let Some(i) = self.selected_volume() {
+            // A parented volume's frame is relative to an object.
+            let volume = self.volumes()?.triggers.get(i).filter(|v| v.in_world())?;
+            return Some((volume.frame.center()?, volume.frame.radius()));
+        }
         let all = self.selection();
         let mut bounds = Bounds::EMPTY;
         for m in self

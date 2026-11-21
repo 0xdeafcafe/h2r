@@ -307,6 +307,81 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
     }
 }
 
+/// `volume.*`: the trigger volumes, read and selected (read only until
+/// they are edited as placements are; docs/editor/polish-plan.md P9).
+pub fn volume(app: &mut App, method: &str, p: &P) -> Reply {
+    use scenario_edit::volumes::{Holder, VolumeKind};
+    match method {
+        m::VOLUME_LIST => {
+            let kind = match p.opt_str("kind")? {
+                Some(name) => Some(VolumeKind::from_name(name).ok_or_else(|| {
+                    err(
+                        code::INVALID_PARAMS,
+                        format!("kind: trigger, kill or bsp_switch, not {name:?}"),
+                    )
+                })?),
+                None => None,
+            };
+            let v = &open(app)?.volumes;
+            let rows: Vec<Value> = v
+                .triggers
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| kind.is_none_or(|k| v.kinds(*i).contains(&k)))
+                .map(|(i, t)| {
+                    let named_by: Vec<Value> = v
+                        .holders(i)
+                        .into_iter()
+                        .map(|h| match h {
+                            Holder::Kill(index) => json!({"kind": "kill", "index": index}),
+                            Holder::BspSwitch { index, from, to } => json!({
+                                "kind": "bsp_switch", "index": index, "from": from, "to": to,
+                            }),
+                        })
+                        .collect();
+                    json!({
+                        "index": i,
+                        "name": t.name,
+                        "label": v.label(i),
+                        "kinds": v.kinds(i).into_iter().map(VolumeKind::name).collect::<Vec<_>>(),
+                        "origin": t.frame.origin,
+                        "forward": t.frame.forward,
+                        "up": t.frame.up,
+                        "size": t.frame.size,
+                        "center": t.frame.center().filter(|_| t.in_world()),
+                        "parent": t.parent,
+                        "world": t.in_world(),
+                        "named_by": named_by,
+                    })
+                })
+                .collect();
+            Ok(json!({
+                "volumes": rows,
+                "kill_triggers": v.kills.len(),
+                "bsp_switches": v.switches.len(),
+                "selected": app.session.selected_volume(),
+                "error": v.error,
+            }))
+        }
+        m::VOLUME_SELECT => {
+            let count = open(app)?.volumes.triggers.len();
+            let index = p.opt_usize("index")?;
+            if let Some(i) = index.filter(|&i| i >= count) {
+                return Err(err(
+                    code::INVALID_PARAMS,
+                    format!("no trigger volume {i} (the map has {count})"),
+                ));
+            }
+            perform(app, Action::SelectVolume(index))?;
+            if index.is_some() && p.bool("focus")? {
+                perform(app, Action::FocusSelected)?;
+            }
+            Ok(json!({ "selected": app.session.selected_volume() }))
+        }
+        _ => Err(err(code::METHOD_NOT_FOUND, format!("no method {method}"))),
+    }
+}
+
 /// Adds a placement: refused first where the block can't grow safely or
 /// takes no new entries. The editor puts a new entry (or a copy) at the
 /// camera focus; at `position`, the focus is moved there for the add and
