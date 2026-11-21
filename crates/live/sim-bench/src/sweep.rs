@@ -126,6 +126,16 @@ pub fn key(b: &BounceParams) -> String {
         .join(" ")
 }
 
+/// Whether `a` and `b` play the same: every field equal once those left
+/// out are at their built-in value. A candidate that sets a field to its
+/// default is the base again, and is not played twice.
+pub fn same_play(a: &BounceParams, b: &BounceParams) -> bool {
+    crate::config::BOUNCE_FIELDS.iter().all(|f| {
+        let at = |p: &BounceParams| p.get(f.name).unwrap_or(f.default) as f32;
+        at(a) == at(b)
+    })
+}
+
 fn trim(v: f64) -> String {
     let s = format!("{v:.4}");
     let s = s.trim_end_matches('0').trim_end_matches('.');
@@ -249,7 +259,7 @@ impl Sweep {
     }
 
     /// The base, then every combination of the axes' values (the first
-    /// axis slowest), without repeats.
+    /// axis slowest), without repeats ([`same_play`]).
     pub fn grid(&self) -> Vec<Candidate> {
         let mut combos: Vec<BounceParams> = vec![self.base.clone()];
         for (name, values) in &self.axes {
@@ -265,7 +275,7 @@ impl Sweep {
         }
         let mut out = vec![self.base_candidate()];
         for b in combos {
-            if out.iter().all(|c| c.bounce != b) {
+            if out.iter().all(|c| !same_play(&c.bounce, &b)) {
                 let n = out.len();
                 out.push(self.candidate(n, b));
             }
@@ -293,8 +303,9 @@ impl Sweep {
     }
 
     /// One coordinate step: axis `axis`'s values, each with the other
-    /// fields at `best`; numbered from `first`. Values `best` already has
-    /// are left out.
+    /// fields at `best`; numbered from `first`. Values `best` already
+    /// plays (set, or the built-in value of a field it leaves out) are
+    /// left out.
     pub fn step(&self, best: &BounceParams, axis: usize, first: usize) -> Vec<Candidate> {
         let Some((name, values)) = self.axes.get(axis) else {
             return Vec::new();
@@ -303,7 +314,7 @@ impl Sweep {
         for v in values {
             let mut b = best.clone();
             let _ = b.set(name, *v);
-            if b != *best && out.iter().all(|c| c.bounce != b) {
+            if !same_play(&b, best) && out.iter().all(|c| !same_play(&c.bounce, &b)) {
                 let n = first + out.len();
                 out.push(self.candidate(n, b));
             }
@@ -428,7 +439,7 @@ pub fn fresh(cands: Vec<Candidate>, played: &[Candidate], first: usize) -> Vec<C
         if played
             .iter()
             .chain(out.iter())
-            .any(|p| p.bounce == c.bounce)
+            .any(|p| same_play(&p.bounce, &c.bounce))
         {
             continue;
         }

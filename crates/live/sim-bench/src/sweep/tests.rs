@@ -112,15 +112,20 @@ fn a_coordinate_step_moves_one_axis_from_the_best() {
     };
     let step = s.step(&best, 0, 7);
     let keys: Vec<&str> = step.iter().map(|c| c.key.as_str()).collect();
+    // still_ticks = 4 is the built-in value: the best plays it already.
     assert_eq!(
         keys,
-        [
-            "still_ticks=2 drift=0.25",
-            "still_ticks=4 drift=0.25",
-            "still_ticks=8 drift=0.25"
-        ]
+        ["still_ticks=2 drift=0.25", "still_ticks=8 drift=0.25"]
     );
     assert_eq!(step[0].id, "c007");
+    assert!(same_play(
+        &BounceParams {
+            still_ticks: Some(4),
+            ..best.clone()
+        },
+        &best
+    ));
+    assert!(!same_play(&BounceParams::default(), &best));
     // The value the best has already is not tried again.
     let step = s.step(&best, 1, 0);
     assert_eq!(step.len(), 1);

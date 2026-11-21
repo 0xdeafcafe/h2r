@@ -833,7 +833,9 @@ still_ticks = [2, 4, 8]
   draws, each axis uniform between its least and most value (whole
   fields rounded). `coordinate`: from the base, one axis at a time, each
   of its values with the other fields at the best so far, `rounds`
-  passes; a tuning already played is not played again.
+  passes. A tuning that plays as one already listed (a field set to its
+  built-in value plays as the field left out; `sweep::same_play`) is not
+  played again.
 - **Each candidate** gets `<out>/candidates/<id>/batch.toml`: the sweep's
   batch with its paths made absolute, its results beside it, and one arm,
   named the id, whose tuning is arm A's with the candidate's `[bounce]`
