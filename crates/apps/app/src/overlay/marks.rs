@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 pub use gfx::world_lines::ImageSamples;
-use gfx::world_lines::{Fade, Pulse, ShownMarks, WorldLine};
+use gfx::world_lines::{Fade, LineStyle, Pulse, ShownMarks, WorldLine};
 
 use crate::scale::Viewport;
 
@@ -208,6 +208,27 @@ fn strip_quad([a, b]: [[f32; 2]; 2], outer: f32, extend: f32) -> Option<[Corner;
         ([end[0] - nx, end[1] - ny], [length + extend, -outer]),
         ([end[0] + nx, end[1] + ny], [length + extend, outer]),
     ])
+}
+
+/// The size of one font pixel of a label: its style's scale, and for a
+/// centred (prompt) label also the output height over 1080p, at least 1.
+fn label_glyph_scale(style: &LineStyle, pixel_scale: f32) -> f32 {
+    let scale = style.label_scale.max(0.25);
+    if style.label_centered {
+        scale * pixel_scale.max(1.0)
+    } else {
+        scale
+    }
+}
+
+/// The top-left pixel of a label of `chars` glyphs at `point`: just below
+/// and right of it, or centred on it.
+fn label_origin([x, y]: [f32; 2], chars: usize, glyph: f32, centered: bool) -> [f32; 2] {
+    if centered {
+        [x - chars as f32 * 8.0 * glyph * 0.5, y - 4.0 * glyph]
+    } else {
+        [x.ceil() + 5.0, y.ceil() + 5.0]
+    }
 }
 
 /// The most arrowheads along one edge.
@@ -432,8 +453,10 @@ fn fs(in: Out) -> @location(0) vec4<f32> {
                     if fade > 0.0
                         && let Some(point) = project_point(camera, area, mark.anchor)
                     {
-                        let color = [mark.color[0], mark.color[1], mark.color[2], fade];
-                        self.label(label, point, color, size, camera, area);
+                        let a = fade * pulse_factor(style.pulse, self.seconds);
+                        let color = [mark.color[0], mark.color[1], mark.color[2], a];
+                        let glyph = label_glyph_scale(&style, scale);
+                        self.label(label, point, color, glyph, style.label_centered, size, camera, area);
                     }
                 }
             }
@@ -574,11 +597,14 @@ fn fs(in: Out) -> @location(0) vec4<f32> {
             }
         }
 
+        #[allow(clippy::too_many_arguments)]
         fn label(
             &mut self,
             label: &str,
-            [x, y]: [f32; 2],
+            point: [f32; 2],
             color: [f32; 4],
+            glyph: f32,
+            centered: bool,
             size: (u32, u32),
             camera: &MarkCamera,
             area: Viewport,
@@ -586,23 +612,42 @@ fn fs(in: Out) -> @location(0) vec4<f32> {
             let [_, _, bottom, right] = camera.viewport;
             let right = area.x as f32 + right * area.width as f32;
             let bottom = area.y as f32 + bottom * area.height as f32;
-            let x = x.ceil() + 5.0;
-            let y = y.ceil() + 5.0;
-            if y + 8.0 > bottom {
+            let text = crate::overlay::overlay_text(label);
+            let [x, y] = label_origin(point, text.chars().count(), glyph, centered);
+            if y + 8.0 * glyph > bottom {
                 return;
             }
-            for (i, c) in crate::overlay::overlay_text(label).chars().enumerate() {
-                let x = x + i as f32 * 8.0;
-                if x + 8.0 > right {
+            if centered {
+                // A dark drop shadow keeps big text readable on any floor.
+                let shadow = [0.0, 0.0, 0.0, color[3] * 0.7];
+                let off = glyph.max(1.0);
+                self.glyphs(&text, [x + off, y + off], shadow, glyph, right, size);
+            }
+            self.glyphs(&text, [x, y], color, glyph, right, size);
+        }
+
+        /// The text's lit font pixels as runs of `glyph`-pixel squares.
+        fn glyphs(
+            &mut self,
+            text: &str,
+            [x, y]: [f32; 2],
+            color: [f32; 4],
+            glyph: f32,
+            right: f32,
+            size: (u32, u32),
+        ) {
+            for (i, c) in text.chars().enumerate() {
+                let x = x + i as f32 * 8.0 * glyph;
+                if x + 8.0 * glyph > right {
                     break;
                 }
-                let Some(glyph) = font8x8::BASIC_FONTS
+                let Some(font) = font8x8::BASIC_FONTS
                     .get(c)
                     .or_else(|| font8x8::LATIN_FONTS.get(c))
                 else {
                     continue;
                 };
-                for (row, bits) in glyph.into_iter().enumerate() {
+                for (row, bits) in font.into_iter().enumerate() {
                     let mut col = 0;
                     while col < 8 {
                         if bits & (1 << col) == 0 {
@@ -613,16 +658,18 @@ fn fs(in: Out) -> @location(0) vec4<f32> {
                         while col < 8 && bits & (1 << col) != 0 {
                             col += 1;
                         }
-                        // A one-pixel-high run, covering whole pixels.
-                        let top = y + row as f32;
-                        let (x0, x1) = (x + first as f32, x + col as f32);
+                        // One font row of a run, snapped to whole pixels.
+                        let top = (y + row as f32 * glyph).round();
+                        let bottom = (y + (row + 1) as f32 * glyph).round();
+                        let x0 = (x + first as f32 * glyph).round();
+                        let x1 = (x + col as f32 * glyph).round();
                         let shape = [FILL, FILL, 0.0, 0.0];
                         let corner = |pos| ((pos, [0.0, 0.0]), color, shape);
                         self.quad(
                             [
                                 corner([x0, top]),
-                                corner([x0, top + 1.0]),
-                                corner([x1, top + 1.0]),
+                                corner([x0, bottom]),
+                                corner([x1, bottom]),
                                 corner([x1, top]),
                             ],
                             size,
@@ -926,5 +973,21 @@ mod tests {
         );
         let behind = square.map(|p| [p[0], p[1], -1.0, p[3]]);
         assert!(clip_near(&behind).is_empty());
+    }
+
+    #[test]
+    fn labels_are_centred_or_hang_off_their_anchor() {
+        assert_eq!(label_origin([100.0, 50.0], 6, 2.0, true), [76.0, 42.0]);
+        assert_eq!(label_origin([100.2, 50.0], 6, 1.0, false), [106.0, 55.0]);
+    }
+
+    #[test]
+    fn a_centred_label_scales_with_the_output_a_plain_one_does_not() {
+        let plain = LineStyle { label_scale: 2.0, ..LineStyle::default() };
+        let centred = LineStyle { label_centered: true, ..plain };
+        assert_eq!(label_glyph_scale(&plain, 2.0), 2.0);
+        assert_eq!(label_glyph_scale(&centred, 2.0), 4.0);
+        assert_eq!(label_glyph_scale(&centred, 0.5), 2.0);
+        assert_eq!(label_glyph_scale(&LineStyle::default(), 1.0), 1.0);
     }
 }

@@ -140,6 +140,7 @@ pub fn bounce_style(drift: [f32; 2], primed: bool) -> LineStyle {
             width: RIBBON_WIDTH,
             alpha: 0.18,
         }),
+        ..LineStyle::default()
     }
 }
 
@@ -159,6 +160,7 @@ pub fn crouch_style() -> LineStyle {
         }),
         chevrons: None,
         ribbon: None,
+        ..LineStyle::default()
     }
 }
 
@@ -199,6 +201,21 @@ fn anchor(spot: &Spot) -> Vec3 {
         (a[1] + b[1]) / 2.0,
         (a[2] + b[2]) / 2.0,
     ]
+}
+
+/// The strip the assist is steering onto, brightened: full colour whether
+/// or not the player is primed, a bolder core and halo, and pulsing.
+pub fn highlight(line: &mut Line, spot: &Spot) {
+    line.color = fall_colour(spot.fall);
+    line.style.width = 4.5;
+    line.style.glow = Some(Glow {
+        width: 7.0,
+        alpha: 0.6,
+    });
+    line.style.pulse = Some(Pulse {
+        period: 0.6,
+        depth: 0.4,
+    });
 }
 
 /// The lines for the `max` spots nearest `at` (by their edges' middle),
@@ -742,19 +759,44 @@ mod gpu {
             super::active()
         }
 
-        fn capture(&self, _: &dyn GuestMemory) -> Option<Arc<dyn ImageMarks>> {
+        fn capture(&self, guest: &dyn GuestMemory) -> Option<Arc<dyn ImageMarks>> {
+            use crate::superbounce_assist as assist;
+            use crate::superbounce_prompts as prompts;
             let s = state();
-            let drawn = lines(&current_spots(), s.position, s.primed(), MAX_LINES);
-            (!drawn.is_empty()).then(|| Arc::new(Sample(drawn)) as Arc<dyn ImageMarks>)
+            let spots = current_spots();
+            let mut drawn = lines(&spots, s.position, s.primed(), MAX_LINES);
+            let mut callouts = Vec::new();
+            if s.primed()
+                && let Some(body) = assist::read_body(guest, assist::PORT)
+            {
+                let target = assist::pick(&spots, &body);
+                if let Some((spot, _)) = target
+                    && let Some(line) = drawn.iter_mut().find(|l| l.edge == spot.edge)
+                {
+                    highlight(line, spot);
+                }
+                callouts = prompts::callouts(
+                    &spots,
+                    &body,
+                    true,
+                    target.as_ref().map(|(spot, reach)| (*spot, reach)),
+                    assist::assisting(),
+                );
+            }
+            (!drawn.is_empty() || !callouts.is_empty())
+                .then(|| Arc::new(Sample { lines: drawn, callouts }) as Arc<dyn ImageMarks>)
         }
     }
 
     #[derive(Debug)]
-    struct Sample(Vec<Line>);
+    struct Sample {
+        lines: Vec<Line>,
+        callouts: Vec<crate::superbounce_prompts::Callout>,
+    }
 
     impl ImageMarks for Sample {
         fn lines(&self, visitor: &mut dyn FnMut(WorldLine<'_>)) {
-            for l in &self.0 {
+            for l in &self.lines {
                 visitor(WorldLine {
                     edges: std::slice::from_ref(&l.edge),
                     anchor: l.anchor,
@@ -762,6 +804,16 @@ mod gpu {
                     dashed: l.dashed,
                     label: l.label.as_deref(),
                     style: l.style,
+                });
+            }
+            for c in &self.callouts {
+                visitor(WorldLine {
+                    edges: &c.edges,
+                    anchor: c.anchor,
+                    color: c.color,
+                    dashed: false,
+                    label: c.label.as_deref(),
+                    style: c.style,
                 });
             }
         }
@@ -894,6 +946,17 @@ mod tests {
             .unwrap();
         assert!(drawn[..first_unlabelled].iter().filter(|l| !l.dashed).all(|l| l.label.is_some()));
         assert_eq!(drawn.len(), 12);
+    }
+
+    #[test]
+    fn the_assist_target_is_drawn_bright_even_when_unprimed() {
+        let s = spot(Kind::Bounce, 0.0, 1.5, 17.9);
+        let mut dim = line_for(&s, false);
+        assert_eq!(dim.color, [DIM, DIM, 0.0]);
+        highlight(&mut dim, &s);
+        assert_eq!(dim.color, [1.0, 1.0, 0.0]);
+        assert!(dim.style.width > bounce_style([0.0; 2], true).width);
+        assert!(dim.style.pulse.is_some());
     }
 
     #[test]
