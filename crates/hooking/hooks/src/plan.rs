@@ -252,7 +252,7 @@ fn place_locale(
     }
     let native = locale.server.filter(|f| {
         placed.iter().any(|(_, h)| {
-            h.feature == *f && h.kind() == Kind::Implement && std::ptr::eq(h.point, &LOCALE_FIND)
+            h.feature == *f && h.kind() == Kind::Implement && h.point.name == LOCALE_FIND.name
         })
     });
     let by = match native {
@@ -358,7 +358,7 @@ pub(crate) fn build(
     let mut warnings = Vec::new();
     for (addr, hooks) in by_addr {
         let point = hooks[0].point;
-        if let Some(other) = hooks.iter().find(|h| !std::ptr::eq(h.point, point)) {
+        if let Some(other) = hooks.iter().find(|h| h.point.name != point.name) {
             conflicts.push(Conflict::TwoNames {
                 addr,
                 a: point.name,

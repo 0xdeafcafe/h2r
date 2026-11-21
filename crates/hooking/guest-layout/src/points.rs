@@ -508,7 +508,8 @@ points! { ALL;
     CAMERA_DIRECTOR @ 0x0015_54b0: [opaque], Optional; "docs/engine/engine-map.md";
     CAMERA_OBSERVER @ 0x0016_f280: [opaque], Optional; "docs/engine/engine-map.md";
     CAMERA_FIRST_PERSON @ 0x0023_c110: [opaque], Optional; "docs/engine/engine-map.md";
-    UI_UPDATE @ 0x0014_79c3: [opaque], Optional; "docs/engine/engine-map.md";
+    /// The per-frame UI update: one float argument, the elapsed time.
+    UI_UPDATE @ 0x0014_79c3: [fn(elapsed: stack 0) ret 4], Optional; "docs/engine/engine-map.md";
     /// Updates the menu music gate and returns true when the attract movie is due.
     UI_ATTRACT_TIMER @ 0x0022_3976: [fn() -> al ret 0]; "docs/audio/bink-hle.md";
     /// Starts the attract movie through the retail Bink wrapper.

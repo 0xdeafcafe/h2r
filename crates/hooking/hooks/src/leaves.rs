@@ -71,7 +71,7 @@ impl Feature for EngineLeaves {
             if !b.switches().implementation(&key, default_on(g)) {
                 continue;
             }
-            if std::ptr::eq(*point, &points::LOCALE_FIND) {
+            if point.name == points::LOCALE_FIND.name {
                 // The Rust lookup asks our string sources first.
                 let sources = b.locale().serve();
                 b.raw()

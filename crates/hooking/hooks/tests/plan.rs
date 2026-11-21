@@ -290,6 +290,28 @@ fn one_address_with_two_names_is_refused() {
     ));
 }
 
+/// A second copy of GAME_TICK, as a `const` inlined into another crate is:
+/// the same point at a different address in memory.
+static TICK_COPY: Point = Point::new(
+    "GAME_TICK",
+    0x0013_7fe0,
+    Sig::Opaque,
+    "docs/engine/engine-map.md",
+);
+
+#[test]
+fn copies_of_one_point_share_its_chain() {
+    let mut r = Registry::new(Switches::defaults());
+    r.add(&from_fn("x", |b| {
+        b.frame().on_tick("t", |_| {});
+        b.raw().observe_after(&TICK_COPY, "u", |_| {});
+        Ok(())
+    }))
+    .unwrap();
+    let plan = r.build(&Base).unwrap();
+    assert_eq!(plan.chains[&points::GAME_TICK.base].observe_after.len(), 2);
+}
+
 #[test]
 fn duplicate_ids_are_refused() {
     let mut r = Registry::new(Switches::defaults());
