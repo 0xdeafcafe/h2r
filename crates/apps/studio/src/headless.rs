@@ -594,17 +594,19 @@ mod tests {
         let workspaces = [
             (ToolKind::Scenario, ["maps", "viewport", "inspector"]),
             (ToolKind::Tags, ["tags", "viewport", "inspector"]),
+            (ToolKind::Scripts, ["scripts", "viewport", "inspector"]),
             (ToolKind::Variants, ["variants-list", "variants-settings", "variants-inspector"]),
             (ToolKind::Playlists, ["playlists-list", "playlists-entries", "playlists-inspector"]),
             (ToolKind::UiScreens, ["screens-list", "screens-preview", "screens-inspector"]),
             (ToolKind::Hud, ["hud-list", "hud-preview", "hud-inspector"]),
         ];
-        // Each workspace's own IDs use the same dock geometry. Scenario
-        // and Tags are two tabs of Map, so they share its centre and right.
+        // Each workspace's own IDs use the same dock geometry. Scenario,
+        // Tags and Scripts are tabs of Map, so they share its centre and
+        // right.
         let mut regions = None;
         let mut workspace_keys = std::collections::HashSet::new();
         for (tool, keys) in workspaces {
-            if tool != ToolKind::Tags {
+            if !matches!(tool, ToolKind::Tags | ToolKind::Scripts) {
                 assert!(keys.iter().all(|key| workspace_keys.insert(*key)));
             }
             app.dispatch(Action::SetTool(tool));

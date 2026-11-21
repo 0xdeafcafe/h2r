@@ -20,7 +20,7 @@ static ALLOCATOR: mem_watch::TaggedAllocator = mem_watch::TaggedAllocator;
 
 const USAGE: &str = "usage: h2-editor call <call> [args] | h2-editor --serve [--socket PATH] [...]
        h2-editor [--socket PATH | --no-listen] [--disc <iso> | --map <file.map> | --folder <maps dir>] \
-[--halo1 <iso|maps dir>] [--mappack <iso|folder>] [--data <dir>] [--package <dir>[#H1|#H2]] [--halo1-map <map> [--convert h2|h1]] [--overlay on|off] [--tool scenario|tags|variants|playlists|ui-screens|hud] [--tags-map <map>] [--tag <group>:<path>] [--ui-screen <screen>/<state> [--ui-press up,a,...]] \
+[--halo1 <iso|maps dir>] [--mappack <iso|folder>] [--data <dir>] [--package <dir>[#H1|#H2]] [--halo1-map <map> [--convert h2|h1]] [--overlay on|off] [--tool scenario|tags|scripts|variants|playlists|ui-screens|hud] [--hs-doc <hs_doc.txt>] [--tags-map <map>] [--tag <group>:<path>] [--ui-screen <screen>/<state> [--ui-press up,a,...]] \
 [--hud-map <map>|--hud-package <key>] [--hud <nhdt name>] [--hud-widget <name>] [--pick <map>] [--select <block>:<index>] [--hopper <file.dat>|default] \
 [--variant <built-in index>] [--copy-variant <name>] [--playlist <1..16>] [--preset <n>] \
 [--focus] [--camera <yaw>,<pitch>,<distance>] [--dialog unsaved|package] \
@@ -61,6 +61,9 @@ struct Args {
     tag: Option<String>,
     /// Another map of the source browsed in the Tags tool (`shared`).
     tags_map: Option<String>,
+    /// The script documentation listing the Scripts tool names builtins
+    /// from (the user's own copy, read at run time).
+    hs_doc: Option<PathBuf>,
     hopper: Option<String>,
     variant: Option<usize>,
     playlist: Option<usize>,
@@ -113,6 +116,7 @@ fn args() -> Result<Args> {
         hud_widget: None,
         tag: None,
         tags_map: None,
+        hs_doc: None,
         hopper: None,
         variant: None,
         playlist: None,
@@ -171,6 +175,7 @@ fn args() -> Result<Args> {
             "--hud-widget" => a.hud_widget = Some(value()?),
             "--tag" => a.tag = Some(value()?),
             "--tags-map" => a.tags_map = Some(value()?),
+            "--hs-doc" => a.hs_doc = Some(value()?.into()),
             "--tool" => {
                 a.tool = Some(match value()?.as_str() {
                     "scenario" => ToolKind::Scenario,
@@ -179,6 +184,7 @@ fn args() -> Result<Args> {
                     "ui-screens" => ToolKind::UiScreens,
                     "hud" => ToolKind::Hud,
                     "tags" => ToolKind::Tags,
+                    "scripts" => ToolKind::Scripts,
                     t => bail!("unknown tool {t}\n{USAGE}"),
                 })
             }
@@ -305,6 +311,7 @@ fn main() -> Result<()> {
     if let Some(d) = &args.data {
         app.set_data_root(d.clone());
     }
+    app.scripts.doc_path = args.hs_doc.clone();
     app.refresh_packages();
     let disc = editor_core::default_disc(args.source.clone()).filter(|_| !args.no_disc);
     // The Map Pack: --mappack, else $H2_MAPPACK_ISO, else mappack.iso beside

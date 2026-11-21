@@ -169,6 +169,14 @@ pub mod method {
     pub const VIEW_SNAPSHOT: &str = "view.snapshot";
     pub const VIEW_STATS: &str = "view.stats";
 
+    // The Scripts tool (docs/editor/rich-editors.md, "Scripts").
+    pub const SCRIPT_LIST: &str = "script.list";
+    pub const SCRIPT_SOURCE: &str = "script.source";
+    pub const SCRIPT_FOLLOW: &str = "script.follow";
+    pub const SCRIPT_USES: &str = "script.uses";
+    pub const SCRIPT_BUILTINS: &str = "script.builtins";
+    pub const SCRIPT_DOC: &str = "script.doc";
+
     // Planned namespaces: listed by `session.methods` with status
     // "planned"; a call answers NOT_YET until its lane registers it.
     pub const HUD_LIST: &str = "hud.list";

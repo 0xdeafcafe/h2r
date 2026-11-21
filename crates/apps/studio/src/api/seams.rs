@@ -25,6 +25,9 @@
 //! - **studio-hud** (the HUD editor): `hud.list`, `hud.read`, `hud.set`,
 //!   `hud.move`, `hud.render`, `hud.check` and `hud.save_as` through the
 //!   HUD tool's `Action::Hud*` ([`super::hud`]).
+//! - **Scripts** (the open map's scripts, read): `script.list`,
+//!   `script.source`, `script.follow`, `script.uses`, `script.builtins` and
+//!   `script.doc` through `Action::Script` ([`super::scripts`]).
 //! - **player models** and **customisation**: `model.*` and `custom.*`
 //!   are planned the same way (docs/editor/agent-api.md).
 //!
@@ -55,6 +58,8 @@ pub fn register(api: &mut Api) {
     api.register(Box::new(super::tags::TagGraph));
     // studio-hud: the HUD tool's HUDs, widgets, picture, checks and save.
     api.register(Box::new(super::hud::Hud));
+    // The Scripts tool: the open map's scripts read, links and builtins.
+    api.register(Box::new(super::scripts::Scripts));
     // pair.*: the window's pairing with a running game (play::pair).
     api.register(Box::new(super::pair::Pair));
     api.register(Box::new(super::mirror::Mirror));

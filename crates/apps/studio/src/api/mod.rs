@@ -34,6 +34,7 @@ mod pair;
 mod params;
 mod playlists;
 mod scenario;
+mod scripts;
 pub mod seams;
 pub mod server;
 mod tag_fields;
@@ -918,5 +919,6 @@ pub fn tool_name(t: crate::ToolKind) -> &'static str {
         crate::ToolKind::UiScreens => "ui-screens",
         crate::ToolKind::Tags => "tags",
         crate::ToolKind::Hud => "hud",
+        crate::ToolKind::Scripts => "scripts",
     }
 }

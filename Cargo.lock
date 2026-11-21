@@ -6727,6 +6727,7 @@ dependencies = [
  "h1map",
  "h1objects",
  "hopper-edit",
+ "hs",
  "hud-edit",
  "libc",
  "live-mirror",
@@ -6744,6 +6745,7 @@ dependencies = [
  "vfs",
  "wgpu",
  "winit",
+ "xbe",
 ]
 
 [[package]]

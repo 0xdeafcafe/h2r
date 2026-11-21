@@ -168,6 +168,18 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
                 c(m::VOLUME_REMOVE, json!({"index": 1}));
             }
         }
+        m::SCRIPT_LIST
+        | m::SCRIPT_SOURCE
+        | m::SCRIPT_FOLLOW
+        | m::SCRIPT_USES
+        | m::SCRIPT_BUILTINS
+        | m::SCRIPT_DOC => {
+            // The invented map with scripts and the invented executable.
+            let dir = t.path("scripts");
+            std::fs::create_dir_all(&dir).unwrap();
+            let map = crate::app::scripts::tests::scripted_source(&dir, true);
+            c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
+        }
         m::COLLISION_SURFACES | m::COLLISION_AT | m::COLLISION_SELECT | m::COLLISION_OBJECTS => {
             let map = t.path("collision.map");
             let bytes = if name == m::COLLISION_OBJECTS {
