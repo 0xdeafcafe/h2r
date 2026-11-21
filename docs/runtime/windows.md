@@ -29,8 +29,9 @@ packaging and controls. See [xbox.md](xbox.md).
 [The Windows workflow](../../.github/workflows/windows.yml) runs on
 `windows-latest` for pushes to `windows-desktop` and manual dispatches.
 It checks the workspace with test targets, runs synthetic CPU and module
-tests, and starts the linked desktop executable. Rendering backend support
-is handled separately. Disc boot, hardware swap-chain presentation,
+tests, and starts the linked desktop executable. The separate wgpu backend
+PR owns device and surface setup, render passes, shaders, GPU readback and
+Metal integration. The desktop host uses wgpu’s default backend selection. Disc boot, hardware swap-chain presentation,
 controller input and WASAPI playback need a Windows PC.
 
 ## Toolchain (on the Mac)
