@@ -321,8 +321,12 @@ mod tests {
             (row.length_ticks, row.duration_ticks, row.ticks_per_second),
             (9000, Some(3600), Some(60))
         );
-        assert_eq!(row.scoreboard[0].seat, Some(3));
-        assert_eq!(row.scoreboard[0].score, Some(i64::MAX));
-        assert_eq!(row.scoreboard[0].medals["double_kill"], 2);
+        // The film's own summary names the seats; scores and medals come
+        // from the stats file, which `stats::read_summary` applies later.
+        assert_eq!(row.roster.len(), 1);
+        assert_eq!(row.roster[0].name, "Chief");
+        assert_eq!(row.roster[0].seat, Some(3));
+        assert_eq!(row.roster[0].team.as_deref(), Some("Blue"));
+        assert!(row.scoreboard.is_empty());
     }
 }
