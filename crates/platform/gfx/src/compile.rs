@@ -60,10 +60,12 @@ impl<T> Pending<T> {
     /// A worker result visible at the start of this guest frame. A native
     /// pass can retain its D3D draws until the swap after compilation.
     pub fn previous_frame(&self) -> Option<&T> {
-        self.ready_at(timeline::frames())
+        self.visible_at_frame(timeline::frames())
     }
 
-    fn ready_at(&self, frame: u64) -> Option<&T> {
+    /// Whether a pass extracted in this guest frame can use the value.
+    /// A deferred render worker can be several swaps behind extraction.
+    pub fn visible_at_frame(&self, frame: u64) -> Option<&T> {
         self.value.get().filter(|_| {
             self.completed_frame.get().is_none_or(|&completed| completed < frame)
         })
@@ -261,9 +263,9 @@ mod tests {
         assert!(pending.previous_frame().is_none());
         assert_eq!(pending.get(), &9);
         let completed = *pending.completed_frame.get().unwrap();
-        assert!(pending.ready_at(completed).is_none());
-        assert_eq!(pending.ready_at(completed + 1), Some(&9));
-        assert_eq!(Pending::ready(3).ready_at(0), Some(&3));
+        assert!(pending.visible_at_frame(completed).is_none());
+        assert_eq!(pending.visible_at_frame(completed + 1), Some(&9));
+        assert_eq!(Pending::ready(3).visible_at_frame(0), Some(&3));
     }
 
     #[test]

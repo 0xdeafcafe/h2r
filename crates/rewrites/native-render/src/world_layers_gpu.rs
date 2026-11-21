@@ -290,6 +290,9 @@ pub struct IndexedPass {
     draw: Arc<ResolvedDraw>,
     cache: Arc<Cache>,
     frame: u64,
+    // Eligibility is fixed at guest extraction even if the render FIFO
+    // records the candidate after a later swap.
+    extracted_frame: u64,
     fetch: FetchMode,
     texaccum: Option<Texaccum>,
     texaccum_stages: [bool; 4],
@@ -337,6 +340,7 @@ impl IndexedPass {
             fetch: cache.fetch,
             cache,
             frame,
+            extracted_frame: timeline::frames(),
             section,
             texaccum,
             texaccum_stages: draw
@@ -484,7 +488,7 @@ impl IndexedPass {
             let pipeline = shader.pipelines.request(&target.device, &key);
             (key, pipeline)
         };
-        pipeline.previous_frame()?.as_ref()?;
+        pipeline.visible_at_frame(self.extracted_frame)?.as_ref()?;
         let views = std::array::from_fn(|n| dims[n].and(target.stages[n].clone()));
         let cached_textures = previous.and_then(|(key, i)| cache.sections.get(&key)?[i].material.as_ref())
             .filter(|_| material_hit)
