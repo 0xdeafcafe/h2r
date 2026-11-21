@@ -2,7 +2,8 @@
 
 Status: Reference, retail research with traces, except [Spots in the
 geometry](#spots-in-the-geometry), which is the design of our scanner
-(`crates/live/superbounce`, `h2 superbounce scan`).
+(`crates/live/superbounce`, `h2 superbounce scan`), and [Medals](#medals),
+a design that is not built.
 
 What the retail engine does when a player superbounces: what is
 established, what is measured, and what is still open. The research is a
@@ -1057,5 +1058,211 @@ Each of these is a lab run through the agent API
 - **The landing report.** The recorded jump with the word at −3, at 0,
   from a lower take-off and 0.3 to the side: `bounce`, `not primed`,
   `too slow` and `missed` in turn.
+
+No game was run for this section.
+
+## Medals
+
+Design, not built. Four medals for bounces: **Superbounce** for a
+bounce, and **Double Bounce**, **Triple Bounce** and **Chain Bounce**
+for two, three and five bounces with no ground between them. They are
+awarded to every player in the game, bots included, while the mode is
+on. The player sees a medal as Halo 2 shows its own, a line of the
+notification list with a medal glyph ([hud-kit.md](hud-kit.md), "The
+medals"); the film and Live count them.
+
+### The rule
+
+The mode watches every player that has a biped, each tick: the unit, its
+position and velocity, the airborne bit and the level pair's word, the
+fields `superbounce_charge::Tick` reads for the first local player
+([the state](#the-superbounce-game-type)). Sixteen pair reads a tick at
+most, only while the mode is on.
+
+- **A touchdown** is the one [Landings](#landings) uses: the tick
+  before was airborne and falling at 1 unit/s or more, and this tick
+  has stopped falling (over −0.5), launched, or landed. Here it counts
+  anywhere on the map, by a strip or not.
+- **A bounce** is a touchdown the landing classifier files as `bounce`
+  (within 0.5 of a strip, out at over 8 units/s,
+  `superbounce_charge::classify`), with the word at −3 on the tick
+  before. Every measured bounce had the word ([the touchdown
+  tick](#the-touchdown-tick-trace-stepped): 0 of 4 without it), and the
+  test keeps an explosion or a lift beside a strip from counting.
+- **The chain** is a count per player. A bounce while the chain is live
+  adds one; a bounce while it is not makes it 1. Each bounce makes the
+  chain live. It stops being live at the first of:
+  - a touchdown that is not a bounce (a plain landing, or a caught
+    one, which leaves the airborne bit set);
+  - a tick with the airborne bit clear, from the third tick after the
+    bounce on (a soft landing at the top of the flight is no touchdown);
+  - the player's unit changing or going (a death, a respawn, a
+    vehicle), or its origin moving more than 3 units in a tick (a
+    teleporter, `sim.state.set`);
+  - the mode going off, or the game ending.
+
+So "right into" the next bounce means the next thing the player's feet
+do is bounce. There is no clock. Halo 2's multi-kill count has one: the
+kill adds to the count when the last kill's tick is inside a window the
+caller passes, and restarts it at 1 otherwise (**Code** `0x001ea733` to
+`0x001ea751`; the count is the stat row's multiple-kill counter,
+[live-gamestate.md](../live/live-gamestate.md)). A flight off a +12.4
+launch is 6 s back to the same floor and 18 units high (gravity 4.15),
+longer than a multi-kill's 4 s, and a flight cannot be stretched, so
+the ground is the better test.
+
+Medals are given as the count is reached, as the game gives its
+multi-kills:
+
+| Chain count | Medals |
+|---|---|
+| 1 | Superbounce |
+| 2 | Superbounce, Double Bounce |
+| 3 | Superbounce, Triple Bounce |
+| 4 | Superbounce |
+| 5 | Superbounce, Chain Bounce |
+| 6 and over | Superbounce |
+
+Superbounce is every bounce, so its count is the player's bounces. A
+chain gives each of the other three once: a chain of seven is seven
+Superbounces, one Double, one Triple and one Chain Bounce. The table is
+one function, `bounce_medals(chain)`, in
+`crates/live/live-proto/src/film/events/medals.rs`, used by the HUD, the
+film and the agent API; the site has a copy in `web/src/state/derive.ts`,
+as it has of the kill medals. The ids are `superbounce`, `double-bounce`,
+`triple-bounce` and `chain-bounce`.
+
+The chain is a module of its own beside
+`crates/extensions/game/src/superbounce_charge.rs`: a `Chain` per player
+slot stepped with that player's tick, with no guest access of its own,
+so its tests are lists of ticks. It is not in a
+snapshot: after a state load or a Theater seek a chain in flight starts
+again at 1.
+
+### What is known about a second bounce
+
+A chain needs a bounce with no crouch between it and the last one.
+
+- The word is still −3 after the bounce tick (**Trace**, [the touchdown
+  tick](#the-touchdown-tick-trace-stepped)).
+- The word stayed −3 through 175 ticks of walking, a run-up and a jump
+  (**Trace**, [the pair word](#the-pair-word-trace-lab-playback)), and
+  nothing in the pair pass takes −3 back; only a crouch or a sleep
+  rebuilds the pair at 0 (**Code**).
+- So a player who neither crouches nor stands still is primed for the
+  next landing, and a chain needs no new crouch. Supposed: no trace
+  follows the word through a flight after a bounce. The first trace's
+  bounces at ticks 11274, 11770 and 12008 were each within 28 s of the
+  last crouch, which fits one crouch for several bounces; which crouch
+  came before which was not recorded.
+- Every measured bounce came in at −5.3 to −5.4 units/s. A landing off a
+  bounce comes in at 8 to 13 and more. Whether the crease launches at
+  that speed, and how hard, is **Open**: it decides whether a chain
+  happens at all on the traced patch.
+
+### On the HUD
+
+One notification per bounce for a local player: the line of the highest
+medal that bounce earned (`Superbounce!`, `Double bounce!`, `Triple
+bounce!`, `Chain bounce!`) behind a medal glyph of the HUD font, queued
+through the game's own insert. Halo 2 shows a multi-kill the same way,
+to the earner only and through the same routine, so the line's font,
+colour, place and fade are the game's. No sound. A bot's medals and
+another console's players' are recorded and not shown. The glyphs, the
+other choices for the picture and the preview states are in
+[hud-kit.md](hud-kit.md), "The medals" and "Game events and medals".
+
+### Recording
+
+The game says that a bounce happened and what the chain's count was;
+the medals are worked out from the count wherever they are shown, as
+kill medals are worked out from kills.
+
+- **The event.** `Superbounce`, with `tick`, `player` (the slot) and
+  `chain` (1 and up): a game event beside `PlayerKilled`
+  (`live_proto::game`, with its validation: a player of the game, a
+  chain of at least 1). The mode sends it for every player it watches
+  through the telemetry session that sends the kills
+  (`crates/live/live-telemetry/src/session.rs`), on the console that
+  records the game: the host, or the one console of a local game. A
+  guest's own HUD line comes from its own simulation of its players;
+  where the two disagree the record is the host's.
+- **The film.** `film::events::Tracker` takes the event as it takes a
+  kill: it writes a `Superbounce { player, chain }` record at the
+  bounce's match tick, then a `Medal` record for each medal of that
+  count (the `Medal` kind as it is: `player`, `earned_at`, and the id
+  in `medal`), and adds them to the counts the summary's `medals` map
+  carries (`medals::Tally`). The film's version does not change: `Medal`'s
+  `medal` and the summary's map are strings, and `Superbounce` is one
+  more highlight kind, which a reader that does not know it passes over
+  (**Code**: `Record::decode_telemetry` returns nothing for it, and
+  `film::privacy` keeps a record it cannot decode private). An older
+  film has no bounces. [film-format.md](film-format.md) lists the kind
+  with the highlights when it is built.
+- **Live.** `Superbounce` joins `game::CLIENT_GAME_EVENTS`, so a
+  console may append it and the server keeps it in the game's events,
+  in both homes (`live-server`, `live-worker`). The server refuses a
+  batch holding a kind it does not know (`games.rs`), so the server is
+  released before the consoles that send it. A game's snapshot serves
+  its `bounces` beside its `kills`, and the site derives the four
+  medals from them (`derive.ts`: `MedalId`, `MEDALS`, a `bounceMedals`
+  beside `gameMedals`) for the Medals tab, the carnage report and the
+  service record. A bot's bounce medals are in the game's record and
+  not in a career, as its kills are ([bots.md](bots.md)).
+- **The site's pictures.** A medal's badge is the art pack's file named
+  after its id (`web/public/art/medals/<id>.webp` and `@2x`, original
+  art, `web/public/art/ART.md`), or the game's own medal from the
+  owner's disc where the server has game art
+  ([web-viewer.md](../live/web-viewer.md), `medalKey`). The four ids
+  need four new pieces in the pack; with game art they take the glyphs
+  the HUD line uses (`medal/killing_spree`, `medal/double_kill`,
+  `medal/triple_kill`, `medal/kill_frenzy`).
+- **Theater.** A film played in the game runs the simulation again,
+  and the mode with it when the film's variant turns it on, so the
+  lines show as they did (supposed: a mode forced on by
+  `H2_SUPERBOUNCE` or `superbounce.set` is not in the film). The film's
+  summary carries the counts to the film list and the post-game panels
+  (`theater_ui::adapter`), and the web Theater reads the `Medal` records
+  as it reads the kill medals'.
+
+### The agent API
+
+`superbounce.state` ([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type))
+gains `medals`:
+
+| Field | Meaning |
+|---|---|
+| `players` | a row for each player that has bounced this game: `player` (the slot), `chain` (the count of its last chain), `live` (whether the next bounce adds to it) and `counts` (each medal id's total this game) |
+| `recent` | the last 8 bounces, oldest first: `player`, `tick`, `chain` and `medals` (the ids that bounce earned) |
+
+`superbounce.medal_test {"chain": N}` (access: act) files a bounce at
+that count for the first local player after the chain's rule: the HUD
+line and `medals` as a real bounce gives them, and nothing sent or
+recorded. It is how a run checks the line without five bounces in a
+row, as `superbounce.assist_test` holds X without a pad.
+
+### Checking the medals on the lab
+
+Lab runs through the agent API at 30 frames a second, as
+[above](#checking-it-on-the-lab):
+
+- **The word in flight.** The recorded bounce, then `havok.agents`
+  every tick to the next touchdown: the word stays −3 and the pair is
+  kept at the top of the flight.
+- **A second bounce.** From a bounce, steer back onto the strip
+  (`superbounce.assist_test`) and read `last_landing` and `medals`:
+  `bounce` and a chain of 2, or what the landing was filed as and the
+  speed it came in at.
+- **The airborne bit** on the bounce tick and the two after
+  (`world.object`), which the chain's three-tick rule supposes.
+- **What ends a chain.** A bounce, then a landing off the strip, a
+  caught landing, a death and a teleport: `live` goes false on that
+  tick each time.
+- **Host and guest.** A guest's bounce read on both consoles: the
+  host's `medals` has it at the same tick, or the record and the
+  guest's HUD differ and by how much.
+- **The line.** `superbounce.medal_test` at 1, 2, 3 and 5 with
+  `render.frame`, against `h2 hud preview superbounce`'s `bounced` and
+  `medal-` states.
 
 No game was run for this section.
