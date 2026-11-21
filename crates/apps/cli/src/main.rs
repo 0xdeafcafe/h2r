@@ -1219,12 +1219,11 @@ fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
         println!("total: {:.3}s", total.elapsed().as_secs_f64());
         return Ok(());
     }
-    let header = opts
-        .abi_header
-        .clone()
-        .or_else(|| std::env::var_os("H2ABI_HEADER").map(PathBuf::from))
-        .unwrap_or_else(|| repo_root().join("crates/runtime/runtime/include/h2abi.h"));
-    emit::compile::install_header(&src, &header)?;
+    if let Some(header) = opts.abi_header.clone().or_else(|| std::env::var_os("H2ABI_HEADER").map(PathBuf::from)) {
+        emit::compile::install_header(&src, &header)?;
+    } else {
+        boot::install_abi_header(&src)?;
+    }
     let jobs = opts.jobs.unwrap_or_else(emit::compile::default_jobs);
     let cache_max = emit::compile::obj_cache_max()?;
     let mut host = None;

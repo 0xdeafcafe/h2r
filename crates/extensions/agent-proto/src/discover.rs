@@ -215,7 +215,7 @@ pub fn scan_paths(paths: &[PathBuf], timeout: Duration, clean: bool) -> Vec<Foun
                 note: Some(why),
             }),
             Probe::Stale => {
-                if clean {
+                if clean && is_socket(&path) {
                     let _ = std::fs::remove_file(&path);
                 }
             }

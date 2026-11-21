@@ -121,7 +121,7 @@ does, only it may send them. Queued steps outlive the connection and play out.
 
 The socket is --socket (a path, or tcp://HOST:PORT), else --xbox HOST
 (tcp://HOST:4720, the Xbox app; HOST defaults to $H2_XBOX), else $H2_AGENT,
-else the cache directory's h2recomp/agent.sock, where `h2 serve` listens
+else agent.sock in the h2recomp cache directory, where `h2 serve` listens
 by default; with nothing there, the one game in its agents/ directory, where
 `h2 play` listens unless H2_AGENT is set (`h2 agent games` lists them). Results print as
 JSON, one per line in scripts; an error prints to stderr and exits 1 (a

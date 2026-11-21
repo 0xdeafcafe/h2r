@@ -37,7 +37,7 @@ pub const H2ABI_H: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../runtime/ru
 /// Install the ABI header that matches this executable, even when the
 /// source checkout it was built from is absent on the player's machine.
 #[cfg(feature = "desktop-runtime")]
-fn install_abi_header(dir: &Path) -> Result<PathBuf> {
+pub fn install_abi_header(dir: &Path) -> Result<PathBuf> {
     const HEADER: &[u8] = include_bytes!("../../runtime/include/h2abi.h");
     let path = dir.join("h2abi.h");
     if std::fs::read(&path).ok().as_deref() != Some(HEADER) {

@@ -424,12 +424,9 @@ fn background_lock(out: &Path) -> Result<Option<std::fs::File>> {
     }
     #[cfg(windows)]
     {
-        #[link(name = "kernel32")]
-        unsafe extern "system" {
-            fn GetCurrentProcess() -> isize;
-            fn SetPriorityClass(process: isize, class: u32) -> i32;
-        }
-        const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x4000;
+        use windows_sys::Win32::System::Threading::{
+            BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess, SetPriorityClass,
+        };
         // Child processes inherit a below-normal priority class by default.
         if unsafe { SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS) } == 0 {
             eprintln!("warning: build --background: lowering priority: {}", std::io::Error::last_os_error());

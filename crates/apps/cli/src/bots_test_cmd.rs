@@ -759,7 +759,6 @@ struct Watch<'a> {
     /// Whether the scripted driver presses (off with `--no-drive`).
     driving: bool,
     agent_up: bool,
-    #[cfg(unix)]
     conn: Option<agent_proto::Client>,
     status_at: Option<Instant>,
     server_at: Option<Instant>,
@@ -791,7 +790,6 @@ impl<'a> Watch<'a> {
             drive,
             driving,
             agent_up: false,
-            #[cfg(unix)]
             conn: None,
             status_at: None,
             server_at: None,
@@ -871,7 +869,6 @@ impl<'a> Watch<'a> {
     }
 
     /// The agent API's phase, mode and map (`session.status`).
-    #[cfg(unix)]
     fn status(&mut self) -> Option<(String, String, String)> {
         let v = self
             .call(agent_proto::method::STATUS, serde_json::Value::Null)
@@ -879,12 +876,6 @@ impl<'a> Watch<'a> {
         Some(read_status(&v))
     }
 
-    #[cfg(not(unix))]
-    fn status(&mut self) -> Option<(String, String, String)> {
-        None
-    }
-
-    #[cfg(unix)]
     fn press(&mut self, p: &crate::coop_drive::Press) -> Result<()> {
         self.call(
             agent_proto::method::INPUT_PAD,
@@ -893,12 +884,6 @@ impl<'a> Watch<'a> {
         .map(drop)
     }
 
-    #[cfg(not(unix))]
-    fn press(&mut self, _: &crate::coop_drive::Press) -> Result<()> {
-        bail!("the agent API needs Unix sockets")
-    }
-
-    #[cfg(unix)]
     fn call(&mut self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
         if self.conn.is_none() {
             let c = agent_proto::Client::connect(self.agent)

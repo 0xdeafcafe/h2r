@@ -683,7 +683,6 @@ fn say_next_steps_at_the_menu(socket: PathBuf, line: String) {
 /// Waits until the game at `socket` has been in its menu for 60 ticks:
 /// connects (retrying while the socket is not up yet), then
 /// `session.wait {"phase":"menu","map_ticks":60}`.
-#[cfg(unix)]
 pub fn wait_for_menu(socket: &Path, within: Duration) -> Result<()> {
     let deadline = Instant::now() + within;
     let mut client = loop {
@@ -705,11 +704,6 @@ pub fn wait_for_menu(socket: &Path, within: Duration) -> Result<()> {
         )
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(())
-}
-
-#[cfg(not(unix))]
-pub fn wait_for_menu(_: &Path, _: Duration) -> Result<()> {
-    bail!("the agent API needs Unix sockets")
 }
 
 /// A UTC `YYYYMMDD-HHMMSS` for unix time `secs`, naming a run's logs.
@@ -851,7 +845,6 @@ impl Drive {
         Ok(())
     }
 
-    #[cfg(unix)]
     fn send(&mut self, i: usize, game: &Game, p: &coop_drive::Press) -> Result<()> {
         if self.clients[i].is_none() {
             let c = agent_proto::Client::connect(&game.agent)
@@ -867,11 +860,6 @@ impl Drive {
             bail!("input.pad: {e}");
         }
         Ok(())
-    }
-
-    #[cfg(not(unix))]
-    fn send(&mut self, _: usize, _: &Game, _: &coop_drive::Press) -> Result<()> {
-        bail!("the agent API needs Unix sockets")
     }
 }
 

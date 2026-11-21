@@ -377,7 +377,17 @@ fn memory_bytes() -> Option<u64> {
         };
         (r == 0 && v > 0).then_some(v)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+        let mut status = MEMORYSTATUSEX {
+            dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+            ..Default::default()
+        };
+        // Windows requires dwLength before it writes the result.
+        (unsafe { GlobalMemoryStatusEx(&mut status) } != 0).then_some(status.ullTotalPhys)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let text = std::fs::read_to_string("/proc/meminfo").ok()?;
         let kb: u64 = text

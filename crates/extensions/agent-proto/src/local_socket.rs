@@ -21,10 +21,12 @@ pub fn listen(path: &Path) -> io::Result<UnixListener> {
                 ));
             }
             match UnixStream::connect(path) {
-                Ok(_) => return Err(io::Error::new(
-                    io::ErrorKind::AddrInUse,
-                    format!("{} already has a listener", path.display()),
-                )),
+                Ok(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AddrInUse,
+                        format!("{} already has a listener", path.display()),
+                    ));
+                }
                 Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
                     std::fs::remove_file(path)?;
                 }
