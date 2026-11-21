@@ -369,3 +369,33 @@ pub async fn streamed(addr: std::net::SocketAddr, token: Option<String>) -> Vec<
         }
     }
 }
+
+const FIREFIGHT_EVENTS: &str = include_str!("../fixtures/firefight-events.json");
+
+/// A Firefight match for `host`: the host and one of its Clankers.
+pub fn firefight_game(host: &User) -> Value {
+    json!({
+        "console": "Den", "map": "lockout", "mode": "multiplayer", "variant": "Firefight",
+        "team_play": false, "tick": 0, "kind": "custom",
+        "players": [
+            {"index": 0, "name": "Host", "xuid": host.xuid, "team": 0, "local": true},
+            {"index": 1, "name": "Clanker 1", "team": 0, "local": true, "bot": true}
+        ]
+    })
+}
+
+/// The fixture's events as a batch's `(kind, data)` pairs, then `GameEnded`.
+pub fn firefight_batch() -> Vec<(String, Value)> {
+    let mut events: Vec<(String, Value)> =
+        serde_json::from_str::<Vec<Value>>(FIREFIGHT_EVENTS)
+            .unwrap()
+            .into_iter()
+            .map(|e| (e["kind"].as_str().unwrap().to_string(), e["data"].clone()))
+            .collect();
+    events.push((
+        "GameEnded".into(),
+        json!({"tick": 900, "reason": "finished", "winner": {"player": 0}}),
+    ));
+    events
+}
+

@@ -497,6 +497,14 @@ records its salted unit and character datums, the credited player's slot
 and the damage-source key when available. The same row goes into the
 public stats stream alongside the recording.
 
+`FirefightScore` and `FirefightEnded` come from the Firefight host
+runtime ([firefight.md](../game/firefight.md#scoring-and-stats)) through
+`Telemetry::firefight_score` and `Telemetry::firefight_ended`: the score
+for each `Score` command the director credits, the result when it
+finishes the match. With no game running they are dropped. They go to the
+public stats stream and the film (as an `ObjectiveScore` of game type
+`firefight`), not to the private import rows.
+
 ## Server ingest
 
 Starting `h2 play` with Live on (`--live`, `--live-server` or

@@ -276,7 +276,7 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 }
 
 /// The screens `h2 ui preview` knows, by name.
-pub const NAMES: [&str; 33] = [
+pub const NAMES: [&str; 34] = [
     "forge.hud",
     "forge.palette",
     "forge.properties",
@@ -299,6 +299,7 @@ pub const NAMES: [&str; 33] = [
     "kit.dialog.large",
     crate::lab_takeover::SCREEN,
     "clankers",
+    crate::firefight::options::SCREEN,
     crate::clanker_card::SCREEN,
     "mods",
     "mods.pack",
@@ -566,6 +567,11 @@ pub fn list_page(name: &str) -> Option<ListPage> {
             let s = Arc::new(crate::clankers::page(store));
             list(ListPage::new(s.class(), described(&s)))
         }
+        crate::firefight::options::SCREEN => {
+            let store = Arc::new(settings::Store::defaults(&crate::firefight::options::DEFS));
+            let s = Arc::new(crate::firefight::options::page(store));
+            list(ListPage::new(s.class(), described(&s)))
+        }
         "mods" | "mods.pack" | "mods.detail" => {
             use crate::mods_screen::spec::{Sample, sample_repo};
             let open = Sample::named(name)?;
@@ -621,7 +627,7 @@ mod tests {
     }
 
     /// Our settings dialogs: the pages that are Quick Options inside.
-    const QUICK_PAGES: [&str; 2] = ["clankers", "h1-options"];
+    const QUICK_PAGES: [&str; 3] = ["clankers", "h1-options", crate::firefight::options::SCREEN];
 
     /// Screen `name` drawn from `from` has every widget the kit's own
     /// Quick Options sample (`kit.dialog`) has where that sample has it:
@@ -934,7 +940,7 @@ mod tests {
         matches!(
             (screen, issue),
             (
-                "kit.dialog" | "kit.dialog.large" | "clankers" | "h1-options" | "kit.picker" | "kit.picker.game"
+                "kit.dialog" | "kit.dialog.large" | "clankers" | "firefight" | "h1-options" | "kit.picker" | "kit.picker.game"
                 | "browser.filters" | "clanker_player_options" | "theater.pause-menu",
                 Issue::Contrast { id, .. }
             )

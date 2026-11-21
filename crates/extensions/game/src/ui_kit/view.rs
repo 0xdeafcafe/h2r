@@ -128,6 +128,22 @@ impl Opener {
         focus: 4,
         ..Opener::GAME_SETUP
     };
+    /// [`Opener::GAME_SETUP`] as a custom game on a Halo 2 map lists it,
+    /// on the Firefight Options row (after Clanker Options, as the hooks
+    /// add them).
+    pub const GAME_SETUP_FIREFIGHT: Opener = Opener {
+        rows: &[
+            "Change Map...",
+            "Change Rules...",
+            "Quick Options...",
+            "Clanker Options...",
+            "Firefight Options...",
+            "Switch To: Co-Op Game",
+            "Switch To: Matchmaking",
+        ],
+        focus: 4,
+        ..Opener::GAME_SETUP
+    };
     /// The Xbox Live menu (screen `0xba`) on Quickmatch, its rows as the
     /// list hooks show them (docs/live/live-custom-games.md "Rows").
     pub const XBOX_LIVE_MENU: Opener = Opener {

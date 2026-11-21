@@ -1003,6 +1003,38 @@ impl Session {
         );
     }
 
+    /// A Firefight `Score` command as the director credited it: a public
+    /// game event the host reports (docs/game/firefight.md, "Scoring and
+    /// stats"). Its `tick` is the guest's; the match clock replaces it.
+    pub(crate) fn firefight_score(&mut self, mut score: live_proto::firefight::FirefightScore) {
+        let Some(current) = self.current.as_mut().filter(|m| !m.ended && !m.cinematic) else {
+            return;
+        };
+        score.tick = current.clock(score.tick);
+        current.sent_tick = current.sent_tick.max(score.tick);
+        Self::event_to(
+            &mut self.output,
+            current.game_id.clone(),
+            live_proto::game::FIREFIGHT_SCORE,
+            score,
+        );
+    }
+
+    /// A Firefight match's result, before the game's own end.
+    pub(crate) fn firefight_ended(&mut self, mut end: live_proto::firefight::FirefightEnded) {
+        let Some(current) = self.current.as_mut().filter(|m| !m.ended && !m.cinematic) else {
+            return;
+        };
+        end.tick = current.clock(end.tick);
+        current.sent_tick = current.sent_tick.max(end.tick);
+        Self::event_to(
+            &mut self.output,
+            current.game_id.clone(),
+            live_proto::game::FIREFIGHT_ENDED,
+            end,
+        );
+    }
+
     pub(crate) fn end_without_scoreboard(&mut self, tick: Option<u64>) {
         if let Some(current) = &self.current {
             self.end(&Snapshot { tick: tick.unwrap_or(current.tick), ..Snapshot::default() });

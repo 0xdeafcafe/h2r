@@ -376,6 +376,40 @@ function GameTypes(props: { sum: StatsSummary }) {
   );
 }
 
+/** Firefight: matches against the director, from the server's summary.
+ *  Nothing shows until a match has been played in the window. */
+function Firefight(props: { sum: StatsSummary }) {
+  const f = () => props.sum.firefight;
+  return (
+    <Show when={f().games > 0}>
+      <section class="s-sec s-firefight" aria-labelledby="s-ff-h">
+        <header><h3 id="s-ff-h">Firefight</h3><small>{num(f().games)} {f().games === 1 ? "match" : "matches"}, {num(f().won)} won</small></header>
+        <dl class="s-rows">
+          <div><dt>Rounds Cleared</dt><dd>{num(f().rounds_cleared)}</dd></div>
+          <div><dt>Lives Used</dt><dd>{num(f().lives_used)}</dd></div>
+          <div><dt>Points Scored</dt><dd>{num(f().score)}</dd></div>
+        </dl>
+        <div class="s-home-pair">
+          <section class="s-sec">
+            <header><h3>Wave Sets</h3><small>matches</small></header>
+            <Bars rows={f().sets.slice(0, 5)} value={(r) => r.games} name={(r) => r.set} label={(r) => `${r.set} (${num(r.won)} won)`} unit="matches" empty="" />
+          </section>
+          <section class="s-sec">
+            <header><h3>Kills by Enemy</h3><small>kills</small></header>
+            <Bars rows={f().kills_by_class.slice(0, 6)} value={(r) => r.kills} name={(r) => r.class} label={(r) => r.class} unit="kills" empty="" />
+          </section>
+        </div>
+        <Show when={f().players.length}>
+          <section class="s-sec">
+            <header><h3>Top Scores</h3><small>points</small></header>
+            <Bars rows={f().players.slice(0, 5)} value={(r) => r.score} name={(r) => r.name} label={(r) => <Who xuid={r.xuid} name={r.name} />} unit="points" empty="" />
+          </section>
+        </Show>
+      </section>
+    </Show>
+  );
+}
+
 function Skulls(props: { sum: StatsSummary }) {
   const rows = () => [...props.sum.skulls].sort((a, b) => b.games - a.games || a.skull - b.skull);
   return (
@@ -591,6 +625,7 @@ export function HomeView(props: { win: StatsWindow; week: StatsSummary | null; w
                     </section>
                   </div>
                   <Heatmap sum={s()} />
+                  <Firefight sum={s()} />
                   <div class="s-home-pair">
                     <GameTypes sum={s()} />
                     <div class="s-home-stack">

@@ -56,6 +56,8 @@ Event types so far (payload fields):
 | `game-<id>` | `PlayerJoined`, `PlayerLeft` | `player` (below) / `index` |
 | `game-<id>` | `PlayerKilled` | `tick`, `victim`, `killer?`, `weapon?`, `headshot?`, `pos?`, `kind` (`kill`/`suicide`/`betrayal`/`world`; `betrayal` only for a teammate killed in a team game or campaign, `live_proto::game::is_betrayal`, and readers settle a stored `kill` or `betrayal` again by the teams, since older hosts sent free-for-all kills as betrayals) |
 | `game-<id>` | `ActorKilled` | `tick`, `unit` (salted unit object datum), `character?` (salted character tag datum), `killer?` (credited player slot), `weapon?` (damage-source key). Published by the host. |
+| `game-<id>` | `FirefightScore` | `tick`, `player` (credited roster slot), `points`, `reason` (`kill`/`assist`), `class?` (the kit class killed; on a kill only). Published by the host ([Firefight](../game/firefight.md#scoring-and-stats)). |
+| `game-<id>` | `FirefightEnded` | `tick`, `set` (the wave set's name), `outcome` (`won`/`lost`), `rounds_cleared`, `lives_used`. Published by the host, once, before `GameEnded`. |
 | `game-<id>` | `ScoreChanged` | `tick`, `players: [{index, score, kills, deaths, assists}]`, `teams?: [{team, score}]` |
 | `game-<id>` | `FrameChunk` | a stored chunk of the game's recorded frames ([Frame chunks](#frame-chunks)) |
 | `game-<id>` | `GameFrame` | a frame (below), recorded at 1 Hz for replays by servers before frame chunks |
@@ -642,8 +644,22 @@ UTC days, today included) or `all`; anything else is 400.
   "weapons":   [ { "weapon": "battle_rifle", "kills": 310 } ],
   "playlists": [ { "playlist": "Team Slayer", "games": 14 } ],
   "skulls":    [ { "skull": 4, "games": 3 } ],
-  "activity":  [ { "hour": "2026-11-16T14:00:00Z", "games": 3, "kills": 95 } ] }
+  "activity":  [ { "hour": "2026-11-16T14:00:00Z", "games": 3, "kills": 95 } ],
+  "firefight": { "games": 4, "won": 3, "rounds_cleared": 9, "lives_used": 14, "score": 5250,
+                 "sets": [ { "set": "Holdout", "games": 3, "won": 2, "rounds_cleared": 7 } ],
+                 "kills_by_class": [ { "class": "grunt", "kills": 61 } ],
+                 "players": [ { "xuid": "...", "name": "Sneaky Pete", "score": 3100, "kills": 41,
+                                "assists": 6, "games": 4 } ] } }
 ```
+
+`firefight` folds the host's `FirefightScore` and `FirefightEnded` events
+(`live_proto::firefight`, [firefight.md](../game/firefight.md#scoring-and-stats)):
+matches (counted at the result, once a game), wins, rounds cleared, lives
+used and points over everyone; matches and wins by wave set (at most 64
+rows, by matches); kills by enemy class (at most 64, by kills); and a row
+per account, by score (at most 64). A bot has no row but its points and
+kills count in the totals and classes. A Firefight game is not
+multiplayer's kills or deaths, and it ranks nobody.
 
 The rules match the web app's: `kills` (kind `kill` with a killer other
 than the victim), `deaths` (every death), `betrayals`, `suicides`, `wins`

@@ -423,3 +423,26 @@ fn a_rejected_packet_does_not_queue_its_line_or_change_posture() {
     assert!(client.apply(&packet(21, vec![line(21)]), 52).unwrap());
     assert_eq!(tick(client, result.guest, 52).1.calls.len(), 2);
 }
+
+#[test]
+fn the_mode_state_is_the_hosts_last_and_a_key_replaces_it() {
+    let mut client = Client::default();
+    assert!(client.mode_state().is_empty());
+    client
+        .apply(&packet(1, vec![Record::State(vec![4, 5, 6])]), 1)
+        .unwrap();
+    assert_eq!(client.mode_state(), [4, 5, 6]);
+    client
+        .apply(
+            &packet(
+                2,
+                vec![Record::Key {
+                    actors: vec![],
+                    state: vec![7],
+                }],
+            ),
+            2,
+        )
+        .unwrap();
+    assert_eq!(client.mode_state(), [7]);
+}

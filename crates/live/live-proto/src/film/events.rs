@@ -22,6 +22,10 @@ pub enum Event {
     PlayerLeft(game::PlayerLeft),
     PlayerKilled(game::PlayerKilled),
     ActorKilled(game::ActorKilled),
+    /// A Firefight `Score` command as credited. The tracker also writes the
+    /// player's running total as an `ObjectiveScore` of game type `firefight`.
+    FirefightScore(crate::firefight::FirefightScore),
+    FirefightEnded(crate::firefight::FirefightEnded),
     ScoreChanged(game::ScoreChanged),
     GameEnded(game::GameEnded),
     /// The scoreboard reports the count. It does not identify which victim.
@@ -169,6 +173,8 @@ pub struct Tracker {
     scores: BTreeMap<u32, (u32, i64)>,
     team_scores: BTreeMap<i32, i64>,
     objective_type: Option<String>,
+    /// Each player's Firefight points so far: the `ObjectiveScore` they emit.
+    firefight_scores: BTreeMap<u32, i64>,
 }
 
 impl Tracker {
@@ -302,6 +308,18 @@ impl Tracker {
                 kill.tick
             }
             Event::ActorKilled(e) => e.tick,
+            Event::FirefightScore(e) => {
+                let total = self.firefight_scores.entry(e.player).or_default();
+                *total += i64::from(e.points);
+                extra.push(Event::ObjectiveScore {
+                    game_type: crate::firefight::GAME_TYPE.into(),
+                    player: Some(e.player),
+                    team: None,
+                    score: *total,
+                });
+                e.tick
+            }
+            Event::FirefightEnded(e) => e.tick,
             Event::ScoreChanged(e) => {
                 self.score_changes(
                     &e.players,
@@ -618,6 +636,41 @@ mod tests {
             decode(&left.encode().unwrap()).unwrap(),
             Some((left.tick, kind, data))
         );
+    }
+
+    #[test]
+    fn firefight_scores_become_running_objective_scores() {
+        let mut tracker = Tracker::default();
+        tracker
+            .event(
+                game::GAME_STARTED,
+                &json!({"host":"h","game_id":"g","map":"lockout",
+            "mode":"multiplayer","team_play":false,"players":[
+            {"index":0,"name":"A","team":0},{"index":1,"name":"B","team":0}]}),
+                0,
+            )
+            .unwrap();
+        let mut scored = |player: u32, points: u32, tick: u64| {
+            let data = json!({"tick": tick, "player": player, "points": points, "reason": "kill", "class": "grunt"});
+            tracker.event(game::FIREFIGHT_SCORE, &data, tick).unwrap()
+        };
+        let first = scored(0, 100, 10);
+        assert!(matches!(&first[0].event, Event::FirefightScore(s) if s.points == 100));
+        assert_eq!(
+            first[1].event,
+            Event::ObjectiveScore {
+                game_type: "firefight".into(),
+                player: Some(0),
+                team: None,
+                score: 100
+            }
+        );
+        scored(1, 30, 11);
+        let third = scored(0, 50, 12);
+        assert!(matches!(&third[1].event, Event::ObjectiveScore { player: Some(0), score: 150, .. }));
+        // Public only: Live's six telemetry records are untouched.
+        assert!(first[0].event.telemetry().is_none());
+        assert_eq!(Record::decode_telemetry(&first[0].encode().unwrap()).unwrap(), None);
     }
 
     #[test]
