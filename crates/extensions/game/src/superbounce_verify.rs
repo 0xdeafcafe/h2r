@@ -69,6 +69,12 @@ fn unavailable(msg: impl Into<String>) -> RpcError {
     RpcError::new(code::UNAVAILABLE, msg)
 }
 
+/// The game's calls queue, once agent_glue has set it (`player.goto`'s
+/// turn uses it too).
+pub(crate) fn calls() -> Option<&'static Shared> {
+    CALLS.get()
+}
+
 // ---- the seat ----
 
 /// Who the trials drive.
@@ -178,8 +184,9 @@ pub fn stick_for(walk: [f32; 2], yaw: f32) -> [f32; 2] {
 
 // ---- reading and writing the game ----
 
-/// What seat `index` reads now, and its unit's handle.
-fn read_seat(m: &dyn GuestMemory, index: u32) -> Option<(Read, u32)> {
+/// What seat `index` reads now, and its unit's handle (`player.goto`
+/// reads `player.0` with it too).
+pub(crate) fn read_seat(m: &dyn GuestMemory, index: u32) -> Option<(Read, u32)> {
     use live_telemetry::layout::{
         BIPED_FLAGS, BODY_VELOCITY, UNIT_AIM, UNIT_CROUCH, UNIT_FLAG_CROUCH, UNIT_FLAGS,
     };
@@ -624,6 +631,11 @@ fn verify(v: Value, ctx: &mut GameCtx<'_>) -> Result<Value, RpcError> {
         (Seat::Pad { .. }, TrialKind::Route) => {
             return Err(invalid("a route trial needs a brain-driven bot seat"));
         }
+        (Seat::Pad { .. }, _) if crate::player_goto::running() => {
+            return Err(invalid(
+                "player.goto is driving player.0; player.goto_cancel stops it",
+            ));
+        }
         (Seat::Pad { .. }, _) if !crate::superbounce_assist::tapped() => {
             return Err(unavailable(
                 "the pad tap is not in place (the superbounce-assist feature is off), so \
@@ -699,6 +711,14 @@ fn running() -> bool {
     lock(&JOB)
         .as_ref()
         .is_some_and(|j| j.state == JobState::Running)
+}
+
+/// Whether a running batch drives `player.0`'s pad (`player.goto` waits
+/// for it).
+pub(crate) fn drives_pad() -> bool {
+    lock(&JOB)
+        .as_ref()
+        .is_some_and(|j| j.state == JobState::Running && matches!(j.seat, Seat::Pad { .. }))
 }
 
 /// `superbounce.verify_status`.

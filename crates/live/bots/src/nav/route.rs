@@ -50,6 +50,16 @@ impl RouteWalk {
         })
     }
 
+    /// The corridor being followed.
+    pub fn follower(&self) -> &Follower {
+        &self.follower
+    }
+
+    /// Where the walk ends.
+    pub fn goal(&self) -> V3 {
+        self.goal
+    }
+
     /// Follow the bot's corners and traversal links. A move completes
     /// within the caller's three-dimensional arrival radius.
     pub fn step(

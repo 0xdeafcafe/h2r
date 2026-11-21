@@ -1675,7 +1675,7 @@ a walk-length function over the nav mesh:
 3. for a site with no fall, walk to 0.8 units behind it, never
    crouching, then the bounce run (`glitches::BounceRun`) until it
    launches. For a site that needs a fall, walk to its **launch
-   floor** (`mind::order::launch_floor`: the nav mesh's point nearest
+   floor** (`bounce_route::launch_floor`: the nav mesh's point nearest
    the site's aim sideways, within 3 units **[guess]**, whose floor is
    the drop height over the strip, 0.2 under to 2.5 over), then
    **drop**: line up on that point (45 ticks at most), walk off toward
@@ -1780,10 +1780,54 @@ and is not tallied. Turning the mode off ends a practice route
 attempts, bounces and reasons), so a game of practising bots is a live
 verifier too.
 
+#### Driving a player
+
+The same planner and route runner drive a seat with no brain of its own:
+the local player, sent somewhere by an agent (`player.goto`,
+docs/runtime/agent-api.md). There is one planner. `bounce_route` holds
+the walk length and the launch floor (`path_length`, `launch_floor`) a
+bot's orders plan with, the prime's two steps (`prime_steps`), a site's
+approach (`approach`: behind it, or its launch floor) and the route by one
+named site (`plan_site`: the crouch spot `plan_with` would pair with it,
+proven first, no reach limit and no walk to beat; `why` is `asked`).
+`goto::plan` picks from these by target and what to do there: a point is
+a plain walk (`nav`); a crouch spot is the walk to its start, then its
+recipe for `crouch_recipe`; a bounce site is the walk to its approach, its
+route up to the approach for `crouch_recipe`, or its whole route
+(`plan_site`, ending once down) for `bounce`.
+
+The plan is played by `OrderRun` as a bot's would be, its last walk
+ending within the asker's `within` (`OrderRun::arrive_within`).
+`goto::Goto` adds a watchdog for a body the brain does not own:
+
+- a walk that strays more than 1.5 units sideways from the leg it walks
+  (from the waypoint passed, or where the walk began, to the next one;
+  jumps, drops and lifts are left to the follower) plans again from where
+  the body is (`strayed`);
+- a walk whose distance left along its waypoints has not come down by
+  0.5 units in 150 ticks plans again (`stuck`), except while the next
+  waypoint is a lift, an elevator or a teleporter;
+- a route the runner ends with `path_lost` (the follower's own stuck and
+  fallen checks), `stalled` or `pair_lost` plans again, the word read
+  again or, unread, the last run's priming kept;
+- after 6 plans made again, or the timeout (3600 ticks unless asked),
+  it gives up with the last reason (`strayed` reads `stuck`).
+
+A jump is asked for as a fresh press: the pad never holds A two ticks
+running. The game's glue (`player_goto`) reads `player.0`, steps the
+`Goto` each tick on an agent ticker and holds the first controller's pad
+with the motion, the walk turned into the stick against the player's
+aim (the player does not turn while it walks). With no bot in the game
+nothing has loaded the map's nav mesh (the bots' glue reads it only
+while a phantom plays), so the glue asks for it the same way: the nav
+worker's load (built when stale), else the `.bots` file in the cache
+directory.
+
 **Untested.** The pair-word read, the priming's timings, the air speed
 and the whole route are not checked in a game; the pure planner and the
 state machines are unit tests (`bounce_route/tests.rs`,
-`glitches/tests.rs`, `mind/order/tests.rs`, `mind/practice/tests.rs`).
+`glitches/tests.rs`, `mind/order/tests.rs`, `mind/practice/tests.rs`,
+`goto/tests.rs`).
 
 **Not built:**
 

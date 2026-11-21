@@ -17,6 +17,7 @@ pub mod decisions;
 pub mod emote;
 pub mod experience;
 pub mod glitches;
+pub mod goto;
 pub mod grenades;
 pub mod guest;
 mod human_input;

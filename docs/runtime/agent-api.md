@@ -78,6 +78,8 @@ connection to hold `session.claim`.
 | `bots.stats` | read | [Bot combat](#bot-combat) |
 | `bots.bounce_to` | act | [Bounce routes](#bounce-routes) |
 | `bots.bounce_status`, `superbounce.spots` | read | [Bounce routes](#bounce-routes) |
+| `player.goto`, `player.goto_cancel` | act | [`player.goto`](#playergoto-drive-the-player-somewhere) |
+| `player.goto_status` | read | [`player.goto`](#playergoto-drive-the-player-somewhere) |
 | `sim.*` | read or act | [`sim`](#sim-simulated-players-and-direct-state) |
 | `forge.status`, `forge.doc`, `forge.log`, `forge.propose`, `forge.input`, `forge.look`, `forge.look.set`, `forge.status.monitors` | read or act | [Local Forge session](#local-forge-session) |
 | `forge.capacity`, `forge.probe` | read, act | [Forge probes](#forge-probes) |
@@ -98,7 +100,7 @@ connection to hold `session.claim`.
 
 A new method gets a row here and a section for its domain. The names
 live in `crates/extensions/agent-proto/src` (`method::ALL`, `hot::method::ALL`,
-`state::method::ALL`, `sim`, `forge`, `firefight`, `trace`, `theater`) and where the host adds
+`state::method::ALL`, `sim`, `forge`, `firefight`, `trace`, `theater`, `goto`) and where the host adds
 them (`Agent::add_method`, `Agent::add_game_method`).
 
 ## Connecting
@@ -2779,6 +2781,57 @@ h2 agent sim.state.set '{"player":2,"pos":[-12.0,3.0,-3.2]}'
 h2 agent bots.bounce_to '{"bot":"Clanker","to":[-10.6,9.0,2.4],"mode":"fun"}'
 h2 agent bots.bounce_status '{"bot":"Clanker"}'
 h2 agent superbounce.spots '{"map":"ascension","kind":"crouch"}'
+```
+
+## `player.goto`: drive the player somewhere
+
+`player.goto` drives `player.0` to a point or a spot with the bots'
+route brain, in one call instead of stepping the pad
+([bots.md](../game/bots.md#driving-a-player); the glue is
+`crates/extensions/game/src/player_goto.rs`, the autopilot
+`bots::goto`). It plans over the map's nav mesh, follows the path
+(jumps and drops included), plans again when the player strays or stops
+getting nearer, and holds the first controller's pad through the pad
+tap until it is over. It works with no bots in the game: the map's nav
+mesh is loaded for it (built by the nav worker when stale, else read
+from the cache; `h2 bots nav <map>` builds one by hand).
+
+Params: `to`, a point `[x, y, z]` (world units) or a spot
+`{"spot": n, "kind": "bounce" | "crouch"}` (default `bounce`), by its
+index among the mode's scanned spots of that kind, best first: the
+indices `superbounce.verify` uses (the mode must be on and its scan
+ready). `within` (world units, default 0.3, 0.05 to 10) is how near a
+point counts as there; a spot ends at its approach (a crouch spot's
+start, behind a bounce strip or on its launch floor). `face` turns the
+player to that yaw (radians from +X toward +Y) on arriving, with the
+game's teleport and no move. `timeout_ticks` (default 3600). `then`:
+`stop` (default), `crouch_recipe` (prime at the crouch spot, or at the
+one the planner picks for a bounce spot, then walk to its approach) or
+`bounce` (a bounce spot's whole route: prime unless primed, the jump or
+drop onto the strip, the ride down). The reply is `{job, kind, goal,
+then, map, nav}` (`nav` is `ready` or `loading`). A new `player.goto`
+replaces a running one. It is refused while a `superbounce.verify` batch
+drives `player.0`, and the batch is refused while a drive runs; without
+the pad tap (the `superbounce-assist` feature off) it is `UNAVAILABLE`.
+
+`player.goto_status {wait_ticks?}` reads it back (waiting up to 290
+ticks for the end): `state` (`none`, `loading`, `running`, `facing`,
+`done`, `failed`, `cancelled`), `job`, `kind`, `goal`, `then`, `steps`
+(`walk`, `walk_crouched`, `prime`, `bounce`, `drop`, `fly`, `nav`),
+`step`, `phase`, `primed`, `position`, `distance` (left along the walk
+under way, else straight to the goal), `path` (the player, then the
+waypoints ahead, at most 32), `replans`, `replanned` (`strayed`,
+`stuck`, `path_lost`, `stalled`, `pair_lost`), `ticks` and, for a failed
+drive, `error` (the route's reasons as in `bots.bounce_status`, `stuck`,
+`timeout`, `no_route`, `no_launch_floor`, a missing nav mesh, a changed
+map). `player.goto_cancel` stops it and lets go of the pad. The player
+strafes along the path: it does not turn while it walks.
+
+```sh
+h2 agent player.goto '{"to":[-10.6,9.0,2.4],"within":0.2}'
+h2 agent player.goto_status '{"wait_ticks":280}'
+h2 agent player.goto '{"to":{"spot":0,"kind":"crouch"},"then":"crouch_recipe"}'
+h2 agent player.goto_cancel
 ```
 
 ## `sim`: simulated players and direct state

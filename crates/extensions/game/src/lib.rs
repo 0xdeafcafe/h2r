@@ -188,6 +188,7 @@ pub mod clanker_card;
 pub mod clankermatch;
 pub mod clankers;
 pub mod pause_menu;
+pub mod player_goto;
 pub mod profile_voice_row;
 pub mod setting_defs;
 pub mod sha;
