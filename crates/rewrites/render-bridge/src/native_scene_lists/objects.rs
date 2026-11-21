@@ -204,7 +204,10 @@ impl Clip {
             Self::Sphere(s) => {
                 let [x, y, z] = std::array::from_fn(|i| object.centre[i] - s.centre[i]);
                 let limit = object.radius + s.radius;
-                if !(limit * limit >= (z * z + x * x) + y * y) {
+                if !matches!(
+                    (limit * limit).partial_cmp(&((z * z + x * x) + y * y)),
+                    Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
+                ) {
                     return Ok(0);
                 }
                 // The containment branch uses the game's double-precision
@@ -273,7 +276,7 @@ fn classify_frustum(m: &dyn GuestMemory, frustum: u32, sphere: Sphere) -> Result
         if d > sphere.radius {
             return Ok(0);
         }
-        if i != 4 && !(0.0 - sphere.radius > d) {
+        if i != 4 && (0.0 - sphere.radius).partial_cmp(&d) != Some(std::cmp::Ordering::Greater) {
             inside = false;
         }
     }

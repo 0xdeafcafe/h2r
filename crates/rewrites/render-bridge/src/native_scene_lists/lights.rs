@@ -311,7 +311,7 @@ fn shape_visible(m: &dyn GuestMemory, light: u32, definition: u32) -> Result<boo
         )
     };
     let far = far * scale;
-    if !(far > eps) {
+    if far.partial_cmp(&eps) != Some(std::cmp::Ordering::Greater) {
         return Ok(false);
     }
     let texture = m.u32(at(definition, 0x7c)?)?;

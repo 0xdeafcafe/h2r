@@ -83,7 +83,7 @@ fn fades(
             0.0
         } else if factor > one {
             one
-        } else if minimum > factor || minimum == factor {
+        } else if minimum >= factor {
             0.0
         } else {
             factor

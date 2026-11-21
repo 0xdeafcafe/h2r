@@ -112,7 +112,6 @@ impl Feature for ScaledSceneLists {
             Seam::CallSite(
                 &points::OBJECT_RECORD_APPEND,
                 points::OBJECT_RECORD_APPENDED,
-                &points::SCENE_RECORD_WRITER,
                 SceneList::ObjectRecord,
             ),
             move |m, cpu| records::build(m, cpu, scale.map_or(1.0, |scale| scale.read(m))),
@@ -351,7 +350,7 @@ impl Output {
 enum Seam {
     Function(&'static Point, u32),
     Sites(&'static Point, &'static Point, SceneList),
-    CallSite(&'static Point, u32, &'static Point, SceneList),
+    CallSite(&'static Point, u32, SceneList),
 }
 
 /// The stage can depend on the view kind, which is read by the builder.
@@ -361,7 +360,7 @@ fn install(
     build: impl Fn(&dyn GuestMemory, &CpuAbi) -> (SceneList, Result<Output>) + Send + Sync + 'static,
 ) {
     let point = match seam {
-        Seam::Function(point, _) | Seam::Sites(point, _, _) | Seam::CallSite(point, _, _, _) => {
+        Seam::Function(point, _) | Seam::Sites(point, _, _) | Seam::CallSite(point, _, _) => {
             point
         }
     };
@@ -376,7 +375,7 @@ fn install(
                 Seam::Sites(_, ready, stage) => {
                     (!runtime.read_dispatch(|d| d.has_generated(ready.base))).then_some(stage)
                 }
-                Seam::CallSite(_, ready, _, stage) => {
+                Seam::CallSite(_, ready, stage) => {
                     (!runtime.read_dispatch(|d| d.has_resume(ready))).then_some(stage)
                 }
             };
@@ -415,7 +414,7 @@ fn install(
                     }
                 },
                 Seam::Sites(_, ready, _) => TransferAbi::jump(ready.base),
-                Seam::CallSite(_, ready, _, _) => TransferAbi::resume(ready),
+                Seam::CallSite(_, ready, _) => TransferAbi::resume(ready),
             };
             output.publish(&mut mem, c.addr)?;
             if let Some(eax) = output.eax {

@@ -120,7 +120,7 @@ fn geometry(n: u32) -> SortedPart {
         part_addr: PART, shader: SHADER_DATUM, layer_argument: 0, lod: 0, variant: 0,
         projected_size: 0, layer: 3, pass: 0, implementation: n as u8,
         program: IMPLEMENTATIONS + 0x132 * n, classification: 0, strip: false,
-        index_buffer: TABLE + 0x1f00, indices: vec![0..3],
+        index_buffer: TABLE + 0x1f00, indices: std::iter::once(0..3).collect(),
     }
 }
 

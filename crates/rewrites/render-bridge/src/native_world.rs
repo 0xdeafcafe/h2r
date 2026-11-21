@@ -235,7 +235,7 @@ pub fn plan_parts(mem: &dyn GuestRead, parts: &PartSet, keep: impl Fn(Owner, u8)
 /// 3's bits back, then this layer's skip.
 pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     restore_pending(mem);
-    let mut m = Mem(mem);
+    let m = Mem(mem);
     if m.read_u32(skip::CURRENT_LAYER) != Some(LIGHTMAP_LAYER) {
         return;
     }
