@@ -26,6 +26,7 @@ mod agent_run;
 mod agent_sim;
 mod sim_cmd;
 mod sim_store_cmd;
+mod film_cmd;
 mod theater_cmd;
 #[cfg(feature = "desktop")]
 mod anim;
@@ -192,6 +193,7 @@ const USAGE: &str = "usage: h2 <command>
   host pack ...           run several leased matches in one container
   theater play FILM --render-every 0
                           replay a host film headlessly
+  film stat FILE          a film's keyframes and capture points (docs/game/film-format.md)
   sim <run|batch|compare> run or compare bot matches
   agent <call>            call a running game's agent API";
 
@@ -221,6 +223,7 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           sim compare <dir> prints the comparison again
   lockstep <a> <b>        compare two H2_LOCKSTEP traces; exit 1 if they differ
                           (docs/game/high-framerate.md)
+  film stat FILE          a film's keyframes and capture points (docs/game/film-format.md)
   coop-probe diff <a> <b> compare two H2_COOP_PROBE hash logs: first tick and pool
                           that differ (docs/live/live-coop.md section 9)
   coop test [--auto]      co-op over Live on this Mac: a Live server, two
@@ -386,6 +389,7 @@ fn main() -> Result<()> {
         "sim" => sim_cmd::run(args.collect()),
         "host" => host_cmd::run(args.collect()),
         "theater" => theater_cmd::run(args.collect()),
+        "film" => film_cmd::run(args.collect()),
         #[cfg(unix)]
         "agent" => agent_cmd::run(args.collect()),
         #[cfg(not(unix))]

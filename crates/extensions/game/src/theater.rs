@@ -46,6 +46,9 @@ pub struct Replay {
     pub render_every: u32,
     pub speed: f64,
     pub seek_tick: u64,
+    /// The tick the seek left, carried across the player restart. A fresh
+    /// launch seeks from tick 0.
+    pub from_tick: u64,
     pub paused_at_target: bool,
     pub presentation: Presentation,
     /// Receiver for a requested restart, consumed by the CLI parent.
@@ -97,6 +100,16 @@ enum Mode {
     Record(Recording),
     Replay(Playback, Replay),
 }
+/// The jump this process is serving, reported in `theater.state`. It stays
+/// after the target is reached so the route and restore cost remain visible
+/// until the process exits or serves another jump.
+struct SeekProgress {
+    target: u64,
+    from_tick: u64,
+    source: agent_proto::theater::SeekSource,
+    warm: bool,
+    restore_ms: Option<u64>,
+}
 struct State {
     mode: Mode,
     engine: Option<replay::EngineReplay>,
@@ -106,6 +119,9 @@ struct State {
     paused: bool,
     speed: f64,
     seeking: Option<u64>,
+    seek: Option<SeekProgress>,
+    /// The film's recorded D3D capture boundaries, as ticks, from load time.
+    capture_points: Vec<u64>,
     presentation: Presentation,
     restart: Option<u64>,
     failure: Option<String>,
@@ -176,10 +192,11 @@ impl Session {
             .map_err(anyhow::Error::msg)?
             .spec();
         let mut image = film::image::ImageMatch::Native;
-        let (mode, header, speed, seeking, paused) = if let Some(r) = replay {
+        let (mode, header, speed, seeking, paused, capture_points) = if let Some(r) = replay {
             ensure!(record.is_none(), "cannot record and replay the same boot");
             ensure!((0.25..=4.).contains(&r.speed), "speed must be 0.25 to 4");
             let tape = Playback::load(Reader::open(&r.path)?)?;
+            let capture_points = tape.barriers().map(|(_, _, tick, _)| tick).collect();
             let mut h = tape.reader.header.clone();
             image = image_match(h.version, &h.meta.image_stamp, &h.runtime_stamp,
                 h.guest_image.as_ref(), &stamp, &h.xbe_sha256)?;
@@ -212,7 +229,7 @@ impl Session {
                 (r.seek_tick > 0).then_some(r.seek_tick),
                 r.paused_at_target && r.seek_tick == 0,
             );
-            (Mode::Replay(tape, r), h, speed, target, paused)
+            (Mode::Replay(tape, r), h, speed, target, paused, capture_points)
         } else if let Some(path) = record {
             let started_ms = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
             let lease_id = std::env::var("H2_LEASE").ok().filter(|id| !id.is_empty());
@@ -297,12 +314,28 @@ impl Session {
                 1.,
                 None,
                 false,
+                Vec::new(),
             )
         } else {
             return Ok(None);
         };
         let engine = match &mode {
             Mode::Replay(_, r) if header.version >= 2 => Some(replay::EngineReplay::open(r, image)?),
+            _ => None,
+        };
+        let seek = match &mode {
+            Mode::Replay(_, r) if r.seek_tick > 0 => Some(SeekProgress {
+                target: r.seek_tick,
+                from_tick: r.from_tick,
+                source: match &engine {
+                    Some(engine) if engine.has_keyframe() => {
+                        agent_proto::theater::SeekSource::Keyframe
+                    }
+                    _ => agent_proto::theater::SeekSource::Boot,
+                },
+                warm: false,
+                restore_ms: None,
+            }),
             _ => None,
         };
         let bot_tape = bot_tape::BotTape::new(&mode, header.version);
@@ -334,6 +367,8 @@ impl Session {
                 header,
                 speed,
                 seeking,
+                seek,
+                capture_points,
                 paused,
                 presentation,
                 tick: 0,
@@ -445,7 +480,7 @@ impl Session {
                     if s.header.version >= 2 { r.camera.save(&mut presentation); }
                     std::fs::write(
                         &r.restart,
-                        serde_json::to_vec(&(target, s.speed, s.paused, &presentation))?,
+                        serde_json::to_vec(&(target, s.speed, s.paused, &presentation, s.tick))?,
                     )?;
                     return Ok(false);
                 }

@@ -7,7 +7,8 @@ pub const PAUSE: &str = "theater.pause";
 pub const SPEED: &str = "theater.speed";
 pub const SEEK: &str = "theater.seek";
 pub const CAMERA: &str = "theater.camera";
-pub const METHODS: [&str; 6] = [PLAY, STATE, PAUSE, SPEED, SEEK, CAMERA];
+pub const KEYFRAMES: &str = "theater.keyframes";
+pub const METHODS: [&str; 7] = [PLAY, STATE, PAUSE, SPEED, SEEK, CAMERA, KEYFRAMES];
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -59,6 +60,29 @@ pub struct Camera {
     #[serde(default)]
     pub zoom: f32,
 }
+/// The cheapest recorded state a seek restored or replays from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SeekSource {
+    Ring,
+    Keyframe,
+    Sidecar,
+    Boot,
+}
+
+/// The jump the player is serving, kept after it completes so the restore
+/// cost stays visible until the next jump. `restore_ms` is null until the
+/// restore finishes, and stays null when no keyframe was restored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeekInfo {
+    pub target: u64,
+    pub from_tick: u64,
+    pub source: SeekSource,
+    pub warm: bool,
+    pub remaining_ticks: u64,
+    pub restore_ms: Option<u64>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct State {
     pub id: String,
@@ -74,4 +98,22 @@ pub struct State {
     pub camera_player: Option<String>,
     #[serde(default)]
     pub kills: Vec<u64>,
+    #[serde(default)]
+    pub seek: Option<SeekInfo>,
+}
+
+/// The recorded states the player can seek from, and the film's capture
+/// points. The session ring and sidecar keyframes do not exist yet: both
+/// lists are empty and the byte counts are zero.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct Keyframes {
+    /// Ticks of the film's own machine keyframes, in order.
+    pub film: Vec<u64>,
+    pub sidecar: Vec<u64>,
+    pub ring: Vec<u64>,
+    /// Ticks of the film's recorded D3D capture boundaries, in order.
+    pub capture_points: Vec<u64>,
+    pub ring_bytes: u64,
+    pub ring_cap: u64,
+    pub sidecar_bytes: u64,
 }

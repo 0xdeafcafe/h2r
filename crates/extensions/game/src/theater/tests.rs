@@ -40,6 +40,7 @@ fn theater_replays_checkpoints_reports_first_divergence_and_registers_controls()
                 render_every,
                 speed: 1.,
                 seek_tick: 0,
+                from_tick: 0,
                 paused_at_target: false,
                 presentation: Presentation::default(),
                 restart: dir.join("restart"),
@@ -223,6 +224,7 @@ fn sealed_film_reinstalls_the_recorders_telemetry_and_impact_hook_chains() {
                     render_every: 0,
                     speed: 1.,
                     seek_tick: 0,
+                    from_tick: 0,
                     paused_at_target: false,
                     presentation: Presentation::default(),
                     restart: dir.join("restart"),
@@ -431,6 +433,7 @@ fn seek_restores_machine_and_replays_only_the_remaining_ticks() {
         render_every: 0,
         speed: 1.,
         seek_tick: 31,
+        from_tick: 0,
         paused_at_target: true,
         presentation: Presentation::default(),
         restart: dir.join("restart"),
@@ -446,6 +449,123 @@ fn seek_restores_machine_and_replays_only_the_remaining_ticks() {
     assert!(replay.lock().paused);
     replay.finish(40, true).unwrap();
     assert!(replay.lock().complete);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn state_reports_the_seek_route_and_restore_cost_and_lists_keyframes() {
+    let dir = std::env::temp_dir().join(format!("engine-seek-state-{}", live_proto::sign::random_id()));
+    std::fs::create_dir(&dir).unwrap();
+    let file = dir.join("game.h2film");
+    let opts = options(&dir);
+    let record = Session::open(Some(file.clone()), None, host_facts(), b"xbe", &opts)
+        .unwrap().unwrap();
+    let mut machine = crate::snapshot_glue::BootMachine {
+        parts: vec![],
+        checks: Box::new(Vec::new),
+        shelf: crate::snapshot_glue::Shelf::new(&dir, snapshot::BuildKey {
+            stamp: "fixture".into(),
+            switches: String::new(),
+        }),
+        hash: Box::new(|| lockstep::RamHash { total: 42, chunks: vec![42] }),
+        presents: 1,
+        rt: None,
+    };
+    let guest = arena();
+    for _ in 0..30 {
+        record.checkpoint(&guest);
+    }
+    record.try_keyframe(35, 0, &mut machine);
+    record.checkpoint(&guest);
+    record.finish(40, true).unwrap();
+
+    let open = |seek_tick| {
+        Session::open(None, Some(Replay {
+            path: file.clone(),
+            render_every: 0,
+            speed: 1.,
+            seek_tick,
+            from_tick: 0,
+            paused_at_target: false,
+            presentation: Presentation::default(),
+            restart: dir.join("restart"),
+            camera: Default::default(),
+            window_closed: None,
+        }), host_facts(), b"xbe", &opts).unwrap().unwrap()
+    };
+    let a = agent::Agent::new();
+    let (send, read) = std::sync::mpsc::sync_channel(32);
+    let client = a.connect(send);
+    struct Empty;
+    impl agent::Reader for Empty {
+        fn status(&mut self) -> agent::GameStatus {
+            Default::default()
+        }
+        fn objects(&mut self) -> Result<Vec<agent_proto::Object>, String> {
+            Ok(vec![])
+        }
+    }
+    let call = |method: &str, p: Value| {
+        a.submit(
+            client,
+            &json!({"jsonrpc":"2.0","id":1,"method":method,"params":p}).to_string(),
+        );
+        a.poll_theater(&mut Empty);
+        serde_json::from_str::<Value>(&read.try_recv().unwrap()).unwrap()
+    };
+
+    // A cold seek to tick 31 routes through the film's keyframe at tick 30.
+    let player = open(31);
+    player.add_methods(&a);
+    let seek = call(api::STATE, json!({}))["result"]["seek"].clone();
+    assert_eq!(seek["target"], 31);
+    assert_eq!(seek["from_tick"], 0);
+    assert_eq!(seek["source"], "keyframe");
+    assert_eq!(seek["warm"], false);
+    assert_eq!(seek["remaining_ticks"], 31);
+    assert!(seek["restore_ms"].is_null());
+    let stored = call(api::KEYFRAMES, json!({}))["result"].clone();
+    assert_eq!(stored["film"], json!([30]));
+    assert_eq!(stored["capture_points"], json!([]));
+    assert_eq!(stored["ring"], json!([]));
+    assert_eq!(stored["sidecar"], json!([]));
+    assert_eq!(stored["ring_bytes"], 0);
+    assert_eq!(stored["ring_cap"], 0);
+    assert_eq!(stored["sidecar_bytes"], 0);
+    assert!(call(api::KEYFRAMES, json!({"film":true}))["error"].is_object());
+
+    // The restore reports its cost and the shrinking distance to the target.
+    let keyframe = player.take_keyframe().unwrap();
+    player.restore_keyframe(keyframe, &mut machine, None).unwrap();
+    let seek = call(api::STATE, json!({}))["result"]["seek"].clone();
+    assert_eq!(seek["remaining_ticks"], 1);
+    assert!(seek["restore_ms"].is_u64(), "{seek}");
+    player.checkpoint(&guest);
+    let seek = call(api::STATE, json!({}))["result"]["seek"].clone();
+    assert_eq!(seek["remaining_ticks"], 0);
+    assert!(seek["restore_ms"].is_u64(), "{seek}");
+
+    // A requested jump names its own route: covered by the tick-30 keyframe
+    // or not. The tick it leaves becomes the next jump's from_tick.
+    let jump = call(api::SEEK, json!({"tick":35}))["result"]["seek"].clone();
+    assert_eq!(jump["from_tick"], 31);
+    assert_eq!(jump["source"], "keyframe");
+    let jump = call(api::SEEK, json!({"tick":5}))["result"]["seek"].clone();
+    assert_eq!(jump["source"], "boot");
+
+    // A target before every stored keyframe replays from boot.
+    let booted = open(20);
+    booted.add_methods(&a);
+    assert!(booted.take_keyframe().is_none());
+    let seek = call(api::STATE, json!({}))["result"]["seek"].clone();
+    assert_eq!(seek["source"], "boot");
+    assert_eq!(seek["remaining_ticks"], 20);
+    assert!(seek["restore_ms"].is_null());
+
+    // Playing from the start reports no jump.
+    let linear = open(0);
+    linear.add_methods(&a);
+    assert!(call(api::STATE, json!({}))["result"]["seek"].is_null());
     std::fs::remove_dir_all(dir).unwrap();
 }
 

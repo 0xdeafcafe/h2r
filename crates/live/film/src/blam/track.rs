@@ -436,6 +436,31 @@ fn one<R: Read + Seek>(reader: &Reader<R>, tag: crate::Tag) -> Result<Entry> {
     Ok(reader.machine_section().unique(tag)?.clone())
 }
 
+/// A stored machine keyframe as the film's private directory lists it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeyframeInfo {
+    pub tick: u64,
+    pub offset: u64,
+    /// The standalone anchor tick this frame's RAM delta decodes against.
+    /// None on a standalone frame, which carries the whole RAM.
+    pub ram_anchor: Option<u64>,
+}
+
+/// The film's stored machine keyframes in tick order, from the TIDX
+/// directory alone. This does not inflate input, HLE or snapshot data.
+pub fn keyframes<R: Read + Seek>(reader: &mut Reader<R>) -> Result<Vec<KeyframeInfo>> {
+    let directory: Directory = reader.read(&one(reader, TIDX)?)?;
+    Ok(directory
+        .keyframes
+        .iter()
+        .map(|key| KeyframeInfo {
+            tick: key.tick,
+            offset: key.offset,
+            ram_anchor: key.ram_anchor,
+        })
+        .collect())
+}
+
 /// Read just the menu block. This does not inflate input, HLE or snapshot data.
 pub fn summary<R: Read + Seek>(reader: &mut Reader<R>) -> Result<Summary> {
     if reader.header.version == 3 {
@@ -605,6 +630,20 @@ impl<R: Read + Seek> TrackReader<R> {
 
     pub fn keyframe_offset(&self) -> Option<u64> {
         self.keyframe_offset
+    }
+
+    /// Every stored machine keyframe's tick, in order (`theater.keyframes`).
+    pub fn keyframe_ticks(&self) -> Vec<u64> {
+        self.directory.keyframes.iter().map(|key| key.tick).collect()
+    }
+
+    /// A seek to `target` restores a machine keyframe when one is stored at
+    /// or before it.
+    pub fn seek_uses_keyframe(&self, target: u64) -> bool {
+        self.directory
+            .keyframes
+            .first()
+            .is_some_and(|key| key.tick <= target)
     }
 
     fn keyframe_index(&self, target: u64) -> Result<Option<usize>> {

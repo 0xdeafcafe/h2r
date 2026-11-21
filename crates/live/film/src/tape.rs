@@ -220,6 +220,11 @@ impl Playback {
         self.lobby.retain(|(at, _, _)| *at > lobby_boundary);
         Ok(())
     }
+    /// The recorded D3D capture boundaries still ahead of the tape cursor,
+    /// as (file offset, scheduler slice, completed tick, save succeeded).
+    pub fn barriers(&self) -> impl Iterator<Item = (u64, u64, u64, bool)> + '_ {
+        self.barriers.iter().copied()
+    }
     /// A linear run repeats D3D's push-buffer drain, target writeback and
     /// visibility queries at the same scheduler boundary as the recorder.
     pub fn d3d_barrier(&mut self, slices: u64, tick: u64) -> FilmResult<Option<bool>> {

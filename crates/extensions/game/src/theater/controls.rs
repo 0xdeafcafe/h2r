@@ -96,7 +96,7 @@ impl Session {
             let session = self.clone();
             a.add_method(
                 name,
-                if name == api::STATE {
+                if name == api::STATE || name == api::KEYFRAMES {
                     Access::Read
                 } else {
                     Access::Act
@@ -161,11 +161,45 @@ impl Session {
                                 }
                                 s.presentation.clip_marks = marks;
                             }
+                            let source = s
+                                .engine
+                                .as_ref()
+                                .map_or(api::SeekSource::Boot, |engine| {
+                                    engine.seek_source(p.tick)
+                                });
+                            s.seek = Some(SeekProgress {
+                                target: p.tick,
+                                from_tick: s.tick,
+                                source,
+                                warm: false,
+                                restore_ms: None,
+                            });
                             s.restart = Some(p.tick);
                         }
                         api::CAMERA => {
                             let p = params::<api::Camera>(p)?;
                             s.camera_request(p)?;
+                        }
+                        api::KEYFRAMES => {
+                            if !(p.is_null() || p.as_object().is_some_and(|o| o.is_empty())) {
+                                return Err(RpcError::new(
+                                    code::INVALID_PARAMS,
+                                    "expected empty parameters",
+                                ));
+                            }
+                            return Ok(serde_json::json!(api::Keyframes {
+                                film: s
+                                    .engine
+                                    .as_ref()
+                                    .map(|engine| engine.track.keyframe_ticks())
+                                    .unwrap_or_default(),
+                                sidecar: Vec::new(),
+                                ring: Vec::new(),
+                                capture_points: s.capture_points.clone(),
+                                ring_bytes: 0,
+                                ring_cap: 0,
+                                sidecar_bytes: 0,
+                            }));
                         }
                         _ => unreachable!(),
                     }
@@ -184,6 +218,14 @@ impl Session {
                         camera: s.presentation.camera.mode,
                         camera_player: s.presentation.camera.player.clone(),
                         kills: s.presentation.kills.iter().copied().collect(),
+                        seek: s.seek.as_ref().map(|seek| api::SeekInfo {
+                            target: seek.target,
+                            from_tick: seek.from_tick,
+                            source: seek.source,
+                            warm: seek.warm,
+                            remaining_ticks: seek.target.saturating_sub(s.tick),
+                            restore_ms: seek.restore_ms,
+                        }),
                     }))
                 },
             );
@@ -246,7 +288,7 @@ pub fn library_methods(
         let (dir, disc, out, data) = (dir.clone(), disc.clone(), out.clone(), data.clone());
         a.add_method(
             name,
-            if name == api::STATE {
+            if name == api::STATE || name == api::KEYFRAMES {
                 Access::Read
             } else {
                 Access::Act
