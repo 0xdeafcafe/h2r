@@ -223,3 +223,21 @@ fn a_failed_op_list_changes_nothing() {
     assert!(s.ops(cluster()).is_empty());
     assert_eq!(s.mesh(cluster()).unwrap().selection().len(), 0);
 }
+
+#[test]
+fn the_preview_redraws_the_cluster_with_the_moved_vertex() {
+    let (_, mut s) = opened();
+    let before = s.previews();
+    assert_eq!(before.len(), 1);
+    assert_eq!(
+        (before[0].bsp, before[0].drawn.clone()),
+        (fixture::id(4), vec![Drawn::Cluster(0)])
+    );
+    lift(&mut s, [4.0, 4.0, 0.0], 1.0);
+    let after = s.previews();
+    assert_eq!(after[0].positions.len(), 4);
+    assert!(after[0].positions.contains(&[4.0, 4.0, 1.0]));
+    assert!(!after[0].positions.contains(&[4.0, 4.0, 0.0]));
+    assert!(s.undo());
+    assert_eq!(s.previews(), before);
+}

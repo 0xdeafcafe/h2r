@@ -20,5 +20,10 @@ mod session;
 mod target;
 mod write;
 
-pub use session::{Check, Error, GeometrySession, OpenInfo, Patches, RawWrite, RegionWrite, WriteClass};
+/// The kernel the session edits with: `MeshOp` is the API's op value.
+pub use mesh_edit;
+pub use session::{
+    Check, Drawn, Error, GeometrySession, OpenInfo, Patches, Preview, RawWrite, RegionWrite,
+    WriteClass,
+};
 pub use target::{Target, TargetInfo, TargetKind, list, list_model};

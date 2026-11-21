@@ -18,6 +18,25 @@ use crate::import::section_source;
 use crate::target::{Target, TargetKind};
 use crate::write::{SectionSource, block_runs, rewrite};
 
+/// One section the native world draws a structure target as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Drawn {
+    /// A cluster, by index in `sbsp+0x9c`.
+    Cluster(u32),
+    /// An instanced-geometry placement, by index in `sbsp+0x140`.
+    Instance(u32),
+}
+
+/// What the live preview redraws for one open target
+/// ([`GeometrySession::previews`]): positions per source vertex in the
+/// section's own space.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Preview {
+    pub bsp: TagId,
+    pub drawn: Vec<Drawn>,
+    pub positions: Vec<[f32; 3]>,
+}
+
 /// Why the session could not do something.
 #[derive(Debug)]
 pub enum Error {
@@ -779,6 +798,33 @@ impl GeometrySession {
         let o = self.find(t)?;
         let (class, _, export) = self.classify(o);
         (class != WriteClass::Grown).then_some(export.positions)
+    }
+
+    /// The native previews of the open structure targets: a cluster
+    /// draws as its own section, a definition as each of its placements.
+    /// A render model's section has none (the native world does not draw
+    /// it), nor has a grown edit.
+    pub fn previews(&self) -> Vec<Preview> {
+        self.opened
+            .iter()
+            .filter_map(|o| {
+                let t = o.target;
+                let drawn = match t.kind {
+                    TargetKind::Cluster => vec![Drawn::Cluster(t.index)],
+                    TargetKind::InstanceDef => self
+                        .instances(t)
+                        .iter()
+                        .map(|(i, _)| Drawn::Instance(*i))
+                        .collect(),
+                    TargetKind::ModeSection => return None,
+                };
+                Some(Preview {
+                    bsp: t.tag,
+                    drawn,
+                    positions: self.preview_positions(t)?,
+                })
+            })
+            .collect()
     }
 
     /// The write class of an open target.
