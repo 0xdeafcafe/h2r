@@ -570,6 +570,10 @@ h2 agent faults
   geometry snapshots and bot map changes.
   `setup_dispatch_stalled_frames` counts over-budget presents whose handoffs
   alone took more than 33⅓ ms.
+  For inactive map slots, `map_slot_vfs_wait_ns` times the render-frame hook
+  acquiring the shared VFS and `map_slot_check_ns` times its checks for
+  changed source files after acquisition. A slot check runs at most twice a
+  second and requires an inactive candidate.
   `load.timeline` also sums these counters for the stall and settling periods.
 - **Fallbacks.** `profile.fallbacks {top}` (20 by default, 1 to 500)
   returns the fallback interpreter's totals and its entry addresses ranked

@@ -178,6 +178,10 @@ pub enum Counter {
     /// draw order, splitting the pass, because the submission's front
     /// already held other bytes for them (`GfxBackend::write_ahead`).
     OrderedWrites,
+    /// Foreground time entering the shared VFS to validate inactive map slots.
+    MapSlotVfsWaitNs,
+    /// Foreground time checking the mounted sources of inactive map slots.
+    MapSlotCheckNs,
 }
 
 /// Number of [`Counter`]s.
@@ -191,7 +195,7 @@ pub fn counter_columns() -> impl Iterator<Item = (usize, &'static str)> {
 }
 
 impl Counter {
-    pub const ALL: [Counter; 31] = [
+    pub const ALL: [Counter; 33] = [
         Counter::Draws,
         Counter::Submits,
         Counter::Pipelines,
@@ -223,6 +227,8 @@ impl Counter {
         Counter::ShadowWalkLayers,
         Counter::CommandBuffers,
         Counter::OrderedWrites,
+        Counter::MapSlotVfsWaitNs,
+        Counter::MapSlotCheckNs,
     ];
 
     pub fn label(self) -> &'static str {
@@ -257,6 +263,8 @@ impl Counter {
             Counter::ShadowWalkLayers => "shadow_walk_layers",
             Counter::CommandBuffers => "command_buffers",
             Counter::OrderedWrites => "ordered_writes",
+            Counter::MapSlotVfsWaitNs => "map_slot_vfs_wait_ns",
+            Counter::MapSlotCheckNs => "map_slot_check_ns",
             Counter::FileIoUs => "file_io_us",
         }
     }

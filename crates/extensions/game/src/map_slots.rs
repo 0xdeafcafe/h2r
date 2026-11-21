@@ -167,13 +167,20 @@ impl hooks::Feature for MapSlots {
                 if candidates.is_empty() {
                     return;
                 }
-                let stale: Vec<(u32, String)> = {
-                    let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-                    candidates
-                        .into_iter()
-                        .filter(|(_, file)| v.map_changed(file))
-                        .collect()
-                };
+                let start = timeline::phase::enabled().then(timeline::now_ns);
+                let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
+                let acquired = start.map(|_| timeline::now_ns());
+                let stale: Vec<_> = candidates
+                    .into_iter()
+                    .filter(|(_, file)| v.map_changed(file))
+                    .collect();
+                drop(v);
+                if let Some((start, acquired)) = start.zip(acquired) {
+                    use timeline::phase::{count, Counter};
+                    let finished = timeline::now_ns();
+                    count(Counter::MapSlotVfsWaitNs, acquired.saturating_sub(start));
+                    count(Counter::MapSlotCheckNs, finished.saturating_sub(acquired));
+                }
                 if stale.is_empty() {
                     return;
                 }
