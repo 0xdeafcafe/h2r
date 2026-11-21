@@ -50,9 +50,7 @@ impl Session {
         self.doc.as_ref().map(|d| &d.objects)
     }
 
-    /// Every collision shape the placements place, in world space. An
-    /// object added to a palette after the map opened has none until it
-    /// is opened again.
+    /// Every collision shape the placements place, in world space.
     pub fn placed_object_shapes(&self) -> Vec<PlacedShape<'_>> {
         self.object_collisions()
             .map(|o| o.placed(&self.markers))
@@ -89,7 +87,7 @@ mod tests {
         let mut ed = Session::new();
         ed.build_scenes = false;
         ed.open(MapSource::file(&path)).unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
+        // The source stays on disk: an object placed later reads it again.
         ed
     }
 
@@ -225,6 +223,44 @@ mod tests {
         // The plain fixture's placements have no collision to draw.
         let plain = open(fixture::fixture(), "object-plain");
         assert_eq!(plain.object_shape_count(), 0);
+    }
+
+    /// Gap 4: a scenery that places nothing when the map opens has no
+    /// collision read; switching it to the palette's crate reads the
+    /// crate's `coll` and `phmo` then, and an undo keeps what was read.
+    #[test]
+    fn an_object_placed_after_the_map_opens_has_its_collision_read() {
+        let mut bytes = fixture::fixture_with_object_collision();
+        let at = fixture::sfile(fixture::SCENERY_AT);
+        bytes[at..at + 2].copy_from_slice(&(-1i16).to_le_bytes());
+        let mut ed = open(bytes, "object-late");
+        let scen = fixture::id(4);
+        assert_eq!(ed.object_collisions().unwrap().of(scen), None);
+        assert_eq!(ed.object_shape_count(), 0);
+
+        let field = ed
+            .scenario()
+            .unwrap()
+            .block(BlockKind::Scenery)
+            .def
+            .role(Role::PaletteIndex)
+            .unwrap()
+            .name;
+        ed.apply(Command::set(BlockKind::Scenery, 0, field, Value::Int(0)))
+            .unwrap();
+        let objects = ed.object_collisions().unwrap();
+        assert_eq!(objects.error, None);
+        let model = objects.of(scen).unwrap();
+        assert!(model.errors.is_empty(), "{:?}", model.errors);
+        assert_eq!(model.shapes.len(), 2);
+        assert_eq!(ed.object_shape_count(), 2);
+        assert_eq!(ed.placed_object_shapes().len(), 2);
+
+        assert!(ed.undo());
+        assert_eq!(ed.object_shape_count(), 0);
+        assert!(ed.object_collisions().unwrap().of(scen).is_some());
+        assert!(ed.redo());
+        assert_eq!(ed.object_shape_count(), 2);
     }
 
     /// A map whose scenario names no structure BSP has no collision, and

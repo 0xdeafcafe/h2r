@@ -654,7 +654,10 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   and Collision only covers it too. Object collision draws each placed
   object's `coll` BSPs and `phmo` shapes as wire, each posed by its
   node's rest transform and then the placement's
-  (`scenario_edit::object_collision`). All four start hidden. A click on a shown surface selects it when nothing else
+  (`scenario_edit::object_collision`). Each object tag is read once:
+  those placed when the map opens, and any other the moment an edit
+  first places it (another palette entry, an item reference). All four
+  start hidden. A click on a shown surface selects it when nothing else
   is under the cursor, and the inspector shows its class, plane, raw
   flags, material and ring, read only.
 - **Glyphs and labels.** Other placements without a model use a diamond

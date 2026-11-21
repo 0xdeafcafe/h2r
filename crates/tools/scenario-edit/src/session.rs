@@ -44,7 +44,7 @@ struct Doc {
     /// drawn triangles ([`crate::collision_view`]).
     collision: crate::collision_view::LevelCollision,
     /// The placed object tags' collision, read once per tag when the map
-    /// opens ([`crate::object_collision`]).
+    /// opens or a placement first places it ([`crate::object_collision`]).
     objects: crate::object_collision::ObjectCollisions,
     /// The textured BSP and the placed objects' models, when the map's art
     /// could be read.
@@ -614,7 +614,34 @@ impl Session {
             (None, Some(r)) => r.markers.clone(),
             (None, None) => Vec::new(),
         };
+        self.read_new_objects();
         self.markers_rev += 1;
+    }
+
+    /// Read the collision of object tags the markers place that were not
+    /// placed when the map opened (a placement switched to another palette
+    /// entry, an item reference set to another tag). Each tag is read
+    /// once; nothing is read once the map's tag metadata has failed.
+    fn read_new_objects(&mut self) {
+        let Some(doc) = self.doc.as_mut() else {
+            return;
+        };
+        if doc.objects.error.is_some() {
+            return;
+        }
+        let new: Vec<TagId> = self
+            .markers
+            .iter()
+            .filter_map(|m| m.object)
+            .filter(|&o| doc.objects.of(o).is_none())
+            .collect();
+        if new.is_empty() {
+            return;
+        }
+        match doc.source.open() {
+            Ok(mut map) => doc.objects.add(&mut map, new),
+            Err(e) => doc.objects.error = Some(format!("reading new objects: {e}")),
+        }
     }
 
     pub fn camera(&self) -> &Camera {

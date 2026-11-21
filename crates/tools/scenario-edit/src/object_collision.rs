@@ -122,24 +122,40 @@ impl ObjectCollisions {
         map: &mut Map<R>,
         objects: impl IntoIterator<Item = TagId>,
     ) -> Self {
+        let mut out = Self::default();
+        out.add(map, objects);
+        out
+    }
+
+    /// Read the collision of each tag in `objects` not read yet: a
+    /// placement switched to a palette entry, or an item reference set to
+    /// a tag, that nothing placed when the map opened. A tag that failed
+    /// to read is kept with its errors and not read again. With no new
+    /// tag the map's metadata is not read.
+    pub fn add<R: Read + Seek>(
+        &mut self,
+        map: &mut Map<R>,
+        objects: impl IntoIterator<Item = TagId>,
+    ) {
+        let mut new: Vec<TagId> = objects
+            .into_iter()
+            .filter(|o| !self.models.contains_key(o))
+            .collect();
+        new.sort_by_key(|o| o.0);
+        new.dedup();
+        if new.is_empty() {
+            return;
+        }
         let ctx = match Context::read(map) {
             Ok(c) => c,
             Err(e) => {
-                return Self {
-                    models: HashMap::new(),
-                    error: Some(e.to_string()),
-                };
+                self.error = Some(e.to_string());
+                return;
             }
         };
-        let mut models = HashMap::new();
-        for object in objects {
-            if !models.contains_key(&object) {
-                models.insert(object, model_collision(map, &ctx, object));
-            }
-        }
-        Self {
-            models,
-            error: None,
+        for object in new {
+            let read = model_collision(map, &ctx, object);
+            self.models.insert(object, read);
         }
     }
 
