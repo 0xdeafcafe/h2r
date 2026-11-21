@@ -572,8 +572,7 @@ pub fn fields(
         // No layout: the bytes only.
         if t.bsp.is_some() {
             if let Some(bytes) = doc.read_source(id, t.address, t.size) {
-                ui.child_window("##bsp-bytes")
-                    .build(ui, || bsp_hex(ui, bytes));
+                theme::panel_body(ui, "##bsp-bytes", || bsp_hex(ui, bytes));
             }
         } else if let Some(b) = doc.read(id, t.address, t.size.min(4096)) {
             ui.text(fields::hex_lines(&b));
@@ -616,18 +615,18 @@ pub fn fields(
         }
         st.focus = want;
     }
-    ui.child_window("##fields").build(ui, || {
-        fields::panel_with_marks(
-            ui,
-            doc,
-            id,
-            &[],
-            &mut st.panel,
-            actions,
-            fields::PanelRoot::Tags(scene),
-            &mut inspector::tag_field_marks(ui, issues, &mut resolution),
-        );
-    });
+    // Nothing is pinned over the rows: the header scrolls with them, in
+    // the window (docs/editor/tag-editing.md, "Panels on short windows").
+    fields::panel_with_marks(
+        ui,
+        doc,
+        id,
+        &[],
+        &mut st.panel,
+        actions,
+        fields::PanelRoot::Tags(scene),
+        &mut inspector::tag_field_marks(ui, issues, &mut resolution),
+    );
     if let Some(action) = resolution {
         app.pairing.requests.push(Request::Apply(action));
     }

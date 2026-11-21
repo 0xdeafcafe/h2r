@@ -746,12 +746,9 @@ mod tests {
     }
 
     /// `theme::panel_body` and `theme::bounded_list` are the only callers of
-    /// `child_window` in `ui.rs` and `ui/`. `ui/tags.rs` and `fields.rs`
-    /// are allowed until slice T2 of docs/editor/tag-editing.md moves them
-    /// onto the helpers; then this list is empty.
+    /// `child_window` in `ui.rs`, `ui/`, `fields.rs` and `fields/`.
     #[test]
     fn child_windows_come_from_the_panel_helpers() {
-        const UNTIL_T2: [&str; 2] = ["tags.rs", "fields.rs"];
         fn check(file: &Path) {
             if file.is_dir() {
                 for entry in file.read_dir().unwrap() {
@@ -760,10 +757,6 @@ mod tests {
                 return;
             }
             if file.extension().and_then(|e| e.to_str()) != Some("rs") {
-                return;
-            }
-            let name = file.file_name().and_then(|n| n.to_str()).unwrap();
-            if UNTIL_T2.contains(&name) {
                 return;
             }
             let source = std::fs::read_to_string(file).unwrap();
@@ -780,6 +773,8 @@ mod tests {
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         check(&src.join("ui.rs"));
         check(&src.join("ui"));
+        check(&src.join("fields.rs"));
+        check(&src.join("fields"));
     }
 
     /// At 1000 by 420 every tool draws no child window but a panel body or
@@ -804,8 +799,8 @@ mod tests {
         app.set_data_root(dir.join("data"));
         app.dispatch(Action::OpenSource(map));
         // The ids of `theme::panel_body` and `theme::bounded_list` callers
-        // (and the empty card), plus the tags tool's own until T2.
-        const ALLOWED: [&str; 10] = [
+        // (and the empty card).
+        const ALLOWED: [&str; 9] = [
             "##outliner-body",
             "##h1-outliner-body",
             "##log-lines",
@@ -814,7 +809,6 @@ mod tests {
             "##playlist-list",
             "##palette-results",
             "##empty-card",
-            "##fields",
             "##bsp-bytes",
         ];
         for tool in [
