@@ -2767,8 +2767,12 @@ portable op and optional prior-value digest. The local host supplies the
 author and sequence. Placement waits for the engine's creation result.
 A saved document can create several objects in one tick. If the engine refuses
 a creation, the call releases objects it made for that load. A refusal leaves
-the log head in place. Moving, deleting and restoring a
-live object require the corresponding M8 engine call.
+the log head in place. Moves, deletes and restores, including those of
+undo and redo, run at the next tick through the `world.object.set` and
+`world.object.delete` bodies and the ownerless spawn. A live object that
+no longer resolves by kind and salt is refused as `forge_object_gone`
+before any guest call. A block with no `world.object` kind (sound
+scenery) is refused as `forge_object_kind`.
 
 ## Forge probes
 

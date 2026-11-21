@@ -1,4 +1,5 @@
 use super::*;
+use agent::forge::local::OBJECT_GONE;
 use forge::{BlockKind, Frame, TagKey};
 use forge_doc::{BuilderVersions, ForgeDoc, Limits, MapRef, WorldBounds};
 
@@ -69,14 +70,60 @@ fn palette_to_properties_to_confirmed_engine_handle() {
     let work = calls::lock(&e.calls).drain();
     assert_eq!(work.len(), 1);
     let (ticket, call) = work.into_iter().next().unwrap();
-    assert!(matches!(call, calls::Call::ForgeSpawn {placements,..} if placements == [(42,frame)]));
+    assert!(
+        matches!(call, calls::Call::Forge { steps, .. } if steps == [
+            calls::ForgeStep::Make { tag: 42, frame },
+        ])
+    );
     calls::lock(&e.calls).finish(ticket, Ok(json!({"handles":[31]})));
     e.poll(9);
     assert_eq!(e.session.log().len(), 1);
     assert_eq!(e.session.objects()[0].handle, 31);
     assert_eq!(e.tool.placing, None);
     let id = e.session.objects()[0].id;
-    let error = e.command(10, Command::Delete { id }).unwrap_err();
-    assert!(error.contains("world.object.delete"));
+    let live = calls::ForgeTarget::Live(agent_proto::ObjectId {
+        kind: agent_proto::Kind::Crate,
+        key: 31,
+    });
+
+    // The game refuses a stale object by name: the notice says so and the
+    // log stays where it was.
+    e.command(10, Command::Delete { id }).unwrap();
+    let (ticket, call) = calls::lock(&e.calls).drain().pop().unwrap();
+    assert!(
+        matches!(call, calls::Call::Forge { steps, .. } if steps == [
+            calls::ForgeStep::Delete { target: live },
+        ])
+    );
+    let gone = format!("{}: crate.0000001f is no longer in the world", OBJECT_GONE);
+    calls::lock(&e.calls).finish(
+        ticket,
+        Err(agent_proto::RpcError::new(
+            agent_proto::sim::REFUSED,
+            gone.clone(),
+        )),
+    );
+    e.poll(11);
+    assert_eq!(e.notice, Some((gone, 11)));
     assert_eq!(e.session.log().len(), 1);
+    assert_eq!(e.session.objects().len(), 1);
+
+    // A confirmed delete removes the live object, and undo restores it.
+    e.command(12, Command::Delete { id }).unwrap();
+    let (ticket, _) = calls::lock(&e.calls).drain().pop().unwrap();
+    calls::lock(&e.calls).finish(ticket, Ok(json!({"handles":[]})));
+    e.poll(13);
+    assert_eq!(e.session.log().len(), 2);
+    assert!(e.session.objects().is_empty());
+    e.command(14, Command::Undo).unwrap();
+    let (ticket, call) = calls::lock(&e.calls).drain().pop().unwrap();
+    assert!(
+        matches!(call, calls::Call::Forge { steps, .. } if steps == [
+            calls::ForgeStep::Make { tag: 42, frame },
+        ])
+    );
+    calls::lock(&e.calls).finish(ticket, Ok(json!({"handles":[32]})));
+    e.poll(15);
+    assert_eq!(e.session.objects()[0].id, id);
+    assert_eq!(e.session.objects()[0].handle, 32);
 }

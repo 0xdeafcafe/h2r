@@ -1,8 +1,9 @@
 # Forge: the design
 
 Status: Local Objects editing uses the Forge document, materialiser, runtime
-probes and monitor UI. Live object transforms, delete and respawn depend on
-live-mirror M8. Networked editing is planned.
+probes and monitor UI. Place, move, turn, delete, undo and redo apply to the
+running game's objects through live-mirror M8's object calls. Networked
+editing is planned.
 Code: `crates/formats/forge-doc` defines the document and log.
 `crates/tools/forge-build` materialises it. `crates/extensions/forge`
 owns the local session and Objects tool. The host is
@@ -547,7 +548,7 @@ and the game. Sizes as under Features.
 | **F1** | `forge-doc`: the document, placement and tag-field ops, canonical form and hash, validator with caps, fold of a log into a document, inverse ops | M | nothing | golden vectors for the hash; fold then unfold through inverses gives the start; every validator rule has a refusing case; a seeded fuzz of 10,000 random documents never panics; applying placement ops to a `scenario_edit::fixture` equals the same edits made through `Session` |
 | **F2** | `forge-build`: document to package, the `[[forge]]` layer, `MapId` format 2, `h2 forge build` and `check`, the kit's spare entries | M | F1 | two builds of one document are byte-equal; an empty document on a kit map differs from its base only in the kit's blocks; a stale base hash is a named error; `MapId` golden vectors, format 1 ids unchanged; the package resolves through `content::resolve` to the built map |
 | **F3** | Probes: `forge.capacity`, `forge.probe` (replication of a host-made object by group, the synchronous protocol on a multiplayer map, the AI flag in multiplayer, kit entries inert) | S | nothing | each method answers over a fake game with a test; the coordinator's runs go in `docs/game/notes/forge-probes.md` |
-| **F4** | Local session (live move, delete and restore require M8): the camera body, the `Hud` kind, Objects tool, palette and properties dialogs, save and load | L | F1, F2, live-mirror M8 | `Page` tables for each dialog; the `Hud` view passes the kit's checks in every state; over a fake game, place, move and delete produce the expected proposals and engine calls, undo restores, a saved file folds to the same document |
+| **F4** | Local session, its edits applied to the live objects through M8's calls: the camera body, the `Hud` kind, Objects tool, palette and properties dialogs, save and load | L | F1, F2, live-mirror M8 | `Page` tables for each dialog; the `Hud` view passes the kit's checks in every state; over a fake game, place, move and delete produce the expected proposals and engine calls, undo restores, a stale object is a named refusal that leaves the document alone, a saved file folds to the same document |
 | **F5** | Synchronous mode: the log on the network, roles, holding, join in progress, the film record | M | F3's results, F4 | two fake peers and a host converge to one head under reordered proposals; a second hold is refused; a late joiner's document equals the host's; a film with entries replays to the same `ForgeExt` hash |
 | **F6** | Teleporters and retail links: the Links tool, channels, device groups | M | F4 | a linked pair writes two flags with one identifier on a fixture; the bots' generator finds the link; unlink restores the bytes |
 | **F7** | `SimExt` and `ForgeExt`: volumes, the graph, emitters | L | F4; sim-rewrite's blob hooks | the blob round-trips and enters the hash; a graph fixture's outputs per tick match a table; one, two and eight workers give the same bits; an emitter fires on the scheduled ticks and stops at its limit |
@@ -613,12 +614,25 @@ step. Properties exposes heading and the rotation increment.
 
 `forge::Session` validates edits against the loaded map and folds their
 entries with F1. Its `World` interface resolves each placement to a
-local object handle. The game adapter commits the candidate document
-and log after the engine answers. Missing M8 operations return the name
-of the required method. Loading a draft validates its base and builder
-and opens its folded document at a fresh log head. The local session ends
-on a map change. Multiplayer proposals, roles and film entries belong
-to F5.
+local object handle. The game adapter (`ForgeWorld` in
+`crates/extensions/agent/src/forge/local.rs`) stages an edit's engine
+work on a private copy of the session and queues it as one
+`Call::Forge` for the next tick, on the call queue that `world.object.*`
+uses. Before the first guest call the queue rechecks the session guard
+and resolves every live object by kind and salt, as `world.object.set`
+and `.delete` do. It then makes new objects with the ownerless spawn,
+moves with the `world.object.set` body and deletes with the
+`world.object.delete` body (`crates/extensions/agent/src/sim/calls.rs`).
+Undo and redo fold F1's inverse ops the same way: undoing a delete makes
+a new object at the stored frame and binds its handle to the same
+`OpId`. The adapter commits the candidate document and log only after
+the engine answers. A refusal leaves both unchanged and shows its reason
+as the HUD notice. A stale handle is refused as `forge_object_gone`, and
+a block whose objects `world.object` cannot resolve (sound scenery) is
+refused as `forge_object_kind` before anything is queued. Loading a
+draft validates its base and builder and opens its folded document at a
+fresh log head. The local session ends on a map change. Multiplayer
+proposals, roles and film entries belong to F5.
 
 ## Decisions
 

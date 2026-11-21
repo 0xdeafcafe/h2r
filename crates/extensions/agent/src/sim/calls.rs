@@ -45,9 +45,11 @@
 //!   `placement_data_new` with owner -1, the position at placement `+0x1c`,
 //!   forward and up at `+0x28` and `+0x34` (`0x11df60` fills them from the
 //!   entry's angles at `0x15abcc`), then `object_new`.
-//! - **Forge spawn** makes each of a local Forge batch's placements the
-//!   same way, forward and up from the frame's rotation. A refusal deletes
-//!   the objects the batch already made, newest first.
+//! - **Forge** makes each of a local Forge edit's placements and restored
+//!   deletes the same way, forward and up from the frame's rotation, then
+//!   moves and deletes its live objects with the `world.object.set` and
+//!   `.delete` bodies. A refusal deletes the objects the batch
+//!   already made, newest first.
 //! - **Queue a game** is the level boot's sequence (docs/runtime/level-boot.md)
 //!   run from a tick: the host gives the steps ([`GameStep`]: the game's
 //!   option builders, our field writes, its options check and its queue,
@@ -149,6 +151,36 @@ pub enum RespawnTarget {
     Placement(agent_proto::sim::Placement),
 }
 
+/// The object a Forge step edits: one already in the world, or the
+/// `index`th object this batch makes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForgeTarget {
+    Live(ObjectId),
+    Made { index: usize, kind: agent_proto::Kind },
+}
+
+/// One engine call of a local Forge edit. [`Call::Forge`] makes every
+/// object first, then moves, then deletes, so only the makes can be refused
+/// once the live objects have been checked, and those it unwinds.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ForgeStep {
+    /// Make `tag` at the frame: a placement, or a delete being restored.
+    Make { tag: u32, frame: ::forge::Frame },
+    /// `world.object.set` with the frame's position, forward and up.
+    Move {
+        target: ForgeTarget,
+        frame: ::forge::Frame,
+    },
+    /// `world.object.delete`.
+    Delete { target: ForgeTarget },
+}
+
+/// The forward and up axes of a Forge frame's yaw, pitch and roll.
+fn forge_axes(frame: &::forge::Frame) -> ([f32; 3], [f32; 3]) {
+    let (forward, up) = live_telemetry::rotation_axes(frame.rotation.map(f64::from));
+    (forward.map(|v| v as f32), up.map(|v| v as f32))
+}
+
 /// One piece of work for the game.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Call {
@@ -179,10 +211,11 @@ pub enum Call {
     },
     ObjectDelete { id: ObjectId },
     ObjectRespawn { target: RespawnTarget },
-    /// A local Forge placement, rechecking its admission at the next tick.
-    ForgeSpawn {
+    /// One local Forge edit's engine work, rechecking its admission and
+    /// every live object at the next tick before the first guest call.
+    Forge {
         guard: crate::forge::local::Guard,
-        placements: Vec<(u32, ::forge::Frame)>,
+        steps: Vec<ForgeStep>,
     },
     /// Build game options with `steps` and queue them: a new game loads
     /// at the game's next transition.
@@ -706,6 +739,219 @@ async fn discard_new(cx: &Cx, made: u32) -> Result<(), EntryError> {
     Ok(())
 }
 
+/// `world.object.set` and a Forge move: `object_set_position` on a
+/// resolved object, an omitted axis kept from the object's own.
+async fn object_set(
+    cx: &Cx,
+    scratch: u32,
+    id: ObjectId,
+    pos: Option<[f32; 3]>,
+    forward: Option<[f32; 3]>,
+    up: Option<[f32; 3]>,
+) -> Result<Outcome, EntryError> {
+    let body = match cx.read(|m| placement::resolve(m, id)) {
+        Ok(body) => body,
+        Err(e) => return Ok(Err(e)),
+    };
+    let turning = forward.is_some() || up.is_some();
+    if turning {
+        let axes = cx.read(|m| -> Result<_, engine::MemFault> {
+            Ok((
+                match forward {
+                    Some(f) => f,
+                    None => body.forward(m)?,
+                },
+                match up {
+                    Some(u) => u,
+                    None => body.up(m)?,
+                },
+            ))
+        });
+        let (f, u) = match axes {
+            Ok(axes) => axes,
+            Err(e) => {
+                return Ok(Err(unavailable(format!(
+                    "cannot read the object's unchanged orientation at {:#x}",
+                    e.addr
+                ))));
+            }
+        };
+        if !super::edits::valid_axes(f, u) {
+            return Ok(Err(super::invalid(
+                "forward and up must be perpendicular unit vectors",
+            )));
+        }
+        cx.write(|m| {
+            put_vec(m, scratch + SCRATCH_FORWARD, f)?;
+            put_vec(m, scratch + SCRATCH_UP, u)
+        })?;
+    }
+    if let Some(p) = pos {
+        cx.write(|m| put_vec(m, scratch + SCRATCH_POS, p))?;
+    }
+    cx.call(
+        GuestCall::new(addr::OBJECT_SET_POSITION)
+            .eax(if pos.is_some() { scratch + SCRATCH_POS } else { 0 })
+            .ecx(if turning { scratch + SCRATCH_FORWARD } else { 0 })
+            .edx(if turning { scratch + SCRATCH_UP } else { 0 })
+            .args([id.key, 0, 0]),
+    )
+    .await?;
+    Ok(Ok(json!({ "object": id.to_string() })))
+}
+
+/// `world.object.delete` and a Forge delete: `object_delete` on a resolved object.
+async fn object_delete(cx: &Cx, queue: &Shared, id: ObjectId) -> Result<Outcome, EntryError> {
+    if let Err(e) = cx.read(|m| placement::resolve(m, id)) {
+        return Ok(Err(e));
+    }
+    cx.call(GuestCall::new(addr::OBJECT_DELETE).args([id.key]))
+        .await?;
+    lock(queue).preview_deleted(id);
+    Ok(Ok(json!({ "deleted": id.to_string() })))
+}
+
+/// A stale Forge handle is a named refusal, so the session reports it and
+/// keeps its document. Memory faults stay as they are.
+fn forge_gone(e: RpcError, id: ObjectId) -> RpcError {
+    if e.code == code::GONE {
+        refused(format!(
+            "{}: {id} is no longer in the world",
+            crate::forge::local::OBJECT_GONE
+        ))
+    } else {
+        e
+    }
+}
+
+fn forge_id(target: ForgeTarget, made: &[u32]) -> ObjectId {
+    match target {
+        ForgeTarget::Live(id) => id,
+        ForgeTarget::Made { index, kind } => ObjectId {
+            kind,
+            key: made[index],
+        },
+    }
+}
+
+/// Release the objects this batch made and has not deleted, newest first,
+/// before the game tick can give them to another player or system.
+async fn unwind_made(cx: &Cx, made: &[u32], deleted: &[usize]) -> Result<(), EntryError> {
+    for (index, &handle) in made.iter().enumerate().rev() {
+        if !deleted.contains(&index) {
+            discard_new(cx, handle).await?;
+        }
+    }
+    Ok(())
+}
+
+/// A local Forge edit, in the [`ForgeStep`] order. The guard and the
+/// `world.object.*` object check run before the first guest call: every
+/// live target must still resolve with its kind and salt, and every frame
+/// must give perpendicular unit axes. Moves and deletes are the
+/// `world.object.set` and `.delete` bodies ([`object_set`],
+/// [`object_delete`]); a make, a placement or a restored delete, is the
+/// ownerless [`spawn`] that `sim.spawn` uses.
+async fn run_forge(
+    cx: &Cx,
+    scratch: u32,
+    queue: &Shared,
+    guard: crate::forge::local::Guard,
+    steps: &[ForgeStep],
+) -> Result<Outcome, EntryError> {
+    if !cx.read(|m| guard.allows(m)) {
+        return Ok(Err(unavailable(
+            "the local Forge session changed before the edit",
+        )));
+    }
+    let makes = steps
+        .iter()
+        .filter(|step| matches!(step, ForgeStep::Make { .. }))
+        .count();
+    for step in steps {
+        let (target, frame) = match step {
+            ForgeStep::Make { frame, .. } => (None, Some(frame)),
+            ForgeStep::Move { target, frame } => (Some(*target), Some(frame)),
+            ForgeStep::Delete { target } => (Some(*target), None),
+        };
+        match target {
+            Some(ForgeTarget::Live(id)) => {
+                if let Err(e) = cx.read(|m| placement::resolve(m, id)) {
+                    return Ok(Err(forge_gone(e, id)));
+                }
+            }
+            Some(ForgeTarget::Made { index, .. }) if index >= makes => {
+                return Ok(Err(super::invalid(
+                    "a Forge step names an object its batch does not make",
+                )));
+            }
+            _ => {}
+        }
+        if let Some(frame) = frame {
+            let (forward, up) = forge_axes(frame);
+            if !frame.position.iter().all(|c| c.is_finite())
+                || !super::edits::valid_axes(forward, up)
+            {
+                return Ok(Err(super::invalid(
+                    "a Forge frame needs a finite position and rotation",
+                )));
+            }
+        }
+    }
+    if makes > 0 {
+        match cx.read(crate::forge::object_pool) {
+            Ok(pool) if makes <= (pool.limit - pool.used) as usize => {}
+            Ok(_) => {
+                return Ok(Err(unavailable(
+                    "the game object pool has insufficient free slots",
+                )));
+            }
+            Err(e) => return Ok(Err(e)),
+        }
+    }
+    let mut made = Vec::with_capacity(makes);
+    for step in steps {
+        if let ForgeStep::Make { tag, frame } = *step {
+            match spawn(cx, scratch, tag, frame.position, Some(forge_axes(&frame))).await? {
+                Ok(handle) => made.push(handle),
+                Err(e) => {
+                    unwind_made(cx, &made, &[]).await?;
+                    return Ok(Err(e));
+                }
+            }
+        }
+    }
+    // The checks above leave only a guest change during this batch to
+    // refuse a move or delete. The batch then releases what it made; the
+    // moves it already made stay.
+    for step in steps {
+        if let ForgeStep::Move { target, frame } = *step {
+            let (forward, up) = forge_axes(&frame);
+            let id = forge_id(target, &made);
+            let out =
+                object_set(cx, scratch, id, Some(frame.position), Some(forward), Some(up)).await?;
+            if let Err(e) = out {
+                unwind_made(cx, &made, &[]).await?;
+                return Ok(Err(forge_gone(e, id)));
+            }
+        }
+    }
+    let mut deleted = Vec::new();
+    for step in steps {
+        if let ForgeStep::Delete { target } = *step {
+            let id = forge_id(target, &made);
+            if let Err(e) = object_delete(cx, queue, id).await? {
+                unwind_made(cx, &made, &deleted).await?;
+                return Ok(Err(forge_gone(e, id)));
+            }
+            if let ForgeTarget::Made { index, .. } = target {
+                deleted.push(index);
+            }
+        }
+    }
+    Ok(Ok(json!({ "handles": made })))
+}
+
 /// Makes one call. A guest call that faults ends the tick's work
 /// (`EntryError`); a refusal is the outcome.
 #[cfg(test)]
@@ -880,66 +1126,8 @@ async fn run_call(
             pos,
             forward,
             up,
-        } => {
-            let body = match cx.read(|m| placement::resolve(m, id)) {
-                Ok(body) => body,
-                Err(e) => return Ok(Err(e)),
-            };
-            let turning = forward.is_some() || up.is_some();
-            if turning {
-                let axes = cx.read(|m| -> Result<_, engine::MemFault> {
-                    Ok((
-                        match forward {
-                            Some(f) => f,
-                            None => body.forward(m)?,
-                        },
-                        match up {
-                            Some(u) => u,
-                            None => body.up(m)?,
-                        },
-                    ))
-                });
-                let (f, u) = match axes {
-                    Ok(axes) => axes,
-                    Err(e) => {
-                        return Ok(Err(unavailable(format!(
-                            "cannot read the object's unchanged orientation at {:#x}",
-                            e.addr
-                        ))));
-                    }
-                };
-                if !super::edits::valid_axes(f, u) {
-                    return Ok(Err(super::invalid(
-                        "forward and up must be perpendicular unit vectors",
-                    )));
-                }
-                cx.write(|m| {
-                    put_vec(m, scratch + SCRATCH_FORWARD, f)?;
-                    put_vec(m, scratch + SCRATCH_UP, u)
-                })?;
-            }
-            if let Some(p) = pos {
-                cx.write(|m| put_vec(m, scratch + SCRATCH_POS, p))?;
-            }
-            cx.call(
-                GuestCall::new(addr::OBJECT_SET_POSITION)
-                    .eax(if pos.is_some() { scratch + SCRATCH_POS } else { 0 })
-                    .ecx(if turning { scratch + SCRATCH_FORWARD } else { 0 })
-                    .edx(if turning { scratch + SCRATCH_UP } else { 0 })
-                    .args([id.key, 0, 0]),
-            )
-            .await?;
-            Ok(Ok(json!({ "object": id.to_string() })))
-        }
-        Call::ObjectDelete { id } => {
-            if let Err(e) = cx.read(|m| placement::resolve(m, id)) {
-                return Ok(Err(e));
-            }
-            cx.call(GuestCall::new(addr::OBJECT_DELETE).args([id.key]))
-                .await?;
-            lock(queue).preview_deleted(id);
-            Ok(Ok(json!({ "deleted": id.to_string() })))
-        }
+        } => object_set(cx, scratch, id, pos, forward, up).await,
+        Call::ObjectDelete { id } => object_delete(cx, queue, id).await,
         Call::ObjectRespawn { ref target } => {
             let entry = match cx.read(|m| placement::read(m, target, &lock(queue).previews)) {
                 Ok(entry) => entry,
@@ -975,42 +1163,7 @@ async fn run_call(
             lock(queue).previews.remember(&entry, object);
             Ok(Ok(json!({ "old": old, "object": object.to_string(), "linked": false })))
         }
-        Call::ForgeSpawn {
-            guard,
-            ref placements,
-        } => {
-            if !cx.read(|m| guard.allows(m)) {
-                return Ok(Err(unavailable(
-                    "the local Forge session changed before placement",
-                )));
-            }
-            match cx.read(crate::forge::object_pool) {
-                Ok(pool) if placements.len() <= (pool.limit - pool.used) as usize => {}
-                Ok(_) => {
-                    return Ok(Err(unavailable(
-                        "the game object pool has insufficient free slots",
-                    )));
-                }
-                Err(e) => return Ok(Err(e)),
-            }
-            let mut handles = Vec::with_capacity(placements.len());
-            for &(tag, frame) in placements {
-                let (forward, up) = live_telemetry::rotation_axes(frame.rotation.map(f64::from));
-                let axes = (forward.map(|v| v as f32), up.map(|v| v as f32));
-                match spawn(cx, scratch, tag, frame.position, Some(axes)).await? {
-                    Ok(handle) => handles.push(handle),
-                    Err(e) => {
-                        // Unwind only this command's newly created objects, before
-                        // the game tick can give them to another player or system.
-                        for handle in handles.into_iter().rev() {
-                            discard_new(cx, handle).await?;
-                        }
-                        return Ok(Err(e));
-                    }
-                }
-            }
-            Ok(Ok(json!({"handles":handles})))
-        }
+        Call::Forge { guard, ref steps } => run_forge(cx, scratch, queue, guard, steps).await,
         Call::QueueGame { ref steps } => {
             let options = scratch + SCRATCH_OPTIONS;
             let mut out = serde_json::Map::new();
