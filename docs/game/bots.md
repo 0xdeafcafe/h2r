@@ -3451,10 +3451,13 @@ lobby never started.
   already follows it (`the game moved from session ... asking Live to
   carry its bots there`). With the bots in the target session the lobby
   reaches its fewest players within the fill's 15 s or so, far inside the
-  timeout, and the start wait (`+0x5a4`, 0 at the playlist's most
-  players) starts it. Nothing on our side abandons the session, so
-  nothing is changed for it; a run that still re-searches with the lobby
-  full says the start is held elsewhere.
+  timeout. At the hopper's maximum, `0x1931d0` gives a zero start wait.
+  The host update (`0x71730`) compares the target membership count and IDs
+  to its expected matchmaking roster (`+0x4a00`), then checks each peer's
+  map status (`0x6e0f0`) and arbitration status (`0x72140`). For a full
+  lobby that returns to the party, `live.matchmaking.trace` retains these
+  inputs, the guest matchmaking result and the target key release.
+  [Agent API](../runtime/agent-api.md#matchmaking-transitions)
 - **Live.** The match's bots went to the party's Live session too, and
   each was refused there (§9.5): now only the roster's session is told.
 

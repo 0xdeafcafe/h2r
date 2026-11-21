@@ -1015,6 +1015,11 @@ points! { ALL;
     /// An item widget's `index`-th text widget of kind 6 (thiscall on the
     /// item; the game pushes 0, the index, 6), or 0.
     ITEM_TEXT @ 0x0022_edb8: [fn(item: ecx, kind: stack 0, index: stack 1, zero: stack 2) -> eax ret 12]; "docs/audio/playstation-audio.md";
+    /// The lifecycle-6 matchmaking update. ECX is its state object.
+    MATCHMAKING_UPDATE @ 0x0007_06f0: [fn(state: ecx) -> al ret 0]; "docs/runtime/agent-api.md";
+    /// Stops QoS and unregisters the session's key. The key id is in the
+    /// session at +0x1c while +0x24 is set.
+    SESSION_RELEASE_KEY @ 0x0005_fb60: [fn(session: esi) ret 0]; "docs/runtime/agent-api.md";
     /// The network session's game start: builds game options from the
     /// session in EDX and starts the game (`0x18e8b0`); AL 1 when it
     /// started. Refuses a campaign session with more than one peer

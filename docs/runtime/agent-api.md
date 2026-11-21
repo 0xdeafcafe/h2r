@@ -47,6 +47,7 @@ connection to hold `session.claim`.
 | `load.timeline` | read | [Load timeline](#load-timeline) |
 | `features.list` | read | [`session`](#session-what-is-running-and-its-clock) |
 | `live.join.open`, `live.join.status` | act, read | [Live session links](#live-session-links) |
+| `live.matchmaking.trace` | read | [Matchmaking transitions](#matchmaking-transitions) |
 | `host.metrics`, `host.audit`, `host.perf` | read | [`host`](#host-the-process-and-its-lobby) |
 | `host.lobby.open`, `close`, `start` | act | [`host.lobby`](#hostlobby) |
 | `host.lobby.state` | read | [`host.lobby`](#hostlobby) |
@@ -1039,6 +1040,37 @@ in-game confirmation. [Live session links](../live/live-custom-games.md#join-in-
 ```sh
 h2 agent live.join.open '{"url":"h2recomp://join?server=https%3A%2F%2Flive.forbes.red&session=8000000000000001"}'
 h2 agent live.join.status
+```
+
+### Matchmaking transitions
+
+`live.matchmaking.trace` takes no parameters. `transitions` holds up to 128
+changes in capture order. Call it after a match starts or returns to the
+party. The history is retained across the lifecycle change.
+
+Each row has a `sequence`, an `event` and a `state`. Events are `frame`,
+`matchmaking_update` and `release_key`. A key release includes the guest
+return address as `caller`. The state includes the guest lifecycle
+(`6` is matchmaking progress and `1` is the party lobby), the matchmaking
+update's `result` (`3` while active), and the arbitration state and result.
+
+`squad` and `target` are null when the session is absent. Each includes its
+session id when it has a key, its state and class, hopper index, host and
+local peer indices, player and roster counts, whether an arbitration round
+is set, and countdown seconds when set. `roster_ids_present` counts the expected player IDs found in the
+membership. Peers list their map, selected hopper and arbitration status
+and whether they are phantoms. Unavailable readings are null. The
+history contains no exchange keys, names or player IDs.
+
+`game::agent_glue::matchmaking` samples the lifecycle at `RENDER_FRAME`,
+the matchmaking result after `0x706f0`, and the target before the key
+cleanup at `0x5fb60`. The hosting update `0x71730` compares the target's
+player and roster counts and IDs at `0x71982` before checking map and
+arbitration readiness at `0x71a58` and `0x71b0d`.
+[Clankermatch lobby](../game/bots.md#84-search-and-lobby-built-the-empty-search)
+
+```sh
+h2 agent live.matchmaking.trace
 ```
 
 ## `host`: the process and its lobby

@@ -43,6 +43,8 @@ use agent_proto::{Endpoint, RpcError, code, method};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
+mod matchmaking;
+
 /// Optional second listener, supplied by the dedicated-host supervisor
 /// as a TCP address (without the tcp:// prefix).
 pub const HOST_TCP_ENV: &str = "H2_HOST_AGENT_TCP";
@@ -233,6 +235,11 @@ impl AgentGlue {
             sim: None,
             _listeners: Vec::new(),
         }
+    }
+
+    /// Observe matchmaking and target-session cleanup for the Live trace.
+    pub fn install_matchmaking_trace(&self, registry: &mut hooks::Registry) -> Result<()> {
+        matchmaking::install(registry, &self.agent)
     }
 
     /// The installed plan, for `features.list`.

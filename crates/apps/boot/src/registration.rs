@@ -418,6 +418,7 @@ pub(crate) fn register_late_for_profile(
     // Our cheats (cheats.rs): refused in co-op and lockstep runs, and on
     // Live but for the allowed gamertags.
     if let Some(a) = &agent {
+        a.install_matchmaking_trace(features)?;
         cheats::install(features, &a.agent, i.rt, lockstep_on, i.live.clone())?;
     }
     // The Rust datum, tag and locale functions, when H2_FEATURES has
