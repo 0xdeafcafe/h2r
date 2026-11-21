@@ -33,10 +33,9 @@ match report.status {
 # Ok::<(), std::io::Error>(())
 ```
 
-The default destination is
-`~/Library/Application Support/h2recomp/movies` on Apple hosts,
-`%LOCALAPPDATA%\h2recomp\movies` on Windows and
-`$XDG_DATA_HOME/h2recomp/movies` (`~/.local/share/h2recomp/movies`) on other Unix (`movies::install::app_movies_dir`). A sandboxed app may provide
+The default destination is `movies` in the app data directory
+(`movies::install::app_movies_dir`; the paths per host are in
+[storage.md](../runtime/storage.md#host-directories)). A sandboxed app may provide
 its own container data directory through `InstallOptions::new`. Destinations
 inside a Git checkout or worktree, including symlink aliases, are rejected.
 Nothing writes into the source ISO or repository. The synchronous installer

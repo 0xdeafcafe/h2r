@@ -1,7 +1,7 @@
 # Linux x86-64 desktop and game module
 
 Status: Built. A reference for the Linux desktop `h2 play`, the Linux x86-64 module and the headless host build.
-Code: `crates/recompiler/emit/src/compile.rs` (`Arch::X86_64Linux`, `linux_target_args`), `crates/platform/gfx/src/context.rs` (`instance`), `crates/formats/content/src/store.rs` (`app_data_dir`), `deploy/host/build.sh`.
+Code: `crates/recompiler/emit/src/compile.rs` (`Arch::X86_64Linux`, `linux_target_args`), `crates/platform/gfx/src/context.rs` (`instance`), `crates/formats/host-dirs/src/lib.rs` (`Convention::Xdg`), `deploy/host/build.sh`.
 Switch: `H2_LINUX_SYSROOT`, `H2_OPT`, `WGPU_BACKEND`, see [switches.md](switches.md).
 
 The desktop game and the dedicated host run an ELF64 shared object,
@@ -41,19 +41,20 @@ h2 play disc/halo2.iso --out ~/.cache/h2recomp/boot
 ```
 
 The window uses winit on Wayland or X11. The GPU is wgpu on Vulkan only
-(`gfx::instance`, as on every Unix other than Apple's). `WGPU_BACKEND`
-names other backends for a test. The swapchain prefers `Bgra8Unorm`, then
-`Rgba8Unorm` (`crates/apps/app/src/surface.rs`). Audio is cpal on ALSA,
+(`gfx::GpuHost::Unix`, `gfx::instance`). `WGPU_BACKEND` names other
+backends for a test. The
+swapchain prefers `Bgra8Unorm`, then `Rgba8Unorm`, and an opaque
+composite alpha (`crates/apps/app/src/surface.rs`). Audio is cpal on ALSA,
 which reaches PipeWire through its ALSA plugin. Without an output device
 the game runs with a silent mixer. Controllers come through gilrs (evdev),
 which includes Steam Input's virtual pad. Linux has no movie decoder, so
 the intro movies are skipped, and no raw-HID Steam Controller or DualSense
 opener.
 
-Data lives in `$XDG_DATA_HOME/h2recomp` (`~/.local/share/h2recomp`): the
-game's data root `data/` (`H2_DATA` names another) and the movie
-transcodes `movies/`. Caches, the agent socket and the pipeline cache live
-in `$XDG_CACHE_HOME/h2recomp` (`~/.cache/h2recomp`).
+Data, caches and configuration follow the XDG base directories
+(`$XDG_DATA_HOME/h2recomp`, `$XDG_CACHE_HOME/h2recomp`,
+`$XDG_CONFIG_HOME/h2recomp`); [storage.md](storage.md#host-directories)
+has the defaults and what lives in each.
 
 ### Prebuilt module without a toolchain
 
