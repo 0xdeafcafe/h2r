@@ -477,9 +477,18 @@ pub fn install_headless_with_scenes(
                 let single = single_copy(settings)?;
                 let mut b =
                     d3d::ScaledBackend::with_single_copy(reference, view, scale, single).map_err(anyhow::Error::msg)?;
-                b.set_lighting(lighting);
+                if private.is_some() && settings.is_some() {
+                    // A serve can change its Lighting row between Swaps. Use
+                    // the same live handle as the raw 1x native owner.
+                    let wanted = current_lighting(settings, lighting);
+                    b.set_lighting(wanted());
+                    b.follow_lighting(wanted);
+                } else {
+                    b.set_lighting(lighting);
+                }
                 eprintln!(
-                    "d3d: rendering at {scale}x (H2_RENDER_SCALE), {lighting:?} lighting (H2_LIGHTING); single copy {single}"
+                    "d3d: rendering at {scale}x (H2_RENDER_SCALE), {:?} lighting; single copy {single}",
+                    b.lighting()
                 );
                 return install_scaled_view(rt, b, interp, render_thread_requested(), profile, private);
             }
@@ -2038,6 +2047,31 @@ mod tests {
             assert_eq!(policy(spec, gpu, true), None, "{spec}");
         }
         assert_eq!(policy("frame-scene.sink", film::RenderHooks::Slim, false), None);
+    }
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn the_native_render_worker_sees_live_lighting_at_its_next_boundary() {
+        use crate::setting_defs::{LIGHTING, LIGHTING_E3};
+        use d3d::Lighting;
+        use std::sync::mpsc;
+
+        let (store, errors) = settings::Store::load(&[&LIGHTING], None, &|_| None, &[]);
+        assert!(errors.is_empty());
+        let wanted = current_lighting(Some(&store), Lighting::E3);
+        let (next, requested) = mpsc::channel();
+        let (report, seen) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            report.send(wanted()).unwrap();
+            requested.recv().unwrap();
+            report.send(wanted()).unwrap();
+        });
+        assert_eq!(seen.recv().unwrap(), Lighting::Retail);
+        store.set(LIGHTING.key, settings::Value::Int(LIGHTING_E3)).unwrap();
+        next.send(()).unwrap();
+        assert_eq!(seen.recv().unwrap(), Lighting::E3);
+        worker.join().unwrap();
+        assert_eq!(current_lighting(None, Lighting::E3)(), Lighting::E3);
     }
 
     #[test]

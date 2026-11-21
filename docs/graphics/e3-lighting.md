@@ -411,8 +411,10 @@ On a replayable game view the render thread draws one sealed scene into a privat
   `sun_tiles_redrawn` and `atlas_halved`. They count the renderer's own
   light and atlas decisions. L3 replays guest selections in both modes.
 
-`settings.set` with `graphics.lighting` changes the mode live, as the row
-does.
+The display worker samples the Lighting row at the frame boundary.
+`settings.set` with `graphics.lighting` changes the mode on a window or GPU
+serve with a settings store. A capture with an explicit mode leaves the
+row untouched.
 
 ## Budget
 
