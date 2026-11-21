@@ -434,6 +434,7 @@ mod tests {
             epoch: 1,
             tick: 1,
             stale: false,
+            cameras: Vec::new(),
             objects,
             players: vec![],
         }
@@ -473,6 +474,7 @@ mod tests {
                 aim: [1.0, 0.0, 0.0],
                 ..Default::default()
             }],
+            cameras: Vec::new(),
         };
         let frame = |seq, tick, cut, w: &World| {
             Frame::between(
@@ -487,6 +489,7 @@ mod tests {
                 Layers {
                     objects: true,
                     players: true,
+                    camera: false,
                 },
                 None,
                 w,

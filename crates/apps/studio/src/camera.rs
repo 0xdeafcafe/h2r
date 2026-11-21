@@ -255,6 +255,8 @@ pub fn blend(a: &Camera, b: &Camera, t: f32) -> Camera {
             (a.distance.max(1e-3).ln() * (1.0 - t) + b.distance.max(1e-3).ln() * t).exp()
         },
         fov_y: lerp(a.fov_y, b.fov_y),
+        // An exact pose is never blended: the glide ends on it.
+        exact: if t >= 1.0 { b.exact } else { None },
     }
 }
 

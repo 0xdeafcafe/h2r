@@ -393,7 +393,12 @@ fn every_method_in_methods_has_a_test() {
             (None, Err(e))
                 if matches!(
                     d.name,
-                    m::PAIR_STOP | m::PAIR_EDIT | m::PAIR_CONTROL | m::MIRROR_APPLY | m::MIRROR_PLAYER
+                    m::PAIR_STOP
+                        | m::PAIR_EDIT
+                        | m::PAIR_CONTROL
+                        | m::MIRROR_APPLY
+                        | m::MIRROR_PLAYER
+                        | m::MIRROR_CONTROL
                 ) && e.code == code::REFUSED => {}
             (None, Err(e)) => panic!("{} {params}: {e}", d.name),
             (None, Ok(v)) => assert!(!v.is_null() || matches!(d.name, m::METHODS | m::MIRROR_PICK), "{}", d.name),
@@ -2553,5 +2558,85 @@ mod mirror_presence {
         let moves = game.calls(sim::method::STATE_SET);
         assert_eq!(moves[0]["pos"], json!([2., 3., 4.]));
         assert!(moves[0].get("yaw").is_none() && moves[0].get("pitch").is_none());
+    }
+}
+
+#[cfg(unix)]
+mod windowless_serve {
+    use super::*;
+    use crate::app::tag_tests;
+    use crate::play::Play;
+    use crate::play::testing::fake::Game;
+    use agent_proto::sim::SessionKind;
+    use std::sync::mpsc::Receiver;
+    use std::time::{Duration, Instant};
+
+    struct Served {
+        client: agent_proto::Client,
+        rx: Receiver<server::Incoming>,
+        api: Api,
+        app: App,
+        play: Play,
+    }
+
+    impl Served {
+        /// A socket call answered by `Api::serve_once`, as `h2-editor --serve` runs.
+        fn call(&mut self, method: &str, params: Value) -> Value {
+            let client = &mut self.client;
+            std::thread::scope(|scope| {
+                let request = scope.spawn(move || client.call(method, params));
+                while !request.is_finished() {
+                    assert!(self.api.serve_once(
+                        &mut self.app,
+                        &mut self.play,
+                        &self.rx,
+                        Duration::from_millis(2),
+                    ));
+                }
+                request.join().unwrap().unwrap()
+            })
+        }
+    }
+
+    #[test]
+    fn a_windowless_serve_pairs_and_answers_from_the_mirror() {
+        let t = Temp::new("serve-pair");
+        let game = Game::start("serve-pair", "example", SessionKind::Local);
+        let (mut app, ..) = tag_tests::app(&t.0);
+        app.pairing.auto_pair = false;
+        let sock = t.path("serve.sock");
+        let (_listener, rx) = server::listen(&sock).unwrap();
+        let client = studio_proto::cli::connect(&sock).unwrap();
+        client.set_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut play = Play::new();
+        // As `serve` starts: the game link has published before the first request.
+        play.update(&mut app);
+        let mut served = Served {
+            client,
+            rx,
+            api: Api::new(),
+            app,
+            play,
+        };
+        assert!(!served.api.window);
+        let socket = game.path.display().to_string();
+        served.call(m::PAIR_CONNECT, json!({"socket": socket}));
+        let end = Instant::now() + Duration::from_secs(25);
+        loop {
+            let objects = served.call(m::MIRROR_OBJECTS, json!({}));
+            if objects["objects"].as_array().is_some_and(|o| !o.is_empty()) {
+                break;
+            }
+            assert!(Instant::now() < end, "no streamed objects: {objects}");
+        }
+        assert_eq!(
+            served.call(m::PAIR_STATUS, Value::Null)["state"],
+            "connected"
+        );
+        let status = served.call(m::MIRROR_STATUS, json!({}));
+        assert_eq!(status["stream"]["state"], "streaming");
+        assert!(status["store"]["tick"].is_u64());
+        let control = served.call(m::MIRROR_CONTROL, json!({"op":"pause"}));
+        assert_eq!(control["requested"], true);
     }
 }
