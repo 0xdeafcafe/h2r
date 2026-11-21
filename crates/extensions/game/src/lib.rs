@@ -45,6 +45,7 @@ pub mod debug_menu_glue;
 pub mod debug_views;
 pub mod dsound_glue;
 mod editor_glue;
+pub mod firefight;
 pub mod fov_row;
 #[cfg(feature = "gpu")]
 pub mod render_aspect;

@@ -4,6 +4,7 @@ pub mod client;
 pub mod creature;
 mod dialogue;
 pub mod host;
+pub mod squads;
 
 use std::sync::{Arc, Mutex};
 
