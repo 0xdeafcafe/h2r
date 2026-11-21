@@ -1,11 +1,12 @@
 # Firefight
 
 Status: Partly built. The definition format, validator, three built-in wave
-sets, director (FF2), stage-one offline kit, probe recipe and the host
-runtime over its game interface (FF4) are implemented. The engine entries
-the runtime calls are traced only in part (see "Guest boundary"), so no
-feature drives it in the game yet. Retail play and the network probes
-await verification.
+sets, director (FF2), stage-one offline kit, probe recipe, the host
+runtime over its game interface (FF4) and the guest bodies of its engine
+entries are implemented. No feature drives the runtime in the game yet;
+"Guest boundary" lists the runs that settle what the disassembly leaves
+open, and the hunt order the kit does not author yet. Retail play and the
+network probes await verification.
 Code: `crates/formats/firefight` defines and validates wave sets and holds
 the director (`src/director.rs`) and kill scoring (`src/scoring.rs`).
 `crates/tools/firefight-kit` builds the map kit. The offline command lives
@@ -194,9 +195,9 @@ pub enum Command { PlaceSquad { slot, class, count, zone, weapon_tier }, Hunt { 
 `game::firefight::host::Host` (`crates/extensions/game/src/firefight/host.rs`)
 runs one match on one machine over a `Game`: the running game as the
 runtime reads and changes it, one method per engine entry. The guest
-implementation of `Game` waits on the entries listed under "Guest
-boundary"; the tests drive `Host` over a fake game that records every
-call.
+bodies of those entries are in `game::firefight::guest` ("Guest
+boundary"); the `Game` over them is not wired yet. The tests drive `Host`
+over a fake game that records every call.
 
 | Role | Runs the director | Applies entries |
 |---|---|---|
@@ -324,7 +325,9 @@ limits").
   respawns then without a charge. Between waves an empty pool does not
   hold a respawn. `Lives.shared = false` gives each player their own
   count instead, announced when the player first appears. The engine's
-  own respawn stays off; a player respawns only on `Respawn`.
+  own respawn stays off: the variant's lives setting is 1, so a death
+  leaves the player with none and the engine holds the respawn, and
+  `Respawn` gives back the one life ("Guest boundary").
 - **Rounds.** Five waves, the last a boss wave; an intermission between
   rounds refills ammunition crates (a kit placement the director
   re-enables) and adds `per_round_bonus` lives.
@@ -373,21 +376,43 @@ mode blob.
 
 ### Guest boundary
 
-The entries behind `Game`. Each is an entry the engine already has. A
-point is named in `guest-layout`'s `points.rs` once an address is known.
+The entries behind `Game`. Each goes through a routine the engine
+already has, named in `guest-layout`'s `points.rs`, and has a body in
+`game::firefight::guest` (`crates/extensions/game/src/firefight/guest.rs`):
+a read or write of guest memory, or an `async` body over `engine::entry::Cx`
+that makes the guest calls from inside a guest entry at the tick
+boundary. Every address below is **E** unless the row says otherwise. A
+`Game` over these bodies is not wired into a feature yet.
 
-| Entry | Point | State | What identifies it |
-|---|---|---|---|
-| AI on | `AI_GLOBALS` `+0` | built: `firefight::guest` | the script switch 278 stores its boolean there (`0x2a4d31`, [ai-control.md](../halo1/ai-control.md)) |
-| Place a squad with a count | `HS_AI_PLACE_COUNTED` (`0x2a5010`, evaluator 291) | untraced past the evaluator | its callee that takes the resolved squad and the count; on the `firefight-probe` map, a call yields `count` actors whose `world.ai` squad is the slot. Also where the placement takes its character and zone, which the kit leaves for place time |
-| Actors' team | `HS_AI_SET_TEAM` (`0x2a5850`, evaluator 322) | untraced past the evaluator | its callee writing the actor team; `world.ai` shows the new team |
-| Hunt | none | untraced | an order the kit authors toward the players, given through the order dispatch `0x275cb0` that `ai_set_orders` (333) uses ([ai-control.md](../halo1/ai-control.md)) |
-| Erase a squad | none | untraced | the `ai_erase` evaluator and its callee; the squad's actors and bodies leave `world.ai` and `sim.objects` |
-| Credit a player's score | none | untraced | the writer of the statborg's player row `+0x00` that Slayer's kill path calls near the end of `0x15ce70` ([live-gamestate.md](../live/live-gamestate.md) section 5); it clamps to ±30,000 and the scoreboard of every machine shows the change |
-| Lives and respawn | none | untraced | the writer of the game-engine player entity's lives remaining, the routine that respawns a player, and the switch that holds the engine's own respawn |
-| End the game | `GAME_END` (`0x1389c0`, no arguments) | named; its signature is still opaque in `points.rs` | it sets the end latch at game globals `+0x1128`; whether a direct call from a tick boundary ends a Slayer game with the scores intact needs a run |
-| Line of sight from a player to a point | none | untraced | the visibility test the AI's perception uses. The BSP vector test `0x1697c0` is a ray against geometry only |
-| The kit on the loaded map | none (a tag read) | unbuilt | the kit's `firefight_kit_v1` string id, its zones' positions, each class's character tag slot and the 16 squad slots, read from the loaded scenario's AI blocks |
+| Entry | Points | Body | State | Evidence |
+|---|---|---|---|---|
+| AI on | `AI_GLOBALS` `+0` | `switch_ai_on` | built | the script switch 278 stores its boolean there (`0x2a4d31`, [ai-control.md](../halo1/ai-control.md)) |
+| Place a squad with a count | `AI_SQUAD_PLACE` (`0x201520`), behind `HS_AI_PLACE_COUNTED` (291) | `place_squad` | traced; run R1 | Evaluator 291 resolves its two arguments, keeps the `ai` value only for a plain squad (top two bits clear, `0x2a5045`), and calls `0x201520` with the count in EAX and four stack words: the squad index, start -1, 0 and 1 (`0x2a5052`); it then stores the `ai` value at AI globals `+0x364`. The one-argument overload (290) reaches the same routine through `0x273480` with the count -1, which takes the squad's normal or legendary count by difficulty (`0x2015c5`). The routine returns at once while AI globals `+1` is clear (`0x20152e`). Start -1 lets `AI_CHOOSE_SQUAD_START` pick each actor's start, and the pool of starts refills when it runs out (`0x203ac5`), so a count over the squad's starts reuses them. The third word, a byte, skips the given start's availability check and the vehicle-seat attempt; the fourth goes to `AI_SPAWN_AT_SQUAD_START` as its flags |
+| ... its character and zone | scenario squad `+0x36` and `+0x38`, its starts' positions | `place_squad` | traced | Nothing chooses them at the call. `AI_SPAWN_AT_SQUAD_START` reads, for each actor, the start's character (`+0x20`) or else the squad's (`+0x36`), as an index into the character palette (scenario `+0x178`, `0x2037cc`); a squad with neither places nobody. The squad's areas while it has no order come from its zone `+0x38` (`0x204f93`), and its actors appear at its starts' positions. So `place_squad` writes the palette index, the zone, and the zone's firing positions into the slot squad's starts, then places: tag memory every applying machine writes the same way. The weapon tier is not applied, since the stage-one kit authors one weapon |
+| Actors' team | `AI_SET_TEAM` (`0x275b60`), behind `HS_AI_SET_TEAM` (322) | `place_squad`, after the placement | traced | The evaluator passes the `ai` value in EAX and the team in BX (`0x2a587a`). The routine accepts a squad or a group, writes the runtime squad's team byte (`+0x76`, `0x275bf4`), then each actor's team (`+0x24`, which `world.ai` reports) and its unit's (`+0x138`, `0x275c99`). Placement copies a nonzero squad team byte onto each new unit (`0x20187a`), but team 0 reads as unset there, so the body sets the team after every placement |
+| Hunt | `AI_SET_ORDERS` (`0x275cb0`), behind `HS_AI_SET_ORDERS` (333) | `hunt` | refused until the kit authors the order | The evaluator passes the `ai` value in EAX and the order index in CX (`0x2a5c39`). The routine ignores an index outside the scenario's order block (`+0x240`, `0x275ce6`) and hands a squad to `0x202e90`, a group to `0x203120`. There is no built-in hunt: it is an order the kit must author, which `hunt` finds by its name `ff_hunt`. Stage one authors none, so `hunt` refuses with that reason |
+| Erase a squad | `AI_ERASE` (`0x2736c0`), behind `HS_AI_ERASE` (297) | `erase_squad` | traced; run R2 for bodies | `ai_erase` passes the `ai` value as its one stack argument (`0x2a523b`). For each actor the routine deletes the actor (`0x1e2a90`) and then its unit (`OBJECT_DELETE`) or swarm (`0x28e200`); an actor the AI is updating at that moment is marked instead (`+0x0d`, `0x2736fc`). It then walks the objects the squad placed (runtime squad `+0x70`, linked through object `+0x3a4`) and deletes each one `0xbeb30` does not keep. Whether a dead actor's body is still on that list is what R2 settles |
+| Credit a player's score | `SCORE_ADD` (`0x15b7c0`) | `credit_score` | traced | Slayer's kill callback is its engine's vtable slot `+0x78` (engine 2 at `0x55e4d8`), which `0x15ce70` calls last (`0x15d6a4`); it calls `0x15b7c0` with the score change in EAX and the killer's player datum on the stack (`0x2bc05d`). The routine adds the change's low 16 bits, signed, to row `+0x00` at `+0x308 + 0x1c * slot` of the game engine globals, clamps to ±30,000 (`0x15b849`), marks the statborg entity's player bit for replication (`0x15b88a`), updates the team score in a team game, checks the score limit when it is nonzero, and returns true. It refuses, returning false, without a game engine, while engine `+0x6c` is not 1, and on a machine where engine `+0xc04` is not 1 (unless game globals `+0x0c` is 4). `credit_score` passes the salted player datum and treats false as an error |
+| Lives and respawn | `PLAYER_OUT_OF_LIVES` (`0x15db30`), `PLAYER_RESPAWN_READY` (`0x15dd40`), `PLAYER_ENTITY_DIRTY` (`0xa7840`), `PLAYER_SPAWN` (`0x14f2e0`) | `engine_holds_respawns`, `respawn`; `Lives` writes nothing | traced; run R3 | No routine sets lives: the engine writes player `+0x1ac` itself. Round start sets it to the variant's lives setting (game globals `+0x1b8`, 0 meaning unlimited, `0x157d03`), and a death takes one on the authority (`0x15d01e`, gated by `GAME_ENGINE_AUTHORITATIVE`), then marks the player entity's bit `0x20` for clients (`0x15d03d`; a client applies it at `0x24e257`). The players update spawns a waiting player through `PLAYER_SPAWN` only when `PLAYER_RESPAWN_READY` says so (`0x14d430`), which refuses a player `PLAYER_OUT_OF_LIVES` reports: a positive lives setting, no unit and no lives left. So the hold is the variant's lives setting at 1, and `respawn` gives one life and marks bit `0x20`; the engine respawns the player when its respawn delay runs out and takes the life at the next death. The pool stays in the mode blob, so `Lives` changes nothing in the game. A team whose players are all out of lives leaves the playing-teams mask (`0x1925c6`); whether that ends the Slayer round before the director's `Finish` is part of R3 |
+| End the game | `GAME_END` (`0x1389c0`, no arguments, `ret`) | `end_game` | traced; run R4 | The routine latches game globals `+0x1128` once, sets the end delay at `+0x112c` from the tick rate and clears `+0x1129`; it checks nothing else. The engine's own round-over path ends a game in three steps (`0x15b5f9` to `0x15b624`): engine state `+0xc04` to 2, `GAME_END` unless latched, then the engine's changed flag (`+0`, bit `0x20`), skipping the first two while game globals `+0x0c` is 4. A client ends when the engine globals entity carries bit 4 (`0x24e52a`). `end_game` takes the same three steps and refuses in mode 4; whether a client ends with it is R4 |
+| Line of sight from a player to a point | `AI_LINE_OF_SIGHT` (`0x29dd50`) | `line_of_sight` | traced; the eye point is open | The routine takes the two points in ESI and EDI and two objects to ignore in EDX and ECX, and runs the collision query `0x1697c0` with flags `0x1808c2d`: structure, instanced geometry and objects, the set the actor code passes at `0x1c1ab1`, `0x1f970e` and `0x292747` ([sim-rewrite-collision.md](../engine/sim-rewrite-collision.md) 5.4 for the bits). It is true when nothing is hit, or the hit is within about a third of a world unit of the target (`0x29de01`). The engine's own sight cone, `0xcc2b0` behind `objects_can_see_flag` (113), tests only the angle from a marker of the viewer it looks up through `0xb8d30` (**S**: the head). `sees` should start from the same marker; that lookup is not traced |
+| The kit on the loaded map | scenario blocks at `+0x160` squads, `+0x168` zones, `+0x178` character palette, `+0x240` orders | `read_kit`, `KitLayout::kit` | built | Squads named `ff_slot_00` to `ff_slot_15` give the slots and the team (`+0x24`); zones named `ff_drop_NN` give each zone's point, its first area's mean (`+0x24` of area 0), and its firing positions; the palette's row count bounds the classes. The offsets are the kit builder's (`h1campaign::ai::h2::layout`), and the engine reads them at the addresses cited above. Stage one maps its one class, `elite`, to palette row 0. The `firefight_kit_v1` string ID is not checked: the game has no reader for the loaded map's string IDs |
+
+#### What a run settles
+
+Each run is on the `firefight-probe` map (`h2 agent maps create
+firefight-probe`, then `h2 agent maps load firefight-probe`). R1 needs
+nothing new. R2 to R4 apply an entry, which needs FF5's `firefight.command`;
+R3 also needs each player's lives and score, which `sim.view` does not
+report yet: a `lives` field (player `+0x1ac`, null when -1) and a `score`
+field (statborg row `+0x00`) on its `player` root would cover both.
+
+| Run | Command | Expected |
+|---|---|---|
+| R1 | `h2 agent world.ai` after load | two actors with `squad` 0, the Elite's character datum and `team` 3: the probe's startup `ai_place` reached `AI_SQUAD_PLACE` and the character came from squad `+0x36` |
+| R2 | `firefight.command` `EraseSquad` for the probe squad after one Elite is killed, then `h2 agent world.ai` and `h2 agent sim.objects '{"kinds":["biped"]}'` | no actors; whether the dead Elite's biped is gone says if bodies are on the squad's list |
+| R3 | with the variant's lives at 1, kill player 0, then `firefight.command` `Respawn` | the player stays dead until the command, then respawns after its respawn delay with `lives` 0 again after the next death; with every player dead the round does not end before `Finish` |
+| R4 | `firefight.command` `Finish` on a host with one client | both machines show the post-game screen with the scores the statborg held |
 
 Kills come from `SimEvent::ActorKilled` (AN6), which is filled only while
 the object update runs in Rust (`impl.sim.native.objects`). The killer's
@@ -416,7 +441,7 @@ are slices of [ai-networking.md](ai-networking.md); P numbers its probes.
 | **FF1** | `firefight`: `Def`, canonical form and hash, `validate`, three built-in definitions | S | nothing | `crates/formats/firefight/src/{def,validate,builtin}.rs` | `golden_hash_for_the_builtin_defs`, `a_wave_over_the_cap_is_refused`, `an_unknown_class_is_refused`, `canonical_form_is_stable_under_key_order` | every validator rule has a refusing case; built-ins validate |
 | **FF2** | The director: states, the reserve and cap, zone choice, lives, scoring, commands | M | FF1, AN1 | `crates/formats/firefight/src/{director,scoring}.rs` | `a_scripted_match_issues_the_golden_command_list`, `live_actors_never_exceed_the_cap`, `no_zone_in_sight_is_chosen_while_another_exists`, `same_seed_same_commands`, `the_pool_at_zero_holds_respawns_until_the_wave_ends`, `everyone_dead_and_no_lives_finishes_lost`, `a_replay_of_the_observed_sequence_issues_the_same_commands`, `a_resumed_mode_blob_issues_the_same_commands` | 1,000 seeded matches against a scripted `Observed` never break the cap and always end |
 | **FF3** | The kit, stage 1: sectors, drop zones, zones and firing positions, squad slots, authored Elite characters, the package and its id; the `firefight-probe` test map recipe (one squad of two) | L | nothing | `crates/tools/firefight-kit/`, `crates/apps/cli/` (`h2 firefight kit`), the test-map recipe list ([test-maps.md](test-maps.md)) | `two_builds_of_one_map_are_byte_equal`, `squad_blocks_read_back_through_h1campaign`, `every_drop_zone_has_a_path_to_the_middle`, `a_map_without_headroom_is_refused_with_the_cost`, `the_probe_recipe_places_one_squad` | on invented maps the kit's blocks read back; the coordinator's build on a retail map and probe P2 go in notes |
-| **FF4** | The host runtime over the `Game` interface: the AI switch, team setup, `Observed`, applying commands; then the squad, score and game-end entries behind it ("Guest boundary" lists those still untraced) | M | FF2, FF3, AN6, P2 | `crates/extensions/game/src/firefight/{host,guest}.rs`, `crates/extensions/game/src/actor_net/squads.rs`, `points.rs` | `place_calls_the_squad_entry_with_class_and_count`, `a_client_applies_no_command`, `score_credits_the_killer`, `entries_apply_at_their_tick_in_seq_order`, `a_map_without_the_kit_refuses_the_mode`, `a_scripted_match_makes_the_expected_engine_calls_in_order` | over a fake game, a scripted match produces the expected engine calls in order |
+| **FF4** | The host runtime over the `Game` interface: the AI switch, team setup, `Observed`, applying commands; then the squad, score and game-end entries behind it ("Guest boundary" gives each one's state) | M | FF2, FF3, AN6, P2 | `crates/extensions/game/src/firefight/{host,guest}.rs`, `crates/extensions/game/src/actor_net/squads.rs`, `points.rs` | `place_calls_the_squad_entry_with_class_and_count`, `a_client_applies_no_command`, `score_credits_the_killer`, `entries_apply_at_their_tick_in_seq_order`, `a_map_without_the_kit_refuses_the_mode`, `a_scripted_match_makes_the_expected_engine_calls_in_order` | over a fake game, a scripted match produces the expected engine calls in order |
 | **FF5** | Agent API: `firefight.state`, `firefight.command`, `firefight.kit` | S | FF4 | `crates/extensions/agent/src/firefight.rs`, [agent-api.md](../runtime/agent-api.md) | `state_reports_the_director`, `command_is_refused_on_a_client_and_in_playback` | the methods answer over a fake game |
 | **FF6** | Stats: `Score` and `ActorKilled` to film events, the Live projection's Firefight summary, the web stats page | M | FF2, AN6 | `crates/live/live-proto/src/{film/events,firefight}.rs`, `crates/live/live-server/`, `crates/live/live-worker/`, `web/` | `a_scripted_match_projects_to_the_golden_summary`, `firefight_scores_do_not_touch_ranks`, the parity suite | both homes give the same summary |
 | **FF7** | Skulls: the host-only AI set, the round schedule, multipliers | S | FF4 | `crates/extensions/game/src/skulls_mp.rs`, `firefight/host.rs` | `ai_skulls_apply_on_the_host_only`, `a_round_switches_its_skulls_on`, `multipliers_multiply` | skulls.md's table gains a Firefight column, each cell with a test |

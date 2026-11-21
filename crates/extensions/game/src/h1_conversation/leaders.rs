@@ -147,7 +147,7 @@ pub(super) fn install(b: &mut Builder, pending: u32) {
     let calls = Arc::new(Mutex::new(InFlight::default()));
     let state = Arc::clone(&calls);
     b.raw().before(
-        &points::HS_CONVERSATION_SPAWN_WAVE,
+        &points::AI_SQUAD_PLACE,
         "choose the squad leader voice",
         move |call| {
             let (thread, esp, requested) = (call.ctx.thread_id, call.cpu.esp, call.cpu.eax as i16);
@@ -196,7 +196,7 @@ pub(super) fn install(b: &mut Builder, pending: u32) {
 
     let state = Arc::clone(&calls);
     b.raw().after(
-        &points::HS_CONVERSATION_SPAWN_WAVE,
+        &points::AI_SQUAD_PLACE,
         "complete the squad placement wave",
         move |call| {
             let key = (call.ctx.thread_id, call.cpu.esp.wrapping_sub(20));
