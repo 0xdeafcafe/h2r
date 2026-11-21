@@ -187,7 +187,8 @@ otherwise), **Ignore** (diagnostics). Sources are **Code** unless marked.
 | Delete-pending sets, next handle | `Vfs::pending`, `cleanup_pending`, `next_handle` | Save | `next_handle` built; a save refuses while a delete is pending. |
 | Host file descriptors, write-behind queue, reservations | `HostBackend`, `WriteBehind`, `vfs/src/host.rs`, `write_behind.rs` | Rebuild | Flush (`vfs::flush_pending_metadata`) before saving. |
 | Files on the host disk (saves, cache partitions) | the data root | Not in the snapshot | A load after the game wrote a save or a cache file sees the newer file. A save refuses while a file is open for writing (above); closed files are not recorded. |
-| Map overrides | `MapOverrideBackend` | Rebuild | Opened at boot. |
+| Editor play copy | `MapOverrideBackend`, `vfs/src/state.rs` | Refuse | An active file preparation, reservation or published binding prevents save and restore, including snapshot-based rewind and film keyframe capture. Cancelling preparation releases its claim immediately. A closed DVD source can still supply a resident cache slot. Restart without the binding to use snapshots. Startup directory overrides resolve through the boot mount. |
+| Unlinked editor placement preview | `agent/src/sim/calls/placement.rs` | Refuse | An outstanding preview or an interrupted creation whose result is unknown prevents save and restore. A different scenario clears it. Deleting a multiplayer preview also clears it. A checkpoint may still hold a deleted campaign preview on the same mission. |
 
 ### xapi and input
 
@@ -263,7 +264,7 @@ Decisions per field are in the `snap` modules ([Devices](#devices-d3d-and-audio)
 | Bink | `BinkHle` slots, platform decoder | Quiesce | Refuse while a movie plays. |
 | Interpreter fallback caches | `boot/src/fallback.rs` | Rebuild | |
 | Lockstep recorder counters | `lockstep::Recorder::ticks`, `presents` | Save | So a trace can continue across a load. The `lockstep` feature's section. |
-| Agent session, timeline, perf, telemetry | | Ignore | Observers. The agent's view of the game (cutscene, map, map ticks) is its `agent` section. |
+| Agent session, timeline, perf, telemetry | | Ignore | Observers. The agent's view of the game (cutscene, map, map ticks) is its `agent` section. The host refuses capture and restore while an unlinked editor preview can still exist. |
 
 ### What "the guest can rebuild" means here
 
@@ -278,7 +279,11 @@ In the process that is already running the same image, at a slice
 boundary that passes the quiescence check:
 
 1. Open the file, check magic, format version, the file CRC and the build
-   key (image build stamp plus switches).
+   key (image build stamp plus switches). Refuse a machine with a pending
+   or published editor copy or an unlinked preview. Validate and decode the
+   kernel and thread sections, check their boot dependencies and resolve
+   their saved file objects before applying any part of the snapshot. This
+   check also runs before a film keyframe restores its Live claims or RAM.
 2. Quiesce devices as for a save, then drop host caches: D3D caches and
    tracker, audio output, input devices' held state.
 3. Guest: check reservations, claims and code guards match, then replace
@@ -365,12 +370,15 @@ writes are atomic (temporary file, then rename).
 
 Code: `crates/runtime/kernel/src/snapshot.rs`; tests: `crates/runtime/kernel/tests/snapshot.rs`.
 
-- `Machine::save_snapshot` refuses unless `Machine::quiescent()` and
-  `load_snapshot` write and read the sections `kcore` (version 2) and
-  `machine` on the snapshot crate's codec. The `Persist` trait and
+- `Machine::save_snapshot` requires a quiescent machine. It writes the
+  sections `kcore` (version 2) and `machine` on the snapshot crate's
+  codec, and `load_snapshot` reads them. The `Persist` trait and
   `persist_struct!` destructure every saved struct without `..`, and
   `save_core` destructures `Core` whole, so a new field does not compile
-  until it has a decision.
+  until it has a decision. Mounted and storage-free games use the same
+  format. The host checks for editor copies and previews before modifying
+  the machine. Editor observers add no feature section or build-key entry.
+  Recording and playback use the ordinary agent hooks.
 - Saved: every table in the [inventory](#kernel), the clock with its
   history and charging bit, the periodic schedules (put back onto the
   booted source of the same id and name, which keeps its Rust handler),

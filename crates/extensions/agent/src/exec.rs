@@ -6,9 +6,9 @@
 //! thread passes in, so every answer is read on the game's own thread.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::SyncSender;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 
 use crate::capture::{self, FrameSource, Sampler, TickMark, TimelineFrames};
 use crate::loads::{LoadTracker, TimelineTotals, TotalsSource};
@@ -84,6 +84,8 @@ pub struct GameCtx<'a> {
     pub conn: ConnId,
     pub(crate) epoch: u64,
     pub(crate) map_epoch: u64,
+    /// A queued edit reads the current epoch without taking the executor lock.
+    map_lifetime: &'a mut Option<Arc<AtomicU64>>,
     pub(crate) live_session: Option<fn(&dyn engine::GuestMemory) -> bool>,
     /// The game at this boundary ([`Reader::with_guest`] for guest memory).
     pub reader: &'a mut dyn Reader,
@@ -104,6 +106,11 @@ pub const DEFER_TICKS_MAX: u64 = 300;
 const DEFER_WALL: Duration = Duration::from_secs(60);
 
 impl GameCtx<'_> {
+    pub(crate) fn edit_lifetime(&mut self) -> Arc<AtomicU64> {
+        let epoch = self.epoch;
+        self.map_lifetime.get_or_insert_with(|| Arc::new(AtomicU64::new(epoch))).clone()
+    }
+
     /// Runs an operation once with guest memory at this boundary.
     pub(crate) fn with_guest<T>(
         &mut self,
@@ -143,6 +150,12 @@ impl GameCtx<'_> {
     /// dropped. A paused game holds the answer until it steps.
     pub fn defer(&mut self, ticks: u64, poll: Later) {
         self.defer_for(ticks, DEFER_WALL, poll);
+    }
+
+    /// File preparation runs in wall time. A fast host may advance hundreds of
+    /// ticks while copying one map, so only the normal wall deadline applies.
+    pub(crate) fn defer_file(&mut self, poll: Later) {
+        self.later = Some((poll, u64::MAX, DEFER_WALL, false));
     }
 
     /// A deferred operation with its own, shorter wall-clock deadline.
@@ -189,6 +202,7 @@ pub struct Agent {
 
 #[derive(Default)]
 struct Shared {
+    editor_calls: OnceLock<crate::sim::calls::Shared>,
     state: Mutex<State>,
     wake: Condvar,
     connection_reads_running: AtomicUsize,
@@ -201,6 +215,8 @@ struct State {
     live_epoch: u64,
     // The last epoch that replaced the map or restored its state.
     map_epoch: u64,
+    activation: u64,
+    map_lifetime: Option<Arc<AtomicU64>>,
     live_session: Option<fn(&dyn engine::GuestMemory) -> bool>,
     lobby_tape: Option<Arc<dyn LobbyTape>>,
     lobby_boundary: u64,
@@ -529,7 +545,15 @@ impl Agent {
         self.lock().cinematic = on;
     }
 
-    /// Same-map checkpoint restores need a key even if the game clock moves forward.
+    /// A successful full game start. Checkpoint reactivation takes a different
+    /// path and never publishes an editor reload's reserved identity.
+    pub(crate) fn game_started(&self, activation: u64) {
+        let mut s = self.lock();
+        s.activation = activation;
+        s.map_ticks = 0;
+    }
+
+    /// Checkpoint restore invalidates the old instance even at a later clock.
     pub(crate) fn live_cut(&self) {
         let mut s = self.lock();
         s.advance_live_epoch();
@@ -571,6 +595,7 @@ impl Agent {
         s.cinematic = cinematic;
         s.game.map = map;
         s.map_ticks = map_ticks;
+        s.activation = 0;
         s.advance_live_epoch();
         s.map_epoch = s.live_epoch;
         Ok(())
@@ -608,6 +633,14 @@ impl Agent {
                 Response::err(w.id, RpcError::new(code::SHUTDOWN, "the game is exiting")),
             );
         }
+        for d in std::mem::take(&mut s.deferred) {
+            if let Some(id) = d.id {
+                s.send(
+                    d.conn,
+                    Response::err(id, RpcError::new(code::SHUTDOWN, "the game is exiting")),
+                );
+            }
+        }
         if let Some(c) = s.cancel_capture() {
             s.send(
                 c.conn,
@@ -616,6 +649,27 @@ impl Agent {
         }
         drop(s);
         self.shared.wake.notify_all();
+    }
+
+    pub(crate) fn edit_input(&self) -> Arc<Mutex<Input>> {
+        Arc::clone(&self.lock().input)
+    }
+
+    pub(crate) fn editor_adopted(&self, queue: crate::sim::calls::Shared) {
+        let _ = self.shared.editor_calls.set(queue);
+    }
+
+    /// Machine snapshots cannot reproduce an unlinked placement preview.
+    /// An unadopted game can answer this without locking the call queue.
+    pub fn editor_snapshot_refusal(&self) -> Option<String> {
+        crate::sim::calls::lock(self.shared.editor_calls.get()?).preview_refusal()
+    }
+
+    /// A callback installed on the agent can observe its lifetime without
+    /// keeping the executor alive through its own method table.
+    pub(crate) fn weak_handle(&self) -> impl Fn() -> Option<Agent> + Send + use<> {
+        let weak = Arc::downgrade(&self.shared);
+        move || weak.upgrade().map(|shared| Agent { shared })
     }
 
     /// The input tap for `xapi`, wrapping the one already there (`inner`,
@@ -828,6 +882,7 @@ impl State {
         At {
             tick: self.game.tick,
             ticks: self.ticks,
+            activation: self.activation,
             map_ticks: self.map_ticks,
             present: self.presents,
             map: self.game.map.clone(),
@@ -873,6 +928,9 @@ impl State {
 
     fn advance_live_epoch(&mut self) {
         self.live_epoch += 1;
+        if let Some(lifetime) = &self.map_lifetime {
+            lifetime.store(self.live_epoch, Ordering::Release);
+        }
         if let Some(marks) = &self.editor_marks {
             marks.invalidate();
         }
@@ -1068,6 +1126,7 @@ impl State {
                     conn: d.conn,
                     epoch: self.live_epoch,
                     map_epoch: self.map_epoch,
+                    map_lifetime: &mut self.map_lifetime,
                     live_session: self.live_session,
                     reader: &mut *reader,
                     at: at.clone(),
@@ -1137,6 +1196,7 @@ impl State {
     fn holds(&self, u: &Until, passed: u64) -> bool {
         u.tick
             .is_none_or(|t| self.game.tick.is_some_and(|now| now >= t))
+            && u.activation.is_none_or(|n| self.activation == n)
             && u.ticks.is_none_or(|n| passed >= n)
             && u.map_ticks.is_none_or(|n| self.map_ticks >= n)
             && u.present.is_none_or(|p| self.presents >= p)
@@ -1219,6 +1279,7 @@ impl State {
                 conn,
                 epoch: self.live_epoch,
                 map_epoch: self.map_epoch,
+                map_lifetime: &mut self.map_lifetime,
                 live_session: self.live_session,
                 reader,
                 at,

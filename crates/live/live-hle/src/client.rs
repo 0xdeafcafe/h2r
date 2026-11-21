@@ -155,6 +155,14 @@ impl Pending {
     pub fn take(&self) -> Option<Result<Reply, u32>> {
         self.0.result.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
+    /// Inspect the worker's result without taking it away from the guest's task.
+    pub fn failed(&self) -> bool {
+        self.0.result
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(Result::is_err)
+    }
     /// Synchronous reads own this completion and retain their original deadline.
     /// Guest task polling continues to use the nonblocking `take`.
     pub fn wait(&self, timeout: Duration) -> Option<Result<Reply, u32>> {

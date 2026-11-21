@@ -18,7 +18,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use bots::autonav::{self, Handle, Region, Source, Worker};
+use bots::autonav::{self, Region, RunningWorker, Source, Worker};
 
 type SharedVfs = Arc<Mutex<vfs::Vfs>>;
 
@@ -28,7 +28,7 @@ pub fn start(
     data_root: &Path,
     vfs: SharedVfs,
     first: Option<String>,
-) -> Option<Handle> {
+) -> Option<RunningWorker> {
     let v = std::env::var(autonav::ENV).ok();
     start_with(
         autonav::enabled(v.as_deref()),
@@ -44,7 +44,7 @@ pub fn start_with(
     data_root: &Path,
     vfs: SharedVfs,
     first: Option<String>,
-) -> Option<Handle> {
+) -> Option<RunningWorker> {
     if !on {
         eprintln!(
             "bots: nav meshes are not built automatically ({}=0); `h2 bots nav all` builds them",
@@ -54,9 +54,11 @@ pub fn start_with(
     }
     let content = content_root(data_root);
     let (worker, handle) = Worker::new(bots::cache::dir(data_root), Box::new(Vec::new));
+    // The parked worker can outlive this boot. Only active jobs borrow its mount.
+    let vfs = Arc::downgrade(&vfs);
     let worker = worker
         .shared_cache(autonav::shared_cache_dir())
-        .on_demand(move |name, source| lookup(&vfs, &content, name, source))
+        .on_demand(move |name, source| lookup(&vfs.upgrade()?, &content, name, source))
         .stay(true)
         .background(true);
     if let Some(first) = first {
@@ -69,8 +71,7 @@ pub fn start_with(
         eprintln!("bots: nav meshes not built: {e}");
         return None;
     }
-    autonav::set_handle(handle.clone());
-    Some(handle)
+    Some(autonav::set_handle(handle))
 }
 
 /// Whether any bot plays this map (excluding the menu and shared maps).
@@ -138,17 +139,7 @@ pub fn vfs_source(vfs: &SharedVfs, key: &str, path: &str) -> Option<Box<dyn Sour
         }))));
     }
     if let Some(h) = v.host_file(path) {
-        let file = h.path.clone();
-        return Some(Box::new(Region::new(
-            key,
-            h.offset,
-            h.len,
-            Box::new(move || {
-                Ok(Box::new(std::io::BufReader::new(std::fs::File::open(
-                    &file,
-                )?)))
-            }),
-        )));
+        return Some(host_region(key, h));
     }
     let r = v.open(path, vfs::OpenOptions::default()).ok()?;
     let len = v
@@ -170,6 +161,13 @@ pub fn vfs_source(vfs: &SharedVfs, key: &str, path: &str) -> Option<Box<dyn Sour
             )))
         }),
     )))
+}
+
+pub(crate) fn host_region(key: &str, file: vfs::HostFile) -> Box<dyn Source> {
+    Box::new(Region::new(key, file.offset, file.len, Box::new(move || {
+        let pinned = &file;
+        Ok(Box::new(std::io::BufReader::new(std::fs::File::open(&pinned.path)?)))
+    })))
 }
 
 /// A file read through the VFS, a chunk per lock, so the game's own reads

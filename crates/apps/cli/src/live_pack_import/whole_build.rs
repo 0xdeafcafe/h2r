@@ -124,6 +124,7 @@ impl RetailMaps {
                     .with_context(|| format!("{} in {}", map.stem, iso.display()))?
                 {
                     let source = HostFile {
+                        generation: None,
                         path: map.host,
                         offset: map.base,
                         len: map.size.into(),

@@ -605,3 +605,18 @@ fn a_warm_file_must_match_the_active_slots_header() {
     let expected = Stamp { generator: first.generator.wrapping_add(1), ..first };
     assert_eq!(decode_cached(&bytes, Some(expected)).unwrap_err(), Status::OldGenerator(first.generator));
 }
+
+
+#[test]
+fn each_boot_owns_the_worker_serving_its_maps() {
+    let (_, first) = Worker::new(PathBuf::new(), Box::new(Vec::new));
+    let (_, second) = Worker::new(PathBuf::new(), Box::new(Vec::new));
+    let first_boot = set_handle(first.clone());
+    let second_boot = set_handle(second.clone());
+    assert!(first.0.wants.lock().unwrap().stop);
+    drop(first_boot);
+    assert!(Arc::ptr_eq(&handle().unwrap().0, &second.0));
+    drop(second_boot);
+    assert!(second.0.wants.lock().unwrap().stop);
+    assert!(handle().is_none());
+}

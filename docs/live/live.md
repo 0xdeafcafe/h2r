@@ -972,6 +972,19 @@ CLI's accounts JSON path, and set `server_url` to the service base URL. Account
 creation remains the CLI's responsibility. Boot glue installs the same HLE and
 returns `Arc<Hle>` to an embedding host; no new boot argument is required.
 
+After `map.reload {file}` binds an editor map, the process refuses external
+Live sign-in until restart. The game's cannot-connect dialog says “An editor
+map was loaded. Restart the game to sign in to Xbox Live.” The HLE contacts
+no service for that logon. A DVD reservation in progress returns `TASK_BUSY`.
+A pending sign-in or an external logon that has signed in an account
+refuses a file reload. After a connection loss, the worker can still
+announce that account on a heartbeat until the game closes the logon.
+A failed initial sign-in allows binding as soon as the worker finishes,
+even before the game polls the failure. The embedded service continues
+to allow local play copies.
+See `crates/live/live-hle/src/state.rs` and
+`crates/extensions/game/src/live_notice.rs`.
+
 One `h2-live-http` worker owns a blocking `ureq` client. Guest calls only enqueue
 owned host data and poll completions. HTTP, signing, response parsing and waits
 never hold guest memory or HLE locks. The bounded queue fails with TASK_BUSY if
@@ -1358,7 +1371,9 @@ first button's buffer is never touched. Title and buttons keep the game's
 text. Finding the dialog this way needs no asset names, string IDs or
 string-table offsets.
 
-The text depends on the boot's `LiveConfig`:
+An external-service boot that has loaded an editor play copy uses this dialog
+to explain that signing in requires a restart. Otherwise its text follows the
+boot's `LiveConfig`:
 
 | Live | Server | Message |
 |---|---|---|

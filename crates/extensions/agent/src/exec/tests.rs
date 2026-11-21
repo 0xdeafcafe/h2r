@@ -27,6 +27,16 @@ impl Reader for Fake {
     }
 }
 
+impl Agent {
+    /// Move one test connection's deferred deadline to the next boundary.
+    pub(crate) fn expire_deferred_for_test(&self, conn: ConnId) {
+        self.lock().deferred.iter_mut()
+            .find(|answer| answer.conn == conn)
+            .expect("a deferred answer")
+            .deadline = Instant::now();
+    }
+}
+
 fn obj(id: &str, kind: Kind, pos: [f64; 3], team: Option<i32>) -> Object {
     Object {
         id: id.into(),
@@ -912,6 +922,61 @@ fn map_ticks_count_from_each_map_load() {
         ),
         (json!(1), json!(4))
     );
+}
+
+#[test]
+fn a_restore_counts_map_ticks_from_the_saved_full_start() {
+    let a = Agent::new();
+    let mut g = level();
+    for _ in 0..7 {
+        a.on_tick(&mut g);
+    }
+    a.game_started(24);
+    a.on_tick(&mut g);
+    let saved = a.save_state();
+    a.on_tick(&mut g);
+    a.load_state(&saved).unwrap();
+    assert_eq!(a.lock().at().map_ticks, 1);
+    assert_eq!(a.lock().at().activation, 0);
+
+    // Fresh-process restore reads exactly the same v2 field.
+    let fresh = Agent::new();
+    fresh.load_state(&saved).unwrap();
+    fresh.on_tick(&mut g);
+    assert_eq!(fresh.lock().at().map_ticks, 2);
+}
+
+#[test]
+fn only_the_requested_full_start_satisfies_a_reload_wait() {
+    let a = Agent::new();
+    let (c, rx) = client(&a);
+    let mut g = level();
+    a.game_started(10);
+    a.on_tick(&mut g);
+    let saved = a.save_state();
+    ask(
+        &a,
+        c,
+        1,
+        method::WAIT,
+        json!({"until": {"activation": 12, "map": g.status.map, "phase": "gameplay", "map_ticks": 1}}),
+    );
+    a.on_tick(&mut g);
+    // Both GAME_ACTIVATE during checkpoint reactivation and the revert
+    // return cut the epoch. Neither completed a new full game start.
+    a.live_cut();
+    a.live_cut();
+    a.on_tick(&mut g);
+    none(&rx);
+    a.load_state(&saved).unwrap();
+    a.game_started(13);
+    a.on_tick(&mut g);
+    none(&rx);
+    a.game_started(12);
+    a.on_tick(&mut g);
+    let at = next(&rx)["result"]["at"].clone();
+    assert_eq!(at["activation"], 12);
+    assert_eq!(at["map_ticks"], 1);
 }
 
 /// A snapshot loaded mid-cutscene still answers `cinematic`, and the

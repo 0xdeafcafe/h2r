@@ -147,6 +147,7 @@ impl Backend for DirDiscBackend {
     fn host_file(&mut self, path: &str) -> Option<HostFile> {
         let e = self.entry(path).ok().filter(|e| !e.is_dir)?;
         Some(HostFile {
+            generation: None,
             path: e.host.clone(),
             offset: 0,
             len: e.size,

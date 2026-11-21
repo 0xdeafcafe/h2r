@@ -500,7 +500,15 @@ fn prepare_map(
         "invalid film map name"
     );
     let path = match cache_path {
-        Some(path) => crate::map_slots::slot_file(path).context("invalid film cache path")?,
+        Some(path) => {
+            let mounted = crate::map_slots::recorded_file(path).context("invalid film cache path")?;
+            if mounted == path && vfs.lock().unwrap_or_else(|e| e.into_inner()).query_path(&mounted).is_err() {
+                // A recorded title-content slot can be verified before the title links T:.
+                crate::map_slots::slot_file(path).unwrap_or(mounted)
+            } else {
+                mounted
+            }
+        }
         None => vfs.lock().unwrap_or_else(|e| e.into_inner())
             .content_map_path(name)
             .unwrap_or_else(|| format!("{}\\maps\\{name}.map", vfs::CDROM_DEVICE)),

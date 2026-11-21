@@ -164,6 +164,16 @@ pub fn run_theater(
     run_configured(xbe, image, &opts, host, (&lan, None), sim.map(|s| (s, None)), Some((replay, legacy_lod, child_started)))
 }
 
+/// Workers can still hold the VFS when the game exits. End this boot's
+/// bindings on every exit, including a failed boot or guest fault.
+struct EditorMount(vfs::MapRebind);
+
+impl Drop for EditorMount {
+    fn drop(&mut self) {
+        self.0.clear_on_shutdown();
+    }
+}
+
 fn run_configured(
     xbe_bytes: &[u8],
     dylib: &Path,
@@ -413,9 +423,6 @@ fn run_configured(
         let initial = output();
         Arc::new(move || initial) as run_opts::NativeSize
     });
-    // Our text on the cannot-connect dialog when Live is off or its server
-    // is unreachable (docs/live/live.md, "Client HLE: Live not set up").
-    live_notice::install(&loaded.runtime, live).context("installing the Live notice")?;
     std::fs::create_dir_all(&opts.data_root)?;
     let mut cfg = vfs::Config::new(&opts.data_root, x.certificate.title_id);
     cfg.mmap_disc = host_light;
@@ -483,8 +490,26 @@ fn run_configured(
         .as_ref()
         .map(|s| campaigns::host_maps(&opts.data_root, s))
         .unwrap_or_default();
-    // Explicit editor maps still use H2_MAP_DIR. Installed packages use
-    // their independent content offers (docs/game/maps.md).
+    // The discoverable socket can adopt this boot's DVD on a file reload.
+    let agent_socket = agent_glue::socket_from_env().or_else(|| {
+        host.discoverable_agent.then(agent_glue::discoverable_socket).flatten()
+    });
+    let editor_hooks_on = features.switches().feature(agent::EDIT_LIFECYCLE, true);
+    let recording_or_playback =
+        agent_glue::reload_recording_refusal(replaying, film.is_some(), &lockstep_config);
+    let reload_mount = if host_light {
+        Err("the light host has no writable editor map mount")
+    } else if let Some(reason) = recording_or_playback {
+        Err(reason)
+    } else if !editor_hooks_on {
+        Err("editor lifecycle hooks are disabled")
+    } else if !features.switches().feature(map_slots::FEATURE, true) {
+        Err("the map-slots feature is disabled")
+    } else if agent_socket.is_none() {
+        Err("the editor agent socket is disabled")
+    } else {
+        Ok(())
+    };
     let maps = map_override::dir();
     campaign_cache::configure(
         &mut features, &loaded.runtime, &mut cfg, &campaign_maps, maps.as_deref(),
@@ -513,19 +538,22 @@ fn run_configured(
     #[cfg(not(feature = "desktop-runtime"))]
     let fonts = bot_mark::GearRewrite;
     let rewrites = Some(vfs::Chain(fonts, cards));
-    let mounted = map_override::mount(
+    let mounted = map_override::mount_for_agent(
         cfg.clone(),
         &opts.disc,
         rewrites,
         maps.as_deref(),
         &campaign_maps,
+        reload_mount.is_ok()
+            && features.switches().feature("agent", true)
+            && features.switches().feature(agent::sim::calls::FEATURE, true),
     );
     #[cfg(feature = "desktop-runtime")]
     if let Some(i) = &icons {
         icons::install(&loaded.runtime, Arc::clone(i))?;
     }
-    let v = match mounted {
-        Ok(v) => v,
+    let (v, map_rebind) = match mounted {
+        Ok(mount) => mount,
         Err(e) => {
             // A raw XBE (or a file that is not an XISO) still boots, with no
             // DVD mounted: the first map open then fails in the guest.
@@ -533,10 +561,17 @@ fn run_configured(
                 "warning: {} is not a mountable XISO ({e:?}); running with no DVD",
                 opts.disc.display()
             );
-            vfs::Vfs::with_storage(cfg).map_err(|e| anyhow::anyhow!("vfs: {e:?}"))?
+            let storage = vfs::Vfs::with_storage(cfg).map_err(|e| anyhow::anyhow!("vfs: {e:?}"))?;
+            (storage, None)
         }
     };
+    let editor_mount = map_rebind.clone().map(EditorMount);
     k.set_vfs(v).context("attaching the VFS")?;
+    let external_maps = map_rebind.clone().filter(|_| {
+        !host.embedded_live && _live.as_ref().is_some_and(|hle| hle.config().server_url.is_some())
+    });
+    live_notice::install_for_maps(&loaded.runtime, live, external_maps)
+        .context("installing the Live notice")?;
     if let (Some(ready), Some(vfs)) = (host.on_vfs.take(), k.vfs()) {
         ready(&vfs);
     }
@@ -667,9 +702,10 @@ fn run_configured(
         },
         film.clone(),
         replaying || host_light || sim_mode.is_some(),
+        map_rebind.clone(),
     )?;
-    let (skulls_on, skulls_mp_on, skulls_custom_on, health_on) = (
-        core.skulls_on,
+    let (skulls, skulls_mp_on, skulls_custom_on, health_on) = (
+        core.skulls,
         core.skulls_mp_on,
         core.skulls_custom_on,
         core.health_on,
@@ -678,9 +714,11 @@ fn run_configured(
     // (docs/game/bots.md §10 stage 2); H2_BOTS_NAV_AUTO=0 turns it off.
     // Sim mode never builds them: a build on a thread is at the wall
     // clock's mercy (docs/runtime/sim.md §8).
-    if let (true, Some(vfs), None) = (core.bots_on, k.vfs(), &sim_mode) {
-        bots_nav_auto::start(&opts.data_root, vfs, level_name.clone());
-    }
+    let _nav_worker = if let (true, Some(vfs), None) = (core.bots_on, k.vfs(), &sim_mode) {
+        bots_nav_auto::start(&opts.data_root, vfs, level_name.clone())
+    } else {
+        None
+    };
     if let Some(s) = &sim_mode {
         if !core.bots_on {
             anyhow::bail!("sim: the bots are off (H2_FEATURES or no XAPI); a match needs them");
@@ -717,10 +755,10 @@ fn run_configured(
     // Which map exactly (docs/game/maps.md §5): a package's MapId, None for the
     // disc's own map. Games and advertisements carry it as `map_id`.
     if let (Some(t), Some(vfs)) = (&_telemetry, k.vfs()) {
-        t.set_map_id_locator(Box::new(move |map| {
+        let binding = map_rebind.clone();
+        t.set_map_id_locator(Box::new(move |guest| {
             let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-            let id = map_override::map_id(&mut v, map)?;
-            Some((id, v.content_base_name(map)))
+            map_override::active_map_id(&mut v, guest, binding.as_ref())
         }));
     }
     // A matchmaking game's record names its playlist and Live session
@@ -743,20 +781,17 @@ fn run_configured(
         }));
     }
     if let (Some(hle), Some(vfs)) = (&_live, k.vfs()) {
+        let binding = map_rebind.clone();
         hle.set_map_probe(Some(Arc::new(move |g: &runtime::Guest| {
             let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-            map_override::lobby_map_id(&mut v, g)
+            map_override::lobby_map_id(&mut v, g, binding.as_ref())
         })));
     }
     if let (Some(t), Some(vfs)) = (&_telemetry, k.vfs()) {
-        t.set_map_locator(Box::new(move |map| {
+        let binding = map_rebind.clone();
+        t.set_map_locator(Box::new(move |guest| {
             let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-            let file = map_override::map_file(&mut v, map)?;
-            Some(telemetry::MapFile {
-                path: file.path,
-                offset: file.offset,
-                len: file.len,
-            })
+            map_override::active_map_file(&mut v, guest, binding.as_ref()).map(map_override::telemetry_file)
         }));
     }
     // Sample the render thread too when profiling.
@@ -1004,9 +1039,7 @@ fn run_configured(
     // the debug menu talks to a local one with no socket.
     // With none set, a game that asks for it opens `<pid>.sock` in the agents
     // directory for editors to find (`H2_AGENT=off` keeps it closed).
-    let agent_source = match agent_glue::socket_from_env()
-        .or_else(|| host.discoverable_agent.then(agent_glue::discoverable_socket).flatten())
-    {
+    let agent_source = match agent_socket {
         Some(path) => registration::AgentSource::Socket(path),
         None if film.is_some() => registration::AgentSource::Recording,
         None if host.debug_menu.is_some() || theater.is_some() => registration::AgentSource::Local,
@@ -1022,7 +1055,7 @@ fn run_configured(
     render_probe::set_pipeline(pipeline.clone());
     let coop_probe = coop_probe::parse(|k| std::env::var(k).ok()).map_err(anyhow::Error::msg)?;
     #[cfg(feature = "gpu")]
-    native_map::set_vfs(k.vfs());
+    let native_sources = k.vfs().map(|vfs| native_map::mount(vfs, map_rebind.clone()));
     let editor_link = host.editor_link.take();
     #[cfg(feature = "gpu")]
     let world_line_present = {
@@ -1100,14 +1133,10 @@ fn run_configured(
     if let Some(a) = &agent {
         let maps = || {
             k.vfs().map(|vfs| -> hot_glue::MapLocator {
-                Box::new(move |map| {
+                let binding = map_rebind.clone();
+                Box::new(move |guest| {
                     let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-                    let file = map_override::map_file(&mut v, map)?;
-                    Some(telemetry::MapFile {
-                        path: file.path,
-                        offset: file.offset,
-                        len: file.len,
-                    })
+                    map_override::active_map_file(&mut v, guest, binding.as_ref())
                 })
             })
         };
@@ -1359,6 +1388,83 @@ fn run_configured(
     }
     if let Some(a) = &agent {
         a.set_plan(&plan, &installed);
+        let rt = Arc::clone(&loaded.runtime);
+        let reload_vfs = k.vfs();
+        let extended_campaign = plan.is_on("h1-campaign-cache")
+            && installed.off_reason("h1-campaign-cache").is_none();
+        let external_live = _live.clone().filter(|hle| {
+            !host.embedded_live && hle.config().server_url.is_some()
+        });
+        let rebind: agent::sim::MapRebind = Box::new(move |map, scenario, file, cancelled| {
+            reload_mount.map_err(str::to_owned)?;
+            let handle = map_rebind.clone().ok_or("no writable DVD map mount")?;
+            let vfs = reload_vfs.clone().ok_or("the DVD is not mounted")?;
+            if let Some(hle) = &external_live {
+                hle.with_editor_reservation(|| Ok(()))?;
+            }
+            let (slot, index, source, limits) = {
+                let mem = rt.memory();
+                let index = mem.u32(map_slots::CURRENT).map_err(|e| e.to_string())?;
+                let source = map_slots::current_source(&*mem)
+                    .ok_or("the current cache slot has no known map source")?;
+                let slot = map_override::reload_slot(&source, scenario)?;
+                map_slots::can_reload(&*mem, &source)?;
+                (slot, index, source, campaign_cache::reload_limits(&mem, map, extended_campaign)?)
+            };
+            let attached = handle.attach(&mut vfs.lock().unwrap_or_else(|e| e.into_inner()))?;
+            if attached && let Some(hle) = &external_live {
+                let mount = handle.clone();
+                hle.set_logon_map_check(Box::new(move || {
+                    if !mount.blocks_external_live() {
+                        live_hle::status::OK
+                    } else if mount.has_ever_bound() {
+                        live_hle::status::CANNOT_ACCESS_SERVICE
+                    } else {
+                        live_hle::status::TASK_BUSY
+                    }
+                }));
+            }
+            let rt = Arc::clone(&rt);
+            let external_live = external_live.clone();
+            let (map, file) = (map.to_owned(), file.to_owned());
+            map_override::prepare_on_worker(move || {
+                handle.prepare_cancellable(&slot, &map, &file, limits.0, limits.1, cancelled).map(|prepared| {
+                    agent::sim::PreparedMapReload::new(prepared.checksum(), move || {
+                        let reserve = || {
+                            let dvd = vfs.lock().unwrap_or_else(|e| e.into_inner());
+                            prepared.reserve(&dvd)
+                        };
+                        let reserved = match external_live {
+                            Some(hle) => hle.with_editor_reservation(reserve)?,
+                            None => reserve()?,
+                        };
+                        let (mut keys, retired) = {
+                            let mut mem = rt.memory();
+                            if mem.u32(map_slots::CURRENT).ok() != Some(index)
+                                || campaign_cache::reload_limits(&mem, &map, extended_campaign)? != limits
+                            {
+                                return Err("the active map cache slot or its capacity changed".into());
+                            }
+                            let mut keys = map_slots::reload_keys(&*mem, &source)?;
+                            let retired = keys.retire(&mut *mem);
+                            (keys, retired)
+                        };
+                        let runtime = Arc::downgrade(&rt);
+                        Ok(agent::sim::ReservedMapReload::new(
+                            move || reserved.commit(),
+                            move || match runtime.upgrade() {
+                                Some(rt) => keys.restore(&mut *rt.memory()),
+                                None => Ok(()),
+                            },
+                        ).with_retirement(retired))
+                    })
+                })
+            })
+        });
+        a.install_editor_methods(
+            &plan, &installed, &loaded.runtime, editor_hooks_on, recording_or_playback,
+            skulls.clone(), core.editor_sources.clone(), rebind,
+        );
         if let Some(why) = installed.off_reason("agent") {
             a.agent.set_no_tick_hook();
             eprintln!("agent: answering between slices only, no pausing: {why}");
@@ -1369,7 +1475,7 @@ fn run_configured(
         note_editor_scene_install(link, &installed);
     }
     if verbose_plan {
-        if let Some(store) = host.settings.as_ref().filter(|_| skulls_on) {
+        if let Some(store) = host.settings.as_ref().filter(|_| skulls.is_some()) {
             eprintln!("{}", skulls::report(&plan, &installed, store));
         }
         if skulls_mp_on {
@@ -1445,6 +1551,7 @@ fn run_configured(
     // Machine snapshots (snapshot_glue.rs, docs/runtime/snapshots.md):
     // what holds state outside guest RAM, for `state.*` and the probe.
     let snap_host = snapshot_glue::Host {
+        editor_agent: agent.as_ref().map(|a| &a.agent),
         rt: &loaded.runtime,
         d3d: d3d_calls.as_ref().map(|i| i.snapshot.as_ref()),
         audio: ds.as_ref(),
@@ -1945,6 +2052,9 @@ fn run_configured(
         eip,
         kernel_log: k.log(),
     };
+    #[cfg(feature = "gpu")]
+    drop(native_sources);
+    drop(editor_mount);
     drop(m);
     drop(loaded);
     drop(module);

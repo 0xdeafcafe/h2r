@@ -39,6 +39,10 @@ use snapshot::{BuildKey, Codec, Header, Snapshot, SnapshotWriter, Store, Tag};
 pub trait Part {
     /// Its place in [`SAVE_ORDER`] and [`LOAD_ORDER`].
     fn name(&self) -> &'static str;
+    /// A limitation that waiting another tick cannot resolve.
+    fn refusal(&self) -> Option<String> {
+        None
+    }
     /// Why it cannot be saved or loaded now; empty when it can.
     fn blockers(&self) -> Vec<String> {
         Vec::new()
@@ -47,6 +51,10 @@ pub trait Part {
         self.blockers()
     }
     fn save(&mut self, out: &mut SnapshotWriter) -> Result<(), String>;
+    /// Check restore prerequisites before the first part can change guest state.
+    fn prepare_load(&mut self, _snapshot: &Snapshot<'_>) -> Result<(), String> {
+        Ok(())
+    }
     fn load(&mut self, snapshot: &Snapshot<'_>) -> Result<(), String>;
     /// Film anchors supply physical RAM only. Device and feature sections
     /// are always complete for the selected keyframe.
@@ -100,6 +108,9 @@ fn save_parts_into(
     order: &[&str],
 ) -> Result<Vec<u8>, String> {
     check_names(parts)?;
+    if let Some(why) = parts.iter().find_map(|p| p.refusal()) {
+        return Err(why);
+    }
     for &name in order {
         if let Some(p) = parts.iter_mut().find(|p| p.name() == name) {
             let result = match ram_base {
@@ -153,6 +164,13 @@ fn load_parts_with_guest(
     mut guest: impl FnMut(&mut dyn Part) -> Result<(), String>,
 ) -> Result<Vec<String>, String> {
     check_names(parts)?;
+    if let Some(why) = parts.iter().find_map(|p| p.refusal()) {
+        return Err(why);
+    }
+    for part in parts.iter_mut() {
+        part.prepare_load(snapshot)
+            .map_err(|e| format!("{}: {e} (nothing was loaded)", part.name()))?;
+    }
     let mut applied = Vec::new();
     for name in LOAD_ORDER {
         if let Some(p) = parts.iter_mut().find(|p| p.name() == name) {
@@ -306,6 +324,7 @@ pub fn build_key(stamp: String, switches: &str, plan: &hooks::Plan, host: &[&str
 
 /// The host subsystems a snapshot covers, whichever this run has.
 pub struct Host<'a> {
+    pub editor_agent: Option<&'a agent::Agent>,
     pub rt: &'a runtime::Runtime,
     pub d3d: Option<&'a dyn crate::d3d_glue::DeviceSnapshot>,
     pub audio: Option<&'a crate::dsound_glue::Audio>,
@@ -420,8 +439,16 @@ impl Host<'_> {
         presents: u64,
     ) -> BootMachine<'a> {
         let mut parts = self.device_parts();
-        parts.push(Box::new(KernelPart { m, rebuilders }));
-        parts.push(Box::new(FeaturesPart { plan, rt: self.rt }));
+        parts.push(Box::new(KernelPart {
+            m,
+            rebuilders,
+            prepared: None,
+        }));
+        parts.push(Box::new(FeaturesPart {
+            plan,
+            rt: self.rt,
+            editor_agent: self.editor_agent,
+        }));
         let rt = self.rt;
         BootMachine {
             parts,
@@ -564,6 +591,9 @@ impl BootMachine<'_> {
     }
 
     pub fn film_load_blockers(&self) -> Vec<String> {
+        if let Some(why) = self.parts.iter().find_map(|p| p.refusal()) {
+            return vec![why];
+        }
         self.collect_blockers(true)
     }
 
@@ -591,7 +621,13 @@ impl BootMachine<'_> {
 }
 
 impl agent::SnapshotMachine for BootMachine<'_> {
+    fn refusal(&self) -> Option<String> {
+        self.parts.iter().find_map(|p| p.refusal())
+    }
     fn blockers(&mut self) -> Vec<String> {
+        if let Some(why) = self.refusal() {
+            return vec![why];
+        }
         self.collect_blockers(false)
     }
 
@@ -755,11 +791,15 @@ impl Part for GuestPart<'_> {
 struct KernelPart<'a> {
     m: &'a mut kernel::Machine,
     rebuilders: &'a kernel::snapshot::Rebuilders,
+    prepared: Option<Box<dyn FnOnce(&mut kernel::Machine)>>,
 }
 
 impl Part for KernelPart<'_> {
     fn name(&self) -> &'static str {
         "kernel"
+    }
+    fn refusal(&self) -> Option<String> {
+        self.m.check_snapshot_maps().err().map(|e| e.to_string())
     }
     fn blockers(&self) -> Vec<String> {
         self.m
@@ -772,8 +812,15 @@ impl Part for KernelPart<'_> {
     fn save(&mut self, out: &mut SnapshotWriter) -> Result<(), String> {
         self.m.save_snapshot(out).map_err(err)
     }
-    fn load(&mut self, snapshot: &Snapshot<'_>) -> Result<(), String> {
-        self.m.load_snapshot(snapshot, self.rebuilders).map_err(err)
+    fn prepare_load(&mut self, snapshot: &Snapshot<'_>) -> Result<(), String> {
+        let apply = self.m.prepare_snapshot(snapshot, self.rebuilders).map_err(err)?;
+        self.prepared = Some(Box::new(apply));
+        Ok(())
+    }
+    fn load(&mut self, _: &Snapshot<'_>) -> Result<(), String> {
+        let apply = self.prepared.take().ok_or("kernel restore was not prepared")?;
+        apply(self.m);
+        Ok(())
     }
 }
 
@@ -887,6 +934,7 @@ impl Part for XapiPart<'_> {
 
 /// `features`: every feature's own section, and every feature's policy.
 struct FeaturesPart<'a> {
+    editor_agent: Option<&'a agent::Agent>,
     plan: &'a hooks::Plan,
     rt: &'a runtime::Runtime,
 }
@@ -894,6 +942,9 @@ struct FeaturesPart<'a> {
 impl Part for FeaturesPart<'_> {
     fn name(&self) -> &'static str {
         "features"
+    }
+    fn refusal(&self) -> Option<String> {
+        self.editor_agent?.editor_snapshot_refusal()
     }
     fn blockers(&self) -> Vec<String> {
         self.plan

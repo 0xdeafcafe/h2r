@@ -27,6 +27,8 @@ live-proto.workspace = true
 timeline = { path = "../../runtime/timeline" }
 xapi = { path = "../../platform/xapi" }
 input = { path = "../../platform/input", default-features = false }
+# The retail object types and their scenario placement/palette layout.
+tags.workspace = true
 # Hot iteration: live tag edits and render overrides (src/hot.rs).
 hot-render = { path = "../../platform/hot-render", optional = true }
 hot-tags = { path = "../hot-tags" }
@@ -44,6 +46,5 @@ lifted = { path = "../../runtime/lifted" }
 # sim.hashes' rows against the sim report's (src/sim/hashes.rs); renamed
 # so it can't be mistaken for this crate's `sim` module.
 sim-report = { package = "sim-bench", path = "../../live/sim-bench" }
-# Synthetic tags laid out by their definitions (src/hot/tests.rs).
-tags.workspace = true
+# Synthetic maps for src/hot/tests.rs.
 map.workspace = true

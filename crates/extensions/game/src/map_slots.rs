@@ -61,8 +61,104 @@ pub fn current_source<M: Gm>(m: &M) -> Option<String> {
         return None;
     }
     let path = path_at(m, slot)?;
-    slot_file(&path)?;
+    recorded_file(&path)?;
     Some(path)
+}
+
+/// The mounted object name used by the active scenario or main menu.
+/// Retail opens T: and W: paths verbatim (docs/game/map-pack.md, "Loading").
+/// Let the VFS follow the guest's drive links, which can point into a subdirectory.
+pub fn active_file<M: Gm>(m: &M) -> Option<String> {
+    let slot = m.u32(CURRENT)?;
+    if slot != 2 && !SLOTS.contains(&slot) {
+        return None;
+    }
+    recorded_file(&path_at(m, slot)?)
+}
+
+/// Decode a path recorded by the copier, including direct T: and W: names.
+pub fn recorded_file(source: &str) -> Option<String> {
+    if let Some((drive, path)) = source.split_once(":\\")
+        && (drive.eq_ignore_ascii_case("t") || drive.eq_ignore_ascii_case("w"))
+    {
+        let (name, ext) = path.rsplit('\\').next()?.rsplit_once('.')?;
+        if !name.is_empty()
+            && ext.eq_ignore_ascii_case("map")
+            && vfs::validate_fatx_path(path).is_ok()
+        {
+            return Some(source.to_owned());
+        }
+        return None;
+    }
+    slot_file(source)
+}
+
+/// A file reload targets the DVD source of the active scenario. The copier
+/// must have closed its source before the host can offer another generation.
+pub fn can_reload<M: Gm>(m: &M, source: &str) -> Result<(), String> {
+    if m.u32(STATE) != Some(0) {
+        return Err("the map copier is busy or its state is unreadable".into());
+    }
+    if map_name(source).is_none()
+        || !current_source(m).is_some_and(|path| path.eq_ignore_ascii_case(source))
+    {
+        return Err("the active cache slot no longer names the requested DVD map".into());
+    }
+    Ok(())
+}
+
+/// Resident path keys retired for one reload. Keep the old spellings so a
+/// cancelled reload can restore only keys that still belong to this request.
+#[derive(Debug)]
+pub struct RetiredReloadKeys(Vec<(u32, String)>);
+
+impl RetiredReloadKeys {
+    pub fn retire<M: Gm>(&mut self, m: &mut M) -> Result<(), String> {
+        for index in 0..self.0.len() {
+            let slot = self.0[index].0;
+            let addr = RECORDS + slot * STRIDE + HEADER + PATH;
+            if !m.wr(addr, &[0]) {
+                self.0.truncate(index);
+                return Err(format!("cannot retire the map cache path in slot {slot}"));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn restore<M: Gm>(&mut self, m: &mut M) -> Result<(), String> {
+        self.0.retain(|(slot, path)| {
+            let addr = RECORDS + slot * STRIDE + HEADER + PATH;
+            let mut key = [0; PATH_LEN];
+            if !m.rd(addr, &mut key) {
+                return true;
+            }
+            // Only the nulled first byte and the exact remaining path belong
+            // to our write. Forget restored and superseded keys permanently.
+            key[0] == 0 && key[1..path.len()] == path.as_bytes()[1..]
+                && key[path.len()] == 0 && !m.wr(addr, &path.as_bytes()[..1])
+        });
+        if self.0.is_empty() {
+            Ok(())
+        } else {
+            let failed: Vec<_> = self.0.iter().map(|(slot, _)| *slot).collect();
+            Err(format!("cannot restore retired map cache keys in slots {failed:?}"))
+        }
+    }
+}
+
+/// Capture every matching path before the first write. The ticket owns this
+/// journal even if retirement stops partway through the matching slots.
+pub fn reload_keys<M: Gm>(m: &M, source: &str) -> Result<RetiredReloadKeys, String> {
+    can_reload(m, source)?;
+    let mut keys = Vec::new();
+    for slot in SLOTS {
+        let path = path_at(m, slot)
+            .ok_or_else(|| format!("cannot read the path in map cache slot {slot}"))?;
+        if path.eq_ignore_ascii_case(source) {
+            keys.push((slot, path));
+        }
+    }
+    Ok(RetiredReloadKeys(keys))
 }
 
 /// The map name in a slot path `d:\maps\<name>.map`, if it is one.
@@ -280,6 +376,19 @@ mod tests {
         format!("\\Device\\CdRom0\\maps\\{name}.map")
     }
 
+    #[test]
+    fn active_files_preserve_direct_title_and_workspace_map_paths() {
+        for source in [
+            r"t:\local.map",
+            r"W:\maps\a b.MAP",
+            r"T:\$C\0000000000000001\test.map",
+        ] {
+            let mut paths = PATHS;
+            paths[3] = source;
+            assert_eq!(active_file(&world(3, paths)).as_deref(), Some(source));
+        }
+    }
+
     /// A new map's slot names its content package's file on the data
     /// partition, so a converted map whose sandbox changed is dropped too.
     #[test]
@@ -327,6 +436,77 @@ mod tests {
         assert_eq!(m.u32(RECORDS + 3 * STRIDE), Some(1), "handle kept");
         assert_ne!(header(&m, 4), vec![0; HEADER_LEN], "unchanged map kept");
         assert_eq!(candidates(&m), vec![(4, disc("01a_tutorial"))]);
+    }
+
+    #[test]
+    fn reload_retires_only_the_lookup_keys_of_matching_copies() {
+        let mut paths = PATHS;
+        paths[5] = "D:\\MAPS\\01A_TUTORIAL.MAP";
+        let mut m = world(4, paths);
+        let original = m.0.clone();
+        reload_keys(&m, PATHS[4]).unwrap().retire(&mut m).unwrap();
+        let mut expected = original;
+        for slot in [4, 5] {
+            expected.insert(RECORDS + slot * STRIDE + HEADER + PATH, 0);
+        }
+        assert_eq!(m.0, expected);
+    }
+
+    #[test]
+    fn a_second_key_write_failure_restores_the_first_key() {
+        struct Fails {
+            mem: Fake,
+            fail_restore: bool,
+        }
+        impl Gm for Fails {
+            fn rd(&self, at: u32, out: &mut [u8]) -> bool {
+                self.mem.rd(at, out)
+            }
+            fn wr(&mut self, at: u32, bytes: &[u8]) -> bool {
+                let first = RECORDS + 4 * STRIDE + HEADER + PATH;
+                if at == first + STRIDE || (self.fail_restore && at == first && bytes != [0]) {
+                    return false;
+                }
+                self.mem.wr(at, bytes)
+            }
+        }
+        let mut paths = PATHS;
+        paths[5] = PATHS[4];
+        let mut guest = Fails { mem: world(4, paths), fail_restore: false };
+        let before = guest.mem.0.clone();
+        let mut keys = reload_keys(&guest, PATHS[4]).unwrap();
+        let error = keys.retire(&mut guest).unwrap_err();
+        assert!(error.contains("retire") && error.contains("slot 5"));
+        guest.fail_restore = true;
+        let error = keys.restore(&mut guest).unwrap_err();
+        assert!(error.contains("restore") && error.contains("[4]"));
+        guest.fail_restore = false;
+        keys.restore(&mut guest).unwrap();
+        assert_eq!(guest.mem.0, before);
+
+        let mut keys = reload_keys(&guest, PATHS[4]).unwrap();
+        assert!(keys.retire(&mut guest).is_err());
+        let addr = RECORDS + 4 * STRIDE + HEADER + PATH;
+        assert!(guest.mem.wr(addr, b"another owner\0"));
+        let newer = guest.mem.0.clone();
+        keys.restore(&mut guest).unwrap();
+        assert_eq!(guest.mem.0, newer);
+    }
+
+    #[test]
+    fn reload_leaves_busy_replaced_and_non_dvd_slots_intact() {
+        for (slot, state, path) in [
+            (3, 1, PATHS[3]),
+            (4, 0, PATHS[3]),
+            (2, 0, PATHS[2]),
+            (3, 0, "t:\\$C\\4D53006400000101\\local.map"),
+        ] {
+            let mut m = world(slot, PATHS);
+            m.set_u32(STATE, state);
+            let original = m.0.clone();
+            assert!(reload_keys(&m, path).is_err());
+            assert_eq!(m.0, original);
+        }
     }
 
     #[test]

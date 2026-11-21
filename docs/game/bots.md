@@ -386,7 +386,8 @@ the nav mesh, and shared read-only by every bot in the process.
   (`Handle::want`) or it is stopped, saves, builds the map asked for, and
   carries on with the grid once its queue is empty
   (`bots: visibility grid for lockout: paused after 12.0 s, progress saved`).
-  The game never stops the worker at exit, so a quit loses at most
+  `autonav::RunningWorker` requests a stop when its host exits. If the
+  process exits before the next progress save, a quit loses at most
   `SAVE_EVERY` of grid work. Tests:
   `a_stopped_grid_build_keeps_its_progress_and_carries_on_to_the_same_grid`
   (`vis/tests.rs`), `a_built_grid_is_saved_where_the_game_loads_it_and_used`
@@ -3937,9 +3938,14 @@ The checks for live play are in §11 and §13. Clankers use phantom peers
      or manual meshes, `bots-map-data` reads the local file. This worker
      sleeps between loads and coalesces pending reads. Until a mesh is
      ready the bots can walk toward known goals. Host visual contacts
-     require a loaded BSP.
-   - **Built for you** (`bots::autonav`, `game::bots_nav_auto`). One
-     worker (`bots-nav`) sleeps until a boot, a map selection with
+     require a loaded BSP. On an editor-bound multiplayer map with
+     automatic navigation enabled, `bots-map-data` builds in memory from
+     the activated play copy and leaves the on-disk meshes untouched.
+     A bound campaign map or a play copy with automatic navigation off
+     has no mesh.
+   - **Built for you** (`bots::autonav`, `game::bots_nav_auto`). Each
+     boot owns its `bots-nav` worker and its mounted map sources. The
+     worker sleeps until a map selection with
      Clankers on, or a map load requests a map. It looks up that map as
      the VFS serves it, using the active cache slot's recorded path on
      load. This includes disc overrides, installed Map Pack

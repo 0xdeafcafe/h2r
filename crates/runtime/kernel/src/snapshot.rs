@@ -429,9 +429,12 @@ fn save_core(core: &Core, w: &mut Writer) -> Result<(), SnapshotError> {
     Ok(())
 }
 
-/// Read a `kcore` section into `core`, which a machine booted the same way
-/// owns. Everything is decoded and checked before `core` changes.
-fn load_core(core: &mut Core, bytes: &[u8]) -> Result<(), SnapshotError> {
+/// Decode and check a kernel section against this boot before any part of the
+/// machine changes. The returned operation only installs the checked state.
+fn prepare_core(
+    core: &Core,
+    bytes: &[u8],
+) -> Result<impl FnOnce(&mut Core) + use<>, SnapshotError> {
     let r = &mut Reader::new(bytes, "kcore");
     let check = |what: &str, same: bool| {
         if same {
@@ -519,56 +522,62 @@ fn load_core(core: &mut Core, bytes: &[u8]) -> Result<(), SnapshotError> {
     {
         return Err(corrupt("more raw disk sectors than the disk keeps").into());
     }
-    // The VFS checks every saved file before it changes anything.
-    match (&vfs, &core.storage) {
-        (Some(state), Some(storage)) => storage
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .restore_state(state)
-            .map_err(|e| SnapshotError::Mismatch(format!("vfs: {e}")))?,
-        (None, None) => {}
+    let storage = match (vfs, &core.storage) {
+        (Some(state), Some(storage)) => {
+            let apply = storage
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .prepare_restore(&state)
+                .map_err(|e| SnapshotError::Mismatch(format!("vfs: {e}")))?;
+            Some((Arc::clone(storage), apply))
+        }
+        (None, None) => None,
         _ => {
             return Err(SnapshotError::Mismatch(
                 "storage is attached on one machine only".into(),
             ));
         }
-    }
-    core.memory = memory;
-    core.handles = handles;
-    core.objects = objects;
-    core.owned_objects = owned_objects;
-    core.critical = critical;
-    core.threads = threads;
-    core.wait_order = wait_order;
-    core.ready = ready;
-    core.yielder = yielder;
-    core.yielded = yielded;
-    core.next_tid = next_tid;
-    core.clock = clock;
-    core.work_carry = work_carry;
-    core.saved_av = saved_av;
-    core.phy_ready = phy_ready;
-    core.encoder = encoder;
-    core.launch_page = launch_page;
-    core.references = references;
-    core.files = files;
-    core.file_handles = file_handles;
-    core.links = links;
-    core.timers = timers;
-    core.mutant_owners = mutant_owners;
-    core.guest_references = guest_references;
-    core.dpcs = dpcs;
-    core.next_periodic = next_periodic;
-    core.dpc_complete = dpc_complete;
-    core.shutdown = shutdown;
-    core.persistent = persistent;
-    for (id, schedule) in schedules {
-        core.periodic.get_mut(&id).unwrap().restore(schedule);
-    }
-    if let (Some(saved), Some(sectors)) = (disk, &core.raw_disk) {
-        *sectors.lock() = saved;
-    }
-    Ok(())
+    };
+    Ok(move |core: &mut Core| {
+        if let Some((storage, apply)) = storage {
+            apply(&mut storage.lock().unwrap_or_else(|e| e.into_inner()));
+        }
+        core.memory = memory;
+        core.handles = handles;
+        core.objects = objects;
+        core.owned_objects = owned_objects;
+        core.critical = critical;
+        core.threads = threads;
+        core.wait_order = wait_order;
+        core.ready = ready;
+        core.yielder = yielder;
+        core.yielded = yielded;
+        core.next_tid = next_tid;
+        core.clock = clock;
+        core.work_carry = work_carry;
+        core.saved_av = saved_av;
+        core.phy_ready = phy_ready;
+        core.encoder = encoder;
+        core.launch_page = launch_page;
+        core.references = references;
+        core.files = files;
+        core.file_handles = file_handles;
+        core.links = links;
+        core.timers = timers;
+        core.mutant_owners = mutant_owners;
+        core.guest_references = guest_references;
+        core.dpcs = dpcs;
+        core.next_periodic = next_periodic;
+        core.dpc_complete = dpc_complete;
+        core.shutdown = shutdown;
+        core.persistent = persistent;
+        for (id, schedule) in schedules {
+            core.periodic.get_mut(&id).unwrap().restore(schedule);
+        }
+        if let (Some(saved), Some(sectors)) = (disk, &core.raw_disk) {
+            *sectors.lock() = saved;
+        }
+    })
 }
 
 /// One guest thread's context, beyond its kernel record.
@@ -628,6 +637,17 @@ impl Default for Rebuilders {
 }
 
 impl Machine {
+    /// A host-side editor copy cannot be named by a machine snapshot.
+    /// Check before changing any guest memory or device on restore.
+    pub fn check_snapshot_maps(&self) -> Result<(), SnapshotError> {
+        if let Some(vfs) = self.kernel.vfs() {
+            vfs.lock().unwrap_or_else(|e| e.into_inner())
+                .check_snapshot_maps()
+                .map_err(|e| SnapshotError::Mismatch(e.to_string()))?;
+        }
+        Ok(())
+    }
+
     /// Add the `kcore` and `machine` sections. The machine must be between
     /// slices with nothing live ([`Machine::quiescent`]); guest RAM and the
     /// TSC are the caller's (`snapshot::guest`).
@@ -670,6 +690,19 @@ impl Machine {
         snapshot: &Snapshot<'_>,
         rebuilders: &Rebuilders,
     ) -> Result<(), SnapshotError> {
+        let apply = self.prepare_snapshot(snapshot, rebuilders)?;
+        apply(self);
+        Ok(())
+    }
+
+    /// Validate both kernel sections, resolve the boot dependencies and rebuild
+    /// the saved contexts before guest RAM or device state changes. Install the
+    /// result on the same machine after loading RAM, at this slice boundary.
+    pub fn prepare_snapshot(
+        &self,
+        snapshot: &Snapshot<'_>,
+        rebuilders: &Rebuilders,
+    ) -> Result<impl FnOnce(&mut Machine) + use<>, SnapshotError> {
         let core_bytes = snapshot.require(KCORE, KCORE_VERSION..=KCORE_VERSION)?;
         let machine_bytes = snapshot.require(MACHINE, MACHINE_VERSION..=MACHINE_VERSION)?;
         let r = &mut Reader::new(&machine_bytes, "machine");
@@ -698,14 +731,16 @@ impl Machine {
                 },
             );
         }
-        load_core(&mut self.kernel.lock(), &core_bytes)?;
-        self.kernel
-            .deferred
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
-        self.replace_threads(threads, schedule);
-        Ok(())
+        let core = prepare_core(&self.kernel.lock(), &core_bytes)?;
+        Ok(move |machine: &mut Machine| {
+            core(&mut machine.kernel.lock());
+            machine.kernel
+                .deferred
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
+            machine.replace_threads(threads, schedule);
+        })
     }
 }
 

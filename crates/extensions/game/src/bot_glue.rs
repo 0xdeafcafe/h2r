@@ -34,7 +34,7 @@ pub struct Bots {
     phantoms: bots::phantom::Phantoms,
     /// Where each map's data is written (`h2 bots nav`, `bots_nav_auto`).
     dir: std::path::PathBuf,
-    map: Arc<Mutex<MapIdentity>>,
+    map: Arc<Mutex<NavMap>>,
     frame: Arc<AtomicU64>,
     diagnostics: Arc<Mutex<LobbyDiagnostics>>,
 }
@@ -328,11 +328,17 @@ struct MapIdentity {
     checksum: u32,
 }
 
+#[derive(Default)]
+struct NavMap {
+    seen: MapIdentity,
+    editor: Option<vfs::HostFile>,
+}
+
 /// When the loaded map changes, queue the cached data read and, for a
 /// multiplayer map, the background build. Bots steer toward known goals
 /// until the mesh arrives ([`bots::autonav::offer`]).
 fn load_map_data(
-    seen: &Mutex<MapIdentity>,
+    seen: &Mutex<NavMap>,
     reader: Option<&std::sync::mpsc::Sender<MapRead>>,
     mem: &runtime::Guest,
 ) {
@@ -345,11 +351,13 @@ fn load_map_data(
     let Ok(checksum) = mem.u32(MAP_CHECKSUM) else { return };
     let identity = MapIdentity { name: raw, checksum };
     let mut last = lock(seen);
-    if *last == identity {
+    if last.seen == identity {
         return;
     }
     let _dispatch = timeline::setup::dispatch();
-    *last = identity;
+    last.seen = identity;
+    let editor = last.editor.clone();
+    drop(last);
     let name = String::from_utf8_lossy(&raw[..end]).into_owned();
     let (generation, retired) = autonav::map_loaded(&name);
     let kind = mem
@@ -361,15 +369,14 @@ fn load_map_data(
         return;
     }
     let auto = autonav::handle().filter(|_| usage == MapUse::Build);
-    if let Some(h) = auto {
-        let path = crate::map_slots::current_source(mem).and_then(|p| crate::map_slots::slot_file(&p));
-        h.want_active(&name, path, generation);
+    if let Some(h) = &auto && editor.is_none() {
+        h.want_active(&name, crate::map_slots::active_file(mem), generation);
         if retired.is_none() {
             return;
         }
     }
     if let Some(reader) = reader {
-        let _ = reader.send(MapRead { name, usage, generation, retired, auto: auto.is_some() });
+        let _ = reader.send(MapRead { name, usage, generation, retired, auto: auto.is_some(), editor });
     }
 }
 
@@ -379,6 +386,7 @@ struct MapRead {
     generation: u64,
     retired: Option<Arc<bots::cache::MapData>>,
     auto: bool,
+    editor: Option<vfs::HostFile>,
 }
 
 /// The receiver sleeps while the map is stable. Rapid transitions retire
@@ -403,10 +411,26 @@ fn map_reader(dir: std::path::PathBuf) -> Option<std::sync::mpsc::Sender<MapRead
 impl MapRead {
     fn load(self, dir: &std::path::Path) {
         use bots::autonav::{self, MapUse};
-        let MapRead { name, usage, generation, retired, auto } = self;
+        let MapRead { name, usage, generation, retired, auto, editor } = self;
         // Free the retired mesh and its many polygon, edge and visibility
         // allocations away from the frame that observed the transition.
         drop(retired);
+        if let Some(file) = editor {
+            // The ordinary per-map cache can match the retail name and even its
+            // XOR checksum. Build from the pinned play copy, in memory only.
+            if auto {
+                let mut src = crate::bots_nav_auto::host_region(&name, file);
+                match src.build_with(bots::vis::Threads::background()) {
+                    Ok(bsps) => {
+                        if let Some(data) = bsps.into_iter().next() {
+                            autonav::offer(&name, Arc::new(data), generation);
+                        }
+                    }
+                    Err(why) => eprintln!("bots: nav mesh for edited {name} unavailable: {why}"),
+                }
+            }
+            return;
+        }
         if usage == MapUse::Never || auto {
             return;
         }
@@ -434,11 +458,28 @@ pub fn install_film(
     data_root: &std::path::Path,
     film: Option<Arc<crate::theater::Session>>,
 ) -> anyhow::Result<bool> {
+    install_for_maps(registry, data_root, film, None)
+}
+
+pub fn install_for_maps(
+    registry: &mut hooks::Registry,
+    data_root: &std::path::Path,
+    film: Option<Arc<crate::theater::Session>>,
+    sources: Option<&crate::loaded_map::EditorSources>,
+) -> anyhow::Result<bool> {
     let mut bots = Bots::new(bots::phantom::global().clone(), data_root);
     bots.film = film;
     let added = registry
         .add(&bots)
         .map_err(|e| anyhow::anyhow!("bots: {e}"))?;
+    if added && let Some(sources) = sources {
+        let map = Arc::downgrade(&bots.map);
+        sources.on_change(move |file| {
+            if let Some(map) = map.upgrade() {
+                *lock(&map) = NavMap { seen: MapIdentity::default(), editor: file.cloned() };
+            }
+        });
+    }
     if !added {
         eprintln!("bots: off: switched off (H2_FEATURES)");
     }

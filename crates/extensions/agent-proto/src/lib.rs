@@ -434,6 +434,9 @@ pub struct At {
     pub tick: Option<u64>,
     /// Ticks the server has seen since the game started; never resets.
     pub ticks: u64,
+    /// Identity of the last observed full game start. Zero until one is observed.
+    #[serde(default)]
+    pub activation: u64,
     /// Ticks since the current map loaded. A level's scripts start its
     /// opening cutscene in its first ticks, so "in control" is better
     /// asked as `{"phase":"gameplay","map_ticks":30}` than as the phase
@@ -489,6 +492,9 @@ pub struct StepParams {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Until {
+    /// The exact full game start to observe, as returned by map.reload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation: Option<u64>,
     /// The game's own tick is at least this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tick: Option<u64>,
@@ -1272,6 +1278,7 @@ mod tests {
         let at = At {
             tick: Some(5),
             ticks: 5,
+            activation: 1,
             map_ticks: 5,
             present: 9,
             map: None,

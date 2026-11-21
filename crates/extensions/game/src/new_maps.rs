@@ -166,6 +166,7 @@ fn base_file(data_root: &Path, disc: &mut dyn Disc, map: &str) -> Result<vfs::Ho
     let (_, _, path) = crate::map_bases::map_pack_file(data_root, map)
         .with_context(|| format!("the disc and Map Pack have no {map}.map"))?;
     Ok(vfs::HostFile {
+        generation: None,
         len: path.metadata()?.len(),
         path,
         offset: 0,

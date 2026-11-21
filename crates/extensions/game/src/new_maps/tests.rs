@@ -739,6 +739,7 @@ fn legacy_choices_migrate_to_independent_disc_and_map_pack_mods() {
     d.base_files.insert(
         "level".into(),
         vfs::HostFile {
+            generation: None,
             path: iso.clone(),
             offset: 37 * 2048,
             len: 0x800,
@@ -842,6 +843,7 @@ fn slot_plan_preserves_retail_and_uses_the_mods_own_preview() {
     d.base_files.insert(
         "alpha".into(),
         vfs::HostFile {
+            generation: None,
             path: source,
             offset: 0,
             len: base.len() as u64,
