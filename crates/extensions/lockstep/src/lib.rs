@@ -167,9 +167,25 @@ impl SimRegion {
     };
 }
 
+const EXT_SEED: u64 = 0x7369_6d2d_6578_7400; // "sim-ext\0"
+
+/// An arena hash with the `SimExt` records' digest folded in
+/// (docs/engine/sim-rewrite.md section 7: `hash_sim(HALO2)` with the
+/// extension state, when there is any). With no records the arena hash is
+/// returned as it is, so a run without extension state hashes as before.
+pub fn fold_ext(arena: u64, ext: Option<u64>) -> u64 {
+    match ext {
+        Some(e) => fmix(arena ^ fmix(e ^ EXT_SEED)),
+        None => arena,
+    }
+}
+
 /// The hash of `region`, or `None` while it is not there to read (before
 /// the guest has set the pointer, or with the range not mapped). Reads
-/// guest memory from Rust: uncharged, and it writes nothing.
+/// guest memory from Rust: uncharged, and it writes nothing. The process's
+/// `SimExt` records are folded in ([`fold_ext`], `sim_ext::digest`), so
+/// extension state that differs between two runs makes their hashes
+/// differ.
 pub fn hash_sim(guest: &Guest, region: SimRegion) -> Option<u64> {
     hash_sim_buffered(guest, region, &mut Vec::new())
 }
@@ -186,13 +202,15 @@ pub fn hash_sim_buffered(guest: &Guest, region: SimRegion, bytes: &mut Vec<u8>) 
     }
     bytes.resize(len as usize, 0);
     guest.read_bytes(base, bytes, 1).ok()?;
-    Some(hash_bytes(u64::from(len), bytes))
+    Some(fold_ext(hash_bytes(u64::from(len), bytes), sim_ext::digest()))
 }
 
 /// [`hash_sim_buffered`], plus one hash per `block` bytes (the last block
 /// may be shorter) appended to `blocks` after clearing it. Returns the
-/// region's guest base address and the same whole-region hash. A divergence
-/// report names the first differing block rather than the whole region.
+/// region's guest base address and the same whole-region hash, extension
+/// records folded in. A divergence report names the first differing block
+/// rather than the whole region; the blocks are the arena's alone, so a
+/// difference only in extension state shows in the whole hash.
 pub fn hash_sim_blocks(
     guest: &Guest,
     region: SimRegion,
@@ -215,7 +233,10 @@ pub fn hash_sim_blocks(
             .chunks(block)
             .map(|c| hash_bytes(c.len() as u64, c)),
     );
-    Some((base, hash_bytes(u64::from(len), bytes)))
+    Some((
+        base,
+        fold_ext(hash_bytes(u64::from(len), bytes), sim_ext::digest()),
+    ))
 }
 
 /// What a record marks.
@@ -797,6 +818,28 @@ mod tests {
             hash_guest(&g),
             hash_guest(&guest_with(&[(0x10000, 0x4000), (0x40000, 0x1000)]))
         );
+    }
+
+    #[test]
+    fn extension_records_change_the_sim_hash_and_none_leave_it() {
+        let g = guest_with(&[(0x10000, 0x1000)]);
+        let fixed = SimRegion::Fixed {
+            base: 0x10000,
+            len: 0x1000,
+        };
+        let arena = hash_sim(&g, fixed).unwrap();
+        assert_eq!(fold_ext(arena, None), arena, "no records: the arena hash");
+        assert_eq!(fold_ext(arena, sim_ext::SimExt::new().digest()), arena);
+
+        let mut ext = sim_ext::SimExt::new();
+        ext.set(&sim_ext::RULES, vec![1]).unwrap();
+        let one = fold_ext(arena, ext.digest());
+        assert_ne!(one, arena);
+        ext.set(&sim_ext::RULES, vec![2]).unwrap();
+        let two = fold_ext(arena, ext.digest());
+        assert_ne!(two, one, "a changed record changes the hash");
+        ext.set(&sim_ext::RULES, vec![1]).unwrap();
+        assert_eq!(fold_ext(arena, ext.digest()), one);
     }
 
     #[test]

@@ -306,7 +306,9 @@ variant):
 | `+0x11a` | 2 | primary weapon, our id (0 means use `+0xd6`) |
 | `+0x11c` | 2 | secondary weapon, our id |
 | `+0x11e` | 1 | team size (0 means any; at most 16) |
-| `+0x11f..+0x12b` | 13 | reserved, zero |
+| `+0x11f` | 1 | script mode: 0 none, 1 Firefight, 2 rules script (other values are kept and never applied) |
+| `+0x120` | 8 | first 8 bytes of the script definition's SHA-256 |
+| `+0x128` | 4 | packed script option values |
 | `+0x12c` | 4 | CRC-32 of `+0x10c..+0x12b` |
 
 Our weapon ids are a table in our code naming tags by path (the weapons the
@@ -314,8 +316,12 @@ multiplayer maps carry), never a datum, which differs per map. A block with
 a bad magic, version or CRC, or a value out of its range, is ignored as a
 whole (`variants::ext::Block::Ignored`): the game plays retail rules and
 Studio lists it as an issue. The CRC is zlib's CRC-32 over the 0x20 bytes
-before it, little-endian. The default options encode as all zero, so a
-variant whose extras are all put back is a retail record again. Because retail never writes these
+before it, little-endian. The default options with no script mode encode as all zero, so a
+variant whose extras are all put back is a retail record again. A block
+with a script mode is never default. `variants::ext::Ext` carries the
+script reference (`Script`: mode, prefix, options), so every edit that
+decodes and re-encodes the block keeps it
+([rules-engine.md](rules-engine.md#carrying-a-script)). Because retail never writes these
 bytes, a record from a retail editor is all zero there.
 
 An older build ignores the block and keeps it: it loads, plays and re-saves
