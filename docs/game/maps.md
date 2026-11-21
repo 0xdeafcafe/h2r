@@ -1037,8 +1037,8 @@ fail, such as a base whose hash differs from the disc's):
   it scrolls) with the focused map's picture at the box's size and four
   summary lines that change with focus; the footer reads Details,
   Download, Back with button glyphs.
-- X downloads a map not here: the row reads `<name>  ↓ N%`, then
-  `<name>  ✓`, and `<data>/maps/live-<16 hex>/` exists. Without a
+- X downloads a map not here: the row reads `<name> ↓ N%`, then
+  `<name> ✓`, and `<data>/maps/live-<16 hex>/` exists. Without a
   restart, Change Map lists the mod under Mods with its picture and
   description, and Game Setup and the lobby show its name and package
   image. The mod loads.

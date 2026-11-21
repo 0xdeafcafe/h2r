@@ -1674,14 +1674,14 @@ pub fn mark(status: &str) -> Option<String> {
     }
 }
 
-/// A row's line: `name`, then its state's [`mark`] two spaces after it,
+/// A row's line: `name`, then its state's [`mark`] one space after it,
 /// reserving space for the mark before fitting the published name.
 pub fn marked_line(name: &str, status: &str) -> String {
     match mark(status) {
         None => text_fit::line(name, text_fit::ROW),
         Some(m) => {
-            let room = text_fit::ROW - text_fit::width(&m) - text_fit::width("  ");
-            format!("{}  {m}", text_fit::line(name, room))
+            let room = text_fit::ROW - text_fit::width(&m) - text_fit::width(" ");
+            format!("{} {m}", text_fit::line(name, room))
         }
     }
 }

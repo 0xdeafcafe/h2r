@@ -75,7 +75,7 @@ impl Preview {
 
         if state == "long-name" {
             let mut entries = sample_entries();
-            entries[0].name = "WWWWWWWW WWWWWWWW WWWWWWWW: Swords".into();
+            entries[0].name = "Wwwwwwww Wwwwwwww Wwwwwwww: Swords".into();
             entries[0].credit = Some("Waterworks Map Making Community".into());
             entries[0].description = Some("Flooded passages beneath the base. ".repeat(9));
             self.repo.listed(Ok(entries));
