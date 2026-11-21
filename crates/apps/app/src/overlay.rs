@@ -1,5 +1,5 @@
-//! A one-line notice drawn over the game frame (`h2 play --follow`'s
-//! "Update ready" banner), dismissable, with an optional restart offer.
+//! Text plates drawn over the game frame: the dismissable notice and the
+//! paired editor's status.
 //!
 //! [`Banner`] is a shared handle: any thread sets the notice, the window
 //! draws it. Text is rasterised on the CPU with the public-domain `font8x8`
@@ -9,6 +9,9 @@
 //! shows again); F5 asks for a restart while the notice offers one.
 
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Instant;
+
+pub mod marks;
 
 /// What a notice is about; picks its colour and whether F5 restarts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,6 +28,29 @@ pub enum NoticeKind {
 pub struct Notice {
     pub kind: NoticeKind,
     pub text: String,
+}
+
+/// One or two lines of paired editor status.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EditorPlate {
+    pub title: &'static str,
+    pub text: Option<String>,
+    pub tone: NoticeKind,
+}
+
+impl EditorPlate {
+    pub fn lines(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.title).chain(self.text.as_deref().filter(|text| !text.is_empty()))
+    }
+}
+
+/// The window reads the plate and its wall-clock deadline, and consumes focus
+/// requests. The source wakes the event loop when either changes.
+pub trait EditorPlateSource: std::fmt::Debug + Send + Sync {
+    fn current(&self, now: Instant) -> Option<(EditorPlate, Instant)>;
+    fn set_waker(&self, wake: Arc<dyn Fn() + Send + Sync>);
+    fn take_focus_request(&self) -> bool;
+    fn set_mark_frame_status(&self, status: marks::MarkFrameStatus);
 }
 
 #[derive(Default)]
@@ -99,12 +125,16 @@ const SCALE: u32 = 2;
 const PAD: u32 = 6;
 /// Longest line drawn; the rest is cut with "...".
 const MAX_CHARS: usize = 96;
+const LINE_HEIGHT: u32 = 8 * SCALE;
+const LINE_GAP: u32 = 4;
+const MARGIN: u32 = 12;
 
-/// ASCII stand-ins for the characters notices commonly use.
-fn ascii(text: &str) -> String {
+/// Keep the middle dot and map common punctuation to the available ASCII glyphs.
+fn overlay_text(text: &str) -> String {
     let mut out = String::new();
     for c in text.chars() {
         match c {
+            '·' => out.push(c),
             '\u{2014}' | '\u{2013}' => out.push('-'),
             '\u{2026}' => out.push_str("..."),
             '\u{2018}' | '\u{2019}' => out.push('\''),
@@ -121,11 +151,25 @@ fn ascii(text: &str) -> String {
 
 /// The notice as straight-alpha RGBA: (width, height, pixels).
 pub fn rasterize(notice: &Notice) -> (u32, u32, Vec<u8>) {
+    rasterize_lines(notice.kind, std::iter::once(notice.text.as_str()))
+}
+
+fn rasterize_lines<'a>(
+    tone: NoticeKind,
+    lines: impl Iterator<Item = &'a str>,
+) -> (u32, u32, Vec<u8>) {
     use font8x8::UnicodeFonts;
-    let text = ascii(&notice.text);
-    let n = text.chars().count().max(1) as u32;
-    let (w, h) = (n * 8 * SCALE + 2 * PAD, 8 * SCALE + 2 * PAD);
-    let plate: [u8; 4] = match notice.kind {
+
+    let lines: Vec<_> = lines.map(overlay_text).collect();
+    let cols = lines
+        .iter()
+        .map(|text| text.chars().count())
+        .max()
+        .unwrap_or(0);
+    let rows = lines.len().max(1) as u32;
+    let w = cols.max(1) as u32 * 8 * SCALE + 2 * PAD;
+    let h = rows * LINE_HEIGHT + (rows - 1) * LINE_GAP + 2 * PAD;
+    let plate: [u8; 4] = match tone {
         NoticeKind::Info => [24, 32, 48, 210],
         NoticeKind::Ready => [16, 72, 32, 225],
         NoticeKind::Error => [96, 20, 20, 225],
@@ -136,21 +180,27 @@ pub fn rasterize(notice: &Notice) -> (u32, u32, Vec<u8>) {
         .cycle()
         .take((w * h * 4) as usize)
         .collect();
-    for (i, c) in text.chars().enumerate() {
-        let Some(glyph) = font8x8::BASIC_FONTS.get(c) else {
-            continue;
-        };
-        for (row, bits) in glyph.iter().enumerate() {
-            for col in 0..8u32 {
-                if bits & (1 << col) == 0 {
-                    continue;
-                }
-                for dy in 0..SCALE {
-                    for dx in 0..SCALE {
-                        let x = PAD + (i as u32 * 8 + col) * SCALE + dx;
-                        let y = PAD + row as u32 * SCALE + dy;
-                        let o = ((y * w + x) * 4) as usize;
-                        px[o..o + 4].copy_from_slice(&[240, 240, 240, 255]);
+    for (line, text) in lines.iter().enumerate() {
+        let top = PAD + line as u32 * (LINE_HEIGHT + LINE_GAP);
+        for (i, c) in text.chars().enumerate() {
+            let Some(glyph) = font8x8::BASIC_FONTS
+                .get(c)
+                .or_else(|| font8x8::LATIN_FONTS.get(c))
+            else {
+                continue;
+            };
+            for (row, bits) in glyph.iter().enumerate() {
+                for col in 0..8u32 {
+                    if bits & (1 << col) == 0 {
+                        continue;
+                    }
+                    for dy in 0..SCALE {
+                        for dx in 0..SCALE {
+                            let x = PAD + (i as u32 * 8 + col) * SCALE + dx;
+                            let y = top + row as u32 * SCALE + dy;
+                            let o = ((y * w + x) * 4) as usize;
+                            px[o..o + 4].copy_from_slice(&[240, 240, 240, 255]);
+                        }
                     }
                 }
             }
@@ -447,9 +497,55 @@ impl OverlayRenderer {
             self.sprite.upload(device, queue, (w, h), &px);
             self.cached = Some(notice.clone());
         }
-        let margin = 12u32;
         self.sprite
-            .draw(device, encoder, dst, dst_format, dst_size, (margin, margin));
+            .draw(device, encoder, dst, dst_format, dst_size, (MARGIN, MARGIN));
+    }
+}
+
+#[cfg(not(any(target_os = "tvos", target_os = "ios")))]
+pub(crate) struct EditorPlateRenderer {
+    sprite: Sprite,
+    cached: Option<EditorPlate>,
+}
+
+#[cfg(not(any(target_os = "tvos", target_os = "ios")))]
+impl EditorPlateRenderer {
+    pub(crate) fn new(device: &wgpu::Device) -> Self {
+        Self {
+            sprite: Sprite::new(device, "editor plate"),
+            cached: None,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn draw(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        plate: &EditorPlate,
+        banner_visible: bool,
+        dst: &wgpu::TextureView,
+        dst_format: wgpu::TextureFormat,
+        dst_size: (u32, u32),
+    ) {
+        if self.cached.as_ref() != Some(plate) {
+            let (w, h, px) = rasterize_lines(plate.tone, plate.lines());
+            self.sprite.upload(device, queue, (w, h), &px);
+            self.cached = Some(plate.clone());
+        }
+        let Some((width, _)) = self.sprite.size() else {
+            return;
+        };
+        let x = dst_size.0.saturating_sub(width + MARGIN).max(MARGIN);
+        // Reserve the banner's row when it is visible, even in narrow windows.
+        let y = if banner_visible {
+            2 * MARGIN + LINE_HEIGHT + 2 * PAD
+        } else {
+            MARGIN
+        };
+        self.sprite
+            .draw(device, encoder, dst, dst_format, dst_size, (x, y));
     }
 }
 
@@ -496,6 +592,27 @@ mod tests {
         assert!(b.restart_offered());
         b.set(None);
         assert!(!b.restart_offered());
+    }
+
+    #[test]
+    fn editor_plate_rasterizes_both_lines() {
+        let plate = EditorPlate {
+            title: "Editor · viewing",
+            text: Some("Aim select".into()),
+            tone: NoticeKind::Info,
+        };
+        let (w, h, px) = rasterize_lines(plate.tone, plate.lines());
+        assert_eq!(h, 2 * LINE_HEIGHT + LINE_GAP + 2 * PAD);
+        let ink = |x, y| {
+            let i = ((y * w + x) * 4) as usize;
+            px[i..i + 4] == [240, 240, 240, 255]
+        };
+        let dot_x = PAD + 7 * 8 * SCALE;
+        assert!(
+            (PAD..PAD + LINE_HEIGHT).any(|y| (dot_x..dot_x + 8 * SCALE).any(|x| ink(x, y)))
+        );
+        let second_y = PAD + LINE_HEIGHT + LINE_GAP;
+        assert!((second_y..second_y + LINE_HEIGHT).any(|y| (PAD..w - PAD).any(|x| ink(x, y))));
     }
 
     #[test]
@@ -581,7 +698,7 @@ mod tests {
 
     #[test]
     fn long_text_is_cut() {
-        let s = ascii(&"x".repeat(500));
+        let s = overlay_text(&"x".repeat(500));
         assert_eq!(s.len(), MAX_CHARS);
         assert!(s.ends_with("..."));
     }

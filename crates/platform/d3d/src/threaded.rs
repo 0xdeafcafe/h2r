@@ -972,6 +972,10 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         }
     }
 
+    fn reset_present_metadata(&mut self) -> Result<(), String> {
+        self.call(|w| w.inner.reset_present_metadata())
+    }
+
     fn present(&mut self, surface: u32, flags: u32) -> Result<(), String> {
         self.present_with_gamma(surface, flags, None)
     }
@@ -989,10 +993,13 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         // The arrival, read on the guest's thread (the render thread may
         // reach this present a frame later).
         let at = std::time::Instant::now();
+        let metadata = crate::present_camera::current();
         self.post(move |w| {
             let s = w.surface(surface)?;
             w.inner.stamp_present(at);
-            let r = w.inner.present_with_gamma(s, flags, gamma.as_deref());
+            let r = crate::present_camera::with(metadata, || {
+                w.inner.present_with_gamma(s, flags, gamma.as_deref())
+            });
             *w.shared.presented.lock().unwrap() = n;
             w.shared.presented_cv.notify_all();
             r?;

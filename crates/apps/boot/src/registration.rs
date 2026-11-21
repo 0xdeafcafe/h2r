@@ -386,6 +386,8 @@ pub struct LateInputs<'a> {
     /// Retail guest geometry, or a legacy film's recorded geometry.
     #[cfg(feature = "gpu")]
     pub fixed_lod: Option<f32>,
+    #[cfg(feature = "gpu")]
+    pub world_line_present: Option<Arc<dyn render_bridge::scene_step::PresentObserver>>,
     pub rt: &'a Arc<Runtime>,
     pub lockstep: lockstep_glue::Config,
     pub agent: AgentSource,
@@ -525,7 +527,9 @@ pub(crate) fn register_late_for_profile(
         // The frame step's FrameScene: camera, world and objects extracted
         // for the native stages (docs/graphics/framescene.md).
         features
-            .add(&render_bridge::scene_step::FrameSceneStep)
+            .add(&render_bridge::scene_step::FrameSceneStep {
+                present: i.world_line_present,
+            })
             .map_err(|e| anyhow::anyhow!("frame scene: {e}"))?;
         // The static world on the native GPU renderer
         // (on by default, H2_FEATURES=impl.render.native=off turns it

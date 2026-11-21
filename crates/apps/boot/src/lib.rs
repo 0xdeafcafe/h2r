@@ -1023,6 +1023,34 @@ fn run_configured(
     let coop_probe = coop_probe::parse(|k| std::env::var(k).ok()).map_err(anyhow::Error::msg)?;
     #[cfg(feature = "gpu")]
     native_map::set_vfs(k.vfs());
+    let editor_link = host.editor_link.take();
+    #[cfg(feature = "gpu")]
+    let world_line_present = {
+        let sources = std::mem::take(&mut host.world_line_sources);
+        let disabled = if render_hooks != film::RenderHooks::Gpu
+            || !hooks::switches::native_render_on(features.switches())
+        {
+            Some(agent::editor::MarkAvailability::NativeOff)
+        } else if !features.switches().feature(render_bridge::scene_step::ID, true) {
+            Some(agent::editor::MarkAvailability::SceneOff)
+        } else {
+            None
+        };
+        if let Some(reason) = disabled {
+            if let Some(link) = &editor_link {
+                link.set_mark_capture_disabled(reason);
+            }
+            None
+        } else if editor_link.is_some() || !sources.is_empty() {
+            d3d_calls.as_ref().map(|device| {
+                world_lines::present_observer(editor_link.clone(), sources, device.snapshot.clone())
+            })
+        } else {
+            None
+        }
+    };
+    #[cfg(feature = "gpu")]
+    let world_line_capture_requested = world_line_present.is_some();
     // The lockstep harness, the agent, our cheats, the render features and
     // the probes (registration.rs, the rest of the plan's features).
     let late = registration::register_late_for_profile(
@@ -1032,6 +1060,8 @@ fn run_configured(
             view: d3d_calls.as_ref().and_then(|d| d.view.as_ref()),
             #[cfg(feature = "gpu")]
             fixed_lod: protected_readbacks.then(|| legacy_lod.unwrap_or(1.0)),
+            #[cfg(feature = "gpu")]
+            world_line_present,
             rt: &loaded.runtime,
             lockstep: lockstep_config,
             agent: agent_source,
@@ -1133,8 +1163,10 @@ fn run_configured(
             k.vfs(),
         );
     }
-    // The debug menu's host methods and connection (debug_menu_glue.rs).
+    // Paired editor presentation and the debug menu's host methods.
     if let Some(a) = &agent {
+        agent::editor::install(&a.agent, editor_link.clone());
+        agent::editor::install_scene(&a.agent, editor_link.clone());
         debug_menu_glue::install(
             host.debug_menu.as_ref(),
             host_pads,
@@ -1331,6 +1363,10 @@ fn run_configured(
             a.agent.set_no_tick_hook();
             eprintln!("agent: answering between slices only, no pausing: {why}");
         }
+    }
+    #[cfg(feature = "gpu")]
+    if world_line_capture_requested && let Some(link) = &editor_link {
+        note_editor_scene_install(link, &installed);
     }
     if verbose_plan {
         if let Some(store) = host.settings.as_ref().filter(|_| skulls_on) {
@@ -1916,9 +1952,53 @@ fn run_configured(
     Ok(report)
 }
 
+#[cfg(feature = "gpu")]
+fn note_editor_scene_install(link: &agent::editor::EditorLink, installed: &hooks::Installed) {
+    if installed.off_reason(render_bridge::scene_step::ID).is_some() {
+        link.set_mark_capture_disabled(agent::editor::MarkAvailability::SceneOff);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn an_install_refused_frame_scene_is_reported_by_editor_marks() {
+        struct Game;
+
+        impl agent::Reader for Game {
+            fn status(&mut self) -> agent::GameStatus {
+                agent::GameStatus::default()
+            }
+
+            fn objects(&mut self) -> Result<Vec<agent_proto::Object>, String> {
+                Ok(vec![])
+            }
+        }
+
+        let agent = agent::Agent::new();
+        let link = agent::editor::EditorLink::default();
+        agent::editor::install_scene(&agent, Some(link.clone()));
+        let mut installed = hooks::Installed::default();
+        installed.off.push((render_bridge::scene_step::ID, "missing required point".into()));
+        note_editor_scene_install(&link, &installed);
+
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let connection = agent.connect(sender);
+        agent.submit(connection, &serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "editor.marks",
+            "id": 1,
+            "params": {"marks": [{"point": [1, 2, 3], "color": [1, 0, 0]}]}
+        }).to_string());
+        agent.on_tick(&mut Game);
+        let reply: serde_json::Value = serde_json::from_str(&receiver.try_recv().unwrap()).unwrap();
+        assert_eq!(reply["result"]["held"], 1);
+        assert_eq!(reply["result"]["drawn"], false);
+        assert_eq!(reply["result"]["why"], "frame scene capture is off");
+    }
 
     #[test]
     fn perf_env_note_names_what_writes_nothing() {

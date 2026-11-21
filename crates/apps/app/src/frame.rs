@@ -26,6 +26,7 @@ use gfx::format::TexelFormat;
 use gfx::surface::{SurfaceId, SurfaceKind, SurfaceStore};
 
 use crate::mailbox::TripleBuffer;
+use crate::overlay::marks::FrameMarks;
 use crate::scale::Viewport;
 
 /// Format of the handoff slots. Non-sRGB: the Xbox pipeline is gamma-encoded
@@ -104,6 +105,8 @@ pub struct ShownFrame {
     pub new: bool,
     /// A host loading picture shown while the title rebuilds its menu.
     pub loading: bool,
+    /// The editor data that accompanies these pixels.
+    pub marks: FrameMarks,
 }
 
 struct Slot {
@@ -111,6 +114,7 @@ struct Slot {
     view: wgpu::TextureView,
     size: (u32, u32),
     seq: u64,
+    marks: FrameMarks,
 }
 
 struct State {
@@ -196,6 +200,7 @@ pub struct FrameSink {
     ctx: GfxContext,
     blitter: Option<Blitter>,
     hook_errors: u64,
+    mark_source: Option<Box<dyn FnMut() -> FrameMarks + Send>>,
 }
 
 impl FrameSink {
@@ -235,7 +240,17 @@ impl FrameSink {
             ctx,
             blitter: None,
             hook_errors: 0,
+            mark_source: None,
         }
+    }
+
+    /// The editor data for the D3D present this sink is about to publish.
+    pub fn with_frame_marks(
+        mut self,
+        source: impl FnMut() -> FrameMarks + Send + 'static,
+    ) -> Self {
+        self.mark_source = Some(Box::new(source));
+        self
     }
 
     /// Another sink publishing into the same channel.
@@ -265,7 +280,7 @@ impl FrameSink {
             });
         }
         let ctx = &self.ctx;
-        publish_with(&self.shared, ctx, size, |slot| {
+        publish_with(&self.shared, ctx, size, FrameMarks::Raw, |slot| {
             write_rgba(ctx, slot, pixels);
             Ok(())
         })
@@ -288,7 +303,15 @@ impl FrameSink {
         size: (u32, u32),
         opaque: bool,
     ) -> Result<u64, FrameError> {
-        self.submit_encoded(size, opaque, view, None, [0., 0., 1., 1.], |_| Ok(()))
+        self.submit_encoded(
+            size,
+            opaque,
+            view,
+            None,
+            [0., 0., 1., 1.],
+            FrameMarks::Raw,
+            |_| Ok(()),
+        )
     }
 
     /// Publishes a gfx colour surface: the D3D back buffer on `Swap`.
@@ -324,11 +347,23 @@ impl FrameSink {
         );
         let view = s.view().clone();
         let (output_size, rect) = crop_region(size, logical_size.unwrap_or(size), crop);
-        self.submit_encoded(output_size, opaque, &view, gamma, rect, |enc| {
-            store
-                .resolve_msaa(enc, id)
-                .map_err(|e| FrameError::Surface(e.to_string()))
-        })
+        let marks = self
+            .mark_source
+            .as_mut()
+            .map_or(FrameMarks::Raw, |source| source());
+        self.submit_encoded(
+            output_size,
+            opaque,
+            &view,
+            gamma,
+            rect,
+            marks,
+            |enc| {
+                store
+                    .resolve_msaa(enc, id)
+                    .map_err(|e| FrameError::Surface(e.to_string()))
+            },
+        )
     }
 
     /// Turns this sink into the closure `d3d::GfxBackend::on_present` takes:
@@ -426,6 +461,7 @@ impl FrameSink {
         Ok((slot.size, rgba))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn submit_encoded(
         &mut self,
         size: (u32, u32),
@@ -433,13 +469,14 @@ impl FrameSink {
         src: &wgpu::TextureView,
         gamma: Option<&[u8; 768]>,
         src_rect: [f32; 4],
+        marks: FrameMarks,
         before: impl FnOnce(&mut wgpu::CommandEncoder) -> Result<(), FrameError>,
     ) -> Result<u64, FrameError> {
         check_size(size)?;
         let ctx = &self.ctx;
         let blitter = self.blitter.get_or_insert_with(|| Blitter::new(ctx));
         let shared = &self.shared;
-        publish_with(shared, ctx, size, |slot| {
+        publish_with(shared, ctx, size, marks, |slot| {
             let mut enc = ctx
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -501,6 +538,7 @@ fn publish_with(
     shared: &Shared,
     ctx: &GfxContext,
     size: (u32, u32),
+    marks: FrameMarks,
     write: impl FnOnce(&Slot) -> Result<(), FrameError>,
 ) -> Result<u64, FrameError> {
     let seq = {
@@ -513,7 +551,9 @@ fn publish_with(
         write(slot)?;
         let seq = st.next_seq;
         st.next_seq += 1;
-        st.slots[back].as_mut().expect("just written").seq = seq;
+        let slot = st.slots[back].as_mut().expect("just written");
+        slot.seq = seq;
+        slot.marks = marks;
         st.tb.publish();
         seq
     };
@@ -594,6 +634,7 @@ fn make_slot(ctx: &GfxContext, size: (u32, u32)) -> Slot {
         view,
         size,
         seq: 0,
+        marks: FrameMarks::Raw,
     }
 }
 
@@ -630,6 +671,7 @@ impl FrameSource {
                     seq: 0,
                     new: false,
                     loading: true,
+                    marks: FrameMarks::Raw,
                 });
             }
         }
@@ -644,6 +686,7 @@ impl FrameSource {
             seq: slot.seq,
             new,
             loading: false,
+            marks: slot.marks.clone(),
         })
     }
 

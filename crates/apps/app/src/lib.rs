@@ -55,7 +55,7 @@ pub mod theater_overlay;
 pub use frame::{Compositor, Filter, FrameError, FrameSink, FrameSource, FrameStats, ShownFrame};
 pub use input_pump::{PumpReport, pump_input};
 pub use lifecycle::{Control, Lifecycle};
-pub use overlay::{Banner, Notice, NoticeKind};
+pub use overlay::{Banner, EditorPlate, EditorPlateSource, Notice, NoticeKind};
 pub use pacing::{PaceAction, PacePolicy, PaceStats, Pacer, VBlank, WindowedRate};
 pub use scale::{DisplayAspect, NativeFit, Scaling, Viewport};
 pub use watermark::{BuildInfo, LiveStats, Watermark};
@@ -128,6 +128,8 @@ pub struct AppConfig {
     /// (docs/runtime/app.md "Watermark"). F3 toggles it; F3 does not reach the
     /// guest while one is configured.
     pub watermark: Option<Watermark>,
+    /// The paired editor's leased plate and window focus requests.
+    pub editor_link: Option<Arc<dyn EditorPlateSource>>,
     /// Our debug menu (docs/runtime/debug-menu.md), drawn over the game
     /// image while open. Backquote opens and closes it; while it is open
     /// the arrows, Enter, Space, Escape and Backspace drive it and no key
@@ -165,6 +167,7 @@ impl Default for AppConfig {
             closer: None,
             banner: None,
             watermark: None,
+            editor_link: None,
             debug_menu: None,
             theater: None,
         }

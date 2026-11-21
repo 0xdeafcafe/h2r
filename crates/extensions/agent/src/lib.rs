@@ -52,6 +52,7 @@ pub mod ai;
 mod capture;
 pub mod collision;
 pub mod compare;
+pub mod editor;
 mod exec;
 pub mod forge;
 pub mod havok;

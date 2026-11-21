@@ -197,6 +197,7 @@ struct Shared {
 #[derive(Default)]
 struct State {
     live: crate::live::Mirror,
+    editor_marks: Option<crate::editor::MarkObserver>,
     live_epoch: u64,
     // The last epoch that replaced the map or restored its state.
     map_epoch: u64,
@@ -452,7 +453,11 @@ impl Agent {
     /// The tick observer isn't installed: control methods are refused and
     /// world reads are answered between slices.
     pub fn set_no_tick_hook(&self) {
-        self.lock().no_tick_hook = true;
+        let mut state = self.lock();
+        state.no_tick_hook = true;
+        if let Some(marks) = &state.editor_marks {
+            marks.set_no_tick_hook();
+        }
     }
 
     /// Answers `name` with `f` (replacing an earlier one of that name).
@@ -506,6 +511,14 @@ impl Agent {
             .insert(name.to_owned(), (access, Box::new(f)));
     }
 
+    pub(crate) fn set_editor_marks(&self, marks: crate::editor::MarkObserver) {
+        let mut state = self.lock();
+        if state.no_tick_hook {
+            marks.set_no_tick_hook();
+        }
+        state.editor_marks = Some(marks);
+    }
+
     /// The feature plan's text, for `features.list`.
     pub fn set_plan(&self, lines: Vec<String>) {
         self.lock().plan = lines;
@@ -519,7 +532,7 @@ impl Agent {
     /// Same-map checkpoint restores need a key even if the game clock moves forward.
     pub(crate) fn live_cut(&self) {
         let mut s = self.lock();
-        s.live_epoch += 1;
+        s.advance_live_epoch();
         s.map_epoch = s.live_epoch;
     }
 
@@ -558,7 +571,7 @@ impl Agent {
         s.cinematic = cinematic;
         s.game.map = map;
         s.map_ticks = map_ticks;
-        s.live_epoch += 1;
+        s.advance_live_epoch();
         s.map_epoch = s.live_epoch;
         Ok(())
     }
@@ -679,6 +692,9 @@ impl Agent {
         s.mark_tick();
         s.record_tick(reader);
         s.lobby_boundary(reader);
+        if let Some(marks) = &s.editor_marks {
+            marks.on_tick(reader);
+        }
         s.serve(reader, Where::Tick);
         s.capture_live(reader, None, stepping);
         s.settle_deferred(reader);
@@ -855,6 +871,13 @@ impl State {
         })
     }
 
+    fn advance_live_epoch(&mut self) {
+        self.live_epoch += 1;
+        if let Some(marks) = &self.editor_marks {
+            marks.invalidate();
+        }
+    }
+
     /// Reads the game's status and emits what changed.
     fn refresh(&mut self, reader: &mut dyn Reader, where_: Where) -> At {
         self.boundary = Some(match where_ {
@@ -869,7 +892,7 @@ impl State {
             .zip(self.game.tick)
             .is_some_and(|(prev, tick)| tick < prev);
         if map_changed || rewound || bsp_changed {
-            self.live_epoch += 1;
+            self.advance_live_epoch();
             if map_changed || rewound {
                 self.map_epoch = self.live_epoch;
             }

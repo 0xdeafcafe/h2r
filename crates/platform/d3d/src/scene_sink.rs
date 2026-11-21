@@ -324,6 +324,10 @@ impl<B: Backend> Backend for SceneSink<B> {
     fn idle(&mut self) -> Option<std::time::Instant> {
         self.inner.idle()
     }
+    fn reset_present_metadata(&mut self) -> Result<(), String> {
+        self.inner.reset_present_metadata()
+    }
+
     fn drain(&mut self) -> Result<(), String> {
         self.inner.drain()
     }

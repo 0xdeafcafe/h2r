@@ -19,7 +19,8 @@ use crate::frame::{self, Compositor, FrameSource, FrameStats};
 use crate::keymap::{self, Shortcut};
 use crate::lifecycle::Lifecycle;
 use crate::menu_overlay::MenuRenderer;
-use crate::overlay::OverlayRenderer;
+use crate::overlay::marks::{MarkFrameStatus, MarkRenderer};
+use crate::overlay::{EditorPlateRenderer, OverlayRenderer};
 use crate::pacing::{PaceStats, Pacer, WindowedRate};
 use crate::surface::WindowSurface;
 use crate::theater_overlay;
@@ -33,6 +34,8 @@ enum UserEvent {
     Frame,
     /// The guest thread finished.
     GuestExited,
+    /// The editor changed its plate or asked for focus.
+    EditorChanged,
     /// A [`crate::Closer`] asked to close.
     Close,
 }
@@ -43,6 +46,8 @@ struct Gpu {
     surface: WindowSurface,
     compositor: Compositor,
     overlay: OverlayRenderer,
+    editor: Option<EditorPlateRenderer>,
+    marks: MarkRenderer,
     watermark: WatermarkRenderer,
     menu: MenuRenderer,
     theater: Option<theater_overlay::Renderer>,
@@ -101,6 +106,8 @@ struct Shell {
     frames_at_exit: FrameStats,
     /// The banner generation last drawn.
     banner_drawn: u64,
+    editor_redraw: EditorRedraw,
+    mark_frame_status: Option<MarkFrameStatus>,
     restart_requested: bool,
     watermark_text: Option<WatermarkText>,
     theater_view: theater_overlay::View,
@@ -109,6 +116,42 @@ struct Shell {
     theater_cursor: Option<(f64, f64)>,
     /// The window's own redraw clock above 30 fps (`AppConfig::fps`).
     display: DisplaySchedule,
+}
+
+/// Keep an expired or changed overlay dirty until a replacement presents.
+#[derive(Default)]
+struct EditorRedraw {
+    expires: Option<Instant>,
+    changed: bool,
+    retry_at: Option<Instant>,
+}
+
+const EDITOR_REDRAW_RETRY: Duration = Duration::from_millis(100);
+
+impl EditorRedraw {
+    fn change(&mut self) {
+        self.changed = true;
+    }
+
+    fn presented(&mut self, expires: Option<Instant>) {
+        self.expires = expires;
+        self.changed = false;
+        self.retry_at = None;
+    }
+
+    fn schedule(&mut self, now: Instant) -> (bool, Option<Instant>) {
+        if !self.changed && self.expires.is_none_or(|expires| now < expires) {
+            return (false, self.expires);
+        }
+        if let Some(retry) = self.retry_at
+            && now < retry
+        {
+            return (false, Some(retry));
+        }
+        let retry = now + EDITOR_REDRAW_RETRY;
+        self.retry_at = Some(retry);
+        (true, Some(retry))
+    }
 }
 
 pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitReport> {
@@ -144,6 +187,8 @@ pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitRepor
         },
         frames_at_exit: FrameStats::default(),
         banner_drawn: 0,
+        editor_redraw: EditorRedraw::default(),
+        mark_frame_status: None,
         restart_requested: false,
         watermark_text: None,
         theater_view: theater_overlay::View::default(),
@@ -274,6 +319,12 @@ impl Shell {
         };
         self.audio = Some(audio);
 
+        if let Some(editor) = &self.config.editor_link {
+            let proxy = self.proxy.clone();
+            editor.set_waker(Arc::new(move || {
+                let _ = proxy.send_event(UserEvent::EditorChanged);
+            }));
+        }
         let guest = self.guest.take().expect("init runs once");
         let proxy = self.proxy.clone();
         self.worker = Some(GuestWorker::spawn(host, guest, move || {
@@ -285,6 +336,12 @@ impl Shell {
             window,
             compositor: Compositor::new(&ctx.device),
             overlay: OverlayRenderer::new(&ctx.device),
+            editor: self
+                .config
+                .editor_link
+                .as_ref()
+                .map(|_| EditorPlateRenderer::new(&ctx.device)),
+            marks: MarkRenderer::default(),
             watermark: WatermarkRenderer::new(&ctx.device),
             menu: MenuRenderer::new(&ctx.device),
             theater: self.config.theater.as_ref().map(|_| theater_overlay::Renderer::new(&ctx.device)),
@@ -347,6 +404,32 @@ impl Shell {
             self.config.filter,
             wgpu::Color::BLACK,
         );
+        let now = Instant::now();
+        let mut overlay_expires = None;
+        let mut mark_status = MarkFrameStatus::Waiting;
+        if let Some(frame) = &frame {
+            if frame.loading {
+                mark_status = MarkFrameStatus::Loading;
+            } else {
+                let mut drawn_generation = None;
+                if let Some(marks) = frame.marks.marks() {
+                    g.marks.begin();
+                    let shown = marks.visit(now, &mut |cameras, mark| {
+                        g.marks.push(&mark, cameras, viewport, g.surface.size());
+                    });
+                    overlay_expires = shown.expires;
+                    drawn_generation = shown.editor_generation;
+                    g.marks.draw(
+                        &g.ctx.device,
+                        &g.ctx.queue,
+                        &mut enc,
+                        &view,
+                        g.surface.config.format,
+                    );
+                }
+                mark_status = frame.marks.status(drawn_generation);
+            }
+        }
         if frame.as_ref().is_some_and(|f| f.loading) {
             self.watermark_text = None;
         } else if let Some(wm) = &self.config.watermark
@@ -386,6 +469,26 @@ impl Shell {
                 );
             }
         }
+        let notice = self.config.banner.as_ref().and_then(|banner| {
+            self.banner_drawn = banner.generation();
+            banner.visible()
+        });
+        if let Some(editor) = &self.config.editor_link
+            && let Some(renderer) = &mut g.editor
+            && let Some((plate, expires)) = editor.current(now)
+        {
+            overlay_expires = Some(overlay_expires.map_or(expires, |marks| marks.min(expires)));
+            renderer.draw(
+                &g.ctx.device,
+                &g.ctx.queue,
+                &mut enc,
+                &plate,
+                notice.is_some(),
+                &view,
+                g.surface.config.format,
+                g.surface.size(),
+            );
+        }
         if let Some(renderer) = &mut g.theater {
             renderer.draw(
                 &g.ctx,
@@ -415,19 +518,16 @@ impl Shell {
                 viewport,
             );
         }
-        if let Some(banner) = &self.config.banner {
-            self.banner_drawn = banner.generation();
-            if let Some(notice) = banner.visible() {
-                g.overlay.draw(
-                    &g.ctx.device,
-                    &g.ctx.queue,
-                    &mut enc,
-                    &notice,
-                    &view,
-                    g.surface.config.format,
-                    size,
-                );
-            }
+        if let Some(notice) = notice {
+            g.overlay.draw(
+                &g.ctx.device,
+                &g.ctx.queue,
+                &mut enc,
+                &notice,
+                &view,
+                g.surface.config.format,
+                size,
+            );
         }
         g.ctx.queue.submit([enc.finish()]);
         g.window.pre_present_notify();
@@ -436,6 +536,13 @@ impl Shell {
         {
             drop(transaction);
             g.last_presented_size = size;
+        }
+        self.editor_redraw.presented(overlay_expires);
+        if let Some(editor) = &self.config.editor_link
+            && self.mark_frame_status != Some(mark_status)
+        {
+            editor.set_mark_frame_status(mark_status);
+            self.mark_frame_status = Some(mark_status);
         }
         if let Some(theater) = &self.config.theater
             && let Some(dir) = self.theater_screenshot.take()
@@ -591,6 +698,17 @@ impl ApplicationHandler<UserEvent> for Shell {
                     g.source.ack_wake();
                     if self.display.redraw_on_publish() {
                         g.window.request_redraw();
+                    }
+                }
+            }
+            UserEvent::EditorChanged => {
+                self.editor_redraw.change();
+                if let (Some(editor), Some(g)) = (&self.config.editor_link, &self.gpu) {
+                    if editor.take_focus_request() {
+                        if g.window.is_minimized() == Some(true) {
+                            g.window.set_minimized(false);
+                        }
+                        g.window.focus_window();
                     }
                 }
             }
@@ -876,6 +994,15 @@ impl ApplicationHandler<UserEvent> for Shell {
         }
         // Above 30 fps, sample the latest guest or replay frame on the display grid.
         let mut wake = self.status.last + Duration::from_secs(1);
+        if let Some(g) = &self.gpu {
+            let (redraw, next) = self.editor_redraw.schedule(Instant::now());
+            if redraw {
+                g.window.request_redraw();
+            }
+            if let Some(next) = next {
+                wake = wake.min(next);
+            }
+        }
         if let Some(theater) = &self.config.theater {
             let now = Instant::now();
             if now >= self.theater_refresh {
@@ -933,5 +1060,33 @@ impl ApplicationHandler<UserEvent> for Shell {
 
     fn exiting(&mut self, _: &ActiveEventLoop) {
         self.life.request_stop();
+    }
+}
+
+#[cfg(test)]
+mod editor_redraw_tests {
+    use super::*;
+
+    #[test]
+    fn expired_editor_overlay_retries_until_a_replacement_presents() {
+        let start = Instant::now();
+        let expires = start + Duration::from_millis(500);
+        let mut redraw = EditorRedraw::default();
+        redraw.presented(Some(expires));
+        assert_eq!(redraw.schedule(start), (false, Some(expires)));
+        let retry = expires + EDITOR_REDRAW_RETRY;
+        assert_eq!(redraw.schedule(expires), (true, Some(retry)));
+
+        // Surface acquisition fails: there is no call to presented().
+        assert_eq!(redraw.schedule(expires), (false, Some(retry)));
+        assert_eq!(redraw.schedule(retry), (true, Some(retry + EDITOR_REDRAW_RETRY)));
+        redraw.presented(None);
+        assert_eq!(redraw.schedule(retry), (false, None));
+
+        // A clear or an epoch cut also needs to erase the previous pixels.
+        redraw.change();
+        assert_eq!(redraw.schedule(retry), (true, Some(retry + EDITOR_REDRAW_RETRY)));
+        redraw.presented(None);
+        assert_eq!(redraw.schedule(retry), (false, None));
     }
 }

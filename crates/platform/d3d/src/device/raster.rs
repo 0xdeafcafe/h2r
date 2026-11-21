@@ -291,7 +291,7 @@ impl<B: Backend> Device<B> {
             return Ok(FrameTexture::No);
         };
         // The front after a COPY swap that nothing has drawn over since is
-        // still in back0 (`Device::before_target_write`).
+        // still in back0 (`Device::materialize_display_copy`).
         let front = buffer == sw.front;
         let (source, which) = if buffer == sw.back[0] {
             (buffer, "the back buffer")
@@ -1215,7 +1215,7 @@ impl<B: Backend> Device<B> {
     /// presented contents go to the front, which then holds the displayed
     /// image (what `PersistDisplay` keeps). A backend without
     /// [`Backend::copy_surface`] cannot keep it; `PersistDisplay` then stops.
-    pub(super) fn before_target_write(&mut self, color: B::Surface) -> Result<(), D3dError> {
+    pub(super) fn materialize_display_copy(&mut self, color: B::Surface) -> Result<(), D3dError> {
         let Some(sw) = self.swap.as_mut() else {
             return Ok(());
         };
@@ -1232,11 +1232,13 @@ impl<B: Backend> Device<B> {
             .copy_surface(src, dst)
             .map_err(D3dError::Backend)?
         {
+            self.present_cameras.copy(src, dst);
             let sw = self.swap.as_mut().expect("checked");
             if sw.shown == src {
                 sw.shown = dst;
             }
         } else {
+            self.present_cameras.invalidate(dst);
             self.display.shown_lost = true;
         }
         Ok(())
@@ -1749,7 +1751,7 @@ impl<B: Backend> Device<B> {
         if !mask.any() && depth.is_none() && stencil.is_none() {
             return Ok(());
         }
-        self.before_target_write(c)?;
+        self.materialize_display_copy(c)?;
         let writes_depth = depth.is_some() || stencil.is_some();
         let whole = pixels.iter().any(|r| r.is_whole(w, h));
         if whole && (mask.all() || !mask.any()) {
@@ -1759,6 +1761,9 @@ impl<B: Backend> Device<B> {
                 stencil,
             };
             self.backend.clear(c, d, clear).map_err(D3dError::Backend)?;
+            if clear.color.is_some() {
+                self.present_cameras.color_written(c);
+            }
             self.mark_written(writes_depth);
             return Ok(());
         }
@@ -1784,6 +1789,9 @@ impl<B: Backend> Device<B> {
             .map_err(D3dError::Backend)?
         {
             DrawOutcome::Drawn => {
+                if rc.color.is_some() {
+                    self.present_cameras.color_written(c);
+                }
                 self.mark_written(writes_depth);
                 Ok(())
             }

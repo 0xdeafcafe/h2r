@@ -40,6 +40,7 @@ pub mod d3d_diag;
 pub mod d3d_glue;
 pub mod debug_menu_glue;
 pub mod dsound_glue;
+mod editor_glue;
 pub mod fov_row;
 #[cfg(feature = "gpu")]
 pub mod render_aspect;
@@ -212,6 +213,7 @@ pub mod video_screen;
 #[cfg(feature = "local-io")]
 pub mod voice_glue;
 pub mod voice_settings;
+pub mod world_lines;
 pub mod xapi_glue;
 #[cfg(test)]
 pub mod string_ids;

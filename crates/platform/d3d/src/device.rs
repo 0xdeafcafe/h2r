@@ -644,7 +644,7 @@ struct Swap<S> {
     shown: S,
     /// A `COPY` swap's copy of back0 into the front is still to be made
     /// (it is deferred to the first write into back0,
-    /// [`Device::before_target_write`]): the display header's image is
+    /// [`Device::materialize_display_copy`]): the display header's image is
     /// back0's contents.
     copy_pending: bool,
     /// Host format and size of the ring's surfaces.
@@ -1036,6 +1036,7 @@ pub struct Device<B: Backend> {
     admissions: Vec<Arc<dyn crate::DrawAdmission>>,
     ui_fit: Option<crate::backend::UiFit>,
     projection: projection::DisplayProjection,
+    present_cameras: crate::present_camera::Images<B::Surface>,
     opaque_world_admission: Option<usize>,
     opaque_targets: Option<PreparedOpaqueTargets>,
     scoped_admission: Option<(Arc<ScopeState>, Arc<dyn crate::DrawAdmission>)>,
@@ -1217,7 +1218,8 @@ impl<B: Backend> PreparedExternal<'_, B> {
         for recording in self.recordings {
             self.device.backend.commit_external(recording);
         }
-        for (header, _) in self.binding.colors {
+        for (header, surface) in self.binding.colors {
+            self.device.present_cameras.color_written(surface);
             self.device.mark_color_written(header);
         }
         if self.binding.depth_write { self.device.mark_depth_written(); }
@@ -1251,7 +1253,8 @@ impl<B: Backend> SceneReservation<'_, B> {
             crate::scene_stage::dropped(kind, ranges, "the render thread stopped taking scene stages");
             return;
         }
-        for (header, _) in self.binding.colors {
+        for (header, surface) in self.binding.colors {
+            self.device.present_cameras.color_written(surface);
             self.device.mark_color_written(header);
         }
         if self.binding.depth_write {
@@ -1366,6 +1369,7 @@ impl<B: Backend> Device<B> {
             admissions: Vec::new(),
             ui_fit: None,
             projection: Default::default(),
+            present_cameras: crate::present_camera::Images::new(),
             opaque_world_admission: None,
             opaque_targets: None,
             scoped_admission: None,
@@ -1781,6 +1785,7 @@ impl<B: Backend> Device<B> {
         self.created = false;
         self.params = None;
         self.swap = None;
+        self.present_cameras.clear();
         self.depth = None;
         self.back_header = 0;
         self.frame_headers.clear();
@@ -2247,7 +2252,7 @@ impl<B: Backend> Device<B> {
             return Ok(None);
         }
         for &(_, surface) in &binding.colors {
-            self.before_target_write(surface)?;
+            self.materialize_display_copy(surface)?;
         }
         let stage = crate::SceneStage {
             surfaces: binding.surfaces.clone(),
@@ -2345,7 +2350,7 @@ impl<B: Backend> Device<B> {
             self.refuse_external(ExternalRefusal::Backend);
             return Ok(None);
         };
-        for &(_, surface) in &binding.colors { self.before_target_write(surface)?; }
+        for &(_, surface) in &binding.colors { self.materialize_display_copy(surface)?; }
         Ok(Some(PreparedExternal { device: self, binding, recordings }))
     }
 
@@ -2685,6 +2690,7 @@ impl<B: Backend> Device<B> {
                 p.snapshots[i].as_ref().or_else(|| p.keys[i].and_then(|k| p.cached.get(&k)).map(|c| &c.host))
             });
             let entry = p.draw.entry;
+            let writes_color = p.draw.state.render.color_write.xbox_value() != 0;
             let (outcome, spare) = self.backend.draw_owned(p.color, p.depth, p.draw, textures);
             BACKEND_DRAWS.fetch_add(1, AtomicOrdering::Relaxed);
             self.recycle_streams(spare);
@@ -2692,7 +2698,11 @@ impl<B: Backend> Device<B> {
             self.stats.inline_draws += u64::from(entry == "inline Begin/End");
             self.stats.swallow_draws_replayed += 1;
             match outcome.map_err(D3dError::Backend)? {
-                DrawOutcome::Drawn => {}
+                DrawOutcome::Drawn => {
+                    if writes_color {
+                        self.present_cameras.color_written(p.color);
+                    }
+                }
                 DrawOutcome::Skipped(reason) => self.events.push(Event::DrawSkipped { entry, reason }),
                 DrawOutcome::Unsupported(detail) => return Err(D3dError::Unimplemented { entry, detail }),
             }
@@ -2889,8 +2899,14 @@ impl<B: Backend> Device<B> {
         pass.depth_clip(self.depth_clip(mem, request.z_scale));
 
         if !s.plan.drop {
+            let writes_color = pass.writes().color;
             match self.backend.external_pass(color, color, Vec::new(), request, pass) {
-                Ok(true) => self.stats.external_passes += 1,
+                Ok(true) => {
+                    if writes_color {
+                        self.present_cameras.color_written(color);
+                    }
+                    self.stats.external_passes += 1;
+                }
                 Ok(false) => self.refuse_external(ExternalRefusal::Backend),
                 Err(_) => self.refuse_external(ExternalRefusal::Failed),
             }
@@ -2926,6 +2942,9 @@ impl<B: Backend> Device<B> {
         {
             for recording in recordings {
                 self.backend.commit_external(recording);
+            }
+            for target in s.surfaces.iter().flatten() {
+                self.present_cameras.color_written(target.surface);
             }
             self.stats.swallow_draws_dropped += plan.ranges as u64;
             self.stats.swallow_commits += 1;
@@ -3089,9 +3108,14 @@ impl<B: Backend> Device<B> {
                 // gives it a scratch depth; `Backend::external_pass`).
                 Ok((color, depth)) => match if colour_only { Some(color) } else { depth } {
                     None => Err(ExternalRefusal::NoDepth),
-                    Some(_) if writes.color && self.before_target_write(color).is_err() => Err(ExternalRefusal::Failed),
+                    Some(_) if writes.color && self.materialize_display_copy(color).is_err() => Err(ExternalRefusal::Failed),
                     Some(depth) => match self.backend.external_pass(color, depth, sampled, request, pass) {
-                        Ok(true) => Ok(()),
+                        Ok(true) => {
+                            if writes.color {
+                                self.present_cameras.color_written(color);
+                            }
+                            Ok(())
+                        }
                         Ok(false) => Err(ExternalRefusal::Backend),
                         Err(_) => Err(ExternalRefusal::Failed),
                     },
@@ -4754,6 +4778,8 @@ impl<B: Backend> Device<B> {
             self.count_swap(mem)?;
             let sw = self.swap.as_mut().expect("created");
             let shown = sw.back[0];
+            self.present_cameras.capture(shown);
+            self.present_cameras.finish(shown);
             // The shown buffer becomes the front, the old front the last
             // back buffer.
             let old_front = std::mem::replace(&mut sw.front, shown);
@@ -4775,16 +4801,20 @@ impl<B: Backend> Device<B> {
                 // old front is made first, so the buffer that becomes the
                 // third holds its image.
                 let back0 = self.swap.as_ref().expect("created").back[0];
-                self.before_target_write(back0)?;
+                self.materialize_display_copy(back0)?;
                 let sw = self.swap.as_mut().expect("created");
                 std::mem::swap(&mut sw.front, &mut sw.back[1]);
                 self.exchange_display_headers(mem)?;
             }
+            let back = self.swap.as_ref().expect("created").back[0];
+            self.present_cameras.capture(back);
             if flags & 1 != 0 {
                 // The copy into the display buffer, made before back0 is
-                // next written (`Device::before_target_write`), so a frame
+                // next written (`Device::materialize_display_copy`), so a frame
                 // never drawn over costs nothing.
-                self.swap.as_mut().expect("created").copy_pending = true;
+                let sw = self.swap.as_mut().expect("created");
+                self.present_cameras.finish(sw.back[0]);
+                sw.copy_pending = true;
             }
             if !three {
                 self.scan_out(flags)?;
@@ -4792,6 +4822,10 @@ impl<B: Backend> Device<B> {
         }
         if finish {
             if three {
+                if flags & 3 == 0 {
+                    let back = self.swap.as_ref().expect("created").back[0];
+                    self.present_cameras.capture(back);
+                }
                 self.scan_out(flags)?;
             }
             self.finish_swap(mem)?;
@@ -4818,6 +4852,11 @@ impl<B: Backend> Device<B> {
         self.vblanks_after_swap(mem)
     }
 
+    /// The render-owned sample, detached at Swap after the guest draws.
+    pub fn set_mark_image_source(&mut self, source: fn() -> Option<crate::present_camera::Image>) {
+        self.present_cameras.set_source(source);
+    }
+
     /// Scanout moves to what the display header names: the front, or back0
     /// while the copy into the front is pending.
     fn scan_out(&mut self, flags: u32) -> Result<(), D3dError> {
@@ -4832,9 +4871,15 @@ impl<B: Backend> Device<B> {
             // A fresh image; a front a failed copy left stale stays lost.
             self.display.shown_lost = false;
         }
-        self.backend
-            .present_with_gamma(shown, flags, self.display.gamma.as_deref())
-            .map_err(D3dError::Backend)
+        let metadata = crate::present_camera::Present::Guest {
+            image: self.present_cameras.get(shown),
+            reference: false,
+        };
+        crate::present_camera::with(Some(metadata), || {
+            self.backend
+                .present_with_gamma(shown, flags, self.display.gamma.as_deref())
+        })
+        .map_err(D3dError::Backend)
     }
 
     /// `0x3f9cc0`, at the end of a `FINISH` swap: the display header's
@@ -5529,7 +5574,7 @@ impl<B: Backend> Device<B> {
         let writes_depth = writes_depth_or_stencil(&state.render, target.depth_format);
         // The presented image is kept before anything draws over it; what
         // the draw dirties is noted only once it has drawn.
-        self.before_target_write(color)?;
+        self.materialize_display_copy(color)?;
         for b in &state.bad {
             self.events.push(Event::BadState(b.clone()));
         }
@@ -5675,6 +5720,7 @@ impl<B: Backend> Device<B> {
                     }),
                 };
                 if self.backend.queue_external_draw(queued, textures) {
+                    self.present_cameras.color_written(color);
                     self.mark_written(writes_depth);
                     *streams = draw.streams;
                     return Ok(());
@@ -5687,7 +5733,7 @@ impl<B: Backend> Device<B> {
                 // The original first draw is still intact. On a stale
                 // cursor or a stack fault, drop every unpublished copy.
                 if tail.is_none_or(|t| t.consume(mem, parts.indexed_esp)) {
-                    for &(_, surface) in &binding.colors { self.before_target_write(surface)?; }
+                    for &(_, surface) in &binding.colors { self.materialize_display_copy(surface)?; }
                     PreparedExternal { device: self, binding, recordings }.commit();
                     if let Some(p) = prepared { timeline::native::world_packet(p.material, None); }
                     if let Some((_, committed)) = native.as_mut() { **committed = true; }
@@ -5717,6 +5763,7 @@ impl<B: Backend> Device<B> {
         } else {
             None
         };
+        let writes_color = draw.state.render.color_write.xbox_value() != 0;
         let (outcome, spare) = self.backend.draw_owned(color, depth, draw, textures);
         BACKEND_DRAWS.fetch_add(1, AtomicOrdering::Relaxed);
         if let Some(p) = prepared {
@@ -5732,7 +5779,12 @@ impl<B: Backend> Device<B> {
             *streams = spare;
         }
         match outcome.map_err(D3dError::Backend)? {
-            DrawOutcome::Drawn => self.mark_written(writes_depth),
+            DrawOutcome::Drawn => {
+                if writes_color {
+                    self.present_cameras.color_written(color);
+                }
+                self.mark_written(writes_depth);
+            }
             DrawOutcome::Skipped(reason) => self.events.push(Event::DrawSkipped { entry, reason }),
             DrawOutcome::Unsupported(detail) => {
                 return Err(D3dError::Unimplemented { entry, detail });

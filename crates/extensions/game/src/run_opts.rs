@@ -132,10 +132,27 @@ pub struct Host {
     pub embedded_live: bool,
     /// The perf overlay's on/off switch, for `perf.overlay`.
     pub perf_overlay: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// The window consumer for the paired-editor plate and focus requests.
+    pub editor_link: Option<agent::editor::EditorLink>,
+    #[cfg(feature = "gpu")]
+    #[doc(hidden)]
+    pub world_line_sources: Vec<Arc<dyn crate::world_lines::WorldLineSource>>,
     /// Called once with the kernel's VFS when it is attached, before the
     /// game runs: `h2 play` watches U: through it for cloud saves
     /// (`vfs::Vfs::set_change_observer`, docs/live/live-cloud-saves.md).
     pub on_vfs: Option<VfsReady>,
+}
+
+impl Host {
+    /// Registers a window-overlay producer before boot. Keep the source's
+    /// active state in an atomic so inactive sources make no capture calls
+    /// or allocations. Capture may run on the pipelined worker and only
+    /// reads shared host state and that worker's guest view. The window
+    /// consumes the owned sample later, even when it re-shows an image.
+    #[cfg(feature = "gpu")]
+    pub fn add_world_line_source(&mut self, source: Arc<dyn crate::world_lines::WorldLineSource>) {
+        self.world_line_sources.push(source);
+    }
 }
 
 /// [`Host::on_vfs`].

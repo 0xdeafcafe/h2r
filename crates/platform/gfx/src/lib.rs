@@ -72,6 +72,7 @@ pub mod translate;
 #[cfg(feature = "gpu")]
 pub mod upload;
 pub mod vertex;
+pub mod world_lines;
 pub mod xdk;
 
 #[cfg(feature = "gpu")]

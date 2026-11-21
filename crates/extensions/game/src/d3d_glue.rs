@@ -56,6 +56,10 @@ impl Installed {
 /// with (docs/runtime/snapshots.md, phase 4: `Device::snapshot_blockers`,
 /// `save_snapshot`, `load_snapshot`).
 pub trait DeviceSnapshot: Send + Sync {
+    #[cfg(feature = "gpu")]
+    fn set_mark_image_source(&self, _source: fn() -> Option<d3d::present_camera::Image>) {}
+    #[cfg(feature = "gpu")]
+    fn mark_projection_factor(&self) -> f32 { 1.0 }
     /// What keeps the device from being saved now.
     fn blockers(&self) -> Vec<String>;
     /// Pending device operations which prevent an isolated film restore.
@@ -79,6 +83,20 @@ pub trait DeviceSnapshot: Send + Sync {
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> DeviceSnapshot for Mutex<d3d::Device<B>> {
+    #[cfg(feature = "gpu")]
+    fn set_mark_image_source(&self, source: fn() -> Option<d3d::present_camera::Image>) {
+        self.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_mark_image_source(source);
+    }
+
+    #[cfg(feature = "gpu")]
+    fn mark_projection_factor(&self) -> f32 {
+        self.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .projection_factor()
+    }
+
     fn blockers(&self) -> Vec<String> {
         self.lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -1273,6 +1291,10 @@ impl d3d::backend::Backend for Headless {
     fn idle(&mut self) -> Option<std::time::Instant> {
         self.0.idle()
     }
+    fn reset_present_metadata(&mut self) -> Result<(), String> {
+        self.0.reset_present_metadata()
+    }
+
     fn drain(&mut self) -> Result<(), String> {
         self.0.drain()
     }

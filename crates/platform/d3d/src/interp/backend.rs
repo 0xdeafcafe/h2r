@@ -275,6 +275,7 @@ impl<B: Backend> Op<B> {
 struct Frame<B: Backend> {
     id: u64,
     surface: B::Surface,
+    mark_image: Option<std::sync::Arc<crate::present_camera::Image>>,
     /// Arrival (ns), stamped on the game's thread.
     at: u64,
     ops: Vec<Op<B>>,
@@ -1264,9 +1265,14 @@ impl<B: Backend> InterpBackend<B> {
         let id = self.next_id;
         self.next_id += 1;
         self.prev = keep;
+        let mark_image = match crate::present_camera::current() {
+            Some(crate::present_camera::Present::Guest { image, .. }) => image,
+            _ => None,
+        };
         self.cur = Some(Frame {
             id,
             surface,
+            mark_image,
             at,
             ops,
             model,
@@ -1327,7 +1333,10 @@ impl<B: Backend> InterpBackend<B> {
                     st.substituted_draws += s.draws as u64;
                     st.snapped += s.snapped as u64;
                     drop(st);
-                    self.inner.present_with_gamma(p, flags, gamma)?;
+                    let metadata = self.synthetic_metadata(a);
+                    crate::present_camera::with(Some(metadata), || {
+                        self.inner.present_with_gamma(p, flags, gamma)
+                    })?;
                     if slots == 0 {
                         self.last = Some((id, a));
                         self.schedule.shown_at(now, period);
@@ -1359,6 +1368,14 @@ impl<B: Backend> InterpBackend<B> {
         self.reset();
     }
 
+    fn synthetic_metadata(&self, fraction: f32) -> crate::present_camera::Present {
+        crate::present_camera::Present::synthetic(
+            fraction,
+            self.prev.as_ref().and_then(|frame| frame.mark_image.as_ref()),
+            self.cur.as_ref().and_then(|frame| frame.mark_image.as_ref()),
+        )
+    }
+
     fn show_replay(&mut self, a: f32, surface: B::Surface) -> bool {
         match self.make(a) {
             Ok((p, _, _)) if !self.same_extent(p, surface) => {
@@ -1366,7 +1383,10 @@ impl<B: Backend> InterpBackend<B> {
                 false
             }
             Ok((p, s, t)) => {
-                let r = self.inner.present_replay(p, self.gamma.as_deref());
+                let metadata = self.synthetic_metadata(a);
+                let r = crate::present_camera::with(Some(metadata), || {
+                    self.inner.present_replay(p, self.gamma.as_deref())
+                });
                 self.timed(t);
                 if let Err(e) = r {
                     self.fail(e);
@@ -1454,6 +1474,13 @@ where
 {
     type Surface = B::Surface;
     type Texture = Arc<B::Texture>;
+
+    fn reset_present_metadata(&mut self) -> Result<(), String> {
+        for frame in [&mut self.prev, &mut self.cur].into_iter().flatten() {
+            frame.mark_image = None;
+        }
+        self.inner.reset_present_metadata()
+    }
 
     fn create_surface(
         &mut self,

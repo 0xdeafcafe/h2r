@@ -599,6 +599,44 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn editor_marks_preserve_the_v3_hook_digest() {
+        use std::sync::Arc;
+
+        use render_bridge::scene_step::{FrameSceneStep, PresentObserver, PresentPayload};
+
+        struct Observer;
+
+        impl PresentObserver for Observer {
+            fn capture(&self, _: &dyn engine::GuestMemory) -> Option<PresentPayload> {
+                Some(Arc::new(()))
+            }
+
+            fn horizontal_factor(&self) -> f32 {
+                1.0
+            }
+        }
+
+        let digest = |present: Option<Arc<dyn PresentObserver>>| {
+            let mut registry = hooks::Registry::new(hooks::Switches::defaults());
+            assert!(registry.add(&FrameSceneStep { present }).unwrap());
+            let plan = registry.build(&hooks::Base).unwrap();
+            let installed = hooks::Installed {
+                placed: plan
+                    .chains
+                    .values()
+                    .flat_map(|chain| [Some(chain.addr), chain.shadow].into_iter().flatten())
+                    .chain(plan.entries.iter().map(|entry| entry.addr))
+                    .collect(),
+                ..Default::default()
+            };
+            assert!(installed.placed.contains(&points::RENDER_VIEWS.base));
+            hook_digest(&plan, &installed)
+        };
+        assert_eq!(digest(None), digest(Some(Arc::new(Observer))));
+    }
+
     #[test]
     fn hook_contract_tracks_placed_guest_dispatch_and_ignores_diagnostic_labels() {
         let plan = |label| {

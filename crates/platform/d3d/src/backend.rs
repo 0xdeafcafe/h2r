@@ -1380,6 +1380,11 @@ pub trait Backend: Send {
     fn drain(&mut self) -> Result<(), String> {
         Ok(())
     }
+    /// Discards host mark samples when a snapshot restores the device.
+    fn reset_present_metadata(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Shows `surface` (`Swap`). `flags` are the guest's `D3DSWAP_*` flags.
     fn present(&mut self, surface: Self::Surface, flags: u32) -> Result<(), String>;
     /// Presents with the current DAC ramp. Backends without a display may ignore it.

@@ -1068,7 +1068,19 @@ impl GfxBackend {
             match from {
                 // Another backend's surface (a view showing its reference's
                 // image, `crate::scaled`), on the same device.
-                Some(other) => hook(&other.ctx, &other.store, surface, flags, gamma),
+                Some(other) => {
+                    let mut metadata = crate::present_camera::current();
+                    use crate::present_camera::Present;
+                    match &mut metadata {
+                        Some(Present::Guest { reference, .. } | Present::Synthetic { reference, .. }) => {
+                            *reference = true;
+                        }
+                        None => {}
+                    }
+                    crate::present_camera::with(metadata, || {
+                        hook(&other.ctx, &other.store, surface, flags, gamma)
+                    });
+                }
                 None => hook(&self.ctx, &self.store, surface, flags, gamma),
             }
         }

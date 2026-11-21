@@ -1471,6 +1471,11 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         self.view.frame_stats();
     }
 
+    fn reset_present_metadata(&mut self) -> Result<(), String> {
+        self.reference.reset_present_metadata()?;
+        self.view.reset_present_metadata()
+    }
+
     fn present(&mut self, surface: Self::Surface, flags: u32) -> Result<(), String> {
         self.present_with_gamma(surface, flags, None)
     }

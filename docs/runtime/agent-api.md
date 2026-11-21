@@ -67,6 +67,8 @@ connection to hold `session.claim`.
 | `forge.capacity`, `forge.probe` | read, act | [Forge probes](#forge-probes) |
 | `match.status`, `match.report`, `match.stop` | read, read, act | [Sim matches](#sim-matches) |
 | `settings.list`, `settings.set`, `perf.overlay`, `cheat.list`, `cheat.set` | read or act | [Menu methods](#menu-methods-settings-perf-overlay-cheats) |
+| `editor.link`, `editor.focus` | read, act | [Paired editor](#editor-a-paired-editor) |
+| `editor.marks` | read | [Paired editor](#editor-a-paired-editor) |
 | `theater.*` | read or act | [Theater transport](#theater-transport) |
 | `collision.stats` | read | [`collision`](#collision-the-native-collision-world) |
 | `trace.*`, `flight.*` | read | [Tick traces and the flight recorder](#tick-traces-and-the-flight-recorder) |
@@ -1847,6 +1849,111 @@ the methods it added beside the agent's own are in
 | `perf.overlay` | act | `{}` reads, `{on}` sets | the perf overlay (the watermark) |
 | `cheat.list` | read | `{}` | the cheats, their values, and why any is refused (`crates/extensions/game/src/cheats.rs`) |
 | `cheat.set` | act | `{name, value}` | sets one, for example `{"name":"hide_hud","value":true}` |
+
+## `editor`: a paired editor
+
+`h2 play` shows a plate in the top-right corner while an editor holds a
+link lease. The first line is “Editor · viewing”, “Editor · editing live”
+or “Editor · edits blocked”. Optional `text` appears on the second line.
+The plate expires on the wall clock, including while the game is paused.
+The shell draws it after the watermark and leaves room for the banner
+(`crates/apps/cli/src/play_cmd.rs`, `crates/apps/app/src/shell.rs`).
+
+| Method | Access | Params | Result |
+|---|---|---|---|
+| `editor.link` | read | `{editor, mode, text?, ttl_ms?}` or `{clear: true}` | `{shown, why?, expires_ms}` |
+| `editor.focus` | act | none | `{focused, why?}` |
+| `editor.marks` | read | `{marks, ttl_ms?}` | `{held, drawn, why?, refused}` |
+
+`editor` is a string. `mode` is `view`, `edit` or `blocked`. Each call
+replaces the lease, with a `ttl_ms` of 500 to 10000 (default 3000).
+`text` accepts up to 64 characters. Invalid arguments return
+`INVALID_PARAMS`. `expires_ms` gives the milliseconds remaining when the
+host accepts the lease, or zero when the plate is cleared or refused.
+Clearing returns `shown: false`. The link is available in every session
+kind (`crates/extensions/agent-proto/src/editor.rs`,
+`crates/extensions/agent/src/editor.rs`).
+
+`editor.focus` returns `focused: true` when it queues a request for the
+window. The event loop restores a minimized window and asks the window
+system to give it focus (`crates/apps/app/src/shell.rs`). On `h2 serve`,
+both methods are listed and answer with `shown: false` or `focused: false`
+and `why: "this host has no window"` (`crates/apps/boot/src/lib.rs`).
+
+`editor.marks` replaces the mark set for 500 to 10000 ms (default 3000).
+An empty set clears it. Each of the up to 256 entries contains exactly
+one geometry key: `{object: "<eight hex digits>"}`,
+`{box: {origin, forward, up, size}}` or `{point: [x, y, z]}`. Box size
+gives the full lengths along forward, left and up from the origin.
+An entry takes `color: [r, g, b]` with components from 0 to 1,
+optional `style` (`selected` or `candidate`), optional `label`, and
+optional reserved `xray`. An invalid entry leaves the previous set intact.
+`held` counts accepted entries. Stale object handles and object entries
+without the agent tick observer are refused by index in
+`refused: [{index, why}]`. The tick observer retires handles when their
+objects go away and invalidates older images' mark samples. A live
+stream epoch change clears the entire set
+(`crates/extensions/agent/src/editor/scene.rs`,
+`crates/extensions/agent/src/exec.rs`).
+
+Each genuine guest image captured while a mark lease is active carries
+the bounds sampled from the guest state that renders it, along with
+each view's camera and aspect factor.
+This applies to serial rendering, pipelined workers and repeated
+scanout of the same image. The window projects marks over the finished
+frame. Hidden edges show at full strength, with the same styling as
+visible edges. The candidate style uses dashes. `xray` has no effect
+(`crates/rewrites/render-bridge/src/scene_step.rs`,
+`crates/platform/d3d/src/present_camera.rs`,
+`crates/apps/app/src/frame.rs`, `crates/apps/app/src/overlay/marks.rs`).
+
+`drawn: true` reports a current genuine projection. The window presents
+a genuine image with at least one shape from the current set and a
+usable camera. Individual edges still depend on clipping. `drawn: false`
+gives a reason such as a headless host, native rendering or scene
+capture being off, a loading picture, a raw submission, an unusable
+world camera, or waiting for a render with the set. Frozen marks may
+still be visible on synthetic interpolation frames. They use the
+preceding genuine source image's projection, or the current source's
+at the endpoint, if that source carries the current lease's marks
+(`crates/platform/d3d/src/interp/backend.rs`,
+`crates/apps/cli/src/play_cmd.rs`, `crates/apps/app/src/shell.rs`).
+
+A shell pause or paused Theater playback blocks the guest loop, so
+editor methods wait to be serviced. An agent pause continues to service
+them, and a newly sent mark appears only with the next genuine render.
+The window still expires the plate and marks on wall time
+(`crates/apps/app/src/lifecycle.rs`,
+`crates/extensions/agent/src/exec/lobby_tape.rs`,
+`crates/extensions/agent/src/exec.rs`, `crates/apps/app/src/shell.rs`).
+
+### Drawing world-space lines over the frame
+
+A windowed host registers a `WorldLineSource` with
+`Host::add_world_line_source` before boot. Each source provides an
+immutable sample of world-space edges, with an anchor, color, dash
+flag and optional label for each group. A sample can live as long as
+its image or carry its own lease. Only the editor sample contributes
+to `editor.marks` status (`crates/extensions/game/src/run_opts.rs`,
+`crates/extensions/game/src/world_lines.rs`,
+`crates/platform/gfx/src/world_lines.rs`).
+
+Genuine guest images captured with samples carry their own per-view
+cameras and aspect factors. Repeated scanout keeps the same samples
+and cameras. Synthetic images hold the preceding genuine source's
+projection, or the current source's at the endpoint. The window draws
+all visible samples together in a 2D pass over the finished frame.
+There is no depth test, so hidden edges draw at full strength
+(`crates/platform/d3d/src/present_camera.rs`,
+`crates/apps/app/src/overlay/marks.rs`, `crates/apps/app/src/shell.rs`).
+
+An inactive producer costs an atomic poll. When all producers are
+inactive, there is no capture, guest read for the overlay, or sample
+allocation. The inline collection holds two additional samples
+before growing. Active sources read only the supplied guest view
+and shared host data, and capture can run on the pipelined worker
+(`crates/extensions/game/src/world_lines.rs`,
+`crates/rewrites/render-bridge/src/scene_step.rs`).
 
 ## Bot combat
 

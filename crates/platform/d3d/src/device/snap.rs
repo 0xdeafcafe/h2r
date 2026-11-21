@@ -748,6 +748,7 @@ impl<B: Backend> Device<B> {
             pending_external: _,
             ui_fit: _, // Host render callback scope.
             projection: _, // Derived from the current output and immutable GPU registers.
+            present_cameras: _, // Host image metadata, outside the guest snapshot.
             admissions: _, // Host services, retained across guest loads.
             opaque_world_admission: _,
             opaque_targets: _,
@@ -929,6 +930,8 @@ impl<B: Backend> Device<B> {
         }
         self.check(&s)?;
         self.drop_host_caches()?;
+        self.backend.reset_present_metadata().map_err(D3dError::Backend)?;
+        self.present_cameras.clear();
         self.ui_fit = None;
         self.scoped_admission = None;
         self.apply(s)

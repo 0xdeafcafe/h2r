@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 mod client;
 pub mod discover;
 pub mod collision;
+pub mod editor;
 mod endpoint;
 pub mod expect;
 pub mod forge;

@@ -8,8 +8,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use agent::editor::{EditorLink, MarkAvailability};
+use agent_proto::editor::Mode;
 use anyhow::{Context, Result, bail};
 use input::backend::scripted::{ScriptedInput, Timeline};
 use input::bindings::{Bindings, Control, Input};
@@ -340,7 +342,13 @@ fn hosted(
         &store,
         native_size, host.display_size(),
         || configure(d3d::GfxBackend::new(host.gfx_context())),
-        || configure(d3d::GfxBackend::new(host.gfx_context()).on_present(host.present_hook())),
+        || {
+            let present = host
+                .frame_sink()
+                .with_frame_marks(mark_frame)
+                .into_present_hook();
+            configure(d3d::GfxBackend::new(host.gfx_context()).on_present(present))
+        },
     );
     let input = host.take_input();
     let keyboard = host.keyboard().cloned();
@@ -368,6 +376,8 @@ fn hosted(
         theater: None,
         theater_playback: None,
         perf_overlay: None,
+        editor_link: None,
+        world_line_sources: Vec::new(),
         discoverable_agent: false,
         embedded_live: false,
         settings: Some(store),
@@ -788,6 +798,8 @@ pub(crate) fn run_with_theater(
         .then(debug_menu::Shared::default);
     config.debug_menu = debug_menu.clone();
     let perf_overlay = config.watermark.as_ref().map(app::Watermark::switch);
+    let editor_link = EditorLink::default();
+    config.editor_link = Some(Arc::new(EditorPlateSource(editor_link.clone())));
     let theater = open_library.map(|open| (boot::theater_ui::Theater::default(), open));
     if let Some((controller, _)) = &theater {
         let (overlay, _) = theater::overlay(
@@ -825,6 +837,7 @@ pub(crate) fn run_with_theater(
         host.discoverable_agent = true;
         host.embedded_live = live.local;
         host.perf_overlay = perf_overlay;
+        host.editor_link = Some(editor_link);
         let r = boot::run_hosted_with_live(&xbe, &lib, &opts, host, &live_config);
         // As `h2 run` does: the kernel's storage may outlive the run (or never
         // drop), so store its pending write metadata at a normal exit, whether
@@ -1080,6 +1093,124 @@ fn follow_banner(path: PathBuf) -> app::Banner {
     banner
 }
 
+fn mark_frame() -> app::overlay::marks::FrameMarks {
+    use app::overlay::marks::{FrameMarks, ImageSamples, ProjectedMarks};
+    use d3d::present_camera::Present;
+
+    let project = |image: Arc<d3d::present_camera::Image>, reference| {
+        let Ok(samples) = image.payload.clone().downcast::<ImageSamples>() else {
+            return Ok(None);
+        };
+        if !samples.has_visible_sample(&Instant::now) {
+            return Ok(None);
+        }
+        let Some(cameras) = mark_cameras(&image.views, reference) else {
+            let editor_visible = samples
+                .editor
+                .as_ref()
+                .is_some_and(|editor| editor.validity(&Instant::now).is_some());
+            return if editor_visible { Err(()) } else { Ok(None) };
+        };
+        Ok(Some(Arc::new(ProjectedMarks { cameras, samples })))
+    };
+
+    match d3d::present_camera::current() {
+        Some(Present::Guest { image: Some(image), reference }) => {
+            match project(image, reference) {
+                Ok(sample) => FrameMarks::Guest(sample),
+                Err(()) => FrameMarks::GuestWithoutWorldView,
+            }
+        }
+        Some(Present::Guest { image: None, .. }) => FrameMarks::Guest(None),
+        Some(Present::Synthetic { frozen, reference }) => FrameMarks::Synthetic(
+            frozen.and_then(|image| project(image, reference).ok().flatten()),
+        ),
+        None => FrameMarks::Raw,
+    }
+}
+
+fn mark_cameras(
+    views: &[Option<d3d::present_camera::View>; 4],
+    reference: bool,
+) -> Option<app::overlay::marks::MarkCameras> {
+    let cameras = views.map(|slot| {
+        let view = slot?;
+        mark_camera(view, reference)
+    });
+    cameras.iter().any(Option::is_some).then_some(cameras)
+}
+
+fn mark_camera(
+    view: d3d::present_camera::View,
+    reference: bool,
+) -> Option<app::overlay::marks::MarkCamera> {
+    let (width, height) = boot::setting_defs::GUEST_FRAME;
+    let [top, left, bottom, right] = view.camera.viewport.map(f32::from);
+    if !view.camera.is_usable()
+        || top < 0.0
+        || left < 0.0
+        || bottom > height as f32
+        || right > width as f32
+    {
+        return None;
+    }
+    let horizontal_factor = if reference { 1.0 } else { view.horizontal_factor };
+    let mut view_projection = view.camera.view_projection();
+    for column in &mut view_projection {
+        column[0] *= horizontal_factor;
+    }
+    Some(app::overlay::marks::MarkCamera {
+        view_projection,
+        viewport: [
+            top / height as f32,
+            left / width as f32,
+            bottom / height as f32,
+            right / width as f32,
+        ],
+    })
+}
+
+#[derive(Debug)]
+struct EditorPlateSource(EditorLink);
+
+impl app::EditorPlateSource for EditorPlateSource {
+    fn current(&self, now: Instant) -> Option<(app::EditorPlate, Instant)> {
+        let badge = self.0.current(now)?;
+        let (title, tone) = match badge.mode {
+            Mode::View => ("Editor · viewing", app::NoticeKind::Info),
+            Mode::Edit => ("Editor · editing live", app::NoticeKind::Ready),
+            Mode::Blocked => ("Editor · edits blocked", app::NoticeKind::Error),
+        };
+        let plate = app::EditorPlate {
+            title,
+            text: badge.text.clone(),
+            tone,
+        };
+        Some((plate, badge.expires))
+    }
+
+    fn set_waker(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        self.0.set_waker(wake);
+    }
+
+    fn take_focus_request(&self) -> bool {
+        self.0.take_focus_request()
+    }
+
+    fn set_mark_frame_status(&self, status: app::overlay::marks::MarkFrameStatus) {
+        use app::overlay::marks::MarkFrameStatus as Status;
+        let availability = match status {
+            Status::Waiting => MarkAvailability::Waiting,
+            Status::Ready(generation) => return self.0.set_drawn_mark_generation(generation),
+            Status::NoWorldView => MarkAvailability::NoWorldView,
+            Status::Raw => MarkAvailability::RawFrame,
+            Status::Loading => MarkAvailability::Loading,
+            Status::Synthetic => MarkAvailability::Synthetic,
+        };
+        self.0.set_mark_frame_status(availability);
+    }
+}
+
 /// The window's banner while clang builds the full-speed image in the
 /// background (`boot::tier::background_build`): this start runs on the
 /// slow fast tier until the next one.
@@ -1152,6 +1283,77 @@ fn render_thread(value: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn editor_marks_reject_world_cameras_outside_the_guest_image() {
+        let mut view = test_mark_view();
+        view.camera.viewport[1] = -1;
+        assert!(view.camera.is_usable());
+        assert!(mark_cameras(&[Some(view), None, None, None], false).is_none());
+        assert!(mark_cameras(&[Some(view), Some(test_mark_view()), None, None], false).is_some());
+    }
+
+    fn test_mark_view() -> d3d::present_camera::View {
+        d3d::present_camera::View {
+            camera: d3d::present_camera::Camera {
+                position: [0.0; 3],
+                forward: [1.0, 0.0, 0.0],
+                up: [0.0, 0.0, 1.0],
+                fov: 1.0,
+                projection_xy: None,
+                viewport: [0, 0, 100, 100],
+                near: 1.0,
+                far: 20.0,
+            },
+            horizontal_factor: 1.0,
+        }
+    }
+
+    #[test]
+    fn editor_plate_shows_the_mode_and_optional_text() {
+        use agent_proto::editor::LinkParams;
+        use app::EditorPlateSource as _;
+
+        let source = EditorPlateSource(EditorLink::default());
+        let now = Instant::now();
+        assert!(source.current(now).is_none());
+        for (mode, title, tone) in [
+            (Mode::View, "Editor · viewing", app::NoticeKind::Info),
+            (Mode::Edit, "Editor · editing live", app::NoticeKind::Ready),
+            (Mode::Blocked, "Editor · edits blocked", app::NoticeKind::Error),
+        ] {
+            source
+                .0
+                .set(
+                    LinkParams {
+                        editor: Some("sample".into()),
+                        mode: Some(mode),
+                        text: Some("Aim select".into()),
+                        ttl_ms: Some(500),
+                        ..Default::default()
+                    },
+                    now,
+                )
+                .unwrap();
+            let (plate, expires) = source.current(now).unwrap();
+            assert_eq!(plate.lines().collect::<Vec<_>>(), [title, "Aim select"]);
+            assert_eq!(plate.tone, tone);
+            assert_eq!(expires, now + Duration::from_millis(500));
+        }
+        source
+            .0
+            .set(
+                LinkParams {
+                    editor: Some("sample".into()),
+                    mode: Some(Mode::View),
+                    ..Default::default()
+                },
+                now,
+            )
+            .unwrap();
+        let (plate, _) = source.current(now).unwrap();
+        assert_eq!(plate.lines().collect::<Vec<_>>(), ["Editor · viewing"]);
+    }
 
     #[test]
     fn the_tier_banner_follows_clang_s_log() {

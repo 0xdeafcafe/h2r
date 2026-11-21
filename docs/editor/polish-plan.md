@@ -1,6 +1,6 @@
 # h2-editor polish: what is wrong, the design, and the slices
 
-Status: P1 to P7, P12 and P18 are implemented. The remaining slices, and the game link past its bar (G1 to G9), describe the design.
+Status: P1 to P7, P12, P18, G3 and G5 are implemented. The remaining slices describe the design.
 Code: `crates/apps/studio/src` (the window: `ui.rs`, `ui/`, `play.rs`, `viewport.rs`, `theme.rs`), `crates/tools/scenario-edit/src` (the scene and its renderer). Tests: named per slice.
 Switch: none.
 
@@ -234,8 +234,8 @@ pending list and the game's methods, and returns one step:
   editor takes focus. **Pause the game while I edit** (Game menu, off
   by default) pauses it when the editor's window gains focus and
   resumes it on F5.
-- After the step the editor calls `editor.focus`, so the game window
-  is in front.
+- After the step the editor calls `editor.focus` to queue a request
+  for the window system to give the game focus.
 
 #### The game shows the link
 
@@ -287,32 +287,39 @@ holds (`play::presence`):
 | a tag from the tag tree | `{object}` for every live object made from it, up to 64 |
 | the aim candidate | `{object}` in the candidate style |
 
-The game draws marks as wire boxes in a pass after its world, depth
-tested, with hidden edges at a quarter strength when `xray` is set.
-Colours are the theme's and travel as data. A game that cannot draw
-them (no native world pass, no window) answers `{drawn: false, why}`
-and the Game panel says so once. Marks are presentation: they are sent
-in View mode and in every session kind.
+The window overlay draws wire boxes and crosses over the finished game
+frame. A genuine frame carries the camera and object bounds that
+belong to its pixels. A synthetic interpolation frame holds the
+preceding genuine source's projection until the current source's
+endpoint. All edges show at full strength with no occlusion. Candidate
+edges are dashed, and `xray` is reserved with no effect. Colours are the
+theme's and travel as data. A host without a matching camera for the
+presented frame or without a window answers `{drawn: false, why}` and
+the Game panel says so once. Marks are presentation, sent in View
+mode and in every session kind.
 
 #### Shared camera
 
-Either side follows the other. `mirror.camera {mode}` and the viewport
-toolbar's camera menu choose:
+The editor's camera modes use the live stream. `mirror.camera {mode}`
+and the viewport toolbar choose:
 
 | Mode | Leads | Does |
 |---|---|---|
 | **Free** | neither | the editor's fly, orbit and pan camera |
 | **Follow player** | the game | orbits the local player at the kept offset, from the `players` layer |
 | **Player's eyes** | the game | at the unit's eye looking along its aim; exact once the `camera` layer exists (live-mirror M2), `EYE_HEIGHT` above the unit until then |
-| **Game follows editor** | the editor | the game draws from the editor's camera: `editor.camera {pos, forward, up, fov_deg}` on every camera change, at most 30 a second. The player does not move. Leaving the mode, unpairing or a 1 second lease running out gives the game its camera back |
 
 One-shot moves are beside them: **Go to player** (the editor camera
 jumps to the player), **Player here** (T: `sim.state.set` to the point
 under the cursor) and **Player here, looking my way** (Shift+T: the
 same with the camera's yaw and pitch, so the game opens on what the
 editor has framed). Moving the player is a write and follows the
-session rules; **Game follows editor** moves no simulation state and is
-allowed wherever the game draws for one local machine.
+session rules.
+
+**Game follows editor** is design. It needs a host presentation view
+that draws the world with the native renderer from a host camera. The
+guest render and its readbacks stay on the player's pose. The editor
+offers the mode when `session.methods` advertises its camera control.
 
 #### Edits land as you make them
 
@@ -692,15 +699,14 @@ and `map.reload` rows are live-mirror.md's, with the shapes fixed here.
 | Method | Access | Params | Result |
 |---|---|---|---|
 | `editor.link` | read | `{editor, mode: view \| edit \| blocked, text?, ttl_ms?}` or `{clear: true}`. `text` is at most 64 characters; `ttl_ms` is 500 to 10000, default 3000 | `{shown, why?, expires_ms}`. `shown: false` with `why` on a host with no window |
-| `editor.focus` | act | none | `{focused, why?}`: the game window raised |
-| `editor.marks` | read | `{marks: [mark], ttl_ms?}`, at most 256, replacing the last set. A mark is `{object: "<8 hex>"}`, `{box: {origin, forward, up, size}}` or `{point: [x, y, z]}`, with `color: [r, g, b]`, `style?: selected \| candidate`, `label?`, `xray?` | `{held, drawn, why?, refused: [{index, why}]}`. An object that is gone is refused by index; the rest hold |
-| `editor.camera` | act | `{pos, forward, up?, fov_deg?, ttl_ms?}` (default lease 1000) or `{release: true}` | `{held, why?}`. Refused on a Live session and where the host draws no view of its own |
+| `editor.focus` | act | none | `{focused, why?}`: a window focus request queued |
+| `editor.marks` | read | `{marks: [mark], ttl_ms?}`, at most 256, replacing the last set. A mark is `{object: "<8 hex>"}`, `{box: {origin, forward, up, size}}` or `{point: [x, y, z]}`, with `color: [r, g, b]`, `style?: selected \| candidate`, `label?` and reserved `xray?` | `{held, drawn, why?, refused: [{index, why}]}`. An object that is gone is refused by index; the rest hold |
 | `world.object.set` | act | `{id, pos?, forward?, up?}` | `{at, object}` after the next tick, through the engine's own move |
 | `world.object.delete` | act | `{id}` | `{at, deleted}` |
 | `world.object.respawn` | act | `{id}` or `{placement: {block, index}}` | `{at, old, object, linked}` |
 | `map.reload` | act | `{file?}` | `{queued, map}` |
 
-`editor.link`, `editor.marks` and `editor.camera` hold a lease and never
+`editor.link` and `editor.marks` hold leases and never
 write simulation state, so they are allowed in View and in every
 session the stream is. `world.object.*` and `map.reload` are host
 writes: `SessionKind::writes` and the tick boundary, as `sim.state.set`.
@@ -745,9 +751,9 @@ crate's server with an invented game behind it, as `play::tests` use.
 | G2 | **Play is one action**: `playtest::decide`, `Place`, **Where I was**, the two asks, **Pause the game while I edit**, `pair.playtest` | M | G1 | `play/playtest.rs`, `play.rs`, `play/launch.rs`, `ui/play.rs`, `ui/bar.rs`, `api/pair.rs` | `decide` returns each row of the table for an invented link; fake game: F5 with pokes pending sends one `edit.batch`, resumes and calls `editor.focus`; with a reload pending and `map.reload` listed it reloads and sends the recorded place once gameplay has run `SPAWN_AFTER_TICKS`; a foreign game is asked before any write; selection, camera and undo depth are equal before and after |
 | G3 | **The game shows the link**: `editor.link`, `editor.focus`, the plate in `h2 play` | S | nothing | `crates/extensions/agent-proto/src/editor.rs`, `crates/extensions/agent/src/editor.rs`, `crates/apps/app/src/overlay.rs`, `crates/apps/app/src/shell.rs`, `crates/apps/cli/src/play_cmd.rs` | the lease holds for `ttl_ms` and no longer on an invented clock; `clear` drops it; a host with no window answers `shown: false`; the plate's two lines are the mode's text and `text`; `session.methods` lists both where registered |
 | G4 | **The game moves and remakes objects**: `world.object.set`, `.delete`, `.respawn`, `map.reload` | M | nothing | `crates/extensions/agent-proto/src/sim/mod.rs`, `crates/extensions/agent/src/sim/calls.rs`, `crates/extensions/agent/src/sim/mod.rs` | on the fake guest of `sim/calls/tests.rs`: each call reaches its engine entry with the arguments the retail callers pass, in the tick's `before` hook; a gone id answers `GONE`; co-op and client sessions refuse before anything is queued; `respawn` deletes then makes from the scenario entry and reports `linked`; `map.reload` queues the running map through `Call::QueueGame` |
-| G5 | **The game draws marks and takes the editor's camera**: `editor.marks`, `editor.camera`, the marks pass | M | G3 | `crates/extensions/agent/src/editor.rs`, `crates/rewrites/native-render/src/marks.rs`, `crates/extensions/game/src/editor_glue.rs` | invented marks: an object mark's box is the object's bounding sphere at its transform, a box mark's twelve edges are its frame's; the lease drops them; more than 256 are refused; a pose held by `editor.camera` is the view the next frame is drawn from on an invented scene, and release returns the game's; a host without the native world pass answers `drawn: false` |
+| G5 | **The game draws marks**: `editor.marks`, the window overlay | M | G3 | `crates/extensions/agent/src/editor/scene.rs`, `crates/apps/app/src/overlay/marks.rs`, `crates/extensions/game/src/editor_glue.rs`, `crates/platform/d3d/src/present_camera.rs` | invented marks: the object box uses the world bounding sphere and object axes, and the explicit box has its frame's twelve edges. The lease expires, stale handles are refused by index, and more than 256 are refused. Queued and repeated guest images keep their own camera, bounds and per-view aspect. The overlay clips at the near plane and draws all edges at full strength without occlusion. A host without a camera for the presented frame answers `drawn: false`. |
 | G6 | **Selection both ways**: live objects pickable, aim select, `mirror.pick`, `mirror.aim_select`, marks from the selection | M | G1 | `play/select.rs`, `play/presence.rs`, `viewport.rs`, `viewport/mirror.rs`, `api/mirror.rs` | `aim_pick` on an invented sample picks the nearest object in front of an invented wall and none behind it; a candidate held for `AIM_DWELL` becomes the selection and a shorter one does not; fake game: selecting a placement with a live object sends one `editor.marks` with its handle, and again within the lease; a click on a live object with a placement link selects the placement |
-| G7 | **Shared camera**: Follow player, Player's eyes, Game follows editor, Player here looking my way, `mirror.camera`, `mirror.player` | S | G6 | `play/presence.rs`, `camera.rs`, `ui/toolbar.rs`, `api/mirror.rs` | invented sample: Follow keeps its offset as the player moves, Eyes looks along the aim; fake game: `lead` sends `editor.camera` on a camera change, at most 30 a second, and `release` on leaving; `mirror.player {facing: true}` sends the camera's yaw and pitch |
+| G7 | **Shared camera**: Follow player, Player's eyes, Player here looking my way, `mirror.camera`, `mirror.player` | S | G6 | `play/presence.rs`, `camera.rs`, `ui/toolbar.rs`, `api/mirror.rs` | invented sample: Follow keeps its offset as the player moves, Eyes looks along the aim; fake game: `mirror.player {facing: true}` sends the camera's yaw and pitch |
 | G8 | **Edits land as you make them**: `objects::diff`, objects follow the gizmo, previews, deletes, Respawn now, undo through the document | M | G1, G4 | `play/objects.rs`, `play/edits.rs`, `play.rs`, `api/mirror.rs` | fake game: a gizmo drag sends the `scnr` writes and at most one `world.object.set` a push interval, plus one on release; undo sends the old frame; an added placement spawns a preview and its undo deletes it; a deleted placement's undo respawns it; a game without `world.object.set` receives none and the pending list says why |
 | G9 | **Problems show where you are**: field and row marks, viewport toasts, `LinkView::issues`, the indicator's second line | S | G1 | `play.rs`, `ui/inspector.rs`, `ui/play.rs`, `viewport.rs`, `api/pair.rs` | a refused write and a `MISMATCH` each mark their field and appear in `pair.status.link.issues` with a `target` that `nav.go` accepts; a refused teleport raises one toast that expires; the pill's text carries the largest count |
 
@@ -789,7 +795,7 @@ The tests use invented data.
 - Nothing is written to a game without the Edit switch on, and the
   switch never turns itself on for a game the editor did not start
   (live-mirror.md). F5 asks before its first write to such a game.
-- The link indicator, marks and the held camera are presentation. They
+- The link indicator and marks are presentation. They
   change no simulation state, hold a lease the editor must renew, and
   are gone when it stops.
 - The editor reaches the game only through methods `session.methods`
@@ -852,9 +858,6 @@ The tests use invented data.
 - **Code**: the stream carries each player's unit and aim vector and
   each object's placement link (`agent_proto::live::Player`, `Object`);
   it has no `camera` layer (`Layers::negotiate`).
-- **Code**: the playerless view writes a pose into the game's render
-  camera (`crates/extensions/game/src/spectator_view.rs`), which is the
-  route `editor.camera` takes.
 - **Design**: reference names must agree with the local byte layout.
   The [field-name research note](notes/tag-field-names.md) records the
   retail source, permission and discrepancies for the mapped groups.
@@ -864,10 +867,6 @@ The tests use invented data.
   the bar; addresses in `edit.batch`; the lease on everything the game
   shows for the editor; objects derived from the document by a diff;
   aim select by dwell.
-- **S**: a pose written as the playerless view writes it holds for a
-  frame of a game with players in it, and moves nothing the simulation
-  reads. Verified by G5 against `sim.hashes` with and without the held
-  camera on one input replay.
 - **S**: the engine's object move re-clusters a placed object when
   called from the tick's `before` hook as the teleport calls it.
   Verified by G4's run.
@@ -877,8 +876,6 @@ The tests use invented data.
 - Whether the fixed path's look (step 1) is close enough to the game's
   on maps with many unlit or multi-pass materials; a side-by-side of
   `view.snapshot` and the game's frame on the user's disc shows it.
-- Whether the overlay pass can share the native pass's depth buffer as
-  it is, or must write its own depth for the level.
 - Which collision queries set the flag bits the surface matcher tests,
   and so what each surface class stops.
 - Whether any scenario or structure block beyond trigger volumes, kill
@@ -893,8 +890,15 @@ The tests use invented data.
 - Whether `AIM_DWELL` of 0.6 seconds selects too eagerly in play.
 - That a preview made by `sim.spawn` behaves as the placed object will
   after the reload.
-- The marks pass's cost in a frame, and its depth against the game's
-  own on a map with a sky pass.
+- The window marks overlay's cost in a game frame, and its alignment
+  with objects in a running game, including scaled and split-screen views.
+
+## Not built
+
+- **Game follows editor** depends on the native renderer's host presentation
+  view, with the guest render and readbacks on the player's camera.
+- Depth-aware marks depend on depth for the same view and image the window
+  displays.
 
 ## Related
 

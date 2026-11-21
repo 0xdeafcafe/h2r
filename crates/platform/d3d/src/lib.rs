@@ -50,6 +50,7 @@ pub mod layout;
 pub mod nv2a;
 #[cfg(feature = "gpu")]
 pub mod pipeline_store;
+pub mod present_camera;
 pub mod pushbuf;
 pub mod regs;
 pub mod resource;

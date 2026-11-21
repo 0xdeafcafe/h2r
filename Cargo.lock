@@ -2422,6 +2422,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "pollster",
  "serde",
+ "smallvec",
  "thiserror 2.0.21",
  "timeline",
  "wgpu",
