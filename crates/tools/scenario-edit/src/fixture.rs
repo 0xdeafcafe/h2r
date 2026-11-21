@@ -353,3 +353,210 @@ pub fn fixture_with_collision() -> Vec<u8> {
     put(&mut b, e + 0x1c, u32::MAX);
     b
 }
+
+/// Where [`fixture_with_instance_collision`]'s instanced geometry
+/// definition and its placement are in the structure BSP payload.
+pub const INSTANCE_DEF_AT: usize = 0x400;
+pub const INSTANCE_AT: usize = 0x580;
+/// Where that placement puts the definition's unit quad (its corner).
+pub const INSTANCE_POSITION: [f32; 3] = [202.0, 202.0, 3.0];
+
+/// The unit quad in the `z = 0` plane, the instance definition's
+/// collision.
+pub fn collision_unit_quad() -> tags::collision::Bsp {
+    collision_quads(&[(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ],
+        [0.0, 0.0, 1.0, 0.0],
+    )])
+}
+
+/// [`fixture_with_collision`] with one instanced geometry definition
+/// (`sbsp+0x138`) whose collision BSP is [`collision_unit_quad`], and one
+/// placement of it (`sbsp+0x140`) at [`INSTANCE_POSITION`], unturned.
+pub fn fixture_with_instance_collision() -> Vec<u8> {
+    use tags::structure::{InstancedGeometryDefinition as Def, InstancedGeometryInstance as Inst};
+    let mut b = fixture_with_collision();
+    let root = META_FILE + SBSP;
+    let addr = |at: usize| META + (SBSP + at) as u32;
+    let data_at = INSTANCE_DEF_AT + Def::SIZE;
+    // The fields go in the definition, the blocks' data after it.
+    let encoded = collision_unit_quad().encode_blocks(addr(data_at) - 0x40);
+    assert!(data_at + encoded.len() - 0x40 <= INSTANCE_AT);
+    assert!(INSTANCE_AT + Inst::SIZE <= SBSP_SIZE);
+    let fields = root + INSTANCE_DEF_AT + Def::COLLISION;
+    b[fields..fields + 0x40].copy_from_slice(&encoded[..0x40]);
+    let data = root + data_at;
+    b[data..data + encoded.len() - 0x40].copy_from_slice(&encoded[0x40..]);
+    put(&mut b, root + tags::structure::SBSP_INSTANCE_DEFINITIONS, 1);
+    put(
+        &mut b,
+        root + tags::structure::SBSP_INSTANCE_DEFINITIONS + 4,
+        addr(INSTANCE_DEF_AT),
+    );
+    put(&mut b, root + 0x140, 1);
+    put(&mut b, root + 0x144, addr(INSTANCE_AT));
+    let p = root + INSTANCE_AT;
+    // Scale 1, forward x, left y, up z, the position; definition 0.
+    for (o, v) in [(0, 1.0), (4, 1.0), (0x14, 1.0), (0x24, 1.0)] {
+        putf(&mut b, p + o, v);
+    }
+    for (k, v) in INSTANCE_POSITION.into_iter().enumerate() {
+        putf(&mut b, p + 0x28 + 4 * k, v);
+    }
+    b
+}
+
+/// [`fixture_with_object_collision`]'s tags: a scenery, its model, the
+/// model's `coll` and its `phmo`, at these metadata offsets.
+pub const OBJ_SCEN: usize = 0x1300;
+pub const OBJ_HLMT: usize = 0x1400;
+pub const OBJ_COLL: usize = 0x1600;
+pub const OBJ_COLL_SIZE: usize = 0x500;
+pub const OBJ_PHMO: usize = 0x1b00;
+pub const OBJ_PHMO_SIZE: usize = 0x300;
+/// The scenario's scenery palette (`scnr+0x58`, one 0x28 entry).
+pub const SCENERY_PALETTE_AT: usize = 0xa80;
+/// The model's two node names (invented string IDs): a root, and a child
+/// one unit above it.
+pub const NODE_NAMES: [u32; 2] = [0x0400_0101, 0x0500_0102];
+/// The `phmo` sphere: its radius and its centre in the root node's space.
+pub const SPHERE_RADIUS: f32 = 0.5;
+pub const SPHERE_CENTER: [f32; 3] = [0.0, 0.0, 0.5];
+
+/// A unit cube round the origin as six quads, facing out.
+pub fn collision_cube() -> tags::collision::Bsp {
+    let c = |x: f32, y: f32, z: f32| [x - 0.5, y - 0.5, z - 0.5];
+    collision_quads(&[
+        (
+            [c(0., 0., 0.), c(0., 1., 0.), c(1., 1., 0.), c(1., 0., 0.)],
+            [0.0, 0.0, -1.0, 0.5],
+        ),
+        (
+            [c(0., 0., 1.), c(1., 0., 1.), c(1., 1., 1.), c(0., 1., 1.)],
+            [0.0, 0.0, 1.0, 0.5],
+        ),
+        (
+            [c(0., 0., 0.), c(1., 0., 0.), c(1., 0., 1.), c(0., 0., 1.)],
+            [0.0, -1.0, 0.0, 0.5],
+        ),
+        (
+            [c(0., 1., 0.), c(0., 1., 1.), c(1., 1., 1.), c(1., 1., 0.)],
+            [0.0, 1.0, 0.0, 0.5],
+        ),
+        (
+            [c(0., 0., 0.), c(0., 0., 1.), c(0., 1., 1.), c(0., 1., 0.)],
+            [-1.0, 0.0, 0.0, 0.5],
+        ),
+        (
+            [c(1., 0., 0.), c(1., 1., 0.), c(1., 1., 1.), c(1., 0., 1.)],
+            [1.0, 0.0, 0.0, 0.5],
+        ),
+    ])
+}
+
+/// [`fixture`] whose scenery (at `[5, 5, 5]`, unturned) places an invented
+/// `scen` tag. Its model (`hlmt`) has two nodes, the second one unit above
+/// the first; its `coll` is [`collision_cube`] on the second node (the BSP's
+/// leading word, through the `coll` node names); its `phmo` is one sphere
+/// ([`SPHERE_RADIUS`] at [`SPHERE_CENTER`]) on a rigid body of the first
+/// node. Tags 4 to 7.
+pub fn fixture_with_object_collision() -> Vec<u8> {
+    let mut b = fixture();
+    let mut names = NAMES.to_vec();
+    names.extend(
+        b"objects\\test\\crate\0objects\\test\\crate_model\0objects\\test\\crate_coll\0objects\\test\\crate_phmo\0",
+    );
+    tag_names(&mut b, &names);
+    let mut classes = CLASSES.to_vec();
+    classes.extend([*b"scen", *b"hlmt", *b"coll", *b"phmo"]);
+    let mut payloads = PAYLOADS.to_vec();
+    payloads.extend([
+        (OBJ_SCEN, 0x100),
+        (OBJ_HLMT, 0x200),
+        (OBJ_COLL, OBJ_COLL_SIZE),
+        (OBJ_PHMO, OBJ_PHMO_SIZE),
+    ]);
+    tag_index(&mut b, &classes, &payloads);
+    let file = |at: usize| META_FILE + at;
+    let addr = |at: usize| META + at as u32;
+    let null = |b: &mut [u8], at: usize| {
+        put(b, at, u32::MAX);
+        put(b, at + 4, u32::MAX);
+    };
+    // The scenery tag: object type 6, its model, null references.
+    let s = file(OBJ_SCEN);
+    b[s..s + 2].copy_from_slice(&6u16.to_le_bytes());
+    putf(&mut b, s + 4, 1.0);
+    put(&mut b, s + 0x34, FourCC(*b"hlmt").as_u32());
+    put(&mut b, s + 0x38, id(5).0);
+    for o in [0x3c, 0x44, 0x4c, 0x54] {
+        null(&mut b, s + o);
+    }
+    // The model: collision and physics references, two nodes.
+    let h = file(OBJ_HLMT);
+    for o in [0, 0x10, 0x18, 0x8c, 0x94, 0xf0] {
+        null(&mut b, h + o);
+    }
+    put(&mut b, h + 8, FourCC(*b"coll").as_u32());
+    put(&mut b, h + 0xc, id(6).0);
+    put(&mut b, h + 0x20, FourCC(*b"phmo").as_u32());
+    put(&mut b, h + 0x24, id(7).0);
+    let nodes_at = OBJ_HLMT + 0x100;
+    put(&mut b, h + 0x78, 2);
+    put(&mut b, h + 0x7c, addr(nodes_at));
+    for (i, (parent, z)) in [(-1i16, 0.0f32), (0, 1.0)].into_iter().enumerate() {
+        let n = file(nodes_at + i * 0x5c);
+        put(&mut b, n, NODE_NAMES[i]);
+        b[n + 4..n + 6].copy_from_slice(&parent.to_le_bytes());
+        b[n + 6..n + 10].copy_from_slice(&[0xff; 4]);
+        putf(&mut b, n + 0x14, z);
+        putf(&mut b, n + 0x24, 1.0);
+        putf(&mut b, n + 0x28, 1.0);
+    }
+    // The coll: one region, one permutation, the cube on coll node 1.
+    let c = file(OBJ_COLL);
+    let (region, perm, bsp) = (OBJ_COLL + 0x40, OBJ_COLL + 0x50, OBJ_COLL + 0x70);
+    put(&mut b, c + 0x1c, 1);
+    put(&mut b, c + 0x20, addr(region));
+    put(&mut b, file(region) + 4, 1);
+    put(&mut b, file(region) + 8, addr(perm));
+    put(&mut b, file(perm) + 4, 1);
+    put(&mut b, file(perm) + 8, addr(bsp));
+    put(&mut b, file(bsp), 1);
+    let encoded = collision_cube().encode_blocks(addr(bsp + 4));
+    let nodes = OBJ_COLL + 0x400;
+    assert!(bsp + 4 + encoded.len() <= nodes);
+    b[file(bsp + 4)..file(bsp + 4) + encoded.len()].copy_from_slice(&encoded);
+    put(&mut b, c + 0x2c, 2);
+    put(&mut b, c + 0x30, addr(nodes));
+    for (i, name) in NODE_NAMES.into_iter().enumerate() {
+        let n = file(nodes + i * 12);
+        put(&mut b, n, name);
+        b[n + 4..n + 12].copy_from_slice(&[0xff; 8]);
+    }
+    // The phmo: one sphere, one rigid body on node 0 holding it.
+    let p = file(OBJ_PHMO);
+    let (sphere, body) = (OBJ_PHMO + 0x110, OBJ_PHMO + 0x190);
+    put(&mut b, p + 0x48, 1);
+    put(&mut b, p + 0x4c, addr(sphere));
+    putf(&mut b, file(sphere) + 0x2c, SPHERE_RADIUS);
+    for k in 0..3 {
+        putf(&mut b, file(sphere) + 0x40 + k * 0x14, 1.0);
+        putf(&mut b, file(sphere) + 0x70 + 4 * k, SPHERE_CENTER[k]);
+    }
+    put(&mut b, p + 0x38, 1);
+    put(&mut b, p + 0x3c, addr(body));
+    // Node 0, shape {sphere, 0}.
+    put(&mut b, file(body) + 0x38, 0);
+    // The scenery palette names the tag; the scenery places entry 0.
+    block(&mut b, 0x58, 1, SCENERY_PALETTE_AT);
+    put(&mut b, sfile(SCENERY_PALETTE_AT), FourCC(*b"scen").as_u32());
+    put(&mut b, sfile(SCENERY_PALETTE_AT) + 4, id(4).0);
+    b[sfile(SCENERY_AT)..sfile(SCENERY_AT) + 2].copy_from_slice(&0i16.to_le_bytes());
+    b
+}

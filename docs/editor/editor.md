@@ -649,8 +649,12 @@ build), and keeps the last four maps' scenes so reopening one is instant.
 - **Collision.** Level collision draws every surface of each structure
   BSP's collision BSP as translucent faces with wire edges; Collision
   only draws, in red, the surfaces no drawn triangle covers: the
-  invisible walls (`scenario_edit::collision_view::classify`). Both
-  start hidden. A click on a shown surface selects it when nothing else
+  invisible walls (`scenario_edit::collision_view::classify`). Instance
+  collision draws instanced geometry's collision, placed, the same way,
+  and Collision only covers it too. Object collision draws each placed
+  object's `coll` BSPs and `phmo` shapes as wire, each posed by its
+  node's rest transform and then the placement's
+  (`scenario_edit::object_collision`). All four start hidden. A click on a shown surface selects it when nothing else
   is under the cursor, and the inspector shows its class, plane, raw
   flags, material and ring, read only.
 - **Glyphs and labels.** Other placements without a model use a diamond

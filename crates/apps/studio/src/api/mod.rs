@@ -406,6 +406,13 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"index":0,"focus":true}"#,
     ),
     def(
+        m::COLLISION_OBJECTS,
+        "The placed objects' collision: each object tag's model, coll and phmo, and every shape a placement places (coll BSPs, phmo spheres, pills, boxes and polyhedra), posed by its node's rest transform and the placement's, in world space. Filter by block and index",
+        r#"{"block?":"string","index?":"integer"}"#,
+        r#"{"models":"[{object,resolved,model,coll,phmo,nodes,shapes,errors}]","shapes":"[{block,index,object,kind,tag,shape,node,center,radius,edges}]","error":"string|null"}"#,
+        r#"{"block":"scenery","index":0}"#,
+    ),
+    def(
         m::VARIANT_LIST,
         "The built-in and saved game variants, and the one open",
         "{}",

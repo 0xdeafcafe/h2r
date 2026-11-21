@@ -43,6 +43,9 @@ struct Doc {
     /// The structure BSPs' collision surfaces, classified against the
     /// drawn triangles ([`crate::collision_view`]).
     collision: crate::collision_view::LevelCollision,
+    /// The placed object tags' collision, read once per tag when the map
+    /// opens ([`crate::object_collision`]).
+    objects: crate::object_collision::ObjectCollisions,
     /// The textured BSP and the placed objects' models, when the map's art
     /// could be read.
     scene: Option<Arc<Scene>>,
@@ -433,6 +436,10 @@ impl Session {
         )
         .unwrap_or_default();
         let markers = geometry::markers(&scenario);
+        let objects = crate::object_collision::ObjectCollisions::read(
+            &mut map,
+            markers.iter().filter_map(|m| m.object),
+        );
         let scene = self.build_scenes.then(|| {
             self.scene_for(
                 &source, name, cache_key, &scenario, &markers, &lit, &mut map, &mut raw,
@@ -475,6 +482,7 @@ impl Session {
             world,
             world_failed,
             collision,
+            objects,
             scene,
             derived: false,
         });

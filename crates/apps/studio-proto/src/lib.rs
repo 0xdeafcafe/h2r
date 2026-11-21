@@ -110,6 +110,7 @@ pub mod method {
     pub const COLLISION_SURFACES: &str = "collision.surfaces";
     pub const COLLISION_AT: &str = "collision.at";
     pub const COLLISION_SELECT: &str = "collision.select";
+    pub const COLLISION_OBJECTS: &str = "collision.objects";
     pub const NAV_STATUS: &str = "nav.status";
     pub const NAV_BACK: &str = "nav.back";
     pub const NAV_FORWARD: &str = "nav.forward";

@@ -15,6 +15,11 @@
 //! [`PLANE_TOLERANCE`], the normal within [`NORMAL_COS`] either way) and
 //! overlaps it by more than [`MIN_OVERLAP`]. The raw flags, breakable
 //! surface and material are carried for the legend and the agent API.
+//!
+//! Instanced geometry has its own collision: each definition's collision
+//! BSP ([`tags::structure::InstancedGeometryDefinition::collision`]),
+//! placed by each placement that names it ([`instance_surfaces`]; slice
+//! P11). Those surfaces are classified with the structure's.
 use std::collections::HashMap;
 use std::io::{Read, Seek};
 
@@ -66,8 +71,12 @@ impl SurfaceClass {
 pub struct CollisionSurface {
     /// The scenario BSP's index (`scnr+0x210`).
     pub bsp: usize,
-    /// The surface's index in that BSP's collision BSP.
+    /// The surface's index in that BSP's collision BSP, or in its
+    /// instance definition's.
     pub surface: usize,
+    /// The instanced geometry placement (`sbsp+0x140` index) that places
+    /// this surface; `None` for the structure's own collision.
+    pub instance: Option<usize>,
     /// `[nx, ny, nz, d]` with `n . p = d`, the flip bit applied.
     pub plane: [f32; 4],
     /// The raw flags byte (bit 3 is breakable; the rest are not named).
@@ -183,6 +192,7 @@ pub fn surfaces_of(bsp_index: usize, bsp: &Bsp) -> Vec<CollisionSurface> {
             Some(CollisionSurface {
                 bsp: bsp_index,
                 surface: i,
+                instance: None,
                 plane,
                 flags: s.flags,
                 breakable: s.breakable_surface,
@@ -421,6 +431,41 @@ pub fn structure_collision(bytes: &[u8], base: u32) -> crate::Result<Option<Bsp>
     Ok(Some(Bsp::decode_structure(bytes, base, at)?))
 }
 
+/// Every instanced geometry placement's collision surfaces of a structure
+/// BSP payload loaded at `base`, in world space: each definition's
+/// collision BSP moved by the placement's scale, basis and position
+/// ([`tags::structure::InstancedGeometryInstance::transform`]).
+pub fn instance_surfaces(
+    bsp_index: usize,
+    bytes: &[u8],
+    base: u32,
+) -> crate::Result<Vec<CollisionSurface>> {
+    use tags::structure::{InstancedGeometryDefinition, InstancedGeometryInstance};
+    let view = TagView::new(bytes, base);
+    let definitions = tags::structure::instance_definitions(&view)?;
+    let placements = InstancedGeometryInstance::placements(&view, definitions.len())?;
+    let mut local: Vec<Option<Vec<CollisionSurface>>> = vec![None; definitions.len()];
+    let mut out = Vec::new();
+    for (index, p) in placements.iter().enumerate() {
+        let d = p.definition as usize;
+        if local[d].is_none() {
+            let bsp = InstancedGeometryDefinition::collision(&view, definitions[d])?;
+            local[d] = Some(surfaces_of(bsp_index, &bsp));
+        }
+        for s in local[d].iter().flatten() {
+            let n = normalize(p.rotate(s.normal()));
+            let on_plane = p.transform(scale(s.normal(), s.plane[3]));
+            out.push(CollisionSurface {
+                instance: Some(index),
+                plane: [n[0], n[1], n[2], dot(n, on_plane)],
+                ring: s.ring.iter().map(|&q| p.transform(q)).collect(),
+                ..s.clone()
+            });
+        }
+    }
+    Ok(out)
+}
+
 /// Every scenario BSP's collision surfaces, classified.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LevelCollision {
@@ -441,18 +486,29 @@ impl LevelCollision {
             ..Self::default()
         };
         for (i, &id) in out.bsps.clone().iter().enumerate() {
-            let read = (|| -> crate::Result<Option<Bsp>> {
+            type Got = (Option<Bsp>, crate::Result<Vec<CollisionSurface>>);
+            let read = (|| -> crate::Result<Got> {
                 let address = map
                     .tag(id)?
                     .location
                     .ok_or(crate::Error::Invalid("BSP has no payload"))?
                     .address;
                 let bytes = map.read_tag_bytes(id)?;
-                structure_collision(&bytes, address)
+                Ok((
+                    structure_collision(&bytes, address)?,
+                    instance_surfaces(i, &bytes, address),
+                ))
             })();
             match read {
-                Ok(Some(bsp)) => out.surfaces.extend(surfaces_of(i, &bsp)),
-                Ok(None) => {}
+                Ok((bsp, instances)) => {
+                    if let Some(bsp) = bsp {
+                        out.surfaces.extend(surfaces_of(i, &bsp));
+                    }
+                    match instances {
+                        Ok(s) => out.surfaces.extend(s),
+                        Err(e) => out.errors.push((i, format!("instances: {e}"))),
+                    }
+                }
                 Err(e) => out.errors.push((i, e.to_string())),
             }
         }
@@ -464,12 +520,24 @@ impl LevelCollision {
         self.surfaces.iter().filter(|s| s.class == class).count()
     }
 
+    /// How many surfaces instanced geometry places.
+    pub fn instance_count(&self) -> usize {
+        self.surfaces
+            .iter()
+            .filter(|s| s.instance.is_some())
+            .count()
+    }
+
     /// The nearest surface the ray meets among those `shown` accepts.
-    pub fn pick(&self, ray: &Ray, shown: impl Fn(SurfaceClass) -> bool) -> Option<(f32, usize)> {
+    pub fn pick(
+        &self,
+        ray: &Ray,
+        shown: impl Fn(&CollisionSurface) -> bool,
+    ) -> Option<(f32, usize)> {
         self.surfaces
             .iter()
             .enumerate()
-            .filter(|(_, s)| shown(s.class))
+            .filter(|(_, s)| shown(*s))
             .filter_map(|(i, s)| s.hit(ray).map(|t| (t, i)))
             .min_by(|a, b| a.0.total_cmp(&b.0))
     }
@@ -603,7 +671,7 @@ mod tests {
         let (t, i) = level.pick(&ray, |_| true).unwrap();
         assert_eq!(i, 2);
         assert!((t - 5.0).abs() < 1e-4, "{t}");
-        assert_eq!(level.pick(&ray, |c| c == SurfaceClass::Drawn), None);
+        assert_eq!(level.pick(&ray, |s| s.class == SurfaceClass::Drawn), None);
         assert_eq!(level.at_point([9.99, 5.0, 1.0], 0.05).map(|h| h.1), Some(2));
         assert_eq!(level.at_point([5.0, 5.0, 2.0], 0.05), None);
         // Outside the polygon, however close to its plane.

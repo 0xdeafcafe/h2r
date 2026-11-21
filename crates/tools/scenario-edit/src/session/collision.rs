@@ -5,12 +5,19 @@
 //! the BSP.
 use super::*;
 use crate::collision_view::{CollisionSurface, LevelCollision, SurfaceClass};
+use crate::object_collision::{ObjectCollisions, PlacedShape};
 
-/// Whether a surface of `class` is drawn with `layers`: every surface
-/// with Level collision, the uncovered ones with Collision only.
-pub fn surface_shown(layers: &Layers, class: SurfaceClass) -> bool {
-    layers.visible(LayerId::LevelCollision)
-        || (class == SurfaceClass::CollisionOnly && layers.visible(LayerId::CollisionOnly))
+/// Whether `s` is drawn with `layers`: the structure's surfaces with
+/// Level collision, instanced geometry's with Instance collision, and the
+/// uncovered ones of either with Collision only.
+pub fn surface_shown(layers: &Layers, s: &CollisionSurface) -> bool {
+    let own = if s.instance.is_some() {
+        LayerId::InstanceCollision
+    } else {
+        LayerId::LevelCollision
+    };
+    layers.visible(own)
+        || (s.class == SurfaceClass::CollisionOnly && layers.visible(LayerId::CollisionOnly))
 }
 
 impl Session {
@@ -38,10 +45,30 @@ impl Session {
         self.markers_rev += 1;
     }
 
+    /// The placed object tags' collision.
+    pub fn object_collisions(&self) -> Option<&ObjectCollisions> {
+        self.doc.as_ref().map(|d| &d.objects)
+    }
+
+    /// Every collision shape the placements place, in world space. An
+    /// object added to a palette after the map opened has none until it
+    /// is opened again.
+    pub fn placed_object_shapes(&self) -> Vec<PlacedShape<'_>> {
+        self.object_collisions()
+            .map(|o| o.placed(&self.markers))
+            .unwrap_or_default()
+    }
+
+    /// How many collision shapes the placements place.
+    pub fn object_shape_count(&self) -> usize {
+        self.object_collisions()
+            .map_or(0, |o| o.count(&self.markers))
+    }
+
     /// The nearest shown collision surface a camera ray meets.
     pub fn pick_surface(&self, ray: &Ray, layers: &Layers) -> Option<usize> {
         self.collision()?
-            .pick(ray, |class| surface_shown(layers, class))
+            .pick(ray, |s| surface_shown(layers, s))
             .map(|(_, i)| i)
     }
 }
@@ -109,6 +136,95 @@ mod tests {
         assert_eq!(ed.selected_surface(), None);
         ed.select_surface(Some(9));
         assert_eq!(ed.selected_surface(), None, "past the end");
+    }
+
+    /// P11: the invented instance's quad is placed at its position, after
+    /// the structure's surfaces, classified with them, and picked only
+    /// while Instance collision (or Collision only) shows it.
+    #[test]
+    fn an_invented_instances_collision_is_placed_and_picked() {
+        let ed = open(fixture::fixture_with_instance_collision(), "instance");
+        let c = ed.collision().unwrap();
+        assert!(c.errors.is_empty(), "{:?}", c.errors);
+        assert_eq!(c.surfaces.len(), 4);
+        assert_eq!(c.instance_count(), 1);
+        let s = &c.surfaces[3];
+        assert_eq!((s.instance, s.surface), (Some(0), 0));
+        let at = fixture::INSTANCE_POSITION;
+        let want: Vec<Vec3> = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
+            .into_iter()
+            .map(|q| [at[0] + q[0], at[1] + q[1], at[2]])
+            .collect();
+        assert_eq!(s.ring, want);
+        assert_eq!(s.plane, [0.0, 0.0, 1.0, at[2]]);
+        assert_eq!(s.class, SurfaceClass::CollisionOnly);
+
+        let ray = Ray {
+            origin: [at[0] + 0.25, at[1] + 0.5, 10.0],
+            dir: [0.0, 0.0, -1.0],
+        };
+        let mut layers = Layers::default();
+        layers.set(LayerId::LevelCollision, true);
+        // The floor below it is the structure's.
+        assert_eq!(ed.pick_surface(&ray, &layers), Some(0));
+        layers.set(LayerId::InstanceCollision, true);
+        assert_eq!(ed.pick_surface(&ray, &layers), Some(3));
+        let mut only = Layers::default();
+        only.set(LayerId::CollisionOnly, true);
+        assert_eq!(ed.pick_surface(&ray, &only), Some(3));
+    }
+
+    /// P11: the invented scenery's `coll` cube follows its node one unit
+    /// above the root and its `phmo` sphere the root, both moved by the
+    /// placement at `[5, 5, 5]`.
+    #[test]
+    fn an_objects_coll_and_phmo_are_drawn_at_its_placement() {
+        use crate::object_collision::ShapeKind;
+        let ed = open(fixture::fixture_with_object_collision(), "object");
+        let objects = ed.object_collisions().unwrap();
+        assert_eq!(objects.error, None);
+        let scen = fixture::id(4);
+        let model = objects.of(scen).unwrap();
+        assert!(model.errors.is_empty(), "{:?}", model.errors);
+        assert_eq!(model.coll, Some(fixture::id(6)));
+        assert_eq!(model.phmo, Some(fixture::id(7)));
+        assert_eq!(model.nodes, 2);
+        assert_eq!(model.shapes.len(), 2);
+        assert_eq!(ed.object_shape_count(), 2);
+
+        let placed = ed.placed_object_shapes();
+        assert_eq!(placed.len(), 2);
+        let near = |a: Vec3, b: Vec3| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-4);
+        let cube = placed
+            .iter()
+            .find(|p| p.shape.kind == ShapeKind::Bsp)
+            .unwrap();
+        assert_eq!(cube.marker.block, BlockKind::Scenery);
+        assert_eq!(cube.shape.node, Some(1));
+        assert!(near(cube.center, [5.0, 5.0, 6.0]), "{:?}", cube.center);
+        assert_eq!(cube.lines.len(), 24);
+        assert!(
+            cube.lines
+                .iter()
+                .flatten()
+                .all(|p| (5.5..=6.5).contains(&p[2]) || (p[2] - 5.5).abs() < 1e-4),
+            "the cube sits one unit up"
+        );
+        let sphere = placed
+            .iter()
+            .find(|p| p.shape.kind == ShapeKind::Sphere)
+            .unwrap();
+        assert_eq!(sphere.shape.node, Some(0));
+        assert!(near(sphere.center, [5.0, 5.0, 5.5]), "{:?}", sphere.center);
+        assert!((sphere.radius - fixture::SPHERE_RADIUS).abs() < 1e-6);
+        for [a, _] in &sphere.lines {
+            let d = crate::geometry::sub(*a, sphere.center);
+            assert!((crate::geometry::dot(d, d).sqrt() - 0.5).abs() < 1e-4);
+        }
+
+        // The plain fixture's placements have no collision to draw.
+        let plain = open(fixture::fixture(), "object-plain");
+        assert_eq!(plain.object_shape_count(), 0);
     }
 
     /// A map whose scenario names no structure BSP has no collision, and

@@ -144,6 +144,8 @@ pub fn layer_color(id: scenario_edit::layers::LayerId) -> [f32; 3] {
         // Pale for all collision, red for the invisible walls.
         LayerId::LevelCollision => [0.75, 0.85, 0.95],
         LayerId::CollisionOnly => [1.0, 0.15, 0.25],
+        LayerId::InstanceCollision => [0.55, 0.8, 1.0],
+        LayerId::ObjectCollision => [1.0, 0.85, 0.3],
         LayerId::Halo1 => [1.0, 0.55, 0.15],
         LayerId::Live => [0.42, 0.8, 0.55],
     }

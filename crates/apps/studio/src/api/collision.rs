@@ -2,6 +2,8 @@
 //! drawn or collision only ([`scenario_edit::collision_view`];
 //! docs/editor/polish-plan.md, slice P10). Read only, and independent of
 //! the layers shown: an agent can ask about a surface the viewport hides.
+//! `collision.objects` lists the placed objects' `coll` and `phmo` shapes
+//! ([`scenario_edit::object_collision`], slice P11).
 
 use agent_proto::RpcError;
 use scenario_edit::collision_view::{CollisionSurface, LevelCollision, SurfaceClass};
@@ -32,6 +34,7 @@ pub fn surface_row(index: usize, s: &CollisionSurface) -> Value {
         "index": index,
         "bsp": s.bsp,
         "surface": s.surface,
+        "instance": s.instance,
         "class": s.class.name(),
         "plane": s.plane,
         "flags": s.flags,
@@ -139,6 +142,60 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
                     "selected": app.session.selected_surface(),
                 }),
             })
+        }
+        m::COLLISION_OBJECTS => {
+            let block = p
+                .opt_str("block")?
+                .map(super::params::block_kind)
+                .transpose()?;
+            let index = p.opt_usize("index")?;
+            collision(app)?;
+            let objects = app
+                .session
+                .object_collisions()
+                .ok_or_else(|| err(code::NO_DOCUMENT, "no map is open"))?;
+            let models: Vec<Value> = objects
+                .models()
+                .into_iter()
+                .map(|(id, c)| {
+                    json!({
+                        "object": tag_id(id),
+                        "resolved": c.object.map(tag_id),
+                        "model": c.model.map(tag_id),
+                        "coll": c.coll.map(tag_id),
+                        "phmo": c.phmo.map(tag_id),
+                        "nodes": c.nodes,
+                        "shapes": c.shapes.len(),
+                        "errors": c.errors,
+                    })
+                })
+                .collect();
+            let shapes: Vec<Value> = app
+                .session
+                .placed_object_shapes()
+                .into_iter()
+                .filter(|s| block.is_none_or(|b| s.marker.block == b))
+                .filter(|s| index.is_none_or(|i| s.marker.index == i))
+                .map(|s| {
+                    json!({
+                        "block": super::params::block_name(s.marker.block),
+                        "index": s.marker.index,
+                        "object": s.marker.object.map(tag_id),
+                        "kind": s.shape.kind.name(),
+                        "tag": tag_id(s.shape.tag),
+                        "shape": s.shape.index,
+                        "node": s.shape.node,
+                        "center": s.center,
+                        "radius": s.radius,
+                        "edges": s.lines.len(),
+                    })
+                })
+                .collect();
+            Ok(json!({
+                "models": models,
+                "shapes": shapes,
+                "error": objects.error,
+            }))
         }
         m::COLLISION_SELECT => {
             let count = collision(app)?.surfaces.len();

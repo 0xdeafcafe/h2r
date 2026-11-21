@@ -178,7 +178,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `tag` | `list {group, name, query, path, limit, homes}`, `browse {map}`, `resources {tag}`, `export {tag, out, dependencies, resources}`, `import {path, tag, skip_missing}`, `read {tag, depth, elements, hex}`, `fields {tag, path?}`, `tree {root?, depth?}`, `refs {tag, limit?}`, `follow {tag, ref}`, `set {tag, path, value}`, `block.add`, `block.remove`, `block.duplicate` |
 | `scenario` | `blocks`, `list {block}`, `get`, `set {block, index, field, value}`, `add {block, like, position}`, `move {block, index, position, ypr}`, `delete`, `duplicate`, `select` |
 | `volume` | `list {kind?}` (short form `volumes [kind]`), `select {index?, focus?}`, `set {index, origin?, center?, forward?, up?, size?}`, `add {kill?, center?, origin?, forward?, up?, size?}`, `remove {kind?, index}` |
-| `collision` | `surfaces {class?, bsp?, offset?, limit?}`, `at {origin, dir}` or `at {point, within?}` (with `select?`), `select {index?, focus?}` |
+| `collision` | `surfaces {class?, bsp?, offset?, limit?}`, `at {origin, dir}` or `at {point, within?}` (with `select?`), `select {index?, focus?}`, `objects {block?, index?}` |
 | `variant` | `list`, `get`, `set {setting, value}`, `rename`, `copy`, `export`, `import`, `delete` |
 | `playlist` | `list` (with `unused` per playlist and the `templates`), `get {playlist}`, `set {playlist, title, description, template, clear}` (`template`: make the slot a playlist of that kind, or give a playlist another kind; `clear: true`: make it unused; [live-matchmaking.md §6.10](../live/live-matchmaking.md)), `entry {playlist, op, entry, to, weight}`, `entry_variant` |
 | `ui` | `palette {query, run?}`, `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}` |
@@ -520,9 +520,17 @@ Notes on some:
   `collision.at {origin, dir}` returns the first surface a ray meets and
   `{point}` the one a point lies on (within `within`, 0.05 units), each
   whatever layers are shown; `select` selects it. `collision.select
-  {index, focus}` selects a surface and frames it. Read only: the
-  barrier edits change collision. The Level collision and Collision only
-  layers start hidden; the Collision and Everything presets show them.
+  {index, focus}` selects a surface and frames it. Instanced geometry's
+  collision is in the same list, placed in the world, with the
+  placement's index as `instance` (`null` for the structure's own).
+  `collision.objects` lists each placed object tag's model, `coll` and
+  `phmo` (`models`), and every shape a placement places (`shapes`: a
+  `coll` BSP or a `phmo` sphere, pill, box or polyhedron, with the `hlmt`
+  node it is posed by, its centre and radius in world space); `block` and
+  `index` keep one placement's. Read only: the barrier edits change
+  collision. The four collision layers (Level collision, Collision only,
+  Instance collision, Object collision) start hidden; the Collision and
+  Everything presets show them.
 - **Renders.** `ui.render` draws on the CPU (no GPU needed); `view.snapshot`
   renders the open map offscreen through the viewport's own renderer
   (wgpu, no window) and answers `NO_GPU` on a machine without an adapter.
@@ -754,6 +762,11 @@ system temp directory):
   hidden and selects it in place of the placements; `collision.select`
   frames a surface; the collision layers start hidden and count the
   surfaces (`api::tests::collision_surfaces_and_at_report_the_invented_rooms_walls`);
+- `collision.surfaces` places the invented instance's quad and
+  `collision.at` finds it; `collision.objects` places the invented
+  scenery's `coll` cube on its second node and its `phmo` sphere on the
+  root, and the layers count them
+  (`api::tests::collision_objects_and_instances_report_the_invented_shapes`);
 - `view.stats` of an invented scene reports its BSP's lighting, its
   triangles by blend, its materials and its sky's sun and fog
   (`api::view::tests`);

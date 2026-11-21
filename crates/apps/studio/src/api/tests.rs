@@ -168,9 +168,14 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
                 c(m::VOLUME_REMOVE, json!({"index": 1}));
             }
         }
-        m::COLLISION_SURFACES | m::COLLISION_AT | m::COLLISION_SELECT => {
+        m::COLLISION_SURFACES | m::COLLISION_AT | m::COLLISION_SELECT | m::COLLISION_OBJECTS => {
             let map = t.path("collision.map");
-            std::fs::write(&map, fixture::fixture_with_collision()).unwrap();
+            let bytes = if name == m::COLLISION_OBJECTS {
+                fixture::fixture_with_object_collision()
+            } else {
+                fixture::fixture_with_instance_collision()
+            };
+            std::fs::write(&map, bytes).unwrap();
             c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
         }
         m::DOC_CLOSE | m::PLAYLIST_LIST | m::PLAYLIST_GET | m::PLAYLIST_SET | m::PLAYLIST_ENTRY => {
@@ -1094,6 +1099,91 @@ fn collision_surfaces_and_at_report_the_invented_rooms_walls() {
             .filter(|r| r["group"] == "Collision")
             .all(|r| r["on"] == true)
     );
+}
+
+/// P11: the invented instance's quad through `collision.surfaces`, and
+/// the invented scenery's `coll` cube and `phmo` sphere through
+/// `collision.objects`, each counted by its layer.
+#[test]
+fn collision_objects_and_instances_report_the_invented_shapes() {
+    let t = Temp::new("collision-objects");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    let open = |api: &mut Api, app: &mut App, name: &str, bytes: Vec<u8>| {
+        let map = t.path(name);
+        std::fs::write(&map, bytes).unwrap();
+        call(
+            api,
+            app,
+            m::SOURCE_OPEN,
+            json!({"path": map.display().to_string()}),
+        );
+    };
+    let layer = |api: &mut Api, app: &mut App, name: &str| {
+        let layers = call(api, app, m::VIEW_LAYERS, Value::Null);
+        layers["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["name"] == name)
+            .unwrap()["count"]
+            .clone()
+    };
+
+    open(
+        &mut api,
+        &mut app,
+        "instance.map",
+        fixture::fixture_with_instance_collision(),
+    );
+    let all = call(&mut api, &mut app, m::COLLISION_SURFACES, Value::Null);
+    let rows = all["surfaces"].as_array().unwrap();
+    assert_eq!(rows.len(), 4);
+    assert_eq!(rows[0]["instance"], Value::Null);
+    assert_eq!(rows[3]["instance"], 0);
+    assert_eq!(rows[3]["plane"], json!([0.0, 0.0, 1.0, 3.0]));
+    assert_eq!(layer(&mut api, &mut app, "level_collision"), 3);
+    assert_eq!(layer(&mut api, &mut app, "instance_collision"), 1);
+    let down = call(
+        &mut api,
+        &mut app,
+        m::COLLISION_AT,
+        json!({"origin": [202.25, 202.5, 10], "dir": [0, 0, -1]}),
+    );
+    assert_eq!(down["surface"]["index"], 3);
+
+    open(
+        &mut api,
+        &mut app,
+        "object.map",
+        fixture::fixture_with_object_collision(),
+    );
+    let objects = call(&mut api, &mut app, m::COLLISION_OBJECTS, Value::Null);
+    assert_eq!(objects["error"], Value::Null);
+    let models = objects["models"].as_array().unwrap();
+    let crate_model = models.iter().find(|m| m["shapes"] == 2).unwrap();
+    assert_eq!(crate_model["nodes"], 2);
+    assert_eq!(crate_model["errors"], json!([]));
+    let shapes = objects["shapes"].as_array().unwrap();
+    assert_eq!(shapes.len(), 2);
+    let kinds: Vec<&str> = shapes.iter().map(|s| s["kind"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["bsp", "sphere"]);
+    for s in shapes {
+        assert_eq!(s["block"], "scenery");
+        assert_eq!(s["index"], 0);
+    }
+    assert_eq!(shapes[0]["node"], 1);
+    assert_eq!(shapes[0]["center"], json!([5.0, 5.0, 6.0]));
+    assert_eq!(shapes[1]["center"], json!([5.0, 5.0, 5.5]));
+    assert_eq!(shapes[1]["radius"], 0.5);
+    let none = call(
+        &mut api,
+        &mut app,
+        m::COLLISION_OBJECTS,
+        json!({"block": "weapons"}),
+    );
+    assert_eq!(none["shapes"], json!([]));
+    assert_eq!(layer(&mut api, &mut app, "object_collision"), 2);
 }
 
 /// P9: `volume.set` moves, turns and resizes a box as one undo step each;

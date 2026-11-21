@@ -724,26 +724,35 @@ pub(crate) fn upload_placements(
 
 /// A collision surface as the status line and inspector name it.
 pub(crate) fn surface_label(s: &scenario_edit::collision_view::CollisionSurface) -> String {
-    format!("BSP {} collision surface {}", s.bsp, s.surface)
+    match s.instance {
+        Some(i) => format!("BSP {} instance {i} collision surface {}", s.bsp, s.surface),
+        None => format!("BSP {} collision surface {}", s.bsp, s.surface),
+    }
 }
 
-/// The level collision as two overlays: every surface under Level
-/// collision, the uncovered ones again under Collision only (in its own
+/// The level collision as three overlays: the structure's surfaces under
+/// Level collision, instanced geometry's under Instance collision, the
+/// uncovered ones of either again under Collision only (in its own
 /// colour), each as translucent faces and wire edges, the selected
-/// surface's edges in the selection colour. A hidden layer uploads
+/// surface's edges in the selection colour; and the placed objects'
+/// collision shapes as wire under Object collision. A hidden layer uploads
 /// nothing, so a large map's collision costs nothing until it is shown.
 fn upload_collision(vp: &mut Viewport, device: &wgpu::Device, app: &App) {
-    use scenario_edit::collision_view::SurfaceClass;
+    use scenario_edit::collision_view::{CollisionSurface, SurfaceClass};
     let selected = app.session.selected_surface();
-    for (id, only) in [
-        (LayerId::LevelCollision, false),
-        (LayerId::CollisionOnly, true),
-    ] {
+    let layers: [(LayerId, fn(&CollisionSurface) -> bool); 3] = [
+        (LayerId::LevelCollision, |s| s.instance.is_none()),
+        (LayerId::InstanceCollision, |s| s.instance.is_some()),
+        (LayerId::CollisionOnly, |s| {
+            s.class == SurfaceClass::CollisionOnly
+        }),
+    ];
+    for (id, keep) in layers {
         let (mut faces, mut lines) = (Vec::new(), Vec::new());
         if let Some(c) = app.session.collision().filter(|_| app.layers.visible(id)) {
             let color = crate::theme::layer_color(id);
             for (i, s) in c.surfaces.iter().enumerate() {
-                if only && s.class != SurfaceClass::CollisionOnly {
+                if !keep(s) {
                     continue;
                 }
                 let n = s.normal();
@@ -770,6 +779,31 @@ fn upload_collision(vp: &mut Viewport, device: &wgpu::Device, app: &App) {
         }
         vp.set_layer_overlay(device, id, &faces, &lines);
     }
+    let mut lines = Vec::new();
+    if app.layers.visible(LayerId::ObjectCollision) {
+        let color = crate::theme::layer_color(LayerId::ObjectCollision);
+        let selection = app.session.selection();
+        for shape in app.session.placed_object_shapes() {
+            let m = shape.marker;
+            if !app.layers.placement(m.block) {
+                continue;
+            }
+            let edge = if selection.contains(&(m.block, m.index)) {
+                crate::theme::VOLUME_SELECTED
+            } else {
+                color
+            };
+            for position in shape.lines.into_iter().flatten() {
+                lines.push(render::Vertex {
+                    position,
+                    center: position,
+                    normal: [0.0, 0.0, 1.0],
+                    color: edge,
+                });
+            }
+        }
+    }
+    vp.set_layer_overlay(device, LayerId::ObjectCollision, &[], &lines);
 }
 
 /// The trigger volumes as boxes, one overlay per kind a box is drawn as
