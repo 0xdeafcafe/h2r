@@ -377,6 +377,7 @@ fn hosted(
         theater_playback: None,
         perf_overlay: None,
         editor_link: None,
+        debug_views: None,
         world_line_sources: Vec::new(),
         discoverable_agent: false,
         embedded_live: false,
@@ -838,6 +839,7 @@ pub(crate) fn run_with_theater(
         host.embedded_live = live.local;
         host.perf_overlay = perf_overlay;
         host.editor_link = Some(editor_link);
+        boot::debug_views::register(&mut host);
         let r = boot::run_hosted_with_live(&xbe, &lib, &opts, host, &live_config);
         // As `h2 run` does: the kernel's storage may outlive the run (or never
         // drop), so store its pending write metadata at a normal exit, whether

@@ -51,7 +51,10 @@
 pub mod ai;
 mod capture;
 pub mod collision;
+mod collision_traces;
+pub use collision_traces::{CollisionTrace, CollisionTraces};
 pub mod compare;
+pub mod debug_views;
 pub mod editor;
 mod exec;
 pub mod forge;

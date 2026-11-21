@@ -66,6 +66,7 @@ connection to hold `session.claim`.
 | `sim.*` | read or act | [`sim`](#sim-simulated-players-and-direct-state) |
 | `forge.capacity`, `forge.probe` | read, act | [Forge probes](#forge-probes) |
 | `match.status`, `match.report`, `match.stop` | read, read, act | [Sim matches](#sim-matches) |
+| `debug.views`, `debug.view` | read, act | [World debug views](#world-debug-views) |
 | `settings.list`, `settings.set`, `perf.overlay`, `cheat.list`, `cheat.set` | read or act | [Menu methods](#menu-methods-settings-perf-overlay-cheats) |
 | `editor.link`, `editor.focus` | read, act | [Paired editor](#editor-a-paired-editor) |
 | `editor.marks` | read | [Paired editor](#editor-a-paired-editor) |
@@ -1849,6 +1850,41 @@ the methods it added beside the agent's own are in
 | `perf.overlay` | act | `{}` reads, `{on}` sets | the perf overlay (the watermark) |
 | `cheat.list` | read | `{}` | the cheats, their values, and why any is refused (`crates/extensions/game/src/cheats.rs`) |
 | `cheat.set` | act | `{name, value}` | sets one, for example `{"name":"hide_hud","value":true}` |
+
+### World debug views
+
+| Method | Access | Params | Result |
+|---|---|---|---|
+| `debug.views` | read | none or `{}` | `{views, range, trace_ticks}` |
+| `debug.view` | act | one of `{name, on}`, `{range}` or `{trace_ticks}` | the updated listing |
+
+Each row has `name`, `label`, `on` and an optional `why`. The names are
+`geometry_edges`, `trigger_volumes`, `kill_volumes`, `invisible_barriers`,
+`collision_geometry`, `hitboxes` and `traces`. For example,
+`h2 agent debug.view '{"name":"hitboxes","on":true}'` enables the same
+switch as the window's Debug views section. Range accepts whole world
+units from 1 to 512 (default 48). Trace lifetime accepts 1 to 300 guest
+ticks (default 30).
+
+A host without a window lists the views with a reason. Enabling a refused
+view returns `UNAVAILABLE`. An enabled row can report a cache loading or
+decoding issue. The socketless debug menu refreshes the same map cache
+between execution slices.
+
+The window registers the debug views as a world-line source before boot.
+Changing a switch, range or lifetime affects subsequent genuine images.
+A captured image keeps its geometry, including the object poses and
+traces sampled for it. The overlay projects the sample with the image's
+split-screen cameras and draws hidden edges at full strength. The source
+and capture code live in `crates/extensions/game/src/debug_views.rs` and
+`crates/extensions/agent/src/debug_views/mod.rs`. See
+[Drawing world-space lines over the frame](#drawing-world-space-lines-over-the-frame).
+
+Traces observe the named `SIM_COLLISION_QUERY` entry and its return while
+enabled. A true hit draws the world position from the result record. The
+query's ABI and result layout are in [Collision rewrite, §5.4](../engine/sim-rewrite-collision.md).
+See [Debug views](debug-menu.md#debug-views) for the data sources, draw caps
+and limits. The wire types are in `crates/extensions/agent-proto/src/debug.rs`.
 
 ## `editor`: a paired editor
 

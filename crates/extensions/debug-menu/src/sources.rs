@@ -43,7 +43,66 @@ pub const RENDER_SETTINGS: &str = "graphics.";
 
 /// Every section, in first-page order.
 pub fn all() -> Vec<Section> {
-    vec![render(), shaders(), tags(), cheats(), perf(), features()]
+    vec![
+        render(),
+        shaders(),
+        tags(),
+        cheats(),
+        perf(),
+        features(),
+        debug_views(),
+    ]
+}
+
+fn debug_views() -> Section {
+    Section {
+        id: "debug-views".into(),
+        title: "Debug views".into(),
+        about: "World geometry, volumes, live hitboxes and collision queries".into(),
+        calls: vec![Call::bare(agent_proto::debug::method::VIEWS)],
+        rows: debug_rows,
+    }
+}
+
+fn debug_rows(a: &[Answer]) -> Vec<Row> {
+    use agent_proto::debug::{RANGE, TRACE_TICKS, ViewsResult, method};
+    let state: ViewsResult =
+        match get(a, 0).and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string())) {
+            Ok(state) => state,
+            Err(e) => return vec![problem(method::VIEWS, e)],
+        };
+    let mut rows: Vec<_> = state
+        .views
+        .into_iter()
+        .map(|v| {
+            let row = Row::toggle(
+                v.label,
+                v.on,
+                Setter::new(method::VIEW, json!({"name": v.name}), "on"),
+            );
+            match v.why {
+                Some(why) if !v.on => row.disabled(why),
+                Some(why) => row.about(why),
+                None => row,
+            }
+        })
+        .collect();
+    let setting = |key| Setter::new(method::VIEW, json!({}), key);
+    rows.push(Row::int(
+        "Range (world units)",
+        state.range.into(),
+        1,
+        ((*RANGE.start()).into(), (*RANGE.end()).into()),
+        setting("range"),
+    ));
+    rows.push(Row::int(
+        "Trace lifetime (ticks)",
+        state.trace_ticks.into(),
+        1,
+        ((*TRACE_TICKS.start()).into(), (*TRACE_TICKS.end()).into()),
+        setting("trace_ticks"),
+    ));
+    rows
 }
 
 /// Rendering: the host renderer's toggles and parameters (`render.toggle`,

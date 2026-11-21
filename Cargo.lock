@@ -55,6 +55,7 @@ name = "agent"
 version = "0.1.0"
 dependencies = [
  "agent-proto",
+ "background",
  "debug-menu",
  "engine",
  "guest-layout",
@@ -1723,6 +1724,7 @@ dependencies = [
 name = "debug-menu"
 version = "0.1.0"
 dependencies = [
+ "agent-proto",
  "input",
  "serde_json",
 ]

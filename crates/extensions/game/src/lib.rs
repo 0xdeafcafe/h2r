@@ -39,6 +39,7 @@ pub mod custom_games;
 pub mod d3d_diag;
 pub mod d3d_glue;
 pub mod debug_menu_glue;
+pub mod debug_views;
 pub mod dsound_glue;
 mod editor_glue;
 pub mod fov_row;
