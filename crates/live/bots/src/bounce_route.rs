@@ -441,14 +441,21 @@ pub fn plan_with(ask: &Ask, known: &Known, walk: Walk, ledge: Ledge) -> Plan {
         Mode::Help => {
             let best = candidates
                 .filter(|c| plain_cost.is_none_or(|p| c.cost() + GAIN <= p))
-                .min_by(|a, b| a.cost().total_cmp(&b.cost()));
+                .min_by(|a, b| {
+                    // A proven site before a cheaper likely one.
+                    (!a.site.proven())
+                        .cmp(&!b.site.proven())
+                        .then(a.cost().total_cmp(&b.cost()))
+                });
             best.map_or(plain, |c| route(ask, &c, Why::Helps))
         }
         Mode::Fun => {
             let best = candidates.filter(|c| c.lead <= FUN_REACH).max_by(|a, b| {
+                // A proven site before a higher likely one.
                 a.site
-                    .launch
-                    .total_cmp(&b.site.launch)
+                    .proven()
+                    .cmp(&b.site.proven())
+                    .then(a.site.launch.total_cmp(&b.site.launch))
                     .then(b.cost().total_cmp(&a.cost()))
             });
             best.map_or(plain, |c| route(ask, &c, Why::Fun))
@@ -577,6 +584,9 @@ impl Touchdown {
 #[derive(Clone, Copy, Debug, Default)]
 struct Watch {
     prev: Option<(Vec3, f32, Option<u32>)>,
+    /// The vertical speed the tick before `prev`: the touchdown tick's
+    /// own reads short when the body stops partway through it.
+    before: Option<f32>,
     /// A touchdown still reading its vertical speed out, and ticks left.
     open: Option<(Touchdown, u32)>,
 }
@@ -593,19 +603,23 @@ impl Watch {
                 self.open = Some((t, left - 1));
             }
         } else if let Some((p, pvz, pword)) = self.prev
-            && pvz <= -TOUCHDOWN
+            && -pvz.min(self.before.unwrap_or(pvz)) >= TOUCHDOWN
             && vz > -TOUCHED
         {
+            // The speed in: the faster of the last two ticks down, since
+            // a speed worked from positions loses the part of the tick
+            // after contact.
             let t = Touchdown {
                 tick,
                 at: p,
-                speed_in: -pvz,
+                speed_in: -pvz.min(self.before.unwrap_or(pvz)),
                 vz_out: vz,
                 miss: dist_xy(p, target),
                 word: pword,
             };
             self.open = Some((t, 2));
         }
+        self.before = self.prev.map(|(_, v, _)| v);
         self.prev = Some((at, vz, word));
         done
     }

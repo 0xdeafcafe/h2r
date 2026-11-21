@@ -60,6 +60,9 @@ pub use sound::{clear_shots, observe_shot};
 /// the loaded map's data ([`cache::current`]).
 pub struct Brain {
     pub mind: mind::Mind,
+    /// Each match's mind starts with the warm-up (`mind::warmup`); off
+    /// only for tests of what comes after it ([`Brain::without_warmup`]).
+    warmup: bool,
     combat: stats::Recorder,
     /// The last death heard from [`emote::kills`].
     kills_seen: u64,
@@ -197,7 +200,9 @@ impl Brain {
         let profile = self.name_profile();
         self.mind = mind::Mind::new(self.mind.skill, self.seed);
         // A new match: the warm-up again (mind::warmup).
-        self.mind.warmup = mind::warmup::Warmup::Due;
+        if self.warmup {
+            self.mind.warmup = mind::warmup::Warmup::Due;
+        }
         self.mind.name_profile = profile;
         self.mind.experience.enter(&self.map);
         self.mind.emote.taunt = taunt;
@@ -219,6 +224,7 @@ impl Brain {
         fresh.warmup = mind::warmup::Warmup::Due;
         Brain {
             mind: fresh,
+            warmup: true,
             combat: stats::Recorder::default(),
             seed,
             epoch: radio::lock(radio::host()).epoch,
@@ -241,6 +247,15 @@ impl Brain {
             outbox: Outbox::default(),
             seat: None,
         }
+    }
+
+    /// The brain with no start-of-match warm-up, in this match or the
+    /// next: for tests of the fight itself.
+    #[cfg(test)]
+    pub(crate) fn without_warmup(mut self) -> Self {
+        self.warmup = false;
+        self.mind.warmup = mind::warmup::Warmup::Over;
+        self
     }
 
     /// The brain on its own radio, for tests that run beside each other.
