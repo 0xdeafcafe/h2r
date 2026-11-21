@@ -446,6 +446,7 @@ impl Admission {
                 indices,
                 renderers: self.renderers.clone(),
                 prepared: Vec::new(),
+                frame: crate::d3d_diag::presents(),
             }),
         ))
     }
@@ -461,6 +462,10 @@ struct Pass {
     indices: Vec<u32>,
     renderers: Renderers,
     prepared: Vec<(PreparedDraw, DrawIdentity, TargetKey)>,
+    /// The guest frame the draw was admitted in. The renderer keeps a
+    /// texture group only while draws of recent frames use it: a view of
+    /// a frame-buffer copy or depth alias is new each frame.
+    frame: u64,
 }
 /// What a snapshot needs of one target copy, whether it comes from an
 /// isolated recording's `ExternalTarget` or the open pass's attachments.
@@ -624,6 +629,7 @@ impl ExternalPass for Pass {
         let renderers = self.renderers.clone();
         let mut renderers = renderers.lock().unwrap_or_else(|e| e.into_inner());
         let (id, renderer) = renderer_for(&mut renderers, target.device);
+        renderer.begin_frame(self.frame);
         let refusal = |why: Refused| {
             static LOGGED: AtomicU64 = AtomicU64::new(0);
             if LOGGED.fetch_add(1, Ordering::Relaxed) < 16 {
@@ -662,6 +668,7 @@ impl ExternalPass for Pass {
         let renderers = self.renderers.clone();
         let mut renderers = renderers.lock().unwrap_or_else(|e| e.into_inner());
         let (id, renderer) = renderer_for(&mut renderers, &t.device);
+        renderer.begin_frame(self.frame);
         let refusal = |why: Refused| {
             static LOGGED: AtomicU64 = AtomicU64::new(0);
             if LOGGED.fetch_add(1, Ordering::Relaxed) < 16 {

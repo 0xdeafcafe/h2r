@@ -930,7 +930,18 @@ impl Shared {
 
     /// Runs one step of job `id` in its own process group, so stop reaches
     /// what it starts (cargo's rustc, the game's helpers) too.
-    fn step(&self, id: &str, mut cmd: Command, log: &File) -> Result<std::process::ExitStatus> {
+    fn step(&self, id: &str, cmd: Command, log: &File) -> Result<std::process::ExitStatus> {
+        self.step_with(id, cmd, log, |child| Ok(child.wait()?))
+    }
+
+    /// [`Self::step`], waiting for the child with `wait`.
+    fn step_with(
+        &self,
+        id: &str,
+        mut cmd: Command,
+        log: &File,
+        wait: impl FnOnce(&mut std::process::Child) -> Result<std::process::ExitStatus>,
+    ) -> Result<std::process::ExitStatus> {
         cmd.stdin(Stdio::null())
             .stdout(log.try_clone()?)
             .stderr(log.try_clone()?)
@@ -950,7 +961,7 @@ impl Shared {
             let _ = wake.send(memory::Event::Step);
         }
         drop(inner);
-        let status = child.wait()?;
+        let status = wait(&mut child)?;
         let stopped = {
             let mut inner = self.inner.lock().unwrap();
             match inner.active.as_mut() {
@@ -1170,7 +1181,22 @@ fn run_job(
         m.agent_socket = Some(sock.display().to_string());
         m.h2 = Some(image.h2.display().to_string());
     });
-    let st = sh.step(id, cmd, &log)?;
+    let run_log = run_dir.join("run.log");
+    let mut lingered = None;
+    let st = sh.step_with(id, cmd, &log, |child| {
+        let (st, outcome) = wait_game(child, &run_log, GAME_EXIT_GRACE, sh.cfg.grace)?;
+        lingered = outcome;
+        Ok(st)
+    })?;
+    if let Some(outcome) = lingered {
+        let note = format!(
+            "the game reported its outcome ({outcome}) but had not exited {} s later; \
+             the lab stopped it",
+            GAME_EXIT_GRACE.as_secs()
+        );
+        let _ = writeln!(log, "lab: {note}");
+        sh.update(id, |m| m.notes.push(note));
+    }
     if let Some(name) = &run.record {
         let input = cfg.dir("recordings").join(name).join(INPUT_FILE);
         if !input.is_file() {
@@ -1181,6 +1207,85 @@ fn run_job(
         }
     }
     Ok(JobOutcome::Finished(Some(st)))
+}
+
+/// How long a game may outlive its guest thread's exit before the lab stops
+/// it. `h2 play` closes its window when a lab job's guest returns and exits
+/// within its shutdown timeout; this is the backstop for a process that
+/// still lingers.
+const GAME_EXIT_GRACE: Duration = Duration::from_secs(60);
+
+/// What the app shell logs when the guest thread ends
+/// (`crates/apps/app/src/shell.rs`, `UserEvent::GuestExited`), followed by
+/// the `GuestExit` in Debug form.
+const GUEST_EXITED: &str = "app: guest thread exited: ";
+
+/// The guest's outcome from one run log line, if it is the shell's
+/// guest-exit line.
+fn guest_exit_outcome(line: &str) -> Option<&str> {
+    line.trim_end().strip_prefix(GUEST_EXITED)
+}
+
+/// The exit status a game that reported `outcome` would have had: success
+/// for a guest that returned, exit 1 for one that failed or panicked.
+fn status_for_outcome(outcome: &str) -> std::process::ExitStatus {
+    // A wait status: the exit code sits in the second byte.
+    std::process::ExitStatus::from_raw(if outcome == "Returned" { 0 } else { 1 << 8 })
+}
+
+/// Waits for the game `child` (its own process group leader) to exit,
+/// watching `log` for the guest's outcome. A game still alive `grace` after
+/// its guest thread exited is stopped (SIGTERM to the group, SIGKILL after
+/// `kill_grace`) and finishes with the status that outcome implies; the
+/// outcome is returned with it. A game that exits by itself returns its
+/// own status and no outcome.
+fn wait_game(
+    child: &mut std::process::Child,
+    log: &Path,
+    grace: Duration,
+    kill_grace: Duration,
+) -> Result<(std::process::ExitStatus, Option<String>)> {
+    let pgid = child.id() as i32;
+    let mut reader = File::open(log).ok().map(BufReader::new);
+    let mut line = Vec::new();
+    let mut exited: Option<(String, Instant)> = None;
+    loop {
+        if let Some(st) = child.try_wait()? {
+            return Ok((st, None));
+        }
+        if exited.is_none()
+            && let Some(r) = reader.as_mut()
+        {
+            // Whole lines only: a partial one waits for its newline.
+            loop {
+                match r.read_until(b'\n', &mut line) {
+                    Ok(n) if n > 0 && line.ends_with(b"\n") => {
+                        if let Some(o) = guest_exit_outcome(&String::from_utf8_lossy(&line)) {
+                            exited = Some((o.to_owned(), Instant::now()));
+                            break;
+                        }
+                        line.clear();
+                    }
+                    _ => break,
+                }
+            }
+        }
+        if let Some((outcome, at)) = &exited
+            && at.elapsed() >= grace
+        {
+            // SAFETY: the game's own process group.
+            unsafe { libc::kill(-pgid, libc::SIGTERM) };
+            let deadline = Instant::now() + kill_grace;
+            while child.try_wait()?.is_none() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            // SAFETY: as above; the group may be gone already.
+            unsafe { libc::kill(-pgid, libc::SIGKILL) };
+            child.wait()?;
+            return Ok((status_for_outcome(outcome), Some(outcome.clone())));
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
 }
 
 /// `h2 play` for `run` with `image`, its environment cleaned of the host's
@@ -1776,6 +1881,109 @@ fn summarize(mut log: impl BufRead) -> io::Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Runs `script` under `sh` in its own process group with its output
+    /// in a fresh log, as `Shared::step` runs a game.
+    fn game(name: &str, script: &str) -> (std::process::Child, PathBuf) {
+        let log =
+            std::env::temp_dir().join(format!("h2lab-wait-{name}-{}.log", std::process::id()));
+        let file = File::create(&log).unwrap();
+        let child = Command::new("sh")
+            .arg("-c")
+            .arg(script)
+            .stdin(Stdio::null())
+            .stdout(file.try_clone().unwrap())
+            .stderr(file)
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        (child, log)
+    }
+
+    #[test]
+    fn the_guest_exit_line_gives_the_outcome_and_its_status() {
+        assert_eq!(
+            guest_exit_outcome("app: guest thread exited: Returned\n"),
+            Some("Returned")
+        );
+        assert_eq!(
+            guest_exit_outcome("app: guest thread exited: Failed(\"boom\")"),
+            Some("Failed(\"boom\")")
+        );
+        assert_eq!(guest_exit_outcome("outcome: SliceLimit"), None);
+        assert!(status_for_outcome("Returned").success());
+        assert_eq!(status_for_outcome("Panicked(\"x\")").code(), Some(1));
+    }
+
+    #[test]
+    fn a_game_that_exits_by_itself_keeps_its_own_status() {
+        let (mut child, log) = game("own", "echo 'app: guest thread exited: Returned'; exit 3");
+        let (st, outcome) = wait_game(
+            &mut child,
+            &log,
+            Duration::from_secs(30),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        let _ = fs::remove_file(&log);
+        assert_eq!(st.code(), Some(3));
+        assert_eq!(outcome, None);
+    }
+
+    #[test]
+    fn a_game_that_lingers_after_its_guest_returned_is_stopped_with_that_outcome() {
+        let t = Instant::now();
+        let (mut child, log) = game(
+            "linger",
+            "echo 'frame stats: 300 frames'; echo 'app: guest thread exited: Returned'; exec sleep 60",
+        );
+        let (st, outcome) = wait_game(
+            &mut child,
+            &log,
+            Duration::from_millis(100),
+            Duration::from_secs(2),
+        )
+        .unwrap();
+        let _ = fs::remove_file(&log);
+        assert!(st.success(), "{st:?}");
+        assert_eq!(outcome.as_deref(), Some("Returned"));
+        assert!(t.elapsed() < Duration::from_secs(20), "{:?}", t.elapsed());
+    }
+
+    #[test]
+    fn a_lingering_game_that_ignores_sigterm_is_killed_and_keeps_a_failed_outcome() {
+        let t = Instant::now();
+        let (mut child, log) = game(
+            "ignore",
+            "trap '' TERM; echo 'app: guest thread exited: Failed(\"crash\")'; sleep 60",
+        );
+        let (st, outcome) = wait_game(
+            &mut child,
+            &log,
+            Duration::from_millis(100),
+            Duration::from_millis(300),
+        )
+        .unwrap();
+        let _ = fs::remove_file(&log);
+        assert_eq!(st.code(), Some(1));
+        assert_eq!(outcome.as_deref(), Some("Failed(\"crash\")"));
+        assert!(t.elapsed() < Duration::from_secs(20), "{:?}", t.elapsed());
+    }
+
+    #[test]
+    fn a_game_still_running_its_guest_is_not_stopped() {
+        let (mut child, log) = game("running", "echo 'frame stats: 10 frames'; sleep 1");
+        let (st, outcome) = wait_game(
+            &mut child,
+            &log,
+            Duration::from_millis(1),
+            Duration::from_millis(1),
+        )
+        .unwrap();
+        let _ = fs::remove_file(&log);
+        assert!(st.success(), "{st:?}");
+        assert_eq!(outcome, None);
+    }
 
     #[test]
     fn the_summary_is_the_last_report_and_its_worst_frames() {

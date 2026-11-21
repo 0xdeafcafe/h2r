@@ -267,3 +267,67 @@ fn a_draw_clipped_away_entirely_is_left_to_the_isolated_recording() {
     prepared.clips.push(ClipRect { x: 0, y: 0, width: 8, height: 8 });
     assert!(cache.draws(&ctx.device, &ctx.queue, &arena, &prepared, wrong_mode, &target).is_err());
 }
+
+/// One textured decal packet of `view` as frame `n`.
+fn textured_packet(
+    ctx: &gfx::GfxContext,
+    cache: &mut DecalCache,
+    n: u64,
+    view: &wgpu::TextureView,
+) {
+    cache.begin_frame(n);
+    let arena = gfx::ring::UploadPool::default().begin();
+    let target = PacketTarget {
+        color_format: COLOR,
+        depth_format: DEPTH,
+        guest_size: (SIZE, SIZE),
+        size: (SIZE, SIZE),
+        z_scale: 1.,
+        stage0: Some(view),
+    };
+    let prepared = decal(20., [255, 255, 255, 255], true);
+    assert!(matches!(
+        cache.draws(&ctx.device, &ctx.queue, &arena, &prepared, CLIP, &target),
+        Ok(Some(_))
+    ));
+}
+
+#[test]
+fn decal_texture_groups_last_while_draws_use_them() {
+    let Ok(ctx) = gfx::GfxContext::headless() else {
+        eprintln!("no GPU adapter; skipped");
+        return;
+    };
+    let keep = native_render::texture_groups::KEEP_FRAMES;
+    let mut cache = DecalCache::default();
+    let steady = solid_view(&ctx, [255, 128, 0, 255]);
+    for n in 1..=20 {
+        textured_packet(&ctx, &mut cache, n, &steady);
+    }
+    assert_eq!(
+        cache.created().texture_groups,
+        1,
+        "a steady texture's group is made once"
+    );
+    // A new texture each frame (a frame-buffer copy) keeps only the
+    // groups of the frames still in the window.
+    for n in 21..=60 {
+        textured_packet(&ctx, &mut cache, n, &solid_view(&ctx, [n as u8, 0, 0, 255]));
+        let held = cache.held();
+        assert!(held.groups as u64 <= keep + 1, "frame {n}: {held:?}");
+        if n > 20 + keep {
+            assert_eq!(
+                held.groups as u64,
+                keep + 1,
+                "frame {n}: the steady group has aged out"
+            );
+        }
+        assert_eq!(
+            held.texture_bytes,
+            held.groups as u64 * 4 * 4 * 4,
+            "each group holds its own texture"
+        );
+    }
+    cache.begin_frame(60 + keep + 1);
+    assert_eq!(cache.held(), native_render::texture_groups::Held::default());
+}

@@ -241,6 +241,7 @@ impl DrawAdmission for Glue {
                 clip: None,
                 gpu: None,
                 caches: self.caches.clone(),
+                frame: crate::d3d_diag::presents(),
             }),
         ))
     }
@@ -251,6 +252,9 @@ struct DecalPass {
     clip: Option<d3d::DepthClip>,
     gpu: Option<DecalGpu>,
     caches: Caches,
+    /// The guest frame of the admission: the cache keeps a texture group
+    /// only while draws of recent frames use it.
+    frame: u64,
 }
 
 impl DecalPass {
@@ -317,6 +321,7 @@ impl d3d::ExternalPass for DecalPass {
         };
         let mut caches = self.caches.lock().unwrap_or_else(|e| e.into_inner());
         let cache = caches.entry(t.device.clone()).or_default();
+        cache.begin_frame(self.frame);
         match cache.draws(&t.device, &t.queue, &t.uploads, &self.prepared, clip, &target) {
             Ok(Some((packets, discards))) => Some(Ok(ExternalDraws {
                 ranges: 1,
