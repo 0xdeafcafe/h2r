@@ -742,7 +742,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|w| w["id"] == "transport.0"
+                .any(|w| w["id"] == "transport.time"
                     && w["alpha"].as_u64().is_some_and(|alpha| (1..255).contains(&alpha)))
         );
         assert!(run(args("in:2")).is_ok());

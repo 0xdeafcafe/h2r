@@ -324,7 +324,7 @@ mod tests {
     fn playback_overlay_samples_include_the_transport() {
         let spec = screens::sample(crate::theater_ui::OVERLAY).unwrap();
         let mut animated = From::Synthetic.animated_view(&spec, "playing").unwrap();
-        let opacity = |view: &View| view.widget("transport.0").unwrap().alpha;
+        let opacity = |view: &View| view.widget("transport.time").unwrap().alpha;
         let opening = opacity(animated.seek(Phase::In(6)));
         let rest = opacity(animated.seek(Phase::Rest));
         assert!(opening > 0 && opening < rest);
