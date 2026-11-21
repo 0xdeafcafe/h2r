@@ -17,8 +17,9 @@ pub trait PrivateCaptureScene: Send + Sync {
     fn present(&self) -> u64;
     fn scene_hash(&self) -> u64;
     /// The displayed extent of this Swap may still be on its way from
-    /// the display worker. Keep the selection while waiting for it.
-    fn ready(&self) -> bool;
+    /// the display worker. A failed Swap stays unavailable, including
+    /// while the private worker is drawing or returning its PNG.
+    fn ready(&self) -> Result<bool, String>;
     fn draw(&self, lighting: CaptureLighting, output: PrivateCaptureWrite) -> Result<(), String>;
 }
 
@@ -167,7 +168,7 @@ impl Job {
             )));
         }
         if self.writing.is_none() {
-            if !scene.ready() {
+            if !scene.ready().map_err(unavailable)? {
                 return Ok(None);
             }
             let (done, received) = mpsc::channel();
@@ -184,7 +185,11 @@ impl Job {
             self.writing = Some(received);
         }
         let writing = self.writing.as_ref().expect("draw queued");
-        let file = match writing.try_recv() {
+        let result = writing.try_recv();
+        // Check the original Swap on every poll, even if the private worker
+        // already wrote the PNG. A terminal failure drops the unclaimed file.
+        scene.ready().map_err(unavailable)?;
+        let file = match result {
             Err(mpsc::TryRecvError::Empty) => return Ok(None),
             Err(mpsc::TryRecvError::Disconnected) => {
                 return Err(unavailable("private capture renderer stopped"));
@@ -298,12 +303,26 @@ mod tests {
     use crate::compare::{Rgba, compare_files};
     use agent_proto::{CompareParams, FrameCaptureParams};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     // One installed source for this test. It serves only the latest
     // synthetic scene: the second RPC has to use the first one's pin.
     struct Scene {
         tick: u64,
         draws: Mutex<Vec<CaptureLighting>>,
+        failed: AtomicBool,
+        deferred: Option<Mutex<Option<PrivateCaptureWrite>>>,
+    }
+
+    impl Scene {
+        fn new(tick: u64) -> Self {
+            Self {
+                tick,
+                draws: Mutex::default(),
+                failed: AtomicBool::new(false),
+                deferred: None,
+            }
+        }
     }
 
     impl PrivateCaptureScene for Scene {
@@ -317,8 +336,11 @@ mod tests {
             self.tick + 3
         }
 
-        fn ready(&self) -> bool {
-            true
+        fn ready(&self) -> Result<bool, String> {
+            if self.failed.load(Ordering::Acquire) {
+                return Err("reference present failed".into());
+            }
+            Ok(true)
         }
         fn draw(
             &self,
@@ -326,6 +348,10 @@ mod tests {
             output: PrivateCaptureWrite,
         ) -> Result<(), String> {
             self.draws.lock().unwrap().push(lighting);
+            if let Some(deferred) = &self.deferred {
+                *deferred.lock().unwrap() = Some(output);
+                return Ok(());
+            }
             let mut image = Rgba::filled(4, 3, [1, 2, 3, 255]);
             image.set(1, 2, [self.tick as u8, 33, 22, 255]);
             output.finish(Ok(image));
@@ -432,10 +458,7 @@ mod tests {
             Ok(Some(latest))
         }
 
-        let first = Arc::new(Scene {
-            tick: 42,
-            draws: Mutex::new(vec![]),
-        });
+        let first = Arc::new(Scene::new(42));
         *LATEST.lock().unwrap() = Some(Arc::clone(&first));
         let c = FrameCapture::new(&super::super::PROBE, &super::super::HOSTED);
         c.set_private_source(Some(select));
@@ -452,10 +475,30 @@ mod tests {
         };
 
         let a = capture(CaptureLighting::Retail, None);
-        *LATEST.lock().unwrap() = Some(Arc::new(Scene {
-            tick: 43,
-            draws: Mutex::new(vec![]),
-        }));
+        // The next Swap can fail while its own request is in flight. Its
+        // failure must report the reason and leave the earlier pin intact.
+        let next = Arc::new(Scene {
+            deferred: Some(Mutex::default()),
+            ..Scene::new(43)
+        });
+        *LATEST.lock().unwrap() = Some(Arc::clone(&next));
+        let later_params = FrameCaptureParams {
+            lighting: Some(CaptureLighting::E3),
+            tick: Some(43),
+            pass: None,
+        };
+        let later = c.arm(&later_params, &dir).unwrap();
+        assert!(c.finish(later).is_none());
+        let deferred = next.deferred.as_ref().unwrap();
+        let output = deferred.lock().unwrap().take().unwrap();
+        let unclaimed = output.path.clone();
+        output.finish(Ok(Rgba::filled(1, 1, [0; 4])));
+        assert!(unclaimed.exists());
+        next.failed.store(true, Ordering::Release);
+        let error = c.finish(later).unwrap().unwrap_err();
+        assert_eq!(error.code, code::UNAVAILABLE);
+        assert_eq!(error.message, "reference present failed");
+        assert!(!unclaimed.exists());
         let b = capture(CaptureLighting::E3, Some(a.tick));
         assert_eq!(
             (a.tick, a.present, a.scene_hash.as_deref()),

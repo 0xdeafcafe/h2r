@@ -855,8 +855,10 @@ h2 agent render.parity '{"arm": true}'
   backend showed from its 1x reference. The answer includes the tick,
   present, summary hash, lighting and a fresh PNG path. The most recent
   successful private capture retains its scene for another request with
-  the same tick. Pass both
-  paths to `render.compare` to compare the modes while play continues.
+  the same tick. A failed original Swap gives `UNAVAILABLE` with
+  `reference present failed` for that scene. Other retained ticks stay
+  available. Pass both paths to `render.compare` to compare the modes
+  while play continues.
   A renderer reset releases the retained scene. A missing private
   renderer or an unreplayable scene gives `UNAVAILABLE`. Combining
   `lighting` with `pass` gives `INVALID_PARAMS`. The override applies

@@ -60,14 +60,19 @@ struct DisplaySize {
 }
 
 impl DisplaySize {
+    fn check(&self) -> Result<(), &'static str> {
+        if self.failed.load(Ordering::Acquire) {
+            return Err("reference present failed");
+        }
+        Ok(())
+    }
+
     fn ready(&self) -> bool {
         self.extent.get().is_some() || self.failed.load(Ordering::Acquire)
     }
 
     fn scale(&self, guest: Option<frame_scene::AuxTarget>) -> Result<u32, String> {
-        if self.failed.load(Ordering::Acquire) {
-            return Err("reference present failed".into());
-        }
+        self.check()?;
         let &[width, height] = self
             .extent
             .get()
@@ -125,6 +130,7 @@ impl Inputs {
                 lighting,
                 Some(&mut probe),
             )?;
+            self.display.check()?;
             if !request.waiting() {
                 // A replacement can arrive during readback. Dropping the
                 // observer releases its arming for the outstanding capture.
@@ -264,11 +270,15 @@ impl Scenes {
                     )
                 })?,
         };
-        entry
+        let inputs = entry
             .inputs
             .as_ref()
-            .map(Some)
-            .map_err(|e| RpcError::new(code::UNAVAILABLE, e.clone()))
+            .map_err(|e| RpcError::new(code::UNAVAILABLE, e.clone()))?;
+        inputs
+            .display
+            .check()
+            .map_err(|reason| RpcError::new(code::UNAVAILABLE, reason))?;
+        Ok(Some(inputs))
     }
 }
 
@@ -440,8 +450,9 @@ impl PrivateCaptureScene for Selection {
             .hash
             .get_or_init(|| frame_scene::summary_hash(&self.frame.scene))
     }
-    fn ready(&self) -> bool {
-        self.frame.display.ready()
+    fn ready(&self) -> Result<bool, String> {
+        self.frame.display.check()?;
+        Ok(self.frame.display.extent.get().is_some())
     }
 
     fn draw(&self, lighting: CaptureLighting, output: PrivateCaptureWrite) -> Result<(), String> {
@@ -860,6 +871,40 @@ mod tests {
         let anisotropic = DisplaySize::default();
         anisotropic.extent.set([16, 4]).unwrap();
         assert!(anisotropic.scale(guest).is_err());
+    }
+
+    #[test]
+    fn failed_original_swap_preserves_the_other_retained_tick() {
+        let mut scenes = Scenes::default();
+        let valid = entry(20, 0);
+        let failed = entry(21, 0);
+        let valid_inputs = Arc::clone(valid.inputs.as_ref().unwrap());
+        let failed_inputs = Arc::clone(failed.inputs.as_ref().unwrap());
+        for frame in [&valid_inputs, &failed_inputs] {
+            scenes
+                .displays
+                .insert(frame.replay.present, Arc::downgrade(&frame.display));
+            frame.display.extent.set([8, 4]).unwrap();
+        }
+        scenes.retain(valid);
+        scenes.published = Some(failed.clone());
+        scenes.unshown(failed_inputs.replay.present);
+        assert!(Arc::ptr_eq(
+            scenes.select(Some(20)).unwrap().unwrap(),
+            &valid_inputs
+        ));
+        assert_eq!(failed_inputs.display.check(), Err("reference present failed"));
+
+        // The mailbox may deliver the entry it already owned before the error.
+        scenes.retain(failed);
+        scenes.published = None;
+        let error = scenes.select(Some(21)).err().unwrap();
+        assert_eq!(error.code, code::UNAVAILABLE);
+        assert_eq!(error.message, "reference present failed");
+        assert!(Arc::ptr_eq(
+            scenes.select(Some(20)).unwrap().unwrap(),
+            &valid_inputs
+        ));
     }
 
     #[test]
