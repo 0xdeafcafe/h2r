@@ -81,15 +81,18 @@ that tag alone does not establish a loader for it.
   skin's first shader bitmap uses the medium emblem material in the
   main menu, shared map and Zanzibar. The card copies that definition
   and feeds the profile to the retail emblem setter at `0x2b12ca`.
-- The profile line below the list shows the gamertag’s try-hard band
-  and strongest combat tendencies. The host also shows the active brain’s
+- The profile line sits inside the dialog above the emblem and uses the
+  large panel's animation. It shows the gamertag’s try-hard band and
+  strongest combat tendencies. The host shows the active brain’s
   difficulty and strongest temperament trait. A remote or recent server
   bot resolves its full name and last rostered skill through
   `GET /v1/games/bots/{xuid}`. The client derives the baseline temperament
-  from that name and skill. While the lookup is pending or offline, the
-  card uses its available name for the profile. Difficulty and temperament
-  read “Unavailable” when the skill is unknown. On the host, a scripted
-  or recorded seat shows “Unavailable” for its combat profile.
+  from that name and skill. While a queued lookup runs, Difficulty and
+  Style show “Loading...” and the profile uses the available name. If the
+  lookup fails or no skill is known, those rows show “Unavailable”. On
+  the host, a scripted or recorded seat with no brain shows “Unavailable”
+  for its combat profile. The card's page model is available in the UI
+  builder as `clanker_player_options`.
 - Mute and feedback are omitted from the card. A Clanker has no voice
   account to mute and no human player to report. Both server homes
   refuse friend requests and mailbox writes to either reserved XUID

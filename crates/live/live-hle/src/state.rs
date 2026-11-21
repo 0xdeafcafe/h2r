@@ -1072,21 +1072,20 @@ impl State {
     pub fn bot_card(
         &self,
         xuid: live_proto::Xuid,
-        done: Box<dyn FnOnce(live_proto::bots::PlayerCard) + Send>,
-    ) {
-        if let (Some(service), Some(session)) = (&self.service, self.session()) {
-            let _ = service.bot_card(
-                &session,
-                xuid,
-                Box::new(move |r| {
-                    if let Ok(Reply::BotCard(card)) = r
-                        && card.xuid == xuid
-                    {
-                        done(card);
-                    }
-                }),
-            );
-        }
+        done: Box<dyn FnOnce(std::result::Result<live_proto::bots::PlayerCard, u32>) + Send>,
+    ) -> std::result::Result<(), u32> {
+        let service = self.service.as_ref().ok_or(NO_SESSION)?;
+        let session = self.session().ok_or(NO_SESSION)?;
+        service.bot_card(
+            &session,
+            xuid,
+            Box::new(move |r| {
+                done(r.and_then(|reply| match reply {
+                    Reply::BotCard(card) if card.xuid == xuid => Ok(card),
+                    _ => Err(RESULTS_UNAVAILABLE),
+                }));
+            }),
+        )
     }
     fn mod_list_session(&self) -> std::result::Result<(&Service, Session), crate::mods::ModsError> {
         use crate::mods::ModsError;

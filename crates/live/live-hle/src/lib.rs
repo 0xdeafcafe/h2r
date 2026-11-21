@@ -660,12 +660,14 @@ impl Hle {
     ) -> Result<(), String> {
         self.lock().roster_bots(request, done)
     }
-    /// Look up a remote or recent Clanker on the Live worker. The UI stays usable offline.
+    /// Queues a remote or recent Clanker lookup. A queued lookup calls
+    /// `done` with its result on the Live worker. A lookup that cannot
+    /// be queued returns its status immediately.
     pub fn bot_card(
         &self,
         xuid: live_proto::Xuid,
-        done: Box<dyn FnOnce(live_proto::bots::PlayerCard) + Send>,
-    ) {
+        done: Box<dyn FnOnce(Result<live_proto::bots::PlayerCard, u32>) + Send>,
+    ) -> Result<(), u32> {
         self.lock().bot_card(xuid, done)
     }
     /// Whether the guest has a signed-in player who can read the mod list.

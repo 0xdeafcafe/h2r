@@ -268,7 +268,7 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 }
 
 /// The screens `h2 ui preview` knows, by name.
-pub const NAMES: [&str; 24] = [
+pub const NAMES: [&str; 25] = [
     "campaigns",
     "skulls",
     "skulls.h1",
@@ -285,6 +285,7 @@ pub const NAMES: [&str; 24] = [
     "kit.dialog",
     "kit.dialog.large",
     "clankers",
+    crate::clanker_card::SCREEN,
     "mods",
     "mods.pack",
     "mods.detail",
@@ -535,6 +536,7 @@ pub fn list_page(name: &str) -> Option<ListPage> {
             ));
             list(ListPage::new(s.class(), described(&s)))
         }
+        crate::clanker_card::SCREEN => list(crate::clanker_card::page_sample()),
         "clankers" => {
             let store = Arc::new(settings::Store::defaults(&crate::clankers::DEFS));
             let s = Arc::new(crate::clankers::page(store));

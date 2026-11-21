@@ -1687,6 +1687,10 @@ fn the_host_asks_for_a_bot_roster_for_its_session() {
     let s = Server::new();
     let a = s.account("Host");
     let mut host = World::new(&s.embedded.url, &[&a]);
+    assert_eq!(
+        host.hle.bot_card(a.xuid, Box::new(|_| panic!("offline lookup was queued"))),
+        Err(NO_SESSION)
+    );
     host.logon();
     assert_eq!(host.hle.hosted_session(), None, "no advertisement yet");
     attr(&host, MATCH_ATTR, 1, 101);
@@ -1722,10 +1726,22 @@ fn the_host_asks_for_a_bot_roster_for_its_session() {
     let roster = ask(&session).expect("a roster");
     assert_eq!(roster.match_id, session);
     assert_eq!(roster.bots.len(), 2);
+    let lookup = |xuid| {
+        let (tx, rx) = mpsc::channel();
+        host.hle
+            .bot_card(xuid, Box::new(move |card| tx.send(card).unwrap()))
+            .unwrap();
+        rx.recv_timeout(Duration::from_secs(10)).unwrap()
+    };
+    assert!(lookup(a.xuid).is_err());
     for b in &roster.bots {
         assert!(bots::is_server_xuid(b.xuid), "{}", b.xuid);
         assert_eq!(b.skill, bots::HEROIC);
         assert_eq!(b.team, None);
+        let card = lookup(b.xuid).unwrap();
+        assert_eq!(card.xuid, b.xuid);
+        assert_eq!(card.gamertag, b.gamertag);
+        assert_eq!(card.skill, Some(bots::HEROIC));
     }
     assert!(
         s.events()

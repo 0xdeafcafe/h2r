@@ -12,9 +12,10 @@ use runtime::GuestFault;
 
 use crate::list_class;
 use crate::ui_kit::{
-    dialog::DialogBase,
+    dialog::{DialogBase, PICKER_ANIMATION},
     dialog_tag, ids,
     input::{Glyph, Prompt},
+    page::{ListPage, described},
     screen::{KitScreen, KitTexts, Row, Then},
     view::Opener,
 };
@@ -55,6 +56,7 @@ struct Card {
     difficulty: String,
     style: String,
     profile: String,
+    loading: bool,
 }
 
 impl Card {
@@ -73,6 +75,7 @@ impl Card {
                 profile.summary()
             },
             name,
+            loading: false,
         }
     }
 
@@ -82,6 +85,26 @@ impl Card {
             account.skill.map(crate::clankers::skill_of),
             None,
         )
+    }
+
+    fn skill_detail<'a>(&self, value: &'a str) -> &'a str {
+        if self.loading {
+            "Loading..."
+        } else {
+            value
+        }
+    }
+
+    fn finish_lookup(&mut self, card: Option<live_proto::bots::PlayerCard>) -> bool {
+        self.loading = false;
+        if let Some(card) = card {
+            let resolved = Self::account(card);
+            let changed = self.name != resolved.name;
+            *self = resolved;
+            changed
+        } else {
+            false
+        }
     }
 }
 
@@ -123,13 +146,18 @@ fn route(selection: &Selection, known: Option<Known>) -> Option<Card> {
     }
 }
 
-fn known(c: &Call, s: &Selection) -> Option<Known> {
-    if let Some(p) = phantom::list().into_iter().find(|p| {
+fn hosted(phantoms: &phantom::Phantoms, s: &Selection) -> Option<Known> {
+    let p = phantoms.list().into_iter().find(|p| {
         p.identity.xuid == s.xuid().0
             && (is_bot_xuid(s.xuid())
                 || phantom::session::player_id(p.identity.xuid, p.machine) == s.id)
-    }) {
-        return Some(Known::Hosted(p.identity.gamertag, phantom::global().brain_view(p.handle)));
+    })?;
+    Some(Known::Hosted(p.identity.gamertag, phantoms.brain_view(p.handle)))
+}
+
+fn known(c: &Call, s: &Selection) -> Option<Known> {
+    if let Some(p) = hosted(phantom::global(), s) {
+        return Some(p);
     }
     let m = c.ctx.runtime().memory();
     if m.u8(points::NETWORK_READY.base).ok()? == 0 {
@@ -228,11 +256,11 @@ fn account_name_source(m: &dyn GuestMemory, caller: u32, src: u32) -> u32 {
 // own card, so a late server reply cannot change the next selection.
 type Current = Arc<Mutex<Option<Arc<Mutex<Card>>>>>;
 
-fn field(current: &Current, get: fn(&Card) -> &String) -> String {
+fn field(current: &Current, get: fn(&Card) -> &str) -> String {
     let guard = current.lock().unwrap_or_else(|e| e.into_inner());
     guard
         .as_ref()
-        .map(|c| get(&c.lock().unwrap_or_else(|e| e.into_inner())).clone())
+        .map(|c| get(&c.lock().unwrap_or_else(|e| e.into_inner())).to_owned())
         .unwrap_or_default()
 }
 
@@ -281,19 +309,25 @@ fn show(
         *open = Some(card.clone());
     }
     if remote && let Some(live) = live {
+        card.lock().unwrap_or_else(|e| e.into_inner()).loading = true;
+        let loading = card.clone();
         let widget = widget.clone();
-        live.bot_card(
-            s.xuid(),
-            Box::new(move |r| {
-                let resolved = Card::account(r);
-                let mut old = card.lock().unwrap_or_else(|e| e.into_inner());
-                let changed = old.name != resolved.name;
-                *old = resolved;
-                if changed {
-                    widget.refresh.store(true, Ordering::Release);
-                }
-            }),
-        );
+        if live
+            .bot_card(
+                s.xuid(),
+                Box::new(move |r| {
+                    let mut card = loading.lock().unwrap_or_else(|e| e.into_inner());
+                    if card.finish_lookup(r.ok()) {
+                        widget.refresh.store(true, Ordering::Release);
+                    }
+                }),
+            )
+            .is_err()
+        {
+            card.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .finish_lookup(None);
+        }
     }
     let current = current.clone();
     c.answer_async(move |cx| {
@@ -401,6 +435,8 @@ impl hooks::Feature for Options {
     }
 }
 
+const EMBLEM_RECT: [i16; 4] = [30, 120, -50, 200];
+
 // Skin 6 is the Live players list in both interfaces. Its first table's
 // skin (player_skin_ymenu) contains the retail medium emblem shader.
 fn emblem_block(m: &dyn GuestMemory, skin: u32) -> Result<Option<[u8; 0x24]>, MemFault> {
@@ -420,7 +456,7 @@ fn emblem_block(m: &dyn GuestMemory, skin: u32) -> Result<Option<[u8; 0x24]>, Me
     block[0] &= !2;
     for (pair, coord) in block[0x1c..]
         .chunks_exact_mut(2)
-        .zip([30i16, 120, -50, 200])
+        .zip(EMBLEM_RECT)
     {
         pair.copy_from_slice(&coord.to_le_bytes());
     }
@@ -478,12 +514,12 @@ async fn add_emblem(
     Ok(())
 }
 
-// Below the last list row and the emblem, above the Back legend.
+// Inside the panel below the title, above the emblem and clear of the list.
 const PROFILE_LINE: list_class::TextBlock = list_class::TextBlock {
-    rect: [-52, -225, -80, 240],
+    rect: [68, -15, 42, 249],
     font: 1,
     colour: [0.560784, 0.694118, 0.811765],
-    animation: 0,
+    animation: PICKER_ANIMATION,
 };
 
 fn card_screen(current: &Current) -> KitScreen {
@@ -498,12 +534,21 @@ fn card_screen(current: &Current) -> KitScreen {
     .dialog(DialogBase::Large, Opener::XBOX_LIVE_MENU)
     .row(Row::info("Gamertag", move || field(&name, |v| &v.name)))
     .row(Row::info("Difficulty", move || {
-        field(&difficulty, |v| &v.difficulty)
+        field(&difficulty, |v| v.skill_detail(&v.difficulty))
     }))
-    .row(Row::info("Style", move || field(&style, |v| &v.style)))
+    .row(Row::info("Style", move || {
+        field(&style, |v| v.skill_detail(&v.style))
+    }))
     .row(Row::action("Back", || Then::Close))
     .live_help(PROFILE_LINE, move || field(&summary, |v| &v.profile))
     .prompts(&[Prompt::new(&[Glyph::B], "Back")])
+}
+
+pub(crate) fn page_sample() -> ListPage {
+    let card = Card::new("Rusty Bolt".into(), Some(Skill::Heroic), None);
+    let current = Arc::new(Mutex::new(Some(Arc::new(Mutex::new(card)))));
+    let screen = Arc::new(card_screen(&current));
+    ListPage::new(screen.class(), described(&screen))
 }
 
 pub fn install(
@@ -643,6 +688,71 @@ mod tests {
     }
 
     #[test]
+    fn a_hosted_clanker_uses_its_active_brain_and_full_name() {
+        let phantoms = phantom::Phantoms::default();
+        let xuid = live_proto::bots::local_xuid(1);
+        let name = "Copper Circuit";
+        let brain = bots::Brain::new(Skill::Legendary, 1).with_name_profile(name);
+        let style = strongest_trait(brain.view().personality);
+        phantoms
+            .add(
+                phantom::Identity {
+                    xuid: xuid.0,
+                    gamertag: name.into(),
+                },
+                None,
+                Box::new(brain),
+            )
+            .unwrap();
+        let mut selection = Selection {
+            id: [0; guest::ID_LEN],
+            name: "Copper".into(),
+        };
+        selection.id[..8].copy_from_slice(&xuid.0.to_le_bytes());
+        let card = route(&selection, hosted(&phantoms, &selection)).unwrap();
+        assert_eq!(card.name, name);
+        assert_eq!(card.difficulty, "Legendary");
+        assert_eq!(card.style, style);
+        assert_eq!(card.profile, NameProfile::for_name(name).summary());
+    }
+
+    #[test]
+    fn a_lookup_shows_loading_until_it_succeeds_or_fails() {
+        use crate::ui_kit::spec::Describe;
+
+        let card = Arc::new(Mutex::new(Card::new("Copper".into(), None, None)));
+        let current = Arc::new(Mutex::new(Some(card.clone())));
+        let screen = card_screen(&current);
+        let values = || {
+            let spec = screen.spec();
+            [
+                spec.rows[1].plain_value().unwrap(),
+                spec.rows[2].plain_value().unwrap(),
+            ]
+        };
+        card.lock().unwrap().loading = true;
+        assert_eq!(values(), ["Loading...", "Loading..."]);
+        assert!(!card.lock().unwrap().finish_lookup(None));
+        assert_eq!(values(), ["Unavailable", "Unavailable"]);
+
+        card.lock().unwrap().loading = true;
+        let account = live_proto::bots::PlayerCard {
+            xuid: Xuid(live_proto::bots::SERVER_XUID_MARK | 81),
+            gamertag: live_proto::Gamertag::new("Copper Circuit").unwrap(),
+            seed: 9,
+            skill: Some(live_proto::bots::HEROIC),
+        };
+        let profile = NameProfile::for_name("Copper Circuit");
+        let style = strongest_trait(profile.personality(Skill::Heroic));
+        assert!(card.lock().unwrap().finish_lookup(Some(account)));
+        assert_eq!(values(), ["Heroic", style]);
+        assert_eq!(
+            screen.spec().rows[0].plain_value().as_deref(),
+            Some("Copper Circuit")
+        );
+    }
+
+    #[test]
     fn a_rostered_card_uses_the_full_name_and_last_skill_like_the_host() {
         let name = "Silver Circuit";
         let profile = NameProfile::for_name(name);
@@ -704,10 +814,12 @@ mod tests {
 
         let [top, left, bottom, right] = PROFILE_LINE.rect;
         let geometry = DialogGeometry::fallback_for(DialogBase::Large);
-        let last_row_bottom = i32::from(geometry.list.anchor[1] + geometry.rows.label.0.bottom)
-            - (labels.len() as i32 - 1) * geometry.rows.item_height;
-        assert!(i32::from(top) < last_row_bottom);
-        assert!(bottom > geometry.footer.top);
+        let list_right = geometry.list.anchor[0] + geometry.rows.label.0.right;
+        assert!(left > list_right);
+        assert!(bottom > EMBLEM_RECT[0]);
+        assert!(top < geometry.header.bottom && right <= geometry.header.right);
+        let encoded = PROFILE_LINE.bytes();
+        assert_eq!(u16::from_le_bytes([encoded[4], encoded[5]]), PICKER_ANIMATION);
         assert!(Synthetic.line_height(PROFILE_LINE.font) <= i32::from(top - bottom));
         for i in 0..256 {
             let text = NameProfile::for_name(&format!("Circuit {i}")).summary();
