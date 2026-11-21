@@ -218,6 +218,62 @@ pub(crate) fn named_path(doc: &TagDoc, tag: TagId, path: &str) -> Result<String,
     Ok(out.join("."))
 }
 
+/// One list step of an element path ([`element_steps`]).
+#[derive(Clone, Debug)]
+pub struct ElementStep {
+    /// The list field.
+    pub field: Field,
+    pub index: u32,
+    /// The element's address and layout.
+    pub at: u32,
+    pub layout: Arc<Layout>,
+    /// The element's path from the root by field names (`parts[1]`).
+    pub path: String,
+}
+
+/// The list steps of an element path (`parts[1].bones[0]`, or by offset
+/// `+0x8[1]`), each element checked to be in the tag. The empty path is
+/// the root: no steps.
+pub fn element_steps(doc: &TagDoc, tag: TagId, path: &str) -> Result<Vec<ElementStep>, String> {
+    let t = doc.tag(tag).ok_or("no such tag")?;
+    let mut layout = doc.layout(tag).ok_or("no layout for this group")?.clone();
+    let mut at = t.address;
+    let mut out: Vec<ElementStep> = Vec::new();
+    if path.is_empty() {
+        return Ok(out);
+    }
+    for part in path.split('.') {
+        let (name, index) = step(part)?;
+        let f = find(&layout, name)
+            .ok_or_else(|| format!("no field {name:?} in {}", layout.name))?
+            .clone();
+        let (Some(i), Kind::Block(child)) = (index, &f.kind) else {
+            return Err(format!("{part}: an element path steps through lists by index"));
+        };
+        let child = child.clone();
+        let (n, first) = doc
+            .block(tag, at + f.offset, &child)
+            .ok_or("the list is outside the tag's address space")?;
+        if i >= n {
+            return Err(format!("{} has {n} elements, not {}", f.name, i + 1));
+        }
+        at = first + i * child.size;
+        let here = match out.last() {
+            Some(up) => format!("{}.{}[{i}]", up.path, f.name),
+            None => format!("{}[{i}]", f.name),
+        };
+        out.push(ElementStep {
+            field: f,
+            index: i,
+            at,
+            layout: child.clone(),
+            path: here,
+        });
+        layout = child;
+    }
+    Ok(out)
+}
+
 /// The root or a block element selected for the inspector's field rows.
 pub(crate) fn field_element(
     doc: &TagDoc,

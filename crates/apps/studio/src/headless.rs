@@ -1202,6 +1202,7 @@ mod tests {
         // A reference in the list's first element: No tag, then the kit
         // again.
         h.step(&mut app, &click("Parts")).unwrap();
+        h.step(&mut app, &click("0  kit")).unwrap();
         h.step(&mut app, &click("Change...##change")).unwrap();
         let item = api
             .call(&mut app, m::TAG_CHOICES, serde_json::json!({"tag": id, "path": "parts[0].item"}))
@@ -1292,6 +1293,55 @@ mod tests {
         let speed = viewing.iter().find(|r| r["path"] == "speed").unwrap();
         assert!(speed["chip"].is_null(), "an unchanged not_known field has no chip");
         assert_eq!(speed["effect"]["id"], "not_known");
+    }
+
+    /// A list's rows are `index  title`, one element open at a time; Open
+    /// alone shows an element as the whole panel under breadcrumbs, a
+    /// crumb returns to the root, and Back restores the element. Skipped
+    /// without a wgpu adapter.
+    #[test]
+    fn a_list_opens_one_element_and_shows_it_alone() {
+        use crate::app::{NavAction, tag_tests};
+        use crate::script::{Button, Step};
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("h2-editor-lists-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut app, ..) = tag_tests::app(&dir);
+        h.frames(&mut app, 4).unwrap();
+        let click = |t: &str| Step::Click(t.into(), Button::Left);
+        h.step(&mut app, &click("weap  (1)")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        h.step(&mut app, &click("objects\\test\\blaster")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        let drawn = |h: &Headless| -> Vec<String> {
+            h.studio.tags.panel.drawn.iter().map(|d| d.path.clone()).collect()
+        };
+        h.step(&mut app, &click("Parts")).unwrap();
+        assert!(h.scene.items.iter().any(|i| i.label == "0  kit"), "titled by its item");
+        assert!(!h.scene.items.iter().any(|i| i.label.starts_with("element")), "no number box");
+        assert!(!drawn(&h).iter().any(|p| p.starts_with("parts[")), "none open at first");
+
+        h.step(&mut app, &click("1")).unwrap();
+        let open = drawn(&h);
+        assert!(open.contains(&"parts[1].item".to_owned()), "{open:?}");
+        h.step(&mut app, &click("0  kit")).unwrap();
+        let open = drawn(&h);
+        assert!(open.contains(&"parts[0].item".to_owned()), "{open:?}");
+        assert!(!open.iter().any(|p| p.starts_with("parts[1]")), "one open at a time");
+
+        h.step(&mut app, &click("Open alone##alone1")).unwrap();
+        assert_eq!(app.nav_location().element.as_deref(), Some("parts[1]"));
+        assert_eq!(drawn(&h), ["parts[1].item", "parts[1].value"]);
+        h.step(&mut app, &click("weap: objects\\test\\blaster##crumb0")).unwrap();
+        assert_eq!(app.nav_location().element, None);
+        assert!(drawn(&h).contains(&"parts".to_owned()), "back at the root");
+
+        app.dispatch(Action::Navigate(NavAction::Back));
+        h.frames(&mut app, 3).unwrap();
+        assert_eq!(drawn(&h), ["parts[1].item", "parts[1].value"], "Back restores the element");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The Tags header says how a change reaches the game in each link

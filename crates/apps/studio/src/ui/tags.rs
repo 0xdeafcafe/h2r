@@ -616,14 +616,25 @@ pub fn fields(
         inspector::issues(app)
     };
     let mut resolution = None;
-    // A field the navigation names (nav.go, tag.view) is focused once.
-    let want = match app.browsing() {
+    // A field the navigation names (nav.go, tag.view) is focused once;
+    // an element it names (Open alone) is the whole panel.
+    let (want, element) = match app.browsing() {
         None => {
             let location = app.nav_location();
-            location.tag().filter(|&tag| tag == id).zip(location.path)
+            let here = location.tag().filter(|&tag| tag == id);
+            (here.zip(location.path), location.element.filter(|_| here.is_some()))
         }
-        Some(_) => None,
+        Some(_) => (None, None),
     };
+    let steps = element
+        .as_deref()
+        .and_then(|e| tag_api::element_steps(doc, id, e).ok())
+        .unwrap_or_default();
+    if !steps.is_empty() {
+        crumbs(ui, doc, id, &steps, actions);
+    }
+    let path: Vec<(u32, u32)> = steps.iter().map(|s| (s.field.offset, s.index)).collect();
+    st.panel.open_alone = app.browsing().is_none();
     if st.focus != want {
         st.panel.clear_field_focus();
         if let Some((tag, path)) = &want
@@ -639,7 +650,7 @@ pub fn fields(
         ui,
         doc,
         id,
-        &[],
+        &path,
         &mut st.panel,
         actions,
         fields::PanelRoot::Tags(scene),
@@ -649,6 +660,35 @@ pub fn fields(
         app.pairing.requests.push(Request::Apply(action));
     }
     st.panel.store(app);
+}
+
+/// The breadcrumbs over an element shown alone: the tag, then each list
+/// step; a click returns there.
+fn crumbs(
+    ui: &Ui,
+    doc: &TagDoc,
+    id: TagId,
+    steps: &[tag_api::ElementStep],
+    actions: &mut Vec<Action>,
+) {
+    let all = fields::row::breadcrumbs(doc, id, steps);
+    let last = all.len() - 1;
+    for (k, (text, element)) in all.into_iter().enumerate() {
+        if k > 0 {
+            ui.same_line();
+            ui.text_disabled(">");
+            ui.same_line();
+        }
+        if k == last {
+            ui.text(text);
+        } else if ui.small_button(format!("{text}##crumb{k}")) {
+            actions.push(Action::Navigate(NavAction::Go {
+                tag: id,
+                path: None,
+                element,
+            }));
+        }
+    }
 }
 
 /// How a header line is drawn.

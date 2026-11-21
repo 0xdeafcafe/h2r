@@ -1172,21 +1172,27 @@ How to change things:
 
 - **Numbers**: drag left or right, or double-click and type. Angles show
   in degrees.
-- **Choices**: pick a named value from the list. An enumeration whose choices
-  have no established labels edits as a number.
-- **Flags**: tick or untick a named bit. A field with no bit labels edits as
-  a numeric mask. In a partly named mask, unlabelled bits appear when set.
+- **Choices**: click the value to open the picker, type to narrow it and
+  pick a named value. **Enter a number...** sets a value no name covers;
+  such a value reads `Value 7 (not named)`.
+- **Switches (flags)**: the row says how many are on (`2 of 9 on: Loud,
+  Quiet`). Open it to tick named switches; the rest are under **Unnamed
+  bits**, each `Bit 7`.
 - **Colours**: click the swatch.
 - **Names (string IDs)**: type a name and press Enter. A name the map
   doesn't have yet is added to it when you save (under 128 characters).
   Undo takes it back. Maps with new names have not been tried in the game
   yet.
-- **References to other tags**: open the list, type to narrow it, pick
-  one (or `none`). Only tags of the right kind are listed. The button
-  next to it jumps to that tag.
-- **Lists inside a tag (blocks)**: open the list, pick an element number,
-  then edit its fields. **Add**, **Duplicate** and **Remove** change the
-  list. **Edit > Allow growing full blocks** lets lists in ordinary
+- **References to other tags**: the row shows the kind and the tag's
+  name (hover for its full path). **Change...** opens the picker: type to
+  narrow it and pick a tag, or **No tag**. Only tags of the right kind are
+  listed, all of them; when several kinds fit, **Kind** narrows to one.
+  **Open** jumps to that tag.
+- **Lists inside a tag (blocks)**: open the list to see a row per entry,
+  `1  scope`, named by its title or name field; open one entry to edit its
+  fields (one at a time). A long list has a filter box. **Open alone**
+  shows one entry as the whole panel, with breadcrumbs back to the tag.
+  **Add**, **Duplicate** and **Remove** change the list. **Edit > Allow growing full blocks** lets lists in ordinary
   tag data grow beyond their original size. Save writes the longer list
   at the end of the map's tag data. Hover a greyed-out button for the
   reason. Other things in the map that point at

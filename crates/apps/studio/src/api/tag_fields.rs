@@ -136,15 +136,15 @@ fn rows(
 
 const VIEW: MethodDef = def(
     m::TAG_VIEW,
-    "Drive the Tags tool's field panel and read what it shows. `tag` selects a tag in the Tags tool; `field` (a tag.set path) focuses a field, opening its lists and its Unnamed fields group; `unnamed` sets Show unnamed fields; `show_as` sets how an unnamed value is shown (`as` null for the guess), kept for that field of every tag of the kind. With none it only reads. `rows` are the root's rows the panel shows, `unnamed_hidden` the unnamed rows in a folded group, `header` the header's lines as drawn",
-    r#"{"tag?":"string|integer","field?":"string","unnamed?":"boolean","show_as?":"{path: string, as: decimal|whole_number|hex|null}"}"#,
+    "Drive the Tags tool's field panel and read what it shows. `tag` selects a tag in the Tags tool; `path` (a list element, `parts[1]`) shows that element as the whole panel, as Open alone does (empty for the root); `field` (a tag.set path) focuses a field, opening its lists and its Unnamed fields group (alone, from the root); `unnamed` sets Show unnamed fields; `show_as` sets how an unnamed value is shown (`as` null for the guess), kept for that field of every tag of the kind. With none it only reads. `path` is the element shown and `breadcrumbs` its crumbs as drawn, `rows` the rows the panel shows of it, `unnamed_hidden` the unnamed rows in a folded group, `header` the header's lines as drawn",
+    r#"{"tag?":"string|integer","path?":"string (a list element shown alone, parts[1]; empty for the root)","field?":"string","unnamed?":"boolean","show_as?":"{path: string, as: decimal|whole_number|hex|null}"}"#,
     r#"{"tag":"string|null","path":"string","breadcrumbs":"[string]","field":"string|null","search":"null","changed":"boolean","unnamed":"boolean","rows":"[tag.fields row]","unnamed_hidden":"integer","header":"[string]"}"#,
     r#"{"tag":"itmc","unnamed":true}"#,
 );
 
 fn view(app: &mut App, p: &P) -> Reply {
-    // `path`, `search` and `changed` are not in the params, so the
-    // dispatcher refuses them: the panel shows a tag's root, unsearched.
+    // `search` and `changed` are not in the params, so the dispatcher
+    // refuses them: the panel is unsearched.
     if p.has("tag") {
         let id = resolve(app, p)?;
         app.perform(Action::Tag(TagAction::Select(id)), false)
@@ -155,16 +155,30 @@ fn view(app: &mut App, p: &P) -> Reply {
     let need = |what: &str| {
         selected.ok_or_else(|| err(code::INVALID_PARAMS, format!("{what}: select a tag first")))
     };
-    if let Some(field) = p.opt_str("field")? {
-        let tag = need("field")?;
+    let field = p.opt_str("field")?;
+    let element = p.opt_str("path")?;
+    if field.is_some() || element.is_some() {
+        let what = if field.is_some() { "field" } else { "path" };
+        let tag = need(what)?;
         if app.browsing().is_some() {
-            return Err(err(code::REFUSED, "field: a browsed map's fields are shown, not focused"));
+            return Err(err(
+                code::REFUSED,
+                format!("{what}: a browsed map's tag is shown from its root, not navigated"),
+            ));
         }
-        tag_api::field_focus(&app.tags, tag, field)
-            .map_err(|e| err(code::INVALID_PARAMS, format!("{field}: {e}")))?;
+        if let Some(field) = field {
+            tag_api::field_focus(&app.tags, tag, field)
+                .map_err(|e| err(code::INVALID_PARAMS, format!("{field}: {e}")))?;
+        }
+        if let Some(e) = element {
+            tag_api::element_steps(&app.tags, tag, e)
+                .map_err(|why| err(code::INVALID_PARAMS, format!("path: {why}")))?;
+        }
+        // A field on its own is shown from the root.
         let go = NavAction::Go {
             tag,
-            path: Some(field.to_owned()),
+            path: field.map(str::to_owned),
+            element: element.map(str::to_owned),
         };
         app.perform(Action::Navigate(go), false).map_err(refused)?;
         app.dispatch(Action::SetTool(ToolKind::Tags));
@@ -190,25 +204,38 @@ fn view(app: &mut App, p: &P) -> Reply {
         }));
     };
     let doc = app.shown_tags();
-    let field = match app.browsing() {
+    let (field, element) = match app.browsing() {
         None => {
             let location = app.nav_location();
             let here = location.tag() == Some(tag);
-            location.path.filter(|_| here)
+            (
+                location.path.filter(|_| here),
+                location.element.filter(|_| here).unwrap_or_default(),
+            )
         }
-        Some(_) => None,
+        Some(_) => (None, String::new()),
     };
     let focus = field
         .as_deref()
         .and_then(|f| tag_api::field_focus(doc, tag, f).ok())
         .map(|f| f.address);
-    let (at, layout) = tag_api::field_element(doc, tag, "")
-        .map_err(|reason| err(code::REFUSED, reason))?;
-    let (shown, unnamed_hidden) = rows(app, tag, "", at, &layout, Unnamed::AsShown { focus });
+    let steps = tag_api::element_steps(doc, tag, &element).unwrap_or_default();
+    let (at, layout) = match steps.last() {
+        Some(s) => (s.at, s.layout.clone()),
+        None => tag_api::field_element(doc, tag, "")
+            .map_err(|reason| err(code::REFUSED, reason))?,
+    };
+    let element = steps.last().map_or(String::new(), |s| s.path.clone());
+    let (shown, unnamed_hidden) =
+        rows(app, tag, &element, at, &layout, Unnamed::AsShown { focus });
+    let crumbs: Vec<String> = panel::row::breadcrumbs(doc, tag, &steps)
+        .into_iter()
+        .map(|(text, _)| text)
+        .collect();
     Ok(json!({
         "tag": format!("{:#010x}", tag.0),
-        "path": "",
-        "breadcrumbs": [doc.tag_label(tag.0)],
+        "path": element,
+        "breadcrumbs": crumbs,
         "field": field,
         "search": null,
         "changed": false,
@@ -383,6 +410,54 @@ fn reset(app: &mut App, p: &P) -> Reply {
     Ok(json!({ "value": tag_api::value(&app.tags, tag, at, &f) }))
 }
 
+const ELEMENTS: MethodDef = def(
+    m::TAG_ELEMENTS,
+    "A list's elements as the field panel's rows show them (`1  scope`): each element's index, its title (the block's `title=` field's value, else its first named name or tag reference's, else null) and its path. `filter` keeps the elements whose row words have every word of it, as the list's filter box does; `offset` and `limit` page them",
+    r#"{"tag":"string|integer","path":"string (a list, parts or parts[0].bones)","filter?":"string","offset?":"integer","limit?":"integer"}"#,
+    r#"{"count":"integer","capacity":"integer","elements":"[{index,title,path}]","truncated":"boolean"}"#,
+    r#"{"tag":"itmc","path":"entries"}"#,
+);
+
+fn elements(app: &mut App, p: &P) -> Reply {
+    let tag = resolve(app, p)?;
+    let path = p.str("path")?;
+    let filter = p.opt_str("filter")?.unwrap_or_default();
+    let offset = p.opt_usize("offset")?.unwrap_or(0);
+    let limit = p.opt_usize("limit")?;
+    let doc = app.shown_tags();
+    let bad = |e: String| err(code::INVALID_PARAMS, format!("{path}: {e}"));
+    let (at, _, f) = tag_api::resolve(doc, tag, path).map_err(bad)?;
+    let Kind::Block(child) = &f.kind else {
+        return Err(bad("not a list".into()));
+    };
+    let a = at + f.offset;
+    let (count, address) = doc
+        .block(tag, a, child)
+        .ok_or_else(|| bad("the list is outside the tag's address space".into()))?;
+    let list = panel::row::List {
+        count,
+        address,
+        capacity: doc.capacity(tag, a),
+    };
+    let named = tag_api::named_path(doc, tag, path).map_err(bad)?;
+    let hits = panel::row::matching(doc, tag, &list, child, filter);
+    let from = offset.min(hits.len());
+    let to = limit.map_or(hits.len(), |n| (from + n).min(hits.len()));
+    let listed: Vec<Value> = hits[from..to]
+        .iter()
+        .map(|&i| {
+            let title = panel::row::element_title(doc, tag, address + i * child.size, child);
+            json!({ "index": i, "title": title, "path": format!("{named}[{i}]") })
+        })
+        .collect();
+    Ok(json!({
+        "count": count,
+        "capacity": list.capacity,
+        "elements": listed,
+        "truncated": to < hits.len(),
+    }))
+}
+
 const CHAIN: MethodDef = MethodDef {
     name: m::TAG_CHAIN,
     summary: "The inspector's tag tree for a placement or tag, including in-memory tag edits",
@@ -449,6 +524,7 @@ impl Provider for TagFields {
             CHOICES,
             BYTES,
             RESET,
+            ELEMENTS,
             block_def(
                 m::TAG_BLOCK_ADD,
                 "Add an element to a tag block (path from the root, `parts` or `parts[0].bones`), where the block has room in its source; refused with the reason otherwise",
@@ -475,6 +551,7 @@ impl Provider for TagFields {
             m::TAG_CHOICES => return Some(choices(app, &p)),
             m::TAG_BYTES => return Some(bytes(app, &p)),
             m::TAG_RESET => return Some(reset(app, &p)),
+            m::TAG_ELEMENTS => return Some(elements(app, &p)),
             m::TAG_CHAIN => return Some(chain(app, &p)),
             _ => {}
         }

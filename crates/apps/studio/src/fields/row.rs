@@ -550,6 +550,98 @@ pub fn section_title(layout: &Layout, section: &str) -> String {
     }
 }
 
+/// An element's title: the value of its block's `title=` field, else of
+/// its first named name or tag reference; none when that has no value or
+/// the element has neither (the row shows the index alone).
+pub fn element_title(doc: &TagDoc, tag: TagId, at: u32, layout: &Layout) -> Option<String> {
+    let by_title = match &layout.title {
+        Some(tags::registry::Title::Field(name)) => layout.fields.iter().find(|f| &f.name == name),
+        _ => None,
+    };
+    let f = by_title.or_else(|| {
+        layout
+            .fields
+            .iter()
+            .find(|f| f.named && matches!(f.kind, Kind::StringId | Kind::TagRef { .. }))
+    })?;
+    title_text(doc, tag, at, f)
+}
+
+/// A field's value as an element title: a name's text, a tag's last path
+/// segment, a choice's name, else the value as `tag.read` gives it.
+fn title_text(doc: &TagDoc, tag: TagId, at: u32, f: &Field) -> Option<String> {
+    let a = at + f.offset;
+    let word = |at: u32| doc.read(tag, at, 4).map(|b| le(&b) as u32);
+    let tag_name = |id: u32| {
+        doc.tag(TagId(id))
+            .map(|t| t.name.rsplit('\\').next().unwrap_or(&t.name).to_owned())
+    };
+    match &f.kind {
+        Kind::StringId => doc
+            .string(word(a)?)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned),
+        Kind::TagRef { .. } => tag_name(word(a + 4)?),
+        Kind::Datum { .. } => tag_name(word(a)?),
+        Kind::Enum { bytes: n, values } => {
+            let v = le(&doc.read(tag, a, u32::from(*n))?) as u32;
+            Some(choice_text(values, v))
+        }
+        Kind::Block(_) | Kind::Data | Kind::Pad { .. } | Kind::Unknown { .. } => None,
+        _ => match tag_api::value(doc, tag, at, f) {
+            Value::Null => None,
+            Value::String(text) => Some(text),
+            other => Some(other.to_string()),
+        },
+    }
+}
+
+/// An element row's words: `1  scope`, or the index alone.
+pub fn element_text(index: u32, title: Option<&str>) -> String {
+    match title {
+        Some(t) => format!("{index}  {t}"),
+        None => index.to_string(),
+    }
+}
+
+/// The indices of a list's elements whose row words match `filter` (every
+/// word, case-insensitive): all of them for an empty filter, without
+/// reading a title.
+pub fn matching(doc: &TagDoc, tag: TagId, list: &List, child: &Layout, filter: &str) -> Vec<u32> {
+    let wanted: Vec<String> = filter.split_whitespace().map(str::to_lowercase).collect();
+    if wanted.is_empty() {
+        return (0..list.count).collect();
+    }
+    (0..list.count)
+        .filter(|&i| {
+            let title = element_title(doc, tag, list.address + i * child.size, child);
+            let text = element_text(i, title.as_deref()).to_lowercase();
+            wanted.iter().all(|w| text.contains(w.as_str()))
+        })
+        .collect()
+}
+
+/// The breadcrumbs of an element shown alone: the tag (`weap:
+/// objects\test\blaster`), then each list step (`Parts 1  scope`), with
+/// the element path each returns to (none for the root).
+pub fn breadcrumbs(
+    doc: &TagDoc,
+    tag: TagId,
+    steps: &[tag_api::ElementStep],
+) -> Vec<(String, Option<String>)> {
+    let mut out = vec![(doc.tag_label(tag.0), None)];
+    for s in steps {
+        let title = element_title(doc, tag, s.at, &s.layout);
+        let text = format!(
+            "{} {}",
+            label(&s.field),
+            element_text(s.index, title.as_deref())
+        );
+        out.push((text, Some(s.path.clone())));
+    }
+    out
+}
+
 /// A list's size in words.
 pub fn items(count: u32, capacity: u32) -> String {
     let n = match count {

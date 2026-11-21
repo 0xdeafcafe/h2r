@@ -6,7 +6,7 @@ use studio_proto::{code, method as m};
 use super::{MethodDef, P, Provider, Reply, def, err, params::block_name, scenario, tag_fields};
 use crate::app::{Action, App, NavAction, Selection, ToolKind, tag_api};
 
-const STATUS: &str = r#"{"selected":"{block,index}|{tag}|null","volume":"integer|null","tag":"string|null","path":"string|null","breadcrumbs":"[placement or tag]","can_back":"boolean","can_forward":"boolean"}"#;
+const STATUS: &str = r#"{"selected":"{block,index}|{tag}|null","volume":"integer|null","tag":"string|null","path":"string|null","element":"string|null","breadcrumbs":"[placement or tag]","can_back":"boolean","can_forward":"boolean"}"#;
 
 pub struct Navigation;
 
@@ -36,8 +36,8 @@ impl Provider for Navigation {
             ),
             def(
                 m::NAV_GO,
-                "Show a tag or field, select a placement in the inspector, or open Pending",
-                r#"{"tag?":"string|integer","path?":"string","block?":"string","index?":"integer","panel?":"pending"}"#,
+                "Show a tag or field, select a placement in the inspector, or open Pending. `element` (a list element, `parts[1]`) shows that element alone in the Tags tool, as its Open alone does",
+                r#"{"tag?":"string|integer","path?":"string","element?":"string","block?":"string","index?":"integer","panel?":"pending"}"#,
                 STATUS,
                 r#"{"tag":"itmc"}"#,
             ),
@@ -57,6 +57,7 @@ impl Provider for Navigation {
                 Ok(NavAction::Go {
                     tag,
                     path: p.opt_str("path")?.map(str::to_owned),
+                    element: p.opt_str("element")?.map(str::to_owned),
                 })
             }),
             _ => return None,
@@ -64,8 +65,11 @@ impl Provider for Navigation {
         Some(action.and_then(|action| {
             app.perform(Action::Navigate(action), false)
                 .map_err(scenario::refused)?;
+            // An element alone is the Tags tool's view; the rest show in the
+            // Scenario inspector.
             if method == m::NAV_GO {
-                app.dispatch(Action::SetTool(ToolKind::Scenario));
+                let tool = if p.has("element") { ToolKind::Tags } else { ToolKind::Scenario };
+                app.dispatch(Action::SetTool(tool));
             }
             Ok(status(app))
         }))
@@ -75,13 +79,13 @@ impl Provider for Navigation {
 fn open_placement_or_panel(app: &mut App, p: &P) -> Reply {
     if p.has("panel") {
         if p.str("panel")? != "pending"
-            || ["tag", "path", "block", "index"].iter().any(|key| p.has(key))
+            || ["tag", "path", "element", "block", "index"].iter().any(|key| p.has(key))
         {
             return Err(err(code::INVALID_PARAMS, "use panel: pending on its own"));
         }
         app.pairing.open_pending = true;
     } else {
-        if p.has("tag") || p.has("path") {
+        if p.has("tag") || p.has("path") || p.has("element") {
             return Err(err(code::INVALID_PARAMS, "choose a tag or a placement"));
         }
         let entry = p.entry(app)?;
@@ -128,6 +132,7 @@ fn status(app: &App) -> Value {
         "volume": app.session.selected_volume(),
         "tag": location.tag().map(scenario::tag_id),
         "path": location.path,
+        "element": location.element,
         "breadcrumbs": breadcrumbs,
         "can_back": app.can_navigate(false),
         "can_forward": app.can_navigate(true),

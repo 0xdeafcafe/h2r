@@ -1373,10 +1373,25 @@ and **Change...**; the dialog lists **No tag**, then every tag of the
 allowed groups (and their child groups), searched by words of
 `group:name` as the tag tree is, with a `Kind` row when several kinds are
 allowed. Colours pick; angles show degrees; bounds drag as a pair;
-string IDs are text; blocks are tree nodes labelled with their size (`2
-items`, `2 items, room for 4`) and hold an element picker and Add,
-Duplicate and Remove (disabled with the reason as tooltip); data is hex.
-`tag.choices` returns the dialog's lists.
+string IDs are text; data is hex. `tag.choices` returns the dialog's
+lists.
+
+A list (block) row reads `Parts    2 items` (`2 items, room for 4`) with
+**Add**. An empty one is that one line and does not open. A list of one
+element shows its fields directly. A longer one shows a row per element,
+`1  scope` (`fields::row::element_text`), titled by the block's `title=`
+field, else by its first named name or tag reference, else the index
+alone (`fields::row::element_title`); one element is open at a time,
+below its row, the rows are clipped, and past 12 elements a filter box
+narrows them by their words (`fields::row::matching`). Each element has
+**Open alone**, Duplicate, Remove and **Show bytes**; Add, Duplicate and
+Remove are disabled with the reason as tooltip. **Open alone** (the Tags
+tool only) navigates to the element (`NavAction::Go` with `element`,
+kept in `NavLocation::element`, so Back returns to it): the panel shows
+it as the whole element (`fields::panel`'s `path`) under breadcrumbs,
+the tag then each list step (`Parts 1  scope`, `fields::row::breadcrumbs`),
+each a button back. `tag.elements` lists a list's element rows and
+`tag.view path` shows one alone.
 
 `app/tag_api.rs` is the same editor as plain functions, for scripts and
 the agent API: `read_tag(doc, tag)` (the fields as JSON by name),
