@@ -77,8 +77,8 @@ fn a_take_reply_cannot_write_through_a_relocated_tag_block() {
     grow_parts(&mut app);
     let moved = address(&app);
     assert_ne!(moved, at);
-    let old_bytes = app.tags.read(at, 4);
-    let new_bytes = app.tags.read(moved, 4);
+    let old_bytes = app.tags.read(weap_id(), at, 4);
+    let new_bytes = app.tags.read(weap_id(), moved, 4);
     // The original published Pending row still shows the old location. Check
     // the socket rejection before the following update republishes the list.
     let mut api = crate::api::Api::new();
@@ -88,8 +88,8 @@ fn a_take_reply_cannot_write_through_a_relocated_tag_block() {
     until(&mut play, &mut app, "late take refused", |_, a| {
         a.log().iter().any(|l| l.status.text().contains("take the game's value: the conflicted tag field moved"))
     });
-    assert_eq!(app.tags.read(at, 4), old_bytes);
-    assert_eq!(app.tags.read(moved, 4), new_bytes);
+    assert_eq!(app.tags.read(weap_id(), at, 4), old_bytes);
+    assert_eq!(app.tags.read(weap_id(), moved, 4), new_bytes);
     assert_eq!(game.calls("edit.read").len(), 1);
     assert_eq!(game.calls("edit.batch").len(), 1);
 }
