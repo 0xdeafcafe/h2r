@@ -26,6 +26,7 @@ pub const RUN_ENV: &[&str] = &[
     "H2_PERF_FROM",
     "H2_PROFILE_HZ",
     "H2_HOST_PERF",
+    "H2_MEM_SAMPLE",
     "H2_AUDIO_STATS",
     "H2_FPS",
     "H2_RENDER_SCALE",
@@ -95,6 +96,8 @@ pub struct BuildSpec {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct RunReq {
+    /// Human-readable window label. Never used as a path.
+    pub name: String,
     pub level: Option<String>,
     pub difficulty: Option<String>,
     /// Stop after this many presents (`H2_BOOT_STOP_AT_PRESENT`).
@@ -115,6 +118,9 @@ pub struct RunReq {
     pub build: BuildSpec,
     /// An empty data directory for this run only, removed after it.
     pub fresh_data: bool,
+    /// Game child footprint cap in bytes. Absent selects the host default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mem_limit: Option<u64>,
     /// Free text kept in the run's metadata.
     pub note: Option<String>,
     /// Driven through the agent API (`h2 lab agent`) until `stop`: the game
@@ -153,6 +159,9 @@ pub enum Request {
     Status,
     Update,
     Fetch {
+        id: String,
+    },
+    Mem {
         id: String,
     },
     /// The log feed for one job ID or all current jobs, using transfer frames.
@@ -242,7 +251,10 @@ pub fn check_commit(commit: &str) -> Result<()> {
 }
 
 pub fn parse(line: &str) -> Result<Request> {
-    let r: Request = serde_json::from_str(line)?;
+    let mut r: Request = serde_json::from_str(line)?;
+    if let Request::Run(run) = &mut r {
+        run.name = job_name(&run.name)?.into();
+    }
     validate(&r)?;
     Ok(r)
 }
@@ -250,7 +262,7 @@ pub fn parse(line: &str) -> Result<Request> {
 pub fn validate(r: &Request) -> Result<()> {
     match r {
         Request::Status | Request::Update | Request::Recordings | Request::Runs { .. } => Ok(()),
-        Request::Fetch { id } => check_job_id(id),
+        Request::Fetch { id } | Request::Mem { id } => check_job_id(id),
         Request::Logs { id, .. } => check_log_id(id),
         Request::SyncBases { branch, commit } | Request::Sync { branch, commit, .. } => {
             check_rev(branch)?;
@@ -375,7 +387,27 @@ pub fn check_agent_args(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Labels may include spaces and Unicode text. Use Rust's printable character
+/// tables to exclude controls, invisible formatting and line separators.
+pub fn job_name(raw: &str) -> Result<&str> {
+    let name = raw.trim();
+    ensure!(!name.is_empty(), "lab game jobs require --name TEXT");
+    ensure!(
+        name.chars().count() <= 60
+            && raw
+                .chars()
+                .all(|ch| { ch == ' ' || ch.is_ascii_graphic() || ch.escape_debug().count() == 1 }),
+        "--name must be a printable label of at most 60 characters"
+    );
+    Ok(name)
+}
+
+pub fn window_title(id: &str, name: &str, commit: &str) -> String {
+    format!("h2 · lab {id} · {name} · {commit:.7}")
+}
+
 pub fn validate_run(r: &RunReq) -> Result<()> {
+    job_name(&r.name)?;
     ensure!(
         !(r.serve && r.frames.is_some()),
         "a --serve run never stops by itself; --frames can't be set (h2 lab stop ends it)"
@@ -407,6 +439,9 @@ pub fn validate_run(r: &RunReq) -> Result<()> {
             RUN_ENV.join(" ")
         );
         check_value(k, v)?;
+        if k == "H2_MEM_SAMPLE" {
+            mem_watch::parse_size(v).map_err(anyhow::Error::msg)?;
+        }
     }
     check_play_args(&r.args)?;
     if let Some(n) = &r.note {
@@ -595,9 +630,39 @@ mod tests {
     }
 
     #[test]
+    fn names_round_trip_trimmed_and_only_printable() {
+        let Request::Run(run) = parse(r#"{"cmd":"run","name":"  Café A/B  "}"#).unwrap() else {
+            panic!()
+        };
+        assert_eq!(run.name, "Café A/B");
+        assert_eq!(serde_json::to_value(run).unwrap()["name"], "Café A/B");
+        assert!(
+            parse(r#"{"cmd":"run"}"#)
+                .unwrap_err()
+                .to_string()
+                .contains("--name")
+        );
+        for bad in [
+            "",
+            "  ",
+            "line\nbreak",
+            "\u{1b}",
+            "bidi\u{202e}",
+            &"é".repeat(61),
+        ] {
+            assert!(job_name(bad).is_err(), "{bad:?}");
+        }
+        assert!(job_name(&"é".repeat(60)).is_ok());
+        assert_eq!(
+            window_title("0007", "Café A/B", "0123456789abcdef"),
+            "h2 · lab 0007 · Café A/B · 0123456"
+        );
+    }
+
+    #[test]
     fn a_full_run_request_parses() {
         let r = run(
-            r#"{"cmd":"run","level":"03a_oldmombasa","difficulty":"heroic","frames":900,
+            r#"{"cmd":"run","name":"Fixture","level":"03a_oldmombasa","difficulty":"heroic","frames":900,
             "stats_from":300,"replay":"fight-1","perf":true,"env":{"H2_PROFILE_HZ":"2000"},
             "args":["--no-audio","--fps","60","--set","fov=90"],
             "build":{"rev":"lab/perf-work","features":["perf"],"env":{"H2_OPT":"2"}}}"#,
@@ -621,7 +686,7 @@ mod tests {
         );
         assert!(run(r#"{"cmd":"shell","line":"rm -rf /"}"#).is_err());
         assert!(
-            run(r#"{"cmd":"run","h2":"/bin/sh"}"#).is_err(),
+            run(r#"{"cmd":"run","name":"Fixture","h2":"/bin/sh"}"#).is_err(),
             "unknown fields are refused"
         );
     }
@@ -661,12 +726,14 @@ mod tests {
             "DYLD_INSERT_LIBRARIES",
             "H2_OPT",
         ] {
-            let j = format!(r#"{{"cmd":"run","env":{{"{k}":"x"}}}}"#);
+            let j = format!(r#"{{"cmd":"run","name":"Fixture","env":{{"{k}":"x"}}}}"#);
             assert!(run(&j).is_err(), "{k} must be refused");
         }
-        assert!(run(r#"{"cmd":"run","env":{"H2_FRAME_STATS_FROM":"300"}}"#).is_ok());
-        assert!(run(r#"{"cmd":"run","env":{"H2_RENDER_SCALE":"4","H2_LOD_DISTANCE":"retail"}}"#).is_ok());
-        assert!(run(r#"{"cmd":"run","env":{"H2_FPS":"6\n0"}}"#).is_err());
+        assert!(
+            run(r#"{"cmd":"run","name":"Fixture","env":{"H2_FRAME_STATS_FROM":"300"}}"#).is_ok()
+        );
+        assert!(run(r#"{"cmd":"run","name":"Fixture","env":{"H2_RENDER_SCALE":"4","H2_LOD_DISTANCE":"retail"}}"#).is_ok());
+        assert!(run(r#"{"cmd":"run","name":"Fixture","env":{"H2_FPS":"6\n0"}}"#).is_err());
     }
 
     #[test]
@@ -677,7 +744,7 @@ mod tests {
         assert!(run(r#"{"cmd":"build","rev":"master","env":{"H2_PGO":"use:../x"}}"#).is_err());
         assert!(run(r#"{"cmd":"build","rev":"master","features":["metal-debug"]}"#).is_err());
         assert!(
-            run(r#"{"cmd":"run","build":{"env":{"H2_OPT":"2"}}}"#).is_err(),
+            run(r#"{"cmd":"run","name":"Fixture","build":{"env":{"H2_OPT":"2"}}}"#).is_err(),
             "no rev"
         );
     }
@@ -700,8 +767,8 @@ mod tests {
         for good in ["fight-1", "0007", "city_heroic.v2"] {
             check_name("n", good).unwrap();
         }
-        assert!(run(r#"{"cmd":"run","replay":"../../.ssh/id_ed25519"}"#).is_err());
-        assert!(run(r#"{"cmd":"run","record":"a/b"}"#).is_err());
+        assert!(run(r#"{"cmd":"run","name":"Fixture","replay":"../../.ssh/id_ed25519"}"#).is_err());
+        assert!(run(r#"{"cmd":"run","name":"Fixture","record":"a/b"}"#).is_err());
         assert!(run(r#"{"cmd":"wait","id":".."}"#).is_err());
         assert!(run(r#"{"cmd":"put","name":"../x","hex":""}"#).is_err());
     }
@@ -767,16 +834,20 @@ mod tests {
 
     #[test]
     fn a_serve_run_has_no_frame_limit() {
-        assert!(run(r#"{"cmd":"run","level":"x","serve":true}"#).is_ok());
-        assert!(run(r#"{"cmd":"run","level":"x","serve":true,"frames":10}"#).is_err());
+        assert!(run(r#"{"cmd":"run","name":"Fixture","level":"x","serve":true}"#).is_ok());
+        assert!(
+            run(r#"{"cmd":"run","name":"Fixture","level":"x","serve":true,"frames":10}"#).is_err()
+        );
     }
 
     #[test]
     fn levels_and_difficulties() {
-        assert!(run(r#"{"cmd":"run","level":"03a_oldmombasa","difficulty":"legendary"}"#).is_ok());
-        assert!(run(r#"{"cmd":"run","level":"../x"}"#).is_err());
-        assert!(run(r#"{"cmd":"run","level":"x","difficulty":"impossible"}"#).is_err());
-        assert!(run(r#"{"cmd":"run","difficulty":"easy"}"#).is_err());
-        assert!(run(r#"{"cmd":"run","replay":"a","record":"b"}"#).is_err());
+        assert!(run(r#"{"cmd":"run","name":"Fixture","level":"03a_oldmombasa","difficulty":"legendary"}"#).is_ok());
+        assert!(run(r#"{"cmd":"run","name":"Fixture","level":"../x"}"#).is_err());
+        assert!(
+            run(r#"{"cmd":"run","name":"Fixture","level":"x","difficulty":"impossible"}"#).is_err()
+        );
+        assert!(run(r#"{"cmd":"run","name":"Fixture","difficulty":"easy"}"#).is_err());
+        assert!(run(r#"{"cmd":"run","name":"Fixture","replay":"a","record":"b"}"#).is_err());
     }
 }

@@ -604,7 +604,9 @@ impl Shell {
         if self.config.log_status {
             eprintln!("{line}");
         }
-        g.window.set_title(&line);
+        if self.config.status_in_title {
+            g.window.set_title(&line);
+        }
     }
 
     fn capture(&mut self, on: bool) {

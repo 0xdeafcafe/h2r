@@ -8,9 +8,10 @@ license.workspace = true
 [features]
 default = ["gpu"]
 # Guest formats, texture decoding, state and vertex declarations are CPU-only.
-gpu = ["dep:wgpu", "dep:bytemuck", "dep:pollster", "dep:hashbrown", "dep:timeline"]
+gpu = ["dep:wgpu", "dep:bytemuck", "dep:pollster", "dep:hashbrown", "dep:timeline", "mem-watch/gpu"]
 
 [dependencies]
+mem-watch.workspace = true
 # `serde`: pipeline keys are persisted (d3d::pipeline_store).
 wgpu = { version = "30", features = ["serde"], optional = true }
 bytemuck = { version = "1", optional = true }

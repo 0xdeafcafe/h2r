@@ -47,7 +47,10 @@ lab_host=lab-mac
 h2 lab status --host "$lab_host"
 ```
 
-The host runs one job at a time. If it's busy, arrange a slot with the
+The host runs one job at a time. Give every `run`, `bench` and `record`
+a required `--name TEXT` (up to 60 printable characters). Use a short
+label that identifies the experiment or the A/B arm to a person looking
+at the game window. The name also appears in job and memory reports. If it's busy, arrange a slot with the
 person using it. Leave their job alone. Say what you're about to run
 and share your job ID and current phase once it starts. Keep the ID so
 you can stop your own job and fetch its results.
@@ -63,8 +66,8 @@ you can stop your own job and fetch its results.
 - `--current` uses the host's existing `h2` and image. Use it for a
   quick check of that image. Build options require a branch or revision.
 
-These source flags are mutually exclusive. The host caches builds by
-commit, build features and build variables.
+These source flags are mutually exclusive. The host reuses one checkout and one image directory. An image is cached
+when its commit, features and build variables match.
 
 Set `lab_map` to the level identifier for the task and choose a local
 destination for artifacts. `--level` selects the level. `--frames`
@@ -76,7 +79,7 @@ the purpose of the run in its metadata.
 ```sh
 lab_map=MAP
 lab_results="${RUSH_KEEP:-$TMPDIR}/lab"
-h2 lab run --host "$lab_host" --branch perf-work --level "$lab_map" \
+h2 lab run --name "Frame timing baseline" --host "$lab_host" --branch perf-work --level "$lab_map" \
   --frames 1800 --stats-from 300 --build-env H2_OPT=2 --perf \
   --note 'Baseline frame timing and profile' --wait --to "$lab_results"
 ```
@@ -118,7 +121,7 @@ same graphical session as a bounded lab run and stays up until stopped.
 `H2_BOOT_STOP_AT_PRESENT` unset for this workflow.
 
 ```sh
-h2 lab run --host "$lab_host" --current --level "$lab_map" --serve \
+h2 lab run --name "Live inspection" --host "$lab_host" --current --level "$lab_map" --serve \
   --note 'Live frame inspection'
 ```
 
@@ -162,6 +165,12 @@ The default destination is `$RUSH_KEEP/lab` when set, otherwise `./lab`.
 - `frames.csv` contains per-present frame stats when stats are enabled
   and the run has reached the measurement window.
 - `profile/` contains profile output when the run collects it.
+- `mem/` holds the game's memory reports and flight recorder. A job
+  stopped for memory, or a game that failed, also has a `postmortem`
+  summary in `meta.json`. `h2 lab mem --host "$lab_host" "$lab_id"`
+  fetches only `mem/` and prints the largest growers. Add
+  `--env H2_MEM_SAMPLE=1M` to a run to record allocation stacks. See
+  [Finding a leak after the fact](../../../docs/runtime/agent-api.md#finding-a-leak-after-the-fact).
 
 If the job fails, use its state and the last relevant section of the
 logs to tell a build failure from a runtime failure. Keep the fetched
@@ -176,7 +185,7 @@ window, resolution, LOD distance and pacing settings fixed across A/B
 runs. Busy percentiles remove pacing time. FPS reports the wall rate.
 
 ```sh
-h2 lab bench --host "$lab_host" --rev "$lab_rev" --level "$lab_map" \
+h2 lab bench --name "Frame pacing benchmark" --host "$lab_host" --rev "$lab_rev" --level "$lab_map" \
   --build-env H2_OPT=2 --ticks 600 --to "$lab_results"
 ```
 
@@ -202,7 +211,7 @@ manifest supplies the level when you omit `--level`.
 
 ```sh
 h2 lab recordings --host "$lab_host"
-h2 lab run --host "$lab_host" --current --replay run-sample --frames 1800 \
+h2 lab run --name "Replay baseline" --host "$lab_host" --current --replay run-sample --frames 1800 \
   --wait --to "$lab_results"
 ```
 

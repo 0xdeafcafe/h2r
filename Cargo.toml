@@ -19,6 +19,7 @@ version = "0.1.0"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+mem-watch = { path = "crates/platform/mem-watch" }
 hs = { path = "crates/formats/hs" }
 tags = { path = "crates/formats/tags" }
 map = { path = "crates/formats/map" }

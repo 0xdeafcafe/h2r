@@ -27,6 +27,9 @@ use crate::world_layers::{Geometry, Owner, Texaccum};
 
 const CACHE_BUDGET: u64 = 64 * 1024 * 1024;
 
+static BUFFER_BYTES: mem_watch::Counter = mem_watch::Counter::new("native.world_buffer_cache_bytes");
+static SECTIONS: mem_watch::Counter = mem_watch::Counter::new("native.world_section_windows");
+
 pub struct Cache {
     devices: Mutex<HashMap<wgpu::Device, DeviceCache>>,
     fetch: FetchMode,
@@ -42,7 +45,8 @@ struct DeviceCache {
     bindings: ProgramBindings,
     shaders: HashMap<NativeDrawKey, Shader>,
     buffers: HashMap<BufferKey, (wgpu::Buffer, u64)>,
-    buffer_bytes: u64,
+    buffer_bytes: mem_watch::Gauge,
+    section_count: mem_watch::Gauge,
     frame: u64,
     scope: Option<(u64, u32)>,
     sections: HashMap<SectionKey, Vec<ResidentSection>>,
@@ -173,7 +177,8 @@ impl DeviceCache {
             bindings: ProgramBindings::new(device),
             shaders: HashMap::new(),
             buffers: HashMap::new(),
-            buffer_bytes: 0,
+            buffer_bytes: BUFFER_BYTES.track(0),
+            section_count: SECTIONS.track(0),
             frame: 0, scope: None, sections: HashMap::new(),
         }
     }
@@ -269,17 +274,18 @@ impl DeviceCache {
             usage,
         });
         if let Some(key) = key {
-            if self.buffer_bytes + buffer.size() > CACHE_BUDGET {
+            let mut bytes = self.buffer_bytes.get() + buffer.size();
+            if bytes > CACHE_BUDGET {
                 // Section entries retain their own buffers until the BSP changes.
                 // Trim only the shared snapshot index, oldest sightings first.
                 let mut age: Vec<_> = self.buffers.iter().map(|(k, (_, used))| (*used, k.clone())).collect();
                 age.sort_unstable_by_key(|(used, _)| *used);
                 for (_, old) in age {
-                    if self.buffer_bytes + buffer.size() <= CACHE_BUDGET * 3 / 4 { break; }
-                    if let Some((retired, _)) = self.buffers.remove(&old) { self.buffer_bytes -= retired.size(); }
+                    if bytes <= CACHE_BUDGET * 3 / 4 { break; }
+                    if let Some((retired, _)) = self.buffers.remove(&old) { bytes -= retired.size(); }
                 }
             }
-            self.buffer_bytes += buffer.size();
+            self.buffer_bytes.set(bytes);
             self.buffers.insert(key, (buffer.clone(), self.frame));
         }
         Some((buffer, 0, len))
@@ -355,6 +361,7 @@ impl IndexedPass {
         target: &ExternalAttachments,
         guest_size: (u32, u32),
     ) -> Option<ExternalDraws> {
+        let _scope = mem_watch::scope("native.world");
         // Both target copies retain the same geometry and material snapshot.
         let draw = &self.draw;
         let (width, height) = guest_size;
@@ -386,7 +393,8 @@ impl IndexedPass {
             if cache.scope != Some(scope) {
                 cache.sections.clear();
                 cache.buffers.clear();
-                cache.buffer_bytes = 0;
+                cache.buffer_bytes.set(0);
+                cache.section_count.set(0);
                 cache.scope = Some(scope);
             }
             key
@@ -524,8 +532,11 @@ impl IndexedPass {
                 let windows = cache.sections.entry(key).or_default();
                 // A streaming part can change every frame. Keep its working set
                 // across swaps without retaining every retired resource version.
+                let previous_count = windows.len();
                 windows.retain(|s| self.frame.wrapping_sub(s.last_used) <= 1);
                 windows.push(fresh);
+                let retained = cache.section_count.get() - previous_count as u64 + windows.len() as u64;
+                cache.section_count.set(retained);
                 windows.last_mut()?
             } else { &mut fresh }
         };

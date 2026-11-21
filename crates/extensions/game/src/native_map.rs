@@ -126,6 +126,7 @@ fn open_resolved(
     active: Option<ActiveSource>,
     live: bool,
 ) -> Result<(NativeMap, ResourceFiles), Error> {
+    let _scope = mem_watch::scope("assets.tag_load");
     let activated = active.as_ref().and_then(|a| a.generation.as_ref())
         .and_then(|file| file.generation.clone());
     let (local, candidates, shared) = {

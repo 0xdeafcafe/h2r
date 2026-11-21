@@ -10,6 +10,7 @@ default = ["render-overrides"]
 render-overrides = ["dep:hot-render"]
 
 [dependencies]
+mem-watch.workspace = true
 render-bridge = { path = "../../rewrites/render-bridge", default-features = false }
 sim-bridge = { path = "../../rewrites/sim-bridge" }
 agent-proto = { path = "../agent-proto" }

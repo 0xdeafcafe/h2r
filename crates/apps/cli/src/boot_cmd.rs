@@ -76,6 +76,19 @@ H2_OPT the image was built with.
   disables kernel tracing and paces to real time. Requires --system-link.
 --host-bots enables bot support on a light host.";
 
+pub(crate) fn start_memory_watch(data: &Path) {
+    mem_watch::register_probe("perf.frame_buffer_bytes", timeline::phase::frame_buffer_bytes);
+    mem_watch::register_probe(
+        "perf.timeline_event_buffer_bytes",
+        timeline::event_buffer_bytes,
+    );
+    #[cfg(feature = "desktop")]
+    let commit = Some(app::BuildInfo::baked().sha).filter(|sha| *sha != "unknown");
+    #[cfg(not(feature = "desktop"))]
+    let commit = option_env!("H2_BUILD_SHA");
+    mem_watch::start(data, commit);
+}
+
 pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     let tmp = std::env::temp_dir();
     let mut out = tmp.join("h2boot");
@@ -285,6 +298,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
         #[cfg(not(feature = "desktop"))]
         bail!("the host CLI requires h2 serve");
     };
+    start_memory_watch(&data);
     if fresh {
         for d in fresh_data_dirs(&data, &[&disc, &out])? {
             std::fs::remove_dir_all(&d).with_context(|| format!("emptying {}", d.display()))?;

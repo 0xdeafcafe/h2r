@@ -222,7 +222,7 @@ struct State {
     live_session: Option<fn(&dyn engine::GuestMemory) -> bool>,
     lobby_tape: Option<Arc<dyn LobbyTape>>,
     lobby_boundary: u64,
-    pending: VecDeque<(ConnId, Request)>,
+    pending: VecDeque<Queued>,
     waits: Vec<Waiting>,
     conns: BTreeMap<ConnId, Conn>,
     next_conn: ConnId,
@@ -283,6 +283,12 @@ struct State {
     tag_names: Option<Mutex<Box<dyn TagNames>>>,
 }
 
+struct Queued {
+    conn: ConnId,
+    request: Request,
+    _count: crate::memory::PendingRequest,
+}
+
 /// A `profile.capture` waiting for its window to pass.
 struct Capturing {
     conn: ConnId,
@@ -305,6 +311,7 @@ enum Output {
 }
 
 struct Conn {
+    _connection: mem_watch::Gauge,
     tx: Output,
     /// Once upgraded, both events and further requests are disabled.
     streaming: bool,
@@ -361,6 +368,7 @@ impl Agent {
         s.conns.insert(
             id,
             Conn {
+                _connection: mem_watch::agent_activity::connection(),
                 tx,
                 streaming: false,
                 events: BTreeSet::new(),
@@ -393,6 +401,7 @@ impl Agent {
     /// A line from a connection. Parse errors are answered at once;
     /// requests queue for the game thread.
     pub fn submit(&self, conn: ConnId, line: &str) {
+        let _scope = mem_watch::scope("agent.request");
         let line = line.trim();
         if line.is_empty() {
             return;
@@ -445,6 +454,7 @@ impl Agent {
                 }
                 let _job = InFlight(running);
                 drop(s);
+                mem_watch::agent_activity::served();
                 let result = read(r.params);
                 if let Some(id) = r.id {
                     let mut s = self.lock();
@@ -461,7 +471,11 @@ impl Agent {
                 }
                 return;
             }
-            Ok(r) => s.pending.push_back((conn, r)),
+            Ok(r) => s.pending.push_back(Queued {
+                conn,
+                request: r,
+                _count: crate::memory::PendingRequest::new(),
+            }),
             Err(resp) => s.send(conn, resp),
         }
         drop(s);
@@ -633,7 +647,7 @@ impl Agent {
         s.shutdown = true;
         s.paused = None;
         s.stepping = None;
-        for (conn, r) in std::mem::take(&mut s.pending) {
+        for Queued { conn, request: r, .. } in std::mem::take(&mut s.pending) {
             if let Some(id) = r.id {
                 s.send(
                     conn,
@@ -856,6 +870,7 @@ impl Agent {
 
 impl State {
     fn send(&mut self, conn: ConnId, r: Response) {
+        let _scope = mem_watch::scope("agent.reply");
         let line = serde_json::to_string(&r).expect("responses serialise");
         if let Some(c) = self.conns.get_mut(&conn) {
             Self::push(c, line);
@@ -868,7 +883,7 @@ impl State {
         if c.streaming { return; }
         c.dead |= match &c.tx {
             Output::Local(tx) => tx.try_send(line).is_err(),
-            Output::Socket(tx) => tx.try_send(crate::server::Output::Line(line)).is_err(),
+            Output::Socket(tx) => tx.try_send(crate::server::Output::Line(line.into())).is_err(),
         };
     }
 
@@ -877,6 +892,7 @@ impl State {
     }
 
     fn emit(&mut self, e: Event) {
+        let _scope = mem_watch::scope("agent.reply");
         let kind = e.kind();
         let line = serde_json::to_string(&Notification::event(e)).expect("events serialise");
         for c in self.conns.values_mut().filter(|c| c.events.contains(&kind)) {
@@ -1061,7 +1077,7 @@ impl State {
         let busy: BTreeSet<ConnId> = self
             .pending
             .iter()
-            .map(|(c, _)| *c)
+            .map(|q| q.conn)
             .chain(self.waits.iter().map(|w| w.conn))
             .chain(self.capture.as_ref().map(|c| c.conn))
             .chain(self.snap_jobs.iter().map(|j| j.conn()))
@@ -1074,7 +1090,7 @@ impl State {
             .map(|(id, _)| *id)
             .collect();
         if !dead.is_empty() {
-            self.pending.retain(|(c, _)| !dead.contains(c));
+            self.pending.retain(|q| !dead.contains(&q.conn));
             self.waits.retain(|w| !dead.contains(&w.conn));
             self.snap_jobs.retain(|j| !dead.contains(&j.conn()));
             self.deferred.retain(|d| !dead.contains(&d.conn));
@@ -1104,17 +1120,19 @@ impl State {
     fn serve(&mut self, reader: &mut dyn Reader, where_: Where) {
         let defer_world = where_ == Where::Slice && self.ticking();
         let mut keep = VecDeque::new();
-        while let Some((conn, req)) = self.pending.pop_front() {
+        while let Some(queued) = self.pending.pop_front() {
+            let conn = queued.conn;
+            let req = &queued.request;
             if self.conns.get(&conn).is_none_or(|c| c.streaming) { continue; }
             if defer_world
                 && (req.method.starts_with("world.") || matches!(req.method.as_str(), agent_proto::live::SUBSCRIBE | agent_proto::live::STATUS)
                     || self.game_methods.contains_key(&req.method))
             {
-                keep.push_back((conn, req));
+                keep.push_back(queued);
                 continue;
             }
             let id = req.id.clone();
-            let out = self.handle(conn, req, reader);
+            let out = self.handle(conn, queued.request, reader);
             if let (Some(id), Some(out)) = (id, out) {
                 let r = match out {
                     Ok(v) => Response::ok(id, v),
@@ -1239,6 +1257,8 @@ impl State {
         req: Request,
         reader: &mut dyn Reader,
     ) -> Option<Result<Value, RpcError>> {
+        mem_watch::agent_activity::served();
+        let _scope = mem_watch::scope("agent.request");
         let m = req.method.as_str();
         if agent_proto::live::METHODS.contains(&m) {
             return self.live_method(conn, req, reader);

@@ -1314,7 +1314,7 @@ native renderer.
 
 After step 1 there is no D3D reference in the tree. The reference for
 later render work is the last commit before it, tagged
-`d3d-reference`; `h2 lab run --rev d3d-reference` builds it on the
+`d3d-reference`; `h2 lab run --name "D3D reference" --rev d3d-reference` builds it on the
 laptop. Its captures are game images and stay in local scratch, never
 in the repository.
 
@@ -1328,7 +1328,7 @@ checks. Run each pair back to back, three times, and report medians.
 
 ```sh
 for arm in off on; do
-  h2 lab run --host laptop --branch "$B" --level 03a_oldmombasa --difficulty heroic \
+  h2 lab run --name "Native renderer $arm" --host laptop --branch "$B" --level 03a_oldmombasa --difficulty heroic \
     --frames 5000 --stats-from 3000 --build-env H2_OPT=2 --fresh-data \
     --env H2_RENDER_SCALE=4 --env H2_FEATURES=impl.render.native=$arm \
     --wait --to "$RUSH_KEEP/lab/$B-$arm"

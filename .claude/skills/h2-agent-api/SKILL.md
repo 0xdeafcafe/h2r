@@ -185,6 +185,23 @@ h2 agent edit revert 3
 See [hot iteration](../../../docs/graphics/hot-iteration.md) for field
 paths, shader overrides and which edits take effect on the next frame.
 
+## Explain memory growth
+
+```sh
+h2 agent hostmemory
+h2 agent host.memory.diff '{"from_ms":60000}'
+h2 agent host.memory.gpu
+h2 mem postmortem --pid 4242
+```
+
+`host.memory` gives the footprint and its growth rate. `host.memory.diff`
+ranks the heap tags, sampled stacks, GPU counts and probes that grew
+since a recorded uptime. `host.memory.heap` needs the process started
+with `H2_MEM_SAMPLE=1M`. A process that has already died, or a lab job
+killed for memory, is read offline with `h2 mem postmortem` or
+`h2 lab mem <id>`. The editor answers the same methods on its socket.
+See [Finding a leak after the fact](../../../docs/runtime/agent-api.md#finding-a-leak-after-the-fact).
+
 ## Attach to the editor
 
 Use the editor's own socket with `h2 studio` or `h2-editor call`. It

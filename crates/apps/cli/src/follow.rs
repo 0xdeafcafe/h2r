@@ -894,7 +894,7 @@ impl Step<'_> {
     }
 }
 
-fn niced(program: impl AsRef<std::ffi::OsStr>) -> Command {
+pub(crate) fn niced(program: impl AsRef<std::ffi::OsStr>) -> Command {
     let mut c = Command::new("nice");
     c.args(["-n", "15"]).arg(program);
     c
@@ -998,7 +998,11 @@ fn common_dir(dir: &Path) -> Result<PathBuf, String> {
 /// worktree's. Anything else at that path is refused,
 /// never reset, cleaned or removed: the user's work could be there.
 fn own_checkout(repo: &Path, cache: &Path) -> Result<bool, String> {
-    let path = cache.join("checkout");
+    owned_worktree(repo, cache, "checkout")
+}
+
+pub(crate) fn owned_worktree(repo: &Path, cache: &Path, name: &str) -> Result<bool, String> {
+    let path = cache.join(name);
     let meta = match fs::symlink_metadata(&path) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(format!("{}: {e}", path.display())),
@@ -1017,7 +1021,7 @@ fn own_checkout(repo: &Path, cache: &Path) -> Result<bool, String> {
         return refuse("it is not a directory");
     }
     let here = canonical(&path)?;
-    if here != canonical(cache)?.join("checkout") {
+    if here != canonical(cache)?.join(name) {
         return refuse("it resolves outside the cache");
     }
     let list = git(repo, &["worktree", "list", "--porcelain"]).map_err(|e| format!("{e:#}"))?;

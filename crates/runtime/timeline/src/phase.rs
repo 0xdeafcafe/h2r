@@ -271,8 +271,15 @@ impl Counter {
 }
 
 static ON: AtomicBool = AtomicBool::new(false);
+static FRAME_BUFFER_BYTES: AtomicU64 = AtomicU64::new(0);
 static MATERIAL_DETAILS: AtomicBool = AtomicBool::new(false);
 static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// The active recorder's sample array capacities and pending frame payloads.
+/// Map nodes and allocations inside a sample's material breakdown are excluded.
+pub fn frame_buffer_bytes() -> u64 {
+    FRAME_BUFFER_BYTES.load(Ordering::Relaxed)
+}
 
 /// True while frame stats are being collected. One relaxed load.
 #[inline(always)]
@@ -647,6 +654,7 @@ pub fn forward_frame() -> Option<WorkerFrame> {
     let r = g.as_mut()?;
     let index = crate::frames() + 1;
     r.pending.entry(index).or_default().expected += 1;
+    r.publish_buffer_bytes();
     Some(WorkerFrame {
         generation: r.generation,
         index,
@@ -694,6 +702,7 @@ impl WorkerFrame {
                 *a += n;
             }
             r.publish_ready();
+            r.publish_buffer_bytes();
         }
     }
 }
@@ -762,6 +771,7 @@ pub fn frame_end(index: u64) {
             pending.game = Some(s);
             pending.world_materials.merge(materials);
             r.publish_ready();
+            r.publish_buffer_bytes();
         }
     }
 }
@@ -847,6 +857,7 @@ pub fn start(config: Config) -> std::io::Result<()> {
     let mut recorder = Recorder::new(config, csv);
     let mut g = global();
     recorder.generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+    recorder.publish_buffer_bytes();
     *g = Some(recorder);
     MATERIAL_DETAILS.store(details, Ordering::Relaxed);
     ON.store(true, Ordering::Relaxed);
@@ -875,6 +886,7 @@ pub fn stop() -> Option<String> {
     ON.store(false, Ordering::Relaxed);
     MATERIAL_DETAILS.store(false, Ordering::Relaxed);
     let mut r = g.take()?;
+    FRAME_BUFFER_BYTES.store(0, Ordering::Relaxed);
     drop(g);
     if let Some(f) = r.csv.as_mut() {
         let _ = f.flush();
@@ -901,6 +913,7 @@ pub fn capture_begin() -> bool {
     match global().as_mut() {
         Some(r) => {
             r.capture = Some(Vec::new());
+            r.publish_buffer_bytes();
             true
         }
         None => false,
@@ -911,7 +924,11 @@ pub fn capture_begin() -> bool {
 /// (at most [`CAPTURE_MAX`]). `None` with no capture running, or when
 /// collection stopped or restarted meanwhile.
 pub fn capture_end() -> Option<Vec<FrameSample>> {
-    global().as_mut()?.capture.take()
+    let mut g = global();
+    let r = g.as_mut()?;
+    let frames = r.capture.take();
+    r.publish_buffer_bytes();
+    frames
 }
 
 /// The most frames one capture keeps (over an hour at 60 fps).
@@ -1100,6 +1117,14 @@ impl Recorder {
             capture: None,
             running: Totals::default(),
         }
+    }
+
+    fn publish_buffer_bytes(&self) {
+        let slots = self.window.capacity() + self.worst.capacity()
+            + self.capture.as_ref().map_or(0, Vec::capacity);
+        let bytes = slots * size_of::<FrameSample>() + self.totals_us.capacity() * size_of::<u32>()
+            + self.pending.len() * size_of::<PendingFrame>();
+        FRAME_BUFFER_BYTES.store(bytes as u64, Ordering::Relaxed);
     }
 
     fn publish_ready(&mut self) {
@@ -1598,7 +1623,9 @@ mod tests {
         assert_eq!(rows.frames, 2);
         assert_eq!(count("native_world_opaque_taken_sections"), 4 + 1);
         assert_eq!(count("native_world_opaque_fallback_sections"), 2 + 1);
+        assert!(frame_buffer_bytes() >= 2 * size_of::<FrameSample>() as u64);
         let report = stop().unwrap();
+        assert_eq!(frame_buffer_bytes(), 0);
         assert!(report.contains(r#"refused_sections["program"]=1 refused_sections["texture"]=3"#));
     }
 

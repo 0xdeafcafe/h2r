@@ -485,7 +485,7 @@ pictures.
 
 ```sh
 for mode in retail e3; do
-  h2 lab run --host laptop --branch "$B" --level 03a_oldmombasa --difficulty heroic \
+  h2 lab run --name "Lighting $mode" --host laptop --branch "$B" --level 03a_oldmombasa --difficulty heroic \
     --frames 5000 --stats-from 3000 --build-env H2_OPT=2 --fresh-data \
     --env H2_RENDER_SCALE=4 --env H2_LIGHTING=$mode \
     --wait --to "$RUSH_KEEP/lab/$B-$mode"

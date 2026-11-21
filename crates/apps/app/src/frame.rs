@@ -132,6 +132,7 @@ struct LoadingState {
 type Waker = Arc<dyn Fn() + Send + Sync>;
 
 struct Shared {
+    _census: gfx::context::DeviceRegistration,
     state: Mutex<State>,
     loading: Mutex<LoadingState>,
     wake_pending: AtomicBool,
@@ -178,6 +179,7 @@ impl Shared {
 /// device.
 pub fn channel(ctx: &GfxContext) -> (FrameSink, FrameSource) {
     let shared = Arc::new(Shared {
+        _census: ctx.watch_resources(),
         state: Mutex::new(State {
             tb: TripleBuffer::new(),
             slots: [None, None, None],

@@ -581,7 +581,8 @@ stays on the main thread.
 
 The title bar shows guest presents per second, frames shown per second
 (one decimal), and frames dropped, all over the last 5 seconds
-(`pacing::WindowedRate`), refreshed once a second; `log_status` also prints
+(`pacing::WindowedRate`), refreshed once a second. Lab game windows keep their
+job title throughout the run. In both modes `log_status` also prints
 it. A one-second window read 0.0 for a game presenting 1.4 times a second.
 
 ## Tests

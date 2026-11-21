@@ -211,11 +211,12 @@ impl Drop for Server {
 }
 
 pub(crate) enum Output {
-    Line(String),
-    Upgrade { line: String, frames: crate::live::Frames },
+    Line(crate::memory::ReplyLine),
+    Upgrade { line: crate::memory::ReplyLine, frames: crate::live::Frames },
 }
 
 fn serve<S: Stream>(stream: S, agent: Agent) {
+    let _scope = mem_watch::scope("agent.socket");
     let Ok(mut out) = stream.try_clone() else {
         return;
     };
@@ -224,6 +225,7 @@ fn serve<S: Stream>(stream: S, agent: Agent) {
     let _ = thread::Builder::new()
         .name(format!("agent-out-{conn}"))
         .spawn(move || {
+            let _scope = mem_watch::scope("agent.reply");
             for msg in rx {
                 let (line, upgrade) = match msg {
                     Output::Line(line) => (line, None),
@@ -236,6 +238,7 @@ fn serve<S: Stream>(stream: S, agent: Agent) {
                 {
                     break;
                 }
+                drop(line);
                 if let Some(frames) = upgrade {
                     if out.write_timeout(crate::live::CLOSE_INTERVAL).is_ok() {
                         let _ = frames.write_to(&mut out);
@@ -249,6 +252,7 @@ fn serve<S: Stream>(stream: S, agent: Agent) {
     let _ = thread::Builder::new()
         .name(format!("agent-in-{conn}"))
         .spawn(move || {
+            let _scope = mem_watch::scope("agent.socket");
             let mut r = BufReader::new(stream);
             let mut line = String::new();
             loop {

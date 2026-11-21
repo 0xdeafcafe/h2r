@@ -33,12 +33,37 @@ pub struct Step {
     pub reads: u32,
 }
 
-#[derive(Debug, Default)]
+static QUEUED_STEPS: mem_watch::Counter = mem_watch::Counter::new("input.pad_queued_steps");
+static QUEUE_BYTES: mem_watch::Counter = mem_watch::Counter::new("input.pad_queue_reserved_bytes");
+
+#[derive(Debug)]
 struct Inner {
     queue: VecDeque<Step>,
     current: Option<Current>,
+    queued_steps: mem_watch::Gauge,
+    reserved_bytes: mem_watch::Gauge,
     /// Steps finished since the start, for `input.state`.
     done: u64,
+}
+
+impl Default for Inner {
+    fn default() -> Self {
+        Self {
+            queue: VecDeque::new(),
+            current: None,
+            queued_steps: QUEUED_STEPS.track(0),
+            reserved_bytes: QUEUE_BYTES.track(0),
+            done: 0,
+        }
+    }
+}
+
+impl Inner {
+    fn publish_queue_size(&mut self) {
+        self.queued_steps.set(self.queue.len() as u64);
+        self.reserved_bytes
+            .set((self.queue.capacity() * size_of::<Step>()) as u64);
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -77,14 +102,19 @@ impl Remote {
 
     /// Replaces everything (the step being held too) with `steps`.
     pub fn replace(&self, steps: impl IntoIterator<Item = Step>) {
+        let _scope = mem_watch::scope("input.pad");
         let mut g = self.lock();
         g.current = None;
         g.queue = steps.into_iter().collect();
+        g.publish_queue_size();
     }
 
     /// Queues `steps` after what is queued.
     pub fn append(&self, steps: impl IntoIterator<Item = Step>) {
-        self.lock().queue.extend(steps);
+        let _scope = mem_watch::scope("input.pad");
+        let mut g = self.lock();
+        g.queue.extend(steps);
+        g.publish_queue_size();
     }
 
     /// Lets go of everything.
@@ -122,6 +152,7 @@ impl Remote {
                 None => match g.queue.front() {
                     Some(step) if step.at_tick.is_none_or(|at| tick.is_some_and(|t| t >= at)) => {
                         let step = g.queue.pop_front().expect("front");
+                        g.publish_queue_size();
                         g.current = Some(Current {
                             step,
                             since: now,
@@ -273,8 +304,20 @@ mod tests {
         r.append([hold(Buttons::BACK)]);
         assert_eq!(r.state_at(t).buttons, Buttons::START);
         assert_eq!(r.status().queued, 1);
+        {
+            let g = r.lock();
+            assert_eq!(g.queued_steps.get(), 1);
+            assert!(g.reserved_bytes.get() >= size_of::<Step>() as u64);
+        }
         r.replace([hold(Buttons::DPAD_UP)]);
         assert_eq!(r.state_at(t).buttons, Buttons::DPAD_UP);
         assert_eq!(r.status().queued, 0);
+        r.clear();
+        let g = r.lock();
+        assert_eq!(g.queued_steps.get(), 0);
+        assert_eq!(
+            g.reserved_bytes.get(),
+            (g.queue.capacity() * size_of::<Step>()) as u64
+        );
     }
 }

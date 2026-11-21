@@ -2,6 +2,7 @@
 //! has to supply is a `wgpu::Surface` (or nothing, for headless use).
 
 use crate::translate::Capabilities;
+pub use mem_watch::gpu::DeviceRegistration;
 
 /// Errors from bringing up the GPU.
 #[derive(Debug, thiserror::Error)]
@@ -35,6 +36,11 @@ pub struct GfxContext {
 }
 
 impl GfxContext {
+    /// Keep this device visible to the memory census while its owner is active.
+    pub fn watch_resources(&self) -> DeviceRegistration {
+        DeviceRegistration::new(&self.instance, &self.adapter, &self.device)
+    }
+
     /// Creates a context, preferring an adapter that can present to
     /// `compatible_surface`.
     pub async fn new(instance: wgpu::Instance, compatible_surface: Option<&wgpu::Surface<'_>>) -> Result<Self, GfxError> {

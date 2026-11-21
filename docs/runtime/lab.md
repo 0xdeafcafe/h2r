@@ -11,8 +11,8 @@ and use Metal.
 
 ```text
 driving Mac                         playing Mac (logged-in desktop)
-h2 lab run --host laptop ...  --TLS-->  h2 lab host (Aqua LaunchAgent)
-                                          |-- git worktree per commit
+h2 lab run --name City ...    --TLS-->  h2 lab host (Aqua LaunchAgent)
+                                          |-- one detached worktree, FIFO job queue
                                           |-- cargo build, h2 build (cached)
                                           `-- h2 play --level ... (a window)
 h2 lab fetch <id>              <--TLS--  archive of runs/<id>
@@ -107,17 +107,17 @@ The host keeps its files under `--root`, by default
 | `bin/h2` | stable LaunchAgent executable |
 | `logs/` | LaunchAgent stdout and stderr, host updates, and pairing offers, successful pairings and revocations. Each log has a current file and one rotated copy of up to 8 MiB each. |
 | `auth/` | TLS identity and pairing state |
-| `runs/<id>/` | one job: `meta.json`, `build.log`, `run.log`, `frames.csv`, `profile/`, `traces/`, `flights/`, `inputs/` |
+| `runs/<id>/` | one job: `meta.json`, `build.log`, `run.log`, `frames.csv`, `profile/`, `traces/`, `flights/`, `inputs/`, `mem/` |
 | `a/<id>.sock` | the run's game's agent API socket, removed when the run ends |
 | `takeover-declined-until` | the player's consent cool-down, kept across lab host restarts |
 | `recordings/<name>/` | `manifest.json` and `input.bin` |
 | `pgo/<name>` | PGO profiles uploaded with `h2 lab put --pgo` |
-| `src/<commit>/` | a detached git worktree of each commit built |
+| `src/current/` | the detached Git worktree shared by branch builds |
 | `target/` | the cargo target directory those builds share |
-| `images/<key>/` | a built `h2` and its image (`out/`), per commit and build |
+| `image/` | the built `h2`, game module, generated sources and build stamp (`image.json`) |
 | `obj-cache/` | `H2_OBJ_CACHE` for every image build |
-| `data/` | persistent data at the default cap and the seed for private copies at higher caps |
-| `scratch/<id>/data` | temporary data for an isolated run |
+| `data/` | the data root runs use |
+| `scratch/<id>/data` | the empty data root of a `--fresh-data` run, removed when it ends |
 
 Host and install flags take the same paths. `--repo` sets the checkout
 and defaults to the one used to build the CLI. `--disc` defaults to
@@ -125,15 +125,14 @@ and defaults to the one used to build the CLI. `--disc` defaults to
 select the binary and image for `--current` runs. They default to the
 host executable and the usual `h2 play` image directory. `--data` sets
 the persistent data root and `--cargo` selects the cargo executable.
-`--max-jobs N` caps active builds and runs together and defaults to 1.
-Install saves a custom cap in the LaunchAgent's arguments and saves the
-Terminal's `PATH` for the build tools. Changing an installed cap requires
-uninstalling and reinstalling the LaunchAgent.
+`--max-jobs 1` is accepted for compatibility; any other cap is refused
+because the host runs one job at a time. Install saves the Terminal's
+`PATH` for the build tools.
 
 The local socket is `~/Library/Caches/h2recomp/lab.sock` (mode 0600),
 or a path set by `--socket` or the lab socket environment setting in
-[Switches](switches.md#tools). To stop a foreground host, stop each
-active job (`h2 lab stop <id>`), then press Ctrl-C. During startup, the
+[Switches](switches.md#tools). To stop a foreground host, stop the
+active and queued jobs (`h2 lab stop <id>`), then press Ctrl-C. During startup, the
 host waits for exclusive access to the lab root before marking any
 unfinished jobs failed.
 
@@ -179,7 +178,7 @@ it with `--socket PATH` if the local host uses a custom socket.
 
 ```sh
 h2 lab status --host laptop
-h2 lab run --host laptop --level 03a_oldmombasa --difficulty heroic \
+h2 lab run --name "City baseline" --host laptop --level 03a_oldmombasa --difficulty heroic \
     --frames 3000 --stats-from 600 --build-env H2_OPT=2 --wait
 h2 lab runs --host laptop
 h2 lab fetch --host laptop 0007
@@ -194,35 +193,56 @@ A run (and `h2 lab build`) names what to build:
   laptop's `lab/NAME` branch. It then asks for that exact commit. The
   client reports uncommitted changes, which stay on the driving Mac.
   `--no-sync` uses the existing `lab/NAME` branch.
-- **`--rev REV`**: a commit or branch the laptop's checkout already has.
+- **`--rev REV`** names a commit or branch the laptop already has. The host resolves it to a commit when accepting the request, including when the job must queue.
 - **`--current`**: no build: the host's own `h2` and image as they are.
 
 `h2 lab sync [--branch NAME]...` transfers branches without starting a
 run. It can import a branch while a game job runs.
 
-For a commit, the host builds in a detached worktree at `src/<commit>`
-and leaves the laptop's main working tree alone. It builds `h2` with
-`cargo build --release -p cli --bin h2` (plus `--features perf` for
-`--perf` or `--feature perf`), then `h2 build` with the build variables and
-the shared object cache. The image is kept under `images/<key>`, the key
-being the commit, the features and the build variables (`H2_OPT`,
-`H2_DEBUG`, `H2_CPU`, `H2_HOT`, `H2_OPT_COLD`, `H2_PASSES`, `H2_PGO`; a
-`use:` profile counts by its contents). So A/B runs of two branches build
-each once. The build variables are set again on every run of the image,
-since an `h2` whose `H2_OPT` or `H2_PGO` differs from its image's rebuilds
-it. A job's `meta.json` records its commit, image key, whether the image
-was cached and the build variables. `h2 lab status` shows jobs building
-an image as `building` and games as `running`.
+For a commit, the host switches its detached `src/current/` worktree to
+the requested revision. Each build uses the same Cargo target and passes
+the same `--out <root>/image` directory to `h2 build`. Cargo and the
+image compiler run at nice level +15 with a worker budget of the
+available CPU count minus two (minimum one).
+
+The host reuses the published image when its binary, module and matching
+`image/image.json` stamp are present. The stamp identifies the commit,
+sorted features, build variables and content hash of the selected PGO
+profile. Changing any input rebuilds in place. Switching from A to B
+and back to A rebuilds twice, reusing Cargo artifacts and compiler objects.
+The host invalidates the stamp before a replacement and publishes a new
+one after the build and cache cleanup succeed. Each run receives the
+build's environment. A job's `meta.json` records its commit, image key,
+cache hit or miss, and build variables.
+
+After each build attempt the host removes least recently used objects
+above the object-cache budget (8 GiB by default). It retains the shared
+Cargo target up to its separate budget (32 GiB by default). If it
+exceeds that budget the host clears the whole target so Cargo can
+recreate a consistent set of artifacts on the next build. The published
+image remains usable. Both budgets support zero. The host and install
+flags are in [Switches](switches.md#tools).
+
+At startup the host takes the build/run activity lock before removing
+the old commit-named worktrees and 16-hex-key image directories. Job
+results and recordings are kept.
 
 `H2_PGO=use:NAME` names a profile uploaded with
 `h2 lab put FILE --pgo --as NAME`.
 
 ### Runs
 
+Every game job (`run`, `bench` and `record`) requires `--name TEXT`, a
+printable label of up to 60 characters. Leading and trailing spaces are
+trimmed. The window title reads `h2 · lab <id> · <name> · <short commit>`.
+Status, runs, the job log and memory reports carry the name even when
+the game has no window. Use `--note` for additional context.
+
 `h2 lab run` flags:
 
 | Flag | Becomes |
 |---|---|
+| `--name TEXT` | Required job label, kept in the metadata and window title |
 | `--level MAP [--difficulty D]` | `h2 play --level MAP --difficulty D` |
 | `--frames N` | `H2_BOOT_STOP_AT_PRESENT=N` |
 | `--stats-from N` | `H2_FRAME_STATS_FROM=N` |
@@ -244,32 +264,18 @@ network, no names with `/` or a leading `.`. The host also drops every
 same regardless of the host's environment. A paired driver can send
 source code for the host to build and run as the logged-in user.
 
-With a free slot, a run can start from a cached image even while another
-job builds. Only one job builds an image at a time. If another job needs
-a build, the host refuses it and names the job already building. When
-all slots are occupied, the host refuses new jobs and lists the active
-IDs. `h2 lab status` lists all active jobs in `jobs_active` and includes
-the first one in `active` for compatibility.
-
-With `--max-jobs` above 1, every run gets its own data root under
-`scratch/<id>/data`, removed when that run ends. The host copies the
-`--data` seed and follows symlinks so writes stay local to the run.
-macOS clones files where the filesystem supports it and copies them
-otherwise. `--fresh-data` starts with an empty root. Keep the scratch
-directory outside the seed. Before opening the game,
-the host verifies the image with `h2 build --check` so play cannot
-start by rebuilding a stale image. The run's binary must support this
-check, including when it comes from a cached commit. Point `--current`
-at a prebuilt image that passes the check with the host's `h2`.
-Instrumented runs (`H2_PGO=gen`) use `runs/<id>/h2.profraw` for their raw
-profile.
-
+One activity lock covers each job from build through game exit, so the
+host never builds while a game runs and never runs two builds or two
+games at once. New run and build requests receive job IDs immediately
+and wait in arrival order. `h2 lab status` shows the active job in
+`active` and again as the only entry of `jobs_active`, the queued IDs in
+`queued`, and `max_jobs`, which is always 1. `--max-jobs` accepts only 1.
 `h2 lab wait <id> [--timeout S]` exits 0 when the job completes
 or is skipped, 1 when it fails or is stopped, and 3 when it is still
 going. `h2 lab stop <id>` stops a pending request or sends SIGTERM to
 the job's process group, then SIGKILL 5 s later.
 
-`h2 lab runs` lists jobs with their state, exit, duration, commit, level
+`h2 lab runs` lists jobs with their name, state, exit, duration, commit, level
 and the frame stats report from the log: the last `frame stats:` line,
 the three worst frames and the `outcome:` line. `h2 lab fetch <id>` copies
 `runs/<id>` here as `<DIR>/<id>` (`--to DIR`; default `$RUSH_KEEP/lab`,
@@ -277,7 +283,7 @@ else `./lab`) using an archive streamed over the lab connection.
 The host sets the game's [agent output root](switches.md#tools) to
 `runs/<id>`. The archive includes the game's `traces/` from `trace.start`,
 `flights/` from `flight.dump` and `inputs/` from `input.record`. Each job
-gets its own directories, so concurrent jobs can use the same file names.
+gets its own directories, so jobs can reuse the same file names.
 Use `trace.stop` and `input.stop` to finish writing before stopping the
 job or fetching its files.
 
@@ -312,6 +318,38 @@ cool-down. During the cool-down, an open game window skips later jobs
 without another prompt. With no window, jobs run as usual. Set the two
 durations on `h2 lab host` or `h2 lab host install` using the flags in
 [Switches](switches.md#tools).
+
+## Memory limits and reports
+
+The host samples the running game's physical footprint at launch and every
+two seconds. `h2 lab status` includes the daemon's current and peak footprint
+and its pressure reading. The active job, `h2 lab runs` and the fetched
+`meta.json` carry the game's last and peak readings in bytes. A missing
+reading means the host has not measured that process.
+
+The game child has a 12 GiB lab cap. For example,
+`h2 lab run --name "Memory check" --mem-limit 10G --level ascension` sets a 10 GiB cap.
+`--mem-limit 0` disables the per-job cap. The game and daemon also run their
+own process watchdogs. Machine memory pressure stops the active job, including
+a build, and holds queued jobs until pressure clears.
+
+A cap or pressure stop fails the job with its reason in `meta.json`.
+The host asks a running game's agent for a memory report before terminating
+the job's process group. It saves its own observations in `mem/lab-host.json`.
+If the game cannot answer, the host also attempts OS diagnostics from its
+side. The game's watchdog writes its reports in the same `mem/` directory.
+Both `h2 lab fetch <id>` and `h2 lab run --name "Memory check" --wait --to DIR` bring that directory
+back with the rest of the run, including on failure.
+
+To investigate a finished job, run `h2 lab mem <id> [--to DIR]`. The host
+sends the job's `mem/` directory. The driver computes the footprint change
+and prints up to twenty growing counters, heap tags and sampled stacks from
+the fetched files. The default destination matches `fetch`. The
+`postmortem` field in `meta.json` carries the same summary for a game that
+exits abnormally, a job stopped under memory pressure or a run the host
+finds interrupted on restart. If the process died before producing evidence,
+the field records why attribution is unavailable.
+See [Finding a leak after the fact](agent-api.md#finding-a-leak-after-the-fact).
 
 ## Driving a run: the agent API
 
@@ -355,7 +393,7 @@ fetched files.
 
 ### `--serve` and `bench`
 
-`h2 lab run --serve` is a run meant to be driven: no `--frames`, so it
+`h2 lab run --name "Live inspection" --serve` is a run meant to be driven: no `--frames`, so it
 stays up until `h2 lab stop <id>`, and the agent decides when to measure.
 `--wait` is refused with it.
 
@@ -371,7 +409,7 @@ runs the host in the logged-in user's graphical session.
 `h2 lab bench` is the loop for one measurement:
 
 ```
-h2 lab bench --host laptop --branch perf-work --level 03a_oldmombasa --scale 4 \
+h2 lab bench --name "City benchmark" --host laptop --branch perf-work --level 03a_oldmombasa --scale 4 \
     --ticks 600 --env H2_FEATURES=... [--timeout 600] [--to DIR] [-- --unpaced --no-vsync]
 ```
 
@@ -417,7 +455,10 @@ on, on as many builds as it likes.
 
 On the laptop: `h2 lab record --level 03a_oldmombasa --difficulty heroic
 --name fight-1`, play the fight, quit the game. Through the host when it
-runs (so the agent sees the run), else directly into the default root. A
+runs (so the agent sees the run), else directly into the default root.
+A path-safe label such as `fight-1` doubles as the recording key. For other
+labels the default is the level and a timestamp. Pass `--record KEY` to
+choose the recording directory separately from the window label. A
 recording made elsewhere goes up with `h2 lab put FILE --as NAME --level
 MAP`; `h2 lab recordings` lists them.
 

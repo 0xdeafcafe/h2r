@@ -57,17 +57,7 @@ fn peak_rss_mib() -> u64 {
 /// Returns a snapshot of the calling process's resource use.
 #[cfg(target_os = "macos")]
 pub(super) fn process_rusage() -> Option<libc::rusage_info_v4> {
-    let mut info = std::mem::MaybeUninit::<libc::rusage_info_v4>::uninit();
-    // SAFETY: the flavor selects the size and alignment of this buffer.
-    let result = unsafe {
-        libc::proc_pid_rusage(
-            std::process::id() as libc::c_int,
-            libc::RUSAGE_INFO_V4,
-            info.as_mut_ptr().cast(),
-        )
-    };
-    // SAFETY: success means the OS filled the requested v4 structure.
-    (result == 0).then(|| unsafe { info.assume_init() })
+    mem_watch::process_rusage(std::process::id())
 }
 
 /// The physical footprint in MiB on macOS.

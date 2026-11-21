@@ -64,6 +64,8 @@ or a short form:
   sample-stop            profile.sample.stop: writes LocalState\\profile.h2prof
   sample-status          profile.sample.status
   hostperf               host.perf: the newest host perf line
+  hostmemory [report]    host.memory: footprint, peak, queue sizes and reports
+  postmortem [--pid N | FILE]  explain memory growth offline in a saved recording
   hostmetrics            host.metrics: tick cost, CPU and RSS
   hostaudit              host.audit: coverage and attribution so far
   ui                     ui.screen: the menu screen player one's input goes to (H2_UI_WATCH=1)
@@ -220,6 +222,9 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let Some(first) = rest.first().cloned() else {
         bail!("{}", usage())
     };
+    if first == "postmortem" {
+        return crate::mem_cmd::run(&rest);
+    }
     if first == "flight" && rest.get(1).is_some_and(|w| w == "show") {
         return crate::agent_flight::show(&rest[2..], || connect(socket, timeout));
     }
@@ -696,6 +701,14 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
                 Some(g) => json!({ "group_by": g }),
             },
         ),
+        "hostmemory" => (
+            method::HOST_MEMORY,
+            match arg.map(String::as_str) {
+                None => Value::Null,
+                Some("report") => json!({ "report": true }),
+                Some(_) => bail!("hostmemory takes only the optional argument report"),
+            },
+        ),
         "query" => (method::WORLD_QUERY, json_arg(arg)?),
         "loads" => (
             method::LOAD_TIMELINE,
@@ -992,6 +1005,8 @@ mod tests {
             c("sample-stop"),
             ("profile.sample.stop".into(), Value::Null)
         );
+        assert_eq!(c("hostmemory"), ("host.memory".into(), Value::Null));
+        assert_eq!(c("hostmemory report"), ("host.memory".into(), json!({"report": true})));
         assert_eq!(c("hostperf"), ("host.perf".into(), Value::Null));
         assert_eq!(c("hostmetrics"), ("host.metrics".into(), Value::Null));
         assert_eq!(c("ui"), ("ui.screen".into(), Value::Null));

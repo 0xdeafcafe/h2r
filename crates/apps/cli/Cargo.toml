@@ -10,6 +10,7 @@ path = "src/main.rs"
 required-features = ["host"]
 
 [dependencies]
+mem-watch.workspace = true
 film = { path = "../../live/film" }
 # The default data root (`content::store::default_data_root`).
 content.workspace = true
@@ -56,7 +57,7 @@ agent = { path = "../../extensions/agent", default-features = false }
 studio-proto = { path = "../studio-proto", optional = true }
 # Our settings (play --set, h2 settings).
 settings = { path = "../../formats/settings" }
-timeline = { path = "../../runtime/timeline", optional = true }
+timeline = { path = "../../runtime/timeline" }
 app = { path = "../app", optional = true }
 debug-menu = { path = "../../extensions/debug-menu", optional = true }
 lockstep = { path = "../../extensions/lockstep", optional = true }
@@ -151,7 +152,6 @@ desktop = [
     "dep:emit",
     "dep:ir",
     "dep:studio-proto",
-    "dep:timeline",
     "dep:app",
     "dep:objc2",
     "dep:objc2-foundation",

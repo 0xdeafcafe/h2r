@@ -18,6 +18,7 @@ game-controller = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-game-controll
 hid = ["dep:objc2-io-kit", "dep:objc2-core-foundation"]
 
 [dependencies]
+mem-watch.workspace = true
 thiserror.workspace = true
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"

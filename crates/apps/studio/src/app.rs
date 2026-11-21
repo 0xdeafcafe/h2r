@@ -1135,6 +1135,7 @@ impl App {
     /// Load the tag editor's document from the open map when the session
     /// opened another one since (its edits went with that map).
     pub fn sync_tags(&mut self) {
+        let _scope = mem_watch::scope("assets.tag_load");
         self.tags.allow_growth = self.session.allow_growth();
         let rev = Some(self.session.world_rev());
         if self.tags.for_rev == rev && self.tags.is_open() == self.session.is_open() {
@@ -1414,6 +1415,7 @@ impl App {
     }
 
     fn open_source(&mut self, path: &Path) {
+        let _scope = mem_watch::scope("studio.map");
         // The Map Pack is told by its contents. It joins the open source
         // rather than replacing it: its maps need the Halo 2 disc's caches.
         if self.try_open_mappack(path) {
@@ -1457,6 +1459,7 @@ impl App {
     }
 
     fn select_map(&mut self, name: &str) {
+        let _scope = mem_watch::scope("studio.map");
         if self.select_shared_cache(name) {
             return;
         }

@@ -89,17 +89,20 @@ impl PipelineKey {
     }
 }
 
+static PIPELINES: mem_watch::Counter = mem_watch::Counter::new("gfx.pipeline_cache_entries");
+
 /// A map from [`PipelineKey`] to a built pipeline, with hit/miss counters.
 #[derive(Debug)]
 pub struct PipelineCache<V> {
     map: HashMap<PipelineKey, V>,
+    entries: mem_watch::Gauge,
     hits: u64,
     misses: u64,
 }
 
 impl<V> Default for PipelineCache<V> {
     fn default() -> Self {
-        Self { map: HashMap::new(), hits: 0, misses: 0 }
+        Self { map: HashMap::new(), entries: PIPELINES.track(0), hits: 0, misses: 0 }
     }
 }
 
@@ -117,15 +120,20 @@ impl<V> PipelineCache<V> {
                 entry.into_mut()
             }
             EntryRef::Vacant(entry) => {
+                let _scope = mem_watch::scope("render.pipeline");
                 self.misses += 1;
-                entry.insert(make(key))
+                let value = entry.insert(make(key));
+                self.entries.set(self.entries.get() + 1);
+                value
             }
         }
     }
 
     /// Adds `value` for `key` (replacing any), without counting.
     pub fn insert(&mut self, key: PipelineKey, value: V) {
+        let _scope = mem_watch::scope("render.pipeline");
         self.map.insert(key, value);
+        self.entries.set(self.map.len() as u64);
     }
 
     /// Every key and value.
@@ -161,6 +169,7 @@ impl<V> PipelineCache<V> {
     /// Drops every pipeline (e.g. after the surface format changes).
     pub fn clear(&mut self) {
         self.map.clear();
+        self.entries.set(0);
     }
 }
 
@@ -198,6 +207,7 @@ pub fn create_render_pipeline(
     program: &ShaderProgram,
     label: &str,
 ) -> wgpu::RenderPipeline {
+    let _scope = mem_watch::scope("render.pipeline");
     let buffers: Vec<Option<wgpu::VertexBufferLayout<'_>>> =
         key.vertex_buffers.iter().map(|b| Some(b.as_wgpu())).collect();
     let targets = [Some(key.color_target.clone())];
@@ -332,10 +342,12 @@ mod tests {
             });
         }
         assert_eq!(built, 2);
+        assert_eq!(cache.entries.get(), 2);
         assert_eq!((cache.len(), cache.hits(), cache.misses()), (2, 3, 2));
         assert_eq!(*cache.get_or_insert_with(&a, |_| unreachable!()), 1);
         cache.clear();
         assert!(cache.is_empty());
+        assert_eq!(cache.entries.get(), 0);
     }
 
     #[test]

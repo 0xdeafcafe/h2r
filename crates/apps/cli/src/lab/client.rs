@@ -1,5 +1,6 @@
 //! The lab's client commands (`h2 lab status|run|...`), and `h2 lab record`.
 
+use std::cell::Cell;
 use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, Write};
 use std::net::SocketAddr;
 use std::os::unix::net::UnixStream;
@@ -10,11 +11,16 @@ use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 
 use super::proto::{self, BuildSpec, RunReq};
-use super::{USAGE, default_socket, discovery, lan, transfer, watch};
+use super::transfer::Artifacts;
+use super::{USAGE, default_socket, discovery, forensics, lan, transfer, watch};
 
 enum Remote {
     Local(PathBuf),
-    Lan { name: String, addr: SocketAddr },
+    Unspecified,
+    Lan {
+        name: String,
+        addr: Cell<Option<SocketAddr>>,
+    },
 }
 
 impl Remote {
@@ -29,7 +35,21 @@ impl Remote {
                 })?;
                 Ok(Conn::new(socket))
             }
-            Self::Lan { name, addr } => Ok(Conn::new(lan::connect(name, *addr)?)),
+            Self::Unspecified => {
+                bail!("which host? specify --host NAME|IP|local or set H2_LAB_HOST")
+            }
+            Self::Lan { name, addr } => {
+                // Validate the command before Bonjour discovery or a TCP connection.
+                let address = match addr.get() {
+                    Some(address) => address,
+                    None => {
+                        let address = discovery::resolve(name)?;
+                        addr.set(Some(address));
+                        address
+                    }
+                };
+                Ok(Conn::new(lan::connect(name, address)?))
+            }
         }
     }
 }
@@ -96,13 +116,18 @@ fn remote(args: Vec<String>) -> Result<(Remote, Vec<String>)> {
             _ => rest.push(a),
         }
     }
-    let host = host.context("which host? specify --host NAME|IP|local or set H2_LAB_HOST")?;
-    let target = if host == "local" {
-        Remote::Local(socket.map_or_else(default_socket, PathBuf::from))
-    } else {
-        ensure!(socket.is_none(), "--socket requires --host local");
-        let addr = discovery::resolve(&host)?;
-        Remote::Lan { name: host, addr }
+    let target = match host {
+        None => Remote::Unspecified,
+        Some(name) if name == "local" => {
+            Remote::Local(socket.map_or_else(default_socket, PathBuf::from))
+        }
+        Some(name) => {
+            ensure!(socket.is_none(), "--socket requires --host local");
+            Remote::Lan {
+                name,
+                addr: Cell::new(None),
+            }
+        }
     };
     Ok((target, rest))
 }
@@ -138,22 +163,16 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
         "runs" => runs_cmd(&r, args),
         "logs" => logs_cmd(&r, args),
         "fetch" => {
-            let mut id = None;
-            let mut to = None;
-            let mut it = args.into_iter();
-            while let Some(a) = it.next() {
-                match a.as_str() {
-                    "--to" => {
-                        to = Some(PathBuf::from(it.next().context("--to needs a directory")?))
-                    }
-                    _ if id.is_none() && !a.starts_with('-') => id = Some(a),
-                    _ => bail!("unexpected {a}\n\n{USAGE}"),
-                }
-            }
-            let id = id.context("usage: h2 lab fetch <id> [--to DIR]")?;
+            let (id, to) = forensics::fetch_args(cmd, args)?;
             let dest = fetch(&r, &id, to)?;
             println!("{}", dest.display());
             Ok(())
+        }
+        "mem" => {
+            let (id, to) = forensics::fetch_args(cmd, args)?;
+            let (dest, summary) = fetch_artifacts(&r, &id, to, Artifacts::Memory, forensics::Summary::read)?;
+            println!("Memory evidence: {}", dest.display());
+            summary.print()
         }
         "put" => put_cmd(&r, args),
         "recordings" => {
@@ -301,7 +320,11 @@ fn run_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
         let mut val = || it.next().with_context(|| format!("{a} needs a value"));
         match a.as_str() {
             "--level" => req.level = Some(val()?),
+            "--name" => req.name = proto::job_name(&val()?)?.into(),
             "--difficulty" => req.difficulty = Some(val()?),
+            "--mem-limit" => {
+                req.mem_limit = Some(mem_watch::parse_size(&val()?).map_err(anyhow::Error::msg)?)
+            }
             "--frames" => req.frames = Some(val()?.parse().context("--frames needs a count")?),
             "--stats-from" => {
                 req.stats_from = Some(val()?.parse().context("--stats-from needs a present")?)
@@ -416,6 +439,16 @@ fn wait_and_fetch(r: &Remote, c: &mut Conn, id: &str, to: Option<PathBuf>) -> Re
 
 /// Copies the host's `runs/<id>` into `to` as `<to>/<id>`.
 fn fetch(r: &Remote, id: &str, to: Option<PathBuf>) -> Result<PathBuf> {
+    fetch_artifacts(r, id, to, Artifacts::Run, |_| ()).map(|(path, ())| path)
+}
+
+fn fetch_artifacts<T>(
+    r: &Remote,
+    id: &str,
+    to: Option<PathBuf>,
+    artifacts: Artifacts,
+    inspect: impl FnOnce(&Path) -> T,
+) -> Result<(PathBuf, T)> {
     proto::check_job_id(id)?;
     let to = to.unwrap_or_else(
         || match std::env::var_os("RUSH_KEEP").filter(|v| !v.is_empty()) {
@@ -425,11 +458,11 @@ fn fetch(r: &Remote, id: &str, to: Option<PathBuf>) -> Result<PathBuf> {
     );
     let mut archive = transfer::TempFile::new(&std::env::temp_dir())?;
     let mut conn = r.connect()?;
-    conn.call(json!({"cmd": "fetch", "id": id}))?;
+    conn.call(json!({"cmd": artifacts.command(), "id": id}))?;
     transfer::receive_archive(&mut conn.0, &mut archive.file)?;
     conn.reply()?;
     std::fs::create_dir_all(&to).with_context(|| format!("creating {}", to.display()))?;
-    transfer::extract_run(&archive.path, &to, id)
+    transfer::extract(&archive.path, &to, id, artifacts, inspect)
 }
 
 fn logs_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
@@ -500,15 +533,22 @@ fn runs_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
             _ => "-".into(),
         };
         println!(
-            "{} {} {} {} {} {} {}",
+            "{} {} {} {} {} {} {} {}",
             s("id"),
             s("kind"),
             s("state"),
             exit,
             dur,
             commit,
-            s("level")
+            s("level"),
+            s("name")
         );
+        if let (Some(last), Some(peak)) = (
+            j["last_footprint_bytes"].as_u64(),
+            j["peak_footprint_bytes"].as_u64(),
+        ) {
+            println!("    game memory: {last} bytes last, {peak} bytes peak");
+        }
         if let Some(e) = j["error"].as_str() {
             println!("    error: {e}");
         }
@@ -647,7 +687,7 @@ pub fn record(args: Vec<String>) -> Result<()> {
         stats: Some(false),
         ..RunReq::default()
     };
-    let mut name = None;
+    let mut recording = None;
     let mut socket = None;
     let mut host_args = Vec::new();
     let mut it = args.into_iter();
@@ -655,8 +695,9 @@ pub fn record(args: Vec<String>) -> Result<()> {
         let mut val = || it.next().with_context(|| format!("{a} needs a value"));
         match a.as_str() {
             "--level" => req.level = Some(val()?),
+            "--name" => req.name = proto::job_name(&val()?)?.into(),
             "--difficulty" => req.difficulty = Some(val()?),
-            "--name" => name = Some(val()?),
+            "--record" => recording = Some(val()?),
             "--socket" => socket = Some(PathBuf::from(val()?)),
             "--root" | "--repo" | "--disc" | "--h2" | "--out" | "--data" => {
                 host_args.push(a.clone());
@@ -666,6 +707,7 @@ pub fn record(args: Vec<String>) -> Result<()> {
             _ => bail!("unexpected {a}\n\n{USAGE}"),
         }
     }
+    proto::job_name(&req.name)?;
     let level = req
         .level
         .clone()
@@ -673,7 +715,13 @@ pub fn record(args: Vec<String>) -> Result<()> {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    let name = name.unwrap_or_else(|| format!("{level}-{secs}"));
+    let name = recording.unwrap_or_else(|| {
+        if proto::check_name("recording", &req.name).is_ok() {
+            req.name.clone()
+        } else {
+            format!("{level:.40}-{secs}")
+        }
+    });
     req.record = Some(name.clone());
     proto::validate_run(&req)?;
     let socket = socket.unwrap_or_else(default_socket);
@@ -800,6 +848,7 @@ fn bench_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
         let mut val = || it.next().with_context(|| format!("{a} needs a value"));
         match a.as_str() {
             "--level" => req.level = Some(val()?),
+            "--name" => req.name = proto::job_name(&val()?)?.into(),
             "--difficulty" => req.difficulty = Some(val()?),
             "--scale" => {
                 let n: u32 = val()?.parse().context("--scale needs a number")?;
@@ -823,6 +872,7 @@ fn bench_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
             _ => bail!("unexpected {a}\n\n{USAGE}"),
         }
     }
+    proto::job_name(&req.name)?;
     ensure!(req.level.is_some(), "h2 lab bench needs --level MAP");
     ensure!(
         (1..=36_000).contains(&ticks),
@@ -894,7 +944,12 @@ enum BenchOutcome {
 /// With the job started: waits for it to run, then for gameplay with
 /// `map_ticks >= 30`, then reads the capture, `render.stats` and
 /// `profile.counters`.
-fn bench_measure(c: &mut Conn, id: &str, ticks: u64, gameplay_timeout: f64) -> Result<BenchOutcome> {
+fn bench_measure(
+    c: &mut Conn,
+    id: &str,
+    ticks: u64,
+    gameplay_timeout: f64,
+) -> Result<BenchOutcome> {
     // The build can take a long time; the game then has to boot.
     loop {
         let v = c.call(json!({"cmd": "wait", "id": id, "timeout": 0}))?;
@@ -988,6 +1043,31 @@ pub fn bench_summary(cap: &Value, level: &str, tag: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_game_command_requires_a_label_before_discovering_the_host() {
+        for name in [None, Some("  ")] {
+            let mut args = vec!["--level".into(), "fixture".into()];
+            if let Some(label) = name {
+                args.extend(["--name".into(), label.into()]);
+            }
+            assert!(
+                record(args.clone())
+                    .unwrap_err()
+                    .to_string()
+                    .contains("--name")
+            );
+            args.extend(["--host".into(), "missing.invalid".into()]);
+            for cmd in ["run", "bench"] {
+                assert!(
+                    run(cmd, args.clone())
+                        .unwrap_err()
+                        .to_string()
+                        .contains("--name")
+                );
+            }
+        }
+    }
 
     #[test]
     fn the_bench_line_has_fps_busy_percentiles_and_phases_biggest_first() {
