@@ -422,7 +422,7 @@ fn the_rows_go_after_the_other_rows_on_the_plan() {
         let (h1, firefight, ours) = (
             line.find("h1-options-row:").unwrap(),
             line.find("firefight-row:").unwrap(),
-            line.find("lobby-mode:").unwrap(),
+            line.find("party-lobby:").unwrap(),
         );
         assert!(h1 < ours && firefight < ours, "{line}");
     }

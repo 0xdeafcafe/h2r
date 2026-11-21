@@ -218,8 +218,8 @@ Setup has no row that changes the mode.
   party leader switches, so the mode is the leader's, as the map is.
 - The mode is held per lobby. Leaving the party (`PARTY_LEAVE`) clears
   it, and so does building the main menu's or the Xbox Live menu's
-  list. Snapshots keep it (the `lobby-mode` feature's section). With
-  `-lobby-mode` the lobby is retail's.
+  list. Snapshots keep it (the `party-lobby` feature's section, which has
+  no switch).
 - The monitor is offered only in a session whose mode is Forge. In a
   Multiplayer or Firefight session D-pad Up is the game's own. A game
   started with no lobby (the level boot,

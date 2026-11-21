@@ -54,8 +54,10 @@ use crate::ui_kit::picker::{self, Pick};
 use crate::ui_kit::screen::SlotTexts;
 use crate::ui_kit::view::Opener;
 
-/// The feature (`features.lobby-mode` switches it).
-pub const FEATURE: &str = "lobby-mode";
+/// The party lobby's feature: the mode strip and the modes of ours. It has
+/// no switch ([`hooks::Manifest::always_on`]): the strip is how the lobby
+/// works (docs/game/party-lobby.md).
+pub const FEATURE: &str = "party-lobby";
 /// The Forge Map row's action: past Firefight Options' 13 (retail uses 0
 /// to 9; the row-chosen jump table has no bounds check, so the press never
 /// reaches the original).
@@ -434,9 +436,10 @@ impl hooks::Feature for LobbyMode {
     fn manifest(&self) -> Manifest {
         Manifest::new(
             FEATURE,
-            "Multiplayer, Forge and Firefight as modes of the lobby",
+            "The party lobby: its mode strip and the modes of ours",
         )
-        .doc("docs/game/forge-firefight-ui.md")
+        .doc("docs/game/party-lobby.md")
+        .always_on()
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {

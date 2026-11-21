@@ -2,7 +2,7 @@
 
 Status: Built for slices T1 to T3: the strip is drawn and the bumpers switch among CUSTOM GAMES, FORGE and FIREFIGHT. Slices T4 to T6 (CO-OP, MATCHMAKING and CLANKERS switches, the host's tab on Xbox Live) are design.
 Code: `crates/extensions/game/src/lobby_tabs.rs` and `lobby_tabs/` (the tabs, the strip, the switch; slices T1 to T6), `crates/extensions/game/src/lobby_mode.rs` (Game Setup's rows by tab, the start refusal), `crates/extensions/game/src/lobby_start.rs` (`Mode`), `crates/extensions/game/src/lobby_status.rs` (the reason line), `crates/extensions/game/src/clankermatch.rs` (the Clanker playlists). Tests: named per slice below.
-Switch: `lobby-mode` (on), listed in [switches.md](../runtime/switches.md).
+Switch: none. The strip is how the lobby works: the `party-lobby` feature is `always_on`, so `-party-lobby` stops boot with the reason ([feature-engine.md](../engine/feature-engine.md#switches)). The FORGE and FIREFIGHT tabs follow the `forge` and `firefight` switches ([switches.md](../runtime/switches.md)).
 
 The pregame lobby (`pregame_lobby`, screen 14) has a strip of modes
 across its top: MATCHMAKING, CUSTOM GAMES, FORGE, FIREFIGHT, CO-OP and
@@ -240,19 +240,10 @@ by joining a Forge lobby, which cannot start.
 
 The feature has no section of its own. The selected tab is derived, the
 widgets are guest memory, and `lobby_start::State` is in the
-`lobby-mode` section (`lobby_mode::save_state`), which gains one byte
+`party-lobby` section (`lobby_mode::save_state`), which gains one byte
 for `clankermatch::active`. A snapshot is refused while a switch's
 guest calls are in flight (`SnapshotPolicy::section_forbid_while`).
 The reason line's timer is not saved.
-
-### With the strip off
-
-`-lobby-mode` leaves the retail lobby: its header, the player count in
-its own rectangle, Game Setup with retail's Switch To rows and Switch
-To: Clankermatch, and every lobby in the mode its menu row opened.
-Forge and Firefight are then reached only by the level boot
-([level-boot.md](../runtime/level-boot.md)). There is no second way to
-pick a mode in the menus.
 
 ## Interfaces
 
@@ -317,7 +308,11 @@ in another owner's files, named in its row.
 - On System Link a member that joins a Forge lobby reads CUSTOM GAMES,
   and the game cannot start, until slice F5 puts the Forge session on
   the network.
-- Game Setup has no row that changes mode while the strip is on.
+- Game Setup has no row that changes mode, and there is no retail lobby
+  to fall back to.
+- The strip is drawn from `lobby_options`' variant panel update: with
+  `lobby-options=off` the bumpers still switch, but the strip is not
+  drawn and the retail header shows.
 
 ## Evidence
 

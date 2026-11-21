@@ -303,9 +303,10 @@ pub(crate) fn register_core_film(
         crate::firefight::options::install(features, store)
             .context("installing the Firefight options page")?;
     }
-    // Multiplayer, Forge and Firefight as modes of the lobby, on Game
-    // Setup's Mode row (docs/game/forge-firefight-ui.md, "The lobbies"),
-    // where Game Setup's other rows of ours are: with a settings store.
+    // The party lobby: its mode strip and Multiplayer, Forge and
+    // Firefight as modes of the lobby (docs/game/party-lobby.md). It has
+    // no switch. It is in every run a settings store is opened for, as
+    // Game Setup's other rows of ours are.
     if let Some(store) = i.settings.as_ref() {
         let offer = crate::lobby_start::Offer {
             forge: crate::forge_glue::enabled(features.switches()),
@@ -325,7 +326,7 @@ pub(crate) fn register_core_film(
                 data: i.data_root.to_path_buf(),
             },
         )
-        .context("installing the lobby's modes")?;
+        .context("installing the party lobby")?;
     }
     for effect in [
         &crate::h1_particle_physics::H1ParticlePhysics as &dyn hooks::Feature,
