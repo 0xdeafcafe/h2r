@@ -91,16 +91,18 @@ printf 'claim\npause\nstep 30\ncount\nresume\n' | h2 agent -
   `h2 serve` without a GPU view backend is not what a player sees. Agents
   attach to a running game and never build one. `h2 serve --system-link
   --host-light` always paces to real time ([dedicated-host.md](../live/dedicated-host.md)).
-- **The socket.** `--socket PATH`, else `$H2_AGENT`, else
-  `~/Library/Caches/h2recomp/agent.sock` (`$XDG_CACHE_HOME` or `~/.cache`
-  elsewhere), not `$TMPDIR`, which differs between agent sessions
-  (`agent_proto::default_socket`). A socket file nobody answers on is
-  replaced; a live one is an error. `tcp://HOST:PORT` listens or connects
-  over TCP instead (`agent_proto::Endpoint`), which is how the Xbox app is
-  reached (`h2 agent --xbox HOST`, port 4720; [xbox.md](xbox.md), "Remote
-  control"). TCP has no authentication; Unix sockets are Unix only.
-  `h2 serve` removes its socket on Ctrl-C or SIGTERM. A Unix socket is
-  created with mode 0600.
+- **The socket.** `--socket PATH` selects the endpoint, followed by
+  `$H2_AGENT`, then `agent.sock` in the user's cache directory
+  (`agent_proto::default_socket`). The directory is
+  `~/Library/Caches/h2recomp` on macOS, `%LOCALAPPDATA%\h2recomp\cache`
+  on Windows, and `h2recomp` under `$XDG_CACHE_HOME` or `~/.cache` on Linux.
+  Local clients use an AF_UNIX stream on Unix and on Windows 10 version 1803
+  or later. Unix sockets have mode 0600. Windows socket files inherit the
+  directory's ACL, so custom socket paths belong in the user's private directory.
+  A live listener retains its path. A stale socket file can be replaced at
+  startup. On Unix, `h2 serve` removes its socket on Ctrl-C or SIGTERM.
+  `tcp://HOST:PORT` selects unauthenticated TCP, including the Xbox app's
+  `h2 agent --xbox HOST` endpoint on port 4720 ([xbox.md](xbox.md)).
 - **Another Mac.** `h2 lab agent --host H <run id> <call>` runs `h2 agent
   <call>` against that run's socket; `h2 lab bench` does a wait, capture,
   `render` and `counters` in one command ([lab.md](lab.md#driving-a-run-the-agent-api)).
@@ -125,9 +127,9 @@ printf 'claim\npause\nstep 30\ncount\nresume\n' | h2 agent -
 ### Finding a game
 
 `h2 play` with `H2_AGENT` unset opens its own socket,
-`<cache>/h2recomp/agents/<pid>.sock` (`agent_proto::discover`; the
-directory is mode 0700, so only the user can connect; set in `boot`'s
-agent source from `Host::discoverable_agent`). A game started any other
+`agents/<pid>.sock` under the cache directory (`agent_proto::discover`,
+selected by `Host::discoverable_agent`). On Unix its directory has mode 0700.
+On Windows it inherits the profile directory's ACL. A game started any other
 way (`h2 serve`, `h2 run`, the Xbox app) opens a socket only where
 `H2_AGENT` or `--socket` says. `H2_AGENT=off` keeps `h2 play` from
 opening one ([switches.md](switches.md)). A client lists the directory

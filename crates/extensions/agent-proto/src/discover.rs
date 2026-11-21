@@ -152,7 +152,35 @@ pub fn is_socket(p: &Path) -> bool {
         use std::os::unix::fs::FileTypeExt;
         std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_socket())
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_ATTRIBUTE_TAG_INFO, FILE_FLAG_OPEN_REPARSE_POINT, FileAttributeTagInfo,
+            GetFileInformationByHandleEx,
+        };
+        use windows_sys::Win32::System::SystemServices::IO_REPARSE_TAG_AF_UNIX;
+
+        let Ok(file) = std::fs::OpenOptions::new()
+            .access_mode(0)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(p)
+        else {
+            return false;
+        };
+        let mut tag = FILE_ATTRIBUTE_TAG_INFO::default();
+        // Query the reparse point itself so links and other special files are skipped.
+        let ok = unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle(),
+                FileAttributeTagInfo,
+                (&raw mut tag).cast(),
+                size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32,
+            )
+        };
+        ok != 0 && tag.ReparseTag == IO_REPARSE_TAG_AF_UNIX
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = p;
         false

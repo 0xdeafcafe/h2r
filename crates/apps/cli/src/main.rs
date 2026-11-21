@@ -11,17 +11,12 @@ use anyhow::{Result, bail};
 #[cfg(feature = "desktop")]
 use xiso::Xiso;
 
-#[cfg(unix)]
 mod agent_cmd;
-#[cfg(unix)]
 mod agent_ui_crawl;
 mod agent_flight;
 mod agent_maps;
-#[cfg(unix)]
 mod agent_hot_cmd;
-#[cfg(unix)]
 mod agent_raw;
-#[cfg(unix)]
 mod agent_run;
 mod agent_sim;
 mod sim_cmd;
@@ -386,10 +381,7 @@ fn main() -> Result<()> {
         "sim" => sim_cmd::run(args.collect()),
         "host" => host_cmd::run(args.collect()),
         "theater" => theater_cmd::run(args.collect()),
-        #[cfg(unix)]
         "agent" => agent_cmd::run(args.collect()),
-        #[cfg(not(unix))]
-        "agent" => bail!("h2 agent needs Unix sockets"),
         #[cfg(feature = "desktop")]
         _ => desktop_command(cmd, args),
         #[cfg(not(feature = "desktop"))]

@@ -1,5 +1,5 @@
 //! The socket end to end: a client connects, a "game thread" answers.
-#![cfg(unix)]
+#![cfg(any(unix, windows))]
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -82,7 +82,29 @@ fn a_client_calls_through_the_socket() {
     stop.store(true, Ordering::Relaxed);
     h.join().unwrap();
     drop(server);
-    assert!(!path.exists(), "the socket file is removed");
+    assert!(std::fs::symlink_metadata(&path).is_err(), "the socket file is removed");
+}
+
+#[test]
+fn discovery_probes_the_game_and_preserves_ordinary_files() {
+    let dir = std::env::temp_dir().join(format!("h2a-discover-{}", std::process::id()));
+    agent_proto::discover::create_private_dir(&dir).unwrap();
+    let path = agent_proto::discover::socket_in(&dir, 42);
+    let a = Agent::new();
+    let server = Server::listen(&path, a.clone()).unwrap();
+    let (stop, h) = game(&a);
+    let notes = dir.join("notes.sock");
+    std::fs::write(&notes, b"notes").unwrap();
+    let found = agent_proto::discover::scan(&dir, Duration::from_secs(10));
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].pid, Some(42));
+    assert_eq!(found[0].map(), Some("mainmenu"));
+    assert_eq!(std::fs::read(&notes).unwrap(), b"notes");
+    stop.store(true, Ordering::Relaxed);
+    h.join().unwrap();
+    drop(server);
+    std::fs::remove_file(notes).unwrap();
+    std::fs::remove_dir(dir).unwrap();
 }
 
 #[test]
@@ -92,7 +114,7 @@ fn a_live_socket_is_not_taken_over_but_a_stale_one_is() {
     assert!(Server::listen(&path, Agent::new()).is_err());
     drop(first);
     // A file left behind by a crashed run.
-    std::os::unix::net::UnixListener::bind(&path).unwrap();
+    agent_proto::local_socket::UnixListener::bind(&path).unwrap();
     let second = Server::listen(&path, Agent::new()).unwrap();
     drop(second);
 }
@@ -104,7 +126,7 @@ fn a_bad_line_gets_a_parse_error_and_the_connection_stays() {
     let a = Agent::new();
     let _server = Server::listen(&path, a.clone()).unwrap();
     let (stop, h) = game(&a);
-    let mut s = std::os::unix::net::UnixStream::connect(&path).unwrap();
+    let mut s = agent_proto::local_socket::UnixStream::connect(&path).unwrap();
     s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     let mut r = BufReader::new(s.try_clone().unwrap());
     s.write_all(b"nonsense\n{\"id\":2,\"method\":\"session.methods\"}\n")
@@ -129,7 +151,7 @@ fn a_half_closed_client_gets_its_answer() {
     let a = Agent::new();
     let _server = Server::listen(&path, a.clone()).unwrap();
     let (stop, h) = game(&a);
-    let mut s = std::os::unix::net::UnixStream::connect(&path).unwrap();
+    let mut s = agent_proto::local_socket::UnixStream::connect(&path).unwrap();
     s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     s.write_all(b"{\"id\":1,\"method\":\"session.status\"}\n")
         .unwrap();
