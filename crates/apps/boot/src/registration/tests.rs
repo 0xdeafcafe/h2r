@@ -497,6 +497,7 @@ const BOOT_SITES: &[(&str, &str)] = &[
     ("render_aspect::install", "Case::drawing (gpu)"),
     ("register_late_for_profile", "registry_for_profile"),
     ("forge_glue::install", "Case::full, and `-forge` in the full-case plan test"),
+    ("lobby_start::install_queue", "not covered: the game queue a lobby starts from; needs the agent"),
     ("AgentGlue::configure_takeover", "Case::takeover"),
     ("dsound_glue::add_loop_agent_method", "not covered: needs the audio device (agent-audio)"),
     ("register_viewer_skips", "Case::light"),

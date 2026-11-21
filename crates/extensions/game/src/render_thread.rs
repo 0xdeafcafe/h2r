@@ -20,6 +20,11 @@ const AFTER: &str = "something runs after the body (a Rust continuation a fallba
 /// stands for every point of a feature. A hook on a game-thread point costs
 /// nothing here, because the render never meets it.
 pub const REFUSED: &[(&str, &str, &str)] = &[
+    (
+        "agent-calls",
+        "GAME_TICK",
+        "the queued guest calls run at the end of the game tick; the render never meets it",
+    ),
     // The render path's own points.
     (
         "render-timing",
