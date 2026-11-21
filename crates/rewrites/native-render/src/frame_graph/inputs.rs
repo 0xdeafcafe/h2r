@@ -28,8 +28,7 @@ fn capture(
     reads.push(final_read);
     let required = |reads: &[(usize, TargetRef)]| {
         frame
-            .private_seed_requirements(reads)
-            .map(|names| names.into_iter().map(|(name, _)| name).collect::<Vec<_>>())
+            .private_seed_targets(reads)
             .ok_or_else(|| "sealed frame has an unresolved private input".to_owned())
     };
     let result = (|| {

@@ -24,6 +24,21 @@ impl ReplayFrame {
         &self,
         reads: &[(usize, TargetRef)],
     ) -> Option<Vec<(TargetRef, u8)>> {
+        self.select_seeds(reads, true)
+    }
+
+    /// GPU snapshots retain whole texture allocations. Once the required
+    /// targets are known, individual channel proofs cannot change the copy.
+    pub fn private_seed_targets(&self, reads: &[(usize, TargetRef)]) -> Option<Vec<TargetRef>> {
+        self.select_seeds(reads, false)
+            .map(|targets| targets.into_iter().map(|(target, _)| target).collect())
+    }
+
+    fn select_seeds(
+        &self,
+        reads: &[(usize, TargetRef)],
+        refine_channels: bool,
+    ) -> Option<Vec<(TargetRef, u8)>> {
         if !self.refusals.is_empty() {
             return None;
         }
@@ -73,8 +88,16 @@ impl ReplayFrame {
             }
         }
         let count = candidates.len();
-        reduce(&mut candidates, 0, count, &supplied);
+        // Removing the root group is the empty-input proof already tried.
+        if count > 1 {
+            let half = count / 2;
+            reduce(&mut candidates, 0, half, &supplied);
+            reduce(&mut candidates, half, count - half, &supplied);
+        }
         candidates.retain(|(_, mask)| *mask != 0);
+        if !refine_channels {
+            return Some(candidates);
+        }
         for i in 0..candidates.len() {
             // Colour channels usually travel together. Check RGB as a
             // group first, then its individual channels if needed.
@@ -208,6 +231,86 @@ mod tests {
             frame.private_read_refusal(2, shown).is_some(),
             "asking for the copy does not make it available"
         );
+    }
+
+    #[test]
+    fn whole_target_snapshots_keep_separate_masked_inputs_for_their_passes() {
+        let main = TargetRef::SceneColour;
+        let a = TargetRef::Aux(0);
+        let b = TargetRef::Aux(1);
+        let c = TargetRef::Aux(2);
+        let at = SlotAt {
+            slot: Slot::Opaque,
+            view: 0,
+        };
+        let desc = AuxTarget {
+            width: 7,
+            height: 5,
+            format: D3DFormat::LinA8R8G8B8 as u32,
+            depth: false,
+        };
+        let masked = |colour, mask| {
+            (
+                at,
+                ReplayOp::ClearRects {
+                    colour,
+                    depth: TargetRef::None,
+                    clear: RectClear {
+                        rects: vec![PixelRect {
+                            x: 0,
+                            y: 0,
+                            width: desc.width,
+                            height: desc.height,
+                        }],
+                        color: Some(([0.3, 0.5, 0.7, 1.0], mask)),
+                        depth: None,
+                        stencil: None,
+                    },
+                },
+            )
+        };
+        let copy = |from| (at, ReplayOp::Copy { from, to: main });
+        let rgba = ChannelMask {
+            red: true,
+            green: true,
+            blue: true,
+            alpha: true,
+        };
+        let frame = ReplayFrame {
+            presented: main,
+            colour: Some(desc),
+            aux: vec![desc; 3],
+            ops: vec![
+                masked(
+                    a,
+                    ChannelMask {
+                        alpha: false,
+                        ..rgba
+                    },
+                ),
+                copy(a),
+                masked(
+                    b,
+                    ChannelMask {
+                        green: false,
+                        ..rgba
+                    },
+                ),
+                copy(b),
+                masked(c, rgba),
+                copy(c),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(frame.private_seed_targets(&[(6, main)]), Some(vec![]));
+        assert_eq!(frame.private_seed_targets(&[(2, main)]), Some(vec![a]));
+        let reads = [(2, main), (4, main), (6, main)];
+        assert_eq!(frame.private_seed_targets(&reads), Some(vec![a, b]));
+        assert_eq!(
+            frame.private_seed_requirements(&reads),
+            Some(vec![(a, ALPHA), (b, 2)])
+        );
+        assert_eq!(frame.private_seed_targets(&[(7, main)]), None);
     }
 
     #[test]
