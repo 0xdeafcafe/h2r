@@ -389,10 +389,10 @@ H2_LIVE_S3_ACCESS_KEY_ID=...
 H2_LIVE_S3_SECRET_ACCESS_KEY=...
 ```
 
-(`H2_LIVE_S3_PUBLIC_ENDPOINT`, `H2_LIVE_S3_PUBLIC_ACCESS_KEY_ID`,
-`H2_LIVE_S3_PUBLIC_SECRET_ACCESS_KEY` and `H2_LIVE_S3_PUBLIC_REGION` override
-the matching one for the public bucket, for a token scoped to it;
-`H2_LIVE_S3_REGION` defaults to `auto`.) Then:
+For the public bucket, `S3Config::from_env` in
+`crates/live/live-server/src/blobs.rs` tries the `H2_LIVE_S3_PUBLIC_*`
+prefix first for each of `ENDPOINT`, `ACCESS_KEY_ID`,
+`SECRET_ACCESS_KEY` and `REGION`. The region defaults to `auto`.
 
 ```
 h2 live serve --blobs s3://h2live \

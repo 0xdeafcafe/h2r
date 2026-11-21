@@ -3,8 +3,7 @@
 Clankers join hosted System Link and Xbox Live matches as phantom peers.
 Controller ports are reserved for people. This document covers the
 phantom path, the retail traces behind it and game checks in §11. The
-retired local-slot design is recorded in §4 and the development history
-in §10.
+retail controller traces are in §4 and implementation notes are in §10.
 
 Navigation generator 5 routes through lifts and teleporters, including
 converted Halo 1 one-way exits. Bots build pickup beliefs from sight and
@@ -3751,7 +3750,7 @@ Also agreed: `rank::bot_skill(level)` as the roster's `skill`, and
 the roster endpoint calls; gaps are made-up bots shown at the humans'
 mean level.
 
-### 9.5 Bot accounts (the user's ask, 2026-11-18)
+### 9.5 Bot accounts
 
 "Bots should not be guests but fake Xbox Live users marked as bots": every
 bot the server rosters is a **bot account**, shown like an account with a
@@ -3889,85 +3888,12 @@ can also be checked with `h2 bots test` (§13).
 
 ## 10. Stages
 
-This is the development history, including the retired local-slot
-implementation and its original checks. Use §11 and §13 for current
-game checks.
+The checks for live play are in §11 and §13. Clankers use phantom peers
+(§5). Controller ports are for local players.
 
-1. **Minimal bot (local slot).** Built: `crates/live/bots` (the brain, the pads,
-   the guest memory work) and `boot::bot_glue` (the hooks).
-   - The retired local bot backend was added after the host's own pads. Each bot pad asks for its
-     port (`HostBackend::preferred_port`), and gets the lowest free one if a
-     real pad holds it. `HostBackend::placed` reports where it went.
-     `H2_BOTS=<n>` (1 to 3) adds `n` brains on ports 1 up at boot.
-   - **Joining.** While the players screen `0x1e` is on top and a bot's slot
-     has no profile, the glue signs the bot in itself, before
-     `SOUND_UPDATE` (as the leaving bots are signed out), once a second at
-     most. The bot presses nothing (see stage 7, "The join gate").
-     - It copies the human's block with the bot's name and fixed controls,
-       calls the game's `0x18fb34(port, block, -1)`, writes the slot's
-       display name, and sets the port's bit in the players screen's mask
-       (the screen `ui_watch` read), then runs the frame.
-     - A bot's A that still reaches the screen's handler for a controller
-       with no profile, `0x252a67` (`PLAYERS_SCREEN_UNJOINED`; its caller
-       `0x252ad7` sends a controller with a profile to `0x25286d` instead),
-       as a sim script's can, is answered the same way.
-     - A bot never presses a menu button, so it cannot move the human's
-       menus on.
-     - The bots stay signed in until the game exits.
-     - `H2_BOTS` bots also join a split-screen campaign from its players
-       screen; there their pads are idle (perception reads multiplayer
-       only), so leave `H2_BOTS` unset for campaign.
-   - **Views and listeners.** The bots' local users are taken out of the
-     local player map (§4.3) around two game-thread points:
-     - `RENDER_FRAME`: with the pipelined render, its snapshot is taken
-       inside this point, so it has them hidden too;
-     - `SOUND_UPDATE` (`0x125b40`).
-     
-     Both are listed in `boot::render_thread::REFUSED`, as game-thread
-     points. Both take no arguments and return with a plain `ret` (the
-     main loop calls them back to back, `0x12b659` and `0x12b65e`), so the
-     points now carry that signature, `fn() ret 0`, which a `before` hook
-     needs.
-   - **The brain** (`bots::brain`), once a frame, before `RENDER_FRAME`:
-     - it turns toward the nearest living enemy (everyone in free-for-all,
-       the other teams in a team game) and walks at it once it is within
-       60 degrees;
-     - it holds the trigger while that enemy is within 15 degrees of the aim
-       and 10 world units (about 30 m);
-     - outside a multiplayer game, and on any screen but the players screen,
-       its pad is idle.
-
-     Stages 2 and 3 replaced it as the `H2_BOTS` brain with `bots::mind`;
-     `bots::brain` stays as the perception types and the simplest source.
-   - Tests (`cargo test -p bots`, synthetic guest memory):
-     - the backend: the port order and the pad the game reads;
-     - the bot users and the hide/restore window: humans kept in order;
-       nothing hidden without bots or without a human;
-     - perception: me, the living others, teams, nothing outside
-       multiplayer;
-     - the bot block: name, controls, and the rest the human's;
-     - the join check;
-     - the async sign-in against a fake game sign-in;
-     - the brain's turning, walking and firing, and `H2_BOTS` parsing.
-     
-     In boot: the render-thread plan test covers the new hooks.
-   - **Game run (the user):**
-     1. `H2_BOTS=1 h2 play`, then Split Screen. On the players screen a
-        second player, "Clanker 1", joins by itself within a second or two
-        (the log says `bots: signing Clanker 1 in on port 1`).
-     2. Start a Slayer game on a small map (Lockout or Ivory Tower). The
-        screen is not split: you see one full-screen view and your own HUD.
-     3. You hear only what is near you, not what is near the bot.
-     4. The bot spawns, turns to you, walks at you, and shoots when you are
-        in front of it. It shows on your radar and on the scoreboard.
-     5. Killing it and being killed by it count on the scoreboard and in
-        the carnage report.
-     6. Repeat with `H2_BOTS=3`: three bots, one view, all on the
-        scoreboard.
-     7. Back on the players screen, the bots are still joined; pressing A
-        yourself goes on as usual.
-     8. If step 1 fails (no second player, or a profile chooser appears),
-        send the log lines starting `bots:` and `ui:`.
+1. **Player slots.** The game registers a phantom with the session,
+   then the host feeds it actions through `crates/extensions/game/src/bot_glue.rs`.
+   Sections 5 and 6 describe the join and action path.
 2. **Navigation.** Built: `bots::nav`, `bots::los`, `bots::cache`,
    `h2 bots nav`, and the map loading in `boot::bot_glue`.
    - **The mesh** (`nav::NavMesh`) comes from `crates/formats/pathfind`'s generator
@@ -4149,12 +4075,12 @@ game checks.
      forgetting an old one, Easy wandering; not back where it has been;
      the memory bounded; and in the mind, roaming to where it last saw
      someone, chasing someone seen in the air, and a fight on a bridge.
-   - **Game run (the user):** `h2 play` with Clankers (or `H2_BOTS=3`),
+   - **Game run (the user):** a hosted game with three Clankers,
      Slayer on Lockout, then Ivory Tower and Midship.
      1. Doorways and corners: bots walk through doors and round corners
         without scraping or stopping on the frame; none stands stuck on a
         corner for more than a moment.
-     2. Fight a Legendary bot (`H2_BOTS_SKILL=legendary`): it strafes in
+     2. Fight a bot at Legendary difficulty: it strafes in
         short, uneven bursts, jumps or reverses when you hit it, and with
         its shields popped backs round a wall rather than straight back
         in the open. An Easy bot strafes in long, even sweeps and sometimes
@@ -4169,7 +4095,7 @@ game checks.
         floor and goes on.
      7. Note any spot where a bot still gets stuck for good (map, roughly
         where) and send the `bots:` lines.
-3. **Combat.** Built: `bots::mind` (`Mind`, the `H2_BOTS` brain).
+3. **Combat.** Built: `bots::mind` (`Mind`, the phantom's decision loop).
    - **Seeing.** An enemy is seen when it is inside 65 degrees of the
      aim, or within 3 units anywhere, and the walls leave a clear line from
      the bot's eye to its chest or head. Teammates in a team game are never
@@ -4179,8 +4105,8 @@ game checks.
      saw someone (forgotten after 10 s); else roam to a random polygon it
      can reach. The full utility layer (§3.3: weapons, health, objectives,
      flee) waits for stages 4 and 5.
-   - **Aim** (`mind::Skill`, from `H2_BOTS_SKILL`: easy, normal, heroic,
-     legendary; default normal). The right stick turns by the aim error
+   - **Aim** (`mind::Skill`: Easy, Normal, Heroic and Legendary,
+     selected in Clanker Options). The right stick turns by the aim error
      times a gain, plus a slowly wandering error; the bot leads a moving
      target by part of the lead a 90 unit/s shot needs.
 
@@ -4209,7 +4135,7 @@ game checks.
      1. Select a multiplayer map with Clankers on. A stale mesh produces
         `bots: built the nav mesh for <map> (...)` or a shared-cache
         restore. Selecting a map with current local files skips the build.
-     2. `H2_BOTS=1 h2 play`, Split Screen, Slayer on Lockout. The log says
+     2. Host Slayer on Lockout with one Clanker. The log says
         `bots: lockout: N polygons, ...` when the map loads (not "no nav
         mesh"). If the map loads before its mesh is built, the log says
         `building it`, then `bots: lockout: the new nav mesh is in use`.
@@ -4222,7 +4148,7 @@ game checks.
      5. Step into its view: it pauses briefly (its reaction), then turns,
         strafes and fires. Get close: it melees. At mid range it sometimes
         throws a grenade.
-     6. Repeat with `H2_BOTS_SKILL=easy` and `H2_BOTS_SKILL=legendary`:
+     6. Repeat with Difficulty set to Easy and Legendary:
         Easy is slow to react, sprays in bursts and misses a lot; Legendary
         turns fast and hits most shots.
      7. Run Ivory Tower and Midship too (jumps and drops). Note any spot a
@@ -4265,7 +4191,7 @@ game checks.
      synthetic players and objects; the mind crouching and standing still.
      In boot: Taunts reaching the bots already there; the kill hook on the
      render-thread plan as a game-thread point.
-   - **Game run (the user)**: `H2_BOTS=1 h2 play`, Slayer with the bot. Throw
+   - **Game run (the user)**: host Slayer with one Clanker. Throw
      a grenade at your own feet or jump off the map near the bot, out of
      its view's fight: within a few seconds it may walk on and crouch 3 to
      6 times over the spot (about one time in four: 0.3 × 0.8). It never
@@ -4580,442 +4506,30 @@ game checks.
      Halo 1 row does the same with its id 2 (`h1_options::ROW_LABEL_ID`,
      "Halo 1 Options..."), its screen's title staying "HALO 1 OPTIONS";
      both read like the dialog's other "...Options..." rows.
-   - **The bots.** While `enabled` is on, a driver keeps `min(count, free
-     ports)` brains in the process-wide local bots, on ports 1 to 3 that no
-     other bot asked for (an `H2_BOTS` or `sim` bot keeps its port). They
-     join on the players screen like `H2_BOTS` bots. A change on the page
-     applies at once:
-     - a new difficulty reaches the bots already there at their next
-       frame;
-     - a higher count adds bots;
-     - a lower count, or Off, takes the last added off. Taking a bot off
-       does not unplug its pad (in the user's run that brought up
-       "CONTROLLER DISCONNECTED" for port 4 and the human could not move):
-       the bot leaves the books with an idle pad still plugged. Out of a
-       game (`guest::in_game` false: the menus and a pregame lobby),
-       before `SOUND_UPDATE`, the glue signs its slot out with the game's
-       `SLOT_SIGN_OUT` (`0x190d4b`, slot in EAX; a guest call, then the
-       frame runs): off Xbox Live, its local user freed, its profile out,
-       so a lobby's session drops its player. Once the slot holds no
-       profile and no Live (`guest::slot_held`) it unplugs the pad
-       through its leave step. During a game nothing is removed: the
-       bot stands idle until the game ends. Turning Clankers on again
-       before then gives the new bot the leaving bot's pad back.
-
-     The setting persists, so with `enabled` left on, the bots are added
-     at the next boot too, and join any players screen, campaign
-     included.
-   - Past the free ports the count adds phantom peers (stage 6b), which
-     join once a hosted game runs; without phantoms (tests) it adds what
-     fits and says so in the log.
-   - **No `H2_BOTS` needed.** Turning Clankers On is enough: the bots
-     input backend, the bots feature and the driver are always installed
-     (with the XAPI); `H2_BOTS` only adds bots of its own at boot.
-   - **The join gate.** A bot is signed in only while its own slot has
-     no profile, a human has a profile to copy, no game runs
-     (`bot_glue::to_sign_in`) and either the players screen takes player
-     one's input with nothing on windows 0 to 4 (`ui_watch::dialog`: a
-     dialog, or the profile chooser that `0x24b6ea` and `0x1905bf` open
-     for one controller), or a pregame lobby's session is up (§4.2,
-     "Joining in the pregame lobby"; dialogs over the lobby do not
-     matter there). The log says each port's gate when it changes,
-     naming the screen it thinks is up (`bots: join gate port 1: screen
-     players (top 0x1e), dialog none, signed_in false (slot 0x0): signs
-     in`; `screen lobby (top none)` in a lobby; the slot's flags: `0x10`
-     a profile, `0x20` signed in to Xbox Live) and each sign-in (`bots:
-     signing Clanker 1 in on port 1 on the players screen`, or `in the
-     pregame lobby`).
-
-     Bots used to tap A through the gate and let the screen's handler sign
-     them in. Every tap the game took elsewhere opened a profile chooser
-     for the bot's controller, and a tap that reached a chooser picked the
-     first profile, the human's. In the user's runs the players screen
-     showed the human's player four times, and an Xbox Live lobby kept
-     popping up "pick a profile": the pregame lobby's handler (`0x250b1e`)
-     sends A or START from a controller with no profile to the chooser
-     (`0x250cc3`, Live sessions), and B or Back from a profile that is not
-     on Live to the profile UI (`0x2511b6`, `0x251242`, `0x24b779`). At that
-     stage, the brain and sim scripts returned neutral input during sign-in.
-   - **Their own look.** The bot's block is the human's with the bot's
-     name, controls and look: the 16 bytes at block `+0x118` are the
-     appearance (`0x18fd94` copies them, from slot `+0x130`, into the
-     player properties at `+0x40`; `0x1a0540` zeroes them when
-     `0x153750` rejects the first 8: four colours below 18, a model below
-     4, an emblem foreground below 0x40 and background below 0x20, flags
-     in the low nibble). The gamertag supplies the colours and emblem,
-     and the profile supplies the model.
+   - **Seats.** Clanker Options configures the requested phantom roster.
+     The match host creates the peers as the hosted game starts
+     (`crates/extensions/game/src/clankers.rs`,
+     `crates/extensions/game/src/bot_glue.rs`). See §5 for peer admission
+     and §9.1 for the Live roster.
    - **Nav meshes early.** A map picked in the lobby's map list with
      Clankers on, or Clankers coming on after a map was picked, asks
      `bots::autonav::build_soon` for its mesh (`clankers::map_picked`).
    - Tests:
      - the settings in `setting_defs::ALL`, and off by default;
-     - Mixed by port;
-     - the driver: ports no one else asked for, the last added off first,
-       only its own taken off, a difficulty change reaching the bots
-       already there, and following the store's changes; taken off, the
-       bots stay plugged as leaving, and on again they take their pads
-       back;
-     - leaving: nothing during a game, then sign-out, then unplug
-       (`local::leave_step`); `guest::sign_out_then` calls
-       `SLOT_SIGN_OUT` per port (never `PROFILE_SIGN_OUT` alone), then
-       the frame; a slot is held while it has a profile or Live
-       (`guest::slot_held`);
-     - the gate: only the bare players screen with an empty slot
-       (`bot_glue` tests, `ui_watch` dialog tests);
-     - the look: valid by `0x153750`'s checks, repeatable across ports;
+     - mixed difficulties and stable names in the phantom roster;
      - the page: a row per setting, steps saved in the store, wrapping;
        the row's text in its own slot, not the title's;
      - the row: only a custom game's list, once, beside the Halo 1 row;
        on the plan after the Halo 1 row's hooks;
      - the kit's own checks over the page (`ui_kit::screens`: every
        screen, every input, every state; ids; layout).
-   - **Game run (the user):**
-     1. Run `h2 play` (no `H2_BOTS`). Choose Split Screen (or System Link),
-        then a custom game's Game Setup. Below Change Map and the others,
-        a "Clanker Options..." row shows (after "Halo 1 Options..." on a
-        Halo 1 map). The pages they open are titled "Clankers" and "Halo 1
-        Options".
-     2. Press A on it: the Clankers page opens over the dialog, with
-        eight rows (Glitches last) and a description of the focused row.
-        B goes back to Game Setup.
-     3. Set Clankers to On and Count to 2 (the log says `clankers:
-        Clanker 1 on (Normal)`). In Split Screen, bots join on the
-        players screen, so back out of the lobby to it: "Clanker 1" and
-        "Clanker 2" join by themselves (the screen's panes do not show
-        them, §4.3); go on to the lobby again. In a System Link or Live
-        lobby they join where they are (§4.2, "Joining in the pregame
-        lobby").
-     4. Start Slayer: the two bots play as in stages 1 to 3, at the
-        difficulty chosen.
-     5. Quit to the lobby, open the page, set Difficulty to Legendary,
-        and play again: the bots play harder.
-     6. Set Count to 1: one bot leaves. In a game it stands idle until
-        the game ends (no "controller disconnected"); in the menus the log
-        says `bots: signing the bots on ports [2] out`, then `bots: bot N
-        left: its pad is unplugged`, and in a System Link or Live lobby
-        the bot leaves the lobby's list. Set Clankers to Off: none play,
-        and the lobby lists none.
-     7. Quit and start `h2 play` again: the page shows what you left it
-        at; `h2 settings` lists the `clankers.*` values.
-     8. Send the `clankers:` and `ui:` log lines if the row is missing,
-        draws no text, or opens the page under the lobby.
-   **Built: the bots as Xbox Live guests, and the start log** (§4.2,
-   "Xbox Live guests" and "The start check"). The user's run: in a Live
-   custom game lobby with Clankers On, Count 3, Start showed an error or
-   did nothing.
-   - Out of a game, with the human on Xbox Live as their own account,
-     each bot with a profile goes on Live as the human's guest
-     (`guest::go_live`), keeping its name; offline and in System Link
-     nothing changes.
-   - A Start press in the lobby (A or Start from a controller with a
-     profile) logs the game's start state, what holds it back, and each
-     bot slot.
-   - Tests: `-p bots --lib guest` (the guest writes: flag, record with the
-     guest number, the XUID at slot `+8` and in the local user, the name
-     kept; numbers skip taken ones and run out at 3; nothing offline;
-     the host is a human on Live as their own account; the slot summary),
-     `-p bots --lib lobby` (the leader check, the map check, states 0, 1,
-     8, 9 and 10, the press filter, the line, and the guest call then the
-     frame); `-p boot --lib bot_glue` (which ports and when) and `-p boot
-     --lib render_thread` (the new observer listed).
-   - **Game run (the user):**
-     1. `h2 play --live-local` (or `--live`), Clankers On, Count 3. Sign in
-        to Xbox Live, host a Custom Game. The log says `bots: Clanker N on
-        port N is on Xbox Live as guest N of port 0's account` for each
-        bot; the lobby shows "Clanker 1" to "Clanker 3" (not "afr(1)").
-     2. Press Start (and A on Start Game). The log says `bots: start
-        state N, blocked by ...; port 1 0x30 Live guest 1, ...`. With 9 or
-        10 the countdown should start; send the line either way.
-     3. If an error dialog shows, note its text and send the log around
-        it (dialog 2 comes from the countdown request failing, `0x25109f`,
-        or from a press by a controller with no profile, `0x250ccd`).
-     4. In the game: the bots play; the site's scoreboard marks them BOT
-        with no player link (not the human's account).
-     5. Split Screen and System Link (not signed in to Live): the bots
-        join and play as before, and no `on Xbox Live` line shows.
-   **Built: bots in telemetry and the web** (§6). The user's ask: bots on
-   the live game tracking, the scoreboard and the post-game record,
-   marked as bots, without accounts.
-   - **Why they were not bots before.** Telemetry already sent every
-     listed player (`memory::players_into` filters only on salt and the
-     leaving flag), so local-slot Clankers did go out, but as anonymous
-     guests: `session::identity` marked a player as a bot only for a
-     remote player on a rostered phantom's machine, and
-     `clankers::Driver::bots_in_force` returned `None` unless a server
-     roster was in force, so a Clanker on a local slot (or a host-made
-     phantom) had no `bot` flag. The proto and server also refused `bot:
-     true` without an xuid (`game::validate_new`, `bots::check_players`),
-     and the web had no idea of `bot` at all: a rostered bot with an xuid
-     was linked to a player page by its name, and every bot's knockouts
-     went into the human's career stats.
-   - **Now:** `PlayerState::controller` (player `+0x24`); `Bots` has
-     `session_id: Option`, every phantom's machine and the local bot
-     `ports`; `bots_in_force` answers whenever there are bots. `bot:
-     true` without an xuid is accepted on both homes; the stats are
-     game-only (§6); the web marks and unlinks bots.
-   - Tests: `-p live-telemetry --lib` (`memory`: a local bot slot read
-     with its port; `session`: local Clankers as bots with no account
-     through the start, scores, frames and the end; a bot on local user 0
-     never the account; a rostered xuid only with its session; the
-     rostered test updated); `-p boot --tests clankers` (bots in force
-     before and after a roster, and after a refusal); `-p live-proto
-     game` (an xuid-less bot with or without a session); `-p live-server
-     --test bots` (a host's own Clankers taken and game-only; a human
-     still refused as a bot); `-p live-worker --lib sqlstore` (the same
-     on the Worker's composition); `web`: `bun test test/bots.test.ts`
-     (the record, the labels, the career, the mock's fold, the BOT mark
-     and no player link on the scoreboard and carnage report).
-   - **Game run (the user), bots in telemetry:**
-     1. With Live (`h2 play --live-local`, signed in), host a custom game,
-        set Clankers On, Count 2, and start Slayer.
-     2. On the site's live game page: the scoreboard lists "Clanker 1"
-        and "Clanker 2" with a BOT mark, not as links; the map shows
-        their dots and labels ("Clanker 1 · BOT") moving; their kills and
-        deaths tick up.
-     3. Open the 3D viewer: their labels carry BOT, and the follow list
-        says "(BOT)".
-     4. Kill a bot and get killed by one. After the game, the carnage
-        report lists both bots with their kills and deaths, marked BOT,
-        unlinked. Your player page's service record does not count those
-        kills or deaths; the game's history row does.
-     5. The server log shows no refused game record.
-     6. With Count 5 (phantoms past the free ports): the phantoms show
-        with BOT too, before and after a roster comes.
-     7. Not covered: a local bot added mid-game is marked as a bot only
-        from the next game's start.
-   **Built: bots join in the pregame lobby; phantoms wait for hosting**
-   (§4.2, "Joining in the pregame lobby"). The user's run (Live,
-   Clankers On, Count 5, hosted from the Live menu): no local bot joined
-   (the gate opened only on the players screen, and the lobby reads as
-   no screen), and the phantom failed for good ("not the host").
-   - The gate opens in a pregame lobby, read from the squad session
-     (`bots::lobby::pregame`), out of a game; the bot is signed in with
-     no screen mask, and the session's own local-player pass adds it.
-     The gate line names the screen (`players`, `lobby`, an id, `none`).
-   - A phantom that finds this console not (yet) the game's host waits
-     and tries again, logged once per reason, instead of failing.
-   - Tests: `-p bots --lib lobby` (a pregame lobby: types 1 and 2, states
-     3 to 8; not with no session, another type, another state, networking
-     off, no lobby, or nothing mapped); `-p bots --lib guest` (the lobby
-     join: a sign-in per bot, then the frame, no mask); `-p bots --lib
-     phantom` (the waiting phantom: not failed, said once, said again for
-     another reason, joins once hosting is up; each `NotHost` reason);
-     `-p boot --lib bot_glue` (the screen: players first, then the lobby,
-     never during a game; the gate open in the lobby under a dialog; each
-     joining bot signed in in the lobby and none in a game; the players
-     screen's cases as before; the gate and sign-in lines).
-   - **Game run (the user):**
-     1. `h2 play --live-local` (or `--live`), signed in. Host a Custom
-        Game from the Live menu, open Game Setup, Clanker Options: On,
-        Count 5. Back in the lobby, within a second the log says, per
-        port 1 to 3, `bots: join gate port N: screen lobby (top none),
-        …: signs in`, then `bots: signing Clanker N in on port N in the
-        pregame lobby`, then `bots: … is on Xbox Live as its own bot
-        account` (or as a guest).
-     2. The lobby lists the three local bots by their bot accounts'
-        gamertags (or "Clanker N"), not "Halo0001" or "afr(1)".
-     3. Start the game. The phantoms (Count past 3) say `bots: phantom …
-        waits: this console is not the game's host yet (…)` at most once
-        per reason, then `bots: phantom … joins (peer N)`. No `failed:
-        not the host`.
-     4. In the game all five bots play. Send the `bots:` lines if a local
-        bot does not show in the lobby (the `screen` word says what the
-        gate saw) or a phantom keeps waiting (its reason says which check).
-     5. System Link (not on Live): the same, with no `on Xbox Live` line;
-        the bots show in the lobby at once. Split Screen: the bots still
-        join on the players screen (`screen players`), hidden from its
-        panes (§4.3).
-   **Built: fixes from the first `h2 bots test` run** (2026-11-18,
-   `20261118-232735`, Tester, count 5). What the run was: the drive never
-   reached the Xbox Live menu (`bots-drive: stuck: no Xbox Live menu
-   after 4 tries`; the game logged `mods: no list: not signed in to Live`
-   throughout), and the game that was played was **Split Screen**: the
-   players screen read `0x1e … mode 1`, whose A makes a local squad
-   session (`0x199df9(1, 0)` → `0x591e0` → `0x59890(0, 0, 0)`) and sets
-   lobby mode 2 (`0x199a03(2)`, the custom game mode every kind of
-   custom game uses). `live: playing as Tester` is only the Live HLE's
-   account, not a game sign-in.
-   - **No bot signed in, and the lobby was never the lobby: "in a game"
-     was true in the menus.** The glue took "a game runs" from a game
-     tick alone, and the main menu is a game too: `mainmenu.map` goes
-     through `GAME_ACTIVATE` and its game-time record ticks (the run's
-     status read `mode main_menu` with a tick on every menu screen;
-     options mode 3). So `to_sign_in` returned nothing on the players
-     screen though every gate said `signs in`, and `screen` never named
-     the lobby (it is the lobby only out of a game). Now
-     `guest::in_game` is a tick in a game whose options mode
-     (`[0x4e6948] + 8`) is not 3; every "no game runs" in `bot_glue`
-     uses it (sign-in, Xbox Live, leaving).
-   - **The tries were made only on frames that are multiples of 30**
-     (`frame % 30 == 0` in `SOUND_UPDATE`, with `frame` counted in
-     `RENDER_FRAME`). The two hooks do not run once each per frame, so a
-     run could miss every multiple. `bot_glue::Every` makes the first
-     call due and then the first one 30 or more frames after the last.
-   - **Logging.** With a gate open and no one signed in, once per reason:
-     `bots: the join gate is open, but no one signs in: a game runs` (or
-     `no human profile to copy …`). The lobby's facts, once per change:
-     `bots: lobby facts: lobby true, networking true, session type N,
-     session state N: a pregame lobby`. No roster asked:
-     `clankers: no roster yet: this console hosts no Xbox Live session
-     (host-made bots until it does)`.
-   - **No roster: as designed.** The roster is asked for the session the
-     Live HLE hosts (`Hle::hosted_session`), made only when the game
-     itself hosts on Xbox Live; this game never signed in. A Live session
-     hosted later asks (`Driver::refresh`, every 30 frames).
-   - **Phantoms: not in Split Screen.** A local squad session (session
-     `+0x18` 0) gets protocol 0 (`0x64060`), so the game's simulation
-     mode is 1 (`0x6ec80`, live-coop.md §1.1) and there are no peers to
-     be. A hosted System Link or Live custom game is distributed whatever
-     its peer count (protocol 2 for every shipped engine, `0x161c90`), so
-     the host is game mode 5 (world mode 4) there with one console. Phantoms now say so in
-     Split Screen (`waits: … (a local game (simulation mode 1, Split
-     Screen): phantoms join System Link and Xbox Live games only)`).
-     Making Split Screen distributed is not done: it would change every
-     Split Screen game's simulation for the sake of phantoms.
-   - Tests: `-p bots --lib guest` (`in_game`: the main menu ticks but is
-     not a game; multiplayer and campaign are; a tick with no options is;
-     no tick is not), `-p bots --lib lobby` (the facts line), `-p bots
-     --lib phantom` (the Split Screen reason), `-p boot --lib bot_glue`
-     (`Every`, the skip reasons), `-p boot --lib clankers` (the no-roster
-     line).
-   - **Next run:** the harness has to reach the Xbox Live menu and host a
-     Custom Game there (its drive stuck at the main menu's Xbox Live row);
-     on a Split Screen run expect the three local bots to sign in on the
-     players screen and no phantom to join.
-   **Built: bots off the players screen, and quiet** (2026-11-19, §4.3,
-   "The players screen", "Listeners" and "The controller speaker,
-   haptics and rumble"). The user's ask: "i don't want bots to appear in
-   the other player slots on the xbox live screen ... also other bots
-   sounds come out via the controller?"
-   - **Where bots join:** the players screen only in Split Screen (mode
-     1). In Xbox Live, System Link and an invitation's mode the gate
-     reads it as the lobby (a pregame session up) or as `0x1e` (none),
-     so the bots join in the lobby (`bot_glue::screen`).
-   - **The panes:** around `PLAYERS_SCREEN_UPDATE` the bots' controller
-     handles read as none (`guest::hide_pads`, `restore_pads`), so a
-     bot's pane says "CONNECT CONTROLLER" in every mode, Split Screen
-     included, joined or not.
-   - **The bots' ears:** `SOUND_LISTENERS_UPDATE` gets the hide window
-     too (the per-frame update `0x18c060` runs it outside
-     `SOUND_UPDATE`), and at both points the hidden users' listeners are
-     marked inactive (`guest::quiet_listeners`).
-   - **Voice:** a bot's port gets no communicator
-     (`voice_glue::player_pads`). Rumble for a bot's port was already
-     refused (no motors); a test now says so.
-   - Tests: `-p boot --lib bot_glue`
-     (`only_split_screen_bots_join_on_the_players_screen`), `-p bots
-     --lib guest` (`the_players_screen_sees_no_controller_on_a_bot_port_and_the_humans_as_it_is`,
-     `no_bot_controller_hides_nothing_and_a_handle_the_game_wrote_is_kept`,
-     `a_bot_users_listener_goes_quiet_and_the_humans_stays`,
-     `no_sound_globals_quiets_nothing`), `-p bots --lib local`
-     (`rumble_for_a_bots_port_never_reaches_the_humans_pad`), `-p boot
-     --lib voice_glue` (`a_bots_port_gets_no_communicator`), `-p boot
-     --lib render_thread` (the two new points listed), `-p cli --bin h2
-     bots_drive` (the press label).
-   - **Game run (the user):**
-     1. `h2 play --live`, Clankers On, Count 3 or more. Main menu, Xbox
-        Live: the players screen shows you alone; the other three panes
-        say "CONNECT CONTROLLER". The log has no `bots: signing ... on
-        the players screen`.
-     2. Live menu, Custom Game: in the lobby, `bots: signing Clanker N in
-        on port N in the pregame lobby`, then each is on Xbox Live and in
-        the lobby's list.
-     3. Back out to the players screen: still you alone (the bots stay
-        signed in, unseen). On again to the lobby: the bots are there.
-     4. In a game, with the controller speaker on (a DualSense, or a
-        Steam Controller as haptics): only your own reloads, jumps,
-        landings, melee and shield warnings come out of the controller;
-        the bots' are heard in the world, from where they are. Send the
-        `bots:` lines and say which sounds still come through if any do.
-     5. With a microphone chosen (pause menu, Voice): other players'
-        voices sound as they did with no bots (no doubling).
-     6. Split Screen with Clankers On: the players screen shows you
-        alone, the lobby and the game have the bots. Say whether B on
-        the players screen backs out or opens your profile menu.
-   **Built: a bot's sounds come from the bot** (2026-11-19, §4.3,
-   "Whose sound"). The user's run: "i can hear sound from every ai
-   player, also, sound doesn't get quieter in distance or round corners
-   etc".
-   - **Cause:** a sound starting on a local user's unit plays as that
-     user's own, unpositioned, in the ears (`0x18d4f0`), and the bots
-     are local users; the walk runs on the game tick, outside every
-     window. Each bot's gun, footsteps, grenades and voice played at
-     full level in the human's ears.
-   - **Fix:** the window around `SOUND_OWNER_USER` (`bot_glue`, "hide
-     bot owners" and "bot owners back").
-   - Tests: `-p bots --lib guest`
-     (`a_bots_own_sound_starts_as_a_world_sound_and_the_humans_stays_in_their_ears`),
-     `-p boot --lib render_thread` (the new point listed).
-   - **Game run (the user):** a match with three Clankers, no
-     controller speaker needed. Stand still away from the bots: their
-     shots and footsteps are quiet or silent far away, louder as they
-     come closer, panned to where they are, muffled behind walls. Your
-     own gun, footsteps and melee sound as before. Say whether any bot
-     sound still plays as if it were yours (and which).
-   **Built: Off takes the bots out of the lobby** (2026-11-19). The
-   user's run: "clankers still a bit buggy, i turned them off and they
-   stay in the lobby."
-   - **Cause.** A bot taken off was signed out with `PROFILE_SIGN_OUT`
-     (`0x18fc08`), which only zeroes the profile block, clears `0x10` and
-     sets `+0x1f8` to -1. The slot kept its local user (`+4`, an entry in
-     use at `0x4cd904`) with its Live identity (`0x20`, `+8`, `+0x470`).
-     The squad session's local-player pass (`0x65770`) drops a player only
-     when its local user goes (`0x646b0` status 0: entry `+0` clear, or on
-     Live the offline flags `0xBAD00000`; then `0x65b80`), so the bot
-     stayed in the lobby's list, on Live as its bot account or guest, and
-     the glue unplugged its pad all the same. Clankers on again then took
-     a second local user for the port (`0x18fb34` takes one when the slot
-     has no profile), leaving the first one's player behind.
-   - **Leaving the lobby (traced).** The game's own whole-slot sign-out is
-     `0x190d4b` (`SLOT_SIGN_OUT`, slot in EAX, `ret`): `0x190da5(slot)`
-     (stdcall, `ret 4`: clears `0x20`, zeroes the account record and the
-     Live state around it, releases `+0xc14` and `+0xc18` through
-     `0x6b640` via `0x190d0a`), then the slot's local user freed
-     (`0x64690`, EDX the index: zeroes its `0xd0` bytes) and `+4` set to
-     -1, then `0x18fc08`, then the flags, `+8..+0x13` and the name
-     cleared and `+0x14` set to -1. The profile UI signs a profile out
-     with it (`0x24b807`), and a failed host logon signs every slot of
-     that account out with it (`0x190186`, at `0x1901e7`). The glue now
-     calls it in place of `0x18fc08` (`guest::sign_out_then`); with the
-     local user gone, the pass takes the bot's player out of the session
-     on its next frame, as when a second controller's player signs out
-     of a lobby. The pad still goes a frame later, once the slot holds no
-     profile and no Live (`guest::slot_held`, `local::leave_step`).
-   - **The server.** The game's session drops the player, and the Live
-     HLE hears of it as of any player leaving. The driver already tells
-     the hosted session its bot accounts every 30 frames
-     (`Driver::report_players`), once more with none after Off.
-   - **Phantoms** were already right: they join only while a game runs,
-     and one taken off has its peer taken out at the next frame
-     (`Phantoms::tick`), every one when the game ends.
-   - **Not changed.** A lower count or Off during a game still waits for
-     the game to end (an unplugged pad pauses it). A Clankermatch's bots
-     are the playlist's, not the page's: Off on the Clankers page does
-     not apply there.
-   - Tests: `-p bots --lib guest`
-     (`signing_out_calls_the_games_whole_slot_sign_out_per_port_then_the_frame`,
-     `a_slot_is_held_while_it_has_a_profile_or_xbox_live`), `-p bots
-     --lib local` (`leaving_bots_wait_out_the_game_then_sign_out_then_unplug`),
-     `-p engine --lib points` (`every_address_is_named_once`), `-p boot
-     --lib clankers` (`the_driver_follows_the_store`,
-     `the_hosted_session_is_told_of_the_bot_accounts_in_the_game`).
-   - **Game run (the user):**
-     1. `h2 play --live`, host a Custom Game, Clankers On, Count 3: the
-        three bots are in the lobby's list.
-     2. Count 1: the log says `bots: signing the bots on ports [2, 3]
-        out`, then `bots: bot N left: its pad is unplugged` twice; the
-        lobby lists you and Clanker 1 only at once.
-     3. Clankers Off: Clanker 1 leaves the list the same way.
-     4. Clankers On, Count 3 again: three bots, each once (no leftover
-        "Clanker 2" or a renamed copy beside the new one).
-     5. The same in a System Link custom game.
-     6. Send the `bots:` lines if a bot stays in the list, the lobby
-        shows an error, or the human's own player leaves.
-   **Built: combat boost** (2026-11-19). The user, after playing the
-   bots: "bots kinda suck, ... don't know when they have no ammo ...
-   give the ai a nice big boost". This slice is the fighting decisions
-   (`bots::arms`, the new `bots::tactics`, small hooks in `bots::mind`);
-   the movement (getting stuck, strafing, cover) is another lane's.
+   - **Game check.** In a System Link or Live host lobby, open
+     **Clanker Options**, enable Clankers and set Count to 2. Start the
+     match and confirm two phantom players join the roster. Section 11
+     gives the combat checks, and §13 covers the hosted harness.
+
+   **Combat decisions.** `bots::mind` uses `bots::arms` and
+   `bots::tactics` to pick weapons, targets and fighting positions.
    - **The weapon is known** (§3.6, "Handling"): role, band, the range
      it shoots to, its trigger, its rate and its projectile's speed.
    - **Melee.** Within arm's reach all difficulties attempt a beatdown
@@ -5024,8 +4538,7 @@ game checks.
      slash at arm's length and RT to lunge at a target in its lunge band. The chest direction gates the strike with any gun.
    - **The trigger.** A once-per-pull weapon (magnum, battle rifle,
      carbine, shotgun, sniper, rockets, the plasma pistol's quick
-     shots) fired one shot and then held the trigger for nothing: now it
-     is pulled for 2 ticks and let go, every `30 / rate` ticks (at least
+     shots) pulls the trigger for 2 ticks and let go, every `30 / rate` ticks (at least
      4; 8 when the rate is unknown) plus the skill's pace (Easy 12,
      Normal 6, Heroic 3, Legendary 1 tick). Automatics keep the skill's
      bursts. A blade uses the sword slash and lunge inputs above.
@@ -5079,7 +4592,7 @@ game checks.
      bot, a projectile's
      gravity for lobbed weapons, the energy sword's lunge range from its
      tag, and the flag, ball and bomb tags' aim assist (assumed none).
-   - **Game run (the user):** `H2_BOTS_SKILL=heroic`, Slayer on
+   - **Game run (the user):** host Slayer with Difficulty set to Heroic on
      Lockout and on a map with a sniper rifle and rockets.
      1. A bot with a battle rifle or magnum fires steadily (bursts at
         its rate), not one shot and then nothing.

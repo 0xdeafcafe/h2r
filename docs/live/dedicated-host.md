@@ -569,7 +569,7 @@ directory. Keep the archive, manifest and extracted cache private. Keep
 the bundle out of Git and container images.
 
 ```sh
-h2 host bundle --disc "$H2_DISC" --out "$H2_BUNDLE_DIR"
+h2 host bundle --disc "$H2_DISC" --out "$bundle_dir"
 ```
 
 | Disc files | Why the host needs them |
@@ -604,18 +604,18 @@ SHA-256 digests. Keep the two files together.
 Create an R2 bucket with public access disabled. Create an R2 API token
 with Object Read & Write permission scoped to the bucket, then configure
 your AWS CLI profile with its Access Key ID and Secret Access Key. Set
-`R2_ACCOUNT_ID`, `R2_BUCKET`, `AWS_PROFILE` and `H2_BUNDLE_DIR` before
+`R2_ACCOUNT_ID`, `R2_BUCKET`, `AWS_PROFILE` and `bundle_dir` before
 running these commands with the AWS CLI and `jq`.
 [Cloudflare R2 S3 setup](https://developers.cloudflare.com/r2/get-started/s3/)
 
 ```sh
 R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-H2_DATA_SHA=$(jq -er '.sha256' "$H2_BUNDLE_DIR/host-data.json")
+H2_DATA_SHA=$(jq -er '.sha256' "$bundle_dir/host-data.json")
 R2_BUNDLE="s3://$R2_BUCKET/host-data/$H2_DATA_SHA"
 
-aws s3 cp "$H2_BUNDLE_DIR/host-data.tar.zst" "$R2_BUNDLE/host-data.tar.zst" \
+aws s3 cp "$bundle_dir/host-data.tar.zst" "$R2_BUNDLE/host-data.tar.zst" \
   --endpoint-url "$R2_ENDPOINT" --region auto
-aws s3 cp "$H2_BUNDLE_DIR/host-data.json" "$R2_BUNDLE/host-data.json" \
+aws s3 cp "$bundle_dir/host-data.json" "$R2_BUNDLE/host-data.json" \
   --endpoint-url "$R2_ENDPOINT" --region auto
 ```
 
@@ -901,7 +901,7 @@ cargo build --locked --release -p cli --bin h2
 export H2_BIN="${CARGO_TARGET_DIR:-$PWD/target}/release/h2"
 ```
 
-Use that CLI, the coordinator’s own disc, and a matching prebuilt clang image. Set `H2_DISC` to the ISO, `H2_IMAGE` to its output directory, and `H2_PROFILE_A` and `H2_PROFILE_B` to different game data directories with distinct saved profiles. Choose unused UDP bases and loopback agent ports. Run these blocks in **one macOS shell**. The image check should succeed before either process starts.
+Use that CLI, the coordinator’s own disc, and a matching prebuilt clang image. Set `H2_DISC` to the ISO, `H2_IMAGE` to its output directory, and `host_profile_dir` and `client_profile_dir` to different game data directories with distinct saved profiles. Choose unused UDP bases and loopback agent ports. Run these blocks in **one macOS shell**. The image check should succeed before either process starts.
 
 ```sh
 H2_BIN=${H2_BIN:-"$HOME/.cargo/bin/h2"}
@@ -912,8 +912,8 @@ unset H2_SIM H2_LEVEL H2_BOOT_GFX H2_INPUT_REPLAY H2_BOOT_INPUT
 
 ```sh
 trial=$(mktemp -d "$TMPDIR/microhost.XXXXXX")
-cp -cR "${H2_PROFILE_A:?set host data directory}" "$trial/host"
-cp -cR "${H2_PROFILE_B:?set client data directory}" "$trial/client"
+cp -cR "${host_profile_dir:?set host data directory}" "$trial/host"
+cp -cR "${client_profile_dir:?set client data directory}" "$trial/client"
 cp -cR "$H2_IMAGE" "$trial/host-image"
 iface=$(route -n get default | awk '/interface:/ {print $2}')
 lan=$(ipconfig getifaddr "$iface")

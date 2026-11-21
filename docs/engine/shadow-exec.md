@@ -1,7 +1,7 @@
 # Shadow execution: ports checked on the states the game reaches
 
 Status: **built, not yet run on the disc.** Item 6 of the
-[architecture review](../architecture-review-2026-11.md) (section 3.4,
+[architecture review](../reviews/2026-11-20-architecture.md) (section 3.4,
 "Shadow execution in place of record-and-replay").
 
 The differential tests in `crates/rewrites/engine/tests/*_differential.rs` check

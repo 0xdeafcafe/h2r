@@ -22,7 +22,7 @@ are under [Reviews](#reviews).
 - [simd.md](lifter/simd.md): bit-exact SSE1 reference semantics (`crates/recompiler/simd`), its C twin and how it is tested
 - [oracle.md](lifter/oracle.md): independent x86 instruction oracle on Unicorn (`crates/recompiler/oracle`)
 - [sse-oracle.md](lifter/sse-oracle.md): SSE/MMX results measured on Rosetta 2 (`crates/recompiler/sse-oracle`)
-- [cranelift-tier.md](lifter/cranelift-tier.md): design for a Cranelift fast tier for the first build (`crates/recompiler/clif`); the first stages are built
+- [cranelift-tier.md](lifter/cranelift-tier.md): Cranelift fast start, the background clang build and the shared module contract
 - [dispatch-coverage.md](lifter/dispatch-coverage.md): indirect-dispatch coverage of the campaign's main tables, and how to reproduce it
 - [xdk-libraries.md](lifter/xdk-libraries.md): how `h2 symbols` identifies statically linked XDK library code
 - [BUILD-CACHE.md](lifter/BUILD-CACHE.md): generated-source and object caches, locking, iteration builds, `H2_EMIT_TARGET`; read before changing the build
@@ -154,6 +154,7 @@ are under [Reviews](#reviews).
 - [guest-layout.md](engine/guest-layout.md): `crates/hooking/guest-layout`: guest structure offsets and globals, the `impl.*` switch table, hook point shapes
 - [anim-sampling.md](engine/anim-sampling.md): animation sampling in Rust (`sim-anim`) behind `impl.sim.native.anim`: the contract, the decoded clips and the disc sweep
 - [object-update.md](engine/object-update.md): the object update's contracts read from the lifted code (callouts, flag setters, register liveness) and how the phase 3 bodies behind `impl.sim.native.objects` keep them
+- [sim-review.md](engine/sim-review.md): typed simulation state and the experimental leaf compiler contract
 - [sim-tier-experiment.md](engine/sim-tier-experiment.md): the sim-tier experiment: the tick's leaves compiled under a looser contract (`emit::sim`), checked against the interpreter and timed against the hand ports
 - [sim-tier-writes.md](engine/sim-tier-writes.md): a static census of every store the game tick can make
 - [README.md](engine/README.md): contracts for the engine functions rewritten in Rust (`crates/rewrites/engine`) and their differential tests, indexing [datum_new.md](engine/datum_new.md), [tag_get_checked.md](engine/tag_get_checked.md), [locale_string_id_find.md](engine/locale_string_id_find.md), [memory_pool.md](engine/memory_pool.md) and the HaloScript VM, [hs_vm.md](engine/hs_vm.md)
@@ -181,7 +182,7 @@ are under [Reviews](#reviews).
 - [map-pack.md](game/map-pack.md): the Multiplayer Map Pack disc, `h2 import-mappack` and how 1.0 lists its maps
 - [map-select.md](game/map-select.md): Change Map categories for Halo 2, Map Pack, Mods and Halo: CE, with separate retail and mod slots
 - [high-framerate.md](game/high-framerate.md): 60 and 120 fps with the 30 Hz tick exact (`H2_FPS`): the determinism harness, the interpolated replay and reprojection (built, not yet run in game)
-- [theater.md](game/theater.md): Theater: saved films, free camera and spectating; the in-game selector and host-film player are built, the real-host experiments are pending
+- [theater.md](game/theater.md): the in-game film library, host-film playback and seeking, with real-host verification pending
 - [Theater seek measurements](game/notes/theater-seek.md): cold launch, keyframe capture and tape size procedure
 - [film-format.md](game/film-format.md): the `.h2film` container a host records and Theater replays: layout, keyframes, seeking, determinism checks
 - [forge.md](game/forge.md): what Halo 3's Forge is and what retail Halo 2 has for one to sit on: placement blocks, the netgame equipment spawner, object creation
@@ -190,7 +191,6 @@ are under [Reviews](#reviews).
 - [forge-features.md](game/forge-features.md): design for each Forge feature: monitor bodies, objects, links and triggers, emitters, barriers, nav, AI, geometry and paint, character import (not built)
 - [ai-networking.md](game/ai-networking.md): AI actors in network games: host actors in the distributed model, the synchronous model for campaign, what retail replicates, the actor channel, budgets, probes and slices
 - [firefight.md](game/firefight.md): Firefight: waves of AI on multiplayer maps for up to 16 players, the director, the offline map kit, wave-set definitions and the design for scoring, lives, skulls and Live
-- Notes: [high-framerate.md](game/notes/high-framerate.md) (prior art and measurements for 60 and 120 fps)
 - [theater-design.md](game/theater-design.md): design for the full in-game Theater: stats is the summary and the film is the simulation; rewind and jumps from sidecar keyframes, warm restore, cameras, clips, sharing through Live and the web-to-game link; slices in build order (design)
 - [input-film.md](game/input-film.md): what a film holds (seed, per-seat inputs, joins, digests), every host answer replay depends on, the Halo 3 reference, the column encoding, sizes and memory (design)
 - Notes: [high-framerate.md](game/notes/high-framerate.md) (prior art and measurements for 60 and 120 fps), [halo3-film.md](game/notes/halo3-film.md) (Halo 3's saved film layout and sizes, from public sources), [ai-networking.md](game/notes/ai-networking.md) (what retail's distributed replication carries, read from the image)
@@ -246,7 +246,7 @@ Reading and converting Halo 1 data:
 - [live-boundary.md](live/live-boundary.md): static inventory of the retail XOnline/XNet entry points and the sign-in sequence
 - [live-motd.md](live/live-motd.md): how retail fetches and parses `message_of_the_day.dat` and `multiplayer_hopper.dat`
 - [live-matchmaking.md](live/live-matchmaking.md): sessions, invites, arbitration, the Ranked page and ping-aware host selection in progress
-- [live-custom-games.md](live/live-custom-games.md): the custom games browser, its menu row, visibility and joining
+- [live-custom-games.md](live/live-custom-games.md): the custom games browser, filters, visibility and joining
 - [live-coop.md](live/live-coop.md): campaign co-op over Live: options, decisions, and what is built and probed (Co-op over Live built and confirmed in the game)
 - [live-voice.md](live/live-voice.md): voice chat, voice messages and the mute list: how the title does voice, and the host design (design only, not built)
 - [live-gamestate.md](live/live-gamestate.md): retail game-state addresses and layouts for the scoreboard and map
@@ -257,21 +257,21 @@ Reading and converting Halo 1 data:
 
 ## Editor (`editor/`)
 
-- [editor-guide.md](editor/editor-guide.md) (**start here**): user guide to `h2-editor`: map objects, game variants, playlists and Halo 1 maps, step by step with 74 screenshots
+- [editor-guide.md](editor/editor-guide.md) (**start here**): user guide to `h2-editor`: map placements, tags, variants, playlists, UI screens, HUDs and Halo 1 maps
 - [editor.md](editor/editor.md): the editor for developers (`crates/apps/studio`, Dear ImGui + wgpu): window, the tools, Halo 1 maps and converting, the playlist format rules, code layout, scripted headless screenshots (`--do`, `--crop`, `--callout`), viewport gaps
 - [scenario-editor.md](editor/scenario-editor.md): the scenario placement editor (`crates/tools/scenario-edit`): blocks, fields, save rules, packages
 - [variants.md](editor/variants.md): the game variant record, its schema and saved files (`crates/formats/variants`)
 - [hud-editor.md](editor/hud-editor.md): the HUD tool (`nhdt` tags): placement, checks, the save, what is not modelled
 - [agent-api.md](editor/agent-api.md): the editor's socket API: JSON methods over maps, tags, placements, variants, playlists and UI screens
-- [live-mirror.md](editor/live-mirror.md): design for the paired editor showing the running game live (the world-state stream over the agent socket, its cost, poses, projectile arcs, cameras, the timeline and recordings) and for edits reaching the game by apply class, with the session rules, the agent API methods and the slices
-- [click-to-edit.md](editor/click-to-edit.md): design for one Map tool in place of Scenario and Tags: click a placement or live object to edit its tag chain, navigation, "where is this used", unique copies, and Halo 1 tags (converted maps with source overrides, and Halo 1 maps in their own format)
-- [modeling.md](editor/modeling.md): design for mesh, BSP and texture editing: the mesh kernel and its ops, the round trip for structure and model geometry, collision, lightmaps and `bitm`, the tools, the agent API methods and the slices
+- [live-mirror.md](editor/live-mirror.md): paired game discovery, live world state, conditional edit batches, undo and conflict handling
+- [click-to-edit.md](editor/click-to-edit.md): placement-to-tag navigation, editable tag documents, references and the remaining unified Map work
+- [modeling.md](editor/modeling.md): mesh kernel and the design for editing geometry, collision, lightmaps and textures
 - [modeling-targets.md](editor/modeling-targets.md): design for the Halo 2 round trip of each modeling target: read path, edit model, write classes, what is recomputed, limits and risks for `sbsp` render geometry and collision, portals, lightmaps, `mode`, `coll` and `phmo`
-- [polish-plan.md](editor/polish-plan.md): design for the editor's polish: what is wrong with file and line, one layout with the game link always on screen, the scenario tag tree, tag edits reaching the running game (what is safe, what needs a reload, undo), layers and overlays for trigger and kill volumes and collision-only geometry, editing those, the viewport on the native renderer, and slices P1 to P17 with P1 ready to hand off
+- [polish-plan.md](editor/polish-plan.md): editor layout, scenario tag tree, live editing and layers, with designs for volume and collision tools and a native renderer viewport
 
 ## Working on the repository (`dev/`)
 
-- [crate-structure.md](dev/crate-structure.md): the crate domains (`crates/<domain>/<crate>`) and what each may depend on, the ordered windows that move the tree there with their scripts (`scripts/moves/`) and rebase recipes, local registration, the gate proposal (design; nothing has moved)
+- [crate-structure.md](dev/crate-structure.md): crate domains, dependency checks, composition and the crate table
 
 ## Reviews
 

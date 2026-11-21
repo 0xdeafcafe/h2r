@@ -77,7 +77,7 @@ its own.
 | **B. Host films** | Exact `.h2film` films recorded by dedicated hosts, played back in the game with its own renderer and director cameras | the [film format](film-format.md) and the in-game selector | implemented. Real-host verification pending |
 | **C. Live spectating** | A tier-B film streamed with a 30–120 s delay | section 4B | later |
 
-### Tier A: Web Theater (simple, now)
+### Tier A: Web Theater
 
 Web Theater reads timed pose and event records from a version 3 host film.
 The viewer fetches the chunks covering the requested time range. Older

@@ -1,6 +1,8 @@
 # Live mirror: the running game in the editor, and edits back into it
 
-Status: M1 and M7 are implemented. M2 through M6 and M8 through M11 are design. The real-game parity and cost checks are pending.
+Status: Partly built. Live object streaming, pairing and conditional edit
+batches are implemented. The richer live view, timeline and substantial
+structural edits are designs. Real-game parity and cost checks are pending.
 Code: `crates/extensions/agent-proto/src/live` (wire format), `crates/extensions/agent/src/live` (capture and stream), `crates/tools/live-mirror` (editor store), `crates/apps/studio/src/play` and `crates/tools/scenario-edit` (pairing and viewport).
 Switch: none. With no subscriber the tick observer skips capture and no stream worker runs.
 
@@ -35,10 +37,8 @@ tag editor, and Halo 1 tags are in [click-to-edit.md](click-to-edit.md).
 | Models in the viewport | Built in the bind pose, first permutation, instanced per model | `scenario_edit::render::Viewport`, [editor.md](editor.md), "What the viewport shows" |
 | Map save, packages, play copy | Built | `scenario_edit::save`, `MapEditor`, [scenario-editor.md](scenario-editor.md) section 5 |
 
-Later slices add the timeline and recordings, skinned models, projectile
-arcs, the device, effect and animation reads, tag pokes from the editor
-with apply classes, moving and making live objects, the reload path and
-the overlays.
+The design adds the timeline and recordings, skinned models, projectile
+arcs, device and effect reads, and a broader set of live object edits.
 
 ## Live view
 
