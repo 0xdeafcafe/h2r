@@ -103,7 +103,7 @@ fn every_script_compiles_verifies_and_fits_a_tick() {
         let again = compile(src).unwrap();
         assert_eq!(ir.id(), again.id(), "{name}");
     }
-    assert_eq!(examples().len(), 6);
+    assert_eq!(examples().len(), 7);
 }
 
 #[test]
@@ -114,8 +114,14 @@ fn each_header_names_exactly_the_entries_a_host_lacks() {
         assert_eq!(listed_entries(src), used, "{name}");
         assert_eq!(rules::verify::unhostable(&ir).is_none(), used.is_empty(), "{name}");
     }
-    // Slayer, VIP and Bounce Practice need nothing a host lacks.
-    for src in [builtin::SLAYER, builtin::VIP, builtin::BOUNCE_PRACTICE] {
+    // Slayer, VIP, Bounce Practice and Superbounce need nothing a host
+    // lacks.
+    for src in [
+        builtin::SLAYER,
+        builtin::VIP,
+        builtin::BOUNCE_PRACTICE,
+        builtin::SUPERBOUNCE,
+    ] {
         assert!(unhostable_entries(&compile(src).unwrap()).is_empty());
     }
 }
@@ -434,4 +440,36 @@ fn infection_switches_the_victims_team() {
         Some(&&vec![player(human), Arg::Team(Some(1))])
     );
     assert_eq!(scores(&g), vec![(zombie, 1)]);
+}
+
+// ---- Superbounce ----
+
+#[test]
+fn superbounce_scores_slayers_kills_and_bounces_only_when_asked() {
+    let (ir, report) = build(builtin::SUPERBOUNCE).unwrap();
+    assert!(report.fits());
+    assert_eq!(ir.header.name, "Superbounce");
+    assert_eq!(ir.header.carrier, 2);
+    // The default: a bounce is counted and scores nothing; a kill and a
+    // suicide score as Slayer's.
+    let mut g = FakeGame::with_players(2);
+    let mut vm = Vm::new(ir.clone(), ir.default_options(), 1).unwrap();
+    vm.begin_tick(1);
+    assert_eq!(vm.fire(&mut g, Input::Bounce(1, 77)), Fired::Ran);
+    assert_eq!(vm.fire(&mut g, Input::Bounce(1, 78)), Fired::Ran);
+    assert_eq!(vm.player_var(1, "bounces"), Some(2));
+    assert!(scores(&g).is_empty());
+    vm.fire(&mut g, Input::Kill { victim: 0, killer: Some(1) });
+    vm.fire(&mut g, Input::Kill { victim: 1, killer: None });
+    assert_eq!(scores(&g), vec![(1, 1), (1, -1)]);
+
+    // Bounce points 2: kill points raw 0 (bits 0 to 2), the suicide
+    // option off (bit 3), bounce points raw 2 (bits 4 to 6).
+    let mut g = FakeGame::with_players(2);
+    let mut vm = Vm::new(ir, 2 << 4, 1).unwrap();
+    vm.begin_tick(1);
+    vm.fire(&mut g, Input::Bounce(0, 77));
+    vm.fire(&mut g, Input::Kill { victim: 0, killer: None });
+    assert_eq!(scores(&g), vec![(0, 2)]);
+    assert_eq!(vm.player_var(0, "bounces"), Some(1));
 }

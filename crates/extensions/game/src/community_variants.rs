@@ -320,10 +320,14 @@ pub fn tweaker_builtin(name: &str) -> Option<&'static Variant> {
 
 /// Whether a variant record with this name and extension block is listed
 /// under Tweakers: its block turns on a mode Tweakers owns (the
-/// superbounce flag), or it has a Tweakers built-in's name (as
-/// `crate::superbounce_mode` turns the mode on by name too).
+/// superbounce flag), it has a Tweakers built-in's name (as
+/// `crate::superbounce_mode` turns the mode on by name too), or it names a
+/// rules script whose header files it there
+/// (`crate::rules::header::block_is_tweaker`).
 pub fn is_tweaker(name: &str, block: &[u8; variants::ext::LEN]) -> bool {
-    Ext::in_effect(block).superbounce || tweaker_builtin(name).is_some()
+    Ext::in_effect(block).superbounce
+        || tweaker_builtin(name).is_some()
+        || crate::rules::header::block_is_tweaker(block)
 }
 
 use Setting::*;

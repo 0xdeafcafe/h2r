@@ -2,7 +2,8 @@
 //! game's script and state, and what each moment of the game does with it
 //! (docs/game/rules-engine.md, "The host runtime").
 //!
-//! The feature (`super::feature`) calls in at five moments:
+//! The feature (`super::feature`) and the superbounce mode call in at six
+//! moments:
 //!
 //! - [`Runtime::start`] after a successful `GAME_ACTIVATE`: read the
 //!   record's script reference, find the blob, verify it, refuse what this
@@ -16,6 +17,9 @@
 //!   also asks `GAME_ENGINE_AUTHORITATIVE`; a machine that is not the
 //!   authority drops the script and its record.
 //! - [`Runtime::kill`] at `PLAYER_KILLED`'s entry: `on kill`.
+//! - [`Runtime::bounces`] after each game tick, from the superbounce
+//!   mode's medal chain: `on bounce`, each bounce on the tick its chain
+//!   files it.
 //! - [`Runtime::post_tick`] after each game tick: timers, then `on tick`.
 //! - [`Runtime::ended`] after `GAME_END`: the record is removed.
 //!
@@ -64,7 +68,13 @@ pub const MODE_MULTIPLAYER: u32 = 2;
 
 /// The events this runtime delivers. A script answering any other is
 /// refused at load by the event's name.
-pub const DELIVERED: &[Event] = &[Event::Init, Event::Kill, Event::Timer, Event::Tick];
+pub const DELIVERED: &[Event] = &[
+    Event::Init,
+    Event::Kill,
+    Event::Timer,
+    Event::Tick,
+    Event::Bounce,
+];
 /// The read entries this runtime answers.
 pub const READS: &[u16] = &[
     id::PLAYER_SCORE,
@@ -718,6 +728,30 @@ impl Runtime {
         self.run(m, |vm, g| {
             vm.fire(g, Input::Kill { victim, killer });
         });
+    }
+
+    /// A superbounce by player `player` off the strip `spot`
+    /// (`superbounce_chain::spot_id`): `on bounce`, with its calls kept
+    /// for the next tick boundary.
+    pub fn bounce(&mut self, m: &dyn GuestMemory, player: u8, spot: u32) {
+        self.run(m, |vm, g| {
+            vm.fire(g, Input::Bounce(player, spot));
+        });
+    }
+
+    /// One tick's medal awards (`superbounce_chain::Medals::step`): each
+    /// bounce as [`Runtime::bounce`], in order. A Bounced and a medal test
+    /// name no strip and are not bounces.
+    pub fn bounces(
+        &mut self,
+        m: &dyn GuestMemory,
+        awards: &[crate::superbounce_chain::Award],
+    ) {
+        for a in awards {
+            if let Some(spot) = a.spot {
+                self.bounce(m, a.slot, spot);
+            }
+        }
     }
 
     /// After the game tick: timers, then `on tick`.

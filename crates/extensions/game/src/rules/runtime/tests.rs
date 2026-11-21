@@ -214,6 +214,64 @@ fn a_suicide_costs_a_point_with_the_option_on() {
     );
 }
 
+/// One tick's medal award for player `slot`: a bounce off `spot`, or a
+/// Bounced with none.
+fn award(slot: u8, spot: Option<u32>) -> crate::superbounce_chain::Award {
+    use hud_kit_core::huds::superbounce::Medal;
+    crate::superbounce_chain::Award {
+        seq: 1,
+        slot,
+        user: None,
+        tick: TICK,
+        chain: 1,
+        medals: vec![if spot.is_some() { Medal::Superbounce } else { Medal::Bounced }],
+        spot,
+    }
+}
+
+#[test]
+fn a_bounce_reaches_on_bounce_and_scores_at_the_next_tick_boundary() {
+    let ir = ::rules::compile(::rules::builtin::SUPERBOUNCE).unwrap();
+    assert_eq!(host_refusal(&ir), None, "the host delivers on bounce");
+    let (blob, id) = (ir.encode(), ir.id());
+    let store = Local::default();
+    let s = shared(
+        &store,
+        Box::new(move |_: [u8; 8]| Ok::<_, String>(blob.clone())),
+    );
+    // Bounce points 2 (raw 2 at bit 4); kill points 1, suicides free.
+    let (m, datums) = guest(block(prefix(&id), 2 << 4), SLAYER);
+    s.lock().start(&m, false);
+    let state = s.lock().state();
+    assert!(state.running, "{state:?}");
+    // A Bounced is no bounce; the bounce off strip 77 is.
+    s.lock().bounces(&m, &[award(0, None), award(1, Some(77))]);
+    {
+        let rt = s.lock();
+        let r = rt.running().unwrap();
+        assert_eq!(r.vm.player_var(0, "bounces"), Some(0));
+        assert_eq!(r.vm.player_var(1, "bounces"), Some(1));
+        assert_eq!(
+            r.pending(),
+            [Call::Score {
+                player: 1,
+                delta: 2
+            }]
+        );
+    }
+    let work = s.lock().pre_tick(&m).unwrap();
+    let calls = drive(&s, m, work, true);
+    assert_eq!(
+        calls[1],
+        GuestCall::new(points::SCORE_ADD.base)
+            .eax(2)
+            .args([datums[1]])
+    );
+    // The record carries the count.
+    let record = RulesExt::decode(&store.bytes().unwrap()).unwrap();
+    assert_eq!(&record, s.lock().running().unwrap().vm.ext());
+}
+
 #[test]
 fn a_machine_that_is_not_the_authority_drops_the_script_and_its_record() {
     let store = Local::default();

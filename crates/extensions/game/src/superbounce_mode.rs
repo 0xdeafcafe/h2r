@@ -7,7 +7,9 @@
 //! superbounce flag ([`variants::ext::Ext::superbounce`], through
 //! [`crate::variant_ext::Decision::superbounce`]), or is the built-in
 //! "Superbounce" variant ([`crate::community_variants`], which has no field
-//! for the flag, so it is told by name), or `H2_SUPERBOUNCE=1` forces it.
+//! for the flag, so it is told by name), or the running rules script asks
+//! for it ([`crate::rules::feature::running_asks_superbounce`]), or
+//! `H2_SUPERBOUNCE=1` forces it.
 //!
 //! **Each tick** (a tick observer, only while on) it reads the first local
 //! player's unit, its position, whether it is airborne, its vertical
@@ -32,7 +34,8 @@
 //! **The medals** (docs/game/superbounce.md, "Medals") are on it too:
 //! every player's chain of bounces ([`crate::superbounce_chain`]), stepped
 //! each tick for every listed player, bots included, published as
-//! [`State::medals`].
+//! [`State::medals`]. Each bounce they file goes to the running rules
+//! script as `on bounce` ([`crate::rules::feature::bounces`]).
 
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek};
@@ -699,6 +702,7 @@ fn on_now(m: &dyn GuestMemory) -> bool {
     forced()
         || crate::variant_ext::in_game(&crate::layout_glue::ReadGm(m)).superbounce()
         || variant_name(m).is_some_and(|n| is_superbounce_name(&n))
+        || crate::rules::feature::running_asks_superbounce()
 }
 
 /// The local player's word, position and motion.
@@ -966,6 +970,8 @@ fn on_tick(o: &hooks::Obs) {
         let guest = o.guest();
         let m: &dyn GuestMemory = &*guest;
         crate::superbounce_ghost::tick(m, tick, &players, &awards, map.as_deref(), &spots);
+        // A rules script hears each bounce on the tick it is filed.
+        crate::rules::feature::bounces(m, &awards);
     }
     // The film and Live get each bounce and Bounced, as the kills.
     if !awards.is_empty()

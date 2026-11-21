@@ -403,6 +403,19 @@ pub fn touchdown(was_airborne: bool, was_vz: f32, airborne: bool, vz: f32) -> bo
     was_airborne && was_vz <= TOUCHDOWN_VZ && (vz >= LANDED_VZ || !airborne)
 }
 
+/// The index in `spots` of the strip a touchdown at `at` is by: the
+/// nearest bounce spot whose edge is within [`LANDING_RADIUS`].
+pub fn landing_spot(spots: &[Spot], at: Vec3) -> Option<usize> {
+    spots
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.kind == Kind::Bounce)
+        .map(|(i, s)| (i, edge_distance(s, at)))
+        .filter(|(_, d)| *d <= LANDING_RADIUS)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(i, _)| i)
+}
+
 /// A touchdown's result by the nearest strip within [`LANDING_RADIUS`] of
 /// the origin on the tick before (`at`, with the word `word_before` and
 /// the vertical speed `vz_before` then), coming out at `vz`; `None` with no
@@ -415,13 +428,7 @@ pub fn strip_landing(
     vz_before: f32,
     vz: f32,
 ) -> Option<LandingResult> {
-    let spot = spots
-        .iter()
-        .filter(|s| s.kind == Kind::Bounce)
-        .map(|s| (s, edge_distance(s, at)))
-        .filter(|(_, d)| *d <= LANDING_RADIUS)
-        .min_by(|a, b| a.1.total_cmp(&b.1))
-        .map(|(s, _)| s)?;
+    let spot = &spots[landing_spot(spots, at)?];
     let height = (at[2] - spot.stand[2]).max(0.0);
     let speed_in = (vz_before * vz_before + 2.0 * GRAVITY * height).sqrt();
     Some(classify(spot, word_before, at, speed_in, vz))

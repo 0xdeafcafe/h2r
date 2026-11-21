@@ -129,6 +129,49 @@ fn bounces_with_no_ground_between_count_up() {
     assert_eq!(events[6].medals(), [Superbounce]);
 }
 
+/// Each bounce names its strip by the strip's geometry, the id a rules
+/// script's `on bounce` hears: the same id for the same strip, whatever
+/// else is in the list, and never `none`.
+#[test]
+fn a_bounce_names_its_strip_by_a_stable_id() {
+    let strip = spots()[0];
+    let id = spot_id(&strip);
+    assert_eq!(id & 0x8000_0000, 0);
+    let mut c = Chain::default();
+    let events = run(&mut c, &bounces(2));
+    assert!(events.iter().all(|e| e.spot() == Some(id)), "{events:?}");
+    // Another spot ahead of it in the list leaves the strip's id alone.
+    let crouch = Spot {
+        kind: Kind::Crouch,
+        edge: [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+        ..Spot::default()
+    };
+    let mut c = Chain::default();
+    let list = [crouch, strip];
+    let got: Vec<Event> = bounces(1)
+        .iter()
+        .filter_map(|t| c.step(Some(t), &list))
+        .collect();
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].spot(), Some(id));
+    assert_ne!(spot_id(&crouch), id);
+    assert_eq!(Event::Bounced { chain: 2 }.spot(), None);
+    // The awards carry it; a medal test's has none.
+    let mut m = Medals::new();
+    let seen: Vec<Vec<Seen>> = bounces(1)
+        .into_iter()
+        .map(|t| vec![Seen { slot: 3, user: None, tick: Some(t) }])
+        .collect();
+    let awards: Vec<Award> = seen
+        .iter()
+        .enumerate()
+        .flat_map(|(i, s)| m.step(i as u32, s, &spots()))
+        .collect();
+    assert_eq!(awards.len(), 1);
+    assert_eq!((awards[0].slot, awards[0].spot), (3, Some(id)));
+    assert_eq!(m.test(3, None, 99, 2, false).spot, None);
+}
+
 #[test]
 fn a_landing_off_the_strip_ends_the_chain() {
     let mut c = Chain::default();
@@ -355,6 +398,7 @@ fn award_of(slot: u8, chain: u32, medals: Vec<Medal>) -> Award {
         tick: 40,
         chain,
         medals,
+        spot: None,
     }
 }
 

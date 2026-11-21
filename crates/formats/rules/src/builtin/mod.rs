@@ -34,6 +34,9 @@ pub const SIEGE: &str = include_str!("siege.rules");
 pub const RACE: &str = include_str!("race.rules");
 /// Bounce Practice: points for superbounces.
 pub const BOUNCE_PRACTICE: &str = include_str!("bounce_practice.rules");
+/// Superbounce: Slayer's rules, the superbounce mode's guide and optional
+/// points for a bounce.
+pub const SUPERBOUNCE: &str = include_str!("superbounce.rules");
 
 /// A built-in script: its name, the retail engine index it rides and its
 /// source.
@@ -80,6 +83,7 @@ pub fn examples() -> &'static [(&'static str, &'static str)] {
         ("siege", SIEGE),
         ("race", RACE),
         ("bounce_practice", BOUNCE_PRACTICE),
+        ("superbounce", SUPERBOUNCE),
     ]
 }
 

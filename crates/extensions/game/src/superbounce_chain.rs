@@ -23,7 +23,9 @@ use engine::GuestMemory;
 use hud_kit_core::huds::superbounce::{MEDALS, Medal};
 use superbounce::{Spot, Vec3};
 
-use crate::superbounce_charge::{LandingResult, TOUCHDOWN_VZ, strip_landing, touchdown};
+use crate::superbounce_charge::{
+    LandingResult, TOUCHDOWN_VZ, landing_spot, strip_landing, touchdown,
+};
 use crate::superbounce_mode::primed;
 
 /// Player slots the game has.
@@ -78,11 +80,28 @@ pub struct PlayerTick {
     pub word: Option<u32>,
 }
 
+/// A bounce spot's id as a rules script's `on bounce(p, spot)` hears it
+/// (docs/game/rules-engine.md, "Firefight, AI and bounces"): FNV-1a over
+/// the bits of its edge, in 31 bits so it is never `none`. The scan is a
+/// function of the map's geometry, so the id is the same in every game on
+/// the map, on every machine and in a film, whatever the verified file
+/// says.
+pub fn spot_id(spot: &Spot) -> u32 {
+    let mut h: u32 = 0x811c_9dc5;
+    for v in spot.edge.iter().flatten() {
+        for b in v.to_bits().to_le_bytes() {
+            h = (h ^ u32::from(b)).wrapping_mul(0x0100_0193);
+        }
+    }
+    h & 0x7fff_ffff
+}
+
 /// What a step gave.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event {
-    /// A bounce, the chain's count with it.
-    Bounce { chain: u32 },
+    /// A bounce, the chain's count with it, off the strip [`spot_id`]
+    /// names.
+    Bounce { chain: u32, spot: u32 },
     /// The unit went (a death) on the tick after one that was airborne,
     /// falling at [`TOUCHDOWN_VZ`] or faster, and either in a chain or
     /// primed: a fall out of the map during a bounce. `chain` is the count
@@ -94,14 +113,21 @@ impl Event {
     /// The medals the event earns.
     pub fn medals(self) -> Vec<Medal> {
         match self {
-            Event::Bounce { chain } => bounce_medals(chain).to_vec(),
+            Event::Bounce { chain, .. } => bounce_medals(chain).to_vec(),
             Event::Bounced { .. } => vec![Medal::Bounced],
         }
     }
     /// The chain's count with the event.
     pub fn chain(self) -> u32 {
         match self {
-            Event::Bounce { chain } | Event::Bounced { chain } => chain,
+            Event::Bounce { chain, .. } | Event::Bounced { chain } => chain,
+        }
+    }
+    /// The bounce's strip ([`spot_id`]); `None` for a Bounced.
+    pub fn spot(self) -> Option<u32> {
+        match self {
+            Event::Bounce { spot, .. } => Some(spot),
+            Event::Bounced { .. } => None,
         }
     }
 }
@@ -192,11 +218,15 @@ impl Chain {
             let bounced = p.word.is_some_and(primed)
                 && strip_landing(spots, p.word, p.position, p.vz, now.vz)
                     == Some(LandingResult::Bounce);
-            if bounced {
+            // A bounce is by a strip, so `landing_spot` finds it.
+            if bounced && let Some(i) = landing_spot(spots, p.position) {
                 self.count = if self.live { self.count + 1 } else { 1 };
                 self.live = true;
                 self.since = 0;
-                return Some(Event::Bounce { chain: self.count });
+                return Some(Event::Bounce {
+                    chain: self.count,
+                    spot: spot_id(&spots[i]),
+                });
             }
             self.live = false;
             return None;
@@ -236,6 +266,9 @@ pub struct Award {
     pub tick: u32,
     pub chain: u32,
     pub medals: Vec<Medal>,
+    /// A bounce's strip ([`spot_id`]); `None` for a Bounced and for
+    /// `superbounce.medal_test`'s awards, which no strip made.
+    pub spot: Option<u32>,
 }
 
 /// A player's medals this game.
@@ -308,7 +341,7 @@ impl Medals {
             let event = self.chains[slot].step(t.as_ref(), spots);
             let slot = slot as u8;
             if let Some(e) = event {
-                out.push(self.award(slot, tick, e.chain(), e.medals()));
+                out.push(self.award(slot, tick, e.chain(), e.medals(), e.spot()));
             }
             self.sync(slot);
         }
@@ -338,12 +371,19 @@ impl Medals {
             self.chains[i].force(chain);
             bounce_medals(chain).to_vec()
         };
-        let a = self.award(slot, tick, chain, medals);
+        let a = self.award(slot, tick, chain, medals, None);
         self.sync(slot);
         a
     }
 
-    fn award(&mut self, slot: u8, tick: u32, chain: u32, medals: Vec<Medal>) -> Award {
+    fn award(
+        &mut self,
+        slot: u8,
+        tick: u32,
+        chain: u32,
+        medals: Vec<Medal>,
+        spot: Option<u32>,
+    ) -> Award {
         self.seq += 1;
         let rec = self.records.entry(slot).or_default();
         for m in &medals {
@@ -356,6 +396,7 @@ impl Medals {
             tick,
             chain,
             medals,
+            spot,
         };
         self.recent.push_back(a.clone());
         while self.recent.len() > RECENT {

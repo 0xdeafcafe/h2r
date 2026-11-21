@@ -373,6 +373,7 @@ fn award(seq: u64, user: Option<u8>, tick: u32, medals: Vec<Medal>) -> Award {
         tick,
         chain: 0,
         medals,
+        spot: None,
     }
 }
 

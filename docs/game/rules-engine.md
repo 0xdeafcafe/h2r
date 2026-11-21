@@ -296,7 +296,7 @@ does not start with the record's prefix, when it rides another engine
 than the record's, when it calls an entry no host can make
 (`verify::unhostable`), or when it needs what this runtime does not do
 yet (`runtime::host_refusal`): an event other than `init`, `kill`,
-`timer` and `tick`; a read other than the scores, kills, deaths,
+`timer`, `tick` and `bounce`; a read other than the scores, kills, deaths,
 `alive`, `team_of`, `lives`, `round_time_left` and `is_objective`; an
 action other than `score`, `end_round`, `set_lives` and `respawn`; a
 variant field other than `team_play`, `score_limit`, `time_limit` and
@@ -325,6 +325,7 @@ Firefight sits inside.
 | Handlers | Run from | Their calls |
 |---|---|---|
 | `on kill` | an observer before `PLAYER_KILLED` (`0x15ce70`): the attacker and victim player datums at `[esp+4]` and `[esp+8]`, as live telemetry reads them | at the next tick boundary |
+| `on bounce` | the superbounce mode's tick observer, after `GAME_TICK`: each bounce its medal chain files that tick (`rules::feature::bounces`, "Firefight, AI and bounces") | at the next tick boundary |
 | `on timer`, then `on tick` | an observer after `GAME_TICK` | at the next tick boundary |
 | `on init` | the start observer | at the first tick boundary |
 
@@ -371,7 +372,8 @@ runtime over invented guest memory with fake engine callees: the
 built-in Slayer starting from a record and setting the record, a kill
 making a `SCORE_ADD` call at the next boundary, a suicide's negative
 score, a machine that is not the authority, a refusal for an unknown
-hash and for System Link, refusals by entry and by event, another
+hash and for System Link, refusals by entry and by event, a bounce
+reaching `on bounce` and scoring at the next boundary, another
 engine's record, a record with no mode, the record removed at the game's
 end, a reverted record resuming the VM, a stored script running with no
 Live client and on System Link, a Live variant's script fetched by its
@@ -1327,16 +1329,53 @@ block's flags) a script's own choice. The detector's rule is a traced
 signature, not the launch rule (Open in superbounce.md), so it can miss
 or over-report until it is checked in play.
 
+**Code**, tests only. The detector is the superbounce mode's medal chain
+(`superbounce_chain`, [superbounce.md](superbounce.md#medals)): each
+tick its observer after `GAME_TICK` steps every player's chain, and each
+bounce it files goes to the running script as `on bounce`
+(`rules::feature::bounces`, `Runtime::bounces`), on that tick, with its
+calls made at the next tick boundary as `on kill`'s are. A Bounced (a
+fall out of the map) and a `superbounce.medal_test` award are not
+bounces. `p` is the bouncing player's slot; `spot` is the strip's id,
+`superbounce_chain::spot_id`: FNV-1a over the bits of the strip's edge,
+in 31 bits so it is never `none`. The scan is a function of the map's
+geometry, so a strip has one id in every game on its map, on every
+machine and in a film, and a script keeps per-strip state in object
+variables keyed by it (at most `vm::MAX_OBJECT_RECORDS`, 256, at once).
+The chain runs only while the superbounce mode is on, so a script hears
+bounces only in a game where the mode is on; and the mode is
+presentation-only (a film's hook digest leaves it out), so a script that
+scores bounces is not yet a parity game.
+
+**The Superbounce game type as a script** is
+`crates/formats/rules/src/builtin/superbounce.rules`, an example
+(`builtin::examples`): `carrier slayer`, Slayer's kill rule with its two
+options, and `bounce_points` (0 to 5, default 0), points for each
+bounce, so by default it scores as the community variant does. Its record
+settings (no limits, overshields, a magnum) stay the variant record's.
+Two things the language does not have yet move the rest of the variant
+onto it, and the game reads both through `rules::header`:
+
+| Header | What it turns on | Game side |
+|---|---|---|
+| `requires hud.superbounce`, a capability `rules::caps` lacks | the superbounce mode: HUD, marks, priming, medals | `header::asks_superbounce` reads `requires`; `superbounce_mode` is on when the running script asks (`feature::running_asks_superbounce`), as well as by the flag, the name and the switches |
+| `list tweakers`, a header line | a place under Tweakers ([community-gametypes.md](community-gametypes.md#tweakers)) | `header::lists_tweakers`, false for every header; `community_variants::is_tweaker` asks it of a mode 2 block's script through `header::block_is_tweaker` |
+
+Until both exist the Superbounce variant stays a Slayer record with the
+flag, and no script turns the mode on or lists under Tweakers.
+
 ## Payoff
 
 The modes below that have a script are examples in
 `crates/formats/rules/src/builtin/`, listed by `builtin::examples()`
 rather than by engine: `infection.rules`, `gun_game.rules`,
-`vip.rules`, `siege.rules`, `race.rules` and `bounce_practice.rules`.
-Each compiles, verifies and fits a tick (`tests/engines.rs`), and each
-header names the entries a host cannot make yet. VIP and Bounce
-Practice call none, but wait on the match edit log and the bounce
-detector. Prop Hunt has no script.
+`vip.rules`, `siege.rules`, `race.rules`, `bounce_practice.rules` and
+`superbounce.rules`. Each compiles, verifies and fits a tick
+(`tests/engines.rs`), and each header names the entries a host cannot
+make yet. VIP, Bounce Practice and Superbounce call none. VIP waits on
+the match edit log; Bounce Practice on the host runtime's `round_start`
+and `set_gravity`; Superbounce on the header lines above. Prop Hunt has
+no script.
 
 - **Race.** Halo 1's race track points are dropped at conversion
   ([multiplayer.md](../halo1/multiplayer.md)); labelled checkpoints and

@@ -286,8 +286,15 @@ types above it.
 
 Code: `crates/extensions/game/src/tweakers.rs` (feature `tweakers`, on by
 default, [switches](../runtime/switches.md)). A variant is a tweaker when
-its extension block has a tweak flag (the superbounce flag) or its name is
-a Tweakers built-in's (`community_variants::is_tweaker`). Every tweaker is
+its extension block has a tweak flag (the superbounce flag), its name is
+a Tweakers built-in's, or its block names a rules script (mode 2) whose
+header files it under Tweakers (`community_variants::is_tweaker`). The
+script is found by its record's prefix among the built-in scripts and in
+the game-variant store (`rules::header::block_is_tweaker`); one this
+machine lacks lists under its carrier's game type. The rules language has
+no header line for it yet (`list tweakers`, rules-engine.md, "Firefight,
+AI and bounces"), so `rules::header::lists_tweakers` is false for every
+script and only the flag and the name file a tweaker. Every tweaker is
 a Slayer variant underneath (`Category::Tweakers`, checked by a test), so
 the Tweakers list is Slayer's variant list filtered: its defaults, copies
 and saves are Slayer's. Saving or editing a tweaker keeps the flag, so the

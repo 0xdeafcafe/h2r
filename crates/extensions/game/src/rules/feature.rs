@@ -18,6 +18,10 @@
 //! - `GAME_TICK`, an observer after: timers and `on tick`
 //!   ([`Runtime::post_tick`]).
 //! - `GAME_END`, an observer after: the record is removed.
+//!
+//! The superbounce mode's tick observer feeds it each bounce its medal
+//! chain files ([`bounces`]), and asks whether the running script wants
+//! the mode ([`running_asks_superbounce`]).
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -265,6 +269,29 @@ pub fn install(
     }
     let _ = SHARED.set(shared);
     Ok(true)
+}
+
+/// One tick's superbounce awards (`superbounce_chain::Medals::step`), as
+/// the running script's `on bounce` ([`Runtime::bounces`]). Nothing
+/// without the feature.
+pub fn bounces(m: &dyn GuestMemory, awards: &[crate::superbounce_chain::Award]) {
+    if awards.is_empty() {
+        return;
+    }
+    if let Some(s) = SHARED.get() {
+        s.lock().bounces(m, awards);
+    }
+}
+
+/// Whether the running script asks for the superbounce mode
+/// ([`super::header::asks_superbounce`]); false without the feature or a
+/// running script.
+pub fn running_asks_superbounce() -> bool {
+    SHARED.get().is_some_and(|s| {
+        s.lock()
+            .running()
+            .is_some_and(|r| super::header::asks_superbounce(r.vm.ir()))
+    })
 }
 
 /// Why `rules.state` has no runtime to answer from.
