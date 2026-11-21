@@ -5,7 +5,8 @@ geometry](#spots-in-the-geometry), which is the design of our scanner
 (`crates/live/superbounce`, `h2 superbounce scan`), and [Medals](#medals),
 whose rule, HUD line and agent API are built and not yet run in a game,
 and whose recording in the film and Live, and the site's medals, are
-built.
+built, and [The bounce view](#the-bounce-view), built and not run in a
+game.
 
 What the retail engine does when a player superbounces: what is
 established, what is measured, and what is still open. The research is a
@@ -1570,5 +1571,111 @@ Lab runs through the agent API at 30 frames a second, as
   with `render.frame`, against `h2 hud preview superbounce`'s `bounced`
   and `medal-` states: the glyph in its own colours, the line's place
   and fade.
+
+No game was run for this section.
+
+## The bounce view
+
+The spots across the whole level, on the flashlight, and the nearby ones
+on the motion tracker. Built and not run in a game. Code:
+`crates/extensions/game/src/superbounce_view.rs` (the button, the pulse,
+the tracker, the drawing, the agent methods),
+`crates/live/superbounce/src/view.rs` (the line-of-sight test, the floors
+for the map, the pairing). Tests: `superbounce_view_tests.rs` beside it,
+and the tests in `view.rs`. Design mockups and the choice among them:
+the map-view set of 2026-11-21 (concepts 1, 3, 4 and 6).
+
+| Input | What shows |
+|---|---|
+| Nothing | Spots within the tracker's range are blips on it: a ring for a crouch spot, a filled diamond for a landing, a small chevron over or under one on a floor above or below, a ring round the navpoint's. The nearest 6 out of range are chevrons on the rim pointing at them. Hidden while the variant turns the tracker off. |
+| Tap the flashlight | A scan pulse. A ring leaves the player at 40 units a second and crosses the tracker; each spot in the world lights as it passes, settles and is gone 4 s after it lit. |
+| Hold the flashlight | Every spot on the level is marked in the world: a small upright ring or diamond with its distance in metres (none past 40 m), dashed and dimmer when a wall is between it and the player, a chevron over or under it for a floor above or below, and a dashed line from each crouch spot to its landing. The tracker grows to twice its size into a map: the floors from the collision within 50 m and from 2.5 units below to 1.5 above the player's feet, their outline, the spots and pairs, every proven spot out of range on its rim, turned so ahead is up. Let go and it shrinks back. |
+
+Proven spots are drawn at full strength, likely ones at half, as the
+mode's other marks. Everything is in the HUD's colour (`0x00468c84`,
+`superbounce_font::hud_colour`), labels in the disc's HUD font.
+
+**The button** is the flashlight action, not the White button: the
+unit control flags at unit `+0x148`, bit `0x4`, which Halo 2 tests at
+`0x000c5115` and `0x000c52be` and the converted Halo 1 scope reads
+(`crates/extensions/h1-runtime/src/h1_scope_zoom.rs`). A layout that
+moves the flashlight (Bumper Jumper puts it on X) moves the view with
+it. The press is read, never taken from the game: on a converted Halo 1
+map the light and the view come on together. A press let go within 8
+ticks (0.27 s) is a tap; held 8 ticks it is a hold until let go
+(`TAP_TICKS`). The ghost runs take X on the ground: on Default the two
+are apart; on Bumper Jumper the flashlight is X too, and a press there
+does both (Open: whether that layout needs one of them moved).
+
+**Behind a wall.** One sight line a spot, from the eye (0.62 over the
+feet) to 0.25 over the spot's stand point, against every collision
+polygon of the scanned structure BSP, ignoring a hit within 0.05 of
+either end. The polygons are gridded in 4-unit cells once a map, on the
+scan's thread (`superbounce::view::Geometry`, built with the capsule
+test's `Room`). Each tick tests a few spots round the list: 6 while
+marks show, 2 otherwise (`SightCache`). A mark is wholly solid or wholly
+dashed; nothing cuts it at a wall's edge.
+
+**Another floor.** A spot more than 0.9 units over or under the
+player's feet is on a floor above or below (`superbounce::view::level`).
+
+**The pairs.** A crouch spot pairs with the nearest landing within 8
+units, stand to stand (`superbounce::view::pairs`).
+
+**The map's floors** are the collision polygons whose normal looks up
+more than 0.7, their outline the floor edges no other floor shares (the
+foot of a wall, the lip of a drop), matched at 1 cm. Higher floors are
+drawn over lower ones and brighter. Stacked floors within the band are
+drawn on top of each other.
+
+**The tracker's place** is the retail tracker's, `rects::TRACKER` of the
+HUD kit (x 47..130, y 360..443 at 640 by 480 fullscreen, centre 40.5
+right and 42.5 up from the HUD frame's bottom-left corner, which is read
+at `0x004b9dd8`; [hud-kit.md](hud-kit.md#anchors-the-safe-area-and-scaling)).
+A blip at the range's edge sits 35 HUD pixels from the centre (S: the
+blip disc's own radius is not decoded). The range is the `hudg`'s
+`radar_range` (`+0x290`), as the bots' radar reads it, or 25 m without
+one. The host moves the HUD's bottom-left group for the window's aspect
+and the HUD Position setting; the view reads that fit
+(`render_aspect::hud_bottom_left_fit`, the first view's) and applies it,
+so its marks stay on the tracker in Centered and Pinned. In a split
+screen it follows the view at the frame's top left (S: the first local
+player's). The map's growth keeps the bottom-left corner of its box on
+the tracker's; it covers the shield meter while held, which stays where
+it is.
+
+The marks over the tracker are host marks, drawn by the window's mark
+pass in the image's HUD space (`gfx::world_lines::HudMark`), not HUD kit
+elements: the kit only places the game's own widgets, and it has none for
+a polygon or a map.
+
+**Any frame rate.** The button, the sight tests, the blips (at the
+tick's yaw, so they turn with the game's own blips) and the map are made
+once a 30 Hz tick, with the instants the pulse and the growth started.
+What is drawn is a function of that and the `now` the window gives each
+present: the same `now` gives the same picture however many presents
+there are, and the pulse, the fades and the growth run on the wall clock.
+
+**The agent API.** `superbounce.view` (read) says the mode (`none`,
+`pulse`, `hold`), the button, the pulse's age and front, the growth, the
+spots marked and how many are behind a wall, the tracker's blips and the
+map's counts. `superbounce.view_test {"mode": "pulse"|"hold"|"none"}`
+(act) drives it with no pad
+([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type)).
+
+### Checking the bounce view on the lab
+
+- **The button.** On Default, White taps a pulse and holds the map; on
+  Bumper Jumper the same on X; on a converted Halo 1 map the light comes
+  on too. `superbounce.view`'s `button` follows the press.
+- **The tracker's place.** `render.frame` with blips and the map shown,
+  4:3, 16:9 Centered and 16:9 Pinned: the blips sit on the tracker and
+  turn with the game's own on a fast turn.
+- **The blip disc's radius.** A bot at the edge of the tracker's range
+  against a spot blip at the same distance.
+- **Behind a wall.** `superbounce.view_test {"mode":"hold"}` on
+  Zanzibar from a spot inside the base: `hidden` against what a look
+  round says.
+- **Frame time.** `profile` while held on Zanzibar.
 
 No game was run for this section.

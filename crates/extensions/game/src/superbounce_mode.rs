@@ -806,6 +806,7 @@ fn reset() {
     *lock(&TRACKER) = Tracker::new();
     *lock(&MEDALS) = Medals::empty();
     *lock(&LOCAL) = None;
+    crate::superbounce_view::reset();
 }
 
 /// `superbounce.medal_test`: files a bounce at chain count `chain` (or a
@@ -955,6 +956,8 @@ fn on_tick(o: &hooks::Obs) {
         standing_fits,
         medals,
     };
+    // The bounce view on the flashlight and the tracker.
+    crate::superbounce_view::on_tick(o, &spots, &room);
 }
 
 // ---- the feature ----
@@ -1018,6 +1021,7 @@ mod gpu {
 
     pub fn register(host: &mut crate::Host) {
         host.add_world_line_source(Arc::new(Lines));
+        host.add_world_line_source(Arc::new(crate::superbounce_view::Source));
     }
 
     impl WorldLineSource for Lines {

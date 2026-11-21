@@ -40,6 +40,9 @@ pub struct Room {
     faces: Vec<Face>,
     grid: HashMap<(i32, i32), Vec<u32>>,
     big: Vec<u32>,
+    /// The same polygons for the bounce view: its sight test and its map
+    /// (`superbounce::view`, `crate::superbounce_view`).
+    view: std::sync::Arc<superbounce::view::Geometry>,
 }
 
 impl std::fmt::Debug for Room {
@@ -56,7 +59,10 @@ fn cell(v: f32) -> i32 {
 
 impl Room {
     pub fn new(polys: &[Poly]) -> Room {
-        let mut room = Room::default();
+        let mut room = Room {
+            view: std::sync::Arc::new(superbounce::view::Geometry::new(polys)),
+            ..Room::default()
+        };
         for p in polys {
             if p.verts.len() < 3 || !p.verts.iter().flatten().all(|v| v.is_finite()) {
                 continue;
@@ -88,6 +94,11 @@ impl Room {
             });
         }
         room
+    }
+
+    /// The bounce view's geometry of the same polygons.
+    pub fn view(&self) -> &std::sync::Arc<superbounce::view::Geometry> {
+        &self.view
     }
 
     /// No polygons: nothing to test against.

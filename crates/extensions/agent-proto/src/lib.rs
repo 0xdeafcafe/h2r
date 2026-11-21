@@ -27,6 +27,7 @@ pub mod frame_graph;
 pub mod goto;
 pub mod havok;
 pub mod superbounce;
+pub mod superbounce_view;
 pub mod host_lobby;
 pub mod host_memory;
 pub mod memory_forensics;

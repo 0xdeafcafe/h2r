@@ -44,6 +44,8 @@ connection to hold `session.claim`.
 | `superbounce.assist_test` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `superbounce.verify`, `superbounce.verify_cancel` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `superbounce.verify_status` | read | [`superbounce`](#superbounce-the-superbounce-game-type) |
+| `superbounce.view` | read | [`superbounce`](#superbounce-the-superbounce-game-type) |
+| `superbounce.view_test` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `profile.counters`, `profile.capture`, `profile.fallbacks`, `profile.memory`, `profile.faults` | read | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.start`, `profile.sample.stop` | act | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.status` | read | [`profile`](#profile-where-a-frame-goes) |
@@ -802,6 +804,35 @@ h2 agent superbounce.verify '{"kind":"crouch","dry_run":true}'
 h2 agent superbounce.verify '{"kind":"crouch","spots":[0,1,2],"trace":0}'
 h2 agent superbounce.verify_status '{"wait_ticks":290,"brief":true}'
 h2 agent superbounce.verify '{"kind":"drop","prime":"none","spots":[0]}'
+```
+
+`superbounce.view` (access: read; no parameters) says what the bounce
+view shows ([superbounce.md](../game/superbounce.md#the-bounce-view);
+`crates/extensions/game/src/superbounce_view.rs`; wire types in
+`crates/extensions/agent-proto/src/superbounce_view.rs`), as of the last
+tick, timed now:
+
+| Field | Meaning |
+|---|---|
+| `active` | the superbounce mode is on; everything below is empty while off |
+| `mode` | `none`, `pulse` (a tap's pulse still shows) or `hold` |
+| `button` | the flashlight action at the last tick |
+| `test_hold` | `superbounce.view_test` is holding |
+| `pulse_age`, `pulse_front` | seconds since the pulse left, and its ring's distance from the player in world units; absent without a pulse |
+| `grow` | the tracker's growth into the map, 0 to 1 |
+| `spots`, `marks`, `hidden`, `tested` | the spots the view knows, those marked in the world now, of those the ones behind a wall, and those with a line-of-sight answer |
+| `tracker` | `enabled` (the variant shows the tracker), `range` (world units) and `blips`: each `kind` (`bounce` or `crouch`), `proven`, `x` and `y` (right and ahead over the range; on the unit circle for a rim chevron), `level` (`same`, `above`, `below`), `rim` and `nav` |
+| `map` | while held or shrinking: `floors`, `edges` and `pairs` drawn, and its `blips` over the map's 50 m |
+
+`superbounce.view_test {"mode": "pulse"|"hold"|"none"}` (access: act)
+drives the view with no pad: `pulse` fires a pulse at the next tick,
+`hold` holds until `none`, `none` lets go and stops the pulse. The answer
+is `{mode, test_hold}`. Refused while the mode is off.
+
+```sh
+h2 agent superbounce.view_test '{"mode":"hold"}'
+h2 agent superbounce.view
+h2 agent superbounce.view_test '{"mode":"none"}'
 ```
 
 ## `profile`: where a frame goes
@@ -2653,7 +2684,8 @@ immutable sample of world-space edges, with an anchor, color, dash
 flag, optional label and style for each group. A sample can live as long as
 its image or carry its own lease. Only the editor sample contributes
 to `editor.marks` status. The superbounce game type is another source, and
-its sample stays image-lived (`crates/extensions/game/src/superbounce_mode.rs`;
+its bounce view a third; their samples stay image-lived (`crates/extensions/game/src/superbounce_mode.rs`,
+`crates/extensions/game/src/superbounce_view.rs`;
 `crates/extensions/game/src/run_opts.rs`,
 `crates/extensions/game/src/world_lines.rs`,
 `crates/platform/gfx/src/world_lines.rs`).
@@ -2677,6 +2709,14 @@ how it is drawn; the default is a thin opaque line. A style has:
   disc's HUD font with its button glyphs (`Hud`), once a source has
   published one with `gfx::world_lines::set_hud_font`. A `Hud` label is
   drawn in the 8x8 font while none is published.
+
+A sample may also give marks in the image's HUD space
+(`ImageMarks::hud`, `gfx::world_lines::HudMark`): paths, filled convex
+polygons and text, in guest pixels of the 640 by 480 image with the
+host's HUD fit already applied. The window scales them with the image,
+as the guest's own HUD is scaled, after the world lines. The superbounce
+bounce view draws its tracker blips and map this way
+(`crates/extensions/game/src/superbounce_view.rs`).
 
 The window draws every edge as an anti-aliased screen-space quad, with the
 core, halo and dashes in the fragment shader, and the ribbons, arrowheads

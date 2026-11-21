@@ -199,6 +199,35 @@ impl Canvas {
     }
 }
 
+/// The HUD's bottom-left corner group (anchor 2: the motion tracker and
+/// the shield meter).
+const BOTTOM_LEFT: u32 = 2;
+
+/// The first view's bottom-left HUD fit ([`UiFit::transform`]), as its
+/// last HUD draw set it; identity while the output is 4:3.
+static HUD_BOTTOM_LEFT: Mutex<[f32; 4]> = Mutex::new(UiFit::IDENTITY.transform);
+
+/// Keeps the bottom-left fit of the view at the frame's top left (the
+/// first player's in a split screen; S: that the first local player is
+/// drawn there), for host marks laid over the motion tracker.
+fn publish_hud_corner(active: Option<Canvas>) {
+    let fit = match active {
+        None => UiFit::IDENTITY,
+        Some(c) if c.rect.x == 0 && c.rect.y == 0 => c
+            .fit(Some((BOTTOM_LEFT, [0.0; 2])))
+            .unwrap_or(UiFit::IDENTITY),
+        Some(_) => return,
+    };
+    *HUD_BOTTOM_LEFT.lock().unwrap_or_else(|e| e.into_inner()) = fit.transform;
+}
+
+/// How the host moves the first view's bottom-left HUD group: guest pixel
+/// `p` is drawn at `p * [t0, t1] + [t2, t3]` (docs/game/superbounce.md,
+/// "The bounce view").
+pub fn hud_bottom_left_fit() -> [f32; 4] {
+    *HUD_BOTTOM_LEFT.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[derive(Default)]
 struct Layout {
     active: Option<Canvas>,
@@ -303,6 +332,9 @@ impl Feature for RenderAspect {
                             hud,
                             pinned: hud && position() == crate::setting_defs::HUD_PINNED,
                         });
+                    }
+                    if hud {
+                        publish_hud_corner(layout.active);
                     }
                     if was_active || layout.active.is_some() {
                         sink.set_fit(&mut c.ctx.memory(), layout.current());
@@ -478,6 +510,36 @@ mod tests {
 
     fn close(a: f32, b: f32) {
         assert!((a - b).abs() < 0.001, "{a} != {b}");
+    }
+
+    #[test]
+    fn the_first_views_bottom_left_fit_is_published_for_host_marks() {
+        let canvas = |rect, pinned| Canvas {
+            output: (1920, 1080),
+            rect,
+            hud: true,
+            pinned,
+            projection_factor: 0.75,
+        };
+        // Pinned at 16:9: squeezed about the view's bottom-left corner.
+        publish_hud_corner(Some(canvas(FULL, true)));
+        let [sx, sy, ox, oy] = hud_bottom_left_fit();
+        close(sx, 0.75);
+        close(sy, 1.0);
+        close(ox, 0.0);
+        close(oy, 0.0);
+        // A second view elsewhere leaves the first view's fit.
+        let lower = PixelRect {
+            x: 0,
+            y: 240,
+            width: 640,
+            height: 240,
+        };
+        publish_hud_corner(Some(canvas(lower, true)));
+        close(hud_bottom_left_fit()[0], 0.75);
+        // 4:3: no fit.
+        publish_hud_corner(None);
+        assert_eq!(hud_bottom_left_fit(), UiFit::IDENTITY.transform);
     }
 
     #[test]

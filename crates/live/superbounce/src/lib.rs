@@ -17,6 +17,7 @@ mod geom;
 mod read;
 mod scan;
 pub mod verified;
+pub mod view;
 
 /// A point in world units.
 pub type Vec3 = [f32; 3];

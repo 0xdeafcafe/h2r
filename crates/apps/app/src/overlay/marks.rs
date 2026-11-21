@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 pub use gfx::world_lines::ImageSamples;
-use gfx::world_lines::{Fade, LineStyle, Pulse, ShownMarks, TextLayout, WorldLine};
+use gfx::world_lines::{Fade, HudMark, LineStyle, Pulse, ShownMarks, TextLayout, WorldLine};
 
 use crate::scale::Viewport;
 
@@ -33,6 +33,29 @@ impl ProjectedMarks {
         self.samples
             .visit(&|| now, &mut |line| visitor(&self.cameras, line))
     }
+
+    /// The samples' HUD-space marks ([`HudMark`]), after the world lines.
+    pub(crate) fn visit_hud(&self, now: Instant, visitor: &mut dyn FnMut(HudMark<'_>)) {
+        self.samples.visit_hud(&|| now, visitor);
+    }
+}
+
+/// The guest image is 640 by 480 guest pixels however large it is drawn.
+const GUEST_SIZE: [f32; 2] = [640.0, 480.0];
+
+/// The window pixel of a HUD-space point (guest pixels of the 640 by 480
+/// image) in the image's `area`.
+fn hud_pixel(area: Viewport, [x, y]: [f32; 2]) -> [f32; 2] {
+    [
+        area.x as f32 + x * area.width as f32 / GUEST_SIZE[0],
+        area.y as f32 + y * area.height as f32 / GUEST_SIZE[1],
+    ]
+}
+
+/// Window pixels in one guest pixel of height: what HUD widths and font
+/// pixels scale by.
+fn hud_scale(area: Viewport) -> f32 {
+    area.height as f32 / GUEST_SIZE[1]
 }
 
 /// Presentation metadata, independent of the link plate.
@@ -640,6 +663,101 @@ fn fs(in: Out) -> @location(0) vec4<f32> {
             }
         }
 
+        /// One HUD-space mark ([`HudMark`]) in the image's `area`: its
+        /// guest pixels scaled with the image, as the guest's own HUD is.
+        pub(crate) fn push_hud(&mut self, mark: &HudMark<'_>, area: Viewport, size: (u32, u32)) {
+            let scale = hud_scale(area);
+            match *mark {
+                HudMark::Path {
+                    points,
+                    closed,
+                    width,
+                    dashed,
+                    color,
+                    alpha,
+                } => {
+                    if points.len() < 2 {
+                        return;
+                    }
+                    let half = (width * scale * 0.5).max(0.5);
+                    let pen = Pen {
+                        color,
+                        alpha: alpha.clamp(0.0, 1.0),
+                        fade: None,
+                        half,
+                        outer: half + 0.75,
+                        glow_alpha: 0.0,
+                        dash: if dashed { 6.0 * scale.max(1.0) } else { 0.0 },
+                    };
+                    let px: Vec<[f32; 2]> = points.iter().map(|&p| hud_pixel(area, p)).collect();
+                    let n = px.len();
+                    let segments = if closed { n } else { n - 1 };
+                    let mut along = 0.0;
+                    for i in 0..segments {
+                        let (a, b) = (px[i], px[(i + 1) % n]);
+                        self.stroke_pixels([a, b], along, &pen, size);
+                        along += (b[0] - a[0]).hypot(b[1] - a[1]);
+                    }
+                }
+                HudMark::Fill {
+                    points,
+                    color,
+                    alpha,
+                } => {
+                    if points.len() < 3 {
+                        return;
+                    }
+                    let c = [color[0], color[1], color[2], alpha.clamp(0.0, 1.0)];
+                    let shape = [FILL, FILL, 0.0, 0.0];
+                    let first = hud_pixel(area, points[0]);
+                    for w in points[1..].windows(2) {
+                        for p in [first, hud_pixel(area, w[0]), hud_pixel(area, w[1])] {
+                            self.vertex(p, c, [0.0, 0.0], shape, size);
+                        }
+                    }
+                }
+                HudMark::Text {
+                    at,
+                    text,
+                    color,
+                    alpha,
+                    pixel,
+                    centered,
+                } => {
+                    let point = hud_pixel(area, at);
+                    let c = [color[0], color[1], color[2], alpha.clamp(0.0, 1.0)];
+                    let px = pixel * scale;
+                    // The whole image: text is clipped at its right and bottom.
+                    let whole = MarkCamera {
+                        view_projection: [[0.0; 4]; 4],
+                        viewport: [0.0, 0.0, 1.0, 1.0],
+                    };
+                    if let Some(font) = self.font.clone() {
+                        self.hud_label(&font, text, point, c, px, centered, size, &whole, area);
+                    } else {
+                        self.label(text, point, c, px, centered, size, &whole, area);
+                    }
+                }
+            }
+        }
+
+        /// A window-pixel segment as an anti-aliased quad, its dashes
+        /// counted from `along` pixels into its path.
+        fn stroke_pixels(&mut self, line: [[f32; 2]; 2], along: f32, pen: &Pen, size: (u32, u32)) {
+            let Some(quad) = strip_quad(line, pen.outer, pen.half) else {
+                return;
+            };
+            let shape = [pen.half, pen.outer, pen.dash, pen.glow_alpha];
+            let color = [pen.color[0], pen.color[1], pen.color[2], pen.alpha];
+            self.quad(
+                std::array::from_fn(|i| {
+                    let (pos, local) = quad[i];
+                    ((pos, [local[0] + along, local[1]]), color, shape)
+                }),
+                size,
+            );
+        }
+
         fn vertex(
             &mut self,
             [x, y]: [f32; 2],
@@ -1143,6 +1261,21 @@ mod tests {
         assert_eq!(points, [[215.0, 60.0], [202.5, 60.0]]);
         // Clipped at the near plane (w = 1), the far end is at w = 2.
         assert!((depth[0] - 1.0).abs() < 1e-4 && (depth[1] - 2.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn hud_points_scale_with_the_guest_image() {
+        // The image drawn at 1280 by 960 from (40, 10).
+        let area = Viewport {
+            x: 40,
+            y: 10,
+            width: 1280,
+            height: 960,
+        };
+        assert_eq!(hud_pixel(area, [0.0, 0.0]), [40.0, 10.0]);
+        assert_eq!(hud_pixel(area, [640.0, 480.0]), [1320.0, 970.0]);
+        assert_eq!(hud_pixel(area, [88.5, 401.5]), [217.0, 813.0]);
+        assert_eq!(hud_scale(area), 2.0);
     }
 
     #[test]

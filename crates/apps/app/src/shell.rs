@@ -442,6 +442,9 @@ impl Shell {
                     let shown = marks.visit(now, &mut |cameras, mark| {
                         g.marks.push(&mark, cameras, viewport, g.surface.size());
                     });
+                    marks.visit_hud(now, &mut |mark| {
+                        g.marks.push_hud(&mark, viewport, g.surface.size());
+                    });
                     overlay_expires = shown.expires;
                     drawn_generation = shown.editor_generation;
                     g.marks.draw(

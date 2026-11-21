@@ -580,6 +580,14 @@ constants, checked on the disc: `TRACKER`, `SHIELD_BAND`, `H1_HEALTH`,
 and the like give offsets from them, so "above the motion tracker" is written
 once and is right in each screen mode.
 
+Something drawn over the tracker that no retail widget can draw (a
+polygon, a map) is not a kit element. The superbounce bounce view's
+blips and map are host marks in the image's HUD space
+(`gfx::world_lines::HudMark`), placed at `TRACKER` from the HUD frame's
+bottom-left corner and moved by the host's fit of the bottom-left group
+(`render_aspect::hud_bottom_left_fit`)
+([superbounce.md](superbounce.md#the-bounce-view)).
+
 ### Cost
 
 S, to be measured with `profile` on the lab Mac: one address-range test

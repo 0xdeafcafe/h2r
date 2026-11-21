@@ -342,6 +342,42 @@ pub fn hud_font() -> Option<Arc<LabelFont>> {
     HUD_FONT.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
+/// A mark drawn in a view's HUD space rather than the world: points in
+/// guest pixels of the 640 by 480 image, with the host's HUD fit already
+/// applied by the source. The window scales them with the image as it
+/// scales the guest's own HUD. A source that draws over the motion
+/// tracker uses these (docs/game/superbounce.md, "The bounce view").
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum HudMark<'a> {
+    /// A line through `points`, `width` guest pixels wide (scaled by the
+    /// image's height); `closed` joins the last point to the first.
+    Path {
+        points: &'a [[f32; 2]],
+        closed: bool,
+        width: f32,
+        dashed: bool,
+        color: [f32; 3],
+        alpha: f32,
+    },
+    /// A filled convex polygon: a fan from its first point.
+    Fill {
+        points: &'a [[f32; 2]],
+        color: [f32; 3],
+        alpha: f32,
+    },
+    /// Text in the HUD font ([`hud_font`]; the 8x8 font without one),
+    /// `pixel` guest pixels a font pixel, its top left at `at` or centred
+    /// on it.
+    Text {
+        at: [f32; 2],
+        text: &'a str,
+        color: [f32; 3],
+        alpha: f32,
+        pixel: f32,
+        centered: bool,
+    },
+}
+
 /// How long a sample can appear when its image is shown again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImageValidity {
@@ -369,6 +405,10 @@ pub trait ImageMarks: Debug + Send + Sync {
         self.lines(visitor);
         Some(validity)
     }
+
+    /// Marks in the view's HUD space ([`HudMark`]), drawn after the world
+    /// lines. Most sources have none.
+    fn hud(&self, _now: &dyn Fn() -> Instant, _visitor: &mut dyn FnMut(HudMark<'_>)) {}
 }
 
 #[derive(Debug, Default)]
@@ -416,6 +456,15 @@ impl ImageSamples {
             shown.editor_generation = Some(generation);
         }
         shown
+    }
+
+    /// Draws every visible source's HUD-space marks ([`ImageMarks::hud`]).
+    pub fn visit_hud(&self, now: &dyn Fn() -> Instant, visitor: &mut dyn FnMut(HudMark<'_>)) {
+        for sample in &self.sources {
+            if sample.validity(now).is_some() {
+                sample.hud(now, visitor);
+            }
+        }
     }
 }
 
@@ -507,6 +556,41 @@ mod tests {
             }
         }
         assert_eq!(f.rgba.len() as u32, f.size[0] * f.size[1] * 4);
+    }
+
+    #[test]
+    fn hud_marks_come_from_visible_sources_only() {
+        #[derive(Debug)]
+        struct Tracker(bool);
+        impl ImageMarks for Tracker {
+            fn validity(&self, _now: &dyn Fn() -> Instant) -> Option<ImageValidity> {
+                self.0.then_some(ImageValidity::Image)
+            }
+            fn lines(&self, _visitor: &mut dyn FnMut(WorldLine<'_>)) {}
+            fn hud(&self, _now: &dyn Fn() -> Instant, visitor: &mut dyn FnMut(HudMark<'_>)) {
+                visitor(HudMark::Fill {
+                    points: &[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+                    color: [1.0; 3],
+                    alpha: 1.0,
+                });
+            }
+        }
+        let mut samples = ImageSamples::default();
+        samples.sources.push(Arc::new(Tracker(true)));
+        samples.sources.push(Arc::new(Tracker(false)));
+        let mut n = 0;
+        samples.visit_hud(&Instant::now, &mut |_| n += 1);
+        assert_eq!(n, 1);
+        // A source without HUD marks draws none.
+        #[derive(Debug)]
+        struct Plain;
+        impl ImageMarks for Plain {
+            fn lines(&self, _visitor: &mut dyn FnMut(WorldLine<'_>)) {}
+        }
+        let mut plain = ImageSamples::default();
+        plain.sources.push(Arc::new(Plain));
+        plain.visit_hud(&Instant::now, &mut |_| n += 1);
+        assert_eq!(n, 1);
     }
 
     #[test]
