@@ -94,6 +94,8 @@ struct Shell {
     super_held: bool,
     ime_composing: bool,
     ime_allowed: bool,
+    #[cfg(target_os = "linux")]
+    steam_keyboard: Option<crate::steam_keyboard::SteamKeyboard>,
     user_paused: bool,
     focus_paused: bool,
     closing: bool,
@@ -132,6 +134,8 @@ pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitRepor
         super_held: false,
         ime_composing: false,
         ime_allowed: false,
+        #[cfg(target_os = "linux")]
+        steam_keyboard: crate::steam_keyboard::SteamKeyboard::from_env(),
         user_paused: false,
         focus_paused: false,
         closing: false,
@@ -205,7 +209,7 @@ impl Shell {
         #[cfg(target_os = "macos")]
         app_icon::set_dock_icon();
         let size = window.inner_size();
-        let instance = wgpu::Instance::default();
+        let instance = gfx::instance();
         let surface = instance.create_surface(Arc::clone(&window))?;
         let ctx = pollster::block_on(GfxContext::new(instance, Some(&surface)))?;
         let info = ctx.adapter.get_info();
@@ -844,6 +848,10 @@ impl ApplicationHandler<UserEvent> for Shell {
                 g.window.set_ime_allowed(text_active);
             }
             self.ime_allowed = text_active;
+            #[cfg(target_os = "linux")]
+            if let (Some(steam), Some(kb)) = (&mut self.steam_keyboard, &self.keyboard) {
+                steam.update(text_active, kb.active_device().get());
+            }
             if !text_active {
                 self.ime_composing = false;
             }

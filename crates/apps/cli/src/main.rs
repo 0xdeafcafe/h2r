@@ -361,7 +361,15 @@ fn perf_cmd(cmd: &str, _: Vec<String>) -> Result<()> {
     )
 }
 
+// Heap profiling (docs/perf/profiling.md, "Heap profile"): every allocation
+// goes through dhat, which writes dhat-heap.json when `main` returns.
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 fn main() -> Result<()> {
+    #[cfg(feature = "dhat-heap")]
+    let _heap = dhat::Profiler::new_heap();
     // Live presence says which build this is (docs/game/game-options.md 3).
     #[cfg(feature = "desktop")]
     boot::live_glue::set_build(app::BuildInfo::baked().sha);
@@ -1181,10 +1189,7 @@ fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
     if !reuse {
         emit_cache::invalidate(&out)?;
         let t = Instant::now();
-        let (mut a, _) = boot::analyze_cached(&x, None)?;
-        if boot::has_retail_render_sites(&x) {
-            a.expose_instructions(boot::scene_effect_instruction_entries());
-        }
+        let (a, _) = boot::analyze_cached(&x, None)?;
         println!("analyze: {:.3}s", t.elapsed().as_secs_f64());
         let t = Instant::now();
         let owners = emit::plan_image(&a, &x, passes)?;
