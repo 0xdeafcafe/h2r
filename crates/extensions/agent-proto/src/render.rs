@@ -803,11 +803,11 @@ pub struct ResidualReply {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub sites_full: bool,
     /// Producer exits with nothing to end, and producers dropped unended.
-    #[serde(default, skip_serializing_if = "is_zero")]
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub unbalanced: u64,
 }
 
-fn is_zero(n: &u64) -> bool {
+fn is_zero_u64(n: &u64) -> bool {
     *n == 0
 }
 
