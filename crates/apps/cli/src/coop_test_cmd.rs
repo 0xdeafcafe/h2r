@@ -123,8 +123,13 @@ pub struct Opts {
     pub play_args: Vec<String>,
 }
 
-/// Parses `h2 coop ...` using the disc and application data environment.
-pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<Cmd> {
+/// Parses `h2 coop ...` using the disc and application data environment,
+/// with `host`'s app data convention for the default `--root`.
+pub fn parse(
+    args: Vec<String>,
+    host: content::store::DataHost,
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<Cmd> {
     let mut it = args.into_iter();
     match it.next().as_deref() {
         Some("test") => {}
@@ -221,7 +226,7 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
     }
     let root = match root {
         Some(r) => r,
-        None => content::store::app_data_dir(content::store::DataHost::CURRENT, |name| env(name).map(Into::into))
+        None => content::store::app_data_dir(host, |name| env(name).map(Into::into))
             .context("application data directory is unavailable; pass --root")?
             .join("coop-test"),
     };
@@ -457,7 +462,7 @@ pub fn accounts(client: &Client, games: &[Game], all: &Path) -> Result<Vec<Local
 
 pub fn run(args: Vec<String>) -> Result<()> {
     let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
-    match parse(args, env)? {
+    match parse(args, content::store::DataHost::CURRENT, env)? {
         Cmd::Verdict { log, auto } => {
             let text =
                 fs::read_to_string(&log).with_context(|| format!("reading {}", log.display()))?;
