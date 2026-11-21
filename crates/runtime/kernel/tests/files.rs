@@ -1247,12 +1247,30 @@ fn immutable_map_reads_install_private_pages_and_copy_noncongruent_reads() {
     cfg.map_guest_reads = true;
     let mut storage = vfs::Vfs::with_disc(cfg.clone(), &dvd).unwrap();
     storage.create_standard_links(&cfg).unwrap();
-    let mut h = Harness::with_memory(Default::default(), runtime::Guest::with_mapped_reads(true), |g| {
-        g.map(BIG, 1024 * 1024, 8 * 1024 * 1024, runtime::guest::Permissions::RW).unwrap();
-    });
+    let mut h = Harness::with_memory(
+        Default::default(),
+        runtime::Guest::with_mapped_reads(true),
+        |g| {
+            g.map(
+                BIG,
+                1024 * 1024,
+                8 * 1024 * 1024,
+                runtime::guest::Permissions::RW,
+            )
+            .unwrap();
+        },
+    );
     h.kernel.set_vfs(storage).unwrap();
     path(&h, r"D:\maps\synthetic.map", 0);
-    assert_eq!(h.success(202, &[DATA, vfs::Access::READ.0, ATTR, IOSB, 7, 0x60]), 0);
+    // FILE_SYNCHRONOUS_IO_NONALERT needs SYNCHRONIZE (0x100000) with the
+    // read right; the position query below relies on a synchronous handle.
+    assert_eq!(
+        h.success(
+            202,
+            &[DATA, 0x0010_0000 | vfs::Access::READ.0, ATTR, IOSB, 7, 0x60]
+        ),
+        0
+    );
     let handle = h.get(DATA);
     let watch = {
         let mut mem = h.runtime.memory();
@@ -1262,7 +1280,10 @@ fn immutable_map_reads_install_private_pages_and_copy_noncongruent_reads() {
     };
     // Starts and ends inside a page; the request also crosses logical EOF.
     h.runtime.memory().set_u64(INFO, 3).unwrap();
-    assert_eq!(h.success(219, &[handle, 0, 0, 0, IOSB, BIG + 3, 600_000, INFO]), 0);
+    assert_eq!(
+        h.success(219, &[handle, 0, 0, 0, IOSB, BIG + 3, 600_000, INFO]),
+        0
+    );
     assert_eq!(h.get(IOSB + 4) as usize, bytes.len() - 3);
     assert!(h.runtime.memory().has_dirty(watch));
     let mut got = vec![0; bytes.len()];
@@ -1283,11 +1304,17 @@ fn immutable_map_reads_install_private_pages_and_copy_noncongruent_reads() {
     assert_eq!(h.runtime.memory().u64(INFO).unwrap(), bytes.len() as u64);
 
     h.runtime.memory().set_u64(INFO, 1).unwrap();
-    assert_eq!(h.success(219, &[handle, 0, 0, 0, IOSB, BIG, 300_000, INFO]), 0);
+    assert_eq!(
+        h.success(219, &[handle, 0, 0, 0, IOSB, BIG, 300_000, INFO]),
+        0
+    );
     let second = vfs.lock().unwrap().guest_read_bytes();
     assert_eq!(second.mapped, first.mapped);
     assert_eq!(second.copied - first.copied, 300_000);
-    h.runtime.memory().read_bytes(BIG, &mut got[..300_000], 1).unwrap();
+    h.runtime
+        .memory()
+        .read_bytes(BIG, &mut got[..300_000], 1)
+        .unwrap();
     assert_eq!(got[..300_000], bytes[1..300_001]);
     drop(h);
     drop(vfs);
