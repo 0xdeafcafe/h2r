@@ -129,6 +129,38 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ),
     ("coop-players", "*", "players 3 to 16 spawn and follow teleports on the simulation thread"),
     ("coop-latency", "*", "samples update arrival on the simulation thread into shared counters"),
+    // render-aspect's own hooks are context-only. Two of its chains still
+    // fall back: the game view's, only while render-timing (off by default)
+    // puts a timer after the body, and the menu backdrop's, whose fit must
+    // be restored after the body (menus only).
+    #[cfg(feature = "gpu")]
+    (
+        "render-aspect",
+        "RENDER_GAME_VIEW",
+        "context-only, but shares the view with render-timing (off by default), whose timer runs after the body",
+    ),
+    #[cfg(feature = "gpu")]
+    (
+        "render-aspect",
+        "UI_MENU_BACKDROP",
+        "restores the menu widget fit after the backdrop's body, which needs the after continuation (menus only)",
+    ),
+    // Game-thread and UI points: the render never meets them, so they cost
+    // the pipelined render nothing.
+    (
+        "return-to-menu",
+        "*",
+        "the options queue, game activation and the frame launch point run on the game thread",
+    ),
+    ("coop-screens", "*", "Live co-op's lobby and texts on the game thread"),
+    ("host-metrics", "*", "samples the host on the game tick"),
+    ("live-browser-ads", "*", "refreshes Live lobby metadata on the game tick"),
+    ("theater-texts", "*", "the Theater row's texts on the game tick"),
+    ("theater-link", "*", "opens a linked film page from the UI update"),
+    ("live-map-pack-rotation", "*", "the matchmaking hopper's block read on the game thread"),
+    ("live-join-link", "*", "the Live join link's UI update and session join on the game thread"),
+    ("browser-filter-texts", "*", "rebuilds the Live browser's header and footer in the UI"),
+    ("lab-takeover", "*", "opens and expires the lab request from the UI update"),
     // Game-thread points: the simulation, the UI and the level start.
     ("actor-net", "*", "capture and dialogue share per-match state on the simulation thread"),
     (
