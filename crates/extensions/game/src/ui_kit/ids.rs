@@ -97,11 +97,9 @@ pub const FAMILIES: &[Family] = &[
     Family::new("theater menu", TABLE + 0x0d00_0000, 1),
     Family::new("campaign actions", TABLE + 0x0e00_0000, 3),
     Family::new("lobby options", TABLE + 0x1000_0000, 0x50),
-    Family::new("lobby status", TABLE + 0x0f00_0000, 1),
+    Family::new("lobby status", TABLE + 0x0f00_0000, 2),
     Family::new("firefight", TABLE + 0x1100_0000, 0x40),
-    Family::new("main menu rows", TABLE + 0x1200_0000, 2),
-    Family::new("forge lobby", TABLE + 0x1300_0000, 0x40),
-    Family::new("firefight lobby", TABLE + 0x1400_0000, 0x40),
+    Family::new("lobby mode", TABLE + 0x1300_0000, 0x40),
 ];
 
 const fn same(a: &str, b: &str) -> bool {

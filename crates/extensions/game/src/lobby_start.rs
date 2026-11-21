@@ -1,36 +1,30 @@
-//! What the FORGE and FIREFIGHT main-menu lobbies share
-//! ([`crate::forge_lobby`], [`crate::firefight::lobby`]): the maps their
-//! pickers list, the pregame lobby's skin, and starting a local game.
+//! The lobby's mode (docs/game/forge-firefight-ui.md, "The lobbies"):
+//! Multiplayer, Forge or Firefight, chosen on Game Setup's Mode row
+//! ([`crate::lobby_mode`]), and the maps each mode plays.
+//!
+//! **The mode** is held for the lobby the player is in: [`set_mode`] from
+//! the Mode row's picker, [`clear`] when the lobby is left (the party's
+//! leave, or the main menu or Xbox Live menu built again), which puts it
+//! back to Multiplayer, the mode a lobby opens in. Until the menus are
+//! first reached there is no lobby at all: a game the level boot starts
+//! ([`crate::level_boot`]) is a Forge session when it is local
+//! multiplayer ([`forge_session`]), so an agent can drive one.
 //!
 //! **Maps.** Forge opens on an original map: the catalogue's Halo 2
 //! category ([`forge_maps`]). Firefight needs a map that carries the kit,
 //! which `h2 firefight kit` installs as a package named `Firefight – <map>`
 //! (`firefight-kit`'s `build_package`): the catalogue lists it by that
-//! name ([`is_kit_map`]). A map the kit's probe recipe made is named
-//! `Firefight Probe – <map>` and is not offered.
+//! name ([`is_kit_map`]) in its Firefight category. A map the kit's probe
+//! recipe made is named `Firefight Probe – <map>` and is not offered.
 //!
-//! **The skin.** The pregame lobby's layout, as a mod's page has it
-//! ([`crate::mods_screen::page_layout`]): the rows where the lobby's
-//! buttons are, the lobby's panels behind them and one status line
-//! ([`STATUS`], at most [`STATUS_CHARS`] characters) under the rows.
-//!
-//! **Starting.** [`start`] queues a local multiplayer game on a map the way
-//! the level boot starts one ([`crate::level_boot::game_steps`]): the
-//! agent's guest calls ([`agent::sim::calls`]) make the game's own option
-//! builders and queue them at the next tick, and the game loads at its next
-//! transition, as the main menu's own start does. The queue is set at boot
-//! ([`set_queue`]). The guest's answer comes back through [`failure`]: a
-//! refusal is shown on the lobby's status line, never dropped.
+//! **The guest-call queue** the Forge session submits its game calls to
+//! is found at boot ([`install_queue`]).
 
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Mutex;
 
-use agent::sim::calls::{self, Call, PendingCall};
+use agent::sim::calls;
 
-use crate::level_boot::{self, Kind, Request};
-use crate::list_class::{ListLayout, Panel, TextBlock};
 use crate::map_select::{Catalogue, Category, Map};
-use crate::mods_screen::page_layout as lobby;
-use crate::ui_kit::picker::Pick;
 
 /// A kit package's name in the catalogue: `firefight-kit`'s package name
 /// for its regular mode (`Firefight – <map>`, with an en dash).
@@ -51,170 +45,214 @@ pub fn kit_maps(catalogue: &Catalogue) -> Vec<Map> {
     catalogue.all().filter(|m| is_kit_map(m)).cloned().collect()
 }
 
-/// The maps `from` lists now, or none before the catalogue is read.
-pub fn maps_from(
-    from: impl Fn(&Catalogue) -> Vec<Map> + Send + Sync + 'static,
-) -> Arc<dyn Fn() -> Vec<Map> + Send + Sync> {
-    Arc::new(move || {
-        crate::map_select::current()
-            .map(|c| from(&c))
-            .unwrap_or_default()
-    })
+// ---- the mode ----
+
+/// What a lobby plays.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Mode {
+    /// The game's own multiplayer: the mode a lobby opens in.
+    #[default]
+    Multiplayer,
+    /// A Forge session: D-pad Up enters the monitor
+    /// (docs/game/forge-editing.md, "Controls").
+    Forge,
+    /// Firefight on a kit map (docs/game/firefight.md).
+    Firefight,
 }
 
-/// The local game a lobby starts on `map`: one local player, the default
-/// Slayer, as the level boot starts a disc map.
-pub fn request(map: &Map) -> Request {
-    Request {
-        name: map.name.clone(),
-        scenario: map.path.clone(),
-        campaign: u32::MAX,
-        map: map.id,
-        difficulty: level_boot::Difficulty::default(),
-        kind: Kind::Multiplayer,
+impl Mode {
+    /// Every mode, in the picker's order.
+    pub const ALL: [Mode; 3] = [Mode::Multiplayer, Mode::Forge, Mode::Firefight];
+
+    /// Its name in the picker and on the Mode row's help.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Mode::Multiplayer => "Multiplayer",
+            Mode::Forge => "Forge",
+            Mode::Firefight => "Firefight",
+        }
+    }
+
+    /// What it plays, one sentence.
+    pub const fn description(self) -> &'static str {
+        match self {
+            Mode::Multiplayer => "The game's own rules.",
+            Mode::Forge => "Build and edit the map in a game, then save it.",
+            Mode::Firefight => "Fight waves of enemies on a Firefight map.",
+        }
+    }
+
+    /// What it plays, one sentence that names it, for the picker.
+    pub const fn summary(self) -> &'static str {
+        match self {
+            Mode::Multiplayer => "Multiplayer plays the game's own rules.",
+            Mode::Forge => "Forge builds and edits the map in a game.",
+            Mode::Firefight => "Firefight fights waves of enemies on a Firefight map.",
+        }
+    }
+
+    /// The lobby's header in this mode, in capitals as retail's headers
+    /// are; `None` keeps retail's.
+    pub const fn header(self) -> Option<&'static str> {
+        match self {
+            Mode::Multiplayer => None,
+            Mode::Forge => Some("FORGE"),
+            Mode::Firefight => Some("FIREFIGHT"),
+        }
     }
 }
 
-// ---- the skin ----
+/// Which modes a lobby offers: Multiplayer always, Forge with the `forge`
+/// feature on, Firefight with the `firefight` feature on and a settings
+/// store holding its choices.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Offer {
+    pub forge: bool,
+    pub firefight: bool,
+}
 
-/// The rows of a lobby: the pregame lobby's list, three rows tall.
-pub const LAYOUT: ListLayout = ListLayout {
-    visible: 3,
-    ..lobby::LIST
-};
-/// The status line, under the rows.
-pub const STATUS: TextBlock = lobby::STATUS;
-/// What fits on the status line (about 300 units of conduit-12).
-pub const STATUS_CHARS: usize = 46;
+impl Offer {
+    /// The modes on offer, in the picker's order.
+    pub fn modes(self) -> Vec<Mode> {
+        Mode::ALL
+            .into_iter()
+            .filter(|m| match m {
+                Mode::Multiplayer => true,
+                Mode::Forge => self.forge,
+                Mode::Firefight => self.firefight,
+            })
+            .collect()
+    }
 
-/// The lobby's backings, behind the rows and the status.
-pub fn panel() -> Panel {
-    Panel {
-        art: lobby::ART.to_vec(),
-        texts: Vec::new(),
+    /// Whether Game Setup has the Mode row: there is a mode besides
+    /// Multiplayer to pick. Without one the lobby is retail's.
+    pub fn any(self) -> bool {
+        self.forge || self.firefight
     }
 }
 
-/// `text` as the status line holds it.
-pub fn fit(text: &str) -> String {
-    if text.chars().count() <= STATUS_CHARS {
-        return text.into();
+/// The lobby the player is in, as the mode sees it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct State {
+    /// The menus have been reached since boot: a game starts from a lobby.
+    /// `false` only before them, for the level boot's game.
+    pub lobby: bool,
+    pub mode: Mode,
+    /// The saved Forge map the session loads (`None`: a new map).
+    pub forge_map: Option<String>,
+}
+
+impl State {
+    /// Whether a game started now is a Forge session: the lobby is in
+    /// Forge mode, or there is no lobby (the level boot).
+    pub fn forge_session(&self) -> bool {
+        !self.lobby || self.mode == Mode::Forge
     }
-    let head: String = text.chars().take(STATUS_CHARS - 3).collect();
-    format!("{}...", head.trim_end())
 }
 
-/// A pick of `maps`, each listed as `name` gives it, the one at `current`
-/// held. `set` is told the map chosen.
-pub fn map_pick(
-    maps: &[Map],
-    name: fn(&Map) -> String,
-    current: usize,
-    description: &str,
-    set: impl Fn(&Map) -> String + Send + Sync + 'static,
-) -> Pick {
-    let held: Vec<Map> = maps.to_vec();
-    Pick::new(
-        "Map",
-        maps.iter().map(name).collect(),
-        current,
-        description,
-        Arc::new(move |i: usize| match held.get(i) {
-            Some(map) => set(map),
-            None => format!("map {i} is not in the list"),
-        }),
-    )
+#[cfg(not(test))]
+static STATE: Mutex<State> = Mutex::new(State {
+    lobby: false,
+    mode: Mode::Multiplayer,
+    forge_map: None,
+});
+
+#[cfg(not(test))]
+fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> T {
+    f(&mut STATE.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
-/// A pick that only says why there is nothing to pick: one entry, the
-/// reason, and `description` to explain it. Choosing it changes nothing.
-pub fn nothing_to_pick(label: &str, reason: &str, description: &str) -> Pick {
-    Pick::new(
-        label,
-        vec![reason.into()],
-        0,
-        description,
-        Arc::new(|_: usize| "nothing to pick".into()),
-    )
+// Tests run side by side, each on its own thread: each has its own lobby.
+#[cfg(test)]
+thread_local! {
+    static STATE: Mutex<State> = const {
+        Mutex::new(State {
+            lobby: false,
+            mode: Mode::Multiplayer,
+            forge_map: None,
+        })
+    };
 }
 
-// ---- starting ----
-
-static QUEUE: Mutex<Option<calls::Shared>> = Mutex::new(None);
-static PENDING: Mutex<Option<PendingCall>> = Mutex::new(None);
-static FAILED: Mutex<Option<String>> = Mutex::new(None);
-
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|e| e.into_inner())
+#[cfg(test)]
+fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> T {
+    STATE.with(|s| f(&mut s.lock().unwrap_or_else(|e| e.into_inner())))
 }
 
-/// The guest-call queue [`start`] submits to.
-pub fn set_queue(queue: calls::Shared) {
-    *lock(&QUEUE) = Some(queue);
+/// The lobby as it stands.
+pub fn state() -> State {
+    with_state(|s| s.clone())
 }
 
-/// Finds the guest-call queue the lobbies start through: the agent's, else
-/// one of our own with the feature that makes its calls. It becomes
-/// [`start`]'s ([`set_queue`]) and is returned.
+/// The lobby's mode (Multiplayer before any lobby).
+pub fn mode() -> Mode {
+    with_state(|s| s.mode)
+}
+
+/// Whether a game started now is a Forge session ([`State::forge_session`]).
+pub fn forge_session() -> bool {
+    with_state(|s| s.forge_session())
+}
+
+/// The Mode row's choice for the lobby the player is in.
+pub fn set_mode(mode: Mode) {
+    with_state(|s| {
+        if s.mode != mode {
+            eprintln!("lobby: mode {}", mode.label());
+        }
+        s.lobby = true;
+        s.mode = mode;
+    });
+}
+
+/// The saved Forge map the next Forge session loads (`None`: a new map).
+pub fn forge_map() -> Option<String> {
+    with_state(|s| s.forge_map.clone())
+}
+
+/// The Forge Map row's choice.
+pub fn set_forge_map(name: Option<String>) {
+    with_state(|s| {
+        s.lobby = true;
+        s.forge_map = name;
+    });
+}
+
+/// The lobby as a snapshot held it.
+pub fn restore(state: State) {
+    with_state(|s| *s = state);
+}
+
+/// The lobby was left, or the menus reached: the next lobby opens in
+/// Multiplayer with a new Forge map.
+pub fn clear() {
+    with_state(|s| {
+        if s.mode != Mode::Multiplayer {
+            eprintln!("lobby: left; mode Multiplayer");
+        }
+        *s = State {
+            lobby: true,
+            ..State::default()
+        };
+    });
+}
+
+// ---- the guest-call queue ----
+
+/// Finds the guest-call queue the Forge session submits to: the agent's,
+/// else one of our own with the feature that makes its calls.
 pub fn install_queue(
     registry: &mut hooks::Registry,
     agent: Option<&crate::agent_glue::AgentGlue>,
 ) -> anyhow::Result<calls::Shared> {
-    let queue = if let Some(sim) = agent.and_then(|a| a.sim.as_ref()) {
-        sim.calls().unwrap_or_else(calls::shared)
-    } else {
-        let queue = calls::shared();
-        registry
-            .add(&calls::CallsFeature(queue.clone()))
-            .map_err(anyhow::Error::msg)?;
-        queue
-    };
-    set_queue(queue.clone());
+    if let Some(sim) = agent.and_then(|a| a.sim.as_ref()) {
+        return Ok(sim.calls().unwrap_or_else(calls::shared));
+    }
+    let queue = calls::shared();
+    registry
+        .add(&calls::CallsFeature(queue.clone()))
+        .map_err(anyhow::Error::msg)?;
     Ok(queue)
-}
-
-/// Queues a local game on `req`. An error says why it was not queued; the
-/// guest's own refusal comes later, through [`failure`].
-pub fn start(req: &Request) -> Result<(), String> {
-    let steps = level_boot::game_steps(req)
-        .ok_or_else(|| format!("{}: its path does not fit the game's options", req.name))?;
-    let queue = lock(&QUEUE).clone().ok_or_else(|| {
-        "The game's own functions are not reachable here (agent-calls is off).".to_owned()
-    })?;
-    let ticket = calls::submit(&queue, Call::QueueGame { steps })?;
-    eprintln!(
-        "lobby: queueing {} ({}, map {:#x})",
-        req.name, req.scenario, req.map
-    );
-    *lock(&FAILED) = None;
-    *lock(&PENDING) = Some(ticket);
-    Ok(())
-}
-
-/// Why the last [`start`] did not go through in the guest, once the guest
-/// has answered; `None` while it waits or after it queued the game.
-pub fn failure() -> Option<String> {
-    let mut pending = lock(&PENDING);
-    if let Some(outcome) = pending.as_ref().and_then(PendingCall::outcome) {
-        *pending = None;
-        *lock(&FAILED) = refusal(outcome.map_err(|e| e.message).map(|v| {
-            let queued = v["queued"].as_bool().unwrap_or(false);
-            let checked = v["check"].as_bool().unwrap_or(true);
-            (queued, checked)
-        }));
-    }
-    lock(&FAILED).clone()
-}
-
-/// The reason an answer from the guest is a refusal: the game's options
-/// check failed, or the calls did not queue the game.
-pub fn refusal(answer: Result<(bool, bool), String>) -> Option<String> {
-    match answer {
-        Err(why) => Some(format!("The game refused to start: {why}")),
-        Ok((_, false)) => Some("The game's options check refused this map.".into()),
-        Ok((false, _)) => Some("The game did not queue the match.".into()),
-        Ok((true, true)) => None,
-    }
 }
 
 #[cfg(test)]
@@ -265,81 +303,72 @@ mod tests {
         );
         let kit: Vec<_> = kit_maps(&cat).into_iter().map(|m| m.id).collect();
         assert_eq!(kit, [12]);
+        let firefight: Vec<_> = cat.maps(Category::Firefight).iter().map(|m| m.id).collect();
+        assert_eq!(firefight, [12], "the kit maps are the Firefight category");
     }
 
     #[test]
-    fn a_lobby_starts_a_one_player_multiplayer_game_on_the_maps_path() {
-        let m = map(0x1234, "Lockout", r"d:\maps\lockout");
-        let r = request(&m);
-        assert_eq!(r.kind, Kind::Multiplayer);
+    fn mode_lists_only_enabled_features() {
+        let cases = [
+            (false, false, vec![Mode::Multiplayer]),
+            (true, false, vec![Mode::Multiplayer, Mode::Forge]),
+            (false, true, vec![Mode::Multiplayer, Mode::Firefight]),
+            (true, true, Mode::ALL.to_vec()),
+        ];
+        for (forge, firefight, want) in cases {
+            let offer = Offer { forge, firefight };
+            assert_eq!(offer.modes(), want, "forge {forge}, firefight {firefight}");
+            assert_eq!(offer.any(), forge || firefight);
+        }
+    }
+
+    #[test]
+    fn leaving_the_lobby_clears_the_mode() {
+        set_mode(Mode::Forge);
+        set_forge_map(Some("Castle".into()));
+        assert_eq!(mode(), Mode::Forge);
+        assert_eq!(forge_map().as_deref(), Some("Castle"));
+        clear();
         assert_eq!(
-            (r.scenario.as_str(), r.map, r.campaign),
-            (r"d:\maps\lockout", 0x1234, u32::MAX)
-        );
-        assert!(level_boot::game_steps(&r).is_some());
-        let long = map(1, "x", &"p".repeat(0x200));
-        assert!(
-            level_boot::game_steps(&request(&long)).is_none(),
-            "a path the options cannot hold"
+            state(),
+            State {
+                lobby: true,
+                mode: Mode::Multiplayer,
+                forge_map: None
+            }
         );
     }
 
     #[test]
-    fn the_status_line_keeps_what_fits_and_ends_a_long_one_with_dots() {
-        assert_eq!(fit("Lockout: a new Forge map"), "Lockout: a new Forge map");
-        let long = fit(&"w".repeat(80));
-        assert_eq!(long.chars().count(), STATUS_CHARS);
-        assert!(long.ends_with("..."));
-        assert_eq!(fit(&"w".repeat(STATUS_CHARS)).chars().count(), STATUS_CHARS);
+    fn the_monitor_needs_forge_mode() {
+        assert!(
+            forge_session(),
+            "no lobby yet: the level boot's game is a Forge session"
+        );
+        clear();
+        assert!(!forge_session(), "a lobby opens in Multiplayer");
+        for (m, forge) in [
+            (Mode::Forge, true),
+            (Mode::Firefight, false),
+            (Mode::Multiplayer, false),
+        ] {
+            set_mode(m);
+            assert_eq!(forge_session(), forge, "{m:?}");
+        }
     }
 
     #[test]
-    fn the_guests_answer_is_a_refusal_unless_it_queued_the_game() {
-        assert_eq!(refusal(Ok((true, true))), None);
-        assert!(
-            refusal(Ok((true, false)))
-                .unwrap()
-                .contains("options check")
-        );
-        assert!(
-            refusal(Ok((false, true)))
-                .unwrap()
-                .contains("did not queue")
-        );
-        assert!(
-            refusal(Err("no player".into()))
-                .unwrap()
-                .ends_with("no player")
-        );
-    }
-
-    #[test]
-    fn a_pick_names_the_maps_and_tells_the_choice() {
-        let maps = [map(1, "A", "a"), map(2, "B", "b")];
-        let pick = map_pick(
-            &maps,
-            |m: &Map| m.name.clone(),
-            1,
-            "x",
-            |m: &Map| format!("chose {}", m.name),
-        );
-        assert_eq!(pick.values, ["A", "B"]);
-        assert_eq!(pick.current, 1);
-        assert_eq!((pick.set)(0), "chose A");
-        assert!((pick.set)(5).contains("not in the list"));
-        let none = nothing_to_pick("Map", "None installed", "why");
-        assert_eq!(none.values, ["None installed"]);
-        assert_eq!((none.set)(0), "nothing to pick");
-    }
-
-    #[test]
-    fn the_lobby_rows_are_the_lobbys_list_and_every_status_fits() {
-        assert_eq!(LAYOUT.visible, 3);
-        assert_eq!(LAYOUT.anchor, lobby::LIST.anchor);
-        assert_eq!(panel().art.len(), 2);
-        assert!(
-            STATUS_CHARS <= 50,
-            "the status block is one line of conduit-12"
-        );
+    fn each_mode_has_its_copy() {
+        for m in Mode::ALL {
+            let label = m.label();
+            assert!(!label.contains(':') && !label.contains("  "), "{label}");
+            assert!(m.description().ends_with('.'), "{m:?}");
+            assert!(m.summary().starts_with(label), "{m:?}");
+            if let Some(h) = m.header() {
+                assert_eq!(h, h.to_uppercase(), "a header is in capitals");
+            }
+        }
+        assert_eq!(Mode::default(), Mode::Multiplayer);
+        assert_eq!(Mode::Multiplayer.header(), None, "retail's header");
     }
 }

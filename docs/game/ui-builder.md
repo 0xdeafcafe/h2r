@@ -357,8 +357,8 @@ row lit (`view_of`'s list). The preview draws that under the dialog. The
 openers:
 
 - `Opener::MAIN_MENU`: the main menu on the Xbox Live row (rows as
-  `ui_watch` reads them: Campaign, Xbox Live, Split Screen, System
-  Link, Settings).
+  the list hooks show them: Campaign, Xbox Live, Split Screen, System
+  Link, THEATER, Settings).
 - `Opener::XBOX_LIVE_MENU`: the Xbox Live menu (screen `0xba`, pane 0)
   on Quickmatch, with our five rows.
 

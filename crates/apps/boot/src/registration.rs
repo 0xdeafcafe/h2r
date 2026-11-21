@@ -292,17 +292,34 @@ pub(crate) fn register_core_film(
             crate::firefight::runtime::Report::Ended(ended) => t.firefight_ended(ended),
         }) as Box<crate::firefight::runtime::ReportSink>
     });
-    if crate::firefight::feature::install_with(
+    let firefight_on = crate::firefight::feature::install_with(
         features,
         film.is_some(),
         firefight_options,
         firefight_reports,
     )
-        .context("installing Firefight")?
-        && let Some(store) = i.settings.as_ref()
-    {
+        .context("installing Firefight")?;
+    if firefight_on && let Some(store) = i.settings.as_ref() {
         crate::firefight::options::install(features, store)
             .context("installing the Firefight options page")?;
+    }
+    // Multiplayer, Forge and Firefight as modes of the lobby, on Game
+    // Setup's Mode row (docs/game/forge-firefight-ui.md, "The lobbies"),
+    // where Game Setup's other rows of ours are: with a settings store.
+    if let Some(store) = i.settings.as_ref() {
+        let offer = crate::lobby_start::Offer {
+            forge: crate::forge_glue::enabled(features.switches()),
+            firefight: firefight_on,
+        };
+        crate::lobby_mode::install(
+            features,
+            crate::lobby_mode::LobbyMode {
+                offer,
+                store: Some(Arc::clone(store)),
+                data: i.data_root.to_path_buf(),
+            },
+        )
+        .context("installing the lobby's modes")?;
     }
     for effect in [
         &crate::h1_particle_physics::H1ParticlePhysics as &dyn hooks::Feature,
