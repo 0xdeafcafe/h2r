@@ -1201,7 +1201,7 @@ impl Follower {
         &mut self,
         at: V3,
         frame: u64,
-        clear: impl FnOnce([f32; 2]) -> bool,
+        clear: impl FnOnce([f32; 2], f32) -> bool,
         precise_end: bool,
     ) -> Steer {
         while let Some(w) = self.path.get(self.next).copied() {

@@ -76,7 +76,7 @@ impl RouteWalk {
         }
         let steer =
             self.follower
-                .steer_until(at, u64::from(tick), |d| moves::bend_clear(map, at, d), true);
+                .steer_until(at, u64::from(tick), |d, _reach| moves::bend_clear(map, at, d), true);
         if steer.replan {
             return Err("path_lost");
         }
