@@ -102,7 +102,9 @@ retail skips AI on a distributed client and on nothing else: a
 distributed server, a synchronous server and a synchronous client all run
 it when the two bytes are set.
 
-**An object's entity.** Object body `+0xd4` is the entity index, set to
+### An object's entity
+
+Object body `+0xd4` is the entity index, set to
 -1 by object creation (`0xb7b40`, the store at `0xb7e78`) and written by
 each entity type's attach routine (the unit's at `0x9dea0`).
 
@@ -114,3 +116,23 @@ budget behind that was not read.
 Not read: the encoders (bits per field), the per-client budget, which
 objects are given an entity at creation, and how a client turns a unit
 entity with no player into movement animation.
+
+### Creature slot research
+
+The table read establishes 16 unused entity pointers. Storage capacity
+alone gives no wire guarantee. The [AN11 slice](../ai-networking.md#slices)
+uses a static read of the owner's retail XBE through `h2 disasm`. It
+records the commit, guest entry addresses, bounds and rejection paths in
+this notes page. The public record contains field semantics and synthetic
+examples. Disc data and fixtures stay local.
+
+| Static check | Evidence to record |
+|---|---|
+| `entity_table_bounds_trace` | Follow every reader of the entity table and returned count from `0x82240`. Record whether loops use the returned count, a sentinel, or a fixed maximum. Identify which of the 16 slots are addressable, whether entries must be contiguous, what each definition must provide, and where the event table begins. Follow the creature creation, attach, update and removal entry points as well as reset and map transitions. |
+| `entity_type_codec_trace` | Trace the writer and reader for create, update and delete. Record the type index encoding, reserved values, bounds and dispatch order, and how an update recovers the type from an existing entity. Trace the reusable object field codecs, mask validation, state and creation record sizes, and how a record's end is determined. Identify the slot with a complete writer-to-reader path, or the first bound that blocks it. |
+| `unknown_type_receive_trace` | Follow an unextended client's receive path for a creation carrying the chosen type and for its later update. Record whether it refuses the record or packet, skips it, or interprets subsequent bits using the wrong definition. Identify whether failure happens before allocation or state changes. Trace the Live and System Link session version checks that keep incompatible peers out before entity traffic. |
+
+P7 records the matched-pair agent API observations and the control result
+here with the build commit, setup, tick intervals and aggregate traffic
+deltas. The synthetic packet sizes and the P5 CPU measurements use their
+own methods and units.

@@ -4,16 +4,22 @@ Status: Design. Nothing here is built.
 Code (planned): `crates/formats/firefight` (the definition, the director), `crates/tools/firefight-kit` (the map kit), `crates/extensions/game/src/firefight/` (the host runtime, the HUD), `crates/live/live-proto/src/firefight.rs`. Tests: each crate's own, on invented data.
 Switch: the `firefight` feature of `H2_FEATURES` (off until slice FF4 is seen in the game); it joins [switches.md](../runtime/switches.md) with the code.
 
-Firefight is a co-operative mode on multiplayer maps: up to 16 players on
-one team hold out against waves of AI, with shared lives, rounds, skulls
-and a score. It runs on Live and on dedicated hosts in the distributed
-model with host actors ([ai-networking.md](ai-networking.md)). The rule
-that must hold: **the director is a pure function of the match**. Given
-the definition, the seed and what it reads from the game each tick, it
-issues the same commands on every run, so a film replays and a
-synchronous session agrees.
+Firefight is a co-operative mode on multiplayer maps. One team holds
+out against waves of AI, with shared lives, rounds, skulls and a score.
+It runs on Live and on dedicated hosts in the distributed model with
+host actors ([ai-networking.md](ai-networking.md)). The director is a
+pure function of the match. Given the definition, the seed and what it
+reads from the game each tick, it issues the same commands on every run,
+so a film replays and a synchronous session agrees.
 
 Evidence labels are those of [docs-style.md](../meta/docs-style.md).
+
+## Decisions
+
+- **Kit map.** Every machine builds the kit map from its own disc using
+  the same offline builder, including dedicated hosts.
+- **Player count.** Firefight ships for 1 to 4 players. The 16-player
+  playlist requires a passing CPU probe. [P5](ai-networking.md#probes)
 
 ## What the player gets
 
@@ -122,8 +128,9 @@ A multiplayer map has no characters, no squads and no sectors (**Code**,
 [pathfinding.md](../formats/pathfinding.md); bots.md 2.4). The kit adds
 them offline, on each machine, from that machine's own disc:
 `firefight-kit` takes a base map and writes a map package
-([maps.md](maps.md)) whose id is derived from the base map's hash and
-the kit's version, so every machine that builds it gets the same id.
+([maps.md](maps.md)). The base map hash and kit version yield the same
+package id on every machine with matching inputs. Session data names
+that id, and each machine loads its own build.
 
 | Part | Built with | Notes |
 |---|---|---|
@@ -180,14 +187,14 @@ limits").
   a mode id and a definition-hash prefix. The definition itself travels
   in the session data beside the extension (`NewSession.firefight`), in
   both homes.
-- **Hoppers.** A Firefight hopper entry is a kit map and the Firefight
-  variant; `hopper-edit` offers the built-in definitions. Party size 1
-  to 4 for the first playlist, 16 for a "Big Team" one once the host
-  budget allows it.
+- **Hoppers.** A Firefight hopper entry identifies a kit map and the
+  Firefight variant. `hopper-edit` offers the built-in definitions. FF9
+  ships the 1-to-4-player playlist. FF13 adds the 16-player playlist
+  once P5 meets the host target at the chosen actor cap.
 - **Dedicated host.** A Firefight match asks for a host of its own class
   with a whole core (ai-networking.md, "CPU on the host"). The host
-  builds or downloads the kit map at boot like any map package; the
-  server-map strip keeps the AI blocks and sectors.
+  builds the kit map from its own disc. The server-map strip keeps the
+  AI blocks and sectors.
 - **Join in progress** follows ai-networking.md: lobby only until probe
   P6 answers.
 
@@ -225,7 +232,9 @@ has.
 
 - One team of players. Versus variants are out of scope.
 - The live actor cap is the definition's, bounded by the host table.
-- No creatures; no class the kit could not fit.
+- The kit admits classes that fit within the map's tag headroom.
+  Creatures use the [creature entity](ai-networking.md#creature-entity)
+  in distributed sessions.
 - A machine without the kit map cannot join; the session says which map
   to build.
 - The director never reads a wall clock and draws only from its own
@@ -246,10 +255,11 @@ are slices of [ai-networking.md](ai-networking.md); P numbers its probes.
 | **FF6** | Stats: `Score` and `ActorKilled` to film events, the Live projection's Firefight summary, the web stats page | M | FF2, AN6 | `crates/live/live-proto/src/{film/events,firefight}.rs`, `crates/live/live-server/`, `crates/live/live-worker/`, `web/` | `a_scripted_match_projects_to_the_golden_summary`, `firefight_scores_do_not_touch_ranks`, the parity suite | both homes give the same summary |
 | **FF7** | Skulls: the host-only AI set, the round schedule, multipliers | S | FF4 | `crates/extensions/game/src/skulls_mp.rs`, `firefight/host.rs` | `ai_skulls_apply_on_the_host_only`, `a_round_switches_its_skulls_on`, `multipliers_multiply` | skulls.md's table gains a Firefight column, each cell with a test |
 | **FF8** | HUD and screens: wave banner, enemies left, lives, the Game Setup row and its options page | M | FF2, AN4, AN5 | `crates/extensions/game/src/firefight/hud.rs`, `crates/extensions/game/src/ui_kit/` | `Page` tables for the options page; `the_hud_reads_only_the_mode_blob`; the kit's layout checks in every state | a client with only the mode blob draws the same HUD as the host |
-| **FF9** | Live: the variant bytes, `NewSession.firefight`, hopper entries, the lobby's kit check | M | FF1 | `crates/formats/variants/src/ext.rs`, `crates/live/live-proto/`, `crates/live/live-server/`, `crates/live/live-worker/`, `crates/tools/hopper-edit/` | `the_mode_bytes_round_trip_and_leave_the_crc_valid`, `a_joiner_without_the_kit_map_is_refused_before_load`, `an_oversize_def_is_refused`, the parity suite | both homes agree; a retail variant is unchanged |
+| **FF9** | Live: the variant bytes, `NewSession.firefight`, 1-to-4-player hopper entries, the lobby's local kit check | M | FF1 | `crates/formats/variants/src/ext.rs`, `crates/live/live-proto/`, `crates/live/live-server/`, `crates/live/live-worker/`, `crates/tools/hopper-edit/` | `the_mode_bytes_round_trip_and_leave_the_crc_valid`, `a_joiner_without_the_kit_map_is_refused_before_load`, `first_playlist_accepts_one_to_four_players`, `an_oversize_def_is_refused`, the parity suite | both homes offer 1 to 4 players and refuse unsupported sizes and missing local kits. A retail variant is unchanged |
 | **FF10** | Dedicated host: the Firefight host class and admission, the kit in the host's map set, the strip keeping AI data | S | FF3, FF4, P5 | `crates/apps/h2host/`, `crates/live/host-data/`, [dedicated-host.md](../live/dedicated-host.md) | `a_firefight_match_takes_a_whole_slot_class`, `strip_keeps_squads_and_sectors` | admission tests; the coordinator's host run in notes |
-| **FF11** | `h2 sim run` Firefight matches: Clankers as the players, a report with rounds, score and tick times | S | FF4 | `crates/live/sim-bench/`, [sim.md](../runtime/sim.md) | `a_firefight_match_toml_parses`, `the_report_has_rounds_and_score` | a match file runs headless (coordinator) and feeds P5 |
+| **FF11** | `h2 sim run` Firefight matches: Clankers as the players, a report with rounds, score and tick times. `host.metrics` reports `game_cpu_ms_per_tick_p99` over the last 30 steady gameplay seconds from per-tick game-thread CPU deltas | M | FF4 | `crates/live/sim-bench/`, `crates/extensions/game/src/host_metrics.rs`, [sim.md](../runtime/sim.md), [agent-api.md](../runtime/agent-api.md#hostmetrics) | `a_firefight_match_toml_parses`, `the_report_has_rounds_and_score`, `game_cpu_p99_uses_individual_tick_deltas` | a match file runs headless (coordinator) and feeds P5. The p99 comes from individual gameplay samples and resets between matches |
 | **FF12** | The kit, stage 2: transplanted classes, their cost, the cut order | L | FF3, P2 | `crates/tools/firefight-kit/src/transplant.rs` | `a_class_over_the_headroom_is_refused_with_its_cost`, `a_transplanted_closure_resolves`, `two_machines_build_equal_ids` | on invented maps; the retail census goes in notes |
+| **FF13** | The 16-player playlist at the live-actor cap measured by the CPU probe | S | FF9, FF10, FF11, P5 passes at 16 seats | `crates/tools/hopper-edit/`, `crates/live/live-server/`, `crates/live/live-worker/` | `sixteen_player_playlist_requires_the_measured_host_class`, `sixteen_player_definition_honours_the_measured_actor_cap`, the parity suite | publish in both Live homes only with a P5 result at or below 28 ms p99 game-thread CPU at the chosen live-actor cap on the intended host class. Admission uses that class and cap |
 
 FF1 and FF3 start at once, beside AN0, AN1, AN2 and AN6. FF2 follows
 FF1 and AN1. FF9's format half can run beside FF2. FF4 is the join
