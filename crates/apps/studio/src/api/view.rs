@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use anyhow::{Context as _, Result, anyhow};
 use scenario_edit::geometry::{BspLighting, Camera};
 use scenario_edit::layers::{LayerId, Preset};
+use scenario_edit::native_view::Lighting;
 use scenario_edit::render::Viewport;
 use scenario_edit::scene::{Blend, Scene};
 use serde_json::{Value, json};
@@ -184,6 +185,9 @@ pub fn snapshot(gpu: &Gpu, app: &mut App, p: &P) -> Reply {
         Some(scene) => vp.set_scene(&gpu.device, &gpu.queue, scene),
         None => vp.set_world(&gpu.device, session.world().0),
     }
+    let native = session.native_world().map_or(&[][..], |n| n.as_slice());
+    vp.set_lighting(&gpu.device, &gpu.queue, native, app.lighting);
+    vp.set_native(&gpu.device, &gpu.queue, native);
     crate::viewport::upload_placements(&mut vp, &gpu.device, app, &live.linked);
     crate::viewport::upload_overlays(&mut vp, &gpu.device, app);
     vp.set_live_instances(&gpu.device, &gpu.queue, session.source(), &live.instances);
@@ -207,14 +211,75 @@ pub fn snapshot(gpu: &Gpu, app: &mut App, p: &P) -> Reply {
     }))
 }
 
+/// `view.lighting`: the viewport's Lighting mode, set by `mode` (an id
+/// of [`Lighting`]) when given.
+pub fn lighting(app: &mut App, p: &P) -> Reply {
+    let _ = m::VIEW_LIGHTING;
+    if let Some(id) = p.opt_str("mode")? {
+        let mode = Lighting::from_id(id).ok_or_else(|| {
+            let ids: Vec<_> = Lighting::ALL.iter().map(|l| l.id()).collect();
+            err(
+                code::INVALID_PARAMS,
+                format!("mode: one of {}, not {id}", ids.join(", ")),
+            )
+        })?;
+        app.perform(Action::SetLighting(mode), false)
+            .map_err(super::scenario::refused)?;
+    }
+    Ok(json!({
+        "mode": app.lighting.id(),
+        "modes": Lighting::ALL.map(Lighting::id),
+    }))
+}
+
 /// `view.stats`: what the viewport draws for the open map
 /// ([`scene_stats`]); `{"scene": false}` while it shows the grey world.
+/// `native` is the level on the native renderer ([`native_stats`]).
 pub fn stats(app: &mut App, _p: &P) -> Reply {
     super::scenario::open(app)?;
     let _ = m::VIEW_STATS;
-    Ok(match app.session.scene() {
+    let mut out = match app.session.scene() {
         Some(scene) => scene_stats(scene),
         None => json!({ "scene": false }),
+    };
+    out["native"] = native_stats(app);
+    Ok(out)
+}
+
+/// The open map's level on the native renderer: the Lighting mode, each
+/// BSP's draws, batches, materials, lightmap pages, draws left out for a
+/// missing picture and sections that did not decode, and why any BSP did
+/// not load.
+pub fn native_stats(app: &App) -> Value {
+    let session = &app.session;
+    let bsps: Vec<Value> = session
+        .native_world()
+        .map(|n| n.as_slice())
+        .unwrap_or_default()
+        .iter()
+        .map(|l| {
+            let s = l.stats();
+            json!({
+                "bsp": l.bsp.0,
+                "draws": s.draws,
+                "batches": s.batches,
+                "materials": s.materials,
+                "lightmap_pages": s.lightmap_pages,
+                "untextured": s.untextured,
+                "failed_sections": s.failed_sections,
+                "lightmap_error": l.lightmap_error,
+            })
+        })
+        .collect();
+    let errors: Vec<Value> = session
+        .native_errors()
+        .iter()
+        .map(|(index, why)| json!({ "index": index, "error": why }))
+        .collect();
+    json!({
+        "lighting": app.lighting.id(),
+        "bsps": bsps,
+        "errors": errors,
     })
 }
 

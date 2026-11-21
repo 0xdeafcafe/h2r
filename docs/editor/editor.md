@@ -617,6 +617,14 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   row shows its colour and count. Art, Gameplay, Collision and Everything
   choose a set of layers in one click. Collision shows the level structure
   for context, the kill volumes and the collision layers. The viewport and `view.snapshot` share these settings.
+- **Lighting.** The level is drawn by the native renderer
+  (`scenario_edit::native_view`), one world per BSP; the toolbar's
+  **Lighting** menu picks Game (base map times lightmap), Flat (no
+  lightmap), Lightmap only (the lightmap on white) or Collision (Flat at a
+  third, for the collision layers). Placements, models, markers and
+  overlays draw over it with its depth (view depth over the far plane).
+  A map whose BSPs the native loader does not read (a Halo 1 reference)
+  draws its textured scene instead.
   Clicking skips hidden placement categories and hidden structure.
 - **Gameplay layers.** Spawn points have a team-coloured pawn and an
   arrow pointing along the spawn facing. Netgame flags have a team tint

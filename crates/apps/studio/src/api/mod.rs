@@ -560,6 +560,13 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"preset":"everything","set":{"fog":false},"xray":true}"#,
     ),
     def(
+        m::VIEW_LIGHTING,
+        "Read the viewport's Lighting mode, or set it, for the window and snapshots: game (base map times lightmap), flat (no lightmap), lightmap (the lightmap on white), collision (flat at a third)",
+        r#"{"mode?":"game|flat|lightmap|collision"}"#,
+        r#"{"mode":"string","modes":"[string]"}"#,
+        r#"{"mode":"flat"}"#,
+    ),
+    def(
         m::VIEW_SNAPSHOT,
         "Render the open map from a camera (default: the viewport's) offscreen to a PNG (default: the cache directory's studio/view/; never into a Git checkout)",
         r#"{"out?":"string","size?":"[w,h] (default [960,540])","camera?":{"yaw?":"number","pitch?":"number","distance?":"number","target?":"[x,y,z]"}}"#,
@@ -791,6 +798,7 @@ impl Api {
             m::VIEW_CAMERA => view::camera(app, p),
             m::VIEW_LAYERS => view::layers(app, p),
             m::VIEW_STATS => view::stats(app, p),
+            m::VIEW_LIGHTING => view::lighting(app, p),
             m::VIEW_SNAPSHOT => {
                 let gpu = self
                     .gpu

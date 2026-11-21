@@ -165,6 +165,7 @@ pub mod method {
 
     pub const VIEW_CAMERA: &str = "view.camera";
     pub const VIEW_LAYERS: &str = "view.layers";
+    pub const VIEW_LIGHTING: &str = "view.lighting";
     pub const VIEW_SNAPSHOT: &str = "view.snapshot";
     pub const VIEW_STATS: &str = "view.stats";
 

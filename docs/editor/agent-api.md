@@ -86,6 +86,7 @@ What goes through actions, from both sides:
 | Add a trigger volume, make a kill volume, remove either | `AddVolume {frame, kill}` (with `kill`, the volume and a kill trigger naming it in one step), `RemoveVolume(kind, index)`; `Delete` on a selected volume | the Scene tab's Volumes menu, the inspector's Delete and a kill trigger's Remove, the Delete key | `volume.add`, `volume.remove` |
 | Set fly speed | `SetFlySpeed` | viewport toolbar, wheel while flying | `view.camera {fly_speed}` |
 | Show or hide viewport layers | `SetLayers`, `SetOverlay` | Show popover, Scene legend, View > Halo 1 overlay | `view.layers` |
+| Choose what the level is drawn with | `SetLighting` | the toolbar's Lighting menu | `view.lighting` |
 | Navigate tag fields | `Navigate` | inspector links and breadcrumbs | `nav.go`, `nav.back`, `nav.forward` |
 | Undo, redo | `Undo`, `Redo` (the tool shown), `UndoIn(tool)`, `RedoIn(tool)` | Edit menu, keys | `doc.undo`, `doc.redo` |
 | Save | `Save`, `SaveMapAs`, `SaveVariant`, `SaveHopper(As)`, `ExportVariant` | File menu, shortcuts, prompt | `doc.save`, `doc.save_as` |
@@ -543,8 +544,18 @@ Notes on some:
   `emissive`, `base`, `details`), the `sky` drawn and the `atmosphere`
   read from it (`sun` direction, colour and power; `fog` colour, density,
   start and opaque distance; `fallback_rgb`). `{"scene": false}` while
-  the viewport shows the grey world (no art built). What each field means
-  is in [editor.md](editor.md), "What the viewport shows". To check a
+  the viewport shows the grey world (no art built). `native` is the
+  level on the native renderer (`scenario_edit::native_view`): the
+  `lighting` mode, each BSP's `bsp`, `draws`, `batches`, `materials`,
+  `lightmap_pages`, `untextured` (draws left out for a missing picture),
+  `failed_sections` and `lightmap_error`, and the `errors` of BSPs that
+  did not load. What each field means is in [editor.md](editor.md),
+  "What the viewport shows".
+- **Lighting.** `view.lighting {}` returns `{mode, modes}`;
+  `view.lighting {"mode":"flat"}` sets it for the window and
+  `view.snapshot`: `game` (base map times lightmap), `flat` (no
+  lightmap), `lightmap` (the lightmap on white), `collision` (flat at a
+  third). Another mode is `INVALID_PARAMS`. To check a
   map: `h2 studio open mainmenu`, `h2 studio render-stats`, then
   `h2 studio snapshot` and look at the PNG.
 

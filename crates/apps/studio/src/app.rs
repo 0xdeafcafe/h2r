@@ -136,6 +136,8 @@ pub enum Action {
     /// Draw a converted map's Halo 1 source over it.
     SetOverlay(bool),
     SetLayers(Layers),
+    /// The viewport's Lighting mode (docs/editor/polish-plan.md, P14).
+    SetLighting(scenario_edit::native_view::Lighting),
     /// Convert the Halo 1 map on show to Halo 2, in the background.
     ConvertHalo1(ConvertSandbox),
     /// The sandbox "Convert to Halo 2" uses.
@@ -469,6 +471,8 @@ pub struct App {
     /// The open converted map's Halo 1 source.
     compare: Option<Compare>,
     pub layers: Layers,
+    /// What the viewport's level shows: the Lighting menu's mode.
+    pub lighting: scenario_edit::native_view::Lighting,
     overlay_rev: u64,
     /// The conversion running, why the last one wrote nothing, and what
     /// runs it.
@@ -546,6 +550,7 @@ impl App {
             h1_loaded: None,
             compare: None,
             layers: Layers::default(),
+            lighting: Default::default(),
             overlay_rev: 0,
             convert: None,
             convert_error: None,
@@ -858,6 +863,7 @@ impl App {
             Action::SelectHalo1Map(name) => self.select_halo1_map(&name),
             Action::SetOverlay(on) => self.layers.set(LayerId::Halo1, on),
             Action::SetLayers(layers) => self.layers = layers,
+            Action::SetLighting(lighting) => self.lighting = lighting,
             Action::ConvertHalo1(sandbox) => self.start_convert(sandbox),
             Action::SetConvertSandbox(sandbox) => {
                 self.convert_sandbox = sandbox;

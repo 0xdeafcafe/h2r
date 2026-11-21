@@ -748,6 +748,32 @@ mod paired_socket {
     }
 }
 
+/// P14: `view.lighting` reads and sets the Lighting mode, refuses an
+/// unknown one, and `view.stats` reports it under `native`, beside the
+/// level's BSPs on the native renderer (none here: the test app builds
+/// no art).
+#[test]
+fn view_lighting_sets_the_mode_and_stats_report_it() {
+    let t = Temp::new("view-lighting");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    let read = call(&mut api, &mut app, m::VIEW_LIGHTING, Value::Null);
+    assert_eq!(read["mode"], "game");
+    assert_eq!(read["modes"], json!(["game", "flat", "lightmap", "collision"]));
+    let set = call(&mut api, &mut app, m::VIEW_LIGHTING, json!({"mode": "lightmap"}));
+    assert_eq!(set["mode"], "lightmap");
+    assert_eq!(app.lighting, scenario_edit::native_view::Lighting::LightmapOnly);
+    for invalid in [json!({"mode": "bright"}), json!({"mode": 3})] {
+        let reply = api.call(&mut app, m::VIEW_LIGHTING, invalid);
+        assert_eq!(code_of(reply), code::INVALID_PARAMS);
+    }
+    assert_eq!(app.lighting, scenario_edit::native_view::Lighting::LightmapOnly);
+    let stats = call(&mut api, &mut app, m::VIEW_STATS, Value::Null);
+    assert_eq!(stats["native"]["lighting"], "lightmap");
+    assert!(stats["native"]["bsps"].as_array().is_some());
+    assert!(stats["native"]["errors"].as_array().is_some());
+}
+
 #[test]
 fn view_layers_applies_overrides_atomically_and_shares_the_halo1_menu_switch() {
     let t = Temp::new("view-layers");

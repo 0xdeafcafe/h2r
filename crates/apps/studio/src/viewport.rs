@@ -231,6 +231,10 @@ impl ViewportView {
             vp.set_native(gpu.device, gpu.queue, native);
             self.world_rev = Some(session.world_rev());
         }
+        if vp.lighting() != app.lighting {
+            let native = session.native_world().map_or(&[][..], |n| n.as_slice());
+            vp.set_lighting(gpu.device, gpu.queue, native, app.lighting);
+        }
         let layers_changed = self.layers.as_ref() != Some(&app.layers);
         if layers_changed {
             vp.set_layers(&app.layers);

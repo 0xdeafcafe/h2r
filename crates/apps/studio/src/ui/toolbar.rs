@@ -122,6 +122,21 @@ pub(super) fn draw(
     if layers::show_button(ui, app, actions) {
         *hint = Some("Choose what the viewport shows".to_owned());
     }
+
+    next_group(ui, right, 132.0);
+    ui.set_next_item_width(132.0);
+    if let Some(_combo) = ui.begin_combo("##Lighting", app.lighting.name()) {
+        for choice in scenario_edit::native_view::Lighting::ALL {
+            if ui
+                .selectable_config(choice.name())
+                .selected(choice == app.lighting)
+                .build()
+            {
+                actions.push(Action::SetLighting(choice));
+            }
+        }
+    }
+    describe(ui, hint, "Lighting: what the level is drawn with");
 }
 
 fn next_group(ui: &Ui, right: f32, width: f32) {
