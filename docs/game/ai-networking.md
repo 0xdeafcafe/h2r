@@ -1,7 +1,7 @@
 # AI over the network
 
-Status: Design. Slice AN0 (the agent API methods the probes need) is built; nothing else is.
-Code: `crates/extensions/agent/src/net.rs` (`net.replication`), `crates/extensions/agent/src/ai.rs` (`world.ai`). Planned: `crates/formats/host-log`, `crates/live/actor-net`, `crates/extensions/game/src/actor_net/`. Tests: each crate's own, on invented data.
+Status: Design. AN0 provides the agent API methods for the probes. AN1 provides the shared host log.
+Code: `crates/extensions/agent/src/net.rs` (`net.replication`), `crates/extensions/agent/src/ai.rs` (`world.ai`), `crates/formats/host-log`. Planned: `crates/live/actor-net`, `crates/extensions/game/src/actor_net/`. Tests: each crate's own, on invented data.
 Switch: `agent-net` (the event counter behind `net.replication`), listed in [switches.md](../runtime/switches.md). The `actor-net` feature of `H2_FEATURES` (off until probe P3 is seen in the game) joins it with the code.
 
 AI actors in a network game: who runs them, what reaches the other
@@ -97,12 +97,15 @@ already gives both sides (object body `+0xd4`, **E**), so the channel
 needs no id map of its own.
 
 **3. The host log** (`crates/formats/host-log`). An ordered, hash-chained
-list of entries `{seq, tick, op, prev_hash}`, generic over the op. It is
-the log Forge's edit log describes ([forge-design.md](forge-design.md),
-"The edit log and multiplayer"); `forge-doc`'s `Entry` is
-`host_log::Entry<forge_doc::Op>` and Firefight's is
-`host_log::Entry<firefight::Command>`. Whatever changes the world on
-purpose (place a squad, start a round, switch a skull) is a log entry.
+list of entries `{seq, tick, op, prev_hash}`, generic over the op.
+Forge's multiplayer integration uses `host_log::Entry<forge_doc::Op>`
+with the authenticated `author` field, matching the F1 entry encoding
+([forge-design.md](forge-design.md), "The edit log and multiplayer").
+Firefight uses `host_log::Entry<firefight::Command>` and omits `author`.
+The chain hashes each entry's canonical JSON with SHA-256. A trusted
+checkpoint supplies the starting sequence, tick and hash for a suffix.
+An operation that changes the world on purpose (place a squad, start a
+round, switch a skull) is a log entry.
 In a distributed session only the host applies entries and clients see
 their effects through layers 1 and 2. In a synchronous session the
 entries travel to every machine and each applies them at the entry's

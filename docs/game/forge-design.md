@@ -190,9 +190,10 @@ proposal:  {author, base_seq, op, was?}        peer -> host
 entry:     {seq, tick, author, op, prev_hash}  host -> every peer
 ```
 
-The log itself (entries, the hash chain, the head) is the
-`host-log` crate that [ai-networking.md](ai-networking.md) specifies;
-`forge-doc`'s `Entry` is `host_log::Entry<Op>`.
+The shared `host-log` crate handles entries, the hash chain and the head
+([ai-networking.md](ai-networking.md), "How it works"). The multiplayer
+integration uses `host_log::Entry<Op>` with the authenticated author set.
+Its canonical bytes and SHA-256 match the authored F1 entry.
 
 - The host validates a proposal (schema, permission, budget, bounds,
   `was` against what it holds), assigns the next `seq` and an apply
