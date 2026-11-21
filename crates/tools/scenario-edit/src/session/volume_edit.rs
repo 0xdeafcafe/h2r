@@ -234,7 +234,7 @@ mod tests {
         let mut ed = Session::new();
         ed.build_scenes = false;
         ed.open(MapSource::file(&path)).unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
+        // The source stays on disk: saving reads it again.
         ed
     }
 
