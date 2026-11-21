@@ -34,10 +34,13 @@ fn small_def(shared: bool, rounds: usize) -> Def {
     Def {
         format: FORMAT,
         name: "Hud".into(),
-        rounds: (0..rounds)
-            .map(|_| Round {
+        // Each skull is switched on by one round only.
+        rounds: [Skull::Famine, Skull::Blind, Skull::Ghost, Skull::Catch, Skull::Mythic]
+            .into_iter()
+            .take(rounds)
+            .map(|skull| Round {
                 waves: waves(),
-                skulls_on: vec![Skull::Famine],
+                skulls_on: vec![skull],
             })
             .collect(),
         lives: ::firefight::Lives {

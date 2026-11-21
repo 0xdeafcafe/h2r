@@ -92,7 +92,7 @@ fn the_options_page_steps_and_opens_pickers() {
         case(
             "focus-0",
             &[Right],
-            vec![stepped("firefight.enabled -> Off")],
+            vec![stepped("firefight: right on row 0: firefight.enabled -> Off")],
             "focus 0 Firefight = Off",
             vec![(&ENABLED, Value::Bool(false))],
         ),
@@ -101,7 +101,7 @@ fn the_options_page_steps_and_opens_pickers() {
             &[Down, Right],
             vec![
                 ListEffect::Focus(1),
-                stepped("firefight.waveset -> Attrition"),
+                stepped("firefight: right on row 1: firefight.waveset -> Attrition"),
             ],
             "focus 1 Wave set = Attrition",
             vec![(&WAVE_SET, Value::Int(1))],
@@ -111,7 +111,7 @@ fn the_options_page_steps_and_opens_pickers() {
             &[Down, Left],
             vec![
                 ListEffect::Focus(1),
-                stepped("firefight.waveset -> Last Stand"),
+                stepped("firefight: left on row 1: firefight.waveset -> Last Stand"),
             ],
             "focus 1 Wave set = Last Stand",
             vec![(&WAVE_SET, Value::Int(2))],
@@ -119,7 +119,7 @@ fn the_options_page_steps_and_opens_pickers() {
         case(
             "focus-2",
             &[Left],
-            vec![stepped("firefight.difficulty -> Easy")],
+            vec![stepped("firefight: left on row 2: firefight.difficulty -> Easy")],
             "focus 2 Difficulty = Easy",
             vec![(&DIFFICULTY, Value::Int(0))],
         ),
@@ -128,9 +128,9 @@ fn the_options_page_steps_and_opens_pickers() {
             "focus-2",
             &[Right, Right, Right],
             vec![
-                stepped("firefight.difficulty -> Heroic"),
-                stepped("firefight.difficulty -> Legendary"),
-                stepped("firefight.difficulty -> Easy"),
+                stepped("firefight: right on row 2: firefight.difficulty -> Heroic"),
+                stepped("firefight: right on row 2: firefight.difficulty -> Legendary"),
+                stepped("firefight: right on row 2: firefight.difficulty -> Easy"),
             ],
             "focus 2 Difficulty = Easy",
             vec![(&DIFFICULTY, Value::Int(0))],
@@ -139,14 +139,14 @@ fn the_options_page_steps_and_opens_pickers() {
         case(
             "focus-2",
             &[Down, Right],
-            vec![ListEffect::Focus(3), stepped("firefight.lives -> 1")],
+            vec![ListEffect::Focus(3), stepped("firefight: right on row 3: firefight.lives -> 1")],
             "focus 3 Starting lives = 1",
             vec![(&LIVES, Value::Int(1))],
         ),
         case(
             "focus-2",
             &[Down, Left],
-            vec![ListEffect::Focus(3), stepped("firefight.lives -> 30")],
+            vec![ListEffect::Focus(3), stepped("firefight: left on row 3: firefight.lives -> 30")],
             "focus 3 Starting lives = 30",
             vec![(&LIVES, Value::Int(30))],
         ),
@@ -181,7 +181,7 @@ fn the_options_page_steps_and_opens_pickers() {
         case(
             "focus-4",
             &[Right],
-            vec![stepped("firefight.skulls -> Off")],
+            vec![stepped("firefight: right on row 4: firefight.skulls -> Off")],
             "focus 4 Skulls = Off",
             vec![(&SKULLS, Value::Bool(false))],
         ),

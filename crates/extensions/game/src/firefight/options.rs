@@ -38,7 +38,7 @@ use runtime::guest::Permissions;
 use settings::{Apply, Choice, Def as Setting, Kind, Scope, Store, Tier, Value};
 
 use crate::h1_options_row::{self as h1row, CHANGE_MAP};
-use crate::list_class;
+use crate::list_class::{self, Rows};
 use crate::ui_kit::choice::ChoiceRow;
 use crate::ui_kit::dialog::{DialogBase, icon};
 use crate::ui_kit::ids::{self, Family};
