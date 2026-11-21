@@ -38,7 +38,9 @@ pub struct Uniforms {
     /// W-buffering: depth full scale, polygon offset units, slope factor.
     pub depth: Vec4,
     /// W-buffering: the clamp range of the stored w.
-    pub depth_range: Vec4,
+    pub depth_range: [f32; 2],
+    /// Host pixels per guest pixel on each axis, for the polygon stipple.
+    pub stipple_scale: [f32; 2],
 }
 
 impl Default for Uniforms {
@@ -58,7 +60,8 @@ impl Default for Uniforms {
             lod_bias: [0.0; 4],
             stipple: [0; 32],
             depth: [16_777_215.0, 0.0, 0.0, 1.0],
-            depth_range: [0.0, 16_777_215.0, 0.0, 0.0],
+            depth_range: [0.0, 16_777_215.0],
+            stipple_scale: [1.0; 2],
         }
     }
 }
@@ -99,7 +102,10 @@ impl Uniforms {
         for (dst, row) in stipple.as_chunks_mut::<4>().0.iter_mut().zip(self.stipple) {
             *dst = row.to_le_bytes();
         }
-        crate::common::uniform_vectors(out, &[self.depth, self.depth_range]);
+        let [lo, hi] = self.depth_range;
+        let [sx, sy] = self.stipple_scale;
+        // In WGSL, depth_range.xy is the W clamp, and .zw is the stipple scale.
+        crate::common::uniform_vectors(out, &[self.depth, [lo, hi, sx, sy]]);
     }
 }
 
