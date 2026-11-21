@@ -316,10 +316,14 @@ fn active() -> Option<Arc<Shared>> {
 }
 
 fn has_game_view(scene: &FrameScene, replay: &ReplayFrame) -> bool {
-    // An empty view never visits a camera-extraction hook. Its actual
-    // entry and fully carried overlay are sufficient to replay that Swap.
+    // A view that only clears or copies its targets can reach Swap
+    // without visiting the layer that supplies a camera. Those operations
+    // and the overlay use only the attachments pinned by the transaction.
     scene.views.iter().any(|v| v.key.kind == ViewKind::Game)
-        || (replay.entered_game_view && replay.ops.iter().all(|(at, _)| !at.slot.in_game_view()))
+        || (replay.entered_game_view && replay.ops.iter().all(|(at, op)| {
+            !at.slot.in_game_view()
+                || !matches!(op, d3d::scene_sink::ReplayOp::Draw { .. } | d3d::scene_sink::ReplayOp::Stage(_))
+        }))
 }
 
 fn sealed(sequence: u64, scene: Arc<FrameScene>) {
@@ -710,7 +714,12 @@ mod tests {
         }));
         assert!(has_game_view(&scene, &replay));
         replay.ops[0].0.slot = Slot::Opaque;
-        assert!(!has_game_view(&scene, &replay));
+        replay.ops.push((SlotAt { slot: Slot::AfterPost, view: 0 }, ReplayOp::Copy {
+            from: TargetRef::Aux(0), to: TargetRef::SceneColour,
+        }));
+        assert!(has_game_view(&scene, &replay), "attachment operations do not need a view matrix");
+        replay.entered_game_view = false;
+        assert!(!has_game_view(&scene, &replay), "a pass alone cannot identify a game-view entry");
     }
 
     #[test]
