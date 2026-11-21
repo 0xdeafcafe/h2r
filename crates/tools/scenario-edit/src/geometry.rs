@@ -858,9 +858,12 @@ impl Ray {
 /// The nearest marker glyph the ray hits, with its distance along the ray.
 /// Glyphs are enlarged with distance from the ray's origin as they are
 /// drawn ([`glyph_scale`]).
-pub fn pick_glyph(markers: &[Marker], ray: &Ray) -> Option<(f32, BlockKind, usize)> {
+pub fn pick_glyph<'a>(
+    markers: impl IntoIterator<Item = &'a Marker>,
+    ray: &Ray,
+) -> Option<(f32, BlockKind, usize)> {
     markers
-        .iter()
+        .into_iter()
         .filter_map(|m| {
             let (lift, r) = glyph_bounds(glyph_of(m.block));
             let s = glyph_scale(ray.origin, m.position);

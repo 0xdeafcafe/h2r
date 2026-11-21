@@ -37,6 +37,7 @@ pub use ui_screens::{Pick, UiScreens};
 use editor_core::map_groups::MapGroup;
 use editor_core::{MapPack, MapSource, Status, variant_sources};
 use hopper_edit::HopperSession;
+use scenario_edit::layers::{LayerId, Layers};
 use scenario_edit::{BlockKind, MapSource as EditSource, PackageForm, Session};
 use variants::panel::Origin;
 use variants::{GameType, GameVariant, SettingId, VariantEditor};
@@ -114,6 +115,7 @@ pub enum Action {
     SelectHalo1Map(String),
     /// Draw a converted map's Halo 1 source over it.
     SetOverlay(bool),
+    SetLayers(Layers),
     /// Convert the Halo 1 map on show to Halo 2, in the background.
     ConvertHalo1(ConvertSandbox),
     /// The sandbox "Convert to Halo 2" uses.
@@ -420,7 +422,7 @@ pub struct App {
     h1_loaded: Option<String>,
     /// The open converted map's Halo 1 source.
     compare: Option<Compare>,
-    show_overlay: bool,
+    pub layers: Layers,
     overlay_rev: u64,
     /// The conversion running, why the last one wrote nothing, and what
     /// runs it.
@@ -497,7 +499,7 @@ impl App {
             h1_view: None,
             h1_loaded: None,
             compare: None,
-            show_overlay: true,
+            layers: Layers::default(),
             overlay_rev: 0,
             convert: None,
             convert_error: None,
@@ -794,7 +796,8 @@ impl App {
             Action::OpenPackageEntry(key) => self.open_package_entry(&key),
             Action::OpenMapPack(key) => self.open_pack_map(&key),
             Action::SelectHalo1Map(name) => self.select_halo1_map(&name),
-            Action::SetOverlay(on) => self.set_overlay(on),
+            Action::SetOverlay(on) => self.layers.set(LayerId::Halo1, on),
+            Action::SetLayers(layers) => self.layers = layers,
             Action::ConvertHalo1(sandbox) => self.start_convert(sandbox),
             Action::SetConvertSandbox(sandbox) => {
                 self.convert_sandbox = sandbox;

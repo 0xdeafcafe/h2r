@@ -127,7 +127,7 @@ impl Scene {
         let Some(sample) = app.pairing.shown.as_ref() else {
             return Self::default();
         };
-        if !app.pairing.show_objects || !app.pairing.matches_sample(app, sample) {
+        if !app.layers.visible(scenario_edit::layers::LayerId::Live) || !app.pairing.matches_sample(app, sample) {
             return Self::default();
         }
         Self::new(sample, &app.session)

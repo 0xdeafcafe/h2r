@@ -320,10 +320,9 @@ one on the owner's discs, end to end.
 **The Halo 1 overlay.** Opening a converted variant looks for its
 `[origin] map` in the open Halo 1 source, then `$H1_MAP_DIR`, and checks
 the stored file's SHA-256 against `source_sha256`. When it matches, View >
-Halo 1 overlay (and the viewport toolbar's toggle) draws the Halo 1 BSP
-and placement glyphs in orange at 35 % over the converted map, through
-everything (`render::Viewport::set_overlay`), to check a conversion by
-eye. The inspector says where the map came from, and why there is no
+Halo 1 overlay and **Show > Halo 1 overlay** draw the source BSP and
+placement glyphs in translucent orange. Turn on **X-ray** to see the
+parts behind the converted geometry at a quarter of their usual opacity. The inspector says where the map came from, and why there is no
 overlay when there is none.
 
 ### The Maps list's cards
@@ -602,6 +601,13 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   is drawn at the placement's position, rotation and scale, instanced per
   model. Clicking a model picks it (ray against its triangles); the
   selection is tinted and keeps its marker.
+- **Layers.** Open **Show** above the viewport or **Layers** in the scene
+  outliner to toggle the structure, sky, object models, fog, markers,
+  individual placement blocks, Halo 1 reference and live objects. Each
+  row shows its colour and count. Art, Gameplay, Collision and Everything
+  choose a set of layers in one click. Collision shows the level structure
+  for context. The viewport and `view.snapshot` share these settings.
+  Clicking skips hidden placement categories and hidden structure.
 - **Glyphs.** Placements without a model get a glyph in their block's
   colour: a standing pawn with an arrow for player spawns, a pole and
   pennant for netgame flags, a diamond for the rest. Past 40 units from

@@ -224,7 +224,6 @@ pub struct Bridge {
     /// The sample shown this editor frame, shared by the viewport and API.
     pub shown: Option<live_mirror::Sample>,
     pub latest: bool,
-    pub show_objects: bool,
     /// Counters reported by the game's writer for this stream.
     pub counters: Option<Value>,
     /// Map identity from the handshake, refreshed over live.status after a cut.
@@ -243,7 +242,6 @@ impl Default for Bridge {
             mirror: None,
             shown: None,
             latest: false,
-            show_objects: true,
             counters: None,
             stream_map: Value::Null,
             play_copy: None,

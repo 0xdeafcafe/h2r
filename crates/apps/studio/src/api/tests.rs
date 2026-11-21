@@ -303,6 +303,81 @@ fn pair_status_carries_link_view() {
 }
 
 #[test]
+fn view_layers_applies_overrides_atomically_and_shares_the_halo1_menu_switch() {
+    let t = Temp::new("view-layers");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    let result = call(&mut api, &mut app, m::VIEW_LAYERS, json!({
+        "preset": "everything", "set": {"fog": false}, "xray": true
+    }));
+    assert_eq!(result["xray"], true);
+    let rows = result["layers"].as_array().unwrap();
+    assert_eq!(rows.iter().find(|r| r["name"] == "fog").unwrap()["on"], false);
+    let scenery = rows.iter().find(|r| r["label"] == "Scenery").unwrap();
+    assert_eq!(scenery["count"], 1);
+    assert_eq!(scenery["on"], true);
+    assert_eq!(scenery["color"].as_array().unwrap().len(), 3);
+
+    for invalid in [
+        json!({"preset": "missing"}),
+        json!({"preset": "art", "set": []}),
+        json!({"preset": "art", "set": {"fog": true, "unknown": false}}),
+        json!({"set": {"fog": "on"}}),
+        json!({"set": {"fog": true}, "xray": 1}),
+    ] {
+        let reply = api.call(&mut app, m::VIEW_LAYERS, invalid);
+        assert_eq!(code_of(reply), code::INVALID_PARAMS);
+        assert_eq!(call(&mut api, &mut app, m::VIEW_LAYERS, Value::Null), result);
+    }
+
+    assert!(app.overlay_shown());
+    app.dispatch(Action::SetOverlay(false));
+    let hidden = call(&mut api, &mut app, m::VIEW_LAYERS, Value::Null);
+    let halo = hidden["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "halo1")
+        .unwrap();
+    assert_eq!(halo["on"], false);
+    call(&mut api, &mut app, m::VIEW_LAYERS, json!({"set": {"halo1": true}}));
+    assert!(app.overlay_shown());
+}
+
+#[test]
+fn view_layers_changes_snapshot_pixels_on_the_fixture() {
+    let t = Temp::new("view-layer-pixels");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    let out = t.path("view.png");
+    let params = json!({
+        "out": out, "size": [128, 96],
+        "camera": {"target": [5, 5, 5], "distance": 2, "yaw": 15, "pitch": 15}
+    });
+    // The fixture has one scenery glyph at [5, 5, 5].
+    call(&mut api, &mut app, m::VIEW_LAYERS, json!({"preset": "everything"}));
+    match api.call(&mut app, m::VIEW_SNAPSHOT, params.clone()) {
+        Err(e) if e.code == code::NO_GPU => return,
+        Ok(_) => {}
+        Err(e) => panic!("view.snapshot: {e}"),
+    }
+    let pixels = || {
+        let file = std::io::BufReader::new(std::fs::File::open(&out).unwrap());
+        let mut png = png::Decoder::new(file).read_info().unwrap();
+        let mut rgba = vec![0; png.output_buffer_size().unwrap()];
+        png.next_frame(&mut rgba).unwrap();
+        rgba
+    };
+    let shown = pixels();
+    call(&mut api, &mut app, m::VIEW_LAYERS, json!({"set": {"scenery": false}}));
+    call(&mut api, &mut app, m::VIEW_SNAPSHOT, params.clone());
+    assert!(pixels() != shown, "hiding scenery must remove its glyph from the snapshot");
+    call(&mut api, &mut app, m::VIEW_LAYERS, json!({"set": {"scenery": true}}));
+    call(&mut api, &mut app, m::VIEW_SNAPSHOT, params);
+    assert!(pixels() == shown, "showing scenery must restore the original pixels");
+}
+
+#[test]
 fn methods_describe_their_params_results_and_examples() {
     let t = Temp::new("methods");
     let mut app = app(&t);
@@ -1386,7 +1461,9 @@ fn viewport_pick_pushes_one_history_entry() {
         origin: [0.0, 1.0, 12.0],
         dir: [0.0, 0.0, -1.0],
     };
-    let pick = crate::viewport::pick_action(&app.session, &ray, false).unwrap();
+    let pick = crate::viewport::pick_action(
+        &app.session, &ray, false, &app.layers, &Default::default(),
+    ).unwrap();
     assert_eq!(pick, Action::Select(Some((BlockKind::Weapons, 0))));
     app.dispatch(pick.clone());
     let after = call(&mut api, &mut app, m::NAV_STATUS, json!({}));

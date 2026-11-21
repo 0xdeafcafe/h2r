@@ -8,7 +8,8 @@ use std::path::PathBuf;
 
 use anyhow::{Context as _, Result, anyhow};
 use scenario_edit::geometry::{BspLighting, Camera};
-use scenario_edit::render::{self, Viewport};
+use scenario_edit::layers::{LayerId, Preset};
+use scenario_edit::render::Viewport;
 use scenario_edit::scene::{Blend, Scene};
 use serde_json::{Value, json};
 use studio_proto::{code, method as m};
@@ -94,6 +95,46 @@ pub fn camera(app: &mut App, p: &P) -> Reply {
     Ok(reply)
 }
 
+pub fn layers(app: &mut App, p: &P) -> Reply {
+    // Validate the whole request before applying its changes in one action.
+    let mut next = app.layers.clone();
+    if let Some(name) = p.opt_str("preset")? {
+        let preset = Preset::ALL.into_iter().find(|preset| preset.id() == name)
+            .ok_or_else(|| err(code::INVALID_PARAMS, format!("unknown layer preset {name:?}")))?;
+        next.apply(preset);
+    }
+    if let Some(set) = p.get("set") {
+        let entries = set.as_object()
+            .ok_or_else(|| err(code::INVALID_PARAMS, "set must map layer names to booleans"))?;
+        for (name, value) in entries {
+            let layer = LayerId::all().find(|id| id.id() == name.as_str())
+                .ok_or_else(|| err(code::INVALID_PARAMS, format!("unknown layer {name:?}")))?;
+            let on = value.as_bool().ok_or_else(|| {
+                err(code::INVALID_PARAMS, format!("set.{name} must be true or false"))
+            })?;
+            next.set(layer, on);
+        }
+    }
+    if p.has("xray") {
+        next.xray = p.bool("xray")?;
+    }
+    if next != app.layers {
+        app.perform(Action::SetLayers(next), false)
+            .map_err(super::scenario::refused)?;
+    }
+    let rows: Vec<Value> = LayerId::all()
+        .map(|id| json!({
+            "name": id.id(),
+            "label": id.label(),
+            "group": id.group(),
+            "on": app.layers.visible(id),
+            "count": app.layer_count(id),
+            "color": crate::theme::layer_color(id),
+        }))
+        .collect();
+    Ok(json!({ "layers": rows, "xray": app.layers.xray }))
+}
+
 pub fn snapshot(gpu: &Gpu, app: &mut App, p: &P) -> Reply {
     super::scenario::open(app)?;
     let size = match p.get("size") {
@@ -132,22 +173,15 @@ pub fn snapshot(gpu: &Gpu, app: &mut App, p: &P) -> Reply {
     }
     let live = crate::viewport::mirror::Scene::shown(app);
     let session = &app.session;
-    let selection = session.selection();
     let mut vp = Viewport::new(&gpu.device);
+    vp.set_layers(&app.layers);
     match session.scene() {
-        Some(scene) => {
-            vp.set_scene(&gpu.device, &gpu.queue, scene);
-            vp.set_linked_placements(&gpu.device, scene, session.markers(), &selection, &live.linked);
-            vp.set_live_instances(&gpu.device, &gpu.queue, session.source(), &live.instances);
-        }
-        None => {
-            vp.set_world(&gpu.device, session.world().0);
-            vp.set_markers(
-                &gpu.device,
-                &render::marker_vertices(session.markers(), &selection),
-            );
-        }
+        Some(scene) => vp.set_scene(&gpu.device, &gpu.queue, scene),
+        None => vp.set_world(&gpu.device, session.world().0),
     }
+    crate::viewport::upload_placements(&mut vp, &gpu.device, app, &live.linked);
+    crate::viewport::upload_overlays(&mut vp, &gpu.device, app);
+    vp.set_live_instances(&gpu.device, &gpu.queue, session.source(), &live.instances);
     vp.render(&gpu.device, &gpu.queue, &cam, size);
     let texture = vp
         .color_texture()
@@ -290,6 +324,19 @@ mod tests {
             tris: vec![[0, 1, 2]],
             ..WorldPart::default()
         }
+    }
+
+    #[test]
+    fn view_layers_counts_translucent_structure_even_when_hidden() {
+        let mut scene = Scene::default();
+        scene.world.push(None, None, Blend::Translucent, &tri());
+        let mut app = App::new();
+        app.session.open_reference(scenario_edit::Reference {
+            scene: Some(std::sync::Arc::new(scene)),
+            ..Default::default()
+        });
+        app.layers.set(LayerId::Structure, false);
+        assert_eq!(app.layer_count(LayerId::Structure), 1);
     }
 
     /// The stats say how each BSP is lit, count the world's triangles by

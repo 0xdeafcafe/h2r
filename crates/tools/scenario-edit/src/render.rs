@@ -8,9 +8,10 @@
 //! toolkit is used here; `h2-editor` registers [`Viewport::ui_view`]
 //! with `dear-imgui-wgpu`.
 use crate::geometry::{Camera, Marker, Tri, Vec3, block_color, cross, marker_triangles, normalize};
+use crate::layers::{LayerId, Layers};
 use crate::scene::{Atmosphere, Blend, Scene, SceneVertex, sun_tint};
 use map::TagId;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Range;
 use wgpu::util::DeviceExt;
 
@@ -181,6 +182,9 @@ struct V { @builtin(position) clip: vec4<f32>, @location(0) n: vec3<f32>, @locat
     let l = normalize(vec3<f32>(0.4, 0.3, 0.85));
     let d = abs(dot(normalize(v.n), l));
     return vec4<f32>(v.c * (0.3 + 0.7 * d), 1.0);
+}
+@fragment fn fs_overlay(v: V) -> @location(0) vec4<f32> {
+    return vec4<f32>(v.c, 1.0);
 }
 "#;
 
@@ -376,7 +380,7 @@ pub fn world_vertices(tris: &[Tri]) -> Vec<Vertex> {
     out
 }
 
-/// The opacity of [`Viewport::set_overlay`]'s geometry.
+/// Opacity of overlay faces. Their wire edges use full opacity.
 pub const OVERLAY_ALPHA: f64 = 0.35;
 
 /// Triangles in one flat colour, lit by slope, for the overlay (a
@@ -402,6 +406,16 @@ pub fn glyph_vertices(
     selected: &[(crate::BlockKind, usize)],
     modelled: impl Fn(&Marker) -> bool,
 ) -> Vec<Vertex> {
+    glyph_vertices_colored(markers, selected, modelled, |m| block_color(m.block))
+}
+
+/// Build the same glyphs with the caller's layer colours.
+pub fn glyph_vertices_colored(
+    markers: &[Marker],
+    selected: &[(crate::BlockKind, usize)],
+    modelled: impl Fn(&Marker) -> bool,
+    color_of: impl Fn(&Marker) -> Vec3,
+) -> Vec<Vertex> {
     let mut out = Vec::new();
     for m in markers {
         let is_sel = selected.contains(&(m.block, m.index));
@@ -412,11 +426,7 @@ pub fn glyph_vertices(
         if is_sel {
             m.axes = m.axes.map(|a| crate::geometry::scale(a, 1.6));
         }
-        let color: Vec3 = if is_sel {
-            [1.0; 3]
-        } else {
-            block_color(m.block)
-        };
+        let color: Vec3 = if is_sel { [1.0; 3] } else { color_of(&m) };
         for t in marker_triangles(&m) {
             let n = crate::geometry::normalize(crate::geometry::cross(
                 crate::geometry::sub(t[1], t[0]),
@@ -662,11 +672,21 @@ impl MeshContext<'_> {
     }
 }
 
+struct OverlayGeometry {
+    triangles: Option<(wgpu::Buffer, u32)>,
+    lines: Option<(wgpu::Buffer, u32)>,
+}
+
+struct OverlayPipelines {
+    visible: wgpu::RenderPipeline,
+    occluded: wgpu::RenderPipeline,
+}
+
 /// Offscreen renderer for the viewport.
 pub struct Viewport {
     pipeline: wgpu::RenderPipeline,
-    /// [`Self::pipeline`] blended at [`OVERLAY_ALPHA`] over everything.
-    ghost: wgpu::RenderPipeline,
+    overlay_faces: OverlayPipelines,
+    overlay_lines: OverlayPipelines,
     sky: wgpu::RenderPipeline,
     /// The sky model: solid, then see-through batches, alpha-blended or
     /// added ([`Blend::Additive`]).
@@ -696,7 +716,8 @@ pub struct Viewport {
     bind: wgpu::BindGroup,
     world: Option<(wgpu::Buffer, u32)>,
     markers: Option<(wgpu::Buffer, u32)>,
-    overlay: Option<(wgpu::Buffer, u32)>,
+    overlays: BTreeMap<LayerId, OverlayGeometry>,
+    layers: Layers,
     scene: Option<GpuScene>,
     target: Option<Target>,
 }
@@ -762,49 +783,58 @@ impl Viewport {
             cache: None,
         });
 
-        let ghost = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("scenario viewport overlay"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &module,
-                entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<Vertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &attrs,
-                })],
-            },
-            primitive: wgpu::PrimitiveState::default(),
-            // Seen through everything: it is there to compare against.
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::Always),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: COLOR_FORMAT,
-                    blend: Some(wgpu::BlendState {
-                        color: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::Constant,
-                            dst_factor: wgpu::BlendFactor::OneMinusConstant,
-                            operation: wgpu::BlendOperation::Add,
-                        },
-                        alpha: wgpu::BlendComponent::REPLACE,
-                    }),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        let overlay_pipeline = |topology, compare| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("scenario viewport overlay"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("vs"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<Vertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &attrs,
+                    })],
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(compare),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some("fs_overlay"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: COLOR_FORMAT,
+                        blend: Some(wgpu::BlendState {
+                            color: wgpu::BlendComponent {
+                                src_factor: wgpu::BlendFactor::Constant,
+                                dst_factor: wgpu::BlendFactor::OneMinusConstant,
+                                operation: wgpu::BlendOperation::Add,
+                            },
+                            alpha: wgpu::BlendComponent::REPLACE,
+                        }),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+
+        let overlays = |topology| OverlayPipelines {
+            visible: overlay_pipeline(topology, wgpu::CompareFunction::LessEqual),
+            occluded: overlay_pipeline(topology, wgpu::CompareFunction::Greater),
+        };
 
         // Textured meshes.
         let scene_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -1074,7 +1104,8 @@ impl Viewport {
         });
         Self {
             pipeline,
-            ghost,
+            overlay_faces: overlays(wgpu::PrimitiveTopology::TriangleList),
+            overlay_lines: overlays(wgpu::PrimitiveTopology::LineList),
             sky,
             sky_opaque,
             sky_blend,
@@ -1098,7 +1129,8 @@ impl Viewport {
             bind,
             world: None,
             markers: None,
-            overlay: None,
+            overlays: BTreeMap::new(),
+            layers: Layers::default(),
             scene: None,
             target: None,
         }
@@ -1170,9 +1202,30 @@ impl Viewport {
     pub fn set_markers(&mut self, device: &wgpu::Device, v: &[Vertex]) {
         self.markers = Self::upload(device, v);
     }
-    /// Geometry drawn see-through over everything (empty: none).
-    pub fn set_overlay(&mut self, device: &wgpu::Device, v: &[Vertex]) {
-        self.overlay = Self::upload(device, v);
+    pub fn set_layers(&mut self, layers: &Layers) {
+        self.layers.clone_from(layers);
+    }
+
+    /// Replace one layer's triangle list and line list. Their geometry
+    /// stays resident across visibility changes. Empty slices remove it.
+    pub fn set_layer_overlay(
+        &mut self,
+        device: &wgpu::Device,
+        id: LayerId,
+        triangles: &[Vertex],
+        lines: &[Vertex],
+    ) {
+        if triangles.is_empty() && lines.is_empty() {
+            self.overlays.remove(&id);
+        } else {
+            self.overlays.insert(
+                id,
+                OverlayGeometry {
+                    triangles: Self::upload(device, triangles),
+                    lines: Self::upload(device, lines),
+                },
+            );
+        }
     }
 
     /// Upload a map's textured world and models (replacing the grey world
@@ -1318,11 +1371,29 @@ impl Viewport {
         selected: &[(crate::BlockKind, usize)],
         linked: &BTreeSet<(crate::BlockKind, usize)>,
     ) {
+        self.set_linked_placements_colored(device, scene, markers, selected, linked, |m| {
+            block_color(m.block)
+        });
+    }
+
+    /// Upload authoring glyphs in their layer colours and the placed models.
+    pub fn set_linked_placements_colored(
+        &mut self,
+        device: &wgpu::Device,
+        scene: &Scene,
+        markers: &[Marker],
+        selected: &[(crate::BlockKind, usize)],
+        linked: &BTreeSet<(crate::BlockKind, usize)>,
+        color_of: impl Fn(&Marker) -> Vec3,
+    ) {
         self.markers = Self::upload(
             device,
-            &glyph_vertices(markers, selected, |m| {
-                !linked.contains(&(m.block, m.index)) && scene.model_of(m).is_some()
-            }),
+            &glyph_vertices_colored(
+                markers,
+                selected,
+                |m| !linked.contains(&(m.block, m.index)) && scene.model_of(m).is_some(),
+                color_of,
+            ),
         );
         if let Some(gpu) = &mut self.scene {
             let placements = markers.iter().filter(|m| !linked.contains(&(m.block, m.index)));
@@ -1413,7 +1484,11 @@ impl Viewport {
                 sun: self.atmosphere.sun,
                 sun_color: self.atmosphere.sun_color,
                 fog_color: self.atmosphere.fog_color,
-                fog_range: self.atmosphere.fog_range,
+                fog_range: if self.layers.visible(LayerId::Fog) {
+                    self.atmosphere.fog_range
+                } else {
+                    AtmosphereUniforms::NONE.fog_range
+                },
             }),
         );
         queue.write_buffer(
@@ -1450,13 +1525,10 @@ impl Viewport {
                 },
             })]
         };
-        let depth_attachment = || {
+        let depth_attachment = |load, store| {
             Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &target.depth_view,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(1.0),
-                    store: wgpu::StoreOp::Discard,
-                }),
+                depth_ops: Some(wgpu::Operations { load, store }),
                 stencil_ops: None,
             })
         };
@@ -1466,7 +1538,12 @@ impl Viewport {
         // model is drawn over its clear colour (black unless the tag sets
         // one), not the gradient: its added layers add onto what is
         // behind them, as in the game.
-        let sky = self.scene.as_ref().and_then(|s| s.sky.as_ref());
+        let show_sky = self.layers.visible(LayerId::Sky);
+        let sky = self
+            .scene
+            .as_ref()
+            .filter(|_| show_sky)
+            .and_then(|s| s.sky.as_ref());
         if let Some(sky) = sky {
             let clear = self.scene.as_ref().map_or([0.0; 3], |s| s.sky_clear);
             let color = color_attachment(wgpu::LoadOp::Clear(wgpu::Color {
@@ -1478,7 +1555,10 @@ impl Viewport {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("scenario viewport sky"),
                 color_attachments: &color,
-                depth_stencil_attachment: depth_attachment(),
+                depth_stencil_attachment: depth_attachment(
+                    wgpu::LoadOp::Clear(1.0),
+                    wgpu::StoreOp::Discard,
+                ),
                 timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,
@@ -1501,6 +1581,7 @@ impl Viewport {
                 pass.draw_indexed(indices.clone(), 0, 0..1);
             }
         }
+        let has_overlays = self.overlays.keys().any(|&id| self.layers.visible(id));
         {
             let color = color_attachment(if sky.is_some() {
                 wgpu::LoadOp::Load
@@ -1510,13 +1591,20 @@ impl Viewport {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("scenario viewport"),
                 color_attachments: &color,
-                depth_stencil_attachment: depth_attachment(),
+                depth_stencil_attachment: depth_attachment(
+                    wgpu::LoadOp::Clear(1.0),
+                    if has_overlays {
+                        wgpu::StoreOp::Store
+                    } else {
+                        wgpu::StoreOp::Discard
+                    },
+                ),
                 timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
             pass.set_bind_group(0, &self.bind, &[]);
-            if self.scene.is_some() && sky.is_none() {
+            if show_sky && self.scene.is_some() && sky.is_none() {
                 pass.set_pipeline(&self.sky);
                 pass.draw(0..3, 0..1);
             }
@@ -1524,26 +1612,77 @@ impl Viewport {
             // see-through batches over them.
             self.draw_scene(&mut pass, false);
             pass.set_pipeline(&self.pipeline);
-            for (buffer, count) in [&self.world, &self.markers].into_iter().flatten() {
+            for (id, geometry) in [
+                (LayerId::Structure, &self.world),
+                (LayerId::Markers, &self.markers),
+            ] {
+                let Some((buffer, count)) = geometry.as_ref().filter(|_| self.layers.visible(id))
+                else {
+                    continue;
+                };
                 pass.set_vertex_buffer(0, buffer.slice(..));
                 pass.draw(0..*count, 0..1);
             }
             self.draw_scene(&mut pass, true);
-            if let Some((buffer, count)) = &self.overlay {
-                pass.set_pipeline(&self.ghost);
-                let a = OVERLAY_ALPHA;
-                pass.set_blend_constant(wgpu::Color {
-                    r: a,
-                    g: a,
-                    b: a,
-                    a,
-                });
-                pass.set_vertex_buffer(0, buffer.slice(..));
-                pass.draw(0..*count, 0..1);
-            }
+        }
+        if has_overlays {
+            let color = color_attachment(wgpu::LoadOp::Load);
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("scenario viewport overlays"),
+                color_attachments: &color,
+                depth_stencil_attachment: depth_attachment(
+                    wgpu::LoadOp::Load,
+                    wgpu::StoreOp::Discard,
+                ),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_bind_group(0, &self.bind, &[]);
+            self.draw_overlays(&mut pass);
         }
         queue.submit([enc.finish()]);
         resized
+    }
+
+    fn draw_overlays(&self, pass: &mut wgpu::RenderPass<'_>) {
+        // All layers' fills first, so a later fill never covers a wire edge.
+        // The depth comparisons partition the fragments without changing
+        // picture depth, even where multiple overlays overlap.
+        for (lines, pipelines, opacity) in [
+            (false, &self.overlay_faces, OVERLAY_ALPHA),
+            (true, &self.overlay_lines, 1.0),
+        ] {
+            for (hidden, pipeline, alpha) in [
+                (true, &pipelines.occluded, opacity * 0.25),
+                (false, &pipelines.visible, opacity),
+            ] {
+                if hidden && !self.layers.xray {
+                    continue;
+                }
+                pass.set_pipeline(pipeline);
+                pass.set_blend_constant(wgpu::Color {
+                    r: alpha,
+                    g: alpha,
+                    b: alpha,
+                    a: alpha,
+                });
+                for (&id, geometry) in &self.overlays {
+                    if !self.layers.visible(id) {
+                        continue;
+                    }
+                    let vertices = if lines {
+                        &geometry.lines
+                    } else {
+                        &geometry.triangles
+                    };
+                    if let Some((buffer, count)) = vertices {
+                        pass.set_vertex_buffer(0, buffer.slice(..));
+                        pass.draw(0..*count, 0..1);
+                    }
+                }
+            }
+        }
     }
 
     /// The scene's batches: solid and cut-out ones, or the see-through ones.
@@ -1572,13 +1711,20 @@ impl Viewport {
                 pass.draw_indexed(indices.clone(), 0, range.clone());
             }
         };
-        if let Some(world) = &scene.world {
+        if let Some(world) = scene
+            .world
+            .as_ref()
+            .filter(|_| self.layers.visible(LayerId::Structure))
+        {
             draw(world, &self.identity, 0..1);
         }
-        for (buffer, ranges) in [
-            (&scene.instances, &scene.ranges), (&scene.live_instances, &scene.live_ranges),
+        for (id, buffer, ranges) in [
+            (LayerId::Objects, &scene.instances, &scene.ranges),
+            (LayerId::Live, &scene.live_instances, &scene.live_ranges),
         ] {
-            let Some(instances) = buffer else { continue };
+            let Some(instances) = buffer.as_ref().filter(|_| self.layers.visible(id)) else {
+                continue;
+            };
             for (model, range) in ranges {
                 if let Some(Some(mesh)) = scene.models.get(*model) {
                     draw(mesh, instances, range.clone());

@@ -615,18 +615,63 @@ fn camera_rays_projection_picking_and_planes() {
     assert_eq!(geometry::marker_triangles(&markers[0]).len(), 8);
 }
 
-/// Renders a marker offscreen and reads the centre pixel back. Skipped when
-/// the machine has no wgpu adapter.
-#[test]
-fn viewport_renders_markers_offscreen() {
+fn viewport_device() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::default();
     let Ok(adapter) =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
     else {
         eprintln!("no wgpu adapter; skipping");
+        return None;
+    };
+    Some(pollster::block_on(adapter.request_device(&Default::default())).unwrap())
+}
+
+/// Read the centre pixel of a 64 by 64 test viewport (one aligned row).
+fn viewport_pixel(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    vp: &crate::render::Viewport,
+) -> [u8; 4] {
+    let tex = vp.color_texture().unwrap();
+    let row = 256u32;
+    let buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: u64::from(row * 64),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut enc = device.create_command_encoder(&Default::default());
+    enc.copy_texture_to_buffer(
+        tex.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buf,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(row),
+                rows_per_image: Some(64),
+            },
+        },
+        wgpu::Extent3d {
+            width: 64,
+            height: 64,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([enc.finish()]);
+    buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    let data = buf.slice(..).get_mapped_range().unwrap();
+    let at = (32 * row + 32 * 4) as usize;
+    [data[at], data[at + 1], data[at + 2], data[at + 3]]
+}
+
+/// Renders a marker offscreen and reads the centre pixel back. Skipped when
+/// the machine has no wgpu adapter.
+#[test]
+fn viewport_renders_markers_offscreen() {
+    let Some((device, queue)) = viewport_device() else {
         return;
     };
-    let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
     let mut vp = crate::render::Viewport::new(&device);
     let cam = Camera {
         target: [0.0; 3],
@@ -634,41 +679,8 @@ fn viewport_renders_markers_offscreen() {
         ..Camera::default()
     };
     let size = [64u32, 64];
-    let pixel = |vp: &crate::render::Viewport| -> [u8; 4] {
-        let tex = vp.color_texture().unwrap();
-        let row = 256u32;
-        let buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: u64::from(row * size[1]),
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        let mut enc = device.create_command_encoder(&Default::default());
-        enc.copy_texture_to_buffer(
-            tex.as_image_copy(),
-            wgpu::TexelCopyBufferInfo {
-                buffer: &buf,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(row),
-                    rows_per_image: Some(size[1]),
-                },
-            },
-            wgpu::Extent3d {
-                width: size[0],
-                height: size[1],
-                depth_or_array_layers: 1,
-            },
-        );
-        queue.submit([enc.finish()]);
-        buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-        let data = buf.slice(..).get_mapped_range().unwrap();
-        let at = (32 * row + 32 * 4) as usize;
-        [data[at], data[at + 1], data[at + 2], data[at + 3]]
-    };
     vp.render(&device, &queue, &cam, size);
-    let empty = pixel(&vp);
+    let empty = viewport_pixel(&device, &queue, &vp);
     let marker = geometry::Marker {
         block: BlockKind::Weapons,
         index: 0,
@@ -679,28 +691,110 @@ fn viewport_renders_markers_offscreen() {
     };
     vp.set_markers(&device, &crate::render::marker_vertices(&[marker], &[]));
     vp.render(&device, &queue, &cam, size);
-    let drawn = pixel(&vp);
+    let drawn = viewport_pixel(&device, &queue, &vp);
     assert_ne!(empty, drawn);
     // Orange weapons: red dominates blue.
     assert!(drawn[0] > drawn[2], "{drawn:?}");
-    // The overlay is seen through the marker, blended over it: neither
-    // the marker's colour nor the overlay's alone.
-    let quad = |z| geometry::Tri {
-        p: [[-5.0, -5.0, z], [5.0, -5.0, z], [0.0, 5.0, z]],
-        n: [0.0, 0.0, 1.0],
+}
+
+/// The two faces of an invented box along the view ray each blend at
+/// quarter opacity when occluded, and at normal opacity in front.
+#[test]
+fn xray_draws_a_box_behind_a_wall_at_quarter_strength() {
+    use crate::layers::{LayerId, Layers};
+    use crate::render::{OVERLAY_ALPHA, Vertex, Viewport};
+
+    let Some((device, queue)) = viewport_device() else {
+        return;
     };
-    vp.set_overlay(
+    let mut vp = Viewport::new(&device);
+    let camera = Camera {
+        yaw: 0.0,
+        pitch: 0.0,
+        distance: 8.0,
+        ..Default::default()
+    };
+    // Eye at +X. A single opaque wall cuts across the entire box.
+    vp.set_world(
         &device,
-        &crate::render::overlay_vertices(&[quad(-2.0)], [0.0, 0.0, 1.0]),
+        &[geometry::Tri {
+            p: [[1.0, -5.0, -4.0], [1.0, 5.0, -4.0], [1.0, 0.0, 5.0]],
+            n: [1.0, 0.0, 0.0],
+        }],
     );
-    vp.render(&device, &queue, &cam, size);
-    let ghosted = pixel(&vp);
-    assert_ne!(ghosted, drawn);
-    assert!(ghosted[2] > drawn[2], "blue mixed in: {ghosted:?}");
-    assert!(ghosted[0] > 0, "the marker still shows: {ghosted:?}");
-    vp.set_overlay(&device, &[]);
-    vp.render(&device, &queue, &cam, size);
-    assert_eq!(pixel(&vp), drawn);
+    let read = |vp: &mut Viewport| {
+        vp.render(&device, &queue, &camera, [64, 64]);
+        viewport_pixel(&device, &queue, vp)
+    };
+    let wall = read(&mut vp);
+    let corners = [
+        [-0.5, -1.0, -1.0],
+        [-0.5, 1.0, -1.0],
+        [-0.5, 1.0, 1.0],
+        [-0.5, -1.0, 1.0],
+        [0.5, -1.0, -1.0],
+        [0.5, 1.0, -1.0],
+        [0.5, 1.0, 1.0],
+        [0.5, -1.0, 1.0],
+    ];
+    let faces = [
+        [0, 1, 2, 3],
+        [4, 5, 6, 7],
+        [0, 4, 5, 1],
+        [1, 5, 6, 2],
+        [2, 6, 7, 3],
+        [3, 7, 4, 0],
+    ];
+    let box_at = |x| -> Vec<Vertex> {
+        faces
+            .iter()
+            .flat_map(|&[a, b, c, d]| [a, b, c, a, c, d])
+            .map(|i: usize| {
+                let [dx, y, z] = corners[i];
+                let position = [x + dx, y, z];
+                Vertex {
+                    position,
+                    center: position,
+                    normal: [1.0, 0.0, 0.0],
+                    color: [0.0, 0.0, 1.0],
+                }
+            })
+            .collect()
+    };
+    let mut layers = Layers::default();
+    let id = LayerId::Halo1;
+    layers.set(id, true);
+    vp.set_layers(&layers);
+    vp.set_layer_overlay(&device, id, &box_at(0.0), &[]);
+    assert_eq!(read(&mut vp), wall);
+
+    layers.xray = true;
+    vp.set_layers(&layers);
+    let hidden = read(&mut vp);
+    vp.set_layer_overlay(&device, id, &box_at(2.0), &[]);
+    let visible = read(&mut vp);
+    assert!(wall[2] < hidden[2] && hidden[2] < visible[2]);
+    // Blending happens in linear space. The centre ray hits two blue
+    // faces. Allow for quantisation of the sRGB target between blends.
+    let linear = crate::scene::srgb_to_linear;
+    for (pixel, alpha) in [(hidden, OVERLAY_ALPHA / 4.0), (visible, OVERLAY_ALPHA)] {
+        let want = 1.0 - (1.0 - linear(wall[2])) * (1.0 - alpha as f32).powi(2);
+        assert!(
+            (linear(pixel[2]) - want).abs() < 0.015,
+            "{pixel:?} expected blue {want}"
+        );
+    }
+    layers.xray = false;
+    vp.set_layers(&layers);
+    assert_eq!(read(&mut vp), visible);
+    layers.set(id, false);
+    vp.set_layers(&layers);
+    assert_eq!(read(&mut vp), wall);
+    layers.set(id, true);
+    vp.set_layers(&layers);
+    assert_eq!(read(&mut vp), visible);
+    vp.set_layer_overlay(&device, id, &[], &[]);
+    assert_eq!(read(&mut vp), wall);
 }
 
 /// Transparent parts (glass, water, cloud decks) are neither framed nor

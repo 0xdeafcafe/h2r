@@ -78,6 +78,7 @@ What goes through actions, from both sides:
 | Add, duplicate, delete | `Add`, `DuplicateEntry`, `DeleteEntry` | outliner, toolbar, keys | `scenario.add`, `.duplicate`, `.delete`, `tag.block.*` |
 | Select, frame | `Select`, `FocusSelected`, `FrameAll` | Scene, viewport, keys | `scenario.select`, `view.camera` |
 | Set fly speed | `SetFlySpeed` | viewport toolbar, wheel while flying | `view.camera {fly_speed}` |
+| Show or hide viewport layers | `SetLayers`, `SetOverlay` | Show popover, Scene legend, View > Halo 1 overlay | `view.layers` |
 | Navigate tag fields | `Navigate` | inspector links and breadcrumbs | `nav.go`, `nav.back`, `nav.forward` |
 | Undo, redo | `Undo`, `Redo` (the tool shown), `UndoIn(tool)`, `RedoIn(tool)` | Edit menu, keys | `doc.undo`, `doc.redo` |
 | Save | `SaveMapAs`, `SaveVariant`, `SaveHopper(As)`, `ExportVariant` | File menu, prompt | `doc.save`, `doc.save_as` |
@@ -290,6 +291,16 @@ Notes on some:
   of attached objects are relative to their parents. `near` takes
   `{point: [x,y,z], radius}` in world space. Bind-pose objects have no
   streamed nodes. Pairing and presentation are described in [live-mirror.md](live-mirror.md).
+- **Viewport layers.** `view.layers {}` returns `{layers, xray}`. Each layer
+  has a stable `name` for calls, a display `label`, a `group`, the visibility
+  switch `on`, a `count` and its legend `color` (RGB, each channel 0 to 1).
+  Counts include hidden entries. For example,
+  `view.layers {"preset":"everything","set":{"fog":false},"xray":true}`
+  shows every layer except fog and draws occluded overlays at quarter
+  strength. Presets are `art`, `gameplay`, `collision` and `everything`.
+  Individual switches apply after the preset. An invalid name or value
+  rejects the entire request. The window and `view.snapshot` share these
+  settings.
 - **Renders.** `ui.render` draws on the CPU (no GPU needed); `view.snapshot`
   renders the open map offscreen through the viewport's own renderer
   (wgpu, no window) and answers `NO_GPU` on a machine without an adapter.
@@ -502,6 +513,8 @@ system temp directory):
   document, render (refused in a Git checkout), save as and re-open; and
   the window's actions and the API's make identical patches;
 - a registered provider answers a planned method;
+- `view.layers` validates changes atomically, shares the Halo 1 menu switch,
+  and changes the invented map’s snapshot pixels on a machine with a GPU;
 - `view.stats` of an invented scene reports its BSP's lighting, its
   triangles by blend, its materials and its sky's sun and fog
   (`api::view::tests`);

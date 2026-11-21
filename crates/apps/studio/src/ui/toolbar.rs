@@ -2,6 +2,7 @@
 
 use dear_imgui_rs::{SliderFlags, StyleColor, StyleVar, Ui};
 
+use super::layers;
 use crate::app::{Action, App};
 use crate::camera::{MAX_SPEED, MIN_SPEED};
 use crate::theme::{self, icon};
@@ -98,6 +99,11 @@ pub(super) fn draw(
         }
         describe(ui, hint, "Fly speed (wheel while flying)");
     });
+
+    next_group(ui, right, 76.0);
+    if layers::show_button(ui, app, actions) {
+        *hint = Some("Choose what the viewport shows".to_owned());
+    }
 
     if app.compare().is_some_and(|c| c.view.is_ok()) {
         next_group(ui, right, 36.0);

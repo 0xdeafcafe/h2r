@@ -79,6 +79,21 @@ pub const HIDDEN_WIDGET: [f32; 4] = [0.6, 0.6, 0.6, 0.5];
 pub const OTHER_HUD: [f32; 4] = [1.0, 0.75, 0.2, 0.5];
 pub const RESERVED_AREA: [f32; 4] = [1.0, 0.75, 0.2, 0.8];
 
+/// Colours shared by the viewport's layers and the Show legend.
+pub fn layer_color(id: scenario_edit::layers::LayerId) -> [f32; 3] {
+    use scenario_edit::layers::LayerId;
+    match id {
+        LayerId::Structure => [0.70, 0.72, 0.76],
+        LayerId::Sky => [0.4, 0.65, 0.9],
+        LayerId::Objects => [0.9, 0.75, 0.5],
+        LayerId::Fog => [0.65, 0.68, 0.75],
+        LayerId::Markers => [0.85, 0.85, 0.85],
+        LayerId::Placement(kind) => scenario_edit::geometry::block_color(kind),
+        LayerId::Halo1 => [1.0, 0.55, 0.15],
+        LayerId::Live => [0.42, 0.8, 0.55],
+    }
+}
+
 /// The accent (selection, active tabs, gizmo-adjacent highlights).
 pub const ACCENT: [f32; 4] = rgb(56, 132, 230);
 /// Muted text.

@@ -6,6 +6,7 @@ mod bar;
 mod layout;
 mod toolbar;
 pub(crate) mod inspector;
+mod layers;
 pub mod map_list;
 pub mod map_pack;
 mod outliner;
@@ -736,6 +737,7 @@ impl Studio {
             if ui.is_window_hovered_with_flags(WindowHoveredFlags::CHILD_WINDOWS) && map_is_visible(app) {
                 self.hint = Some("Click to select · Cmd/Ctrl toggles · Shift selects a range".into());
             }
+            layers::section(ui, app, actions);
             if let Some(view) = app.halo1_view() {
                 halo1_outliner(ui, app, view, actions);
                 return;

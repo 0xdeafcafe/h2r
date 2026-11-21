@@ -144,6 +144,7 @@ pub mod method {
     pub const MIRROR_OBJECTS: &str = "mirror.objects";
 
     pub const VIEW_CAMERA: &str = "view.camera";
+    pub const VIEW_LAYERS: &str = "view.layers";
     pub const VIEW_SNAPSHOT: &str = "view.snapshot";
     pub const VIEW_STATS: &str = "view.stats";
 

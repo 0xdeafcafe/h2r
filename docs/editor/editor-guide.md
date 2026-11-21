@@ -590,7 +590,7 @@ by a plain sun.*
 **Comparing with the original.** If the editor can find the Halo 1 map a
 converted map was made from (on the Halo 1 disc or folder you opened, or
 in `H1_MAP_DIR`), the inspector says `Converted from Halo 1's <map>`,
-and **View > Halo 1 overlay** (also a button above the viewport) draws
+and **View > Halo 1 overlay** (also under **Show** above the viewport) draws
 the original level and its spawns in orange over the converted one, so
 you can check that everything lines up. Click it again to hide it. The
 editor checks that the file is the very one the map was converted from;

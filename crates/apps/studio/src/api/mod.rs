@@ -441,6 +441,13 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"yaw":45,"pitch":30,"distance":40}"#,
     ),
     def(
+        m::VIEW_LAYERS,
+        "Read the viewport legend, or apply a preset, layer switches and X-ray to the window and snapshots",
+        r#"{"set?":"{layer name: boolean}","preset?":"art|gameplay|collision|everything","xray?":"boolean"}"#,
+        r#"{"layers":"[{name,label,group,on,count,color}]","xray":"boolean"}"#,
+        r#"{"preset":"everything","set":{"fog":false},"xray":true}"#,
+    ),
+    def(
         m::VIEW_SNAPSHOT,
         "Render the open map from a camera (default: the viewport's) offscreen to a PNG (default: the cache directory's studio/view/; never into a Git checkout)",
         r#"{"out?":"string","size?":"[w,h] (default [960,540])","camera?":{"yaw?":"number","pitch?":"number","distance?":"number","target?":"[x,y,z]"}}"#,
@@ -664,6 +671,7 @@ impl Api {
     fn view(&mut self, app: &mut App, method: &str, p: &P) -> Reply {
         match method {
             m::VIEW_CAMERA => view::camera(app, p),
+            m::VIEW_LAYERS => view::layers(app, p),
             m::VIEW_STATS => view::stats(app, p),
             m::VIEW_SNAPSHOT => {
                 let gpu = self

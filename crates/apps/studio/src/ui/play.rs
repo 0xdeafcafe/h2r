@@ -259,10 +259,12 @@ impl PlayUi {
                     ui.text_disabled("Waiting for live frames");
                 }
             }
-            ui.checkbox(
-                "Show live objects in the viewport",
-                &mut app.pairing.show_objects,
-            );
+            let mut live = app.layers.visible(scenario_edit::layers::LayerId::Live);
+            if ui.checkbox("Show live objects in the viewport", &mut live) {
+                let mut layers = app.layers.clone();
+                layers.set(scenario_edit::layers::LayerId::Live, live);
+                app.dispatch(crate::app::Action::SetLayers(layers));
+            }
             ui.checkbox("Latest (no interpolation)", &mut app.pairing.latest);
             if !p.reload.is_empty() {
                 ui.text_colored(theme::WARN, format!("Needs Play again: {:?}", p.reload));

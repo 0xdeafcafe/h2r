@@ -4,6 +4,7 @@
 //! (`crates/apps/studio`) drives a [`Session`].
 use crate::edit::{Command, History};
 use crate::geometry::{self, Bounds, Camera, Marker, Ray, Tri, Vec3};
+use crate::layers::{LayerId, Layers};
 use crate::layout::{BlockKind, Role};
 use crate::package::{self, PackageForm, SavedPackage};
 use crate::save::{self, MapSource};
@@ -11,6 +12,7 @@ use crate::scenario::{Changes, Scenario, Value};
 use crate::scene::{Scene, SceneBuilder};
 use crate::{Error, Result};
 use map::TagId;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -575,6 +577,29 @@ impl Session {
             Some(s) => s.pick(&self.markers, ray),
             None => geometry::pick(&self.markers, ray),
         }
+    }
+
+    /// The visible placement under a camera ray in an unpaired viewport.
+    pub fn pick_visible(&self, ray: &Ray, layers: &Layers) -> Option<(BlockKind, usize)> {
+        self.pick_visible_linked(ray, layers, &BTreeSet::new())
+    }
+
+    /// As [`Self::pick_visible`], with the authoring glyphs of placements
+    /// represented by live objects.
+    pub fn pick_visible_linked(
+        &self,
+        ray: &Ray,
+        layers: &Layers,
+        linked: &BTreeSet<(BlockKind, usize)>,
+    ) -> Option<(BlockKind, usize)> {
+        if let Some(scene) = self.scene() {
+            return scene.pick_visible(&self.markers, ray, layers, &self.selection(), linked);
+        }
+        if !layers.visible(LayerId::Markers) {
+            return None;
+        }
+        let markers = self.markers.iter().filter(|m| layers.placement(m.block));
+        geometry::pick_glyph(markers, ray).map(|(_, block, index)| (block, index))
     }
 
     /// Edits since the last save (undoing back to the saved state clears it).

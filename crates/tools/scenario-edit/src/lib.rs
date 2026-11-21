@@ -30,6 +30,7 @@ pub mod edit;
 #[doc(hidden)]
 pub mod fixture;
 pub mod geometry;
+pub mod layers;
 pub mod layout;
 pub mod package;
 pub mod recipe;
