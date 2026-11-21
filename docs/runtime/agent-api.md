@@ -985,11 +985,18 @@ includes it for the corresponding draw. Its `passes` array contains
 `e3.tiles`, `e3.sun`, `e3.marks` and `e3.lights`. Each row has
 `name`, submitted `draws` and `gpu_ns` (null for an empty or unmeasured
 stage). Snapshot indices refer to the attachment runs in the frame
-record. The six per-frame counters are `lights_lit`, `lights_shadowed`,
-`lights_over_cap`, `sun_tiles`, `sun_tiles_redrawn` and `atlas_halved`.
-They count the E3 renderer's selections and atlas work. Slice L3 replays
-the guest's own lights in both modes, so its E3 counters and pass draw
-counts are zero. The guest's light selections are in `render.scene.views`.
+record. The seven per-frame counters are `lights_lit`, `lights_shadowed`,
+`lights_over_cap`, `sun_tiles`, `sun_tiles_redrawn`, `atlas_halved` and
+`tiles_refused`. They count the E3 renderer's selections and atlas work.
+The graph draws the guest's shadow maps as tiles
+([e3-lighting.md](../graphics/e3-lighting.md), "Shadows from local
+lights"): `e3.tiles` counts the caster draws into them, `e3.marks` the
+receivers compared with the Sharp edge, `lights_shadowed` the tiles (one
+per shadowed light of the guest's) and `tiles_refused` the shadow maps
+left at the guest's size. The display on the guest's live attachments
+draws no tiles. The other stages and counters are zero: the lights lit
+are still the guest's. The guest's light selections are in
+`render.scene.views`.
 Retail graph draws omit `e3`.
 
 `interp` exists when in-between frames run: in `h2 play`, or in an `h2
