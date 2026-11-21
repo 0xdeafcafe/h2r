@@ -136,7 +136,10 @@ fn receive(endpoint: &Endpoint, state: &Mutex<State>) -> Result<(), String> {
         state.shutdown = Some(client.shutdown_handle().map_err(|e| e.to_string())?);
     }
     let hello = client
-        .call(live::SUBSCRIBE, json!({"layers": ["objects", "players"]}))
+        .call(
+            live::SUBSCRIBE,
+            json!({"layers": ["objects", "players", "camera"]}),
+        )
         .map_err(|e| format!("{}: {e}", live::SUBSCRIBE))?;
     if hello["protocol"].as_str() != Some(live::PROTOCOL) {
         return Err(format!(

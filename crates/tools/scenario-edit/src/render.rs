@@ -7,7 +7,7 @@
 //! depth buffer and any MSAA count, and a pipeline must match both. No UI
 //! toolkit is used here; `h2-editor` registers [`Viewport::ui_view`]
 //! with `dear-imgui-wgpu`.
-use crate::geometry::{Camera, Marker, Tri, Vec3, block_color, cross, marker_triangles_styled, normalize};
+use crate::geometry::{Camera, Marker, Tri, Vec3, block_color, marker_triangles_styled};
 use crate::layers::{LayerId, Layers};
 use crate::scene::{Atmosphere, Blend, Scene, SceneVertex, sun_tint};
 use map::TagId;
@@ -1466,8 +1466,7 @@ impl Viewport {
         let resized = self.ensure_target(device, size);
         let target = self.target.as_ref().expect("just ensured");
         let aspect = target.size[0] as f32 / target.size[1] as f32;
-        let f = camera.forward();
-        let r = normalize(cross(f, [0.0, 0.0, 1.0]));
+        let [f, r, u] = camera.basis();
         let w = |v: Vec3| [v[0], v[1], v[2], 0.0];
         queue.write_buffer(
             &self.uniforms,
@@ -1479,7 +1478,7 @@ impl Viewport {
                     [e[0], e[1], e[2], 1.0]
                 },
                 right: w(r),
-                up: w(cross(r, f)),
+                up: w(u),
                 forward: w(f),
                 lens: [(camera.fov_y * 0.5).tan(), aspect, 0.0, 0.0],
                 sun: self.atmosphere.sun,
@@ -1499,7 +1498,7 @@ impl Viewport {
                 view_proj: camera.sky_view_proj(aspect),
                 eye: [0.0, 0.0, 0.0, 1.0],
                 right: w(r),
-                up: w(cross(r, f)),
+                up: w(u),
                 forward: w(f),
                 lens: [(camera.fov_y * 0.5).tan(), aspect, 0.0, 0.0],
                 // The sky is not fogged or sunlit: it is its own light.
