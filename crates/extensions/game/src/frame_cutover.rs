@@ -22,7 +22,7 @@ fn needs_reference(present: u64) -> bool {
 pub fn record(service: &Service) -> impl FnMut(ReplayFrame) + Send + 'static + use<> {
     let mut collect = service.recorder();
     move |frame| {
-        let game_view = frame.ops.iter().any(|(at, _)| at.slot.in_game_view());
+        let game_view = frame.has_game_view();
         collect(frame);
         if game_view {
             render_bridge::scene_step::seal();

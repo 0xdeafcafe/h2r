@@ -105,7 +105,8 @@ pub struct SceneSink<B: Backend> {
     inner: B,
     source: SlotSource,
     collect_census: bool,
-    present_window: Option<(Arc<window::PresentWindow>, fn() -> bool)>,
+    present_window: Option<Arc<window::PresentWindow>>,
+    take_game_view: fn() -> bool,
     keep: bool,
     replay: Option<Recorder<B::Surface>>,
     presents: u64,
@@ -131,6 +132,7 @@ impl<B: Backend> SceneSink<B> {
             source,
             collect_census: true,
             present_window: None,
+            take_game_view: || false,
             keep: false,
             replay: None,
             presents: 0,
@@ -156,7 +158,8 @@ impl<B: Backend> SceneSink<B> {
 
     /// Joins the original guest Swap to its display worker's result.
     pub fn with_present_window(mut self, window: Option<Arc<window::PresentWindow>>, game_view: fn() -> bool) -> Self {
-        self.present_window = window.map(|window| (window, game_view));
+        self.present_window = window;
+        self.take_game_view = game_view;
         self
     }
 
@@ -387,10 +390,12 @@ impl<B: Backend> SceneSink<B> {
 
     fn presented(&mut self, surface: B::Surface, flags: u32, gamma: Option<&[u8; 768]>) {
         self.presents += 1;
-        if self.replay.is_some() && (self.at().is_some() || !self.frame.ops.is_empty()) {
+        let entered_game_view = (self.take_game_view)();
+        if self.replay.is_some() && (entered_game_view || self.at().is_some() || !self.frame.ops.is_empty()) {
             let shown = self.replay_target(surface);
             let replay = self.replay.as_mut().expect("recording replay");
             replay.frame.present = self.presents;
+            replay.frame.entered_game_view = entered_game_view;
             replay.frame.flags = flags;
             replay.frame.gamma = gamma.copied().map(Box::new);
             replay.finish(shown);
@@ -400,19 +405,18 @@ impl<B: Backend> SceneSink<B> {
         if self.scene_colour.len() > SCENE_COLOURS {
             self.scene_colour.remove(0);
         }
-        if self.at().is_none() && self.frame.ops.is_empty() && self.frame.readbacks.is_empty() {
-            if let Some((window, game_view)) = &self.present_window {
+        if !entered_game_view && self.at().is_none() && self.frame.ops.is_empty() && self.frame.readbacks.is_empty() {
+            if let Some(window) = &self.present_window {
                 window.submit(self.presents, window::Input {
-                    game_view: game_view(), drops: crate::scene_stage::take_local_drops(), ..Default::default()
+                    drops: crate::scene_stage::take_local_drops(), ..Default::default()
                 });
             }
             return;
         }
         let summary = self.frame.summary();
-        if let Some((window, game_view)) = &self.present_window {
-            let entered = game_view();
+        if let Some(window) = &self.present_window {
             window.submit(self.presents, window::Input {
-                game_view: entered || !summary.views.is_empty() || summary.readback_total() != 0,
+                game_view: entered_game_view || !summary.views.is_empty() || summary.readback_total() != 0,
                 reads: summary.readbacks,
                 drops: crate::scene_stage::take_local_drops(),
             });
@@ -422,7 +426,7 @@ impl<B: Backend> SceneSink<B> {
         } else {
             census::skip();
         }
-        if !summary.views.is_empty() {
+        if entered_game_view || !summary.views.is_empty() {
             GAME_FRAMES.fetch_add(1, Ordering::Relaxed);
         }
         FRAMES.fetch_add(1, Ordering::Relaxed);

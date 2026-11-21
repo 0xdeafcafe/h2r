@@ -107,6 +107,7 @@ pub fn on(event: SlotEvent) {
 
 /// A snapshot load: the frame starts again outside every view.
 pub fn forget() {
+    GAME_VIEW.store(false, Ordering::Relaxed);
     on(SlotEvent::Frame);
 }
 

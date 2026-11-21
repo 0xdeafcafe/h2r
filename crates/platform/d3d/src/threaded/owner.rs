@@ -243,7 +243,7 @@ fn target_map<B: Backend>(
     uploads: &HashMap<u64, std::sync::Weak<gfx::texture::DecodedTexture>>,
     surface: u32,
 ) -> Option<Proxies> {
-    if !frame.refusals.is_empty() || !frame.ops.iter().any(|(at, _)| at.slot.in_game_view()) {
+    if !frame.refusals.is_empty() || !frame.has_game_view() {
         return None;
     }
     let mut targets = HashMap::new();
@@ -323,7 +323,7 @@ fn target_map<B: Backend>(
             _ => return None,
         }
     }
-    (original.next().is_none() && !commands.is_empty()).then_some(Proxies { targets, samples })
+    original.next().is_none().then_some(Proxies { targets, samples })
 }
 
 impl<B: Backend> Worker<B> {

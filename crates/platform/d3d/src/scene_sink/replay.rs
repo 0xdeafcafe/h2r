@@ -97,6 +97,9 @@ impl ReplayOp {
 pub struct ReplayFrame {
     /// Guest presents, including those without captured ops; first present is 1.
     pub present: u64,
+    /// The frame step entered a game view before this Swap. A view may
+    /// contribute no packets of its own and be followed only by HUD work.
+    pub entered_game_view: bool,
     pub flags: u32,
     pub gamma: Option<Box<[u8; 768]>>,
     /// Exact contents last established by an earlier clear or whole upload.
@@ -118,6 +121,7 @@ impl Default for ReplayFrame {
     fn default() -> Self {
         Self {
             present: 0,
+            entered_game_view: false,
             flags: 0,
             gamma: None,
             initial: Vec::new(),
@@ -134,6 +138,10 @@ impl Default for ReplayFrame {
 }
 
 impl ReplayFrame {
+    pub fn has_game_view(&self) -> bool {
+        self.entered_game_view || self.ops.iter().any(|(at, _)| at.slot.in_game_view())
+    }
+
     /// True when the reference backend received the guest's original draws
     /// throughout this captured frame. A typed pass may already have been
     /// accepted before a parity request arrived in the middle of a frame.

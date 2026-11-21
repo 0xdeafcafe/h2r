@@ -156,6 +156,59 @@ fn value(gpu: &mut ThreadedBackend<Pixels>, target: u32) -> u8 {
 }
 
 #[test]
+fn an_empty_game_view_and_its_overlay_keep_their_swap_without_adopting_a_menu() {
+    use std::sync::{Mutex, atomic::AtomicBool};
+    static ENTERED: AtomicBool = AtomicBool::new(false);
+    let slot = Arc::new(Mutex::new(None::<Arc<ReplayFrame>>));
+    let sealed = Arc::clone(&slot);
+    let accepted = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&accepted);
+    let worker = ThreadedBackend::new(Pixels::default()).unwrap().with_frame_owner(FrameOwner {
+        select: Box::new(move |n| {
+            let frame = slot.lock().unwrap().take()?;
+            assert_eq!(frame.present, n);
+            let replay = Arc::clone(&frame);
+            let log = Arc::clone(&log);
+            Some(Submission::Native(Candidate {
+                frame,
+                before_original: None,
+                eligible: Box::new(|_, _| true),
+                draw: Box::new(move |gpu: &mut Pixels, targets| {
+                    log.lock().unwrap().push(n);
+                    let shown = targets[&TargetRef::SceneColour];
+                    for (_, op) in &replay.ops {
+                        let ReplayOp::Clear { clear, .. } = op else { panic!("unexpected {op:?}") };
+                        gpu.clear(shown, None, *clear)?;
+                    }
+                    gpu.present(shown, 0)?;
+                    Ok(Outputs::default())
+                }),
+            }))
+        }),
+        declined: |_| {},
+        failed: |_| panic!("display failed"),
+        stopped: || {},
+    });
+    let overlay = || Some(SlotAt { slot: Slot::Overlay, view: 0 });
+    let mut sink = crate::SceneSink::new(worker, overlay)
+        .with_present_window(None, || ENTERED.swap(false, Ordering::Relaxed))
+        .with_replay(move |frame| *sealed.lock().unwrap() = Some(Arc::new(frame)));
+    let surface = sink.create_surface(D3DFormat::A8R8G8B8, 1, 1, false).unwrap();
+
+    sink.clear(surface, None, clear(18)).unwrap();
+    sink.present(surface, 0).unwrap();
+    ENTERED.store(true, Ordering::Relaxed);
+    sink.present(surface, 0).unwrap();
+    ENTERED.store(true, Ordering::Relaxed);
+    sink.clear(surface, None, clear(77)).unwrap();
+    sink.present(surface, 0).unwrap();
+    sink.present(surface, 0).unwrap();
+    let shown = sink.inner_mut().with_inner(|gpu| gpu.shown.clone()).unwrap();
+    assert_eq!(shown, [18, 18, 77, 77]);
+    assert_eq!(*accepted.lock().unwrap(), [2, 3]);
+}
+
+#[test]
 fn an_owned_frame_and_the_following_legacy_frame_share_the_physical_surface() {
     let (mut gpu, accepted, target) = device(true);
     gpu.clear(target, None, clear(1)).unwrap();

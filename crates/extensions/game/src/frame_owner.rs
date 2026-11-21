@@ -641,7 +641,7 @@ impl Service {
             let id = scene_step::open_identity();
             let mut scenes = shared.scenes.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(id) = id {
-                if crate::frame_parity::armed() {
+                if replay.has_game_view() && crate::frame_parity::armed() {
                     if !replay.refusals.is_empty() {
                         crate::frame_parity::refuse(replay.refusals.join(", "));
                     } else if replay.guest_reference_complete() {
