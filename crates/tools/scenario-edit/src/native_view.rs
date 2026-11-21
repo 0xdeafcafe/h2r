@@ -184,6 +184,38 @@ pub struct NativeLoad {
     /// The world layers, when the BSP was read from a map
     /// ([`NativeLoad::read`]).
     layers: Option<Arc<NativeLayers>>,
+    /// The base look's translated passes ([`base_passes_of`]), or why
+    /// `world.wgsl` draws it instead.
+    base_passes: Result<Arc<BasePasses>, String>,
+    /// Why the GPU did not bind the base look's passes, when a
+    /// [`NativeWorld`] found that it could not (the check above passed).
+    base_unbound: Arc<std::sync::OnceLock<String>>,
+}
+
+/// The base look's programs by material key ([`base_look::base_programs`]).
+type BasePasses = HashMap<u16, Vec<native_render::fog_gpu::FogProgram>>;
+
+/// `world`'s base look as translated passes, or why it cannot be: a
+/// program that does not compile, or a placement with no model rows (the
+/// rigid program reads them; `FogSet::new` leaves such a part out). The
+/// world holds only draws with a base map, and a lit draw's page falls
+/// back to white, so every other part binds.
+fn base_passes_of(world: &World) -> Result<Arc<BasePasses>, String> {
+    let programs = base_look::base_programs(
+        world
+            .draws
+            .iter()
+            .map(|d| (d.material, d.lightmap.is_some())),
+    )
+    .map_err(|why| format!("the base look does not compile: {why}"))?;
+    for d in &world.draws {
+        if let Owner::Instance(i) = d.owner
+            && world.rows(i).is_none()
+        {
+            return Err(format!("placement {i} has no model rows"));
+        }
+    }
+    Ok(Arc::new(programs))
 }
 
 impl NativeLoad {
@@ -253,6 +285,7 @@ impl NativeLoad {
             untextured: all - world.draws.len(),
             failed_sections: 0,
         };
+        let base_passes = base_passes_of(&world);
         Self {
             bsp,
             world,
@@ -261,6 +294,18 @@ impl NativeLoad {
             stats,
             lightmap_error: None,
             layers: None,
+            base_passes,
+            base_unbound: Default::default(),
+        }
+    }
+
+    /// Why `world.wgsl` draws this BSP's base look in place of its
+    /// translated pass, when it does; the world layers are off then (their
+    /// depths would not agree with it).
+    pub fn base_fallback(&self) -> Option<&str> {
+        match &self.base_passes {
+            Err(why) => Some(why),
+            Ok(_) => self.base_unbound.get().map(String::as_str),
         }
     }
 
@@ -458,8 +503,9 @@ pub struct NativeWorld {
     lighting: Lighting,
     pool: gfx::ring::UploadPool,
     /// The base look as a translated pass ([`base_look`]): what it draws.
-    /// `None` when it did not compile: `world.wgsl` draws the base look
-    /// then, and no layer is drawn over it (their depths would not agree).
+    /// `None` when it could not be ([`NativeLoad::base_fallback`]):
+    /// `world.wgsl` draws the base look then, and no layer is drawn over it
+    /// (their depths would not agree).
     base: Option<DrawnLayer>,
     /// The uploaded layers (the Game mode only): what each draws.
     layers: Vec<DrawnLayer>,
@@ -470,31 +516,23 @@ pub struct NativeWorld {
 const BASE_LAYER: u8 = 3;
 
 /// `load`'s base look in `lighting` as a translated pass
-/// ([`base_look::base_programs`]): each draw's base map (the mode's),
+/// ([`NativeLoad::base_passes`]): each draw's base map (the mode's),
 /// times its lightmap page (the mode's, white where the mode has none)
-/// or white when unlit. `None`, with the cause printed, when a program
-/// does not compile or no part binds.
+/// or white when unlit. The cause when the passes did not compile or a
+/// part does not bind.
 fn base_set(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     load: &NativeLoad,
     lighting: Lighting,
-) -> Option<(native_render::fog_gpu::FogSet, DrawnLayer)> {
+) -> Result<(native_render::fog_gpu::FogSet, DrawnLayer), String> {
+    let programs = load.base_passes.as_ref().map_err(Clone::clone)?;
     let w = &load.world;
     let key = |d: &native_render::world::WorldDraw| {
         if d.lightmap.is_some() {
             d.material
         } else {
             base_look::unlit(d.material)
-        }
-    };
-    let programs = match base_look::base_programs(
-        w.draws.iter().map(|d| (d.material, d.lightmap.is_some())),
-    ) {
-        Ok(p) => p,
-        Err(why) => {
-            eprintln!("editor native world: the base look does not compile ({why})");
-            return None;
         }
     };
     let parts: Vec<layers_load::Part> = w
@@ -513,7 +551,7 @@ fn base_set(
         queue,
         w,
         parts.clone(),
-        programs,
+        (**programs).clone(),
         &mut |s| {
             if s == base_look::WHITE_STAGE {
                 return Some(white.clone());
@@ -536,18 +574,17 @@ fn base_set(
         .filter(|&(owner, part)| set.draws_part(owner, part))
         .collect();
     if selected.len() != parts.len() {
-        eprintln!(
-            "editor native world: the base look binds {} of {} parts",
+        return Err(format!(
+            "the base look binds {} of {} parts",
             selected.len(),
             parts.len()
-        );
-        return None;
+        ));
     }
     let fogs = parts
         .iter()
         .map(|&(_, (_, _, _, m))| (m, (shaders::psh::fog::Fog::OFF, [0.0; 4])))
         .collect();
-    Some((
+    Ok((
         set,
         DrawnLayer {
             layer: BASE_LAYER,
@@ -579,10 +616,19 @@ impl NativeWorld {
             &mut |m| load.base.get(&m).map(|i| lighting.base(i)),
             &mut |k| load.pages.get(&k).and_then(|i| lighting.page(i)),
         );
-        let base = base_set(device, queue, load, lighting).map(|(set, drawn)| {
-            gpu.set_layer(BASE_LAYER, set);
-            drawn
-        });
+        let base = match base_set(device, queue, load, lighting) {
+            Ok((set, drawn)) => {
+                gpu.set_layer(BASE_LAYER, set);
+                Some(drawn)
+            }
+            Err(why) => {
+                // Named in `view.stats` ([`NativeLoad::base_fallback`]).
+                if load.base_passes.is_ok() {
+                    let _ = load.base_unbound.set(why);
+                }
+                None
+            }
+        };
         // The layers are the game's look: the other modes draw the base
         // look alone. They draw only over the translated base look, whose
         // depth is theirs.

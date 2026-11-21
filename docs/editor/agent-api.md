@@ -548,7 +548,11 @@ Notes on some:
   level on the native renderer (`scenario_edit::native_view`): the
   `lighting` mode, each BSP's `bsp`, `draws`, `batches`, `materials`,
   `lightmap_pages`, `untextured` (draws left out for a missing picture),
-  `failed_sections` and `lightmap_error`, its world `layers` (null
+  `failed_sections` and `lightmap_error`, its `base_look`
+  (`translated` when the base look draws as a translated pass; else the
+  `fallback` cause, such as a placement with no model rows or a program
+  that does not compile, with `world.wgsl` drawing it and `layers_off`
+  true: no world layer draws over it), its world `layers` (null
   when not read from the map: `unresolved`, the world materials that
   did not resolve by cause with how many, and `by_layer`, for each of
   layers 1, 5, 7, 8 and 20 the `layer`, the materials whose passes

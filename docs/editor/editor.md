@@ -623,8 +623,11 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   lightmap), Lightmap only (the lightmap on white) or Collision (Flat at a
   third, for the collision layers). The level's base look is a
   translated pass (`native_render::base_look`), so its depth is the one a
-  material's pass computes for the same vertex; when it does not compile
-  the level draws with the renderer's `world.wgsl`. The placed objects draw through the
+  material's pass computes for the same vertex. When it cannot be (a
+  program that does not encode or compile, or a part that does not
+  bind) the BSP draws with the renderer's `world.wgsl`, its world layers
+  are off, and `view.stats` names the cause (`base_look`,
+  `NativeLoad::base_fallback`). The placed objects draw through the
   native renderer too (`native_view::NativeObjects`, `GpuModels`), each
   in its rest pose with its base maps in the same mode, and a selected
   one mixed towards the selection orange as the scene's models are

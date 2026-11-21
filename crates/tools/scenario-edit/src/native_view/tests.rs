@@ -375,6 +375,25 @@ fn the_invented_bsps_layers_name_what_does_not_draw() {
     assert!(bare.layers().is_none());
 }
 
+/// A BSP's base look is its translated pass, or `world.wgsl` with the
+/// reason named: here a placement with no model rows for the rigid
+/// program to read.
+#[test]
+fn a_base_look_that_cannot_be_translated_is_named() {
+    let base = HashMap::from([(0u16, Image::solid([200; 4]))]);
+    let load = NativeLoad::new(TagId(7), world(&[(0, false)]), base.clone(), HashMap::new());
+    assert_eq!(load.base_fallback(), None);
+    let mut b = WorldBuilder::new();
+    b.add_section(
+        Owner::Instance(4),
+        &quad(0, 0.0, false),
+        &Placement::IDENTITY,
+        None,
+    );
+    let load = NativeLoad::new(TagId(7), b.finish(), base, HashMap::new());
+    assert_eq!(load.base_fallback(), Some("placement 4 has no model rows"));
+}
+
 /// Layer 1 is refused whole and named; the other layers keep their plan.
 #[test]
 fn layer_1_is_refused_until_it_is_checked_against_the_game() {
