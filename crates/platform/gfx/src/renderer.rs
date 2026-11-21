@@ -367,6 +367,9 @@ pub struct Renderer {
     clearer: Clearer,
     /// Builds pipelines off this thread.
     compiler: Arc<Compiler>,
+    /// This renderer's prewarms on [`compiler`](Self::compiler)
+    /// ([`Compiler::prewarm`]).
+    prewarm_owner: u64,
     /// Keys of pipelines draws asked for that were not in the cache (and
     /// whether it was the count pipeline), oldest first, until
     /// [`take_new_keys`](Renderer::take_new_keys).
@@ -618,6 +621,7 @@ impl Renderer {
             cache: PipelineCache::new(),
             clearer: Clearer::new(&ctx.device),
             compiler: Compiler::global().clone(),
+            prewarm_owner: Compiler::owner(),
             new_keys: Vec::new(),
             caps: ctx.caps,
             z_max: D3DZ_MAX_24,
@@ -705,8 +709,10 @@ impl Renderer {
 
     /// Starts building the pipeline for `key` (its count pipeline with
     /// `count`) on a compile worker, behind any a draw is waiting for, so a
-    /// later draw that needs it finds it built. Returns `false` if it is
-    /// already cached or `key.shader` is not registered.
+    /// later draw that needs it finds it built. A cached one that is not
+    /// built, nor queued (its prewarm was dropped), is queued again.
+    /// Returns `false` if it is built, being built or already queued, or
+    /// `key.shader` is not registered.
     pub fn prewarm(&mut self, ctx: &GfxContext, key: &PipelineKey, count: bool) -> bool {
         let Some(program) = self.shaders.get(&key.shader) else {
             return false;
@@ -716,8 +722,8 @@ impl Renderer {
         } else {
             &mut self.cache
         };
-        if cache.get(key).is_some() {
-            return false;
+        if let Some(cached) = cache.get(key) {
+            return self.compiler.prewarm(cached, self.prewarm_owner);
         }
         let pending = if count {
             let fragment = count_fragment(&mut self.count_fragment, &ctx.device);
@@ -725,9 +731,19 @@ impl Renderer {
         } else {
             pending_pipeline(&ctx.device, key, program)
         };
-        self.compiler.submit(&pending, Priority::Background);
+        self.compiler.prewarm(&pending, self.prewarm_owner);
         cache.insert(key.clone(), pending);
         true
+    }
+
+    /// Takes this renderer's [`prewarm`](Self::prewarm)s that no worker
+    /// has started out of the compile queue, and returns how many: the
+    /// guesses they were made on (the map that was loaded) no longer hold,
+    /// and every one would compile ahead of the new map's. Each stays in
+    /// the cache unbuilt: a draw that needs it queues it ahead of other
+    /// prewarms, and a later prewarm queues it again.
+    pub fn drop_prewarms(&mut self) -> usize {
+        self.compiler.drop_prewarms(self.prewarm_owner)
     }
 
     /// Whether the built-in shader can draw `layout` (pre-transformed float4
@@ -897,26 +913,32 @@ impl Renderer {
         let program = &self.shaders[&d.shader];
         let compiler = &self.compiler;
         let new_keys = &mut self.new_keys;
+        // A hit on a prewarm no worker has started moves it ahead of the
+        // other prewarms (once: a queued draw job is not queued again), so
+        // a worker starts it now rather than the encoding thread building
+        // it behind a queue of guesses.
         let pipeline = self
             .cache
             .get_or_insert_with(&key, |k| {
                 new_keys.push((k.clone(), false));
-                let p = pending_pipeline(&ctx.device, k, program);
-                compiler.submit(&p, Priority::Draw);
-                p
+                pending_pipeline(&ctx.device, k, program)
             })
             .clone();
+        if !pipeline.is_ready() {
+            compiler.submit(&pipeline, Priority::Draw);
+        }
         let count = d.count_samples.then(|| {
             let fragment = count_fragment(&mut self.count_fragment, &ctx.device);
             let pipeline = self
                 .count_cache
                 .get_or_insert_with(&key, |k| {
                     new_keys.push((k.clone(), true));
-                    let p = pending_count(&ctx.device, k, program, &fragment);
-                    compiler.submit(&p, Priority::Draw);
-                    p
+                    pending_count(&ctx.device, k, program, &fragment)
                 })
                 .clone();
+            if !pipeline.is_ready() {
+                compiler.submit(&pipeline, Priority::Draw);
+            }
             (
                 pipeline,
                 key.depth_stencil.as_ref().is_some_and(writes_depth_stencil),

@@ -378,6 +378,7 @@ h2 lab agent --host laptop 0007 session.status
 h2 lab agent --host laptop 0007 trace.list
 h2 lab agent --host laptop 0007 flight show crouch-bug.jsonl --field physics.crouch
 h2 lab agent --host laptop 0007 input.log.read '{"name":"fight","limit":4096}'
+h2 lab agent --host laptop 0007 game.menu                # leave the level for the main menu
 h2 lab agent --host laptop 0007 - < script.txt        # an `h2 agent -` script
 ```
 
@@ -414,6 +415,18 @@ window). `h2 play` opens the window and the native GPU renderer, and a game
 with `H2_AGENT` set serves the same API ([agent-api.md](agent-api.md)), so
 `--serve` gets the API on a real window and GPU. The Aqua LaunchAgent
 runs the host in the logged-in user's graphical session.
+
+A `--serve` run of a level can go back to the main menu as a player
+would, with [`game.menu`](agent-api.md#returning-to-the-main-menu), to
+measure the menu after the level:
+
+```
+h2 lab run --host laptop --name "Menu after Ascension" --level ascension --serve --env H2_RENDER_SCALE=4
+h2 lab agent --host laptop <id> wait '{"phase":"gameplay","map_ticks":3600}' 300000 --timeout 400
+h2 lab agent --host laptop <id> game.menu
+h2 lab agent --host laptop <id> wait '{"map":"mainmenu","map_ticks":900}' 300000 --timeout 400
+h2 lab stop --host laptop <id>
+```
 
 `h2 lab bench` is the loop for one measurement:
 

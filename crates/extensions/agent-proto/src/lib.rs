@@ -202,6 +202,9 @@ pub mod method {
     pub const HOST_LOBBY_STATE: &str = "host.lobby.state";
     pub const HOST_LOBBY_START: &str = "host.lobby.start";
     pub const HOST_LOBBY_CLOSE: &str = "host.lobby.close";
+    /// Leave the running campaign or multiplayer game for the main menu
+    /// as the title's own departure does (`game_menu.rs` in `game`).
+    pub const GAME_MENU: &str = "game.menu";
     /// Queue an installed multiplayer package by its complete MapId.
     pub const MAPS_LOAD: &str = "maps.load";
     /// Test maps (docs/game/test-maps.md, [`crate::test_maps`]): the

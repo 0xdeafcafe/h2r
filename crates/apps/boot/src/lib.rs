@@ -1218,6 +1218,11 @@ fn run_configured(
             k.vfs(),
         );
     }
+    // game.menu: leave the game for the main menu through the agent's
+    // guest calls (game_menu.rs, docs/runtime/agent-api.md).
+    if let Some(a) = &agent {
+        game::game_menu::install(&a.agent, a.sim.as_ref().and_then(|s| s.calls()));
+    }
     // Paired editor presentation and the debug menu's host methods.
     if let Some(a) = &agent {
         a.agent

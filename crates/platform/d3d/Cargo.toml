@@ -122,6 +122,10 @@ name = "pipeline_cache"
 path = "tests/pipeline_cache.rs"
 
 [[test]]
+name = "pipeline_scope"
+path = "tests/pipeline_scope.rs"
+
+[[test]]
 name = "pipeline_cost"
 path = "tests/pipeline_cost.rs"
 
