@@ -65,6 +65,15 @@ pub(super) async fn upgrade(
             .parse()
             .expect("XUID is a valid header value"),
     );
+    if headers
+        .get(tunnel::ACTOR_CHANNEL_HEADER)
+        .is_some_and(|offer| offer == tunnel::ACTOR_CHANNEL_OFFER)
+    {
+        request.headers_mut().insert(
+            tunnel::ACTOR_CHANNEL_HEADER,
+            axum::http::HeaderValue::from_static(tunnel::ACTOR_CHANNEL_OFFER),
+        );
+    }
     let config = WebSocketConfig::default()
         .read_buffer_size(4096)
         .max_message_size(Some(MAX_FRAME))
@@ -87,8 +96,8 @@ pub(super) async fn upgrade(
 }
 
 async fn bridge(mut client: WebSocket, mut upstream: WebSocketStream<TcpStream>) {
-    // Ping and pong are local to each WebSocket. Only binary datagrams
-    // cross the relay, with no decoding or buffering between sockets.
+    // Ping and pong are local to each WebSocket. Binary tunnel frames
+    // cross the relay with no decoding or buffering between sockets.
     loop {
         tokio::select! {
             message = client.recv() => match message {

@@ -476,7 +476,10 @@ returns the WebSocket response. The supervisor uses the same port through
 `H2_TUNNEL_LISTEN=0.0.0.0:31100`. It drives the game through a private
 Unix socket. The image's `H2_AGENT` fallback stays on container loopback.
 Each binary message carries one tunnel frame end to end. The host assigns
-peer IDs and handles the game ports.
+peer IDs and handles the game ports. LiveHub forwards the optional
+`x-h2-actor-channel: 1` upgrade offer. The host's binary hello acknowledges
+the offer and the same socket carries actor frames.
+[Host tunnel](dedicated-host.md#host-tunnel)
 [WebSocket forwarding](https://developers.cloudflare.com/containers/examples/websocket/)
 
 Only provider start can launch a container. A liveness check reads

@@ -114,9 +114,29 @@ pub(crate) fn register_core_film(
         telemetry::TelemetryConfig::default()
     });
     let telemetry = register_telemetry(features, &config, film.as_ref())?;
-    // The transport supplies its per-peer scheduler and match reset here.
+    let link = Arc::new(crate::actor_net_link::HostLink::default());
+    let reset = Arc::clone(&link);
+    let live = i.live.clone();
+    let capture = crate::actor_net::Capture::new(
+        move |_, tick, host| {
+            let result = link.post_tick(live.as_deref(), tick, |peer, budget, request_key| {
+                // P3 leaves controls off. Tunnel peer IDs are connection IDs.
+                match host.schedule(budget, None, request_key) {
+                    Ok(packet) => packet,
+                    Err(error) => {
+                        eprintln!("actor-net: scheduling peer {peer} at tick {tick}: {error}");
+                        None
+                    }
+                }
+            });
+            if let Err(error) = result {
+                eprintln!("actor-net: sending host tick {tick}: {error}");
+            }
+        },
+        move || reset.reset(),
+    );
     features
-        .add(&crate::actor_net::Capture::new(|_, _, _| {}, || {}))
+        .add(&capture)
         .map_err(|e| anyhow::anyhow!("actor channel host capture: {e}"))?;
     if let Some(vfs) = i.vfs.clone() {
         features
