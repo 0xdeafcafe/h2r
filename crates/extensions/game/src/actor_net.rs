@@ -1,5 +1,6 @@
-//! Host-side actor presentation capture at the simulation tick boundary.
+//! Engine integration of the distributed actor presentation channel.
 
+pub mod client;
 mod dialogue;
 pub mod host;
 

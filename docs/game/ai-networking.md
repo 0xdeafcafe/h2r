@@ -1,7 +1,7 @@
 # AI over the network
 
-Status: Partly built. The probe methods (AN0), shared host log (AN1), actor channel (AN2), distributed host capture (AN3) and Live tunnel transport (AN5) are implemented. Client puppets are a separate slice.
-Code: `crates/extensions/agent/src/net.rs` (`net.replication`), `crates/extensions/agent/src/ai.rs` (`world.ai`), `crates/formats/host-log` (host log), `crates/live/actor-net/src/wire.rs`, `set.rs` and `budget.rs` (actor channel), `crates/extensions/game/src/actor_net/host.rs` (capture), `crates/extensions/game/src/actor_net/link.rs` (per-peer scheduling) and `crates/live/live-hle/src/tunnel_host.rs` and `tunnel_client.rs` (transport). Tests: each crate's own, on invented data.
+Status: Partly built. The probe methods (AN0), shared host log (AN1), actor channel (AN2), distributed host capture (AN3), client puppet adapter (AN4) and Live tunnel transport (AN5) are implemented.
+Code: `crates/extensions/agent/src/net.rs` (`net.replication`), `crates/extensions/agent/src/ai.rs` (`world.ai`), `crates/formats/host-log` (host log), `crates/live/actor-net/src/wire.rs`, `set.rs` and `budget.rs` (actor channel), `crates/extensions/game/src/actor_net/host.rs` (capture), `crates/extensions/game/src/actor_net/client.rs` (client puppets), `crates/extensions/game/src/actor_net/link.rs` (per-peer scheduling) and `crates/live/live-hle/src/tunnel_host.rs` and `tunnel_client.rs` (transport). Tests: each crate's own, on invented data.
 Switch: `agent-net` and `actor-net`, listed in [switches.md](../runtime/switches.md).
 
 AI actors in a network game: who runs them, what reaches the other
@@ -120,6 +120,13 @@ and facing delta into bits 11–15. Each five-bit field maps codes 0–30 to
 31 equally spaced values across ±1 for throttle or ±π radians for facing.
 Code 15 means zero. Code 31 is reserved.
 
+Posture combines a requested animation mode and the crouch request.
+The eight bare mode bytes are `84`, `85`, `86`, `89`, `cb`, `2c`,
+`39` and `c9` in hex. Each is the low byte of a mode handled by the
+unit animation selector at `0x10eef0`. Bare `ff` selects the default.
+XOR the bare byte with `10` hex to request crouch. The client ignores
+other posture bytes.
+
 `ActorSet::key` snapshots membership, posture and mode state in entity order.
 `Replica::apply` replaces that state on a key and applies each packet atomically.
 It ignores duplicate and older ticks using wrapping 32-bit ordering. A
@@ -177,18 +184,26 @@ the connected peers’ budgets.
 
 ### On a client, each tick
 
-`crates/extensions/game/src/actor_net/client.rs`, before the game tick:
+`crates/extensions/game/src/actor_net/client.rs` owns one `Client` per
+match. `client::install` takes a receive callback that drains accepted
+tunnel frames before `GAME_TICK`. The adapter resets puppet state on game
+activation. Its caller must reset it when the transport changes sessions
+or restores the guest. The adapter has an install entry point for wiring
+the Live inbox into the feature.
 
-1. Find each named entity's local object (the entity-to-object lookup,
-   a research point, slice AN4). A record for an entity that has not
-   arrived yet waits up to 30 ticks, then is dropped.
-2. Mark the unit as a puppet in an extension table (not in guest
-   memory), with its character class and squad for the HUD and the
-   agent API.
-3. `Posture` and `Control`: write the unit's control and posture fields
-   through the engine's own setters at the tick boundary.
-4. `Line`: start the sound through the engine's sound entry on the
-   unit's head marker.
+1. Apply packets in host-tick order. Resolve each named entity through the
+   retail entity table, matching the full entity ID and the salted local
+   unit. Pending presentation records expire 30 local ticks after receipt
+   if the body has yet to arrive.
+2. Keep each resolved unit's character class and squad in the client's
+   puppet table for the HUD and agent API.
+3. Submit the requested mode, crouch and optional movement controls through
+   `UNIT_APPLY_CONTROL`. Leave existing aim, weapons and action inputs to
+   the engine. Pose and control updates skip depleted bodies.
+4. Resolve the vocalization in the unit's voice bank. Start the sound on
+   its head marker and give a biped's sound instance to lip sync. The
+   client remembers each original line tuple for the match, including
+   across keys and repeats that arrive while the body is still missing.
 
 The actor channel writes presentation fields. The entity stream carries
 the host's authoritative damage, position and death state.
@@ -390,7 +405,9 @@ keeps mirrors, schedules and the capability mark.
 | Entity index | object body `+0xd4` | naming actors on the channel |
 | Replication type registration | `0x82240` | AN11 traces the table and its readers. AN12 and AN13 install the creature definition |
 | Dialogue queue entry | `0x20d0c0` (`AI_DIALOGUE_ENQUEUE`, [halo1/ai.md](../halo1/ai.md)) | AN3 observes it for `Line` |
-| Entity to object | not traced; `0xa5930` and `0xa5980` translate event references and are the place to start | AN4 |
+| Entity to object | `0xa58d0` compares the full entity ID at the start of its row in the simulation world's entity table and reads the local object at row `+8` | AN4 checks the unit type, object salt and the body's reciprocal entity |
+| Unit presentation | `0xc6de0` (`UNIT_APPLY_CONTROL`) writes the requested animation mode at unit `+0x14c` and the control flags at `+0x148` | AN4 applies posture, crouch and optional control |
+| Spatial dialogue | `0x1144a0` resolves the vocalization from the unit's voice bank. `0x1891d0` (`SOUND_START_AT_MARKER`) returns the instance passed to `0x109220` (`BIPED_DIALOGUE_LIP_SYNC`). | AN4 starts a replicated line on the speaking unit |
 
 ## Probes
 
