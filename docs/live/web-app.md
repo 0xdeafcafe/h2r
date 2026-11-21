@@ -241,6 +241,21 @@ and approve or remove it. Installation runs in the game. The mock serves
 invented pack metadata and member artwork.
 [Admin screenshot review](live-admin.md#screenshot-review)
 
+### Game variants
+
+A player's page lists the game variants they've published, the public
+ones, under **Game Types** (name, game type, "scripted: <script>" when
+it has one, date). Each links to its page (`statsPath("/variants/:id")`,
+`web/src/stats/Variant.tsx`): name, description, author, game type, the
+server's settings summary, the script with a link that opens it
+read-only in the workbench (`statsPath("/rules")?script=<hash>`), the
+`.h2variant` download and, for its author, Delete. The workbench's
+**Make a game variant** and **My Game Types** tab are in
+[rules-engine.md, "Workbench"](../game/rules-engine.md#workbench); the
+routes are [live-api.md, "Game variants"](live-api.md#game-variants),
+the pure half `web/src/lib/variants.ts`. The mock (`mock/variants.ts`)
+serves every route in memory and seeds two variants for Sneaky Pete.
+
 ### Server stats
 
 The home's windowed numbers come from the server's
