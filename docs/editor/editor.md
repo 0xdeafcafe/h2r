@@ -959,6 +959,15 @@ through the same lossless `MapEditor` path as the scenario's. Any other map of
 the source (the shared caches among them) can be browsed read-only, and
 tags go out to and come back from tag bundles (below).
 
+### Field names
+
+The editor reads names and `doc="..."` descriptions from the checked-in tag
+definitions. Hover a field to see its description, offset and evidence. The
+detail row shows the same description, and `tag.fields` exposes it to
+scripts. An `A Halo2Xbox` evidence marker identifies a name checked against
+the retail Assembly reference. Offset labels identify fields whose purpose
+is still unknown. See [the field-name research note](notes/tag-field-names.md).
+
 ### The field registry
 
 `tags::registry` (`crates/formats/tags/src/registry.rs`) gives every group's root
@@ -968,7 +977,7 @@ and block elements as fields tiling every byte, merged from:
   retail data): every group's structure (element sizes, blocks, data
   references, tag references, datums, string IDs, raw pointers), no names;
 - the **definitions** (`tags::defs`, `defs/*.txt`): typed, named fields
-  for the groups the converters use (28 groups), with their evidence.
+  for groups used by the editor and converters, with their evidence.
 
 A definition's field is used where its size matches the schema's
 element; its name counts as a name unless it is only its type and offset
@@ -980,19 +989,13 @@ suggests (a float, an integer, hex) and its context menu switches. Float
 arrays get a hint from their name and note: colours (`colour`/`color`,
 3 floats), angles (`angle`, `field_of_view`, `_yaw`, `_pitch`, or
 "radians" in the note; shown in degrees), bounds (`bounds`, `_range`, 2
-floats). Names come only from our definitions (their evidence is the
-XBE's readers and the disc), never from community tools or plugins.
+floats).
 
-Definitions name fields in 53 of the registry's 78 groups. On the disc
-(`tests/tag_defs.rs`, opt-in) every tag of those groups decodes, and the
-share of their bytes that is named runs from 1.6% (`vrtx`, mostly
-compiled shader data) to 100% (`wgtz`): over 85% for `coll`, `lsnd`,
-`itmc`, `vehc`, `sily`, `spas` and `stem`; about half for `snd!`; under
-15% for `bipd`, `vehi`, `weap` and `sbsp` (`sbsp` is mostly data
-references and child blocks still typed only). `registry::tests::coverage_counts_every_byte_once`
-prints the registry's totals (named, typed, padding and unknown bytes)
-with `--nocapture`. The names grow as definitions do: a name added to
-`defs/*.txt` shows in the editor with no other change.
+The opt-in test in `crates/formats/tags/tests/tag_defs.rs` decodes disc
+tags and reports byte coverage. `coverage_counts_every_byte_once` in
+`crates/formats/tags/src/registry/tests.rs` reports named, typed,
+padding and unknown bytes for the built-in layouts. The editor reads
+each field label directly from those layouts.
 
 ### The document
 
@@ -1174,7 +1177,8 @@ hovered field lit and edited bytes marked.
 `fields::panel(ui, &app.tags, tag, path, &mut PanelState, &mut actions)`
 draws the element at `path` (per step, a block field's offset and the
 element index; empty is the root) and pushes `Action::Tag` commands.
-Numbers drag; enums are combos; flags are checkboxes (unnamed bits that
+Numbers drag. Enums and flag masks without labelled options edit numerically.
+Named enum values appear in a combo. Named flags have checkboxes (unnamed bits that
 are set show as `bit N`); colours pick; angles show degrees; bounds drag
 as a pair; string IDs are text; tag references and datums pick from the
 map's tags of the allowed groups (and their child groups) with a button

@@ -295,6 +295,63 @@ fn doc_save_rewrites_the_open_package() {
 }
 
 #[test]
+fn tag_fields_describe_root_and_nested_registry_fields() {
+    let t = Temp::new("field-rows");
+    let mut bytes = fixture::fixture();
+    // One collection entry in the fixture's ordinary metadata.
+    let root = fixture::META_FILE + 0x1200;
+    fixture::put(&mut bytes, root, 1);
+    fixture::put(&mut bytes, root + 4, fixture::META + 0x1240);
+    fixture::putf(&mut bytes, fixture::META_FILE + 0x1240, 1.5);
+    let source = t.path("rows.map");
+    std::fs::write(&source, bytes).unwrap();
+    let mut app = App::new();
+    app.set_data_root(t.path("data"));
+    app.session.build_scenes = false;
+    app.dispatch(Action::OpenSource(source));
+    let mut api = Api::new();
+
+    let root = call(&mut api, &mut app, m::TAG_FIELDS, json!({"tag":"itmc"}));
+    let rows = root["fields"].as_array().unwrap();
+    let respawn = rows.iter().find(|f| f["name"] == "respawn_time").unwrap();
+    assert_eq!(respawn["offset"], 8);
+    assert_eq!(respawn["size"], 2);
+    assert_eq!(respawn["kind"], "i16");
+    assert_eq!(
+        respawn["description"],
+        "Seconds before the item respawns when its placement has no override."
+    );
+    let entries = rows.iter().find(|f| f["name"] == "entries").unwrap();
+    assert_eq!(entries["value"], 1);
+    assert!(entries.get("description").unwrap().is_null());
+
+    let nested = call(
+        &mut api,
+        &mut app,
+        m::TAG_FIELDS,
+        json!({"tag":"itmc", "path":"entries[0]"}),
+    );
+    let weight = &nested["fields"][0];
+    assert_eq!(weight["name"], "weight");
+    assert_eq!(weight["value"], 1.5);
+    let via_offset = call(
+        &mut api,
+        &mut app,
+        m::TAG_FIELDS,
+        json!({"tag":"itmc", "path":"+0x0[0]"}),
+    );
+    assert_eq!(nested, via_offset);
+    assert_eq!(
+        code_of(api.call(
+            &mut app,
+            m::TAG_FIELDS,
+            json!({"tag":"itmc", "path":"entries[1]"}),
+        )),
+        code::REFUSED
+    );
+}
+
+#[test]
 fn the_camera_api_reads_and_sets_fly_speed() {
     let temp = Temp::new("fly-speed");
     let mut app = app(&temp);

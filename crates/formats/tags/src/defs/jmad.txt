@@ -2,12 +2,14 @@
 # (E = read by the retail animation code, engine-map.md "Animation graphs"; V = disc).
 # Fields the doc marks S (name only from general vocabulary) keep offset-suffixed names.
 group jmad 0xbc align 4
-  0x0 tagref tagref_0 -- V a jmad reference, null on most graphs; role S (animation.md tag layout)
-  0x8 unknown 0x4 seen=3 -- V version-like word (anim.rs version_word), raw
+  0x0 tagref tagref_0 doc="Identifies the parent animation graph." -- A Halo2Xbox jmad.xml; V a jmad reference, null on most graphs; role S (animation.md tag layout)
+  0x8 flags8 inheritance_options doc="Stores options for inheriting from the parent graph." -- A Halo2Xbox jmad.xml; V: source span +0x8..+0xc seen=3; V version-like word (anim.rs version_word), raw
+  0x9 flags8 internal_graph_flags doc="Holds internal options for this animation graph." -- A Halo2Xbox jmad.xml
+  0xa i16 codec_pack doc="Selects the animation codec pack." -- A Halo2Xbox jmad.xml
   0xc block nodes 0x20 align 4 -- V; stride E (count equals each animation's node count)
     0x0 string name -- V every name resolves to a bone name
-    0x4 i16 next_sibling -- V links form a valid tree, -1 none (anim.rs Node)
-    0x6 i16 first_child -- V
+    0x4 i16 next_sibling doc="Indexes the next sibling bone in the skeleton." -- V links form a valid tree, -1 none (anim.rs Node)
+    0x6 i16 first_child doc="Indexes the first bone parented to this one." -- V
     0x8 i16 parent -- V
     0xa u16 flags_a -- S (anim.rs model_flags)
     0xc u32 flags_c -- S (anim.rs joint_flags)
@@ -22,30 +24,34 @@ group jmad 0xbc align 4
     0xa unknown 0x2 seen=zero
   0x24 block blend_screens 0x1c align 4 -- V size; field names S
     0x0 string name -- V
-    0x4 unknown 0x4 seen=13 -- floats
-    0x8 unknown 0x4 seen=13 -- floats
-    0xc unknown 0x4 seen=3
-    0x10 unknown 0x4 seen=15 -- floats
-    0x14 unknown 0x4 seen=14 -- floats
-    0x18 unknown 0x4 seen=2
+    0x4 f32 right_yaw_step doc="Gives the yaw increment per rightward frame." -- A Halo2Xbox jmad.xml; V: source span +0x4..+0x8 seen=13; floats
+    0x8 f32 left_yaw_step doc="Gives the yaw increment per leftward frame." -- A Halo2Xbox jmad.xml; V: source span +0x8..+0xc seen=13; floats
+    0xc i16 right_frames doc="Counts the frames on the right side of the blend screen." -- A Halo2Xbox jmad.xml; V: source span +0xc..+0x10 seen=3
+    0xe i16 left_frames doc="Counts the frames on the left side of the blend screen." -- A Halo2Xbox jmad.xml
+    0x10 f32 down_pitch_step doc="Gives the pitch increment per downward frame." -- A Halo2Xbox jmad.xml; V: source span +0x10..+0x14 seen=15; floats
+    0x14 f32 up_pitch_step doc="Gives the pitch increment per upward frame." -- A Halo2Xbox jmad.xml; V: source span +0x14..+0x18 seen=14; floats
+    0x18 i16 down_frames doc="Counts the frames below the blend screen center." -- A Halo2Xbox jmad.xml; V: source span +0x18..+0x1c seen=2
+    0x1a i16 up_frames doc="Counts the frames above the blend screen center." -- A Halo2Xbox jmad.xml
   0x2c block animations 0x6c align 4 -- E (animation.md "Animation record")
     0x0 string name -- V
     0x4 word checksum_4 -- V constant within a graph; name S (anim.rs node_list_checksum)
-    0x8 unknown 0x4 seen=many
-    0xc unknown 0x4 seen=many
+    0x8 i32 production_checksum doc="Stores the checksum associated with animation production." -- A Halo2Xbox jmad.xml; V: source span +0x8..+0xc seen=many
+    0xc i32 import_checksum doc="Stores the checksum recorded when importing the animation." -- A Halo2Xbox jmad.xml; V: source span +0xc..+0x10 seen=many
     0x10 enum8 animation_type values=base|overlay|replacement -- E 0 and 1 distinguished by the engine; 2 S
     0x11 u8 frame_info_type -- E passed to the movement decoder, 0..3
-    0x12 unknown 0x1 seen=many -- E i8 blend screen index into +0x24, -1 none (0x001daf30)
+    0x12 unknown 0x1 seen=many doc="Selects a blend screen, with minus one indicating no screen." -- E i8 blend screen index into +0x24, -1 none (0x001daf30)
     0x13 u8 node_count -- E
     0x14 i16 frame_count -- E valid frames 0..frame_count
     0x16 u16 flags -- E 0x10: data lives in a cache resource
-    0x18 unknown 0x4 seen=22
-    0x1c unknown 0x4 seen=many -- floats
+    0x18 flags16 playback_options doc="Stores the options for playing this sequence." -- A Halo2Xbox jmad.xml; V: source span +0x18..+0x1c seen=22
+    0x1a enum8 requested_codec doc="Identifies the compression requested for this clip." -- A Halo2Xbox jmad.xml
+    0x1b enum8 stored_codec doc="Identifies the compression used for this clip." -- A Halo2Xbox jmad.xml
+    0x1c f32 animation_weight doc="Sets the relative weight of this clip." -- A Halo2Xbox jmad.xml; V: source span +0x1c..+0x20 seen=many; floats
     0x20 unknown 0x4 seen=2 -- small integers
-    0x24 u32 resource_index -- E index into the data resources block (+0xac)
-    0x28 u32 data_offset -- E byte offset of the animation's blob inside the resource
+    0x24 u32 resource_index doc="Indexes the resource containing this animation." -- E index into the data resources block (+0xac)
+    0x28 u32 data_offset doc="Locates the clip data within its resource." -- E byte offset of the animation's blob inside the resource
     0x2c i16 static_pose -- E index into static poses, -1 none
-    0x2e unknown 0x2 seen=many
+    0x2e i16 loop_frame doc="Indexes the frame where the animation loop begins." -- A Halo2Xbox jmad.xml; V: source span +0x2e..+0x30 seen=many
     0x30 i16 linked_animation_a -- E an animation index the engine preloads (role S)
     0x32 i16 linked_animation_b -- E an animation index the engine preloads (role S)
     0x34 u32 inline_data_size -- E used when flag 0x10 is clear; never on the disc
@@ -63,18 +69,19 @@ group jmad 0xbc align 4
     0x54 block sound_events 0x8 align 4 -- E
       0x0 i16 sound -- E index into sound_references
       0x2 i16 frame -- E
-      0x4 string string_4
+      0x4 string string_4 doc="Identifies the attachment marker for the sound." -- A Halo2Xbox jmad.xml
     0x5c block effect_events 0x4 align 4 -- E
       0x0 i16 effect -- E index into effect_references
       0x2 i16 frame -- E
     0x64 block block_64 0x1c align 4
-      0x0 unknown 0x4 seen=8
+      0x0 i16 parent_node doc="Indexes the skeleton node in this parent transform." -- A Halo2Xbox jmad.xml; V: source span +0x0..+0x4 seen=8
+      0x2 flags16 transform_components doc="Identifies which components of the transform are used." -- A Halo2Xbox jmad.xml
       0x4 unknown 0x4 seen=32
       0x8 unknown 0x4 seen=32
       0xc unknown 0x4 seen=31 -- floats
       0x10 unknown 0x4 seen=37
       0x14 unknown 0x4 seen=38 -- floats
-      0x18 unknown 0x4 seen=const -- floats
+      0x18 f32 rest_scale doc="Gives the default scale of the object-space transform." -- A Halo2Xbox jmad.xml; V: source span +0x18..+0x1c seen=const; floats
   0x34 block modes 0x14 align 4 -- E lookup 0x001db170; names resolve to mode names (V)
     0x0 string name -- E/V
     0x4 block classes 0x14 align 4 -- E 0x001db170
@@ -87,12 +94,14 @@ group jmad 0xbc align 4
           0x6 i16 animation_index -- E
         0xc block block_c 0x8 align 4
           0x0 string string_0
-          0x4 unknown 0x4 seen=many
-        0x14 block block_14 0xc align 4
+          0x4 i16 graph_index doc="Selects the graph supplying this overlay." -- A Halo2Xbox jmad.xml; V: source span +0x4..+0x8 seen=many
+          0x6 i16 animation_index doc="Indexes the overlay clip in the selected graph." -- A Halo2Xbox jmad.xml
+        0x14 block block_14 0xc align 4 doc="Groups the damage and death clips by direction and region." -- A Halo2Xbox jmad.xml
           0x0 string string_0
           0x4 block block_4 0x8 align 4
             0x0 block block_0 0x4 align 4
-              0x0 unknown 0x4 seen=many
+              0x0 i16 graph_index doc="Selects the graph supplying this region animation." -- A Halo2Xbox jmad.xml; V: source span +0x0..+0x4 seen=many
+              0x2 i16 animation_index doc="Indexes the selected region animation." -- A Halo2Xbox jmad.xml
         0x1c block block_1c 0x14 align 4
           0x0 string string_0
           0x4 string string_4
@@ -102,7 +111,8 @@ group jmad 0xbc align 4
             0x4 string string_4
             0x8 string string_8
             0xc unknown 0x4 seen=const -- small integers
-            0x10 unknown 0x4 seen=many
+            0x10 i16 graph_index doc="Selects the graph supplying the transition animation." -- A Halo2Xbox jmad.xml; V: source span +0x10..+0x14 seen=many
+            0x12 i16 animation_index doc="Indexes the transition animation in its graph." -- A Halo2Xbox jmad.xml
         0x24 block preloaded_resources_a 0x4 align 4 -- E resource indices the engine preloads
           0x0 u32 resource -- E
         0x2c block preloaded_resources_b 0x4 align 4 -- E resource indices the engine preloads
@@ -113,40 +123,46 @@ group jmad 0xbc align 4
     0xc block block_c 0x8 align 4
       0x0 string string_0
       0x4 string string_4
-  0x3c block block_3c 0x28 align 4
+  0x3c block block_3c 0x28 align 4 doc="Lists the suspension animations for a vehicle." -- A Halo2Xbox jmad.xml
     0x0 string string_0
     0x4 unknown 0x4 seen=10
-    0x8 string string_8
-    0xc unknown 0x4 seen=2 -- floats
-    0x10 unknown 0x4 seen=5 -- floats
-    0x14 unknown 0x4 seen=4 -- floats
+    0x8 string string_8 doc="Identifies the suspension marker." -- A Halo2Xbox jmad.xml
+    0xc f32 suspension_offset doc="Gives the displacement of the suspension mass point." -- A Halo2Xbox jmad.xml; V: source span +0xc..+0x10 seen=2; floats
+    0x10 unknown 0x4 seen=5 doc="Gives the ground depth when the suspension is fully extended." -- A Halo2Xbox jmad.xml; floats
+    0x14 unknown 0x4 seen=4 doc="Gives the ground depth when the suspension is fully compressed." -- A Halo2Xbox jmad.xml; floats
     0x18 string string_18
-    0x1c unknown 0x4 seen=zero
-    0x20 unknown 0x4 seen=2 -- floats
-    0x24 unknown 0x4 seen=2 -- floats
+    0x1c f32 damaged_offset doc="Gives the suspension mass-point displacement for the destroyed region." -- A Halo2Xbox jmad.xml; V: source span +0x1c..+0x20 seen=zero
+    0x20 f32 damaged_depth_extended doc="Gives the ground depth at full extension for the destroyed region." -- A Halo2Xbox jmad.xml; V: source span +0x20..+0x24 seen=2; floats
+    0x24 f32 damaged_depth_compressed doc="Gives the ground depth at full compression for the destroyed region." -- A Halo2Xbox jmad.xml; V: source span +0x24..+0x28 seen=2; floats
   0x44 block block_44 0x14 align 4
     0x0 string string_0
-    0x4 unknown 0x4 seen=2
+    0x4 i16 graph_index doc="Identifies the graph that supplies the object overlay." -- A Halo2Xbox jmad.xml; V: source span +0x4..+0x8 seen=2
+    0x6 i16 animation_index doc="Indexes the clip used for the object overlay." -- A Halo2Xbox jmad.xml
     0x8 unknown 0x4 seen=zero
-    0xc string string_c
+    0xc string string_c doc="Names the function driving this overlay." -- A Halo2Xbox jmad.xml
     0x10 unknown 0x4 seen=zero
   0x4c block inheritance 0x20 align 4 -- E
     0x0 tagref graph -- E the datum at +4 selects a parent graph (anim.rs Inheritance)
     0x8 block block_8 0x2 align 4
-      0x0 unknown 0x2 seen=many
+      0x0 i16 local_node_index doc="Indexes a node in the local skeleton." -- A Halo2Xbox jmad.xml; V: source span +0x0..+0x2 seen=many
     0x10 block block_10 0x4 align 4
-      0x0 unknown 0x4 seen=13
-    0x18 unknown 0x4 seen=9 -- floats
-    0x1c unknown 0x4 seen=3 -- small integers
+      0x0 flags32 local_node_mask doc="Marks the local nodes covered by this inheritance entry." -- A Halo2Xbox jmad.xml; V: source span +0x0..+0x4 seen=13
+    0x18 f32 root_height_offset doc="Gives the vertical adjustment to the inherited root." -- A Halo2Xbox jmad.xml; V: source span +0x18..+0x1c seen=9; floats
+    0x1c flags32 inheritance_options doc="Stores the options for using this parent graph." -- A Halo2Xbox jmad.xml; V: source span +0x1c..+0x20 seen=3; small integers
   0x54 block block_54 0x8 align 4 -- V string-ID pairs, count >= 1 on every graph; meaning unknown
-    0x0 string string_0
-    0x4 string string_4
-  0x5c unknown 0x4 seen=16
-  0x60 unknown 0x4 seen=11
-  0x64 unknown 0x18 seen=zero
-  0x7c unknown 0x4 seen=39
-  0x80 unknown 0x4 seen=28
-  0x84 unknown 0x4 seen=4 -- small integers
+    0x0 string string_0 doc="Identifies the weapon associated with this graph entry." -- A Halo2Xbox jmad.xml
+    0x4 string string_4 doc="Identifies its weapon class." -- A Halo2Xbox jmad.xml
+  0x5c flags32 left_arm_mask_first doc="Marks left-arm skeleton nodes zero through thirty-one." -- A Halo2Xbox jmad.xml; V: source span +0x5c..+0x60 seen=16
+  0x60 flags32 left_arm_mask_second doc="Marks the next thirty-two left-arm skeleton nodes." -- A Halo2Xbox jmad.xml; V: source span +0x60..+0x64 seen=11
+  0x64 flags32 left_arm_mask_third doc="Marks left-arm nodes 64 through 95." -- A Halo2Xbox jmad.xml; V: zero on disc
+  0x68 flags32 left_arm_mask_fourth doc="Marks left-arm nodes 96 through 127." -- A Halo2Xbox jmad.xml; V: zero on disc
+  0x6c flags32 left_arm_mask_fifth doc="Marks left-arm nodes 128 through 159." -- A Halo2Xbox jmad.xml; V: zero on disc
+  0x70 flags32 left_arm_mask_sixth doc="Marks left-arm nodes 160 through 191." -- A Halo2Xbox jmad.xml; V: zero on disc
+  0x74 flags32 left_arm_mask_seventh doc="Marks left-arm nodes 192 through 223." -- A Halo2Xbox jmad.xml; V: zero on disc
+  0x78 flags32 left_arm_mask_eighth doc="Marks left-arm nodes 224 through 255." -- A Halo2Xbox jmad.xml; V: zero on disc
+  0x7c flags32 right_arm_mask_first doc="Marks right-arm skeleton nodes zero through thirty-one." -- A Halo2Xbox jmad.xml; V: source span +0x7c..+0x80 seen=39
+  0x80 flags32 right_arm_mask_second doc="Marks the next thirty-two right-arm skeleton nodes." -- A Halo2Xbox jmad.xml; V: source span +0x80..+0x84 seen=28
+  0x84 flags32 right_arm_mask_third doc="Marks the third set of thirty-two right-arm nodes." -- A Halo2Xbox jmad.xml; V: source span +0x84..+0x88 seen=4; small integers
   0x88 unknown 0x24 seen=zero
   0xac block data_resources 0x14 align 4 -- E (animation.md "Data resources")
     0x0 datum owner -- E owning datum

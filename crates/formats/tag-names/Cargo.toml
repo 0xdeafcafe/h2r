@@ -1,0 +1,9 @@
+[package]
+name = "tag-names"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+tags.workspace = true
+quick-xml = "0.41"

@@ -1,6 +1,6 @@
 # h2-editor polish: what is wrong, the design, and the slices
 
-Status: P1 to P7 and P12 are implemented. The remaining slices, and the game link past its bar (G1 to G9), describe the design.
+Status: P1 to P7, P12 and P18 are implemented. The remaining slices, and the game link past its bar (G1 to G9), describe the design.
 Code: `crates/apps/studio/src` (the window: `ui.rs`, `ui/`, `play.rs`, `viewport.rs`, `theme.rs`), `crates/tools/scenario-edit/src` (the scene and its renderer). Tests: named per slice.
 Switch: none.
 
@@ -470,6 +470,35 @@ class, each with its reason. Buttons: **Send** (View to Edit),
 **Respawn now**, **Reload map** (Play again for a game the editor
 started; `map.reload` otherwise).
 
+### Field names and descriptions
+
+The editor takes its field names and descriptions from the checked-in
+`crates/formats/tags/src/defs/*.txt`. A field's optional `doc="..."`
+appears in its tooltip, the inspector detail row and the `description`
+member of `tag.fields`. Fields without established names keep their
+offset labels.
+
+Assembly's retail Xbox plugins serve as a reference with permission
+from one of Assembly's creators, the owner of this repository. Each
+reference-sourced name is written in our naming style. Its evidence
+includes `A Halo2Xbox <filename>`, and its description is written here.
+The [field-name research note](notes/tag-field-names.md) records the
+permission, coverage and layout disagreements.
+
+Our layout governs every match. Existing named fields keep their names
+and types. A reference field or set of fields can name an unknown or
+padding span when it tiles the span exactly. A block must also agree on
+element size and its nested offsets. Conflicting spans retain their
+local layout. Shared object and unit layers are defined once, and
+definitions used by converters preserve the paths and value types those
+callers write.
+
+The developer comparison lives in `crates/formats/tag-names`.
+`every_plugin_merges_against_our_definitions` reads a local retail
+directory on request and prints per-group coverage and conflicts.
+Its input is listed in [switches.md](../runtime/switches.md#tools).
+The editor needs only its built-in registry.
+
 ### Layers and overlays
 
 Everything the viewport can show is a **layer** with a toggle, a count,
@@ -650,6 +679,7 @@ when built. The game's methods for the link follow in their own table.
 | `collision.surfaces` | `{bsp?, class?, limit?}` | counts by class, and surfaces with `plane`, `flags`, `material`, `class`, `ring` |
 | `collision.at` | `{ray \| point}` | the surface hit and its class |
 | `ui.palette` | `{query, run?}` | visible entries and per-kind totals, optionally runs the entry at index `run` |
+| `tag.fields` | `{tag, path?}` | `{fields: [{offset, name, kind, size, value, description}]}`. A block element path selects its rows. A missing description is `null` |
 
 `view.snapshot` draws the layers that are on, so a check can look at the
 overlays in a picture.
@@ -698,6 +728,7 @@ under 2,500, L more.
 | P11 | **Object and instance collision** | M | P10 | `crates/formats/tags/src/structure.rs` (instance collision reader), `collision_view.rs` | research first: the instance definition's collision block, labelled in structure-bsp.md. Fixture object with a `coll` box and a `phmo` sphere: both drawn at the placement's transform; an invented instance's collision reads back |
 | P12 | **Tag edits reach the game** (live-mirror M7): `edit.map`; `edit.batch` with `was` and the `at` form; the session check on every `edit.*` write; `tag_sync`; View and Edit; class badges; the Pending tab; leave and rejoin | L | P1 | `crates/extensions/agent-proto/src/hot.rs`, `crates/extensions/agent/src/hot.rs`, `crates/extensions/hot-tags/src/lib.rs`, `play/tag_sync.rs`, `play.rs`, `ui/play.rs`, `fields.rs`, `api/pair.rs`, `api/mirror.rs` | live-mirror.md's M7 row, plus: an `at` write outside every tag is refused; an edit that grows a block is listed under Reload and nothing is sent; a `MISMATCH` offers both choices and each leaves document and baseline equal; pairing with a non-empty journal lists it; `edit.set` in a co-op session is refused by the game |
 | P13 | **`applies` on fields** | S, repeatable | P12 | `crates/formats/tags/src/defs/*.txt`, `crates/formats/tags/src/defs.rs` | the parser reads `applies=frame\|use\|creation` with its evidence; hot-iteration.md's "What shows when" rows are the first entries; a field with none is `unknown` |
+| P18 | **Field names and descriptions** from checked-in definitions, with a developer comparison against the retail reference | M | P12 | `crates/formats/tags/src/defs.rs`, `crates/formats/tag-names`, `fields.rs`, `api/tag_fields.rs` | Descriptions parse and round-trip, and appear in root and nested socket rows. Definitions tile each element. Invented plugins exercise compatible fields, overruns, stride conflicts and game refusal. The opt-in comparison prints group coverage and disagreements. |
 | P14 | **Viewport step 1: the native world** | L | P6 | `crates/rewrites/native-render/src/load.rs` (the moved decodes), `scenario-edit/src/render.rs`, `scene.rs`, `geometry.rs`, `viewport.rs`, `api/view.rs` | the fixture map draws through `GpuWorld` into the viewport target (GPU test, skipped without an adapter); `view.stats` keeps its fields; the Lighting modes change the snapshot; picking returns the same placement and surface as before on the fixture; `scenario-edit` holds no world or model shader; the Theater host view still builds on the moved functions |
 | P15 | **Viewport step 2: the material passes** | L | P14 | `crates/rewrites/scene-static` (new), `native-render/src/program.rs`, `scenario-edit/src/render.rs` | the survey note first. `MapMemory` reads equal `TagDoc::read`; a static scene of the fixture has one view, its clusters and an instance per placement; an invented material with a translated pass draws its pass, one without falls back to step 1's look and is counted in `view.stats` |
 | P16 | **Add a barrier** | L | P10; modeling.md slices 8 and 11 | `crates/formats/collision-build`, `scenario-edit/src/session.rs`, `viewport.rs` | modeling.md slice 11's acceptance, plus: the new solid is in Collision only after the edit; undo removes it; a paired game lists it under Reload |
@@ -772,6 +803,10 @@ The tests use invented data.
   map's pathfinding stale where the level has any.
 - Colours and sizes come from `theme.rs`. The scene crate takes its
   layer colours as data from the caller.
+- Only the retail `Halo2Xbox` folder serves as an external field-name
+  reference. New labels and descriptions use our wording and cite the
+  reference in their evidence. Plugin files and verbatim text stay out
+  of the repository.
 - No game data in the repository: fixtures are invented, disc tests are
   `#[ignore]`d, and the guide's screenshots are scripted and stored in
   Git LFS.
@@ -820,6 +855,11 @@ The tests use invented data.
 - **Code**: the playerless view writes a pose into the game's render
   camera (`crates/extensions/game/src/spectator_view.rs`), which is the
   route `editor.camera` takes.
+- **Design**: reference names must agree with the local byte layout.
+  The [field-name research note](notes/tag-field-names.md) records the
+  retail source, permission and discrepancies for the mapped groups.
+- **Test**: `tag_fields_describe_root_and_nested_registry_fields` covers
+  a described field, an absent description and nested element selection.
 - **Design**: the geometric test for Collision only; the layer list;
   the bar; addresses in `edit.batch`; the lease on everything the game
   shows for the editor; objects derived from the document by a diff;
@@ -846,6 +886,8 @@ The tests use invented data.
 - Whether a tag reference poked live is honoured for groups the engine
   resolves once at load.
 - The bar's height and the pill's contrast on a non-HiDPI display.
+- Which reference-sourced field meanings can also be established from an
+  engine reader or a controlled change on the owner's disc.
 - `EYE_HEIGHT` against the game's view for each biped, and so how far
   aim select is off before the `camera` layer exists.
 - Whether `AIM_DWELL` of 0.6 seconds selects too eagerly in play.

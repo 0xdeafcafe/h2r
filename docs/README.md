@@ -268,7 +268,8 @@ Reading and converting Halo 1 data:
 - [click-to-edit.md](editor/click-to-edit.md): placement-to-tag navigation, editable tag documents, references and the remaining unified Map work
 - [modeling.md](editor/modeling.md): mesh kernel and the design for editing geometry, collision, lightmaps and textures
 - [modeling-targets.md](editor/modeling-targets.md): design for the Halo 2 round trip of each modeling target: read path, edit model, write classes, what is recomputed, limits and risks for `sbsp` render geometry and collision, portals, lightmaps, `mode`, `coll` and `phmo`
-- [polish-plan.md](editor/polish-plan.md): editor layout, scenario tag tree, live editing and layers, with designs for volume and collision tools and a native renderer viewport
+- [polish-plan.md](editor/polish-plan.md): editor layout, scenario tag tree, live editing, tag field names and descriptions, and layers, with designs for volume and collision tools and a native renderer viewport
+- Notes: [tag-field-names.md](editor/notes/tag-field-names.md) (the sources of tag field names, their links and licences)
 
 ## Working on the repository (`dev/`)
 
