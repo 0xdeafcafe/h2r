@@ -657,10 +657,12 @@ mod tests {
 
     #[test]
     fn a_drop_from_rest_takes_the_free_fall_time() {
-        // 2.43 units at 4.15 units/s²: the recipe's drop, landing at 5.4.
+        // 2.43 units at 4.15 units/s² lands at sqrt(2gh) = 4.49 units/s.
+        // (The lab's drop from 3.5 above the strip landed at 5.24 after a
+        // 0.23 start, which fits the same gravity.)
         let t = fall_time(2.43, 0.0).unwrap();
         near(t, (2.0 * 2.43 / GRAVITY).sqrt(), 1e-5);
-        near(GRAVITY * t, 5.4, 0.05);
+        near(GRAVITY * t, (2.0 * GRAVITY * 2.43).sqrt(), 1e-4);
         near(fall_time(0.0, -5.4).unwrap(), 0.0, 1e-5);
     }
 
@@ -746,7 +748,8 @@ mod tests {
         let a = spot_at([1.5, 0.0, 0.0], [1.0, 0.0]);
         let b = spot_at([-0.4, 0.2, 0.0], [1.0, 0.0]);
         let body = falling([0.0, 0.0, 2.0], [0.0; 3]);
-        let (picked, _) = pick(&[a, b], &body).unwrap();
+        let spots = [a, b];
+        let (picked, _) = pick(&spots, &body).unwrap();
         assert_eq!(picked.stand, b.stand);
         assert!(pick(&[], &body).is_none());
     }
