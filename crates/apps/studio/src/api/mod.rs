@@ -801,7 +801,8 @@ fn check_params(d: &MethodDef, params: &Value) -> Result<(), RpcError> {
     }
     if let Some((missing, _)) = keys
         .iter()
-        .find(|(k, req)| *req && obj.get(k).is_none_or(Value::is_null))
+        // Present counts as given: null is a value (a reference set to none).
+        .find(|(k, req)| *req && !obj.contains_key(k.as_str()))
     {
         return Err(err(
             code::INVALID_PARAMS,
