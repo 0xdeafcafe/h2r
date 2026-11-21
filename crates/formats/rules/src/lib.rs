@@ -13,6 +13,7 @@ pub mod caps;
 pub mod fake;
 pub mod ir;
 pub mod lang;
+pub mod scenario;
 pub mod ty;
 pub mod verify;
 pub mod vm;

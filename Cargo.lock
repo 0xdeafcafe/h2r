@@ -1033,6 +1033,7 @@ dependencies = [
  "perf",
  "png",
  "ring",
+ "rules",
  "rustls",
  "scenario-edit",
  "serde",
@@ -5586,6 +5587,8 @@ name = "rules"
 version = "0.1.0"
 dependencies = [
  "content",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
