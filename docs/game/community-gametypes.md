@@ -99,7 +99,9 @@ U+E000 to U+E008 are small symbols every font maps: three faces, a box, a
 fourth face, a camera, two people (U+E006), a download arrow (U+E007) and the
 padlock (U+E008). Only one retail string uses U+E006 (a guest gamertag
 format). Two people means "made by players", so the community variants use
-it. No glyph is added or changed. If a purpose-made picture is wanted later,
+it. The game-variant store's variants (rules-engine.md, "Live game
+variants in the game") carry the download arrow, U+E007, which no retail
+name uses: made elsewhere and brought in. No glyph is added or changed. If a purpose-made picture is wanted later,
 the `button-icons` branch shows how to add one at an unused code point
 (nothing uses U+E200 and up) without shipping art.
 
@@ -196,6 +198,33 @@ Team Ball, Low Ball, Fiesta, 2 on 1, 3 on 1, Ninjanaut, Phantom Fodder,
 Dreadnaut, the CTF, Assault and Territories set
 (<https://www.halopedia.org/Custom_game>).
 
+## The merged block
+
+The wrapper on `0x149f88` builds one block for every built-in of ours:
+the retail entries, then the community variants, then the game-variant
+store's (`community_variants::extend_with`, with two groups), at most 101
+in all, the content list's limit. A store variant past it is left out
+with a line. Each group writes its pairs into its own page: the
+community variants' at `0xa0fd0000`, the store's at `0xa0fd8000`
+(`game_variants::PAIRS_BASE`, 16 KiB); the merged block stays at
+`0xa0fd2000`.
+
+A store variant's entry (`game_variants::inject::entries`) is its list
+type, its record's value of every setting of its type that the `sily`
+pages offer, and a description number. A value the editor does not
+offer leaves the variant out, by name. Its ids are a private range of
+their own, `0x00ffe200..=0x00ffe2ff` (`ui_kit::ids` family "game
+variants"): names at `+i`, descriptions at `+0x80 + i`, a shared line at
+`+0xff`. Description numbers 94 to 99 name the first six variants'
+descriptions and 100 the shared line ("A game variant from this
+machine's game-variant store."), since the game takes 0 to 100 and the
+community variants hold 80 to 93. The string and description wrappers
+answer these ids and numbers beside the community ones.
+
+The settings reach the game through the pairs; the record's `hx` block
+(extras and the script reference) is written at the game's start, as
+rules-engine.md "Live game variants in the game" says.
+
 ## What the code does
 
 All three hooks are wrappers at function entries
@@ -219,7 +248,8 @@ All three hooks are wrappers at function entries
    first at `0x20ffe000`, showed these names. The ids reach the wrapper as
    written (the `goof` entry's name, the description id we return), so
    nothing needs the looser match. `crates/extensions/game/src/string_ids.rs` checks
-   every family of our ids against every other's claim.
+   every family of our ids against every other's claim. The store's
+variants answer from their own range ("The merged block").
 3. **Description numbers.** The variant list turns the entry's description
    number into the string id of its decimal text with `0x19fd00`, from
    `0x2ca1fd`, and the list's `unic` holds the text under those ids

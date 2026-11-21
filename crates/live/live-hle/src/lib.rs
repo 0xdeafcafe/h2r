@@ -12,6 +12,7 @@ mod config;
 mod feedback;
 mod film_service;
 pub mod films;
+pub mod game_variants;
 mod invites;
 pub mod join_resolver;
 pub mod join_link;
@@ -809,6 +810,45 @@ impl Hle {
                 ext: session.advertisement.variant_ext.clone(),
                 refreshed,
             },
+        }
+    }
+    /// A rules IR blob by its full SHA-256 (64 lowercase hex digits), from
+    /// `GET /v1/rules/{hash}/ir` as the first account signed in. Waits at
+    /// most `wait` for the server; call with no guest memory held, it never
+    /// takes guest memory. The blob is as the server sent it: the caller
+    /// checks its hash and verifies it (docs/game/rules-engine.md, "The
+    /// host runtime").
+    pub fn fetch_rules_ir(
+        &self,
+        hash: &str,
+        wait: std::time::Duration,
+    ) -> Result<Vec<u8>, game_variants::FetchError> {
+        use game_variants::FetchError;
+        if !game_variants::valid_hash(hash) {
+            return Err(FetchError::BadHash(hash.to_owned()));
+        }
+        let pending = self.lock().rules_ir(hash)?;
+        match pending.wait(wait) {
+            Some(Ok(client::Reply::RulesIr(r))) => r,
+            Some(Ok(_)) => Err(FetchError::Server("not a rules blob".into())),
+            Some(Err(code)) => Err(FetchError::Server(format!("{code:#010x}"))),
+            None => Err(FetchError::Timeout(wait.as_millis())),
+        }
+    }
+    /// The first signed-in account's Live game variants, from
+    /// `GET /v1/variants?author=<xuid>`. Waits at most `wait`; never takes
+    /// guest memory, so call it off the game thread.
+    pub fn my_game_variants(
+        &self,
+        wait: std::time::Duration,
+    ) -> Result<Vec<game_variants::LiveVariant>, game_variants::FetchError> {
+        use game_variants::FetchError;
+        let pending = self.lock().game_variants()?;
+        match pending.wait(wait) {
+            Some(Ok(client::Reply::GameVariants(v))) => Ok(v),
+            Some(Ok(_)) => Err(FetchError::Server("not a variant list".into())),
+            Some(Err(code)) => Err(FetchError::Server(format!("{code:#010x}"))),
+            None => Err(FetchError::Timeout(wait.as_millis())),
         }
     }
     /// What the host of the session this console joined advertised as the

@@ -64,6 +64,7 @@ pub const TABLE: u32 = 0x20ff_f000;
 pub const FAMILIES: &[Family] = &[
     Family::new("community variants", 0x00ff_e000, 0x100),
     Family::new("variant options", 0x00ff_e100, 0x100),
+    Family::new("game variants", 0x00ff_e200, 0x100),
     Family::new("kit.example", 0x20ff_c000, 0x40),
     Family::new("kit.choices", 0x20ff_c040, 0x40),
     Family::new("kit.dialog", 0x20ff_c080, 0x40),

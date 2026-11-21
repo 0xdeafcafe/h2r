@@ -278,6 +278,7 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ("hud", "GAME_ACTIVATE", AFTER),
     ("loaded_map", "GAME_ACTIVATE", AFTER),
     ("variant-ext-live", "GAME_ACTIVATE", AFTER),
+    ("game-variants", "GAME_ACTIVATE", AFTER),
     (
         "live-telemetry",
         "*",

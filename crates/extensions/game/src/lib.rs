@@ -32,6 +32,8 @@ pub mod campaign_menu;
 pub mod campaigns;
 pub mod cheats;
 pub mod community_variants;
+// Game variants as bundles: the store, the list, porting (docs/game/rules-engine.md).
+pub mod game_variants;
 pub mod controls_text;
 pub mod coop_jip;
 pub mod coop_latency;

@@ -64,6 +64,16 @@ fn table_members() -> Vec<(&'static str, Vec<u32>)> {
     ]
 }
 
+/// The game-variant store's ids: every name and description slot, and the
+/// shared description.
+fn game_variant_ids() -> Vec<u32> {
+    use crate::game_variants::inject;
+    (0..inject::MAX_LISTED)
+        .flat_map(|i| [inject::name_id(i), inject::description_id(i)])
+        .chain(inject::description_for(inject::SHARED_DESCRIPTION))
+        .collect()
+}
+
 fn families() -> Vec<Family> {
     let community = (0..community_variants::VARIANTS.len())
         .flat_map(|i| {
@@ -83,6 +93,14 @@ fn families() -> Vec<Family> {
             name: "community variants",
             ids: community,
             claims: |id| community_variants::is_ours(id) || community_variants::text(id).is_some(),
+        },
+        Family {
+            name: "game variants",
+            ids: game_variant_ids(),
+            claims: |id| {
+                crate::game_variants::inject::is_ours(id)
+                    || crate::game_variants::inject::text(id).is_some()
+            },
         },
         Family {
             name: "variant options",
@@ -206,6 +224,7 @@ fn every_served_id_is_in_its_registered_family() {
                 })
                 .collect(),
         ),
+        ("game variants", game_variant_ids()),
         (
             "signin",
             std::iter::once(crate::signin_screen::TITLE_ID)

@@ -592,7 +592,7 @@ pub fn description_for(n: u32) -> Option<u32> {
 /// address and number: our description id for the variant list only.
 pub fn description_answer(ret: u32, n: u32) -> Option<u32> {
     if ret == LIST_DESCRIPTION_RETURN {
-        description_for(n)
+        description_for(n).or_else(|| crate::game_variants::inject::description_for(n))
     } else {
         None
     }
@@ -646,14 +646,59 @@ pub fn usable(offered: &std::collections::HashMap<u32, Vec<i32>>) -> Vec<usize> 
 
 /// One list entry: name id, game type, settings block, description number.
 pub fn entry(i: usize, pairs_at: u32) -> [u8; ENTRY_SIZE as usize] {
-    let v = &VARIANTS[i];
-    let mut e = [0; ENTRY_SIZE as usize];
-    e[0..4].copy_from_slice(&name_id(i).to_le_bytes());
-    e[4..8].copy_from_slice(&(v.ty as u32).to_le_bytes());
-    e[8..12].copy_from_slice(&(v.settings.len() as u32).to_le_bytes());
-    e[12..16].copy_from_slice(&pairs_at.to_le_bytes());
-    e[16..20].copy_from_slice(&(DESCRIPTION_BASE + i as u32).to_le_bytes());
-    e
+    NewEntry::community(i).encode(pairs_at)
+}
+
+/// The most built-ins the content list takes (`0x217080`).
+pub const MAX_BUILTINS: u32 = 101;
+
+/// One entry to append: its name id, list type, `(setting, value)` pairs
+/// and description number.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewEntry {
+    pub name_id: u32,
+    pub list_type: u32,
+    pub pairs: Vec<(u32, i32)>,
+    pub description: u32,
+}
+
+impl NewEntry {
+    /// Community variant `i`.
+    pub fn community(i: usize) -> Self {
+        let v = &VARIANTS[i];
+        NewEntry {
+            name_id: name_id(i),
+            list_type: v.ty as u32,
+            pairs: v.pairs(),
+            description: DESCRIPTION_BASE + i as u32,
+        }
+    }
+
+    fn encode(&self, pairs_at: u32) -> [u8; ENTRY_SIZE as usize] {
+        let mut e = [0; ENTRY_SIZE as usize];
+        e[0..4].copy_from_slice(&self.name_id.to_le_bytes());
+        e[4..8].copy_from_slice(&self.list_type.to_le_bytes());
+        e[8..12].copy_from_slice(&(self.pairs.len() as u32).to_le_bytes());
+        e[12..16].copy_from_slice(&pairs_at.to_le_bytes());
+        e[16..20].copy_from_slice(&self.description.to_le_bytes());
+        e
+    }
+}
+
+/// One group of entries and the page `[start, end)` their pairs go to.
+pub struct Group<'a> {
+    pub entries: &'a [NewEntry],
+    pub start: u32,
+    pub end: u32,
+}
+
+/// What [`extend_with`] did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Merged {
+    /// Entries appended, by group.
+    pub added: [usize; 2],
+    /// Entries left out past [`MAX_BUILTINS`].
+    pub over: usize,
 }
 
 /// Append the variants in `which` to the `goof` tag's built-in list. The
@@ -668,40 +713,72 @@ pub fn extend_builtins<M: Mem>(
     base: u32,
     entries: u32,
 ) -> Option<bool> {
+    let ours: Vec<NewEntry> = which.iter().map(|&i| NewEntry::community(i)).collect();
+    let groups = [Group {
+        entries: &ours,
+        start: base,
+        end: entries,
+    }];
+    extend_with(m, goof, &groups, entries).map(|d| d.added.iter().sum::<usize>() > 0)
+}
+
+/// [`extend_builtins`] for up to two groups (the community variants, then
+/// the game-variant store's): retail, then each group in order, up to
+/// [`MAX_BUILTINS`] in all, each group's pairs in its own page.
+/// `Some(Merged::default())` when the tag already points at `entries` or
+/// there is nothing to add.
+pub fn extend_with<M: Mem>(
+    m: &mut M,
+    goof: u32,
+    groups: &[Group<'_>],
+    entries: u32,
+) -> Option<Merged> {
     let (n, old) = (
         m.u32(goof + GOOF_BUILTINS)?,
         m.u32(goof + GOOF_BUILTINS + 4)?,
     );
-    if old == entries || which.is_empty() {
-        return Some(false);
+    let total: usize = groups.iter().take(2).map(|g| g.entries.len()).sum();
+    if old == entries || total == 0 {
+        return Some(Merged::default());
     }
-    if n + which.len() as u32 > (DATA_BASE + DATA_SIZE - entries) / ENTRY_SIZE {
+    let room = MAX_BUILTINS.saturating_sub(n) as usize;
+    let take = total.min(room);
+    if n + take as u32 > (DATA_BASE + DATA_SIZE - entries) / ENTRY_SIZE {
         return None;
     }
     let mut block = vec![0; (n * ENTRY_SIZE) as usize];
     if !m.rd(old, &mut block) {
         return None;
     }
-    let mut at = base;
-    for &i in which {
-        let pairs: Vec<u8> = VARIANTS[i]
-            .pairs()
-            .into_iter()
-            .flat_map(|(s, v)| s.to_le_bytes().into_iter().chain(v.to_le_bytes()))
-            .collect();
-        if at + pairs.len() as u32 > entries || !m.wr(at, &pairs) {
-            return None;
+    let mut merged = Merged {
+        over: total - take,
+        ..Merged::default()
+    };
+    let mut left = take;
+    for (k, g) in groups.iter().enumerate().take(2) {
+        let mut at = g.start;
+        for e in g.entries.iter().take(left) {
+            let pairs: Vec<u8> = e
+                .pairs
+                .iter()
+                .flat_map(|(s, v)| s.to_le_bytes().into_iter().chain(v.to_le_bytes()))
+                .collect();
+            if at + pairs.len() as u32 > g.end || !m.wr(at, &pairs) {
+                return None;
+            }
+            block.extend_from_slice(&e.encode(at));
+            at += pairs.len() as u32;
+            merged.added[k] += 1;
         }
-        block.extend_from_slice(&entry(i, at));
-        at += pairs.len() as u32;
+        left -= merged.added[k];
     }
     if !m.wr(entries, &block) {
         return None;
     }
+    let count = n + take as u32;
     // The block first, then the count that makes it visible.
-    (m.set_u32(goof + GOOF_BUILTINS + 4, entries)
-        && m.set_u32(goof + GOOF_BUILTINS, n + which.len() as u32))
-    .then_some(true)
+    (m.set_u32(goof + GOOF_BUILTINS + 4, entries) && m.set_u32(goof + GOOF_BUILTINS, count))
+        .then_some(merged)
 }
 
 // ---- hooks ----
@@ -720,6 +797,7 @@ fn register_strings(
         });
         if let Some(t) = status
             .or_else(|| text(cpu.edi))
+            .or_else(|| crate::game_variants::inject::text(cpu.edi))
             .or_else(|| crate::variant_options::text(cpu.edi))
         {
             let mut mem = ctx.runtime().memory();
@@ -761,6 +839,11 @@ pub fn install_with_live(
 ) -> anyhow::Result<()> {
     rt.memory()
         .map_zeroed(DATA_BASE, DATA_SIZE, Permissions::RW)?;
+    rt.memory().map_zeroed(
+        crate::game_variants::PAIRS_BASE,
+        crate::game_variants::PAIRS_SIZE,
+        Permissions::RW,
+    )?;
     rt.memory().map_zeroed(
         crate::variant_options::BASE,
         crate::variant_options::SIZE,
@@ -808,12 +891,49 @@ pub fn install_with_live(
                             (0..VARIANTS.len()).filter(|i| !which.contains(i)).map(|i| VARIANTS[i].name).collect();
                         eprintln!("community variants: left out (a setting the game does not offer): {left:?}");
                     }
-                    match extend_builtins(&mut *mem, goof, &which, DATA_BASE, ENTRIES_AT) {
-                        Some(true) => eprintln!("community variants: {} added to the built-in list", which.len()),
-                        Some(false) => {}
+                    // The game-variant store's after ours, in its own pairs
+                    // page (docs/game/community-gametypes.md, "The merged block").
+                    let offer = offered(&*mem, goof, tags).unwrap_or_default();
+                    let ours: Vec<NewEntry> = which.iter().map(|&i| NewEntry::community(i)).collect();
+                    let retail = mem.u32(goof + GOOF_BUILTINS).unwrap_or(0);
+                    let room = (MAX_BUILTINS.saturating_sub(retail) as usize).saturating_sub(ours.len());
+                    let (stored, lines) = {
+                        let store = crate::game_variants::store();
+                        let store = store.lock().unwrap_or_else(|e| e.into_inner());
+                        crate::game_variants::inject::entries(&store, &offer, room)
+                    };
+                    for line in lines {
+                        eprintln!("{line}");
+                    }
+                    let groups = [
+                        Group {
+                            entries: &ours,
+                            start: DATA_BASE,
+                            end: ENTRIES_AT,
+                        },
+                        Group {
+                            entries: &stored,
+                            start: crate::game_variants::PAIRS_BASE,
+                            end: crate::game_variants::PAIRS_BASE + crate::game_variants::PAIRS_SIZE,
+                        },
+                    ];
+                    match extend_with(&mut *mem, goof, &groups, ENTRIES_AT) {
+                        Some(d) if d.added != [0, 0] => eprintln!(
+                            "community variants: {} added to the built-in list; game variants: {} added{}",
+                            d.added[0],
+                            d.added[1],
+                            if d.over > 0 {
+                                format!(", {} left out past 101 built-ins", d.over)
+                            } else {
+                                String::new()
+                            }
+                        ),
+                        Some(_) => {}
                         None => eprintln!("community variants: could not extend the built-in list"),
                     }
                 }
+                // The Live variants for the next load, off the game thread.
+                crate::game_variants::refresh_live();
                 Ok(o.invoke(cpu, ctx, BUILTINS_LOAD))
             });
         }

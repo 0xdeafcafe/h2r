@@ -250,13 +250,13 @@ fn an_unknown_hash_is_refused_by_name_and_the_game_plays_its_own_rules() {
     assert!(!state.running);
     let why = state.refused.unwrap();
     assert!(why.contains("0909090909090909"), "{why}");
-    assert!(why.contains("fetching a blob from Live is not built"), "{why}");
+    assert!(why.contains("no Live client to fetch it"), "{why}");
     assert_eq!(state.hash.as_deref(), Some("0909090909090909"));
     assert_eq!(store.bytes(), None);
     assert_eq!(s.lock().pre_tick(&m), None);
     assert_eq!(s.lock().hash(), None);
 
-    // System Link runs only the built-ins.
+    // System Link runs only the scripts on this machine.
     s.lock().start(&m, true);
     let why = s.lock().state().refused.unwrap();
     assert!(why.contains("System Link"), "{why}");
@@ -396,4 +396,162 @@ fn the_game_reads_the_roster_the_statborg_and_the_record() {
         args: vec![Arg::Team(Some(0))],
     });
     assert_eq!(calls, [Call::End], "a call through none does nothing");
+}
+
+// ---- scripts from the game-variant store and Live ----
+
+use crate::game_variants::GameScripts;
+use crate::game_variants::bundle::{Bundle, BundleScript};
+use crate::game_variants::store::{Origin, Store as VariantStore};
+
+const POINTS: &str = "rules \"Double Points\" 1\ncarrier slayer\n\non kill(victim, killer) { score(killer, 2) }\n";
+
+type Answer = Box<dyn Fn(&str, std::time::Duration) -> Result<Vec<u8>, String> + Send + Sync>;
+
+fn answer(
+    f: impl Fn(&str, std::time::Duration) -> Result<Vec<u8>, String> + Send + Sync + 'static,
+) -> Answer {
+    Box::new(f)
+}
+
+/// A Slayer record naming `id`, as a bundle naming it by hash, with its IR
+/// when `ir` is given.
+fn bundle_naming(id: &Sha256, ir: Option<&[u8]>) -> Bundle {
+    let mut v = variants::GameVariant::blank(variants::GameType::Slayer);
+    let mut e = v.ext();
+    e.script = Script {
+        mode: Mode::Rules,
+        prefix: prefix(id),
+        options: 0,
+    };
+    v.set_ext(&e).unwrap();
+    let mut b = Bundle::new("Double Points", "", v.bytes());
+    b.script = Some(BundleScript {
+        name: "Double Points".into(),
+        hash: id.to_string(),
+        ir_b64: None,
+        source: None,
+    });
+    match ir {
+        Some(ir) => b.with_ir(ir),
+        None => b,
+    }
+}
+
+fn scripts_over(vs: VariantStore, fetch: Answer) -> Arc<GameScripts> {
+    Arc::new(GameScripts::new(Arc::new(Mutex::new(vs)), None, fetch))
+}
+
+/// The runtime as the game composes it (`Runtime::in_game`), over `scripts`.
+fn composed(store: &Local, scripts: &Arc<GameScripts>) -> Arc<Shared> {
+    let (l, f) = (Arc::clone(scripts), Arc::clone(scripts));
+    Arc::new(Shared::new(
+        Runtime::new(Box::new(store.clone()), Box::new(move |p: [u8; 8]| f.fetched(p)))
+            .with_local(Box::new(move |p: [u8; 8]| l.local(p))),
+    ))
+}
+
+#[test]
+fn a_stored_script_runs_with_no_live_client_and_on_system_link() {
+    let ir = ::rules::compile(POINTS).unwrap();
+    let (blob, id) = (ir.encode(), ir.id());
+    let mut vs = VariantStore::in_memory();
+    assert_eq!(vs.add(Origin::Imported, bundle_naming(&id, Some(blob.as_slice()))), Ok(true));
+    let scripts = scripts_over(vs, answer(|_, _| panic!("a stored script is never fetched")));
+    for system_link in [false, true] {
+        let store = Local::default();
+        let s = composed(&store, &scripts);
+        let (m, _) = guest(block(prefix(&id), 0), SLAYER);
+        assert_eq!(crate::rules::feature::to_fetch(&m, &scripts), None);
+        let line = s.lock().start(&m, system_link);
+        assert!(line.contains("Double Points"), "{line}");
+        let state = s.lock().state();
+        assert!(state.running, "{state:?}");
+        assert_eq!(state.source.as_deref(), Some("local"));
+        assert_eq!(state.hash, Some(id.to_string()));
+    }
+}
+
+#[test]
+fn a_live_variants_script_is_fetched_by_its_full_hash_verified_and_run() {
+    let ir = ::rules::compile(POINTS).unwrap();
+    let (blob, id) = (ir.encode(), ir.id());
+    let mut vs = VariantStore::in_memory();
+    vs.add(Origin::Live, bundle_naming(&id, None)).unwrap();
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&asked);
+    let served = blob.clone();
+    let scripts = scripts_over(
+        vs,
+        answer(move |h, _| {
+            seen.lock().unwrap().push(h.to_owned());
+            Ok(served.clone())
+        }),
+    );
+    let store = Local::default();
+    let s = composed(&store, &scripts);
+    let (m, _) = guest(block(prefix(&id), 0), SLAYER);
+    // The start hook fetches first, with no guest memory held.
+    assert_eq!(crate::rules::feature::to_fetch(&m, &scripts), Some(prefix(&id)));
+    scripts.prefetch(prefix(&id), crate::game_variants::START_WAIT);
+    assert_eq!(*asked.lock().unwrap(), [id.to_string()]);
+    assert_eq!(crate::rules::feature::to_fetch(&m, &scripts), None);
+    s.lock().start(&m, false);
+    let state = s.lock().state();
+    assert!(state.running, "{state:?}");
+    assert_eq!(state.hash, Some(id.to_string()));
+    // Kept: the next start needs no fetch.
+    assert_eq!(scripts.local(prefix(&id)), Some(blob));
+}
+
+#[test]
+fn each_fetch_failure_is_refused_by_name() {
+    let id = ::rules::compile(POINTS).unwrap().id();
+    // A blob that hashes to what its bundle names and does not verify.
+    let junk = vec![0xee; 40];
+    let junk_id = Sha256::of(&junk);
+    let cases: Vec<(Sha256, Answer, &str)> = vec![
+        (
+            id,
+            answer(|_, _| Err("the Live server did not answer within 1500 ms".into())),
+            "did not answer within 1500 ms",
+        ),
+        (
+            id,
+            answer(|_, _| Err("the Live server has no such script".into())),
+            "has no such script",
+        ),
+        (id, answer(|_, _| Ok(vec![1, 2, 3])), "hashes to"),
+        (
+            junk_id,
+            answer(move |_, _| Ok(junk.clone())),
+            "the blob does not verify",
+        ),
+    ];
+    for (named, answer, want) in cases {
+        let mut vs = VariantStore::in_memory();
+        vs.add(Origin::Live, bundle_naming(&named, None)).unwrap();
+        let scripts = scripts_over(vs, answer);
+        let store = Local::default();
+        let s = composed(&store, &scripts);
+        let (m, _) = guest(block(prefix(&named), 0), SLAYER);
+        scripts.prefetch(prefix(&named), crate::game_variants::START_WAIT);
+        s.lock().start(&m, false);
+        let state = s.lock().state();
+        assert!(!state.running);
+        let why = state.refused.unwrap();
+        assert!(why.contains(want), "{want}: {why}");
+        assert_eq!(store.bytes(), None);
+    }
+    // A prefix no bundle names a full hash for.
+    let scripts = scripts_over(
+        VariantStore::in_memory(),
+        answer(|_, _| panic!("nothing to fetch by")),
+    );
+    let s = composed(&Local::default(), &scripts);
+    let (m, _) = guest(block([7; 8], 0), SLAYER);
+    scripts.prefetch([7; 8], crate::game_variants::START_WAIT);
+    s.lock().start(&m, false);
+    let why = s.lock().state().refused.unwrap();
+    assert!(why.contains("full hash is not known"), "{why}");
 }
