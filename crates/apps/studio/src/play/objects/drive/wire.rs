@@ -94,13 +94,15 @@ impl Play {
             Op::Set { id, frame } => (
                 method::OBJECT_SET,
                 json!({"id":id.to_string(), "pos":frame.pos, "forward":frame.forward,
-                    "up":frame.up, "confirm_peers":peers}),
+                    "up":frame.up, "epoch":scope.epoch, "confirm_peers":peers}),
             ),
             Op::Delete { id } => (
-                method::OBJECT_DELETE, json!({"id":id.to_string(),"confirm_peers":peers}),
+                method::OBJECT_DELETE,
+                json!({"id":id.to_string(), "epoch":scope.epoch, "confirm_peers":peers}),
             ),
             Op::Respawn { id: Some(id) } => (
-                method::OBJECT_RESPAWN, json!({"id":id.to_string(),"confirm_peers":peers}),
+                method::OBJECT_RESPAWN,
+                json!({"id":id.to_string(), "epoch":scope.epoch, "confirm_peers":peers}),
             ),
             Op::Respawn { id: None } => {
                 let kind = scenario_edit::layout::block(change.key.block).object_type;
@@ -110,6 +112,7 @@ impl Play {
                 empty_slot = Some((kind, slot));
                 (method::OBJECT_RESPAWN, json!({
                     "placement":{"block":crate::api::block_name(change.key.block),"index":slot},
+                    "epoch":scope.epoch,
                     "confirm_peers":peers,
                 }))
             }
@@ -122,9 +125,8 @@ impl Play {
         }
         self.objects.next_ticket += 1;
         let ticket = self.objects.next_ticket;
-        // Expected-epoch wire extension: include scope.epoch here once ObjectSetParams,
-        // ObjectDeleteParams and ObjectRespawnParams accept "epoch". This protocol
-        // denies unknown fields; the worker checks the subscription epoch before I/O.
+        // The worker checks the subscription epoch before I/O. The host checks
+        // `epoch` again when the edit runs, which covers a map change in between.
         let call = Call { method: method.into(), params, purpose: Purpose::Object(ticket) };
         let dispatch = Arc::new(ObjectDispatch::new(call, stream, scope.epoch, empty_slot));
         if !link.offer_object(ticket, &dispatch) {

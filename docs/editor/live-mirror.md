@@ -288,6 +288,9 @@ requests a respawn at the original loaded slot. **Respawn now** applies
 creation-time fields that differ from the last actual creation. A replacement
 uses the salted object ID. If it fails after deleting that object, a fresh
 stream observation of the empty slot allows an explicit retry by placement.
+Every object request carries the map epoch the editor paired on
+(`play/objects/drive/wire.rs`), so the host refuses an edit that arrives
+after the map changed.
 
 An added placement requests a preview through `world.object.respawn`.
 The host reads creation fields from its loaded scenario. An index beyond
