@@ -229,5 +229,6 @@ fn playback_states_render_distinct_transport_copy() {
     assert!(page.spec().texts.is_empty());
     assert!(page.go("preparing"));
     assert_eq!(page.spec().name, crate::theater_ui::DETAIL);
-    assert_eq!(page.spec().help.as_deref(), Some("Preparing 2:40 / 8:26"));
+    // Prepare progress lives on the film page's Prepare row.
+    assert_eq!(page.spec().rows[1].label, "Preparing... 40%");
 }
