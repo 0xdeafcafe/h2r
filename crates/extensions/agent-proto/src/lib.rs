@@ -15,6 +15,7 @@ mod client;
 pub mod discover;
 #[cfg(any(unix, windows))]
 pub mod local_socket;
+pub mod bot_bounce;
 pub mod collision;
 pub mod debug;
 pub mod editor;
@@ -38,6 +39,7 @@ mod render;
 pub mod shadow;
 pub mod sim;
 pub mod state;
+pub mod superbounce;
 pub mod takeover;
 pub mod test_maps;
 pub mod theater;

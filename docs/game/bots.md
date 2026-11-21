@@ -1532,7 +1532,7 @@ Taunts path: store, `clankers::Want::read`, the driver's shared
 | Quad shot | a double shot, 9 Y, 12 Y, then a double shot from 15 | as the double shot, 12 rounds and a second gun | Bungie.net forum: "RRX, YY, RRX"; YY swaps back before the reload |
 | Sword flying | 0 Y, 1 X, 3 R, 11 A | the sword the other weapon, the gun in hand on target (its reticle red) past the sword's lunge, up to 20 units | [Halopedia, Sword flying](https://www.halopedia.org/Sword_flying): Y, X, RT "quickly in that order", the reticle red on the gun first; the window is 0.066 s at 30 fps (two ticks); A in the lunge goes higher |
 | Crouch jump | 0 A, 7 crouch (10 ticks) | roaming, now and then | superbounce.md, "The crouch height term": a crouch change in the air lifts the feet |
-| Super bounce | at a measured spot: stand still, A, hands off but a light push toward +y, land; again from a nudged place | roaming, a spot within 60 units | superbounce.md (traced; the spot's table is `glitches::spots`) |
+| Super bounce | prime at a crouch spot (crouch, let go under the low ceiling), then at a spot: stand still, A, hands off but a light push toward +y, land; again from a nudged place | roaming, a spot within 60 units | superbounce.md (traced; the spot's table is `glitches::spots`, the scan `spots`) |
 
 The 5 ticks from B to the melee landing (`MELEE_CONNECT`) and the 4 for
 the battle rifle's burst (`BURST`) are not traced. They are starting
@@ -1599,16 +1599,90 @@ between tries, a drift direction and a source. There is one:
 |---|---|---|---|
 | `ascension` | (−10.62, 3.88, −3.19), nudged up to 0.04 | +y | superbounce.md: the crease where the ramp meets the floor, 5 bounces in 20 standing-jump landings; the launch is a pinch between faces at y 4.12 and 3.94 |
 
-The bot walks to 0.8 units short of the spot (lower y), steps onto it,
-stands still for 4 ticks, jumps with the stick let go, and pushes the
-stick 0.15 toward +y in the air, because every traced bounce came in
-moving slowly toward +y. Not every landing bounces, so it tries again from
-a nudged place. It knows it bounced when it rises 0.4 units again after
-starting to fall: a plain landing never does. Community guides
-([Halopedia, Super bouncing](https://www.halopedia.org/Super_Bouncing))
-give spots on most maps by landmark only, with a forced crouch first.
-superbounce.md found the crouch is not needed. A spot goes in the table
-only once a game run has found and traced it.
+A bounce needs the player primed first: a forced crouch leaves the
+level pair word at -3 and only a landing with it at -3 bounces
+([superbounce.md](superbounce.md), "The pair word"). The bot primes
+before it goes to a spot (below). Then it walks to 0.8 units short of the
+spot (lower y), steps onto it, stands still for 4 ticks, jumps with the
+stick let go, and pushes the stick 0.15 toward +y in the air, because
+every traced bounce came in moving slowly toward +y. Not every landing
+bounces, so it tries again from a nudged place; the word stays at -3
+until the pair is rebuilt (a crouch, or the body going to sleep), so a
+retry needs no new priming. It knows it bounced when it rises 0.4 units
+again after starting to fall: a plain landing never does. Community
+guides ([Halopedia, Super bouncing](https://www.halopedia.org/Super_Bouncing))
+give spots on most maps by landmark only. A spot goes in the table only
+once a game run has found and traced it; the scan below finds the rest.
+
+#### Superbounce routes
+
+`bots::spots` holds what a bot knows of its map's spots: the measured
+ones first, then the scan of the map's collision geometry
+(`crates/live/superbounce`: **bounce** spots, narrow slots a primed
+landing launches out of, and **crouch** spots, where a standing player is
+forced into a crouch). The nav worker scans a map when it builds or
+restores the nav mesh (`autonav::Worker::keep_spots`) and saves the
+result beside it as `<map>.spots`, stamped with the nav generator, the
+scan version (`spots::SCAN`) and the map's fingerprint. A scanned bounce
+spot becomes a `glitches::Bounce` (source `scan`, spread 0.03) with its
+launch speed (`spots::Site`); one at a measured spot's place is dropped.
+A spot that needs a drop onto it is not used: a bot only jumps in place.
+
+`bounce_route::plan` plans a route from the bot to a point, purely, from
+a walk-length function over the nav mesh:
+
+1. walk to the nearest useful crouch spot, crouched;
+2. **prime** (`glitches::prime::PrimeRun`): crouch 12 ticks, let go and
+   stand up under the ceiling; the engine refuses the stand-up and the
+   word goes to -3. Done when the word reads -3, or 12 ticks after the
+   release when it cannot be read;
+3. walk to 0.8 units behind the bounce spot, never crouching;
+4. the bounce run (`glitches::BounceRun`) until it launches;
+5. fly: steer toward the goal at full stick until down
+   (vertical speed under 0.3 for 2 ticks after the top);
+6. walk the rest.
+
+The plan is the best bounce under the asker's mode. **Help** (the
+default) takes a bounce only where it reaches the goal and the plain walk
+cannot (no path, such as a ledge above a jump), or where the whole route,
+with 8 units for the priming, is 4 units shorter than the walk. **Fun**
+takes, of the spots within 60 units of walking, the highest launch (the
+cheaper on a tie) and then goes on to the goal. With no bounce that
+qualifies it is the plain walk. A bounce needs a crouch spot to prime at,
+unless the bot's pair word reads -3 already.
+
+The arc: up at the site's launch speed, gravity 5.2 units a second
+squared (`nav::route`), sideways at 2.5 units a second in the air. The
+flight reaches a goal when the horizontal gap is within the time it takes
+to come down through the goal's height, times that speed. The air speed
+is a **[guess]**; the launch speeds are the scan's estimates and, for the
+measured spot, the 12.3 of superbounce.md.
+
+**Priming state.** The brain asks for the player's level pair word
+through a reader the host installs (`bots::set_pair_reader`: the unit's
+datum in, the word out; the game's reader is `live_telemetry::havok_agents`'s
+`fixed_pair` and `PAIR_WORD`). With it a priming ends when the word reads
+-3, a word that reads anything else on the ground after priming sends
+the bot back to the crouch spot (twice at most), and a priming whose
+word never reaches -3 fails (`prime_failed`). Without it the bot assumes
+it is primed once the stand-up has had its 12 ticks; `bots.bounce_status`
+says which (`primed_read`). `Mind::primed` is true from the priming to
+the bounce, and while a route runs its pad has no crouch button.
+
+**Orders.** `Mind::order_bounce(to, mode)` (through
+`PadSource::order_bounce`, `Phantoms::order_bounce`) asks for a route;
+it is planned at the next sample from where the bot stands and played as
+the bot's whole pad (`mind::order`, through `RoutePad`, as an
+`input.route` is): the bot fights and picks up nothing until it is over
+(the agent API's `bots.bounce_to`, docs/runtime/agent-api.md). A route
+gives up after 200 s. With the Glitches setting on, a show-off at a spot
+with a crouch spot known is a **Fun** route back to where the bot began;
+it ends when the bot sees an enemy.
+
+**Untested.** The pair-word read, the priming's timings, the air speed
+and the whole route are not checked in a game; the pure planner and the
+state machines are unit tests (`bounce_route/tests.rs`,
+`glitches/tests.rs`, `mind/order/tests.rs`).
 
 **Not built:**
 

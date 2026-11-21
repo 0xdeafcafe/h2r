@@ -523,9 +523,17 @@ pub fn faults_json(c: &runtime::fault_census::FaultCounts, features: u32, top: u
 /// The host methods (module docs).
 pub fn add_host_methods(agent: &agent::Agent) {
     crate::lab_takeover::add_info(agent, false);
+    crate::sim_bots::install_pair_reader();
     agent.add_game_method(agent_proto::sim::method::BOT_STATS, Access::Read, |v, _| {
         crate::sim_bots::stats(v, bots::phantom::global())
     });
+    agent.add_method(agent_proto::bot_bounce::BOUNCE_TO, Access::Act, |v| {
+        crate::sim_bots::bounce_to(v, bots::phantom::global())
+    });
+    agent.add_method(agent_proto::bot_bounce::BOUNCE_STATUS, Access::Read, |v| {
+        crate::sim_bots::bounce_status(v, bots::phantom::global())
+    });
+    agent.add_method(agent_proto::superbounce::SPOTS, Access::Read, crate::sim_bots::spots);
     agent.add_method(method::UI_BROWSER_FILTERS, Access::Read, |params| {
         if !params.is_null() && !params.as_object().is_some_and(|fields| fields.is_empty()) {
             return Err(RpcError::new(

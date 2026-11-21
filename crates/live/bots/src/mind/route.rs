@@ -18,7 +18,7 @@ pub struct RouteMotion {
 }
 
 /// Stateful bot thumb and jump timing for a route's controller.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct RoutePad {
     hand: Hand,
     feet: Feet,

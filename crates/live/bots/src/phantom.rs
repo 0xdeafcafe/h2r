@@ -432,6 +432,23 @@ impl Phantoms {
         lock_source(&self.source(handle)?).brain_view()
     }
 
+    /// Asks phantom `handle`'s brain for a bounce route to `to`
+    /// (`crate::bounce_route`); `false` for a source that takes no orders.
+    pub fn order_bounce(
+        &self,
+        handle: PhantomHandle,
+        to: [f32; 3],
+        mode: crate::bounce_route::Mode,
+    ) -> bool {
+        self.source(handle)
+            .is_some_and(|s| lock_source(&s).order_bounce(to, mode))
+    }
+
+    /// Where phantom `handle`'s bounce route stands.
+    pub fn order_view(&self, handle: PhantomHandle) -> Option<crate::mind::OrderView> {
+        lock_source(&self.source(handle)?).order_view()
+    }
+
     pub fn combat_stats(&self, handle: PhantomHandle) -> Option<crate::stats::CombatStats> {
         lock_source(&self.source(handle)?).combat_stats().cloned()
     }

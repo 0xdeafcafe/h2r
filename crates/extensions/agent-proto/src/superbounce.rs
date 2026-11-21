@@ -1,5 +1,6 @@
 //! `superbounce.*`: the superbounce game type's state (docs/runtime/agent-api.md,
-//! "superbounce"; docs/game/superbounce.md, "The superbounce game type").
+//! "superbounce"; docs/game/superbounce.md, "The superbounce game type"
+//! and "Spots in the geometry").
 //! Wire types only. A game method: `session.methods` lists it where the game
 //! registered it (`game::agent_glue`).
 
@@ -11,7 +12,10 @@ pub mod method {
     /// ([`super::State`]; no params).
     pub const STATE: &str = "superbounce.state";
 
-    pub const ALL: &[&str] = &[STATE];
+    /// The spots the bots know for a map ([`super::SPOTS`]).
+    pub const SPOTS: &str = super::SPOTS;
+
+    pub const ALL: &[&str] = &[STATE, SPOTS];
 }
 
 // ---- superbounce.state ----
@@ -68,6 +72,58 @@ pub struct State {
     pub scan: Scan,
 }
 
+// ---- superbounce.spots ----
+
+/// `superbounce.spots`: the spots the bots know for a map. A read.
+pub const SPOTS: &str = "superbounce.spots";
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpotsParams {
+    /// The map's short name (`ascension`); default the loaded map.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map: Option<String>,
+    /// Only `bounce` or `crouch` spots; default both.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+}
+
+/// One spot. Coordinates are world units, Z up.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SpotRecord {
+    /// `bounce`: a slot a primed landing launches out of. `crouch`: a
+    /// place a standing player is forced into a crouch, which primes.
+    pub kind: String,
+    /// `measured` (a game run bounced from it) or `scan` (found in the
+    /// collision geometry).
+    pub source: String,
+    /// The line to draw.
+    pub edge: [[f32; 3]; 2],
+    /// Where a player stands to use it: a unit's origin, standing.
+    pub stand: [f32; 3],
+    /// Bounce: how far to fall onto the slot (0 for a standing jump).
+    pub fall: f32,
+    /// Bounce: the launch speed straight up (world units a second).
+    pub launch: f32,
+    /// A world direction (unit, X and Y) to drift along when landing, or
+    /// zero.
+    pub drift: [f32; 2],
+    /// 0..1: how sure the scan is; 1 for a measured spot.
+    pub score: f32,
+}
+
+/// The result of `superbounce.spots`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Spots {
+    /// The map the spots are for.
+    pub map: String,
+    /// The map has a scan (the nav worker has made or read one); the
+    /// measured spots are listed either way.
+    pub scanned: bool,
+    /// Measured spots first, then scanned, best first.
+    pub spots: Vec<SpotRecord>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,6 +149,6 @@ mod tests {
         assert_eq!(v["word"], "fffffffd");
         assert!(v.get("nearest").is_none() && v["scan"].get("error").is_none());
         assert_eq!(serde_json::from_value::<State>(v).unwrap(), s);
-        assert_eq!(method::ALL, [method::STATE]);
+        assert_eq!(method::ALL, [method::STATE, method::SPOTS]);
     }
 }

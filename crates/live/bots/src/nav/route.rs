@@ -9,7 +9,7 @@ use crate::cache::MapData;
 use crate::mind::RouteMotion;
 use crate::moves;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct RouteWalk {
     follower: Follower,
     goal: V3,
