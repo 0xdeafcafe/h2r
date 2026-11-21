@@ -23,7 +23,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use super::proto::{self, BuildSpec, INPUT_FILE, Manifest, Request, RunReq};
-use super::transfer::Transfers;
+use super::forensics::Summary;
+use super::transfer::{Artifacts, Transfers};
 use super::{build_cache, discovery, lan, service, takeover, transfer};
 
 /// Where the host keeps everything, and what it runs.
@@ -83,6 +84,8 @@ pub struct Meta {
     pub signal: Option<i32>,
     pub peak_footprint_bytes: Option<u64>,
     pub last_footprint_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    postmortem: Option<Summary>,
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skip_reason: Option<String>,
@@ -347,6 +350,9 @@ pub fn bind(path: &Path) -> Result<UnixListener> {
 /// Jobs a previous host left unfinished are failed: nothing watches them now.
 fn recover(sh: &Shared, unfinished: Vec<Meta>) {
     for mut job in unfinished {
+        if job.state == "running" {
+            job.postmortem = Some(Summary::read(&sh.cfg.dir("runs").join(&job.id).join("mem")));
+        }
         job.state = "failed".into();
         job.error = Some("the host stopped while this job was pending or running".into());
         let _ = write_meta(&sh.cfg, &job);
@@ -416,7 +422,11 @@ fn connection<S: Read + Write>(
         };
         match r {
             Request::Fetch { id } => {
-                fetch(sh, &mut conn, &id)?;
+                fetch(sh, &mut conn, &id, Artifacts::Run)?;
+                return Ok(());
+            }
+            Request::Mem { id } => {
+                fetch(sh, &mut conn, &id, Artifacts::Memory)?;
                 return Ok(());
             }
             Request::Sync {
@@ -460,14 +470,17 @@ fn connection<S: Read + Write>(
     }
 }
 
-fn fetch(sh: &Shared, conn: &mut BufReader<impl Read + Write>, id: &str) -> Result<()> {
+fn fetch(sh: &Shared, conn: &mut BufReader<impl Read + Write>, id: &str, artifacts: Artifacts) -> Result<()> {
     let runs = sh.cfg.dir("runs");
     let child = (|| {
         ensure!(runs.join(id).join("meta.json").is_file(), "no job {id}");
+        let member = artifacts.member(id);
+        ensure!(runs.join(&member).is_dir(), "no {} artifacts for job {id}", artifacts.command());
         Command::new("tar")
             .arg("-C")
             .arg(&runs)
-            .args(["-cf", "-", id])
+            .args(["-cf", "-", "--"])
+            .arg(member)
             .stdout(Stdio::piped())
             .spawn()
             .context("starting host tar")
@@ -581,7 +594,7 @@ fn handle(sh: &Arc<Shared>, r: Request, requester: &str) -> Result<Value> {
             }
             Ok(json!({ "known": known, "bases": bases }))
         }
-        Request::Fetch { .. } | Request::Sync { .. } | Request::Update => unreachable!(),
+        Request::Fetch { .. } | Request::Mem { .. } | Request::Sync { .. } | Request::Update => unreachable!(),
         Request::Run(run) => start(sh, Job::Run(run), requester),
         Request::Build(b) => start(sh, Job::Build(b), requester),
         Request::Wait { id, timeout } => wait(sh, &id, timeout.map(Duration::from_secs_f64)),
@@ -920,6 +933,8 @@ fn execute(
     } else {
         state
     };
+    let postmortem = (memory_error.is_some() || (state == "failed" && status.is_some()))
+        .then(|| Summary::read(&run_dir.join("mem")));
     let _ = fs::remove_dir_all(sh.cfg.dir("scratch").join(id));
     let _ = fs::remove_file(agent_socket_path(&sh.cfg, id));
     let mut inner = sh.inner.lock().unwrap();
@@ -931,6 +946,7 @@ fn execute(
         m.exit_code = status.and_then(|s| s.code());
         m.signal = status.and_then(|s| s.signal());
         m.summary = summary;
+        m.postmortem = postmortem;
         if write_meta(&sh.cfg, m).is_ok() {
             inner.jobs.remove(id);
         }
@@ -1082,8 +1098,15 @@ fn play_command(
     cmd.arg("play").arg(&cfg.disc);
     // Earlier revisions also accept this flag. A current game supplies its
     // own baked SHA for --current, even when --h2 selects another binary.
-    let revision = commit.unwrap_or(if cfg.explicit_h2 { "unknown" } else { app::BuildInfo::baked().sha });
-    cmd.arg("--title").arg(proto::window_title(id, &run.name, revision));
+    let revision = commit.unwrap_or_else(|| {
+        if cfg.explicit_h2 {
+            "unknown"
+        } else {
+            app::BuildInfo::baked().sha
+        }
+    });
+    cmd.arg("--title")
+        .arg(proto::window_title(id, &run.name, revision));
     if let Some(out) = &image.out {
         cmd.arg("--out").arg(out);
     }

@@ -647,7 +647,10 @@ pub(crate) fn run_with_theater(
         }
     }
     #[cfg(unix)]
-    if let (Ok(id), Ok(name)) = (std::env::var("H2_LAB_JOB_ID"), std::env::var("H2_LAB_JOB_NAME")) {
+    if let (Ok(id), Ok(name)) = (
+        std::env::var("H2_LAB_JOB_ID"),
+        std::env::var("H2_LAB_JOB_NAME"),
+    ) {
         config.title = crate::lab::proto::window_title(&id, &name, app::BuildInfo::baked().sha);
         config.status_in_title = false;
     }

@@ -25,6 +25,7 @@ pub const RUN_ENV: &[&str] = &[
     "H2_PERF_FROM",
     "H2_PROFILE_HZ",
     "H2_HOST_PERF",
+    "H2_MEM_SAMPLE",
     "H2_AUDIO_STATS",
     "H2_FPS",
     "H2_RENDER_SCALE",
@@ -157,6 +158,9 @@ pub enum Request {
     Fetch {
         id: String,
     },
+    Mem {
+        id: String,
+    },
     SyncBases {
         branch: String,
         commit: String,
@@ -249,7 +253,7 @@ pub fn parse(line: &str) -> Result<Request> {
 pub fn validate(r: &Request) -> Result<()> {
     match r {
         Request::Status | Request::Update | Request::Recordings | Request::Runs { .. } => Ok(()),
-        Request::Fetch { id } => check_job_id(id),
+        Request::Fetch { id } | Request::Mem { id } => check_job_id(id),
         Request::SyncBases { branch, commit } | Request::Sync { branch, commit, .. } => {
             check_rev(branch)?;
             check_commit(commit)?;
@@ -367,17 +371,17 @@ pub fn job_name(raw: &str) -> Result<&str> {
     let name = raw.trim();
     ensure!(!name.is_empty(), "lab game jobs require --name TEXT");
     ensure!(
-        name.chars().count() <= 60 && raw.chars().all(|ch| {
-            ch == ' ' || ch.is_ascii_graphic() || ch.escape_debug().count() == 1
-        }),
+        name.chars().count() <= 60
+            && raw
+                .chars()
+                .all(|ch| { ch == ' ' || ch.is_ascii_graphic() || ch.escape_debug().count() == 1 }),
         "--name must be a printable label of at most 60 characters"
     );
     Ok(name)
 }
 
 pub fn window_title(id: &str, name: &str, commit: &str) -> String {
-    let short: String = commit.chars().take(9).collect();
-    format!("h2 · lab {id} · {name} · {short}")
+    format!("h2 · lab {id} · {name} · {commit:.7}")
 }
 
 pub fn validate_run(r: &RunReq) -> Result<()> {
@@ -413,6 +417,9 @@ pub fn validate_run(r: &RunReq) -> Result<()> {
             RUN_ENV.join(" ")
         );
         check_value(k, v)?;
+        if k == "H2_MEM_SAMPLE" {
+            mem_watch::parse_size(v).map_err(anyhow::Error::msg)?;
+        }
     }
     check_play_args(&r.args)?;
     if let Some(n) = &r.note {
@@ -602,15 +609,32 @@ mod tests {
 
     #[test]
     fn names_round_trip_trimmed_and_only_printable() {
-        let Request::Run(run) = parse(r#"{"cmd":"run","name":"  Café A/B  "}"#).unwrap() else { panic!() };
+        let Request::Run(run) = parse(r#"{"cmd":"run","name":"  Café A/B  "}"#).unwrap() else {
+            panic!()
+        };
         assert_eq!(run.name, "Café A/B");
         assert_eq!(serde_json::to_value(run).unwrap()["name"], "Café A/B");
-        assert!(parse(r#"{"cmd":"run"}"#).unwrap_err().to_string().contains("--name"));
-        for bad in ["", "  ", "line\nbreak", "\u{1b}", "bidi\u{202e}", &"é".repeat(61)] {
+        assert!(
+            parse(r#"{"cmd":"run"}"#)
+                .unwrap_err()
+                .to_string()
+                .contains("--name")
+        );
+        for bad in [
+            "",
+            "  ",
+            "line\nbreak",
+            "\u{1b}",
+            "bidi\u{202e}",
+            &"é".repeat(61),
+        ] {
             assert!(job_name(bad).is_err(), "{bad:?}");
         }
         assert!(job_name(&"é".repeat(60)).is_ok());
-        assert_eq!(window_title("0007", "Café A/B", "0123456789abcdef"), "h2 · lab 0007 · Café A/B · 012345678");
+        assert_eq!(
+            window_title("0007", "Café A/B", "0123456789abcdef"),
+            "h2 · lab 0007 · Café A/B · 0123456"
+        );
     }
 
     #[test]
@@ -659,7 +683,9 @@ mod tests {
             let j = format!(r#"{{"cmd":"run","name":"Fixture","env":{{"{k}":"x"}}}}"#);
             assert!(run(&j).is_err(), "{k} must be refused");
         }
-        assert!(run(r#"{"cmd":"run","name":"Fixture","env":{"H2_FRAME_STATS_FROM":"300"}}"#).is_ok());
+        assert!(
+            run(r#"{"cmd":"run","name":"Fixture","env":{"H2_FRAME_STATS_FROM":"300"}}"#).is_ok()
+        );
         assert!(run(r#"{"cmd":"run","name":"Fixture","env":{"H2_RENDER_SCALE":"4","H2_LOD_DISTANCE":"retail"}}"#).is_ok());
         assert!(run(r#"{"cmd":"run","name":"Fixture","env":{"H2_FPS":"6\n0"}}"#).is_err());
     }
@@ -757,14 +783,18 @@ mod tests {
     #[test]
     fn a_serve_run_has_no_frame_limit() {
         assert!(run(r#"{"cmd":"run","name":"Fixture","level":"x","serve":true}"#).is_ok());
-        assert!(run(r#"{"cmd":"run","name":"Fixture","level":"x","serve":true,"frames":10}"#).is_err());
+        assert!(
+            run(r#"{"cmd":"run","name":"Fixture","level":"x","serve":true,"frames":10}"#).is_err()
+        );
     }
 
     #[test]
     fn levels_and_difficulties() {
         assert!(run(r#"{"cmd":"run","name":"Fixture","level":"03a_oldmombasa","difficulty":"legendary"}"#).is_ok());
         assert!(run(r#"{"cmd":"run","name":"Fixture","level":"../x"}"#).is_err());
-        assert!(run(r#"{"cmd":"run","name":"Fixture","level":"x","difficulty":"impossible"}"#).is_err());
+        assert!(
+            run(r#"{"cmd":"run","name":"Fixture","level":"x","difficulty":"impossible"}"#).is_err()
+        );
         assert!(run(r#"{"cmd":"run","name":"Fixture","difficulty":"easy"}"#).is_err());
         assert!(run(r#"{"cmd":"run","name":"Fixture","replay":"a","record":"b"}"#).is_err());
     }

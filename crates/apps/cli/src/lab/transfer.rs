@@ -120,10 +120,40 @@ pub(super) fn receive_archive(mut src: impl Read, mut dst: impl Write) -> Result
     }
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum Artifacts {
+    Run,
+    Memory,
+}
+
+impl Artifacts {
+    pub(super) fn member(self, id: &str) -> PathBuf {
+        let run = PathBuf::from(id);
+        match self {
+            Self::Run => run,
+            Self::Memory => run.join("mem"),
+        }
+    }
+
+    pub(super) fn command(self) -> &'static str {
+        match self {
+            Self::Run => "fetch",
+            Self::Memory => "mem",
+        }
+    }
+}
+
 /// Extract a numeric run into private staging with the platform tar's normal
 /// path protections. Publish regular files only, after checking the whole tree.
-pub(super) fn extract_run(archive: &Path, to: &Path, id: &str) -> Result<PathBuf> {
+pub(super) fn extract<T>(
+    archive: &Path,
+    to: &Path,
+    id: &str,
+    artifacts: Artifacts,
+    inspect: impl FnOnce(&Path) -> T,
+) -> Result<(PathBuf, T)> {
     proto::check_job_id(id)?;
+    let member = artifacts.member(id);
     let stage = to.join(format!(".fetch-{}", live_proto::sign::random_id()));
     fs::DirBuilder::new().mode(0o700).create(&stage)?;
     let result = (|| {
@@ -134,7 +164,8 @@ pub(super) fn extract_run(archive: &Path, to: &Path, id: &str) -> Result<PathBuf
             .arg(&stage)
             .arg("-xf")
             .arg(archive)
-            .args(["--", id])
+            .arg("--")
+            .arg(&member)
             .status()
             .context("extracting lab archive")?;
         ensure!(
@@ -167,6 +198,9 @@ pub(super) fn extract_run(archive: &Path, to: &Path, id: &str) -> Result<PathBuf
             }
             dirs.push(dir);
         }
+        // Analyze this fetch's validated files, even if the destination
+        // contains artifacts from an earlier fetch of the same numeric ID.
+        let inspected = inspect(&stage.join(&member));
         for dir in dirs {
             let path = to.join(dir);
             match fs::create_dir(&path) {
@@ -188,10 +222,15 @@ pub(super) fn extract_run(archive: &Path, to: &Path, id: &str) -> Result<PathBuf
             io::copy(&mut File::open(stage.join(file))?, &mut out.file)?;
             fs::rename(&out.path, path)?;
         }
-        Ok(to.join(run))
+        Ok((to.join(member), inspected))
     })();
     let _ = fs::remove_dir_all(&stage);
     result
+}
+
+#[cfg(test)]
+fn extract_run(archive: &Path, to: &Path, id: &str) -> Result<PathBuf> {
+    extract(archive, to, id, Artifacts::Run, |_| ()).map(|(path, ())| path)
 }
 
 pub(super) fn branch_refs(branch: &str) -> Result<(String, String)> {
@@ -331,6 +370,41 @@ mod tests {
         pack();
         assert!(extract_run(&archive, &dest, "0001").is_err());
         assert!(!run.join("link").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn memory_artifacts_bring_only_the_mem_directory_and_inspect_this_fetch() {
+        let root = std::env::temp_dir().join(live_proto::sign::random_id());
+        let source = root.join("source");
+        let dest = root.join("dest");
+        fs::create_dir_all(source.join("0002/mem")).unwrap();
+        fs::create_dir(&dest).unwrap();
+        fs::write(source.join("0002/run.log"), "log").unwrap();
+        fs::write(source.join("0002/mem/mem-7.ndjson"), "{}\n").unwrap();
+        let archive = root.join("mem.tar");
+        assert!(
+            Command::new("tar")
+                .arg("-cf")
+                .arg(&archive)
+                .arg("-C")
+                .arg(&source)
+                .arg("0002/mem")
+                .status()
+                .unwrap()
+                .success()
+        );
+        let (path, seen) = extract(&archive, &dest, "0002", Artifacts::Memory, |dir| {
+            assert!(dir.ends_with("0002/mem"));
+            fs::read_dir(dir).unwrap().count()
+        })
+        .unwrap();
+        assert_eq!(seen, 1);
+        assert_eq!(path, dest.join("0002/mem"));
+        assert!(path.join("mem-7.ndjson").is_file());
+        assert!(!dest.join("0002/run.log").exists());
+        assert_eq!(Artifacts::Memory.command(), "mem");
+        assert_eq!(Artifacts::Run.member("0002"), PathBuf::from("0002"));
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -8,6 +8,7 @@
 mod build_cache;
 mod client;
 mod discovery;
+mod forensics;
 pub mod host;
 mod lan;
 pub mod proto;
@@ -65,6 +66,7 @@ const USAGE: &str = "usage:
     wait <id> [--timeout SECONDS]
     stop <id>             SIGTERM, then SIGKILL after 5 s
     runs [--limit N] [--json]
+    mem <id> [--to DIR]   fetch memory evidence and print its largest growers
     fetch <id> [--to DIR] copy runs/<id> here (default $RUSH_KEEP/lab, else ./lab)
     put <file> [--as NAME] [--level MAP] [--difficulty D] [--commit SHA] [--pgo]
                           upload an input recording (or with --pgo a PGO profile)

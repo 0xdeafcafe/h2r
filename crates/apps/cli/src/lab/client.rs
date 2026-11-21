@@ -1,22 +1,26 @@
 //! The lab's client commands (`h2 lab status|run|...`), and `h2 lab record`.
 
+use std::cell::Cell;
 use std::io::{self, BufRead, BufReader, Read, Seek, Write};
 use std::net::SocketAddr;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::cell::Cell;
 
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 
 use super::proto::{self, BuildSpec, RunReq};
-use super::{USAGE, default_socket, discovery, lan, transfer};
+use super::transfer::Artifacts;
+use super::{USAGE, default_socket, discovery, forensics, lan, transfer};
 
 enum Remote {
     Local(PathBuf),
     Unspecified,
-    Lan { name: String, addr: Cell<Option<SocketAddr>> },
+    Lan {
+        name: String,
+        addr: Cell<Option<SocketAddr>>,
+    },
 }
 
 impl Remote {
@@ -31,7 +35,9 @@ impl Remote {
                 })?;
                 Ok(Conn::new(socket))
             }
-            Self::Unspecified => bail!("which host? specify --host NAME|IP|local or set H2_LAB_HOST"),
+            Self::Unspecified => {
+                bail!("which host? specify --host NAME|IP|local or set H2_LAB_HOST")
+            }
             Self::Lan { name, addr } => {
                 // Validate the command before Bonjour discovery or a TCP connection.
                 let address = match addr.get() {
@@ -103,10 +109,15 @@ fn remote(args: Vec<String>) -> Result<(Remote, Vec<String>)> {
     }
     let target = match host {
         None => Remote::Unspecified,
-        Some(name) if name == "local" => Remote::Local(socket.map_or_else(default_socket, PathBuf::from)),
+        Some(name) if name == "local" => {
+            Remote::Local(socket.map_or_else(default_socket, PathBuf::from))
+        }
         Some(name) => {
             ensure!(socket.is_none(), "--socket requires --host local");
-            Remote::Lan { name, addr: Cell::new(None) }
+            Remote::Lan {
+                name,
+                addr: Cell::new(None),
+            }
         }
     };
     Ok((target, rest))
@@ -142,22 +153,16 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
         }
         "runs" => runs_cmd(&r, args),
         "fetch" => {
-            let mut id = None;
-            let mut to = None;
-            let mut it = args.into_iter();
-            while let Some(a) = it.next() {
-                match a.as_str() {
-                    "--to" => {
-                        to = Some(PathBuf::from(it.next().context("--to needs a directory")?))
-                    }
-                    _ if id.is_none() && !a.starts_with('-') => id = Some(a),
-                    _ => bail!("unexpected {a}\n\n{USAGE}"),
-                }
-            }
-            let id = id.context("usage: h2 lab fetch <id> [--to DIR]")?;
+            let (id, to) = forensics::fetch_args(cmd, args)?;
             let dest = fetch(&r, &id, to)?;
             println!("{}", dest.display());
             Ok(())
+        }
+        "mem" => {
+            let (id, to) = forensics::fetch_args(cmd, args)?;
+            let (dest, summary) = fetch_artifacts(&r, &id, to, Artifacts::Memory, forensics::Summary::read)?;
+            println!("Memory evidence: {}", dest.display());
+            summary.print()
         }
         "put" => put_cmd(&r, args),
         "recordings" => {
@@ -424,6 +429,16 @@ fn wait_and_fetch(r: &Remote, c: &mut Conn, id: &str, to: Option<PathBuf>) -> Re
 
 /// Copies the host's `runs/<id>` into `to` as `<to>/<id>`.
 fn fetch(r: &Remote, id: &str, to: Option<PathBuf>) -> Result<PathBuf> {
+    fetch_artifacts(r, id, to, Artifacts::Run, |_| ()).map(|(path, ())| path)
+}
+
+fn fetch_artifacts<T>(
+    r: &Remote,
+    id: &str,
+    to: Option<PathBuf>,
+    artifacts: Artifacts,
+    inspect: impl FnOnce(&Path) -> T,
+) -> Result<(PathBuf, T)> {
     proto::check_job_id(id)?;
     let to = to.unwrap_or_else(
         || match std::env::var_os("RUSH_KEEP").filter(|v| !v.is_empty()) {
@@ -433,11 +448,11 @@ fn fetch(r: &Remote, id: &str, to: Option<PathBuf>) -> Result<PathBuf> {
     );
     let mut archive = transfer::TempFile::new(&std::env::temp_dir())?;
     let mut conn = r.connect()?;
-    conn.call(json!({"cmd": "fetch", "id": id}))?;
+    conn.call(json!({"cmd": artifacts.command(), "id": id}))?;
     transfer::receive_archive(&mut conn.0, &mut archive.file)?;
     conn.reply()?;
     std::fs::create_dir_all(&to).with_context(|| format!("creating {}", to.display()))?;
-    transfer::extract_run(&archive.path, &to, id)
+    transfer::extract(&archive.path, &to, id, artifacts, inspect)
 }
 
 fn runs_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
@@ -652,7 +667,6 @@ pub fn record(args: Vec<String>) -> Result<()> {
         .level
         .clone()
         .context("h2 lab record needs --level MAP")?;
-    proto::check_level(&level)?;
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
@@ -660,7 +674,7 @@ pub fn record(args: Vec<String>) -> Result<()> {
         if proto::check_name("recording", &req.name).is_ok() {
             req.name.clone()
         } else {
-            format!("{}-{secs}", &level[..level.len().min(43)])
+            format!("{level:.40}-{secs}")
         }
     });
     req.record = Some(name.clone());
@@ -885,7 +899,12 @@ enum BenchOutcome {
 /// With the job started: waits for it to run, then for gameplay with
 /// `map_ticks >= 30`, then reads the capture, `render.stats` and
 /// `profile.counters`.
-fn bench_measure(c: &mut Conn, id: &str, ticks: u64, gameplay_timeout: f64) -> Result<BenchOutcome> {
+fn bench_measure(
+    c: &mut Conn,
+    id: &str,
+    ticks: u64,
+    gameplay_timeout: f64,
+) -> Result<BenchOutcome> {
     // The build can take a long time; the game then has to boot.
     loop {
         let v = c.call(json!({"cmd": "wait", "id": id, "timeout": 0}))?;
@@ -987,10 +1006,20 @@ mod tests {
             if let Some(label) = name {
                 args.extend(["--name".into(), label.into()]);
             }
-            assert!(record(args.clone()).unwrap_err().to_string().contains("--name"));
+            assert!(
+                record(args.clone())
+                    .unwrap_err()
+                    .to_string()
+                    .contains("--name")
+            );
             args.extend(["--host".into(), "missing.invalid".into()]);
             for cmd in ["run", "bench"] {
-                assert!(run(cmd, args.clone()).unwrap_err().to_string().contains("--name"));
+                assert!(
+                    run(cmd, args.clone())
+                        .unwrap_err()
+                        .to_string()
+                        .contains("--name")
+                );
             }
         }
     }
