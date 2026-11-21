@@ -3,6 +3,13 @@
 Evidence for [ai-networking.md](../ai-networking.md) and
 [firefight.md](../firefight.md). Newest first.
 
+## 2026-11-21 — Correction to the spare-slot count
+
+At `f563722220f6`, the registry initializer at `0x67e30` establishes
+32 entity pointers and 15 free slots. The 33-pointer estimate below
+includes the word holding the event count. The AN11 evidence, reproduction
+commands and verdict for slot 17 are in [creature-entity.md](creature-entity.md).
+
 ## 2026-11-21: host presentation inputs (static read)
 
 Commit: `28fd333f4`. To reproduce, use `h2 disasm <addr> <count>` on
@@ -141,6 +148,9 @@ objects are given an entity at creation, and how a client turns a unit
 entity with no player into movement animation.
 
 ### Creature slot research
+
+The completed [AN11 read](creature-entity.md) corrects the capacity
+estimate below and traces each of the three checks.
 
 The table read establishes 16 unused entity pointers. Storage capacity
 alone gives no wire guarantee. The [AN11 slice](../ai-networking.md#slices)
