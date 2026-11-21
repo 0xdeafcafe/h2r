@@ -63,6 +63,10 @@ pub struct LocalSession {
     /// The game variant's h2recomp options for the host's next game
     /// (docs/game/game-options.md section 3), when the host set them.
     pub variant_ext: Option<live_proto::session::VariantExt>,
+    /// The SHA-256 (64 lowercase hex digits) of the rules IR blob the host's
+    /// next game runs (docs/game/rules-engine.md, "Carrying a script"), when
+    /// the host set one.
+    pub rules: Option<String>,
     /// The host's current multiplayer setup for Live browser filters.
     pub browser: Option<BrowserMetadata>,
 }
@@ -173,6 +177,9 @@ pub(crate) struct Sessions {
     /// The host's variant options for its next game, for new and updated
     /// advertisements.
     variant_ext: Option<live_proto::session::VariantExt>,
+    /// The host's rules IR hash for its next game, for new and updated
+    /// advertisements.
+    rules: Option<String>,
     /// Reads them afresh (boot: the signed-in profiles' choice) each time
     /// the game advertises or updates a lobby.
     skulls_probe: Option<SkullsProbe>,
@@ -384,6 +391,39 @@ impl Sessions {
                 }
             }
             record.session.skulls = self.skulls.clone();
+        }
+    }
+    /// The host's rules IR hash for the game it is starting: the same
+    /// publication as [`Self::set_variant_ext`].
+    pub fn set_rules(
+        &mut self,
+        rules: Option<String>,
+        service: Option<&Service>,
+        connection: Option<&Session>,
+    ) {
+        self.rules = rules;
+        self.background.retain(|p| p.take().is_none());
+        let Some(rules) = self.rules.clone() else {
+            return;
+        };
+        for (id, record) in &mut self.records {
+            if record.session.rules.as_ref() == Some(&rules) {
+                continue;
+            }
+            if let (Some(service), Some(connection)) = (service, connection) {
+                let request = MatchRequest::Update {
+                    id: live_proto::sign::hex(id),
+                    update: live_proto::session::Update {
+                        rules: Some(rules.clone()),
+                        ..Default::default()
+                    },
+                };
+                match service.match_request(connection, request) {
+                    Ok(p) => self.background.push(p),
+                    Err(_) => continue,
+                }
+            }
+            record.session.rules = Some(rules.clone());
         }
     }
     /// The host's variant options for the game it is starting (boot, at
@@ -1051,6 +1091,7 @@ impl Sessions {
                             campaign: self.coop.clone(),
                             ping_ms: self.coop.as_ref().and(self.coop_ping),
                             variant_ext: self.variant_ext.clone(),
+                            rules: self.rules.clone(),
                             browser: None,
                         },
                     )
@@ -1066,6 +1107,9 @@ impl Sessions {
                 session.skulls = self.advertised_skulls();
                 if self.variant_ext.is_some() {
                     session.variant_ext = self.variant_ext.clone();
+                }
+                if self.rules.is_some() {
+                    session.rules = self.rules.clone();
                 }
                 let was_coop = session.campaign.clone();
                 session.campaign = self.coop.clone();
@@ -1155,6 +1199,12 @@ impl Sessions {
                                     self.records
                                         .get(&id)
                                         .is_none_or(|r| r.session.variant_ext.as_ref() != Some(v))
+                                }),
+                                // Only a change, as for the skulls.
+                                rules: session.rules.clone().filter(|v| {
+                                    self.records
+                                        .get(&id)
+                                        .is_none_or(|r| r.session.rules.as_ref() != Some(v))
                                 }),
                                 browser: {
                                     // A background selection update may already be ahead
@@ -1761,6 +1811,7 @@ fn advertisement(s: &LocalSession) -> live_proto::session::NewSession {
         campaign: s.campaign.clone(),
         ping_ms: s.ping_ms,
         variant_ext: s.variant_ext.clone(),
+        rules: s.rules.clone(),
         browser: s.browser.clone(),
     }
 }
@@ -2017,6 +2068,7 @@ mod tests {
                 campaign: None,
                 ping_ms: None,
                 variant_ext: None,
+                rules: None,
                 browser: None,
             }),
             key: [0; 16],

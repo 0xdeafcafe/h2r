@@ -650,7 +650,9 @@ each one holds:
   `render-timing` while a render stage is open).
 - **Section**: host state a load puts back (`skulls`, `skulls-custom`,
   `skulls-mp`, `hud`, `h1-hud`, `lockstep`'s counters, `agent`'s view of the
-  game, `loaded_map`, `aim-assist`).
+  game, `loaded_map`, `aim-assist`, and `sim-ext`'s extension records with
+  their checkpoint-slot copies, empty when there are none;
+  [sim-rewrite.md](../engine/sim-rewrite.md), "The `SimExt` blob").
 
 Open items for list classes and screens are under "Not verified".
 
