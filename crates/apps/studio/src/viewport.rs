@@ -127,6 +127,9 @@ pub struct ViewportView {
     texture: Option<ExternalTextureId>,
     world_rev: Option<u64>,
     markers_rev: Option<u64>,
+    /// The session's native models last uploaded: a placement of a tag
+    /// first placed after the map opened gives the session new ones.
+    native_models: Option<std::sync::Arc<scenario_edit::native_view::NativeModels>>,
     linked: BTreeSet<(BlockKind, usize)>,
     overlay_rev: Option<u64>,
     layers: Option<Layers>,
@@ -166,6 +169,7 @@ impl ViewportView {
             texture: None,
             world_rev: None,
             markers_rev: None,
+            native_models: None,
             linked: BTreeSet::new(),
             overlay_rev: None,
             layers: None,
@@ -229,22 +233,33 @@ impl ViewportView {
             // loaded (docs/editor/polish-plan.md, P14).
             let native = session.native_world().map_or(&[][..], |n| n.as_slice());
             vp.set_native(gpu.device, gpu.queue, native);
-            // Its placed objects too; the scene draws only those with no
-            // native model.
-            let models = session.native_models().cloned().unwrap_or_default();
-            vp.set_native_models(gpu.device, gpu.queue, models);
             self.world_rev = Some(session.world_rev());
         }
         if vp.lighting() != app.lighting {
             let native = session.native_world().map_or(&[][..], |n| n.as_slice());
             vp.set_lighting(gpu.device, gpu.queue, native, app.lighting);
         }
+        // Its placed objects too, again whenever the session reads a new
+        // tag's model; the scene draws only those with no native model.
+        let models = session.native_models();
+        let models_changed = world_changed
+            || match (&self.native_models, models) {
+                (Some(a), Some(b)) => !std::sync::Arc::ptr_eq(a, b),
+                (None, None) => false,
+                _ => true,
+            };
+        if models_changed {
+            let upload = models.cloned().unwrap_or_default();
+            vp.set_native_models(gpu.device, gpu.queue, upload);
+            self.native_models = models.cloned();
+        }
         let layers_changed = self.layers.as_ref() != Some(&app.layers);
         if layers_changed {
             vp.set_layers(&app.layers);
             self.layers = Some(app.layers.clone());
         }
-        if world_changed || layers_changed || self.markers_rev != Some(session.markers_rev())
+        if world_changed || models_changed || layers_changed
+            || self.markers_rev != Some(session.markers_rev())
             || self.linked != live.linked
         {
             upload_placements(vp, gpu.device, app, &live.linked);

@@ -646,6 +646,7 @@ impl Session {
             (None, None) => Vec::new(),
         };
         self.read_new_objects();
+        self.read_new_models();
         self.markers_rev += 1;
     }
 
@@ -672,6 +673,37 @@ impl Session {
         match doc.source.open() {
             Ok(mut map) => doc.objects.add(&mut map, new),
             Err(e) => doc.objects.error = Some(format!("reading new objects: {e}")),
+        }
+    }
+
+    /// Read the native models of object tags the markers place that were
+    /// not read when the map opened, the same way
+    /// [`Self::read_new_objects`] reads their collision. Only a map with a
+    /// native world reads them; the viewport sees a new
+    /// [`Self::native_models`] and uploads it.
+    fn read_new_models(&mut self) {
+        let Some(doc) = self.doc.as_mut() else {
+            return;
+        };
+        if doc.native.is_empty() {
+            return;
+        }
+        let unread: Vec<TagId> = self
+            .markers
+            .iter()
+            .filter_map(|m| m.object)
+            .filter(|&o| o != TagId::NULL && !doc.native_models.has_read(o))
+            .collect();
+        if unread.is_empty() {
+            return;
+        }
+        let mut files = crate::scene::resource_files(&doc.source);
+        let models = std::sync::Arc::make_mut(&mut doc.native_models);
+        match doc.source.open() {
+            Ok(mut map) => models.add(&mut map, &mut files, unread),
+            Err(e) => models
+                .errors
+                .push((TagId::NULL, format!("reading new models: {e}"))),
         }
     }
 

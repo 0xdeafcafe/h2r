@@ -519,7 +519,9 @@ pub struct NativeModel {
 /// when the map opens.
 #[derive(Clone, Debug, Default)]
 pub struct NativeModels {
-    models: HashMap<TagId, NativeModel>,
+    /// Shared, so a copy (a tag read after the map opened, while the
+    /// viewport holds the old set) copies no model.
+    models: HashMap<TagId, std::sync::Arc<NativeModel>>,
     /// Each tag that has no model to draw, and why.
     pub errors: Vec<(TagId, String)>,
 }
@@ -532,25 +534,49 @@ impl NativeModels {
         objects: impl IntoIterator<Item = TagId>,
     ) -> Self {
         let mut out = Self::default();
+        out.add(map, files, objects);
+        out
+    }
+
+    /// Read the model of each tag in `objects` not read before (modelled
+    /// or refused): a tag placed after the map opened. Nothing is read
+    /// once the map's tag metadata has failed (its error is under
+    /// `TagId::NULL`).
+    pub fn add<R: Read + Seek>(
+        &mut self,
+        map: &mut Map<R>,
+        files: &mut ResourceFiles,
+        objects: impl IntoIterator<Item = TagId>,
+    ) {
+        let mut objects: Vec<TagId> = objects
+            .into_iter()
+            .filter(|&o| o != TagId::NULL && !self.has_read(o))
+            .collect();
+        if objects.is_empty() || self.has_read(TagId::NULL) {
+            return;
+        }
+        objects.sort_by_key(|o| o.0);
+        objects.dedup();
         let ctx = match tags::object::Context::read(map) {
             Ok(c) => c,
             Err(e) => {
-                out.errors.push((TagId::NULL, e.to_string()));
-                return out;
+                self.errors.push((TagId::NULL, e.to_string()));
+                return;
             }
         };
-        let mut objects: Vec<TagId> = objects.into_iter().filter(|o| *o != TagId::NULL).collect();
-        objects.sort_by_key(|o| o.0);
-        objects.dedup();
         for object in objects {
             match read_model(map, &ctx, files, object) {
                 Ok(m) => {
-                    out.models.insert(object, m);
+                    self.models.insert(object, std::sync::Arc::new(m));
                 }
-                Err(e) => out.errors.push((object, e)),
+                Err(e) => self.errors.push((object, e)),
             }
         }
-        out
+    }
+
+    /// Whether `object`'s model was read (drawn or refused).
+    pub fn has_read(&self, object: TagId) -> bool {
+        self.models.contains_key(&object) || self.errors.iter().any(|(t, _)| *t == object)
     }
 
     /// Models made elsewhere (tests): `(object tag, model, base maps)`.
@@ -563,11 +589,11 @@ impl NativeModels {
                 .map(|(object, model, base)| {
                     (
                         object,
-                        NativeModel {
+                        std::sync::Arc::new(NativeModel {
                             object,
                             model,
                             base,
-                        },
+                        }),
                     )
                 })
                 .collect(),
@@ -577,7 +603,7 @@ impl NativeModels {
 
     /// The model drawn for object tag `object`.
     pub fn of(&self, object: TagId) -> Option<&NativeModel> {
-        self.models.get(&object)
+        self.models.get(&object).map(|m| m.as_ref())
     }
 
     pub fn len(&self) -> usize {

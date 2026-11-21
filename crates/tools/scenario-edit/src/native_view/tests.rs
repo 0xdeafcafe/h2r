@@ -743,3 +743,54 @@ fn the_selection_highlight_matches_the_scenes_tint() {
         assert!((c - orange[k]).abs() < 1.0 / 255.0, "{k}: {c}");
     }
 }
+
+/// An item reference set after the map opened to a tag nothing placed at
+/// open has its native model read at once, as gap 4 reads its collision:
+/// the session hands out a new set holding it (here a tag with no render
+/// model, so it is refused and named), and undoing keeps what was read.
+#[test]
+fn an_item_reference_set_after_open_has_its_model_read() {
+    use crate::fixture::id;
+    let bytes = crate::fixture::fixture_with_textured_bsp();
+    let dir = std::env::temp_dir().join(format!("native-late-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("textured.map");
+    std::fs::write(&path, &bytes).unwrap();
+    let mut ed = crate::Session::new();
+    ed.open(crate::save::MapSource::file(&path)).unwrap();
+    assert!(
+        !ed.native_world().unwrap().is_empty(),
+        "{:?}",
+        ed.native_errors()
+    );
+    let late = id(4);
+    let before = ed.native_models().unwrap().clone();
+    assert!(
+        !before.has_read(TagId::NULL),
+        "the tag metadata read: {:?}",
+        before.errors
+    );
+    assert!(!before.has_read(late));
+    ed.apply(crate::Command::set(
+        crate::BlockKind::NetgameEquipment,
+        0,
+        "item",
+        crate::Value::Tag(crate::TagRef {
+            group: map::FourCC(*b"itmc"),
+            id: late,
+        }),
+    ))
+    .unwrap();
+    let after = ed.native_models().unwrap().clone();
+    assert!(!std::sync::Arc::ptr_eq(&before, &after), "a new set");
+    assert!(after.has_read(late));
+    assert!(
+        after.errors.iter().any(|(t, _)| *t == late),
+        "{:?}",
+        after.errors
+    );
+    assert!(!before.has_read(late), "the old set is left as it was");
+    assert!(ed.undo());
+    assert!(ed.native_models().unwrap().has_read(late));
+    std::fs::remove_dir_all(&dir).ok();
+}
