@@ -18,9 +18,9 @@
 //! ([`plate_lines`], drawn by `app`'s watermark renderer), the world lines
 //! ([`gpu::Lines`]) and the agent method ([`reply`]) read that state.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use engine::GuestMemory;
@@ -99,11 +99,7 @@ pub struct Line {
 
 /// How `spot` is drawn when the player is, or is not, `primed`.
 pub fn line_for(spot: &Spot, primed: bool) -> Line {
-    let anchor = [
-        (spot.edge[0][0] + spot.edge[1][0]) / 2.0,
-        (spot.edge[0][1] + spot.edge[1][1]) / 2.0,
-        (spot.edge[0][2] + spot.edge[1][2]) / 2.0,
-    ];
+    let anchor = anchor(spot);
     match spot.kind {
         Kind::Bounce => Line {
             edge: spot.edge,
@@ -127,20 +123,35 @@ fn distance(a: Vec3, b: Vec3) -> f32 {
     (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
 }
 
+/// The middle of a spot's edge, where its line is anchored.
+fn anchor(spot: &Spot) -> Vec3 {
+    let [a, b] = spot.edge;
+    [
+        (a[0] + b[0]) / 2.0,
+        (a[1] + b[1]) / 2.0,
+        (a[2] + b[2]) / 2.0,
+    ]
+}
+
 /// The lines for the `max` spots nearest `at` (by their edges' middle),
-/// nearest first. None without a position.
+/// nearest first. None without a position. Only the chosen spots get a
+/// styled line (and a label); the rest cost a distance.
 pub fn lines(spots: &[Spot], at: Option<Vec3>, primed: bool, max: usize) -> Vec<Line> {
     let Some(at) = at else { return Vec::new() };
+    if max == 0 {
+        return Vec::new();
+    }
     let mut near: Vec<(f32, &Spot)> = spots
         .iter()
-        .map(|s| {
-            let l = line_for(s, primed);
-            (distance(l.anchor, at), s)
-        })
+        .map(|s| (distance(anchor(s), at), s))
         .collect();
-    near.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let by_distance = |a: &(f32, &Spot), b: &(f32, &Spot)| a.0.total_cmp(&b.0);
+    if near.len() > max {
+        near.select_nth_unstable_by(max, by_distance);
+        near.truncate(max);
+    }
+    near.sort_by(by_distance);
     near.into_iter()
-        .take(max)
         .map(|(_, s)| line_for(s, primed))
         .collect()
 }
@@ -246,6 +257,9 @@ pub fn active() -> bool {
 /// The HUD plate's lines; empty while the mode is off. `app`'s watermark
 /// asks for them each refresh.
 pub fn plate_lines() -> Vec<String> {
+    if !active() {
+        return Vec::new();
+    }
     let s = state();
     if s.active { hud_lines(&s) } else { Vec::new() }
 }
@@ -282,6 +296,15 @@ pub fn reply(s: &State) -> agent_proto::superbounce::State {
     }
 }
 
+/// `superbounce.state` takes no parameters: null or `{}`.
+pub fn no_params(params: &serde_json::Value) -> Result<(), &'static str> {
+    if params.is_null() || params.as_object().is_some_and(|f| f.is_empty()) {
+        Ok(())
+    } else {
+        Err("superbounce.state takes no parameters")
+    }
+}
+
 /// `superbounce.state` as the agent answers it.
 pub fn state_reply() -> agent_proto::superbounce::State {
     reply(&state())
@@ -292,6 +315,9 @@ pub fn state_reply() -> agent_proto::superbounce::State {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct ScanKey {
     map: String,
+    /// The loaded map file's header checksum, so a different file of the
+    /// same name (an editor or Map Pack override) is scanned again.
+    checksum: u32,
     bsp: usize,
 }
 
@@ -301,6 +327,9 @@ struct Scans {
     spots: Arc<Vec<Spot>>,
     status: ScanState,
     cache: HashMap<ScanKey, Arc<Vec<Spot>>>,
+    /// Scans running now, so leaving a map and coming back does not start a
+    /// second one.
+    inflight: HashSet<ScanKey>,
 }
 
 fn scans() -> &'static Mutex<Scans> {
@@ -324,6 +353,9 @@ fn scan_one<R: Read + Seek>(
 #[cfg(feature = "gpu")]
 fn scan(key: &ScanKey) -> Result<Vec<Spot>, String> {
     let (mut map, files) = crate::native_map::open(&key.map).map_err(|e| e.to_string())?;
+    if map.header().checksum != key.checksum {
+        return Err("the mounted map file is not the loaded one".into());
+    }
     let mut raw = crate::native_world_glue::Raw(files);
     scan_one(&mut map, &mut raw, key.bsp)
 }
@@ -347,9 +379,13 @@ fn request_scan(key: ScanKey) -> ScanView {
         if let Some(spots) = s.cache.get(&key).cloned() {
             s.spots = spots;
             s.status = ScanState::Ready;
+        } else if s.inflight.contains(&key) {
+            s.spots = Arc::default();
+            s.status = ScanState::Scanning;
         } else {
             s.spots = Arc::default();
             s.status = ScanState::Scanning;
+            s.inflight.insert(key.clone());
             let k = key.clone();
             let spawned = std::thread::Builder::new()
                 .name("superbounce-scan".into())
@@ -359,6 +395,7 @@ fn request_scan(key: ScanKey) -> ScanView {
                     finish_scan(k, found);
                 });
             if let Err(e) = spawned {
+                s.inflight.remove(&key);
                 s.status = ScanState::Failed(format!("no scan thread: {e}"));
             }
         }
@@ -371,6 +408,7 @@ fn request_scan(key: ScanKey) -> ScanView {
 
 fn finish_scan(key: ScanKey, found: Result<Vec<Spot>, String>) {
     let mut s = lock(scans());
+    s.inflight.remove(&key);
     let here = s.current.as_ref() == Some(&key);
     match found {
         Ok(spots) => {
@@ -455,15 +493,15 @@ fn read_live(m: &dyn GuestMemory) -> Live {
         let f = |i: u32| m.u32(at.wrapping_add(4 * i)).ok().map(f32::from_bits);
         Some([f(0)?, f(1)?, f(2)?])
     })();
-    let word = live_telemetry::havok_agents::fixed_pair(m, u.unit)
+    let word = live_telemetry::havok_agents::fixed_pair_word(m, u.unit)
         .ok()
-        .flatten()
-        .and_then(|entry| {
-            m.u32(entry.wrapping_add(live_telemetry::havok_agents::PAIR_WORD))
-                .ok()
-        });
+        .flatten();
     Live { word, position }
 }
+
+/// The loaded map's cache header checksum (`+0x2d0` in the header the name
+/// is at `+0x198` of).
+const CACHE_CHECKSUM: u32 = live_telemetry::layout::CACHE_MAP_NAME - 0x198 + 0x2d0;
 
 /// The scan key of the loaded map and its active structure BSP.
 fn scan_key(m: &dyn GuestMemory) -> Option<ScanKey> {
@@ -473,32 +511,46 @@ fn scan_key(m: &dyn GuestMemory) -> Option<ScanKey> {
     let bsp = m.u16(g.wrapping_add(GLOBALS_ACTIVE_BSP)).ok()? as i16;
     Some(ScanKey {
         map,
+        checksum: m.u32(CACHE_CHECKSUM).ok()?,
         bsp: usize::try_from(bsp).ok()?,
     })
 }
+
+/// How often (in ticks) a mode that is off, or on, is decided again, so a
+/// guest's late host block is picked up. A second at 30 Hz.
+const RECHECK: u32 = 30;
+static TICKS: AtomicU32 = AtomicU32::new(0);
 
 fn reset() {
     ACTIVE.store(false, Ordering::Relaxed);
     *lock(&STATE) = State::EMPTY;
 }
 
-fn on_tick(o: &hooks::Obs) {
-    let (on, live, key) = {
+/// Decides on or off from the game now. Going off clears the state.
+fn decide(o: &hooks::Obs) {
+    let on = {
         let guest = o.guest();
-        let m: &dyn GuestMemory = &*guest;
-        let on = on_now(m);
-        if !on {
-            (false, Live::default(), None)
-        } else {
-            (true, read_live(m), scan_key(m))
-        }
+        on_now(&*guest)
     };
-    if !on {
-        if ACTIVE.swap(false, Ordering::Relaxed) {
-            *lock(&STATE) = State::EMPTY;
-        }
+    if ACTIVE.swap(on, Ordering::Relaxed) && !on {
+        *lock(&STATE) = State::EMPTY;
+    }
+}
+
+fn on_tick(o: &hooks::Obs) {
+    // Off costs a counter and a flag: the decision is made at the game's
+    // start and again every RECHECK ticks.
+    if TICKS.fetch_add(1, Ordering::Relaxed) % RECHECK == 0 {
+        decide(o);
+    }
+    if !ACTIVE.load(Ordering::Relaxed) {
         return;
     }
+    let (live, key) = {
+        let guest = o.guest();
+        let m: &dyn GuestMemory = &*guest;
+        (read_live(m), scan_key(m))
+    };
     let map = key.as_ref().map(|k| k.map.clone());
     let view = key.map(request_scan);
     let (spots, scan) = match view {
@@ -524,7 +576,6 @@ fn on_tick(o: &hooks::Obs) {
         bounce: count(Kind::Bounce),
         crouch: count(Kind::Crouch),
     };
-    ACTIVE.store(true, Ordering::Relaxed);
 }
 
 // ---- the feature ----
@@ -536,10 +587,20 @@ impl hooks::Feature for SuperbounceMode {
     fn manifest(&self) -> hooks::Manifest {
         hooks::Manifest::new(FEATURE, "Superbounce game type: HUD plate and spot lines")
             .doc("docs/game/superbounce.md")
+            // A tick observer and start and end observers only: a recorded
+            // film's hook digest does not include it.
+            .presentation_only()
     }
 
     fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
-        b.game().on_start("superbounce: a new game", |_| reset());
+        // State is rebuilt from guest RAM every tick and the scan cache holds
+        // only map-derived spots, so a snapshot needs nothing from us.
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
+        b.game().on_start("superbounce: a new game", |o| {
+            reset();
+            TICKS.store(1, Ordering::Relaxed);
+            decide(o);
+        });
         b.game().on_end("superbounce: the game ended", |_| reset());
         b.frame().on_tick("superbounce: state", on_tick);
         Ok(())
@@ -749,6 +810,21 @@ mod tests {
             ..s
         };
         assert_eq!(hud_lines(&f)[1], "no spots: no collision");
+    }
+
+    #[test]
+    fn the_state_method_takes_no_parameters() {
+        use serde_json::json;
+        assert!(no_params(&json!(null)).is_ok());
+        assert!(no_params(&json!({})).is_ok());
+        assert!(no_params(&json!({"x": 1})).is_err());
+        assert!(no_params(&json!([1])).is_err());
+    }
+
+    #[test]
+    fn a_zero_budget_draws_nothing() {
+        let spots = [spot(Kind::Bounce, 0.0, 0.0, 1.0)];
+        assert!(lines(&spots, Some([0.0; 3]), true, 0).is_empty());
     }
 
     #[test]

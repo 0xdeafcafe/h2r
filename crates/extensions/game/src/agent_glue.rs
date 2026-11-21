@@ -226,7 +226,9 @@ impl AgentGlue {
         agent.add_game_method(
             agent_proto::superbounce::method::STATE,
             Access::Read,
-            |_params, _ctx| {
+            |params, _ctx| {
+                crate::superbounce_mode::no_params(&params)
+                    .map_err(|why| RpcError::new(code::INVALID_PARAMS, why))?;
                 Ok(serde_json::to_value(crate::superbounce_mode::state_reply())
                     .expect("superbounce.state serialises"))
             },

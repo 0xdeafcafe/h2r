@@ -240,3 +240,19 @@ fn pair_word_writes_only_the_objects_own_pairs() {
         assert_eq!(m.u32(other + PAIR_WORD).unwrap(), before);
     }
 }
+
+#[test]
+fn the_light_pair_word_reads_the_levels_pair_without_decoding_caches() {
+    let (mut m, datum) = scene();
+    assert_eq!(fixed_pair_word(&m, datum).unwrap(), Some(u32::MAX));
+    // The same pair `fixed_pair` finds.
+    let entry = fixed_pair(&m, datum).unwrap().unwrap();
+    m.put_u32(entry + PAIR_WORD, 0xffff_fffd);
+    assert_eq!(fixed_pair_word(&m, datum).unwrap(), Some(0xffff_fffd));
+    // An agent cache that cannot decode does not matter to it.
+    m.put_u32(AGENT, 0xdead_beef);
+    assert_eq!(fixed_pair_word(&m, datum).unwrap(), Some(0xffff_fffd));
+    // No Havok world: none.
+    m.put_u32(layout::HAVOK_WORLD_PTR, 0);
+    assert_eq!(fixed_pair_word(&m, datum).unwrap(), None);
+}

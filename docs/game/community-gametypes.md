@@ -1,11 +1,11 @@
 # Community game variants
 
-Status: Built. 13 community variants (`community_variants::VARIANTS`) are added after the retail built-ins; the unit tests prove the entries land in the `goof` block, and what the game then does with them is in "Not done and risks".
+Status: Built. 14 community variants (`community_variants::VARIANTS`) are added after the retail built-ins; the unit tests prove the entries land in the `goof` block, and what the game then does with them is in "Not done and risks".
 Switch: none.
 
 Halo 2 ships with 39 built-in game variants (Slayer, Rockets, Ninjanaut,
 Crazy King and so on). This adds thirteen classics the community set up by
-hand in custom games, as extra built-ins. In the variant list they carry a
+hand in custom games, and a practice mode (Superbounce), as extra built-ins. In the variant list they carry a
 "two players" icon where the retail ones carry a padlock. Like the retail
 built-ins they cannot be edited in place: choosing Edit asks for a name and
 makes a copy, which is an ordinary saved variant.
@@ -127,9 +127,9 @@ Settings not listed stay at the game type's default.
 | Wheeeeee! | Oddball | team play; no shields; extra damage; fast and tough with the ball; rocket launcher; rockets on the map, respawning twice as often; 30 seconds |
 | Cops and Robbers | Slayer | team play; 3 lives; no shields; no pickups; shotgun and plasma pistol; nothing on the map |
 | Bounce Practice | Slayer | no score or time limit; 3 s respawn; no suicide penalty; overshields; damage resistance; a magnum and no secondary weapon; nothing on the map; no grenades |
-| Superbounce | Slayer | Bounce Practice's rules, plus the superbounce HUD plate and spot lines ([superbounce.md](superbounce.md#the-superbounce-game-type)); the game's own list has no field for them, so the mode is keyed on the variant's name or the extension block's superbounce flag |
 | Glitch Hunt | Slayer | no score or time limit; 3 s respawn; no suicide penalty; overshields; damage resistance; energy sword and rocket launcher; no friendly fire |
 | Bumper Cars | Slayer | no starting weapon (one of our added choices) and no secondary; no grenades at start or on the map; nothing on the map; no pickups; Warthog and Ghost, no other vehicles or turrets; 25 points |
+| Superbounce | Slayer | Bounce Practice's rules, plus the superbounce HUD plate and spot lines ([superbounce.md](superbounce.md#the-superbounce-game-type)); the game's own list has no field for them, so the mode is keyed on the variant's name or the extension block's superbounce flag |
 
 Why these, and the sources:
 
@@ -223,7 +223,7 @@ All three hooks are wrappers at function entries
 3. **Description numbers.** The variant list turns the entry's description
    number into the string id of its decimal text with `0x19fd00`, from
    `0x2ca1fd`, and the list's `unic` holds the text under those ids
-   (retail uses 0 to 38). Ours are 80 to 92. The wrapper on `0x19fd00`
+   (retail uses 0 to 38). Ours are 80 to 93. The wrapper on `0x19fd00`
    returns our description id (the number is in ECX) only for a number of ours and only when the
    return address is `0x2ca1fd`; every other caller (numbers shown as
    text) gets the original.
@@ -245,10 +245,10 @@ being left out, and a failed read leaving the tag alone.
 
 - **Not verified in a game run.** The unit tests and the disassembly above
   prove the work. A run would check: Settings, Game
-  Variants should list the thirteen after the retail ones, each ending in the
+  Variants should list the fourteen after the retail ones, each ending in the
   two-players icon, with its description; Edit on one should ask for a name
   and save a copy; a custom game on one should play with its settings. The
-  boot log says "community variants: 13 added to the built-in list", or names
+  boot log says "community variants: 14 added to the built-in list", or names
   any variant left out.
 - **Copy and lock are the game's.** No hook decides them: an entry in the
   `goof` block becomes a built-in through `0x217080`, as the retail ones do.

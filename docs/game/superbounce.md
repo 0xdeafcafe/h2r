@@ -547,16 +547,23 @@ of `+0x10f`, [game-options.md](game-options.md)), or with
 `H2_SUPERBOUNCE=1` ([switches](../runtime/switches.md)). It is
 `crates/extensions/game/src/superbounce_mode.rs`.
 
-**State.** Each tick, while on, it reads the first local player's unit,
-its position and the word of its one pair against the level (pair `+0x0c`,
-`live_telemetry::havok_agents::fixed_pair`). A word of −3 is primed. It
+**State.** On or off is decided when a game starts and again every 30
+ticks (so a guest's late host block counts); off, a tick costs a counter
+and a flag. On, each tick reads the first local player's unit, its
+position and the word of its one pair against the level (pair `+0x0c`,
+`live_telemetry::havok_agents::fixed_pair_word`, which checks handles and
+islands and decodes no collision-agent cache). A word of −3 is primed. It
 publishes that with the nearest bounce spot; the plate, the lines and
 `superbounce.state` ([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type))
 all read it.
 
 **Spots.** The first tick on a map and structure BSP starts a scan of the
 BSP's collision geometry on a background thread (`superbounce::scan_map`,
-"Spots in the geometry"); the result is kept for the map. The nearest
+"Spots in the geometry"); the result is kept per map name, BSP and the map
+file's header checksum, so an override with the same name is scanned
+again, and a scan still running when the map is left is not started
+twice. The feature is presentation-only (a recorded film's hook digest
+ignores it) and snapshot-stateless: nothing it holds needs saving. The nearest
 bounce spot is the one with the nearest edge.
 
 **The plate.** Two lines, top centre, drawn by the window's watermark

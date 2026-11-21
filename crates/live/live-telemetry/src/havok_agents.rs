@@ -192,6 +192,61 @@ pub fn fixed_pair(m: &dyn GuestMemory, datum: u32) -> Result<Option<u32>, MemFau
     })
 }
 
+/// The word of the object's one pair against a fixed body (the level), or
+/// `None` without exactly one. The same pairs as [`fixed_pair`] finds, by a
+/// minimal walk: it checks each pair's handles and the other body's island
+/// and decodes no collision-agent cache or tree, so it is cheap enough to
+/// call every tick.
+pub fn fixed_pair_word(m: &dyn GuestMemory, datum: u32) -> Result<Option<u32>, MemFault> {
+    let world = m.u32(layout::HAVOK_WORLD_PTR)?;
+    if world == 0 {
+        return Ok(None);
+    }
+    let handles: HashSet<_> = object_entities(m, datum)?
+        .into_iter()
+        .map(|entity| entity + HANDLE_IN_ENTITY)
+        .collect();
+    if handles.is_empty() {
+        return Ok(None);
+    }
+    span(world, layout::WORLD_FIXED_ISLAND + 4)?;
+    let fixed = m.u32(world + layout::WORLD_FIXED_ISLAND)?;
+    if fixed == 0 {
+        return Ok(None);
+    }
+    let mut remaining_pairs = MAX_PAIRS;
+    let mut found = None;
+    for (island, _) in havok::islands(m, world)? {
+        span(island, ISLAND_PAIRS + 12)?;
+        let (ptr, count) = array(m, island + ISLAND_PAIRS, remaining_pairs, 16)?;
+        remaining_pairs -= count;
+        for i in 0..count {
+            let entry = ptr + 16 * i;
+            let sides = [m.u32(entry)?, m.u32(entry + 4)?];
+            let Some(side) = sides.iter().position(|h| handles.contains(h)) else {
+                continue;
+            };
+            if m.u32(entry + 8)? == 0 {
+                continue;
+            }
+            let other = sides[1 - side].checked_sub(0x10).ok_or_else(|| bad(sides[1 - side]))?;
+            span(other, 0x24)?;
+            if m.u32(other + 0x18)? != 1 {
+                continue;
+            }
+            let owner = m.u32(other + 0x20)?;
+            span(owner, 0x48)?;
+            if m.u32(owner + 0x44)? != fixed {
+                continue;
+            }
+            if found.replace(m.u32(entry + PAIR_WORD)?).is_some() {
+                return Ok(None);
+            }
+        }
+    }
+    Ok(found)
+}
+
 /// Writes `word` over the pair word of `entry`, which must be one of the
 /// object's pairs as [`agents`] finds them. The word before, or `None` when
 /// `entry` isn't one of them.

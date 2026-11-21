@@ -468,23 +468,6 @@ pub const VARIANTS: &[Variant] = &[
         description: "Practice super bounces and crouch jumps with a magnum: no score, no time limit, tough players, quick respawns and nothing to pick up.",
     },
     Variant {
-        name: "Superbounce",
-        ty: GameType::Slayer,
-        settings: &[
-            ScoreToWin(0),
-            TimeLimit(0),
-            RespawnSeconds(3),
-            SuicidePenaltySeconds(0),
-            Shields(Shields::Overshields),
-            DamageResistance(true),
-            StartingWeapon(Some(Weapon::Magnum)),
-            SecondaryWeapon(None),
-            WeaponsOnMap(WeaponSet::None),
-            GrenadesOnMap(false),
-        ],
-        description: "Bounce practice with a guide: a plate shows whether your crouch has primed the bounce, and lines mark the slots that launch you.",
-    },
-    Variant {
         name: "Glitch Hunt",
         ty: GameType::Slayer,
         settings: &[
@@ -520,6 +503,23 @@ pub const VARIANTS: &[Variant] = &[
             ScoreToWin(25),
         ],
         description: "No weapons at all, only Warthogs and Ghosts. Splatter everyone else. Try Coagulation or Burial Mounds.",
+    },
+    Variant {
+        name: "Superbounce",
+        ty: GameType::Slayer,
+        settings: &[
+            ScoreToWin(0),
+            TimeLimit(0),
+            RespawnSeconds(3),
+            SuicidePenaltySeconds(0),
+            Shields(Shields::Overshields),
+            DamageResistance(true),
+            StartingWeapon(Some(Weapon::Magnum)),
+            SecondaryWeapon(None),
+            WeaponsOnMap(WeaponSet::None),
+            GrenadesOnMap(false),
+        ],
+        description: "Bounce practice with a guide: a plate shows whether your crouch has primed the bounce, and lines mark the strips that launch you.",
     },
 ];
 

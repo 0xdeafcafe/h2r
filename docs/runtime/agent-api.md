@@ -623,7 +623,8 @@ printf '%s\n' claim 'havok.pair.set {"object":"player.0","word":"fffffffd"}' | h
 
 ## `superbounce`: the superbounce game type
 
-`superbounce.state` (access: read, no params) answers from the state the
+`superbounce.state` (access: read; it takes no parameters and refuses any
+with `INVALID_PARAMS`) answers from the state the
 `superbounce` feature publishes each tick
 (`crates/extensions/game/src/superbounce_mode.rs`; wire types in
 `crates/extensions/agent-proto/src/superbounce.rs`; registered in
