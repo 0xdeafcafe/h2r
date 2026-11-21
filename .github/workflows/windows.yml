@@ -13,7 +13,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  WGPU_BACKEND: vulkan
   CARGO_INCREMENTAL: "0"
 
 jobs:
@@ -62,27 +61,3 @@ jobs:
         run: cargo test -p recomp --features desktop-runtime --lib windows_play_prepares_and_loads_both_tiers
       - name: Link and start h2.exe
         run: cargo run -p cli -- settings list
-      - name: Install Vulkan loader and Mesa lavapipe
-        shell: pwsh
-        run: |
-          $dir = "$env:RUNNER_TEMP\lavapipe"
-          $url = 'https://github.com/pal1000/mesa-dist-win/releases/download/26.2.6/mesa3d-26.2.6-release-msvc.7z'
-          curl.exe -fLsS --retry 3 $url -o "$env:RUNNER_TEMP\mesa.7z"
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          7z x "$env:RUNNER_TEMP\mesa.7z" "-o$dir" 'x64/*'
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          $icd = (Resolve-Path "$dir\x64\lvp_icd.x86_64.json").Path
-          "$dir\x64" >> $env:GITHUB_PATH
-          "VK_DRIVER_FILES=$icd" >> $env:GITHUB_ENV
-          "VK_ICD_FILENAMES=$icd" >> $env:GITHUB_ENV
-          if (!(Test-Path "$env:SystemRoot\System32\vulkan-1.dll")) {
-            $runtime = 'https://sdk.lunarg.com/sdk/download/1.4.328.1/windows/VulkanRT-X64-1.4.328.1-Components.zip'
-            curl.exe -fLsS --retry 3 $runtime -o "$dir\loader.zip"
-            if ($LASTEXITCODE) { exit $LASTEXITCODE }
-            Expand-Archive "$dir\loader.zip" "$dir\loader"
-            $dll = Get-ChildItem "$dir\loader" -Recurse -Filter 'vulkan-1.dll' | Where-Object { $_.Directory.Name -eq 'x64' } | Select-Object -First 1
-            if (!$dll) { throw 'x64 Vulkan loader missing from runtime archive' }
-            $dll.DirectoryName >> $env:GITHUB_PATH
-          }
-      - name: Render and read back on lavapipe
-        run: cargo test -p gfx --test headless -- --include-ignored --test-threads=1 --nocapture

@@ -1,7 +1,7 @@
 # Windows desktop and Xbox Dev Mode
 
-Status: The Windows desktop host targets x86-64 MSVC and Vulkan. Playing a disc through to the menu on a PC still needs hardware verification. The UWP host runs on Xbox Series X in Developer Mode.
-Code: `crates/apps/app/src/shell.rs`, `crates/platform/gfx/src/context.rs`, `crates/recompiler/emit/src/compile.rs`, `platform/windows/env.sh`.
+Status: The Windows desktop host targets x86-64 MSVC. Playing a disc through to the menu on a PC still needs hardware verification. The UWP host runs on Xbox Series X in Developer Mode.
+Code: `crates/apps/app/src/shell.rs`, `crates/recompiler/emit/src/compile.rs`, `platform/windows/env.sh`.
 Switch: [switches.md](switches.md).
 
 ## Playing on a PC
@@ -10,7 +10,7 @@ Install stable x64 MSVC Rust, Visual Studio Build Tools with the Desktop
 development with C++ workload and Windows SDK, and LLVM 22 for x64 Windows.
 Open an **x64 Native Tools Command Prompt**. Put the LLVM bin directory on
 PATH. Clang uses the installed CRT headers and the linker uses the MSVC
-and Windows SDK libraries. The graphics driver must provide Vulkan.
+and Windows SDK libraries.
 
 ```bat
 set "PATH=%ProgramFiles%\LLVM\bin;%PATH%"
@@ -29,9 +29,8 @@ packaging and controls. See [xbox.md](xbox.md).
 [The Windows workflow](../../.github/workflows/windows.yml) runs on
 `windows-latest` for pushes to `windows-desktop` and manual dispatches.
 It checks the workspace with test targets, runs synthetic CPU and module
-tests, and uses Mesa lavapipe for the headless graphics suite. The GPU
-probe requires a Vulkan CPU adapter, draws a triangle and checks its
-pixels after readback. Disc boot, hardware swap-chain presentation,
+tests, and starts the linked desktop executable. Rendering backend support
+is handled separately. Disc boot, hardware swap-chain presentation,
 controller input and WASAPI playback need a Windows PC.
 
 ## Toolchain (on the Mac)
@@ -139,7 +138,7 @@ passes no CRT state across the host boundary ([xbox.md](xbox.md)).
 | guest RAM and faults | platform mappings and POSIX signal handlers | guarded VirtualAlloc reservations, private file views for restores, paged address translation and x64 vectored exception handling |
 | local agent API | Unix domain sockets | pathname AF_UNIX sockets on Windows 10 version 1803 or later |
 | generated game code | native object files and shared library | Cranelift fast tier or Clang, COFF objects and a DLL loaded through libloading |
-| rendering | wgpu on Metal | Vulkan in desktop and headless mode, DX12 in the Xbox app |
+| rendering | wgpu on Metal | wgpu default selection on desktop, DX12 in the Xbox app |
 | host-owned surface (`app::embedded`) | `CAMetalLayer` | XAML `SwapChainPanel` (`app::embedded::host_surface`), the UWP seam |
 | windowed shell, keyboard, mouse | winit | winit |
 | gamepads | GameController, IOKit HID | gilrs, whose Windows backend is Windows.Gaming.Input, which UWP also has |

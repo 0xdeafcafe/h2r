@@ -5,7 +5,7 @@ Code: `crates/apps/app/src` (`shell.rs`, `embedded.rs`, `lib.rs`), `crates/apps/
 Switch: `H2_FPS` (30), the rest in [switches.md](switches.md).
 
 `crates/apps/app` is the platform layer the game runs inside on the desktop: a window
-with a Metal surface on macOS or Vulkan on Windows, presentation of the guest's frames, live keyboard,
+with a wgpu surface, presentation of the guest's frames, live keyboard,
 mouse and controller input, the audio device, and the guest thread's
 lifecycle. Everything the recompiled game touches (D3D, XAPI, DirectSound,
 the kernel) stays in its own crate; the shell only hands those crates a
