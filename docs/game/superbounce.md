@@ -33,15 +33,21 @@ established).
 - A forced crouch leaves the player-vs-level collision pair's word (pair
   `+0x0c`) at −3, and that word is what makes the landing bounce.
   Standing up out of the forced crouch takes it from 0 to −3, and it
-  stays there until the pair is rebuilt, which a teleport does. Played
-  back with the player's recorded input from before the crouches, the
-  landing bounced 4 times in 4. From a teleport after them, the same
-  landing at the same place and speed never bounced (0 of 7). Setting the
-  word to −3 on a teleported body (`havok.pair.set`) made it bounce every
-  time the word held to the landing (3 of 3), at +12.3, the player's own
-  launch ([playback](#the-forced-crouch-leaves-state-trace-lab-playback),
-  [pair word](#the-pair-word-trace-lab-playback)). **Trace**; **Open** for
-  why a negative word launches
+  stays there until the pair is rebuilt at 0 (a crouch, or the body going
+  to sleep). Played back with the player's recorded input from before the
+  crouches, the landing bounced 4 times in 4. From a teleport after them,
+  the same landing at the same place and speed never bounced (0 of 7).
+  Setting the word to −3 on a teleported body (`havok.pair.set`) made it
+  bounce every time the word held to the landing, at +12.3 to +12.45, the
+  player's own launch
+  ([playback](#the-forced-crouch-leaves-state-trace-lab-playback),
+  [pair word](#the-pair-word-trace-lab-playback)). **Trace**
+- Only the touchdown tick needs the word at −3. At 0 the pair pass widens
+  its tolerance on that tick and catches the floor 2.7 cm above it. At −3
+  it makes no contact, the capsule drops 14 to 23 cm into the two facing
+  walls of the slot at the seam, and the solver's two opposing pushes of
+  about 77,600 leave the upward part of the tilted face's normal as the
+  launch ([touchdown tick](#the-touchdown-tick-trace-stepped)). **Trace**
 
 ## Forced crouch (Code)
 
@@ -329,10 +335,11 @@ jump (recording tick 6684), then the recorded jump from there:
 | `fffffffd`, gone by the end of the run | 0 of 1 | — |
 
 All of them landed at (−10.25, 4.04, −3.25) at −5.4 units/s, where the
-player's own bounce launched at +12.4. A body that stands still for a
-while after a teleport has no level pair to write (three runs of seven
-found none 20 ticks after the teleport), and a pair that is rebuilt
-comes back at 0.
+player's own bounce launched at +12.4. A teleport keeps the pair and its
+word (a word written in one run was still there after the next run's
+teleport), and keeps the body's velocity. A body that stands still for a
+while has no level pair (it sleeps), and the pair it gets on waking
+starts at 0. Those runs had nothing to write.
 
 **Where −3 comes from** (Code, [havok-runtime.md](../engine/havok-runtime.md)).
 The word is the pair's tolerance level in the pair pass `FUN_00317950`.
@@ -344,6 +351,47 @@ tolerance of −1000. Nothing re-arms −3; only −2 goes back to 0. A capsule
 standing up into the corner's ceiling is deep in the geometry, which fits
 the give-up path. **Code** for the paths; **Trace** that it happens on
 standing up.
+
+### The touchdown tick (Trace, stepped)
+
+Measured 2026-11-21 through the lab (job 0025, branch `sb-lab2`: the
+bounded pipeline prewarm `241622789` with `havok.pair.set`), with the
+game paused and advanced one tick at a time (`session.pause`, then
+`session.step {ticks: 1}` per tick, with `havok.pair.set`, `world.object`,
+`havok.agents` and `havok.contacts` between ticks). Each run teleports to
+where the player stood at recording tick 6684, waits for the body to
+stand, steps 30 ticks, sets the word to 0, queues the recorded input from
+6684 and steps through the jump. Pad steps advance with ticks, so the
+path is the same from run to run. Ticks below are recording ticks; the
+capsule first meets the floor on 6753.
+
+| Word | Bounced |
+|---|---|
+| 0 throughout | 0 of 2 |
+| −3 from 6684 | 1 of 1 |
+| −3 written before tick 6713, 6733, 6748, 6750 or 6752 | 5 of 5 |
+| −3 from 6684, 0 written before 6750, 6751, 6752 or 6753 | 0 of 4 |
+| −3 from 6684, 0 written before 6754 | 1 of 1 |
+
+Runs whose body had no level pair to write are left out (four of 17).
+The word decides the bounce on tick 6753 alone. On that tick, in the two
+kinds of run, with everything before it the same (z −3.253, vertical
+speed −5.4):
+
+| | Word after the tick | Contacts with the level after the tick | Vertical speed |
+|---|---|---|---|
+| word 0 | 1 (widened) | one, normal (0, 0, 1), 0.027 above the floor, impulse 509 | −0.04 |
+| word −3 | −3 | two, normal (0, −1, 0) at y 4.105, 0.231 deep, impulse 77,576; normal (0, 0.9993, 0.0372) at y 3.939, 0.141 deep, impulse 77,566 | +12.45 |
+
+At 0 the pass widens the pair's tolerance and catches the floor before
+the capsule reaches it. At −3 it makes no point with the floor, the
+capsule ends the tick inside the slot between two walls 17 cm apart, and
+the solver pushes it out of both at once. The sideways parts cancel. The
+second wall leans 2.1° up, and the upward part of the two impulses is
+2,886, which over the body's mass (125, `havok.bodies`) is 23 units/s
+against the 17.85 the body gained. How the solver's reported impulse
+turns into that velocity, and so where the other 5 units/s go, isn't
+read. The scripts and replies are in the lab session's keep directory.
 
 ## The geometry (Code, from the map)
 
@@ -365,15 +413,13 @@ rest on the ramp side of the crease.
 
 ## Open
 
-- **Why a pair at −3 launches.** At −3 the pair pass runs the agent at a
-  tolerance of −1000 ([pair word](#the-pair-word-trace-lab-playback)).
-  One reading is that the capsule then gets no early contact points from
-  the level and sinks 7 to 14 cm into the crease before the solver
-  pushes it out, but which contact points the agent keeps at −1000, and
-  what the virtual `+0x74` before the write does, aren't read.
-- **What drops the pair.** Entering a crouch and a long stand both
-  rebuild it at 0, which ends the effect. How long a stand it takes isn't
-  measured.
+- **The last 5 units/s.** The upward part of the two impulses on the
+  touchdown tick gives 23 units/s over the body's mass; the body gains
+  17.85 ([touchdown tick](#the-touchdown-tick-trace-stepped)). What the
+  virtual `+0x74` before the −3 write does isn't read either.
+- **What drops the pair.** Entering a crouch and the body going to
+  sleep both rebuild it at 0, which ends the effect. How long a stand it
+  takes to sleep isn't measured.
 - **60 frames a second.** The player reports no bounces at 60. That isn't
   measured here, and how a frame rate would reach the 30 Hz tick isn't
   known.

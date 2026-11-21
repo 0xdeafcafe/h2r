@@ -44,23 +44,36 @@ pub(super) fn pair_set_method(
     sim: &SimHandle,
 ) -> Result<Value, RpcError> {
     let p: PairSetParams = params(v)?;
-    let entry = hex_word("entry", &p.entry)?;
+    let entry = p.entry.as_deref().map(|e| hex_word("entry", e)).transpose()?;
     let word = hex_word("word", &p.word)?;
     sim.writable_session(ctx)?;
     let objects = objects(ctx)?;
     let (datum, _) = resolve(&objects, &p.object)?;
-    let before = ctx.with_guest(|m| {
-        hk::set_pair_word(m, datum, entry, word).map_err(|e| {
-            RpcError::new(
-                code::UNAVAILABLE,
-                format!("the Havok world at {:08x} faulted", e.addr),
-            )
-        })
+    let fault = |e: engine::MemFault| {
+        RpcError::new(
+            code::UNAVAILABLE,
+            format!("the Havok world at {:08x} faulted", e.addr),
+        )
+    };
+    let written = ctx.with_guest(|m| {
+        let Some(entry) = (match entry {
+            Some(e) => Some(e),
+            None => hk::fixed_pair(&*m, datum).map_err(fault)?,
+        }) else {
+            return Ok(None);
+        };
+        Ok(hk::set_pair_word(m, datum, entry, word)
+            .map_err(fault)?
+            .map(|before| (entry, before)))
     })?;
-    let before = before.ok_or_else(|| {
+    let (entry, before) = written.ok_or_else(|| {
+        let which = p
+            .entry
+            .as_deref()
+            .map_or("against the level".to_owned(), |e| format!("at {e}"));
         RpcError::new(
             code::GONE,
-            format!("{} has no collision pair at {}", p.object, p.entry),
+            format!("{} has no collision pair {which}", p.object),
         )
     })?;
     let answer = PairSet {
@@ -229,6 +242,8 @@ mod tests {
         assert!(
             params::<PairSetParams>(json!({"object": "player.0", "entry": "7fbfa8d0"})).is_err()
         );
+        let level = params::<PairSetParams>(json!({"object": "player.0", "word": "fffffffd"}));
+        assert_eq!(level.unwrap().entry, None);
     }
 
     #[test]

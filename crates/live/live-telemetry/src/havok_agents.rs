@@ -178,6 +178,20 @@ pub fn agents(m: &dyn GuestMemory, datum: u32) -> Result<Vec<Pair>, MemFault> {
     Ok(out)
 }
 
+/// The entry of the object's one pair against a fixed body, if it has
+/// exactly one.
+pub fn fixed_pair(m: &dyn GuestMemory, datum: u32) -> Result<Option<u32>, MemFault> {
+    let fixed: Vec<_> = agents(m, datum)?
+        .into_iter()
+        .filter(|p| p.other_fixed)
+        .map(|p| p.entry)
+        .collect();
+    Ok(match fixed[..] {
+        [entry] => Some(entry),
+        _ => None,
+    })
+}
+
 /// Writes `word` over the pair word of `entry`, which must be one of the
 /// object's pairs as [`agents`] finds them. The word before, or `None` when
 /// `entry` isn't one of them.

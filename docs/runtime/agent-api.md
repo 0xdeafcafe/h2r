@@ -603,10 +603,11 @@ empty manifold is still a candidate in the query box.
 `havok.pair.set {object, entry, word}` (access: claim) overwrites one
 pair's word (pair `+0x0c`, [havok-runtime.md](../engine/havok-runtime.md))
 at a tick boundary. `entry` is the pair's `entry` from `havok.agents` for
-the same object and `word` is eight hex digits, as `pair_word` prints
-them. It writes only a pair `havok.agents` would list for that object at
-that tick; another `entry` is `GONE`, and so is an absent object or a
-player between lives. The reply has `object`, `entry`, `before` and
+the same object; without it, the write goes to the object's one pair
+against a fixed body (the level). `word` is eight hex digits, as
+`pair_word` prints them. It writes only a pair `havok.agents` would list
+for that object at that tick; another `entry`, or no single level pair,
+is `GONE`, and so is an absent object or a player between lives. The reply has `object`, `entry`, `before` and
 `after`. It needs the same claim and host-write session as `world.poke`
 (`agent::havok::install_writes`; writer `set_pair_word` in
 `crates/live/live-telemetry/src/havok_agents.rs`). It exists to test
@@ -614,7 +615,7 @@ whether the word a forced crouch leaves behind is what makes a superbounce
 ([superbounce.md](../game/superbounce.md)).
 
 ```sh
-printf '%s\n' claim 'havok.pair.set {"object":"player.0","entry":"7fbfa8d0","word":"fffffffd"}' | h2 agent -
+printf '%s\n' claim 'havok.pair.set {"object":"player.0","word":"fffffffd"}' | h2 agent -
 ```
 
 ## `profile`: where a frame goes
