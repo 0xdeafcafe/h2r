@@ -393,3 +393,224 @@ fn replication_refuses_wrong_role_group_and_tag_without_queueing() {
     assert_eq!(r["error"]["code"], code::INVALID_PARAMS);
     assert!(!calls::lock(&h.calls).has_pending());
 }
+
+fn draft() -> forge_doc::ForgeDoc {
+    forge_doc::ForgeDoc {
+        format: forge_doc::FORMAT,
+        author: "Editor".into(),
+        title: "Fixture".into(),
+        description: String::new(),
+        base: forge_doc::MapRef {
+            map: "fixture".into(),
+            sha256: forge_doc::Sha256::of(b"base"),
+        },
+        builder: forge_doc::BuilderVersions {
+            forge_build: 1,
+            pathfind: 1,
+            bots: 1,
+        },
+        sources: vec![],
+        recipes: vec![],
+        imports: vec![],
+        ops: vec![],
+        expect: None,
+    }
+}
+
+#[test]
+fn local_edits_publish_the_engine_handle_only_after_a_confirmed_spawn() {
+    use ::forge::{BlockKind, Frame, PaletteItem, Session, TagKey};
+    use local::{ForgeWorld, Guard};
+    let limits = forge_doc::Limits {
+        world: Some(forge_doc::WorldBounds {
+            min: [-8.0; 3],
+            max: [8.0; 3],
+        }),
+        base_counts: [(BlockKind::Scenery, 0)].into(),
+        ..Default::default()
+    };
+    let tag = TagKey {
+        group: "scen".into(),
+        path: "objects\\fixture".into(),
+    };
+    let session = Session::new(
+        draft(),
+        limits,
+        vec![PaletteItem {
+            block: BlockKind::Scenery,
+            tag: tag.clone(),
+        }],
+        3,
+    )
+    .unwrap();
+    let q = calls::shared();
+    calls::lock(&q).arm();
+    let guard = Guard {
+        scenario: SCENARIO,
+        generation: 1,
+        admitted: |_, _| true,
+    };
+    let place = || {
+        ForgeWorld::apply(
+            &session,
+            &q,
+            guard,
+            |requested| {
+                assert_eq!(requested, &tag);
+                Ok(TAG)
+            },
+            |s, w| s.place(w, 90, 0, Frame::default()),
+        )
+        .unwrap()
+    };
+    let mut edit = place();
+    let (ticket, call) = calls::lock(&q).drain().pop().unwrap();
+    assert!(
+        matches!(call, calls::Call::ForgeSpawn { placements, .. } if placements == [(TAG,Frame::default())])
+    );
+    assert!(edit.poll().is_none());
+    calls::lock(&q).finish(ticket, Err("object_new refused".into()));
+    assert_eq!(edit.poll().unwrap().unwrap_err(), "object_new refused");
+    assert!(session.log().is_empty());
+    let mut edit = place();
+    let ticket = calls::lock(&q).drain()[0].0;
+    calls::lock(&q).finish(ticket, Ok(json!({"handles":[0xa123_0003u32]})));
+    let (updated, id) = edit.poll().unwrap().unwrap();
+    assert_eq!(updated.log()[0].op.id, id);
+    assert_eq!(updated.objects()[0].handle, 0xa123_0003);
+    assert!(edit.poll().is_none());
+    let delete = ForgeWorld::apply(
+        &updated,
+        &q,
+        guard,
+        |_| unreachable!(),
+        |s, w| s.delete(w, 91, id),
+    );
+    assert!(
+        delete
+            .err()
+            .unwrap()
+            .contains("needs M8 world.object.delete")
+    );
+    assert!(!calls::lock(&q).has_pending());
+    assert_eq!(updated.objects().len(), 1);
+
+    let mut batch = ForgeWorld::apply(
+        &session,
+        &q,
+        guard,
+        |_| Ok(TAG),
+        |s, w| {
+            s.place(w, 92, 0, Frame::default())?;
+            s.place(
+                w,
+                92,
+                0,
+                Frame {
+                    position: [2.0; 3],
+                    ..Default::default()
+                },
+            )?;
+            Ok(())
+        },
+    )
+    .unwrap();
+    let (ticket, call) = calls::lock(&q).drain().pop().unwrap();
+    assert!(matches!(call,calls::Call::ForgeSpawn{placements,..} if placements.len()==2));
+    calls::lock(&q).finish(
+        ticket,
+        Ok(json!({"handles":[0xa000_0001u32, 0xa000_0002u32]})),
+    );
+    let (session, ()) = batch.poll().unwrap().unwrap();
+    assert_eq!(
+        session
+            .objects()
+            .iter()
+            .map(|o| o.handle)
+            .collect::<Vec<_>>(),
+        [0xa000_0001, 0xa000_0002]
+    );
+}
+
+#[test]
+fn local_agent_reads_the_session_and_reports_a_refused_proposal() {
+    struct Backend;
+    impl local::LocalApi for Backend {
+        fn status(&self) -> Result<Value, String> {
+            Ok(json!({"session":"local"}))
+        }
+        fn document(&self) -> Result<forge_doc::ForgeDoc, String> {
+            Ok(draft())
+        }
+        fn log(&self, since: u32) -> Result<Vec<forge_doc::Entry>, String> {
+            assert_eq!(since, 1);
+            Ok(vec![])
+        }
+        fn input(
+            &self,
+            m: &dyn engine::GuestMemory,
+            input: ::forge::tool::Input,
+        ) -> Result<(), String> {
+            if m.u32(global::SCENARIO.base).ok() != Some(SCENARIO) {
+                return Err("stale Forge session".into());
+            }
+            assert_eq!(input.action, Some(::forge::tool::Action::Toggle));
+            Ok(())
+        }
+        fn propose(
+            &self,
+            tick: u32,
+            op: forge_doc::Op,
+            was: Option<forge_doc::Sha256>,
+        ) -> Result<local::ProposalReply, String> {
+            assert_eq!(tick, 90);
+            assert!(was.is_none());
+            assert_eq!(op.edit, forge_doc::Edit::Undo);
+            let (tx, rx) = std::sync::mpsc::channel();
+            tx.send(Err("there is nothing to undo".into())).unwrap();
+            Ok(rx)
+        }
+    }
+    let h = Harness::new();
+    let mut game = game(1);
+    local::install(&h.agent, Backend);
+    assert_eq!(
+        h.ok(&mut game, method::STATUS, Value::Null)["session"],
+        "local"
+    );
+    assert_eq!(
+        h.ok(&mut game, method::DOC, json!({}))["document"],
+        json!(draft())
+    );
+    assert_eq!(
+        h.ok(&mut game, method::LOG, json!({"since":1}))["entries"],
+        json!([])
+    );
+    assert_eq!(
+        h.ok(&mut game, method::INPUT, json!({"action":"toggle"}))["queued"],
+        true
+    );
+    for bad in [
+        json!({}),
+        json!({"action":"grant"}),
+        json!({"look":[0.,2.]}),
+        json!({"action":"toggle","roll":0.5}),
+    ] {
+        assert_eq!(
+            h.call(&mut game, method::INPUT, bad)["error"]["code"],
+            code::INVALID_PARAMS
+        );
+    }
+    game.memory.put_u32(global::SCENARIO.base, 0);
+    assert_eq!(
+        h.call(&mut game, method::INPUT, json!({"action":"toggle"}))["error"]["message"],
+        "stale Forge session"
+    );
+    game.memory.put_u32(global::SCENARIO.base, SCENARIO);
+    let op = json!({"op":{"id":1,"edit":"undo"}});
+    h.send(method::PROPOSE, op);
+    h.agent.on_tick(&mut game);
+    game.tick += 1;
+    h.agent.on_tick(&mut game);
+    assert_eq!(h.reply()["error"]["message"], "there is nothing to undo");
+}

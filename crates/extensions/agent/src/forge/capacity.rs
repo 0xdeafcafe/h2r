@@ -197,7 +197,8 @@ fn pool(m: &dyn GuestMemory, global: u32) -> Result<Option<ObjectPool>, RpcError
     }))
 }
 
-pub(super) fn object_pool(m: &dyn GuestMemory) -> Result<ObjectPool, RpcError> {
+/// Current number of live object datums and the engine pool limit.
+pub fn object_pool(m: &dyn GuestMemory) -> Result<ObjectPool, RpcError> {
     pool(m, global::OBJECTS.base)?.ok_or_else(|| unavailable("no active object pool"))
 }
 

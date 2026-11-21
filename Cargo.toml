@@ -49,6 +49,7 @@ vfs = { path = "crates/runtime/vfs" }
 background = { path = "crates/runtime/background" }
 boot = { path = "crates/apps/boot" }
 content = { path = "crates/formats/content" }
+forge = { path = "crates/extensions/forge" }
 forge-doc = { path = "crates/formats/forge-doc" }
 forge-build = { path = "crates/tools/forge-build" }
 live-proto = { path = "crates/live/live-proto" }

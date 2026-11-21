@@ -1,0 +1,10 @@
+[package]
+name = "forge"
+description = "Local in-game Forge editing session and Objects tool"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+content.workspace = true
+forge-doc.workspace = true

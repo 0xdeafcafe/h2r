@@ -500,3 +500,91 @@ fn a_replication_spawn_checks_the_host_and_scenario_when_the_call_runs() {
         assert!(calls.is_empty());
     }
 }
+
+#[test]
+fn a_forge_spawn_preserves_roll_and_rechecks_the_session_before_entering_the_guest() {
+    use crate::forge::local::Guard;
+    let scenario = 0x8100_0000;
+    let frame = ::forge::Frame {
+        position: [2.0, 3.0, 4.0],
+        rotation: [0.0, 0.0, std::f32::consts::FRAC_PI_2],
+    };
+    for (generation, loaded) in [(3, scenario), (2, scenario), (3, scenario + 4)] {
+        let mut w = world();
+        w.g.put_u32(guest_layout::global::SCENARIO.base, loaded);
+        let (out, calls, _) = one(
+            w,
+            Call::ForgeSpawn {
+                guard: Guard {
+                    scenario,
+                    generation,
+                    admitted: |_, generation| generation == 3,
+                },
+                placements: vec![(0xa100_0001, frame)],
+            },
+            |c, m| {
+                assert_eq!((generation, loaded), (3, scenario));
+                if c.target == addr::OBJECT_NEW {
+                    let placement = c.args[0];
+                    assert_eq!(
+                        vec3(m, placement + addr::PLACEMENT_POSITION),
+                        frame.position
+                    );
+                    assert_eq!(
+                        vec3(m, placement + addr::PLACEMENT_FORWARD),
+                        [1.0, 0.0, 0.0]
+                    );
+                    let up = vec3(m, placement + addr::PLACEMENT_UP);
+                    assert!(up[0].abs() < 1e-5 && (up[1] + 1.0).abs() < 1e-5 && up[2].abs() < 1e-5);
+                    return al(0x100_0001);
+                }
+                Regs::default()
+            },
+        );
+        if generation == 3 && loaded == scenario {
+            assert_eq!(out.unwrap()["handles"], json!([0x0100_0001]));
+            assert_eq!(calls.len(), 2);
+        } else {
+            assert!(out.unwrap_err().contains("session changed"));
+            assert!(calls.is_empty());
+        }
+    }
+}
+
+#[test]
+fn a_forge_batch_releases_its_own_objects_when_a_later_placement_fails() {
+    let scenario = 0x8100_0000;
+    let mut w = world();
+    w.g.put_u32(guest_layout::global::SCENARIO.base, scenario);
+    let guard = crate::forge::local::Guard {
+        scenario,
+        generation: 0,
+        admitted: |_, _| true,
+    };
+    let mut created = 0;
+    let (out, calls, _) = one(
+        w,
+        Call::ForgeSpawn {
+            guard,
+            placements: vec![(0xa100_0001, ::forge::Frame::default()); 3],
+        },
+        |c, _| {
+            if c.target == addr::OBJECT_NEW {
+                created += 1;
+                return al(if created == 3 {
+                    u32::MAX
+                } else {
+                    0x1000_0000 + created
+                });
+            }
+            Regs::default()
+        },
+    );
+    assert!(out.unwrap_err().contains("object_new"));
+    let deleted: Vec<_> = calls
+        .iter()
+        .filter(|c| c.target == addr::OBJECT_DELETE)
+        .map(|c| c.args[0])
+        .collect();
+    assert_eq!(deleted, [0x1000_0002, 0x1000_0001]);
+}

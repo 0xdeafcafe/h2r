@@ -194,6 +194,12 @@ menus work with arrows and Enter. Escape is START.
 | Arrows | D-pad |
 | WASD, mouse (click to capture) | Left stick, look |
 
+In a local Forge session, the play window draws the monitor HUD and dialogs
+over the game frame using the UI kit and the fonts and art on the disc.
+Opening a dialog releases mouse capture. A click selects the row under
+the pointer in the fitted viewport. The monitor controls are listed in
+[forge-design.md](../game/forge-design.md#the-ui).
+
 Cmd+F toggles fullscreen and Cmd+P pauses.
 
 Quitting: Cmd+Q or the close button stop the guest through the lifecycle

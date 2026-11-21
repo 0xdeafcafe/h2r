@@ -272,7 +272,11 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 }
 
 /// The screens `h2 ui preview` knows, by name.
-pub const NAMES: [&str; 28] = [
+pub const NAMES: [&str; 32] = [
+    "forge.hud",
+    "forge.palette",
+    "forge.properties",
+    "forge.menu",
     "campaigns",
     "skulls",
     "skulls.h1",
@@ -323,6 +327,9 @@ pub fn sample(name: &str) -> Option<ScreenSpec> {
 /// file.
 pub fn live(name: &str) -> Option<Box<dyn Live>> {
     match name {
+        "forge.hud" | "forge.palette" | "forge.properties" | "forge.menu" => {
+            super::forge::live(name)
+        }
         "signin-code" => Some(Box::new(Driven::new(crate::signin_screen::SigninPage))),
         "account" => Some(Box::new(Driven::new(AccountPage))),
         "mods" | "mods.pack" | "mods.detail" => {

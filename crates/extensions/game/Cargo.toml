@@ -6,6 +6,8 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
+forge.workspace = true
+forge-doc.workspace = true
 guest-layout = { path = "../../hooking/guest-layout" }
 actor-net = { path = "../../live/actor-net" }
 # Build and load (docs/dev/crate-structure.md, S4).

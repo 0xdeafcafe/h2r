@@ -155,6 +155,11 @@ pub enum Call {
         /// Forge's probe rechecks the distributed host and scenario at execution.
         mp_scenario: Option<u32>,
     },
+    /// A local Forge placement, rechecking its admission at the next tick.
+    ForgeSpawn {
+        guard: crate::forge::local::Guard,
+        placements: Vec<(u32, ::forge::Frame)>,
+    },
     /// Build game options with `steps` and queue them: a new game loads
     /// at the game's next transition.
     QueueGame { steps: Vec<GameStep> },
@@ -177,6 +182,9 @@ pub struct Queue {
     next: u64,
     pending: Vec<(u64, Call)>,
     done: BTreeMap<u64, Outcome>,
+    // A local editor awaits a specific engine result to commit its document.
+    // Its result must survive even when more than DONE_KEEP RPCs finish.
+    watchers: BTreeMap<u64, std::sync::mpsc::Sender<Outcome>>,
 }
 
 /// Optional distributed enrollment for an object just made by `sim.spawn`.
@@ -222,6 +230,16 @@ impl Queue {
         Ok(self.next)
     }
 
+    pub(crate) fn submit_watched(
+        &mut self,
+        call: Call,
+    ) -> Result<std::sync::mpsc::Receiver<Outcome>, String> {
+        let ticket = self.submit(call)?;
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.watchers.insert(ticket, tx);
+        Ok(rx)
+    }
+
     /// The calls to make now.
     pub fn drain(&mut self) -> Vec<(u64, Call)> {
         std::mem::take(&mut self.pending)
@@ -233,6 +251,10 @@ impl Queue {
 
     /// Records what came of `ticket`.
     pub fn finish(&mut self, ticket: u64, out: Outcome) {
+        if let Some(tx) = self.watchers.remove(&ticket) {
+            let _ = tx.send(out);
+            return;
+        }
         self.done.insert(ticket, out);
         while self.done.len() > DONE_KEEP {
             self.done.pop_first();
@@ -472,8 +494,7 @@ async fn run(
                 .eax
                 & 0xff;
             if added == 0 {
-                cx.call(GuestCall::new(addr::OBJECT_DELETE).args([made]))
-                    .await?;
+                discard_new(cx, made).await?;
                 return Ok(Err(format!(
                     "unit_add_weapon (0xcd0c0, mode {mode}) refused it (a full inventory, or a \
                      unit that takes no weapons); the weapon was deleted"
@@ -507,29 +528,11 @@ async fn run(
                     ));
                 }
             }
-            cx.call(
-                GuestCall::new(addr::PLACEMENT_NEW)
-                    .esi(scratch)
-                    .args([tag, u32::MAX, 0]),
-            )
-            .await?;
-            cx.write(|m| {
-                put_vec(m, scratch + addr::PLACEMENT_POSITION, pos)?;
-                if let Some(f) = facing {
-                    put_vec(m, scratch + addr::PLACEMENT_FORWARD, f)?;
-                    put_vec(m, scratch + addr::PLACEMENT_UP, up_of(f))?;
-                }
-                Ok::<_, engine::MemFault>(())
-            })?;
-            let made = cx
-                .call(GuestCall::new(addr::OBJECT_NEW).args([scratch]))
-                .await?
-                .eax;
-            if made == u32::MAX {
-                return Ok(Err(format!(
-                    "object_new (0xb7b40) refused to make tag {tag:#010x} there"
-                )));
-            }
+            let axes = facing.map(|f| (f, up_of(f)));
+            let made = match spawn(cx, scratch, tag, pos, axes).await? {
+                Ok(made) => made,
+                Err(reason) => return Ok(Err(reason)),
+            };
             if let Some(enroll) = spawn_enrollment
                 && let Some(call) = cx.read(|m| enroll(m, made))
             {
@@ -537,6 +540,42 @@ async fn run(
             }
             let at = cx.read(|m| body_of(m, made).and_then(|b| b.position(m).ok()));
             Ok(Ok(json!({ "object": hex(made), "pos": at })))
+        }
+        Call::ForgeSpawn {
+            guard,
+            ref placements,
+        } => {
+            if !cx.read(|m| guard.allows(m)) {
+                return Ok(Err(
+                    "the local Forge session changed before placement".into()
+                ));
+            }
+            match cx.read(crate::forge::object_pool) {
+                Ok(pool) if placements.len() <= (pool.limit - pool.used) as usize => {}
+                Ok(_) => {
+                    return Ok(Err(
+                        "the game object pool has insufficient free slots".into()
+                    ));
+                }
+                Err(e) => return Ok(Err(e.message)),
+            }
+            let mut handles = Vec::with_capacity(placements.len());
+            for &(tag, frame) in placements {
+                let (forward, up) = live_telemetry::rotation_axes(frame.rotation.map(f64::from));
+                let axes = (forward.map(|v| v as f32), up.map(|v| v as f32));
+                match spawn(cx, scratch, tag, frame.position, Some(axes)).await? {
+                    Ok(handle) => handles.push(handle),
+                    Err(reason) => {
+                        // Unwind only this command's newly created objects, before
+                        // the game tick can give them to another player or system.
+                        for handle in handles.into_iter().rev() {
+                            discard_new(cx, handle).await?;
+                        }
+                        return Ok(Err(reason));
+                    }
+                }
+            }
+            Ok(Ok(json!({"handles":handles})))
         }
         Call::QueueGame { ref steps } => {
             let options = scratch + SCRATCH_OPTIONS;
@@ -582,6 +621,48 @@ async fn run(
     }
 }
 
+/// Both spawn routes use the same retail placement buffer and object constructor.
+async fn spawn(
+    cx: &Cx,
+    scratch: u32,
+    tag: u32,
+    pos: [f32; 3],
+    axes: Option<([f32; 3], [f32; 3])>,
+) -> Result<Result<u32, String>, EntryError> {
+    cx.call(
+        GuestCall::new(addr::PLACEMENT_NEW)
+            .esi(scratch)
+            .args([tag, u32::MAX, 0]),
+    )
+    .await?;
+    cx.write(|m| {
+        put_vec(m, scratch + addr::PLACEMENT_POSITION, pos)?;
+        if let Some((forward, up)) = axes {
+            put_vec(m, scratch + addr::PLACEMENT_FORWARD, forward)?;
+            put_vec(m, scratch + addr::PLACEMENT_UP, up)?;
+        }
+        Ok::<_, engine::MemFault>(())
+    })?;
+    let made = cx
+        .call(GuestCall::new(addr::OBJECT_NEW).args([scratch]))
+        .await?
+        .eax;
+    if made == u32::MAX {
+        return Ok(Err(format!(
+            "object_new (0xb7b40) refused to make tag {tag:#010x} there"
+        )));
+    }
+    Ok(Ok(made))
+}
+
+/// Release an object made by the current command after an engine refusal.
+/// sim.give uses this when the unit cannot take the new weapon.
+async fn discard_new(cx: &Cx, made: u32) -> Result<(), EntryError> {
+    cx.call(GuestCall::new(addr::OBJECT_DELETE).args([made]))
+        .await?;
+    Ok(())
+}
+
 /// The `before` on `game_tick`'s body: makes the queued calls, records
 /// each outcome, then runs the tick with `reentry` set so this hook (and
 /// the queue) let it through.
@@ -593,11 +674,16 @@ pub async fn run_queued(
     reentry: Arc<AtomicBool>,
 ) -> Result<Ret, EntryError> {
     let spawn_enrollment = lock(&queue).spawn_enrollment;
-    for (ticket, call) in work {
+    let mut work = work.into_iter();
+    while let Some((ticket, call)) = work.next() {
         let out = match run(&cx, &call, scratch, spawn_enrollment).await {
             Ok(out) => out,
             Err(e) => {
-                lock(&queue).finish(ticket, Err(format!("the game faulted: {e}")));
+                let mut q = lock(&queue);
+                q.finish(ticket, Err(format!("the game faulted: {e}")));
+                for (skipped, _) in work {
+                    q.finish(skipped, Err("an earlier guest call faulted".into()));
+                }
                 return Err(e);
             }
         };

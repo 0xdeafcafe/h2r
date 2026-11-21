@@ -64,6 +64,7 @@ connection to hold `session.claim`.
 | `state.save`, `load`, `list`, `drop`, `fork` | act (`list` read) | [`state`](#state-machine-snapshots) |
 | `bots.stats` | read | [Bot combat](#bot-combat) |
 | `sim.*` | read or act | [`sim`](#sim-simulated-players-and-direct-state) |
+| `forge.status`, `forge.doc`, `forge.log`, `forge.propose`, `forge.input` | read or act | [Local Forge session](#local-forge-session) |
 | `forge.capacity`, `forge.probe` | read, act | [Forge probes](#forge-probes) |
 | `match.status`, `match.report`, `match.stop` | read, read, act | [Sim matches](#sim-matches) |
 | `settings.list`, `settings.set`, `perf.overlay`, `cheat.list`, `cheat.set` | read or act | [Menu methods](#menu-methods-settings-perf-overlay-cheats) |
@@ -2293,6 +2294,37 @@ is the local embedded server (`h2 play --live-local`,
 `live_server::start_embedded`), which issues bot identities and accepts
 `bot: true` only for xuids it issued. Never point a sim run at the public
 Live server.
+
+## Local Forge session
+
+The local Forge feature registers these methods in
+`crates/extensions/agent/src/forge/local.rs`. The controller and the agent
+edit the same document. The methods appear in `session.methods` when the
+feature is enabled.
+
+| Method and access | Parameters | Result |
+|---|---|---|
+| `forge.status` (read) | `{}` or omitted | The local session, role, log head, budget, monitor camera, aimed and held IDs, screen and focus, pending call or file work, and last notice. An inactive session returns `{session:"inactive", reason}` |
+| `forge.doc` (read) | `{}` or omitted | `{document}`, the folded Forge document including confirmed edits |
+| `forge.log` (read) | `{since?}` | `{entries}` in sequence order, starting strictly after `since` (default zero) |
+| `forge.input` (act) | `{action}` or `{movement?, look?, roll?, rotating?}` | `{queued:true}` when the current local session accepts one monitor input |
+| `forge.propose` (act) | `{op, was?}` | `{entry}` on acceptance, or a refusal with its reason |
+
+The input queue accepts `toggle`, `accept`, `back`, `delete`, `palette`,
+`properties`, `menu`, `undo`, `redo`, `up` and `down`. In player mode
+only `toggle` enters the monitor. An open dialog takes `up`, `down`,
+`accept` and `back`. An analog request supplies one 1/30-second sample
+with at least one axis. Movement is [right, forward, up], look is [yaw,
+pitch] and roll turns a preview with `rotating:true`. Each axis is in
+[-1, 1]. Read `forge.status` for the resulting monitor and document state.
+
+A proposal uses the [Forge document's](../game/forge-design.md#the-document)
+portable op and optional prior-value digest. The local host supplies the
+author and sequence. Placement waits for the engine's creation result.
+A saved document can create several objects in one tick. If the engine refuses
+a creation, the call releases objects it made for that load. A refusal leaves
+the log head in place. Moving, deleting and restoring a
+live object require the corresponding M8 engine call.
 
 ## Forge probes
 

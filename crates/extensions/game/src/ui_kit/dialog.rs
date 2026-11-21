@@ -666,10 +666,14 @@ pub fn dialog_view(
     state: &str,
 ) -> View {
     let mut w = Vec::new();
-    for (k, a) in g.panel.iter().enumerate() {
+    // A page drawn over the live world can supply a backing within its
+    // panel to keep the rows readable against bright scenery.
+    let backing = s.panel.iter().enumerate().map(|(i, a)| (format!("backing.{i}"), a));
+    let panel = g.panel.iter().enumerate().map(|(i, a)| (format!("panel.{i}"), a));
+    for (id, a) in backing.chain(panel) {
         let r = art_rect(a);
         w.push(Widget {
-            id: format!("panel.{k}"),
+            id,
             rect: [r.top, r.left, r.bottom, r.right],
             layer: Layer::Panel,
             alpha: 255,

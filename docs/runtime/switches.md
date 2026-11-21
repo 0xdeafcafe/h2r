@@ -35,6 +35,7 @@ An `impl.` name is an implementation switch
 | `H2_IMPORT_JOBS` | Parallel jobs for Halo 1 import (`crates/apps/cli/src/h1_import.rs`). |
 | `H2_CLOUD_SAVES=0` | Keep saves on this machine during Live play (`crates/apps/cli/src/play_cloud.rs`). |
 | `H2_LIVE_SERVER` | Service selected by `h2 play --live`. Use a URL or `off` ([app.md](app.md)). |
+| `forge` | Off by default. Enables the [local Forge session](../game/forge-design.md#the-ui) on offline multiplayer maps. D-pad Up or Tab toggles the monitor. |
 | `ui-back` | on by default. B or Back returns to Game Setup from its nested selectors. `H2_FEATURES=-ui-back` restores the retail selector Back behavior ([Back navigation](../game/ui-screens.md#back-navigation)) |
 | `return-to-menu` | on in ordinary windowed runs. Shows the host loading picture on the return from a game ([level-boot.md](level-boot.md#returning-to-the-main-menu)) |
 | `impl.render.native=off` | turns off the native GPU renderer, every stage together ([native-renderer.md](../graphics/native-renderer.md)) |

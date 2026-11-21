@@ -76,6 +76,15 @@ pub struct BuilderVersions {
     pub bots: u32,
 }
 
+impl BuilderVersions {
+    /// Materialisation and generator versions for documents authored by this build.
+    pub const CURRENT: Self = Self {
+        forge_build: 1,
+        pathfind: 1,
+        bots: 5,
+    };
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MapRef {
