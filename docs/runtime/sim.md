@@ -1030,6 +1030,9 @@ headers and blocks while those dependencies are being traced.
 
 - `h2 sim` never builds: it stops with `h2 build` when the image is not
   current for this `h2` (`crates/apps/cli/src/sim_cmd.rs`), as `h2 serve` does.
+- `h2 lab sim` runs a match or batch on the lab host's image and keeps the
+  reports, with per-arm medians and a state-hash comparison, for timings
+  taken on the other Mac ([Sim benchmarks](lab.md#sim-benchmarks)).
 - Sim mode never builds nav meshes: run `h2 bots nav <map>`
   (`crates/apps/cli/src/bots_nav.rs`) once per map first.
 - Each batch run has its own data directory (`<out>/runs/<id>/data`, its
