@@ -37,6 +37,7 @@ connection to hold `session.claim`.
 | `world.poke` | claim | [`world.poke`](#worldpoke-replace-bytes-in-one-object-part) |
 | `havok.bodies`, `havok.agents`, `havok.contacts` | read | [`havok`](#havok-the-physics-world) |
 | `havok.pair.set` | claim | [`havok.pair.set`](#havokpairset) |
+| `superbounce.state` | read | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `profile.counters`, `profile.capture`, `profile.fallbacks`, `profile.memory`, `profile.faults` | read | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.start`, `profile.sample.stop` | act | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.status` | read | [`profile`](#profile-where-a-frame-goes) |
@@ -616,6 +617,28 @@ whether the word a forced crouch leaves behind is what makes a superbounce
 
 ```sh
 printf '%s\n' claim 'havok.pair.set {"object":"player.0","word":"fffffffd"}' | h2 agent -
+```
+
+## `superbounce`: the superbounce game type
+
+`superbounce.state` (access: read, no params) answers from the state the
+`superbounce` feature publishes each tick
+(`crates/extensions/game/src/superbounce_mode.rs`; wire types in
+`crates/extensions/agent-proto/src/superbounce.rs`; registered in
+`crates/extensions/game/src/agent_glue.rs`). The mode is described in
+[superbounce.md](../game/superbounce.md#the-superbounce-game-type).
+
+| Field | Meaning |
+|---|---|
+| `active` | the mode is on: the variant's flag, the built-in Superbounce variant, or `H2_SUPERBOUNCE=1`. Everything below is empty or `idle` while it is off |
+| `primed` | the local player's level pair word is -3 |
+| `word`, `word_signed` | the pair word as eight hex digits and as a signed number; absent without a level pair (between lives) |
+| `position` | the local player's position, world units |
+| `nearest` | the bounce spot nearest the player: `distance` to its edge, `launch` (units/s), `fall` (units) and its `edge` |
+| `scan` | `status` (`idle`, `scanning`, `ready`, `failed`), `map`, `error`, and the `bounce` and `crouch` spot counts |
+
+```sh
+printf '%s\n' 'superbounce.state' | h2 agent -
 ```
 
 ## `profile`: where a frame goes
@@ -2202,7 +2225,9 @@ A windowed host registers a `WorldLineSource` with
 immutable sample of world-space edges, with an anchor, color, dash
 flag and optional label for each group. A sample can live as long as
 its image or carry its own lease. Only the editor sample contributes
-to `editor.marks` status (`crates/extensions/game/src/run_opts.rs`,
+to `editor.marks` status. The superbounce game type is another source, and
+its sample stays image-lived (`crates/extensions/game/src/superbounce_mode.rs`;
+`crates/extensions/game/src/run_opts.rs`,
 `crates/extensions/game/src/world_lines.rs`,
 `crates/platform/gfx/src/world_lines.rs`).
 

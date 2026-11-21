@@ -326,6 +326,10 @@ pub(crate) fn register_core_film(
     // pull at each map load, from the Aim Assist setting (Auto: Strong
     // while the touch controls show). Headless runs keep retail.
     aim_assist::install(features, i.settings.clone()).context("installing the aim assist")?;
+    // The superbounce game type's HUD plate and spot lines
+    // (docs/game/superbounce.md): idle unless the variant or
+    // H2_SUPERBOUNCE asks for it.
+    crate::superbounce_mode::install(features).context("installing the superbounce mode")?;
     // Bots (docs/game/bots.md): phantom peers in a session this console
     // hosts. Idle with none.
     let playing_film = film.is_some();

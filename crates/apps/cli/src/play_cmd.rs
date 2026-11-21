@@ -853,6 +853,7 @@ pub(crate) fn run_with_theater(
         host.perf_overlay = perf_overlay;
         host.editor_link = Some(editor_link);
         boot::debug_views::register(&mut host);
+        boot::superbounce_mode::register(&mut host);
         let r = boot::run_hosted_with_live(&xbe, &lib, &opts, host, &live_config);
         // As `h2 run` does: the kernel's storage may outlive the run (or never
         // drop), so store its pending write metadata at a normal exit, whether
@@ -1059,6 +1060,7 @@ fn play_watermark(render_thread: bool) -> app::Watermark {
             "render thread off"
         })
         .with_map(kernel::level::last_map)
+        .with_plate(boot::superbounce_mode::plate_lines)
 }
 
 /// A banner showing the frame stats' rolling window, refreshed once a

@@ -22,6 +22,7 @@ mod endpoint;
 pub mod expect;
 pub mod forge;
 pub mod havok;
+pub mod superbounce;
 pub mod host_lobby;
 pub mod host_memory;
 pub mod memory_forensics;
