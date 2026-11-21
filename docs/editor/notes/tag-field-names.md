@@ -70,8 +70,8 @@ a path refuses it. The retail names the first list held (`Halo3`,
 
 ### Names written into the definitions
 
-The citation for a `Halo2` plugin is `A Halo2 <file>`. Names are our
-snake_case, without the plugin's parentheses, units or descriptions.
+A name carries no citation: the definitions and the editor show it as
+our name, with no source label. Names are our snake_case, without the plugin's parentheses, units or descriptions.
 A `degree` field gets `unit=degrees`. Enumerations and flags get no
 value or bit names. A new scalar tiles one or more whole consecutive
 unknown spans; a plugin field that crosses a named field or a span
@@ -94,38 +94,47 @@ Sources per definition:
 plugin with a field at that offset agrees on its type, width and stride.
 No other game's plugin supplied a name to the definitions.
 
-A field that a converter writes by its byte-valued path keeps that path
-and representation (rule above). The comparison script treats a name as
-written by a converter when a string literal in the object converters
-(`crates/tools/h1objects`, `h1campaign`, `studio`, `agent`,
-`tags/src/object`) holds it, and when a converter builds the names in
-a loop: `weap` `block_2c8` (triggers), `vehi` `block_2f8` (phantom) and
-`obje` `change_colors`.
+Fields the Halo 1 converter writes are named too, against the earlier
+rule that such a field keeps its byte-valued path: the owner decided to
+name them. The converter writes the same bytes under the new names,
+raw words over typed fields (`Record::set` with `Val::Bytes`,
+[tag-definitions.md](../../formats/tag-definitions.md), "Raw bytes into
+typed fields"). A word that names no field start is addressed by its
+name and offset (`pitch_range+0x4`) or by its element offset (`@0x38`),
+as the `weap` triggers, `vehi` phantom and `obje` change colours do in
+their loops. Every path in `crates/tools/h1objects`, its tests, the
+`h1campaign` disc test and the studio's chain labels moved with the
+names.
 
 ### Counts
 
 Counted by reading, as the registry counts them
 (`Layout::coverage`): each embedded struct's fields once per group, a
 block's element once, an unknown span as its words (`registry::fill`),
-a typed field whose name ends in its offset as unnamed. The last column
-counts unnamed fields for which the plugin has a usable name at the
-same offset and width but a converter writes the field by its byte path.
+a typed field whose name ends in its offset as unnamed. A multi-word
+field (a float range, a point) counts once, so a group's total falls
+where words merge.
 
-| Group | Named before | Unnamed before | Named after | Unnamed after | Kept for a converter |
-|---|---:|---:|---:|---:|---:|
-| `weap` | 60 | 244 | 102 | 200 | 141 |
-| `vehi` | 111 | 374 | 132 | 351 | 171 |
-| `bipd` | 46 | 305 | 75 | 277 | 176 |
-| `eqip` | 33 | 73 | 46 | 60 | 37 |
-| `proj` | 55 | 87 | 63 | 81 | 53 |
-| `scen` | 27 | 54 | 30 | 51 | 30 |
-| `mach` | 41 | 63 | 45 | 60 | 37 |
-| `ctrl` | 40 | 63 | 44 | 59 | 36 |
-| `bloc` | 27 | 53 | 30 | 50 | 29 |
-| `jpt!` | 4 | 59 | 11 | 52 | 45 |
-| `ssce` | 27 | 56 | 30 | 53 | 28 |
-| `crea` | 27 | 180 | 38 | 170 | 34 |
-| `garb` | 30 | 114 | 43 | 101 | 36 |
+| Group | Named before | Unnamed before | Named after | Unnamed after |
+|---|---:|---:|---:|---:|
+| `weap` | 60 | 244 | 244 | 56 |
+| `vehi` | 111 | 374 | 309 | 146 |
+| `bipd` | 46 | 305 | 256 | 75 |
+| `eqip` | 33 | 73 | 85 | 8 |
+| `proj` | 55 | 87 | 119 | 11 |
+| `scen` | 27 | 54 | 62 | 8 |
+| `mach` | 41 | 63 | 83 | 9 |
+| `ctrl` | 40 | 63 | 83 | 8 |
+| `bloc` | 27 | 53 | 60 | 8 |
+| `jpt!` | 4 | 59 | 55 | 9 |
+| `ssce` | 27 | 56 | 59 | 11 |
+| `crea` | 27 | 180 | 103 | 92 |
+| `garb` | 30 | 114 | 81 | 50 |
+
+Still unnamed where the plugin names a field: `weap` +0x210 and +0x214
+(two plugin fields share one name). `jpt!` +0x14 and +0x8c and the
+`weap` barrel words +0x38, +0x3c, +0x48..+0x54 and +0x70..+0x78 stay
+unknown spans.
 
 The shared layers count in every group that embeds them.
 `H2_FIELD_NAMES` with the ignored comparison test prints the registry's
@@ -137,7 +146,6 @@ own counts.
 |---|---|---|---|
 | weap +0x130, +0x284 | Unknown words | String IDs | No string fixup in our schema. |
 | bipd `block_1c8` | Element `0xb4` | Element `0xb0` | The schema infers `0xb4` in `bipd`; objects.md and the `vehi` element have `0xb0`. Correcting the stride is schema work. |
-| vehi `block_1c8` +0x44 | Unknown word | Float range at +0x44 | The range crosses into the next word, which a converter writes. |
 
 ## 2026-11-21: retail reference and checked-in mappings
 
@@ -155,14 +163,13 @@ definitions and relocation schema. The retail directory contains 14 XML
 files. The comparison for these mappings covers 13 groups. The scenario
 definition is maintained separately.
 
-In a definition's evidence, `A Halo2Xbox <filename>` identifies an
-observation from that reference. It can accompany an engine or disc
-citation where they establish different facts. New labels use our
+At this entry's commit, `A Halo2Xbox <filename>` in a definition's
+evidence identified an observation from that reference; the entry above
+drops the label. New labels use our
 snake_case spelling. Descriptions are single-line sentences written
 for the editor. New scalar fields tile an entire existing opaque span.
 Shared layers contribute their fields to every definition that embeds
-them. A converter that addresses an opaque field by its byte-valued
-path keeps that path and representation.
+them.
 
 ### Mapped declarations
 

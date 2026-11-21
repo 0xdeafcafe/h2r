@@ -2,70 +2,69 @@
 # each group. Layer bounds: docs/formats/objects.md.
 struct unit 0x1c8
   0x0 struct obje obje -- the obje layer
-  0xbc unknown 0x4
-  0xc0 unknown 0x4
-  0xc4 tagref effe_ref_c4 doc="Names the effect for toggling the unit's built-in light." -- V; A Halo2Xbox vehi.xml
-  0xcc f32 camera_field_of_view doc="Sets the field of view of the unit camera in radians." -- V radians: 70 degrees on every Halo 2 biped and turret with a Halo 1 counterpart, and equal to Halo 1's unit +0x1a0 on the cyborg, marine, elite, grunt and jackal pairs (h1objects tests/unit_rebuild_disc.rs); name D; A Halo2Xbox vehi.xml
-  0xd0 f32 camera_spring_stiffness doc="Controls the stiffness of the unit's camera movement." -- A Halo2Xbox vehi.xml
-  0xd4 string string_d4 doc="Locates the camera on the unit's model." -- A Halo2Xbox vehi.xml
+  0xbc flags32 flags
+  0xc0 enum16 default_team
+  0xc2 enum16 constant_sound_volume
+  0xc4 tagref integrated_light_toggle doc="Names the effect for toggling the unit's built-in light." -- V
+  0xcc f32 camera_field_of_view doc="Sets the field of view of the unit camera in radians." -- V radians: 70 degrees on every Halo 2 biped and turret with a Halo 1 counterpart, and equal to Halo 1's unit +0x1a0 on the cyborg, marine, elite, grunt and jackal pairs (h1objects tests/unit_rebuild_disc.rs); name D
+  0xd0 f32 camera_spring_stiffness doc="Controls the stiffness of the unit's camera movement."
+  0xd4 string camera_marker_name doc="Locates the camera on the unit's model."
   0xd8 unknown 0x4
-  0xdc unknown 0x4
-  0xe0 unknown 0x4
-  0xe4 unknown 0x4
-  0xe8 block block_e8 0x8 align 4 doc="Lists tracks for the unit camera." -- A Halo2Xbox vehi.xml
-    0x0 tagref ref_0
-  0xf0 f32[3] acceleration_range -- A Halo2Xbox vehi.xml
-  0xfc f32 action_acceleration_scale doc="Scales the unit's acceleration for actions." -- A Halo2Xbox vehi.xml
-  0x100 f32 attachment_acceleration_scale doc="Scales acceleration when the unit is attached." -- A Halo2Xbox vehi.xml
-  0x104 f32 minor_hit_threshold doc="Sets the threshold for a minor hit reaction." -- A Halo2Xbox vehi.xml
-  0x108 f32 minor_hit_interrupt_time doc="Sets the duration of the interruption from a minor hit." -- A Halo2Xbox vehi.xml
-  0x10c unknown 0x4
-  0x110 unknown 0x4
-  0x114 unknown 0x4
-  0x118 unknown 0x4
-  0x11c unknown 0x4
-  0x120 unknown 0x4
-  0x124 unknown 0x4
-  0x128 f32 stun_motion_threshold doc="Sets the movement threshold for a stunned unit." -- A Halo2Xbox vehi.xml
-  0x12c f32 feign_probability doc="Sets the chance of the unit feigning death." -- A Halo2Xbox vehi.xml
-  0x130 f32 feign_repeat_probability doc="Sets the chance of feigning death again." -- A Halo2Xbox vehi.xml
-  0x134 tagref spawned_turret_character doc="Identifies the character to spawn for the turret." -- A Halo2Xbox vehi.xml
-  0x13c i16[2] spawn_count_bounds doc="Sets the lower and upper limits on the number of actors to spawn." -- A Halo2Xbox vehi.xml
-  0x140 f32 spawned_actor_speed doc="Sets the initial speed of a spawned actor." -- A Halo2Xbox vehi.xml
-  0x144 unknown 0x4
-  0x148 unknown 0x4
-  0x14c unknown 0x4
-  0x150 f32 look_speed_limit doc="Limits the angular speed of the unit's gaze." -- A Halo2Xbox vehi.xml
-  0x154 f32 look_acceleration_limit doc="Limits how quickly the unit's gaze can change speed." -- A Halo2Xbox vehi.xml
-  0x158 string string_158 doc="Names the unit model's right hand node." -- A Halo2Xbox vehi.xml
-  0x15c string string_15c doc="Names the unit model's left hand node." -- A Halo2Xbox vehi.xml
-  0x160 string preferred_gun_node doc="Identifies the preferred node for mounting a gun." -- A Halo2Xbox vehi.xml
-  0x164 tagref ref_164 doc="Names the damage effect for a normal melee strike." -- A Halo2Xbox vehi.xml
-  0x16c tagref boarding_melee_damage doc="Names the damage effect for a boarding melee strike." -- A Halo2Xbox vehi.xml
-  0x174 tagref boarding_melee_response doc="Names the response to a boarding melee strike." -- A Halo2Xbox vehi.xml
-  0x17c tagref landing_melee_damage doc="Names the damage effect for a landing melee strike." -- A Halo2Xbox vehi.xml
-  0x184 tagref flurry_melee_damage doc="Names the damage effect for a melee flurry." -- A Halo2Xbox vehi.xml
-  0x18c tagref obstacle_smash_damage doc="Names the damage effect for smashing an obstacle." -- A Halo2Xbox vehi.xml
-  0x194 enum16 radar_blip_size doc="Selects the size of the unit's marker on the motion sensor." -- A Halo2Xbox vehi.xml
+  0xdc f32 pitch_auto_level unit=degrees
+  0xe0 f32[2] pitch_range unit=degrees
+  0xe8 block camera_tracks 0x8 align 4 doc="Lists tracks for the unit camera."
+    0x0 tagref track
+  0xf0 f32[3] acceleration_range
+  0xfc f32 action_acceleration_scale doc="Scales the unit's acceleration for actions."
+  0x100 f32 attachment_acceleration_scale doc="Scales acceleration when the unit is attached."
+  0x104 f32 minor_hit_threshold doc="Sets the threshold for a minor hit reaction."
+  0x108 f32 minor_hit_interrupt_time doc="Sets the duration of the interruption from a minor hit."
+  0x10c f32 hard_ping_threshold
+  0x110 f32 hard_ping_interrupt_time
+  0x114 f32 hard_death_threshold
+  0x118 f32 feign_death_threshold
+  0x11c f32 feign_death_time
+  0x120 f32 distance_of_evade_animation
+  0x124 f32 distance_of_dive_animation
+  0x128 f32 stun_motion_threshold doc="Sets the movement threshold for a stunned unit."
+  0x12c f32 feign_probability doc="Sets the chance of the unit feigning death."
+  0x130 f32 feign_repeat_probability doc="Sets the chance of feigning death again."
+  0x134 tagref spawned_turret_character doc="Identifies the character to spawn for the turret."
+  0x13c i16[2] spawn_count_bounds doc="Sets the lower and upper limits on the number of actors to spawn."
+  0x140 f32 spawned_actor_speed doc="Sets the initial speed of a spawned actor."
+  0x144 f32 aiming_velocity_maximum unit=degrees
+  0x148 f32 aiming_acceleration_maximum unit=degrees
+  0x14c f32 casual_aiming_modifier
+  0x150 f32 look_speed_limit doc="Limits the angular speed of the unit's gaze."
+  0x154 f32 look_acceleration_limit doc="Limits how quickly the unit's gaze can change speed."
+  0x158 string right_hand_node doc="Names the unit model's right hand node."
+  0x15c string left_hand_node doc="Names the unit model's left hand node."
+  0x160 string preferred_gun_node doc="Identifies the preferred node for mounting a gun."
+  0x164 tagref melee_damage doc="Names the damage effect for a normal melee strike."
+  0x16c tagref boarding_melee_damage doc="Names the damage effect for a boarding melee strike."
+  0x174 tagref boarding_melee_response doc="Names the response to a boarding melee strike."
+  0x17c tagref landing_melee_damage doc="Names the damage effect for a landing melee strike."
+  0x184 tagref flurry_melee_damage doc="Names the damage effect for a melee flurry."
+  0x18c tagref obstacle_smash_damage doc="Names the damage effect for smashing an obstacle."
+  0x194 enum16 radar_blip_size doc="Selects the size of the unit's marker on the motion sensor."
   0x196 unknown 0x2
-  0x198 block postures 0x10 align 4 doc="Lists the postures available to the unit." -- A Halo2Xbox vehi.xml
-    0x0 string string_0
-    0x4 unknown 0x4
-    0x8 unknown 0x4
-    0xc unknown 0x4
-  0x1a0 block block_1a0 0x8 align 4 doc="Lists HUD interface references for this unit." -- A Halo2Xbox vehi.xml
-    0x0 tagref ref_0
-  0x1a8 block dialogue_variants 0xc align 4 doc="Lists the unit's dialogue variants." -- A Halo2Xbox vehi.xml
-    0x0 i16 dialogue_variant_index doc="Selects the dialogue variant associated with this entry." -- A Halo2Xbox vehi.xml
+  0x198 block postures 0x10 align 4 doc="Lists the postures available to the unit."
+    0x0 string name
+    0x4 f32[3] pill_offset
+  0x1a0 block hud_interfaces 0x8 align 4 doc="Lists HUD interface references for this unit."
+    0x0 tagref hud_interface
+  0x1a8 block dialogue_variants 0xc align 4 doc="Lists the unit's dialogue variants."
+    0x0 i16 dialogue_variant_index doc="Selects the dialogue variant associated with this entry."
     0x2 unknown 0x2
     0x4 unknown 0x4
     0x8 unknown 0x4
-  0x1b0 unknown 0x4
-  0x1b4 unknown 0x4
-  0x1b8 block block_1b8 0x8 align 4 doc="Lists the power transitions available to the driver." -- A Halo2Xbox vehi.xml
-    0x0 f32 driver_power_rise_time doc="Sets how long driver power takes to rise." -- A Halo2Xbox vehi.xml
-    0x4 f32 driver_power_fall_time doc="Sets how long driver power takes to fall." -- A Halo2Xbox vehi.xml
-  0x1c0 block weapons 0x8 align 4 doc="Lists the weapons carried as part of the unit." -- V the unit's weapons: every element of every vehicle on 05a_deltaapproach and coagulation that has one names a weap (the turrets' guns, the warthog's horn, the ghost's, banshee's and phantom's guns); A Halo2Xbox vehi.xml
+  0x1b0 f32 grenade_velocity
+  0x1b4 enum16 grenade_type
+  0x1b6 i16 grenade_count
+  0x1b8 block powered_seats 0x8 align 4 doc="Lists the power transitions available to the driver."
+    0x0 f32 driver_power_rise_time doc="Sets how long driver power takes to rise."
+    0x4 f32 driver_power_fall_time doc="Sets how long driver power takes to fall."
+  0x1c0 block weapons 0x8 align 4 doc="Lists the weapons carried as part of the unit." -- V the unit's weapons: every element of every vehicle on 05a_deltaapproach and coagulation that has one names a weap (the turrets' guns, the warthog's horn, the ghost's, banshee's and phantom's guns)
     0x0 tagref weapon groups=weap -- V
 group bipd 0x314
   0x0 struct unit unit -- the unit layer
@@ -115,255 +114,244 @@ group bipd 0x314
     0xa8 unknown 0x4
     0xac unknown 0x4
     0xb0 unknown 0x4
-  0x1d0 unknown 0x4
-  0x1d4 f32 boost_rise_power -- A Halo2 bipd.xml
-  0x1d8 f32 boost_peak_time -- A Halo2 bipd.xml
-  0x1dc f32 boost_fall_power -- A Halo2 bipd.xml
-  0x1e0 f32 boost_dead_time -- A Halo2 bipd.xml
-  0x1e4 f32 lipsync_attack_weight -- A Halo2 bipd.xml
-  0x1e8 f32 lipsync_decay_weight -- A Halo2 bipd.xml
-  0x1ec unknown 0x4
-  0x1f0 unknown 0x4
-  0x1f4 unknown 0x4
-  0x1f8 unknown 0x4
-  0x1fc unknown 0x4
-  0x200 unknown 0x4
-  0x204 unknown 0x4
-  0x208 unknown 0x4
-  0x20c unknown 0x4
-  0x210 unknown 0x4
-  0x214 unknown 0x4
-  0x218 unknown 0x4
-  0x21c unknown 0x4
-  0x220 unknown 0x4
-  0x224 f32 camera_interpolation_start unit=degrees -- A Halo2 bipd.xml
-  0x228 f32 camera_interpolation_end unit=degrees -- A Halo2 bipd.xml
-  0x22c unknown 0x4
-  0x230 unknown 0x4
-  0x234 unknown 0x4
-  0x238 unknown 0x4
-  0x23c unknown 0x4
-  0x240 unknown 0x4
-  0x244 unknown 0x4
-  0x248 i16 physics_control_node_index -- A Halo2 bipd.xml
+  0x1d0 f32 boost_peak_power
+  0x1d4 f32 boost_rise_power
+  0x1d8 f32 boost_peak_time
+  0x1dc f32 boost_fall_power
+  0x1e0 f32 boost_dead_time
+  0x1e4 f32 lipsync_attack_weight
+  0x1e8 f32 lipsync_decay_weight
+  0x1ec f32 moving_turning_speed unit=degrees
+  0x1f0 flags32 flags
+  0x1f4 f32 stationary_turning_threshold unit=degrees
+  0x1f8 f32 jump_velocity
+  0x1fc f32 maximum_soft_landing_time
+  0x200 f32 maximum_hard_landing_time
+  0x204 f32 minimum_soft_landing_velocity
+  0x208 f32 minimum_hard_landing_velocity
+  0x20c f32 maximum_hard_landing_velocity
+  0x210 f32 death_hard_landing_velocity
+  0x214 f32 stun_duration
+  0x218 f32 standing_camera_height
+  0x21c f32 crouching_camera_height
+  0x220 f32 crouch_transition_time
+  0x224 f32 camera_interpolation_start unit=degrees
+  0x228 f32 camera_interpolation_end unit=degrees
+  0x22c f32 camera_forward_movement_scale
+  0x230 f32 camera_side_movement_scale
+  0x234 f32 camera_vertical_movement_scale
+  0x238 f32 camera_exclusion_distance
+  0x23c f32 autoaim_width
+  0x240 flags32 lock_on_flags
+  0x244 f32 lock_on_distance
+  0x248 i16 physics_control_node_index
   0x24a unknown 0x2
-  0x24c unknown 0x4
-  0x250 unknown 0x4
-  0x254 unknown 0x4
-  0x258 unknown 0x4
-  0x25c tagref ref_25c
+  0x24c f32 cosine_stationary_turning_threshold
+  0x250 f32 crouch_transition_velocity
+  0x254 i16 pelvis_node_index
+  0x256 i16 head_node_index
+  0x258 f32 headshot_acceleration_scale
+  0x25c tagref area_damage_effect
   0x264 unknown 0x4
-  0x268 unknown 0x4
-  0x26c unknown 0x4
-  0x270 unknown 0x4
-  0x274 unknown 0x4
-  0x278 string living_global_material_name -- A Halo2 bipd.xml
-  0x27c string dead_global_material_name -- A Halo2 bipd.xml
-  0x280 i16 living_global_material_index -- A Halo2 bipd.xml
-  0x282 i16 dead_global_material_index -- A Halo2 bipd.xml
-  0x284 block block_284 0x80 align 16
+  0x268 f32 height_standing
+  0x26c f32 height_crouching
+  0x270 f32 radius
+  0x274 f32 mass
+  0x278 string living_global_material_name
+  0x27c string dead_global_material_name
+  0x280 i16 living_global_material_index
+  0x282 i16 dead_global_material_index
+  0x284 block dead_sphere_shapes 0x80 align 16
     0x0 unknown 0x4
-    0x4 unknown 0x4
-    0x8 unknown 0x4
-    0xc unknown 0x4
-    0x10 unknown 0x4
-    0x14 unknown 0x4
-    0x18 unknown 0x4
-    0x1c unknown 0x4
+    0x4 i16 material_index
+    0x6 flags16 flags
+    0x8 f32 relative_mass_scale
+    0xc f32 friction
+    0x10 f32 restitution
+    0x14 f32 volume
+    0x18 f32 mass
+    0x1c i16 mass_distribution_index
+    0x1e i8 phantom_type_index
+    0x1f i8 collision_group
     0x20 unknown 0x4
-    0x24 unknown 0x4
-    0x28 unknown 0x4
-    0x2c unknown 0x4
+    0x24 i16 size
+    0x26 i16 count
+    0x28 u32 user_data
+    0x2c f32 radius
     0x30 unknown 0x4
     0x34 unknown 0x4
     0x38 unknown 0x4
     0x3c unknown 0x4
-    0x40 unknown 0x4
-    0x44 unknown 0x4
-    0x48 unknown 0x4
-    0x4c unknown 0x4
-    0x50 unknown 0x4
-    0x54 unknown 0x4
-    0x58 unknown 0x4
-    0x5c unknown 0x4
-    0x60 unknown 0x4
-    0x64 unknown 0x4
-    0x68 unknown 0x4
-    0x6c unknown 0x4
-    0x70 unknown 0x4
-    0x74 unknown 0x4
-    0x78 unknown 0x4
-    0x7c unknown 0x4
-  0x28c block block_28c 0x50 align 16
+    0x40 f32[3] rotation_i
+    0x4c f32 w_rotation_i
+    0x50 f32[3] rotation_j
+    0x5c f32 w_rotation_j
+    0x60 f32[3] rotation_k
+    0x6c f32 w_rotation_k
+    0x70 f32[3] translation
+    0x7c f32 w_translation
+  0x28c block pill_shapes 0x50 align 16
     0x0 unknown 0x4
-    0x4 unknown 0x4
-    0x8 unknown 0x4
-    0xc unknown 0x4
-    0x10 unknown 0x4
-    0x14 unknown 0x4
-    0x18 unknown 0x4
-    0x1c unknown 0x4
+    0x4 i16 material_index
+    0x6 flags16 flags
+    0x8 f32 relative_mass_scale
+    0xc f32 friction
+    0x10 f32 restitution
+    0x14 f32 volume
+    0x18 f32 mass
+    0x1c i16 mass_distribution_index
+    0x1e i8 phantom_type_index
+    0x1f i8 collision_group
     0x20 unknown 0x4
-    0x24 unknown 0x4
-    0x28 unknown 0x4
-    0x2c unknown 0x4
+    0x24 i16 size
+    0x26 i16 count
+    0x28 u32 user_data
+    0x2c f32 radius
+    0x30 f32[3] bottom
+    0x3c f32 w_bottom
+    0x40 f32[3] top
+    0x4c f32 w_top
+  0x294 block sphere_shapes 0x80 align 16
+    0x0 unknown 0x4
+    0x4 i16 material_index
+    0x6 flags16 flags
+    0x8 f32 relative_mass_scale
+    0xc f32 friction
+    0x10 f32 restitution
+    0x14 f32 volume
+    0x18 f32 mass
+    0x1c i16 mass_distribution_index
+    0x1e i8 phantom_type_index
+    0x1f i8 collision_group
+    0x20 unknown 0x4
+    0x24 i16 size
+    0x26 i16 count
+    0x28 u32 user_data
+    0x2c f32 radius
     0x30 unknown 0x4
     0x34 unknown 0x4
     0x38 unknown 0x4
     0x3c unknown 0x4
-    0x40 unknown 0x4
-    0x44 unknown 0x4
-    0x48 unknown 0x4
-    0x4c unknown 0x4
-  0x294 block block_294 0x80 align 16
-    0x0 unknown 0x4
-    0x4 unknown 0x4
-    0x8 unknown 0x4
-    0xc unknown 0x4
-    0x10 unknown 0x4
-    0x14 unknown 0x4
-    0x18 unknown 0x4
-    0x1c unknown 0x4
-    0x20 unknown 0x4
-    0x24 unknown 0x4
-    0x28 unknown 0x4
-    0x2c unknown 0x4
-    0x30 unknown 0x4
-    0x34 unknown 0x4
-    0x38 unknown 0x4
-    0x3c unknown 0x4
-    0x40 unknown 0x4
-    0x44 unknown 0x4
-    0x48 unknown 0x4
-    0x4c unknown 0x4
-    0x50 unknown 0x4
-    0x54 unknown 0x4
-    0x58 unknown 0x4
-    0x5c unknown 0x4
-    0x60 unknown 0x4
-    0x64 unknown 0x4
-    0x68 unknown 0x4
-    0x6c unknown 0x4
-    0x70 unknown 0x4
-    0x74 unknown 0x4
-    0x78 unknown 0x4
-    0x7c unknown 0x4
-  0x29c unknown 0x4
-  0x2a0 unknown 0x4
-  0x2a4 unknown 0x4
-  0x2a8 unknown 0x4
-  0x2ac unknown 0x4
-  0x2b0 unknown 0x4
-  0x2b4 unknown 0x4
-  0x2b8 unknown 0x4
-  0x2bc unknown 0x4
-  0x2c0 unknown 0x4
-  0x2c4 unknown 0x4
-  0x2c8 unknown 0x4
-  0x2cc unknown 0x4
-  0x2d0 unknown 0x4
-  0x2d4 unknown 0x4
-  0x2d8 unknown 0x4
-  0x2dc unknown 0x4
-  0x2e0 unknown 0x4
-  0x2e4 unknown 0x4
-  0x2e8 unknown 0x4
-  0x2ec unknown 0x4
-  0x2f0 unknown 0x4
-  0x2f4 unknown 0x4
-  0x2f8 block block_2f8 0x4 align 16
-    0x0 string string_0
-  0x300 tagref reanimation_character -- A Halo2 bipd.xml
-  0x308 tagref death_spawn_character -- A Halo2 bipd.xml
-  0x310 i16 death_spawn_count -- A Halo2 bipd.xml
+    0x40 f32[3] rotation_i
+    0x4c f32 w_rotation_i
+    0x50 f32[3] rotation_j
+    0x5c f32 w_rotation_j
+    0x60 f32[3] rotation_k
+    0x6c f32 w_rotation_k
+    0x70 f32[3] translation
+    0x7c f32 w_translation
+  0x29c f32 maximum_slope_angle unit=degrees
+  0x2a0 f32 downhill_falloff_angle unit=degrees
+  0x2a4 f32 downhill_cutoff_angle unit=degrees
+  0x2a8 f32 uphill_falloff_angle unit=degrees
+  0x2ac f32 uphill_cutoff_angle unit=degrees
+  0x2b0 f32 downhill_velocity_scale
+  0x2b4 f32 uphill_velocity_scale
+  0x2b8 f32 cosine_maximum_slope_angle
+  0x2bc f32 negative_sine_downhill_falloff_angle
+  0x2c0 f32 negative_sine_downhill_cutoff_angle
+  0x2c4 f32 sine_uphill_falloff_angle
+  0x2c8 f32 sine_uphill_cutoff_angle
+  0x2cc f32 bank_angle unit=degrees
+  0x2d0 f32 bank_apply_time
+  0x2d4 f32 bank_decay_time
+  0x2d8 f32 pitch_ratio
+  0x2dc f32 maximum_velocity
+  0x2e0 f32 maximum_sidestep_velocity
+  0x2e4 f32 acceleration
+  0x2e8 f32 deceleration
+  0x2ec f32 angular_velocity_maximum unit=degrees
+  0x2f0 f32 angular_acceleration_maximum unit=degrees
+  0x2f4 f32 crouch_velocity_modifier
+  0x2f8 block contact_points 0x4 align 16
+    0x0 string marker_name
+  0x300 tagref reanimation_character
+  0x308 tagref death_spawn_character
+  0x310 i16 death_spawn_count
   0x312 unknown 0x2
 group vehi 0x300
   0x0 struct unit unit -- the unit layer
-  0x1c8 block block_1c8 0xb0 align 4 doc="Describes the seats available to riders." -- A Halo2Xbox vehi.xml
-    0x0 unknown 0x4
-    0x4 string label doc="Identifies the seat to scripts that select a rider position." -- V the seat's label: scripts select seats by it (the scenario's seat-mapping masks select the seats whose label starts with the script's text, h1scripts::seats, checked on 05a); A Halo2Xbox vehi.xml
-    0x8 string string_8 doc="Names the model marker occupied by the rider." -- A Halo2Xbox vehi.xml
-    0xc string string_c doc="Names the marker used to enter this seat." -- A Halo2Xbox vehi.xml
-    0x10 string string_10 doc="Locates the grenade marker used during boarding." -- A Halo2Xbox vehi.xml
-    0x14 string string_14 doc="Identifies the boarding prompt for a grenade." -- A Halo2Xbox vehi.xml
-    0x18 string boarding_melee_string doc="Identifies the boarding prompt for a melee attack." -- A Halo2Xbox vehi.xml
-    0x1c f32 seat_hit_reaction_scale doc="Scales a hit reaction for the occupant of this seat." -- A Halo2Xbox vehi.xml
-    0x20 unknown 0x4
-    0x24 unknown 0x4
-    0x28 unknown 0x4
-    0x2c unknown 0x4
-    0x30 f32 seat_action_acceleration_scale doc="Scales acceleration for actions performed from this seat." -- A Halo2Xbox vehi.xml
-    0x34 f32 seat_attachment_acceleration_scale doc="Scales acceleration applied to the attached rider." -- A Halo2Xbox vehi.xml
-    0x38 f32 ai_threat_rating doc="Sets the threat rating AI assigns to this seat." -- A Halo2Xbox vehi.xml
-    0x3c enum16 ai_seat_role doc="Classifies the seat for AI occupants." -- A Halo2Xbox vehi.xml
-    0x3e i16 boarding_target_seat doc="Identifies the seat targeted during boarding." -- A Halo2Xbox vehi.xml
-    0x40 f32 listener_blend doc="Sets how far the sound listener interpolates toward the seat." -- A Halo2Xbox vehi.xml
-    0x44 unknown 0x4
-    0x48 unknown 0x4
-    0x4c unknown 0x4
-    0x50 unknown 0x4
-    0x54 f32 low_speed_reference doc="Sets the low endpoint of the seat's speed reference." -- A Halo2Xbox vehi.xml
-    0x58 f32 high_speed_reference doc="Sets the high endpoint of the seat's speed reference." -- A Halo2Xbox vehi.xml
-    0x5c f32 speed_response_exponent doc="Shapes the response between the seat's reference speeds." -- A Halo2Xbox vehi.xml
-    0x60 string string_60 doc="Names the camera marker used by the rider." -- A Halo2Xbox vehi.xml
-    0x64 string camera_submerged_marker_name doc="Names the rider's underwater camera marker." -- A Halo2Xbox vehi.xml
-    0x68 unknown 0x4
-    0x6c unknown 0x4
-    0x70 unknown 0x4
-    0x74 block block_74 0x8 align 4
-      0x0 tagref ref_0
-    0x7c block unit_hud_interface 0x8 align 4 -- A Halo2Xbox vehi.xml
-      0x0 tagref ref_0
-    0x84 string enter_seat_string doc="Identifies the text used to prompt entry into this seat." -- A Halo2Xbox vehi.xml
-    0x88 unknown 0x4
-    0x8c unknown 0x4
-    0x90 tagref built_in_gunner doc="Names the character assigned as the built-in gunner." -- A Halo2Xbox vehi.xml
-    0x98 unknown 0x4
-    0x9c unknown 0x4
-    0xa0 unknown 0x4
-    0xa4 unknown 0x4
-    0xa8 string invisible_seat_region -- A Halo2Xbox vehi.xml
-    0xac unknown 0x4
-  0x1d0 f32 boost_peak doc="Sets the power at the top of the boost cycle." -- A Halo2Xbox vehi.xml
-  0x1d4 f32 boost_rise_power doc="Controls power on the rising side of the boost cycle." -- A Halo2Xbox vehi.xml
-  0x1d8 f32 boost_peak_duration doc="Sets the interval that boost spends at peak power." -- A Halo2Xbox vehi.xml
-  0x1dc f32 boost_fall_power doc="Controls power on the falling side of the boost cycle." -- A Halo2Xbox vehi.xml
-  0x1e0 f32 boost_recovery_time doc="Sets the inactive interval in the boost cycle." -- A Halo2Xbox vehi.xml
-  0x1e4 f32 lip_sync_onset_weight doc="Weights the onset of lip movements during speech." -- A Halo2Xbox vehi.xml
-  0x1e8 f32 lip_sync_release_weight doc="Weights the decay of lip movements during speech." -- A Halo2Xbox vehi.xml
+  0x1c8 block seats 0xb0 align 4 doc="Describes the seats available to riders."
+    0x0 flags32 flags
+    0x4 string label doc="Identifies the seat to scripts that select a rider position." -- V the seat's label: scripts select seats by it (the scenario's seat-mapping masks select the seats whose label starts with the script's text, h1scripts::seats, checked on 05a)
+    0x8 string seat_marker_name doc="Names the model marker occupied by the rider."
+    0xc string entry_marker_name doc="Names the marker used to enter this seat."
+    0x10 string boarding_grenade_marker doc="Locates the grenade marker used during boarding."
+    0x14 string boarding_grenade_string doc="Identifies the boarding prompt for a grenade."
+    0x18 string boarding_melee_string doc="Identifies the boarding prompt for a melee attack."
+    0x1c f32 seat_hit_reaction_scale doc="Scales a hit reaction for the occupant of this seat."
+    0x20 f32 turnover_time
+    0x24 f32[3] acceleration_range
+    0x30 f32 seat_action_acceleration_scale doc="Scales acceleration for actions performed from this seat."
+    0x34 f32 seat_attachment_acceleration_scale doc="Scales acceleration applied to the attached rider."
+    0x38 f32 ai_threat_rating doc="Sets the threat rating AI assigns to this seat."
+    0x3c enum16 ai_seat_role doc="Classifies the seat for AI occupants."
+    0x3e i16 boarding_target_seat doc="Identifies the seat targeted during boarding."
+    0x40 f32 listener_blend doc="Sets how far the sound listener interpolates toward the seat."
+    0x44 f32[2] yaw_rate_bounds
+    0x4c f32[2] pitch_rate_bounds
+    0x54 f32 low_speed_reference doc="Sets the low endpoint of the seat's speed reference."
+    0x58 f32 high_speed_reference doc="Sets the high endpoint of the seat's speed reference."
+    0x5c f32 speed_response_exponent doc="Shapes the response between the seat's reference speeds."
+    0x60 string camera_marker_name doc="Names the camera marker used by the rider."
+    0x64 string camera_submerged_marker_name doc="Names the rider's underwater camera marker."
+    0x68 f32 pitch_auto_level unit=degrees
+    0x6c f32[2] pitch_range unit=degrees
+    0x74 block camera_tracks 0x8 align 4
+      0x0 tagref track
+    0x7c block unit_hud_interface 0x8 align 4
+      0x0 tagref hud_interface
+    0x84 string enter_seat_string doc="Identifies the text used to prompt entry into this seat."
+    0x88 f32[2] yaw unit=degrees
+    0x90 tagref built_in_gunner doc="Names the character assigned as the built-in gunner."
+    0x98 f32 entry_radius
+    0x9c f32 entry_marker_cone_angle unit=degrees
+    0xa0 f32 entry_marker_facing_angle unit=degrees
+    0xa4 f32 maximum_relative_velocity
+    0xa8 string invisible_seat_region
+    0xac i32 invisible_seat_region_index
+  0x1d0 f32 boost_peak doc="Sets the power at the top of the boost cycle."
+  0x1d4 f32 boost_rise_power doc="Controls power on the rising side of the boost cycle."
+  0x1d8 f32 boost_peak_duration doc="Sets the interval that boost spends at peak power."
+  0x1dc f32 boost_fall_power doc="Controls power on the falling side of the boost cycle."
+  0x1e0 f32 boost_recovery_time doc="Sets the inactive interval in the boost cycle."
+  0x1e4 f32 lip_sync_onset_weight doc="Weights the onset of lip movements during speech."
+  0x1e8 f32 lip_sync_release_weight doc="Weights the decay of lip movements during speech."
   0x1ec u32 vehicle_flags -- E objects.md (vehicle code tests bits here, 0x000efb8c); V the low half equals Halo 1's vehi +0x2f0 on five of eight pairs (warthog, scorpion, wraith, banshee, Covenant gun turret; h1objects tests/vehicle_rebuild_disc.rs). Bits not named
-  0x1f0 enum16 vehicle_type values=tank|jeep|type_2|dropship|hover|flier|turret doc="Selects the vehicle controller used by the engine." -- E objects.md (vehicle code reads the type here); V names by the retail vehicles holding each: 0 scorpion, 1 warthog, 3 pelican, phantom and the gravity throne, 4 ghost, wraith, spectre and creep, 5 banshee, 6 the turrets (none holds 2); A Halo2Xbox vehi.xml
-  0x1f2 unknown 0x2
-  0x1f4 unknown 0x4
-  0x1f8 unknown 0x4
-  0x1fc unknown 0x4
-  0x200 unknown 0x4
-  0x204 unknown 0x4
-  0x208 unknown 0x4
-  0x20c unknown 0x4
-  0x210 unknown 0x4
-  0x214 unknown 0x4
-  0x218 unknown 0x4
-  0x21c string flip_message doc="Identifies the prompt for righting an overturned vehicle." -- A Halo2Xbox vehi.xml
-  0x220 f32 steering_scale doc="Scales the vehicle's turning response." -- A Halo2Xbox vehi.xml
-  0x224 f32 steering_penalty_exponent doc="Shapes the effect of speed on the steering penalty." -- A Halo2Xbox vehi.xml
-  0x228 f32 steering_penalty doc="Sets how strongly speed limits the vehicle's turning." -- A Halo2Xbox vehi.xml
-  0x22c unknown 0x4
-  0x230 unknown 0x4
-  0x234 unknown 0x4
-  0x238 unknown 0x4
-  0x23c unknown 0x4
-  0x240 unknown 0x4
-  0x244 unknown 0x4
-  0x248 f32 fixed_weapon_yaw doc="Sets the horizontal orientation of a fixed weapon." -- A Halo2Xbox vehi.xml
-  0x24c f32 fixed_weapon_pitch doc="Sets the vertical orientation of a fixed weapon." -- A Halo2Xbox vehi.xml
-  0x250 f32 damping_cusp_angle doc="Sets the angle at the cusp of the damping curve." -- A Halo2Xbox vehi.xml
-  0x254 f32 damping_exponent doc="Shapes the damping curve beyond its cusp." -- A Halo2Xbox vehi.xml
-  0x258 f32 crouch_transition_time doc="Sets the duration of the vehicle's crouch transition." -- A Halo2Xbox vehi.xml
+  0x1f0 enum16 vehicle_type values=tank|jeep|type_2|dropship|hover|flier|turret doc="Selects the vehicle controller used by the engine." -- E objects.md (vehicle code reads the type here); V names by the retail vehicles holding each: 0 scorpion, 1 warthog, 3 pelican, phantom and the gravity throne, 4 ghost, wraith, spectre and creep, 5 banshee, 6 the turrets (none holds 2)
+  0x1f2 enum16 control
+  0x1f4 f32 maximum_forward_speed
+  0x1f8 f32 maximum_reverse_speed
+  0x1fc f32 speed_acceleration
+  0x200 f32 speed_deceleration
+  0x204 f32 maximum_left_turn
+  0x208 f32 maximum_right_turn
+  0x20c f32 wheel_circumference
+  0x210 f32 turn_rate
+  0x214 f32 blur_speed
+  0x218 enum16 specific_type
+  0x21a enum16 player_training_vehicle_type
+  0x21c string flip_message doc="Identifies the prompt for righting an overturned vehicle."
+  0x220 f32 steering_scale doc="Scales the vehicle's turning response."
+  0x224 f32 steering_penalty_exponent doc="Shapes the effect of speed on the steering penalty."
+  0x228 f32 steering_penalty doc="Sets how strongly speed limits the vehicle's turning."
+  0x22c f32 maximum_left_slide
+  0x230 f32 maximum_right_slide
+  0x234 f32 slide_acceleration
+  0x238 f32 slide_deceleration
+  0x23c f32 minimum_flipping_angular_velocity
+  0x240 f32 maximum_flipping_angular_velocity
+  0x244 enum16 vehicle_size
+  0x246 unknown 0x2
+  0x248 f32 fixed_weapon_yaw doc="Sets the horizontal orientation of a fixed weapon."
+  0x24c f32 fixed_weapon_pitch doc="Sets the vertical orientation of a fixed weapon."
+  0x250 f32 damping_cusp_angle doc="Sets the angle at the cusp of the damping curve."
+  0x254 f32 damping_exponent doc="Shapes the damping curve beyond its cusp."
+  0x258 f32 crouch_transition_time doc="Sets the duration of the vehicle's crouch transition."
   0x25c unknown 0x4
-  0x260 unknown 0x4
-  0x264 unknown 0x4
-  0x268 block block_268 0x44 align 4 doc="Describes torque and shift thresholds for each gear." -- A Halo2Xbox vehi.xml
+  0x260 f32 engine_moment
+  0x264 f32 engine_maximum_angular_velocity
+  0x268 block gears 0x44 align 4 doc="Describes torque and shift thresholds for each gear."
     0x0 f32 drive_at_rest
     0x4 f32 drive_at_peak
     0x8 f32 drive_peak_fraction
@@ -381,135 +369,125 @@ group vehi 0x300
     0x38 f32 speed_ratio
     0x3c f32 downshift_seconds
     0x40 f32 downshift_fraction
-  0x270 f32 flight_torque_scale doc="Scales torque while the vehicle is flying." -- A Halo2Xbox vehi.xml
-  0x274 unknown 0x4
-  0x278 unknown 0x4
-  0x27c f32 air_drag_deceleration doc="Sets the deceleration attributed to air friction." -- A Halo2Xbox vehi.xml
-  0x280 f32 thrust_multiplier doc="Scales the vehicle's thrust." -- A Halo2Xbox vehi.xml
-  0x284 tagref snd_ref_284 groups=snd! doc="Names the sound associated with suspension movement." -- V objects.md (snd! 0x284); group word snd! or none and the datum null on every retail vehicle, so the schema could not see it; A Halo2Xbox vehi.xml
-  0x28c tagref ref_28c doc="Names the sound used for a vehicle crash." -- A Halo2Xbox vehi.xml
+  0x270 f32 flight_torque_scale doc="Scales torque while the vehicle is flying."
+  0x274 f32 seat_entrance_acceleration_scale
+  0x278 f32 seat_exit_acceleration_scale
+  0x27c f32 air_drag_deceleration doc="Sets the deceleration attributed to air friction."
+  0x280 f32 thrust_multiplier doc="Scales the vehicle's thrust."
+  0x284 tagref suspension_sound groups=snd! doc="Names the sound associated with suspension movement." -- V objects.md (snd! 0x284); group word snd! or none and the datum null on every retail vehicle, so the schema could not see it
+  0x28c tagref crash_sound doc="Names the sound used for a vehicle crash."
   0x294 tagref foot_ref_294 groups=foot -- V objects.md (foot 0x294); group word foot and the datum null on every retail vehicle
-  0x29c tagref ref_29c
+  0x29c tagref special_effect
   0x2a4 tagref ref_2a4
-  0x2ac flags32 vehicle_physics_flags doc="Holds status flags for the vehicle physics parameters." -- A Halo2Xbox vehi.xml
-  0x2b0 unknown 0x4
-  0x2b4 unknown 0x4
-  0x2b8 unknown 0x4
-  0x2bc unknown 0x4
-  0x2c0 unknown 0x4
-  0x2c4 unknown 0x4
+  0x2ac flags32 vehicle_physics_flags doc="Holds status flags for the vehicle physics parameters."
+  0x2b0 f32 ground_friction
+  0x2b4 f32 ground_depth
+  0x2b8 f32 ground_damp_factor
+  0x2bc f32 ground_moving_friction
+  0x2c0 f32 ground_maximum_slope_0
+  0x2c4 f32 ground_maximum_slope_1
   0x2c8 unknown 0x4
   0x2cc unknown 0x4
   0x2d0 unknown 0x4
   0x2d4 unknown 0x4
-  0x2d8 unknown 0x4
-  0x2dc unknown 0x4
-  0x2e0 unknown 0x4
-  0x2e4 f32 vehicle_physics_radius doc="Sets the radius specified for vehicle physics." -- A Halo2Xbox vehi.xml
-  0x2e8 block block_2e8 0x4c align 4 doc="Lists the points where the vehicle generates lift." -- A Halo2Xbox vehi.xml
-    0x0 string string_0
-    0x4 flags32 hover_point_flags doc="Configures this vehicle lift point." -- A Halo2Xbox vehi.xml
-    0x8 unknown 0x4
-    0xc unknown 0x4
-    0x10 unknown 0x4
-    0x14 unknown 0x4
-    0x18 unknown 0x4
-    0x1c unknown 0x4
-    0x20 unknown 0x4
+  0x2d8 f32 anti_gravity_bank_lift
+  0x2dc f32 steering_bank_reaction_scale
+  0x2e0 f32 gravity_scale
+  0x2e4 f32 vehicle_physics_radius doc="Sets the radius specified for vehicle physics."
+  0x2e8 block anti_gravity_points 0x4c align 4 doc="Lists the points where the vehicle generates lift."
+    0x0 string marker_name
+    0x4 flags32 hover_point_flags doc="Configures this vehicle lift point."
+    0x8 f32 antigrav_strength
+    0xc f32 antigrav_offset
+    0x10 f32 antigrav_height
+    0x14 f32 antigrav_damp_factor
+    0x18 f32 antigrav_normal_k1
+    0x1c f32 antigrav_normal_k0
+    0x20 f32 radius
     0x24 unknown 0x4
     0x28 unknown 0x4
     0x2c unknown 0x4
     0x30 unknown 0x2
-    0x32 i16 damage_region_index doc="Identifies the region whose damage affects this lift point." -- A Halo2Xbox vehi.xml
-    0x34 string string_34
-    0x38 f32 intact_lift_error doc="Sets the lift-point error for an intact region." -- A Halo2Xbox vehi.xml
-    0x3c f32 light_damage_lift_error doc="Sets the lift-point error for light damage." -- A Halo2Xbox vehi.xml
-    0x40 f32 moderate_damage_lift_error doc="Sets the lift-point error for moderate damage." -- A Halo2Xbox vehi.xml
-    0x44 f32 heavy_damage_lift_error doc="Sets the lift-point error for heavy damage." -- A Halo2Xbox vehi.xml
-    0x48 f32 destroyed_lift_error doc="Sets the lift-point error for a destroyed region." -- A Halo2Xbox vehi.xml
-  0x2f0 block block_2f0 0x4c align 4 doc="Lists the ground contact points that generate friction." -- A Halo2Xbox vehi.xml
-    0x0 string string_0
-    0x4 unknown 0x4
-    0x8 unknown 0x4
-    0xc unknown 0x4
-    0x10 f32 damaged_contact_radius doc="Sets the size of the ground contact when damaged." -- A Halo2Xbox vehi.xml
-    0x14 enum16 contact_friction_type doc="Selects the friction model for this contact." -- A Halo2Xbox vehi.xml
+    0x32 i16 damage_region_index doc="Identifies the region whose damage affects this lift point."
+    0x34 string damage_source_region_name
+    0x38 f32 intact_lift_error doc="Sets the lift-point error for an intact region."
+    0x3c f32 light_damage_lift_error doc="Sets the lift-point error for light damage."
+    0x40 f32 moderate_damage_lift_error doc="Sets the lift-point error for moderate damage."
+    0x44 f32 heavy_damage_lift_error doc="Sets the lift-point error for heavy damage."
+    0x48 f32 destroyed_lift_error doc="Sets the lift-point error for a destroyed region."
+  0x2f0 block friction_points 0x4c align 4 doc="Lists the ground contact points that generate friction."
+    0x0 string marker_name
+    0x4 flags32 flags
+    0x8 f32 fraction_of_total_mass
+    0xc f32 radius
+    0x10 f32 damaged_contact_radius doc="Sets the size of the ground contact when damaged."
+    0x14 enum16 contact_friction_type doc="Selects the friction model for this contact."
     0x16 unknown 0x2
-    0x18 f32 slip_velocity_difference doc="Sets the velocity difference used by moving friction." -- A Halo2Xbox vehi.xml
-    0x1c f32 braking_slide_friction doc="Sets moving friction while the handbrake is applied." -- A Halo2Xbox vehi.xml
-    0x20 f32 handbrake_friction doc="Sets friction during handbraking." -- A Halo2Xbox vehi.xml
-    0x24 f32 braking_slip_velocity doc="Sets the velocity difference for moving friction during handbraking." -- A Halo2Xbox vehi.xml
+    0x18 f32 slip_velocity_difference doc="Sets the velocity difference used by moving friction."
+    0x1c f32 braking_slide_friction doc="Sets moving friction while the handbrake is applied."
+    0x20 f32 handbrake_friction doc="Sets friction during handbraking."
+    0x24 f32 braking_slip_velocity doc="Sets the velocity difference for moving friction during handbraking."
     0x28 unknown 0x4
     0x2c unknown 0x4
     0x30 unknown 0x4
     0x34 unknown 0x4
     0x38 unknown 0x4
-    0x3c string collision_global_material_name -- A Halo2Xbox vehi.xml
-    0x40 i16 collision_material_index doc="Selects the global collision material for this contact." -- A Halo2Xbox vehi.xml
-    0x42 enum16 destroyed_model_state doc="Selects the model state associated with destruction of this contact." -- A Halo2Xbox vehi.xml
-    0x44 string string_44
-    0x48 unknown 0x4
-  0x2f8 block block_2f8 0x2a0 align 16
+    0x3c string collision_global_material_name
+    0x40 i16 collision_material_index doc="Selects the global collision material for this contact."
+    0x42 enum16 destroyed_model_state doc="Selects the model state associated with destruction of this contact."
+    0x44 string region_name
+    0x48 i16 region_index
+    0x4a unknown 0x2
+  0x2f8 block phantom_shapes 0x2a0 align 16
     0x0 unknown 0x4
-    0x4 unknown 0x4
+    0x4 i16 size
+    0x6 i16 count
     0x8 unknown 0x4
-    0xc unknown 0x4
-    0x10 unknown 0x4
-    0x14 unknown 0x4
-    0x18 unknown 0x4
-    0x1c unknown 0x4
-    0x20 unknown 0x4
-    0x24 unknown 0x4
-    0x28 unknown 0x4
-    0x2c unknown 0x4
-    0x30 unknown 0x4
-    0x34 unknown 0x4
-    0x38 unknown 0x4
-    0x3c unknown 0x4
+    0xc u32 user_data
+    0x10 i32 child_shapes_size
+    0x14 u32 child_shapes_capacity
+    0x18 enum16 shape_type_0
+    0x1a i16 shape_index_0
+    0x1c i32 collision_filter_0
+    0x20 enum16 shape_type_1
+    0x22 i16 shape_index_1
+    0x24 i32 collision_filter_1
+    0x28 enum16 shape_type_2
+    0x2a i16 shape_index_2
+    0x2c i32 collision_filter_2
+    0x30 enum16 shape_type_3
+    0x32 i16 shape_index_3
+    0x34 i32 collision_filter_3
+    0x38 u32 multisphere_count
+    0x3c flags32 flags
     0x40 unknown 0x4
     0x44 unknown 0x4
-    0x48 unknown 0x4
-    0x4c unknown 0x4
-    0x50 unknown 0x4
-    0x54 unknown 0x4
-    0x58 unknown 0x4
-    0x5c unknown 0x4
+    0x48 f32 x0
+    0x4c f32 x1
+    0x50 f32 y0
+    0x54 f32 y1
+    0x58 f32 z0
+    0x5c f32 z1
     0x60 unknown 0x4
     0x64 unknown 0x4
     0x68 unknown 0x4
-    0x6c unknown 0x4
-    0x70 unknown 0x4
-    0x74 unknown 0x4
-    0x78 unknown 0x4
-    0x7c unknown 0x4
-    0x80 unknown 0x4
-    0x84 unknown 0x4
-    0x88 unknown 0x4
-    0x8c unknown 0x4
-    0x90 unknown 0x4
-    0x94 unknown 0x4
-    0x98 unknown 0x4
-    0x9c unknown 0x4
-    0xa0 unknown 0x4
-    0xa4 unknown 0x4
-    0xa8 unknown 0x4
-    0xac unknown 0x4
-    0xb0 unknown 0x4
-    0xb4 unknown 0x4
-    0xb8 unknown 0x4
-    0xbc unknown 0x4
-    0xc0 unknown 0x4
-    0xc4 unknown 0x4
-    0xc8 unknown 0x4
-    0xcc unknown 0x4
-    0xd0 unknown 0x4
-    0xd4 unknown 0x4
-    0xd8 unknown 0x4
-    0xdc unknown 0x4
-    0xe0 unknown 0x4
-    0xe4 unknown 0x4
-    0xe8 unknown 0x4
-    0xec unknown 0x4
+    0x6c u32 number_of_spheres
+    0x70 f32[3] sphere_0
+    0x7c f32 w_sphere_0
+    0x80 f32[3] sphere_1
+    0x8c f32 w_sphere_1
+    0x90 f32[3] sphere_2
+    0x9c f32 w_sphere_2
+    0xa0 f32[3] sphere_3
+    0xac f32 w_sphere_3
+    0xb0 f32[3] sphere_4
+    0xbc f32 w_sphere_4
+    0xc0 f32[3] sphere_5
+    0xcc f32 w_sphere_5
+    0xd0 f32[3] sphere_6
+    0xdc f32 w_sphere_6
+    0xe0 f32[3] sphere_7
+    0xec f32 w_sphere_7
     0xf0 unknown 0x4
     0xf4 unknown 0x4
     0xf8 unknown 0x4

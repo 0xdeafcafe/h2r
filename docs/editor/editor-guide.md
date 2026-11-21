@@ -1168,9 +1168,9 @@ row. The editor includes these labels. A field with no established name
 is labelled by its type and offset (`Value at +0x14`) and sits in the
 folded **Unnamed fields** group at the end of its element, which says
 what it holds; **Show unnamed fields** opens every group, and **Show
-as** picks how an unnamed value reads (Decimal, Whole number or Hex). The evidence line identifies a retail
-reference with `A Halo2Xbox`, an engine reader with `E`, or a disc check
-with `V`. See [Field names](editor.md#field-names).
+as** picks how an unnamed value reads (Decimal, Whole number or Hex). The
+evidence line, when there is one, identifies an engine reader with `E` or
+a disc check with `V`. See [Field names](editor.md#field-names).
 
 How to change things:
 

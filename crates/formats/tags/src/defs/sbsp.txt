@@ -18,23 +18,23 @@ group sbsp 0x23c align 16
     0x28 data surfaces align 8 -- E surfaces, 8 bytes each (collision.rs:624)
     0x30 data edges align 8 -- E edges, 0xc bytes each (collision.rs:624)
     0x38 data vertices align 16 -- E vertices, 0x10 bytes each (collision.rs:624)
-  0x1c f32 vehicle_lower_z doc="Lower height limit for vehicles in this structure." -- A Halo2Xbox sbsp.xml
-  0x20 f32 vehicle_upper_z doc="Upper height limit for vehicles in this structure." -- A Halo2Xbox sbsp.xml
+  0x1c f32 vehicle_lower_z doc="Lower height limit for vehicles in this structure."
+  0x20 f32 vehicle_upper_z doc="Upper height limit for vehicles in this structure."
   0x24 unknown 0x8
   0x2c data structure_leaves align 16 -- E 0x0018d730..: the ambience pass takes the listener's cluster from its leaf's i16 at +0 (structure-bsp.md:82)
-  0x34 f32[2] x_bounds doc="Minimum and maximum world coordinates along the X axis." -- A Halo2Xbox sbsp.xml
-  0x3c f32[2] y_bounds doc="Minimum and maximum world coordinates along the Y axis." -- A Halo2Xbox sbsp.xml
-  0x44 f32[2] z_bounds doc="Minimum and maximum world coordinates along the Z axis." -- A Halo2Xbox sbsp.xml
+  0x34 f32[2] x_bounds doc="Minimum and maximum world coordinates along the X axis."
+  0x3c f32[2] y_bounds doc="Minimum and maximum world coordinates along the Y axis."
+  0x44 f32[2] z_bounds doc="Minimum and maximum world coordinates along the Z axis."
   0x4c data data_4c align 8
   0x54 data data_54 align 8
   0x5c block block_5c 0x3 align 8
     0x0 unknown 0x3
   0x64 block block_64 0x18 align 4
-    0x0 i16 fog_palette_index doc="Selects the scenario fog entry associated with this plane." -- A Halo2Xbox sbsp.xml
+    0x0 i16 fog_palette_index doc="Selects the scenario fog entry associated with this plane."
     0x2 unknown 0x2
-    0x4 f32[4] plane_equation doc="The four coefficients that place the fog boundary in world space." -- A Halo2Xbox sbsp.xml
-    0x14 flags16 plane_flags doc="Options for this fog boundary." -- A Halo2Xbox sbsp.xml
-    0x16 i16 plane_priority doc="Relative priority of this fog boundary." -- A Halo2Xbox sbsp.xml
+    0x4 f32[4] plane_equation doc="The four coefficients that place the fog boundary in world space."
+    0x14 flags16 plane_flags doc="Options for this fog boundary."
+    0x16 i16 plane_priority doc="Relative priority of this fog boundary."
   0x6c unknown 0x18
   0x84 block weather_palette 0x88 align 4 -- E 0x00036cb8, 0x000385a3 (structure-bsp.md:84); V the layout live_weather reads (live_weather.rs:7-8,35-36)
     0x0 u8[32] name -- V palette entry name, read as text (live_weather.rs:178)
@@ -64,10 +64,10 @@ group sbsp 0x23c align 16
     0x10 word word_10
     0x14 unknown 0x3
   0xac block block_ac 0x2 align 4
-    0x0 i16 sky_cluster_index doc="Identifies the cluster associated with this sky." -- A Halo2Xbox sbsp.xml
+    0x0 i16 sky_cluster_index doc="Identifies the cluster associated with this sky."
   0xb4 block block_b4 0x18 align 8
-    0x0 f32[3] conveyor_u doc="First surface-coordinate direction for the conveyor." -- A Halo2Xbox sbsp.xml
-    0xc f32[3] conveyor_v doc="Second surface-coordinate direction for the conveyor." -- A Halo2Xbox sbsp.xml
+    0x0 f32[3] conveyor_u doc="First surface-coordinate direction for the conveyor."
+    0xc f32[3] conveyor_v doc="Second surface-coordinate direction for the conveyor."
   0xbc unknown 0x8
   0xc4 block pathfinding_data 0x74 align 4 -- V count 0 or 1, element 0x74 (pathfinding.md:34; pathfinding.rs:13)
     0x0 data sectors align 4 -- V 8-byte sectors (pathfinding.md:47; pathfinding.rs:152)
@@ -78,20 +78,20 @@ group sbsp 0x23c align 16
     0x20 unknown 0x8
     0x28 data vertices align 4 -- V f32 x,y,z points (pathfinding.md:52; pathfinding.rs:192)
     0x30 block block_30 0x1c align 4
-      0x0 flags16 object_nav_flags doc="Options for the object's pathfinding entry." -- A Halo2Xbox sbsp.xml
+      0x0 flags16 object_nav_flags doc="Options for the object's pathfinding entry."
       0x2 unknown 0x2
-      0x4 i32 first_sector_index doc="First pathfinding sector assigned to this object." -- A Halo2Xbox sbsp.xml
-      0x8 i32 last_sector_index doc="Last pathfinding sector assigned to this object." -- A Halo2Xbox sbsp.xml
+      0x4 i32 first_sector_index doc="First pathfinding sector assigned to this object."
+      0x8 i32 last_sector_index doc="Last pathfinding sector assigned to this object."
       0xc block block_c 0x10 align 4
-        0x0 i32 bsp_index doc="Identifies the BSP for this group of object sectors." -- A Halo2Xbox sbsp.xml
-        0x4 i32 first_sector_index doc="First pathfinding sector in this BSP entry." -- A Halo2Xbox sbsp.xml
-        0x8 i32 last_sector_index doc="Last pathfinding sector in this BSP entry." -- A Halo2Xbox sbsp.xml
-        0xc i16 node_index doc="Node associated with the sectors." -- A Halo2Xbox sbsp.xml
+        0x0 i32 bsp_index doc="Identifies the BSP for this group of object sectors."
+        0x4 i32 first_sector_index doc="First pathfinding sector in this BSP entry."
+        0x8 i32 last_sector_index doc="Last pathfinding sector in this BSP entry."
+        0xc i16 node_index doc="Node associated with the sectors."
         0xe unknown 0x2
       0x14 block block_14 0x4 align 4
-        0x0 i16 frame_index doc="Selects the coordinate frame for this node." -- A Halo2Xbox sbsp.xml
-        0x2 u8 projection_axis doc="Axis used to project this node." -- A Halo2Xbox sbsp.xml
-        0x3 flags8 projection_sign_flags doc="Encodes the orientation of the projection." -- A Halo2Xbox sbsp.xml
+        0x0 i16 frame_index doc="Selects the coordinate frame for this node."
+        0x2 u8 projection_axis doc="Axis used to project this node."
+        0x3 flags8 projection_sign_flags doc="Encodes the orientation of the projection."
     0x38 block block_38 0x2 align 4
       0x0 unknown 0x2
     0x40 data instance_refs align 4 -- V one u32 per instanced-geometry placement (pathfinding.md:55; pathfinding.rs:207)
@@ -100,56 +100,56 @@ group sbsp 0x23c align 16
     0x6c block block_6c 0x48 align 4
       0x0 unknown 0x10
       0x10 block block_10 0x24 align 4
-        0x0 flags32 segment_flags doc="Options for a line segment in a pathfinding hint." -- A Halo2Xbox sbsp.xml
-        0x4 f32[3] start_position doc="First endpoint of the hint segment." -- A Halo2Xbox sbsp.xml
-        0x10 i16 start_frame doc="Coordinate frame for the first endpoint." -- A Halo2Xbox sbsp.xml
+        0x0 flags32 segment_flags doc="Options for a line segment in a pathfinding hint."
+        0x4 f32[3] start_position doc="First endpoint of the hint segment."
+        0x10 i16 start_frame doc="Coordinate frame for the first endpoint."
         0x12 unknown 0x2
-        0x14 f32[3] end_position doc="Second endpoint of the hint segment." -- A Halo2Xbox sbsp.xml
-        0x20 i16 end_frame doc="Coordinate frame for the second endpoint." -- A Halo2Xbox sbsp.xml
+        0x14 f32[3] end_position doc="Second endpoint of the hint segment."
+        0x20 i16 end_frame doc="Coordinate frame for the second endpoint."
         0x22 unknown 0x2
       0x18 block block_18 0x6 align 4
         0x0 word word_0
         0x4 unknown 0x2
       0x20 unknown 0x8
       0x28 block block_28 0x8 align 4
-        0x0 flags16 hint_flags doc="Options for this jump hint." -- A Halo2Xbox sbsp.xml
-        0x2 i16 hint_geometry_index doc="Selects the geometry used by the jump hint." -- A Halo2Xbox sbsp.xml
-        0x4 enum16 forced_height doc="Height category for the jump." -- A Halo2Xbox sbsp.xml
-        0x6 flags16 control_flags doc="Control settings for the jump hint." -- A Halo2Xbox sbsp.xml
+        0x0 flags16 hint_flags doc="Options for this jump hint."
+        0x2 i16 hint_geometry_index doc="Selects the geometry used by the jump hint."
+        0x4 enum16 forced_height doc="Height category for the jump."
+        0x6 flags16 control_flags doc="Control settings for the jump hint."
       0x30 block block_30 0x4 align 4
-        0x0 flags16 hint_flags doc="Options for this climb hint." -- A Halo2Xbox sbsp.xml
-        0x2 i16 hint_geometry_index doc="Selects the geometry used by the climb hint." -- A Halo2Xbox sbsp.xml
+        0x0 flags16 hint_flags doc="Options for this climb hint."
+        0x2 i16 hint_geometry_index doc="Selects the geometry used by the climb hint."
       0x38 block block_38 0xc align 4
-        0x0 flags32 hint_flags doc="Options for this well hint." -- A Halo2Xbox sbsp.xml
+        0x0 flags32 hint_flags doc="Options for this well hint."
         0x4 block block_4 0x20 align 4
-          0x0 enum16 point_kind doc="Classifies this point within the well hint." -- A Halo2Xbox sbsp.xml
+          0x0 enum16 point_kind doc="Classifies this point within the well hint."
           0x2 unknown 0x2
-          0x4 f32[3] position doc="Location of the point in its coordinate frame." -- A Halo2Xbox sbsp.xml
-          0x10 i16 frame_index doc="Selects the coordinate frame for the point." -- A Halo2Xbox sbsp.xml
+          0x4 f32[3] position doc="Location of the point in its coordinate frame."
+          0x10 i16 frame_index doc="Selects the coordinate frame for the point."
           0x12 unknown 0x2
-          0x14 i32 sector_index doc="Pathfinding sector containing the point." -- A Halo2Xbox sbsp.xml
-          0x18 f32[2] normal_angles doc="Two angular components of the point's normal." -- A Halo2Xbox sbsp.xml
+          0x14 i32 sector_index doc="Pathfinding sector containing the point."
+          0x18 f32[2] normal_angles doc="Two angular components of the point's normal."
       0x40 block block_40 0x8 align 4
         0x0 block block_0 0xc align 4
-          0x0 f32[3] position doc="Location of a point along the flight hint." -- A Halo2Xbox sbsp.xml
+          0x0 f32[3] position doc="Location of a point along the flight hint."
   0xcc unknown 0x8
   0xd4 block background_sound_palette 0x64 align 4 -- E 0x0018d730..0x0018d8a5 via cluster +0x72; V names the scenario's palette (scnr+0x250) entry for entry (structure-bsp.md:82; ambience.rs:248-250)
     0x0 u8[32] name -- D palette entry name (ambience.rs:5-9,252)
     0x20 tagref looping_sound groups=lsnd -- V (ambience.rs:8-9,254-255)
     0x28 tagref tagref_28
     0x30 unknown 0x14
-    0x44 f32 sound_cutoff_distance doc="Distance limit for the background sound." -- A Halo2Xbox sbsp.xml
-    0x48 flags32 scaling_flags doc="Options governing how this palette entry scales the sound." -- A Halo2Xbox sbsp.xml
-    0x4c f32 interior_scale doc="Background sound multiplier for cluster interiors." -- A Halo2Xbox sbsp.xml
-    0x50 f32 portal_scale doc="Background sound multiplier at portals." -- A Halo2Xbox sbsp.xml
-    0x54 f32 exterior_scale doc="Background sound multiplier outside the interior." -- A Halo2Xbox sbsp.xml
-    0x58 f32 transition_rate doc="Speed of the transition between ambience levels." -- A Halo2Xbox sbsp.xml
+    0x44 f32 sound_cutoff_distance doc="Distance limit for the background sound."
+    0x48 flags32 scaling_flags doc="Options governing how this palette entry scales the sound."
+    0x4c f32 interior_scale doc="Background sound multiplier for cluster interiors."
+    0x50 f32 portal_scale doc="Background sound multiplier at portals."
+    0x54 f32 exterior_scale doc="Background sound multiplier outside the interior."
+    0x58 f32 transition_rate doc="Speed of the transition between ambience levels."
     0x5c unknown 0x8
   0xdc block sound_environment_palette 0x48 align 4 -- E 0x0018ddf0..0x0018de0d via cluster +0x74; V names scnr+0x258 entry for entry (structure-bsp.md:82; ambience.rs:263)
     0x0 u8[32] name -- D palette entry name (ambience.rs:12,265)
     0x20 tagref sound_environment groups=snde -- V (ambience.rs:12,266-267)
-    0x28 f32 environment_cutoff_distance doc="Distance limit for the sound environment." -- A Halo2Xbox sbsp.xml
-    0x2c f32 transition_rate doc="Speed of the transition between sound environments." -- A Halo2Xbox sbsp.xml
+    0x28 f32 environment_cutoff_distance doc="Distance limit for the sound environment."
+    0x2c f32 transition_rate doc="Speed of the transition between sound environments."
     0x30 unknown 0x18
   0xe4 unknown 0x8
   0xec block block_ec 0x3c align 4
@@ -157,10 +157,10 @@ group sbsp 0x23c align 16
     0x10 raw raw_10
     0x14 unknown 0x28
   0xf4 block block_f4 0x10 align 4
-    0x0 f32[3] decal_position doc="Location of the decal in the structure." -- A Halo2Xbox sbsp.xml
-    0xc i16 decal_type_index doc="Selects the type of decal to place." -- A Halo2Xbox sbsp.xml
-    0xe i8 packed_yaw doc="Horizontal orientation of the decal in its byte encoding." -- A Halo2Xbox sbsp.xml
-    0xf i8 packed_pitch doc="Vertical orientation of the decal in its byte encoding." -- A Halo2Xbox sbsp.xml
+    0x0 f32[3] decal_position doc="Location of the decal in the structure."
+    0xc i16 decal_type_index doc="Selects the type of decal to place."
+    0xe i8 packed_yaw doc="Horizontal orientation of the decal in its byte encoding."
+    0xf i8 packed_pitch doc="Vertical orientation of the decal in its byte encoding."
   0xfc block block_fc 0x14 align 4
     0x0 unknown 0x14
   0x104 block block_104 0x8 align 4
@@ -179,46 +179,46 @@ group sbsp 0x23c align 16
     0x1c f32[3] up -- V (structure.rs:327)
     0x28 f32[3] position -- V translation (structure-bsp.md:96; structure.rs:328)
     0x34 i16 definition_index -- E 0x000410c5 movsx; V in range (structure-bsp.md:97; structure.rs:329)
-    0x36 flags16 instance_flags doc="Options for this placement of instanced geometry." -- A Halo2Xbox sbsp.xml
+    0x36 flags16 instance_flags doc="Options for this placement of instanced geometry."
     0x38 unknown 0x14
     0x4c word word_4c
     0x50 string string_50
-    0x54 enum16 pathfinding_mode doc="Selects how this instance participates in pathfinding." -- A Halo2Xbox sbsp.xml
-    0x56 enum16 lighting_mode doc="Selects the lightmapping policy for this instance." -- A Halo2Xbox sbsp.xml
+    0x54 enum16 pathfinding_mode doc="Selects how this instance participates in pathfinding."
+    0x56 enum16 lighting_mode doc="Selects the lightmapping policy for this instance."
   0x148 block ambience_sound_clusters 0x14 align 4 -- E 0x0018d7b4 via cluster +0x78 (structure-bsp.md:83)
     0x0 unknown 0x4
     0x4 block block_4 0x2 align 4
-      0x0 i16 portal_id doc="Portal enclosing the ambience region." -- A Halo2Xbox sbsp.xml
+      0x0 i16 portal_id doc="Portal enclosing the ambience region."
     0xc block block_c 0x2 align 4
-      0x0 i16 cluster_index doc="Index of a cluster inside the ambience region." -- A Halo2Xbox sbsp.xml
+      0x0 i16 cluster_index doc="Index of a cluster inside the ambience region."
   0x150 block reverb_sound_clusters 0x14 align 4 -- E 0x0018dd10 via cluster +0x7a (structure-bsp.md:83)
     0x0 unknown 0x4
     0x4 block block_4 0x2 align 4
-      0x0 i16 portal_id doc="Portal enclosing the reverb region." -- A Halo2Xbox sbsp.xml
+      0x0 i16 portal_id doc="Portal enclosing the reverb region."
     0xc block block_c 0x2 align 4
-      0x0 i16 cluster_index doc="Index of a cluster inside the reverb region." -- A Halo2Xbox sbsp.xml
+      0x0 i16 cluster_index doc="Index of a cluster inside the reverb region."
   0x158 block block_158 0x14 align 4
-    0x0 i16 section_index doc="Mesh section containing the transparent part." -- A Halo2Xbox sbsp.xml
-    0x2 i16 part_index doc="Part within the selected section." -- A Halo2Xbox sbsp.xml
-    0x4 f32[4] plane_equation doc="Plane coefficients for the transparent surface." -- A Halo2Xbox sbsp.xml
+    0x0 i16 section_index doc="Mesh section containing the transparent part."
+    0x2 i16 part_index doc="Part within the selected section."
+    0x4 f32[4] plane_equation doc="Plane coefficients for the transparent surface."
   0x160 unknown 0x60
-  0x1c0 f32 vehicle_limit_radius doc="Radius of the spherical boundary for vehicles." -- A Halo2Xbox sbsp.xml
-  0x1c4 f32[3] vehicle_limit_center doc="World-space center of the spherical vehicle boundary." -- A Halo2Xbox sbsp.xml
+  0x1c0 f32 vehicle_limit_radius doc="Radius of the spherical boundary for vehicles."
+  0x1c4 f32[3] vehicle_limit_center doc="World-space center of the spherical vehicle boundary."
   0x1d0 block block_1d0 0x58 align 4
     0x0 unknown 0x40
     0x40 block block_40 0x48 align 4
       0x0 unknown 0x28
       0x28 block block_28 0x4 align 4
-        0x0 i32 fog_plane_index doc="Index of a fog plane associated with this diagnostic cluster." -- A Halo2Xbox sbsp.xml
+        0x0 i32 fog_plane_index doc="Index of a fog plane associated with this diagnostic cluster."
       0x30 block block_30 0x4 align 4
-        0x0 i32 visible_plane_index doc="A fog plane visible to the diagnostic cluster." -- A Halo2Xbox sbsp.xml
+        0x0 i32 visible_plane_index doc="A fog plane visible to the diagnostic cluster."
       0x38 unknown 0x8
       0x40 block block_40 0x4 align 8
-        0x0 i32 enclosing_zone_index doc="Index of a fog zone containing this cluster." -- A Halo2Xbox sbsp.xml
+        0x0 i32 enclosing_zone_index doc="Index of a fog zone containing this cluster."
     0x48 block block_48 0x38 align 4
-      0x0 i32 zone_index doc="Fog zone associated with this diagnostic plane." -- A Halo2Xbox sbsp.xml
+      0x0 i32 zone_index doc="Fog zone associated with this diagnostic plane."
       0x4 unknown 0x18
-      0x1c i32 adjacent_plane_id doc="Identifies the fog plane connected to this plane." -- A Halo2Xbox sbsp.xml
+      0x1c i32 adjacent_plane_id doc="Identifies the fog plane connected to this plane."
       0x20 block block_20 0x11 align 4
         0x0 word word_0
         0x4 word word_4
@@ -226,40 +226,40 @@ group sbsp 0x23c align 16
         0xc word word_c
         0x10 unknown 0x1
       0x28 block block_28 0x4 align 4
-        0x0 i32 cluster_index doc="Index of a cluster intersected by this fog plane." -- A Halo2Xbox sbsp.xml
+        0x0 i32 cluster_index doc="Index of a cluster intersected by this fog plane."
       0x30 block block_30 0x4 align 4
-        0x0 i32 cluster_index doc="Cluster intersected when the plane is extended without bounds." -- A Halo2Xbox sbsp.xml
+        0x0 i32 cluster_index doc="Cluster intersected when the plane is extended without bounds."
     0x50 block block_50 0x40 align 4
-      0x0 i32 scenario_fog_index doc="Scenario fog plane supplying the medium for this zone." -- A Halo2Xbox sbsp.xml
-      0x4 i32 base_plane_index doc="Index of the fog plane at the base of this zone." -- A Halo2Xbox sbsp.xml
+      0x0 i32 scenario_fog_index doc="Scenario fog plane supplying the medium for this zone."
+      0x4 i32 base_plane_index doc="Index of the fog plane at the base of this zone."
       0x8 unknown 0x18
       0x20 block block_20 0x20 align 4
-        0x0 enum16 line_kind doc="Category of the diagnostic line." -- A Halo2Xbox sbsp.xml
-        0x2 i16 diagnostic_code doc="Diagnostic associated with the line." -- A Halo2Xbox sbsp.xml
+        0x0 enum16 line_kind doc="Category of the diagnostic line."
+        0x2 i16 diagnostic_code doc="Diagnostic associated with the line."
         0x4 unknown 0x4
-        0x8 f32[3] start_position doc="First endpoint of the diagnostic line." -- A Halo2Xbox sbsp.xml
-        0x14 f32[3] end_position doc="Second endpoint of the diagnostic line." -- A Halo2Xbox sbsp.xml
+        0x8 f32[3] start_position doc="First endpoint of the diagnostic line."
+        0x14 f32[3] end_position doc="Second endpoint of the diagnostic line."
       0x28 block block_28 0x4 align 8
-        0x0 i32 immersed_cluster_index doc="Cluster contained within this fog zone." -- A Halo2Xbox sbsp.xml
+        0x0 i32 immersed_cluster_index doc="Cluster contained within this fog zone."
       0x30 block block_30 0x4 align 4
-        0x0 i32 boundary_plane_index doc="Fog plane bounding this zone." -- A Halo2Xbox sbsp.xml
+        0x0 i32 boundary_plane_index doc="Fog plane bounding this zone."
       0x38 unknown 0x8
   0x1d8 unknown 0x8
   0x1e0 data collision_mopp_code align 16 -- E 0x001c3b3e/0x001c3b20 pass [sbsp+0x1e4] to the MOPP shape; V count = code size rounded to 16 (mopp.md:26-27)
   0x1e8 unknown 0x4
-  0x1ec f32[3] mopp_minimum doc="Lower corner of the collision acceleration structure's bounds." -- A Halo2Xbox sbsp.xml
-  0x1f8 f32[3] mopp_maximum doc="Upper corner of the collision acceleration structure's bounds." -- A Halo2Xbox sbsp.xml
+  0x1ec f32[3] mopp_minimum doc="Lower corner of the collision acceleration structure's bounds."
+  0x1f8 f32[3] mopp_maximum doc="Upper corner of the collision acceleration structure's bounds."
   0x204 data data_204 align 16
   0x20c block block_20c 0x20 align 16
-    0x0 i16 instance_index doc="Geometry instance associated with the breakable surface." -- A Halo2Xbox sbsp.xml
-    0x2 i16 breakable_index doc="Index of the breakable surface in this key." -- A Halo2Xbox sbsp.xml
-    0x4 i32 seed_index doc="Starting surface for this key." -- A Halo2Xbox sbsp.xml
-    0x8 f32 x_lower doc="Lower X coordinate of the surface bounds." -- A Halo2Xbox sbsp.xml
-    0xc f32 x_upper doc="Upper X coordinate of the surface bounds." -- A Halo2Xbox sbsp.xml
-    0x10 f32 y_lower doc="Lower Y coordinate of the surface bounds." -- A Halo2Xbox sbsp.xml
-    0x14 f32 y_upper doc="Upper Y coordinate of the surface bounds." -- A Halo2Xbox sbsp.xml
-    0x18 f32 z_lower doc="Lower Z coordinate of the surface bounds." -- A Halo2Xbox sbsp.xml
-    0x1c f32 z_upper doc="Upper Z coordinate of the surface bounds." -- A Halo2Xbox sbsp.xml
+    0x0 i16 instance_index doc="Geometry instance associated with the breakable surface."
+    0x2 i16 breakable_index doc="Index of the breakable surface in this key."
+    0x4 i32 seed_index doc="Starting surface for this key."
+    0x8 f32 x_lower doc="Lower X coordinate of the surface bounds."
+    0xc f32 x_upper doc="Upper X coordinate of the surface bounds."
+    0x10 f32 y_lower doc="Lower Y coordinate of the surface bounds."
+    0x14 f32 y_upper doc="Upper Y coordinate of the surface bounds."
+    0x18 f32 z_lower doc="Lower Z coordinate of the surface bounds."
+    0x1c f32 z_upper doc="Upper Z coordinate of the surface bounds."
   0x214 block block_214 0xac align 16
     0x0 tagref tagref_0
     0x8 unknown 0x8
@@ -268,88 +268,88 @@ group sbsp 0x23c align 16
     0x18 rawsize raw_size_18 of=0x10
     0x1c raw raw_1c
     0x20 block block_20 0x10 align 4
-      0x0 enum8 resource_kind doc="Category of the section resource." -- A Halo2Xbox sbsp.xml
+      0x0 enum8 resource_kind doc="Category of the section resource."
       0x1 unknown 0x3
-      0x4 i16 locator_primary doc="Primary selector for this resource." -- A Halo2Xbox sbsp.xml
-      0x6 i16 locator_secondary doc="Secondary selector for this resource." -- A Halo2Xbox sbsp.xml
-      0x8 u32 byte_length doc="Size of the resource payload in bytes." -- A Halo2Xbox sbsp.xml
-      0xc u32 payload_offset doc="Byte offset of the resource payload." -- A Halo2Xbox sbsp.xml
+      0x4 i16 locator_primary doc="Primary selector for this resource."
+      0x6 i16 locator_secondary doc="Secondary selector for this resource."
+      0x8 u32 byte_length doc="Size of the resource payload in bytes."
+      0xc u32 payload_offset doc="Byte offset of the resource payload."
     0x28 word word_28
     0x2c unknown 0x80
   0x21c block block_21c 0x10 align 4
     0x0 block block_0 0xc align 4
       0x0 unknown 0x4
-      0x4 i16 source_bsp_index doc="BSP in which the associated device originates." -- A Halo2Xbox sbsp.xml
-      0x6 enum8 object_kind doc="Type of the device-associated object." -- A Halo2Xbox sbsp.xml
-      0x7 enum8 object_source doc="Origin category for the associated object." -- A Halo2Xbox sbsp.xml
-      0x8 i16 first_portal_index doc="First portal assigned to this device." -- A Halo2Xbox sbsp.xml
-      0xa i16 portal_count doc="Number of portals assigned to this device." -- A Halo2Xbox sbsp.xml
+      0x4 i16 source_bsp_index doc="BSP in which the associated device originates."
+      0x6 enum8 object_kind doc="Type of the device-associated object."
+      0x7 enum8 object_source doc="Origin category for the associated object."
+      0x8 i16 first_portal_index doc="First portal assigned to this device."
+      0xa i16 portal_count doc="Number of portals assigned to this device."
     0x8 block block_8 0x2 align 4
-      0x0 i16 portal_index doc="Structure portal corresponding to this game portal." -- A Halo2Xbox sbsp.xml
+      0x0 i16 portal_index doc="Structure portal corresponding to this game portal."
   0x224 block block_224 0x34 align 4
-    0x0 i32 door_portal_count doc="Number of door portals in the audibility data." -- A Halo2Xbox sbsp.xml
-    0x4 f32[2] distance_bounds doc="Distance range represented by the cluster distance data." -- A Halo2Xbox sbsp.xml
+    0x0 i32 door_portal_count doc="Number of door portals in the audibility data."
+    0x4 f32[2] distance_bounds doc="Distance range represented by the cluster distance data."
     0xc block block_c 0x4 align 4
       0x0 word word_0
     0x14 block block_14 0x4 align 4
-      0x0 i32 door_audibility_word doc="Packed audibility data for cluster door portals." -- A Halo2Xbox sbsp.xml
+      0x0 i32 door_audibility_word doc="Packed audibility data for cluster door portals."
     0x1c block block_1c 0x4 align 4
-      0x0 i32 ai_audibility_word doc="Packed audibility data for AI sound attenuation." -- A Halo2Xbox sbsp.xml
+      0x0 i32 ai_audibility_word doc="Packed audibility data for AI sound attenuation."
     0x24 data data_24 align 4
     0x2c data data_2c align 4
   0x22c block block_22c 0x5c align 4
     0x0 unknown 0x4
-    0x4 i16 source_bsp_index doc="BSP in which the lit object originates." -- A Halo2Xbox sbsp.xml
-    0x6 enum8 object_kind doc="Type of the object receiving this lighting." -- A Halo2Xbox sbsp.xml
-    0x7 enum8 object_source doc="Origin category of the lit object." -- A Halo2Xbox sbsp.xml
-    0x8 f32[3] ambient_colour doc="Ambient contribution for the object's probe." -- A Halo2Xbox sbsp.xml
-    0x14 f32[3] shadow_direction doc="Direction used to cast the probe's shadow." -- A Halo2Xbox sbsp.xml
-    0x20 f32 accuracy doc="Accuracy parameter for the probe lighting." -- A Halo2Xbox sbsp.xml
-    0x24 f32 shadow_opacity doc="Opacity of the shadow supplied by the probe." -- A Halo2Xbox sbsp.xml
-    0x28 f32[3] main_light_colour doc="Colour contribution from the primary light direction." -- A Halo2Xbox sbsp.xml
-    0x34 f32[3] main_light_direction doc="Primary direction of incoming light." -- A Halo2Xbox sbsp.xml
-    0x40 f32[3] fill_light_colour doc="Colour contribution from the secondary light direction." -- A Halo2Xbox sbsp.xml
-    0x4c f32[3] fill_light_direction doc="Secondary direction of incoming light." -- A Halo2Xbox sbsp.xml
-    0x58 i16 harmonic_index doc="Selects the spherical harmonic lighting record." -- A Halo2Xbox sbsp.xml
+    0x4 i16 source_bsp_index doc="BSP in which the lit object originates."
+    0x6 enum8 object_kind doc="Type of the object receiving this lighting."
+    0x7 enum8 object_source doc="Origin category of the lit object."
+    0x8 f32[3] ambient_colour doc="Ambient contribution for the object's probe."
+    0x14 f32[3] shadow_direction doc="Direction used to cast the probe's shadow."
+    0x20 f32 accuracy doc="Accuracy parameter for the probe lighting."
+    0x24 f32 shadow_opacity doc="Opacity of the shadow supplied by the probe."
+    0x28 f32[3] main_light_colour doc="Colour contribution from the primary light direction."
+    0x34 f32[3] main_light_direction doc="Primary direction of incoming light."
+    0x40 f32[3] fill_light_colour doc="Colour contribution from the secondary light direction."
+    0x4c f32[3] fill_light_direction doc="Secondary direction of incoming light."
+    0x58 i16 harmonic_index doc="Selects the spherical harmonic lighting record."
     0x5a unknown 0x2
   0x234 block block_234 0x30 align 4
-    0x0 f32[3] grid_origin doc="World-space origin of the decorator grid." -- A Halo2Xbox sbsp.xml
-    0xc i32 cells_per_axis doc="Number of grid cells along each dimension." -- A Halo2Xbox sbsp.xml
+    0x0 f32[3] grid_origin doc="World-space origin of the decorator grid."
+    0xc i32 cells_per_axis doc="Number of grid cells along each dimension."
     0x10 block block_10 0x3 align 4
       0x0 unknown 0x3
     0x18 block block_18 0x18 align 4
-      0x0 i8 set_index doc="Selects the decorator set for this group." -- A Halo2Xbox sbsp.xml
-      0x1 enum8 decorator_kind doc="Category of decorator in the group." -- A Halo2Xbox sbsp.xml
-      0x2 i8 shader_index doc="Selects the shader for the group." -- A Halo2Xbox sbsp.xml
-      0x3 i8 packed_radius doc="Encoded radius of the group bounds." -- A Halo2Xbox sbsp.xml
-      0x4 i16 cluster_index doc="Structure cluster containing the group." -- A Halo2Xbox sbsp.xml
-      0x6 i16 cache_index doc="Index of the group's decorator cache block." -- A Halo2Xbox sbsp.xml
-      0x8 i16 first_decorator doc="First decorator in the group's range." -- A Halo2Xbox sbsp.xml
-      0xa i16 decorator_count doc="Number of decorators in the range." -- A Halo2Xbox sbsp.xml
-      0xc i16 vertex_start doc="Start of the group's vertices." -- A Halo2Xbox sbsp.xml
-      0xe i16 vertex_count doc="Number of vertices used by the group." -- A Halo2Xbox sbsp.xml
-      0x10 i16 first_index doc="Start of the group's mesh indices." -- A Halo2Xbox sbsp.xml
-      0x12 i16 index_count doc="Number of mesh indices used by the group." -- A Halo2Xbox sbsp.xml
+      0x0 i8 set_index doc="Selects the decorator set for this group."
+      0x1 enum8 decorator_kind doc="Category of decorator in the group."
+      0x2 i8 shader_index doc="Selects the shader for the group."
+      0x3 i8 packed_radius doc="Encoded radius of the group bounds."
+      0x4 i16 cluster_index doc="Structure cluster containing the group."
+      0x6 i16 cache_index doc="Index of the group's decorator cache block."
+      0x8 i16 first_decorator doc="First decorator in the group's range."
+      0xa i16 decorator_count doc="Number of decorators in the range."
+      0xc i16 vertex_start doc="Start of the group's vertices."
+      0xe i16 vertex_count doc="Number of vertices used by the group."
+      0x10 i16 first_index doc="Start of the group's mesh indices."
+      0x12 i16 index_count doc="Number of mesh indices used by the group."
       0x14 word word_14
     0x20 block block_20 0x18 align 4
-      0x0 i16 child_0_index doc="Index of the first decorator child cell." -- A Halo2Xbox sbsp.xml
-      0x2 i16 child_1_index doc="Index of the second decorator child cell." -- A Halo2Xbox sbsp.xml
-      0x4 i16 child_2_index doc="Index of the third decorator child cell." -- A Halo2Xbox sbsp.xml
-      0x6 i16 child_3_index doc="Index of the fourth decorator child cell." -- A Halo2Xbox sbsp.xml
-      0x8 i16 child_4_index doc="Index of the fifth decorator child cell." -- A Halo2Xbox sbsp.xml
-      0xa i16 child_5_index doc="Index of the sixth decorator child cell." -- A Halo2Xbox sbsp.xml
-      0xc i16 child_6_index doc="Index of the seventh decorator child cell." -- A Halo2Xbox sbsp.xml
-      0xe i16 child_7_index doc="Index of the eighth decorator child cell." -- A Halo2Xbox sbsp.xml
-      0x10 i16 cache_index doc="Selects the decorator cache block containing this cell." -- A Halo2Xbox sbsp.xml
-      0x12 i16 group_count doc="Number of decorator groups assigned to the cell." -- A Halo2Xbox sbsp.xml
-      0x14 i32 first_group doc="First decorator group assigned to the cell." -- A Halo2Xbox sbsp.xml
+      0x0 i16 child_0_index doc="Index of the first decorator child cell."
+      0x2 i16 child_1_index doc="Index of the second decorator child cell."
+      0x4 i16 child_2_index doc="Index of the third decorator child cell."
+      0x6 i16 child_3_index doc="Index of the fourth decorator child cell."
+      0x8 i16 child_4_index doc="Index of the fifth decorator child cell."
+      0xa i16 child_5_index doc="Index of the sixth decorator child cell."
+      0xc i16 child_6_index doc="Index of the seventh decorator child cell."
+      0xe i16 child_7_index doc="Index of the eighth decorator child cell."
+      0x10 i16 cache_index doc="Selects the decorator cache block containing this cell."
+      0x12 i16 group_count doc="Number of decorator groups assigned to the cell."
+      0x14 i32 first_group doc="First decorator group assigned to the cell."
     0x28 block block_28 0x40 align 4
-      0x0 i8 set_index doc="Selects the decorator set for this decal." -- A Halo2Xbox sbsp.xml
-      0x1 i8 decorator_class doc="Class of the decal within its set." -- A Halo2Xbox sbsp.xml
-      0x2 i8 permutation_index doc="Variation of the decorator to display." -- A Halo2Xbox sbsp.xml
-      0x3 i8 sprite_index doc="Sprite to use for the decal." -- A Halo2Xbox sbsp.xml
-      0x4 f32[3] position doc="Location of the decorator decal." -- A Halo2Xbox sbsp.xml
-      0x10 f32[3] left_axis doc="Left direction in the decal's local frame." -- A Halo2Xbox sbsp.xml
-      0x1c f32[3] up_axis doc="Up direction in the decal's local frame." -- A Halo2Xbox sbsp.xml
-      0x28 f32[3] extents doc="Spatial extents of the decal." -- A Halo2Xbox sbsp.xml
-      0x34 f32[3] prior_position doc="Location recorded for the preceding decal position." -- A Halo2Xbox sbsp.xml
+      0x0 i8 set_index doc="Selects the decorator set for this decal."
+      0x1 i8 decorator_class doc="Class of the decal within its set."
+      0x2 i8 permutation_index doc="Variation of the decorator to display."
+      0x3 i8 sprite_index doc="Sprite to use for the decal."
+      0x4 f32[3] position doc="Location of the decorator decal."
+      0x10 f32[3] left_axis doc="Left direction in the decal's local frame."
+      0x1c f32[3] up_axis doc="Up direction in the decal's local frame."
+      0x28 f32[3] extents doc="Spatial extents of the decal."
+      0x34 f32[3] prior_position doc="Location recorded for the preceding decal position."

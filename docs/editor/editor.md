@@ -1085,9 +1085,7 @@ tags go out to and come back from tag bundles (below).
 The editor reads names and `doc="..."` descriptions from the checked-in tag
 definitions. Hover a field to see its description, offset and evidence. The
 detail row shows the same description, and `tag.fields` exposes it to
-scripts. An `A Halo2Xbox` evidence marker identifies a name checked against
-the retail Assembly reference. Offset labels identify fields whose purpose
-is still unknown. See [the field-name research note](notes/tag-field-names.md).
+scripts. Offset labels identify fields whose purpose is still unknown. See [the field-name research note](notes/tag-field-names.md).
 
 ### The field registry
 

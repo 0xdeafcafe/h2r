@@ -103,25 +103,35 @@ fn def(g: &[u8; 4]) -> &'static StructDef {
     Defs::builtin().group(FourCC(*g)).unwrap()
 }
 
-/// Counts of each 4-byte unknown span's value, by path: `prefix` + field
-/// name, through embedded structs (not blocks).
+/// Each plain 4-byte word of the record by path, through embedded structs
+/// (not blocks): `prefix` + the field's name, or `name+0x4` inside a wider
+/// field, as [`Record::bytes`] reads it.
+fn plain_words(d: &StructDef, r: &Record, prefix: &str, out: &mut dyn FnMut(String, u32)) {
+    for (f, (_, v)) in d.fields.iter().zip(&r.fields) {
+        if let (defs::Kind::Struct(s), Val::Struct(x)) = (&f.kind, v) {
+            plain_words(s, x, &format!("{prefix}{}.", f.name), out);
+            continue;
+        }
+        if f.offset % 4 != 0 {
+            continue;
+        }
+        for k in (0..f.kind.width()).step_by(4) {
+            let p = if k == 0 { f.name.clone() } else { format!("{}+{k:#x}", f.name) };
+            if let Some(b) = r.bytes(&p, 4) {
+                out(format!("{prefix}{p}"), u32::from_le_bytes(b[..4].try_into().unwrap()));
+            }
+        }
+    }
+}
+
+/// Counts of each plain 4-byte word's value, by path ([`plain_words`]).
 fn tally(
     d: &StructDef,
     r: &Record,
     prefix: &str,
     out: &mut BTreeMap<String, BTreeMap<u32, usize>>,
 ) {
-    for (f, (_, v)) in d.fields.iter().zip(&r.fields) {
-        let p = format!("{prefix}{}", f.name);
-        match (&f.kind, v) {
-            (defs::Kind::Struct(s), Val::Struct(x)) => tally(s, x, &format!("{p}."), out),
-            (defs::Kind::Unknown { .. }, Val::Bytes(b)) if b.len() == 4 => {
-                let w = u32::from_le_bytes(b[..4].try_into().unwrap());
-                *out.entry(p).or_default().entry(w).or_default() += 1;
-            }
-            _ => {}
-        }
-    }
+    plain_words(d, r, prefix, &mut |p, w| *out.entry(p).or_default().entry(w).or_default() += 1);
 }
 
 /// The role rule: per path, the value at least half the instances hold,
@@ -138,10 +148,10 @@ fn majority(t: &BTreeMap<String, BTreeMap<u32, usize>>) -> Vec<(String, u32)> {
     out
 }
 
-/// A driver's seat: its flags (`+0`, the unknown word) hold
+/// A driver's seat: its flags (`+0`) hold
 /// [`SEAT_DRIVER`].
 fn driver(x: &Record) -> bool {
-    matches!(x.get("unknown_0"), Some(Val::Bytes(b)) if u32::from_le_bytes(b[..4].try_into().unwrap()) & SEAT_DRIVER != 0)
+    matches!(x.bytes("flags", 4), Some(b) if u32::from_le_bytes(b[..4].try_into().unwrap()) & SEAT_DRIVER != 0)
 }
 
 fn table(t: &[(&str, u32)]) -> Vec<(String, u32)> {
@@ -374,7 +384,7 @@ fn a10_vehicles_without_templates_are_rebuilt() {
                 );
                 let has = markers.iter().any(|m| m.eq_ignore_ascii_case(&s.marker));
                 assert_eq!(
-                    text(&r, &format!("{p}.string_8")).to_ascii_lowercase(),
+                    text(&r, &format!("{p}.seat_marker_name")).to_ascii_lowercase(),
                     if has { s.marker.to_ascii_lowercase() } else { String::new() },
                     "{}: seat {k}",
                     t.name
@@ -403,7 +413,7 @@ fn a10_vehicles_without_templates_are_rebuilt() {
             // suspension sound at `+0x3b0`, the material effects at
             // `+0x3d0`) or null, never tag 0: a sound stands in as one of
             // the tree's sounds, the material effects as a tree `foot`.
-            for (p, at) in [("snd_ref_284", 0x3b0), ("foot_ref_294", 0x3d0)] {
+            for (p, at) in [("suspension_sound", 0x3b0), ("foot_ref_294", 0x3d0)] {
                 let Some(Val::Ref { target, .. }) = r.at(p) else {
                     panic!("{}: {p} is no reference", t.name)
                 };
@@ -415,7 +425,7 @@ fn a10_vehicles_without_templates_are_rebuilt() {
                             "{}: {p} set where Halo 1's is null",
                             t.name
                         );
-                        let ok = if p == "snd_ref_284" {
+                        let ok = if p == "suspension_sound" {
                             (0..c.tree.sounds.len()).any(|k| h1objects::convert::sound(k) == *id)
                         } else {
                             local(&c.tree, *id).is_some_and(|x| x.group == FourCC(*b"foot"))
@@ -510,7 +520,7 @@ fn biped_words_match_halo_2s_counterparts() {
             u.camera_field_of_view
         );
         for &(path, h1_at) in BIPED_WORDS {
-            if path == "unknown_21c" || (!h1_name.ends_with("crewman") && !["unknown_1f4", "unknown_220"].contains(&path)) {
+            if path == "crouching_camera_height" || (!h1_name.ends_with("crewman") && !["stationary_turning_threshold", "crouch_transition_time"].contains(&path)) {
                 continue;
             }
             let w = u.biped_words.iter().find(|x| x.0 == h1_at).unwrap().1;
@@ -540,18 +550,20 @@ fn h2_offset<'d>(d: &'d StructDef, path: &str, at: u32) -> Option<(&'d defs::Fie
     }
 }
 
-/// The record's 4-byte unknown spans, by path, through embedded structs.
-fn words(d: &StructDef, r: &Record, prefix: &str, out: &mut BTreeMap<String, u32>) {
-    for (f, (_, v)) in d.fields.iter().zip(&r.fields) {
-        let p = format!("{prefix}{}", f.name);
-        match (&f.kind, v) {
-            (defs::Kind::Struct(s), Val::Struct(x)) => words(s, x, &format!("{p}."), out),
-            (defs::Kind::Unknown { .. }, Val::Bytes(b)) if b.len() == 4 => {
-                out.insert(p, u32::from_le_bytes(b[..4].try_into().unwrap()));
-            }
-            _ => {}
-        }
+/// Whether `r` holds `v` at `path`: raw bytes as [`Record::bytes`] reads
+/// them, any other value as it is.
+fn holds(r: &Record, path: &str, v: &Val) -> bool {
+    match v {
+        Val::Bytes(b) => r.bytes(path, b.len()).as_ref() == Some(b),
+        v => r.at(path) == Some(v),
     }
+}
+
+/// The record's plain 4-byte words, by path ([`plain_words`]).
+fn words(d: &StructDef, r: &Record, prefix: &str, out: &mut BTreeMap<String, u32>) {
+    plain_words(d, r, prefix, &mut |p, w| {
+        out.insert(p, w);
+    });
 }
 
 fn float(r: &Record, path: &str) -> f32 {
@@ -638,9 +650,9 @@ fn biped_shapes_follow_the_collision_size() {
     let (mut shaped, mut bodies) = (0, 0);
     for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"bipd")) {
         let r = base.record(d, t.0).unwrap();
-        let f = |p: &str| match r.at(p) {
-            Some(Val::Bytes(b)) => f32::from_le_bytes(b[..4].try_into().unwrap()),
-            x => panic!("{p}: {x:?}"),
+        let f = |p: &str| match r.bytes(p, 4) {
+            Some(b) => f32::from_le_bytes(b[..4].try_into().unwrap()),
+            None => panic!("{p}"),
         };
         let [s, c, rad] = BIPD_SIZE.map(f);
         let Some(Val::Block(pills)) = r.at(BIPD_PILLS) else {
@@ -657,17 +669,14 @@ fn biped_shapes_follow_the_collision_size() {
             .unwrap();
             // Every word the rule writes, against retail's; the runtime
             // words (the post-process writes them) aside.
-            let runtime = |path: &str| {
-                [
-                    "unknown_20",
-                    "unknown_24",
-                    "unknown_28",
-                    "unknown_30",
-                    "unknown_34",
-                    "unknown_38",
-                    "unknown_3c",
-                ]
-                .contains(&path)
+            // A pill's end points are not runtime words.
+            let runtime = |element: &str, path: &str| {
+                let words: &[&str] = if element == BIPD_PILLS {
+                    &["unknown_20", "size", "user_data", "bottom", "bottom+0x4"]
+                } else {
+                    &["unknown_20", "size", "user_data", "unknown_30", "unknown_34", "unknown_38", "unknown_3c"]
+                };
+                words.contains(&path)
             };
             for (path, v) in &want {
                 match v {
@@ -682,11 +691,7 @@ fn biped_shapes_follow_the_collision_size() {
                             words(ed, g, "", &mut gw);
                             words(ed, w, "", &mut ww);
                             for (p, x) in &ww {
-                                // A pill's end points are not runtime words.
-                                if runtime(p)
-                                    && !(path == BIPD_PILLS
-                                        && (p == "unknown_38" || p == "unknown_3c"))
-                                {
+                                if runtime(path, p) {
                                     continue;
                                 }
                                 let y = gw[p];
@@ -699,7 +704,7 @@ fn biped_shapes_follow_the_collision_size() {
                             }
                         }
                     }
-                    _ => assert_eq!(r.at(path), Some(v), "{}: {path}", t.2),
+                    _ => assert!(holds(&r, path, v), "{}: {path}", t.2),
                 }
             }
             shaped += 1;
@@ -832,19 +837,19 @@ fn bipeds_rebuilt_from_the_source_unit() {
             }
             if !sized {
                 assert!(matches!(r.at(BIPD_PILLS), Some(Val::Block(b)) if b.is_empty()));
-                for (path, count) in [("block_294", 2), ("block_284", 3)] {
+                for (path, count) in [("sphere_shapes", 2), ("dead_sphere_shapes", 3)] {
                     assert!(matches!(r.at(path), Some(Val::Block(b)) if b.len() == count));
                 }
             }
             if sized {
                 for (path, v) in biped_shapes(&size).unwrap() {
-                    assert_eq!(r.at(&path), Some(&v), "{}: {path}", t.name);
+                    assert!(holds(&r, &path, &v), "{}: {path}", t.name);
                 }
             }
             let player = h1objects::health_hud::is_player_biped(&t.name);
             let h1_root = h1.tag_data(t).unwrap();
             let track_count = u.camera_tracks.len();
-            assert!(matches!(r.at("unit.block_e8"), Some(Val::Block(v)) if v.len() == track_count));
+            assert!(matches!(r.at("unit.camera_tracks"), Some(Val::Block(v)) if v.len() == track_count));
             if h1::reference(&h1, h1_root, 0x38c).is_some() {
                 let f = reference(&r, h1objects::convert::FOOT_FIELD).and_then(|id| local(&c.tree, id));
                 assert_eq!(f.map(|f| f.group), Some(FourCC(*b"foot")));
@@ -919,7 +924,7 @@ fn bipeds_rebuilt_from_the_source_unit() {
                     let Some(Val::Ref {
                         target: Target::Id(id),
                         ..
-                    }) = e.get("ref_0")
+                    }) = e.get("hud_interface")
                     else {
                         panic!("{}: a HUD interface", t.name)
                     };

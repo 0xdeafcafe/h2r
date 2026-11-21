@@ -92,13 +92,13 @@ mod tests {
         }
         let root = crate::arsenal::damage(&bytes, None).unwrap();
         let r = defs::from_built(Defs::builtin().group(map::FourCC(*b"jpt!")).unwrap(), &root).unwrap();
-        let Some(Val::Block(responses)) = r.at("block_6c") else { panic!("no player responses") };
+        let Some(Val::Block(responses)) = r.at("player_responses") else { panic!("no player responses") };
         assert_eq!(responses.len(), 3);
         for (i, response) in responses.iter().enumerate() {
-            assert_eq!(response.at("unknown_0"), Some(&Val::Bytes((i as u32).to_le_bytes().to_vec())));
-            for (path, time, magnitude, duration) in [("data_28", "unknown_24", 0.75, 0.2f32),
-                                                       ("data_34", "unknown_30", 0.25, 0.5)] {
-                assert_eq!(response.at(time), Some(&Val::Bytes(duration.to_le_bytes().to_vec())));
+            assert_eq!(response.bytes("response_type", 4), Some((i as u32).to_le_bytes().to_vec()));
+            for (path, time, magnitude, duration) in [("low_frequency_vibration_function", "low_frequency_vibration_duration", 0.75, 0.2f32),
+                                                       ("high_frequency_vibration_function", "high_frequency_vibration_duration", 0.25, 0.5)] {
+                assert_eq!(response.at(time), Some(&Val::Float(duration)));
                 let Some(Val::Data(data)) = response.at(path) else { panic!("{path}") };
                 let envelope = Function::parse(data).unwrap();
                 assert_eq!(envelope.evaluate(0.0, 0.0), magnitude);
