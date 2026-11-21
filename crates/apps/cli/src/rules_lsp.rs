@@ -1,5 +1,5 @@
 //! `h2 rules lsp`: a language server for `.rules` files on stdin and
-//! stdout (docs/game/rules-engine.md, "Tooling"). Full document sync;
+//! stdout (docs/game/rules-engine.md, "Security and usability"). Full document sync;
 //! every answer comes from `rules::ide`, as Live's `POST /v1/rules/ide`
 //! does. [`Server::handle`] is the whole protocol, so tests drive it
 //! without a process.
