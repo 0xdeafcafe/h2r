@@ -413,7 +413,8 @@ impl Live {
                 return Ok(());
             };
             let started = &g.started.game;
-            if started.sim.is_some() {
+            // Firefight is players against the director: nobody ranks by it.
+            if started.sim.is_some() || g.firefight {
                 return Ok(());
             }
             let finished = g

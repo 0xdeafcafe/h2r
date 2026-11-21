@@ -630,8 +630,14 @@ impl Prefix {
                 types: game::CLIENT_GAME_EVENTS
                     .iter()
                     .copied()
-                    // Public actor kills are absent from the private import rows.
-                    .filter(|&kind| kind != game::ACTOR_KILLED)
+                    // Public actor kills and Firefight records are absent from
+                    // the private import rows.
+                    .filter(|&kind| {
+                        !matches!(
+                            kind,
+                            game::ACTOR_KILLED | game::FIREFIGHT_SCORE | game::FIREFIGHT_ENDED
+                        )
+                    })
                     .map(str::to_owned)
                     .collect(),
                 limit: 32,

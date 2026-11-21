@@ -63,3 +63,43 @@ async fn the_summary_follows_games_as_they_are_played() {
     let bad = h.get("/v1/stats/summary?window=1y").await;
     assert_eq!(bad.status, StatusCode::BAD_REQUEST);
 }
+
+const FIREFIGHT_GOLDEN: &str = include_str!("fixtures/firefight-summary.json");
+
+#[tokio::test]
+async fn the_firefight_summary_is_the_golden_one_and_players_cannot_write_it() {
+    let h = harness().await;
+    let host = h.create("Host").await;
+    let guest = h.create("Guest").await;
+    let id = h.start_game(&host, firefight_game(&host)).await;
+    // An account that is not the game's host writes no score.
+    let forged = h.batch(
+        &guest,
+        &id,
+        &[(
+            "FirefightScore",
+            json!({"tick": 5, "player": 0, "points": 1000, "reason": "kill", "class": "grunt"}),
+        )],
+    );
+    assert_eq!(h.post_batch(&guest, &id, forged).await.status, StatusCode::FORBIDDEN);
+
+    // A bad score is refused whole.
+    let bad = h.batch(
+        &host,
+        &id,
+        &[("FirefightScore", json!({"tick": 5, "player": 7, "points": 1, "reason": "kill"}))],
+    );
+    assert_eq!(h.post_batch(&host, &id, bad).await.status, StatusCode::BAD_REQUEST);
+
+    let events = firefight_batch();
+    let pairs: Vec<(&str, serde_json::Value)> =
+        events.iter().map(|(k, d)| (k.as_str(), d.clone())).collect();
+    let jws = h.batch(&host, &id, &pairs);
+    assert_eq!(h.post_batch(&host, &id, jws).await.status, StatusCode::CREATED);
+
+    let golden: serde_json::Value =
+        serde_json::from_str(&FIREFIGHT_GOLDEN.replace("$HOST", &host.xuid.to_string())).unwrap();
+    let v = h.get("/v1/stats/summary?window=all").await.json();
+    assert_eq!(v["firefight"], golden);
+    assert_eq!(v["totals"]["kills"], 0);
+}

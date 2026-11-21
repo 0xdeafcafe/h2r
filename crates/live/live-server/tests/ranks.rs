@@ -761,3 +761,61 @@ async fn a_game_that_moves_nobody_still_spends_its_round() {
     play_unregistered(&h, &host, duel(&s, &host, &guest, "1", "matchmaking")).await;
     assert_eq!(board(&h).await, json!([]));
 }
+
+/// Firefight is the players against the director: its scores and its result
+/// ride a game that would otherwise rank, and nobody's rank moves.
+#[tokio::test]
+async fn firefight_scores_do_not_touch_ranks() {
+    let h = harness().await;
+    let host = h.create("Host").await;
+    let s = host_session(&h, &host).await;
+    let guest = h.create("Guest").await;
+    let r = round();
+    for u in [&host, &guest] {
+        assert_eq!(register(&h, &s, u, &r).await.status, StatusCode::CREATED);
+    }
+    // The playlist and finish of `a_finished_ranked_game_ranks_both_players_once`.
+    let id = h
+        .start_game(&host, duel(&s, &host, &guest, "1", "matchmaking"))
+        .await;
+    let end = h.batch(
+        &host,
+        &id,
+        &[
+            (
+                "FirefightScore",
+                json!({"tick": 30, "player": 0, "points": 100, "reason": "kill", "class": "grunt"}),
+            ),
+            (
+                "FirefightEnded",
+                json!({"tick": 800, "set": "Holdout", "outcome": "won", "rounds_cleared": 3, "lives_used": 4}),
+            ),
+            (
+                "ScoreChanged",
+                json!({"tick": 800, "players": [
+                    {"index": 0, "score": 100, "kills": 0, "deaths": 0, "assists": 0},
+                    {"index": 1, "score": 0, "kills": 0, "deaths": 0, "assists": 0}],
+                    "teams": [{"team": 0, "score": 100}, {"team": 1, "score": 0}]}),
+            ),
+            (
+                "GameEnded",
+                json!({"tick": 900, "reason": "finished", "winner": {"team": 0}}),
+            ),
+        ],
+    );
+    let r = h.post_batch(&host, &id, end).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", String::from_utf8_lossy(&r.body));
+
+    for who in [&host, &guest] {
+        let stream = h
+            .get(&format!("/v1/events?stream=rank-{}", who.xuid))
+            .await
+            .json();
+        assert_eq!(changes(&stream), Vec::<Value>::new());
+    }
+    assert_eq!(h.get("/v1/accounts/Host/ranks").await.json()["ranks"], json!({}));
+    assert_eq!(h.get("/v1/ranks/1").await.json()["items"], json!([]));
+    // The scores were kept all the same.
+    let v = h.get("/v1/stats/summary?window=all").await.json();
+    assert_eq!(v["firefight"]["score"], 100);
+}
