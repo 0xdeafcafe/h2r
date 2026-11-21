@@ -891,7 +891,7 @@ impl TrackerPlace {
     }
 }
 
-fn ring(centre: [f32; 2], radius: f32, sides: usize) -> Vec<[f32; 2]> {
+pub(crate) fn ring(centre: [f32; 2], radius: f32, sides: usize) -> Vec<[f32; 2]> {
     (0..sides)
         .map(|i| {
             let a = std::f32::consts::TAU * i as f32 / sides as f32;
@@ -1349,6 +1349,8 @@ pub fn install(agent: &agent::Agent) {
 /// mode's own.
 #[cfg(feature = "gpu")]
 pub use gpu::Source;
+#[cfg(feature = "gpu")]
+pub(crate) use gpu::emit;
 
 #[cfg(feature = "gpu")]
 mod gpu {
@@ -1444,47 +1446,53 @@ mod gpu {
 
         fn hud(&self, now: &dyn Fn() -> Instant, visitor: &mut dyn FnMut(HudMark<'_>)) {
             for shape in self.0.hud(now()) {
-                match shape.fitted(self.0.fit) {
-                    Shape::Path {
-                        points,
-                        closed,
-                        width,
-                        dashed,
-                        color,
-                        alpha,
-                    } => visitor(HudMark::Path {
-                        points: &points,
-                        closed,
-                        width,
-                        dashed,
-                        color,
-                        alpha,
-                    }),
-                    Shape::Fill {
-                        points,
-                        color,
-                        alpha,
-                    } => visitor(HudMark::Fill {
-                        points: &points,
-                        color,
-                        alpha,
-                    }),
-                    Shape::Text {
-                        at,
-                        text,
-                        color,
-                        alpha,
-                        pixel,
-                    } => visitor(HudMark::Text {
-                        at,
-                        text: &text,
-                        color,
-                        alpha,
-                        pixel,
-                        centered: true,
-                    }),
-                }
+                emit(&shape.fitted(self.0.fit), visitor);
             }
+        }
+    }
+
+    /// Hands a [`Shape`] (already in the window's HUD space) to the
+    /// window as the [`HudMark`] it is.
+    pub(crate) fn emit(shape: &Shape, visitor: &mut dyn FnMut(HudMark<'_>)) {
+        match shape {
+            Shape::Path {
+                points,
+                closed,
+                width,
+                dashed,
+                color,
+                alpha,
+            } => visitor(HudMark::Path {
+                points,
+                closed: *closed,
+                width: *width,
+                dashed: *dashed,
+                color: *color,
+                alpha: *alpha,
+            }),
+            Shape::Fill {
+                points,
+                color,
+                alpha,
+            } => visitor(HudMark::Fill {
+                points,
+                color: *color,
+                alpha: *alpha,
+            }),
+            Shape::Text {
+                at,
+                text,
+                color,
+                alpha,
+                pixel,
+            } => visitor(HudMark::Text {
+                at: *at,
+                text,
+                color: *color,
+                alpha: *alpha,
+                pixel: *pixel,
+                centered: true,
+            }),
         }
     }
 }
