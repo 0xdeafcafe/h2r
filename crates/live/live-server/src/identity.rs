@@ -189,13 +189,21 @@ mod tests {
         let a = ServerIdentity::open(&dir, Some("live.example")).unwrap();
         assert_eq!(a.id, "live.example");
         assert_eq!(a.author(), "server:live.example");
-        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode(&dir.join("server.key")), 0o600);
-        assert_eq!(mode(&dir), 0o700);
-
         let b = ServerIdentity::open(&dir, None).unwrap();
         assert_eq!(b.key.kid(), a.key.kid());
         assert!(ServerIdentity::open(&dir, Some("other")).is_err());
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn keys_require_owner_only_permissions() {
+        let dir = temp_dir("identity-mode");
+        ServerIdentity::open(&dir, Some("live.example")).unwrap();
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir.join("server.key")), 0o600);
+        assert_eq!(mode(&dir), 0o700);
 
         // A key file others can read is refused.
         fs::set_permissions(dir.join("server.key"), fs::Permissions::from_mode(0o644)).unwrap();
