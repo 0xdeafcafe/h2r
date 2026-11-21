@@ -317,20 +317,140 @@ fn ascension_corner() -> Vec<Poly> {
     ]
 }
 
+/// The corner and the bounce patch together, as on the map: the corner's
+/// ramp is the one that comes down to the patch's crease (the patch's own
+/// copy of it left out).
+fn ascension_corner_and_patch() -> Vec<Poly> {
+    let mut polys = ascension_corner();
+    let mut patch = ascension_patch(0.2);
+    patch.remove(2);
+    polys.extend(patch);
+    polys
+}
+
 #[test]
 fn the_ascension_prop_lip_is_the_measured_crouch_spot() {
-    let spots = scan(&ascension_corner());
+    // The lip's band runs the 0.4 front of the prop and round both ends;
+    // its stand is the end nearest the bounce strip 3 units away, where
+    // the player stood.
+    let spots = scan(&ascension_corner_and_patch());
     let c = crouches(&spots);
     let target = [-10.91, 0.72, -1.16];
+    assert_eq!(c.len(), 1, "{c:?}");
+    assert!(dist(c[0].stand, target) < 0.15, "{:?}", c[0].stand);
+    assert_eq!((c[0].fall, c[0].launch, c[0].drift), (0.0, 0.0, [0.0, 0.0]));
+    // Scored up for the bounce strip nearby.
+    assert!(c[0].score > 0.7, "{}", c[0].score);
+    assert_eq!(bounces(&spots).len(), 1, "{spots:?}");
+}
+
+#[test]
+fn the_ascension_lip_alone_is_still_a_crouch_spot() {
+    // With no bounce strip near, it stands mid-band.
+    let spots = scan(&ascension_corner());
+    let c = crouches(&spots);
+    assert_eq!(c.len(), 1, "{c:?}");
+    let [x, y, _] = c[0].stand;
     assert!(
-        c.iter().any(|s| dist(s.stand, target) < 0.15),
+        (-11.6..=-10.8).contains(&x) && (0.6..=0.8).contains(&y),
         "{:?}",
-        c.iter().map(|s| s.stand).collect::<Vec<_>>()
+        c[0].stand
     );
-    for s in &c {
-        assert_eq!((s.fall, s.launch, s.drift), (0.0, 0.0, [0.0, 0.0]));
-    }
+    assert!(c[0].score < 0.65, "{}", c[0].score);
     assert!(bounces(&spots).is_empty(), "{spots:?}");
+}
+
+#[test]
+fn a_thin_band_under_a_low_ledge_is_no_spot() {
+    // Clearance 0.4: only the crouched capsule's rounded top slips under,
+    // 0.157 to 0.17 from the edge, a band 1.3 cm wide.
+    assert!(crouches(&scan(&room(0.4))).is_empty());
+}
+
+#[test]
+fn a_crouch_place_inside_a_prop_is_no_spot() {
+    // A closed box 0.9 high, with a shelf at 0.6 inside over half of it:
+    // forced under the shelf, but walled in and roofed.
+    let (h, s) = (0.9, 0.6);
+    let polys = vec![
+        flat([-2.0, 3.0], [-2.0, 3.0], 0.0, true),
+        quad(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 0.0, h],
+                [0.0, 0.0, h],
+            ],
+            [0.0, -1.0, 0.0],
+        ),
+        quad(
+            [
+                [0.0, 1.0, 0.0],
+                [0.0, 1.0, h],
+                [1.0, 1.0, h],
+                [1.0, 1.0, 0.0],
+            ],
+            [0.0, 1.0, 0.0],
+        ),
+        quad(
+            [
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, h],
+                [0.0, 1.0, h],
+                [0.0, 1.0, 0.0],
+            ],
+            [-1.0, 0.0, 0.0],
+        ),
+        quad(
+            [
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [1.0, 1.0, h],
+                [1.0, 0.0, h],
+            ],
+            [1.0, 0.0, 0.0],
+        ),
+        flat([0.0, 1.0], [0.0, 1.0], h, true),
+        flat([0.0, 1.0], [0.0, 0.5], s, false),
+    ];
+    assert!(
+        crouches(&scan(&polys)).is_empty(),
+        "{:?}",
+        crouches(&scan(&polys))
+    );
+}
+
+#[test]
+fn two_crouch_places_close_together_are_one_spot() {
+    let polys = vec![
+        flat([-2.0, 4.0], [-2.0, 3.0], 0.0, true),
+        flat([0.0, 0.8], [0.0, 0.8], 0.6, false),
+        flat([1.4, 2.2], [0.0, 0.8], 0.6, false),
+    ];
+    let c = crouches(&scan(&polys)).len();
+    assert_eq!(c, 1);
+}
+
+#[test]
+fn a_crouch_spot_near_a_bounce_strip_outranks_a_lone_one() {
+    let mut polys = ascension_patch(0.2);
+    // Low ceilings over floor 3.5 units from the strip, and 31 units.
+    for x in [-7.0, 21.0] {
+        polys.push(flat([x - 1.0, x + 1.0], [3.0, 5.0], -3.2, true));
+        polys.push(flat([x - 0.4, x + 0.4], [3.6, 4.4], -2.6, false));
+    }
+    let spots = scan(&polys);
+    let c = crouches(&spots);
+    assert_eq!(c.len(), 2, "{c:?}");
+    // Its stand is the end nearest the strip.
+    assert!((c[0].stand[0] + 7.0).abs() < 0.8, "{:?}", c[0].stand);
+    assert!((c[1].stand[0] - 21.0).abs() < 0.5, "{:?}", c[1].stand);
+    assert!(
+        c[0].score > c[1].score + 0.1,
+        "{} {}",
+        c[0].score,
+        c[1].score
+    );
 }
 
 fn room(ceiling: f32) -> Vec<Poly> {
@@ -364,7 +484,8 @@ fn a_ceiling_at_crouch_height_is_a_crouch_spot() {
     assert!(off_side(a) < 0.25 && off_side(b) < 0.25, "{:?}", s.edge);
     assert!(a[2].abs() < 1e-3 && b[2].abs() < 1e-3, "{:?}", s.edge);
     assert!(dist(a, b) > 2.0, "{:?}", s.edge);
-    assert!((s.score - 1.0).abs() < 1e-5, "{}", s.score);
+    // No bounce strip near: 0.4 + 0.2 (wide) + 0.1 (long).
+    assert!((s.score - 0.7).abs() < 1e-4, "{}", s.score);
     assert!(bounces(&spots).is_empty());
 }
 

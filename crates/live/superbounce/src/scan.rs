@@ -31,7 +31,8 @@ pub(crate) fn scan(polys: &[Poly]) -> Vec<Spot> {
         })
         .collect();
     let mut out = crate::bounce::bounces(&faces);
-    out.extend(crate::crouch::crouches(&faces));
+    let crouches = crate::crouch::crouches(&faces, &out);
+    out.extend(best(crouches));
     out
 }
 

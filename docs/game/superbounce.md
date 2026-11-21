@@ -519,18 +519,40 @@ which is support. A sample where the standing capsule hits and the
 crouched one doesn't is a forced crouch.
 
 Forced samples that neighbour each other (8-neighbours, floors within
-0.15) are one region. A region narrower than a diameter and longer than
-one is cut along its long axis into pieces at most a diameter long, so
-every stand point is within a capsule's width of its whole spot; at
-Ascension the band beside the lip is about 5 cm wide and 0.7 long.
+0.15) are one region. Most regions are no use to a player: hair-thin
+bands at the edges of low ledges and props, where only the crouched
+capsule's rounded top slips under (under a ledge 0.4 up, 0.157 to 0.17
+from its edge), and pockets inside props. A region is a spot only when:
 
-- **stand**: the sample nearest the piece's centre.
-- **edge**: across the largest group of samples that have standing room
-  the same way next door, between its two ends: where a player walks in
-  crouched and can't stand up. With no such samples it runs along the
-  piece's long axis.
-- **score**: 0.4, plus 0.3 for that edge, plus 0.3 × the samples over 4
-  (to 1).
+- **it touches standing room**: some of its samples have a neighbour
+  where standing is clear (its exits);
+- **it is reachable**: walking clear samples from its exits reaches a
+  lattice cell with no sample that is open floor, walkable floor with no
+  walkable face (a prop's top) within 1.075 over it. A region walled in
+  and roofed, inside a prop, never does;
+- **it is wide enough to stand in**: at up to 24 of its exits, the band
+  is probed across, out to where standing is clear and back in to where
+  the crouch is no longer forced (1 cm steps, then three halvings). It
+  must be at least 4 cm wide at two or more of them. The Ascension lip's
+  band measures 5 cm, its overhang; probing along a lattice axis
+  overstates a diagonal band by up to √2;
+- **its wide part is at least 0.25 long** along its principal axis.
+
+Then a spot within 1.5 of a better one is dropped, and the 30 best are
+kept.
+
+- **stand**: when a bounce spot's stand is within 15 (straight line, not
+  walking distance) of the region's centre, the region's sample nearest
+  the nearest such stand: the end you leave from to go and bounce. At
+  Ascension that is the prop's corner, where the player stood. Otherwise
+  the sample nearest the region's centre.
+- **edge**: across the largest group of exits that have standing room
+  the same way, between its two ends: where a player walks in crouched
+  and can't stand up.
+- **score**: 0.4, plus 0.2 × the widest band over 0.15 (to 1), plus
+  0.1 × the wide part's length (to 1), plus 0.3 × (1 − the distance to
+  that bounce stand over 15) when there is one. You prime, then go and
+  bounce, so a crouch spot near a strip ranks first.
 
 `fall`, `launch` and `drift` are 0.
 
