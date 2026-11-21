@@ -318,6 +318,43 @@ fn ui_lobby_tabs_answers_each_tab_with_its_state_and_reason() {
     assert!(json_of(&s, None)["notice"].is_null());
 }
 
+/// The party lobby's own panel hook draws the strip with no other feature
+/// on the point (`lobby-options=off`): retail's update, then the header
+/// hidden and the count narrowed, and retail's answer returned.
+#[test]
+fn the_strip_draws_with_lobby_options_off() {
+    use engine::entry::{Regs, testing};
+    install(0);
+    let mut g = lobby(&pieces(Present::ALL), OURS, 0x300);
+    // Split Screen: not networked, a custom game's session type.
+    g.map(0x0052_7000, 0x1000);
+    g.put_u8(lobby::NETWORKING, 0)
+        .put_u32(lobby::SESSION_TYPE, 0)
+        .put_u32(lobby::SESSION, 0);
+    let entry = |cx: Cx| -> EntryFuture { Box::pin(panel_entry(cx, SCREEN, 3)) };
+    let run = testing::run(&entry, g, Regs::default(), |call, _| {
+        assert_eq!(call.target, points::LOBBY_VARIANT_PANEL.base);
+        Regs {
+            eax: 7,
+            ..Regs::default()
+        }
+    });
+    assert_eq!(run.result.unwrap(), Ret::new(7, 4), "retail's answer");
+    assert_eq!(run.calls.len(), 1, "only retail's update: no widget to add");
+    assert_eq!(run.calls[0].eax, Some(SCREEN));
+    assert_eq!(run.calls[0].args, [3]);
+    assert!(
+        !visible(&run.guest, HEADER_AT),
+        "the retail header is hidden"
+    );
+    assert_eq!(rect_at(&run.guest, COUNT_AT), Some(COUNT_NARROW));
+    let found = find(&run.guest, SCREEN).unwrap();
+    assert!(
+        found.ours.iter().any(|(_, at)| visible(&run.guest, *at)),
+        "the strip is drawn"
+    );
+}
+
 // ---- against the disc ----
 
 fn disc() -> crate::ui_kit::preview::Disc {

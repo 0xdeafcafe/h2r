@@ -317,6 +317,12 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "removes the freed dialog from host navigation state on the game thread",
     ),
     (
+        "party-lobby",
+        "*",
+        "the party lobby's UI (its Game Setup rows, mode strip, bumpers, start refusal and \
+         leave) on the game thread, through guest calls and a game-thread reentry guard",
+    ),
+    (
         "lobby-options",
         "LOBBY_VARIANT_PANEL",
         "updates lobby widgets through guest calls and uses a game-thread reentry guard",

@@ -137,9 +137,14 @@ header and the count fill it. The strip takes the band:
   is off shows that tab's reason there for four seconds
   (`lobby_tabs::Notice`).
 
-The strip is updated where the lobby's panel is
-(`lobby_options::update`, on `LOBBY_VARIANT_PANEL`;
-`lobby_tabs::strip::update`). The widgets are found again on each update
+The strip is updated after the lobby's panel update, by the party
+lobby's own `before` on `LOBBY_VARIANT_PANEL`
+(`lobby_tabs::strip::panel`): it runs retail's update, then
+`lobby_tabs::strip::update`. It is ordered inside `lobby-options`'s
+hook on the same point (`after_feature`), so with that feature on its
+answer's call to retail comes through the strip's, and with
+`lobby-options=off` the strip's is the only answer: the strip is drawn
+and the retail header hidden either way. The widgets are found again on each update
 by their block indices (`lobby_tabs::strip::BLOCK_BASE` and up, past any
 of the tag's own, so no retail lookup by index finds one), not by kept
 addresses. A pane that lacks them, at its first update or after its
@@ -310,9 +315,8 @@ in another owner's files, named in its row.
   the network.
 - Game Setup has no row that changes mode, and there is no retail lobby
   to fall back to.
-- The strip is drawn from `lobby_options`' variant panel update: with
-  `lobby-options=off` the bumpers still switch, but the strip is not
-  drawn and the retail header shows.
+- The strip depends on no other feature: `lobby-options=off` removes
+  only the extra panel lines.
 
 ## Evidence
 
@@ -369,7 +373,7 @@ in another owner's files, named in its row.
   and the co-op lobby from the session's campaign difficulty
   (`lobby_tabs::strip::retail_mode`).
 - That the strip is updated on every pane: it is drawn from the custom
-  pane's variant panel update, the one `lobby_options.rs` answers.
+  pane's variant panel update (`LOBBY_VARIANT_PANEL`).
 - Xbox Live's playlists are taken as listed until slice T5 reads them.
 
 ## Related

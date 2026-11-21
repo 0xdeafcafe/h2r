@@ -392,6 +392,42 @@ fn a_snapshot_keeps_the_lobbys_mode() {
     assert!(load_state(&[1, 9]).is_err(), "no mode 9");
 }
 
+/// The strip has its own hook on the panel update, inside
+/// `lobby-options`'s, and keeps it with that feature off.
+#[test]
+fn the_strip_has_its_own_panel_hook_inside_lobby_options() {
+    let panel = |switches: &str| -> String {
+        let mut r = hooks::Registry::new(hooks::Switches::parse(switches).unwrap());
+        let store = Arc::new(Store::defaults(&ff::DEFS));
+        r.add(&crate::lobby_options::LobbyOptions::new(
+            Arc::clone(&store),
+            None,
+            false,
+        ))
+        .unwrap();
+        r.add(&LobbyMode {
+            offer: ALL,
+            store: Some(store),
+            data: std::env::temp_dir(),
+        })
+        .unwrap();
+        let text = r.build(&hooks::Base).unwrap().text();
+        text.lines()
+            .find(|l| l.contains("LOBBY_VARIANT_PANEL"))
+            .unwrap_or_else(|| panic!("no panel hook: {text}"))
+            .to_owned()
+    };
+    let on = panel("");
+    let (theirs, ours) = (
+        on.find("lobby-options:").unwrap(),
+        on.find("party-lobby:").unwrap(),
+    );
+    assert!(theirs < ours, "the strip sits inside lobby-options: {on}");
+    let off = panel("lobby-options=off");
+    assert!(off.contains("party-lobby:"), "{off}");
+    assert!(!off.contains("lobby-options:"), "{off}");
+}
+
 /// The hooks come after every other Game Setup row's on the plan.
 #[test]
 fn the_rows_go_after_the_other_rows_on_the_plan() {

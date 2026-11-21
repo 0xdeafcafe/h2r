@@ -20,8 +20,10 @@
 //!
 //! **The panel** ([`panel_ids`]): the lobby's variant panel update
 //! (`crate::lobby_options`) adds the mode's lines. The lobby's title is the
-//! mode strip's selected tab (`crate::lobby_tabs::strip`), which hides the
-//! retail header.
+//! mode strip's selected tab, which hides the retail header. The strip is
+//! drawn by this feature's own `before` on the update, inside
+//! `lobby-options`'s (`crate::lobby_tabs::strip::panel`), so it does not
+//! depend on that feature.
 //!
 //! **Start Game with a remote member.** Forge across consoles needs the
 //! session log on the network (slice F5). Until then, an `after` on the
@@ -536,6 +538,14 @@ impl hooks::Feature for LobbyMode {
                 },
             )
             .optional();
+        // The mode strip's update after retail's panel update, inside
+        // `lobby-options`'s answer when that feature is on and alone when it
+        // is off (docs/game/party-lobby.md, "The strip").
+        b.raw()
+            .before(&points::LOBBY_VARIANT_PANEL, "the mode strip", |c| {
+                crate::lobby_tabs::strip::panel(c)
+            })
+            .after_feature(crate::lobby_options::FEATURE);
         // The mode strip's bumpers (docs/game/party-lobby.md, "Switching").
         let store = self.store.clone();
         b.raw().before(

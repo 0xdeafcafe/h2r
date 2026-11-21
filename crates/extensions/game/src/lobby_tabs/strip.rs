@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bots::lobby;
-use engine::entry::{Cx, EntryError, GuestCall};
+use engine::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
 use engine::memory::{GuestMemory, MemFault};
 use engine::points;
 use serde_json::{Value, json};
@@ -430,6 +430,42 @@ pub fn install(blocks: u32) {
 /// Whether the strip is installed.
 pub fn on() -> bool {
     ON.load(Ordering::SeqCst)
+}
+
+static PASSING: AtomicBool = AtomicBool::new(false);
+
+/// The party lobby's own `before` on `LOBBY_VARIANT_PANEL` (EAX the lobby
+/// screen, the variant on the stack, `ret 4`), ordered after
+/// `lobby-options`'s: it runs retail's panel update, then the strip's
+/// ([`update`]). With `lobby-options` on, its answer's call to retail
+/// comes through here; with it off, this is the only answer. Either way
+/// the strip is drawn and the retail header hidden.
+pub fn panel(c: &mut hooks::Call) -> Result<hooks::Flow, runtime::GuestFault> {
+    if PASSING.load(Ordering::SeqCst) {
+        return Ok(hooks::Flow::Continue);
+    }
+    let screen = c.cpu.eax;
+    let Some(variant) = c.arg_u32("variant") else {
+        return Ok(hooks::Flow::Continue);
+    };
+    c.answer_async(move |cx| -> EntryFuture { Box::pin(panel_entry(cx, screen, variant)) })
+}
+
+/// [`panel`]'s answer: retail's panel update for `variant` on `screen`,
+/// then the strip's.
+pub async fn panel_entry(cx: Cx, screen: u32, variant: u32) -> Result<Ret, EntryError> {
+    PASSING.store(true, Ordering::SeqCst);
+    let retail = cx
+        .call(
+            GuestCall::new(points::LOBBY_VARIANT_PANEL.base)
+                .eax(screen)
+                .args([variant]),
+        )
+        .await;
+    PASSING.store(false, Ordering::SeqCst);
+    let retail = retail?;
+    update(&cx, screen).await?;
+    Ok(Ret::new(retail.eax, 4))
 }
 
 /// The strip's update on the lobby `screen`, after its panel update: adds

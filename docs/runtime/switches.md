@@ -47,7 +47,7 @@ An `impl.` name is an implementation switch
 | `actor-net` | on; `-actor-net` stops capturing replicated AI actors and accepted dialogue after each distributed host tick ([AI over the network](../game/ai-networking.md#on-the-host-each-tick)) |
 | `firefight`, `firefight-row`, `firefight-options` | on; `-firefight` turns off the [Firefight](../game/firefight.md#the-host-runtime) director and host log (in each multiplayer game whose map carries the kit; any other map gets the refusal and its reason in `firefight.state`). `-firefight-row` removes the Game Setup row, `-firefight-options` the [Firefight Options...](../game/firefight.md#game-setup) page. With `firefight` on, the party lobby's mode strip has a FIREFIGHT tab ([the lobby](../game/firefight.md#the-lobby)). |
 | `impl.engine.datums`, `impl.engine.tags`, `impl.engine.locale` | on; `=off` turns off the Rust datum, tag and locale leaves, each group or one function (`impl.engine.tags.tag_get_checked=off`) |
-| `lobby-options=off` | keeps the retail Quick Options lines in the custom game lobby ([ui-builder.md](../game/ui-builder.md#the-pregame-lobbys-quick-options)); the party lobby's mode strip is drawn from the same update, so it is not drawn either ([party-lobby.md](../game/party-lobby.md#rules-and-limits)) |
+| `lobby-options=off` | keeps the retail Quick Options lines in the custom game lobby ([ui-builder.md](../game/ui-builder.md#the-pregame-lobbys-quick-options)); the party lobby's mode strip has its own hook on that update and is drawn either way ([party-lobby.md](../game/party-lobby.md#the-strip)) |
 
 ## Build and code generation
 

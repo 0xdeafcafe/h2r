@@ -7,10 +7,11 @@
 //! sits below the Quick Options box, next to the footer.
 //!
 //! The lobby's mode (`crate::lobby_mode`) puts its lines first (the Forge
-//! map; Firefight's wave set, difficulty and starting lives), and the
-//! party lobby's mode strip (`crate::lobby_tabs::strip`) is updated after
-//! retail's panel update. The strip's own text widgets are left out of the
-//! count of the screen's texts here.
+//! map; Firefight's wave set, difficulty and starting lives). The party
+//! lobby's mode strip (`crate::lobby_tabs::strip::panel`) has its own hook
+//! on the same point, inside this one, so it is drawn with this feature
+//! off too. The strip's own text widgets are left out of the count of the
+//! screen's texts here.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -283,7 +284,6 @@ impl LobbyOptions {
             .await;
         self.passing.store(false, Ordering::SeqCst);
         let retail = retail?;
-        crate::lobby_tabs::strip::update(&cx, screen).await?;
         if variant == 0 {
             return Ok(Ret::new(retail.eax, 4));
         }
@@ -307,9 +307,12 @@ impl LobbyOptions {
     }
 }
 
+/// The feature's id (`lobby-options=off` switches it).
+pub const FEATURE: &str = "lobby-options";
+
 impl hooks::Feature for LobbyOptions {
     fn manifest(&self) -> Manifest {
-        Manifest::new("lobby-options", "Extra options in the custom game lobby")
+        Manifest::new(FEATURE, "Extra options in the custom game lobby")
             .doc("docs/game/ui-builder.md")
     }
 
