@@ -598,6 +598,7 @@ impl MountedView {
                         model: (*scene.uploaded.get(&o.definition)?)?,
                         nodes: &o.nodes,
                         sphere: o.sphere,
+                        highlight: [0; 4],
                     })
                 })
                 .collect();

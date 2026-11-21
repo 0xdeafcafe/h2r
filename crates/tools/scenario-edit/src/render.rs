@@ -754,9 +754,10 @@ pub struct Viewport {
     /// have no model for.
     native_models: std::sync::Arc<crate::native_view::NativeModels>,
     native_objects: Option<crate::native_view::NativeObjects>,
-    /// The placements last uploaded, to place again when the models are
-    /// uploaded again (another Lighting mode).
+    /// The placements last uploaded and the selection among them, to place
+    /// again when the models are uploaded again (another Lighting mode).
     native_placed: Vec<Marker>,
+    native_selected: Vec<(crate::BlockKind, usize)>,
     target: Option<Target>,
 }
 
@@ -1175,6 +1176,7 @@ impl Viewport {
             native_models: Default::default(),
             native_objects: None,
             native_placed: Vec::new(),
+            native_selected: Vec::new(),
             target: None,
         }
     }
@@ -1291,7 +1293,7 @@ impl Viewport {
         self.native_objects = (!models.is_empty()).then(|| {
             let mut objects =
                 crate::native_view::NativeObjects::new(device, queue, &models, self.lighting);
-            objects.place(&models, &self.native_placed);
+            objects.place(&models, &self.native_placed, &self.native_selected);
             objects
         });
         self.native_models = models;
@@ -1300,6 +1302,11 @@ impl Viewport {
     /// How many placements draw through the native renderer.
     pub fn native_object_count(&self) -> usize {
         self.native_objects.as_ref().map_or(0, |o| o.placed())
+    }
+
+    /// How many of those are highlighted as selected.
+    pub fn native_selected_count(&self) -> usize {
+        self.native_objects.as_ref().map_or(0, |o| o.highlighted())
     }
 
     /// Whether the native renderer draws `m`'s model (so the scene does
@@ -1516,8 +1523,9 @@ impl Viewport {
         // The native renderer draws the placements it has a model for;
         // the scene draws the rest.
         self.native_placed = markers.iter().copied().filter(|m| shown(m)).collect();
+        self.native_selected = selected.to_vec();
         if let Some(objects) = &mut self.native_objects {
-            objects.place(&self.native_models, &self.native_placed);
+            objects.place(&self.native_models, &self.native_placed, selected);
         }
         let scene_drawn: Vec<Marker> = self
             .native_placed

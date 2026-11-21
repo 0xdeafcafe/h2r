@@ -670,9 +670,26 @@ fn the_viewport_draws_placed_models_through_the_native_renderer() {
     let floor = draw(&mut vp, None);
     let object = draw(&mut vp, Some(upright(0.0, Some(tag))));
     assert_eq!(vp.native_object_count(), 1);
+    assert_eq!(vp.native_selected_count(), 0);
     assert!(
         object[1] > object[0] && object[1] > object[2],
         "the model's base colour: {object:?} over {floor:?}"
+    );
+    // Selected, it mixes towards the selection orange as the scene's
+    // models do: redder and less blue than the green model.
+    let selected = upright(0.0, Some(tag));
+    vp.set_placements(
+        &device,
+        &scene,
+        &[selected],
+        &[(selected.block, selected.index)],
+    );
+    assert_eq!(vp.native_selected_count(), 1);
+    vp.render(&device, &queue, &camera, [64, 64]);
+    let tinted = read_centre(&device, &queue, vp.color_texture().unwrap());
+    assert!(
+        tinted[0] > object[0] + 40 && tinted[2] >= object[2],
+        "selected: {tinted:?}, unselected: {object:?}"
     );
     let mut hidden = shown.clone();
     hidden.set(crate::layers::LayerId::Objects, false);
@@ -709,4 +726,20 @@ fn the_session_reads_the_placed_objects_models() {
         assert!(models.of(object).is_some() || refused, "{object:?}");
     }
     std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The native selection highlight is the scene's: the same mix amount as
+/// a selected scene instance's tint alpha.
+#[test]
+fn the_selection_highlight_matches_the_scenes_tint() {
+    let marker = placed_at([0.0; 3], None);
+    let tint = crate::render::Instance::of(&marker, true).tint;
+    let alpha = f32::from(SELECTED_HIGHLIGHT[3]) / 255.0;
+    assert!((alpha - tint[3]).abs() < 1.0 / 255.0, "{alpha} {}", tint[3]);
+    assert_eq!(crate::render::Instance::of(&marker, false).tint[3], 0.0);
+    let orange = [1.0, 0.78, 0.25];
+    for k in 0..3 {
+        let c = f32::from(SELECTED_HIGHLIGHT[k]) / 255.0;
+        assert!((c - orange[k]).abs() < 1.0 / 255.0, "{k}: {c}");
+    }
 }

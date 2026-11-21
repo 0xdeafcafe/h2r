@@ -440,6 +440,11 @@ fn clear_pass(
     }
 }
 
+/// A selected placement's model: mixed 0.45 of the way to the scene's
+/// selection orange (`render.rs`, `Instance::at` and the scene shader's
+/// `mix(.., vec3(1.0, 0.78, 0.25), tint.a)`), as RGBA8.
+pub const SELECTED_HIGHLIGHT: [u8; 4] = [255, 199, 64, 115];
+
 /// The inverse of a rigid node matrix with a uniform scale: `invert(m)
 /// ∘ m` is the identity.
 pub fn invert(m: &NodeMatrix) -> NodeMatrix {
@@ -627,8 +632,8 @@ pub struct NativeObjects {
     gpu: GpuModels,
     /// GPU model index per object tag.
     uploaded: HashMap<TagId, u32>,
-    /// (GPU model, node matrices, world sphere) per placement.
-    placed: Vec<(u32, Vec<NodeMatrix>, ([f32; 3], f32))>,
+    /// (GPU model, node matrices, world sphere, highlight) per placement.
+    placed: Vec<(u32, Vec<NodeMatrix>, ([f32; 3], f32), [u8; 4])>,
     pool: gfx::ring::UploadPool,
 }
 
@@ -657,11 +662,13 @@ impl NativeObjects {
         }
     }
 
-    /// The placements to draw: each one whose object tag has a model.
+    /// The placements to draw: each one whose object tag has a model,
+    /// the `selected` ones highlighted as the scene's models are.
     pub fn place<'a>(
         &mut self,
         models: &NativeModels,
         markers: impl IntoIterator<Item = &'a Marker>,
+        selected: &[(crate::BlockKind, usize)],
     ) {
         self.placed = markers
             .into_iter()
@@ -670,10 +677,16 @@ impl NativeObjects {
                 let index = *self.uploaded.get(&object)?;
                 let model = &models.of(object)?.model;
                 let placement = placement_matrix(m);
+                let highlight = if selected.contains(&(m.block, m.index)) {
+                    SELECTED_HIGHLIGHT
+                } else {
+                    [0; 4]
+                };
                 Some((
                     index,
                     rest_nodes(model, &placement),
                     placed_sphere(model, &placement),
+                    highlight,
                 ))
             })
             .collect();
@@ -682,6 +695,11 @@ impl NativeObjects {
     /// How many placements are drawn.
     pub fn placed(&self) -> usize {
         self.placed.len()
+    }
+
+    /// How many of them are highlighted as selected.
+    pub fn highlighted(&self) -> usize {
+        self.placed.iter().filter(|p| p.3[3] > 0).count()
     }
 
     /// Clear what `clear` names, then draw the placements over what
@@ -704,10 +722,11 @@ impl NativeObjects {
         let objects: Vec<ObjectInput<'_>> = self
             .placed
             .iter()
-            .map(|(model, nodes, sphere)| ObjectInput {
+            .map(|(model, nodes, sphere, highlight)| ObjectInput {
                 model: *model,
                 nodes,
                 sphere: *sphere,
+                highlight: *highlight,
             })
             .collect();
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {

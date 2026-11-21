@@ -182,7 +182,9 @@ Node matrices are read once per view at the hook, from the body
 the frame's animation and attachment updates (the records exist, so
 `0x00133ab0`'s node pass ran). They are uploaded raw (13 floats a node)
 into one storage buffer per pass, with one small instance record per
-object (node base, inverse base). The inverse rest frames are resident
+object (node base, node count, and an RGBA8 highlight the lit colour
+mixes towards by its alpha; zero for the game, the selection in the
+editor). The inverse rest frames are resident
 per model. No matrix product is done on the CPU. An object whose node
 count disagrees with its model's stays on the D3D path.
 
@@ -613,7 +615,8 @@ vertex and no matrix work on the CPU.
   uniform and two storage writes, one pass with an indexed draw per
   (object, part), `instance_index` the object) and `models.wgsl`
   (skinning `Σ w · N · I · p`, base map times ambient plus one
-  directional term, the W depth). Tests: the unit tests in each module on
+  directional term, mixed towards the instance's highlight, the W
+  depth). Tests: the unit tests in each module on
   invented models and synthetic guest memory; `tests/models_gpu.rs` draws
   an invented two-node model whose square hangs on a turned node, checks
   colour (lit by the skinned normal), W depth, one object culled and one

@@ -158,9 +158,9 @@ fn a_posed_object_draws_skinned_and_lit_with_the_games_w_depth() {
     let behind = [NodeMatrix::IDENTITY, turned([-10.0, 0.0, 0.0])];
     let one = [NodeMatrix::IDENTITY];
     let objects = [
-        ObjectInput { model: m, nodes: &posed, sphere: ([10.0, 0.0, 0.0], 3.0) },
-        ObjectInput { model: m, nodes: &behind, sphere: ([-10.0, 0.0, 0.0], 3.0) },
-        ObjectInput { model: m, nodes: &one, sphere: ([10.0, 0.0, 0.0], 3.0) },
+        ObjectInput { model: m, nodes: &posed, sphere: ([10.0, 0.0, 0.0], 3.0), highlight: [0; 4] },
+        ObjectInput { model: m, nodes: &behind, sphere: ([-10.0, 0.0, 0.0], 3.0), highlight: [0; 4] },
+        ObjectInput { model: m, nodes: &one, sphere: ([10.0, 0.0, 0.0], 3.0), highlight: [0; 4] },
     ];
     let arena = gfx::ring::UploadPool::default().begin();
     let mut uploads = gfx::ring::EncoderUploads { device: &ctx.device, queue: &ctx.queue, encoder: &mut enc, arena: &arena };

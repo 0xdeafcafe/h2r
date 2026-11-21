@@ -623,7 +623,9 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   lightmap), Lightmap only (the lightmap on white) or Collision (Flat at a
   third, for the collision layers). The placed objects draw through the
   native renderer too (`native_view::NativeObjects`, `GpuModels`), each
-  in its rest pose with its base maps in the same mode; an object whose
+  in its rest pose with its base maps in the same mode, and a selected
+  one mixed towards the selection orange as the scene's models are
+  (`native_view::SELECTED_HIGHLIGHT`); an object whose
   model the native loader refuses (`native_render::model_load`) draws
   the scene's model, and `view.stats` names it. Live objects, markers and
   overlays draw over the level with its depth (view depth over the far
