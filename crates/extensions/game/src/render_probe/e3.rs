@@ -23,6 +23,7 @@ pub(super) fn e3_report(frame: &FrameReport) -> Option<E3Report> {
         sun_tiles: work.sun_tiles,
         sun_tiles_redrawn: work.sun_tiles_redrawn,
         atlas_halved: work.atlas_halved,
+        tiles_refused: work.tiles_refused,
     })
 }
 
@@ -65,6 +66,7 @@ mod tests {
             sun_tiles: 4,
             sun_tiles_redrawn: 1,
             atlas_halved: 2,
+            tiles_refused: 1,
         });
         assert_eq!(
             json!(e3_report(&frame)),
@@ -76,7 +78,8 @@ mod tests {
                     {"name":"e3.lights", "draws":4, "gpu_ns":17}
                 ],
                 "lights_lit":5, "lights_shadowed":3, "lights_over_cap":2,
-                "sun_tiles":4, "sun_tiles_redrawn":1, "atlas_halved":2
+                "sun_tiles":4, "sun_tiles_redrawn":1, "atlas_halved":2,
+                "tiles_refused":1
             })
         );
     }

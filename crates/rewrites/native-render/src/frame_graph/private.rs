@@ -12,6 +12,10 @@ impl FramePass for MixedPrivatePass<'_> {
     fn read_target(&mut self, target: TargetRef) -> ReadColour {
         MixedPrivatePass::read_target(self, target)
     }
+
+    fn tile_work(&self) -> Option<TileWork> {
+        MixedPrivatePass::tile_work(self)
+    }
 }
 
 pub(super) fn draw_mixed(
@@ -23,7 +27,7 @@ pub(super) fn draw_mixed(
     observer: Option<&mut dyn PassObserver>,
 ) -> Result<CapturedFrame, String> {
     let before = backend.batch_stats();
-    let mut pass = MixedPrivatePass::new(backend, replay, scale)?;
+    let mut pass = MixedPrivatePass::new_lit(backend, replay, scale, lighting)?;
     let e3 = record(&mut pass, replay, true, lighting, observer)?;
     let (size, rgba) = pass.read_target(replay.presented)?;
     drop(pass);
