@@ -51,9 +51,23 @@ fn voice_levels(
             let path_gain = if bin == audio::route::I3DL2 { v.room_gain } else { v.direct_gain };
             json!({ "bin": bin, "volume_mb": mb, "gain": audio::dsound::mb_to_gain(mb) * path_gain })
         }).collect::<Vec<_>>());
+        // The level the voice's direct path leaves with: volume, headroom,
+        // I3DL2 direct level and the 3D gain, before bin volumes and pan.
+        let applied_gain = v.direct_gain * v.spatial.as_ref().map_or(1.0, |s| s.gain);
+        let spatial = v.spatial.map(|s| {
+            json!({
+                "position": s.position, "relative": s.relative,
+                "min_distance": finite(s.min_distance), "max_distance": finite(s.max_distance),
+                "rolloff": s.rolloff, "distance_gain": s.distance_gain,
+                "cone_gain": s.cone_gain, "gain": s.gain, "pan": s.pan,
+                "front": s.front, "pitch": s.pitch
+            })
+        });
         json!({
             "id": v.id, "kind": v.kind, "input_bin": v.input_bin,
-            "distance_units": v.distance_units, "volume_mb": v.volume_mb, "bins": bins,
+            "distance_units": v.distance_units, "spatial": spatial,
+            "applied_gain": applied_gain, "sends_to": v.sends_to,
+            "volume_mb": v.volume_mb, "bins": bins,
             "direct_gain": v.direct_gain, "room_gain": v.room_gain,
             "direct_hf_db": v.direct_hf_db, "room_hf_db": v.room_hf_db,
             "reference_hz": v.reference_hz
@@ -62,6 +76,12 @@ fn voice_levels(
     Ok(
         json!({ "distance_reverb": distance_reverb, "reverb_active": reverb_active, "voices": voices }),
     )
+}
+
+/// JSON has no infinity; Halo's `FLT_MAX` distances are finite and pass.
+#[cfg(feature = "local-io")]
+fn finite(v: f32) -> Option<f32> {
+    v.is_finite().then_some(v)
 }
 
 struct KernelEvents(Arc<kernel::Kernel>);
@@ -563,6 +583,16 @@ mod tests {
         assert_eq!(voices[1]["kind"], "mix_in");
         assert_eq!(voices[1]["distance_units"], 5.0);
         assert!((voices[1]["bins"][1]["gain"].as_f64().unwrap() - 10f64.powf(-0.5)).abs() < 1e-6);
+        // The stream is 2D and feeds the bus; the bus carries the 3D terms.
+        assert!(voices[0]["spatial"].is_null());
+        assert_eq!(voices[0]["sends_to"], json!([voices[1]["id"]]));
+        let spatial = &voices[1]["spatial"];
+        assert_eq!(spatial["position"], json!([0.0, 3.0, 4.0]));
+        assert_eq!(spatial["relative"], json!([0.0, 3.0, 4.0]));
+        // Default min distance 1 and rolloff 1: 1 / (1 + 4) at 5 units.
+        assert!((spatial["distance_gain"].as_f64().unwrap() - 0.2).abs() < 1e-6);
+        assert_eq!(spatial["cone_gain"], 1.0);
+        assert!((voices[1]["applied_gain"].as_f64().unwrap() - 0.2).abs() < 1e-6);
     }
 
     #[cfg(feature = "local-io")]
