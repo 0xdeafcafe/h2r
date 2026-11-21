@@ -25,7 +25,9 @@ use tags::model::RenderModelGeometry;
 use crate::native_world_glue::{Raw, StagePalettes, light_image};
 
 /// What the light passes draw a map's models with.
+#[derive(Default)]
 pub struct ModelLights {
+    retire: Option<crate::native_map::RetireQueue>,
     pub models: LightModels,
     /// Vertex programs by (`vrtx`, classification).
     pub microcode: HashMap<(TagId, u32), Vec<u8>>,
@@ -37,6 +39,14 @@ pub struct ModelLights {
     /// Each shader's instance inputs (`EngineInputs::for_shader`), by
     /// datum.
     pub instances: HashMap<u32, (TagId, EngineInputs)>,
+}
+
+impl Drop for ModelLights {
+    fn drop(&mut self) {
+        if let Some(queue) = self.retire.take() {
+            crate::native_map::retire(queue, timeline::setup::Stage::Lights, self);
+        }
+    }
 }
 
 struct Load {
@@ -136,6 +146,7 @@ fn load(name: &str, generation: u64, formats: &StreamFormats, palettes: &StagePa
     let meta = tags::object::Metadata::read(&mut map).ok();
     let modes: Vec<TagId> = map.tags().iter().filter(|t| t.group.0 == *b"mode").map(|t| t.id).collect();
     let mut out = ModelLights {
+        retire: Some(crate::native_map::retire_queue().map_err(|e| e.to_string())?),
         models: LightModels::default(),
         microcode: HashMap::new(),
         images: HashMap::new(),
