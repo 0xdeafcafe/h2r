@@ -28,6 +28,11 @@
 //! ([`crate::superbounce_assist::predict`]). The standing-capsule test
 //! behind `under` is [`crate::superbounce_capsule`], over the collision the
 //! scan reads.
+//!
+//! **The medals** (docs/game/superbounce.md, "Medals") are on it too:
+//! every player's chain of bounces ([`crate::superbounce_chain`]), stepped
+//! each tick for every listed player, bots included, published as
+//! [`State::medals`].
 
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek};
@@ -42,6 +47,7 @@ pub use crate::superbounce_charge::{
     Predicted, Verb,
 };
 use crate::superbounce_capsule::Room;
+use crate::superbounce_chain::{self as chain, Medals};
 use crate::superbounce_charge::{Tick, Tracker};
 
 /// The feature's name.
@@ -55,7 +61,7 @@ pub const PRIMED_WORD: i32 = -3;
 /// Metres in a world unit (10 feet).
 pub const METRES_PER_UNIT: f32 = 3.048;
 /// Where an object's position is, in its body.
-const OBJECT_POSITION: u32 = 0x30;
+pub const OBJECT_POSITION: u32 = 0x30;
 /// The most spot lines drawn: the nearest ones.
 pub const MAX_LINES: usize = 40;
 /// A bounce line's brightness while the player is not primed.
@@ -150,6 +156,9 @@ pub struct State {
     /// capsule test against the scanned collision
     /// ([`crate::superbounce_capsule`]); `None` before the scan is ready.
     pub standing_fits: Option<bool>,
+    /// Every player's medals this game: the records and the last awards
+    /// ([`crate::superbounce_chain`]).
+    pub medals: chain::View,
 }
 
 impl State {
@@ -172,6 +181,7 @@ impl State {
         last_landing: None,
         still_ticks: 0,
         standing_fits: None,
+        medals: chain::View::EMPTY,
     };
 
     pub fn primed(&self) -> bool {
@@ -323,6 +333,41 @@ pub fn reply(s: &State) -> agent_proto::superbounce::State {
             at: v3(l.at),
         }),
         standing_fits: s.standing_fits,
+        medals: medals_reply(&s.medals),
+    }
+}
+
+/// `superbounce.state`'s `medals` for `m`.
+pub fn medals_reply(m: &chain::View) -> agent_proto::superbounce::Medals {
+    use agent_proto::superbounce as wire;
+    let ids = |medals: &[hud_kit_core::huds::superbounce::Medal]| {
+        medals.iter().map(|m| m.id().to_owned()).collect()
+    };
+    wire::Medals {
+        players: m
+            .players
+            .iter()
+            .map(|(slot, r)| wire::MedalPlayer {
+                player: *slot,
+                chain: r.chain,
+                live: r.live,
+                counts: r
+                    .counts
+                    .iter()
+                    .map(|(m, n)| (m.id().to_owned(), *n))
+                    .collect(),
+            })
+            .collect(),
+        recent: m
+            .recent
+            .iter()
+            .map(|a| wire::MedalAward {
+                player: a.slot,
+                tick: a.tick,
+                chain: a.chain,
+                medals: ids(&a.medals),
+            })
+            .collect(),
     }
 }
 
@@ -748,12 +793,52 @@ const RECHECK: u32 = 30;
 static TICKS: AtomicU32 = AtomicU32::new(0);
 /// The charge and landing state kept from tick to tick.
 static TRACKER: Mutex<Tracker> = Mutex::new(Tracker::new());
+/// Every player's chain and medals this game.
+static MEDALS: Mutex<Medals> = Mutex::new(Medals::empty());
+/// The first local player's slot and user at the last tick, for
+/// `superbounce.medal_test`.
+static LOCAL: Mutex<Option<(u8, u8)>> = Mutex::new(None);
 
 fn reset() {
     ACTIVE.store(false, Ordering::Relaxed);
     bots::set_practice(false);
     *lock(&STATE) = State::EMPTY;
     *lock(&TRACKER) = Tracker::new();
+    *lock(&MEDALS) = Medals::empty();
+    *lock(&LOCAL) = None;
+}
+
+/// `superbounce.medal_test`: files a bounce at chain count `chain` (or a
+/// Bounced with `bounced`) for the first local player, as the chain's rule
+/// gives it. The HUD line and `medals` show it as a real one's; nothing
+/// is sent or recorded. Refused while the mode is off or there is no
+/// local player.
+pub fn medal_test(
+    p: &agent_proto::superbounce::MedalTestParams,
+) -> Result<agent_proto::superbounce::MedalTest, String> {
+    if !active() {
+        return Err("the superbounce mode is off (superbounce.set {\"on\":true})".into());
+    }
+    let chain = match (p.chain, p.bounced) {
+        (Some(0), _) => return Err("chain is 1 or more".into()),
+        (Some(n), false) => n,
+        (None, true) => 0,
+        (Some(_), true) => return Err("give chain or bounced, not both".into()),
+        (None, false) => return Err("give chain (1 and up) or bounced".into()),
+    };
+    let Some((slot, user)) = *lock(&LOCAL) else {
+        return Err("no local player with a unit".into());
+    };
+    let tick = TICKS.load(Ordering::Relaxed);
+    let a = lock(&MEDALS).test(slot, Some(user), tick, chain, p.bounced);
+    let view = lock(&MEDALS).view();
+    lock(&STATE).medals = view;
+    Ok(agent_proto::superbounce::MedalTest {
+        player: slot,
+        chain: a.chain,
+        medals: a.medals.iter().map(|m| m.id().to_owned()).collect(),
+        line: chain::highest(&a.medals).map(|m| m.line()),
+    })
 }
 
 /// Decides on or off from the game now. Going off clears the state.
@@ -768,6 +853,8 @@ fn decide(o: &hooks::Obs) {
     if ACTIVE.swap(on, Ordering::Relaxed) && !on {
         *lock(&STATE) = State::EMPTY;
         *lock(&TRACKER) = Tracker::new();
+        *lock(&MEDALS) = Medals::empty();
+        *lock(&LOCAL) = None;
     }
 }
 
@@ -780,10 +867,10 @@ fn on_tick(o: &hooks::Obs) {
     if !ACTIVE.load(Ordering::Relaxed) {
         return;
     }
-    let (live, key) = {
+    let (live, key, players) = {
         let guest = o.guest();
         let m: &dyn GuestMemory = &*guest;
-        (read_live(m), scan_key(m))
+        (read_live(m), scan_key(m), chain::read_players(m))
     };
     let map = key.as_ref().map(|k| k.map.clone());
     let view = key.map(request_scan);
@@ -829,6 +916,17 @@ fn on_tick(o: &hooks::Obs) {
         ),
         _ => None,
     };
+    *lock(&LOCAL) = players
+        .iter()
+        .filter(|p| p.tick.is_some())
+        .filter_map(|p| Some((p.slot, p.user?)))
+        .min_by_key(|(_, user)| *user);
+    let medals = {
+        let tick = live.tick.unwrap_or_else(|| TICKS.load(Ordering::Relaxed));
+        let mut m = lock(&MEDALS);
+        m.step(tick, &players, &spots);
+        m.view()
+    };
     *lock(&STATE) = State {
         active: true,
         word: live.word,
@@ -848,6 +946,7 @@ fn on_tick(o: &hooks::Obs) {
         last_landing: step.last_landing,
         still_ticks: step.still_ticks,
         standing_fits,
+        medals,
     };
 }
 

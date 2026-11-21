@@ -55,6 +55,21 @@ pub fn wants_font(name: &str) -> bool {
     FONTS.iter().any(|f| f.eq_ignore_ascii_case(base))
 }
 
+/// The font file `name` (bytes `data`) with the medals added, when it is
+/// one of [`FONTS`] and lacks them; `None` otherwise (or when the patch
+/// fails). What the game's font rewrite serves for that file, for tools
+/// that read the disc's fonts.
+pub fn patch(name: &str, data: &[u8]) -> Option<Vec<u8>> {
+    if !wants_font(name) {
+        return None;
+    }
+    let add = replacements(&Font::parse(data).ok()?);
+    if add.is_empty() {
+        return None;
+    }
+    crate::patch::apply(data, &add).ok()
+}
+
 /// The medals `font` lacks, each with the retail medal's offsets and
 /// advance. Empty when the font has no retail medal of the pictures' size
 /// (the pictures are not scaled).

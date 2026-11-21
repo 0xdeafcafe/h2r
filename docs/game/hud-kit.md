@@ -1,6 +1,6 @@
 # The HUD kit: HUD elements of ours, drawn by Halo 2's own HUD
 
-Status: In progress. Built: the model, the compiler, the preview and the checks, the widget runtime (install, gate, inputs, string, crop), the prompt, training and navpoint channels, and the superbounce HUD on them. Not built: the colour hook and the flash, the pointer's turn, notifications (and so the superbounce medals, "The medals"), the navpoint's number, and the `hud.kit` agent method (build plan). Nothing of the runtime has been run in a game ("Not verified").
+Status: In progress. Built: the model, the compiler, the preview and the checks, the widget runtime (install, gate, inputs, string, crop), the prompt, message (notification), training and navpoint channels, and the superbounce HUD on them with its medals ("The medals"). Not built: the colour hook and the flash, the pointer's turn, the navpoint's number, and the `hud.kit` agent method (build plan). Nothing of the runtime has been run in a game ("Not verified").
 Code: `crates/rewrites/hud-kit-core` (the model, the HUDs, the templates, the record compiler), `crates/tools/hud-kit` (the preview, the checks), `crates/extensions/game/src/hud_kit.rs` (the runtime), `crates/extensions/game/src/superbounce_hud.rs` (the superbounce HUD's feed), `crates/apps/cli/src/hud_cmd.rs` (`h2 hud`). Tests: `crates/rewrites/hud-kit-core/src/tests.rs`, `crates/tools/hud-kit/src/tests.rs`, `crates/tools/hud-kit/tests/disc.rs`, `crates/extensions/game/src/hud_kit_tests.rs`, `crates/extensions/game/src/superbounce_hud_tests.rs`.
 Switch: none (the runtime is the feature `hud-kit`).
 
@@ -482,8 +482,10 @@ the same text. So a `Message` is sent with `Handle::notify(user, text)`,
 once per line, for a local user, and not by `publish`. Its element is in
 the `Hud` for the checks and the preview, whose states give it a text
 (`Value::text`); `longest` is the widest line it is ever sent. A text
-of at most 63 characters is sent whole; a longer one is refused in the
-`prompt` check (E `0x0024cbee` copies 63).
+of at most 63 UTF-16 units and one line is sent whole; a longer one, or
+one with a line break, is refused by the `prompt` check and by
+`Handle::notify` (`hud_kit_core::model::message_fault`; E `0x0024cbee`
+copies 63).
 
 ### The runtime (`crates/extensions/game/src/hud_kit.rs`)
 
@@ -546,9 +548,18 @@ returns a `Handle`), then publishes a `Values` whenever its state changes
      end moved one on (`hud_kit::write_navpoint`). Without a point the
      slot is skipped (kind 15). The game draws its own arrow and marker
      there; the kit's number is not drawn.
-   - `Message`: not sent. Queuing a notification is a guest call to
-     `0x0024cbee` with the user and the text ("Game events and medals";
-     build plan 3).
+   - `Message`: `Handle::notify(user, text)` queues the line (a user
+     under 4, a text `message_fault` passes; else refused and logged).
+     At the top of the next tick a before-hook on `GAME_TICK` writes
+     each queued text, UTF-16 and zero ended, into a 128-byte slot of
+     the kit's third allocation (`NOTES_LEN`, 32 slots, so 32 lines a
+     tick at most; the rest wait), and calls the insert `0x0024cbee`
+     for each with EAX the user and the slot's address its stack
+     argument ("Game events and medals"), then runs the tick itself and
+     answers for it, as `skulls_custom` sends its messages. A flag passes
+     the hook while that tick runs. It is in the first group, after the
+     agent's calls, our skulls', the map select's and the dedicated
+     lobby's hooks there (`hud_kit::stage_notes`, `notify_call`).
 
 The styles the runtime draws are `Normal`, and `Flash` as `Normal`; a
 widget in `Dim` or `Inactive` is not drawn until the colour hook
@@ -816,10 +827,10 @@ its notification list:
 | `Prompt` | Let go of (crouch) | under |
 | `Prompt` | Walk out to stand up | held |
 | `Prompt` | Keep moving or lose the charge | primed and still for 19 ticks or more, the fill at half or under |
-| `Prompt` | the loss's message, then Find a crouch spot to charge again (two lines) | for 150 ticks after a loss, until a crouch step begins |
+| `Prompt` | Find a crouch spot to charge again | for 150 ticks after a loss, until a crouch step begins; the reason is the loss's notification |
 | `Message` | Primed | the word becomes −3 |
 | `Message` | Charge lost: you stood still / Charge lost: you crouched / Charge lost | lost, by its reason ([superbounce.md](superbounce.md), "Charge"): the body slept, a crouch, another reason |
-| `Message` | a medal line (below, "The medals") | a bounce |
+| `Message` (`sb.medal`) | a medal line (below, "The medals") | a bounce, or a Bounced |
 | `Message` | Not primed. / Missed the strip. / Too slow. / No bounce. | a landing within 0.5 of a strip that did not bounce, by its first failed test ([superbounce.md](superbounce.md), "Landings") |
 
 (crouch) is U+E110, the left stick click's glyph, the default crouch
@@ -841,28 +852,38 @@ A bounce shows one notification, as a retail multi-kill does ("Game
 events and medals"): a medal glyph of the HUD font, a space, the words
 and `!`, in sentence case. `sb.medal` is a `Message` in every screen
 mode, sent to the local user of the player who bounced, so in split
-screen each view gets its own. A bounce shows the highest medal it
-earned and no other line.
+screen each view gets its own; a bot's or a remote player's award is
+recorded and not shown. A bounce shows the highest medal it earned and
+no other line (a bounce's landing has none of its own); a Bounced shows
+its own line. Each award is sent once, by its number
+(`superbounce_chain::Award::seq`; `superbounce_hud::Sent`).
 
-| Medal | Chain count | Line | Glyph |
+| Medal | Earned | Line | Glyph |
 |---|---|---|---|
-| Superbounce | every bounce that earns none below | `Superbounce!` | U+E2A0, a bronze disc with one chevron rising off a strip |
-| Double Bounce | 2 | `Double bounce!` | U+E2A1, a gold disc with two chevrons |
-| Triple Bounce | 3 | `Triple bounce!` | U+E2A2, a steel disc with three chevrons |
-| Chain Bounce | 5 | `Chain bounce!` | U+E2A3, a silver disc with a spiked rim and three chevrons |
+| Superbounce | every bounce; its line on 1 and 7 and up | `Superbounce!` | U+E2A0, a slate-blue disc, one chevron rising off a strip |
+| Double Bounce | the chain's 2nd bounce | `Double bounce!` | U+E2A1, a gold disc, two chevrons |
+| Triple Bounce | the 3rd | `Triple bounce!` | U+E2A2, a steel disc, three chevrons |
+| Quad Bounce | the 4th | `Quad bounce!` | U+E2A3, a bronze disc, two pairs of chevrons |
+| Chain Bounce | the 5th | `Chain bounce!` | U+E2A4, a lavender disc, a chevron over two pairs |
+| Bouncetacular | the 6th | `Bouncetacular!` | U+E2A5, a pale gold disc in a spiked rim, three pairs |
+| Bounced | a fall out of the map during a bounce | `Bounced!` | U+E2A6, a maroon disc, a chevron falling through a broken strip |
 
-**The picture.** The disc has no superbounce medal, so the four glyphs
+**The picture.** The disc has no superbounce medal, so the seven glyphs
 are new art, drawn for this project in the retail medals' manner: 24 by
 24, a shaded disc with a dark rim and the light from the upper left, in
 their own 12-bit colours, and the tier told as a multi-kill tells it,
 by the count of marks on the disc and the disc's colour, with a frame
 for the top tier as the sprees have. The art is data,
 `crates/formats/font/src/medals/art.rs` (ARGB 4444 rows, written by
-`scripts/superbounce-medals.py` from its drawing), and
-`font::medals::replacements` adds the four glyphs to `conduit-13` and
+`scripts/superbounce-medals.py` from its drawing, which also draws a
+preview sheet beside the retail medals with `--preview DIR --h2 BIN`), and
+`font::medals::replacements` adds the seven glyphs to `conduit-13` and
 `conduit-12` through the font rewrite ([button-icons.md](../input/button-icons.md),
 `font::patch`) at spare code points of the icon range, U+E2A0 to
-U+E2A3. Every other font is left alone. New art is a new `art.rs`: the
+U+E2A6, each placed as the font's own Double Kill (U+E038: its advance
+and offsets; a font without a 24 by 24 one gets none). Every other font
+is left alone. `font::medals::patch` is the same patch for tools that
+read the disc's fonts (`hud-edit`'s renderer, the preview). New art is a new `art.rs`: the
 line, the insert and the checks do not change. `MEDAL_GLYPHS` in
 `hud_kit_core::huds::superbounce` names the code points.
 
@@ -941,20 +962,23 @@ target.
 | `primed-full` | lit | 1 | Primed | strip, "12" | |
 | `primed-draining` | lit, icon `Flash(TimeWarning)` | 0.25 | | strip, "12" | |
 | `primed-still-warning` | lit, icon `Flash(TimeWarning)` | 0.5 | Keep moving or lose the charge | strip, "12" | |
-| `lost` | inactive | 0 | Charge lost / Find a crouch spot to charge again; Charge lost | crouch spot, "12" | |
-| `lost-stood-still` | inactive | 0 | Charge lost: you stood still / Find a crouch spot to charge again; Charge lost: you stood still | crouch spot, "12" | |
-| `lost-crouched` | inactive | 0 | Charge lost: you crouched / Find a crouch spot to charge again; Charge lost: you crouched | crouch spot, "12" | |
+| `lost` | inactive | 0 | Find a crouch spot to charge again; Charge lost | crouch spot, "12" | |
+| `lost-stood-still` | inactive | 0 | Find a crouch spot to charge again; Charge lost: you stood still | crouch spot, "12" | |
+| `lost-crouched` | inactive | 0 | Find a crouch spot to charge again; Charge lost: you crouched | crouch spot, "12" | |
 | `bounced` | lit | 1 | (medal) Superbounce! | strip, "12" | |
 | `medal-double` | lit | 1 | (medal) Double bounce! | strip, "12" | |
 | `medal-triple` | lit | 1 | (medal) Triple bounce! | strip, "12" | |
+| `medal-quad` | lit | 1 | (medal) Quad bounce! | strip, "12" | |
 | `medal-chain` | lit | 1 | (medal) Chain bounce! | strip, "12" | |
+| `medal-bouncetacular` | lit | 1 | (medal) Bouncetacular! | strip, "12" | |
+| `medal-bounced` | inactive | hidden | (medal) Bounced! | crouch spot, "12" | |
 | `missed` | lit | 0.8 | Missed the strip. | strip, "12" | |
 | `scanning` | dim | hidden | | hidden | |
 | `no-strips` | hidden | hidden | | hidden | |
 | `tutorial-1` | inactive | hidden | | crouch spot | step 1 |
 | `tutorial-2`, `-3`, `-4` | lit | 1 | Primed | strip | steps 2 to 4 |
 
-`bounced` and the three `medal-` states are the four medals, one line
+`bounced` and the six `medal-` states are the seven medals, one line
 each, with the glyph in its own colours as the game's font draw leaves
 a coloured glyph (the tutorial's (X) is drawn the same way). The
 preview draws them in font 6, and in font 5 in the half and quarter
@@ -965,9 +989,10 @@ h2 hud preview superbounce --state bounced --mode all --out DIR
 h2 hud preview superbounce --state medal-chain --mode all --out DIR
 ```
 
-The `glyphs` check covers the four code points in both fonts, `prompt`
-the line's width and its 63 characters, and `drawn` that the line puts
-pixels down.
+The `glyphs` check covers the seven code points in both fonts (the disc
+test also reads them from the patched `conduit-13` and `conduit-12`:
+`the_glyphs_are_in_the_fonts`), `prompt` the line's width and its 63
+units, and `drawn` that the line puts pixels down.
 
 ### The runtime, for this HUD
 
@@ -980,10 +1005,15 @@ feeds it each tick from `superbounce_mode`'s state through one adapter,
 | `scan` | ready with spots, ready with none (`NoStrips`), failed, else scanning |
 | `charge` (phase, fill) | the charge, as it is |
 | `verb` | the prompt's verb (a crouch step, keep moving, charge again); in the near phase, not primed and with no verb, "Hold (crouch) and walk under" |
-| the loss (`charge`'s while lost, `ChargeAgain`'s after) | its reason's message at its tick, when newer than the last landing; the HUD keeps the last loss past the 150 ticks the state has it, so an older landing does not take its place |
+| `word` | on its change to −3, one `Handle::notify` of Primed |
+| the loss (`charge`'s while lost, `ChargeAgain`'s after) | its reason's message at its tick, when newer than the last landing; the HUD keeps the last loss past the 150 ticks the state has it, so an older landing does not take its place. One `Handle::notify` per loss, by its tick |
 | `nav_target` (point, kind, distance) | the navpoint's target and distance, world units to metres; its point goes to `Handle::navpoint` |
-| `last_landing` (result, tick) | the landing's message at its tick, for a landing that did not bounce |
-| `medals` (the awards newer than the last seen) | one `Handle::notify` per bounce of a local player: the line of its highest medal ([superbounce.md](superbounce.md#medals)) |
+| `last_landing` (result, tick) | the landing's message at its tick, for a landing that did not bounce; one `Handle::notify` per such landing, by its tick |
+| `medals` (the awards newer than the last sent) | `sb.medal`: the last local award's highest medal at its tick; one `Handle::notify` per award of a local player, to its user: the line of its highest medal ([superbounce.md](superbounce.md#medals)) |
+
+Primed, the loss and the landing go to user 0, the first local player's,
+whose state the mode tracks. The first state after the mode comes on is
+not news: what it already holds is not sent (`superbounce_hud::Sent`).
 
 With the mode off every element is hidden. The tutorial's step machine
 watches primed, the nearest bounce spot in metres and a bounce landing
@@ -992,12 +1022,10 @@ newer than the last it saw (`superbounce_hud::watch`).
 What shows in the game: the pill and its icon while primed (`Inactive`
 not drawn), the charge meter through the recipe and the charge, the
 prompt verbs, the navpoint (the game's arrow and marker, no number) and
-the tutorial's training text. The notifications do not show, so in the
-game a loss's reason is told by the prompt line: its first line is the
-loss's message, over "Find a crouch spot to charge again". The first
-line goes when `Message` is sent (`PROMPT_LOST_*` in
-`hud_kit_core::huds::superbounce`). `superbounce.state` has the reason
-as `lost_reason`.
+the tutorial's training text, and in the notification list Primed, a
+loss's reason, a landing that did not bounce and the medals.
+`superbounce.state` has a loss's reason as `lost_reason` and the medals
+as `medals`.
 
 ### The tutorial
 
@@ -1151,8 +1179,13 @@ particular:
   captured).
 - Where a notification is drawn against the first message line (the
   preview puts it below the line's five-line box).
-- The medal line: that a guest call to `0x0024cbee` at the tick's end
-  draws as the game-event caller's does, that a medal glyph keeps its
+- The notifications: that a guest call to `0x0024cbee` at the tick's top
+  draws as the game-event caller's does, that running the tick again
+  from the hook (as `skulls_custom` does) leaves the frame as it was,
+  that the hook's place in the first group passes the plan beside the
+  other features there, and that a mutating tick hook in this
+  presentation-only feature costs a film or a snapshot nothing (the
+  insert writes only the user's HUD message state). The medal line: that a medal glyph keeps its
   own colours in a notification (the retail lines say it does) and
   fades with the line, and where a fifth line in four slots goes
   (decoding 6). That the preview's text draw keeps a coloured glyph's
@@ -1178,12 +1211,9 @@ Each slice is code and tests only; the coordinator compiles and runs.
    `Inactive` and `Flash` draw; the corner turn. Before coding, decodings
    4 and 7. Tests: a `Dim` text's alpha; a flash at the record's phases;
    four corners turned by a quarter turn.
-3. **Messages and the navpoint's number.** `Handle::notify` and a
-   guest call to `0x0024cbee` at the tick, as `skulls_custom.rs` calls
-   `0x0024cbbf`; the superbounce HUD's landing lines and medals on it
-   ("The medals"); the number drawn at the projected point after
-   `0x0024e59f` returns (decoding 8). Tests on `FlatMemory`: a queued
-   message's entry; one line per bounce; the number's place.
+3. **The navpoint's number.** The number drawn at the projected point
+   after `0x0024e59f` returns (decoding 8). Tests on `FlatMemory`: the
+   number's place.
 4. **Preview fidelity.** Decodings 3 and 5, so the preview draws the
    training box's frame and a retail widget's own flash; `h2 hud
    compare` against a `render.frame` capture, as the UI builder's

@@ -122,6 +122,16 @@ fn a_font_without_a_retail_medal_of_that_size_gets_none() {
 }
 
 #[test]
+fn only_the_message_fonts_are_patched() {
+    let raw = font_with_medal(art::SIZE);
+    let out = patch("maps\\fonts\\conduit-12", &raw).unwrap();
+    let f = Font::parse(&out).unwrap();
+    assert!(MEDALS.iter().all(|(u, _)| has_glyph(&f, *u)));
+    assert_eq!(patch("conduit-16", &raw), None);
+    assert_eq!(patch("conduit-13", &out), None, "patched already");
+}
+
+#[test]
 fn only_the_message_fonts_want_them() {
     assert!(wants_font("conduit-13"));
     assert!(wants_font("maps\\fonts\\conduit-12"));

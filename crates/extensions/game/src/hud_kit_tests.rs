@@ -1,7 +1,7 @@
 //! The HUD kit's runtime on `FlatMemory`: the appended widget records'
 //! byte layout, a second install leaving one copy, the draw hooks on a
 //! kit widget and passing a retail one through, the crop, and the
-//! training, prompt and navpoint channels.
+//! training, prompt, navpoint and notification channels.
 
 use engine::memory::FlatMemory;
 use engine::tags::{
@@ -435,4 +435,62 @@ fn only_normal_and_flash_are_drawn() {
     assert!(draws(Style::Flash(hud_kit_core::model::Pulse::Help)));
     assert!(!draws(Style::Dim));
     assert!(!draws(Style::Inactive));
+}
+
+/// A notification is a call to the game's insert with the user in EAX
+/// and the text's address its one argument; the text is UTF-16 with its
+/// zero, one slot each.
+#[test]
+fn a_notification_is_the_inserts_call_with_its_text() {
+    let mut m = memory();
+    let region = (0x0058_0000, NOTES_LEN);
+    let notes = [
+        Note {
+            user: 0,
+            text: "Primed".into(),
+        },
+        Note {
+            user: 2,
+            text: "\u{e2a1} Double bounce!".into(),
+        },
+    ];
+    let calls = stage_notes(&mut m, region, &notes).unwrap();
+    assert_eq!(calls.len(), 2);
+    for (i, (c, n)) in calls.iter().zip(&notes).enumerate() {
+        let at = region.0 + i as u32 * NOTE_LEN;
+        assert_eq!(c.target, NOTIFY);
+        assert_eq!(c.target, 0x0024_cbee);
+        assert_eq!(c.eax, Some(n.user));
+        assert_eq!(c.args, vec![at]);
+        let units: Vec<u16> = n.text.encode_utf16().chain([0]).collect();
+        for (k, u) in units.iter().enumerate() {
+            assert_eq!(m.u16(at + 2 * k as u32).unwrap(), *u, "note {i} unit {k}");
+        }
+    }
+    // The medal's glyph is one unit, at the line's start.
+    assert_eq!(m.u16(region.0 + NOTE_LEN).unwrap(), 0xe2a1);
+    // A region of one slot sends one; the rest wait.
+    let one = stage_notes(&mut m, (region.0, NOTE_LEN), &notes).unwrap();
+    assert_eq!(one.len(), 1);
+    assert_eq!(NOTE_LEN, 128);
+    assert!(NOTES_PER_TICK >= 16);
+}
+
+/// The insert copies 63 units: a longer text, a second line, an empty
+/// text and a fifth user are refused, not cut.
+#[test]
+fn a_notification_the_game_cannot_keep_is_refused() {
+    assert_eq!(note_fits(0, &"a".repeat(63)), Ok(()));
+    assert!(note_fits(0, &"a".repeat(64)).is_err());
+    assert!(note_fits(0, "one\ntwo").is_err());
+    assert!(note_fits(0, "").is_err());
+    assert!(note_fits(USERS, "Primed").is_err());
+    let h = Handle(usize::MAX);
+    assert!(!h.notify(0, &"a".repeat(64)));
+    assert!(h.notify(3, "Bounced!"));
+    let queued = take_notes();
+    assert!(queued.contains(&Note {
+        user: 3,
+        text: "Bounced!".into()
+    }));
 }
