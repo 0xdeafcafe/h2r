@@ -3089,6 +3089,9 @@ those checks.
 
 The confirmed leave paths at `0x199e3c` and `0x252150` remove phantom
 players and peers through `bots::phantom::Phantoms::retire_solo_session`.
+The pause and lobby Back calls at `0x232ccc` and `0x25125c` target the
+frame at `0x199e3c`, which follows the tail jump at `0x199e37` from
+`UI_LEAVE_SESSIONS`. The hook verifies the frame prologue at that entry.
 Retirement also drops their matchmaking roster entries and holds off new
 seating until the departing session closes. The Clankers page settings
 still apply in the next lobby.

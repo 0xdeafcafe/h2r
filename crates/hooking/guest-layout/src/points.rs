@@ -1116,7 +1116,8 @@ points! { ALL;
     PARTY_PEER_COUNT @ 0x0019_9f34: [fn() -> eax ret 0]; "docs/game/bots.md";
     /// Whether the player slot in AX is occupied in the squad membership.
     PARTY_PLAYER_VALID @ 0x0019_a951: [fn(player: eax) -> al ret 0]; "docs/game/bots.md";
-    /// The lobby Back or pause Leave Game has committed to leaving.
+    /// The lobby Back or pause Leave Game has committed to leaving. The
+    /// entry follows the tail jump of `UI_LEAVE_SESSIONS` at `0x199e37`.
     PARTY_LEAVE @ 0x0019_9e3c: [fn(controller: stack 0) ret 4]; "docs/game/bots.md";
     /// The player accepted the matchmaking lobby's Back confirmation.
     MATCHMAKING_CANCEL_CONFIRMED @ 0x0025_2150: [fn(controller: stack 0) -> al ret 4]; "docs/game/bots.md";
