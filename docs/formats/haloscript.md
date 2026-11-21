@@ -46,9 +46,13 @@ cargo run -p cli --release -- disasm disc/halo2.iso 0x2a0c40 30
 ## Scenario tables and per-table provenance
 
 Descriptors are `u32 count, u32 guest_address`, except the strings descriptor's
-count is bytes. Integers are little-endian. The parser checks nonempty spans
-against the owning scenario payload and requires four-byte alignment; zero
-count ignores the address. This deliberately does not guess other scnr blocks.
+count is bytes. Integers are little-endian. Each nonempty table starts on a
+four-byte boundary. A zero count ignores the address. In
+`crates/formats/hs/src/scenario.rs`, `Scenario::decode` bounds each span by
+the supplied scenario payload. `Scenario::read` reads the descriptors from
+the indexed scenario root and bounds each span by the map's ordinary metadata.
+This allows a packaged map to append script tables while keeping the root in
+place. Both paths preflight all five spans before allocating the tables.
 
 | Table / scnr field | Layout | Provenance and evidence |
 |---|---|---|

@@ -261,9 +261,10 @@ fn round_trip(pf: &PathfindingData) -> PathfindingData {
     let mut map = Map::from_reader(Cursor::new(bytes)).unwrap();
     let location = map.tag(bsp).unwrap().location.unwrap();
     let payload = map.read_tag_bytes(bsp).unwrap();
-    PathfindingData::from_sbsp(&TagView::new(&payload, location.address))
-        .unwrap()
-        .expect("pathfinding element present")
+    let native = PathfindingData::from_sbsp(&TagView::new(&payload, location.address)).unwrap();
+    let read = PathfindingData::read(&mut map, bsp).unwrap();
+    assert_eq!(read, native);
+    read.expect("pathfinding element present")
 }
 
 #[test]

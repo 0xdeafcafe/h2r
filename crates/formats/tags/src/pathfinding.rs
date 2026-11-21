@@ -8,6 +8,8 @@
 //! from pointers.
 use crate::geometry::{TagView, f32_at, u16_at, u32_at};
 use crate::{Error, Result};
+use map::{AddressSpace, FourCC, Map, TagId};
+use std::io::{Read, Seek};
 
 /// Header field of the pathfinding-data block in an `sbsp` (V).
 pub const SBSP_PATHFINDING_FIELD: usize = 0xc4;
@@ -140,26 +142,85 @@ impl PathfindingData {
         }
     }
 
+    /// Read an `sbsp` whose pathfinding arrays may also point into ordinary
+    /// metadata. A BSP's virtual addresses belong to that scenario BSP alone.
+    /// Charge each table against its owning region before reading it.
+    pub fn read<R: Read + Seek>(map: &mut Map<R>, bsp: TagId) -> Result<Option<Self>> {
+        let tag = map.tag(bsp)?;
+        if tag.group != FourCC(*b"sbsp") {
+            return Err(Error::UnsupportedGroup(tag.group));
+        }
+        let loc = tag.location.ok_or(map::Error::NoTagData)?;
+        if loc.size < (SBSP_PATHFINDING_FIELD + 8) as u32 {
+            return Err(Error::Invalid("BSP missing pathfinding block field"));
+        }
+        let native = AddressSpace {
+            virtual_base: loc.address,
+            size: loc.size,
+            file_offset: loc.file_offset()?,
+        };
+        let pair = map.read_file_range(native.file_offset + SBSP_PATHFINDING_FIELD as u64, 8)?;
+        match u32_at(&pair, 0) {
+            0 => return Ok(None),
+            1 => {}
+            _ => return Err(Error::Invalid("more than one pathfinding-data element")),
+        }
+        let metadata = map.metadata_space().ok_or(map::Error::NoTagData)?;
+        let mut budgets = [native.size, metadata.size];
+        let mut read_block = |record: &[u8], field: usize, stride: usize| -> Result<Vec<u8>> {
+            let count = u32_at(record, field);
+            if count == 0 {
+                return Ok(Vec::new());
+            }
+            let address = u32_at(record, field + 4);
+            if !address.is_multiple_of(4) {
+                return Err(Error::Invalid("unaligned pathfinding block pointer"));
+            }
+            let len = count
+                .checked_mul(stride as u32)
+                .ok_or(Error::Invalid("pathfinding block too large"))?;
+            let (region, offset) = match native.translate(address, len) {
+                Ok(offset) => (0, offset),
+                Err(_) => (1, metadata.translate(address, len)?),
+            };
+            budgets[region] = budgets[region].checked_sub(len).ok_or(Error::Invalid(
+                "pathfinding blocks exceed the payload budget",
+            ))?;
+            Ok(map.read_file_range(offset, len.into())?)
+        };
+        let element = read_block(&pair, 0, Self::SIZE)?;
+        Self::decode_tables(&element, read_block).map(Some)
+    }
+
     /// Decode one 0x74-byte element.
     pub fn decode(view: &TagView<'_>, e: &[u8]) -> Result<Self> {
+        Self::decode_tables(e, |record, field, stride| {
+            view.block_bytes(record, field, stride)
+        })
+    }
+
+    fn decode_tables<B: AsRef<[u8]>>(
+        e: &[u8],
+        mut read: impl FnMut(&[u8], usize, usize) -> Result<B>,
+    ) -> Result<Self> {
         if e.len() != Self::SIZE {
             return Err(Error::RecordSize {
                 actual: e.len(),
                 expected: Self::SIZE,
             });
         }
-        let sectors = view
-            .block(e, 0x00, Sector::SIZE)?
-            .into_iter()
+        let sectors = read(e, 0x00, Sector::SIZE)?
+            .as_ref()
+            .chunks_exact(Sector::SIZE)
             .map(|c| Sector {
                 flags: u16_at(c, 0),
                 hint: u16_at(c, 2),
                 first_link: u32_at(c, 4),
             })
             .collect();
-        let links = view
-            .block(e, 0x08, Link::SIZE)?
-            .into_iter()
+        let links = read(e, 0x08, Link::SIZE)?
+            .as_ref()
+            .chunks_exact(Link::SIZE)
             .map(|c| Link {
                 vertex1: u16_at(c, 0),
                 vertex2: u16_at(c, 2),
@@ -171,14 +232,14 @@ impl PathfindingData {
                 right_sector: u16_at(c, 0xe),
             })
             .collect();
-        let refs = view
-            .block(e, 0x10, 4)?
-            .into_iter()
+        let refs = read(e, 0x10, 4)?
+            .as_ref()
+            .chunks_exact(4)
             .map(|c| Ref(u32_at(c, 0)))
             .collect();
-        let bsp2d_nodes = view
-            .block(e, 0x18, Bsp2dNode::SIZE)?
-            .into_iter()
+        let bsp2d_nodes = read(e, 0x18, Bsp2dNode::SIZE)?
+            .as_ref()
+            .chunks_exact(Bsp2dNode::SIZE)
             .map(|c| Bsp2dNode {
                 plane: [f32_at(c, 0), f32_at(c, 4), f32_at(c, 8)],
                 positive: Ref(u32_at(c, 0xc)),
@@ -188,24 +249,24 @@ impl PathfindingData {
         if u32_at(e, 0x20) != 0 {
             return Err(Error::UnsupportedBlock("pathfinding +0x20"));
         }
-        let vertices = view
-            .block(e, 0x28, 12)?
-            .into_iter()
+        let vertices = read(e, 0x28, 12)?
+            .as_ref()
+            .chunks_exact(12)
             .map(|c| [f32_at(c, 0), f32_at(c, 4), f32_at(c, 8)])
             .collect();
-        let object_refs = view
-            .block(e, 0x30, Self::OBJECT_REF_SIZE)?
-            .into_iter()
+        let object_refs = read(e, 0x30, Self::OBJECT_REF_SIZE)?
+            .as_ref()
+            .chunks_exact(Self::OBJECT_REF_SIZE)
             .map(<[u8]>::to_vec)
             .collect();
-        let hints = view
-            .block(e, 0x38, Self::HINT_SIZE)?
-            .into_iter()
+        let hints = read(e, 0x38, Self::HINT_SIZE)?
+            .as_ref()
+            .chunks_exact(Self::HINT_SIZE)
             .map(|c| c.try_into().expect("stride"))
             .collect();
-        let instance_refs = view
-            .block(e, 0x40, 4)?
-            .into_iter()
+        let instance_refs = read(e, 0x40, 4)?
+            .as_ref()
+            .chunks_exact(4)
             .map(|c| u32_at(c, 0))
             .collect();
         for field in (0x4c..0x6c).step_by(8) {
@@ -213,9 +274,9 @@ impl PathfindingData {
                 return Err(Error::UnsupportedBlock("pathfinding +0x4c..+0x6c"));
             }
         }
-        let user_hints = view
-            .block(e, 0x6c, Self::USER_HINTS_SIZE)?
-            .into_iter()
+        let user_hints = read(e, 0x6c, Self::USER_HINTS_SIZE)?
+            .as_ref()
+            .chunks_exact(Self::USER_HINTS_SIZE)
             .map(<[u8]>::to_vec)
             .collect();
         Ok(Self {

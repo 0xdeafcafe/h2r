@@ -65,16 +65,34 @@ impl Scenario {
         Ok(result)
     }
 
-    /// Load only the root scenario's payload; validate reference IDs/classes
-    /// through the map's existing salted tag index and group ancestry.
+    /// Read the root scenario's table descriptors and follow them within
+    /// ordinary map metadata. A map writer can append a table beyond the
+    /// indexed scenario payload without moving the root. References still
+    /// resolve through the map's salted tag index and group ancestry.
     pub fn read<R: Read + Seek>(map: &mut map::Map<R>) -> Result<Self> {
-        let tag = map
+        let loc = map
             .scenario()
-            .ok_or_else(|| invalid("map has no scenario"))?;
-        let id = tag.id;
-        let base = tag.location.ok_or(map::Error::NoTagData)?.address;
-        let bytes = map.read_tag_bytes(id)?;
-        let scenario = Self::decode(&bytes, base)?;
+            .ok_or_else(|| invalid("map has no scenario"))?
+            .location
+            .ok_or(map::Error::NoTagData)?;
+        if loc.size < HS_HEADER_SIZE {
+            return Err(invalid("scenario header is truncated"));
+        }
+        let header = map.read_file_range(loc.file_offset()?, HS_HEADER_SIZE.into())?;
+        let [nodes, strings, scripts, globals, references] = tables(&header, |field, stride| {
+            let (address, len) = table_span(&header, field, stride)?;
+            let offset = if len == 0 { 0 } else { map.file_offset(address, len)? };
+            Ok((offset, len))
+        })?;
+        // Every count and span is valid before any table is allocated.
+        let mut read = |(offset, len): (u64, u32)| map.read_file_range(offset, len.into());
+        let scenario = Self::decode_tables(
+            &read(nodes)?,
+            read(strings)?,
+            &read(scripts)?,
+            &read(globals)?,
+            &read(references)?,
+        )?;
         for reference in &scenario.references {
             if reference.id == map::TagId::NULL {
                 continue;
@@ -99,20 +117,18 @@ impl Scenario {
     /// Decode a complete scnr payload, with its guest virtual base. Every
     /// nonempty table must be within that payload, not just somewhere in a map.
     pub fn decode(bytes: &[u8], base: u32) -> Result<Self> {
-        if bytes.len() < 0x240 {
-            return Err(invalid("scenario header is truncated"));
-        }
-        if word(bytes, 0x1a8) != 0 {
-            return Err(invalid(
-                "legacy syntax-data blob is unsupported; retail uses +0x238",
-            ));
-        }
-        let nodes = table(bytes, base, 0x238, Node::SIZE)?;
-        // Preflight EVERY count and span before decoding or allocating any table.
-        let strings = table(bytes, base, 0x1b0, 1)?;
-        let scripts = table(bytes, base, 0x1b8, Script::SIZE)?;
-        let globals = table(bytes, base, 0x1c0, Global::SIZE)?;
-        let references = table(bytes, base, 0x1c8, Reference::SIZE)?;
+        let [nodes, strings, scripts, globals, references] =
+            tables(bytes, |field, stride| table(bytes, base, field, stride))?;
+        Self::decode_tables(nodes, strings.to_vec(), scripts, globals, references)
+    }
+
+    fn decode_tables(
+        nodes: &[u8],
+        strings: Vec<u8>,
+        scripts: &[u8],
+        globals: &[u8],
+        references: &[u8],
+    ) -> Result<Self> {
         let scenario = Self {
             nodes: nodes
                 .as_chunks::<{ Node::SIZE }>()
@@ -120,7 +136,7 @@ impl Scenario {
                 .iter()
                 .map(|b| Node::decode(b))
                 .collect::<Result<_>>()?,
-            strings: strings.to_vec(),
+            strings,
             scripts: scripts
                 .as_chunks::<{ Script::SIZE }>()
                 .0
@@ -409,7 +425,7 @@ impl Scenario {
     /// Exact byte comparison for every retained table, including dead slots,
     /// reserved words and name padding. Does not rewrite/relocate a cache.
     pub fn verify_codec_symmetry(&self, bytes: &[u8], base: u32) -> Result<()> {
-        if bytes.len() < 0x240 {
+        if bytes.len() < HS_HEADER_SIZE as usize {
             return Err(invalid("scenario header is truncated"));
         }
         let checks = [
@@ -448,7 +464,31 @@ impl Scenario {
         Ok(())
     }
 }
-fn table(bytes: &[u8], base: u32, field: usize, stride: usize) -> Result<&[u8]> {
+
+const HS_HEADER_SIZE: u32 = 0x240;
+
+/// Preflight every descriptor before allocating tables or decoding records.
+fn tables<T>(
+    header: &[u8],
+    mut locate: impl FnMut(usize, usize) -> Result<T>,
+) -> Result<[T; 5]> {
+    if header.len() < HS_HEADER_SIZE as usize {
+        return Err(invalid("scenario header is truncated"));
+    }
+    if word(header, 0x1a8) != 0 {
+        return Err(invalid("legacy syntax-data blob is unsupported; retail uses +0x238"));
+    }
+    Ok([
+        locate(0x238, Node::SIZE)?,
+        locate(0x1b0, 1)?,
+        locate(0x1b8, Script::SIZE)?,
+        locate(0x1c0, Global::SIZE)?,
+        locate(0x1c8, Reference::SIZE)?,
+    ])
+}
+
+/// Guest address and byte length. An empty table ignores its address.
+fn table_span(bytes: &[u8], field: usize, stride: usize) -> Result<(u32, u32)> {
     let count = word(bytes, field) as usize;
     let limit = match field {
         0x238 => MAX_NODES,
@@ -463,20 +503,29 @@ fn table(bytes: &[u8], base: u32, field: usize, stride: usize) -> Result<&[u8]> 
         )));
     }
     if count == 0 {
-        return Ok(&[]);
+        return Ok((0, 0));
     }
     let address = word(bytes, field + 4);
     if address & 3 != 0 {
         return Err(invalid(format!("table +{field:#x} is unaligned")));
     }
+    let len = count
+        .checked_mul(stride)
+        .and_then(|n| u32::try_from(n).ok())
+        .ok_or_else(|| invalid("table length overflow"))?;
+    Ok((address, len))
+}
+
+fn table(bytes: &[u8], base: u32, field: usize, stride: usize) -> Result<&[u8]> {
+    let (address, len) = table_span(bytes, field, stride)?;
+    if len == 0 {
+        return Ok(&[]);
+    }
     let offset = address
         .checked_sub(base)
         .ok_or_else(|| invalid("table precedes scenario"))? as usize;
-    let len = count
-        .checked_mul(stride)
-        .ok_or_else(|| invalid("table length overflow"))?;
     let end = offset
-        .checked_add(len)
+        .checked_add(len as usize)
         .ok_or_else(|| invalid("table end overflow"))?;
     bytes
         .get(offset..end)

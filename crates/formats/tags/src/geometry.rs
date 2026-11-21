@@ -94,15 +94,34 @@ impl<'a> TagView<'a> {
     /// Elements of the tag block whose (count, pointer) pair is at `field`
     /// inside `record`, one slice per element. Charged to the budget.
     pub fn block(&self, record: &[u8], field: usize, stride: usize) -> Result<Vec<&'a [u8]>> {
+        Ok(self
+            .block_bytes(record, field, stride)?
+            .chunks_exact(stride)
+            .collect())
+    }
+
+    pub(crate) fn block_bytes(
+        &self,
+        record: &[u8],
+        field: usize,
+        stride: usize,
+    ) -> Result<&'a [u8]> {
         let pair = field
             .checked_add(8)
             .and_then(|end| record.get(field..end))
             .ok_or(Error::Invalid("tag block field outside its record"))?;
-        self.elements(u32_at(pair, 0), u32_at(pair, 4), stride)
+        self.element_bytes(u32_at(pair, 0), u32_at(pair, 4), stride)
     }
     /// Elements of a tag block given its count and pointer. Charged to the
     /// budget. A zero `stride` is a caller error and is rejected.
     pub fn elements(&self, count: u32, address: u32, stride: usize) -> Result<Vec<&'a [u8]>> {
+        Ok(self
+            .element_bytes(count, address, stride)?
+            .chunks_exact(stride)
+            .collect())
+    }
+
+    fn element_bytes(&self, count: u32, address: u32, stride: usize) -> Result<&'a [u8]> {
         if stride == 0 {
             return Err(Error::Invalid("tag block stride is zero"));
         }
@@ -117,7 +136,7 @@ impl<'a> TagView<'a> {
         }
         let bytes = self.range(address, len)?;
         self.charge(len)?;
-        Ok(bytes.chunks_exact(stride).collect())
+        Ok(bytes)
     }
     /// Charge `len` bytes of decoded output that did not come from
     /// [`Self::block`] (for example an alias read from another payload) to

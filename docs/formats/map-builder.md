@@ -195,7 +195,14 @@ built, padding, slack up to the old size), then after it. With
 `reverse_built = true` places built tags in reverse slot order (used to
 move retail tags away from their old addresses while reusing freed space).
 `check_tag_memory = false` skips the tag-memory bound below; only for
-offline round trips of maps already at the bound.
+offline sizing or round trips. Firefight uses the final layout to report
+per-part costs and refuses to publish a package over the bound.
+
+`TagSet::append_pinned_blocks` lays out new block trees at the end of
+ordinary metadata. It returns each root's address and allocated byte count,
+including alignment and children. The Firefight kit writes those addresses
+into the original scenario and BSP root pairs. The original BSP load
+regions keep their sizes.
 
 A pinned map's BSP space is fixed too: every region loads at the same
 base, the metadata sits right after the largest, and pinned metadata

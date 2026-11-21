@@ -243,6 +243,40 @@ fn stale_salts_free_links_and_cycles_are_rejected() {
     assert!(s.validate_graph().is_err());
 }
 #[test]
+fn map_script_tables_can_extend_past_the_root_but_must_fit_metadata() {
+    use map::build::{Block, TagPayload, TagSet};
+    use map::{CacheType, FourCC, Map};
+    use std::io::Cursor;
+
+    let mut set = TagSet::new(CacheType::Multiplayer, "rig", "rig");
+    let group = FourCC(*b"scnr");
+    set.add_group(group, None, None);
+    let root = set.add_tag(group, "rig", TagPayload::Built(Block::zeroed(0x240))).unwrap();
+    set.scenario = root;
+    let (base, _) = set.build().unwrap();
+    let mut source = Map::from_reader(Cursor::new(base)).unwrap();
+    let mut edit = source.edit();
+    let token = b"test_token\0";
+    let address = edit.append_metadata(token, 4).unwrap();
+    edit.patch_tag(root, 0x1b0, &(token.len() as u32).to_le_bytes()).unwrap();
+    edit.patch_tag(root, 0x1b4, &address.to_le_bytes()).unwrap();
+    let mut out = Cursor::new(Vec::new());
+    edit.write_to(&mut out).unwrap();
+    let mut bytes = out.into_inner();
+
+    let mut map = Map::from_reader(Cursor::new(&bytes)).unwrap();
+    let loc = map.scenario().unwrap().location.unwrap();
+    assert!(Scenario::decode(&map.read_tag_bytes(root).unwrap(), loc.address).is_err());
+    assert_eq!(Scenario::read(&mut map).unwrap().string(0).unwrap(), "test_token");
+
+    let space = map.metadata_space().unwrap();
+    let last_word = space.virtual_base + space.size - 4;
+    let pointer = loc.file_offset().unwrap() as usize + 0x1b4;
+    bytes[pointer..pointer + 4].copy_from_slice(&last_word.to_le_bytes());
+    let mut bad = Map::from_reader(Cursor::new(bytes)).unwrap();
+    assert!(Scenario::read(&mut bad).is_err());
+}
+#[test]
 fn corrupt_tables_and_legacy_blob_are_rejected() {
     let (s, _) = fixture();
     let (bytes, base) = payload(&s);

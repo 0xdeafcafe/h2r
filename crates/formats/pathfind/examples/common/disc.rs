@@ -93,6 +93,6 @@ pub fn load_bsp(
     )?;
     let at = coll[0].as_ptr() as usize - bytes.as_ptr() as usize;
     let bsp = tags::collision::Bsp::decode_structure(&bytes, base, at)?;
-    let pf = tags::pathfinding::PathfindingData::from_sbsp(&TagView::new(&bytes, base))?;
+    let pf = tags::pathfinding::PathfindingData::read(map, id)?;
     Ok((bsp, pf, bytes, base))
 }
