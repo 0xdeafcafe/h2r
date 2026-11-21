@@ -81,6 +81,10 @@ impl<B: SceneDevice> Commands<B> {
                     *dst = match src {
                         None => None,
                         Some(ReplayTexture::Upload(asset)) => Some(gpu.scene_upload(asset)?),
+                        Some(ReplayTexture::Live { target, .. }) => {
+                            let source = surface(target)?;
+                            Some(gpu.surface_texture(source)?.ok_or("live scene colour cannot be sampled")?)
+                        }
                         Some(ReplayTexture::Frozen(sample)) => {
                             Some(gpu.frozen_texture(sample, scale).ok_or(
                                 "frozen sample unavailable for this device and display scale",

@@ -1,4 +1,5 @@
-//! The immutable result of a sample from an earlier submitted frame.
+//! A texture binding from an earlier submitted frame. Replay samples an
+//! immutable result or checks the allocation behind a live surface view.
 //! The guest retains a proxy. Only the render worker resolves it to GPU
 //! objects. The response owns those objects after the proxy is dropped.
 

@@ -1105,8 +1105,9 @@ pub trait Backend: Send {
     /// A host texture made from guest texture memory.
     type Texture: Send;
 
-    /// Pins the exact reference and display images of an immutable sample
-    /// produced in an earlier submitted frame. Never for a live surface view.
+    /// Pins the GPU images bound by the original texture. Immutable samples
+    /// can be shared. A live view uses these handles only to verify that its
+    /// original source allocation still matches the current frame target.
     #[cfg(feature = "gpu")]
     fn frozen_images(&self, _texture: &Self::Texture) -> Option<crate::scene_sink::FrozenImages> {
         None

@@ -47,7 +47,10 @@ impl Scaled {
             .iter()
             .map(|(&name, s)| (name, s.reference))
             .collect();
-        self.reference.matches_scene_targets(frame, &reference)
+        // The reference store describes guest dimensions. Live samples may
+        // reside on the display grid and must be checked in that store.
+        self.reference.matches_scene_targets_at(frame, &reference, 1)
+            && self.scene_live_views_match(frame, targets)
             && targets.iter().all(|(name, s)| {
                 let desc = match name {
                     TargetRef::SceneColour => frame.colour,

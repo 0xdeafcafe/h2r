@@ -3,6 +3,7 @@
 //! encoder are the same ones the renderer uses for typed scene stages.
 
 pub(crate) mod commands;
+pub(crate) mod live;
 mod typed;
 use commands::{Commands, SceneDevice};
 
@@ -52,7 +53,7 @@ impl GfxBackend {
         frame: &ReplayFrame,
         targets: &HashMap<TargetRef, SurfaceId>,
     ) -> bool {
-        self.matches_scene_targets_at(frame, targets, 1)
+        self.matches_scene_targets_at(frame, targets, 1) && self.raw_live_views_match(frame, targets)
     }
 
     pub(crate) fn matches_scene_targets_at(
@@ -93,6 +94,10 @@ impl GfxBackend {
         targets: &HashMap<TargetRef, SurfaceId>,
         names: &[TargetRef],
     ) -> Result<HashMap<TargetRef, super::FrozenTarget>, String> {
+        if !self.raw_live_views_match(frame, targets) {
+            return Err("earlier live sample differs from the current colour attachment".into());
+        }
+        frame.validate_live_bindings();
         if names.is_empty() {
             return Ok(HashMap::new());
         }
@@ -173,6 +178,9 @@ impl<'a> GuestDrawPass<'a> {
         frame: &ReplayFrame,
         targets: &HashMap<TargetRef, SurfaceId>,
     ) -> Result<Self, String> {
+        if !gpu.raw_live_views_match(frame, targets) {
+            return Err("earlier live sample cannot bind the current attachment".into());
+        }
         let presented = targets
             .get(&frame.presented)
             .ok_or("missing existing present target")?;

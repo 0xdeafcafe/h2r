@@ -378,6 +378,7 @@ fn private_draws_restore_inherited_colour_depth_and_stencil_before_blending() {
     assert!(pollster::block_on(validation.pop()).is_none());
 }
 
+mod live_views;
 mod scaled;
 
 #[test]
