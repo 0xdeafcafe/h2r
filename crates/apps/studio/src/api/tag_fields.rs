@@ -61,9 +61,9 @@ fn fields(app: &mut App, p: &P) -> Reply {
             // its pair, even for a block with many elements.
             let value = match &f.kind {
                 tags::registry::Kind::Block(child) => {
-                    json!(doc.block(at + f.offset, child).map(|(count, _)| count))
+                    json!(doc.block(tag, at + f.offset, child).map(|(count, _)| count))
                 }
-                _ => tag_api::value(doc, at, f),
+                _ => tag_api::value(doc, tag, at, f),
             };
             json!({
                 "name": f.name, "offset": f.offset, "kind": f.kind.label(),

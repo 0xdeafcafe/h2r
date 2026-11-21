@@ -210,7 +210,7 @@ pub(crate) fn field_element(
         return Err(format!("{field_path} is not a block"));
     };
     let (count, start) = doc
-        .block(at + field.offset, &child)
+        .block(tag, at + field.offset, &child)
         .ok_or("unreadable block")?;
     if index >= count {
         return Err(format!(
