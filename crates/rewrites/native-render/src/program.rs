@@ -715,6 +715,46 @@ pub struct ViewInputs {
     pub w_clip: Option<([f32; 2], bool)>,
 }
 
+impl ViewInputs {
+    /// The view a game-free host (the editor) gives the translated passes
+    /// for `camera` drawing a `size` target at the guest's own size, in
+    /// the layout the game uploads before a view's draws
+    /// (docs/graphics/native-world.md, "What a world pass reads"):
+    ///
+    /// - `c[0..3]`: the view-projection rows (`dph` with the world
+    ///   position), scaled by `zs / far` so the clip `w` is the view depth
+    ///   in W-buffer units, as the game's own (docs/graphics/
+    ///   occlusion-culling.md, "The W scale"; `zs` D24's full scale). The
+    ///   z row is the w row: W-buffered, the depth is `w` and z only
+    ///   clips, from `w` (`shaders::vsh` `xvs_fixup`).
+    /// - `c[5].w` 0.5, the scale that packs a unit vector into a colour.
+    /// - `c[10]`, `c[11]`: the viewport scale and offset from clip x, y
+    ///   over w to guest pixels, y down.
+    /// - The rest 0: `c[5].xyz`, `c[6]` (a world-space vector the game
+    ///   sets per view) and the block at `c[12..17]` (`0x00025c70`) are
+    ///   not known well enough to synthesise.
+    ///
+    /// The clip range is the game's, `[near / far, 1] · zs`, culled.
+    pub fn from_camera(camera: &crate::camera::RenderCamera, size: (u32, u32)) -> Self {
+        let zs = crate::camera::D24_SCALE;
+        let vp = camera.view_projection();
+        let s = zs / camera.far;
+        // `vp` is by columns: clip row `i` is `vp[j][i]` over `j`.
+        let row = |i: usize| std::array::from_fn(|j| vp[j][i] * s);
+        let mut constants = [[0.0; 4]; VIEW_CONSTANTS];
+        constants[0] = row(0);
+        constants[1] = row(1);
+        constants[2] = row(3);
+        constants[3] = row(3);
+        constants[5] = [0.0, 0.0, 0.0, 0.5];
+        let (w, h) = (size.0 as f32, size.1 as f32);
+        constants[10] = [w * 0.5, -h * 0.5, 0.0, 0.0];
+        constants[11] = [w * 0.5, h * 0.5, 0.0, 0.0];
+        let near = (camera.near / camera.far * zs).clamp(0.0, zs);
+        Self { constants, guest_size: size, size, z_scale: zs, w_clip: Some(([near, zs], false)) }
+    }
+}
+
 /// `base` with the view's constants, surface and depth for one frame.
 pub fn frame_vertex(base: &VertexUniforms, view: &ViewInputs) -> VertexUniforms {
     let mut u = base.clone();
@@ -1597,6 +1637,56 @@ mod tests {
         assert_eq!(regs[2], [1.0, 9.0, 3.0, 9.0]);
         put(&mut regs, &Register { index: 7, value: [0.0; 4], written: 0xf, origin: Origin::Instance });
         assert_eq!(regs[3], [9.0; 4], "out of range: ignored");
+    }
+
+    /// A camera at the origin looking down +x, z up, 90 degrees vertical,
+    /// 640x480, near 1/16, far 1024: the editor's constants are the
+    /// game's layout for that view.
+    #[test]
+    fn a_cameras_view_constants_put_points_where_its_projection_does() {
+        let camera = crate::camera::RenderCamera {
+            position: [0.0; 3],
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            fov: 90f32.to_radians(),
+            projection_xy: None,
+            viewport: [0, 0, 480, 640],
+            near: 0.0625,
+            far: 1024.0,
+        };
+        let v = ViewInputs::from_camera(&camera, (640, 480));
+        let zs = crate::camera::D24_SCALE;
+        let s = zs / 1024.0;
+        let c = &v.constants;
+        // Known rows: right is -y, up is z, w the depth along x, all by
+        // zs / far; x by 1 / aspect, y by 1 (tan 45 degrees).
+        let near = |a: [f32; 4], b: [f32; 4]| (0..4).all(|k| (a[k] - b[k]).abs() <= 1e-3 * s);
+        assert!(near(c[0], [0.0, -0.75 * s, 0.0, 0.0]), "{:?}", c[0]);
+        assert!(near(c[1], [0.0, 0.0, s, 0.0]), "{:?}", c[1]);
+        assert!(near(c[3], [s, 0.0, 0.0, 0.0]), "{:?}", c[3]);
+        assert_eq!(c[2], c[3], "z clips from w");
+        assert_eq!(c[5][3], 0.5);
+        assert_eq!((c[10], c[11]), ([320.0, -240.0, 0.0, 0.0], [320.0, 240.0, 0.0, 0.0]));
+        // The game's epilogue: window = clip.xy / w * c[10] + c[11].
+        let window = |p: [f32; 3]| {
+            let dph = |r: [f32; 4]| r[0] * p[0] + r[1] * p[1] + r[2] * p[2] + r[3];
+            let w = dph(c[3]);
+            ([dph(c[0]) / w * c[10][0] + c[11][0], dph(c[1]) / w * c[10][1] + c[11][1]], w)
+        };
+        let close = |(a, w): ([f32; 2], f32), b: [f32; 2], depth: f32| {
+            assert!((a[0] - b[0]).abs() < 1e-2 && (a[1] - b[1]).abs() < 1e-2, "{a:?} {b:?}");
+            assert!((w - depth * s).abs() <= 1e-3 * depth * s, "w {w} for depth {depth}");
+        };
+        close(window([10.0, 0.0, 0.0]), [320.0, 240.0], 10.0);
+        close(window([10.0, 0.0, 10.0]), [320.0, 0.0], 10.0);
+        close(window([20.0, -20.0 * 640.0 / 480.0, 0.0]), [640.0, 240.0], 20.0);
+        close(window([5.0, 5.0 * 640.0 / 480.0, -5.0]), [0.0, 480.0], 5.0);
+        // The game's clip range and size; frame_vertex takes them as given.
+        assert_eq!(v.w_clip, Some(([0.0625 / 1024.0 * zs, zs], false)));
+        assert_eq!((v.guest_size, v.size, v.z_scale), ((640, 480), (640, 480), zs));
+        let u = frame_vertex(&VertexUniforms::default(), &v);
+        assert_eq!(u.constants[..VIEW_CONSTANTS], v.constants[..]);
+        assert_eq!(u.shift, [0.0; 2]);
     }
 
     #[test]
