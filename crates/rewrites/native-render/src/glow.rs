@@ -1012,7 +1012,7 @@ mod tests {
         });
         ctx.queue.write_texture(
             source.as_image_copy(), &[64, 128, 192, 255].repeat((view_size.0 * view_size.1) as usize),
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * view_size.0), rows_per_image: Some(4) },
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * view_size.0), rows_per_image: Some(view_size.1) },
             source.size(),
         );
         let sample = source.create_view(&Default::default());
