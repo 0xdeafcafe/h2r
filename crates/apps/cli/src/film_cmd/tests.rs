@@ -90,7 +90,9 @@ fn sample_film() -> Vec<u8> {
                     },
                 )
                 .unwrap();
-                track.keyframe_against(&mut out, &key(tick), Some(30)).unwrap();
+                track
+                    .keyframe_against(&mut out, &key(tick), Some(30))
+                    .unwrap();
             }
             _ => {}
         }
@@ -125,7 +127,7 @@ fn film_stat_lists_keyframes_anchors_and_capture_points() {
     let report = stat_bytes(sample_film());
     assert!(report.contains("version: 3"), "{report}");
     assert!(report.contains("source: host"), "{report}");
-    assert!(report.contains("length_ticks: 60 (2.0 s)"), "{report}");
+    assert!(report.contains("length_ticks: 60\n"), "{report}");
     assert!(
         report.contains("keyframes: 2 (1 anchors, 1 deltas,"),
         "{report}"
@@ -141,9 +143,18 @@ fn film_stat_lists_keyframes_anchors_and_capture_points() {
         .find(|line| line.starts_with("KEYF tick=60 "))
         .unwrap();
     assert!(delta.ends_with(" delta anchor=30"), "{delta}");
-    assert!(report.contains("capture_points: 2 (1 saved, 1 failed)"), "{report}");
-    assert!(report.contains("d3d_barrier tick=45 slices=91 saved=false"), "{report}");
-    assert!(report.contains("d3d_barrier tick=60 slices=130 saved=true"), "{report}");
+    assert!(
+        report.contains("capture_points: 2 (1 saved, 1 failed)"),
+        "{report}"
+    );
+    assert!(
+        report.contains("d3d_barrier tick=45 slices=91 saved=false"),
+        "{report}"
+    );
+    assert!(
+        report.contains("d3d_barrier tick=60 slices=130 saved=true"),
+        "{report}"
+    );
 }
 
 #[test]
@@ -151,16 +162,23 @@ fn film_stat_scans_keyframes_when_the_directory_is_unwritten() {
     let mut out = film::Writer::new(Cursor::new(Vec::new()), &header(2, 7)).unwrap();
     // The keyframe payload's own tick varint: tick 7, cursors 14, 21, 28,
     // an empty disk delta and a one-byte snapshot.
-    out.chunk_bytes(film::KEYF, &[7, 14, 21, 28, 0, 0xf1]).unwrap();
+    out.chunk_bytes(film::KEYF, &[7, 14, 21, 28, 0, 0xf1])
+        .unwrap();
     let bytes = out.finish().unwrap().into_inner();
     let report = stat_bytes(bytes);
-    assert!(report.contains("keyframes: 1 (0 anchors, 0 deltas,"), "{report}");
+    assert!(
+        report.contains("keyframes: 1 (0 anchors, 0 deltas,"),
+        "{report}"
+    );
     let row = report
         .lines()
         .find(|line| line.starts_with("KEYF tick=7 "))
         .unwrap();
     assert!(row.ends_with(" anchor=unknown"), "{row}");
-    assert!(report.contains("capture_points: 0 (0 saved, 0 failed)"), "{report}");
+    assert!(
+        report.contains("capture_points: 0 (0 saved, 0 failed)"),
+        "{report}"
+    );
 }
 
 #[test]
@@ -172,5 +190,68 @@ fn film_stat_reports_a_film_without_keyframes_or_barriers() {
         report.contains("keyframes: 0 (0 anchors, 0 deltas, 0 stored bytes)"),
         "{report}"
     );
-    assert!(report.contains("capture_points: 0 (0 saved, 0 failed)"), "{report}");
+    assert!(
+        report.contains("capture_points: 0 (0 saved, 0 failed)"),
+        "{report}"
+    );
+}
+
+#[test]
+fn film_stat_counts_tape_batches_bytes_and_operations() {
+    let mut header = header(2, 0);
+    header.meta.source = film::Source::Local;
+    let mut out = film::Writer::new(Cursor::new(Vec::new()), &header).unwrap();
+    let call = |index, op: &str| Call {
+        index,
+        op: op.into(),
+        args: vec![7],
+        thread: 1,
+        result: Ok(0),
+        outputs: vec![vec![23; 8]],
+    };
+    let first = vec![call(1, "Select"), call(2, "Htonl")];
+    let pad = vec![call(3, "XInputGetState")];
+    let second = vec![call(4, "Select")];
+    out.chunk(film::NETR, &first).unwrap();
+    out.chunk(film::tape::PADR, &pad).unwrap();
+    out.chunk(film::NETR, &second).unwrap();
+    out.chunk(
+        PDEV,
+        &film::tape::PortChange {
+            sync: 0,
+            ports: [None; 4],
+        },
+    )
+    .unwrap();
+    let bytes = out.finish().unwrap().into_inner();
+    let reader = film::Reader::new(Cursor::new(&bytes)).unwrap();
+    let stored = |tag| {
+        reader
+            .entries
+            .iter()
+            .filter(|e| e.tag == tag)
+            .map(|e| u64::from(e.size) + 8)
+            .sum::<u64>()
+    };
+    let inflated = |batch: &[Call]| serde_json::to_vec(batch).unwrap().len();
+    let net = format!(
+        "NETR calls=3 inflated={} stored={} chunks=2\n  \"Htonl\" calls=1\n  \"Select\" calls=2\n",
+        inflated(&first) + inflated(&second),
+        stored(film::NETR),
+    );
+    let pad = format!(
+        "PADR calls=1 inflated={} stored={} chunks=1\n  \"XInputGetState\" calls=1\n",
+        inflated(&pad),
+        stored(film::tape::PADR),
+    );
+    let report = stat_bytes(bytes);
+    assert!(report.contains("source: local"), "{report}");
+    assert!(report.contains(&net), "{report}");
+    assert!(report.contains(&pad), "{report}");
+    assert!(
+        report.contains("RAND calls=0 inflated=0 stored=0 chunks=0"),
+        "{report}"
+    );
+    assert!(report.contains("PDEV calls=0 inflated="), "{report}");
+    assert!(!report.contains("outputs"), "{report}");
 }

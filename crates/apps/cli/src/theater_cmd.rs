@@ -165,6 +165,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
 }
 
 fn child(opts: Options, work: &Path) -> Result<()> {
+    let child_started = std::time::Instant::now();
     let mut film = film::Reader::open(&opts.film)?;
     let xbe = boot::read_xbe(&opts.disc)?;
     let xbe_sha256 = film::xbe_digest(&xbe);
@@ -260,7 +261,7 @@ fn child(opts: Options, work: &Path) -> Result<()> {
     let run = move |host, window_closed| -> Result<()> {
         let mut replay = replay;
         replay.window_closed = window_closed;
-        let r = boot::run_theater(&xbe, &image, &boot, host, replay);
+        let r = boot::run_theater(&xbe, &image, &boot, host, replay, child_started);
         vfs::flush_pending_metadata();
         r.map(|_| ())
     };

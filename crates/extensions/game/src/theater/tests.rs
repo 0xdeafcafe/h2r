@@ -460,6 +460,7 @@ fn state_reports_the_seek_route_and_restore_cost_and_lists_keyframes() {
     let opts = options(&dir);
     let record = Session::open(Some(file.clone()), None, host_facts(), b"xbe", &opts)
         .unwrap().unwrap();
+    record.start_measurements(std::time::Instant::now(), None);
     let mut machine = crate::snapshot_glue::BootMachine {
         parts: vec![],
         checks: Box::new(Vec::new),
@@ -474,6 +475,15 @@ fn state_reports_the_seek_route_and_restore_cost_and_lists_keyframes() {
     let guest = arena();
     for _ in 0..30 {
         record.checkpoint(&guest);
+    }
+    if let Mode::Record(rec) = &mut record.lock().mode {
+        // Synthetic marker at the keyframe boundary. The cold keyframe
+        // restore skips past it, as it does for a real recorded barrier.
+        rec.out.as_mut().unwrap().chunk(film::MARK, &Mark::D3dBarrier {
+            slices: 35,
+            tick: 30,
+            saved: true,
+        }).unwrap();
     }
     record.try_keyframe(35, 0, &mut machine);
     record.checkpoint(&guest);
@@ -513,6 +523,12 @@ fn state_reports_the_seek_route_and_restore_cost_and_lists_keyframes() {
         a.poll_theater(&mut Empty);
         serde_json::from_str::<Value>(&read.try_recv().unwrap()).unwrap()
     };
+    record.add_methods(&a);
+    let capture = &call(api::MEASUREMENTS, json!({}))["result"]["captures"][0];
+    assert_eq!(capture["tick"], 30);
+    assert_eq!(capture["slices"], 35);
+    assert_eq!(capture["published"], true);
+    assert!(capture["elapsed_ms"].is_u64());
 
     // A cold seek to tick 31 routes through the film's keyframe at tick 30.
     let player = open(31);
@@ -526,7 +542,7 @@ fn state_reports_the_seek_route_and_restore_cost_and_lists_keyframes() {
     assert!(seek["restore_ms"].is_null());
     let stored = call(api::KEYFRAMES, json!({}))["result"].clone();
     assert_eq!(stored["film"], json!([30]));
-    assert_eq!(stored["capture_points"], json!([]));
+    assert_eq!(stored["capture_points"], json!([30]));
     assert_eq!(stored["ring"], json!([]));
     assert_eq!(stored["sidecar"], json!([]));
     assert_eq!(stored["ring_bytes"], 0);
@@ -537,13 +553,23 @@ fn state_reports_the_seek_route_and_restore_cost_and_lists_keyframes() {
     // The restore reports its cost and the shrinking distance to the target.
     let keyframe = player.take_keyframe().unwrap();
     player.restore_keyframe(keyframe, &mut machine, None).unwrap();
+    let start = std::time::Instant::now();
+    player.start_measurements(start, Some(start));
+    player.measure_first_slice();
     let seek = call(api::STATE, json!({}))["result"]["seek"].clone();
     assert_eq!(seek["remaining_ticks"], 1);
     assert!(seek["restore_ms"].is_u64(), "{seek}");
+    let measured = call(api::MEASUREMENTS, json!({}))["result"].clone();
+    assert!(measured["child_to_first_slice_ms"].is_u64());
+    assert!(measured["fast_forward_ms"].is_null());
     player.checkpoint(&guest);
     let seek = call(api::STATE, json!({}))["result"]["seek"].clone();
     assert_eq!(seek["remaining_ticks"], 0);
     assert!(seek["restore_ms"].is_u64(), "{seek}");
+    let measured = call(api::MEASUREMENTS, json!({}))["result"].clone();
+    assert_eq!(measured["fast_forward_ticks"], 1);
+    assert!(measured["fast_forward_ms"].is_u64());
+    assert!(measured["boot_to_match_start_ms"].is_null());
 
     // A requested jump names its own route: covered by the tick-30 keyframe
     // or not. The tick it leaves becomes the next jump's from_tick.

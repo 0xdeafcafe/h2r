@@ -448,9 +448,12 @@ pub struct KeyframeInfo {
 
 /// The film's stored machine keyframes in tick order, from the TIDX
 /// directory alone. This does not inflate input, HLE or snapshot data.
-pub fn keyframes<R: Read + Seek>(reader: &mut Reader<R>) -> Result<Vec<KeyframeInfo>> {
+pub fn keyframes<R: Read + Seek>(reader: &mut Reader<R>) -> Result<Option<Vec<KeyframeInfo>>> {
+    if !reader.machine_section().entries().any(|entry| entry.tag == TIDX) {
+        return Ok(None);
+    }
     let directory: Directory = reader.read(&one(reader, TIDX)?)?;
-    Ok(directory
+    Ok(Some(directory
         .keyframes
         .iter()
         .map(|key| KeyframeInfo {
@@ -458,7 +461,7 @@ pub fn keyframes<R: Read + Seek>(reader: &mut Reader<R>) -> Result<Vec<KeyframeI
             offset: key.offset,
             ram_anchor: key.ram_anchor,
         })
-        .collect())
+        .collect()))
 }
 
 /// Read just the menu block. This does not inflate input, HLE or snapshot data.

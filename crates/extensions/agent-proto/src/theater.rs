@@ -8,7 +8,39 @@ pub const SPEED: &str = "theater.speed";
 pub const SEEK: &str = "theater.seek";
 pub const CAMERA: &str = "theater.camera";
 pub const KEYFRAMES: &str = "theater.keyframes";
-pub const METHODS: [&str; 7] = [PLAY, STATE, PAUSE, SPEED, SEEK, CAMERA, KEYFRAMES];
+pub const MEASUREMENTS: &str = "theater.measurements";
+pub const METHODS: [&str; 8] = [PLAY, STATE, PAUSE, SPEED, SEEK, CAMERA, KEYFRAMES, MEASUREMENTS];
+
+/// Host wall-clock timings and write-watch counts for an instrumented run.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Measurements {
+    pub child_to_first_slice_ms: Option<u64>,
+    pub boot_to_match_start_ms: Option<u64>,
+    pub match_start_tick: Option<u64>,
+    pub fast_forward_ms: Option<u64>,
+    pub fast_forward_ticks: Option<u64>,
+    pub captures: Vec<CaptureMeasurement>,
+    pub page_windows: Vec<PageWindow>,
+    pub captures_omitted: u64,
+    pub page_windows_omitted: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CaptureMeasurement {
+    pub tick: u64,
+    pub slices: u64,
+    pub elapsed_ms: u64,
+    pub published: bool,
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PageWindow {
+    pub seconds: u32,
+    pub from_tick: u64,
+    pub to_tick: u64,
+    pub pages: u64,
+}
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

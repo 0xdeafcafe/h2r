@@ -103,8 +103,8 @@ so interleaved pad and socket calls make a zstd frame, an envelope and an
 165 bytes inflated, an empty socket poll about 100, a received datagram
 of N bytes about 90 + 3.6 N. One pad read a frame at 30 Hz is 297 KB a
 pad-minute inflated; stored size depends on the alternation and is not
-measured. Slice 0 measures calls and bytes per stream; slice 14 replaces
-the encoding.
+measured. [Theater seek measurements](notes/theater-seek.md) records
+calls and bytes per stream. Slice 14 replaces the encoding.
 
 ### Joins and leaves
 

@@ -12,6 +12,7 @@ pub mod bot_tape;
 mod legacy_camera;
 mod controls;
 mod metadata;
+mod measurements;
 mod unified;
 mod objectives;
 mod record;
@@ -122,6 +123,7 @@ struct State {
     seek: Option<SeekProgress>,
     /// The film's recorded D3D capture boundaries, as ticks, from load time.
     capture_points: Vec<u64>,
+    measurements: Option<measurements::Run>,
     presentation: Presentation,
     restart: Option<u64>,
     failure: Option<String>,
@@ -369,6 +371,7 @@ impl Session {
                 seeking,
                 seek,
                 capture_points,
+                measurements: None,
                 paused,
                 presentation,
                 tick: 0,
@@ -401,7 +404,8 @@ impl Session {
         }
         s.tick += 1;
         let tick = s.tick;
-        if s.seeking == Some(tick) {
+        let reached_target = s.seeking == Some(tick);
+        if reached_target {
             s.seeking = None;
             s.paused = matches!(&s.mode, Mode::Replay(_,r) if r.paused_at_target);
         }
@@ -415,6 +419,12 @@ impl Session {
             } else {
                 Session::check_replay_tick(&mut s, guest, hash);
             }
+            if s.failure.is_none() {
+                s.measure_match_start(tick);
+            }
+        }
+        if reached_target && let Some(run) = &mut s.measurements {
+            run.reached_target(tick);
         }
         if !tick.is_multiple_of(30) {
             return;

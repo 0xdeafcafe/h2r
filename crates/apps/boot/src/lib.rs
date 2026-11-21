@@ -142,6 +142,7 @@ pub fn run_theater(
     opts: &RunOpts,
     mut host: Host,
     replay: theater::Replay,
+    child_started: std::time::Instant,
 ) -> Result<RunReport> {
     let mut reader = film::Reader::open(&replay.path)?;
     let lan = LiveConfig {
@@ -159,7 +160,7 @@ pub fn run_theater(
             None
         }
     };
-    run_configured(xbe, image, &opts, host, (&lan, None), sim.map(|s| (s, None)), Some((replay, legacy_lod)))
+    run_configured(xbe, image, &opts, host, (&lan, None), sim.map(|s| (s, None)), Some((replay, legacy_lod, child_started)))
 }
 
 fn run_configured(
@@ -169,9 +170,13 @@ fn run_configured(
     mut host: Host,
     (live, publisher): (&LiveConfig, Option<HostPublisher>),
     sim: Option<(sim_glue::Sim, Option<telemetry::TelemetryConfig>)>,
-    replay: Option<(theater::Replay, Option<f32>)>,
+    replay: Option<(theater::Replay, Option<f32>, std::time::Instant)>,
 ) -> Result<RunReport> {
-    let (replay, legacy_lod) = replay.unzip();
+    let boot_started = std::time::Instant::now();
+    let (replay, legacy_lod, child_started) = match replay {
+        Some((replay, lod, start)) => (Some(replay), lod, Some(start)),
+        None => (None, None, None),
+    };
     #[cfg(not(feature = "gpu"))]
     let _ = legacy_lod;
     // H2_SIM and the CLI sim entry share the dedicated profile. The explicit
@@ -351,6 +356,11 @@ fn run_configured(
         };
         if let (Some(hle), Some(session)) = (&_live, &session) {
             hle.set_film_tap(session.clone());
+        }
+        if let Some(session) = &session
+            && std::env::var("H2_THEATER_MEASURE").as_deref() == Ok("1")
+        {
+            session.start_measurements(boot_started, child_started);
         }
         session
     } else {
@@ -1415,6 +1425,7 @@ fn run_configured(
     };
     // `film_slices` ends as the last slice run, so the loop starts from a copy.
     let first_slice = film_slices;
+    let measure_recording = !replaying && std::env::var("H2_THEATER_MEASURE").as_deref() == Ok("1");
     for slice in first_slice..opts.max_slices {
         if let Some(f) = &film {
             f.observe_pause(&loaded.runtime.memory());
@@ -1423,6 +1434,9 @@ fn run_configured(
                     f.replay_device_barrier(slice, &snap_host, shelf)?;
                 }
             } else {
+                if measure_recording {
+                    f.measure_recording_pages(&loaded.runtime)?;
+                }
                 if let Some(shelf) = &shelf && f.keyframe_due() {
                     let lobby = agent.as_ref().map_or(0, |a| a.agent.film_lobby_boundary());
                     let mut machine = snap_host.machine(
@@ -1469,6 +1483,9 @@ fn run_configured(
             script.step(slice, pad);
         }
         let ran_before = dsound_glue::guest_slices(&m);
+        if slice == first_slice && let Some(f) = &film {
+            f.measure_first_slice();
+        }
         outcome = m.run(1).context("machine run")?;
         // Every thread waits and nothing is timed: pending audio is a wake
         // source the scheduler does not know about (dsound_glue::wake_idle).

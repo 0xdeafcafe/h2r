@@ -2025,6 +2025,8 @@ directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
 | `theater.speed` | `{"speed":0.5}` | sets host pacing from 0.25 to 4 times realtime |
 | `theater.seek` | `{"tick":900}`, optionally `"clip_marks":[300,null]` | restarts the player and fast-forwards to the target, carrying camera and timeline state; direct socket clients reconnect after the restart |
 | `theater.camera` | `{"mode":"orbit","player":"<name>","look":[0.2,-0.1],"zoom":-1}` or `{"mode":"first_person","seat":3}` | selects the view and returns transport state; an absolute film seat is 0 to 15 |
+| `theater.keyframes` | `{}` | seek inventory `{film, sidecar, ring, capture_points, ring_bytes, ring_cap, sidecar_bytes}`; lists contain tick numbers |
+| `theater.measurements` | `{}` | timings, keyframe attempts and page counts from the instrumented recorder or playback child |
 
 The rendered player starts at the clip's first tick and loops at its end.
 Its overlay uses the player's agent socket for transport and `cheat.set
@@ -2049,6 +2051,37 @@ discovered kill marker ticks in `kills`, alongside the usual `at` stamp.
 Tick zero is boot. A paused seek holds at its target until play. The HLE
 compares the recorded call index and game-thread hash samples during
 fast-forward ([theater.md](../game/theater.md)).
+
+The `seek` object records `target`, `from_tick`, `source`, `warm`,
+`remaining_ticks` and `restore_ms`. It remains available at the target,
+with zero ticks left. Linear playback starts with `seek: null`. The
+cold player reports `source: "keyframe"` for a compatible embedded
+keyframe or `"boot"` for replay from startup, with `warm: false`.
+`restore_ms` times loading the snapshot into the machine and checking
+its restored state. It is null before restore and on the boot route.
+The keyframe inventory lists embedded frames and all recorded D3D
+barrier ticks, including failed captures. The cold player returns empty
+ring and sidecar lists and zero for their byte fields.
+
+`theater.measurements` is a read on the recorder's or playback child's
+own socket when the run uses the Theater measurement switch
+([switches.md](switches.md#tools)). Its fields are:
+
+- `child_to_first_slice_ms` from the playback child entry to its first
+  guest scheduler slice, including disk setup and any cold restore.
+- `boot_to_match_start_ms` from configured boot to the first recorded
+  match tick, and `match_start_tick`. These stay null when the run
+  does not pass through that tick, including a restore past it.
+- `fast_forward_ms` and `fast_forward_ticks` from the first scheduler
+  slice after boot or restore to the seek target. Both are null until
+  a forward replay reaches its target.
+- `captures` with `{tick, slices, elapsed_ms, published, reason}`. The
+  recorder times the attempt through the write and gives the blocker
+  or error when it skips a frame. `page_windows` with
+  `{seconds, from_tick, to_tick, pages}` counts distinct physical guest
+  pages written in each 5 s and 30 s window of match ticks.
+  `captures_omitted` and `page_windows_omitted` count entries older
+  than the 256 retained in each list.
 
 ```sh
 h2 agent theater.state '{}' --socket "$film_run/play.sock"

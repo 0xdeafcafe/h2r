@@ -169,6 +169,7 @@ impl Session {
         lobby_boundary: u64,
         machine: &mut crate::snapshot_glue::BootMachine<'_>,
     ) {
+        let started = std::time::Instant::now();
         let (tick, calls, anchor, disk) = {
             let mut s = self.lock();
             let (tick, calls) = (s.tick, s.calls);
@@ -256,7 +257,7 @@ impl Session {
                 return;
             }
         }
-        match capture {
+        let reason = match capture {
             Ok((snapshot, disk_delta)) => {
                 let Some(out) = &mut rec.out else { return };
                 let frame = Keyframe {
@@ -285,11 +286,17 @@ impl Session {
                             existing.deltas += 1;
                         }
                         rec.frame.last_reason = None;
+                        None
                     }
                     Err(error) if error.is::<film::ChunkTooLarge>() => {
                         eprintln!("theater: skipped keyframe at tick {tick}: {error}");
+                        Some(error.to_string())
                     }
-                    Err(error) => s.fail(format!("writing keyframe: {error:#}")),
+                    Err(error) => {
+                        let why = format!("writing keyframe: {error:#}");
+                        s.fail(why.clone());
+                        Some(why)
+                    }
                 }
             }
             Err(error) => {
@@ -302,9 +309,13 @@ impl Session {
                 }
                 if rec.frame.last_reason.is_none() {
                     eprintln!("theater: keyframe at tick {tick} deferred: {why}");
-                    rec.frame.last_reason = Some(why);
+                    rec.frame.last_reason = Some(why.clone());
                 }
+                Some(why)
             }
+        };
+        if let Some(run) = &mut s.measurements {
+            run.capture(tick, slices, started, reason);
         }
     }
 }
