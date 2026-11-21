@@ -31,7 +31,7 @@ use crate::ui::{Chosen, LABEL_SLOT, VALUE_SLOT};
 use crate::ui_kit::dialog::{DialogBase, DialogSpec};
 use crate::ui_kit::ids::{self, Family};
 use crate::ui_kit::input::{Glyph, Input, OpenerGuard, Prompt};
-use crate::ui_kit::lifecycle::{self, AfterClose};
+use crate::ui_kit::lifecycle::AfterClose;
 use crate::ui_kit::spec::{self, Describe, ListPlace, RowSpec, ScreenSpec, ValueStyle};
 use crate::ui_kit::view::Opener;
 
@@ -868,6 +868,7 @@ pub fn example() -> (KitScreen, Arc<AtomicUsize>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui_kit::lifecycle;
 
     /// Each screen's texts are a feature of their own, so a second kit
     /// screen in the game no longer fails the plan with DuplicateFeature.

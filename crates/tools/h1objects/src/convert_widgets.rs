@@ -321,175 +321,6 @@ impl Converter<'_> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn antenna_relocates_its_marker_and_preserves_each_segment() {
-        let mut source = [0; 0xd0];
-        source[..5].copy_from_slice(b"whisk");
-        source[0x94..0x98].copy_from_slice(&7.25f32.to_le_bytes());
-        let first = [0x31; 0x80];
-        let last = [0x72; 0x80];
-        let result = antenna(&source, &[&first, &last], TagId(11), TagId(12)).unwrap();
-        let r = defs::from_built(def(*b"ant!"), &result).unwrap();
-        assert_eq!(r.at("marker"), Some(&Val::text("whisk")));
-        assert!(matches!(
-            r.at("bitmap"),
-            Some(Val::Ref {
-                target: defs::Target::Id(TagId(11)),
-                ..
-            })
-        ));
-        assert!(matches!(
-            r.at("physics"),
-            Some(Val::Ref {
-                target: defs::Target::Id(TagId(12)),
-                ..
-            })
-        ));
-        assert_eq!(real(&result.bytes, 0x68), 7.25);
-        assert_eq!(
-            r.at("vertices[0].unknown_0"),
-            Some(&Val::Bytes(first.to_vec()))
-        );
-        assert_eq!(
-            r.at("vertices[1].unknown_0"),
-            Some(&Val::Bytes(last.to_vec()))
-        );
-    }
-
-    #[test]
-    fn beam_samples_follow_source_spacing_radius_and_view_dependent_opacity() {
-        let mut source = [0; 0x14c];
-        let mut frame = [0; 0xb0];
-        for (at, val) in [(0x3c, 0.5f32), (0x40, 1.0)] {
-            source[at..at + 4].copy_from_slice(&val.to_le_bytes());
-        }
-        for (at, val) in [
-            (0x10, -1.0f32),
-            (0x14, 2.0),
-            (0x18, 8.0),
-            (0x3c, 1.0),
-            (0x40, 5.0),
-            (0x44, 1.0),
-            (0x68, 1.0),
-            (0x88, 1.0),
-            (0x8c, 2.0),
-        ] {
-            frame[at..at + 4].copy_from_slice(&val.to_le_bytes());
-        }
-        let root = light_volume(&source, &frame, 3, TagId(19)).unwrap();
-        let r = defs::from_built(def(*b"MGS2"), &root).unwrap();
-        assert_eq!(
-            r.at("layers[0].sample_positions[1].input"),
-            Some(&Val::floats(&[0.25; 2]))
-        );
-        let evaluate = |field: &str, angle| {
-            let Some(Val::Data(bytes)) = r.at(field) else {
-                panic!("{field}")
-            };
-            let f = Function::parse(bytes).unwrap();
-            f.range[0] + (f.range[1] - f.range[0]) * f.evaluate(0.25, angle)
-        };
-        assert_eq!(evaluate("layers[0].data_10", 0.0), 1.0);
-        assert_eq!(evaluate("layers[0].data_18", 0.0), 2.0);
-        assert_eq!(evaluate("layers[0].data_20", 0.0), 0.46875);
-        assert_eq!(evaluate("layers[0].data_20", 1.0), 0.9375);
-        assert!(light_volume(&source, &frame, 257, TagId(19)).is_err());
-    }
-    #[test]
-    fn lightning_passes_keep_each_bolts_endpoint_styles() {
-        use tags::effects::h1_lightning::{Endpoint, HEADER, STRIDE};
-        let mut root = [0; 0x108];
-        root[2] = 2;
-        let mut a = [0; 0xe4];
-        a[..4].copy_from_slice(b"mast");
-        a[0x24] = 3;
-        a[0x84..0x88].copy_from_slice(&0.75f32.to_le_bytes());
-        let mut b = a;
-        b[0x20] = 1;
-        b[0x74..0x78].copy_from_slice(&0.25f32.to_le_bytes());
-        let mut shader = [0; 0xb4];
-        shader[0x24] = 1;
-        shader[0x28] = 2;
-        shader[0x2a] = 3;
-        let root = lightning(&root, &[&a, &b], &shader, TagId(42)).unwrap();
-        let r = defs::from_built(def(*b"tdtl"), &root).unwrap();
-        assert_eq!(r.at("marker"), Some(&Val::text("mast")));
-        for n in 0..2 {
-            let field = format!("layers[{n}].displacement");
-            let Some(Val::Data(blob)) = r.at(&field) else {
-                panic!("{field}")
-            };
-            assert_eq!(&blob[0x10..0x14], &[n, 0, 2, 0]);
-            let end = |i: usize| {
-                Endpoint::decode(
-                    blob[HEADER + i * STRIDE..HEADER + (i + 1) * STRIDE]
-                        .try_into()
-                        .unwrap(),
-                )
-            };
-            assert_eq!(end(0).depth, 3);
-            assert_eq!(end(0).width, 0.75);
-            assert!(end(1).end);
-            assert_eq!(end(1).jitter, [0.25, 0., 0.]);
-        }
-    }
-
-    #[test]
-    fn full_flag_grid_keeps_every_source_vertex_and_the_mast_pins() {
-        let grid = FlagGrid {
-            width: 16,
-            height: 13,
-            spacing: [0.025, 0.025],
-            contact: [0.5, 0.75],
-            physics: tags::effects::h1_attachment::PointPhysics {
-                flags: 0,
-                particle_type_flags: 0,
-                mass: 1.,
-                acceleration: [-3., 0.],
-                drag: [1., 3.],
-                radius: 0.02,
-            },
-        };
-        let panel = |upper, marker, shader| {
-            defs::from_built(
-                def(*b"clwd"),
-                &grid.panel(upper, marker, TagId(shader)).unwrap(),
-            )
-            .unwrap()
-        };
-        let lo = panel(false, "bottom", 1);
-        let hi = panel(true, "top", 2);
-        assert_eq!(lo.at("marker"), Some(&Val::text("bottom")));
-        assert_eq!(hi.at("marker"), Some(&Val::text("top")));
-        assert_eq!(lo.at("vertices[0].uv"), Some(&Val::floats(&[0., 0.])));
-        assert_eq!(hi.at("vertices[0].uv"), Some(&Val::floats(&[0., 1.])));
-        for p in [&lo, &hi] {
-            let Some(Val::Block(vertices)) = p.at("vertices") else {
-                panic!("vertices")
-            };
-            let Some(Val::Block(triangles)) = p.at("triangles") else {
-                panic!("triangles")
-            };
-            assert_eq!(vertices.len(), 112);
-            assert_eq!(triangles.len(), 6 * 15 * 6);
-        }
-        for i in 96..112 {
-            assert_eq!(
-                lo.at(&format!("vertices[{i}].position")),
-                hi.at(&format!("vertices[{i}].position"))
-            );
-            assert_eq!(
-                lo.at(&format!("vertices[{i}].uv")),
-                hi.at(&format!("vertices[{i}].uv"))
-            );
-        }
-    }
-}
-
 impl Converter<'_> {
     pub(super) fn glow(&mut self, tag: &Tag) -> Result<TagId> {
         if let Some(&id) = self.done.get(&tag.id.0) {
@@ -874,5 +705,174 @@ impl Converter<'_> {
         ];
         self.flag_panels.insert(tag.id.0, ids);
         Ok(ids)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn antenna_relocates_its_marker_and_preserves_each_segment() {
+        let mut source = [0; 0xd0];
+        source[..5].copy_from_slice(b"whisk");
+        source[0x94..0x98].copy_from_slice(&7.25f32.to_le_bytes());
+        let first = [0x31; 0x80];
+        let last = [0x72; 0x80];
+        let result = antenna(&source, &[&first, &last], TagId(11), TagId(12)).unwrap();
+        let r = defs::from_built(def(*b"ant!"), &result).unwrap();
+        assert_eq!(r.at("marker"), Some(&Val::text("whisk")));
+        assert!(matches!(
+            r.at("bitmap"),
+            Some(Val::Ref {
+                target: defs::Target::Id(TagId(11)),
+                ..
+            })
+        ));
+        assert!(matches!(
+            r.at("physics"),
+            Some(Val::Ref {
+                target: defs::Target::Id(TagId(12)),
+                ..
+            })
+        ));
+        assert_eq!(real(&result.bytes, 0x68), 7.25);
+        assert_eq!(
+            r.at("vertices[0].unknown_0"),
+            Some(&Val::Bytes(first.to_vec()))
+        );
+        assert_eq!(
+            r.at("vertices[1].unknown_0"),
+            Some(&Val::Bytes(last.to_vec()))
+        );
+    }
+
+    #[test]
+    fn beam_samples_follow_source_spacing_radius_and_view_dependent_opacity() {
+        let mut source = [0; 0x14c];
+        let mut frame = [0; 0xb0];
+        for (at, val) in [(0x3c, 0.5f32), (0x40, 1.0)] {
+            source[at..at + 4].copy_from_slice(&val.to_le_bytes());
+        }
+        for (at, val) in [
+            (0x10, -1.0f32),
+            (0x14, 2.0),
+            (0x18, 8.0),
+            (0x3c, 1.0),
+            (0x40, 5.0),
+            (0x44, 1.0),
+            (0x68, 1.0),
+            (0x88, 1.0),
+            (0x8c, 2.0),
+        ] {
+            frame[at..at + 4].copy_from_slice(&val.to_le_bytes());
+        }
+        let root = light_volume(&source, &frame, 3, TagId(19)).unwrap();
+        let r = defs::from_built(def(*b"MGS2"), &root).unwrap();
+        assert_eq!(
+            r.at("layers[0].sample_positions[1].input"),
+            Some(&Val::floats(&[0.25; 2]))
+        );
+        let evaluate = |field: &str, angle| {
+            let Some(Val::Data(bytes)) = r.at(field) else {
+                panic!("{field}")
+            };
+            let f = Function::parse(bytes).unwrap();
+            f.range[0] + (f.range[1] - f.range[0]) * f.evaluate(0.25, angle)
+        };
+        assert_eq!(evaluate("layers[0].data_10", 0.0), 1.0);
+        assert_eq!(evaluate("layers[0].data_18", 0.0), 2.0);
+        assert_eq!(evaluate("layers[0].data_20", 0.0), 0.46875);
+        assert_eq!(evaluate("layers[0].data_20", 1.0), 0.9375);
+        assert!(light_volume(&source, &frame, 257, TagId(19)).is_err());
+    }
+    #[test]
+    fn lightning_passes_keep_each_bolts_endpoint_styles() {
+        use tags::effects::h1_lightning::{Endpoint, HEADER, STRIDE};
+        let mut root = [0; 0x108];
+        root[2] = 2;
+        let mut a = [0; 0xe4];
+        a[..4].copy_from_slice(b"mast");
+        a[0x24] = 3;
+        a[0x84..0x88].copy_from_slice(&0.75f32.to_le_bytes());
+        let mut b = a;
+        b[0x20] = 1;
+        b[0x74..0x78].copy_from_slice(&0.25f32.to_le_bytes());
+        let mut shader = [0; 0xb4];
+        shader[0x24] = 1;
+        shader[0x28] = 2;
+        shader[0x2a] = 3;
+        let root = lightning(&root, &[&a, &b], &shader, TagId(42)).unwrap();
+        let r = defs::from_built(def(*b"tdtl"), &root).unwrap();
+        assert_eq!(r.at("marker"), Some(&Val::text("mast")));
+        for n in 0..2 {
+            let field = format!("layers[{n}].displacement");
+            let Some(Val::Data(blob)) = r.at(&field) else {
+                panic!("{field}")
+            };
+            assert_eq!(&blob[0x10..0x14], &[n, 0, 2, 0]);
+            let end = |i: usize| {
+                Endpoint::decode(
+                    blob[HEADER + i * STRIDE..HEADER + (i + 1) * STRIDE]
+                        .try_into()
+                        .unwrap(),
+                )
+            };
+            assert_eq!(end(0).depth, 3);
+            assert_eq!(end(0).width, 0.75);
+            assert!(end(1).end);
+            assert_eq!(end(1).jitter, [0.25, 0., 0.]);
+        }
+    }
+
+    #[test]
+    fn full_flag_grid_keeps_every_source_vertex_and_the_mast_pins() {
+        let grid = FlagGrid {
+            width: 16,
+            height: 13,
+            spacing: [0.025, 0.025],
+            contact: [0.5, 0.75],
+            physics: tags::effects::h1_attachment::PointPhysics {
+                flags: 0,
+                particle_type_flags: 0,
+                mass: 1.,
+                acceleration: [-3., 0.],
+                drag: [1., 3.],
+                radius: 0.02,
+            },
+        };
+        let panel = |upper, marker, shader| {
+            defs::from_built(
+                def(*b"clwd"),
+                &grid.panel(upper, marker, TagId(shader)).unwrap(),
+            )
+            .unwrap()
+        };
+        let lo = panel(false, "bottom", 1);
+        let hi = panel(true, "top", 2);
+        assert_eq!(lo.at("marker"), Some(&Val::text("bottom")));
+        assert_eq!(hi.at("marker"), Some(&Val::text("top")));
+        assert_eq!(lo.at("vertices[0].uv"), Some(&Val::floats(&[0., 0.])));
+        assert_eq!(hi.at("vertices[0].uv"), Some(&Val::floats(&[0., 1.])));
+        for p in [&lo, &hi] {
+            let Some(Val::Block(vertices)) = p.at("vertices") else {
+                panic!("vertices")
+            };
+            let Some(Val::Block(triangles)) = p.at("triangles") else {
+                panic!("triangles")
+            };
+            assert_eq!(vertices.len(), 112);
+            assert_eq!(triangles.len(), 6 * 15 * 6);
+        }
+        for i in 96..112 {
+            assert_eq!(
+                lo.at(&format!("vertices[{i}].position")),
+                hi.at(&format!("vertices[{i}].position"))
+            );
+            assert_eq!(
+                lo.at(&format!("vertices[{i}].uv")),
+                hi.at(&format!("vertices[{i}].uv"))
+            );
+        }
     }
 }

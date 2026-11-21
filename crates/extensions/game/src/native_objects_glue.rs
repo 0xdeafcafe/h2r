@@ -821,10 +821,9 @@ fn lit_parts(o: &mut Opened, geo: &RenderModelGeometry, materials: &HashMap<u16,
         for vs in vertex_shaders {
             for s in &sections {
                 let key = (vs, s.geometry, s.influences);
-                if !programs.contains_key(&key) {
-                    let p = object_vertex_program(o, vs, s.geometry, s.influences);
-                    programs.insert(key, p);
-                }
+                programs
+                    .entry(key)
+                    .or_insert_with(|| object_vertex_program(o, vs, s.geometry, s.influences));
             }
         }
     }

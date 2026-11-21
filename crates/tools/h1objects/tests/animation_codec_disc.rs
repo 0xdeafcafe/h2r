@@ -143,10 +143,10 @@ fn check_graph(
             .unwrap_or("?")
             .to_owned();
         let r = a.resource_index as usize;
-        if !resources.contains_key(&r) {
+        if let std::collections::btree_map::Entry::Vacant(slot) = resources.entry(r) {
             match g.read_resource(r, &mut *raw) {
                 Ok(bytes) => {
-                    resources.insert(r, bytes);
+                    slot.insert(bytes);
                 }
                 Err(e) => {
                     out.problems

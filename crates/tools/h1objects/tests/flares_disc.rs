@@ -249,7 +249,7 @@ fn halo1_reference_survey() {
             let Ok(b) = m.tag_data(t) else { continue };
             for at in (0..b.len().saturating_sub(16)).step_by(4) {
                 if let Some(r) = TagRef::read(b, at)
-                    && wanted.iter().any(|w| r.group == Group::new(*w))
+                    && wanted.iter().any(|w| r.group == Group::new(w))
                     && !r.id.is_none()
                     && let Ok(x) = m.tag(r.id)
                     && x.group == r.group

@@ -133,7 +133,7 @@ pub fn check(p: &Picture) -> Vec<Finding> {
             widgets: ids,
         });
     }
-    out.sort_by(|a, b| b.severity.cmp(&a.severity));
+    out.sort_by_key(|check| std::cmp::Reverse(check.severity));
     out
 }
 

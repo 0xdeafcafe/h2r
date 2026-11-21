@@ -95,7 +95,7 @@ impl Unit {
     }
 
     fn looks_at(self, target: Self) -> bool {
-        self.aim_toward(target) >= 0.5235988
+        self.aim_toward(target) >= std::f32::consts::FRAC_PI_6
     }
 }
 
@@ -547,6 +547,33 @@ pub(super) fn operate(
     Ok(())
 }
 
+pub(super) async fn cancel_command(cx: &Cx, unit: u32, script: u32) -> Result<(), EntryError> {
+    let command = cx.read(|m| {
+        let Some(actor) = actor_handle(m, object_global(m, unit)?)? else {
+            return Ok::<_, MemFault>(None);
+        };
+        let Some(row) = datum(m, ACTORS, actor)? else {
+            return Ok(None);
+        };
+        let mut handle = m.u32(row + ACTOR_COMMAND_STACK)?;
+        for _ in 0..ACTOR_CAPACITY {
+            let Some(command) = datum(m, COMMANDS, handle)? else {
+                break;
+            };
+            if m.u32(command + COMMAND_SCRIPT)? == script {
+                return Ok(Some((actor, handle)));
+            }
+            handle = m.u32(command + COMMAND_NEXT)?;
+        }
+        Ok(None)
+    })?;
+    if let Some((actor, command)) = command {
+        cx.call(GuestCall::new(DELETE_COMMAND).ecx(actor).args([command]))
+            .await?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,31 +650,4 @@ mod tests {
         assert_eq!(choose_voice::<()>(0, voices, |_| Ok(1)), Ok(Some((7, 0.0))));
         assert_eq!(choose_voice::<()>(116, voices, |_| panic!()), Ok(None));
     }
-}
-
-pub(super) async fn cancel_command(cx: &Cx, unit: u32, script: u32) -> Result<(), EntryError> {
-    let command = cx.read(|m| {
-        let Some(actor) = actor_handle(m, object_global(m, unit)?)? else {
-            return Ok::<_, MemFault>(None);
-        };
-        let Some(row) = datum(m, ACTORS, actor)? else {
-            return Ok(None);
-        };
-        let mut handle = m.u32(row + ACTOR_COMMAND_STACK)?;
-        for _ in 0..ACTOR_CAPACITY {
-            let Some(command) = datum(m, COMMANDS, handle)? else {
-                break;
-            };
-            if m.u32(command + COMMAND_SCRIPT)? == script {
-                return Ok(Some((actor, handle)));
-            }
-            handle = m.u32(command + COMMAND_NEXT)?;
-        }
-        Ok(None)
-    })?;
-    if let Some((actor, command)) = command {
-        cx.call(GuestCall::new(DELETE_COMMAND).ecx(actor).args([command]))
-            .await?;
-    }
-    Ok(())
 }

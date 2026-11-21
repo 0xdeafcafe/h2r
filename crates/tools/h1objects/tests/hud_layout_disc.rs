@@ -255,7 +255,7 @@ fn digit_font() -> DigitFont {
     let mut glyphs = Vec::new();
     for c in '0'..='9' {
         let g = font.glyph(c as u16).unwrap();
-        let r = g.record.clone();
+        let r = g.record;
         assert_eq!(r.y_offset, font.header.ascent);
         let (w, h) = (usize::from(r.width), usize::from(r.height));
         let shows = |x: usize, y: usize| g.pixels[y * w + x] >> 12 != 0;

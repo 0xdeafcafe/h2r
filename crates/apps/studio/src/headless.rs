@@ -451,6 +451,55 @@ pub fn write_png(path: &Path, rgba: &[u8], w: u32, h: u32) -> Result<()> {
     Ok(())
 }
 
+/// A 2D RGBA8 texture's texels as tightly packed rows (the texture needs
+/// `COPY_SRC`).
+pub fn read_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+) -> Result<Vec<u8>> {
+    let (w, h) = (texture.width(), texture.height());
+    let row = (w * 4).div_ceil(256) * 256;
+    let buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: u64::from(row * h),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut enc = device.create_command_encoder(&Default::default());
+    enc.copy_texture_to_buffer(
+        texture.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buf,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(row),
+                rows_per_image: Some(h),
+            },
+        },
+        wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([enc.finish()]);
+    buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+    device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .map_err(|e| anyhow!("wgpu poll: {e}"))?;
+    let data = buf
+        .slice(..)
+        .get_mapped_range()
+        .map_err(|e| anyhow!("map the readback: {e}"))?;
+    let mut out = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h as usize {
+        let start = y * row as usize;
+        out.extend_from_slice(&data[start..start + (w * 4) as usize]);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -894,53 +943,4 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
-}
-
-/// A 2D RGBA8 texture's texels as tightly packed rows (the texture needs
-/// `COPY_SRC`).
-pub fn read_texture(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    texture: &wgpu::Texture,
-) -> Result<Vec<u8>> {
-    let (w, h) = (texture.width(), texture.height());
-    let row = (w * 4).div_ceil(256) * 256;
-    let buf = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size: u64::from(row * h),
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    let mut enc = device.create_command_encoder(&Default::default());
-    enc.copy_texture_to_buffer(
-        texture.as_image_copy(),
-        wgpu::TexelCopyBufferInfo {
-            buffer: &buf,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(row),
-                rows_per_image: Some(h),
-            },
-        },
-        wgpu::Extent3d {
-            width: w,
-            height: h,
-            depth_or_array_layers: 1,
-        },
-    );
-    queue.submit([enc.finish()]);
-    buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-    device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .map_err(|e| anyhow!("wgpu poll: {e}"))?;
-    let data = buf
-        .slice(..)
-        .get_mapped_range()
-        .map_err(|e| anyhow!("map the readback: {e}"))?;
-    let mut out = Vec::with_capacity((w * h * 4) as usize);
-    for y in 0..h as usize {
-        let start = y * row as usize;
-        out.extend_from_slice(&data[start..start + (w * 4) as usize]);
-    }
-    Ok(out)
 }

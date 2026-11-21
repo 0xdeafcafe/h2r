@@ -722,13 +722,6 @@ fn add_point_markers(model: &mut h1_assets::models::h1::Model, points: &[Powered
     }
 }
 
-fn put_f32(b: &mut [u8], at: usize, v: f32) {
-    b[at..at + 4].copy_from_slice(&v.to_le_bytes());
-}
-fn get_f32(b: &[u8], at: usize) -> f32 {
-    f32::from_le_bytes(b[at..at + 4].try_into().unwrap())
-}
-
 /// The `hlmt` field a rebuilt biped's converted dialogue goes in: the
 /// model's dialogue (`+0x8c`, `udlg`; V: where retail models name theirs,
 /// `docs/formats/objects.md`).
@@ -1085,7 +1078,7 @@ impl<'a> Converter<'a> {
     fn decal_uncached(&mut self, tag: &Tag) -> Result<TagId> {
         let x = h1::Decal::read(self.h1, tag)?;
         let next = x.next.map(|id| self.decal(self.h1_tag(id)?)).transpose()?;
-        let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
+        let rep = Self::report(tag, "none: rebuilt from tags::defs");
         let bitmap = self.source_bitmap(x.bitmap)?;
         let root = crate::rebuild::decal(&x, next, bitmap)?;
         self.tree.reports.push(rep);
@@ -1109,7 +1102,7 @@ impl<'a> Converter<'a> {
         }
         let l = h1::Light::read(self.h1, tag)?;
         let mut root = crate::rebuild::light(&l)?;
-        let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
+        let rep = Self::report(tag, "none: rebuilt from tags::defs");
         if let Some(id) = l.lens_flare {
             let lens = self.lens_flare(self.h1_tag(id)?)?;
             root = flares_conv::light_with_flare(&root, lens)?;
@@ -2244,7 +2237,7 @@ impl<'a> Converter<'a> {
         if first >= sprites.len() {
             return Ok(None);
         }
-        let selected = sprites[first].clone();
+        let selected = sprites[first];
         *sprites = vec![selected];
         let mut pixels = (0..bm.images.len())
             .map(|i| bm.pixels(source, i).map(|p| p.to_vec()))
@@ -2276,14 +2269,6 @@ impl<'a> Converter<'a> {
         let id = self.tree.push(&t.name, conv);
         self.done.insert(t.id.0, id);
         Ok(id)
-    }
-
-    fn stopgaps(&self, rep: &mut ObjectReport, root: &[u8], replaced: &[usize]) {
-        for (at, g, n) in self.base.references(root) {
-            if !replaced.contains(&at) {
-                rep.stopgaps.push((at, g.to_string(), n));
-            }
-        }
     }
 
     fn report(tag: &Tag, template: &str) -> ObjectReport {

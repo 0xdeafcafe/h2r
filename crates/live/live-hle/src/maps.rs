@@ -975,7 +975,7 @@ mod tests {
         let manifest = format!("/maps/{id}");
         assert_eq!(
             *s.counted.lock().unwrap(),
-            [manifest.clone()],
+            std::slice::from_ref(&manifest),
             "the download is counted once installed"
         );
         assert!(!maps.join("active.toml").exists());

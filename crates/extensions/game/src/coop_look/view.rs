@@ -22,7 +22,7 @@ pub fn mode(m: &dyn GuestMemory) -> Option<u32> {
         .ok()
 }
 
-pub fn angles(m: &dyn GuestMemory, at: u32) -> Option<Aim> {
+pub(super) fn angles(m: &dyn GuestMemory, at: u32) -> Option<Aim> {
     let yaw = m.f32(at).ok()?;
     let pitch = m.f32(at.checked_add(4)?).ok()?;
     (yaw.is_finite() && yaw.abs() <= TAU + 0.001 && pitch.abs() <= FRAC_PI_2 + 0.001)
@@ -127,7 +127,7 @@ fn vector(record: &[u8], at: usize) -> [f32; 3] {
     })
 }
 
-pub fn facing(v: [f32; 3]) -> Option<Aim> {
+pub(super) fn facing(v: [f32; 3]) -> Option<Aim> {
     let [x, y, z] = v;
     let length = x * x + y * y + z * z;
     (0.96..=1.04).contains(&length).then(|| Aim {
@@ -161,7 +161,7 @@ fn rotate(record: &mut [u8], camera: usize, offset: Aim) -> Option<()> {
     Some(())
 }
 
-pub fn draw_copy(
+pub(super) fn draw_copy(
     m: &mut dyn GuestMemory,
     arg: u32,
     original: u32,

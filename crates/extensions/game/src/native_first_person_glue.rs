@@ -89,7 +89,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let current = |state: &Option<MapState>| {
             state.as_ref().is_some_and(|s| s.name == name.as_ref() && s.map_generation == map_generation)
         };
-        if !current(&*self.state.lock().unwrap_or_else(|e| e.into_inner())) {
+        if !current(&self.state.lock().unwrap_or_else(|e| e.into_inner())) {
             let _dispatch = timeline::setup::dispatch();
             let (palettes, formats) = {
                 let device = self.device.lock().ok()?;
@@ -99,7 +99,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             *generation += 1;
             let next = *generation;
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            if !current(&*state) {
+            if !current(&state) {
                 let models = Arc::new(Models::default());
                 let set = Arc::new(NativeSet {
                     map: name.to_string(),

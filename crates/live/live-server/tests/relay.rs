@@ -117,6 +117,9 @@ fn url(addr: SocketAddr, id: &str) -> String {
     format!("ws://{addr}/v1/sessions/{id}/relay")
 }
 
+// tungstenite's `Error` is large and this helper only feeds `unwrap` and
+// `matches!` in tests.
+#[allow(clippy::result_large_err)]
 async fn upgrade(addr: SocketAddr, id: &str, token: Option<&str>) -> Result<Socket, Error> {
     let mut req = url(addr, id).into_client_request()?;
     if let Some(token) = token {

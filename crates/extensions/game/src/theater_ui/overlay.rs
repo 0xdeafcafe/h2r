@@ -87,7 +87,6 @@ struct AgentState {
 #[derive(Clone, Debug)]
 pub(super) struct Track {
     pub film: String,
-    pub title: String,
     pub tick: u64,
     pub length: u64,
     pub paused: bool,
@@ -110,7 +109,6 @@ impl Track {
     pub(super) fn from_entry(entry: &Entry) -> Self {
         Self {
             film: entry.film.id.clone(),
-            title: entry.film.map.clone(),
             tick: 0,
             length: entry.film.length_ticks,
             paused: false,

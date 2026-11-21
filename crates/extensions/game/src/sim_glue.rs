@@ -464,7 +464,6 @@ impl Sim {
             let id = bots::phantom::Identity {
                 xuid: live_proto::bots::local_xuid(u32::from(b.seat) + 1).0,
                 gamertag: b.name.clone(),
-                ..Default::default()
             };
             let handle =
                 bots::phantom::add(id, b.team, Box::new(source)).map_err(anyhow::Error::msg)?;

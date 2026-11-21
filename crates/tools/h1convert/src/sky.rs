@@ -10,10 +10,8 @@
 //!
 //! Every authored sky material requires a rebuilt shader before installation.
 
-use std::io::{Read, Seek};
-
 use map::build::{Block, FixupKind, TagPayload, TagSet};
-use map::{FourCC, Map, TagId};
+use map::{FourCC, TagId};
 use tags::shader::SHAD;
 
 use crate::sky_shaders::{H1SkyShader, Recipe, SkyTemplates, read_h1, recipe};

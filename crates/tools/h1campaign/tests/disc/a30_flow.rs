@@ -31,7 +31,7 @@ fn calls<'a>(s: &'a Scenario, script: &str) -> Vec<Call<'a>> {
     out
 }
 
-fn atom<'a>(s: &'a Scenario, d: Datum) -> (&'a str, u32) {
+fn atom(s: &Scenario, d: Datum) -> (&str, u32) {
     let n = s.node(d).unwrap();
     assert!(n.atom());
     (s.string(n.string_offset()).unwrap(), n.data())

@@ -298,7 +298,7 @@ async fn game_join_uses_the_recorded_lobby_and_the_current_reader() {
     let start = &log["items"][0];
     assert_eq!(start["type"], "GameStarted");
     let signed = live_proto::sign::SignedEvent::open(start["jws"].as_str().unwrap()).unwrap();
-    signed.verify(&h.operator.public()).unwrap();
+    signed.verify(h.operator.public()).unwrap();
     assert_eq!(start["data"], signed.body.data);
     assert!(signed.body.data.get("session_id").is_none());
     let links = "/v1/events?stream=lobby-links";

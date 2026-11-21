@@ -458,7 +458,7 @@ fn field_row(
                 .speed(0.01)
                 .range(0.01, 100.0)
                 .build(ui, &mut s)
-                .then(|| FieldEdit::Set(Value::Float(s)));
+                .then_some(FieldEdit::Set(Value::Float(s)));
             ui.set_item_tooltip("0 in the map reads as 1");
             r
         }

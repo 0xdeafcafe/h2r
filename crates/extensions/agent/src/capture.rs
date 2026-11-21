@@ -97,7 +97,7 @@ fn top(s: &FrameSample) -> Vec<String> {
         .map(|p| (p, s.phase_ns[p as usize]))
         .filter(|&(_, ns)| ns > 0)
         .collect();
-    p.sort_by(|a, b| b.1.cmp(&a.1));
+    p.sort_by_key(|phase| std::cmp::Reverse(phase.1));
     p.into_iter()
         .take(3)
         .map(|(p, _)| p.label().to_owned())

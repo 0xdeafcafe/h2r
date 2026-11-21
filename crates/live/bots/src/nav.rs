@@ -400,7 +400,7 @@ pub(crate) fn ordered_build_chunks<T: Send>(
         results
     };
     let mut results: Vec<_> = std::thread::scope(|scope| {
-        let jobs: Vec<_> = (0..workers).map(|_| scope.spawn(&work)).collect();
+        let jobs: Vec<_> = (0..workers).map(|_| scope.spawn(work)).collect();
         jobs.into_iter()
             .flat_map(|job| job.join().expect("nav build worker panicked"))
             .collect()

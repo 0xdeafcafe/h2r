@@ -586,7 +586,7 @@ pub const fn damage_reporting_type(code: u8) -> (&'static str, Option<&'static s
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct KillSource {
+pub struct KillSource {
     pub name: &'static str,
     pub headshot: Option<bool>,
 }

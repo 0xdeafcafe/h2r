@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use dear_imgui_rs::{TableColumnFlags, TableColumnWidth, TableFlags, TreeNodeFlags, Ui};
-use variants::ext::{self, Ext};
+use variants::ext;
 use variants::panel::{Origin, strip_icon};
 use variants::record::{self, Kind};
 use variants::{GameType, GameVariant, SettingId, VariantEditor};

@@ -61,7 +61,7 @@ impl View {
         }
     }
 
-    fn to_view(&self, p: [f32; 3]) -> [f32; 3] {
+    fn to_view(self, p: [f32; 3]) -> [f32; 3] {
         let d = sub(p, self.position);
         [dot(d, self.right), dot(d, self.up), dot(d, self.forward)]
     }

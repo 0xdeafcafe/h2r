@@ -329,7 +329,7 @@ impl d3d::ExternalPass for DecalPass {
         }
     }
 
-    fn record_ranges(&mut self, mut t: d3d::ExternalTarget<'_>) -> usize {
+    fn record_ranges(&mut self, t: d3d::ExternalTarget<'_>) -> usize {
         if let Err(why) = self.prepare(&t) {
             render_bridge::native_decals::note_refusal(why);
             return 0;

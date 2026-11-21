@@ -4,7 +4,6 @@
 
 mod common;
 
-use common::*;
 use mesh_edit::fixtures::{self, Caps};
 use mesh_edit::{Affine, DeleteWhat, EdgeId, MergeAt, Mesh, MeshOp, SelectHow, SelectMode, VertId};
 

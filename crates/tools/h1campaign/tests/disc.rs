@@ -3027,9 +3027,9 @@ fn rebuilt_crew_and_sentinel_characters_reach_their_own_animation_resources() {
                 for k in (0..0x2c).step_by(4) {
                     let (h2_at, h1_at) = (0x2cc + k, 0x324 + k);
                     let want = if h1objects::rebuild::BIPED_RATES.iter().any(|r| r.1 == h1_at) {
-                        (30.0 * f32::from_bits(word(&source, h1_at))).to_bits()
+                        (30.0 * f32::from_bits(word(source, h1_at))).to_bits()
                     } else {
-                        word(&source, h1_at)
+                        word(source, h1_at)
                     };
                     assert_eq!(word(&b, h2_at), want, "{level} {}: bipd +{h2_at:#x} from +{h1_at:#x}", v.name);
                 }

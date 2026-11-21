@@ -87,7 +87,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
                 | "service-abi"),
             ) => service::command(op, &rest[1..]),
             Some("-h" | "--help" | "help") => {
-                print!("{USAGE}\n");
+                println!("{USAGE}");
                 Ok(())
             }
             _ => host::serve(host_config(&rest)?),
@@ -102,7 +102,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         }
         "record" => client::record(rest),
         "-h" | "--help" | "help" => {
-            print!("{USAGE}\n");
+            println!("{USAGE}");
             Ok(())
         }
         _ => client::run(&cmd, rest),

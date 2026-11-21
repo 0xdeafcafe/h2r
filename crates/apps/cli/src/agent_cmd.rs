@@ -356,7 +356,8 @@ fn script(c: &mut Client) -> Result<()> {
     Ok(())
 }
 
-/// The words of a script line (for `agent_run`).
+/// The words of a script line (for the `agent_run` and `agent_sim` tests).
+#[cfg(test)]
 pub(crate) fn split_words(line: &str) -> Result<Vec<String>> {
     split(line)
 }

@@ -459,7 +459,7 @@ struct DecoratorPass {
 impl DecoratorPass {
     /// Binds the plan's batches on `t`'s device and records them: the
     /// number of guest draws recorded.
-    fn record(&self, mut t: d3d::ExternalTarget<'_>, view: &ViewInputs) -> Result<usize, &'static str> {
+    fn record(&self, t: d3d::ExternalTarget<'_>, view: &ViewInputs) -> Result<usize, &'static str> {
         let looks = self.ready.decorators.get().ok_or("decorator load unavailable")?;
         let mut gpu = looks.gpu.lock().unwrap_or_else(|e| e.into_inner());
         let bound = bind(t.device, &mut gpu, &self.plan, view, t.color_format, t.depth_format)?;

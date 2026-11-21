@@ -1,7 +1,6 @@
 //! Client for private sim batches on Live-managed dedicated hosts.
 
 use std::num::NonZeroUsize;
-use std::path::Path;
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 

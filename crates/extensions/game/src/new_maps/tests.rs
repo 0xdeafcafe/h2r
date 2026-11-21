@@ -259,7 +259,7 @@ fn refreshes_on_a_new_map_id_and_removes_what_is_gone() {
     let manifest = data.join("maps/coldsnap/manifest.toml");
     let text = std::fs::read_to_string(&manifest).unwrap();
     std::fs::write(&manifest, text.replace("Name of coldsnap", "Coldsnap 2")).unwrap();
-    let renamed = install(data, &mut d).unwrap();
+    install(data, &mut d).unwrap();
     let dir = vfs::Config::new(data, HALO2_TITLE).content_dir(offer);
     assert_eq!(
         Entry::from_v2(&std::fs::read(dir.join("patch.lvl")).unwrap())
@@ -658,7 +658,7 @@ fn a_converted_map_is_served_in_the_sandbox_chosen_per_game() {
     let host = data.join("disk").join("Partition1").join(path.replace('\\', "/"));
     assert!(host.is_file(), "{}", host.display());
 
-    let mut cfg = vfs::Config::new(data, HALO2_TITLE);
+    let cfg = vfs::Config::new(data, HALO2_TITLE);
     for (p, pair) in &r.variants {
         cfg.variants.register(p, pair.clone());
     }

@@ -186,7 +186,7 @@ fn barrier_sees_every_store_between_draws() {
     let draws: Arc<Mutex<Vec<Vec<DirtyRange>>>> = Arc::default();
     rt.edit_dispatch(|d| {
         d.register_override(DRAW, "test: draw", |cpu, ctx, _| {
-            let mut m = ctx.runtime().memory();
+            let m = ctx.runtime().memory();
             m.ret(cpu, 0)
         });
         let prev = d.override_handler(DRAW).unwrap();

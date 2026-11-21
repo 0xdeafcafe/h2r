@@ -722,7 +722,7 @@ mod tests {
             });
             live
         };
-        let call = |live, req| async move {
+        let call = |live: Arc<Live>, req: Request<Body>| async move {
             let r = live_server::http::router(live).oneshot(req).await.unwrap();
             let status = r.status();
             let body = r.into_body().collect().await.unwrap().to_bytes();

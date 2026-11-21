@@ -452,12 +452,9 @@ fn lit_parts(
         for shader in vertex_shaders {
             for section in &sections {
                 let key = (shader, section.geometry, section.influences);
-                if !programs.contains_key(&key) {
-                    programs.insert(
-                        key,
-                        object_vertex_program(opened, shader, section.geometry, section.influences),
-                    );
-                }
+                programs.entry(key).or_insert_with(|| {
+                    object_vertex_program(opened, shader, section.geometry, section.influences)
+                });
             }
         }
     }

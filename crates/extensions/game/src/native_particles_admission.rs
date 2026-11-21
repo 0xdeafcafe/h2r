@@ -497,6 +497,9 @@ impl<'a> CopyView<'a> {
         }
     }
 }
+// `wgpu::Device` is a handle hashed and compared by identity, so its interior
+// state never changes the key.
+#[allow(clippy::mutable_key_type)]
 fn renderer_for<'a>(
     renderers: &'a mut HashMap<wgpu::Device, (u64, ParticleRenderer)>,
     device: &wgpu::Device,

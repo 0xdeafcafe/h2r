@@ -834,7 +834,7 @@ fn every_seat_passes_the_engines_boarding_rule() {
                     }
                     for field in ["unknown_98", "unknown_9c", "unknown_a0", "unknown_a4"] {
                         let v = f32::from_bits(word(x, field));
-                        if !(v > 0.0) {
+                        if v.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
                             fail(format!("{field} {v}"));
                         }
                     }
@@ -1479,7 +1479,7 @@ fn blood_gulch_drive_commands_follow_the_source_on_both_bases() {
             for (field, expected) in [
                 ("unknown_2b4", spring / GRAVITY_RATIO),
                 ("unknown_2b8", 1.5),
-                ("unknown_2c0", 0.707107),
+                ("unknown_2c0", std::f32::consts::FRAC_1_SQRT_2),
                 ("unknown_2c4", 0.5),
                 ("unknown_2e0", 1.0),
             ] {
@@ -1788,7 +1788,7 @@ fn retail_vehicle_drive_laws_round_trip() {
                         [0.0, 0.0, 1.0],
                         [0.0, 0.0, 1.0],
                         cap,
-                        0.707107,
+                        std::f32::consts::FRAC_1_SQRT_2,
                         0.5,
                         5000.0,
                     );

@@ -138,9 +138,7 @@ fn constraints(p: &Record) -> Vec<Read> {
         .iter()
         .map(|b| int(b, "node"))
         .collect();
-    for other in ["block_f0"] {
-        assert!(block(p, other).is_empty(), "{other}");
-    }
+    assert!(block(p, "block_f0").is_empty(), "block_f0");
     let mut out = Vec::new();
     for (kind, path) in [(1, "limited_hinge_constraints"), (2, "ragdoll_constraints")] {
         for (i, c) in block(p, path).iter().enumerate() {

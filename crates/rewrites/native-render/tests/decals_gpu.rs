@@ -17,10 +17,12 @@ const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// An opaque decal over `[x, x + 40] x [8, 56]` in `bgra`, clipped to the
 /// left and right strips of the target; with a texture it takes stage 0's.
 fn decal(x: f32, bgra: [u8; 4], textured: bool) -> Prepared {
-    let mut render = RenderState::default();
-    render.color_write = ColorWriteMask::from_xbox(0x0001_0101);
-    render.depth_mode = DepthBufferMode::Disabled;
-    render.cull_mode = gfx::state::CullMode::None;
+    let render = RenderState {
+        color_write: ColorWriteMask::from_xbox(0x0001_0101),
+        depth_mode: DepthBufferMode::Disabled,
+        cull_mode: gfx::state::CullMode::None,
+        ..Default::default()
+    };
     let mut combiner = psh::PixelShaderDef {
         final_inputs_abcd: psh::bits::REG_V0 as u32,
         final_inputs_efg: ((psh::bits::REG_V0 | psh::bits::CHAN_ALPHA) as u32) << 8,

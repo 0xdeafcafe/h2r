@@ -312,7 +312,7 @@ impl Live for Preview {
             load: match name {
                 "empty" | "empty-saved" | "empty-clips" => Load::Ready(Vec::new()),
                 "loading" => Load::Loading,
-                _ => Load::Ready(films),
+                _ => Load::Ready(films.clone()),
             },
             tab: match name {
                 "saved" | "empty-saved" => Tab::Saved,

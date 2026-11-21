@@ -930,7 +930,7 @@ mod tests {
             ]
         );
         // The last slot's end is inside the session.
-        assert!(players::AT + players::SLOTS * players::STRIDE <= 0x4980);
+        const { assert!(players::AT + players::SLOTS * players::STRIDE <= 0x4980) };
 
         let lines = older_lines(&live_hle::Lacking::Known(vec!["Oldie".into()]));
         assert_eq!(

@@ -329,9 +329,7 @@ mod tests {
         // does, and the phased marker global holding base 0 at the end.
         let mut words = timers::build([(0, 0x8, 2.0)]).unwrap();
         words[timers::HEADER as usize] = value;
-        for block in 0..timers::BLOCKS {
-            words.push(0);
-        }
+        words.extend(std::iter::repeat_n(0, timers::BLOCKS as usize));
         let mut guest = FakeGuest::new();
         guest
             .put_u32(GLOBALS, ARRAY)

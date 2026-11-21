@@ -275,6 +275,9 @@ impl Nv2aShaders {
             }
         }
         let keys: Vec<ProgramKey> = loaded.programs.into_iter().map(|(_, k)| k).collect();
+        // Microcode holds a OnceLock cache, but its Eq and Hash read only the
+        // words, so the key's identity never changes while it is in the set.
+        #[allow(clippy::mutable_key_type)]
         let waiting: FxHashSet<ProgramKey> = keys.iter().cloned().collect();
         let (tx, rx) = mpsc::channel();
         let device = ctx.device.clone();

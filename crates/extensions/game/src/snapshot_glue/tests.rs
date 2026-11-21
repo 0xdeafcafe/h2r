@@ -90,7 +90,7 @@ impl World {
         let mut parts: Vec<Box<dyn Part + '_>> = Vec::new();
         for (name, value) in self.values.iter().rev() {
             parts.push(Box::new(Fake {
-                name: *name,
+                name,
                 value: Rc::clone(value),
                 log: Rc::clone(&self.log),
                 busy: if *name == "d3d" {

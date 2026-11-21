@@ -1413,7 +1413,9 @@ fn run_configured(
     } else {
         0
     };
-    for slice in film_slices..opts.max_slices {
+    // `film_slices` ends as the last slice run, so the loop starts from a copy.
+    let first_slice = film_slices;
+    for slice in first_slice..opts.max_slices {
         if let Some(f) = &film {
             f.observe_pause(&loaded.runtime.memory());
             if replaying {

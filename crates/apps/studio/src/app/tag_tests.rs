@@ -173,7 +173,7 @@ fn a_field_edit_saves_byte_exactly_and_undoes() {
     app.dispatch(Action::SaveMapAs(out.clone()));
     assert!(!app.session.is_dirty(), "{:?}", app.log().last());
     let saved = std::fs::read(&out).unwrap();
-    let w = (META_FILE + 0x1100) as usize;
+    let w = META_FILE + 0x1100;
     let item = w + 0x10 + 0xc;
     for (lo, hi) in diff(&src, &saved) {
         let ok = (lo >= w && hi <= w + 4)

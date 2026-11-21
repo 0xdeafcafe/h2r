@@ -117,6 +117,7 @@ fn extract(m: &FlatMemory) -> Arc<FrameScene> {
             forward: [1.0, 0.0, 0.0],
             up: [0.0, 0.0, 1.0],
             fov: 1.0,
+            projection_xy: None,
             viewport: [0, 0, 480, 640],
             near: 0.1,
             far: 100.0,

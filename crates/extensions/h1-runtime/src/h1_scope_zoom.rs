@@ -224,6 +224,7 @@ fn prepare_blur(mem: &mut dyn GuestMemory, esp: u32) -> Option<()> {
 mod tests {
     use super::*;
     use engine::memory::FlatMemory;
+    use render_bridge::scope_zoom_hud::HUD_SCREEN_RETURN;
     use engine::tags::{TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL, entry_layout, index_layout};
     use tags::scope_zoom::{Blur, Filter, Profile};
 

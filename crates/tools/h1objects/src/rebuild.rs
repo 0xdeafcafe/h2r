@@ -876,6 +876,7 @@ fn field_offset(d: &StructDef, name: &str) -> Result<u32> {
 ///   with neither, the object is outside the map (`obj +4` bit 18) and the
 ///   player's action search (`0x00151110`, objects in the clusters around
 ///   the player, `0x000bb050`) never offers it.
+///
 /// Retail vehicles hold their centre inside the body: the warthog's 0.29
 /// above an origin its wheels touch 0.02 below, the ghost's on an origin
 /// 0.15 above its belly (`tests/vehicle_ground_disc.rs`).

@@ -106,7 +106,7 @@ pub fn snapshot(gpu: &Gpu, app: &mut App, p: &P) -> Reply {
             }
         }
     };
-    let mut cam = app.session.camera().clone();
+    let mut cam = *app.session.camera();
     if let Some(c) = p.get("camera") {
         apply_camera(&mut cam, &P(c))?;
     }

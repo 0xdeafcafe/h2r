@@ -443,7 +443,7 @@ fn map_pack_only_requires_a_nonempty_rotation_without_a_disc_entry() {
         map_name: String::new(),
         ..disc.clone()
     };
-    file.set_entries(0, &[pack.clone()]).unwrap();
+    file.set_entries(0, std::slice::from_ref(&pack)).unwrap();
     assert!(pack_only(&file, 0), "a raw import does not need to name its maps");
     file.set_entries(0, &[pack, disc]).unwrap();
     assert!(!pack_only(&file, 0), "the disc entry is a fallback");

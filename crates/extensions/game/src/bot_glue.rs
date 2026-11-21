@@ -17,6 +17,7 @@
 //!   console the session's host when no other console is in it
 //!   ([`bots::phantom::session::game_start`]), so the game starts as the
 //!   distributed server and the phantoms can join.
+//!
 //! With no bots every hook returns at once.
 
 use std::sync::atomic::{AtomicU64, Ordering};

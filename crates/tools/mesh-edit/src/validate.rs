@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::ids::{EdgeId, FaceId, LoopId, VertId};
-use crate::mesh::{Edge, Face, Loop, Mesh, Vert};
+use crate::mesh::{Edge, Loop, Mesh, Vert};
 
 impl Mesh {
     fn vert_opt(&self, v: VertId) -> Option<&Vert> {
@@ -17,10 +17,6 @@ impl Mesh {
 
     fn loop_opt(&self, l: LoopId) -> Option<&Loop> {
         self.loops.get(l.index())?.as_ref()
-    }
-
-    fn face_opt(&self, f: FaceId) -> Option<&Face> {
-        self.faces.get(f.index())?.as_ref()
     }
 
     /// Checks every invariant; returns each broken one.

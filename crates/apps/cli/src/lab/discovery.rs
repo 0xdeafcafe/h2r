@@ -3,7 +3,7 @@
 
 use std::net::{IpAddr, SocketAddr};
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 
 pub const PORT: u16 = 29422;
 
@@ -70,7 +70,7 @@ fn host_address(name: &str, port: u16) -> Result<SocketAddr> {
 }
 
 #[cfg(target_os = "macos")]
-pub use macos::{Advertisement, advertise};
+pub use macos::advertise;
 
 #[cfg(not(target_os = "macos"))]
 pub struct Advertisement;

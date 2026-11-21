@@ -5,7 +5,6 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use engine::GuestMemory;
 use engine::entry::{Cx, EntryError, GuestCall, Ret};
 use engine::points;
 
