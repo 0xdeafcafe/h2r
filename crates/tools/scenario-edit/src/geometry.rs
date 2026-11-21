@@ -1078,7 +1078,9 @@ impl Camera {
             add(scale(r, -dx * units), scale(u, dy * units)),
         );
     }
-    fn near_far(&self) -> (f32, f32) {
+    /// The near and far clip planes: the exact pose's, or ones that
+    /// scale with the orbit distance.
+    pub fn near_far(&self) -> (f32, f32) {
         if let Some(exact) = &self.exact {
             return (exact.near, exact.far);
         }

@@ -26,6 +26,9 @@
 //!   geometry's included.
 //! - [`object_collision`]: each placed object's `coll` BSPs and `phmo`
 //!   shapes, posed by their nodes, as wire shapes.
+//! - [`native_view`]: the viewport's world on the native renderer: one
+//!   BSP through `native_render::load` and `GpuWorld`, and the Lighting
+//!   modes.
 //!
 //! Entries are removed in place (swap with the last, lower the count) and
 //! added in place up to the source size; a block that grows past it is
@@ -41,6 +44,7 @@ pub mod fixture;
 pub mod geometry;
 pub mod layers;
 pub mod layout;
+pub mod native_view;
 pub mod object_collision;
 pub mod package;
 pub mod recipe;
