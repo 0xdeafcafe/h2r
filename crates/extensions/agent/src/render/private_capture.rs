@@ -46,8 +46,8 @@ impl PrivateCaptureWrite {
             return;
         }
         let result = result.and_then(|image| {
-            let file = Written(Some(self.path));
-            crate::compare::write_png(file.0.as_deref().expect("capture path"), &image)
+            let file = Written::new(self.path);
+            crate::compare::write_png(file.path(), &image)
                 .map_err(|e| e.to_string())?;
             Ok(file)
         });
@@ -57,7 +57,21 @@ impl PrivateCaptureWrite {
 
 // If the game discards a request while PNG encoding is finishing, the
 // last owner of the unclaimed file removes it, on either thread.
-struct Written(Option<PathBuf>);
+pub(super) struct Written(Option<PathBuf>);
+
+impl Written {
+    pub(super) fn new(path: PathBuf) -> Self {
+        Self(Some(path))
+    }
+
+    pub(super) fn path(&self) -> &Path {
+        self.0.as_deref().expect("unclaimed capture path")
+    }
+
+    pub(super) fn retain(mut self) {
+        self.0 = None;
+    }
+}
 
 impl Drop for Written {
     fn drop(&mut self) {
@@ -239,6 +253,7 @@ impl FrameCapture {
             writing: None,
             path,
         };
+        self.probe.cancel_capture_pass(s.job.as_ref());
         s.private.active = Some((seq, Arc::new(Mutex::new(job))));
         s.job = None;
         self.pending
@@ -269,9 +284,9 @@ impl FrameCapture {
             return Some(Err(super::capture_interrupted()));
         }
         s.private.active = None;
-        Some(result.map(|(reply, mut file)| {
+        Some(result.map(|(reply, file)| {
             s.private.pinned.clone_from(&job.scene);
-            file.0 = None;
+            file.retain();
             reply
         }))
     }
@@ -353,6 +368,35 @@ mod tests {
             "disconnect between encoding and reply removes the file"
         );
         std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn a_lighting_override_cancels_only_the_pass_capture_it_replaced() {
+        use super::super::{FrameProbe, Hosted};
+        use agent_proto::FrameParams;
+
+        static DISPLAY: FrameProbe = FrameProbe::new();
+        static HOST: Hosted = Hosted::new();
+        let capture = FrameCapture::new(&DISPLAY, &HOST);
+        capture.set_private_source(Some(|_| Ok(None)));
+        capture.tick_ended(7);
+        let dir = Path::new("unused");
+        let pass = FrameCaptureParams { pass: Some(0), ..Default::default() };
+        let lighting = FrameCaptureParams { lighting: Some(CaptureLighting::E3), ..Default::default() };
+
+        let first = capture.arm(&pass, dir).unwrap();
+        DISPLAY.present(1);
+        assert!(DISPLAY.armed());
+        capture.arm(&lighting, dir).unwrap();
+        assert!(!DISPLAY.armed());
+        assert_eq!(capture.finish(first).unwrap().unwrap_err().code, code::INTERRUPTED);
+
+        let second = capture.arm(&pass, dir).unwrap();
+        let independent = DISPLAY.arm(&FrameParams { arm: true, ..Default::default() }).unwrap();
+        capture.arm(&lighting, dir).unwrap();
+        assert_eq!(capture.finish(second).unwrap().unwrap_err().code, code::INTERRUPTED);
+        assert!(DISPLAY.armed());
+        assert_eq!(DISPLAY.reply().seq, independent.seq);
     }
 
     #[test]

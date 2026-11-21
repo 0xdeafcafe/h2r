@@ -193,6 +193,17 @@ impl FrameProbe {
         Ok(reply(&s))
     }
 
+    /// A superseded pass capture owns only its own display arming. An
+    /// independent render.frame request may already have replaced it.
+    fn cancel_capture_pass(&self, job: Option<&CaptureJob>) {
+        let Some(seq) = job.and_then(|j| j.probe_seq) else { return };
+        let mut s = self.lock();
+        if s.stage.arming().is_some_and(|a| a.seq == seq) {
+            s.stage = Stage::Idle;
+            self.armed.store(false, Ordering::Relaxed);
+        }
+    }
+
     /// The last frame, and whether one is still to come.
     pub fn reply(&self) -> FrameReply {
         reply(&self.lock())
@@ -437,12 +448,18 @@ impl Recording {
     }
 }
 
+impl Stage {
+    fn arming(&self) -> Option<&Arming> {
+        match self {
+            Self::Idle => None,
+            Self::Waiting(a) | Self::Graph(a) | Self::Routing { arming: a, .. } => Some(a),
+            Self::Recording(r) => Some(&r.arming),
+        }
+    }
+}
+
 fn reply(s: &ProbeState) -> FrameReply {
-    let arming = match &s.stage {
-        Stage::Idle => None,
-        Stage::Waiting(a) | Stage::Graph(a) | Stage::Routing { arming: a, .. } => Some(a),
-        Stage::Recording(r) => Some(&r.arming),
-    };
+    let arming = s.stage.arming();
     FrameReply {
         armed: arming.is_some(),
         seq: arming.map(|a| a.seq),
@@ -818,6 +835,7 @@ impl FrameCapture {
         {
             job.probe_seq = Some(self.arm_probe(pass)?);
         }
+        self.probe.cancel_capture_pass(s.job.as_ref());
         s.private.active = None;
         s.job = Some(job);
         self.want.store(0, Ordering::Relaxed);
