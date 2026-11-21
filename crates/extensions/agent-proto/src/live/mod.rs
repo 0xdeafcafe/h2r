@@ -175,7 +175,8 @@ impl View {
     /// The parsed form of [`View::name`].
     pub fn key_of(name: &str) -> Option<u32> {
         let mut parts = name.split(':');
-        let kind = VIEW_KINDS.iter().position(|k| Some(*k) == parts.next())?;
+        let kind = parts.next()?;
+        let kind = VIEW_KINDS.iter().position(|k| *k == kind)?;
         let player = parts.next()?.parse().ok()?;
         let view = parts.next()?.parse().ok()?;
         parts
