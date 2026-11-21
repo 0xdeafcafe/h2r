@@ -1070,7 +1070,8 @@ mod tests {
     /// The Tags tool through its widgets: open the weapon group in the
     /// tree, pick the weapon, tick a flag and pick an enum value in the
     /// field panel. The edits land in the document, as undo steps, and
-    /// the hex pane shows the element. Skipped without a wgpu adapter.
+    /// a click on a row selects it for Data and bytes, which keeps it while
+    /// the mouse moves. Skipped without a wgpu adapter.
     #[test]
     fn the_tags_tool_edits_a_field_through_its_widgets() {
         use crate::app::tag_tests;
@@ -1098,24 +1099,31 @@ mod tests {
         assert_eq!(flags, [3, 0], "both flags set");
         assert!(app.tags.is_changed(tag_tests::weap_id()));
         // One line per row: labels in words, the changed row dotted, the
-        // list's size beside its name. The hex pane follows the mouse.
+        // list's size beside its name.
         assert!(h.scene.items.iter().any(|i| i.label == "Parts"));
         let drawn = &h.studio.tags.panel.drawn;
         let flags = drawn.iter().find(|d| d.path == "flags").unwrap();
         assert_eq!((flags.label.as_str(), flags.edited), ("Flags", true));
         let parts = drawn.iter().find(|d| d.path == "parts").unwrap();
         assert_eq!(parts.summary.as_deref(), Some("2 items"));
-        h.step(&mut app, &Step::Hover("Loud##b0".into())).unwrap();
-        h.frames(&mut app, 2).unwrap();
-        assert_eq!(
+        // A click on a label selects the row; Data and bytes follows the
+        // selection, not the mouse.
+        h.step(&mut app, &click("Speed##label")).unwrap();
+        let selected = |h: &Headless, app: &App| {
             h.studio
                 .tags
                 .panel
-                .hovered
-                .as_ref()
-                .map(|h| h.name.as_str()),
-            Some("flags")
-        );
+                .selected_row(&app.tags, tag_tests::weap_id())
+                .map(|r| r.path)
+        };
+        assert_eq!(selected(&h, &app).as_deref(), Some("speed"));
+        h.step(&mut app, &Step::Hover("Loud##b0".into())).unwrap();
+        h.step(&mut app, &Step::Move("Parts".into())).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        assert_eq!(selected(&h, &app).as_deref(), Some("speed"), "the mouse moving keeps it");
+        h.step(&mut app, &click("Loud##b0")).unwrap();
+        assert_eq!(selected(&h, &app).as_deref(), Some("flags"));
+        app.dispatch(Action::Undo);
         app.dispatch(Action::Undo);
         assert_eq!(
             app.tags

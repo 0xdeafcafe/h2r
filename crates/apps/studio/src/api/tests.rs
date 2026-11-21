@@ -445,6 +445,72 @@ fn tag_choices_lists_the_pick_dialogs_choices() {
     assert_eq!(gap["shown"], "whole_number");
 }
 
+/// `tag.bytes` gives an element's bytes with spans that tile it, or one
+/// field's; `tag.reset` puts a field back to the file's value as one undo
+/// step and clears `edited`.
+#[test]
+fn tag_bytes_tile_the_element_and_tag_reset_is_one_undo_step() {
+    use crate::app::tag_tests;
+    let t = Temp::new("tag-bytes");
+    let (mut app, ..) = tag_tests::app(&t.0);
+    let mut api = Api::new();
+    let weap = format!("{:#010x}", tag_tests::weap_id().0);
+    let tiles = |v: &Value| {
+        let mut next = 0;
+        for s in v["spans"].as_array().unwrap() {
+            assert_eq!(s["offset"], next, "{v}");
+            next += s["size"].as_u64().unwrap();
+        }
+        assert_eq!(json!(next), v["size"], "{v}");
+        assert_eq!(v["hex"].as_str().unwrap().len() as u64, 2 * next);
+    };
+
+    let root = call(&mut api, &mut app, m::TAG_BYTES, json!({ "tag": weap }));
+    assert_eq!(root["address"], tag_tests::WEAP);
+    assert_eq!(root["size"], 0x10);
+    tiles(&root);
+    assert_eq!(root["hex"], root["file_hex"], "nothing changed");
+    assert!(root["hex"].as_str().unwrap().starts_with("00002040"), "speed 2.5");
+    let part = call(&mut api, &mut app, m::TAG_BYTES, json!({"tag": weap, "path": "parts[1]"}));
+    assert_eq!(part["address"], tag_tests::PARTS + 0xc);
+    tiles(&part);
+    let mode = call(&mut api, &mut app, m::TAG_BYTES, json!({"tag": weap, "path": "mode"}));
+    assert_eq!(mode["hex"], "0200");
+    assert_eq!(
+        mode["spans"],
+        json!([{"offset": 0, "size": 2, "name": "mode", "named": true}])
+    );
+    assert_eq!(
+        code_of(api.call(&mut app, m::TAG_BYTES, json!({"tag": weap, "path": "parts[5]"}))),
+        code::INVALID_PARAMS
+    );
+
+    let speed = |api: &mut Api, app: &mut App| {
+        let rows = call(api, app, m::TAG_FIELDS, json!({ "tag": weap }));
+        rows["fields"][0].clone()
+    };
+    call(&mut api, &mut app, m::TAG_SET, json!({"tag": weap, "path": "speed", "value": 4.0}));
+    assert_eq!(speed(&mut api, &mut app)["edited"], true);
+    let changed = call(&mut api, &mut app, m::TAG_BYTES, json!({"tag": weap, "path": "speed"}));
+    assert_ne!(changed["hex"], changed["file_hex"]);
+    let back = call(&mut api, &mut app, m::TAG_RESET, json!({"tag": weap, "path": "speed"}));
+    assert_eq!(back["value"], 2.5);
+    let row = speed(&mut api, &mut app);
+    assert_eq!((row["edited"].as_bool(), row["value"].as_f64()), (Some(false), Some(2.5)));
+    app.dispatch(Action::Undo);
+    assert_eq!(speed(&mut api, &mut app)["value"], 4.0, "the reset is one undo step");
+    app.dispatch(Action::Undo);
+    assert_eq!(speed(&mut api, &mut app)["value"], 2.5);
+    // Already the file's value: no step.
+    call(&mut api, &mut app, m::TAG_RESET, json!({"tag": weap, "path": "speed"}));
+    app.dispatch(Action::Redo);
+    assert_eq!(speed(&mut api, &mut app)["value"], 4.0, "the redo stack is intact");
+    assert_eq!(
+        code_of(api.call(&mut app, m::TAG_RESET, json!({"tag": weap, "path": "parts"}))),
+        code::INVALID_PARAMS
+    );
+}
+
 #[test]
 fn tag_view_folds_unnamed_fields_and_opens_them_on_request() {
     use crate::app::tag_tests;

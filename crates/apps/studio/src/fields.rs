@@ -24,7 +24,7 @@ pub mod row;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
-use dear_imgui_rs::{Drag, DragRange, NumericFormat, TreeNodeToken, Ui};
+use dear_imgui_rs::{Drag, DragRange, NumericFormat, StyleColor, TreeNodeToken, Ui};
 use map::{FourCC, TagId};
 use scenario_edit::{Role, Scenario};
 use tags::registry::{Field, Hint, Kind, Layout};
@@ -138,18 +138,27 @@ pub fn show_as_key(group: FourCC, prefix: &str, offset: u32) -> String {
     format!("{}:{shape}+{offset:#x}", group_text(group))
 }
 
-/// The field under the mouse, for the hex pane and the status line.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Hovered {
+/// The selected row, which the Data and bytes window details: its field
+/// and the element it is in. A click on a row selects it; the mouse
+/// moving does not change it.
+#[derive(Clone, Debug)]
+pub struct Selected {
+    pub tag: TagId,
+    /// The element's address and layout.
+    pub at: u32,
+    pub layout: Arc<Layout>,
+    /// The field's address.
     pub address: u32,
-    pub len: u32,
-    /// Offset in its element.
-    pub offset: u32,
-    pub name: String,
-    pub kind: String,
-    pub named: bool,
-    pub description: Option<String>,
-    pub meaning: String,
+    /// The element's `tag.set` path with its trailing dot (`parts[1].`).
+    pub prefix: String,
+}
+
+/// An element whose bytes the Data and bytes window shows.
+#[derive(Clone, Debug)]
+pub struct Element {
+    pub tag: TagId,
+    pub at: u32,
+    pub layout: Arc<Layout>,
 }
 
 /// The panel's UI state (one per place the panel is drawn).
@@ -158,11 +167,14 @@ pub struct PanelState {
     /// The element shown per block, by the address of its `(count,
     /// address)` pair.
     index: HashMap<(TagId, u32), u32>,
-    /// The field under the mouse this frame.
-    pub hovered: Option<Hovered>,
-    /// The element the mouse was last in: its address and layout (the hex
-    /// pane shows it).
-    pub focus: Option<(TagId, u32, Arc<Layout>)>,
+    /// The selected row ([`Selected`]).
+    pub selected: Option<Selected>,
+    /// The element whose bytes are shown: the selected row's, or one
+    /// **Show bytes** named.
+    pub bytes: Option<Element>,
+    /// **Show bytes** was pressed: the Bytes section opens once (taken
+    /// by the window that draws it).
+    pub open_bytes: std::cell::Cell<bool>,
     /// The settings drawn with ([`PanelState::follow`]); a change waits
     /// for [`PanelState::store`].
     pub settings: Settings,
@@ -242,6 +254,14 @@ impl PanelState {
 
     pub fn has_field_focus(&self, tag: TagId) -> bool {
         self.focus_target.is_some_and(|(id, _)| id == tag)
+    }
+
+    /// The selected row of `tag`, built as the panel draws it.
+    pub fn selected_row(&self, doc: &TagDoc, tag: TagId) -> Option<Row<'_>> {
+        let s = self.selected.as_ref().filter(|s| s.tag == tag)?;
+        row::rows(doc, tag, s.at, &s.layout, &self.context(&s.prefix))
+            .into_iter()
+            .find(|r| r.address == s.address)
     }
 }
 
@@ -338,7 +358,6 @@ pub(crate) fn panel_with_marks(
     root: PanelRoot<'_>,
     mark_field: &mut dyn FnMut(TagId, u32),
 ) {
-    st.hovered = None;
     st.drawn.clear();
     let Some((at, layout)) = doc.resolve(tag, path) else {
         ui.text_disabled("Nothing to show: the element is not in the map's metadata.");
@@ -590,11 +609,15 @@ impl Cx<'_, '_> {
         let ui = self.ui;
         self.dot(r);
         ui.align_text_to_frame_padding();
-        if r.field.named {
-            ui.text(&r.label);
-        } else {
-            ui.text_disabled(&r.label);
-        }
+        let width = (LABEL - ui.cursor_pos()[0] - GAP).max(1.0);
+        let dim = (!r.field.named).then(|| {
+            ui.push_style_color(StyleColor::Text, ui.style_color(StyleColor::TextDisabled))
+        });
+        ui.selectable_config(format!("{}##label", r.label))
+            .selected(self.is_selected(r))
+            .size([width, 0.0])
+            .build();
+        drop(dim);
         self.hover(at, layout, r);
         ui.same_line_with_pos(LABEL);
         self.trailing = self.tail_width(r);
@@ -635,7 +658,8 @@ impl Cx<'_, '_> {
         self.trailing = 0.0;
     }
 
-    /// Record the field as hovered when the last item is.
+    /// The last item's tooltip when it is hovered; a click on it selects
+    /// the row.
     fn hover(&mut self, at: u32, layout: &Arc<Layout>, r: &Row) {
         let ui = self.ui;
         if !ui.is_item_hovered() {
@@ -665,17 +689,33 @@ impl Cx<'_, '_> {
             tip.push_str(&f.meaning);
         }
         ui.set_item_tooltip(tip);
-        self.st.hovered = Some(Hovered {
+        if ui.is_item_clicked() {
+            self.select(at, layout, r);
+        }
+    }
+
+    /// Select the row: the Data and bytes window details it and shows its
+    /// element's bytes.
+    fn select(&mut self, at: u32, layout: &Arc<Layout>, r: &Row) {
+        self.st.selected = Some(Selected {
+            tag: self.tag,
+            at,
+            layout: layout.clone(),
             address: r.address,
-            len: f.kind.width(),
-            offset: f.offset,
-            name: f.name.clone(),
-            kind: f.kind.label(),
-            named: f.named,
-            description: f.doc.clone(),
-            meaning: f.meaning.clone(),
+            prefix: self.prefix.clone(),
         });
-        self.st.focus = Some((self.tag, at, layout.clone()));
+        self.st.bytes = Some(Element {
+            tag: self.tag,
+            at,
+            layout: layout.clone(),
+        });
+    }
+
+    fn is_selected(&self, r: &Row) -> bool {
+        self.st
+            .selected
+            .as_ref()
+            .is_some_and(|s| s.tag == self.tag && s.address == r.address)
     }
 
     fn field(&mut self, at: u32, layout: &Arc<Layout>, r: &Row) {
@@ -1118,6 +1158,18 @@ impl Cx<'_, '_> {
                 &format!("{} Remove##rm", icon::TRASH),
                 BlockOp::Remove(i),
             );
+            ui.same_line();
+            if ui.small_button("Show bytes##show-bytes") {
+                self.st.bytes = Some(Element {
+                    tag,
+                    at: a + i * child.size,
+                    layout: child.clone(),
+                });
+                self.st.open_bytes.set(true);
+            }
+            if ui.is_item_hovered() {
+                ui.set_item_tooltip("Show this element's bytes in Data and bytes");
+            }
         }
         // The header's summary says when the list is empty.
         if n == 0 {

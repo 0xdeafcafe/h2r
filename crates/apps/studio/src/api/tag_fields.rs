@@ -283,8 +283,8 @@ fn choices(app: &mut App, p: &P) -> Reply {
                 .collect();
             Ok(json!({ "values": listed }))
         }
-        Kind::Flags { bytes, bits } => {
-            let n = usize::from(*bytes);
+        Kind::Flags { bytes: width, bits } => {
+            let n = usize::from(*width);
             let v = word(n);
             let listed: Vec<Value> = picker::bits(bits, 8 * n as u32)
                 .into_iter()
@@ -339,6 +339,48 @@ fn choices(app: &mut App, p: &P) -> Reply {
             ),
         )),
     }
+}
+
+const BYTES: MethodDef = def(
+    m::TAG_BYTES,
+    "The bytes of a tag's element (the root, or a block element such as `parts[1]`) or of one field (a tag.set path), as the Data and bytes window shows them: the address, the size, the bytes now and in the loaded file as hex, and the spans of its fields at offsets from the address (an element's spans tile it)",
+    r#"{"tag":"string|integer","path?":"string (an element or a field; default the root)"}"#,
+    r#"{"address":"integer","size":"integer","hex":"string","file_hex":"string|null","spans":"[{offset,size,name,named}]"}"#,
+    r#"{"tag":"itmc"}"#,
+);
+
+const RESET: MethodDef = def(
+    m::TAG_RESET,
+    "Put a field back to its value in the loaded file, as the Data and bytes window's Reset to file value does: one undo step, none when it already has that value. Lists and data are refused (put back their elements or bytes)",
+    r#"{"tag":"string|integer","path":"string (a tag.set path)"}"#,
+    r#"{"value":"any (the field's value now)"}"#,
+    r#"{"tag":"itmc","path":"respawn_time"}"#,
+);
+
+fn bytes(app: &mut App, p: &P) -> Reply {
+    let tag = resolve(app, p)?;
+    let path = p.opt_str("path")?.unwrap_or_default();
+    tag_api::bytes_of(app.shown_tags(), tag, path)
+        .map_err(|e| err(code::INVALID_PARAMS, format!("{path}: {e}")))
+}
+
+fn reset(app: &mut App, p: &P) -> Reply {
+    let tag = resolve(app, p)?;
+    let path = p.str("path")?;
+    if app.browsing().is_some() {
+        return Err(err(code::REFUSED, "a browsed map's tags are shown, not edited"));
+    }
+    if app.session.scenario().is_some_and(|s| s.tag == tag) {
+        return Err(err(code::REFUSED, "the scenario's fields are the Scenario tool's"));
+    }
+    let action = tag_api::reset(&app.tags, tag, path)
+        .map_err(|e| err(code::INVALID_PARAMS, format!("{path}: {e}")))?;
+    if let Some(action) = action {
+        perform(app, action)?;
+    }
+    let (at, _, f) = tag_api::resolve(&app.tags, tag, path)
+        .map_err(|e| err(code::REFUSED, e))?;
+    Ok(json!({ "value": tag_api::value(&app.tags, tag, at, &f) }))
 }
 
 const CHAIN: MethodDef = MethodDef {
@@ -405,6 +447,8 @@ impl Provider for TagFields {
             FIELDS,
             VIEW,
             CHOICES,
+            BYTES,
+            RESET,
             block_def(
                 m::TAG_BLOCK_ADD,
                 "Add an element to a tag block (path from the root, `parts` or `parts[0].bones`), where the block has room in its source; refused with the reason otherwise",
@@ -429,6 +473,8 @@ impl Provider for TagFields {
             m::TAG_FIELDS => return Some(fields(app, &p)),
             m::TAG_VIEW => return Some(view(app, &p)),
             m::TAG_CHOICES => return Some(choices(app, &p)),
+            m::TAG_BYTES => return Some(bytes(app, &p)),
+            m::TAG_RESET => return Some(reset(app, &p)),
             m::TAG_CHAIN => return Some(chain(app, &p)),
             _ => {}
         }

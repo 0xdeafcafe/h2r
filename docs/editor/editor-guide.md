@@ -1143,13 +1143,19 @@ packages, or a converted Halo 1 map), then select the **Tags** tab beside **Scen
 - **Structure BSPs and lightmaps** open in the field inspector. Their
   rows identify the BSP. Field and block edits save to that BSP's
   region, and blocks use their original capacity.
-- **Data and bytes** (beside Log): the tag's data and resources first: each
-  block of raw data inside the tag with its size, and each resource
-  (pixels, model geometry, sound) with the map it is in (`local` for this
-  one, or `shared`, `single_player_shared`, `mainmenu`), where and how
-  big. A bitmap has **Preview**, which draws its first image. Then the
-  raw bytes of the part of the tag under the mouse, the hovered field
-  lit in blue and bytes you changed in orange.
+- **Data and bytes** (beside Log) shows the field you last clicked in the
+  fields list; moving the mouse does not change it. **Field details**
+  explains the field: what it is, its unit, its value in the map file
+  when you changed it, with **Reset to file value**, and when the game
+  sees a change. **Developer details** inside it has the path for
+  scripts, the offset, the address and the bytes. **Bytes** (folded; **Show
+  bytes** on a list element opens it) shows the raw bytes of the field's
+  part of the tag, the field lit in blue and bytes you changed in orange.
+  **Data and resources** lists each block of raw data inside the tag
+  with its size, and each resource (pixels, model geometry, sound) with
+  the map it is in (`local` for this one, or `shared`,
+  `single_player_shared`, `mainmenu`), where and how big. A bitmap has
+  **Preview**, which draws its first image.
 
 ### Field names
 

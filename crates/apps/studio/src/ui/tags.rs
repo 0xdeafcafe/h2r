@@ -894,8 +894,10 @@ fn data(
     ui.separator();
 }
 
-/// The inspector: the tag's data and resources, then the raw bytes of the
-/// element under the mouse, the hovered field lit.
+/// The Data and bytes window: the selected row's details, then the bytes
+/// of its element (or of one **Show bytes** named) with the field lit,
+/// then the tag's data and resources, each a folding header. It follows
+/// the selected row; the mouse moving changes nothing here.
 pub fn hex(
     ui: &Ui,
     app: &App,
@@ -918,47 +920,126 @@ pub fn hex(
         bsp_hex(ui, bytes);
         return;
     }
-    data(ui, app, id, gpu, pictures, actions);
     let p = &st.panel;
-    let (at, size, name) = match &p.focus {
-        Some((tag, at, l)) if *tag == id => (*at, l.size, l.name.clone()),
+    let picked = p.selected_row(doc, id);
+    if let Some(r) = &picked {
+        field_details(ui, doc, id, r, fonts, actions);
+    }
+    let lit = picked
+        .as_ref()
+        .map(|r| (r.address, r.address + r.field.kind.width()));
+    element_bytes(ui, doc, id, p, lit);
+    data(ui, app, id, gpu, pictures, actions);
+}
+
+/// Field details: the label, description, type and unit, the file's
+/// value with **Reset to file value** when it differs, when a change takes
+/// effect and why it is read-only; then, folded, the developer facts.
+fn field_details(
+    ui: &Ui,
+    doc: &TagDoc,
+    id: TagId,
+    r: &fields::Row,
+    fonts: &Fonts,
+    actions: &mut Vec<Action>,
+) {
+    if !ui.collapsing_header(
+        "Field details##tag-field",
+        dear_imgui_rs::TreeNodeFlags::DEFAULT_OPEN,
+    ) {
+        return;
+    }
+    let f = r.field;
+    let width = f.kind.width();
+    let bold = ui.push_font(fonts.bold);
+    ui.text(&r.label);
+    bold.pop();
+    if let Some(text) = f.doc.as_deref().filter(|s| !s.is_empty()) {
+        ui.text_wrapped(text);
+    }
+    ui.text_disabled(match r.unit {
+        Some(unit) => format!("{}, in {unit}", r.type_words),
+        None => r.type_words.to_owned(),
+    });
+    if r.edited
+        && let Some(file) = file_value(doc, id, r)
+    {
+        ui.text(format!("In the file: {file}"));
+        if r.read_only.is_none() {
+            ui.same_line();
+            if ui.small_button("Reset to file value##reset")
+                && let Ok(Some(write)) = tag_api::reset(doc, id, &r.path)
+            {
+                actions.push(Action::Tag(write));
+                actions.push(Action::Tag(TagAction::Seal));
+            }
+        }
+    }
+    ui.text_wrapped(format!("{} {}", r.effect.sentence(), r.why));
+    if let Some(why) = r.read_only {
+        ui.text_colored(theme::WARN, why);
+    }
+    let Some(_dev) = ui
+        .tree_node_config("tag-field-dev")
+        .label("Developer details")
+        .push()
+    else {
+        return;
+    };
+    ui.text_disabled(format!("Path for tag.set: {}", r.path));
+    ui.text_disabled(format!(
+        "Offset +{:#x}, {width} bytes, {}",
+        f.offset,
+        f.kind.label()
+    ));
+    ui.text_disabled(format!("Address {:#010x}", r.address));
+    if let Some(b) = doc.read(id, r.address, width.min(64)) {
+        ui.text_disabled(format!("Bytes {}", fields::hex(&b)));
+    }
+    if !f.meaning.is_empty() {
+        ui.text_wrapped(format!("Evidence: {}", f.meaning));
+    }
+}
+
+/// A changed field's value in the loaded file, as tag.read writes it.
+fn file_value(doc: &TagDoc, id: TagId, r: &fields::Row) -> Option<String> {
+    let f = r.field;
+    if matches!(f.kind, tags::registry::Kind::Block(_) | tags::registry::Kind::Data) {
+        return None;
+    }
+    let file = doc.read_source(id, r.address, f.kind.width())?;
+    let at = r.address - f.offset;
+    Some(match tag_api::value_of(doc, id, at, f, file) {
+        serde_json::Value::String(text) => text,
+        other => other.to_string(),
+    })
+}
+
+/// Bytes, folded until **Show bytes** opens it: the element's bytes, the
+/// selected field's lit, changed bytes marked.
+fn element_bytes(ui: &Ui, doc: &TagDoc, id: TagId, p: &PanelState, lit: Option<(u32, u32)>) {
+    let (at, size, name) = match &p.bytes {
+        Some(e) if e.tag == id => (e.at, e.layout.size, e.layout.name.clone()),
         _ => match (doc.tag(id), doc.layout(id)) {
             (Some(t), Some(l)) => (t.address, l.size, l.name.clone()),
             _ => return,
         },
     };
-    if let Some(h) = &p.hovered {
-        let f = ui.push_font(fonts.bold);
-        ui.text(&h.name);
-        f.pop();
-        if let Some(doc) = h.description.as_deref().filter(|s| !s.is_empty()) {
-            ui.text_wrapped(doc);
-        }
-        ui.text_disabled(format!(
-            "{} at +{:#x} ({:#010x}){}",
-            h.kind,
-            h.offset,
-            h.address,
-            if h.named { "" } else { ", unnamed" }
-        ));
-        if !h.meaning.is_empty() {
-            ui.text_wrapped(&h.meaning);
-        }
-        ui.separator();
+    if p.open_bytes.take() {
+        ui.set_next_item_open(true);
     }
-    ui.text_disabled(format!("{name}: {size:#x} bytes at {at:#010x}"));
+    if !ui.collapsing_header("Bytes##tag-bytes", dear_imgui_rs::TreeNodeFlags::NONE) {
+        return;
+    }
+    ui.text_disabled(format!("{name}: {size} bytes"));
     let shown = size.min(4096);
     let Some(bytes) = doc.read(id, at, shown) else {
         return;
     };
     let source = doc.read_source(id, at, shown);
-    let lit = p
-        .hovered
-        .as_ref()
-        .map(|h| (h.address, h.address + h.len))
-        .filter(|(lo, hi)| *lo >= at && *hi <= at + shown);
-    for (row, chunk) in bytes.chunks(16).enumerate() {
-        let base = row as u32 * 16;
+    let lit = lit.filter(|(lo, hi)| *lo >= at && *hi <= at + shown);
+    for (line, chunk) in bytes.chunks(16).enumerate() {
+        let base = line as u32 * 16;
         ui.text_disabled(format!("{base:04x}"));
         for (k, b) in chunk.iter().enumerate() {
             let a = at + base + k as u32;

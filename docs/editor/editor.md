@@ -1290,9 +1290,18 @@ step (`TagDoc::squash`) and saves with the map like any edit.
 sections with an **(open map)** marker for the Scenario tool's map),
 the **tag tree** (Scenario, All tags and Not reachable from the
 scenario, with edited and shared-cache marks), the **fields** of the selected tag with Export and
-Import, and **Data and bytes**: the tag's data and resources (with a
-bitmap preview), then the bytes of the element under the mouse with the
-hovered field lit and edited bytes marked.
+Import, and **Data and bytes** (`tags::hex`), which follows the selected
+row, never the mouse. A click on a row's label (or any of its widgets)
+selects it (`fields::PanelState::selected`). The window has three folding
+headers. **Field details** gives the label, description, type and unit,
+the value in the file with **Reset to file value** when it differs, when
+a change takes effect and why the field is read-only; under **Developer
+details** it gives the path for `tag.set`, the offset, address, bytes and
+evidence text. **Bytes**, folded until **Show bytes** on a list element
+opens it, gives the selected row's element (or that element) with the
+field lit and edited bytes marked. **Data and resources** gives the tag's
+data and resources, with a bitmap preview. `tag.bytes` and `tag.reset`
+are the window's bytes and its reset (`tag_api::{bytes_of, reset}`).
 
 `fields.rs` is the field panel, reusable by any tool:
 `fields::panel(ui, &app.tags, tag, path, &mut PanelState, &mut actions)`

@@ -79,6 +79,7 @@ What goes through actions, from both sides:
 | Inspect tag fields | read the registry layout | Tags panel and inspector | `tag.fields {tag, path?, unnamed?}` |
 | Show unnamed fields, Show as, focus a field | `App::tag_fields` (`fields::Settings`), `Navigate(Go)` | the Tags tool's **Show unnamed fields** and **Show as** | `tag.view` |
 | What a field's pick dialog lists | `fields::picker::{values, bits, kinds, tags, views}` | the field panel's pick dialog | `tag.choices {tag, path, query?, kind?, limit?}` |
+| An element's or field's bytes; put a field back to the file's value | `tag_api::{bytes_of, reset}` | Data and bytes: **Bytes**, **Reset to file value** | `tag.bytes {tag, path?}`, `tag.reset {tag, path}` |
 | Move and turn a placement | `MovePlacement` (one step); `GestureSet {position, ypr}`, `GestureScale`, `EndGesture` (a drag: one step, a multi-selection riding along) | the viewport gizmo dispatches the gesture actions every frame of a drag | `scenario.move` |
 | Add, duplicate, delete | `Add`, `DuplicateEntry`, `DeleteEntry` | outliner, toolbar, keys | `scenario.add`, `.duplicate`, `.delete`, `tag.block.*` |
 | Select, frame | `Select`, `FocusSelected`, `FrameAll` | Scene, viewport, keys | `scenario.select`, `view.camera` |
@@ -276,6 +277,17 @@ Notes on some:
   one in use. `query` narrows values and tags as the dialog's search box
   does: every word in the name, or in `group:name` for a tag. Any other
   field is refused with `INVALID_PARAMS`.
+- **Bytes and reset.** `tag.bytes {tag, path?}` returns the bytes of an
+  element (the root by default, or a block element such as `parts[1]`)
+  or of one field: `{address, size, hex, file_hex, spans: [{offset, size,
+  name, named}]}`. `hex` is the bytes now and `file_hex` the loaded
+  file's, null when the file has none. The spans are the element's
+  fields at offsets from `address` and tile it, or the one field.
+  `tag.reset {tag, path}` puts a field back to its value in the loaded
+  file, as **Reset to file value** does: one undo step, and none when it
+  already has that value. It returns `{value}`. Lists and data are
+  refused with `INVALID_PARAMS`, and the scenario's fields and a browsed
+  map's are refused with `REFUSED`.
 - **Scenario tree.** `tag.tree {"root":"scenario","depth":2}` reads the
   open scenario and returns `{root, unreachable, incomplete, truncated}`.
   The root's children are Structure (BSPs with their lightmaps), Skies,

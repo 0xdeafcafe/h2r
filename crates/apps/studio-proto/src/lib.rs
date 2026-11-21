@@ -81,6 +81,8 @@ pub mod method {
     pub const TAG_FIELDS: &str = "tag.fields";
     pub const TAG_VIEW: &str = "tag.view";
     pub const TAG_CHOICES: &str = "tag.choices";
+    pub const TAG_BYTES: &str = "tag.bytes";
+    pub const TAG_RESET: &str = "tag.reset";
     pub const TAG_READ: &str = "tag.read";
     pub const TAG_TREE: &str = "tag.tree";
     pub const TAG_REFS: &str = "tag.refs";

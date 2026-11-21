@@ -516,6 +516,76 @@ pub fn block(doc: &TagDoc, tag: TagId, path: &str, op: BlockOp) -> Result<TagAct
     })
 }
 
+/// The command that puts the field at `path` back to its value in the
+/// loaded file; none when it has that value. A list or data is put back
+/// by its elements or its bytes, not as one value.
+pub fn reset(doc: &TagDoc, tag: TagId, path: &str) -> Result<Option<TagAction>, String> {
+    if let Some(why) = doc.refusal(tag) {
+        return Err(why.into());
+    }
+    let (at, _, f) = resolve(doc, tag, path)?;
+    if matches!(f.kind, Kind::Block(_) | Kind::Data) {
+        return Err(format!(
+            "{}: a list or data is put back by its elements or bytes",
+            f.name
+        ));
+    }
+    let a = at + f.offset;
+    let w = f.kind.width();
+    let file = doc
+        .read_source(tag, a, w)
+        .ok_or("the loaded file has no value here")?;
+    if doc.read(tag, a, w).as_deref() == Some(file) {
+        return Ok(None);
+    }
+    Ok(Some(TagAction::Write(TagWrite {
+        tag,
+        address: a,
+        bytes: file.to_vec(),
+        label: format!("Reset {}", f.name),
+        merge: None,
+    })))
+}
+
+/// The bytes of the element (the root, `parts[1]`) or the field at
+/// `path`: `{address, size, hex, file_hex, spans: [{offset, size, name,
+/// named}]}`, the spans being the element's fields in offset order (they
+/// tile it) or the one field, at offsets from `address`. `file_hex` is
+/// the loaded file's bytes, null for a tag the file does not have.
+pub fn bytes_of(doc: &TagDoc, tag: TagId, path: &str) -> Result<Value, String> {
+    let span = |f: &Field, offset: u32| {
+        json!({
+            "offset": offset,
+            "size": f.kind.width(),
+            "name": f.name,
+            "named": f.named,
+        })
+    };
+    let (address, size, spans) = match field_element(doc, tag, path) {
+        Ok((at, l)) => {
+            let spans: Vec<Value> = l.fields.iter().map(|f| span(f, f.offset)).collect();
+            (at, l.size, spans)
+        }
+        Err(e) if path.is_empty() || path.ends_with(']') => return Err(e),
+        Err(_) => {
+            let (at, _, f) = resolve(doc, tag, path)?;
+            (at + f.offset, f.kind.width(), vec![span(&f, 0)])
+        }
+    };
+    let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+    let now = doc
+        .read(tag, address, size)
+        .ok_or("outside the tag's address space")?;
+    let file = doc.read_source(tag, address, size);
+    Ok(json!({
+        "address": address,
+        "size": size,
+        "hex": hex(&now),
+        "file_hex": file.map(hex),
+        "spans": spans,
+    }))
+}
+
 /// Data references and raw pointers [`resources`] lists at most.
 pub const RESOURCES: usize = 4096;
 
