@@ -589,7 +589,9 @@ impl ApplicationHandler<UserEvent> for Shell {
             UserEvent::Frame => {
                 if let Some(g) = &self.gpu {
                     g.source.ack_wake();
-                    g.window.request_redraw();
+                    if self.display.redraw_on_publish() {
+                        g.window.request_redraw();
+                    }
                 }
             }
             UserEvent::Close => self.close(event_loop, "close requested"),
@@ -872,10 +874,7 @@ impl ApplicationHandler<UserEvent> for Shell {
         {
             g.window.request_redraw();
         }
-        // Above 30 fps the window also redraws on its own clock; between
-        // guest presents that shows the newest guest frame again (no
-        // interpolation before phase 2, docs/game/high-framerate.md). At 30 the
-        // schedule is never due and this changes nothing.
+        // Above 30 fps, sample the latest guest or replay frame on the display grid.
         let mut wake = self.status.last + Duration::from_secs(1);
         if let Some(theater) = &self.config.theater {
             let now = Instant::now();
@@ -906,8 +905,14 @@ impl ApplicationHandler<UserEvent> for Shell {
         {
             self.config.fps = target;
             self.display.retarget(target);
-            if let (Some(v), Some(g)) = (vsync, self.gpu.as_mut()) {
-                g.surface.set_vsync(v);
+            if let Some(g) = self.gpu.as_mut() {
+                if let Some(v) = vsync {
+                    g.surface.set_vsync(v);
+                }
+                if self.display.redraw_on_publish() {
+                    // A publish just before the switch may still be waiting for a slot.
+                    g.window.request_redraw();
+                }
             }
             eprintln!("app: frame rate {target}");
         }

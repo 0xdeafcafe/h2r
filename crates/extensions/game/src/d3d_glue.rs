@@ -1610,10 +1610,8 @@ pub fn install_for_profile<B: d3d::backend::Backend + Send + 'static>(
     let mut out = None;
     rt.edit_dispatch(|d| {
         out = Some(d3d::register(d, Arc::clone(&device)));
-        // Halo's frame wait 0x12b2e0 ("Vertical blank" in docs/graphics/d3d.md):
-        // calls the vblank callback at device+0x1db8 until the counter
-        // reaches the target, unpaced. Generated code would otherwise spin
-        // on the counter natively and never return to the runner.
+        // Yield to the kernel until the 60 Hz logical vblank source delivers
+        // enough callbacks for this frame (docs/graphics/d3d.md, "Vertical blank").
         d3d::register_frame_wait(
             d,
             Arc::clone(&device),

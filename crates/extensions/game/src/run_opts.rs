@@ -107,8 +107,8 @@ pub struct Host {
     /// Start this campaign level in place of the main menu (`level_boot`,
     /// docs/runtime/level-boot.md). `None` reads `H2_LEVEL` and `H2_DIFFICULTY`.
     pub level: Option<crate::level_boot::Request>,
-    /// Called after every slice, input pump and audio advance, with the
-    /// kernel (for its logical clock). Returning false ends the run
+    /// Receives the kernel clock after servicing a slice and after an audio-only
+    /// idle advance, before the scheduler retries. Returning false ends the run
     /// (outcome `HostStop`).
     pub between_slices: Option<BetweenSlices>,
     /// Switch the window to its loading picture before the game rebuilds the

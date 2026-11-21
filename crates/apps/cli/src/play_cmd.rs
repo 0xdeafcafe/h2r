@@ -62,10 +62,11 @@ transcode is prepared from the disc using local ffmpeg when available.
 --movies DIR selects another install. --no-movies skips playback, as does
 a --level boot unless --movies DIR is given. During playback outside film
 sessions, an unavailable attract movie leaves the menu music playing.
---fps (or H2_FPS) sets how often the window presents: 30, the default, is the
-game's own rate and today's behaviour; 60, 120 and uncapped only redraw the
-newest game frame more often for now, with no smoothing (the game itself
-always runs at 30; docs/game/high-framerate.md).
+--fps (or H2_FPS) sets how often the window presents. At 30 it redraws on
+guest presents. At 60, 120 or uncapped it repeats the newest picture between
+guest frames unless host interpolation or reprojection is enabled.
+--unpaced disables guest wall-clock pacing for benchmarks. For normal-speed
+gameplay with unrestricted window redraws, use --fps uncapped.
 The Video screen saves frame rate and resolution in <data>/settings.toml.
 Native resolution follows the window in physical pixels. H2_RESOLUTION
 accepts native or WIDTHxHEIGHT; H2_RENDER_SCALE accepts a legacy multiplier.

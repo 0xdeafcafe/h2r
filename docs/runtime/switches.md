@@ -15,8 +15,10 @@ An `impl.` name is an implementation switch
 
 | Switch | What |
 |---|---|
-| Every setting in `crates/extensions/game/src/setting_defs.rs` | the Settings menu's values; each has its env name there (`H2_FOV`, `H2_FPS`, `H2_LIGHTING`, `H2_SINGLE_COPY`, `H2_PAD_*`, `H2_VOICE_*`, `H2_TOUCH_*`, `H2_STEAM_*`...) |
+| Every setting in `crates/extensions/game/src/setting_defs.rs` | the Settings menu's values; each has its env name there (`H2_FOV`, `H2_LIGHTING`, `H2_SINGLE_COPY`, `H2_PAD_*`, `H2_VOICE_*`, `H2_TOUCH_*`, `H2_STEAM_*`...) |
 | `H2_THEATER_RING_MIB` | Overrides the viewer’s `theater.ring_mib` setting for this launch. The [Theater ring](../game/theater-design.md#the-session-ring) defaults to 256 MiB. Set a persistent budget with `h2 settings set theater.ring_mib 128`. Zero disables ring capture. |
+| `H2_FPS`, `h2 play --fps` | Window presentation rate. Choose 30 (default), 60, 120 or uncapped. All four use real-time guest pacing in normal play. |
+| `h2 play --unpaced` | Disables the shell's guest pacing for throughput measurements. A fast host can simulate more than 30 ticks per wall second. |
 | `H2_RESOLUTION` | `native` (drawable aspect, up to a 3840 × 2160 pixel budget, the default) or a fixed `WxH`, each dimension 1–8192. Locks the Video screen's Resolution row. A headless GPU uses 640x480 for Native. |
 | `H2_RENDER_SCALE` | Legacy resolution override from 1 to 6. A value of 2 means 1280x960. `H2_RESOLUTION` takes precedence. |
 | `H2_HUD_POSITION` | `pinned` (default) anchors HUD elements to their screen edges. `centered` uses a centered safe area. Locks the HUD Position row. |
@@ -36,7 +38,7 @@ An `impl.` name is an implementation switch
 | `ui-back` | on by default. B or Back returns to Game Setup from its nested selectors. `H2_FEATURES=-ui-back` restores the retail selector Back behavior ([Back navigation](../game/ui-screens.md#back-navigation)) |
 | `return-to-menu` | on in ordinary windowed runs. Shows the host loading picture on the return from a game ([level-boot.md](level-boot.md#returning-to-the-main-menu)) |
 | `impl.render.native=off` | turns off the native GPU renderer, every stage together ([native-renderer.md](../graphics/native-renderer.md)) |
-| `impl.render.reproject` | off by default. Enables rotation-only reprojection between guest frames above 30 fps ([high-framerate.md](../game/high-framerate.md)) |
+| `impl.render.interpolate`, `impl.render.reproject` | Opt-in host frames above 30 fps. Interpolate replays geometry with blended transforms. Reproject warps the world image for camera rotation. Both generate up to 60 frames per second ([high-framerate.md](../game/high-framerate.md)). |
 | `audio.hrtf`, `audio.distance_reverb` | headphone binaural filtering; extra distance reverb |
 | `lobby-options=off` | keeps the retail Quick Options lines in the custom game lobby ([ui-builder.md](../game/ui-builder.md#the-pregame-lobbys-quick-options)) |
 
