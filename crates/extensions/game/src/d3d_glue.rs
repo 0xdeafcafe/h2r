@@ -243,6 +243,7 @@ impl PrivateScenes {
             self.mode,
         )?;
         display.observe_guest_present(worker.reference_observer());
+        display.observe_unshown_guest_present(worker.unshown_observer());
         Ok(worker)
     }
 }
@@ -1390,6 +1391,10 @@ impl d3d::backend::Backend for Headless {
     fn measure_present_raster(&mut self, surface: Option<Self::Surface>) -> d3d::backend::RasterMeasurement {
         self.0.measure_present_raster(surface)
     }
+    fn last_present_unshown(&self) -> bool {
+        self.0.last_present_unshown()
+    }
+
     fn take_presented_extent(&mut self) -> Option<(u32, u32)> {
         self.0.take_presented_extent()
     }

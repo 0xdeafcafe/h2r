@@ -187,6 +187,29 @@ impl Scenes {
             .insert(frame.replay.present, Arc::downgrade(&frame.display));
     }
 
+    fn unshown(&mut self, present: u64) {
+        // Also wake previously pinned explicit captures. Their next poll
+        // sees a ready size whose resolution reports this specific failure.
+        if let Some(display) = self.displays.get(&present).and_then(Weak::upgrade) {
+            display.failed.store(true, Ordering::Release);
+        }
+        if let Some((_, slot)) = &mut self.pending.item
+            && slot.as_ref().is_ok_and(|frame| frame.replay.present == present)
+        {
+            *slot = Err("reference present failed");
+        }
+        if self.parity_wait.as_ref().is_some_and(|frame| frame.replay.present == present) {
+            self.parity_wait = None;
+        }
+        // Preserve the sealed identity so a future request for the failed
+        // tick can report it, and leave neighboring Swaps and pins alone.
+        if let Some(entry) = &mut self.published
+            && entry.inputs.as_ref().is_ok_and(|frame| frame.replay.present == present)
+        {
+            entry.inputs = Err("reference present failed".into());
+        }
+    }
+
     fn ready_parity(&mut self) -> Option<(u64, Arc<Inputs>)> {
         if self.parity_wait.as_ref()?.display.ready() {
             Some((self.generation, self.parity_wait.take()?))
@@ -469,33 +492,12 @@ pub fn pair_for_present(present: u64) -> Option<(Arc<FrameScene>, Arc<ReplayFram
 /// submit, even if its present number was already reserved in the sink.
 pub fn present_failed(present: u64) {
     if let Some(shared) = active() {
-        let mut scenes = shared.scenes.lock().unwrap_or_else(|e| e.into_inner());
-        let known = if let Some(display) = scenes.displays.get(&present).and_then(Weak::upgrade) {
-            display.failed.store(true, Ordering::Release);
-            true
-        } else {
-            false
-        };
-        if let Some((_, slot)) = &mut scenes.pending.item
-            && slot
-                .as_ref()
-                .is_ok_and(|frame| frame.replay.present == present)
-        {
-            *slot = Err("reference present failed");
-        }
-        if scenes.published.as_ref().is_some_and(|entry| {
-            entry
-                .inputs
-                .as_ref()
-                .is_ok_and(|f| f.replay.present == present)
-        }) {
-            scenes.reset();
-        }
-        if known {
-            // Invalidates an RPC pin even if newer frames have since been published.
-            set_private_capture_source(Some(capture));
-        }
+        fail_display(&shared, present);
     }
+}
+
+fn fail_display(shared: &Shared, present: u64) {
+    shared.scenes.lock().unwrap_or_else(|e| e.into_inner()).unshown(present);
     crate::frame_parity::reference_error(present);
 }
 
@@ -645,6 +647,20 @@ impl Service {
         }
     }
 
+    /// Retire pending diagnostics even when the legacy scaled backend treats
+    /// a final display error as recoverable and returns success to the guest.
+    pub fn unshown_observer(&self) -> impl FnMut(u64) + Send + 'static + use<> {
+        let weak = Arc::downgrade(&self.shared);
+        move |present| {
+            let active = ACTIVE.lock().unwrap_or_else(|e| e.into_inner());
+            if weak.ptr_eq(&active) && let Some(shared) = weak.upgrade()
+                && !shared.stopping.load(Ordering::Acquire)
+            {
+                fail_display(&shared, present);
+            }
+        }
+    }
+
     pub fn recorder(&self) -> impl FnMut(ReplayFrame) + Send + 'static + use<> {
         let weak = Arc::downgrade(&self.shared);
         move |replay| {
@@ -683,10 +699,10 @@ impl Service {
 
 impl Drop for Service {
     fn drop(&mut self) {
+        self.shared.stopping.store(true, Ordering::Release);
         scene_step::set_seal_observer(None);
         set_private_capture_source(None);
         crate::frame_parity::uninstall();
-        self.shared.stopping.store(true, Ordering::Release);
         self.shared.worker.unpark();
         if let Some(join) = self.join.take() {
             let _ = join.join();
@@ -769,6 +785,33 @@ mod tests {
                 hash: OnceLock::new(),
             })),
         }
+    }
+
+    #[test]
+    fn an_unshown_swap_releases_only_its_capture_and_parity_wait() {
+        let mut scenes = Scenes::default();
+        let first = entry(2, scenes.generation);
+        let next = entry(3, scenes.generation);
+        let pinned = first.inputs.as_ref().unwrap().clone();
+        let following = next.inputs.as_ref().unwrap().clone();
+        for frame in [&pinned, &following] {
+            scenes.displays.insert(frame.replay.present, Arc::downgrade(&frame.display));
+        }
+        scenes.published = Some(first);
+        scenes.parity_wait = Some(Arc::clone(&pinned));
+        scenes.unshown(pinned.replay.present);
+        assert!(pinned.display.ready());
+        assert_eq!(pinned.display.scale(None).unwrap_err(), "reference present failed");
+        assert!(scenes.select(Some(2)).is_err());
+        assert!(scenes.parity_wait.is_none());
+
+        scenes.published = Some(next);
+        scenes.parity_wait = Some(Arc::clone(&following));
+        scenes.unshown(pinned.replay.present);
+        assert!(!following.display.ready());
+        following.display.extent.set([8, 4]).unwrap();
+        assert_eq!(scenes.ready_parity().unwrap().1.replay.present, following.replay.present);
+        assert_eq!(scenes.select(Some(3)).unwrap().unwrap().replay.present, following.replay.present);
     }
 
     #[test]

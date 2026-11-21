@@ -588,6 +588,10 @@ impl<B: Backend> Backend for SceneSink<B> {
     fn measure_present_raster(&mut self, surface: Option<Self::Surface>) -> crate::backend::RasterMeasurement {
         self.inner.measure_present_raster(surface)
     }
+    fn last_present_unshown(&self) -> bool {
+        self.inner.last_present_unshown()
+    }
+
     fn take_presented_extent(&mut self) -> Option<(u32, u32)> {
         self.inner.take_presented_extent()
     }

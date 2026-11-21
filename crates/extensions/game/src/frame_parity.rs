@@ -363,6 +363,21 @@ mod tests {
         assert_eq!(reset["error"]["code"], code::UNAVAILABLE);
         assert_eq!(reset["error"]["message"], "test timeline reset");
         assert!(replies.try_recv().is_err());
+
+        request(3);
+        bind(102, 48);
+        reference_error(102);
+        let unshown = reply();
+        assert_eq!(unshown["id"], 3);
+        assert_eq!(unshown["error"]["code"], code::UNAVAILABLE);
+        request(4);
+        bind(103, 49);
+        complete(103, Side::Reference, Ok(image(7)), None);
+        native(103, Ok(image(7)));
+        let shown = reply();
+        assert_eq!(shown["id"], 4);
+        assert_eq!(shown["result"]["tick"], 49);
+        assert_eq!(shown["result"]["max_channel"], 0);
     }
 
     #[test]

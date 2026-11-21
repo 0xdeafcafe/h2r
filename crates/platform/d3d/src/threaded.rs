@@ -1220,7 +1220,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
                 let raster = w.measure_present_raster(surface);
                 w.inner.stamp_present(at);
                 let r = w.surface(surface).and_then(|s| w.inner.present_with_gamma(s, flags, gamma.as_deref()));
-                let complete = r.is_ok() && !w.shared.failed.load(Ordering::Relaxed);
+                let complete = r.is_ok() && !w.inner.last_present_unshown() && !w.shared.failed.load(Ordering::Relaxed);
                 let residency = w.residency.present(complete);
                 if let Some(window) = w.shared.window.get() {
                     use crate::scene_sink::window::DisplayResult;

@@ -168,6 +168,8 @@ pub struct GfxBackend {
     scene_uploads: guest_draw_pass::TextureCache,
     present_hook: Option<PresentHook>,
     guest_present_observer: Option<GuestPresentObserver>,
+    unshown_observer: Option<Box<dyn FnMut(u64) + Send>>,
+    last_present_unshown: bool,
     measure_raster: bool,
     displayed_extent: Option<(u32, u32)>,
     recorded_pass_observer: Option<RecordedPassObserver>,
@@ -358,6 +360,8 @@ impl GfxBackend {
             scene_uploads: Default::default(),
             present_hook: None,
             guest_present_observer: None,
+            unshown_observer: None,
+            last_present_unshown: false,
             measure_raster: false,
             displayed_extent: None,
             recorded_pass_observer: None,
@@ -540,6 +544,11 @@ impl GfxBackend {
         observer: impl FnMut(u64, &GfxContext, &SurfaceStore, SurfaceId, crate::Lighting) + Send + 'static,
     ) {
         self.guest_present_observer = Some(Box::new(observer));
+    }
+
+    /// A scaled display exhausted its last fallback without an image.
+    pub fn observe_unshown_guest_present(&mut self, observer: impl FnMut(u64) + Send + 'static) {
+        self.unshown_observer = Some(Box::new(observer));
     }
 
     /// Observe complete packets before their original pass records. Used by
@@ -1115,6 +1124,11 @@ impl GfxBackend {
         if result.is_err() && from.is_some() {
             // Showing the reference is the scaled backend's final attempt for
             // this guest swap. Even an unshown frame consumes its ordinal.
+            self.last_present_unshown = true;
+            self.displayed_extent = None;
+            if let Some(observer) = &mut self.unshown_observer {
+                observer(self.frame);
+            }
             self.frame += 1;
             self.frame_draw = 0;
         }
@@ -1156,6 +1170,7 @@ impl GfxBackend {
             Some(reference) => (&reference.ctx, &reference.store),
             None => (&self.ctx, &self.store),
         };
+        self.last_present_unshown = false;
         if self.measure_raster {
             self.displayed_extent = store.get(surface).ok().map(|s| (s.desc().width, s.desc().height));
         }
@@ -2199,6 +2214,10 @@ impl Backend for GfxBackend {
         }
     }
 
+    fn last_present_unshown(&self) -> bool {
+        self.last_present_unshown
+    }
+
     fn take_presented_extent(&mut self) -> Option<(u32, u32)> {
         self.measure_raster = false;
         self.displayed_extent.take()
@@ -2439,6 +2458,9 @@ mod tests {
         let back = reference.create_surface(gfx::D3DFormat::LinA8R8G8B8, 8, 8, false).unwrap();
         let observed = Arc::new(Mutex::new(Vec::new()));
         let ordinals = Arc::clone(&observed);
+        let missed = Arc::new(Mutex::new(Vec::new()));
+        let failures = Arc::clone(&missed);
+        display.observe_unshown_guest_present(move |n| failures.lock().unwrap().push(n));
         display.observe_guest_present(move |n, _, _, _, _| ordinals.lock().unwrap().push(n));
 
         // A failed view may still show the reference under the same number.
@@ -2452,10 +2474,13 @@ mod tests {
         display.external_ordering_error = Some("failed reference view".into());
         assert!(display.present_from(Some(&reference), back, 0, None).is_err());
         assert_eq!(display.take_presented_extent(), None);
+        assert!(display.last_present_unshown());
         display.measure_present_raster(None);
         display.present_from(Some(&reference), back, 0, None).unwrap();
         assert_eq!(display.take_presented_extent(), Some((8, 8)));
+        assert!(!display.last_present_unshown());
         assert_eq!(*observed.lock().unwrap(), [1, 3]);
+        assert_eq!(*missed.lock().unwrap(), [2]);
     }
 
     #[test]

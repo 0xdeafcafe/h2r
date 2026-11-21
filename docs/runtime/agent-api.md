@@ -1114,6 +1114,9 @@ h2 agent render.parity '{"arm": true}'
   The request completes at a tick boundary after both render paths
   finish. A new arming interrupts one still waiting. Unavailable
   inputs or a missing reference or private renderer give `UNAVAILABLE`.
+  When the scaled display also fails to show its final 1× fallback,
+  the matching capture and parity request report the failed Swap. A
+  later Swap can still supply its own image.
   A request that receives no game frame within the deferred request
   limit times out. `{"arm": false}` gives `INVALID_PARAMS`.
 - **`sim.hashes`.** The running game's post-tick digests in the rows sim

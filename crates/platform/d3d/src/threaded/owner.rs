@@ -454,7 +454,7 @@ impl<B: Backend> Worker<B> {
                 self.exec_original(cmd);
             }
             match self.surface(surface).and_then(|surface| self.inner.present_with_gamma(surface, flags, gamma.as_deref())) {
-                Ok(()) if self.shared.failed.load(Ordering::Acquire) => failed(n),
+                Ok(()) if self.inner.last_present_unshown() || self.shared.failed.load(Ordering::Acquire) => failed(n),
                 Ok(()) => {
                     outcome = DisplayResult::Ordinary;
                     DECLINED.fetch_add(1, Ordering::Relaxed);
@@ -467,7 +467,7 @@ impl<B: Backend> Worker<B> {
             }
             self.shared.display_capacity.release(n);
         }
-        let residency = self.residency.present(!self.shared.failed.load(Ordering::Relaxed));
+        let residency = self.residency.present(!matches!(&outcome, DisplayResult::Failed));
         if let Some(window) = self.shared.window.get() {
             let extent = self.inner.take_presented_extent().filter(|_| !matches!(&outcome, DisplayResult::Failed));
             window.complete_at_scale(n, outcome, residency, crate::scene_stage::take_local_drops(), raster.finish(extent));

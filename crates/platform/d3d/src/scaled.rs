@@ -1511,6 +1511,10 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         crate::backend::RasterMeasurement { configured: Some(self.scale), guest: surface.map(|s| s.size) }
     }
 
+    fn last_present_unshown(&self) -> bool {
+        self.view.last_present_unshown()
+    }
+
     fn take_presented_extent(&mut self) -> Option<(u32, u32)> {
         self.view.take_presented_extent()
     }

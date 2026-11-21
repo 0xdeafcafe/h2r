@@ -1253,6 +1253,10 @@ pub trait Backend: Send {
     /// A failed or unshown Swap and a backend without an observer return None.
     fn take_presented_extent(&mut self) -> Option<(u32, u32)> { None }
 
+    /// True only when the last ordinary Swap exhausted all display attempts.
+    /// Backends without display feedback leave the outcome unknown.
+    fn last_present_unshown(&self) -> bool { false }
+
     /// Shows a host-only frame between the guest's presents (an
     /// interpolated replay, `crate::interp`): the present hook sees it,
     /// but it is not a guest frame, so frame counters, shader upkeep and

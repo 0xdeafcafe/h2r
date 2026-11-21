@@ -1590,6 +1590,10 @@ where
         self.inner.measure_present_raster(surface)
     }
 
+    fn last_present_unshown(&self) -> bool {
+        self.inner.last_present_unshown()
+    }
+
     fn take_presented_extent(&mut self) -> Option<(u32, u32)> {
         self.inner.take_presented_extent()
     }

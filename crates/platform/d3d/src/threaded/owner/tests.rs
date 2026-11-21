@@ -20,6 +20,7 @@ struct Pixels {
     clears: usize,
     parity_inputs: Vec<u8>,
     probe_reads: usize,
+    unshown: bool,
     hold_present: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
 }
 
@@ -71,9 +72,10 @@ impl Backend for Pixels {
             entered.send(()).map_err(|e| e.to_string())?;
             resume.recv().map_err(|e| e.to_string())?;
         }
-        self.shown.push(self.surfaces[surface as usize]);
+        if !self.unshown { self.shown.push(self.surfaces[surface as usize]); }
         Ok(())
     }
+    fn last_present_unshown(&self) -> bool { self.unshown }
     fn read_surface(
         &mut self,
         surface: u32,
@@ -167,6 +169,35 @@ fn value(gpu: &mut ThreadedBackend<Pixels>, target: u32) -> u8 {
         GuestLayoutKind::Linear { pitch: 4 },
     )
     .unwrap()[0]
+}
+
+#[test]
+fn census_counts_a_terminally_unshown_swap_and_then_an_ordinary_one() {
+    use crate::scene_sink::window::PresentWindow;
+
+    for owner in [false, true] {
+        let window = Arc::new(PresentWindow::new(owner));
+        let mut worker = ThreadedBackend::new(Pixels::default()).unwrap()
+            .with_present_window(Some(Arc::clone(&window)));
+        if owner {
+            worker = worker.with_frame_owner(FrameOwner {
+                select: Box::new(|_| None), declined: |_| {}, failed: |_| {}, stopped: || {},
+            });
+        }
+        let mut sink = crate::SceneSink::new(worker, || None)
+            .with_present_window(Some(Arc::clone(&window)), || true);
+        let target = sink.create_surface(D3DFormat::A8R8G8B8, 1, 1, false).unwrap();
+        window.activate();
+        for unshown in [true, false] {
+            sink.inner_mut().with_inner(move |b| b.unshown = unshown).unwrap();
+            sink.present(target, 0).unwrap();
+        }
+        let shown = sink.inner_mut().with_inner(|b| b.shown.len()).unwrap();
+        assert_eq!(shown, 1);
+        let counters = window.counters();
+        assert_eq!(counters["scene_window_failed"], 1);
+        assert_eq!(counters["scene_window_ordinary"], 1);
+    }
 }
 
 #[test]
