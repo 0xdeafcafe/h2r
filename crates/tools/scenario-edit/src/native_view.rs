@@ -708,7 +708,7 @@ impl NativeWorld {
             .filter(|_| lighting == Lighting::Game && base.is_some())
         {
             // Layer 3 draws in the base look's set ([`base_set`]).
-            for (&layer, plan) in l.plans.iter().filter(|(l, _)| **l != BASE_LAYER) {
+            for (&layer, plan) in l.plans.iter().filter(|(k, _)| **k != BASE_LAYER) {
                 let Some(set) = layers_load::upload_static(
                     &l.view,
                     layer,
