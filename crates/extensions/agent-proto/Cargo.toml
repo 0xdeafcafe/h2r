@@ -13,3 +13,7 @@ mem-watch = { workspace = true, optional = true }
 
 [features]
 serve-memory = ["dep:mem-watch"]
+
+[target.'cfg(windows)'.dependencies]
+socket2 = "0.6"
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_SystemServices"] }

@@ -125,7 +125,7 @@ fn requests_and_responses_round_trip_on_the_wire() {
 fn the_socket_lives_in_the_cache_directory() {
     let p = crate::default_socket();
     if std::env::var_os(crate::ENV).is_none() {
-        assert!(p.ends_with("h2recomp/studio.sock"), "{}", p.display());
+        assert_eq!(p, agent_proto::cache_dir().join("studio.sock"));
     }
-    assert!(crate::output_dir().ends_with("h2recomp/studio"));
+    assert_eq!(crate::output_dir(), agent_proto::cache_dir().join("studio"));
 }

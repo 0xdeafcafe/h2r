@@ -2,7 +2,8 @@
 //! docs/runtime/contract-thin-transfers-flat-ram.md).
 //!
 //! One handler per process, installed on first use: `SIGBUS` and `SIGSEGV`
-//! on Apple systems, `SIGSEGV` on Linux. It knows two things, both held in
+//! on Apple systems, `SIGSEGV` on Linux, and a vectored exception handler
+//! on x64 Windows. It knows two things, both held in
 //! fixed arrays so the handler never allocates or locks:
 //!
 //! - **Regions**: an address range and a callback that runs inside the
@@ -25,10 +26,6 @@
 //! panics. Unregistering ([`Region`] and [`Table`] drops) unpublishes the
 //! entry and then waits until no handler is reading, so a fault racing the
 //! removal never sees freed state.
-//!
-//! Windows (a vectored handler) is not here yet: [`register_region`]
-//! returns [`Error::Unsupported`] there and tables can still be checked
-//! and searched.
 
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering::SeqCst};
@@ -36,6 +33,8 @@ use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering::SeqCst};
 mod table;
 #[cfg(unix)]
 mod unix;
+#[cfg(all(windows, target_arch = "x86_64"))]
+mod windows;
 
 pub use table::{Format, MAX_TABLES, Table, lookup, register_table};
 
@@ -46,7 +45,7 @@ pub const MAX_REGIONS: usize = 16;
 pub enum Error {
     /// This target has no handler yet.
     Unsupported,
-    /// `sigaction` failed, or the previous action resets itself and so
+    /// Handler installation failed, or the previous action resets itself and so
     /// cannot be chained.
     Install,
     /// Every slot is taken.
@@ -87,8 +86,6 @@ impl std::error::Error for Error {}
 pub struct Fault {
     address: usize,
     pc: usize,
-    /// The saved machine context (`ucontext_t`), to move the PC.
-    context: *mut std::ffi::c_void,
 }
 
 impl Fault {
@@ -103,19 +100,9 @@ impl Fault {
     /// Return from the handler to `pc` instead of retrying the
     /// instruction. Every other register is as the fault left it.
     pub fn resume_at(&mut self, pc: usize) {
-        set_saved_pc(self.context, pc);
         self.pc = pc;
     }
 }
-
-#[cfg(unix)]
-fn set_saved_pc(context: *mut std::ffi::c_void, pc: usize) {
-    // SAFETY: `context` is the live saved context of the signal a Fault
-    // was built for; only the handler builds one.
-    unsafe { unix::set_pc(context.cast(), pc) }
-}
-#[cfg(not(unix))]
-fn set_saved_pc(_: *mut std::ffi::c_void, _: usize) {}
 
 /// Runs in the signal handler for a fault in its region: `true` when it
 /// handled the fault (the thread resumes at [`Fault::pc`]), `false` to let
@@ -228,7 +215,7 @@ fn quiesce() {
 }
 
 /// Offer a fault to the region holding `address`. Called by the handler.
-#[cfg_attr(not(unix), allow(dead_code))]
+#[cfg_attr(not(any(unix, all(windows, target_arch = "x86_64"))), allow(dead_code))]
 fn dispatch(fault: &mut Fault) -> bool {
     READERS.fetch_add(1, SeqCst);
     let address = fault.address;
@@ -249,7 +236,11 @@ fn dispatch(fault: &mut Fault) -> bool {
 fn install() -> Result<(), Error> {
     unix::install()
 }
-#[cfg(not(unix))]
+#[cfg(all(windows, target_arch = "x86_64"))]
+fn install() -> Result<(), Error> {
+    windows::install()
+}
+#[cfg(not(any(unix, all(windows, target_arch = "x86_64"))))]
 fn install() -> Result<(), Error> {
     Err(Error::Unsupported)
 }
@@ -264,7 +255,7 @@ mod tests {
 
     #[test]
     fn regions_reject_empty_wrapping_and_overlapping_ranges() {
-        if cfg!(not(unix)) {
+        if cfg!(not(any(unix, all(windows, target_arch = "x86_64")))) {
             return;
         }
         assert_eq!(

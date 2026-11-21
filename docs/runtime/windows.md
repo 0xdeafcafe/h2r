@@ -1,16 +1,38 @@
-# Windows (and the road to Xbox Dev Mode)
+# Windows desktop and Xbox Dev Mode
 
-Status: Built. The runtime and the generated game module build for
-`x86_64-pc-windows-msvc`, cross-compiled from a Mac, and run inside the UWP
-app on an Xbox Series X in Developer Mode ([xbox.md](xbox.md)). The Windows
-desktop path (`h2 play` on a Windows PC) has not been run.
-Code: `crates/recompiler/emit/src/compile.rs` (`Arch::X86_64Windows`), `platform/windows/env.sh`.
-Switch: `H2_EMIT_TARGET=windows`, `H2_XWIN`, `H2_LLD`, `H2_LLVM`, `H2_WINDOWS_TARGET_DIR`, see [switches.md](switches.md).
+Status: The Windows desktop host targets x86-64 MSVC. Playing a disc through to the menu on a PC still needs hardware verification. The UWP host runs on Xbox Series X in Developer Mode.
+Code: `crates/apps/app/src/shell.rs`, `crates/recompiler/emit/src/compile.rs`, `platform/windows/env.sh`.
+Switch: [switches.md](switches.md).
 
-The module and the runtime are the Xbox app's: the UWP app
-(`crates/apps/uwp-host`, `platform/xbox`) is documented in [xbox.md](xbox.md).
-This page covers the cross-toolchain, the module's target and what the
-runtime does on Windows.
+## Playing on a PC
+
+Install stable x64 MSVC Rust, Visual Studio Build Tools with the Desktop
+development with C++ workload and Windows SDK, and LLVM 22 for x64 Windows.
+Open an **x64 Native Tools Command Prompt**. Put the LLVM bin directory on
+PATH. Clang uses the installed CRT headers and the linker uses the MSVC
+and Windows SDK libraries.
+
+```bat
+set "PATH=%ProgramFiles%\LLVM\bin;%PATH%"
+cargo build --release -p cli
+target\release\h2.exe play "D:\Games\Halo 2.iso"
+```
+
+Use your own disc image. The window handles keyboard, mouse and resize
+events through winit. Resizing reconfigures the wgpu surface to the
+window's physical pixel size. The Metal live-resize helper is macOS-only.
+The Xbox app embeds a DX12 surface in a XAML panel and uses its own
+packaging and controls. See [xbox.md](xbox.md).
+
+## Windows CI
+
+[The Windows workflow](../../.github/workflows/windows.yml) runs on
+`windows-latest` for pushes to `windows-desktop` and manual dispatches.
+It checks the workspace with test targets, runs synthetic CPU and module
+tests, and starts the linked desktop executable. The separate wgpu backend
+PR owns device and surface setup, render passes, shaders, GPU readback and
+Metal integration. The desktop host uses wgpu’s default backend selection. Disc boot, hardware swap-chain presentation,
+controller input and WASAPI playback need a Windows PC.
 
 ## Toolchain (on the Mac)
 
@@ -53,7 +75,7 @@ cargo check -Zbuild-std --target x86_64-pc-windows-msvc --workspace
 | codegen | `-O1` (`H2_OPT`) | `-O2` unless `H2_OPT` says otherwise, and `-march=x86-64-v3 -mtune=znver2 -fno-math-errno` (`Arch::default_opt`, `Arch::codegen_flags`) |
 | objects | `shard.arm64.<key>.o` | `shard.x86_64-windows.<key>.o` (keyed apart) |
 | archive | libtool | `llvm-lib` (Apple's libtool takes only Mach-O) |
-| link | `clang -dynamiclib` | `lld-link /dll /noimplib`, against the splat's CRT, UCRT and um libs |
+| link | `clang -dynamiclib` | `lld-link /dll /noimplib`, against the native or cross-toolchain libraries |
 | module | `libh2game.dylib` | `h2game.dll` |
 | exports | every global | only what is marked `H2_EXPORT` (see below) |
 | stamp | unchanged | ends `target x86_64-pc-windows-msvc` |
@@ -114,8 +136,10 @@ passes no CRT state across the host boundary ([xbox.md](xbox.md)).
 
 | Area | macOS / Unix | Windows |
 | --- | --- | --- |
-| guest memory, fastmem, threads, preemption | portable Rust (no mmap or signals on the game path) | as is |
-| rendering | wgpu on Metal | wgpu on DX12 (wgpu's default features) |
+| guest RAM and faults | platform mappings and POSIX signal handlers | guarded VirtualAlloc reservations, private file views for restores, paged address translation and x64 vectored exception handling |
+| local agent API | Unix domain sockets | pathname AF_UNIX sockets on Windows 10 version 1803 or later |
+| generated game code | native object files and shared library | Cranelift fast tier or Clang, COFF objects and a DLL loaded through libloading |
+| rendering | wgpu on Metal | wgpu default selection on desktop, DX12 in the Xbox app |
 | host-owned surface (`app::embedded`) | `CAMetalLayer` | XAML `SwapChainPanel` (`app::embedded::host_surface`), the UWP seam |
 | windowed shell, keyboard, mouse | winit | winit |
 | gamepads | GameController, IOKit HID | gilrs, whose Windows backend is Windows.Gaming.Input, which UWP also has |
@@ -126,7 +150,7 @@ passes no CRT state across the host boundary ([xbox.md](xbox.md)).
 | Live sockets (Live on) | BSD sockets | stand-in: every socket fails with WSASYSNOTREADY (Winsock port to do) |
 | movies (Bink, AVFoundation) | AVFoundation | compiled out: movies are skipped |
 | `h2 emit` output lock | flock | std `File::lock` (LockFileEx) |
-| perf sampler, HID | Mach and IOKit | compiled out |
+| perf sampler, HID | Mach and IOKit | x64 Windows sampler, gilrs for pads |
 | Ctrl-C in `h2 play` | signal watcher | none |
 | live-server identity files | mode 0600 | the profile directory's ACL |
 

@@ -377,7 +377,17 @@ fn memory_bytes() -> Option<u64> {
         };
         (r == 0 && v > 0).then_some(v)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+        let mut status = MEMORYSTATUSEX {
+            dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+            ..Default::default()
+        };
+        // Windows requires dwLength before it writes the result.
+        (unsafe { GlobalMemoryStatusEx(&mut status) } != 0).then_some(status.ullTotalPhys)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let text = std::fs::read_to_string("/proc/meminfo").ok()?;
         let kb: u64 = text
@@ -468,18 +478,11 @@ pub const TIMING_FILE: &str = "import-timing.txt";
 
 /// The calling thread's CPU time, for [`h1map::phase`].
 fn thread_cpu() -> Duration {
-    let mut t = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: `t` is a valid timespec to write.
-    if unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut t) } != 0 {
-        return Duration::ZERO;
-    }
-    Duration::new(t.tv_sec as u64, t.tv_nsec as u32)
+    Duration::from_nanos(timeline::host::thread_cpu_ns().unwrap_or_default())
 }
 
 /// The process's CPU time and peak memory so far, for the report.
+#[cfg(unix)]
 fn usage_text() -> String {
     // SAFETY: `ru` is a valid rusage to write.
     let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
@@ -500,6 +503,13 @@ fn usage_text() -> String {
         rss / 1e9,
         ru.ru_minflt
     )
+}
+
+#[cfg(not(unix))]
+fn usage_text() -> String {
+    timeline::host::process_cpu_ns().map_or_else(String::new, |ns| {
+        format!("\nprocess: {:.1} s CPU\n", Duration::from_nanos(ns).as_secs_f64())
+    })
 }
 
 /// The timing report: the run's wall time and workers, each phase's time

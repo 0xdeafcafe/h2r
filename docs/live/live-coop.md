@@ -1431,7 +1431,8 @@ It:
 
 1. Starts a Live server in its own process on `127.0.0.1:8075`
    (`--server-port`), with the file store under `--root` (by default
-   `~/Library/Application Support/h2recomp/coop-test`), so accounts,
+   `%LOCALAPPDATA%\h2recomp\coop-test` on Windows and
+   `~/Library/Application Support/h2recomp/coop-test` on Unix), so accounts,
    friends and profiles last between runs. The web app is served there
    too when it is built.
 2. Makes an account per game: Alpha hosts, Bravo joins (`--players N`, up

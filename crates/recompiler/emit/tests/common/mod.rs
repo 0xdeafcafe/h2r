@@ -54,7 +54,7 @@ pub fn build_split(owners: &[Owner], header: &Path, name: &str, codegen: emit::C
     compile::install_header(&src, header).unwrap();
     let jobs = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
     let b = compile::build(&src, &dir, Arch::host(), jobs).unwrap_or_else(|e| panic!("{e}"));
-    let dylib = dir.join(format!("lib{name}.dylib"));
+    let dylib = dir.join(Arch::host().module_file_name());
     compile::host_dylib(&b, &src, &[("bridge.c", BRIDGE)], &dylib).unwrap_or_else(|e| panic!("{e}"));
     // SAFETY: built just now from this crate's output for this host.
     unsafe { Generated::load(&dylib) }.unwrap()

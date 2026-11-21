@@ -13,6 +13,8 @@ use std::collections::BTreeMap;
 
 mod client;
 pub mod discover;
+#[cfg(any(unix, windows))]
+pub mod local_socket;
 pub mod collision;
 pub mod debug;
 pub mod editor;
@@ -70,7 +72,8 @@ pub const XBOX_PORT: u16 = 4720;
 
 /// Where `h2 serve` listens and `h2 agent` connects when neither is told:
 /// `$H2_AGENT`, else the user's cache directory (`~/Library/Caches/h2recomp`
-/// on macOS, `$XDG_CACHE_HOME/h2recomp` or `~/.cache/h2recomp` elsewhere).
+/// on macOS, `%LOCALAPPDATA%\h2recomp\cache` on Windows,
+/// `$XDG_CACHE_HOME/h2recomp` or `~/.cache/h2recomp` elsewhere).
 /// Not under `$TMPDIR`, which differs between agent sessions.
 pub fn default_socket() -> std::path::PathBuf {
     if let Some(p) = std::env::var_os(ENV).filter(|p| !p.is_empty()) {
@@ -80,10 +83,18 @@ pub fn default_socket() -> std::path::PathBuf {
 }
 
 /// The user's cache directory for h2recomp (`~/Library/Caches/h2recomp`
-/// on macOS, `$XDG_CACHE_HOME/h2recomp` or `~/.cache/h2recomp` elsewhere).
+/// on macOS, `%LOCALAPPDATA%\h2recomp\cache` on Windows,
+/// `$XDG_CACHE_HOME/h2recomp` or `~/.cache/h2recomp` elsewhere).
 /// The agent keeps its captures (`captures/`) here. It also defaults to
 /// this root for traces, flights and input logs.
 pub fn cache_dir() -> std::path::PathBuf {
+    if cfg!(windows) {
+        return std::env::var_os("LOCALAPPDATA")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join("h2recomp")
+            .join("cache");
+    }
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
     let cache = if cfg!(target_os = "macos") {
         home.map(|h| h.join("Library/Caches"))

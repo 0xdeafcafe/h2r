@@ -72,7 +72,7 @@ pub fn socket_from_env() -> Option<PathBuf> {
 /// ([`agent_proto::discover`]). `None` when `H2_AGENT` switches it off, or
 /// where there are no Unix sockets.
 pub fn discoverable_socket() -> Option<PathBuf> {
-    if !cfg!(unix) || agent_proto::discover::off_from_env() {
+    if !cfg!(any(unix, windows)) || agent_proto::discover::off_from_env() {
         return None;
     }
     let path = agent_proto::discover::process_socket();

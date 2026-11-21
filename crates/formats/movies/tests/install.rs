@@ -2,7 +2,9 @@ mod support;
 use movies::install::{InstallOptions, InstallStatus, discover, install};
 use movies::{Manifest, locate};
 use std::fs;
-use support::{Temp, disc, media, stub_ffmpeg};
+#[cfg(unix)]
+use support::stub_ffmpeg;
+use support::{Temp, disc, media};
 
 #[test]
 fn discovers_case_insensitively_and_ignores_other_files() {

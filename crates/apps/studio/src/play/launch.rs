@@ -15,6 +15,8 @@
 
 use std::path::{Path, PathBuf};
 
+use agent_proto::discover::is_socket;
+
 /// Where the `h2` binary is: the one given, else `$H2_BIN`, else the `h2`
 /// beside the editor's own executable (a checkout's `target/<profile>/h2`
 /// after `cargo build -p cli --bin h2`), else cargo's install directory
@@ -32,17 +34,18 @@ pub fn find_h2_from(given: Option<&Path>, exe: Option<&Path>) -> Option<PathBuf>
     if let Some(p) = std::env::var_os("H2_BIN").filter(|v| !v.is_empty()) {
         return Some(PathBuf::from(p));
     }
+    let binary = format!("h2{}", std::env::consts::EXE_SUFFIX);
     if let Some(p) = exe
         .and_then(Path::parent)
-        .map(|d| d.join("h2"))
+        .map(|d| d.join(&binary))
         .filter(|p| p.is_file())
     {
         return Some(p);
     }
     let cargo_home = std::env::var_os("CARGO_HOME")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cargo")));
-    if let Some(p) = cargo_home.map(|c| c.join("bin").join("h2"))
+        .or_else(|| std::env::home_dir().map(|home| home.join(".cargo")));
+    if let Some(p) = cargo_home.map(|c| c.join("bin").join(&binary))
         && p.is_file()
     {
         return Some(p);
@@ -50,7 +53,7 @@ pub fn find_h2_from(given: Option<&Path>, exe: Option<&Path>) -> Option<PathBuf>
     std::env::var_os("PATH")
         .and_then(|path| {
             std::env::split_paths(&path)
-                .map(|d| d.join("h2"))
+                .map(|d| d.join(&binary))
                 .find(|p| p.is_file())
         })
         .or_else(|| {
@@ -271,19 +274,6 @@ pub fn sockets_in(dir: &Path) -> Vec<PathBuf> {
     v
 }
 
-fn is_socket(p: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::FileTypeExt;
-        std::fs::metadata(p).is_ok_and(|m| m.file_type().is_socket())
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = p;
-        false
-    }
-}
-
 #[cfg(test)]
 mod tests {
     #[test]
@@ -437,16 +427,17 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn sockets_are_found_in_a_directory() {
         let dir = std::env::temp_dir().join(format!("h2e-sock-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let s = dir.join("a.sock");
-        let _l = std::os::unix::net::UnixListener::bind(&s).unwrap();
+        let _l = agent_proto::local_socket::UnixListener::bind(&s).unwrap();
         std::fs::write(dir.join("not-a-socket.sock"), b"").unwrap();
         assert_eq!(sockets_in(&dir), vec![s]);
+        drop(_l);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

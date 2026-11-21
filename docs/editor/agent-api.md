@@ -33,9 +33,9 @@ Two ways to have an editor to talk to:
   killed.
 
 The socket is `--socket`, else `$H2_STUDIO`, else `studio.sock` in the
-cache directory (`~/Library/Caches/h2recomp/` on macOS, beside the game's
-`agent.sock`). It is a Unix socket only, mode 0600; the editor never
-listens on TCP, and the client refuses a `tcp://` path.
+game's cache directory beside `agent.sock`. The editor accepts local AF_UNIX
+connections. The socket has mode 0600 on Unix. On Windows 10 version 1803
+or later it inherits the directory's ACL. The client refuses a `tcp://` path.
 
 The client is `h2 studio` (or `h2-editor call`, the same code):
 

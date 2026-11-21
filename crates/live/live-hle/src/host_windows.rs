@@ -21,6 +21,9 @@ impl Socket {
     pub fn new(_datagram: bool) -> io::Result<Self> {
         unsupported()
     }
+    pub fn low_delay(&self) -> io::Result<()> {
+        match self.never {}
+    }
     pub fn bind(&self, _a: SocketAddrV4) -> io::Result<()> {
         match self.never {}
     }

@@ -6,8 +6,8 @@
 //! user sees each edit as it lands.
 
 use std::io::{BufRead, BufReader, Read, Write};
-#[cfg(unix)]
-use std::os::unix::net::{UnixListener, UnixStream};
+#[cfg(any(unix, windows))]
+use agent_proto::local_socket::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -45,6 +45,7 @@ impl Incoming {
 pub struct Listener {
     path: PathBuf,
     stop: Arc<AtomicBool>,
+    acceptor: Option<thread::JoinHandle<()>>,
 }
 
 impl Listener {
@@ -56,9 +57,8 @@ impl Listener {
 /// Listens at `path` and queues requests on the returned receiver. A
 /// socket file left by an editor that's gone is replaced; one something
 /// still answers on is an error, as is anything that isn't a socket.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub fn listen(path: &Path) -> std::io::Result<(Listener, mpsc::Receiver<Incoming>)> {
-    use std::os::unix::fs::{FileTypeExt, PermissionsExt};
     let invalid = |m: String| std::io::Error::new(std::io::ErrorKind::InvalidInput, m);
     if path.to_str().is_some_and(|s| s.starts_with("tcp:")) {
         return Err(invalid(format!(
@@ -66,30 +66,14 @@ pub fn listen(path: &Path) -> std::io::Result<(Listener, mpsc::Receiver<Incoming
             path.display()
         )));
     }
-    if let Ok(meta) = std::fs::symlink_metadata(path) {
-        if !meta.file_type().is_socket() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
-                format!("{}: a file that isn't a socket is there", path.display()),
-            ));
-        }
-        if UnixStream::connect(path).is_ok() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::AddrInUse,
-                format!("{}: another editor is listening there", path.display()),
-            ));
-        }
-        std::fs::remove_file(path)?;
-    }
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir)?;
     }
-    let listener = UnixListener::bind(path)?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    let listener = agent_proto::local_socket::listen(path)?;
     let (tx, rx) = mpsc::channel();
     let stop = Arc::new(AtomicBool::new(false));
     let s = Arc::clone(&stop);
-    thread::Builder::new()
+    let acceptor = thread::Builder::new()
         .name("studio-accept".into())
         .spawn(move || {
             for conn in listener.incoming() {
@@ -107,12 +91,13 @@ pub fn listen(path: &Path) -> std::io::Result<(Listener, mpsc::Receiver<Incoming
         Listener {
             path: path.to_path_buf(),
             stop,
+            acceptor: Some(acceptor),
         },
         rx,
     ))
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub fn listen(path: &Path) -> std::io::Result<(Listener, mpsc::Receiver<Incoming>)> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
@@ -123,14 +108,16 @@ pub fn listen(path: &Path) -> std::io::Result<(Listener, mpsc::Receiver<Incoming
 impl Drop for Listener {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
-        #[cfg(unix)]
-        let _ = UnixStream::connect(&self.path);
+        #[cfg(any(unix, windows))]
+        if UnixStream::connect(&self.path).is_ok() && let Some(thread) = self.acceptor.take() {
+            let _ = thread.join();
+        }
         let _ = std::fs::remove_file(&self.path);
     }
 }
 
 /// One connection: a line in, its answer out, in order.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn serve(conn: UnixStream, tx: mpsc::Sender<Incoming>) {
     let _connection = mem_watch::agent_activity::connection();
     let _scope = mem_watch::scope("agent.socket");

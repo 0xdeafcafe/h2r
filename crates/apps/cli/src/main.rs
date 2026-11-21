@@ -14,17 +14,12 @@ use xiso::Xiso;
 #[global_allocator]
 static ALLOCATOR: mem_watch::TaggedAllocator = mem_watch::TaggedAllocator;
 
-#[cfg(unix)]
 mod agent_cmd;
-#[cfg(unix)]
 mod agent_ui_crawl;
 mod agent_flight;
 mod agent_maps;
-#[cfg(unix)]
 mod agent_hot_cmd;
-#[cfg(unix)]
 mod agent_raw;
-#[cfg(unix)]
 mod agent_run;
 mod agent_sim;
 mod sim_cmd;
@@ -384,7 +379,15 @@ fn perf_cmd(cmd: &str, _: Vec<String>) -> Result<()> {
     )
 }
 
+// Heap profiling (docs/perf/profiling.md, "Heap profile"): every allocation
+// goes through dhat, which writes dhat-heap.json when `main` returns.
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 fn main() -> Result<()> {
+    #[cfg(feature = "dhat-heap")]
+    let _heap = dhat::Profiler::new_heap();
     // Live presence says which build this is (docs/game/game-options.md 3).
     #[cfg(feature = "desktop")]
     boot::live_glue::set_build(app::BuildInfo::baked().sha);
@@ -406,10 +409,7 @@ fn main() -> Result<()> {
         "host" => host_cmd::run(args.collect()),
         "theater" => theater_cmd::run(args.collect()),
         "film" => film_cmd::run(args.collect()),
-        #[cfg(unix)]
-        "agent" => agent_cmd::run(args.collect()),
-        #[cfg(not(unix))]
-        "agent" => bail!("h2 agent needs Unix sockets"),
+                "agent" => agent_cmd::run(args.collect()),
         #[cfg(feature = "desktop")]
         _ => desktop_command(cmd, args),
         #[cfg(not(feature = "desktop"))]
@@ -1215,10 +1215,7 @@ fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
     if !reuse {
         emit_cache::invalidate(&out)?;
         let t = Instant::now();
-        let (mut a, _) = boot::analyze_cached(&x, None)?;
-        if boot::has_retail_render_sites(&x) {
-            a.expose_instructions(boot::scene_effect_instruction_entries());
-        }
+        let (a, _) = boot::analyze_cached(&x, None)?;
         println!("analyze: {:.3}s", t.elapsed().as_secs_f64());
         let t = Instant::now();
         let owners = emit::plan_image(&a, &x, passes)?;
@@ -1253,12 +1250,11 @@ fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
         println!("total: {:.3}s", total.elapsed().as_secs_f64());
         return Ok(());
     }
-    let header = opts
-        .abi_header
-        .clone()
-        .or_else(|| std::env::var_os("H2ABI_HEADER").map(PathBuf::from))
-        .unwrap_or_else(|| repo_root().join("crates/runtime/runtime/include/h2abi.h"));
-    emit::compile::install_header(&src, &header)?;
+    if let Some(header) = opts.abi_header.clone().or_else(|| std::env::var_os("H2ABI_HEADER").map(PathBuf::from)) {
+        emit::compile::install_header(&src, &header)?;
+    } else {
+        boot::install_abi_header(&src)?;
+    }
     let jobs = opts.jobs.unwrap_or_else(emit::compile::default_jobs);
     let cache_max = emit::compile::obj_cache_max()?;
     let mut host = None;

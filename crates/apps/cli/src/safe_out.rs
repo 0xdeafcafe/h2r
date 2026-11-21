@@ -111,7 +111,29 @@ fn open_real_dir(path: &Path) -> io::Result<File> {
         use std::os::unix::fs::OpenOptionsExt;
         OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW).open(path)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+            FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+
+        // Open the directory itself, including at a junction. Exclude delete
+        // sharing so its name stays put while the output path is in use.
+        let directory = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)?;
+        let metadata = directory.metadata()?;
+        if metadata.is_dir() && metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+            Ok(directory)
+        } else {
+            Err(io::ErrorKind::InvalidInput.into())
+        }
+    }
+    #[cfg(not(any(windows, unix)))]
     {
         if fs::symlink_metadata(path)?.is_dir() { File::open(path) } else { Err(io::ErrorKind::InvalidInput.into()) }
     }

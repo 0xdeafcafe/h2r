@@ -10,12 +10,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// Drop removes unfinished output; publish replaces the destination name.
 pub struct Temporary {
     path: PathBuf,
-    file: File,
     published: bool,
 }
 
 impl Temporary {
     pub fn new(destination: &Path) -> io::Result<Self> {
+        // External tools open their output themselves. Keep the reservation
+        // on disk, and close its handle before a Windows linker opens it.
+        Self::create(destination).map(|(temporary, _)| temporary)
+    }
+
+    fn create(destination: &Path) -> io::Result<(Self, File)> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         if destination.file_name().is_none() {
             return Err(io::Error::new(
@@ -32,11 +37,7 @@ impl Temporary {
             let path = parent.join(format!(".h2-output-{}-{number}.tmp", std::process::id()));
             match OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(file) => {
-                    return Ok(Self {
-                        path,
-                        file,
-                        published: false,
-                    });
+                    return Ok((Self { path, published: false }, file));
                 }
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(error) => return Err(error),
@@ -79,15 +80,16 @@ impl Drop for Temporary {
 /// Write through a fresh inode, then atomically replace the old directory
 /// entry. Existing hard links retain their previous bytes and inode.
 pub fn replace(destination: &Path, content: &[u8]) -> io::Result<()> {
-    let mut temporary = Temporary::new(destination)?;
-    temporary.file.write_all(content)?;
+    let (temporary, mut file) = Temporary::create(destination)?;
+    file.write_all(content)?;
+    drop(file);
     temporary.publish(destination)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::MetadataExt;
+
 
     #[test]
     fn replacement_detaches_hard_links_and_failed_publication_cleans_up() {
@@ -102,10 +104,6 @@ mod tests {
         replace(&output, b"new output").unwrap();
         assert_eq!(fs::read(&sentinel).unwrap(), b"original");
         assert_eq!(fs::read(&output).unwrap(), b"new output");
-        assert_ne!(
-            fs::metadata(&sentinel).unwrap().ino(),
-            fs::metadata(&output).unwrap().ino()
-        );
         let temporary = Temporary::new(&output).unwrap();
         let reserved = temporary.path().to_path_buf();
         assert!(temporary.require_nonempty().is_err());

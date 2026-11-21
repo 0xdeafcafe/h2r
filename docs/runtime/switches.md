@@ -28,6 +28,7 @@ An `impl.` name is an implementation switch
 | `H2_AIM_ASSIST` | aim-assist strength. Its Controls row appears on iOS and is editable from the main menu ([aim-assist.md](../game/aim-assist.md)) |
 | `H2_PAD_MUTE` | DualSense mute button and LED. Locks the Mute Button row in Voice ([playstation-audio.md](../audio/playstation-audio.md)) |
 | `--aspect source\|4:3\|16:9` | Desktop presentation shape. Source (default) follows the drawable in Native resolution. The fixed shapes fit inside it ([app.md](app.md)). |
+| `H2_STEAM_KEYBOARD=0` | on Linux under Steam, keeps Steam's on-screen keyboard closed when the game's virtual keyboard gains focus after controller input ([host-keyboard.md](../input/host-keyboard.md#steams-on-screen-keyboard)) |
 | `H2_LEVEL`, `H2_DIFFICULTY` | boot straight into a level ([level-boot.md](level-boot.md)) |
 | `H2_MAP_DIR` | Startup directory for disc map overrides. The first lookup, including a directory listing, selects the source for each map. A paired editor can request a separate play copy. [Map overrides](storage.md#map-overrides) |
 | `H2_MAPPACK=0`, `H2_HALO1=0` | Skip automatic import of the adjacent Map Pack or Halo 1 disc ([map pack](../game/map-pack.md), [Halo 1](../halo1/campaign.md)). |
@@ -115,6 +116,7 @@ the final result through that directory.
 | `frame-scene.layers` | off; with the native renderer on, the scene's layers 1, 5, 7, 8 and 20 draw their clusters' and placements' static items from the scene's plan, the rest on the D3D path; outcomes in `render.scene` as `layer_plan_*` ([framescene.md](../graphics/framescene.md), slice 4) |
 | `frame-scene.sink` | off; with the native renderer on, the device's scene sink files each guest D3D op by the frame's slot, names side targets and counts readbacks; the D3D backend still draws everything. `render.scene` reports it as `carried` and `scene_carried_*`, `scene_readback*` ([framescene.md](../graphics/framescene.md), slice 6) |
 | `H2_PIPELINE_CACHE`, `H2_GFX_COMPILE_THREADS`, `H2_VERTEX_CACHE_MB`, `H2_SMOOTH_TEXT`, `H2_RENDER_OVERRIDES` | D3D pipeline cache and sibling native descriptor archive, D3D compile workers, vertex cache budget, glyph smoothing, hot render overrides |
+| `WGPU_BACKEND` | the wgpu backends the desktop shell's window (`app::shell`) and `gfx::GfxContext::headless` may use, a comma list (`vulkan`, `metal`, `dx12`, `gl`); unset, every backend on Apple and Windows hosts and Vulkan on other Unix (`gfx::instance`, [linux.md](linux.md#desktop-build)). Other wgpu callers ignore it |
 | `H2_LOCKSTEP*` | Lockstep settings |
 | `H2_INPUT_RECORD`, `H2_INPUT_REPLAY` | Record or replay the guest's input reads. A boot with either tap excludes editor object edits and map reloads. [Input](agent-api.md#input-act-like-a-player) |
 | `H2_FILM_OUT`, `H2_FILM_DIR` | Recording destination and film library location ([film format](../game/film-format.md)). |

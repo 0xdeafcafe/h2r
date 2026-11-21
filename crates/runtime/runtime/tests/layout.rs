@@ -1,5 +1,5 @@
 //! Rust layouts are constant assertions on every compiled target. Clang checks
-//! every header field against those values for the macOS and Linux targets.
+//! every header field against those values for the macOS, Linux and Windows targets.
 use runtime::{CpuAbi, TransferAbi, cpu::X87Abi};
 use std::{
     fs,
@@ -22,7 +22,7 @@ const _: () = {
 };
 
 #[test]
-fn c_header_matches_every_rust_field_on_macos_and_linux() {
+fn c_header_matches_every_rust_field_on_supported_targets() {
     let mut source = String::from("#include \"h2abi.h\"\n");
     macro_rules! check {
         ($ty:ty, $($field:ident),+ $(,)?) => { $( source.push_str(&format!(
@@ -117,6 +117,7 @@ fn c_header_matches_every_rust_field_on_macos_and_linux() {
         "arm64-apple-macos14",
         "x86_64-apple-macos10.15",
         "x86_64-unknown-linux-gnu",
+        "x86_64-pc-windows-msvc",
     ] {
         let output = Command::new("clang")
             .args([
@@ -153,7 +154,7 @@ fn default_version_probes_link_in_multiple_generated_objects() {
     fs::write(&a,"#include \"h2abi.h\"\nH2_DEFINE_GENERATED_ABI()\nuint32_t version_a(void) { return h2gen_abi_version(); }\n").unwrap();
     fs::write(&b,"#include \"h2abi.h\"\nH2_DEFINE_GENERATED_ABI()\nuint32_t version_b(void) { return h2gen_abi_version(); }\n").unwrap();
     fs::write(&main,"#include \"h2abi.h\"\nuint32_t version_a(void); uint32_t version_b(void);\nint main(void) { return (version_a() == H2_ABI_VERSION && version_b() == H2_ABI_VERSION) ? 0 : 1; }\n").unwrap();
-    let binary = directory.join("modules");
+    let binary = directory.join(format!("modules{}", std::env::consts::EXE_SUFFIX));
     let output = Command::new("clang")
         .args(["-std=c11", "-Wall", "-Wextra", "-Werror", "-I"])
         .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/include"))

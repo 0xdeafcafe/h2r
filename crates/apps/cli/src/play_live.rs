@@ -1532,6 +1532,7 @@ mod tests {
 
     /// A test-only cloudflared: prints a quick tunnel URL, records its
     /// arguments and pid, then waits to be stopped.
+    #[cfg(unix)]
     fn fake_cloudflared(dir: &Path) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let bin = dir.join("bin");
@@ -1551,6 +1552,7 @@ mod tests {
         p
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_tunnelled_session_publishes_the_url_and_keeps_signin_local() {
         let dir = temp("tunnel");
@@ -1623,6 +1625,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_named_tunnel_is_set_up_before_the_session_publishes_it() {
         use std::os::unix::fs::PermissionsExt;
