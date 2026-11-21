@@ -9,9 +9,10 @@ at the API level; it does not emulate the NV2A GPU. `crates/platform/d3d`
 ([d3d.md](d3d.md)) calls into it from the D3D entry points and from the
 push-buffer methods the game writes inline.
 
-Nothing here needs the disc. `cargo test -p gfx` covers everything except a
-handful of GPU smoke tests (`tests/headless.rs`), which run on any machine with
-a wgpu adapter and skip themselves otherwise.
+The graphics tests use synthetic geometry and textures. The headless suite
+in `crates/platform/gfx/tests/headless.rs` exercises drawing and readback on
+a wgpu adapter. The `software_vulkan_renders_and_reads_back` test requires a
+Vulkan CPU adapter and runs explicitly in [Windows CI](../runtime/windows.md).
 
 ## Layers
 
