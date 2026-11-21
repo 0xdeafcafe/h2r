@@ -24,7 +24,7 @@ fn int32(n: i64, pos: Pos) -> R<i32> {
 }
 
 /// Fields every player, team, object or squad has, read through an entry.
-const FIELDS: &[(Ty, &str, u16)] = &[
+pub(crate) const FIELDS: &[(Ty, &str, u16)] = &[
     (Ty::Player, "team", caps::id::TEAM_OF),
     (Ty::Player, "alive", caps::id::ALIVE),
     (Ty::Player, "score", caps::id::PLAYER_SCORE),

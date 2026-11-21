@@ -5,7 +5,10 @@
 //! the server, so the web app needs no wasm toolchain: `check` measures a
 //! script (`rules::workbench::check`) and `run` steps a scenario over
 //! `rules::fake::FakeGame` (`rules::workbench::run`). Both are public and
-//! rate-limited per client address.
+//! rate-limited per client address. `ide` answers the web editor's
+//! completion, hover, signature, definition, references, tokens, outline,
+//! format and diagnostics requests from `rules::ide`, in LSP's shapes, at
+//! the same rate in a bucket of its own.
 //!
 //! A signed-in account saves a script that verifies: a server-signed
 //! `RulesSaved` event on `rules-<hash>` holds its source, and the first
@@ -528,6 +531,48 @@ fn trace_view(t: workbench::Trace) -> TraceView {
     }
 }
 
+/// `POST /v1/rules/ide`'s body: the source, the operation, and the place
+/// (0-based line, UTF-16 character) for the operations that take one.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IdeBody {
+    source: String,
+    op: String,
+    #[serde(default)]
+    line: Option<u32>,
+    #[serde(default)]
+    character: Option<u32>,
+}
+
+/// One editor operation over `rules::ide`, answered in LSP's shapes.
+fn ide_answer(b: &IdeBody) -> ApiResult<serde_json::Value> {
+    use rules::ide;
+    let at = || match (b.line, b.character) {
+        (Some(line), Some(character)) => Ok(ide::Position::new(line, character)),
+        _ => Err(invalid(format!("op {} needs line and character", b.op))),
+    };
+    let src = b.source.as_str();
+    Ok(match b.op.as_str() {
+        "complete" => json!(ide::complete(src, at()?)),
+        "hover" => json!(ide::hover(src, at()?)),
+        "signature" => json!(ide::signature_help(src, at()?)),
+        "definition" => json!(ide::definition(src, at()?)),
+        "references" => json!(ide::references(src, at()?)),
+        "tokens" => json!({"legend": ide::LEGEND, "data": ide::semantic_tokens(src)}),
+        "symbols" => json!(ide::symbols(src)),
+        "diagnostics" => json!(ide::diagnostics(src)),
+        "format" => match ide::format(src) {
+            Ok(text) => json!({ "text": text }),
+            Err(e) => json!({"error": e.to_string(), "line": e.line, "col": e.col}),
+        },
+        other => {
+            return Err(invalid(format!(
+                "unknown op {other:?}: complete, hover, signature, definition, references, tokens, symbols, format or diagnostics"
+            )));
+        }
+    })
+}
+
 // ---------- the service ----------
 
 fn source_of(body: Result<Bytes, BytesRejection>) -> ApiResult<SourceBody> {
@@ -569,6 +614,19 @@ impl Live {
             Err(ApiError::new(
                 ErrorCode::RateLimited,
                 "too many checks; try again shortly",
+            ))
+        }
+    }
+
+    /// Charges an editor request to the client's own bucket, at the
+    /// workbench's rate.
+    fn limit_ide(&self, ip: &str) -> ApiResult<()> {
+        if self.rules_ide_rate.allow(ip) {
+            Ok(())
+        } else {
+            Err(ApiError::new(
+                ErrorCode::RateLimited,
+                "too many editor requests; try again shortly",
             ))
         }
     }
@@ -700,6 +758,22 @@ async fn post_run(
     }
 }
 
+async fn post_ide(
+    State(live): Shared,
+    Extension(ClientIp(ip)): Extension<ClientIp>,
+    body: Result<Bytes, BytesRejection>,
+) -> ApiResult<Response> {
+    live.limit_ide(&ip)?;
+    let bytes = body_bytes(body)?;
+    let b: IdeBody = serde_json::from_slice(&bytes).map_err(|e| invalid(format!("body: {e}")))?;
+    capped(&b.source)?;
+    Ok(crate::http::json(StatusCode::OK, &ide_answer(&b)?))
+}
+
+async fn get_ide_legend() -> Response {
+    crate::http::json(StatusCode::OK, &json!({ "legend": rules::ide::LEGEND }))
+}
+
 async fn get_builtin(State(live): Shared, headers: HeaderMap) -> ApiResult<Response> {
     live.authorize_read(bearer(&headers))?;
     let items: Vec<_> = rules::builtin::ALL
@@ -809,6 +883,8 @@ pub(crate) fn routes() -> Router<Arc<Live>> {
         .route("/v1/rules", get(get_list).post(post_save))
         .route("/v1/rules/check", post(post_check))
         .route("/v1/rules/run", post(post_run))
+        .route("/v1/rules/ide", post(post_ide))
+        .route("/v1/rules/ide/legend", get(get_ide_legend))
         .route("/v1/rules/builtin", get(get_builtin))
         .route("/v1/rules/{hash}", get(get_script))
         .route("/v1/rules/{hash}/ir", get(get_ir))
