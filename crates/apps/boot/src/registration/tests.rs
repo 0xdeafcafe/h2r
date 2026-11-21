@@ -517,6 +517,9 @@ mod render_thread_plan {
             .iter()
             .zip(&used)
             .filter(|(_, u)| !**u)
+            // Boot adds agent-audio only with the agent and live audio
+            // (dsound_glue::add_loop_agent_method), which this plan omits.
+            .filter(|((f, _, _), _)| *f != "agent-audio")
             .map(|(r, _)| r)
             .collect();
         assert!(stale.is_empty(), "listed but not placed: {stale:?}");
