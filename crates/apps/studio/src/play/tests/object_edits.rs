@@ -3,9 +3,11 @@
 use super::*;
 use agent_proto::sim::method::{OBJECT_DELETE, OBJECT_RESPAWN, OBJECT_SET};
 
+mod failures;
+
 const WEAPONS: BlockKind = BlockKind::Weapons;
 
-fn object_pair(tag: &str, kind: SessionKind, with_set: bool) -> (Temp, Game, App, Play) {
+pub(in crate::play) fn object_pair(tag: &str, kind: SessionKind, with_set: bool) -> (Temp, Game, App, Play) {
     let t = Temp::new(tag);
     let mut bytes = scenario_edit::fixture::fixture_at_end();
     // Plain unnamed weapons with default creation fields, allowed by the real respawn method.
@@ -74,69 +76,6 @@ fn barrier(play: &mut Play, app: &mut App) {
 }
 
 #[test]
-fn gizmo_coalesces_object_frames_flushes_release_and_follows_document_undo() {
-    let (_t, game, mut app, mut play) = object_pair("object-drag", SessionKind::Local, true);
-    let id = weapon_handle(&app, 0);
-    enable(&mut play, &mut app);
-    // Socket replies update through real frames. Advance the object clock beyond them
-    // so only the explicit samples below are eligible for a timed push.
-    let first = Instant::now() + Duration::from_secs(20);
-    play.update_objects(&mut app, first - PUSH_EVERY);
-    app.session.begin_gesture();
-    app.session.gesture_set([2., 3., 4.], [0.; 3]).unwrap();
-    push_fields(&mut play, &mut app);
-    play.update_objects(&mut app, first);
-    barrier(&mut play, &mut app);
-    assert_eq!(game.calls(OBJECT_SET).len(), 1);
-    assert_eq!(game.calls(OBJECT_SET)[0]["id"], id);
-    let fields = &game.calls("edit.batch")[0]["writes"];
-    assert_eq!(fields[0]["group"], "scnr");
-    let position = scenario_edit::layout::block(WEAPONS).field("position").unwrap();
-    assert_eq!(fields[0]["path"], sync::path(WEAPONS, 0, position));
-
-    app.session.gesture_set([5., 6., 7.], [0.; 3]).unwrap();
-    push_fields(&mut play, &mut app);
-    play.update_objects(&mut app, first + PUSH_EVERY / 2);
-    barrier(&mut play, &mut app);
-    assert_eq!(game.calls(OBJECT_SET).len(), 1);
-
-    app.session.gesture_set([8., 9., 10.], [0.; 3]).unwrap();
-    push_fields(&mut play, &mut app);
-    play.update_objects(&mut app, first + PUSH_EVERY);
-    barrier(&mut play, &mut app);
-    assert_eq!(game.calls(OBJECT_SET).len(), 2);
-    assert_eq!(game.calls(OBJECT_SET)[1]["pos"], json!([8.,9.,10.]));
-
-    app.session.gesture_set([11., 12., 13.], [0.5, 0., 0.]).unwrap();
-    app.session.end_gesture();
-    play.update_objects(&mut app, first + PUSH_EVERY);
-    barrier(&mut play, &mut app);
-    until(&mut play, &mut app, "released frame", |_, _| {
-        game.calls(OBJECT_SET).len() == 3
-    });
-    let calls = game.calls(OBJECT_SET);
-    assert_eq!(calls.len(), 3);
-    assert_eq!(calls[2]["pos"], json!([11.,12.,13.]));
-    assert!(calls[2]["forward"][1].as_f64().unwrap().abs() > 0.1);
-    assert!(calls[2]["up"].is_array());
-
-    barrier(&mut play, &mut app);
-    app.dispatch(Action::Undo);
-    push_fields(&mut play, &mut app);
-    play.update_objects(&mut app, first + PUSH_EVERY * 2);
-    until(&mut play, &mut app, "the original frame", |_, _| game.calls(OBJECT_SET).len() == 4);
-    let old = &game.calls(OBJECT_SET)[3];
-    assert_eq!(old["pos"], json!([0.,1.,2.]));
-    assert_eq!(old["forward"], json!([1.,0.,0.]));
-    barrier(&mut play, &mut app);
-    app.dispatch(Action::Redo);
-    push_fields(&mut play, &mut app);
-    play.update_objects(&mut app, first + PUSH_EVERY * 3);
-    until(&mut play, &mut app, "the redone frame", |_, _| game.calls(OBJECT_SET).len() == 5);
-    assert_eq!(game.calls(OBJECT_SET)[4]["pos"], calls[2]["pos"]);
-}
-
-#[test]
 fn appended_preview_is_removed_by_its_returned_handle_on_undo() {
     let (_t, game, mut app, mut play) = object_pair("object-add", SessionKind::Local, true);
     game.allow_appended_preview();
@@ -145,7 +84,9 @@ fn appended_preview_is_removed_by_its_returned_handle_on_undo() {
     assert_eq!(slot, 2);
     until(&mut play, &mut app, "unlinked preview", |_, a| {
         a.pairing.shown.as_ref().is_some_and(|sample| {
-            sample.objects.iter().any(|o| o.kind == 2 && o.placement.is_none())
+            sample.objects.iter().any(|o| {
+                o.kind == 2 && o.placement.is_none() && o.position == [4., 5., 6.]
+            })
         })
     });
     assert_eq!(game.calls(OBJECT_RESPAWN).len(), 1);
@@ -153,6 +94,9 @@ fn appended_preview_is_removed_by_its_returned_handle_on_undo() {
     let object = app.pairing.shown.as_ref().unwrap().objects.iter()
         .find(|o| o.kind == 2 && o.placement.is_none()).unwrap();
     let preview = agent_proto::ObjectId { kind: agent_proto::Kind::Weapon, key: object.id };
+    assert!(game.calls(OBJECT_SET).iter().any(|call| {
+        call["id"] == preview.to_string() && call["pos"] == json!([4., 5., 6.])
+    }));
     barrier(&mut play, &mut app);
     app.dispatch(Action::Undo);
     until(&mut play, &mut app, "preview deleted", |_, _| !game.calls(OBJECT_DELETE).is_empty());
@@ -193,7 +137,7 @@ fn appended_slot_refused_by_the_loaded_block_stays_pending_for_reload() {
     app.session.add_entry(WEAPONS, None).unwrap();
     until(&mut play, &mut app, "strict loaded block", |_, a| {
         a.pairing.pending.iter().any(|row| {
-            row["why"].as_str().is_some_and(|why| why.contains("outside the loaded block"))
+            row["why"].as_str().is_some_and(|why| why.contains("outside a block of 2 records"))
         })
     });
     assert_eq!(game.calls(OBJECT_RESPAWN).len(), 1);
@@ -246,9 +190,13 @@ fn respawn_now_follows_the_batch_and_confirms_the_peer_count() {
     });
     assert!(game.calls(OBJECT_RESPAWN).is_empty());
     assert_eq!(game.calls("edit.batch")[0]["confirm_peers"], 3);
+    let old = weapon_handle(&app, 0);
     play.apply_edits(&mut app, Apply::Respawn).unwrap();
     until(&mut play, &mut app, "host preview", |_, _| !game.calls(OBJECT_RESPAWN).is_empty());
-    assert_eq!(game.calls(OBJECT_RESPAWN)[0]["confirm_peers"], 3);
+    let calls = game.calls(OBJECT_RESPAWN);
+    assert_eq!(calls[0]["confirm_peers"], 3);
+    assert_eq!(calls[0]["id"], old);
+    assert!(calls[0].get("placement").is_none());
     barrier(&mut play, &mut app);
 
     game.edits.lock().unwrap().peers = None;
@@ -258,7 +206,7 @@ fn respawn_now_follows_the_batch_and_confirms_the_peer_count() {
     move_weapon(&mut app, [6., 7., 8.]);
     play.update_objects(&mut app, Instant::now() + PUSH_EVERY);
     barrier(&mut play, &mut app);
-    assert!(game.calls(OBJECT_SET).is_empty());
+    assert!(game.calls(OBJECT_SET).iter().all(|call| call["pos"] != json!([6., 7., 8.])));
     assert!(play.apply_edits(&mut app, Apply::Respawn).is_err());
     assert_eq!(game.calls(OBJECT_RESPAWN).len(), 1);
 }
@@ -299,6 +247,12 @@ fn a_gone_object_is_replaced_only_from_a_fresh_stream_handle() {
     until(&mut play, &mut app, "retired handle", |_, app| {
         app.pairing.pending.iter().any(|row| row["why"] == "the weapon is gone")
     });
+    move_weapon(&mut app, [1., 3., 7.]);
+    push_fields(&mut play, &mut app);
+    play.update_objects(&mut app, Instant::now() + PUSH_EVERY);
+    barrier(&mut play, &mut app);
+    assert_eq!(game.calls(OBJECT_SET).len(), 1, "the retired salt cannot take a new frame");
+
     let new = game.replace_weapon(0);
     assert_ne!(old, new);
     until(&mut play, &mut app, "replacement object", |_, a| weapon_handle(a, 0) == new);
@@ -362,12 +316,10 @@ fn reconnecting_during_a_drag_finishes_the_move_on_the_same_map() {
     let (_t, game, mut app, mut play) = object_pair("object-drag-return", SessionKind::Local, true);
     enable(&mut play, &mut app);
     let handle = weapon_handle(&app, 0);
-    let first = Instant::now() + Duration::from_secs(1);
-    play.update_objects(&mut app, first - PUSH_EVERY);
     app.session.begin_gesture();
     app.session.gesture_set([2., 3., 4.], [0.; 3]).unwrap();
-    push_fields(&mut play, &mut app);
-    play.update_objects(&mut app, first);
+    play.push_edits(&mut app);
+    play.update_objects(&mut app, Instant::now());
     // Consume the wire reply without delivering it to the editor. The game applied
     // the old frame, and the editor still has an outstanding request when it loses the link.
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -378,6 +330,8 @@ fn reconnecting_during_a_drag_finishes_the_move_on_the_same_map() {
             break;
         }
         play.on_event(&mut app, event);
+        // A field acknowledgement makes the matching body move eligible immediately.
+        play.update_objects(&mut app, Instant::now());
     }
     play.on_event(&mut app, Event::Lost("closed before move acknowledgement".into()));
     app.session.gesture_set([7., 8., 9.], [0.; 3]).unwrap();
@@ -433,3 +387,29 @@ fn a_timed_out_preview_stays_pending_across_document_undo() {
     assert_eq!(game.calls(OBJECT_RESPAWN).len(), 1);
     assert!(game.calls(OBJECT_DELETE).is_empty());
 }
+
+#[test]
+fn undoing_the_creation_field_clears_respawn_and_its_refusal() {
+    let (_t, game, mut app, mut play) = object_pair("object-undo-creation", SessionKind::Local, true);
+    enable(&mut play, &mut app);
+    app.session.apply(Command::set(WEAPONS, 0, "scale", FieldValue::Float(0.))).unwrap();
+    until(&mut play, &mut app, "creation change acknowledged", |p, _| p.can_respawn());
+    let why = "fixture weapon refuses replacement";
+    game.fail_next_object_edit(agent_proto::sim::REFUSED, why);
+    play.apply_edits(&mut app, Apply::Respawn).unwrap();
+    until(&mut play, &mut app, "respawn refused", |_, a| {
+        a.pairing.pending.iter().any(|row| row["why"] == why)
+    });
+
+    app.dispatch(Action::Undo);
+    until(&mut play, &mut app, "undo clears creation difference and refusal", |p, a| {
+        game.calls("edit.batch").len() == 2 && p.edits.sent.is_none() && !p.can_respawn()
+            && a.pairing.pending.iter().all(|row| row["why"] != why)
+    });
+    assert!(play.apply_edits(&mut app, Apply::Respawn).is_err());
+    assert_eq!(game.calls(OBJECT_RESPAWN).len(), 1);
+}
+
+mod previews;
+
+mod pacing;

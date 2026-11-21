@@ -85,6 +85,7 @@ pub(crate) struct LiveSelection {
     displayed: Option<u64>,
     segment: Option<u64>,
     marker_revision: u64,
+    preview_revision: u64,
     // A loose live object remains distinct from a tag selected in the tree.
     selected: Option<(u32, SelectionRevision)>,
 }
@@ -185,9 +186,16 @@ pub(crate) fn placement(session: &Session, object: &Object) -> Option<(BlockKind
     Some((marker.block, index))
 }
 
+fn streamed_placement(app: &App, object: &Object) -> Option<(BlockKind, usize)> {
+    app.pairing.previews.placement(app, object).or_else(|| {
+        placement(&app.session, object)
+            .filter(|(kind, _)| app.pairing.placement_matches(&app.session, *kind))
+    })
+}
+
 /// Nearest intersection in front of the level. Resolve the placement only for the winner.
 fn aim_pick(
-    session: &Session,
+    resolve: impl Fn(&Object) -> Option<(BlockKind, usize)>,
     sample: &Sample,
     ray: &Ray,
     wall: &[Tri],
@@ -213,7 +221,7 @@ fn aim_pick(
     Some(Hit {
         object: object.id,
         tag: object.tag,
-        placement: placement(session, object),
+        placement: resolve(object),
         point: add(ray.origin, scale(ray.dir, distance)),
         distance,
     })
@@ -226,13 +234,14 @@ fn pick_sample(app: &App, ray: &Ray, wall: &[Tri], omit: [Option<u32>; 2]) -> Op
     }
     let mut bounds = app.pairing.selection.bounds.borrow_mut();
     bounds.prepare(&app.session, sample);
-    let mut hit = aim_pick(&app.session, sample, ray, wall, omit, |o| {
-        bounds.sphere(o.tag)
-    })?;
-    hit.placement = hit
-        .placement
-        .filter(|(kind, _)| app.pairing.placement_matches(&app.session, *kind));
-    Some(hit)
+    aim_pick(
+        |o| streamed_placement(app, o),
+        sample,
+        ray,
+        wall,
+        omit,
+        |o| bounds.sphere(o.tag),
+    )
 }
 
 pub(crate) fn pick(app: &App, ray: &Ray) -> Option<Hit> {
@@ -278,8 +287,14 @@ pub(crate) fn selected_object(app: &App) -> Option<u32> {
 }
 
 pub(crate) fn placement_action(app: &App, hit: Hit, extend: bool) -> Option<Action> {
-    let entry = hit.placement
-        .filter(|(kind, _)| app.pairing.placement_matches(&app.session, *kind))?;
+    // A delayed click or aim dwell can cross a swap-removal or preview replacement.
+    hit.placement?;
+    if !matching(app) {
+        return None;
+    }
+    let sample = app.pairing.shown.as_ref()?;
+    let object = sample.objects.iter().find(|o| o.id == hit.object)?;
+    let entry = streamed_placement(app, object)?;
     Some(if extend {
         Action::ToggleSelect(entry)
     } else {
@@ -348,7 +363,10 @@ pub(crate) fn update(app: &mut App, now: Instant) {
     let displayed = Some(segment.map_or(sample.tick, |_| app.pairing.display.revision()));
     let cut = state.segment != segment;
     let fresh = cut || state.displayed != displayed;
-    let pick_changed = fresh || state.marker_revision != app.session.markers_rev();
+    let previews = app.pairing.previews.revision();
+    let pick_changed = fresh
+        || state.marker_revision != app.session.markers_rev()
+        || state.preview_revision != previews;
     if let Some((id, rev)) = state.selected
         && (rev != app.selection_revision() || fresh && !sample.objects.iter().any(|o| o.id == id))
     {
@@ -368,6 +386,7 @@ pub(crate) fn update(app: &mut App, now: Instant) {
     }
     if pick_changed {
         app.pairing.selection.marker_revision = app.session.markers_rev();
+        app.pairing.selection.preview_revision = previews;
         let hit = from_aim(app);
         app.pairing.selection.candidate = hit;
         app.pairing.selection.displayed = displayed;
@@ -567,7 +586,11 @@ mod tests {
                 n: [-1.0, 0.0, 0.0],
             }]
         };
-        let pick = |x, omit| aim_pick(&session, &world, &ray, &wall(x), omit, |_| ([0.0; 3], 0.5));
+        let pick = |x, omit| {
+            aim_pick(|o| placement(&session, o), &world, &ray, &wall(x), omit, |_| {
+                ([0.0; 3], 0.5)
+            })
+        };
         let hit = pick(8.0, [None; 2]).unwrap();
         assert_eq!(
             (hit.object, hit.point, hit.distance),
@@ -610,7 +633,7 @@ mod tests {
             origin: [3.0, 0.0, 0.0],
             dir: [0.0, 1.0, 0.0],
         };
-        let hit = aim_pick(&Session::new(), &sample, &ray, &[], [Some(1), None], |_| {
+        let hit = aim_pick(|_| None, &sample, &ray, &[], [Some(1), None], |_| {
             ([1.0, 0.0, 0.0], 0.5)
         })
         .unwrap();

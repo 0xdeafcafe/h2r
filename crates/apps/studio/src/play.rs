@@ -178,11 +178,12 @@ pub struct LinkView {
     pub text: String,
     pub why: Option<String>,
     pub unavailable: Vec<String>,
-    pub issues: Vec<issues::Issue>,
+    pub issues: std::sync::Arc<issues::IssueIndex>,
     pub can_play: bool,
     pub playtest_busy: bool,
     pub can_stop: bool,
-    pub can_pause: bool,
+    pub paired: bool,
+    pub(crate) controls: capabilities::Controls,
     pub paused: bool,
 }
 
@@ -219,6 +220,8 @@ pub struct Play {
     pub conn: Conn,
     /// The last `session.status`.
     pub status: Option<Status>,
+    /// Optional public tick stamp from hosts with counted map activations.
+    status_activation: Option<u64>,
     /// Next read of the binary stream's writer counters over the control link.
     next_live_status: Instant,
     /// Scenario datum from edit.map, for the placement paths in edit.batch.
@@ -289,6 +292,7 @@ impl Play {
             paired_pid: None,
             conn: Conn::Off,
             status: None,
+            status_activation: None,
             next_live_status: Instant::now(),
             scenario_tag: None,
 
@@ -361,8 +365,8 @@ impl Play {
         use LinkState as State;
         use LinkTone as Tone;
 
-        let can_pause = self.is_paired();
-        let paused = can_pause && self.paused;
+        let paired = self.is_paired();
+        let paused = paired && self.paused;
         let (state, tone, text, why) = match &self.conn {
             Conn::Off => match self.notice(app) {
                 Some(n) => (
@@ -460,10 +464,7 @@ impl Play {
         };
         let mut unavailable = self.unavailable_features();
         unavailable.extend(self.presence.reasons().map(str::to_owned));
-        let mut issues = issues::for_pending(app);
-        if let Some(why) = self.refused_move_at(Instant::now()) {
-            issues.push(issues::Issue::refused_move(why));
-        }
+        let issues = app.pairing.pending.issues(app, self.refused_move_at(Instant::now()));
         let mut view = LinkView {
             issues,
             state,
@@ -476,7 +477,8 @@ impl Play {
                 && !matches!(self.conn, Conn::Connecting | Conn::Reconnecting { .. }),
             playtest_busy: !matches!(self.waiting, Waiting::Idle | Waiting::Pick),
             can_stop: self.child.is_some(),
-            can_pause,
+            paired,
+            controls: self.controls(),
             paused,
         };
         if let Some(summary) = view.issue_summary() {
@@ -488,7 +490,16 @@ impl Play {
 
     /// Leave a UI request for the next update.
     pub fn request(&mut self, r: Request) {
+        if matches!(r, Request::Edit(false) | Request::Unpair) {
+            self.objects.cancel_unsent();
+        }
         self.queue.push(r);
+    }
+
+    /// Withdraw an offered object write before publishing the View transition.
+    fn enter_view(&mut self) {
+        self.objects.cancel_unsent();
+        self.live_edits = false;
     }
 
     pub fn retry_endpoint(&self) -> Option<&Endpoint> {
@@ -569,6 +580,7 @@ impl Play {
     fn start(&mut self, app: &mut App, endpoint: Endpoint, options: Options) {
         self.close_presence();
         self.presence = Default::default();
+        self.feedback.clear_moves();
         self.pair_source = pair::Source::Finder;
         self.paired_pid = self.pid_for(&endpoint);
         if let Endpoint::Unix(path) = &endpoint {
@@ -594,13 +606,14 @@ impl Play {
         self.retry = None;
         self.conn = Conn::Connecting;
         self.status = None;
+        self.status_activation = None;
         self.next_live_status = Instant::now();
         self.scenario_tag = None;
 
         self.session = None;
         self.edits = Edits::default();
         self.reload_copy = None;
-        self.live_edits = false;
+        self.enter_view();
         self.reload.clear();
         self.controller = false;
         self.paused = false;
@@ -768,7 +781,10 @@ impl Play {
     /// Once a frame: the link's news, the launched game's state, and edits
     /// to send.
     pub fn update(&mut self, app: &mut App) {
-        let now = Instant::now();
+        self.update_at(app, Instant::now());
+    }
+
+    fn update_at(&mut self, app: &mut App, now: Instant) {
         self.expire_reload(app, now);
         if self.waiting != Waiting::Idle && self.play_world != app.session.world_rev() {
             self.cancel_reload();
@@ -845,6 +861,7 @@ impl Play {
         select::update(app, now);
         Self::update_shared_camera(app);
         self.update_objects(app, now);
+        self.expire_move_feedback(app, now);
         self.publish(app);
         self.update_presence(app, now);
     }
@@ -886,7 +903,7 @@ impl Play {
                     if let Some(copy) = &mut self.reload_copy {
                         copy.resume_edits = false;
                     }
-                    self.live_edits = false;
+                    self.enter_view();
                     self.edits.own_start = false;
                     self.playtest_consent = false;
                 }
@@ -898,7 +915,11 @@ impl Play {
                         self.game_refusal(app, why);
                     }
                 }
-                Request::PlayerMoveRefused(why) => self.game_refusal(app, why),
+                Request::PlayerMoveRefused(scope, why) => {
+                    if scope == self.move_context(app) {
+                        self.game_refusal(app, why);
+                    }
+                }
             }
         }
     }
@@ -955,6 +976,7 @@ impl Play {
     fn disconnect(&mut self, app: &mut App) {
         self.close_presence();
         self.presence = Default::default();
+        self.feedback.clear_moves();
         self.retry = None;
         self.pair_source = pair::Source::Finder;
         self.paired_pid = None;
@@ -963,13 +985,14 @@ impl Play {
         self.methods = None;
         self.waiting = Waiting::Idle;
         self.status = None;
+        self.status_activation = None;
         self.session = None;
         self.baseline = None;
         self.edits = Edits::default();
         self.reload_copy = None;
         self.controller = false;
         self.paused = false;
-        self.live_edits = false;
+        self.enter_view();
         self.pending_spawn = None;
         self.reload.clear();
         app.tags.live_datums = None;
@@ -990,7 +1013,7 @@ impl Play {
             self.link = None;
             app.error(format!("game link: {why}"));
             self.conn = Conn::Lost(why.clone());
-            self.live_edits = false;
+            self.enter_view();
             self.cancel_reload();
         } else if self.link.is_none() && backoff.due(now) {
             self.link = self.retry.clone().map(|ep| Link::open(ep, Options::default()));
@@ -1017,6 +1040,7 @@ impl Play {
         let edits_blocked = self.edits_blocked(app);
         let player_scope = self.player_move_scope(app, edits_blocked.as_deref());
         app.pairing.set_player_scope(player_scope);
+        app.pairing.move_context = Some(self.move_context(app));
         let published = json!({
             "state": state,
             "why": why,
@@ -1054,6 +1078,7 @@ impl Play {
     fn on_event(&mut self, app: &mut App, e: Event) {
         let reconnecting = matches!(self.conn, Conn::Reconnecting { .. });
         match e {
+            Event::ObjectSkipped(ticket) => self.objects.skipped(ticket, self.live_edits),
             Event::Connected => {
                 if !reconnecting {
                     self.conn = Conn::Connected;
@@ -1073,10 +1098,12 @@ impl Play {
                     app.error("game link closed before the player move was acknowledged");
                 }
                 self.presence.transport_lost();
+                self.feedback.clear_moves();
                 self.retry = self.link.take().map(|l| l.endpoint.clone()).or(self.retry.take());
                 self.controller = false;
                 self.paused = false;
                 self.status = None;
+                self.status_activation = None;
                 self.session = None;
                 if let Some(copy) = &mut self.reload_copy {
                     // Its reply may have been lost after the host queued the reload.
@@ -1095,7 +1122,7 @@ impl Play {
                 if self.edits.interrupted_write() {
                     // The last write may have reached the game. Re-read its journal before
                     // offering edits or a restore on this connection again.
-                    self.live_edits = false;
+                    self.enter_view();
                     self.edits = Edits::default();
                     self.baseline = None;
                     app.pairing.leaving = false;
@@ -1121,7 +1148,9 @@ impl Play {
                 }
             }
             Event::Poll(status) => {
+                let activation = status["at"]["activation"].as_u64();
                 if let Ok(s) = serde_json::from_value::<Status>(status) {
+                    self.status_activation = activation;
                     self.paused = s.at.paused;
                     self.controller = s.controller;
                     self.status = Some(s);
@@ -1141,6 +1170,7 @@ impl Play {
                 result,
             } => self.on_answer(app, purpose, &method, result),
         }
+        self.revalidate_object_dispatch(app);
         if reconnecting && self.is_paired() {
             self.feedback.toast("Game link restored".into(), false, Instant::now());
             app.info("Game link restored");
@@ -1154,7 +1184,6 @@ impl Play {
         method: &str,
         result: Result<Value, agent_proto::RpcError>,
     ) {
-        self.feedback.answer(&purpose, method, &result);
         match (purpose, result) {
             (Purpose::LiveStatus, result) => {
                 let stream_id = app.pairing.mirror.as_ref()
@@ -1182,19 +1211,15 @@ impl Play {
                     self.pending_spawn = None;
                     self.spawn_deadline = None;
                     match result {
-                        Ok(_) => self.finish_playtest(),
+                        Ok(_) => self.finish_playtest(app),
                         Err(e) => {
                             self.waiting = Waiting::Idle;
-                            app.error(format!("could not move the player: {e}"));
+                            self.feedback.problem(app, format!("could not move the player: {e}"));
                         }
                     }
                 }
             }
-            (Purpose::Teleport, Ok(_)) => app.info("moved the player"),
-            (Purpose::Teleport, Err(e)) => {
-                let why = e.data.as_ref().and_then(|d| d["why"].as_str()).unwrap_or(&e.message);
-                self.game_refusal(app, why);
-            }
+            (Purpose::Teleport(ticket), result) => self.move_answer(app, ticket, result),
             (Purpose::Control(what), Ok(_)) => {
                 match what {
                     "pause" => self.paused = true,
@@ -1206,7 +1231,7 @@ impl Play {
                 app.info(format!("game: {what}"));
             }
             (Purpose::Other, _) if method == agent_proto::editor::method::MARKS => {}
-            (_, Err(e)) => app.error(format!("{method}: {e}")),
+            (_, Err(e)) => self.feedback.problem(app, format!("{method}: {e}")),
             (Purpose::Other, Ok(v)) => app.info(format!("{method}: {v}")),
         }
     }
@@ -1344,6 +1369,9 @@ impl Play {
     }
 
     pub fn pause(&mut self) {
+        if self.controls().pause.is_some() {
+            return;
+        }
         self.ensure_claim();
         self.call(
             method::PAUSE,
@@ -1352,16 +1380,26 @@ impl Play {
         );
     }
     pub fn resume(&mut self) {
+        if self.controls().resume.is_some() {
+            return;
+        }
+        self.ensure_claim();
         self.call(method::RESUME, Value::Null, Purpose::Control("resume"));
         self.release_control();
     }
 
     fn release_control(&mut self) {
+        if !self.controller || !self.has_method(method::RELEASE) {
+            return;
+        }
         // Give control back so other clients (and agents) may act.
         self.call(method::RELEASE, Value::Null, Purpose::Control("release"));
         self.controller = false;
     }
     pub fn step(&mut self, ticks: u64) {
+        if self.controls().step.is_some() {
+            return;
+        }
         self.ensure_claim();
         self.call(
             method::STEP,

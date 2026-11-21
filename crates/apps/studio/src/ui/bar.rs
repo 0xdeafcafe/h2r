@@ -122,11 +122,16 @@ pub(super) fn draw(
 
 /// The width of the link pill and the controls that follow it.
 fn link_width(ui: &Ui, view: &LinkView, pill_width: f32) -> f32 {
-    let buttons = [view.can_play, view.can_stop, view.can_pause, view.paused];
+    let buttons = [
+        view.can_play,
+        view.can_stop,
+        view.controls.can_toggle_pause(view.paused),
+        view.paused && view.controls.step.is_none(),
+    ];
     let mut width = pill_width
         + (theme::BAR_BUTTON + theme::BAR_SPACING)
             * buttons.into_iter().filter(|&on| on).count() as f32;
-    if view.can_pause {
+    if view.paired {
         width += theme::edit_switch_width(ui) + theme::BAR_BUTTON + 2.0 * theme::BAR_SPACING;
     }
     width
@@ -151,7 +156,7 @@ fn link(ui: &Ui, app: &mut App, play: &mut PlayUi, view: &LinkView, row: f32) {
             play.play.request(Request::Stop);
         }
     }
-    if view.can_pause {
+    if view.controls.can_toggle_pause(view.paused) {
         same_line();
         let (icon, text, request) = if view.paused {
             (TransportIcon::Play, "Resume", Request::Resume)
@@ -162,13 +167,13 @@ fn link(ui: &Ui, app: &mut App, play: &mut PlayUi, view: &LinkView, row: f32) {
             play.play.request(request);
         }
     }
-    if view.paused {
+    if view.paused && view.controls.step.is_none() {
         same_line();
         if theme::transport_button(ui, TransportIcon::Step, "Step") {
             play.step();
         }
     }
-    if view.can_pause {
+    if view.paired {
         same_line();
         let enabled = app.pairing.selection.enabled;
         let available = crate::play::Play::can_aim_select(app);

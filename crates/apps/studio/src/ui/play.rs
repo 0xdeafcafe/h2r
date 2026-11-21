@@ -73,7 +73,7 @@ impl PlayUi {
         {
             self.open_link_popup = true;
         }
-        if ui.menu_item_enabled_selected_no_shortcut("Unpair", false, view.can_pause) {
+        if ui.menu_item_enabled_selected_no_shortcut("Unpair", false, view.paired) {
             self.play.request(Request::Unpair);
         }
         ui.separator();
@@ -95,10 +95,18 @@ impl PlayUi {
         } else {
             ("Pause", Request::Pause)
         };
-        if ui.menu_item_enabled_selected_no_shortcut(label, false, view.can_pause) {
+        if ui.menu_item_enabled_selected_no_shortcut(
+            label,
+            false,
+            view.controls.can_toggle_pause(view.paused),
+        ) {
             self.play.request(request);
         }
-        if ui.menu_item_enabled_selected_no_shortcut("Step", false, view.paused) {
+        if ui.menu_item_enabled_selected_no_shortcut(
+            "Step",
+            false,
+            view.paused && view.controls.step.is_none(),
+        ) {
             self.play.request(Request::Step(self.step_ticks as u64));
         }
         if ui.menu_item_enabled_selected_no_shortcut(
@@ -237,7 +245,7 @@ impl PlayUi {
             ));
             ui.same_line();
             if current {
-                ui.text_disabled(if view.can_pause {
+                ui.text_disabled(if view.paired {
                     "Paired"
                 } else {
                     "Connecting"
@@ -251,7 +259,7 @@ impl PlayUi {
             ui.close_current_popup();
         }
         ui.separator();
-        if view.can_pause && ui.button("Unpair") {
+        if view.paired && ui.button("Unpair") {
             self.play.request(Request::Unpair);
             ui.close_current_popup();
         }
@@ -291,11 +299,11 @@ impl PlayUi {
     }
 
     fn session(&mut self, ui: &Ui, app: &mut App, view: &LinkView) {
-        if view.can_pause {
+        if view.paired {
             self.edit_switch(ui, view);
         }
         let p = &self.play;
-        if view.can_pause {
+        if view.paired {
             if let Some(at) = p.status.as_ref().map(|s| &s.at) {
                 let kind = p
                     .session
@@ -335,7 +343,7 @@ impl PlayUi {
     }
 
     fn player(&mut self, ui: &Ui, app: &mut App, view: &LinkView) {
-        if view.can_pause {
+        if view.paired {
             if ui.button(format!("{} Go to player", icon::CROSSHAIR)) {
                 self.play.go_to_player(app);
             }
@@ -491,11 +499,11 @@ impl PlayUi {
                 ui.separator_with_text("Player move refused");
                 ui.text_wrapped(why);
             }
-            let mut rows: Vec<_> = app.pairing.pending.iter().collect();
-            rows.sort_by(|a, b| a["class"].as_str().cmp(&b["class"].as_str()));
             let mut class = "";
-            for r in rows {
+            let mut has_reload = false;
+            for r in app.pairing.pending.sorted() {
                 let next = r["class"].as_str().unwrap_or("Pending");
+                has_reload |= next == crate::play::tag_sync::RELOAD;
                 if class != next {
                     ui.separator_with_text(next);
                     class = next;
@@ -505,7 +513,8 @@ impl PlayUi {
                     r["path"].as_str().unwrap_or("?"),
                     r["why"].as_str().unwrap_or("")
                 ));
-                if r["conflict"] == true
+                if r["conflict"] == true && r["resolvable"] != false
+                    && crate::play::tag_sync::check_conflict_path(&app.tags, r).is_ok()
                     && let Some(at) = r["at"].as_u64()
                 {
                     let _id = ui.push_id(at as usize);
@@ -529,7 +538,7 @@ impl PlayUi {
                 if ui.button("Send") {
                     action = Some(Apply::Send);
                 }
-                if app.pairing.pending.iter().any(|r| r["class"] == "Reload") {
+                if has_reload {
                     ui.same_line();
                     if ui.button("Reload map") {
                         action = Some(Apply::Reload);

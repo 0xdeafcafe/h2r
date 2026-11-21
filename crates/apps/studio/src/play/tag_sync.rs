@@ -51,6 +51,7 @@ impl TagBaseline {
 pub struct Write {
     pub tag: TagId,
     pub path: String,
+    pub nav_path: String,
     pub at: u32,
     pub value: Vec<u8>,
     pub was: Vec<u8>,
@@ -310,6 +311,7 @@ pub fn diff(base: &TagBaseline, doc: &TagDoc) -> (Vec<Write>, Vec<Value>) {
             writes.push(Write {
                 tag: entry.id,
                 path,
+                nav_path,
                 at: start,
                 value,
                 was,
@@ -318,6 +320,20 @@ pub fn diff(base: &TagBaseline, doc: &TagDoc) -> (Vec<Write>, Vec<Value>) {
         }
     }
     (writes, rows)
+}
+
+/// Re-resolve the submitted tag field, including every indexed block along its path.
+pub(crate) fn check_conflict_path(doc: &TagDoc, row: &Value) -> Result<(), &'static str> {
+    if row["doc"] == "tags" {
+        let current = row["target"]["path"].as_str().and_then(|path| {
+            let tag = crate::app::tag_api::lookup(doc, &row["tag"]).ok()?;
+            crate::app::tag_api::field_focus(doc, tag, path).ok()
+        });
+        if !current.is_some_and(|field| row["at"].as_u64() == Some(u64::from(field.address))) {
+            return Err("the conflicted tag field moved. Undo the layout change or reload the map");
+        }
+    }
+    Ok(())
 }
 
 impl Write {

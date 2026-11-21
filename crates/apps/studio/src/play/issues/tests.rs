@@ -10,11 +10,8 @@ use studio_proto::method as m;
 fn a_refused_batch_marks_the_placement_and_navigates_to_its_row() {
     let (_dir, game, mut app, mut play) =
         crate::play::tests::paired("field-refusal", "example", SessionKind::Local);
-    game.agent.add_game_method(agent_proto::hot::method::EDIT_BATCH, agent::Access::Act, |_, _| {
-        let mut err = agent_proto::RpcError::new(agent_proto::sim::REFUSED, "write refused");
-        err.data = Some(json!({"why":"fixture is read only"}));
-        Err(err)
-    });
+    game.edits.lock().unwrap().batch_error =
+        Some(agent_proto::RpcError::new(agent_proto::code::UNAVAILABLE, "fixture is read only"));
     crate::play::tests::move_flag(&mut app, [7., 8., 9.]);
     play.apply_edits(&mut app, Apply::Send).unwrap();
     play.playtest(&mut app, None).unwrap();
@@ -26,13 +23,13 @@ fn a_refused_batch_marks_the_placement_and_navigates_to_its_row() {
     assert!(play.edits.sent.is_none(), "an unchanged refusal is not an automatic retry");
     let link = play.link_view(&app);
     let issue = link.issues.iter().find(|i| i.kind == Kind::Refused).unwrap();
-    assert!(issue.matches_placement(BlockKind::NetgameFlags, 0, Some("position")));
-    assert!(issue.matches_placement(BlockKind::NetgameFlags, 0, None));
-    assert!(!issue.matches_placement(BlockKind::NetgameFlags, 1, None));
+    assert!(link.issues.placement_row(BlockKind::NetgameFlags, 1).is_none());
     assert_eq!(issue.text, "fixture is read only");
-    let mark = crate::ui::inspector::row_issue(&link.issues, |i| {
-        i.matches_placement(BlockKind::NetgameFlags, 0, None)
-    });
+    let mark = link.issues.placement_row(BlockKind::NetgameFlags, 0);
+    assert_eq!(
+        link.issues.placement_field(BlockKind::NetgameFlags, 0, "position").next(),
+        Some(issue)
+    );
     assert_eq!(mark, Some(issue));
 
     let mut api = Api::new();
@@ -45,9 +42,8 @@ fn a_refused_batch_marks_the_placement_and_navigates_to_its_row() {
     assert_eq!(app.tool, ToolKind::Scenario);
     assert_eq!(nav["selected"], json!({"block":"netgame_flags", "index":0}));
 
-    game.agent.add_game_method(agent_proto::hot::method::EDIT_BATCH, agent::Access::Act, |_, _| {
-        Err(agent_proto::RpcError::new(agent_proto::code::INVALID_PARAMS, "invalid field"))
-    });
+    game.edits.lock().unwrap().batch_error =
+        Some(agent_proto::RpcError::new(agent_proto::code::INVALID_PARAMS, "invalid field"));
     play.apply_edits(&mut app, Apply::Send).unwrap();
     fake::until(&mut play, &mut app, "field validation error", |p, a| {
         p.link_view(a).issues.iter().any(|i| i.kind == Kind::Refused && i.text == "invalid field")
@@ -79,8 +75,8 @@ fn a_mismatch_marks_the_nested_tag_field_and_navigates_to_it() {
     let link = play.link_view(&app);
     let issue = link.issues.iter().find(|i| i.kind == Kind::Mismatch).unwrap();
     assert_eq!(issue.at, Some(at));
-    assert!(issue.matches_tag(tag, Some(at)));
-    let mark = crate::ui::inspector::row_issue(&link.issues, |i| i.matches_tag(tag, None));
+    let mark = link.issues.tag_row(tag);
+    assert_eq!(link.issues.tag_field(tag, at).next(), Some(issue));
     assert_eq!(mark, Some(issue));
 
     let mut api = Api::new();
@@ -100,7 +96,7 @@ fn the_link_summarizes_the_largest_count_and_pending_is_navigable() {
     let t = Temp::new("issue-counts");
     let (mut app, _, _) = tag_tests::app(&t.0);
     let play = Play::new();
-    app.pairing.pending = vec![
+    *app.pairing.pending = vec![
         tag_sync::row("scenario", json!(tag_tests::weap_id().0), "Weapons", tag_sync::RELOAD, "layout changed"),
         tag_sync::row("tags", Value::Null, "second", tag_sync::RELOAD, "new map string"),
         tag_sync::row("tags", Value::Null, "third", tag_sync::CREATION, "next creation"),
@@ -113,4 +109,57 @@ fn the_link_summarizes_the_largest_count_and_pending_is_navigable() {
     assert_eq!(target, json!({"panel":"pending"}));
     Api::new().call(&mut app, m::NAV_GO, target).unwrap();
     assert!(app.pairing.open_pending);
+}
+
+#[test]
+fn unchanged_frames_share_the_issue_index_and_edits_invalidate_it() {
+    let t = Temp::new("issue-index");
+    let (mut app, _, _) = tag_tests::app(&t.0);
+    let play = Play::new();
+    let tag = tag_tests::weap_id();
+    let path = "parts[1].value";
+    let at = tag_api::field_focus(&app.tags, tag, path).unwrap().address;
+    let mut row = json!({
+        "doc": "tags", "class": tag_sync::CREATION, "at": at, "conflict": true,
+        "target": {"tag": tag.0, "path": path}, "why": "different field bytes"
+    });
+    app.pairing.pending.push(row.clone());
+    let first = play.link_view(&app).issues;
+    play.publish(&mut app);
+    let rendered = &app.pairing.link.as_ref().unwrap().issues;
+    assert!(Arc::ptr_eq(&first, rendered));
+    assert_eq!(first.tag_row(tag), first.tag_field(tag, at).next());
+    assert_eq!(first.tag_field(tag, at).count(), 1);
+    assert!(first.tag_field(tag, at + 1).next().is_none());
+    let edit = tag_api::set_field(&app.tags, tag, path, &json!(42)).unwrap();
+    app.dispatch(Action::Tag(edit));
+    let edited = play.link_view(&app).issues;
+    assert!(!Arc::ptr_eq(&first, &edited));
+
+    row["refused"] = json!(true);
+    row["conflict"] = json!(false);
+    app.pairing.pending.push(row);
+    let refused = play.link_view(&app).issues;
+    assert_eq!(refused.tag_row(tag).unwrap().kind, Kind::Refused);
+    assert_eq!(refused.tag_field(tag, at).count(), 2);
+    assert!(!Arc::ptr_eq(&edited, &refused));
+    let moving = app.pairing.pending.issues(&app, Some("player moved"));
+    assert_eq!(moving.len(), refused.len() + 1);
+    assert!(Arc::ptr_eq(&moving, &app.pairing.pending.issues(&app, Some("player moved"))));
+    assert_eq!(app.pairing.pending.issues(&app, None).len(), refused.len());
+}
+
+#[test]
+fn pending_class_order_and_playtest_follow_row_replacements() {
+    use crate::play::playtest::Changes;
+
+    let mut pending = Pending::default();
+    let changed = json!({"doc":"scenario", "class":tag_sync::RELOAD});
+    let preview = json!({"doc":"object", "class":tag_sync::CREATION});
+    pending.extend([changed.clone(), preview.clone()]);
+    assert_eq!(pending.playtest_changes(), Changes::Reload);
+    assert_eq!(pending.sorted().collect::<Vec<_>>(), [&preview, &changed]);
+    pending.remove(0);
+    assert_eq!(pending.playtest_changes(), Changes::None);
+    assert_eq!(pending.sorted().collect::<Vec<_>>(), [&preview]);
 }

@@ -148,6 +148,8 @@ pub(crate) mod fake {
         pub(crate) loading: bool,
         former_checksum: Option<u32>,
         pub(crate) hold_reload_reply: bool,
+        pub(crate) release_batch_reply: Option<Arc<AtomicBool>>,
+        pub(crate) batch_error: Option<RpcError>,
         pub(crate) indicator_failure: Option<&'static str>,
         pub(crate) mark_replies: std::collections::VecDeque<Result<Value, RpcError>>,
         pub(crate) teleport_map_ticks: u64,
@@ -281,6 +283,9 @@ pub(crate) mod fake {
                 }
                 let writes = params["writes"].as_array().unwrap();
                 let mut state = state.lock().unwrap();
+                if let Some(error) = state.batch_error.take() {
+                    return Err(error);
+                }
                 let key = |w: &Value| w.get("at").unwrap_or(&w["path"]).to_string();
                 for w in writes {
                     if let Some(holds) = state.bytes.get(&key(w))
@@ -309,7 +314,14 @@ pub(crate) mod fake {
                         }));
                     }
                 }
-                Ok(json!({"id":1,"applied":writes.len(),"changes":writes}))
+                let reply = json!({"id":1,"applied":writes.len(),"changes":writes});
+                if let Some(release) = state.release_batch_reply.take() {
+                    let held = reply.clone();
+                    ctx.defer(600, Box::new(move |_| {
+                        release.load(Ordering::Acquire).then(|| Ok(held.clone()))
+                    }));
+                }
+                Ok(reply)
             });
             let r = rec("sim.state.set");
             let state = Arc::clone(&edits);

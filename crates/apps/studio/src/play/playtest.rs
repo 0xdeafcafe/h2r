@@ -106,15 +106,47 @@ impl Step {
     }
 }
 
-// An acknowledged preview is informational. A lost object receipt needs a fresh map.
-fn needs_playtest(row: &Value) -> bool {
-    row["doc"] != "object" || row["unknown"] == true
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Changes {
+    None,
+    Send,
+    Reload,
+}
+
+impl Changes {
+    pub(super) fn of(rows: &[Value]) -> Self {
+        let mut result = Self::None;
+        for row in rows {
+            if row["doc"] == "object" {
+                // Successful preview and delete notices describe the loaded scenario.
+                if row["refused"] == true || row["unknown"] == true || row["needs_reload"] == true {
+                    return Self::Reload;
+                }
+            } else if row["class"] == tag_sync::RELOAD {
+                return Self::Reload;
+            } else {
+                result = Self::Send;
+            }
+        }
+        result
+    }
 }
 
 pub fn decide(
     link: &LinkState,
     identity_refusal: Option<&str>,
     pending: &[Value],
+    own: bool,
+    authorized: bool,
+    reload: bool,
+) -> Step {
+    decide_changes(link, identity_refusal, Changes::of(pending), own, authorized, reload)
+}
+
+fn decide_changes(
+    link: &LinkState,
+    identity_refusal: Option<&str>,
+    changes: Changes,
     own: bool,
     authorized: bool,
     reload: bool,
@@ -130,12 +162,10 @@ pub fn decide(
         }
         LinkState::OtherMap { .. } if own || authorized => reload,
         LinkState::OtherMap { .. } => Step::Ask { ask: Ask::Load },
-        _ if !own && !authorized && pending.iter().any(needs_playtest) => {
+        _ if !own && !authorized && changes != Changes::None => {
             Step::Ask { ask: Ask::Send }
         }
-        _ if pending.iter().any(|row| needs_playtest(row) && row["class"] == tag_sync::RELOAD) => {
-            reload
-        }
+        _ if changes == Changes::Reload => reload,
         _ => Step::Resume,
     }
 }
@@ -268,14 +298,22 @@ impl Play {
             None
         };
         let decision = |authorized| {
-            decide(
+            let step = decide_changes(
                 &link.state,
                 identity_refusal.as_deref(),
-                &app.pairing.pending,
+                app.pairing.pending.playtest_changes(),
                 self.own_game(),
                 authorized,
                 self.has_method(agent_proto::sim::method::MAP_RELOAD),
-            )
+            );
+            if matches!(step, Step::Resume | Step::Reload(Reload::Method))
+                && link.paused
+                && let Some(why) = link.controls.resume
+            {
+                Step::Refused(why.into())
+            } else {
+                step
+            }
         };
         let found_after_loss = matches!(link.state, LinkState::Lost { .. })
             && !self.finder.running().is_empty();
@@ -372,7 +410,7 @@ impl Play {
             Step::Resume => {
                 if self.edits.sent.is_some() {
                     self.waiting = Waiting::Batch;
-                } else if app.pairing.pending.iter().any(needs_playtest) {
+                } else if app.pairing.pending.playtest_changes() != Changes::None {
                     if let Some(why) = self.edit_refusal(app) {
                         return Err(why);
                     }
@@ -383,7 +421,7 @@ impl Play {
                     }
                     self.waiting = Waiting::Sent;
                 } else {
-                    self.finish_playtest();
+                    self.finish_playtest(app);
                 }
             }
             Step::Reload(Reload::Manual) => return Err(MANUAL_RELOAD.into()),
@@ -407,9 +445,13 @@ impl Play {
         Ok(())
     }
 
-    pub(super) fn finish_playtest(&mut self) {
+    pub(super) fn finish_playtest(&mut self, app: &mut App) {
         if self.paused {
-            self.ensure_claim();
+            if let Some(why) = self.controls().resume {
+                self.waiting = Waiting::Idle;
+                app.error(why);
+                return;
+            }
             self.resume();
         } else if self.controller {
             // The pause can expire while this connection still owns the claim.
@@ -442,7 +484,7 @@ impl Play {
                 if self.is_paired() && self.methods.is_some() && self.status.is_some()
                     && self.pending_spawn.is_none()
                 {
-                    self.finish_playtest();
+                    self.finish_playtest(app);
                 }
                 false
             }

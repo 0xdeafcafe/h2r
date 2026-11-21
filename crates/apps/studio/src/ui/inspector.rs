@@ -25,7 +25,7 @@ use crate::app::tag_api::{self, Chain, Node};
 use crate::app::tag_doc::Access;
 use crate::app::{Action, App, NavAction, NavLocation, Selection, TagDoc, ToolKind};
 use crate::fields;
-use crate::play::issues::{Issue, Kind};
+use crate::play::issues::{Issue, IssueIndex, Kind};
 use crate::play::pair::Request;
 use crate::play::{Apply, LinkTone};
 use crate::theme::{self, icon};
@@ -74,11 +74,11 @@ fn merge_key(selection: &[(BlockKind, usize)], field: &str) -> u64 {
     h.finish()
 }
 
-pub(crate) fn issues(app: &App) -> &[Issue] {
+pub(crate) fn issues(app: &App) -> &IssueIndex {
     app.pairing
         .link
         .as_ref()
-        .map_or(&[], |link| link.issues.as_slice())
+        .map_or(IssueIndex::empty(), |link| link.issues.as_ref())
 }
 
 fn field_mark(kind: Kind) -> Option<(LinkTone, &'static str)> {
@@ -87,14 +87,6 @@ fn field_mark(kind: Kind) -> Option<(LinkTone, &'static str)> {
         Kind::Mismatch => Some((LinkTone::Warn, "Changed in game")),
         _ => None,
     }
-}
-
-/// A row with several affected fields shows the most urgent field's mark.
-pub(crate) fn row_issue(issues: &[Issue], matches: impl Fn(&Issue) -> bool) -> Option<&Issue> {
-    issues
-        .iter()
-        .filter(|issue| field_mark(issue.kind).is_some() && matches(issue))
-        .max_by_key(|issue| issue.kind == Kind::Refused)
 }
 
 pub(super) fn marked_row<T>(
@@ -136,13 +128,11 @@ fn field_problem(ui: &Ui, issue: &Issue, resolution: &mut Option<Apply>) {
 
 pub(super) fn tag_field_marks<'a>(
     ui: &'a Ui,
-    issues: &'a [Issue],
+    issues: &'a IssueIndex,
     resolution: &'a mut Option<Apply>,
 ) -> impl FnMut(TagId, u32) + 'a {
     move |tag, at| {
-        for issue in issues.iter().filter(|issue| {
-            field_mark(issue.kind).is_some() && issue.matches_tag(tag, Some(at))
-        }) {
+        for issue in issues.tag_field(tag, at) {
             field_problem(ui, issue, resolution);
         }
     }
@@ -244,10 +234,8 @@ pub fn draw(ui: &Ui, fonts: &theme::Fonts, app: &mut App, state: &mut InspectorS
         }
         done |= ui.is_item_deactivated_after_edit();
         d.end();
-        for issue in issues.iter().filter(|issue| field_mark(issue.kind).is_some()) {
-            if let Some(&(k, i)) = selection.iter().find(|&&(k, i)| {
-                issue.matches_placement(k, i, Some(f.name))
-            }) {
+        for &(k, i) in &selection {
+            for issue in issues.placement_field(k, i, f.name) {
                 if selection.len() > 1 {
                     ui.text_disabled(scenario.label(k, i));
                 }
@@ -424,7 +412,7 @@ fn tag_node(
     trail: &mut Vec<TagId>,
     panel: &mut fields::PanelState,
     actions: &mut Vec<Action>,
-    issues: &[Issue],
+    issues: &IssueIndex,
     resolution: &mut Option<Apply>,
 ) {
     let _id = ui.push_id(node.via.as_str());
@@ -443,7 +431,7 @@ fn tag_node(
         Some(role) => format!("{role} · {label}"),
         None => label,
     };
-    let issue = row_issue(issues, |issue| issue.matches_tag(id, None));
+    let issue = issues.tag_row(id);
     let item = marked_row(ui, label, issue, |label| {
         ui.tree_node_config(format!("tag{:08x}", id.0))
             .label(label)

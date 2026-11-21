@@ -16,6 +16,9 @@ use serde_json::Value;
 
 use super::{presence::PlayerMove, stream::Stream};
 
+mod object;
+pub(super) use object::ObjectDispatch;
+
 /// How often the idle link polls the game.
 pub const POLL: Duration = Duration::from_millis(250);
 /// How long one call may take before the link is taken as lost.
@@ -43,7 +46,7 @@ pub enum Purpose {
     Edit(u64),
     Object(u64),
     Take { id: u64, at: u32 },
-    Teleport,
+    Teleport(u64),
     Spawn(Instant),
     Control(&'static str),
     /// A call the user asked for by hand.
@@ -59,15 +62,19 @@ pub struct Call {
 }
 
 #[derive(Debug)]
-struct QueuedCall {
-    call: Call,
-    /// A queued move cannot keep its stream alive after the editor unpairs.
-    player: Option<(Weak<Stream>, PlayerMove)>,
+enum QueuedCall {
+    Control {
+        call: Call,
+        /// A queued move cannot keep its stream alive after the editor unpairs.
+        player: Option<(Weak<Stream>, PlayerMove)>,
+    },
+    /// Play owns the payload until the worker enters the socket.
+    Object { ticket: u64, edit: Weak<ObjectDispatch> },
 }
 
 impl QueuedCall {
     fn check_player(&self) -> Result<(), CallError> {
-        let Some((stream, request)) = &self.player else {
+        let Self::Control { player: Some((stream, request)), .. } = self else {
             return Ok(());
         };
         stream
@@ -88,6 +95,8 @@ pub enum Event {
     Lost(String),
     /// The control connection's latest session status.
     Poll(Value),
+    /// The edit was withdrawn or its stream changed before it reached the socket.
+    ObjectSkipped(u64),
     Answer {
         purpose: Purpose,
         method: String,
@@ -166,21 +175,26 @@ impl Link {
             params,
             purpose,
         };
-        let _ = self.calls.send(QueuedCall { call, player: None });
+        let _ = self.calls.send(QueuedCall::Control { call, player: None });
+    }
+
+    pub(super) fn offer_object(&self, ticket: u64, edit: &Arc<ObjectDispatch>) -> bool {
+        self.calls.send(QueuedCall::Object { ticket, edit: Arc::downgrade(edit) }).is_ok()
     }
 
     pub(super) fn move_player(
         &self,
         request: PlayerMove,
         stream: &Arc<Stream>,
+        ticket: u64,
     ) -> Result<(), String> {
         let call = Call {
             method: agent_proto::sim::method::STATE_SET.into(),
             params: request.state_set_params(),
-            purpose: Purpose::Teleport,
+            purpose: Purpose::Teleport(ticket),
         };
         self.calls
-            .send(QueuedCall {
+            .send(QueuedCall::Control {
                 call,
                 player: Some((Arc::downgrade(stream), request)),
             })
@@ -265,7 +279,22 @@ fn run(
                     clear_leases(&mut c, close);
                     return;
                 }
-                let call = queued.call;
+                let call = match queued {
+                    QueuedCall::Control { call, .. } => call,
+                    QueuedCall::Object { ticket, edit } => {
+                        let edit = edit.upgrade();
+                        let current = edit.as_ref().is_some_and(|edit| edit.current_stream());
+                        if let Ok(close) = stop.try_recv() {
+                            clear_leases(&mut c, close);
+                            return;
+                        }
+                        let Some(call) = edit.and_then(|edit| edit.dispatch(current)) else {
+                            let _ = events.send(Event::ObjectSkipped(ticket));
+                            continue;
+                        };
+                        call
+                    }
+                };
                 let result = checked.and_then(|()| c.call(&call.method, call.params));
                 let broke = matches!(&result, Err(e) if lost(e));
                 if broke {

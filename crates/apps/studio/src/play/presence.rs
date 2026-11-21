@@ -91,14 +91,14 @@ fn targets(
                     .take(editor::MAX_MARKS - usize::from(candidate.is_some()))
                 {
                     let kind = scenario_edit::layout::block(marker.block).object_type;
-                    let object = if app.pairing.placement_matches(&app.session, marker.block) {
-                        objects.iter().find(|o| {
-                            kind == Some(i16::from(o.kind))
-                                && o.placement.map(usize::from) == Some(marker.index)
-                        })
-                    } else {
-                        None
-                    };
+                    let preview = app.pairing.previews.object(app, marker.block, marker.index);
+                    let linked = app.pairing.placement_matches(&app.session, marker.block);
+                    let object = objects.iter().find(|o| {
+                        kind == Some(i16::from(o.kind))
+                            && (preview == Some(o.id)
+                                || (preview.is_none() && linked
+                                    && o.placement.map(usize::from) == Some(marker.index)))
+                    });
                     out.push(match object {
                         Some(o) => Target::Object(o.id, MarkStyle::Selected),
                         None => Target::Box(placement_box(app, marker)),
@@ -126,6 +126,7 @@ fn targets(
 struct MarkInputs {
     selection: crate::app::SelectionRevision,
     placement_geometry: Option<u64>,
+    previews: u64,
     sample: Option<(u64, u64)>,
     segment: Option<u64>,
     epoch: Option<u64>,
@@ -241,6 +242,7 @@ impl Play {
         }
         let inputs = MarkInputs {
             selection,
+            previews: app.pairing.previews.revision(),
             placement_geometry: matches!(self.presence.selection, Some(Selection::Placement(..)))
                 .then(|| app.session.markers_rev()),
             sample: sample.map(|s| (s.epoch, s.tick)),

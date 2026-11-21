@@ -228,7 +228,7 @@ impl Play {
         Ok((self.pairing_id, app.session.world_rev(), epoch))
     }
 
-    pub(crate) fn send_player_move(&self, app: &App, request: PlayerMove) -> Result<(), String> {
+    pub(crate) fn send_player_move(&mut self, app: &App, request: PlayerMove) -> Result<(), String> {
         if self.player_move_scope(app, self.edits_blocked(app).as_deref())? != request.scope {
             return Err("the game or map changed before the move".into());
         }
@@ -246,10 +246,12 @@ impl Play {
             .as_ref()
             .ok_or("waiting for the game's latest exact sample")?;
         request.check_latest(stream)?;
+        let scope = self.move_context(app);
+        let ticket = self.feedback.sent_move(scope, &request);
         self.link
             .as_ref()
             .ok_or("the game link closed before the move")?
-            .move_player(request, stream)
+            .move_player(request, stream, ticket)
     }
 
     pub(crate) fn player_here(&mut self, app: &mut App, pos: Vec3, facing: bool) {

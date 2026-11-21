@@ -83,6 +83,10 @@ impl Captures {
         })
     }
 
+    pub(super) fn stale(&self, header: Header, now: Instant) -> bool {
+        !header.paused && self.age_ticks(now) > 3.0
+    }
+
     fn fps(&self) -> Option<f64> {
         let span = self
             .recent

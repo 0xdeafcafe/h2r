@@ -82,7 +82,7 @@ impl Provider for Mirror {
         match method {
             m::MIRROR_STATUS => Some(Ok(status(app))),
             m::MIRROR_PENDING => Some(Ok(
-                json!({"pending":app.pairing.pending,"journal":app.pairing.journal,"leaving":app.pairing.leaving}),
+                json!({"pending":app.pairing.pending.as_slice(),"journal":app.pairing.journal,"leaving":app.pairing.leaving}),
             )),
             m::MIRROR_APPLY => Some(apply(app, &P(params))),
             m::MIRROR_PICK => Some(pick(app, &P(params))),
@@ -92,11 +92,11 @@ impl Provider for Mirror {
                 let result = move_player(app, &P(params));
                 if let Err(error) = &result
                     && error.code == code::REFUSED
-                    && app.pairing.published.is_some()
+                    && let Some(scope) = app.pairing.move_context
                 {
                     app.pairing
                         .requests
-                        .push(Request::PlayerMoveRefused(error.message.clone()));
+                        .push(Request::PlayerMoveRefused(scope, error.message.clone()));
                 }
                 Some(result)
             }
@@ -156,8 +156,22 @@ fn apply(app: &mut App, p: &P) -> Reply {
         "revert" => Apply::Revert,
         "keep" => Apply::Keep,
         "restore" => Apply::Restore,
-        "take" => Apply::Take(number("at")?),
-        "overwrite" => Apply::Overwrite(number("at")?),
+        "take" | "overwrite" => {
+            let at = number("at")?;
+            let field = app.pairing.pending.iter()
+                .find(|row| row["conflict"] == true && row["at"] == at)
+                .ok_or_else(|| err(code::REFUSED, "no conflict at this address"))?;
+            if field["resolvable"] == false {
+                return Err(err(code::REFUSED, field["why"].as_str().unwrap_or("the field moved")));
+            }
+            crate::play::tag_sync::check_conflict_path(&app.tags, field)
+                .map_err(|why| err(code::REFUSED, why))?;
+            if what == "take" {
+                Apply::Take(at)
+            } else {
+                Apply::Overwrite(at)
+            }
+        }
         _ => return Err(err(code::INVALID_PARAMS, "unknown mirror.apply action")),
     };
     app.pairing.requests.push(Request::Apply(action));

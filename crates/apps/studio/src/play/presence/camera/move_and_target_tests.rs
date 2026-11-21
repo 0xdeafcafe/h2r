@@ -134,9 +134,11 @@ fn split_screen_camera_holds_its_target_across_a_missing_unit() {
 }
 
 #[test]
-fn control_worker_refuses_a_move_after_a_queued_respawn() {
+fn control_worker_skips_a_move_after_respawn_without_a_stale_issue() {
     use crate::play::link::Purpose;
     use agent_proto::hot::method::EDIT_GET;
+    use serde_json::Value;
+    use std::time::Instant;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -185,15 +187,12 @@ fn control_worker_refuses_a_move_after_a_queued_respawn() {
         },
     );
     release.store(true, Ordering::Release);
-    until(
-        &mut play,
-        &mut app,
-        "refusal from the control worker",
-        |_, a| {
-            a.log()
-                .iter()
-                .any(|l| l.status.text() == "the local player's unit changed before the move")
-        },
-    );
+    // A later response on the same socket proves that the obsolete move was consumed.
+    play.call(agent_proto::method::STATUS, Value::Null, Purpose::Other);
+    until(&mut play, &mut app, "the following status reply", |_, a| {
+        a.log().iter().any(|l| l.status.text().starts_with("session.status:"))
+    });
+    assert!(play.refused_move_at(Instant::now()).is_none());
+    assert!(play.toasts(Instant::now()).all(|(text, _)| !text.contains("unit changed")));
     assert!(game.calls(sim::method::STATE_SET).is_empty());
 }

@@ -48,6 +48,13 @@ pub(crate) fn same_records(sample: &Sample, objects: &[Object], players: &[Playe
             .all(|(a, b)| same_player(a, b))
 }
 
+fn same_bindings(a: &Sample, b: &Sample) -> bool {
+    let objects = |o: &Object| (o.id, o.kind, o.placement, o.parent.is_some());
+    let held = |p: &Player| p.held;
+    a.objects.iter().map(objects).eq(b.objects.iter().map(objects))
+        && a.players.iter().filter_map(held).eq(b.players.iter().filter_map(held))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StablePose {
     Exact(u64),
@@ -58,6 +65,7 @@ enum StablePose {
 pub(crate) struct DisplayState {
     segment: Option<u64>,
     revision: u64,
+    binding_revision: u64,
     stable: Option<StablePose>,
 }
 
@@ -68,6 +76,11 @@ impl DisplayState {
 
     pub(crate) fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// Interpolated poses can change many times for the same set of live placement bindings.
+    pub(super) fn binding_revision(&self) -> u64 {
+        self.binding_revision
     }
 
     pub(super) fn clear(&mut self) {
@@ -93,7 +106,7 @@ impl DisplayState {
         };
         let cut = self.segment != Some(segment);
         let age = store.age_ticks(now);
-        let stale = !header.paused && age > 3.0;
+        let stale = store.stale(header, now);
         let stable = if header.paused || latest {
             Some(StablePose::Exact(header.seq))
         } else if stale && (header.tick as f64 + age - 2.0) - header.tick as f64 >= 1.0 {
@@ -110,6 +123,13 @@ impl DisplayState {
             return;
         }
         let next = store.sample(now, latest).expect("snapshot has a capture");
+        // Interpolation changes poses and aim. Membership, placement, attachments,
+        // and held handles are discrete records from the source tick.
+        if cut || shown.as_ref().is_none_or(|prior| {
+            prior.tick != next.tick && !same_bindings(prior, &next)
+        }) {
+            self.binding_revision = self.binding_revision.wrapping_add(1);
+        }
         if cut
             || shown
                 .as_ref()
@@ -239,5 +259,35 @@ mod tests {
             &mut shown,
         );
         assert_eq!(shown.unwrap().objects.as_ptr(), clamped);
+    }
+    #[test]
+    fn placement_binding_revision_ignores_poses_and_changes_for_a_held_or_replaced_handle() {
+        let mut store = Captures::new(30.0).unwrap();
+        let mut display = DisplayState::default();
+        let mut shown = None;
+        let now = Instant::now();
+        let mut world = World {
+            objects: vec![Object { id: 0x10001, kind: 2, placement: Some(1), ..Default::default() }],
+            players: vec![Player { index: 0, ..Default::default() }],
+        };
+        let mut observe = |seq, world: &World| {
+            let f = Frame::between(
+                Header { seq, tick: seq, epoch: 1, paused: false, cut: false, kind: Kind::Key },
+                Layers { objects: true, players: true },
+                None,
+                world,
+            );
+            store.apply(&f, now).unwrap();
+            display.refresh(Some(&store), now, true, &mut shown);
+            display.binding_revision()
+        };
+        let initial = observe(1, &world);
+        world.objects[0].position[0] = 5.0;
+        assert_eq!(observe(2, &world), initial);
+        world.players[0].held = Some(world.objects[0].id);
+        let held = observe(3, &world);
+        assert_ne!(held, initial);
+        world.objects[0].id = 0x20001;
+        assert_ne!(observe(4, &world), held);
     }
 }

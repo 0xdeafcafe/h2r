@@ -23,12 +23,59 @@ use scenario_edit::{BlockKind, Scenario};
 pub struct Baseline {
     blocks: BTreeMap<BlockKind, LoadedBlock>,
     object_rows: super::objects::Rows,
+    creation: Creation,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 struct LoadedBlock {
     layout_rev: u64,
     entries: Vec<Vec<u8>>,
+}
+
+/// Only slots whose creation fields differ from the last created object need
+/// a snapshot. Slot indices here always refer to the loaded scenario.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Creation {
+    slots: BTreeMap<(BlockKind, usize), Vec<u8>>,
+    revision: u64,
+}
+
+fn creation_ranges(kind: BlockKind) -> impl Iterator<Item = Range<usize>> {
+    let def = layout::block(kind);
+    def.fields.iter().filter_map(move |f| {
+        if def.object_type.is_none() || matches!(
+            f.role, layout::Role::Position | layout::Role::Rotation | layout::Role::Facing
+        ) {
+            return None;
+        }
+        Some(f.offset as usize..(f.offset + f.ty.size()) as usize)
+    })
+}
+
+fn same_creation_fields(kind: BlockKind, a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && creation_ranges(kind).all(|field| a.get(field.clone()) == b.get(field))
+}
+
+impl Creation {
+    fn write(&mut self, slot: (BlockKind, usize), entry: &mut [u8], at: usize, bytes: &[u8]) {
+        let end = at + bytes.len();
+        let changed = creation_ranges(slot.0).any(|field| {
+            let lo = field.start.max(at);
+            let hi = field.end.min(end);
+            lo < hi && entry[lo..hi] != bytes[lo - at..hi - at]
+        });
+        if changed {
+            self.slots.entry(slot).or_insert_with(|| entry.to_vec());
+        }
+        entry[at..end].copy_from_slice(bytes);
+        if changed {
+            let created = &self.slots[&slot];
+            if same_creation_fields(slot.0, entry, created) {
+                self.slots.remove(&slot);
+            }
+            self.revision += 1;
+        }
+    }
 }
 
 /// One field write: what `edit.batch` gets, and what it is for the log.
@@ -58,6 +105,7 @@ impl Baseline {
     pub fn source(s: &Scenario) -> Self {
         Self {
             object_rows: super::objects::source(s),
+            creation: Creation::default(),
             blocks: BLOCKS
                 .iter()
                 .map(|b| {
@@ -90,6 +138,7 @@ impl Baseline {
         Baseline {
             blocks,
             object_rows: super::objects::document(s),
+            creation: Creation::default(),
         }
     }
 
@@ -108,6 +157,49 @@ impl Baseline {
         super::objects::Frame::from_entry(kind, bytes)
     }
 
+    pub(super) fn creation_slots(&self) -> impl Iterator<Item = (BlockKind, usize)> + '_ {
+        self.creation.slots.keys().copied()
+    }
+
+    pub(super) fn needs_creation(&self, kind: BlockKind, index: usize) -> bool {
+        self.creation.slots.contains_key(&(kind, index))
+    }
+
+    pub(super) fn creation_revision(&self) -> u64 {
+        self.creation.revision
+    }
+
+    /// Snapshot of the slot a dispatched respawn reads. A preview outside the
+    /// loaded scenario has no creation fields to reconcile.
+    pub(super) fn creation_fields(&self, kind: BlockKind, index: usize) -> Vec<u8> {
+        self.blocks
+            .get(&kind)
+            .and_then(|b| b.entries.get(index))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub(super) fn creation_matches(&self, kind: BlockKind, index: usize, fields: &[u8]) -> bool {
+        self.blocks.get(&kind).and_then(|b| b.entries.get(index))
+            .is_some_and(|entry| same_creation_fields(kind, entry, fields))
+    }
+
+    pub(super) fn object_created(&mut self, kind: BlockKind, index: usize, created: &[u8]) {
+        let Some(entry) = self.blocks.get(&kind).and_then(|b| b.entries.get(index)) else {
+            return;
+        };
+        if created.len() != entry.len() {
+            return;
+        }
+        let slot = (kind, index);
+        if same_creation_fields(kind, entry, created) {
+            self.creation.slots.remove(&slot);
+        } else {
+            self.creation.slots.insert(slot, created.to_vec());
+        }
+        self.creation.revision += 1;
+    }
+
     /// The game now holds `w` (it was written).
     pub fn wrote(&mut self, w: &Write) {
         let Some(f) = layout::block(w.block).field(w.field) else {
@@ -121,10 +213,10 @@ impl Baseline {
             return;
         };
         let (at, n) = (f.offset as usize, f.ty.size() as usize);
-        if let (Some(dst), Some(src)) = (entry.get_mut(at..at + n), unhex(&w.value)) {
-            if src.len() == n {
-                dst.copy_from_slice(&src);
-            }
+        if let Some(bytes) = unhex(&w.value)
+            && bytes.len() == n && at + n <= entry.len()
+        {
+            self.creation.write((w.block, w.index), entry, at, &bytes);
         }
     }
 
@@ -153,9 +245,10 @@ impl Baseline {
             let span = (lo - start) as usize..(hi - start) as usize;
             let mut src = &bytes[span.clone()];
             let mut offset = ((lo - first) % stride) as usize;
-            for entry in &mut entries[((lo - first) / stride) as usize..] {
+            let first_index = ((lo - first) / stride) as usize;
+            for (index, entry) in entries.iter_mut().enumerate().skip(first_index) {
                 let n = src.len().min(entry.len() - offset);
-                entry[offset..offset + n].copy_from_slice(&src[..n]);
+                self.creation.write((*kind, index), entry, offset, &src[..n]);
                 src = &src[n..];
                 if src.is_empty() {
                     break;
@@ -291,6 +384,35 @@ mod tests {
         let d = diff(&base, s.scenario().unwrap());
         assert_eq!(d.writes.len(), 1);
         assert_eq!(d.writes[0].value, w.was);
+    }
+
+    #[test]
+    fn respawn_tracks_net_creation_fields_including_writes_after_dispatch() {
+        let (_t, session) = session("sync-respawn");
+        let scenario = session.scenario().unwrap();
+        let kind = BlockKind::Weapons;
+        let mut base = Baseline::source(scenario);
+        let file = base.creation_fields(kind, 0);
+        let src = scenario.block(kind).address;
+        let scale = layout::block(kind).role(layout::Role::Scale).unwrap().offset;
+        let flags = layout::block(kind).field("placement flags").unwrap().offset;
+        let old_scale = &file[scale as usize..scale as usize + 4];
+        let old_flags = &file[flags as usize..flags as usize + 4];
+        let changed = |bytes: &[u8]| bytes.iter().map(|b| !b).collect::<Vec<_>>();
+
+        base.observe(scenario, src + scale, &changed(old_scale));
+        base.observe(scenario, src + flags, &changed(old_flags));
+        base.observe(scenario, src + scale, old_scale);
+        assert!(base.needs_creation(kind, 0), "the flags still differ");
+        let dispatched = base.creation_fields(kind, 0);
+        base.observe(scenario, src + flags, old_flags);
+        assert!(!base.needs_creation(kind, 0), "both undos reached the original body");
+
+        // The respawn read the edited flags before that last field write arrived.
+        base.object_created(kind, 0, &dispatched);
+        assert_eq!(base.creation_slots().collect::<Vec<_>>(), [(kind, 0)]);
+        base.observe(scenario, src + flags, &changed(old_flags));
+        assert!(!base.needs_creation(kind, 0), "the slot matches its respawned body");
     }
 
     #[test]

@@ -1,14 +1,19 @@
 //! Drive object edits on the control connection. Replies acknowledge the exact
 //! frame or slot requested, even if the document changes while the call runs.
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Arc;
 use std::time::Instant;
 
-use agent_proto::{ObjectId, RpcError, code, sim::method};
+use agent_proto::{ObjectId, sim::method};
 use serde_json::{Value, json};
 
-use super::{Ack, Change, Frame, Key, Op, Rows, diff, document, respawn};
+use super::{Ack, Change, Frame, Key, LayoutIndex, Op, Rows, SampleIndex, diff, document, respawn};
 use crate::app::App;
-use crate::play::{Play, PUSH_EVERY, link::Purpose, sync, tag_sync};
+use crate::play::{Play, PUSH_EVERY, link::ObjectDispatch, tag_sync};
+
+mod outcome;
+mod wire;
+use outcome::Failure;
 
 #[derive(Clone, Copy, PartialEq)]
 struct Scope {
@@ -18,21 +23,17 @@ struct Scope {
     checksum: u32,
 }
 
+/// At most one object call can reach the worker at a time. Other edits are
+/// represented by the document or a pending user request and get diffed again.
 struct Flight {
     ticket: u64,
     change: Change,
-    frame: Option<Frame>,
-    creation: Option<sync::Write>,
-}
-
-struct Failure {
-    change: Change,
-    why: String,
-    // A manual Respawn has no automatic diff to attach its refusal to.
     manual: bool,
-    gone_preview: bool,
-    // A timeout or a closed connection can follow a committed game edit.
-    unknown: bool,
+    offered_at: Instant,
+    creation: Vec<u8>,
+    dispatch: Arc<ObjectDispatch>,
+    markers: u64,
+    peers: Option<u32>,
 }
 
 #[derive(Default)]
@@ -41,56 +42,48 @@ pub(in crate::play) struct State {
     ack: BTreeMap<Key, Ack>,
     flight: BTreeMap<Key, Flight>,
     failed: BTreeMap<Key, Failure>,
+    requested: BTreeSet<Key>,
+    eligible: BTreeMap<Key, Change>,
     doc_revision: Option<u64>,
     doc: Rows,
+    layout: LayoutIndex,
+    changed: BTreeSet<Key>,
+    sample: SampleIndex,
+    binding_revision: Option<(Option<u64>, u64)>,
+    creation_revision: Option<u64>,
+    methods: Option<[bool; 3]>,
+    writable: bool,
     next_ticket: u64,
-    next_push: Option<Instant>,
+    retry_at: Option<Instant>,
+    // A newer observed tick can confirm an empty slot even when the
+    // stream's object bindings have stayed identical since the last reply.
+    after_tick: Option<u64>,
     dirty: bool,
     dragging: bool,
     drag_moves: BTreeSet<Key>,
-    last_move: BTreeMap<Key, Instant>,
+    last_move: HashMap<ObjectId, Instant>,
     release: BTreeSet<Key>,
     rows: Vec<Value>,
-    can_respawn: bool,
     pub(in crate::play) waiting_for_sample: Option<&'static str>,
 }
 
 impl State {
-    pub(in crate::play) fn transport_lost(&mut self) {
-        for (key, flight) in std::mem::take(&mut self.flight) {
-            self.failed.insert(
-                key,
-                Failure {
-                    change: flight.change,
-                    why: "the connection closed before the game acknowledged this object edit".into(),
-                    manual: flight.creation.is_some(),
-                    gone_preview: false,
-                    unknown: true,
-                },
-            );
-        }
-        self.release.clear();
-        self.drag_moves.clear();
-        self.dragging = false;
-        self.dirty = true;
+    pub(in crate::play) fn waiting_for_permission(&self) -> bool {
+        self.failed.values().any(Failure::is_permission)
     }
 
     pub(in crate::play) fn field_answer(&mut self) {
-        // A released gizmo can send its final object frame as soon as the
-        // conditional field batch succeeds, including inside the interval.
         self.dirty = true;
     }
 
     pub(in crate::play) fn can_respawn(&self) -> bool {
-        self.can_respawn
+        self.writable && !self.eligible.is_empty()
     }
 
-    fn hide_rows(&mut self, pending: &mut Vec<Value>) {
-        self.can_respawn = false;
-        self.waiting_for_sample = None;
-        if !self.rows.is_empty() {
-            self.rows.clear();
-            self.publish(pending);
+    fn set_rows(&mut self, app: &mut App, rows: Vec<Value>) {
+        if self.rows != rows {
+            self.rows = rows;
+            self.publish(&mut app.pairing.pending);
         }
     }
 
@@ -120,20 +113,6 @@ impl State {
     }
 }
 
-// A gone salted preview can be recreated for the next document change.
-// A different occupant of the same object slot is never its replacement.
-fn forget_gone_preview(ack: &mut BTreeMap<Key, Ack>, key: Key, op: Op) -> bool {
-    if let Op::Set { id, .. } = op
-        && ack.get(&key)
-            .and_then(Ack::binding)
-            .is_some_and(|(saved, linked, _)| saved == id && !linked)
-    {
-        ack.insert(key, Ack::Delete { id });
-        return true;
-    }
-    false
-}
-
 fn row(change: Change, doc: &Rows, why: &str, refused: bool) -> Value {
     let block = change.key.block;
     let name = crate::api::block_name(block);
@@ -143,7 +122,7 @@ fn row(change: Change, doc: &Rows, why: &str, refused: bool) -> Value {
         || json!({"panel":"pending"}),
         |_| json!({"block":name, "index":index}),
     );
-    let structural = matches!(change.op, Op::Reload(_) | Op::Respawn | Op::Delete { .. });
+    let structural = matches!(change.op, Op::Reload(_) | Op::Respawn { .. } | Op::Delete { .. });
     json!({
         "doc": "object",
         "block": format!("{block:?}"),
@@ -193,363 +172,314 @@ impl Play {
         Ok(())
     }
 
+    pub(in crate::play) fn reset_objects(&mut self, app: &mut App) {
+        self.objects.cancel_unsent();
+        let next_ticket = self.objects.next_ticket;
+        self.objects = State { next_ticket, ..Default::default() };
+        app.pairing.previews.clear();
+        self.objects.publish(&mut app.pairing.pending);
+    }
+
     pub(in crate::play) fn update_objects(&mut self, app: &mut App, now: Instant) {
+        self.revalidate_object_dispatch(app);
         let scope = self.object_scope(app);
-        if scope.is_some() && self.objects.scope != scope {
-            // A delayed reply from the previous epoch still carries its ticket.
-            self.objects = State {
-                scope,
-                next_ticket: self.objects.next_ticket,
-                ..Default::default()
-            };
-            self.objects.publish(&mut app.pairing.pending);
+        if self.is_paired() && scope.is_some() && self.objects.scope != scope
+            && self.edits.world == Some(app.session.world_rev())
+        {
+            self.reset_objects(app);
+            self.objects.scope = scope;
+            if let Some((_, base)) = &self.baseline {
+                self.objects.layout = LayoutIndex::new(base.object_rows());
+            }
         }
-        if !self.is_paired() || !self.live_edits || self.reload_copy.is_some() {
-            self.objects.hide_rows(&mut app.pairing.pending);
-            self.objects.release.clear();
+
+        let writable = self.object_gate(app).is_ok() && scope == self.objects.scope;
+        if self.objects.writable != writable {
+            self.objects.writable = writable;
+            self.objects.dirty = true;
+        }
+        if !writable {
+            self.objects.requested.clear();
             self.objects.drag_moves.clear();
+            self.objects.release.clear();
             self.objects.dragging = false;
+        }
+        // Without verified identity keep the last published rows, including
+        // a request whose receipt was lost. Don't compare against a new file.
+        if scope.is_none() || self.objects.scope != scope || !self.is_paired()
+            || self.reload_copy.is_some()
+        {
+            if self.objects.dirty {
+                let mut rows = self.objects.rows.clone();
+                for failure in self.objects.failed.values().filter(|f| f.is_unknown()) {
+                    let issue = failure_row(failure, &self.objects.doc);
+                    if !rows.contains(&issue) {
+                        rows.push(issue);
+                    }
+                }
+                self.objects.set_rows(app, rows);
+                self.objects.dirty = false;
+            }
+            return;
+        }
+        if !self.live_edits && self.objects.rows.is_empty() && self.objects.ack.is_empty()
+            && self.objects.failed.is_empty()
+        {
             return;
         }
 
-        let dragging = app.session.in_gesture() || app.session.dragging();
+        let dragging = writable && (app.session.in_gesture() || app.session.dragging());
         let released = self.objects.dragging && !dragging;
         self.objects.dragging = dragging;
         if released {
             self.objects.release.append(&mut self.objects.drag_moves);
             self.push_edits(app);
         }
-        let due = self.objects.next_push.is_none_or(|next| now >= next);
-        if !due && !released && !self.objects.dirty {
-            return;
-        }
-        if due {
-            self.objects.next_push = Some(now + PUSH_EVERY);
-        }
-        self.objects.dirty = false;
-        if self.object_gate(app).is_err() {
-            self.objects.hide_rows(&mut app.pairing.pending);
-            if self.has_method(agent_proto::live::SUBSCRIBE) {
-                self.objects.waiting_for_sample = sample_refusal(app);
-            }
-            return;
-        }
-        self.objects.waiting_for_sample = None;
-        let Some((_, base)) = &self.baseline else {
-            return;
-        };
-        let Some(scenario) = app.session.scenario() else {
-            return;
-        };
+        let Some((_, base)) = &self.baseline else { return };
+        let Some(scenario) = app.session.scenario() else { return };
         let revision = app.session.markers_rev();
         if self.objects.doc_revision != Some(revision) {
-            self.objects.doc = document(scenario);
+            let next = document(scenario);
+            if dragging || released {
+                // A release flushes frames changed by this gesture. Other
+                // placements may already have staged or outstanding writes.
+                let moved = next.iter().filter_map(|(&key, row)| {
+                    let previous = self.objects.doc.get(&key)?;
+                    (previous.frame != row.frame).then_some(key)
+                });
+                if released {
+                    self.objects.release.extend(moved);
+                } else {
+                    self.objects.drag_moves.extend(moved);
+                }
+            }
+            self.objects.doc = next;
+            self.objects.changed = self.objects.layout.changed(base.object_rows(), &self.objects.doc);
             self.objects.doc_revision = Some(revision);
+            self.objects.dirty = true;
         }
-        let doc = &self.objects.doc;
-        let sample = app.pairing.shown.as_ref().unwrap();
+
+        let subscribed = self.has_method(agent_proto::live::SUBSCRIBE);
+        self.objects.waiting_for_sample = subscribed.then(|| sample_refusal(app)).flatten();
+        let sample = app.pairing.shown.as_ref()
+            .filter(|_| subscribed && self.objects.waiting_for_sample.is_none());
+        let binding = sample.map(|s| {
+            let segment = app.pairing.display.segment();
+            (segment, segment.map_or(s.tick, |_| app.pairing.display.binding_revision()))
+        });
+        if self.objects.binding_revision != binding {
+            self.objects.sample = sample.map(SampleIndex::new).unwrap_or_default();
+            self.objects.binding_revision = binding;
+            self.objects.dirty = true;
+        }
+        let tick = sample.map(|s| s.tick);
+        if let Some(tick) = tick {
+            self.objects.sample.tick = tick;
+            if self.objects.after_tick.is_some_and(|after| tick > after) {
+                self.objects.dirty = true;
+                self.objects.after_tick = None;
+            }
+        }
+
+        let methods = [method::OBJECT_SET, method::OBJECT_DELETE, method::OBJECT_RESPAWN]
+            .map(|m| self.has_method(m));
+        let creation_revision = base.creation_revision();
+        if self.objects.creation_revision != Some(creation_revision) || self.objects.methods != Some(methods) {
+            self.objects.dirty = true;
+            self.objects.methods = Some(methods);
+            self.objects.creation_revision = Some(creation_revision);
+        }
+        if !self.objects.dirty && !released
+            && self.objects.retry_at.is_none_or(|due| now < due)
+        {
+            return;
+        }
+        self.objects.dirty = false;
+        self.objects.retry_at = None;
+        if tick.is_some() {
+            self.objects.reconcile_failures(app);
+        }
+        let Some(scenario) = app.session.scenario() else { return };
         let loaded = base.object_rows();
-        // Reassert a changed document frame against the exact salted id if a
-        // previous move's acknowledgement was lost, including undo to source.
+        let doc = &self.objects.doc;
+        self.objects.failed.retain(|_, failure| failure.matches_creation(base));
         let mut force = self.objects.release.clone();
         for (&key, failure) in &self.objects.failed {
-            if failure.unknown && let Op::Set { frame, .. } = failure.change.op
-                && doc.get(&key).and_then(|r| r.frame).is_some_and(|new| new != frame)
-            {
+            if failure.force_move(doc.get(&key).and_then(|row| row.frame)) {
                 force.insert(key);
             }
         }
-        let changes = diff(loaded, doc, sample, &self.objects.ack, &force);
-        let dirty_slots: BTreeSet<_> = self.edits.created.iter().map(|w| (w.block, w.index)).collect();
-        self.objects.can_respawn = !dirty_slots.is_empty() && loaded.iter().any(|(&key, r)| {
-            dirty_slots.contains(&(key.block, r.index))
-                && !self.objects.flight.contains_key(&key)
-                && !self.objects.failed.get(&key).is_some_and(|f| f.unknown)
-                && respawn(loaded, doc, key, sample, &self.objects.ack).is_some()
-        });
+        let changes = diff(
+            loaded, doc, &self.objects.layout, &self.objects.changed,
+            &self.objects.sample, &self.objects.ack, &force,
+        );
         let mut rows = Vec::new();
-        let mut calls = Vec::new();
-        let mut keep_release = BTreeSet::new();
-        // Undoing a failed edit clears its refusal; a later redo is a new edit.
-        self.objects.failed.retain(|key, failure| {
-            failure.manual || failure.unknown || changes.iter().any(|change| change.key == *key)
-        });
-        for mut change in changes {
-            let key = change.key;
-            if self.objects.failed.get(&key).is_some_and(|f| {
-                f.unknown && !matches!((f.change.op, change.op),
-                    (Op::Set { id: old, frame: a }, Op::Set { id, frame: b })
-                        if old == id && a != b)
-            }) {
-                // Structural writes cannot be replayed from a missing receipt:
-                // an unlinked preview can exist without a placement in the stream.
+        // The first eligible call wins this frame. Every other candidate is
+        // resolved from the latest document, session and bindings on reply.
+        let mut call = None;
+        self.objects.eligible.clear();
+        let mut candidates = BTreeSet::new();
+        for (block, index) in base.creation_slots() {
+            if let Some(key) = self.objects.layout.key_at(block, index) {
+                candidates.insert(key);
+            }
+        }
+        candidates.extend(self.objects.failed.iter().filter_map(|(&key, f)| f.is_partial().then_some(key)));
+        for key in candidates {
+            if tick.is_none() || !writable || !methods[2] || self.objects.flight.contains_key(&key) {
                 continue;
             }
-            let method = match change.op {
-                Op::Set { .. } => method::OBJECT_SET,
-                Op::Delete { .. } => method::OBJECT_DELETE,
-                Op::Respawn => method::OBJECT_RESPAWN,
+            if let Some(change) = respawn(loaded, doc, key, &self.objects.sample, &self.objects.ack)
+                && self.objects.failed.get(&key).is_none_or(|f| f.allows_manual(change, &self.objects.sample))
+            {
+                self.objects.eligible.insert(key, change);
+            }
+        }
+        self.objects.requested.retain(|key| self.objects.eligible.contains_key(key));
+        if self.edits.sent.is_none()
+            && let Some(key) = self.objects.requested.first()
+        {
+            call = self.objects.eligible.get(key).copied().map(|change| (change, true));
+        }
+
+        let mut active_failures = BTreeSet::new();
+        let unobserved = tick.is_none();
+        let mut release = BTreeSet::new();
+        for mut change in changes {
+            let key = change.key;
+            let moving = matches!(change.op, Op::Set { .. });
+            let final_move = moving && self.objects.release.contains(&key);
+            if final_move {
+                release.insert(key);
+            }
+            if let Some(failure) = self.objects.failed.get(&key)
+                && failure.blocks(change)
+            {
+                active_failures.insert(key);
+                continue;
+            }
+            let (available, method) = match change.op {
+                Op::Set { .. } => (methods[0], method::OBJECT_SET),
+                Op::Delete { .. } => (methods[1], method::OBJECT_DELETE),
+                Op::Respawn { .. } => (methods[2], method::OBJECT_RESPAWN),
                 Op::Reload(why) => {
-                    rows.push(row(change, doc, why, false));
+                    let mut issue = row(change, doc, why, false);
+                    issue["needs_reload"] = json!(true);
+                    rows.push(issue);
                     continue;
                 }
             };
-            if !self.has_method(method) {
+            if !available {
                 let why = format!("the game does not offer {method}. The object changes at its next creation or reload.");
-                rows.push(row(change, doc, &why, false));
+                let mut issue = row(change, doc, &why, false);
+                issue["needs_reload"] = json!(true);
+                rows.push(issue);
                 continue;
             }
-            if change.op == Op::Respawn && u16::try_from(change.index).is_err() {
-                rows.push(row(
-                    change,
-                    doc,
-                    "the slot exceeds the game's placement limit",
-                    false,
-                ));
-                continue;
-            }
-            let moving = matches!(change.op, Op::Set { .. });
-            if dragging && moving {
-                self.objects.drag_moves.insert(key);
-            }
-            let final_move = moving && (released || self.objects.release.contains(&key));
-            if self.objects.flight.contains_key(&key) {
-                if final_move {
-                    keep_release.insert(key);
-                }
-                continue;
-            }
-            if let Op::Set { id, frame } = change.op
-                && let Some(original) = loaded.get(&key)
-                && base.layout_matches(scenario, key.block)
-                && base.object_frame(key.block, original.index) != Some(frame)
+            if let Op::Respawn { id: None } = change.op
+                && u16::try_from(change.index).is_err()
             {
-                // The scnr poke can be refused or lose a was-byte comparison.
-                // Move the body only after its slot holds the requested frame.
-                if final_move {
-                    keep_release.insert(key);
-                    continue;
-                }
-                // During a continuous drag the next editor sample may already
-                // be newer than the last successful batch. Follow that batch.
-                let last = self.objects.ack.get(&key)
-                    .and_then(|ack| ack.frame(id))
-                    .or(original.frame);
-                let Some(applied) = base.object_frame(key.block, original.index) else {
-                    continue;
-                };
-                if last == Some(applied) {
-                    continue;
-                }
-                change.op = Op::Set { id, frame: applied };
-            }
-            if let Some(failure) = self.objects.failed.get(&key) {
-                let gone = failure.gone_preview && change.op == Op::Respawn
-                    && matches!(failure.change.op, Op::Set { frame, .. }
-                        if doc.get(&key).and_then(|r| r.frame) == Some(frame));
-                if gone || failure.change == change {
-                    rows.push(row(change, doc, &failure.why, true));
-                    continue;
-                }
-            }
-            if !due && !final_move {
+                let mut issue = row(change, doc, "the slot exceeds the game's placement limit", false);
+                issue["needs_reload"] = json!(true);
+                rows.push(issue);
                 continue;
             }
-            if moving {
-                if !final_move && self.objects.last_move.get(&key)
-                    .is_some_and(|last| now < *last + PUSH_EVERY)
+            if !writable || call.is_some() || !self.objects.flight.is_empty() {
+                continue;
+            }
+            if matches!(change.op, Op::Respawn { .. }) && self.edits.sent.is_some() {
+                continue;
+            }
+            if let Op::Set { id, frame } = change.op {
+                if let Some(original) = loaded.get(&key)
+                    && base.layout_matches(scenario, key.block)
+                    && base.object_frame(key.block, original.index) != Some(frame)
                 {
-                    continue;
+                    if final_move {
+                        continue;
+                    }
+                    let last = self.objects.ack.get(&key).and_then(|ack| ack.frame(id)).or(original.frame);
+                    let Some(applied) = base.object_frame(key.block, original.index) else { continue };
+                    if last == Some(applied) {
+                        continue;
+                    }
+                    change.op = Op::Set { id, frame: applied };
                 }
-                self.objects.last_move.insert(key, now);
+                if !final_move && let Some(last) = self.objects.last_move.get(&id) {
+                    let due = *last + PUSH_EVERY;
+                    if now < due {
+                        self.objects.retry_at = Some(self.objects.retry_at.map_or(due, |old| due.min(old)));
+                        continue;
+                    }
+                }
             }
-            let frame = base.object_frame(key.block, change.index)
-                .or_else(|| doc.get(&key).and_then(|row| row.frame));
-            calls.push((change, frame));
+            call = Some((change, false));
         }
-        self.objects.release = keep_release;
+        self.objects.failed.retain(|key, f| {
+            let dirty = loaded.get(key).is_some_and(|r| base.needs_creation(key.block, r.index));
+            let keep = f.keep_without_diff(dirty, !doc.contains_key(key)) || unobserved || active_failures.contains(key);
+            if keep && (active_failures.contains(key) || f.is_unknown() || f.is_partial() || f.manual && dirty || unobserved) {
+                rows.push(failure_row(f, doc));
+            }
+            keep
+        });
         for (&key, ack) in &self.objects.ack {
-            let (index, op, why) = if let Some((_, linked, slot)) = ack.binding()
-                && (!linked || !loaded.contains_key(&key))
+            let (index, op, why) = if let Some((id, linked, slot)) = ack.binding()
+                && (!linked || !loaded.contains_key(&key)) && doc.contains_key(&key)
             {
-                if !doc.contains_key(&key) {
-                    continue;
-                }
-                (slot, Op::Respawn, "a preview until the map reloads")
+                (slot, Op::Respawn { id: Some(id) }, "a preview until the map reloads")
             } else if let Ack::Delete { id } = ack
                 && let Some(original) = loaded.get(&key)
                 && !doc.contains_key(&key)
             {
-                (
-                    original.index,
-                    Op::Delete { id: *id },
-                    "still in the game's scenario until the map reloads",
-                )
+                (original.index, Op::Delete { id: *id }, "still in the game's scenario until the map reloads")
             } else {
                 continue;
             };
             rows.push(row(Change { key, index, op }, doc, why, false));
         }
-        for failure in self.objects.failed.values() {
-            if failure.unknown {
-                let why = format!("{}; reload the map to verify the object", failure.why);
-                let mut issue = row(failure.change, doc, &why, true);
-                issue["class"] = json!(tag_sync::RELOAD);
-                issue["unknown"] = json!(true);
-                rows.push(issue);
-            } else if failure.manual && doc.contains_key(&failure.change.key) {
-                rows.push(row(failure.change, doc, &failure.why, true));
+        if let Some(tick) = tick {
+            let until_ack = self.objects.ack.values().filter_map(|a| match *a {
+                Ack::Set { tick: at, .. } | Ack::Spawn { tick: at, .. } if at >= tick => Some(at),
+                _ => None,
+            }).min();
+            let until_observed = self.objects.failed.values()
+                .filter_map(Failure::awaiting_sample)
+                .filter(|&after| after >= tick)
+                .min();
+            self.objects.after_tick = until_ack.into_iter().chain(until_observed).min();
+        }
+        self.objects.release = release;
+        self.objects.set_rows(app, rows);
+        if let Some((change, manual)) = call
+            && self.objects.flight.is_empty()
+            && self.send_object(change, manual, app, now)
+        {
+            if let Op::Set { .. } = change.op {
+                self.objects.release.remove(&change.key);
             }
+            self.objects.requested.remove(&change.key);
         }
-        self.objects.rows = rows;
-        self.objects.publish(&mut app.pairing.pending);
-        for (change, frame) in calls {
-            self.send_object(change, frame, None);
-        }
-    }
-
-    fn send_object(&mut self, change: Change, frame: Option<Frame>, creation: Option<sync::Write>) {
-        let peers = self.edits.confirmed;
-        let (method, params) = match change.op {
-            Op::Set { id, frame } => (
-                method::OBJECT_SET,
-                json!({"id":id.to_string(), "pos":frame.pos, "forward":frame.forward, "up":frame.up,
-                    "confirm_peers":peers}),
-            ),
-            Op::Delete { id } => (
-                method::OBJECT_DELETE,
-                json!({"id":id.to_string(), "confirm_peers":peers}),
-            ),
-            Op::Respawn => (
-                method::OBJECT_RESPAWN,
-                json!({"placement":{"block":crate::api::block_name(change.key.block),
-                    "index":change.index}, "confirm_peers":peers}),
-            ),
-            Op::Reload(_) => return,
-        };
-        self.objects.next_ticket += 1;
-        let ticket = self.objects.next_ticket;
-        self.objects.failed.remove(&change.key);
-        self.objects.flight.insert(
-            change.key,
-            Flight { ticket, change, frame, creation },
-        );
-        self.call(method, params, Purpose::Object(ticket));
     }
 
     pub(in crate::play) fn respawn_objects(&mut self, app: &App) -> Result<(), String> {
         self.object_gate(app)?;
-        if self.object_scope(app) != self.objects.scope {
-            return Err("waiting for the current map's live objects".into());
-        }
         self.require_method(method::OBJECT_RESPAWN)?;
-        let base = &self.baseline.as_ref().ok_or("waiting for the loaded map")?.1;
-        let doc = document(app.session.scenario().ok_or("open a map first")?);
-        let sample = app.pairing.shown.as_ref().unwrap();
-        let mut calls = BTreeMap::new();
-        for w in &self.edits.created {
-            let Some((&key, _)) = base.object_rows().iter().find(|(key, row)| {
-                key.block == w.block && row.index == w.index
-            }) else { continue };
-            if self.objects.flight.contains_key(&key)
-                || self.objects.failed.get(&key).is_some_and(|f| f.unknown)
-            {
-                continue;
-            }
-            if let Some(change) = respawn(base.object_rows(), &doc, key, sample, &self.objects.ack) {
-                calls.entry(key).or_insert_with(|| {
-                    (change, base.object_frame(w.block, w.index), w.clone())
-                });
-            }
-        }
-        if calls.is_empty() {
+        if self.object_scope(app) != self.objects.scope || self.objects.eligible.is_empty() {
             return Err("no live object has an acknowledged creation-field change to respawn".into());
         }
-        for (change, frame, write) in calls.into_values() {
-            self.send_object(change, frame, Some(write));
-        }
+        self.objects.requested.extend(self.objects.eligible.keys().copied());
+        self.objects.dirty = true;
         Ok(())
     }
+}
 
-    pub(in crate::play) fn object_answer(
-        &mut self,
-        app: &mut App,
-        ticket: u64,
-        result: Result<Value, RpcError>,
-    ) {
-        if self.object_scope(app) != self.objects.scope {
-            return;
-        }
-        let Some(key) = self.objects.flight.iter()
-            .find_map(|(&key, f)| (f.ticket == ticket).then_some(key))
-        else {
-            return;
-        };
-        let flight = self.objects.flight.remove(&key).unwrap();
-        let change = flight.change;
-        let reply = result.and_then(|v| {
-            let object = |name: &str| v[name].as_str().and_then(ObjectId::parse);
-            let tick = v["at"]["tick"].as_u64()
-                .or_else(|| app.pairing.shown.as_ref().map(|sample| sample.tick))
-                .unwrap_or(0);
-            let ack = match change.op {
-                Op::Set { id, frame } if object("object") == Some(id) => {
-                    let binding = self.objects.ack.get(&key).and_then(Ack::binding)
-                        .filter(|(saved, _, _)| *saved == id);
-                    Some(Ack::Set {
-                        id, frame, tick, linked: binding.is_none_or(|(_, linked, _)| linked),
-                        index: binding.map_or(change.index, |(_, _, index)| index),
-                    })
-                }
-                Op::Delete { id } if object("deleted") == Some(id) => Some(Ack::Delete { id }),
-                Op::Respawn => match (object("object"), v["linked"].as_bool(), flight.frame) {
-                    (Some(id), Some(linked), Some(frame)) => Some(Ack::Spawn {
-                        id, linked, frame, tick, index: change.index,
-                    }),
-                    _ => None,
-                },
-                _ => None,
-            };
-            ack.ok_or_else(|| {
-                RpcError::new(code::INVALID_REQUEST, "unreadable object edit acknowledgement")
-            })
-        });
-        match reply {
-            Ok(ack) => {
-                self.objects.ack.insert(key, ack);
-                if let Some(w) = flight.creation {
-                    self.edits.created.retain(|dirty| dirty != &w);
-                }
-            }
-            Err(e) => {
-                if e.code == code::GONE && let Op::Delete { id } = change.op {
-                    self.objects.ack.insert(key, Ack::Delete { id });
-                } else {
-                    let why = e.data.as_ref().and_then(|d| d["why"].as_str()).unwrap_or(&e.message);
-                    // A refused respawn may have removed the old object before
-                    // the host's creation call failed. Retire that salted id.
-                    if change.op == Op::Respawn
-                        && let Some(deleted) = e.data.as_ref()
-                            .and_then(|d| d["deleted"].as_str()).and_then(ObjectId::parse)
-                    {
-                        self.objects.ack.insert(key, Ack::Delete { id: deleted });
-                    }
-                    let gone_preview = e.code == code::GONE
-                        && forget_gone_preview(&mut self.objects.ack, key, change.op);
-                    self.objects.failed.insert(
-                        key,
-                        Failure {
-                            change,
-                            why: why.into(),
-                            manual: flight.creation.is_some(),
-                            gone_preview,
-                            unknown: matches!(e.code, code::TIMEOUT | code::INVALID_REQUEST),
-                        },
-                    );
-                }
-                app.error(format!("live object edit: {e}"));
-            }
-        }
-        self.objects.dirty = true;
+fn failure_row(f: &Failure, doc: &Rows) -> Value {
+    let mut issue = row(f.change, doc, &f.why, true);
+    if f.is_unknown() {
+        issue["why"] = json!(format!("{}; reload the map to verify the object", f.why));
+        issue["unknown"] = json!(true);
+        issue["class"] = json!(tag_sync::RELOAD);
     }
+    issue
 }

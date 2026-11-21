@@ -11,6 +11,10 @@ pub(super) struct Objects {
     salt: u32,
     allow_append: bool,
     fail_next: Option<RpcError>,
+    hold_on_delete: bool,
+    fail_creation: bool,
+    replace_before_respawn: Option<u16>,
+    peer_change: Option<(u32, bool)>,
 }
 
 impl Objects {
@@ -38,9 +42,11 @@ impl Objects {
         let id = ObjectId::parse(id)
             .filter(|id| id.kind == Kind::Weapon)
             .ok_or_else(|| RpcError::new(code::INVALID_PARAMS, "expected a salted weapon id"))?;
-        self.weapons.iter().find(|(_, object)| object.id == id.key)
+        self.weapons
+            .iter()
+            .find(|(_, object)| object.id == id.key && object.parent.is_none())
             .map(|(&slot, _)| slot)
-            .ok_or_else(|| RpcError::new(code::GONE, "the weapon is gone"))
+            .ok_or_else(|| RpcError::new(code::GONE, format!("{id} is gone")))
     }
 
     fn edit(&mut self, method: &str, params: Value) -> Result<Value, RpcError> {
@@ -66,23 +72,52 @@ impl Objects {
             method::OBJECT_DELETE => {
                 let p: ObjectDeleteParams = serde_json::from_value(params).map_err(invalid)?;
                 let slot = self.slot(&p.id)?;
+                if std::mem::take(&mut self.hold_on_delete) {
+                    // The pickup races the editor's last streamed free weapon.
+                    self.weapons.get_mut(&slot).unwrap().parent = Some(UNIT);
+                    self.slot(&p.id)?;
+                }
                 self.weapons.remove(&slot);
                 Ok(json!({"deleted": p.id}))
             }
             method::OBJECT_RESPAWN => {
                 let p: ObjectRespawnParams = serde_json::from_value(params).map_err(invalid)?;
+                if let Some(slot) = self.replace_before_respawn.take() {
+                    let replacement = self.weapon(slot, true);
+                    self.weapons.insert(slot, replacement);
+                }
                 let slot = match (p.placement, p.id) {
                     (Some(place), None) if place.block == "weapons" => place.index,
+                    (Some(place), None) => {
+                        return Err(RpcError::new(agent_proto::sim::REFUSED, format!(
+                            "{} has no supported object palette and world id", place.block
+                        )));
+                    }
                     (None, Some(id)) => self.slot(&id)?,
-                    _ => return Err(refused("unsupported fixture placement")),
+                    _ => {
+                        return Err(RpcError::new(code::INVALID_PARAMS, "give exactly one of id or placement"));
+                    }
                 };
                 // The fixture's loaded block has two entries. Separate tests opt in to a
                 // successful appended-slot reply to exercise consumers of an unlinked preview.
                 if slot >= 2 && !self.allow_append {
-                    return Err(refused("placement is outside the loaded block"));
+                    return Err(RpcError::new(agent_proto::sim::REFUSED,
+                        format!("index {slot} is outside a block of 2 records")));
+                }
+                if self.weapons.get(&slot).is_some_and(|o| o.parent.is_some()) {
+                    return Err(RpcError::new(
+                        agent_proto::sim::REFUSED,
+                        "the placement's object is held or attached",
+                    ));
+                }
+                let old = self.weapons.remove(&slot).map(|o| name(o.id));
+                if std::mem::take(&mut self.fail_creation) {
+                    let mut err = RpcError::new(agent_proto::sim::REFUSED, "object_new refused the replacement");
+                    err.data = Some(json!({"deleted": old}));
+                    return Err(err);
                 }
                 let object = self.weapon(slot, false);
-                let old = self.weapons.insert(slot, object).map(|o| name(o.id));
+                self.weapons.insert(slot, object);
                 Ok(json!({"old": old, "object": name(object.id), "linked": false}))
             }
             _ => unreachable!(),
@@ -121,20 +156,35 @@ impl Game {
             }
             let calls = self.calls.clone();
             let edits = self.edits.clone();
-            self.agent.add_game_method(name, Access::Act, move |v, _ctx| {
+            self.agent.add_game_method(name, Access::Act, move |v, ctx| {
                 calls.lock().unwrap().push((name.to_owned(), v.clone()));
                 let mut state = edits.lock().unwrap();
-                kind.writes().map_err(refused)?;
+                kind.writes().map_err(|why| RpcError::new(code::INVALID_REQUEST, why))?;
                 if state.external_live {
                     return Err(refused("external Live session"));
                 }
                 if kind == SessionKind::MpHost {
-                    let peers = state.peers.ok_or_else(|| refused("unknown peer count"))?;
+                    let change = state.objects.peer_change.take();
+                    if let Some((peers, false)) = change {
+                        state.peers = Some(peers);
+                    }
+                    let peers = state.peers.ok_or_else(|| {
+                        RpcError::new(code::INVALID_REQUEST, "the multiplayer peer count is unknown")
+                    })?;
                     if peers > 1 && v["confirm_peers"].as_u64() != Some(u64::from(peers)) {
-                        return Err(refused("confirm the current peer count"));
+                        return Err(RpcError::new(
+                            code::INVALID_REQUEST,
+                            "confirm the current peer count for host-only edits",
+                        ));
+                    }
+                    if let Some((changed, true)) = change {
+                        state.peers = Some(changed);
+                        return Err(refused("the session or its peer count changed before the edit"));
                     }
                 }
-                state.objects.edit(name, v)
+                let mut reply = state.objects.edit(name, v)?;
+                reply["at"] = json!(ctx.at);
+                Ok(reply)
             });
         }
     }
@@ -150,9 +200,27 @@ impl Game {
         self.edits.lock().unwrap().objects.allow_append = true;
     }
 
+    pub(crate) fn pick_up_weapon_on_next_delete(&self) {
+        self.edits.lock().unwrap().objects.hold_on_delete = true;
+    }
+
+    pub(crate) fn put_down_weapon(&self, slot: u16) {
+        self.edits.lock().unwrap().objects.weapons.get_mut(&slot).unwrap().parent = None;
+    }
+
+    pub(crate) fn replace_weapon_before_respawn(&self, slot: u16) {
+        self.edits.lock().unwrap().objects.replace_before_respawn = Some(slot);
+    }
+
+    pub(crate) fn fail_next_creation(&self) {
+        self.edits.lock().unwrap().objects.fail_creation = true;
+    }
+
+    pub(crate) fn change_peers_on_next_object_edit(&self, peers: u32, at_execution: bool) {
+        self.edits.lock().unwrap().objects.peer_change = Some((peers, at_execution));
+    }
+
     pub(crate) fn fail_next_object_edit(&self, code: i64, why: &str) {
-        let mut err = refused(why);
-        err.code = code;
-        self.edits.lock().unwrap().objects.fail_next = Some(err);
+        self.edits.lock().unwrap().objects.fail_next = Some(RpcError::new(code, why));
     }
 }

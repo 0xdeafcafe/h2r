@@ -790,9 +790,7 @@ impl Studio {
                     let Some(_node) = node else { continue };
                     for &i in &shown {
                         let label = scenario.label(kind, i);
-                        let issue = inspector::row_issue(inspector::issues(app), |issue| {
-                            issue.matches_placement(kind, i, None)
-                        });
+                        let issue = inspector::issues(app).placement_row(kind, i);
                         if inspector::marked_row(ui, label, issue, |label| {
                             ui.selectable_config(format!("{label}###{kind:?}-{i}"))
                                 .selected(session.is_selected((kind, i)))

@@ -15,11 +15,11 @@ fn close_after_dequeue_discards_the_queued_move() {
     let (stop, stopping) = mpsc::channel();
     let (ack, done) = mpsc::channel();
     calls
-        .send(QueuedCall {
+        .send(QueuedCall::Control {
             call: Call {
                 method: agent_proto::sim::method::STATE_SET.into(),
                 params: json!({"player":"player.0","pos":[1.0, 2.0, 3.0]}),
-                purpose: Purpose::Teleport,
+                purpose: Purpose::Other,
             },
             player: None,
         })
@@ -131,3 +131,67 @@ fn unpair_and_pair_waits_for_the_old_mark_clear() {
 fn returning_to_a_game_waits_only_for_that_games_old_mark_clear() {
     check_mark_handoff("return-lease", true);
 }
+
+#[test]
+fn sparse_control_methods_refuse_before_claiming_or_queueing_a_call() {
+    use agent_proto::method::{CLAIM, PAUSE, RELEASE, RESUME, STEP};
+    use crate::api::Api;
+    use crate::play::Conn;
+
+    let all = [CLAIM, RELEASE, PAUSE, RESUME, STEP];
+    for (missing, action) in [
+        (PAUSE, "pause"),
+        (RESUME, "resume"),
+        (STEP, "step"),
+        (CLAIM, "pause"),
+        (RELEASE, "pause"),
+    ] {
+        let mut play = Play::new();
+        let mut app = crate::app::App::new();
+        let (calls, queued) = mpsc::channel();
+        let (_, events) = mpsc::channel();
+        let (stop, _closing) = mpsc::channel();
+        play.link = Some(Link {
+            endpoint: Endpoint::Unix("fixture-control.sock".into()),
+            calls,
+            events,
+            stop,
+        });
+        play.conn = Conn::Connected;
+        play.paused = action != "pause";
+        let methods: Vec<_> = all.into_iter().filter(|&m| m != missing).collect();
+        play.received_methods(&mut app, Ok(json!(methods)));
+        play.publish(&mut app);
+        let view = app.pairing.link.as_ref().unwrap();
+        assert!(view.paired);
+        assert!(view.unavailable.iter().any(|why| why.contains(missing)));
+        let claim_available = missing != CLAIM && missing != RELEASE;
+        assert_eq!(view.controls.pause.is_none(), claim_available && missing != PAUSE);
+        assert_eq!(view.controls.resume.is_none(), claim_available && missing != RESUME);
+        assert_eq!(view.controls.step.is_none(), claim_available && missing != STEP);
+        let failure = Api::new()
+            .call(&mut app, studio_proto::method::PAIR_CONTROL, json!({"action":action}))
+            .unwrap_err();
+        assert_eq!(failure.code, studio_proto::code::REFUSED);
+        assert!(failure.message.contains(missing));
+
+        match action {
+            "pause" => {
+                app.pairing.pause_while_editing = true;
+                play.window_focus(&app, true);
+            }
+            "resume" => play.finish_playtest(&mut app),
+            _ => play.step(1),
+        }
+        if missing == RELEASE {
+            play.controller = true;
+            play.release_control();
+            assert!(play.controller);
+        } else {
+            assert!(!play.controller);
+        }
+        assert!(queued.try_recv().is_err(), "queued game control without {missing}");
+    }
+}
+
+mod object_dispatch;

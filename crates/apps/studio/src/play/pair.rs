@@ -211,7 +211,7 @@ pub enum Request {
     Resume,
     Step(u64),
     MovePlayer(super::presence::PlayerMove),
-    PlayerMoveRefused(String),
+    PlayerMoveRefused(super::feedback::MoveContext, String),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -232,10 +232,11 @@ impl Request {
             Self::Play | Self::PlayAnswer(..) if !link.can_play => Some("open a map first"),
             Self::Stop if !link.can_stop => Some("the editor has no game of its own to stop"),
             Self::Edit(_) if !link.state.can_edit() => Some("pair with a game first"),
-            Self::Pause | Self::Resume | Self::Step(_) if !link.can_pause => {
-                Some("pair with a game first")
-            }
-            Self::Step(_) if !link.paused => Some("pause the game before stepping"),
+            Self::Pause => link.controls.pause,
+            Self::Resume => link.controls.resume,
+            Self::Step(_) => link.controls.step.or_else(|| {
+                (!link.paused).then_some("pause the game before stepping")
+            }),
             _ => None,
         }
     }
@@ -269,7 +270,7 @@ pub struct Bridge {
     pub published: Option<Value>,
     /// The same game-link state the bar and Game panel read.
     pub link: Option<Arc<LinkView>>,
-    pub pending: Vec<Value>,
+    pub pending: super::issues::Pending,
     pub journal: Vec<Value>,
     pub leaving: bool,
     /// One socket and its exact tick samples for the current pairing.
@@ -282,8 +283,10 @@ pub struct Bridge {
     pub(crate) camera: super::presence::SharedCamera,
     /// Slot layouts verified against a loaded play copy. An absent baseline uses source slots.
     layouts: Vec<(scenario_edit::BlockKind, Option<u64>)>,
+    pub(super) previews: super::objects::previews::Previews,
     /// Pairing, editor document and game epoch that accept a player move.
     pub(crate) player_scope: Result<(u64, u64, u64), String>,
+    pub(crate) move_context: Option<super::feedback::MoveContext>,
     /// Counters reported by the game's writer for this stream.
     pub counters: Option<Value>,
     /// Map identity from the handshake, refreshed over live.status after a cut.
@@ -306,7 +309,7 @@ impl Default for Bridge {
             requests: Vec::new(),
             published: None,
             link: None,
-            pending: Vec::new(),
+            pending: Default::default(),
             journal: Vec::new(),
             leaving: false,
             mirror: None,
@@ -316,7 +319,9 @@ impl Default for Bridge {
             selection: Default::default(),
             camera: Default::default(),
             layouts: Vec::new(),
+            previews: Default::default(),
             player_scope: Err("waiting for the editor to pair in Edit mode".into()),
+            move_context: None,
             counters: None,
             stream_map: Value::Null,
             play_copy: None,
@@ -350,6 +355,7 @@ impl Bridge {
         self.journal.clear();
         self.leaving = false;
         self.play_copy = None;
+        self.previews.clear();
         self.drop_stream();
     }
 
@@ -358,6 +364,7 @@ impl Bridge {
         self.camera = Default::default();
         self.layouts.clear();
         self.set_player_scope(Err("waiting for the editor to pair in Edit mode"));
+        self.move_context = None;
         self.mirror = None;
         self.shown = None;
         self.display.clear();

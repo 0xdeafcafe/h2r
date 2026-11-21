@@ -12,7 +12,7 @@ use crate::app::tag_doc::{Access, TagDoc, TagEntry};
 use crate::app::tag_tree::{self, Arrange, Folder, Row, ScenarioRoots, ScenarioTree};
 use crate::app::{Action, App, NavAction, TagAction, tag_api};
 use crate::fields::{self, PanelState};
-use crate::play::issues::{Issue, Kind};
+use crate::play::issues::IssueIndex;
 use crate::play::pair::Request;
 use super::inspector;
 use crate::theme::{self, Fonts, icon};
@@ -166,7 +166,7 @@ pub fn tree(ui: &Ui, app: &App, st: &mut TagsUi, fonts: &Fonts, actions: &mut Ve
         doc,
         browse,
         paired,
-        issues: if browse { &[] } else { inspector::issues(app) },
+        issues: if browse { IssueIndex::empty() } else { inspector::issues(app) },
         selected: selected(app),
         edited_scenario: scenario.filter(|s| s.is_modified()).map(|s| s.tag),
     };
@@ -346,7 +346,7 @@ fn tag_rows(
             ListNames::GroupAndPath => format!("{}  {}", group_text(t.group), t.name),
         };
         let label = view.marked(t, &text, "");
-        let issue = inspector::row_issue(view.issues, |issue| issue.matches_tag(t.id, None));
+        let issue = view.issues.tag_row(t.id);
         if inspector::marked_row(ui, label, issue, |label| {
             ui.selectable_config(format!("{label}###tag-{:x}", t.id.0))
                 .selected(view.selected == Some(t.id))
@@ -361,7 +361,7 @@ struct RowView<'a> {
     doc: &'a TagDoc,
     browse: bool,
     paired: bool,
-    issues: &'a [Issue],
+    issues: &'a IssueIndex,
     selected: Option<TagId>,
     edited_scenario: Option<TagId>,
 }
@@ -374,10 +374,7 @@ impl RowView<'_> {
         } else {
             ""
         };
-        let waiting = self.issues.iter().any(|issue| {
-            matches!(issue.kind, Kind::Waiting | Kind::Reload) && issue.matches_tag(t.id, None)
-        });
-        let live = if self.paired && waiting {
+        let live = if self.paired && self.issues.tag_waiting(t.id) {
             "  [Pending]"
         } else {
             ""
@@ -480,9 +477,7 @@ fn scenario_rows(
         if row.cycle {
             label.push_str("  (cycle)");
         }
-        let issue = inspector::row_issue(view.issues, |issue| {
-            row.tag.is_some_and(|id| issue.matches_tag(id, None))
-        });
+        let issue = row.tag.and_then(|id| view.issues.tag_row(id));
         let shown = inspector::marked_row(ui, label, issue, |label| {
             ui.tree_node_config("##row")
                 .label(label)
@@ -605,7 +600,7 @@ pub fn fields(
         None
     };
     let issues = if app.browsing().is_some() {
-        &[]
+        IssueIndex::empty()
     } else {
         inspector::issues(app)
     };
@@ -925,7 +920,7 @@ mod tests {
             doc: &doc,
             browse: true,
             paired: false,
-            issues: &[],
+            issues: IssueIndex::empty(),
             selected: Some(doc.tags()[0].id),
             edited_scenario: None,
         };

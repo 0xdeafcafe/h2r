@@ -3,7 +3,7 @@
 //! salted handles from that map's stream or an acknowledged preview can move
 //! or delete objects.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use agent_proto::{Kind, ObjectId};
 use live_mirror::Sample;
@@ -13,6 +13,7 @@ use scenario_edit::scenario::PlacementId;
 use scenario_edit::{BlockKind, Role, Scenario};
 
 pub(super) mod drive;
+pub(super) mod previews;
 pub(super) use drive::State;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -110,7 +111,6 @@ pub(super) enum Ack {
     },
     Spawn {
         id: ObjectId,
-        frame: Frame,
         linked: bool,
         index: usize,
         tick: u64,
@@ -137,7 +137,7 @@ impl Ack {
 
     /// The displayed sample can be several game ticks behind a completed
     /// respawn. Its old occupant must not replace the newly returned handle.
-    fn before_sample(&self, sample: &Sample) -> Option<ObjectId> {
+    fn before_sample(&self, sample: &SampleIndex) -> Option<ObjectId> {
         match *self {
             Self::Set { id, tick, .. } | Self::Spawn { id, tick, .. } if sample.tick <= tick => {
                 Some(id)
@@ -148,9 +148,7 @@ impl Ack {
 
     fn frame(&self, object: ObjectId) -> Option<Frame> {
         match *self {
-            Self::Set { id, frame, .. } | Self::Spawn { id, frame, .. } if id == object => {
-                Some(frame)
-            }
+            Self::Set { id, frame, .. } if id == object => Some(frame),
             _ => None,
         }
     }
@@ -160,7 +158,7 @@ impl Ack {
 pub(super) enum Op {
     Set { id: ObjectId, frame: Frame },
     Delete { id: ObjectId },
-    Respawn,
+    Respawn { id: Option<ObjectId> },
     Reload(&'static str),
 }
 
@@ -183,33 +181,125 @@ fn wire_kind(kind: u8) -> Option<Kind> {
     }
 }
 
-fn occupants(sample: &Sample) -> BTreeMap<Slot, Occupant> {
-    let mut slots = BTreeMap::new();
-    for object in &sample.objects {
-        let (Some(index), Some(kind)) = (object.placement, wire_kind(object.kind)) else {
-            continue;
+/// The loaded document's stable slot owners, reused until its baseline changes.
+#[derive(Default)]
+pub(super) struct LayoutIndex(BTreeMap<Slot, Key>);
+
+impl LayoutIndex {
+    pub(super) fn new(loaded: &Rows) -> Self {
+        Self(
+            loaded
+                .iter()
+                .map(|(&key, row)| ((key.block, row.index), key))
+                .collect(),
+        )
+    }
+
+    pub(super) fn key_at(&self, block: BlockKind, index: usize) -> Option<Key> {
+        self.0.get(&(block, index)).copied()
+    }
+
+    /// Swapping an untouched survivor into another document slot is not a frame edit.
+    pub(super) fn changed(&self, loaded: &Rows, doc: &Rows) -> BTreeSet<Key> {
+        let modified = loaded.iter().filter_map(|(&key, old)| {
+            doc.get(&key)
+                .is_none_or(|row| row.frame != old.frame)
+                .then_some(key)
+        });
+        let added = doc.keys().filter(|key| !loaded.contains_key(*key)).copied();
+        modified.chain(added).collect()
+    }
+}
+
+/// Only topology is indexed. A moving body keeps the same placement and salted identity.
+#[derive(Default)]
+pub(super) struct SampleIndex {
+    pub(super) tick: u64,
+    observed: bool,
+    slots: BTreeMap<Slot, Occupant>,
+    seen: HashSet<ObjectId>,
+    attached: HashSet<ObjectId>,
+}
+
+impl SampleIndex {
+    pub(super) fn new(sample: &Sample) -> Self {
+        let mut index = Self {
+            tick: sample.tick,
+            observed: true,
+            ..Self::default()
         };
-        let Some(def) = BLOCKS
-            .iter()
-            .find(|b| b.object_type == Some(i16::from(object.kind)))
-        else {
-            continue;
-        };
-        let id = ObjectId {
-            kind,
-            key: object.id,
-        };
-        let occupant = if object.parent.is_some() {
+        for object in &sample.objects {
+            let Some(kind) = wire_kind(object.kind) else {
+                continue;
+            };
+            let id = ObjectId { kind, key: object.id };
+            index.seen.insert(id);
+            if object.parent.is_some() {
+                index.attached.insert(id);
+            }
+            let Some(slot) = object.placement else { continue };
+            let Some(def) = BLOCKS
+                .iter()
+                .find(|b| b.object_type == Some(i16::from(object.kind)))
+            else {
+                continue;
+            };
+            index.slots
+                .entry((def.kind, usize::from(slot)))
+                .and_modify(|slot| *slot = Err("more than one live object uses the placement"))
+                .or_insert(Ok(id));
+        }
+        for key in sample.players.iter().filter_map(|player| player.held) {
+            let id = ObjectId { kind: Kind::Weapon, key };
+            index.seen.insert(id);
+            index.attached.insert(id);
+        }
+        index
+    }
+
+    pub(super) fn contains(&self, id: ObjectId) -> bool {
+        self.seen.contains(&id)
+    }
+
+    pub(super) fn attached(&self, id: ObjectId) -> bool {
+        self.attached.contains(&id)
+    }
+
+    pub(super) fn occupant(&self, block: BlockKind, index: usize) -> Option<Occupant> {
+        self.slots.get(&(block, index)).copied().map(|result| {
+            result.and_then(|id| {
+                if self.attached(id) {
+                    Err("the placed object is held or attached")
+                } else {
+                    Ok(id)
+                }
+            })
+        })
+    }
+}
+
+fn occupant(
+    key: Key,
+    original: Option<&Row>,
+    sample: &SampleIndex,
+    ack: Option<&Ack>,
+) -> Option<Occupant> {
+    let acknowledged = ack.and_then(|a| {
+        a.preview()
+            .map(|(id, _)| id)
+            .or_else(|| a.before_sample(sample))
+    });
+    if let Some(id) = acknowledged {
+        return Some(if sample.attached(id) {
             Err("the placed object is held or attached")
         } else {
             Ok(id)
-        };
-        slots
-            .entry((def.kind, usize::from(index)))
-            .and_modify(|slot| *slot = Err("more than one live object uses the placement"))
-            .or_insert(occupant);
+        });
     }
-    slots
+    let slot = original
+        .map(|row| row.index)
+        .or_else(|| ack.and_then(Ack::binding).map(|(_, _, index)| index))?;
+    sample.occupant(key.block, slot)
 }
 
 /// Compare the desired rows with the file's slots and acknowledged object
@@ -218,22 +308,13 @@ fn occupants(sample: &Sample) -> BTreeMap<Slot, Occupant> {
 pub(super) fn diff(
     loaded: &Rows,
     doc: &Rows,
-    sample: &Sample,
+    layout: &LayoutIndex,
+    changed: &BTreeSet<Key>,
+    sample: &SampleIndex,
     ack: &BTreeMap<Key, Ack>,
     release: &BTreeSet<Key>,
 ) -> Vec<Change> {
-    let occupants = occupants(sample);
-    let attached: BTreeSet<_> = sample
-        .objects
-        .iter()
-        .filter(|object| object.parent.is_some())
-        .map(|object| object.id)
-        .chain(sample.players.iter().filter_map(|player| player.held))
-        .collect();
     let mut reserved = BTreeMap::new();
-    for (&key, row) in loaded {
-        reserved.insert((key.block, row.index), key);
-    }
     for (&key, reply) in ack {
         if let Some((_, linked, index)) = reply.binding()
             && (!linked || !loaded.contains_key(&key))
@@ -241,11 +322,11 @@ pub(super) fn diff(
             reserved.insert((key.block, index), key);
         }
     }
-
-    let keys: BTreeSet<_> = loaded
-        .keys()
-        .chain(doc.keys())
+    // Untouched rows have no pending operations, regardless of physics movement.
+    let keys: BTreeSet<_> = changed
+        .iter()
         .chain(ack.keys())
+        .chain(release)
         .copied()
         .collect();
     let mut out = Vec::new();
@@ -253,38 +334,42 @@ pub(super) fn diff(
         let original = loaded.get(&key);
         let desired = doc.get(&key);
         let reply = ack.get(&key);
-        let binding = reply.and_then(Ack::binding);
-        let spawned_slot = binding.filter(|(_, linked, _)| !*linked || original.is_none());
-        let loaded_slot = original.map(|r| r.index).or(spawned_slot.map(|(_, _, i)| i));
-        let occupant = loaded_slot
-            .and_then(|i| occupants.get(&(key.block, i)))
-            .copied();
-        let Some(index) = desired.or(original).map(|r| r.index).or(loaded_slot) else {
+        let Some(index) = desired
+            .or(original)
+            .map(|r| r.index)
+            .or_else(|| reply.and_then(Ack::binding).map(|(_, _, i)| i))
+        else {
             continue;
         };
         let mut change = |index, op| out.push(Change { key, index, op });
-        let acknowledged = reply.and_then(|a| {
-            a.preview()
-                .map(|(id, _)| id)
-                .or_else(|| a.before_sample(sample))
-        });
-        let id = match acknowledged.map(Ok).or(occupant) {
+        if layout::block(key.block)
+            .object_type
+            .and_then(|t| u8::try_from(t).ok())
+            .and_then(wire_kind)
+            .is_none()
+        {
+            if changed.contains(&key) {
+                change(index, Op::Reload("this placement type has no live object edit method"));
+            }
+            continue;
+        }
+        if !sample.observed {
+            if changed.contains(&key) {
+                change(index, Op::Reload("live objects are unavailable; reload to apply the placement"));
+            }
+            continue;
+        }
+        let id = match occupant(key, original, sample, reply) {
             Some(Err(why)) => {
-                if original != desired || release.contains(&key) {
+                if changed.contains(&key) || release.contains(&key) {
                     change(index, Op::Reload(why));
                 }
                 continue;
             }
-            entry => entry
-                .and_then(Result::ok)
-                .or(spawned_slot.map(|(id, _, _)| id)),
+            entry => entry.and_then(Result::ok),
         };
-        if id.is_some_and(|id| attached.contains(&id.key)) {
-            if original != desired || release.contains(&key) {
-                change(index, Op::Reload("the placed object is held or attached"));
-            }
-            continue;
-        }
+        // A by-slot respawn can delete the current occupant. A successful deletion
+        // overrides an old sample for edit purposes, but wait for a visibly empty slot.
         let deleted = matches!(reply, Some(Ack::Delete { .. }));
         let current = id.filter(|id| !matches!(reply, Some(Ack::Delete { id: old }) if id == old));
         let Some(row) = desired else {
@@ -295,7 +380,7 @@ pub(super) fn diff(
         };
         // A missing frame is still a document row, never a delete.
         let Some(frame) = row.frame else {
-            if original != desired {
+            if changed.contains(&key) {
                 change(index, Op::Reload("the placement has no finite frame"));
             }
             continue;
@@ -312,24 +397,28 @@ pub(super) fn diff(
             }
         } else if original.is_none() || deleted {
             let slot = original.map_or(index, |r| r.index);
-            let op = if reserved
-                .get(&(key.block, slot))
-                .is_some_and(|owner| *owner != key)
+            if let Some(Ack::Delete { id }) = reply
+                && sample.contains(*id)
+            {
+                continue;
+            }
+            let op = if layout.key_at(key.block, slot).is_some_and(|owner| owner != key)
+                || reserved
+                    .get(&(key.block, slot))
+                    .is_some_and(|owner| *owner != key)
             {
                 Op::Reload("another placement occupies that slot in the game until reload")
-            } else if original.is_none() && occupants.contains_key(&(key.block, slot)) {
+            } else if sample.occupant(key.block, slot).is_some() {
                 Op::Reload("the requested preview slot already has a live occupant")
-            } else if layout::block(key.block)
-                .object_type
-                .and_then(|t| u8::try_from(t).ok())
-                .and_then(wire_kind)
-                .is_none()
-            {
-                Op::Reload("this placement type has no live object edit method")
             } else {
-                Op::Respawn
+                Op::Respawn { id: None }
             };
             change(slot, op);
+        } else if changed.contains(&key) {
+            change(
+                index,
+                Op::Reload("the placement has no live object; changes apply at its next creation"),
+            );
         }
     }
     out
@@ -341,23 +430,28 @@ pub(super) fn respawn(
     loaded: &Rows,
     doc: &Rows,
     key: Key,
-    sample: &Sample,
+    sample: &SampleIndex,
     ack: &BTreeMap<Key, Ack>,
 ) -> Option<Change> {
     doc.get(&key)?.frame?;
-    let binding = ack.get(&key).and_then(Ack::binding);
-    let preview = binding.filter(|(_, linked, _)| !*linked || !loaded.contains_key(&key));
-    let index = if let Some((_, _, index)) = preview {
-        index
-    } else {
-        let index = loaded.get(&key)?.index;
-        occupants(sample).get(&(key.block, index))?.as_ref().ok()?;
-        index
+    if !sample.observed {
+        return None;
+    }
+    let original = loaded.get(&key);
+    let reply = ack.get(&key);
+    let index = reply
+        .and_then(Ack::binding)
+        .map(|(_, _, index)| index)
+        .or_else(|| original.map(|row| row.index))?;
+    let id = match occupant(key, original, sample, reply) {
+        Some(Ok(id)) if !matches!(reply, Some(Ack::Delete { id: old }) if *old == id) => Some(id),
+        None if matches!(reply, Some(Ack::Delete { id }) if !sample.contains(*id)) => None,
+        _ => return None,
     };
     Some(Change {
         key,
         index,
-        op: Op::Respawn,
+        op: Op::Respawn { id },
     })
 }
 
@@ -366,6 +460,25 @@ mod tests {
     use super::*;
     use crate::play::testing::session;
     use agent_proto::live::Object;
+
+    fn diff(
+        loaded: &Rows,
+        doc: &Rows,
+        sample: &Sample,
+        ack: &BTreeMap<Key, Ack>,
+        release: &BTreeSet<Key>,
+    ) -> Vec<Change> {
+        let layout = LayoutIndex::new(loaded);
+        super::diff(
+            loaded,
+            doc,
+            &layout,
+            &layout.changed(loaded, doc),
+            &SampleIndex::new(sample),
+            ack,
+            release,
+        )
+    }
 
     fn game() -> Sample {
         Sample {
@@ -409,7 +522,7 @@ mod tests {
         let addition = key(scnr, block, 1).unwrap();
         let commands = diff(&loaded, &document(scnr), &sample, &ack, &release);
         assert!(commands.iter().any(|c| c.key == addition && matches!(c.op, Op::Reload(_))));
-        assert!(!commands.iter().any(|c| c.op == Op::Respawn));
+        assert!(!commands.iter().any(|c| matches!(c.op, Op::Respawn { .. })));
         assert!(session.undo());
         assert!(session.redo());
         assert_eq!(key(session.scenario().unwrap(), block, 1), Some(addition));
@@ -454,7 +567,6 @@ mod tests {
         let s = session.scenario().unwrap();
         let loaded = source(s);
         let key = key(s, BlockKind::Weapons, 0).unwrap();
-        let frame = loaded[&key].frame.unwrap();
         let new_object = ObjectId { kind: Kind::Weapon, key: 0x4100_0001 };
         let mut doc = document(s);
         let wanted = doc.get_mut(&key).unwrap().frame.as_mut().unwrap();
@@ -466,7 +578,6 @@ mod tests {
                 id: new_object,
                 linked: true,
                 index: 0,
-                frame,
                 tick: sample.tick + 1,
             },
         )]);
@@ -552,7 +663,7 @@ mod tests {
         let release = BTreeSet::new();
         assert_eq!(
             diff(&loaded, &doc, &sample, &BTreeMap::new(), &release),
-            [Change { key, index, op: Op::Respawn }]
+            [Change { key, index, op: Op::Respawn { id: None } }]
         );
         let id = ObjectId { kind: Kind::Weapon, key: 0xcdef0001 };
         let frame = doc[&key].frame.unwrap();
@@ -560,18 +671,92 @@ mod tests {
             key,
             Ack::Spawn {
                 id,
-                frame,
                 index,
                 linked: false,
                 tick: sample.tick,
             },
         )]);
-        assert!(diff(&loaded, &doc, &sample, &ack, &release).is_empty());
+        assert_eq!(
+            diff(&loaded, &doc, &sample, &ack, &release),
+            [Change { key, index, op: Op::Set { id, frame } }]
+        );
         assert!(session.undo());
         let doc = document(session.scenario().unwrap());
         assert_eq!(
             diff(&loaded, &doc, &sample, &ack, &release),
             [Change { key, index, op: Op::Delete { id } }]
         );
+    }
+    #[test]
+    fn swap_removal_does_not_flag_an_untouched_held_survivor() {
+        let (_t, mut session) = session("object-slot-held");
+        let block = BlockKind::Weapons;
+        let loaded = source(session.scenario().unwrap());
+        let removed = key(session.scenario().unwrap(), block, 0).unwrap();
+        session.remove_entry(block, 0).unwrap();
+        let doc = document(session.scenario().unwrap());
+        let mut sample = game();
+        sample.objects[1].parent = Some(0x1200_0007);
+        assert_eq!(LayoutIndex::new(&loaded).changed(&loaded, &doc), BTreeSet::from([removed]));
+        let changes = diff(&loaded, &doc, &sample, &BTreeMap::new(), &BTreeSet::new());
+        assert!(matches!(changes.as_slice(), [Change { op: Op::Delete { .. }, .. }]));
+    }
+
+    #[test]
+    fn a_sound_scenery_move_stays_pending_for_reload() {
+        let (_t, session) = session("sound-scenery-frame");
+        let weapon = key(session.scenario().unwrap(), BlockKind::Weapons, 0).unwrap();
+        let row = source(session.scenario().unwrap())[&weapon];
+        let sound = Key { block: BlockKind::SoundScenery, id: PlacementId::Source(0) };
+        let loaded = Rows::from([(sound, row)]);
+        let mut doc = loaded.clone();
+        doc.get_mut(&sound).unwrap().frame.as_mut().unwrap().pos[2] += 1.;
+        let mut sample = game();
+        sample.objects[0].kind = 10;
+        let changes = diff(&loaded, &doc, &sample, &BTreeMap::new(), &BTreeSet::new());
+        assert!(matches!(changes.as_slice(),
+            [Change { key, op: Op::Reload(why), .. }] if *key == sound && why.contains("placement type")));
+    }
+
+    #[test]
+    fn a_respawn_targets_the_salted_id_until_deletion_and_an_empty_sample() {
+        let (_t, session) = session("object-respawn-by-id");
+        let loaded = document(session.scenario().unwrap());
+        let key = key(session.scenario().unwrap(), BlockKind::Weapons, 0).unwrap();
+        let mut sample = game();
+        let old = ObjectId { kind: Kind::Weapon, key: sample.objects[0].id };
+        let choose = |sample: &Sample, ack| {
+            respawn(&loaded, &loaded, key, &SampleIndex::new(sample), &ack).map(|c| c.op)
+        };
+        assert_eq!(choose(&sample, BTreeMap::new()), Some(Op::Respawn { id: Some(old) }));
+        let ack = BTreeMap::from([(key, Ack::Delete { id: old })]);
+        assert_eq!(choose(&sample, ack.clone()), None);
+        sample.objects.remove(0);
+        assert_eq!(choose(&sample, ack.clone()), Some(Op::Respawn { id: None }));
+        sample.players.push(agent_proto::live::Player { held: Some(old.key), ..Default::default() });
+        assert_eq!(choose(&sample, ack), None);
+    }
+    #[test]
+    fn an_unobserved_move_explains_why_the_body_cannot_be_sent() {
+        let (_t, session) = session("object-no-stream");
+        let scenario = session.scenario().unwrap();
+        let loaded = document(scenario);
+        let key = key(scenario, BlockKind::Weapons, 0).unwrap();
+        let mut doc = loaded.clone();
+        doc.get_mut(&key).unwrap().frame.as_mut().unwrap().pos[0] += 1.;
+        let layout = LayoutIndex::new(&loaded);
+        let changes = super::diff(
+            &loaded,
+            &doc,
+            &layout,
+            &layout.changed(&loaded, &doc),
+            &SampleIndex::default(),
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+        );
+        assert!(matches!(
+            changes.as_slice(),
+            [Change { op: Op::Reload(why), .. }] if why.contains("unavailable")
+        ));
     }
 }
