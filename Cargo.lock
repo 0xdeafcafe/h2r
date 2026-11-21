@@ -704,6 +704,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tags",
+ "timeline",
  "xiso",
 ]
 
@@ -3583,6 +3584,7 @@ dependencies = [
  "flate2",
  "live-proto",
  "live-server",
+ "polling",
  "runtime",
  "serde",
  "serde_json",
@@ -4000,6 +4002,7 @@ name = "native-render"
 version = "0.1.0"
 dependencies = [
  "analyze",
+ "background",
  "bytemuck",
  "d3d",
  "frame-scene",

@@ -6,6 +6,7 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
+polling = "3"
 film = { path = "../film" }
 runtime.workspace = true
 serde.workspace = true

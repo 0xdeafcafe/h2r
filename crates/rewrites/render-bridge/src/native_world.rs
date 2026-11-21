@@ -120,6 +120,9 @@ pub trait OpaqueView: Send + Sync {
 
 /// What draws the world: boot's glue over the GPU world and the device.
 pub trait Host: Send + Sync {
+    /// Publish completed worker resources before the frame draws its views.
+    fn begin_frame(&self) {}
+
     /// Starts the shared BSP load once the scene binds its world palettes.
     fn load_bsp(&self, _mem: &dyn GuestMemory, _bsp: u32) -> bool {
         false
@@ -310,6 +313,11 @@ pub fn forget_pending() {
     CLEARED.lock().unwrap_or_else(|e| e.into_inner()).take();
 }
 
+pub(crate) fn begin_frame() {
+    let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some(host) = host { host.begin_frame(); }
+}
+
 pub(crate) fn load_bsp(mem: &dyn GuestMemory, esp: u32) {
     use native_render::world_layers::{Site, layer_site};
     if mem.u32(skip::CURRENT_LAYER).ok() != Some(LIGHTMAP_LAYER)
@@ -324,6 +332,7 @@ pub(crate) fn load_bsp(mem: &dyn GuestMemory, esp: u32) {
         return;
     }
     let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let _dispatch = timeline::setup::dispatch();
     if !host.is_some_and(|host| host.load_bsp(mem, bsp)) {
         native_map_work::request_bsp_load();
     }

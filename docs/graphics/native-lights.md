@@ -139,8 +139,9 @@ with no handler: `boot::native_lights_glue` (`Glue::alone`, behind
 structure parts and the map's model parts as the `Resident` (`Held`),
 resolves each entry's material pass for the light as the resolved-draw
 path does, takes the scissor, stencil, W-buffer, palettes and cull from
-the device at that point, and issues the pass at once
-(`Device::external_pass_now`), with no resolved fallback. Structure
+the device at that point, and requests a complete packet reservation
+on every target copy (`Device::prepare_external_bound`). The guest
+handlers run when any shader, pipeline or target copy is unavailable. Structure
 entries (clusters and placements) draw from the world's buffers.
 
 Object entries draw from model parts built once per map on a worker
@@ -152,13 +153,13 @@ per (vertex shader, classification) that the parts' materials' layer-12
 and layer-13 implementations name, gathered through the declaration that
 program's input semantics give over the section's streams. Their stage
 images load as the world's do, through the stage palettes bound at the
-ask. At run time the pass is resolved with the light's inputs and
-compiled for the buffer of the program the look names at the entry's
+ask. A utility worker resolves the pass with the light's inputs and
+compiles it for the buffer of the program the look names at the entry's
 sorted classification (`light_look::compile_light_model`: the
 declaration's registers and fetch; reads of the node rows `c[50..]`,
 relative to `a0.x` from there as a skinned program does, and of the
 decompression `c[170..172]`), cached by material, layer,
-implementation, inputs, classification and layout. Each object entry
+implementation, inputs, model, section and classification. Each object entry
 is a draw of its own: its node rows from the scene at `c[50..]` and its
 section's decompression at `c[170..172]`
 (`light_gpu::ModelGeometry`, `model_vertex`), over a pipeline with the
@@ -365,12 +366,14 @@ The host takes each of layers 12 and 13 a light's steps draw, shadowed or not, w
   `0x00031170` would (`feature::native_lights::light_constants`: the
   definition from the tag table, the shadow word under scene flag bit
   10, `light_globals` without the screen bounds, `pass_flags`) into
-  `Light::constants`; `LightInputs::from_constants` and
-  `LookCache` (keyed by shader, layer, implementation and the inputs'
-  bits) resolve a material once per distinct light;
-  `native_render::light_gpu` uploads the cube and volume
-  (`LayeredImage`, `layered_texture`) and draws a compiled pass with
-  one uniform group per light (`LightGpu`); `boot::native_lights_glue`
+  `Light::constants`. The BSP's material worker
+  (`crates/extensions/game/src/native_lights_glue/materials.rs`) resolves
+  each requested shader, layer, implementation and set of light inputs,
+  translates its program and uploads its stage textures. The map worker
+  uploads the normalization cube, attenuation volume and static gels.
+  The guest checks the resident pipeline for the live target formats,
+  cull and vertex layout before admission. D3D handles the light until
+  the first swap after its pipeline completes. `boot::native_lights_glue`
   reads the light textures' bitmaps from the `matg +0x108` block
   (`light_bitmaps`, `matg_light_bitmaps` over the ordinary metadata,
   `light_textures`; `layered` takes a cube's six level-0 faces and a

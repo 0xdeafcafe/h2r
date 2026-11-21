@@ -662,10 +662,12 @@ commands are for the coordinator.
     (frustum against the parts' bounds). Objects
     (`boot::native_objects_glue`): the render-state checks and each
     part's plan (`LitObjects::plan_part_of`, where an item refuses).
-  - **What runs on the render thread.** World: the GPU world's upload,
-    part slots, pipelines and packets (`WorldPass::record_draws`).
-    Objects: pipelines, uniform uploads and packets
-    (`ObjectsPass::packets`).
+  - **Worker preparation.** Map workers upload world and object geometry,
+    stage textures and material programs. Pipeline workers build the
+    attachment-specific variants. A pending variant leaves the draw on D3D.
+  - **Render thread.** `WorldPass::record_draws` and `ObjectsPass::packets`
+    bind the prepared resources, write frame-specific uniforms and issue
+    the selected parts.
   - **Named errors.** What the render thread cannot record
     (`d3d::scene_stage`) is counted, its cause logged once, and the
     stage stands down: from then on it reserves on the sim thread, where

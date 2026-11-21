@@ -226,6 +226,56 @@ impl Drop for FilmMapSource {
     }
 }
 
+/// An independent cursor over the mounted map bytes. On Unix the pinned
+/// source uses positional reads, so disk and overlay IO needs no VFS lock.
+#[cfg(unix)]
+#[derive(Clone)]
+pub struct DetachedMapReader {
+    source: Arc<FilmMapSource>,
+    pos: u64,
+    len: u64,
+}
+
+#[cfg(unix)]
+impl Vfs {
+    /// Open a reader with its own cursor for a background map job. A backend
+    /// without a pinned source can still serve reads through a VFS handle.
+    /// Callers doing speculative work must first check `resolves_on_use`.
+    pub fn detached_map_reader(&mut self, name: &str) -> Option<(DetachedMapReader, u64)> {
+        let (mount, path) = self.resolve(name).ok()?;
+        let backend = &mut self.mounts[mount].backend;
+        let source = backend.film_source(&path).ok()??;
+        let len = backend.stat(&path).ok()?.end_of_file;
+        Some((DetachedMapReader { source: Arc::new(source), pos: 0, len }, len))
+    }
+}
+
+#[cfg(unix)]
+impl Read for DetachedMapReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let len = self.len.saturating_sub(self.pos).min(buf.len() as u64) as usize;
+        if len == 0 {
+            return Ok(0);
+        }
+        let got = self.source.read(self.pos, &mut buf[..len]).map_err(std::io::Error::other)?;
+        self.pos += got as u64;
+        Ok(got)
+    }
+}
+
+#[cfg(unix)]
+impl std::io::Seek for DetachedMapReader {
+    fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
+        use std::io::SeekFrom;
+        self.pos = match to {
+            SeekFrom::Start(n) => Some(n),
+            SeekFrom::End(n) => self.len.checked_add_signed(n),
+            SeekFrom::Current(n) => self.pos.checked_add_signed(n),
+        }.ok_or_else(|| std::io::Error::other("seek outside map address range"))?;
+        Ok(self.pos)
+    }
+}
+
 /// The mounted source and exact extent selected at the match-start tick.
 pub struct FilmMap {
     source: FilmMapSource,

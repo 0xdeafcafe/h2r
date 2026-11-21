@@ -561,6 +561,22 @@ h2 agent faults
   validation. Frame captures also include `native_lights_worker_round_trips`
   and `native_lights_reference_passes` / `native_lights_display_passes`.
   Definitions: [native-renderer.md](../graphics/native-renderer.md#frame-counters).
+- During map preparation, `setup_<stage>_worker_ns` sums elapsed time on workers
+  between presents for world, lights, fog, water, decorators, objects, layers,
+  pipelines, nav and visibility. Concurrent jobs can contribute more than one
+  frame's duration. `setup_over_33ms_frames` counts presents more than 33⅓ ms
+  apart while measured work overlaps that interval. Use the capture's phase
+  breakdown to distinguish a blocked frame from work running alongside it.
+  `setup_dispatch_ns` times foreground handoffs for BSP activation and
+  publication, object and light models, first-person models, resident decorator
+  geometry snapshots and bot map changes.
+  `setup_dispatch_stalled_frames` counts over-budget presents whose handoffs
+  alone took more than 33⅓ ms.
+  For inactive map slots, `map_slot_vfs_wait_ns` times the render-frame hook
+  acquiring the shared VFS and `map_slot_check_ns` times its checks for
+  changed source files after acquisition. A slot check runs at most twice a
+  second and requires an inactive candidate.
+  `load.timeline` also sums these counters for the stall and settling periods.
 - **Fallbacks.** `profile.fallbacks {top}` (20 by default, 1 to 500)
   returns the fallback interpreter's totals and its entry addresses ranked
   by instructions interpreted, each with hits, x87 instructions and the
@@ -1050,6 +1066,8 @@ answers `UNAVAILABLE` ([`crates/extensions/game/src/host_metrics.rs`](../../crat
 | `late_ticks` | Number of intervals in that same window longer than 36 ms. Both interval fields are `null` outside the light profile. |
 | `cpu_percent` | Whole-process CPU over the wall interval; 100 is one fully used core |
 | `cpu_seconds` | User and system CPU seconds consumed by this game process through the request |
+| `package_idle_wakeups`, `interrupt_wakeups` | Process-lifetime counts from macOS `proc_pid_rusage` (`ri_pkg_idle_wkups` and `ri_interrupt_wkups`). Each successful request samples both counters together. |
+| `wakeups_at_ns` | Monotonic sample time in nanoseconds, or `null` when wakeup counters are unavailable. For two readings from the same process, divide the change in each count by the change in `wakeups_at_ns` and multiply by 1e9 for wakeups per second. |
 | `rss_bytes` | Resident bytes at the end of the interval on macOS and Linux, including resident shared pages |
 | `pss_bytes`, `peak_pss_bytes` | Current and highest sampled Linux proportional resident bytes. Each `host.metrics` request samples the process. |
 | `private_bytes`, `shared_bytes` | Private and shared resident mappings in Linux smaps, each including clean and dirty pages |
@@ -1629,6 +1647,13 @@ the methods it added beside the agent's own are in
 boundary. It takes no parameters. The result contains `at` and a `bots`
 array. Each row has the seat's `handle`, `name`, `player` (null until
 bound to a game player), `skill`, `profile`, `combat` and `accuracy`.
+
+`maintenance` measures the host's phantom roster work on render frames with
+configured seats or pending removals. `frames` counts calls, `total_ns` sums
+their wall time, and `max_ns` is the longest call. `unchanged_lobby_frames`
+counts frames where the seated custom lobby's peer and player records matched
+the previous sample. Subtract two readings in the same session to get a
+window's mean cost (`Δtotal_ns / Δframes`) and cache hit fraction.
 
 `profile` contains the card's `summary`, its `archetype`, `favorite_weapon`, the name's
 `try_hard` score and the `weights` active for that difficulty and style.

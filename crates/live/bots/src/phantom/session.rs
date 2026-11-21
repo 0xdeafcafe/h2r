@@ -17,6 +17,7 @@ use engine::points;
 
 use crate::guest;
 
+pub(super) mod lobby_membership;
 pub(super) mod match_roster;
 
 pub type R<T> = Result<T, MemFault>;
@@ -481,7 +482,7 @@ pub fn host_lobby(m: &dyn GuestMemory) -> Result<u32, NotNow> {
     if guest::game_tick(m).is_some() && multiplayer(m) {
         return Err(NotNow::Wait);
     }
-    let Ok(f) = crate::lobby::facts(m) else {
+    let Ok(f) = crate::lobby::membership(m) else {
         return Err(NotNow::Wait);
     };
     if !crate::lobby::joinable(&f) {
@@ -549,29 +550,47 @@ fn local_peer(m: &dyn GuestMemory, s: u32) -> R<Option<u32>> {
     Ok((local < m.u32(s + PEER_COUNT)?.min(MAX)).then_some(local))
 }
 
+/// The two fixed-width peer names and the effective player name/appearance,
+/// all derived from the same immutable gamertag when the seat is registered.
+pub(super) struct PeerIdentity {
+    names: [u8; (PEER_MAP_STATUS - PEER_PROPS) as usize],
+    player: [u8; CONFIG_LOOK + 8],
+}
+
+impl PeerIdentity {
+    pub(super) fn new(name: &str) -> Self {
+        let mut names = [0; (PEER_MAP_STATUS - PEER_PROPS) as usize];
+        for (start, units) in [(PEER_NAME, PEER_NAME_UNITS), (PEER_NAME2, PEER_NAME2_UNITS)] {
+            let field = &mut names[(start - PEER_PROPS) as usize..];
+            for (dst, unit) in field.chunks_exact_mut(2).zip(name.encode_utf16().take(units as usize)) {
+                dst.copy_from_slice(&unit.to_le_bytes());
+            }
+        }
+        Self { names, player: identity_bytes(name) }
+    }
+}
+
+type Properties = [u8; PROPS_SIZE as usize];
+
+pub(super) fn host_properties(m: &dyn GuestMemory, s: u32) -> R<Option<Properties>> {
+    let Some(local) = local_peer(m, s)? else { return Ok(None) };
+    let mut p = [0; PROPS_SIZE as usize];
+    m.read(peer(s, local) + PEER_PROPS, &mut p)?;
+    Ok(Some(p))
+}
+
+fn named_properties(mut host: Properties, identity: &PeerIdentity) -> Properties {
+    host[..identity.names.len()].copy_from_slice(&identity.names);
+    host
+}
+
 /// A phantom's peer properties: this console's own (its map and hopper
 /// statuses, which the lobby's start checks read of every peer: the map
 /// `0x652a0`, the countdown's end `0x6e410`, the matchmaking start
 /// `0x66050`), with `name` for both names. `None` while this console has
 /// no peer.
 pub fn props_for(m: &dyn GuestMemory, s: u32, name: &str) -> R<Option<Vec<u8>>> {
-    let Some(local) = local_peer(m, s)? else {
-        return Ok(None);
-    };
-    let mut p = vec![0; PROPS_SIZE as usize];
-    m.read(peer(s, local) + PEER_PROPS, &mut p)?;
-    let units: Vec<u16> = name.encode_utf16().collect();
-    for (at, n) in [
-        (PEER_NAME - PEER_PROPS, PEER_NAME_UNITS),
-        (PEER_NAME2 - PEER_PROPS, PEER_NAME2_UNITS),
-    ] {
-        let at = at as usize;
-        p[at..at + 2 * (n as usize + 1)].fill(0);
-        for (i, u) in units.iter().take(n as usize).enumerate() {
-            p[at + 2 * i..at + 2 * i + 2].copy_from_slice(&u.to_le_bytes());
-        }
-    }
-    Ok(Some(p))
+    Ok(host_properties(m, s)?.map(|host| named_properties(host, &PeerIdentity::new(name)).to_vec()))
 }
 
 /// Gives peer `p` (a phantom's, `name`) [`props_for`]'s properties, as the
@@ -580,11 +599,17 @@ pub fn props_for(m: &dyn GuestMemory, s: u32, name: &str) -> R<Option<Vec<u8>>> 
 /// either changed. Kept each frame, so a map load or a hopper's status on
 /// this console is the phantom's too. Returns whether it wrote.
 pub fn sync_props(m: &mut dyn GuestMemory, s: u32, p: u32, name: &str) -> R<bool> {
-    let Some(want) = props_for(&*m, s, name)? else {
-        return Ok(false);
-    };
+    let host = host_properties(m, s)?;
+    sync_peer(m, s, p, host.as_ref(), &PeerIdentity::new(name))
+}
+
+pub(super) fn sync_peer(
+    m: &mut dyn GuestMemory, s: u32, p: u32, host: Option<&Properties>, identity: &PeerIdentity,
+) -> R<bool> {
+    let Some(host) = host else { return Ok(false) };
+    let want = named_properties(*host, identity);
     let a = peer(s, p);
-    let mut have = vec![0; PROPS_SIZE as usize];
+    let mut have = [0; PROPS_SIZE as usize];
     m.read(a + PEER_PROPS, &mut have)?;
     if have == want && m.u8(a + PEER_PROPS_SET)? == 1 {
         return Ok(false);
@@ -868,7 +893,16 @@ pub fn solo_host(m: &dyn GuestMemory, s: u32) -> R<bool> {
 
 /// The peer with machine id `mac`.
 pub fn find_peer(m: &dyn GuestMemory, s: u32, mac: [u8; 6]) -> R<Option<u32>> {
+    find_peer_near(m, s, mac, None)
+}
+
+pub(super) fn find_peer_near(
+    m: &dyn GuestMemory, s: u32, mac: [u8; 6], hint: Option<u32>,
+) -> R<Option<u32>> {
     let n = m.u32(s + PEER_COUNT)?.min(MAX);
+    if let Some(p) = hint && p < n && peer_machine(m, s, p)? == mac {
+        return Ok(Some(p));
+    }
     for p in 0..n {
         if peer_machine(m, s, p)? == mac {
             return Ok(Some(p));
@@ -970,7 +1004,7 @@ fn set_identity(c: &mut [u8; CONFIG_SIZE], name: &str) {
 // The host can rebuild a player's effective configuration while the phantom
 // is seated. A reclaimed peer can also carry an earlier profile. Publish the
 // identity in both copies without disturbing team, handicap or ready state.
-pub(super) fn sync_identity(m: &mut dyn GuestMemory, s: u32, p: u32, name: &str) -> R<()> {
+pub(super) fn sync_identity(m: &mut dyn GuestMemory, s: u32, p: u32, identity: &PeerIdentity) -> R<()> {
     let slot = m.u32(peer(s, p) + PEER_SLOTS)?;
     if slot >= MAX || m.u32(s + PLAYER_MASK)? & (1 << slot) == 0 {
         return Ok(());
@@ -979,13 +1013,13 @@ pub(super) fn sync_identity(m: &mut dyn GuestMemory, s: u32, p: u32, name: &str)
     if m.u32(a + P_PEER)? != p {
         return Ok(());
     }
-    let want = identity_bytes(name);
+    let want = &identity.player;
     let mut have = [0; CONFIG_LOOK + 8];
     let mut changed = false;
     for at in [a + P_REQUESTED, a + P_EFFECTIVE] {
         m.read(at, &mut have)?;
-        if have != want {
-            m.write(at, &want)?;
+        if &have != want {
+            m.write(at, want)?;
             changed = true;
         }
     }

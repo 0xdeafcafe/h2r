@@ -31,6 +31,10 @@ impl Stage {
         }
     }
 
+    fn log_stand_down(self, map: &str) {
+        eprintln!("{}: nothing native on {map}; standing down until the next map", self.name());
+    }
+
     #[inline]
     pub fn standing_down(self) -> bool {
         MAP.standing_down(self)
@@ -99,30 +103,27 @@ impl MapWork {
         let map_empty = bsps
             .iter()
             .fold(u8::MAX, |mask, entry| mask & entry.unwrap_or(0));
+        // Publish the bits while holding the activation lock. Diagnostics
+        // may write to a full pipe and must never hold up a map switch.
+        let previous = self.standing_down.fetch_or(map_empty, Ordering::Relaxed);
+        drop(bsps);
         for stage in BSP_STAGES {
-            if map_empty & stage as u8 != 0 {
-                self.stand_down(stage, map);
+            if map_empty & !previous & stage as u8 != 0 {
+                stage.log_stand_down(map);
             }
         }
     }
 
     fn map_stage_empty(&self, generation: u64, map: &str, stage: Stage) {
-        let _bsps = self.bsps.lock().unwrap_or_else(|e| e.into_inner());
+        let bsps = self.bsps.lock().unwrap_or_else(|e| e.into_inner());
         if self.generation() == generation {
-            self.stand_down(stage, map);
+            let bit = stage as u8;
+            let previous = self.standing_down.fetch_or(bit, Ordering::Relaxed);
+            drop(bsps);
+            if previous & bit == 0 { stage.log_stand_down(map); }
         }
     }
 
-    // Callers hold the map lock so an earlier load cannot race a reset.
-    fn stand_down(&self, stage: Stage, map: &str) {
-        let bit = stage as u8;
-        if self.standing_down.fetch_or(bit, Ordering::Relaxed) & bit == 0 {
-            eprintln!(
-                "{}: nothing native on {map}; standing down until the next map",
-                stage.name()
-            );
-        }
-    }
 }
 
 // Also distinguishes a reload into the same BSP address on revert or switch.
@@ -195,6 +196,11 @@ impl Feature for NativeMapWork {
         }
         b.game().on_start("native_map_reset", |_| reset());
         if needs_bsp {
+            b.raw()
+                .observe_before(&points::RENDER_VIEWS, "native_bsp_publish", |_| {
+                    crate::native_world::begin_frame();
+                })
+                .context_only();
             for point in [&points::BSP_SWITCH, &points::GAME_STATE_REVERT] {
                 b.raw()
                     .observe_after(point, "native_bsp_reload", |_| {

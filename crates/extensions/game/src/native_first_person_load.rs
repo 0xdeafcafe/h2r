@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use render_bridge::native_objects::{NativeSet, SetPart};
 use map::TagId;
@@ -26,89 +26,144 @@ use tags::model::RenderModelGeometry;
 use crate::native_map::{self, NativeMap};
 use crate::native_world_glue::{Raw, StageDecoder, StageImages, StagePalettes};
 
-pub struct CpuModel {
-    pub definition: u32,
-    pub nodes: usize,
-    pub lit: LitModelInput,
-    pub normalization: Option<Arc<StaticLightTexture>>,
+struct CpuModel {
+    nodes: usize,
+    lit: LitModelInput,
+    normalization: Option<Arc<StaticLightTexture>>,
 }
 
 #[derive(Default)]
 pub struct Models {
-    pub pending: Mutex<Vec<CpuModel>>,
+    retire: OnceLock<native_map::RetireQueue>,
     pub lit: Mutex<Option<LitObjects>>,
     pub palettes: Mutex<StagePalettes>,
+}
+
+impl Drop for Models {
+    fn drop(&mut self) {
+        if let Some(send) = self.retire.take() {
+            native_map::retire(send, timeline::setup::Stage::Objects, self);
+        }
+    }
 }
 
 pub struct MapState {
     pub name: String,
     pub generation: u64,
+    pub map_generation: u64,
     pub models: Arc<Models>,
     pub set: Arc<NativeSet>,
+    pub next: Option<(u64, Arc<NativeSet>)>,
     pub tried: HashSet<u16>,
     pub worker: Option<mpsc::Sender<u32>>,
 }
 
-/// Starts this map generation's loader. Publication checks both the name
-/// and generation, so an A -> B -> A transition cannot publish stale work.
+impl MapState {
+    pub fn activate(&mut self, frame: u64) {
+        if self.next.as_ref().is_some_and(|(finished, _)| frame > *finished)
+            && let Some((_, set)) = self.next.take()
+        {
+            self.set = set;
+        }
+    }
+}
+
+/// Starts this map generation's loader. The shared state owns the request
+/// sender, so the worker holds only a weak reference to it.
 pub fn spawn_worker(
-    name: String,
-    generation: u64,
+    mut set: Arc<NativeSet>,
     models: Arc<Models>,
-    state: Arc<Mutex<Option<MapState>>>,
+    state: Weak<Mutex<Option<MapState>>>,
     palettes: StagePalettes,
     formats: Option<StreamFormats>,
+    (device, queue): (wgpu::Device, wgpu::Queue),
+    map_generation: u64,
 ) -> Option<mpsc::Sender<u32>> {
     let (tx, rx) = mpsc::channel::<u32>();
-    std::thread::Builder::new()
-        .name("native-first-person load".into())
-        .spawn(move || {
-            let mut opened = match open(&name, palettes, formats) {
-                Ok(o) => o,
+    background::spawn("native-first-person load", move || {
+        if map_generation != render_bridge::native_map_work::generation() {
+            return;
+        }
+        let name = set.map.clone();
+        match native_map::retire_queue() {
+            Ok(queue) => {
+                let _ = models.retire.set(queue);
+            }
+            Err(error) => {
+                eprintln!("native-first-person: {name}: could not start resource retirement ({error})");
+                return;
+            }
+        }
+        let (mut opened, mut uploads) = {
+            let _timer = timeline::setup::Stage::Objects.worker();
+            match open(&name, palettes, formats) {
+                Ok(o) => (o, LitObjects::new(&device)),
                 Err(e) => {
                     eprintln!("native-first-person: {name}: map not opened ({e}); first person stays on D3D");
                     return;
                 }
-            };
-            let (mut loaded, mut refused) = (0u32, 0u32);
-            while let Ok(definition) = rx.recv() {
-                let result = load_model(&mut opened, definition);
-                models.palettes.lock().unwrap_or_else(|e| e.into_inner()).clone_from(opened.decoder.used());
-                match result {
-                    Ok(cpu) => {
-                        let parts = set_parts(&cpu.lit);
-                        let nodes = cpu.nodes;
-                        let part_count = parts.len();
-                        models.pending.lock().unwrap_or_else(|e| e.into_inner()).push(cpu);
-                        let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
-                        let Some(s) = st.as_mut().filter(|s| s.name == name && s.generation == generation) else {
+            }
+        };
+        *models.lit.lock().unwrap_or_else(|e| e.into_inner()) = Some(uploads.empty_with_layout());
+        let (mut loaded, mut refused) = (0u32, 0u32);
+        while let Ok(definition) = rx.recv() {
+            if map_generation != render_bridge::native_map_work::generation() {
+                return;
+            }
+            let _timer = timeline::setup::Stage::Objects.worker();
+            let result = load_model(&mut opened, definition).and_then(|cpu| {
+                let parts = set_parts(&cpu.lit);
+                if let Some(texture) = cpu.normalization {
+                    uploads.set_normalization(&device, &queue, &texture);
+                }
+                uploads.add_model(&device, &queue, definition, cpu.lit);
+                if !uploads.has(definition) {
+                    return Err("GPU refused the model's programs or textures".into());
+                }
+                queue.submit([]);
+                Ok((cpu.nodes, parts))
+            });
+            match result {
+                Ok((nodes, parts)) => {
+                    let part_count = parts.len();
+                    let next = Arc::make_mut(&mut set);
+                    next.definitions.insert(definition as u16, nodes);
+                    next.parts.extend(parts.into_iter().map(|((section, part), native)| {
+                        ((definition as u16, section, part), native)
+                    }));
+                    models.palettes.lock().unwrap_or_else(|e| e.into_inner()).clone_from(opened.decoder.used());
+                    {
+                        let mut lit = models.lit.lock().unwrap_or_else(|e| e.into_inner());
+                        let Some(lit) = lit.as_mut() else { return };
+                        if !uploads.move_model_into(definition, lit) {
                             return;
-                        };
-                        let mut set = (*s.set).clone();
-                        set.definitions.insert(definition as u16, nodes);
-                        set.parts.extend(parts.into_iter().map(|((section, part), native)| {
-                            ((definition as u16, section, part), native)
-                        }));
-                        s.set = Arc::new(set);
-                        drop(st);
-                        loaded += 1;
-                        if hooks::native_verbose() {
-                            eprintln!(
-                                "native-first-person: {name}: mode {definition:#010x}: {part_count} lit parts, {nodes} nodes ({loaded} models native, {refused} left to D3D)"
-                            );
                         }
                     }
-                    Err(why) => {
-                        refused += 1;
-                        if hooks::native_verbose() {
-                            eprintln!("native-first-person: {name}: definition {definition:#010x} left to D3D ({why})");
-                        }
+                    {
+                        let Some(state) = state.upgrade() else { return };
+                        let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
+                        let Some(current) = st.as_mut().filter(|s| {
+                            s.generation == set.generation && s.map_generation == render_bridge::native_map_work::generation()
+                        }) else { return };
+                        current.next = Some((timeline::frames(), Arc::clone(&set)));
+                    }
+                    loaded += 1;
+                    if hooks::native_verbose() {
+                        eprintln!(
+                            "native-first-person: {name}: mode {definition:#010x}: {part_count} lit parts, {nodes} nodes ({loaded} models native, {refused} left to D3D)"
+                        );
+                    }
+                }
+                Err(why) => {
+                    refused += 1;
+                    if hooks::native_verbose() {
+                        eprintln!("native-first-person: {name}: definition {definition:#010x} left to D3D ({why})");
                     }
                 }
             }
-            eprintln!("native-first-person: {name}: {loaded} models native, {refused} left to the D3D path");
-        })
-        .ok()?;
+        }
+        eprintln!("native-first-person: {name}: {loaded} models native, {refused} left to the D3D path");
+    }).ok()?;
     Some(tx)
 }
 
@@ -324,7 +379,6 @@ fn load_model(opened: &mut Opened, definition: u32) -> Result<CpuModel, load::Er
         opened.normalization.clone().flatten()
     };
     Ok(CpuModel {
-        definition,
         nodes,
         lit: input,
         normalization,
@@ -540,4 +594,33 @@ fn object_vertex_program(
     let semantics = look::vertex_semantics(metadata, address, class)
         .ok_or_else(|| format!("classification {class}'s inputs do not read"))?;
     Ok((code, semantics))
+}
+
+#[cfg(test)]
+mod publication_tests {
+    use super::*;
+
+    #[test]
+    fn the_previous_model_set_draws_until_the_next_swap() {
+        let mut state = MapState {
+            name: "arena".into(),
+            generation: 2,
+            map_generation: 1,
+            models: Arc::new(Models::default()),
+            set: Arc::new(NativeSet::default()),
+            next: None,
+            tried: HashSet::new(),
+            worker: None,
+        };
+        Arc::make_mut(&mut state.set).definitions.insert(4, 2);
+        let mut next = (*state.set).clone();
+        next.definitions.insert(7, 3);
+        state.next = Some((8, Arc::new(next)));
+        state.activate(8);
+        assert_eq!(state.set.node_count(4), Some(2));
+        assert_eq!(state.set.node_count(7), None);
+        state.activate(9);
+        assert_eq!(state.set.node_count(4), Some(2));
+        assert_eq!(state.set.node_count(7), Some(3));
+    }
 }

@@ -403,6 +403,11 @@ impl<B: Backend> Backend for SceneSink<B> {
     fn commit_external(&mut self, recording: ExternalRecording) {
         self.inner.commit_external(recording)
     }
+    #[cfg(feature = "gpu")]
+    fn upload_device(&self) -> Option<(wgpu::Device, wgpu::Queue)> {
+        self.inner.upload_device()
+    }
+
     fn supports_external_pass(&self) -> bool {
         self.inner.supports_external_pass()
     }

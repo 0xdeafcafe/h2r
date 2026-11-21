@@ -249,6 +249,7 @@ fn game_send_checks_message_size_and_queue_capacity_before_reporting_success() {
             }),
             inject: Mutex::default(),
             stopping: AtomicBool::new(false),
+            wake: Arc::new(Poller::new().unwrap()),
             closed: AtomicBool::new(false),
         }),
         injector: local,

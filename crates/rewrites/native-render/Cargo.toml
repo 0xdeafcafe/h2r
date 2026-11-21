@@ -9,12 +9,14 @@ license.workspace = true
 default = ["gpu"]
 # The map loader and the wgpu pass. Without it only the pure parts
 # (world, camera, cull, skip) build: what the feature crate's hooks need.
-gpu = ["dep:map", "dep:tags", "dep:wgpu", "dep:shaders", "dep:gfx", "dep:d3d", "dep:pollster"]
+gpu = ["dep:map", "dep:tags", "dep:wgpu", "dep:shaders", "dep:gfx", "dep:d3d", "dep:pollster", "dep:background", "dep:timeline"]
 # Seeded differential test of the object lighting port against the lifted
 # original (tests/object_lighting_differential.rs; needs the user's XBE).
 differential = ["dep:analyze", "dep:xbe", "dep:ir", "dep:lift"]
 
 [dependencies]
+background = { path = "../../runtime/background", optional = true }
+timeline = { path = "../../runtime/timeline", optional = true }
 map = { workspace = true, optional = true }
 tags = { workspace = true, optional = true }
 wgpu = { version = "30", optional = true }

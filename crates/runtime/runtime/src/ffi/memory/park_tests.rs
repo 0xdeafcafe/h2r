@@ -133,3 +133,34 @@ fn guard_on_helper_thread_does_not_deadlock() {
     rt.memory().set_u32(DATA, 10).unwrap();
     assert_eq!(rt.memory().u32(DATA).unwrap(), 10);
 }
+
+/// A second runner waits for the first runner's safe point. A wake may
+/// arrive before the requester has entered its condition-variable wait.
+#[test]
+fn runners_handoff_between_threads() {
+    use std::time::{Duration, Instant};
+
+    let rt = runtime(&[]);
+    let memory = rt.memory_state();
+    let first = ExecCtx::new(rt.clone(), 1);
+    let entered = memory.start_running(first.preempt_ptr());
+    let other = rt.clone();
+    let (done, ready) = std::sync::mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        let second = ExecCtx::new(other.clone(), 2);
+        let memory = other.memory_state();
+        let token = memory.start_running(second.preempt_ptr());
+        memory.stop_running(token);
+        done.send(()).unwrap();
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while first.leave_word() & PARK == 0 && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    let asked = first.leave_word() & PARK != 0;
+    memory.stop_running(entered);
+    assert!(asked, "the other runner requested a safe point");
+    ready.recv_timeout(Duration::from_secs(5)).expect("second runner resumed");
+    thread.join().unwrap();
+    assert_eq!(memory.state.load(Ordering::Relaxed), IDLE);
+}

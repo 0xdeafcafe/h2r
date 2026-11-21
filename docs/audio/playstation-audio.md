@@ -383,7 +383,9 @@ Headless runs (`h2 run`) never add the row.
   Only those valid-flag bits are set.
 - **The thread** (`pad_hid::spawn`) looks for a pad once a second, follows
   the button and the `SpeakerSwitch` from `on_live`, and keeps the mute and
-  speaker state across an unplug. Dropping it puts the path back to the jack.
+  speaker state across an unplug. Between discovery attempts it sleeps until
+  a command or the next attempt is due. Dropping it wakes the worker and
+  puts a connected pad back on the jack.
 - **`H2_PAD_MUTE`**: `1` (default) or `0`. On does nothing until a DualSense
   is found. With no Communicator the toggle only lights the LED and mutes the
   mic in the controller; the mute state is there for the voice design below.

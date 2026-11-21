@@ -193,6 +193,8 @@ pub fn install(
             reply["late_ticks"] = json!(timing.map(|(_, late)| late));
             reply["age_ms"] = json!(now.duration_since(*at).as_millis() as u64);
             drop(state);
+            let wakeups = process_wakeups();
+            add_wakeups(&mut reply, wakeups, timeline::now_ns());
             let split = crate::host_mem::resident_split();
             let pss = split.map(|m| m.pss);
             peak_pss_bytes = peak_pss_bytes.max(pss);
@@ -208,6 +210,33 @@ pub fn install(
         });
     }
     Ok(())
+}
+
+/// Process-lifetime counters, sampled by the request handler outside the tick lock.
+struct Wakeups {
+    package_idle: u64,
+    interrupt: u64,
+}
+
+fn process_wakeups() -> Option<Wakeups> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::host_mem::process_rusage().map(|usage| Wakeups {
+            package_idle: usage.ri_pkg_idle_wkups,
+            interrupt: usage.ri_interrupt_wkups,
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
+fn add_wakeups(reply: &mut serde_json::Value, totals: Option<Wakeups>, at_ns: u64) {
+    let (package_idle, interrupt) = totals.map(|w| (w.package_idle, w.interrupt)).unzip();
+    reply["package_idle_wakeups"] = json!(package_idle);
+    reply["interrupt_wakeups"] = json!(interrupt);
+    reply["wakeups_at_ns"] = json!(package_idle.map(|_| at_ns));
 }
 
 #[cfg(target_os = "macos")]
@@ -246,6 +275,23 @@ fn resident_bytes() -> Option<u64> {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn wakeups_preserve_zero_and_report_missing_samples_as_null() {
+        let mut reply = json!({});
+        add_wakeups(&mut reply, Some(Wakeups { package_idle: 0, interrupt: 47 }), 900);
+        assert_eq!(reply, json!({
+            "package_idle_wakeups": 0,
+            "interrupt_wakeups": 47,
+            "wakeups_at_ns": 900,
+        }));
+        add_wakeups(&mut reply, None, 1800);
+        assert_eq!(reply, json!({
+            "package_idle_wakeups": null,
+            "interrupt_wakeups": null,
+            "wakeups_at_ns": null,
+        }));
+    }
 
     #[test]
     fn ordinary_players_get_window_metrics_without_a_guest_mode_read() {

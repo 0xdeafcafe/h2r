@@ -13,6 +13,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::socket_wait::SocketWait;
+use polling::Poller;
 use live_proto::tunnel::{self, Frame, Kind, MAX_PAYLOAD, MAX_PORT};
 use tungstenite::{
     Message, WebSocket,
@@ -23,7 +25,9 @@ use tungstenite::{
     stream::MaybeTlsStream,
 };
 
-const TURN: Duration = Duration::from_millis(2);
+// A WebSocket/TLS read can have a buffered partial frame. Bound that one
+// read before waiting on TCP, the local QoS socket and the outbound queue.
+const READ_WINDOW: Duration = Duration::from_millis(2);
 const CONNECT_WAIT: Duration = Duration::from_secs(5);
 const KEEPALIVE: Duration = Duration::from_secs(5);
 const QUEUE: usize = 256;
@@ -65,6 +69,7 @@ struct Shared {
     hello: Mutex<Hello>,
     inject: Mutex<Option<Inject>>,
     stopping: AtomicBool,
+    wake: Arc<Poller>,
     closed: AtomicBool,
 }
 
@@ -77,7 +82,14 @@ struct Client {
 
 impl Drop for Client {
     fn drop(&mut self) {
-        self.shared.stopping.store(true, Ordering::Release);
+        self.shared.stop();
+    }
+}
+
+impl Shared {
+    fn stop(&self) {
+        self.stopping.store(true, Ordering::Release);
+        let _ = self.wake.notify();
     }
 }
 
@@ -128,7 +140,7 @@ impl TunnelHandle {
     }
 
     pub(crate) fn stop(&self) {
-        self.0.shared.stopping.store(true, Ordering::Release);
+        self.0.shared.stop();
     }
 
     pub(crate) fn send(&self, port: u16, payload: &[u8]) -> Result<usize, u32> {
@@ -153,6 +165,7 @@ impl TunnelHandle {
                 TrySendError::Full(_) => 10035u32,      // WSAEWOULDBLOCK
                 TrySendError::Disconnected(_) => 10054, // WSAECONNRESET
             })?;
+        let _ = self.0.shared.wake.notify();
         Ok(payload.len())
     }
 }
@@ -175,6 +188,7 @@ fn connect(url: &str, bearer: &str) -> io::Result<TunnelHandle> {
         hello: Mutex::new(hello),
         inject: Mutex::new(None),
         stopping: AtomicBool::new(false),
+        wake: Arc::new(Poller::new()?),
         closed: AtomicBool::new(false),
     });
     let worker = shared.clone();
@@ -189,7 +203,10 @@ fn connect(url: &str, bearer: &str) -> io::Result<TunnelHandle> {
                 || open(&url, &bearer),
                 |socket, hello| {
                     *worker.hello.lock().unwrap() = hello;
-                    run(socket, hello, &worker, &rx, &injector, &mut qos)
+                    let tcp = tcp(socket)?;
+                    tcp.set_read_timeout(Some(READ_WINDOW))?;
+                    let wait = SocketWait::new(worker.wake.clone(), Some(tcp), Some(&qos.socket))?;
+                    run(socket, hello, &worker, &rx, &injector, &mut qos, wait)
                 },
                 || worker.stopping.load(Ordering::Acquire),
             );
@@ -230,7 +247,7 @@ fn request(url: &str, bearer: &str) -> io::Result<Request> {
 type Ws = WebSocket<MaybeTlsStream<TcpStream>>;
 
 fn open(url: &str, bearer: &str) -> io::Result<Ws> {
-    open_with_timeouts(url, bearer, CONNECT_WAIT, TURN)
+    open_with_timeouts(url, bearer, CONNECT_WAIT, CONNECT_WAIT)
 }
 
 /// Measure only the first application frame on a fresh authenticated upgrade.
@@ -278,7 +295,7 @@ fn open_with_timeouts(url: &str, bearer: &str, connect_wait: Duration, read_wait
         .max_message_size(Some(tunnel::HEADER_LEN + MAX_PAYLOAD))
         .max_frame_size(Some(tunnel::HEADER_LEN + MAX_PAYLOAD));
     // A single upgrade to this URL. A redirect must never receive the bearer.
-    let (mut socket, _) = tungstenite::client_tls_with_config(req, stream, Some(config), None)
+    let (socket, _) = tungstenite::client_tls_with_config(req, stream, Some(config), None)
         .map_err(|err| match err {
             tungstenite::handshake::HandshakeError::Failure(tungstenite::Error::Http(reply)) => {
                 io::Error::other(format!(
@@ -289,19 +306,25 @@ fn open_with_timeouts(url: &str, bearer: &str, connect_wait: Duration, read_wait
             tungstenite::handshake::HandshakeError::Failure(tungstenite::Error::Io(err)) => err,
             _ => io::Error::other("dedicated tunnel upgrade failed"),
         })?;
-    let tcp = match socket.get_mut() {
-        MaybeTlsStream::Plain(tcp) => tcp,
-        MaybeTlsStream::Rustls(tls) => &mut tls.sock,
-        _ => return Err(io::Error::other("unsupported tunnel TLS backend")),
-    };
-    tcp.set_read_timeout(Some(read_wait))?;
+    tcp(&socket)?.set_read_timeout(Some(read_wait))?;
     Ok(socket)
+}
+
+fn tcp(socket: &Ws) -> io::Result<&TcpStream> {
+    match socket.get_ref() {
+        MaybeTlsStream::Plain(tcp) => Ok(tcp),
+        MaybeTlsStream::Rustls(tls) => Ok(&tls.sock),
+        _ => Err(io::Error::other("unsupported tunnel TLS backend")),
+    }
 }
 
 trait Wire {
     fn send(&mut self, message: Message) -> io::Result<()>;
     fn read(&mut self) -> io::Result<Option<Message>>;
     fn close(&mut self);
+    fn read_timeout(&self, _timeout: Duration) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 fn ws_error(err: tungstenite::Error) -> io::Error {
@@ -317,6 +340,10 @@ fn ws_error(err: tungstenite::Error) -> io::Error {
 }
 
 impl Wire for Ws {
+    fn read_timeout(&self, timeout: Duration) -> io::Result<()> {
+        tcp(self)?.set_read_timeout(Some(timeout))
+    }
+
     fn send(&mut self, message: Message) -> io::Result<()> {
         WebSocket::send(self, message).map_err(ws_error)
     }
@@ -366,7 +393,12 @@ fn client_control(kind: Kind) -> Message {
 fn handshake(socket: &mut impl Wire) -> io::Result<Hello> {
     socket.send(client_control(Kind::Hello))?;
     let until = Instant::now() + CONNECT_WAIT;
-    while Instant::now() < until {
+    loop {
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        socket.read_timeout(left)?;
         match socket.read()? {
             None | Some(Message::Ping(_) | Message::Pong(_)) => continue,
             Some(Message::Binary(bytes)) => {
@@ -389,7 +421,6 @@ fn handshake(socket: &mut impl Wire) -> io::Result<Hello> {
             "expected host hello with assigned peer and synthetic IPv4",
         ));
     }
-    Err(io::ErrorKind::TimedOut.into())
 }
 
 enum Incoming {
@@ -478,11 +509,14 @@ fn run(
     out: &Receiver<Frame>,
     injector: &UdpSocket,
     qos: &mut QosBridge,
+    mut wait: SocketWait,
 ) -> io::Result<()> {
     let mut keepalive = Keepalive::new(Instant::now());
     while !shared.stopping.load(Ordering::Acquire) {
         // Bound each turn so continuous game traffic cannot starve receives.
+        let mut sent = 0;
         for frame in out.try_iter().take(32) {
+            sent += 1;
             socket.send(Message::binary(tunnel::encode(&frame)))?;
         }
         qos.poll(socket)?;
@@ -504,6 +538,9 @@ fn run(
                     }
                 }
             }
+        } else if sent < 32 {
+            let deadline = keepalive.next_ping.min(keepalive.last_seen + KEEPALIVE * 3);
+            wait.wait(Some(deadline.saturating_duration_since(Instant::now())))?;
         }
     }
     let result = socket.send(client_control(Kind::Bye));

@@ -378,6 +378,18 @@ fn the_mode_comes_from_the_environment_values() {
 }
 
 #[test]
+fn leaving_a_game_discards_a_queued_batch_without_running_it_on_the_caller() {
+    let w = world(7);
+    let mut thinker = Thinker::on_radio(pipelined(0), w.board);
+    let g = FakeGuest::new();
+    thinker.sample(0, &g, &seats(&w, 0));
+    thinker.end_game();
+    assert!(thinker.ready_for_game());
+    assert!(thinker.in_flight.is_none());
+    assert!(w.logs.iter().all(|log| lock(log).is_empty()));
+}
+
+#[test]
 fn a_mode_change_settles_the_thinks_in_flight() {
     let w = world(7);
     let mut thinker = Thinker::on_radio(pipelined(2), w.board);

@@ -159,7 +159,27 @@ fn installs_a_new_map_as_a_content_package() {
     let dir = vfs::Config::new(data, HALO2_TITLE).content_dir(offer);
 
     // The map, through the resolver: here the layer's own bytes.
-    assert_eq!(served(data, &r, offer, "coldsnap"), body(3));
+    let path = device_path(offer, "coldsnap");
+    let mut vfs = mounted(data, &r);
+    assert!(vfs.resolves_on_use(&path), "a speculative worker must leave the package alone");
+    assert_eq!(read(&mut vfs, &path), body(3));
+    assert!(!vfs.resolves_on_use(&path), "the loaded map can be opened by the worker");
+    #[cfg(unix)]
+    {
+        use std::io::{Read, Seek, SeekFrom};
+        let (mut first, len) = vfs.detached_map_reader(&path).unwrap();
+        let mut second = first.clone();
+        drop(vfs);
+        let expected = body(3);
+        assert_eq!(len, expected.len() as u64);
+        second.seek(SeekFrom::End(-4)).unwrap();
+        let mut tail = Vec::new();
+        second.read_to_end(&mut tail).unwrap();
+        assert_eq!(tail, expected[expected.len()-4..]);
+        let mut whole = Vec::new();
+        first.read_to_end(&mut whole).unwrap();
+        assert_eq!(whole, expected);
+    }
     // patch.lvl passes 1.0's check and names the map beside it.
     let lvl = std::fs::read(dir.join("patch.lvl")).unwrap();
     patch_lvl::validate_v2(&lvl).unwrap();

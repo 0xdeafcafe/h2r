@@ -10,6 +10,8 @@ mod dir_disc;
 mod disc;
 mod host;
 mod film_map;
+#[cfg(unix)]
+pub use film_map::DetachedMapReader;
 pub use film_map::{FilmMap, FilmMapSource, ImmutableRead};
 mod map_override;
 mod packages;

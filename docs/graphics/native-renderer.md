@@ -293,6 +293,12 @@ effective register values on commit and restore their old values on
 refusal. Post retains the assembled original strips for exact D3D replay
 if its complete call fails validation or recording.
 
+`world_layers_gpu::IndexedPass` translates each distinct resolved shader
+and creates its GPU module on a compile worker. The frame requests the
+pipeline for the live vertex layout, render state and attachment formats.
+Until the pipeline has crossed a guest swap, the ordered draw takes its
+original D3D path. A cold variant consumes no native geometry upload.
+
 Program selection, material evaluation and target changes still run in the
 guest for indexed geometry and HUD shader quads. Multi-range indexed
 branches, unknown effect builders, query draws and unsupported states keep

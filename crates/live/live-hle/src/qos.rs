@@ -175,6 +175,7 @@ pub(crate) struct Info {
 }
 pub(crate) type Listeners = Arc<Mutex<BTreeMap<[u8; 8], Listener>>>;
 pub(crate) struct Responder {
+    poller: Arc<polling::Poller>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
@@ -186,7 +187,9 @@ impl Responder {
         asked: Asked,
     ) -> std::io::Result<Self> {
         let socket = UdpSocket::bind((address.ip().to_owned(), address.port() + 2))?;
-        socket.set_read_timeout(Some(Duration::from_millis(50)))?;
+        socket.set_nonblocking(true)?;
+        let poller = Arc::new(polling::Poller::new()?);
+        let mut ready = crate::socket_wait::SocketWait::new(poller.clone(), None, Some(&socket))?;
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
         let thread = std::thread::Builder::new()
@@ -198,8 +201,18 @@ impl Responder {
                 // "network problems" join failure.
                 let mut unknown = std::collections::BTreeSet::new();
                 while !flag.load(Ordering::Acquire) {
-                    let Ok((n, sender)) = socket.recv_from(&mut input) else {
-                        continue;
+                    let (n, sender) = match socket.recv_from(&mut input) {
+                        Ok(packet) => packet,
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            if let Err(e) = ready.wait(None)
+                                && e.kind() != std::io::ErrorKind::Interrupted
+                            {
+                                break;
+                            }
+                            continue;
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(_) => break,
                     };
                     if n == PING_LEN {
                         if let SocketAddr::V4(v4) = sender
@@ -258,6 +271,7 @@ impl Responder {
                 }
             })?;
         Ok(Self {
+            poller,
             stop,
             thread: Some(thread),
         })
@@ -266,6 +280,7 @@ impl Responder {
 impl Drop for Responder {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
+        let _ = self.poller.notify();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }

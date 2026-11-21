@@ -51,11 +51,14 @@ impl Phantoms {
                 return Err("invalid phantom machine identity".into());
             }
             list.push(Phantom {
+                peer_identity: session::PeerIdentity::new(&info.identity.gamertag),
+                peer_hint: None,
                 info: info.clone(),
                 source: std::sync::Arc::new(Mutex::new(Box::new(
                     crate::pad_source::Recorded::new(Vec::new()),
                 ))),
                 generation: 0,
+                source_reset_due: false,
                 made: *made,
                 buttons: buttons.restore()?,
                 uplink: action::Uplink::new(info.identity.xuid),
@@ -64,7 +67,9 @@ impl Phantoms {
                 waiting: None,
             });
         }
-        *self.lock() = Books {
+        let mut books = self.lock();
+        let maintenance = books.maintenance;
+        *books = Books {
             list,
             hosted_game: r.hosted_game,
             opening_fade: r.opening_fade,
@@ -78,6 +83,8 @@ impl Phantoms {
             // pending brain jobs or buffered plans to reinstate.
             thinker: Thinker::default(),
             batch: None,
+            lobby_membership: Default::default(),
+            maintenance,
         };
         Ok(())
     }

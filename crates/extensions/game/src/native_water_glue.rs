@@ -75,7 +75,7 @@ pub fn load<R: std::io::Read + std::io::Seek>(
     lightmaps: &HashMap<LightmapKey, native_render::gpu::Image>,
     images: &mut StageImages,
     decoder: &mut StageDecoder,
-) -> Arc<WaterData> {
+) -> WaterData {
     let mut passes: HashMap<u16, Vec<native_render::fog_gpu::FogPass>> = HashMap::new();
     let mut programs: HashMap<u16, Vec<FogProgram>> = HashMap::new();
     let mut words: HashMap<u16, FogWords> = HashMap::new();
@@ -167,7 +167,7 @@ pub fn load<R: std::io::Read + std::io::Seek>(
         .iter()
         .filter_map(|&(k, (_, _, _, m))| Some((k, shaders.get(usize::from(m))?.0 as u16)))
         .collect();
-    Arc::new(WaterData {
+    WaterData {
         passes,
         programs,
         words,
@@ -175,19 +175,17 @@ pub fn load<R: std::io::Read + std::io::Seek>(
         part_set,
         targets,
         samples_view,
-    })
+    }
 }
 
-/// Uploads the water set onto `gpu` (the world's `upload`, once its own
-/// is done).
+/// Builds the water resources on the BSP loader's device.
 pub fn upload_water(
     water: &WaterData,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    gpu: &mut native_render::gpu::GpuWorld,
     stage_image: &mut dyn FnMut(Stage) -> Option<native_render::gpu::Image>,
     lightmap_image: &mut dyn FnMut(LightmapKey) -> Option<native_render::gpu::Image>,
-) {
+) -> WaterSet {
     let mut programs = HashMap::new();
     for (&m, compiled) in &water.programs {
         if let Some(ps) = water.passes.get(&m) {
@@ -207,7 +205,7 @@ pub fn upload_water(
             water.samples_view
         );
     }
-    gpu.set_water(set);
+    set
 }
 
 struct Glue<B: d3d::backend::Backend + Send + 'static> {
@@ -222,7 +220,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             Arc::clone(current_ready(&state, mem)?)
         };
-        let water = ready.water.clone()?;
+        let (water, palettes) = ready.water.get()?;
         let Ok(mut d) = self.device.lock() else { return None };
         if !d.can_external_pass()
             || !d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).ok()?
@@ -231,7 +229,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         }
         let read = ReadMemory(mem);
         if !d.stencil_state(&read).is_some_and(|s| !s.enable)
-            || !palettes_hold(&ready.palettes, &|n| d.stage_palette(&read, n))
+            || !palettes_hold(palettes, &|n| d.stage_palette(&read, n))
         {
             return None;
         }
@@ -272,6 +270,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         if selected.is_empty() {
             return None;
         }
+        ready.with_pipeline_target(&d, mem, |gpu, device, color, depth| {
+            gpu.prewarm_water(device, color, depth).then_some(())
+        })?;
         // The view's water into the frame step's scene; the stage draws
         // the scene's copy. A view the scene cannot take stays on the D3D
         // path.
@@ -428,7 +429,7 @@ impl d3d::ExternalPass for WaterViewPass {
 
     fn prepare_copy(&mut self, t: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
         self.preflight(t.sampled, t.color, t.color_format, t.depth, t.size, t.device.features())?;
-        let guard = crate::native_world_glue::upload(&self.ready, t);
+        let guard = self.ready.gpu();
         let gpu = guard.as_ref().ok_or("world geometry unavailable")?;
         let set = gpu.water().ok_or("water materials unavailable")?;
         for &(owner, part) in &self.selected {
@@ -457,7 +458,7 @@ impl d3d::ExternalPass for WaterViewPass {
             Ok(inputs) => inputs,
             Err(why) => return Some(Err(why)),
         };
-        let mut guard = crate::native_world_glue::upload_on(&self.ready, &t.device, &t.queue);
+        let mut guard = self.ready.gpu();
         let Some(gpu) = guard.as_mut() else { return Some(Err("world geometry unavailable")) };
         Some(gpu.water_draws(&t.device, t.color_format, t.depth_format, t.size, &self.selected, &sampled, &view, &self.fogs))
     }
@@ -475,7 +476,7 @@ impl d3d::ExternalPass for WaterViewPass {
             Ok(inputs) => inputs,
             Err(why) => return Some(Err(why)),
         };
-        let mut guard = crate::native_world_glue::upload_on(&self.ready, &t.device, &t.queue);
+        let mut guard = self.ready.gpu();
         let Some(gpu) = guard.as_mut() else { return Some(Err("world geometry unavailable")) };
         Some(gpu.water_encoded(
             &t.device, &t.queue, &t.uploads, &t.color, t.color_format, &t.depth, t.depth_format,
@@ -493,7 +494,7 @@ impl d3d::ExternalPass for WaterViewPass {
             w_clip: self.w_clip,
         };
         let sampled: Vec<Option<wgpu::TextureView>> = t.sampled.iter().map(|s| s.as_ref().map(|s| s.view.clone())).collect();
-        let mut gpu = crate::native_world_glue::upload(&self.ready, &t);
+        let mut gpu = self.ready.gpu();
         let Some(gpu) = gpu.as_mut() else { return 0 };
         {
             let mut uploads = t.encoder_uploads();

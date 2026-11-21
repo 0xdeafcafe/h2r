@@ -1396,7 +1396,9 @@ impl<B: Backend> InterpBackend<B> {
         }
         if self.counting {
             self.stats.lock().unwrap().deferred += 1;
-            return Some(now + 1_000_000);
+            // Only report_pixel_count can close the query. The mailbox
+            // calls idle again after the batch containing that command.
+            return None;
         }
         if !self.schedule.is_due(now) {
             return self.schedule.deadline();
@@ -1802,6 +1804,10 @@ where
     fn commit_external(&mut self, recording: crate::ExternalRecording) {
         self.unpinned = true;
         self.inner.commit_external(recording);
+    }
+
+    fn upload_device(&self) -> Option<(wgpu::Device, wgpu::Queue)> {
+        self.inner.upload_device()
     }
 
     fn supports_external_pass(&self) -> bool {

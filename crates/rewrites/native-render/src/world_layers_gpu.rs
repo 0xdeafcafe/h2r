@@ -9,9 +9,9 @@ use d3d::backend::{
     ExternalAttachments, ExternalDraws, ExternalPass, ExternalPassRequest, ExternalTarget,
     ExternalWrites, PixelRect, ResolvedDraw,
 };
-use d3d::nv2a::{NativeDrawKey, NativeDrawMaterial};
+use d3d::nv2a::{NativeDrawKey, NativeDrawMaterial, NativeDrawShader};
 use gfx::compile::{Pending, PendingPipeline};
-use gfx::pipeline::{PipelineKey, ShaderId, ShaderProgram, TargetFormats, create_render_pipeline};
+use gfx::pipeline::{PipelineKey, ShaderId, TargetFormats};
 use gfx::program::{ProgramBindings, StageDims};
 use gfx::repack::{FetchMode, RepackPlan, StreamPlan};
 use gfx::state::{DepthBufferMode, StencilOp};
@@ -21,6 +21,7 @@ use gfx::{BoundGroup, RecordedDraw, ScissorRect};
 use gfx::vertex::PrimitiveType;
 use shaders::{psh::PixelUniforms, vsh::VertexUniforms};
 
+use crate::pipelines::{self, Pipelines};
 use crate::world_layers::{Geometry, Owner, Texaccum};
 
 const CACHE_BUDGET: u64 = 64 * 1024 * 1024;
@@ -38,8 +39,7 @@ impl Default for Cache {
 
 struct DeviceCache {
     bindings: ProgramBindings,
-    shaders: HashMap<NativeDrawKey, Option<Program>>,
-    pipelines: HashMap<PipelineKey, Arc<PendingPipeline>>,
+    shaders: HashMap<NativeDrawKey, Shader>,
     buffers: HashMap<BufferKey, (wgpu::Buffer, u64)>,
     buffer_bytes: u64,
     frame: u64,
@@ -47,10 +47,20 @@ struct DeviceCache {
     sections: HashMap<SectionKey, Vec<ResidentSection>>,
 }
 
+struct TranslatedShader {
+    linked: NativeDrawShader,
+    module: wgpu::ShaderModule,
+}
+
+enum Shader {
+    Translating { id: ShaderId, work: Arc<Pending<Option<TranslatedShader>>> },
+    Ready(Program),
+}
+
 #[derive(Clone)]
 struct Program {
     id: ShaderId,
-    shader: ShaderProgram,
+    pipelines: Pipelines,
     dims: StageDims,
     discards: bool,
 }
@@ -161,7 +171,6 @@ impl DeviceCache {
         Self {
             bindings: ProgramBindings::new(device),
             shaders: HashMap::new(),
-            pipelines: HashMap::new(),
             buffers: HashMap::new(),
             buffer_bytes: 0,
             frame: 0, scope: None, sections: HashMap::new(),
@@ -174,36 +183,42 @@ impl DeviceCache {
     ) -> Option<(Arc<NativeDrawMaterial>, Program)> {
         let program = Arc::new(NativeDrawMaterial::resolve(draw, present, caps, fetch).ok()?);
         let new_id = ShaderId(self.shaders.len().try_into().ok()?);
-        let shader = self
-            .shaders
-            .entry(program.key.clone())
-            .or_insert_with(|| {
-                let linked = program.key.translate().ok()?;
-                let module = gfx::program::validated_resource(device, || {
+        let shader = self.shaders.entry(program.key.clone()).or_insert_with_key(|key| {
+            let key = key.clone();
+            let device = device.clone();
+            let work = pipelines::background(move || {
+                let linked = key.translate().ok()?;
+                let module = gfx::program::validated_resource(&device, || {
                     device.create_shader_module(wgpu::ShaderModuleDescriptor {
                         label: Some("opaque indexed program"),
-                        source: wgpu::ShaderSource::Wgsl(linked.source.into()),
+                        source: wgpu::ShaderSource::Wgsl(linked.source.as_str().into()),
                     })
                 })?;
-                Some(Program {
-                    id: new_id,
-                    shader: self.bindings.program(device, module, linked.dims),
-                    dims: linked.dims,
-                    discards: linked.discards,
-                })
-            })
-            .clone()?;
-        Some((program, shader))
+                Some(TranslatedShader { linked, module })
+            });
+            Shader::Translating { id: new_id, work }
+        });
+        if let Shader::Translating { id, work } = shader {
+            let TranslatedShader { linked, module } = work.try_get()?.as_ref()?;
+            // These layouts must also own the texture and uniform bindings at draw time.
+            let bindings = self.bindings.program(device, module.clone(), linked.dims);
+            *shader = Shader::Ready(Program {
+                id: *id,
+                pipelines: Pipelines::new(device, &linked.source, bindings, "native opaque layer"),
+                dims: linked.dims,
+                discards: linked.discards,
+            });
+        }
+        let Shader::Ready(shader) = shader else { return None };
+        Some((program, shader.clone()))
     }
 
     fn upload_section(
         &mut self, target: &ExternalAttachments, draw: &Arc<ResolvedDraw>,
-        fetch: FetchMode, resident: bool,
+        fetch: FetchMode, repack: RepackPlan, resident: bool,
     ) -> Option<ResidentSection> {
         let indices = draw.indices.as_ref()?;
         if resident && indices.iter().any(|&index| index >= draw.vertex_count) { return None; }
-        let strides: Vec<_> = draw.streams.iter().map(|s| s.stride).collect();
-        let repack = RepackPlan::with_mode(&draw.layout, &strides, fetch);
         let mut streams = Vec::with_capacity(draw.streams.len());
         for (plan, stream) in repack.streams.iter().zip(&draw.streams) {
             if plan.identity {
@@ -275,6 +290,9 @@ pub struct IndexedPass {
     draw: Arc<ResolvedDraw>,
     cache: Arc<Cache>,
     frame: u64,
+    // Eligibility is fixed at guest extraction even if the render FIFO
+    // records the candidate after a later swap.
+    extracted_frame: u64,
     fetch: FetchMode,
     texaccum: Option<Texaccum>,
     texaccum_stages: [bool; 4],
@@ -322,6 +340,7 @@ impl IndexedPass {
             fetch: cache.fetch,
             cache,
             frame,
+            extracted_frame: timeline::frames(),
             section,
             texaccum,
             texaccum_stages: draw
@@ -434,6 +453,42 @@ impl IndexedPass {
         {
             return None;
         }
+        // An unresolved native variant leaves this exact indexed range on D3D.
+        // Check it before allocating streams, bind groups or submission uploads.
+        let mut new_repack = None;
+        let repack = match previous {
+            Some((key, i)) => &cache.sections[&key][i].repack,
+            None => {
+                let strides: Vec<_> = draw.streams.iter().map(|s| s.stride).collect();
+                new_repack.insert(RepackPlan::with_mode(&draw.layout, &strides, self.fetch))
+            }
+        };
+        let mut state = draw.state.render;
+        if program.writes_depth {
+            // The same offset is already in the translated W-depth uniforms.
+            state.solid_offset_enable = false;
+            state.wireframe_offset_enable = false;
+            state.point_offset_enable = false;
+        }
+        let pipeline_hit = cached_pipeline.is_some();
+        let (key, pipeline) = if let Some(cached) = cached_pipeline {
+            cached
+        } else {
+            let mut key = PipelineKey::from_plan(
+                shader.id,
+                repack,
+                draw.primitive,
+                &state,
+                formats,
+                caps,
+            );
+            if draw.primitive == PrimitiveType::TriangleStrip {
+                key.primitive.strip_index_format = Some(wgpu::IndexFormat::Uint32);
+            }
+            let pipeline = shader.pipelines.request(&target.device, &key);
+            (key, pipeline)
+        };
+        pipeline.visible_at_frame(self.extracted_frame)?.as_ref()?;
         let views = std::array::from_fn(|n| dims[n].and(target.stages[n].clone()));
         let cached_textures = previous.and_then(|(key, i)| cache.sections.get(&key)?[i].material.as_ref())
             .filter(|_| material_hit)
@@ -465,7 +520,7 @@ impl IndexedPass {
             }
             section
         } else {
-            fresh = cache.upload_section(target, draw, self.fetch, section_key.is_some())?;
+            fresh = cache.upload_section(target, draw, self.fetch, new_repack?, section_key.is_some())?;
             if let Some(key) = section_key {
                 let windows = cache.sections.entry(key).or_default();
                 // A streaming part can change every frame. Keep its working set
@@ -475,49 +530,17 @@ impl IndexedPass {
                 windows.last_mut()?
             } else { &mut fresh }
         };
-        let mut state = draw.state.render;
-        if program.writes_depth {
-            // The same offset is already in the translated W-depth uniforms.
-            state.solid_offset_enable = false;
-            state.wireframe_offset_enable = false;
-            state.point_offset_enable = false;
-        }
-        let pipeline_hit = cached_pipeline.is_some();
-        let (key, pipeline) = if let Some(cached) = cached_pipeline {
-            cached
-        } else {
-            let mut key = PipelineKey::from_plan(
-                shader.id,
-                &section.repack,
-                draw.primitive,
-                &state,
-                formats,
-                caps,
-            );
-            if draw.primitive == PrimitiveType::TriangleStrip {
-                key.primitive.strip_index_format = Some(wgpu::IndexFormat::Uint32);
+        if section_key.is_some() {
+            if !material_hit {
+                section.material = Some(ResidentMaterial {
+                    source: Arc::clone(draw), present, program: Arc::clone(&program),
+                    shader: shader.clone(), pipelines: HashMap::new(), groups: Vec::new(),
+                });
             }
-            let pipeline = cache
-                .pipelines
-                .entry(key.clone())
-                .or_insert_with(|| {
-                    Pending::ready(gfx::program::validated_resource(&target.device, || {
-                        create_render_pipeline(&target.device, &key, &shader.shader, "native opaque layer")
-                    }))
-                })
-                .clone();
-            if section_key.is_some() {
-                if !material_hit {
-                    section.material = Some(ResidentMaterial {
-                        source: Arc::clone(draw), present, program: Arc::clone(&program),
-                        shader: shader.clone(), pipelines: HashMap::new(), groups: Vec::new(),
-                    });
-                }
+            if !pipeline_hit {
                 section.material.as_mut()?.pipelines.insert(formats, (key.clone(), pipeline.clone()));
             }
-            (key, pipeline)
-        };
-        pipeline.get().as_ref()?;
+        }
         if section_key.is_some() && !bindings_hit {
             let groups = &mut section.material.as_mut()?.groups;
             if groups.len() == 2 { groups.remove(0); }

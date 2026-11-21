@@ -372,6 +372,11 @@ fn the_queue_puts_the_wanted_map_first_and_keeps_one_per_key() {
     assert_eq!(q.keys(), ["c", "b", "a"]);
     q.prioritise("nothing");
     assert_eq!(q.keys(), ["c", "b", "a"]);
+    q.push_for(scan().remove(0), Some(4));
+    q.push(scan().remove(0));
+    let active = q.jobs.back().unwrap();
+    assert_eq!(active.source.key(), "a");
+    assert_eq!(active.generation, Some(4), "a later hint keeps the active slot's job");
 }
 
 #[test]
@@ -471,9 +476,18 @@ fn the_worker_never_wants_scans_or_builds_the_menu_and_shared_maps() {
     let (w, h) = Worker::new(dir.clone(), scan_of(Arc::clone(&list), Arc::clone(&builds)));
     h.want("mainmenu");
     h.want("Shared");
-    assert!(h.0.wants.lock().unwrap().names.is_empty());
+    assert!(h.0.wants.lock().unwrap().maps.is_empty());
     h.want("lockout");
-    assert_eq!(h.0.wants.lock().unwrap().names, ["lockout"]);
+    let source = r"D:\maps\other-stem.map";
+    h.want_active("LOCKOUT", Some(source.to_owned()), 7);
+    h.want("lockout");
+    {
+        let wants = h.0.wants.lock().unwrap();
+        assert_eq!(wants.maps.len(), 1);
+        assert_eq!(wants.maps[0].name, "lockout");
+        assert_eq!(wants.maps[0].path.as_deref(), Some(source));
+        assert_eq!(wants.maps[0].generation, Some(7));
+    }
     // Even forced and of any kind (`h2 bots nav mainmenu --force`).
     let sum = w.force(true).any_kind(true).log(|_| {}).run();
     assert_eq!(*builds.lock().unwrap(), ["lockout"]);
@@ -567,20 +581,27 @@ fn a_wanted_map_installed_after_boot_is_built_while_the_worker_waits() {
 }
 
 #[test]
-fn the_workers_data_wins_over_a_file_read_as_the_map_loads() {
+fn only_results_for_the_current_visit_can_publish() {
     let mut l = Loaded::default();
     // Nothing loaded: nothing goes in.
-    assert!(!l.accept("lockout", true));
+    assert!(!l.accepts("lockout", 0));
     l.changed("lockout");
-    assert!(!l.accept("zanzibar", false));
-    assert!(!l.accept("zanzibar", true));
-    // The file first, then the worker's: both go in.
-    assert!(l.accept("lockout", false));
-    assert!(l.accept("Lockout", true));
-    // A file read late does not replace what the worker built.
-    assert!(!l.accept("lockout", false));
-    assert!(l.accept("lockout", true));
-    // The next map starts over.
+    let first = l.generation;
+    assert!(l.accepts("LOCKOUT", first));
+    assert!(!l.accepts("zanzibar", first));
     l.changed("zanzibar");
-    assert!(l.accept("zanzibar", false));
+    assert!(!l.accepts("lockout", first));
+    l.changed("lockout");
+    assert!(!l.accepts("lockout", first), "a late build/read from the first visit");
+    assert!(l.accepts("lockout", l.generation));
+}
+
+#[test]
+fn a_warm_file_must_match_the_active_slots_header() {
+    let first = Stamp::now(0x1234);
+    let bytes = data(1.0).to_bytes(first);
+    assert_eq!(decode_cached(&bytes, Some(first)).unwrap().1, first);
+    assert_eq!(decode_cached(&bytes, Some(Stamp::now(0x5678))).unwrap_err(), Status::OtherMap);
+    let expected = Stamp { generator: first.generator.wrapping_add(1), ..first };
+    assert_eq!(decode_cached(&bytes, Some(expected)).unwrap_err(), Status::OldGenerator(first.generator));
 }

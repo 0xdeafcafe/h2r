@@ -9,10 +9,11 @@ use std::collections::{HashMap, VecDeque};
 use std::ffi::c_void;
 use std::io;
 use std::ptr::NonNull;
+use std::sync::Arc;
 use std::time::Duration;
 
 use objc2_core_foundation::{
-    CFArray, CFDictionary, CFIndex, CFNumber, CFRetained, CFRunLoop, CFString,
+    CFArray, CFDictionary, CFIndex, CFNumber, CFRetained, CFRunLoop, CFRunLoopSource, CFRunLoopSourceContext, CFString,
     kCFRunLoopDefaultMode,
 };
 use objc2_io_kit::{
@@ -114,9 +115,27 @@ unsafe extern "C-unwind" fn report(
     inbox.push(HidEvent::Report(key(sender), r));
 }
 
+// A signalled source stays pending if shutdown races entry to run_in_mode.
+struct Wake {
+    run_loop: CFRetained<CFRunLoop>,
+    source: CFRetained<CFRunLoopSource>,
+}
+
+// SAFETY: these retained objects are used across threads only to signal
+// the source and wake its run loop. No HID callbacks or state cross threads.
+unsafe impl Send for Wake {}
+unsafe impl Sync for Wake {}
+
+impl Wake {
+    fn signal(&self) {
+        self.source.signal();
+        self.run_loop.wake_up();
+    }
+}
+
 struct Host {
     manager: CFRetained<IOHIDManager>,
-    run_loop: CFRetained<CFRunLoop>,
+    wake: Arc<Wake>,
     inbox: Box<Inbox>,
 }
 
@@ -141,6 +160,23 @@ pub(super) fn open() -> Option<Box<dyn super::SteamHid>> {
     );
     let run_loop = CFRunLoop::current()?;
     let mode = unsafe { kCFRunLoopDefaultMode }?;
+    unsafe extern "C-unwind" fn interrupted(_: *mut c_void) {}
+    // A version-zero source has no data to retain and only a perform callback.
+    let mut context = CFRunLoopSourceContext {
+        version: 0,
+        info: std::ptr::null_mut(),
+        retain: None,
+        release: None,
+        copyDescription: None,
+        equal: None,
+        hash: None,
+        schedule: None,
+        cancel: None,
+        perform: Some(interrupted),
+    };
+    // SAFETY: CF copies the version-zero context and its static function pointer.
+    let source = unsafe { CFRunLoopSource::new(None, 0, &mut context) }?;
+    run_loop.add_source(Some(&source), Some(mode));
     let mut inbox = Box::<Inbox>::default();
     let ctx = &mut *inbox as *mut Inbox as *mut c_void;
     // SAFETY: the matchers are dictionaries; `ctx` outlives the
@@ -154,7 +190,7 @@ pub(super) fn open() -> Option<Box<dyn super::SteamHid>> {
     }
     let host = Host {
         manager,
-        run_loop,
+        wake: Arc::new(Wake { run_loop, source }),
         inbox,
     };
     if host.manager.open(kIOHIDOptionsTypeNone) != kIOReturnSuccess {
@@ -173,6 +209,11 @@ impl super::SteamHid for Host {
             );
         }
         Ok(self.inbox.events.drain(..).collect())
+    }
+
+    fn wake_handle(&self) -> Option<Box<dyn Fn() + Send + Sync>> {
+        let wake = self.wake.clone();
+        Some(Box::new(move || wake.signal()))
     }
 
     /// hidapi's rule: report ID 0 means an unnumbered report, sent without
@@ -209,7 +250,8 @@ impl Drop for Host {
         // can reach the inbox.
         unsafe {
             if let Some(mode) = kCFRunLoopDefaultMode {
-                self.manager.unschedule_from_run_loop(&self.run_loop, mode);
+                self.manager.unschedule_from_run_loop(&self.wake.run_loop, mode);
+                self.wake.run_loop.remove_source(Some(&self.wake.source), Some(mode));
             }
         }
         self.manager.close(kIOHIDOptionsTypeNone);

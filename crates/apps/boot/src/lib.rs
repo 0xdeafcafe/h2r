@@ -623,7 +623,7 @@ fn run_configured(
     // Sim mode never builds them: a build on a thread is at the wall
     // clock's mercy (docs/runtime/sim.md §8).
     if let (true, Some(vfs), None) = (core.bots_on, k.vfs(), &sim_mode) {
-        bots_nav_auto::start(&opts.data_root, &opts.disc, vfs, level_name.clone(), host_light);
+        bots_nav_auto::start(&opts.data_root, vfs, level_name.clone());
     }
     if let Some(s) = &sim_mode {
         if !core.bots_on {
