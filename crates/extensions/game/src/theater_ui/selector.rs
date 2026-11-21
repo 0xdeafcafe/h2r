@@ -86,7 +86,7 @@ impl Filter {
     }
 }
 
-/// The three library options, in their order after the tab strip.
+/// The three options at the top of the library list.
 #[derive(Clone, Copy)]
 pub(super) enum OptionRow {
     Sort,
@@ -98,7 +98,7 @@ impl OptionRow {
     pub const ALL: [Self; 3] = [Self::Sort, Self::Map, Self::GameType];
 
     pub fn at(row: i16) -> Option<Self> {
-        let index = usize::try_from(row).ok()?.checked_sub(1)?;
+        let index = usize::try_from(row).ok()?;
         Self::ALL.get(index).copied()
     }
 
@@ -198,14 +198,14 @@ impl Entry {
         if let Some((_, title)) = &self.archive_clip
             && !title.trim().is_empty()
         {
-            return text_fit::line(title, 240);
+            return text_fit::line(title, text_fit::ROW);
         }
         let map = map_title(&self.film.map);
         let title = match self.film.game_type().filter(|s| !s.trim().is_empty()) {
             Some(kind) => format!("{map} / {kind}"),
             None => map,
         };
-        text_fit::line(&title, 240)
+        text_fit::line(&title, text_fit::ROW)
     }
 
     fn duration(&self) -> Option<String> {

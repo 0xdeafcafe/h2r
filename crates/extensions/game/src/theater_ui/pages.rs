@@ -28,24 +28,22 @@ const STATUS: u32 = 5;
 const ROWS: u32 = 8;
 const ROSTER: usize = 7;
 pub(super) const FILM_ROWS: usize = 40;
-pub(super) const BROWSE_ROWS: usize = 4;
-const MAX_ROWS: usize = FILM_ROWS + BROWSE_ROWS;
-const VALUES: u32 = ROWS + MAX_ROWS as u32;
-const DETAIL_ROWS: u32 = VALUES + MAX_ROWS as u32;
+pub(super) const BROWSE_ROWS: usize = OptionRow::ALL.len();
+const MAX_ROWS: usize = FILM_ROWS + BROWSE_ROWS + 1; // Also allow a retry row.
+const DETAIL_ROWS: u32 = ROWS + MAX_ROWS as u32;
 const TAB_PANEL: u32 = DETAIL_ROWS + 3;
-const PANEL: u32 = TAB_PANEL + 2 * Tab::ALL.len() as u32;
+const TAB_TEXTS: usize = 2 * Tab::ALL.len();
+const PANEL: u32 = TAB_PANEL + TAB_TEXTS as u32 + 2;
 const _: () = assert!(PANEL + crate::list_class::MAX_PANEL_TEXTS as u32 <= TEXTS.len);
 
-// The native settings skin supplies both text columns. Its first highlight
-// ends below the 207-unit level picture and its fifth clears the footer.
+// The single-column skin leaves the right half for the selected film.
 const FILMS_LAYOUT: ListLayout = ListLayout {
-    skin: crate::ui_kit::dialog::QUICK_LIST.skin,
-    anchor: [crate::ui_kit::dialog::QUICK_LIST.anchor[0], -64],
-    visible: 5,
-    bitmaps_left_of: i16::MIN,
+    anchor: [-262, 110],
+    visible: 13,
+    ..lobby::LIST
 };
 const LIST_PICTURE: PictureSpec = PictureSpec {
-    at: [52, 177],
+    at: [22, 149],
     ..lobby::PICTURE
 };
 const FILM_LAYOUT: ListLayout = ListLayout {
@@ -68,7 +66,7 @@ const FILM_PANEL_ART: [PictureSpec; 2] = [
     },
 ];
 const LIST_STATUS: TextBlock = TextBlock {
-    rect: [132, -248, -24, 36],
+    rect: [-62, -20, -184, 268],
     ..lobby::BODY
 };
 const FILM_STATUS: TextBlock = TextBlock {
@@ -102,7 +100,7 @@ impl Action {
 impl Theater {
     fn choose_film(&self, row: i16) -> Chosen {
         let mut state = self.state();
-        if row == 0 && state.library_error().is_some() {
+        if row == BROWSE_ROWS as i16 && state.library_error().is_some() {
             let (controller, player) = (state.controller, state.player.clone());
             drop(state);
             self.open(controller, player);
@@ -183,20 +181,16 @@ impl Theater {
 }
 
 fn entry_at(state: &super::State, row: i16) -> Option<Entry> {
-    let index = usize::try_from(row).ok()?.checked_sub(BROWSE_ROWS)?;
+    let controls = BROWSE_ROWS + usize::from(state.library_error().is_some());
+    let index = usize::try_from(row).ok()?.checked_sub(controls)?;
     state.entries().into_iter().nth(index)
 }
 
-// The lobby has two backings. The two remaining panel widgets are the
-// retail dialog corners. They stay in place even for an empty picture.
-fn panel_art(list: bool) -> [(PictureSpec, [u16; 2]); 4] {
+// The film's detail page frames its left-hand level picture.
+fn film_art() -> [(PictureSpec, [u16; 2]); 4] {
     use crate::ui_kit::dialog::{FRAME_CORNER_SIZE, FRAME_CORNERS, LARGE_SCREEN_ID};
 
-    let (backings, picture) = if list {
-        (lobby::ART, LIST_PICTURE)
-    } else {
-        (FILM_PANEL_ART, FILM_PICTURE)
-    };
+    let picture = FILM_PICTURE;
     let [left, top] = picture.at;
     let [width, height] = lobby::PICTURE_SIZE.map(|n| n as i16);
     let side = FRAME_CORNER_SIZE as i16;
@@ -214,29 +208,34 @@ fn panel_art(list: bool) -> [(PictureSpec, [u16; 2]); 4] {
         )
     };
     [
-        (backings[0], lobby::ART_SIZES[0]),
-        (backings[1], lobby::ART_SIZES[1]),
+        (FILM_PANEL_ART[0], lobby::ART_SIZES[0]),
+        (FILM_PANEL_ART[1], lobby::ART_SIZES[1]),
         corner(FRAME_CORNERS[0], [left, top]),
         corner(FRAME_CORNERS[1], [left + width - side, top - height + side]),
     ]
 }
 
 fn library_panel() -> Panel {
+    // Each tab has a bright and a muted text at the same position. The
+    // inactive text of each pair is hidden.
+    let mut texts: Vec<_> = (0..Tab::ALL.len())
+        .flat_map(|i| {
+            let left = -242 + 80 * i as i16;
+            let rect = [174, left, 152, left + 74];
+            [panel_cell(rect, false, false), panel_cell(rect, false, true)]
+        })
+        .collect();
+    texts.push(panel_cell([174, 22, 152, 268], true, true));
+    texts.push(panel_cell([140, -20, 20, 268], false, true));
     Panel {
-        art: panel_art(true).map(|(p, _)| p).to_vec(),
-        // Panel colours come from the tag at construction. Each tab has
-        // a bright and a muted widget, and only its current one is drawn.
-        texts: (0..Tab::ALL.len())
-            .flat_map(|i| {
-                let left = LIST_STATUS.rect[1] + 94 * i as i16;
-                let rect = [171, left, 149, left + 88];
-                [
-                    panel_cell(rect, false, false),
-                    panel_cell(rect, false, true),
-                ]
-            })
-            .collect(),
+        art: Vec::new(),
+        texts,
     }
+}
+
+fn library_count(state: &super::State, count: usize) -> String {
+    let noun = if state.tab == Tab::Clips { "clip" } else { "film" };
+    format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
 }
 
 fn empty_help(state: &super::State) -> String {
@@ -265,55 +264,29 @@ fn empty_help(state: &super::State) -> String {
 }
 
 fn films_model(state: &super::State, entries: &[Entry]) -> Vec<RowSpec> {
-    let noun = if state.tab == Tab::Clips {
-        "clip"
-    } else {
-        "film"
-    };
-    let count = entries.len();
-    let count = format!("{count} {noun}{}", if count == 1 { "" } else { "s" });
-    let error = state.library_error();
-    let mut library = if let Some(error) = error {
-        RowSpec::info("Retry library", &count)
-            .press(Press::Act)
-            .describe(&text_fit::paragraph(error, 280, 5))
-    } else {
-        let help = if state.tab == Tab::Clips {
-            state.clips_error.as_deref()
-        } else {
-            None
-        };
-        RowSpec::info("Film library", &count).describe(&help.map_or_else(
-            || "Use Left or Right to switch libraries.".into(),
-            |e| text_fit::paragraph(e, 280, 5),
-        ))
-    };
-    let mut tab_prompts = vec![Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Library")];
-    if error.is_some() {
-        tab_prompts.push(Prompt::new(&[Glyph::A], "Retry"));
-    }
-    tab_prompts.push(Prompt::new(&[Glyph::B], "Back"));
-    library.prompts = Some(tab_prompts);
-    let mut rows = vec![library];
+    let mut rows = Vec::with_capacity(BROWSE_ROWS + entries.len() + 1);
     rows.extend(OptionRow::ALL.map(|option| {
-        RowSpec::info(
-            option.label(),
-            &text_fit::line(option.current(&state.selector), 240),
-        )
-        .press(Press::Open(crate::ui_kit::picker::NAME.into()))
-        .describe(option.description())
+        let label = option.label();
+        let room = text_fit::ROW - text_fit::width(label) - text_fit::width(": ");
+        RowSpec::info(label, &text_fit::line(option.current(&state.selector), room))
+            .press(Press::Open(crate::ui_kit::picker::NAME.into()))
     }));
+    if let Some(error) = state.library_error() {
+        let mut retry = RowSpec::action("Retry library")
+            .describe(&text_fit::paragraph(error, 280, 5));
+        retry.prompts = Some(library_prompts("Retry"));
+        rows.push(retry);
+    }
     rows.extend(entries.iter().map(|entry| {
         let when = entry.recorded_time();
-        let value = if when.is_empty() {
-            entry.film.source_badge()
-        } else {
-            &when
-        };
-        let mut row = RowSpec::info(&entry.row_title(), value)
+        let mut details = entry.browse_description(state.player.as_deref());
+        if !when.is_empty() {
+            details.insert_str(0, &format!("{when}\n"));
+        }
+        let mut row = RowSpec::action(&entry.row_title())
             .press(Press::Open(DETAIL.into()))
-            .describe(&entry.browse_description(state.player.as_deref()));
-        row.prompts = Some(prompts("Details", false));
+            .describe(&details);
+        row.prompts = Some(library_prompts("Details"));
         row.art = level_picture(entry, LIST_PICTURE);
         row
     }));
@@ -352,6 +325,12 @@ fn prompts(action: &str, roster_pages: bool) -> Vec<Prompt> {
         prompts.push(Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Players"));
     }
     prompts
+}
+
+fn library_prompts(action: &str) -> Vec<Prompt> {
+    let mut footer = prompts(action, false);
+    footer.push(Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Library"));
+    footer
 }
 
 fn panel_cell(rect: [i16; 4], right: bool, data: bool) -> PanelText {
@@ -407,7 +386,7 @@ fn film_panel() -> Panel {
         true,
     ));
     Panel {
-        art: panel_art(false).map(|(p, _)| p).to_vec(),
+        art: film_art().map(|(p, _)| p).to_vec(),
         texts,
     }
 }
@@ -548,27 +527,24 @@ pub(super) fn spec(theater: &Theater, list: bool) -> ScreenSpec {
         )
     };
     let mut s = ScreenSpec::new(if list { FILMS } else { DETAIL }, &title);
+    let entries = if list { state.entries() } else { Vec::new() };
     s.rows = if list {
-        let entries = state.entries();
-        if entries.is_empty() {
-            s.help = Some(empty_help(&state));
-        }
         films_model(&state, &entries)
     } else {
         detail_model(&state)
     };
     s.footer = true;
-    s.style = if list {
-        ValueStyle::Setting
-    } else {
-        ValueStyle::Inline
-    };
+    s.style = ValueStyle::Inline;
     let roster_pages = !list
         && state
             .selected
             .as_ref()
             .is_some_and(|e| e.film.scoreboard().len() > ROSTER);
-    s.prompts = prompts("Select", roster_pages);
+    s.prompts = if list {
+        library_prompts("Select")
+    } else {
+        prompts("Select", roster_pages)
+    };
     s.inputs = vec![
         Input::A,
         Input::B,
@@ -579,10 +555,6 @@ pub(super) fn spec(theater: &Theater, list: bool) -> ScreenSpec {
     ];
     s.list = ListPlace::from(Some(if list { FILMS_LAYOUT } else { FILM_LAYOUT }));
     s.description = Some((if list { LIST_STATUS } else { FILM_STATUS }).into());
-    s.panel = panel_art(list)
-        .into_iter()
-        .map(|(p, size)| art(p, size))
-        .collect();
     if list {
         s.scrolls = true;
         let panel = library_panel();
@@ -591,16 +563,25 @@ pub(super) fn spec(theater: &Theater, list: bool) -> ScreenSpec {
             .iter()
             .enumerate()
             .map(|(i, cell)| {
-                let tab = Tab::ALL[i / 2];
-                let label = match (i % 2, state.tab == tab) {
-                    (0, true) => tab.label().to_uppercase(),
-                    (1, false) => tab.label().into(),
-                    _ => String::new(),
+                let text = if i < TAB_TEXTS {
+                    let tab = Tab::ALL[i / 2];
+                    match (i % 2, state.tab == tab) {
+                        (0, true) => tab.label().to_uppercase(),
+                        (1, false) => tab.label().into(),
+                        _ => String::new(),
+                    }
+                } else if i == TAB_TEXTS {
+                    library_count(&state, entries.len())
+                } else if entries.is_empty() {
+                    empty_help(&state)
+                } else {
+                    String::new()
                 };
-                pane_text(i, cell, label)
+                pane_text(i, cell, text)
             })
             .collect();
     } else {
+        s.panel = film_art().into_iter().map(|(p, size)| art(p, size)).collect();
         s.art.extend(
             state
                 .selected
@@ -727,21 +708,11 @@ impl Rows for ScreenRows {
 
     fn texts(&self, row: i16) -> Vec<(u32, u32)> {
         let index = row as usize;
-        let Some((label, value)) = self.with_spec(|s| s.rows.get(index).map(|r| r.cells(s.style)))
-        else {
+        let Some(label) = self.with_spec(|s| s.rows.get(index).map(|r| r.cells(s.style).0)) else {
             return Vec::new();
         };
         let slot = if self.list { ROWS } else { DETAIL_ROWS } + row as u32;
-        let mut cells = vec![(crate::ui::LABEL_SLOT, self.texts.set(slot, &label))];
-        if self.list {
-            // A recycled item widget still holds its last value.
-            cells.push((
-                crate::ui::VALUE_SLOT,
-                self.texts
-                    .set(VALUES + row as u32, value.as_deref().unwrap_or("")),
-            ));
-        }
-        cells
+        vec![(crate::ui::LABEL_SLOT, self.texts.set(slot, &label))]
     }
 
     fn press(&self, row: i16) -> Chosen {
@@ -757,12 +728,9 @@ impl Rows for ScreenRows {
         }
     }
 
-    fn sideways(&self, row: i16, right: bool) -> Option<String> {
+    fn sideways(&self, _row: i16, right: bool) -> Option<String> {
         let mut state = self.theater.state();
         if self.list {
-            if row != 0 {
-                return None;
-            }
             state.change_tab(right);
             let tab = state.tab;
             drop(state);
@@ -948,7 +916,7 @@ pub(super) fn install(registry: &mut hooks::Registry, theater: Theater) -> anyho
     let texts = Arc::new(GuestTexts::default());
     texts.set(FILMS_TITLE, "THEATER");
     texts.set(DETAIL_TITLE, "Film");
-    texts.set(FILMS_FOOTER, &footer_legend(&prompts("Select", false)));
+    texts.set(FILMS_FOOTER, &footer_legend(&library_prompts("Select")));
     texts.set(DETAIL_FOOTER, &footer_legend(&prompts("Select", false)));
     registry
         .add(&TextFeature(texts.clone()))
@@ -973,7 +941,7 @@ mod tests {
     use crate::theater_ui::adapter::FilmMeta;
 
     #[test]
-    fn guest_rows_write_each_label_value_and_footer_to_its_own_slot() {
+    fn guest_rows_write_each_label_and_footer_to_its_own_slot() {
         let theater = Theater::default();
         theater.state().load = Load::Ready(vec![FilmMeta {
             id: "sample".into(),
@@ -982,13 +950,9 @@ mod tests {
         }]);
         let texts = Arc::new(GuestTexts::default());
         let rows = ScreenRows::new(theater, texts.clone(), true);
-        let slots = [
-            (1, "Sort", "Newest"),
-            (2, "Map", "All"),
-            (3, "Game type", "All"),
-            (4, "Lockout", "Local film"),
-        ]
-        .map(|(row, label, value)| (rows.texts(row), label, value));
+        let slots = ["Sort: Newest", "Map: All", "Game type: All", "Lockout"]
+            .into_iter()
+            .enumerate();
 
         let string = |id: u32| {
             let values = texts.values.lock().unwrap();
@@ -997,24 +961,21 @@ mod tests {
                 .unwrap();
             std::str::from_utf8(bytes).unwrap().to_owned()
         };
-        for (cells, label, value) in slots {
-            let [(first, label_id), (second, value_id)] = cells.as_slice() else {
-                panic!("a settings row needs a label and a value");
+        for (row, label) in slots {
+            let cells = rows.texts(row as i16);
+            let [(slot, id)] = cells.as_slice() else {
+                panic!("the film browser uses one text per row");
             };
-            assert_eq!(
-                (*first, *second),
-                (crate::ui::LABEL_SLOT, crate::ui::VALUE_SLOT)
-            );
-            assert_eq!(string(*label_id), label);
-            assert_eq!(string(*value_id), value);
+            assert_eq!(*slot, crate::ui::LABEL_SLOT);
+            assert_eq!(string(*id), label);
         }
         assert_eq!(
-            string(rows.focused_footer(Some(1)).unwrap()),
-            "\u{e100} SELECT  \u{e101} BACK"
+            string(rows.focused_footer(Some(0)).unwrap()),
+            footer_legend(&library_prompts("Select"))
         );
         assert_eq!(
-            string(rows.focused_footer(Some(4)).unwrap()),
-            "\u{e100} DETAILS  \u{e101} BACK"
+            string(rows.focused_footer(Some(3)).unwrap()),
+            footer_legend(&library_prompts("Details"))
         );
     }
 }
