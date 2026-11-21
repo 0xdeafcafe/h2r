@@ -173,8 +173,7 @@ fn call_label(name: &str, params: &[String], result: &str) -> (String, Vec<[u32;
 }
 
 pub(crate) fn entry_signature(e: &Entry) -> (String, Vec<[u32; 2]>) {
-    let params: Vec<String> = e.args.iter().map(|t| t.name().to_string()).collect();
-    call_label(e.name, &params, e.result.map_or("", Ty::name))
+    call_label(caps::spelled(e), &caps::params(e), e.result.map_or("", Ty::name))
 }
 
 pub(crate) fn lang_signature(l: &Lang) -> (String, Vec<[u32; 2]>) {
