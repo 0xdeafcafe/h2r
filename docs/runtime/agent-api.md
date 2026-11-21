@@ -48,6 +48,7 @@ connection to hold `session.claim`.
 | `profile.sample.start`, `profile.sample.stop` | act | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.status` | read | [`profile`](#profile-where-a-frame-goes) |
 | `render.frame`, `render.stats` | read | [`render`](#render-the-frame-and-the-pipeline) |
+| `render.marks` | read | [`render.marks`](#rendermarks) |
 | `render.frame_layout` | read | [Display raster and texture coordinates](#renderframe_layout) |
 | `render.capture_clip`, `render.capture_clip.status` | act, read | [Headless display clips](#rendercapture_clip) |
 | `render.coop_look` | read | [`render`](#render-the-frame-and-the-pipeline) |
@@ -1161,6 +1162,40 @@ sequence retains the requested rate.
 
 The state is in `crates/extensions/agent/src/render/clip.rs`. The GPU
 writer is in `crates/extensions/game/src/d3d_glue/clip_png.rs`.
+
+### `render.marks`
+
+`render.marks` (no params) reads where the window drew the world marks
+([Drawing world-space lines over the frame](#drawing-world-space-lines-over-the-frame))
+on its last 32 presents. The first call arms the window's probe and
+returns `armed: false` with no presents. Unarmed, the window pays one
+atomic load a present. Each later call returns `armed: true` and
+`presents`, oldest first. Each present has:
+
+- `seq`, counting the window's draws since the probe was armed;
+- `age_ms`, how long ago the window drew it;
+- `frame`: `guest` (a genuine image), `synthetic` (an in-between frame
+  at 60 or 120 fps), `no_world_view`, `raw` or `loading`;
+- `fraction`: a synthetic frame's blend fraction, 0 the frame before and
+  1 the newest; null otherwise or without marks;
+- `shifted`: the synthetic frame drew some view with another camera than
+  its marks' image, and the marks were moved onto it
+  ([high-framerate.md](../game/high-framerate.md), "World marks on made frames");
+- `anchors`: the first 16 mark groups' anchors in window pixels through
+  the first view's camera, null where off screen or behind it; empty
+  without marks.
+
+A headless host has no window and returns no presents. To check that
+marks stay on the world at 60 fps, turn at a steady rate with a mark in
+view and read twice: an anchor's `x` steps by a similar amount on every
+present, genuine and synthetic alike
+(`crates/platform/gfx/src/world_lines/probe.rs`,
+`crates/apps/app/src/shell.rs`, `crates/extensions/game/src/world_lines.rs`).
+
+```sh
+h2 agent render.marks
+h2 agent render.marks | jq '.presents[] | [.frame, .fraction, .shifted, .anchors[0]]'
+```
 
 ### `render.coop_look`
 
@@ -2631,11 +2666,12 @@ a genuine image with at least one shape from the current set and a
 usable camera. Individual edges still depend on clipping. `drawn: false`
 gives a reason such as a headless host, native rendering or scene
 capture being off, a loading picture, a raw submission, an unusable
-world camera, or waiting for a render with the set. Frozen marks may
-still be visible on synthetic interpolation frames. They use the
-preceding genuine source image's projection, or the current source's
-at the endpoint, if that source carries the current lease's marks
-(`crates/platform/d3d/src/interp/backend.rs`,
+world camera, or waiting for a render with the set. Marks are also
+drawn on in-between frames (60 and 120 fps), from the source image's
+samples if it carries the current lease's marks, with the camera the
+frame drew each view with
+([high-framerate.md](../game/high-framerate.md), "World marks on made frames";
+`crates/platform/d3d/src/interp/marks.rs`,
 `crates/apps/cli/src/play_cmd.rs`, `crates/apps/app/src/shell.rs`).
 
 A shell pause or paused Theater playback blocks the guest loop, so
@@ -2671,7 +2707,10 @@ how it is drawn; the default is a thin opaque line. A style has:
   from its end, in world units from the camera;
 - optional `chevrons`, small arrowheads lying flat in the world along
   each edge and pointing along a world direction. They flow along
-  the direction when their speed is not zero;
+  the direction when their speed is not zero, moved by the window's
+  clock at each present;
+- `stroke`, on by default: off leaves only the chevrons, ribbon and
+  label along the edges, with no line;
 - an optional floor `ribbon`, a translucent strip of a world width
   along each edge, clipped at the near plane;
 - a `label_face`: the 8x8 debug font (`Debug`, the default), or the
@@ -2687,10 +2726,18 @@ it is one pipeline and one draw per frame
 (`crates/apps/app/src/overlay/marks.rs`). A label's opacity is the
 style's `alpha` times its fade and pulse.
 
+A sample is captured once a guest frame, so motion within it belongs
+in the style (pulse, chevron speed), which the window runs at every
+present; geometry built from a capture-time clock steps at the tick
+rate at 60 and 120 fps.
+
 Genuine guest images captured with samples carry their own per-view
 cameras and aspect factors. Repeated scanout keeps the same samples
-and cameras. Synthetic images hold the preceding genuine source's
-projection, or the current source's at the endpoint. The window draws
+and cameras. An in-between frame draws the samples of the newest
+genuine image, or of the one before while a blended replay is under
+half way, with each view's camera moved onto the one the frame drew
+the world with ([high-framerate.md](../game/high-framerate.md), "World
+marks on made frames"). The window draws
 all visible samples together in a 2D pass over the finished frame.
 There is no depth test, so hidden edges draw at full strength
 (`crates/platform/d3d/src/present_camera.rs`,

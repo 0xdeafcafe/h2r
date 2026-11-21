@@ -7,6 +7,8 @@ use std::time::Instant;
 
 use smallvec::SmallVec;
 
+pub mod probe;
+
 /// One group of world-space edges with a shared style and label anchor.
 pub struct WorldLine<'a> {
     pub edges: &'a [[[f32; 3]; 2]],
@@ -78,6 +80,10 @@ pub struct LineStyle {
     pub fade: Option<Fade>,
     pub chevrons: Option<Chevrons>,
     pub ribbon: Option<Ribbon>,
+    /// Draw the edges themselves (the default). Off leaves only what the
+    /// style adds along them (chevrons, ribbon) and the label: arrowheads
+    /// that flow along a run with no line under them.
+    pub stroke: bool,
     /// Size of one font pixel of the label (1 is the 8x8 font as is).
     pub label_scale: f32,
     /// Centre the label on its anchor, with a drop shadow, and scale it
@@ -111,6 +117,7 @@ impl Default for LineStyle {
             fade: None,
             chevrons: None,
             ribbon: None,
+            stroke: true,
             label_scale: 1.0,
             label_centered: false,
             label_face: LabelFace::Debug,

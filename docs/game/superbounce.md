@@ -743,7 +743,8 @@ by its row.
 
 Priming moves step 1 to 2, a bounce spot within 8 m moves 2 to 3, a
 bounce landing or 20 s moves 3 to 4, and a bounce or 15 s closes 4
-(`hud_kit_core::huds::superbounce::Tutorial`). A training text of the
+(`hud_kit_core::huds::superbounce::Tutorial`), in game seconds: 600 and
+450 ticks at any frame rate. A training text of the
 game's own takes the box while it shows. Closing the last step sets the
 `superbounce.tutorial_seen` setting; setting it back to false
 (`h2 settings set superbounce.tutorial_seen false`) shows the steps again

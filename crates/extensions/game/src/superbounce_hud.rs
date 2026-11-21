@@ -14,7 +14,6 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Instant;
 
 use engine::memory::{GuestMemory, MemFault};
 use engine::points;
@@ -34,6 +33,16 @@ use crate::superbounce_mode::{self as mode, METRES_PER_UNIT, ScanState, State};
 
 /// The feature's id.
 pub const FEATURE: &str = "superbounce-hud";
+
+/// Game ticks a second.
+const TICKS_PER_SECOND: f64 = 30.0;
+
+/// The tutorial's clock after `ticks` of the HUD's: game seconds, so a
+/// step's time limit is the same at every frame rate and runs slow with
+/// the game below 30 fps.
+pub fn tutorial_seconds(ticks: u64) -> f64 {
+    ticks as f64 / TICKS_PER_SECOND
+}
 
 /// The HUD's [`View`] of the mode's state `s`, with the tutorial at step
 /// `tutorial`.
@@ -332,7 +341,8 @@ struct Hud {
     /// A landing older than the HUD's first tick is not a bounce of the
     /// tutorial's.
     started: bool,
-    start: Instant,
+    /// Ticks the HUD has seen: the tutorial's clock ([`tutorial_seconds`]).
+    ticks: u64,
     settings: Option<Arc<settings::Store>>,
     sent: Sent,
     /// The arming bar, tick to tick.
@@ -345,6 +355,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl Hud {
     fn tick(&mut self) {
+        self.ticks += 1;
         let Some(s) = mode::hud_state() else {
             LOCKED.store(false, Ordering::Relaxed);
             self.lost = None;
@@ -359,7 +370,7 @@ impl Hud {
             self.handle.notify(user, &text);
         }
         self.lost = mode::lost(&s).or(self.lost);
-        let now = self.start.elapsed().as_secs_f64();
+        let now = tutorial_seconds(self.ticks);
         let mut w = watch(&s, self.seen_tick);
         if !self.started {
             self.started = true;
@@ -475,7 +486,7 @@ pub fn install(
         lost: None,
         seen_tick: None,
         started: false,
-        start: Instant::now(),
+        ticks: 0,
         settings,
         sent: Sent::default(),
         arm: ArmTrack::default(),

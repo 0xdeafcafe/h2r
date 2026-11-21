@@ -1228,6 +1228,9 @@ fn run_configured(
         ui_stack::install(&a.agent, core.ui_navigation);
         // profile.faults: the fault census (agent_glue.rs).
         agent_glue::add_runtime_methods(&a.agent, &loaded.runtime);
+        // render.marks: where the window drew the world marks (world_lines.rs).
+        #[cfg(feature = "gpu")]
+        world_lines::add_marks_method(&a.agent);
         // sim.give and sim.spawn find tags as edit.* does (agent_glue.rs).
         if let Some(sim) = &a.sim {
             sim.set_tags(Box::new(hot_glue::map_tags(&loaded.runtime, maps())));
