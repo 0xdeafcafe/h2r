@@ -29,8 +29,10 @@ Two ways to have an editor to talk to:
 - **Headless.** `h2-editor --serve [--socket PATH] [--data DIR] [--map
   file.map | --disc iso ...]` runs the same API with no window and no GPU
   session. Every start-up flag still applies (`--map`, `--pick`,
-  `--hopper`, ...), so a run can begin with a map open. It runs until
-  killed.
+  `--hopper`, ...), so a run can begin with a map open. Between requests
+  it runs the game link as the window does between frames, so it pairs,
+  auto-pairs with the one game running, and answers `pair.*` and
+  `mirror.*`. It runs until killed.
 
 The socket is `--socket`, else `$H2_STUDIO`, else `studio.sock` in the
 game's cache directory beside `agent.sock`. The editor accepts local AF_UNIX
@@ -78,8 +80,13 @@ What goes through actions, from both sides:
 | Move and turn a placement | `MovePlacement` (one step); `GestureSet {position, ypr}`, `GestureScale`, `EndGesture` (a drag: one step, a multi-selection riding along) | the viewport gizmo dispatches the gesture actions every frame of a drag | `scenario.move` |
 | Add, duplicate, delete | `Add`, `DuplicateEntry`, `DeleteEntry` | outliner, toolbar, keys | `scenario.add`, `.duplicate`, `.delete`, `tag.block.*` |
 | Select, frame | `Select`, `FocusSelected`, `FrameAll` | Scene, viewport, keys | `scenario.select`, `view.camera` |
+| Select a trigger volume | `SelectVolume` (clears the placements; selecting a placement clears it), `FocusSelected` | a click on a box the viewport shows, the Scene tab's Volumes group, the inspector's Frame | `volume.select {index?, focus?}` |
+| Move, turn and resize a trigger volume | `SetVolumeFrame {index, frame, merge}` (one step, or one per merge run); `VolumeGesture(frame)`, `EndGesture` (a gizmo drag: one step) | the viewport gizmo (move, turn, and scale along each axis), the inspector's centre, size and facing | `volume.set` |
+| Select a level collision surface | `SelectSurface` (clears the placements and the volume), `FocusSelected` | a click on a surface a collision layer shows when nothing else is under the cursor | `collision.select {index?, focus?}`, `collision.at {..., select: true}` |
+| Add a trigger volume, make a kill volume, remove either | `AddVolume {frame, kill}` (with `kill`, the volume and a kill trigger naming it in one step), `RemoveVolume(kind, index)`; `Delete` on a selected volume | the Scene tab's Volumes menu, the inspector's Delete and a kill trigger's Remove, the Delete key | `volume.add`, `volume.remove` |
 | Set fly speed | `SetFlySpeed` | viewport toolbar, wheel while flying | `view.camera {fly_speed}` |
 | Show or hide viewport layers | `SetLayers`, `SetOverlay` | Show popover, Scene legend, View > Halo 1 overlay | `view.layers` |
+| Choose what the level is drawn with | `SetLighting` | the toolbar's Lighting menu | `view.lighting` |
 | Navigate tag fields | `Navigate` | inspector links and breadcrumbs | `nav.go`, `nav.back`, `nav.forward` |
 | Undo, redo | `Undo`, `Redo` (the tool shown), `UndoIn(tool)`, `RedoIn(tool)` | Edit menu, keys | `doc.undo`, `doc.redo` |
 | Save | `Save`, `SaveMapAs`, `SaveVariant`, `SaveHopper(As)`, `ExportVariant` | File menu, shortcuts, prompt | `doc.save`, `doc.save_as` |
@@ -91,7 +98,7 @@ What goes through actions, from both sides:
 | Playtest settings | `play::pair::Bridge` | Game menu and Game tab spawn picker | `pair.settings {spawn?, pause_while_editing?}` |
 | Live selection | `play::select` | click a live object, Aim select in the bar or Game menu | `mirror.pick`, `mirror.aim_select` |
 | Shared camera and player moves | `play::presence` | viewport camera menu, T and Shift+T | `mirror.camera`, `mirror.player` |
-| Game link | `play::pair::Request` | game link bar, Game menu and Game panel | `pair.connect`, `pair.disconnect`, `pair.auto`, `pair.play`, `pair.stop`, `pair.control`, `pair.edit` |
+| Game link | `play::pair::Request` | game link bar, Game menu and Game panel | `pair.connect`, `pair.disconnect`, `pair.auto`, `pair.play`, `pair.stop`, `pair.control`, `mirror.control`, `pair.edit` |
 
 The playlist fields apply their `PlaylistEdit`s inside the frame's
 `HopperSession::edit_with`, so a typing run stays one undo step (merged
@@ -171,6 +178,8 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `doc` | `list`, `open {map \| path \| package \| variant \| playlists}`, `save`, `save_as {path}`, `diff`, `undo`, `redo`, `close` |
 | `tag` | `list {group, name, query, path, limit, homes}`, `browse {map}`, `resources {tag}`, `export {tag, out, dependencies, resources}`, `import {path, tag, skip_missing}`, `read {tag, depth, elements, hex}`, `fields {tag, path?}`, `tree {root?, depth?}`, `refs {tag, limit?}`, `follow {tag, ref}`, `set {tag, path, value}`, `block.add`, `block.remove`, `block.duplicate` |
 | `scenario` | `blocks`, `list {block}`, `get`, `set {block, index, field, value}`, `add {block, like, position}`, `move {block, index, position, ypr}`, `delete`, `duplicate`, `select` |
+| `volume` | `list {kind?}` (short form `volumes [kind]`), `select {index?, focus?}`, `set {index, origin?, center?, forward?, up?, size?}`, `add {kill?, center?, origin?, forward?, up?, size?}`, `remove {kind?, index}` |
+| `collision` | `surfaces {class?, bsp?, offset?, limit?}`, `at {origin, dir}` or `at {point, within?}` (with `select?`), `select {index?, focus?}`, `objects {block?, index?}` |
 | `variant` | `list`, `get`, `set {setting, value}`, `rename`, `copy`, `export`, `import`, `delete` |
 | `playlist` | `list` (with `unused` per playlist and the `templates`), `get {playlist}`, `set {playlist, title, description, template, clear}` (`template`: make the slot a playlist of that kind, or give a playlist another kind; `clear: true`: make it unused; [live-matchmaking.md §6.10](../live/live-matchmaking.md)), `entry {playlist, op, entry, to, weight}`, `entry_variant` |
 | `ui` | `palette {query, run?}`, `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}` |
@@ -253,7 +262,8 @@ Notes on some:
   `nav.go {"panel":"pending"}` opens the Pending tab. These are also the
   target forms returned for placement and panel issues. `nav.status`,
   `nav.back` and `nav.forward` take no params. All `nav.*` methods
-  return `{selected, tag, path, breadcrumbs, can_back, can_forward}`.
+  return `{selected, volume, tag, path, breadcrumbs, can_back, can_forward}`.
+  `volume` is the selected trigger volume's index, or null.
   `selected` is a placement `{block,index}`, a tag `{tag}` or null.
   `tag` and `path` identify the focused tag and field, or are null.
   Breadcrumbs begin with the placement when selected, followed by tags
@@ -293,10 +303,11 @@ Notes on some:
   open one (`matches`: `same`, `different`, `unknown`) and whether the
   editor is `paired` with it; a socket nothing answers on is removed from
   the agents directory. It works headless. `pair.status`, `pair.connect`
-  and `pair.disconnect` act on the window's pairing (`api/pair.rs`, through
-  `play::pair::Bridge` on the app), so they answer REFUSED with no window,
-  and `pair.connect` answers before the window has paired: poll
-  `pair.status` for `state: "connected"`. `pair.connect` with no `socket`
+  and `pair.disconnect` act on the editor's pairing (`api/pair.rs`, through
+  `play::pair::Bridge` on the app). The window runs it each frame and
+  `h2-editor --serve` between requests (`Api::serve_once`); an `Api` with
+  neither answers REFUSED. `pair.connect` answers before the editor has
+  paired: poll `pair.status` for `state: "connected"`. `pair.connect` with no `socket`
   takes the one game running, and is refused with none or several.
   `pair.auto {enabled}` reads or sets auto-pair, on by default.
   The `link` object in `pair.status` contains `state`, the pill's
@@ -333,8 +344,8 @@ Notes on some:
   `step` as `action`. Step requires a paused game and accepts `ticks`
   from 1 to 600 (default 1). `pair.edit {enabled}` sets the Edit switch
   on the pairing. A game that is already running pairs in View mode.
-  Play starts its own game in Edit mode. The four calls need the window,
-  queue a request on it and return `{"requested":true}`. Read
+  Play starts its own game in Edit mode. The four calls need the window
+  or `--serve`, queue a request on the pairing and return `{"requested":true}`. Read
   `pair.status` for the result in a later frame. A call that needs a
   game, an open map or a pause returns `REFUSED` when that requirement
   is missing. The pill's **Open** action uses the normal map selection
@@ -374,8 +385,9 @@ Notes on some:
   waits for an outstanding batch, reverts the journal, and disconnects on
   acknowledgement. Omitting `leave` opens the prompt in the window. Both `edit.set` and
   `edit.revert` enforce the same game-side session check as `edit.batch`.
-- **Live mirror.** The paired window reads the game's `objects` and
-  `players` stream. `mirror.status` reports the stream state, layers,
+- **Live mirror.** The paired editor reads the game's `objects`,
+  `players` and `camera` stream. `mirror.status.stream.refused.camera`
+  says why a game has no camera layer. `mirror.status` reports the stream state, layers,
   frame rate, presentation delay, dropped and skipped counts, and the
   store's latest, earliest retained and shown ticks. `mirror.objects`
   returns `{tick, objects, truncated}` for the viewport sample.
@@ -414,10 +426,18 @@ Notes on some:
   indices. A failed clear retries at the renewal interval. The game plate
   shows the largest link issue count, or `Aim select` when aim selection
   is on and the count is zero.
-- **Shared camera.** `mirror.camera {mode?,target?}` returns `{mode,target}`.
+- **Shared camera.** `mirror.camera {mode?,target?,view?}` returns
+  `{mode,target}`, with `view` in game mode.
   `free` releases the editor viewport, `follow` keeps the eye's orbit offset
-  as the local player moves, and `eyes` looks along the player's aim from
-  eye height. An explicit `player.<index>` keeps the camera on that local
+  as the local player moves, `eyes` looks along the player's aim from
+  eye height, and `game` takes a game view's camera from the `camera`
+  layer exactly (eye, basis with roll, vertical field of view, near and
+  far; the editor viewport's aspect). `view` names one as
+  `<kind>:<player>:<view>` (`game:0:0`, `first_person:0:0`); without it the
+  first `game` view is taken. A stream without the layer, a view the game
+  did not draw or a `target` in game mode is refused. Leaving game mode
+  keeps the eye and restores the editor's field of view. Every mode but
+  `game` draws each game view's frustum. An explicit `player.<index>` keeps the camera on that local
   player across samples. While its unit is missing, the viewport holds its
   pose and resumes following when the unit returns. A map change or unpair
   releases the camera. The free camera reports null. The viewport toolbar
@@ -429,6 +449,12 @@ Notes on some:
   permission or game method returns `REFUSED`, as does a pending reload or
   a playtest transition. The control worker checks the latest exact sample
   for the expected epoch and salted unit immediately before the game call.
+- **Mirror controls.** `mirror.control {op, ticks?}` pauses, steps or
+  resumes the paired game as `pair.control` does (`op` is `pause`,
+  `resume` or `step`; `ticks` 1 to 600) and returns
+  `{requested, tick}`, `tick` being the store's latest game tick before
+  the request. Each step sends one frame per tick, so after a step of `n`
+  ticks `mirror.status.store.tick` is `tick + n`.
 - **Viewport layers.** `view.layers {}` returns `{layers, xray}`. Each layer
   has a stable `name` for calls, a display `label`, a `group`, the visibility
   switch `on`, a `count` and its legend `color` (RGB, each channel 0 to 1).
@@ -444,6 +470,68 @@ Notes on some:
   respectively. Each uses its matching placement block switch as well.
   Turn off `markers` to hide annotations, including the flag-type and
   equipment respawn labels. The Art preset keeps equipment models visible.
+  The Volumes rows are `trigger_volumes`, `kill_volumes` and
+  `bsp_switches`. Every trigger volume is in the first; the other two
+  count the distinct volumes a kill trigger or a BSP switch names. The
+  Gameplay preset shows all three and the Collision preset shows
+  `kill_volumes`.
+- **Trigger volumes.** `volume.list {}` returns `{volumes, kill_triggers,
+  bsp_switches, selected, error}`. Each volume has its `index` in the
+  scenario's trigger volume block, `name` (the string ID's text, or null),
+  `label`, `kinds` (what it is drawn as, most specific first: `kill`,
+  `bsp_switch`, `trigger`), the box as `origin` (a corner), `forward`,
+  `up` and full `size` along forward, left and up, its `center`,
+  `parent` (an object name index, or null) and `world`, and `named_by`:
+  `[{kind: "kill", index}]` and `[{kind: "bsp_switch", index, from, to}]`.
+  A volume with a parent object has `world: false` and a null `center`:
+  its frame is relative to an object only a running game places, so the
+  viewport does not draw or pick it. `{"kind": "kill"}` keeps the
+  volumes with that kind. `error` says why the volume blocks did not read;
+  the placements still open. `volume.select {"index": 1, "focus": true}`
+  selects a volume, clears the placements and frames the box;
+  `volume.select {}` clears it.
+- **Editing volumes.** `volume.set {index, ...}` gives a trigger volume a
+  new box as one undo step and returns its `volume` row: `forward`, `up`
+  and `size` over its own (forward and up are made unit and square),
+  then the corner `origin`, or the `center` (its own centre when neither
+  is given, so a resize or turn keeps it). `volume.add {}` adds a 2-unit
+  cube at the camera focus (or the box the same fields give) and selects
+  it; `{"kill": true}` also adds a kill trigger naming it, in the same
+  undo step, and returns `{index, kill_trigger, volume}`. Adding past a
+  block's source size is refused (`REFUSED`, with `{kind, count,
+  capacity}`) while growth is off, as `scenario.add` is.
+  `volume.remove {index}` removes a trigger volume (the last one takes its
+  slot, and the kill triggers and BSP switches that named it follow);
+  `{"kind": "kill", "index": 0}` removes a kill trigger. A volume a kill
+  trigger or BSP switch names is refused with a message naming them and
+  `{named_by}`; so is a volume the map came with when it has compiled
+  scripts, which name volumes by index. BSP switches are read only. The
+  three blocks are the editor's own list (`scenario_edit::volumes::VolumeBlock`),
+  not `map::scenario_layout` blocks, so `scenario.*` does not list them.
+- **Level collision.** `collision.surfaces` lists every surface of each
+  structure BSP's collision BSP (`scenario_edit::collision_view`) with
+  its plane (`[nx, ny, nz, d]`, the flip bit applied), raw `flags`
+  (`breakable` is bit 3; the other bits are not named), material, ring
+  and `class`: `collision_only` when no drawn triangle of the structure
+  or its instances lies on its plane (within 0.01 units, the normal
+  within about five degrees either way) over it, else `drawn`, with the
+  share `covered`. `{"class": "collision_only"}` lists the invisible
+  walls; `offset` and `limit` (200) page the list, `matching` counts it,
+  and `errors` names a BSP whose collision did not read.
+  `collision.at {origin, dir}` returns the first surface a ray meets and
+  `{point}` the one a point lies on (within `within`, 0.05 units), each
+  whatever layers are shown; `select` selects it. `collision.select
+  {index, focus}` selects a surface and frames it. Instanced geometry's
+  collision is in the same list, placed in the world, with the
+  placement's index as `instance` (`null` for the structure's own).
+  `collision.objects` lists each placed object tag's model, `coll` and
+  `phmo` (`models`), and every shape a placement places (`shapes`: a
+  `coll` BSP or a `phmo` sphere, pill, box or polyhedron, with the `hlmt`
+  node it is posed by, its centre and radius in world space); `block` and
+  `index` keep one placement's. Read only: the barrier edits change
+  collision. The four collision layers (Level collision, Collision only,
+  Instance collision, Object collision) start hidden; the Collision and
+  Everything presets show them.
 - **Renders.** `ui.render` draws on the CPU (no GPU needed); `view.snapshot`
   renders the open map offscreen through the viewport's own renderer
   (wgpu, no window) and answers `NO_GPU` on a machine without an adapter.
@@ -456,8 +544,30 @@ Notes on some:
   `emissive`, `base`, `details`), the `sky` drawn and the `atmosphere`
   read from it (`sun` direction, colour and power; `fog` colour, density,
   start and opaque distance; `fallback_rgb`). `{"scene": false}` while
-  the viewport shows the grey world (no art built). What each field means
-  is in [editor.md](editor.md), "What the viewport shows". To check a
+  the viewport shows the grey world (no art built). `native` is the
+  level on the native renderer (`scenario_edit::native_view`): the
+  `lighting` mode, each BSP's `bsp`, `draws`, `batches`, `materials`,
+  `lightmap_pages`, `untextured` (draws left out for a missing picture),
+  `failed_sections` and `lightmap_error`, its world `layers` (null
+  when not read from the map: `unresolved`, the world materials that
+  did not resolve by cause with how many, and `by_layer`, for each of
+  layers 1, 5, 7, 8 and 20 the `layer`, the materials whose passes
+  `compiled`, those `drawn` and their `parts`, and every other
+  material's cause with how many, `refused`, as `cause: detail`:
+  `program` for the load's refusals, such as a view constant the camera
+  does not give, then the plan's causes, `animated`, `fog`, and for
+  layer 1 `layer 1: stencil mode not checked against the game`; they draw
+  in the `game` mode only), the `errors` of BSPs that
+  did not load, and the placed `objects`: how many object tags have a
+  native model (`models`), how many placements draw one (`placed`), and
+  each tag left to the scene's model with why (`errors`, `tag` and
+  `error`). What each field means is in [editor.md](editor.md),
+  "What the viewport shows".
+- **Lighting.** `view.lighting {}` returns `{mode, modes}`;
+  `view.lighting {"mode":"flat"}` sets it for the window and
+  `view.snapshot`: `game` (base map times lightmap), `flat` (no
+  lightmap), `lightmap` (the lightmap on white), `collision` (flat at a
+  third). Another mode is `INVALID_PARAMS`. To check a
   map: `h2 studio open mainmenu`, `h2 studio render-stats`, then
   `h2 studio snapshot` and look at the PNG.
 
@@ -618,7 +728,7 @@ identical profiles.
   example), `Api::call` (shape check, providers, built-ins),
   `Api::pump` (the window's between-frames answer).
 - `api/server.rs`: the socket. `api/{docs,scenario,tags,variants,playlists,ui_screens,view}.rs`:
-  the namespaces. `api/seams.rs`: providers; `api/tag_fields.rs`,
+  the namespaces (`volume.*` is in `api/scenario.rs`, `collision.*` in `api/collision.rs`). `api/seams.rs`: providers; `api/tag_fields.rs`,
   `api/tag_io.rs` and `api/hud.rs` the Tags and HUD tools'.
 - `app/commands.rs`: the actions added for the API and the window
   (`SetField`, `EditSelection`, `MovePlacement`, `EditPlaylist`,
@@ -658,6 +768,28 @@ system temp directory):
 - a registered provider answers a planned method;
 - `view.layers` validates changes atomically, shares the Halo 1 menu switch,
   and changes the invented map’s snapshot pixels on a machine with a GPU;
+- `volume.list` reads the invented map's two volumes, kill trigger and BSP
+  switch, `volume.select` replaces the placements and frames the box, and
+  the volume layers count the boxes and change the snapshot's pixels
+  (`api::tests::volume_list_and_select_read_the_invented_volumes`); a
+  click in the headless window selects a volume and brings its Scene row
+  into view (`headless::tests::a_click_on_a_volume_selects_it`);
+- `volume.set` moves, resizes and turns a box as one undo step each,
+  `volume.remove` refuses the kill box naming its kill trigger and takes
+  the kill trigger first, and `volume.add` with `kill` adds both entries
+  and undoes as one step
+  (`api::tests::volume_set_add_and_remove_edit_through_the_command_layer`);
+- `collision.surfaces` reads the invented structure BSP's room, all
+  collision only as nothing draws it, filtered and paged;
+  `collision.at` finds the far wall by ray and by point with the layers
+  hidden and selects it in place of the placements; `collision.select`
+  frames a surface; the collision layers start hidden and count the
+  surfaces (`api::tests::collision_surfaces_and_at_report_the_invented_rooms_walls`);
+- `collision.surfaces` places the invented instance's quad and
+  `collision.at` finds it; `collision.objects` places the invented
+  scenery's `coll` cube on its second node and its `phmo` sphere on the
+  root, and the layers count them
+  (`api::tests::collision_objects_and_instances_report_the_invented_shapes`);
 - `view.stats` of an invented scene reports its BSP's lighting, its
   triangles by blend, its materials and its sky's sun and fog
   (`api::view::tests`);

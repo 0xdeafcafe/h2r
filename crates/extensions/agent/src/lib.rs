@@ -28,6 +28,8 @@
 //!   world's call, bail and decode counters.
 //! * [`havok`] answers `havok.bodies` and `havok.contacts`: the Havok
 //!   world's rigid bodies and contact points ([`Agent::add_game_method`]).
+//! * [`firefight`] answers `firefight.*` over the game's Firefight
+//!   runtime, which the game registers as a [`firefight::Source`].
 //! * [`raw`] answers `world.raw`: an object's body, physics component,
 //!   Havok entity, motion and shape as raw bytes. `world.poke` writes
 //!   bounded byte ranges within those parts.
@@ -57,6 +59,7 @@ pub mod compare;
 pub mod debug_views;
 pub mod editor;
 mod exec;
+pub mod firefight;
 pub mod forge;
 pub mod havok;
 pub mod hostpads;
@@ -69,6 +72,7 @@ mod memory;
 pub mod menu;
 pub mod net;
 mod outputs;
+pub mod probe;
 pub mod raw;
 mod reader;
 pub mod render;
@@ -84,6 +88,7 @@ pub use exec::{
     Access, Agent, ConnId, DEFER_TICKS_MAX, GameCtx, GameMethod, HostMethod, Later, LobbyTape,
     Page, SnapshotMachine, Snapshots, TICK_STALE, query,
 };
+pub use live::CameraSource;
 pub use loads::{LoadTracker, TimelineTotals, TotalsSource};
 pub use reader::{
     GameStatus, GuestReader, Reader, TagNames, actor_object, machine_object, name_tags,

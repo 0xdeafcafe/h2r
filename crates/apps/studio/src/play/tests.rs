@@ -28,8 +28,19 @@ pub(super) fn editor(t: &Temp) -> App {
 }
 
 pub(super) fn paired(tag: &str, map: &str, kind: SessionKind) -> (Temp, Game, App, Play) {
+    paired_with(tag, map, kind, |_| {})
+}
+
+/// [`paired`], with the game set up (a scene source) before the editor subscribes.
+pub(super) fn paired_with(
+    tag: &str,
+    map: &str,
+    kind: SessionKind,
+    setup: impl FnOnce(&Game),
+) -> (Temp, Game, App, Play) {
     let t = Temp::new(tag);
     let game = Game::start(tag, map, kind);
+    setup(&game);
     let mut app = editor(&t);
     let mut play = Play::new();
     play.pair(&mut app, Endpoint::Unix(game.path.clone()));
@@ -84,7 +95,7 @@ fn map_identity_tracks_the_frame_epoch_and_the_loaded_file() {
     let t = Temp::new("map-identity");
     let mut app = editor(&t);
     let sample = live_mirror::Sample {
-        tick: 100, epoch: 2, stale: false, objects: Vec::new(), players: Vec::new()
+        tick: 100, epoch: 2, stale: false, objects: Vec::new(), players: Vec::new(), cameras: Vec::new()
     };
     let checksum = app.session.source_checksum().unwrap();
     app.pairing.stream_map = json!({"name": "example", "epoch": 1, "checksum": checksum});
@@ -245,7 +256,11 @@ fn reloading_a_play_copy_uses_the_layout_at_save_time() {
     assert!(app.session.redo());
     assert!(app.session.redo());
     play.push_edits(&mut app);
-    assert!(app.pairing.pending.is_empty());
+    // The object rows for the old layout leave on the next object pass, as
+    // every frame runs one.
+    until(&mut play, &mut app, "nothing pending in the copy's layout", |_, a| {
+        a.pairing.pending.is_empty()
+    });
     assert!(game.calls("edit.batch").is_empty());
     play.apply_edits(&mut app, Apply::Send).unwrap();
     app.session

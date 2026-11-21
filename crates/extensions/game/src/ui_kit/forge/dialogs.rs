@@ -1,4 +1,4 @@
-use super::{Hud, MENU, PALETTE, PROPERTIES};
+use super::{Hud, LINK, MENU, PALETTE, PROPERTIES};
 use crate::ui_kit::{
     dialog::{DialogBase, DialogSpec},
     input::{Glyph, Input, Prompt},
@@ -23,6 +23,8 @@ pub enum Action {
     Save,
     SaveAs,
     Load(String),
+    /// Remove the link the dialog shows.
+    Unlink,
 }
 
 #[derive(Clone, Debug)]
@@ -45,6 +47,10 @@ enum Parent {
     },
     Menu {
         saves: Vec<String>,
+    },
+    /// A link's ends and what it writes, as (label, value) rows.
+    Link {
+        rows: Vec<(String, String)>,
     },
 }
 
@@ -102,6 +108,15 @@ impl Dialogs {
         }
     }
 
+    /// A link's rows, then **Remove link**.
+    pub fn link(rows: Vec<(String, String)>) -> Self {
+        Self {
+            parent: Parent::Link { rows },
+            focus: 0,
+            picker_focus: None,
+        }
+    }
+
     pub fn menu(saves: Vec<String>) -> Self {
         Self {
             parent: Parent::Menu { saves },
@@ -121,6 +136,7 @@ impl Dialogs {
             (Parent::Properties { .. }, Some(_)) => ANGLE_STEPS.len(),
             (Parent::Menu { .. }, None) => 3,
             (Parent::Menu { saves }, Some(_)) => saves.len(),
+            (Parent::Link { rows }, _) => rows.len() + 1,
         }
     }
 
@@ -168,6 +184,8 @@ impl Dialogs {
                 Effect::Changed
             }
             (Parent::Menu { saves }, Some(_)) => Effect::Action(Action::Load(saves[index].clone())),
+            (Parent::Link { rows }, _) if index == rows.len() => Effect::Action(Action::Unlink),
+            (Parent::Link { .. }, _) => Effect::Ignored,
         }
     }
 
@@ -264,6 +282,27 @@ impl Dialogs {
                 s.dialog.as_mut().expect("a dialog").body = text_fit::line(object, 460);
                 s
             }
+            Parent::Link { rows: info } => {
+                let mut list: Vec<_> = info
+                    .iter()
+                    .map(|(label, value)| RowSpec::info(label, &text_fit::line(value, 300)))
+                    .collect();
+                list.push(RowSpec::action("Remove link"));
+                let visible = list.len() as i16;
+                let mut s = rows(LINK, "LINK", list, self.focus, DialogBase::Large);
+                s.list = ListPlace::Moved {
+                    skin: 2,
+                    anchor: [-253, 0],
+                    bitmaps_left_of: i16::MIN,
+                    visible,
+                };
+                s.style = ValueStyle::Setting;
+                // Only Remove link takes A; an info row offers only Back.
+                if self.focus < info.len() {
+                    s.prompts.retain(|p| !p.glyphs.contains(&Glyph::A));
+                }
+                s
+            }
             Parent::Menu { .. } => rows(
                 MENU,
                 "FORGE",
@@ -315,6 +354,7 @@ impl Dialogs {
                 "Choose how far each turn rotates the object.",
                 "",
             ),
+            Parent::Link { .. } => return parent,
             Parent::Menu { saves } => choices(
                 "forge.load",
                 "LOAD",

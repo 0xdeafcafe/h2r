@@ -92,6 +92,65 @@ fn a_once_per_pull_gun_is_pulled_again_and_again() {
 }
 
 #[test]
+fn a_shotgun_only_fires_at_clear_targets_inside_its_projectile_reach() {
+    use crate::cache::MapData;
+    use crate::los::Walls;
+
+    let mut arms = holding(Trigger::Automatic, rounds(6, 24));
+    let held = arms.held.as_mut().unwrap();
+    held.profile.pellets = 15;
+    held.profile.cone_range = 15.0;
+    held.profile.damage_reach = 3.0;
+    let me = bot(Some(arms));
+    let wall = MapData {
+        walls: Walls::new(vec![[[1.0, -10.0, -5.0], [1.0, 10.0, -5.0], [1.0, 0.0, 10.0]]]),
+        ..Default::default()
+    };
+
+    for (distance, map, expect_fire) in [
+        (6.0, None, false),
+        (2.0, Some(&wall), false),
+        (2.0, None, true),
+    ] {
+        let mut mind = Mind::new(Skill::Legendary, 3);
+        let mut fires = false;
+        for tick in 0..60 {
+            let p = Perception {
+                me: Some(me),
+                others: vec![enemy(1, [distance, 0.0, 0.0])],
+                tick,
+                ..Default::default()
+            };
+            fires |= mind.step(&p, map).right_trigger > 0.0;
+        }
+        assert_eq!(
+            fires, expect_fire,
+            "distance {distance}, wall {}",
+            map.is_some()
+        );
+    }
+}
+
+#[test]
+fn dual_wielding_checks_the_range_of_each_gun() {
+    let mut arms = holding(Trigger::Automatic, rounds(36, 108));
+    let mut left = arms.held.unwrap();
+    left.profile.damage_reach = 3.0;
+    arms.left = Some(left);
+    let me = bot(Some(arms));
+    for (distance, expect_left) in [(6.0, false), (2.0, true)] {
+        let mut mind = Mind::new(Skill::Legendary, 3);
+        let mut fired = [false; 2];
+        for tick in 0..60 {
+            let pad = step(&mut mind, me, vec![enemy(1, [distance, 0.0, 0.0])], false, tick);
+            fired[0] |= pad.right_trigger > 0.0;
+            fired[1] |= pad.left_trigger > 0.0;
+        }
+        assert_eq!(fired, [true, expect_left]);
+    }
+}
+
+#[test]
 fn it_never_fires_an_empty_magazine() {
     let mut m = Mind::new(Skill::Legendary, 3);
     let me = bot(Some(holding(Trigger::Automatic, rounds(0, 40))));

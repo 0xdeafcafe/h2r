@@ -21,7 +21,7 @@
 //! An option, off by default: without it [`slot`] answers `None` and the
 //! sink records nothing.
 
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 
 use engine::memory::GuestMemory;
@@ -35,6 +35,15 @@ pub const ID: &str = "frame-scene.sink";
 /// `0x004ba050`).
 const VIEW_RECORD_INDEX: u32 = 4;
 
+// Frame-end and overlay hooks may run before Swap. Keep a game-view entry
+// until the original present, including views without any carried packets.
+static GAME_VIEW: AtomicBool = AtomicBool::new(false);
+
+/// Consume the game-view entry observed since the last original Swap.
+pub fn take_present_game_view() -> bool {
+    GAME_VIEW.swap(false, Ordering::Relaxed)
+}
+
 /// [`OFF`], or the current slot as `slot << 8 | view`.
 static AT: AtomicU16 = AtomicU16::new(OFF);
 const OFF: u16 = u16::MAX;
@@ -45,6 +54,8 @@ static DRAIN: Mutex<Option<Arc<dyn Drain>>> = Mutex::new(None);
 /// is decoded and handed to the backend under the slot it was written in.
 pub trait Drain: Send + Sync {
     fn drain(&self, mem: &mut dyn GuestMemory);
+    /// Observe map residency at game-view entry after the prior slot drained.
+    fn game_view(&self) {}
 }
 
 /// Registers the device's [`Drain`] (the host's D3D install).
@@ -78,6 +89,7 @@ fn at_entry(mem: &mut dyn GuestMemory, event: SlotEvent) {
     let drain = DRAIN.lock().unwrap_or_else(|e| e.into_inner()).clone();
     if let Some(d) = drain {
         d.drain(mem);
+        if matches!(event, SlotEvent::GameView(_)) { d.game_view(); }
     }
     on(event);
 }
@@ -88,16 +100,19 @@ pub fn on(event: SlotEvent) {
         return;
     }
     let mut t = TRACKER.lock().unwrap_or_else(|e| e.into_inner());
+    if matches!(event, SlotEvent::GameView(_)) { GAME_VIEW.store(true, Ordering::Relaxed); }
     t.on(event);
     AT.store(pack(t.at()), Ordering::Relaxed);
 }
 
 /// A snapshot load: the frame starts again outside every view.
 pub fn forget() {
+    GAME_VIEW.store(false, Ordering::Relaxed);
     on(SlotEvent::Frame);
 }
 
 fn arm() {
+    GAME_VIEW.store(false, Ordering::Relaxed);
     *TRACKER.lock().unwrap_or_else(|e| e.into_inner()) = SlotTracker::new();
     AT.store(pack(SlotAt::default()), Ordering::Relaxed);
 }

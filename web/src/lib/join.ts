@@ -1,8 +1,7 @@
 // Links carry only the selected Live server and its advertised session ID.
 import { seats, type Session } from "./sessions";
 
-export function joinHref(server: string, session: string): string | null {
-  if (session.length !== 16 || !/^[0-9a-f]{16}$/.test(session)) return null;
+export function linkServer(server: string): string | null {
   // Match the native parser before URL normalizes an empty authority, userinfo,
   // dot segment, or other spelling that the link protocol rejects.
   const parts = /^https?:\/\/([^/]+)(?:\/([A-Za-z0-9._~/-]*))?$/i.exec(server);
@@ -10,7 +9,13 @@ export function joinHref(server: string, session: string): string | null {
     || parts[2]?.split("/").some((s) => s === "." || s === "..")) return null;
   let base: URL;
   try { base = new URL(server); } catch { return null; }
-  const query = new URLSearchParams({ server: base.href.replace(/\/+$/, ""), session });
+  return base.href.replace(/\/+$/, "");
+}
+
+export function joinHref(server: string, session: string): string | null {
+  const base = linkServer(server);
+  if (!base || session.length !== 16 || !/^[0-9a-f]{16}$/.test(session)) return null;
+  const query = new URLSearchParams({ server: base, session });
   const link = `h2recomp://join?${query}`;
   return link.length <= 4096 ? link : null;
 }

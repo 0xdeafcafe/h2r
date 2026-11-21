@@ -279,6 +279,10 @@ pub(crate) fn register_core_film(
         features, i.settings.clone(), telemetry.clone(), custom_maps, sources.as_deref(),
     )
         .context("installing our skulls")?;
+    // Firefight on a kit map (docs/game/firefight.md, "The host runtime"):
+    // off unless H2_FEATURES names `firefight`. A film replays the host's
+    // entries.
+    crate::firefight::feature::install(features, film.is_some()).context("installing Firefight")?;
     for effect in [
         &crate::h1_particle_physics::H1ParticlePhysics as &dyn hooks::Feature,
         &crate::h1_flag::H1Flag,
@@ -330,6 +334,10 @@ pub(crate) fn register_core_film(
     // (docs/game/superbounce.md): idle unless the variant or
     // H2_SUPERBOUNCE asks for it.
     crate::superbounce_mode::install(features).context("installing the superbounce mode")?;
+    // Hold X while falling to steer onto a bounce strip
+    // (docs/game/superbounce.md, "Hold X: the fall assist"). Its input tap
+    // goes in with the XAPI input taps (register_late).
+    crate::superbounce_assist::install(features).context("installing the superbounce assist")?;
     // Bots (docs/game/bots.md): phantom peers in a session this console
     // hosts. Idle with none.
     let playing_film = film.is_some();
@@ -466,6 +474,10 @@ pub(crate) fn register_late_for_profile(
     } else {
         None
     };
+    // The superbounce fall assist's input tap (superbounce_assist.rs): under
+    // the agent's tap, over a recording's or replay's, so a recording logs the
+    // pad the guest got and a replay overwrites it.
+    crate::superbounce_assist::install_tap(xa);
     // H2_AGENT=<socket>: the agent API (agent_glue.rs, docs/runtime/agent-api.md).
     let agent = match i.agent {
         // Over TCP (the Xbox app) a refused port must not stop the game:

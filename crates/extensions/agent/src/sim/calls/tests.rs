@@ -1366,13 +1366,13 @@ fn a_forge_spawn_preserves_roll_and_rechecks_the_session_before_entering_the_gue
         w.g.put_u32(guest_layout::global::SCENARIO.base, loaded);
         let (out, calls, _) = one(
             w,
-            Call::ForgeSpawn {
+            Call::Forge {
                 guard: Guard {
                     scenario,
                     generation,
                     admitted: |_, generation| generation == 3,
                 },
-                placements: vec![(0xa100_0001, frame)],
+                steps: vec![ForgeStep::Make { tag: 0xa100_0001, frame }],
             },
             |c, m| {
                 assert_eq!((generation, loaded), (3, scenario));
@@ -1416,9 +1416,9 @@ fn a_forge_batch_releases_its_own_objects_when_a_later_placement_fails() {
     let mut created = 0;
     let (out, calls, _) = one(
         w,
-        Call::ForgeSpawn {
+        Call::Forge {
             guard,
-            placements: vec![(0xa100_0001, ::forge::Frame::default()); 3],
+            steps: vec![ForgeStep::Make { tag: 0xa100_0001, frame: ::forge::Frame::default() }; 3],
         },
         |c, _| {
             if c.target == addr::OBJECT_NEW {
@@ -1439,4 +1439,188 @@ fn a_forge_batch_releases_its_own_objects_when_a_later_placement_fails() {
         .map(|c| c.args[0])
         .collect();
     assert_eq!(deleted, [0x1000_0002, 0x1000_0001]);
+}
+
+#[test]
+fn a_forge_channel_writes_only_a_teleporter_flag_identifier() {
+    let scenario = 0x8100_0000;
+    let flags = 0x8200_0000;
+    // Flag 1's identifier is the low half of the word at +0x14; the high
+    // half belongs to the next field and must survive.
+    for (kind, flag, written) in [(7, 1, true), (8, 1, true), (2, 1, false), (7, 2, false)] {
+        let mut w = world();
+        w.g.put_u32(guest_layout::global::SCENARIO.base, scenario)
+            .put_u32(scenario + 0x118, 2)
+            .put_u32(scenario + 0x11c, flags)
+            .put_u32(flags + 0x30, kind)
+            .put_u32(flags + 0x34, 0xabcd_0003);
+        let guard = crate::forge::local::Guard { scenario, generation: 0, admitted: |_, _| true };
+        let (out, calls, g) = one(
+            w,
+            Call::Forge { guard, steps: vec![ForgeStep::Channel { flag, channel: 9 }] },
+            |_, _| Regs::default(),
+        );
+        assert!(calls.is_empty());
+        if written {
+            assert_eq!(out.unwrap()["handles"], json!([]));
+            assert_eq!(g.u32(flags + 0x34).unwrap(), 0xabcd_0009);
+        } else {
+            let message = out.unwrap_err().message;
+            assert!(message.contains("not a teleporter") || message.contains("no netgame flag 2"), "{message}");
+            assert_eq!(g.u32(flags + 0x34).unwrap(), 0xabcd_0003);
+        }
+    }
+}
+
+/// The vehicle fixture inside an admitted local Forge session.
+fn forge_vehicle() -> (World, ObjectId, crate::forge::local::Guard) {
+    let (mut w, id) = vehicle();
+    let scenario = 0x8100_0000;
+    w.g.put_u32(guest_layout::global::SCENARIO.base, scenario);
+    let guard = crate::forge::local::Guard { scenario, generation: 0, admitted: |_, _| true };
+    (w, id, guard)
+}
+
+#[test]
+fn a_forge_move_and_delete_are_the_world_object_calls_on_the_live_object() {
+    let frame = ::forge::Frame { position: [2.0, 3.0, 4.0], rotation: [std::f32::consts::FRAC_PI_2, 0.0, 0.0] };
+    let (w, id, guard) = forge_vehicle();
+    let target = ForgeTarget::Live(id);
+    let (out, calls, _) = one(
+        w,
+        Call::Forge { guard, steps: vec![ForgeStep::Move { target, frame }] },
+        |c, m| {
+            assert_eq!(c.target, addr::OBJECT_SET_POSITION);
+            assert_eq!(c.args, [id.key, 0, 0]);
+            assert_eq!(vec3(m, c.eax.unwrap()), frame.position);
+            let forward = vec3(m, c.ecx.unwrap());
+            assert!(forward[0].abs() < 1e-5 && (forward[1] - 1.0).abs() < 1e-5);
+            assert_eq!(vec3(m, c.edx.unwrap()), [0.0, 0.0, 1.0]);
+            al(0)
+        },
+    );
+    assert_eq!(calls.len(), 1);
+    assert_eq!(out.unwrap()["handles"], json!([]));
+
+    let (w, id, guard) = forge_vehicle();
+    let (out, calls, _) = one(
+        w,
+        Call::Forge { guard, steps: vec![ForgeStep::Delete { target: ForgeTarget::Live(id) }] },
+        |_, _| al(0),
+    );
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].target, addr::OBJECT_DELETE);
+    assert_eq!(calls[0].args, [id.key]);
+    assert_eq!(out.unwrap()["handles"], json!([]));
+}
+
+#[test]
+fn a_forge_restore_makes_its_object_before_the_batch_deletes() {
+    let (w, id, guard) = forge_vehicle();
+    let frame = ::forge::Frame { position: [1.0; 3], ..Default::default() };
+    let (out, calls, _) = one(
+        w,
+        Call::Forge {
+            guard,
+            steps: vec![
+                ForgeStep::Delete { target: ForgeTarget::Live(id) },
+                ForgeStep::Make { tag: 0xa100_0001, frame },
+            ],
+        },
+        |c, _| if c.target == addr::OBJECT_NEW { al(0x1000_0007) } else { al(0) },
+    );
+    let targets: Vec<_> = calls.iter().map(|c| c.target).collect();
+    assert_eq!(targets, [addr::PLACEMENT_NEW, addr::OBJECT_NEW, addr::OBJECT_DELETE]);
+    assert_eq!(calls[2].args, [id.key]);
+    assert_eq!(out.unwrap()["handles"], json!([0x1000_0007]));
+}
+
+#[test]
+fn a_stale_forge_object_is_a_named_refusal_before_any_guest_call() {
+    let frame = ::forge::Frame::default();
+    let cases: [fn(ObjectId) -> Vec<ForgeStep>; 2] = [
+        |stale| vec![ForgeStep::Move { target: ForgeTarget::Live(stale), frame: ::forge::Frame::default() }],
+        |stale| vec![
+            ForgeStep::Make { tag: 0xa100_0001, frame: ::forge::Frame::default() },
+            ForgeStep::Delete { target: ForgeTarget::Live(stale) },
+        ],
+    ];
+    for steps in cases {
+        let (w, id, guard) = forge_vehicle();
+        let stale = ObjectId { key: id.key ^ (1 << 16), ..id };
+        let (out, calls, _) = one(w, Call::Forge { guard, steps: steps(stale) }, |_, _| {
+            panic!("a stale Forge object reached the game")
+        });
+        assert!(calls.is_empty());
+        let error = out.unwrap_err();
+        assert_eq!(error.code, REFUSED);
+        assert!(error.message.starts_with(crate::forge::local::OBJECT_GONE), "{}", error.message);
+        assert!(error.message.contains(&stale.to_string()));
+    }
+    let (w, id, guard) = forge_vehicle();
+    let wrong = ObjectId { kind: agent_proto::Kind::Crate, ..id };
+    let (out, calls, _) = one(
+        w,
+        Call::Forge { guard, steps: vec![ForgeStep::Move { target: ForgeTarget::Live(wrong), frame }] },
+        |_, _| panic!("a Forge object of another kind reached the game"),
+    );
+    assert!(calls.is_empty());
+    assert!(out.unwrap_err().message.starts_with(crate::forge::local::OBJECT_GONE));
+}
+
+#[test]
+fn probe_animation_uses_the_units_graph_and_resolves_the_engine_selection() {
+    use engine::tags::{GroupTag, TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL};
+    let mut w = world();
+    let tag = 0x45670000;
+    let group = GroupTag::from_chars(*b"jmad").0;
+    w.g.put_u16(
+        UNIT_BODY + live_telemetry::layout::OBJECT_ANIMATION_MANAGER,
+        0x200,
+    )
+    .put_u32(
+        UNIT_BODY + 0x200 + live_telemetry::layout::MANAGER_GRAPH,
+        tag,
+    )
+    .put_u32(TAG_INDEX_GLOBAL, 0x6000)
+    .put_u32(TAG_ENTRIES_GLOBAL, 0x7000)
+    .put_u32(0x6000, 0x8000)
+    .put_u32(0x6004, 1)
+    .put_u32(0x6018, 1)
+    .put_u32(0x7000, group)
+    .put_u32(0x7004, tag)
+    .put_u32(0x7008, 0x9000)
+    .put_u32(0x8000, group)
+    .put_u32(0xa000, 77)
+    .put_u16(0xa014, 31);
+    let unit = w.unit;
+    let (out, calls, _) = one(
+        w,
+        Call::Animation {
+            unit,
+            path: [1, 2, 3, 4],
+            overlay: true,
+        },
+        |call, m| match call.target {
+            0x1dbc80 => {
+                assert_eq!(call.eax, Some(4));
+                assert_eq!(&call.args[..5], &[0x9000, SCRATCH, 1, 2, 3]);
+                for (i, value) in [0x0003ffff, 1, 2, 3].into_iter().enumerate() {
+                    m.set_u32(SCRATCH + 4 * i as u32, value).unwrap();
+                }
+                al(SCRATCH)
+            }
+            0x1daea0 => {
+                assert_eq!(call.edx, Some(0x9000));
+                al(0xa000)
+            }
+            _ => panic!("unexpected guest call"),
+        },
+    );
+    assert_eq!(calls.len(), 2);
+    let out = out.unwrap();
+    assert_eq!(out["index"], 3);
+    assert_eq!(out["frames"], 31);
+    assert_eq!(out["animation"], 77);
+    assert_eq!(out["selected"], json!([1, 2, 3]));
 }

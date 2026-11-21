@@ -1,21 +1,25 @@
 //! Forced-crouch spots: places on walkable floor where the standing
-//! capsule hits the geometry and the crouched one doesn't
+//! capsule hits the geometry and the crouched one doesn't, wide and long
+//! enough to stand in, reachable on foot, best near a bounce strip
 //! (docs/game/superbounce.md, "Spots in the geometry", "Crouch").
 //!
 //! The measured spot on Ascension is a corner, not a low ceiling: the
 //! player at (−10.91, 0.72, −1.16) is beside a small prop whose
 //! overhanging lip (underside normal `(0, 0.7071, −0.7071)`, y 0.56..0.61,
 //! z −0.73..−0.68) comes within 0.142 of the capsule's axis. Standing, the
-//! capsule's top reaches into the lip; crouched, it stays under it.
-use std::collections::{BTreeMap, HashMap, HashSet};
+//! capsule's top reaches into the lip; crouched, it stays under it. The
+//! band where that holds is 5 cm wide, the lip's overhang.
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
-use crate::geom::{V2, area2, dot2, inside2, len2, plane_z, seg_poly, sub2, xy_ccw};
-use crate::scan::{Face, ORIGIN_LIFT, WALKABLE, best, grid_of};
-use crate::{CROUCHED, Kind, RADIUS, STANDING, Spot, Vec3};
+use crate::geom::{
+    Grid, V2, area2, dot2, inside2, len, len2, plane_z, seg_poly, sub, sub2, xy_ccw,
+};
+use crate::scan::{Face, ORIGIN_LIFT, WALKABLE, grid_of};
+use crate::{CROUCHED, CrouchRegion, Kind, RADIUS, STANDING, Spot, Vec3};
 
 /// Spacing (world units) of the candidate origins, on a world-aligned
-/// lattice. Under the Ascension lip the forced-crouch band is about 5 cm
-/// wide, so the lattice is finer than that.
+/// lattice. Under the Ascension lip the forced-crouch band is 5 cm wide,
+/// so the lattice is finer than that.
 const SAMPLE: f32 = 0.04;
 /// A capsule hits a polygon when it is in deeper than this.
 const HIT_EPS: f32 = 0.005;
@@ -25,15 +29,41 @@ const HIT_EPS: f32 = 0.005;
 const SUPPORT_NZ: f32 = 0.3;
 /// Neighbouring samples are on the same floor within this height.
 const STEP_Z: f32 = 0.15;
-/// A region narrower than this is a strip, cut into spots this long, so
-/// every stand point is within a capsule's width of its whole spot.
-const CHUNK: f32 = 2.0 * RADIUS;
 /// Samples tested at most, over the whole map.
 const MAX_SAMPLES: usize = 8_000_000;
+/// A spot's band, measured across its edge, is at least this wide. The
+/// Ascension lip's band measures 5 cm in its test geometry
+/// (`tests.rs`, `ascension_corner`); the hair-thin bands under low ledges,
+/// where only the crouched capsule's rounded top slips under, are 1 to 2
+/// cm (a ledge at 0.4: 0.157 to 0.17 from its edge).
+const MIN_WIDTH: f32 = 0.04;
+/// A region is at least this many samples: one alone is a speck.
+const MIN_SAMPLES: usize = 2;
+/// Band widths are probed this far each way at most.
+const PROBE_MAX: f32 = 0.3;
+/// Coarse probe step, then three halvings (to 1.25 mm).
+const PROBE_STEP: f32 = 0.01;
+/// Exit samples probed per region at most, spread over its exits.
+const MAX_PROBED: usize = 24;
+/// Clear lattice cells walked at most looking for open floor; past this
+/// the region counts as reachable.
+const MAX_FLOOD: usize = 20_000;
+/// A walkable face this far over a floor point (a prop's top) covers it:
+/// the point is inside the prop, not open floor.
+const COVER: f32 = STANDING + 2.0 * RADIUS;
+/// Crouch spots within this of a better one are dropped.
+const SUPPRESS: f32 = 1.5;
+/// A bounce strip this close (straight line) scores a crouch spot up: you
+/// prime, then go and bounce.
+const BOUNCE_NEAR: f32 = 15.0;
+/// Crouch spots kept per scan, best first.
+const MAX_CROUCH: usize = 30;
 
 /// One candidate origin and what the two capsules hit there.
 struct Sample {
     ij: (i32, i32),
+    /// The walkable face it's on.
+    floor: usize,
     floor_z: f32,
     origin: Vec3,
     stand_hit: bool,
@@ -54,15 +84,123 @@ fn at(ij: (i32, i32)) -> V2 {
     [ij.0 as f32 * SAMPLE, ij.1 as f32 * SAMPLE]
 }
 
-pub(crate) fn crouches(faces: &[Face]) -> Vec<Spot> {
+/// The faces and their buckets.
+struct Scene<'a> {
+    faces: &'a [Face<'a>],
+    /// Everything that isn't walkable floor: what can stop a capsule.
+    obstacles: Grid,
+    floors: Grid,
+}
+
+impl Scene<'_> {
+    /// The origin standing on walkable face `floor` over `p`: the lower
+    /// sphere resting on the slope, its centre r above the plane, so the
+    /// origin is r / nz − r over the floor point.
+    fn origin(&self, floor: usize, p: V2) -> Option<(f32, Vec3)> {
+        let f = self.faces[floor].poly;
+        let fz = plane_z(f, p)?;
+        let nz = f.normal[2];
+        Some((fz, [p[0], p[1], fz + RADIUS / nz - RADIUS + ORIGIN_LIFT]))
+    }
+
+    /// Whether the standing capsule, then (only when it hits) the crouched
+    /// one, hit anything at `origin`.
+    fn capsules(&self, origin: Vec3, near: &mut Vec<u32>) -> (bool, bool) {
+        self.obstacles.query(
+            [origin[0] - RADIUS, origin[1] - RADIUS],
+            [origin[0] + RADIUS, origin[1] + RADIUS],
+            near,
+        );
+        let stand = capsule_hits(self.faces, near, origin, STANDING);
+        (
+            stand,
+            stand && capsule_hits(self.faces, near, origin, CROUCHED),
+        )
+    }
+
+    /// Open floor at `p`, about height `z`: walkable floor there, and no
+    /// walkable face over it within [`COVER`] (a prop's top).
+    fn open_floor(&self, p: V2, z: f32) -> bool {
+        let mut near = Vec::new();
+        self.floors.query(p, p, &mut near);
+        let mut on = false;
+        for &i in &near {
+            let f = self.faces[i as usize].poly;
+            let Some(fz) = plane_z(f, p) else {
+                continue;
+            };
+            if !inside2(&xy_ccw(&f.verts), p, 1e-4) {
+                continue;
+            }
+            if (fz - z).abs() <= STEP_Z {
+                on = true;
+            } else if fz > z + 0.05 && fz < z + COVER {
+                return false;
+            }
+        }
+        on
+    }
+
+    /// Distance from the sample `s` along `d` until `clear` holds, to
+    /// [`PROBE_MAX`].
+    fn probe(&self, s: &Sample, d: V2, clear: impl Fn((bool, bool)) -> bool) -> f32 {
+        let mut near = Vec::new();
+        let p = at(s.ij);
+        let mut test = |t: f32| {
+            let q = [p[0] + d[0] * t, p[1] + d[1] * t];
+            self.origin(s.floor, q)
+                .is_none_or(|(_, o)| clear(self.capsules(o, &mut near)))
+        };
+        let mut t = PROBE_STEP;
+        while t <= PROBE_MAX {
+            if test(t) {
+                let (mut lo, mut hi) = (t - PROBE_STEP, t);
+                for _ in 0..3 {
+                    let m = (lo + hi) / 2.0;
+                    if test(m) {
+                        hi = m;
+                    } else {
+                        lo = m;
+                    }
+                }
+                return (lo + hi) / 2.0;
+            }
+            t += PROBE_STEP;
+        }
+        PROBE_MAX
+    }
+
+    /// The forced band's width at sample `s`: across it each way to where
+    /// the crouch is no longer forced, along each lattice axis, and the
+    /// narrower of the two. One axis alone would measure a band's length
+    /// at its ends, where the way out runs along it; the narrower axis is
+    /// at most √2 times the true width.
+    fn band_width(&self, s: &Sample) -> f32 {
+        let free = |(stand, crouch): (bool, bool)| !(stand && !crouch);
+        let across = |d: V2| self.probe(s, d, free) + self.probe(s, [-d[0], -d[1]], free);
+        across([1.0, 0.0]).min(across([0.0, 1.0]))
+    }
+}
+
+pub(crate) fn crouches(faces: &[Face], bounces: &[Spot]) -> Vec<Spot> {
+    let (scene, samples) = sample(faces);
+    let mut found = regions(&scene, &samples, bounces);
+    select(&mut found)
+}
+
+/// The scene, and every candidate origin tested.
+fn sample<'a>(faces: &'a [Face<'a>]) -> (Scene<'a>, Vec<Sample>) {
     let floors: Vec<usize> = (0..faces.len())
         .filter(|&i| faces[i].poly.normal[2] > WALKABLE)
         .collect();
-    // Everything that isn't walkable floor can stop a capsule.
     let obstacles: Vec<usize> = (0..faces.len())
         .filter(|&i| faces[i].poly.normal[2] <= WALKABLE)
         .collect();
-    let grid = grid_of(faces, &obstacles);
+    let scene = Scene {
+        faces,
+        obstacles: grid_of(faces, &obstacles),
+        floors: grid_of(faces, &floors),
+    };
     let mut samples = Vec::new();
     let mut near = Vec::new();
     let mut hits = Vec::new();
@@ -72,7 +210,7 @@ pub(crate) fn crouches(faces: &[Face]) -> Vec<Spot> {
             [f.b.min[0] - RADIUS, f.b.min[1] - RADIUS],
             [f.b.max[0] + RADIUS, f.b.max[1] + RADIUS],
         );
-        grid.query(lo, hi, &mut near);
+        scene.obstacles.query(lo, hi, &mut near);
         // Only where some geometry is within a standing capsule over the
         // floor.
         let mut cells = HashSet::new();
@@ -90,23 +228,14 @@ pub(crate) fn crouches(faces: &[Face]) -> Vec<Spot> {
             if !inside2(&outline, p, 1e-4) {
                 continue;
             }
-            let Some(fz) = plane_z(f.poly, p) else {
+            let Some((floor_z, origin)) = scene.origin(fi, p) else {
                 continue;
             };
-            // The lower sphere resting on the slope: its centre r above
-            // the plane, so the origin is r / nz − r over the floor point.
-            let nz = f.poly.normal[2];
-            let origin = [p[0], p[1], fz + RADIUS / nz - RADIUS + ORIGIN_LIFT];
-            grid.query(
-                [p[0] - RADIUS, p[1] - RADIUS],
-                [p[0] + RADIUS, p[1] + RADIUS],
-                &mut hits,
-            );
-            let stand_hit = capsule_hits(faces, &hits, origin, STANDING);
-            let crouch_hit = stand_hit && capsule_hits(faces, &hits, origin, CROUCHED);
+            let (stand_hit, crouch_hit) = scene.capsules(origin, &mut hits);
             samples.push(Sample {
                 ij,
-                floor_z: fz,
+                floor: fi,
+                floor_z,
                 origin,
                 stand_hit,
                 crouch_hit,
@@ -116,7 +245,54 @@ pub(crate) fn crouches(faces: &[Face]) -> Vec<Spot> {
             break;
         }
     }
-    best(regions(&samples))
+    (scene, samples)
+}
+
+/// One forced-crouch region with how the filters judged it.
+pub(crate) struct Candidate {
+    pub report: CrouchRegion,
+    /// Its samples' origins.
+    pub origins: Vec<Vec3>,
+}
+
+/// Best score first, dropping any within [`SUPPRESS`] of a better one, at
+/// most [`MAX_CROUCH`]; each candidate's report says which.
+fn select(found: &mut [Candidate]) -> Vec<Spot> {
+    let mut order: Vec<usize> = (0..found.len())
+        .filter(|&i| found[i].report.spot.is_some())
+        .collect();
+    let score = |i: usize| found[i].report.spot.map_or(0.0, |s| s.score);
+    order.sort_by(|&a, &b| score(b).total_cmp(&score(a)));
+    let mut kept: Vec<Spot> = Vec::new();
+    for i in order {
+        let s = found[i].report.spot.expect("filtered on spot");
+        let r = &mut found[i].report;
+        if kept.len() == MAX_CROUCH {
+            r.rejected = Some(format!("not among the {MAX_CROUCH} best"));
+        } else if let Some(k) = kept.iter().find(|k| len(sub(k.stand, s.stand)) < SUPPRESS) {
+            r.suppressed_by = Some(k.stand);
+            r.rejected = Some(format!(
+                "within {SUPPRESS} of a better spot (score {:.2})",
+                k.score
+            ));
+        } else {
+            r.kept = true;
+            kept.push(s);
+        }
+    }
+    kept
+}
+
+/// Every forced-crouch region with a sample within `r` of `at`, judged.
+pub(crate) fn explain(faces: &[Face], bounces: &[Spot], at: Vec3, r: f32) -> Vec<CrouchRegion> {
+    let (scene, samples) = sample(faces);
+    let mut found = regions(&scene, &samples, bounces);
+    select(&mut found);
+    found
+        .into_iter()
+        .filter(|c| c.origins.iter().any(|&o| len(sub(o, at)) <= r))
+        .map(|c| c.report)
+        .collect()
 }
 
 /// Lattice cells whose origin could put a capsule within reach of `o`
@@ -199,9 +375,23 @@ fn capsule_hits(faces: &[Face], near: &[u32], origin: Vec3, height: f32) -> bool
     })
 }
 
+/// How the walk out of a region to open floor ended.
+enum Reach {
+    /// At a cell with no sample that is open floor, after this many clear
+    /// samples.
+    Open(V2, usize),
+    /// Every clear sample walked (this many), none next to open floor.
+    Enclosed(usize),
+    /// The walk passed [`MAX_FLOOD`]: counted reachable.
+    Capped,
+}
+
 /// Forced samples that neighbour each other (8-neighbours on one floor)
-/// are one region; each region, or each piece of a long strip, is a spot.
-fn regions(samples: &[Sample]) -> Vec<Spot> {
+/// are one region. A region is a spot when it is more than a speck,
+/// touches floor where standing is clear, that floor reaches open floor
+/// (not the inside of a prop), and its band is wide enough to stand in
+/// somewhere across its edge.
+fn regions(scene: &Scene, samples: &[Sample], bounces: &[Spot]) -> Vec<Candidate> {
     let mut cells: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
     for (i, s) in samples.iter().enumerate() {
         cells.entry(s.ij).or_default().push(i);
@@ -243,43 +433,133 @@ fn regions(samples: &[Sample]) -> Vec<Spot> {
         let r = root(&mut parent, i);
         groups.entry(r).or_default().push(i);
     }
+    const SIDES: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
     // Where standing is clear next door: the direction out to it.
     let exit = |i: usize| -> Option<(i32, i32)> {
-        [(1, 0), (-1, 0), (0, 1), (0, -1)]
+        SIDES
             .into_iter()
             .find(|&(di, dj)| neighbour(i, di, dj).any(|k| !samples[k].stand_hit))
     };
+    // Walk clear samples from `start` (4-neighbours, one floor) until a
+    // cell with no sample that is open floor: reachable on foot.
+    let reaches_open = |start: Vec<usize>| -> Reach {
+        let mut seen: HashSet<usize> = start.iter().copied().collect();
+        let mut queue: VecDeque<usize> = start.into_iter().collect();
+        while let Some(i) = queue.pop_front() {
+            if seen.len() > MAX_FLOOD {
+                return Reach::Capped;
+            }
+            let s = &samples[i];
+            for (di, dj) in SIDES {
+                let mut there = neighbour(i, di, dj).peekable();
+                if there.peek().is_none() {
+                    let p = at((s.ij.0 + di, s.ij.1 + dj));
+                    if scene.open_floor(p, s.floor_z) {
+                        return Reach::Open(p, seen.len());
+                    }
+                    continue;
+                }
+                for k in there {
+                    if !samples[k].stand_hit && seen.insert(k) {
+                        queue.push_back(k);
+                    }
+                }
+            }
+        }
+        Reach::Enclosed(seen.len())
+    };
     let mut out = Vec::new();
     for members in groups.into_values() {
+        let origins: Vec<Vec3> = members.iter().map(|&i| samples[i].origin).collect();
+        let (min, max) = origins.iter().fold(
+            ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]),
+            |(lo, hi), o| {
+                (
+                    std::array::from_fn(|k| lo[k].min(o[k])),
+                    std::array::from_fn(|k| hi[k].max(o[k])),
+                )
+            },
+        );
         let pts: Vec<V2> = members.iter().map(|&i| at(samples[i].ij)).collect();
-        let (axis, minor) = axes(&pts);
-        let proj = |p: V2, d: V2| dot2(p, d);
-        let range = |d: V2| {
-            pts.iter()
-                .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), &p| {
-                    (lo.min(proj(p, d)), hi.max(proj(p, d)))
-                })
+        let (axis, _) = axes(&pts);
+        let (a0, a1) = pts
+            .iter()
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), &p| {
+                (lo.min(dot2(p, axis)), hi.max(dot2(p, axis)))
+            });
+        let length = (a1 - a0).max(0.0);
+        let mut report = CrouchRegion {
+            samples: members.len(),
+            min,
+            max,
+            widths: Vec::new(),
+            length,
+            reachable: false,
+            reach: String::new(),
+            rejected: None,
+            spot: None,
+            suppressed_by: None,
+            kept: false,
         };
-        let (a0, a1) = range(axis);
-        let (m0, m1) = range(minor);
-        let length = a1 - a0;
-        let pieces = if m1 - m0 < CHUNK && length > CHUNK {
-            (length / CHUNK).ceil() as usize
-        } else {
-            1
-        };
-        let mut split = vec![Vec::new(); pieces];
-        for (&i, &p) in members.iter().zip(&pts) {
-            let k = if length > 0.0 {
-                (((proj(p, axis) - a0) / length * pieces as f32) as usize).min(pieces - 1)
-            } else {
-                0
-            };
-            split[k].push(i);
+        let exits: Vec<(usize, (i32, i32))> = members
+            .iter()
+            .filter_map(|&i| exit(i).map(|d| (i, d)))
+            .collect();
+        let verdict = (|| {
+            if members.len() < MIN_SAMPLES {
+                return Err(format!("{} sample: a speck", members.len()));
+            }
+            if exits.is_empty() {
+                report.reach = "no sample has standing room next door".into();
+                return Err("no exits".into());
+            }
+            let doors: Vec<usize> = exits
+                .iter()
+                .flat_map(|&(i, (di, dj))| neighbour(i, di, dj).filter(|&k| !samples[k].stand_hit))
+                .collect();
+            match reaches_open(doors) {
+                Reach::Open(p, n) => {
+                    report.reachable = true;
+                    report.reach = format!(
+                        "reaches open floor at ({:.2}, {:.2}) after {n} clear samples",
+                        p[0], p[1]
+                    );
+                }
+                Reach::Capped => {
+                    report.reachable = true;
+                    report.reach =
+                        format!("walk passed {MAX_FLOOD} clear samples: counted reachable");
+                }
+                Reach::Enclosed(n) => {
+                    report.reach = format!(
+                        "enclosed: {n} clear samples, none next to open floor (or all under a walkable face within {COVER:.3})"
+                    );
+                    return Err("enclosed".into());
+                }
+            }
+            // The band's width across its edge at up to MAX_PROBED exits.
+            let stride = exits.len().div_ceil(MAX_PROBED);
+            let mut widest = 0.0f32;
+            for &(i, d) in exits.iter().step_by(stride) {
+                let w = scene.band_width(&samples[i]);
+                widest = widest.max(w);
+                report.widths.push((samples[i].origin, [d.0, d.1], w));
+            }
+            if widest < MIN_WIDTH {
+                return Err(format!(
+                    "band too thin: widest {:.3} across its edge, under {MIN_WIDTH}",
+                    widest
+                ));
+            }
+            Ok(spot(
+                samples, &members, &exits, axis, widest, length, bounces,
+            ))
+        })();
+        match verdict {
+            Ok(s) => report.spot = Some(s),
+            Err(why) => report.rejected = Some(why),
         }
-        for piece in split.into_iter().filter(|p| !p.is_empty()) {
-            out.push(spot(samples, &piece, axis, &exit));
-        }
+        out.push(Candidate { report, origins });
     }
     out
 }
@@ -305,32 +585,55 @@ fn axes(pts: &[V2]) -> (V2, V2) {
 
 fn spot(
     samples: &[Sample],
-    piece: &[usize],
+    members: &[usize],
+    exits: &[(usize, (i32, i32))],
     axis: V2,
-    exit: &impl Fn(usize) -> Option<(i32, i32)>,
+    width: f32,
+    length: f32,
+    bounces: &[Spot],
 ) -> Spot {
     let pt = |i: usize| at(samples[i].ij);
-    let n = piece.len() as f32;
-    let c = piece.iter().fold([0.0, 0.0], |a, &i| {
+    // The stand: the sample nearest the nearest bounce strip's stand,
+    // when one is within BOUNCE_NEAR (the end you leave from to go and
+    // bounce); otherwise the sample nearest the region's centre.
+    let n = members.len() as f32;
+    let c = members.iter().fold([0.0, 0.0], |a, &i| {
         [a[0] + pt(i)[0] / n, a[1] + pt(i)[1] / n]
     });
-    let centre = *piece
+    let centre = [c[0], c[1], samples[members[0]].origin[2]];
+    let bounce = bounces
         .iter()
-        .min_by(|&&a, &&b| len2(sub2(pt(a), c)).total_cmp(&len2(sub2(pt(b), c))))
-        .expect("a piece has samples");
-    // The edge: along the biggest group of samples with standing room the
-    // same way out, across that way; with none, along the region.
-    let mut sides: BTreeMap<(i32, i32), Vec<usize>> = BTreeMap::new();
-    for &i in piece {
-        if let Some(d) = exit(i) {
-            sides.entry(d).or_default().push(i);
-        }
-    }
-    let side = sides.into_iter().max_by_key(|(_, v)| v.len());
-    let (line, along) = match &side {
-        Some(((di, dj), v)) => (v.as_slice(), [-(*dj as f32), *di as f32]),
-        None => (piece, axis),
+        .map(|b| (b, len(sub(b.stand, centre))))
+        .filter(|(_, d)| *d <= BOUNCE_NEAR)
+        .min_by(|a, b| a.1.total_cmp(&b.1));
+    let toward = |target: Vec3, flat: bool| {
+        *members
+            .iter()
+            .min_by(|&&a, &&b| {
+                let d = |i: usize| {
+                    let o = samples[i].origin;
+                    let dz = if flat { 0.0 } else { o[2] - target[2] };
+                    len([o[0] - target[0], o[1] - target[1], dz])
+                };
+                d(a).total_cmp(&d(b))
+            })
+            .expect("a region has samples")
     };
+    let stand = match bounce {
+        Some((b, _)) => toward(b.stand, false),
+        None => toward(centre, true),
+    };
+    // The edge: along the biggest group of exits the same way out,
+    // across that way.
+    let mut sides: BTreeMap<(i32, i32), Vec<usize>> = BTreeMap::new();
+    for &(i, d) in exits {
+        sides.entry(d).or_default().push(i);
+    }
+    let ((di, dj), line) = sides
+        .into_iter()
+        .max_by_key(|(_, v)| v.len())
+        .expect("a spot has exits");
+    let along = [-(dj as f32), di as f32];
     let ends = |pick: &dyn Fn(f32, f32) -> bool| {
         line.iter()
             .copied()
@@ -351,20 +654,22 @@ fn spot(
     let mut edge = [point(lo), point(hi)];
     if lo == hi {
         let h = SAMPLE / 2.0;
-        edge[0][0] -= along[0] * h;
-        edge[0][1] -= along[1] * h;
-        edge[1][0] += along[0] * h;
-        edge[1][1] += along[1] * h;
+        edge[0][0] -= axis[0] * h;
+        edge[0][1] -= axis[1] * h;
+        edge[1][0] += axis[0] * h;
+        edge[1][1] += axis[1] * h;
     }
-    let exit_bonus = if side.is_some() { 0.3 } else { 0.0 };
-    let size_bonus = 0.3 * (n / 4.0).min(1.0);
+    // 0.4, plus up to 0.2 for width (to 15 cm), 0.1 for length (to 1
+    // unit), 0.3 for a bounce strip nearby (closer is more).
+    let near = bounce.map_or(0.0, |(_, d)| 1.0 - d / BOUNCE_NEAR);
+    let score = 0.4 + 0.2 * (width / 0.15).min(1.0) + 0.1 * length.min(1.0) + 0.3 * near;
     Spot {
         kind: Kind::Crouch,
         edge,
-        stand: samples[centre].origin,
+        stand: samples[stand].origin,
         fall: 0.0,
         launch: 0.0,
         drift: [0.0, 0.0],
-        score: 0.4 + exit_bonus + size_bonus,
+        score,
     }
 }

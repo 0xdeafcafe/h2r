@@ -4623,6 +4623,61 @@ fn a_presence_change_whose_answer_is_lost_is_sent_once() {
     assert_eq!(w.call("XOnlineTaskContinue", &[h]), CONNECTED);
 }
 
+/// A matchmaking lobby ends when this console's arbitration registration
+/// fails (docs/game/bots.md §8.4, `0x72260`), so a registration rides out a
+/// deploy and a lost answer: the server writes a second one as nothing.
+/// An extension writes each time, so it is sent once.
+#[test]
+fn an_arbitration_registration_rides_out_a_deploy_and_a_lost_answer() {
+    const ROUND: u32 = DATA + 0x12000;
+    let server = Server::new();
+    let a = server.account("Registrar");
+    let proxy = Flaky::new(&server.embedded.url);
+    let mut w = outage_world(
+        &proxy,
+        &a,
+        Duration::from_secs(3600),
+        Duration::from_secs(90),
+    );
+    w.logon();
+    attr(&w, MATCH_ATTR, 1, 101);
+    assert_eq!(
+        w.call(
+            "XOnlineMatchSessionCreate",
+            &[1, 7, 0, 0, 1, MATCH_ATTR, 0, OUT]
+        ),
+        OK
+    );
+    let create = w.u32(OUT);
+    assert_eq!(w.wait(create), TASK_SUCCESS);
+    let session_hex = w.hle.hosted_session().expect("the advertised session");
+    let session_id: Vec<u8> = (0..8)
+        .map(|i| u8::from_str_radix(&session_hex[2 * i..2 * i + 2], 16).unwrap())
+        .collect();
+    w.put(ROUND, &session_id);
+    assert_eq!(w.call("XOnlineArbitrationCreateRoundID", &[ROUND + 8]), OK);
+
+    proxy.fail("/register", Fault::Busy);
+    proxy.fail("/register", Fault::Lost);
+    assert_eq!(
+        w.call("XOnlineArbitrationRegister", &[ROUND, 300, 0xc, 0, OUT]),
+        OK
+    );
+    let task = w.u32(OUT);
+    assert_eq!(w.wait(task), TASK_SUCCESS);
+    assert_eq!(proxy.count("POST", "/register"), 3);
+    assert_eq!(kinds(&server, "ArbitrationRegistered").len(), 1);
+
+    proxy.fail("/extend", Fault::Busy);
+    assert_eq!(
+        w.call("XOnlineArbitrationExtendRound", &[ROUND, 300, 0, OUT]),
+        OK
+    );
+    let task = w.u32(OUT);
+    assert_eq!(w.wait(task), SERVERS_BUSY);
+    assert_eq!(proxy.count("POST", "/extend"), 1);
+}
+
 #[test]
 fn reads_and_logon_ride_out_dropped_connections_and_a_deploy() {
     let server = Server::new();

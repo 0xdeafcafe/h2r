@@ -48,6 +48,7 @@ pointer, as already recorded in [engine-map.md](../engine/engine-map.md).
 | `sbsp+9c` block, stride `b0` | Clusters | E `0x0004109e` (`[bsp+0A0h]`), `0x000410ac` (`imul 0B0h`) |
 | `sbsp+a4` block | Materials; only the count is read | V: every part's material index is below it |
 | `sbsp+138` block, stride `c8` | Instanced geometry definitions | E `0x000410ca` (`[bsp+13Ch]`), `0x000410d0` (`imul 0C8h`) |
+| definition `+70` | The definition's collision BSP: the eight blocks of a structure collision BSP, without a leading word (`tags::structure::InstancedGeometryDefinition::collision`) | E: the instance trace tests the definition's BSP at `+0x70` ([collision-queries.md](../engine/collision-queries.md), entry E) |
 | `sbsp+140` block, stride `58` | Instanced geometry placements | E `0x000410b4` (`[bsp+144h]`), `0x000410c2` (`imul 58h`) |
 
 Other BSP header fields remain as described (or left opaque) in map-format.md.

@@ -428,7 +428,11 @@ impl Session {
         self.rpc = Some(Playback::new(agent));
     }
 
-    pub fn play(&mut self, entry: &Entry) -> Result<(), String> {
+    pub fn play(
+        &mut self,
+        entry: &Entry,
+        view: Option<agent_proto::theater::InitialView>,
+    ) -> Result<(), String> {
         if self.pending.values().any(|r| matches!(r, Request::Open)) {
             return Err("A film is already opening or playing".into());
         }
@@ -439,7 +443,7 @@ impl Session {
             .map(|clip| [clip.from_tick, clip.to_tick]);
         let id = rpc.send(
             agent_proto::theater::PLAY,
-            json!({"id": entry.film.id, "range": range}),
+            json!({"id": entry.film.id, "range": range, "view": view}),
         );
         self.pending.insert(id, Request::Open);
         Ok(())

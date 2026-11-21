@@ -163,7 +163,7 @@ pub(crate) fn document(doc: &ForgeDoc, limits: &Limits) -> Result<()> {
         }
         counts.push(item, limits)?;
     }
-    Ok(())
+    crate::links::check(&doc.ops, &limits.base_counts)
 }
 
 fn validate_recipe(
@@ -217,6 +217,7 @@ pub(crate) fn op(op: &Op, limits: &Limits, in_log: bool) -> Result<()> {
     match &op.edit {
         Edit::Placement(p) => placement(p, limits),
         Edit::TagField(write) => tag_write(write),
+        Edit::Forge(edit) => crate::links::op(edit),
         Edit::Undo if in_log => Ok(()),
         edit => Err(edit.unsupported()),
     }

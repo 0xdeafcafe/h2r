@@ -18,4 +18,6 @@ pub enum Key {
     Down,
     Undo,
     Redo,
+    /// The Links tool: switch to it, or start or cancel a link.
+    Link,
 }

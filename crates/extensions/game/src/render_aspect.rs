@@ -244,6 +244,9 @@ impl Feature for RenderAspect {
                 .observe_before(point, "select the GPU projection", move |o| {
                     sink.set_projection_factor(projection_factor(&*o.guest(), size()));
                 })
+                // Reads this view's guest memory and tells the sink, as the
+                // UI-fit hooks below do (all context-only).
+                .context_only()
                 .optional();
         }
 

@@ -14,7 +14,30 @@ fn header(kind: Kind, seq: u64) -> Header {
 const BOTH: Layers = Layers {
     objects: true,
     players: true,
+    camera: false,
 };
+
+const ALL: Layers = Layers {
+    objects: true,
+    players: true,
+    camera: true,
+};
+
+fn view(key: u32, x: f32) -> View {
+    View {
+        key,
+        scene_tick: 40,
+        position: [x, 2., 3.],
+        forward: [1., 0., 0.],
+        up: [0., 0., 1.],
+        fov: 1.2,
+        near: 0.0625,
+        far: 1024.,
+        viewport: [0, 0, 480, 640],
+        cut: true,
+        drawn: vec![0x20001, 0x30002],
+    }
+}
 
 fn initial() -> World {
     World {
@@ -42,6 +65,7 @@ fn initial() -> World {
             aim: [0., 0., 1.],
             local_user: Some(0),
         }],
+        cameras: Vec::new(),
     }
 }
 
@@ -66,7 +90,7 @@ fn key_round_trip_clears_old_layers_and_preserves_header() {
     assert_eq!(replica, world);
     let players = Layers {
         players: true,
-        objects: false,
+        ..Layers::default()
     };
     transfer(Frame::between(hdr, players, None, &world), &mut replica);
     assert!(replica.objects.is_empty());
@@ -196,7 +220,7 @@ fn negotiation_reports_unavailable_layers_and_rejects_unknown_options() {
     }))
     .unwrap();
     assert_eq!((params.every, params.key_every), (1, 150));
-    let (layers, refused) = Layers::negotiate(&params.layers);
+    let (layers, refused) = Layers::negotiate(&params.layers, None);
     assert_eq!(layers.names(), ["objects", "players"]);
     assert_eq!(
         refused.keys().map(String::as_str).collect::<Vec<_>>(),
@@ -208,4 +232,75 @@ fn negotiation_reports_unavailable_layers_and_rejects_unknown_options() {
         }))
         .is_err()
     );
+}
+
+#[test]
+fn camera_layer_round_trips_and_deltas_only_the_moved_view() {
+    let mut base = initial();
+    base.cameras = vec![view(view_key(0, 0, 0), 1.), view(view_key(0, 1, 0), 5.)];
+    let mut replica = World::default();
+    transfer(
+        Frame::between(header(Kind::Key, 1), ALL, None, &base),
+        &mut replica,
+    );
+    assert_eq!(replica, base);
+
+    let mut next = base.clone();
+    next.cameras[1].position[0] = 6.;
+    next.cameras[1].drawn.pop();
+    next.cameras[1].cut = false;
+    let frame = transfer(
+        Frame::between(header(Kind::Delta, 2), ALL, Some(&base), &next),
+        &mut replica,
+    );
+    let rows = &frame.camera.as_ref().unwrap().rows;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].0, (1 << 1) | (1 << 8) | (1 << 9));
+    assert_eq!(replica, next);
+
+    // A view that closes (a split-screen player leaving) is removed.
+    let mut fewer = next.clone();
+    fewer.cameras.truncate(1);
+    let frame = transfer(
+        Frame::between(header(Kind::Delta, 3), ALL, Some(&next), &fewer),
+        &mut replica,
+    );
+    assert_eq!(frame.camera.unwrap().removed, [view_key(0, 1, 0)]);
+    assert_eq!(replica, fewer);
+}
+
+#[test]
+fn a_reader_without_the_camera_layer_skips_it_and_a_stream_without_it_keeps_none() {
+    let mut base = initial();
+    base.cameras = vec![view(view_key(3, 0, 1), 1.)];
+    let mut replica = World::default();
+    transfer(
+        Frame::between(header(Kind::Key, 1), BOTH, None, &base),
+        &mut replica,
+    );
+    assert!(replica.cameras.is_empty());
+    assert_eq!(replica.objects, base.objects);
+}
+
+#[test]
+fn view_names_match_render_scene_keys() {
+    let v = view(view_key(3, 1, 2), 0.);
+    assert_eq!(v.name(), "first_person:1:2");
+    assert!(!v.is_game());
+    assert_eq!(View::key_of("first_person:1:2"), Some(v.key));
+    assert_eq!(View::key_of("game:0:0"), Some(0));
+    for bad in ["game:0", "game:0:0:0", "map:0:0", "game:x:0", "game:0:256"] {
+        assert_eq!(View::key_of(bad), None, "{bad}");
+    }
+}
+
+#[test]
+fn camera_is_refused_with_the_servers_reason() {
+    let names = ["objects".to_owned(), "camera".to_owned()];
+    let (layers, refused) = Layers::negotiate(&names, Some("no sealed frame scene"));
+    assert_eq!(layers.names(), ["objects"]);
+    assert_eq!(refused["camera"], "no sealed frame scene");
+    let (layers, refused) = Layers::negotiate(&names, None);
+    assert_eq!(layers.names(), ["objects", "camera"]);
+    assert!(refused.is_empty());
 }

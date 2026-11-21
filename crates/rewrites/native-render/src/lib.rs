@@ -44,6 +44,8 @@ pub mod effect_immediate;
 pub mod fog;
 #[cfg(feature = "gpu")]
 pub mod fog_gpu;
+#[cfg(feature = "gpu")]
+pub mod frame_graph;
 pub mod gels;
 #[cfg(feature = "gpu")]
 pub mod gels_gpu;
@@ -54,6 +56,10 @@ pub mod gpu;
 pub mod hud;
 #[cfg(feature = "gpu")]
 pub mod layer_pass;
+#[cfg(feature = "gpu")]
+pub mod layers_load;
+#[cfg(feature = "gpu")]
+pub mod stage_images;
 #[cfg(feature = "gpu")]
 pub mod ui_gpu;
 pub mod instances;

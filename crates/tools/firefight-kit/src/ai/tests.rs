@@ -180,3 +180,42 @@ fn the_probe_recipe_places_one_squad() {
     assert_eq!(actor.data(), 0);
     assert_eq!(actor.next(), hs::Datum::NULL);
 }
+
+#[test]
+fn the_kit_authors_one_named_hunt_order_over_every_area() {
+    for probe in [false, true] {
+        let mut map = kit_map(probe);
+        let ai = ScenarioAi::read_map(&mut map).unwrap();
+        let [order] = ai.orders.as_slice() else {
+            panic!("expected one order")
+        };
+        assert_eq!(order.name, HUNT_ORDER);
+        assert_eq!(order.name, "ff_hunt");
+        assert_eq!(
+            (order.style, order.follow_squad, order.entry_script_index),
+            (-1, -1, -1)
+        );
+        let want: Vec<_> = (0..ai.zones[0].areas.len())
+            .map(|area| AreaRef {
+                kind: 0,
+                zone: 0,
+                area: area as i16,
+            })
+            .collect();
+        assert_eq!(order.primary_areas, want);
+        assert!(order.secondary_areas.is_empty());
+    }
+}
+
+#[test]
+fn hunt_spans_every_zone_and_refuses_an_arena_without_areas() {
+    let mut two = vec![zone(), zone()];
+    two[1].areas.clear();
+    two.push(zone());
+    let order = hunt_order(&two).unwrap();
+    let zones: Vec<i16> = order.primary_areas.iter().map(|a| a.zone).collect();
+    assert_eq!(zones, [0, 2]);
+    let mut none = zone();
+    none.areas.clear();
+    assert!(hunt_order(&[none]).unwrap_err().contains("Hunt"));
+}

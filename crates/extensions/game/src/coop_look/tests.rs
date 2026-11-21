@@ -448,3 +448,82 @@ fn recorded_stick_turns_keep_the_retail_action_and_match_host_angles() {
         "capture an active turn and its echoes on Bravo"
     );
 }
+
+fn second_turn(s: &mut State, m: &mut FakeGuest) {
+    let action = PACKET + 16 + ACTION_BYTES;
+    let echoed = UPDATE + 12 + 3 * ACTION_BYTES;
+    m.put_u32(PACKET, 8)
+        .put_u32(PACKET + 4, 6)
+        .put_u32(PACKET + 12, 2)
+        .put_f32(action + 4, 0.25)
+        .put_f32(action + 8, -0.02)
+        .put_u32(UPDATE, 6)
+        .put_f32(echoed + 4, 0.19)
+        .put_f32(echoed + 8, -0.04);
+    s.applied(m, UPDATE).unwrap();
+    s.sent(m, PACKET, true).unwrap();
+}
+
+fn look() -> Look {
+    Look {
+        state: Arc::default(),
+        shared: Arc::default(),
+        arm: Arm::session(),
+        setting: None,
+        default: true,
+    }
+}
+
+/// The game thread's observers and the render hook, in turns, give the
+/// same private cameras, users and agent frames as the one state did.
+#[test]
+fn the_published_copy_draws_and_logs_as_the_single_state_did() {
+    let (mut old_guest, mut new_guest) = (fixture(), fixture());
+    let mut old = State::default();
+    let look = look();
+    let camera = |m: &FakeGuest| (m.u32(ARG).unwrap(), m.bytes(PRIVATE, 4 * view::STRIDE as usize).unwrap());
+    submit_turn(&mut old, &mut old_guest);
+    submit_turn(&mut look.state(), &mut new_guest);
+    // Two views in one frame, with no game-thread work between them.
+    for _ in 0..2 {
+        old.render(&mut old_guest, ARG, PRIVATE, true).unwrap();
+        look.render(&mut new_guest, ARG, PRIVATE);
+        assert_eq!(camera(&old_guest), camera(&new_guest));
+        old_guest.put_u32(ARG, ORIGINAL);
+        new_guest.put_u32(ARG, ORIGINAL);
+    }
+    // The next tick, then another view.
+    second_turn(&mut old, &mut old_guest);
+    second_turn(&mut look.state(), &mut new_guest);
+    old.render(&mut old_guest, ARG, PRIVATE, true).unwrap();
+    look.render(&mut new_guest, ARG, PRIVATE);
+    assert_eq!(camera(&old_guest), camera(&new_guest));
+    let new = look.state();
+    assert_eq!(
+        serde_json::to_string(&old.users).unwrap(),
+        serde_json::to_string(&new.users).unwrap()
+    );
+    assert_eq!(old.read(json!({})).unwrap(), new.read(json!({})).unwrap());
+    assert_eq!(new.history.len(), 3);
+}
+
+/// The render hook does not touch the game thread's state.
+#[test]
+fn a_render_call_changes_the_owner_only_when_the_game_thread_next_looks() {
+    let mut m = fixture();
+    let look = look();
+    submit_turn(&mut look.state(), &mut m);
+    look.render(&mut m, ARG, PRIVATE);
+    assert!(lock(&look.state).history.is_empty());
+    assert_eq!(look.state().history.len(), 1);
+}
+
+#[test]
+fn a_look_prediction_render_hook_runs_on_the_render_thread() {
+    let mut registry = Registry::new(hooks::Switches::defaults());
+    install(&mut registry, Arm::session(), None, None).unwrap();
+    let plan = registry.build(&hooks::Base).unwrap();
+    let chain = &plan.chains[&points::RENDER_GAME_VIEW.base];
+    assert!(chain.hooks().any(|h| h.feature == "coop-look-prediction"));
+    assert!(chain.render_thread().is_ok());
+}

@@ -118,7 +118,7 @@ fn triangle<B: Backend>(d: &mut Device<B>, m: &mut SparseMemory, color: u32) {
 
 /// A quad over `r` sampling all of the 32x32 linear texture (texel
 /// coordinates).
-fn textured_quad<B: Backend>(d: &mut Device<B>, m: &mut SparseMemory, r: (f32, f32, f32, f32)) {
+pub(super) fn textured_quad<B: Backend>(d: &mut Device<B>, m: &mut SparseMemory, r: (f32, f32, f32, f32)) {
     let mut vb = Vec::new();
     for (u, v) in [(0.0f32, 0.0f32), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
         for f in [r.0 + (r.2 - r.0) * u, r.1 + (r.3 - r.1) * v, 0.5, 1.0] {
@@ -1703,6 +1703,221 @@ fn e3_shadows_are_one_tap_and_follow_the_caster_closer() {
         let (e3_point, _) = error(e3(&ctx, scale), false);
         assert_eq!(e3_point, e3_wrong, "{scale}x");
     }
+}
+
+// --- E3 tiles on the native frame graph (docs/graphics/e3-lighting.md,
+// "Shadows from local lights", slice L4) ----------------------------------
+//
+// The same shadow pass as a sealed frame names it: the map (`Aux(0)`, with
+// its colour level `Aux(1)`) cleared and drawn, then the back buffer
+// cleared and the receiver sampling the map. Replayed in E3 mode, the map
+// is drawn as a tile at `shadow_scale` times its size and the receiver
+// compares it with the Sharp edge.
+
+/// The device's caster and receiver draws, recorded without a GPU, in a
+/// sealed frame.
+fn tile_frame() -> d3d::scene_sink::ReplayFrame {
+    use d3d::scene_sink::{ReplayFrame, ReplayOp, ReplaySample, ReplayTexture};
+    use frame_scene::carried::CameraUse;
+    use frame_scene::{AuxTarget, Slot, SlotAt, TargetRef};
+    let mut recorder = d3d::RecordingBackend::new();
+    recorder.sample_depth = true;
+    recorder.sample_surfaces = true;
+    let (mut d, mut m) = create(recorder, UploadPolicy::Tracked);
+    d.set_rtt_direct(true);
+    smap_headers(&mut m);
+    shadow_pass(&mut d, &mut m, true);
+    let draws = d.backend.draws();
+    let caster = draws
+        .iter()
+        .find(|draw| (draw.target.width, draw.target.height) == (SMAP, SMAP))
+        .map(|draw| Arc::new((*draw).clone()))
+        .expect("the caster");
+    let receiver = draws
+        .iter()
+        .find(|draw| draw.texture_info[0].is_some())
+        .map(|draw| Arc::new((*draw).clone()))
+        .expect("the receiver");
+    let (level, map, main) = (TargetRef::Aux(0), TargetRef::Aux(1), TargetRef::SceneColour);
+    let colour = |width, height, format: gfx::D3DFormat| AuxTarget {
+        width,
+        height,
+        format: format as u32,
+        depth: false,
+    };
+    let at = SlotAt {
+        slot: Slot::Opaque,
+        view: 0,
+    };
+    let ops = vec![
+        ReplayOp::Bind {
+            colour: map,
+            depth: level,
+        },
+        ReplayOp::Clear {
+            colour: map,
+            depth: level,
+            clear: gfx::Clear {
+                color: Some([0.0; 4]),
+                depth: Some(1.0),
+                stencil: Some(0),
+            },
+        },
+        ReplayOp::Draw {
+            draw: caster.clone(),
+            textures: [None, None, None, None],
+            camera: CameraUse::Screen,
+        },
+        ReplayOp::Bind {
+            colour: main,
+            depth: TargetRef::None,
+        },
+        ReplayOp::Clear {
+            colour: main,
+            depth: TargetRef::None,
+            clear: gfx::Clear {
+                color: Some([0.0, 0.0, 1.0, 1.0]),
+                ..gfx::Clear::NONE
+            },
+        },
+        ReplayOp::Sample {
+            of: level,
+            id: 0,
+            how: ReplaySample::Depth,
+        },
+        ReplayOp::Draw {
+            draw: receiver.clone(),
+            textures: [Some(ReplayTexture::Sample(0)), None, None, None],
+            camera: CameraUse::Screen,
+        },
+    ];
+    ReplayFrame {
+        colour: Some(colour(W, H, receiver.target.format)),
+        aux: vec![
+            AuxTarget {
+                depth: true,
+                ..colour(SMAP, SMAP, gfx::D3DFormat::LinD24S8)
+            },
+            colour(SMAP, SMAP, caster.target.format),
+        ],
+        presented: main,
+        ops: ops.into_iter().map(|op| (at, op)).collect(),
+        ..Default::default()
+    }
+}
+
+/// Signed distance from host pixel `p` to the caster's shadow outline, in
+/// host pixels at render scale `scale`: positive in its shadow. Both draws
+/// sample where `gfx::raster::window_shift` puts them, not at pixel
+/// centres. At 1x host pixel `P` samples guest coordinate `P` (D3D puts
+/// pixel centres on integers); above, `(P + 1/4) / s`. The receiver reads
+/// map point `guest / 2`. The caster, drawn into a tile at `f` texels per
+/// map texel (`f > 1`), covers tile texel `j` when guest point
+/// `(j + 1/4) / f` is inside it, so its shadow is the caster moved by
+/// `1/4` of a tile texel, `1 / (4 f)` map texels.
+fn caster_distance(p: (f32, f32), scale: u32) -> f32 {
+    let s = scale as f32;
+    let guest = |v: f32| if scale == 1 { v } else { (v + 0.25) / s };
+    let f = d3d::scaled::shadow_scale(scale, d3d::Lighting::E3) as f32;
+    let q = (guest(p.0) / 2.0 - 0.25 / f, guest(p.1) / 2.0 - 0.25 / f);
+    let segment = |a: (f32, f32), b: (f32, f32)| {
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let t = (((q.0 - a.0) * dx + (q.1 - a.1) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+        ((q.0 - a.0 - t * dx).powi(2) + (q.1 - a.1 - t * dy).powi(2)).sqrt()
+    };
+    let [a, b, c] = CASTER;
+    // Map texels to host pixels: a map texel covers 2x2 guest pixels.
+    let d = 2.0 * s * segment(a, b).min(segment(b, c)).min(segment(c, a));
+    // `in_shadow` takes guest frame coordinates, twice map ones.
+    if in_shadow(2.0 * q.0, 2.0 * q.1) { d } else { -d }
+}
+
+/// The L1 edge, in host pixels where a tile texel is `texel` of them:
+/// beyond one texel of the outline the light is on the caster's side,
+/// beyond two it is pure black or white, and the ramp between is
+/// anti-aliased (some pixels are neither).
+fn assert_sharp_edge(size: [u32; 2], rgba: &[u8], scale: u32, texel: f32, what: &str) {
+    let mut ramp = 0;
+    for y in 0..size[1] {
+        for x in 0..size[0] {
+            let lit = rgba[((y * size[0] + x) * 4) as usize];
+            let d = caster_distance((x as f32, y as f32), scale);
+            if d.abs() >= texel {
+                assert_eq!(lit < 0x80, d > 0.0, "{what}: ({x}, {y}) {d:.2} px from the outline lit {lit}");
+            }
+            if d.abs() >= 2.0 * texel {
+                assert!(lit == 0 || lit == 0xFF, "{what}: ({x}, {y}) {d:.2} px from the outline is {lit}");
+            }
+            ramp += u32::from(lit != 0 && lit != 0xFF);
+        }
+    }
+    assert!(ramp > 0, "{what}: the edge is anti-aliased, not stepped");
+}
+
+/// Slice L4's synthetic check: in E3 mode the replayed map is a tile and
+/// its shadow has the Sharp edge, at 1x on the graph's own targets and at
+/// 2x through the mixed-size private pass; retail mode replays the map at
+/// the guest's size, and the two differ only near the outline.
+#[test]
+fn e3_tiles_give_a_replayed_shadow_the_sharp_edge() {
+    use d3d::gfx_backend::{GuestDrawPass, TileWork};
+    use d3d::scaled::private_scene::MixedPrivatePass;
+    let Some(ctx) = context() else { return };
+    if !ctx.caps.depth32_stencil8 {
+        eprintln!("skipping: depth levels are not sampled in place");
+        return;
+    }
+    let frame = tile_frame();
+    let one_light = TileWork {
+        tiles: 1,
+        tile_draws: 1,
+        marks: 1,
+        refused: 0,
+    };
+    let mut gpu = GfxBackend::new(share(&ctx));
+    let draw = |gpu: &mut GfxBackend, lighting| {
+        let mut pass = GuestDrawPass::new_lit(gpu, &frame, 1, lighting).unwrap();
+        for (_, op) in &frame.ops {
+            pass.apply(op).unwrap();
+        }
+        let work = pass.tile_work();
+        let (size, rgba) = pass.read_rgba().unwrap();
+        assert_eq!(size, [W, H]);
+        (work, rgba)
+    };
+    let (retail_work, retail) = draw(&mut gpu, d3d::Lighting::Retail);
+    let (e3_work, e3) = draw(&mut gpu, d3d::Lighting::E3);
+    assert_eq!(retail_work, None, "retail plans no tiles");
+    assert_eq!(e3_work, Some(one_light));
+    // At 1x a tile texel (the map at 2x) is one frame pixel.
+    assert_sharp_edge([W, H], &e3, 1, 1.0, "1x");
+    assert_ne!(e3, retail, "the edge changed");
+    for y in 0..H {
+        for x in 0..W {
+            let i = ((y * W + x) * 4) as usize;
+            let d = caster_distance((x as f32, y as f32), 1);
+            // Retail's 2x2 filter reaches a map texel and a half past the edge.
+            if d.abs() > 5.0 {
+                assert_eq!(e3[i..i + 4], retail[i..i + 4], "({x}, {y}) away from the edge");
+            }
+        }
+    }
+
+    let mut pass = MixedPrivatePass::new_lit(&mut gpu, &frame, 2, d3d::Lighting::E3).unwrap();
+    for (_, op) in &frame.ops {
+        pass.apply(op).unwrap();
+    }
+    assert_eq!(pass.tile_work(), Some(one_light));
+    let (size, rgba) = pass.read_target(frame.presented).unwrap();
+    assert_eq!(size, [2 * W, 2 * H]);
+    // At 2x the tile is the map at 2x: a tile texel is two host pixels.
+    assert_sharp_edge(size, &rgba, 2, 2.0, "2x");
+    drop(pass);
+    let mut retail = MixedPrivatePass::new_lit(&mut gpu, &frame, 2, d3d::Lighting::Retail).unwrap();
+    for (_, op) in &frame.ops {
+        retail.apply(op).unwrap();
+    }
+    assert_eq!(retail.tile_work(), None);
 }
 
 /// The Lighting row changes at a frame boundary, both ways, with no

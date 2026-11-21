@@ -17,6 +17,7 @@ enum Call {
     Move(u32, Frame),
     Delete(u32),
     Respawn(u32, Frame),
+    Channel(u32, i16),
 }
 
 #[derive(Default)]
@@ -65,6 +66,11 @@ impl World for Fake {
         self.admit()?;
         self.objects.remove(&h).ok_or("stale handle")?;
         self.calls.push(Call::Delete(h));
+        Ok(())
+    }
+    fn channel(&mut self, flag: u32, channel: i16) -> Result<(), String> {
+        self.admit()?;
+        self.calls.push(Call::Channel(flag, channel));
         Ok(())
     }
 }
@@ -352,3 +358,6 @@ fn save_as_allocates_unique_complete_files_concurrently() {
 
 #[path = "tool_tests.rs"]
 mod tool_tests;
+
+#[path = "link_tests.rs"]
+mod link_tests;

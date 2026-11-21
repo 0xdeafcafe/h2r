@@ -460,6 +460,20 @@ and these constants (hardware numbering, D3D register + 96):
 | `c[50..52]` | model transform rows | `0x0004d830` from the render record's matrix, skipped for clusters (`[record+8] == -1`) | identity for clusters; for a placement (rigid program) its rows per draw, `world::model_rows` |
 | `c[170..172]` | position and texcoord decompression (scale, offset) | `0x0001cdd0`; `0x0004d7c0` passes no compression for the BSP (record `+4` is `-1`), so the default upload (`0x0001cf29`, scale 1, offset 0) | `c[170]` all 1, `c[171]` 0, `c[172]` `(1, 1, 0, 0)`: BSP vertices are uncompressed |
 
+With no game (the editor), `program::ViewInputs::from_camera` builds
+the per-view block from a camera: `c[0..3]` the view-projection rows
+scaled by `zs / far` (so `w` is the W-buffer's, "The W scale" in
+[occlusion-culling.md](occlusion-culling.md)) with the z row equal to the
+w row, `c[5].w` 0.5, `c[10]` and `c[11]` the guest viewport (x, y, z);
+the clip range is the game's `[near / far, 1] · zs`. The other registers
+and components, `c[4]`, `c[5].xyz`, `c[6]`, `c[7..9]`, the `w` of `c[10]`
+and `c[11]` and the block at `c[12..17]`, are not known well enough to
+synthesise and are not given (`program::CAMERA_GIVEN`). The editor loads
+the layers with that mask (`layers_load::load_with`): a pass whose vertex
+program reads a component outside it, by any lane of a swizzle or by a
+relative read based in the block, is refused and named with the register
+(`program::ungiven_view_read`), never drawn with zeros.
+
 Where `v5` and `v6` come from depends on the render record
 (`0x004ba138 + 0x20·i`). `0x0002cbf0` packs its `+0xc` as bits 0..3 an
 argument, 4..8 an index into the `0x24`-byte table at `0x004c152c` (`0x1f` none), 9..17 the cluster index, 18..28 a placement
@@ -604,7 +618,7 @@ and its pipeline completions have crossed a frame boundary.
   palettes bound at stages 0..3 when it starts (`Device::stage_palette`,
   read-only), and refuses a palettized bitmap at stage 3 or at a stage
   with no full 256-entry palette. One decoder does this for every pass
-  loaded with the world (`native_world_glue::StageDecoder`: layer 3
+  loaded with the world (`native_render::stage_images::StageDecoder`: layer 3
   and the transparents' layer-15 passes, which share its images; the
   objects can take it too): an image is expanded once, and another
   stage shares it only when it holds the same palette; a refusal for

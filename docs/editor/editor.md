@@ -616,7 +616,39 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   individual placement blocks, Halo 1 reference and live objects. Each
   row shows its colour and count. Art, Gameplay, Collision and Everything
   choose a set of layers in one click. Collision shows the level structure
-  for context. The viewport and `view.snapshot` share these settings.
+  for context, the kill volumes and the collision layers. The viewport and `view.snapshot` share these settings.
+- **Lighting.** The level is drawn by the native renderer
+  (`scenario_edit::native_view`), one world per BSP; the toolbar's
+  **Lighting** menu picks Game (base map times lightmap), Flat (no
+  lightmap), Lightmap only (the lightmap on white) or Collision (Flat at a
+  third, for the collision layers). The placed objects draw through the
+  native renderer too (`native_view::NativeObjects`, `GpuModels`), each
+  in its rest pose with its base maps in the same mode, and a selected
+  one mixed towards the selection orange as the scene's models are
+  (`native_view::SELECTED_HIGHLIGHT`). Each tag's model is read once:
+  every palette entry's and placement's when the map opens, and a tag
+  an item reference is first set to when the edit lands
+  (`NativeModels::add`, after the placement's collision); an object whose
+  model the native loader refuses (`native_render::model_load`) draws
+  the scene's model, and `view.stats` names it. Live objects, markers and
+  overlays draw over the level with its depth (view depth over the far
+  plane). A map whose BSPs the native loader does not read (a Halo 1
+  reference) draws its textured scene instead.
+- **World layers.** In the Game mode each BSP also draws the world
+  layers 1, 5, 7, 8 and 20 with the materials' own translated passes
+  (`native_view::NativeLayers`), in the game's order: layer 1 before the
+  base look, then 5, 8, 20 and 7 over it. Layer 1 is refused whole
+  (`native_view::LAYER_1_UNCHECKED`): the game draws it in a stencil mode
+  the editor's pass does not hold, and that has not been checked against
+  the game's picture. They load as the game loads
+  them (`native_render::layers_load`) and each material is planned with
+  no game (`layers_load::plan_without_game`: render time, no fog, no
+  dynamic light). A material draws only when nothing it reads is left
+  out: a pass that reads a view constant the camera does not give
+  (`program::CAMERA_GIVEN`), an input the game-free run state does not
+  give, a palettized stage bitmap (no stage palettes), an animated
+  constant or its own fog is refused, and `view.stats` counts it by
+  cause. The other modes draw the base look alone.
   Clicking skips hidden placement categories and hidden structure.
 - **Gameplay layers.** Spawn points have a team-coloured pawn and an
   arrow pointing along the spawn facing. Netgame flags have a team tint
@@ -628,6 +660,38 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   Netgame equipment shows its model when available and a respawn label.
   The Gameplay switches and their corresponding placement blocks both
   control visibility. The **Placement markers** switch controls glyphs and annotations.
+- **Volumes.** Trigger volumes are translucent boxes with wire edges and
+  a caption with the name and what names the volume (`· kill`, `· BSP 0
+  to 1`), in three layers: Trigger volumes (all of them), Kill volumes
+  and BSP switches (the volumes a kill trigger or a BSP switch names), in
+  the colour of the most specific one shown (`scenario_edit::volumes`,
+  `theme::volume_color`). A click on a box selects it when no placement is
+  under the cursor; the Scene tab's Volumes group lists them and brings
+  a picked one into view, and the inspector shows the box, its parent and
+  what names it. A volume with a parent object is listed and not drawn.
+  A selected world-space volume takes the gizmo: move, turn, and scale
+  along each axis, each drag one undo step; the inspector edits its
+  centre, size and (upright boxes) facing. The Volumes group's menu adds
+  a trigger volume or makes a kill volume (a volume and a kill trigger
+  naming it, one step) at the camera focus; Delete and the inspector
+  remove one, refused while a kill trigger or BSP switch names it, and
+  a kill trigger's Remove drops just the kill trigger
+  ([scenario-editor.md](scenario-editor.md), "Trigger volumes, kill
+  triggers and BSP switches").
+- **Collision.** Level collision draws every surface of each structure
+  BSP's collision BSP as translucent faces with wire edges; Collision
+  only draws, in red, the surfaces no drawn triangle covers: the
+  invisible walls (`scenario_edit::collision_view::classify`). Instance
+  collision draws instanced geometry's collision, placed, the same way,
+  and Collision only covers it too. Object collision draws each placed
+  object's `coll` BSPs and `phmo` shapes as wire, each posed by its
+  node's rest transform and then the placement's
+  (`scenario_edit::object_collision`). Each object tag is read once:
+  those placed when the map opens, and any other the moment an edit
+  first places it (another palette entry, an item reference). All four
+  start hidden. A click on a shown surface selects it when nothing else
+  is under the cursor, and the inspector shows its class, plane, raw
+  flags, material and ring, read only.
 - **Glyphs and labels.** Other placements without a model use a diamond
   in their block colour. Past 40 world units glyphs and their pick
   spheres grow with distance so the whole map stays readable. Gameplay
@@ -674,11 +738,12 @@ sun, the fog check, colour conversion and bilinear samples, the floor
 under a point), `tests::the_first_lightmap_group_lights_a_bsp_with_its_checksum`
 the group choice, and `api::view::tests` the stats.
 
-Not yet: the shaders' own passes (the native renderer translates each
-material's layer-3 pass and its unlit-BSP implementation; the viewport
-draws a base map, its detail maps and a lightmap, so bump, environment
-and specular layers, and the engine lighting vectors of an unlit BSP, are
-missing); the bucket streams (types `2f` and `30`: per-vertex colour and
+Not yet: the shaders' own layer-3 passes (the native renderer translates
+each material's layer-3 pass and its unlit-BSP implementation; the
+viewport draws a base map, its detail maps and a lightmap there, so the
+bump, environment and specular parts of layer 3, and the engine lighting
+vectors of an unlit BSP, are missing; layers 1, 5, 7, 8 and 20 draw
+their own passes where the plan takes them, "World layers" above); the bucket streams (types `2f` and `30`: per-vertex colour and
 light direction, not interpreted); the lightmap's light probes and the
 sky's fallback object-lighting colour (reported, not drawn); fog B,
 patchy fog and the BSP's fog planes; the sky's node transforms, its tag's

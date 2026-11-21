@@ -159,6 +159,20 @@ fn dialog_page_tables() {
             effects: vec![Ignored, Changed],
             after: "FORGE | focus 2 Load",
         },
+        Case {
+            page: Link,
+            from: "teleporter",
+            inputs: &[Down, Down, Down, A],
+            effects: vec![Changed, Changed, Changed, Command(Unlink)],
+            after: "LINK | focus 3 Remove link",
+        },
+        Case {
+            page: Link,
+            from: "device",
+            inputs: &[A, Down, Down, Down, Down, B],
+            effects: vec![Ignored, Changed, Changed, Changed, Ignored, Command(Close)],
+            after: "LINK | focus 3 Remove link",
+        },
     ] {
         let mut state = named(&case.page, case.from);
         assert_eq!(

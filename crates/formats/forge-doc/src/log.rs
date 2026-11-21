@@ -300,6 +300,7 @@ fn fold_document(
     if !active.iter().map(|(op, _)| *op).eq(doc.ops.iter()) {
         result.ops = active.into_iter().map(|(op, _)| op.clone()).collect();
         result.expect = None;
+        crate::links::check(&result.ops, &limits.base_counts)?;
     }
     wire::measure(&result, "document bytes", MAX_DOC_BYTES)?;
     Ok((result, chain.head))
@@ -329,7 +330,7 @@ impl<'a> Before<'a> {
 /// latest active edit, so later index-based commands cannot be reordered.
 pub fn inverse(op: &Op, before: &Before<'_>) -> Result<Op> {
     match &op.edit {
-        Edit::Placement(_) | Edit::TagField(_) => Ok(Op {
+        Edit::Placement(_) | Edit::TagField(_) | Edit::Forge(_) => Ok(Op {
             id: op.id,
             edit: Edit::Undo,
         }),

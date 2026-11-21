@@ -133,7 +133,7 @@ pub struct Shot {
     /// The projectile's speed for lead (world units a second).
     pub speed: f32,
     /// Shoots at targets this far, no nearer or further: the gun's reach
-    /// ([`crate::weapons::reach`]), its role's refined by its aim assist.
+    /// ([`crate::weapons::reach`]), using its aim assist and projectile.
     pub range: (f32, f32),
     /// A blade's lunge (world units): it swings this close. 0 for a gun.
     pub lunge: f32,

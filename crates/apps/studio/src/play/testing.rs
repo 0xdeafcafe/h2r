@@ -156,8 +156,12 @@ pub(crate) mod fake {
         pub(crate) external_live: bool,
         pub(crate) peers: Option<u32>,
         pub(crate) bytes: std::collections::HashMap<String, String>,
+        // The epoch the edited bytes belong to: a new map load starts from its file.
+        bytes_epoch: Option<u64>,
         pub(crate) placements: std::collections::HashMap<String, u32>,
         pub(crate) journal: Vec<Value>,
+        /// The sealed scene's views, once [`Game::scene`] gave the game one.
+        pub(crate) views: Vec<live::View>,
     }
     /// The agent server and the state observed at its synthetic game boundaries.
     pub(crate) struct Game {
@@ -286,6 +290,12 @@ pub(crate) mod fake {
                 if let Some(error) = state.batch_error.take() {
                     return Err(error);
                 }
+                // A map change loads the file again: the old epoch's edits are gone.
+                if state.bytes_epoch.is_some_and(|epoch| epoch != fixture_epoch(ctx)) {
+                    state.bytes.clear();
+                    state.journal.clear();
+                }
+                state.bytes_epoch = Some(fixture_epoch(ctx));
                 let key = |w: &Value| w.get("at").unwrap_or(&w["path"]).to_string();
                 for w in writes {
                     if let Some(holds) = state.bytes.get(&key(w))
@@ -429,6 +439,19 @@ pub(crate) mod fake {
                 Ok(json!({"held":marks.marks.len(), "drawn":window && !marks.marks.is_empty(),
                     "why":(!window).then_some("this host has no window"), "refused":[]}))
             });
+        }
+
+        /// A scene source with these views, as the native renderer's scene
+        /// glue registers one. Call before pairing: the subscription
+        /// negotiates the `camera` layer.
+        pub(crate) fn scene(&self, views: Vec<live::View>) {
+            self.edits.lock().unwrap().views = views;
+            let edits = Arc::clone(&self.edits);
+            self.agent
+                .set_camera_source(Arc::new(move |out: &mut Vec<live::View>| {
+                    out.extend(edits.lock().unwrap().views.iter().cloned());
+                    Ok::<(), String>(())
+                }));
         }
 
         pub(crate) fn calls(&self, name: &str) -> Vec<Value> {

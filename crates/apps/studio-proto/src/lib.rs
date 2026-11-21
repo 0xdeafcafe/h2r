@@ -102,6 +102,15 @@ pub mod method {
     pub const SCENARIO_DELETE: &str = "scenario.delete";
     pub const SCENARIO_DUPLICATE: &str = "scenario.duplicate";
     pub const SCENARIO_SELECT: &str = "scenario.select";
+    pub const VOLUME_LIST: &str = "volume.list";
+    pub const VOLUME_SELECT: &str = "volume.select";
+    pub const VOLUME_SET: &str = "volume.set";
+    pub const VOLUME_ADD: &str = "volume.add";
+    pub const VOLUME_REMOVE: &str = "volume.remove";
+    pub const COLLISION_SURFACES: &str = "collision.surfaces";
+    pub const COLLISION_AT: &str = "collision.at";
+    pub const COLLISION_SELECT: &str = "collision.select";
+    pub const COLLISION_OBJECTS: &str = "collision.objects";
     pub const NAV_STATUS: &str = "nav.status";
     pub const NAV_BACK: &str = "nav.back";
     pub const NAV_FORWARD: &str = "nav.forward";
@@ -150,11 +159,13 @@ pub mod method {
     pub const MIRROR_PICK: &str = "mirror.pick";
     pub const MIRROR_AIM_SELECT: &str = "mirror.aim_select";
     pub const MIRROR_CAMERA: &str = "mirror.camera";
+    pub const MIRROR_CONTROL: &str = "mirror.control";
     pub const MIRROR_PLAYER: &str = "mirror.player";
     pub const MIRROR_OBJECTS: &str = "mirror.objects";
 
     pub const VIEW_CAMERA: &str = "view.camera";
     pub const VIEW_LAYERS: &str = "view.layers";
+    pub const VIEW_LIGHTING: &str = "view.lighting";
     pub const VIEW_SNAPSHOT: &str = "view.snapshot";
     pub const VIEW_STATS: &str = "view.stats";
 

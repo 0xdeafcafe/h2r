@@ -424,6 +424,32 @@ async fn only_the_games_lease_can_upload_a_bounded_host_film() {
         response.headers()[header::CONTENT_LENGTH].to_str().unwrap().parse::<usize>().unwrap(),
         film.len()
     );
+    let exact_range = |token: Option<String>| {
+        let mut req = Request::get(format!("/v1/films/{id}/film?object=film"))
+            .header(header::RANGE, "bytes=0-7");
+        if let Some(token) = token {
+            req = req.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        router.clone().oneshot(req.body(Body::empty()).unwrap())
+    };
+    assert_eq!(
+        exact_range(None).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        exact_range(Some(read_token(1))).await.unwrap().status(),
+        StatusCode::NOT_FOUND
+    );
+    let ranged = exact_range(Some(read_token(0))).await.unwrap();
+    assert_eq!(ranged.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        ranged.headers()[header::CONTENT_RANGE],
+        format!("bytes 0-7/{}", film.len())
+    );
+    assert_eq!(
+        to_bytes(ranged.into_body(), 8).await.unwrap().as_ref(),
+        &film[..8]
+    );
     let downloaded = to_bytes(response.into_body(), film.len()).await.unwrap();
     assert_eq!(downloaded.as_ref(), film.as_slice());
 

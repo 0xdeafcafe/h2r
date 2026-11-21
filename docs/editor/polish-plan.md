@@ -1,6 +1,6 @@
 # h2-editor polish: what is wrong, the design, and the slices
 
-Status: P1 to P7, P12, P18, G1 to G3, G5, G6, the editor camera modes and player move in G7, G8 and G9 are implemented. Trigger and kill volume marks depend on P8. The remaining slices describe the design.
+Status: P1 to P13, P18, G1 to G3, G5, G6, the editor camera modes and player move in G7, G8 and G9 are implemented. P8's layouts rest on this repository's readers and writers; the engine's own volume readers are not disassembled. The remaining slices describe the design.
 Code: `crates/apps/studio/src` (the window: `ui.rs`, `ui/`, `play.rs`, `viewport.rs`, `theme.rs`), `crates/tools/scenario-edit/src` (the scene and its renderer). Tests: named per slice.
 Switch: none.
 
@@ -40,9 +40,9 @@ during the read, so nothing here comes from the socket API.
 
 | # | Problem | Where |
 |---|---|---|
-| R22 | Scene handles eleven scenario placement blocks. Trigger volumes, kill triggers, BSP-switch volumes, decals and portals have no Scene overlay. | `crates/tools/scenario-edit/src/layout.rs:12` (`BlockKind`) |
+| R22 | Scene handles eleven scenario placement blocks and the trigger volumes. Decals and portals have no Scene overlay. | `crates/tools/scenario-edit/src/layout.rs:12` (`BlockKind`) |
 | R23 | Collision is not drawn. The parsers exist (`Bsp::decode_structure`, `Collision::decode`, `PhysicsModel::decode` in `crates/formats/tags/src/collision.rs`) and no editor code calls them. Picking uses render triangles, so a wall with collision and no render geometry cannot be seen, clicked or measured. | `crates/tools/scenario-edit/src/geometry.rs:880` (`surface`) |
-| R24 | Instanced geometry has no collision reader anywhere in the tree; `crates/formats/tags/src/structure.rs` reads instance definitions for drawing only. | `crates/formats/tags/src/structure.rs:185` |
+| R24 | Out of date: instanced geometry's collision has a reader, `tags::structure::InstancedGeometryDefinition::collision` (definition `+0x70`), the one `crates/live/superbounce/src/read.rs` used as `DEFINITION_COLLISION`; superbounce and the editor's Instance collision layer share it. | `crates/formats/tags/src/structure.rs` (`InstancedGeometryDefinition::COLLISION`) |
 
 ### The viewport's picture
 
@@ -303,8 +303,7 @@ holds (`play::presence`):
 | an unlinked live object | `{object}` for the selected salted handle |
 | a tag from the tag tree | `{object}` for every live object made from it, up to 64 |
 | the aim candidate | `{object}` in the candidate style |
-
-Trigger and kill volume marks depend on P8 making those entries selectable.
+| a trigger volume | `{box}` at its corner, forward, up and full size (`presence::volume_box`); a volume with a parent object sends none |
 
 The window overlay draws wire boxes and crosses over the finished game
 frame. A genuine frame carries the camera and object bounds that
@@ -548,14 +547,23 @@ owns the list; `view.layers {set?}` reads and sets it; presets
 | Gameplay | Netgame flags | netgame flags | `layout.rs` | a pennant by flag type and team, the type as a label; flags of one type and index joined as an outline (hills, territories) |
 | Gameplay | Netgame equipment | netgame equipment | `layout.rs` | the item's model with its respawn time as a label |
 | Volumes | Trigger volumes | the scenario's trigger volume block | `scenario_edit::volumes` | a translucent oriented box with wire edges and its name |
-| Volumes | Kill volumes | the kill trigger block, which names trigger volumes | `scenario_edit::volumes` | the same box in the kill colour, hatched |
-| Volumes | BSP switches | the BSP-switch block | `scenario_edit::volumes` | the box with "from to" as its label |
+| Volumes | Kill volumes | the kill trigger block, which names trigger volumes | `scenario_edit::volumes` | the same box in the kill colour |
+| Volumes | BSP switches | the BSP-switch block | `scenario_edit::volumes` | the box with "BSP from to to" in its label |
 | Collision | Level collision | the structure's collision BSP | `scenario_edit::collision_view` | surfaces as translucent faces with wire edges |
 | Collision | Collision only | level collision surfaces with no drawn surface over them | `collision_view::classify` | solid red hatch: the invisible walls |
-| Collision | Instance collision | instanced geometry's collision | a new reader in `tags::structure` | as level collision |
-| Collision | Object collision | each placed object's `coll` BSPs and `phmo` shapes | `tags::collision` | wire shapes at the placement's transform |
+| Collision | Instance collision | instanced geometry's collision | `tags::structure::InstancedGeometryDefinition::collision`, placed by `collision_view::instance_surfaces` | as level collision |
+| Collision | Object collision | each placed object's `coll` BSPs and `phmo` shapes | `tags::collision`, `scenario_edit::object_collision` | wire shapes, each posed by its node's rest transform and then the placement's |
 | Structure | Portals and clusters | modeling-targets.md, "Portals, clusters and visibility" | that design | outlines, read-only |
 | Live | players, objects and the rest | the stream | live-mirror.md, "The editor's UI" | that design |
+
+**Node posing.** An object's collision shape is posed by its node's
+default (rest) transform, then the placement's transform. The rest
+transforms are the `hlmt` nodes' translation and orientation, composed
+from the roots. A `coll` BSP's node is its element's leading word (V on
+retail objects, not proven against the engine), a `phmo` shape's its
+rigid body's node; each is named through its tag's node names and found
+in the `hlmt` nodes by name. A one-node object therefore draws at the
+placement's transform. Each region's first permutation is drawn.
 
 **Collision only** is the layer that answers "where are the invisible
 barriers". A collision surface is in it when no render triangle of the
@@ -584,21 +592,38 @@ hidden parts at a quarter strength. It replaces the single-purpose
 text projected by the camera, culled by distance.
 
 **Picking.** A visible overlay shape is pickable: a box by ray against
-its oriented box, a collision surface by ray against its polygon. A
-pick selects it (`Selection::Volume`, `Selection::Surface`), the Scene
-tab highlights its row, and the inspector shows its fields. Hidden
-layers are never picked.
+its oriented box (`volumes::Frame::hit`; a ray that starts inside a box
+does not pick it), a collision surface by ray against its polygon. A
+placement under the cursor wins over a box, since placements sit inside
+volumes. A volume pick selects it in place of the placements
+(`Session::select_volume`, `Action::SelectVolume`), the Scene tab's
+Volumes group highlights its row, and the inspector shows its box and
+what names it. A collision surface is picked when nothing else is under
+the cursor (`Session::pick_surface`, `Action::SelectSurface`), replaces
+the placements and the volume, and the inspector shows it read only.
+Hidden layers are never picked. A box is one selection whatever its
+kinds: kill triggers and BSP switches name trigger volumes, so the
+selection is the trigger volume's index.
 
 ### Editing volumes and barriers
 
-- **Trigger, kill and BSP-switch volumes** are scenario blocks edited as
-  placements are: new entries in `layout::BLOCKS` with their fields, the
-  same `Set`, `Add` and `Remove` ops, the same undo. The gizmo moves and
-  turns the box; scale handles on its faces change its size. Removing
-  one is refused while a script, a kill trigger or a BSP switch names it
-  by index (the refusal names the holder), as scenario-editor.md's
-  section 6 does for placements. Adding one grows the block under the
-  existing growth rule.
+- **Trigger volumes and kill triggers** are edited as placements are,
+  through the editor's own volume block list
+  (`scenario_edit::volumes::VolumeBlock`, held by `Scenario`) and its own
+  ops (`Op::VolumeSet`, `VolumeAdd`, `VolumeRemove`) in the same
+  `History`, with the same undo, merging and growth rule. They are not
+  entries of `layout::BLOCKS`: that is `map::scenario_layout`, which
+  Forge documents depend on (the forge-doc wire format and its
+  validation, the game's Forge map and the Halo 1 converter read it), so
+  a block added there would change what a Forge document may hold. The
+  gizmo moves, turns and scales the box along each axis (`Frame::matrix`,
+  `viewport::volume_gizmo_frame`); a drag is one undo step. Removing one
+  is refused while a kill trigger or a BSP switch names it by index (the
+  refusal names the holder), and, in a map with compiled scripts, for a
+  volume the map came with, since script atoms name volumes by index and
+  the editor does not read their types. A swap-removal repoints the
+  kill triggers and BSP switches of the volume that moves. BSP switches
+  stay read only until what refers to them is surveyed.
 - **Make a kill volume** is one command: add a trigger volume at the
   camera focus and a kill trigger that names it.
 - **Collision-only surfaces** cannot be edited in place: the collision
@@ -647,10 +672,11 @@ It lands in three steps, each a better picture than the last.
    `RenderCamera` from the editor's camera, and calls `prepare` and
    `encode` with the viewport's own colour and depth views
    (`native-render/src/gpu.rs`). The lightmap page decode and the
-   first-bitmap decode move from the game crate
-   (`native_world_glue::decode_lightmap`, `decode_first`) into
-   `native_render::load`, so the editor does not depend on the game
-   host. `scenario-edit`'s world, model and sky pipelines and their
+   bitmap decodes are `native_render::load::decode_lightmap`,
+   `decode_first` and `decode_image`, and the draw filter is
+   `native_render::world::keep_draws`; the game's glue and Theater's
+   host view use them from there, so the editor does not depend on the
+   game host. `scenario-edit`'s world, model and sky pipelines and their
    shaders are deleted; `view.stats` reports from the native world. The
    look is the renderer's `world.wgsl`: base map times lightmap, as the
    game's fixed path.
@@ -676,7 +702,18 @@ It lands in three steps, each a better picture than the last.
    The first task of this step is a survey: each `GuestRead` use in
    `native-render` and `scene-extract`, marked tag data (served by
    `MapMemory`) or run state (synthesised by `scene-static`), written to
-   `docs/graphics/notes/`.
+   `docs/graphics/notes/`: [editor-guest-reads.md](../graphics/notes/editor-guest-reads.md).
+   It finds the material library read from the map file
+   (`tags::material::ShaderLibrary`), five readers of tag data only, and
+   `ViewInputs` built from the D3D device's constants rather than read.
+   So the step takes the shorter path: the layers' load and the stage
+   decoder in native-render (`layers_load`, `stage_images`; the game's
+   glue re-exports them), the view constants from the editor's camera
+   (`program::ViewInputs::from_camera`), and the layer inputs with the
+   editor's run state (`scene_extract::layout::layer_inputs::without_game`:
+   its time, no fog, no dynamic light). `MapMemory` and `scene-static`
+   wait until the lights or the decorators need them: their readers are
+   the ones that start from run state.
 3. **The game's own frame, when paired.** With a game that renders
    natively, **Game camera** (live-mirror.md M2) draws the game's sealed
    scene from the stream in the same viewport, so posed characters,
@@ -708,10 +745,15 @@ when built. The game's methods for the link follow in their own table.
 | `tag.refs` | `{tag}` | `[{to, via, found: field \| scan}]` |
 | `view.layers` | `{set?: {name: bool}, preset?, xray?}` | every layer: `name`, `group`, `on`, `count` |
 | `view.lighting` | `{mode?}` | the mode |
-| `volume.list` | `{kind?}` | `[{kind, index, name, origin, forward, up, size, named_by}]` |
-| `volume.set`, `volume.add`, `volume.remove` | as `scenario.set` and its kin | the volume; refusals name the holder |
-| `collision.surfaces` | `{bsp?, class?, limit?}` | counts by class, and surfaces with `plane`, `flags`, `material`, `class`, `ring` |
-| `collision.at` | `{ray \| point}` | the surface hit and its class |
+| `volume.list` | `{kind?}` | `{volumes: [{index, name, label, kinds, origin, forward, up, size, center, parent, world, named_by}], kill_triggers, bsp_switches, selected, error}` (built) |
+| `volume.select` | `{index?, focus?}` | `{selected}` (built) |
+| `volume.set` | `{index, origin?, center?, forward?, up?, size?}` | `{volume}` (built) |
+| `volume.add` | `{kill?, center?, origin?, forward?, up?, size?}` | `{index, kill_trigger, volume}` (built) |
+| `volume.remove` | `{kind?: trigger \| kill, index}` | `{removed, triggers, kill_triggers, selected}`; a refusal names the holder and carries `{named_by}` (built) |
+| `collision.surfaces` | `{class?, bsp?, offset?, limit?}` | `{bsps, counts: {drawn, collision_only}, matching, surfaces: [{index, bsp, surface, class, plane, flags, breakable, breakable_surface, material, covered, area, center, ring}], selected, errors}` (built) |
+| `collision.at` | `{origin, dir}` or `{point, within?}`, `select?` | `{surface, distance, selected}`: the surface hit and its class, whatever layers are shown (built) |
+| `collision.select` | `{index?, focus?}` | `{selected}` (built) |
+| `collision.objects` | `{block?, index?}` | `{models: [{object, resolved, model, coll, phmo, nodes, shapes, errors}], shapes: [{block, index, object, kind, tag, shape, node, center, radius, edges}], error}` (built) |
 | `ui.palette` | `{query, run?}` | visible entries and per-kind totals, optionally runs the entry at index `run` |
 | `tag.fields` | `{tag, path?}` | `{fields: [{offset, name, kind, size, value, description}]}`. A block element path selects its rows. A missing description is `null` |
 
@@ -758,15 +800,15 @@ under 2,500, L more.
 | P5 | **`scnr.txt` and BSP-region tags** | M | P4 | `crates/formats/tags/src/defs/scnr.txt`, `app/tag_doc.rs` | the registry's own tiling test passes for `scnr`; blocks owned by `layout::BLOCKS` are read-only in the panel; fixture BSP and lightmap edits save at their own file offsets and undo; opt-in disc test: every disc scenario walks through the definition |
 | P6 | **Layers and the overlay pass** | M | nothing | `crates/tools/scenario-edit/src/layers.rs`, `render.rs`, `scene.rs`, `viewport.rs`, `ui.rs`, `api/view.rs` | `view.layers` toggles change `view.snapshot`'s pixels on the fixture; a hidden layer is not picked; the Halo 1 overlay is a layer and its menu item still works; X-ray draws a box behind a wall at reduced strength (pixel test, skipped without an adapter) |
 | P7 | **Spawn and netgame layers**: facing arrows, team tint, flag-type pennants and labels, joined outlines | S | P6 | `geometry.rs`, `layers.rs`, `theme.rs` | glyph geometry tests: an arrow points along the facing; two flags of one type and index make one outline; colours come from the theme's layer tokens |
-| P8 | **Trigger, kill and BSP-switch volumes: see and pick** | M | P6 | `scenario-edit/src/volumes.rs`, `layout.rs`, `scenario.rs`, `api/scenario.rs` (`volume.list`) | research first: the volume's size field and the kill trigger element, from the retail readers with `h2 disasm`, recorded in scenario-editor.md with labels. Fixture with two volumes and a kill trigger: `volume.list` gives frames and sizes; a ray through a box picks it; the kill box is in the Kill layer |
-| P9 | **Edit volumes** | M | P8 | `layout.rs` (`BLOCKS`), `edit.rs`, `session.rs`, `ui/inspector.rs`, `viewport.rs` | move, turn and resize through the gizmo are one undo step each; the saved map differs only in the volume's bytes and the checksum; removing a volume a kill trigger names is refused by name; Make a kill volume adds both entries and undoes as one step |
-| P10 | **Level collision and the Collision only layer** | M | P6 | `scenario-edit/src/collision_view.rs`, `geometry.rs`, `api/view.rs` (`collision.*`) | invented room with one wall that has no render face: `classify` puts that wall alone in Collision only; a render face 1 mm off its plane still covers it; `collision.at` on the wall returns its class; triangulated rings equal `Bsp::surface_ring` |
-| P11 | **Object and instance collision** | M | P10 | `crates/formats/tags/src/structure.rs` (instance collision reader), `collision_view.rs` | research first: the instance definition's collision block, labelled in structure-bsp.md. Fixture object with a `coll` box and a `phmo` sphere: both drawn at the placement's transform; an invented instance's collision reads back |
+| P8 | **Trigger, kill and BSP-switch volumes: see and pick** (implemented) | M | P6 | `scenario-edit/src/volumes.rs`, `scenario.rs`, `layers.rs`, `session.rs`, `fixture.rs` (`fixture_with_volumes`); studio `viewport.rs`, `viewport/mirror.rs`, `ui.rs`, `ui/inspector.rs`, `play/presence.rs`, `api/scenario.rs` (`volume.list`, `volume.select`) | the layouts are recorded in scenario-editor.md, "Trigger volumes, kill triggers and BSP switches", labelled S from this repository's writers and the game-side volume view; the retail readers are not disassembled. `volumes::tests` (box frame, ray pick, holders, the fixture read, pick and frame through `Session`), `api::tests::volume_list_and_select_read_the_invented_volumes` (frames and sizes, the kill box in the Kill layer, layer counts and snapshot pixels), `headless::tests::a_click_on_a_volume_selects_it`, `presence::tests::a_selected_volume_is_marked_as_its_box` |
+| P9 | **Edit volumes** (implemented) | M | P8 | `scenario-edit/src/volumes.rs` (`VolumeBlock`, `Frame::matrix`), `scenario.rs`, `edit.rs` (`Op::Volume*`), `session/volume_edit.rs`; studio `app.rs`, `viewport.rs` (the volume gizmo), `ui.rs` (the Volumes menu), `ui/inspector.rs`, `api/scenario.rs` (`volume.set`, `.add`, `.remove`). Not `layout.rs`: see "Editing volumes and barriers" | `volume_edit::tests` (a gizmo move, turn and resize are one undo step each; the saved map differs only in the volume's bytes and the checksum; removal refused naming the kill trigger and the BSP switch; Make a kill volume adds both and undoes as one step; a removal repoints the moved volume's kill trigger; a scripted map keeps its source volumes; bad frames are refused), `viewport::tests::a_volume_gizmo_moves_turns_or_stretches_only`, `api::tests::volume_set_add_and_remove_edit_through_the_command_layer`. A paired game does not see volume edits until a reload: the live poke the marks table names needs a game run |
+| P10 | **Level collision and the Collision only layer** (implemented) | M | P6 | `scenario-edit/src/collision_view.rs` (`LevelCollision`, `classify`), `layers.rs` (Level collision and Collision only, hidden until shown), `session/collision.rs`, `fixture.rs` (`fixture_with_collision`); studio `viewport.rs` (`upload_collision`, the surface pick), `ui/inspector.rs`, `api/collision.rs` (`collision.surfaces`, `.at`, `.select`) | `collision_view::tests` (the invented room's wall with no render face is alone in Collision only; a render face 0.001 off its plane still covers it, 0.1 off does not, and one touching the edge does not; triangulated rings equal `Bsp::surface_ring`; a ray and a point find the wall; the structure's collision block reads back), `session::collision::tests` (the invented structure BSP's room reads with the map, picks only while a collision layer shows it, and a bad BSP is named), `layers::tests`, `api::tests::collision_surfaces_and_at_report_the_invented_rooms_walls`. Not checked on a retail map: how many surfaces the classifier calls collision only there, and its cost on open, need a disc run |
+| P11 | **Object and instance collision** (implemented) | M | P10 | `crates/formats/tags/src/structure.rs` (`InstancedGeometryDefinition::collision`, `instance_definitions`; superbounce reads through it), `scenario-edit/src/collision_view.rs` (`instance_surfaces`), `object_collision.rs`, `layers.rs` (Instance collision, Object collision), `session/collision.rs`, `fixture.rs` (`fixture_with_instance_collision`, `fixture_with_object_collision`); studio `viewport.rs`, `api/collision.rs` (`collision.objects`) | the definition's collision at `+0x70` is labelled in structure-bsp.md from entry E of collision-queries.md. `structure_tests::an_instance_definitions_collision_reads_back`; `session::collision::tests` (the invented instance's quad is placed, classified and picked only while its layer shows it; the invented scenery's `coll` cube follows its node one unit up and its `phmo` sphere the root, both at the placement; a scenery switched to the crate after the map opens has its collision read then, and an undo keeps it); `object_collision::tests` (hull, box, sphere and pill edges; nodes by name, then index); `api::tests::collision_objects_and_instances_report_the_invented_shapes`. Not checked on a retail map: that the BSP leading word picks the right node on a multi-node object, and the rotation rows' sense on a turned box, need a disc run |
 | P12 | **Tag edits reach the game** (live-mirror M7): `edit.map`; `edit.batch` with `was` and the `at` form; the session check on every `edit.*` write; `tag_sync`; View and Edit; class badges; the Pending tab; leave and rejoin | L | P1 | `crates/extensions/agent-proto/src/hot.rs`, `crates/extensions/agent/src/hot.rs`, `crates/extensions/hot-tags/src/lib.rs`, `play/tag_sync.rs`, `play.rs`, `ui/play.rs`, `fields.rs`, `api/pair.rs`, `api/mirror.rs` | live-mirror.md's M7 row, plus: an `at` write outside every tag is refused; an edit that grows a block is listed under Reload and nothing is sent; a `MISMATCH` offers both choices and each leaves document and baseline equal; pairing with a non-empty journal lists it; `edit.set` in a co-op session is refused by the game |
-| P13 | **`applies` on fields** | S, repeatable | P12 | `crates/formats/tags/src/defs/*.txt`, `crates/formats/tags/src/defs.rs` | the parser reads `applies=frame\|use\|creation` with its evidence; hot-iteration.md's "What shows when" rows are the first entries; a field with none is `unknown` |
+| P13 | **`applies` on fields** | S, repeatable | P12 | `crates/formats/tags/src/defs/*.txt`, `crates/formats/tags/src/defs.rs` | the parser reads `applies=frame\|use\|creation` with its evidence; hot-iteration.md's "What shows when" rows are the first entries; a field with none is `unknown`. Implemented with P12: `FieldDef::applies` in `defs.rs` refuses any other word; `shad.txt` marks the postprocess bitmap, colour and vector `frame` with their E addresses; `play/tag_sync.rs` shows a field with none as unknown; `defs/tests.rs` covers each word, the missing case and a refused word. The rows for placements and object definitions name no single field, so they have no entry yet. |
 | P18 | **Field names and descriptions** from checked-in definitions, with a developer comparison against the retail reference | M | P12 | `crates/formats/tags/src/defs.rs`, `crates/formats/tag-names`, `fields.rs`, `api/tag_fields.rs` | Descriptions parse and round-trip, and appear in root and nested socket rows. Definitions tile each element. Invented plugins exercise compatible fields, overruns, stride conflicts and game refusal. The opt-in comparison prints group coverage and disagreements. |
-| P14 | **Viewport step 1: the native world** | L | P6 | `crates/rewrites/native-render/src/load.rs` (the moved decodes), `scenario-edit/src/render.rs`, `scene.rs`, `geometry.rs`, `viewport.rs`, `api/view.rs` | the fixture map draws through `GpuWorld` into the viewport target (GPU test, skipped without an adapter); `view.stats` keeps its fields; the Lighting modes change the snapshot; picking returns the same placement and surface as before on the fixture; `scenario-edit` holds no world or model shader; the Theater host view still builds on the moved functions |
-| P15 | **Viewport step 2: the material passes** | L | P14 | `crates/rewrites/scene-static` (new), `native-render/src/program.rs`, `scenario-edit/src/render.rs` | the survey note first. `MapMemory` reads equal `TagDoc::read`; a static scene of the fixture has one view, its clusters and an instance per placement; an invented material with a translated pass draws its pass, one without falls back to step 1's look and is counted in `view.stats` |
+| P14 | **Viewport step 1: the native world** (in progress) | L | P6 | `crates/rewrites/native-render/src/load.rs` (the moved decodes), `scenario-edit/src/render.rs`, `scene.rs`, `geometry.rs`, `viewport.rs`, `api/view.rs` | the fixture map draws through `GpuWorld` into the viewport target (GPU test, skipped without an adapter); `view.stats` keeps its fields; the Lighting modes change the snapshot; picking returns the same placement and surface as before on the fixture; `scenario-edit` holds no world or model shader; the Theater host view still builds on the moved functions. Built: the decodes and `keep_draws` in native-render (`load::tests::a_p8_pages_levels_expand_through_the_palette`, `world::tests::keeping_some_draws_rebuilds_the_batches_over_them`), and `scenario-edit/src/native_view.rs`: `NativeLoad`, `NativeWorld`, `Lighting`, `render_camera` and the depth rule (`native_view::tests`: the render camera's view-projection is the editor camera's; each mode's images; untextured draws left out; GPU, an invented quad in each mode; `fixture::fixture_with_textured_bsp`, one invented lit and textured BSP, read through `load_world`, `base_map` and both decodes, and drawn on the GPU). `Viewport::set_native` draws the level through one `NativeWorld` per BSP the session read (`Session::native_world`), behind the scene's models, markers and overlays; the scene's world and the grey world draw only for a map with none (`native_view::tests::the_viewport_draws_the_level_through_the_native_world`). The viewport's glyph, overlay and scene shaders write the same depth as the native pass (view depth over far, `depth_out` in `render.rs`; `native_view::tests::glyphs_test_depth_against_the_native_floor`). The toolbar's Lighting menu and `view.lighting` set the mode, and `view.stats` adds `native` (`api::tests::view_lighting_sets_the_mode_and_stats_report_it`). `NativeLoad::triangles` picks the floor where the editor's world triangles do, and the session picks the same placement with the native world loaded (`native_view::tests::picking_the_native_world_matches_the_editors_world`); picking itself still reads the editor's triangles. Placed objects draw through `GpuModels` (`native_view::NativeObjects`), each in its rest pose (`rest_nodes`: the placement after each node's rest frame) with its base maps in the Lighting mode; the session reads every palette entry's and placement's model once at open (`Session::native_models`) and a tag first placed later when the edit lands (`NativeModels::add`; `native_view::tests::an_item_reference_set_after_open_has_its_model_read`), and the scene draws only the placements whose model `model_load` refuses (`native_view::tests`: `inverting_a_node_matrix_undoes_it`, `the_rest_pose_places_vertices_as_the_scene_does`, GPU `the_viewport_draws_placed_models_through_the_native_renderer`, `the_session_reads_the_placed_objects_models`); a selected placement's model mixes towards the scene's selection orange through the instance record's highlight (`instances::tests::an_objects_highlight_packs_into_its_instance_record`, `native_view::tests::the_selection_highlight_matches_the_scenes_tint`). Left: the scene's world, sky and model pipelines, kept for maps the native loader does not read (Halo 1 reference maps) and for models it refuses. |
+| P15 | **Viewport step 2: the material passes** (in progress) | L | P14 | `native-render/src/layers_load.rs`, `stage_images.rs`, `program.rs`, `scene-extract/src/layout/layer_inputs.rs`, `scenario-edit/src/render.rs` | the survey note first (written: [editor-guest-reads.md](../graphics/notes/editor-guest-reads.md)). An invented material with a translated pass draws its pass, one without falls back to step 1's look and is counted in `view.stats`. Built: the layers' load and the stage decoder in native-render (`stage_images::tests`), `ViewInputs::from_camera` (`program::tests::a_cameras_view_constants_put_points_where_its_projection_does`) with the constants it does not give refused by register (`program::CAMERA_GIVEN`, `layers_load::load_with`; `program::tests::a_program_reading_an_ungiven_view_constant_is_named`), `layer_inputs::without_game` (`layer_inputs::tests::without_a_game_only_time_fog_and_light_are_given`), the game-free plan (`layers_load::plan_without_game`, `upload_static`; `layers_load::tests::a_game_free_plan_names_what_the_load_refused`), and the editor's layer pass: `native_view::NativeLayers` per BSP, drawn by `NativeWorld` in the Game mode through `GpuWorld::prepare_layer` and `encode_layer` (layer 1 before the base look, then 5, 8, 20 and 7; `native_view::tests::the_layers_draw_in_the_games_order`; layer 1 refused and named until its stencil mode is checked against the game's picture, `native_view::tests::layer_1_is_refused_until_it_is_checked_against_the_game`), counted in `view.stats` under each BSP's `layers` (`native_view::tests::the_invented_bsps_layers_name_what_does_not_draw`). Left: an invented material with a translated pass in the fixture, to draw a layer on the GPU in a test; layer 3's own translated passes (`native_world_glue::material_programs`) in place of the base look; editor values for the material and fade blocks, the view vectors and the defaults, and for `c[6]` and `c[12..17]`, which stay refused until they are known. `MapMemory` (reads equal `TagDoc::read`) and `scene-static` (one view, its clusters, an instance per placement) wait until the lights or decorators need them |
 | P16 | **Add a barrier** | L | P10; modeling.md slices 8 and 11 | `crates/formats/collision-build`, `scenario-edit/src/session.rs`, `viewport.rs` | modeling.md slice 11's acceptance, plus: the new solid is in Collision only after the edit; undo removes it; a paired game lists it under Reload |
 | P17 | **Remove, move and From render** | L | P16; modeling.md slice 13 | as P16 | slice 13's acceptance; refused on a retail map until the survey note exists, with that reason |
 
@@ -872,8 +914,12 @@ The tests use invented data.
 - **Code**: `TagDoc::scan_refs` scans the readable range owned by the
   tag. A known layout can also follow block pointers into the document's
   other readable ranges.
-- **S**: the trigger volume's size field and the kill trigger element's
-  layout. Verified by P8's read of the retail volume test.
+- **S**: the trigger volume's frame and size fields, its parent object
+  field and the kill trigger element's layout
+  ([scenario-editor.md](scenario-editor.md), "Trigger volumes, kill
+  triggers and BSP switches"). They rest on this repository's writers and
+  the game-side volume view. Verified by a read of the retail volume test
+  with `h2 disasm`.
 - **S**: the engine tests a trigger volume against the scenario's bytes
   each time, so a poke shows at once. Verified in a run by moving a
   volume with `edit.set` and reading the script result.

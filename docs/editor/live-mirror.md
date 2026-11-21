@@ -1,9 +1,12 @@
 # Live mirror: the running game in the editor, and edits back into it
 
-Status: Partly built. Live object streaming, pairing, conditional tag edits,
-live object edits and reload from a play copy are built. The richer live view,
-timeline and substantial structural edits are designs. Real-game parity and cost checks are pending.
-Code: `crates/extensions/agent-proto/src/live` (wire format), `crates/extensions/agent/src/live` (capture and stream), `crates/tools/live-mirror` (editor store), `crates/apps/studio/src/play` and `crates/tools/scenario-edit` (pairing and viewport).
+Status: Partly built. Live object streaming, the game's cameras (the
+`camera` layer, frustums, Follow, Through its eyes and Game camera), pause
+and step, a windowless paired editor, conditional tag edits, live object
+edits and reload from a play copy are built. The richer live view, timeline
+and substantial structural edits are designs. Real-game parity and cost
+checks are pending.
+Code: `crates/extensions/agent-proto/src/live` (wire format), `crates/extensions/agent/src/live` (capture and stream), `crates/extensions/game/src/scene_glue.rs` (the camera source), `crates/tools/live-mirror` (editor store), `crates/apps/studio/src/play` and `crates/tools/scenario-edit` (pairing and viewport).
 Switch: none. With no subscriber the tick observer skips capture and no stream worker runs.
 
 A paired editor shows the game as it runs: players, bipeds, vehicles,
@@ -25,7 +28,9 @@ tag editor, and Halo 1 tags are in [click-to-edit.md](click-to-edit.md).
 |---|---|---|
 | Pairing, auto-pair, game link pill | Built | `studio::play` (`play.rs`, `play/pair.rs`), `pair.*` ([agent-api.md](agent-api.md)) |
 | Live objects and players | Built: a binary stream on a second connection, interpolated bind-pose models and player overlays | `agent_proto::live`, `live_mirror::Store`, `studio::play` |
-| Pause, step, resume, go to player, teleport | Built | `play.rs`; `session.claim`, `pause`, `step`, `sim.state.set` |
+| Pause, step, resume, go to player, teleport | Built: each step sends its frame | `play.rs`; `session.claim`, `pause`, `step`, `sim.state.set`; `mirror.control` |
+| The game's cameras in the editor | Built: the `camera` layer from the last sealed `FrameScene`, a frustum per game view, Follow, Through its eyes and Game camera | `scene_glue::install_cameras`, `play/presence/camera.rs`, `viewport/mirror.rs`, `geometry::Exact` |
+| A paired editor with no window | Built: `h2-editor --serve` runs the game link between requests | `Api::serve_once` (`crates/apps/studio/src/api/mod.rs`) |
 | Placement field edits sent live | Built: a diff against `sync::Baseline` every 200 ms, one conditional `edit.batch` with the tag document’s fields and raw placement paths on the game’s `scnr`; shows when the object is next made | `play/sync.rs` |
 | Move, delete and remake live objects | In Edit the streamed placement object follows a move or delete. Respawn reads the loaded scenario entry and returns an unlinked preview. | `crates/apps/studio/src/play/objects.rs`, [Object edits](../runtime/agent-api.md#object-edits) |
 | Reload the running map | The editor writes a play copy and the host queues the active campaign or multiplayer options. The editor checks the returned activation and checksum. | `crates/extensions/agent/src/sim/edits.rs`, [Test maps](../runtime/agent-api.md#test-maps) |
@@ -33,7 +38,7 @@ tag editor, and Halo 1 tags are in [click-to-edit.md](click-to-edit.md).
 | No writes in co-op or as a client | Built | `agent_proto::sim::SessionKind::writes` |
 | Typed object reads | Built: transform, velocity, sphere, vitality, node matrices, unit player, team, seat, weapons and aim | `crates/rewrites/sim-state` (`ObjectView`, `UnitView`), over `crates/hooking/guest-layout` |
 | The tick's events | Built: `deleted`, `damage`, `kill`, while `impl.sim.native.objects` is on | `sim_state::events`, `sim.events` |
-| The game's cameras, drawn instances, lights | Built for a run that renders with the native renderer | the sealed `FrameScene` (`frame_scene::View`, `Instance`), [framescene.md](../graphics/framescene.md) section 4 |
+| The game's cameras, drawn instances, lights | Built for a run that renders with the native renderer; the cameras and drawn handles stream as the `camera` layer | the sealed `FrameScene` (`frame_scene::View`, `Instance`), [framescene.md](../graphics/framescene.md) section 4 |
 | Object to placement link, a machine's position | Built | `live_telemetry::memory` (`placement`), `guest_layout::unit::Device::POSITION` |
 | Per-tick rows taken inside the tick observer | Built, as JSON to a file | `crates/extensions/agent/src/trace.rs` |
 | Models in the viewport | Built in the bind pose, first permutation, instanced per model | `scenario_edit::render::Viewport`, [editor.md](editor.md), "What the viewport shows" |
@@ -63,7 +68,8 @@ mirror wants every object at full precision over a local socket.
 A frame is `u32` length, then a header (`kind`: key, delta or notice;
 `seq`; the game tick; the map epoch; flags `paused`, `cut`), then
 sections. A section is a layer id, a byte length and a payload, so a
-reader skips a layer it does not know. The types and both codecs are
+reader skips a layer it does not know. Layer ids follow the table below
+from 1 (`objects`); `camera` is 7. The types and both codecs are
 `agent_proto::live`, with no guest and no editor dependency.
 
 | Layer | Carries | Source |
@@ -74,7 +80,7 @@ reader skips a layer it does not know. The types and both codecs are
 | `anim` | per animated object: the animation graph tag, the animation and frame each channel plays | new `sim_state::AnimationView` over `Object::ANIMATION_MANAGER` |
 | `projectiles` | per projectile: the `objects` fields plus owner, flight flags, ticks alive | new `sim_state::ProjectileView` |
 | `devices` | per machine and control: position 0 to 1, and power and target once read | `Device::POSITION`, new `sim_state::DeviceView` |
-| `camera` | per game view: position, forward, up, field of view, near, far, viewport, the cut flag; the handles of the instances the game drew | `frame_scene::View::camera`, `Instance::key` |
+| `camera` | per view, keyed by kind, player and view index (`game:0:0`): the sealed scene's tick, position, forward, up, vertical field of view, near, far, viewport, the cut flag; the handles of the instances the view drew | `frame_scene::View::camera`, `Instance::key`, through `scene_glue::install_cameras` |
 | `events` | the tick's events: deleted, damage, kill, projectile ended, effect started | `sim_state::events`; `live_telemetry::impacts`; effects are new |
 | `effects` | particle points: position, size, colour, per emitter | the native particle stage's captured geometry ([native-particles.md](../graphics/native-particles.md)); new |
 
@@ -104,8 +110,11 @@ Three places do the work, in this order.
    through a bounded channel of two buffers. The worker diffs it against
    the last capture it encoded, writes the frame and hands the buffer
    back. The `camera` layer is read here from the last sealed
-   `FrameScene` (`agent::render::set_scene_source`): a sealed scene is an
-   immutable `Arc`, so it costs the game thread nothing.
+   `FrameScene`, through the source the game's scene glue gives the agent
+   (`Agent::set_camera_source`): a sealed scene is an immutable `Arc`, so
+   it costs the game thread nothing. The worker sorts the views by key and
+   keeps the first of any repeated key. A camera can be a rendered frame
+   behind the tick it travels with; its `scene_tick` says which.
 3. **Send, on the connection's writer thread.** Each stream has a queue
    of eight frames. When it is full the worker drops the frame, counts it
    and makes the next one a key frame.
@@ -241,18 +250,27 @@ pause stops the game window's event loop (agent-api.md, "Control").
 
 | Mode | Does |
 |---|---|
-| Free | the editor's fly, orbit and pan camera (`camera.rs`), as now |
-| Follow | orbits a chosen player or object at a kept offset; optionally turns with its aim |
-| Through its eyes | at the unit's head node looking along its aim; the editor's own render, not the game's picture |
-| Game camera | takes a game view's camera from the `camera` layer exactly, field of view included |
+| Free | the editor's fly, orbit and pan camera (`camera.rs`) |
+| Follow | orbits a local player at the offset the eye had on entry; orbit and zoom change the offset |
+| Through its eyes | at the unit's position plus eye height, looking along its aim; the editor's own render, not the game's picture |
+| Game camera | takes a game view's camera from the `camera` layer exactly: eye, forward, up (roll included), vertical field of view, near and far |
 
-In every mode but Game camera, each game view's frustum is drawn as a
-wire pyramid from the `camera` layer, one per split-screen player, and
-objects the game drew that frame can be tinted (the `drawn` overlay). A
-run with no sealed scene (a headless `h2 serve` with no GPU view) has no
-`camera` layer: `live.subscribe` lists it under `refused` with the
-reason, and the editor says the game has no camera. It does not invent
-one from a player's aim.
+Game camera sets the editor camera's exact pose (`geometry::Exact`), so
+the viewport's view matrix is the scene's. The projection uses the game's
+vertical field of view at the editor viewport's aspect. It takes the
+first `game` view, or the one `mirror.camera` names, and holds its last
+pose while that view is not drawn. Leaving it keeps the eye where the
+game's was and gives back the editor's field of view.
+
+In every mode but Game camera, each `game` view's frustum is drawn as a
+wire pyramid from the `camera` layer, one per split-screen player, out to
+two world units or the far plane (`viewport/mirror.rs`, `frustum`). The
+`drawn` handles are streamed; the overlay that tints the objects a view
+drew is not drawn yet. A run with no sealed scene source (no native
+renderer, or the frame scene off) has no `camera` layer: `live.subscribe`
+lists it under `refused` with the reason, and Game camera is refused with
+"the game has no camera". The editor does not invent a camera from a
+player's aim.
 
 ## Live edit
 
@@ -467,18 +485,21 @@ confirmation for these writes. [Object edits](../runtime/agent-api.md#object-edi
 
 ### The editor's socket API
 
-New namespace `mirror` in `studio_proto`, answered by a provider
+Namespace `mirror` in `studio_proto`, answered by a provider
 (`api/mirror.rs`, [agent-api.md](agent-api.md), "Extension points"). It
-needs the pairing, so it moves `play::Play` from the window to the `App`
-and lets `h2-editor --serve` pair; `pair.connect` then works headless.
+needs the pairing, which `play::Play` runs over the `App`'s
+`play::pair::Bridge`. The window updates its `Play` each frame;
+`h2-editor --serve` keeps one beside the `App` and updates it between
+requests (`Api::serve_once`), so `pair.*` and `mirror.*` work with no
+window.
 
 | Method | Params | Result |
 |---|---|---|
 | `mirror.status` | none | the stream (`state`, `protocol`, `layers`, `fps`, `delay_ms`, `dropped`, `skipped`, `notice`), the store (`tick`, `first_tick`, `objects`, `bytes`), `mode` (`view`, `edit`) and why Edit is off |
 | `mirror.layers` | `{set?: {name: bool}, overlays?: {name: bool}}` | every layer and overlay, on or off, with its count |
 | `mirror.objects` | `{kind?, near?, limit?, at_tick?}` | the store's objects as the viewport draws them: `id`, `kind`, `tag`, `pos`, `forward`, `placement`, `nodes`, at the shown tick |
-| `mirror.camera` | `{mode: free \| follow \| eyes \| game, target?, view?}` | the camera mode and what it follows |
-| `mirror.control` | `{op: pause \| step \| resume, ticks?}` | the game's stamp after it |
+| `mirror.camera` | `{mode: free \| follow \| eyes \| game, target?, view?}` | `{mode, target}`, and `view` in game mode |
+| `mirror.control` | `{op: pause \| step \| resume, ticks?}` | `{requested, tick}`: queued, with the store's latest tick before it |
 | `mirror.seek` | `{tick}` or `{live: true}` | the shown tick and the ring's range |
 | `mirror.record` | `{op: start \| stop \| save, path?}` | `{recording, frames, bytes, path?}`; `save` is refused in a Git checkout |
 | `mirror.open` | `{path}` | a recording opened with no game: its map, tick range and layers |
@@ -498,7 +519,7 @@ with an invented game behind it, as `play::tests` use; no game data.
 | Slice | Ships | Acceptance |
 |---|---|---|
 | **M1** See players and objects move (implemented) | `agent_proto::live` (frames, `objects` and `players`); the capture, worker and `live.subscribe`, `live.status`, `live.close`; `live_mirror::Store`, the editor's stream thread and interpolation; live objects drawn with their models in the bind pose, players with name, team and aim line; the 4 Hz poll's markers removed | codec round trip and delta tests in `agent-proto`; capture of a synthetic pool equals `sim.objects` of the same pool; a full queue drops and re-keys and never blocks the capture; fake game: a moved object moves in `mirror.objects` within two frames; with the real game, `mirror.objects` at a tick equals `sim.objects` at that tick, `sim.hashes` are equal with and without a subscriber on one input replay, and the note records bytes a second and `capture_us` |
-| **M2** Cameras and controls | the `camera` layer from the sealed scene; frustums; Follow, Through its eyes, Game camera; `mirror.camera`, `mirror.control`; a frame per step; `Play` on the `App`, `mirror.*` headless | fake game with a scene source: the Game camera's view matrix equals the scene's; no source lists `camera` under `refused`; a step of one tick advances `mirror.status.tick` by one |
+| **M2** Cameras and controls (implemented) | the `camera` layer from the sealed scene; frustums; Follow, Through its eyes, Game camera; `mirror.camera`, `mirror.control`; a frame per step; `mirror.*` headless through `h2-editor --serve` | fake game with a scene source: the Game camera's view matrix equals the scene's; no source lists `camera` under `refused`; a step of one tick advances `mirror.status.tick` by one (`play/presence/camera/game_camera_tests.rs`); a windowless serve pairs and answers `mirror.objects` (`api/tests.rs`, `windowless_serve`). With the real game: Game camera matches the game's picture |
 | **M3** Timeline and recordings | the ring, the scrubber, `mirror.seek`, `mirror.record`, `mirror.open`, the `.h2mirror` file | a recording saved and opened shows the same `mirror.objects` at each tick; the ring stays under its bound and drops whole key intervals; saving into a Git checkout is refused |
 | **M4** Poses and animation | the `poses` layer with its interest sphere; a skinned pipeline in `scenario_edit::render`; `sim_state::AnimationView` and the `anim` layer; the shed rule | synthetic model: node matrices in, skinned vertices out match a reference; fake game: a pose change shows in `view.snapshot`; over budget, `poses` is shed and a notice sent |
 | **M5** Projectiles and arcs | `ProjectileView`, the `projectiles` layer, trails, `arc::predict`, aim projection, impact marks | `arc::predict` against a closed form for gravity alone; a recorded synthetic flight stays within the stated error of its arc; a projectile-ended event leaves a mark |
@@ -574,6 +595,8 @@ M10 each start by reading the retail code for the fields they add, into
 - That a spawned preview object behaves as the placed one would.
 - Edits on a System Link host with clients in the game.
 - The stream from the Xbox app over TCP.
+- That Game camera lines the editor's render up with the game's picture
+  on a real run, and how far the sealed scene's camera lags the tick.
 
 ## Related
 

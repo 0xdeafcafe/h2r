@@ -561,6 +561,12 @@ impl Hle {
         let keys = self.network.registered_keys();
         self.lock().matchmade(&keys)
     }
+    /// Whether this match has a Live session whose host supplies the library film.
+    /// A System Link peer also registers a key, but has no Live advertisement.
+    pub fn archived_session(&self) -> bool {
+        let keys = self.network.registered_keys();
+        self.lock().archived_session(&keys)
+    }
     /// Whether Live assigned frame uploads to the host for this match alone.
     /// The uploader reads it when it latches the published session ID.
     pub fn frames_from_host(&self, session_id: &str) -> bool {

@@ -462,6 +462,7 @@ fn queued_and_repeated_frames_keep_their_own_mark_bounds_and_view_lenses() {
                 color: [1.0, 0.0, 0.0],
                 dashed: false,
                 label: None,
+                style: Default::default(),
             });
         }
     }

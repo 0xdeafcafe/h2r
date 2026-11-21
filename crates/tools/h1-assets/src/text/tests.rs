@@ -6,7 +6,7 @@ use crate::text::convert::Locales;
 use crate::text::h1::{Hmt, MessagePart, Ustr, scenario_text};
 use h1map::TagId as H1TagId;
 use h1map::{Group, H1Map, Tag, testing};
-use map::build::{Block, TagPayload, TagSet, string_id};
+use map::build::{Block, FixupKind, TagPayload, TagSet, string_id};
 use map::{CacheType, FourCC, Map, TagId};
 use std::io::Cursor;
 
@@ -204,6 +204,122 @@ fn find<'a>(map: &'a H1Map, group: &[u8; 4]) -> &'a Tag {
         .iter()
         .find(|t| t.group == Group::new(group))
         .expect("tag present")
+}
+
+#[test]
+fn multiplayer_pickup_text_routes_only_the_rebuilt_item_slots() {
+    use crate::text::hud::{EVENTS, GROUP, PROMPT_SUBJECTS, SCENARIO_HMT};
+    use crate::text::multiplayer::PickupText;
+
+    let source = synth_map(vec![
+        tag(b"scnr", "fixture", |_| scenario()),
+        tag(b"hudg", "globals", |_| {
+            let mut bytes = vec![0; 0x100];
+            put(&mut bytes, 0xa0, SCNR_ID + 3);
+            put(&mut bytes, 0xb0, u32::MAX);
+            put(&mut bytes, 0xc0, u32::MAX);
+            put(&mut bytes, 0xfc, SCNR_ID + 2);
+            bytes
+        }),
+        tag(b"hmt ", "messages", |at| {
+            hmt_raw(
+                &[],
+                &[(1, 18), (1, 32), (1, 24), (1, 18), (1, 32), (1, 33)],
+                &[
+                    ("pickup", 0, 2),
+                    ("swap_weapon", 2, 1),
+                    ("remind_to_switch_weapons", 3, 1),
+                    ("swap_powerup", 4, 2),
+                ],
+                at,
+            )
+        }),
+        tag(b"ustr", "items", |at| {
+            ustr_tag(
+                &["unused", "Picked up a gadget", "Picked up an example pack"],
+                at,
+            )
+        }),
+        tag(b"weap", "gadget", |_| {
+            let mut bytes = vec![0; 0x490];
+            put(&mut bytes, 0x180, 1);
+            bytes
+        }),
+        tag(b"eqip", "pack", |_| {
+            let mut bytes = vec![0; 0x310];
+            put(&mut bytes, 0x180, 2);
+            put(&mut bytes, 0x308, 5);
+            bytes
+        }),
+    ]);
+    let weapon = FourCC(*b"weap");
+    let equipment = FourCC(*b"eqip");
+    for weapons in [true, false] {
+        let mut set = TagSet::new(CacheType::Multiplayer, "fixture", "fixture");
+        let scenario = set
+            .add_tag(
+                FourCC(*b"scnr"),
+                "fixture",
+                TagPayload::Pinned {
+                    address: 0,
+                    bytes: vec![0; 0x210],
+                },
+            )
+            .unwrap();
+        set.scenario = scenario;
+        let untouched = TagPayload::Built(Block::zeroed(0x31c));
+        let base_weapon = set.add_tag(weapon, "gadget", untouched.clone()).unwrap();
+        let first = set.slots.len();
+        let rebuilt_weapon = set.add_tag(weapon, "gadget", untouched.clone()).unwrap();
+        let pack = set
+            .add_tag(equipment, "pack", TagPayload::Built(Block::zeroed(0x13c)))
+            .unwrap();
+        let end = set.slots.len();
+        PickupText::read(&source, weapons)
+            .unwrap()
+            .install(&mut set, first..end)
+            .unwrap();
+
+        assert_eq!(set.tag(base_weapon).unwrap().payload, untouched);
+        let TagPayload::Built(weapon) = &set.tag(rebuilt_weapon).unwrap().payload else {
+            panic!()
+        };
+        let TagPayload::Built(equipment) = &set.tag(pack).unwrap().payload else {
+            panic!()
+        };
+        let TagPayload::Pinned { bytes, .. } = &set.tag(scenario).unwrap().payload else {
+            panic!()
+        };
+        let reference = &bytes[SCENARIO_HMT as usize..];
+        assert_eq!(reference[..4], GROUP.as_u32().to_le_bytes());
+        let hud = TagId(u32::from_le_bytes(reference[4..8].try_into().unwrap()));
+        let TagPayload::Built(hud) = &set.tag(hud).unwrap().payload else {
+            panic!()
+        };
+        let child = |offset| {
+            let fixup = hud
+                .fixups
+                .iter()
+                .find(|fixup| fixup.offset == offset)
+                .unwrap();
+            let FixupKind::Block { child, count } = &fixup.kind else {
+                panic!()
+            };
+            (child, *count)
+        };
+        let (events, count) = child(EVENTS);
+        assert_eq!(count, if weapons { 8 } else { 1 });
+        for (root, offset) in [(weapon, 0xcc), (equipment, 0xe0)] {
+            let binding = root.fixups.iter().find(|fixup| fixup.offset == offset);
+            assert_eq!(binding.is_some(), weapons || offset == 0xe0);
+            if let Some(binding) = binding {
+                assert!(events.fixups.iter().any(|fixup| fixup.kind == binding.kind));
+            }
+        }
+        let (subjects, count) = child(PROMPT_SUBJECTS);
+        assert_eq!(count, 1);
+        assert_eq!(subjects.fixups[0].kind, FixupKind::TagId(pack));
+    }
 }
 
 // ---------------------------------------------------------------------------

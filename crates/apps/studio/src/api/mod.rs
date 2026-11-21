@@ -25,6 +25,7 @@ use studio_proto::{code, method as m};
 
 use crate::App;
 
+mod collision;
 mod docs;
 mod hud;
 mod mirror;
@@ -349,6 +350,69 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"block":"netgame_flags","index":0}"#,
     ),
     def(
+        m::VOLUME_LIST,
+        "The open map's trigger volumes as oriented boxes (corner, forward, up, full size), what each is drawn as, and the kill triggers and BSP switches that name it",
+        r#"{"kind?":"trigger|kill|bsp_switch"}"#,
+        r#"{"volumes":"[{index,name,label,kinds,origin,forward,up,size,center,parent,world,named_by:[{kind,index,from?,to?}]}]","kill_triggers":"integer","bsp_switches":"integer","selected":"integer|null","error":"string|null"}"#,
+        r#"{"kind":"kill"}"#,
+    ),
+    def(
+        m::VOLUME_SELECT,
+        "Select a trigger volume by index (clearing the placements) and frame it with focus, or clear the selection",
+        r#"{"index?":"integer","focus?":"boolean"}"#,
+        r#"{"selected":"integer|null"}"#,
+        r#"{"index":0,"focus":true}"#,
+    ),
+    def(
+        m::VOLUME_SET,
+        "Give a trigger volume a new box as one undo step: forward, up and size over its own, then the corner origin or the centre (its own when neither is given). Forward and up are squared",
+        r#"{"index":"integer","origin?":"[x,y,z]","center?":"[x,y,z]","forward?":"[x,y,z]","up?":"[x,y,z]","size?":"[x,y,z]"}"#,
+        r#"{"volume":"{index,name,label,kinds,origin,forward,up,size,center,parent,world,named_by}"}"#,
+        r#"{"index":0,"center":[102,102,3],"size":[4,4,6]}"#,
+    ),
+    def(
+        m::VOLUME_ADD,
+        "Add a trigger volume (a 2-unit cube at the camera focus unless the box is given) and select it; kill adds a kill trigger naming it in the same undo step (Make a kill volume). Refused past the block's source size while growth is off",
+        r#"{"kill?":"boolean","center?":"[x,y,z]","origin?":"[x,y,z]","forward?":"[x,y,z]","up?":"[x,y,z]","size?":"[x,y,z]"}"#,
+        r#"{"index":"integer","kill_trigger":"integer|null","volume":"{index,...}"}"#,
+        r#"{"kill":true,"center":[0,0,2]}"#,
+    ),
+    def(
+        m::VOLUME_REMOVE,
+        "Remove a trigger volume or a kill trigger (the last entry takes its slot; kill triggers and BSP switches follow a moved volume). A volume a kill trigger or BSP switch names is refused, naming them, as is a source volume of a scripted map",
+        r#"{"kind?":"trigger|kill","index":"integer"}"#,
+        r#"{"removed":"{kind,index}","triggers":"integer","kill_triggers":"integer","selected":"integer|null"}"#,
+        r#"{"kind":"kill","index":0}"#,
+    ),
+    def(
+        m::COLLISION_SURFACES,
+        "The open map's level collision surfaces (each structure BSP's collision BSP): plane, raw flags, material, ring, and class, collision_only when no drawn triangle lies on the surface's plane over it (the invisible walls). Filter by class or BSP; offset and limit (200) page the list",
+        r#"{"class?":"drawn|collision_only","bsp?":"integer","offset?":"integer","limit?":"integer"}"#,
+        r#"{"bsps":"[string]","counts":"{drawn,collision_only}","matching":"integer","surfaces":"[{index,bsp,surface,class,plane,flags,breakable,breakable_surface,material,covered,area,center,ring}]","selected":"integer|null","errors":"[{bsp,error}]"}"#,
+        r#"{"class":"collision_only","limit":10}"#,
+    ),
+    def(
+        m::COLLISION_AT,
+        "The level collision surface a ray meets first (origin and dir) or the one a point lies on (within 0.05 units of its plane, over it), and its class, whatever layers are shown; select selects it (or clears the selection on a miss)",
+        r#"{"origin?":"[x,y,z]","dir?":"[x,y,z]","point?":"[x,y,z]","within?":"number","select?":"boolean"}"#,
+        r#"{"surface":"{index,bsp,surface,class,...}|null","distance":"number|null","selected":"integer|null"}"#,
+        r#"{"origin":[205,205,1],"dir":[1,0,0]}"#,
+    ),
+    def(
+        m::COLLISION_SELECT,
+        "Select a level collision surface by index (clearing the placements and the volume) and frame it with focus, or clear the selection. Read only",
+        r#"{"index?":"integer","focus?":"boolean"}"#,
+        r#"{"selected":"integer|null"}"#,
+        r#"{"index":0,"focus":true}"#,
+    ),
+    def(
+        m::COLLISION_OBJECTS,
+        "The placed objects' collision: each object tag's model, coll and phmo, and every shape a placement places (coll BSPs, phmo spheres, pills, boxes and polyhedra), posed by its node's rest transform and the placement's, in world space. Filter by block and index",
+        r#"{"block?":"string","index?":"integer"}"#,
+        r#"{"models":"[{object,resolved,model,coll,phmo,nodes,shapes,errors}]","shapes":"[{block,index,object,kind,tag,shape,node,center,radius,edges}]","error":"string|null"}"#,
+        r#"{"block":"scenery","index":0}"#,
+    ),
+    def(
         m::VARIANT_LIST,
         "The built-in and saved game variants, and the one open",
         "{}",
@@ -494,6 +558,13 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"set?":"{layer name: boolean}","preset?":"art|gameplay|collision|everything","xray?":"boolean"}"#,
         r#"{"layers":"[{name,label,group,on,count,color}]","xray":"boolean"}"#,
         r#"{"preset":"everything","set":{"fog":false},"xray":true}"#,
+    ),
+    def(
+        m::VIEW_LIGHTING,
+        "Read the viewport's Lighting mode, or set it, for the window and snapshots: game (base map times lightmap), flat (no lightmap), lightmap (the lightmap on white), collision (flat at a third)",
+        r#"{"mode?":"game|flat|lightmap|collision"}"#,
+        r#"{"mode":"string","modes":"[string]"}"#,
+        r#"{"mode":"flat"}"#,
     ),
     def(
         m::VIEW_SNAPSHOT,
@@ -682,6 +753,8 @@ impl Api {
             "source" | "doc" => docs::call(app, method, &p),
             "tag" => tags::call(app, method, &p),
             "scenario" => scenario::call(app, method, &p),
+            "volume" => scenario::volume(app, method, &p),
+            "collision" => collision::call(app, method, &p),
             "variant" => variants::call(app, method, &p),
             "playlist" => playlists::call(app, method, &p),
             "ui" => ui_screens::call(app, method, &p),
@@ -725,6 +798,7 @@ impl Api {
             m::VIEW_CAMERA => view::camera(app, p),
             m::VIEW_LAYERS => view::layers(app, p),
             m::VIEW_STATS => view::stats(app, p),
+            m::VIEW_LIGHTING => view::lighting(app, p),
             m::VIEW_SNAPSHOT => {
                 let gpu = self
                     .gpu
@@ -736,6 +810,30 @@ impl Api {
             }
             _ => Err(err(code::METHOD_NOT_FOUND, format!("no method {method}"))),
         }
+    }
+
+    /// One turn of `h2-editor --serve`: waits up to `wait` for a request,
+    /// answers every one queued, then runs the game link as the window does
+    /// between frames, so `pair.*` and `mirror.*` work with no window.
+    /// False once the socket's queue has closed.
+    pub fn serve_once(
+        &mut self,
+        app: &mut App,
+        play: &mut crate::play::Play,
+        rx: &std::sync::mpsc::Receiver<server::Incoming>,
+        wait: std::time::Duration,
+    ) -> bool {
+        use std::sync::mpsc::RecvTimeoutError;
+        match rx.recv_timeout(wait) {
+            Ok(inc) => {
+                inc.answer(self.handle(app, inc.request.clone()));
+                self.pump(app, rx);
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return false,
+        }
+        play.update(app);
+        true
     }
 
     /// Answers every request waiting on `rx`; returns how many.

@@ -276,6 +276,13 @@ impl IndexedTail {
 /// world. The device decides where (the bound targets and viewport); the
 /// backend gives the pass its encoder and the targets' views.
 pub trait ExternalPass: Send {
+    /// The scene may retain this pass after presentation and record it again
+    /// on other attachments of the same device. Its selections, view and
+    /// material inputs must stay valid for the lifetime of the pass. It
+    /// must produce packets or encoded commands using only the attachments
+    /// and uploads supplied to that recording, with no guest feedback.
+    fn replays_scene(&self) -> bool { false }
+
     fn indexed_tail(&self) -> Option<IndexedTail> { None }
 
     /// All these ranges share the textures resolved at the first draw.
@@ -1227,14 +1234,83 @@ pub enum DrawOutcome {
     Unsupported(String),
 }
 
+/// Create immutable, device-local assets for future scene draws. This
+/// command has no target handles, guest bindings, frame encoder or reads.
+#[cfg(feature = "gpu")]
+pub type AssetUpload = Box<dyn FnOnce(&wgpu::Device, &wgpu::Queue) + Send>;
+
+/// The resolution setting and guest surface size at the start of a Swap.
+/// A scaled backend applies setting changes after it shows the frame.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RasterMeasurement {
+    pub configured: Option<u32>,
+    pub guest: Option<(u32, u32)>,
+}
+
+impl RasterMeasurement {
+    pub fn finish(self, shown: Option<(u32, u32)>) -> crate::scene_sink::window::PresentScale {
+        let physical = self.guest.zip(shown).and_then(|((gw, gh), (w, h))| {
+            let scale = w.checked_div(gw)?;
+            (gh != 0 && scale != 0 && gw.checked_mul(scale) == Some(w)
+                && gh.checked_mul(scale) == Some(h)).then_some(scale)
+        });
+        crate::scene_sink::window::PresentScale { configured: self.configured, physical }
+    }
+}
+
+#[cfg(test)]
+mod raster_tests {
+    use super::RasterMeasurement;
+
+    #[test]
+    fn a_physical_scale_needs_a_uniform_integral_extent_in_both_dimensions() {
+        let measure = RasterMeasurement { configured: Some(4), guest: Some((8, 4)) };
+        for shown in [None, Some((0, 0)), Some((28, 14)), Some((32, 4)), Some((4, 2))] {
+            assert_eq!(measure.finish(shown).physical, None);
+        }
+        assert_eq!(measure.finish(Some((8, 4))).physical, Some(1));
+        assert_eq!(measure.finish(Some((32, 16))).physical, Some(4));
+        assert_eq!(RasterMeasurement::default().finish(Some((32, 16))).physical, None);
+    }
+}
+
+/// The ordinary display probe reads tightly packed guest-format BGRA pixels.
+pub(crate) fn read_frame_probe<B: Backend + ?Sized>(
+    backend: &mut B, surface: B::Surface, width: u32, height: u32,
+) -> Result<Vec<u8>, String> {
+    let pitch = width.checked_mul(4).ok_or("frame probe row pitch overflow")?;
+    pitch.checked_mul(height).ok_or("frame probe image size overflow")?;
+    backend.read_surface(surface, D3DFormat::LinA8R8G8B8, width, height, GuestLayoutKind::Linear { pitch })
+}
+
 /// Host rendering for the device.
 /// `Send` (with its handles) so a device can sit behind the runtime's
 /// `Send + Sync` override handlers.
 pub trait Backend: Send {
+    /// Run an asset upload on the same device that records scene stages.
+    /// A backend without a GPU discards the request.
+    #[cfg(feature = "gpu")]
+    fn upload_scene_assets(&mut self, _upload: AssetUpload) {}
+
     /// Handle of a colour or depth/stencil surface.
     type Surface: Copy + Eq + std::fmt::Debug + Send;
     /// A host texture made from guest texture memory.
     type Texture: Send;
+
+    /// Pins the GPU images bound by the original texture. Immutable samples
+    /// can be shared. A live view uses these handles only to verify that its
+    /// original source allocation still matches the current frame target.
+    #[cfg(feature = "gpu")]
+    fn frozen_images(&self, _texture: &Self::Texture) -> Option<crate::scene_sink::FrozenImages> {
+        None
+    }
+
+    /// The threaded backend resolves its proxy in queue order without a
+    /// guest wait. Synchronous encoders can share the submitted images now.
+    #[cfg(feature = "gpu")]
+    fn retain_scene_sample(&self, texture: &Self::Texture) -> Option<crate::scene_sink::FrozenSample> {
+        self.frozen_images(texture).map(crate::scene_sink::FrozenSample::ready)
+    }
 
     /// Creates a surface (`depth` selects depth/stencil).
     fn create_surface(
@@ -1249,6 +1325,11 @@ pub trait Backend: Send {
     fn destroy_surface(&mut self, surface: Self::Surface) -> Result<(), String>;
     /// Uploads a decoded guest texture.
     fn upload_texture(&mut self, texture: &DecodedTexture) -> Result<Self::Texture, String>;
+    /// An immutable upload shared with a scene. The render queue can
+    /// identify its exact texels by allocation across frames.
+    fn upload_shared(&mut self, texture: std::sync::Arc<DecodedTexture>) -> Result<Self::Texture, String> {
+        self.upload_texture(&texture)
+    }
     /// Whether the backend can supply descriptor-only textures. Such handles
     /// never back real drawing, and no texel or palette data is needed.
     fn uses_texture_placeholders(&self) -> bool {
@@ -1288,6 +1369,19 @@ pub trait Backend: Send {
         let r = self.draw(color, depth, &draw, textures);
         (r, draw.streams)
     }
+    /// Submit a packet whose immutable contents also belong to a sealed
+    /// frame. Queued renderers may share it with the replay until Swap.
+    fn draw_shared(
+        &mut self,
+        color: Self::Surface,
+        depth: Option<Self::Surface>,
+        draw: std::sync::Arc<ResolvedDraw>,
+        textures: [Option<&Self::Texture>; 4],
+    ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
+        let result = self.draw(color, depth, &draw, textures);
+        let streams = std::sync::Arc::into_inner(draw).map(|d| d.streams).unwrap_or_default();
+        (result, streams)
+    }
     /// Marks this thread's frame-stat boundary. Asynchronous backends
     /// forward queued statistics without waiting for the render thread.
     fn frame_stats(&mut self) {}
@@ -1298,6 +1392,19 @@ pub trait Backend: Send {
     fn stamp_present(&mut self, at: std::time::Instant) {
         let _ = at;
     }
+    /// Observe the next original Swap on this device. A wrapping display may
+    /// provide the guest extent itself and arm its view with no surface.
+    fn measure_present_raster(&mut self, _surface: Option<Self::Surface>) -> RasterMeasurement {
+        RasterMeasurement::default()
+    }
+    /// Physical texel extent actually handed to the display for that Swap.
+    /// A failed or unshown Swap and a backend without an observer return None.
+    fn take_presented_extent(&mut self) -> Option<(u32, u32)> { None }
+
+    /// True only when the last ordinary Swap exhausted all display attempts.
+    /// Backends without display feedback leave the outcome unknown.
+    fn last_present_unshown(&self) -> bool { false }
+
     /// Shows a host-only frame between the guest's presents (an
     /// interpolated replay, `crate::interp`): the present hook sees it,
     /// but it is not a guest frame, so frame counters, shader upkeep and
@@ -1413,6 +1520,16 @@ pub trait Backend: Send {
             clear.color.map(|c| c.1)
         )))
     }
+    /// Diagnostic pixels at this pass boundary. A worker that adopts the
+    /// sealed scene discards this callback; its graph provides the snapshot.
+    /// A read failure belongs to the probe and leaves guest rendering live.
+    fn queue_frame_probe_read(
+        &mut self, surface: Self::Surface, width: u32, height: u32,
+        done: Box<dyn FnOnce(Result<Vec<u8>, String>) + Send>,
+    ) {
+        done(read_frame_probe(self, surface, width, height));
+    }
+
     /// Reads a colour surface back as guest bytes: `format` texels of a
     /// `width x height` level laid out as `layout` (render-to-texture
     /// write-back). The default cannot.
@@ -1561,6 +1678,11 @@ pub trait Backend: Send {
             Ok(false)
         }
     }
+
+    /// The backend can accept this particular pass into a scene reservation.
+    /// Checked while the guest still owns all the draws. A sink that keeps
+    /// a replay requires the pass to support repeated recording.
+    fn accepts_scene_pass(&self, _pass: &dyn ExternalPass) -> bool { true }
 
     /// Whether [`queue_scene_stage`](Self::queue_scene_stage) takes a
     /// stage now: a render thread whose backend

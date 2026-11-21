@@ -116,7 +116,7 @@ The host keeps its files under `--root`, by default
 | `target/` | the cargo target directory those builds share |
 | `image/` | the built `h2`, game module, generated sources and build stamp (`image.json`) |
 | `obj-cache/` | `H2_OBJ_CACHE` for every image build |
-| `data/` | the data root runs use |
+| `data/` | the data root runs use; `data/films/` is the film library `theater.play` reads |
 | `scratch/<id>/data` | the empty data root of a `--fresh-data` run, removed when it ends |
 
 Host and install flags take the same paths. `--repo` sets the checkout
@@ -251,6 +251,7 @@ the game has no window. Use `--note` for additional context.
 | `--serve` | the same run with no frame limit (`--frames` is refused): it runs until `h2 lab stop`, for `lab agent` |
 | `--replay NAME` | `H2_INPUT_REPLAY=recordings/NAME/input.bin`; level and difficulty from its manifest unless given |
 | `--record NAME` | `H2_INPUT_RECORD=recordings/NAME/input.bin` and its manifest |
+| `--film NAME` | `h2 play --film <data root>/films/NAME.h2film`: the run records a film into the film library its game plays from (see [Theater runs](#theater-runs)) |
 | `--perf` | `H2_PROFILE=runs/<id>/profile`, `H2_PERF_FROM=level`, and the `perf` feature |
 | `--env KEY=VALUE` | one of `H2_FRAME_STATS`, `H2_FRAME_STATS_FROM`, `H2_BOOT_STOP_AT_PRESENT`, `H2_PERF_FROM`, `H2_PROFILE_HZ`, `H2_HOST_PERF`, `H2_AUDIO_STATS`, `H2_FPS`, `H2_RESOLUTION`, `H2_HUD_POSITION`, `H2_LOD_DISTANCE`, `H2_RENDER_SCALE`, `H2_WATERMARK`, `H2_MAPPACK`, `H2_HALO1`, `H2_FEATURES`, `H2_LOCKSTEP_TICKS`, `H2_ICONS`, `H2_MEM_SAMPLE`, `H2_PREWARM_PROGRAMS`; `H2_PIPELINE_CACHE=off` (no pipeline cache) or `H2_PIPELINE_CACHE=fresh` (an empty one at `runs/<id>/pipeline-cache.jsonl`), never a path |
 | `-- FLAGS` | `h2 play` flags from a fixed list: `--no-audio`, `--no-vsync`, `--unpaced`, `--fps N`, `--set KEY=VALUE`, ... |
@@ -468,6 +469,50 @@ For a comparison against timings taken with 480-line LOD choices, pass
 To measure the cost of retaining higher detail, keep the resolution fixed
 in two unrecorded offline runs and compare
 `--env H2_LOD_DISTANCE=retail` with `--env H2_LOD_DISTANCE=1`.
+
+## Theater runs
+
+`--film NAME` makes a run record a film. `NAME` is a file stem of 1 to 64
+letters, digits, `.`, `_` or `-`, not starting with `.` and without a
+`.h2film` extension. The host passes the game `--film
+<data root>/films/NAME.h2film`, the directory the game's agent resolves
+`theater.play {"id"}` from (`H2_FILM_DIR` is not passed through, so the
+library is `<data root>/films`). The data root is the one the run plays
+with, so a `--fresh-data` run records into its own scratch library. The
+host refuses a name that already has a film in the library, or a pending
+job, before it starts the run.
+
+When the game exits, whether it finished or `h2 lab stop` ended it, the
+host links (or copies) the film to `runs/<id>/NAME.h2film`, so `h2 lab
+fetch` brings it back and a `--fresh-data` film survives the removal of
+its scratch root. It reads the film's header with the `film` crate and
+records the header ID as `film_id` in the job's metadata (`h2 lab wait`,
+`h2 lab runs`) and in its notes. A film whose header can't be read is
+named in the notes, without an ID. `-- --film PATH` is refused like any
+other path flag.
+
+Playback is the game's own: a `--serve` run's agent starts the isolated
+playback process for `theater.play`, which inherits the run's disc, image
+directory, data root and `H2_OPT`. The playback runs in the `--serve`
+run's window, and `h2 lab agent <id> theater.*` drives it. The film
+library is the persistent data root's, so record and play without
+`--fresh-data` (a `--fresh-data` film plays only in the run that recorded
+it, or after fetching):
+
+```
+h2 lab run --host laptop --name "Film: record" --current --level 03a_oldmombasa --film oldmombasa-1 --frames 1800 --wait
+# the job's film_id is the film's ID
+h2 lab run --host laptop --name "Film: play" --current --serve --no-stats
+h2 lab agent --host laptop <serve-id> theater.play '{"id":"<film_id>"}'
+h2 lab agent --host laptop <serve-id> theater.state
+h2 lab stop --host laptop <serve-id>
+```
+
+The playback process starts with the run's environment, including its
+`H2_FRAME_STATS_CSV` path, so start the playback run with `--no-stats`.
+A film plays only on an image whose stamp matches the recording
+(`theater.compat`), so record and play with the same `--current` or
+`--rev`.
 
 ## Recordings
 

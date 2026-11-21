@@ -84,6 +84,50 @@ pub fn scan(polys: &[Poly]) -> Vec<Spot> {
     scan::scan(polys)
 }
 
+/// One forced-crouch region as the scan judged it, before and through its
+/// filters: for tuning the scan against a real map
+/// (`h2 superbounce scan --explain`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CrouchRegion {
+    /// Its forced samples.
+    pub samples: usize,
+    /// The bounds of their origins.
+    pub min: Vec3,
+    pub max: Vec3,
+    /// The band measured across its edge at the probed exits: the
+    /// sample's origin, the lattice way out, the width.
+    pub widths: Vec<(Vec3, [i32; 2], f32)>,
+    /// Its extent along its principal axis.
+    pub length: f32,
+    /// Whether a walk from its exits reaches open floor, and how it ended.
+    pub reachable: bool,
+    pub reach: String,
+    /// Why it isn't a spot; `None` when it is one.
+    pub rejected: Option<String>,
+    /// The spot it makes when it passes the filters, before suppression.
+    pub spot: Option<Spot>,
+    /// The stand of the better spot within 1.5 that dropped it.
+    pub suppressed_by: Option<Vec3>,
+    /// Whether it is among the spots [`scan`] returns.
+    pub kept: bool,
+}
+
+/// Every forced-crouch region with a sample within `r` of `at`, with how
+/// the scan's filters judged it.
+pub fn explain(polys: &[Poly], at: Vec3, r: f32) -> Vec<CrouchRegion> {
+    scan::explain(polys, at, r)
+}
+
+/// [`explain`] on one structure BSP of a `.map`.
+pub fn explain_map<R: std::io::Read + std::io::Seek>(
+    map: &mut map::Map<R>,
+    bsp: usize,
+    at: Vec3,
+    r: f32,
+) -> Result<Vec<CrouchRegion>, tags::Error> {
+    Ok(explain(&map_polys(map, bsp)?, at, r))
+}
+
 /// The polygons of a decoded collision BSP, moved by `transform`
 /// (a row-major 3x4: rotation columns then translation), or as is for
 /// `None`.

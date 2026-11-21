@@ -49,11 +49,14 @@ pub struct Studio {
     palette: palette::PaletteUi,
     reset_layout: bool,
     focus_game: bool,
+    settle_tabs: bool,
     previous_tool: Option<ToolKind>,
     previous_map: Option<String>,
     hint: Option<String>,
     /// Log lines already seen (to scroll to new ones).
     log_seen: usize,
+    /// The trigger volume the Scene tab last brought into view.
+    volume_shown: Option<usize>,
     /// Native file dialogs. Off in headless renders and tests.
     pub dialogs: bool,
     pub variants: variants::VariantsUi,
@@ -82,10 +85,12 @@ impl Studio {
             palette: Default::default(),
             reset_layout: false,
             focus_game: false,
+            settle_tabs: false,
             previous_tool: None,
             previous_map: None,
             hint: None,
             log_seen: 0,
+            volume_shown: None,
             dialogs: true,
             variants: variants::VariantsUi::default(),
             playlists: playlists::PlaylistsUi::default(),
@@ -111,7 +116,11 @@ impl Studio {
         self.menu_bar(ui, app, &mut actions);
         let focus_game = std::mem::take(&mut self.focus_game);
         bar::draw(ui, app, &mut self.play, &self.fonts, &mut actions);
-        let reset = self.dockspace(ui);
+        // The frame after the layout is applied asks for the Map tabs again:
+        // Dear ImGui selects the last new tab of a node as its windows first
+        // dock, over any focus asked for in that first frame.
+        let settle = std::mem::take(&mut self.settle_tabs);
+        let reset = self.dockspace(ui) || settle;
         self.hint = None;
         self.map_list.begin();
         match app.tool {
@@ -469,6 +478,7 @@ impl Studio {
             // ImGui selects the last new tab when the windows first dock.
             // Select Game once both tabs have appeared in the default layout.
             self.focus_game = true;
+            self.settle_tabs = true;
         }
         fresh || apply == DockLayoutApply::Replace
     }
@@ -813,6 +823,7 @@ impl Studio {
                         }
                     }
                 }
+                volume_outliner(ui, session, &filter, &mut self.volume_shown, actions);
         });
                 if place.is_some() {
                     self.viewport.placing = place;
@@ -1148,7 +1159,14 @@ impl Studio {
 pub(crate) fn dispatch_actions(app: &mut App, actions: Vec<Action>) {
     for a in actions {
         if app.tool == ToolKind::Tags
-            && matches!(a, Action::Select(_) | Action::SelectMany(_) | Action::ToggleSelect(_))
+            && matches!(
+                a,
+                Action::Select(_)
+                    | Action::SelectMany(_)
+                    | Action::ToggleSelect(_)
+                    | Action::SelectVolume(_)
+                    | Action::SelectSurface(_)
+            )
         {
             app.dispatch(Action::SetTool(ToolKind::Scenario));
         }
@@ -1268,6 +1286,96 @@ fn package_row(
     };
     if st.row(ui, gpu, group, &row) {
         actions.push(Action::OpenPackageEntry(key.clone()));
+    }
+}
+
+/// The Volumes group's menu: add a trigger volume, or make a kill volume,
+/// at the camera focus.
+fn volume_menu(ui: &Ui, session: &scenario_edit::Session, actions: &mut Vec<Action>) {
+    use scenario_edit::volumes::VolumeKind;
+    let trigger = session.volume_add_refusal(VolumeKind::Trigger);
+    let kill = trigger
+        .clone()
+        .or_else(|| session.volume_add_refusal(VolumeKind::Kill));
+    for (label, refusal, kill) in [
+        (
+            format!("{} Add trigger volume at the camera focus", icon::PLUS),
+            trigger,
+            false,
+        ),
+        (
+            format!("{} Make kill volume at the camera focus", icon::PLUS),
+            kill,
+            true,
+        ),
+    ] {
+        if ui.menu_item_enabled_selected_no_shortcut(label, false, refusal.is_none()) {
+            actions.push(Action::AddVolume { frame: None, kill });
+        }
+        if let Some(why) = refusal {
+            ui.set_item_tooltip(why);
+        }
+    }
+}
+
+/// The Scene tab's Volumes group: every trigger volume, with what names
+/// it. A newly selected volume (a viewport
+/// click, say) opens the group and scrolls its row into view;
+/// `shown_volume` keeps which one last did.
+fn volume_outliner(
+    ui: &Ui,
+    session: &scenario_edit::Session,
+    filter: &str,
+    shown_volume: &mut Option<usize>,
+    actions: &mut Vec<Action>,
+) {
+    let selected = session.selected_volume();
+    let reveal = selected.is_some() && selected != *shown_volume;
+    *shown_volume = selected;
+    let Some(volumes) = session.volumes() else {
+        return;
+    };
+    let total = volumes.triggers.len();
+    let shown: Vec<usize> = (0..total)
+        .filter(|&i| outliner::matches(filter, "Volumes", &volumes.caption(i), i))
+        .collect();
+    if !filter.is_empty() && shown.is_empty() {
+        return;
+    }
+    let count = if filter.is_empty() {
+        total.to_string()
+    } else {
+        format!("{} of {total}", shown.len())
+    };
+    let mut node = ui
+        .tree_node_config("block-volumes")
+        .label(format!("{}  Volumes  ({count})", icon::BOX))
+        .span_avail_width(true);
+    if !filter.is_empty() || reveal {
+        node = node.opened(true, Condition::Always);
+    }
+    let node = node.push();
+    if let Some(_p) = ui.begin_popup_context_item() {
+        volume_menu(ui, session, actions);
+    }
+    let Some(_node) = node else {
+        return;
+    };
+    for i in shown {
+        let clicked = ui
+            .selectable_config(format!("{}###volume-{i}", volumes.caption(i)))
+            .selected(selected == Some(i))
+            .allow_double_click(true)
+            .build();
+        if reveal && selected == Some(i) {
+            ui.set_scroll_here_y(0.5);
+        }
+        if clicked {
+            actions.push(Action::SelectVolume(Some(i)));
+            if ui.is_mouse_double_clicked(dear_imgui_rs::MouseButton::Left) {
+                actions.push(Action::FocusSelected);
+            }
+        }
     }
 }
 

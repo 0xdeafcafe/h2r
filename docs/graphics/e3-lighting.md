@@ -1,7 +1,7 @@
 # E3 lighting: stencil shadows and dynamic lighting
 
-Status: Partly built. The Lighting setting (harder retail shadow maps) is built on the D3D path only. The native design below (sun shadows from objects, more lights, shadows from every cone light, the sharp edge) is Design.
-Code: `crates/platform/d3d/src/scaled.rs` (`Lighting`, `follow_lighting`, `shadow_scale`), `crates/formats/shaders/src/psh/shadow.rs` (the shadow comparison), `crates/rewrites/engine/src/render.rs` (views of the light record), `crates/rewrites/native-render/src/light_look.rs` (retail's light passes, native). Tests: `crates/platform/d3d/tests/render_scale.rs`, `crates/formats/shaders/tests/shadow.rs`.
+Status: Partly built. The scaled D3D backend draws harder retail shadows. The native frame graph accepts the Lighting mode and draws sealed scenes into private targets. Both native modes use the guest's light passes. In E3 mode the graph draws the guest's shadow maps as tiles and compares them with the Sharp edge. Sun shadows, light selection and the shared atlas are Design.
+Code: `crates/rewrites/native-render/src/frame_graph.rs` (display and private lighting), `crates/platform/d3d/src/gfx_backend/guest_draw_pass/tiles.rs` (the tile plan), `crates/platform/d3d/src/scaled/private_scene.rs` (tiles at render scale), `crates/platform/d3d/src/scaled.rs` (`Lighting`, `follow_lighting`, `shadow_scale`), `crates/formats/shaders/src/psh/shadow.rs` (the shadow comparison), `crates/rewrites/engine/src/render.rs` (views of the light record), `crates/rewrites/native-render/src/light_look.rs` (retail's light passes, native). Tests: `crates/rewrites/native-render/tests/world_layers_gpu/frame_graph.rs`, `crates/platform/d3d/tests/render_scale.rs`, `crates/platform/d3d/src/gfx_backend/guest_draw_pass/tiles.rs`, `crates/formats/shaders/tests/shadow.rs`.
 Switch: `H2_LIGHTING` (`retail`), listed in [switches.md](../runtime/switches.md).
 
 An opt-in lighting mode in the spirit of the Halo 2 E3 2003 demo: hard-edged
@@ -161,7 +161,7 @@ shadows from every cone light, and a different edge.
 
 ## How it works
 
-Nothing in this section is built. It is the design, in the present tense.
+The frame graph, candidate extraction and the tiles of the guest's shadowed lights are built. The sun's shadows and the renderer's own light selection are the design.
 
 ### The scene does not know the mode
 
@@ -286,13 +286,42 @@ Retail mode draws the candidates the guest drew, in its order.
   memory changes.
 - **At most four shadowed lights in a frame**, by score. The view's own
   flashlight holds a slot while it is on.
-- **The map** is a tile of the atlas, 1024 square, 2048 for the flashlight
-  at render scale 3 and above.
+- **The map** is a tile at `d3d::scaled::shadow_scale` times the guest's
+  level: the render scale, and at least 2. Retail's 512-square level gives
+  1024 at 1x and 2x and 2048 at 4x. The flashlight's tile (L7) is at least
+  2048.
 - **Casters.** The guest's list for a light the guest shadowed. Otherwise
   the renderer gathers the instances and cluster parts inside the cone.
   The level casts here; open meshes are no trouble for a map.
 - **Passes.** Retail's: layer 10 into the tile, layer 11 with the sharp
   edge, then 14, 12 and 13.
+
+**Built: the guest's shadowed lights** (`d3d::gfx_backend::guest_draw_pass::tiles`).
+A guest shadow map is a `D24S8` depth level not of the frame's size. For
+each shadowed light the guest clears it, draws the casters into it and
+draws receivers that compare against it. In E3 mode the graph replays the
+same commands in the same order. It draws the level and the colour levels
+bound with it at the tile factor, and turns on
+`ShaderProvider::set_sharp_shadows` for each draw that samples a tile.
+Every other draw is the guest's, byte for byte.
+
+- **Where.** On the graph's own attachments, `GuestDrawPass` allocates the
+  level at the tile factor. At render scale, the mixed-size private pass
+  keeps the guest-size level, repeats each of its draws and clears into a
+  copy at the tile factor (`ScaledBackend::scene_tile`), and has receivers
+  sample the copy. The display on the guest device's live attachments
+  (`draw_display_on`, `draw_scaled_display_on`) keeps the guest's maps.
+- **One tile per light.** A tile is counted at the first caster after
+  each whole depth clear of its level, so `lights_shadowed` is the number
+  of the guest's shadowed lights. Each tile is drawn into its level's own
+  image in the guest's order. Packing tiles into the shared atlas, drawn
+  ahead of the light pass, comes with the sun's tiles (L5), which need it.
+- **Refused.** A level that a frame copies, uploads, aliases, seeds from
+  earlier contents, reads in a typed stage or through an earlier frame's
+  view, or binds with a frame-sized attachment, cannot be redrawn at
+  another size. It keeps the guest's size and retail's comparison, and
+  `tiles_refused` counts it. So does a tile sample that fell back to the
+  guest-size level (a stale copy at render scale).
 
 ### The edge
 
@@ -302,7 +331,7 @@ The shadow comparison in `shaders::psh::shadow` has three forms:
 |---|---|---|
 | Retail | the NV2A's comparison with its 2x2 filter | retail lighting |
 | Hard | one nearest tap (`PixelOptions::hard_shadow`) | the Lighting setting on the D3D path |
-| Sharp | four bilinear comparison taps over a 3x3 texel tent, then a ramp centred on half coverage and one screen pixel wide (from the term's screen derivative) | E3 lighting on the native renderer (**Design**) |
+| Sharp | four bilinear comparison taps over a 3x3 texel tent, then a ramp centred on half coverage and one screen pixel wide (from the term's screen derivative) | E3 lighting on the native frame graph: every receiver of a tile (`ShaderProvider::set_sharp_shadows`) |
 
 A nearest tap is hard but stepped wherever a map texel is larger than a
 pixel, and a lamp's cone at 4x always has such texels. Filtering and then
@@ -396,18 +425,30 @@ light pass runs.
 `lights_with_constants` per view in `render.scene`. The extraction counters
 report views attempted, elapsed nanoseconds and unread batches.
 
-The capture override, pass rows and drawing counters belong to the later slices.
+On a replayable game view the render thread draws one sealed scene into a private target with either mode. A completed native draw publishes its own report.
 
 - `render.capture` takes `lighting: "retail" | "e3"`: the same sealed scene
   drawn in that mode into a private target, the setting untouched. A retail
   and an E3 capture of one tick go to `render.compare`.
-- `render.frame` lists the mode's passes (`e3.tiles`, `e3.sun`, `e3.marks`,
-  `e3.lights`) with GPU time where the adapter has timestamp queries.
-- `render.stats` and `render.scene` count `lights_lit`, `lights_shadowed`,
-  `lights_over_cap`, `sun_tiles`, `sun_tiles_redrawn` and `atlas_halved`.
+- `render.frame` reports four lighting stages under the completed E3
+  graph's `e3.passes`: `e3.tiles`, `e3.sun`, `e3.marks` and
+  `e3.lights`. Each has its submitted draw count and an optional GPU
+  time. `e3.tiles` counts the caster draws into tiles and `e3.marks` the
+  receivers compared with the Sharp edge. `e3.sun` and `e3.lights` issue
+  no draws yet. No stage has a timestamp query yet, so `gpu_ns` is null.
+- `render.stats` and `render.scene` expose the E3 graph's per-draw
+  counters under `display_frame.e3` and `private_frame.e3`:
+  `lights_lit`, `lights_shadowed`, `lights_over_cap`, `sun_tiles`,
+  `sun_tiles_redrawn`, `atlas_halved` and `tiles_refused`. They count the
+  renderer's own light and atlas decisions. `lights_shadowed` is the
+  tiles drawn, one per shadowed light of the guest's, and `tiles_refused`
+  the shadow maps left at the guest's size. The lights lit are still the
+  guest's in both modes.
 
-`settings.set` with `graphics.lighting` changes the mode live, as the row
-does.
+The display worker samples the Lighting row at the frame boundary.
+`settings.set` with `graphics.lighting` changes the mode on a window or GPU
+serve with a settings store. A capture with an explicit mode leaves the
+row untouched.
 
 ## Budget
 
@@ -415,6 +456,12 @@ At render scale 4 (2560x1920), one view, per display frame, on the M3 lab
 laptop. All **Estimate**: scaled from the prototype's M1 Max timings
 ([notes/e3-lighting.md](notes/e3-lighting.md), "Budget arithmetic"), and
 replaced by slice L4's first measurement.
+
+Slice L4 builds the local-light tiles and the marks. Their two rows wait
+for its first lab A/B ("Measurements"). The stages have no timestamp
+queries, so the first numbers are the difference in render-thread and
+frame time between the retail and E3 runs, at 1x and 4x. The other rows
+wait for their slices.
 
 | Part | GPU ms |
 |---|---:|
@@ -470,7 +517,7 @@ runs the game.
 | L1 | `shaders::psh::shadow` provides Sharp beside Retail and Hard. `PixelOptions::sharp_shadow` selects it per stage | Golden WGSL for the three forms; a GPU test with a slanted caster at map-to-screen ratios 1:1, 1:2 and 1:4: the lit-to-dark ramp is at most 1.5 pixels wide and its centre within a texel of the caster's outline; retail's golden file unchanged | none |
 | L2 | `frame_scene::Light` holds each candidate and both constant sets. `scene_extract::lights` reads the view's visibility gather, and `render.scene` reports the counts | A synthetic guest with 20 lights gives 20 candidates with the guest's five marked; the scene hash and `sim.hashes` do not change with `H2_LIGHTING` | sim-thread extraction time, both modes |
 | L3 | The mode as a render-thread parameter; `render.capture {lighting}`; the pass rows and counters | With no E3 pass yet, a retail and an E3 capture of one tick are identical (`max_channel == 0`) | none |
-| L4 | Local-light shadows: atlas tiles for the guest's shadowed lights, the Sharp edge on layer 11 | Synthetic: a tile's shadow has the L1 edge. Game: on a tick with a shadowed light, the E3 capture differs from retail's only within eight pixels of retail's shadow edges, and `e3.tiles` lists one tile per shadowed light | GPU ms of `e3.tiles` and `e3.marks` at 1x and 4x; the first numbers for the budget |
+| L4 | Built. Local-light shadows: the guest's shadow maps drawn as tiles at `shadow_scale`, the Sharp edge on layer 11 ("Shadows from local lights") | Synthetic: `render_scale::e3_tiles_give_a_replayed_shadow_the_sharp_edge`, a replayed tile's shadow with the L1 edge at 1x and 2x and retail's map in retail mode; the plan's tests in `tiles.rs`. Game: on a tick with a shadowed light, the E3 capture differs from retail's only within eight pixels of retail's shadow edges, `e3.tiles` and `e3.marks` have draws, `lights_shadowed` is one per shadowed light and `tiles_refused` is 0 | Frame and render-thread time of E3 against retail at 1x and 4x; the first numbers for the budget |
 | L5 | Sun shadows from objects: tiles, receivers, self-shadowing, the tile cache | Synthetic: a box on a plane casts a hard shadow; an L-shaped caster shadows itself; a triangle with three nonpositive normal terms keeps its RGB, and mixed vertex terms interpolate; a still caster's tile is not redrawn; a moved one is. Game: an outdoor gameplay tick differs from retail around every caster, and no retail mask pass is drawn for a caster with a tile | GPU ms with 8, 16 and 32 casters (`sim.spawn`) at 1x and 4x; `sun_tiles_redrawn` at 60 fps |
 | L6 | The renderer's light choice: score, the cap of 16, the view's own lights first, the first-person pass | Synthetic: 20 candidates draw the 16 highest in score order, the same every run. Game: firing in a dark street (`input.pad`) lights the firer and the ground in the E3 capture; `lights_lit` and `lights_over_cap` | GPU ms of `e3.lights` against `lights_lit` |
 | L7 | Shadows from cones the content flagged off, with the renderer's caster gather; four slots; the flashlight | Synthetic: a no-shadow cone casts in E3 and not in retail. Game: a lamp placement and the flashlight cast in the E3 capture | The flashlight frame: all of the mode's passes at 4x. This is the worst case the budget must hold |
@@ -480,14 +527,15 @@ runs the game.
 Split screen and 120 fps are checked in L6 and L7 with the caps shared.
 
 **Measurements.** Numbers come from the lab laptop
-([lab.md](../runtime/lab.md)), as FrameScene's do; local runs are for
-pictures.
+([lab.md](../runtime/lab.md)). Both arms use the native game-frame
+owner. Its completed game-view counters in `render.scene` identify the
+frames the native graph presented. Local runs supply the pictures.
 
 ```sh
 for mode in retail e3; do
   h2 lab run --name "Lighting $mode" --host laptop --branch "$B" --level 03a_oldmombasa --difficulty heroic \
     --frames 5000 --stats-from 3000 --build-env H2_OPT=2 --fresh-data \
-    --env H2_RENDER_SCALE=4 --env H2_LIGHTING=$mode \
+    --env H2_FEATURES=frame-scene.sink --env H2_RENDER_SCALE=4 --env H2_LIGHTING=$mode \
     --wait --to "$RUSH_KEEP/lab/$B-$mode"
 done
 ```
@@ -497,11 +545,15 @@ frame; repeat at `H2_RENDER_SCALE=1` and with `--env H2_FPS=60`. For one
 frame, on a serve:
 
 ```sh
-h2 agent render.capture '{"tick": 9000, "lighting": "retail"}'
-h2 agent render.capture '{"tick": 9000, "lighting": "e3"}'
-h2 agent frame compare retail.png e3.png --diff diff.png
-h2 agent render.frame      # e3.tiles, e3.sun, e3.marks, e3.lights
-h2 agent render.stats      # lights_lit, lights_shadowed, sun_tiles, ...
+retail=$(h2 agent render.capture '{"lighting":"retail"}')
+tick=$(printf '%s\n' "$retail" | jq -r '.tick')
+h2 agent render.frame '{"source":"private","arm":true}'
+e3=$(h2 agent render.capture "$(jq -nc --argjson t "$tick" '{tick:$t,lighting:"e3"}')")
+retail_path=$(printf '%s\n' "$retail" | jq -r '.path')
+e3_path=$(printf '%s\n' "$e3" | jq -r '.path')
+h2 agent render.compare "$(jq -nc --arg a "$retail_path" --arg b "$e3_path" '{a:$a,b:$b}')"
+h2 agent render.frame '{"source":"private"}'   # frame.private_frame.e3.passes
+h2 agent render.stats                        # private_frame.e3
 ```
 
 Each slice adds a dated entry to [notes/e3-lighting.md](notes/e3-lighting.md)
@@ -509,19 +561,20 @@ with its commit and these numbers.
 
 ## The Lighting setting
 
-What is built of the mode is the row on the D3D path
-([e3-lighting-setting.md](e3-lighting-setting.md)): with E3 chosen, the
-scaled backend keeps a copy of each of the guest's shadow maps at the
-render scale (at least 2x, `d3d::scaled::shadow_scale`) and the pixel
+The row also selects the shadow treatment on the [D3D path](e3-lighting-setting.md). With E3 chosen, the scaled backend keeps a copy of each of the guest's shadow maps at the
+nearest integral vertical render scale (at least 2x, `d3d::scaled::shadow_scale`) and the pixel
 translator compares it with one nearest tap
 (`shaders::psh::PixelOptions::hard_shadow`). The guest sees retail. It
 changes the edge of retail's own dynamic-light shadows and nothing else,
 and it is the Hard form of "The edge".
 
-It is on the path FrameScene removes. From FrameScene slice 6 a game view
-has no scaled copy, and the row selects the native mode above as its
-slices land; the scaled-copy code is deleted with `scaled.rs`. Until L3
-the row means what that page says.
+Where the native frame graph owns the game view, the row supplies its
+mode at the display frame. A scaled display hands the frame to the graph
+only at a uniform integer render scale (`RenderScale::uniform_integer`);
+at any other resolution the D3D path draws it. An explicit private
+capture supplies its own mode. In E3 mode the graph's draws on fresh
+attachments draw the guest's shadow maps as tiles with the Sharp edge
+("Shadows from local lights").
 
 ## Phase 0 findings
 
@@ -707,6 +760,9 @@ sky, transparents, fog and the rest. The view can tag every draw with
   fallback is the receiver program of ours.
 - That 16 lit lights are enough for a firefight to read as the footage
   does, and that four shadowed ones are.
+- That a game frame's shadow maps reach the replay in a form the tile plan
+  admits. A refused level stays retail; `tiles_refused` on a capture says
+  whether any is.
 - The Lighting setting's pictures in a level: the runs so far caught no
   frame where the two modes differ on screen
   ([notes/e3-lighting.md](notes/e3-lighting.md)).

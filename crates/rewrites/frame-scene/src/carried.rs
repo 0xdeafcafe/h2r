@@ -14,6 +14,15 @@
 //! The draw type is a parameter: `d3d` carries its `ResolvedDraw`, a
 //! census carries nothing. This crate does not know either.
 
+/// Whether a carried draw can follow the camera between sealed ticks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CameraUse {
+    Screen,
+    /// Hardware constant index of the verified four-row view projection.
+    View { view: u8, first: u8 },
+    Unknown,
+}
+
 /// A position in the frame, in the guest's order (section 4.4). Within a
 /// game view the slots run in declaration order; `Overlay` is the HUD
 /// and UI after a game view, `Outside` a frame or a part of one that

@@ -39,6 +39,7 @@ pub mod particles;
 pub mod physics;
 mod player_damage;
 pub mod provenance;
+pub mod parity;
 pub mod query;
 pub mod ragdoll;
 pub mod rebuild;

@@ -108,8 +108,68 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "CACHE_COPY_STEP",
         "the loading screen's cache copy on the game thread; steps it with guest calls",
     ),
+    // Co-op over Live: the session, the simulation's update apply and the
+    // script teleports, all on the game thread. The look prediction's one
+    // render-met hook, RENDER_GAME_VIEW, is context-only and is not here
+    // (`a_look_prediction_render_hook_runs_on_the_render_thread`).
+    (
+        "coop-look-prediction",
+        "*",
+        "the simulation's observers write the prediction the render hook's published copy comes from",
+    ),
+    (
+        "coop-jip",
+        "*",
+        "the session's join check and player-set changes on the game thread; read live RAM through the runtime",
+    ),
+    (
+        "coop-live",
+        "*",
+        "the retail synchronous campaign path: session, game start and joinable queries on the game thread",
+    ),
+    ("coop-players", "*", "players 3 to 16 spawn and follow teleports on the simulation thread"),
+    ("coop-latency", "*", "samples update arrival on the simulation thread into shared counters"),
+    // render-aspect's own hooks are context-only. Two of its chains still
+    // fall back: the game view's, only while render-timing (off by default)
+    // puts a timer after the body, and the menu backdrop's, whose fit must
+    // be restored after the body (menus only).
+    #[cfg(feature = "gpu")]
+    (
+        "render-aspect",
+        "RENDER_GAME_VIEW",
+        "context-only, but shares the view with render-timing (off by default), whose timer runs after the body",
+    ),
+    #[cfg(feature = "gpu")]
+    (
+        "render-aspect",
+        "UI_MENU_BACKDROP",
+        "restores the menu widget fit after the backdrop's body, which needs the after continuation (menus only)",
+    ),
+    // Game-thread and UI points: the render never meets them, so they cost
+    // the pipelined render nothing.
+    (
+        "return-to-menu",
+        "*",
+        "the options queue, game activation and the frame launch point run on the game thread",
+    ),
+    ("coop-screens", "*", "Live co-op's lobby and texts on the game thread"),
+    ("host-metrics", "*", "samples the host on the game tick"),
+    ("live-browser-ads", "*", "refreshes Live lobby metadata on the game tick"),
+    ("theater-texts", "*", "the Theater row's texts on the game tick"),
+    ("theater-link", "*", "opens a linked film page from the UI update"),
+    ("live-map-pack-rotation", "*", "the matchmaking hopper's block read on the game thread"),
+    ("live-join-link", "*", "the Live join link's UI update and session join on the game thread"),
+    ("browser-filter-texts", "*", "rebuilds the Live browser's header and footer in the UI"),
+    ("lab-takeover", "*", "opens and expires the lab request from the UI update"),
     // Game-thread points: the simulation, the UI and the level start.
     ("actor-net", "*", "capture and dialogue share per-match state on the simulation thread"),
+    (
+        "firefight",
+        "*",
+        "the game's start and tick on the game thread: starts the mode, applies entries through \
+         guest calls before the tick (an async answer that re-enters it) and steps the director \
+         after it",
+    ),
     (
         "variant-vitality",
         "*",

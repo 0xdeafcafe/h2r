@@ -606,6 +606,38 @@ Limits:
 - As with every plan hook, a clash at one of the points refuses the plan
   at boot rather than replacing a hook.
 
+## In Firefight
+
+Status: the set and its per-machine split are built, tests only; the
+engine's campaign gate is not yet answered for the AI readers.
+
+A Firefight match ([firefight.md](firefight.md)) runs actors, so the AI
+skulls mean something there, on the host only (`skulls_mp::firefight_ai`:
+every machine but a guest). The director switches each skull on with a
+`Skull` command at its round's first wave, and the active set only grows.
+Score multipliers come from the definition and the director's active set
+(`firefight::scoring::kill_points`).
+
+| n | Skull | In Firefight | Test |
+|---|---|---|---|
+| 2 | Assassins | host's actors | `ai_skulls_apply_on_the_host_only` |
+| 3 | Thunderstorm | host's actors | `ai_skulls_apply_on_the_host_only` |
+| 4 | Famine | host's actors' drops, and placed weapons on every machine (the multiplayer path) | `ai_skulls_apply_on_the_host_only` |
+| 6 | Blind | each machine's own HUD (the multiplayer path) | `every_firefight_skull_has_a_scope_and_an_engine_index` |
+| 7 | Ghost | host's actors | `ai_skulls_apply_on_the_host_only` |
+| 9 | Catch | host's actors | `ai_skulls_apply_on_the_host_only` |
+| 12 | Mythic | host's actors | `ai_skulls_apply_on_the_host_only` |
+| 13 | Angry | host's actors | `ai_skulls_apply_on_the_host_only` |
+| 16 | Low Gravity | everyone (the multiplayer path) | `every_firefight_skull_has_a_scope_and_an_engine_index` |
+
+`MpSkulls::write_firefight_array` sets the array byte (`0x4f55dc + n`) of
+each AI skull on and clears the others it owns. Each reader still tests
+the campaign gate (`[[0x4e6948]+8] == 1`) before it loads its byte, so a
+reader acts only where that gate is answered "on"; the readers are those
+in "Where each effect lives" and need one hook each. A round's skulls
+(`a_round_switches_its_skulls_on`) and multipliers (`multipliers_multiply`)
+are in `crates/formats/firefight/tests/skulls.rs`.
+
 ## Our skulls
 
 Status: built, tests only; not seen running. Every effect and the hidden

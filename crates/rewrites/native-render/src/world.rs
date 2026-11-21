@@ -473,6 +473,28 @@ impl WorldBuilder {
     }
 }
 
+/// `world` with only the draws `keep` accepts, its batches rebuilt over
+/// them: one per run of equal material and lightmap, each draw's `batch`
+/// renumbered. A host leaves out the draws it has no texture for (the
+/// game, the editor, Theater's host view).
+pub fn keep_draws(mut world: World, keep: &dyn Fn(&WorldDraw) -> bool) -> World {
+    world.draws.retain(|d| keep(d));
+    world.batches.clear();
+    for (i, d) in world.draws.iter_mut().enumerate() {
+        match world.batches.last_mut() {
+            Some(b) if b.material == d.material && b.lightmap == d.lightmap => b.draw_count += 1,
+            _ => world.batches.push(Batch {
+                material: d.material,
+                lightmap: d.lightmap,
+                first_draw: i as u32,
+                draw_count: 1,
+            }),
+        }
+        d.batch = world.batches.len() as u32 - 1;
+    }
+    world
+}
+
 impl World {
     /// The lightmap pages the draws and the transparent parts use, in a
     /// fixed order: index `i` is layer `i` of the lightmap array.
@@ -577,6 +599,27 @@ mod tests {
         b.add_section(Owner::Cluster(0), &quad(0, false, true), &Placement::IDENTITY, PAGE);
         let v = b.finish().vertices[0];
         assert_eq!((v.binormal, v.tangent, v.lighting), ([0.0; 3], [0.0; 3], [0.0; 3]), "none: zero");
+    }
+
+    /// Dropping a material's draws leaves one batch per run of what is
+    /// left, and each draw names its new batch.
+    #[test]
+    fn keeping_some_draws_rebuilds_the_batches_over_them() {
+        let mut b = WorldBuilder::new();
+        for (i, m) in [1u16, 2, 1].into_iter().enumerate() {
+            b.add_section(Owner::Cluster(i as _), &quad(m, false, true), &Placement::IDENTITY, PAGE);
+        }
+        let all = b.finish();
+        assert_eq!(all.draws.len(), 3);
+        let kept = keep_draws(all.clone(), &|d| d.material == 1);
+        assert_eq!(kept.draws.len(), 2);
+        assert!(kept.draws.iter().all(|d| d.material == 1 && d.batch == 0));
+        assert_eq!(
+            kept.batches,
+            vec![Batch { material: 1, lightmap: PAGE, first_draw: 0, draw_count: 2 }]
+        );
+        let none = keep_draws(all, &|_| false);
+        assert!(none.draws.is_empty() && none.batches.is_empty());
     }
 
     #[test]

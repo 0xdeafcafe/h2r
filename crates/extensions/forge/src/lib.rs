@@ -1,15 +1,18 @@
-//! A local Forge host. The caller supplies the loaded map's palette and
-//! bounds, and invokes edits at a game boundary after checking session access.
+//! A local Forge host. The caller supplies the loaded map's palette, bounds
+//! and teleporters, and invokes edits at a game boundary after checking
+//! session access.
 #![forbid(unsafe_code)]
 
 pub mod camera;
 mod files;
+mod links;
 mod scene;
 mod session;
 pub mod tool;
 
 pub use files::saved_names;
 pub use forge_doc::{BlockKind, OpId, TagKey};
+pub use links::{Linkable, Teleporter};
 pub use session::Session;
 
 /// Position in world units, and yaw, pitch and roll in radians, in scenario order.
@@ -51,6 +54,12 @@ pub trait World {
     fn move_object(&mut self, handle: u32, frame: Frame) -> Result<(), String>;
     fn delete(&mut self, handle: u32) -> Result<(), String>;
     fn respawn(&mut self, item: &PaletteItem, frame: Frame) -> Result<u32, String>;
+    /// Set a teleporter netgame flag's identifier, its channel. Flags are
+    /// named by their index in the loaded scenario.
+    fn channel(&mut self, flag: u32, channel: i16) -> Result<(), String> {
+        let _ = (flag, channel);
+        Err("This game cannot change teleporter channels.".into())
+    }
 }
 
 #[cfg(test)]

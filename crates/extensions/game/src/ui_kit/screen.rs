@@ -785,6 +785,13 @@ impl Describe for KitScreen {
             s.rows.push(row);
         }
         s.description = self.description_block().map(spec::DescriptionBlock::from);
+        if s.description.is_none() {
+            // The large dialog has no help line: a row's description would
+            // have nowhere to show.
+            for row in &mut s.rows {
+                row.description = None;
+            }
+        }
         s.content.row_help = self.description.is_some() && self.live_help.is_none();
         if self.header_picture().is_some() {
             s.content.required_icons.push("art.0".into());

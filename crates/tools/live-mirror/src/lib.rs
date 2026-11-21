@@ -4,7 +4,7 @@
 mod stream;
 pub use stream::Stream;
 
-use agent_proto::live::{Frame, Header, Kind, Object, Player, World};
+use agent_proto::live::{Frame, Header, Kind, Object, Player, View, World};
 use std::collections::VecDeque;
 use std::io;
 use std::sync::Arc;
@@ -18,6 +18,9 @@ pub struct Sample {
     pub stale: bool,
     pub objects: Vec<Object>,
     pub players: Vec<Player>,
+    /// The game's views as of this sample's source capture, never blended:
+    /// a Game camera takes them exactly.
+    pub cameras: Vec<View>,
 }
 
 #[derive(Clone)]
@@ -35,6 +38,7 @@ impl Received {
             stale,
             objects: self.world.objects.clone(),
             players: self.world.players.clone(),
+            cameras: self.world.cameras.clone(),
         }
     }
 }

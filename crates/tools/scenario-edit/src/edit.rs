@@ -1,13 +1,15 @@
 //! Edits as commands with undo and redo.
 //!
 //! A command is a list of operations applied together (moving a selection,
-//! say): field sets, swap-removals and appends. The history keeps, for each
+//! say): field sets, swap-removals and appends, of the placement blocks or
+//! of the volume blocks ([`crate::volumes::VolumeKind`]). The history keeps, for each
 //! applied command, what every operation replaced, so undo restores exactly
 //! those bytes and counts. Consecutive commands with the same merge key (one
 //! drag gesture) collapse into one undo step.
 use crate::Result;
 use crate::layout::BlockKind;
-use crate::scenario::{LayoutChange, Removed, Scenario, Value};
+use crate::scenario::{LayoutChange, Removed, Scenario, Value, VolumeRemoved};
+use crate::volumes::VolumeKind;
 
 /// One field change.
 #[derive(Clone, Debug, PartialEq)]
@@ -30,6 +32,22 @@ pub enum Op {
     /// Append one entry (exactly one stride of bytes).
     Add {
         block: BlockKind,
+        entry: Vec<u8>,
+    },
+    /// Replace entry `index` of a volume block with `entry`.
+    VolumeSet {
+        kind: VolumeKind,
+        index: usize,
+        entry: Vec<u8>,
+    },
+    /// Swap-remove entry `index` of a volume block.
+    VolumeRemove {
+        kind: VolumeKind,
+        index: usize,
+    },
+    /// Append one entry to a volume block.
+    VolumeAdd {
+        kind: VolumeKind,
         entry: Vec<u8>,
     },
 }
@@ -78,7 +96,9 @@ impl Command {
         self
     }
     fn only_sets(&self) -> bool {
-        self.ops.iter().all(|o| matches!(o, Op::Set(_)))
+        self.ops
+            .iter()
+            .all(|o| matches!(o, Op::Set(_) | Op::VolumeSet { .. }))
     }
 }
 
@@ -91,6 +111,17 @@ enum Undo {
         block: BlockKind,
         entry: Vec<u8>,
         layout: LayoutChange,
+    },
+    /// The volume entry's old bytes.
+    VolumeSet {
+        kind: VolumeKind,
+        index: usize,
+        entry: Vec<u8>,
+    },
+    VolumeRemoved(VolumeRemoved),
+    VolumeAdded {
+        kind: VolumeKind,
+        entry: Vec<u8>,
     },
 }
 
@@ -122,23 +153,14 @@ impl History {
         {
             // Keep the oldest "before" for each field; take the new targets.
             for b in before {
-                let Undo::Set(b) = b else { continue };
-                if !last
-                    .before
-                    .iter()
-                    .any(|x| matches!(x, Undo::Set(x) if same_field(x, &b)))
-                {
-                    last.before.push(Undo::Set(b));
+                if !last.before.iter().any(|x| same_undo(x, &b)) {
+                    last.before.push(b);
                 }
             }
             for op in command.ops {
-                let Op::Set(s) = op else { continue };
-                match last.command.ops.iter_mut().find_map(|x| match x {
-                    Op::Set(x) if same_field(x, &s) => Some(x),
-                    _ => None,
-                }) {
-                    Some(x) => x.value = s.value,
-                    None => last.command.ops.push(Op::Set(s)),
+                match last.command.ops.iter_mut().find(|x| same_op(x, &op)) {
+                    Some(x) => *x = op,
+                    None => last.command.ops.push(op),
                 }
             }
             return Ok(());
@@ -160,9 +182,9 @@ impl History {
             .before
             .into_iter()
             .filter_map(|u| match u {
-                Undo::Set(_) => None,
                 Undo::Removed(r) => Some(r.layout),
                 Undo::Added { layout, .. } => Some(layout),
+                _ => None,
             })
             .collect();
         let label = applied.command.label.clone();
@@ -208,6 +230,33 @@ fn same_field(a: &SetField, b: &SetField) -> bool {
     a.block == b.block && a.index == b.index && a.field == b.field
 }
 
+/// Whether two set operations write the same field or volume entry.
+fn same_op(a: &Op, b: &Op) -> bool {
+    match (a, b) {
+        (Op::Set(a), Op::Set(b)) => same_field(a, b),
+        (
+            Op::VolumeSet { kind, index, .. },
+            Op::VolumeSet {
+                kind: k, index: i, ..
+            },
+        ) => kind == k && index == i,
+        _ => false,
+    }
+}
+
+fn same_undo(a: &Undo, b: &Undo) -> bool {
+    match (a, b) {
+        (Undo::Set(a), Undo::Set(b)) => same_field(a, b),
+        (
+            Undo::VolumeSet { kind, index, .. },
+            Undo::VolumeSet {
+                kind: k, index: i, ..
+            },
+        ) => kind == k && index == i,
+        _ => false,
+    }
+}
+
 fn apply_all(
     scenario: &mut Scenario,
     ops: &[Op],
@@ -233,6 +282,24 @@ fn apply_all(
                     entry: entry.clone(),
                     layout,
                 }),
+            Op::VolumeSet { kind, index, entry } => scenario
+                .set_volume(*kind, *index, entry.clone())
+                .map(|old| Undo::VolumeSet {
+                    kind: *kind,
+                    index: *index,
+                    entry: old,
+                }),
+            Op::VolumeRemove { kind, index } => scenario
+                .remove_volume(*kind, *index)
+                .map(Undo::VolumeRemoved),
+            Op::VolumeAdd { kind, entry } => {
+                scenario
+                    .add_volume(*kind, entry.clone())
+                    .map(|_| Undo::VolumeAdded {
+                        kind: *kind,
+                        entry: entry.clone(),
+                    })
+            }
         };
         match r {
             Ok(u) => before.push(u),
@@ -256,6 +323,11 @@ fn revert(scenario: &mut Scenario, before: &[Undo]) -> Result<()> {
             }
             Undo::Removed(r) => scenario.unremove(r)?,
             Undo::Added { block, entry, .. } => scenario.unadd(*block, entry)?,
+            Undo::VolumeSet { kind, index, entry } => {
+                scenario.write_volume(*kind, *index, entry.clone())?;
+            }
+            Undo::VolumeRemoved(r) => scenario.unremove_volume(r)?,
+            Undo::VolumeAdded { kind, entry } => scenario.unadd_volume(*kind, entry)?,
         }
     }
     Ok(())

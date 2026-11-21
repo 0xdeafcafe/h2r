@@ -1,7 +1,8 @@
 use std::io::{Read, Seek};
 
 use forge_doc::{
-    Apply, BlockKind, F32, FieldWrite, Placement, Refusal, TagKey, TagWrite, Value, WorldBounds,
+    Apply, BlockKind, F32, FieldWrite, Links, Placement, Refusal, TagKey, TagWrite, Value,
+    WorldBounds,
 };
 use map::{FourCC, Map, Tag, TagQuery};
 use scenario_edit::{
@@ -54,6 +55,14 @@ pub(super) struct Materialiser<'a, R> {
     session: &'a mut Session,
     map: &'a mut Map<R>,
     tags: TagFields,
+    device_groups: Vec<Vec<u32>>,
+}
+
+/// What the save leaves to write: new tag strings, and the device groups
+/// the scenario editor has no block for.
+pub(super) struct Finished {
+    pub strings: Vec<String>,
+    pub device_groups: Vec<Vec<u32>>,
 }
 
 impl<'a, R: Read + Seek> Materialiser<'a, R> {
@@ -62,13 +71,17 @@ impl<'a, R: Read + Seek> Materialiser<'a, R> {
             session,
             map,
             tags: TagFields::default(),
+            device_groups: Vec::new(),
         }
     }
 
-    pub fn finish(self) -> Result<Vec<String>, Error> {
+    pub fn finish(self) -> Result<Finished, Error> {
         self.session
             .set_tag_patches(self.tags.patches.into_iter().collect())?;
-        Ok(self.tags.strings)
+        Ok(Finished {
+            strings: self.tags.strings,
+            device_groups: self.device_groups,
+        })
     }
 
     fn scenario(&self) -> forge_doc::Result<&scenario_edit::Scenario> {
@@ -162,5 +175,11 @@ impl<R: Read + Seek> Apply for Materialiser<'_, R> {
 
     fn tag_field(&mut self, write: &TagWrite) -> forge_doc::Result<()> {
         self.tags.write(self.map, write)
+    }
+
+    fn links(&mut self, links: &Links) -> forge_doc::Result<()> {
+        crate::links::teleporters(self.session, &links.teleporters)?;
+        self.device_groups.clone_from(&links.device_groups);
+        Ok(())
     }
 }

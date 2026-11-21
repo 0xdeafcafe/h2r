@@ -20,6 +20,9 @@ pub struct SpawnViewParams {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrameParams {
+    /// Omit for the displayed frame. A private graph runs on an explicit lighting capture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<crate::frame_graph::Source>,
     /// Record the next whole frame: from the next present to the one after.
     /// Replaces an arming not yet done, and forgets the last frame.
     #[serde(default)]
@@ -71,6 +74,12 @@ pub struct FrameReply {
 /// between two presents.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct FrameRecord {
+    /// Counters from an actual native graph presented to the display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_frame: Option<crate::frame_graph::FrameGraphStats>,
+    /// Identifies the sealed scene and the draw mode for a private-target recording.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_frame: Option<crate::frame_graph::FrameGraphStats>,
     /// The arming that asked for it.
     pub seq: u64,
     /// The present that began it and the one that ended it.
@@ -112,6 +121,12 @@ pub struct FrameTotals {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PassRecord {
+    /// Named typed stages, in execution order within the attachment run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stages: Vec<String>,
+    /// Carried slots in execution order on this pair of private graph attachments.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub slots: Vec<crate::frame_graph::PassSlot>,
     pub index: usize,
     /// The colour surface (the backend's handle, as text) and its size and
     /// format as the guest describes it (`640x480 X8R8G8B8`), once a draw
@@ -282,6 +297,12 @@ pub struct SnapRecord {
 /// each `null` where that piece isn't running.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RenderStats {
+    /// Counters from an actual native graph presented to the display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_frame: Option<crate::frame_graph::DisplayStats>,
+    /// The latest completed private-target draw while its renderer is installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_frame: Option<crate::frame_graph::FrameGraphStats>,
     /// In-between frames (`impl.render.interpolate`, `.reproject`):
     /// `d3d::interp::InterpStats`, every field, including the hold reasons
     /// (`unsure_*`, `mismatch_*`, `dropped`).
@@ -343,6 +364,14 @@ impl CompareReply {
     }
 }
 
+/// Lighting for a private draw of one sealed scene.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CaptureLighting {
+    Retail,
+    E3,
+}
+
 /// `render.capture`: the frame of a sim tick as a PNG.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -355,6 +384,10 @@ pub struct FrameCaptureParams {
     /// instead of the presented image.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pass: Option<usize>,
+    /// Draw the selected sealed scene with this mode into private targets.
+    /// The tick defaults to the latest sealed scene. Excludes `pass`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lighting: Option<CaptureLighting>,
     /// Include the rendered package, spawn camera and PNG digest for this
     /// Live capture game. Only whole frames from a spawn view qualify.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -381,6 +414,9 @@ pub struct CaptureReply {
     /// The pass read back, when one was asked for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pass: Option<usize>,
+    /// The mode the private renderer drew, when requested.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lighting: Option<CaptureLighting>,
     /// The sealed scene's summary hash at that present (`render.scene`);
     /// `null` with no scene source.
     pub scene_hash: Option<String>,
@@ -419,6 +455,12 @@ pub struct SceneParams {
 /// (docs/graphics/framescene.md, section 4).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SceneReply {
+    /// Counters from an actual native graph presented to the display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_frame: Option<crate::frame_graph::DisplayStats>,
+    /// The last private-target draw if it used exactly this sealed scene.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_frame: Option<crate::frame_graph::FrameGraphStats>,
     /// False until a scene has been sealed.
     pub sealed: bool,
     pub map_epoch: u32,
@@ -445,9 +487,80 @@ pub struct SceneReply {
     /// recorded no frame.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub carried: Option<SceneCarried>,
+    /// Side target uses and readbacks across all frames the device's sink recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carried_census: Option<SceneCarriedCensus>,
+    /// Frozen census corpus at original Swap 3000.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carried_checkpoint: Option<SceneCensusCheckpoint>,
+    /// Activation of the requested level on a fresh level boot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carried_activation: Option<SceneCensusActivation>,
     /// The JSON file written when `dump` was asked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dump: Option<String>,
+}
+
+/// Totals over sink frames, including targets that only appeared during loading.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneCarriedCensus {
+    pub frames: u64,
+    /// Frames containing a guest D3D op inside a game view.
+    pub game_frames: u64,
+    pub targets: Vec<SceneTargetUse>,
+    pub reads: Vec<SceneReadUse>,
+}
+
+/// Only a consecutive prefix from boot can supply the inventory and the
+/// measured window. Each field appears when its own side reaches the Swap.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneCensusCheckpoint {
+    pub present: u64,
+    pub sealed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inventory: Option<SceneCarriedCensus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counters: Option<BTreeMap<String, u64>>,
+}
+
+/// The level-boot mark, used as the baseline for post-load deltas.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneCensusActivation {
+    pub map: String,
+    pub present: u64,
+    /// The sink frame reached at activation.
+    pub frame: u64,
+    pub counters: BTreeMap<String, u64>,
+}
+
+/// Occurrences of a census row. Sink frames are numbered from one.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneUses {
+    pub count: u64,
+    pub first_frame: u64,
+    pub last_frame: u64,
+}
+
+/// A side surface class, where it was used, and how.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneTargetUse {
+    pub width: u32,
+    pub height: u32,
+    pub format: u32,
+    pub depth: bool,
+    pub slot: String,
+    pub operation: String,
+    #[serde(flatten)]
+    pub uses: SceneUses,
+}
+
+/// Guest reads inside or outside a game view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneReadUse {
+    pub slot: String,
+    pub kind: String,
+    #[serde(flatten)]
+    pub uses: SceneUses,
 }
 
 /// `render.scene`'s entry census.
@@ -781,6 +894,45 @@ mod tests {
         assert_eq!(v["post"]["effects"], 1);
         assert!(v.get("water").is_none());
         assert_eq!(serde_json::from_value::<SceneViewRecord>(v).unwrap(), r);
+    }
+
+    #[test]
+    fn the_census_preserves_counts_and_frame_bounds_on_the_wire() {
+        let uses = SceneUses { count: 3, first_frame: 2, last_frame: 7 };
+        let reply = SceneReply {
+            carried_checkpoint: Some(SceneCensusCheckpoint {
+                present: 3000, sealed: true, inventory: None,
+                counters: Some(BTreeMap::from([("scene_window_games".into(), 5)])),
+            }),
+            carried_activation: Some(SceneCensusActivation {
+                map: "invented".into(), present: 2, frame: 2,
+                counters: BTreeMap::from([("scene_readback".into(), 1)]),
+            }),
+            carried_census: Some(SceneCarriedCensus {
+                frames: 10,
+                game_frames: 8,
+                targets: vec![SceneTargetUse {
+                    width: 9, height: 7, format: 6, depth: false,
+                    slot: "after_lights".into(), operation: "copy_from".into(), uses,
+                }],
+                reads: vec![SceneReadUse { slot: "outside".into(), kind: "mirror".into(), uses }],
+            }),
+            ..Default::default()
+        };
+        let v = serde_json::to_value(&reply).unwrap();
+        let saved = &v["carried_checkpoint"];
+        assert_eq!(saved["present"], 3000);
+        assert_eq!(saved["counters"]["scene_window_games"], 5);
+        assert!(saved.get("inventory").is_none());
+        let census = &v["carried_census"];
+        assert_eq!(census["targets"][0]["first_frame"], 2);
+        assert_eq!(census["reads"][0]["last_frame"], 7);
+        assert_eq!(census["reads"][0]["count"], 3);
+        assert_eq!(serde_json::from_value::<SceneReply>(v).unwrap(), reply);
+        let mut old = serde_json::to_value(SceneReply::default()).unwrap();
+        assert!(old.get("carried_checkpoint").is_none());
+        assert!(old.as_object_mut().unwrap().remove("carried_census").is_none());
+        assert!(serde_json::from_value::<SceneReply>(old).unwrap().carried_census.is_none());
     }
 
     #[test]

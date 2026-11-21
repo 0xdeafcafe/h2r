@@ -2,7 +2,7 @@
 use std::io::{Read, Seek};
 
 use h1campaign::ai::convert::{ScenarioBlocks, grenade};
-use h1campaign::ai::h2::{ScenarioAi, Squad, StartingLocation, Zone, layout};
+use h1campaign::ai::h2::{AreaRef, Order, ScenarioAi, Squad, StartingLocation, Zone, layout};
 use h1campaign::scripts::compile::{Compiled, add_startup_squad, field};
 use map::build::Block;
 use map::{FourCC, Map, TagId, TagQuery};
@@ -23,6 +23,8 @@ const PROBE_SCRIPT: &str = "ff_probe_place";
 const PROBE_SQUAD: &str = "ff_probe_elites";
 const SQUAD_SLOTS: usize = 16;
 const COVENANT_TEAM: u16 = 3;
+/// The order the guest's `hunt` entry finds by name (`AI_SET_ORDERS`, 0x275cb0).
+pub(crate) const HUNT_ORDER: &str = "ff_hunt";
 
 pub(crate) struct AiBlocks {
     pub character: Block,
@@ -46,9 +48,16 @@ pub(crate) fn prepare<R: Read + Seek>(
     let root = map
         .read_file_range(at, layout::SCENARIO_MIN as u64)
         .map_err(|e| e.to_string())?;
-    for (field, _) in [layout::CHARACTER_PALETTE, layout::SQUADS, layout::ZONES] {
+    for (field, _) in [
+        layout::CHARACTER_PALETTE,
+        layout::SQUADS,
+        layout::ZONES,
+        layout::ORDERS,
+    ] {
         if root[field..field + 4] != [0; 4] {
-            return Err("the multiplayer base already has characters, squads or zones".into());
+            return Err(
+                "the multiplayer base already has characters, squads, zones or orders".into(),
+            );
         }
     }
 
@@ -65,14 +74,17 @@ pub(crate) fn prepare<R: Read + Seek>(
     let mut fields = ScenarioBlocks { fields: Vec::new() };
     let weapon_index = weapon_slot(map, &root, weapon, &mut fields)?;
     let squads = squads(&zones, weapon_index, probe)?;
+    let orders = vec![hunt_order(&zones)?];
     let ai = ScenarioAi {
+        orders,
         zones,
         squads,
         character_palette: vec![elite],
         ..Default::default()
     };
-    // Preserve the map's scripting data (including point sets), orders
-    // and squad groups. This kit owns just three scenario AI fields.
+    // Preserve the map's scripting data (including point sets) and squad
+    // groups. This kit owns four scenario AI fields; the orders block is
+    // empty in the base (checked above), so `ff_hunt` is order 0.
     fields
         .fields
         .extend(ai.blocks().fields.into_iter().filter(|(field, _, _)| {
@@ -80,6 +92,7 @@ pub(crate) fn prepare<R: Read + Seek>(
                 layout::CHARACTER_PALETTE.0,
                 layout::SQUADS.0,
                 layout::ZONES.0,
+                layout::ORDERS.0,
             ]
             .contains(&(*field as usize))
         }));
@@ -119,6 +132,39 @@ fn weapon_slot<R: Read + Seek>(
         .fields
         .push((u32::from(field), index as u32 + 1, palette));
     Ok(index)
+}
+
+/// The Hunt order: engage from every area of every drop zone, so a squad
+/// sent to it sweeps the whole arena toward the players. No style, script or
+/// follow target; the guest finds it by its name.
+fn hunt_order(zones: &[Zone]) -> Result<Order, String> {
+    let primary_areas: Vec<AreaRef> = zones
+        .iter()
+        .enumerate()
+        .flat_map(|(zone, z)| {
+            (0..z.areas.len()).map(move |area| AreaRef {
+                kind: 0,
+                zone: zone as i16,
+                area: area as i16,
+            })
+        })
+        .collect();
+    if primary_areas.is_empty() {
+        return Err("no drop zone areas for the Hunt order".into());
+    }
+    Ok(Order {
+        name: HUNT_ORDER.into(),
+        style: -1,
+        flags: 0,
+        force_combat_status: 0,
+        entry_script: String::new(),
+        entry_script_index: -1,
+        follow_squad: -1,
+        follow_radius: 0.0,
+        primary_areas,
+        secondary_areas: Vec::new(),
+        endings: 0,
+    })
 }
 
 fn squads(zones: &[Zone], weapon: i16, probe: bool) -> Result<Vec<Squad>, String> {

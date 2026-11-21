@@ -4,7 +4,9 @@ use std::io::{Read, Seek};
 use map::{FourCC, Map, TagId};
 use tags::collision::Bsp;
 use tags::geometry::TagView;
-use tags::structure::{InstancedGeometryDefinition, InstancedGeometryInstance};
+use tags::structure::{
+    InstancedGeometryDefinition, InstancedGeometryInstance, instance_definitions,
+};
 use tags::{Error, Result};
 
 use crate::geom::{cross, dot, unit};
@@ -15,12 +17,6 @@ use crate::{Poly, Vec3};
 /// the agent's `debug_static.rs` read the same.
 const SCENARIO_BSPS: usize = 0x210;
 const SCENARIO_BSP_ROW: usize = 0x44;
-/// `sbsp+0x138`: instanced geometry definitions, each with its collision
-/// BSP's eight blocks at `+0x70` (docs/engine/collision-queries.md, entry
-/// E); `sbsp+0x140` is the placement block
-/// ([`InstancedGeometryInstance::placements`]).
-const SBSP_INSTANCE_DEFINITIONS: usize = 0x138;
-const DEFINITION_COLLISION: usize = 0x70;
 /// A map's structure and instances together stay well under this; past it
 /// the read stops with an error rather than allocating without bound.
 const MAX_POLYS: usize = 4 << 20;
@@ -172,11 +168,9 @@ pub(crate) fn map_polys<R: Read + Seek>(map: &mut Map<R>, bsp: usize) -> Result<
         out.extend(polys(&collision, None));
     }
 
-    let definitions = view.block(
-        view.bytes(),
-        SBSP_INSTANCE_DEFINITIONS,
-        InstancedGeometryDefinition::SIZE,
-    )?;
+    // sbsp+0x138: instanced geometry definitions, each with its collision
+    // BSP at +0x70 (tags::structure); sbsp+0x140: their placements.
+    let definitions = instance_definitions(&view)?;
     let placements = InstancedGeometryInstance::placements(&view, definitions.len())?;
     let mut grouped = vec![Vec::new(); definitions.len()];
     for p in &placements {
@@ -186,8 +180,7 @@ pub(crate) fn map_polys<R: Read + Seek>(map: &mut Map<R>, bsp: usize) -> Result<
         if placed.is_empty() {
             continue;
         }
-        let at = offset(definition) + DEFINITION_COLLISION;
-        let collision = Bsp::decode_structure(&bytes, location.address, at)?;
+        let collision = InstancedGeometryDefinition::collision(&view, definition)?;
         for p in placed {
             out.extend(polys(&collision, Some(instance_transform(p))));
             if out.len() > MAX_POLYS {

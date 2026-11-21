@@ -248,7 +248,11 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
     use crate::account_screen::{MENU, Step};
     let mut s = ScreenSpec::new("account", a.title());
     s.inputs = vec![Input::Up, Input::Down, Input::A, Input::B];
-    s.description = Some(crate::signin_screen::TEXT_BLOCK.into());
+    // The sign-in prompt's block, its right edge held inside the title-safe
+    // area (its own reaches 300, past it).
+    let mut block: crate::ui_kit::spec::DescriptionBlock = crate::signin_screen::TEXT_BLOCK.into();
+    block.rect[3] = block.rect[3].min(crate::ui_kit::layout::SAFE.right);
+    s.description = Some(block);
     match &a.step {
         Step::Menu { focus } => {
             s.focus = *focus;
@@ -272,11 +276,12 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 }
 
 /// The screens `h2 ui preview` knows, by name.
-pub const NAMES: [&str; 32] = [
+pub const NAMES: [&str; 33] = [
     "forge.hud",
     "forge.palette",
     "forge.properties",
     "forge.menu",
+    "forge.link",
     "campaigns",
     "skulls",
     "skulls.h1",
@@ -327,7 +332,7 @@ pub fn sample(name: &str) -> Option<ScreenSpec> {
 /// file.
 pub fn live(name: &str) -> Option<Box<dyn Live>> {
     match name {
-        "forge.hud" | "forge.palette" | "forge.properties" | "forge.menu" => {
+        "forge.hud" | "forge.palette" | "forge.properties" | "forge.menu" | "forge.link" => {
             super::forge::live(name)
         }
         "signin-code" => Some(Box::new(Driven::new(crate::signin_screen::SigninPage))),
@@ -920,12 +925,23 @@ mod tests {
     ///   Quick Options dialogs (the sample, Clankers, Halo 1 Options) pass
     ///   on the disc's art, but the synthetic source has no `fs_dialog` to
     ///   cover their opener's rows.
+    /// - The same for the dialogs opened over another page: the browser's
+    ///   filters and the Clanker card (Quick Options), and the Theater
+    ///   pause menu's pickers (the large dialog, over the menu's own rows;
+    ///   its camera picker's title also lands on them).
     fn known(screen: &str, issue: &crate::ui_kit::layout::Issue) -> bool {
         use crate::ui_kit::layout::Issue;
         matches!(
             (screen, issue),
-            ("kit.dialog" | "kit.dialog.large" | "clankers" | "h1-options" | "kit.picker" | "kit.picker.game", Issue::Contrast { id, .. })
+            (
+                "kit.dialog" | "kit.dialog.large" | "clankers" | "h1-options" | "kit.picker" | "kit.picker.game"
+                | "browser.filters" | "clanker_player_options" | "theater.pause-menu",
+                Issue::Contrast { id, .. }
+            )
                 if id.starts_with("row.")
+        ) || matches!(
+            (screen, issue),
+            ("theater.pause-menu", Issue::Contrast { id, .. }) if id == "title"
         )
     }
 

@@ -13,6 +13,7 @@ use runtime::Guest;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Names {
     pub scenario: u32,
+    strings: Vec<Option<String>>,
     by_datum: HashMap<u32, (FourCC, String)>,
 }
 
@@ -29,6 +30,7 @@ impl Names {
     pub fn new(scenario: u32, rows: impl IntoIterator<Item = (u32, FourCC, String)>) -> Names {
         Names {
             scenario,
+            strings: Vec::new(),
             by_datum: rows.into_iter().map(|(d, g, n)| (d, (g, n))).collect(),
         }
     }
@@ -36,12 +38,32 @@ impl Names {
     /// From a map file.
     pub fn from_map<R: Read + Seek>(map: &map::Map<R>) -> Option<Names> {
         let scenario = map.scenario()?.id.0;
-        Some(Names::new(
+        let mut names = Names::new(
             scenario,
             map.tags()
                 .iter()
                 .filter_map(|t| Some((t.id.0, t.group, t.name.clone()?))),
-        ))
+        );
+        names.strings = map.strings().to_vec();
+        Some(names)
+    }
+
+    pub fn string(&self, id: u32) -> Option<&str> {
+        let s = self.strings.get((id & 0xffffff) as usize)?.as_deref()?;
+        (map::build::string_id((id & 0xffffff) as usize, s).ok()? == id).then_some(s)
+    }
+
+    pub fn string_id(&self, text: &str) -> Option<u32> {
+        let mut hits = self
+            .strings
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.as_deref() == Some(text));
+        let index = hits.next()?.0;
+        hits.next()
+            .is_none()
+            .then(|| map::build::string_id(index, text).ok())
+            .flatten()
     }
 
     pub fn name(&self, datum: u32) -> Option<&str> {

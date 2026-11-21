@@ -159,9 +159,13 @@ impl AgentGlue {
         }
         let agent = agent::Agent::new();
         add_host_methods(&agent);
-        // render.scene: the frame step's FrameScene (docs/graphics/framescene.md).
+        // render.scene: the frame step's FrameScene (docs/graphics/framescene.md),
+        // and the live mirror's camera layer from the same sealed scene.
         #[cfg(feature = "gpu")]
-        crate::scene_glue::install();
+        {
+            crate::scene_glue::install();
+            crate::scene_glue::install_cameras(&agent);
+        }
         let sim = install_sim(&agent, allow_bot_add);
         // The game's own functions for sim (teleports, give, spawn): a
         // `before` on the tick that makes the calls queued for it.
@@ -176,6 +180,16 @@ impl AgentGlue {
             Err(e) => anyhow::bail!("agent-calls: {e}"),
         }
         agent::forge::install(&agent, sim.clone(), &agent::sim::hashes::HASHES);
+        // firefight.*: the Firefight runtime, or why there is none
+        // (docs/game/firefight.md, "Agent API").
+        agent::firefight::install(
+            &agent,
+            std::sync::Arc::new(crate::firefight::feature::AgentSource::installed()),
+        );
+        let probes = agent::probe::Probes::default();
+        if registry.add(&probes).map_err(|e| anyhow::anyhow!("agent-probes: {e}"))? {
+            probes.install(&agent, &sim);
+        }
         agent::ai::install(&agent);
         // net.replication: the event counter is an observer of its own, so
         // H2_FEATURES can drop it and leave the method's other readings.
@@ -249,6 +263,31 @@ impl AgentGlue {
                 let mode = crate::superbounce_mode::set_override(p.on).to_string();
                 Ok(serde_json::to_value(agent_proto::superbounce::Set { mode })
                     .expect("superbounce.set serialises"))
+            },
+        );
+        // The superbounce fall assist (superbounce_assist.rs,
+        // docs/game/superbounce.md, "Hold X: the fall assist").
+        agent.add_game_method(
+            agent_proto::superbounce::ASSIST,
+            Access::Read,
+            |params, _ctx| {
+                crate::superbounce_assist::no_params(&params)
+                    .map_err(|why| RpcError::new(code::INVALID_PARAMS, why))?;
+                Ok(serde_json::to_value(crate::superbounce_assist::assist_reply())
+                    .expect("superbounce.assist serialises"))
+            },
+        );
+        // Holds the assist's button for an agent with no pad.
+        agent.add_game_method(
+            agent_proto::superbounce::ASSIST_TEST,
+            Access::Act,
+            |params, _ctx| {
+                let p: agent_proto::superbounce::AssistTestParams =
+                    serde_json::from_value(params)
+                        .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?;
+                let hold = crate::superbounce_assist::set_test_hold(p.hold);
+                Ok(serde_json::to_value(agent_proto::superbounce::AssistTest { hold })
+                    .expect("superbounce.assist_test serialises"))
             },
         );
         // HaloScript state: the threads and globals of the running scenario.

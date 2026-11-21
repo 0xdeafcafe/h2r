@@ -1,6 +1,7 @@
 //! Viewport visibility shared by the renderer, picking, the editor and its API.
 use std::collections::BTreeSet;
 
+use crate::volumes::VolumeKind;
 use crate::{BlockKind, layout};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -14,11 +15,33 @@ pub enum LayerId {
     SpawnPoints,
     Flags,
     NetgameItems,
+    /// Trigger volumes drawn as each kind ([`crate::volumes`]).
+    Volume(VolumeKind),
+    /// Every structure BSP's collision surfaces
+    /// ([`crate::collision_view`]).
+    LevelCollision,
+    /// The collision surfaces no drawn surface covers: the invisible
+    /// walls ([`crate::collision_view::classify`]).
+    CollisionOnly,
+    /// Instanced geometry's collision, placed
+    /// ([`crate::collision_view::instance_surfaces`]).
+    InstanceCollision,
+    /// Each placed object's `coll` BSPs and `phmo` shapes as wire shapes
+    /// ([`crate::object_collision`]).
+    ObjectCollision,
     Halo1,
     Live,
 }
 
 impl LayerId {
+    /// The collision layers, hidden until shown ([`Layers::default`]).
+    pub const COLLISION: [Self; 4] = [
+        Self::LevelCollision,
+        Self::CollisionOnly,
+        Self::InstanceCollision,
+        Self::ObjectCollision,
+    ];
+
     /// Legend order. Every placement block has a row, even on an empty map.
     pub fn all() -> impl Iterator<Item = Self> {
         [
@@ -30,13 +53,10 @@ impl LayerId {
         ]
         .into_iter()
         .chain(layout::BLOCKS.iter().map(|b| Self::Placement(b.kind)))
-        .chain([
-            Self::SpawnPoints,
-            Self::Flags,
-            Self::NetgameItems,
-            Self::Halo1,
-            Self::Live,
-        ])
+        .chain([Self::SpawnPoints, Self::Flags, Self::NetgameItems])
+        .chain(VolumeKind::ALL.map(Self::Volume))
+        .chain(Self::COLLISION)
+        .chain([Self::Halo1, Self::Live])
     }
 
     pub fn id(self) -> &'static str {
@@ -63,6 +83,15 @@ impl LayerId {
             Self::SpawnPoints => "spawn_points",
             Self::Flags => "flags",
             Self::NetgameItems => "netgame_items",
+            Self::Volume(kind) => match kind {
+                VolumeKind::Trigger => "trigger_volumes",
+                VolumeKind::Kill => "kill_volumes",
+                VolumeKind::BspSwitch => "bsp_switches",
+            },
+            Self::LevelCollision => "level_collision",
+            Self::CollisionOnly => "collision_only",
+            Self::InstanceCollision => "instance_collision",
+            Self::ObjectCollision => "object_collision",
             Self::Halo1 => "halo1",
             Self::Live => "live",
         }
@@ -79,6 +108,13 @@ impl LayerId {
             Self::SpawnPoints => "Spawn points",
             Self::Flags => "Netgame flags",
             Self::NetgameItems => "Netgame equipment",
+            Self::Volume(VolumeKind::Trigger) => "Trigger volumes",
+            Self::Volume(VolumeKind::Kill) => "Kill volumes",
+            Self::Volume(VolumeKind::BspSwitch) => "BSP switches",
+            Self::LevelCollision => "Level collision",
+            Self::CollisionOnly => "Collision only",
+            Self::InstanceCollision => "Instance collision",
+            Self::ObjectCollision => "Object collision",
             Self::Halo1 => "Halo 1 overlay",
             Self::Live => "Live objects",
         }
@@ -98,6 +134,11 @@ impl LayerId {
             Self::Structure | Self::Sky | Self::Objects | Self::Fog => "World",
             Self::Markers | Self::Placement(_) => "Placements",
             Self::SpawnPoints | Self::Flags | Self::NetgameItems => "Gameplay",
+            Self::Volume(_) => "Volumes",
+            Self::LevelCollision
+            | Self::CollisionOnly
+            | Self::InstanceCollision
+            | Self::ObjectCollision => "Collision",
             Self::Halo1 => "Reference",
             Self::Live => "Live",
         }
@@ -150,17 +191,39 @@ impl Preset {
                     | SpawnPoints
                     | Flags
                     | NetgameItems
+                    | Volume(_)
             ),
-            Self::Collision => id == Structure,
+            // Out of bounds is kill volumes and collision.
+            Self::Collision => matches!(
+                id,
+                Structure
+                    | Volume(VolumeKind::Kill)
+                    | LevelCollision
+                    | CollisionOnly
+                    | InstanceCollision
+                    | ObjectCollision
+            ),
             Self::Everything => true,
         }
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// The viewport's shown layers. Everything starts shown except the
+/// collision layers, which cover the picture: the Collision and
+/// Everything presets show them.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Layers {
     hidden: BTreeSet<LayerId>,
     pub xray: bool,
+}
+
+impl Default for Layers {
+    fn default() -> Self {
+        Self {
+            hidden: LayerId::COLLISION.into(),
+            xray: false,
+        }
+    }
 }
 
 impl Layers {
@@ -198,14 +261,25 @@ mod tests {
         layers.set(LayerId::Placement(BlockKind::Weapons), false);
         layers.apply(Preset::Art);
         assert!(layers.placement(BlockKind::Weapons));
+        assert!(!layers.visible(LayerId::Volume(VolumeKind::Kill)));
         assert!(!layers.visible(LayerId::Markers));
         layers.apply(Preset::Gameplay);
         assert!(layers.visible(LayerId::Markers));
         assert!(!layers.visible(LayerId::Fog));
+        assert!(layers.visible(LayerId::Volume(VolumeKind::Trigger)));
+        assert!(!layers.visible(LayerId::CollisionOnly));
         layers.apply(Preset::Collision);
+        assert!(layers.visible(LayerId::LevelCollision));
+        assert!(LayerId::COLLISION.iter().all(|&id| layers.visible(id)));
         assert!(layers.visible(LayerId::Structure));
+        assert!(layers.visible(LayerId::Volume(VolumeKind::Kill)));
+        assert!(!layers.visible(LayerId::Volume(VolumeKind::Trigger)));
         assert!(!layers.visible(LayerId::Objects));
         layers.apply(Preset::Everything);
-        assert_eq!(layers, Layers::default());
+        assert!(LayerId::all().all(|id| layers.visible(id)));
+        // The default hides only the collision layers.
+        let default = Layers::default();
+        let hidden: Vec<_> = LayerId::all().filter(|&id| !default.visible(id)).collect();
+        assert_eq!(hidden, LayerId::COLLISION);
     }
 }

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use agent::editor::EditorLink;
 use engine::GuestMemory;
 use gfx::world_lines::ImageSamples;
-pub use gfx::world_lines::{ImageMarks, ImageValidity, WorldLine};
+pub use gfx::world_lines::{ImageMarks, ImageValidity, LineStyle, WorldLine};
 use render_bridge::scene_step::{self, PresentObserver, PresentPayload};
 
 use crate::d3d_glue::DeviceSnapshot;
@@ -105,6 +105,7 @@ mod tests {
                 color: [1.0, 0.0, 0.0],
                 dashed: false,
                 label: None,
+                style: Default::default(),
             });
         }
     }

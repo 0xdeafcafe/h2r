@@ -1,8 +1,9 @@
 # Forge: the features
 
 Status: The local monitor, Objects tool and document files have an
-implementation. Live move, delete and respawn require live-mirror M8.
-The other tools and body recipes are design.
+implementation. Its moves, deletes and restores apply to the live objects
+through live-mirror M8's object calls. The other tools and body recipes
+are design.
 Code: `crates/extensions/forge` owns the local session and tools.
 `crates/formats/forge-doc` defines the portable edits and
 `crates/tools/forge-build` materialises them.

@@ -3,8 +3,8 @@
 Materialises a Forge document against the user's own Halo 2 multiplayer
 map. The builder verifies every named source hash and the pinned builder
 versions. It applies placement and typed tag-field edits through the
-scenario editor's command and save path, then checks the expected MapId
-and geometry. Output is deterministic for the same input bytes and
+scenario editor's command and save path, then the document's links, then
+checks the expected MapId and geometry. Output is deterministic for the same input bytes and
 versions.
 
 ## Where it sits
@@ -51,11 +51,29 @@ with fewer slots when a block would exceed a bound. A normal play
 document omits this recipe. Other generators, transplants, variants and
 imports return named errors pending their own slices.
 
+## Links
+
+Links are written as retail data after every placement edit, at the
+entries' final indices (`forge_doc::ForgeDoc::links`).
+
+- A teleporter link sets the identifier (`+0x14`) of its sender and
+  receiver netgame flags to the channel. The sender must already have
+  type 7 and the receiver type 8, else the build is refused naming the
+  flag.
+- Device links join machines into groups. Each group is a new entry
+  after the map's own device groups (`scnr+0xa0`, stride `0x28`), named
+  `forge link <n>` with initial value 0 and no flags, and each member's
+  position group (`+0x36`) names it. These bytes are written after the
+  save and before the kit, which then reserves spare groups after them.
+
+An unlinked entry keeps the bytes it would have had without the link.
+
 ## Tests
 
 `cargo test --locked -p forge-build` uses invented maps for deterministic
 output, kit byte isolation, stale-base and expectation refusals, typed
-field writes and resolution through `content::Library`.
+field writes, resolution through `content::Library`, and links: a linked
+teleporter pair, a device group, and unlinking back to the same bytes.
 
 ## Docs
 

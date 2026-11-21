@@ -218,6 +218,8 @@ pub struct Nv2aShaders {
     render_scale: crate::scaled::RenderScale,
     /// [`ShaderProvider::set_hard_shadows`].
     hard_shadows: bool,
+    /// [`ShaderProvider::set_sharp_shadows`].
+    sharp_shadows: bool,
     /// WGSL overrides and dumps (`nv2a_hot.rs`).
     hot: hot::HotState,
 }
@@ -406,6 +408,7 @@ impl Nv2aShaders {
             map_generation: 0,
             render_scale: crate::scaled::RenderScale::ONE,
             hard_shadows: false,
+            sharp_shadows: false,
             hot: hot::HotState::new(hot_render::global()),
         }
     }
@@ -1108,6 +1111,10 @@ impl ShaderProvider for Nv2aShaders {
         self.hard_shadows = on;
     }
 
+    fn set_sharp_shadows(&mut self, on: bool) {
+        self.sharp_shadows = on;
+    }
+
     fn prepare(
         &mut self,
         ctx: &gfx::GfxContext,
@@ -1133,6 +1140,10 @@ impl ShaderProvider for Nv2aShaders {
         // filter): the reference never sets it.
         if self.hard_shadows {
             key.pixel_options.hard_shadow = hard_shadow_groups(draw, &key.pixel_options.shadow);
+        }
+        // E3 lighting's Sharp edge for a receiver of a native shadow tile.
+        if self.sharp_shadows {
+            key.pixel_options.sharp_shadow = sharp_shadow_stages(&key.pixel_options.shadow);
         }
         if def.explicit_final && def.final_inputs_abcd == 0 && def.final_inputs_efg == 0 {
             self.stats.zero_final_draws += 1;
@@ -1545,6 +1556,14 @@ pub fn hard_shadow_groups(draw: &ResolvedDraw, shadow: &[Option<Shadow>; 4]) -> 
             .filter(|&m| header(m) == Some(h))
             .fold(0u8, |mask, m| mask | 1 << m)
     })
+}
+
+/// [`PixelOptions::sharp_shadow`] for a draw's shadow stages: every stage
+/// that compares against a shadow map.
+pub fn sharp_shadow_stages(shadow: &[Option<Shadow>; 4]) -> u8 {
+    (0..4)
+        .filter(|&n| shadow[n].is_some())
+        .fold(0u8, |mask, n| mask | 1 << n)
 }
 
 /// [`PixelOptions::border`] for a stage: the `BORDER` axes when the stage

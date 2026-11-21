@@ -240,6 +240,7 @@ pub struct DiagBackend<B: Backend> {
     /// The agent's `render.frame` recorder (`agent::render::PROBE`; a
     /// test's own in tests).
     probe: &'static agent::render::FrameProbe,
+    owner_probe: bool,
     /// The current pass's colour target and size, while a frame is being
     /// recorded, so a pass asked for can be read back when it ends.
     probe_target: Option<(B::Surface, u32, u32)>,
@@ -357,6 +358,7 @@ impl<B: Backend> DiagBackend<B> {
             DiagBackend {
                 inner,
                 probe: &agent::render::PROBE,
+                owner_probe: false,
                 probe_target: None,
                 stats: Arc::clone(&stats),
                 log,
@@ -369,6 +371,12 @@ impl<B: Backend> DiagBackend<B> {
             },
             stats,
         )
+    }
+
+    /// The renderer reports a final routing decision for every Swap of this device.
+    pub fn with_owner_probe(mut self, enabled: bool) -> Self {
+        self.owner_probe = enabled;
+        self
     }
 
     /// The same, recording frames for `render.frame` into `probe`.
@@ -455,35 +463,62 @@ impl<B: Backend> DiagBackend<B> {
     /// Reads the current pass's colour target back into a PNG under the
     /// cache directory's `frames/`, and tells the probe.
     fn probe_snap(&mut self, ask: agent::render::SnapAsk) {
-        let result = self.probe_target
-            .ok_or_else(|| "the pass's size is unknown (no draw in it)".to_owned())
-            .and_then(|(surface, w, h)| {
-                if ask.display {
-                    self.inner.read_display_surface(surface)?
-                        .ok_or_else(|| "the backend has no display readback for this surface".into())
-                } else {
-                    let layout = GuestLayoutKind::Linear { pitch: w * 4 };
-                    self.inner
-                        .read_surface(surface, D3DFormat::LinA8R8G8B8, w, h, layout)
-                        .map(|bgra| ((w, h), bgra))
+        let probe = self.probe;
+        let Some((surface, width, height)) = self.probe_target else {
+            probe.snapped_for(ask, Err("the pass's size is unknown (no draw in it)".into()));
+            return;
+        };
+        if ask.display {
+            // A layout capture reads the displayed raster at its own size.
+            probe.write_snapshot(ask, || {
+                let ((width, height), mut pixels) = self.inner.read_display_surface(surface)?
+                    .ok_or_else(|| "the backend has no display readback for this surface".to_owned())?;
+                if pixels.len() as u64 != u64::from(width) * u64::from(height) * 4 {
+                    return Err(format!("display readback has {} bytes for {width}x{height}", pixels.len()));
                 }
-            })
-            .and_then(|((w, h), bgra)| {
-                let rgba: Vec<u8> = bgra.chunks_exact(4)
-                    .flat_map(|p| [p[2], p[1], p[0], 0xff])
-                    .collect();
-                let dir = agent_proto::cache_dir().join("frames");
-                let path = dir.join(format!("frame-{}-pass-{}.png", ask.seq, ask.pass));
-                std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-                crate::d3d_glue::write_png(&path, &rgba, w, h).map_err(|e| e.to_string())?;
-                Ok(path.display().to_string())
+                for pixel in pixels.chunks_exact_mut(4) {
+                    pixel.swap(0, 2);
+                    pixel[3] = 255;
+                }
+                Ok(agent::compare::Rgba { width, height, pixels })
             });
-        self.probe.snapped(ask.pass, result);
+            return;
+        }
+        let Some(pitch) = width.checked_mul(4) else {
+            probe.snapped_for(ask, Err("frame probe row pitch overflow".into()));
+            return;
+        };
+        let Some(size) = pitch.checked_mul(height) else {
+            probe.snapped_for(ask, Err("frame probe image size overflow".into()));
+            return;
+        };
+        let rgba = move |mut pixels: Vec<u8>| {
+            if pixels.len() != size as usize {
+                return Err(format!("frame probe read {} bytes, expected {size}", pixels.len()));
+            }
+            for pixel in pixels.chunks_exact_mut(4) {
+                pixel.swap(0, 2);
+                pixel[3] = 255;
+            }
+            Ok(agent::compare::Rgba { width, height, pixels })
+        };
+        if self.owner_probe {
+            // Only the renderer that draws the pass should read it back.
+            // The worker executes this at the pass boundary on fallback.
+            self.inner.queue_frame_probe_read(surface, width, height, Box::new(move |result| {
+                probe.write_snapshot(ask, || result.and_then(rgba));
+            }));
+        } else {
+            probe.write_snapshot(ask, || {
+                self.inner.read_surface(surface, D3DFormat::LinA8R8G8B8, width, height,
+                    GuestLayoutKind::Linear { pitch }).and_then(rgba)
+            });
+        }
     }
 }
 
 /// A draw for `render.frame`.
-fn probe_draw<S: std::fmt::Debug>(
+pub(crate) fn probe_draw<S: std::fmt::Debug>(
     color: S,
     depth: Option<S>,
     draw: &ResolvedDraw,
@@ -566,6 +601,233 @@ fn outcome_name(r: &Result<DrawOutcome, String>) -> String {
 }
 
 impl<B: Backend> DiagBackend<B> {
+    fn observe_upload(
+        &mut self, texture: &DecodedTexture, r: Result<B::Texture, String>,
+    ) -> Result<Tracked<B::Texture, B::Surface>, String> {
+        if let Some(s) = &mut self.sweep {
+            s.upload(texture);
+        }
+        if let Err(e) = &r {
+            self.line(format!("upload_texture failed: {e}"));
+        }
+        let id = self.next_texture;
+        self.next_texture += 1;
+        self.origin(id, || {
+            let d = &texture.desc;
+            format!(
+                "upload of {:?} {}x{} (guest bytes or a decoded readback)",
+                d.format, d.width, d.height
+            )
+        });
+        if let Some(c) = &self.capture {
+            let levels: Vec<String> = texture
+                .levels
+                .iter()
+                .enumerate()
+                .map(|(i, l)| {
+                    let name = format!("tex-{id}-{i}.bin");
+                    if c.keep_tex.contains(&id) {
+                        let _ = std::fs::write(c.dir.join(name), &l.data);
+                    } else {
+                        c.blob(&name, &l.data);
+                    }
+                    format!(
+                        "face {} level {} {}x{}x{} {} bytes",
+                        l.face,
+                        l.level,
+                        l.width,
+                        l.height,
+                        l.depth,
+                        l.data.len()
+                    )
+                })
+                .collect();
+            c.append(
+                "textures.txt",
+                &format!(
+                    "tex {id} frame {} host {:?} desc {:?} ok={} levels [{}]",
+                    self.in_frame,
+                    texture.host,
+                    texture.desc,
+                    r.is_ok(),
+                    levels.join("; ")
+                ),
+            );
+        }
+        r.map(|inner| Tracked { id, inner, source: TextureSource::Upload })
+    }
+
+    fn inspects_draw(&mut self) -> bool {
+        self.capturing().is_some() || self.logging() || self.sweep.is_some() || self.probe.armed()
+    }
+
+    fn diagnosed_draw(
+        &mut self,
+        color: B::Surface,
+        depth: Option<B::Surface>,
+        draw: &ResolvedDraw,
+        shared: Option<&Arc<ResolvedDraw>>,
+        textures: [Option<&Tracked<B::Texture, B::Surface>>; 4],
+    ) -> Result<DrawOutcome, String> {
+        let ids: Vec<Option<u64>> = textures.iter().map(|t| t.map(|t| t.id)).collect();
+        let mut snap = None;
+        if let Some(c) = self.capturing() {
+            let k = c.draws;
+            if c.skips.contains(&k) {
+                c.draws += 1;
+                c.append(
+                    "frame.txt",
+                    &format!("draw {k} skipped (H2_BOOT_CAPTURE_SKIP)"),
+                );
+                return Ok(DrawOutcome::Drawn);
+            }
+            if c.snaps.contains(&k) {
+                snap = Some((k, c.dir.join(format!("snap-{k}.bin"))));
+            }
+            c.draws += 1;
+            let mut d = draw.clone();
+            for (i, st) in d.streams.iter_mut().enumerate() {
+                c.blob(&format!("draw-{k}-s{i}.bin"), &std::mem::take(&mut st.data));
+            }
+            if let Some(idx) = d.indices.take() {
+                let bytes: Vec<u8> = idx.iter().flat_map(|i| i.to_le_bytes()).collect();
+                c.blob(&format!("draw-{k}-idx.bin"), &bytes);
+            }
+            c.append(
+                "frame.txt",
+                &format!("draw {k} color={color:?} depth={depth:?} textures={ids:?}\n{d:#?}"),
+            );
+        }
+        let sweep_logging = self
+            .sweep
+            .as_ref()
+            .is_some_and(|s| s.dumping(self.in_frame));
+        if sweep_logging && self.sweep.as_ref().is_some_and(|s| s.logged_draws() == 0) {
+            self.sweep_samples(
+                color,
+                draw.target.width,
+                draw.target.height,
+                "target before the frame's first draw",
+            );
+        }
+        let probing = self.probe.armed();
+        if probing {
+            self.probe_enter(color, depth, Some((draw.target.width, draw.target.height)));
+        }
+        let inner: [Option<&B::Texture>; 4] =
+            std::array::from_fn(|i| textures[i].map(|t| &t.inner));
+        let r = match shared {
+            Some(packet) => self.inner.draw_shared(color, depth, Arc::clone(packet), inner).0,
+            None => self.inner.draw(color, depth, draw, inner),
+        };
+        if probing {
+            let mut info = probe_draw(color, depth, draw, &r);
+            if self.probe.layout_requested() {
+                let extents = self.inner.render_extents(color, depth, inner);
+                info.layout = Some(layout::describe(draw, textures, extents, None));
+            }
+            self.probe.draw(info);
+        }
+        if let Some(s) = &mut self.sweep {
+            if s.dumping(self.in_frame) {
+                s.draw(draw, &format!("{color:?}"), &outcome_name(&r));
+                let src: Vec<String> = ids
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, id)| {
+                        id.map(|id| {
+                            let o = self
+                                .origins
+                                .get(&id)
+                                .map_or("made before the log", String::as_str);
+                            format!("t{i}=tex {id}: {o}")
+                        })
+                    })
+                    .collect();
+                s.line(&format!("  src [{}]", src.join("; ")));
+            }
+            s.saw_draw(self.in_frame, draw);
+        }
+        if sweep_logging {
+            self.sweep_samples(color, draw.target.width, draw.target.height, "target after");
+        }
+        if let Some((k, path)) = snap {
+            let t = &draw.target;
+            let layout = GuestLayoutKind::Linear { pitch: t.width * 4 };
+            match self
+                .inner
+                .read_surface(color, D3DFormat::LinA8R8G8B8, t.width, t.height, layout)
+            {
+                Ok(bytes) => {
+                    let _ = std::fs::write(&path, bytes);
+                }
+                Err(e) => eprintln!("boot: snap after draw {k}: {e}"),
+            }
+        }
+        let (out, target) = self.count(&r, &draw.target, &draw.texture_info);
+        if self.logging() {
+            let tex: Vec<String> = draw
+                .texture_info
+                .iter()
+                .enumerate()
+                .filter_map(|(i, t)| {
+                    t.map(|t| {
+                        format!(
+                            "t{i}={:?} {}x{} @{:#x}",
+                            t.format, t.width, t.height, t.header
+                        )
+                    })
+                })
+                .collect();
+            let st = &draw.state;
+            self.line(format!(
+                "draw {} {:?} n={} idx={} -> {color:?} ({target}) clip={:?} ps={} vs={:?} tex=[{}] blend={}:{:?}/{:?} atest={}:{:?}/{} z={:?}/{} cw={:?} cull={:?} {}",
+                draw.entry,
+                draw.primitive,
+                draw.vertex_count,
+                draw.indices.as_ref().map_or(0, |i| i.len()),
+                draw.clip,
+                if draw.shader.pixel_shader.is_some() { "program" } else { "fixed" },
+                std::mem::discriminant(&draw.shader.vertex),
+                tex.join(" "),
+                st.render.blend_enable,
+                st.render.src_blend,
+                st.render.dst_blend,
+                st.render.alpha_test_enable,
+                st.render.alpha_func,
+                st.render.alpha_ref,
+                st.render.depth_func,
+                st.render.depth_write,
+                st.render.color_write,
+                st.render.cull_mode,
+                out
+            ));
+        }
+        if self.logging() && std::env::var_os("H2_BOOT_DRAWLOG_VERTS").is_some() {
+            self.line(format!("  layout {:?}", draw.layout));
+            for (i, st) in draw.streams.iter().enumerate() {
+                let stride = st.stride.max(4) as usize;
+                for v in st.data.chunks(stride).take(8) {
+                    let words: Vec<String> = v
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|w| {
+                            let f = f32::from_le_bytes(*w);
+                            if f.is_finite() && (f == 0.0 || (1e-4..1e5).contains(&f.abs())) {
+                                format!("{f}")
+                            } else {
+                                format!("#{:08x}", u32::from_le_bytes(*w))
+                            }
+                        })
+                        .collect();
+                    self.line(format!("  s{i} {}", words.join(" ")));
+                }
+            }
+        }
+        r
+    }
+
     /// Adds a draw's outcome to the stats; returns the outcome's and the
     /// target's names.
     fn count(
@@ -595,6 +857,21 @@ impl<B: Backend> DiagBackend<B> {
 impl<B: Backend> Backend for DiagBackend<B> {
     type Surface = B::Surface;
     type Texture = Tracked<B::Texture, B::Surface>;
+
+    #[cfg(feature = "gpu")]
+    fn upload_scene_assets(&mut self, upload: d3d::backend::AssetUpload) {
+        self.inner.upload_scene_assets(upload);
+    }
+
+    #[cfg(feature = "gpu")]
+    fn frozen_images(&self, texture: &Self::Texture) -> Option<d3d::scene_sink::FrozenImages> {
+        self.inner.frozen_images(&texture.inner)
+    }
+
+    #[cfg(feature = "gpu")]
+    fn retain_scene_sample(&self, texture: &Self::Texture) -> Option<d3d::scene_sink::FrozenSample> {
+        self.inner.retain_scene_sample(&texture.inner)
+    }
 
     fn create_surface(
         &mut self,
@@ -805,6 +1082,10 @@ impl<B: Backend> Backend for DiagBackend<B> {
         self.inner.run_scene_stage(stage)
     }
 
+    fn accepts_scene_pass(&self, pass: &dyn d3d::ExternalPass) -> bool {
+        self.inner.accepts_scene_pass(pass)
+    }
+
     fn queues_scene_stages(&self) -> bool {
         self.inner.queues_scene_stages()
     }
@@ -867,6 +1148,23 @@ impl<B: Backend> Backend for DiagBackend<B> {
     ) -> Result<bool, String> {
         self.inner.warp_surface(src, dst, h)
     }
+    fn queue_frame_probe_read(
+        &mut self, surface: Self::Surface, width: u32, height: u32,
+        done: Box<dyn FnOnce(Result<Vec<u8>, String>) + Send>,
+    ) {
+        self.inner.queue_frame_probe_read(surface, width, height, done)
+    }
+
+    fn measure_present_raster(&mut self, surface: Option<Self::Surface>) -> d3d::backend::RasterMeasurement {
+        self.inner.measure_present_raster(surface)
+    }
+    fn last_present_unshown(&self) -> bool {
+        self.inner.last_present_unshown()
+    }
+
+    fn take_presented_extent(&mut self) -> Option<(u32, u32)> {
+        self.inner.take_presented_extent()
+    }
     fn surface_extent(&self, surface: Self::Surface) -> Option<(u32, u32)> {
         self.inner.surface_extent(surface)
     }
@@ -915,58 +1213,12 @@ impl<B: Backend> Backend for DiagBackend<B> {
         Ok(Tracked { id, inner, source: TextureSource::Placeholder })
     }
     fn upload_texture(&mut self, texture: &DecodedTexture) -> Result<Self::Texture, String> {
-        let r = self.inner.upload_texture(texture);
-        if let Some(s) = &mut self.sweep {
-            s.upload(texture);
-        }
-        if let Err(e) = &r {
-            self.line(format!("upload_texture failed: {e}"));
-        }
-        let id = self.next_texture;
-        self.next_texture += 1;
-        self.origin(id, || {
-            let d = &texture.desc;
-            format!(
-                "upload of {:?} {}x{} (guest bytes or a decoded readback)",
-                d.format, d.width, d.height
-            )
-        });
-        if let Some(c) = &self.capture {
-            let levels: Vec<String> = texture
-                .levels
-                .iter()
-                .enumerate()
-                .map(|(i, l)| {
-                    let name = format!("tex-{id}-{i}.bin");
-                    if c.keep_tex.contains(&id) {
-                        let _ = std::fs::write(c.dir.join(name), &l.data);
-                    } else {
-                        c.blob(&name, &l.data);
-                    }
-                    format!(
-                        "face {} level {} {}x{}x{} {} bytes",
-                        l.face,
-                        l.level,
-                        l.width,
-                        l.height,
-                        l.depth,
-                        l.data.len()
-                    )
-                })
-                .collect();
-            c.append(
-                "textures.txt",
-                &format!(
-                    "tex {id} frame {} host {:?} desc {:?} ok={} levels [{}]",
-                    self.in_frame,
-                    texture.host,
-                    texture.desc,
-                    r.is_ok(),
-                    levels.join("; ")
-                ),
-            );
-        }
-        r.map(|inner| Tracked { id, inner, source: TextureSource::Upload })
+        let result = self.inner.upload_texture(texture);
+        self.observe_upload(texture, result)
+    }
+    fn upload_shared(&mut self, texture: Arc<DecodedTexture>) -> Result<Self::Texture, String> {
+        let result = self.inner.upload_shared(Arc::clone(&texture));
+        self.observe_upload(&texture, result)
     }
     fn bc_supported(&self) -> bool {
         self.inner.bc_supported()
@@ -1005,160 +1257,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
         draw: &ResolvedDraw,
         textures: [Option<&Self::Texture>; 4],
     ) -> Result<DrawOutcome, String> {
-        let ids: Vec<Option<u64>> = textures.iter().map(|t| t.map(|t| t.id)).collect();
-        let mut snap = None;
-        if let Some(c) = self.capturing() {
-            let k = c.draws;
-            if c.skips.contains(&k) {
-                c.draws += 1;
-                c.append(
-                    "frame.txt",
-                    &format!("draw {k} skipped (H2_BOOT_CAPTURE_SKIP)"),
-                );
-                return Ok(DrawOutcome::Drawn);
-            }
-            if c.snaps.contains(&k) {
-                snap = Some((k, c.dir.join(format!("snap-{k}.bin"))));
-            }
-            c.draws += 1;
-            let mut d = draw.clone();
-            for (i, st) in d.streams.iter_mut().enumerate() {
-                c.blob(&format!("draw-{k}-s{i}.bin"), &std::mem::take(&mut st.data));
-            }
-            if let Some(idx) = d.indices.take() {
-                let bytes: Vec<u8> = idx.iter().flat_map(|i| i.to_le_bytes()).collect();
-                c.blob(&format!("draw-{k}-idx.bin"), &bytes);
-            }
-            c.append(
-                "frame.txt",
-                &format!("draw {k} color={color:?} depth={depth:?} textures={ids:?}\n{d:#?}"),
-            );
-        }
-        let sweep_logging = self
-            .sweep
-            .as_ref()
-            .is_some_and(|s| s.dumping(self.in_frame));
-        if sweep_logging && self.sweep.as_ref().is_some_and(|s| s.logged_draws() == 0) {
-            self.sweep_samples(
-                color,
-                draw.target.width,
-                draw.target.height,
-                "target before the frame's first draw",
-            );
-        }
-        let probing = self.probe.armed();
-        if probing {
-            self.probe_enter(color, depth, Some((draw.target.width, draw.target.height)));
-        }
-        let inner: [Option<&B::Texture>; 4] =
-            std::array::from_fn(|i| textures[i].map(|t| &t.inner));
-        let r = self.inner.draw(color, depth, draw, inner);
-        if probing {
-            let mut info = probe_draw(color, depth, draw, &r);
-            if self.probe.layout_requested() {
-                let extents = self.inner.render_extents(color, depth, inner);
-                info.layout = Some(layout::describe(draw, textures, extents, None));
-            }
-            self.probe.draw(info);
-        }
-        if let Some(s) = &mut self.sweep {
-            if s.dumping(self.in_frame) {
-                s.draw(draw, &format!("{color:?}"), &outcome_name(&r));
-                let src: Vec<String> = ids
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, id)| {
-                        id.map(|id| {
-                            let o = self
-                                .origins
-                                .get(&id)
-                                .map_or("made before the log", String::as_str);
-                            format!("t{i}=tex {id}: {o}")
-                        })
-                    })
-                    .collect();
-                s.line(&format!("  src [{}]", src.join("; ")));
-            }
-            s.saw_draw(self.in_frame, draw);
-        }
-        if sweep_logging {
-            self.sweep_samples(color, draw.target.width, draw.target.height, "target after");
-        }
-        if let Some((k, path)) = snap {
-            let t = &draw.target;
-            let layout = GuestLayoutKind::Linear { pitch: t.width * 4 };
-            match self
-                .inner
-                .read_surface(color, D3DFormat::LinA8R8G8B8, t.width, t.height, layout)
-            {
-                Ok(bytes) => {
-                    let _ = std::fs::write(&path, bytes);
-                }
-                Err(e) => eprintln!("boot: snap after draw {k}: {e}"),
-            }
-        }
-        let (out, target) = self.count(&r, &draw.target, &draw.texture_info);
-        if self.logging() {
-            let tex: Vec<String> = draw
-                .texture_info
-                .iter()
-                .enumerate()
-                .filter_map(|(i, t)| {
-                    t.map(|t| {
-                        format!(
-                            "t{i}={:?} {}x{} @{:#x}",
-                            t.format, t.width, t.height, t.header
-                        )
-                    })
-                })
-                .collect();
-            let st = &draw.state;
-            self.line(format!(
-                "draw {} {:?} n={} idx={} -> {color:?} ({target}) clip={:?} ps={} vs={:?} tex=[{}] blend={}:{:?}/{:?} atest={}:{:?}/{} z={:?}/{} cw={:?} cull={:?} {}",
-                draw.entry,
-                draw.primitive,
-                draw.vertex_count,
-                draw.indices.as_ref().map_or(0, |i| i.len()),
-                draw.clip,
-                if draw.shader.pixel_shader.is_some() { "program" } else { "fixed" },
-                std::mem::discriminant(&draw.shader.vertex),
-                tex.join(" "),
-                st.render.blend_enable,
-                st.render.src_blend,
-                st.render.dst_blend,
-                st.render.alpha_test_enable,
-                st.render.alpha_func,
-                st.render.alpha_ref,
-                st.render.depth_func,
-                st.render.depth_write,
-                st.render.color_write,
-                st.render.cull_mode,
-                out
-            ));
-        }
-        if self.logging() && std::env::var_os("H2_BOOT_DRAWLOG_VERTS").is_some() {
-            self.line(format!("  layout {:?}", draw.layout));
-            for (i, st) in draw.streams.iter().enumerate() {
-                let stride = st.stride.max(4) as usize;
-                for v in st.data.chunks(stride).take(8) {
-                    let words: Vec<String> = v
-                        .as_chunks::<4>()
-                        .0
-                        .iter()
-                        .map(|w| {
-                            let f = f32::from_le_bytes(*w);
-                            if f.is_finite() && (f == 0.0 || (1e-4..1e5).contains(&f.abs())) {
-                                format!("{f}")
-                            } else {
-                                format!("#{:08x}", u32::from_le_bytes(*w))
-                            }
-                        })
-                        .collect();
-                    self.line(format!("  s{i} {}", words.join(" ")));
-                }
-            }
-        }
-        r
+        self.diagnosed_draw(color, depth, draw, None, textures)
     }
     fn draw_owned(
         &mut self,
@@ -1169,11 +1268,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
     ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
         // Capturing, logging and the sweep diagnostic read the draw after
         // the inner backend has drawn it.
-        if self.capturing().is_some()
-            || self.logging()
-            || self.sweep.is_some()
-            || self.probe.armed()
-        {
+        if self.inspects_draw() {
             let r = self.draw(color, depth, &draw, textures);
             return (r, draw.streams);
         }
@@ -1183,6 +1278,22 @@ impl<B: Backend> Backend for DiagBackend<B> {
         let (r, spare) = self.inner.draw_owned(color, depth, draw, inner);
         self.tally(&r, &target, &info);
         (r, spare)
+    }
+    fn draw_shared(
+        &mut self,
+        color: Self::Surface,
+        depth: Option<Self::Surface>,
+        draw: Arc<ResolvedDraw>,
+        textures: [Option<&Self::Texture>; 4],
+    ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
+        if self.inspects_draw() {
+            let result = self.diagnosed_draw(color, depth, &draw, Some(&draw), textures);
+            return (result, Vec::new());
+        }
+        let (target, info) = (draw.target, draw.texture_info);
+        let (result, spare) = self.inner.draw_shared(color, depth, draw, textures.map(|t| t.map(|t| &t.inner)));
+        self.tally(&result, &target, &info);
+        (result, spare)
     }
     fn frame_stats(&mut self) {
         self.inner.frame_stats()
@@ -1251,7 +1362,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
         crate::host_perf::on_present(n);
         // render.frame: the frame's last pass is read back before the
         // present when it was asked for.
-        if let Some(ask) = self.probe.present(n) {
+        if let Some(ask) = self.probe.present_routed(n, self.owner_probe.then_some(self.in_frame)) {
             self.probe_snap(ask);
         }
         // render.capture: the present after the tick asked for is its frame.
@@ -1265,7 +1376,11 @@ impl<B: Backend> Backend for DiagBackend<B> {
         if let Some(l) = &mut self.log {
             let _ = l.flush();
         }
-        self.inner.present_with_gamma(surface, flags, gamma)
+        let presented = self.inner.present_with_gamma(surface, flags, gamma);
+        if presented.is_err() && self.owner_probe {
+            agent::render::private_graph::discard_display(self.in_frame - 1);
+        }
+        presented
     }
     fn clear_rects(
         &mut self,
@@ -1568,6 +1683,94 @@ mod tests {
         assert!(!PROBE.armed());
     }
 
+    /// The outer sink records the same draw packets the worker sees. A pass
+    /// snapshot between them, or at Swap, must leave that pairing intact.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn pass_snapshots_follow_the_display_worker_without_changing_its_choice() {
+        use d3d::scene_sink::ReplayFrame;
+        use d3d::threaded::owner::{Candidate, FrameOwner, Outputs, Submission};
+        use d3d::{RecordingBackend, SceneSink, ThreadedBackend};
+        use frame_scene::{Slot, SlotAt, TargetRef};
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let _one = PRESENTING.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = crate::frame_parity::RPC_RENDERER.lock().unwrap_or_else(|e| e.into_inner());
+        let probe = &agent::render::PROBE;
+        for native in [true, false] {
+            let slot = Arc::new(Mutex::new(None::<Arc<ReplayFrame>>));
+            let sealed = Arc::clone(&slot);
+            let adopted = Arc::new(AtomicU64::new(0));
+            let owner_swap = Arc::clone(&adopted);
+            let mut recording = RecordingBackend::new();
+            recording.readback_fill = 0x6d;
+            struct ProbeEvents;
+            impl d3d::threaded::owner::OwnerEvents for ProbeEvents {
+                fn declined(&self, _: u64, n: u64) { agent::render::private_graph::display_declined(n); }
+                fn failed(&self, _: u64, _: u64) { panic!("synthetic Swap failed"); }
+                fn stopped(&self) { agent::render::private_graph::display_stopped(); }
+            }
+            let worker = ThreadedBackend::new(recording).unwrap().with_frame_owner(FrameOwner {
+                select: Box::new(move |n, _| {
+                    let frame = slot.lock().unwrap().take()?;
+                    let selected = Arc::clone(&owner_swap);
+                    Some(Submission::Native(Candidate {
+                        frame,
+                        before_original: None,
+                        eligible: Box::new(move |_, _| native),
+                        draw: Box::new(move |gpu: &mut RecordingBackend, targets| {
+                            gpu.present(targets[&TargetRef::SceneColour], 0)?;
+                            selected.store(n, Ordering::Relaxed);
+                            Ok(Outputs::default())
+                        }),
+                    }))
+                }),
+                events: Arc::new(ProbeEvents),
+            });
+            let (diag, _) = DiagBackend::new(worker);
+            let mut sink = SceneSink::new(diag.with_owner_probe(true), || Some(SlotAt { slot: Slot::Opaque, view: 0 }))
+                .with_census(false)
+                .with_replay(move |frame| *sealed.lock().unwrap() = Some(Arc::new(frame)));
+            let back = sink.create_surface(D3DFormat::LinA8R8G8B8, 2, 1, false).unwrap();
+            let side = sink.create_surface(D3DFormat::LinA8R8G8B8, 1, 1, false).unwrap();
+
+            probe.arm(&agent_proto::FrameParams { arm: true, snap: vec![0, 1], ..Default::default() }).unwrap();
+            sink.present(back, 0).unwrap();
+            let mut draw = depth_draw();
+            draw.target.width = 2;
+            draw.target.height = 1;
+            draw.target.depth_format = None;
+            sink.draw(back, None, &draw, [None; 4]).unwrap();
+            draw.target.width = 1;
+            sink.draw(side, None, &draw, [None; 4]).unwrap();
+            sink.present(back, 0).unwrap();
+
+            let trace = sink.inner_mut().inner.with_inner(|gpu| {
+                gpu.calls.iter().filter_map(|call| match call {
+                    d3d::Recorded::Draw { .. } => Some("draw"),
+                    d3d::Recorded::ReadSurface { .. } => Some("read"),
+                    d3d::Recorded::Present { .. } => Some("swap"),
+                    _ => None,
+                }).collect::<Vec<_>>()
+            }).unwrap();
+            if native {
+                assert_eq!(adopted.load(Ordering::Relaxed), 2);
+                assert_eq!(trace, ["swap", "swap"]);
+            } else {
+                assert_eq!(adopted.load(Ordering::Relaxed), 0);
+                assert_eq!(trace, ["swap", "draw", "read", "draw", "read", "swap"]);
+                let report = probe.reply().frame.unwrap();
+                assert_eq!(report.snaps.len(), 2);
+                for (snap, width) in report.snaps.into_iter().zip([2, 1]) {
+                    let file = std::path::PathBuf::from(snap.file.expect("original pass PNG"));
+                    let image = agent::compare::read_png(&file).unwrap();
+                    std::fs::remove_file(file).unwrap();
+                    assert_eq!(image, agent::compare::Rgba::filled(width, 1, [0x6d, 0x6d, 0x6d, 255]));
+                }
+            }
+        }
+    }
+
     /// A W-buffered draw of a vertex program to a D24S8 target, depth
     /// clamped, LessEqual without a depth write.
     fn depth_draw() -> ResolvedDraw {
@@ -1780,6 +1983,44 @@ mod tests {
         assert_eq!(backend.inner.waits().reads - reads, 1);
         assert_eq!(*seen.lock().unwrap(), [0, 1, 2, 3]);
         backend.drain().unwrap();
+    }
+
+    /// Exercise the same two decorators and display-worker window as a game
+    /// installation. Asset uploads and immutable textures must reach the GPU
+    /// even when this present uses the original renderer.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn scene_assets_samples_and_original_presents_cross_the_diagnostic_stack() {
+        let _one = PRESENTING.lock().unwrap_or_else(|e| e.into_inner());
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        let window = Arc::new(d3d::scene_sink::window::PresentWindow::new(false));
+        let worker = d3d::ThreadedBackend::new(d3d::GfxBackend::new(ctx)).unwrap()
+            .with_present_window(Some(Arc::clone(&window)));
+        let (diag, _) = DiagBackend::new(worker);
+        let mut backend = d3d::SceneSink::new(diag, || None)
+            .with_census(false)
+            .with_present_window(Some(Arc::clone(&window)), || true);
+        let (mark, uploaded) = std::sync::mpsc::channel();
+        backend.upload_scene_assets(Box::new(move |_, _| { mark.send(()).unwrap(); }));
+
+        let colour = backend.create_surface(D3DFormat::LinA8R8G8B8, 4, 4, false).unwrap();
+        backend.clear(colour, None, Clear { color: Some([0.5; 4]), ..Clear::NONE }).unwrap();
+        let texture = backend.snapshot_surface(colour, false).unwrap().unwrap();
+        window.activate();
+        window.game_view(Some(true));
+        backend.present(colour, 0).unwrap();
+        // A threaded backend retains the prior Swap's exact proxy. Falling
+        // through to the synchronous GPU-image default would return None.
+        let held = backend.retain_scene_sample(&texture).expect("immutable scene texture");
+        drop(texture);
+        backend.drain().unwrap();
+        assert!(uploaded.try_recv().is_ok());
+        let counts = window.counters();
+        assert_eq!(counts["scene_window_games"], 1);
+        assert_eq!(counts["scene_window_ordinary"], 1);
+        assert_eq!(counts["scene_window_owned"], 0);
+        assert_eq!(counts["scene_window_gaps"], 0);
+        drop(held);
     }
 
     /// Every `Backend` method must be forwarded by `DiagBackend`; a missed

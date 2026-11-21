@@ -231,6 +231,46 @@ the next row's `%d` becomes the queued-count substitution U+E422
 (E `0x24caf4`, `0x24d472`, `0x22d9e0`). Counted ammo and grenades
 use the native queue's singular/plural selection and accumulation.
 
+## Multiplayer pickup text
+
+**Built.** Halo 2 picks the interaction and the item before looking up
+the prompt. The weapon action reads one of the string IDs at
+`weap +0xcc..+0xdc` (E `0x191d89`–`0x191e42`). The automatic
+power-up pickup reads `eqip +0xe0` (E `0x151fc3` → `0x191fc9`).
+Both go through the HUD lookup at `0x13925f`, which reads the `unic`
+reference at `hudg +0x3f8`. Coagulation's reference names
+`ui\hud\hud_messages` (V). The battle rifle's pickup and swap rows use
+the current interact binding and a weapon glyph in Halo 2's font. Its
+pickup notification names the rifle in text. The multiplayer globals'
+weapon list selects starting weapons and placement substitutions. The
+resolved object's tag supplies its HUD string IDs.
+
+The converted Blood Gulch assault rifle and shotgun had zeroes in
+these fields, and the scenario carried no `hmt `. Halo 1 has the
+templates in `hudg +0xf0`, the item text list in `hudg +0x94` and the
+weapon icon atlas in `hudg +0xa4` (V). `PickupText` now builds a
+shared event `hmt ` from those resources. It attaches the tag to
+`scnr +0x208` before pruning and binds the route IDs to the rebuilt
+item slots. Both the pinned and fresh writers carry that reference.
+The existing `boot::h1_hud_text` hook expands the selected template,
+and the stock renderer substitutes the player's actual button glyph.
+
+In the Halo 1 sandbox, the weapon name comes from the source
+`item +0x180` pickup row and the silhouette from its `wphi +0x13c`
+(E `0xe0147`, `0xe2ed5`, `0xe2f5e`). The MP weapon argument shows
+the name and the authored icon inline. Weapons without a source
+silhouette show their name. The Halo 2 sandbox's equivalent weapons
+use the retail localized rows. The retained Halo 1 overshield,
+camouflage and health pack use their original named pickup notification
+in either sandbox. Halo 1's Xbox power-ups are automatic and have text
+for the notification, with the placeholder in their icon-message
+field (V).
+
+`bloodgulch_pickup_text_survives_both_sandboxes` follows the fresh
+scenario's event reference, compares pickup messages with the Halo 1
+source rows, checks weapon action glyphs and sprite data, and resolves
+a retail weapon's prompt through Halo 2's native HUD `unic`.
+
 ## Script control and the native HUD draw
 
 **Built.** Every slot in the first table already has a native evaluator.

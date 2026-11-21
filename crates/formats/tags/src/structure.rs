@@ -200,6 +200,36 @@ pub struct InstancedGeometryDefinition {
 impl InstancedGeometryDefinition {
     /// Element stride (engine `imul 0C8h` at 0x000410d0).
     pub const SIZE: usize = 0xc8;
+    /// The definition's collision BSP: the eight block fields of a
+    /// structure collision BSP at `+0x70`, without a leading word (E: the
+    /// instance trace tests the definition's BSP at `+0x70`,
+    /// docs/engine/collision-queries.md, entry E).
+    pub const COLLISION: usize = 0x70;
+
+    /// The collision BSP of the definition `element`, a slice of `view`'s
+    /// payload (one of [`instance_definitions`]).
+    pub fn collision(view: &TagView<'_>, element: &[u8]) -> Result<crate::collision::Bsp> {
+        let at = (element.as_ptr() as usize)
+            .checked_sub(view.bytes().as_ptr() as usize)
+            .filter(|at| at + Self::SIZE <= view.bytes().len())
+            .ok_or(Error::Invalid("definition outside the structure payload"))?;
+        crate::collision::Bsp::decode_structure(view.bytes(), view.address(), at + Self::COLLISION)
+    }
+}
+
+/// `sbsp+0x138`: the instanced geometry definition block.
+pub const SBSP_INSTANCE_DEFINITIONS: usize = 0x138;
+
+/// The structure BSP's instanced geometry definitions, one slice of the
+/// payload each ([`InstancedGeometryDefinition::SIZE`] bytes), for
+/// [`InstancedGeometryDefinition::collision`] and
+/// [`InstancedGeometryInstance::placements`].
+pub fn instance_definitions<'a>(view: &TagView<'a>) -> Result<Vec<&'a [u8]>> {
+    view.block(
+        view.bytes(),
+        SBSP_INSTANCE_DEFINITIONS,
+        InstancedGeometryDefinition::SIZE,
+    )
 }
 
 /// One placement of a definition (0x58 bytes).

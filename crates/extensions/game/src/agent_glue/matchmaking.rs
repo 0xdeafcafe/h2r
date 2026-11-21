@@ -176,9 +176,47 @@ struct Trace {
     rows: VecDeque<Row>,
     sequence: u64,
     in_matchmaking: bool,
+    /// The matchmaking result after the last update, for [`Trace::ended`].
+    result: Option<u32>,
+}
+
+/// What a matchmaking result other than 2 (done) or 3 (active) means: the
+/// branch of the update `0x706f0` or its checks that set it. Any such
+/// result returns the party to its lobby (`0x70942`) and the title shows
+/// its matchmaking failure.
+fn result_reason(result: u32) -> &'static str {
+    match result {
+        1 => "the matchmaking setup failed (0x72330)",
+        4 => "the party leader cancelled (0x72260, squad +0x49fc)",
+        5 => "a party console failed to load the map (0x707d0)",
+        6 => "the party changed or left the hopper (0x72540)",
+        7 => "the party or the target has no hopper or roster for it (0x66050, 0x718b1)",
+        0xe => "the target session left its lobby states (0x717b6)",
+        0x11 => "this console's arbitration registration failed (0x72260)",
+        0x13 => "the update's +0x10 flag is clear (0x70765)",
+        _ => "an untraced branch",
+    }
 }
 
 impl Trace {
+    /// After a matchmaking update: the log line when the result leaves 3
+    /// (active) for a failure, else `None`.
+    fn ended(&mut self, m: &dyn GuestMemory) -> Option<String> {
+        let now = m.u32(MATCHMAKING_RESULT).ok();
+        let before = std::mem::replace(&mut self.result, now);
+        let now = now?;
+        if before != Some(3) || matches!(now, 2 | 3) {
+            return None;
+        }
+        let arbitration = |at| m.u32(at).map_or("?".into(), |v| v.to_string());
+        Some(format!(
+            "live: matchmaking ended with result {now:#x}: {} (arbitration state {}, result {})",
+            result_reason(now),
+            arbitration(ARBITRATION_STATE),
+            arbitration(ARBITRATION_RESULT),
+        ))
+    }
+
     fn record(&mut self, m: &dyn GuestMemory, event: Event) {
         let Ok(lifecycle) = m.u32(lobby::SESSION_TYPE) else {
             return;
@@ -261,7 +299,11 @@ impl hooks::Feature for Observer {
                 "observe the matchmaking decision",
                 move |o| {
                     let m = o.guest();
-                    update.lock().record(&*m, Event::MatchmakingUpdate);
+                    let mut trace = update.lock();
+                    trace.record(&*m, Event::MatchmakingUpdate);
+                    if let Some(line) = trace.ended(&*m) {
+                        eprintln!("{line}");
+                    }
                 },
             )
             .optional();
@@ -302,6 +344,32 @@ mod tests {
     use super::*;
     use bots::phantom::session;
     use engine::testing::FakeGuest;
+
+    #[test]
+    fn a_failed_result_after_an_active_one_is_named_once() {
+        let mut m = FakeGuest::new();
+        m.map(MATCHMAKING_RESULT, 4)
+            .map(ARBITRATION_RESULT, 8)
+            .put_u32(MATCHMAKING_RESULT, 3);
+        let mut trace = Trace::default();
+        assert_eq!(trace.ended(&m), None);
+        assert_eq!(trace.ended(&m), None);
+        // The poller's failure (0x73dc0(1)): arbitration state 0, result 1.
+        m.put_u32(MATCHMAKING_RESULT, 0x11)
+            .put_u32(ARBITRATION_STATE, 0)
+            .put_u32(ARBITRATION_RESULT, 1);
+        let line = trace.ended(&m).expect("the failure is named");
+        assert!(line.contains("result 0x11"), "{line}");
+        assert!(line.contains("arbitration registration failed"), "{line}");
+        assert!(line.contains("arbitration state 0, result 1"), "{line}");
+        assert_eq!(trace.ended(&m), None, "once per failure");
+
+        // A started match (2) is no failure.
+        m.put_u32(MATCHMAKING_RESULT, 3);
+        assert_eq!(trace.ended(&m), None);
+        m.put_u32(MATCHMAKING_RESULT, 2);
+        assert_eq!(trace.ended(&m), None);
+    }
 
     #[test]
     fn matchmaking_trace_keeps_the_full_target_and_its_teardown() {

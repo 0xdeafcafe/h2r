@@ -30,8 +30,11 @@ pub(crate) fn project(
 ) -> Result<Vec<Object>, String> {
     let mut blocks: BTreeMap<BlockKind, Vec<Object>> = BTreeMap::new();
     for op in &doc.ops {
-        let Edit::Placement(placement) = &op.edit else {
-            return Err("The Objects tool can load placement edits only.".into());
+        let placement = match &op.edit {
+            Edit::Placement(placement) => placement,
+            // Links are retail data on scenario entries; they place nothing.
+            Edit::Forge(_) => continue,
+            _ => return Err("The Objects tool can load placement edits only.".into()),
         };
         let block = placement.block();
         let base = *limits

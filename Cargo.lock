@@ -715,6 +715,7 @@ dependencies = [
  "background",
  "content",
  "engine",
+ "h1map",
  "host-dirs",
  "input",
  "live-proto",
@@ -2352,6 +2353,7 @@ dependencies = [
  "dsound",
  "engine",
  "film",
+ "firefight",
  "font",
  "forge",
  "forge-doc",
@@ -2361,6 +2363,7 @@ dependencies = [
  "h1-contract",
  "h1-runtime",
  "hooks",
+ "host-log",
  "hot-render",
  "hot-tags",
  "hs",
@@ -3731,6 +3734,8 @@ name = "live-hle"
 version = "0.1.0"
 dependencies = [
  "actor-net",
+ "background",
+ "cloud-saves",
  "content",
  "coop",
  "film",
@@ -3874,9 +3879,11 @@ dependencies = [
  "live-proto",
  "live-server",
  "object_store",
+ "ruzstd",
  "send_wrapper",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "sqlx",
  "tokio",
  "tower",
@@ -4177,6 +4184,7 @@ name = "native-render"
 version = "0.1.0"
 dependencies = [
  "analyze",
+ "assets",
  "background",
  "bytemuck",
  "d3d",

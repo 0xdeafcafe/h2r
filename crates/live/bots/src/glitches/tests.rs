@@ -26,6 +26,7 @@ fn gun(trigger: Trigger, zoom: i16, pellets: i16, reach: f32, ammo: Ammo) -> Gun
             cone_range: reach,
             pull_range: reach,
             rate: 6.0,
+            damage_reach: 0.0,
         },
     }
 }

@@ -372,6 +372,7 @@ fn hosted(
         // The backend's work on a render thread unless H2_RENDER_THREAD=0, as
         // for `h2 run` (docs/graphics/render-thread.md).
         render_thread: render_thread(std::env::var("H2_RENDER_THREAD").ok().as_deref()),
+        unpaced_display: host.pace_policy() == app::PacePolicy::Unpaced,
         audio_sink: Some(audio_sink(audio)),
         voice_io: Some(voice::host::HostVoiceIo::opener()),
         pad_speaker,
@@ -825,6 +826,9 @@ pub(crate) fn run_with_theater(
     }
     let theater = open_library.map(|open| (boot::theater_ui::Theater::default(), open));
     if let Some((controller, _)) = &theater {
+        if let Some(session) = &session {
+            controller.configure_sync(&opts.data_root, &session.server_id, session.account.as_ref().map(|a| a.xuid));
+        }
         let (overlay, _) = theater::overlay(
             controller.clone(),
             opts.data_root.join("films/screenshots"),

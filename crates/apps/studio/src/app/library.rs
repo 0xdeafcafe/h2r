@@ -170,6 +170,18 @@ impl App {
             LayerId::SpawnPoints => self.layer_count(LayerId::Placement(BlockKind::StartingLocations)),
             LayerId::Flags => self.layer_count(LayerId::Placement(BlockKind::NetgameFlags)),
             LayerId::NetgameItems => self.layer_count(LayerId::Placement(BlockKind::NetgameEquipment)),
+            LayerId::Volume(kind) => self.session.scenario().map_or(0, |s| s.volumes.count(kind)),
+            LayerId::LevelCollision => self
+                .session
+                .collision()
+                .map_or(0, |c| c.surfaces.len() - c.instance_count()),
+            LayerId::InstanceCollision => {
+                self.session.collision().map_or(0, |c| c.instance_count())
+            }
+            LayerId::ObjectCollision => self.session.object_shape_count(),
+            LayerId::CollisionOnly => self.session.collision().map_or(0, |c| {
+                c.count(scenario_edit::collision_view::SurfaceClass::CollisionOnly)
+            }),
             LayerId::Halo1 => self.compare().and_then(|c| c.view.as_ref().ok())
                 .map_or(0, |v| v.tris.len() + v.placements.len()),
             LayerId::Live => self.pairing.shown.as_ref()

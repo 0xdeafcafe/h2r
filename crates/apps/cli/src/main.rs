@@ -71,6 +71,8 @@ mod fonts;
 #[cfg(feature = "desktop")]
 mod h1_cmd;
 #[cfg(feature = "desktop")]
+mod parity;
+#[cfg(feature = "desktop")]
 mod h1_import;
 mod host_cmd;
 #[cfg(all(unix, feature = "desktop"))]
@@ -200,6 +202,7 @@ const USAGE: &str = "usage: h2 <command>
                           run a light host with the agent API
   host run --lease ID ... run a dedicated match for a Live lease
   host pack ...           run several leased matches in one container
+  theater open URL                 Open the linked film page in the game
   theater play FILM --render-every 0
                           replay a host film headlessly
   film stat FILE          report keyframes, capture points and tape usage
@@ -288,6 +291,7 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           campaign levels and its multiplayer maps, into the data
                           root `h2 play` reads; `h2 play` does it by itself when
                           halo1.iso is next to the disc (docs/halo1/campaign.md)
+  parity <h1.iso> <converted.map> <case> <socket>   compare a running level with its Halo 1 source
   h1 info <iso|map> [map] Halo 1 map header, tag index and tag counts by group
   h1 tags <iso|map> [map] [--group G]
                           Halo 1 map's tags (docs/halo1/map-format.md)
@@ -469,6 +473,9 @@ fn desktop_command(cmd: String, mut args: impl Iterator<Item = String>) -> Resul
     }
     if cmd == "import" {
         return h1_cmd::run_import(args.collect());
+    }
+    if cmd == "parity" {
+        return parity::run(args.collect());
     }
     if cmd == "h1" {
         return h1_cmd::run(args.collect());

@@ -233,8 +233,9 @@ the next start uses clang's module.** No hot swap.
 
 - `h2 build --tier fast` writes `<out>/fast/libh2game.dylib` and its own
   stamp (`crates/runtime/recomp/src/tier.rs`): it starts `tier fast` and names the
-  image, the generator's sources plus crates/recompiler/clif and Cargo.lock, the IR
-  passes, Cranelift's optimisation level and the module ABI. Neither
+  image, the generator's sources plus crates/recompiler/clif and the `Cargo.lock`
+  entries of the packages clif reaches (name, version, source, checksum; other
+  dependency changes leave it alone), the IR passes, Cranelift's optimisation level and the module ABI. Neither
   tier's stamp passes for the other's. Plain `h2 build` builds clang's
   module in `<out>/libh2game.dylib`.
 - `h2 run` and `h2 play` (`--tier auto`, the default, or `H2_TIER`) run

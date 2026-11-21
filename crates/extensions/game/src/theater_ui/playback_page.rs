@@ -245,6 +245,8 @@ pub(super) fn bar(track: &Track, ready: bool, notice: Option<&str>) -> ScreenSpe
         Input::Start,
         Input::Back,
     ];
+    // The bar lists nothing: its status line is its message.
+    spec.content.empty_text = Some("transport.time".into());
     spec
 }
 
@@ -500,6 +502,16 @@ pub(super) struct Menu {
 }
 
 impl Menu {
+    /// Steps `input` and says whether it did anything: a command, a move of
+    /// the focus, or a picker opening, moving or closing. For the offline
+    /// audit of the pad's inputs.
+    pub(super) fn handles(&mut self, track: &Track, input: Input) -> (Option<Command>, bool) {
+        let at = |m: &Menu| (m.focus, m.picker.as_ref().map(|p| p.focus));
+        let before = at(self);
+        let command = self.press(track, input);
+        (command, command.is_some() || before != at(self))
+    }
+
     pub(super) fn press(&mut self, track: &Track, input: Input) -> Option<Command> {
         if let Some(dialog) = &mut self.picker {
             match input {
@@ -543,7 +555,10 @@ impl Menu {
                     } else {
                         "No players"
                     };
-                    return RowSpec::info(row.label(), value);
+                    let mut disabled = RowSpec::info(row.label(), value);
+                    // Nothing to select here: the legend says only Resume.
+                    disabled.prompts = Some(vec![Prompt::new(&[Glyph::B], "Resume")]);
+                    return disabled;
                 }
                 let value = match row {
                     Row::Player => track.camera_target().map(|p| p.name.as_str()),
@@ -590,6 +605,9 @@ impl Menu {
                 pick.focus,
                 pick.row.help(),
             );
+            // The dialog's own title takes the header: the menu's under it
+            // would draw over the same place.
+            spec.title.clear();
             dialog.underlay = Some(Box::new(spec));
             return dialog;
         }

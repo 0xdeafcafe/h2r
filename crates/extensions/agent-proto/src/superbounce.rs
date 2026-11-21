@@ -19,7 +19,7 @@ pub mod method {
     /// The spots the bots know for a map ([`super::SPOTS`]).
     pub const SPOTS: &str = super::SPOTS;
 
-    pub const ALL: &[&str] = &[STATE, SET, SPOTS];
+    pub const ALL: &[&str] = &[STATE, SET, SPOTS, super::ASSIST, super::ASSIST_TEST];
 }
 
 // ---- superbounce.state ----
@@ -161,6 +161,61 @@ pub struct Spots {
     pub spots: Vec<SpotRecord>,
 }
 
+// ---- superbounce.assist, superbounce.assist_test (the fall assist) ----
+//
+// The hold-X assist (crates/extensions/game/src/superbounce_assist.rs;
+// docs/game/superbounce.md, "Hold X: the fall assist").
+
+/// `superbounce.assist`: whether the fall assist is steering the player,
+/// and where to. A read; no params.
+pub const ASSIST: &str = "superbounce.assist";
+
+/// `superbounce.assist_test`: holds the assist's button as if pressed, for
+/// an agent with no pad ([`AssistTestParams`], [`AssistTest`]). An act.
+pub const ASSIST_TEST: &str = "superbounce.assist_test";
+
+/// `superbounce.assist`'s result.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Assist {
+    /// The superbounce mode is on (the assist only works with it on).
+    pub active: bool,
+    /// `superbounce.assist_test` is holding the button.
+    pub test_hold: bool,
+    /// The assist steered the player at its last pad read.
+    pub engaged: bool,
+    /// The strip's stand point, world units; absent when not engaged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<[f64; 3]>,
+    /// The point being aimed at: the stand point a little before along the
+    /// drift (X and Y).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aim: Option<[f64; 2]>,
+    /// Where the player lands if the stick is let go (X and Y).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub landing: Option<[f64; 2]>,
+    /// Seconds until touchdown at the strip's height.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fall_time: Option<f64>,
+    /// The left stick sent to the guest, `[x (right), y (forward)]`, -1..1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stick: Option<[f64; 2]>,
+}
+
+/// `superbounce.assist_test`'s params.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistTestParams {
+    /// `true` holds the button, `false` lets go.
+    pub hold: bool,
+}
+
+/// `superbounce.assist_test`'s result.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AssistTest {
+    /// The hold now.
+    pub hold: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,6 +247,27 @@ mod tests {
         assert_eq!(v["vz"], -4.5);
         assert!(v.get("yaw").is_none());
         assert_eq!(serde_json::from_value::<State>(v).unwrap(), s);
-        assert_eq!(method::ALL, [method::STATE, method::SET, method::SPOTS]);
+        let a = Assist {
+            engaged: true,
+            stick: Some([0.5, -1.0]),
+            ..Assist::default()
+        };
+        let v = serde_json::to_value(&a).unwrap();
+        assert!(v.get("target").is_none() && v["stick"][1] == -1.0);
+        assert_eq!(serde_json::from_value::<Assist>(v).unwrap(), a);
+        assert!(
+            serde_json::from_value::<AssistTestParams>(serde_json::json!({"hold": true, "x": 1}))
+                .is_err()
+        );
+        assert_eq!(
+            method::ALL,
+            [
+                method::STATE,
+                method::SET,
+                method::SPOTS,
+                ASSIST,
+                ASSIST_TEST
+            ]
+        );
     }
 }

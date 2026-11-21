@@ -2,11 +2,11 @@
 //! Object records retain the simulation's parent-relative coordinates.
 use std::collections::{BTreeSet, HashMap};
 
-use agent_proto::live::Object;
+use agent_proto::live::{Object, View};
 use live_mirror::Sample;
 use map::TagId;
 use scenario_edit::geometry::{
-    self, Bounds, Camera, Gameplay, Vec3, add, cross, dot, scale, sub, transform,
+    self, Bounds, Camera, Gameplay, Vec3, add, cross, dot, normalize, scale, sub, transform,
 };
 use scenario_edit::layers::LayerId;
 use scenario_edit::render::{Instance, object_light};
@@ -230,11 +230,12 @@ fn streamed_bounds(triangles: impl IntoIterator<Item = [Vec3; 3]>) -> Option<Bou
 #[derive(Default)]
 pub(super) struct SceneCache {
     scene: std::sync::Arc<Scene>,
-    inputs: Option<(u64, u64, u64, Option<u32>, u32)>,
+    inputs: Option<(u64, u64, u64, Option<u32>, u32, bool)>,
     display_revision: Option<u64>,
     // Unstamped samples (e.g. an injected headless scene) compare the wire records.
     objects: Vec<Object>,
     players: Vec<agent_proto::live::Player>,
+    cameras: Vec<View>,
 }
 
 impl SceneCache {
@@ -251,11 +252,14 @@ impl SceneCache {
                 sample.epoch,
                 crate::play::select::selected_object(app),
                 placement_mask(app),
+                frustums_shown(app),
             ));
             let display = &app.pairing.display;
             let revision = display.segment().map(|_| display.revision());
             let changed_records = self.display_revision != revision
-                || revision.is_none() && !crate::play::display::same_records(sample, &self.objects, &self.players);
+                || revision.is_none()
+                    && (!crate::play::display::same_records(sample, &self.objects, &self.players)
+                        || sample.cameras != self.cameras);
             if self.inputs != inputs || changed_records {
                 self.scene = std::sync::Arc::new(Scene::shown(app));
                 changed = true;
@@ -264,6 +268,7 @@ impl SceneCache {
                 if revision.is_none() {
                     self.objects.clone_from(&sample.objects);
                     self.players.clone_from(&sample.players);
+                    self.cameras.clone_from(&sample.cameras);
                 }
             }
         } else if self.inputs.take().is_some() {
@@ -272,6 +277,7 @@ impl SceneCache {
             self.display_revision = None;
             self.objects.clear();
             self.players.clear();
+            self.cameras.clear();
         }
         (self.scene.clone(), changed)
     }
@@ -284,6 +290,57 @@ pub(crate) struct Scene {
     links: Vec<(Vec3, Vec3)>,
     players: Vec<Player>,
     glyphs: Vec<(Vec3, f32, bool)>,
+    /// Each game view's apex and far corners ([`frustum`]).
+    pub(crate) frustums: Vec<[Vec3; 5]>,
+}
+
+/// How far the drawn pyramid reaches along a view, in world units, when
+/// the view's far plane is further.
+pub(crate) const FRUSTUM_DEPTH: f32 = 2.0;
+
+/// Game views' frustums show in every camera mode but Game camera.
+fn frustums_shown(app: &App) -> bool {
+    app.pairing.camera.mode != crate::play::presence::CameraMode::Game
+}
+
+/// A view's wire pyramid: the eye, then the corners `depth` along it
+/// (top left, top right, bottom right, bottom left), from its vertical
+/// field of view and viewport aspect. None for an unusable camera.
+pub(crate) fn frustum(view: &View, depth: f32) -> Option<[Vec3; 5]> {
+    let finite = view
+        .position
+        .iter()
+        .chain(&view.forward)
+        .chain(&view.up)
+        .chain([&view.fov, &view.far])
+        .all(|v| v.is_finite());
+    let [top, left, bottom, right] = view.viewport.map(f32::from);
+    if !finite || !(view.fov > 0.0 && view.fov < std::f32::consts::PI) || view.far <= 0.0 {
+        return None;
+    }
+    let aspect = if right > left && bottom > top {
+        (right - left) / (bottom - top)
+    } else {
+        4.0 / 3.0
+    };
+    let f = normalize(view.forward);
+    let r = normalize(cross(f, view.up));
+    if dot(f, f) < 0.5 || dot(r, r) < 0.5 {
+        return None;
+    }
+    let u = cross(r, f);
+    let depth = depth.min(view.far);
+    let h = depth * (view.fov * 0.5).tan();
+    let w = h * aspect;
+    let centre = add(view.position, scale(f, depth));
+    let corner = |x: f32, y: f32| add(centre, add(scale(r, x * w), scale(u, y * h)));
+    Some([
+        view.position,
+        corner(-1.0, 1.0),
+        corner(1.0, 1.0),
+        corner(1.0, -1.0),
+        corner(-1.0, -1.0),
+    ])
 }
 
 struct Player {
@@ -304,22 +361,50 @@ pub(crate) struct Label {
 }
 
 pub(crate) fn gameplay_labels(app: &App) -> Vec<Label> {
+    let mut labels = volume_labels(app);
     if !app.layers.visible(LayerId::Markers) {
-        return Vec::new();
+        return labels;
     }
     let scenario = app.session.scenario();
-    app.session
-        .markers()
+    labels.extend(
+        app.session
+            .markers()
+            .iter()
+            .filter(|m| app.layers.placement(m.block))
+            .filter_map(|marker| {
+                let game = Gameplay::of(scenario, marker);
+                let text = game.label()?;
+                let color = theme::placement_color(marker.block, game.team);
+                Some(Label {
+                    position: marker.position,
+                    text,
+                    color: color.map(|c| (255.0 * c).round() as u8),
+                })
+            }),
+    );
+    labels
+}
+
+/// A caption at each drawn volume's centre (its name, then what names
+/// it), in the colour of its most specific visible kind.
+fn volume_labels(app: &App) -> Vec<Label> {
+    let Some(volumes) = app.session.volumes() else {
+        return Vec::new();
+    };
+    volumes
+        .triggers
         .iter()
-        .filter(|m| app.layers.placement(m.block))
-        .filter_map(|marker| {
-            let game = Gameplay::of(scenario, marker);
-            let text = game.label()?;
-            let color = theme::placement_color(marker.block, game.team);
+        .enumerate()
+        .filter(|(_, v)| v.in_world())
+        .filter_map(|(i, v)| {
+            let kind = volumes
+                .kinds(i)
+                .into_iter()
+                .find(|&k| app.layers.visible(LayerId::Volume(k)))?;
             Some(Label {
-                position: marker.position,
-                text,
-                color: color.map(|c| (255.0 * c).round() as u8),
+                position: v.frame.center()?,
+                text: volumes.caption(i),
+                color: theme::volume_color(kind).map(|c| (255.0 * c).round() as u8),
             })
         })
         .collect()
@@ -382,13 +467,22 @@ impl Scene {
         }
         let mut bounds = app.pairing.selection.bounds.borrow_mut();
         bounds.prepare(&app.session, sample);
-        Self::new(
+        let mut scene = Self::new(
             sample,
             &app.session,
             &bounds,
             crate::play::select::selected_object(app),
             placement_mask(app),
-        )
+        );
+        if frustums_shown(app) {
+            scene.frustums = sample
+                .cameras
+                .iter()
+                .filter(|v| v.is_game())
+                .filter_map(|v| frustum(v, FRUSTUM_DEPTH))
+                .collect();
+        }
+        scene
     }
 
     fn new(
@@ -511,7 +605,24 @@ impl Scene {
             let [bt, bf] = bar(22.0, p.body, [112, 220, 134]);
             Some([aim, label, st, sf, bt, bf].into_iter().flatten())
         }).flatten();
-        glyphs.chain(links).chain(players)
+        let frustums = self.frustums.iter().flat_map(move |pyramid| {
+            let [apex, a, b, c, d] = *pyramid;
+            [
+                (apex, a),
+                (apex, b),
+                (apex, c),
+                (apex, d),
+                (a, b),
+                (b, c),
+                (c, d),
+                (d, a),
+            ]
+            .into_iter()
+            .filter_map(move |(p, q)| {
+                Some(Mark::Line(project(p)?, project(q)?, [255, 200, 64], 1.0))
+            })
+        });
+        glyphs.chain(links).chain(players).chain(frustums)
     }
 
     pub(super) fn overlay(&self, ui: &dear_imgui_rs::Ui, cam: &Camera, rect: [f32; 4]) {
@@ -688,6 +799,7 @@ mod tests {
             epoch: 1,
             tick: 1,
             stale: false,
+            cameras: Vec::new(),
             players: vec![],
             objects: vec![Object {
                 id: 1,
@@ -719,6 +831,7 @@ mod tests {
             epoch: 1,
             tick: 1,
             stale: false,
+            cameras: Vec::new(),
             objects: vec![Object {
                 id: 1,
                 body: f32::from_bits(0x7fc0_1234),
@@ -738,6 +851,59 @@ mod tests {
         assert!(std::sync::Arc::ptr_eq(&original, &again));
         app.pairing.shown.as_mut().unwrap().players[0].aim[0] = f32::from_bits(0x7fc0_4322);
         assert!(cache.shown(&app).1);
+    }
+
+    #[test]
+    fn a_game_view_frustum_is_a_pyramid_along_its_camera() {
+        let view = View {
+            position: [1.0, 2.0, 3.0],
+            forward: [0.0, 3.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            fov: std::f32::consts::FRAC_PI_2,
+            near: 0.1,
+            far: 1.5,
+            viewport: [0, 0, 480, 640],
+            ..View::default()
+        };
+        let [apex, tl, tr, br, bl] = frustum(&view, FRUSTUM_DEPTH).unwrap();
+        assert_eq!(apex, view.position);
+        // Clamped to the far plane; tan(45°) = 1, so the half height is the
+        // depth and the half width is that by the 4:3 viewport.
+        let close = |a: Vec3, b: Vec3| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5);
+        assert!(close(tl, [1.0 - 2.0, 3.5, 4.5]), "{tl:?}");
+        assert!(close(tr, [1.0 + 2.0, 3.5, 4.5]), "{tr:?}");
+        assert!(close(br, [3.0, 3.5, 1.5]), "{br:?}");
+        assert!(close(bl, [-1.0, 3.5, 1.5]), "{bl:?}");
+        assert!(
+            frustum(
+                &View {
+                    fov: 0.0,
+                    ..view.clone()
+                },
+                2.0
+            )
+            .is_none()
+        );
+        assert!(
+            frustum(
+                &View {
+                    up: [0.0, 1.0, 0.0],
+                    ..view.clone()
+                },
+                2.0
+            )
+            .is_none()
+        );
+        assert!(
+            frustum(
+                &View {
+                    position: [f32::NAN; 3],
+                    ..view
+                },
+                2.0
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -797,6 +963,7 @@ mod tests {
             epoch: 1,
             tick: 1,
             stale: false,
+            cameras: Vec::new(),
             objects: vec![weapon, orphan, vehicle],
             players: vec![LivePlayer {
                 unit: Some(vehicle.id),

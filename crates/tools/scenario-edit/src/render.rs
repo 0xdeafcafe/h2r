@@ -7,7 +7,7 @@
 //! depth buffer and any MSAA count, and a pipeline must match both. No UI
 //! toolkit is used here; `h2-editor` registers [`Viewport::ui_view`]
 //! with `dear-imgui-wgpu`.
-use crate::geometry::{Camera, Marker, Tri, Vec3, block_color, cross, marker_triangles_styled, normalize};
+use crate::geometry::{Camera, Marker, Tri, Vec3, block_color, marker_triangles_styled};
 use crate::layers::{LayerId, Layers};
 use crate::scene::{Atmosphere, Blend, Scene, SceneVertex, sun_tint};
 use map::TagId;
@@ -167,8 +167,21 @@ struct V { @builtin(position) clip: vec4<f32>, @location(0) ndc: vec2<f32> };
 "#;
 
 const SHADER: &str = r#"
-struct U { view_proj: mat4x4<f32>, eye: vec4<f32> };
+struct U {
+    view_proj: mat4x4<f32>, eye: vec4<f32>,
+    right: vec4<f32>, up: vec4<f32>, forward: vec4<f32>, lens: vec4<f32>,
+};
 @group(0) @binding(0) var<uniform> u: U;
+// The depth the native world pass writes (native_view::DEPTH_RULE): view
+// depth over the far plane, so this pass's depth test agrees with the
+// level's. 1 / position.w is the perspective-correct view depth; lens.z is
+// 1 / far, and lens.w 1 to write it (the sky's own pass keeps the
+// rasterised depth).
+struct O { @location(0) c: vec4<f32>, @builtin(frag_depth) d: f32 };
+fn depth_out(clip: vec4<f32>) -> f32 {
+    if (u.lens.w < 0.5) { return clip.z; }
+    return clamp((1.0 / clip.w) * u.lens.z, 0.0, 1.0);
+}
 struct V { @builtin(position) clip: vec4<f32>, @location(0) n: vec3<f32>, @location(1) c: vec3<f32> };
 @vertex fn vs(@location(0) p: vec3<f32>, @location(1) n: vec3<f32>, @location(2) c: vec3<f32>, @location(3) center: vec3<f32>) -> V {
     var o: V;
@@ -178,13 +191,13 @@ struct V { @builtin(position) clip: vec4<f32>, @location(0) n: vec3<f32>, @locat
     o.c = c;
     return o;
 }
-@fragment fn fs(v: V) -> @location(0) vec4<f32> {
+@fragment fn fs(v: V) -> O {
     let l = normalize(vec3<f32>(0.4, 0.3, 0.85));
     let d = abs(dot(normalize(v.n), l));
-    return vec4<f32>(v.c * (0.3 + 0.7 * d), 1.0);
+    return O(vec4<f32>(v.c * (0.3 + 0.7 * d), 1.0), depth_out(v.clip));
 }
-@fragment fn fs_overlay(v: V) -> @location(0) vec4<f32> {
-    return vec4<f32>(v.c, 1.0);
+@fragment fn fs_overlay(v: V) -> O {
+    return O(vec4<f32>(v.c, 1.0), depth_out(v.clip));
 }
 "#;
 
@@ -209,6 +222,16 @@ struct P {
     emissive: f32, pad1: f32,
 };
 @group(0) @binding(0) var<uniform> u: U;
+// The depth the native world pass writes (native_view::DEPTH_RULE): view
+// depth over the far plane, so this pass's depth test agrees with the
+// level's. 1 / position.w is the perspective-correct view depth; lens.z is
+// 1 / far, and lens.w 1 to write it (the sky's own pass keeps the
+// rasterised depth).
+struct O { @location(0) c: vec4<f32>, @builtin(frag_depth) d: f32 };
+fn depth_out(clip: vec4<f32>) -> f32 {
+    if (u.lens.w < 0.5) { return clip.z; }
+    return clamp((1.0 / clip.w) * u.lens.z, 0.0, 1.0);
+}
 @group(1) @binding(0) var tex: texture_2d<f32>;
 @group(1) @binding(1) var samp: sampler;
 @group(1) @binding(2) var lm: texture_2d<f32>;
@@ -296,55 +319,55 @@ fn albedo(v: V) -> vec4<f32> {
     if (p.details > 1.5) { c = vec4<f32>(times_detail(c.rgb, d1), c.a); }
     return c;
 }
-@fragment fn fs_opaque(v: V) -> @location(0) vec4<f32> {
-    return vec4<f32>(fogged(v, lit(v, albedo(v).rgb)), 1.0);
+@fragment fn fs_opaque(v: V) -> O {
+    return O(vec4<f32>(fogged(v, lit(v, albedo(v).rgb)), 1.0), depth_out(v.clip));
 }
-@fragment fn fs_mask(v: V) -> @location(0) vec4<f32> {
+@fragment fn fs_mask(v: V) -> O {
     let c = albedo(v);
     if (c.a < 0.5) { discard; }
-    return vec4<f32>(fogged(v, lit(v, c.rgb)), 1.0);
+    return O(vec4<f32>(fogged(v, lit(v, c.rgb)), 1.0), depth_out(v.clip));
 }
 // Water and see-through surfaces of unknown blend: a fixed opacity.
-@fragment fn fs_translucent(v: V) -> @location(0) vec4<f32> {
+@fragment fn fs_translucent(v: V) -> O {
     let c = albedo(v);
-    return vec4<f32>(fogged(v, c.rgb * (0.6 + 0.4 * v.tint.rgb)), 0.3);
+    return O(vec4<f32>(fogged(v, c.rgb * (0.6 + 0.4 * v.tint.rgb)), 0.3), depth_out(v.clip));
 }
 // Blended by the picture's alpha, lit as a solid surface is.
-@fragment fn fs_alpha(v: V) -> @location(0) vec4<f32> {
+@fragment fn fs_alpha(v: V) -> O {
     let c = albedo(v);
-    return vec4<f32>(fogged(v, lit(v, c.rgb)), c.a);
+    return O(vec4<f32>(fogged(v, lit(v, c.rgb)), c.a), depth_out(v.clip));
 }
 // Added to what is behind it, unshaded (lights, shafts, glows); faded by
 // the fog. Without a picture it adds nothing.
-@fragment fn fs_additive(v: V) -> @location(0) vec4<f32> {
+@fragment fn fs_additive(v: V) -> O {
     if (p.textured < 0.5) { discard; }
     let c = albedo(v).rgb * (1.0 - fog_amount(v));
-    return vec4<f32>(c, 1.0);
+    return O(vec4<f32>(c, 1.0), depth_out(v.clip));
 }
 // Times what is behind it; the fog fades it to white (no change).
-@fragment fn fs_multiply(v: V) -> @location(0) vec4<f32> {
+@fragment fn fs_multiply(v: V) -> O {
     if (p.textured < 0.5) { discard; }
     let c = mix(albedo(v).rgb, vec3<f32>(1.0), fog_amount(v));
-    return vec4<f32>(c, 1.0);
+    return O(vec4<f32>(c, 1.0), depth_out(v.clip));
 }
 // Twice the picture times what is behind it, in gamma space as the game
 // does: the blend doubles, the factor 2^1.2 makes the rest of 2^2.2 in
 // linear light (mid-grey leaves the surface as it is). Fogged to neutral.
-@fragment fn fs_double(v: V) -> @location(0) vec4<f32> {
+@fragment fn fs_double(v: V) -> O {
     if (p.textured < 0.5) { discard; }
     let c = min(albedo(v).rgb * DOUBLE_SCALE, vec3<f32>(1.0));
-    return vec4<f32>(mix(c, vec3<f32>(0.5), fog_amount(v)), 1.0);
+    return O(vec4<f32>(mix(c, vec3<f32>(0.5), fog_amount(v)), 1.0), depth_out(v.clip));
 }
 // The sky: its base maps as they are, unlit (the sky is its own light).
-@fragment fn fs_sky(v: V) -> @location(0) vec4<f32> {
-    return vec4<f32>(albedo(v).rgb, 1.0);
+@fragment fn fs_sky(v: V) -> O {
+    return O(vec4<f32>(albedo(v).rgb, 1.0), depth_out(v.clip));
 }
-@fragment fn fs_sky_blend(v: V) -> @location(0) vec4<f32> {
-    return albedo(v);
+@fragment fn fs_sky_blend(v: V) -> O {
+    return O(albedo(v), depth_out(v.clip));
 }
 // An added sky layer (blend one, one): black adds nothing.
-@fragment fn fs_sky_add(v: V) -> @location(0) vec4<f32> {
-    return vec4<f32>(albedo(v).rgb, 0.0);
+@fragment fn fs_sky_add(v: V) -> O {
+    return O(vec4<f32>(albedo(v).rgb, 0.0), depth_out(v.clip));
 }
 "#;
 
@@ -720,6 +743,21 @@ pub struct Viewport {
     overlays: BTreeMap<LayerId, OverlayGeometry>,
     layers: Layers,
     scene: Option<GpuScene>,
+    /// Each BSP of the open map on the native renderer
+    /// ([`crate::native_view`]). While there are any, they draw the level
+    /// (the scene's world and the grey world are not drawn) and the other
+    /// passes load their colour and depth.
+    native: Vec<crate::native_view::NativeWorld>,
+    lighting: crate::native_view::Lighting,
+    /// The placed objects' models on the native renderer, drawn while
+    /// there is a native world. The scene draws only the placements these
+    /// have no model for.
+    native_models: std::sync::Arc<crate::native_view::NativeModels>,
+    native_objects: Option<crate::native_view::NativeObjects>,
+    /// The placements last uploaded and the selection among them, to place
+    /// again when the models are uploaded again (another Lighting mode).
+    native_placed: Vec<Marker>,
+    native_selected: Vec<(crate::BlockKind, usize)>,
     target: Option<Target>,
 }
 
@@ -1133,6 +1171,12 @@ impl Viewport {
             overlays: BTreeMap::new(),
             layers: Layers::default(),
             scene: None,
+            native: Vec::new(),
+            lighting: crate::native_view::Lighting::default(),
+            native_models: Default::default(),
+            native_objects: None,
+            native_placed: Vec::new(),
+            native_selected: Vec::new(),
             target: None,
         }
     }
@@ -1194,6 +1238,85 @@ impl Viewport {
             (buffer, v.len() as u32)
         })
     }
+    /// Draw the level through the native renderer: one world per load, in
+    /// the current Lighting mode. An empty list draws the scene's world
+    /// (or the grey one) again.
+    pub fn set_native(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        loads: &[crate::native_view::NativeLoad],
+    ) {
+        self.native = loads
+            .iter()
+            .map(|l| crate::native_view::NativeWorld::new(device, queue, l, self.lighting))
+            .collect();
+    }
+
+    /// The Lighting mode the native worlds draw in.
+    pub fn lighting(&self) -> crate::native_view::Lighting {
+        self.lighting
+    }
+
+    /// Change the Lighting mode: the worlds of `loads` are uploaded again
+    /// with that mode's images.
+    pub fn set_lighting(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        loads: &[crate::native_view::NativeLoad],
+        lighting: crate::native_view::Lighting,
+    ) {
+        if lighting != self.lighting || self.native.len() != loads.len() {
+            self.lighting = lighting;
+            self.set_native(device, queue, loads);
+            let models = self.native_models.clone();
+            self.set_native_models(device, queue, models);
+        }
+    }
+
+    /// Whether the level draws through the native renderer.
+    pub fn has_native(&self) -> bool {
+        !self.native.is_empty()
+    }
+
+    /// Draw the placed objects through the native renderer while there is
+    /// a native world ([`Self::set_native`]): `models` holds each object
+    /// tag's model, uploaded in the current Lighting mode. Call it before
+    /// the placements are uploaded.
+    pub fn set_native_models(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        models: std::sync::Arc<crate::native_view::NativeModels>,
+    ) {
+        self.native_objects = (!models.is_empty()).then(|| {
+            let mut objects =
+                crate::native_view::NativeObjects::new(device, queue, &models, self.lighting);
+            objects.place(&models, &self.native_placed, &self.native_selected);
+            objects
+        });
+        self.native_models = models;
+    }
+
+    /// How many placements draw through the native renderer.
+    pub fn native_object_count(&self) -> usize {
+        self.native_objects.as_ref().map_or(0, |o| o.placed())
+    }
+
+    /// How many of those are highlighted as selected.
+    pub fn native_selected_count(&self) -> usize {
+        self.native_objects.as_ref().map_or(0, |o| o.highlighted())
+    }
+
+    /// Whether the native renderer draws `m`'s model (so the scene does
+    /// not).
+    fn draws_natively(&self, m: &Marker) -> bool {
+        !self.native.is_empty()
+            && self.native_objects.is_some()
+            && m.object.is_some_and(|o| self.native_models.of(o).is_some())
+    }
+
     /// Draw the world as grey slope-shaded triangles (no scene).
     pub fn set_world(&mut self, device: &wgpu::Device, tris: &[Tri]) {
         self.world = Self::upload(device, &world_vertices(tris));
@@ -1387,18 +1510,31 @@ impl Viewport {
         linked: &BTreeSet<(crate::BlockKind, usize)>,
         style: impl Fn(&Marker) -> (Vec3, Option<i64>),
     ) {
+        let shown = |m: &Marker| !linked.contains(&(m.block, m.index));
         self.markers = Self::upload(
             device,
             &glyph_vertices_styled(
                 markers,
                 selected,
-                |m| !linked.contains(&(m.block, m.index)) && scene.model_of(m).is_some(),
+                |m| shown(m) && (self.draws_natively(m) || scene.model_of(m).is_some()),
                 style,
             ),
         );
+        // The native renderer draws the placements it has a model for;
+        // the scene draws the rest.
+        self.native_placed = markers.iter().copied().filter(|m| shown(m)).collect();
+        self.native_selected = selected.to_vec();
+        if let Some(objects) = &mut self.native_objects {
+            objects.place(&self.native_models, &self.native_placed, selected);
+        }
+        let scene_drawn: Vec<Marker> = self
+            .native_placed
+            .iter()
+            .copied()
+            .filter(|m| !self.draws_natively(m))
+            .collect();
         if let Some(gpu) = &mut self.scene {
-            let placements = markers.iter().filter(|m| !linked.contains(&(m.block, m.index)));
-            let (instances, ranges) = marker_instances(scene, placements, selected);
+            let (instances, ranges) = marker_instances(scene, scene_drawn.iter(), selected);
             gpu.instances = (!instances.is_empty()).then(|| {
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("scenario viewport placements"),
@@ -1466,8 +1602,7 @@ impl Viewport {
         let resized = self.ensure_target(device, size);
         let target = self.target.as_ref().expect("just ensured");
         let aspect = target.size[0] as f32 / target.size[1] as f32;
-        let f = camera.forward();
-        let r = normalize(cross(f, [0.0, 0.0, 1.0]));
+        let [f, r, u] = camera.basis();
         let w = |v: Vec3| [v[0], v[1], v[2], 0.0];
         queue.write_buffer(
             &self.uniforms,
@@ -1479,9 +1614,10 @@ impl Viewport {
                     [e[0], e[1], e[2], 1.0]
                 },
                 right: w(r),
-                up: w(cross(r, f)),
+                up: w(u),
                 forward: w(f),
-                lens: [(camera.fov_y * 0.5).tan(), aspect, 0.0, 0.0],
+                // 1 / far and 1: write the native depth rule.
+                lens: [(camera.fov_y * 0.5).tan(), aspect, 1.0 / camera.near_far().1, 1.0],
                 sun: self.atmosphere.sun,
                 sun_color: self.atmosphere.sun_color,
                 fog_color: self.atmosphere.fog_color,
@@ -1499,7 +1635,7 @@ impl Viewport {
                 view_proj: camera.sky_view_proj(aspect),
                 eye: [0.0, 0.0, 0.0, 1.0],
                 right: w(r),
-                up: w(cross(r, f)),
+                up: w(u),
                 forward: w(f),
                 lens: [(camera.fov_y * 0.5).tan(), aspect, 0.0, 0.0],
                 // The sky is not fogged or sunlit: it is its own light.
@@ -1583,8 +1719,74 @@ impl Viewport {
             }
         }
         let has_overlays = self.overlays.keys().any(|&id| self.layers.visible(id));
+        let native_world = self.layers.visible(LayerId::Structure) && !self.native.is_empty();
+        let objects_native = self.layers.visible(LayerId::Objects)
+            && !self.native.is_empty()
+            && self.native_object_count() > 0;
+        let native = native_world || objects_native;
+        let gradient = show_sky && self.scene.is_some() && sky.is_none();
+        // The native world writes its own depth, so the gradient goes
+        // behind it in a pass of its own.
+        if native && gradient {
+            let color = color_attachment(background);
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("scenario viewport gradient"),
+                color_attachments: &color,
+                depth_stencil_attachment: depth_attachment(
+                    wgpu::LoadOp::Clear(1.0),
+                    wgpu::StoreOp::Discard,
+                ),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_bind_group(0, &self.bind, &[]);
+            pass.set_pipeline(&self.sky);
+            pass.draw(0..3, 0..1);
+        }
+        if native {
+            // What is behind the level goes first: the native worlds
+            // submit their own commands.
+            queue.submit([std::mem::replace(
+                &mut enc,
+                device.create_command_encoder(&Default::default()),
+            )
+            .finish()]);
+            let behind = sky.is_some() || gradient;
+            let mut clear = crate::native_view::Clear {
+                color: (!behind).then_some(CLEAR),
+                depth: true,
+            };
+            for world in self.native.iter_mut().filter(|_| native_world) {
+                world.render(
+                    device,
+                    queue,
+                    &target.color_view,
+                    COLOR_FORMAT,
+                    &target.depth_view,
+                    DEPTH_FORMAT,
+                    target.size,
+                    camera,
+                    std::mem::replace(&mut clear, crate::native_view::Clear::NONE),
+                );
+            }
+            // The placed objects test against the level's depth.
+            if let Some(objects) = self.native_objects.as_mut().filter(|_| objects_native) {
+                objects.render(
+                    device,
+                    queue,
+                    &target.color_view,
+                    COLOR_FORMAT,
+                    &target.depth_view,
+                    DEPTH_FORMAT,
+                    target.size,
+                    camera,
+                    clear,
+                );
+            }
+        }
         {
-            let color = color_attachment(if sky.is_some() {
+            let color = color_attachment(if sky.is_some() || native {
                 wgpu::LoadOp::Load
             } else {
                 background
@@ -1593,7 +1795,11 @@ impl Viewport {
                 label: Some("scenario viewport"),
                 color_attachments: &color,
                 depth_stencil_attachment: depth_attachment(
-                    wgpu::LoadOp::Clear(1.0),
+                    if native {
+                        wgpu::LoadOp::Load
+                    } else {
+                        wgpu::LoadOp::Clear(1.0)
+                    },
                     if has_overlays {
                         wgpu::StoreOp::Store
                     } else {
@@ -1605,18 +1811,21 @@ impl Viewport {
                 multiview_mask: None,
             });
             pass.set_bind_group(0, &self.bind, &[]);
-            if show_sky && self.scene.is_some() && sky.is_none() {
+            if gradient && !native {
                 pass.set_pipeline(&self.sky);
                 pass.draw(0..3, 0..1);
             }
             // Solid and cut-out scene batches, then the glyphs, then the
             // see-through batches over them.
-            self.draw_scene(&mut pass, false);
+            self.draw_scene(&mut pass, false, native_world);
             pass.set_pipeline(&self.pipeline);
             for (id, geometry) in [
                 (LayerId::Structure, &self.world),
                 (LayerId::Markers, &self.markers),
             ] {
+                if native_world && id == LayerId::Structure {
+                    continue;
+                }
                 let Some((buffer, count)) = geometry.as_ref().filter(|_| self.layers.visible(id))
                 else {
                     continue;
@@ -1624,7 +1833,7 @@ impl Viewport {
                 pass.set_vertex_buffer(0, buffer.slice(..));
                 pass.draw(0..*count, 0..1);
             }
-            self.draw_scene(&mut pass, true);
+            self.draw_scene(&mut pass, true, native_world);
         }
         if has_overlays {
             let color = color_attachment(wgpu::LoadOp::Load);
@@ -1687,7 +1896,9 @@ impl Viewport {
     }
 
     /// The scene's batches: solid and cut-out ones, or the see-through ones.
-    fn draw_scene(&self, pass: &mut wgpu::RenderPass<'_>, translucent: bool) {
+    /// The world's are left out when the native renderer draws the level
+    /// (`native`).
+    fn draw_scene(&self, pass: &mut wgpu::RenderPass<'_>, translucent: bool, native: bool) {
         let Some(scene) = &self.scene else {
             return;
         };
@@ -1715,7 +1926,7 @@ impl Viewport {
         if let Some(world) = scene
             .world
             .as_ref()
-            .filter(|_| self.layers.visible(LayerId::Structure))
+            .filter(|_| !native && self.layers.visible(LayerId::Structure))
         {
             draw(world, &self.identity, 0..1);
         }

@@ -102,6 +102,10 @@ pub const BARREL_DEF_PROJECTILES: u32 = 0x6a;
 pub const BARREL_DEF_PROJECTILE: u32 = 0x8c;
 /// `proj` `+0x17c`: the initial velocity (`f32`, world units a second).
 pub const PROJ_INITIAL_VELOCITY: u32 = 0x17c;
+/// `proj` `+0xe0`: maximum projectile travel (world units).
+pub const PROJ_MAXIMUM_RANGE: u32 = 0xe0;
+/// `proj` `+0x16c`: far end of the air damage falloff (world units).
+pub const PROJ_AIR_DAMAGE_RANGE_END: u32 = 0x16c;
 const PROJ: GroupTag = GroupTag::from_chars(*b"proj");
 
 /// A weapon's ammunition.
@@ -252,6 +256,8 @@ pub struct Profile {
     /// The first barrel's projectile's initial speed (world units a
     /// second), 0 unknown.
     pub shot_speed: f32,
+    /// The first barrel's effective projectile range, 0 if unspecified.
+    pub damage_reach: f32,
 }
 
 /// Retail multiplayer weapon-list entries with a preferred off-hand pairing.
@@ -365,7 +371,7 @@ impl Profile {
                     Role::Sniper
                 } else if single && self.shot_speed > 0.0 && self.shot_speed < BLAST_SPEED {
                     Role::Blast
-                } else if single && self.pellets >= SCATTER_PELLETS {
+                } else if self.pellets >= SCATTER_PELLETS {
                     Role::Scatter
                 } else if single {
                     Role::Precise
@@ -954,7 +960,8 @@ impl WeaponDef {
 
     /// The handling of the weapon whose definition is at `weap` (section
     /// 3.6, "Handling"). The first trigger and the first barrel speak for
-    /// the weapon. A projectile that does not resolve leaves the speed 0.
+    /// the weapon. A projectile that does not resolve supplies neither
+    /// speed nor damage reach.
     pub fn profile(m: &dyn GuestMemory, weap: u32) -> R<Profile> {
         let triggers = m.i32(weap + WEAP_TRIGGERS)?;
         let trigger = if triggers <= 0 {
@@ -982,6 +989,12 @@ impl WeaponDef {
                 let def = tag.address(m)?;
                 if def != 0 {
                     p.shot_speed = finite(m.f32(def + PROJ_INITIAL_VELOCITY)?);
+                    let damage = finite(m.f32(def + PROJ_AIR_DAMAGE_RANGE_END)?);
+                    let travel = finite(m.f32(def + PROJ_MAXIMUM_RANGE)?);
+                    p.damage_reach = match (damage > 0.0, travel > 0.0) {
+                        (true, true) => damage.min(travel),
+                        _ => damage.max(travel),
+                    };
                 }
             }
         }

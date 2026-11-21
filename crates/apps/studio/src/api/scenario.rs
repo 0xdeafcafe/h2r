@@ -307,6 +307,221 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
     }
 }
 
+/// `volume.*`: the trigger volumes, read and selected (read only until
+/// they are edited as placements are; docs/editor/polish-plan.md P9).
+/// One `volume.list` row.
+fn volume_row(v: &scenario_edit::volumes::Volumes, i: usize) -> Value {
+    use scenario_edit::volumes::{Holder, VolumeKind};
+    let t = &v.triggers[i];
+    let named_by: Vec<Value> = v
+        .holders(i)
+        .into_iter()
+        .map(|h| match h {
+            Holder::Kill(index) => json!({"kind": "kill", "index": index}),
+            Holder::BspSwitch { index, from, to } => json!({
+                "kind": "bsp_switch", "index": index, "from": from, "to": to,
+            }),
+        })
+        .collect();
+    json!({
+        "index": i,
+        "name": t.name,
+        "label": v.label(i),
+        "kinds": v.kinds(i).into_iter().map(VolumeKind::name).collect::<Vec<_>>(),
+        "origin": t.frame.origin,
+        "forward": t.frame.forward,
+        "up": t.frame.up,
+        "size": t.frame.size,
+        "center": t.frame.center().filter(|_| t.in_world()),
+        "parent": t.parent,
+        "world": t.in_world(),
+        "named_by": named_by,
+    })
+}
+
+/// The box `volume.set` and `volume.add` describe: `forward`, `up` and
+/// `size` over `base`'s, then the corner `origin` when given, else the
+/// centre `center` (or `base`'s centre).
+fn volume_frame(
+    p: &P,
+    base: &scenario_edit::volumes::Frame,
+) -> Result<scenario_edit::volumes::Frame, RpcError> {
+    use scenario_edit::volumes::Frame;
+    let bad = || {
+        err(
+            code::INVALID_PARAMS,
+            "the box needs a finite origin, a positive size and forward and up that are not parallel",
+        )
+    };
+    let forward = p.opt_vec3("forward")?.unwrap_or(base.forward);
+    let up = p.opt_vec3("up")?.unwrap_or(base.up);
+    let size = p.opt_vec3("size")?.unwrap_or(base.size);
+    let frame = match (p.opt_vec3("origin")?, p.opt_vec3("center")?) {
+        (Some(_), Some(_)) => {
+            return Err(err(code::INVALID_PARAMS, "give origin or center, not both"));
+        }
+        (Some(origin), None) => Frame {
+            origin,
+            forward,
+            up,
+            size,
+        }
+        .squared(),
+        (None, center) => {
+            let center = center.or_else(|| base.center()).ok_or_else(bad)?;
+            Frame::around(center, forward, up, size)
+        }
+    };
+    frame.ok_or_else(bad)
+}
+
+pub fn volume(app: &mut App, method: &str, p: &P) -> Reply {
+    use scenario_edit::volumes::VolumeKind;
+    match method {
+        m::VOLUME_LIST => {
+            let kind = match p.opt_str("kind")? {
+                Some(name) => Some(VolumeKind::from_name(name).ok_or_else(|| {
+                    err(
+                        code::INVALID_PARAMS,
+                        format!("kind: trigger, kill or bsp_switch, not {name:?}"),
+                    )
+                })?),
+                None => None,
+            };
+            let v = &open(app)?.volumes;
+            let rows: Vec<Value> = (0..v.triggers.len())
+                .filter(|&i| kind.is_none_or(|k| v.kinds(i).contains(&k)))
+                .map(|i| volume_row(v, i))
+                .collect();
+            Ok(json!({
+                "volumes": rows,
+                "kill_triggers": v.kills.len(),
+                "bsp_switches": v.switches.len(),
+                "selected": app.session.selected_volume(),
+                "error": v.error,
+            }))
+        }
+        m::VOLUME_SELECT => {
+            let count = open(app)?.volumes.triggers.len();
+            let index = p.opt_usize("index")?;
+            if let Some(i) = index.filter(|&i| i >= count) {
+                return Err(err(
+                    code::INVALID_PARAMS,
+                    format!("no trigger volume {i} (the map has {count})"),
+                ));
+            }
+            perform(app, Action::SelectVolume(index))?;
+            if index.is_some() && p.bool("focus")? {
+                perform(app, Action::FocusSelected)?;
+            }
+            Ok(json!({ "selected": app.session.selected_volume() }))
+        }
+        m::VOLUME_SET => {
+            let index = p.usize("index")?;
+            let s = open(app)?;
+            let Some(base) = s.volumes.triggers.get(index).map(|t| t.frame) else {
+                let count = s.volumes.triggers.len();
+                return Err(err(
+                    code::INVALID_PARAMS,
+                    format!("no trigger volume {index} (the map has {count})"),
+                ));
+            };
+            if let Some(why) = s.volume_refusal(VolumeKind::Trigger) {
+                return Err(err(code::REFUSED, why));
+            }
+            let frame = volume_frame(p, &base)?;
+            perform(
+                app,
+                Action::SetVolumeFrame {
+                    index,
+                    frame,
+                    merge: None,
+                },
+            )?;
+            Ok(json!({ "volume": volume_row(&open(app)?.volumes, index) }))
+        }
+        m::VOLUME_ADD => {
+            let kill = p.bool("kill")?;
+            let s = open(app)?;
+            let kinds: &[VolumeKind] = if kill {
+                &[VolumeKind::Trigger, VolumeKind::Kill]
+            } else {
+                &[VolumeKind::Trigger]
+            };
+            for &kind in kinds {
+                if let Some(why) = app.session.volume_add_refusal(kind) {
+                    let block = s.volume_block(kind);
+                    let mut e = err(code::REFUSED, format!("{}: {why}", kind.noun()));
+                    e.data = Some(json!({
+                        "kind": kind.name(),
+                        "count": block.len(),
+                        "capacity": block.capacity(),
+                    }));
+                    return Err(e);
+                }
+            }
+            // A small box at the camera focus, unless the params say.
+            let frame = volume_frame(p, &app.session.new_volume_frame())?;
+            let index = s.volume_block(VolumeKind::Trigger).len();
+            let kill_index = kill.then(|| s.volume_block(VolumeKind::Kill).len());
+            perform(
+                app,
+                Action::AddVolume {
+                    frame: Some(frame),
+                    kill,
+                },
+            )?;
+            Ok(json!({
+                "index": index,
+                "kill_trigger": kill_index,
+                "volume": volume_row(&open(app)?.volumes, index),
+            }))
+        }
+        m::VOLUME_REMOVE => {
+            let kind = match p.opt_str("kind")? {
+                None | Some("trigger") => VolumeKind::Trigger,
+                Some("kill") => VolumeKind::Kill,
+                Some(other) => {
+                    return Err(err(
+                        code::INVALID_PARAMS,
+                        format!("kind: trigger or kill, not {other:?}"),
+                    ));
+                }
+            };
+            let index = p.usize("index")?;
+            let count = open(app)?.volume_block(kind).len();
+            if index >= count {
+                return Err(err(
+                    code::INVALID_PARAMS,
+                    format!("no {} {index} (the map has {count})", kind.noun()),
+                ));
+            }
+            if let Some(why) = app.session.volume_remove_refusal(kind, index) {
+                let mut e = err(code::REFUSED, why);
+                if kind == VolumeKind::Trigger {
+                    let holders = open(app)?.volumes.holders(index);
+                    e.data = Some(json!({
+                        "named_by": holders.iter().map(|h| json!({
+                            "kind": h.kind().name(),
+                            "index": h.index(),
+                        })).collect::<Vec<_>>(),
+                    }));
+                }
+                return Err(e);
+            }
+            perform(app, Action::RemoveVolume(kind, index))?;
+            let s = open(app)?;
+            Ok(json!({
+                "removed": {"kind": kind.name(), "index": index},
+                "triggers": s.volumes.triggers.len(),
+                "kill_triggers": s.volumes.kills.len(),
+                "selected": app.session.selected_volume(),
+            }))
+        }
+        _ => Err(err(code::METHOD_NOT_FOUND, format!("no method {method}"))),
+    }
+}
+
 /// Adds a placement: refused first where the block can't grow safely or
 /// takes no new entries. The editor puts a new entry (or a copy) at the
 /// camera focus; at `position`, the focus is moved there for the add and

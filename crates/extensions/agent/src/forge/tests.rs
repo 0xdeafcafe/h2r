@@ -466,7 +466,9 @@ fn local_edits_publish_the_engine_handle_only_after_a_confirmed_spawn() {
     let mut edit = place();
     let (ticket, call) = calls::lock(&q).drain().pop().unwrap();
     assert!(
-        matches!(call, calls::Call::ForgeSpawn { placements, .. } if placements == [(TAG,Frame::default())])
+        matches!(call, calls::Call::Forge { steps, .. } if steps == [
+            calls::ForgeStep::Make { tag: TAG, frame: Frame::default() },
+        ])
     );
     assert!(edit.poll().is_none());
     calls::lock(&q).finish(
@@ -485,22 +487,6 @@ fn local_edits_publish_the_engine_handle_only_after_a_confirmed_spawn() {
     assert_eq!(updated.log()[0].op.id, id);
     assert_eq!(updated.objects()[0].handle, 0xa123_0003);
     assert!(edit.poll().is_none());
-    let delete = ForgeWorld::apply(
-        &updated,
-        &q,
-        guard,
-        |_| unreachable!(),
-        |s, w| s.delete(w, 91, id),
-    );
-    assert!(
-        delete
-            .err()
-            .unwrap()
-            .contains("needs M8 world.object.delete")
-    );
-    assert!(!calls::lock(&q).has_pending());
-    assert_eq!(updated.objects().len(), 1);
-
     let mut batch = ForgeWorld::apply(
         &session,
         &q,
@@ -522,7 +508,7 @@ fn local_edits_publish_the_engine_handle_only_after_a_confirmed_spawn() {
     )
     .unwrap();
     let (ticket, call) = calls::lock(&q).drain().pop().unwrap();
-    assert!(matches!(call,calls::Call::ForgeSpawn{placements,..} if placements.len()==2));
+    assert!(matches!(call, calls::Call::Forge { steps, .. } if steps.len() == 2));
     calls::lock(&q).finish(
         ticket,
         Ok(json!({"handles":[0xa000_0001u32, 0xa000_0002u32]})),
@@ -536,6 +522,219 @@ fn local_edits_publish_the_engine_handle_only_after_a_confirmed_spawn() {
             .collect::<Vec<_>>(),
         [0xa000_0001, 0xa000_0002]
     );
+}
+
+/// Drain the one queued Forge call, answer it with `outcome`, and poll.
+fn answer<T>(
+    q: &calls::Shared,
+    edit: &mut local::ForgeEdit<T>,
+    outcome: calls::Outcome,
+) -> (Vec<calls::ForgeStep>, Result<(::forge::Session, T), String>) {
+    let mut work = calls::lock(q).drain();
+    assert_eq!(work.len(), 1);
+    let (ticket, call) = work.pop().unwrap();
+    let calls::Call::Forge { steps, .. } = call else {
+        panic!("expected a Forge call, got {call:?}")
+    };
+    assert!(
+        edit.poll().is_none(),
+        "nothing is visible before the game answers"
+    );
+    calls::lock(q).finish(ticket, outcome);
+    (steps, edit.poll().unwrap())
+}
+
+/// Stage one local edit over the fixture tag.
+fn stage(
+    session: &::forge::Session,
+    q: &calls::Shared,
+    guard: local::Guard,
+    edit: impl FnOnce(&mut ::forge::Session, &mut local::ForgeWorld) -> Result<(), String>,
+) -> local::ForgeEdit<()> {
+    local::ForgeWorld::apply(session, q, guard, |_| Ok(TAG), edit).unwrap()
+}
+
+#[test]
+fn local_moves_deletes_and_restores_apply_to_the_live_object() {
+    use ::forge::{BlockKind, Frame, PaletteItem, Session, TagKey};
+    use calls::{ForgeStep, ForgeTarget};
+    use local::{ForgeWorld, Guard};
+    let limits = forge_doc::Limits {
+        world: Some(forge_doc::WorldBounds {
+            min: [-8.0; 3],
+            max: [8.0; 3],
+        }),
+        base_counts: [(BlockKind::Scenery, 0)].into(),
+        ..Default::default()
+    };
+    let item = PaletteItem {
+        block: BlockKind::Scenery,
+        tag: TagKey {
+            group: "scen".into(),
+            path: "objects\\fixture".into(),
+        },
+    };
+    let base = Session::new(draft(), limits, vec![item], 3).unwrap();
+    let q = calls::shared();
+    calls::lock(&q).arm();
+    let guard = Guard {
+        scenario: SCENARIO,
+        generation: 1,
+        admitted: |_, _| true,
+    };
+    let (a, b) = (
+        Frame {
+            position: [1.0, 2.0, 3.0],
+            rotation: [0.0; 3],
+        },
+        Frame {
+            position: [4.0, 2.0, 3.0],
+            rotation: [0.0; 3],
+        },
+    );
+    let live = |key| {
+        ForgeTarget::Live(agent_proto::ObjectId {
+            kind: agent_proto::Kind::Scenery,
+            key,
+        })
+    };
+
+    let mut edit =
+        ForgeWorld::apply(&base, &q, guard, |_| Ok(TAG), |s, w| s.place(w, 90, 0, a)).unwrap();
+    let (_, placed) = answer(&q, &mut edit, Ok(json!({"handles":[0xa123_0003u32]})));
+    let (placed, id) = placed.unwrap();
+
+    // A move is one op and one world.object.set on the placed object.
+    let mut edit = stage(&placed, &q, guard, |s, w| s.move_object(w, 91, id, b));
+    let (steps, moved) = answer(&q, &mut edit, Ok(json!({"handles":[]})));
+    assert_eq!(
+        steps,
+        [ForgeStep::Move {
+            target: live(0xa123_0003),
+            frame: b
+        }]
+    );
+    let moved = moved.unwrap().0;
+    assert_eq!(moved.log().len(), placed.log().len() + 1);
+    assert_eq!(moved.document().ops.len(), 2);
+    assert_eq!(moved.objects()[0].frame, b);
+    assert_eq!(moved.objects()[0].handle, 0xa123_0003);
+
+    // A stale handle is the game's named refusal; nothing is committed.
+    let mut edit = stage(&moved, &q, guard, |s, w| s.delete(w, 92, id));
+    let gone = agent_proto::RpcError::new(
+        agent_proto::sim::REFUSED,
+        format!(
+            "{}: scenery.a1230003 is no longer in the world",
+            local::OBJECT_GONE
+        ),
+    );
+    let (steps, refused) = answer(&q, &mut edit, Err(gone));
+    assert_eq!(
+        steps,
+        [ForgeStep::Delete {
+            target: live(0xa123_0003)
+        }]
+    );
+    assert!(refused.unwrap_err().starts_with(local::OBJECT_GONE));
+    assert_eq!(moved.document().ops.len(), 2);
+    assert_eq!(moved.objects().len(), 1);
+
+    // Delete, then undo restores it through a new object at the same frame.
+    let mut edit = stage(&moved, &q, guard, |s, w| s.delete(w, 93, id));
+    let (steps, deleted) = answer(&q, &mut edit, Ok(json!({"handles":[]})));
+    assert_eq!(
+        steps,
+        [ForgeStep::Delete {
+            target: live(0xa123_0003)
+        }]
+    );
+    let deleted = deleted.unwrap().0;
+    assert!(deleted.objects().is_empty());
+    let mut edit = stage(&deleted, &q, guard, |s, w| s.undo(w, 94));
+    let (steps, restored) = answer(&q, &mut edit, Ok(json!({"handles":[0xa456_0003u32]})));
+    assert_eq!(steps, [ForgeStep::Make { tag: TAG, frame: b }]);
+    let restored = restored.unwrap().0;
+    assert_eq!(restored.objects()[0].id, id);
+    assert_eq!(restored.objects()[0].handle, 0xa456_0003);
+    assert_eq!(restored.objects()[0].frame, b);
+    assert_eq!(restored.document(), moved.document());
+
+    // Undoing the move moves the restored object back; redo moves it again.
+    let mut edit = stage(&restored, &q, guard, |s, w| s.undo(w, 95));
+    let (steps, unmoved) = answer(&q, &mut edit, Ok(json!({"handles":[]})));
+    assert_eq!(
+        steps,
+        [ForgeStep::Move {
+            target: live(0xa456_0003),
+            frame: a
+        }]
+    );
+    let unmoved = unmoved.unwrap().0;
+    assert_eq!(unmoved.objects()[0].frame, a);
+    let mut edit = stage(&unmoved, &q, guard, |s, w| s.redo(w, 96));
+    let (steps, redone) = answer(&q, &mut edit, Ok(json!({"handles":[]})));
+    assert_eq!(
+        steps,
+        [ForgeStep::Move {
+            target: live(0xa456_0003),
+            frame: b
+        }]
+    );
+    let redone = redone.unwrap().0;
+
+    // Replaying the log from the base gives the session's document.
+    assert_eq!(
+        forge_doc::fold(base.document(), redone.log()).unwrap(),
+        *redone.document()
+    );
+    assert_eq!(redone.document(), moved.document());
+    assert!(!calls::lock(&q).has_pending());
+}
+
+#[test]
+fn a_block_without_live_objects_refuses_a_move_by_name() {
+    use ::forge::{BlockKind, Frame, PaletteItem, Session, TagKey};
+    use local::{ForgeWorld, Guard};
+    let limits = forge_doc::Limits {
+        world: Some(forge_doc::WorldBounds {
+            min: [-8.0; 3],
+            max: [8.0; 3],
+        }),
+        base_counts: [(BlockKind::SoundScenery, 0)].into(),
+        ..Default::default()
+    };
+    let item = PaletteItem {
+        block: BlockKind::SoundScenery,
+        tag: TagKey {
+            group: "ssce".into(),
+            path: "sound\\fixture".into(),
+        },
+    };
+    let session = Session::new(draft(), limits, vec![item], 3).unwrap();
+    let q = calls::shared();
+    calls::lock(&q).arm();
+    let guard = Guard {
+        scenario: SCENARIO,
+        generation: 1,
+        admitted: |_, _| true,
+    };
+    let mut edit = ForgeWorld::apply(
+        &session,
+        &q,
+        guard,
+        |_| Ok(TAG),
+        |s, w| s.place(w, 90, 0, Frame::default()),
+    )
+    .unwrap();
+    let (_, placed) = answer(&q, &mut edit, Ok(json!({"handles":[0xa123_0003u32]})));
+    let (placed, id) = placed.unwrap();
+    let error = ForgeWorld::apply(&placed, &q, guard, |_| Ok(TAG), |s, w| s.delete(w, 91, id))
+        .err()
+        .unwrap();
+    assert!(error.starts_with(local::OBJECT_KIND), "{error}");
+    assert!(!calls::lock(&q).has_pending());
+    assert_eq!(placed.objects().len(), 1);
 }
 
 #[test]
@@ -619,4 +818,68 @@ fn local_agent_reads_the_session_and_reports_a_refused_proposal() {
     game.tick += 1;
     h.agent.on_tick(&mut game);
     assert_eq!(h.reply()["error"]["message"], "there is nothing to undo");
+}
+
+#[test]
+fn a_teleporter_link_stages_one_channel_write_after_the_objects() {
+    use ::forge::{BlockKind, Linkable, Session, Teleporter};
+    use calls::ForgeStep;
+    let limits = forge_doc::Limits {
+        world: Some(forge_doc::WorldBounds {
+            min: [-8.0; 3],
+            max: [8.0; 3],
+        }),
+        base_counts: [(BlockKind::NetgameFlags, 2)].into(),
+        ..Default::default()
+    };
+    let flag = |index, sender, channel| Teleporter {
+        index,
+        position: [index as f32; 3],
+        sender,
+        channel,
+    };
+    let session = Session::new(draft(), limits, vec![], 3)
+        .unwrap()
+        .with_teleporters(vec![flag(0, true, 4), flag(1, false, 6)])
+        .unwrap();
+    let q = calls::shared();
+    calls::lock(&q).arm();
+    let guard = local::Guard {
+        scenario: SCENARIO,
+        generation: 1,
+        admitted: |_, _| true,
+    };
+    let mut edit = stage(&session, &q, guard, |s, w| {
+        s.link(w, 5, Linkable::Teleporter(0), Linkable::Teleporter(1))
+            .map(|_| ())
+    });
+    let (steps, result) = answer(&q, &mut edit, Ok(json!({"handles":[]})));
+    assert_eq!(
+        steps,
+        [ForgeStep::Channel {
+            flag: 1,
+            channel: 4
+        }]
+    );
+    let (session, ()) = result.unwrap();
+    assert_eq!(
+        session
+            .teleporters()
+            .iter()
+            .map(|t| t.channel)
+            .collect::<Vec<_>>(),
+        [4, 4]
+    );
+    // A refused write leaves the document as it was.
+    let mut edit = stage(&session, &q, guard, |s, w| s.undo(w, 6));
+    let (_, result) = answer(
+        &q,
+        &mut edit,
+        Err(agent_proto::RpcError::new(
+            agent_proto::code::INVALID_REQUEST,
+            "netgame flag 1 is not a teleporter",
+        )),
+    );
+    assert!(result.unwrap_err().contains("not a teleporter"));
+    assert_eq!(session.document().ops.len(), 1);
 }

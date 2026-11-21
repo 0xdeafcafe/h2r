@@ -107,6 +107,7 @@ impl Bridge {
                     Key::Redo => Action::Redo,
                     Key::Up => Action::Up,
                     Key::Down => Action::Down,
+                    Key::Link => Action::Link,
                     _ => unreachable!(),
                 };
                 self.push(Event::Action(action));
@@ -328,6 +329,7 @@ impl Gate {
                 (H::West, Action::Palette),
                 (H::North, Action::Properties),
                 (H::Start, Action::Menu),
+                (H::DpadRight, Action::Link),
             ] {
                 if rising(button) {
                     b.push(Event::Action(action));

@@ -375,7 +375,40 @@ points! { ALL;
     HS_UNIT_GRENADE_COUNT @ 0x002a_4310: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
     /// HaloScript's object awareness evaluator, index 305.
     HS_AI_SEE_OBJECT @ 0x002a_53b0: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
-    HS_CONVERSATION_SPAWN_WAVE @ 0x0020_1520: [fn(count: eax, squad: stack 0, location: stack 1) ret 16]; "docs/halo1/ai.md";
+    /// HaloScript's two-argument `ai_place` evaluator (291): a squad and a
+    /// count. It places a plain squad (the top two bits of the `ai` value
+    /// clear) through [`AI_SQUAD_PLACE`] with any start, not forced, spawn
+    /// flag 1, and stores the `ai` value at AI globals `+0x364`.
+    HS_AI_PLACE_COUNTED @ 0x002a_5010: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12], Optional; "docs/game/firefight.md";
+    /// HaloScript's `ai_set_team` evaluator (322): calls [`AI_SET_TEAM`].
+    HS_AI_SET_TEAM @ 0x002a_5850: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12], Optional; "docs/game/firefight.md";
+    /// HaloScript's `ai_erase` evaluator (297): calls [`AI_ERASE`].
+    HS_AI_ERASE @ 0x002a_5210: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12], Optional; "docs/game/firefight.md";
+    /// HaloScript's `ai_set_orders` evaluator (333): calls [`AI_SET_ORDERS`].
+    HS_AI_SET_ORDERS @ 0x002a_5c10: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12], Optional; "docs/game/firefight.md";
+    /// Place `count` actors of a scenario squad. The character is read per
+    /// actor at placement, from the start's character or else the squad's
+    /// (`+0x36`). `location` -1 lets [`AI_CHOOSE_SQUAD_START`] pick each
+    /// start; a given location places one actor. `force` (a byte) skips the
+    /// location's availability check and the vehicle-seat attempt;
+    /// `spawn_flags` goes to [`AI_SPAWN_AT_SQUAD_START`]. Returns at once
+    /// while the AI globals' initialised byte is clear.
+    AI_SQUAD_PLACE @ 0x0020_1520: [fn(count: eax, squad: stack 0, location: stack 1, force: stack 2, spawn_flags: stack 3) ret 16]; "docs/game/firefight.md";
+    /// Delete every actor of an `ai` value (a squad, or a group as
+    /// `0x4000_0000 | index`) with its unit, then the objects the squad
+    /// placed (runtime squad `+0x70`) that nothing else keeps.
+    AI_ERASE @ 0x0027_36c0: [fn(ai: stack 0) ret 4], Optional; "docs/game/firefight.md";
+    /// Set the team of a squad or group: runtime squad `+0x76`, each
+    /// actor's `+0x24` and its unit's `+0x138`.
+    AI_SET_TEAM @ 0x0027_5b60: [fn(ai: eax, team: ebx) ret 0], Optional; "docs/game/firefight.md";
+    /// Give a squad or group a scenario order (the order block at scenario
+    /// `+0x240`); an index outside the block is ignored.
+    AI_SET_ORDERS @ 0x0027_5cb0: [fn(ai: eax, order: ecx) ret 0], Optional; "docs/game/firefight.md";
+    /// The AI's clear-line test between two points: the collision query
+    /// with flags `0x0180_8c2d` (structure, instanced geometry and
+    /// objects). True when nothing is hit, or the hit is within about a
+    /// third of a world unit of `to`.
+    AI_LINE_OF_SIGHT @ 0x0029_dd50: [fn(from: esi, to: edi, ignore_a: edx, ignore_b: ecx) -> al ret 0], Optional; "docs/game/firefight.md";
     HS_CONVERSATION_UNIT_NEW @ 0x000c_4410: [fn(unit: stack 0) ret 12]; "docs/halo1/ai.md";
     /// Initializes the unit's speech block from its model and variant name.
     UNIT_DIALOGUE_SET_VARIANT @ 0x0011_4ec0: [fn(unit: eax, variant: stack 0) ret 4]; "docs/halo1/ai.md";
@@ -555,8 +588,28 @@ points! { ALL;
     UI_LOADING_DRAW @ 0x0002_89e0: [fn() -> al ret 0], Optional; "docs/graphics/native-renderer.md";
     NETWORK_PRE_UPDATE @ 0x0008_df50: [opaque], Optional; "docs/engine/engine-map.md";
     NETWORK_POST_UPDATE @ 0x0008_dfc0: [opaque], Optional; "docs/engine/engine-map.md";
-    /// The game-end path; the end latch is game globals `+0x1128`.
-    GAME_END @ 0x0013_89c0: [opaque]; "docs/live/live-gamestate.md";
+    /// The game-end path; the end latch is game globals `+0x1128`. Sets
+    /// the latch once, the end delay at `+0x112c` from the tick rate, and
+    /// clears `+0x1129`; a second call does nothing.
+    GAME_END @ 0x0013_89c0: [fn() ret 0]; "docs/live/live-gamestate.md";
+    /// Add `delta` (its low 16 bits, signed) to a player's statborg score
+    /// (`+0x308 + 0x1c * slot` in the game engine globals), clamped to
+    /// ±30,000, then the team score and the score limit. True when it
+    /// wrote: a game engine, its state `+0x6c` 1, and the engine's
+    /// authority (`+0xc04` 1, or game globals `+0x0c` 4).
+    SCORE_ADD @ 0x0015_b7c0: [fn(delta: eax, player: stack 0) -> al ret 4], Optional; "docs/game/firefight.md";
+    /// The gate [`SCORE_ADD`] opens with: true when that machine's engine
+    /// keeps scores and lives.
+    GAME_ENGINE_AUTHORITATIVE @ 0x0015_b2f0: [fn() -> al ret 0], Optional; "docs/game/firefight.md";
+    /// Mark fields of the player's game-engine player entity for
+    /// replication; bit `0x20` is lives remaining (player `+0x1ac`).
+    PLAYER_ENTITY_DIRTY @ 0x000a_7840: [fn(player: stack 0, mask: stack 1) ret 8], Optional; "docs/game/firefight.md";
+    /// True when the variant's lives setting (game globals `+0x1b8`) is
+    /// positive and the unitless player has no lives left (`+0x1ac` 0).
+    PLAYER_OUT_OF_LIVES @ 0x0015_db30: [fn(player: ecx) -> al ret 0], Optional; "docs/game/firefight.md";
+    /// Whether a waiting player respawns this tick: counts its respawn
+    /// delay (`+0x164`) down, and refuses a player out of lives.
+    PLAYER_RESPAWN_READY @ 0x0015_dd40: [fn(player: eax) -> al ret 0], Optional; "docs/game/firefight.md";
     /// A player was killed: `(attacker player, victim player, flag, packed
     /// damage)` on the stack. The flag is not a betrayal flag (it is set in
     /// free-for-all too). The low byte of the fourth argument is the
@@ -569,6 +622,10 @@ points! { ALL;
     WEAPON_STAT_BUCKET @ 0x0019_6ef0: [fn(code: ecx) -> eax ret 0], Optional; "docs/runtime/sim.md";
     /// Object deletion before the salted header and body are freed.
     OBJECT_DELETE @ 0x000b_8540: [fn(object: stack 0) ret 4], Optional; "docs/game/skulls.md";
+    /// Retail calls this after object_new succeeds for a barrel projectile.
+    BARREL_PROJECTILE @ 0x000f_a100: [fn(projectile: ecx) ret 0]; "docs/runtime/agent-api.md";
+    /// Projectile update passes the completed collision result before resolving damage.
+    PROJECTILE_IMPACT @ 0x000f_aa60: [opaque]; "docs/runtime/agent-api.md";
     /// Attach a weapon to a unit, or detach when the unit is -1.
     ITEM_SET_UNIT @ 0x0010_ca80: [fn(item: eax, unit: stack 0) ret 4], Optional; "docs/game/bots.md";
     /// Successful power-up application before the consumed equipment is deleted.

@@ -512,16 +512,19 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// How long `--serve` waits for a request before running the game link.
+const SERVE_FRAME: std::time::Duration = std::time::Duration::from_millis(16);
+
 /// `h2-editor --serve`: the agent API with no window, until killed.
 fn serve(mut app: App, socket: &std::path::Path) -> Result<()> {
     let (_listener, rx) = studio::api::server::listen(socket)
         .map_err(|e| anyhow!("listening on {}: {e}", socket.display()))?;
     eprintln!("h2-editor: agent API on {} (no window)", socket.display());
     let mut api = studio::api::Api::new();
-    for inc in rx.iter() {
-        let r = api.handle(&mut app, inc.request.clone());
-        inc.answer(r);
-    }
+    // The game link runs here as it does between the window's frames.
+    let mut play = studio::play::Play::discovering();
+    play.update(&mut app);
+    while api.serve_once(&mut app, &mut play, &rx, SERVE_FRAME) {}
     Ok(())
 }
 

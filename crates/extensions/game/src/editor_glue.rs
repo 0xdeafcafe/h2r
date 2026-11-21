@@ -37,6 +37,7 @@ impl ImageMarks for EditorSample {
                 color: shape.color,
                 dashed: shape.style == Some(MarkStyle::Candidate),
                 label: shape.label.as_deref(),
+                style: Default::default(),
             });
         }
     }

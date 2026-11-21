@@ -45,6 +45,7 @@ pub mod debug_menu_glue;
 pub mod debug_views;
 pub mod dsound_glue;
 mod editor_glue;
+pub mod firefight;
 pub mod fov_row;
 #[cfg(feature = "gpu")]
 pub mod render_aspect;
@@ -154,6 +155,12 @@ pub mod native_world_layers_glue;
 #[cfg(feature = "gpu")]
 pub mod opaque_streams;
 #[cfg(feature = "gpu")]
+pub mod frame_cutover;
+#[cfg(feature = "gpu")]
+pub mod frame_owner;
+#[cfg(feature = "gpu")]
+pub mod frame_parity;
+#[cfg(feature = "gpu")]
 pub mod scene_glue;
 pub mod new_maps;
 #[cfg(feature = "test-maps")]
@@ -198,6 +205,8 @@ pub mod speaker_setting;
 #[cfg(feature = "local-io")]
 pub mod steam_speaker;
 pub mod stopgaps;
+pub mod superbounce_assist;
+pub mod superbounce_prompts;
 pub mod superbounce_mode;
 pub mod sweep_diag;
 pub mod theater;

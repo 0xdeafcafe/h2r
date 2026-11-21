@@ -188,6 +188,8 @@ pub struct Prepared {
     pub objects: Option<halo1::ObjectTags>,
     /// The index slot the first of them takes.
     objects_first: usize,
+    /// HUD event text for the items rebuilt by the sandbox converter.
+    pickup_text: Option<h1_assets::text::multiplayer::PickupText>,
     /// Halo 1's scenery ([`halo1::plan_scenery`]), written into the
     /// scenario by the fresh build; `None` places none.
     pub scenery: Option<halo1::Scenery>,
@@ -530,6 +532,7 @@ fn prepare_plan<R: Read + Seek>(
         lightmap,
         objects: None,
         objects_first: 0,
+        pickup_text: None,
         scenery: None,
         fixtures: halo1::Fixtures::default(),
         player_biped: None,
@@ -797,12 +800,22 @@ impl Prepared {
         }
         let mut set = TagSet::from_map(&mut patched)?;
         set.check_bsp_space = !intermediate;
+        set.name = map_name(&self.h1_name);
+        set.scenario_path = scenario_path(&self.h1_name);
+        let slot = (set.scenario.0 & 0xffff) as usize;
+        set.slots[slot].name = Some(set.scenario_path.clone());
+
         // The vehicle collections the placements build first (their
         // datums were picked from the first added slot), then the
         // converted objects.
         self.add_collections(base, &mut set)?;
         if let Some(objects) = &self.objects {
             halo1::install(objects, self.objects_first, &mut set)?;
+            if let Some(text) = &self.pickup_text {
+                let slots = self.objects_first..self.objects_first + objects.count;
+                text.install(&mut set, slots)
+                    .map_err(|e| Error::Objects(format!("{} pickup text: {e}", self.h1_name)))?;
+            }
         }
         if let Some(biped) = self.player_biped {
             crate::globals::set_player_unit(&mut set, biped, crate::globals::Players::Multiplayer)?;
@@ -823,11 +836,6 @@ impl Prepared {
                 &self.vehicle_list,
             )?;
         }
-
-        set.name = map_name(&self.h1_name);
-        set.scenario_path = scenario_path(&self.h1_name);
-        let slot = (set.scenario.0 & 0xffff) as usize;
-        set.slots[slot].name = Some(set.scenario_path.clone());
 
         let lightmap_bitmap = match &self.lightmap {
             Some(l) => l.bitmap.clone().install_at(

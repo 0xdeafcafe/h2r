@@ -695,6 +695,18 @@ enum Error {
     Replayed,
 }
 impl Error {
+    /// For a log line: what the server said, or that it said nothing.
+    fn describe(self) -> String {
+        match self {
+            Self::Status(code) => format!("the server answered {code}"),
+            Self::Transport => "the server could not be reached".into(),
+            Self::Protocol => "the server's answer did not parse".into(),
+            Self::TooLarge => "the server's answer was too large".into(),
+            Self::Team(_) => "the server refused it for the team".into(),
+            Self::Banned => "the account is banned".into(),
+            Self::Replayed => "the server already had it (409)".into(),
+        }
+    }
     fn result(self) -> u32 {
         match self {
             Self::Team(error) => error.hresult(),
@@ -2022,18 +2034,29 @@ impl Worker {
                 if active.users.is_empty() {
                     return Err(NO_USER);
                 }
+                let url = format!("/arbitration/{path}");
+                // A second registration or report writes nothing on the
+                // server, so those ride out an outage; an extension is sent
+                // once.
+                let repeatable = !path.ends_with("/extend");
                 for user in active.users.values() {
-                    self.response(
-                        self.request(
-                            "POST",
-                            &format!("/arbitration/{path}"),
-                            user,
-                            lxm::GAMES_WRITE,
-                        ),
-                        Some(body),
-                        64 * 1024,
-                    )
-                    .map_err(Error::result)?;
+                    let build = || self.request("POST", &url, user, lxm::GAMES_WRITE);
+                    let sent = if repeatable {
+                        self.retried(build, Some(body), 64 * 1024)
+                    } else {
+                        self.response(build(), Some(body), 64 * 1024)
+                    };
+                    if let Err(e) = sent {
+                        // The title ends a matchmaking lobby whose
+                        // registration failed (docs/live/live-matchmaking.md
+                        // "Arbitration (built)"), so say which call and why.
+                        eprintln!(
+                            "live: arbitration {path} for {} failed: {}",
+                            user.gamertag,
+                            e.describe()
+                        );
+                        return Err(e.result());
+                    }
                 }
                 Ok(Reply::Done)
             }

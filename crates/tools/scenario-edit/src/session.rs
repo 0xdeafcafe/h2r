@@ -10,14 +10,18 @@ use crate::package::{self, PackageForm, SavedPackage};
 use crate::save::{self, MapSource};
 use crate::scenario::{Changes, Scenario, Value};
 use crate::scene::{Scene, SceneBuilder};
+use crate::volumes::{VolumeKind, Volumes};
 use crate::{Error, Result};
 use map::TagId;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+mod collision;
 mod multi;
+mod volume_edit;
 pub use multi::FieldEdit;
+pub use volume_edit::NEW_VOLUME_SIZE;
 
 /// An open map.
 struct Doc {
@@ -36,9 +40,22 @@ struct Doc {
     world: Vec<Tri>,
     /// How many BSP sections failed to load.
     world_failed: usize,
+    /// The structure BSPs' collision surfaces, classified against the
+    /// drawn triangles ([`crate::collision_view`]).
+    collision: crate::collision_view::LevelCollision,
+    /// The placed object tags' collision, read once per tag when the map
+    /// opens or a placement first places it ([`crate::object_collision`]).
+    objects: crate::object_collision::ObjectCollisions,
     /// The textured BSP and the placed objects' models, when the map's art
     /// could be read.
     scene: Option<Arc<Scene>>,
+    /// Each BSP's world for the native renderer, read with the scene
+    /// ([`crate::native_view`]), and why any BSP did not load.
+    native: Arc<Vec<crate::native_view::NativeLoad>>,
+    native_errors: Vec<(usize, String)>,
+    /// The placed objects' models for the native renderer: every palette
+    /// entry's and every placement's own tag, read with the native world.
+    native_models: Arc<crate::native_view::NativeModels>,
     /// A new map (no disc base): `source.bytes` is its whole unedited file,
     /// and a package saved from it carries that file as its first layer.
     derived: bool,
@@ -103,6 +120,13 @@ pub struct Session {
     selected: Option<(BlockKind, usize)>,
     /// The rest of a multi-selection ([`multi`]), beside [`Self::selected`].
     extra: Vec<(BlockKind, usize)>,
+    /// The selected trigger volume, by index. Selecting a placement clears
+    /// it and selecting one clears the placements.
+    volume: Option<usize>,
+    /// The selected level collision surface, by index into
+    /// [`crate::collision_view::LevelCollision::surfaces`]. Cleared as the
+    /// volume is.
+    surface: Option<usize>,
     camera: Camera,
     markers: Vec<Marker>,
     /// Bumped whenever the markers or the selection change, so a viewport
@@ -143,6 +167,8 @@ impl Session {
             status: "Open a .map file, or a disc image to pick a map from it.".into(),
             selected: None,
             extra: Vec::new(),
+            volume: None,
+            surface: None,
             camera: Camera::default(),
             markers: Vec::new(),
             markers_rev: 0,
@@ -377,6 +403,8 @@ impl Session {
     pub fn open_reference(&mut self, reference: Reference) {
         self.doc = None;
         self.selected = None;
+        self.volume = None;
+        self.surface = None;
         self.drag = None;
         self.gesture = None;
         self.camera = Camera::frame(&frame_bounds(&reference.world, &reference.markers));
@@ -409,12 +437,33 @@ impl Session {
         let lit = geometry::world_parts_lit(&mut map, &mut raw).unwrap_or_default();
         let world_failed = lit.failed;
         let world = geometry::opaque_triangles(&lit.parts);
+        let collision = crate::collision_view::LevelCollision::read(
+            &mut map,
+            &crate::collision_view::render_triangles(&lit.parts),
+        )
+        .unwrap_or_default();
         let markers = geometry::markers(&scenario);
+        let objects = crate::object_collision::ObjectCollisions::read(
+            &mut map,
+            markers.iter().filter_map(|m| m.object),
+        );
         let scene = self.build_scenes.then(|| {
             self.scene_for(
                 &source, name, cache_key, &scenario, &markers, &lit, &mut map, &mut raw,
             )
         });
+        let (native, native_errors, native_models) = if self.build_scenes {
+            let mut files = crate::scene::resource_files(&source);
+            let (native, errors) = crate::native_view::read_all(&mut map, &mut files);
+            let models = crate::native_view::NativeModels::read(
+                &mut map,
+                &mut files,
+                placed_objects(&scenario, &markers),
+            );
+            (native, errors, models)
+        } else {
+            Default::default()
+        };
         self.camera = Camera::frame(&frame_bounds(&world, &markers));
         let art = match &scene {
             Some(s) => format!(
@@ -451,11 +500,18 @@ impl Session {
             saved: Changes::default(),
             world,
             world_failed,
+            collision,
+            objects,
             scene,
+            native: Arc::new(native),
+            native_errors,
+            native_models: Arc::new(native_models),
             derived: false,
         });
         self.reference = None;
         self.selected = None;
+        self.volume = None;
+        self.surface = None;
         self.drag = None;
         self.gesture = None;
         self.world_rev += 1;
@@ -468,6 +524,8 @@ impl Session {
         self.doc = None;
         self.reference = None;
         self.selected = None;
+        self.volume = None;
+        self.surface = None;
         self.drag = None;
         self.gesture = None;
         self.world_rev += 1;
@@ -517,6 +575,24 @@ impl Session {
         }
     }
 
+    /// The open map's BSPs for the native renderer (none for a reference
+    /// map, or when scenes are not built), shared with the viewport.
+    pub fn native_world(&self) -> Option<&Arc<Vec<crate::native_view::NativeLoad>>> {
+        self.doc.as_ref().map(|d| &d.native)
+    }
+
+    /// The BSPs whose native world did not load, by index, and why.
+    pub fn native_errors(&self) -> &[(usize, String)] {
+        self.doc.as_ref().map_or(&[], |d| &d.native_errors)
+    }
+
+    /// The placed objects' models for the native renderer, shared with
+    /// the viewport (none for a reference map, or when scenes are not
+    /// built).
+    pub fn native_models(&self) -> Option<&Arc<crate::native_view::NativeModels>> {
+        self.doc.as_ref().map(|d| &d.native_models)
+    }
+
     /// The cached scene of a map, else a new one (cached).
     #[allow(clippy::too_many_arguments)]
     fn scene_for<R: std::io::Read + std::io::Seek>(
@@ -542,16 +618,7 @@ impl Session {
         b.lighting(&lit.bsps);
         b.sky();
         b.atmosphere();
-        // Every palette entry, so a placement switched to another entry
-        // has its model too, and each placement's own reference.
-        let objects: Vec<TagId> = scenario
-            .blocks
-            .iter()
-            .flat_map(|b| b.palette.iter().map(|r| r.id))
-            .chain(markers.iter().filter_map(|m| m.object))
-            .filter(|id| *id != TagId::NULL)
-            .collect();
-        b.objects(objects);
+        b.objects(placed_objects(scenario, markers));
         let scene = Arc::new(b.finish());
         self.scenes.push((key, scene.clone()));
         if self.scenes.len() > SCENE_CACHE {
@@ -578,7 +645,66 @@ impl Session {
             (None, Some(r)) => r.markers.clone(),
             (None, None) => Vec::new(),
         };
+        self.read_new_objects();
+        self.read_new_models();
         self.markers_rev += 1;
+    }
+
+    /// Read the collision of object tags the markers place that were not
+    /// placed when the map opened (a placement switched to another palette
+    /// entry, an item reference set to another tag). Each tag is read
+    /// once; nothing is read once the map's tag metadata has failed.
+    fn read_new_objects(&mut self) {
+        let Some(doc) = self.doc.as_mut() else {
+            return;
+        };
+        if doc.objects.error.is_some() {
+            return;
+        }
+        let new: Vec<TagId> = self
+            .markers
+            .iter()
+            .filter_map(|m| m.object)
+            .filter(|&o| doc.objects.of(o).is_none())
+            .collect();
+        if new.is_empty() {
+            return;
+        }
+        match doc.source.open() {
+            Ok(mut map) => doc.objects.add(&mut map, new),
+            Err(e) => doc.objects.error = Some(format!("reading new objects: {e}")),
+        }
+    }
+
+    /// Read the native models of object tags the markers place that were
+    /// not read when the map opened, the same way
+    /// [`Self::read_new_objects`] reads their collision. Only a map with a
+    /// native world reads them; the viewport sees a new
+    /// [`Self::native_models`] and uploads it.
+    fn read_new_models(&mut self) {
+        let Some(doc) = self.doc.as_mut() else {
+            return;
+        };
+        if doc.native.is_empty() {
+            return;
+        }
+        let unread: Vec<TagId> = self
+            .markers
+            .iter()
+            .filter_map(|m| m.object)
+            .filter(|&o| o != TagId::NULL && !doc.native_models.has_read(o))
+            .collect();
+        if unread.is_empty() {
+            return;
+        }
+        let mut files = crate::scene::resource_files(&doc.source);
+        let models = std::sync::Arc::make_mut(&mut doc.native_models);
+        match doc.source.open() {
+            Ok(mut map) => models.add(&mut map, &mut files, unread),
+            Err(e) => models
+                .errors
+                .push((TagId::NULL, format!("reading new models: {e}"))),
+        }
     }
 
     pub fn camera(&self) -> &Camera {
@@ -606,6 +732,8 @@ impl Session {
     }
     pub fn select(&mut self, selection: Option<(BlockKind, usize)>) {
         self.extra.clear();
+        self.volume = None;
+        self.surface = None;
         if selection != self.selected
             && let Some(doc) = self.doc.as_mut()
         {
@@ -613,6 +741,30 @@ impl Session {
         }
         self.selected = selection;
         self.markers_rev += 1;
+    }
+
+    /// The open map's trigger volumes.
+    pub fn volumes(&self) -> Option<&Volumes> {
+        self.scenario().map(|s| &s.volumes)
+    }
+
+    /// The selected trigger volume's index.
+    pub fn selected_volume(&self) -> Option<usize> {
+        self.volume
+            .filter(|&i| self.volumes().is_some_and(|v| i < v.triggers.len()))
+    }
+
+    /// Select a trigger volume (clearing the placements), or none.
+    pub fn select_volume(&mut self, index: Option<usize>) {
+        self.select(None);
+        self.volume = index;
+        self.markers_rev += 1;
+    }
+
+    /// The nearest visible world-space trigger volume a camera ray enters.
+    pub fn pick_volume(&self, ray: &Ray, layers: &Layers) -> Option<usize> {
+        let shown = |kind: VolumeKind| layers.visible(LayerId::Volume(kind));
+        self.volumes()?.pick(ray, shown).map(|(_, i)| i)
     }
 
     /// The placement under a camera ray, if any.
@@ -694,6 +846,12 @@ impl Session {
             && i >= doc.scenario.block(kind).len()
         {
             self.selected = None;
+        }
+        if self
+            .volume
+            .is_some_and(|i| i >= doc.scenario.volumes.triggers.len())
+        {
+            self.volume = None;
         }
         self.refresh_markers();
         match r {
@@ -1028,6 +1186,19 @@ impl Transform {
             1.0,
         ]
     }
+}
+
+/// The object tags a map can show: every palette entry, so a placement
+/// switched to another entry has its model too, and each placement's own
+/// reference.
+fn placed_objects(scenario: &Scenario, markers: &[Marker]) -> Vec<TagId> {
+    scenario
+        .blocks
+        .iter()
+        .flat_map(|b| b.palette.iter().map(|r| r.id))
+        .chain(markers.iter().filter_map(|m| m.object))
+        .filter(|id| *id != TagId::NULL)
+        .collect()
 }
 
 fn set_op(kind: BlockKind, index: usize, field: &'static str, value: Value) -> crate::edit::Op {

@@ -433,7 +433,23 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         .route("/v1/sessions/{id}", get(crate::sessions::detail))
         .route("/v1/sessions/{id}/events", post(crate::sessions::append))
         .route("/v1/snapshot", get(snapshot))
-        .route("/v1/films", get(crate::films::list))
+        .route(
+            "/v1/films",
+            get(crate::films::list).post(crate::films::shared::reserve),
+        )
+        .route(
+            "/v1/films/{game}",
+            get(crate::films::film_detail)
+                .put(crate::films::shared::part)
+                .post(crate::films::shared::complete)
+                .delete(crate::films::shared::delete)
+                .layer(DefaultBodyLimit::max(live_proto::film::PART_BYTES as usize)),
+        )
+        .route(
+            "/v1/films/{game}/visibility",
+            axum::routing::put(crate::films::shared::visibility),
+        )
+        .route("/v1/films/{game}/film", get(crate::films::film_object))
         .route(
             "/v1/films/{game}/save",
             post(crate::films::save).delete(crate::films::unsave),

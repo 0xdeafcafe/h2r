@@ -15,6 +15,7 @@ const HUD: &str = "forge.hud";
 const PALETTE: &str = "forge.palette";
 const PROPERTIES: &str = "forge.properties";
 const MENU: &str = "forge.menu";
+const LINK: &str = "forge.link";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Mode {
@@ -23,26 +24,37 @@ pub enum Mode {
     Aimed,
     Holding,
     Placing,
+    /// The Links tool has a link's first end.
+    Linking,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Hud {
     pub mode: Mode,
+    /// The Links tool is selected instead of the Objects tool.
+    pub links: bool,
     pub target: String,
     pub used: usize,
     pub limit: usize,
+    /// Edits that reach the game only through **Rebuild map**.
+    pub rebuild: usize,
     pub notice: Option<String>,
 }
 
 impl Hud {
     pub fn spec(&self) -> ScreenSpec {
+        let tool = if self.links { "LINKS" } else { "OBJECTS" };
+        let title = match self.rebuild {
+            0 => tool.to_string(),
+            n => format!("{tool}   REBUILD {n}"),
+        };
         let mut widgets = vec![
             panel("hud.top", [204, -272, 148, 272]),
             text(
                 "title",
                 [198, -264, 171, 40],
                 Justify::Left,
-                "OBJECTS".into(),
+                text_fit::line(&title, 290),
             ),
             text(
                 "budget",
@@ -76,10 +88,13 @@ impl Hud {
                 text_fit::paragraph(notice, 490, 2),
             ));
         }
-        ScreenSpec::hud(HUD, "OBJECTS", widgets)
+        ScreenSpec::hud(HUD, tool, widgets)
     }
 
     fn prompts(&self) -> Vec<Prompt> {
+        if self.links {
+            return self.link_prompts();
+        }
         let mut p = Vec::new();
         match self.mode {
             Mode::Aimed => {
@@ -100,16 +115,36 @@ impl Hud {
                 p.push(Prompt::new(&[Glyph::Y], "Properties"));
                 p.push(Prompt::new(&[Glyph::B], "Cancel"));
             }
-            Mode::Idle => {}
+            Mode::Idle | Mode::Linking => {}
         }
         if matches!(self.mode, Mode::Idle | Mode::Aimed) {
             p.push(Prompt::new(&[Glyph::X], "Palette"));
         }
         if self.mode == Mode::Idle {
+            p.push(Prompt::new(&[Glyph::DpadRight], "Links"));
             p.push(Prompt::new(&[Glyph::Start], "Forge menu"));
             p.push(Prompt::new(&[Glyph::DpadUp], "Player"));
         }
         p
+    }
+
+    fn link_prompts(&self) -> Vec<Prompt> {
+        match self.mode {
+            Mode::Linking => vec![
+                Prompt::new(&[Glyph::A], "Link"),
+                Prompt::new(&[Glyph::B], "Cancel"),
+            ],
+            Mode::Aimed => vec![
+                Prompt::new(&[Glyph::A], "Start link"),
+                Prompt::new(&[Glyph::Y], "Link"),
+                Prompt::new(&[Glyph::B], "Hold to unlink"),
+            ],
+            _ => vec![
+                Prompt::new(&[Glyph::DpadRight], "Objects"),
+                Prompt::new(&[Glyph::Start], "Forge menu"),
+                Prompt::new(&[Glyph::DpadUp], "Player"),
+            ],
+        }
     }
 }
 

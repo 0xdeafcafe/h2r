@@ -138,8 +138,222 @@ pub(super) fn tag_field_marks<'a>(
     }
 }
 
+/// The selected trigger volume: its frame, size and what names it, read
+/// only.
+fn volume(ui: &Ui, fonts: &theme::Fonts, app: &mut App, index: usize) {
+    use scenario_edit::volumes::{Holder, VolumeKind};
+    let Some(volumes) = app.session.volumes() else {
+        return;
+    };
+    let v = volumes.triggers[index].clone();
+    let f = ui.push_font(fonts.title);
+    ui.text(format!("{}  {}", icon::BOX, volumes.label(index)));
+    f.pop();
+    let kinds: Vec<&str> = volumes
+        .kinds(index)
+        .into_iter()
+        .map(|k| scenario_edit::layers::LayerId::Volume(k).label())
+        .collect();
+    ui.text_disabled(format!("Trigger volume #{index}   {}", kinds.join(", ")));
+    let holders = volumes.holders(index);
+    let mut actions = Vec::new();
+    if v.in_world() {
+        if ui.button(format!("{} Frame", icon::FOCUS)) {
+            actions.push(Action::FocusSelected);
+        }
+        ui.same_line();
+    } else {
+        ui.text_wrapped(
+            "Its frame is relative to a placed object, which only a running game places, \
+             so it is not drawn.",
+        );
+    }
+    let refusal = app
+        .session
+        .volume_remove_refusal(VolumeKind::Trigger, index);
+    let d = ui.begin_disabled_with_cond(refusal.is_some());
+    if ui.button(format!("{} Delete", icon::TRASH)) {
+        actions.push(Action::RemoveVolume(VolumeKind::Trigger, index));
+    }
+    d.end();
+    if let Some(why) = &refusal {
+        ui.set_item_tooltip(why);
+    }
+    let locked = app
+        .session
+        .scenario()
+        .and_then(|s| s.volume_refusal(VolumeKind::Trigger));
+
+    theme::section(ui, "Box");
+    let d = ui.begin_disabled_with_cond(locked.is_some() || !v.in_world());
+    let (edited, done) = volume_box(ui, &v.frame);
+    d.end();
+    if let Some(why) = &locked {
+        ui.text_disabled(why);
+    }
+    let xyz = |p: [f32; 3]| format!("{:.3}, {:.3}, {:.3}", p[0], p[1], p[2]);
+    for (label, value) in [
+        ("Origin (corner)", xyz(v.frame.origin)),
+        ("Forward", xyz(v.frame.forward)),
+        ("Up", xyz(v.frame.up)),
+    ] {
+        ui.label_text(label, value);
+    }
+    if let Some(parent) = v.parent {
+        ui.label_text("Parent object name", parent.to_string());
+    }
+    theme::section(ui, "Named by");
+    if holders.is_empty() {
+        ui.text_disabled("Nothing names it by index.");
+    }
+    for h in holders {
+        ui.bullet_text(match h {
+            Holder::Kill(i) => format!("Kill trigger #{i}"),
+            Holder::BspSwitch { index, from, to } => {
+                format!("BSP switch #{index}, BSP {from} to {to}")
+            }
+        });
+        if let Holder::Kill(i) = h {
+            ui.same_line();
+            if ui.small_button(format!("Remove##kill-{i}")) {
+                actions.push(Action::RemoveVolume(VolumeKind::Kill, i));
+            }
+            ui.set_item_tooltip("Remove the kill trigger; the volume stays a plain trigger");
+        }
+    }
+    // Through the command layer, as the agent API's edits.
+    if let Some(frame) = edited {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        ("studio-inspector-volume", index).hash(&mut h);
+        app.dispatch(Action::SetVolumeFrame {
+            index,
+            frame,
+            merge: Some(h.finish()),
+        });
+    }
+    if done {
+        app.dispatch(Action::SealEdit);
+    }
+    for action in actions {
+        app.dispatch(action);
+    }
+}
+
+/// The box's centre, size and (when it stands upright) its facing, as
+/// drags: the new box when one changed, and whether a drag ended.
+fn volume_box(
+    ui: &Ui,
+    frame: &scenario_edit::volumes::Frame,
+) -> (Option<scenario_edit::volumes::Frame>, bool) {
+    use scenario_edit::volumes::Frame;
+    let (Some([forward, _, up]), Some(mut centre)) = (frame.axes(), frame.center()) else {
+        return (None, false);
+    };
+    let mut size = frame.size;
+    let mut done = false;
+    let mut row = |name: &str, v: &mut [f32; 3]| {
+        ui.align_text_to_frame_padding();
+        ui.text_disabled(name);
+        ui.same_line_with_pos(LABEL);
+        let avail = ui.content_region_avail()[0];
+        let w = ((avail - 2.0 * 4.0) / 3.0).max(30.0);
+        let mut changed = false;
+        for (k, axis) in ["x", "y", "z"].into_iter().enumerate() {
+            if k > 0 {
+                ui.same_line_with_spacing(0.0, 4.0);
+            }
+            ui.set_next_item_width(w);
+            let fmt = format!("{axis} %.2f");
+            changed |= drag_fmt(ui, format!("##volume-{name}-{k}"), 0.05, &fmt, &mut v[k]);
+            done |= ui.is_item_deactivated_after_edit();
+        }
+        changed
+    };
+    let mut out = None;
+    if row("centre", &mut centre) {
+        out = Frame::around(centre, forward, up, size);
+    }
+    if row("size", &mut size) {
+        size = size.map(|x| x.max(0.01));
+        out = Frame::around(centre, forward, up, size);
+    }
+    // An upright box turns by its facing here; any box turns with the
+    // gizmo.
+    if (up[2] - 1.0).abs() < 1e-4 {
+        ui.align_text_to_frame_padding();
+        ui.text_disabled("facing °");
+        ui.same_line_with_pos(LABEL);
+        ui.set_next_item_width(-1.0);
+        let mut yaw = forward[1].atan2(forward[0]).to_degrees();
+        if drag_fmt(ui, "##volume-facing".into(), 0.5, "%.1f", &mut yaw) {
+            let (s, c) = yaw.to_radians().sin_cos();
+            out = Frame::around(centre, [c, s, 0.0], up, size);
+        }
+        done |= ui.is_item_deactivated_after_edit();
+    }
+    (out, done)
+}
+
+/// The selected level collision surface, read only: its class, plane,
+/// raw flags, material and ring.
+fn surface(ui: &Ui, fonts: &theme::Fonts, app: &mut App) {
+    use scenario_edit::collision_view::SurfaceClass;
+    let Some(s) = app.session.selected_surface_data().cloned() else {
+        return;
+    };
+    let f = ui.push_font(fonts.title);
+    ui.text(format!(
+        "{}  {}",
+        icon::BOX,
+        crate::viewport::surface_label(&s)
+    ));
+    f.pop();
+    ui.text_disabled(match s.class {
+        SurfaceClass::Drawn => "Drawn: a render face covers it",
+        SurfaceClass::CollisionOnly => "Collision only: nothing drawn covers it",
+    });
+    if ui.button(format!("{} Frame", icon::FOCUS)) {
+        app.dispatch(Action::FocusSelected);
+    }
+    theme::section(ui, "Surface");
+    let p = s.plane;
+    for (label, value) in [
+        (
+            "Plane",
+            format!("{:.3}, {:.3}, {:.3}, d {:.3}", p[0], p[1], p[2], p[3]),
+        ),
+        ("Covered", format!("{:.0}%", s.covered * 100.0)),
+        ("Flags", format!("0x{:02x}", s.flags)),
+        (
+            "Breakable surface",
+            if s.breakable == 0xff {
+                "none".to_owned()
+            } else {
+                s.breakable.to_string()
+            },
+        ),
+        ("Material", s.material.to_string()),
+        ("Area", format!("{:.2}", s.area())),
+    ] {
+        ui.label_text(label, value);
+    }
+    ui.text_disabled("Bit 3 of the flags is breakable; what the others stop is not established.");
+    theme::section(ui, "Ring");
+    for (i, q) in s.ring.iter().enumerate() {
+        ui.text(format!("{i}: {:.3}, {:.3}, {:.3}", q[0], q[1], q[2]));
+    }
+}
+
 /// Draw the inspector for the selection and apply its edits.
 pub fn draw(ui: &Ui, fonts: &theme::Fonts, app: &mut App, state: &mut InspectorState) {
+    if let Some(index) = app.session.selected_volume() {
+        volume(ui, fonts, app, index);
+        return;
+    }
+    if app.session.selected_surface().is_some() {
+        surface(ui, fonts, app);
+        return;
+    }
     let location = app.nav_location();
     let (kind, index) = match location.selection() {
         Some(Selection::Placement(kind, index)) => (kind, index),

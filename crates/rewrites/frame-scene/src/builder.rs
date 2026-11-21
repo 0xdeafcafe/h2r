@@ -145,6 +145,13 @@ impl SceneBuilder {
         self.pending_cut |= why;
     }
 
+    /// Retires the in-progress frame and carries the cut to the next seal.
+    pub fn discard(&mut self, why: Cut) {
+        self.open = None;
+        self.scene = None;
+        self.cut(why);
+    }
+
     /// The scene being written.
     pub fn scene(&self) -> Option<&FrameScene> {
         self.scene.as_ref()

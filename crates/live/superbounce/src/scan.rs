@@ -4,7 +4,7 @@
 //! The bounce search is in `bounce.rs`, the forced-crouch search in
 //! `crouch.rs`.
 use crate::geom::{Bounds, Grid};
-use crate::{Poly, Spot};
+use crate::{CrouchRegion, Poly, Spot, Vec3};
 
 /// Grid cell (world units) for bucketing polygons on the ground plane.
 pub(crate) const CELL: f32 = 1.0;
@@ -22,17 +22,29 @@ pub(crate) struct Face<'a> {
 }
 
 pub(crate) fn scan(polys: &[Poly]) -> Vec<Spot> {
-    let faces: Vec<Face> = polys
+    let faces = faces(polys);
+    let mut out = crate::bounce::bounces(&faces);
+    let crouches = crate::crouch::crouches(&faces, &out);
+    out.extend(best(crouches));
+    out
+}
+
+/// The forced-crouch regions near `at`, judged (`crate::explain`).
+pub(crate) fn explain(polys: &[Poly], at: Vec3, r: f32) -> Vec<CrouchRegion> {
+    let faces = faces(polys);
+    let bounces = crate::bounce::bounces(&faces);
+    crate::crouch::explain(&faces, &bounces, at, r)
+}
+
+fn faces(polys: &[Poly]) -> Vec<Face<'_>> {
+    polys
         .iter()
         .filter(|p| p.verts.len() >= 3)
         .map(|poly| Face {
             poly,
             b: Bounds::of(&poly.verts),
         })
-        .collect();
-    let mut out = crate::bounce::bounces(&faces);
-    out.extend(crate::crouch::crouches(&faces));
-    out
+        .collect()
 }
 
 /// The faces `set` names, bucketed by their bounds on the ground plane.

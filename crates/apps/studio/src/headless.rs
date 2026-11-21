@@ -989,7 +989,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("h2-editor-tags-ui-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (mut app, ..) = tag_tests::app(&dir);
-        h.frames(&mut app, 3).unwrap();
+        h.frames(&mut app, 4).unwrap();
         let click = |t: &str| Step::Click(t.into(), Button::Left);
         h.step(&mut app, &click("weap  (1)")).unwrap();
         h.frames(&mut app, 2).unwrap();
@@ -1163,6 +1163,79 @@ mod tests {
         h.frames(&mut app, 2).unwrap();
         assert_eq!(app.loaded_map(), Some("02_pier"));
         assert!(app.session.is_open());
+    }
+
+    /// P8: a click on a trigger volume in the viewport selects it in
+    /// place of the placements, the Scene tab lists the volumes and the
+    /// inspector shows the box; a click on nothing clears it. Skipped
+    /// when the machine has no wgpu adapter.
+    #[test]
+    fn a_click_on_a_volume_selects_it() {
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("h2-editor-volumes-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let map = dir.join("volumes.map");
+        std::fs::write(&map, fixture::fixture_with_volumes()).unwrap();
+        let mut app = App::new();
+        app.set_data_root(dir.join("data"));
+        app.dispatch(Action::OpenSource(map));
+        app.dispatch(Action::Select(Some((BlockKind::Weapons, 0))));
+        h.frames(&mut app, 4).unwrap();
+        // Coming back from the Tags tab brings the Scene tab to the front
+        // of the left dock, whichever tab the first frames left there.
+        app.dispatch(Action::SetTool(crate::ToolKind::Tags));
+        h.frames(&mut app, 2).unwrap();
+        app.dispatch(Action::SetTool(crate::ToolKind::Scenario));
+        h.frames(&mut app, 2).unwrap();
+        // Look straight down on the kill box, far from every placement.
+        let centre = app.session.volumes().unwrap().triggers[1]
+            .frame
+            .center()
+            .unwrap();
+        *app.session.camera_mut() = scenario_edit::geometry::Camera {
+            target: centre,
+            yaw: 0.0,
+            pitch: 1.5,
+            distance: 20.0,
+            ..*app.session.camera()
+        };
+        h.frames(&mut app, 2).unwrap();
+        let (rect, _) = h.studio.viewport.shown().unwrap();
+        let middle = format!("{},{}", rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0);
+        h.step(&mut app, &Step::Click(middle, Button::Left))
+            .unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(app.session.selected_volume(), Some(1));
+        assert_eq!(app.session.selected(), None);
+        // The pick opens the Volumes group and scrolls its row into view.
+        let scene: Vec<&str> = h
+            .scene
+            .items
+            .iter()
+            .filter(|i| i.window.contains("###outliner"))
+            .map(|i| i.label.as_str())
+            .collect();
+        assert!(
+            scene.iter().any(|l| l.contains("Volumes  (2)")),
+            "the Scene tab lists the volumes: {scene:?}"
+        );
+        assert!(
+            scene.iter().any(|l| l.ends_with("###volume-1")),
+            "the Scene tab shows the picked volume's row: {scene:?}"
+        );
+        assert!(
+            h.scene
+                .items
+                .iter()
+                .any(|i| i.window.contains("inspector") && i.label.ends_with(" Frame")),
+            "the inspector shows the volume"
+        );
+        let corner = format!("{},{}", rect[0] + rect[2] - 12.0, rect[1] + rect[3] - 12.0);
+        h.step(&mut app, &Step::Click(corner, Button::Left))
+            .unwrap();
+        assert_eq!(app.session.selected_volume(), None);
     }
 
     fn headless() -> Option<(std::sync::MutexGuard<'static, ()>, Headless)> {

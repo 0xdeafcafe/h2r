@@ -671,6 +671,13 @@ fn run_configured(
             _live.clone(),
             open,
         )?;
+        // Resume queued uploads on sign-in, including a session which acquired
+        // its account in the game after launch.
+        let _ = theater.sync();
+        if let Some(recording) = &film {
+            let controller = theater.clone();
+            recording.sync_library(move || controller.sync());
+        }
         Some(theater)
     } else {
         None
@@ -837,6 +844,18 @@ fn run_configured(
     }
     let render_hooks = film.as_ref()
         .map_or_else(run_plan::compiled_render_hooks, |s| s.render_hooks());
+    // A present-limited run consumes every sealed frame in order.
+    let stop_at: Option<u64> = std::env::var("H2_BOOT_STOP_AT_PRESENT").ok().and_then(|v| v.parse().ok());
+    #[cfg(feature = "gpu")]
+    let private = d3d_glue::PrivateScenes::requested(
+        features.switches(), render_hooks, headless || host.unpaced_display || stop_at.is_some(),
+    );
+    // A film export presents each frame before the next is encoded.
+    #[cfg(feature = "gpu")]
+    let render_thread = host.render_thread.then_some(d3d_glue::RenderThread {
+        clip_capture: false,
+        synchronous_presents: host.film_capture.is_some(),
+    });
     #[cfg(feature = "gpu")]
     let mut d3d_calls = match (opts.d3d, host.gfx.take()) {
         (false, _) => None,
@@ -866,35 +885,21 @@ fn run_configured(
                 if let Some(viewport) = display_size.take() {
                     b.follow_presentation(move |src| viewport(src));
                 }
-                let scale_stats = b.shared_stats();
-                let stats = scale_stats.clone();
+                let stats = b.shared_stats();
                 active_size = Some(Arc::new(move || {
                     stats.lock().unwrap_or_else(|e| e.into_inner()).presentation
                 }));
-                let report = Some(d3d_glue::scale_report(&mut b));
-                let installed = if host.render_thread && host.film_capture.is_some() {
-                    d3d_glue::install_export_threaded(&loaded.runtime, b, report, interp, render_hooks)
-                } else if host.render_thread {
-                    d3d_glue::install_threaded_for_profile(&loaded.runtime, b, report, interp, render_hooks)
-                } else {
-                    d3d_glue::install_for_profile(&loaded.runtime, b, report, render_hooks)
-                }?;
-                installed.with_gpu_view(Some(scale_stats))
+                d3d_glue::install_scaled_view(
+                    &loaded.runtime, b, interp, render_thread, render_hooks, private,
+                )?
             }
-            None => {
-                let installed = if host.render_thread && host.film_capture.is_some() {
-                    d3d_glue::install_export_threaded(&loaded.runtime, b, None, interp, render_hooks)
-                } else if host.render_thread {
-                    d3d_glue::install_threaded_for_profile(&loaded.runtime, b, None, interp, render_hooks)
-                } else {
-                    d3d_glue::install_for_profile(&loaded.runtime, b, None, render_hooks)
-                }?;
-                installed.with_gpu_view(None)
-            }
+            None => d3d_glue::install_game_view(
+                &loaded.runtime, b, interp, render_thread, render_hooks, private, host.settings.as_deref(),
+            )?,
         }),
         (true, None) if host_light => Some(d3d_glue::install_light_for_profile(&loaded.runtime, render_hooks)?),
-        (true, None) => Some(d3d_glue::install_headless_for_profile(
-            &loaded.runtime, interp, render_hooks, host.settings.as_deref(), protected_readbacks,
+        (true, None) => Some(d3d_glue::install_headless_with_scenes(
+            &loaded.runtime, interp, render_hooks, host.settings.as_deref(), protected_readbacks, private,
         )?),
     };
     #[cfg(all(not(feature = "gpu"), feature = "desktop-runtime"))]
@@ -1064,6 +1069,21 @@ fn run_configured(
     #[cfg(feature = "gpu")]
     let native_sources = k.vfs().map(|vfs| native_map::mount(vfs, map_rebind.clone()));
     let editor_link = host.editor_link.take();
+    // The live mirror's camera layer reads the sealed frame scene
+    // (docs/editor/live-mirror.md, "Cameras"): why this run seals none.
+    #[cfg(feature = "gpu")]
+    let scene_camera_off = if render_hooks != film::RenderHooks::Gpu
+        || !hooks::switches::native_render_on(features.switches())
+    {
+        Some("native rendering is off")
+    } else if !features
+        .switches()
+        .feature(render_bridge::scene_step::ID, true)
+    {
+        Some("frame scene capture is off")
+    } else {
+        None
+    };
     #[cfg(feature = "gpu")]
     let (world_line_present, debug_capture_unavailable) = {
         let sources = std::mem::take(&mut host.world_line_sources);
@@ -1422,6 +1442,14 @@ fn run_configured(
     }
     if let Some(a) = &agent {
         #[cfg(feature = "gpu")]
+        if let Some(why) = scene_camera_off.or_else(|| {
+            installed
+                .off_reason(render_bridge::scene_step::ID)
+                .map(|_| "frame scene capture is off")
+        }) {
+            a.agent.set_camera_unavailable(why);
+        }
+        #[cfg(feature = "gpu")]
         let debug_capture_unavailable = debug_capture_unavailable.or_else(|| {
             installed
                 .off_reason(render_bridge::scene_step::ID)
@@ -1637,10 +1665,6 @@ fn run_configured(
     } else {
         None
     };
-    // H2_BOOT_STOP_AT_PRESENT=N: end the run once N presents are out.
-    let stop_at: Option<u64> = std::env::var("H2_BOOT_STOP_AT_PRESENT")
-        .ok()
-        .and_then(|v| v.parse().ok());
     // H2_HOST_PERF=1 (the Xbox app's default): a line every 100 frames or
     // 5 s of where frame time goes on this host (host_perf.rs); it starts
     // frame stats quietly if nothing else has.

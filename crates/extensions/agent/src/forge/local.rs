@@ -1,15 +1,16 @@
 //! Local Forge sessions submit edits at a tick boundary. The ordinary
 //! tools and the agent share the same host; the call queue owns guest entry.
+use std::collections::BTreeMap;
 use std::sync::{Arc, mpsc};
 
-use ::forge::{Frame, PaletteItem, Session, World};
-use agent_proto::{Boundary, RpcError, code, forge::method};
+use ::forge::{BlockKind, Frame, PaletteItem, Session, World};
+use agent_proto::{Boundary, Kind, ObjectId, RpcError, code, forge::method};
 use engine::GuestMemory;
 use forge_doc::{Entry, ForgeDoc, Op, Sha256, TagKey};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::sim::calls::{self, Call};
+use crate::sim::calls::{self, Call, ForgeStep, ForgeTarget};
 use crate::{Access, Agent};
 
 /// Rechecked at guest entry, after submission. The host checks the generation,
@@ -37,11 +38,44 @@ impl Guard {
     }
 }
 
+/// Why a Forge edit's live object can no longer be edited: the session's
+/// handle no longer resolves with its kind and salt (`world.object.*`'s
+/// check). The edit leaves the document as it was.
+pub const OBJECT_GONE: &str = "forge_object_gone";
+
+/// A live object edit names a block whose objects `world.object.*` cannot
+/// resolve.
+pub const OBJECT_KIND: &str = "forge_object_kind";
+
+/// The `world.object` kind of a block's live objects.
+fn live_kind(block: BlockKind) -> Option<Kind> {
+    Some(match block {
+        BlockKind::Scenery => Kind::Scenery,
+        BlockKind::Vehicles => Kind::Vehicle,
+        BlockKind::Equipment => Kind::Equipment,
+        BlockKind::Weapons => Kind::Weapon,
+        BlockKind::Machines => Kind::Machine,
+        BlockKind::Crates => Kind::Crate,
+        _ => return None,
+    })
+}
+
+enum Staged {
+    Make(TagKey, Frame),
+    Move(ForgeTarget, Frame),
+    Delete(ForgeTarget),
+    Channel(u32, i16),
+}
+
 /// A validated command can build a candidate document and log on a private
-/// session clone. Engine denial discards the entire candidate.
+/// session clone. Its engine work becomes one [`Call::Forge`] at the next
+/// tick; engine denial discards the entire candidate.
 #[derive(Default)]
 pub struct ForgeWorld {
-    placements: Vec<(TagKey, Frame)>,
+    steps: Vec<Staged>,
+    made: u16,
+    /// The block of each handle the session holds or this edit makes.
+    blocks: BTreeMap<u32, BlockKind>,
 }
 
 impl ForgeWorld {
@@ -53,21 +87,35 @@ impl ForgeWorld {
         edit: impl FnOnce(&mut Session, &mut Self) -> Result<T, String>,
     ) -> Result<ForgeEdit<T>, String> {
         let mut candidate = session.clone();
-        let mut world = ForgeWorld::default();
+        let mut world = ForgeWorld {
+            blocks: session
+                .objects()
+                .iter()
+                .map(|object| (object.handle, object.item.block))
+                .collect(),
+            ..Default::default()
+        };
         let result = edit(&mut candidate, &mut world)?;
-        let count = world.placements.len();
-        let pending = if count == 0 {
+        let count = usize::from(world.made);
+        let pending = if world.steps.is_empty() {
             None
         } else {
-            let placements = world
-                .placements
+            let steps = world
+                .steps
                 .into_iter()
-                .map(|(tag, frame)| Ok((resolve(&tag)?, frame)))
+                .map(|step| {
+                    Ok(match step {
+                        Staged::Make(tag, frame) => ForgeStep::Make {
+                            tag: resolve(&tag)?,
+                            frame,
+                        },
+                        Staged::Move(target, frame) => ForgeStep::Move { target, frame },
+                        Staged::Delete(target) => ForgeStep::Delete { target },
+                        Staged::Channel(flag, channel) => ForgeStep::Channel { flag, channel },
+                    })
+                })
                 .collect::<Result<Vec<_>, String>>()?;
-            Some(calls::submit(
-                queue,
-                Call::ForgeSpawn { guard, placements },
-            )?)
+            Some(calls::submit(queue, Call::Forge { guard, steps })?)
         };
         Ok(ForgeEdit {
             candidate: Some((candidate, result)),
@@ -75,25 +123,66 @@ impl ForgeWorld {
             pending,
         })
     }
+
+    fn make(&mut self, item: &PaletteItem, frame: Frame) -> Result<u32, String> {
+        let handle = staged_handle(self.made);
+        self.made = self.made.checked_add(1).ok_or("too many placements")?;
+        self.blocks.insert(handle, item.block);
+        self.steps.push(Staged::Make(item.tag.clone(), frame));
+        Ok(handle)
+    }
+
+    fn target(&self, handle: u32) -> Result<ForgeTarget, String> {
+        let block = *self
+            .blocks
+            .get(&handle)
+            .ok_or_else(|| format!("{OBJECT_GONE}: the session holds no object {handle:#010x}"))?;
+        let kind = live_kind(block).ok_or_else(|| {
+            format!(
+                "{OBJECT_KIND}: live {} objects cannot be moved or deleted",
+                block.name().replace('_', " ")
+            )
+        })?;
+        Ok(if handle as u16 == u16::MAX {
+            ForgeTarget::Made {
+                index: (handle >> 16) as usize,
+                kind,
+            }
+        } else {
+            ForgeTarget::Live(ObjectId { kind, key: handle })
+        })
+    }
 }
 
+/// Each call stages one engine step. Moves, deletes and restores apply to the
+/// live object through the `world.object.set` and `.delete` bodies and the
+/// ownerless spawn, at the tick boundary the queue runs them.
 impl World for ForgeWorld {
     fn place(&mut self, item: &PaletteItem, frame: Frame) -> Result<u32, String> {
-        let index = u16::try_from(self.placements.len()).map_err(|_| "too many placements")?;
-        self.placements.push((item.tag.clone(), frame));
-        Ok(staged_handle(index))
+        self.make(item, frame)
     }
 
-    fn move_object(&mut self, _: u32, _: Frame) -> Result<(), String> {
-        Err("moving an object needs M8 world.object.set".into())
+    fn move_object(&mut self, handle: u32, frame: Frame) -> Result<(), String> {
+        let target = self.target(handle)?;
+        self.steps.push(Staged::Move(target, frame));
+        Ok(())
     }
 
-    fn delete(&mut self, _: u32) -> Result<(), String> {
-        Err("deleting an object needs M8 world.object.delete".into())
+    fn delete(&mut self, handle: u32) -> Result<(), String> {
+        let target = self.target(handle)?;
+        self.steps.push(Staged::Delete(target));
+        Ok(())
     }
 
-    fn respawn(&mut self, _: &PaletteItem, _: Frame) -> Result<u32, String> {
-        Err("restoring an object needs M8 world.object.respawn".into())
+    fn respawn(&mut self, item: &PaletteItem, frame: Frame) -> Result<u32, String> {
+        self.make(item, frame)
+    }
+
+    /// A teleporter link writes the flag's identifier in the loaded
+    /// scenario, after the batch's objects.
+    fn channel(&mut self, flag: u32, channel: i16) -> Result<(), String> {
+        self.steps.push(Staged::Channel(flag, channel));
+        Ok(())
     }
 }
 
@@ -146,7 +235,7 @@ fn spawned_handles(made: Value, expected: usize) -> Result<Vec<u32>, String> {
     let made: Made =
         serde_json::from_value(made).map_err(|e| format!("invalid spawn result: {e}"))?;
     if made.handles.len() != expected || made.handles.iter().any(|h| *h as u16 == u16::MAX) {
-        return Err("object_new did not return each placement's handle".into());
+        return Err("object_new did not return each new object's handle".into());
     }
     Ok(made.handles)
 }

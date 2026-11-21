@@ -636,6 +636,7 @@ impl d3d::ExternalPass for ScreenPass {
         Some(match self.prepare(PostCopy::of_attachments(t, request)) {
             Ok(commands) => Ok(d3d::backend::ExternalEncoded {
                 ranges: commands.ranges(),
+                draws: commands.draws(),
                 passes: commands.passes(),
                 commands: Box::new(move |encoder: &mut wgpu::CommandEncoder| commands.record(encoder)),
             }),
@@ -896,6 +897,7 @@ impl d3d::ExternalPass for GlowPass {
         Some(match self.prepare(PostCopy::of_attachments(t, request)) {
             Some(commands) => Ok(d3d::backend::ExternalEncoded {
                 ranges: self.plan.draws.len(),
+                draws: commands.passes(),
                 passes: commands.passes(),
                 commands: Box::new(move |encoder: &mut wgpu::CommandEncoder| commands.record(encoder)),
             }),

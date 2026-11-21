@@ -332,6 +332,7 @@ fn run_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
             "--no-stats" => req.stats = Some(false),
             "--replay" => req.replay = Some(val()?),
             "--record" => req.record = Some(val()?),
+            "--film" => req.film = Some(val()?),
             "--perf" => req.perf = true,
             "--env" => {
                 let (k, v) = kv(&val()?, "--env")?;

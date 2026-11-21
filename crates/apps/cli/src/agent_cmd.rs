@@ -134,7 +134,7 @@ script stops at its first error).";
 /// The one game running in the agents directory, when no socket is named
 /// (`$H2_AGENT` unset, nothing at the default socket) and there is exactly
 /// one: `h2 play` opens it by default ([`agent_proto::discover`]).
-fn only_game() -> Option<PathBuf> {
+pub(crate) fn only_game() -> Option<PathBuf> {
     if std::env::var_os(agent_proto::ENV).is_some_and(|v| !v.is_empty())
         || agent_proto::discover::is_socket(&agent_proto::default_socket())
     {

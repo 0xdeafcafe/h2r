@@ -120,6 +120,7 @@ impl App {
         SelectionRevision {
             world: self.session.world_rev(),
             primary: self.session.selected(),
+            volume: self.session.selected_volume(),
             navigation: self.nav.revision,
         }
     }

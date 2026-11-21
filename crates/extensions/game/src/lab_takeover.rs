@@ -490,6 +490,8 @@ impl Feature for Driver {
             // The Live join link also runs before UI_UPDATE; a pending join
             // goes first and the lab request waits a frame.
             .after_feature("live-join-link")
+            // So does a linked Theater film page, which also goes first.
+            .after_feature("theater-link")
             .optional();
         Ok(())
     }

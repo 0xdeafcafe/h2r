@@ -1592,3 +1592,104 @@ fn a_connection_read_leaves_the_game_and_other_clients_running() {
     assert_eq!(next(&reply)["result"]["checked"], 30);
     assert!(!a.connection_read_pending());
 }
+
+/// A level whose tick boundary always yields a live capture.
+struct Streamed(Fake);
+
+impl Reader for Streamed {
+    fn status(&mut self) -> GameStatus {
+        self.0.status()
+    }
+    fn objects(&mut self) -> Result<Vec<Object>, String> {
+        self.0.objects()
+    }
+    fn live_capture(
+        &mut self,
+        _: agent_proto::live::Layers,
+        world: &mut agent_proto::live::World,
+    ) -> bool {
+        world.objects.clear();
+        world.players.clear();
+        true
+    }
+}
+
+fn subscribe_camera(agent: &Agent, game: &mut Streamed) -> (Value, crate::live::Frames) {
+    let (tx, output) = sync_channel(4);
+    let stream = agent.connect_socket(tx);
+    ask(
+        agent,
+        stream,
+        1,
+        agent_proto::live::SUBSCRIBE,
+        json!({"layers": ["objects", "camera"]}),
+    );
+    agent.on_tick(game);
+    let crate::server::Output::Upgrade { line, frames } = output.try_recv().unwrap() else {
+        panic!("the subscription should open")
+    };
+    let hello: Value = serde_json::from_str(&line).unwrap();
+    (hello["result"].clone(), frames)
+}
+
+#[test]
+fn camera_layer_is_refused_without_a_sealed_scene_source() {
+    let agent = Agent::new();
+    let mut game = Streamed(level());
+    let (hello, _frames) = subscribe_camera(&agent, &mut game);
+    assert_eq!(hello["layers"], json!(["objects"]));
+    assert_eq!(hello["refused"]["camera"], super::mirror::NO_CAMERA);
+
+    // The host's reason wins over a source registered beside it.
+    let agent = Agent::new();
+    agent.set_camera_source(Arc::new(|_: &mut Vec<agent_proto::live::View>| {
+        Ok::<(), String>(())
+    }));
+    agent.set_camera_unavailable("this host has no window");
+    agent.set_camera_unavailable("frame scene capture is off");
+    let (hello, _frames) = subscribe_camera(&agent, &mut game);
+    assert_eq!(hello["layers"], json!(["objects"]));
+    assert_eq!(hello["refused"]["camera"], "this host has no window");
+}
+
+#[test]
+fn camera_layer_carries_the_sealed_scene_views_sorted_by_key() {
+    use agent_proto::live::{View, World, view_key};
+    let view = |key, x| View {
+        key,
+        scene_tick: 99,
+        position: [x, 0., 1.],
+        forward: [0., 1., 0.],
+        up: [0., 0., 1.],
+        fov: 1.1,
+        near: 0.1,
+        far: 500.,
+        viewport: [0, 0, 480, 640],
+        cut: false,
+        drawn: vec![0x10001],
+    };
+    let views = vec![
+        view(view_key(0, 1, 0), 4.),
+        view(view_key(0, 0, 0), 2.),
+        view(0, 9.),
+    ];
+    let agent = Agent::new();
+    let source = views.clone();
+    agent.set_camera_source(Arc::new(move |out: &mut Vec<View>| {
+        out.extend(source.iter().cloned());
+        Ok::<(), String>(())
+    }));
+    let mut game = Streamed(level());
+    let (hello, frames) = subscribe_camera(&agent, &mut game);
+    assert_eq!(hello["layers"], json!(["objects", "camera"]));
+    assert_eq!(hello["refused"], json!({}));
+    game.0.status.tick = Some(101);
+    agent.on_tick(&mut game);
+    let frame = frames
+        .next(Duration::from_secs(5))
+        .expect("a frame with the camera");
+    let mut world = World::default();
+    frame.apply(&mut world).unwrap();
+    // Sorted, and the second view under key 0 dropped rather than sent twice.
+    assert_eq!(world.cameras, [views[1].clone(), views[0].clone()]);
+}

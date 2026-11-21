@@ -1,6 +1,21 @@
 //! Film transport and presentation controls. Ticks count from boot.
 use serde::{Deserialize, Serialize};
 
+pub const SHARE: &str = "theater.share";
+pub const OPEN: &str = "theater.open";
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Open {
+    pub url: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InitialView {
+    pub tick: Option<u32>,
+    pub seat: Option<u8>,
+    pub camera: Option<CameraMode>,
+}
 pub const PLAY: &str = "theater.play";
 pub const PREPARE: &str = "theater.prepare";
 pub const STATE: &str = "theater.state";
@@ -110,6 +125,8 @@ pub struct InstalledImage {
 #[serde(deny_unknown_fields)]
 pub struct Play {
     pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view: Option<InitialView>,
     /// Optional clip bounds [start, end) when opening a library film.
     pub range: Option<[u64; 2]>,
 }

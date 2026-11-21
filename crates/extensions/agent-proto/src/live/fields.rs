@@ -1,7 +1,7 @@
 //! The field mask is the schema. One declaration per layer drives
 //! comparison, patching and both directions of the wire codec.
 
-use super::{Object, Player, invalid};
+use super::{Object, Player, View, invalid};
 use std::io;
 
 pub(super) trait Field: Sized {
@@ -54,6 +54,65 @@ impl Field for [f32; 3] {
     }
     fn read(input: &mut &[u8]) -> io::Result<Self> {
         Ok([f32::read(input)?, f32::read(input)?, f32::read(input)?])
+    }
+}
+
+impl Field for bool {
+    fn same(&self, other: &Self) -> bool {
+        self == other
+    }
+    fn write(&self, out: &mut Vec<u8>) -> io::Result<()> {
+        out.push(u8::from(*self));
+        Ok(())
+    }
+    fn read(input: &mut &[u8]) -> io::Result<Self> {
+        match u8::read(input)? {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(invalid("invalid live flag")),
+        }
+    }
+}
+
+impl Field for [i16; 4] {
+    fn same(&self, other: &Self) -> bool {
+        self == other
+    }
+    fn write(&self, out: &mut Vec<u8>) -> io::Result<()> {
+        for component in self {
+            component.write(out)?;
+        }
+        Ok(())
+    }
+    fn read(input: &mut &[u8]) -> io::Result<Self> {
+        Ok([
+            i16::read(input)?,
+            i16::read(input)?,
+            i16::read(input)?,
+            i16::read(input)?,
+        ])
+    }
+}
+
+/// A u16 count, then the handles.
+impl Field for Vec<u32> {
+    fn same(&self, other: &Self) -> bool {
+        self == other
+    }
+    fn write(&self, out: &mut Vec<u8>) -> io::Result<()> {
+        let len = u16::try_from(self.len()).map_err(|_| invalid("too many live handles"))?;
+        len.write(out)?;
+        for handle in self {
+            handle.write(out)?;
+        }
+        Ok(())
+    }
+    fn read(input: &mut &[u8]) -> io::Result<Self> {
+        let len = usize::from(u16::read(input)?);
+        if input.len() < len * 4 {
+            return Err(invalid("truncated live handles"));
+        }
+        (0..len).map(|_| u32::read(input)).collect()
     }
 }
 
@@ -143,4 +202,8 @@ record!(Object, id: u32, key_only: 0, {
 });
 record!(Player, index: u16, key_only: 1, {
     0: name, 1: team, 2: unit, 3: held, 4: aim, 5: local_user,
+});
+record!(View, key: u32, key_only: 0, {
+    0: scene_tick, 1: position, 2: forward, 3: up, 4: fov, 5: near,
+    6: far, 7: viewport, 8: cut, 9: drawn,
 });
