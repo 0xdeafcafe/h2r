@@ -129,6 +129,8 @@ struct State {
     dispatch_end: Option<runtime::DispatchCounts>,
     /// The initial RNG seed has been written for this match.
     set_up: bool,
+    /// The game options' spawn words have been written for this game.
+    spawn_seeded: bool,
     /// Weapon datums fired since the last tick.
     fired: Vec<u32>,
     notes: Vec<String>,
@@ -405,6 +407,7 @@ impl Sim {
                 dispatch_start: None,
                 dispatch_end: None,
                 set_up: false,
+                spawn_seeded: false,
                 fired: Vec::new(),
                 notes: Vec::new(),
                 cow: None,
@@ -1156,6 +1159,31 @@ impl hooks::Feature for SimMetrics {
                     );
                 }
             });
+        // Spawn locations do not draw from the shared seed: `0x14ef00` mixes
+        // the player index and spawn count with two words of the game
+        // options (`[[0x4e6948]+0x10]`, `+0x14`), which the session fills
+        // anew for each game. Written from the match seed ahead of a game's
+        // first spawn, two runs of one match start their players in the
+        // same places.
+        let me = Arc::clone(&self.sim);
+        b.raw()
+            .observe_before(&points::GAME_ACTIVATE, "sim: new game", move |_| {
+                me.lock().spawn_seeded = false;
+            });
+        let me = Arc::clone(&self.sim);
+        b.raw()
+            .before(&points::PLAYER_SPAWN, "sim: spawn words", move |c| {
+                if std::mem::replace(&mut me.lock().spawn_seeded, true) {
+                    return Ok(Flow::Continue);
+                }
+                let rt = Arc::clone(c.ctx.runtime());
+                let mut g = rt.memory();
+                if let Err(e) = write_spawn_words(&mut g, me.matched.config.seed) {
+                    eprintln!("sim: the spawn words were not written: {e:?}");
+                }
+                Ok(Flow::Continue)
+            })
+            .first();
         let me = Arc::clone(&self.sim);
         b.raw()
             .before(&points::GAME_TICK, "sim: match seed", move |c| {
@@ -1195,6 +1223,24 @@ pub fn seed32(seed: u64) -> u32 {
     ((seed >> 32) as u32) ^ (seed as u32)
 }
 
+/// The game options' two spawn words (`[[0x4e6948]+0x10]`, `+0x14`) for a
+/// match seed: the 32-bit seed, then the same of the seed's SplitMix64 step.
+pub fn spawn_words(seed: u64) -> [u32; 2] {
+    let mut x = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    [seed32(seed), seed32(x ^ (x >> 31))]
+}
+
+const GAME_OPTIONS_SPAWN_WORDS: u32 = 0x10;
+
+fn write_spawn_words(g: &mut runtime::Guest, seed: u64) -> std::result::Result<(), runtime::GuestFault> {
+    let globals = g.u32(telemetry::layout::GAME_GLOBALS_PTR)?;
+    let [a, b] = spawn_words(seed);
+    g.set_u32(globals + GAME_OPTIONS_SPAWN_WORDS, a)?;
+    g.set_u32(globals + GAME_OPTIONS_SPAWN_WORDS + 4, b)
+}
+
 fn write_seed(g: &mut runtime::Guest, seed: u64) -> std::result::Result<u32, runtime::GuestFault> {
     let p = g.u32(RANDOM_SEED_PTR)?;
     let v = seed32(seed);
@@ -1205,6 +1251,14 @@ fn write_seed(g: &mut runtime::Guest, seed: u64) -> std::result::Result<u32, run
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spawn_words_follow_the_match_seed_alone() {
+        assert_eq!(spawn_words(1), spawn_words(1));
+        assert_eq!(spawn_words(1)[0], seed32(1));
+        assert_ne!(spawn_words(1), spawn_words(2));
+        assert_ne!(spawn_words(7)[0], spawn_words(7)[1]);
+    }
 
     #[test]
     fn live_combat_uses_the_last_completed_decision_and_bounds_the_preview() {
