@@ -357,10 +357,10 @@ impl hooks::Feature for RenderHooks {
                         }
                         if let Some(fov) = camera.viewport_fov(slot.map(|(seat, _)| seat)) {
                             let mut copy = [0; VIEW_STRIDE as usize];
-                            if guest.read(view, &mut copy).is_ok() {
+                            if GuestMemory::read(&*guest, view, &mut copy).is_ok() {
                                 put_fov(&mut copy, vertical_fov(fov));
                                 let private = scratch + VIEW_STRIDE;
-                                if guest.write(private, &copy).is_ok() {
+                                if GuestMemory::write(&mut *guest, private, &copy).is_ok() {
                                     let _ = guest.set_u32(arg, private);
                                 }
                             }

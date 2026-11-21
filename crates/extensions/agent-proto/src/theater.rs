@@ -456,7 +456,7 @@ mod verify_tests {
 }
 
 #[cfg(test)]
-mod tests {
+mod camera_tests {
     use super::*;
     use serde_json::json;
 
@@ -552,7 +552,7 @@ fn loaded_compatibility() -> CompatibilityState {
 }
 
 #[cfg(test)]
-mod tests {
+mod compatibility_tests {
     use super::*;
     use serde_json::json;
 

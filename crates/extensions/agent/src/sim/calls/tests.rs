@@ -323,6 +323,7 @@ fn a_successful_spawn_can_enroll_the_new_object_before_the_tick() {
             tag: 0xe200_0002,
             pos: [5.0, 6.0, 7.0],
             facing: None,
+            mp_scenario: None,
         })];
         Box::pin(run_queued(cx, Arc::clone(&q), work, SCRATCH, Arc::default()))
     };

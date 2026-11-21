@@ -47,7 +47,7 @@ pub(super) fn media(
         screenshots: dir.join("screenshots"),
         latest: Box::new(move || {
             let (size, rgba) = frames
-                .read_published_rgba()
+                .read_latest_published_rgba()
                 .context("no game frame to capture yet")?;
             Ok(Picture { size, rgba })
         }),
@@ -354,7 +354,7 @@ pub(super) fn host(
 
 fn read_picture(frames: &app::FrameSink) -> Result<Picture> {
     let (size, rgba) = frames
-        .read_published_rgba()
+        .read_latest_published_rgba()
         .context("no clip picture was published")?;
     Ok(Picture { size, rgba })
 }

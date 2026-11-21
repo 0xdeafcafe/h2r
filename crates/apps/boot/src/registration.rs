@@ -322,6 +322,7 @@ pub(crate) fn register_core_film(
     aim_assist::install(features, i.settings.clone()).context("installing the aim assist")?;
     // Bots (docs/game/bots.md): phantom peers in a session this console
     // hosts. Idle with none.
+    let playing_film = film.is_some();
     let mut bots_on = false;
     if i.bots {
         crate::clanker_card::install(features, i.live.clone())
@@ -333,7 +334,7 @@ pub(crate) fn register_core_film(
             clankers::install(features, store, i.live.clone(), telemetry.as_ref()).context("installing the Clankers page")?;
         }
     }
-    if let Some(hle) = i.live.as_ref().filter(|_| film.is_none()) {
+    if let Some(hle) = i.live.as_ref().filter(|_| !playing_film) {
         crate::live_glue::install_browser_advertisement(
             features, hle, i.settings.as_ref(), bots_on,
         )

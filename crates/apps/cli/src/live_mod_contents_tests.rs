@@ -397,6 +397,7 @@ fn rifle_layout() -> Layout {
         named: !name.starts_with('+'),
         kind,
         meaning: String::new(),
+        applies: None,
     };
     let barrel = Layout {
         name: "barrels".into(),

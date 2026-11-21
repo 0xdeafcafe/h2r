@@ -1639,8 +1639,8 @@ mod tests {
         let event = GameEvent::new("local", game::GAME_ENDED, serde_json::json!({
             "tick": 1800, "reason": "finished", "players": [],
         }));
-        let batch = sink.sign("leased-game".into(), vec![event]).unwrap();
-        let ClientMessage::Events { jws, .. } = serde_json::from_str(&batch.text).unwrap() else {
+        let text = sink.sign("leased-game", &[event], time::OffsetDateTime::now_utc()).unwrap();
+        let ClientMessage::Events { jws, .. } = serde_json::from_str(&text).unwrap() else {
             panic!("expected an event batch")
         };
         let (signed, bodies) = SignedEvent::open_batch(&jws).unwrap();

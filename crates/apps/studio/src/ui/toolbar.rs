@@ -91,7 +91,7 @@ pub(super) fn draw(
         let mut speed = app.fly_speed();
         if ui
             .slider_config("##Fly speed", MIN_SPEED, MAX_SPEED)
-            .display_format("%.1f u/s")
+            .display_format(dear_imgui_rs::NumericFormat::new("%.1f u/s").expect("a valid float format"))
             .flags(SliderFlags::LOGARITHMIC | SliderFlags::ALWAYS_CLAMP)
             .build(&mut speed)
         {

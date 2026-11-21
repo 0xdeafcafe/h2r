@@ -272,7 +272,7 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 }
 
 /// The screens `h2 ui preview` knows, by name.
-pub const NAMES: [&str; 27] = [
+pub const NAMES: [&str; 28] = [
     "campaigns",
     "skulls",
     "skulls.h1",

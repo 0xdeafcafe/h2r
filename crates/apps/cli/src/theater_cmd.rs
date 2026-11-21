@@ -253,7 +253,7 @@ fn child_with_start(
             Err(e) => diagnostics.push(format!("{}: {e}", path.display())),
         }
     }
-    let (image, _, compatibility) = images
+    let (image, image_stamp, compatibility) = images
         .into_iter()
         .min_by_key(|(_, _, mode)| *mode != film::image::ImageMatch::Native)
         .with_context(|| {
@@ -291,7 +291,7 @@ fn child_with_start(
         }
         if cap_bytes > 0
             && let Some((stamp, switches)) = &launch.presentation.snapshot_build
-            && stamp == &_stamp
+            && stamp == &image_stamp
             && let Err(e) = track.attach_sidecar(&films_dir, stamp, switches)
         {
             eprintln!("theater: could not open sidecar for disk restore: {e:#}");

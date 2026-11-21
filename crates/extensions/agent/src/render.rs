@@ -32,11 +32,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use agent_proto::{
-    CaptureReply, CompareParams, CompareReply, DepthRecord, DrawLayout, DrawRecord,
+    CaptureCamera, CaptureReply, CaptureSource, CompareParams, CompareReply, DepthRecord, DrawLayout, DrawRecord,
     FrameCaptureParams, FrameParams, FrameRecord, FrameReply, OpRecord, ParityParams, ParityReply,
     PassRecord, RenderStats, RpcError, SceneParams, SceneReply, SnapRecord, code, method,
 };
-use agent_proto::render::{CaptureCamera, CaptureSource};
 use live_proto::maps::{MapId, Sha256};
 use serde_json::{Map, Value, json};
 

@@ -2518,6 +2518,7 @@ mod tests {
         });
         let mut worker = Worker {
             publisher: None,
+            replication: crate::qos::Version::default(),
             base: base.clone(),
             maps: None,
             addon_hoppers: Arc::new(AtomicU32::new(0)),

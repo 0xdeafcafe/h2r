@@ -1030,7 +1030,7 @@ fn run_configured(
             #[cfg(feature = "gpu")]
             view: d3d_calls.as_ref().and_then(|d| d.view.as_ref()),
             #[cfg(feature = "gpu")]
-            fixed_lod: protected_readbacks.then(|| legacy_lod.flatten().unwrap_or(1.0)),
+            fixed_lod: protected_readbacks.then(|| legacy_lod.unwrap_or(1.0)),
             rt: &loaded.runtime,
             lockstep: lockstep_config,
             agent: agent_source,

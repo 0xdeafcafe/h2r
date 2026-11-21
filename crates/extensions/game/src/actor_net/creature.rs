@@ -338,7 +338,7 @@ impl hooks::Feature for CreatureProbe {
             move |c| {
                 let mut mem = c.ctx.runtime().memory();
                 let Some(registry) = points::SIM_REPLICATION_REGISTRY
-                    .pointer(&*mem)
+                    .pointer(&*mem as &dyn GuestMemory)
                     .map_err(guest_fault)?
                 else {
                     return Ok(());

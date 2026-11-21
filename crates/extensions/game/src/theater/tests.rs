@@ -171,7 +171,7 @@ fn theater_replays_checkpoints_reports_first_divergence_and_registers_controls()
     assert_eq!(bar["result"]["hud"], false);
     assert_eq!(bar["result"]["bar"], true);
 
-    let local = open(facts(), 1).unwrap().unwrap();
+    let local = open(facts(), 1, false).unwrap().unwrap();
     local.lock().header.meta.source = Source::Local;
     local.add_methods(&a);
     assert_eq!(call(api::CAMERA, json!({"mode":"orbit"}))["result"]["camera"], "orbit");

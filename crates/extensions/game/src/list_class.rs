@@ -3404,7 +3404,7 @@ mod tests {
     fn a_failed_allocation_opens_nothing() {
         let mut g = guest();
         g.put_u32(STACK + 4, REQUEST);
-        let f = move |cx| -> EntryFuture { Box::pin(load(cx, entries(), video_rows(), "test")) };
+        let f = move |cx| -> EntryFuture { Box::pin(load(cx, entries(), video_rows(), "test", TransitionStyle::Default)) };
         let regs = Regs {
             esp: STACK,
             ..Default::default()

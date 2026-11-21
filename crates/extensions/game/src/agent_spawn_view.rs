@@ -4,8 +4,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use agent_proto::render::CaptureCamera;
-use agent_proto::{RpcError, SpawnViewParams, code, method};
+use agent_proto::{CaptureCamera, RpcError, SpawnViewParams, code, method};
 use engine::{GuestMemory, points, render_loop::views::VIEW_STRIDE};
 use hooks::{Builder, Flow};
 use serde_json::{Value, json};

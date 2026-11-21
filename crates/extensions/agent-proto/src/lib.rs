@@ -37,7 +37,7 @@ pub use endpoint::Endpoint;
 pub use load::{LoadParams, LoadRecord, LoadSegment, Loads};
 pub use pad::{AtTick, Now, PAD_BUTTONS, PadParams, PadStep};
 pub use render::{
-    CaptureReply, CompareParams, CompareReply, DepthRecord, DrawLayout, DrawRecord,
+    CaptureCamera, CaptureReply, CaptureSource, CompareParams, CompareReply, DepthRecord, DrawLayout, DrawRecord,
     FrameCaptureParams, FrameParams, FrameRecord, FrameReply, FrameTotals, LayoutTexture, OpRecord,
     ParityParams, ParityReply, PassRecord, RenderStats, SceneCarried, SceneEntries, SceneEntryRecord,
     SceneLateRecord, SceneOpCounts, SceneParams, ScenePostRecord, SceneReply, SceneSideTarget,

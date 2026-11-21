@@ -224,7 +224,7 @@ impl FrameSink {
 
     /// Read the latest game picture without taking or advancing the window's
     /// front slot. Keep the slot locked until the GPU copy is submitted and read.
-    pub fn read_published_rgba(&self) -> Option<((u32, u32), Vec<u8>)> {
+    pub fn read_latest_published_rgba(&self) -> Option<((u32, u32), Vec<u8>)> {
         let state = self.shared.lock();
         let slot = state.slots.iter().flatten()
             .find(|slot| slot.seq != 0 && slot.seq == state.next_seq - 1)?;

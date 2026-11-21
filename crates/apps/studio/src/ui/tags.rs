@@ -187,6 +187,13 @@ pub fn tree(ui: &Ui, app: &App, st: &mut TagsUi, fonts: &Fonts, actions: &mut Ve
     {
         all_tags(ui, &view, st, fonts, actions);
     }
+    // `all_tags` borrows the whole state; look the model up again after it.
+    let model = st
+        .scenario
+        .model
+        .as_ref()
+        .filter(|_| scenario.is_some())
+        .map(|(_, tree)| tree);
     if let Some(tree) = model {
         let label = if tree.incomplete {
             "Not reachable from the scenario (walk incomplete)".to_owned()
@@ -438,7 +445,7 @@ fn scenario_rows(
     visible_rows(&tree.root, &mut Vec::new(), opened, &mut rows);
     clipped_rows(ui, rows.len(), |i| {
         let VisibleRow { row, path, open } = &rows[i];
-        let _id = ui.push_id(format!("{path:?}"));
+        let _id = ui.push_id(format!("{path:?}").as_str());
         let indent = 16.0 * path.len() as f32;
         if indent > 0.0 {
             ui.indent_by(indent);

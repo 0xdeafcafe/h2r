@@ -6,6 +6,7 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
+guest-layout = { path = "../../hooking/guest-layout" }
 actor-net = { path = "../../live/actor-net" }
 # Build and load (docs/dev/crate-structure.md, S4).
 recomp = { path = "../../runtime/recomp" }
@@ -106,7 +107,6 @@ perf = ["dep:perf"]
 test-maps = []
 
 [dev-dependencies]
-guest-layout = { path = "../../hooking/guest-layout" }
 # The fixture generated module, for hooks run through the real Runner.
 runtime-test-probe = { path = "../../runtime/runtime/test-probe" }
 

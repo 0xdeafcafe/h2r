@@ -81,7 +81,6 @@ pub(super) enum Action {
     Prepare,
     Save,
     Delete,
-    Prepare,
 }
 
 impl Action {

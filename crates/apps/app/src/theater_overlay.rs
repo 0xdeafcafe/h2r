@@ -15,7 +15,6 @@ pub enum Key {
     Right,
     Up,
     Down,
-    Step,
     Slower,
     Faster,
     Hide,
