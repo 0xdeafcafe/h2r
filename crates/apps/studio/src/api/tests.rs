@@ -772,6 +772,16 @@ fn view_lighting_sets_the_mode_and_stats_report_it() {
     assert_eq!(stats["native"]["lighting"], "lightmap");
     assert!(stats["native"]["bsps"].as_array().is_some());
     assert!(stats["native"]["errors"].as_array().is_some());
+    // The placed objects: null with no art built, else the counts.
+    let objects = &stats["native"]["objects"];
+    assert!(stats["native"].get("objects").is_some());
+    assert!(
+        objects.is_null()
+            || (objects["models"].is_u64()
+                && objects["placed"].is_u64()
+                && objects["errors"].is_array()),
+        "{objects}"
+    );
 }
 
 #[test]

@@ -749,6 +749,14 @@ pub struct Viewport {
     /// passes load their colour and depth.
     native: Vec<crate::native_view::NativeWorld>,
     lighting: crate::native_view::Lighting,
+    /// The placed objects' models on the native renderer, drawn while
+    /// there is a native world. The scene draws only the placements these
+    /// have no model for.
+    native_models: std::sync::Arc<crate::native_view::NativeModels>,
+    native_objects: Option<crate::native_view::NativeObjects>,
+    /// The placements last uploaded, to place again when the models are
+    /// uploaded again (another Lighting mode).
+    native_placed: Vec<Marker>,
     target: Option<Target>,
 }
 
@@ -1164,6 +1172,9 @@ impl Viewport {
             scene: None,
             native: Vec::new(),
             lighting: crate::native_view::Lighting::default(),
+            native_models: Default::default(),
+            native_objects: None,
+            native_placed: Vec::new(),
             target: None,
         }
     }
@@ -1257,12 +1268,46 @@ impl Viewport {
         if lighting != self.lighting || self.native.len() != loads.len() {
             self.lighting = lighting;
             self.set_native(device, queue, loads);
+            let models = self.native_models.clone();
+            self.set_native_models(device, queue, models);
         }
     }
 
     /// Whether the level draws through the native renderer.
     pub fn has_native(&self) -> bool {
         !self.native.is_empty()
+    }
+
+    /// Draw the placed objects through the native renderer while there is
+    /// a native world ([`Self::set_native`]): `models` holds each object
+    /// tag's model, uploaded in the current Lighting mode. Call it before
+    /// the placements are uploaded.
+    pub fn set_native_models(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        models: std::sync::Arc<crate::native_view::NativeModels>,
+    ) {
+        self.native_objects = (!models.is_empty()).then(|| {
+            let mut objects =
+                crate::native_view::NativeObjects::new(device, queue, &models, self.lighting);
+            objects.place(&models, &self.native_placed);
+            objects
+        });
+        self.native_models = models;
+    }
+
+    /// How many placements draw through the native renderer.
+    pub fn native_object_count(&self) -> usize {
+        self.native_objects.as_ref().map_or(0, |o| o.placed())
+    }
+
+    /// Whether the native renderer draws `m`'s model (so the scene does
+    /// not).
+    fn draws_natively(&self, m: &Marker) -> bool {
+        !self.native.is_empty()
+            && self.native_objects.is_some()
+            && m.object.is_some_and(|o| self.native_models.of(o).is_some())
     }
 
     /// Draw the world as grey slope-shaded triangles (no scene).
@@ -1458,18 +1503,30 @@ impl Viewport {
         linked: &BTreeSet<(crate::BlockKind, usize)>,
         style: impl Fn(&Marker) -> (Vec3, Option<i64>),
     ) {
+        let shown = |m: &Marker| !linked.contains(&(m.block, m.index));
         self.markers = Self::upload(
             device,
             &glyph_vertices_styled(
                 markers,
                 selected,
-                |m| !linked.contains(&(m.block, m.index)) && scene.model_of(m).is_some(),
+                |m| shown(m) && (self.draws_natively(m) || scene.model_of(m).is_some()),
                 style,
             ),
         );
+        // The native renderer draws the placements it has a model for;
+        // the scene draws the rest.
+        self.native_placed = markers.iter().copied().filter(|m| shown(m)).collect();
+        if let Some(objects) = &mut self.native_objects {
+            objects.place(&self.native_models, &self.native_placed);
+        }
+        let scene_drawn: Vec<Marker> = self
+            .native_placed
+            .iter()
+            .copied()
+            .filter(|m| !self.draws_natively(m))
+            .collect();
         if let Some(gpu) = &mut self.scene {
-            let placements = markers.iter().filter(|m| !linked.contains(&(m.block, m.index)));
-            let (instances, ranges) = marker_instances(scene, placements, selected);
+            let (instances, ranges) = marker_instances(scene, scene_drawn.iter(), selected);
             gpu.instances = (!instances.is_empty()).then(|| {
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("scenario viewport placements"),
@@ -1654,7 +1711,11 @@ impl Viewport {
             }
         }
         let has_overlays = self.overlays.keys().any(|&id| self.layers.visible(id));
-        let native = self.layers.visible(LayerId::Structure) && !self.native.is_empty();
+        let native_world = self.layers.visible(LayerId::Structure) && !self.native.is_empty();
+        let objects_native = self.layers.visible(LayerId::Objects)
+            && !self.native.is_empty()
+            && self.native_object_count() > 0;
+        let native = native_world || objects_native;
         let gradient = show_sky && self.scene.is_some() && sky.is_none();
         // The native world writes its own depth, so the gradient goes
         // behind it in a pass of its own.
@@ -1684,16 +1745,26 @@ impl Viewport {
             )
             .finish()]);
             let behind = sky.is_some() || gradient;
-            for (i, world) in self.native.iter_mut().enumerate() {
-                let clear = if i == 0 {
-                    crate::native_view::Clear {
-                        color: (!behind).then_some(CLEAR),
-                        depth: true,
-                    }
-                } else {
-                    crate::native_view::Clear::NONE
-                };
+            let mut clear = crate::native_view::Clear {
+                color: (!behind).then_some(CLEAR),
+                depth: true,
+            };
+            for world in self.native.iter_mut().filter(|_| native_world) {
                 world.render(
+                    device,
+                    queue,
+                    &target.color_view,
+                    COLOR_FORMAT,
+                    &target.depth_view,
+                    DEPTH_FORMAT,
+                    target.size,
+                    camera,
+                    std::mem::replace(&mut clear, crate::native_view::Clear::NONE),
+                );
+            }
+            // The placed objects test against the level's depth.
+            if let Some(objects) = self.native_objects.as_mut().filter(|_| objects_native) {
+                objects.render(
                     device,
                     queue,
                     &target.color_view,
@@ -1738,13 +1809,13 @@ impl Viewport {
             }
             // Solid and cut-out scene batches, then the glyphs, then the
             // see-through batches over them.
-            self.draw_scene(&mut pass, false, native);
+            self.draw_scene(&mut pass, false, native_world);
             pass.set_pipeline(&self.pipeline);
             for (id, geometry) in [
                 (LayerId::Structure, &self.world),
                 (LayerId::Markers, &self.markers),
             ] {
-                if native && id == LayerId::Structure {
+                if native_world && id == LayerId::Structure {
                     continue;
                 }
                 let Some((buffer, count)) = geometry.as_ref().filter(|_| self.layers.visible(id))
@@ -1754,7 +1825,7 @@ impl Viewport {
                 pass.set_vertex_buffer(0, buffer.slice(..));
                 pass.draw(0..*count, 0..1);
             }
-            self.draw_scene(&mut pass, true, native);
+            self.draw_scene(&mut pass, true, native_world);
         }
         if has_overlays {
             let color = color_attachment(wgpu::LoadOp::Load);

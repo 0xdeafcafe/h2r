@@ -53,6 +53,9 @@ struct Doc {
     /// ([`crate::native_view`]), and why any BSP did not load.
     native: Arc<Vec<crate::native_view::NativeLoad>>,
     native_errors: Vec<(usize, String)>,
+    /// The placed objects' models for the native renderer: every palette
+    /// entry's and every placement's own tag, read with the native world.
+    native_models: Arc<crate::native_view::NativeModels>,
     /// A new map (no disc base): `source.bytes` is its whole unedited file,
     /// and a package saved from it carries that file as its first layer.
     derived: bool,
@@ -449,9 +452,15 @@ impl Session {
                 &source, name, cache_key, &scenario, &markers, &lit, &mut map, &mut raw,
             )
         });
-        let (native, native_errors) = if self.build_scenes {
+        let (native, native_errors, native_models) = if self.build_scenes {
             let mut files = crate::scene::resource_files(&source);
-            crate::native_view::read_all(&mut map, &mut files)
+            let (native, errors) = crate::native_view::read_all(&mut map, &mut files);
+            let models = crate::native_view::NativeModels::read(
+                &mut map,
+                &mut files,
+                placed_objects(&scenario, &markers),
+            );
+            (native, errors, models)
         } else {
             Default::default()
         };
@@ -496,6 +505,7 @@ impl Session {
             scene,
             native: Arc::new(native),
             native_errors,
+            native_models: Arc::new(native_models),
             derived: false,
         });
         self.reference = None;
@@ -576,6 +586,13 @@ impl Session {
         self.doc.as_ref().map_or(&[], |d| &d.native_errors)
     }
 
+    /// The placed objects' models for the native renderer, shared with
+    /// the viewport (none for a reference map, or when scenes are not
+    /// built).
+    pub fn native_models(&self) -> Option<&Arc<crate::native_view::NativeModels>> {
+        self.doc.as_ref().map(|d| &d.native_models)
+    }
+
     /// The cached scene of a map, else a new one (cached).
     #[allow(clippy::too_many_arguments)]
     fn scene_for<R: std::io::Read + std::io::Seek>(
@@ -601,16 +618,7 @@ impl Session {
         b.lighting(&lit.bsps);
         b.sky();
         b.atmosphere();
-        // Every palette entry, so a placement switched to another entry
-        // has its model too, and each placement's own reference.
-        let objects: Vec<TagId> = scenario
-            .blocks
-            .iter()
-            .flat_map(|b| b.palette.iter().map(|r| r.id))
-            .chain(markers.iter().filter_map(|m| m.object))
-            .filter(|id| *id != TagId::NULL)
-            .collect();
-        b.objects(objects);
+        b.objects(placed_objects(scenario, markers));
         let scene = Arc::new(b.finish());
         self.scenes.push((key, scene.clone()));
         if self.scenes.len() > SCENE_CACHE {
@@ -1146,6 +1154,19 @@ impl Transform {
             1.0,
         ]
     }
+}
+
+/// The object tags a map can show: every palette entry, so a placement
+/// switched to another entry has its model too, and each placement's own
+/// reference.
+fn placed_objects(scenario: &Scenario, markers: &[Marker]) -> Vec<TagId> {
+    scenario
+        .blocks
+        .iter()
+        .flat_map(|b| b.palette.iter().map(|r| r.id))
+        .chain(markers.iter().filter_map(|m| m.object))
+        .filter(|id| *id != TagId::NULL)
+        .collect()
 }
 
 fn set_op(kind: BlockKind, index: usize, field: &'static str, value: Value) -> crate::edit::Op {

@@ -210,7 +210,10 @@ impl ObjectCollisions {
 
 /// An object's model: an item or vehicle collection stands for its first
 /// entry, as the viewport draws it.
-fn resolve(ctx: &Context, object: TagId) -> Result<(TagId, Option<ResolvedModel>), String> {
+pub(crate) fn resolve(
+    ctx: &Context,
+    object: TagId,
+) -> Result<(TagId, Option<ResolvedModel>), String> {
     let group = ctx.catalog.get(object).ok_or("no such tag")?.group;
     let object = if group == FourCC(*b"itmc") || group == FourCC(*b"vehc") {
         let tag = ctx.decode(object).map_err(|e| e.to_string())?;

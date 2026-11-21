@@ -6,13 +6,16 @@
 //! colour and depth targets. The look is the renderer's `world.wgsl`: base
 //! map times lightmap. The Lighting menu's modes swap the images the
 //! world is uploaded with ([`Lighting`]).
-use crate::geometry::Camera;
+use crate::geometry::{Camera, Marker};
 use assets::ResourceFiles;
 use map::{Map, TagId};
 use native_render::camera::RenderCamera;
 use native_render::cull::CullStats;
 use native_render::gpu::{DepthRule, GpuWorld, Image, PassViewport};
+use native_render::instances::ObjectInput;
 use native_render::load;
+use native_render::model::{Model, NodeMatrix};
+use native_render::model_gpu::GpuModels;
 use native_render::world::{LightmapKey, World, keep_draws};
 use std::collections::HashMap;
 use std::io::{Read, Seek};
@@ -363,38 +366,7 @@ impl NativeWorld {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("editor native world"),
         });
-        if clear.color.is_some() || clear.depth {
-            drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("editor native world clear"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: color,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: match clear.color {
-                            Some([r, g, b]) => wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a: 1.0 }),
-                            None => wgpu::LoadOp::Load,
-                        },
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: depth,
-                    depth_ops: Some(wgpu::Operations {
-                        load: if clear.depth {
-                            wgpu::LoadOp::Clear(1.0)
-                        } else {
-                            wgpu::LoadOp::Load
-                        },
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            }));
-        }
+        clear_pass(&mut encoder, color, depth, clear);
         let arena = self.pool.begin();
         let stats = {
             let mut uploads = gfx::ring::EncoderUploads {
@@ -424,6 +396,353 @@ impl NativeWorld {
         queue.submit(patches.into_iter().chain([encoder.finish()]));
         queue.on_submitted_work_done(move || drop(arena));
         stats
+    }
+}
+
+/// Clear what `clear` names of the target, in a pass of its own.
+fn clear_pass(
+    encoder: &mut wgpu::CommandEncoder,
+    color: &wgpu::TextureView,
+    depth: &wgpu::TextureView,
+    clear: Clear,
+) {
+    if clear.color.is_some() || clear.depth {
+        drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("editor native clear"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: color,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: match clear.color {
+                        Some([r, g, b]) => wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a: 1.0 }),
+                        None => wgpu::LoadOp::Load,
+                    },
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth,
+                depth_ops: Some(wgpu::Operations {
+                    load: if clear.depth {
+                        wgpu::LoadOp::Clear(1.0)
+                    } else {
+                        wgpu::LoadOp::Load
+                    },
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        }));
+    }
+}
+
+/// The inverse of a rigid node matrix with a uniform scale: `invert(m)
+/// ∘ m` is the identity.
+pub fn invert(m: &NodeMatrix) -> NodeMatrix {
+    let s = if m.scale != 0.0 { 1.0 / m.scale } else { 0.0 };
+    // The rows of the transposed rotation are the axes' components.
+    let col = |k: usize| [m.forward[k], m.left[k], m.up[k]];
+    let r = NodeMatrix {
+        scale: s,
+        forward: col(0),
+        left: col(1),
+        up: col(2),
+        position: [0.0; 3],
+    };
+    let p = r.point(m.position);
+    NodeMatrix {
+        position: [-p[0], -p[1], -p[2]],
+        ..r
+    }
+}
+
+/// A placement's transform as a node matrix: its axes, scale and
+/// position ([`crate::scene::model_to_world`]).
+pub fn placement_matrix(m: &Marker) -> NodeMatrix {
+    NodeMatrix {
+        scale: m.scale,
+        forward: m.axes[0],
+        left: m.axes[1],
+        up: m.axes[2],
+        position: m.position,
+    }
+}
+
+/// A model's nodes in their rest pose under `placement`: each node's
+/// world matrix is the placement after the node's rest frame (the inverse
+/// of its inverse rest frame), so every vertex lands where the placement
+/// puts its model-space position.
+pub fn rest_nodes(model: &Model, placement: &NodeMatrix) -> Vec<NodeMatrix> {
+    let rest = |inv: &NodeMatrix| placement.compose(&invert(inv));
+    if model.inverse_binds.is_empty() {
+        vec![*placement]
+    } else {
+        model.inverse_binds.iter().map(rest).collect()
+    }
+}
+
+/// A model's bounding sphere under `placement`: its box's centre and
+/// half diagonal, placed and scaled.
+pub fn placed_sphere(model: &Model, placement: &NodeMatrix) -> ([f32; 3], f32) {
+    let Some(b) = model.bounds else {
+        return (placement.position, 0.0);
+    };
+    let c: [f32; 3] = std::array::from_fn(|k| (b.min[k] + b.max[k]) * 0.5);
+    let h: f32 = (0..3)
+        .map(|k| (b.max[k] - b.min[k]).powi(2))
+        .sum::<f32>()
+        .sqrt()
+        * 0.5;
+    (placement.point(c), h * placement.scale.abs())
+}
+
+/// A placed object's model for the native renderer, with the base map of
+/// each material it draws.
+#[derive(Clone, Debug)]
+pub struct NativeModel {
+    /// The object tag the model is drawn for (a collection's first entry).
+    pub object: TagId,
+    pub model: Model,
+    base: HashMap<u16, Image>,
+}
+
+/// The models of the object tags the open map places, read once each
+/// when the map opens.
+#[derive(Clone, Debug, Default)]
+pub struct NativeModels {
+    models: HashMap<TagId, NativeModel>,
+    /// Each tag that has no model to draw, and why.
+    pub errors: Vec<(TagId, String)>,
+}
+
+impl NativeModels {
+    /// Read the model of every tag in `objects` (each once).
+    pub fn read<R: Read + Seek>(
+        map: &mut Map<R>,
+        files: &mut ResourceFiles,
+        objects: impl IntoIterator<Item = TagId>,
+    ) -> Self {
+        let mut out = Self::default();
+        let ctx = match tags::object::Context::read(map) {
+            Ok(c) => c,
+            Err(e) => {
+                out.errors.push((TagId::NULL, e.to_string()));
+                return out;
+            }
+        };
+        let mut objects: Vec<TagId> = objects.into_iter().filter(|o| *o != TagId::NULL).collect();
+        objects.sort_by_key(|o| o.0);
+        objects.dedup();
+        for object in objects {
+            match read_model(map, &ctx, files, object) {
+                Ok(m) => {
+                    out.models.insert(object, m);
+                }
+                Err(e) => out.errors.push((object, e)),
+            }
+        }
+        out
+    }
+
+    /// Models made elsewhere (tests): `(object tag, model, base maps)`.
+    pub fn from_models(
+        models: impl IntoIterator<Item = (TagId, Model, HashMap<u16, Image>)>,
+    ) -> Self {
+        Self {
+            models: models
+                .into_iter()
+                .map(|(object, model, base)| {
+                    (
+                        object,
+                        NativeModel {
+                            object,
+                            model,
+                            base,
+                        },
+                    )
+                })
+                .collect(),
+            errors: Vec::new(),
+        }
+    }
+
+    /// The model drawn for object tag `object`.
+    pub fn of(&self, object: TagId) -> Option<&NativeModel> {
+        self.models.get(&object)
+    }
+
+    pub fn len(&self) -> usize {
+        self.models.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.models.is_empty()
+    }
+}
+
+/// One object tag's model: its collection resolved to the first entry,
+/// its render model loaded by `native_render::model_load`, and the draws
+/// whose base map decodes.
+fn read_model<R: Read + Seek>(
+    map: &mut Map<R>,
+    ctx: &tags::object::Context,
+    files: &mut ResourceFiles,
+    object: TagId,
+) -> Result<NativeModel, String> {
+    let (definition, _) = crate::object_collision::resolve(ctx, object)?;
+    let loaded =
+        native_render::model_load::load_object_model(map, ctx, &mut Files(files), definition)
+            .map_err(|e| e.to_string())?;
+    let mut model = loaded.model;
+    let mut maps = HashMap::new();
+    for m in model.materials() {
+        let Some(&shader) = loaded.shaders.get(usize::from(m)) else {
+            continue;
+        };
+        let Some(bitmap) = load::base_map(map, shader) else {
+            continue;
+        };
+        if let Some(image) = load::decode_first(map, files, bitmap) {
+            maps.insert(m, image);
+        }
+    }
+    model.draws.retain(|d| maps.contains_key(&d.material));
+    if model.draws.is_empty() {
+        return Err("no draw of the model has a base map".into());
+    }
+    Ok(NativeModel {
+        object,
+        model,
+        base: maps,
+    })
+}
+
+/// The placed objects on the GPU: every model of a [`NativeModels`] in
+/// one Lighting mode, and the placements to draw, each in its rest pose.
+pub struct NativeObjects {
+    gpu: GpuModels,
+    /// GPU model index per object tag.
+    uploaded: HashMap<TagId, u32>,
+    /// (GPU model, node matrices, world sphere) per placement.
+    placed: Vec<(u32, Vec<NodeMatrix>, ([f32; 3], f32))>,
+    pool: gfx::ring::UploadPool,
+}
+
+impl NativeObjects {
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        models: &NativeModels,
+        lighting: Lighting,
+    ) -> Self {
+        let mut gpu = GpuModels::new(device, queue);
+        let mut uploaded = HashMap::new();
+        let mut objects: Vec<_> = models.models.values().collect();
+        objects.sort_by_key(|m| m.object.0);
+        for m in objects {
+            let index = gpu.add_model(device, queue, m.model.clone(), &mut |k| {
+                m.base.get(&k).map(|i| lighting.base(i))
+            });
+            uploaded.insert(m.object, index);
+        }
+        Self {
+            gpu,
+            uploaded,
+            placed: Vec::new(),
+            pool: Default::default(),
+        }
+    }
+
+    /// The placements to draw: each one whose object tag has a model.
+    pub fn place<'a>(
+        &mut self,
+        models: &NativeModels,
+        markers: impl IntoIterator<Item = &'a Marker>,
+    ) {
+        self.placed = markers
+            .into_iter()
+            .filter_map(|m| {
+                let object = m.object?;
+                let index = *self.uploaded.get(&object)?;
+                let model = &models.of(object)?.model;
+                let placement = placement_matrix(m);
+                Some((
+                    index,
+                    rest_nodes(model, &placement),
+                    placed_sphere(model, &placement),
+                ))
+            })
+            .collect();
+    }
+
+    /// How many placements are drawn.
+    pub fn placed(&self) -> usize {
+        self.placed.len()
+    }
+
+    /// Clear what `clear` names, then draw the placements over what
+    /// `color` and `depth` hold, seen by `camera`, with the world pass's
+    /// depth rule. Returns how many (object, part) draws were made.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        color: &wgpu::TextureView,
+        color_format: wgpu::TextureFormat,
+        depth: &wgpu::TextureView,
+        depth_format: wgpu::TextureFormat,
+        size: [u32; 2],
+        camera: &Camera,
+        clear: Clear,
+    ) -> usize {
+        let view = render_camera(camera, size);
+        let objects: Vec<ObjectInput<'_>> = self
+            .placed
+            .iter()
+            .map(|(model, nodes, sphere)| ObjectInput {
+                model: *model,
+                nodes,
+                sphere: *sphere,
+            })
+            .collect();
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("editor native objects"),
+        });
+        clear_pass(&mut encoder, color, depth, clear);
+        let arena = self.pool.begin();
+        {
+            let mut uploads = gfx::ring::EncoderUploads {
+                device,
+                queue,
+                encoder: &mut encoder,
+                arena: &arena,
+            };
+            self.gpu
+                .prepare(device, &mut uploads, &view, DEPTH_RULE, &objects);
+        }
+        let drawn = self.gpu.encode(
+            device,
+            &mut encoder,
+            color,
+            color_format,
+            depth,
+            depth_format,
+            PassViewport {
+                x: 0.0,
+                y: 0.0,
+                width: size[0] as f32,
+                height: size[1] as f32,
+            },
+        );
+        let patches = arena.upload_commands(queue);
+        queue.submit(patches.into_iter().chain([encoder.finish()]));
+        queue.on_submitted_work_done(move || drop(arena));
+        drawn
     }
 }
 

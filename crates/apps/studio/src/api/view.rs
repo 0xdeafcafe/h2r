@@ -188,6 +188,8 @@ pub fn snapshot(gpu: &Gpu, app: &mut App, p: &P) -> Reply {
     let native = session.native_world().map_or(&[][..], |n| n.as_slice());
     vp.set_lighting(&gpu.device, &gpu.queue, native, app.lighting);
     vp.set_native(&gpu.device, &gpu.queue, native);
+    let models = session.native_models().cloned().unwrap_or_default();
+    vp.set_native_models(&gpu.device, &gpu.queue, models);
     crate::viewport::upload_placements(&mut vp, &gpu.device, app, &live.linked);
     crate::viewport::upload_overlays(&mut vp, &gpu.device, app);
     vp.set_live_instances(&gpu.device, &gpu.queue, session.source(), &live.instances);
@@ -276,10 +278,26 @@ pub fn native_stats(app: &App) -> Value {
         .iter()
         .map(|(index, why)| json!({ "index": index, "error": why }))
         .collect();
+    // The placed objects: how many tags have a model, how many
+    // placements draw one, and each tag left to the scene and why.
+    let objects = session.native_models().map(|models| {
+        let placed = session
+            .markers()
+            .iter()
+            .filter(|m| m.object.is_some_and(|o| models.of(o).is_some()))
+            .count();
+        let refused: Vec<Value> = models
+            .errors
+            .iter()
+            .map(|(tag, why)| json!({ "tag": tag.0, "error": why }))
+            .collect();
+        json!({ "models": models.len(), "placed": placed, "errors": refused })
+    });
     json!({
         "lighting": app.lighting.id(),
         "bsps": bsps,
         "errors": errors,
+        "objects": objects,
     })
 }
 

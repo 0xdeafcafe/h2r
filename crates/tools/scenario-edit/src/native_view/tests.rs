@@ -520,3 +520,193 @@ fn picking_the_native_world_matches_the_editors_world() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn close(a: [f32; 3], b: [f32; 3]) -> bool {
+    (0..3).all(|k| (a[k] - b[k]).abs() < 1e-4)
+}
+
+fn turned(scale: f32, ypr: [f32; 3], position: [f32; 3]) -> NodeMatrix {
+    let [forward, left, up] = crate::geometry::rotation(ypr);
+    NodeMatrix {
+        scale,
+        forward,
+        left,
+        up,
+        position,
+    }
+}
+
+/// Step 4: a node matrix's inverse undoes it, on either side.
+#[test]
+fn inverting_a_node_matrix_undoes_it() {
+    let m = turned(2.5, [0.7, 0.3, -0.2], [3.0, -4.0, 1.5]);
+    let back = invert(&m);
+    for p in [[0.0; 3], [1.0, 2.0, 3.0], [-5.0, 0.25, 9.0]] {
+        assert!(close(back.point(m.point(p)), p), "{p:?}");
+        assert!(close(m.compose(&back).point(p), p), "{p:?}");
+    }
+}
+
+/// An invented two-node model: a unit quad at height `z` bound to node 1,
+/// whose inverse rest frame is not the identity, drawing material 0.
+fn quad_model(z: f32) -> Model {
+    let positions = vec![
+        [-1.0, -1.0, z],
+        [1.0, -1.0, z],
+        [1.0, 1.0, z],
+        [-1.0, 1.0, z],
+    ];
+    Model::build(&native_render::model::ModelInput {
+        inverse_binds: vec![
+            NodeMatrix::IDENTITY,
+            turned(1.0, [0.4, 0.0, 0.0], [0.5, -0.25, 0.0]),
+        ],
+        sections: vec![native_render::model::ModelSectionInput {
+            uvs: vec![[0.5, 0.5]; positions.len()],
+            normals: vec![[0.0, 0.0, 1.0]; positions.len()],
+            node_indices: vec![[1, 0, 0, 0]; positions.len()],
+            node_weights: vec![[1.0, 0.0, 0.0, 0.0]; positions.len()],
+            positions,
+            node_map: Vec::new(),
+            parts: vec![native_render::model::ModelPartInput {
+                material: 0,
+                transparent: false,
+                triangles: vec![[0, 1, 2], [0, 2, 3]],
+            }],
+        }],
+    })
+}
+
+fn placed_at(position: [f32; 3], object: Option<TagId>) -> Marker {
+    Marker {
+        block: crate::layout::BlockKind::Scenery,
+        index: 0,
+        position,
+        axes: crate::geometry::rotation([0.9, 0.1, 0.0]),
+        scale: 1.5,
+        object,
+    }
+}
+
+/// Step 4: in the rest pose every vertex lands where the scene puts the
+/// placement's model-space point, and the placed sphere holds them all.
+#[test]
+fn the_rest_pose_places_vertices_as_the_scene_does() {
+    let model = quad_model(0.5);
+    let marker = placed_at([10.0, -3.0, 2.0], None);
+    let placement = placement_matrix(&marker);
+    let nodes = rest_nodes(&model, &placement);
+    assert_eq!(nodes.len(), model.inverse_binds.len());
+    let (centre, radius) = placed_sphere(&model, &placement);
+    assert!(!model.vertices.is_empty());
+    for v in &model.vertices {
+        let at = model.skin(v, &nodes);
+        let want = crate::scene::model_to_world(&marker, v.position);
+        assert!(close(at, want), "{at:?} {want:?}");
+        let d: f32 = (0..3)
+            .map(|k| (at[k] - centre[k]).powi(2))
+            .sum::<f32>()
+            .sqrt();
+        assert!(d <= radius + 1e-4, "{d} > {radius}");
+    }
+}
+
+/// Models made for tests are found by their object tag; a model with no
+/// inverse rest frames is placed by the placement alone.
+#[test]
+fn native_models_are_found_by_object_tag() {
+    let tag = TagId(0x1234_0005);
+    let models = NativeModels::from_models([(tag, quad_model(0.0), HashMap::new())]);
+    assert_eq!(models.len(), 1);
+    assert_eq!(models.of(tag).map(|m| m.object), Some(tag));
+    assert!(models.of(TagId(7)).is_none());
+    let bare = Model::default();
+    let placement = placement_matrix(&placed_at([1.0, 2.0, 3.0], None));
+    assert_eq!(rest_nodes(&bare, &placement), vec![placement]);
+    assert_eq!(placed_sphere(&bare, &placement), ([1.0, 2.0, 3.0], 0.0));
+}
+
+/// Step 4: a placed model draws through the native renderer over the
+/// native floor in its base map's colour; the Objects layer hides it, the
+/// floor hides one placed under it, and a placement whose tag has no
+/// model draws nothing. Skipped without a wgpu adapter.
+#[test]
+fn the_viewport_draws_placed_models_through_the_native_renderer() {
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let (mut map, mut files) = textured();
+    let (loads, _) = read_all(&mut map, &mut files);
+    let half = crate::fixture::TEX_FLOOR / 2.0;
+    let camera = Camera {
+        target: [half, half, 0.0],
+        yaw: 0.0,
+        pitch: 1.3,
+        distance: 6.0,
+        ..Camera::default()
+    };
+    let tag = TagId(0x1234_0005);
+    let green = HashMap::from([(0u16, Image::solid([20, 220, 40, 255]))]);
+    let models = std::sync::Arc::new(NativeModels::from_models([(tag, quad_model(0.5), green)]));
+    let scene = crate::scene::Scene::default();
+    let mut vp = crate::render::Viewport::new(&device);
+    vp.set_native(&device, &queue, &loads);
+    vp.set_native_models(&device, &queue, models);
+    // No glyphs: the centre pixel is the model's or the floor's.
+    let mut shown = crate::layers::Layers::default();
+    shown.set(crate::layers::LayerId::Markers, false);
+    vp.set_layers(&shown);
+    let draw = |vp: &mut crate::render::Viewport, marker: Option<Marker>| {
+        let markers: Vec<Marker> = marker.into_iter().collect();
+        vp.set_placements(&device, &scene, &markers, &[]);
+        vp.render(&device, &queue, &camera, [64, 64]);
+        read_centre(&device, &queue, vp.color_texture().unwrap())
+    };
+    let upright = |z: f32, object| Marker {
+        axes: crate::geometry::rotation([0.0; 3]),
+        scale: 1.0,
+        ..placed_at([half, half, z], object)
+    };
+    let floor = draw(&mut vp, None);
+    let object = draw(&mut vp, Some(upright(0.0, Some(tag))));
+    assert_eq!(vp.native_object_count(), 1);
+    assert!(
+        object[1] > object[0] && object[1] > object[2],
+        "the model's base colour: {object:?} over {floor:?}"
+    );
+    let mut hidden = shown.clone();
+    hidden.set(crate::layers::LayerId::Objects, false);
+    vp.set_layers(&hidden);
+    assert_eq!(draw(&mut vp, Some(upright(0.0, Some(tag)))), floor);
+    vp.set_layers(&shown);
+    assert_eq!(
+        draw(&mut vp, Some(upright(-3.0, Some(tag)))),
+        floor,
+        "under the floor"
+    );
+    assert_eq!(draw(&mut vp, Some(upright(0.0, Some(TagId(9))))), floor);
+    assert_eq!(vp.native_object_count(), 0);
+    // A Lighting change uploads the models again and keeps them placed.
+    draw(&mut vp, Some(upright(0.0, Some(tag))));
+    vp.set_lighting(&device, &queue, &loads, Lighting::Flat);
+    assert_eq!(vp.native_object_count(), 1);
+}
+
+/// The session reads a native model for, or names why it could not, every
+/// object tag the map places.
+#[test]
+fn the_session_reads_the_placed_objects_models() {
+    let bytes = crate::fixture::fixture_with_textured_bsp();
+    let dir = std::env::temp_dir().join(format!("native-models-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("textured.map");
+    std::fs::write(&path, &bytes).unwrap();
+    let mut ed = crate::Session::new();
+    ed.open(crate::save::MapSource::file(&path)).unwrap();
+    let models = ed.native_models().expect("a map is open").clone();
+    for object in ed.markers().iter().filter_map(|m| m.object) {
+        let refused = models.errors.iter().any(|(t, _)| *t == object);
+        assert!(models.of(object).is_some() || refused, "{object:?}");
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}

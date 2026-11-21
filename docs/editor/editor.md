@@ -621,10 +621,14 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   (`scenario_edit::native_view`), one world per BSP; the toolbar's
   **Lighting** menu picks Game (base map times lightmap), Flat (no
   lightmap), Lightmap only (the lightmap on white) or Collision (Flat at a
-  third, for the collision layers). Placements, models, markers and
-  overlays draw over it with its depth (view depth over the far plane).
-  A map whose BSPs the native loader does not read (a Halo 1 reference)
-  draws its textured scene instead.
+  third, for the collision layers). The placed objects draw through the
+  native renderer too (`native_view::NativeObjects`, `GpuModels`), each
+  in its rest pose with its base maps in the same mode; an object whose
+  model the native loader refuses (`native_render::model_load`) draws
+  the scene's model, and `view.stats` names it. Live objects, markers and
+  overlays draw over the level with its depth (view depth over the far
+  plane). A map whose BSPs the native loader does not read (a Halo 1
+  reference) draws its textured scene instead.
   Clicking skips hidden placement categories and hidden structure.
 - **Gameplay layers.** Spawn points have a team-coloured pawn and an
   arrow pointing along the spawn facing. Netgame flags have a team tint

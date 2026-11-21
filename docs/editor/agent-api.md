@@ -548,8 +548,11 @@ Notes on some:
   level on the native renderer (`scenario_edit::native_view`): the
   `lighting` mode, each BSP's `bsp`, `draws`, `batches`, `materials`,
   `lightmap_pages`, `untextured` (draws left out for a missing picture),
-  `failed_sections` and `lightmap_error`, and the `errors` of BSPs that
-  did not load. What each field means is in [editor.md](editor.md),
+  `failed_sections` and `lightmap_error`, the `errors` of BSPs that
+  did not load, and the placed `objects`: how many object tags have a
+  native model (`models`), how many placements draw one (`placed`), and
+  each tag left to the scene's model with why (`errors`, `tag` and
+  `error`). What each field means is in [editor.md](editor.md),
   "What the viewport shows".
 - **Lighting.** `view.lighting {}` returns `{mode, modes}`;
   `view.lighting {"mode":"flat"}` sets it for the window and

@@ -229,6 +229,10 @@ impl ViewportView {
             // loaded (docs/editor/polish-plan.md, P14).
             let native = session.native_world().map_or(&[][..], |n| n.as_slice());
             vp.set_native(gpu.device, gpu.queue, native);
+            // Its placed objects too; the scene draws only those with no
+            // native model.
+            let models = session.native_models().cloned().unwrap_or_default();
+            vp.set_native_models(gpu.device, gpu.queue, models);
             self.world_rev = Some(session.world_rev());
         }
         if vp.lighting() != app.lighting {
