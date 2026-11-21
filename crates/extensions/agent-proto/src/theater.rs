@@ -8,12 +8,19 @@ pub const PAUSE: &str = "theater.pause";
 pub const SPEED: &str = "theater.speed";
 pub const SEEK: &str = "theater.seek";
 pub const CAMERA: &str = "theater.camera";
+pub const SCREENSHOT: &str = "theater.screenshot";
+pub const CLIP_MARK: &str = "theater.clip.mark";
+pub const CLIP_EXPORT: &str = "theater.clip.export";
+pub const CLIP_STATUS: &str = "theater.clip.status";
 pub const HUD: &str = "theater.hud";
 pub const KEYFRAMES: &str = "theater.keyframes";
 pub const MEASUREMENTS: &str = "theater.measurements";
 pub const STEP: &str = "theater.step";
 pub const VERIFY: &str = "theater.verify";
-pub const METHODS: [&str; 11] = [
+pub const TRANSPORT_METHODS: [&str; 9] = [
+    PLAY, STATE, PAUSE, SPEED, SEEK, CAMERA, HUD, KEYFRAMES, STEP,
+];
+pub const METHODS: [&str; 15] = [
     PLAY,
     STATE,
     PAUSE,
@@ -25,6 +32,10 @@ pub const METHODS: [&str; 11] = [
     MEASUREMENTS,
     STEP,
     VERIFY,
+    SCREENSHOT,
+    CLIP_MARK,
+    CLIP_EXPORT,
+    CLIP_STATUS,
 ];
 
 /// Host wall-clock timings and write-watch counts for an instrumented run.
@@ -428,4 +439,71 @@ mod tests {
         assert_eq!(request.bar, Some(false));
         assert!(serde_json::from_value::<Hud>(json!({"visible": true})).is_err());
     }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Screenshot {
+    pub scale: Option<u8>,
+    pub path: Option<std::path::PathBuf>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScreenshotSaved {
+    pub path: std::path::PathBuf,
+    pub width: u32,
+    pub height: u32,
+    pub tick: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClipMark {
+    #[serde(rename = "in")]
+    pub start: Option<u64>,
+    #[serde(rename = "out")]
+    pub end: Option<u64>,
+    #[serde(default)]
+    pub clear: bool,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClipMarks {
+    #[serde(rename = "in")]
+    pub start: Option<u64>,
+    #[serde(rename = "out")]
+    pub end: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ClipFormat {
+    Png,
+    Mp4,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClipExport {
+    pub from: u64,
+    pub to: u64,
+    pub fps: u32,
+    pub format: ClipFormat,
+    pub path: Option<std::path::PathBuf>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClipJob {
+    pub job: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClipStatus {
+    pub frames_done: u64,
+    pub frames_total: u64,
+    pub path: std::path::PathBuf,
+    pub error: Option<String>,
+    /// True once the output has been published or the job has failed.
+    pub finished: bool,
 }

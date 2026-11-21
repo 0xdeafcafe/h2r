@@ -379,6 +379,9 @@ struct Grid {
     max_queued: usize,
 }
 
+#[cfg(feature = "playback")]
+type SampleTap = Box<dyn FnMut(&[f32]) + Send>;
+
 /// The output thread [`Hle::spawn_output`] started. Dropping it stops and
 /// joins the thread, closes the sink and gives the mixer back (another
 /// consumer may then claim it).
@@ -389,10 +392,19 @@ pub struct Output {
     runtime: Arc<Runtime>,
     lease: Lease,
     grid: Option<Mutex<Grid>>,
+    #[cfg(feature = "playback")]
+    tap: Option<Mutex<SampleTap>>,
     clock_only: bool,
 }
 
 impl Output {
+    /// Observe logical-time PCM before the device queue can drop old samples.
+    /// Clock-only output has no PCM. The tap must not reenter DirectSound.
+    #[cfg(feature = "playback")]
+    pub fn tap_samples(&mut self, tap: impl FnMut(&[f32]) + Send + 'static) {
+        self.tap = Some(Mutex::new(Box::new(tap)));
+    }
+
     pub fn health_probe(&self) -> OutputHealthProbe {
         OutputHealthProbe {
             shared: Arc::clone(&self.shared),
@@ -486,6 +498,9 @@ impl Output {
                     &self.lease,
                 )?;
                 drop(gate);
+                if let Some(tap) = &self.tap {
+                    tap.lock().unwrap_or_else(|e| e.into_inner())(block);
+                }
                 if side_live {
                     self.shared.push_side(side, g.max_queued);
                 }
@@ -732,6 +747,8 @@ impl Hle {
             runtime,
             lease,
             grid,
+            #[cfg(feature = "playback")]
+            tap: None,
             clock_only,
         })
     }

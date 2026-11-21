@@ -1,4 +1,5 @@
 mod capture_points;
+mod media;
 mod pad_inputs;
 mod transport;
 mod sidecar_restore;

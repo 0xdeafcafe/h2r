@@ -2111,6 +2111,10 @@ directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
 | `theater.keyframes` | `{}` | seek inventory `{film, sidecar, ring, capture_points, ring_bytes, ring_cap, sidecar_bytes}`; lists contain tick numbers |
 | `theater.measurements` | `{}` | timings, keyframe attempts and page counts from the instrumented recorder or playback child |
 | `theater.verify` | `{"from":1,"to":900,"ring":true}`, all optional | replays in an isolated, unpaced player. Ring verification first records reference hashes in a linear pass, compares every successful marked capture, and returns `{ticks, digests_checked, arena_hashes_checked, ram_hashes_checked, first_divergence}` |
+| `theater.screenshot` | `{"scale":2,"path":"/path/view.png"}`. Both fields are optional | `{path, width, height, tick}` for a clean PNG |
+| `theater.clip.mark` | `{"in":300}`, `{"out":900}`, or `{"clear":true}` | `{in, out}` with null for each unset mark |
+| `theater.clip.export` | `{"from":300,"to":900,"fps":60,"format":"mp4"}`. Optional `path`. Use 30 or 60 fps and `png` or `mp4` | `{job}` once the offline player starts |
+| `theater.clip.status` | `{"job":"<job>"}` | `{frames_done, frames_total, path, error, finished}` |
 
 Prepare accepts a local library ID or `live:<game-id>` for a host film
 downloaded into the library. It replays the entire film from boot in an
@@ -2131,6 +2135,30 @@ hash at each successful capture point in range. A second pass checks that hash
 before and after capturing, restores the ring entry, and checks the restored RAM.
 The active player's transport remains usable. A clean run returns
 `first_divergence: null`. A mismatch returns its tick and reason.
+
+Screenshots use scale 1 by default and save the latest published game picture.
+Scales 2 through 4 render the view at a larger internal raster. The independent
+observer can redraw from its current state. Guest-drawn views need a paused
+tick and a warm return point for the ring's redraw. When the redraw is
+unavailable, the method reports why. The default output is a new PNG in the
+film library's `screenshots` directory.
+
+An export job copies the current camera rig into a windowless replay. The
+range is half-open, in ticks from boot. The tick at `to` is excluded. Output
+uses a 640×480 canvas and contains exactly `(to - from) * fps / 30` frames.
+At 60 fps, a tick with one presented frame uses it twice. The timeline holds
+the previous picture through skipped draws. MP4 includes the available
+48 kHz stereo game mix. Host recordings with clock-only audio export with
+silence.
+
+The default destination is under the film library's `exports` directory.
+A PNG export creates a directory of numbered frames starting at
+`frame-000000.png`. MP4 uses the user's `ffmpeg` on `PATH`. When ffmpeg is
+missing, the job reports the same reason as `h2 movies` (exit 3) and PNG
+export remains available. Use a fresh destination path for either format.
+`finished` becomes true after the output is published or the job fails.
+`error` is null for a successful job. The job ID remains valid across seeks.
+These files stay on the user's machine.
 
 The rendered player starts at the clip's first tick and loops at its end.
 Its overlay uses the player's agent socket for transport, camera and HUD

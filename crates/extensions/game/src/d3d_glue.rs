@@ -516,7 +516,7 @@ pub fn install_headless_for_profile(
                 let scale_stats = b.shared_stats();
                 let report = scale_report(&mut b);
                 let installed = if render_thread_requested() {
-                    install_render_thread(rt, b, Some(report), interp, profile, max_slots > 1)
+                    install_render_thread(rt, b, Some(report), interp, profile, max_slots > 1, false)
                 } else {
                     install_for_profile(rt, b, Some(report), profile)
                 }?;
@@ -535,7 +535,7 @@ pub fn install_headless_for_profile(
             // (docs/graphics/render-thread.md), unless H2_RENDER_THREAD=0;
             // behind the in-between frames when `interp` is given.
             let installed = if render_thread_requested() {
-                install_render_thread(rt, backend, None, interp, profile, max_slots > 1)
+                install_render_thread(rt, backend, None, interp, profile, max_slots > 1, false)
             } else {
                 install_for_profile(rt, backend, None, profile)
             }?;
@@ -940,7 +940,22 @@ where
     B: d3d::backend::Backend + Send + 'static,
     B::Texture: Sync,
 {
-    install_render_thread(rt, backend, extra, interp, profile, false)
+    install_render_thread(rt, backend, extra, interp, profile, false, false)
+}
+
+#[cfg(feature = "gpu")]
+pub fn install_export_threaded<B>(
+    rt: &runtime::Runtime,
+    backend: B,
+    extra: Option<ExtraReport>,
+    interp: Option<Interpolation>,
+    profile: film::RenderHooks,
+) -> anyhow::Result<Installed>
+where
+    B: d3d::backend::Backend + Send + 'static,
+    B::Texture: Sync,
+{
+    install_render_thread(rt, backend, extra, interp, profile, false, true)
 }
 
 #[cfg(feature = "gpu")]
@@ -951,6 +966,7 @@ fn install_render_thread<B>(
     interp: Option<Interpolation>,
     profile: film::RenderHooks,
     clip_capture: bool,
+    synchronous_presents: bool,
 ) -> anyhow::Result<Installed>
 where
     B: d3d::backend::Backend + Send + 'static,
@@ -969,9 +985,9 @@ where
             // The agent's render.stats reads its counters.
             crate::render_probe::set_interp(interp.stats());
             crate::render_probe::set_interp_holds(interp.holds());
-            install_for_profile(rt, d3d::ThreadedBackend::new(interp)?, extra, profile)
+            install_for_profile(rt, d3d::ThreadedBackend::new(interp)?.with_synchronous_presents(synchronous_presents), extra, profile)
         }
-        None => install_for_profile(rt, d3d::ThreadedBackend::new(backend)?, extra, profile),
+        None => install_for_profile(rt, d3d::ThreadedBackend::new(backend)?.with_synchronous_presents(synchronous_presents), extra, profile),
     }
 }
 
@@ -1027,12 +1043,22 @@ fn opaque_rgba(px: &mut [u8], order: gfx::surface::HostPixelOrder) {
 
 pub fn write_png(path: &std::path::Path, px: &[u8], w: u32, h: u32) -> anyhow::Result<()> {
     let f = std::io::BufWriter::new(std::fs::File::create(path)?);
-    let mut enc = png::Encoder::new(f, w, h);
+    encode_png(f, px, w, h)
+}
+
+pub(crate) fn encode_png(
+    mut output: impl std::io::Write,
+    px: &[u8],
+    w: u32,
+    h: u32,
+) -> anyhow::Result<()> {
+    let mut enc = png::Encoder::new(&mut output, w, h);
     enc.set_color(png::ColorType::Rgba);
     enc.set_depth(png::BitDepth::Eight);
     let mut writer = enc.write_header()?;
     writer.write_image_data(px)?;
     writer.finish()?;
+    output.flush()?;
     Ok(())
 }
 

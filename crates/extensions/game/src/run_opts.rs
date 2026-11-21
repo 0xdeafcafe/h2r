@@ -49,6 +49,9 @@ pub struct RunReport {
 pub struct Host {
     /// Record this boot to a new film file. Falls back to H2_FILM_OUT.
     pub film_out: Option<PathBuf>,
+    /// Local media controls and the offline clip sink belong to separate players.
+    pub film_media: Option<crate::theater::Media>,
+    pub film_capture: Option<Arc<crate::theater::ClipCapture>>,
     /// Dedicated System Link profile, with no screen or speakers.
     pub host_light: bool,
     /// Opt in to bot support on a light host.

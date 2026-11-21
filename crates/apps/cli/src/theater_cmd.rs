@@ -7,6 +7,9 @@ use std::{
     process::Command,
 };
 
+#[cfg(feature = "desktop")]
+mod export;
+
 const USAGE: &str = "h2 theater play FILM [--seek TICK] [--render-every N] [--speed 0.25..4] [--disc ISO] [--out IMAGE_DIR] [--data INITIAL_DATA] [--movies DIR] [--socket PATH]\n\
                     h2 theater prepare FILM [--disc ISO] [--out IMAGE_DIR] [--data INITIAL_DATA] [--movies DIR] [--socket PATH]";
 #[derive(Clone)]
@@ -120,6 +123,10 @@ impl Drop for Temp {
 
 pub fn run(args: Vec<String>) -> Result<()> {
     let opts = Options::parse(args.clone().into_iter())?;
+    #[cfg(feature = "desktop")]
+    if let Some(job) = std::env::var_os("H2_THEATER_EXPORT_JOB") {
+        return export::run(opts, Path::new(&job));
+    }
     if let Some(work) = std::env::var_os("H2_THEATER_WORK") {
         return child(opts, Path::new(&work));
     }
@@ -198,6 +205,23 @@ pub fn run(args: Vec<String>) -> Result<()> {
 }
 
 fn child(opts: Options, work: &Path) -> Result<()> {
+    child_with_start(
+        opts,
+        work,
+        serde_json::from_reader(fs::File::open(work.join("launch.json"))?)?,
+        #[cfg(feature = "desktop")]
+        None,
+    )
+}
+
+fn child_with_start(
+    opts: Options,
+    work: &Path,
+    launch: boot::theater::Restart,
+    #[cfg(feature = "desktop")] capture: Option<std::sync::Arc<boot::theater::ClipCapture>>,
+) -> Result<()> {
+    #[cfg(feature = "desktop")]
+    let media_options = opts.clone();
     let child_started = std::time::Instant::now();
     let mut film = film::Reader::open(&opts.film)?;
     let xbe = boot::read_xbe(&opts.disc)?;
@@ -242,8 +266,6 @@ fn child(opts: Options, work: &Path) -> Result<()> {
     );
     let entry = film.machine_section().unique(film::DATA)?.clone();
     let data = work.join("data");
-    let launch: boot::theater::Restart =
-        serde_json::from_reader(fs::File::open(work.join("launch.json"))?)?;
     let viewer_data = opts.data.clone().unwrap_or_else(content::store::default_data_root);
     let films_dir = std::env::var_os("H2_FILM_DIR").map(PathBuf::from)
         .unwrap_or_else(|| viewer_data.join("films"));
@@ -318,12 +340,16 @@ fn child(opts: Options, work: &Path) -> Result<()> {
         window_closed: None,
     };
     let retry = work.join("retry-build.json");
+    #[cfg(feature = "desktop")]
+    let may_retry = capture.is_none();
+    #[cfg(not(feature = "desktop"))]
+    let may_retry = true;
     let run = move |host, window_closed| -> Result<()> {
         let mut replay = replay;
         replay.window_closed = window_closed;
         let r = boot::run_theater(&xbe, &image, &boot, host, replay, child_started);
         vfs::flush_pending_metadata();
-        if let Err(e) = &r
+        if may_retry && let Err(e) = &r
             && let Some(build) = e.downcast_ref::<boot::theater::RetrySeek>()
         {
             serde_json::to_writer(fs::File::create_new(retry)?, &build.0)?;
@@ -339,6 +365,11 @@ fn child(opts: Options, work: &Path) -> Result<()> {
     } else {
         None
     };
+    #[cfg(feature = "desktop")]
+    if let Some(capture) = capture {
+        let observer = film.header.version >= 2 && local_gpu != Some(true);
+        return run(export::host(capture, camera, observer, host_bots)?, None);
+    }
     if opts.every == 0 {
         let host = boot::Host { host_light: true, host_bots, ..Default::default() };
         if local_gpu == Some(true) {
@@ -412,6 +443,12 @@ fn child(opts: Options, work: &Path) -> Result<()> {
             }
             let native: boot::run_opts::NativeSize = std::sync::Arc::new(window.native_size());
             let raster = boot::d3d_glue::output_size(Some(&settings), native.clone())?;
+            let film_media = export::media(
+                media_options,
+                dir,
+                window.frame_sink(),
+                raster.clone(),
+            );
             let (gfx, gfx_view, film_view) = if observer {
                 let mut sink = window.frame_sink();
                 (
@@ -464,6 +501,7 @@ fn child(opts: Options, work: &Path) -> Result<()> {
                     gfx,
                     gfx_view,
                     film_view,
+                    film_media: Some(film_media),
                     between_slices: Some(Box::new(move |_| !window.should_stop())),
                     host_light: true,
                     host_bots,

@@ -49,6 +49,7 @@ impl Agent {
             }
         }
         s.pending = keep;
+        s.settle_deferred_at(reader, true);
     }
 }
 impl State {

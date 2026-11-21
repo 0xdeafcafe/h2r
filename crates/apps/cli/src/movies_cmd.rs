@@ -90,6 +90,24 @@ pub enum DiscoverError {
     Unusable(String),
 }
 
+impl DiscoverError {
+    pub(crate) fn exit_code(&self) -> i32 {
+        match self {
+            Self::Missing(_) => EXIT_NO_FFMPEG,
+            Self::Unusable(_) => EXIT_FFMPEG_UNUSABLE,
+        }
+    }
+}
+
+impl std::fmt::Display for DiscoverError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (Self::Missing(message) | Self::Unusable(message)) = self;
+        f.write_str(message)
+    }
+}
+
+impl std::error::Error for DiscoverError {}
+
 fn run_text(path: &Path, args: &[&str]) -> Result<String> {
     let out = Command::new(path)
         .args(args)
@@ -120,6 +138,19 @@ fn is_executable(p: &Path) -> bool {
 /// Locate and vet ffmpeg: `explicit` if given, else the first `ffmpeg` on
 /// `path_env`. Checks `-version`, the Bink decoders and the H.264/AAC encoders.
 pub fn discover(explicit: Option<&Path>, path_env: Option<OsString>) -> Result<Ffmpeg, DiscoverError> {
+    discover_with(explicit, path_env, true)
+}
+
+/// Raw-video exports use the same encoders as movies and need no Bink decoder.
+pub(crate) fn discover_encoding(path_env: Option<OsString>) -> Result<Ffmpeg, DiscoverError> {
+    discover_with(None, path_env, false)
+}
+
+fn discover_with(
+    explicit: Option<&Path>,
+    path_env: Option<OsString>,
+    require_bink: bool,
+) -> Result<Ffmpeg, DiscoverError> {
     let path = match explicit {
         Some(p) if is_executable(p) => p.to_path_buf(),
         Some(p) => {
@@ -142,9 +173,11 @@ pub fn discover(explicit: Option<&Path>, path_env: Option<OsString>) -> Result<F
     if !version.starts_with("ffmpeg version") {
         return Err(unusable("does not look like ffmpeg (`-version` printed something else)".into()));
     }
-    let dec = run_text(&path, &["-hide_banner", "-decoders"]).map_err(|e| unusable(format!("{e:#}")))?;
-    if !lists(&dec, "binkvideo") || !(lists(&dec, "binkaudio_dct") || lists(&dec, "binkaudio_rdft")) {
-        return Err(unusable("this ffmpeg build has no Bink video/audio decoder".into()));
+    if require_bink {
+        let dec = run_text(&path, &["-hide_banner", "-decoders"]).map_err(|e| unusable(format!("{e:#}")))?;
+        if !lists(&dec, "binkvideo") || !(lists(&dec, "binkaudio_dct") || lists(&dec, "binkaudio_rdft")) {
+            return Err(unusable("this ffmpeg build has no Bink video/audio decoder".into()));
+        }
     }
     let enc = run_text(&path, &["-hide_banner", "-encoders"]).map_err(|e| unusable(format!("{e:#}")))?;
     let video = if lists(&enc, "libx264") {
@@ -160,6 +193,15 @@ pub fn discover(explicit: Option<&Path>, path_env: Option<OsString>) -> Result<F
     Ok(Ffmpeg { path, version, video })
 }
 
+impl VideoEncoder {
+    pub(crate) fn args(self) -> &'static [&'static str] {
+        match self {
+            Self::X264 => &["-c:v", "libx264", "-preset", "slow", "-crf", "18", "-profile:v", "high"],
+            Self::VideoToolbox => &["-c:v", "h264_videotoolbox", "-b:v", "4M", "-profile:v", "high"],
+        }
+    }
+}
+
 impl Ffmpeg {
     pub fn settings(&self) -> &'static str {
         match self.video {
@@ -173,11 +215,7 @@ impl Ffmpeg {
             .iter()
             .map(Into::into)
             .collect();
-        let rest: &[&str] = match self.video {
-            VideoEncoder::X264 => &["-c:v", "libx264", "-preset", "slow", "-crf", "18", "-profile:v", "high"],
-            VideoEncoder::VideoToolbox => &["-c:v", "h264_videotoolbox", "-b:v", "4M", "-profile:v", "high"],
-        };
-        a.extend(rest.iter().map(OsString::from));
+        a.extend(self.video.args().iter().map(OsString::from));
         a.extend(
             ["-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn"]
                 .iter()
@@ -349,18 +387,18 @@ pub fn run_with(args: Vec<String>, path_env: Option<OsString>) -> i32 {
     };
     let ff = match discover(args.ffmpeg.as_deref(), path_env) {
         Ok(f) => f,
-        Err(DiscoverError::Missing(m)) => {
+        Err(error @ DiscoverError::Missing(_)) => {
             eprintln!(
-                "h2 movies: {m}.\nThe movies are optional: without them the game skips the intro, attract and \
+                "h2 movies: {error}.\nThe movies are optional: without them the game skips the intro, attract and \
                  credits movies. To get them, install ffmpeg (with the Bink decoder) or pass --ffmpeg PATH, then re-run."
             );
-            return EXIT_NO_FFMPEG;
+            return error.exit_code();
         }
-        Err(DiscoverError::Unusable(m)) => {
+        Err(error @ DiscoverError::Unusable(_)) => {
             eprintln!(
-                "h2 movies: {m}\nThe movies are optional; the game skips them. Use an ffmpeg build with the Bink decoder and libx264."
+                "h2 movies: {error}\nThe movies are optional; the game skips them. Use an ffmpeg build with the Bink decoder and libx264."
             );
-            return EXIT_FFMPEG_UNUSABLE;
+            return error.exit_code();
         }
     };
     match convert_all(&args, &ff, &INTERRUPTED) {

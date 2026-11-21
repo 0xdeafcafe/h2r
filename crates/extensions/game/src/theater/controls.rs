@@ -83,8 +83,9 @@ impl Session {
         let unpaced = matches!(&self.lock().mode, Mode::Replay(_, replay) if replay.unpaced);
         if !unpaced {
             self.add_verify_method(a);
+            self.add_media_methods(a);
         }
-        for name in api::METHODS.into_iter().filter(|&name| !matches!(name, api::MEASUREMENTS | api::VERIFY)) {
+        for name in api::TRANSPORT_METHODS {
             if unpaced && name != api::STATE {
                 continue;
             }
@@ -364,7 +365,7 @@ pub fn library_methods(
         let jobs = jobs.clone();
         a.add_method(
             name,
-            if matches!(name, api::STATE | api::KEYFRAMES) {
+            if matches!(name, api::STATE | api::KEYFRAMES | api::CLIP_STATUS) {
                 Access::Read
             } else {
                 Access::Act
@@ -430,8 +431,9 @@ pub fn library_methods(
                 };
                 let mut client = agent_proto::Client::connect(&active.socket)
                     .map_err(|_| unavailable(format!("film {} is starting", active.id)))?;
+                let timeout = if name == api::SCREENSHOT { 61 } else { 2 };
                 client
-                    .set_timeout(Some(std::time::Duration::from_secs(2)))
+                    .set_timeout(Some(std::time::Duration::from_secs(timeout)))
                     .map_err(|e| unavailable(e.to_string()))?;
                 client.call(name, p).map_err(|e| match e {
                     agent_proto::CallError::Rpc(e) => e,

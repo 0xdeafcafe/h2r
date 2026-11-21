@@ -43,6 +43,7 @@ impl Session {
         guest_disk_root: &Path,
     ) -> Result<()> {
         let mut state = self.lock();
+        let build_cache = self.capture.get().is_none() && state.verify.is_none();
         let State {
             header,
             mode,
@@ -119,7 +120,7 @@ impl Session {
                     }
                 }
                 presentation.snapshot_build = Some((build.stamp.clone(), build.switches.clone()));
-                if cap > 0 {
+                if cap > 0 && build_cache {
                     match SidecarWriter::resume(
                         films_dir,
                         &mut tape.reader,
