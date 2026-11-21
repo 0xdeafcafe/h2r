@@ -207,7 +207,9 @@ fn instructions_resolve_from_objects_another_output_compiled() {
     m.call(hotloop::ALU, 3).unwrap();
     let base = m.handler_address(hotloop::ALU).unwrap();
     let mut s = Symbolizer::new();
-    let insns: Vec<u32> = (0..256)
+    // The prologue (register homes, the entry switch) has no instruction of its
+    // own, and it has grown past the first 256 bytes: look through the body.
+    let insns: Vec<u32> = (0..2048)
         .step_by(4)
         .filter_map(|off| match s.resolve(base + off) {
             Frame::Guest {

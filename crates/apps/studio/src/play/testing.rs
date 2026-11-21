@@ -156,6 +156,8 @@ pub(crate) mod fake {
         pub(crate) external_live: bool,
         pub(crate) peers: Option<u32>,
         pub(crate) bytes: std::collections::HashMap<String, String>,
+        // The epoch the edited bytes belong to: a new map load starts from its file.
+        bytes_epoch: Option<u64>,
         pub(crate) placements: std::collections::HashMap<String, u32>,
         pub(crate) journal: Vec<Value>,
     }
@@ -286,6 +288,12 @@ pub(crate) mod fake {
                 if let Some(error) = state.batch_error.take() {
                     return Err(error);
                 }
+                // A map change loads the file again: the old epoch's edits are gone.
+                if state.bytes_epoch.is_some_and(|epoch| epoch != fixture_epoch(ctx)) {
+                    state.bytes.clear();
+                    state.journal.clear();
+                }
+                state.bytes_epoch = Some(fixture_epoch(ctx));
                 let key = |w: &Value| w.get("at").unwrap_or(&w["path"]).to_string();
                 for w in writes {
                     if let Some(holds) = state.bytes.get(&key(w))
