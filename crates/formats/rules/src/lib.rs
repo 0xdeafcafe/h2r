@@ -17,6 +17,7 @@ pub mod scenario;
 pub mod ty;
 pub mod verify;
 pub mod vm;
+pub mod workbench;
 
 pub use content::Sha256;
 pub use ir::{DecodeError, Event, Ir};

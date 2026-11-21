@@ -48,6 +48,7 @@ import { Content, customFor } from "./content";
 import { Reports } from "./reports";
 import { Bans } from "./bans";
 import { Mutes } from "./mutes";
+import { MockRules } from "./rules";
 import { CloudSaves } from "./cloudsaves";
 import { hasAllSkulls, parseSkullsParam } from "../src/lib/skulls";
 import { StatsFold, archive } from "./stats";
@@ -161,6 +162,8 @@ const reports = new Reports(world, admin);
 const bans = new Bans(world, admin, reports);
 // Mute lists (mock/mutes.ts).
 const mutes = new Mutes(world, admin);
+// The rules workbench and saved scripts (mock/rules.ts).
+const rulesBench = new MockRules(world);
 // Cloud saves (mock/cloudsaves.ts).
 const cloudSaves = new CloudSaves(world);
 if (admin.everyoneAdmin) console.log("[mock] H2_MOCK_ADMIN: accounts signed up in the browser are admins");
@@ -270,6 +273,8 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
   if (ban) return json(ban.body, ban.status);
   const mut = mutes.handle(req, u);
   if (mut) return json(mut.body, mut.status);
+  const rul = await rulesBench.handle(req, u);
+  if (rul) return json(rul.body, rul.status);
   const cs = cloudSaves.handle(req, u);
   if (cs) return cs instanceof Response ? cs : json(cs.body, cs.status);
   const con = await content.handle(req, u, (bytes) => new Response(bytes as Uint8Array<ArrayBuffer>, { headers: { "content-type": "image/png", "cache-control": "max-age=3600", ...CORS } }));

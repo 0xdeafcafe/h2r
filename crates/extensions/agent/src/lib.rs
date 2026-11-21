@@ -30,6 +30,8 @@
 //!   world's rigid bodies and contact points ([`Agent::add_game_method`]).
 //! * [`firefight`] answers `firefight.*` over the game's Firefight
 //!   runtime, which the game registers as a [`firefight::Source`].
+//! * [`rules`] answers `rules.state` over the game's rules runtime, which
+//!   the game registers as a [`rules::Source`].
 //! * [`raw`] answers `world.raw`: an object's body, physics component,
 //!   Havok entity, motion and shape as raw bytes. `world.poke` writes
 //!   bounded byte ranges within those parts.
@@ -61,6 +63,7 @@ pub mod editor;
 mod exec;
 pub mod firefight;
 pub mod forge;
+pub mod rules;
 pub mod havok;
 pub mod hostpads;
 pub mod hot;

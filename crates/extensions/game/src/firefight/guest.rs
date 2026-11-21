@@ -369,7 +369,9 @@ pub fn player_datum(m: &dyn GuestMemory, slot: u8) -> Result<Option<u32>, MemFau
     Ok((salt != 0).then_some(u32::from(salt) << 16 | u32::from(slot)))
 }
 
-fn player_record(m: &dyn GuestMemory, slot: u8) -> Result<u32, MemFault> {
+/// The player record of an absolute player slot (the rules runtime reads
+/// lives there too).
+pub fn player_record(m: &dyn GuestMemory, slot: u8) -> Result<u32, MemFault> {
     let players = m.u32(points::PLAYERS.base)?;
     Ok(m.u32(players + PLAYERS_DATA)? + u32::from(slot) * PLAYER_SIZE)
 }

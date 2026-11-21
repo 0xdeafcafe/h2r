@@ -1,7 +1,7 @@
 //! A fake [`Game`] for tests and `h2 rules run`: plain tables in, a log of
 //! the calls made out.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::caps::id;
 use crate::vm::{Arg, Call, Game, Placed, ScriptError};
@@ -13,11 +13,14 @@ pub struct FakePlayer {
     pub alive: bool,
     pub score: i32,
     pub lives: i32,
+    /// What `kills(p)` and `deaths(p)` read.
+    pub kills: i32,
+    pub deaths: i32,
 }
 
 /// A game held in tables. Actions it can model (score, team, lives,
-/// respawn) change the tables as the engine would; every action and the
-/// script-error end are logged in call order.
+/// respawn, objective registration) change the tables as the engine
+/// would; every action and the script-error end are logged in call order.
 #[derive(Clone, Debug, Default)]
 pub struct FakeGame {
     pub players: BTreeMap<u8, FakePlayer>,
@@ -26,6 +29,14 @@ pub struct FakeGame {
     pub variant: BTreeMap<String, i32>,
     pub round_time_left: i32,
     pub squad_alive: [i32; 16],
+    /// The objective registry: object to its carrying player.
+    pub objectives: BTreeMap<u32, Option<u8>>,
+    /// Objects' teams: an objective's, or a flag placement's designator.
+    pub object_teams: BTreeMap<u32, u8>,
+    /// Labelled objects' label numbers.
+    pub numbers: BTreeMap<u32, i32>,
+    /// `(player, zone object)` pairs `inside` answers true for.
+    pub inside: BTreeSet<(u8, u32)>,
     /// Actions made, as `(entry name, args)`.
     pub calls: Vec<(&'static str, Vec<Arg>)>,
     /// Reads made, by entry name.
@@ -44,10 +55,8 @@ impl FakeGame {
             g.players.insert(
                 slot,
                 FakePlayer {
-                    team: 0,
                     alive: true,
-                    score: 0,
-                    lives: 0,
+                    ..FakePlayer::default()
                 },
             );
         }
@@ -87,6 +96,10 @@ impl Game for FakeGame {
         list
     }
 
+    fn objectives(&self) -> Vec<u32> {
+        self.objectives.keys().rev().copied().collect()
+    }
+
     fn variant(&self, field: &str) -> i32 {
         self.variant.get(field).copied().unwrap_or(0)
     }
@@ -94,11 +107,29 @@ impl Game for FakeGame {
     fn read(&mut self, call: &Call) -> i32 {
         self.reads.push(call.entry.name);
         let p = self.player(call.args.first());
+        let object = |i: usize| match call.args.get(i) {
+            Some(Arg::Object(Some(o))) => Some(*o),
+            _ => None,
+        };
         match call.entry.id {
+            id::IS_OBJECTIVE => object(0).is_some_and(|o| self.objectives.contains_key(&o)) as i32,
+            id::CARRIER_OF => object(0)
+                .and_then(|o| self.objectives.get(&o).copied().flatten())
+                .map_or(-1, i32::from),
+            id::OBJECT_TEAM => object(0)
+                .and_then(|o| self.object_teams.get(&o))
+                .map_or(-1, |&t| i32::from(t)),
+            id::LABEL_NUMBER => object(0).and_then(|o| self.numbers.get(&o).copied()).unwrap_or(0),
+            id::INSIDE => match (call.args.first(), object(1)) {
+                (Some(Arg::Player(Some(p))), Some(z)) => self.inside.contains(&(*p, z)) as i32,
+                _ => 0,
+            },
             id::PLAYER_SCORE => p.map_or(0, |p| p.score),
             id::ALIVE => p.is_some_and(|p| p.alive) as i32,
             id::TEAM_OF => p.map_or(-1, |p| p.team as i32),
             id::LIVES => p.map_or(0, |p| p.lives),
+            id::KILLS => p.map_or(0, |p| p.kills),
+            id::DEATHS => p.map_or(0, |p| p.deaths),
             id::ROUND_TIME_LEFT => self.round_time_left,
             id::SQUAD_ALIVE => match call.args.first() {
                 Some(Arg::Squad(s)) => self.squad_alive.get(*s as usize).copied().unwrap_or(0),
@@ -119,6 +150,15 @@ impl Game for FakeGame {
 
     fn act(&mut self, call: &Call) {
         self.calls.push((call.entry.name, call.args.clone()));
+        if call.entry.id == id::REGISTER_OBJECTIVE
+            && let Some(Arg::Object(Some(o))) = call.args.first()
+        {
+            self.objectives.insert(*o, None);
+            if let Some(Arg::Team(Some(t))) = call.args.get(1) {
+                self.object_teams.insert(*o, *t);
+            }
+            return;
+        }
         let slot = match call.args.first() {
             Some(Arg::Player(Some(p))) => Some(*p),
             _ => None,

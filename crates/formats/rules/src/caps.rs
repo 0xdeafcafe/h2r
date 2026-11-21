@@ -208,6 +208,13 @@ pub mod id {
     pub const MIN: u16 = 36;
     pub const MAX: u16 = 37;
     pub const SQUAD: u16 = 38;
+    pub const CARRIER_OF: u16 = 39;
+    pub const OBJECT_TEAM: u16 = 40;
+    pub const INSIDE: u16 = 41;
+    pub const PLAYER_OF: u16 = 42;
+    pub const SPAWN_OBJECTIVE: u16 = 43;
+    pub const RESET_OBJECTIVE: u16 = 44;
+    pub const ROLE_TRAITS: u16 = 45;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -256,6 +263,29 @@ pub const ENTRIES: &[Entry] = &[
     vm(id::MIN, "min", &[Int, Int], Int),
     vm(id::MAX, "max", &[Int, Int], Int),
     vm(id::SQUAD, "squad", &[Int], Squad),
+    // The objective entries the engine ports need (rules-engine.md,
+    // "Porting the seven engines").
+    // An objective record's carrying player, `+0xc` (`engine::objectives`).
+    read(id::CARRIER_OF, "carrier_of", &[Object], Player, Named),
+    // An objective record's team (`+4`), or a netgame flag placement's team
+    // through its designator (`E+0x10`); neutral (8) reads as none.
+    read(id::OBJECT_TEAM, "object_team", &[Object], Team, Traced),
+    // The player's living unit inside a zone object: a labelled volume, a
+    // territory marker's capture volume, or a hill corner's hill.
+    read(id::INSIDE, "inside", &[Player, Object], Bool, NotBuilt),
+    // The player whose unit an object is (unit `+0x13c`).
+    read(id::PLAYER_OF, "player_of", &[Object], Player, Traced),
+    // Create an objective at a placement and register it with a team, as
+    // the CTF/Assault flag spawn `0x2422d0` and Oddball's `0x2bc1f0` do.
+    act(id::SPAWN_OBJECTIVE, "spawn_objective", &[Tag, Object, Team], None, Queued, Traced),
+    // Return an objective to where it spawned; the lifted engines' return
+    // path is not traced.
+    act(id::RESET_OBJECTIVE, "reset_objective", &[Object], None, Queued, Untraced),
+    // Apply (or clear) the carrier engine's role traits from the variant's
+    // type area: ball or flag carrier, the Juggernaut (with its bit of the
+    // role mask `[0x510c9c]+0`). The trait query `0x24dda0` has no direct
+    // call site.
+    act(id::ROLE_TRAITS, "role_traits", &[Player, Bool], None, Now, Untraced),
 ];
 
 /// The entry numbered `id` in `api`.
@@ -269,7 +299,13 @@ pub fn entry_named(name: &str) -> Option<&'static Entry> {
 }
 
 /// Retail record fields a script reads as `variant.<name>`, with the type
-/// it reads them as. The host maps each onto `variants::record`.
+/// it reads them as. The host maps each onto `variants::record`. New
+/// fields are appended: a blob names a field by its index.
+///
+/// The per-engine fields read the type area (`+0xf0..+0x10c`), whose
+/// meaning depends on the engine; each names its `record::SettingId` and
+/// offset. Meanings marked inferred come from the editor's page labels
+/// against `record::field` (docs/editor/variants.md), not from a reader.
 pub const VARIANT_FIELDS: &[(&str, Ty)] = &[
     ("team_play", Ty::Bool),
     ("score_limit", Ty::Int),
@@ -278,6 +314,32 @@ pub const VARIANT_FIELDS: &[(&str, Ty)] = &[
     ("respawn_time", Ty::Int),
     ("friendly_fire", Ty::Bool),
     ("rounds", Ty::Int),
+    // The engine index, `+0x44` (a CTF and an Assault game share a script).
+    ("engine", Ty::Int),
+    // Oddball: setting 43, i16 `+0xf4`, 0..3 (inferred: Ball Count).
+    ("oddball_ball_count", Ty::Int),
+    // King: setting 40, i16 `+0xf4`, seconds until the hill moves, 0 never
+    // (the KotH globals' `+0x1a4` counts it, bots.md 3.7).
+    ("king_moving_hill", Ty::Int),
+    // CTF and Assault: settings 50 and 59, i32 `+0x104`, 0..2; 1 is one
+    // flag or one bomb (`G+0x240 == 1`, bots.md 3.7).
+    ("ctf_flag_type", Ty::Int),
+    // CTF and Assault: settings 54 and 61, i32 `+0xf4`, seconds
+    // (inferred: Flag Reset Time, Bomb Reset Time).
+    ("ctf_reset_time", Ty::Int),
+    // CTF and Assault: settings 53 and 62, type-area bit 3 (inferred: Flag
+    // Touch Return, Bomb Touch Return).
+    ("ctf_touch_return", Ty::Bool),
+    // CTF: setting 52, type-area bit 2 (inferred: Flag At Home To Score).
+    ("ctf_flag_at_home", Ty::Bool),
+    // Assault: setting 63, i16 `+0x108`, seconds to arm (`G+0x244`,
+    // bots.md 3.7).
+    ("assault_arm_time", Ty::Int),
+    // Territories: setting 74, i16 `+0xf0`, 1..8 (Territory Count).
+    ("territories_count", Ty::Int),
+    // Territories: setting 98, i16 `+0xf2`, seconds (inferred: the
+    // contest time).
+    ("territories_contest_time", Ty::Int),
 ];
 
 /// The script's carrier engine: retail engine indices

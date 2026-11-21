@@ -161,6 +161,8 @@ pub fn game_of(scenario: &Scenario) -> FakeGame {
                 alive: p.alive,
                 score: p.score,
                 lives: p.lives,
+                kills: 0,
+                deaths: 0,
             },
         );
     }

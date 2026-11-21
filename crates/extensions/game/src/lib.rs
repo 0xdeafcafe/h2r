@@ -47,6 +47,9 @@ pub mod debug_views;
 pub mod dsound_glue;
 mod editor_glue;
 pub mod firefight;
+// Rules scripts on the authoritative machine (docs/game/rules-engine.md).
+#[cfg(feature = "rules")]
+pub mod rules;
 pub mod fov_row;
 #[cfg(feature = "gpu")]
 pub mod render_aspect;

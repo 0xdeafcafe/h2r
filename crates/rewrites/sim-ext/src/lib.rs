@@ -68,8 +68,10 @@ impl Kind {
 }
 
 /// `RulesExt`: the rules VM's variables, timers and generator state
-/// (docs/game/rules-engine.md, "Carrying a script": VM state 16 KiB). Opaque until
-/// the VM lands.
+/// (docs/game/rules-engine.md, "Carrying a script": VM state 16 KiB):
+/// `rules::RulesExt::encode`, set by the rules host runtime
+/// (`game::rules::runtime`) at a script game's start and removed at its
+/// end.
 pub const RULES: Kind = Kind::new("rules", 1, 16 * 1024);
 /// `ForgeExt`: emitter timers, logic node state, volume occupancy
 /// (docs/game/forge-design.md, slice F7). Opaque until F7 lands.

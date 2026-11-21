@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 use crate::caps::{self, Entry, Kind, Order, VARIANT_FIELDS};
 use crate::ir::*;
-use crate::ty::{MAX_LABELLED, MAX_PLAYERS, MAX_SQUADS, MAX_TEAMS, NONE, Ty, fixed};
+use crate::ty::{MAX_LABELLED, MAX_OBJECTIVES, MAX_PLAYERS, MAX_SQUADS, MAX_TEAMS, NONE, Ty, fixed};
 use crate::verify::{self, Refusal};
 
 /// Ops one tick may execute across all its handlers.
@@ -67,6 +67,11 @@ pub trait Game {
     fn teams(&self) -> Vec<u8>;
     /// The objects with a Forge label. Order does not matter.
     fn labelled(&self, label: &str) -> Vec<Placed>;
+    /// The objects of the objective registry (`E+0xc1c`). Order does not
+    /// matter.
+    fn objectives(&self) -> Vec<u32> {
+        Vec::new()
+    }
     /// A retail record field by its [`VARIANT_FIELDS`] name.
     fn variant(&self, field: &str) -> i32;
     /// A read entry. The VM maps a value outside the result type to its
@@ -1185,6 +1190,15 @@ impl<'a> Run<'a> {
                     .into_iter()
                     .filter_map(|p| i32::try_from(p.object).ok())
                     .take(MAX_LABELLED)
+                    .collect()
+            }
+            SetBase::Objectives => {
+                let mut list = game.objectives();
+                list.sort_unstable();
+                list.dedup();
+                list.into_iter()
+                    .filter_map(|o| i32::try_from(o).ok())
+                    .take(MAX_OBJECTIVES)
                     .collect()
             }
         }

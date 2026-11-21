@@ -186,6 +186,13 @@ impl AgentGlue {
             &agent,
             std::sync::Arc::new(crate::firefight::feature::AgentSource::installed()),
         );
+        // rules.state: the game's rules script, or why there is none
+        // (docs/game/rules-engine.md, "The host runtime").
+        #[cfg(feature = "rules")]
+        agent::rules::install(
+            &agent,
+            std::sync::Arc::new(crate::rules::feature::AgentSource::installed()),
+        );
         let probes = agent::probe::Probes::default();
         if registry.add(&probes).map_err(|e| anyhow::anyhow!("agent-probes: {e}"))? {
             probes.install(&agent, &sim);

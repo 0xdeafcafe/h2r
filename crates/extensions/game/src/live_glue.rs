@@ -50,7 +50,7 @@ pub fn install_configured(
         publisher,
         maps,
         build: build(),
-        capabilities: CAPABILITIES.iter().map(|c| c.to_string()).collect(),
+        capabilities: capabilities(),
         ..ServerOptions::default()
     };
     let hle = Hle::with_server_options(config.clone(), network, options)
@@ -84,6 +84,18 @@ fn register_network(
 /// What this build tells Live it can do, on every presence set
 /// (docs/game/game-options.md section 3, "Older builds").
 pub const CAPABILITIES: [&str; 1] = [live_proto::capability::VARIANT_EXT];
+
+/// [`CAPABILITIES`], and `rules/1` when the `rules` feature is on in
+/// `H2_FEATURES` (docs/game/rules-engine.md, "The IR and the VM", Versioning).
+pub fn capabilities() -> Vec<String> {
+    #[allow(unused_mut)]
+    let mut c: Vec<String> = CAPABILITIES.iter().map(|c| c.to_string()).collect();
+    #[cfg(feature = "rules")]
+    if hooks::Switches::from_env().is_ok_and(|s| crate::rules::feature::enabled(&s)) {
+        c.push(live_proto::capability::RULES.to_string());
+    }
+    c
+}
 
 static BUILD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
