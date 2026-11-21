@@ -121,6 +121,15 @@ describe("the game header's markup", () => {
     expect(html).toContain('data-emblem-fallback="/art/emblems/17-half-disc-stack.webp"');
   });
 
+  test("scores from the wire are rendered as text", () => {
+    const wire = JSON.parse(JSON.stringify(model));
+    wire.teams[0].score = "<team>";
+    wire.teams[0].players[0].score = "<player>";
+    const html = gameHeaderHtml(wire);
+    expect(html).toContain("&lt;team&gt;");
+    expect(html).toContain("&lt;player&gt;");
+  });
+
   test("every emblem element has fixed dimensions, so nothing shifts as it loads", () => {
     const imgs = gameHeaderHtml(model).match(/<img [^>]*>/g) ?? [];
     expect(imgs.length).toBeGreaterThan(0);

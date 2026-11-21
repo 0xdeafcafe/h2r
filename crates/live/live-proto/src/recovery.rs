@@ -233,7 +233,7 @@ impl RecoverRequest {
         if req.aud != aud {
             return Err(SignError::Claims("recover request is for another server"));
         }
-        if (req.iat - now).abs() > MAX_EVENT_SKEW_S {
+        if req.iat.abs_diff(now) > MAX_EVENT_SKEW_S as u64 {
             return Err(SignError::Claims(
                 "recover request iat is more than 5 minutes off",
             ));
@@ -405,6 +405,10 @@ mod tests {
         assert_eq!((req.gamertag.as_str(), &key), ("Alpha", device.public()));
         assert!(RecoverRequest::open(&jws, "other", 1000).is_err());
         assert!(RecoverRequest::open(&jws, "srv", 1000 + 301).is_err());
+        for at in [i64::MIN, i64::MAX] {
+            let stale = RecoverRequest::sign(&device, "Alpha", "srv", at);
+            assert!(RecoverRequest::open(&stale, "srv", 1000).is_err());
+        }
         // Signed by another key than the one it carries.
         let forged = KeyPair::generate().sign_json(TYP_RECOVER, &req);
         assert!(RecoverRequest::open(&forged, "srv", 1000).is_err());

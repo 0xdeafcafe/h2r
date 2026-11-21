@@ -85,6 +85,8 @@ impl LocalProvider {
         // EOF and closes its game even when Live could not run Drop.
         cmd.env("H2_HOST_PARENT_PIPE", "1");
         cmd.env("H2_HOST_LEASE_JSON", lease_json);
+        cmd.env("H2_TOKEN", &boot.token);
+        cmd.env("H2_DATA_URL", &boot.data_url);
         cmd.env("H2_HOST_ARCHIVE", boot.archive.as_str());
         cmd.args([
             "host",
@@ -93,10 +95,6 @@ impl LocalProvider {
             &lease.id,
             "--live",
             &boot.live_url,
-            "--token",
-            &boot.token,
-            "--data-url",
-            &boot.data_url,
             "--data-sha",
             &boot.data_sha256,
         ])

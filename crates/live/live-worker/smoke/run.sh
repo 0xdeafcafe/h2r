@@ -87,7 +87,7 @@ stop() {
 trap stop EXIT
 
 start first
-bun "$here/smoke/smoke.ts" "http://127.0.0.1:$port" --seed "$seed" --wake "${WAKE:-0}" --admin "$admin" --busy "${BUSY:-0}" ${BIG:+--big} | tee "$out/first.json"
+bun --env-file="$work/.dev.vars" "$here/smoke/smoke.ts" "http://127.0.0.1:$port" --seed "$seed" --wake "${WAKE:-0}" --admin "$admin" --busy "${BUSY:-0}" ${BIG:+--big} | tee "$out/first.json"
 grep -q '"ok": true' "$out/first.json" || { echo "smoke test failed" >&2; exit 1; }
 stop
 start restart

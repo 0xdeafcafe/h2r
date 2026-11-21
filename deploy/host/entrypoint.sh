@@ -24,8 +24,6 @@ fi
 set -- host run \
   --lease "$H2_LEASE" \
   --live "$H2_LIVE" \
-  --token "$H2_TOKEN" \
-  --data-url "$H2_DATA_URL" \
   --data-sha "$H2_DATA_SHA"
 if [ -n "${H2_REGION:-}" ]; then
   set -- "$@" --region "$H2_REGION"

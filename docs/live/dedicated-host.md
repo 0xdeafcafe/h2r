@@ -193,7 +193,7 @@ writable data and ports. The module and maps are memory-mapped from the
 same files, so the page cache shares them.
 
 **Supervisor.** `h2 host pack` listens on `H2_PACK_CONTROL` (default
-`0.0.0.0:31099`). Live adds a match with `POST /v1/pack/matches`, removes
+`127.0.0.1:31099`). Cloudflare packs explicitly bind their private container interface. Live adds a match with `POST /v1/pack/matches`, removes
 one with `DELETE /v1/pack/matches/<lease>`, reads one with
 `GET /v1/pack/matches/<lease>` and reads the whole pack with
 `GET /v1/pack`. Each slot *n* uses UDP `31000 + 7n` to `31006 + 7n`,
@@ -424,7 +424,7 @@ game-data bundle. Every required flag can also come from the environment.
 | `--data-sha` | `H2_DATA_SHA` | Bundle SHA-256 |
 | `--region` | `H2_REGION` | Optional provider region label |
 | `--base-port` | `H2_BASE_PORT` | XNet base port, default 31000 |
-| `--tunnel-listen` | `H2_TUNNEL_LISTEN` | Internal tunnel listener, default `0.0.0.0:31100` |
+| `--tunnel-listen` | `H2_TUNNEL_LISTEN` | Internal tunnel listener, default `127.0.0.1:31100` |
 | `--out` | `H2_IMAGE` | Prebuilt game module directory, default `$TMPDIR/h2boot` |
 | `--data` | `H2_DATA` | Writable game data directory, default private per-run scratch space |
 |  | `H2_AGENT` | Optional TCP endpoint for the child's agent, as `tcp://HOST:PORT` |
@@ -696,7 +696,8 @@ reserved roster and keep the service account out of ranks and scores.
 
 ## Host tunnel
 
-Set `H2_TUNNEL_LISTEN=0.0.0.0:31100` in the dedicated game process.
+Local supervisors bind the tunnel to loopback. Cloudflare sets
+`H2_TUNNEL_LISTEN=0.0.0.0:31100` inside its private container.
 The listener starts on its first initialized XNet call and serves one
 lease. Keep this port on the private network between the game host and
 the upstream proxy. Live authenticates and admits the client first. The

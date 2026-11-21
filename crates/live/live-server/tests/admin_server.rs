@@ -53,12 +53,13 @@ async fn account(h: &Harness, tag: &str) -> User {
     }
     let key = KeyPair::generate();
     let code = live_proto::sign::Invite::issue(&h.operator, &h.id, now() + 3600);
+    let proof = AccountRequest::sign(&key, tag, Some(code), &h.id, now());
     let r = h
         .call(
             Method::POST,
             "/v1/accounts",
-            &[],
-            AccountRequest::sign(&key, tag, Some(code), "live.test", now()),
+            &h.signup_headers(tag, &proof),
+            proof,
         )
         .await;
     assert_eq!(
@@ -89,6 +90,58 @@ async fn sign_up(h: &Harness, tag: &str, code: &str) -> common::Resp {
         ),
     )
     .await
+}
+
+#[tokio::test]
+async fn reserved_signup_needs_the_operator_and_the_account_proof() {
+    let h = server(false, false).await;
+    let player = h.create("Member").await;
+    let key = KeyPair::generate();
+    let proof = AccountRequest::sign(&key, "bOsS", None, &h.id, now());
+    let signup = |headers: Vec<(&'static str, String)>| {
+        let h = &h;
+        let proof = proof.clone();
+        async move {
+            h.call(Method::POST, "/v1/accounts", &headers, proof)
+                .await
+                .status
+        }
+    };
+    assert_eq!(signup(vec![]).await, StatusCode::UNAUTHORIZED);
+    let scope = AccountRequest::operator_scope(&proof);
+    let token = h.token(&player.key, &player.author, &scope);
+    assert_eq!(
+        signup(vec![("authorization", format!("Bearer {token}"))]).await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        signup(vec![operator_auth(&h, "admin.write")]).await,
+        StatusCode::UNAUTHORIZED
+    );
+    let other = AccountRequest::sign(&KeyPair::generate(), "Boss", None, &h.id, now());
+    assert_eq!(
+        signup(vec![operator_auth(
+            &h,
+            &AccountRequest::operator_scope(&other)
+        )])
+        .await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert!(
+        h.call(
+            Method::POST,
+            "/v1/accounts",
+            &[operator_auth(&h, &scope)],
+            "invalid".to_string()
+        )
+        .await
+        .status
+        .is_client_error()
+    );
+    assert_eq!(
+        signup(vec![operator_auth(&h, &scope)]).await,
+        StatusCode::CREATED
+    );
 }
 
 fn created_event(h: &Harness, user: &User, jti: &str, exp: i64) -> String {

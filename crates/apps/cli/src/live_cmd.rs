@@ -64,7 +64,7 @@ const USAGE: &str = "usage: h2 live <command> [options]
                           --behind-cloudflared that proxy is a cloudflared
                           you run (CF-Connecting-IP trusted from loopback,
                           the URL's host the id on first start)
-  account create <gamertag> [--server URL] [--invite CODE]
+  account create <gamertag> [--server URL] [--invite CODE] [--operator-data DIR]
                           make a key, register it, keep both in accounts.json;
                           prints the recovery code and authenticator key
   account code [--as GAMERTAG] [--server URL]
@@ -549,6 +549,8 @@ pub(crate) struct Client {
     pub(crate) api: String,
     pub(crate) discovery: Discovery,
     pub(crate) agent: ureq::Agent,
+    /// Only set for explicit operator registration or our own embedded server.
+    pub(crate) signup_operator: Option<ServerIdentity>,
 }
 
 /// `--server`, else `$H2_LIVE_SERVER`, else the local default.
@@ -565,6 +567,7 @@ impl Client {
     pub(crate) fn at(base: &str) -> Result<Self> {
         let base = base.trim_end_matches('/').to_string();
         let agent = ureq::AgentBuilder::new()
+            .redirects(0)
             .timeout(Duration::from_secs(30))
             .build();
         let url = format!("{base}/.well-known/h2live.json");
@@ -576,6 +579,7 @@ impl Client {
             api,
             discovery,
             agent,
+            signup_operator: None,
         })
     }
 
@@ -619,24 +623,39 @@ impl Client {
         gamertag: &str,
         invite: Option<String>,
     ) -> Result<(CreatedAccount, KeyPair)> {
+        self.check_credential_transport(&self.api)?;
         let req = self
             .agent
             .post(&self.url("/accounts"))
             .set("content-type", "application/jose");
         let body = AccountRequest::sign(&key, gamertag, invite, &self.discovery.id, now());
+        let req = if let Some(operator) = &self.signup_operator {
+            let token = issue_token(
+                &operator.key,
+                &operator.author(),
+                &self.discovery.id,
+                &AccountRequest::operator_scope(&body),
+                now(),
+            );
+            self.authorized(req, token)?
+        } else {
+            req
+        };
         let created = serde_json::from_str(&call(req, Some(body.as_bytes()))?)?;
         Ok((created, key))
     }
 
     /// Adds a bearer token, refusing to send one in the clear.
     pub(crate) fn authorized(&self, req: ureq::Request, token: String) -> Result<ureq::Request> {
-        if !bearer_allowed(req.url()) {
-            bail!(
-                "refusing to send a token over plain HTTP to {}; use https",
-                self.base
-            );
-        }
+        self.check_credential_transport(req.url())?;
         Ok(req.set("authorization", &format!("Bearer {token}")))
+    }
+
+    pub(crate) fn check_credential_transport(&self, destination: &str) -> Result<()> {
+        if !bearer_allowed(&self.base) || !bearer_allowed(destination) {
+            bail!("Live credentials require HTTPS or loopback");
+        }
+        Ok(())
     }
 }
 
@@ -711,6 +730,7 @@ pub(crate) fn now() -> i64 {
 }
 
 fn account_create(mut args: Args) -> Result<()> {
+    let operator_data = args.take("--operator-data")?;
     let server = args.take("--server")?;
     let invite = args.take("--invite")?;
     let [gamertag] = args.positional()?.try_into().map_err(|_| {
@@ -718,7 +738,10 @@ fn account_create(mut args: Args) -> Result<()> {
     })?;
     let tag = Gamertag::new(&gamertag)
         .with_context(|| format!("{gamertag:?} is not a valid gamertag"))?;
-    let client = Client::connect(server)?;
+    let mut client = Client::connect(server)?;
+    if operator_data.is_some() {
+        client.signup_operator = Some(operator(operator_data, &client)?);
+    }
     let (created, key) = client.create_account(tag.as_str(), invite)?;
     let path = accounts_path()?;
     let account = LocalAccount::new(
@@ -1346,6 +1369,27 @@ mod tests {
 
     fn args(s: &[&str]) -> Args {
         Args(s.iter().map(|s| s.to_string()).collect())
+    }
+
+    #[test]
+    fn signup_checks_both_home_and_api_before_sending_credentials() {
+        let safe = "https://home.example";
+        let clear = "http://home.example";
+        for (base, api) in [(safe, clear), (clear, safe)] {
+            let client = Client {
+                base: base.into(),
+                api: api.into(),
+                discovery: serde_json::from_value(serde_json::json!({
+                    "id": "test", "api": "/v1", "keys": [], "software": "test", "federation": false
+                }))
+                .unwrap(),
+                agent: ureq::agent(),
+                signup_operator: None,
+            };
+            assert!(
+                matches!(client.create_account("Example", None), Err(e) if e.to_string().contains("HTTPS"))
+            );
+        }
     }
 
     #[test]

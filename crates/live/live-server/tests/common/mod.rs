@@ -139,14 +139,34 @@ impl Harness {
         issue_token(key, iss, &self.id, method, now())
     }
 
+    pub fn signup_headers(&self, tag: &str, proof: &str) -> Vec<(&'static str, String)> {
+        let configured = self
+            .live
+            .policy()
+            .admins
+            .iter()
+            .any(|a| a.as_str().eq_ignore_ascii_case(tag));
+        if configured {
+            let token = self.token(
+                &self.operator,
+                &format!("server:{}", self.id),
+                &AccountRequest::operator_scope(proof),
+            );
+            vec![("authorization", format!("Bearer {token}"))]
+        } else {
+            Vec::new()
+        }
+    }
+
     pub async fn create(&self, gamertag: &str) -> User {
         let key = KeyPair::generate();
+        let proof = AccountRequest::sign(&key, gamertag, None, &self.id, now());
         let r = self
             .call(
                 Method::POST,
                 "/v1/accounts",
-                &[],
-                AccountRequest::sign(&key, gamertag, None, "live.test", now()),
+                &self.signup_headers(gamertag, &proof),
+                proof,
             )
             .await;
         assert_eq!(

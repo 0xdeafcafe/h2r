@@ -67,6 +67,23 @@ describe("codes", () => {
   });
 });
 
+describe("account transport", () => {
+  test("refuses insecure discovery and API addresses before sending credentials", async () => {
+    const { calls, f } = recorder(() => json({}));
+    for (const [api, base] of [
+      ["https://home.test/v1", "http://home.test"],
+      ["http://home.test/v1", "https://home.test"],
+    ] as const) {
+      await expect(signUp(api, base, "home", "Mochi", undefined, f)).rejects.toThrow("HTTPS");
+      await expect(recoverAccount(api, base, "home", "Mochi", "123456", f)).rejects.toThrow("HTTPS");
+    }
+    expect(calls).toHaveLength(0);
+    const loop = recorder(() => json({ xuid: "0009aaaaaaaaaaaa", gamertag: "Mochi", id: "local" }, 201));
+    await signUp("http://127.0.0.1/v1", "http://127.0.0.1", "home", "Mochi", undefined, loop.f);
+    expect(loop.calls[0]!.init.redirect).toBe("error");
+  });
+});
+
 describe("the recovery object", () => {
   test("parses, formats the code, and is null when absent or wrong", () => {
     expect(parseRecovery({ ...REC, code: "123456" })).toEqual(REC);
@@ -77,10 +94,10 @@ describe("the recovery object", () => {
 
   test("sign-up hands back the recovery setup, or null from an older server", async () => {
     const reply = (recovery?: unknown) => recorder(() => json({ xuid: "0009aaaaaaaaaaaa", gamertag: "Mochi", id: "acct:0009aaaaaaaaaaaa@h", ...(recovery ? { recovery } : {}) }, 201)).f;
-    const withRec = await signUp("http://h/v1", "http://h", "h", "Mochi", undefined, reply(REC));
+    const withRec = await signUp("https://h/v1", "https://h", "h", "Mochi", undefined, reply(REC));
     expect(withRec.recovery).toEqual(REC);
     expect(withRec.account.gamertag).toBe("Mochi");
-    const old = await signUp("http://h/v1", "http://h", "h", "Mochi", undefined, reply());
+    const old = await signUp("https://h/v1", "https://h", "h", "Mochi", undefined, reply());
     expect(old.recovery).toBeNull();
     expect(old.account.xuid).toBe("0009aaaaaaaaaaaa");
   });
@@ -111,9 +128,9 @@ describe("the recover request", () => {
 
   test("recoverAccount posts {request, code} and keeps the new key", async () => {
     const { f, calls } = recorder(() => json({ xuid: "0009aaaaaaaaaaaa", gamertag: "Sneaky Pete", id: "acct:0009aaaaaaaaaaaa@h" }, 201));
-    const a = await recoverAccount("http://h/v1", "http://h", "h", "Sneaky Pete", "123 456", f, 1_800_000_123_456);
+    const a = await recoverAccount("https://h/v1", "https://h", "h", "Sneaky Pete", "123 456", f, 1_800_000_123_456);
     const c = calls[0]!;
-    expect(c.url).toBe("http://h/v1/accounts/Sneaky%20Pete/recover");
+    expect(c.url).toBe("https://h/v1/accounts/Sneaky%20Pete/recover");
     expect(c.init.method).toBe("POST");
     expect(new Headers(c.init.headers).get("content-type")).toBe("application/json");
     const body = JSON.parse(String(c.init.body)) as { request: string; code: string };
@@ -126,7 +143,7 @@ describe("the recover request", () => {
     expect(payload.jwk.x).toBe(a.x);
     expect(req.header.kid).toBe(a.kid);
     expect((await importSeed(a.key, a.x)).publicJwk.kid).toBe(a.kid);
-    expect(a).toMatchObject({ xuid: "0009aaaaaaaaaaaa", gamertag: "Sneaky Pete", id: "acct:0009aaaaaaaaaaaa@h", server: "http://h", server_id: "h" });
+    expect(a).toMatchObject({ xuid: "0009aaaaaaaaaaaa", gamertag: "Sneaky Pete", id: "acct:0009aaaaaaaaaaaa@h", server: "https://h", server_id: "h" });
   });
 
   test("refusals read well", async () => {
@@ -138,37 +155,37 @@ describe("the recover request", () => {
     ];
     for (const [status, error, msg] of tries) {
       const { f } = recorder(() => json({ error, message: "bad nonce" }, status));
-      const e = await recoverAccount("http://h/v1", "http://h", "h", "Mochi", "123456", f).catch((x) => x);
+      const e = await recoverAccount("https://h/v1", "https://h", "h", "Mochi", "123456", f).catch((x) => x);
       expect(e).toBeInstanceOf(RecoverError);
       expect(e.status).toBe(status);
       expect(e.code).toBe(error);
       expect(e.message).toMatch(msg);
     }
     const { f, calls } = recorder(() => json({}, 201));
-    await expect(recoverAccount("http://h/v1", "http://h", "h", "Mochi", "12345", f)).rejects.toThrow("6 digits");
-    await expect(recoverAccount("http://h/v1", "http://h", "h", "1bad", "123456", f)).rejects.toThrow("gamertag");
+    await expect(recoverAccount("https://h/v1", "https://h", "h", "Mochi", "12345", f)).rejects.toThrow("6 digits");
+    await expect(recoverAccount("https://h/v1", "https://h", "h", "1bad", "123456", f)).rejects.toThrow("gamertag");
     expect(calls).toHaveLength(0);
   });
 });
 
 function me(xuid: string, server = HOST): LocalAccount {
-  return { xuid, gamertag: "afr", id: `acct:${xuid}@${server}`, server: "http://m", server_id: server, kid: RFC.kid, key: RFC.d, x: RFC.x };
+  return { xuid, gamertag: "afr", id: `acct:${xuid}@${server}`, server: "https://m", server_id: server, kid: RFC.kid, key: RFC.d, x: RFC.x };
 }
 
 describe("reading and setting up", () => {
   test("GET with a recovery.read token; 404 is no recovery", async () => {
     const { f, calls } = recorder((url) => (url.includes("0009000000000001") ? json(REC) : json({ error: "not_found" }, 404)));
-    expect(await fetchRecovery("http://h/v1", "aud", me("0009000000000001"), f)).toEqual(REC);
-    expect(calls[0]!.url).toBe("http://h/v1/accounts/by-xuid/0009000000000001/recovery");
+    expect(await fetchRecovery("https://h/v1", "aud", me("0009000000000001"), f)).toEqual(REC);
+    expect(calls[0]!.url).toBe("https://h/v1/accounts/by-xuid/0009000000000001/recovery");
     const t = tokenOf(calls[0]!.init);
     expect((t.payload as { lxm: string; aud: string }).lxm).toBe("recovery.read");
     expect((t.payload as { aud: string }).aud).toBe("aud");
-    expect(await fetchRecovery("http://h/v1", "aud", me("0009000000000002"), f)).toBeNull();
+    expect(await fetchRecovery("https://h/v1", "aud", me("0009000000000002"), f)).toBeNull();
   });
 
   test("POST with a recovery.write token and no body", async () => {
     const { f, calls } = recorder(() => json(REC, 201));
-    expect(await setupRecovery("http://h/v1", "aud", me("0009000000000001"), f)).toEqual(REC);
+    expect(await setupRecovery("https://h/v1", "aud", me("0009000000000001"), f)).toEqual(REC);
     expect(calls[0]!.init.method).toBe("POST");
     expect(calls[0]!.init.body).toBeUndefined();
     expect((tokenOf(calls[0]!.init).payload as { lxm: string }).lxm).toBe("recovery.write");
@@ -191,17 +208,17 @@ describe("the mock's recovery endpoints", () => {
   test("none until set up; the code is the secret's TOTP; a reset changes the secret", async () => {
     const { a, f, now } = setup();
     const account = me(a.xuid);
-    expect(await fetchRecovery("http://m/v1", HOST, account, f, now())).toBeNull();
-    const first = await setupRecovery("http://m/v1", HOST, account, f, now());
+    expect(await fetchRecovery("https://m/v1", HOST, account, f, now())).toBeNull();
+    const first = await setupRecovery("https://m/v1", HOST, account, f, now());
     expect(first.secret).toMatch(/^[A-Z2-7]{32}$/);
     expect(first.otpauth).toStartWith("otpauth://totp/");
     expect(first.code).toBe(formatCode(await totp(base32Decode(first.secret), now() / 1000)));
     expect(first.expires_at % 30).toBe(0);
-    expect((await fetchRecovery("http://m/v1", HOST, account, f, now()))!.secret).toBe(first.secret);
-    const second = await setupRecovery("http://m/v1", HOST, account, f, now());
+    expect((await fetchRecovery("https://m/v1", HOST, account, f, now()))!.secret).toBe(first.secret);
+    const second = await setupRecovery("https://m/v1", HOST, account, f, now());
     expect(second.secret).not.toBe(first.secret);
     // A token from another account is refused.
-    await expect(fetchRecovery("http://m/v1", HOST, { ...account, id: `acct:0009000000000099@${HOST}` }, f, now())).rejects.toMatchObject({ status: 403 });
+    await expect(fetchRecovery("https://m/v1", HOST, { ...account, id: `acct:0009000000000099@${HOST}` }, f, now())).rejects.toMatchObject({ status: 403 });
   });
 
   test("recover: wrong codes, the lockout, then the right code moves the account to the new key", async () => {
@@ -210,23 +227,23 @@ describe("the mock's recovery endpoints", () => {
     const good = await totp(base32Decode(r.secret), now() / 1000);
     const bad = String((Number(good) + 500_000) % 1_000_000).padStart(6, "0");
     for (let i = 0; i < 5; i++) {
-      await expect(recoverAccount("http://m/v1", "http://m", HOST, "afr", bad, f, now())).rejects.toMatchObject({ status: 403 });
+      await expect(recoverAccount("https://m/v1", "https://m", HOST, "afr", bad, f, now())).rejects.toMatchObject({ status: 403 });
     }
-    await expect(recoverAccount("http://m/v1", "http://m", HOST, "afr", good, f, now())).rejects.toMatchObject({ status: 429 });
+    await expect(recoverAccount("https://m/v1", "https://m", HOST, "afr", good, f, now())).rejects.toMatchObject({ status: 429 });
     advance(61_000);
     const code = await totp(base32Decode(r.secret), now() / 1000);
-    const back = await recoverAccount("http://m/v1", "http://m", HOST, "afr", formatCode(code), f, now());
+    const back = await recoverAccount("https://m/v1", "https://m", HOST, "afr", formatCode(code), f, now());
     expect(back.xuid).toBe(a.xuid);
     expect(a.key.kid).toBe(back.kid);
     expect(a.key.jwk.x).toBe(back.x);
     // The new key reads recovery; the old one no longer does.
-    expect((await fetchRecovery("http://m/v1", HOST, back, f, now()))!.secret).toBe(r.secret);
-    await expect(fetchRecovery("http://m/v1", HOST, me(a.xuid), f, now())).rejects.toMatchObject({ status: 401 });
-    await expect(recoverAccount("http://m/v1", "http://m", HOST, "nobody", "123456", f, now())).rejects.toMatchObject({ status: 404 });
+    expect((await fetchRecovery("https://m/v1", HOST, back, f, now()))!.secret).toBe(r.secret);
+    await expect(fetchRecovery("https://m/v1", HOST, me(a.xuid), f, now())).rejects.toMatchObject({ status: 401 });
+    await expect(recoverAccount("https://m/v1", "https://m", HOST, "nobody", "123456", f, now())).rejects.toMatchObject({ status: 404 });
   });
 
   test("an account without recovery can't be taken over", async () => {
     const { f, now } = setup();
-    await expect(recoverAccount("http://m/v1", "http://m", HOST, "afr", "123456", f, now())).rejects.toMatchObject({ status: 403 });
+    await expect(recoverAccount("https://m/v1", "https://m", HOST, "afr", "123456", f, now())).rejects.toMatchObject({ status: 403 });
   });
 });

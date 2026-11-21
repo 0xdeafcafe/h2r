@@ -658,6 +658,19 @@ pub mod http {
                 Parse::Partial
             };
         };
+        if head.len() > MAX_HEAD {
+            return Parse::Invalid("head too large");
+        }
+        // Control callers are native processes or private Worker subrequests.
+        // A browser must never drive the local supervisor.
+        if head.split("\r\n").skip(1).any(|line| {
+            line.split_once(':').is_some_and(|(name, _)| {
+                name.trim().eq_ignore_ascii_case("origin")
+                    || name.trim().eq_ignore_ascii_case("sec-fetch-site")
+            })
+        }) {
+            return Parse::Invalid("browser requests are forbidden");
+        }
         let mut words = head.split("\r\n").next().unwrap_or("").split(' ');
         let (Some(method), Some(path), Some(version), None) =
             (words.next(), words.next(), words.next(), words.next())

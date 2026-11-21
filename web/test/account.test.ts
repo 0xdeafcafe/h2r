@@ -82,20 +82,20 @@ describe("sign-up crypto", () => {
       seen = { url, type: new Headers(init.headers).get("content-type"), body: String(init.body), aud: body.aud, iat: body.iat };
       return new Response(JSON.stringify({ xuid: "0009aaaaaaaaaaaa", gamertag: body.gamertag, id: "acct:0009aaaaaaaaaaaa@h" }), { status: 201 });
     }) as unknown as typeof fetch;
-    const a = await createAccount("http://h/v1", "http://h", "h", "Mochi", undefined, fakeFetch, 1_800_000_123_456);
-    expect(seen!.url).toBe("http://h/v1/accounts");
+    const a = await createAccount("https://h/v1", "https://h", "h", "Mochi", undefined, fakeFetch, 1_800_000_123_456);
+    expect(seen!.url).toBe("https://h/v1/accounts");
     expect(seen!.type).toBe("application/jose");
     // The request names the server (its well-known id) and the time in seconds.
     expect(seen!.aud).toBe("h");
     expect(seen!.iat).toBe(1_800_000_123);
     const file = JSON.parse(accountsFile(a));
-    expect(file).toEqual([{ xuid: "0009aaaaaaaaaaaa", gamertag: "Mochi", id: "acct:0009aaaaaaaaaaaa@h", server: "http://h", server_id: "h", kid: a.kid, key: { kty: "OKP", crv: "Ed25519", x: a.x, d: a.key } }]);
+    expect(file).toEqual([{ xuid: "0009aaaaaaaaaaaa", gamertag: "Mochi", id: "acct:0009aaaaaaaaaaaa@h", server: "https://h", server_id: "h", kid: a.kid, key: { kty: "OKP", crv: "Ed25519", x: a.x, d: a.key } }]);
     // The stored seed really is the key that signed.
     expect((await importSeed(a.key, a.x)).publicJwk.kid).toBe(a.kid);
   });
 
   test("a taken gamertag reads well", async () => {
     const fakeFetch = (async () => new Response(JSON.stringify({ error: "conflict", message: "taken" }), { status: 409 })) as unknown as typeof fetch;
-    await expect(createAccount("http://h/v1", "http://h", "h", "Mochi", undefined, fakeFetch)).rejects.toThrow("already has");
+    await expect(createAccount("https://h/v1", "https://h", "h", "Mochi", undefined, fakeFetch)).rejects.toThrow("already has");
   });
 });

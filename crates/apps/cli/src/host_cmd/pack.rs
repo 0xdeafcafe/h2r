@@ -32,9 +32,9 @@ mod measure;
 use measure::Meter;
 
 pub(super) const USAGE: &str = "usage:
-  h2 host pack [--control-listen 0.0.0.0:31099] [--max-matches 5]
+  h2 host pack [--control-listen 127.0.0.1:31099] [--max-matches 5]
                [--vcpus N] [--memory-mib MIB] [--linger-s 60]
-               [--base-port 31000] [--tunnel-listen 0.0.0.0:31100]
+               [--base-port 31000] [--tunnel-listen 127.0.0.1:31100]
                [--agent-port 14720] [--data DIR]";
 
 const SAMPLE: Duration = Duration::from_secs(2);
@@ -89,7 +89,7 @@ impl Options {
                 .or_else(|| env(name).filter(|v| !v.trim().is_empty()))
         };
         let control: SocketAddr = value("--control-listen", "H2_PACK_CONTROL")
-            .unwrap_or_else(|| format!("0.0.0.0:{}", host_pack::CONTROL_PORT))
+            .unwrap_or_else(|| format!("127.0.0.1:{}", host_pack::CONTROL_PORT))
             .parse()
             .context("--control-listen must be an IP address and port")?;
         let max_matches: usize = value("--max-matches", "H2_PACK_MAX_MATCHES")
@@ -118,7 +118,7 @@ impl Options {
             .map_or(Ok(host_pack::BASE_PORT), |v| v.parse())
             .context("--base-port must be a port")?;
         let tunnel: SocketAddr = value("--tunnel-listen", "H2_TUNNEL_LISTEN")
-            .unwrap_or_else(|| format!("0.0.0.0:{}", host_pack::TUNNEL_PORT))
+            .unwrap_or_else(|| format!("127.0.0.1:{}", host_pack::TUNNEL_PORT))
             .parse()
             .context("--tunnel-listen must be an IP address and port")?;
         let agent_port = value("--agent-port", "H2_PACK_AGENT_PORT")
@@ -627,10 +627,6 @@ fn launcher(opts: &Options, mut control: SocketAddr) -> Result<Launch> {
             &control.to_string(),
             "--live",
             &add.live,
-            "--token",
-            &add.token,
-            "--data-url",
-            &add.data_url,
             "--data-sha",
             &add.data_sha,
             "--archive",
@@ -650,8 +646,6 @@ fn launcher(opts: &Options, mut control: SocketAddr) -> Result<Launch> {
         }
         for name in [
             "H2_LEASE",
-            "H2_TOKEN",
-            "H2_DATA_URL",
             "H2_DATA_SHA",
             "H2_REGION",
             "H2_BASE_PORT",
@@ -667,7 +661,9 @@ fn launcher(opts: &Options, mut control: SocketAddr) -> Result<Launch> {
         }
         let phase_ns = (1_000_000_000 / 30) * u64::from(slot) / slots;
         cmd.env("H2_HOST_TICK_PHASE_NS", phase_ns.to_string());
-        cmd.env("H2_HOST_LEASE_JSON", &add.lease_json)
+        cmd.env("H2_TOKEN", &add.token)
+            .env("H2_DATA_URL", &add.data_url)
+            .env("H2_HOST_LEASE_JSON", &add.lease_json)
             // Each match gets a private diagnostic agent of its own.
             .env(
                 agent_proto::ENV,

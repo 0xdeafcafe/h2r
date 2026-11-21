@@ -16,14 +16,15 @@ mod sim_run;
 mod supervisor;
 
 const USAGE: &str = "usage:
-  h2 host run --lease ID --live URL --token TOKEN --data-url URL --data-sha SHA256
-              [--region REGION] [--base-port 31000] [--tunnel-listen 0.0.0.0:31100]
+  h2 host run --lease ID --live URL --data-sha SHA256
+              [--region REGION] [--base-port 31000] [--tunnel-listen 127.0.0.1:31100]
               [--out DIR] [--data DIR] [--film FILE] [--archive dual|film]
-  h2 host pack [--control-listen 0.0.0.0:31099] [--max-matches 5]
+  h2 host pack [--control-listen 127.0.0.1:31099] [--max-matches 5]
                [--vcpus N] [--memory-mib MIB] [--linger-s 60] [--data DIR]
   h2 host bundle --disc ISO --out DIR
 
-See docs/live/dedicated-host.md for environment variables and boot inputs.";
+Supply H2_TOKEN and H2_DATA_URL in the host environment.
+See docs/live/dedicated-host.md for other boot inputs.";
 
 pub fn run(args: Vec<String>) -> Result<()> {
     let mut args = args.into_iter();

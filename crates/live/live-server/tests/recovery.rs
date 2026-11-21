@@ -238,6 +238,51 @@ async fn wrong_codes_lock_only_the_gamertag_and_client_ip_pair() {
 }
 
 #[tokio::test]
+async fn recovery_budget_follows_the_account_across_clients() {
+    let policy = Policy::default();
+    policy.public.set_edge("https://live.test");
+    let h = start(Arc::new(MemoryStore::new()), policy).await;
+    let (_, info) = create(&h, "Alice", None).await;
+    let alice = secret(&info);
+    let at = now();
+    // Use a known incorrect test code across the adjacent time steps.
+    let wrong = format_code(
+        (0..1_000_000)
+            .find(|&code| {
+                [-30, 0, 30]
+                    .iter()
+                    .all(|offset| alice.verify(code, at + offset).is_none())
+            })
+            .unwrap(),
+    );
+    let device = KeyPair::generate();
+    for client in 1..=10 {
+        let peer = [("cf-connecting-ip", format!("192.0.2.{client}"))];
+        assert_eq!(
+            recover_from(&h, &peer, "Alice", &wrong, &device)
+                .await
+                .status,
+            StatusCode::FORBIDDEN
+        );
+    }
+    let peer = [("cf-connecting-ip", "192.0.2.11".into())];
+    assert_eq!(
+        recover_from(&h, &peer, "ALICE", &wrong, &device)
+            .await
+            .status,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    let (_, other) = create(&h, "Other", None).await;
+    let good = format_code(secret(&other).code_at(now()));
+    assert_eq!(
+        recover_from(&h, &peer, "Other", &good, &device)
+            .await
+            .status,
+        StatusCode::CREATED
+    );
+}
+
+#[tokio::test]
 async fn recovery_request_budget_is_per_ip_and_independent_of_signup() {
     let policy = Policy {
         create_rate: (0.0, 1),

@@ -542,13 +542,13 @@ impl Token {
         if c.lxm != lxm {
             return Err(SignError::Claims("token lxm does not name this method"));
         }
-        if c.exp - c.iat > MAX_TOKEN_LIFETIME_S || c.exp < c.iat {
+        if c.exp < c.iat || c.exp.abs_diff(c.iat) > MAX_TOKEN_LIFETIME_S as u64 {
             return Err(SignError::Claims("token lifetime exceeds 60 s"));
         }
-        if c.iat > now + TOKEN_LEEWAY_S {
+        if c.iat > now.saturating_add(TOKEN_LEEWAY_S) {
             return Err(SignError::Claims("token issued in the future"));
         }
-        if c.exp + TOKEN_LEEWAY_S < now {
+        if c.exp < now.saturating_sub(TOKEN_LEEWAY_S) {
             return Err(SignError::Claims("token expired"));
         }
         Ok(())
@@ -570,6 +570,11 @@ pub struct AccountRequest {
 }
 
 impl AccountRequest {
+    /// Operator approval for this exact signed registration (name, device, invite and nonce).
+    pub fn operator_scope(jws: &str) -> String {
+        format!("accounts.reserve.{}", hex(&Sha256::digest(jws.as_bytes())))
+    }
+
     pub fn sign(
         key: &KeyPair,
         gamertag: &str,
@@ -600,7 +605,7 @@ impl AccountRequest {
         if req.aud != aud {
             return Err(SignError::Claims("account request is for another server"));
         }
-        if (req.iat - now).abs() > MAX_EVENT_SKEW_S {
+        if req.iat.abs_diff(now) > MAX_EVENT_SKEW_S as u64 {
             return Err(SignError::Claims(
                 "account request iat is more than 5 minutes off",
             ));
@@ -827,6 +832,15 @@ mod tests {
             jti: "j".into(),
             lxm: "m".into(),
         };
+        for (iat, exp) in [(i64::MIN, NOW), (NOW, i64::MAX), (i64::MAX, i64::MIN)] {
+            let claims = Claims {
+                iat,
+                exp,
+                ..long.clone()
+            };
+            let t = Token::parse(&key.sign_json(TYP_TOKEN, &claims)).unwrap();
+            assert!(t.verify(pk, "h", "m", NOW).is_err());
+        }
         let long = Token::parse(&key.sign_json(TYP_TOKEN, &long)).unwrap();
         assert_eq!(
             long.verify(pk, "h", "m", NOW),
@@ -846,6 +860,10 @@ mod tests {
         // Another server, or stale.
         assert!(AccountRequest::open(&jws, "other", NOW).is_err());
         assert!(AccountRequest::open(&jws, "h", NOW + 301).is_err());
+        for at in [i64::MIN, i64::MAX] {
+            let stale = AccountRequest::sign(&key, "Example", None, "h", at);
+            assert!(AccountRequest::open(&stale, "h", NOW).is_err());
+        }
         // Signed by a key other than the one it carries.
         let other = KeyPair::generate();
         let body = AccountRequest {

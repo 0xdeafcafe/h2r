@@ -21,10 +21,8 @@ pub fn host_perf(local: &Path) -> bool {
     flag(local, HOST_PERF_DEFAULT, HOST_PERF_ON, HOST_PERF_OFF)
 }
 
-/// The agent API over TCP (docs/runtime/xbox.md, "Remote control"): on
-/// by default in these dev builds, so an agent on the Mac can drive and
-/// profile the game. A file `agent-off` in LocalState turns it off.
-pub const AGENT_DEFAULT: bool = true;
+/// The TCP agent is enabled explicitly through LocalState on a trusted LAN.
+pub const AGENT_DEFAULT: bool = false;
 pub const AGENT_OFF: &str = "agent-off";
 pub const AGENT_ON: &str = "agent-on";
 /// The port it listens on, on every interface (`agent_proto::XBOX_PORT`;
@@ -114,7 +112,7 @@ mod tests {
             host_perf(Path::new("/nonexistent/local/state")),
             HOST_PERF_DEFAULT
         );
-        assert_eq!(agent(Path::new("/nonexistent/local/state")), AGENT_DEFAULT);
+        assert!(!agent(Path::new("/nonexistent/local/state")));
         assert_eq!(agent_endpoint(), "tcp://0.0.0.0:4720");
     }
 

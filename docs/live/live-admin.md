@@ -24,8 +24,11 @@ key can. Admins come from two places:
   h2 live: admins configured: Bob, afr
   ```
 
-  Configured admins need no account to exist; when the account exists, its
-  reads say so. Configuration cannot be revoked at runtime.
+  An existing account gets the configured role at startup. Registering a
+  reserved name requires a server-key bearer bound to the signed signup
+  request and any invite required by the server's policy.
+  Use `h2 live account create TAG --operator-data DIR` for this registration.
+  Configuration cannot be revoked at runtime.
 - **The log.** The operator runs
   `h2 live admin grant <gamertag>` / `h2 live admin revoke <gamertag>`
   (signed with the server key in `--data`, like `motd set`). Grant appends a

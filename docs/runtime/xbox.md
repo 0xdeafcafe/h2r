@@ -378,9 +378,8 @@ replies (`render-wait`).
 
 The app runs the agent API ([agent-api.md](agent-api.md)) on TCP port
 4720 (`agent_proto::XBOX_PORT`), so the Mac drives the console the way it
-drives `h2 serve`. It is on by default (`uwp_host::switches`); an empty
-`LocalState\agent-off` turns it off, `agent-on` back on if the default
-ever changes. The log says `h2uwp: agent API on tcp://0.0.0.0:4720` at start.
+drives `h2 serve`. To enable it on a trusted LAN, create an empty
+`LocalState\agent-on` and relaunch. An `agent-off` file overrides it. The log says `h2uwp: agent API on tcp://0.0.0.0:4720` at start.
 A port that won't bind is logged and the game runs without it.
 
 The manifest asks for `internetClientServer` and

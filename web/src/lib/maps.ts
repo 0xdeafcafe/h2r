@@ -4,6 +4,38 @@
 // unknown, still loading or taken down. Everything here is pure; the
 // per-page cache that asks the server lives in state/maps.ts.
 
+/** Full-size signed-in photos open in a blob URL owned by this dashboard.
+ * Use the catalogue's raster signatures and 512 KiB limit for that document. */
+export async function readModPhoto(response: Response): Promise<Blob> {
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("empty photo");
+  const chunks: BlobPart[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > 512 * 1024) {
+        await reader.cancel();
+        throw new Error("photo is too large");
+      }
+      chunks.push(new Uint8Array(value));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const blob = new Blob(chunks);
+  const magic = new Uint8Array(await blob.slice(0, 12).arrayBuffer());
+  const prefix = String.fromCharCode(...magic);
+  let type: string;
+  if (prefix.startsWith("\x89PNG\r\n\x1a\n")) type = "image/png";
+  else if (prefix.startsWith("\xff\xd8\xff")) type = "image/jpeg";
+  else if (prefix.startsWith("RIFF") && prefix.slice(8) === "WEBP") type = "image/webp";
+  else throw new Error("expected a PNG, JPEG or WebP photo");
+  return blob.slice(0, blob.size, type);
+}
+
 /** A package id (a MapId): 64 lowercase hex. */
 export type MapId = string;
 

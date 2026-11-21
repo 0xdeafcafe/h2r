@@ -874,6 +874,15 @@ impl Live {
         jws: &str,
         device: Option<crate::signins::Device>,
     ) -> Result<CreatedAccount, ApiError> {
+        self.register_account(jws, device, None).await
+    }
+
+    pub(crate) async fn register_account(
+        &self,
+        jws: &str,
+        device: Option<crate::signins::Device>,
+        bearer: Option<&str>,
+    ) -> Result<CreatedAccount, ApiError> {
         if !self.creates.allow("accounts.create") {
             return Err(ApiError::new(
                 ErrorCode::RateLimited,
@@ -882,6 +891,9 @@ impl Live {
         }
         let (req, key) = AccountRequest::open(jws, &self.identity.id, now()).map_err(sign_error)?;
         let tag = Gamertag::new(&req.gamertag).map_err(|e| invalid(e.to_string()))?;
+        if self.admins.is_configured(&tag) {
+            self.authorize_operator(bearer, &AccountRequest::operator_scope(jws))?;
+        }
         // Keep redemption and its account append ordered with invite revocation.
         let _invite_guard = if self.policy.invite_only && req.invite.is_some() {
             Some(self.invites.writes.lock().await)

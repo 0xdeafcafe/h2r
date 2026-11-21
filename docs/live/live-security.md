@@ -68,9 +68,9 @@ shown `123-456`), the same scheme authenticator apps use.
   code or a day without failures clears it. A wrong code's 403 says how
   many tries remain (`wrong code; N tries left`). Recovery has its own
   bucket of one request per second per IP with a burst of ten across all
-  gamertags. An owner recovering from another IP has their own budget and
-  backoff. With three codes valid at once, five guesses from one IP have
-  odds of about 1 in 67,000 before the backoff begins.
+  gamertags. Each account also has a shared budget of ten attempts across
+  all addresses, replenished by one attempt every five minutes. Already
+  signed-in devices retain access while recovery is throttled.
 - **Sealing.** Secrets are sealed with XChaCha20-Poly1305 (a random
   24-byte nonce per value, stored as base64url of nonce and ciphertext with
   its tag) under a key derived from the server key with HKDF-SHA256 (info
@@ -139,17 +139,20 @@ JWT themselves, the way AT Protocol service auth works.
   check `aud`, `exp`, `lxm`, and reject a `jti` seen in the last 2 minutes
   (an in-memory set that expires itself). No database call.
 - **WebSockets** for stream and ingest send the token as the first
-  message when authentication is required. For co-op relay, both homes
+  message when authentication is required. Authenticated readers renew their
+  read token before expiry on both public and private homes. For co-op relay, both homes
   check the bearer token and session membership before upgrading. The
   relay rechecks membership and accepts refreshes from the same account.
   [Relay protocol](live-api.md#co-op-relay)
 - **Reads are public by default**: viewing games, accounts and the event
   log needs no token, which is what the web app does. A server can switch
   that off (`--private`), and then readers need a token too.
-- **Account creation** and **recovery** (§1) are the writes without a
-  token. The creation request carries the new public key and is signed by it (proof of possession), with `aud`
-  (the server id) and `iat` so it can't be replayed to another server. Servers can
-  require an invite code (`--invite-only`).
+- **Account creation** and **recovery** (§1) generally need no bearer.
+  Registering a configured admin name also requires a server-key token with
+  scope `accounts.reserve.<sha256>`. Its suffix is the lowercase hex SHA-256
+  of the exact compact signup JWS. The new key signs the creation request,
+  which includes its public key, `aud` (the server id), and `iat`. Servers
+  can require an invite code (`--invite-only`).
 
 The operator signs tokens with the server key for tasks such as
 publishing title files and creating invites. Admin accounts can also

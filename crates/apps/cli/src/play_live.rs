@@ -348,7 +348,13 @@ pub fn start(
         (None, Some(url)) => url.clone(),
         (None, None) => bail!("no Live server: --live-local or a --live-server URL"),
     };
-    let client = Client::at(&url)?;
+    let mut client = Client::at(&url)?;
+    if embedded
+        .as_ref()
+        .is_some_and(|e| !e.live.unclaimed_admins().is_empty())
+    {
+        client.signup_operator = Some(live_server::ServerIdentity::load(&places.server_data)?);
+    }
     let mut terminal = terminal_ask;
     // The terminal asks only when told to; otherwise a code is the game's
     // to ask for (docs/live/live.md, "In-game sign-in").

@@ -406,6 +406,7 @@ fn wait_and_fetch(r: &Remote, c: &mut Conn, id: &str, to: Option<PathBuf>) -> Re
 
 /// Copies the host's `runs/<id>` into `to` as `<to>/<id>`.
 fn fetch(r: &Remote, id: &str, to: Option<PathBuf>) -> Result<PathBuf> {
+    proto::check_job_id(id)?;
     let to = to.unwrap_or_else(
         || match std::env::var_os("RUSH_KEEP").filter(|v| !v.is_empty()) {
             Some(k) => PathBuf::from(k).join("lab"),
@@ -418,18 +419,7 @@ fn fetch(r: &Remote, id: &str, to: Option<PathBuf>) -> Result<PathBuf> {
     transfer::receive_archive(&mut conn.0, &mut archive.file)?;
     conn.reply()?;
     std::fs::create_dir_all(&to).with_context(|| format!("creating {}", to.display()))?;
-    let status = Command::new("tar")
-        .arg("-C")
-        .arg(&to)
-        .arg("-xf")
-        .arg(&archive.path)
-        .status()
-        .context("extracting lab archive")?;
-    ensure!(
-        status.success(),
-        "extracting runs/{id} failed with {status}"
-    );
-    Ok(to.join(id))
+    transfer::extract_run(&archive.path, &to, id)
 }
 
 fn runs_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
@@ -817,8 +807,10 @@ fn bench_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
         ("render-stats.json", &m.render),
         ("profile-counters.json", &m.counters),
     ] {
-        std::fs::write(dest.join(name), text)
-            .with_context(|| format!("writing {}", dest.join(name).display()))?;
+        let mut file = transfer::TempFile::new(&dest)?;
+        file.file.write_all(text.as_bytes())?;
+        std::fs::rename(&file.path, dest.join(name))
+            .with_context(|| format!("saving {}", dest.join(name).display()))?;
     }
     let tag = {
         let mut t: Vec<String> = req.env.iter().map(|(k, v)| format!("{k}={v}")).collect();

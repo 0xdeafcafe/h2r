@@ -12,6 +12,7 @@
 //     canonical JSON of {aud, gamertag, iat, jwk, nonce}, signed by a fresh
 //     key that becomes the account's key, exactly as at sign-up.
 
+import { requireCredentialTransport } from "../api/server";
 import { gamertagError, generateKey, signCompact, type LocalAccount, type NewKey } from "./account";
 import { b64urlEncode, canonicalJson } from "./verify";
 import { issueToken } from "../admin/token";
@@ -174,10 +175,11 @@ export async function recoverAccount(
   if (bad) throw new RecoverError(0, "invalid", `That gamertag won't work: ${bad}.`);
   const badCode = codeError(code);
   if (badCode) throw new RecoverError(0, "invalid", `Check the code: ${badCode}.`);
+  requireCredentialTransport(serverBase, apiRoot);
   const key = await generateKey();
   const request = await signRecoverRequest(key, gamertag, serverId, Math.floor(nowMs / 1000));
   const r = await fetchFn(`${apiRoot}/accounts/${encodeURIComponent(gamertag)}/recover`, {
-    method: "POST",
+    method: "POST", redirect: "error",
     headers: { "content-type": "application/json", accept: "application/json" },
     body: JSON.stringify({ request, code: normalizeCode(code) }),
   });
@@ -205,8 +207,9 @@ const recoveryUrl = (api: string, me: LocalAccount) => `${api}/accounts/by-xuid/
 
 /** The account's recovery now; null when it has none set up. */
 export async function fetchRecovery(api: string, aud: string, me: LocalAccount, fetchFn: typeof fetch = fetch, nowMs: number = Date.now()): Promise<Recovery | null> {
+  requireCredentialTransport(me.server, api);
   const token = await issueToken(me, aud, RECOVERY_READ, nowMs);
-  const r = await fetchFn(recoveryUrl(api, me), { headers: { accept: "application/json", authorization: `Bearer ${token}` }, cache: "no-store" });
+  const r = await fetchFn(recoveryUrl(api, me), { redirect: "error", headers: { accept: "application/json", authorization: `Bearer ${token}` }, cache: "no-store" });
   if (r.status === 404) return null;
   if (!r.ok) return fail(r);
   const rec = parseRecovery(await r.json());
@@ -216,8 +219,9 @@ export async function fetchRecovery(api: string, aud: string, me: LocalAccount, 
 
 /** Sets recovery up, or replaces it: the old secret stops working. */
 export async function setupRecovery(api: string, aud: string, me: LocalAccount, fetchFn: typeof fetch = fetch, nowMs: number = Date.now()): Promise<Recovery> {
+  requireCredentialTransport(me.server, api);
   const token = await issueToken(me, aud, RECOVERY_WRITE, nowMs);
-  const r = await fetchFn(recoveryUrl(api, me), { method: "POST", headers: { accept: "application/json", authorization: `Bearer ${token}` } });
+  const r = await fetchFn(recoveryUrl(api, me), { method: "POST", redirect: "error", headers: { accept: "application/json", authorization: `Bearer ${token}` } });
   if (!r.ok) return fail(r);
   const rec = parseRecovery(await r.json());
   if (!rec) throw new ApiError(500, "invalid", "the server's answer is not a recovery setup");

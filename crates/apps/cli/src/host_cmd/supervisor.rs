@@ -111,7 +111,7 @@ impl Options {
         );
         let tunnel_listen: SocketAddr = value("--tunnel-listen", "H2_TUNNEL_LISTEN")
             .as_deref()
-            .unwrap_or("0.0.0.0:31100")
+            .unwrap_or("127.0.0.1:31100")
             .parse()
             .context("--tunnel-listen must be an IP address and port")?;
         ensure!(
