@@ -239,7 +239,7 @@ impl ViewportView {
             self.world_rev = Some(session.world_rev());
         }
         // The Modeling tool's in-place edits, redrawn over the sections
-        // they came from (docs/editor/modeling.md, "Preview").
+        // they came from (docs/editor/modeling.md, "Interfaces").
         if world_changed || self.modeling_rev != Some(app.modeling_rev()) {
             for p in app.modeling_previews() {
                 for d in &p.drawn {
