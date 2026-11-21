@@ -42,6 +42,9 @@ pub struct LayerData {
     pub part_set: HashMap<(Owner, u8), u32>,
     /// Whether any pass's state writes depth.
     pub writes_depth: bool,
+    /// Why each material that has passes of the layer does not draw, with
+    /// how many are refused for each cause.
+    pub refused: BTreeMap<String, usize>,
 }
 
 /// The layers of one loaded world and what the plan reads of its shaders.
@@ -64,6 +67,26 @@ pub fn load<R: std::io::Read + std::io::Seek>(
     lightmaps: &HashMap<LightmapKey, Image>,
     images: &mut StageImages,
     decoder: &mut StageDecoder,
+) -> LayersView {
+    load_with(map, files, shaders, world, lightmaps, images, decoder, None)
+}
+
+/// [`load`], with the view constants the caller gives. With `given`, a
+/// pass whose vertex program reads a constant (or a component of one)
+/// the mask leaves out is refused, named with the register
+/// (`program::ungiven_view_read`), so no pass draws with a register the
+/// view leaves at zero. The game gives every constant (`None`); the
+/// editor gives `program::CAMERA_GIVEN`.
+#[allow(clippy::too_many_arguments)]
+pub fn load_with<R: std::io::Read + std::io::Seek>(
+    map: &mut Map<R>,
+    files: &mut assets::ResourceFiles,
+    shaders: &[TagId],
+    world: &World,
+    lightmaps: &HashMap<LightmapKey, Image>,
+    images: &mut StageImages,
+    decoder: &mut StageDecoder,
+    given: Option<&[u8; program::VIEW_CONSTANTS]>,
 ) -> LayersView {
     let mut out = LayersView::default();
     let materials: Vec<u16> = world
@@ -124,7 +147,7 @@ pub fn load<R: std::io::Read + std::io::Seek>(
             {
                 continue; // the layer draws nothing of it
             }
-            match compile(map, files, &lib, images, decoder, material, layer) {
+            match compile(map, files, &lib, images, decoder, material, layer, given) {
                 Ok(p) => {
                     data.words
                         .insert(m, p.first().map(|p| p.words).unwrap_or_default());
@@ -174,6 +197,7 @@ pub fn load<R: std::io::Read + std::io::Seek>(
                 data.parts.len()
             );
         }
+        data.refused = refused;
         out.layers.insert(layer, data);
     }
     out
@@ -181,7 +205,9 @@ pub fn load<R: std::io::Read + std::io::Seek>(
 
 /// One material's passes of `layer`, compiled (with the rigid
 /// classification for its placements where it compiles) and their stage
-/// images decoded, or why it stays on the D3D path.
+/// images decoded, or why it stays on the D3D path. With `given`, a vertex
+/// program reading a view constant outside it refuses the material.
+#[allow(clippy::too_many_arguments)]
 fn compile<R: std::io::Read + std::io::Seek>(
     map: &mut Map<R>,
     files: &mut assets::ResourceFiles,
@@ -190,14 +216,19 @@ fn compile<R: std::io::Read + std::io::Seek>(
     decoder: &mut StageDecoder,
     material: &Material,
     layer: u8,
+    given: Option<&[u8; program::VIEW_CONSTANTS]>,
 ) -> Result<Vec<FogProgram>, String> {
     let passes = fog_gpu::layer_passes(material, usize::from(layer)).map_err(|r| r.describe())?;
     let mut out = Vec::with_capacity(passes.len());
     for p in &passes {
         let code = look::world_program(map, lib.metadata(), p.look.vertex_shader)
             .ok_or("no world-space vertex program")?;
+        if let Some(why) = given.and_then(|g| program::ungiven_view_read(&code, g)) {
+            return Err(why);
+        }
         let mut program = FogProgram::compile(p, &code)?;
         if let Some(rigid) = look::rigid_program(map, lib.metadata(), p.look.vertex_shader)
+            && given.is_none_or(|g| program::ungiven_view_read(&rigid, g).is_none())
             && let Ok(r) = program::compile_pass_rigid(&p.look, p.state.alpha_test, &rigid)
         {
             program.rigid = Some(r);

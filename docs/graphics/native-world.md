@@ -464,9 +464,15 @@ With no game (the editor), `program::ViewInputs::from_camera` builds
 the per-view block from a camera: `c[0..3]` the view-projection rows
 scaled by `zs / far` (so `w` is the W-buffer's, "The W scale" in
 [occlusion-culling.md](occlusion-culling.md)) with the z row equal to the
-w row, `c[5].w` 0.5, `c[10]` and `c[11]` the guest viewport, and 0 for
-`c[5].xyz`, `c[6]` and `c[12..17]`, whose values are not known well
-enough to synthesise; the clip range is the game's `[near / far, 1] · zs`.
+w row, `c[5].w` 0.5, `c[10]` and `c[11]` the guest viewport (x, y, z);
+the clip range is the game's `[near / far, 1] · zs`. The other registers
+and components, `c[4]`, `c[5].xyz`, `c[6]`, `c[7..9]`, the `w` of `c[10]`
+and `c[11]` and the block at `c[12..17]`, are not known well enough to
+synthesise and are not given (`program::CAMERA_GIVEN`). The editor loads
+the layers with that mask (`layers_load::load_with`): a pass whose vertex
+program reads a component outside it, by any lane of a swizzle or by a
+relative read based in the block, is refused and named with the register
+(`program::ungiven_view_read`), never drawn with zeros.
 
 Where `v5` and `v6` come from depends on the render record
 (`0x004ba138 + 0x20·i`). `0x0002cbf0` packs its `+0xc` as bits 0..3 an

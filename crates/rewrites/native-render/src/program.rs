@@ -730,9 +730,12 @@ impl ViewInputs {
     /// - `c[5].w` 0.5, the scale that packs a unit vector into a colour.
     /// - `c[10]`, `c[11]`: the viewport scale and offset from clip x, y
     ///   over w to guest pixels, y down.
-    /// - The rest 0: `c[5].xyz`, `c[6]` (a world-space vector the game
-    ///   sets per view) and the block at `c[12..17]` (`0x00025c70`) are
-    ///   not known well enough to synthesise.
+    /// - The rest 0 and not given ([`CAMERA_GIVEN`]): `c[4]`, `c[5].xyz`,
+    ///   `c[6]` (a world-space vector the game sets per view), `c[7..9]`,
+    ///   the `w` of `c[10]` and `c[11]`, and the block at `c[12..17]`
+    ///   (`0x00025c70`) are not known well enough to synthesise. A pass
+    ///   whose vertex program reads one is refused
+    ///   ([`ungiven_view_read`]), not drawn with the zeros.
     ///
     /// The clip range is the game's, `[near / far, 1] · zs`, culled.
     pub fn from_camera(camera: &crate::camera::RenderCamera, size: (u32, u32)) -> Self {
@@ -753,6 +756,50 @@ impl ViewInputs {
         let near = (camera.near / camera.far * zs).clamp(0.0, zs);
         Self { constants, guest_size: size, size, z_scale: zs, w_clip: Some(([near, zs], false)) }
     }
+}
+
+/// The view constants' components [`ViewInputs::from_camera`] gives, as
+/// a mask per register (bit `k` component `k`, x first): all of
+/// `c[0..3]`; `c[5].w`; `c[10]` and `c[11]` but `w`. The z lanes there
+/// reach only `oPos.z`, which a W-buffered pass does not use
+/// (`shaders::vsh` `xvs_fixup`).
+pub const CAMERA_GIVEN: [u8; VIEW_CONSTANTS] = {
+    let mut given = [0u8; VIEW_CONSTANTS];
+    given[0] = 0xf;
+    given[1] = 0xf;
+    given[2] = 0xf;
+    given[3] = 0xf;
+    given[5] = 0b1000;
+    given[10] = 0b0111;
+    given[11] = 0b0111;
+    given
+};
+
+/// The first view constant component (register, component) `microcode`
+/// reads that `given` does not give, as a refusal; `None` when it reads
+/// only given ones. Every lane a source's swizzle selects counts as
+/// read, whatever the write mask keeps, and a relative read based inside
+/// the view's registers reads all of them: a pass is refused rather than
+/// drawn from a value nobody gave.
+pub fn ungiven_view_read(microcode: &[u8], given: &[u8; VIEW_CONSTANTS]) -> Option<String> {
+    let program = match vsh::Program::parse(microcode) {
+        Ok(p) => p,
+        Err(e) => return Some(format!("vertex program: {e:?}")),
+    };
+    for i in &program.instructions {
+        for src in i.sources() {
+            let vsh::SrcReg::Const { index, relative } = src.reg else { continue };
+            let Some(&mask) = given.get(usize::from(index)) else { continue };
+            if relative {
+                return Some(format!("vertex program reads c[a0.x + {index}], inside the view's constants"));
+            }
+            if let Some(&k) = src.swizzle.iter().find(|&&k| mask >> k & 1 == 0) {
+                let lane = ["x", "y", "z", "w"][usize::from(k & 3)];
+                return Some(format!("vertex program reads c[{index}].{lane}, which the view does not give"));
+            }
+        }
+    }
+    None
 }
 
 /// `base` with the view's constants, surface and depth for one frame.
@@ -1637,6 +1684,40 @@ mod tests {
         assert_eq!(regs[2], [1.0, 9.0, 3.0, 9.0]);
         put(&mut regs, &Register { index: 7, value: [0.0; 4], written: 0xf, origin: Origin::Instance });
         assert_eq!(regs[3], [9.0; 4], "out of range: ignored");
+    }
+
+    /// A program reading only what the camera's view gives passes; one
+    /// that reads `c[6]`, the block at `c[12..17]`, `c[5].x` or `c[10].w`
+    /// is named, so its pass is refused rather than drawn from zeros.
+    #[test]
+    fn a_program_reading_an_ungiven_view_constant_is_named() {
+        use shaders::vsh::encode::{Inst, Operand as O, program};
+        use shaders::vsh::{MacOp, OutReg};
+        let row = |c: u8, mask| Inst::mac(MacOp::Dp4, Some(O::v(0)), Some(O::c(c)), None).to_out(false, OutReg::Pos, mask);
+        let reads = |extra: Option<Inst>| {
+            let mut code = vec![row(0, 8), row(1, 4), row(2, 2), row(3, 1)];
+            code.extend(extra);
+            code.push(Inst::mac(MacOp::Mov, Some(O::v(1)), None, None).to_out(false, OutReg::T(0), 0xf));
+            program(&code)
+        };
+        let mov = |c: O| Some(Inst::mac(MacOp::Mov, Some(c), None, None).to_out(false, OutReg::T(1), 0xf));
+        assert_eq!(ungiven_view_read(&reads(None), &CAMERA_GIVEN), None);
+        assert_eq!(ungiven_view_read(&reads(mov(O::c(5).swz("w"))), &CAMERA_GIVEN), None, "the pack scale");
+        assert_eq!(ungiven_view_read(&reads(mov(O::c(10).swz("xyz"))), &CAMERA_GIVEN), None);
+        for (operand, named) in [
+            (O::c(6), "c[6].x"),
+            (O::c(12).swz("y"), "c[12].y"),
+            (O::c(17).swz("z"), "c[17].z"),
+            (O::c(5).swz("xw"), "c[5].x"),
+            (O::c(10).swz("w"), "c[10].w"),
+            (O::c_rel(0).swz("x"), "c[a0.x + 0]"),
+        ] {
+            let why = ungiven_view_read(&reads(mov(operand)), &CAMERA_GIVEN).expect(named);
+            assert!(why.contains(named), "{why}");
+        }
+        // The instance's and the model rows' registers are not the view's.
+        assert_eq!(ungiven_view_read(&reads(mov(O::c(18))), &CAMERA_GIVEN), None);
+        assert_eq!(ungiven_view_read(&reads(mov(O::c_rel(50))), &CAMERA_GIVEN), None);
     }
 
     /// A camera at the origin looking down +x, z up, 90 degrees vertical,
