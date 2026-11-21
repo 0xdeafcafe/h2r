@@ -19,6 +19,7 @@ use shaders::vsh::{self, VertexOptions, VertexUniforms};
 
 use crate::decal::{Mode, VERTEX_SIZE, Vertex, quad_indices};
 use crate::program;
+use crate::texture_groups::{Held, TextureGroups};
 
 /// Raw per-stage state outside `gfx`'s sampler model that the combiner needs.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -707,9 +708,8 @@ impl DecalGpu {
     }
 }
 
-/// Texture groups kept before the cache starts over, so views of retired
-/// textures are not held for ever.
-const GROUP_LIMIT: usize = 64;
+static GROUP_BYTES: mem_watch::Counter =
+    mem_watch::Counter::new("native.decal_group_texture_bytes");
 
 /// What a program is made from; the combiner's constants are uniforms, not
 /// part of the translation.
@@ -761,20 +761,44 @@ pub struct PacketTarget<'a> {
 
 /// Programs, pipelines, samplers and texture groups of the decals' packets,
 /// scoped to one device and kept across frames: a steady scene makes
-/// nothing. Geometry and uniforms come from the submission's arena.
-#[derive(Default)]
+/// nothing. Geometry and uniforms come from the submission's arena. A
+/// texture group lasts while draws use it ([`crate::texture_groups`]).
 pub struct DecalCache {
     uniforms: Option<wgpu::BindGroupLayout>,
     programs: HashMap<ProgramKey, Result<Arc<CachedProgram>, &'static str>>,
     pipelines: HashMap<PipelineKey, CachedPipeline>,
     samplers: HashMap<gfx::translate::SamplerKey, wgpu::Sampler>,
-    groups: HashMap<(wgpu::BindGroupLayout, wgpu::TextureView, wgpu::Sampler), wgpu::BindGroup>,
+    groups: TextureGroups<(wgpu::BindGroupLayout, wgpu::TextureView, wgpu::Sampler)>,
     created: Created,
+}
+
+impl Default for DecalCache {
+    fn default() -> Self {
+        Self {
+            uniforms: None,
+            programs: HashMap::new(),
+            pipelines: HashMap::new(),
+            samplers: HashMap::new(),
+            groups: TextureGroups::new(&GROUP_BYTES),
+            created: Created::default(),
+        }
+    }
 }
 
 impl DecalCache {
     pub fn created(&self) -> Created {
         self.created
+    }
+
+    /// The texture groups held now and the textures they keep alive.
+    pub fn held(&self) -> Held {
+        self.groups.held()
+    }
+
+    /// The frame the following draws belong to. Texture groups no draw
+    /// used for [`crate::texture_groups::KEEP_FRAMES`] frames are dropped.
+    pub fn begin_frame(&mut self, frame: u64) {
+        self.groups.begin_frame(frame);
     }
 
     fn program(
@@ -891,7 +915,7 @@ impl DecalCache {
             let group_key = (program.textures.clone(), view.clone(), sampler);
             if let Some(group) = self.groups.get(&group_key) {
                 gfx::churn::native_cache(true);
-                group.clone()
+                group
             } else {
                 gfx::churn::native_cache(false);
                 let group = gfx::churn::create_bind_group(
@@ -911,11 +935,9 @@ impl DecalCache {
                         ],
                     },
                 );
-                if self.groups.len() >= GROUP_LIMIT {
-                    self.groups.clear();
-                }
                 self.created.texture_groups += 1;
-                self.groups.insert(group_key, group.clone());
+                let texture = group_key.1.texture().clone();
+                self.groups.insert(group_key, group.clone(), [texture]);
                 group
             }
         } else {

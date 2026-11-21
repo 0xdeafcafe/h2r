@@ -119,6 +119,16 @@ Explicit assumptions and limits:
   epoch and copy, rather than guessing a map or attachment generation.
   Prepared draws never survive that reservation. Pipeline caches contain
   no guest resource handles and are keyed by their shader/state contents.
+  Texture groups are keyed by the views they bind and last only while
+  draws use them (`native_render::texture_groups`): each pass carries the
+  frame it was admitted in, and a group no draw used for
+  `KEEP_FRAMES` (4) frames is dropped, as the D3D path's
+  `ProgramBindings` drops its own. A frame-buffer copy or depth alias is
+  a new texture at the target's size every frame, so its group goes with
+  the frames that drew with it. The decals' packet cache works the same
+  way. The probes `native.particle_group_texture_bytes` and
+  `native.decal_group_texture_bytes` report the bytes of the textures the
+  groups hold.
 - The seam does not expose a player-view ordinal. Diagnostics/counters use
   view bucket 4 (other); each draw's actual viewport, constants and scissor
   still come from its own snapshot. No stale per-view matrices are cached.

@@ -98,6 +98,8 @@ pub mod screen_look;
 #[cfg(feature = "gpu")]
 pub mod shadow_gpu;
 pub mod shadows;
+#[cfg(feature = "gpu")]
+pub mod texture_groups;
 pub mod transparent;
 #[cfg(feature = "gpu")]
 pub mod transparent_streams;
