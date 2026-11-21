@@ -375,6 +375,11 @@ points! { ALL;
     HS_UNIT_GRENADE_COUNT @ 0x002a_4310: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
     /// HaloScript's object awareness evaluator, index 305.
     HS_AI_SEE_OBJECT @ 0x002a_53b0: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
+    /// HaloScript's two-argument `ai_place` evaluator (291): a squad and a
+    /// count. The Firefight squad entry's trace starts here.
+    HS_AI_PLACE_COUNTED @ 0x002a_5010: [opaque], Optional; "docs/halo1/ai-control.md";
+    /// HaloScript's `ai_set_team` evaluator (322): writes the actor team.
+    HS_AI_SET_TEAM @ 0x002a_5850: [opaque], Optional; "docs/halo1/ai-control.md";
     HS_CONVERSATION_SPAWN_WAVE @ 0x0020_1520: [fn(count: eax, squad: stack 0, location: stack 1) ret 16]; "docs/halo1/ai.md";
     HS_CONVERSATION_UNIT_NEW @ 0x000c_4410: [fn(unit: stack 0) ret 12]; "docs/halo1/ai.md";
     /// Initializes the unit's speech block from its model and variant name.

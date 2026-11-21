@@ -9,6 +9,9 @@ license.workspace = true
 mem-watch.workspace = true
 forge.workspace = true
 forge-doc.workspace = true
+# The Firefight director and its host log (firefight/host.rs).
+firefight = { path = "../../formats/firefight" }
+host-log.workspace = true
 guest-layout = { path = "../../hooking/guest-layout" }
 actor-net = { path = "../../live/actor-net" }
 # Build and load (docs/dev/crate-structure.md, S4).
