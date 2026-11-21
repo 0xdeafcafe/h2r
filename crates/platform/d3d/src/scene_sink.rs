@@ -692,6 +692,11 @@ impl<B: Backend> Backend for SceneSink<B> {
         self.refuse_replay("unrecorded_external_pass");
         self.inner.commit_external(recording)
     }
+    #[cfg(feature = "gpu")]
+    fn upload_scene_assets(&mut self, upload: crate::backend::AssetUpload) {
+        self.inner.upload_scene_assets(upload);
+    }
+
     fn supports_external_pass(&self) -> bool {
         self.inner.supports_external_pass()
     }

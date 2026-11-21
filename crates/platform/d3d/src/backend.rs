@@ -1086,10 +1086,20 @@ pub enum DrawOutcome {
     Unsupported(String),
 }
 
+/// Create immutable, device-local assets for future scene draws. This
+/// command has no target handles, guest bindings, frame encoder or reads.
+#[cfg(feature = "gpu")]
+pub type AssetUpload = Box<dyn FnOnce(&wgpu::Device, &wgpu::Queue) + Send>;
+
 /// Host rendering for the device.
 /// `Send` (with its handles) so a device can sit behind the runtime's
 /// `Send + Sync` override handlers.
 pub trait Backend: Send {
+    /// Run an asset upload on the same device that records scene stages.
+    /// A backend without a GPU discards the request.
+    #[cfg(feature = "gpu")]
+    fn upload_scene_assets(&mut self, _upload: AssetUpload) {}
+
     /// Handle of a colour or depth/stencil surface.
     type Surface: Copy + Eq + std::fmt::Debug + Send;
     /// A host texture made from guest texture memory.

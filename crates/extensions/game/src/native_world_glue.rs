@@ -59,7 +59,7 @@ pub struct CpuWorld {
     layered_images: LayeredImages,
 }
 
-/// One loaded world: CPU data until the first pass uploads it.
+/// One loaded world. Prefetch and the first pass share its single upload.
 #[cfg_attr(test, derive(Default))]
 pub struct Ready {
     opaque: opaque_materials::Library,
@@ -169,6 +169,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         // them through. Read with no other lock held.
         let palettes = self.device.lock().ok().map(|d| scene_load_palettes(&d, mem)).unwrap_or_default();
         let state = Arc::clone(&self.state);
+        let device = Arc::downgrade(&self.device);
         let started = std::thread::Builder::new()
             .name("native-world load".into())
             .spawn(move || {
@@ -223,6 +224,16 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                         Load::Failed
                     }
                 };
+                let Load::Ready(ready) = &st.1 else { return };
+                let ready = Arc::downgrade(ready);
+                drop(st);
+                if let Some(device) = device.upgrade() && let Ok(mut d) = device.lock() {
+                    d.backend.upload_scene_assets(Box::new(move |device, queue| {
+                        if key.generation == native_map_work::generation() && let Some(ready) = ready.upgrade() {
+                            drop(upload_on(&ready, device, queue));
+                        }
+                    }));
+                }
             });
         if started.is_err() {
             let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());

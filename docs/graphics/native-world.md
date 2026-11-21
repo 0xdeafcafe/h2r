@@ -386,9 +386,10 @@ there is no hand-written look in between.
   undrawn parts included). A material that shares its shader with one
   left to D3D is native too. The lights' split clears by shader
   (`feature::native_lights`), so the lights take only the materials whose
-  shader is native whole. Each layer-3 view then asks the device for a
-  `WorldPass` with the view's camera; the first pass uploads the world on
-  the render thread. Log lines per load: `native-world: N of M materials
+  shader is native whole. The load queues the BSP geometry, material
+  programs and stage textures for upload on the render worker as soon as
+  decoding finishes. Each layer-3 view requests a `WorldPass` with its
+  camera. A pass that reaches the worker first uses the same upload. Log lines per load: `native-world: N of M materials
   draw natively with their own programs (P of Q parts); K stay on the D3D
   path for R reasons`, one line per reason, most parts first; `native-world:
   <map> BSP at <addr>: N draws in B batches, P parts native, in S s`; and

@@ -1601,6 +1601,16 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         });
     }
 
+    #[cfg(feature = "gpu")]
+    fn upload_scene_assets(&mut self, upload: crate::backend::AssetUpload) {
+        self.post_create(move |w| {
+            w.inner.upload_scene_assets(upload);
+            Ok(())
+        });
+        // Asset prefetch can start before the first guest frame fills a batch.
+        self.flush();
+    }
+
     fn supports_external_pass(&self) -> bool {
         self.external_pass
     }

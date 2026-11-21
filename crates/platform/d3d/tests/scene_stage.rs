@@ -3,7 +3,8 @@
 //! draws around it, its preparation runs on the render thread and not on
 //! the game thread, and without a render thread (or while the backend
 //! replays) none is taken, so the stages keep reserving on the game
-//! thread. Synthetic device over the recording backend; no GPU.
+//! thread. Synthetic stages use the recording backend. The asset-upload
+//! case uses a headless device without any game surfaces.
 #![cfg(feature = "gpu")]
 
 use std::sync::{Arc, Mutex};
@@ -189,4 +190,26 @@ fn replay_filters_one_shot_stages_before_the_guest_surrenders_the_draw() {
     assert_eq!(order, ["guest", "stage"]);
     assert!(seen.lock().unwrap().is_empty());
     assert_eq!(d.stats().external_passes, 1);
+}
+
+
+#[test]
+fn scene_asset_upload_runs_once_on_the_display_worker_without_a_frame_or_attachments() {
+    use d3d::Backend;
+
+    let Ok(ctx) = gfx::GfxContext::headless() else { return };
+    let worker = ThreadedBackend::new(d3d::GfxBackend::new(ctx)).unwrap()
+        .with_frame_owner(d3d::threaded::owner::FrameOwner {
+            select: Box::new(|_| None), declined: |_| {}, failed: |_| {}, stopped: || {},
+        });
+    let mut sink = d3d::SceneSink::new(worker, || None).with_replay(|_| panic!("unexpected present"));
+    let (send, recv) = std::sync::mpsc::channel();
+    sink.upload_scene_assets(Box::new(move |device, _| {
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None, size: 32, usage: wgpu::BufferUsages::VERTEX, mapped_at_creation: false,
+        });
+        send.send((buffer.size(), std::thread::current().name().map(str::to_owned))).unwrap();
+    }));
+    sink.inner_mut().with_inner(|gpu| assert!(gpu.last_presented().is_none())).unwrap();
+    assert_eq!(recv.recv().unwrap(), (32, Some("d3d-render".to_string())));
 }

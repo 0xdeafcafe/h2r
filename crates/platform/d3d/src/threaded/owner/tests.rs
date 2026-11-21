@@ -219,6 +219,19 @@ fn two_logical_names_cannot_alias_one_physical_target_during_admission() {
 }
 
 
+#[cfg(feature = "gpu")]
+#[test]
+fn asset_upload_after_original_work_preserves_frame_admission() {
+    let (mut gpu, accepted, target) = device(true);
+    gpu.clear(target, None, clear(1)).unwrap();
+    // This backend discards uploads. The command still crosses the real
+    // worker queue without claiming the clear or becoming a frame barrier.
+    gpu.upload_scene_assets(Box::new(|_, _| unreachable!()));
+    gpu.present(target, 0).unwrap();
+    assert_eq!(value(&mut gpu, target), 1);
+    assert_eq!(accepted.load(Ordering::Relaxed), 1);
+}
+
 #[test]
 fn a_fresh_allocation_after_a_draw_preserves_that_frames_admission() {
     let (mut gpu, accepted, target) = device(true);

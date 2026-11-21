@@ -1915,6 +1915,11 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         }
     }
 
+    #[cfg(feature = "gpu")]
+    fn upload_scene_assets(&mut self, upload: crate::backend::AssetUpload) {
+        self.view.upload_scene_assets(upload);
+    }
+
     fn supports_external_pass(&self) -> bool {
         self.reference.supports_external_pass()
     }
