@@ -366,9 +366,15 @@ fn start_waits_for_two_consoles_and_the_status_says_who() {
     );
     assert_eq!(*live.invites.lock().unwrap(), vec![Xuid(2)]);
     assert_eq!(friends.row_texts(0).unwrap().1, "Invited");
-    assert!(
-        matches!(friends.press(1), Chosen::Stepped(m) if m.contains("offline")),
+    // An offline friend's row has no A action, and the lobby refuses them too.
+    assert_eq!(
+        friends.press(1),
+        Chosen::Nothing,
         "an offline friend is not invited"
+    );
+    assert_eq!(
+        lobby.invite(1),
+        "coop-live: Charlie is offline; not invited"
     );
     assert_eq!(live.invites.lock().unwrap().len(), 1);
     assert_eq!(lobby.status(), "Waiting for Bravo");
