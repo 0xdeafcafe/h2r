@@ -24,7 +24,9 @@ pub(crate) mod feel;
 mod look;
 mod order;
 pub(crate) mod pad;
+mod practice;
 mod route;
+pub mod warmup;
 #[cfg(test)]
 use look::turn_rate;
 
@@ -33,6 +35,7 @@ pub use look::AimTrace;
 use look::{Hand, angle_error};
 use pad::{Buttons, Feet, Fidget, Tap};
 pub use order::OrderView;
+pub use practice::{PracticeView, SpotTally};
 pub use route::{RouteMotion, RoutePad};
 
 /// How good a bot is (docs/game/bots.md, section 3.4).
@@ -321,6 +324,13 @@ pub struct Mind {
     route_pad: RoutePad,
     show_off: crate::glitches::ShowOff,
     stunt: Option<Stunt>,
+    /// Practising bounces while the superbounce mode is on
+    /// (`mind::practice`): no fight at all.
+    practice: practice::Practice,
+    /// The start-of-match warm-up (`mind::warmup`).
+    pub warmup: warmup::Warmup,
+    /// The seed it was made with: the warm-up's length without a name.
+    seed: u64,
 }
 
 /// A show-off under way (crate::glitches).
@@ -451,6 +461,9 @@ impl Mind {
             route_pad: RoutePad::default(),
             show_off: crate::glitches::ShowOff::new(seed ^ 0x5b0_0ce),
             stunt: None,
+            practice: practice::Practice::new(seed),
+            warmup: warmup::Warmup::Over,
+            seed,
         }
     }
 
@@ -654,6 +667,11 @@ impl Mind {
             );
         }
 
+        // Practising bounces (the superbounce mode, mind::practice): the
+        // practice loop is the whole pad, and nothing is fought.
+        if let Some(pad) = self.practice_pad(p, me, map, seen) {
+            return pad;
+        }
         // A bounce route plays the whole pad (mind::order).
         if let Some(pad) = self.order_pad(p, me, map, seen) {
             return pad;
@@ -694,7 +712,14 @@ impl Mind {
         } else {
             self.radar = None;
         }
-        let (goal, intent) = self.decide(p, me, seen, map);
+        let (goal, mut intent) = self.decide(p, me, seen, map);
+        // The warm-up (mind::warmup): no target, so no shot, throw or
+        // melee, until it is over or the bot is hurt.
+        let warm_ticks = warmup::warmup_ticks(self.name_profile.map_or(self.seed, |n| n.seed));
+        let warming = self.warmup.holding(p.tick, warm_ticks, took_damage);
+        if warming {
+            intent.chosen = None;
+        }
         // Team knowledge (crate::decisions::radio): a teammate's contact
         // call is where a fight is, at any range. Kept as a roam sighting
         // it makes roaming converge on it (§3.2), which the support walk
@@ -1357,7 +1382,8 @@ impl Mind {
                     || taking_objective
                     || (dual.is_some() && !trade_left)
                     || self.combo.busy()
-                    || self.stunt.is_some(),
+                    || self.stunt.is_some()
+                    || warming,
                 pushing,
             },
             world,
@@ -1736,20 +1762,25 @@ impl Mind {
     /// map's within [`BOUNCE_REACH`], else a crouch jump.
     fn pick_stunt(&mut self, at: Vec3, tick: u32) -> Option<Stunt> {
         // With a crouch spot to prime at, a bounce is a route: prime,
-        // then the spot (an unprimed landing does not bounce). The
-        // nearest site not given up on; the plan looks at that one only,
-        // so a map with hundreds of spots costs a show-off a few queries.
+        // then the spot (an unprimed landing does not bounce). A proven
+        // site before a likely one, then the nearest, not given up on; the
+        // plan looks at that one only, so a map with hundreds of spots
+        // costs a show-off a few queries. A site that needs a drop is
+        // taken from its launch floor when the plan finds one.
         if !self.known.crouches.is_empty() {
             let site = self
                 .known
                 .sites
                 .iter()
                 .filter(|s| {
-                    s.standing()
-                        && dist_xy(s.bounce.stand, at) < BOUNCE_REACH
+                    dist_xy(s.bounce.stand, at) < BOUNCE_REACH
                         && !self.stuck.blocked(s.bounce.stand, tick)
                 })
-                .min_by(|a, b| dist_xy(a.bounce.stand, at).total_cmp(&dist_xy(b.bounce.stand, at)))
+                .min_by(|a, b| {
+                    (!a.proven()).cmp(&!b.proven()).then(
+                        dist_xy(a.bounce.stand, at).total_cmp(&dist_xy(b.bounce.stand, at)),
+                    )
+                })
                 .copied();
             if let Some(site) = site {
                 self.asked = Some(order::Asked {

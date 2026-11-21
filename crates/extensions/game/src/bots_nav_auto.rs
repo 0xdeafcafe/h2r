@@ -45,6 +45,9 @@ pub fn start_with(
     vfs: SharedVfs,
     first: Option<String>,
 ) -> Option<RunningWorker> {
+    // The maps' verified spot files (`superbounce.verify`) live with the
+    // nav caches, whether or not the worker runs.
+    bots::spots::set_verified_dir(bots::cache::dir(data_root));
     if !on {
         eprintln!(
             "bots: nav meshes are not built automatically ({}=0); `h2 bots nav all` builds them",

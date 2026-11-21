@@ -279,6 +279,12 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "the Game Setup list's row, a UI event on the game thread",
     ),
     (
+        "tweakers",
+        "*",
+        "the game type list's row and its variant lists, UI events and a per-frame screen \
+         update on the game thread",
+    ),
+    (
         "game-setup-help",
         "SQUAD_SETTINGS_UPDATE",
         "the Game Setup screen's per-frame update (picture and description), UI on the game thread",

@@ -732,8 +732,10 @@ the pill (D: `h2 bitmap`). Which to use is open (Design, "Not verified").
 | scanning | `Dim`: half alpha |
 | no strips, scan failed | hidden |
 
-While the charge is about to go (the meter below under a third), the
-icon is `Flash(TimeWarning)`, the timer's warning record.
+While the charge is about to go (the meter below at half or under:
+19 still ticks of 38, the tick the prompt line says "Keep moving or lose
+the charge"), the icon is `Flash(TimeWarning)`, the timer's warning
+record.
 
 ### The charge meter
 
@@ -813,23 +815,27 @@ its notification list:
 | `Prompt` | Hold (crouch) and walk under | near, not primed, within 1.5 of a crouch spot |
 | `Prompt` | Let go of (crouch) | under |
 | `Prompt` | Walk out to stand up | held |
+| `Prompt` | Keep moving or lose the charge | primed and still for 19 ticks or more, the fill at half or under |
+| `Prompt` | the loss's message, then Find a crouch spot to charge again (two lines) | for 150 ticks after a loss, until a crouch step begins |
 | `Message` | Primed | the word becomes −3 |
-| `Message` | Charge lost | lost |
+| `Message` | Charge lost: you stood still / Charge lost: you crouched / Charge lost | lost, by its reason ([superbounce.md](superbounce.md), "Charge"): the body slept, a crouch, another reason |
 | `Message` | a medal line (below, "The medals") | a bounce |
 | `Message` | Not primed. / Missed the strip. / Too slow. / No bounce. | a landing within 0.5 of a strip that did not bounce, by its first failed test ([superbounce.md](superbounce.md), "Landings") |
 
 (crouch) is U+E110, the left stick click's glyph, the default crouch
 button ([button-icons.md](../input/button-icons.md)), which the button
-swap redraws as the bound key's picture on the other input sets, as the
-tutorial's (X) is U+E102. A prompt of the game's own wins the line.
+swap redraws as the bound key's picture on the other input sets. U+E110 is one glyph, 38 by 19, that shows
+both sticks: the left one lit and outlined, the right one faint (alpha
+3 of 15), as every retail stick glyph does. The preview draws it as the
+game does, so the prompt reads "Let go of" and a pair of sticks. A
+prompt of the game's own wins the line.
 The landing's result is `superbounce_mode`'s `last_landing`. A bounce's
 line is its medal.
 
 ### The medals
 
-Not built (build plan 3 sends a `Message`). The rule, the recording and
-the agent API are in [superbounce.md](superbounce.md#medals); this is
-what the player sees.
+The rule, the recording and the agent API are in
+[superbounce.md](superbounce.md#medals); this is what the player sees.
 
 A bounce shows one notification, as a retail multi-kill does ("Game
 events and medals"): a medal glyph of the HUD font, a space, the words
@@ -838,43 +844,32 @@ mode, sent to the local user of the player who bounced, so in split
 screen each view gets its own. A bounce shows the highest medal it
 earned and no other line.
 
-| Medal | Chain count | Line | Glyph | The retail string that draws the glyph |
-|---|---|---|---|---|
-| Superbounce | every bounce that earns none below | `Superbounce!` | U+E033, the four-point star | `flavor_killing_spree_cause_player` |
-| Double Bounce | 2 | `Double bounce!` | U+E038, the disc with two stars | `flavor_double_kill_cause_player` |
-| Triple Bounce | 3 | `Triple bounce!` | U+E039, three stars | `flavor_triple_kill_cause_player` |
-| Chain Bounce | 5 | `Chain bounce!` | U+E041, five stars | `flavor_killing_frenzy_cause_player` |
+| Medal | Chain count | Line | Glyph |
+|---|---|---|---|
+| Superbounce | every bounce that earns none below | `Superbounce!` | U+E2A0, a bronze disc with one chevron rising off a strip |
+| Double Bounce | 2 | `Double bounce!` | U+E2A1, a gold disc with two chevrons |
+| Triple Bounce | 3 | `Triple bounce!` | U+E2A2, a steel disc with three chevrons |
+| Chain Bounce | 5 | `Chain bounce!` | U+E2A3, a silver disc with a spiked rim and three chevrons |
 
-The widest, `Double bounce!` with its glyph, is 127 pixels in
-`conduit-13` (V, `h2 font`), and all four glyphs are in `conduit-12`
-too (V). `hud_kit_core::huds::superbounce` names the glyphs by code
-point (`MEDAL_GLYPHS`), and the disc test reads each named string from
-the shared map and checks that it starts with that code point, so a
-disc whose strings differ fails the test, not the picture.
-
-**The picture.** The disc has no superbounce medal, and the kit draws
-only what the disc has. The design uses four of the disc's medals as
-they are: the star count of a multi-kill disc is the count of the chain
-(two, three, five), and the single bounce takes the plainest star. The
-cost is that a Double Bounce and a Double Kill show the same disc with
-different words. The other choices, each the owner's call:
-
-| Choice | What it takes | Why not the design |
-|---|---|---|
-| The five spare medals, U+E060 to U+E064, one for each | nothing new; no retail line uses them | a question mark reads as a missing picture, and the five look alike |
-| No glyph, the words alone | nothing | a retail medal line has a picture |
-| A medal composed at boot from the disc's glyphs (a multi-kill disc with other colours, or with the pill's `^` on it) by the font rewrite ([button-icons.md](../input/button-icons.md), `font::patch`), at spare code points | a compositor, and a rule for what "composed" may change | it is a picture the disc does not have: new art by another route, and so the owner's to approve |
-| New medal art, four glyphs added to the HUD fonts the same way | art the owner approves ([web-boundary.md](../live/web-boundary.md); the art pack's rules, `web/public/art/ART.md`) | not the kit's to make |
-
-Whichever is chosen is one table, `MEDAL_GLYPHS`: the line, the insert
-and the checks do not change.
+**The picture.** The disc has no superbounce medal, so the four glyphs
+are new art, drawn for this project in the retail medals' manner: 24 by
+24, a shaded disc with a dark rim and the light from the upper left, in
+their own 12-bit colours, and the tier told as a multi-kill tells it,
+by the count of marks on the disc and the disc's colour, with a frame
+for the top tier as the sprees have. The art is data,
+`crates/formats/font/src/medals/art.rs` (ARGB 4444 rows, written by
+`scripts/superbounce-medals.py` from its drawing), and
+`font::medals::replacements` adds the four glyphs to `conduit-13` and
+`conduit-12` through the font rewrite ([button-icons.md](../input/button-icons.md),
+`font::patch`) at spare code points of the icon range, U+E2A0 to
+U+E2A3. Every other font is left alone. New art is a new `art.rs`: the
+line, the insert and the checks do not change. `MEDAL_GLYPHS` in
+`hud_kit_core::huds::superbounce` names the code points.
 
 **The sound.** None. A retail medal's voice is its response's sound
 ("Game events and medals"), and no line on the disc says "bounce" (S:
 the event sounds are not listed or listened to). Playing the Double
-Kill line on a Double Bounce would say the wrong thing, and a new voice
-is not the kit's. A retail line is one call to `0x0023ef80` if one is
-ever chosen.
+Kill line on a Double Bounce would say the wrong thing.
 
 **Not the game's event machinery.** The other way to show a medal is a
 new row in the map's event table with its strings, raised as a
@@ -945,7 +940,10 @@ target.
 | `held` | inactive, icon `Flash(Help)` | 2/3 | Walk out to stand up | crouch spot, "1" | |
 | `primed-full` | lit | 1 | Primed | strip, "12" | |
 | `primed-draining` | lit, icon `Flash(TimeWarning)` | 0.25 | | strip, "12" | |
-| `lost` | inactive | 0 | Charge lost | crouch spot, "12" | |
+| `primed-still-warning` | lit, icon `Flash(TimeWarning)` | 0.5 | Keep moving or lose the charge | strip, "12" | |
+| `lost` | inactive | 0 | Charge lost / Find a crouch spot to charge again; Charge lost | crouch spot, "12" | |
+| `lost-stood-still` | inactive | 0 | Charge lost: you stood still / Find a crouch spot to charge again; Charge lost: you stood still | crouch spot, "12" | |
+| `lost-crouched` | inactive | 0 | Charge lost: you crouched / Find a crouch spot to charge again; Charge lost: you crouched | crouch spot, "12" | |
 | `bounced` | lit | 1 | (medal) Superbounce! | strip, "12" | |
 | `medal-double` | lit | 1 | (medal) Double bounce! | strip, "12" | |
 | `medal-triple` | lit | 1 | (medal) Triple bounce! | strip, "12" | |
@@ -981,7 +979,8 @@ feeds it each tick from `superbounce_mode`'s state through one adapter,
 |---|---|
 | `scan` | ready with spots, ready with none (`NoStrips`), failed, else scanning |
 | `charge` (phase, fill) | the charge, as it is |
-| `verb` | the prompt's verb; in the near phase, not primed and with no verb, "Hold (crouch) and walk under" |
+| `verb` | the prompt's verb (a crouch step, keep moving, charge again); in the near phase, not primed and with no verb, "Hold (crouch) and walk under" |
+| the loss (`charge`'s while lost, `ChargeAgain`'s after) | its reason's message at its tick, when newer than the last landing; the HUD keeps the last loss past the 150 ticks the state has it, so an older landing does not take its place |
 | `nav_target` (point, kind, distance) | the navpoint's target and distance, world units to metres; its point goes to `Handle::navpoint` |
 | `last_landing` (result, tick) | the landing's message at its tick, for a landing that did not bounce |
 | `medals` (the awards newer than the last seen) | one `Handle::notify` per bounce of a local player: the line of its highest medal ([superbounce.md](superbounce.md#medals)) |
@@ -993,7 +992,12 @@ newer than the last it saw (`superbounce_hud::watch`).
 What shows in the game: the pill and its icon while primed (`Inactive`
 not drawn), the charge meter through the recipe and the charge, the
 prompt verbs, the navpoint (the game's arrow and marker, no number) and
-the tutorial's training text. The notifications do not show.
+the tutorial's training text. The notifications do not show, so in the
+game a loss's reason is told by the prompt line: its first line is the
+loss's message, over "Find a crouch spot to charge again". The first
+line goes when `Message` is sent (`PROMPT_LOST_*` in
+`hud_kit_core::huds::superbounce`). `superbounce.state` has the reason
+as `lost_reason`.
 
 ### The tutorial
 
@@ -1004,24 +1008,29 @@ diagrams: a retail training prompt has none.
 
 | Step | Text | Moves on when |
 |---|---|---|
-| 1 | Crouch under a cyan crouch spot, / then stand up. | primed |
+| 1 | Crouch, walk in under a lip, / let go, then walk out. | primed |
 | 2 | You are primed. / Do not crouch again. | a bounce spot within 8 m |
-| 3 | Find a strip. Green is a standing jump. / Red needs a big drop. | a bounce, or 20 s |
-| 4 | Land on the strip. / Hold (X) while falling. | a bounce, or 15 s |
+| 3 | Find a strip. Its post is the height / to fall from. No post: just jump. | a bounce, or 20 s |
+| 4 | Jump or fall onto the strip. / Fall Assist (Controls) can steer. | a bounce, or 15 s |
+
+No step asks for a button: the fall assist is opt in
+([superbounce.md](superbounce.md#hold-x-the-fall-assist)), and step 4
+names its Controls row once.
 
 ```text
                  x 163                              x 477
           y 218  +----------------------------------+
-                 |  Crouch under a cyan crouch spot, |
-                 |          then stand up.           |
+                 |   Crouch, walk in under a lip,    |
+                 |      let go, then walk out.       |
           y 262  +----------------------------------+
                           (HUD frame centre 320, 240)
 ```
 
 The box is the text's size plus 5 each side and 1 above and below, plus
 the frame art (S: decoding 3 gives its outer edge). The widest first
-line is 304 pixels in font 6 (V, measured as above), inside the frame's
-544. The element's `longest` is step 3, the most characters; which
+line of the earlier wording was 304 pixels in font 6 (V); the steps are
+no longer than it, inside the frame's 544. The element's `longest` is
+step 3, the widest line (its unit test checks that); which
 step is widest in font 6 is S until the disc's checks run. The tutorial
 is fullscreen only. The step machine is
 `hud_kit_core::huds::superbounce::Tutorial` (its thresholds);

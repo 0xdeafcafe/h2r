@@ -19,7 +19,27 @@ pub mod method {
     /// The spots the bots know for a map ([`super::SPOTS`]).
     pub const SPOTS: &str = super::SPOTS;
 
-    pub const ALL: &[&str] = &[STATE, SET, SPOTS, super::ASSIST, super::ASSIST_TEST];
+    /// Starts a batch of trials of the loaded map's spots in the game
+    /// ([`super::VerifyParams`], [`super::VerifyStarted`]).
+    pub const VERIFY: &str = super::VERIFY;
+
+    /// The batch's progress and results ([`super::VerifyStatusParams`],
+    /// [`super::VerifyReport`]).
+    pub const VERIFY_STATUS: &str = super::VERIFY_STATUS;
+
+    /// Stops the batch and lets go of the seat ([`super::VerifyReport`]).
+    pub const VERIFY_CANCEL: &str = super::VERIFY_CANCEL;
+
+    pub const ALL: &[&str] = &[
+        STATE,
+        SET,
+        SPOTS,
+        super::ASSIST,
+        super::ASSIST_TEST,
+        VERIFY,
+        VERIFY_STATUS,
+        VERIFY_CANCEL,
+    ];
 }
 
 // ---- superbounce.state ----
@@ -91,9 +111,15 @@ pub struct State {
     /// by a crouch spot).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub charge: Option<Charge>,
-    /// The recipe's step on the HUD's prompt line, while `under` or `held`.
+    /// The next thing to do on the HUD's prompt line: a crouch step
+    /// while `under` or `held`, the warning while primed and still, the
+    /// new charge after a loss.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verb: Option<Verb>,
+    /// Why the charge went: while `lost`, and while the verb is
+    /// `charge_again`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lost_reason: Option<LostReason>,
     /// The navpoint's target: the nearest crouch spot while not primed,
     /// the nearest strip while primed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -140,7 +166,7 @@ pub struct Charge {
     pub still_ticks: u32,
 }
 
-/// The prompt line's verb for a crouch step.
+/// The prompt line's verb.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Verb {
@@ -148,6 +174,24 @@ pub enum Verb {
     LetGoOfCrouch,
     /// "Walk out to stand up".
     WalkOutToStand,
+    /// "Keep moving or lose the charge": primed and still for 19 ticks or
+    /// more.
+    KeepMoving,
+    /// "Find a crouch spot to charge again": for 150 ticks after a loss,
+    /// while no crouch step has begun.
+    ChargeAgain,
+}
+
+/// Why the charge went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LostReason {
+    /// The word left -3 after 30 still ticks or more: the body slept.
+    StoodStill,
+    /// A crouch while primed.
+    Crouched,
+    /// The word left -3 for another reason.
+    Unknown,
 }
 
 /// What the navpoint points at.
@@ -284,8 +328,9 @@ pub struct SpotRecord {
     /// touch down at; `fall` is worked from it. Crouch: 0.
     #[serde(default)]
     pub need: f32,
-    /// Crouch: `proven` (a measured priming place) or `likely`. Bounce:
-    /// `likely`.
+    /// `proven` (a measured place, or one the map's verified file proved),
+    /// `failed` (the verified file tried it and it never worked) or
+    /// `likely` (found in the geometry, untried).
     #[serde(default = "likely")]
     pub status: String,
     /// Crouch: the unit direction (X and Y) from `stand` to the standing
@@ -332,6 +377,10 @@ pub const ASSIST_TEST: &str = "superbounce.assist_test";
 pub struct Assist {
     /// The superbounce mode is on (the assist only works with it on).
     pub active: bool,
+    /// The player has turned the assist on: the `superbounce.fall_assist`
+    /// setting (`settings.set` changes it). Off, it never steers.
+    #[serde(default)]
+    pub enabled: bool,
     /// `superbounce.assist_test` is holding the button.
     pub test_hold: bool,
     /// The assist steered the player at its last pad read.
@@ -369,6 +418,370 @@ pub struct AssistTest {
     pub hold: bool,
 }
 
+// ---- superbounce.verify (trials of the spots in the game) ----
+//
+// The verifier (crates/extensions/game/src/superbounce_verify.rs;
+// docs/game/superbounce.md, "Verifying spots").
+
+/// `superbounce.verify`: starts a batch of trials of the loaded map's spots,
+/// run in the game tick by tick on one seat. An act.
+pub const VERIFY: &str = "superbounce.verify";
+/// `superbounce.verify_status`: the batch's progress and, once done, its
+/// results. A read; may wait for the batch ([`VerifyStatusParams::wait_ticks`]).
+pub const VERIFY_STATUS: &str = "superbounce.verify_status";
+/// `superbounce.verify_cancel`: stops the batch. An act; no params.
+pub const VERIFY_CANCEL: &str = "superbounce.verify_cancel";
+
+/// An explicit spot to try, instead of the scan's by index.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VerifyPoint {
+    /// Crouch: where the forced crouch lets go (the scan's `stand`).
+    /// Drop: the strip's stand point. A unit's origin.
+    pub stand: [f32; 3],
+    /// Crouch: the way out, X and Y (normalised); default +X.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub out: Option<[f32; 2]>,
+    /// Drop: the strip's midline, floor height; default a 0.3-unit line
+    /// across `drift` through `stand`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge: Option<[[f32; 3]; 2]>,
+    /// Drop: across the strip from the crease; default +Y.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drift: Option<[f32; 2]>,
+    /// Drop: the slot's width (default 0.2) and the touchdown speed it
+    /// needs (default 4.3), for the landing classifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub need: Option<f32>,
+}
+
+/// `superbounce.verify`'s params. Every field but `kind` has a default.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VerifyParams {
+    /// `crouch`: does a forced crouch here turn the word to -3? `drop`: does
+    /// a primed fall onto this strip launch? `route`: does a bot's bounce
+    /// route (`bots.bounce_to`) work end to end?
+    pub kind: String,
+    /// The scan's spots of that kind by index (the order
+    /// `superbounce.verify {dry_run}` lists, best first); default every
+    /// one, up to `max_spots`. Not with `points`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spots: Option<Vec<usize>>,
+    /// Explicit spots instead of the scan's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub points: Option<Vec<VerifyPoint>>,
+    /// With no `spots` or `points`: this many of the scan's, best first
+    /// (default 12).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_spots: Option<usize>,
+    /// The seat: `player.<n>` (default `player.0`, the first local
+    /// player, driven through its pad), or a brain-driven bot by gamertag
+    /// or handle (`bots.stats`), driven by holding its pad. `route` needs a
+    /// bot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat: Option<String>,
+    /// Crouch: starting offsets from the spot's start (X and Y, world
+    /// units). Default `[[0,0]]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offsets: Option<Vec<[f32; 2]>>,
+    /// Crouch: approach turns, degrees from straight in along the way out.
+    /// Default `[0, 25, -25]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turns: Option<Vec<f32>>,
+    /// Crouch: how far outside the lip each trial starts, along its
+    /// approach, world units. Default `[0.3, 0.6]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distances: Option<Vec<f32>>,
+    /// Drop: offsets across the slot from its midline, toward the drift
+    /// (world units). Default `[-0.05, 0, 0.05, 0.1, 0.15]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub across: Option<Vec<f32>>,
+    /// Drop: offsets along the slot from its middle (world units). Default
+    /// `[0]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub along: Option<Vec<f32>>,
+    /// Drop: heights over the strip to fall from, at rest (world units).
+    /// Default `[1.5, 2.5, 3.5]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heights: Option<Vec<f32>>,
+    /// Drop: the word before the landing. `set` (default): written -3 every
+    /// tick of the fall while there is a pair; `none`: written 0 (the
+    /// control); `keep`: left as the game has it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prime: Option<String>,
+    /// Drop: the stick along the strip's drift while falling, 0..1
+    /// (default 0: straight down).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drift_stick: Option<f32>,
+    /// Ticks: settle after a teleport (default 20), crouch held under the
+    /// lip (default 15), walk out (default 30), fall (most, default 120),
+    /// a route (most, default 3600).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settle_ticks: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold_ticks: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub out_ticks: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fall_ticks: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_ticks: Option<u32>,
+    /// Route: where to send the bot (default 6 units straight up from the
+    /// nearest strip's stand, so any launch counts), and `help` or `fun`
+    /// (default `fun`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<[f32; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// Route: repeat the route this many times (default 3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat: Option<u32>,
+    /// Keep the per-tick trace of this trial (by its index).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace: Option<usize>,
+    /// Write the outcome to the map's verified file (default true; not for
+    /// `points` or `route`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub save: Option<bool>,
+    /// Plan the trials and list the spots, run nothing.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+/// One spot of a batch.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VerifySpot {
+    /// The scan's index of that kind; absent for an explicit point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<usize>,
+    pub kind: String,
+    pub stand: [f32; 3],
+    /// The scan's status before the batch: `likely`, `proven`, `failed`.
+    pub status: String,
+    pub score: f32,
+}
+
+/// One planned trial.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VerifyPlanned {
+    /// Index into the batch's `spots`.
+    pub spot: usize,
+    /// Crouch: the start (where it is teleported). Drop: the drop's origin.
+    pub start: [f32; 3],
+    /// Crouch: the facing and walk-in direction, degrees about +Z from +X.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub yaw: Option<f32>,
+    /// Crouch: the start's distance outside the lip along the approach.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distance: Option<f32>,
+    /// The offset tried (crouch: X and Y from the spot's start; drop:
+    /// across and along the slot).
+    pub offset: [f32; 2],
+    /// Drop: the height over the strip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<f32>,
+}
+
+/// `superbounce.verify`'s result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VerifyStarted {
+    /// The batch's number; `superbounce.verify_status` reports on the
+    /// newest.
+    pub job: u32,
+    pub kind: String,
+    pub seat: String,
+    pub map: String,
+    pub spots: Vec<VerifySpot>,
+    pub trials: Vec<VerifyPlanned>,
+    /// A guess at the batch's length in game ticks (30 a second).
+    pub estimated_ticks: u64,
+    /// Nothing runs: `dry_run` was set.
+    pub dry_run: bool,
+}
+
+/// `superbounce.verify_status`'s params.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VerifyStatusParams {
+    /// Wait for the batch to end, up to this many ticks (at most 300), and
+    /// answer then; default answer at once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_ticks: Option<u64>,
+    /// Leave out the per-trial list (the per-spot summary and lines stay).
+    #[serde(default)]
+    pub brief: bool,
+}
+
+/// One tick of a traced trial.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct VerifyTick {
+    /// Ticks since the trial's first move (after its settle).
+    pub t: u32,
+    /// The phase: `in`, `release`, `out` (crouch); `fall`, `after`
+    /// (drop); a route's step.
+    pub phase: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pos: Option<[f32; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vz: Option<f32>,
+    pub airborne: bool,
+    /// The crouch request (unit flags bit 23).
+    pub request: bool,
+    /// The crouch button as the trial pressed it.
+    pub crouch_button: bool,
+    /// The crouch amount, 0 standing to 1 crouched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crouch: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standing_fits: Option<bool>,
+    /// The level pair word, signed; absent with no pair.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub word: Option<i32>,
+}
+
+/// One trial's outcome.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct VerifyTrial {
+    pub index: usize,
+    /// Index into the batch's `spots`.
+    pub spot: usize,
+    pub start: [f32; 3],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub yaw: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distance: Option<f32>,
+    pub offset: [f32; 2],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<f32>,
+    /// Crouch: primed. Drop: launched. Route: the route ended `done` with
+    /// a bounce.
+    pub ok: bool,
+    /// Crouch: the crouch was down (amount 0.9 or more) when the walk in
+    /// started: crouched before walking in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crouched_first: Option<bool>,
+    /// Crouch: the standing capsule did not fit at some tick under the lip
+    /// (the mode's capsule test; absent without it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub under: Option<bool>,
+    /// Crouch: the request stayed set with the button up (forced).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forced: Option<bool>,
+    /// Crouch: ticks from letting go to the word reading -3, and where.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primed_tick: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primed_at: Option<[f32; 3]>,
+    /// Crouch: how close (world units) the body got to the stand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closest: Option<f32>,
+    /// Drop: ticks from the release to the contact tick.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contact_tick: Option<u32>,
+    /// Drop: the speed in (down, units/s) and the best vertical speed out
+    /// (up) over the contact tick and the three after.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed_in: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vz_out: Option<f32>,
+    /// Drop: the origin on the tick before contact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub landed_at: Option<[f32; 3]>,
+    /// Drop: the word on the tick before contact, signed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub word_before: Option<i32>,
+    /// Drop and route: the landing classifier's verdict (`bounce`,
+    /// `not_primed`, `missed`, `too_slow`, `no_bounce`), or `no_touchdown`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub landing: Option<String>,
+    /// Route: the step it ended on and why it failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
+    /// Route: each step and phase change, `<tick> <step>/<phase> <what>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<String>,
+    /// What went wrong outside the physics (a teleport refused, no pair to
+    /// write, the seat gone).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// The best trial of a spot.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct VerifyBest {
+    pub trial: usize,
+    pub offset: [f32; 2],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub yaw: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distance: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<f32>,
+    /// Drop: its launch (units/s up).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch: Option<f32>,
+}
+
+/// One spot's outcome.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VerifySpotResult {
+    /// Index into the batch's `spots`.
+    pub spot: usize,
+    pub trials: u32,
+    pub ok: u32,
+    /// `proven` (one worked), `failed` (all were tried and none did),
+    /// `untried` (the batch ended first).
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub best: Option<VerifyBest>,
+    /// Why the failures failed, by count (`not_forced`, `forced_no_word`,
+    /// `not_primed`, `missed`, `too_slow`, `no_bounce`, ...).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub why: std::collections::BTreeMap<String, u32>,
+}
+
+/// `superbounce.verify_status`'s result (and `superbounce.verify_cancel`'s).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct VerifyReport {
+    /// `none` (no batch yet), `running`, `done`, `failed` or `cancelled`.
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<u32>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub seat: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub map: String,
+    /// Trials finished and planned.
+    pub done: usize,
+    pub total: usize,
+    /// The trial running and its phase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spots: Vec<VerifySpot>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub results: Vec<VerifySpotResult>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trials: Vec<VerifyTrial>,
+    /// The `trace` trial's ticks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trace: Vec<VerifyTick>,
+    /// One line a spot, e.g. `crouch #3 (-10.91, 0.72, -1.16): primed 4/9,
+    /// best offset (0.06, -0.03) yaw -121`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lines: Vec<String>,
+    /// The verified file written, once the batch is done.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saved: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -398,6 +811,7 @@ mod tests {
                 still_ticks: 0,
             }),
             verb: Some(Verb::WalkOutToStand),
+            lost_reason: Some(LostReason::StoodStill),
             nav_target: Some(NavTarget {
                 at: [1.0, 2.0, 3.0],
                 kind: NavKind::Crouch,
@@ -419,6 +833,7 @@ mod tests {
         let v = serde_json::to_value(&s).unwrap();
         assert_eq!(v["charge"]["phase"], "held");
         assert_eq!(v["verb"], "walk_out_to_stand");
+        assert_eq!(v["lost_reason"], "stood_still");
         assert_eq!(v["nav_target"]["kind"], "crouch");
         assert_eq!(v["landing"]["verdict"], "on_slot");
         assert_eq!(v["last_landing"]["result"], "not_primed");
@@ -427,6 +842,7 @@ mod tests {
         for absent in [
             "charge",
             "verb",
+            "lost_reason",
             "nav_target",
             "landing",
             "last_landing",
@@ -446,6 +862,18 @@ mod tests {
             serde_json::to_value(Verb::LetGoOfCrouch).unwrap(),
             "let_go_of_crouch"
         );
+        assert_eq!(
+            serde_json::to_value(Verb::KeepMoving).unwrap(),
+            "keep_moving"
+        );
+        assert_eq!(
+            serde_json::to_value(Verb::ChargeAgain).unwrap(),
+            "charge_again"
+        );
+        assert_eq!(
+            serde_json::to_value(LostReason::Crouched).unwrap(),
+            "crouched"
+        );
         assert_eq!(serde_json::to_value(Course::Fixable).unwrap(), "fixable");
         assert_eq!(v["word"], "fffffffd");
         assert!(v.get("nearest").is_none() && v["scan"].get("error").is_none());
@@ -454,6 +882,7 @@ mod tests {
         assert!(v.get("yaw").is_none());
         assert_eq!(serde_json::from_value::<State>(v).unwrap(), s);
         let a = Assist {
+            enabled: true,
             engaged: true,
             stick: Some([0.5, -1.0]),
             ..Assist::default()
@@ -461,6 +890,9 @@ mod tests {
         let v = serde_json::to_value(&a).unwrap();
         assert!(v.get("target").is_none() && v["stick"][1] == -1.0);
         assert_eq!(serde_json::from_value::<Assist>(v).unwrap(), a);
+        // A reply without the field reads as off.
+        let old = serde_json::json!({"active": true, "test_hold": false, "engaged": false});
+        assert!(!serde_json::from_value::<Assist>(old).unwrap().enabled);
         assert!(
             serde_json::from_value::<AssistTestParams>(serde_json::json!({"hold": true, "x": 1}))
                 .is_err()
@@ -472,8 +904,38 @@ mod tests {
                 method::SET,
                 method::SPOTS,
                 ASSIST,
-                ASSIST_TEST
+                ASSIST_TEST,
+                VERIFY,
+                VERIFY_STATUS,
+                VERIFY_CANCEL
             ]
         );
+    }
+
+    #[test]
+    fn verify_params_default_and_refuse_unknown_fields() {
+        let p: VerifyParams =
+            serde_json::from_value(serde_json::json!({"kind": "crouch"})).unwrap();
+        assert_eq!(p.kind, "crouch");
+        assert!(p.spots.is_none() && !p.dry_run);
+        let p: VerifyParams = serde_json::from_value(serde_json::json!({
+            "kind": "drop", "spots": [0, 2], "heights": [2.43], "prime": "none", "trace": 1
+        }))
+        .unwrap();
+        assert_eq!(
+            (p.spots, p.heights, p.trace),
+            (Some(vec![0, 2]), Some(vec![2.43]), Some(1))
+        );
+        assert!(
+            serde_json::from_value::<VerifyParams>(serde_json::json!({"kind": "drop", "x": 1}))
+                .is_err()
+        );
+        let r = VerifyReport {
+            state: "none".into(),
+            ..VerifyReport::default()
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert!(v.get("trials").is_none() && v.get("job").is_none());
+        assert_eq!(serde_json::from_value::<VerifyReport>(v).unwrap(), r);
     }
 }

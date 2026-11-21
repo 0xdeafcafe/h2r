@@ -588,15 +588,20 @@ for tuning these rules against a real map.
 
 ## The superbounce game type
 
-A built-in Slayer variant, Superbounce, for practising: Bounce Practice's
+A built-in variant, Superbounce, for practising: Bounce Practice's
 rules (no score or time limit, 3 s respawn, no suicide penalty,
 overshields, damage resistance, a magnum, nothing on the map) plus a HUD
-and lines over the map. The mode is on when the active variant is the
-built-in Superbounce (told by its name,
-`crates/extensions/game/src/community_variants.rs` has no field for the
-flag), when the variant's extension block has the superbounce flag (bit 2
-of `+0x10f`, [game-options.md](game-options.md)), or with
-`H2_SUPERBOUNCE=1` ([switches](../runtime/switches.md)). An agent can
+and lines over the map. It is listed under **Tweakers**, the last row of
+the game type list (after Territories), and not under Slayer; underneath
+it is a Slayer variant ([community-gametypes.md](community-gametypes.md#tweakers)).
+Its entry in `crates/extensions/game/src/community_variants.rs` is
+`Category::Tweakers(SUPERBOUNCE_EXT)`, and `crate::tweakers` writes that
+extension block into its built-in record, so a game on it and a saved
+copy of it carry the flag. The mode is on when the variant's extension
+block has the superbounce flag (bit 2 of `+0x10f`,
+[game-options.md](game-options.md)), when the active variant's name is
+the built-in Superbounce's (a fallback for a game whose block did not
+arrive), or with `H2_SUPERBOUNCE=1` ([switches](../runtime/switches.md)). An agent can
 force it on or off in any game with `superbounce.set`
 ([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type)). It is
 `crates/extensions/game/src/superbounce_mode.rs`.
@@ -615,12 +620,20 @@ publishes that with the nearest bounce spot; the HUD, the lines and
 all read it.
 
 **Spots.** The first tick on a map and structure BSP starts a scan of the
-BSP's collision geometry on a background thread (`superbounce::scan_map`,
-"Spots in the geometry"); the result is kept per map name, BSP and the map
-file's header checksum, so an override with the same name is scanned
-again, and a scan still running when the map is left is not started
-twice. The feature is presentation-only (a recorded film's hook digest
-ignores it) and snapshot-stateless: nothing it holds needs saving. The nearest
+BSP's collision geometry on a background thread (`superbounce::scan_in`
+over the map's context, `superbounce::map_context`: its starting
+locations and proven places, "Spots in the geometry"); the result is kept
+per map name, BSP and the map file's header checksum, so an override with
+the same name is scanned again, and a scan still running when the map is
+left is not started twice. The map's verified file ("Verifying spots") is
+applied to the result, and again whenever the file changes: a `proven`
+spot scores 1, a `failed` one is kept for `superbounce.verify` but hidden
+from the HUD, the lines and the overlay. The feature is presentation-only (a recorded film's hook digest
+ignores it) and snapshot-stateless: nothing it holds needs saving.
+
+**The bots.** While the mode is on the bots fight no one and practise
+bounces instead, spread over the map's sites, proven ones first
+([bots.md](bots.md#practising-bounces)). The nearest
 bounce spot is the one with the nearest edge.
 
 **The HUD.** Drawn by Halo 2's own HUD through the HUD kit
@@ -648,10 +661,14 @@ the checks").
 **The tutorial.** The first time the mode is on, four steps show in the
 game's training box, two centred lines each:
 
-1. Crouch under a cyan crouch spot, then stand up.
+1. Crouch, walk in under a lip, let go, then walk out.
 2. You are primed. Do not crouch again.
-3. Find a strip. Green is a standing jump. Red needs a big drop.
-4. Land on the strip. Hold (X) while falling.
+3. Find a strip. Its post is the height to fall from. No post: just jump.
+4. Jump or fall onto the strip. Fall Assist (Controls) can steer.
+
+No step asks for a button: the landing is the player's own, and the
+last step names the opt-in [fall assist](#hold-x-the-fall-assist) once,
+by its row.
 
 Priming moves step 1 to 2, a bounce spot within 8 m moves 2 to 3, a
 bounce landing or 20 s moves 3 to 4, and a bounce or 15 s closes 4
@@ -684,8 +701,9 @@ and [Landings](#landings) describe.
 centred, shadowed labels with a pulse, on the spots they say something
 about (`crates/extensions/game/src/superbounce_prompts.rs`):
 
-- Airborne and falling toward a strip the assist can steer onto (its
-  pick), `Hold X` (the X button's glyph) floats 0.3 units above the
+- With the [fall assist](#hold-x-the-fall-assist) on, airborne and
+  falling toward a strip it can steer onto (its pick), `Hold X` (the X
+  button's glyph) floats 0.3 units above the
   strip's stand point. It grows as the player nears: 1x at 6 units and
   more, 3x at 0.5 and less, linear between (`label_scale`). A guide runs
   along the floor from where the player lands if nothing is done to the
@@ -693,6 +711,10 @@ about (`crates/extensions/game/src/superbounce_prompts.rs`):
   ([Landings](#landings)).
 - Once X is held and the assist is steering, the label reads `Guiding`
   and stops pulsing.
+- With the assist off (the default) nothing is said in the air and no
+  strip is anyone's target: the landing is the player's, and what the
+  map shows of it is the bounce's own (the landing ring and the speed
+  bar, [Landings](#landings)).
 - On the ground, within 1.5 units of a strip whose fall is at most 0.05 (a
   standing jump does it), `Jump` is drawn at the take-off spot, 0.2 units
   back from the stand point against the drift (`takeoff`), with a small
@@ -713,16 +735,25 @@ formatted.
 
 ### Hold X: the fall assist
 
-Holding X in the air steers the player onto a bounce strip, so the landing
-is on the strip, moving slowly along its drift, the way every traced bounce
-came in. It works on input, not physics: the assist replaces the left stick
+An opt-in help: with the player's **Fall Assist** setting on
+(`superbounce.fall_assist`, off by default, a row at the end of the
+Controls list that a press turns on or off; `crates/extensions/game/src/setting_defs.rs`,
+`crates/extensions/game/src/video_screen.rs`), holding X in the air
+steers the player onto a bounce strip, so the landing is on the strip,
+moving slowly along its drift, the way every traced bounce came in. Off,
+the tap never reads X, nothing steers, and nothing on the map or the HUD
+asks for X. The setting is read live (`follow_setting`); the
+`superbounce-assist` feature in `H2_FEATURES` stays the kill switch, which
+leaves the tap out whatever the setting says. It works on input, not
+physics: the assist replaces the left stick
 the guest reads and takes X out of it, and writes nothing to the world. It
 is `crates/extensions/game/src/superbounce_assist.rs`; `superbounce.assist`
 and `superbounce.assist_test`
 ([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type))
 show it and hold the button without a pad.
 
-**When it applies.** The mode is on, the first local player's X is held
+**When it applies.** The mode is on, the setting is on, the first local
+player's X is held
 (pad X, keyboard E by default; the `BUTTON` constant), the player is
 airborne and falling (vertical speed at most 0.5 units/s), and a bounce spot
 passes the reach cone:
@@ -756,11 +787,14 @@ until the player lets go, so a landing or a strip going out of reach does
 not hand the game a fresh press. With no strip in reach, X and the stick
 pass through unchanged.
 
-**The prompt.** The assist's pick is also what the world prompts are
-drawn from, whether or not X is held: the window reads the player's body
-and runs `pick` on each frame, so `HOLD X` appears on the strip before the
-button is pressed, and turns to `GUIDING` once the tap reports it is
-engaged (`assisting`; [the prompts](#the-superbounce-game-type)).
+**The prompt.** With the setting on, the assist's pick is also what the
+world prompts are drawn from, whether or not X is held: the window reads
+the player's body and runs `pick` on each frame, so `Hold X` appears on
+the strip before the button is pressed, and turns to `Guiding` once the
+tap reports it is engaged (`assisting`; [the prompts](#the-superbounce-game-type)).
+Off, there is no pick: no prompt in the air, no strip drawn as the
+target, and a predicted landing the assist could have brought in is drawn
+as the miss it is (`superbounce_world::course`).
 
 **Where it sits.** An input tap at `XInputGetState`
 (`AssistTap`, installed by `register_late` before the agent's tap), so
@@ -829,7 +863,8 @@ the crouch lets go at the band's way out, 6 cm from where the body
 rested in the measured corner (**Trace**, the note). So "how charged" is
 two things the engine does have:
 
-- **How far through the recipe.** `near` (crouched, the crouch request
+- **How far through the recipe** (crouch, walk in, let go, walk out:
+  one phase a step). `near` (crouched, the crouch request
   set, within 1.5 of a crouch spot's stand point), `under` (crouched with
   crouch held and the standing capsule does not fit), `held` (the crouch
   button is up and the request, unit flags bit 23, is still set: the
@@ -844,10 +879,33 @@ two things the engine does have:
   request is set is `lost`, as is one whose word leaves −3. `lost` shows
   for 30 ticks.
 
-`superbounce_mode`'s state carries it as `charge` (the phase and the
-fill: 0, 1/3, 2/3, then the charge left, 0 while lost), `still_ticks`,
-`verb` (`LetGoOfCrouch` while `under`, `WalkOutToStand` while `held`) and
-`standing_fits`. `superbounce.state` returns them, and `world.object`'s
+**Why it went.** The tracker gives each loss a reason, read on the tick
+the charge goes (`superbounce_charge::LostReason`):
+
+| Reason | When |
+|---|---|
+| `crouched` | the crouch request is set |
+| `stood_still` | the word left −3 after 30 still ticks or more (`STOOD_STILL_TICKS`): the body slept. 30 is under the 38 to 40 measured, so a sleep a few ticks early still reads as one |
+| `unknown` | the word left −3 for another reason: a respawn, a vehicle, the pair gone, or a sleep the still count missed |
+
+A landing is not a reason. Nothing measured has a landing use the
+charge up: the word stays −3 after a bounce until the body sleeps (the
+note), and a landing that does not bounce is filed as a landing, not a
+loss.
+
+**The warning and the new charge.** From 19 still ticks while primed
+(`WARN_STILL_TICKS`, half of 38, where the fill is 0.5) the verb is
+`KeepMoving`. For 150 ticks after a loss (`AGAIN_TICKS`: the `lost`
+second and four more), while the phase is `lost` or hidden, the verb is
+`ChargeAgain`; a crouch step (`near`, `under`, `held`) takes the line
+from it.
+
+`superbounce_mode`'s state carries it as `charge` (the phase, the fill:
+0, 1/3, 2/3, then the charge left, 0 while lost; and the loss, its
+reason and tick, while lost), `still_ticks`, `verb` (`LetGoOfCrouch`
+while `under`, `WalkOutToStand` while `held`, `KeepMoving`, and
+`ChargeAgain` with the loss) and `standing_fits`. `superbounce.state`
+returns them, the reason as `lost_reason`, and `world.object`'s
 `physics` block has `standing_fits` for bipeds.
 
 Two inputs are not the engine's own:
@@ -924,8 +982,10 @@ disc's maps: 7 to 12 a map, 3 on a map whose strips are far from its
 lips (an estimate from the note's table; `h2 superbounce scan <map>
 --json` counts them).
 
-Which `likely` spots prime is a game run's to say. A lab pass walks
-each kept spot (below), and one that primes becomes a row in `PROVEN`.
+Which `likely` spots prime is a game run's to say: `superbounce.verify`
+tries each kept spot in the game and writes the map's verified file
+([Verifying spots](#verifying-spots)), which marks the spots that primed
+`proven` and the ones that never did `failed`.
 
 ### Crouch spots in the world
 
@@ -979,8 +1039,8 @@ The figures are `crates/extensions/game/src/superbounce_world.rs`'s.
 - **On course.** While primed, airborne and moving down, the landing the
   state predicts (`landing`) is drawn where it is: a ring of the capsule's
   radius when it is inside the slot, the ring broken into every other
-  segment when the assist can still bring it in (`Hold X`), and a cross
-  when it cannot. 0.35 to its side, across the line from the player, a
+  segment when the [fall assist](#hold-x-the-fall-assist) is on and can
+  still bring it in, and a cross when it cannot (or is off). 0.35 to its side, across the line from the player, a
   0.5-high post fills from the floor with the touchdown speed over `need`
   (`speed_fill`), full at `need`.
   The state is the mode's `landing` (`superbounce_assist::predict`),
@@ -1049,17 +1109,127 @@ Each of these is a lab run through the agent API
   `havok.agents` until the pair goes: the fill reaches 0 on that tick,
   within 2. Then creep at 0.02, 0.05 and 0.1 units/s for the speed
   limit.
-- **Each kept crouch spot.** `sim.state.set` to 0.3 out along `out`,
-  facing in; `input.pad` crouch held and the stick in, crouch released,
-  then the stick out; read the request bit and the word. A spot that
-  holds the request and turns the word is proven. The measured corner
-  was not reached by scripted sticks, only by the recorded input, so a
-  miss here is not proof a spot fails: try three approach angles.
+- **Each kept crouch spot, and each strip.** `superbounce.verify`
+  ([Verifying spots](#verifying-spots)).
 - **The landing report.** The recorded jump with the word at −3, at 0,
   from a lower take-off and 0.3 to the side: `bounce`, `not primed`,
-  `too slow` and `missed` in turn.
+  `too slow` and `missed` in turn. `superbounce.verify {"kind":"drop"}`
+  with `prime` `set` and `none` gives the same verdicts from a fall.
 
 No game was run for this section.
+
+## Verifying spots
+
+`superbounce.verify` tries the loaded map's scanned spots in the running
+game and says which work
+([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type)).
+It is `crates/extensions/game/src/superbounce_verify.rs`: the plan in
+`plan.rs`, a trial tick by tick in `trial.rs`, the verdicts in
+`summary.rs`.
+
+**A batch.** One call plans a batch of one kind (`crouch`, `drop` or
+`route`) over the scan's spots of that kind, best score first (the order
+`dry_run` lists, which `spots` indexes count in; failed spots are left out
+unless named or `max_spots` is given), or over explicit `points`. An
+agent ticker then runs the trials one after another on one seat, a tick
+at a time, because a batch runs far longer than a deferred answer may
+wait. `superbounce.verify_status` reports progress and, at the end, a
+verdict and one line a spot; `superbounce.verify_cancel` stops it. A
+batch needs the mode on and its scan ready (`superbounce.set
+{"on":true}`, then `superbounce.state`'s `scan.status`), except over
+explicit points. A new map, or the game ending, fails a running batch.
+
+**The seat.** `player.0` (the default) is driven through the first
+controller's pad: the fall assist's input tap replaces the whole pad
+while a trial runs, so it needs the `superbounce-assist` feature. A
+brain-driven bot (by name, handle or its `player.<n>`) is driven by
+holding its pad (`bots::phantom::Phantoms::hold_pad`): its brain's own
+pad is ignored until the trial lets go. Trials start by teleport (the
+game's own, through the agent's calls queue) and clear or set the level
+pair word directly (`live_telemetry::havok_agents::set_pair_word`); they
+do not use snapshots, which `state.save` refuses in a game that is not
+quiescent. A teleport keeps the pair word and the velocity, so each
+trial clears the word after it lands and settles before it moves.
+
+**Crouch trials** follow the recipe: crouch, walk in, let go, walk out.
+Each starts outside the lip on the approach side: `distance` out from
+`stand` against the way in, which is the way out (`out`) reversed and
+turned by `turn` degrees, moved by `offset`, facing in. The default grid
+is turns 0, 25 and −25 by distances 0.3 and 0.6. Then:
+
+1. settle `settle_ticks` (20) with the word written 0;
+2. press crouch and stand still until the crouch is down (at least 6
+   ticks, at most 20);
+3. crouch-walk in at 0.6 of full stick toward a point 0.06 past `stand`,
+   until within 0.08 of it (at most 60 ticks);
+4. hold crouch there `hold_ticks` (15), pushing in gently;
+5. let go, still pushing in, for 6 ticks; the crouch request still set
+   then is `forced`;
+6. walk out along `out` at full stick for `out_ticks` (30).
+
+The word reading −3 from step 5 on primes the trial and ends it. A trial
+records whether it crouched first, whether the standing capsule failed to
+fit at some tick (`under`, the mode's capsule test), `forced`, how close
+it got to `stand`, and the ticks from letting go to the prime and where.
+A trial that did not prime fails as `not_under` (never within 0.2 of
+`stand`), `not_crouched`, `not_forced` or `forced_no_word`.
+
+**Drop trials** fall onto a strip with the word set. Each is a point in
+the slot, `across` the midline toward the drift (default −0.05 to 0.15
+in 0.05 steps) and `along` it (default 0), and a `height` over the
+strip's stand height (default 1.5, 2.5 and 3.5). The seat is teleported
+onto the point, settles with the word written (`prime`: `set` −3, `none`
+0, `keep` left alone), is lifted straight up, and falls; the word is
+written again each tick there is a pair. Contact is the first tick the
+vertical speed is back over −0.5 after falling faster than −1; the speed
+in is the tick before's, the speed out the best of the contact tick and
+the three after. The landing is classified as the HUD's are
+(`superbounce_charge::classify`): `bounce` (out over 8 units/s),
+`not_primed`, `missed`, `too_slow` or `no_bounce`; `no_touchdown` when
+it never lands within `fall_ticks` (120). `prime` `none` is the control:
+a strip that launches with it is not a superbounce.
+
+**Route trials** order a bot's whole bounce route (`bots.bounce_to`) to a
+point `ROUTE_RISE` (6) units straight up from each strip's stand, or to
+`to`, `repeat` times (3), and watch it to its end (`route_ticks`, 3600).
+A route works when it ends `done` with a touchdown that launched; the
+trial carries the route's log, its touchdown and where it stopped.
+Routes write nothing to the verified file.
+
+**The verdict.** A spot one trial worked for is `proven`; one whose
+trials all ran and none worked is `failed`; else `untried` (the batch
+ended first, or only the setup failed: a refused teleport, the seat
+gone). The best crouch trial is the quickest prime, the best drop the
+biggest launch. Each spot's line reads like `crouch #3 (-10.91, 0.72,
+-1.16): primed 4/9, best offset (0.06, -0.03) yaw -121 from 0.30 out;
+failed: forced_no_word 5`.
+
+**The verified file.** A batch of the scan's spots that ends (not
+cancelled) merges its proven and failed spots into
+`<data>/bots/<map>.verified` (`superbounce::verified`; written by
+`bots::spots::store_verified`):
+
+```text
+# superbounce verified v1
+crouch proven -10.910 0.720 -1.160 dx=0.060 dy=-0.030 yaw=-121.0 trials=9 ok=4
+bounce failed -10.620 3.880 -3.190 dx=0.000 dy=0.000 trials=15 ok=0 best=1.71
+```
+
+A line is the kind, the verdict and the spot's `stand` as the scan gave
+it, then `key=value` fields: `dx`, `dy` (a crouch's working start, a
+drop's landing point, from `stand`), `yaw` (the working way in, degrees),
+`height` (the working drop height), `trials`, `ok` and `best` (the
+biggest launch seen). An entry is about the spot of its kind within 0.3
+of its point sideways and 0.5 up or down. The scan's readers apply it:
+the mode's spots (failed ones hidden, "The superbounce game type"),
+`superbounce.spots` (`status`), and the bots, which route by proven spots
+first, never by failed ones, start a walking prime where the working
+trial started and along its way in, and aim a drop at the working
+landing point from the working height ([bots.md](bots.md)). A person can
+edit the file; a later batch replaces the entries it tried.
+
+No game has run a batch yet: the defaults (the grid, the speeds, the
+tick counts) are first guesses to tune on the lab.
 
 ## Medals
 

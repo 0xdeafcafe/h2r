@@ -38,7 +38,8 @@ use engine::GuestMemory;
 use superbounce::{Kind, Spot, Vec3};
 
 pub use crate::superbounce_charge::{
-    Charge, ChargePhase, Course, Landing, LandingResult, NavKind, NavTarget, Predicted, Verb,
+    Charge, ChargePhase, Course, Landing, LandingResult, Lost, LostReason, NavKind, NavTarget,
+    Predicted, Verb,
 };
 use crate::superbounce_capsule::Room;
 use crate::superbounce_charge::{Tick, Tracker};
@@ -284,6 +285,13 @@ pub fn reply(s: &State) -> agent_proto::superbounce::State {
         verb: s.verb.map(|v| match v {
             Verb::LetGoOfCrouch => wire::Verb::LetGoOfCrouch,
             Verb::WalkOutToStand => wire::Verb::WalkOutToStand,
+            Verb::KeepMoving => wire::Verb::KeepMoving,
+            Verb::ChargeAgain(_) => wire::Verb::ChargeAgain,
+        }),
+        lost_reason: lost(s).map(|l| match l.reason {
+            LostReason::StoodStill => wire::LostReason::StoodStill,
+            LostReason::Crouched => wire::LostReason::Crouched,
+            LostReason::Unknown => wire::LostReason::Unknown,
         }),
         nav_target: s.nav_target.map(|n| wire::NavTarget {
             at: v3(n.at),
@@ -316,6 +324,15 @@ pub fn reply(s: &State) -> agent_proto::superbounce::State {
         }),
         standing_fits: s.standing_fits,
     }
+}
+
+/// The last loss, while the charge shows `lost` or the verb asks for a
+/// new charge.
+pub fn lost(s: &State) -> Option<Lost> {
+    s.charge.and_then(|c| c.lost).or(match s.verb {
+        Some(Verb::ChargeAgain(l)) => Some(l),
+        _ => None,
+    })
 }
 
 /// `superbounce.state` takes no parameters: null or `{}`.
@@ -353,7 +370,14 @@ struct Scanned {
 #[derive(Default)]
 struct Scans {
     current: Option<ScanKey>,
+    /// The current key's spots with the map's verified file applied
+    /// (`superbounce::verified`), failed ones too: what the verifier
+    /// indexes.
+    scanned: Arc<Vec<Spot>>,
+    /// The same without the failed spots: what is drawn and steered onto.
     spots: Arc<Vec<Spot>>,
+    /// The bots' spots generation the verified file was applied at.
+    verified_at: u64,
     /// The current key's collision; empty until its scan is ready.
     room: Arc<Room>,
     status: ScanState,
@@ -379,9 +403,12 @@ fn scan_one<R: Read + Seek>(
     bsp: usize,
 ) -> Result<Scanned, String> {
     let _ = &raw;
+    // The starting locations and the measured priming places, as `h2
+    // superbounce scan` and the bots' scan use them.
+    let ctx = superbounce::map_context(map).map_err(|e| e.to_string())?;
     let polys = superbounce::map_polys(map, bsp).map_err(|e| e.to_string())?;
     Ok(Scanned {
-        spots: superbounce::scan(&polys),
+        spots: superbounce::scan_in(&polys, &ctx),
         room: Room::new(&polys),
     })
 }
@@ -409,20 +436,49 @@ struct ScanView {
     status: ScanState,
 }
 
+/// `raw` with the map's verified file applied: every spot, and the ones not
+/// failed.
+fn with_verified(map: &str, raw: &[Spot]) -> (Arc<Vec<Spot>>, Arc<Vec<Spot>>) {
+    let mut all = raw.to_vec();
+    superbounce::verified::apply(&mut all, &bots::spots::verified_for(map));
+    let shown: Vec<Spot> = all
+        .iter()
+        .filter(|s| s.status != superbounce::Status::Failed)
+        .copied()
+        .collect();
+    (Arc::new(all), Arc::new(shown))
+}
+
 fn request_scan(key: ScanKey) -> ScanView {
     let mut s = lock(scans());
+    // A verified file written (or read) since: apply it again.
+    let generation = bots::spots::generation();
+    if s.current.as_ref() == Some(&key)
+        && s.verified_at != generation
+        && let Some((raw, _)) = s.cache.get(&key).cloned()
+    {
+        let (all, shown) = with_verified(&key.map, &raw);
+        s.scanned = all;
+        s.spots = shown;
+        s.verified_at = generation;
+    }
     if s.current.as_ref() != Some(&key) {
         s.current = Some(key.clone());
         if let Some((spots, room)) = s.cache.get(&key).cloned() {
-            s.spots = spots;
+            let (all, shown) = with_verified(&key.map, &spots);
+            s.scanned = all;
+            s.spots = shown;
+            s.verified_at = generation;
             s.room = room;
             s.status = ScanState::Ready;
         } else if s.inflight.contains(&key) {
             s.spots = Arc::default();
+            s.scanned = Arc::default();
             s.room = Arc::default();
             s.status = ScanState::Scanning;
         } else {
             s.spots = Arc::default();
+            s.scanned = Arc::default();
             s.room = Arc::default();
             s.status = ScanState::Scanning;
             s.inflight.insert(key.clone());
@@ -460,9 +516,12 @@ fn finish_scan(key: ScanKey, found: Result<Scanned, String>) {
                 key.bsp
             );
             let (spots, room) = (Arc::new(spots), Arc::new(room));
-            s.cache.insert(key, (Arc::clone(&spots), Arc::clone(&room)));
+            s.cache.insert(key.clone(), (Arc::clone(&spots), Arc::clone(&room)));
             if here {
-                s.spots = spots;
+                let (all, shown) = with_verified(&key.map, &spots);
+                s.scanned = all;
+                s.spots = shown;
+                s.verified_at = bots::spots::generation();
                 s.room = room;
                 s.status = ScanState::Ready;
             }
@@ -476,9 +535,20 @@ fn finish_scan(key: ScanKey, found: Result<Scanned, String>) {
     }
 }
 
-/// The spots of the current scan, for the world lines.
+/// The spots of the current scan, for the world lines: the map's verified
+/// file applied, the failed spots left out.
 pub fn current_spots() -> Arc<Vec<Spot>> {
     Arc::clone(&lock(scans()).spots)
+}
+
+/// Every spot of the current scan with its verified status, failed ones
+/// too, and the map they are for: what `superbounce.verify` indexes.
+pub fn scanned_spots() -> (Option<String>, Arc<Vec<Spot>>) {
+    let s = lock(scans());
+    (
+        s.current.as_ref().map(|k| k.map.clone()),
+        Arc::clone(&s.scanned),
+    )
 }
 
 /// The collision of the current scan, for the standing-capsule test;
@@ -553,6 +623,15 @@ pub fn set_override(on: Option<bool>) -> &'static str {
     };
     OVERRIDE.store(v, Ordering::Relaxed);
     name
+}
+
+/// The override now: what [`set_override`] was last given.
+pub fn override_now() -> Option<bool> {
+    match OVERRIDE.load(Ordering::Relaxed) {
+        FORCE_ON => Some(true),
+        FORCE_OFF => Some(false),
+        _ => None,
+    }
 }
 
 /// Whether the mode is on in the game running now.
@@ -672,6 +751,7 @@ static TRACKER: Mutex<Tracker> = Mutex::new(Tracker::new());
 
 fn reset() {
     ACTIVE.store(false, Ordering::Relaxed);
+    bots::set_practice(false);
     *lock(&STATE) = State::EMPTY;
     *lock(&TRACKER) = Tracker::new();
 }
@@ -682,6 +762,9 @@ fn decide(o: &hooks::Obs) {
         let guest = o.guest();
         on_now(&*guest)
     };
+    // The bots practise bounces instead of fighting while it is on
+    // (docs/game/bots.md, "Practising bounces").
+    bots::set_practice(on);
     if ACTIVE.swap(on, Ordering::Relaxed) && !on {
         *lock(&STATE) = State::EMPTY;
         *lock(&TRACKER) = Tracker::new();
@@ -989,6 +1072,7 @@ mod tests {
             charge: Some(Charge {
                 phase: ChargePhase::Primed,
                 fill: 0.5,
+                lost: None,
             }),
             still_ticks: 19,
             verb: Some(Verb::WalkOutToStand),
@@ -1034,6 +1118,53 @@ mod tests {
             (wire::LandingResult::TooSlow, 6753, [0.5, 0.5, -3.0])
         );
         assert_eq!(r.standing_fits, Some(false));
+        assert_eq!(r.lost_reason, None);
+    }
+
+    #[test]
+    fn the_agent_reply_says_why_the_charge_went_while_lost_and_after() {
+        use agent_proto::superbounce as wire;
+        let lost = Lost {
+            reason: LostReason::StoodStill,
+            tick: 7000,
+        };
+        let s = State {
+            active: true,
+            charge: Some(Charge {
+                phase: ChargePhase::Lost,
+                fill: 0.0,
+                lost: Some(lost),
+            }),
+            verb: Some(Verb::ChargeAgain(lost)),
+            ..State::EMPTY
+        };
+        let r = reply(&s);
+        assert_eq!(r.lost_reason, Some(wire::LostReason::StoodStill));
+        assert_eq!(r.verb, Some(wire::Verb::ChargeAgain));
+        // After the lost second the charge is hidden; the verb keeps it.
+        let after = State {
+            charge: None,
+            verb: Some(Verb::ChargeAgain(Lost {
+                reason: LostReason::Crouched,
+                ..lost
+            })),
+            ..s.clone()
+        };
+        assert_eq!(reply(&after).lost_reason, Some(wire::LostReason::Crouched));
+        let unknown = State {
+            verb: Some(Verb::ChargeAgain(Lost {
+                reason: LostReason::Unknown,
+                ..lost
+            })),
+            ..after.clone()
+        };
+        assert_eq!(reply(&unknown).lost_reason, Some(wire::LostReason::Unknown));
+        let warned = State {
+            verb: Some(Verb::KeepMoving),
+            ..State::EMPTY
+        };
+        let r = reply(&warned);
+        assert_eq!((r.verb, r.lost_reason), (Some(wire::Verb::KeepMoving), None));
     }
 
     #[test]

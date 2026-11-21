@@ -2,14 +2,16 @@
 //! values each state gives (docs/game/hud-kit.md, "States").
 
 use hud_kit_core::huds::superbounce::{
-    self as sb, CHARGE, Landed, MESSAGE, NAVPOINT, Note, PILL, PROMPT, PROMPT_HELD, PROMPT_NEAR,
-    PROMPT_UNDER, Phase, Scan, Target, Verb,
+    self as sb, CHARGE, LOW_CHARGE, Landed, Lost, MESSAGE, MESSAGE_LOST_CROUCHED,
+    MESSAGE_LOST_STOOD_STILL, NAVPOINT, Note, PILL, PILL_ICON, PROMPT, PROMPT_CHARGE_AGAIN,
+    PROMPT_HELD, PROMPT_KEEP_MOVING, PROMPT_NEAR, PROMPT_UNDER, Phase, Scan, Target, Verb,
 };
-use hud_kit_core::model::Style;
+use hud_kit_core::model::{Pulse, Style};
 
 use super::*;
+use crate::superbounce_charge::{SLEEP_TICKS, WARN_STILL_TICKS};
 use crate::superbounce_mode::{
-    Charge, ChargePhase, Landing, LandingResult, NavKind, NavTarget, Near, PRIMED_WORD,
+    Charge, ChargePhase, Landing, LandingResult, LostReason, NavKind, NavTarget, Near, PRIMED_WORD,
 };
 
 fn ready() -> State {
@@ -23,7 +25,11 @@ fn ready() -> State {
 }
 
 fn charge(phase: ChargePhase, fill: f32) -> Option<Charge> {
-    Some(Charge { phase, fill })
+    Some(Charge {
+        phase,
+        fill,
+        lost: None,
+    })
 }
 
 fn crouch_spot(distance: f32) -> Option<NavTarget> {
@@ -119,6 +125,129 @@ fn primed_lights_the_pill_and_drains_the_meter() {
     assert_eq!(values.get(PILL).unwrap().style, Style::Normal);
     assert_eq!(values.get(CHARGE).unwrap().fill, 0.25);
     assert!(!values.get(PROMPT).unwrap().shown);
+}
+
+/// The prompt line's warning starts at the tick the icon starts to flash:
+/// 19 still ticks, half the fill.
+#[test]
+fn the_warning_lines_up_with_the_icons_flash() {
+    assert_eq!(
+        1.0 - WARN_STILL_TICKS as f32 / SLEEP_TICKS as f32,
+        LOW_CHARGE
+    );
+    let s = State {
+        word: Some(PRIMED_WORD as u32),
+        charge: charge(ChargePhase::Primed, LOW_CHARGE),
+        verb: Some(mode::Verb::KeepMoving),
+        still_ticks: WARN_STILL_TICKS,
+        ..ready()
+    };
+    let v = view(&s, None);
+    assert_eq!(v.verb, Some(Verb::KeepMoving));
+    let values = sb::values(&v);
+    assert_eq!(values.get(PROMPT).unwrap().text, PROMPT_KEEP_MOVING);
+    assert_eq!(
+        values.get(PILL_ICON).unwrap().style,
+        Style::Flash(Pulse::TimeWarning)
+    );
+    // A tick before: no warning, and no flash.
+    let before = State {
+        charge: charge(
+            ChargePhase::Primed,
+            1.0 - (WARN_STILL_TICKS - 1) as f32 / SLEEP_TICKS as f32,
+        ),
+        verb: None,
+        ..s
+    };
+    let values = sb::values(&view(&before, None));
+    assert!(!values.get(PROMPT).unwrap().shown);
+    assert_eq!(values.get(PILL_ICON).unwrap().style, Style::Normal);
+}
+
+/// A loss says why in the message, and the prompt line asks for a new
+/// charge.
+#[test]
+fn a_loss_says_why_and_asks_for_a_new_charge() {
+    for (reason, why, text) in [
+        (
+            LostReason::StoodStill,
+            Lost::StoodStill,
+            MESSAGE_LOST_STOOD_STILL,
+        ),
+        (LostReason::Crouched, Lost::Crouched, MESSAGE_LOST_CROUCHED),
+        (LostReason::Unknown, Lost::Unknown, sb::MESSAGE_LOST),
+    ] {
+        let lost = mode::Lost { reason, tick: 90 };
+        let s = State {
+            charge: Some(Charge {
+                phase: ChargePhase::Lost,
+                fill: 0.0,
+                lost: Some(lost),
+            }),
+            verb: Some(mode::Verb::ChargeAgain(lost)),
+            ..ready()
+        };
+        let v = view(&s, None);
+        assert_eq!(v.note, Some((Note::ChargeLost(why), 90)));
+        assert_eq!(v.verb, Some(Verb::ChargeAgain(why)));
+        let values = sb::values(&v);
+        let m = values.get(MESSAGE).unwrap();
+        assert_eq!((m.text.as_str(), m.since_tick), (text, 90));
+        // The reason on the prompt line too, while notifications are
+        // not drawn.
+        assert_eq!(
+            values.get(PROMPT).unwrap().text,
+            format!("{text}\n{PROMPT_CHARGE_AGAIN}")
+        );
+        assert_eq!(values.get(CHARGE).unwrap().fill, 0.0);
+    }
+}
+
+/// The loss and the last landing: the newer one is the note, and a loss
+/// the mode no longer carries keeps its place over an older landing.
+#[test]
+fn the_newer_of_the_loss_and_the_landing_is_the_note() {
+    let landing = |tick| {
+        Some(Landing {
+            result: LandingResult::Missed,
+            tick,
+            at: [0.0; 3],
+        })
+    };
+    let lost = mode::Lost {
+        reason: LostReason::StoodStill,
+        tick: 100,
+    };
+    let after_landing = State {
+        last_landing: landing(50),
+        verb: Some(mode::Verb::ChargeAgain(lost)),
+        ..ready()
+    };
+    assert_eq!(
+        view(&after_landing, None).note,
+        Some((Note::ChargeLost(Lost::StoodStill), 100))
+    );
+    let landed_since = State {
+        last_landing: landing(120),
+        ..after_landing.clone()
+    };
+    assert_eq!(
+        view(&landed_since, None).note,
+        Some((Note::Landed(Landed::Missed), 120))
+    );
+    // Past the hint the state has no loss; the HUD's kept one still wins.
+    let later = State {
+        verb: None,
+        ..after_landing
+    };
+    assert_eq!(
+        view(&later, None).note,
+        Some((Note::Landed(Landed::Missed), 50))
+    );
+    assert_eq!(
+        note(&later, Some(lost)),
+        Some((Note::ChargeLost(Lost::StoodStill), 100))
+    );
 }
 
 #[test]

@@ -86,7 +86,7 @@ mod trace;
 pub use capture::{FrameSource, Sampler, TickMark, summarise, write_csv};
 pub use exec::{
     Access, Agent, ConnId, DEFER_TICKS_MAX, GameCtx, GameMethod, HostMethod, Later, LobbyTape,
-    Page, SnapshotMachine, Snapshots, TICK_STALE, query,
+    Page, SnapshotMachine, Snapshots, TICK_STALE, TICKER_CONN, Ticker, query,
 };
 pub use live::CameraSource;
 pub use loads::{LoadTracker, TimelineTotals, TotalsSource};

@@ -2,6 +2,7 @@ use super::*;
 use crate::glitches::Bounce;
 use crate::glitches::prime::{CROUCH_TICKS, FORCE_TICKS, PRIMED_WORD};
 use crate::nav::{NavMesh, Poly};
+use crate::spots::Crouch;
 
 fn site(x: f32, y: f32, launch: f32) -> Site {
     Site {
@@ -15,6 +16,7 @@ fn site(x: f32, y: f32, launch: f32) -> Site {
         },
         launch,
         fall: 0.0,
+        ..Site::default()
     }
 }
 
@@ -43,7 +45,7 @@ fn ask(to: Vec3, primed: bool, mode: Mode) -> Ask {
 fn known(sites: Vec<Site>) -> Known {
     Known {
         sites,
-        crouches: vec![[3.0, 0.0, 0.0]],
+        crouches: vec![Crouch::at([3.0, 0.0, 0.0])],
     }
 }
 
@@ -114,7 +116,7 @@ fn without_a_crouch_spot_to_prime_at_there_is_no_bounce_route() {
     // Already primed: no crouch spot needed.
     let p = plan(&ask([18.0, 0.0, 6.0], true, Mode::Help), &k, &ledge_walk);
     assert_eq!(p.why, Why::Helps);
-    assert!(!p.steps.iter().any(|s| matches!(s, Step::Prime { .. })));
+    assert!(!p.steps.iter().any(|s| matches!(s, Step::Prime(_))));
 }
 
 #[test]
@@ -141,9 +143,9 @@ fn the_route_primes_first_and_never_crouches_between_the_prime_and_the_bounce() 
             crouch: true
         }
     );
-    assert_eq!(p.steps[1], Step::Prime { at: [3.0, 0.0, 0.0] });
+    assert_eq!(p.steps[1], Step::Prime(Crouch::at([3.0, 0.0, 0.0])));
     // From the prime to the bounce: no crouching walk.
-    let prime = p.steps.iter().position(|s| matches!(s, Step::Prime { .. })).unwrap();
+    let prime = p.steps.iter().position(|s| matches!(s, Step::Prime(_))).unwrap();
     let bounce = p.steps.iter().position(|s| matches!(s, Step::Bounce(_))).unwrap();
     for s in &p.steps[prime + 1..bounce] {
         assert!(matches!(s, Step::Walk { crouch: false, .. }), "{s:?}");
@@ -177,7 +179,7 @@ fn for_fun_the_highest_launch_within_reach_is_taken_even_on_the_flat() {
     let p = plan(&ask([20.0, 0.0, 0.0], false, Mode::Fun), &k, &flat_walk);
     assert_eq!(p.why, Why::Fun);
     assert_eq!(p.site.unwrap().launch, 14.0);
-    assert!(p.steps.iter().any(|s| matches!(s, Step::Prime { .. })));
+    assert!(p.steps.iter().any(|s| matches!(s, Step::Prime(_))));
     // None in reach: the plain walk.
     let far = known(vec![site(500.0, 0.0, 20.0)]);
     assert_eq!(plan(&ask([20.0, 0.0, 0.0], false, Mode::Fun), &far, &flat_walk).why, Why::Plain);
@@ -188,7 +190,8 @@ fn a_plan_makes_a_bounded_number_of_path_queries_however_many_spots_there_are() 
     let sites: Vec<Site> = (0..400)
         .map(|i| site(5.0 + (i % 40) as f32 * 0.5, (i / 40) as f32, 12.3))
         .collect();
-    let crouches: Vec<Vec3> = (0..500).map(|i| [(i % 50) as f32 * 0.4, (i / 50) as f32, 0.0]).collect();
+    let crouches: Vec<Crouch> =
+        (0..500).map(|i| Crouch::at([(i % 50) as f32 * 0.4, (i / 50) as f32, 0.0])).collect();
     let k = Known { sites, crouches };
     for mode in [Mode::Help, Mode::Fun] {
         for primed in [false, true] {
@@ -209,7 +212,7 @@ fn a_plan_makes_a_bounded_number_of_path_queries_however_many_spots_there_are() 
 fn spots_farther_than_the_reach_cost_no_query() {
     let k = Known {
         sites: vec![site(900.0, 0.0, 12.3)],
-        crouches: vec![[800.0, 0.0, 0.0]],
+        crouches: vec![Crouch::at([800.0, 0.0, 0.0])],
     };
     let n = std::cell::Cell::new(0u32);
     let walk = |a: Vec3, b: Vec3| {
@@ -279,7 +282,7 @@ fn the_run_walks_to_the_crouch_spot_primes_then_walks_without_crouching() {
     let map = flat_map();
     let k = known(vec![site(10.0, 0.0, 12.3)]);
     let p = plan(&ask([18.0, 0.0, 0.0], false, Mode::Fun), &k, &flat_walk);
-    assert!(p.steps.iter().any(|s| matches!(s, Step::Prime { .. })));
+    assert!(p.steps.iter().any(|s| matches!(s, Step::Prime(_))));
     let mut run = OrderRun::new(p, false, 0, 1);
     let (mut at, mut tick) = ([0.0, 0.0, 0.0], 0);
 
@@ -378,4 +381,238 @@ fn a_plain_order_walks_to_the_goal_and_finishes() {
         tick += 1;
     }
     assert_eq!(done, Some(Ok(())));
+}
+
+// ---- proven spots, drops and the walking prime ----
+
+fn drop_site(x: f32, launch: f32) -> Site {
+    Site {
+        fall: 2.4,
+        need: 4.5,
+        width: 0.2,
+        ..site(x, 0.0, launch)
+    }
+}
+
+#[test]
+fn a_site_that_needs_a_drop_is_planned_from_its_launch_floor() {
+    let s = drop_site(10.0, 12.3);
+    let k = known(vec![s]);
+    // No launch floor: not used.
+    let p = plan_with(&ask([18.0, 0.0, 6.0], false, Mode::Help), &k, &ledge_walk, &|_| None);
+    assert_eq!(p.why, Why::Plain);
+    // A floor 2.4 up, a unit back.
+    let floor = [9.0, 0.0, 2.4];
+    let walk = |a: Vec3, b: Vec3| Some(dist3(a, b));
+    let p = plan_with(&ask([18.0, 0.0, 6.0], false, Mode::Fun), &k, &walk, &|_| Some(floor));
+    let names: Vec<_> = p.steps.iter().map(Step::name).collect();
+    assert_eq!(names, ["walk_crouched", "prime", "walk", "drop", "fly", "nav"]);
+    assert_eq!(p.steps[2], Step::Walk { to: floor, crouch: false });
+    assert!(matches!(p.steps[3], Step::Drop { from, .. } if from == floor));
+}
+
+#[test]
+fn proven_sites_and_crouch_spots_come_first() {
+    let mut proven = site(14.0, 0.0, 10.0);
+    proven.status = superbounce::Status::Proven;
+    let k = Known {
+        sites: vec![site(10.0, 0.0, 14.0), proven],
+        crouches: vec![
+            Crouch::at([1.0, 0.0, 0.0]),
+            Crouch {
+                status: superbounce::Status::Proven,
+                ..Crouch::at([5.0, 0.0, 0.0])
+            },
+        ],
+    };
+    // For fun the higher launch would win; the proven one does.
+    let p = plan(&ask([20.0, 0.0, 0.0], false, Mode::Fun), &k, &flat_walk);
+    assert_eq!(p.site.unwrap().bounce.stand[0], 14.0);
+    assert!(matches!(p.steps[1], Step::Prime(c) if c.stand[0] == 5.0));
+}
+
+#[test]
+fn with_the_way_out_known_the_prime_starts_out_along_it_and_walks_there_standing() {
+    let c = Crouch {
+        out: [0.0, 1.0],
+        ..Crouch::at([3.0, 0.0, 0.0])
+    };
+    let k = Known {
+        sites: vec![site(10.0, 0.0, 12.3)],
+        crouches: vec![c],
+    };
+    let p = plan(&ask([18.0, 0.0, 6.0], false, Mode::Help), &k, &ledge_walk);
+    let start = prime_start(&c);
+    assert!((start[1] - crate::glitches::prime::START_OUT).abs() < 1e-5 && start[0] == 3.0);
+    assert_eq!(p.steps[0], Step::Walk { to: start, crouch: false });
+    assert_eq!(p.steps[0].name(), "walk");
+}
+
+/// Plays a walking prime at a crouch spot whose lip lets go `release_at`
+/// units out along the way out; the word turns -3 there when `primes`.
+fn walk_prime(primes: bool) -> (Option<Result<(), &'static str>>, OrderRun, Vec<RouteMotion>) {
+    let map = flat_map();
+    let c = Crouch {
+        out: [0.0, 1.0],
+        ..Crouch::at([3.0, 0.0, 0.0])
+    };
+    let plan = Plan {
+        steps: vec![Step::Prime(c), Step::Nav { to: [3.0, 5.0, 0.0] }],
+        why: Why::Fun,
+        site: None,
+        cost: None,
+    };
+    let mut run = OrderRun::new(plan, false, 0, 1);
+    let mut at = [3.0, 0.4, 0.0];
+    let mut seen = Vec::new();
+    let mut out_since: Option<u32> = None;
+    for tick in 0..2000 {
+        // The word: 0 until the bot walks out 0.06 past the stand after
+        // a crouch.
+        let crouched = seen.iter().any(|m: &RouteMotion| m.crouch);
+        let word = if primes && crouched && at[1] > 0.06 && run.status().phase == "out" {
+            out_since.get_or_insert(tick);
+            PRIMED_WORD
+        } else {
+            0
+        };
+        let o = run.step(&map, at, tick, Some(word));
+        if o.done.is_some() {
+            return (o.done, run, seen);
+        }
+        let m = o.motion;
+        let step = 5.0 * m.speed / 30.0;
+        at[0] += m.dir[0] * step;
+        // The lip stops it 2 cm past the stand.
+        at[1] = (at[1] + m.dir[1] * step).max(-0.02);
+        seen.push(m);
+    }
+    (None, run, seen)
+}
+
+#[test]
+fn a_walking_prime_crouch_walks_in_lets_go_and_walks_out_until_the_word_turns() {
+    let (done, run, seen) = walk_prime(true);
+    assert_eq!(done, Some(Ok(())));
+    let log: Vec<_> = run.log().iter().map(|l| (l.step, l.what)).collect();
+    assert!(log.contains(&("prime", "start")) && log.contains(&("prime", "done")), "{log:?}");
+    // Crouch, walk in crouched toward -y, release, then out standing
+    // toward +y, never crouching after it let go.
+    let first_crouch = seen.iter().position(|m| m.crouch).unwrap();
+    assert_eq!(seen[first_crouch].speed, 0.0, "crouch before walking in");
+    let let_go = first_crouch + seen[first_crouch..].iter().position(|m| !m.crouch).unwrap();
+    assert!(seen[first_crouch..let_go].iter().all(|m| m.dir[1] <= 0.0));
+    assert!(seen[let_go..].iter().all(|m| !m.crouch));
+    assert!(seen[let_go..].iter().any(|m| m.dir[1] > 0.9));
+}
+
+#[test]
+fn a_walking_prime_that_never_turns_the_word_tries_other_angles_then_fails() {
+    let (done, _, seen) = walk_prime(false);
+    assert_eq!(done, Some(Err("prime_failed")));
+    let presses = seen.windows(2).filter(|w| !w[0].crouch && w[1].crouch).count()
+        + usize::from(seen[0].crouch);
+    assert_eq!(presses as u32, crate::glitches::prime::WALK_TRIES);
+    // Each try crouches first, standing, then walks in; the second comes
+    // in turned.
+    let presses: Vec<usize> = (0..seen.len())
+        .filter(|&i| seen[i].crouch && (i == 0 || !seen[i - 1].crouch))
+        .collect();
+    for &p in &presses {
+        let first = &seen[p..p + crate::glitches::prime::CROUCH_FIRST as usize];
+        assert!(first.iter().all(|m| m.crouch && m.speed == 0.0), "{first:?}");
+    }
+    let ins: Vec<[f32; 2]> = presses
+        .iter()
+        .filter_map(|&p| seen[p..].iter().find(|m| m.crouch && m.speed > 0.0).map(|m| m.dir))
+        .collect();
+    assert!(ins.len() >= 3 && (ins[1][0] - ins[2][0]).abs() > 0.1, "{ins:?}");
+}
+
+/// A ledge at z 2.4 for x under 0, a floor at 0 past it (not linked).
+fn ledge_map() -> MapData {
+    let ledge = Poly::new(vec![[-10.0, -5.0, 2.4], [0.0, -5.0, 2.4], [0.0, 5.0, 2.4], [-10.0, 5.0, 2.4]]);
+    let floor = Poly::new(vec![[0.0, -5.0, 0.0], [10.0, -5.0, 0.0], [10.0, 5.0, 0.0], [0.0, 5.0, 0.0]]);
+    MapData {
+        nav: NavMesh::new(vec![ledge, floor], vec![]),
+        ..MapData::default()
+    }
+}
+
+/// Plays a drop off the ledge onto a slot at x 1; the landing launches
+/// when it is within 0.1 of it and `bounces`.
+fn play_drop(bounces: bool) -> (Option<Result<(), &'static str>>, OrderRun) {
+    let map = ledge_map();
+    let s = drop_site(1.0, 12.3);
+    let from = [-0.4, 0.0, 2.4];
+    let plan = Plan {
+        steps: vec![
+            Step::Walk { to: from, crouch: false },
+            Step::Drop { from, site: s },
+            Step::Fly { to: [3.0, 0.0, 0.0] },
+        ],
+        why: Why::Fun,
+        site: Some(s),
+        cost: None,
+    };
+    let mut run = OrderRun::new(plan, true, 0, 1);
+    let (mut at, mut vz) = ([-1.0f32, 0.0, 2.4], 0.0f32);
+    for tick in 0..900 {
+        let o = run.step(&map, at, tick, Some(PRIMED_WORD));
+        if o.done.is_some() {
+            return (o.done, run);
+        }
+        let m = o.motion;
+        let step = 5.0 * m.speed / 30.0;
+        at[0] += m.dir[0] * step;
+        at[1] += m.dir[1] * step;
+        let floor = if at[0] < 0.0 { 2.4 } else { 0.0 };
+        if at[2] > floor || vz > 0.0 {
+            vz -= GRAVITY / 30.0;
+            at[2] += vz / 30.0;
+            if at[2] <= floor {
+                at[2] = floor;
+                vz = if bounces && (at[0] - 1.0).abs() < 0.1 && vz < -4.0 { 12.0 } else { 0.0 };
+            }
+        }
+    }
+    (None, run)
+}
+
+#[test]
+fn a_drop_lines_up_runs_off_steers_onto_the_slot_and_rides_the_launch() {
+    let (_, run) = play_drop(true);
+    let log: Vec<_> = run.log().iter().map(|l| (l.step, l.what)).collect();
+    assert!(log.contains(&("drop", "done")), "{log:?}");
+    let t = run.status().landing.expect("a touchdown");
+    assert!(t.bounced() && t.miss < 0.1 && t.speed_in > 4.0, "{t:?}");
+    assert_eq!(t.result(0.2, 4.5), "bounce");
+    assert!(log.iter().any(|l| *l == ("fly", "bounce") || *l == ("drop", "bounce")), "{log:?}");
+}
+
+#[test]
+fn a_drop_that_does_not_launch_walks_back_up_for_another() {
+    let (done, run) = play_drop(false);
+    let log: Vec<_> = run.log().iter().map(|l| (l.step, l.what)).collect();
+    assert!(log.contains(&("drop", "retry")), "{log:?}");
+    assert!(log.iter().any(|l| l.0 == "drop" && l.1 == "no_bounce"), "{log:?}");
+    // The floor is not linked to the ledge here: the walk back fails.
+    assert_eq!(done, Some(Err("no_path")));
+}
+
+#[test]
+fn a_touchdown_is_named_by_its_first_failed_test() {
+    let t = Touchdown {
+        tick: 1,
+        at: [0.0; 3],
+        speed_in: 5.0,
+        vz_out: 0.0,
+        miss: 0.05,
+        word: Some(PRIMED_WORD),
+    };
+    assert_eq!(t.result(0.2, 4.0), "no_bounce");
+    assert_eq!(Touchdown { vz_out: 12.0, ..t }.result(0.2, 4.0), "bounce");
+    assert_eq!(Touchdown { word: Some(0), ..t }.result(0.2, 4.0), "not_primed");
+    assert_eq!(Touchdown { miss: 0.2, ..t }.result(0.2, 4.0), "missed");
+    assert_eq!(Touchdown { speed_in: 3.0, ..t }.result(0.2, 4.0), "too_slow");
 }

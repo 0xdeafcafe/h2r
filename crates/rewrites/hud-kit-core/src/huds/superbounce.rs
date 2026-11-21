@@ -57,9 +57,10 @@ pub const CHARGE_COLUMNS: u8 = (PILL_BODY + model::PILL_END) as u8;
 /// The meter's top below the pill's: the pill's 19 rows (V: `grenade_bkd`,
 /// 103 by 19) and 2 more.
 pub const CHARGE_DOWN: i16 = 21;
-/// Under this fill the charge is about to go: the icon flashes the
-/// timer's warning record.
-pub const LOW_CHARGE: f32 = 1.0 / 3.0;
+/// At this fill or under the charge is about to go: the icon flashes the
+/// timer's warning record. Half: 19 still ticks of the 38 a body has
+/// before it sleeps, where the prompt line warns ([`PROMPT_KEEP_MOVING`]).
+pub const LOW_CHARGE: f32 = 0.5;
 /// The fill of each recipe step before the word is -3
 /// (docs/game/hud-kit.md, "The charge meter").
 pub const FILL_NEAR: f32 = 0.0;
@@ -67,30 +68,48 @@ pub const FILL_UNDER: f32 = 1.0 / 3.0;
 pub const FILL_HELD: f32 = 2.0 / 3.0;
 
 /// The default crouch button's glyph, the left stick click (U+E110,
-/// docs/input/button-icons.md), as the tutorial names X by its glyph.
+/// docs/input/button-icons.md).
 pub const CROUCH: &str = "\u{e110}";
-/// The prompt line's verbs, one a recipe step.
+/// The prompt line's verbs: the recipe's steps, the warning while primed
+/// and still, and the new charge after a loss.
 pub const PROMPT_NEAR: &str = "Hold \u{e110} and walk under";
 pub const PROMPT_UNDER: &str = "Let go of \u{e110}";
 pub const PROMPT_HELD: &str = "Walk out to stand up";
+pub const PROMPT_KEEP_MOVING: &str = "Keep moving or lose the charge";
+pub const PROMPT_CHARGE_AGAIN: &str = "Find a crouch spot to charge again";
+/// The new-charge prompt with the loss's reason as its first line, the
+/// reason's message ([`Note::ChargeLost`]): the game does not draw the
+/// kit's notifications yet (docs/game/hud-kit.md, "Message": decoding 6),
+/// so the prompt line tells it. Drop the first lines (back to
+/// [`PROMPT_CHARGE_AGAIN`]) when `Message` is sent.
+pub const PROMPT_LOST_STOOD_STILL: &str =
+    "Charge lost: you stood still\nFind a crouch spot to charge again";
+pub const PROMPT_LOST_CROUCHED: &str =
+    "Charge lost: you crouched\nFind a crouch spot to charge again";
+pub const PROMPT_LOST: &str = "Charge lost\nFind a crouch spot to charge again";
 
 /// The notifications.
 pub const MESSAGE_PRIMED: &str = "Primed";
 pub const MESSAGE_LOST: &str = "Charge lost";
+pub const MESSAGE_LOST_STOOD_STILL: &str = "Charge lost: you stood still";
+pub const MESSAGE_LOST_CROUCHED: &str = "Charge lost: you crouched";
 pub const MESSAGE_NOT_PRIMED: &str = "Not primed.";
 pub const MESSAGE_MISSED: &str = "Missed the strip.";
 pub const MESSAGE_TOO_SLOW: &str = "Too slow.";
 pub const MESSAGE_NO_BOUNCE: &str = "No bounce.";
-/// The widest notification: a bounce of three figures.
-pub const MESSAGE_LONGEST: &str = "Superbounce, 999 m";
+/// The widest bounce notification: three figures.
+pub const MESSAGE_BOUNCE_LONGEST: &str = "Superbounce, 999 m";
+/// The widest notification: the most characters, all of them plain.
+pub const MESSAGE_LONGEST: &str = MESSAGE_LOST_STOOD_STILL;
 
-/// The four tutorial steps, two lines each (X is the font's button glyph,
-/// U+E102).
+/// The four tutorial steps, two lines each. The landing is the player's
+/// own: the last step names the opt-in fall assist once, by its Controls
+/// row, and no step asks for a button. The third is the widest.
 pub const TUTORIAL_TEXT: [&str; 4] = [
-    "Crouch under a cyan crouch spot,\nthen stand up.",
+    "Crouch, walk in under a lip,\nlet go, then walk out.",
     "You are primed.\nDo not crouch again.",
-    "Find a strip. Green is a standing jump.\nRed needs a big drop.",
-    "Land on the strip.\nHold \u{e102} while falling.",
+    "Find a strip. Its post is the height\nto fall from. No post: just jump.",
+    "Jump or fall onto the strip.\nFall Assist (Controls) can steer.",
 ];
 
 /// The scan of the map for strips.
@@ -133,6 +152,10 @@ pub enum Verb {
     HoldAndWalkUnder,
     LetGoOfCrouch,
     WalkOutToStand,
+    /// Primed and still for half the time a body has before it sleeps.
+    KeepMoving,
+    /// A few seconds after a loss, until a recipe step begins, with why.
+    ChargeAgain(Lost),
 }
 
 impl Verb {
@@ -141,8 +164,24 @@ impl Verb {
             Verb::HoldAndWalkUnder => PROMPT_NEAR,
             Verb::LetGoOfCrouch => PROMPT_UNDER,
             Verb::WalkOutToStand => PROMPT_HELD,
+            Verb::KeepMoving => PROMPT_KEEP_MOVING,
+            // Drop the reason line when `Message` is sent: PROMPT_CHARGE_AGAIN.
+            Verb::ChargeAgain(Lost::StoodStill) => PROMPT_LOST_STOOD_STILL,
+            Verb::ChargeAgain(Lost::Crouched) => PROMPT_LOST_CROUCHED,
+            Verb::ChargeAgain(Lost::Unknown) => PROMPT_LOST,
         }
     }
+}
+
+/// Why the charge went (docs/game/superbounce.md, "Charge").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lost {
+    /// The body stood still until it slept.
+    StoodStill,
+    /// A crouch while primed.
+    Crouched,
+    /// The word left -3 for another reason.
+    Unknown,
 }
 
 /// What the navpoint is over.
@@ -172,7 +211,7 @@ pub enum Landed {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Note {
     Primed,
-    ChargeLost,
+    ChargeLost(Lost),
     Landed(Landed),
 }
 
@@ -180,7 +219,9 @@ impl Note {
     pub fn text(self) -> String {
         match self {
             Note::Primed => MESSAGE_PRIMED.into(),
-            Note::ChargeLost => MESSAGE_LOST.into(),
+            Note::ChargeLost(Lost::StoodStill) => MESSAGE_LOST_STOOD_STILL.into(),
+            Note::ChargeLost(Lost::Crouched) => MESSAGE_LOST_CROUCHED.into(),
+            Note::ChargeLost(Lost::Unknown) => MESSAGE_LOST.into(),
             Note::Landed(Landed::Bounce { height_m: Some(m) }) => {
                 format!("Superbounce, {} m", distance_text(m))
             }
@@ -280,7 +321,7 @@ pub fn hud() -> Hud {
             Element::channel(
                 PROMPT,
                 Kind::Prompt {
-                    longest: PROMPT_NEAR,
+                    longest: PROMPT_LOST_STOOD_STILL,
                 },
             ),
             Element::channel(
@@ -322,7 +363,7 @@ pub fn values(v: &View) -> Values {
     // The icon flashes while the charge is about to go, and in the held
     // step (the next is to walk out).
     let icon_style = |style: Style| match charge {
-        Some(c) if v.primed && c.phase == Phase::Primed && c.fill < LOW_CHARGE => {
+        Some(c) if v.primed && c.phase == Phase::Primed && c.fill <= LOW_CHARGE => {
             Style::Flash(Pulse::TimeWarning)
         }
         Some(c) if !v.primed && c.phase == Phase::Held => Style::Flash(Pulse::Help),
@@ -406,6 +447,15 @@ pub fn views() -> Vec<(&'static str, View)> {
         note: Some((Note::Primed, 1)),
         ..primed(1.0)
     };
+    let lost = |why, tick| View {
+        charge: Some(Charge {
+            phase: Phase::Lost,
+            fill: 0.0,
+        }),
+        verb: Some(Verb::ChargeAgain(why)),
+        note: Some((Note::ChargeLost(why), tick)),
+        ..not_primed.clone()
+    };
     let scanning = View {
         scan: Scan::Scanning,
         ..View::idle()
@@ -422,16 +472,15 @@ pub fn views() -> Vec<(&'static str, View)> {
         ("primed-full", full.clone()),
         ("primed-draining", primed(0.25)),
         (
-            "lost",
+            "primed-still-warning",
             View {
-                charge: Some(Charge {
-                    phase: Phase::Lost,
-                    fill: 0.0,
-                }),
-                note: Some((Note::ChargeLost, 2)),
-                ..not_primed.clone()
+                verb: Some(Verb::KeepMoving),
+                ..primed(LOW_CHARGE)
             },
         ),
+        ("lost", lost(Lost::Unknown, 2)),
+        ("lost-stood-still", lost(Lost::StoodStill, 5)),
+        ("lost-crouched", lost(Lost::Crouched, 6)),
         (
             "bounced",
             View {
@@ -641,11 +690,19 @@ mod tests {
         assert_eq!(fill("primed-full"), Some(1.0));
         assert_eq!(fill("primed-draining"), Some(0.25));
         assert_eq!(fill("lost"), Some(0.0));
+        assert_eq!(fill("lost-stood-still"), Some(0.0));
+        assert_eq!(fill("primed-still-warning"), Some(LOW_CHARGE));
         assert_eq!(fill("scanning"), None);
         assert_eq!(
             style("primed-draining", PILL_ICON),
             Some(Style::Flash(Pulse::TimeWarning))
         );
+        // The warning and the flash start together, at half.
+        assert_eq!(
+            style("primed-still-warning", PILL_ICON),
+            Some(Style::Flash(Pulse::TimeWarning))
+        );
+        assert_eq!(style("missed", PILL_ICON), Some(Style::Normal));
         assert_eq!(style("held", PILL_ICON), Some(Style::Flash(Pulse::Help)));
         assert_eq!(style("under", PILL_ICON), Some(Style::Inactive));
         assert_eq!(style("primed-draining", PILL), Some(Style::Normal));
@@ -658,6 +715,25 @@ mod tests {
         assert_eq!(prompt("under").as_deref(), Some(PROMPT_UNDER));
         assert_eq!(prompt("held").as_deref(), Some(PROMPT_HELD));
         assert_eq!(prompt("primed-full"), None);
+        assert_eq!(prompt("primed-draining"), None);
+        assert_eq!(
+            prompt("primed-still-warning").as_deref(),
+            Some(PROMPT_KEEP_MOVING)
+        );
+        // The reason's message, then the hint, while notifications are
+        // not drawn.
+        for (s, why) in [
+            ("lost", MESSAGE_LOST),
+            ("lost-stood-still", MESSAGE_LOST_STOOD_STILL),
+            ("lost-crouched", MESSAGE_LOST_CROUCHED),
+        ] {
+            let p = prompt(s).unwrap();
+            assert_eq!(
+                p.split('\n').collect::<Vec<_>>(),
+                [why, PROMPT_CHARGE_AGAIN],
+                "{s}"
+            );
+        }
         assert!(PROMPT_NEAR.contains(CROUCH) && PROMPT_UNDER.contains(CROUCH));
     }
 
@@ -671,12 +747,27 @@ mod tests {
         };
         assert_eq!(msg("primed-full"), Some((MESSAGE_PRIMED.into(), 1)));
         assert_eq!(msg("lost"), Some((MESSAGE_LOST.into(), 2)));
+        assert_eq!(
+            msg("lost-stood-still"),
+            Some((MESSAGE_LOST_STOOD_STILL.into(), 5))
+        );
+        assert_eq!(
+            msg("lost-crouched"),
+            Some((MESSAGE_LOST_CROUCHED.into(), 6))
+        );
+        assert_eq!(msg("primed-still-warning"), None);
+        for m in [MESSAGE_LOST_STOOD_STILL, MESSAGE_LOST_CROUCHED] {
+            assert!(m.starts_with(MESSAGE_LOST) && m.len() <= MESSAGE_LONGEST.len());
+        }
+        for m in [MESSAGE_BOUNCE_LONGEST, MESSAGE_MISSED, MESSAGE_NOT_PRIMED] {
+            assert!(m.len() <= MESSAGE_LONGEST.len(), "{m}");
+        }
         assert_eq!(msg("bounced"), Some(("Superbounce, 12 m".into(), 3)));
         assert_eq!(msg("missed"), Some((MESSAGE_MISSED.into(), 4)));
         assert_eq!(msg("near"), None);
         let bounce = |h| Note::Landed(Landed::Bounce { height_m: h }).text();
         assert_eq!(bounce(None), "Superbounce");
-        assert_eq!(bounce(Some(4000.0)), MESSAGE_LONGEST);
+        assert_eq!(bounce(Some(4000.0)), MESSAGE_BOUNCE_LONGEST);
         for (n, t) in [
             (Landed::NotPrimed, MESSAGE_NOT_PRIMED),
             (Landed::TooSlow, MESSAGE_TOO_SLOW),
@@ -711,7 +802,16 @@ mod tests {
                 }
             }
         }
-        assert!(TUTORIAL_TEXT[3].contains('\u{e102}'));
+        // The tutorial asks for no button: the fall assist is opt in.
+        assert!(TUTORIAL_TEXT.iter().all(|t| !t.contains('\u{e102}')));
+        assert!(TUTORIAL_TEXT[3].contains("Fall Assist"));
+        // The layout is sized by the third step's text.
+        let widest = |t: &str| t.lines().map(str::len).max().unwrap_or(0);
+        assert!(
+            TUTORIAL_TEXT
+                .iter()
+                .all(|t| widest(t) <= widest(TUTORIAL_TEXT[2]))
+        );
     }
 
     #[test]
@@ -728,7 +828,10 @@ mod tests {
                 "held",
                 "primed-full",
                 "primed-draining",
+                "primed-still-warning",
                 "lost",
+                "lost-stood-still",
+                "lost-crouched",
                 "bounced",
                 "missed",
                 "scanning",
