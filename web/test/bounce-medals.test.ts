@@ -121,14 +121,14 @@ describe("a game's bounces", () => {
 });
 
 describe("the bounce medals' pictures", () => {
-  test("no art yet: no pack file and no game counterpart, so the badge shows the name", () => {
+  test("the pack draws them, named after the ids, and the game has no counterpart", () => {
     for (const id of BOUNCE_MEDALS) {
-      expect(PACK_MEDALS.has(id)).toBe(false);
-      expect(medalArt(id, 30)).toBeNull();
+      expect(PACK_MEDALS.has(id)).toBe(true);
+      expect(medalArt(id, 30)).toEqual({ src: `/art/medals/${id}.webp`, srcset: `/art/medals/${id}.webp 1x, /art/medals/${id}@2x.webp 2x` });
       expect(medalKey(id)).toBeNull();
     }
-    // The kill medals keep their pack art, named after the ids.
+    // Every medal has pack art, the kill medals included.
+    expect(MEDALS.every((m) => PACK_MEDALS.has(m.id))).toBe(true);
     expect(medalArt("twofer", 30)).toEqual({ src: "/art/medals/twofer.webp", srcset: "/art/medals/twofer.webp 1x, /art/medals/twofer@2x.webp 2x" });
-    expect(MEDALS.filter((m) => !isBounceMedal(m.id)).every((m) => PACK_MEDALS.has(m.id))).toBe(true);
   });
 });

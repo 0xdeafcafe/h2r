@@ -1032,11 +1032,12 @@ impl Session {
     }
 
     /// A player of the match died falling out of or through the map while
-    /// trying a bounce, at the engine's `tick`: the `bounced` medal. The
-    /// superbounce mode decides what counts, and calls it through
+    /// trying a bounce, at the engine's `tick`, ending a chain of `chain`
+    /// (0 if none): the `bounced` medal. The superbounce mode decides what
+    /// counts, and calls it through
     /// [`crate::Telemetry::bounced`]; the rules are those of
     /// [`Session::superbounce`].
-    pub fn bounced(&mut self, tick: u64, player: u32) {
+    pub fn bounced(&mut self, tick: u64, player: u32, chain: u32) {
         let Some(current) = self.current.as_mut().filter(|m| !m.ended && !m.cinematic) else {
             return;
         };
@@ -1049,7 +1050,11 @@ impl Session {
             &mut self.output,
             current.game_id.clone(),
             live_proto::game::BOUNCED,
-            Bounced { tick, player },
+            Bounced {
+                tick,
+                player,
+                chain,
+            },
         );
     }
 
@@ -2017,8 +2022,8 @@ mod tests {
         session.superbounce(70, 1, 2);
         session.superbounce(71, 5, 1);
         session.superbounce(72, 0, 0);
-        session.bounced(80, 1);
-        session.bounced(81, 5);
+        session.bounced(80, 1, 3);
+        session.bounced(81, 5, 0);
         let events: Vec<_> = session
             .take_output()
             .into_iter()
@@ -2030,7 +2035,10 @@ mod tests {
         assert_eq!(events.len(), 3);
         let roster = [player(0, 0).player, player(1, 0).player];
         assert_eq!(events[2].kind, live_proto::game::BOUNCED);
-        assert_eq!(events[2].data, serde_json::json!({"tick": 80, "player": 1}));
+        assert_eq!(
+            events[2].data,
+            serde_json::json!({"tick": 80, "player": 1, "chain": 3})
+        );
         for event in &events {
             assert_eq!(
                 live_proto::game::validate(&event.kind, &event.data, &roster),
@@ -2047,7 +2055,7 @@ mod tests {
         session.end(&snapshot(90, vec![player(0, 0), player(1, 0)]));
         session.take_output();
         session.superbounce(95, 1, 1);
-        session.bounced(96, 1);
+        session.bounced(96, 1, 0);
         assert!(kinds(&mut session).is_empty());
     }
 

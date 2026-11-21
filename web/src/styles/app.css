@@ -147,7 +147,7 @@ code { font-family: var(--font-mono); }
 .gametype-icon { display: inline-flex; flex: none; align-items: center; justify-content: center; vertical-align: -3px; margin-right: 5px; padding: 1px; box-sizing: border-box; background: #1d2b3f; border: 1px solid #0c1420; border-radius: 2px; }
 .gametype-icon img { display: block; width: 100%; height: 100%; object-fit: contain; }
 .medal--game { object-fit: contain; }
-/* A medal without art yet (ART.md, "Pending: the superbounce medals"): its name. */
+/* A medal the art pack has no file for (MedalIcon): its name. */
 .medal--name {
   display: inline-flex; align-items: center; justify-content: center; text-align: center; overflow: hidden;
   border-radius: 50%; border: 1px solid currentColor; line-height: 1; font-weight: 700; word-break: break-word;

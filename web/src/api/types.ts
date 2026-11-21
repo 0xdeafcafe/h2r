@@ -345,7 +345,7 @@ export interface PlayerKilled {
  *  1 for a first bounce (docs/game/superbounce.md, "Recording"). */
 export interface Superbounce { tick: number; player: number; chain: number }
 /** A death falling out of or through the map while trying a bounce. */
-export interface Bounced { tick: number; player: number }
+export interface Bounced { tick: number; player: number; chain?: number }
 export interface ScoreChanged { tick: number; players: PlayerScore[]; teams?: TeamScore[] | null }
 /** `{team}` in team games, `{player}` (slot index) otherwise, null for a draw or quit. */
 export type Winner = { team: number } | { player: number };

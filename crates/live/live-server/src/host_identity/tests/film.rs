@@ -79,7 +79,8 @@ fn bounce_rows() -> [(&'static str, Value); 2] {
             game::BOUNCED,
             json!(game::Bounced {
                 tick: 30,
-                player: 1
+                player: 1,
+                chain: 2,
             }),
         ),
     ]
@@ -186,6 +187,7 @@ fn fixture_with(
             Event::Bounced(game::Bounced {
                 tick: 30,
                 player: 1,
+                chain: 2,
             }),
         );
         add(
@@ -409,7 +411,8 @@ async fn film_bounces_match_live_ones_and_import_into_a_film_only_game() {
                 .collect::<Vec<_>>(),
             [game::Bounced {
                 tick: 30,
-                player: 1
+                player: 1,
+                chain: 2,
             }]
         );
         assert_eq!(detail.kills.len(), 1);

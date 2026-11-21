@@ -381,6 +381,10 @@ pub struct Bounced {
     pub tick: u64,
     /// The player's slot.
     pub player: u32,
+    /// The count of the chain the death ended, 0 if none was live. Absent
+    /// (0) from a host that sends no chain.
+    #[serde(default)]
+    pub chain: u32,
 }
 
 pub const KILL_KINDS: [&str; 4] = ["kill", "suicide", "betrayal", "world"];

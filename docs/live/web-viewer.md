@@ -41,7 +41,7 @@ any picture whose key it has replaces the pack's (`src/lib/gameart.ts`):
   full-house, encore are the multi-kills; hot-streak, wildfire, untouchable
   the sprees). Opening Act, Last Word and Payback have no counterpart and
   keep the pack's, and the disc has no superbounce medal, so those keep the
-  pack's too (`medalKey` is null for them; until their art lands, their name).
+  pack's too (`medalKey` is null for them).
 - **Weapons** (`weapon/<alias>`, by the words of the reported name,
   `weaponKey`) are single masks, used as a CSS mask so they take the page's
   tint like the SVG silhouettes, which every other weapon keeps.

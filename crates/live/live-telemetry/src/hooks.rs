@@ -487,10 +487,15 @@ impl Telemetry {
     }
 
     /// The player in slot `player` died falling out of or through the map
-    /// while trying a bounce, as the superbounce mode decides: a `Bounced`
+    /// while trying a bounce, ending a chain of `chain` (0 if none), as the
+    /// superbounce mode decides: a `Bounced`
     /// game event, and the `bounced` medal in the film.
-    pub fn bounced(&self, guest: &runtime::Guest, player: u32) {
-        self.bounce_work(guest, |tick| Work::Bounced { tick, player });
+    pub fn bounced(&self, guest: &runtime::Guest, player: u32, chain: u32) {
+        self.bounce_work(guest, |tick| Work::Bounced {
+            tick,
+            player,
+            chain,
+        });
     }
 
     fn bounce_work(&self, guest: &runtime::Guest, work: impl FnOnce(u64) -> Work) {

@@ -226,8 +226,8 @@ It is public stats data, with no input, score or digest attached. Player
 kill totals and medals come from `PlayerKilled`.
 
 `Superbounce` carries the match tick, the player's slot and `chain`, the
-bounce's place in its chain (1 and up); `Bounced` carries the match tick
-and slot of a death falling out of the map while trying a bounce
+bounce's place in its chain (1 and up); `Bounced` carries the match tick,
+slot and ended chain's count (0 if none) of a death falling out of the map while trying a bounce
 ([superbounce.md](superbounce.md#recording)). Both are public stats
 records, imported into the game's events like a kill. The Tracker writes,
 at the same tick, a `Medal` record for each medal the bounce earns

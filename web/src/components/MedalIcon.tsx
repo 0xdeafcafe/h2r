@@ -1,7 +1,7 @@
 // Medal badges, one per derived medal id: the game's own medal when the
 // server has game art and the medal has a counterpart there, else the art
-// pack's original, else (a medal whose art is not drawn yet, ART.md) the
-// medal's name in a badge of the same size.
+// pack's original, else (an id the pack has no file for) the medal's name
+// in a badge of the same size.
 
 import { Show } from "solid-js";
 import type { MedalId } from "../state/derive";

@@ -788,7 +788,11 @@ mod tests {
         assert_eq!(ids(7), ["superbounce"]);
 
         let death = tracker
-            .event(game::BOUNCED, &json!({"tick":450,"player":3}), 460)
+            .event(
+                game::BOUNCED,
+                &json!({"tick":450,"player":3,"chain":0}),
+                460,
+            )
             .unwrap();
         assert_eq!(
             death,
@@ -797,7 +801,8 @@ mod tests {
                     tick: 450,
                     event: Event::Bounced(game::Bounced {
                         tick: 450,
-                        player: 3
+                        player: 3,
+                        chain: 0,
                     }),
                 },
                 Record {
@@ -854,7 +859,7 @@ mod tests {
         );
         assert_eq!(
             Record::decode_telemetry(&death[0].encode().unwrap()).unwrap(),
-            Some((450, game::BOUNCED, json!({"tick":450,"player":3})))
+            Some((450, game::BOUNCED, json!({"tick":450,"player":3,"chain":0})))
         );
         assert_eq!(
             Record::decode_telemetry(&death[1].encode().unwrap()).unwrap(),

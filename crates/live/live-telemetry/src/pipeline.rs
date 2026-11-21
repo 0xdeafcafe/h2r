@@ -104,6 +104,7 @@ pub(crate) enum Work {
     Bounced {
         tick: u64,
         player: u32,
+        chain: u32,
     },
     End(Box<Snapshot>),
     FinishSim(serde_json::Value),
@@ -515,7 +516,11 @@ pub(crate) fn apply(session: &mut Session, work: Work) -> Option<Box<Snapshot>> 
             player,
             chain,
         } => session.superbounce(tick, player, chain),
-        Work::Bounced { tick, player } => session.bounced(tick, player),
+        Work::Bounced {
+            tick,
+            player,
+            chain,
+        } => session.bounced(tick, player, chain),
         Work::Forward(_) | Work::FinishSim(_) => unreachable!("handled by the worker"),
         Work::End(snapshot) => {
             session.end(&snapshot);
