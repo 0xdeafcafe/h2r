@@ -140,6 +140,7 @@ impl Live {
             None
         };
         self.check_session_map(&new.flags, new.hopper_id, new.map_id.as_ref())?;
+        self.check_session_rules(&new.flags, new.rules.as_deref())?;
         // Off loopback, listed sessions use the observed client address.
         // An assigned session always uses the address the roster probed.
         let declared = match seen {
@@ -343,6 +344,10 @@ impl Live {
                 return Err(invalid("SessionDeleted must be last"));
             }
             let did = item.apply(&b.kind, &b.data, &b.at, at).map_err(invalid)?;
+            if b.kind == session::UPDATED && b.data.get("rules").is_some() {
+                let ad = &item.advertisement;
+                self.check_session_rules(&ad.flags, ad.rules.as_deref())?;
+            }
             if b.kind == session::UPDATED
                 && let Some(assignment) = &item.matchmaking
             {

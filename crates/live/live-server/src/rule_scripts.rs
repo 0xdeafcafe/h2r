@@ -71,6 +71,15 @@ pub struct RulesState {
 }
 
 impl RulesState {
+    /// The saved hashes that start with `prefix` (lowercase hex), in order.
+    pub fn hashes_with_prefix(&self, prefix: &str) -> Vec<String> {
+        self.by_hash
+            .range(prefix.to_string()..)
+            .take_while(|(h, _)| h.starts_with(prefix))
+            .map(|(h, _)| h.clone())
+            .collect()
+    }
+
     pub fn has(&self, hash: &str) -> bool {
         self.by_hash.contains_key(hash)
     }
@@ -258,6 +267,9 @@ struct WireSeat {
     team: u8,
     #[serde(default)]
     lives: i32,
+    /// The unit the player drives, for `enter`/`leave` events that name it.
+    #[serde(default)]
+    unit: Option<u32>,
 }
 
 /// One event of a scenario. `type` is the handler's event name.
@@ -320,6 +332,13 @@ enum WireEvent {
         killer: Option<u8>,
         class: String,
     },
+    ActorAssist {
+        #[serde(default)]
+        killer: Option<u8>,
+        #[serde(default)]
+        assist: Option<u8>,
+        class: String,
+    },
 }
 
 impl From<WireEvent> for Input {
@@ -342,6 +361,9 @@ impl From<WireEvent> for Input {
             WireEvent::Leave { zone, object } => Input::Leave { zone, object },
             WireEvent::SquadDead { squad } => Input::SquadDead(squad),
             WireEvent::ActorKill { killer, class } => Input::ActorKill { killer, class },
+            WireEvent::ActorAssist { killer, assist, class } => {
+                Input::ActorAssist { killer, assist, class }
+            }
         }
     }
 }
@@ -381,6 +403,10 @@ struct WireScenario {
     start: bool,
     #[serde(default)]
     timeline: Vec<WireTick>,
+    /// Labelled objects the game holds: what `objects labelled` visits
+    /// and `o.number` reads.
+    #[serde(default)]
+    labelled: Vec<rules::scenario::ScenarioLabel>,
 }
 
 impl WireScenario {
@@ -405,8 +431,10 @@ impl WireScenario {
                     slot: s.slot,
                     team: s.team,
                     lives: s.lives,
+                    unit: s.unit,
                 })
                 .collect(),
+            labelled: self.labelled,
             teams: self.teams,
             variant: self.variant,
             options: self.options,
@@ -787,7 +815,8 @@ async fn get_ide_legend() -> Response {
 
 async fn get_builtin(State(live): Shared, headers: HeaderMap) -> ApiResult<Response> {
     live.authorize_read(bearer(&headers))?;
-    let items: Vec<_> = rules::builtin::ALL
+    // The engine ports, then the examples: "Start from..." offers both.
+    let mut items: Vec<_> = rules::builtin::ALL
         .iter()
         .map(|b| {
             json!({
@@ -795,9 +824,21 @@ async fn get_builtin(State(live): Shared, headers: HeaderMap) -> ApiResult<Respo
                 "engine": b.engine,
                 "source": b.source,
                 "hash": rules::compile(b.source).ok().map(|ir| ir.id().to_string()),
+                "example": false,
             })
         })
         .collect();
+    for (key, source) in rules::builtin::examples() {
+        let ir = rules::compile(source).ok();
+        items.push(json!({
+            "name": ir.as_ref().map_or(*key, |ir| ir.header.name.as_str()),
+            "key": key,
+            "engine": ir.as_ref().map(|ir| ir.header.carrier),
+            "source": source,
+            "hash": ir.as_ref().map(|ir| ir.id().to_string()),
+            "example": true,
+        }));
+    }
     Ok(crate::http::json(StatusCode::OK, &json!({ "items": items })))
 }
 

@@ -33,6 +33,7 @@ const VIEW = {
   id: ID, name: "Pillow Fight", description: "Swords only.", author: { xuid: "0009000000000042", gamertag: "afr" },
   engine: 2, game_type: "Slayer", record_hex: RECORD, script_hash: HASH, script_name: "Slayer", visibility: "unlisted",
   created: "2026-11-20T10:00:00Z", bundle_url: `/v1/variants/${ID}/h2variant`, settings: [{ label: "Score to win", value: "25" }],
+  eligible: ["custom", "hopper"],
 };
 const BUNDLE: H2Variant = { format: "h2recomp-game-variant", version: 2, name: "Pillow Fight", description: "", game_type: "Slayer", engine: 2, record_hex: RECORD };
 
@@ -127,6 +128,8 @@ describe("reading answers", () => {
     expect(v.visibility).toBe("unlisted");
     expect(v.script_hash).toBe(HASH);
     expect(v.settings).toEqual([{ label: "Score to win", value: "25" }]);
+    expect(v.eligible).toEqual(["custom", "hopper"]);
+    expect(parseVariant({ id: ID })!.eligible).toEqual([]);
     expect(parseVariant({ ...VIEW, id: "nope" })).toBeNull();
     expect(parseVariant({ id: ID })).toMatchObject({ name: "Untitled", script_hash: null, visibility: "public", bundle_url: `/v1/variants/${ID}/h2variant` });
     expect(parseVariants({ items: [VIEW, { id: 3 }, null] }).length).toBe(1);

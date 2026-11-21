@@ -232,36 +232,22 @@ pub fn option_views(ir: &rules::Ir) -> Vec<OptionView> {
 /// A value is a number, a bool or an enum value's name; an option left out
 /// takes its default.
 pub fn pack_options(ir: &rules::Ir, given: &Map<String, Value>) -> ApiResult<u32> {
-    let views = option_views(ir);
-    if let Some(k) = given.keys().find(|k| !views.iter().any(|o| o.name == **k)) {
-        return Err(invalid(format!("the script has no option {k:?}")));
-    }
-    let mut bits = 0u64;
-    for ((o, view), off) in ir.options.iter().zip(&views).zip(ir.option_offsets()) {
-        let bad = || invalid(format!("option {:?} takes {}..={}", view.name, o.lo, o.hi));
-        let value = match given.get(&view.name) {
-            None => o.default,
-            Some(Value::Bool(b)) => i32::from(*b),
-            Some(Value::Number(n)) => n
-                .as_i64()
-                .and_then(|n| i32::try_from(n).ok())
-                .ok_or_else(bad)?,
-            Some(Value::String(s)) => view
-                .values
-                .as_ref()
-                .and_then(|vs| vs.iter().position(|v| v == s))
-                .map(|p| o.lo + p as i32)
-                .ok_or_else(|| invalid(format!("option {:?} has no value {s:?}", view.name)))?,
-            Some(_) => return Err(bad()),
-        };
-        if !(o.lo..=o.hi).contains(&value) {
-            return Err(bad());
-        }
-        if off < 64 {
-            bits |= ((i64::from(value) - i64::from(o.lo)) as u64) << off;
-        }
-    }
-    Ok(bits as u32)
+    use rules::ir::OptionValue;
+    let given: Vec<(String, OptionValue)> = given
+        .iter()
+        .map(|(k, v)| {
+            let value = match v {
+                Value::Bool(b) => OptionValue::Bool(*b),
+                Value::String(s) => OptionValue::Name(s.clone()),
+                // A fraction, or a value of another type, is out of every
+                // option's range.
+                Value::Number(n) => OptionValue::Int(n.as_i64().unwrap_or(i64::MAX)),
+                _ => OptionValue::Int(i64::MAX),
+            };
+            (k.clone(), value)
+        })
+        .collect();
+    ir.pack_options(&given).map_err(|e| invalid(e.to_string()))
 }
 
 fn view(live: &Live, k: &Kept) -> Variant {
@@ -284,6 +270,23 @@ fn view(live: &Live, k: &Kept) -> Variant {
         created: k.created.clone(),
         bundle_url: format!("/v1/variants/{}/h2variant", k.published.id),
         settings: v.as_ref().map(settings).unwrap_or_default(),
+        eligible: eligible(b),
+    }
+}
+
+/// Where a bundle may play, by the script policy (`rules::policy`): every
+/// kind of game with no script, else the ones its header's capabilities
+/// allow. Publishing stays open; this records the answer.
+pub fn eligible(b: &Bundle) -> Vec<String> {
+    match b.integrity() {
+        Ok(c) => match c.script {
+            None => rules::policy::PLAYED.iter().map(|c| c.name().to_string()).collect(),
+            Some((_, ir)) => rules::policy::eligible(&ir.header.requires, ir.header.api_version)
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        },
+        Err(_) => Vec::new(),
     }
 }
 
@@ -328,6 +331,62 @@ impl Live {
         };
         self.rate_limit(&author, lxm::CONTENT_WRITE)?;
         Ok((author, xuid))
+    }
+
+    /// The script policy (`rules::policy`) for the saved or built-in
+    /// script with this full hash in `context`: its first refused
+    /// capability, by name and reason.
+    fn script_policy(&self, hash: &str, context: rules::policy::Context<'_>) -> ApiResult<()> {
+        let attach = self.script_by_hash(hash)?;
+        let (ir, _) = rules::verify::load(&attach.ir)
+            .map_err(|e| invalid(format!("the script does not load: {e}")))?;
+        match rules::policy::check(context, &ir.header.requires, ir.header.api_version)
+            .into_iter()
+            .next()
+        {
+            Some(d) => Err(forbidden(format!("the rules script {hash}: {d}"))),
+            None => Ok(()),
+        }
+    }
+
+    /// A session's script against the policy of its kind of game: a
+    /// ranked session's `rules` names a script Live knows whose header the
+    /// ranked policy takes. Custom and hopper sessions are checked at the
+    /// host and at the hopper's edit.
+    pub(crate) fn check_session_rules(&self, flags: &str, script: Option<&str>) -> ApiResult<()> {
+        match script {
+            Some(hash) if flags == "ranked" => {
+                self.script_policy(hash, rules::policy::Context::Ranked)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// A hopper slot's script, named by the record's hash prefix (16
+    /// lowercase hex digits), against `context`: one saved or built-in
+    /// script has the prefix, and the context takes its header.
+    pub(crate) fn check_slot_script(
+        &self,
+        prefix: &str,
+        context: rules::policy::Context<'_>,
+    ) -> ApiResult<()> {
+        let mut hashes: Vec<String> = builtins()
+            .keys()
+            .filter(|h| h.starts_with(prefix))
+            .cloned()
+            .collect();
+        hashes.extend(self.rules.read().hashes_with_prefix(prefix));
+        hashes.sort();
+        hashes.dedup();
+        match hashes.as_slice() {
+            [] => Err(invalid(format!(
+                "no saved or built-in script has hash prefix {prefix}"
+            ))),
+            [hash] => self.script_policy(hash, context),
+            _ => Err(invalid(format!(
+                "more than one script has hash prefix {prefix}"
+            ))),
+        }
     }
 
     /// A saved script's or a built-in's IR and source, by IR hash.
@@ -759,4 +818,46 @@ pub(crate) fn routes() -> Router<Arc<Live>> {
         .route("/v1/variants/{id}", get(get_variant).delete(delete_variant))
         .route("/v1/variants/{id}/h2variant", get(get_file))
         .layer(DefaultBodyLimit::max(MAX_BODY))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use variants::portable::PortScript;
+    use variants::record::GameType;
+
+    fn fists() -> GameVariant {
+        let mut v = GameVariant::blank(GameType::Slayer);
+        v.set_name("Fists").unwrap();
+        v
+    }
+
+    #[test]
+    fn eligibility_follows_the_scripts_capabilities() {
+        let plain = portable::port(&fists(), None, None, PortScript::Keep).unwrap();
+        assert_eq!(eligible(&plain), ["custom", "hopper", "ranked"]);
+        let slayer = portable::port(&fists(), None, None, PortScript::Builtin).unwrap();
+        assert_eq!(eligible(&slayer), ["custom", "hopper", "ranked"]);
+        let builder = "rules \"Builder\" 1\ncarrier slayer\nrequires forge.move\n\non kill(victim, killer) { score(killer, 1) }\n";
+        let forge = portable::port(&fists(), None, None, PortScript::Source(builder.into())).unwrap();
+        assert_eq!(eligible(&forge), ["custom", "hopper"]);
+    }
+
+    #[test]
+    fn options_pack_by_name_with_the_routes_refusals() {
+        let ir = rules::compile(rules::builtin::SLAYER).unwrap();
+        let map = |v: Value| v.as_object().unwrap().clone();
+        assert_eq!(pack_options(&ir, &Map::new()).unwrap(), ir.default_options());
+        let three = pack_options(&ir, &map(json!({"kill_points": 3, "suicide_costs": false}))).unwrap();
+        assert_ne!(three, ir.default_options());
+        for (bad, want) in [
+            (json!({"nope": 1}), "the script has no option \"nope\""),
+            (json!({"kill_points": 9}), "option \"kill_points\" takes 1..=5"),
+            (json!({"kill_points": 1.5}), "option \"kill_points\" takes 1..=5"),
+            (json!({"kill_points": null}), "option \"kill_points\" takes 1..=5"),
+            (json!({"kill_points": "x"}), "option \"kill_points\" has no value \"x\""),
+        ] {
+            assert_eq!(pack_options(&ir, &map(bad.clone())).unwrap_err().message, want, "{bad}");
+        }
+    }
 }

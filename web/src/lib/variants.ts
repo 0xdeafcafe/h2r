@@ -41,6 +41,8 @@ export interface Variant {
   bundle_url: string;
   /** The server's summary of the record. */
   settings: VariantSetting[];
+  /** Where it may play, by the script policy: "custom", "hopper", "ranked". */
+  eligible: string[];
 }
 
 /** The `.h2variant` file, format 2. */
@@ -187,6 +189,7 @@ export function parseVariant(body: unknown): Variant | null {
     created: str(v.created),
     bundle_url: str(v.bundle_url) || `/v1/variants/${id}/h2variant`,
     settings: arr(v.settings).map(obj).filter((s) => typeof s.label === "string").map((s) => ({ label: str(s.label), value: typeof s.value === "string" ? s.value : String(s.value ?? "") })),
+    eligible: arr(v.eligible).filter((e): e is string => typeof e === "string"),
   };
 }
 

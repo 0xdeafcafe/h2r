@@ -948,6 +948,43 @@ async fn pack_takedown_covers_member_reads_sessions_and_exclusive_blobs() {
 }
 
 #[tokio::test]
+async fn a_ranked_session_names_a_script_the_ranked_policy_takes() {
+    let h = content_harness(small()).await;
+    let u = h.create("Host").await;
+    let with = |flags: &str, rules: &str| NewSession {
+        rules: Some(rules.into()),
+        ..session(flags, Some(3), None)
+    };
+    let slayer = rules::compile(rules::builtin::SLAYER).unwrap().id().to_string();
+    assert_eq!(advertise(&h, &u, &with("ranked", &slayer)).await.status, StatusCode::CREATED);
+    // A script Live does not know cannot be checked, so a ranked game refuses it.
+    let unknown = "ee".repeat(32);
+    let r = advertise(&h, &u, &with("ranked", &unknown)).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.error());
+    assert_eq!(advertise(&h, &u, &with("custom", &unknown)).await.status, StatusCode::CREATED);
+
+    // A saved script that grants Forge edits plays custom games, never ranked.
+    let builder = "rules \"Builder\" 1\ncarrier slayer\nrequires forge.move\n\non kill(victim, killer) { score(killer, 1) }\n";
+    let saved = h
+        .call(
+            Method::POST,
+            "/v1/rules",
+            &[
+                h.bearer(&u, lxm::CONTENT_WRITE),
+                ("content-type", "application/json".into()),
+            ],
+            json!({"source": builder}).to_string(),
+        )
+        .await;
+    assert_eq!(saved.status, StatusCode::CREATED, "{}", saved.error());
+    let hash = rules::compile(builder).unwrap().id().to_string();
+    let r = advertise(&h, &u, &with("ranked", &hash)).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.error());
+    assert!(r.error().contains("capability forge.move is not allowed in a ranked game"), "{}", r.error());
+    assert_eq!(advertise(&h, &u, &with("hopper", &hash)).await.status, StatusCode::CREATED);
+}
+
+#[tokio::test]
 async fn ranked_sessions_take_retail_or_pinned_maps_only() {
     let h = content_harness(small()).await;
     let u = h.create("Host").await;

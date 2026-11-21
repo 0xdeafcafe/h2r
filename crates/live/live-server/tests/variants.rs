@@ -258,6 +258,8 @@ async fn bad_variants_are_refused() {
     .await;
     assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
     assert_eq!(r.json()["script_name"], "King of the Hill");
+    // King declares no power, so the policy lets it play everywhere.
+    assert_eq!(r.json()["eligible"], json!(["custom", "hopper", "ranked"]));
 
     // Options the script does not declare, or out of range.
     for options in [json!({"nope": 1}), json!({"kill_points": 9}), json!({"kill_points": "x"})] {
