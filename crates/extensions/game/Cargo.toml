@@ -6,6 +6,7 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
+actor-net = { path = "../../live/actor-net" }
 # Build and load (docs/dev/crate-structure.md, S4).
 recomp = { path = "../../runtime/recomp" }
 h1-runtime = { path = "../h1-runtime" }

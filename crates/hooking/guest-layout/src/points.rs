@@ -1298,6 +1298,10 @@ points! { ALL;
     /// `0x18d4dc`, on the game thread (the object and effect updates and the
     /// per-frame update `0x18c060`).
     SOUND_OWNER_USER @ 0x0018_d4f0: [fn(object: stack 0, kind: stack 1, user: stack 2) ret 12]; "docs/game/bots.md";
+    /// Start a spatial sound at an object marker. Returns the sound instance.
+    SOUND_START_AT_MARKER @ 0x0018_91d0: [fn(marker: eax, object: esi, parameters: stack 0) -> eax ret 4]; "docs/game/ai-networking.md";
+    /// Bind the sound instance to the speaking biped's mouth animation.
+    BIPED_DIALOGUE_LIP_SYNC @ 0x0010_9220: [fn(unit: ebx, sound: stack 0, instance: stack 1) ret 8]; "docs/game/ai-networking.md";
     /// Per-type file bound called by the cache header validator (0x1228b8).
     CACHE_TYPE_LIMIT @ 0x0021_4ed0: [fn(kind: ecx) -> eax ret 0]; "docs/halo1/sounds.md";
     /// Apply the unit control packet (EAX unit datum, ECX control). The

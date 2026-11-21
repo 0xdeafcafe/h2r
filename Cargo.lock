@@ -2230,6 +2230,7 @@ dependencies = [
 name = "game"
 version = "0.1.0"
 dependencies = [
+ "actor-net",
  "agent",
  "agent-proto",
  "anyhow",
